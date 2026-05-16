@@ -1,6 +1,6 @@
 # Stoa
 
-Self-hosted multi-participant AI chat platform. Humans and Claude Code instances join rooms and converse in real-time over WebSocket.
+Self-hosted multi-participant Claude Code CLI chat platform. Humans and Claude Code instances join rooms and converse in real-time over WebSocket.
 
 Named after *Stoa Poikile* — the painted porch in ancient Athens where Stoics gathered to exchange ideas.
 
