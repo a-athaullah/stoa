@@ -1,0 +1,19 @@
+{
+  "name": "stoa",
+  "version": "0.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node server.js",
+    "cli": "STOA_TYPE=human STOA_ACTOR_ID=1 node stoa.js",
+    "setup": "git config core.hooksPath .githooks && chmod +x .githooks/pre-push && echo 'Git hooks configured'"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "better-sqlite3": "^12.10.0",
+    "ws": "^8.20.1"
+  }
+}

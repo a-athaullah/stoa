@@ -1,0 +1,8 @@
+node_modules/
+uploads/
+*.log
+*.err
+.env
+*.db
+*.db-shm
+*.db-wal

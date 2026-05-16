@@ -1,0 +1,80 @@
+#!/bin/bash
+# Auto-bump version on every push
+# Conventional commits: fix: → patch, feat: → minor, feat!/BREAKING: → major
+
+# Skip if last commit is already a version bump
+LAST_MSG=$(git log -1 --format="%s" 2>/dev/null)
+if echo "$LAST_MSG" | grep -q "\[version\]"; then
+  exit 0
+fi
+
+# Get commits since last tag (or all commits if no tag yet)
+LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+if [ -z "$LAST_TAG" ]; then
+  COMMITS=$(git log --format="%s")
+else
+  COMMITS=$(git log "${LAST_TAG}..HEAD" --format="%s")
+fi
+
+# No new commits to version
+if [ -z "$COMMITS" ]; then
+  exit 0
+fi
+
+# Determine bump type
+BUMP="patch"
+if echo "$COMMITS" | grep -qiE "^(feat!|fix!|BREAKING CHANGE):"; then
+  BUMP="major"
+elif echo "$COMMITS" | grep -qiE "^feat(\(.+\))?:"; then
+  BUMP="minor"
+fi
+
+# Calculate new version
+CURRENT=$(node -p "require('./package.json').version" 2>/dev/null || echo "0.0.0")
+NEW_VERSION=$(node -e "
+const [M,m,p] = '$CURRENT'.split('.').map(Number);
+if ('$BUMP' === 'major') process.stdout.write((M+1)+'.0.0');
+else if ('$BUMP' === 'minor') process.stdout.write(M+'.'+(m+1)+'.0');
+else process.stdout.write(M+'.'+m+'.'+(p+1));
+")
+
+# Bump package.json
+node -e "
+const fs = require('fs');
+const pkg = JSON.parse(fs.readFileSync('package.json','utf8'));
+pkg.version = '$NEW_VERSION';
+fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+"
+
+# Generate changelog
+mkdir -p changelog
+SLUG="${NEW_VERSION//./-}"
+DATE=$(date +%Y-%m-%d)
+
+if [ -z "$LAST_TAG" ]; then
+  COMMIT_LIST=$(git log --format="- %s" | grep -v "\[version\]")
+else
+  COMMIT_LIST=$(git log "${LAST_TAG}..HEAD" --format="- %s" | grep -v "\[version\]")
+fi
+
+cat > "changelog/version-${SLUG}.md" << EOF
+# v${NEW_VERSION} — ${DATE}
+
+$([ "$BUMP" = "major" ] && echo "⚠️  Breaking changes" || [ "$BUMP" = "minor" ] && echo "✨ New features" || echo "🔧 Bug fixes & improvements")
+
+## Changes
+
+${COMMIT_LIST}
+EOF
+
+# Commit version bump
+git add package.json "changelog/version-${SLUG}.md"
+git commit -m "v${NEW_VERSION} [version]" --no-verify
+
+# Tag
+git tag "v${NEW_VERSION}"
+
+echo ""
+echo "→ v${CURRENT} → v${NEW_VERSION} (${BUMP})"
+echo "→ changelog/version-${SLUG}.md"
+echo ""

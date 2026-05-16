@@ -1,0 +1,635 @@
+#!/usr/bin/env node
+// Stoa full-flow integration test
+// Tests: setup, add agents (Idris + Kira), create room, workdirs, skills, chat WS
+// Run: node test.js
+// Cleanup: all created actors, rooms, workdirs, messages removed at end.
+
+'use strict';
+
+const http   = require('http');
+const assert = require('assert');
+const WebSocket = require('ws');
+const Database = require('better-sqlite3');
+const path   = require('path');
+
+const BASE  = 'http://localhost:3001';
+const WS    = 'ws://localhost:3001';
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'stoa.db');
+
+let db;
+const created = { actors: [], rooms: [], workdirs: [] };
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+function req(method, urlPath, body) {
+  return new Promise((resolve, reject) => {
+    const buf = body ? Buffer.from(JSON.stringify(body)) : null;
+    const opts = {
+      hostname: '127.0.0.1', port: 3001,
+      path: urlPath, method,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(buf ? { 'Content-Length': buf.length } : {}),
+      },
+    };
+    const r = http.request(opts, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        const raw = Buffer.concat(chunks).toString();
+        let json;
+        try { json = JSON.parse(raw); } catch { json = raw; }
+        resolve({ status: res.statusCode, body: json });
+      });
+    });
+    r.on('error', reject);
+    if (buf) r.write(buf);
+    r.end();
+  });
+}
+
+function reqRaw(method, urlPath) {
+  return new Promise((resolve, reject) => {
+    const opts = { hostname: '127.0.0.1', port: 3001, path: urlPath, method };
+    const r = http.request(opts, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString() }));
+    });
+    r.on('error', reject);
+    r.end();
+  });
+}
+
+// Get a one-time install token via /install.sh script
+async function getInstallToken(name) {
+  const { body: script } = await reqRaw('GET', `/install.sh?name=${encodeURIComponent(name)}`);
+  const m = script.match(/REG_TOKEN="([0-9a-f]+)"/);
+  if (!m) throw new Error('could not parse REG_TOKEN from install.sh');
+  return m[1];
+}
+
+// Register agent using the install token flow
+async function registerAgent(name) {
+  const token = await getInstallToken(name);
+  const { status, body } = await req('POST', '/api/agent/register', { token });
+  assert.strictEqual(status, 200, `register failed for ${name}: ${JSON.stringify(body)}`);
+  return body; // { actor_id, name, secret }
+}
+
+function pass(msg) { process.stdout.write(`  \x1b[32m✓\x1b[0m ${msg}\n`); }
+function fail(msg) { process.stdout.write(`  \x1b[31m✗\x1b[0m ${msg}\n`); }
+
+async function test(name, fn) {
+  try {
+    await fn();
+    pass(name);
+  } catch (e) {
+    fail(`${name}: ${e.message}`);
+    if (process.env.DEBUG) console.error(e);
+  }
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// Connect a fake agent over WebSocket, handshake, send scan result, resolve when ready
+function connectAgent(actorId, secret, workdirs = []) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(WS);
+    ws.on('open', () => {
+      ws.send(JSON.stringify({ type: 'agent_connect', actor_id: actorId, secret }));
+    });
+    ws.on('message', raw => {
+      let msg;
+      try { msg = JSON.parse(raw); } catch { return; }
+      if (msg.type === 'auth_error') { ws.close(); reject(new Error('auth_error: ' + msg.error)); return; }
+      if (msg.type === 'agent_ready') {
+        ws.send(JSON.stringify({
+          type: 'agent_scan_result',
+          workdirs: workdirs.map(w => ({ path: w, label: path.basename(w), skills: [] })),
+          global_skills: [],
+        }));
+        resolve(ws);
+      }
+    });
+    ws.on('error', reject);
+    setTimeout(() => reject(new Error('agent connect timeout')), 5000);
+  });
+}
+
+// ── test suite ────────────────────────────────────────────────────────────────
+
+async function run() {
+  console.log('\n\x1b[1mStoa integration tests\x1b[0m\n');
+
+  // ── 0. Prerequisites ──────────────────────────────────────────────────────
+  console.log('0 · server health');
+
+  await test('server responds on :3001', async () => {
+    const { status } = await req('GET', '/');
+    assert.strictEqual(status, 200);
+  });
+
+  db = new Database(DB_PATH, { readonly: false });
+
+  // ── 1. Setup ──────────────────────────────────────────────────────────────
+  console.log('\n1 · first-run setup');
+
+  let humanId;
+
+  await test('GET /api/setup/status returns shape', async () => {
+    const { status, body } = await req('GET', '/api/setup/status');
+    assert.strictEqual(status, 200);
+    assert.ok('needsSetup' in body);
+  });
+
+  // If setup already done (e.g. human actor exists) keep it; else create one
+  await test('setup or reuse human actor', async () => {
+    const { body: status } = await req('GET', '/api/setup/status');
+    if (status.needsSetup) {
+      const { status: s, body } = await req('POST', '/api/setup', { name: 'Test Human' });
+      assert.strictEqual(s, 200);
+      assert.ok(body.id);
+      humanId = body.id;
+      created.actors.push(humanId);
+    } else {
+      const { body: actors } = await req('GET', '/api/actors');
+      const human = actors.find(a => a.type === 'human');
+      assert.ok(human, 'human actor must exist');
+      humanId = human.id;
+      // don't add to created – we didn't create it
+    }
+    assert.ok(humanId > 0);
+  });
+
+  // ── 2. Register agents ────────────────────────────────────────────────────
+  console.log('\n2 · agent registration');
+
+  let idrisId, idrisSecret, kiraId, kiraSecret;
+
+  await test('register Idris via install token flow', async () => {
+    const r = await registerAgent('Idris-test');
+    assert.ok(r.actor_id);
+    assert.ok(r.secret);
+    idrisId     = r.actor_id;
+    idrisSecret = r.secret;
+    created.actors.push(idrisId);
+  });
+
+  await test('register Kira via install token flow', async () => {
+    const r = await registerAgent('Kira-test');
+    assert.ok(r.actor_id);
+    kiraId     = r.actor_id;
+    kiraSecret = r.secret;
+    created.actors.push(kiraId);
+  });
+
+  await test('GET /api/actors includes both agents', async () => {
+    const { body: actors } = await req('GET', '/api/actors');
+    const names = actors.map(a => a.name);
+    assert.ok(names.includes('Idris-test'), 'Idris-test not in actors');
+    assert.ok(names.includes('Kira-test'),  'Kira-test not in actors');
+  });
+
+  // ── 3. Agent WebSocket connect + scan ──────────────────────────────────────
+  console.log('\n3 · agent WS connection & workdir scan');
+
+  const IDRIS_WORKDIRS = ['/tmp/stoa-test-proj-a', '/tmp/stoa-test-proj-b'];
+  let idrisWs, kiraWs;
+
+  await test('Idris connects and sends scan result', async () => {
+    idrisWs = await connectAgent(idrisId, idrisSecret, IDRIS_WORKDIRS);
+    assert.ok(idrisWs.readyState === WebSocket.OPEN);
+    await sleep(300); // let server persist workdirs
+  });
+
+  await test('Kira connects (no workdirs)', async () => {
+    kiraWs = await connectAgent(kiraId, kiraSecret, []);
+    assert.ok(kiraWs.readyState === WebSocket.OPEN);
+  });
+
+  await test('wrong secret rejected with auth_error', async () => {
+    let got = false;
+    await new Promise((resolve, reject) => {
+      const ws = new WebSocket(WS);
+      ws.on('open', () => ws.send(JSON.stringify({ type: 'agent_connect', actor_id: idrisId, secret: 'wrong' })));
+      ws.on('message', raw => {
+        const msg = JSON.parse(raw);
+        if (msg.type === 'auth_error') { got = true; ws.close(); resolve(); }
+      });
+      ws.on('error', reject);
+      setTimeout(resolve, 3000);
+    });
+    assert.ok(got, 'expected auth_error for wrong secret');
+  });
+
+  // ── 4. Workdirs ────────────────────────────────────────────────────────────
+  console.log('\n4 · workdirs');
+
+  await test('GET /api/actors/:id/workdirs returns scanned dirs', async () => {
+    const { body } = await req('GET', `/api/actors/${idrisId}/workdirs`);
+    assert.ok(Array.isArray(body));
+    const paths = body.map(w => w.path);
+    for (const wd of IDRIS_WORKDIRS) {
+      assert.ok(paths.includes(wd), `missing workdir ${wd}`);
+    }
+    created.workdirs.push(...body.map(w => w.id));
+  });
+
+  let newWorkdirId;
+  await test('POST /api/actors/:id/workdirs adds new workdir', async () => {
+    const { status, body } = await req('POST', `/api/actors/${idrisId}/workdirs`, {
+      path: '/tmp/stoa-test-new-wd',
+      label: 'new-wd',
+    });
+    assert.strictEqual(status, 200);
+    assert.ok(body.id);
+    newWorkdirId = body.id;
+    created.workdirs.push(newWorkdirId);
+  });
+
+  await test('new workdir appears in list', async () => {
+    const { body } = await req('GET', `/api/actors/${idrisId}/workdirs`);
+    const ids = body.map(w => w.id);
+    assert.ok(ids.includes(newWorkdirId));
+  });
+
+  // ── 5. Skills ──────────────────────────────────────────────────────────────
+  console.log('\n5 · skills');
+
+  await test('GET /api/actors/:id/skills returns array', async () => {
+    const { body } = await req('GET', `/api/actors/${idrisId}/skills`);
+    assert.ok(Array.isArray(body));
+  });
+
+  await test('GET /api/skills returns global skill list', async () => {
+    const { body } = await req('GET', '/api/skills');
+    assert.ok(Array.isArray(body));
+  });
+
+  // ── 6. Room creation ───────────────────────────────────────────────────────
+  console.log('\n6 · room creation');
+
+  let roomId;
+
+  await test('POST /api/rooms creates room with participants', async () => {
+    const { status, body } = await req('POST', '/api/rooms', {
+      title:           'Test Room — flow',
+      participant_ids: [humanId, idrisId, kiraId],
+      workdir_id:      null,
+    });
+    assert.strictEqual(status, 200);
+    assert.ok(body.id, `expected body.id, got: ${JSON.stringify(body)}`);
+    roomId = body.id;
+    created.rooms.push(roomId);
+  });
+
+  await test('GET /api/rooms lists new room', async () => {
+    const { body } = await req('GET', '/api/rooms');
+    const titles = body.map(r => r.title);
+    assert.ok(titles.includes('Test Room — flow'));
+  });
+
+  await test('GET /api/rooms/:id/participants returns 3 participants', async () => {
+    const { body } = await req('GET', `/api/rooms/${roomId}/participants`);
+    assert.ok(Array.isArray(body));
+    assert.strictEqual(body.length, 3);
+  });
+
+  // ── 7. Change workdir for room ─────────────────────────────────────────────
+  console.log('\n7 · change working directory');
+
+  await test('POST /api/rooms creates room with workdir_id', async () => {
+    const { body: scannedWds } = await req('GET', `/api/actors/${idrisId}/workdirs`);
+    const wd = scannedWds.find(w => w.path === IDRIS_WORKDIRS[0]);
+    assert.ok(wd, `workdir ${IDRIS_WORKDIRS[0]} not found in list`);
+    const { status, body } = await req('POST', '/api/rooms', {
+      title:           'Test Room — wd',
+      participant_ids: [humanId, idrisId],
+      workdir_id:      wd.id,
+    });
+    assert.strictEqual(status, 200);
+    created.rooms.push(body.id);
+    const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(body.id);
+    assert.strictEqual(roomRow.workdir_id, wd.id);
+  });
+
+  // ── 8. Messages ────────────────────────────────────────────────────────────
+  console.log('\n8 · message persistence');
+
+  await test('GET /api/rooms/:id/messages returns empty array initially', async () => {
+    const { body } = await req('GET', `/api/rooms/${roomId}/messages`);
+    assert.ok(Array.isArray(body));
+    assert.strictEqual(body.length, 0);
+  });
+
+  // ── 8b. Room rename ───────────────────────────────────────────────────────
+  console.log('\n8b · room rename');
+
+  await test('PATCH /api/rooms/:id renames room', async () => {
+    const { status } = await req('PATCH', `/api/rooms/${roomId}`, { title: 'Test Room — renamed' });
+    assert.strictEqual(status, 200);
+    const { body: rooms } = await req('GET', '/api/rooms');
+    const found = rooms.find(r => r.id === roomId);
+    assert.strictEqual(found.title, 'Test Room — renamed');
+  });
+
+  // ── 8c. Install scripts ──────────────────────────────────────────────────
+  console.log('\n8c · install scripts');
+
+  await test('GET /install.sh returns 200 with REG_TOKEN', async () => {
+    const { status, body } = await reqRaw('GET', '/install.sh?name=test-install');
+    assert.strictEqual(status, 200);
+    assert.ok(body.includes('REG_TOKEN='), 'missing REG_TOKEN in install.sh');
+  });
+
+  await test('GET /install.ps1 returns 200', async () => {
+    const { status } = await reqRaw('GET', '/install.ps1?name=test-install-ps');
+    assert.strictEqual(status, 200);
+  });
+
+  await test('GET /install.cmd returns 200', async () => {
+    const { status } = await reqRaw('GET', '/install.cmd?name=test-install-cmd');
+    assert.strictEqual(status, 200);
+  });
+
+  // ── 8d. Client manifest ──────────────────────────────────────────────────
+  console.log('\n8d · client manifest');
+
+  await test('GET /api/client/manifest returns files object', async () => {
+    const { status, body } = await req('GET', '/api/client/manifest');
+    assert.strictEqual(status, 200);
+    assert.ok(body.files && typeof body.files === 'object');
+  });
+
+  // ── 8e. Message pagination ───────────────────────────────────────────────
+  console.log('\n8e · message pagination');
+
+  await test('GET /api/rooms/:id/messages?before=999999 returns array', async () => {
+    const { status, body } = await req('GET', `/api/rooms/${roomId}/messages?before=999999&limit=10`);
+    assert.strictEqual(status, 200);
+    assert.ok(Array.isArray(body));
+  });
+
+  // ── 8f. Settings ─────────────────────────────────────────────────────────
+  console.log('\n8f · settings');
+
+  await test('GET /api/settings returns object', async () => {
+    const { status, body } = await req('GET', '/api/settings');
+    assert.strictEqual(status, 200);
+    assert.ok(typeof body === 'object');
+  });
+
+  // ── 8g. Invalid JSON returns 400 not 500 ─────────────────────────────────
+  console.log('\n8g · error handling');
+
+  await test('POST with invalid JSON returns 400', async () => {
+    const { status } = await new Promise((resolve, reject) => {
+      const r = http.request({ hostname: '127.0.0.1', port: 3001, path: '/api/rooms', method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': 5 } }, res => {
+        const chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => resolve({ status: res.statusCode }));
+      });
+      r.on('error', reject);
+      r.write('{bad}');
+      r.end();
+    });
+    assert.strictEqual(status, 400);
+  });
+
+  // ── 8h. Client file download ───────────────────────────────────────────────
+  console.log('\n8h · client file download');
+
+  await test('GET /api/client/file/stoa.js returns 200', async () => {
+    const { status } = await reqRaw('GET', '/api/client/file/stoa.js');
+    assert.strictEqual(status, 200);
+  });
+
+  await test('GET /api/client/file/nonexistent returns 404', async () => {
+    const { status } = await reqRaw('GET', '/api/client/file/nonexistent.xyz');
+    assert.strictEqual(status, 404);
+  });
+
+  // ── 8i. Docs listing ──────────────────────────────────────────────────────
+  console.log('\n8i · docs listing');
+
+  await test('GET /api/docs returns array', async () => {
+    const { status, body } = await req('GET', '/api/docs');
+    assert.strictEqual(status, 200);
+    assert.ok(Array.isArray(body));
+  });
+
+  // ── 8j. Messages with since param ─────────────────────────────────────────
+  console.log('\n8j · messages since');
+
+  await test('GET /api/rooms/:id/messages?since=0 returns array', async () => {
+    const { status, body } = await req('GET', `/api/rooms/${roomId}/messages?since=0`);
+    assert.strictEqual(status, 200);
+    assert.ok(Array.isArray(body));
+  });
+
+  // ── 8k. Agent commands via REST ───────────────────────────────────────────
+  console.log('\n8k · agent commands');
+
+  await test('POST /api/actors/:id/rescan sends rescan to connected agent', async () => {
+    const { status } = await req('POST', `/api/actors/${idrisId}/rescan`);
+    assert.strictEqual(status, 200);
+  });
+
+  await test('POST /api/actors/:id/force-update sends update to agent', async () => {
+    const { status } = await req('POST', `/api/actors/${idrisId}/force-update`);
+    assert.strictEqual(status, 200);
+  });
+
+  // ── 8l. File upload (base64) ──────────────────────────────────────────────
+  console.log('\n8l · file upload');
+
+  await test('POST /api/upload returns file URL', async () => {
+    const data = Buffer.from('hello test').toString('base64');
+    const { status, body } = await req('POST', '/api/upload', {
+      data: `data:text/plain;base64,${data}`,
+      mimeType: 'text/plain',
+      fileName: 'test-upload.txt',
+    });
+    assert.strictEqual(status, 200);
+    assert.ok(body.url, 'expected url in response');
+  });
+
+  // ── 8m. Invite resolve ────────────────────────────────────────────────────
+  console.log('\n8m · invite resolve');
+
+  await test('POST /api/invites/:id/resolve works', async () => {
+    const humanPart = db.prepare(
+      "SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1"
+    ).get(roomId);
+    const invite = db.prepare(
+      'INSERT INTO invite_suggestions (room_id, suggested_by_participant_id, suggested_actor_id, reason) VALUES (?,?,?,?)'
+    ).run(roomId, humanPart.id, kiraId, 'test invite');
+    const inviteId = invite.lastInsertRowid;
+    const { status, body } = await req('POST', `/api/invites/${inviteId}/resolve`, { approved: true });
+    assert.strictEqual(status, 200);
+    assert.ok(body.ok);
+  });
+
+  // ── 8n. Raw binary upload ───────────────────────────────────────────────
+  console.log('\n8n · raw upload');
+
+  await test('POST /api/upload/raw returns file URL', async () => {
+    const { status, body } = await new Promise((resolve, reject) => {
+      const buf = Buffer.from('binary test data');
+      const r = http.request({
+        hostname: '127.0.0.1', port: 3001,
+        path: '/api/upload/raw', method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': buf.length,
+          'X-File-Name': encodeURIComponent('test-raw.bin'),
+        },
+      }, res => {
+        const chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => {
+          const raw = Buffer.concat(chunks).toString();
+          let json; try { json = JSON.parse(raw); } catch { json = raw; }
+          resolve({ status: res.statusCode, body: json });
+        });
+      });
+      r.on('error', reject);
+      r.write(buf);
+      r.end();
+    });
+    assert.strictEqual(status, 200);
+    assert.ok(body.url, 'expected url in response');
+    assert.ok(body.name === 'test-raw.bin');
+  });
+
+  // ── 8o. Avatar upload & delete ────────────────────────────────────────────
+  console.log('\n8o · avatar');
+
+  await test('POST /api/actors/:id/avatar uploads avatar', async () => {
+    const dataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQAB';
+    const { status, body } = await req('POST', `/api/actors/${idrisId}/avatar`, { data_url: dataUrl });
+    assert.strictEqual(status, 200);
+    assert.ok(body.avatar_url, 'expected avatar_url in response');
+  });
+
+  await test('DELETE /api/actors/:id/avatar removes avatar', async () => {
+    const { status } = await req('DELETE', `/api/actors/${idrisId}/avatar`);
+    assert.strictEqual(status, 200);
+  });
+
+  // ── 8p. PATCH settings ────────────────────────────────────────────────────
+  console.log('\n8p · settings update');
+
+  await test('PATCH /api/settings updates human_name', async () => {
+    const { body: before } = await req('GET', '/api/settings');
+    const origName = before.human_name;
+    const { status, body } = await req('PATCH', '/api/settings', { human_name: 'Test Human Updated' });
+    assert.strictEqual(status, 200);
+    assert.ok(body.ok);
+    const { body: after } = await req('GET', '/api/settings');
+    assert.strictEqual(after.human_name, 'Test Human Updated');
+    await req('PATCH', '/api/settings', { human_name: origName });
+  });
+
+  // ── 8q. Doc content ───────────────────────────────────────────────────────
+  console.log('\n8q · doc content');
+
+  await test('GET /api/docs/:filename returns md content or 404', async () => {
+    const { body: docs } = await req('GET', '/api/docs');
+    if (docs.length > 0) {
+      const { status } = await reqRaw('GET', `/api/docs/${docs[0].slug}.en.md`);
+      assert.strictEqual(status, 200);
+    } else {
+      const { status } = await reqRaw('GET', '/api/docs/nonexistent.md');
+      assert.strictEqual(status, 404);
+    }
+  });
+
+  // ── 9. Rename actor ────────────────────────────────────────────────────────
+  console.log('\n9 · actor rename');
+
+  await test('PATCH /api/actors/:id renames agent', async () => {
+    const { status } = await req('PATCH', `/api/actors/${idrisId}`, { name: 'Idris-test-renamed' });
+    assert.strictEqual(status, 200);
+    const { body: actors } = await req('GET', '/api/actors');
+    const found = actors.find(a => a.id === idrisId);
+    assert.strictEqual(found.name, 'Idris-test-renamed');
+  });
+
+  // ── 9b. Search ──────────────────────────────────────────────────────────────
+  console.log('\n9b · search');
+
+  await test('GET /api/search with empty q returns empty array', async () => {
+    const { status, body } = await req('GET', '/api/search?q=&limit=10');
+    assert.strictEqual(status, 200);
+    assert.ok(Array.isArray(body));
+    assert.strictEqual(body.length, 0);
+  });
+
+  await test('GET /api/search with query returns array', async () => {
+    const { status, body } = await req('GET', '/api/search?q=test&limit=5');
+    assert.strictEqual(status, 200);
+    assert.ok(Array.isArray(body));
+  });
+
+  // ── 9c. Add participant to room ───────────────────────────────────────────
+  console.log('\n9c · add participant');
+
+  await test('POST /api/rooms/:id/participants adds actor to room', async () => {
+    // Create a new room with only human
+    const { body: newRoom } = await req('POST', '/api/rooms', { title: 'Test Room — add-part', participant_ids: [humanId] });
+    created.rooms.push(newRoom.id);
+    const { status } = await req('POST', `/api/rooms/${newRoom.id}/participants`, { actor_id: kiraId });
+    assert.strictEqual(status, 200);
+    const { body: parts } = await req('GET', `/api/rooms/${newRoom.id}/participants`);
+    assert.ok(parts.some(p => p.actor_id === kiraId));
+  });
+
+  await test('POST /api/rooms/:id/participants without actor_id returns 400', async () => {
+    const { status } = await req('POST', `/api/rooms/${roomId}/participants`, {});
+    assert.strictEqual(status, 400);
+  });
+
+  // ── 10. Cleanup ────────────────────────────────────────────────────────────
+  console.log('\n10 · cleanup');
+
+  if (idrisWs) idrisWs.close();
+  if (kiraWs)  kiraWs.close();
+  await sleep(200);
+
+  // Delete rooms directly from DB (no REST delete endpoint)
+  await test('delete test rooms from DB', async () => {
+    // Also catch any orphans by title in case IDs were never tracked (e.g. earlier failed run)
+    const orphans = db.prepare("SELECT id FROM rooms WHERE title LIKE 'Test Room%'").all().map(r => r.id);
+    const allRoomIds = [...new Set([...created.rooms.filter(Boolean), ...orphans])];
+    for (const id of allRoomIds) {
+      db.prepare('DELETE FROM invite_suggestions WHERE room_id=?').run(id);
+      db.prepare('DELETE FROM messages WHERE room_id=?').run(id);
+      db.prepare('DELETE FROM room_participants WHERE room_id=?').run(id);
+      db.prepare('DELETE FROM rooms WHERE id=?').run(id);
+    }
+    const remaining = db.prepare("SELECT id FROM rooms WHERE title LIKE 'Test Room%'").all();
+    assert.strictEqual(remaining.length, 0, `orphan test rooms remain: ${remaining.map(r=>r.id)}`);
+  });
+
+  // Delete test actors via REST
+  for (const id of created.actors) {
+    await test(`DELETE /api/actors/${id}`, async () => {
+      const { status } = await req('DELETE', `/api/actors/${id}`);
+      assert.ok(status === 200 || status === 204);
+    });
+  }
+
+  await test('no test actors remain', async () => {
+    const { body: actors } = await req('GET', '/api/actors');
+    const testActors = actors.filter(a => created.actors.includes(a.id));
+    assert.strictEqual(testActors.length, 0);
+  });
+
+  db.close();
+  console.log('\n\x1b[1mDone.\x1b[0m\n');
+}
+
+run().catch(e => { console.error('\nFatal:', e.message); process.exit(1); });

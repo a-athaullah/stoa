@@ -1,0 +1,666 @@
+#!/usr/bin/env node
+// Stoa — generic client
+// Human mode:  STOA_TYPE=human node stoa.js [room_id]
+// Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
+
+const WebSocket = require('ws');
+const readline = require('readline');
+const fs = require('fs');
+const crypto = require('crypto');
+const path = require('path');
+const os = require('os');
+const { ClaudeSession } = require('./claude-session');
+
+let STOA_URL      = process.env.STOA_URL    || 'ws://localhost:3001';
+const ACTOR_ID    = parseInt(process.env.STOA_ACTOR_ID || '1');
+const ACTOR_TYPE  = process.env.STOA_TYPE   || 'human';
+const STOA_SECRET = process.env.STOA_SECRET || '';
+const ROOM_ID     = parseInt(process.argv[2] || process.env.STOA_ROOM_ID || '1');
+
+// ─── ANSI ─────────────────────────────────────────────────────────────────────
+const C = {
+  reset: '\x1b[0m', dim: '\x1b[2m', bold: '\x1b[1m',
+  white: '\x1b[97m', blue: '\x1b[94m', cyan: '\x1b[96m',
+  yellow: '\x1b[93m', red: '\x1b[91m', gray: '\x1b[90m',
+};
+
+function colorFromHex(hex = '') {
+  if (hex.toLowerCase().includes('4d9f')) return C.blue;
+  if (hex.toLowerCase().includes('00d4')) return C.cyan;
+  return C.white;
+}
+
+// ─── State ────────────────────────────────────────────────────────────────────
+let ws = null;
+let reconnectTimer = null;
+let rl = null;
+
+const activeStreams = {}; // message_id → { actor_name, started, color, symbol }
+const triggerQueue = [];
+let processingTrigger = false;
+let consecutiveFailures = 0;
+let consecutiveTriggerErrors = 0;
+const MAX_TRIGGER_ERRORS = 3;
+const TRIGGER_TIMEOUT = 5 * 60_000;
+
+// ─── Auto-update (agent mode only) ───────────────────────────────────────────
+const UPDATE_INTERVAL = 120_000; // cek tiap 2 menit
+const UPDATE_FILES = ['stoa.js', 'claude-session.js', 'claude-adapter.js', 'claude-adapter-lite.js'];
+
+function buildLocalManifest() {
+  const manifest = {};
+  for (const name of UPDATE_FILES) {
+    const fp = path.join(__dirname, name);
+    if (fs.existsSync(fp))
+      manifest[name] = crypto.createHash('sha256').update(fs.readFileSync(fp)).digest('hex').slice(0, 12);
+  }
+  return manifest;
+}
+
+const localManifest = buildLocalManifest();
+let updateChecker = null;
+
+async function checkForUpdates() {
+  const baseUrl = STOA_URL.replace(/^ws/, 'http');
+  try {
+    const body = await fetchText(`${baseUrl}/api/client/manifest`);
+    const remote = JSON.parse(body).files || {};
+    const changed = Object.entries(remote).filter(([name, hash]) =>
+      localManifest[name] !== undefined && localManifest[name] !== hash
+    );
+    if (!changed.length) return;
+
+    console.log(`[stoa:update] update detected: ${changed.map(([n]) => n).join(', ')}`);
+    for (const [name] of changed) {
+      const content = await fetchText(`${baseUrl}/api/client/file/${encodeURIComponent(name)}`);
+      fs.writeFileSync(path.join(__dirname, name), content, 'utf8');
+      console.log(`[stoa:update] ${name} updated`);
+    }
+    console.log('[stoa:update] restarting to apply...');
+    clearInterval(keepAlive);
+    clearInterval(updateChecker);
+    clearTimeout(reconnectTimer);
+    claudeSession?.shutdown();
+    ws?.close();
+    process.exit(0);
+  } catch {
+    // retry on next interval
+  }
+}
+
+// ─── Persistent claude session (agent mode only) ───────────────────────────
+let claudeSession = null;
+
+function ensureSession() {
+  if (!claudeSession) {
+    claudeSession = new ClaudeSession({ workDir: process.env.STOA_WORK_DIR || os.homedir() });
+    console.log(`[stoa] Claude session started`);
+  }
+  return claudeSession;
+}
+
+// ─── Connect ──────────────────────────────────────────────────────────────────
+function connect() {
+  ws = new WebSocket(STOA_URL);
+
+  ws.on('open', () => {
+    if (ACTOR_TYPE === 'ai') {
+      ensureSession(); // warm up the session before any triggers arrive
+      ws.send(JSON.stringify({ type: 'agent_connect', actor_id: ACTOR_ID, secret: STOA_SECRET }));
+      console.log(`[stoa] Agent #${ACTOR_ID} connected to ${STOA_URL}`);
+    } else {
+      ws.send(JSON.stringify({ type: 'join_room', room_id: ROOM_ID }));
+      printHeader();
+      startPrompt();
+    }
+  });
+
+  ws.on('message', raw => {
+    let msg; try { msg = JSON.parse(raw); } catch { return; }
+
+    if (ACTOR_TYPE === 'ai') {
+      handleAgentMessage(msg);
+    } else {
+      handleHumanMessage(msg);
+    }
+  });
+
+  ws.on('close', () => {
+    if (ACTOR_TYPE === 'ai') {
+      consecutiveFailures++;
+      const delay = Math.min(5000 * Math.pow(2, consecutiveFailures - 1), 60000);
+      console.log(`[stoa] Disconnected (attempt ${consecutiveFailures}), reconnecting in ${delay/1000}s...`);
+      reconnectTimer = setTimeout(connect, delay);
+    } else {
+      process.stdout.write('\n' + C.gray + 'Disconnected.' + C.reset + '\n');
+      process.exit(0);
+    }
+  });
+
+  ws.on('error', err => {
+    if (ACTOR_TYPE !== 'ai') {
+      process.stdout.write(C.red + 'Connection error: ' + err.message + C.reset + '\n');
+    }
+  });
+}
+
+// ─── Agent mode ───────────────────────────────────────────────────────────────
+async function handleAgentMessage(msg) {
+  if (msg.type === 'auth_error') {
+    console.error(`[stoa] Auth failed: ${msg.message}. Set STOA_SECRET correctly and restart.`);
+    process.exit(1);
+  }
+
+  if (msg.type === 'agent_ready') {
+    consecutiveFailures = 0;
+    console.log('[stoa] Ready, waiting for triggers...');
+    try {
+      const scanResult = scanForWorkdirs();
+      console.log(`[stoa] Scanned: ${scanResult.workdirs.length} workdirs, ${scanResult.globalSkills.length} global skills`);
+      send({ type: 'agent_scan_result', ...scanResult });
+    } catch (err) {
+      console.error('[stoa] Scan failed:', err.message);
+    }
+  }
+
+  if (msg.type === 'force_update') {
+    console.log('[stoa] Force update requested');
+    checkForUpdates();
+  }
+
+  if (msg.type === 'request_scan') {
+    try {
+      const scanResult = scanForWorkdirs();
+      console.log(`[stoa] Rescan: ${scanResult.workdirs.length} workdirs, ${scanResult.globalSkills.length} global skills`);
+      send({ type: 'agent_scan_result', ...scanResult });
+    } catch (err) {
+      console.error('[stoa] Rescan failed:', err.message);
+    }
+  }
+
+  if (msg.type === 'server_restart') {
+    console.log(`[stoa] Server restarting on new port → ${msg.new_ws_url}`);
+    STOA_URL = msg.new_ws_url;
+    clearTimeout(reconnectTimer);
+    ws?.close();
+    return;
+  }
+
+  if (msg.type === 'cancel_generation') {
+    console.log(`[stoa] Cancel requested for message ${msg.message_id}`);
+    const qIdx = triggerQueue.findIndex(t => t.message_id === msg.message_id);
+    if (qIdx !== -1) {
+      triggerQueue.splice(qIdx, 1);
+      send({ type: 'agent_complete', room_id: msg.room_id, message_id: msg.message_id, content: '(cancelled before processing)' });
+      console.log(`[stoa] Cancelled queued msg=${msg.message_id}`);
+    } else if (claudeSession) {
+      claudeSession.abort();
+    }
+  }
+
+  if (msg.type === 'create_workdir') {
+    try {
+      fs.mkdirSync(msg.path, { recursive: true });
+      // Write CLAUDE.md so Claude Code trusts this directory without interactive prompt
+      const claudeMd = path.join(msg.path, 'CLAUDE.md');
+      if (!fs.existsSync(claudeMd)) fs.writeFileSync(claudeMd, '', 'utf8');
+      console.log(`[stoa] Created workdir: ${msg.path}`);
+    } catch (err) {
+      console.error('[stoa] Failed to create workdir:', err.message);
+    }
+  }
+
+  if (msg.type === 'agent_trigger') {
+    const { room_id, message_id, prompt } = msg;
+    console.log(`[stoa] trigger received room=${room_id} msg=${message_id} prompt="${prompt?.slice(0, 60)}..."`);
+
+    if (processingTrigger) {
+      triggerQueue.push(msg);
+      console.log(`[stoa] queued msg=${message_id} (${triggerQueue.length} in queue)`);
+      return;
+    }
+
+    await processTrigger(msg);
+  }
+}
+
+async function processTrigger(msg) {
+  processingTrigger = true;
+  const { room_id, message_id, imageUrl, fileUrl, fileName } = msg;
+  const baseUrl = STOA_URL.replace('ws://', 'http://').replace('wss://', 'https://');
+
+  let imageData = null;
+  if (imageUrl) {
+    try {
+      const fetched = await fetchFileAsBase64(baseUrl + imageUrl);
+      if (fetched.mimeType.startsWith('image/')) imageData = fetched;
+    } catch (err) {
+      console.error('[stoa] image fetch failed:', err.message);
+    }
+  }
+
+  let finalPrompt = msg.prompt;
+  if (fileUrl && fileName) {
+    const ext = path.extname(fileName).toLowerCase();
+    const TEXT_EXTS = new Set(['.md','.txt','.json','.csv','.html','.js','.ts','.py','.yaml','.yml','.sh','.css']);
+    if (TEXT_EXTS.has(ext)) {
+      try {
+        const text = await fetchText(baseUrl + fileUrl);
+        finalPrompt = `${finalPrompt}\n\n---\nIsi file \`${fileName}\`:\n\`\`\`\n${text}\n\`\`\``;
+      } catch (err) {
+        console.error('[stoa] file fetch failed:', err.message);
+      }
+    }
+  }
+
+  try {
+    let session = ensureSession();
+    const rid = msg.claude_session_id || null;
+    const targetDir = msg.workdir || session.workDir;
+    const needsWorkdirChange = msg.workdir && path.resolve(session.workDir) !== path.resolve(msg.workdir);
+    const needsResume = rid && session.resumeId !== rid;
+    const needsFreshSession = !rid && session.resumeId;
+
+    if (msg.workdir) {
+      try {
+        fs.mkdirSync(msg.workdir, { recursive: true });
+        const claudeMd = path.join(msg.workdir, 'CLAUDE.md');
+        if (!fs.existsSync(claudeMd)) fs.writeFileSync(claudeMd, '', 'utf8');
+      } catch {}
+    }
+
+    if (needsWorkdirChange || needsResume || needsFreshSession) {
+      session.shutdown();
+      const canResume = rid && !needsWorkdirChange;
+      const flags = canResume ? ['--resume', rid] : [];
+      claudeSession = new ClaudeSession({ workDir: targetDir, flags, resumeId: canResume ? rid : null });
+      session = claudeSession;
+      console.log(`[stoa] Session restarted: workdir=${targetDir}${rid ? ' resume=' + rid.slice(0, 8) + '...' : ' (fresh)'}`);
+    }
+    let fullContent = '';
+    let lastActivity = Date.now();
+    const hangWatchdog = setInterval(() => {
+      if (Date.now() - lastActivity > TRIGGER_TIMEOUT) {
+        clearInterval(hangWatchdog);
+        console.error(`[stoa] trigger timeout (${TRIGGER_TIMEOUT/1000}s no activity), aborting`);
+        session.abort();
+      }
+    }, 10_000);
+
+    const { content, sessionId, aborted } = await session.send({
+      prompt: finalPrompt,
+      imageData,
+      onToken: token => {
+        lastActivity = Date.now();
+        fullContent += token;
+        send({ type: 'agent_token', room_id, message_id, token });
+      },
+      onState: state => {
+        lastActivity = Date.now();
+        send({ type: 'agent_state', room_id, message_id, state });
+      },
+      onTool: tool => {
+        lastActivity = Date.now();
+        send({ type: 'agent_tool', room_id, message_id, tool });
+      },
+    });
+    clearInterval(hangWatchdog);
+
+    consecutiveTriggerErrors = 0;
+    if (aborted) {
+      const partial = fullContent || content || '';
+      send({ type: 'agent_complete', room_id, message_id, content: partial || '(stopped by user)' });
+      console.log(`[stoa] Aborted message ${message_id}, partial=${partial.length} chars`);
+    } else {
+      const { text: cleanContent, fileUrl, fileName } = await extractAndUploadFile(content, msg.workdir);
+      const completeMsg = { type: 'agent_complete', room_id, message_id, content: cleanContent, claude_session_id: sessionId };
+      if (fileUrl) { completeMsg.file_url = fileUrl; completeMsg.file_name = fileName; }
+      send(completeMsg);
+    }
+
+  } catch (err) {
+    consecutiveTriggerErrors++;
+    console.error(`[stoa] trigger error (${consecutiveTriggerErrors}/${MAX_TRIGGER_ERRORS}): ${err.message}`);
+    send({ type: 'agent_error', room_id, message_id, error: err.message });
+    if (consecutiveTriggerErrors >= MAX_TRIGGER_ERRORS) {
+      console.log('[stoa] too many trigger errors, restarting clean...');
+      claudeSession?.shutdown();
+      process.exit(0);
+    }
+  } finally {
+    processingTrigger = false;
+    drainQueue();
+  }
+}
+
+async function extractAndUploadFile(content, workdir) {
+  const match = content.match(/\[send:([^\]]+)\]/);
+  if (!match) return { text: content, fileUrl: null, fileName: null };
+
+  const filePath = match[1].trim();
+  const resolved = path.isAbsolute(filePath) ? filePath : path.resolve(workdir || '.', filePath);
+  const text = content.replace(match[0], '').trim();
+
+  if (!fs.existsSync(resolved)) {
+    console.log(`[stoa] send file not found: ${resolved}`);
+    return { text, fileUrl: null, fileName: null };
+  }
+
+  try {
+    const baseUrl = STOA_URL.replace('ws://', 'http://').replace('wss://', 'https://');
+    const fileData = fs.readFileSync(resolved);
+    const fileName = path.basename(resolved);
+    const ext = path.extname(fileName).toLowerCase();
+    const mimeMap = { '.txt': 'text/plain', '.md': 'text/markdown', '.json': 'application/json', '.csv': 'text/csv',
+      '.js': 'text/javascript', '.ts': 'text/typescript', '.py': 'text/x-python', '.html': 'text/html', '.css': 'text/css',
+      '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml',
+      '.pdf': 'application/pdf', '.zip': 'application/zip', '.yaml': 'text/yaml', '.yml': 'text/yaml',
+      '.sh': 'text/x-shellscript', '.sql': 'text/x-sql', '.xml': 'application/xml' };
+    const mime = mimeMap[ext] || 'application/octet-stream';
+
+    const res = await fetch(`${baseUrl}/api/upload/raw`, {
+      method: 'POST',
+      headers: { 'Content-Type': mime, 'X-File-Name': encodeURIComponent(fileName) },
+      body: fileData,
+    });
+    const result = await res.json();
+    console.log(`[stoa] uploaded file: ${fileName} → ${result.url}`);
+    return { text, fileUrl: result.url, fileName: result.name };
+  } catch (err) {
+    console.error(`[stoa] file upload failed: ${err.message}`);
+    return { text, fileUrl: null, fileName: null };
+  }
+}
+
+function drainQueue() {
+  if (processingTrigger || triggerQueue.length === 0) return;
+  const next = triggerQueue.shift();
+  console.log(`[stoa] dequeued msg=${next.message_id} (${triggerQueue.length} remaining)`);
+  processTrigger(next);
+}
+
+function fetchFileAsBase64(url) {
+  const http = url.startsWith('https') ? require('https') : require('http');
+  return new Promise((resolve, reject) => {
+    http.get(url, res => {
+      const chunks = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        const base64 = Buffer.concat(chunks).toString('base64');
+        const mimeType = (res.headers['content-type'] || 'application/octet-stream').split(';')[0].trim();
+        resolve({ base64, mimeType });
+      });
+      res.on('error', reject);
+    }).on('error', reject);
+  });
+}
+
+function fetchText(url) {
+  const http = url.startsWith('https') ? require('https') : require('http');
+  return new Promise((resolve, reject) => {
+    http.get(url, res => {
+      let text = '';
+      res.setEncoding('utf8');
+      res.on('data', c => text += c);
+      res.on('end', () => resolve(text));
+      res.on('error', reject);
+    }).on('error', reject);
+  });
+}
+
+// ─── Workdir scanner ──────────────────────────────────────────────────────────
+
+const SCAN_EXCLUDE_SYSTEM = new Set([
+  // Windows C:\ level
+  'windows','program files','program files (x86)','programdata',
+  'system volume information','$recycle.bin','recovery','users','boot','efi','msocache',
+  // Windows USERPROFILE level (default folders)
+  'downloads','documents','music','pictures','videos','desktop',
+  'appdata','onedrive','contacts','favorites','links',
+  'saved games','searches','3d objects',
+  // Unix/common
+  'node_modules','.git','dist','build','.next','__pycache__',
+]);
+
+function scanForWorkdirs() {
+  const home = os.homedir();
+  const isWindows = process.platform === 'win32';
+  const results = [];
+
+  function hasClaudeMarker(dir) {
+    try {
+      const entries = fs.readdirSync(dir);
+      return entries.includes('.claude') || entries.includes('CLAUDE.md');
+    } catch { return false; }
+  }
+
+  function readSkills(dir) {
+    const skills = [];
+    const commandsDir = path.join(dir, '.claude', 'commands');
+    try {
+      const files = fs.readdirSync(commandsDir);
+      for (const f of files) {
+        if (!f.endsWith('.md')) continue;
+        const name = f.replace(/\.md$/, '');
+        let description = null;
+        try {
+          const content = fs.readFileSync(path.join(commandsDir, f), 'utf8');
+          const firstLine = content.split('\n').find(l => l.trim());
+          description = firstLine?.replace(/^#\s*/, '').trim() || null;
+        } catch {}
+        skills.push({ name, description, scope: 'project' });
+      }
+    } catch {}
+    return skills;
+  }
+
+  function scanDir(dir, depth, maxDepth, excludeSet) {
+    if (depth > maxDepth) return;
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      if (dir !== home && path.basename(dir) !== '.claude' && hasClaudeMarker(dir)) {
+        const skills = readSkills(dir);
+        results.push({ path: dir, skills, is_default: dir === home + '/stoa-workspace' || dir === path.join(home, 'stoa-workspace') });
+      }
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        if (entry.name.startsWith('.') && entry.name !== '.claude') continue;
+        if (excludeSet.has(entry.name.toLowerCase())) continue;
+        // Skip .claude/projects — Claude Code internal session state, not real workdirs
+        if (path.basename(dir) === '.claude' && entry.name === 'projects') continue;
+        scanDir(path.join(dir, entry.name), depth + 1, maxDepth, excludeSet);
+      }
+    } catch {}
+  }
+
+  // Scan home directory (3 levels)
+  const homeExclude = isWindows
+    ? new Set([...SCAN_EXCLUDE_SYSTEM])
+    : new Set([...SCAN_EXCLUDE_SYSTEM]);
+  scanDir(home, 0, 3, homeExclude);
+
+  // On Windows, also scan C:\ (2 levels, excluding system dirs)
+  if (isWindows) {
+    const cDrive = 'C:\\';
+    const cExclude = new Set([...SCAN_EXCLUDE_SYSTEM, 'users']); // skip Users since home already covered
+    try {
+      const topDirs = fs.readdirSync(cDrive, { withFileTypes: true });
+      for (const entry of topDirs) {
+        if (!entry.isDirectory()) continue;
+        if (cExclude.has(entry.name.toLowerCase())) continue;
+        scanDir(path.join(cDrive, entry.name), 0, 2, SCAN_EXCLUDE_SYSTEM);
+      }
+    } catch {}
+  }
+
+  // Always include STOA_WORK_DIR as default workdir if it exists and not already in list
+  const defaultWorkDir = process.env.STOA_WORK_DIR;
+  if (defaultWorkDir && fs.existsSync(defaultWorkDir)) {
+    const normalized = path.resolve(defaultWorkDir);
+    if (!results.find(r => path.resolve(r.path) === normalized)) {
+      const skills = readSkills(normalized);
+      results.unshift({ path: normalized, skills, is_default: true });
+    } else {
+      // Mark it as default if already found via scan
+      const existing = results.find(r => path.resolve(r.path) === normalized);
+      if (existing) existing.is_default = true;
+    }
+  }
+
+  // Global skills from ~/.claude/commands/
+  const globalSkills = [];
+  const globalCommandsDir = path.join(home, '.claude', 'commands');
+  try {
+    const files = fs.readdirSync(globalCommandsDir);
+    for (const f of files) {
+      if (!f.endsWith('.md')) continue;
+      const name = f.replace(/\.md$/, '');
+      let description = null;
+      try {
+        const content = fs.readFileSync(path.join(globalCommandsDir, f), 'utf8');
+        const firstLine = content.split('\n').find(l => l.trim());
+        description = firstLine?.replace(/^#\s*/, '').trim() || null;
+      } catch {}
+      globalSkills.push({ name, description, scope: 'global' });
+    }
+  } catch {}
+
+  return { workdirs: results, globalSkills };
+}
+
+// ─── Human (interactive) mode ─────────────────────────────────────────────────
+function handleHumanMessage(msg) {
+  if (msg.type === 'history') {
+    if (msg.messages.length) {
+      out(C.gray + `── ${msg.messages.length} pesan sebelumnya ──` + C.reset);
+      msg.messages.forEach(renderMessage);
+      out(C.gray + '── sekarang ──' + C.reset);
+    }
+    return;
+  }
+
+  if (msg.type === 'message_new') { renderMessage(msg.message); reprompt(); return; }
+
+  if (msg.type === 'message_state' && msg.state === 'streaming') {
+    const color = colorFromHex(msg.avatar_color);
+    out('');
+    process.stdout.write(color + C.bold + msg.avatar_symbol + ' ' + msg.actor_name + C.reset + '  ' + C.gray + '●●●' + C.reset);
+    activeStreams[msg.message_id] = { actor_name: msg.actor_name, color, symbol: msg.avatar_symbol, started: false };
+    return;
+  }
+
+  if (msg.type === 'message_token') {
+    const s = activeStreams[msg.message_id];
+    if (!s) return;
+    if (!s.started) {
+      process.stdout.write('\r\x1b[K' + s.color + C.bold + s.symbol + ' ' + s.actor_name + C.reset + '  ');
+      s.started = true;
+    }
+    process.stdout.write(msg.token);
+    return;
+  }
+
+  if (msg.type === 'message_complete') {
+    if (activeStreams[msg.message_id]) {
+      out('');
+      delete activeStreams[msg.message_id];
+      reprompt();
+    }
+    return;
+  }
+
+  if (msg.type === 'invite_suggestion') {
+    const a = msg.suggested_actor;
+    out(C.yellow +
+      '┌─ Invite suggestion ──────────────────────\n' +
+      `│  ${a.avatar_symbol} ${a.name} diusulkan masuk room ini\n` +
+      `│  Alasan: ${msg.reason || '—'}\n` +
+      `│  /approve ${msg.invite_id}  atau  /reject ${msg.invite_id}\n` +
+      '└──────────────────────────────────────────' + C.reset);
+    reprompt();
+  }
+}
+
+function renderMessage(m) {
+  const color = colorFromHex(m.avatar_color);
+  const ts = m.created_at
+    ? new Date(m.created_at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
+    : '';
+  out('\n' + color + C.bold + m.avatar_symbol + ' ' + m.actor_name + C.reset + C.gray + '  ' + ts + C.reset);
+  out(m.content);
+}
+
+function startPrompt() {
+  rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  reprompt();
+
+  rl.on('line', async line => {
+    const input = line.trim();
+    if (!input) { reprompt(); return; }
+
+    if (input === '/exit') { ws.close(); rl.close(); return; }
+
+    const m = input.match(/^\/(approve|reject) (\d+)$/);
+    if (m) {
+      const approved = m[1] === 'approve';
+      await fetch(`${STOA_URL.replace('ws://', 'http://')}/api/invites/${m[2]}/resolve`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approved }),
+      });
+      out(C.gray + `[Invite ${approved ? 'approved' : 'rejected'}]` + C.reset);
+      reprompt();
+      return;
+    }
+
+    send({ type: 'send_message', room_id: ROOM_ID, content: input });
+    reprompt();
+  });
+}
+
+function reprompt() {
+  if (rl) rl.setPrompt(C.white + '◉  ' + C.reset); rl?.prompt(true);
+}
+
+function printHeader() {
+  out(C.gray +
+    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n' +
+    '  STOA  —  Room #' + ROOM_ID + '\n' +
+    '  /exit untuk keluar\n' +
+    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━' + C.reset);
+}
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
+function send(data) {
+  if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data));
+}
+
+function out(line) {
+  process.stdout.write('\n' + line + '\n');
+}
+
+process.on('SIGINT', () => {
+  clearTimeout(reconnectTimer);
+  claudeSession?.shutdown();
+  ws?.close();
+  process.exit(0);
+});
+
+process.on('uncaughtException', err => {
+  console.error('[stoa] uncaughtException:', err.message);
+});
+
+process.on('unhandledRejection', err => {
+  console.error('[stoa] unhandledRejection:', err?.message || err);
+});
+
+// Keep event loop alive + WebSocket heartbeat
+const keepAlive = setInterval(() => {
+  if (ws?.readyState === 1) ws.ping?.();
+}, 20_000);
+
+connect();
+
+if (ACTOR_TYPE === 'ai') {
+  updateChecker = setInterval(checkForUpdates, UPDATE_INTERVAL);
+  setTimeout(checkForUpdates, 15_000); // cek awal setelah koneksi stabil
+}
