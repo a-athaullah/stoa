@@ -1,6 +1,6 @@
 # Stoa — Todo
 
-## Priority 1 — Before Public Release
+## Priority 1 — Done
 
 - [x] **Invite participant UI** — UI add participant di room header
 - [x] **Mention system** — @mention autocomplete, warna di bubble, agent-to-agent mention chain
@@ -12,18 +12,32 @@
 - [x] **Copy message** — tombol copy di setiap message bubble (hover action)
 - [x] **Drag & drop upload** — drag file/image ke composer langsung upload
 - [x] **Composer formatting** — htmlToMarkdown rewrite, hyperlink paste, code block exit, semua format support
-
-## Priority 2 — Post-Release Roadmap
-
 - [x] **Thread/reply** — reply-to any message, quote ditampilkan di bubble, context dikirim ke AI prompt
-- [ ] **Multi-model support** — sekarang locked ke Claude, harusnya pluggable (OpenAI, Gemini, local LLM)
-- [ ] **Export/backup UI** — raw SQLite udah bisa di-copy, tapi butuh proper export (JSON, markdown)
-- [ ] **Notification system** — beyond unread count, push notification / desktop notification
+
+## Priority 2 — Core Gaps
+
+- [ ] **Basic auth** — simple token/password untuk protect instance di network luas (opsional untuk personal use)
+- [ ] **Push notification** — browser/desktop notification untuk long-running agent tasks
+
+## Priority 3 — High Impact
+
+- [ ] **Multi-model support** — abstraksi adapter layer untuk non-Claude models:
+  - [ ] OpenAI API adapter (via API key langsung)
+  - [ ] Gemini CLI/API adapter
+  - [ ] Ollama adapter (local LLM, self-hosted)
+  - [ ] LiteLLM proxy support (unified interface)
+- [ ] **Export conversation** — export room history ke JSON dan/atau Markdown
+- [ ] **Webhook/API** — HTTP endpoint untuk trigger agent dari external (CI/CD, monitoring, script)
+
+## Priority 4 — Enhancement
+
+- [ ] **Agent config via UI** — tambah/manage agent dari browser tanpa CLI
+- [ ] **Context window indicator** — notifikasi ketika conversation mendekati batas context window
 
 ## Trash
 
-- **Semantic search** — butuh AI embeddings (tidak mekanis), FTS5 keyword search sudah cukup
-- **Role/permission system** — personal tools, belum ada flow user management yang jelas
+- **Semantic search** — FTS5 keyword search sudah cukup, AI embeddings overkill
+- **Role/permission system** — personal tool, premature tanpa multi-tenant use case
 - **Read receipts** — human + multiple AI, konsep "read" tidak relevan
-- **Proper auth** — belum ada plan membuat user management
 - **Plugin/extension system** — agent sendiri sudah jadi "plugin", premature tanpa use case konkret
+- **Native mobile app** — PWA sudah cukup untuk sekarang

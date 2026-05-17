@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const db = require('./db');
 const { spawnClaude } = require('./claude-adapter');
+const { compress: compressImage } = require('./tools/compress-image');
 
 function getSession(participantId, workdir) {
   if (workdir) {
@@ -43,6 +44,7 @@ db.exec(fs.readFileSync(path.join(__dirname, 'schema.sqlite.sql'), 'utf8'));
 
 // Add avatar_url column if not exists
 try { db.exec("ALTER TABLE actors ADD COLUMN avatar_url TEXT DEFAULT NULL"); } catch {}
+try { db.exec("ALTER TABLE messages ADD COLUMN attachments TEXT DEFAULT NULL"); } catch {}
 
 // Rebuild FTS index on startup
 {
@@ -75,6 +77,36 @@ function clientFileHash(name) {
   return crypto.createHash('sha256').update(fs.readFileSync(fp)).digest('hex').slice(0, 12);
 }
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
+
+// ── Scheduled cleanup: delete uploaded files older than CLEANUP_MAX_AGE_HOURS (skip avatar/)
+{
+  const CLEANUP_HOUR = parseInt(process.env.CLEANUP_CRON_HOUR) || 10;
+  const CLEANUP_MAX_AGE = (parseInt(process.env.CLEANUP_MAX_AGE_HOURS) || 24) * 3600_000;
+
+  const cleanupUploads = () => {
+    const now = Date.now();
+    let count = 0;
+    for (const entry of fs.readdirSync(UPLOADS_DIR)) {
+      if (entry === 'avatar') continue;
+      const fp = path.join(UPLOADS_DIR, entry);
+      const stat = fs.statSync(fp);
+      if (stat.isFile() && (now - stat.mtimeMs) > CLEANUP_MAX_AGE) {
+        fs.unlinkSync(fp);
+        count++;
+      }
+    }
+    if (count) console.log(`[cleanup] Deleted ${count} expired file(s) from uploads/`);
+  };
+
+  const scheduleNext = () => {
+    const now = new Date();
+    const next = new Date(now);
+    next.setHours(CLEANUP_HOUR, 0, 0, 0);
+    if (next <= now) next.setDate(next.getDate() + 1);
+    setTimeout(() => { cleanupUploads(); scheduleNext(); }, next - now);
+  };
+  scheduleNext();
+}
 
 function getSetting(key, scopeId = null) {
   const scope = scopeId ? 'room' : 'global';
@@ -177,8 +209,12 @@ const server = http.createServer(async (req, res) => {
     const ext = origExt || mimeToExt[mimeType] || '.' + (mimeType.split('/')[1] || 'bin');
     const safeExt = ext.startsWith('.') ? ext : '.' + ext;
     const saved = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}${safeExt}`;
-    fs.writeFileSync(path.join(UPLOADS_DIR, saved), buffer);
-    return json(res, { url: `/uploads/${saved}`, name: fileName || saved });
+    const savedPath = path.join(UPLOADS_DIR, saved);
+    fs.writeFileSync(savedPath, buffer);
+    const compressed = await compressImage(savedPath).catch(() => null);
+    const finalName = compressed?.success ? path.basename(compressed.path) : saved;
+    if (compressed?.success) console.log(`[compress] ${saved} → ${finalName} (${compressed.ratio} smaller)`);
+    return json(res, { url: `/uploads/${finalName}`, name: fileName || saved });
   }
 
   // ── Upload file (base64 JSON body — legacy)
@@ -191,8 +227,12 @@ const server = http.createServer(async (req, res) => {
     const ext = origExt || '.' + (mimeToExt[mimeType] || mimeType.split('/')[1] || 'bin');
     const safeExt = ext.startsWith('.') ? ext : '.' + ext;
     const saved = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}${safeExt}`;
-    fs.writeFileSync(path.join(UPLOADS_DIR, saved), Buffer.from(data, 'base64'));
-    return json(res, { url: `/uploads/${saved}`, name: fileName || saved });
+    const savedPath = path.join(UPLOADS_DIR, saved);
+    fs.writeFileSync(savedPath, Buffer.from(data, 'base64'));
+    const compressed = await compressImage(savedPath).catch(() => null);
+    const finalName = compressed?.success ? path.basename(compressed.path) : saved;
+    if (compressed?.success) console.log(`[compress] ${saved} → ${finalName} (${compressed.ratio} smaller)`);
+    return json(res, { url: `/uploads/${finalName}`, name: fileName || saved });
   }
 
   // ── Actor avatar upload
@@ -208,6 +248,11 @@ const server = http.createServer(async (req, res) => {
     const mimeToExt = { 'image/jpeg':'jpg','image/png':'png','image/gif':'gif','image/webp':'webp' };
     const ext = mimeToExt[mimeType] || 'png';
     const base64Data = data_url.slice(data_url.indexOf(',') + 1);
+    const oldAvatar = db.prepare('SELECT avatar_url FROM actors WHERE id=?').get(id);
+    if (oldAvatar?.avatar_url) {
+      const oldPath = path.join(__dirname, oldAvatar.avatar_url);
+      if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+    }
     const saved = `avatar-${id}-${Date.now()}.${ext}`;
     const avatarDir = path.join(UPLOADS_DIR, 'avatar');
     if (!fs.existsSync(avatarDir)) fs.mkdirSync(avatarDir);
@@ -221,6 +266,11 @@ const server = http.createServer(async (req, res) => {
   const avatarDeleteMatch = req.method === 'DELETE' && url.pathname.match(/^\/api\/actors\/(\d+)\/avatar$/);
   if (avatarDeleteMatch) {
     const id = parseInt(avatarDeleteMatch[1]);
+    const actor = db.prepare('SELECT avatar_url FROM actors WHERE id=?').get(id);
+    if (actor?.avatar_url) {
+      const oldPath = path.join(__dirname, actor.avatar_url);
+      if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+    }
     db.prepare('UPDATE actors SET avatar_url=NULL WHERE id=?').run(id);
     return json(res, { ok: true });
   }
@@ -296,6 +346,22 @@ const server = http.createServer(async (req, res) => {
     return json(res, { ok: true });
   }
 
+  const roomDeleteMatch = req.method === 'DELETE' && url.pathname.match(/^\/api\/rooms\/(\d+)$/);
+  if (roomDeleteMatch) {
+    const roomId = parseInt(roomDeleteMatch[1]);
+    const participantIds = db.prepare('SELECT id FROM room_participants WHERE room_id=?').all(roomId).map(r => r.id);
+    if (participantIds.length) {
+      const ph = participantIds.map(() => '?').join(',');
+      db.prepare(`DELETE FROM ai_sessions WHERE participant_id IN (${ph})`).run(...participantIds);
+    }
+    db.prepare('DELETE FROM invite_suggestions WHERE room_id=?').run(roomId);
+    db.prepare('DELETE FROM messages WHERE room_id=?').run(roomId);
+    db.prepare('DELETE FROM room_participants WHERE room_id=?').run(roomId);
+    db.prepare('DELETE FROM rooms WHERE id=?').run(roomId);
+    broadcastGlobal({ type: 'room_deleted', room_id: roomId });
+    res.writeHead(204); return res.end();
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/search') {
     const q = (url.searchParams.get('q') || '').trim();
     const roomId = url.searchParams.get('room_id');
@@ -327,7 +393,7 @@ const server = http.createServer(async (req, res) => {
         const replyIds = [...new Set(rows.filter(r => r.reply_to).map(r => r.reply_to))];
         if (!replyIds.length) return rows;
         const ph = replyIds.map(() => '?').join(',');
-        const repliedRows = db.prepare(`SELECT m.id, m.content, a.name as actor_name, a.avatar_color FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id WHERE m.id IN (${ph})`).all(...replyIds);
+        const repliedRows = db.prepare(`SELECT m.id, m.content, m.image_url, m.file_url, m.file_name, m.attachments, a.name as actor_name, a.avatar_color FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id WHERE m.id IN (${ph})`).all(...replyIds);
         const replied = {};
         for (const r of repliedRows) replied[r.id] = r;
         return rows.map(r => r.reply_to && replied[r.reply_to] ? { ...r, reply_msg: replied[r.reply_to] } : r);
@@ -342,7 +408,7 @@ const server = http.createServer(async (req, res) => {
             JOIN room_participants rp ON rp.id=m.participant_id
             JOIN actors a ON a.id=rp.actor_id
             WHERE m.room_id=? AND m.id < ? AND m.state='complete'
-              AND (m.content != '' OR m.image_url IS NOT NULL)
+              AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL)
             ORDER BY m.created_at DESC LIMIT ?
           ) t ORDER BY created_at ASC
         `).all(roomId, before, limit);
@@ -355,7 +421,7 @@ const server = http.createServer(async (req, res) => {
         JOIN room_participants rp ON rp.id=m.participant_id
         JOIN actors a ON a.id=rp.actor_id
         WHERE m.room_id=? AND m.id > ? AND m.state='complete'
-          AND (m.content != '' OR m.image_url IS NOT NULL)
+          AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL)
         ORDER BY m.created_at ASC
         LIMIT 500
       `).all(roomId, since);
@@ -409,6 +475,9 @@ const server = http.createServer(async (req, res) => {
       human_id:    human?.id ?? null,
       port:        PORT,
       human_name_from_env: !!process.env.HUMAN_NAME,
+      max_ai_turns: parseInt(process.env.MAX_AI_TURNS) || 15,
+      cleanup_cron_hour: parseInt(process.env.CLEANUP_CRON_HOUR) || 10,
+      cleanup_max_age_hours: parseInt(process.env.CLEANUP_MAX_AGE_HOURS) || 24,
     });
   }
 
@@ -421,6 +490,18 @@ const server = http.createServer(async (req, res) => {
       process.env.HUMAN_NAME = name;
       const human = db.prepare(`SELECT id FROM actors WHERE type='human' LIMIT 1`).get();
       if (human) db.prepare('UPDATE actors SET name=? WHERE id=?').run(name, human.id);
+    }
+    if (body.max_ai_turns !== undefined) {
+      const val = parseInt(body.max_ai_turns);
+      if (val >= 1 && val <= 100) { writeEnv('MAX_AI_TURNS', String(val)); process.env.MAX_AI_TURNS = String(val); }
+    }
+    if (body.cleanup_cron_hour !== undefined) {
+      const val = parseInt(body.cleanup_cron_hour);
+      if (val >= 0 && val <= 23) { writeEnv('CLEANUP_CRON_HOUR', String(val)); process.env.CLEANUP_CRON_HOUR = String(val); }
+    }
+    if (body.cleanup_max_age_hours !== undefined) {
+      const val = parseInt(body.cleanup_max_age_hours);
+      if (val >= 1 && val <= 720) { writeEnv('CLEANUP_MAX_AGE_HOURS', String(val)); process.env.CLEANUP_MAX_AGE_HOURS = String(val); }
     }
     if (body.port !== undefined) {
       const newPort = parseInt(body.port);
@@ -466,9 +547,17 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'DELETE' && url.pathname.startsWith('/api/actors/')) {
     const id = parseInt(url.pathname.split('/')[3]);
+    const actor = db.prepare('SELECT avatar_url FROM actors WHERE id=?').get(id);
+    if (actor?.avatar_url) {
+      const avatarPath = path.join(__dirname, actor.avatar_url);
+      if (fs.existsSync(avatarPath)) fs.unlinkSync(avatarPath);
+    }
+    const affectedRooms = db.prepare('SELECT room_id FROM room_participants WHERE actor_id=?').all(id).map(r => r.room_id);
+    db.prepare('DELETE FROM room_participants WHERE actor_id=?').run(id);
     db.prepare('DELETE FROM actors WHERE id=?').run(id);
     const ws = agentClients.get(id);
     if (ws) { ws.close(); agentClients.delete(id); }
+    broadcastGlobal({ type: 'actor_removed', actor_id: id, affected_rooms: affectedRooms });
     res.writeHead(204); return res.end();
   }
 
@@ -870,7 +959,7 @@ wss.on('connection', ws => {
           JOIN room_participants rp ON rp.id=m.participant_id
           JOIN actors a ON a.id=rp.actor_id
           WHERE m.room_id=? AND m.state IN ('complete','streaming','requesting')
-            AND (m.content != '' OR m.image_url IS NOT NULL OR m.state IN ('streaming','requesting'))
+            AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL OR m.state IN ('streaming','requesting'))
           ORDER BY m.created_at DESC LIMIT 100
         ) AS recent ORDER BY created_at ASC
       `).all(subscribedRoom);
@@ -881,7 +970,7 @@ wss.on('connection', ws => {
       if (msg.content?.startsWith('/')) {
         await handleSkillCommand(msg.room_id, msg.content, ws);
       } else {
-        await handleHumanMessage(msg.room_id, msg.content, msg.imageUrl || null, msg.fileUrl || null, msg.fileName || null, msg.reply_to || null, ws);
+        await handleHumanMessage(msg.room_id, msg.content, msg.attachments || null, msg.reply_to || null, ws);
       }
     }
 
@@ -1005,9 +1094,10 @@ wss.on('connection', ws => {
         pendingActorMeta.delete(msg.message_id);
         return;
       }
+      const attachJson = msg.attachments?.length ? JSON.stringify(msg.attachments) : null;
       db.prepare(
-        "UPDATE messages SET content=?, file_url=?, file_name=?, state='complete', completed_at=datetime('now') WHERE id=?"
-      ).run(msg.content, msg.file_url || null, msg.file_name || null, msg.message_id);
+        "UPDATE messages SET content=?, file_url=?, file_name=?, attachments=?, state='complete', completed_at=datetime('now') WHERE id=?"
+      ).run(msg.content, msg.file_url || null, msg.file_name || null, attachJson, msg.message_id);
       if (msg.claude_session_id) {
         const row = db.prepare(`
           SELECT m.participant_id, w.path as workdir
@@ -1017,7 +1107,8 @@ wss.on('connection', ws => {
         if (row) saveSession(row.participant_id, msg.claude_session_id, row.workdir);
       }
       const completePayload = { type: 'message_complete', message_id: msg.message_id, content: msg.content };
-      if (msg.file_url) { completePayload.file_url = msg.file_url; completePayload.file_name = msg.file_name; }
+      if (msg.attachments?.length) { completePayload.attachments = msg.attachments; }
+      else if (msg.file_url) { completePayload.file_url = msg.file_url; completePayload.file_name = msg.file_name; }
       broadcast(msg.room_id, completePayload);
       broadcastGlobal({ type: 'room_activity', room_id: msg.room_id });
       pendingAgents.get(msg.message_id)?.resolve(msg.content);
@@ -1073,7 +1164,7 @@ function resolveAgentOrder(content, agents) {
 
 const activeSequences = new Map(); // roomId → { cancelled: bool }
 
-async function triggerAgentsSequential(roomId, agents, content, replyTo, imageUrl, fileUrl, fileName) {
+async function triggerAgentsSequential(roomId, agents, content, replyTo, attachments) {
   const maxTurns = parseInt(process.env.MAX_AI_TURNS || '5');
   const seq = { cancelled: false };
   activeSequences.set(roomId, seq);
@@ -1083,7 +1174,7 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, imageUr
     if (seq.cancelled) break;
     turnCount++;
     const currentAgent = agents[i];
-    await triggerAiResponse(roomId, currentAgent, content, replyTo, imageUrl, fileUrl, fileName);
+    await triggerAiResponse(roomId, currentAgent, content, replyTo, attachments);
     if (seq.cancelled) break;
 
     const lastMsg = db.prepare(`
@@ -1117,7 +1208,7 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, imageUr
   activeSequences.delete(roomId);
 }
 
-async function handleHumanMessage(roomId, content, imageUrl, fileUrl, fileName, replyTo, senderWs) {
+async function handleHumanMessage(roomId, content, attachments, replyTo, senderWs) {
   // Get Ahmad's participant ID
   const parts = db.prepare(
     "SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1"
@@ -1125,10 +1216,18 @@ async function handleHumanMessage(roomId, content, imageUrl, fileUrl, fileName, 
   if (!parts.length) return;
   const humanParticipantId = parts[0].id;
 
+  // Backward compat: extract first image/file for legacy columns
+  const images = (attachments || []).filter(a => a.type === 'image');
+  const files  = (attachments || []).filter(a => a.type === 'file');
+  const imageUrl = images[0]?.url || null;
+  const fileUrl  = files[0]?.url || null;
+  const fileName = files[0]?.name || null;
+  const attachJson = attachments?.length ? JSON.stringify(attachments) : null;
+
   // Save human message
   const result = db.prepare(
-    `INSERT INTO messages (room_id, participant_id, content, image_url, file_url, file_name, reply_to, state) VALUES (?,?,?,?,?,?,?,'complete')`
-  ).run(roomId, humanParticipantId, content, imageUrl || null, fileUrl || null, fileName || null, replyTo || null);
+    `INSERT INTO messages (room_id, participant_id, content, image_url, file_url, file_name, attachments, reply_to, state) VALUES (?,?,?,?,?,?,?,?,'complete')`
+  ).run(roomId, humanParticipantId, content, imageUrl, fileUrl, fileName, attachJson, replyTo || null);
   const messageId = result.lastInsertRowid;
 
   // Get message with actor info for broadcast
@@ -1137,7 +1236,7 @@ async function handleHumanMessage(roomId, content, imageUrl, fileUrl, fileName, 
     FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id
     WHERE m.id=?`).get(messageId);
   if (row.reply_to) {
-    const replied = db.prepare(`SELECT m.id, m.content, a.name as actor_name, a.avatar_color FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id WHERE m.id=?`).get(row.reply_to);
+    const replied = db.prepare(`SELECT m.id, m.content, m.image_url, m.file_url, m.file_name, m.attachments, a.name as actor_name, a.avatar_color FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id WHERE m.id=?`).get(row.reply_to);
     if (replied) row.reply_msg = replied;
   }
   broadcast(roomId, { type: 'message_new', message: row });
@@ -1151,7 +1250,7 @@ async function handleHumanMessage(roomId, content, imageUrl, fileUrl, fileName, 
 
   if (allAiParts.length > 0) {
     const ordered = resolveAgentOrder(content, allAiParts);
-    triggerAgentsSequential(roomId, ordered, content, messageId, imageUrl, fileUrl, fileName);
+    triggerAgentsSequential(roomId, ordered, content, messageId, attachments || []);
   }
 }
 
@@ -1285,7 +1384,7 @@ async function triggerSkillResponse(roomId, ai, prompt) {
   }
 }
 
-async function triggerAiResponse(roomId, ai, prompt, replyTo, imageUrl = null, fileUrl = null, fileName = null) {
+async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) {
 
   const result = db.prepare(
     `INSERT INTO messages (room_id, participant_id, content, state, reply_to) VALUES (?,?,'','streaming',?)`
@@ -1307,15 +1406,23 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, imageUrl = null, f
 
   // Build context-aware prompt
   const history = db.prepare(`
-    SELECT a.name, m.content, m.image_url, m.file_url, m.file_name FROM messages m
+    SELECT a.name, m.content, m.image_url, m.file_url, m.file_name, m.attachments FROM messages m
     JOIN room_participants rp ON rp.id=m.participant_id
     JOIN actors a ON a.id=rp.actor_id
     WHERE m.room_id=? AND m.state='complete' ORDER BY m.created_at DESC LIMIT 10
   `).all(roomId);
   const ctx = history.reverse().map(r => {
     let line = `[${r.name}]: ${r.content || ''}`;
-    if (r.image_url) line += ' [mengirim gambar]';
-    if (r.file_name) line += ` [melampirkan file: ${r.file_name}]`;
+    let files = [];
+    if (r.attachments) {
+      try { files = JSON.parse(r.attachments); } catch {}
+    }
+    if (files.length) {
+      line += '\n  Lampiran: ' + files.map(f => f.name || 'file').join(', ') + ' (file sudah didownload ke .stoa-attachments/ di workdir jika ini pesan terbaru)';
+    } else {
+      if (r.image_url) line += ' [mengirim gambar]';
+      if (r.file_name) line += ` [melampirkan file: ${r.file_name}]`;
+    }
     return line;
   }).join('\n');
 
@@ -1352,7 +1459,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, imageUrl = null, f
     otherAINames.length
       ? `Jika ingin bicara ke AI lain, gunakan @NamaMereka (contoh: ${otherAINames.map(n => '@' + n).join(' atau ')}). Mention akan otomatis memicu mereka untuk merespons.`
       : '',
-    `\nJika diminta mengirim file, sertakan marker [send:path/to/file] di response. Path harus absolute. Sistem akan otomatis upload dan menampilkan file di chat.`,
+    `\nJika diminta mengirim file, sertakan marker [send:path/to/file] di response. Path harus absolute. Bisa kirim beberapa file sekaligus dengan multiple marker [send:...]. Sistem akan otomatis upload dan menampilkan di chat.`,
   ].filter(Boolean).join('\n');
 
   // Resolve workdir: use room's workdir only if it belongs to this agent, else agent's default
@@ -1370,6 +1477,11 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, imageUrl = null, f
     await new Promise((resolve, reject) => {
       pendingAgents.set(msgId, { resolve, reject });
       pendingActorMeta.set(msgId, { actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null });
+      const triggerBaseUrl = getPublicUrl(`localhost:${PORT}`);
+      const fullAttachments = (attachments || []).map(a => ({
+        ...a,
+        url: a.url?.startsWith('/') ? triggerBaseUrl + a.url : a.url,
+      }));
       agentWs.send(JSON.stringify({
         type: 'agent_trigger',
         room_id: roomId,
@@ -1377,9 +1489,10 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, imageUrl = null, f
         participant_id: ai.participant_id,
         claude_session_id: sessionId,
         prompt: fullPrompt,
-        imageUrl: imageUrl  || undefined,
-        fileUrl:  fileUrl   || undefined,
-        fileName: fileName  || undefined,
+        attachments: fullAttachments.length ? fullAttachments : undefined,
+        imageUrl: fullAttachments.find(a => a.type === 'image')?.url || undefined,
+        fileUrl:  fullAttachments.find(a => a.type === 'file')?.url || undefined,
+        fileName: fullAttachments.find(a => a.type === 'file')?.name || undefined,
         workdir: workdir    || undefined,
       }));
       console.log(`[trigger] sent to ${ai.name} agent, msgId=${msgId}`);

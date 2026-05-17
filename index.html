@@ -249,17 +249,44 @@
     }
 
     .h-room-row {
-      padding: 9px 10px;
+      position: relative;
       border-radius: 8px;
       cursor: pointer;
       background: transparent;
-      display: flex;
-      flex-direction: column;
-      gap: 5px;
-      transition: background 0.12s;
+      overflow: hidden;
     }
     .h-room-row:hover { background: color-mix(in srgb, var(--h-surface) 60%, transparent); }
     .h-room-row.active { background: var(--h-surface); }
+    .h-room-row.swiped { background: transparent !important; }
+    .h-room-content {
+      padding: 9px 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      transition: transform 0.2s ease;
+      position: relative;
+      z-index: 1;
+      background: inherit;
+    }
+    .h-room-row.swiped .h-room-content { transform: translateX(62px); }
+    .h-room-delete-btn {
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 58px;
+      background: #c44;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--h-sans);
+      font-size: 12px;
+      font-weight: 500;
+      border-radius: 8px 0 0 8px;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+      cursor: pointer;
+    }
+    .h-room-row.swiped .h-room-delete-btn { opacity: 1; }
 
     .h-room-row-top {
       display: flex;
@@ -311,6 +338,7 @@
       flex: 0 0 auto;
     }
     .h-room-row.active .h-actor-dot { opacity: 1; }
+
 
     .h-sidebar-footer {
       border-top: 1px solid var(--h-hair-soft);
@@ -598,8 +626,68 @@
       object-fit: cover;
       object-position: center;
     }
+    .h-gallery-wrap {
+      position: relative;
+      margin-bottom: 8px;
+    }
+    .h-msg-gallery {
+      width: 100%;
+      max-height: 220px;
+      border-radius: 8px;
+      overflow: hidden;
+      position: relative;
+      cursor: grab;
+    }
+    .h-msg-gallery.dragging { cursor: grabbing; }
+    .h-gallery-track {
+      display: flex;
+      gap: 6px;
+      height: 100%;
+      will-change: transform;
+    }
+    .h-gallery-track.snapping {
+      transition: transform 0.3s cubic-bezier(0.25, 1, 0.5, 1);
+    }
+    .h-gallery-track img {
+      height: 200px;
+      width: auto;
+      object-fit: contain;
+      border-radius: 8px;
+      pointer-events: none;
+      user-select: none;
+      -webkit-user-drag: none;
+      flex-shrink: 0;
+      background: rgba(0,0,0,0.15);
+    }
+    .h-gallery-nav {
+      position: absolute;
+      top: 50%; transform: translateY(-50%);
+      width: 28px; height: 28px;
+      border-radius: 50%;
+      border: none;
+      background: rgba(0,0,0,0.35);
+      color: #fff;
+      font-size: 18px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 3;
+      transition: background 0.15s;
+    }
+    .h-gallery-nav:hover { background: rgba(0,0,0,0.7); }
+    .h-gallery-nav.left { left: 6px; }
+    .h-gallery-nav.right { right: 6px; }
+    .h-gallery-counter {
+      text-align: center;
+      font-size: 11px;
+      color: var(--h-ink-mute);
+      margin-top: 4px;
+    }
     @media (max-width: 600px) {
       .h-msg-img { width: 220px; height: 180px; }
+      .h-msg-gallery { max-height: 180px; }
+      .h-gallery-track img { height: 160px; }
     }
     .h-msg-img:hover { opacity: 0.9; }
 
@@ -621,6 +709,22 @@
       box-shadow: 0 4px 40px rgba(0,0,0,0.5);
       object-fit: contain;
     }
+    .lb-nav {
+      position: absolute;
+      top: 50%; transform: translateY(-50%);
+      background: rgba(255,255,255,0.15);
+      border: none;
+      color: #fff;
+      font-size: 36px;
+      width: 44px; height: 44px;
+      border-radius: 50%;
+      cursor: pointer;
+      display: none;
+    }
+    .lb-nav:hover { background: rgba(255,255,255,0.3); }
+    .lb-prev { left: 16px; }
+    .lb-next { right: 16px; }
+    #img-lightbox.has-nav .lb-nav { display: flex; align-items: center; justify-content: center; }
 
     /* Streaming cursor */
     .h-cursor {
@@ -820,21 +924,57 @@
       border: 1px solid var(--h-hair-soft);
     }
 
-    #img-preview {
+    #attach-preview {
       display: none;
-      align-items: center;
-      gap: 8px;
+      flex-wrap: wrap;
+      gap: 6px;
       padding-bottom: 6px;
     }
-    #img-preview.visible { display: flex; }
-
-    #file-preview {
-      display: none;
-      align-items: center;
-      gap: 8px;
-      padding-bottom: 6px;
+    #attach-preview.visible { display: flex; }
+    .attach-thumb {
+      position: relative;
+      width: 56px; height: 56px;
+      border-radius: 6px;
+      overflow: hidden;
+      border: 1px solid var(--h-hairline);
     }
-    #file-preview.visible { display: flex; }
+    .attach-thumb img { width: 100%; height: 100%; object-fit: cover; }
+    .attach-thumb-file {
+      width: 56px; height: 56px;
+      border-radius: 6px;
+      border: 1px solid var(--h-hairline);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--h-surface-hi, #f5f5f5);
+      position: relative;
+    }
+    .attach-thumb-file span {
+      font-size: 9px;
+      color: var(--h-ink-mute);
+      position: absolute;
+      bottom: 3px;
+      left: 0; right: 0;
+      text-align: center;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      padding: 0 2px;
+    }
+    .attach-thumb-x {
+      position: absolute;
+      top: -2px; right: -2px;
+      width: 16px; height: 16px;
+      border-radius: 50%;
+      background: rgba(0,0,0,0.6);
+      color: #fff;
+      border: none;
+      font-size: 11px;
+      line-height: 16px;
+      text-align: center;
+      cursor: pointer;
+      z-index: 2;
+    }
     .attach-menu {
       display: none;
       position: absolute;
@@ -920,8 +1060,14 @@
       color: var(--h-ink-mute);
       overflow: hidden;
       display: -webkit-box;
-      -webkit-line-clamp: 2;
+      -webkit-line-clamp: 3;
       -webkit-box-orient: vertical;
+    }
+    .h-reply-quote-file {
+      font-size: 11px;
+      color: var(--h-accent, #5b9bd5);
+      word-break: break-all;
+      margin-bottom: 2px;
     }
 
     /* Message actions (copy + reply) — Gemini-style, beside bubble */
@@ -933,7 +1079,7 @@
       padding: 2px;
       z-index: 5;
     }
-    .h-msg-row:hover .h-msg-actions { display: flex; }
+    .h-msg-row:hover .h-msg-actions, .h-msg-row.show-actions .h-msg-actions { display: flex; }
     .h-msg-row.ai .h-msg-actions { left: calc(100% + 6px); }
     .h-msg-row.human .h-msg-actions { right: calc(100% + 6px); }
     .h-msg-action-btn {
@@ -947,6 +1093,9 @@
       align-items: center;
     }
     .h-msg-action-btn:hover { background: var(--h-hair-soft); color: var(--h-ink); }
+
+    .h-msg-action-btn.copied svg { stroke: #5cb85c; }
+    .h-msg-action-btn.copied { background: rgba(92,184,92,.12); }
 
     .upload-error {
       display: none;
@@ -1039,24 +1188,6 @@
     .h-msg-file:hover { background: var(--h-hair-soft); }
     .h-msg-file svg { flex-shrink: 0; color: var(--h-ink-mute); }
 
-    #img-thumb {
-      height: 48px;
-      border-radius: 6px;
-      border: 1px solid var(--h-hair-soft);
-      cursor: pointer;
-    }
-
-    #img-clear {
-      background: none;
-      border: none;
-      cursor: pointer;
-      color: var(--h-ink-mute);
-      font-size: 18px;
-      line-height: 1;
-      padding: 2px 6px;
-      border-radius: 4px;
-    }
-    #img-clear:hover { color: var(--h-ink); background: var(--h-surface-hi); }
 
     .h-fmt-bar {
       display: flex;
@@ -2229,6 +2360,33 @@
             <a class="s-docs-link" data-doc="doc-tailscale" href="#">how to set up Tailscale →</a>
           </div>
         </div>
+        <div class="s-server-card">
+          <div class="s-server-card-header">
+            <span style="font-family:var(--h-serif);font-size:16px;color:var(--h-ink)">configuration</span>
+            <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)">runtime behavior</span>
+          </div>
+          <div class="s-server-field">
+            <span class="s-server-field-label">max AI turns</span>
+            <input class="s-server-input" id="s-max-ai-turns-input" type="number" min="1" max="100" style="width:70px" autocomplete="off">
+            <span class="s-server-saved" id="s-max-ai-turns-saved">saved</span>
+            <button class="s-server-save" id="s-max-ai-turns-save">save</button>
+            <span class="s-server-value-hint">max consecutive AI responses per trigger</span>
+          </div>
+          <div class="s-server-field">
+            <span class="s-server-field-label">cleanup hour</span>
+            <input class="s-server-input" id="s-cleanup-hour-input" type="number" min="0" max="23" style="width:70px" autocomplete="off">
+            <span class="s-server-saved" id="s-cleanup-hour-saved">saved</span>
+            <button class="s-server-save" id="s-cleanup-hour-save">save</button>
+            <span class="s-server-value-hint">hour of day (0–23) to run file cleanup</span>
+          </div>
+          <div class="s-server-field">
+            <span class="s-server-field-label">file max age</span>
+            <input class="s-server-input" id="s-cleanup-age-input" type="number" min="1" max="720" style="width:70px" autocomplete="off">
+            <span class="s-server-saved" id="s-cleanup-age-saved">saved</span>
+            <button class="s-server-save" id="s-cleanup-age-save">save</button>
+            <span class="s-server-value-hint">hours before uploaded files are deleted</span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -2263,10 +2421,7 @@
         <div id="emoji-grid"></div>
       </div>
       <div class="h-composer-box" style="position:relative">
-        <div id="img-preview">
-          <img id="img-thumb" alt="image preview">
-          <button id="img-clear" title="Remove image">×</button>
-        </div>
+        <div id="attach-preview"></div>
         <div id="upload-progress">
           <span id="upload-progress-text">Uploading...</span>
           <div id="upload-progress-bar"><div id="upload-progress-fill"></div></div>
@@ -2274,13 +2429,6 @@
         <div class="upload-error" id="upload-error">
           <span id="upload-error-text">Upload failed</span>
           <button style="margin-left:auto;background:none;border:none;cursor:pointer;color:inherit;font-size:16px" onclick="document.getElementById('upload-error').classList.remove('visible')">&times;</button>
-        </div>
-        <div id="file-preview">
-          <div class="h-file-chip">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-            <span id="file-chip-name"></span>
-          </div>
-          <button id="file-clear" title="Remove file">×</button>
         </div>
         <div id="skill-popup" style="display:none"></div>
         <div id="mention-popup" style="display:none"></div>
@@ -2444,9 +2592,7 @@ let allActors = [];
 let humanActor = null;
 let actorByName = {};
 let roomParticipantsCache = {}; // roomId -> [participant]
-let pendingImageUrl = null;
-let pendingFileUrl  = null;
-let pendingFileName = null;
+let pendingAttachments = [];
 const streaming = {}; // msgId -> accumulated text
 const processingMessages = new Set(); // message IDs currently being processed by AI
 let oldestMessageId   = null;
@@ -2657,6 +2803,15 @@ function renderRoomList(rooms) {
     row.className = 'h-room-row' + (room.id === currentRoomId ? ' active' : '');
     row.dataset.roomId = room.id;
 
+    const delBtn = document.createElement('div');
+    delBtn.className = 'h-room-delete-btn';
+    delBtn.textContent = 'Delete';
+    delBtn.onclick = e => { e.stopPropagation(); deleteRoom(room); };
+    row.appendChild(delBtn);
+
+    const content = document.createElement('div');
+    content.className = 'h-room-content';
+
     const top = document.createElement('div');
     top.className = 'h-room-row-top';
 
@@ -2677,7 +2832,7 @@ function renderRoomList(rooms) {
     }
     top.appendChild(time);
 
-    row.appendChild(top);
+    content.appendChild(top);
 
     if (room.last_message) {
       const preview = document.createElement('div');
@@ -2686,20 +2841,73 @@ function renderRoomList(rooms) {
       preview.textContent = room.last_message_actor
         ? `${room.last_message_actor}: ${plain}`
         : plain;
-      row.appendChild(preview);
+      content.appendChild(preview);
     }
 
     const dots = document.createElement('div');
     dots.className = 'h-room-dots';
     dots.id = 'room-dots-' + room.id;
-    row.appendChild(dots);
+    content.appendChild(dots);
+
+    row.appendChild(content);
 
     const cached = roomParticipantsCache[room.id];
     if (cached) renderRoomDots(room.id, cached);
 
-    row.onclick = () => openRoom(room);
+    content.onclick = () => { if (!row.classList.contains('swiped')) openRoom(room); };
+    initRoomSwipe(row);
     list.appendChild(row);
   }
+}
+
+function initRoomSwipe(row) {
+  let startX = 0, startY = 0, dragging = false;
+  const onStart = e => {
+    const pt = e.touches ? e.touches[0] : e;
+    startX = pt.clientX; startY = pt.clientY; dragging = true;
+  };
+  const onMove = e => {
+    if (!dragging) return;
+    const pt = e.touches ? e.touches[0] : e;
+    const dx = pt.clientX - startX;
+    const dy = pt.clientY - startY;
+    if (Math.abs(dy) > Math.abs(dx)) { dragging = false; return; }
+    if (dx > 30) {
+      dragging = false;
+      closeAllSwipes();
+      row.classList.add('swiped');
+    } else if (dx < -20 && row.classList.contains('swiped')) {
+      dragging = false;
+      row.classList.remove('swiped');
+    }
+  };
+  const onEnd = () => { dragging = false; };
+  row.addEventListener('touchstart', onStart, { passive: true });
+  row.addEventListener('touchmove', onMove, { passive: true });
+  row.addEventListener('touchend', onEnd);
+  row.addEventListener('mousedown', onStart);
+  row.addEventListener('mousemove', onMove);
+  row.addEventListener('mouseup', onEnd);
+}
+
+function closeAllSwipes() {
+  document.querySelectorAll('.h-room-row.swiped').forEach(r => r.classList.remove('swiped'));
+}
+document.addEventListener('click', e => {
+  if (!e.target.closest('.h-room-row')) closeAllSwipes();
+});
+
+async function deleteRoom(room) {
+  if (!confirm(`Delete "${room.title}"? All messages will be lost.`)) return;
+  try {
+    await fetch(`/api/rooms/${room.id}`, { method: 'DELETE' });
+  } catch {}
+  if (currentRoomId === room.id) {
+    currentRoomId = null;
+    document.getElementById('chat-area').innerHTML = '';
+    document.getElementById('room-header-title').textContent = '';
+  }
+  refreshRoomList();
 }
 
 function renderRoomDots(roomId, participants) {
@@ -2825,7 +3033,7 @@ function handleWsMessage(msg) {
   }
 
   if (msg.type === 'message_complete') {
-    finalizeMessage(msg.message_id, msg.content, msg.file_url, msg.file_name);
+    finalizeMessage(msg.message_id, msg.content, msg.file_url, msg.file_name, msg.attachments);
     clearComposerProcessing(msg.message_id);
     refreshRoomList();
     return;
@@ -2949,6 +3157,162 @@ async function copyToClipboard(text) {
   return ok;
 }
 
+function showCopyFeedback(btn) {
+  const row = btn.closest('.h-msg-row');
+  if (row) row.classList.add('show-actions');
+  const orig = btn.innerHTML;
+  btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5cb85c" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+  btn.classList.add('copied');
+  setTimeout(() => {
+    btn.innerHTML = orig;
+    btn.classList.remove('copied');
+    if (row) row.classList.remove('show-actions');
+  }, 1500);
+}
+
+function getAttachments(m) {
+  let list = [];
+  if (m.attachments) {
+    try { list = typeof m.attachments === 'string' ? JSON.parse(m.attachments) : m.attachments; } catch {}
+  }
+  if (!list.length) {
+    if (m.image_url) list.push({ url: m.image_url, name: '', type: 'image' });
+    if (m.file_url && m.file_name) {
+      const isImg = /\.(png|jpe?g|gif|webp|svg)$/i.test(m.file_name);
+      list.push({ url: m.file_url, name: m.file_name, type: isImg ? 'image' : 'file' });
+    }
+  }
+  return list;
+}
+
+function renderAttachments(bubble, m) {
+  const attachments = getAttachments(m);
+  if (!attachments.length) return;
+
+  const images = attachments.filter(a => a.type === 'image');
+  const files  = attachments.filter(a => a.type === 'file');
+
+  if (images.length === 1) {
+    const img = document.createElement('img');
+    img.src = images[0].url;
+    img.className = 'h-msg-img';
+    img.loading = 'lazy';
+    img.onclick = () => openLightbox(images, 0);
+    bubble.appendChild(img);
+  } else if (images.length > 1) {
+    const wrap = document.createElement('div');
+    wrap.className = 'h-gallery-wrap';
+    const gallery = document.createElement('div');
+    gallery.className = 'h-msg-gallery';
+    const track = document.createElement('div');
+    track.className = 'h-gallery-track';
+    let tx = 0, maxScroll = 0;
+
+    images.forEach((a, i) => {
+      const img = document.createElement('img');
+      img.src = a.url;
+      img.loading = 'lazy';
+      img.onclick = () => { if (!wasDragged) openLightbox(images, i); };
+      img.style.pointerEvents = 'auto';
+      img.style.cursor = 'pointer';
+      track.appendChild(img);
+    });
+    gallery.appendChild(track);
+
+    const counter = document.createElement('div');
+    counter.className = 'h-gallery-counter';
+    counter.textContent = images.length + ' images';
+
+    function clamp(val) {
+      maxScroll = Math.max(0, track.scrollWidth - gallery.offsetWidth);
+      return Math.max(-maxScroll, Math.min(0, val));
+    }
+    function setPos(val, animate) {
+      tx = clamp(val);
+      if (animate) {
+        track.classList.add('snapping');
+        track.addEventListener('transitionend', () => track.classList.remove('snapping'), { once: true });
+      } else {
+        track.classList.remove('snapping');
+      }
+      track.style.transform = 'translateX(' + tx + 'px)';
+    }
+
+    let dragStartX = 0, dragOffset = 0, isDragging = false, wasDragged = false;
+
+    function pointerDown(x) {
+      isDragging = true;
+      wasDragged = false;
+      dragStartX = x;
+      track.classList.remove('snapping');
+      gallery.classList.add('dragging');
+    }
+    function pointerMove(x) {
+      if (!isDragging) return;
+      dragOffset = x - dragStartX;
+      if (Math.abs(dragOffset) > 5) wasDragged = true;
+      track.style.transform = 'translateX(' + clamp(tx + dragOffset) + 'px)';
+    }
+    function pointerUp() {
+      if (!isDragging) return;
+      isDragging = false;
+      gallery.classList.remove('dragging');
+      setPos(tx + dragOffset, true);
+      dragOffset = 0;
+    }
+
+    gallery.addEventListener('touchstart', e => pointerDown(e.touches[0].clientX), { passive: true });
+    gallery.addEventListener('touchmove', e => pointerMove(e.touches[0].clientX), { passive: true });
+    gallery.addEventListener('touchend', pointerUp);
+
+    gallery.addEventListener('mousedown', e => { e.preventDefault(); pointerDown(e.clientX); });
+    document.addEventListener('mousemove', e => { if (isDragging) pointerMove(e.clientX); });
+    document.addEventListener('mouseup', pointerUp);
+
+    const scrollStep = 200;
+    const btnL = document.createElement('button');
+    btnL.className = 'h-gallery-nav left';
+    btnL.innerHTML = '&#8249;';
+    btnL.onclick = e => { e.stopPropagation(); setPos(tx + scrollStep, true); };
+    const btnR = document.createElement('button');
+    btnR.className = 'h-gallery-nav right';
+    btnR.innerHTML = '&#8250;';
+    btnR.onclick = e => { e.stopPropagation(); setPos(tx - scrollStep, true); };
+
+    wrap.appendChild(gallery);
+    wrap.appendChild(btnL);
+    wrap.appendChild(btnR);
+    wrap.appendChild(counter);
+    bubble.appendChild(wrap);
+  }
+
+  files.forEach(a => {
+    const link = document.createElement('a');
+    link.href = a.url;
+    link.target = '_blank';
+    link.className = 'h-msg-file';
+    link.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>${escHtml(a.name)}`;
+    bubble.appendChild(link);
+  });
+}
+
+function openLightbox(images, startIdx) {
+  const lb = document.getElementById('img-lightbox');
+  const img = document.getElementById('img-lightbox-src');
+  lb._images = images;
+  lb._idx = startIdx;
+  img.src = images[startIdx].url;
+  lb.classList.toggle('has-nav', images.length > 1);
+  lb.classList.add('visible');
+}
+
+function lbNav(dir) {
+  const lb = document.getElementById('img-lightbox');
+  if (!lb._images) return;
+  lb._idx = (lb._idx + dir + lb._images.length) % lb._images.length;
+  document.getElementById('img-lightbox-src').src = lb._images[lb._idx].url;
+}
+
 function addCopyButtons(el) {
   el.querySelectorAll('pre').forEach(pre => {
     if (pre.querySelector('.h-copy-btn')) return;
@@ -3024,39 +3388,18 @@ function appendMessage(m, container) {
   if (m.reply_msg) {
     const quote = document.createElement('div');
     quote.className = 'h-reply-quote';
-    quote.innerHTML = `<div class="h-reply-quote-name" style="color:${m.reply_msg.avatar_color || 'var(--h-ink)'}">${escHtml(m.reply_msg.actor_name)}</div><div class="h-reply-quote-text">${escHtml((m.reply_msg.content || '').substring(0, 150))}</div>`;
+    const replyAttachments = getAttachments(m.reply_msg);
+    let quoteText = escHtml((m.reply_msg.content || '').substring(0, 150));
+    if (replyAttachments.length) {
+      const urls = replyAttachments.map(a => `<div class="h-reply-quote-file">${escHtml(a.url)}</div>`).join('');
+      quoteText = urls + quoteText;
+    }
+    quote.innerHTML = `<div class="h-reply-quote-name" style="color:${m.reply_msg.avatar_color || 'var(--h-ink)'}">${escHtml(m.reply_msg.actor_name)}</div><div class="h-reply-quote-text">${quoteText}</div>`;
     quote.onclick = () => { const el = document.getElementById('msg-' + m.reply_to); if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.style.transition = 'background 0.3s'; el.style.background = 'color-mix(in srgb, #d39749 15%, transparent)'; setTimeout(() => { el.style.background = ''; }, 2000); } };
     bubble.appendChild(quote);
   }
 
-  if (m.image_url) {
-    const img = document.createElement('img');
-    img.src = m.image_url;
-    img.className = 'h-msg-img';
-    img.loading = 'lazy';
-    img.onclick = () => { document.getElementById('img-lightbox-src').src = img.src; document.getElementById('img-lightbox').classList.add('visible'); };
-    bubble.appendChild(img);
-  }
-
-  if (m.file_url && m.file_name) {
-    const isImg = /\.(png|jpe?g|gif|webp|svg)$/i.test(m.file_name);
-    if (isImg) {
-      const img = document.createElement('img');
-      img.src = m.file_url;
-      img.alt = m.file_name;
-      img.className = 'h-msg-img';
-      img.loading = 'lazy';
-      img.onclick = () => { document.getElementById('img-lightbox-src').src = img.src; document.getElementById('img-lightbox').classList.add('visible'); };
-      bubble.appendChild(img);
-    } else {
-      const a = document.createElement('a');
-      a.href = m.file_url;
-      a.target = '_blank';
-      a.className = 'h-msg-file';
-      a.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>${escHtml(m.file_name)}`;
-      bubble.appendChild(a);
-    }
-  }
+  renderAttachments(bubble, m);
 
   if (m.content) {
     const textDiv = document.createElement('div');
@@ -3069,13 +3412,9 @@ function appendMessage(m, container) {
   actions.innerHTML =
     `<button class="h-msg-action-btn" data-action="reply" title="Reply"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg></button>` +
     `<button class="h-msg-action-btn" data-action="copy" title="Copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>`;
-  actions.querySelector('[data-action="reply"]').onclick = () => startReply(m.id, m.actor_name, m.avatar_color, m.content);
-  actions.querySelector('[data-action="copy"]').onclick = async (e) => {
-    if (await copyToClipboard(m.content || '')) {
-      const btn = e.currentTarget;
-      btn.style.color = 'var(--h-ink)';
-      setTimeout(() => { btn.style.color = ''; }, 1000);
-    }
+  actions.querySelector('[data-action="reply"]').onclick = () => startReply(m.id, m.actor_name, m.avatar_color, m.content, getAttachments(m));
+  actions.querySelector('[data-action="copy"]').onclick = async function() {
+    if (await copyToClipboard(m.content || '')) showCopyFeedback(this);
   };
 
   body.appendChild(bubble);
@@ -3193,7 +3532,7 @@ function appendToken(msgId, token) {
 }
 
 // ── Finalize streaming message ─────────────────────────────────────────────
-function finalizeMessage(msgId, content, fileUrl, fileName) {
+function finalizeMessage(msgId, content, fileUrl, fileName, attachments) {
   const row = document.getElementById('msg-' + msgId);
   if (!row) return;
 
@@ -3212,23 +3551,8 @@ function finalizeMessage(msgId, content, fileUrl, fileName) {
     }
 
     bubble.innerHTML = '';
-    if (fileUrl && fileName) {
-      const isImg = /\.(png|jpe?g|gif|webp|svg)$/i.test(fileName);
-      if (isImg) {
-        const img = document.createElement('img');
-        img.src = fileUrl;
-        img.alt = fileName;
-        img.className = 'h-msg-img';
-        img.onclick = () => { document.getElementById('img-lightbox-src').src = img.src; document.getElementById('img-lightbox').classList.add('visible'); };
-        bubble.appendChild(img);
-      } else {
-        const a = document.createElement('a');
-        a.href = fileUrl;
-        a.target = '_blank';
-        a.className = 'h-msg-file';
-        a.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>${escHtml(fileName)}`;
-        bubble.appendChild(a);
-      }
+    if (attachments?.length || (fileUrl && fileName)) {
+      renderAttachments(bubble, { file_url: fileUrl, file_name: fileName, attachments });
     }
     const textDiv = document.createElement('div');
     textDiv.innerHTML = highlightMentions(renderMarkdown(content || ''));
@@ -3246,13 +3570,10 @@ function finalizeMessage(msgId, content, fileUrl, fileName) {
       `<button class="h-msg-action-btn" data-action="copy" title="Copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>`;
     const actorName = row.querySelector('.h-msg-name')?.textContent || '';
     const avatarColor = row.querySelector('.h-msg-name')?.style.color || '';
-    actions.querySelector('[data-action="reply"]').onclick = () => startReply(msgId, actorName, avatarColor, content);
-    actions.querySelector('[data-action="copy"]').onclick = async (e) => {
-      if (await copyToClipboard(content || '')) {
-        const btn = e.currentTarget;
-        btn.style.color = 'var(--h-ink)';
-        setTimeout(() => { btn.style.color = ''; }, 1000);
-      }
+    const msgAttachments = attachments || (fileUrl ? [{ url: fileUrl, name: fileName || '', type: /\.(png|jpe?g|gif|webp|svg)$/i.test(fileName || '') ? 'image' : 'file' }] : []);
+    actions.querySelector('[data-action="reply"]').onclick = () => startReply(msgId, actorName, avatarColor, content, msgAttachments);
+    actions.querySelector('[data-action="copy"]').onclick = async function() {
+      if (await copyToClipboard(content || '')) showCopyFeedback(this);
     };
     body.style.position = 'relative';
     body.appendChild(actions);
@@ -3457,26 +3778,42 @@ async function handleImagePaste(e) {
   e.preventDefault();
   const file = imageItem.getAsFile();
   try {
-    const { url } = await uploadWithProgress(file);
-    pendingImageUrl = url;
-    document.getElementById('img-thumb').src = url;
-    document.getElementById('img-preview').classList.add('visible');
+    const { url, name } = await uploadWithProgress(file);
+    addPendingAttachment(url, name || file.name, 'image');
   } catch (err) {
     showUploadError(err.message || 'Upload failed');
   }
 }
 
-function clearImagePreview() {
-  pendingImageUrl = null;
-  document.getElementById('img-preview').classList.remove('visible');
-  document.getElementById('img-thumb').src = '';
+function addPendingAttachment(url, name, type) {
+  pendingAttachments.push({ url, name, type });
+  renderAttachPreview();
 }
 
-function clearFilePreview() {
-  pendingFileUrl = null;
-  pendingFileName = null;
-  document.getElementById('file-preview').classList.remove('visible');
-  document.getElementById('file-chip-name').textContent = '';
+function removePendingAttachment(idx) {
+  pendingAttachments.splice(idx, 1);
+  renderAttachPreview();
+}
+
+function clearAttachments() {
+  pendingAttachments = [];
+  renderAttachPreview();
+}
+
+function renderAttachPreview() {
+  const el = document.getElementById('attach-preview');
+  if (!pendingAttachments.length) { el.classList.remove('visible'); el.innerHTML = ''; return; }
+  el.classList.add('visible');
+  el.innerHTML = pendingAttachments.map((a, i) => {
+    if (a.type === 'image') {
+      return `<div class="attach-thumb"><img src="${a.url}" alt="${escHtml(a.name)}"><button class="attach-thumb-x" data-idx="${i}">&times;</button></div>`;
+    }
+    const ext = (a.name || '').split('.').pop()?.toUpperCase() || 'FILE';
+    return `<div class="attach-thumb-file"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span>${escHtml(a.name)}</span><button class="attach-thumb-x" data-idx="${i}">&times;</button></div>`;
+  }).join('');
+  el.querySelectorAll('.attach-thumb-x').forEach(btn => {
+    btn.onclick = () => removePendingAttachment(parseInt(btn.dataset.idx));
+  });
 }
 
 // ── HTML → Markdown ─────────────────────────────────────────────────────────
@@ -3593,11 +3930,16 @@ function stopGeneration() {
 // ── Reply ───────────────────────────────────────────────────────────────────
 let pendingReplyTo = null;
 
-function startReply(msgId, actorName, avatarColor, content) {
+function startReply(msgId, actorName, avatarColor, content, attachments) {
   pendingReplyTo = msgId;
   document.getElementById('reply-bar-name').textContent = actorName;
   document.getElementById('reply-bar-name').style.color = avatarColor || 'var(--h-ink)';
-  document.getElementById('reply-bar-text').textContent = (content || '').substring(0, 150);
+  let preview = (content || '').substring(0, 150);
+  if (attachments && attachments.length) {
+    const urls = attachments.map(a => a.url).join('\n');
+    preview = preview ? preview + '\n' + urls : urls;
+  }
+  document.getElementById('reply-bar-text').textContent = preview;
   document.getElementById('reply-bar').classList.add('visible');
   document.getElementById('msg-input').focus();
 }
@@ -3613,16 +3955,13 @@ document.getElementById('reply-bar-close').onclick = clearReply;
 function sendMessage() {
   const input = document.getElementById('msg-input');
   const content = htmlToMarkdown(input).replace(/​/g, '').replace(/\n{3,}/g, '\n\n').trim();
-  if ((!content && !pendingImageUrl && !pendingFileUrl) || !ws || ws.readyState !== WebSocket.OPEN) return;
+  if ((!content && !pendingAttachments.length) || !ws || ws.readyState !== WebSocket.OPEN) return;
   input.innerHTML = '';
-  const imageUrl = pendingImageUrl;
-  const fileUrl  = pendingFileUrl;
-  const fileName = pendingFileName;
-  const replyTo  = pendingReplyTo;
-  clearImagePreview();
-  clearFilePreview();
+  const attachments = pendingAttachments.length ? [...pendingAttachments] : undefined;
+  const replyTo = pendingReplyTo;
+  clearAttachments();
   clearReply();
-  ws.send(JSON.stringify({ type: 'send_message', room_id: currentRoomId, content, imageUrl, fileUrl, fileName, reply_to: replyTo }));
+  ws.send(JSON.stringify({ type: 'send_message', room_id: currentRoomId, content, attachments, reply_to: replyTo }));
   clearDraft(currentRoomId);
 }
 
@@ -3659,6 +3998,12 @@ async function loadWorkdirsForActor(actorId) {
 }
 
 async function openNewRoomModal() {
+  try {
+    const freshActors = await fjson('/api/actors');
+    allActors = freshActors;
+    actorByName = {};
+    allActors.forEach(a => actorByName[a.name] = a);
+  } catch {}
   if (!allActors.some(a => a.type === 'ai')) { openSettings(); return; }
   const modal = document.getElementById('new-room-modal');
   const nameInput = document.getElementById('new-room-name');
@@ -4634,7 +4979,6 @@ async function init() {
 
   document.getElementById('send-btn').addEventListener('click', sendMessage);
   document.getElementById('stop-btn').addEventListener('click', stopGeneration);
-  document.getElementById('img-clear').addEventListener('click', clearImagePreview);
   document.getElementById('new-room-btn').addEventListener('click', openNewRoomModal);
   initEmojiPicker();
   initScrollLoader();
@@ -4673,21 +5017,41 @@ async function init() {
     setTimeout(() => el.classList.remove('visible'), 5000);
   }
 
+  function compressImage(file, maxDim = 1920, quality = 0.8) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          const ratio = Math.min(maxDim / width, maxDim / height);
+          width = Math.round(width * ratio);
+          height = Math.round(height * ratio);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        canvas.toBlob(blob => {
+          if (!blob) return reject(new Error('Compression failed'));
+          const ext = blob.type === 'image/webp' ? '.webp' : '.jpg';
+          const baseName = file.name.replace(/\.[^.]+$/, '') + ext;
+          resolve(new File([blob], baseName, { type: blob.type }));
+        }, 'image/webp', quality);
+      };
+      img.onerror = () => reject(new Error('Failed to load image'));
+      img.src = URL.createObjectURL(file);
+    });
+  }
+
   async function handleFileUpload(file, isImage) {
     try {
-      const { url, name } = await uploadWithProgress(file);
-      if (isImage) {
-        clearFilePreview();
-        pendingImageUrl = url;
-        document.getElementById('img-thumb').src = url;
-        document.getElementById('img-preview').classList.add('visible');
-      } else {
-        clearImagePreview();
-        pendingFileUrl  = url;
-        pendingFileName = name;
-        document.getElementById('file-chip-name').textContent = name;
-        document.getElementById('file-preview').classList.add('visible');
+      let toUpload = file;
+      if (isImage && file.size > 200 * 1024) {
+        toUpload = await compressImage(file);
       }
+      const { url, name } = await uploadWithProgress(toUpload);
+      addPendingAttachment(url, name || file.name, isImage ? 'image' : 'file');
     } catch (err) {
       showUploadError(err.message || 'Upload failed');
     }
@@ -4698,7 +5062,8 @@ async function init() {
     const fi = document.createElement('input');
     fi.type = 'file';
     fi.accept = 'image/*';
-    fi.onchange = () => { if (fi.files[0]) handleFileUpload(fi.files[0], true); };
+    fi.multiple = true;
+    fi.onchange = () => { for (const f of fi.files) handleFileUpload(f, true); };
     fi.click();
   });
 
@@ -4706,12 +5071,10 @@ async function init() {
     attachMenu.classList.remove('visible');
     const fi = document.createElement('input');
     fi.type = 'file';
-    fi.accept = '.md,.txt,.pdf,.json,.csv,.html,.js,.ts,.py,.yaml,.yml';
-    fi.onchange = () => { if (fi.files[0]) handleFileUpload(fi.files[0], false); };
+    fi.multiple = true;
+    fi.onchange = () => { for (const f of fi.files) handleFileUpload(f, f.type.startsWith('image/')); };
     fi.click();
   });
-
-  document.getElementById('file-clear').addEventListener('click', clearFilePreview);
 
   // Drag & drop file upload on composer
   const composer = document.getElementById('composer');
@@ -4725,10 +5088,9 @@ async function init() {
   composer.addEventListener('drop', e => {
     e.preventDefault();
     composer.classList.remove('drag-over');
-    const file = e.dataTransfer.files[0];
-    if (!file) return;
-    const isImage = file.type.startsWith('image/');
-    handleFileUpload(file, isImage);
+    for (const file of e.dataTransfer.files) {
+      handleFileUpload(file, file.type.startsWith('image/'));
+    }
   });
 
   initSettings();
@@ -5351,6 +5713,9 @@ async function sLoadServerTab() {
   document.getElementById('s-public-url-input').value = data.public_url || '';
   document.getElementById('s-public-url-input').placeholder = `http://localhost:${port}`;
   document.getElementById('s-port-input').value = port;
+  document.getElementById('s-max-ai-turns-input').value = data.max_ai_turns || 15;
+  document.getElementById('s-cleanup-hour-input').value = data.cleanup_cron_hour ?? 10;
+  document.getElementById('s-cleanup-age-input').value = data.cleanup_max_age_hours || 24;
   sPublicUrl = data.public_url || '';
   sPort = port;
   // Populate avatar preview from current humanActor
@@ -5493,7 +5858,16 @@ function initGlobalWs() {
     globalWs.onmessage = async e => {
       let msg; try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.type === 'actor_status') handleActorStatus(msg.actor);
+      if (msg.type === 'actor_removed') handleActorRemoved(msg.actor_id, msg.affected_rooms);
       if (msg.type === 'server_restart') handleServerRestart(msg);
+      if (msg.type === 'room_deleted') {
+        if (currentRoomId === msg.room_id) {
+          currentRoomId = null;
+          document.getElementById('chat-area').innerHTML = '';
+          document.getElementById('room-header-title').textContent = '';
+        }
+        refreshRoomList();
+      }
       if (msg.type === 'room_created' || msg.type === 'room_activity' || msg.type === 'room_updated') refreshRoomList();
     };
     globalWs.onclose = () => setTimeout(connect, 3000);
@@ -5570,6 +5944,26 @@ function handleActorStatus(actor) {
   }
 }
 
+function handleActorRemoved(actorId, affectedRooms) {
+  const actor = allActors.find(a => a.id === actorId);
+  if (actor && actorByName[actor.name]) delete actorByName[actor.name];
+  const idx = allActors.findIndex(a => a.id === actorId);
+  if (idx >= 0) allActors.splice(idx, 1);
+  settingsActors = settingsActors?.filter(a => a.id !== actorId);
+  const sRow = document.getElementById('s-row-' + actorId);
+  if (sRow) { sRow.style.maxHeight = '0'; sRow.style.padding = '0'; setTimeout(() => sRow.remove(), 220); }
+  sRowStates.delete(actorId);
+  syncNewRoomBtn();
+  if (affectedRooms?.includes(currentRoomId)) {
+    const cached = roomParticipantsCache[currentRoomId];
+    if (cached) {
+      roomParticipantsCache[currentRoomId] = cached.filter(p => p.actor_id !== actorId);
+      renderRoomHeader(currentRoomId);
+    }
+  }
+  refreshRoomList();
+}
+
 function initSettings() {
   document.getElementById('s-add-agent-btn').addEventListener('click', sOpenAddPanel);
   document.getElementById('s-mobile-back').addEventListener('click', closeSettingsToSidebar);
@@ -5605,7 +5999,22 @@ function initSettings() {
     if (!confirm(`Port akan diubah ke ${val}. Server akan restart dan browser akan redirect otomatis. Lanjutkan?`)) return;
     sSaveSetting('port', val, 's-port-saved');
   });
-  ['s-human-name-input', 's-public-url-input', 's-port-input'].forEach(id => {
+  document.getElementById('s-max-ai-turns-save').addEventListener('click', () => {
+    const val = parseInt(document.getElementById('s-max-ai-turns-input').value);
+    if (!val || val < 1 || val > 100) return;
+    sSaveSetting('max_ai_turns', val, 's-max-ai-turns-saved');
+  });
+  document.getElementById('s-cleanup-hour-save').addEventListener('click', () => {
+    const val = parseInt(document.getElementById('s-cleanup-hour-input').value);
+    if (isNaN(val) || val < 0 || val > 23) return;
+    sSaveSetting('cleanup_cron_hour', val, 's-cleanup-hour-saved');
+  });
+  document.getElementById('s-cleanup-age-save').addEventListener('click', () => {
+    const val = parseInt(document.getElementById('s-cleanup-age-input').value);
+    if (!val || val < 1 || val > 720) return;
+    sSaveSetting('cleanup_max_age_hours', val, 's-cleanup-age-saved');
+  });
+  ['s-human-name-input', 's-public-url-input', 's-port-input', 's-max-ai-turns-input', 's-cleanup-hour-input', 's-cleanup-age-input'].forEach(id => {
     document.getElementById(id).addEventListener('keydown', e => {
       if (e.key === 'Enter') e.target.closest('.s-server-field').querySelector('.s-server-save').click();
     });
@@ -5718,6 +6127,6 @@ init();
   }, 3000);
 })();
 </script>
-<div id="img-lightbox" onclick="this.classList.remove('visible')"><img id="img-lightbox-src" alt="preview"></div>
+<div id="img-lightbox" onclick="if(event.target===this)this.classList.remove('visible')"><button class="lb-nav lb-prev" onclick="event.stopPropagation();lbNav(-1)">&#8249;</button><img id="img-lightbox-src" alt="preview"><button class="lb-nav lb-next" onclick="event.stopPropagation();lbNav(1)">&#8250;</button></div>
 </body>
 </html>

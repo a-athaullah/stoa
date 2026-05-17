@@ -226,31 +226,71 @@ async function handleAgentMessage(msg) {
 
 async function processTrigger(msg) {
   processingTrigger = true;
-  const { room_id, message_id, imageUrl, fileUrl, fileName } = msg;
+  const { room_id, message_id } = msg;
   const baseUrl = STOA_URL.replace('ws://', 'http://').replace('wss://', 'https://');
+  const TEXT_EXTS = new Set(['.md','.txt','.json','.csv','.html','.js','.ts','.py','.yaml','.yml','.sh','.css']);
+  const IMAGE_EXTS = new Set(['.png','.jpg','.jpeg','.gif','.webp','.svg']);
 
   let imageData = null;
-  if (imageUrl) {
-    try {
-      const fetched = await fetchFileAsBase64(baseUrl + imageUrl);
-      if (fetched.mimeType.startsWith('image/')) imageData = fetched;
-    } catch (err) {
-      console.error('[stoa] image fetch failed:', err.message);
+  let finalPrompt = msg.prompt;
+  const allAttachments = msg.attachments || [];
+
+  if (!allAttachments.length) {
+    if (msg.imageUrl) allAttachments.push({ url: msg.imageUrl, name: '', type: 'image' });
+    if (msg.fileUrl) allAttachments.push({ url: msg.fileUrl, name: msg.fileName || '', type: 'file' });
+  }
+
+  const localFiles = [];
+  const workdir = msg.workdir || process.cwd();
+  const tempDir = path.join(workdir, '.stoa-attachments');
+
+  try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+  if (allAttachments.length) {
+    try { fs.mkdirSync(tempDir, { recursive: true }); } catch {}
+  }
+
+  for (const att of allAttachments) {
+    const url = att.url?.startsWith('http') ? att.url : baseUrl + att.url;
+    const ext = path.extname(att.name || att.url || '').toLowerCase();
+    const safeName = (att.name || path.basename(att.url || 'file')).replace(/[^a-zA-Z0-9._-]/g, '_');
+
+    if (att.type === 'image' || IMAGE_EXTS.has(ext)) {
+      if (!imageData) {
+        try {
+          const fetched = await fetchFileAsBase64(url);
+          if (fetched.mimeType.startsWith('image/')) imageData = fetched;
+        } catch (err) {
+          console.error('[stoa] image fetch failed:', att.url, err.message);
+        }
+      }
+      try {
+        const localPath = path.join(tempDir, safeName);
+        await fetchToFile(url, localPath);
+        localFiles.push({ name: att.name || safeName, path: localPath, type: 'image' });
+      } catch (err) {
+        console.error('[stoa] image download failed:', att.url, err.message);
+      }
+    } else if (TEXT_EXTS.has(ext)) {
+      try {
+        const text = await fetchText(url);
+        finalPrompt = `${finalPrompt}\n\n---\nIsi file \`${att.name}\`:\n\`\`\`\n${text}\n\`\`\``;
+      } catch (err) {
+        console.error('[stoa] file fetch failed:', att.url, err.message);
+      }
+    } else {
+      try {
+        const localPath = path.join(tempDir, safeName);
+        await fetchToFile(url, localPath);
+        localFiles.push({ name: att.name || safeName, path: localPath, type: 'file' });
+      } catch (err) {
+        console.error('[stoa] file download failed:', att.url, err.message);
+      }
     }
   }
 
-  let finalPrompt = msg.prompt;
-  if (fileUrl && fileName) {
-    const ext = path.extname(fileName).toLowerCase();
-    const TEXT_EXTS = new Set(['.md','.txt','.json','.csv','.html','.js','.ts','.py','.yaml','.yml','.sh','.css']);
-    if (TEXT_EXTS.has(ext)) {
-      try {
-        const text = await fetchText(baseUrl + fileUrl);
-        finalPrompt = `${finalPrompt}\n\n---\nIsi file \`${fileName}\`:\n\`\`\`\n${text}\n\`\`\``;
-      } catch (err) {
-        console.error('[stoa] file fetch failed:', err.message);
-      }
-    }
+  if (localFiles.length) {
+    const fileList = localFiles.map(f => `- ${f.name}: ${f.path}`).join('\n');
+    finalPrompt += `\n\n---\nFile yang dilampirkan (sudah didownload ke lokal, gunakan Read tool untuk membaca/melihat):\n${fileList}`;
   }
 
   try {
@@ -312,9 +352,14 @@ async function processTrigger(msg) {
       send({ type: 'agent_complete', room_id, message_id, content: partial || '(stopped by user)' });
       console.log(`[stoa] Aborted message ${message_id}, partial=${partial.length} chars`);
     } else {
-      const { text: cleanContent, fileUrl, fileName } = await extractAndUploadFile(content, msg.workdir);
+      const { text: cleanContent, attachments } = await extractAndUploadFiles(content, msg.workdir);
       const completeMsg = { type: 'agent_complete', room_id, message_id, content: cleanContent, claude_session_id: sessionId };
-      if (fileUrl) { completeMsg.file_url = fileUrl; completeMsg.file_name = fileName; }
+      if (attachments.length === 1) {
+        completeMsg.file_url = attachments[0].url;
+        completeMsg.file_name = attachments[0].name;
+      } else if (attachments.length > 1) {
+        completeMsg.attachments = attachments;
+      }
       send(completeMsg);
     }
 
@@ -333,43 +378,48 @@ async function processTrigger(msg) {
   }
 }
 
-async function extractAndUploadFile(content, workdir) {
-  const match = content.match(/\[send:([^\]]+)\]/);
-  if (!match) return { text: content, fileUrl: null, fileName: null };
+async function extractAndUploadFiles(content, workdir) {
+  const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg']);
+  const matches = [...content.matchAll(/\[send:([^\]]+)\]/g)];
+  if (!matches.length) return { text: content, attachments: [] };
 
-  const filePath = match[1].trim();
-  const resolved = path.isAbsolute(filePath) ? filePath : path.resolve(workdir || '.', filePath);
-  const text = content.replace(match[0], '').trim();
+  let text = content;
+  for (const m of matches) text = text.replace(m[0], '');
+  text = text.trim();
 
-  if (!fs.existsSync(resolved)) {
-    console.log(`[stoa] send file not found: ${resolved}`);
-    return { text, fileUrl: null, fileName: null };
+  const baseUrl = STOA_URL.replace('ws://', 'http://').replace('wss://', 'https://');
+  const mimeMap = { '.txt': 'text/plain', '.md': 'text/markdown', '.json': 'application/json', '.csv': 'text/csv',
+    '.js': 'text/javascript', '.ts': 'text/typescript', '.py': 'text/x-python', '.html': 'text/html', '.css': 'text/css',
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml',
+    '.pdf': 'application/pdf', '.zip': 'application/zip', '.yaml': 'text/yaml', '.yml': 'text/yaml',
+    '.sh': 'text/x-shellscript', '.sql': 'text/x-sql', '.xml': 'application/xml' };
+
+  const attachments = [];
+  for (const m of matches) {
+    const filePath = m[1].trim();
+    const resolved = path.isAbsolute(filePath) ? filePath : path.resolve(workdir || '.', filePath);
+    if (!fs.existsSync(resolved)) {
+      console.log(`[stoa] send file not found: ${resolved}`);
+      continue;
+    }
+    try {
+      const fileData = fs.readFileSync(resolved);
+      const fileName = path.basename(resolved);
+      const ext = path.extname(fileName).toLowerCase();
+      const mime = mimeMap[ext] || 'application/octet-stream';
+      const res = await fetch(`${baseUrl}/api/upload/raw`, {
+        method: 'POST',
+        headers: { 'Content-Type': mime, 'X-File-Name': encodeURIComponent(fileName) },
+        body: fileData,
+      });
+      const result = await res.json();
+      console.log(`[stoa] uploaded file: ${fileName} → ${result.url}`);
+      attachments.push({ url: result.url, name: result.name, type: IMAGE_EXTS.has(ext) ? 'image' : 'file' });
+    } catch (err) {
+      console.error(`[stoa] file upload failed: ${err.message}`);
+    }
   }
-
-  try {
-    const baseUrl = STOA_URL.replace('ws://', 'http://').replace('wss://', 'https://');
-    const fileData = fs.readFileSync(resolved);
-    const fileName = path.basename(resolved);
-    const ext = path.extname(fileName).toLowerCase();
-    const mimeMap = { '.txt': 'text/plain', '.md': 'text/markdown', '.json': 'application/json', '.csv': 'text/csv',
-      '.js': 'text/javascript', '.ts': 'text/typescript', '.py': 'text/x-python', '.html': 'text/html', '.css': 'text/css',
-      '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml',
-      '.pdf': 'application/pdf', '.zip': 'application/zip', '.yaml': 'text/yaml', '.yml': 'text/yaml',
-      '.sh': 'text/x-shellscript', '.sql': 'text/x-sql', '.xml': 'application/xml' };
-    const mime = mimeMap[ext] || 'application/octet-stream';
-
-    const res = await fetch(`${baseUrl}/api/upload/raw`, {
-      method: 'POST',
-      headers: { 'Content-Type': mime, 'X-File-Name': encodeURIComponent(fileName) },
-      body: fileData,
-    });
-    const result = await res.json();
-    console.log(`[stoa] uploaded file: ${fileName} → ${result.url}`);
-    return { text, fileUrl: result.url, fileName: result.name };
-  } catch (err) {
-    console.error(`[stoa] file upload failed: ${err.message}`);
-    return { text, fileUrl: null, fileName: null };
-  }
+  return { text, attachments };
 }
 
 function drainQueue() {
@@ -377,6 +427,18 @@ function drainQueue() {
   const next = triggerQueue.shift();
   console.log(`[stoa] dequeued msg=${next.message_id} (${triggerQueue.length} remaining)`);
   processTrigger(next);
+}
+
+function fetchToFile(url, destPath) {
+  const http = url.startsWith('https') ? require('https') : require('http');
+  return new Promise((resolve, reject) => {
+    http.get(url, res => {
+      const ws = fs.createWriteStream(destPath);
+      res.pipe(ws);
+      ws.on('finish', () => { ws.close(); resolve(destPath); });
+      ws.on('error', reject);
+    }).on('error', reject);
+  });
 }
 
 function fetchFileAsBase64(url) {

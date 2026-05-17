@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS messages (
   image_url TEXT DEFAULT NULL,
   file_url TEXT DEFAULT NULL,
   file_name TEXT DEFAULT NULL,
+  attachments TEXT DEFAULT NULL,
   created_at TEXT DEFAULT (datetime('now')),
   completed_at TEXT DEFAULT NULL,
   FOREIGN KEY (room_id) REFERENCES rooms(id),
