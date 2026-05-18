@@ -65,6 +65,7 @@ Composer mendukung:
 - **Format Markdown** — bold, italic, code, link, list
 - **Code block** — triple backtick dengan tag bahasa opsional
 - **Hyperlink** — paste URL dan otomatis menjadi link
+- **Input suara** — klik tombol mikrofon untuk mendikte pesan menggunakan speech recognition browser. Lihat [panduan setup browser](doc-browser-setup) untuk browser yang didukung dan pengaturan bahasa
 
 ### Reply-to
 

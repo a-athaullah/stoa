@@ -134,6 +134,8 @@ CREATE INDEX IF NOT EXISTS idx_room_participants_actor_id ON room_participants(a
 CREATE INDEX IF NOT EXISTS idx_agent_workdirs_actor_id ON agent_workdirs(actor_id);
 CREATE INDEX IF NOT EXISTS idx_agent_skills_actor_id ON agent_skills(actor_id);
 CREATE INDEX IF NOT EXISTS idx_agent_skills_workdir_id ON agent_skills(workdir_id);
+CREATE INDEX IF NOT EXISTS idx_messages_participant_id ON messages(participant_id);
+CREATE INDEX IF NOT EXISTS idx_ai_sessions_participant_id ON ai_sessions(participant_id);
 
 CREATE TABLE IF NOT EXISTS auth_users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

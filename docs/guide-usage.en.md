@@ -65,6 +65,7 @@ The composer supports:
 - **Markdown formatting** — bold, italic, code, links, lists
 - **Code blocks** — triple backticks with optional language tag
 - **Hyperlinks** — paste a URL and it auto-links
+- **Voice input** — click the microphone button to dictate messages using your browser's speech recognition. See the [browser setup guide](doc-browser-setup) for supported browsers and language settings
 
 ### Reply-to
 

@@ -34,10 +34,6 @@ if (fs.existsSync(envPath)) {
 // Initialize schema on startup
 db.exec(fs.readFileSync(path.join(__dirname, 'schema.sqlite.sql'), 'utf8'));
 
-// Add avatar_url column if not exists
-try { db.exec("ALTER TABLE actors ADD COLUMN avatar_url TEXT DEFAULT NULL"); } catch {}
-try { db.exec("ALTER TABLE messages ADD COLUMN attachments TEXT DEFAULT NULL"); } catch {}
-
 // Migrate ai_sessions: participant_id UNIQUE → UNIQUE(participant_id, workdir)
 try {
   const hasOld = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='ai_sessions'").get();

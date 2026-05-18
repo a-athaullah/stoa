@@ -2947,12 +2947,14 @@ function renderChatHeader(room, participants) {
     name.classList.remove('editing');
     const newTitle = name.textContent.trim();
     if (newTitle && newTitle !== room.title) {
+      const oldTitle = room.title;
       room.title = newTitle;
       fetch(`/api/rooms/${room.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: newTitle }),
-      });
+      }).then(r => { if (!r.ok) { room.title = oldTitle; name.textContent = oldTitle; } })
+        .catch(() => { room.title = oldTitle; name.textContent = oldTitle; });
     } else {
       name.textContent = room.title;
     }
@@ -5709,7 +5711,8 @@ async function sCommitRename(id) {
   sRowStates.set(id, { state: 'default', draft: '' });
   sRefreshRow(id);
   try {
-    await fetch(`/api/actors/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: newName }) });
+    const r = await fetch(`/api/actors/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: newName }) });
+    if (!r.ok) throw new Error('rename failed');
     const ga = allActors.find(a => a.id === id);
     if (ga) { if (actorByName[ga.name]) delete actorByName[ga.name]; ga.name = newName; actorByName[newName] = ga; }
   } catch {
@@ -5741,11 +5744,12 @@ async function sCommitDelete(id) {
   settingsActors = settingsActors.filter(a => a.id !== id);
   sRowStates.delete(id);
   try {
-    await fetch(`/api/actors/${id}`, { method: 'DELETE' });
+    const r = await fetch(`/api/actors/${id}`, { method: 'DELETE' });
+    if (!r.ok) throw new Error('delete failed');
     const idx = allActors.findIndex(a => a.id === id);
     if (idx >= 0) allActors.splice(idx, 1);
     syncNewRoomBtn();
-  } catch {}
+  } catch { sRefreshRow(id); }
 }
 
 // ── Add-agent panel ─────────────────────────────────────────────────────────
@@ -6073,7 +6077,7 @@ async function sLoadServerTab() {
 async function sSaveSetting(key, value, savedId) {
   const body = {};
   body[key] = value;
-  try { await fetch('/api/settings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); } catch { return; }
+  try { const r = await fetch('/api/settings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); if (!r.ok) return; } catch { return; }
   const el = document.getElementById(savedId);
   if (el) { el.classList.add('visible'); setTimeout(() => el.classList.remove('visible'), 2000); }
   if (key === 'human_name') {
