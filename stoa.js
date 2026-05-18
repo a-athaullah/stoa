@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.2.4';
+const CLIENT_VERSION = '0.2.5';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -474,6 +474,13 @@ const SCAN_EXCLUDE_SYSTEM = new Set([
 function scanForWorkdirs() {
   const home = os.homedir();
   const isWindows = process.platform === 'win32';
+
+  // Gemini has no per-project config folders — just report the default workdir
+  if (AI_BACKEND === 'gemini') {
+    const defaultDir = process.env.STOA_WORK_DIR || process.cwd();
+    return { workdirs: [{ path: path.resolve(defaultDir), skills: [], is_default: true }], globalSkills: [] };
+  }
+
   const results = [];
 
   function hasClaudeMarker(dir) {

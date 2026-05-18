@@ -4278,13 +4278,19 @@ function sendMessage() {
 async function loadWorkdirsForActor(actorId) {
   const section = document.getElementById('new-room-workdir-section');
   const sel = document.getElementById('new-room-workdir');
+  const newWdRow = document.getElementById('new-room-new-workdir-row');
   if (!actorId) { section.style.display = 'none'; return; }
+
+  const actor = allActors.find(a => a.id === parseInt(actorId));
+  const isGemini = actor?.adapter === 'gemini';
+
   const workdirs = await fjson(`/api/actors/${actorId}/workdirs`);
   sel.innerHTML = '';
   if (workdirs.length === 0) {
     section.style.display = 'none'; return;
   }
   section.style.display = 'block';
+  newWdRow.style.display = 'none';
   workdirs.forEach(w => {
     const opt = document.createElement('option');
     opt.value = w.id;
@@ -4292,16 +4298,22 @@ async function loadWorkdirsForActor(actorId) {
     if (w.is_default) opt.selected = true;
     sel.appendChild(opt);
   });
-  // "new folder" option
-  const newOpt = document.createElement('option');
-  newOpt.value = '__new__';
-  newOpt.textContent = '+ new folder…';
-  sel.appendChild(newOpt);
+
+  if (isGemini) {
+    sel.disabled = true;
+  } else {
+    sel.disabled = false;
+    const newOpt = document.createElement('option');
+    newOpt.value = '__new__';
+    newOpt.textContent = '+ new folder…';
+    sel.appendChild(newOpt);
+  }
+
   // Remove old listener by cloning
   const newSel = sel.cloneNode(true);
   sel.parentNode.replaceChild(newSel, sel);
   newSel.addEventListener('change', () => {
-    document.getElementById('new-room-new-workdir-row').style.display = newSel.value === '__new__' ? 'flex' : 'none';
+    newWdRow.style.display = newSel.value === '__new__' ? 'flex' : 'none';
   });
 }
 
