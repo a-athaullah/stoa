@@ -906,7 +906,7 @@ echo "Logs   : pm2 logs \${AGENT_NAME}"
     const ps1TrustCmd = ps1IsGemini
       ? 'try { gemini --skip-trust -y -p "hello" 2>$null } catch {}'
       : 'try { "1" | & claude --dangerously-skip-permissions --print -p "hello" 2>$null } catch {}';
-    const ps1BackendEnv = ps1IsGemini ? `\n      STOA_AI_BACKEND = 'gemini'` : '';
+    const ps1BackendEnv = ps1IsGemini ? `\n      STOA_AI_BACKEND: 'gemini',` : '';
 
     const script = `$ErrorActionPreference = "Stop"
 $BaseUrl = "${baseUrl}"
