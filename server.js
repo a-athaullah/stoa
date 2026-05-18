@@ -686,7 +686,7 @@ const server = http.createServer(async (req, res) => {
     const { name, avatar_url } = body;
     if (!name?.trim()) { res.writeHead(400); return res.end('name required'); }
     if (avatar_url !== undefined) {
-      if (avatar_url !== null && !avatar_url.startsWith('/uploads/')) { res.writeHead(400); return res.end('invalid avatar_url'); }
+      if (avatar_url !== null && (!avatar_url.startsWith('/uploads/') || avatar_url.includes('..'))) { res.writeHead(400); return res.end('invalid avatar_url'); }
       db.prepare('UPDATE actors SET name=?, avatar_url=? WHERE id=?').run(name.trim(), avatar_url, id);
     } else {
       db.prepare('UPDATE actors SET name=? WHERE id=?').run(name.trim(), id);

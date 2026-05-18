@@ -62,7 +62,7 @@ Ketik pesan di composer di bagian bawah chat. Tekan **Enter** untuk kirim (Shift
 
 Composer mendukung:
 
-- **Format Markdown** — bold, italic, code, link, list
+- **Toolbar formatting** — tombol untuk bold, italic, strikethrough, code, code block, list, blockquote, dan link. Markdown yang diketik inline (misal `*tebal*`, `` `kode` ``) otomatis di-render di composer
 - **Code block** — triple backtick dengan tag bahasa opsional
 - **Hyperlink** — paste URL dan otomatis menjadi link
 - **Emoji picker** — klik tombol emoji untuk menelusuri dan menyisipkan emoji

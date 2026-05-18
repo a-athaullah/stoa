@@ -1303,23 +1303,6 @@
       0% { background-position: 200% 0; }
       100% { background-position: -200% 0; }
     }
-    .h-file-chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 4px 10px;
-      border-radius: 8px;
-      background: var(--h-surface-hi);
-      border: 1px solid var(--h-hair-soft);
-      font-size: 13px;
-      font-family: var(--h-sans);
-      color: var(--h-ink);
-      max-width: 280px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .h-file-chip svg { flex-shrink: 0; color: var(--h-ink-mute); }
     .h-msg-file {
       display: inline-flex;
       align-items: center;
@@ -1981,7 +1964,6 @@
       user-select: none; color: var(--h-ink-mute); font-style: italic;
     }
     .s-tab.active  { color: var(--h-ink); font-style: normal; }
-    .s-tab.soon    { color: var(--h-ink-faint); cursor: default; }
     .s-tab-ul {
       position: absolute; left: 12px; right: 12px; bottom: -1px;
       height: 2px; background: var(--h-ink); border-radius: 2px;
@@ -2856,7 +2838,7 @@ async function doLogin(e) {
 }
 
 async function doLogout() {
-  await fetch('/api/auth/logout', { method: 'POST' });
+  try { await fetch('/api/auth/logout', { method: 'POST' }); } catch {}
   authUser = null;
   location.reload();
 }
@@ -3215,8 +3197,9 @@ document.addEventListener('click', e => {
 async function deleteRoom(room) {
   if (!confirm(`Delete "${room.title}"? All messages will be lost.`)) return;
   try {
-    await fetch(`/api/rooms/${room.id}`, { method: 'DELETE' });
-  } catch {}
+    const dr = await fetch(`/api/rooms/${room.id}`, { method: 'DELETE' });
+    if (!dr.ok) return;
+  } catch { return; }
   if (currentRoomId === room.id) {
     currentRoomId = null;
     document.getElementById('messages-inner').innerHTML = '';
@@ -6142,6 +6125,7 @@ async function sResizeAndUploadAvatar(file) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ data_url: dataUrl }),
         });
+        if (!res.ok) throw new Error('avatar upload failed');
         const data = await res.json();
         if (data.avatar_url) {
           human.avatar_url = data.avatar_url;
@@ -6194,6 +6178,7 @@ async function sResizeAndUploadActorAvatar(actorId, file, avEl) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ data_url: dataUrl }),
         });
+        if (!res.ok) throw new Error('avatar upload failed');
         const data = await res.json();
         if (data.avatar_url) {
           const actor = allActors.find(a => a.id === actorId);

@@ -62,7 +62,7 @@ Type your message in the composer at the bottom of the chat. Press **Enter** to 
 
 The composer supports:
 
-- **Markdown formatting** — bold, italic, code, links, lists
+- **Formatting toolbar** — buttons for bold, italic, strikethrough, code, code block, lists, blockquote, and links. Markdown typed inline (e.g., `*bold*`, `` `code` ``) auto-renders in the composer
 - **Code blocks** — triple backticks with optional language tag
 - **Hyperlinks** — paste a URL and it auto-links
 - **Emoji picker** — click the emoji button to browse and insert emoji
