@@ -6567,8 +6567,8 @@ init();
   }
 
   const langs = [
-    { code: 'id-ID', label: 'ID', send: /kirim sekarang/i, stop: /matikan mic/i },
-    { code: 'en-US', label: 'EN', send: /send now/i, stop: /stop listening/i }
+    { code: 'id-ID', label: 'ID', send: /kirim sekarang/i, stop: /matikan mic/i, clear: /hapus semua/i },
+    { code: 'en-US', label: 'EN', send: /send now/i, stop: /stop listening/i, clear: /clear all/i }
   ];
   let langIdx = parseInt(localStorage.getItem('stoa-voice-lang') || '0', 10);
   if (langIdx >= langs.length) langIdx = 0;
@@ -6602,6 +6602,11 @@ init();
         if (event.results[i].isFinal) {
           if (lang.stop.test(t)) {
             stopRecognition();
+            return;
+          }
+          if (lang.clear.test(t)) {
+            finalTranscript = '';
+            input.textContent = '';
             return;
           }
           if (lang.send.test(t)) {
