@@ -1,5 +1,28 @@
 # Changelog
 
+## [2026-05-18]
+
+### Added
+- Speech-to-text via Web Speech API — click the mic button to dictate messages
+- Voice commands: "kirim"/"send" to send, "stop"/"matikan mic" to stop, "hapus semua"/"clear all" to clear text
+- Language toggle (ID/EN) for speech recognition
+- Mic selection hint tooltip on voice button
+- Browser setup guide for voice input, notifications, and PWA (EN+ID docs)
+- Integration tests: auth, path traversal, unauthenticated access, offline agent handling
+
+### Changed
+- Voice input auto-stops on room switch and tab hide
+- Voice input muted while AI is processing to prevent feedback loops
+- Usage guides (EN+ID) synced with all current features
+
+### Fixed
+- Voice command multi-trigger — skip stale onresult events between stop and restart
+- Search field autofill by password manager on page load
+- Logout button styling in settings — solid button, consistent layout
+- Frontend error handling: room rename, actor rename/delete, settings patch now check response.ok
+- Removed redundant runtime ALTER TABLE migrations (avatar_url, attachments already in schema)
+- Added missing database indexes (agent_skills.workdir_id, messages.participant_id, ai_sessions.participant_id)
+
 ## [2026-05-17]
 
 ### Added
