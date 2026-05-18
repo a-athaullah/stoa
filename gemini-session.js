@@ -4,6 +4,8 @@ const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
 const crypto = require('crypto');
 
+const GEMINI_CMD = process.platform === 'win32' ? 'gemini.cmd' : 'gemini';
+
 class GeminiSession extends EventEmitter {
   constructor({ workDir = process.cwd(), flags = [], resumeId = null } = {}) {
     super();
@@ -48,7 +50,7 @@ class GeminiSession extends EventEmitter {
 
     onState?.('requesting');
 
-    this.proc = spawn('gemini', args, { cwd: this.workDir, shell: true, windowsHide: true });
+    this.proc = spawn(GEMINI_CMD, args, { cwd: this.workDir, windowsHide: true });
 
     let buffer = '';
 
