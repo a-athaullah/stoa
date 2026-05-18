@@ -1504,6 +1504,17 @@
     #enter-send-toggle.active .enter-send-knob { left: 15px; }
     #enter-send-toggle.active .enter-send-label { color: var(--h-ink-mute); }
 
+    /* ── Voice recording state ─────────────────────────── */
+    #voice-btn.recording {
+      color: #d32f2f;
+      background: rgba(211, 47, 47, 0.1);
+      animation: voice-pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes voice-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
     /* ── Stop generation button ────────────────────────── */
     #stop-btn {
       display: none;
@@ -2667,7 +2678,7 @@
               </button>
             </div>
           </span>
-          <button class="h-icon-btn" title="Voice message" aria-label="Voice message">
+          <button class="h-icon-btn" id="voice-btn" title="Speech to text" aria-label="Speech to text">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
               <rect x="9" y="3" width="6" height="12" rx="3"/>
               <path d="M5 11a7 7 0 0 0 14 0"/>
@@ -6537,6 +6548,85 @@ init();
       banner.classList.add('visible');
     }
   }, 3000);
+})();
+
+// ── Speech-to-text (Web Speech API) ────────────────────────────────────────
+(function() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const voiceBtn = document.getElementById('voice-btn');
+  if (!SpeechRecognition || !voiceBtn) {
+    if (voiceBtn) voiceBtn.title = 'Speech not supported in this browser';
+    return;
+  }
+
+  let recognition = null;
+  let isRecording = false;
+
+  function startRecognition() {
+    recognition = new SpeechRecognition();
+    recognition.lang = 'id-ID';
+    recognition.continuous = true;
+    recognition.interimResults = true;
+
+    const input = document.getElementById('msg-input');
+    const existingText = input.textContent.replace(/​/g, '').trim();
+    let finalTranscript = existingText ? existingText + ' ' : '';
+
+    recognition.onresult = (event) => {
+      let interim = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const t = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalTranscript += t;
+        } else {
+          interim += t;
+        }
+      }
+      input.textContent = finalTranscript + interim;
+      const range = document.createRange();
+      range.selectNodeContents(input);
+      range.collapse(false);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    };
+
+    recognition.onerror = (event) => {
+      if (event.error !== 'aborted') {
+        console.warn('Speech recognition error:', event.error);
+      }
+      stopRecognition();
+    };
+
+    recognition.onend = () => {
+      if (isRecording) {
+        try { recognition.start(); } catch {}
+      }
+    };
+
+    recognition.start();
+    isRecording = true;
+    voiceBtn.classList.add('recording');
+    voiceBtn.title = 'Stop recording';
+  }
+
+  function stopRecognition() {
+    isRecording = false;
+    voiceBtn.classList.remove('recording');
+    voiceBtn.title = 'Speech to text';
+    if (recognition) {
+      try { recognition.stop(); } catch {}
+      recognition = null;
+    }
+  }
+
+  voiceBtn.addEventListener('click', () => {
+    if (isRecording) {
+      stopRecognition();
+    } else {
+      startRecognition();
+    }
+  });
 })();
 </script>
 <div id="login-overlay" style="display:none">
