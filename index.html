@@ -2395,7 +2395,7 @@
   </div>
   <div class="h-search-wrap">
     <svg class="h-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-    <span id="search-input-slot"></span>
+    <input id="search-input" type="search" name="q" placeholder="Search messages…" autocomplete="off" spellcheck="false">
     <button id="search-clear" style="display:none" aria-label="Clear search">&times;</button>
   </div>
   <div id="search-results" style="display:none"></div>
@@ -2554,23 +2554,25 @@
             <span style="font-family:var(--h-serif);font-size:16px;color:var(--h-ink)">account</span>
             <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)">login credentials</span>
           </div>
+          <form autocomplete="off" onsubmit="return false">
           <div class="s-server-field">
             <span class="s-server-field-label">email</span>
             <input class="s-server-input" id="s-auth-email-input" type="email" autocomplete="off">
             <span class="s-server-saved" id="s-auth-email-saved">saved</span>
-            <button class="s-server-save" id="s-auth-email-save">save</button>
+            <button class="s-server-save" id="s-auth-email-save" type="button">save</button>
           </div>
           <div class="s-server-field" style="margin-top:12px">
             <span class="s-server-field-label">current password</span>
-            <input class="s-server-input" id="s-auth-cur-pw" type="password" autocomplete="off">
+            <input class="s-server-input" id="s-auth-cur-pw" type="password" autocomplete="new-password">
           </div>
           <div class="s-server-field">
             <span class="s-server-field-label">new password</span>
-            <input class="s-server-input" id="s-auth-new-pw" type="password" autocomplete="off" placeholder="min 6 characters">
+            <input class="s-server-input" id="s-auth-new-pw" type="password" autocomplete="new-password" placeholder="min 6 characters">
             <span class="s-server-saved" id="s-auth-pw-saved">saved</span>
-            <button class="s-server-save" id="s-auth-pw-save">change</button>
+            <button class="s-server-save" id="s-auth-pw-save" type="button">change</button>
           </div>
           <div class="s-auth-error" id="s-auth-error"></div>
+          </form>
         </div>
         <div class="s-server-card">
           <div class="s-server-card-header">
@@ -4456,15 +4458,8 @@ function initScrollLoader() {
 }
 
 // ── Search ──────────────────────────────────────────────────────────────────
-setTimeout(() => {
-  const searchSlot = document.getElementById('search-input-slot');
-  const searchInput = document.createElement('input');
-  searchInput.id = 'search-input';
-  searchInput.type = 'search';
-  searchInput.placeholder = 'Search messages…';
-  searchInput.autocomplete = 'off';
-  searchInput.spellcheck = false;
-  searchSlot.replaceWith(searchInput);
+{
+  const searchInput = document.getElementById('search-input');
   const searchResults = document.getElementById('search-results');
   const searchClear = document.getElementById('search-clear');
   const roomList = document.getElementById('room-list');
@@ -4554,7 +4549,7 @@ setTimeout(() => {
       setTimeout(() => { el.style.background = ''; }, 2000);
     }
   }
-}, 0);
+}
 
 // ── Utility ─────────────────────────────────────────────────────────────────
 function relativeTime(ts) {
