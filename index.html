@@ -6604,15 +6604,17 @@ init();
     recognition.onresult = (event) => {
       if (skipUntilRestart) return;
       if (processingMessages.size > 0) return;
+      let rebuilt = '';
       let interim = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
+      for (let i = 0; i < event.results.length; i++) {
         const t = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
-          finalTranscript += t;
+          rebuilt += t;
         } else {
           interim += t;
         }
       }
+      finalTranscript = rebuilt;
       const full = (finalTranscript + interim).trim();
       if (lang.stop.test(full)) {
         input.textContent = '';
