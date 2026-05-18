@@ -6667,11 +6667,15 @@ init();
 
     recognition.onend = () => {
       if (isRecording) {
-        skipUntilRestart = false;
-        const currentText = input.textContent.replace(/​/g, '').trim();
-        baseText = currentText ? currentText + ' ' : '';
-        finalResults = [];
-        try { recognition.start(); } catch {}
+        if (isAndroid) {
+          stopRecognition();
+        } else {
+          skipUntilRestart = false;
+          const currentText = input.textContent.replace(/​/g, '').trim();
+          baseText = currentText ? currentText + ' ' : '';
+          finalResults = [];
+          try { recognition.start(); } catch {}
+        }
       }
     };
 
