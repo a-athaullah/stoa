@@ -2445,8 +2445,8 @@
               add agent
             </button>
           </div>
-          <div id="s-agents-list"></div>
           <div id="s-add-panel" class="s-add-panel"></div>
+          <div id="s-agents-list"></div>
         </div>
       </div>
     </div>
@@ -5851,28 +5851,24 @@ function sRenderAddPanel() {
   });
   osGrp.appendChild(osLbl); osGrp.appendChild(osPills);
 
-  // Backend group
+  // AI Agent dropdown (backend selector)
   const beGrp = document.createElement('div');
   beGrp.className = 's-field-group'; beGrp.style.minWidth = 'auto';
   const beLbl = document.createElement('span');
   beLbl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);letter-spacing:.04em';
-  beLbl.textContent = 'backend';
-  const bePills = document.createElement('div');
-  bePills.className = 's-os-pills'; bePills.id = 's-be-pills';
+  beLbl.textContent = 'AI agent';
+  const beSelect = document.createElement('select');
+  beSelect.className = 's-name-input'; beSelect.style.cssText = 'width:auto;min-width:120px;cursor:pointer';
   [['claude','Claude'],['gemini','Gemini']].forEach(([id,lbl]) => {
-    const p = document.createElement('button');
-    p.type = 'button'; p.className = 's-os-pill' + (sAddPanel.backend === id ? ' active' : '');
-    p.textContent = lbl; p.dataset.be = id;
-    p.addEventListener('click', () => {
-      sAddPanel.backend = id;
-      document.querySelectorAll('#s-be-pills .s-os-pill').forEach(x => x.classList.toggle('active', x.dataset.be === id));
-      sUpdateCmd();
-    });
-    bePills.appendChild(p);
+    const opt = document.createElement('option');
+    opt.value = id; opt.textContent = lbl;
+    if (sAddPanel.backend === id) opt.selected = true;
+    beSelect.appendChild(opt);
   });
-  beGrp.appendChild(beLbl); beGrp.appendChild(bePills);
+  beSelect.addEventListener('change', () => { sAddPanel.backend = beSelect.value; sUpdateCmd(); });
+  beGrp.appendChild(beLbl); beGrp.appendChild(beSelect);
 
-  fieldRow.appendChild(nameGrp); fieldRow.appendChild(osGrp); fieldRow.appendChild(beGrp);
+  fieldRow.appendChild(beGrp); fieldRow.appendChild(nameGrp); fieldRow.appendChild(osGrp);
   panel.appendChild(fieldRow);
 
   // Command slip
