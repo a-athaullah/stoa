@@ -6607,17 +6607,23 @@ init();
     recognition.onresult = (event) => {
       if (skipUntilRestart) return;
       if (processingMessages.size > 0) return;
-      let interim = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const t = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          finalResults[i] = t;
-        } else {
-          interim += t;
+      let full;
+      if (isAndroid) {
+        const last = event.results[event.results.length - 1];
+        full = (baseText + last[0].transcript).trim();
+      } else {
+        let interim = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const t = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalResults[i] = t;
+          } else {
+            interim += t;
+          }
         }
+        const finalTranscript = baseText + finalResults.filter(Boolean).join('');
+        full = (finalTranscript + interim).trim();
       }
-      const finalTranscript = baseText + finalResults.filter(Boolean).join('');
-      const full = (finalTranscript + interim).trim();
       if (lang.stop.test(full)) {
         input.textContent = '';
         stopRecognition();
