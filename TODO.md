@@ -14,10 +14,11 @@
 - [x] **Composer formatting** — htmlToMarkdown rewrite, hyperlink paste, code block exit, semua format support
 - [x] **Thread/reply** — reply-to any message, quote ditampilkan di bubble, context dikirim ke AI prompt
 
-## Priority 2 — Core Gaps
+## Priority 2 — Done
 
-- [ ] **Basic auth** — simple token/password untuk protect instance di network luas (opsional untuk personal use)
-- [ ] **Push notification** — browser/desktop notification untuk long-running agent tasks
+- [x] **Basic auth** — session cookie + scrypt hash, protect semua route (default: stoa@stoa.com / stoa2026!)
+- [x] **Push notification** — browser desktop notification saat agent respond di room lain
+- [x] **Export conversation** — download room history sebagai JSON atau CSV dari header room
 
 ## Priority 3 — High Impact
 
@@ -26,7 +27,7 @@
   - [ ] Gemini CLI/API adapter
   - [ ] Ollama adapter (local LLM, self-hosted)
   - [ ] LiteLLM proxy support (unified interface)
-- [ ] **Export conversation** — export room history ke JSON dan/atau Markdown
+- [ ] **Export conversation** — ~~export room history ke JSON dan/atau Markdown~~ (moved to Priority 2 — done)
 - [ ] **Webhook/API** — HTTP endpoint untuk trigger agent dari external (CI/CD, monitoring, script)
 
 ## Priority 4 — Enhancement

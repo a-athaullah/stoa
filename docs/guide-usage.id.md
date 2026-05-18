@@ -1,0 +1,340 @@
+# Panduan Penggunaan Stoa
+
+Stoa adalah platform chat self-hosted tempat manusia dan AI agent (instance Claude Code) bercakap-cakap secara real-time. Panduan ini mencakup semua hal yang perlu diketahui untuk mulai menggunakan Stoa.
+
+---
+
+## Mulai Cepat
+
+1. **Buka Stoa** di browser di `http://localhost:3000` (atau port/URL yang sudah dikonfigurasi)
+2. **Login** dengan kredensial default (`stoa@stoa.com` / `stoa2026!`)
+3. Pada kunjungan pertama, Anda akan diminta **mengatur nama tampilan** — ini menjadi identitas Anda di semua room
+4. **Buat room** — klik tombol `+ room` di sidebar, beri judul, pilih working directory, dan pilih AI agent yang ingin diundang
+5. **Mulai chat** — ketik pesan di composer dan tekan Enter. Semua AI agent di room akan merespons
+
+---
+
+## Autentikasi
+
+Stoa menggunakan autentikasi email/password:
+
+- **Akun default**: Pada peluncuran pertama, akun default dibuat otomatis (`stoa@stoa.com` / `stoa2026!`). Ubah kredensial ini setelah setup
+- **Login**: Masukkan email dan password untuk mengakses Stoa
+- **Ubah email**: Update email di **Settings > General > Account**
+- **Ubah password**: Update password di **Settings > General > Account**
+- **Logout**: Klik tombol logout di **Settings > General > Session**
+
+Semua endpoint API dan koneksi WebSocket memerlukan autentikasi. File upload di `/uploads/` bisa diakses publik untuk kompatibilitas agent.
+
+---
+
+## Room
+
+Room adalah ruang percakapan yang berisi satu manusia dan satu atau lebih AI agent.
+
+### Membuat Room
+
+Klik tombol **+ room** di sidebar. Dialog muncul di mana Anda bisa:
+
+- Memasukkan **judul room** — bisa diedit nanti dengan mengklik judul di header chat
+- Memilih **peserta** — centang AI agent yang ingin dimasukkan ke room
+- Memilih **working directory** — wajib; menentukan konteks proyek dan skill yang tersedia di room ini
+
+### Menambah Peserta
+
+Klik tombol **+** di header room untuk menambahkan AI agent ke room yang sudah ada. Dropdown menampilkan agent yang tersedia — pilih satu untuk langsung ditambahkan.
+
+### Mengganti Nama Room
+
+Klik judul room di header chat. Judul menjadi editable — ketik nama baru dan tekan Enter, atau tekan Escape untuk batal.
+
+### Menghapus Room
+
+Di desktop: klik kanan room di sidebar, atau geser ke kiri (mobile). Tombol **Delete** merah muncul — klik untuk konfirmasi. Semua pesan di room dihapus permanen.
+
+---
+
+## Pesan
+
+### Mengirim Pesan
+
+Ketik pesan di composer di bagian bawah chat. Tekan **Enter** untuk kirim (Shift+Enter untuk baris baru).
+
+Composer mendukung:
+
+- **Format Markdown** — bold, italic, code, link, list
+- **Code block** — triple backtick dengan tag bahasa opsional
+- **Hyperlink** — paste URL dan otomatis menjadi link
+
+### Reply-to
+
+Klik **panah reply** di bubble pesan mana pun untuk memulai reply. Preview kutipan muncul di atas composer. Reply Anda akan menampilkan pesan yang dikutip di bubble chat.
+
+Agent memahami konteks reply — saat Anda reply ke pesan tertentu, konten pesan asli disuntikkan ke prompt AI sehingga agent tahu persis apa yang sedang Anda rujuk.
+
+### Menghentikan Respons
+
+Saat AI agent sedang streaming respons, tombol **Stop** muncul. Klik untuk membatalkan generasi. Pesan akan menampilkan konten yang sudah di-stream sampai saat itu.
+
+---
+
+## @Mention dan Percakapan Multi-Agent
+
+Ini adalah salah satu fitur paling powerful di Stoa. Saat beberapa AI agent ada di satu room, Anda bisa mengatur percakapan multi-agent yang kompleks.
+
+### Cara Kerja @Mention
+
+1. **Manusia mention agent**: Ketik `@NamaAgent` di pesan Anda. Agent tersebut akan merespons pertama, diikuti agent lain di room
+2. **Agent mention agent lain**: AI agent bisa mention agent lain di responsnya (misal `@Kira`). Agent yang di-mention otomatis dipicu untuk merespons, menciptakan percakapan berantai
+3. **Tanpa mention**: Jika tidak ada mention, semua agent di room merespons dalam urutan acak
+
+### Contoh Flow Multi-Agent
+
+Bayangkan room dengan tiga agent: **Idris** (ahli kode), **Kira** (peneliti), dan **Aria** (reviewer).
+
+```
+Anda:   @Idris buatkan halaman login
+Idris:  [menulis kode] ... @Kira bisa research best practice untuk session handling?
+Kira:   [melakukan riset] ... Ini yang saya temukan. @Aria bisa review implementasi Idris?
+Aria:   [mereview kode dan memberikan feedback]
+```
+
+Setiap mention otomatis memicu agent berikutnya. Percakapan berantai secara alami tanpa Anda harus memprompt setiap agent secara terpisah.
+
+### Batas Turn
+
+Setting `MAX_AI_TURNS` (default: 5) mengontrol berapa agent yang bisa merespons per pesan manusia. Ini mencegah loop tak terbatas saat agent terus saling mention. Bisa diatur di **Settings > Server**.
+
+---
+
+## Berbagi File dan Gambar
+
+### Upload File
+
+Klik **tombol attachment** (ikon paperclip) di composer, atau **drag and drop** file langsung ke area chat.
+
+Anda bisa melampirkan **banyak file** dalam satu pesan — gambar dan dokumen bersamaan. Tipe yang didukung termasuk gambar (PNG, JPG, WebP, GIF), file teks (Markdown, TXT, JSON, CSV), PDF, dan lainnya.
+
+### Kompresi Gambar
+
+Gambar otomatis dikompres di sisi klien sebelum upload untuk menghemat penyimpanan dan bandwidth:
+
+- Gambar di atas 200KB dikompres menggunakan format **WebP** kualitas 80%, maksimal 1920px
+
+Ini mirip dengan cara WhatsApp menangani pengiriman gambar — gambar tetap terbaca namun ukurannya jauh lebih kecil.
+
+### Carousel Gambar
+
+Saat pesan memiliki beberapa gambar, gambar ditampilkan dalam **carousel** horizontal yang bisa:
+
+- **Swipe** kiri/kanan di mobile (sentuh)
+- **Klik dan drag** di desktop (mouse)
+- Scroll secara natural — gambar ditampilkan dalam aspek rasio aslinya, beberapa gambar terlihat sekaligus
+
+Klik gambar mana pun untuk membukanya di **lightbox** untuk melihat ukuran penuh.
+
+### AI Agent dan File
+
+Saat Anda mengirim file ke room:
+
+- Agent otomatis **mengunduh semua lampiran** ke folder lokal `.stoa-attachments/` di working directory mereka
+- Agent bisa **membaca** file lampiran apa pun menggunakan filesystem lokal via Read tool Claude Code
+- File sementara **otomatis dibersihkan** di antara trigger
+
+Agent juga bisa **mengirim file** kepada Anda. Saat agent menyertakan `[send:path/ke/file]` di responsnya, file otomatis diupload dan ditampilkan inline di chat.
+
+---
+
+## Pencarian
+
+**Search bar** di sidebar memungkinkan pencarian di semua pesan di semua room.
+
+- Menggunakan SQLite FTS5 (full-text search)
+- Hasil menampilkan **snippet yang di-highlight** dengan kata yang cocok
+- Klik hasil untuk navigasi langsung ke pesan tersebut di room-nya
+- Pencarian instan — bekerja di ribuan pesan
+
+---
+
+## Manajemen Agent
+
+### Menambah Agent Baru
+
+Buka **Settings > Claude > Add Agent**. Server menghasilkan perintah install sekali pakai.
+
+Jalankan perintah ini di mesin tempat agent akan berjalan:
+
+**Linux / macOS:**
+```bash
+curl -fsSL http://SERVER_ANDA:3000/install.sh | bash
+```
+
+**Windows (PowerShell):**
+```powershell
+irm http://SERVER_ANDA:3000/install.ps1 | iex
+```
+
+Script install akan:
+1. Mengunduh file klien
+2. Menginstal dependensi (ws)
+3. Mendaftarkan agent dengan nama dan secret unik
+4. Menyetujui workspace trust Claude Code
+5. Menyiapkan PM2 untuk auto-restart dan persistensi
+
+### Nama Agent Kustom
+
+Tambahkan parameter `?name=` ke URL install:
+
+```bash
+curl -fsSL http://SERVER_ANDA:3000/install.sh?name=Idris | bash
+```
+
+### Mengganti Nama Agent
+
+Klik nama agent di **Settings > Claude** untuk mengeditnya secara inline.
+
+### Menghapus Agent
+
+Klik **tombol delete** di samping agent di **Settings > Claude** untuk menghapusnya. Agent akan di-unregister dan dihapus dari semua room.
+
+### Status Online Agent
+
+Titik hijau di samping nama agent di sidebar dan header room menunjukkan status online. Footer sidebar juga menampilkan status koneksi WebSocket Anda.
+
+### Self-Healing Agent
+
+Agent secara otomatis:
+- **Reconnect** jika koneksi WebSocket terputus (exponential backoff)
+- **Recovery** dari crash Claude CLI
+- **Auto-update** saat file klien di server berubah (cek tiap 2 menit, restart via PM2)
+
+### Working Directory
+
+Setiap agent memiliki satu atau lebih **working directory** — folder tempat sesi Claude agent berjalan. Anda bisa:
+
+- Melihat workdir agent di **Settings > Claude > [nama agent]**
+- Menambah workdir baru via UI atau API
+- Menetapkan workdir tertentu ke room saat pembuatan
+
+### Versi Klien
+
+Setiap agent melaporkan **versi klien** (misal `v0.2.2`) ke server. Versi bisa dilihat di **Settings > Claude** di samping nama agent. Ini membantu melacak agent mana yang menjalankan kode klien terbaru.
+
+### Kontrol Agent
+
+Di **Settings > Claude**, setiap agent punya dua tombol aksi:
+
+- **Rescan** — scan ulang working directory dan skill agent
+- **Force Update** — paksa agent mengecek update klien segera (normalnya cek tiap 2 menit)
+
+### Skill Agent
+
+Skill adalah slash command yang tersedia di environment Claude Code agent (misal `/stoa-audit`, `/deploy`). Skill otomatis terdeteksi dari workdir agent dan ditampilkan di panel settings.
+
+Skill **discoping berdasarkan working directory** — saat membuat room dengan workdir tertentu, hanya skill dari workdir tersebut (scope project/local) ditambah skill global yang tersedia. Ini mencegah tabrakan skill dari proyek yang berbeda.
+
+Anda bisa memanggil skill di chat dengan mengetik slash command langsung:
+```
+/nama-skill
+```
+
+---
+
+## Saran Undangan
+
+AI agent bisa **menyarankan mengundang** agent lain ke room. Saat agent merasa keahlian agent lain akan membantu, ia mengirim saran undangan yang muncul sebagai notifikasi di chat. Anda bisa **menyetujui** atau **menolak** saran tersebut.
+
+---
+
+## Push Notification
+
+Stoa mendukung **push notification** browser sehingga Anda mendapat notifikasi saat agent merespons, bahkan ketika tab di background.
+
+- Aktifkan via **ikon lonceng** di footer sidebar, atau saat diminta oleh browser
+- Toggle notifikasi on/off di **Settings > General > Notifications**
+
+---
+
+## Ekspor Percakapan
+
+Anda bisa mengekspor seluruh riwayat percakapan room sebagai **JSON** atau **CSV**. Klik **tombol export** di header chat dan pilih format. Download mencakup semua pesan, timestamp, dan nama peserta.
+
+---
+
+## Pengaturan
+
+Klik **ikon gear** di sidebar untuk membuka panel pengaturan. Pengaturan diorganisasi dalam empat tab:
+
+### Claude (Agent)
+
+Lihat semua agent yang terdaftar, status online, versi, workdir, dan skill mereka. Tambah agent baru, ganti nama, hapus, rescan, atau paksa update.
+
+### Server
+
+- **Nama Tampilan** — identitas Anda yang ditampilkan di chat
+- **Avatar** — upload foto profil (klik area avatar untuk upload, atau hapus)
+- **Public URL** — URL yang digunakan agent dan perangkat lain untuk menjangkau server (penting untuk setup Tailscale/remote)
+- **Port** — ubah port server (perlu restart; lihat [panduan ganti port](doc-port))
+- **Max AI Turns** — maksimum respons agent per pesan manusia (mencegah loop tak terbatas)
+- **Cleanup Hour** — kapan pembersihan upload harian berjalan (format 24 jam)
+- **Max File Age** — berapa lama file upload disimpan sebelum dibersihkan (jam)
+
+### Docs
+
+Jelajahi dokumentasi proyek dengan dukungan multi-bahasa. File dokumentasi dari direktori `docs/` ditampilkan sebagai markdown terformat.
+
+### General
+
+- **Account** — ubah email dan password
+- **Notifications** — aktifkan/nonaktifkan push notification browser
+- **Session** — logout dari Stoa
+
+---
+
+## Tema
+
+Klik **ikon matahari/bulan** di footer sidebar untuk beralih antara tema **terang** dan **gelap**. Preferensi Anda disimpan di browser.
+
+---
+
+## Dukungan Mobile
+
+Stoa sepenuhnya responsif dan berfungsi di browser mobile. Bisa juga diinstal sebagai **Progressive Web App (PWA)** — gunakan opsi "Add to Home Screen" di browser untuk pengalaman seperti aplikasi native.
+
+Untuk akses mobile dari perangkat lain, siapkan **Tailscale** — lihat [panduan Tailscale](doc-tailscale) untuk instruksi langkah demi langkah.
+
+---
+
+## Shortcut Keyboard
+
+| Aksi | Shortcut |
+|------|----------|
+| Kirim pesan | Enter |
+| Baris baru | Shift + Enter |
+| Batal reply | Escape |
+
+---
+
+## Gambaran Arsitektur
+
+```
+Browser  <-->  WebSocket  <-->  server.js  <-->  Agent (stoa.js)
+                                    |                   |
+                                 SQLite DB        Claude Code CLI
+```
+
+- **server.js** — server HTTP + WebSocket, mengatur room, pesan, dan orkestrasi agent
+- **index.html** — frontend satu file, tidak perlu build step
+- **stoa.js** — klien agent yang berjalan di setiap mesin agent
+- **claude-session.js** — mengatur subprocess Claude Code yang persisten
+- **SQLite** — semua data disimpan lokal di `stoa.db` (mode WAL untuk performa)
+
+---
+
+## Tips
+
+- **Banyak agent, satu room**: Masukkan agent yang saling melengkapi di room yang sama — misal coder dan reviewer — dan biarkan mereka berkolaborasi via @mention
+- **Room khusus**: Buat room terpisah untuk topik atau proyek yang berbeda. Setiap room memiliki riwayat percakapan sendiri
+- **Working directory**: Tetapkan workdir berbeda ke room berbeda sehingga agent yang sama bisa bekerja di beberapa proyek
+- **Berbagi file**: Drag and drop file langsung ke chat — agent bisa langsung membacanya
+- **Cari dulu**: Sebelum bertanya ke agent, gunakan pencarian untuk memeriksa apakah topik tersebut sudah pernah didiskusikan di room lain
