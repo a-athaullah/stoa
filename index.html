@@ -2395,7 +2395,7 @@
   </div>
   <div class="h-search-wrap">
     <svg class="h-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-    <input id="search-input" type="search" placeholder="Search messages…" autocomplete="off" role="search" data-lpignore="true" data-1p-ignore spellcheck="false">
+    <span id="search-input-slot"></span>
     <button id="search-clear" style="display:none" aria-label="Clear search">&times;</button>
   </div>
   <div id="search-results" style="display:none"></div>
@@ -4457,7 +4457,14 @@ function initScrollLoader() {
 
 // ── Search ──────────────────────────────────────────────────────────────────
 {
-  const searchInput = document.getElementById('search-input');
+  const searchSlot = document.getElementById('search-input-slot');
+  const searchInput = document.createElement('input');
+  searchInput.id = 'search-input';
+  searchInput.type = 'search';
+  searchInput.placeholder = 'Search messages…';
+  searchInput.autocomplete = 'off';
+  searchInput.spellcheck = false;
+  searchSlot.replaceWith(searchInput);
   const searchResults = document.getElementById('search-results');
   const searchClear = document.getElementById('search-clear');
   const roomList = document.getElementById('room-list');
@@ -4465,7 +4472,6 @@ function initScrollLoader() {
   let searchTimer = null;
 
   searchInput.addEventListener('input', () => {
-    if (document.activeElement !== searchInput) return;
     const q = searchInput.value.trim();
     searchClear.style.display = q ? 'block' : 'none';
     clearTimeout(searchTimer);
@@ -4875,8 +4881,6 @@ async function checkSetup() {
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
-  const si = document.getElementById('search-input');
-  if (si) si.value = '';
   const saved = localStorage.getItem('stoa-theme');
   applyTheme(saved === 'dark' || (!saved && window.matchMedia('(prefers-color-scheme: dark)').matches));
   // Auth check — show login if not authenticated
