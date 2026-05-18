@@ -2,14 +2,12 @@
 const { spawn } = require('child_process');
 const crypto = require('crypto');
 
-const GEMINI_CMD = process.platform === 'win32' ? 'gemini.cmd' : 'gemini';
-
 function spawnGemini({ prompt, sessionId = null, imageFilePath = null, workDir = process.cwd(), onToken, onState, onTool, flags = [] }) {
   const geminiSessionId = sessionId || crypto.randomUUID();
 
   return new Promise((resolve, reject) => {
     const args = [
-      '-p', prompt,
+      '--prompt=.',
       '-o', 'stream-json',
       '-y',
       '--skip-trust',
@@ -19,7 +17,9 @@ function spawnGemini({ prompt, sessionId = null, imageFilePath = null, workDir =
 
     if (sessionId) args.push('-r', 'latest');
 
-    const proc = spawn(GEMINI_CMD, args, { cwd: workDir, windowsHide: true });
+    const proc = spawn('gemini', args, { cwd: workDir, shell: true, windowsHide: true });
+    proc.stdin.write(prompt);
+    proc.stdin.end();
 
     let buffer = '';
     onState?.('requesting');
