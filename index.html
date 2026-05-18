@@ -6602,6 +6602,7 @@ init();
 
     recognition.onresult = (event) => {
       if (skipUntilRestart) return;
+      if (processingMessages.size > 0) return;
       let interim = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const t = event.results[i][0].transcript;
