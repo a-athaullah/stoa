@@ -3246,6 +3246,7 @@ async function openRoom(room) {
   }
   // Save draft from previous room
   saveDraft(currentRoomId);
+  if (window.stopVoiceRecognition) window.stopVoiceRecognition();
 
   currentRoomId = room.id;
   clearComposerProcessing();
@@ -6681,6 +6682,13 @@ init();
     } else {
       startRecognition();
     }
+  });
+
+  window.stopVoiceRecognition = stopRecognition;
+
+  // Auto-stop mic when tab becomes hidden
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && isRecording) stopRecognition();
   });
 })();
 </script>
