@@ -5,7 +5,6 @@ const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const db = require('./db');
 const { spawnClaude } = require('./claude-adapter');
-const { compress: compressImage } = require('./tools/compress-image');
 
 function getSession(participantId, workdir) {
   if (workdir) {
@@ -17,17 +16,10 @@ function getSession(participantId, workdir) {
 }
 
 function saveSession(participantId, claudeSessionId, workdir) {
-  if (workdir) {
-    db.prepare(
-      `INSERT INTO ai_sessions (participant_id, claude_session_id, workdir, status) VALUES (?,?,?,'idle')
-       ON CONFLICT(participant_id) DO UPDATE SET claude_session_id=excluded.claude_session_id, workdir=excluded.workdir, status='idle', last_active_at=datetime('now')`
-    ).run(participantId, claudeSessionId, workdir);
-  } else {
-    db.prepare(
-      `INSERT INTO ai_sessions (participant_id, claude_session_id, status) VALUES (?,?,'idle')
-       ON CONFLICT(participant_id) DO UPDATE SET claude_session_id=excluded.claude_session_id, status='idle', last_active_at=datetime('now')`
-    ).run(participantId, claudeSessionId);
-  }
+  db.prepare(
+    `INSERT INTO ai_sessions (participant_id, claude_session_id, workdir, status) VALUES (?,?,?,'idle')
+     ON CONFLICT(participant_id, workdir) DO UPDATE SET claude_session_id=excluded.claude_session_id, status='idle', last_active_at=datetime('now')`
+  ).run(participantId, claudeSessionId, workdir || null);
 }
 
 // Load .env if present
@@ -45,6 +37,82 @@ db.exec(fs.readFileSync(path.join(__dirname, 'schema.sqlite.sql'), 'utf8'));
 // Add avatar_url column if not exists
 try { db.exec("ALTER TABLE actors ADD COLUMN avatar_url TEXT DEFAULT NULL"); } catch {}
 try { db.exec("ALTER TABLE messages ADD COLUMN attachments TEXT DEFAULT NULL"); } catch {}
+
+// Migrate ai_sessions: participant_id UNIQUE → UNIQUE(participant_id, workdir)
+try {
+  const hasOld = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='ai_sessions'").get();
+  if (hasOld?.sql?.includes('participant_id INTEGER NOT NULL UNIQUE')) {
+    db.exec(`
+      CREATE TABLE ai_sessions_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        participant_id INTEGER NOT NULL,
+        claude_session_id TEXT NOT NULL,
+        workdir TEXT DEFAULT NULL,
+        status TEXT DEFAULT 'idle' CHECK(status IN ('active','idle')),
+        last_active_at TEXT DEFAULT (datetime('now')),
+        created_at TEXT DEFAULT (datetime('now')),
+        FOREIGN KEY (participant_id) REFERENCES room_participants(id),
+        UNIQUE (participant_id, workdir)
+      );
+      INSERT INTO ai_sessions_new SELECT * FROM ai_sessions;
+      DROP TABLE ai_sessions;
+      ALTER TABLE ai_sessions_new RENAME TO ai_sessions;
+    `);
+    console.log('[db] migrated ai_sessions: UNIQUE(participant_id) → UNIQUE(participant_id, workdir)');
+  }
+} catch {}
+
+// ─── Auth: password hashing & session management ─────────────────────────────
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return `${salt}:${hash}`;
+}
+
+function verifyPassword(password, stored) {
+  const [salt, hash] = stored.split(':');
+  const test = crypto.scryptSync(password, salt, 64).toString('hex');
+  return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(test, 'hex'));
+}
+
+function createAuthSession(userId) {
+  const token = crypto.randomBytes(32).toString('hex');
+  const expires = new Date(Date.now() + 7 * 24 * 3600_000).toISOString();
+  db.prepare('INSERT INTO auth_sessions (token, user_id, expires_at) VALUES (?,?,?)').run(token, userId, expires);
+  return { token, expires };
+}
+
+function validateAuthSession(token) {
+  if (!token) return null;
+  const row = db.prepare("SELECT s.*, u.email FROM auth_sessions s JOIN auth_users u ON u.id=s.user_id WHERE s.token=? AND s.expires_at > datetime('now')").get(token);
+  return row || null;
+}
+
+function parseCookies(cookieHeader) {
+  const cookies = {};
+  if (!cookieHeader) return cookies;
+  for (const part of cookieHeader.split(';')) {
+    const [k, ...v] = part.trim().split('=');
+    if (k) cookies[k.trim()] = v.join('=').trim();
+  }
+  return cookies;
+}
+
+// Seed default auth user
+{
+  const existing = db.prepare('SELECT id FROM auth_users LIMIT 1').get();
+  if (!existing) {
+    const hash = hashPassword('stoa2026!');
+    db.prepare('INSERT INTO auth_users (email, password_hash) VALUES (?,?)').run('stoa@stoa.com', hash);
+    console.log('[auth] Default user seeded: stoa@stoa.com');
+  }
+}
+
+// Cleanup expired sessions periodically
+setInterval(() => {
+  db.prepare("DELETE FROM auth_sessions WHERE expires_at < datetime('now')").run();
+}, 3600_000);
 
 // Rebuild FTS index on startup
 {
@@ -165,11 +233,108 @@ function parseDocFilename(name) {
   return null;
 }
 
+// ─── Auth helpers ────────────────────────────────────────────────────────────
+
+const AUTH_EXEMPT = new Set(['/api/auth/login', '/favicon.ico', '/stoa-icon.svg', '/manifest.json', '/sw.js']);
+
+function requireAuth(req, res, url) {
+  if (AUTH_EXEMPT.has(url.pathname)) return true;
+  // Uploaded files accessible by agents (they fetch without cookies)
+  if (url.pathname.startsWith('/uploads/')) return true;
+  // Install scripts and agent register are public (token-protected already)
+  if (url.pathname === '/install.sh' || url.pathname === '/install.ps1' || url.pathname === '/install.cmd') return true;
+  if (url.pathname === '/api/agent/register') return true;
+  // Client file API used by agents for auto-update
+  if (url.pathname === '/api/client/manifest' || url.pathname.startsWith('/api/client/file/')) return true;
+
+  const cookies = parseCookies(req.headers.cookie);
+  const session = validateAuthSession(cookies.stoa_session);
+  if (session) { req._authUser = session; return true; }
+
+  // Not authenticated
+  if (url.pathname === '/' || !url.pathname.startsWith('/api/')) {
+    // Serve login page for HTML requests
+    return 'login';
+  }
+  res.writeHead(401, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'unauthorized' }));
+  return false;
+}
+
 // ─── HTTP server ──────────────────────────────────────────────────────────────
 
 const server = http.createServer(async (req, res) => {
   try {
   const url = new URL(req.url, `http://localhost:${PORT}`);
+
+  // ── Auth check ──
+  const authResult = requireAuth(req, res, url);
+  if (authResult === false) return;
+  if (authResult === 'login') {
+    if (req.method === 'GET' && url.pathname === '/') {
+      const html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
+      return res.end(html);
+    }
+    res.writeHead(401); return res.end('Unauthorized');
+  }
+
+  // ── Auth routes (exempt from auth check above) ──
+  if (req.method === 'POST' && url.pathname === '/api/auth/login') {
+    const body = await readBody(req);
+    const { email, password } = JSON.parse(body);
+    const user = db.prepare('SELECT * FROM auth_users WHERE email=?').get(email);
+    if (!user || !verifyPassword(password, user.password_hash)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'Invalid email or password' }));
+    }
+    const session = createAuthSession(user.id);
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Set-Cookie': `stoa_session=${session.token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${7*24*3600}`,
+    });
+    return res.end(JSON.stringify({ ok: true, email: user.email }));
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/auth/logout') {
+    const cookies = parseCookies(req.headers.cookie);
+    if (cookies.stoa_session) {
+      db.prepare('DELETE FROM auth_sessions WHERE token=?').run(cookies.stoa_session);
+    }
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Set-Cookie': 'stoa_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0',
+    });
+    return res.end(JSON.stringify({ ok: true }));
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/auth/me') {
+    const user = db.prepare('SELECT id, email FROM auth_users WHERE id=?').get(req._authUser.user_id);
+    return json(res, user || {});
+  }
+
+  if (req.method === 'PATCH' && url.pathname === '/api/auth/email') {
+    const { email } = JSON.parse(await readBody(req));
+    if (!email?.trim() || !email.includes('@')) { res.writeHead(400); return res.end('invalid email'); }
+    try {
+      db.prepare('UPDATE auth_users SET email=? WHERE id=?').run(email.trim(), req._authUser.user_id);
+    } catch { res.writeHead(409); return res.end('email already in use'); }
+    return json(res, { ok: true, email: email.trim() });
+  }
+
+  if (req.method === 'PATCH' && url.pathname === '/api/auth/password') {
+    const { current_password, new_password } = JSON.parse(await readBody(req));
+    if (!new_password || new_password.length < 6) { res.writeHead(400); return res.end('password must be at least 6 characters'); }
+    const user = db.prepare('SELECT * FROM auth_users WHERE id=?').get(req._authUser.user_id);
+    if (!verifyPassword(current_password, user.password_hash)) {
+      res.writeHead(401); return res.end('current password incorrect');
+    }
+    const hash = hashPassword(new_password);
+    db.prepare('UPDATE auth_users SET password_hash=? WHERE id=?').run(hash, user.id);
+    // Invalidate all other sessions
+    db.prepare('DELETE FROM auth_sessions WHERE user_id=? AND token!=?').run(user.id, req._authUser.token);
+    return json(res, { ok: true });
+  }
 
   // ── Static: uploaded files
   if (req.method === 'GET' && url.pathname.startsWith('/uploads/')) {
@@ -211,28 +376,7 @@ const server = http.createServer(async (req, res) => {
     const saved = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}${safeExt}`;
     const savedPath = path.join(UPLOADS_DIR, saved);
     fs.writeFileSync(savedPath, buffer);
-    const compressed = await compressImage(savedPath).catch(() => null);
-    const finalName = compressed?.success ? path.basename(compressed.path) : saved;
-    if (compressed?.success) console.log(`[compress] ${saved} → ${finalName} (${compressed.ratio} smaller)`);
-    return json(res, { url: `/uploads/${finalName}`, name: fileName || saved });
-  }
-
-  // ── Upload file (base64 JSON body — legacy)
-  if (req.method === 'POST' && url.pathname === '/api/upload') {
-    const body = await readBody(req);
-    const { data, mimeType, fileName } = JSON.parse(body);
-    const origExt = fileName ? path.extname(fileName).toLowerCase() : null;
-    const mimeToExt = { 'image/jpeg':'jpg','image/png':'png','image/gif':'gif','image/webp':'webp',
-      'text/markdown':'md','text/plain':'txt','application/pdf':'pdf','application/json':'json' };
-    const ext = origExt || '.' + (mimeToExt[mimeType] || mimeType.split('/')[1] || 'bin');
-    const safeExt = ext.startsWith('.') ? ext : '.' + ext;
-    const saved = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}${safeExt}`;
-    const savedPath = path.join(UPLOADS_DIR, saved);
-    fs.writeFileSync(savedPath, Buffer.from(data, 'base64'));
-    const compressed = await compressImage(savedPath).catch(() => null);
-    const finalName = compressed?.success ? path.basename(compressed.path) : saved;
-    if (compressed?.success) console.log(`[compress] ${saved} → ${finalName} (${compressed.ratio} smaller)`);
-    return json(res, { url: `/uploads/${finalName}`, name: fileName || saved });
+    return json(res, { url: `/uploads/${saved}`, name: fileName || saved });
   }
 
   // ── Actor avatar upload
@@ -298,13 +442,6 @@ const server = http.createServer(async (req, res) => {
     return res.end(html);
   }
 
-  if (req.method === 'GET' && url.pathname === '/api/skills') {
-    const rows = db.prepare(
-      'SELECT DISTINCT name, description, scope FROM agent_skills ORDER BY scope, name'
-    ).all();
-    return json(res, rows);
-  }
-
   if (req.method === 'GET' && url.pathname === '/api/rooms') {
     const rows = db.prepare(`
       SELECT r.*, a.name as creator_name,
@@ -321,9 +458,10 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/rooms') {
     const body = await readBody(req);
     const { title, participant_ids = [], workdir_id = null } = JSON.parse(body);
+    if (!workdir_id) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: 'workdir_id is required' })); }
     const human = db.prepare(`SELECT id FROM actors WHERE type='human' LIMIT 1`).get();
     const humanId = human?.id ?? 1;
-    const result = db.prepare('INSERT INTO rooms (title, created_by, workdir_id) VALUES (?,?,?)').run(title, humanId, workdir_id || null);
+    const result = db.prepare('INSERT INTO rooms (title, created_by, workdir_id) VALUES (?,?,?)').run(title, humanId, workdir_id);
     const roomId = result.lastInsertRowid;
     const allIds = [...new Set([humanId, ...participant_ids])];
     const insertParticipant = db.prepare('INSERT OR IGNORE INTO room_participants (room_id, actor_id) VALUES (?,?)');
@@ -436,6 +574,25 @@ const server = http.createServer(async (req, res) => {
       `).all(roomId);
       return json(res, rows);
     }
+
+    if (url.pathname.endsWith('/skills')) {
+      const room = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(roomId);
+      if (!room) { res.writeHead(404); return res.end('Room not found'); }
+      const agentIds = db.prepare(
+        "SELECT a.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='ai'"
+      ).all(roomId).map(r => r.id);
+      if (!agentIds.length) return json(res, []);
+      const ph = agentIds.map(() => '?').join(',');
+      const skills = db.prepare(`
+        SELECT s.name, s.description, s.scope, s.actor_id, a.name as actor_name,
+               a.avatar_color, a.avatar_symbol, a.avatar_url
+        FROM agent_skills s JOIN actors a ON a.id=s.actor_id
+        WHERE s.actor_id IN (${ph})
+          AND ((s.scope IN ('project','local') AND s.workdir_id = ?) OR s.scope = 'global')
+        ORDER BY s.scope, s.name
+      `).all(...agentIds, room.workdir_id);
+      return json(res, skills);
+    }
   }
 
   if (req.method === 'POST' && url.pathname.match(/^\/api\/rooms\/\d+\/participants$/)) {
@@ -475,7 +632,7 @@ const server = http.createServer(async (req, res) => {
       human_id:    human?.id ?? null,
       port:        PORT,
       human_name_from_env: !!process.env.HUMAN_NAME,
-      max_ai_turns: parseInt(process.env.MAX_AI_TURNS) || 15,
+      max_ai_turns: parseInt(process.env.MAX_AI_TURNS) || 5,
       cleanup_cron_hour: parseInt(process.env.CLEANUP_CRON_HOUR) || 10,
       cleanup_max_age_hours: parseInt(process.env.CLEANUP_MAX_AGE_HOURS) || 24,
     });
@@ -523,7 +680,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/api/actors') {
     const rows = db.prepare('SELECT id, name, type, avatar_color, avatar_symbol, avatar_url, created_at FROM actors ORDER BY id').all();
-    const result = rows.map(r => ({ ...r, online: agentClients.has(r.id) }));
+    const result = rows.map(r => ({ ...r, online: agentClients.has(r.id), client_version: agentVersions.get(r.id) || null }));
     return json(res, result);
   }
 
@@ -886,20 +1043,56 @@ Write-Host "Logs   : pm2 logs $AgentName"
     return json(res, { ok: true });
   }
 
-  // GET /api/actors/:id/skills — list skills for an agent
-  if (req.method === 'GET' && url.pathname.match(/^\/api\/actors\/\d+\/skills$/)) {
-    const actorId = parseInt(url.pathname.split('/')[3]);
-    const rows = db.prepare(
-      'SELECT s.*, w.path as workdir_path FROM agent_skills s LEFT JOIN agent_workdirs w ON w.id=s.workdir_id WHERE s.actor_id=? ORDER BY s.scope, s.name'
-    ).all(actorId);
-    return json(res, rows);
+
+
+  // ── Export room messages ──
+  const exportMatch = req.method === 'GET' && url.pathname.match(/^\/api\/rooms\/(\d+)\/export$/);
+  if (exportMatch) {
+    const roomId = parseInt(exportMatch[1]);
+    const format = (url.searchParams.get('format') || 'json').toLowerCase();
+    const room = db.prepare('SELECT title FROM rooms WHERE id=?').get(roomId);
+    if (!room) { res.writeHead(404); return res.end('room not found'); }
+    const rows = db.prepare(`
+      SELECT m.id, m.content, m.created_at, m.completed_at, m.image_url, m.file_url, m.file_name, m.attachments, m.reply_to,
+             a.name as actor_name, a.type as actor_type
+      FROM messages m
+      JOIN room_participants rp ON rp.id=m.participant_id
+      JOIN actors a ON a.id=rp.actor_id
+      WHERE m.room_id=? AND m.state='complete'
+      ORDER BY m.created_at ASC
+    `).all(roomId);
+
+    const safeTitle = room.title.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 50);
+
+    if (format === 'csv') {
+      const escape = (s) => `"${(s || '').replace(/"/g, '""')}"`;
+      const header = 'id,timestamp,actor,type,content,attachments,reply_to';
+      const lines = rows.map(r => {
+        const attachments = r.attachments ? JSON.parse(r.attachments).map(a => a.name || a.url).join('; ') : (r.file_name || '');
+        return [r.id, r.created_at, escape(r.actor_name), r.actor_type, escape(r.content), escape(attachments), r.reply_to || ''].join(',');
+      });
+      const csv = [header, ...lines].join('\n');
+      res.writeHead(200, {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${safeTitle}.csv"`,
+      });
+      return res.end(csv);
+    }
+
+    // Default: JSON
+    const data = { room: { id: roomId, title: room.title }, exported_at: new Date().toISOString(), messages: rows.map(r => ({ ...r, attachments: r.attachments ? JSON.parse(r.attachments) : null })) };
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Disposition': `attachment; filename="${safeTitle}.json"`,
+    });
+    return res.end(JSON.stringify(data, null, 2));
   }
 
   res.writeHead(404);
   res.end('Not found');
   } catch (err) {
     console.error('[http] unhandled error:', err.message);
-    if (!res.headersSent) { res.writeHead(400); res.end(JSON.stringify({ error: err.message })); }
+    if (!res.headersSent) { res.writeHead(400); res.end(JSON.stringify({ error: 'Bad request' })); }
   }
 });
 
@@ -909,6 +1102,7 @@ const wss = new WebSocketServer({ server, pingInterval: 20000 });
 const roomClients = new Map();    // roomId → Set<ws>
 const globalClients = new Set();  // all browser ws connections
 const agentClients = new Map();   // actor_id → ws
+const agentVersions = new Map();  // actor_id → client_version string
 const pendingAgents = new Map();    // message_id → { resolve, reject }
 const pendingActorMeta = new Map(); // message_id → { name, avatar_color, avatar_symbol }
 
@@ -930,16 +1124,24 @@ function broadcastServerRestart(newPort, newWsUrl) {
   console.log(`[server] Port change → ${newPort}, notified ${globalClients.size} browsers + ${agentClients.size} agents`);
 }
 
-wss.on('connection', ws => {
+wss.on('connection', (ws, req) => {
   let subscribedRoom = null;
   let agentActorId = null;
   let isHumanClient = false;
+  // Auth check: browser clients must have valid session cookie
+  const cookies = parseCookies(req.headers.cookie);
+  const wsAuth = validateAuthSession(cookies.stoa_session);
+  let wsAuthenticated = !!wsAuth; // agents authenticate later via agent_connect
 
   ws.on('error', () => {}); // prevent unhandled error crash on abrupt disconnect
 
   ws.on('message', async raw => {
+   try {
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
+
+    // Block unauthenticated browser messages (agents auth via agent_connect)
+    if (!wsAuthenticated && msg.type !== 'agent_connect') return;
 
     // ── Human client subscribes to global events (sent on WS open)
     if (msg.type === 'subscribe_global') {
@@ -1011,11 +1213,13 @@ wss.on('connection', ws => {
         }
       }
       agentActorId = msg.actor_id;
+      wsAuthenticated = true;
       agentClients.set(agentActorId, ws);
-      console.log(`[agent] Actor #${agentActorId} connected`);
+      if (msg.client_version) agentVersions.set(agentActorId, msg.client_version);
+      console.log(`[agent] Actor #${agentActorId} connected (v${msg.client_version || '?'})`);
       ws.send(JSON.stringify({ type: 'agent_ready' }));
       const connectedActor = db.prepare('SELECT id, name, type, avatar_color, avatar_symbol, avatar_url, created_at FROM actors WHERE id=?').get(agentActorId);
-      if (connectedActor) broadcastGlobal({ type: 'actor_status', actor: { ...connectedActor, online: true } });
+      if (connectedActor) broadcastGlobal({ type: 'actor_status', actor: { ...connectedActor, online: true, client_version: msg.client_version || null } });
     }
 
     // ── Agent reports scan results
@@ -1098,19 +1302,21 @@ wss.on('connection', ws => {
       db.prepare(
         "UPDATE messages SET content=?, file_url=?, file_name=?, attachments=?, state='complete', completed_at=datetime('now') WHERE id=?"
       ).run(msg.content, msg.file_url || null, msg.file_name || null, attachJson, msg.message_id);
-      if (msg.claude_session_id) {
-        const row = db.prepare(`
-          SELECT m.participant_id, w.path as workdir
-          FROM messages m JOIN rooms r ON r.id=m.room_id LEFT JOIN agent_workdirs w ON w.id=r.workdir_id
-          WHERE m.id=?
-        `).get(msg.message_id);
-        if (row) saveSession(row.participant_id, msg.claude_session_id, row.workdir);
-      }
       const completePayload = { type: 'message_complete', message_id: msg.message_id, content: msg.content };
       if (msg.attachments?.length) { completePayload.attachments = msg.attachments; }
       else if (msg.file_url) { completePayload.file_url = msg.file_url; completePayload.file_name = msg.file_name; }
       broadcast(msg.room_id, completePayload);
       broadcastGlobal({ type: 'room_activity', room_id: msg.room_id });
+      if (msg.claude_session_id) {
+        try {
+          const row = db.prepare(`
+            SELECT m.participant_id, w.path as workdir
+            FROM messages m JOIN rooms r ON r.id=m.room_id LEFT JOIN agent_workdirs w ON w.id=r.workdir_id
+            WHERE m.id=?
+          `).get(msg.message_id);
+          if (row) saveSession(row.participant_id, msg.claude_session_id, row.workdir);
+        } catch (e) { console.error('[agent] saveSession error:', e.message); }
+      }
       pendingAgents.get(msg.message_id)?.resolve(msg.content);
       pendingAgents.delete(msg.message_id);
       pendingActorMeta.delete(msg.message_id);
@@ -1124,6 +1330,7 @@ wss.on('connection', ws => {
       pendingAgents.delete(msg.message_id);
       pendingActorMeta.delete(msg.message_id);
     }
+   } catch (err) { console.error('[ws] unhandled message error:', err); }
   });
 
   ws.on('close', () => {
@@ -1131,6 +1338,7 @@ wss.on('connection', ws => {
     if (isHumanClient) globalClients.delete(ws);
     if (agentActorId) {
       agentClients.delete(agentActorId);
+      agentVersions.delete(agentActorId);
       const cleaned = db.prepare(
         "UPDATE messages SET state='error', content=CASE WHEN content='' THEN '(interrupted — agent disconnected)' ELSE content END WHERE state IN ('streaming','requesting') AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?)"
       ).run(agentActorId);
@@ -1250,7 +1458,7 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
 
   if (allAiParts.length > 0) {
     const ordered = resolveAgentOrder(content, allAiParts);
-    triggerAgentsSequential(roomId, ordered, content, messageId, attachments || []);
+    triggerAgentsSequential(roomId, ordered, content, messageId, attachments || []).catch(e => console.error('[trigger] sequence error:', e));
   }
 }
 
@@ -1281,32 +1489,38 @@ async function handleSkillCommand(roomId, rawCommand, senderWs) {
     return;
   }
 
-  // Check skill exists for at least one of the target AIs
+  // Check skill exists — scoped to room's workdir
+  const room = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(roomId);
   const aiIds = allAis.map(a => a.actor_id);
   const placeholders = aiIds.map(() => '?').join(',');
-  const skill = db.prepare(
-    `SELECT 1 FROM agent_skills WHERE name=? AND actor_id IN (${placeholders}) LIMIT 1`
-  ).get(skillName, ...aiIds);
+  const matchedSkills = db.prepare(
+    `SELECT actor_id FROM agent_skills WHERE name=? AND actor_id IN (${placeholders})
+     AND ((scope IN ('project','local') AND workdir_id = ?) OR scope = 'global')`
+  ).all(skillName, ...aiIds, room?.workdir_id);
 
-  if (!skill) {
+  if (!matchedSkills.length) {
     senderWs.send(JSON.stringify({
       type: 'system_notice',
-      text: `Skill /${skillName} tidak ditemukan. Ketik / untuk melihat daftar skill.`,
+      text: `Skill /${skillName} tidak ditemukan di room ini. Ketik / untuk melihat daftar skill.`,
     }));
     return;
   }
+
+  // Only trigger agents that own the matched skill
+  const matchedIds = new Set(matchedSkills.map(s => s.actor_id));
+  const filteredAis = allAis.filter(a => matchedIds.has(a.actor_id));
 
   // Broadcast notice bahwa skill dipanggil
   broadcast(roomId, {
     type: 'skill_invoked',
     skill_name: skillName,
-    targets: allAis.map(a => a.name),
+    targets: filteredAis.map(a => a.name),
   });
 
   // Send skill invocation as prompt — agent's Claude Code session handles the skill
   const promptText = `/${skillName}`;
 
-  for (const ai of allAis) {
+  for (const ai of filteredAis) {
     await triggerSkillResponse(roomId, ai, promptText);
   }
 }
@@ -1503,6 +1717,10 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
     console.log(`[trigger] ${ai.name} fallback to direct spawn`);
     let fullContent = '';
     const sessionId = getSession(ai.participant_id, workdir);
+
+    const imageUrl = (attachments || []).find(a => a.type === 'image')?.url;
+    const fileUrl  = (attachments || []).find(a => a.type === 'file')?.url;
+    const fileName = (attachments || []).find(a => a.type === 'file')?.name;
 
     try {
       const imageFilePath = imageUrl ? path.join(__dirname, imageUrl) : null;

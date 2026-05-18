@@ -45,7 +45,7 @@ Write-Output "OK"
 `.trim();
 
   return new Promise((resolve, reject) => {
-    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 30000 }, (err, stdout, stderr) => {
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 30000, windowsHide: true }, (err, stdout, stderr) => {
       if (err) return reject(new Error(stderr || err.message));
       if (!fs.existsSync(absOut)) return reject(new Error('output file not created'));
 

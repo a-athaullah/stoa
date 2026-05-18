@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS messages (
   room_id INTEGER NOT NULL,
   participant_id INTEGER NOT NULL,
   content TEXT NOT NULL,
-  state TEXT DEFAULT 'complete' CHECK(state IN ('pending','streaming','complete','error')),
+  state TEXT DEFAULT 'complete' CHECK(state IN ('requesting','streaming','complete','error')),
   reply_to INTEGER DEFAULT NULL,
   image_url TEXT DEFAULT NULL,
   file_url TEXT DEFAULT NULL,
@@ -56,13 +56,14 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE TABLE IF NOT EXISTS ai_sessions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  participant_id INTEGER NOT NULL UNIQUE,
+  participant_id INTEGER NOT NULL,
   claude_session_id TEXT NOT NULL,
   workdir TEXT DEFAULT NULL,
   status TEXT DEFAULT 'idle' CHECK(status IN ('active','idle')),
   last_active_at TEXT DEFAULT (datetime('now')),
   created_at TEXT DEFAULT (datetime('now')),
-  FOREIGN KEY (participant_id) REFERENCES room_participants(id)
+  FOREIGN KEY (participant_id) REFERENCES room_participants(id),
+  UNIQUE (participant_id, workdir)
 );
 
 CREATE TABLE IF NOT EXISTS invite_suggestions (
@@ -132,6 +133,23 @@ CREATE INDEX IF NOT EXISTS idx_room_participants_room_id ON room_participants(ro
 CREATE INDEX IF NOT EXISTS idx_room_participants_actor_id ON room_participants(actor_id);
 CREATE INDEX IF NOT EXISTS idx_agent_workdirs_actor_id ON agent_workdirs(actor_id);
 CREATE INDEX IF NOT EXISTS idx_agent_skills_actor_id ON agent_skills(actor_id);
+CREATE INDEX IF NOT EXISTS idx_agent_skills_workdir_id ON agent_skills(workdir_id);
+
+CREATE TABLE IF NOT EXISTS auth_users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  token TEXT NOT NULL UNIQUE,
+  user_id INTEGER NOT NULL,
+  expires_at TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+);
 
 INSERT OR IGNORE INTO settings (scope, key_name, value) VALUES
   ('global','idle_timeout_seconds','300'),

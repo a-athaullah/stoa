@@ -3,6 +3,8 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
+const CLIENT_VERSION = '0.2.2';
+
 const WebSocket = require('ws');
 const readline = require('readline');
 const fs = require('fs');
@@ -106,8 +108,8 @@ function connect() {
   ws.on('open', () => {
     if (ACTOR_TYPE === 'ai') {
       ensureSession(); // warm up the session before any triggers arrive
-      ws.send(JSON.stringify({ type: 'agent_connect', actor_id: ACTOR_ID, secret: STOA_SECRET }));
-      console.log(`[stoa] Agent #${ACTOR_ID} connected to ${STOA_URL}`);
+      ws.send(JSON.stringify({ type: 'agent_connect', actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION }));
+      console.log(`[stoa] Agent #${ACTOR_ID} v${CLIENT_VERSION} connected to ${STOA_URL}`);
     } else {
       ws.send(JSON.stringify({ type: 'join_room', room_id: ROOM_ID }));
       printHeader();
@@ -231,7 +233,6 @@ async function processTrigger(msg) {
   const TEXT_EXTS = new Set(['.md','.txt','.json','.csv','.html','.js','.ts','.py','.yaml','.yml','.sh','.css']);
   const IMAGE_EXTS = new Set(['.png','.jpg','.jpeg','.gif','.webp','.svg']);
 
-  let imageData = null;
   let finalPrompt = msg.prompt;
   const allAttachments = msg.attachments || [];
 
@@ -255,14 +256,6 @@ async function processTrigger(msg) {
     const safeName = (att.name || path.basename(att.url || 'file')).replace(/[^a-zA-Z0-9._-]/g, '_');
 
     if (att.type === 'image' || IMAGE_EXTS.has(ext)) {
-      if (!imageData) {
-        try {
-          const fetched = await fetchFileAsBase64(url);
-          if (fetched.mimeType.startsWith('image/')) imageData = fetched;
-        } catch (err) {
-          console.error('[stoa] image fetch failed:', att.url, err.message);
-        }
-      }
       try {
         const localPath = path.join(tempDir, safeName);
         await fetchToFile(url, localPath);
@@ -329,7 +322,6 @@ async function processTrigger(msg) {
 
     const { content, sessionId, aborted } = await session.send({
       prompt: finalPrompt,
-      imageData,
       onToken: token => {
         lastActivity = Date.now();
         fullContent += token;
@@ -437,22 +429,6 @@ function fetchToFile(url, destPath) {
       res.pipe(ws);
       ws.on('finish', () => { ws.close(); resolve(destPath); });
       ws.on('error', reject);
-    }).on('error', reject);
-  });
-}
-
-function fetchFileAsBase64(url) {
-  const http = url.startsWith('https') ? require('https') : require('http');
-  return new Promise((resolve, reject) => {
-    http.get(url, res => {
-      const chunks = [];
-      res.on('data', c => chunks.push(c));
-      res.on('end', () => {
-        const base64 = Buffer.concat(chunks).toString('base64');
-        const mimeType = (res.headers['content-type'] || 'application/octet-stream').split(';')[0].trim();
-        resolve({ base64, mimeType });
-      });
-      res.on('error', reject);
     }).on('error', reject);
   });
 }
