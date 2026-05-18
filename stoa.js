@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.2.2';
+const CLIENT_VERSION = '0.2.3';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -401,7 +401,12 @@ async function extractAndUploadFiles(content, workdir) {
       const mime = mimeMap[ext] || 'application/octet-stream';
       const res = await fetch(`${baseUrl}/api/upload/raw`, {
         method: 'POST',
-        headers: { 'Content-Type': mime, 'X-File-Name': encodeURIComponent(fileName) },
+        headers: {
+          'Content-Type': mime,
+          'X-File-Name': encodeURIComponent(fileName),
+          'X-Agent-Id': String(ACTOR_ID),
+          'X-Agent-Secret': STOA_SECRET,
+        },
         body: fileData,
       });
       const result = await res.json();

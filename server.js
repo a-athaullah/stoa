@@ -242,8 +242,18 @@ function requireAuth(req, res, url) {
   if (url.pathname === '/api/agent/register') return true;
   // Client file API used by agents for auto-update
   if (url.pathname === '/api/client/manifest' || url.pathname.startsWith('/api/client/file/')) return true;
-  // Upload API used by agents (they authenticate via WS, not cookies)
-  if (req.method === 'POST' && url.pathname === '/api/upload/raw') return true;
+
+  // Agent HTTP auth via headers (for upload etc.)
+  const agentId = req.headers['x-agent-id'];
+  const agentSecret = req.headers['x-agent-secret'];
+  if (agentId && agentSecret) {
+    const actor = db.prepare('SELECT secret FROM actors WHERE id=? AND type=?').get(agentId, 'ai');
+    if (actor?.secret) {
+      const provided = Buffer.from(agentSecret);
+      const expected = Buffer.from(actor.secret);
+      if (provided.length === expected.length && crypto.timingSafeEqual(provided, expected)) return true;
+    }
+  }
 
   const cookies = parseCookies(req.headers.cookie);
   const session = validateAuthSession(cookies.stoa_session);
