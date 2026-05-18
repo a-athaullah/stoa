@@ -6598,12 +6598,10 @@ init();
     const input = document.getElementById('msg-input');
     const existingText = input.textContent.replace(/​/g, '').trim();
     let finalTranscript = existingText ? existingText + ' ' : '';
-
-    function restartClean() {
-      try { recognition.stop(); } catch {}
-    }
+    let skipUntilRestart = false;
 
     recognition.onresult = (event) => {
+      if (skipUntilRestart) return;
       let interim = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const t = event.results[i][0].transcript;
@@ -6621,7 +6619,8 @@ init();
       if (lang.clear.test(full)) {
         finalTranscript = '';
         input.textContent = '';
-        restartClean();
+        skipUntilRestart = true;
+        try { recognition.stop(); } catch {}
         return;
       }
       if (lang.send.test(full)) {
@@ -6630,7 +6629,8 @@ init();
         if (cleaned) sendMessage();
         finalTranscript = '';
         input.textContent = '';
-        restartClean();
+        skipUntilRestart = true;
+        try { recognition.stop(); } catch {}
         return;
       }
       input.textContent = full;
@@ -6651,6 +6651,8 @@ init();
 
     recognition.onend = () => {
       if (isRecording) {
+        skipUntilRestart = false;
+        finalTranscript = '';
         try { recognition.start(); } catch {}
       }
     };
