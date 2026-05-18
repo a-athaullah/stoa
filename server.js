@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const db = require('./db');
 const { spawnClaude } = require('./claude-adapter');
+const { spawnGemini } = require('./gemini-adapter');
 
 function getSession(participantId, workdir) {
   if (workdir) {
@@ -126,7 +127,7 @@ const UPLOADS_DIR = path.join(__dirname, 'uploads');
 }
 
 // Files yang boleh di-serve sebagai client update
-const CLIENT_FILES = new Set(['stoa.js', 'claude-session.js', 'claude-adapter.js', 'claude-adapter-lite.js']);
+const CLIENT_FILES = new Set(['stoa.js', 'claude-session.js', 'claude-adapter.js', 'claude-adapter-lite.js', 'gemini-session.js', 'gemini-adapter.js']);
 
 // One-time install tokens (expires in 10 min)
 const installTokens = new Map();
@@ -687,7 +688,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/actors') {
-    const rows = db.prepare('SELECT id, name, type, avatar_color, avatar_symbol, avatar_url, created_at FROM actors ORDER BY id').all();
+    const rows = db.prepare('SELECT id, name, type, adapter, avatar_color, avatar_symbol, avatar_url, created_at FROM actors ORDER BY id').all();
     const result = rows.map(r => ({ ...r, online: agentClients.has(r.id), client_version: agentVersions.get(r.id) || null }));
     return json(res, result);
   }
@@ -788,7 +789,17 @@ const server = http.createServer(async (req, res) => {
     const stoaUrl = baseUrl.replace(/^https?/, wsProto);
     const token = crypto.randomBytes(12).toString('hex');
     const presetName = url.searchParams.get('name') || '';
-    installTokens.set(token, { expires: Date.now() + 600_000, name: presetName });
+    const backend = (url.searchParams.get('backend') || 'claude').toLowerCase();
+    installTokens.set(token, { expires: Date.now() + 600_000, name: presetName, backend });
+
+    const isGemini = backend === 'gemini';
+    const clientFiles = isGemini
+      ? 'stoa.js gemini-session.js gemini-adapter.js'
+      : 'stoa.js claude-session.js claude-adapter.js claude-adapter-lite.js';
+    const trustCmd = isGemini
+      ? 'gemini --skip-trust -y -p "hello" > /dev/null 2>&1 || true'
+      : 'printf "1\\n" | claude --dangerously-skip-permissions --print -p "hello" > /dev/null 2>&1 || true';
+    const backendEnv = isGemini ? `\n      STOA_AI_BACKEND: 'gemini',` : '';
 
     const script = `#!/bin/bash
 set -e
@@ -798,7 +809,7 @@ STOA_URL="${stoaUrl}"
 REG_TOKEN="${token}"
 AGENT_DIR="\${HOME}/stoa-agent"
 
-echo "=== Stoa Agent Setup ==="
+echo "=== Stoa Agent Setup (${isGemini ? 'Gemini' : 'Claude'}) ==="
 echo "Server : \${BASE_URL}"
 echo ""
 
@@ -807,7 +818,7 @@ mkdir -p "\${HOME}/stoa-workspace"
 
 echo "[1/5] Downloading client files..."
 cd "\${AGENT_DIR}"
-for FILE in stoa.js claude-session.js claude-adapter.js claude-adapter-lite.js; do
+for FILE in ${clientFiles}; do
   curl -fsSL "\${BASE_URL}/api/client/file/\${FILE}" -o "\${FILE}"
   echo "  ok \${FILE}"
 done
@@ -832,7 +843,7 @@ echo "  ok Actor #\${ACTOR_ID} (\${AGENT_NAME})"
 
 echo "[4/5] Approving workspace trust..."
 cd "\${HOME}/stoa-workspace"
-printf "1\\n" | claude --dangerously-skip-permissions --print -p "hello" > /dev/null 2>&1 || true
+${trustCmd}
 cd "\${AGENT_DIR}"
 
 echo "[5/5] Setting up PM2..."
@@ -851,7 +862,7 @@ module.exports = {
       STOA_TYPE: 'ai',
       STOA_ACTOR_ID: '\${ACTOR_ID}',
       STOA_SECRET: '\${STOA_SECRET}',
-      STOA_WORK_DIR: process.env.HOME + '/stoa-workspace',
+      STOA_WORK_DIR: process.env.HOME + '/stoa-workspace',${backendEnv}
     },
     restart_delay: 3000,
     max_restarts: 50,
@@ -885,7 +896,17 @@ echo "Logs   : pm2 logs \${AGENT_NAME}"
     const stoaUrl = baseUrl.replace(/^https?/, wsProto);
     const token = crypto.randomBytes(12).toString('hex');
     const presetName = url.searchParams.get('name') || '';
-    installTokens.set(token, { expires: Date.now() + 600_000, name: presetName });
+    const ps1Backend = (url.searchParams.get('backend') || 'claude').toLowerCase();
+    installTokens.set(token, { expires: Date.now() + 600_000, name: presetName, backend: ps1Backend });
+
+    const ps1IsGemini = ps1Backend === 'gemini';
+    const ps1Files = ps1IsGemini
+      ? '"stoa.js","gemini-session.js","gemini-adapter.js"'
+      : '"stoa.js","claude-session.js","claude-adapter.js","claude-adapter-lite.js"';
+    const ps1TrustCmd = ps1IsGemini
+      ? 'gemini --skip-trust -y -p "hello" 2>$null'
+      : '"1" | & claude --dangerously-skip-permissions --print -p "hello" 2>$null';
+    const ps1BackendEnv = ps1IsGemini ? `\n      STOA_AI_BACKEND = 'gemini'` : '';
 
     const script = `$ErrorActionPreference = "Stop"
 $BaseUrl = "${baseUrl}"
@@ -894,7 +915,7 @@ $RegToken = "${token}"
 $AgentDir = "$env:USERPROFILE\\stoa-agent"
 $WorkDir  = "$env:USERPROFILE\\stoa-workspace"
 
-Write-Host "=== Stoa Agent Setup ==="
+Write-Host "=== Stoa Agent Setup (${ps1IsGemini ? 'Gemini' : 'Claude'}) ==="
 Write-Host "Server : $BaseUrl"
 Write-Host ""
 
@@ -902,7 +923,7 @@ New-Item -ItemType Directory -Force $AgentDir | Out-Null
 New-Item -ItemType Directory -Force $WorkDir  | Out-Null
 
 Write-Host "[1/5] Downloading client files..."
-foreach ($file in @("stoa.js","claude-session.js","claude-adapter.js","claude-adapter-lite.js")) {
+foreach ($file in @(${ps1Files})) {
   Invoke-WebRequest "$BaseUrl/api/client/file/$file" -OutFile "$AgentDir\\$file" -UseBasicParsing
   Write-Host "  ok $file"
 }
@@ -924,7 +945,7 @@ Write-Host "  ok Actor #$ActorId ($AgentName)"
 
 Write-Host "[4/5] Approving workspace trust..."
 Set-Location $WorkDir
-"1" | & claude --dangerously-skip-permissions --print -p "hello" 2>$null
+${ps1TrustCmd}
 Set-Location $AgentDir
 
 Write-Host "[5/5] Setting up PM2..."
@@ -941,7 +962,7 @@ module.exports = {
       STOA_TYPE: 'ai',
       STOA_ACTOR_ID: String($ActorId),
       STOA_SECRET: '$Secret',
-      STOA_WORK_DIR: require('os').homedir() + '/stoa-workspace',
+      STOA_WORK_DIR: require('os').homedir() + '/stoa-workspace',${ps1BackendEnv}
     },
     restart_delay: 3000,
     max_restarts: 50,
@@ -970,8 +991,11 @@ Write-Host "Logs   : pm2 logs $AgentName"
   if (req.method === 'GET' && url.pathname === '/install.cmd') {
     const host = req.headers.host || `localhost:${PORT}`;
     const baseUrl = getPublicUrl(host);
-    const nameParam = url.searchParams.get('name') ? `?name=${encodeURIComponent(url.searchParams.get('name'))}` : '';
-    const script = `@echo off\r\npowershell -ExecutionPolicy Bypass -Command "irm ${baseUrl}/install.ps1${nameParam} | iex"\r\n`;
+    const cmdParams = [];
+    if (url.searchParams.get('name')) cmdParams.push(`name=${encodeURIComponent(url.searchParams.get('name'))}`);
+    if (url.searchParams.get('backend')) cmdParams.push(`backend=${encodeURIComponent(url.searchParams.get('backend'))}`);
+    const qs = cmdParams.length ? '?' + cmdParams.join('&') : '';
+    const script = `@echo off\r\npowershell -ExecutionPolicy Bypass -Command "irm ${baseUrl}/install.ps1${qs} | iex"\r\n`;
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
     return res.end(script);
   }
@@ -988,10 +1012,11 @@ Write-Host "Logs   : pm2 logs $AgentName"
     const suffix = crypto.randomBytes(3).toString('hex');
     const name = (entry.name || '').trim() || `stoa-${suffix}`;
     const secret = crypto.randomBytes(32).toString('hex');
+    const adapter = entry.backend === 'gemini' ? 'gemini' : 'claude';
     const result = db.prepare(
-      `INSERT INTO actors (name, type, avatar_color, avatar_symbol, secret) VALUES (?, 'ai', '#4d9f9f', '◈', ?)`
-    ).run(name, secret);
-    return json(res, { actor_id: result.lastInsertRowid, name, secret });
+      `INSERT INTO actors (name, type, adapter, avatar_color, avatar_symbol, secret) VALUES (?, 'ai', ?, '#4d9f9f', '◈', ?)`
+    ).run(name, adapter, secret);
+    return json(res, { actor_id: result.lastInsertRowid, name, secret, adapter });
   }
 
   if (req.method === 'POST' && url.pathname.startsWith('/api/invites/') && url.pathname.endsWith('/resolve')) {
@@ -1480,12 +1505,12 @@ async function handleSkillCommand(roomId, rawCommand, senderWs) {
   // Cari AI target di room
   const allAis = targetName
     ? db.prepare(`
-        SELECT rp.id as participant_id, a.id as actor_id, a.name, a.avatar_color, a.avatar_symbol, a.avatar_url
+        SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.avatar_color, a.avatar_symbol, a.avatar_url
         FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
         WHERE rp.room_id=? AND a.type='ai' AND LOWER(a.name)=?
       `).all(roomId, targetName)
     : db.prepare(`
-        SELECT rp.id as participant_id, a.id as actor_id, a.name, a.avatar_color, a.avatar_symbol, a.avatar_url
+        SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.avatar_color, a.avatar_symbol, a.avatar_url
         FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
         WHERE rp.room_id=? AND a.type='ai'
       `).all(roomId);
@@ -1579,8 +1604,9 @@ async function triggerSkillResponse(roomId, ai, prompt) {
   } else {
     const meta = { actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null };
     let fullContent = '';
+    const spawnFn = ai.adapter === 'gemini' ? spawnGemini : spawnClaude;
     try {
-      await spawnClaude({
+      await spawnFn({
         prompt,
         onToken: token => {
           fullContent += token;
@@ -1722,8 +1748,9 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
     });
 
   } else {
-    // ── Fallback: spawn claude directly (no agent connected)
-    console.log(`[trigger] ${ai.name} fallback to direct spawn`);
+    // ── Fallback: spawn directly (no agent connected)
+    const spawnFn = ai.adapter === 'gemini' ? spawnGemini : spawnClaude;
+    console.log(`[trigger] ${ai.name} fallback to direct spawn (${ai.adapter || 'claude'})`);
     let fullContent = '';
     const sessionId = getSession(ai.participant_id, workdir);
 
@@ -1743,7 +1770,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
           spawnPrompt = `${fullPrompt}\n\n---\nIsi file \`${fileName}\`:\n\`\`\`\n${fileContent}\n\`\`\``;
         }
       }
-      const finalSessionId = await spawnClaude({
+      const finalSessionId = await spawnFn({
         prompt: spawnPrompt,
         sessionId,
         imageFilePath,

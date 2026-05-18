@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.2.3';
+const CLIENT_VERSION = '0.2.4';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -11,7 +11,11 @@ const fs = require('fs');
 const crypto = require('crypto');
 const path = require('path');
 const os = require('os');
-const { ClaudeSession } = require('./claude-session');
+
+const AI_BACKEND = (process.env.STOA_AI_BACKEND || 'claude').toLowerCase();
+const SessionClass = AI_BACKEND === 'gemini'
+  ? require('./gemini-session').GeminiSession
+  : require('./claude-session').ClaudeSession;
 
 let STOA_URL      = process.env.STOA_URL    || 'ws://localhost:3001';
 const ACTOR_ID    = parseInt(process.env.STOA_ACTOR_ID || '1');
@@ -47,7 +51,9 @@ const TRIGGER_TIMEOUT = 5 * 60_000;
 
 // ─── Auto-update (agent mode only) ───────────────────────────────────────────
 const UPDATE_INTERVAL = 120_000; // cek tiap 2 menit
-const UPDATE_FILES = ['stoa.js', 'claude-session.js', 'claude-adapter.js', 'claude-adapter-lite.js'];
+const UPDATE_FILES = AI_BACKEND === 'gemini'
+  ? ['stoa.js', 'gemini-session.js', 'gemini-adapter.js']
+  : ['stoa.js', 'claude-session.js', 'claude-adapter.js', 'claude-adapter-lite.js'];
 
 function buildLocalManifest() {
   const manifest = {};
@@ -95,8 +101,8 @@ let claudeSession = null;
 
 function ensureSession() {
   if (!claudeSession) {
-    claudeSession = new ClaudeSession({ workDir: process.env.STOA_WORK_DIR || os.homedir() });
-    console.log(`[stoa] Claude session started`);
+    claudeSession = new SessionClass({ workDir: process.env.STOA_WORK_DIR || os.homedir() });
+    console.log(`[stoa] ${AI_BACKEND} session started`);
   }
   return claudeSession;
 }
@@ -306,7 +312,7 @@ async function processTrigger(msg) {
       session.shutdown();
       const canResume = rid && !needsWorkdirChange;
       const flags = canResume ? ['--resume', rid] : [];
-      claudeSession = new ClaudeSession({ workDir: targetDir, flags, resumeId: canResume ? rid : null });
+      claudeSession = new SessionClass({ workDir: targetDir, flags, resumeId: canResume ? rid : null });
       session = claudeSession;
       console.log(`[stoa] Session restarted: workdir=${targetDir}${rid ? ' resume=' + rid.slice(0, 8) + '...' : ' (fresh)'}`);
     }

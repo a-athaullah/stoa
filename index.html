@@ -2432,17 +2432,17 @@
       <div class="s-content-inner">
         <div class="s-no-agent-banner" id="s-no-agent-banner">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M8 5v3.5M8 11h.01"/></svg>
-          No Claude Code CLI instances connected — add one below before creating rooms.
+          No AI agent instances connected — add one below before creating rooms.
         </div>
         <div class="s-agents-card">
           <div class="s-agents-header">
             <div class="s-agents-header-left">
-              <span style="font-family:var(--h-serif);font-size:16px;color:var(--h-ink);letter-spacing:.01em">claude</span>
-              <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)">humans &amp; Claude Code instances on this server</span>
+              <span style="font-family:var(--h-serif);font-size:16px;color:var(--h-ink);letter-spacing:.01em">agents</span>
+              <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)">humans &amp; AI agent instances on this server</span>
             </div>
             <button class="h-btn-primary" id="s-add-agent-btn" style="padding:6px 12px 6px 10px;display:inline-flex;align-items:center;gap:6px;font-size:13px;letter-spacing:.005em">
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
-              add Claude
+              add agent
             </button>
           </div>
           <div id="s-agents-list"></div>
@@ -5555,6 +5555,7 @@ function sMakeRow(actor, flash) {
   const sub = document.createElement('div');
   sub.className = 's-agent-sub';
   const subParts = [isHuman ? 'you' : `actor #${actor.id}`];
+  if (!isHuman && actor.adapter) subParts.push(actor.adapter);
   if (!isHuman && actor.client_version) subParts.push(`v${actor.client_version}`);
   subParts.push('joined ' + sFormatJoined(actor.created_at));
   sub.textContent = subParts.join(' · ');
@@ -5746,7 +5747,7 @@ async function sCommitDelete(id) {
 
 // ── Add-agent panel ─────────────────────────────────────────────────────────
 function sOpenAddPanel() {
-  sAddPanel = { open: true, name: '', os: sDetectOS(), phase: 'waiting',
+  sAddPanel = { open: true, name: '', os: sDetectOS(), backend: 'claude', phase: 'waiting',
     baselineIds: new Set(settingsActors.map(a => String(a.id))), newActor: null, timer: null };
   document.getElementById('s-add-agent-btn').style.display = 'none';
   sRenderAddPanel();
@@ -5770,7 +5771,10 @@ let sPort = 3000;      // cached from /api/settings
 
 function sGetCmd() {
   const base = sPublicUrl || `http://localhost:${sPort}`;
-  const q = sAddPanel.name ? `?name=${encodeURIComponent(sAddPanel.name)}` : '';
+  const params = [];
+  if (sAddPanel.name) params.push(`name=${encodeURIComponent(sAddPanel.name)}`);
+  if (sAddPanel.backend === 'gemini') params.push('backend=gemini');
+  const q = params.length ? '?' + params.join('&') : '';
   return {
     unix: `curl -fsSL ${base}/install.sh${q} | bash`,
     ps:   `irm ${base}/install.ps1${q} | iex`,
@@ -5787,10 +5791,10 @@ function sRenderAddPanel() {
   hdr.className = 's-panel-header';
   const title = document.createElement('span');
   title.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:17px;color:var(--h-ink)';
-  title.textContent = 'invite a new Claude Code CLI';
+  title.textContent = 'invite a new AI agent';
   const sub = document.createElement('span');
   sub.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)';
-  sub.textContent = 'run a command on the machine you want to enroll';
+  sub.textContent = 'choose a backend and run the command on the target machine';
   const spacer = document.createElement('span'); spacer.style.flex = '1';
   const closeBtn = document.createElement('button');
   closeBtn.className = 's-icon-btn'; closeBtn.title = 'Close'; closeBtn.innerHTML = svgX(15);
@@ -5846,7 +5850,28 @@ function sRenderAddPanel() {
   });
   osGrp.appendChild(osLbl); osGrp.appendChild(osPills);
 
-  fieldRow.appendChild(nameGrp); fieldRow.appendChild(osGrp);
+  // Backend group
+  const beGrp = document.createElement('div');
+  beGrp.className = 's-field-group'; beGrp.style.minWidth = 'auto';
+  const beLbl = document.createElement('span');
+  beLbl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);letter-spacing:.04em';
+  beLbl.textContent = 'backend';
+  const bePills = document.createElement('div');
+  bePills.className = 's-os-pills'; bePills.id = 's-be-pills';
+  [['claude','Claude'],['gemini','Gemini']].forEach(([id,lbl]) => {
+    const p = document.createElement('button');
+    p.type = 'button'; p.className = 's-os-pill' + (sAddPanel.backend === id ? ' active' : '');
+    p.textContent = lbl; p.dataset.be = id;
+    p.addEventListener('click', () => {
+      sAddPanel.backend = id;
+      document.querySelectorAll('#s-be-pills .s-os-pill').forEach(x => x.classList.toggle('active', x.dataset.be === id));
+      sUpdateCmd();
+    });
+    bePills.appendChild(p);
+  });
+  beGrp.appendChild(beLbl); beGrp.appendChild(bePills);
+
+  fieldRow.appendChild(nameGrp); fieldRow.appendChild(osGrp); fieldRow.appendChild(beGrp);
   panel.appendChild(fieldRow);
 
   // Command slip
@@ -5886,7 +5911,7 @@ function sMakeWaitingPill() {
   const w = document.createElement('div');
   w.className = 's-waiting-pill'; w.id = 's-waiting-pill';
   w.innerHTML = `<svg class="s-spinner" viewBox="0 0 16 16" fill="none" stroke="var(--h-ink-mute)" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M14 8a6 6 0 1 1-6-6"/></svg>
-    <span style="font-family:var(--h-serif);font-style:italic;font-size:14px;color:var(--h-ink-mute)">waiting for Claude to connect…</span>
+    <span style="font-family:var(--h-serif);font-style:italic;font-size:14px;color:var(--h-ink-mute)">waiting for agent to connect…</span>
     <span style="flex:1"></span>
     <span style="font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-faint)">usually under 30 seconds</span>`;
   return w;
