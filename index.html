@@ -4228,6 +4228,7 @@ function setComposerProcessing(messageId) {
   processingMessages.add(messageId);
   document.querySelector('.h-composer-box')?.classList.add('ai-processing');
   document.getElementById('stop-btn')?.classList.add('visible');
+  document.getElementById('msg-input')?.blur();
 }
 
 function clearComposerProcessing(messageId) {
