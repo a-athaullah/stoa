@@ -866,17 +866,17 @@
       background: #fff;
     }
     .s-logout-btn {
-      background: transparent;
-      border: 1px solid #c44;
-      color: #c44;
+      background: #c44;
+      border: none;
+      color: #fff;
       font-family: var(--h-serif);
-      font-size: 14px;
-      padding: 8px 20px;
-      border-radius: 8px;
+      font-size: 13px;
+      padding: 7px 18px;
+      border-radius: 6px;
       cursor: pointer;
-      transition: background .15s, color .15s;
+      transition: background .15s;
     }
-    .s-logout-btn:hover { background: #c44; color: #fff; }
+    .s-logout-btn:hover { background: #a33; }
 
     /* Streaming cursor */
     .h-cursor {
@@ -2583,11 +2583,13 @@
           </div>
           <div class="s-server-hint" id="s-notif-hint"></div>
         </div>
-        <div class="s-server-card" style="position:relative;min-height:80px">
+        <div class="s-server-card">
           <div class="s-server-card-header">
             <span style="font-family:var(--h-serif);font-size:16px;color:var(--h-ink)">session</span>
           </div>
-          <button class="s-logout-btn" id="s-logout-btn" style="position:absolute;bottom:16px;right:16px">logout</button>
+          <div class="s-server-field" style="justify-content:flex-end">
+            <button class="s-logout-btn" id="s-logout-btn">logout</button>
+          </div>
         </div>
       </div>
     </div>
