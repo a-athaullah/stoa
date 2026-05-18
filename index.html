@@ -6589,11 +6589,13 @@ init();
   let recognition = null;
   let isRecording = false;
 
+  const isAndroid = /Android/i.test(navigator.userAgent);
+
   function startRecognition() {
     const lang = langs[langIdx];
     recognition = new SpeechRecognition();
     recognition.lang = lang.code;
-    recognition.continuous = true;
+    recognition.continuous = !isAndroid;
     recognition.interimResults = true;
 
     const input = document.getElementById('msg-input');
@@ -6614,7 +6616,11 @@ init();
           interim += t;
         }
       }
-      finalTranscript = rebuilt;
+      if (isAndroid) {
+        if (rebuilt) finalTranscript += rebuilt + ' ';
+      } else {
+        finalTranscript = rebuilt;
+      }
       const full = (finalTranscript + interim).trim();
       if (lang.stop.test(full)) {
         input.textContent = '';
@@ -6648,16 +6654,15 @@ init();
     };
 
     recognition.onerror = (event) => {
-      if (event.error !== 'aborted') {
-        console.warn('Speech recognition error:', event.error);
-      }
+      if (event.error === 'no-speech' || event.error === 'aborted') return;
+      console.warn('Speech recognition error:', event.error);
       stopRecognition();
     };
 
     recognition.onend = () => {
       if (isRecording) {
         skipUntilRestart = false;
-        finalTranscript = '';
+        if (!isAndroid) finalTranscript = '';
         try { recognition.start(); } catch {}
       }
     };
