@@ -242,6 +242,8 @@ function requireAuth(req, res, url) {
   if (url.pathname === '/api/agent/register') return true;
   // Client file API used by agents for auto-update
   if (url.pathname === '/api/client/manifest' || url.pathname.startsWith('/api/client/file/')) return true;
+  // Upload API used by agents (they authenticate via WS, not cookies)
+  if (req.method === 'POST' && url.pathname === '/api/upload/raw') return true;
 
   const cookies = parseCookies(req.headers.cookie);
   const session = validateAuthSession(cookies.stoa_session);
