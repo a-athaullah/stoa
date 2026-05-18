@@ -17,7 +17,7 @@ function spawnGemini({ prompt, sessionId = null, imageFilePath = null, workDir =
 
     if (sessionId) args.push('-r', 'latest');
 
-    const proc = spawn('gemini', args, { cwd: workDir, windowsHide: true });
+    const proc = spawn('gemini', args, { cwd: workDir, shell: true, windowsHide: true });
 
     let buffer = '';
     onState?.('requesting');

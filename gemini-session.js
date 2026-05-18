@@ -48,7 +48,7 @@ class GeminiSession extends EventEmitter {
 
     onState?.('requesting');
 
-    this.proc = spawn('gemini', args, { cwd: this.workDir, windowsHide: true });
+    this.proc = spawn('gemini', args, { cwd: this.workDir, shell: true, windowsHide: true });
 
     let buffer = '';
 
