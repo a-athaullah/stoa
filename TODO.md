@@ -2,7 +2,6 @@
 
 ## Priority 1 — In Progress
 
-- [ ] **Gemini spawn ENOENT** — PM2 tidak bisa find `gemini` executable walau PATH sudah benar. Debug: cek apakah perlu full path ke gemini.cmd/gemini.ps1 di Windows, atau spawn dengan `shell: true`
 - [ ] **Gemini workdir scanner** — filter workdir scan berdasarkan backend (Gemini agent jangan report .claude workdirs)
 
 ## Priority 3 — High Impact
