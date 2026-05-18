@@ -6600,29 +6600,30 @@ init();
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const t = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
-          if (lang.stop.test(t)) {
-            stopRecognition();
-            return;
-          }
-          if (lang.clear.test(t)) {
-            finalTranscript = '';
-            input.textContent = '';
-            return;
-          }
-          if (lang.send.test(t)) {
-            const cleaned = t.replace(lang.send, '').trim();
-            if (cleaned) finalTranscript += cleaned;
-            input.textContent = finalTranscript.trim();
-            if (input.textContent) sendMessage();
-            finalTranscript = '';
-            return;
-          }
           finalTranscript += t;
         } else {
           interim += t;
         }
       }
-      input.textContent = finalTranscript + interim;
+      const full = (finalTranscript + interim).trim();
+      if (lang.stop.test(full)) {
+        stopRecognition();
+        return;
+      }
+      if (lang.clear.test(full)) {
+        finalTranscript = '';
+        input.textContent = '';
+        return;
+      }
+      if (lang.send.test(full)) {
+        const cleaned = full.replace(lang.send, '').trim();
+        input.textContent = cleaned;
+        if (cleaned) sendMessage();
+        finalTranscript = '';
+        input.textContent = '';
+        return;
+      }
+      input.textContent = full;
       const range = document.createRange();
       range.selectNodeContents(input);
       range.collapse(false);
