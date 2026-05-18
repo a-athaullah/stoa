@@ -3233,8 +3233,6 @@ function renderRoomDots(roomId, participants) {
 
 // ── Open room ──────────────────────────────────────────────────────────────
 async function openRoom(room) {
-  const _si = document.getElementById('search-input');
-  if (_si && _si.value) { _si.value = ''; document.getElementById('search-clear').style.display = 'none'; hideSearchResults(); }
   if (settingsOpen) {
     settingsOpen = false;
     sStopPolling();
@@ -4467,6 +4465,7 @@ function initScrollLoader() {
   let searchTimer = null;
 
   searchInput.addEventListener('input', () => {
+    if (document.activeElement !== searchInput) return;
     const q = searchInput.value.trim();
     searchClear.style.display = q ? 'block' : 'none';
     clearTimeout(searchTimer);
@@ -4877,11 +4876,7 @@ async function checkSetup() {
 // ── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
   const si = document.getElementById('search-input');
-  if (si) {
-    si.value = '';
-    setTimeout(() => { si.value = ''; si.blur(); }, 200);
-    setTimeout(() => { si.value = ''; }, 1000);
-  }
+  if (si) si.value = '';
   const saved = localStorage.getItem('stoa-theme');
   applyTheme(saved === 'dark' || (!saved && window.matchMedia('(prefers-color-scheme: dark)').matches));
   // Auth check — show login if not authenticated
