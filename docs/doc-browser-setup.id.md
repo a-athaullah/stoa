@@ -44,6 +44,34 @@ iOS Safari mendukung speech recognition di secure origin. Untuk akses HTTP:
 
 Catatan: iOS Safari mungkin punya dukungan Web Speech API yang terbatas. Untuk pengalaman terbaik, gunakan browser desktop atau Android Chrome.
 
+### Perintah Suara
+
+Saat mikrofon aktif, Anda bisa menggunakan perintah suara tanpa perlu menyentuh layar:
+
+| Perintah (ID) | Perintah (EN) | Aksi |
+|---------------|--------------|------|
+| "kirim sekarang" | "send now" | Kirim pesan |
+| "matikan mic" | "stop listening" | Matikan mic dan kosongkan teks |
+| "hapus semua" | "clear all" | Kosongkan teks, mic tetap aktif |
+
+Ganti bahasa dengan tombol **ID/EN** di samping tombol mic. Pilihan Anda disimpan.
+
+### Perbedaan Perilaku: Desktop vs Android
+
+Voice input berfungsi di desktop dan Android, tetapi dengan perilaku berbeda karena keterbatasan Chrome Android:
+
+| Perilaku | Desktop (Chrome/Edge) | Android (Chrome) |
+|----------|----------------------|-------------------|
+| **Mendengar terus-menerus** | Ya — mic tetap aktif tanpa batas | Terbatas — mic mati setelah jeda singkat (~3-7 detik) |
+| **Setelah diam** | Mic otomatis restart | Mic mati — tap mic untuk melanjutkan |
+| **Teks antar sesi** | Dipertahankan saat restart | Tetap ada di text field — tap mic untuk lanjut |
+| **Perintah suara** | Berfungsi selama mic aktif | Berfungsi selama mic aktif (sebelum timeout) |
+| **Mic saat AI merespons** | Dibisukan (teks tidak ditulis) | Sama — dibisukan saat processing |
+
+**Kenapa berbeda?** Chrome Android tidak mendukung mode continuous listening dengan benar. Restart otomatis mic di Android menghasilkan bunyi "ding" dan bisa menyebabkan teks terduplikasi. Untuk menghindari masalah ini, Stoa membiarkan mic mati secara alami di Android.
+
+**Tips untuk Android**: Ucapkan seluruh pesan dalam satu kali bicara, lalu katakan "kirim sekarang" sebelum berhenti. Ini menghindari timeout dan mengirim dalam satu alur.
+
 ### Dukungan Bahasa
 
 Voice input default ke **Bahasa Indonesia (id-ID)**, yang juga menangkap kata-kata Inggris umum dengan baik. Untuk percakapan campuran Indonesia-Inggris, ini bekerja cukup andal untuk chat sehari-hari.

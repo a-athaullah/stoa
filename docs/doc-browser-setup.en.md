@@ -44,6 +44,34 @@ iOS Safari supports speech recognition on secure origins. For HTTP access:
 
 Note: iOS Safari may have limited Web Speech API support. For the best experience, use a desktop browser or Android Chrome.
 
+### Voice Commands
+
+While the microphone is active, you can use voice commands instead of tapping buttons:
+
+| Command (ID) | Command (EN) | Action |
+|--------------|-------------|--------|
+| "kirim sekarang" | "send now" | Send the message |
+| "matikan mic" | "stop listening" | Turn off mic and clear text |
+| "hapus semua" | "clear all" | Clear text field and keep mic on |
+
+Toggle language with the **ID/EN** button next to the mic button. Your choice is saved.
+
+### Behavior Differences: Desktop vs Android
+
+Voice input works on both desktop and Android, but with different behavior due to Chrome Android limitations:
+
+| Behavior | Desktop (Chrome/Edge) | Android (Chrome) |
+|----------|----------------------|-------------------|
+| **Continuous listening** | Yes — mic stays on indefinitely | Limited — mic stops after brief silence (~3-7s) |
+| **After silence** | Mic auto-restarts seamlessly | Mic turns off — tap mic to resume |
+| **Text between sessions** | Preserved across restarts | Preserved in text field — tap mic to continue |
+| **Voice commands** | Work anytime while mic is on | Work while mic is active (before timeout) |
+| **Mic during AI response** | Muted (no text written) | Same — muted during processing |
+
+**Why the difference?** Android Chrome's Web Speech API does not properly support continuous listening mode. Auto-restarting the mic on Android causes an audible "ding" sound every restart and may produce duplicate text. To avoid these issues, Stoa lets the mic stop naturally on Android.
+
+**Tip for Android**: Speak your full message in one go, then say "kirim sekarang" before pausing. This avoids the timeout and sends in one flow.
+
 ### Language Support
 
 Voice input defaults to **Indonesian (id-ID)**, which also handles common English words well. For mixed Indonesian-English conversations, this works reliably for everyday chat.
