@@ -6595,32 +6595,28 @@ init();
     const lang = langs[langIdx];
     recognition = new SpeechRecognition();
     recognition.lang = lang.code;
-    recognition.continuous = !isAndroid;
+    recognition.continuous = true;
     recognition.interimResults = true;
 
     const input = document.getElementById('msg-input');
     const existingText = input.textContent.replace(/​/g, '').trim();
-    let finalTranscript = existingText ? existingText + ' ' : '';
+    let baseText = existingText ? existingText + ' ' : '';
+    let finalResults = [];
     let skipUntilRestart = false;
 
     recognition.onresult = (event) => {
       if (skipUntilRestart) return;
       if (processingMessages.size > 0) return;
-      let rebuilt = '';
       let interim = '';
-      for (let i = 0; i < event.results.length; i++) {
+      for (let i = event.resultIndex; i < event.results.length; i++) {
         const t = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
-          rebuilt += t;
+          finalResults[i] = t;
         } else {
           interim += t;
         }
       }
-      if (isAndroid) {
-        if (rebuilt) finalTranscript += rebuilt + ' ';
-      } else {
-        finalTranscript = rebuilt;
-      }
+      const finalTranscript = baseText + finalResults.filter(Boolean).join('');
       const full = (finalTranscript + interim).trim();
       if (lang.stop.test(full)) {
         input.textContent = '';
@@ -6628,7 +6624,8 @@ init();
         return;
       }
       if (lang.clear.test(full)) {
-        finalTranscript = '';
+        baseText = '';
+        finalResults = [];
         input.textContent = '';
         skipUntilRestart = true;
         try { recognition.stop(); } catch {}
@@ -6638,7 +6635,8 @@ init();
         const cleaned = full.replace(lang.send, '').trim();
         input.textContent = cleaned;
         if (cleaned) sendMessage();
-        finalTranscript = '';
+        baseText = '';
+        finalResults = [];
         input.textContent = '';
         skipUntilRestart = true;
         try { recognition.stop(); } catch {}
@@ -6662,7 +6660,9 @@ init();
     recognition.onend = () => {
       if (isRecording) {
         skipUntilRestart = false;
-        if (!isAndroid) finalTranscript = '';
+        const currentText = input.textContent.replace(/​/g, '').trim();
+        baseText = currentText ? currentText + ' ' : '';
+        finalResults = [];
         try { recognition.start(); } catch {}
       }
     };
