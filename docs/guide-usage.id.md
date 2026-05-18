@@ -50,7 +50,7 @@ Klik judul room di header chat. Judul menjadi editable — ketik nama baru dan t
 
 ### Menghapus Room
 
-Di desktop: klik kanan room di sidebar, atau geser ke kiri (mobile). Tombol **Delete** merah muncul — klik untuk konfirmasi. Semua pesan di room dihapus permanen.
+Geser baris room ke kanan (drag dengan mouse di desktop, swipe dengan jari di mobile). Tombol **Delete** merah muncul — klik untuk konfirmasi. Semua pesan di room dihapus permanen.
 
 ---
 
@@ -65,7 +65,10 @@ Composer mendukung:
 - **Format Markdown** — bold, italic, code, link, list
 - **Code block** — triple backtick dengan tag bahasa opsional
 - **Hyperlink** — paste URL dan otomatis menjadi link
+- **Emoji picker** — klik tombol emoji untuk menelusuri dan menyisipkan emoji
+- **Paste gambar** — paste gambar dari clipboard langsung ke composer
 - **Input suara** — klik tombol mikrofon untuk mendikte pesan menggunakan speech recognition browser. Lihat [panduan setup browser](doc-browser-setup) untuk browser yang didukung dan pengaturan bahasa
+- **Slash command** — ketik `/` untuk melihat skill yang tersedia di room dalam popup autocomplete
 
 ### Reply-to
 
@@ -73,9 +76,28 @@ Klik **panah reply** di bubble pesan mana pun untuk memulai reply. Preview kutip
 
 Agent memahami konteks reply — saat Anda reply ke pesan tertentu, konten pesan asli disuntikkan ke prompt AI sehingga agent tahu persis apa yang sedang Anda rujuk.
 
+### Aksi Pesan
+
+Hover di atas bubble pesan untuk menampilkan tombol aksi:
+
+- **Copy** — salin konten pesan ke clipboard
+- **Reply** — mulai reply ke pesan tersebut
+
+### Penyimpanan Draf
+
+Pesan yang belum dikirim otomatis disimpan per room. Saat berpindah room dan kembali, draf Anda tetap tersimpan. Room dengan draf yang belum dikirim menampilkan indikator **draft** oranye di sidebar.
+
+### Jejak Proses
+
+Saat AI agent sedang bekerja, Anda bisa melihat tool call-nya (Read, Edit, Bash, dll.) ditampilkan secara real-time di bawah bubble pesan. Ini memberi visibilitas apa yang sedang dikerjakan agent sebelum respons final selesai.
+
 ### Menghentikan Respons
 
 Saat AI agent sedang streaming respons, tombol **Stop** muncul. Klik untuk membatalkan generasi. Pesan akan menampilkan konten yang sudah di-stream sampai saat itu.
+
+### Scroll Tak Terbatas
+
+Hanya pesan terbaru yang dimuat saat membuka room. Scroll ke atas untuk otomatis memuat pesan-pesan lama.
 
 ---
 
@@ -251,7 +273,6 @@ AI agent bisa **menyarankan mengundang** agent lain ke room. Saat agent merasa k
 
 Stoa mendukung **push notification** browser sehingga Anda mendapat notifikasi saat agent merespons, bahkan ketika tab di background.
 
-- Aktifkan via **ikon lonceng** di footer sidebar, atau saat diminta oleh browser
 - Toggle notifikasi on/off di **Settings > General > Notifications**
 
 ---
@@ -313,6 +334,8 @@ Untuk akses mobile dari perangkat lain, siapkan **Tailscale** — lihat [panduan
 | Kirim pesan | Enter |
 | Baris baru | Shift + Enter |
 | Batal reply | Escape |
+| Autocomplete @mention | @ |
+| Autocomplete skill | / |
 
 ---
 

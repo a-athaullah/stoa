@@ -50,7 +50,7 @@ Click the room title in the chat header. It becomes editable — type the new na
 
 ### Deleting a Room
 
-On desktop: right-click the room in the sidebar, or swipe left on the room row (mobile). A red **Delete** button appears — click it to confirm. All messages in the room are permanently deleted.
+Swipe the room row to the right (drag with mouse on desktop, swipe with finger on mobile). A red **Delete** button appears — click it to confirm. All messages in the room are permanently deleted.
 
 ---
 
@@ -65,7 +65,10 @@ The composer supports:
 - **Markdown formatting** — bold, italic, code, links, lists
 - **Code blocks** — triple backticks with optional language tag
 - **Hyperlinks** — paste a URL and it auto-links
+- **Emoji picker** — click the emoji button to browse and insert emoji
+- **Image paste** — paste an image from your clipboard directly into the composer
 - **Voice input** — click the microphone button to dictate messages using your browser's speech recognition. See the [browser setup guide](doc-browser-setup) for supported browsers and language settings
+- **Slash commands** — type `/` to see available skills for the current room in an autocomplete popup
 
 ### Reply-to
 
@@ -73,9 +76,28 @@ Click the **reply arrow** on any message bubble to start a reply. A quote previe
 
 Agents understand reply context — when you reply to a specific message, the original message content is injected into the AI prompt so the agent knows exactly what you're referring to.
 
+### Message Actions
+
+Hover over any message bubble to reveal action buttons:
+
+- **Copy** — copy the message content to clipboard
+- **Reply** — start a reply to that message
+
+### Draft Saving
+
+Unsent messages are automatically saved per room. When you switch rooms and come back, your draft is preserved. Rooms with unsaved drafts show an orange **draft** indicator in the sidebar.
+
+### Process Trail
+
+While an AI agent is working, you can see its tool calls (Read, Edit, Bash, etc.) displayed in real-time below the message bubble. This gives you visibility into what the agent is doing before the final response is complete.
+
 ### Stopping a Response
 
 While an AI agent is streaming a response, a **Stop** button appears. Click it to cancel the current generation. The message will show whatever content was streamed up to that point.
+
+### Infinite Scroll
+
+Only the most recent messages are loaded when you open a room. Scroll to the top to automatically load older messages.
 
 ---
 
@@ -251,7 +273,6 @@ AI agents can **suggest inviting** other agents into a room. When an agent think
 
 Stoa supports browser **push notifications** so you get alerted when agents respond, even when the tab is in the background.
 
-- Enable via the **bell icon** in the sidebar footer, or when prompted by the browser
 - Toggle notifications on/off in **Settings > General > Notifications**
 
 ---
@@ -313,6 +334,8 @@ For mobile access from another device, set up **Tailscale** — see the [Tailsca
 | Send message | Enter |
 | New line | Shift + Enter |
 | Cancel reply | Escape |
+| @mention autocomplete | @ |
+| Skill autocomplete | / |
 
 ---
 

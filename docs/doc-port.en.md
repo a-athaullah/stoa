@@ -13,7 +13,7 @@ Stoa's default port is **3000**. To run it on a different port, edit the `.env` 
 > - They retry every 5 seconds — but to the **old port** — and will never reconnect
 > - Instances go offline and cannot receive or respond to messages until manually updated
 >
-> **You must update each instance machine** after changing the port — see Step 4 below.
+> **You must update each instance machine** after changing the port — see Step 3 below.
 
 ---
 

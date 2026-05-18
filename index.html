@@ -3413,7 +3413,7 @@ function handleWsMessage(msg) {
         renderRoomDots(currentRoomId, parts);
         const room = { id: currentRoomId, title: document.querySelector('.h-room-name')?.textContent || '' };
         renderChatHeader(room, parts);
-      });
+      }).catch(() => {});
     }
     return;
   }
@@ -4032,11 +4032,12 @@ function showInviteCard(msg) {
 async function resolveInvite(inviteId, approved, btns) {
   btns.forEach(b => b.disabled = true);
   try {
-    await fetch(`/api/invites/${inviteId}/resolve`, {
+    const invRes = await fetch(`/api/invites/${inviteId}/resolve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ approved }),
     });
+    if (!invRes.ok) throw new Error('resolve failed');
     if (approved && currentRoomId) {
       const parts = await fjson(`/api/rooms/${currentRoomId}/participants`);
       roomParticipantsCache[currentRoomId] = parts;
@@ -4382,12 +4383,15 @@ async function submitNewRoom() {
     // Create new workdir on agent
     const selectedActor = document.querySelector('#new-room-actors input[type=radio]:checked');
     if (selectedActor) {
-      const res = await fetch(`/api/actors/${selectedActor.value}/workdirs`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: newWdInput.value.trim() })
-      });
-      const wd = await res.json();
-      workdir_id = wd.id;
+      try {
+        const res = await fetch(`/api/actors/${selectedActor.value}/workdirs`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: newWdInput.value.trim() })
+        });
+        if (!res.ok) throw new Error('workdir creation failed');
+        const wd = await res.json();
+        workdir_id = wd.id;
+      } catch { alert('Failed to create working directory'); return; }
     }
   } else if (wdSel && wdSel.value && wdSel.value !== '__new__') {
     workdir_id = parseInt(wdSel.value);
@@ -4494,6 +4498,7 @@ function initScrollLoader() {
   async function doSearch(q) {
     try {
       const res = await fetch(`/api/search?q=${encodeURIComponent(q)}&limit=30`);
+      if (!res.ok) return;
       const rows = await res.json();
       showSearchResults(rows);
     } catch {}
@@ -6024,20 +6029,22 @@ async function sOpenDoc(slug) {
   const body = document.getElementById('s-docs-body');
   body.innerHTML = '<p class="s-docs-empty">loading…</p>';
 
-  const doc = docsCatalog.find(d => d.slug === slug);
-  const lang = doc?.langs.includes(docsLang) ? docsLang : 'en';
-  const filename = `${slug}.${lang}.md`;
-  const res = await fetch(`/api/docs/${encodeURIComponent(filename)}`);
-  if (!res.ok) { body.innerHTML = '<p class="s-docs-empty">document not found.</p>'; return; }
-  const md = await res.text();
-  body.innerHTML = marked.parse(md);
-  addCopyButtons(body);
-  if (lang !== docsLang) {
-    const note = document.createElement('p');
-    note.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12px;color:var(--h-ink-faint);margin-bottom:16px';
-    note.textContent = `Translation not available — showing English version.`;
-    body.insertBefore(note, body.firstChild);
-  }
+  try {
+    const doc = docsCatalog.find(d => d.slug === slug);
+    const lang = doc?.langs.includes(docsLang) ? docsLang : 'en';
+    const filename = `${slug}.${lang}.md`;
+    const res = await fetch(`/api/docs/${encodeURIComponent(filename)}`);
+    if (!res.ok) { body.innerHTML = '<p class="s-docs-empty">document not found.</p>'; return; }
+    const md = await res.text();
+    body.innerHTML = marked.parse(md);
+    addCopyButtons(body);
+    if (lang !== docsLang) {
+      const note = document.createElement('p');
+      note.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12px;color:var(--h-ink-faint);margin-bottom:16px';
+      note.textContent = `Translation not available — showing English version.`;
+      body.insertBefore(note, body.firstChild);
+    }
+  } catch { body.innerHTML = '<p class="s-docs-empty">failed to load document.</p>'; }
 }
 
 async function sLoadGeneralTab() {
@@ -6154,7 +6161,8 @@ async function sRemoveAvatar() {
   const human = humanActor || allActors.find(a => a.type === 'human');
   if (!human) return;
   try {
-    await fetch(`/api/actors/${human.id}/avatar`, { method: 'DELETE' });
+    const delRes = await fetch(`/api/actors/${human.id}/avatar`, { method: 'DELETE' });
+    if (!delRes.ok) throw new Error('avatar delete failed');
     human.avatar_url = null;
     sUpdateAvatarPreview(null);
     renderSidebarFooter();
