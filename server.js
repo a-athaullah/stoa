@@ -904,8 +904,8 @@ echo "Logs   : pm2 logs \${AGENT_NAME}"
       ? '"stoa.js","gemini-session.js","gemini-adapter.js"'
       : '"stoa.js","claude-session.js","claude-adapter.js","claude-adapter-lite.js"';
     const ps1TrustCmd = ps1IsGemini
-      ? 'gemini --skip-trust -y -p "hello" 2>$null'
-      : '"1" | & claude --dangerously-skip-permissions --print -p "hello" 2>$null';
+      ? 'try { gemini --skip-trust -y -p "hello" 2>$null } catch {}'
+      : 'try { "1" | & claude --dangerously-skip-permissions --print -p "hello" 2>$null } catch {}';
     const ps1BackendEnv = ps1IsGemini ? `\n      STOA_AI_BACKEND = 'gemini'` : '';
 
     const script = `$ErrorActionPreference = "Stop"
