@@ -1,9 +1,5 @@
 # Stoa — Todo
 
-## Priority 1 — In Progress
-
-- [ ] **Gemini workdir scanner** — filter workdir scan berdasarkan backend (Gemini agent jangan report .claude workdirs)
-
 ## Priority 3 — High Impact
 
 - [ ] **Multi-model support (lanjutan)** — adapter tambahan selain Claude & Gemini:
