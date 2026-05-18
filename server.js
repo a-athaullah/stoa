@@ -686,6 +686,7 @@ const server = http.createServer(async (req, res) => {
     const { name, avatar_url } = body;
     if (!name?.trim()) { res.writeHead(400); return res.end('name required'); }
     if (avatar_url !== undefined) {
+      if (avatar_url !== null && !avatar_url.startsWith('/uploads/')) { res.writeHead(400); return res.end('invalid avatar_url'); }
       db.prepare('UPDATE actors SET name=?, avatar_url=? WHERE id=?').run(name.trim(), avatar_url, id);
     } else {
       db.prepare('UPDATE actors SET name=? WHERE id=?').run(name.trim(), id);
@@ -1719,10 +1720,11 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
     const fileName = (attachments || []).find(a => a.type === 'file')?.name;
 
     try {
-      const imageFilePath = imageUrl ? path.join(__dirname, imageUrl) : null;
+      const safeAttachUrl = u => u && u.startsWith('/uploads/') && !u.includes('..');
+      const imageFilePath = (imageUrl && safeAttachUrl(imageUrl)) ? path.join(__dirname, imageUrl) : null;
       const TEXT_EXTS = new Set(['.md','.txt','.json','.csv','.html','.js','.ts','.py','.yaml','.yml','.sh','.css']);
       let spawnPrompt = fullPrompt;
-      if (fileUrl && fileName && TEXT_EXTS.has(path.extname(fileName).toLowerCase())) {
+      if (fileUrl && safeAttachUrl(fileUrl) && fileName && TEXT_EXTS.has(path.extname(fileName).toLowerCase())) {
         const filePath = path.join(__dirname, fileUrl);
         if (fs.existsSync(filePath)) {
           const fileContent = fs.readFileSync(filePath, 'utf8');
