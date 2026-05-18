@@ -20,11 +20,16 @@
 - [x] **Push notification** — browser desktop notification saat agent respond di room lain
 - [x] **Export conversation** — download room history sebagai JSON atau CSV dari header room
 
+## Priority 1 — In Progress
+
+- [x] **Gemini CLI backend** — gemini-session.js, gemini-adapter.js, backend selector di Add Agent UI, install script per-backend
+- [ ] **Gemini workdir scanner** — filter workdir scan berdasarkan backend (Gemini agent jangan report .claude workdirs)
+
 ## Priority 3 — High Impact
 
-- [ ] **Multi-model support** — abstraksi adapter layer untuk non-Claude models:
+- [ ] **Multi-model support (lanjutan)** — adapter tambahan selain Claude & Gemini:
+  - [x] Gemini CLI adapter (done)
   - [ ] OpenAI API adapter (via API key langsung)
-  - [ ] Gemini CLI/API adapter
   - [ ] Ollama adapter (local LLM, self-hosted)
   - [ ] LiteLLM proxy support (unified interface)
 - [ ] **Export conversation** — ~~export room history ke JSON dan/atau Markdown~~ (moved to Priority 2 — done)
