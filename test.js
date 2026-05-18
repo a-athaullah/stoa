@@ -8,6 +8,7 @@
 
 const http   = require('http');
 const assert = require('assert');
+const crypto = require('crypto');
 const WebSocket = require('ws');
 const Database = require('better-sqlite3');
 const path   = require('path');
@@ -17,7 +18,8 @@ const WS    = 'ws://localhost:3001';
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'stoa.db');
 
 let db;
-const created = { actors: [], rooms: [], workdirs: [] };
+let SESSION_COOKIE = '';
+const created = { actors: [], rooms: [], workdirs: [], authUserId: null };
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -30,6 +32,7 @@ function req(method, urlPath, body) {
       headers: {
         'Content-Type': 'application/json',
         ...(buf ? { 'Content-Length': buf.length } : {}),
+        ...(SESSION_COOKIE ? { 'Cookie': SESSION_COOKIE } : {}),
       },
     };
     const r = http.request(opts, res => {
@@ -39,7 +42,7 @@ function req(method, urlPath, body) {
         const raw = Buffer.concat(chunks).toString();
         let json;
         try { json = JSON.parse(raw); } catch { json = raw; }
-        resolve({ status: res.statusCode, body: json });
+        resolve({ status: res.statusCode, body: json, headers: res.headers });
       });
     });
     r.on('error', reject);
@@ -50,11 +53,14 @@ function req(method, urlPath, body) {
 
 function reqRaw(method, urlPath) {
   return new Promise((resolve, reject) => {
-    const opts = { hostname: '127.0.0.1', port: 3001, path: urlPath, method };
+    const opts = {
+      hostname: '127.0.0.1', port: 3001, path: urlPath, method,
+      headers: SESSION_COOKIE ? { 'Cookie': SESSION_COOKIE } : {},
+    };
     const r = http.request(opts, res => {
       const chunks = [];
       res.on('data', c => chunks.push(c));
-      res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString() }));
+      res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString(), headers: res.headers }));
     });
     r.on('error', reject);
     r.end();
@@ -132,6 +138,101 @@ async function run() {
 
   db = new Database(DB_PATH, { readonly: false });
 
+  // ── 0b. Auth setup (create test session directly in DB) ────────────────
+  console.log('\n0b · auth setup');
+
+  const TEST_EMAIL = 'test-stoa@test.com';
+  const TEST_PASSWORD = 'test-pass-123';
+
+  await test('create test auth user and session', async () => {
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = crypto.scryptSync(TEST_PASSWORD, salt, 64).toString('hex');
+    const passwordHash = `${salt}:${hash}`;
+    db.prepare('INSERT OR IGNORE INTO auth_users (email, password_hash) VALUES (?,?)').run(TEST_EMAIL, passwordHash);
+    const user = db.prepare('SELECT id FROM auth_users WHERE email=?').get(TEST_EMAIL);
+    assert.ok(user, 'test user must exist');
+    created.authUserId = user.id;
+    const token = crypto.randomBytes(32).toString('hex');
+    const expires = new Date(Date.now() + 3600_000).toISOString();
+    db.prepare('INSERT INTO auth_sessions (token, user_id, expires_at) VALUES (?,?,?)').run(token, user.id, expires);
+    SESSION_COOKIE = `stoa_session=${token}`;
+  });
+
+  // ── 0c. Auth endpoint tests ───────────────────────────────────────────────
+  console.log('\n0c · auth endpoints');
+
+  await test('POST /api/auth/login with valid creds returns 200 + cookie', async () => {
+    const { status, headers } = await req('POST', '/api/auth/login', { email: TEST_EMAIL, password: TEST_PASSWORD });
+    assert.strictEqual(status, 200);
+    assert.ok(headers['set-cookie'], 'expected Set-Cookie header');
+  });
+
+  await test('POST /api/auth/login with wrong password returns 401', async () => {
+    const { status } = await req('POST', '/api/auth/login', { email: TEST_EMAIL, password: 'wrong' });
+    assert.strictEqual(status, 401);
+  });
+
+  await test('GET /api/auth/me returns user info', async () => {
+    const { status, body } = await req('GET', '/api/auth/me');
+    assert.strictEqual(status, 200);
+    assert.strictEqual(body.email, TEST_EMAIL);
+  });
+
+  await test('PATCH /api/auth/email updates email', async () => {
+    const newEmail = 'test-stoa-updated@test.com';
+    const { status, body } = await req('PATCH', '/api/auth/email', { email: newEmail });
+    assert.strictEqual(status, 200);
+    assert.strictEqual(body.email, newEmail);
+    // Revert
+    await req('PATCH', '/api/auth/email', { email: TEST_EMAIL });
+  });
+
+  await test('PATCH /api/auth/email with invalid email returns 400', async () => {
+    const { status } = await req('PATCH', '/api/auth/email', { email: 'not-an-email' });
+    assert.strictEqual(status, 400);
+  });
+
+  await test('PATCH /api/auth/password with correct current password works', async () => {
+    const { status } = await req('PATCH', '/api/auth/password', { current_password: TEST_PASSWORD, new_password: 'new-pass-456' });
+    assert.strictEqual(status, 200);
+    // Change back
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = crypto.scryptSync(TEST_PASSWORD, salt, 64).toString('hex');
+    db.prepare('UPDATE auth_users SET password_hash=? WHERE id=?').run(`${salt}:${hash}`, created.authUserId);
+  });
+
+  await test('PATCH /api/auth/password with wrong current returns 401', async () => {
+    const { status } = await req('PATCH', '/api/auth/password', { current_password: 'wrong', new_password: 'new-pass' });
+    assert.strictEqual(status, 401);
+  });
+
+  await test('PATCH /api/auth/password with short new password returns 400', async () => {
+    const { status } = await req('PATCH', '/api/auth/password', { current_password: TEST_PASSWORD, new_password: '12345' });
+    assert.strictEqual(status, 400);
+  });
+
+  await test('POST /api/auth/logout returns 200 + clears cookie', async () => {
+    // Use a separate session for logout test
+    const logoutToken = crypto.randomBytes(32).toString('hex');
+    const expires = new Date(Date.now() + 3600_000).toISOString();
+    db.prepare('INSERT INTO auth_sessions (token, user_id, expires_at) VALUES (?,?,?)').run(logoutToken, created.authUserId, expires);
+    const { status } = await new Promise((resolve, reject) => {
+      const r = http.request({
+        hostname: '127.0.0.1', port: 3001, path: '/api/auth/logout', method: 'POST',
+        headers: { 'Cookie': `stoa_session=${logoutToken}` },
+      }, res => {
+        const chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => resolve({ status: res.statusCode }));
+      });
+      r.on('error', reject);
+      r.end();
+    });
+    assert.strictEqual(status, 200);
+    const deleted = db.prepare('SELECT id FROM auth_sessions WHERE token=?').get(logoutToken);
+    assert.ok(!deleted, 'session should be deleted after logout');
+  });
+
   // ── 1. Setup ──────────────────────────────────────────────────────────────
   console.log('\n1 · first-run setup');
 
@@ -149,8 +250,10 @@ async function run() {
     if (status.needsSetup) {
       const { status: s, body } = await req('POST', '/api/setup', { name: 'Test Human' });
       assert.strictEqual(s, 200);
-      assert.ok(body.id);
-      humanId = body.id;
+      assert.ok(body.ok);
+      const { body: actors } = await req('GET', '/api/actors');
+      const human = actors.find(a => a.type === 'human');
+      humanId = human.id;
       created.actors.push(humanId);
     } else {
       const { body: actors } = await req('GET', '/api/actors');
@@ -254,29 +357,31 @@ async function run() {
     assert.ok(ids.includes(newWorkdirId));
   });
 
-  // ── 5. Skills ──────────────────────────────────────────────────────────────
-  console.log('\n5 · skills');
-
-  await test('GET /api/actors/:id/skills returns array', async () => {
-    const { body } = await req('GET', `/api/actors/${idrisId}/skills`);
-    assert.ok(Array.isArray(body));
-  });
-
-  await test('GET /api/skills returns global skill list', async () => {
-    const { body } = await req('GET', '/api/skills');
-    assert.ok(Array.isArray(body));
-  });
-
   // ── 6. Room creation ───────────────────────────────────────────────────────
   console.log('\n6 · room creation');
 
-  let roomId;
+  let roomId, firstWorkdirId;
+
+  // Get a workdir_id for room creation (required)
+  await test('get workdir for room creation', async () => {
+    const { body } = await req('GET', `/api/actors/${idrisId}/workdirs`);
+    assert.ok(body.length > 0, 'need at least one workdir');
+    firstWorkdirId = body[0].id;
+  });
+
+  await test('POST /api/rooms without workdir_id returns 400', async () => {
+    const { status } = await req('POST', '/api/rooms', {
+      title: 'Test Room — no wd',
+      participant_ids: [humanId, idrisId],
+    });
+    assert.strictEqual(status, 400);
+  });
 
   await test('POST /api/rooms creates room with participants', async () => {
     const { status, body } = await req('POST', '/api/rooms', {
       title:           'Test Room — flow',
       participant_ids: [humanId, idrisId, kiraId],
-      workdir_id:      null,
+      workdir_id:      firstWorkdirId,
     });
     assert.strictEqual(status, 200);
     assert.ok(body.id, `expected body.id, got: ${JSON.stringify(body)}`);
@@ -386,7 +491,7 @@ async function run() {
   await test('POST with invalid JSON returns 400', async () => {
     const { status } = await new Promise((resolve, reject) => {
       const r = http.request({ hostname: '127.0.0.1', port: 3001, path: '/api/rooms', method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': 5 } }, res => {
+        headers: { 'Content-Type': 'application/json', 'Content-Length': 5, 'Cookie': SESSION_COOKIE } }, res => {
         const chunks = [];
         res.on('data', c => chunks.push(c));
         res.on('end', () => resolve({ status: res.statusCode }));
@@ -445,12 +550,30 @@ async function run() {
   // ── 8l. File upload (base64) ──────────────────────────────────────────────
   console.log('\n8l · file upload');
 
-  await test('POST /api/upload returns file URL', async () => {
-    const data = Buffer.from('hello test').toString('base64');
-    const { status, body } = await req('POST', '/api/upload', {
-      data: `data:text/plain;base64,${data}`,
-      mimeType: 'text/plain',
-      fileName: 'test-upload.txt',
+  await test('POST /api/upload/raw (text) returns file URL', async () => {
+    const { status, body } = await new Promise((resolve, reject) => {
+      const buf = Buffer.from('hello upload test');
+      const r = http.request({
+        hostname: '127.0.0.1', port: 3001,
+        path: '/api/upload/raw', method: 'POST',
+        headers: {
+          'Content-Type': 'text/plain',
+          'Content-Length': buf.length,
+          'X-File-Name': encodeURIComponent('test-upload.txt'),
+          'Cookie': SESSION_COOKIE,
+        },
+      }, res => {
+        const chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => {
+          const raw = Buffer.concat(chunks).toString();
+          let json; try { json = JSON.parse(raw); } catch { json = raw; }
+          resolve({ status: res.statusCode, body: json });
+        });
+      });
+      r.on('error', reject);
+      r.write(buf);
+      r.end();
     });
     assert.strictEqual(status, 200);
     assert.ok(body.url, 'expected url in response');
@@ -485,6 +608,7 @@ async function run() {
           'Content-Type': 'application/octet-stream',
           'Content-Length': buf.length,
           'X-File-Name': encodeURIComponent('test-raw.bin'),
+          'Cookie': SESSION_COOKIE,
         },
       }, res => {
         const chunks = [];
@@ -579,7 +703,7 @@ async function run() {
 
   await test('POST /api/rooms/:id/participants adds actor to room', async () => {
     // Create a new room with only human
-    const { body: newRoom } = await req('POST', '/api/rooms', { title: 'Test Room — add-part', participant_ids: [humanId] });
+    const { body: newRoom } = await req('POST', '/api/rooms', { title: 'Test Room — add-part', participant_ids: [humanId], workdir_id: firstWorkdirId });
     created.rooms.push(newRoom.id);
     const { status } = await req('POST', `/api/rooms/${newRoom.id}/participants`, { actor_id: kiraId });
     assert.strictEqual(status, 200);
@@ -590,6 +714,178 @@ async function run() {
   await test('POST /api/rooms/:id/participants without actor_id returns 400', async () => {
     const { status } = await req('POST', `/api/rooms/${roomId}/participants`, {});
     assert.strictEqual(status, 400);
+  });
+
+  // ── 9d. Room skills ────────────────────────────────────────────────────────
+  console.log('\n9d · room skills');
+
+  await test('GET /api/rooms/:id/skills returns array', async () => {
+    const { status, body } = await req('GET', `/api/rooms/${roomId}/skills`);
+    assert.strictEqual(status, 200);
+    assert.ok(Array.isArray(body));
+  });
+
+  await test('GET /api/rooms/999999/skills returns 404', async () => {
+    const { status } = await req('GET', '/api/rooms/999999/skills');
+    assert.strictEqual(status, 404);
+  });
+
+  // ── 9e. Room export ───────────────────────────────────────────────────────
+  console.log('\n9e · room export');
+
+  await test('GET /api/rooms/:id/export returns JSON export', async () => {
+    const { status, body } = await req('GET', `/api/rooms/${roomId}/export`);
+    assert.strictEqual(status, 200);
+    assert.ok(body.room, 'expected room in export');
+    assert.ok(Array.isArray(body.messages), 'expected messages array');
+  });
+
+  await test('GET /api/rooms/:id/export?format=csv returns CSV', async () => {
+    const { status, body } = await reqRaw('GET', `/api/rooms/${roomId}/export?format=csv`);
+    assert.strictEqual(status, 200);
+    assert.ok(body.startsWith('id,'), 'expected CSV header');
+  });
+
+  await test('GET /api/rooms/999999/export returns 404', async () => {
+    const { status } = await reqRaw('GET', '/api/rooms/999999/export');
+    assert.strictEqual(status, 404);
+  });
+
+  // ── 9f. Room delete via REST ──────────────────────────────────────────────
+  console.log('\n9f · room delete');
+
+  await test('DELETE /api/rooms/:id deletes room', async () => {
+    const { body: tmpRoom } = await req('POST', '/api/rooms', { title: 'Test Room — delete-test', participant_ids: [humanId], workdir_id: firstWorkdirId });
+    assert.ok(tmpRoom.id);
+    const { status } = await req('DELETE', `/api/rooms/${tmpRoom.id}`);
+    assert.strictEqual(status, 204);
+    const check = db.prepare('SELECT id FROM rooms WHERE id=?').get(tmpRoom.id);
+    assert.ok(!check, 'room should be deleted');
+  });
+
+  // ── 9g. Upload retrieval & path traversal ─────────────────────────────────
+  console.log('\n9g · upload retrieval');
+
+  let uploadedUrl;
+  await test('POST /api/upload/raw then GET /uploads/:path returns file content', async () => {
+    const content = 'retrieve-me-test-content-' + Date.now();
+    const buf = Buffer.from(content);
+    const { status, body } = await new Promise((resolve, reject) => {
+      const r = http.request({
+        hostname: '127.0.0.1', port: 3001,
+        path: '/api/upload/raw', method: 'POST',
+        headers: {
+          'Content-Type': 'text/plain',
+          'Content-Length': buf.length,
+          'X-File-Name': encodeURIComponent('retrieve-test.txt'),
+          'Cookie': SESSION_COOKIE,
+        },
+      }, res => {
+        const chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => {
+          const raw = Buffer.concat(chunks).toString();
+          let json; try { json = JSON.parse(raw); } catch { json = raw; }
+          resolve({ status: res.statusCode, body: json });
+        });
+      });
+      r.on('error', reject);
+      r.write(buf);
+      r.end();
+    });
+    assert.strictEqual(status, 200);
+    uploadedUrl = body.url;
+    const { status: getStatus, body: getBody } = await reqRaw('GET', uploadedUrl);
+    assert.strictEqual(getStatus, 200);
+    assert.strictEqual(getBody, content);
+  });
+
+  await test('GET /uploads/../../server.js path traversal returns 404', async () => {
+    const { status } = await reqRaw('GET', '/uploads/../../server.js');
+    assert.ok(status === 403 || status === 404, `expected 403 or 404, got ${status}`);
+  });
+
+  await test('GET /uploads/../../../etc/passwd path traversal returns 404', async () => {
+    const { status } = await reqRaw('GET', '/uploads/../../../etc/passwd');
+    assert.ok(status === 403 || status === 404, `expected 403 or 404, got ${status}`);
+  });
+
+  // ── 9h. Unauthenticated access rejection ─────────────────────────────────
+  console.log('\n9h · unauthenticated access');
+
+  await test('GET /api/actors without cookie returns 401', async () => {
+    const { status } = await new Promise((resolve, reject) => {
+      const r = http.request({
+        hostname: '127.0.0.1', port: 3001, path: '/api/actors', method: 'GET',
+        headers: {},
+      }, res => {
+        const chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => resolve({ status: res.statusCode }));
+      });
+      r.on('error', reject);
+      r.end();
+    });
+    assert.strictEqual(status, 401);
+  });
+
+  await test('GET /api/rooms without cookie returns 401', async () => {
+    const { status } = await new Promise((resolve, reject) => {
+      const r = http.request({
+        hostname: '127.0.0.1', port: 3001, path: '/api/rooms', method: 'GET',
+        headers: {},
+      }, res => {
+        const chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => resolve({ status: res.statusCode }));
+      });
+      r.on('error', reject);
+      r.end();
+    });
+    assert.strictEqual(status, 401);
+  });
+
+  await test('GET /api/settings without cookie returns 401', async () => {
+    const { status } = await new Promise((resolve, reject) => {
+      const r = http.request({
+        hostname: '127.0.0.1', port: 3001, path: '/api/settings', method: 'GET',
+        headers: {},
+      }, res => {
+        const chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => resolve({ status: res.statusCode }));
+      });
+      r.on('error', reject);
+      r.end();
+    });
+    assert.strictEqual(status, 401);
+  });
+
+  // ── 9i. Agent register with invalid token ─────────────────────────────────
+  console.log('\n9i · agent register invalid token');
+
+  await test('POST /api/agent/register with bogus token returns 401', async () => {
+    const { status, body } = await req('POST', '/api/agent/register', { token: 'bogus' });
+    assert.strictEqual(status, 401);
+    assert.ok(body.error, 'expected error field in response');
+  });
+
+  // ── 9j. Rescan & force-update when agent offline ─────────────────────────
+  console.log('\n9j · agent commands when offline');
+
+  // Disconnect agents first so they are offline for these tests
+  if (idrisWs) { idrisWs.close(); idrisWs = null; }
+  if (kiraWs)  { kiraWs.close();  kiraWs = null; }
+  await sleep(300); // let server notice disconnects
+
+  await test('POST /api/actors/:id/rescan when agent offline returns 503', async () => {
+    const { status } = await req('POST', `/api/actors/${idrisId}/rescan`);
+    assert.strictEqual(status, 503);
+  });
+
+  await test('POST /api/actors/:id/force-update when agent offline returns 503', async () => {
+    const { status } = await req('POST', `/api/actors/${idrisId}/force-update`);
+    assert.strictEqual(status, 503);
   });
 
   // ── 10. Cleanup ────────────────────────────────────────────────────────────
@@ -626,6 +922,16 @@ async function run() {
     const { body: actors } = await req('GET', '/api/actors');
     const testActors = actors.filter(a => created.actors.includes(a.id));
     assert.strictEqual(testActors.length, 0);
+  });
+
+  // Clean up test auth user
+  await test('cleanup test auth user', async () => {
+    if (created.authUserId) {
+      db.prepare('DELETE FROM auth_sessions WHERE user_id=?').run(created.authUserId);
+      db.prepare('DELETE FROM auth_users WHERE id=?').run(created.authUserId);
+    }
+    const remaining = db.prepare('SELECT id FROM auth_users WHERE email=?').get(TEST_EMAIL);
+    assert.ok(!remaining, 'test auth user should be cleaned up');
   });
 
   db.close();
