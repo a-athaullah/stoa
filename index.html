@@ -6614,6 +6614,7 @@ init();
       }
       const full = (finalTranscript + interim).trim();
       if (lang.stop.test(full)) {
+        input.textContent = '';
         stopRecognition();
         return;
       }
