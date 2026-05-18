@@ -6599,6 +6599,10 @@ init();
     const existingText = input.textContent.replace(/​/g, '').trim();
     let finalTranscript = existingText ? existingText + ' ' : '';
 
+    function restartClean() {
+      try { recognition.stop(); } catch {}
+    }
+
     recognition.onresult = (event) => {
       let interim = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -6617,6 +6621,7 @@ init();
       if (lang.clear.test(full)) {
         finalTranscript = '';
         input.textContent = '';
+        restartClean();
         return;
       }
       if (lang.send.test(full)) {
@@ -6625,6 +6630,7 @@ init();
         if (cleaned) sendMessage();
         finalTranscript = '';
         input.textContent = '';
+        restartClean();
         return;
       }
       input.textContent = full;
