@@ -5775,10 +5775,11 @@ function sGetCmd() {
   if (sAddPanel.name) params.push(`name=${encodeURIComponent(sAddPanel.name)}`);
   if (sAddPanel.backend === 'gemini') params.push('backend=gemini');
   const q = params.length ? '?' + params.join('&') : '';
+  const url = `${base}/${({unix:'install.sh',ps:'install.ps1',cmd:'install.cmd'})[sAddPanel.os]}${q}`;
   return {
-    unix: `curl -fsSL ${base}/install.sh${q} | bash`,
-    ps:   `irm ${base}/install.ps1${q} | iex`,
-    cmd:  `curl -fsSL ${base}/install.cmd -o i.cmd && i.cmd && del i.cmd`,
+    unix: `curl -fsSL "${url}" | bash`,
+    ps:   `irm "${url}" | iex`,
+    cmd:  `curl -fsSL "${url}" -o i.cmd && i.cmd && del i.cmd`,
   }[sAddPanel.os];
 }
 
