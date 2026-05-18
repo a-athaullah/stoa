@@ -4456,7 +4456,7 @@ function initScrollLoader() {
 }
 
 // ── Search ──────────────────────────────────────────────────────────────────
-{
+setTimeout(() => {
   const searchSlot = document.getElementById('search-input-slot');
   const searchInput = document.createElement('input');
   searchInput.id = 'search-input';
@@ -4554,7 +4554,7 @@ function initScrollLoader() {
       setTimeout(() => { el.style.background = ''; }, 2000);
     }
   }
-}
+}, 0);
 
 // ── Utility ─────────────────────────────────────────────────────────────────
 function relativeTime(ts) {
