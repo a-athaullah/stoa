@@ -1938,13 +1938,14 @@
     .h-copy-btn.copied { color: #7fb98c; }
 
     /* table */
-    .h-bubble table { border-collapse: collapse; margin: 0.5em 0; font-size: 0.9em; }
+    .h-bubble table { border-collapse: collapse; margin: 0.5em 0; font-size: 0.82em; width: auto; max-width: 100%; overflow-x: auto; display: block; }
     .h-bubble th, .h-bubble td {
       border: 1px solid var(--h-hair-soft);
-      padding: 5px 10px;
+      padding: 3px 7px;
       text-align: left;
+      white-space: nowrap;
     }
-    .h-bubble th { background: color-mix(in srgb, var(--h-hairline) 30%, transparent); }
+    .h-bubble th { background: color-mix(in srgb, var(--h-hairline) 30%, transparent); font-weight: 600; }
 
     /* ── Responsive mobile ──────────────────────────────── */
     #mobile-back { display: none; }
