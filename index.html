@@ -2682,6 +2682,7 @@
               </button>
             </div>
           </span>
+          <button class="h-icon-btn" id="voice-lang-btn" title="Voice language" style="font-family:var(--h-serif);font-size:11px;font-weight:700;padding:0 3px;min-width:22px;letter-spacing:0.5px">ID</button>
           <button class="h-icon-btn" id="voice-btn" title="Speech to text" aria-label="Speech to text">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
               <rect x="9" y="3" width="6" height="12" rx="3"/>
@@ -6558,17 +6559,35 @@ init();
 (function() {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   const voiceBtn = document.getElementById('voice-btn');
+  const langBtn = document.getElementById('voice-lang-btn');
   if (!SpeechRecognition || !voiceBtn) {
     if (voiceBtn) voiceBtn.title = 'Speech not supported in this browser';
+    if (langBtn) langBtn.style.display = 'none';
     return;
   }
+
+  const langs = [
+    { code: 'id-ID', label: 'ID', send: /kirim sekarang/i, stop: /matikan mic/i },
+    { code: 'en-US', label: 'EN', send: /send now/i, stop: /stop listening/i }
+  ];
+  let langIdx = parseInt(localStorage.getItem('stoa-voice-lang') || '0', 10);
+  if (langIdx >= langs.length) langIdx = 0;
+  langBtn.textContent = langs[langIdx].label;
+
+  langBtn.addEventListener('click', () => {
+    langIdx = (langIdx + 1) % langs.length;
+    localStorage.setItem('stoa-voice-lang', langIdx);
+    langBtn.textContent = langs[langIdx].label;
+    if (isRecording) { stopRecognition(); startRecognition(); }
+  });
 
   let recognition = null;
   let isRecording = false;
 
   function startRecognition() {
+    const lang = langs[langIdx];
     recognition = new SpeechRecognition();
-    recognition.lang = 'id-ID';
+    recognition.lang = lang.code;
     recognition.continuous = true;
     recognition.interimResults = true;
 
@@ -6581,6 +6600,18 @@ init();
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const t = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
+          if (lang.stop.test(t)) {
+            stopRecognition();
+            return;
+          }
+          if (lang.send.test(t)) {
+            const cleaned = t.replace(lang.send, '').trim();
+            if (cleaned) finalTranscript += cleaned;
+            input.textContent = finalTranscript.trim();
+            if (input.textContent) sendMessage();
+            finalTranscript = '';
+            return;
+          }
           finalTranscript += t;
         } else {
           interim += t;
