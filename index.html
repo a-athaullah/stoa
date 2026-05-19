@@ -3388,6 +3388,11 @@ function handleWsMessage(msg) {
     return;
   }
 
+  if (msg.type === 'model_update') {
+    handleModelUpdate(msg);
+    return;
+  }
+
   if (msg.type === 'invite_suggestion') {
     showInviteCard(msg);
     return;
@@ -4623,6 +4628,23 @@ function formatModelName(model) {
     .replace(/^gemini-/, 'gemini ')
     .replace(/-(\d)/, ' $1')
     .replace(/-preview$/, '');
+}
+
+function handleModelUpdate(msg) {
+  if (currentRoomWorkdirId !== msg.workdir_id) return;
+  const badge = document.querySelector('.h-model-badge');
+  const label = formatModelName(msg.model);
+  if (badge && label) badge.textContent = label;
+  else if (badge && !label) badge.remove();
+  else if (!badge && label) {
+    const tagline = document.querySelector('.h-room-tagline');
+    if (tagline) {
+      const b = document.createElement('span');
+      b.className = 'h-model-badge';
+      b.textContent = label;
+      tagline.appendChild(b);
+    }
+  }
 }
 
 // ── Skill autocomplete ─────────────────────────────────────────────────────
@@ -6390,23 +6412,7 @@ function initGlobalWs() {
         }
         refreshRoomList();
       }
-      if (msg.type === 'model_update') {
-        if (currentRoomWorkdirId === msg.workdir_id) {
-          const badge = document.querySelector('.h-model-badge');
-          const label = formatModelName(msg.model);
-          if (badge && label) badge.textContent = label;
-          else if (badge && !label) badge.remove();
-          else if (!badge && label) {
-            const tagline = document.querySelector('.h-room-tagline');
-            if (tagline) {
-              const b = document.createElement('span');
-              b.className = 'h-model-badge';
-              b.textContent = label;
-              tagline.appendChild(b);
-            }
-          }
-        }
-      }
+      if (msg.type === 'model_update') handleModelUpdate(msg);
       if (msg.type === 'room_created' || msg.type === 'room_activity' || msg.type === 'room_updated') {
         // Notify for activity in rooms user is not currently viewing
         if (msg.type === 'room_activity' && msg.room_id !== currentRoomId) {

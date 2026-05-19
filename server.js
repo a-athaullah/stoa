@@ -1335,9 +1335,14 @@ wss.on('connection', (ws, req) => {
     // ── Agent reports model for a workdir
     if (msg.type === 'model_info' && agentActorId) {
       const wd = db.prepare('SELECT id, model FROM agent_workdirs WHERE actor_id=? AND path=?').get(agentActorId, msg.workdir);
-      if (wd && wd.model !== msg.model) {
-        db.prepare('UPDATE agent_workdirs SET model=? WHERE id=?').run(msg.model || null, wd.id);
-        broadcastGlobal({ type: 'model_update', workdir_id: wd.id, model: msg.model });
+      if (wd) {
+        if (wd.model !== (msg.model || null)) {
+          db.prepare('UPDATE agent_workdirs SET model=? WHERE id=?').run(msg.model || null, wd.id);
+        }
+        const payload = { type: 'model_update', workdir_id: wd.id, model: msg.model || null };
+        broadcastGlobal(payload);
+        const affectedRooms = db.prepare('SELECT id FROM rooms WHERE workdir_id=?').all(wd.id);
+        for (const r of affectedRooms) broadcast(r.id, payload);
       }
     }
 
