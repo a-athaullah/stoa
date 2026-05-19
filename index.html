@@ -3346,6 +3346,12 @@ function handleWsMessage(msg) {
     msg.messages.forEach(m => appendMessage(m));
     if (msg.messages.length > 0) oldestMessageId = msg.messages[0].id;
     noMoreOlder = msg.messages.length < 100;
+    for (const m of msg.messages) {
+      if (m.state === 'streaming' || m.state === 'requesting') {
+        showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url);
+        setComposerProcessing(m.id);
+      }
+    }
     scrollToBottom(true);
     return;
   }
