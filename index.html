@@ -2092,16 +2092,16 @@
       padding: 4px 0; overflow-y: auto; display: flex; flex-direction: column;
     }
     .s-docs-lang-row {
-      display: flex; gap: 4px; padding: 10px 14px 8px; border-bottom: 1px solid var(--h-hair-soft);
+      padding: 10px 14px 8px; border-bottom: 1px solid var(--h-hair-soft);
       flex-shrink: 0;
     }
-    .s-docs-lang-btn {
-      background: transparent; border: 1px solid var(--h-hairline); border-radius: 999px;
-      padding: 2px 9px; font-size: 11px; cursor: pointer; font-family: var(--h-sans);
-      color: var(--h-ink-mute); letter-spacing: .04em; transition: background .12s, color .12s;
+    .s-docs-lang-select {
+      width: 100%; background: var(--h-bg); border: 1px solid var(--h-hairline); border-radius: 6px;
+      padding: 6px 10px; font-size: 12px; cursor: pointer; font-family: var(--h-sans);
+      color: var(--h-ink); letter-spacing: .04em; appearance: auto;
     }
-    .s-docs-lang-btn:hover { background: var(--h-surface); color: var(--h-ink); }
-    .s-docs-lang-btn.active { background: var(--h-ink); color: var(--h-bg); border-color: var(--h-ink); }
+    .s-docs-lang-select:hover { border-color: var(--h-ink-mute); }
+    .s-docs-lang-select:focus { outline: none; border-color: var(--h-ink); }
     .s-docs-file-list { flex: 1; overflow-y: auto; padding: 4px 0; }
     .s-docs-file {
       display: block; padding: 9px 18px; font-size: 13px; font-family: var(--h-serif);
@@ -2593,7 +2593,9 @@
     <div class="s-content" id="s-tab-docs" style="display:none">
       <div class="s-docs-layout">
         <div class="s-docs-sidebar">
-          <div class="s-docs-lang-row" id="s-docs-lang-row"></div>
+          <div class="s-docs-lang-row">
+            <select class="s-docs-lang-select" id="s-docs-lang-select"></select>
+          </div>
           <div class="s-docs-file-list" id="s-docs-sidebar"></div>
         </div>
         <div class="s-docs-body" id="s-docs-body">
@@ -6109,21 +6111,21 @@ async function sLoadDocsTab() {
 
 function sRenderDocsLangRow() {
   const allLangs = [...new Set(docsCatalog.flatMap(d => d.langs))].sort();
-  const row = document.getElementById('s-docs-lang-row');
-  row.innerHTML = '';
+  const sel = document.getElementById('s-docs-lang-select');
+  sel.innerHTML = '';
   for (const lang of allLangs) {
-    const btn = document.createElement('button');
-    btn.className = 's-docs-lang-btn' + (lang === docsLang ? ' active' : '');
-    btn.textContent = STOA_LANGS[lang] || lang.toUpperCase();
-    btn.addEventListener('click', () => {
-      docsLang = lang;
-      localStorage.setItem('stoa-docs-lang', lang);
-      sRenderDocsLangRow();
-      sRenderDocsSidebar();
-      if (docsActiveSlug) sOpenDoc(docsActiveSlug);
-    });
-    row.appendChild(btn);
+    const opt = document.createElement('option');
+    opt.value = lang;
+    opt.textContent = STOA_LANGS[lang] || lang.toUpperCase();
+    if (lang === docsLang) opt.selected = true;
+    sel.appendChild(opt);
   }
+  sel.onchange = () => {
+    docsLang = sel.value;
+    localStorage.setItem('stoa-docs-lang', docsLang);
+    sRenderDocsSidebar();
+    if (docsActiveSlug) sOpenDoc(docsActiveSlug);
+  };
 }
 
 function sRenderDocsSidebar() {
