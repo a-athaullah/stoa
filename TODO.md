@@ -1,5 +1,9 @@
 # Stoa — Todo
 
+## Priority 2 — In Progress
+
+- [ ] **Gemini model detection** — detect configured model for Gemini CLI workdirs (saat ini hanya Claude yang ter-detect via `.claude/settings.json`)
+
 ## Priority 3 — High Impact
 
 - [ ] **Multi-model support (lanjutan)** — adapter tambahan selain Claude & Gemini:
