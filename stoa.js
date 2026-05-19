@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.2.17';
+const CLIENT_VERSION = '0.2.18';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -50,7 +50,7 @@ let consecutiveFailures = 0;
 let consecutiveTriggerErrors = 0;
 const MAX_TRIGGER_ERRORS = 3;
 const TRIGGER_TIMEOUT = 5 * 60_000;
-const MAX_CONCURRENT = parseInt(process.env.STOA_MAX_CONCURRENT || '1');
+let MAX_CONCURRENT = parseInt(process.env.STOA_MAX_CONCURRENT || '1');
 
 // ─── Auto-update (agent mode only) ───────────────────────────────────────────
 const UPDATE_INTERVAL = 120_000; // cek tiap 2 menit
@@ -183,6 +183,15 @@ async function handleAgentMessage(msg) {
       send({ type: 'agent_scan_result', ...scanResult });
     } catch (err) {
       console.error('[stoa] Scan failed:', err.message);
+    }
+  }
+
+  if (msg.type === 'set_config') {
+    if (msg.max_concurrent !== undefined) {
+      const prev = MAX_CONCURRENT;
+      MAX_CONCURRENT = Math.max(1, Math.min(10, parseInt(msg.max_concurrent) || 1));
+      if (prev !== MAX_CONCURRENT) console.log(`[stoa] max_concurrent: ${prev} → ${MAX_CONCURRENT}`);
+      drainQueue();
     }
   }
 

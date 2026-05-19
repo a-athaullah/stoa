@@ -649,6 +649,7 @@ const server = http.createServer(async (req, res) => {
       port:        PORT,
       human_name_from_env: !!process.env.HUMAN_NAME,
       max_ai_turns: parseInt(process.env.MAX_AI_TURNS) || 5,
+      max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1,
       cleanup_cron_hour: parseInt(process.env.CLEANUP_CRON_HOUR) || 10,
       cleanup_max_age_hours: parseInt(process.env.CLEANUP_MAX_AGE_HOURS) || 24,
     });
@@ -667,6 +668,13 @@ const server = http.createServer(async (req, res) => {
     if (body.max_ai_turns !== undefined) {
       const val = parseInt(body.max_ai_turns);
       if (val >= 1 && val <= 100) { writeEnv('MAX_AI_TURNS', String(val)); process.env.MAX_AI_TURNS = String(val); }
+    }
+    if (body.max_concurrent !== undefined) {
+      const val = parseInt(body.max_concurrent);
+      if (val >= 1 && val <= 10) {
+        writeEnv('MAX_CONCURRENT', String(val)); process.env.MAX_CONCURRENT = String(val);
+        for (const [, agentWs] of agentClients) agentWs.send(JSON.stringify({ type: 'set_config', max_concurrent: val }));
+      }
     }
     if (body.cleanup_cron_hour !== undefined) {
       const val = parseInt(body.cleanup_cron_hour);
@@ -1277,6 +1285,7 @@ wss.on('connection', (ws, req) => {
       if (msg.client_version) agentVersions.set(agentActorId, msg.client_version);
       console.log(`[agent] Actor #${agentActorId} connected (v${msg.client_version || '?'})`);
       ws.send(JSON.stringify({ type: 'agent_ready' }));
+      ws.send(JSON.stringify({ type: 'set_config', max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1 }));
       const connectedActor = db.prepare('SELECT id, name, type, avatar_color, avatar_symbol, avatar_url, created_at FROM actors WHERE id=?').get(agentActorId);
       if (connectedActor) broadcastGlobal({ type: 'actor_status', actor: { ...connectedActor, online: true, client_version: msg.client_version || null } });
     }
