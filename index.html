@@ -4286,9 +4286,6 @@ async function loadWorkdirsForActor(actorId) {
 
   const workdirs = await fjson(`/api/actors/${actorId}/workdirs`);
   sel.innerHTML = '';
-  if (workdirs.length === 0) {
-    section.style.display = 'none'; return;
-  }
   section.style.display = 'block';
   newWdRow.style.display = 'none';
   workdirs.forEach(w => {
@@ -4301,12 +4298,17 @@ async function loadWorkdirsForActor(actorId) {
 
   if (isGemini) {
     sel.disabled = true;
+    if (workdirs.length === 0) { section.style.display = 'none'; }
   } else {
     sel.disabled = false;
     const newOpt = document.createElement('option');
     newOpt.value = '__new__';
     newOpt.textContent = '+ new folder…';
     sel.appendChild(newOpt);
+    if (workdirs.length === 0) {
+      newOpt.selected = true;
+      newWdRow.style.display = 'flex';
+    }
   }
 
   // Remove old listener by cloning
