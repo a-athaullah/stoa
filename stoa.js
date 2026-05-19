@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.2.14';
+const CLIENT_VERSION = '0.2.15';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -226,6 +226,13 @@ async function handleAgentMessage(msg) {
       const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
       model = JSON.parse(stripped).model || null;
     } catch {}
+    if (!model) {
+      try {
+        const raw = fs.readFileSync(path.join(os.homedir(), '.claude', 'settings.json'), 'utf8');
+        const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+        model = JSON.parse(stripped).model || null;
+      } catch {}
+    }
     send({ type: 'model_info', workdir: msg.workdir, model });
   }
 
@@ -521,12 +528,19 @@ function scanForWorkdirs() {
     } catch { return false; }
   }
 
-  function readModel(dir) {
+  function parseJsonc(filePath) {
     try {
-      const raw = fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf8');
+      const raw = fs.readFileSync(filePath, 'utf8');
       const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
-      return JSON.parse(stripped).model || null;
+      return JSON.parse(stripped);
     } catch { return null; }
+  }
+
+  function readModel(dir) {
+    const local = parseJsonc(path.join(dir, '.claude', 'settings.json'));
+    if (local?.model) return local.model;
+    const global = parseJsonc(path.join(os.homedir(), '.claude', 'settings.json'));
+    return global?.model || null;
   }
 
   function readSkills(dir) {
