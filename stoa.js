@@ -223,7 +223,8 @@ async function handleAgentMessage(msg) {
     let model = null;
     try {
       const raw = fs.readFileSync(path.join(msg.workdir, '.claude', 'settings.json'), 'utf8');
-      model = JSON.parse(raw).model || null;
+      const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+      model = JSON.parse(stripped).model || null;
     } catch {}
     send({ type: 'model_info', workdir: msg.workdir, model });
   }
@@ -523,7 +524,8 @@ function scanForWorkdirs() {
   function readModel(dir) {
     try {
       const raw = fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf8');
-      return JSON.parse(raw).model || null;
+      const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+      return JSON.parse(stripped).model || null;
     } catch { return null; }
   }
 
