@@ -5594,6 +5594,34 @@ function sMakeRow(actor, flash) {
     }).catch(() => {});
   }
   info.appendChild(sub);
+
+  if (!isHuman) {
+    const actorLang = (() => { try { return JSON.parse(actor.adapter_config || '{}').lang || 'en'; } catch { return 'en'; } })();
+    const langRow = document.createElement('div');
+    langRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin-top:2px';
+    const langLabel = document.createElement('span');
+    langLabel.style.cssText = 'font-size:11px;color:var(--h-ink-faint);font-family:var(--h-serif);font-style:italic';
+    langLabel.textContent = 'lang';
+    const langSel = document.createElement('select');
+    langSel.style.cssText = 'font-size:11px;padding:1px 4px;border:1px solid var(--h-hair-soft);border-radius:4px;background:var(--h-surface);color:var(--h-ink-mute);cursor:pointer;font-family:var(--h-sans)';
+    Object.entries(STOA_LANGS).forEach(([code, label]) => {
+      const opt = document.createElement('option');
+      opt.value = code; opt.textContent = label;
+      if (code === actorLang) opt.selected = true;
+      langSel.appendChild(opt);
+    });
+    langSel.addEventListener('change', async () => {
+      try {
+        await fetch(`/api/actors/${actor.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: actor.name, lang: langSel.value }),
+        });
+      } catch {}
+    });
+    langRow.appendChild(langLabel); langRow.appendChild(langSel);
+    info.appendChild(langRow);
+  }
   row.appendChild(info);
 
   // Status

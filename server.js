@@ -688,7 +688,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/actors') {
-    const rows = db.prepare('SELECT id, name, type, adapter, avatar_color, avatar_symbol, avatar_url, created_at FROM actors ORDER BY id').all();
+    const rows = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, created_at FROM actors ORDER BY id').all();
     const result = rows.map(r => ({ ...r, online: agentClients.has(r.id), client_version: agentVersions.get(r.id) || null }));
     return json(res, result);
   }
@@ -696,13 +696,18 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'PATCH' && url.pathname.startsWith('/api/actors/')) {
     const id = parseInt(url.pathname.split('/')[3]);
     const body = JSON.parse(await readBody(req));
-    const { name, avatar_url } = body;
+    const { name, avatar_url, lang } = body;
     if (!name?.trim()) { res.writeHead(400); return res.end('name required'); }
     if (avatar_url !== undefined) {
       if (avatar_url !== null && (!avatar_url.startsWith('/uploads/') || avatar_url.includes('..'))) { res.writeHead(400); return res.end('invalid avatar_url'); }
       db.prepare('UPDATE actors SET name=?, avatar_url=? WHERE id=?').run(name.trim(), avatar_url, id);
     } else {
       db.prepare('UPDATE actors SET name=? WHERE id=?').run(name.trim(), id);
+    }
+    if (lang !== undefined) {
+      const existing = (() => { try { return JSON.parse(db.prepare('SELECT adapter_config FROM actors WHERE id=?').get(id)?.adapter_config || '{}'); } catch { return {}; } })();
+      existing.lang = lang;
+      db.prepare('UPDATE actors SET adapter_config=? WHERE id=?').run(JSON.stringify(existing), id);
     }
     const actor = db.prepare('SELECT type FROM actors WHERE id=?').get(id);
     if (actor?.type === 'human') {
