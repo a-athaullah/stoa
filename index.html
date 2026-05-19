@@ -490,6 +490,20 @@
       color: var(--h-ink-faint);
       margin-top: 4px;
     }
+    .h-model-badge {
+      display: inline-block;
+      font-family: var(--h-sans);
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: 0.3px;
+      color: var(--h-ink-faint);
+      background: color-mix(in srgb, var(--h-ink-faint) 10%, transparent);
+      border: 1px solid color-mix(in srgb, var(--h-ink-faint) 15%, transparent);
+      border-radius: 4px;
+      padding: 1px 6px;
+      margin-left: 6px;
+      vertical-align: middle;
+    }
 
     .h-header-seals { display: flex; }
 
@@ -2969,6 +2983,13 @@ function renderChatHeader(room, participants) {
   tagline.className = 'h-room-tagline';
   const n = participants.length;
   tagline.textContent = n === 1 ? 'one voice.' : n === 2 ? 'two voices.' : n + ' voices.';
+  const modelLabel = formatModelName(room.workdir_model);
+  if (modelLabel) {
+    const badge = document.createElement('span');
+    badge.className = 'h-model-badge';
+    badge.textContent = modelLabel;
+    tagline.appendChild(badge);
+  }
   info.appendChild(tagline);
 
   header.appendChild(info);
@@ -4306,7 +4327,8 @@ async function loadWorkdirsForActor(actorId) {
   workdirs.forEach(w => {
     const opt = document.createElement('option');
     opt.value = w.id;
-    opt.textContent = (w.label || w.path) + (w.is_default ? ' (default)' : '');
+    const modelTag = formatModelName(w.model);
+    opt.textContent = (w.label || w.path) + (modelTag ? ` [${modelTag}]` : '') + (w.is_default ? ' (default)' : '');
     if (w.is_default) opt.selected = true;
     sel.appendChild(opt);
   });
@@ -4590,6 +4612,15 @@ function escHtml(s) {
     .replace(/</g,'&lt;')
     .replace(/>/g,'&gt;')
     .replace(/"/g,'&quot;');
+}
+
+function formatModelName(model) {
+  if (!model) return null;
+  return model
+    .replace(/^claude-/, '')
+    .replace(/^gemini-/, 'gemini ')
+    .replace(/-(\d)/, ' $1')
+    .replace(/-preview$/, '');
 }
 
 // ── Skill autocomplete ─────────────────────────────────────────────────────

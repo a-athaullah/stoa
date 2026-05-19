@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS agent_workdirs (
   path TEXT NOT NULL,
   label TEXT DEFAULT NULL,
   is_default INTEGER DEFAULT 0,
+  model TEXT DEFAULT NULL,
   created_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (actor_id) REFERENCES actors(id) ON DELETE CASCADE,
   UNIQUE (actor_id, path)

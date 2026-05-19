@@ -58,6 +58,13 @@ try {
     console.log('[db] migrated ai_sessions: UNIQUE(participant_id) → UNIQUE(participant_id, workdir)');
   }
 } catch {}
+try {
+  const cols = db.prepare("PRAGMA table_info(agent_workdirs)").all().map(c => c.name);
+  if (!cols.includes('model')) {
+    db.prepare("ALTER TABLE agent_workdirs ADD COLUMN model TEXT DEFAULT NULL").run();
+    console.log('[db] added agent_workdirs.model column');
+  }
+} catch {}
 
 // ─── Auth: password hashing & session management ─────────────────────────────
 
@@ -453,13 +460,13 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/api/rooms') {
     const rows = db.prepare(`
-      SELECT r.*, a.name as creator_name,
+      SELECT r.*, a.name as creator_name, w.model as workdir_model,
         (SELECT COUNT(*) FROM room_participants WHERE room_id=r.id) as participant_count,
         (SELECT COUNT(*) FROM messages WHERE room_id=r.id) as message_count,
         (SELECT m.content FROM messages m WHERE m.room_id=r.id AND m.state='complete' AND m.content != '' ORDER BY m.id DESC LIMIT 1) as last_message,
         (SELECT a2.name FROM messages m2 JOIN room_participants rp ON rp.id=m2.participant_id JOIN actors a2 ON a2.id=rp.actor_id WHERE m2.room_id=r.id AND m2.state='complete' AND m2.content != '' ORDER BY m2.id DESC LIMIT 1) as last_message_actor,
         COALESCE((SELECT m3.created_at FROM messages m3 WHERE m3.room_id=r.id ORDER BY m3.id DESC LIMIT 1), r.created_at) as last_activity
-      FROM rooms r JOIN actors a ON a.id=r.created_by ORDER BY last_activity DESC
+      FROM rooms r JOIN actors a ON a.id=r.created_by LEFT JOIN agent_workdirs w ON w.id=r.workdir_id ORDER BY last_activity DESC
     `).all();
     return json(res, rows);
   }
@@ -1049,7 +1056,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
   if (req.method === 'GET' && url.pathname.match(/^\/api\/actors\/\d+\/workdirs$/)) {
     const actorId = parseInt(url.pathname.split('/')[3]);
     const rows = db.prepare(
-      'SELECT id, path, label, is_default FROM agent_workdirs WHERE actor_id=? ORDER BY is_default DESC, id ASC'
+      'SELECT id, path, label, is_default, model FROM agent_workdirs WHERE actor_id=? ORDER BY is_default DESC, id ASC'
     ).all(actorId);
     return json(res, rows);
   }
@@ -1270,7 +1277,7 @@ wss.on('connection', (ws, req) => {
       const { workdirs = [], globalSkills = [] } = msg;
       // UPSERT workdirs — preserve IDs so room references stay valid
       const upsertWorkdir = db.prepare(
-        'INSERT INTO agent_workdirs (actor_id, path, label, is_default) VALUES (?,?,?,?) ON CONFLICT(actor_id, path) DO UPDATE SET label=excluded.label, is_default=excluded.is_default'
+        'INSERT INTO agent_workdirs (actor_id, path, label, is_default, model) VALUES (?,?,?,?,?) ON CONFLICT(actor_id, path) DO UPDATE SET label=excluded.label, is_default=excluded.is_default, model=excluded.model'
       );
       const getWorkdirId = db.prepare(
         'SELECT id FROM agent_workdirs WHERE actor_id=? AND path=?'
@@ -1284,7 +1291,7 @@ wss.on('connection', (ws, req) => {
       const scannedPaths = new Set();
       for (const wd of workdirs) {
         const label = wd.path.split(/[\/\\]/).pop() || wd.path;
-        upsertWorkdir.run(agentActorId, wd.path, label, wd.is_default ? 1 : 0);
+        upsertWorkdir.run(agentActorId, wd.path, label, wd.is_default ? 1 : 0, wd.model || null);
         const row = getWorkdirId.get(agentActorId, wd.path);
         scannedPaths.add(wd.path);
         deleteWorkdirSkills.run(agentActorId, row.id);

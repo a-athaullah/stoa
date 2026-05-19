@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.2.12';
+const CLIENT_VERSION = '0.2.13';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -499,7 +499,7 @@ function scanForWorkdirs() {
       }
       if (current) globalSkills.push(current);
     } catch {}
-    return { workdirs: [{ path: path.resolve(defaultDir), skills: [], is_default: true }], globalSkills };
+    return { workdirs: [{ path: path.resolve(defaultDir), skills: [], model: null, is_default: true }], globalSkills };
   }
 
   const results = [];
@@ -509,6 +509,13 @@ function scanForWorkdirs() {
       const entries = fs.readdirSync(dir);
       return entries.includes('.claude') || entries.includes('CLAUDE.md');
     } catch { return false; }
+  }
+
+  function readModel(dir) {
+    try {
+      const raw = fs.readFileSync(path.join(dir, '.claude', 'settings.json'), 'utf8');
+      return JSON.parse(raw).model || null;
+    } catch { return null; }
   }
 
   function readSkills(dir) {
@@ -537,7 +544,8 @@ function scanForWorkdirs() {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       if (dir !== home && path.basename(dir) !== '.claude' && hasClaudeMarker(dir)) {
         const skills = readSkills(dir);
-        results.push({ path: dir, skills, is_default: dir === home + '/stoa-workspace' || dir === path.join(home, 'stoa-workspace') });
+        const model = readModel(dir);
+        results.push({ path: dir, skills, model, is_default: dir === home + '/stoa-workspace' || dir === path.join(home, 'stoa-workspace') });
       }
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
@@ -576,7 +584,8 @@ function scanForWorkdirs() {
     const normalized = path.resolve(defaultWorkDir);
     if (!results.find(r => path.resolve(r.path) === normalized)) {
       const skills = readSkills(normalized);
-      results.unshift({ path: normalized, skills, is_default: true });
+      const model = readModel(normalized);
+      results.unshift({ path: normalized, skills, model, is_default: true });
     } else {
       // Mark it as default if already found via scan
       const existing = results.find(r => path.resolve(r.path) === normalized);
