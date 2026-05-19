@@ -545,15 +545,6 @@ const server = http.createServer(async (req, res) => {
     const roomId = url.pathname.split('/')[3];
 
     if (url.pathname.endsWith('/messages')) {
-      const enrichReply = rows => {
-        const replyIds = [...new Set(rows.filter(r => r.reply_to).map(r => r.reply_to))];
-        if (!replyIds.length) return rows;
-        const ph = replyIds.map(() => '?').join(',');
-        const repliedRows = db.prepare(`SELECT m.id, m.content, m.image_url, m.file_url, m.file_name, m.attachments, a.name as actor_name, a.avatar_color FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id WHERE m.id IN (${ph})`).all(...replyIds);
-        const replied = {};
-        for (const r of repliedRows) replied[r.id] = r;
-        return rows.map(r => r.reply_to && replied[r.reply_to] ? { ...r, reply_msg: replied[r.reply_to] } : r);
-      };
       const before = url.searchParams.get('before');
       const limit  = Math.min(parseInt(url.searchParams.get('limit') ?? '50'), 100);
       if (before) {
@@ -1225,7 +1216,7 @@ wss.on('connection', (ws, req) => {
           ORDER BY m.created_at DESC LIMIT 100
         ) AS recent ORDER BY created_at ASC
       `).all(subscribedRoom);
-      ws.send(JSON.stringify({ type: 'history', messages }));
+      ws.send(JSON.stringify({ type: 'history', messages: enrichReply(messages) }));
       // Query current model from connected agent
       const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(subscribedRoom);
       if (roomRow?.workdir_id) {
@@ -1934,7 +1925,7 @@ async function handleInviteSuggest(roomId, byParticipantId, suggestedActorId, re
   const result = db.prepare(
     'INSERT INTO invite_suggestions (room_id, suggested_by_participant_id, suggested_actor_id, reason) VALUES (?,?,?,?)'
   ).run(roomId, byParticipantId, suggestedActorId, reason);
-  const actor = db.prepare('SELECT name, avatar_symbol FROM actors WHERE id=?').get(suggestedActorId);
+  const actor = db.prepare('SELECT name, avatar_symbol, avatar_color FROM actors WHERE id=?').get(suggestedActorId);
   broadcast(roomId, {
     type: 'invite_suggestion',
     invite_id: result.lastInsertRowid,
@@ -1944,6 +1935,16 @@ async function handleInviteSuggest(roomId, byParticipantId, suggestedActorId, re
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
+
+function enrichReply(rows) {
+  const replyIds = [...new Set(rows.filter(r => r.reply_to).map(r => r.reply_to))];
+  if (!replyIds.length) return rows;
+  const ph = replyIds.map(() => '?').join(',');
+  const repliedRows = db.prepare(`SELECT m.id, m.content, m.image_url, m.file_url, m.file_name, m.attachments, a.name as actor_name, a.avatar_color FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id WHERE m.id IN (${ph})`).all(...replyIds);
+  const replied = {};
+  for (const r of repliedRows) replied[r.id] = r;
+  return rows.map(r => r.reply_to && replied[r.reply_to] ? { ...r, reply_msg: replied[r.reply_to] } : r);
+}
 
 function broadcast(roomId, data) {
   const clients = roomClients.get(roomId);

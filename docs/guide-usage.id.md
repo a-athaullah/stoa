@@ -48,6 +48,10 @@ Klik tombol **+** di header room untuk menambahkan AI agent ke room yang sudah a
 
 Klik judul room di header chat. Judul menjadi editable — ketik nama baru dan tekan Enter, atau tekan Escape untuk batal.
 
+### Badge Model
+
+Header setiap room menampilkan **badge model** yang menunjukkan model AI mana yang digunakan agent (misalnya "Opus 4", "Sonnet 4"). Model terdeteksi otomatis dari pengaturan CLI Claude Code atau Gemini agent. Badge diperbarui secara real-time saat model agent berubah.
+
 ### Menghapus Room
 
 Geser baris room ke kanan (drag dengan mouse di desktop, swipe dengan jari di mobile). Tombol **Delete** merah muncul — klik untuk konfirmasi. Semua pesan di room dihapus permanen.
@@ -200,6 +204,11 @@ curl -fsSL http://SERVER_ANDA:3000/install.sh | bash
 **Windows (PowerShell):**
 ```powershell
 irm http://SERVER_ANDA:3000/install.ps1 | iex
+```
+
+**Windows (CMD):**
+```cmd
+curl -fsSL http://SERVER_ANDA:3000/install.cmd -o install.cmd && install.cmd
 ```
 
 Script install akan:
@@ -360,7 +369,10 @@ Browser  <-->  WebSocket  <-->  server.js  <-->  Agent (stoa.js)
 - **server.js** — server HTTP + WebSocket, mengatur room, pesan, dan orkestrasi agent
 - **index.html** — frontend satu file, tidak perlu build step
 - **stoa.js** — klien agent yang berjalan di setiap mesin agent
-- **claude-session.js** — mengatur subprocess AI CLI yang persisten (Claude Code atau Gemini)
+- **claude-session.js** — mengatur subprocess CLI Claude Code yang persisten
+- **claude-adapter.js** / **claude-adapter-lite.js** — adapter untuk parsing output Claude Code
+- **gemini-session.js** — mengatur subprocess CLI Gemini yang persisten
+- **gemini-adapter.js** — adapter untuk parsing output Gemini CLI
 - **SQLite** — semua data disimpan lokal di `stoa.db` (mode WAL untuk performa)
 
 Stoa mendukung beberapa backend AI. Setiap agent bisa dikonfigurasi untuk menggunakan **Claude Code CLI** atau **Gemini CLI**, dipilih saat agent ditambahkan. Kedua backend dikelola melalui klien agent dan lapisan orkestrasi yang sama.

@@ -2039,9 +2039,6 @@
     }
     .s-server-saved.visible { opacity: 1; }
 
-    .s-server-value {
-      font-size: 14px; color: var(--h-ink); font-family: var(--h-sans); flex-shrink: 0;
-    }
     .s-server-value-hint {
       font-size: 12px; color: var(--h-ink-faint); font-family: var(--h-serif); margin-left: auto;
     }
@@ -6434,7 +6431,7 @@ function initGlobalWs() {
       if (msg.type === 'room_created' || msg.type === 'room_activity' || msg.type === 'room_updated') {
         // Notify for activity in rooms user is not currently viewing
         if (msg.type === 'room_activity' && msg.room_id !== currentRoomId) {
-          const roomEl = document.querySelector(`.h-room-row[data-id="${msg.room_id}"]`);
+          const roomEl = document.querySelector(`.h-room-row[data-room-id="${msg.room_id}"]`);
           const roomTitle = roomEl?.querySelector('.h-room-title-text')?.textContent || 'Room';
           showDesktopNotif(`New message in ${roomTitle}`, '', msg.room_id);
         }

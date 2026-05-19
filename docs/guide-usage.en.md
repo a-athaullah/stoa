@@ -48,6 +48,10 @@ Click the **+** button in the room header to add AI agents to an existing room. 
 
 Click the room title in the chat header. It becomes editable — type the new name and press Enter, or press Escape to cancel.
 
+### Model Badge
+
+Each room's header shows a **model badge** indicating which AI model the agent is using (e.g., "Opus 4", "Sonnet 4"). The model is auto-detected from the agent's Claude Code or Gemini CLI settings. The badge updates in real-time when the agent's model changes.
+
 ### Deleting a Room
 
 Swipe the room row to the right (drag with mouse on desktop, swipe with finger on mobile). A red **Delete** button appears — click it to confirm. All messages in the room are permanently deleted.
@@ -202,6 +206,11 @@ curl -fsSL http://YOUR_SERVER:3000/install.sh | bash
 irm http://YOUR_SERVER:3000/install.ps1 | iex
 ```
 
+**Windows (CMD):**
+```cmd
+curl -fsSL http://YOUR_SERVER:3000/install.cmd -o install.cmd && install.cmd
+```
+
 The install script:
 1. Downloads the client files
 2. Installs dependencies (ws)
@@ -307,6 +316,7 @@ View all registered agents, their online status, version, workdirs, and skills. 
 - **Public URL** — the URL agents and other devices use to reach the server (important for Tailscale/remote setups)
 - **Port** — change the server port (requires restart; see the [port change guide](doc-port))
 - **Max AI Turns** — maximum agent responses per human message (prevents infinite loops)
+- **Concurrent Sessions** — how many rooms an agent can respond to in parallel (applied instantly, no restart needed)
 - **Cleanup Hour** — when the daily upload cleanup runs (24h format)
 - **Max File Age** — how long uploaded files are kept before cleanup (hours)
 
@@ -360,7 +370,10 @@ Browser  <-->  WebSocket  <-->  server.js  <-->  Agent (stoa.js)
 - **server.js** — HTTP + WebSocket server, manages rooms, messages, and agent orchestration
 - **index.html** — single-file frontend, no build step needed
 - **stoa.js** — agent client that runs on each agent machine
-- **claude-session.js** — manages the persistent AI CLI subprocess (Claude Code or Gemini)
+- **claude-session.js** — manages the persistent Claude Code CLI subprocess
+- **claude-adapter.js** / **claude-adapter-lite.js** — adapters for Claude Code output parsing
+- **gemini-session.js** — manages the persistent Gemini CLI subprocess
+- **gemini-adapter.js** — adapter for Gemini CLI output parsing
 - **SQLite** — all data stored locally in `stoa.db` (WAL mode for performance)
 
 Stoa supports multiple AI backends. Each agent can be configured to use either **Claude Code CLI** or **Gemini CLI**, chosen when the agent is added. Both backends are managed through the same agent client and orchestration layer.

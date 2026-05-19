@@ -48,6 +48,10 @@ API エンドポイントと WebSocket 接続には認証が必要です。`/upl
 
 チャットヘッダーのルームタイトルをクリックします。編集可能になるので、新しい名前を入力して Enter を押すか、Escape でキャンセルします。
 
+### モデルバッジ
+
+各ルームのヘッダーには、エージェントが使用している AI モデルを示す**モデルバッジ**が表示されます（例：「Opus 4」「Sonnet 4」）。モデルはエージェントの Claude Code または Gemini CLI 設定から自動検出されます。エージェントのモデルが変更されると、バッジはリアルタイムで更新されます。
+
 ### ルームの削除
 
 ルーム行を右にスワイプします（デスクトップではマウスでドラッグ、モバイルでは指でスワイプ）。赤い **Delete** ボタンが表示されるので、クリックして確認します。ルーム内のすべてのメッセージが完全に削除されます。
@@ -200,6 +204,11 @@ curl -fsSL http://YOUR_SERVER:3000/install.sh | bash
 **Windows（PowerShell）：**
 ```powershell
 irm http://YOUR_SERVER:3000/install.ps1 | iex
+```
+
+**Windows（CMD）：**
+```cmd
+curl -fsSL http://YOUR_SERVER:3000/install.cmd -o install.cmd && install.cmd
 ```
 
 インストールスクリプトの処理内容：
@@ -360,7 +369,10 @@ Stoa は完全レスポンシブで、モバイルブラウザでも動作しま
 - **server.js** — HTTP + WebSocket サーバー。ルーム、メッセージ、エージェントの管理を行う
 - **index.html** — 単一ファイルのフロントエンド。ビルドステップ不要
 - **stoa.js** — 各エージェントマシンで実行されるエージェントクライアント
-- **claude-session.js** — 永続的な AI CLI サブプロセスを管理（Claude Code または Gemini）
+- **claude-session.js** — 永続的な Claude Code CLI サブプロセスを管理
+- **claude-adapter.js** / **claude-adapter-lite.js** — Claude Code 出力パース用アダプター
+- **gemini-session.js** — 永続的な Gemini CLI サブプロセスを管理
+- **gemini-adapter.js** — Gemini CLI 出力パース用アダプター
 - **SQLite** — すべてのデータを `stoa.db` にローカル保存（パフォーマンスのため WAL モード）
 
 Stoa は複数の AI バックエンドをサポートしています。各エージェントはエージェント追加時に **Claude Code CLI** または **Gemini CLI** のいずれかを選択して構成できます。両方のバックエンドは同じエージェントクライアントとオーケストレーション層で管理されます。

@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.2.18';
+const CLIENT_VERSION = '0.2.19';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -26,7 +26,7 @@ const ROOM_ID     = parseInt(process.argv[2] || process.env.STOA_ROOM_ID || '1')
 
 // ─── ANSI ─────────────────────────────────────────────────────────────────────
 const C = {
-  reset: '\x1b[0m', dim: '\x1b[2m', bold: '\x1b[1m',
+  reset: '\x1b[0m', bold: '\x1b[1m',
   white: '\x1b[97m', blue: '\x1b[94m', cyan: '\x1b[96m',
   yellow: '\x1b[93m', red: '\x1b[91m', gray: '\x1b[90m',
 };
@@ -610,9 +610,7 @@ function scanForWorkdirs() {
   }
 
   // Scan home directory (3 levels)
-  const homeExclude = isWindows
-    ? new Set([...SCAN_EXCLUDE_SYSTEM])
-    : new Set([...SCAN_EXCLUDE_SYSTEM]);
+  const homeExclude = new Set([...SCAN_EXCLUDE_SYSTEM]);
   scanDir(home, 0, 3, homeExclude);
 
   // On Windows, also scan C:\ (2 levels, excluding system dirs)

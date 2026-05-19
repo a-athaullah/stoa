@@ -48,6 +48,10 @@ API 엔드포인트와 WebSocket 연결에는 인증이 필요합니다. `/uploa
 
 채팅 헤더의 룸 제목을 클릭합니다. 편집 가능해지며, 새 이름을 입력하고 Enter를 누르거나 Escape로 취소합니다.
 
+### 모델 배지
+
+각 룸의 헤더에는 에이전트가 사용 중인 AI 모델을 나타내는 **모델 배지**가 표시됩니다(예: "Opus 4", "Sonnet 4"). 모델은 에이전트의 Claude Code 또는 Gemini CLI 설정에서 자동 감지됩니다. 에이전트의 모델이 변경되면 배지가 실시간으로 업데이트됩니다.
+
 ### 룸 삭제
 
 룸 행을 오른쪽으로 스와이프합니다(데스크톱에서는 마우스로 드래그, 모바일에서는 손가락으로 스와이프). 빨간색 **Delete** 버튼이 나타나며, 클릭하면 확인됩니다. 룸 내 모든 메시지가 영구 삭제됩니다.
@@ -200,6 +204,11 @@ curl -fsSL http://YOUR_SERVER:3000/install.sh | bash
 **Windows (PowerShell):**
 ```powershell
 irm http://YOUR_SERVER:3000/install.ps1 | iex
+```
+
+**Windows (CMD):**
+```cmd
+curl -fsSL http://YOUR_SERVER:3000/install.cmd -o install.cmd && install.cmd
 ```
 
 설치 스크립트 동작:
@@ -360,7 +369,10 @@ Stoa는 완전 반응형으로 모바일 브라우저에서도 작동합니다. 
 - **server.js** — HTTP + WebSocket 서버. 룸, 메시지, 에이전트 오케스트레이션 관리
 - **index.html** — 단일 파일 프런트엔드, 빌드 단계 불필요
 - **stoa.js** — 각 에이전트 머신에서 실행되는 에이전트 클라이언트
-- **claude-session.js** — 영구적인 AI CLI 서브프로세스 관리 (Claude Code 또는 Gemini)
+- **claude-session.js** — 영구적인 Claude Code CLI 서브프로세스 관리
+- **claude-adapter.js** / **claude-adapter-lite.js** — Claude Code 출력 파싱 어댑터
+- **gemini-session.js** — 영구적인 Gemini CLI 서브프로세스 관리
+- **gemini-adapter.js** — Gemini CLI 출력 파싱 어댑터
 - **SQLite** — 모든 데이터를 `stoa.db`에 로컬 저장 (성능을 위한 WAL 모드)
 
 Stoa는 여러 AI 백엔드를 지원합니다. 각 에이전트는 추가 시 **Claude Code CLI** 또는 **Gemini CLI** 중 하나를 선택하여 구성할 수 있습니다. 두 백엔드 모두 동일한 에이전트 클라이언트와 오케스트레이션 계층을 통해 관리됩니다.
