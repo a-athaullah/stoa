@@ -697,6 +697,26 @@ async function run() {
     await req('PATCH', '/api/settings', { human_name: origName });
   });
 
+  await test('PATCH /api/settings updates max_concurrent', async () => {
+    const { body: before } = await req('GET', '/api/settings');
+    const orig = before.max_concurrent;
+    const { status, body } = await req('PATCH', '/api/settings', { max_concurrent: 5 });
+    assert.strictEqual(status, 200);
+    assert.ok(body.ok);
+    const { body: after } = await req('GET', '/api/settings');
+    assert.strictEqual(after.max_concurrent, 5);
+    await req('PATCH', '/api/settings', { max_concurrent: orig });
+  });
+
+  await test('PATCH /api/settings rejects invalid max_concurrent', async () => {
+    await req('PATCH', '/api/settings', { max_concurrent: 0 });
+    const { body } = await req('GET', '/api/settings');
+    assert.notStrictEqual(body.max_concurrent, 0);
+    await req('PATCH', '/api/settings', { max_concurrent: 99 });
+    const { body: b2 } = await req('GET', '/api/settings');
+    assert.notStrictEqual(b2.max_concurrent, 99);
+  });
+
   // ── 8q. Doc content ───────────────────────────────────────────────────────
   console.log('\n8q · doc content');
 

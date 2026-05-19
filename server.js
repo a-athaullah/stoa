@@ -428,8 +428,8 @@ const server = http.createServer(async (req, res) => {
     const id = parseInt(avatarDeleteMatch[1]);
     const actor = db.prepare('SELECT avatar_url FROM actors WHERE id=?').get(id);
     if (actor?.avatar_url) {
-      const oldPath = path.join(__dirname, actor.avatar_url);
-      if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+      const oldPath = path.resolve(__dirname, actor.avatar_url);
+      if (oldPath.startsWith(path.join(__dirname, 'uploads')) && fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
     }
     db.prepare('UPDATE actors SET avatar_url=NULL WHERE id=?').run(id);
     return json(res, { ok: true });
@@ -495,8 +495,10 @@ const server = http.createServer(async (req, res) => {
     const roomId = parseInt(roomPatchMatch[1]);
     const body = await readBody(req);
     const { title } = JSON.parse(body);
-    if (title) db.prepare('UPDATE rooms SET title=? WHERE id=?').run(title.trim(), roomId);
-    broadcastGlobal({ type: 'room_updated', room_id: roomId, title: title.trim() });
+    if (title) {
+      db.prepare('UPDATE rooms SET title=? WHERE id=?').run(title.trim(), roomId);
+      broadcastGlobal({ type: 'room_updated', room_id: roomId, title: title.trim() });
+    }
     return json(res, { ok: true });
   }
 
@@ -736,8 +738,8 @@ const server = http.createServer(async (req, res) => {
     const id = parseInt(url.pathname.split('/')[3]);
     const actor = db.prepare('SELECT avatar_url FROM actors WHERE id=?').get(id);
     if (actor?.avatar_url) {
-      const avatarPath = path.join(__dirname, actor.avatar_url);
-      if (fs.existsSync(avatarPath)) fs.unlinkSync(avatarPath);
+      const avatarPath = path.resolve(__dirname, actor.avatar_url);
+      if (avatarPath.startsWith(path.join(__dirname, 'uploads')) && fs.existsSync(avatarPath)) fs.unlinkSync(avatarPath);
     }
     const affectedRooms = db.prepare('SELECT room_id FROM room_participants WHERE actor_id=?').all(id).map(r => r.room_id);
     db.prepare('DELETE FROM room_participants WHERE actor_id=?').run(id);
@@ -1270,14 +1272,16 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ type: 'auth_error', message: 'actor not found' }));
         ws.close(); return;
       }
-      if (actor.secret) {
-        const provided = String(msg.secret || '');
-        const valid = provided.length === actor.secret.length &&
-          crypto.timingSafeEqual(Buffer.from(actor.secret), Buffer.from(provided));
-        if (!valid) {
-          ws.send(JSON.stringify({ type: 'auth_error', message: 'invalid secret' }));
-          ws.close(); return;
-        }
+      if (!actor.secret) {
+        ws.send(JSON.stringify({ type: 'auth_error', message: 'actor has no secret configured' }));
+        ws.close(); return;
+      }
+      const provided = String(msg.secret || '');
+      const valid = provided.length === actor.secret.length &&
+        crypto.timingSafeEqual(Buffer.from(actor.secret), Buffer.from(provided));
+      if (!valid) {
+        ws.send(JSON.stringify({ type: 'auth_error', message: 'invalid secret' }));
+        ws.close(); return;
       }
       agentActorId = msg.actor_id;
       wsAuthenticated = true;

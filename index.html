@@ -3047,11 +3047,13 @@ function renderChatHeader(room, participants) {
         item.onclick = async (ev) => {
           ev.stopPropagation();
           dropdown.classList.remove('open');
-          await fjson(`/api/rooms/${currentRoomId}/participants`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ actor_id: actor.id }),
-          });
+          try {
+            await fjson(`/api/rooms/${currentRoomId}/participants`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ actor_id: actor.id }),
+            });
+          } catch {}
         };
         dropdown.appendChild(item);
       }
@@ -4340,7 +4342,8 @@ async function loadWorkdirsForActor(actorId) {
   const actor = allActors.find(a => a.id === parseInt(actorId));
   const isGemini = actor?.adapter === 'gemini';
 
-  const workdirs = await fjson(`/api/actors/${actorId}/workdirs`);
+  let workdirs;
+  try { workdirs = await fjson(`/api/actors/${actorId}/workdirs`); } catch { workdirs = []; }
   sel.innerHTML = '';
   section.style.display = 'block';
   newWdRow.style.display = 'none';
@@ -4580,7 +4583,7 @@ function initScrollLoader() {
           `<span class="h-search-actor" style="color:${r.avatar_color || 'var(--h-ink)'}">${escHtml(r.actor_name)}</span>` +
           `<span class="h-search-time">${time}</span>` +
         `</div>` +
-        `<div class="h-search-snippet">${r.snippet}</div>`;
+        `<div class="h-search-snippet">${escHtml(r.snippet).replace(/&lt;mark&gt;/g,'<mark>').replace(/&lt;\/mark&gt;/g,'</mark>')}</div>`;
       item.onclick = () => {
         searchInput.value = '';
         searchClear.style.display = 'none';
@@ -4940,7 +4943,8 @@ function syncNewRoomBtn() {
 
 // ── First-run setup ───────────────────────────────────────────────────────────
 async function checkSetup() {
-  const { needsSetup } = await fjson('/api/setup/status');
+  let needsSetup;
+  try { ({ needsSetup } = await fjson('/api/setup/status')); } catch { return; }
   if (!needsSetup) return;
 
   const overlay = document.getElementById('setup-overlay');
@@ -5562,10 +5566,10 @@ function closeSettingsToSidebar() {
 }
 
 async function sLoad() {
-  const [actors, cfg] = await Promise.all([
-    fjson('/api/actors'),
-    fjson('/api/settings'),
-  ]);
+  let actors, cfg;
+  try {
+    [actors, cfg] = await Promise.all([fjson('/api/actors'), fjson('/api/settings')]);
+  } catch { return; }
   settingsActors = actors;
   sPublicUrl = cfg.public_url || '';
   sPort = cfg.port || 3000;
