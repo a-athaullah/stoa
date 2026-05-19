@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.2.16';
+const CLIENT_VERSION = '0.2.17';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -44,12 +44,13 @@ let rl = null;
 
 const activeStreams = {}; // message_id → { actor_name, started, color, symbol }
 const triggerQueue = [];
-let processingTrigger = false;
+const activeTriggers = new Map(); // message_id → { workdir, session }
 let pendingRestart = false;
 let consecutiveFailures = 0;
 let consecutiveTriggerErrors = 0;
 const MAX_TRIGGER_ERRORS = 3;
 const TRIGGER_TIMEOUT = 5 * 60_000;
+const MAX_CONCURRENT = parseInt(process.env.STOA_MAX_CONCURRENT || '1');
 
 // ─── Auto-update (agent mode only) ───────────────────────────────────────────
 const UPDATE_INTERVAL = 120_000; // cek tiap 2 menit
@@ -86,7 +87,7 @@ async function checkForUpdates() {
       fs.writeFileSync(path.join(__dirname, name), content, 'utf8');
       console.log(`[stoa:update] ${name} updated`);
     }
-    if (processingTrigger || triggerQueue.length > 0) {
+    if (activeTriggers.size > 0 || triggerQueue.length > 0) {
       pendingRestart = true;
       console.log('[stoa:update] restart deferred — trigger in progress');
       return;
@@ -102,20 +103,23 @@ function doRestart() {
   clearInterval(keepAlive);
   clearInterval(updateChecker);
   clearTimeout(reconnectTimer);
-  claudeSession?.shutdown();
+  for (const s of sessionPool.values()) s.shutdown();
   ws?.close();
   process.exit(0);
 }
 
-// ─── Persistent claude session (agent mode only) ───────────────────────────
-let claudeSession = null;
+// ─── Session pool (agent mode only) ──────────────────────────────────────────
+const sessionPool = new Map(); // workdir → ClaudeSession
 
-function ensureSession() {
-  if (!claudeSession) {
-    claudeSession = new SessionClass({ workDir: process.env.STOA_WORK_DIR || os.homedir() });
-    console.log(`[stoa] ${AI_BACKEND} session started`);
+function getSession(workdir) {
+  const key = path.resolve(workdir);
+  let session = sessionPool.get(key);
+  if (!session) {
+    session = new SessionClass({ workDir: key });
+    sessionPool.set(key, session);
+    console.log(`[stoa] ${AI_BACKEND} session started for ${key}`);
   }
-  return claudeSession;
+  return session;
 }
 
 // ─── Connect ──────────────────────────────────────────────────────────────────
@@ -124,9 +128,9 @@ function connect() {
 
   ws.on('open', () => {
     if (ACTOR_TYPE === 'ai') {
-      ensureSession(); // warm up the session before any triggers arrive
+      getSession(process.env.STOA_WORK_DIR || os.homedir());
       ws.send(JSON.stringify({ type: 'agent_connect', actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION }));
-      console.log(`[stoa] Agent #${ACTOR_ID} v${CLIENT_VERSION} connected to ${STOA_URL}`);
+      console.log(`[stoa] Agent #${ACTOR_ID} v${CLIENT_VERSION} connected to ${STOA_URL} (max_concurrent=${MAX_CONCURRENT})`);
     } else {
       ws.send(JSON.stringify({ type: 'join_room', room_id: ROOM_ID }));
       printHeader();
@@ -212,8 +216,9 @@ async function handleAgentMessage(msg) {
       triggerQueue.splice(qIdx, 1);
       send({ type: 'agent_complete', room_id: msg.room_id, message_id: msg.message_id, content: '(cancelled before processing)' });
       console.log(`[stoa] Cancelled queued msg=${msg.message_id}`);
-    } else if (claudeSession) {
-      claudeSession.abort();
+    } else {
+      const active = activeTriggers.get(msg.message_id);
+      if (active?.session) active.session.abort();
     }
   }
 
@@ -248,21 +253,22 @@ async function handleAgentMessage(msg) {
 
   if (msg.type === 'agent_trigger') {
     const { room_id, message_id, prompt } = msg;
-    console.log(`[stoa] trigger received room=${room_id} msg=${message_id} prompt="${prompt?.slice(0, 60)}..."`);
+    console.log(`[stoa] trigger received room=${room_id} msg=${message_id} prompt="${prompt?.slice(0, 60)}..." (active=${activeTriggers.size}/${MAX_CONCURRENT})`);
 
-    if (processingTrigger) {
+    if (activeTriggers.size >= MAX_CONCURRENT) {
       triggerQueue.push(msg);
       console.log(`[stoa] queued msg=${message_id} (${triggerQueue.length} in queue)`);
       return;
     }
 
-    await processTrigger(msg);
+    processTrigger(msg);
   }
 }
 
 async function processTrigger(msg) {
-  processingTrigger = true;
   const { room_id, message_id } = msg;
+  const workdir = msg.workdir || process.env.STOA_WORK_DIR || os.homedir();
+  activeTriggers.set(message_id, { workdir, session: null });
   const baseUrl = STOA_URL.replace('ws://', 'http://').replace('wss://', 'https://');
   const TEXT_EXTS = new Set(['.md','.txt','.json','.csv','.html','.js','.ts','.py','.yaml','.yml','.sh','.css']);
   const IMAGE_EXTS = new Set(['.png','.jpg','.jpeg','.gif','.webp','.svg']);
@@ -276,7 +282,6 @@ async function processTrigger(msg) {
   }
 
   const localFiles = [];
-  const workdir = msg.workdir || process.cwd();
   const tempDir = path.join(workdir, '.stoa-attachments');
 
   try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
@@ -321,12 +326,8 @@ async function processTrigger(msg) {
   }
 
   try {
-    let session = ensureSession();
+    const targetDir = path.resolve(workdir);
     const rid = msg.claude_session_id || null;
-    const targetDir = msg.workdir || session.workDir;
-    const needsWorkdirChange = msg.workdir && path.resolve(session.workDir) !== path.resolve(msg.workdir);
-    const needsResume = rid && session.resumeId !== rid;
-    const needsFreshSession = !rid && session.resumeId;
 
     if (msg.workdir) {
       try {
@@ -336,14 +337,18 @@ async function processTrigger(msg) {
       } catch {}
     }
 
-    if (needsWorkdirChange || needsResume || needsFreshSession) {
+    let session = getSession(targetDir);
+    const needsResume = rid && session.resumeId !== rid;
+    const needsFreshSession = !rid && session.resumeId;
+
+    if (needsResume || needsFreshSession) {
       session.shutdown();
-      const canResume = rid && !needsWorkdirChange;
-      const flags = canResume ? ['--resume', rid] : [];
-      claudeSession = new SessionClass({ workDir: targetDir, flags, resumeId: canResume ? rid : null });
-      session = claudeSession;
+      const flags = rid ? ['--resume', rid] : [];
+      session = new SessionClass({ workDir: targetDir, flags, resumeId: rid || null });
+      sessionPool.set(targetDir, session);
       console.log(`[stoa] Session restarted: workdir=${targetDir}${rid ? ' resume=' + rid.slice(0, 8) + '...' : ' (fresh)'}`);
     }
+    activeTriggers.set(message_id, { workdir: targetDir, session });
     let fullContent = '';
     let lastActivity = Date.now();
     const hangWatchdog = setInterval(() => {
@@ -395,11 +400,11 @@ async function processTrigger(msg) {
     send({ type: 'agent_error', room_id, message_id, error: err.message });
     if (consecutiveTriggerErrors >= MAX_TRIGGER_ERRORS) {
       console.log('[stoa] too many trigger errors, restarting clean...');
-      claudeSession?.shutdown();
+      for (const s of sessionPool.values()) s.shutdown();
       process.exit(0);
     }
   } finally {
-    processingTrigger = false;
+    activeTriggers.delete(message_id);
     drainQueue();
   }
 }
@@ -454,13 +459,12 @@ async function extractAndUploadFiles(content, workdir) {
 }
 
 function drainQueue() {
-  if (processingTrigger || triggerQueue.length === 0) {
-    if (!processingTrigger && pendingRestart) doRestart();
-    return;
+  while (activeTriggers.size < MAX_CONCURRENT && triggerQueue.length > 0) {
+    const next = triggerQueue.shift();
+    console.log(`[stoa] dequeued msg=${next.message_id} (${triggerQueue.length} remaining, active=${activeTriggers.size}/${MAX_CONCURRENT})`);
+    processTrigger(next);
   }
-  const next = triggerQueue.shift();
-  console.log(`[stoa] dequeued msg=${next.message_id} (${triggerQueue.length} remaining)`);
-  processTrigger(next);
+  if (activeTriggers.size === 0 && triggerQueue.length === 0 && pendingRestart) doRestart();
 }
 
 function fetchToFile(url, destPath) {
@@ -764,7 +768,7 @@ function out(line) {
 
 process.on('SIGINT', () => {
   clearTimeout(reconnectTimer);
-  claudeSession?.shutdown();
+  for (const s of sessionPool.values()) s.shutdown();
   ws?.close();
   process.exit(0);
 });
