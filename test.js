@@ -448,14 +448,20 @@ async function run() {
     assert.ok(body.includes('REG_TOKEN='), 'missing REG_TOKEN in install.sh');
   });
 
-  await test('GET /install.ps1 returns 200', async () => {
-    const { status } = await reqRaw('GET', '/install.ps1?name=test-install-ps');
+  await test('GET /install.ps1 returns 200 with valid $RegToken', async () => {
+    const { status, body } = await reqRaw('GET', '/install.ps1?name=test-install-ps');
     assert.strictEqual(status, 200);
+    const m = body.match(/\$RegToken\s*=\s*"([0-9a-f]+)"/);
+    assert.ok(m, 'missing $RegToken assignment in install.ps1');
+    assert.ok(m[1].length > 0, '$RegToken must be non-empty hex');
+    assert.ok(/^[0-9a-f]+$/.test(m[1]), `$RegToken must be hex, got: ${m[1]}`);
   });
 
-  await test('GET /install.cmd returns 200', async () => {
-    const { status } = await reqRaw('GET', '/install.cmd?name=test-install-cmd');
+  await test('GET /install.cmd returns 200 with ps1 URL and params', async () => {
+    const { status, body } = await reqRaw('GET', '/install.cmd?name=test-install-cmd');
     assert.strictEqual(status, 200);
+    assert.ok(body.includes('/install.ps1'), 'install.cmd must reference /install.ps1 URL');
+    assert.ok(body.includes('name=test-install-cmd'), 'install.cmd must pass name param to ps1 URL');
   });
 
   // ── 8d. Client manifest ──────────────────────────────────────────────────
@@ -474,6 +480,40 @@ async function run() {
     const { status, body } = await req('GET', `/api/rooms/${roomId}/messages?before=999999&limit=10`);
     assert.strictEqual(status, 200);
     assert.ok(Array.isArray(body));
+  });
+
+  await test('before= pagination returns only earlier messages', async () => {
+    // Get participant_id for human in test room
+    const humanPart = db.prepare(
+      "SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1"
+    ).get(roomId);
+    assert.ok(humanPart, 'human participant must exist in test room');
+
+    // Insert 3 test messages
+    const msgIds = [];
+    for (let i = 1; i <= 3; i++) {
+      const r = db.prepare(
+        "INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,?)"
+      ).run(roomId, humanPart.id, `pagination-test-msg-${i}`, 'complete');
+      msgIds.push(Number(r.lastInsertRowid));
+    }
+
+    // Fetch with before= the last message ID — should return only earlier messages
+    const { status, body } = await req('GET', `/api/rooms/${roomId}/messages?before=${msgIds[2]}&limit=50`);
+    assert.strictEqual(status, 200);
+    assert.ok(Array.isArray(body));
+
+    const returnedIds = body.map(m => m.id);
+    // The first two messages should be in the result
+    assert.ok(returnedIds.includes(msgIds[0]), `msg ${msgIds[0]} should be in before= result`);
+    assert.ok(returnedIds.includes(msgIds[1]), `msg ${msgIds[1]} should be in before= result`);
+    // The last message (the before= target) must NOT be in the result
+    assert.ok(!returnedIds.includes(msgIds[2]), `msg ${msgIds[2]} (before target) must NOT be in result`);
+
+    // Cleanup: remove test messages
+    for (const id of msgIds) {
+      db.prepare('DELETE FROM messages WHERE id=?').run(id);
+    }
   });
 
   // ── 8f. Settings ─────────────────────────────────────────────────────────
