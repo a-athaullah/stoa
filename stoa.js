@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.2.15';
+const CLIENT_VERSION = '0.2.16';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -45,6 +45,7 @@ let rl = null;
 const activeStreams = {}; // message_id → { actor_name, started, color, symbol }
 const triggerQueue = [];
 let processingTrigger = false;
+let pendingRestart = false;
 let consecutiveFailures = 0;
 let consecutiveTriggerErrors = 0;
 const MAX_TRIGGER_ERRORS = 3;
@@ -85,16 +86,25 @@ async function checkForUpdates() {
       fs.writeFileSync(path.join(__dirname, name), content, 'utf8');
       console.log(`[stoa:update] ${name} updated`);
     }
-    console.log('[stoa:update] restarting to apply...');
-    clearInterval(keepAlive);
-    clearInterval(updateChecker);
-    clearTimeout(reconnectTimer);
-    claudeSession?.shutdown();
-    ws?.close();
-    process.exit(0);
+    if (processingTrigger || triggerQueue.length > 0) {
+      pendingRestart = true;
+      console.log('[stoa:update] restart deferred — trigger in progress');
+      return;
+    }
+    doRestart();
   } catch {
     // retry on next interval
   }
+}
+
+function doRestart() {
+  console.log('[stoa:update] restarting to apply...');
+  clearInterval(keepAlive);
+  clearInterval(updateChecker);
+  clearTimeout(reconnectTimer);
+  claudeSession?.shutdown();
+  ws?.close();
+  process.exit(0);
 }
 
 // ─── Persistent claude session (agent mode only) ───────────────────────────
@@ -444,7 +454,10 @@ async function extractAndUploadFiles(content, workdir) {
 }
 
 function drainQueue() {
-  if (processingTrigger || triggerQueue.length === 0) return;
+  if (processingTrigger || triggerQueue.length === 0) {
+    if (!processingTrigger && pendingRestart) doRestart();
+    return;
+  }
   const next = triggerQueue.shift();
   console.log(`[stoa] dequeued msg=${next.message_id} (${triggerQueue.length} remaining)`);
   processTrigger(next);
