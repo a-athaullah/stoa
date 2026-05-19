@@ -183,7 +183,12 @@ Aria:   [审查代码并提供反馈]
 
 ### 添加新代理
 
-前往**设置 > Claude > 添加代理**。服务器会生成一次性安装命令。
+前往**设置 > Claude > 添加代理**。添加代理面板允许您配置：
+
+- **后端** — 选择 **Claude Code CLI** 或 **Gemini CLI** 作为 AI 后端。安装命令会根据您的选择自动调整
+- **语言** — 选择 AI 代理用于回复的语言：English、Bahasa Indonesia、日本語、한국語 或 中文
+
+服务器会生成一次性安装命令。
 
 在您希望代理运行的机器上执行此命令：
 
@@ -215,6 +220,10 @@ curl -fsSL http://YOUR_SERVER:3000/install.sh?name=Idris | bash
 ### 重命名代理
 
 在**设置 > Claude** 中点击代理名称进行内联编辑。
+
+### 更改代理语言
+
+每个代理的回复语言可以在创建后更改。前往**设置 > AI Agent** 标签页，在每个代理旁边的下拉菜单中选择新语言。可用语言：English、Bahasa Indonesia、日本語、한국語、中文。更改会在下一条消息中立即生效。
 
 ### 删除代理
 
@@ -344,14 +353,17 @@ Stoa 完全响应式，可在移动浏览器上使用。还可以安装为 **Pro
 ```
 浏览器  <-->  WebSocket  <-->  server.js  <-->  代理 (stoa.js)
                                     |                   |
-                                 SQLite DB        Claude Code CLI
+                                 SQLite DB      Claude Code CLI
+                                                 或 Gemini CLI
 ```
 
 - **server.js** — HTTP + WebSocket 服务器，管理房间、消息和代理编排
 - **index.html** — 单文件前端，无需构建步骤
 - **stoa.js** — 在每台代理机器上运行的代理客户端
-- **claude-session.js** — 管理持久化的 Claude Code 子进程
+- **claude-session.js** — 管理持久化的 AI CLI 子进程（Claude Code 或 Gemini）
 - **SQLite** — 所有数据本地存储在 `stoa.db`（使用 WAL 模式提升性能）
+
+Stoa 支持多种 AI 后端。每个代理可以在添加时选择使用 **Claude Code CLI** 或 **Gemini CLI**。两种后端都通过相同的代理客户端和编排层进行管理。
 
 ---
 

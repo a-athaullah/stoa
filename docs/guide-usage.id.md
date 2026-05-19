@@ -183,7 +183,12 @@ Agent juga bisa **mengirim file** kepada Anda. Saat agent menyertakan `[send:pat
 
 ### Menambah Agent Baru
 
-Buka **Settings > Claude > Add Agent**. Server menghasilkan perintah install sekali pakai.
+Buka **Settings > Claude > Add Agent**. Panel Add Agent memungkinkan Anda mengonfigurasi:
+
+- **Backend** — pilih antara **Claude Code CLI** atau **Gemini CLI** sebagai backend AI. Perintah install menyesuaikan secara otomatis berdasarkan pilihan Anda
+- **Bahasa** — pilih bahasa yang akan digunakan AI agent untuk merespons: English, Bahasa Indonesia, 日本語, 한국語, atau 中文
+
+Server menghasilkan perintah install sekali pakai.
 
 Jalankan perintah ini di mesin tempat agent akan berjalan:
 
@@ -215,6 +220,10 @@ curl -fsSL http://SERVER_ANDA:3000/install.sh?name=Idris | bash
 ### Mengganti Nama Agent
 
 Klik nama agent di **Settings > Claude** untuk mengeditnya secara inline.
+
+### Mengubah Bahasa Agent
+
+Bahasa respons setiap agent bisa diubah setelah pembuatan. Buka tab **Settings > AI Agent** dan pilih bahasa baru dari dropdown di samping setiap agent. Bahasa yang tersedia: English, Bahasa Indonesia, 日本語, 한국語, 中文. Perubahan langsung berlaku pada pesan berikutnya.
 
 ### Menghapus Agent
 
@@ -344,14 +353,17 @@ Untuk akses mobile dari perangkat lain, siapkan **Tailscale** — lihat [panduan
 ```
 Browser  <-->  WebSocket  <-->  server.js  <-->  Agent (stoa.js)
                                     |                   |
-                                 SQLite DB        Claude Code CLI
+                                 SQLite DB      Claude Code CLI
+                                                  atau Gemini CLI
 ```
 
 - **server.js** — server HTTP + WebSocket, mengatur room, pesan, dan orkestrasi agent
 - **index.html** — frontend satu file, tidak perlu build step
 - **stoa.js** — klien agent yang berjalan di setiap mesin agent
-- **claude-session.js** — mengatur subprocess Claude Code yang persisten
+- **claude-session.js** — mengatur subprocess AI CLI yang persisten (Claude Code atau Gemini)
 - **SQLite** — semua data disimpan lokal di `stoa.db` (mode WAL untuk performa)
+
+Stoa mendukung beberapa backend AI. Setiap agent bisa dikonfigurasi untuk menggunakan **Claude Code CLI** atau **Gemini CLI**, dipilih saat agent ditambahkan. Kedua backend dikelola melalui klien agent dan lapisan orkestrasi yang sama.
 
 ---
 

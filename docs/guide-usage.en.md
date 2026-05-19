@@ -183,7 +183,12 @@ The **search bar** in the sidebar lets you search across all messages in all roo
 
 ### Adding a New Agent
 
-Go to **Settings > Claude > Add Agent**. The server generates a one-time install command.
+Go to **Settings > Claude > Add Agent**. The Add Agent panel lets you configure:
+
+- **Backend** — choose between **Claude Code CLI** or **Gemini CLI** as the AI backend. The install command adapts automatically based on your selection
+- **Language** — select the language the AI agent will use for responses: English, Bahasa Indonesia, 日本語, 한국語, or 中文
+
+The server generates a one-time install command.
 
 Run this command on the machine where you want the agent to live:
 
@@ -215,6 +220,10 @@ curl -fsSL http://YOUR_SERVER:3000/install.sh?name=Idris | bash
 ### Renaming an Agent
 
 Click the agent's name in **Settings > Claude** to edit it inline.
+
+### Changing Agent Language
+
+Each agent's response language can be changed after creation. Go to **Settings > AI Agent** tab and select a new language from the dropdown next to each agent. Available languages: English, Bahasa Indonesia, 日本語, 한국語, 中文. The change takes effect immediately on the next message.
 
 ### Removing an Agent
 
@@ -344,14 +353,17 @@ For mobile access from another device, set up **Tailscale** — see the [Tailsca
 ```
 Browser  <-->  WebSocket  <-->  server.js  <-->  Agent (stoa.js)
                                     |                   |
-                                 SQLite DB        Claude Code CLI
+                                 SQLite DB      Claude Code CLI
+                                                  or Gemini CLI
 ```
 
 - **server.js** — HTTP + WebSocket server, manages rooms, messages, and agent orchestration
 - **index.html** — single-file frontend, no build step needed
 - **stoa.js** — agent client that runs on each agent machine
-- **claude-session.js** — manages the persistent Claude Code subprocess
+- **claude-session.js** — manages the persistent AI CLI subprocess (Claude Code or Gemini)
 - **SQLite** — all data stored locally in `stoa.db` (WAL mode for performance)
+
+Stoa supports multiple AI backends. Each agent can be configured to use either **Claude Code CLI** or **Gemini CLI**, chosen when the agent is added. Both backends are managed through the same agent client and orchestration layer.
 
 ---
 
