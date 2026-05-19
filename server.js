@@ -1304,6 +1304,7 @@ wss.on('connection', (ws, req) => {
         insertSkill.run(agentActorId, null, sk.name, sk.description || null, 'global');
       }
       console.log(`[agent] Actor #${agentActorId} reported ${workdirs.length} workdirs, ${globalSkills.length} global skills`);
+      broadcastGlobal({ type: 'agent_scan_complete', actor_id: agentActorId });
     }
 
     // ── Agent streams a token

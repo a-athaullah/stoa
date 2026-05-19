@@ -2264,13 +2264,22 @@
     .s-connected-slip {
       border-top: 1px solid var(--h-hair-soft);
       background: color-mix(in srgb, #7fb98c 9%, var(--h-surface));
-      padding: 18px 22px; display: flex; align-items: center; gap: 14px;
+      padding: 18px 22px; display: flex; flex-direction: column; gap: 12px;
     }
+    .s-connected-slip-top { display: flex; align-items: center; gap: 14px; width: 100%; }
     .s-connected-check {
       width: 32px; height: 32px; border-radius: 50%; background: #7fb98c; color: #fff;
       display: inline-flex; align-items: center; justify-content: center;
       box-shadow: 0 0 0 4px color-mix(in srgb, #7fb98c 26%, transparent); flex-shrink: 0;
     }
+    .s-setup-progress { display: flex; flex-direction: column; gap: 8px; width: 100%; padding: 0 4px; }
+    .s-progress-bar { width: 100%; height: 5px; border-radius: 3px; background: color-mix(in srgb, var(--h-ink) 12%, transparent); overflow: hidden; }
+    .s-progress-fill { height: 100%; border-radius: 3px; background: #7fb98c; transition: width .4s ease; }
+    .s-progress-steps { display: flex; flex-direction: column; gap: 4px; }
+    .s-progress-step { display: flex; align-items: center; gap: 8px; font-family: var(--h-serif); font-size: 13px; color: var(--h-ink-mute); }
+    .s-progress-step.done { color: var(--h-ink); }
+    .s-progress-step.active { color: var(--h-ink); font-style: italic; }
+    .s-step-icon { width: 16px; display: inline-flex; justify-content: center; flex-shrink: 0; }
     @keyframes s-flash { from { background: color-mix(in srgb, #7fb98c 14%, var(--h-surface)); } to { background: transparent; } }
     .s-just-connected { animation: s-flash .4s linear forwards; }
 
@@ -5452,6 +5461,8 @@ function sIsAutoName(n) { return /^stoa-[0-9a-f]{6}$/i.test(n); }
 function svgPencil(sz=14) { return `<svg width="${sz}" height="${sz}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.5 2.5l2 2L5 13l-2.5.5L3 11z"/><path d="M10 4l2 2"/></svg>`; }
 function svgX(sz=14) { return `<svg width="${sz}" height="${sz}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>`; }
 function svgCheck(sz=14) { return `<svg width="${sz}" height="${sz}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5l3 3 7-7"/></svg>`; }
+function svgSpinner(sz=16) { return `<svg width="${sz}" height="${sz}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M14 8a6 6 0 1 1-6-6"/></svg>`; }
+function svgSpinnerTiny() { return `<svg class="s-spinner" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M14 8a6 6 0 1 1-6-6"/></svg>`; }
 function svgUpdate(sz=14) { return `<svg width="${sz}" height="${sz}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v9M5 8l3 3 3-3"/><path d="M3 13h10"/></svg>`; }
 function svgRefresh(sz=14) { return `<svg width="${sz}" height="${sz}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.1-3.3"/><path d="M14 2.5v3h-3"/></svg>`; }
 function svgCopy(sz=14) { return `<svg width="${sz}" height="${sz}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="8.5" height="8.5" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2H4A1.5 1.5 0 0 0 2.5 3.5V9A1.5 1.5 0 0 0 4 10.5h1"/></svg>`; }
@@ -5931,20 +5942,58 @@ function sMakeWaitingPill() {
 function sMakeConnectedSlip(actor) {
   const slip = document.createElement('div');
   slip.className = 's-connected-slip';
-  const check = document.createElement('span'); check.className = 's-connected-check'; check.innerHTML = svgCheck(16);
+  slip.id = 's-setup-slip-' + actor.id;
+
+  const top = document.createElement('div'); top.className = 's-connected-slip-top';
+  const spinner = document.createElement('span');
+  spinner.className = 's-spinner'; spinner.id = 's-setup-spinner-' + actor.id;
+  spinner.innerHTML = svgSpinner(20);
   const col = document.createElement('div'); col.style.cssText = 'display:flex;flex-direction:column;gap:2px';
   const l1 = document.createElement('div'); l1.style.cssText = 'font-family:var(--h-serif);font-size:16px;color:var(--h-ink)';
-  l1.innerHTML = `<span style="font-family:ui-monospace,'Cascadia Code',Menlo,monospace;font-size:14px">${escHtml(actor.name)}</span> <span style="font-style:italic;color:var(--h-ink-mute)">connected as</span> actor #${actor.id}`;
-  const l2 = document.createElement('div'); l2.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)';
-  l2.textContent = "rename them above, or leave the auto-name — they'll appear in your rooms.";
-  col.appendChild(l1); col.appendChild(l2);
+  l1.innerHTML = `<span style="font-family:ui-monospace,'Cascadia Code',Menlo,monospace;font-size:14px">${escHtml(actor.name)}</span> <span style="font-style:italic;color:var(--h-ink-mute)">setting up...</span>`;
+  l1.id = 's-setup-title-' + actor.id;
+  col.appendChild(l1);
   const spacer = document.createElement('span'); spacer.style.flex = '1';
   const doneBtn = document.createElement('button');
-  doneBtn.className = 'h-btn-primary'; doneBtn.style.cssText = 'padding:7px 16px;font-size:13px';
+  doneBtn.className = 'h-btn-primary'; doneBtn.style.cssText = 'padding:7px 16px;font-size:13px;opacity:0.4;pointer-events:none';
   doneBtn.textContent = 'done';
+  doneBtn.id = 's-setup-done-' + actor.id;
   doneBtn.addEventListener('click', sCloseAddPanel);
-  slip.appendChild(check); slip.appendChild(col); slip.appendChild(spacer); slip.appendChild(doneBtn);
+  top.appendChild(spinner); top.appendChild(col); top.appendChild(spacer); top.appendChild(doneBtn);
+
+  const progress = document.createElement('div'); progress.className = 's-setup-progress';
+  const bar = document.createElement('div'); bar.className = 's-progress-bar';
+  const fill = document.createElement('div'); fill.className = 's-progress-fill'; fill.id = 's-setup-fill-' + actor.id;
+  fill.style.width = '50%';
+  bar.appendChild(fill);
+
+  const steps = document.createElement('div'); steps.className = 's-progress-steps';
+  steps.innerHTML = `
+    <div class="s-progress-step done"><span class="s-step-icon">${svgCheck(13)}</span> Connected as actor #${actor.id}</div>
+    <div class="s-progress-step active" id="s-setup-step2-${actor.id}"><span class="s-step-icon">${svgSpinnerTiny()}</span> Scanning skills &amp; workdirs...</div>
+  `;
+  progress.appendChild(bar); progress.appendChild(steps);
+  slip.appendChild(top); slip.appendChild(progress);
   return slip;
+}
+
+function sFinishSetupSlip(actorId) {
+  const fill = document.getElementById('s-setup-fill-' + actorId);
+  if (fill) fill.style.width = '100%';
+  const step2 = document.getElementById('s-setup-step2-' + actorId);
+  if (step2) { step2.className = 's-progress-step done'; step2.innerHTML = `<span class="s-step-icon">${svgCheck(13)}</span> Skills &amp; workdirs ready`; }
+  const spinner = document.getElementById('s-setup-spinner-' + actorId);
+  if (spinner) { spinner.className = 's-connected-check'; spinner.innerHTML = svgCheck(16); }
+  const title = document.getElementById('s-setup-title-' + actorId);
+  if (title) {
+    const name = title.querySelector('span')?.textContent || '';
+    title.innerHTML = `<span style="font-family:ui-monospace,'Cascadia Code',Menlo,monospace;font-size:14px">${escHtml(name)}</span> <span style="font-style:italic;color:var(--h-ink-mute)">ready</span>`;
+  }
+  const l2 = document.createElement('div'); l2.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)';
+  l2.textContent = "rename them above, or leave the auto-name — they'll appear in your rooms.";
+  title?.parentElement?.appendChild(l2);
+  const doneBtn = document.getElementById('s-setup-done-' + actorId);
+  if (doneBtn) { doneBtn.style.opacity = '1'; doneBtn.style.pointerEvents = 'auto'; }
 }
 
 function sStartPolling() {
@@ -5974,6 +6023,7 @@ function sStartPolling() {
         const panel = document.getElementById('s-add-panel');
         if (waiting) waiting.replaceWith(sMakeConnectedSlip(newAI));
         else if (panel) panel.appendChild(sMakeConnectedSlip(newAI));
+        try { const wds = await fjson(`/api/actors/${newAI.id}/workdirs`); if (wds.length) sFinishSetupSlip(newAI.id); } catch {}
       }
     } catch {}
   }, 2000);
@@ -6242,6 +6292,7 @@ function initGlobalWs() {
     globalWs.onmessage = async e => {
       let msg; try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.type === 'actor_status') handleActorStatus(msg.actor);
+      if (msg.type === 'agent_scan_complete') sFinishSetupSlip(msg.actor_id);
       if (msg.type === 'actor_removed') handleActorRemoved(msg.actor_id, msg.affected_rooms);
       if (msg.type === 'server_restart') handleServerRestart(msg);
       if (msg.type === 'room_deleted') {
@@ -6314,6 +6365,7 @@ function handleActorStatus(actor) {
       const panel = document.getElementById('s-add-panel');
       if (waiting) waiting.replaceWith(sMakeConnectedSlip(actor));
       else if (panel) panel.appendChild(sMakeConnectedSlip(actor));
+      fjson(`/api/actors/${actor.id}/workdirs`).then(wds => { if (wds.length) sFinishSetupSlip(actor.id); }).catch(() => {});
     }
   }
   // Always update status dot and word
