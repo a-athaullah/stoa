@@ -2808,6 +2808,7 @@ function initEmojiPicker() {
 // ── State ──────────────────────────────────────────────────────────────────
 let ws = null;
 let currentRoomId = null;
+let currentRoomWorkdirId = null;
 let allActors = [];
 let humanActor = null;
 let actorByName = {};
@@ -3270,6 +3271,7 @@ async function openRoom(room) {
   if (window.stopVoiceRecognition) window.stopVoiceRecognition();
 
   currentRoomId = room.id;
+  currentRoomWorkdirId = room.workdir_id || null;
   clearComposerProcessing();
 
   document.querySelectorAll('.h-room-row').forEach(el => {
@@ -6387,6 +6389,23 @@ function initGlobalWs() {
           document.getElementById('chat-header').innerHTML = '';
         }
         refreshRoomList();
+      }
+      if (msg.type === 'model_update') {
+        if (currentRoomWorkdirId === msg.workdir_id) {
+          const badge = document.querySelector('.h-model-badge');
+          const label = formatModelName(msg.model);
+          if (badge && label) badge.textContent = label;
+          else if (badge && !label) badge.remove();
+          else if (!badge && label) {
+            const tagline = document.querySelector('.h-room-tagline');
+            if (tagline) {
+              const b = document.createElement('span');
+              b.className = 'h-model-badge';
+              b.textContent = label;
+              tagline.appendChild(b);
+            }
+          }
+        }
       }
       if (msg.type === 'room_created' || msg.type === 'room_activity' || msg.type === 'room_updated') {
         // Notify for activity in rooms user is not currently viewing

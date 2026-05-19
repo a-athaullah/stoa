@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.2.13';
+const CLIENT_VERSION = '0.2.14';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -217,6 +217,15 @@ async function handleAgentMessage(msg) {
     } catch (err) {
       console.error('[stoa] Failed to create workdir:', err.message);
     }
+  }
+
+  if (msg.type === 'query_model') {
+    let model = null;
+    try {
+      const raw = fs.readFileSync(path.join(msg.workdir, '.claude', 'settings.json'), 'utf8');
+      model = JSON.parse(raw).model || null;
+    } catch {}
+    send({ type: 'model_info', workdir: msg.workdir, model });
   }
 
   if (msg.type === 'agent_trigger') {

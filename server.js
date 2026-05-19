@@ -1216,6 +1216,15 @@ wss.on('connection', (ws, req) => {
         ) AS recent ORDER BY created_at ASC
       `).all(subscribedRoom);
       ws.send(JSON.stringify({ type: 'history', messages }));
+      // Query current model from connected agent
+      const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(subscribedRoom);
+      if (roomRow?.workdir_id) {
+        const wd = db.prepare('SELECT actor_id, path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
+        if (wd) {
+          const agentWs = agentClients.get(wd.actor_id);
+          if (agentWs) agentWs.send(JSON.stringify({ type: 'query_model', workdir: wd.path }));
+        }
+      }
     }
 
     if (msg.type === 'send_message') {
@@ -1321,6 +1330,15 @@ wss.on('connection', (ws, req) => {
       }
       console.log(`[agent] Actor #${agentActorId} reported ${workdirs.length} workdirs, ${globalSkills.length} global skills`);
       broadcastGlobal({ type: 'agent_scan_complete', actor_id: agentActorId });
+    }
+
+    // ── Agent reports model for a workdir
+    if (msg.type === 'model_info' && agentActorId) {
+      const wd = db.prepare('SELECT id, model FROM agent_workdirs WHERE actor_id=? AND path=?').get(agentActorId, msg.workdir);
+      if (wd && wd.model !== msg.model) {
+        db.prepare('UPDATE agent_workdirs SET model=? WHERE id=?').run(msg.model || null, wd.id);
+        broadcastGlobal({ type: 'model_update', workdir_id: wd.id, model: msg.model });
+      }
     }
 
     // ── Agent streams a token
