@@ -11,11 +11,14 @@ function spawnGemini({ prompt, sessionId = null, imageFilePath = null, workDir =
       '-o', 'stream-json',
       '-y',
       '--skip-trust',
-      '--session-id', geminiSessionId,
       ...flags,
     ];
 
-    if (sessionId) args.push('-r', 'latest');
+    if (sessionId) {
+      args.push('-r', 'latest');
+    } else {
+      args.push('--session-id', geminiSessionId);
+    }
 
     const proc = spawn('gemini', args, { cwd: workDir, shell: true, windowsHide: true });
     proc.stdin.write(prompt);

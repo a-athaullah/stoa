@@ -38,24 +38,28 @@ class GeminiSession extends EventEmitter {
       '-o', 'stream-json',
       '-y',
       '--skip-trust',
-      '--session-id', this.sessionId,
       ...this.flags,
     ];
 
     if (this._messageCount > 0) {
       args.push('-r', 'latest');
+    } else {
+      args.push('--session-id', this.sessionId);
     }
     this._messageCount++;
 
     onState?.('requesting');
+    console.log('[gemini-session] spawning, prompt_len=' + prompt.length + ' cwd=' + this.workDir);
 
     this.proc = spawn('gemini', args, { cwd: this.workDir, shell: true, windowsHide: true });
-    this.proc.stdin.write(prompt);
+    const written = this.proc.stdin.write(prompt);
+    console.log('[gemini-session] stdin.write returned=' + written);
     this.proc.stdin.end();
 
     let buffer = '';
 
     this.proc.stdout.on('data', chunk => {
+      console.log('[gemini-session] stdout chunk len=' + chunk.length);
       buffer += chunk.toString();
       const lines = buffer.split('\n');
       buffer = lines.pop();
@@ -70,6 +74,7 @@ class GeminiSession extends EventEmitter {
     });
 
     this.proc.on('close', code => {
+      console.log('[gemini-session] close code=' + code + ' content_len=' + (this._accContent || '').length);
       const content = this._accContent || '';
       const sessionId = this.sessionId;
       const res = this._currentResolve;
@@ -84,6 +89,7 @@ class GeminiSession extends EventEmitter {
     });
 
     this.proc.on('error', err => {
+      console.log('[gemini-session] spawn error:', err.message);
       const rej = this._currentReject;
       this._clearCurrent();
       rej?.(err);
