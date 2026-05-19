@@ -790,7 +790,8 @@ const server = http.createServer(async (req, res) => {
     const token = crypto.randomBytes(12).toString('hex');
     const presetName = url.searchParams.get('name') || '';
     const backend = (url.searchParams.get('backend') || 'claude').toLowerCase();
-    installTokens.set(token, { expires: Date.now() + 600_000, name: presetName, backend });
+    const lang = url.searchParams.get('lang') || 'en';
+    installTokens.set(token, { expires: Date.now() + 600_000, name: presetName, backend, lang });
 
     const isGemini = backend === 'gemini';
     const clientFiles = isGemini
@@ -897,7 +898,8 @@ echo "Logs   : pm2 logs \${AGENT_NAME}"
     const token = crypto.randomBytes(12).toString('hex');
     const presetName = url.searchParams.get('name') || '';
     const ps1Backend = (url.searchParams.get('backend') || 'claude').toLowerCase();
-    installTokens.set(token, { expires: Date.now() + 600_000, name: presetName, backend: ps1Backend });
+    const ps1Lang = url.searchParams.get('lang') || 'en';
+    installTokens.set(token, { expires: Date.now() + 600_000, name: presetName, backend: ps1Backend, lang: ps1Lang });
 
     const ps1IsGemini = ps1Backend === 'gemini';
     const ps1Files = ps1IsGemini
@@ -994,6 +996,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
     const cmdParams = [];
     if (url.searchParams.get('name')) cmdParams.push(`name=${encodeURIComponent(url.searchParams.get('name'))}`);
     if (url.searchParams.get('backend')) cmdParams.push(`backend=${encodeURIComponent(url.searchParams.get('backend'))}`);
+    if (url.searchParams.get('lang')) cmdParams.push(`lang=${encodeURIComponent(url.searchParams.get('lang'))}`);
     const qs = cmdParams.length ? '?' + cmdParams.join('&') : '';
     const script = `@echo off\r\npowershell -ExecutionPolicy Bypass -Command "irm ${baseUrl}/install.ps1${qs} | iex"\r\n`;
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -1013,9 +1016,10 @@ Write-Host "Logs   : pm2 logs $AgentName"
     const name = (entry.name || '').trim() || `stoa-${suffix}`;
     const secret = crypto.randomBytes(32).toString('hex');
     const adapter = entry.backend === 'gemini' ? 'gemini' : 'claude';
+    const adapterConfig = JSON.stringify({ lang: entry.lang || 'en' });
     const result = db.prepare(
-      `INSERT INTO actors (name, type, adapter, avatar_color, avatar_symbol, secret) VALUES (?, 'ai', ?, '#4d9f9f', '◈', ?)`
-    ).run(name, adapter, secret);
+      `INSERT INTO actors (name, type, adapter, adapter_config, avatar_color, avatar_symbol, secret) VALUES (?, 'ai', ?, ?, '#4d9f9f', '◈', ?)`
+    ).run(name, adapter, adapterConfig, secret);
     return json(res, { actor_id: result.lastInsertRowid, name, secret, adapter });
   }
 
@@ -1634,6 +1638,77 @@ async function triggerSkillResponse(roomId, ai, prompt) {
   }
 }
 
+function promptStrings(lang) {
+  const t = {
+    en: {
+      identity: name => `You are ${name}. You are in a conversation on the Stoa platform.`,
+      participants: names => `Other participants in this room: ${names}.`,
+      historyLabel: 'Conversation history',
+      attachments: 'Attachments',
+      attachmentsNote: 'files downloaded to .stoa-attachments/ in workdir if this is the latest message',
+      sentImage: 'sent an image',
+      attachedFile: 'attached file',
+      replyTo: (name, content) => `[This message is a reply to ${name}'s message: "${content}"]`,
+      replyInstruction: 'Reply to the last message naturally and directly. No need to mention humans (@name) as they will read it.',
+      mentionInstruction: names => `To talk to another AI, use @TheirName (e.g. ${names.map(n => '@' + n).join(' or ')}). Mentions automatically trigger them to respond.`,
+      sendFileInstruction: 'If asked to send a file, include the marker [send:path/to/file] in your response. Path must be absolute. You can send multiple files with multiple [send:...] markers. The system will automatically upload and display them in chat.',
+    },
+    id: {
+      identity: name => `Kamu adalah ${name}. Kamu sedang dalam percakapan di platform Stoa.`,
+      participants: names => `Peserta lain di room ini: ${names}.`,
+      historyLabel: 'Riwayat percakapan',
+      attachments: 'Lampiran',
+      attachmentsNote: 'file sudah didownload ke .stoa-attachments/ di workdir jika ini pesan terbaru',
+      sentImage: 'mengirim gambar',
+      attachedFile: 'melampirkan file',
+      replyTo: (name, content) => `[Pesan ini adalah reply ke pesan ${name}: "${content}"]`,
+      replyInstruction: 'Balas pesan terakhir secara natural dan langsung. Tidak perlu mention manusia (@nama) karena mereka pasti membaca.',
+      mentionInstruction: names => `Jika ingin bicara ke AI lain, gunakan @NamaMereka (contoh: ${names.map(n => '@' + n).join(' atau ')}). Mention akan otomatis memicu mereka untuk merespons.`,
+      sendFileInstruction: 'Jika diminta mengirim file, sertakan marker [send:path/to/file] di response. Path harus absolute. Bisa kirim beberapa file sekaligus dengan multiple marker [send:...]. Sistem akan otomatis upload dan menampilkan di chat.',
+    },
+    ja: {
+      identity: name => `あなたは${name}です。Stoaプラットフォームで会話中です。`,
+      participants: names => `このルームの他の参加者: ${names}。`,
+      historyLabel: '会話履歴',
+      attachments: '添付ファイル',
+      attachmentsNote: '最新メッセージの場合、ファイルはworkdirの.stoa-attachments/にダウンロード済み',
+      sentImage: '画像を送信',
+      attachedFile: 'ファイルを添付',
+      replyTo: (name, content) => `[このメッセージは${name}のメッセージへの返信です: 「${content}」]`,
+      replyInstruction: '最後のメッセージに自然に直接返信してください。人間への@メンションは不要です。',
+      mentionInstruction: names => `他のAIに話しかけるには@名前を使ってください（例: ${names.map(n => '@' + n).join('、')}）。メンションで自動的に応答が起動します。`,
+      sendFileInstruction: 'ファイル送信を求められた場合、レスポンスに[send:path/to/file]マーカーを含めてください。パスは絶対パスで指定。複数ファイルは複数の[send:...]マーカーで送信可能です。',
+    },
+    ko: {
+      identity: name => `당신은 ${name}입니다. Stoa 플랫폼에서 대화 중입니다.`,
+      participants: names => `이 방의 다른 참가자: ${names}.`,
+      historyLabel: '대화 기록',
+      attachments: '첨부파일',
+      attachmentsNote: '최신 메시지인 경우 파일이 workdir의 .stoa-attachments/에 다운로드됨',
+      sentImage: '이미지 전송',
+      attachedFile: '파일 첨부',
+      replyTo: (name, content) => `[이 메시지는 ${name}의 메시지에 대한 답장입니다: "${content}"]`,
+      replyInstruction: '마지막 메시지에 자연스럽고 직접적으로 답변하세요. 사람에게 @멘션할 필요 없습니다.',
+      mentionInstruction: names => `다른 AI에게 말하려면 @이름을 사용하세요 (예: ${names.map(n => '@' + n).join(' 또는 ')}). 멘션하면 자동으로 응답합니다.`,
+      sendFileInstruction: '파일 전송을 요청받으면 응답에 [send:path/to/file] 마커를 포함하세요. 경로는 절대 경로여야 합니다. 여러 파일은 여러 [send:...] 마커로 전송 가능합니다.',
+    },
+    zh: {
+      identity: name => `你是${name}。你正在Stoa平台上进行对话。`,
+      participants: names => `此房间的其他参与者：${names}。`,
+      historyLabel: '对话历史',
+      attachments: '附件',
+      attachmentsNote: '如果这是最新消息，文件已下载到workdir的.stoa-attachments/',
+      sentImage: '发送了图片',
+      attachedFile: '附加了文件',
+      replyTo: (name, content) => `[此消息是对${name}消息的回复："${content}"]`,
+      replyInstruction: '自然直接地回复最后一条消息。无需@提及人类，他们会看到的。',
+      mentionInstruction: names => `要与其他AI对话，请使用@名字（例如：${names.map(n => '@' + n).join('、')}）。提及会自动触发他们回应。`,
+      sendFileInstruction: '如果被要求发送文件，请在回复中包含[send:path/to/file]标记。路径必须是绝对路径。可以使用多个[send:...]标记发送多个文件。系统会自动上传并在聊天中显示。',
+    },
+  };
+  return t[lang] || t.en;
+}
+
 async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) {
 
   const result = db.prepare(
@@ -1654,7 +1729,10 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
   const agentWs = agentClients.get(ai.actor_id);
   console.log(`[trigger] ${ai.name} actor_id=${ai.actor_id} agentConnected=${!!agentWs} readyState=${agentWs?.readyState}`);
 
-  // Build context-aware prompt
+  // Build context-aware prompt (language-aware)
+  const agentLang = (() => { try { return JSON.parse(ai.adapter_config || '{}').lang || 'en'; } catch { return 'en'; } })();
+  const L = promptStrings(agentLang);
+
   const history = db.prepare(`
     SELECT a.name, m.content, m.image_url, m.file_url, m.file_name, m.attachments FROM messages m
     JOIN room_participants rp ON rp.id=m.participant_id
@@ -1668,10 +1746,10 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
       try { files = JSON.parse(r.attachments); } catch {}
     }
     if (files.length) {
-      line += '\n  Lampiran: ' + files.map(f => f.name || 'file').join(', ') + ' (file sudah didownload ke .stoa-attachments/ di workdir jika ini pesan terbaru)';
+      line += '\n  ' + L.attachments + ': ' + files.map(f => f.name || 'file').join(', ') + ` (${L.attachmentsNote})`;
     } else {
-      if (r.image_url) line += ' [mengirim gambar]';
-      if (r.file_name) line += ` [melampirkan file: ${r.file_name}]`;
+      if (r.image_url) line += ` [${L.sentImage}]`;
+      if (r.file_name) line += ` [${L.attachedFile}: ${r.file_name}]`;
     }
     return line;
   }).join('\n');
@@ -1687,7 +1765,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
   `).all(roomId);
   const allOtherNames = [...humanParts.map(p => p.name), ...otherAINames];
   const othersLine = allOtherNames.length
-    ? `Peserta lain di room ini: ${allOtherNames.join(', ')}.`
+    ? L.participants(allOtherNames.join(', '))
     : '';
 
   let replyCtx = '';
@@ -1697,19 +1775,17 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
       JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id
       WHERE m.id=?
     `).get(replyTo);
-    if (replied) replyCtx = `\n[Pesan ini adalah reply ke pesan ${replied.name}: "${replied.content?.substring(0, 500)}"]\n`;
+    if (replied) replyCtx = '\n' + L.replyTo(replied.name, replied.content?.substring(0, 500)) + '\n';
   }
 
   const fullPrompt = [
-    `Kamu adalah ${ai.name}. Kamu sedang dalam percakapan di platform Stoa.`,
+    L.identity(ai.name),
     othersLine,
-    `\nRiwayat percakapan:\n${ctx}`,
+    `\n${L.historyLabel}:\n${ctx}`,
     replyCtx,
-    `\nBalas pesan terakhir secara natural dan langsung. Tidak perlu mention manusia (@nama) karena mereka pasti membaca.`,
-    otherAINames.length
-      ? `Jika ingin bicara ke AI lain, gunakan @NamaMereka (contoh: ${otherAINames.map(n => '@' + n).join(' atau ')}). Mention akan otomatis memicu mereka untuk merespons.`
-      : '',
-    `\nJika diminta mengirim file, sertakan marker [send:path/to/file] di response. Path harus absolute. Bisa kirim beberapa file sekaligus dengan multiple marker [send:...]. Sistem akan otomatis upload dan menampilkan di chat.`,
+    '\n' + L.replyInstruction,
+    otherAINames.length ? L.mentionInstruction(otherAINames) : '',
+    '\n' + L.sendFileInstruction,
   ].filter(Boolean).join('\n');
 
   // Resolve workdir: use room's workdir only if it belongs to this agent, else agent's default

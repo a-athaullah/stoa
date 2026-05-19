@@ -5457,6 +5457,8 @@ function sFormatJoined(ts) {
 
 function sIsAutoName(n) { return /^stoa-[0-9a-f]{6}$/i.test(n); }
 
+const STOA_LANGS = { en: 'English', id: 'Bahasa Indonesia', ja: '日本語', ko: '한국어', zh: '中文' };
+
 // SVG helpers
 function svgPencil(sz=14) { return `<svg width="${sz}" height="${sz}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.5 2.5l2 2L5 13l-2.5.5L3 11z"/><path d="M10 4l2 2"/></svg>`; }
 function svgX(sz=14) { return `<svg width="${sz}" height="${sz}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>`; }
@@ -5772,7 +5774,7 @@ async function sCommitDelete(id) {
 
 // ── Add-agent panel ─────────────────────────────────────────────────────────
 function sOpenAddPanel() {
-  sAddPanel = { open: true, name: '', os: sDetectOS(), backend: 'claude', phase: 'waiting',
+  sAddPanel = { open: true, name: '', os: sDetectOS(), backend: 'claude', lang: 'en', phase: 'waiting',
     baselineIds: new Set(settingsActors.map(a => String(a.id))), newActor: null, timer: null };
   document.getElementById('s-add-agent-btn').style.display = 'none';
   sRenderAddPanel();
@@ -5799,6 +5801,7 @@ function sGetCmd() {
   const params = [];
   if (sAddPanel.name) params.push(`name=${encodeURIComponent(sAddPanel.name)}`);
   if (sAddPanel.backend === 'gemini') params.push('backend=gemini');
+  if (sAddPanel.lang && sAddPanel.lang !== 'en') params.push(`lang=${sAddPanel.lang}`);
   const q = params.length ? '?' + params.join('&') : '';
   const url = `${base}/${({unix:'install.sh',ps:'install.ps1',cmd:'install.cmd'})[sAddPanel.os]}${q}`;
   return {
@@ -5884,7 +5887,7 @@ function sRenderAddPanel() {
   beLbl.textContent = 'AI agent';
   const beSelect = document.createElement('select');
   beSelect.className = 's-name-input'; beSelect.style.cssText = 'width:auto;min-width:120px;cursor:pointer';
-  [['claude','Claude'],['gemini','Gemini']].forEach(([id,lbl]) => {
+  [['claude','Claude Code CLI'],['gemini','Gemini CLI']].forEach(([id,lbl]) => {
     const opt = document.createElement('option');
     opt.value = id; opt.textContent = lbl;
     if (sAddPanel.backend === id) opt.selected = true;
@@ -5893,7 +5896,24 @@ function sRenderAddPanel() {
   beSelect.addEventListener('change', () => { sAddPanel.backend = beSelect.value; sUpdateCmd(); });
   beGrp.appendChild(beLbl); beGrp.appendChild(beSelect);
 
-  fieldRow.appendChild(beGrp); fieldRow.appendChild(nameGrp); fieldRow.appendChild(osGrp);
+  // Language group
+  const langGrp = document.createElement('div');
+  langGrp.className = 's-field-group'; langGrp.style.minWidth = 'auto';
+  const langLbl = document.createElement('span');
+  langLbl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);letter-spacing:.04em';
+  langLbl.textContent = 'language';
+  const langSelect = document.createElement('select');
+  langSelect.className = 's-name-input'; langSelect.style.cssText = 'width:auto;min-width:120px;cursor:pointer';
+  Object.entries(STOA_LANGS).forEach(([id,lbl]) => {
+    const opt = document.createElement('option');
+    opt.value = id; opt.textContent = lbl;
+    if (sAddPanel.lang === id) opt.selected = true;
+    langSelect.appendChild(opt);
+  });
+  langSelect.addEventListener('change', () => { sAddPanel.lang = langSelect.value; sUpdateCmd(); });
+  langGrp.appendChild(langLbl); langGrp.appendChild(langSelect);
+
+  fieldRow.appendChild(beGrp); fieldRow.appendChild(langGrp); fieldRow.appendChild(nameGrp); fieldRow.appendChild(osGrp);
   panel.appendChild(fieldRow);
 
   // Command slip
@@ -6066,7 +6086,7 @@ function sRenderDocsLangRow() {
   for (const lang of allLangs) {
     const btn = document.createElement('button');
     btn.className = 's-docs-lang-btn' + (lang === docsLang ? ' active' : '');
-    btn.textContent = lang.toUpperCase();
+    btn.textContent = STOA_LANGS[lang] || lang.toUpperCase();
     btn.addEventListener('click', () => {
       docsLang = lang;
       localStorage.setItem('stoa-docs-lang', lang);
@@ -6656,8 +6676,11 @@ init();
   }
 
   const langs = [
+    { code: 'en-US', label: 'EN', send: /send\s*(it\s*)?now/i, stop: /stop\s*listening/i, clear: /clear\s*all/i },
     { code: 'id-ID', label: 'ID', send: /kirim(kan)?\s*(sekarang|sekarang juga|dulu)/i, stop: /matikan\s*mic/i, clear: /hapus\s*semua/i },
-    { code: 'en-US', label: 'EN', send: /send\s*(it\s*)?now/i, stop: /stop\s*listening/i, clear: /clear\s*all/i }
+    { code: 'ja-JP', label: 'JA', send: /送信(して)?/i, stop: /マイク(を)?止め/i, clear: /全部消(して|す)/i },
+    { code: 'ko-KR', label: 'KO', send: /지금\s*보내/i, stop: /마이크\s*끄/i, clear: /전부\s*지우/i },
+    { code: 'zh-CN', label: 'ZH', send: /现在发送/i, stop: /关闭麦克风/i, clear: /全部清除/i },
   ];
   let langIdx = parseInt(localStorage.getItem('stoa-voice-lang') || '0', 10);
   if (langIdx >= langs.length) langIdx = 0;
