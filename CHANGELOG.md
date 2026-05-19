@@ -1,5 +1,35 @@
 # Changelog
 
+## [2026-05-19]
+
+### Added
+- Gemini CLI as additional AI backend — agents can now use either Claude Code or Gemini CLI
+- Agent language selection (English, Bahasa Indonesia, 日本語, 한국어, 中文) — determines system prompt language
+- Voice STT expanded to 5 languages with localized voice commands per language
+- Setup progress bar during agent installation — shows connecting/scanning/ready phases
+- Japanese, Korean, and Chinese translations for all 4 documentation topics (20 doc files total)
+- DOMPurify XSS protection for all markdown rendering (marked v12 dropped built-in sanitization)
+- Pagination test for messages `before=` parameter
+- Install script tests: ps1 token validation, cmd URL forwarding
+
+### Changed
+- Add Agent panel redesigned — moved above list, AI backend dropdown (Claude/Gemini), reorder fields
+- Settings tab renamed from "Claude" to "AI Agent"
+- Docs language selector changed from pill buttons to dropdown
+- Agent language can be changed after connection via settings panel (takes effect on next message)
+
+### Fixed
+- Gemini spawn ENOENT on Windows — use `shell: true` for .cmd resolution
+- Gemini session resume — use specific session ID instead of `'latest'`
+- XSS vulnerability — `marked.parse()` output now sanitized with `DOMPurify.sanitize()`
+- `ai_sessions` schema mismatch — recreated table with correct `UNIQUE(participant_id, workdir)` composite constraint
+- Agent file upload authentication — exempt `/api/upload/raw` for agents via header auth
+- Path traversal hardening — validate `avatar_url` and attachment URLs
+- Room creation when agent has no workdirs — show new folder option
+- Text field accepting keyboard input during AI processing
+- Android voice input text duplication and ding sound
+- Room list rows shrinking — fixed with `flex-shrink:0`
+
 ## [2026-05-18]
 
 ### Added
