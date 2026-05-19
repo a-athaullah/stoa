@@ -15,7 +15,7 @@ function spawnGemini({ prompt, sessionId = null, imageFilePath = null, workDir =
     ];
 
     if (sessionId) {
-      args.push('-r', 'latest');
+      args.push('-r', sessionId);
     } else {
       args.push('--session-id', geminiSessionId);
     }

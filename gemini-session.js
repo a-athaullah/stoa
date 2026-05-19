@@ -42,7 +42,7 @@ class GeminiSession extends EventEmitter {
     ];
 
     if (this._messageCount > 0) {
-      args.push('-r', 'latest');
+      args.push('-r', this.sessionId);
     } else {
       args.push('--session-id', this.sessionId);
     }
