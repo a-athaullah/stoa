@@ -48,13 +48,15 @@ Note: iOS Safari may have limited Web Speech API support. For the best experienc
 
 While the microphone is active, you can use voice commands instead of tapping buttons:
 
-| Command (ID) | Command (EN) | Action |
-|--------------|-------------|--------|
-| "kirim sekarang" | "send now" | Send the message |
-| "matikan mic" | "stop listening" | Turn off mic and clear text |
-| "hapus semua" | "clear all" | Clear text field and keep mic on |
+| Language | Send | Stop | Clear |
+|----------|------|------|-------|
+| EN | "send now" | "stop listening" | "clear all" |
+| ID | "kirimkan sekarang" | "matikan mic" | "hapus semua" |
+| JA | "送信して" | "マイク止め" | "全部消して" |
+| KO | "지금 보내" | "마이크 끄" | "전부 지우" |
+| ZH | "现在发送" | "关闭麦克风" | "全部清除" |
 
-Toggle language with the **ID/EN** button next to the mic button. Your choice is saved.
+Cycle through languages with the **EN/ID/JA/KO/ZH** button next to the mic button (EN → ID → JA → KO → ZH). Your choice is saved.
 
 ### Behavior Differences: Desktop vs Android
 
@@ -70,11 +72,11 @@ Voice input works on both desktop and Android, but with different behavior due t
 
 **Why the difference?** Android Chrome's Web Speech API does not properly support continuous listening mode. Auto-restarting the mic on Android causes an audible "ding" sound every restart and may produce duplicate text. To avoid these issues, Stoa lets the mic stop naturally on Android.
 
-**Tip for Android**: Speak your full message in one go, then say "kirim sekarang" before pausing. This avoids the timeout and sends in one flow.
+**Tip for Android**: Speak your full message in one go, then say the send command (e.g., "send now" in EN) before pausing. This avoids the timeout and sends in one flow.
 
 ### Language Support
 
-Voice input defaults to **Indonesian (id-ID)**, which also handles common English words well. For mixed Indonesian-English conversations, this works reliably for everyday chat.
+Voice input defaults to **English (en-US)**. Five languages are supported: English, Indonesian, Japanese, Korean, and Chinese. Use the language toggle button next to the mic to switch.
 
 ---
 

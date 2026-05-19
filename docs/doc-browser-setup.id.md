@@ -48,13 +48,15 @@ Catatan: iOS Safari mungkin punya dukungan Web Speech API yang terbatas. Untuk p
 
 Saat mikrofon aktif, Anda bisa menggunakan perintah suara tanpa perlu menyentuh layar:
 
-| Perintah (ID) | Perintah (EN) | Aksi |
-|---------------|--------------|------|
-| "kirim sekarang" | "send now" | Kirim pesan |
-| "matikan mic" | "stop listening" | Matikan mic dan kosongkan teks |
-| "hapus semua" | "clear all" | Kosongkan teks, mic tetap aktif |
+| Bahasa | Kirim | Berhenti | Hapus |
+|--------|-------|----------|-------|
+| EN | "send now" | "stop listening" | "clear all" |
+| ID | "kirimkan sekarang" | "matikan mic" | "hapus semua" |
+| JA | "送信して" | "マイク止め" | "全部消して" |
+| KO | "지금 보내" | "마이크 끄" | "전부 지우" |
+| ZH | "现在发送" | "关闭麦克风" | "全部清除" |
 
-Ganti bahasa dengan tombol **ID/EN** di samping tombol mic. Pilihan Anda disimpan.
+Ganti bahasa dengan tombol **EN/ID/JA/KO/ZH** di samping tombol mic (EN → ID → JA → KO → ZH). Pilihan Anda disimpan.
 
 ### Perbedaan Perilaku: Desktop vs Android
 
@@ -70,11 +72,11 @@ Voice input berfungsi di desktop dan Android, tetapi dengan perilaku berbeda kar
 
 **Kenapa berbeda?** Chrome Android tidak mendukung mode continuous listening dengan benar. Restart otomatis mic di Android menghasilkan bunyi "ding" dan bisa menyebabkan teks terduplikasi. Untuk menghindari masalah ini, Stoa membiarkan mic mati secara alami di Android.
 
-**Tips untuk Android**: Ucapkan seluruh pesan dalam satu kali bicara, lalu katakan "kirim sekarang" sebelum berhenti. Ini menghindari timeout dan mengirim dalam satu alur.
+**Tips untuk Android**: Ucapkan seluruh pesan dalam satu kali bicara, lalu ucapkan perintah kirim (misal "kirimkan sekarang" di ID) sebelum berhenti. Ini menghindari timeout dan mengirim dalam satu alur.
 
 ### Dukungan Bahasa
 
-Voice input default ke **Bahasa Indonesia (id-ID)**, yang juga menangkap kata-kata Inggris umum dengan baik. Untuk percakapan campuran Indonesia-Inggris, ini bekerja cukup andal untuk chat sehari-hari.
+Voice input default ke **Bahasa Inggris (en-US)**. Lima bahasa didukung: Inggris, Indonesia, Jepang, Korea, dan Mandarin. Gunakan tombol pengalih bahasa di samping mic untuk beralih.
 
 ---
 
