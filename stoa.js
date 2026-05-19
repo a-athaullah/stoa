@@ -11,6 +11,7 @@ const fs = require('fs');
 const crypto = require('crypto');
 const path = require('path');
 const os = require('os');
+const { spawnSync } = require('child_process');
 
 const AI_BACKEND = (process.env.STOA_AI_BACKEND || 'claude').toLowerCase();
 const SessionClass = AI_BACKEND === 'gemini'
@@ -475,10 +476,30 @@ function scanForWorkdirs() {
   const home = os.homedir();
   const isWindows = process.platform === 'win32';
 
-  // Gemini has no per-project config folders — just report the default workdir
+  // Gemini has no per-project config folders — just report the default workdir + skills from CLI
   if (AI_BACKEND === 'gemini') {
     const defaultDir = process.env.STOA_WORK_DIR || process.cwd();
-    return { workdirs: [{ path: path.resolve(defaultDir), skills: [], is_default: true }], globalSkills: [] };
+    const globalSkills = [];
+    try {
+      const result = spawnSync('gemini', ['skills', 'list', '--all'], {
+        encoding: 'utf8', shell: true, timeout: 10000, windowsHide: true,
+      });
+      const lines = (result.stdout || '').split('\n');
+      let current = null;
+      for (const line of lines) {
+        const m = line.match(/^(\S+)\s+\[(Enabled|Disabled)\]\s+\[(.+)\]$/);
+        if (m) {
+          if (current) globalSkills.push(current);
+          current = { name: m[1], description: null, scope: 'global' };
+          continue;
+        }
+        if (current && line.trim().startsWith('Description:')) {
+          current.description = line.trim().replace(/^Description:\s*/, '').trim() || null;
+        }
+      }
+      if (current) globalSkills.push(current);
+    } catch {}
+    return { workdirs: [{ path: path.resolve(defaultDir), skills: [], is_default: true }], globalSkills };
   }
 
   const results = [];
