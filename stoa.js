@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.2.20';
+const CLIENT_VERSION = '0.2.21';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -360,15 +360,17 @@ async function processTrigger(msg) {
     activeTriggers.set(message_id, { workdir: targetDir, session });
     let fullContent = '';
     let lastActivity = Date.now();
+    const FIRST_TOKEN_TIMEOUT = 60_000;
     const hangWatchdog = setInterval(() => {
-      if (Date.now() - lastActivity > TRIGGER_TIMEOUT) {
+      const timeout = fullContent ? TRIGGER_TIMEOUT : FIRST_TOKEN_TIMEOUT;
+      if (Date.now() - lastActivity > timeout) {
         clearInterval(hangWatchdog);
-        console.error(`[stoa] trigger timeout (${TRIGGER_TIMEOUT/1000}s no activity), aborting`);
+        console.error(`[stoa] trigger timeout (${timeout/1000}s ${fullContent ? 'idle' : 'no first token'}), aborting`);
         session.abort();
       }
     }, 10_000);
 
-    const { content, sessionId, aborted } = await session.send({
+    const sendOpts = {
       prompt: finalPrompt,
       onToken: token => {
         lastActivity = Date.now();
@@ -383,7 +385,24 @@ async function processTrigger(msg) {
         lastActivity = Date.now();
         send({ type: 'agent_tool', room_id, message_id, tool });
       },
-    });
+    };
+
+    let result;
+    try {
+      result = await session.send(sendOpts);
+    } catch (retryErr) {
+      if (retryErr.message.includes('exited unexpectedly') && !fullContent) {
+        console.log(`[stoa] session crashed before output, retrying in 4s...`);
+        await new Promise(r => setTimeout(r, 4000));
+        session = getSession(targetDir);
+        activeTriggers.set(message_id, { workdir: targetDir, session });
+        lastActivity = Date.now();
+        result = await session.send(sendOpts);
+      } else {
+        throw retryErr;
+      }
+    }
+    const { content, sessionId, aborted } = result;
     clearInterval(hangWatchdog);
 
     consecutiveTriggerErrors = 0;
