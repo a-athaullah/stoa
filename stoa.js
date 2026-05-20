@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.2.22';
+const CLIENT_VERSION = '0.2.23';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -361,6 +361,11 @@ async function processTrigger(msg) {
     let fullContent = '';
     let lastActivity = Date.now();
     let abortReason = null;
+    const statusHandler = status => {
+      lastActivity = Date.now();
+      send({ type: 'agent_system_event', room_id, message_id, status });
+    };
+    session.on('status', statusHandler);
     const FIRST_TOKEN_TIMEOUT = 60_000;
     const hangWatchdog = setInterval(() => {
       const timeout = fullContent ? TRIGGER_TIMEOUT : FIRST_TOKEN_TIMEOUT;
@@ -435,6 +440,7 @@ async function processTrigger(msg) {
       process.exit(0);
     }
   } finally {
+    session.removeListener('status', statusHandler);
     activeTriggers.delete(message_id);
     drainQueue();
   }

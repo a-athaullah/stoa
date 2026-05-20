@@ -3361,6 +3361,17 @@ function handleWsMessage(msg) {
     return;
   }
 
+  if (msg.type === 'system_event') {
+    const inner = document.getElementById('messages-inner');
+    if (!inner) return;
+    const el = document.createElement('div');
+    el.className = 'h-system-event';
+    el.textContent = `${msg.actor_name || 'Agent'} · ${msg.status}`;
+    inner.appendChild(el);
+    scrollToBottom();
+    return;
+  }
+
   if (msg.type === 'message_state') {
     if ((msg.state === 'requesting' || msg.state === 'streaming') && msg.actor_name) {
       showThinking(msg.message_id, msg.actor_name, msg.avatar_color, msg.avatar_symbol, msg.avatar_url);

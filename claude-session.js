@@ -111,6 +111,7 @@ class ClaudeSession extends EventEmitter {
 
   _handleEvent(event) {
     if (event.type === 'system' && event.subtype === 'status') {
+      this.emit('status', event.status);
       this._currentOnState?.(event.status);
     }
 

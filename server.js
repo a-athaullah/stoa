@@ -1383,6 +1383,11 @@ wss.on('connection', (ws, req) => {
       broadcast(msg.room_id, { type: 'message_state', message_id: msg.message_id, state: msg.state, ...actorMeta });
     }
 
+    if (msg.type === 'agent_system_event' && agentActorId) {
+      const actor = db.prepare('SELECT name FROM actors WHERE id=?').get(agentActorId);
+      broadcast(msg.room_id, { type: 'system_event', status: msg.status, actor_name: actor?.name });
+    }
+
     // ── Agent finished responding
     if (msg.type === 'agent_complete' && agentActorId) {
       if (!msg.content?.trim()) {
