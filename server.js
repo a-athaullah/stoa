@@ -1244,9 +1244,11 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'send_message') {
+      let handled = false;
       if (msg.content?.startsWith('/')) {
-        await handleSkillCommand(msg.room_id, msg.content, ws);
-      } else {
+        handled = await handleSkillCommand(msg.room_id, msg.content, ws);
+      }
+      if (!handled) {
         await handleHumanMessage(msg.room_id, msg.content, msg.attachments || null, msg.reply_to || null, ws);
       }
     }
@@ -1574,13 +1576,7 @@ async function handleSkillCommand(roomId, rawCommand, senderWs) {
         WHERE rp.room_id=? AND a.type='ai'
       `).all(roomId);
 
-  if (!allAis.length) {
-    const msg = targetName
-      ? `AI "${targetName}" tidak ada di room ini.`
-      : 'Tidak ada AI di room ini.';
-    senderWs.send(JSON.stringify({ type: 'system_notice', text: msg }));
-    return;
-  }
+  if (!allAis.length) return false;
 
   // Check skill exists — scoped to room's workdir
   const room = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(roomId);
@@ -1591,13 +1587,7 @@ async function handleSkillCommand(roomId, rawCommand, senderWs) {
      AND ((scope IN ('project','local') AND workdir_id = ?) OR scope = 'global')`
   ).all(skillName, ...aiIds, room?.workdir_id);
 
-  if (!matchedSkills.length) {
-    senderWs.send(JSON.stringify({
-      type: 'system_notice',
-      text: `Skill /${skillName} tidak ditemukan di room ini. Ketik / untuk melihat daftar skill.`,
-    }));
-    return;
-  }
+  if (!matchedSkills.length) return false;
 
   // Only trigger agents that own the matched skill
   const matchedIds = new Set(matchedSkills.map(s => s.actor_id));
@@ -1616,6 +1606,7 @@ async function handleSkillCommand(roomId, rawCommand, senderWs) {
   for (const ai of filteredAis) {
     await triggerSkillResponse(roomId, ai, promptText);
   }
+  return true;
 }
 
 async function triggerSkillResponse(roomId, ai, prompt) {
