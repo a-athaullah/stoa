@@ -6,12 +6,19 @@ const { WebSocketServer } = require('ws');
 const db = require('./db');
 const { ClaudeSession } = require('./claude-session');
 const fallbackSessions = new Map();
+const FALLBACK_IDLE_MS = 30 * 60 * 1000;
 function getFallbackSession(participantId, workDir) {
   const key = `${participantId}:${workDir || ''}`;
-  if (!fallbackSessions.has(key)) {
-    fallbackSessions.set(key, new ClaudeSession({ workDir: workDir || __dirname }));
+  const entry = fallbackSessions.get(key);
+  if (entry) {
+    clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => { entry.session.shutdown(); fallbackSessions.delete(key); }, FALLBACK_IDLE_MS);
+    return entry.session;
   }
-  return fallbackSessions.get(key);
+  const session = new ClaudeSession({ workDir: workDir || __dirname });
+  const timer = setTimeout(() => { session.shutdown(); fallbackSessions.delete(key); }, FALLBACK_IDLE_MS);
+  fallbackSessions.set(key, { session, timer });
+  return session;
 }
 const { spawnGemini } = require('./gemini-adapter');
 
