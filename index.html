@@ -291,19 +291,16 @@
       z-index: 1;
       background: inherit;
     }
-    .h-room-row.swiped .h-room-content { transform: translateX(62px); }
+    .h-room-row.swiped .h-room-content { transform: translateX(48px); }
     .h-room-delete-btn {
       position: absolute;
       left: 0; top: 0; bottom: 0;
-      width: 58px;
-      background: #c44;
+      width: 48px;
+      background: #d39749;
       color: #fff;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-family: var(--h-sans);
-      font-size: 12px;
-      font-weight: 500;
       border-radius: 8px 0 0 8px;
       opacity: 0;
       transition: opacity 0.2s ease;
@@ -314,15 +311,12 @@
     .h-room-restore-btn {
       position: absolute;
       left: 0; top: 0; bottom: 0;
-      width: 58px;
+      width: 48px;
       background: #5b8fd4;
       color: #fff;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-family: var(--h-sans);
-      font-size: 12px;
-      font-weight: 500;
       border-radius: 8px 0 0 8px;
       opacity: 0;
       transition: opacity 0.2s ease;
@@ -3215,13 +3209,13 @@ function renderRoomList(rooms) {
     if (isArchived) {
       const restoreBtn = document.createElement('div');
       restoreBtn.className = 'h-room-restore-btn';
-      restoreBtn.textContent = 'Restore';
+      restoreBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>';
       restoreBtn.onclick = e => { e.stopPropagation(); restoreRoom(room); };
       row.appendChild(restoreBtn);
     } else {
       const archiveBtn = document.createElement('div');
       archiveBtn.className = 'h-room-delete-btn';
-      archiveBtn.textContent = 'Archive';
+      archiveBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>';
       archiveBtn.onclick = e => { e.stopPropagation(); archiveRoom(room); };
       row.appendChild(archiveBtn);
     }
