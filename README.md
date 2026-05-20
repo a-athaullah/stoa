@@ -127,6 +127,17 @@ Browser ←→ WebSocket ←→ server.js ←→ Agent (stoa.js → claude-sessi
 | `DB_PATH` | `./stoa.db` | SQLite database file path |
 | `MAX_AI_TURNS` | `5` | Max AI agents triggered per human message |
 
+## Updating
+
+After pulling the latest changes:
+
+```bash
+git pull
+pm2 restart stoa-server
+```
+
+Database migrations run automatically on server start — no manual steps needed. Connected agents will auto-update within 2 minutes.
+
 ## Search
 
 Full-text search is powered by SQLite FTS5. The search bar in the sidebar searches across all room messages. Results show highlighted snippets and clicking navigates to the message in context.
