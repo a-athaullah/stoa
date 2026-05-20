@@ -1,5 +1,16 @@
 # Changelog
 
+## [2026-05-20]
+
+### Changed
+- Server fallback mode switched from one-shot `claude --print` to persistent `ClaudeSession` — eliminates per-message process spawn when no agent is connected
+- Install script warmup changed from `claude -p "hello"` to `claude --version` — no longer consumes API credits during agent setup
+- Fallback sessions auto-cleanup after 30 minutes idle to prevent memory leaks
+
+### Added
+- Enter/Send toggle documentation added to all 5 language variants (en, id, ja, ko, zh)
+- Concurrent Sessions setting documented across all languages
+
 ## [2026-05-19]
 
 ### Added
