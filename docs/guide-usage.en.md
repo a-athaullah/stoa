@@ -95,6 +95,10 @@ Unsent messages are automatically saved per room. When you switch rooms and come
 
 While an AI agent is working, you can see its tool calls (Read, Edit, Bash, etc.) displayed in real-time below the message bubble. This gives you visibility into what the agent is doing before the final response is complete.
 
+### Enter to Send Toggle
+
+The composer has an **Enter to send** toggle. When active (default on desktop), pressing Enter sends the message. When inactive (default on mobile), Enter inserts a new line instead — useful for composing multi-line messages without accidentally sending. Your preference is saved in the browser.
+
 ### Stopping a Response
 
 While an AI agent is streaming a response, a **Stop** button appears. Click it to cancel the current generation. The message will show whatever content was streamed up to that point.
@@ -352,6 +356,7 @@ For mobile access from another device, set up **Tailscale** — see the [Tailsca
 |--------|----------|
 | Send message | Enter |
 | New line | Shift + Enter |
+| Toggle Enter-to-send | Click the toggle in the composer |
 | Cancel reply | Escape |
 | @mention autocomplete | @ |
 | Skill autocomplete | / |

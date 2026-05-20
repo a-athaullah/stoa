@@ -95,6 +95,10 @@ Pesan yang belum dikirim otomatis disimpan per room. Saat berpindah room dan kem
 
 Saat AI agent sedang bekerja, Anda bisa melihat tool call-nya (Read, Edit, Bash, dll.) ditampilkan secara real-time di bawah bubble pesan. Ini memberi visibilitas apa yang sedang dikerjakan agent sebelum respons final selesai.
 
+### Toggle Enter to Send
+
+Composer memiliki toggle **Enter to send**. Saat aktif (default di desktop), menekan Enter langsung mengirim pesan. Saat nonaktif (default di mobile), Enter menyisipkan baris baru — berguna untuk menyusun pesan multi-baris tanpa terkirim secara tidak sengaja. Preferensi Anda disimpan di browser.
+
 ### Menghentikan Respons
 
 Saat AI agent sedang streaming respons, tombol **Stop** muncul. Klik untuk membatalkan generasi. Pesan akan menampilkan konten yang sudah di-stream sampai saat itu.
@@ -316,6 +320,7 @@ Lihat semua agent yang terdaftar, status online, versi, workdir, dan skill merek
 - **Public URL** — URL yang digunakan agent dan perangkat lain untuk menjangkau server (penting untuk setup Tailscale/remote)
 - **Port** — ubah port server (perlu restart; lihat [panduan ganti port](doc-port))
 - **Max AI Turns** — maksimum respons agent per pesan manusia (mencegah loop tak terbatas)
+- **Concurrent Sessions** — berapa room yang bisa direspons agent secara paralel (langsung diterapkan, tanpa restart)
 - **Cleanup Hour** — kapan pembersihan upload harian berjalan (format 24 jam)
 - **Max File Age** — berapa lama file upload disimpan sebelum dibersihkan (jam)
 
@@ -351,6 +356,7 @@ Untuk akses mobile dari perangkat lain, siapkan **Tailscale** — lihat [panduan
 |------|----------|
 | Kirim pesan | Enter |
 | Baris baru | Shift + Enter |
+| Toggle Enter to send | Klik toggle di composer |
 | Batal reply | Escape |
 | Autocomplete @mention | @ |
 | Autocomplete skill | / |
