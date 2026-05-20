@@ -3487,6 +3487,8 @@ function handleWsMessage(msg) {
   }
 
   if (msg.type === 'system_event') {
+    const dominated = ['requesting', 'idle'];
+    if (dominated.includes(msg.status)) return;
     const inner = document.getElementById('messages-inner');
     if (!inner) return;
     const el = document.createElement('div');
