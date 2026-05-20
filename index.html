@@ -66,7 +66,7 @@
 
     /* ── Sidebar ─────────────────────────────────────────── */
     #sidebar {
-      width: 252px;
+      width: 300px;
       flex: 0 0 auto;
       background: var(--h-sidebar-bg);
       border-right: 1px solid var(--h-hairline);
@@ -323,6 +323,30 @@
       cursor: pointer;
     }
     .h-room-row.swiped .h-room-restore-btn { opacity: 1; }
+
+    .h-room-action {
+      display: none;
+      align-items: center;
+      align-self: center;
+      background: none;
+      border: none;
+      color: var(--h-ink-faint);
+      cursor: pointer;
+      padding: 2px;
+      border-radius: 4px;
+      flex-shrink: 0;
+      transition: color 0.12s;
+    }
+    .h-room-action:hover { color: var(--h-ink); }
+
+    @media (min-width: 681px) {
+      .h-room-delete-btn, .h-room-restore-btn { display: none !important; }
+      .h-room-row.swiped .h-room-content { transform: none !important; }
+      .h-room-row:hover .h-room-action { display: flex; }
+    }
+    @media (max-width: 680px) {
+      .h-room-action { display: none !important; }
+    }
 
     .h-archived-badge {
       font-family: var(--h-sans);
@@ -3243,6 +3267,19 @@ function renderRoomList(rooms) {
     }
     top.appendChild(time);
 
+    const actionBtn = document.createElement('button');
+    actionBtn.className = 'h-room-action';
+    if (isArchived) {
+      actionBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>';
+      actionBtn.title = 'Restore';
+      actionBtn.onclick = e => { e.stopPropagation(); restoreRoom(room); };
+    } else {
+      actionBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>';
+      actionBtn.title = 'Archive';
+      actionBtn.onclick = e => { e.stopPropagation(); archiveRoom(room); };
+    }
+    top.appendChild(actionBtn);
+
     content.appendChild(top);
 
     if (room.last_message) {
@@ -3311,9 +3348,6 @@ function initRoomSwipe(row) {
   row.addEventListener('touchstart', onStart, { passive: true });
   row.addEventListener('touchmove', onMove, { passive: true });
   row.addEventListener('touchend', onEnd);
-  row.addEventListener('mousedown', onStart);
-  row.addEventListener('mousemove', onMove);
-  row.addEventListener('mouseup', onEnd);
 }
 
 function closeAllSwipes() {
