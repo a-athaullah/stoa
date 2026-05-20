@@ -54,7 +54,7 @@ class ClaudeSession extends EventEmitter {
       this._stderrBuf += d.toString();
     });
 
-    this.proc.on('close', () => {
+    this.proc.on('close', (code, signal) => {
       if (this._dead) return;
       // If resume ID is invalid, drop it and restart fresh
       if (this._stderrBuf.includes('No conversation found')) {
@@ -62,7 +62,9 @@ class ClaudeSession extends EventEmitter {
         this.flags = this.flags.filter((f, i, arr) => f !== '--resume' && arr[i - 1] !== '--resume');
         this.resumeId = null;
       }
-      console.error('[session] claude process exited, restarting in 3s...');
+      const lastStderr = this._stderrBuf.trim().split('\n').slice(-3).join(' | ');
+      console.error(`[session] claude process exited code=${code} signal=${signal}${lastStderr ? ' stderr=' + lastStderr.slice(0, 200) : ''}, restarting in 3s...`);
+      this._stderrBuf = '';
       if (this._currentReject) {
         const reject = this._currentReject;
         this._clearCurrent();

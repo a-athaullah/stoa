@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.2.21';
+const CLIENT_VERSION = '0.2.22';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -360,11 +360,13 @@ async function processTrigger(msg) {
     activeTriggers.set(message_id, { workdir: targetDir, session });
     let fullContent = '';
     let lastActivity = Date.now();
+    let abortReason = null;
     const FIRST_TOKEN_TIMEOUT = 60_000;
     const hangWatchdog = setInterval(() => {
       const timeout = fullContent ? TRIGGER_TIMEOUT : FIRST_TOKEN_TIMEOUT;
       if (Date.now() - lastActivity > timeout) {
         clearInterval(hangWatchdog);
+        abortReason = 'timeout';
         console.error(`[stoa] trigger timeout (${timeout/1000}s ${fullContent ? 'idle' : 'no first token'}), aborting`);
         session.abort();
       }
@@ -408,8 +410,9 @@ async function processTrigger(msg) {
     consecutiveTriggerErrors = 0;
     if (aborted) {
       const partial = fullContent || content || '';
-      send({ type: 'agent_complete', room_id, message_id, content: partial || '(stopped by user)' });
-      console.log(`[stoa] Aborted message ${message_id}, partial=${partial.length} chars`);
+      const fallback = abortReason === 'timeout' ? '(timed out — session not responding)' : '(stopped by user)';
+      send({ type: 'agent_complete', room_id, message_id, content: partial || fallback });
+      console.log(`[stoa] Aborted message ${message_id}, reason=${abortReason || 'user'}, partial=${partial.length} chars`);
     } else {
       const { text: cleanContent, attachments } = await extractAndUploadFiles(content, msg.workdir);
       const completeMsg = { type: 'agent_complete', room_id, message_id, content: cleanContent, claude_session_id: sessionId };
