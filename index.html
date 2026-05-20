@@ -188,6 +188,31 @@
       font-size: 13px;
     }
 
+    .h-room-tabs {
+      display: flex;
+      gap: 0;
+      padding: 0 4px 6px;
+    }
+    .h-room-tab {
+      flex: 1;
+      background: transparent;
+      border: none;
+      font-family: var(--h-serif);
+      font-size: 13px;
+      color: var(--h-ink-faint);
+      cursor: pointer;
+      padding: 6px 0;
+      border-bottom: 2px solid transparent;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .h-room-tab:hover { color: var(--h-ink-mute); }
+    .h-room-tab.active { color: var(--h-ink); border-bottom-color: var(--h-ink); }
+    .h-room-tab .h-tab-count {
+      font-size: 11px;
+      color: var(--h-ink-faint);
+      margin-left: 4px;
+    }
+
     .h-rooms-row {
       display: flex;
       align-items: center;
@@ -285,6 +310,35 @@
       cursor: pointer;
     }
     .h-room-row.swiped .h-room-delete-btn { opacity: 1; }
+
+    .h-room-restore-btn {
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 58px;
+      background: #5b8fd4;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--h-sans);
+      font-size: 12px;
+      font-weight: 500;
+      border-radius: 8px 0 0 8px;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+      cursor: pointer;
+    }
+    .h-room-row.swiped .h-room-restore-btn { opacity: 1; }
+
+    .h-archived-badge {
+      font-family: var(--h-sans);
+      font-size: 10px;
+      color: var(--h-ink-faint);
+      background: color-mix(in srgb, var(--h-ink-faint) 15%, transparent);
+      border-radius: 3px;
+      padding: 1px 5px;
+      margin-left: 6px;
+    }
 
     .h-room-row-top {
       display: flex;
@@ -2407,8 +2461,12 @@
     <button id="search-clear" style="display:none" aria-label="Clear search">&times;</button>
   </div>
   <div id="search-results" style="display:none"></div>
-  <div class="h-rooms-row">
-    <div class="h-rooms-label">rooms</div>
+  <div class="h-room-tabs">
+    <button class="h-room-tab active" id="tab-rooms" onclick="switchRoomTab('rooms')">rooms</button>
+    <button class="h-room-tab" id="tab-archived" onclick="switchRoomTab('archived')">archived</button>
+  </div>
+  <div id="rooms-active-header" class="h-rooms-row">
+    <div class="h-rooms-label"></div>
     <button class="h-new-room-btn" id="new-room-btn" data-tip="add a Claude first">+ new room</button>
   </div>
   <div id="room-list"></div>
@@ -3135,19 +3193,38 @@ function renderSidebarFooter() {
 }
 
 // ── Room list ──────────────────────────────────────────────────────────────
+let currentRoomTab = 'rooms';
+
+function switchRoomTab(tab) {
+  currentRoomTab = tab;
+  document.getElementById('tab-rooms').classList.toggle('active', tab === 'rooms');
+  document.getElementById('tab-archived').classList.toggle('active', tab === 'archived');
+  document.getElementById('rooms-active-header').style.display = tab === 'rooms' ? '' : 'none';
+  refreshRoomList();
+}
+
 function renderRoomList(rooms) {
   const list = document.getElementById('room-list');
   list.innerHTML = '';
+  const isArchived = currentRoomTab === 'archived';
   for (const room of rooms) {
     const row = document.createElement('div');
     row.className = 'h-room-row' + (room.id === currentRoomId ? ' active' : '');
     row.dataset.roomId = room.id;
 
-    const delBtn = document.createElement('div');
-    delBtn.className = 'h-room-delete-btn';
-    delBtn.textContent = 'Delete';
-    delBtn.onclick = e => { e.stopPropagation(); deleteRoom(room); };
-    row.appendChild(delBtn);
+    if (isArchived) {
+      const restoreBtn = document.createElement('div');
+      restoreBtn.className = 'h-room-restore-btn';
+      restoreBtn.textContent = 'Restore';
+      restoreBtn.onclick = e => { e.stopPropagation(); restoreRoom(room); };
+      row.appendChild(restoreBtn);
+    } else {
+      const archiveBtn = document.createElement('div');
+      archiveBtn.className = 'h-room-delete-btn';
+      archiveBtn.textContent = 'Archive';
+      archiveBtn.onclick = e => { e.stopPropagation(); archiveRoom(room); };
+      row.appendChild(archiveBtn);
+    }
 
     const content = document.createElement('div');
     content.className = 'h-room-content';
@@ -3198,6 +3275,21 @@ function renderRoomList(rooms) {
     initRoomSwipe(row);
     list.appendChild(row);
   }
+
+  if (isArchived && rooms.length) {
+    const delAll = document.createElement('div');
+    delAll.style.cssText = 'text-align:center;padding:12px 0 4px';
+    const delBtn = document.createElement('button');
+    delBtn.style.cssText = 'background:transparent;border:1px solid var(--h-hairline);border-radius:6px;padding:5px 14px;font-family:var(--h-sans);font-size:12px;color:#c44;cursor:pointer';
+    delBtn.textContent = 'delete all archived';
+    delBtn.onclick = async () => {
+      if (!confirm(`Delete all ${rooms.length} archived rooms? This cannot be undone.`)) return;
+      for (const r of rooms) await fetch(`/api/rooms/${r.id}`, { method: 'DELETE' });
+      refreshRoomList();
+    };
+    delAll.appendChild(delBtn);
+    list.appendChild(delAll);
+  }
 }
 
 function initRoomSwipe(row) {
@@ -3237,17 +3329,22 @@ document.addEventListener('click', e => {
   if (!e.target.closest('.h-room-row')) closeAllSwipes();
 });
 
-async function deleteRoom(room) {
-  if (!confirm(`Delete "${room.title}"? All messages will be lost.`)) return;
+async function archiveRoom(room) {
   try {
-    const dr = await fetch(`/api/rooms/${room.id}`, { method: 'DELETE' });
-    if (!dr.ok) return;
+    await fetch(`/api/rooms/${room.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ archived: true }) });
   } catch { return; }
   if (currentRoomId === room.id) {
     currentRoomId = null;
     document.getElementById('messages-inner').innerHTML = '';
     document.getElementById('chat-header').innerHTML = '';
   }
+  refreshRoomList();
+}
+
+async function restoreRoom(room) {
+  try {
+    await fetch(`/api/rooms/${room.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ archived: false }) });
+  } catch { return; }
   refreshRoomList();
 }
 
@@ -4585,8 +4682,9 @@ function initScrollLoader() {
       const ts = r.created_at.endsWith('Z') ? r.created_at : r.created_at.replace(' ', 'T') + 'Z';
       const time = new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' +
                    new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const archivedBadge = r.archived_at ? '<span class="h-archived-badge">archived</span>' : '';
       item.innerHTML =
-        `<div class="h-search-room">${escHtml(r.room_title)}</div>` +
+        `<div class="h-search-room">${escHtml(r.room_title)}${archivedBadge}</div>` +
         `<div class="h-search-meta">` +
           `<span class="h-search-actor" style="color:${r.avatar_color || 'var(--h-ink)'}">${escHtml(r.actor_name)}</span>` +
           `<span class="h-search-time">${time}</span>` +
@@ -6430,12 +6528,15 @@ function initGlobalWs() {
       if (msg.type === 'agent_scan_complete') sFinishSetupSlip(msg.actor_id);
       if (msg.type === 'actor_removed') handleActorRemoved(msg.actor_id, msg.affected_rooms);
       if (msg.type === 'server_restart') handleServerRestart(msg);
-      if (msg.type === 'room_deleted') {
+      if (msg.type === 'room_deleted' || msg.type === 'room_archived') {
         if (currentRoomId === msg.room_id) {
           currentRoomId = null;
           document.getElementById('messages-inner').innerHTML = '';
           document.getElementById('chat-header').innerHTML = '';
         }
+        refreshRoomList();
+      }
+      if (msg.type === 'room_restored') {
         refreshRoomList();
       }
       if (msg.type === 'model_update') handleModelUpdate(msg);
@@ -6457,7 +6558,8 @@ function initGlobalWs() {
 
 async function refreshRoomList() {
   try {
-    const rooms = await fjson('/api/rooms');
+    const isArchived = currentRoomTab === 'archived';
+    const rooms = await fjson(`/api/rooms${isArchived ? '?archived=1' : ''}`);
     renderRoomList(rooms);
     rooms.forEach(async room => {
       try {

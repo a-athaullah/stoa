@@ -81,6 +81,14 @@ try {
   }
 } catch {}
 
+try {
+  const cols = db.prepare("PRAGMA table_info(rooms)").all().map(c => c.name);
+  if (!cols.includes('archived_at')) {
+    db.prepare("ALTER TABLE rooms ADD COLUMN archived_at TEXT DEFAULT NULL").run();
+    console.log('[db] added rooms.archived_at column');
+  }
+} catch {}
+
 // ─── Auth: password hashing & session management ─────────────────────────────
 
 function hashPassword(password) {
@@ -474,6 +482,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/rooms') {
+    const archived = url.searchParams.get('archived') === '1';
     const rows = db.prepare(`
       SELECT r.*, a.name as creator_name, w.model as workdir_model,
         (SELECT COUNT(*) FROM room_participants WHERE room_id=r.id) as participant_count,
@@ -481,7 +490,9 @@ const server = http.createServer(async (req, res) => {
         (SELECT m.content FROM messages m WHERE m.room_id=r.id AND m.state='complete' AND m.content != '' ORDER BY m.id DESC LIMIT 1) as last_message,
         (SELECT a2.name FROM messages m2 JOIN room_participants rp ON rp.id=m2.participant_id JOIN actors a2 ON a2.id=rp.actor_id WHERE m2.room_id=r.id AND m2.state='complete' AND m2.content != '' ORDER BY m2.id DESC LIMIT 1) as last_message_actor,
         COALESCE((SELECT m3.created_at FROM messages m3 WHERE m3.room_id=r.id ORDER BY m3.id DESC LIMIT 1), r.created_at) as last_activity
-      FROM rooms r JOIN actors a ON a.id=r.created_by LEFT JOIN agent_workdirs w ON w.id=r.workdir_id ORDER BY last_activity DESC
+      FROM rooms r JOIN actors a ON a.id=r.created_by LEFT JOIN agent_workdirs w ON w.id=r.workdir_id
+      WHERE ${archived ? 'r.archived_at IS NOT NULL' : 'r.archived_at IS NULL'}
+      ORDER BY last_activity DESC
     `).all();
     return json(res, rows);
   }
@@ -509,10 +520,18 @@ const server = http.createServer(async (req, res) => {
   if (roomPatchMatch) {
     const roomId = parseInt(roomPatchMatch[1]);
     const body = await readBody(req);
-    const { title } = JSON.parse(body);
-    if (title) {
-      db.prepare('UPDATE rooms SET title=? WHERE id=?').run(title.trim(), roomId);
-      broadcastGlobal({ type: 'room_updated', room_id: roomId, title: title.trim() });
+    const parsed = JSON.parse(body);
+    if (parsed.title) {
+      db.prepare('UPDATE rooms SET title=? WHERE id=?').run(parsed.title.trim(), roomId);
+      broadcastGlobal({ type: 'room_updated', room_id: roomId, title: parsed.title.trim() });
+    }
+    if (parsed.archived === true) {
+      db.prepare("UPDATE rooms SET archived_at=datetime('now') WHERE id=?").run(roomId);
+      broadcastGlobal({ type: 'room_archived', room_id: roomId });
+    }
+    if (parsed.archived === false) {
+      db.prepare('UPDATE rooms SET archived_at=NULL WHERE id=?').run(roomId);
+      broadcastGlobal({ type: 'room_restored', room_id: roomId });
     }
     return json(res, { ok: true });
   }
@@ -541,7 +560,7 @@ const server = http.createServer(async (req, res) => {
     const rows = db.prepare(`
       SELECT m.id, m.room_id, m.content, m.created_at,
              a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
-             r.title as room_title,
+             r.title as room_title, r.archived_at,
              snippet(messages_fts, 0, '<mark>', '</mark>', '…', 40) as snippet
       FROM messages_fts
       JOIN messages m ON m.id = messages_fts.rowid
