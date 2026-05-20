@@ -149,7 +149,7 @@ const UPLOADS_DIR = path.join(__dirname, 'uploads');
 }
 
 // Files yang boleh di-serve sebagai client update
-const CLIENT_FILES = new Set(['stoa.js', 'claude-session.js', 'claude-adapter.js', 'claude-adapter-lite.js', 'gemini-session.js', 'gemini-adapter.js']);
+const CLIENT_FILES = new Set(['stoa.js', 'claude-session.js', 'gemini-session.js', 'gemini-adapter.js']);
 
 // One-time install tokens (expires in 10 min)
 const installTokens = new Map();
@@ -824,9 +824,9 @@ const server = http.createServer(async (req, res) => {
     const isGemini = backend === 'gemini';
     const clientFiles = isGemini
       ? 'stoa.js gemini-session.js gemini-adapter.js'
-      : 'stoa.js claude-session.js claude-adapter.js claude-adapter-lite.js';
+      : 'stoa.js claude-session.js';
     const trustCmd = isGemini
-      ? 'gemini --skip-trust -y -p "hello" > /dev/null 2>&1 || true'
+      ? 'gemini --version > /dev/null 2>&1 || true'
       : 'claude --version > /dev/null 2>&1 || true';
     const backendEnv = isGemini ? `\n      STOA_AI_BACKEND: 'gemini',` : '';
 
@@ -932,9 +932,9 @@ echo "Logs   : pm2 logs \${AGENT_NAME}"
     const ps1IsGemini = ps1Backend === 'gemini';
     const ps1Files = ps1IsGemini
       ? '"stoa.js","gemini-session.js","gemini-adapter.js"'
-      : '"stoa.js","claude-session.js","claude-adapter.js","claude-adapter-lite.js"';
+      : '"stoa.js","claude-session.js"';
     const ps1TrustCmd = ps1IsGemini
-      ? 'try { gemini --skip-trust -y -p "hello" 2>$null } catch {}'
+      ? 'try { & gemini --version 2>$null } catch {}'
       : 'try { & claude --version 2>$null } catch {}';
     const ps1BackendEnv = ps1IsGemini ? `\n      STOA_AI_BACKEND: 'gemini',` : '';
 

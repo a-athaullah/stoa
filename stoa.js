@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.2.19';
+const CLIENT_VERSION = '0.2.20';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -56,7 +56,7 @@ let MAX_CONCURRENT = parseInt(process.env.STOA_MAX_CONCURRENT || '1');
 const UPDATE_INTERVAL = 120_000; // cek tiap 2 menit
 const UPDATE_FILES = AI_BACKEND === 'gemini'
   ? ['stoa.js', 'gemini-session.js', 'gemini-adapter.js']
-  : ['stoa.js', 'claude-session.js', 'claude-adapter.js', 'claude-adapter-lite.js'];
+  : ['stoa.js', 'claude-session.js'];
 
 function buildLocalManifest() {
   const manifest = {};
