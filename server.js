@@ -4,7 +4,15 @@ const path = require('path');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const db = require('./db');
-const { spawnClaude } = require('./claude-adapter');
+const { ClaudeSession } = require('./claude-session');
+const fallbackSessions = new Map();
+function getFallbackSession(participantId, workDir) {
+  const key = `${participantId}:${workDir || ''}`;
+  if (!fallbackSessions.has(key)) {
+    fallbackSessions.set(key, new ClaudeSession({ workDir: workDir || __dirname }));
+  }
+  return fallbackSessions.get(key);
+}
 const { spawnGemini } = require('./gemini-adapter');
 
 function getSession(participantId, workdir) {
@@ -812,7 +820,7 @@ const server = http.createServer(async (req, res) => {
       : 'stoa.js claude-session.js claude-adapter.js claude-adapter-lite.js';
     const trustCmd = isGemini
       ? 'gemini --skip-trust -y -p "hello" > /dev/null 2>&1 || true'
-      : 'printf "1\\n" | claude --dangerously-skip-permissions --print -p "hello" > /dev/null 2>&1 || true';
+      : 'claude --version > /dev/null 2>&1 || true';
     const backendEnv = isGemini ? `\n      STOA_AI_BACKEND: 'gemini',` : '';
 
     const script = `#!/bin/bash
@@ -920,7 +928,7 @@ echo "Logs   : pm2 logs \${AGENT_NAME}"
       : '"stoa.js","claude-session.js","claude-adapter.js","claude-adapter-lite.js"';
     const ps1TrustCmd = ps1IsGemini
       ? 'try { gemini --skip-trust -y -p "hello" 2>$null } catch {}'
-      : 'try { "1" | & claude --dangerously-skip-permissions --print -p "hello" 2>$null } catch {}';
+      : 'try { & claude --version 2>$null } catch {}';
     const ps1BackendEnv = ps1IsGemini ? `\n      STOA_AI_BACKEND: 'gemini',` : '';
 
     const script = `$ErrorActionPreference = "Stop"
@@ -1648,31 +1656,60 @@ async function triggerSkillResponse(roomId, ai, prompt) {
   } else {
     const meta = { actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null };
     let fullContent = '';
-    const spawnFn = ai.adapter === 'gemini' ? spawnGemini : spawnClaude;
-    try {
-      await spawnFn({
-        prompt,
-        onToken: token => {
-          fullContent += token;
-          broadcast(roomId, { type: 'message_token', message_id: msgId, token });
-        },
-        onState: state => {
-          broadcast(roomId, { type: 'message_state', message_id: msgId, state, ...meta });
-        },
-        onTool: tool => {
-          broadcast(roomId, { type: 'message_tool', message_id: msgId, tool });
-        },
-      });
-      if (!fullContent.trim()) {
+    if (ai.adapter === 'gemini') {
+      try {
+        await spawnGemini({
+          prompt,
+          onToken: token => {
+            fullContent += token;
+            broadcast(roomId, { type: 'message_token', message_id: msgId, token });
+          },
+          onState: state => {
+            broadcast(roomId, { type: 'message_state', message_id: msgId, state, ...meta });
+          },
+          onTool: tool => {
+            broadcast(roomId, { type: 'message_tool', message_id: msgId, tool });
+          },
+        });
+        if (!fullContent.trim()) {
+          db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msgId);
+          broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
+          return;
+        }
+        db.prepare("UPDATE messages SET content=?, state='complete', completed_at=datetime('now') WHERE id=?").run(fullContent, msgId);
+        broadcast(roomId, { type: 'message_complete', message_id: msgId, content: fullContent });
+      } catch {
         db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msgId);
         broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
-        return;
       }
-      db.prepare("UPDATE messages SET content=?, state='complete', completed_at=datetime('now') WHERE id=?").run(fullContent, msgId);
-      broadcast(roomId, { type: 'message_complete', message_id: msgId, content: fullContent });
-    } catch {
-      db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msgId);
-      broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
+    } else {
+      const session = getFallbackSession(ai.participant_id, workdir);
+      try {
+        const result = await session.send({
+          prompt,
+          onToken: token => {
+            fullContent += token;
+            broadcast(roomId, { type: 'message_token', message_id: msgId, token });
+          },
+          onState: state => {
+            broadcast(roomId, { type: 'message_state', message_id: msgId, state, ...meta });
+          },
+          onTool: tool => {
+            broadcast(roomId, { type: 'message_tool', message_id: msgId, tool });
+          },
+        });
+        if (!fullContent.trim()) {
+          db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msgId);
+          broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
+          return;
+        }
+        if (result.sessionId) saveSession(ai.participant_id, result.sessionId, workdir);
+        db.prepare("UPDATE messages SET content=?, state='complete', completed_at=datetime('now') WHERE id=?").run(fullContent, msgId);
+        broadcast(roomId, { type: 'message_complete', message_id: msgId, content: fullContent });
+      } catch {
+        db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msgId);
+        broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
+      }
     }
   }
 }
@@ -1865,10 +1902,8 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
 
   } else {
     // ── Fallback: spawn directly (no agent connected)
-    const spawnFn = ai.adapter === 'gemini' ? spawnGemini : spawnClaude;
     console.log(`[trigger] ${ai.name} fallback to direct spawn (${ai.adapter || 'claude'})`);
     let fullContent = '';
-    const sessionId = getSession(ai.participant_id, workdir);
 
     const imageUrl = (attachments || []).find(a => a.type === 'image')?.url;
     const fileUrl  = (attachments || []).find(a => a.type === 'file')?.url;
@@ -1876,7 +1911,6 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
 
     try {
       const safeAttachUrl = u => u && u.startsWith('/uploads/') && !u.includes('..');
-      const imageFilePath = (imageUrl && safeAttachUrl(imageUrl)) ? path.join(__dirname, imageUrl) : null;
       const TEXT_EXTS = new Set(['.md','.txt','.json','.csv','.html','.js','.ts','.py','.yaml','.yml','.sh','.css']);
       let spawnPrompt = fullPrompt;
       if (fileUrl && safeAttachUrl(fileUrl) && fileName && TEXT_EXTS.has(path.extname(fileName).toLowerCase())) {
@@ -1886,28 +1920,58 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
           spawnPrompt = `${fullPrompt}\n\n---\nIsi file \`${fileName}\`:\n\`\`\`\n${fileContent}\n\`\`\``;
         }
       }
-      const finalSessionId = await spawnFn({
-        prompt: spawnPrompt,
-        sessionId,
-        imageFilePath,
-        onToken: token => {
-          fullContent += token;
-          broadcast(roomId, { type: 'message_token', message_id: msgId, token });
-        },
-        onState: state => {
-          broadcast(roomId, { type: 'message_state', message_id: msgId, state });
-        },
-        onTool: tool => {
-          broadcast(roomId, { type: 'message_tool', message_id: msgId, tool });
-        },
-      });
+
+      let imageData = null;
+      const imageFilePath = (imageUrl && safeAttachUrl(imageUrl)) ? path.join(__dirname, imageUrl) : null;
+      if (imageFilePath && fs.existsSync(imageFilePath)) {
+        const base64 = fs.readFileSync(imageFilePath).toString('base64');
+        const ext = path.extname(imageFilePath).toLowerCase();
+        const mimeMap = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' };
+        imageData = { base64, mimeType: mimeMap[ext] || 'image/png' };
+      }
+
+      if (ai.adapter === 'gemini') {
+        const sessionId = getSession(ai.participant_id, workdir);
+        const finalSessionId = await spawnGemini({
+          prompt: spawnPrompt,
+          sessionId,
+          imageFilePath,
+          onToken: token => {
+            fullContent += token;
+            broadcast(roomId, { type: 'message_token', message_id: msgId, token });
+          },
+          onState: state => {
+            broadcast(roomId, { type: 'message_state', message_id: msgId, state });
+          },
+          onTool: tool => {
+            broadcast(roomId, { type: 'message_tool', message_id: msgId, tool });
+          },
+        });
+        if (finalSessionId) saveSession(ai.participant_id, finalSessionId, workdir);
+      } else {
+        const session = getFallbackSession(ai.participant_id, workdir);
+        const result = await session.send({
+          prompt: spawnPrompt,
+          imageData,
+          onToken: token => {
+            fullContent += token;
+            broadcast(roomId, { type: 'message_token', message_id: msgId, token });
+          },
+          onState: state => {
+            broadcast(roomId, { type: 'message_state', message_id: msgId, state });
+          },
+          onTool: tool => {
+            broadcast(roomId, { type: 'message_tool', message_id: msgId, tool });
+          },
+        });
+        if (result.sessionId) saveSession(ai.participant_id, result.sessionId, workdir);
+      }
 
       if (!fullContent.trim()) {
         db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msgId);
         broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
         return;
       }
-      saveSession(ai.participant_id, finalSessionId, workdir);
       db.prepare(
         "UPDATE messages SET content=?, state='complete', completed_at=datetime('now') WHERE id=?"
       ).run(fullContent, msgId);
