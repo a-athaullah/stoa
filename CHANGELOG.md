@@ -1,5 +1,40 @@
 # Changelog
 
+## [2026-05-21]
+
+### Added
+- Toast notifications for failed actions — archive, restore, delete, search, settings, and other user actions now show error feedback instead of silently failing (14 catch blocks fixed)
+- Room archiving with tabs and swipe gestures — swipe left to archive, swipe right to restore, search badges show archived rooms
+- In-room search — Ctrl+F to search messages within current room, results shown as list
+- Delete message feature with long-press support on mobile
+- Desktop hover buttons for room actions (archive/restore)
+- Message API: GET/DELETE /api/messages/:id, agent search & getMessage capability
+- GET /api/rooms/:id endpoint for single room retrieval
+- Session status events visible in chat (compacting, warmup, etc.)
+- Retry on session crash with faster timeout for unresponsive triggers
+- Auto-load older messages when navigating to search result not in DOM
+- Server-side enforcement to skip triggers to outdated agents and force auto-update
+- Gemini session auto-recovery when resume fails (generates fresh session)
+- Safety net catch on processTrigger to prevent stuck activeTriggers
+- 10 new integration tests: single message GET/DELETE, actor lang config, settings extras, invite rejection
+- parseJsonBody helper — guards all HTTP route JSON.parse with 400 Invalid JSON response
+- Missing database indexes for reply_to and auth session expiry
+
+### Changed
+- First-token timeout increased from 60s to 10 minutes to accommodate large session compaction
+- CLIENT_VERSION bumped to 0.2.30
+- Version comparison uses localeCompare with numeric option — agents newer than expected are no longer rejected
+- Archive/restore buttons use icons instead of text
+- Session status events (requesting, idle) filtered from noisy display in chat
+
+### Fixed
+- Version comparison bug where agents newer than expected were incorrectly rejected
+- Mobile image upload: use createImageBitmap, reduce maxDim on mobile, cleanup blob URLs
+- /slash messages treated as skill when no matching skill exists
+- ReferenceError in processTrigger finally block
+- Stuck messages cleaned up on agent reconnect, stale WS connections closed
+- Dead claude-adapter files removed, Gemini warmup fixed
+
 ## [2026-05-20]
 
 ### Changed
