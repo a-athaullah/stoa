@@ -4935,8 +4935,15 @@ async function doRoomSearch(query) {
   }
 }
 
-function scrollToMessage(msgId) {
-  const el = document.getElementById('msg-' + msgId);
+async function scrollToMessage(msgId) {
+  let el = document.getElementById('msg-' + msgId);
+  if (!el && currentRoomId && oldestMessageId && msgId < oldestMessageId) {
+    for (let i = 0; i < 20 && !el && !noMoreOlder; i++) {
+      loadingOlder = false;
+      await loadOlderMessages();
+      el = document.getElementById('msg-' + msgId);
+    }
+  }
   if (el) {
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     el.style.transition = 'background 0.3s';
