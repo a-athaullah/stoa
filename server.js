@@ -22,6 +22,14 @@ function getFallbackSession(participantId, workDir) {
 }
 const { spawnGemini } = require('./gemini-adapter');
 
+const EXPECTED_CLIENT_VERSION = (() => {
+  try {
+    const src = fs.readFileSync(path.join(__dirname, 'stoa.js'), 'utf8');
+    const m = src.match(/^const CLIENT_VERSION\s*=\s*'([^']+)'/m);
+    return m ? m[1] : null;
+  } catch { return null; }
+})();
+
 function getSession(participantId, workdir) {
   if (workdir) {
     const row = db.prepare('SELECT claude_session_id FROM ai_sessions WHERE participant_id=? AND workdir=?').get(participantId, workdir);
@@ -1888,6 +1896,17 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
 
   const agentWs = agentClients.get(ai.actor_id);
   console.log(`[trigger] ${ai.name} actor_id=${ai.actor_id} agentConnected=${!!agentWs} readyState=${agentWs?.readyState}`);
+
+  if (EXPECTED_CLIENT_VERSION && agentWs && agentWs.readyState === 1) {
+    const agentVer = agentVersions.get(ai.actor_id);
+    if (agentVer && agentVer !== EXPECTED_CLIENT_VERSION) {
+      console.log(`[trigger] ${ai.name} outdated (v${agentVer} < v${EXPECTED_CLIENT_VERSION}), skipping trigger — sending restart`);
+      agentWs.send(JSON.stringify({ type: 'restart' }));
+      db.prepare("UPDATE messages SET state='error', content='(agent updating — please retry)' WHERE id=?").run(msgId);
+      broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error', actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null });
+      return;
+    }
+  }
 
   // Build context-aware prompt (language-aware)
   const agentLang = (() => { try { return JSON.parse(ai.adapter_config || '{}').lang || 'en'; } catch { return 'en'; } })();

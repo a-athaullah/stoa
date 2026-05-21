@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.2.26';
+const CLIENT_VERSION = '0.2.27';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -210,6 +210,13 @@ async function handleAgentMessage(msg) {
     } catch (err) {
       console.error('[stoa] Rescan failed:', err.message);
     }
+  }
+
+  if (msg.type === 'restart') {
+    console.log('[stoa] Server requested restart (version outdated)');
+    pendingRestart = true;
+    if (activeTriggers.size === 0 && triggerQueue.length === 0) doRestart();
+    return;
   }
 
   if (msg.type === 'server_restart') {
