@@ -891,6 +891,41 @@
       transition: background .12s, color .12s;
     }
     .h-header-action-btn:hover { background: var(--h-surface); color: var(--h-ink); }
+    .h-header-action-btn.active { background: var(--h-surface); color: var(--h-accent); }
+
+    .h-room-search-bar {
+      display: none;
+      padding: 8px 16px;
+      border-bottom: 1px solid var(--h-hair-soft);
+      background: var(--h-header-bg);
+      gap: 8px;
+      align-items: center;
+    }
+    .h-room-search-bar.visible { display: flex; }
+    .h-room-search-bar input {
+      flex: 1;
+      border: 1px solid var(--h-hairline);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-family: var(--h-sans);
+      font-size: 13px;
+      background: var(--h-bg);
+      color: var(--h-ink);
+      outline: none;
+    }
+    .h-room-search-bar input:focus { border-color: var(--h-accent); }
+    .h-room-search-bar .h-room-search-nav {
+      display: flex; gap: 4px; align-items: center;
+      font-size: 12px; color: var(--h-ink-faint); white-space: nowrap;
+    }
+    .h-room-search-bar .h-room-search-nav button {
+      background: none; border: none; cursor: pointer;
+      color: var(--h-ink-faint); padding: 2px 4px; border-radius: 4px;
+    }
+    .h-room-search-bar .h-room-search-nav button:hover { color: var(--h-ink); background: var(--h-surface); }
+    .h-room-search-match { background: rgba(211,151,73,0.25); border-radius: 2px; }
+    .h-room-search-current { background: rgba(211,151,73,0.5); border-radius: 2px; }
+
     .h-export-dropdown {
       display: none;
       position: absolute;
@@ -2705,6 +2740,15 @@
 
   <div id="chat-inner">
     <div id="chat-header"></div>
+    <div id="room-search-bar" class="h-room-search-bar">
+      <input type="search" id="room-search-input" placeholder="Search in room…" autocomplete="off" spellcheck="false">
+      <div class="h-room-search-nav">
+        <span id="room-search-count"></span>
+        <button id="room-search-prev" title="Previous">&#9650;</button>
+        <button id="room-search-next" title="Next">&#9660;</button>
+        <button id="room-search-close" title="Close">&times;</button>
+      </div>
+    </div>
     <div id="messages">
       <div id="messages-inner"></div>
     </div>
@@ -3142,6 +3186,15 @@ function renderChatHeader(room, participants) {
   sealsWrap.appendChild(addWrap);
   header.appendChild(sealsWrap);
 
+  // Search button
+  const searchBtn = document.createElement('button');
+  searchBtn.className = 'h-header-action-btn';
+  searchBtn.title = 'Search in room';
+  searchBtn.style.marginLeft = '8px';
+  searchBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`;
+  searchBtn.onclick = () => toggleRoomSearch();
+  header.appendChild(searchBtn);
+
   // Export button
   const exportWrap = document.createElement('div');
   exportWrap.style.cssText = 'position:relative;display:inline-flex;margin-left:8px';
@@ -3422,6 +3475,7 @@ async function openRoom(room) {
     document.getElementById('settings-row').classList.remove('active');
     document.getElementById('settings-inner').classList.remove('visible');
   }
+  closeRoomSearch();
   // Save draft from previous room
   saveDraft(currentRoomId);
   if (window.stopVoiceRecognition) window.stopVoiceRecognition();
@@ -4795,6 +4849,127 @@ function initScrollLoader() {
   }
 }
 
+// ── In-room search ─────────────────────────────────────────────────────────
+let roomSearchResults = [];
+let roomSearchIdx = -1;
+
+function toggleRoomSearch() {
+  const bar = document.getElementById('room-search-bar');
+  const input = document.getElementById('room-search-input');
+  const btn = document.querySelector('#chat-header .h-header-action-btn[title="Search in room"]');
+  if (bar.classList.contains('visible')) {
+    closeRoomSearch();
+  } else {
+    bar.classList.add('visible');
+    if (btn) btn.classList.add('active');
+    input.value = '';
+    input.focus();
+  }
+}
+
+function closeRoomSearch() {
+  const bar = document.getElementById('room-search-bar');
+  bar.classList.remove('visible');
+  const btn = document.querySelector('#chat-header .h-header-action-btn[title="Search in room"]');
+  if (btn) btn.classList.remove('active');
+  clearRoomSearchHighlights();
+  roomSearchResults = [];
+  roomSearchIdx = -1;
+  document.getElementById('room-search-count').textContent = '';
+}
+
+function clearRoomSearchHighlights() {
+  document.querySelectorAll('.h-room-search-match, .h-room-search-current').forEach(el => {
+    el.replaceWith(document.createTextNode(el.textContent));
+  });
+  document.querySelectorAll('.h-msg-row').forEach(r => r.normalize());
+}
+
+async function doRoomSearch(query) {
+  clearRoomSearchHighlights();
+  roomSearchResults = [];
+  roomSearchIdx = -1;
+  if (!query.trim() || !currentRoomId) {
+    document.getElementById('room-search-count').textContent = '';
+    return;
+  }
+  const rows = await fetch(`/api/search?q=${encodeURIComponent(query)}&room_id=${currentRoomId}&limit=100`).then(r => r.json());
+  const msgIds = rows.map(r => r.id);
+  const q = query.toLowerCase();
+  for (const mid of msgIds) {
+    const row = document.getElementById('msg-' + mid);
+    if (!row) continue;
+    const bubble = row.querySelector('.h-msg-bubble');
+    if (!bubble) continue;
+    highlightText(bubble, q);
+    roomSearchResults.push(mid);
+  }
+  const count = document.getElementById('room-search-count');
+  count.textContent = roomSearchResults.length ? `${roomSearchResults.length} found` : 'no results';
+  if (roomSearchResults.length) navigateRoomSearch(0);
+}
+
+function highlightText(node, query) {
+  const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+  const matches = [];
+  while (walker.nextNode()) {
+    const text = walker.currentNode;
+    const idx = text.textContent.toLowerCase().indexOf(query);
+    if (idx >= 0) matches.push({ text, idx });
+  }
+  for (const { text, idx } of matches.reverse()) {
+    const span = document.createElement('span');
+    span.className = 'h-room-search-match';
+    const range = document.createRange();
+    range.setStart(text, idx);
+    range.setEnd(text, idx + query.length);
+    range.surroundContents(span);
+  }
+}
+
+function navigateRoomSearch(idx) {
+  document.querySelectorAll('.h-room-search-current').forEach(el => {
+    el.className = 'h-room-search-match';
+  });
+  roomSearchIdx = idx;
+  const mid = roomSearchResults[idx];
+  const row = document.getElementById('msg-' + mid);
+  if (row) {
+    const mark = row.querySelector('.h-room-search-match');
+    if (mark) mark.className = 'h-room-search-current';
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+  document.getElementById('room-search-count').textContent = `${idx + 1} / ${roomSearchResults.length}`;
+}
+
+(function() {
+  const input = document.getElementById('room-search-input');
+  let debounce = null;
+  input.addEventListener('input', () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(() => doRoomSearch(input.value), 300);
+  });
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (roomSearchResults.length) {
+        const next = e.shiftKey
+          ? (roomSearchIdx - 1 + roomSearchResults.length) % roomSearchResults.length
+          : (roomSearchIdx + 1) % roomSearchResults.length;
+        navigateRoomSearch(next);
+      }
+    }
+    if (e.key === 'Escape') closeRoomSearch();
+  });
+  document.getElementById('room-search-prev').onclick = () => {
+    if (roomSearchResults.length) navigateRoomSearch((roomSearchIdx - 1 + roomSearchResults.length) % roomSearchResults.length);
+  };
+  document.getElementById('room-search-next').onclick = () => {
+    if (roomSearchResults.length) navigateRoomSearch((roomSearchIdx + 1) % roomSearchResults.length);
+  };
+  document.getElementById('room-search-close').onclick = closeRoomSearch;
+})();
+
 // ── Utility ─────────────────────────────────────────────────────────────────
 function relativeTime(ts) {
   const diff = (Date.now() - new Date(ts)) / 1000;
@@ -5590,7 +5765,13 @@ async function init() {
     }
   });
   document.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'f' && currentRoomId) {
+      e.preventDefault();
+      toggleRoomSearch();
+    }
     if (e.key === 'Escape') {
+      const bar = document.getElementById('room-search-bar');
+      if (bar.classList.contains('visible')) { closeRoomSearch(); return; }
       if (processingMessages.size > 0) { stopGeneration(); return; }
       hideSkillPopup();
     }

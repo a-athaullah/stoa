@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.2.24';
+const CLIENT_VERSION = '0.2.25';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -45,6 +45,8 @@ let rl = null;
 const activeStreams = {}; // message_id → { actor_name, started, color, symbol }
 const triggerQueue = [];
 const activeTriggers = new Map(); // message_id → { workdir, session }
+const pendingRequests = new Map(); // request_id → { resolve }
+let requestIdCounter = 0;
 let pendingRestart = false;
 let consecutiveFailures = 0;
 let consecutiveTriggerErrors = 0;
@@ -260,6 +262,11 @@ async function handleAgentMessage(msg) {
     send({ type: 'model_info', workdir: msg.workdir, model });
   }
 
+  if (msg.type === 'search_result' || msg.type === 'get_message_result') {
+    const pending = pendingRequests.get(msg.request_id);
+    if (pending) { pendingRequests.delete(msg.request_id); pending.resolve(msg); }
+  }
+
   if (msg.type === 'agent_trigger') {
     const { room_id, message_id, prompt } = msg;
     console.log(`[stoa] trigger received room=${room_id} msg=${message_id} prompt="${prompt?.slice(0, 60)}..." (active=${activeTriggers.size}/${MAX_CONCURRENT})`);
@@ -272,6 +279,25 @@ async function handleAgentMessage(msg) {
 
     processTrigger(msg);
   }
+}
+
+function wsRequest(type, payload, timeout = 10000) {
+  const request_id = String(++requestIdCounter);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { pendingRequests.delete(request_id); reject(new Error('ws request timeout')); }, timeout);
+    pendingRequests.set(request_id, { resolve: msg => { clearTimeout(timer); resolve(msg); } });
+    send({ type, request_id, ...payload });
+  });
+}
+
+async function searchMessages(query, roomId, limit = 20) {
+  const res = await wsRequest('agent_search', { query, room_id: roomId, limit });
+  return res.results || [];
+}
+
+async function getMessage(messageId) {
+  const res = await wsRequest('agent_get_message', { message_id: messageId });
+  return res.message || null;
 }
 
 async function processTrigger(msg) {

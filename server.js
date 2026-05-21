@@ -563,6 +563,20 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(204); return res.end();
   }
 
+  const msgGetMatch = req.method === 'GET' && url.pathname.match(/^\/api\/messages\/(\d+)$/);
+  if (msgGetMatch) {
+    const msgId = parseInt(msgGetMatch[1]);
+    const row = db.prepare(`
+      SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
+      FROM messages m
+      JOIN room_participants rp ON rp.id=m.participant_id
+      JOIN actors a ON a.id=rp.actor_id
+      WHERE m.id=?
+    `).get(msgId);
+    if (!row) { res.writeHead(404); return res.end(); }
+    return json(res, row);
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/search') {
     const q = (url.searchParams.get('q') || '').trim();
     const roomId = url.searchParams.get('room_id');
@@ -1417,6 +1431,37 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'agent_state' && agentActorId) {
       const actorMeta = pendingActorMeta.get(msg.message_id) || {};
       broadcast(msg.room_id, { type: 'message_state', message_id: msg.message_id, state: msg.state, ...actorMeta });
+    }
+
+    if (msg.type === 'agent_search' && agentActorId) {
+      const q = (msg.query || '').trim();
+      const roomId = msg.room_id;
+      const limit = Math.min(parseInt(msg.limit ?? '20'), 50);
+      if (!q) { ws.send(JSON.stringify({ type: 'search_result', request_id: msg.request_id, results: [] })); }
+      else {
+        const rows = db.prepare(`
+          SELECT m.id, m.room_id, m.content, m.created_at,
+                 a.name as actor_name, a.type as actor_type,
+                 snippet(messages_fts, 0, '', '', '…', 60) as snippet
+          FROM messages_fts
+          JOIN messages m ON m.id = messages_fts.rowid
+          JOIN room_participants rp ON rp.id = m.participant_id
+          JOIN actors a ON a.id = rp.actor_id
+          WHERE messages_fts MATCH ? AND m.state='complete'
+          ${roomId ? 'AND m.room_id = ?' : ''}
+          ORDER BY rank LIMIT ?
+        `).all(...(roomId ? [q, roomId, limit] : [q, limit]));
+        ws.send(JSON.stringify({ type: 'search_result', request_id: msg.request_id, results: rows }));
+      }
+    }
+
+    if (msg.type === 'agent_get_message' && agentActorId) {
+      const row = db.prepare(`
+        SELECT m.id, m.room_id, m.content, m.created_at, a.name as actor_name, a.type as actor_type
+        FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id
+        WHERE m.id=?
+      `).get(msg.message_id);
+      ws.send(JSON.stringify({ type: 'get_message_result', request_id: msg.request_id, message: row || null }));
     }
 
     if (msg.type === 'agent_system_event' && agentActorId) {
