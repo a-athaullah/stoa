@@ -335,7 +335,9 @@ const server = http.createServer(async (req, res) => {
   // ── Auth routes (exempt from auth check above) ──
   if (req.method === 'POST' && url.pathname === '/api/auth/login') {
     const body = await readBody(req);
-    const { email, password } = JSON.parse(body);
+    const data = parseJsonBody(body);
+    if (!data) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
+    const { email, password } = data;
     const user = db.prepare('SELECT * FROM auth_users WHERE email=?').get(email);
     if (!user || !verifyPassword(password, user.password_hash)) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -367,7 +369,9 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'PATCH' && url.pathname === '/api/auth/email') {
-    const { email } = JSON.parse(await readBody(req));
+    const data = parseJsonBody(await readBody(req));
+    if (!data) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
+    const { email } = data;
     if (!email?.trim() || !email.includes('@')) { res.writeHead(400); return res.end('invalid email'); }
     try {
       db.prepare('UPDATE auth_users SET email=? WHERE id=?').run(email.trim(), req._authUser.user_id);
@@ -376,7 +380,9 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'PATCH' && url.pathname === '/api/auth/password') {
-    const { current_password, new_password } = JSON.parse(await readBody(req));
+    const data = parseJsonBody(await readBody(req));
+    if (!data) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
+    const { current_password, new_password } = data;
     if (!new_password || new_password.length < 6) { res.writeHead(400); return res.end('password must be at least 6 characters'); }
     const user = db.prepare('SELECT * FROM auth_users WHERE id=?').get(req._authUser.user_id);
     if (!verifyPassword(current_password, user.password_hash)) {
@@ -437,7 +443,9 @@ const server = http.createServer(async (req, res) => {
   if (avatarUploadMatch) {
     const id = parseInt(avatarUploadMatch[1]);
     const body = await readBody(req);
-    const { data_url } = JSON.parse(body);
+    const data = parseJsonBody(body);
+    if (!data) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
+    const { data_url } = data;
     if (!data_url || !data_url.startsWith('data:image/')) { res.writeHead(400); return res.end('invalid data_url'); }
     const mimeMatch = data_url.match(/^data:(image\/[a-z+]+);base64,/);
     if (!mimeMatch) { res.writeHead(400); return res.end('invalid data_url format'); }
@@ -513,7 +521,9 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && url.pathname === '/api/rooms') {
     const body = await readBody(req);
-    const { title, participant_ids = [], workdir_id = null } = JSON.parse(body);
+    const data = parseJsonBody(body);
+    if (!data) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
+    const { title, participant_ids = [], workdir_id = null } = data;
     if (!workdir_id) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: 'workdir_id is required' })); }
     const human = db.prepare(`SELECT id FROM actors WHERE type='human' LIMIT 1`).get();
     const humanId = human?.id ?? 1;
@@ -534,7 +544,8 @@ const server = http.createServer(async (req, res) => {
   if (roomPatchMatch) {
     const roomId = parseInt(roomPatchMatch[1]);
     const body = await readBody(req);
-    const parsed = JSON.parse(body);
+    const parsed = parseJsonBody(body);
+    if (!parsed) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
     if (parsed.title) {
       db.prepare('UPDATE rooms SET title=? WHERE id=?').run(parsed.title.trim(), roomId);
       broadcastGlobal({ type: 'room_updated', room_id: roomId, title: parsed.title.trim() });
@@ -680,7 +691,9 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname.match(/^\/api\/rooms\/\d+\/participants$/)) {
     const roomId = parseInt(url.pathname.split('/')[3]);
     const body = await readBody(req);
-    const { actor_id } = JSON.parse(body);
+    const data = parseJsonBody(body);
+    if (!data) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
+    const { actor_id } = data;
     if (!actor_id) return json(res, { error: 'actor_id required' }, 400);
     const actor = db.prepare('SELECT id, name FROM actors WHERE id=?').get(actor_id);
     if (!actor) return json(res, { error: 'actor not found' }, 404);
@@ -695,7 +708,9 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/setup') {
-    const { name } = JSON.parse(await readBody(req));
+    const data = parseJsonBody(await readBody(req));
+    if (!data) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
+    const { name } = data;
     if (!name?.trim()) { res.writeHead(400); return res.end('name required'); }
     const row = db.prepare(`SELECT COUNT(*) AS cnt FROM actors WHERE type='human'`).get();
     if (row.cnt > 0) { res.writeHead(409); return res.end('already set up'); }
@@ -722,7 +737,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'PATCH' && url.pathname === '/api/settings') {
-    const body = JSON.parse(await readBody(req));
+    const body = parseJsonBody(await readBody(req));
+    if (!body) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
     if (body.public_url !== undefined) setSetting('public_url', body.public_url.trim());
     if (body.human_name !== undefined) {
       const name = body.human_name.trim() || 'Human';
@@ -776,7 +792,8 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'PATCH' && url.pathname.startsWith('/api/actors/')) {
     const id = parseInt(url.pathname.split('/')[3]);
-    const body = JSON.parse(await readBody(req));
+    const body = parseJsonBody(await readBody(req));
+    if (!body) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
     const { name, avatar_url, lang } = body;
     if (!name?.trim()) { res.writeHead(400); return res.end('name required'); }
     if (avatar_url !== undefined) {
@@ -1092,7 +1109,9 @@ Write-Host "Logs   : pm2 logs $AgentName"
   // ── Agent registration ──
   if (req.method === 'POST' && url.pathname === '/api/agent/register') {
     const body = await readBody(req);
-    const { token } = JSON.parse(body);
+    const data = parseJsonBody(body);
+    if (!data) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
+    const { token } = data;
     const entry = installTokens.get(token);
     if (!entry || entry.expires < Date.now()) {
       res.writeHead(401); return res.end(JSON.stringify({ error: 'invalid or expired token' }));
@@ -1112,7 +1131,9 @@ Write-Host "Logs   : pm2 logs $AgentName"
   if (req.method === 'POST' && url.pathname.startsWith('/api/invites/') && url.pathname.endsWith('/resolve')) {
     const inviteId = url.pathname.split('/')[3];
     const body = await readBody(req);
-    const { approved } = JSON.parse(body);
+    const data = parseJsonBody(body);
+    if (!data) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
+    const { approved } = data;
     const status = approved ? 'approved' : 'rejected';
     db.prepare("UPDATE invite_suggestions SET status=?, resolved_at=datetime('now') WHERE id=?").run(status, inviteId);
 
@@ -1138,7 +1159,9 @@ Write-Host "Logs   : pm2 logs $AgentName"
   // POST /api/actors/:id/workdirs — request agent to create a new workdir
   if (req.method === 'POST' && url.pathname.match(/^\/api\/actors\/\d+\/workdirs$/)) {
     const actorId = parseInt(url.pathname.split('/')[3]);
-    const { path: dirPath, label } = JSON.parse(await readBody(req));
+    const data = parseJsonBody(await readBody(req));
+    if (!data) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
+    const { path: dirPath, label } = data;
     if (!dirPath?.trim()) { res.writeHead(400); return res.end('path required'); }
     const agentWs = agentClients.get(actorId);
     if (!agentWs) { res.writeHead(503); return res.end('agent offline'); }
@@ -2145,6 +2168,10 @@ function readBody(req, maxBytes = 10 * 1024 * 1024) {
     req.on('end', () => resolve(body));
     req.on('error', reject);
   });
+}
+
+function parseJsonBody(raw) {
+  try { return JSON.parse(raw); } catch { return null; }
 }
 
 // ─── Idle session cleanup ─────────────────────────────────────────────────────
