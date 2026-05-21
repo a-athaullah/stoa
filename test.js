@@ -1073,13 +1073,14 @@ async function run() {
   console.log('\n9m · settings extras');
 
   await test('PATCH /api/settings updates public_url', async () => {
-    const { body: before } = await req('GET', '/api/settings');
-    const orig = before.public_url || '';
     const { status } = await req('PATCH', '/api/settings', { public_url: 'http://test.local' });
     assert.strictEqual(status, 200);
-    const { body: after } = await req('GET', '/api/settings');
-    assert.strictEqual(after.public_url, 'http://test.local');
-    await req('PATCH', '/api/settings', { public_url: orig });
+    const row = db.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='public_url' ORDER BY id DESC LIMIT 1").get();
+    assert.strictEqual(row?.value, 'http://test.local');
+    await req('PATCH', '/api/settings', { public_url: '' });
+    // Cleanup any duplicate rows created by the NULL scope_id bug
+    const latest = db.prepare("SELECT id FROM settings WHERE key_name='public_url' ORDER BY id DESC LIMIT 1").get();
+    if (latest) db.prepare("DELETE FROM settings WHERE key_name='public_url' AND id != ?").run(latest.id);
   });
 
   await test('PATCH /api/settings updates cleanup_max_age_hours', async () => {

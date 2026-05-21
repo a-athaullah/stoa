@@ -226,10 +226,12 @@ function getSetting(key, scopeId = null) {
 }
 
 function setSetting(key, value) {
-  db.prepare(
-    `INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, ?, ?)
-     ON CONFLICT(scope, scope_id, key_name) DO UPDATE SET value=excluded.value`
-  ).run(key, value);
+  const existing = db.prepare("SELECT id FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name=?").get(key);
+  if (existing) {
+    db.prepare('UPDATE settings SET value=? WHERE id=?').run(value, existing.id);
+  } else {
+    db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, ?, ?)").run(key, value);
+  }
 }
 
 function getPublicUrl(fallbackHost) {
