@@ -1935,7 +1935,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
 
   if (EXPECTED_CLIENT_VERSION && agentWs && agentWs.readyState === 1) {
     const agentVer = agentVersions.get(ai.actor_id);
-    if (agentVer && agentVer !== EXPECTED_CLIENT_VERSION) {
+    if (agentVer && agentVer.localeCompare(EXPECTED_CLIENT_VERSION, undefined, { numeric: true }) < 0) {
       console.log(`[trigger] ${ai.name} outdated (v${agentVer} < v${EXPECTED_CLIENT_VERSION}), skipping trigger — sending restart`);
       agentWs.send(JSON.stringify({ type: 'restart' }));
       db.prepare("UPDATE messages SET state='error', content='(agent updating — please retry)' WHERE id=?").run(msgId);
