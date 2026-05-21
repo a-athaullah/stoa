@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.2.23';
+const CLIENT_VERSION = '0.2.24';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -334,6 +334,8 @@ async function processTrigger(msg) {
     finalPrompt += `\n\n---\nFile yang dilampirkan (sudah didownload ke lokal, gunakan Read tool untuk membaca/melihat):\n${fileList}`;
   }
 
+  let sessionRef = null;
+  let statusHandler = null;
   try {
     const targetDir = path.resolve(workdir);
     const rid = msg.claude_session_id || null;
@@ -361,10 +363,11 @@ async function processTrigger(msg) {
     let fullContent = '';
     let lastActivity = Date.now();
     let abortReason = null;
-    const statusHandler = status => {
+    statusHandler = status => {
       lastActivity = Date.now();
       send({ type: 'agent_system_event', room_id, message_id, status });
     };
+    sessionRef = session;
     session.on('status', statusHandler);
     const FIRST_TOKEN_TIMEOUT = 60_000;
     const hangWatchdog = setInterval(() => {
@@ -440,7 +443,7 @@ async function processTrigger(msg) {
       process.exit(0);
     }
   } finally {
-    session.removeListener('status', statusHandler);
+    if (sessionRef && statusHandler) sessionRef.removeListener('status', statusHandler);
     activeTriggers.delete(message_id);
     drainQueue();
   }
