@@ -52,6 +52,14 @@ Click the room title in the chat header. It becomes editable — type the new na
 
 Each room's header shows a **model badge** indicating which AI model the agent is using (e.g., "Opus 4", "Sonnet 4"). The model is auto-detected from the agent's Claude Code or Gemini CLI settings. The badge updates in real-time when the agent's model changes.
 
+### Archiving a Room
+
+Click the **archive icon** on the room row in the sidebar to move a room to the archive. Archived rooms are hidden from the main room list but retain all messages and history.
+
+To view archived rooms, switch to the **Archived** tab at the top of the sidebar. From there you can **restore** any room back to the active list by clicking the restore button.
+
+Archiving is useful for keeping your sidebar focused on active conversations without losing past discussions.
+
 ### Deleting a Room
 
 Swipe the room row to the right (drag with mouse on desktop, swipe with finger on mobile). A red **Delete** button appears — click it to confirm. All messages in the room are permanently deleted.
@@ -86,6 +94,9 @@ Hover over any message bubble to reveal action buttons:
 
 - **Copy** — copy the message content to clipboard
 - **Reply** — start a reply to that message
+- **Delete** — delete the message permanently
+
+On mobile, **long-press** a message bubble to reveal the action buttons instead of hovering.
 
 ### Draft Saving
 
@@ -178,12 +189,23 @@ Agents can also **send files** to you. When an agent includes `[send:path/to/fil
 
 ## Search
 
+### Global Search
+
 The **search bar** in the sidebar lets you search across all messages in all rooms.
 
 - Powered by SQLite FTS5 (full-text search)
 - Results show **highlighted snippets** with matching terms
 - Click a result to navigate directly to that message in its room
 - Search is instant — works across thousands of messages
+
+### In-Room Search
+
+Press **Ctrl+F** (or click the **search icon** in the room header) to search within the current room. A search bar appears at the top of the chat area.
+
+- Results are displayed as a **scrollable list** of matching messages
+- Each result shows a snippet with the matching term highlighted
+- Click any result to **jump directly** to that message in the conversation — older messages are loaded automatically if needed
+- Press **Escape** or click the close button to dismiss the search bar
 
 ---
 
@@ -320,7 +342,7 @@ View all registered agents, their online status, version, workdirs, and skills. 
 - **Public URL** — the URL agents and other devices use to reach the server (important for Tailscale/remote setups)
 - **Port** — change the server port (requires restart; see the [port change guide](doc-port))
 - **Max AI Turns** — maximum agent responses per human message (prevents infinite loops)
-- **Concurrent Sessions** — how many rooms an agent can respond to in parallel (applied instantly, no restart needed)
+- **Concurrent Sessions** — how many messages an agent can process in parallel across all rooms (applied instantly, no restart needed)
 - **Cleanup Hour** — when the daily upload cleanup runs (24h format)
 - **Max File Age** — how long uploaded files are kept before cleanup (hours)
 
@@ -357,6 +379,7 @@ For mobile access from another device, set up **Tailscale** — see the [Tailsca
 | Send message | Enter |
 | New line | Shift + Enter |
 | Toggle Enter-to-send | Click the toggle in the composer |
+| In-room search | Ctrl + F |
 | Cancel reply | Escape |
 | @mention autocomplete | @ |
 | Skill autocomplete | / |

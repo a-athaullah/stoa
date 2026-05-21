@@ -52,6 +52,14 @@ Klik judul room di header chat. Judul menjadi editable — ketik nama baru dan t
 
 Header setiap room menampilkan **badge model** yang menunjukkan model AI mana yang digunakan agent (misalnya "Opus 4", "Sonnet 4"). Model terdeteksi otomatis dari pengaturan CLI Claude Code atau Gemini agent. Badge diperbarui secara real-time saat model agent berubah.
 
+### Mengarsipkan Room
+
+Klik **ikon archive** pada baris room di sidebar untuk memindahkan room ke arsip. Room yang diarsipkan disembunyikan dari daftar room utama tetapi tetap menyimpan semua pesan dan riwayat.
+
+Untuk melihat room yang diarsipkan, beralih ke tab **Archived** di bagian atas sidebar. Dari sana Anda bisa **mengembalikan** room ke daftar aktif dengan mengklik tombol restore.
+
+Mengarsipkan berguna untuk menjaga sidebar tetap fokus pada percakapan aktif tanpa kehilangan diskusi sebelumnya.
+
 ### Menghapus Room
 
 Geser baris room ke kanan (drag dengan mouse di desktop, swipe dengan jari di mobile). Tombol **Delete** merah muncul — klik untuk konfirmasi. Semua pesan di room dihapus permanen.
@@ -86,6 +94,9 @@ Hover di atas bubble pesan untuk menampilkan tombol aksi:
 
 - **Copy** — salin konten pesan ke clipboard
 - **Reply** — mulai reply ke pesan tersebut
+- **Delete** — hapus pesan secara permanen
+
+Di mobile, **long-press** (tekan lama) bubble pesan untuk menampilkan tombol aksi alih-alih hover.
 
 ### Penyimpanan Draf
 
@@ -178,12 +189,23 @@ Agent juga bisa **mengirim file** kepada Anda. Saat agent menyertakan `[send:pat
 
 ## Pencarian
 
+### Pencarian Global
+
 **Search bar** di sidebar memungkinkan pencarian di semua pesan di semua room.
 
 - Menggunakan SQLite FTS5 (full-text search)
 - Hasil menampilkan **snippet yang di-highlight** dengan kata yang cocok
 - Klik hasil untuk navigasi langsung ke pesan tersebut di room-nya
 - Pencarian instan — bekerja di ribuan pesan
+
+### Pencarian Dalam Room
+
+Tekan **Ctrl+F** (atau klik **ikon search** di header room) untuk mencari di dalam room yang sedang aktif. Search bar muncul di bagian atas area chat.
+
+- Hasil ditampilkan sebagai **daftar scrollable** pesan yang cocok
+- Setiap hasil menampilkan snippet dengan kata yang cocok di-highlight
+- Klik hasil mana pun untuk **langsung melompat** ke pesan tersebut di percakapan — pesan lama dimuat otomatis jika diperlukan
+- Tekan **Escape** atau klik tombol close untuk menutup search bar
 
 ---
 
@@ -320,7 +342,7 @@ Lihat semua agent yang terdaftar, status online, versi, workdir, dan skill merek
 - **Public URL** — URL yang digunakan agent dan perangkat lain untuk menjangkau server (penting untuk setup Tailscale/remote)
 - **Port** — ubah port server (perlu restart; lihat [panduan ganti port](doc-port))
 - **Max AI Turns** — maksimum respons agent per pesan manusia (mencegah loop tak terbatas)
-- **Concurrent Sessions** — berapa room yang bisa direspons agent secara paralel (langsung diterapkan, tanpa restart)
+- **Concurrent Sessions** — berapa pesan yang bisa diproses agent secara paralel di semua room (langsung diterapkan, tanpa restart)
 - **Cleanup Hour** — kapan pembersihan upload harian berjalan (format 24 jam)
 - **Max File Age** — berapa lama file upload disimpan sebelum dibersihkan (jam)
 
@@ -357,6 +379,7 @@ Untuk akses mobile dari perangkat lain, siapkan **Tailscale** — lihat [panduan
 | Kirim pesan | Enter |
 | Baris baru | Shift + Enter |
 | Toggle Enter to send | Klik toggle di composer |
+| Pencarian dalam room | Ctrl + F |
 | Batal reply | Escape |
 | Autocomplete @mention | @ |
 | Autocomplete skill | / |
