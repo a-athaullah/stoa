@@ -75,7 +75,18 @@ class GeminiSession extends EventEmitter {
       const sessionId = this.sessionId;
       const res = this._currentResolve;
       const rej = this._currentReject;
+      const onToken = this._currentOnToken;
+      const onState = this._currentOnState;
+      const onTool = this._currentOnTool;
       this._clearCurrent();
+
+      if (code !== 0 && !content && this._messageCount > 1) {
+        console.error(`[gemini] resume failed (exit ${code}), retrying with fresh session`);
+        this.sessionId = crypto.randomUUID();
+        this._messageCount = 0;
+        this._startTask({ prompt, imageData, onToken, onState, onTool, resolve: res, reject: rej });
+        return;
+      }
 
       if (code !== 0 && !content) {
         rej?.(new Error(`gemini exited ${code}`));
