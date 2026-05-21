@@ -1010,6 +1010,107 @@ async function run() {
     assert.strictEqual(status, 503);
   });
 
+  // ── 9k. DELETE & GET single message ─────────────────────────────────────
+  console.log('\n9k · single message operations');
+
+  // Reconnect agents for remaining tests
+  idrisWs = await connectAgent(idrisId, idrisSecret, IDRIS_WORKDIRS);
+  kiraWs = await connectAgent(kiraId, kiraSecret, []);
+  await sleep(300);
+
+  await test('GET /api/messages/:id returns message with actor info', async () => {
+    const humanPart = db.prepare(
+      "SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1"
+    ).get(roomId);
+    const r = db.prepare(
+      "INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,?)"
+    ).run(roomId, humanPart.id, 'test-get-single-msg', 'complete');
+    const msgId = Number(r.lastInsertRowid);
+    const { status, body } = await req('GET', `/api/messages/${msgId}`);
+    assert.strictEqual(status, 200);
+    assert.strictEqual(body.id, msgId);
+    assert.ok(body.actor_name, 'expected actor_name in response');
+    assert.ok(body.content === 'test-get-single-msg');
+    db.prepare('DELETE FROM messages WHERE id=?').run(msgId);
+  });
+
+  await test('GET /api/messages/999999 returns 404', async () => {
+    const { status } = await req('GET', '/api/messages/999999');
+    assert.strictEqual(status, 404);
+  });
+
+  await test('DELETE /api/messages/:id deletes message', async () => {
+    const humanPart = db.prepare(
+      "SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1"
+    ).get(roomId);
+    const r = db.prepare(
+      "INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,?)"
+    ).run(roomId, humanPart.id, 'test-delete-msg', 'complete');
+    const msgId = Number(r.lastInsertRowid);
+    const { status } = await req('DELETE', `/api/messages/${msgId}`);
+    assert.strictEqual(status, 204);
+    const check = db.prepare('SELECT id FROM messages WHERE id=?').get(msgId);
+    assert.ok(!check, 'message should be deleted');
+  });
+
+  await test('DELETE /api/messages/999999 returns 404', async () => {
+    const { status } = await req('DELETE', '/api/messages/999999');
+    assert.strictEqual(status, 404);
+  });
+
+  // ── 9l. PATCH actor lang ──────────────────────────────────────────────────
+  console.log('\n9l · actor lang config');
+
+  await test('PATCH /api/actors/:id with lang updates adapter_config', async () => {
+    const { status } = await req('PATCH', `/api/actors/${idrisId}`, { name: 'Idris-test-renamed', lang: 'id' });
+    assert.strictEqual(status, 200);
+    const actor = db.prepare('SELECT adapter_config FROM actors WHERE id=?').get(idrisId);
+    const cfg = JSON.parse(actor.adapter_config || '{}');
+    assert.strictEqual(cfg.lang, 'id');
+  });
+
+  // ── 9m. PATCH settings extras ─────────────────────────────────────────────
+  console.log('\n9m · settings extras');
+
+  await test('PATCH /api/settings updates public_url', async () => {
+    const { body: before } = await req('GET', '/api/settings');
+    const orig = before.public_url || '';
+    const { status } = await req('PATCH', '/api/settings', { public_url: 'http://test.local' });
+    assert.strictEqual(status, 200);
+    const { body: after } = await req('GET', '/api/settings');
+    assert.strictEqual(after.public_url, 'http://test.local');
+    await req('PATCH', '/api/settings', { public_url: orig });
+  });
+
+  await test('PATCH /api/settings updates cleanup_max_age_hours', async () => {
+    const { body: before } = await req('GET', '/api/settings');
+    const orig = before.cleanup_max_age_hours;
+    const { status } = await req('PATCH', '/api/settings', { cleanup_max_age_hours: 48 });
+    assert.strictEqual(status, 200);
+    const { body: after } = await req('GET', '/api/settings');
+    assert.strictEqual(after.cleanup_max_age_hours, 48);
+    await req('PATCH', '/api/settings', { cleanup_max_age_hours: orig || 24 });
+  });
+
+  // ── 9n. Invite reject ─────────────────────────────────────────────────────
+  console.log('\n9n · invite reject');
+
+  await test('POST /api/invites/:id/resolve with approved=false rejects invite', async () => {
+    const humanPart = db.prepare(
+      "SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1"
+    ).get(roomId);
+    const invite = db.prepare(
+      'INSERT INTO invite_suggestions (room_id, suggested_by_participant_id, suggested_actor_id, reason) VALUES (?,?,?,?)'
+    ).run(roomId, humanPart.id, kiraId, 'test reject invite');
+    const inviteId = invite.lastInsertRowid;
+    const { status, body } = await req('POST', `/api/invites/${inviteId}/resolve`, { approved: false });
+    assert.strictEqual(status, 200);
+    assert.ok(body.ok);
+    const row = db.prepare('SELECT status FROM invite_suggestions WHERE id=?').get(inviteId);
+    assert.strictEqual(row.status, 'rejected');
+    db.prepare('DELETE FROM invite_suggestions WHERE id=?').run(inviteId);
+  });
+
   // ── 10. Cleanup ────────────────────────────────────────────────────────────
   console.log('\n10 · cleanup');
 
