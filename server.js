@@ -103,6 +103,16 @@ try {
   db.exec("CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at)");
 } catch {}
 
+// Clean up duplicate settings rows caused by NULL scope_id UNIQUE bug
+try {
+  const dupes = db.prepare("SELECT key_name FROM settings WHERE scope='global' AND scope_id IS NULL GROUP BY key_name HAVING COUNT(*) > 1").all();
+  for (const { key_name } of dupes) {
+    const keep = db.prepare("SELECT id FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name=? ORDER BY id DESC LIMIT 1").get(key_name);
+    db.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name=? AND id!=?").run(key_name, keep.id);
+  }
+  if (dupes.length) console.log(`[migration] cleaned ${dupes.length} duplicate settings keys`);
+} catch {}
+
 // ─── Auth: password hashing & session management ─────────────────────────────
 
 function hashPassword(password) {
