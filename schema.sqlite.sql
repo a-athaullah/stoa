@@ -138,6 +138,8 @@ CREATE INDEX IF NOT EXISTS idx_agent_skills_actor_id ON agent_skills(actor_id);
 CREATE INDEX IF NOT EXISTS idx_agent_skills_workdir_id ON agent_skills(workdir_id);
 CREATE INDEX IF NOT EXISTS idx_messages_participant_id ON messages(participant_id);
 CREATE INDEX IF NOT EXISTS idx_ai_sessions_participant_id ON ai_sessions(participant_id);
+CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(reply_to);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at);
 
 CREATE TABLE IF NOT EXISTS auth_users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

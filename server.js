@@ -97,6 +97,12 @@ try {
   }
 } catch {}
 
+// Add missing indexes for existing databases
+try {
+  db.exec("CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(reply_to)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at)");
+} catch {}
+
 // ─── Auth: password hashing & session management ─────────────────────────────
 
 function hashPassword(password) {
