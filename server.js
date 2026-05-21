@@ -668,6 +668,13 @@ const server = http.createServer(async (req, res) => {
       return json(res, rows);
     }
 
+    const subPath = url.pathname.split('/').slice(4).join('/');
+    if (!subPath) {
+      const room = db.prepare('SELECT * FROM rooms WHERE id=?').get(roomId);
+      if (!room) { res.writeHead(404); return res.end(JSON.stringify({ error: 'Room not found' })); }
+      return json(res, room);
+    }
+
     if (url.pathname.endsWith('/skills')) {
       const room = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(roomId);
       if (!room) { res.writeHead(404); return res.end('Room not found'); }
