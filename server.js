@@ -1312,7 +1312,13 @@ wss.on('connection', (ws, req) => {
       }
       agentActorId = msg.actor_id;
       wsAuthenticated = true;
+      const oldWs = agentClients.get(agentActorId);
+      if (oldWs && oldWs !== ws) oldWs.close();
       agentClients.set(agentActorId, ws);
+      const reconnectCleaned = db.prepare(
+        "UPDATE messages SET state='error', content=CASE WHEN content='' THEN '(interrupted — agent reconnected)' ELSE content END WHERE state IN ('streaming','requesting') AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?)"
+      ).run(agentActorId);
+      if (reconnectCleaned.changes) console.log(`[agent] Cleaned ${reconnectCleaned.changes} orphaned message(s) on reconnect for Actor #${agentActorId}`);
       if (msg.client_version) agentVersions.set(agentActorId, msg.client_version);
       console.log(`[agent] Actor #${agentActorId} connected (v${msg.client_version || '?'})`);
       ws.send(JSON.stringify({ type: 'agent_ready' }));
