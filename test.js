@@ -395,6 +395,39 @@ async function run() {
     assert.ok(titles.includes('Test Room — flow'));
   });
 
+  // NOTE: GET /api/rooms/:id endpoint needs to be added to server.js
+  // Currently falls through to 404 because only sub-paths (/messages, /participants, /skills) are handled
+  await test('GET /api/rooms/:id returns single room with expected shape', async () => {
+    const { status, body } = await req('GET', `/api/rooms/${roomId}`);
+    assert.strictEqual(status, 200, `GET /api/rooms/:id not implemented — returns ${status} instead of 200`);
+    assert.strictEqual(body.id, roomId);
+    assert.ok(body.title, 'expected title field');
+    assert.ok('created_at' in body, 'expected created_at field');
+    assert.ok('workdir_id' in body, 'expected workdir_id field');
+  });
+
+  await test('GET /api/rooms/999999 returns 404', async () => {
+    const { status } = await req('GET', '/api/rooms/999999');
+    assert.strictEqual(status, 404);
+  });
+
+  await test('GET /api/rooms?archived=1 returns only archived rooms', async () => {
+    // Archive the test room
+    await req('PATCH', `/api/rooms/${roomId}`, { archived: true });
+    const { status, body } = await req('GET', '/api/rooms?archived=1');
+    assert.strictEqual(status, 200);
+    assert.ok(Array.isArray(body));
+    const found = body.find(r => r.id === roomId);
+    assert.ok(found, 'archived room should appear in archived list');
+    assert.ok(found.archived_at, 'archived room should have archived_at set');
+    // Verify it does NOT appear in non-archived list
+    const { body: activeRooms } = await req('GET', '/api/rooms');
+    const inActive = activeRooms.find(r => r.id === roomId);
+    assert.ok(!inActive, 'archived room should NOT appear in default (non-archived) list');
+    // Restore the room
+    await req('PATCH', `/api/rooms/${roomId}`, { archived: false });
+  });
+
   await test('GET /api/rooms/:id/participants returns 3 participants', async () => {
     const { body } = await req('GET', `/api/rooms/${roomId}/participants`);
     assert.ok(Array.isArray(body));
@@ -756,6 +789,37 @@ async function run() {
     const { status, body } = await req('GET', '/api/search?q=test&limit=5');
     assert.strictEqual(status, 200);
     assert.ok(Array.isArray(body));
+  });
+
+  await test('GET /api/search?room_id=X scopes results to that room', async () => {
+    // Insert a searchable message in the test room
+    const humanPart = db.prepare(
+      "SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1"
+    ).get(roomId);
+    assert.ok(humanPart, 'human participant must exist in test room');
+    const uniqueWord = 'xyzzyplugh' + Date.now();
+    const r = db.prepare(
+      "INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,?)"
+    ).run(roomId, humanPart.id, `room-scoped search test ${uniqueWord}`, 'complete');
+    const testMsgId = Number(r.lastInsertRowid);
+
+    // Search with room_id scope — should find the message
+    const { status, body } = await req('GET', `/api/search?q=${uniqueWord}&room_id=${roomId}&limit=10`);
+    assert.strictEqual(status, 200);
+    assert.ok(Array.isArray(body));
+    assert.ok(body.length > 0, 'should find at least one result in scoped search');
+    assert.ok(body.every(m => m.room_id === roomId), 'all results should belong to the scoped room');
+
+    // Search with a different room_id scope — should NOT find it
+    const otherRooms = created.rooms.filter(id => id !== roomId);
+    if (otherRooms.length > 0) {
+      const { body: otherBody } = await req('GET', `/api/search?q=${uniqueWord}&room_id=${otherRooms[0]}&limit=10`);
+      assert.strictEqual(otherBody.length, 0, 'should not find message in a different room scope');
+    }
+
+    // Cleanup
+    db.prepare("INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', ?, ?)").run(testMsgId, `room-scoped search test ${uniqueWord}`);
+    db.prepare('DELETE FROM messages WHERE id=?').run(testMsgId);
   });
 
   // ── 9c. Add participant to room ───────────────────────────────────────────
