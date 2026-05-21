@@ -395,11 +395,9 @@ async function run() {
     assert.ok(titles.includes('Test Room — flow'));
   });
 
-  // NOTE: GET /api/rooms/:id endpoint needs to be added to server.js
-  // Currently falls through to 404 because only sub-paths (/messages, /participants, /skills) are handled
   await test('GET /api/rooms/:id returns single room with expected shape', async () => {
     const { status, body } = await req('GET', `/api/rooms/${roomId}`);
-    assert.strictEqual(status, 200, `GET /api/rooms/:id not implemented — returns ${status} instead of 200`);
+    assert.strictEqual(status, 200);
     assert.strictEqual(body.id, roomId);
     assert.ok(body.title, 'expected title field');
     assert.ok('created_at' in body, 'expected created_at field');
