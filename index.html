@@ -2503,6 +2503,17 @@
       .s-agent-status { display: none; }
       #s-mobile-back { display: flex; }
     }
+    .h-toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
+      background: oklch(0.28 0.02 50); color: oklch(0.92 0.01 60); font-family: var(--h-sans);
+      font-size: 13px; padding: 8px 18px; border-radius: 8px; z-index: 9999;
+      opacity: 0; transition: opacity .25s, transform .25s; pointer-events: none;
+      box-shadow: 0 4px 16px rgba(0,0,0,.25);
+    }
+    html.dark .h-toast { background: oklch(0.38 0.02 55); }
+    .h-toast.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+    .h-toast.h-toast-error { background: oklch(0.38 0.12 25); }
+    html.dark .h-toast.h-toast-error { background: oklch(0.42 0.12 25); }
   </style>
 </head>
 <body>
@@ -2956,6 +2967,15 @@ function initEmojiPicker() {
   });
 }
 
+function showToast(msg, { error = false, duration = 3000 } = {}) {
+  const el = document.createElement('div');
+  el.className = 'h-toast' + (error ? ' h-toast-error' : '');
+  el.textContent = msg;
+  document.body.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('visible'));
+  setTimeout(() => { el.classList.remove('visible'); setTimeout(() => el.remove(), 300); }, duration);
+}
+
 // ── State ──────────────────────────────────────────────────────────────────
 let ws = null;
 let currentRoomId = null;
@@ -3197,7 +3217,7 @@ function renderChatHeader(room, participants) {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ actor_id: actor.id }),
             });
-          } catch {}
+          } catch { showToast('Failed to add participant', { error: true }); }
         };
         dropdown.appendChild(item);
       }
@@ -3465,7 +3485,7 @@ document.addEventListener('click', e => {
 async function archiveRoom(room) {
   try {
     await fetch(`/api/rooms/${room.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ archived: true }) });
-  } catch { return; }
+  } catch { showToast('Failed to archive room', { error: true }); return; }
   if (currentRoomId === room.id) {
     currentRoomId = null;
     document.getElementById('messages-inner').innerHTML = '';
@@ -3477,7 +3497,7 @@ async function archiveRoom(room) {
 async function restoreRoom(room) {
   try {
     await fetch(`/api/rooms/${room.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ archived: false }) });
-  } catch { return; }
+  } catch { showToast('Failed to restore room', { error: true }); return; }
   refreshRoomList();
 }
 
@@ -3782,7 +3802,7 @@ function showCopyFeedback(btn) {
 }
 
 async function deleteMessage(msgId) {
-  try { await fetch(`/api/messages/${msgId}`, { method: 'DELETE' }); } catch {}
+  try { await fetch(`/api/messages/${msgId}`, { method: 'DELETE' }); } catch { showToast('Failed to delete message', { error: true }); }
 }
 
 function getAttachments(m) {
@@ -4640,7 +4660,7 @@ async function openNewRoomModal() {
     allActors = freshActors;
     actorByName = {};
     allActors.forEach(a => actorByName[a.name] = a);
-  } catch {}
+  } catch { showToast('Failed to load agents', { error: true }); }
   if (!allActors.some(a => a.type === 'ai')) { openSettings(); return; }
   const modal = document.getElementById('new-room-modal');
   const nameInput = document.getElementById('new-room-name');
@@ -4769,6 +4789,7 @@ async function loadOlderMessages() {
     if (msgs.length < 50) noMoreOlder = true;
   } catch {
     spinner.remove();
+    showToast('Failed to load older messages', { error: true });
   }
   loadingOlder = false;
 }
@@ -4814,7 +4835,7 @@ function initScrollLoader() {
       if (!res.ok) return;
       const rows = await res.json();
       showSearchResults(rows);
-    } catch {}
+    } catch { showToast('Search failed', { error: true }); }
   }
 
   function showSearchResults(rows) {
@@ -5933,7 +5954,7 @@ async function sLoad() {
   let actors, cfg;
   try {
     [actors, cfg] = await Promise.all([fjson('/api/actors'), fjson('/api/settings')]);
-  } catch { return; }
+  } catch { showToast('Failed to load settings', { error: true }); return; }
   settingsActors = actors;
   sPublicUrl = cfg.public_url || '';
   sPort = cfg.port || 3000;
@@ -6059,7 +6080,7 @@ function sMakeRow(actor, flash) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: actor.name, lang: langSel.value }),
         });
-      } catch {}
+      } catch { showToast('Failed to save language', { error: true }); }
     });
     langRow.appendChild(langLabel); langRow.appendChild(langSel);
     info.appendChild(langRow);
@@ -6125,7 +6146,7 @@ function sMakeRow(actor, flash) {
             refresh.disabled = !actor.online;
             refresh.style.opacity = '';
           }, 1200);
-        } catch { refresh.disabled = !actor.online; refresh.style.opacity = ''; }
+        } catch { refresh.disabled = !actor.online; refresh.style.opacity = ''; showToast('Failed to refresh agent', { error: true }); }
       });
       acts.appendChild(refresh);
 
@@ -6137,7 +6158,7 @@ function sMakeRow(actor, flash) {
         e.stopPropagation();
         upd.disabled = true;
         upd.style.opacity = '0.4';
-        try { await fetch(`/api/actors/${actor.id}/force-update`, { method: 'POST' }); } catch {}
+        try { await fetch(`/api/actors/${actor.id}/force-update`, { method: 'POST' }); } catch { showToast('Failed to send update command', { error: true }); }
         setTimeout(() => { upd.disabled = !actor.online; upd.style.opacity = ''; }, 3000);
       });
       acts.appendChild(upd);
@@ -6208,6 +6229,7 @@ async function sCommitRename(id) {
   } catch {
     if (actor) actor.name = oldName;
     sRefreshRow(id);
+    showToast('Failed to rename', { error: true });
   }
 }
 
@@ -6239,7 +6261,7 @@ async function sCommitDelete(id) {
     const idx = allActors.findIndex(a => a.id === id);
     if (idx >= 0) allActors.splice(idx, 1);
     syncNewRoomBtn();
-  } catch { sRefreshRow(id); }
+  } catch { sRefreshRow(id); showToast('Failed to delete agent', { error: true }); }
 }
 
 // ── Add-agent panel ─────────────────────────────────────────────────────────
@@ -6648,7 +6670,7 @@ async function sLoadServerTab() {
 async function sSaveSetting(key, value, savedId) {
   const body = {};
   body[key] = value;
-  try { const r = await fetch('/api/settings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); if (!r.ok) return; } catch { return; }
+  try { const r = await fetch('/api/settings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); if (!r.ok) { showToast('Failed to save setting', { error: true }); return; } } catch { showToast('Failed to save setting', { error: true }); return; }
   const el = document.getElementById(savedId);
   if (el) { el.classList.add('visible'); setTimeout(() => el.classList.remove('visible'), 2000); }
   if (key === 'human_name') {
