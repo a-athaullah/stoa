@@ -5787,29 +5787,38 @@ async function init() {
     setTimeout(() => el.classList.remove('visible'), 5000);
   }
 
-  function compressImage(file, maxDim = 1920, quality = 0.8) {
+  async function compressImage(file, maxDim, quality = 0.8) {
+    if (!maxDim) maxDim = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? 1280 : 1920;
+    let bmp;
+    if (typeof createImageBitmap === 'function') {
+      bmp = await createImageBitmap(file);
+    } else {
+      bmp = await new Promise((resolve, reject) => {
+        const img = new Image();
+        const url = URL.createObjectURL(file);
+        img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+        img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Failed to load image')); };
+        img.src = url;
+      });
+    }
+    let { width, height } = bmp;
+    if (width > maxDim || height > maxDim) {
+      const ratio = Math.min(maxDim / width, maxDim / height);
+      width = Math.round(width * ratio);
+      height = Math.round(height * ratio);
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(bmp, 0, 0, width, height);
+    if (bmp.close) bmp.close();
     return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => {
-        let { width, height } = img;
-        if (width > maxDim || height > maxDim) {
-          const ratio = Math.min(maxDim / width, maxDim / height);
-          width = Math.round(width * ratio);
-          height = Math.round(height * ratio);
-        }
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0, width, height);
-        canvas.toBlob(blob => {
-          if (!blob) return reject(new Error('Compression failed'));
-          const baseName = file.name.replace(/\.[^.]+$/, '') + '.webp';
-          resolve(new File([blob], baseName, { type: 'image/webp' }));
-        }, 'image/webp', quality);
-      };
-      img.onerror = () => reject(new Error('Failed to load image'));
-      img.src = URL.createObjectURL(file);
+      canvas.toBlob(blob => {
+        if (!blob) return reject(new Error('Compression failed'));
+        const baseName = file.name.replace(/\.[^.]+$/, '') + '.webp';
+        resolve(new File([blob], baseName, { type: 'image/webp' }));
+      }, 'image/webp', quality);
     });
   }
 
@@ -5817,7 +5826,11 @@ async function init() {
     try {
       let toUpload = file;
       if (isImage && file.size > 200 * 1024) {
-        toUpload = await compressImage(file);
+        try {
+          toUpload = await compressImage(file);
+        } catch {
+          try { toUpload = await compressImage(file, 800, 0.7); } catch { /* upload original */ }
+        }
       }
       const { url, name } = await uploadWithProgress(toUpload);
       addPendingAttachment(url, name || file.name, isImage ? 'image' : 'file');
