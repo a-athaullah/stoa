@@ -3357,6 +3357,31 @@ document.addEventListener('click', e => {
   if (!e.target.closest('.h-room-row')) closeAllSwipes();
 });
 
+// Long-press to show message actions on mobile
+(function() {
+  let timer = null;
+  let activeRow = null;
+  const inner = document.getElementById('messages-inner');
+  if (!inner) return;
+  inner.addEventListener('touchstart', e => {
+    const row = e.target.closest('.h-msg-row');
+    if (!row || e.target.closest('.h-msg-action-btn')) return;
+    timer = setTimeout(() => {
+      document.querySelectorAll('.h-msg-row.show-actions').forEach(r => r.classList.remove('show-actions'));
+      row.classList.add('show-actions');
+      activeRow = row;
+    }, 500);
+  }, { passive: true });
+  inner.addEventListener('touchend', () => clearTimeout(timer));
+  inner.addEventListener('touchmove', () => clearTimeout(timer));
+  document.addEventListener('click', e => {
+    if (activeRow && !e.target.closest('.h-msg-actions')) {
+      activeRow.classList.remove('show-actions');
+      activeRow = null;
+    }
+  });
+})();
+
 async function archiveRoom(room) {
   try {
     await fetch(`/api/rooms/${room.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ archived: true }) });
@@ -3496,6 +3521,12 @@ function handleWsMessage(msg) {
     el.textContent = `${msg.actor_name || 'Agent'} · ${msg.status}`;
     inner.appendChild(el);
     scrollToBottom();
+    return;
+  }
+
+  if (msg.type === 'message_deleted') {
+    const row = document.getElementById('msg-' + msg.message_id);
+    if (row) row.remove();
     return;
   }
 
@@ -3667,6 +3698,10 @@ function showCopyFeedback(btn) {
     btn.classList.remove('copied');
     if (row) row.classList.remove('show-actions');
   }, 1500);
+}
+
+async function deleteMessage(msgId) {
+  try { await fetch(`/api/messages/${msgId}`, { method: 'DELETE' }); } catch {}
 }
 
 function getAttachments(m) {
@@ -3910,11 +3945,13 @@ function appendMessage(m, container) {
   actions.className = 'h-msg-actions';
   actions.innerHTML =
     `<button class="h-msg-action-btn" data-action="reply" title="Reply"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg></button>` +
-    `<button class="h-msg-action-btn" data-action="copy" title="Copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>`;
+    `<button class="h-msg-action-btn" data-action="copy" title="Copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>` +
+    `<button class="h-msg-action-btn" data-action="delete" title="Delete"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>`;
   actions.querySelector('[data-action="reply"]').onclick = () => startReply(m.id, m.actor_name, m.avatar_color, m.content, getAttachments(m));
   actions.querySelector('[data-action="copy"]').onclick = async function() {
     if (await copyToClipboard(m.content || '')) showCopyFeedback(this);
   };
+  actions.querySelector('[data-action="delete"]').onclick = () => deleteMessage(m.id);
 
   body.appendChild(bubble);
   body.style.position = 'relative';
@@ -4066,7 +4103,8 @@ function finalizeMessage(msgId, content, fileUrl, fileName, attachments) {
     actions.className = 'h-msg-actions';
     actions.innerHTML =
       `<button class="h-msg-action-btn" data-action="reply" title="Reply"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg></button>` +
-      `<button class="h-msg-action-btn" data-action="copy" title="Copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>`;
+      `<button class="h-msg-action-btn" data-action="copy" title="Copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>` +
+      `<button class="h-msg-action-btn" data-action="delete" title="Delete"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>`;
     const actorName = row.querySelector('.h-msg-name')?.textContent || '';
     const avatarColor = row.querySelector('.h-msg-name')?.style.color || '';
     const msgAttachments = attachments || (fileUrl ? [{ url: fileUrl, name: fileName || '', type: /\.(png|jpe?g|gif|webp|svg)$/i.test(fileName || '') ? 'image' : 'file' }] : []);
@@ -4074,6 +4112,7 @@ function finalizeMessage(msgId, content, fileUrl, fileName, attachments) {
     actions.querySelector('[data-action="copy"]').onclick = async function() {
       if (await copyToClipboard(content || '')) showCopyFeedback(this);
     };
+    actions.querySelector('[data-action="delete"]').onclick = () => deleteMessage(msgId);
     body.style.position = 'relative';
     body.appendChild(actions);
   }

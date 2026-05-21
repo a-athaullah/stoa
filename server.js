@@ -552,6 +552,17 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(204); return res.end();
   }
 
+  const msgDeleteMatch = req.method === 'DELETE' && url.pathname.match(/^\/api\/messages\/(\d+)$/);
+  if (msgDeleteMatch) {
+    const msgId = parseInt(msgDeleteMatch[1]);
+    const msg = db.prepare('SELECT room_id FROM messages WHERE id=?').get(msgId);
+    if (!msg) { res.writeHead(404); return res.end(); }
+    db.prepare("INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', ?, (SELECT content FROM messages WHERE id=?))").run(msgId, msgId);
+    db.prepare('DELETE FROM messages WHERE id=?').run(msgId);
+    broadcast(msg.room_id, { type: 'message_deleted', message_id: msgId });
+    res.writeHead(204); return res.end();
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/search') {
     const q = (url.searchParams.get('q') || '').trim();
     const roomId = url.searchParams.get('room_id');
