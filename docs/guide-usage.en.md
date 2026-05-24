@@ -56,13 +56,17 @@ Each room's header shows a **model badge** indicating which AI model the agent i
 
 Click the **archive icon** on the room row in the sidebar to move a room to the archive. Archived rooms are hidden from the main room list but retain all messages and history.
 
-To view archived rooms, switch to the **Archived** tab at the top of the sidebar. From there you can **restore** any room back to the active list by clicking the restore button.
+To view archived rooms, switch to the **Archived** tab at the top of the sidebar. From there you can **restore** any room back to the active list or **delete** it permanently.
 
 Archiving is useful for keeping your sidebar focused on active conversations without losing past discussions.
 
 ### Deleting a Room
 
-Swipe the room row to the right (drag with mouse on desktop, swipe with finger on mobile). A red **Delete** button appears — click it to confirm. All messages in the room are permanently deleted.
+**From archived list:** Swipe an archived room to the right to reveal two buttons — blue (restore) and red (delete). On desktop, hover to see restore and delete icons. You can also use the **delete all archived** button at the bottom of the list.
+
+**From active list:** Swipe the room row to the right (drag with mouse on desktop, swipe with finger on mobile). A red **Archive** button appears. Archive first, then delete from the archived list.
+
+Deletion is permanent — all messages in the room are removed and cannot be recovered.
 
 ---
 

@@ -3241,19 +3241,21 @@ function renderChatHeader(room, participants) {
     sel.removeAllRanges();
     sel.addRange(range);
   };
-  function commitRename() {
+  async function commitRename() {
     name.contentEditable = 'false';
     name.classList.remove('editing');
     const newTitle = name.textContent.trim();
     if (newTitle && newTitle !== room.title) {
       const oldTitle = room.title;
       room.title = newTitle;
-      fetch(`/api/rooms/${room.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: newTitle }),
-      }).then(r => { if (!r.ok) { room.title = oldTitle; name.textContent = oldTitle; } })
-        .catch(() => { room.title = oldTitle; name.textContent = oldTitle; });
+      try {
+        const r = await fetch(`/api/rooms/${room.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: newTitle }),
+        });
+        if (!r.ok) throw new Error('rename failed');
+      } catch { showToast('Failed to rename room', { error: true }); room.title = oldTitle; name.textContent = oldTitle; }
     } else {
       name.textContent = room.title;
     }
@@ -3543,7 +3545,12 @@ function renderRoomList(rooms) {
     delBtn.textContent = 'delete all archived';
     delBtn.onclick = async () => {
       if (!confirm(`Delete all ${rooms.length} archived rooms? This cannot be undone.`)) return;
-      for (const r of rooms) await fetch(`/api/rooms/${r.id}`, { method: 'DELETE' });
+      try {
+        for (const r of rooms) {
+          const res = await fetch(`/api/rooms/${r.id}`, { method: 'DELETE' });
+          if (!res.ok) throw new Error('delete failed');
+        }
+      } catch { showToast('Failed to delete all archived rooms', { error: true }); }
       refreshRoomList();
     };
     delAll.appendChild(delBtn);

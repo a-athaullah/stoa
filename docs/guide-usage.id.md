@@ -56,13 +56,17 @@ Header setiap room menampilkan **badge model** yang menunjukkan model AI mana ya
 
 Klik **ikon archive** pada baris room di sidebar untuk memindahkan room ke arsip. Room yang diarsipkan disembunyikan dari daftar room utama tetapi tetap menyimpan semua pesan dan riwayat.
 
-Untuk melihat room yang diarsipkan, beralih ke tab **Archived** di bagian atas sidebar. Dari sana Anda bisa **mengembalikan** room ke daftar aktif dengan mengklik tombol restore.
+Untuk melihat room yang diarsipkan, beralih ke tab **Archived** di bagian atas sidebar. Dari sana Anda bisa **mengembalikan** room ke daftar aktif atau **menghapusnya** secara permanen.
 
 Mengarsipkan berguna untuk menjaga sidebar tetap fokus pada percakapan aktif tanpa kehilangan diskusi sebelumnya.
 
 ### Menghapus Room
 
-Geser baris room ke kanan (drag dengan mouse di desktop, swipe dengan jari di mobile). Tombol **Delete** merah muncul — klik untuk konfirmasi. Semua pesan di room dihapus permanen.
+**Dari daftar arsip:** Geser room yang diarsipkan ke kanan untuk menampilkan dua tombol — biru (restore) dan merah (hapus). Di desktop, hover untuk melihat ikon restore dan delete. Anda juga bisa menggunakan tombol **delete all archived** di bagian bawah daftar.
+
+**Dari daftar aktif:** Geser baris room ke kanan (drag dengan mouse di desktop, swipe dengan jari di mobile). Tombol **Archive** merah muncul. Arsipkan dulu, lalu hapus dari daftar arsip.
+
+Penghapusan bersifat permanen — semua pesan di room akan dihapus dan tidak bisa dikembalikan.
 
 ---
 
