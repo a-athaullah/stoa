@@ -61,7 +61,10 @@ pm2 start server.js --name stoa-server
 pm2 save
 ```
 
-Open `http://localhost:3000` in your browser.
+Open `http://localhost:3000` in your browser. Log in with the default account:
+
+- **Email:** `stoa@stoa.com`
+- **Password:** `stoa2026!`
 
 > **Why PM2?** Running `node server.js` directly kills the process when the terminal closes. PM2 keeps it alive in the background and restarts on crash or reboot.
 
