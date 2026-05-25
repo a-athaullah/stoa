@@ -2731,6 +2731,13 @@
             <span class="s-server-value-hint">max parallel sessions per agent — applied instantly</span>
           </div>
           <div class="s-server-field">
+            <span class="s-server-field-label">session idle TTL</span>
+            <input class="s-server-input" id="s-session-idle-ttl-input" type="number" min="1" max="60" style="width:70px" autocomplete="off">
+            <span class="s-server-saved" id="s-session-idle-ttl-saved">saved</span>
+            <button class="s-server-save" id="s-session-idle-ttl-save">save</button>
+            <span class="s-server-value-hint">minutes before idle AI sessions auto-close — frees memory</span>
+          </div>
+          <div class="s-server-field">
             <span class="s-server-field-label">cleanup hour</span>
             <input class="s-server-input" id="s-cleanup-hour-input" type="number" min="0" max="23" style="width:70px" autocomplete="off">
             <span class="s-server-saved" id="s-cleanup-hour-saved">saved</span>
@@ -6806,6 +6813,7 @@ async function sLoadServerTab() {
   document.getElementById('s-port-input').value = port;
   document.getElementById('s-max-ai-turns-input').value = data.max_ai_turns || 15;
   document.getElementById('s-max-concurrent-input').value = data.max_concurrent || 1;
+  document.getElementById('s-session-idle-ttl-input').value = data.session_idle_ttl || 5;
   document.getElementById('s-cleanup-hour-input').value = data.cleanup_cron_hour ?? 10;
   document.getElementById('s-cleanup-age-input').value = data.cleanup_max_age_hours || 24;
   sPublicUrl = data.public_url || '';
@@ -7132,6 +7140,11 @@ function initSettings() {
     if (!val || val < 1 || val > 10) return;
     sSaveSetting('max_concurrent', val, 's-max-concurrent-saved');
   });
+  document.getElementById('s-session-idle-ttl-save').addEventListener('click', () => {
+    const val = parseInt(document.getElementById('s-session-idle-ttl-input').value);
+    if (!val || val < 1 || val > 60) return;
+    sSaveSetting('session_idle_ttl', val, 's-session-idle-ttl-saved');
+  });
   document.getElementById('s-cleanup-hour-save').addEventListener('click', () => {
     const val = parseInt(document.getElementById('s-cleanup-hour-input').value);
     if (isNaN(val) || val < 0 || val > 23) return;
@@ -7142,7 +7155,7 @@ function initSettings() {
     if (!val || val < 1 || val > 720) return;
     sSaveSetting('cleanup_max_age_hours', val, 's-cleanup-age-saved');
   });
-  ['s-human-name-input', 's-public-url-input', 's-port-input', 's-max-ai-turns-input', 's-max-concurrent-input', 's-cleanup-hour-input', 's-cleanup-age-input'].forEach(id => {
+  ['s-human-name-input', 's-public-url-input', 's-port-input', 's-max-ai-turns-input', 's-max-concurrent-input', 's-session-idle-ttl-input', 's-cleanup-hour-input', 's-cleanup-age-input'].forEach(id => {
     document.getElementById(id).addEventListener('keydown', e => {
       if (e.key === 'Enter') e.target.closest('.s-server-field').querySelector('.s-server-save').click();
     });

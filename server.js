@@ -750,6 +750,7 @@ const server = http.createServer(async (req, res) => {
       human_name_from_env: !!process.env.HUMAN_NAME,
       max_ai_turns: parseInt(process.env.MAX_AI_TURNS) || 5,
       max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1,
+      session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5,
       cleanup_cron_hour: parseInt(process.env.CLEANUP_CRON_HOUR) || 10,
       cleanup_max_age_hours: parseInt(process.env.CLEANUP_MAX_AGE_HOURS) || 24,
     });
@@ -775,6 +776,13 @@ const server = http.createServer(async (req, res) => {
       if (val >= 1 && val <= 10) {
         writeEnv('MAX_CONCURRENT', String(val)); process.env.MAX_CONCURRENT = String(val);
         for (const [, agentWs] of agentClients) agentWs.send(JSON.stringify({ type: 'set_config', max_concurrent: val }));
+      }
+    }
+    if (body.session_idle_ttl !== undefined) {
+      const val = parseInt(body.session_idle_ttl);
+      if (val >= 1 && val <= 60) {
+        writeEnv('SESSION_IDLE_TTL', String(val)); process.env.SESSION_IDLE_TTL = String(val);
+        for (const [, agentWs] of agentClients) agentWs.send(JSON.stringify({ type: 'set_config', session_idle_ttl: val }));
       }
     }
     if (body.cleanup_cron_hour !== undefined) {
@@ -1403,7 +1411,7 @@ wss.on('connection', (ws, req) => {
       if (msg.client_version) agentVersions.set(agentActorId, msg.client_version);
       console.log(`[agent] Actor #${agentActorId} connected (v${msg.client_version || '?'})`);
       ws.send(JSON.stringify({ type: 'agent_ready' }));
-      ws.send(JSON.stringify({ type: 'set_config', max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1 }));
+      ws.send(JSON.stringify({ type: 'set_config', max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1, session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5 }));
       const connectedActor = db.prepare('SELECT id, name, type, avatar_color, avatar_symbol, avatar_url, created_at FROM actors WHERE id=?').get(agentActorId);
       if (connectedActor) broadcastGlobal({ type: 'actor_status', actor: { ...connectedActor, online: true, client_version: msg.client_version || null } });
     }

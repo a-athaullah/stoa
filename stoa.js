@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.2.30';
+const CLIENT_VERSION = '0.2.31';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -112,9 +112,12 @@ function doRestart() {
 
 // ─── Session pool (agent mode only) ──────────────────────────────────────────
 const sessionPool = new Map(); // workdir → ClaudeSession
+const sessionIdleTimers = new Map(); // workdir → timeout id
+let SESSION_IDLE_TTL = 5; // minutes, configurable via server
 
 function getSession(workdir) {
   const key = path.resolve(workdir);
+  clearSessionIdleTimer(key);
   let session = sessionPool.get(key);
   if (!session) {
     session = new SessionClass({ workDir: key });
@@ -122,6 +125,26 @@ function getSession(workdir) {
     console.log(`[stoa] ${AI_BACKEND} session started for ${key}`);
   }
   return session;
+}
+
+function startSessionIdleTimer(workdir) {
+  const key = path.resolve(workdir);
+  clearSessionIdleTimer(key);
+  const timer = setTimeout(() => {
+    const session = sessionPool.get(key);
+    if (session && !session.busy) {
+      session.shutdown();
+      sessionPool.delete(key);
+      sessionIdleTimers.delete(key);
+      console.log(`[stoa] session closed (idle ${SESSION_IDLE_TTL}m): ${key}`);
+    }
+  }, SESSION_IDLE_TTL * 60_000);
+  sessionIdleTimers.set(key, timer);
+}
+
+function clearSessionIdleTimer(workdir) {
+  const timer = sessionIdleTimers.get(workdir);
+  if (timer) { clearTimeout(timer); sessionIdleTimers.delete(workdir); }
 }
 
 // ─── Connect ──────────────────────────────────────────────────────────────────
@@ -194,6 +217,11 @@ async function handleAgentMessage(msg) {
       MAX_CONCURRENT = Math.max(1, Math.min(10, parseInt(msg.max_concurrent) || 1));
       if (prev !== MAX_CONCURRENT) console.log(`[stoa] max_concurrent: ${prev} → ${MAX_CONCURRENT}`);
       drainQueue();
+    }
+    if (msg.session_idle_ttl !== undefined) {
+      const prev = SESSION_IDLE_TTL;
+      SESSION_IDLE_TTL = Math.max(1, Math.min(60, parseInt(msg.session_idle_ttl) || 5));
+      if (prev !== SESSION_IDLE_TTL) console.log(`[stoa] session_idle_ttl: ${prev} → ${SESSION_IDLE_TTL}m`);
     }
   }
 
@@ -373,8 +401,8 @@ async function processTrigger(msg) {
 
   let sessionRef = null;
   let statusHandler = null;
+  const targetDir = path.resolve(workdir);
   try {
-    const targetDir = path.resolve(workdir);
     const rid = msg.claude_session_id || null;
 
     if (msg.workdir) {
@@ -482,6 +510,7 @@ async function processTrigger(msg) {
   } finally {
     if (sessionRef && statusHandler) sessionRef.removeListener('status', statusHandler);
     activeTriggers.delete(message_id);
+    if (targetDir) startSessionIdleTimer(targetDir);
     drainQueue();
   }
 }
