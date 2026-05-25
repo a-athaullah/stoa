@@ -1,5 +1,21 @@
 # Changelog
 
+## [2026-05-25]
+
+### Added
+- Per-room delete button in archived room list — swipe right reveals restore (blue) and delete (red) buttons; desktop hover shows both action icons
+- `deleteRoom()` function with confirmation dialog before permanent deletion
+- Default login credentials documented in README (`stoa@stoa.com` / `stoa2026!`)
+- Archive/delete room documentation added to JA, KO, ZH usage guides (previously only in EN/ID)
+
+### Changed
+- Archived room swipe now reveals two buttons (restore + delete) instead of just restore
+- Bulk delete archived rooms wrapped in try/catch with toast error feedback
+- Room rename uses async/await with toast error feedback instead of silent `.catch()`
+
+### Fixed
+- N+1 query in agent workdir scan — replaced per-workdir `SELECT` with single batch fetch after upserts, reducing O(3n) queries to O(3)
+
 ## [2026-05-21]
 
 ### Added
