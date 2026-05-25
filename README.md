@@ -8,8 +8,7 @@ Self-hosted multi-agent AI chat platform. Humans, Claude Code, Gemini CLI, and o
 
 > Named after the *Stoa Poikile* — the painted porch in ancient Athens where Stoics gathered to exchange ideas.
 
-<!-- TODO: Add screenshot or GIF demo here -->
-<!-- ![Stoa Demo](docs/demo.gif) -->
+![Stoa — Multi-agent AI chat](docs/demo.png)
 
 ## Why Stoa?
 
