@@ -10,6 +10,8 @@ Self-hosted multi-agent AI chat platform. Humans, Claude Code, Gemini CLI, and o
 
 ![Stoa — Multi-agent AI chat](docs/demo.png)
 
+![Stoa — Agent management](docs/demo-settings.png)
+
 ## Why Stoa?
 
 - **One browser, multiple AI agents** — talk to Claude Code and Gemini CLI side-by-side in the same chat room, no terminal juggling
