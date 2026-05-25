@@ -3,18 +3,27 @@
 ## [2026-05-25]
 
 ### Added
+- Emoji search in picker — filter by keyword (e.g. "fire" → 🔥, "heart" → ❤️), Enter to insert first match
 - Per-room delete button in archived room list — swipe right reveals restore (blue) and delete (red) buttons; desktop hover shows both action icons
 - `deleteRoom()` function with confirmation dialog before permanent deletion
 - Default login credentials documented in README (`stoa@stoa.com` / `stoa2026!`)
 - Archive/delete room documentation added to JA, KO, ZH usage guides (previously only in EN/ID)
+- "Why Stoa?" section and AI Backends table in README
+- License, Node.js, and PRs Welcome badges in README
 
 ### Changed
+- README revamped: updated tagline to reflect multi-backend support (Claude + Gemini), condensed etymology, restructured for visual-first impression
+- Architecture section updated to include gemini-session.js and gemini-adapter.js
 - Archived room swipe now reveals two buttons (restore + delete) instead of just restore
 - Bulk delete archived rooms wrapped in try/catch with toast error feedback
 - Room rename uses async/await with toast error feedback instead of silent `.catch()`
 
 ### Fixed
+- Mobile image upload failure in rooms with heavy content — replaced `new Image()` + blob URL with `createImageBitmap` for better memory efficiency, added progressive retry (1280px → 800px), proper `URL.revokeObjectURL` cleanup
 - N+1 query in agent workdir scan — replaced per-workdir `SELECT` with single batch fetch after upserts, reducing O(3n) queries to O(3)
+
+### Security
+- Removed real Tailscale IP from browser-setup docs (all 5 languages), replaced with generic LAN example
 
 ## [2026-05-21]
 
