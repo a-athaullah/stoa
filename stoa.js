@@ -123,6 +123,7 @@ function getSession(workdir) {
     session = new SessionClass({ workDir: key });
     sessionPool.set(key, session);
     console.log(`[stoa] ${AI_BACKEND} session started for ${key}`);
+    startSessionIdleTimer(key);
   }
   return session;
 }
