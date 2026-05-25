@@ -1415,24 +1415,22 @@ wss.on('connection', (ws, req) => {
       const upsertWorkdir = db.prepare(
         'INSERT INTO agent_workdirs (actor_id, path, label, is_default, model) VALUES (?,?,?,?,?) ON CONFLICT(actor_id, path) DO UPDATE SET label=excluded.label, is_default=excluded.is_default, model=excluded.model'
       );
-      const getWorkdirId = db.prepare(
-        'SELECT id FROM agent_workdirs WHERE actor_id=? AND path=?'
-      );
       const insertSkill = db.prepare(
         'INSERT OR IGNORE INTO agent_skills (actor_id, workdir_id, name, description, scope) VALUES (?,?,?,?,?)'
-      );
-      const deleteWorkdirSkills = db.prepare(
-        'DELETE FROM agent_skills WHERE actor_id=? AND workdir_id=?'
       );
       const scannedPaths = new Set();
       for (const wd of workdirs) {
         const label = wd.path.split(/[\/\\]/).pop() || wd.path;
         upsertWorkdir.run(agentActorId, wd.path, label, wd.is_default ? 1 : 0, wd.model || null);
-        const row = getWorkdirId.get(agentActorId, wd.path);
         scannedPaths.add(wd.path);
-        deleteWorkdirSkills.run(agentActorId, row.id);
+      }
+      const allWds = db.prepare('SELECT id, path FROM agent_workdirs WHERE actor_id=?').all(agentActorId);
+      const wdMap = new Map(allWds.map(w => [w.path, w.id]));
+      db.prepare('DELETE FROM agent_skills WHERE actor_id=? AND workdir_id IS NOT NULL').run(agentActorId);
+      for (const wd of workdirs) {
+        const wdId = wdMap.get(wd.path);
         for (const sk of (wd.skills || [])) {
-          insertSkill.run(agentActorId, row.id, sk.name, sk.description || null, sk.scope || 'project');
+          insertSkill.run(agentActorId, wdId, sk.name, sk.description || null, sk.scope || 'project');
         }
       }
       // Remove workdirs no longer reported (only if not referenced by any room)
