@@ -16,7 +16,7 @@ Stoa has a built-in microphone button in the chat composer. Click it to start sp
 
 ### Allowing Microphone on HTTP (Desktop)
 
-Chrome blocks microphone access on non-HTTPS origins by default. If you access Stoa via a LAN IP or Tailscale IP (e.g., `http://100.90.197.4:3001`), you need to whitelist it:
+Chrome blocks microphone access on non-HTTPS origins by default. If you access Stoa via a LAN IP or Tailscale IP (e.g., `http://192.168.1.100:3001`), you need to whitelist it:
 
 1. Open a new tab and go to: `chrome://flags/#unsafely-treat-insecure-origin-as-secure`
 2. In the text field, enter your Stoa URL: `http://YOUR_IP:PORT`
@@ -30,7 +30,7 @@ After relaunch, Chrome treats that origin as secure and allows microphone access
 ### Allowing Microphone on Android (Chrome)
 
 1. Open Chrome and go to: `chrome://flags/#unsafely-treat-insecure-origin-as-secure`
-2. Enter your Stoa URL (e.g., `http://100.90.197.4:3001`)
+2. Enter your Stoa URL (e.g., `http://192.168.1.100:3001`)
 3. Set to **Enabled** and tap **Relaunch**
 4. Navigate to Stoa, tap the mic button — Chrome will prompt for microphone permission, tap **Allow**
 

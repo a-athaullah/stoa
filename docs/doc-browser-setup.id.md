@@ -16,7 +16,7 @@ Stoa punya tombol mikrofon bawaan di composer chat. Klik untuk mulai bicara — 
 
 ### Mengizinkan Mikrofon di HTTP (Desktop)
 
-Chrome memblokir akses mikrofon di origin non-HTTPS secara default. Jika Anda mengakses Stoa via IP LAN atau Tailscale (misal `http://100.90.197.4:3001`), perlu di-whitelist:
+Chrome memblokir akses mikrofon di origin non-HTTPS secara default. Jika Anda mengakses Stoa via IP LAN atau Tailscale (misal `http://192.168.1.100:3001`), perlu di-whitelist:
 
 1. Buka tab baru dan buka: `chrome://flags/#unsafely-treat-insecure-origin-as-secure`
 2. Di text field, masukkan URL Stoa Anda: `http://IP_ANDA:PORT`
@@ -30,7 +30,7 @@ Setelah relaunch, Chrome menganggap origin tersebut sebagai secure dan mengizink
 ### Mengizinkan Mikrofon di Android (Chrome)
 
 1. Buka Chrome dan buka: `chrome://flags/#unsafely-treat-insecure-origin-as-secure`
-2. Masukkan URL Stoa Anda (misal `http://100.90.197.4:3001`)
+2. Masukkan URL Stoa Anda (misal `http://192.168.1.100:3001`)
 3. Set ke **Enabled** dan tap **Relaunch**
 4. Buka Stoa, tap tombol mic — Chrome akan meminta izin mikrofon, tap **Allow**
 

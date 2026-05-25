@@ -16,7 +16,7 @@ Stoa のチャットコンポーザーにはマイクボタンが内蔵されて
 
 ### HTTP でのマイク許可（デスクトップ）
 
-Chrome はデフォルトで非 HTTPS オリジンのマイクアクセスをブロックします。LAN IP や Tailscale IP（例：`http://100.90.197.4:3001`）で Stoa にアクセスする場合は、ホワイトリストに追加する必要があります：
+Chrome はデフォルトで非 HTTPS オリジンのマイクアクセスをブロックします。LAN IP や Tailscale IP（例：`http://192.168.1.100:3001`）で Stoa にアクセスする場合は、ホワイトリストに追加する必要があります：
 
 1. 新しいタブを開き、次のアドレスにアクセス：`chrome://flags/#unsafely-treat-insecure-origin-as-secure`
 2. テキストフィールドに Stoa の URL を入力：`http://YOUR_IP:PORT`
@@ -30,7 +30,7 @@ Chrome はデフォルトで非 HTTPS オリジンのマイクアクセスをブ
 ### Android でのマイク許可（Chrome）
 
 1. Chrome を開き、次のアドレスにアクセス：`chrome://flags/#unsafely-treat-insecure-origin-as-secure`
-2. Stoa の URL を入力（例：`http://100.90.197.4:3001`）
+2. Stoa の URL を入力（例：`http://192.168.1.100:3001`）
 3. **Enabled** に設定して **Relaunch** をタップ
 4. Stoa に移動してマイクボタンをタップ — Chrome がマイク権限を求めるので、**許可**をタップ
 
