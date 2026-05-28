@@ -5605,11 +5605,11 @@ async function init() {
       }
     }
 
-    // Enter inside code block → create new <pre> or exit if current line empty (Slack behavior)
+    // Enter inside code block → newline (unless "Enter to send" is on without Shift)
     if (e.key === 'Enter') {
       const sel0 = window.getSelection();
       const pre0 = sel0.rangeCount && findAncestorTag(sel0.anchorNode, 'PRE');
-      if (pre0) {
+      if (pre0 && (e.shiftKey || !document.getElementById('enter-send-toggle').classList.contains('active'))) {
         e.preventDefault();
         // Exit code block: Enter on empty line exits (Slack behavior)
         const preText = pre0.textContent;
