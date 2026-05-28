@@ -1519,7 +1519,7 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'agent_get_message' && agentActorId) {
       const row = db.prepare(`
-        SELECT m.id, m.room_id, m.content, m.created_at, a.name as actor_name, a.type as actor_type
+        SELECT m.id, m.room_id, m.content, m.reply_to, m.created_at, a.name as actor_name, a.type as actor_type
         FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id
         WHERE m.id=?
       `).get(msg.message_id);
@@ -2045,6 +2045,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
         type: 'agent_trigger',
         room_id: roomId,
         message_id: msgId,
+        reply_to: replyTo || undefined,
         participant_id: ai.participant_id,
         claude_session_id: sessionId,
         prompt: fullPrompt,
