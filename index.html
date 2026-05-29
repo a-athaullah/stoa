@@ -495,9 +495,133 @@
     #main {
       flex: 1;
       display: flex;
+      flex-direction: row;
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    #chat-area {
+      flex: 1;
+      display: flex;
       flex-direction: column;
       min-width: 0;
       overflow: hidden;
+    }
+
+    /* ── Dev workspace panel ─────────────────────────────── */
+    #workspace-panel {
+      display: none;
+      flex-direction: column;
+      width: var(--ws-panel-width, 40%);
+      min-width: 280px;
+      max-width: 70%;
+      background: var(--h-bg);
+      border-left: 1px solid var(--h-hairline);
+      overflow: hidden;
+    }
+    #workspace-panel.open { display: flex; }
+
+    #ws-drag-handle {
+      position: absolute;
+      left: -3px;
+      top: 0;
+      bottom: 0;
+      width: 6px;
+      cursor: col-resize;
+      z-index: 10;
+      background: transparent;
+      transition: background 0.15s;
+    }
+    #ws-drag-handle:hover, #ws-drag-handle.dragging {
+      background: var(--h-accent);
+      opacity: 0.4;
+    }
+    #ws-drag-handle.dragging { opacity: 0.6; }
+
+    #ws-panel-header {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--h-hair-soft);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--h-header-bg);
+      flex: 0 0 auto;
+    }
+
+    #ws-panel-title {
+      font-family: var(--h-serif);
+      font-size: 14px;
+      color: var(--h-ink);
+    }
+
+    .ws-panel-close {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--h-ink-faint);
+      padding: 4px;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: color 0.12s, background 0.12s;
+    }
+    .ws-panel-close:hover { color: var(--h-ink); background: var(--h-surface); }
+
+    #ws-panel-content {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: auto;
+    }
+
+    .ws-empty-state {
+      text-align: center;
+      padding: 40px 24px;
+    }
+    .ws-empty-icon { color: var(--h-ink-faint); opacity: 0.4; margin-bottom: 16px; }
+    .ws-empty-text {
+      font-family: var(--h-serif);
+      font-style: italic;
+      font-size: 14px;
+      color: var(--h-ink-faint);
+      line-height: 1.5;
+      max-width: 240px;
+    }
+
+    .h-ws-toggle {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--h-ink-faint);
+      padding: 4px;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: color 0.12s, background 0.12s;
+      margin-left: 8px;
+    }
+    .h-ws-toggle:hover { color: var(--h-ink); background: var(--h-surface-hi); }
+    .h-ws-toggle.active { color: var(--h-accent); }
+
+    @media (max-width: 1200px) {
+      #workspace-panel.open {
+        position: absolute;
+        right: 0;
+        top: 0;
+        bottom: 0;
+        z-index: 50;
+        box-shadow: -4px 0 24px rgba(0,0,0,0.15);
+      }
+    }
+    @media (max-width: 680px) {
+      #workspace-panel.open {
+        width: 100% !important;
+        min-width: 0;
+        max-width: 100%;
+      }
     }
 
     /* Empty state */
@@ -2662,6 +2786,7 @@
 </aside>
 
 <main id="main">
+<div id="chat-area">
   <div id="empty-state">
     <div class="h-faded-mark" aria-hidden="true">
       <svg width="165" height="127" viewBox="0 0 260 200">
@@ -2974,6 +3099,29 @@
       </div>
     </div>
   </div>
+</div><!-- /chat-area -->
+
+<div id="workspace-panel" style="position:relative">
+  <div id="ws-drag-handle"></div>
+  <div id="ws-panel-header">
+    <span id="ws-panel-title">workspace</span>
+    <button class="ws-panel-close" id="ws-panel-close-btn" title="Close panel">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <div id="ws-panel-content">
+    <div class="ws-empty-state">
+      <div class="ws-empty-icon">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
+          <polyline points="13 2 13 9 20 9"/>
+        </svg>
+      </div>
+      <div class="ws-empty-text">open a file or click a file reference in chat.</div>
+    </div>
+  </div>
+</div><!-- /workspace-panel -->
+
 </main>
 
 <!-- New-room modal -->
@@ -3451,6 +3599,13 @@ function renderChatHeader(room, participants) {
   exportWrap.appendChild(exportBtn);
   exportWrap.appendChild(exportDrop);
   header.appendChild(exportWrap);
+
+  const wsToggle = document.createElement('button');
+  wsToggle.className = 'h-ws-toggle h-header-action-btn' + (document.getElementById('workspace-panel').classList.contains('open') ? ' active' : '');
+  wsToggle.title = 'Dev Workspace';
+  wsToggle.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/><line x1="12" y1="9" x2="21" y2="9"/></svg>`;
+  wsToggle.onclick = toggleWorkspacePanel;
+  header.appendChild(wsToggle);
 }
 
 // ── Composer seal ──────────────────────────────────────────────────────────
@@ -3973,6 +4128,85 @@ function applyTheme(dark) {
 function toggleTheme() {
   applyTheme(!document.documentElement.classList.contains('dark'));
 }
+
+// ── Workspace panel ───────────────────────────────────────────────────────
+function toggleWorkspacePanel() {
+  const panel = document.getElementById('workspace-panel');
+  const isOpen = panel.classList.toggle('open');
+  document.querySelectorAll('.h-ws-toggle').forEach(b => b.classList.toggle('active', isOpen));
+  if (isOpen) {
+    const saved = localStorage.getItem('stoa-ws-panel-width');
+    if (saved) panel.style.setProperty('--ws-panel-width', saved);
+  }
+}
+
+(function initWorkspacePanel() {
+  const panel = document.getElementById('workspace-panel');
+  const handle = document.getElementById('ws-drag-handle');
+  const closeBtn = document.getElementById('ws-panel-close-btn');
+
+  closeBtn.onclick = toggleWorkspacePanel;
+
+  let dragging = false;
+  let startX = 0;
+  let startWidth = 0;
+
+  handle.addEventListener('mousedown', e => {
+    e.preventDefault();
+    dragging = true;
+    startX = e.clientX;
+    startWidth = panel.offsetWidth;
+    handle.classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const diff = startX - e.clientX;
+    const newWidth = Math.max(280, Math.min(startWidth + diff, window.innerWidth * 0.7));
+    panel.style.setProperty('--ws-panel-width', newWidth + 'px');
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    const w = panel.style.getPropertyValue('--ws-panel-width');
+    if (w) localStorage.setItem('stoa-ws-panel-width', w);
+  });
+
+  handle.addEventListener('dblclick', () => {
+    panel.style.removeProperty('--ws-panel-width');
+    localStorage.removeItem('stoa-ws-panel-width');
+  });
+
+  handle.addEventListener('touchstart', e => {
+    const touch = e.touches[0];
+    dragging = true;
+    startX = touch.clientX;
+    startWidth = panel.offsetWidth;
+    handle.classList.add('dragging');
+  }, { passive: true });
+
+  document.addEventListener('touchmove', e => {
+    if (!dragging) return;
+    const touch = e.touches[0];
+    const diff = startX - touch.clientX;
+    const newWidth = Math.max(280, Math.min(startWidth + diff, window.innerWidth * 0.7));
+    panel.style.setProperty('--ws-panel-width', newWidth + 'px');
+  }, { passive: true });
+
+  document.addEventListener('touchend', () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove('dragging');
+    const w = panel.style.getPropertyValue('--ws-panel-width');
+    if (w) localStorage.setItem('stoa-ws-panel-width', w);
+  });
+})();
 
 // ── Markdown rendering ─────────────────────────────────────────────────────
 marked.use({
