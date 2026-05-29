@@ -509,102 +509,382 @@
     }
 
     /* ── Dev workspace panel ─────────────────────────────── */
+    .ws-mono { font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", ui-monospace, Consolas, monospace; }
+    .ws-code { background: oklch(0.193 0.016 44); color: #d3c8b4; }
+    .ws-code .hljs { background: transparent; color: #d3c8b4; }
+    .ws-code::-webkit-scrollbar { width: 8px; height: 8px; }
+    .ws-code::-webkit-scrollbar-thumb { background: rgba(255,255,255,.12); border-radius: 4px; }
+    .ws-code::-webkit-scrollbar-track { background: transparent; }
+    .ws-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+    .ws-scroll::-webkit-scrollbar-thumb { background: var(--h-hair-soft); border-radius: 4px; }
+    .ws-scroll::-webkit-scrollbar-track { background: transparent; }
+
     #workspace-panel {
       display: none;
-      flex-direction: column;
-      width: var(--ws-panel-width, 40%);
+      flex-direction: row;
+      width: var(--ws-panel-width, 560px);
       min-width: 280px;
       max-width: 70%;
-      background: var(--h-bg);
-      border-left: 1px solid var(--h-hairline);
       overflow: hidden;
     }
     #workspace-panel.open { display: flex; }
 
     #ws-drag-handle {
-      position: absolute;
-      left: -3px;
-      top: 0;
-      bottom: 0;
-      width: 6px;
-      cursor: col-resize;
-      z-index: 10;
-      background: transparent;
-      transition: background 0.15s;
-    }
-    #ws-drag-handle:hover, #ws-drag-handle.dragging {
-      background: var(--h-accent);
-      opacity: 0.4;
-    }
-    #ws-drag-handle.dragging { opacity: 0.6; }
-
-    #ws-panel-header {
-      padding: 12px 16px;
-      border-bottom: 1px solid var(--h-hair-soft);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      background: var(--h-header-bg);
+      width: 7px;
       flex: 0 0 auto;
-    }
-
-    #ws-panel-title {
-      font-family: var(--h-serif);
-      font-size: 14px;
-      color: var(--h-ink);
-    }
-
-    .ws-panel-close {
-      background: none;
-      border: none;
-      cursor: pointer;
-      color: var(--h-ink-faint);
-      padding: 4px;
-      border-radius: 6px;
+      cursor: col-resize;
+      position: relative;
+      background: var(--h-bg);
+      border-left: 1px solid var(--h-hairline);
       display: flex;
       align-items: center;
       justify-content: center;
-      transition: color 0.12s, background 0.12s;
     }
-    .ws-panel-close:hover { color: var(--h-ink); background: var(--h-surface); }
+    .ws-grip {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      opacity: .5;
+      transition: opacity .12s;
+    }
+    #ws-drag-handle:hover .ws-grip, #ws-drag-handle.dragging .ws-grip { opacity: 1; }
+    .ws-grip-dot {
+      width: 3px;
+      height: 3px;
+      border-radius: 50%;
+      background: var(--h-ink-faint);
+    }
 
-    #ws-panel-content {
+    #ws-panel-body {
+      flex: 1;
+      min-width: 0;
+      background: var(--h-bg);
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Tab bar ───────────────────────────────────── */
+    .ws-tab-bar {
+      display: flex;
+      align-items: stretch;
+      height: 42px;
+      flex: 0 0 auto;
+      background: var(--h-header-bg);
+      border-bottom: 1px solid var(--h-hairline);
+    }
+    .ws-pin-tab {
+      position: relative;
+      width: 40px;
+      border: none;
+      cursor: pointer;
+      background: transparent;
+      color: var(--h-ink-mute);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: background .12s, color .12s;
+    }
+    .ws-pin-tab:hover { color: var(--h-ink); }
+    .ws-pin-tab.active { background: var(--h-bg); color: var(--h-ink); }
+    .ws-pin-tab .ws-tab-indicator {
+      position: absolute;
+      left: 8px; right: 8px; bottom: 0;
+      height: 2px; background: var(--h-ink); border-radius: 2px;
+      display: none;
+    }
+    .ws-pin-tab.active .ws-tab-indicator { display: block; }
+
+    .ws-tab-divider { width: 1px; background: var(--h-hair-soft); margin: 8px 4px; }
+
+    .ws-tab-list {
+      display: flex;
+      align-items: stretch;
+      overflow: hidden;
+      flex: 1;
+    }
+    .ws-file-tab {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px 0 12px;
+      cursor: pointer;
+      max-width: 180px;
+      flex: 0 0 auto;
+      background: transparent;
+      border: none;
+      border-right: 1px solid var(--h-hair-soft);
+      transition: background .12s;
+    }
+    .ws-file-tab:hover { background: color-mix(in srgb, var(--h-surface) 50%, transparent); }
+    .ws-file-tab.active { background: var(--h-bg); }
+    .ws-file-tab .ws-tab-indicator {
+      position: absolute;
+      left: 10px; right: 10px; bottom: 0;
+      height: 2px; background: var(--h-ink); border-radius: 2px;
+      display: none;
+    }
+    .ws-file-tab.active .ws-tab-indicator { display: block; }
+    .ws-file-tab-name {
+      font-family: var(--h-sans);
+      font-size: 12px;
+      color: var(--h-ink-mute);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .ws-file-tab.active .ws-file-tab-name { color: var(--h-ink); }
+    .ws-file-tab-modified { color: var(--h-ink-faint); }
+    .ws-file-tab-close {
+      opacity: 0;
+      transition: opacity .12s;
+      color: var(--h-ink-mute);
+      display: inline-flex;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0;
+    }
+    .ws-file-tab:hover .ws-file-tab-close,
+    .ws-file-tab.active .ws-file-tab-close { opacity: .7; }
+    .ws-file-tab-close:hover { opacity: 1 !important; }
+
+    .ws-tab-overflow {
+      flex: 0 0 auto;
+      width: 30px;
+      border: none;
+      background: transparent;
+      color: var(--h-ink-mute);
+      cursor: pointer;
+      border-left: 1px solid var(--h-hair-soft);
+      font-size: 16px;
+    }
+    .ws-tab-close-panel {
+      flex: 0 0 auto;
+      width: 38px;
+      border: none;
+      background: transparent;
+      color: var(--h-ink-mute);
+      cursor: pointer;
+      border-left: 1px solid var(--h-hair-soft);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: color .12s;
+    }
+    .ws-tab-close-panel:hover { color: var(--h-ink); }
+
+    /* ── File glyph ───────────────────────────────── */
+    .ws-file-glyph {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 3px;
+      font-size: 7.5px;
+      font-weight: 600;
+      letter-spacing: .02em;
+    }
+
+    /* ── Panel toolbar ────────────────────────────── */
+    .ws-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 0 0 auto;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--h-hair-soft);
+      background: var(--h-bg);
+    }
+    .ws-breadcrumb {
       flex: 1;
       display: flex;
       align-items: center;
-      justify-content: center;
-      overflow: auto;
+      gap: 6px;
+      min-width: 0;
+      overflow: hidden;
+    }
+    .ws-crumb {
+      font-family: var(--h-sans);
+      font-size: 11px;
+      white-space: nowrap;
+      color: var(--h-ink-faint);
+    }
+    .ws-crumb:last-child { color: var(--h-ink-mute); }
+    .ws-crumb-sep { color: var(--h-ink-faint); font-size: 11px; }
+
+    .ws-ghost-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 7px;
+      cursor: pointer;
+      font-family: var(--h-sans);
+      font-size: 11.5px;
+      color: var(--h-ink-mute);
+      background: transparent;
+      border: 1px solid var(--h-hair-soft);
+      transition: all .12s;
+    }
+    .ws-ghost-btn:hover { border-color: var(--h-hairline); color: var(--h-ink); }
+    .ws-ghost-btn.active {
+      color: var(--h-ink);
+      background: var(--h-surface-hi);
+      border-color: var(--h-hairline);
     }
 
+    /* ── Empty panel ──────────────────────────────── */
     .ws-empty-state {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      padding: 32px;
       text-align: center;
-      padding: 40px 24px;
     }
-    .ws-empty-icon { color: var(--h-ink-faint); opacity: 0.4; margin-bottom: 16px; }
-    .ws-empty-text {
+    .ws-empty-icon { color: var(--h-ink-faint); opacity: .8; }
+    .ws-empty-title {
       font-family: var(--h-serif);
-      font-style: italic;
-      font-size: 14px;
+      font-size: 18px;
+      color: var(--h-ink-mute);
+    }
+    .ws-empty-text {
+      font-family: var(--h-sans);
+      font-size: 13px;
       color: var(--h-ink-faint);
-      line-height: 1.5;
+      line-height: 1.55;
       max-width: 240px;
     }
 
-    .h-ws-toggle {
-      background: none;
-      border: none;
-      cursor: pointer;
-      color: var(--h-ink-faint);
-      padding: 4px;
-      border-radius: 6px;
+    /* ── File tree ────────────────────────────────── */
+    .ws-tree { flex: 1; min-height: 0; overflow: auto; padding: 8px 6px; }
+    .ws-tree-row {
       display: flex;
       align-items: center;
-      justify-content: center;
-      transition: color 0.12s, background 0.12s;
-      margin-left: 8px;
+      gap: 7px;
+      padding: 5px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background .12s;
     }
-    .h-ws-toggle:hover { color: var(--h-ink); background: var(--h-surface-hi); }
-    .h-ws-toggle.active { color: var(--h-accent); }
+    .ws-tree-row:hover { background: var(--h-surface-hi); }
+    .ws-tree-row.active { background: var(--h-surface); }
+    .ws-tree-chevron {
+      color: var(--h-ink-faint);
+      display: inline-flex;
+      transition: transform .12s;
+    }
+    .ws-tree-chevron.open { transform: rotate(90deg); }
+    .ws-tree-name {
+      flex: 1;
+      min-width: 0;
+      font-family: var(--h-sans);
+      font-size: 13px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .ws-tree-name.folder { font-weight: 500; color: var(--h-ink); }
+    .ws-tree-name.file { font-weight: 400; color: var(--h-ink-mute); }
+    .ws-tree-name.active { color: var(--h-ink); }
+    .ws-tree-modified {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex: 0 0 auto;
+    }
+
+    /* ── Code viewer ──────────────────────────────── */
+    .ws-code-viewer {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      font-size: 13px;
+      line-height: 21px;
+    }
+    .ws-code-table { display: table; min-width: 100%; }
+    .ws-code-line { display: table-row; }
+    .ws-code-line.active { background: rgba(255,255,255,.045); }
+    .ws-code-gutter {
+      display: table-cell;
+      text-align: right;
+      padding: 0 12px 0 14px;
+      color: #7a7060;
+      user-select: none;
+      border-right: 1px solid rgba(255,255,255,.07);
+    }
+    .ws-code-line.active .ws-code-gutter { color: #d3c8b4; }
+    .ws-code-text {
+      display: table-cell;
+      padding: 0 18px 0 16px;
+      white-space: pre;
+    }
+
+    /* ── Diff viewer ──────────────────────────────── */
+    .ws-diff-file-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex: 0 0 auto;
+      padding: 9px 14px;
+      border-bottom: 1px solid var(--h-hair-soft);
+      background: var(--h-surface);
+    }
+    .ws-diff-stat { display: inline-flex; align-items: center; gap: 6px; font-family: var(--h-sans); font-size: 11px; font-weight: 500; }
+    .ws-diff-add { color: #7faa7c; }
+    .ws-diff-del { color: #c08378; }
+
+    .ws-diff-hunk {
+      display: table-row;
+    }
+    .ws-diff-hunk-text {
+      display: table-cell;
+      padding: 3px 14px;
+      color: #7d93b0;
+      background: rgba(91,143,212,.08);
+      white-space: pre;
+    }
+    .ws-diff-line-add { background: color-mix(in srgb, oklch(0.62 0.10 150) 16%, oklch(0.193 0.016 44)); }
+    .ws-diff-line-del { background: color-mix(in srgb, oklch(0.58 0.12 28) 16%, oklch(0.193 0.016 44)); }
+    .ws-diff-line-empty { background: rgba(0,0,0,.18); }
+
+    /* ── Editing banner ───────────────────────────── */
+    .ws-editing-banner {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      flex: 0 0 auto;
+      padding: 8px 14px;
+      font-family: var(--h-sans);
+      font-size: 12.5px;
+      font-style: italic;
+    }
+
+    /* ── Toggle button ────────────────────────────── */
+    .h-ws-toggle {
+      width: 34px;
+      height: 34px;
+      border-radius: 9px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--h-hair-soft);
+      background: transparent;
+      color: var(--h-ink-mute);
+      margin-left: 6px;
+      transition: color .12s, background .12s, border-color .12s;
+    }
+    .h-ws-toggle:hover { color: var(--h-ink); border-color: var(--h-hairline); }
+    .h-ws-toggle.active {
+      color: var(--h-ink);
+      background: var(--h-surface-hi);
+      border-color: var(--h-hairline);
+    }
 
     @media (max-width: 1200px) {
       #workspace-panel.open {
@@ -3149,23 +3429,43 @@
   </div>
 </div><!-- /chat-area -->
 
-<div id="workspace-panel" style="position:relative">
-  <div id="ws-drag-handle"></div>
-  <div id="ws-panel-header">
-    <span id="ws-panel-title">workspace</span>
-    <button class="ws-panel-close" id="ws-panel-close-btn" title="Close panel">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-    </button>
+<div id="workspace-panel">
+  <div id="ws-drag-handle">
+    <span class="ws-grip">
+      <span class="ws-grip-dot"></span>
+      <span class="ws-grip-dot"></span>
+      <span class="ws-grip-dot"></span>
+    </span>
   </div>
-  <div id="ws-panel-content">
-    <div class="ws-empty-state">
-      <div class="ws-empty-icon">
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
-          <polyline points="13 2 13 9 20 9"/>
-        </svg>
+  <div id="ws-panel-body">
+    <div class="ws-tab-bar" id="ws-tab-bar">
+      <button class="ws-pin-tab active" data-ws-pin="files" title="Files">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h7M4 12h10M4 18h6"/><circle cx="18" cy="6" r="1.4" fill="currentColor" stroke="none"/></svg>
+        <span class="ws-tab-indicator"></span>
+      </button>
+      <button class="ws-pin-tab" data-ws-pin="git" title="Git">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6.5" cy="6" r="2.2"/><circle cx="6.5" cy="18" r="2.2"/><circle cx="17.5" cy="8" r="2.2"/><path d="M6.5 8.2v7.6M8.7 8c4 .2 6.5 1 8.6 .2M17.5 10.2c0 3.2-3 4.6-6.2 4.8"/></svg>
+        <span class="ws-tab-indicator"></span>
+      </button>
+      <div class="ws-tab-divider"></div>
+      <div class="ws-tab-list" id="ws-tab-list"></div>
+      <button class="ws-tab-close-panel" id="ws-panel-close-btn" title="Close panel">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div id="ws-editing-banner"></div>
+    <div class="ws-toolbar" id="ws-toolbar" style="display:none">
+      <div class="ws-breadcrumb" id="ws-breadcrumb"></div>
+      <div id="ws-toolbar-actions"></div>
+    </div>
+    <div id="ws-panel-content">
+      <div class="ws-empty-state">
+        <span class="ws-empty-icon">
+          <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h7M4 12h10M4 18h6"/><circle cx="18" cy="6" r="1.4" fill="currentColor" stroke="none"/></svg>
+        </span>
+        <div class="ws-empty-title">nothing open yet</div>
+        <div class="ws-empty-text">open a file, or click a file reference in the chat to read it here.</div>
       </div>
-      <div class="ws-empty-text">open a file or click a file reference in chat.</div>
     </div>
   </div>
 </div><!-- /workspace-panel -->
@@ -3649,9 +3949,9 @@ function renderChatHeader(room, participants) {
   header.appendChild(exportWrap);
 
   const wsToggle = document.createElement('button');
-  wsToggle.className = 'h-ws-toggle h-header-action-btn' + (document.getElementById('workspace-panel').classList.contains('open') ? ' active' : '');
+  wsToggle.className = 'h-ws-toggle' + (document.getElementById('workspace-panel').classList.contains('open') ? ' active' : '');
   wsToggle.title = 'Dev Workspace';
-  wsToggle.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/><line x1="12" y1="9" x2="21" y2="9"/></svg>`;
+  wsToggle.innerHTML = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M14 4v16"/></svg>`;
   wsToggle.onclick = toggleWorkspacePanel;
   header.appendChild(wsToggle);
 }
@@ -4178,6 +4478,34 @@ function toggleTheme() {
 }
 
 // ── Workspace panel ───────────────────────────────────────────────────────
+const WS_FILE_COLORS = {
+  js:   { tag: 'js',  c: '#c2876b' },
+  jsx:  { tag: 'jsx', c: '#6f9f8c' },
+  ts:   { tag: 'ts',  c: '#5b8fd4' },
+  tsx:  { tag: 'tsx', c: '#5b8fd4' },
+  md:   { tag: 'md',  c: '#5b8fd4' },
+  json: { tag: '{}',  c: '#d39749' },
+  css:  { tag: 'css', c: '#c08aa0' },
+  html: { tag: 'htm', c: '#c2876b' },
+  py:   { tag: 'py',  c: '#b59a5e' },
+  sql:  { tag: 'sql', c: '#6f9f8c' },
+};
+
+function wsFileGlyph(ext, size = 15) {
+  const m = WS_FILE_COLORS[ext] || { tag: '', c: 'var(--h-ink-faint)' };
+  const el = document.createElement('span');
+  el.className = 'ws-file-glyph ws-mono';
+  el.style.cssText = `width:${size+3}px;height:${size+3}px;border:1px solid color-mix(in srgb,${m.c} 50%,transparent);background:color-mix(in srgb,${m.c} 14%,transparent);color:${m.c}`;
+  el.textContent = m.tag;
+  return el;
+}
+
+function wsGetExt(name) { return (name.match(/\.(\w+)$/) || [])[1] || ''; }
+
+let wsActiveView = 'files';
+let wsOpenFiles = [];
+let wsActiveFile = null;
+
 function toggleWorkspacePanel() {
   const panel = document.getElementById('workspace-panel');
   const isOpen = panel.classList.toggle('open');
@@ -4188,12 +4516,220 @@ function toggleWorkspacePanel() {
   }
 }
 
+function wsSetView(view) {
+  wsActiveView = view;
+  document.querySelectorAll('.ws-pin-tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.wsPin === view);
+  });
+  wsRenderContent();
+}
+
+function wsOpenFile(name, content) {
+  if (!wsOpenFiles.find(f => f.name === name)) {
+    wsOpenFiles.push({ name, content: content || '', ext: wsGetExt(name) });
+  }
+  wsActiveFile = name;
+  wsActiveView = 'file';
+  document.querySelectorAll('.ws-pin-tab').forEach(t => t.classList.remove('active'));
+  wsRenderTabs();
+  wsRenderContent();
+}
+
+function wsCloseFile(name) {
+  wsOpenFiles = wsOpenFiles.filter(f => f.name !== name);
+  if (wsActiveFile === name) {
+    wsActiveFile = wsOpenFiles.length ? wsOpenFiles[wsOpenFiles.length - 1].name : null;
+    if (!wsActiveFile) wsActiveView = 'files';
+  }
+  wsRenderTabs();
+  wsRenderContent();
+}
+
+function wsRenderTabs() {
+  const list = document.getElementById('ws-tab-list');
+  if (!list) return;
+  list.innerHTML = '';
+  wsOpenFiles.forEach(f => {
+    const tab = document.createElement('div');
+    tab.className = 'ws-file-tab' + (f.name === wsActiveFile ? ' active' : '');
+    tab.appendChild(wsFileGlyph(f.ext, 13));
+    const nameEl = document.createElement('span');
+    nameEl.className = 'ws-file-tab-name';
+    nameEl.textContent = f.name;
+    tab.appendChild(nameEl);
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'ws-file-tab-close';
+    closeBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+    closeBtn.onclick = (e) => { e.stopPropagation(); wsCloseFile(f.name); };
+    tab.appendChild(closeBtn);
+    const indicator = document.createElement('span');
+    indicator.className = 'ws-tab-indicator';
+    tab.appendChild(indicator);
+    tab.onclick = () => wsOpenFile(f.name, f.content);
+    list.appendChild(tab);
+  });
+}
+
+function wsSetToolbar(crumbs, actions) {
+  const toolbar = document.getElementById('ws-toolbar');
+  const bc = document.getElementById('ws-breadcrumb');
+  const act = document.getElementById('ws-toolbar-actions');
+  if (!crumbs || !crumbs.length) { toolbar.style.display = 'none'; return; }
+  toolbar.style.display = '';
+  bc.innerHTML = '';
+  crumbs.forEach((c, i) => {
+    if (i > 0) {
+      const sep = document.createElement('span');
+      sep.className = 'ws-crumb-sep';
+      sep.textContent = '/';
+      bc.appendChild(sep);
+    }
+    const s = document.createElement('span');
+    s.className = 'ws-crumb';
+    s.textContent = c;
+    bc.appendChild(s);
+  });
+  act.innerHTML = '';
+  if (actions) act.appendChild(actions);
+}
+
+function wsRenderContent() {
+  const content = document.getElementById('ws-panel-content');
+  const banner = document.getElementById('ws-editing-banner');
+  content.innerHTML = '';
+  banner.innerHTML = '';
+
+  if (wsActiveView === 'files') {
+    wsSetToolbar(null);
+    content.innerHTML = `<div class="ws-empty-state">
+      <span class="ws-empty-icon"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h7M4 12h10M4 18h6"/><circle cx="18" cy="6" r="1.4" fill="currentColor" stroke="none"/></svg></span>
+      <div class="ws-empty-title">nothing open yet</div>
+      <div class="ws-empty-text">open a file, or click a file reference in the chat to read it here.</div>
+    </div>`;
+    return;
+  }
+
+  if (wsActiveView === 'git') {
+    wsSetToolbar(['working tree']);
+    content.innerHTML = `<div class="ws-empty-state">
+      <span class="ws-empty-icon"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6.5" cy="6" r="2.2"/><circle cx="6.5" cy="18" r="2.2"/><circle cx="17.5" cy="8" r="2.2"/><path d="M6.5 8.2v7.6M8.7 8c4 .2 6.5 1 8.6 .2M17.5 10.2c0 3.2-3 4.6-6.2 4.8"/></svg></span>
+      <div class="ws-empty-title">no changes</div>
+      <div class="ws-empty-text">git diff data will appear here when the backend is connected.</div>
+    </div>`;
+    return;
+  }
+
+  if (wsActiveView === 'file' && wsActiveFile) {
+    const file = wsOpenFiles.find(f => f.name === wsActiveFile);
+    if (!file) return;
+    const ext = file.ext;
+    const parts = file.name.split('/');
+    wsSetToolbar(parts);
+
+    if (ext === 'md' && file.content) {
+      content.className = 'ws-scroll';
+      content.style.cssText = 'flex:1;min-height:0;overflow:auto;padding:26px 30px 40px';
+      const inner = document.createElement('div');
+      inner.style.maxWidth = '620px';
+      inner.innerHTML = DOMPurify.sanitize(marked.parse(file.content), { ADD_ATTR: ['class'] });
+      content.appendChild(inner);
+    } else if (file.content) {
+      wsRenderCodeViewer(content, file.content);
+    } else {
+      content.innerHTML = `<div class="ws-empty-state">
+        <div class="ws-empty-title">file viewer</div>
+        <div class="ws-empty-text">file content will load when the backend file:read API is connected.</div>
+      </div>`;
+    }
+  }
+}
+
+function wsRenderCodeViewer(container, text) {
+  const lines = text.split('\n');
+  const gutW = String(lines.length).length * 9 + 22;
+  container.className = 'ws-code ws-mono ws-code-viewer';
+  container.style.cssText = '';
+  const table = document.createElement('div');
+  table.className = 'ws-code-table';
+  lines.forEach((ln, i) => {
+    const row = document.createElement('div');
+    row.className = 'ws-code-line';
+    const gutter = document.createElement('span');
+    gutter.className = 'ws-code-gutter';
+    gutter.style.cssText = `width:${gutW}px;min-width:${gutW}px`;
+    gutter.textContent = i + 1;
+    row.appendChild(gutter);
+    const code = document.createElement('span');
+    code.className = 'ws-code-text';
+    code.textContent = ln || ' ';
+    row.appendChild(code);
+    table.appendChild(row);
+  });
+  container.appendChild(table);
+}
+
+function wsRenderDiff(container, diffData, mode) {
+  const table = document.createElement('div');
+  table.className = 'ws-code-table';
+  diffData.forEach(r => {
+    if (r.k === 'hunk') {
+      const row = document.createElement('div');
+      row.className = 'ws-diff-hunk';
+      const cell = document.createElement('span');
+      cell.className = 'ws-diff-hunk-text';
+      cell.textContent = r.text;
+      row.appendChild(cell);
+      table.appendChild(row);
+      return;
+    }
+    const row = document.createElement('div');
+    row.className = 'ws-code-line' + (r.k === 'add' ? ' ws-diff-line-add' : r.k === 'del' ? ' ws-diff-line-del' : '');
+    const g1 = document.createElement('span');
+    g1.className = 'ws-code-gutter';
+    g1.style.cssText = 'width:34px;padding:0 6px';
+    g1.textContent = r.n1 || '';
+    row.appendChild(g1);
+    const g2 = document.createElement('span');
+    g2.className = 'ws-code-gutter';
+    g2.style.cssText = 'width:34px;padding:0 6px';
+    g2.textContent = r.n2 || '';
+    row.appendChild(g2);
+    const sign = document.createElement('span');
+    sign.style.cssText = 'display:table-cell;width:18px;text-align:center;user-select:none;color:' + (r.k === 'add' ? '#7faa7c' : r.k === 'del' ? '#c08378' : '#7a7060');
+    sign.textContent = r.k === 'add' ? '+' : r.k === 'del' ? '−' : '';
+    row.appendChild(sign);
+    const code = document.createElement('span');
+    code.className = 'ws-code-text';
+    code.style.padding = '0 16px 0 4px';
+    code.textContent = r.text;
+    row.appendChild(code);
+    table.appendChild(row);
+  });
+  container.className = 'ws-code ws-mono ws-code-viewer';
+  container.appendChild(table);
+}
+
+function wsShowEditingBanner(actorName, actorColor) {
+  const banner = document.getElementById('ws-editing-banner');
+  banner.innerHTML = '';
+  if (!actorName) return;
+  const el = document.createElement('div');
+  el.className = 'ws-editing-banner';
+  el.style.cssText = `background:color-mix(in srgb,${actorColor} 14%,var(--h-bg));border-bottom:1px solid color-mix(in srgb,${actorColor} 36%,var(--h-bg));color:${actorColor}`;
+  el.innerHTML = `<span class="h-dot"></span><span class="h-dot"></span><span class="h-dot"></span><span style="font-style:italic">${actorName} is editing this file…</span>`;
+  banner.appendChild(el);
+}
+
 (function initWorkspacePanel() {
   const panel = document.getElementById('workspace-panel');
   const handle = document.getElementById('ws-drag-handle');
   const closeBtn = document.getElementById('ws-panel-close-btn');
 
   closeBtn.onclick = toggleWorkspacePanel;
+
+  document.querySelectorAll('.ws-pin-tab').forEach(tab => {
+    tab.onclick = () => wsSetView(tab.dataset.wsPin);
+  });
 
   let dragging = false;
   let startX = 0;
