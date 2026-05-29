@@ -15,6 +15,7 @@
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&family=Plus+Jakarta+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/highlight.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -2055,6 +2056,23 @@
       color: oklch(0.150 0.010 45);
     }
 
+    /* ── Syntax highlighting (warm Stoa palette) ── */
+    .hljs { background: transparent; color: oklch(0.875 0.010 55); }
+    .hljs-keyword, .hljs-selector-tag, .hljs-built_in, .hljs-deletion { color: oklch(0.72 0.12 25); }
+    .hljs-string, .hljs-attr, .hljs-addition { color: oklch(0.72 0.11 145); }
+    .hljs-number, .hljs-literal, .hljs-variable.constant_ { color: oklch(0.75 0.10 70); }
+    .hljs-comment, .hljs-quote { color: oklch(0.52 0.015 55); font-style: italic; }
+    .hljs-function .hljs-title, .hljs-title.function_, .hljs-title.class_ { color: oklch(0.78 0.10 220); }
+    .hljs-type, .hljs-params { color: oklch(0.75 0.08 200); }
+    .hljs-property, .hljs-attribute { color: oklch(0.78 0.06 70); }
+    .hljs-regexp, .hljs-link { color: oklch(0.70 0.12 35); }
+    .hljs-meta, .hljs-tag { color: oklch(0.65 0.06 55); }
+    .hljs-name, .hljs-selector-class, .hljs-selector-id { color: oklch(0.72 0.10 25); }
+    .hljs-symbol, .hljs-bullet { color: oklch(0.72 0.11 145); }
+    .hljs-template-variable, .hljs-subst { color: oklch(0.80 0.08 50); }
+    .hljs-emphasis { font-style: italic; }
+    .hljs-strong { font-weight: 600; }
+
     /* Code block */
     .h-bubble pre {
       position: relative;
@@ -2081,6 +2099,24 @@
       overflow-wrap: break-word;
       word-break: normal;
       background: transparent;
+    }
+
+    /* Language label */
+    .h-code-lang {
+      position: absolute;
+      top: 8px;
+      left: 12px;
+      font-family: var(--h-sans);
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: 0.3px;
+      color: oklch(0.52 0.015 55);
+      text-transform: uppercase;
+      pointer-events: none;
+      line-height: 1;
+    }
+    .h-bubble pre:has(.h-code-lang) code {
+      padding-top: 28px;
     }
 
     /* Copy button */
@@ -2307,7 +2343,24 @@
     .s-docs-body ul, .s-docs-body ol { padding-left: 20px; margin-bottom: 12px; }
     .s-docs-body code { font-size: 12.5px; background: var(--h-hairline); padding: 1px 5px; border-radius: 4px; }
     .s-docs-body pre { background: color-mix(in srgb, var(--h-ink) 6%, var(--h-surface)); border: 1px solid var(--h-hairline); border-radius: 8px; padding: 14px 16px; overflow-x: auto; margin-bottom: 16px; position: relative; }
-    .s-docs-body pre code { background: none; padding: 0; font-size: 13px; }
+    .s-docs-body pre:has(.h-code-lang) code { padding-top: 14px; }
+    .s-docs-body .h-code-lang { color: var(--h-ink-faint); }
+    .s-docs-body pre code { background: none; padding: 0; font-size: 13px; color: var(--h-ink); }
+    .s-docs-body pre .hljs { color: var(--h-ink); }
+    .s-docs-body pre .hljs-keyword, .s-docs-body pre .hljs-selector-tag, .s-docs-body pre .hljs-built_in { color: oklch(0.48 0.16 280); }
+    .s-docs-body pre .hljs-string, .s-docs-body pre .hljs-attr, .s-docs-body pre .hljs-addition { color: oklch(0.45 0.14 150); }
+    .s-docs-body pre .hljs-number, .s-docs-body pre .hljs-literal { color: oklch(0.52 0.14 45); }
+    .s-docs-body pre .hljs-comment, .s-docs-body pre .hljs-quote { color: var(--h-ink-faint); font-style: italic; }
+    .s-docs-body pre .hljs-function .hljs-title, .s-docs-body pre .hljs-title.function_, .s-docs-body pre .hljs-title.class_ { color: oklch(0.50 0.14 240); }
+    .s-docs-body pre .hljs-type, .s-docs-body pre .hljs-params { color: oklch(0.50 0.10 200); }
+    .s-docs-body pre .hljs-property, .s-docs-body pre .hljs-attribute { color: oklch(0.50 0.08 45); }
+    html.dark .s-docs-body pre .hljs-keyword, html.dark .s-docs-body pre .hljs-selector-tag, html.dark .s-docs-body pre .hljs-built_in { color: oklch(0.72 0.12 280); }
+    html.dark .s-docs-body pre .hljs-string, html.dark .s-docs-body pre .hljs-attr, html.dark .s-docs-body pre .hljs-addition { color: oklch(0.72 0.11 145); }
+    html.dark .s-docs-body pre .hljs-number, html.dark .s-docs-body pre .hljs-literal { color: oklch(0.75 0.10 45); }
+    html.dark .s-docs-body pre .hljs-comment, html.dark .s-docs-body pre .hljs-quote { color: var(--h-ink-faint); }
+    html.dark .s-docs-body pre .hljs-function .hljs-title, html.dark .s-docs-body pre .hljs-title.function_, html.dark .s-docs-body pre .hljs-title.class_ { color: oklch(0.75 0.10 240); }
+    html.dark .s-docs-body pre .hljs-type, html.dark .s-docs-body pre .hljs-params { color: oklch(0.72 0.08 200); }
+    html.dark .s-docs-body pre .hljs-property, html.dark .s-docs-body pre .hljs-attribute { color: oklch(0.78 0.06 45); }
     .s-docs-body a { color: var(--h-ink-mute); text-underline-offset: 3px; }
     .s-docs-body hr { border: none; border-top: 1px solid var(--h-hair-soft); margin: 24px 0; }
     .s-docs-body strong { color: var(--h-ink); }
@@ -3922,11 +3975,28 @@ function toggleTheme() {
 }
 
 // ── Markdown rendering ─────────────────────────────────────────────────────
-marked.setOptions({ breaks: true, gfm: true });
+marked.use({
+  breaks: true, gfm: true,
+  renderer: {
+    code({ text, lang }) {
+      let highlighted;
+      const language = lang && hljs.getLanguage(lang) ? lang : null;
+      try {
+        highlighted = language
+          ? hljs.highlight(text, { language }).value
+          : hljs.highlightAuto(text).value;
+      } catch { highlighted = text; }
+      const langLabel = language
+        ? `<span class="h-code-lang">${language}</span>`
+        : '';
+      return `<pre>${langLabel}<code class="hljs${language ? ' language-' + language : ''}">${highlighted}</code></pre>`;
+    }
+  }
+});
 
 function renderMarkdown(text) {
   if (!text) return '';
-  return DOMPurify.sanitize(marked.parse(text));
+  return DOMPurify.sanitize(marked.parse(text), { ADD_ATTR: ['class'] });
 }
 
 async function copyToClipboard(text) {
@@ -6773,7 +6843,7 @@ async function sOpenDoc(slug) {
     const res = await fetch(`/api/docs/${encodeURIComponent(filename)}`);
     if (!res.ok) { body.innerHTML = '<p class="s-docs-empty">document not found.</p>'; return; }
     const md = await res.text();
-    body.innerHTML = DOMPurify.sanitize(marked.parse(md));
+    body.innerHTML = DOMPurify.sanitize(marked.parse(md), { ADD_ATTR: ['class'] });
     addCopyButtons(body);
     if (lang !== docsLang) {
       const note = document.createElement('p');
