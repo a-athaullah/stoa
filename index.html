@@ -4628,7 +4628,6 @@ function applyTheme(dark) {
 
 function toggleSidebar() {
   const collapsed = document.body.classList.toggle('sidebar-collapsed');
-  localStorage.setItem('stoa-sidebar-collapsed', collapsed ? '1' : '');
   const emptyBtn = document.getElementById('empty-rooms-toggle');
   if (emptyBtn) emptyBtn.style.display = collapsed ? '' : 'none';
   if (currentRoomId) {
@@ -6655,12 +6654,6 @@ async function init() {
       document.documentElement.style.setProperty(cssVar, k === 'width' ? v + 'px' : v);
     }
   });
-  // Restore sidebar collapsed state
-  if (localStorage.getItem('stoa-sidebar-collapsed') === '1') {
-    document.body.classList.add('sidebar-collapsed');
-    const emptyBtn = document.getElementById('empty-rooms-toggle');
-    if (emptyBtn) emptyBtn.style.display = '';
-  }
   document.getElementById('sidebar-collapse-btn').onclick = toggleSidebar;
   document.getElementById('empty-rooms-toggle').onclick = toggleSidebar;
   // Auth check — show login if not authenticated
