@@ -912,14 +912,14 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ── Workspace file serve (images, binary files) ──
-  if (req.method === 'GET' && url.pathname.startsWith('/api/workspace/file/')) {
+  if (req.method === 'GET' && url.pathname === '/api/workspace/file') {
     const roomId = url.searchParams.get('room');
-    if (!roomId) { res.writeHead(400); return res.end('missing room'); }
+    const relPath = url.searchParams.get('path');
+    if (!roomId || !relPath) { res.writeHead(400); return res.end('missing room or path'); }
     const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(roomId);
     if (!roomRow?.workdir_id) { res.writeHead(404); return res.end('no workdir'); }
     const wd = db.prepare('SELECT path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
     if (!wd?.path) { res.writeHead(404); return res.end('workdir not found'); }
-    const relPath = decodeURIComponent(url.pathname.slice('/api/workspace/file/'.length));
     const filePath = path.resolve(wd.path, relPath);
     if (!filePath.startsWith(path.resolve(wd.path))) { res.writeHead(403); return res.end('path traversal blocked'); }
     if (!fs.existsSync(filePath)) { res.writeHead(404); return res.end('not found'); }
