@@ -78,11 +78,49 @@
     }
 
     .h-sidebar-head {
-      padding: 0 4px 18px;
+      padding: 0 4px 16px;
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 8px;
     }
+
+    .h-sidebar-collapse {
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      padding: 0;
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--h-ink-mute);
+      transition: color .12s, background .12s;
+    }
+    .h-sidebar-collapse:hover { color: var(--h-ink); background: var(--h-surface-hi); }
+
+    .h-rooms-toggle {
+      width: 34px;
+      height: 34px;
+      border-radius: 9px;
+      cursor: pointer;
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--h-hair-soft);
+      background: transparent;
+      color: var(--h-ink-mute);
+      margin-right: 4px;
+      transition: color .12s, background .12s;
+    }
+    .h-rooms-toggle:hover { color: var(--h-ink); background: var(--h-surface-hi); }
+
+    body.sidebar-collapsed #sidebar { display: none; }
+
     #refresh-btn {
       display: none;
       background: none;
@@ -1109,16 +1147,16 @@
     }
     .h-msg-row.ai .h-bubble {
       font-family: var(--h-msg);
-      font-size: calc(var(--stoa-msg-scale, 1) * 15px);
+      font-size: calc(var(--stoa-msg-scale, 1) * 19px);
       font-weight: 400;
-      line-height: calc(1.7 * var(--stoa-msg-leading, 1));
+      line-height: calc(1.5 * var(--stoa-msg-leading, 1));
       border-top-left-radius: 4px;
     }
     .h-msg-row.human .h-bubble {
       font-family: var(--h-msg);
-      font-size: calc(var(--stoa-msg-scale, 1) * 15px);
+      font-size: calc(var(--stoa-msg-scale, 1) * 16px);
       font-weight: 400;
-      line-height: calc(1.65 * var(--stoa-msg-leading, 1));
+      line-height: calc(1.55 * var(--stoa-msg-leading, 1));
       border-top-right-radius: 4px;
     }
 
@@ -1838,25 +1876,30 @@
     .h-msg-actions {
       display: none;
       position: absolute;
-      top: 26px;
-      gap: 2px;
-      padding: 2px;
+      top: -15px;
+      gap: 1px;
+      padding: 3px;
+      border-radius: 9px;
+      background: var(--h-surface);
+      border: 1px solid var(--h-hairline);
+      box-shadow: 0 2px 10px rgba(0,0,0,.14);
       z-index: 5;
     }
     .h-msg-row:hover .h-msg-actions, .h-msg-row.show-actions .h-msg-actions { display: flex; }
-    .h-msg-row.ai .h-msg-actions { left: calc(100% + 6px); }
-    .h-msg-row.human .h-msg-actions { right: calc(100% + 6px); }
+    .h-msg-row.ai .h-msg-actions { right: 8px; }
+    .h-msg-row.human .h-msg-actions { left: 8px; }
     .h-msg-action-btn {
       border: none;
       background: none;
-      color: var(--h-ink-faint);
+      color: var(--h-ink-mute);
       cursor: pointer;
-      padding: 4px 6px;
-      border-radius: 4px;
+      padding: 5px;
+      border-radius: 6px;
       display: flex;
       align-items: center;
+      transition: background .12s, color .12s;
     }
-    .h-msg-action-btn:hover { background: var(--h-hair-soft); color: var(--h-ink); }
+    .h-msg-action-btn:hover { background: var(--h-surface-hi); color: var(--h-ink); }
 
     .h-msg-action-btn.copied svg { stroke: #5cb85c; }
     .h-msg-action-btn.copied { background: rgba(92,184,92,.12); }
@@ -3081,6 +3124,9 @@
     <button id="refresh-btn" title="Reload" aria-label="Reload" onclick="location.reload(true)">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
     </button>
+    <button class="h-sidebar-collapse" id="sidebar-collapse-btn" title="Hide room list">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 7l-4 5 4 5"/><path d="M18 7l-4 5 4 5"/></svg>
+    </button>
   </div>
   <div class="h-search-wrap">
     <svg class="h-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -3779,6 +3825,15 @@ function renderChatHeader(room, participants) {
   backBtn.innerHTML = '&#8592;';
   backBtn.onclick = () => document.body.classList.remove('in-chat');
   header.appendChild(backBtn);
+
+  if (document.body.classList.contains('sidebar-collapsed')) {
+    const roomsToggle = document.createElement('button');
+    roomsToggle.className = 'h-rooms-toggle';
+    roomsToggle.title = 'Show room list';
+    roomsToggle.innerHTML = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16"/></svg>`;
+    roomsToggle.onclick = () => toggleSidebar();
+    header.appendChild(roomsToggle);
+  }
 
   const info = document.createElement('div');
   info.className = 'h-header-info';
@@ -4491,6 +4546,16 @@ function applyTheme(dark) {
   localStorage.setItem('stoa-theme', dark ? 'dark' : 'light');
   const btn = document.getElementById('theme-toggle');
   if (btn) { btn.innerHTML = dark ? SUN_SVG : MOON_SVG; btn.title = dark ? 'switch to light' : 'switch to dark'; }
+}
+
+function toggleSidebar() {
+  const collapsed = document.body.classList.toggle('sidebar-collapsed');
+  localStorage.setItem('stoa-sidebar-collapsed', collapsed ? '1' : '');
+  if (currentRoomId) {
+    const parts = roomParticipantsCache[currentRoomId] || [];
+    const room = { id: currentRoomId, title: document.querySelector('.h-room-name')?.textContent || '' };
+    renderChatHeader(room, parts);
+  }
 }
 
 function toggleTheme() {
@@ -6509,6 +6574,11 @@ async function init() {
       document.documentElement.style.setProperty(cssVar, k === 'width' ? v + 'px' : v);
     }
   });
+  // Restore sidebar collapsed state
+  if (localStorage.getItem('stoa-sidebar-collapsed') === '1') {
+    document.body.classList.add('sidebar-collapsed');
+  }
+  document.getElementById('sidebar-collapse-btn').onclick = toggleSidebar;
   // Auth check — show login if not authenticated
   const isAuthed = await checkAuth();
   if (!isAuthed) { showLogin(); return; }
