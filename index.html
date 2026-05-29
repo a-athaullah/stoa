@@ -784,7 +784,7 @@
     .h-msg-seal-wrap { flex: 0 0 auto; margin-bottom: 2px; }
 
     .h-msg-body {
-      max-width: 560px;
+      max-width: var(--stoa-msg-width, 560px);
       display: flex;
       flex-direction: column;
       gap: 5px;
@@ -829,16 +829,16 @@
     }
     .h-msg-row.ai .h-bubble {
       font-family: var(--h-msg);
-      font-size: 15px;
+      font-size: calc(var(--stoa-msg-scale, 1) * 15px);
       font-weight: 400;
-      line-height: 1.7;
+      line-height: calc(1.7 * var(--stoa-msg-leading, 1));
       border-top-left-radius: 4px;
     }
     .h-msg-row.human .h-bubble {
       font-family: var(--h-msg);
-      font-size: 15px;
+      font-size: calc(var(--stoa-msg-scale, 1) * 15px);
       font-weight: 400;
-      line-height: 1.65;
+      line-height: calc(1.65 * var(--stoa-msg-leading, 1));
       border-top-right-radius: 4px;
     }
 
@@ -1170,6 +1170,45 @@
       transition: background .15s;
     }
     .s-logout-btn:hover { background: #a33; }
+
+    /* ── Reading comfort controls ───────────────────── */
+    .s-msg-section { display: flex; flex-direction: column; gap: 18px; padding: 14px 0 6px; }
+    .s-msg-sublabel {
+      font-family: var(--h-serif); font-style: italic;
+      font-size: 12px; color: var(--h-ink-mute); letter-spacing: .04em; margin-bottom: 2px;
+    }
+    .s-msg-row { display: flex; gap: 8px; }
+    .s-msg-row-wrap { display: flex; gap: 18px; flex-wrap: wrap; }
+    .s-msg-col { flex: 1; min-width: 220px; display: flex; flex-direction: column; gap: 8px; }
+
+    .s-seg-btn {
+      flex: 1; display: flex; flex-direction: column; align-items: center;
+      justify-content: flex-end; gap: 8px; min-height: 62px;
+      padding: 12px 8px 10px; border-radius: 10px; cursor: pointer;
+      background: transparent; border: 1px solid var(--h-hair-soft);
+      color: var(--h-ink-mute); transition: background .12s, border-color .12s, color .12s;
+    }
+    .s-seg-btn:hover { border-color: var(--h-hairline); }
+    .s-seg-btn.active {
+      background: var(--h-surface-hi); border-color: var(--h-ink); color: var(--h-ink);
+    }
+    .s-seg-label { font-family: var(--h-sans); font-size: 11.5px; }
+    .s-seg-icon { font-family: var(--h-serif); line-height: 1; }
+
+    .s-seg-bars { display: flex; flex-direction: column; align-items: center; }
+    .s-seg-bar { width: 16px; height: 2px; border-radius: 2px; background: currentColor; }
+
+    .s-msg-preview {
+      display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: 12px;
+      background: color-mix(in srgb, var(--h-bg) 55%, var(--h-surface));
+      border: 1px solid var(--h-hair-soft);
+    }
+    .s-msg-preview-row { display: flex; align-items: flex-end; gap: 10px; }
+    .s-msg-preview-row.human { flex-direction: row-reverse; }
+    .s-msg-preview-bubble {
+      padding: 10px 15px; border-radius: 15px; border: 1px solid;
+      font-family: var(--h-msg); color: var(--h-ink); text-wrap: pretty;
+    }
 
     /* Streaming cursor */
     .h-cursor {
@@ -2938,6 +2977,13 @@
     <!-- tab: general -->
     <div class="s-content" id="s-tab-general" style="display:none">
       <div class="s-content-inner">
+        <div class="s-server-card">
+          <div class="s-server-card-header">
+            <span style="font-family:var(--h-serif);font-size:16px;color:var(--h-ink)">messages</span>
+            <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)">reading comfort in chat bubbles — applies to every room</span>
+          </div>
+          <div id="s-reading-controls" class="s-msg-section" style="padding:14px 18px 18px"></div>
+        </div>
         <div class="s-server-card">
           <div class="s-server-card-header">
             <span style="font-family:var(--h-serif);font-size:16px;color:var(--h-ink)">account</span>
@@ -5801,6 +5847,14 @@ async function checkSetup() {
 async function init() {
   const saved = localStorage.getItem('stoa-theme');
   applyTheme(saved === 'dark' || (!saved && window.matchMedia('(prefers-color-scheme: dark)').matches));
+  // Restore reading comfort preferences
+  ['scale', 'leading', 'width'].forEach(k => {
+    const v = localStorage.getItem('stoa-msg-' + k);
+    if (v) {
+      const cssVar = '--stoa-msg-' + k;
+      document.documentElement.style.setProperty(cssVar, k === 'width' ? v + 'px' : v);
+    }
+  });
   // Auth check — show login if not authenticated
   const isAuthed = await checkAuth();
   if (!isAuthed) { showLogin(); return; }
@@ -7090,7 +7144,143 @@ async function sOpenDoc(slug) {
   } catch { body.innerHTML = '<p class="s-docs-empty">failed to load document.</p>'; }
 }
 
+// ── Reading comfort controls ──────────────────────────────────────────────
+const MSG_SIZES = [
+  { label: 'Compact', v: 0.9, icon: 17 },
+  { label: 'Cozy', v: 1.0, icon: 20 },
+  { label: 'Comfortable', v: 1.15, icon: 23 },
+  { label: 'Large', v: 1.3, icon: 26 },
+];
+const MSG_LEADS = [
+  { label: 'Tight', v: 0.9, gap: 2 },
+  { label: 'Normal', v: 1.0, gap: 4 },
+  { label: 'Relaxed', v: 1.15, gap: 6 },
+];
+const MSG_WIDTHS = [
+  { label: 'Narrow', v: 460, w: 14 },
+  { label: 'Standard', v: 560, w: 20 },
+  { label: 'Wide', v: 680, w: 26 },
+];
+
+function sGetMsgPref(key, def) {
+  const v = localStorage.getItem('stoa-msg-' + key);
+  return v !== null ? parseFloat(v) : def;
+}
+
+function sApplyMsgVar(cssVar, val, storeKey) {
+  document.documentElement.style.setProperty(cssVar, typeof val === 'number' && val > 100 ? val + 'px' : String(val));
+  localStorage.setItem('stoa-msg-' + storeKey, val);
+}
+
+function sRenderReadingControls() {
+  const el = document.getElementById('s-reading-controls');
+  if (!el) return;
+
+  let scale = sGetMsgPref('scale', 1);
+  let lead = sGetMsgPref('leading', 1);
+  let width = sGetMsgPref('width', 560);
+
+  function nearest(arr, val) { return arr.reduce((b, o) => Math.abs(o.v - val) < Math.abs(b.v - val) ? o : b); }
+
+  function render() {
+    const aSize = nearest(MSG_SIZES, scale);
+    const aLead = nearest(MSG_LEADS, lead);
+    const aWid = nearest(MSG_WIDTHS, width);
+
+    el.innerHTML = '';
+
+    // Text size
+    const sizeLabel = document.createElement('div');
+    sizeLabel.className = 's-msg-sublabel';
+    sizeLabel.textContent = 'text size';
+    el.appendChild(sizeLabel);
+
+    const sizeRow = document.createElement('div');
+    sizeRow.className = 's-msg-row';
+    MSG_SIZES.forEach(o => {
+      const btn = document.createElement('button');
+      btn.className = 's-seg-btn' + (o.label === aSize.label ? ' active' : '');
+      btn.innerHTML = `<span class="s-seg-icon" style="font-size:${o.icon}px">A</span><span class="s-seg-label">${o.label}</span>`;
+      btn.onclick = () => { scale = o.v; sApplyMsgVar('--stoa-msg-scale', o.v, 'scale'); render(); };
+      sizeRow.appendChild(btn);
+    });
+    el.appendChild(sizeRow);
+
+    // Line spacing + width row
+    const wrapRow = document.createElement('div');
+    wrapRow.className = 's-msg-row-wrap';
+
+    // Line spacing
+    const leadCol = document.createElement('div');
+    leadCol.className = 's-msg-col';
+    const leadLabel = document.createElement('div');
+    leadLabel.className = 's-msg-sublabel';
+    leadLabel.textContent = 'line spacing';
+    leadCol.appendChild(leadLabel);
+    const leadRow = document.createElement('div');
+    leadRow.className = 's-msg-row';
+    MSG_LEADS.forEach(o => {
+      const btn = document.createElement('button');
+      btn.className = 's-seg-btn' + (o.label === aLead.label ? ' active' : '');
+      const bars = `<span class="s-seg-bars" style="gap:${o.gap}px"><span class="s-seg-bar"></span><span class="s-seg-bar"></span><span class="s-seg-bar"></span></span>`;
+      btn.innerHTML = `${bars}<span class="s-seg-label">${o.label}</span>`;
+      btn.onclick = () => { lead = o.v; sApplyMsgVar('--stoa-msg-leading', o.v, 'leading'); render(); };
+      leadRow.appendChild(btn);
+    });
+    leadCol.appendChild(leadRow);
+    wrapRow.appendChild(leadCol);
+
+    // Width
+    const widCol = document.createElement('div');
+    widCol.className = 's-msg-col';
+    const widLabel = document.createElement('div');
+    widLabel.className = 's-msg-sublabel';
+    widLabel.textContent = 'width';
+    widCol.appendChild(widLabel);
+    const widRow = document.createElement('div');
+    widRow.className = 's-msg-row';
+    MSG_WIDTHS.forEach(o => {
+      const btn = document.createElement('button');
+      btn.className = 's-seg-btn' + (o.label === aWid.label ? ' active' : '');
+      const bars = `<span class="s-seg-bars" style="gap:3px"><span class="s-seg-bar" style="width:${o.w}px"></span><span class="s-seg-bar" style="width:${o.w}px"></span></span>`;
+      btn.innerHTML = `${bars}<span class="s-seg-label">${o.label}</span>`;
+      btn.onclick = () => { width = o.v; sApplyMsgVar('--stoa-msg-width', o.v, 'width'); render(); };
+      widRow.appendChild(btn);
+    });
+    widCol.appendChild(widRow);
+    wrapRow.appendChild(widCol);
+    el.appendChild(wrapRow);
+
+    // Live preview
+    const preview = document.createElement('div');
+    preview.className = 's-msg-preview';
+
+    const aiRow = document.createElement('div');
+    aiRow.className = 's-msg-preview-row';
+    const aiBubble = document.createElement('div');
+    aiBubble.className = 's-msg-preview-bubble';
+    aiBubble.style.cssText = `max-width:min(var(--stoa-msg-width,560px),78%);font-size:calc(var(--stoa-msg-scale,1)*15px);line-height:calc(1.7*var(--stoa-msg-leading,1));border-top-left-radius:4px;background:color-mix(in srgb,#6f9f8c 16%,var(--h-surface));border-color:color-mix(in srgb,#6f9f8c 36%,var(--h-surface))`;
+    aiBubble.innerHTML = 'The client replays from the last <em>message_state</em> event — not from the last token, so a reconnect never loses the thread.';
+    aiRow.appendChild(aiBubble);
+    preview.appendChild(aiRow);
+
+    const humanRow = document.createElement('div');
+    humanRow.className = 's-msg-preview-row human';
+    const humanBubble = document.createElement('div');
+    humanBubble.className = 's-msg-preview-bubble';
+    humanBubble.style.cssText = `max-width:min(var(--stoa-msg-width,560px),78%);font-size:calc(var(--stoa-msg-scale,1)*15px);line-height:calc(1.55*var(--stoa-msg-leading,1));border-top-right-radius:4px;background:var(--h-slip);border-color:var(--h-hair-soft)`;
+    humanBubble.textContent = 'Got it — that reads much better at this size.';
+    humanRow.appendChild(humanBubble);
+    preview.appendChild(humanRow);
+
+    el.appendChild(preview);
+  }
+
+  render();
+}
+
 async function sLoadGeneralTab() {
+  sRenderReadingControls();
   try {
     const user = await fjson('/api/auth/me');
     document.getElementById('s-auth-email-input').value = user.email || '';
