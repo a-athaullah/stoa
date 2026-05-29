@@ -1573,6 +1573,44 @@ wss.on('connection', (ws, req) => {
       pendingAgents.delete(msg.message_id);
       pendingActorMeta.delete(msg.message_id);
     }
+    // ── File operations (workspace panel) ──────────────────────────────────
+    if (msg.type === 'file_list' && subscribedRoom) {
+      const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(subscribedRoom);
+      if (!roomRow?.workdir_id) { ws.send(JSON.stringify({ type: 'file_list', error: 'no workdir' })); return; }
+      const wd = db.prepare('SELECT path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
+      if (!wd?.path) { ws.send(JSON.stringify({ type: 'file_list', error: 'workdir not found' })); return; }
+      try {
+        const tree = buildFileTree(wd.path, wd.path, 0, 3);
+        ws.send(JSON.stringify({ type: 'file_list', root: wd.path, tree }));
+      } catch (e) { ws.send(JSON.stringify({ type: 'file_list', error: e.message })); }
+    }
+
+    if (msg.type === 'file_read' && subscribedRoom) {
+      const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(subscribedRoom);
+      if (!roomRow?.workdir_id) { ws.send(JSON.stringify({ type: 'file_read', error: 'no workdir' })); return; }
+      const wd = db.prepare('SELECT path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
+      if (!wd?.path) { ws.send(JSON.stringify({ type: 'file_read', error: 'workdir not found' })); return; }
+      const filePath = path.resolve(wd.path, msg.path);
+      if (!filePath.startsWith(path.resolve(wd.path))) { ws.send(JSON.stringify({ type: 'file_read', error: 'path traversal blocked' })); return; }
+      try {
+        const content = fs.readFileSync(filePath, 'utf8');
+        ws.send(JSON.stringify({ type: 'file_read', path: msg.path, content }));
+      } catch (e) { ws.send(JSON.stringify({ type: 'file_read', path: msg.path, error: e.message })); }
+    }
+
+    if (msg.type === 'git_diff' && subscribedRoom) {
+      const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(subscribedRoom);
+      if (!roomRow?.workdir_id) { ws.send(JSON.stringify({ type: 'git_diff', error: 'no workdir' })); return; }
+      const wd = db.prepare('SELECT path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
+      if (!wd?.path) { ws.send(JSON.stringify({ type: 'git_diff', error: 'workdir not found' })); return; }
+      try {
+        const { execSync } = require('child_process');
+        const diff = execSync('git diff', { cwd: wd.path, encoding: 'utf8', maxBuffer: 1024 * 1024 });
+        const parsed = parseGitDiff(diff);
+        ws.send(JSON.stringify({ type: 'git_diff', files: parsed }));
+      } catch (e) { ws.send(JSON.stringify({ type: 'git_diff', error: e.message })); }
+    }
+
    } catch (err) { console.error('[ws] unhandled message error:', err); }
   });
 
@@ -1591,6 +1629,54 @@ wss.on('connection', (ws, req) => {
     }
   });
 });
+
+// ─── Workspace helpers ──────────────────────────────────────────────────────
+
+const WS_IGNORE = new Set(['.git', 'node_modules', '.next', '__pycache__', '.venv', 'dist', 'build', '.claude']);
+
+function buildFileTree(dirPath, rootPath, depth, maxDepth) {
+  if (depth > maxDepth) return [];
+  let entries;
+  try { entries = fs.readdirSync(dirPath, { withFileTypes: true }); } catch { return []; }
+  const result = [];
+  const dirs = entries.filter(e => e.isDirectory() && !WS_IGNORE.has(e.name) && !e.name.startsWith('.')).sort((a, b) => a.name.localeCompare(b.name));
+  const files = entries.filter(e => e.isFile() && !e.name.startsWith('.')).sort((a, b) => a.name.localeCompare(b.name));
+  for (const d of dirs) {
+    const children = buildFileTree(path.join(dirPath, d.name), rootPath, depth + 1, maxDepth);
+    result.push({ t: 'folder', name: d.name, depth, open: depth < 1, children });
+  }
+  for (const f of files) {
+    const ext = path.extname(f.name).slice(1);
+    result.push({ t: ext || 'file', name: f.name, depth });
+  }
+  return result;
+}
+
+function parseGitDiff(raw) {
+  if (!raw.trim()) return [];
+  const files = [];
+  let current = null;
+  for (const line of raw.split('\n')) {
+    if (line.startsWith('diff --git')) {
+      const match = line.match(/b\/(.+)$/);
+      current = { name: match ? match[1] : '?', hunks: [], add: 0, del: 0 };
+      files.push(current);
+    } else if (line.startsWith('@@') && current) {
+      current.hunks.push({ k: 'hunk', text: line });
+    } else if (current && current.hunks.length) {
+      if (line.startsWith('+') && !line.startsWith('+++')) {
+        current.hunks.push({ k: 'add', text: line.slice(1) });
+        current.add++;
+      } else if (line.startsWith('-') && !line.startsWith('---')) {
+        current.hunks.push({ k: 'del', text: line.slice(1) });
+        current.del++;
+      } else if (line.startsWith(' ')) {
+        current.hunks.push({ k: 'ctx', text: line.slice(1) });
+      }
+    }
+  }
+  return files;
+}
 
 // ─── Message handling ─────────────────────────────────────────────────────────
 

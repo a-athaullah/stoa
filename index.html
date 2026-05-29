@@ -4442,6 +4442,26 @@ function handleWsMessage(msg) {
     handleServerRestart(msg);
     return;
   }
+
+  if (msg.type === 'file_list' && !msg.error) {
+    wsFileTreeData = msg.tree || [];
+    wsFileTreeRoot = msg.root || '';
+    if (wsActiveView === 'files') wsRenderContent();
+    return;
+  }
+
+  if (msg.type === 'file_read' && !msg.error) {
+    const panel = document.getElementById('workspace-panel');
+    if (!panel.classList.contains('open')) toggleWorkspacePanel();
+    wsOpenFile(msg.path, msg.content);
+    return;
+  }
+
+  if (msg.type === 'git_diff' && !msg.error) {
+    wsGitDiffData = msg.files || [];
+    if (wsActiveView === 'git') wsRenderContent();
+    return;
+  }
 }
 
 // ── Server restart notification ───────────────────────────────────────────
@@ -4505,6 +4525,9 @@ function wsGetExt(name) { return (name.match(/\.(\w+)$/) || [])[1] || ''; }
 let wsActiveView = 'files';
 let wsOpenFiles = [];
 let wsActiveFile = null;
+let wsFileTreeData = [];
+let wsFileTreeRoot = '';
+let wsGitDiffData = [];
 
 function toggleWorkspacePanel() {
   const panel = document.getElementById('workspace-panel');
@@ -4513,26 +4536,92 @@ function toggleWorkspacePanel() {
   if (isOpen) {
     const saved = localStorage.getItem('stoa-ws-panel-width');
     if (saved) panel.style.setProperty('--ws-panel-width', saved);
+    if (ws && wsActiveView === 'files') ws.send(JSON.stringify({ type: 'file_list' }));
+    if (ws && wsActiveView === 'git') ws.send(JSON.stringify({ type: 'git_diff' }));
   }
 }
 
 function wsSetView(view) {
   wsActiveView = view;
+  wsActiveFile = null;
   document.querySelectorAll('.ws-pin-tab').forEach(t => {
     t.classList.toggle('active', t.dataset.wsPin === view);
   });
+  if (view === 'files' && ws) ws.send(JSON.stringify({ type: 'file_list' }));
+  if (view === 'git' && ws) ws.send(JSON.stringify({ type: 'git_diff' }));
   wsRenderContent();
 }
 
 function wsOpenFile(name, content) {
-  if (!wsOpenFiles.find(f => f.name === name)) {
+  const existing = wsOpenFiles.find(f => f.name === name);
+  if (existing) {
+    if (content) existing.content = content;
+  } else {
     wsOpenFiles.push({ name, content: content || '', ext: wsGetExt(name) });
+  }
+  if (!content && ws) {
+    ws.send(JSON.stringify({ type: 'file_read', path: name }));
   }
   wsActiveFile = name;
   wsActiveView = 'file';
   document.querySelectorAll('.ws-pin-tab').forEach(t => t.classList.remove('active'));
   wsRenderTabs();
   wsRenderContent();
+}
+
+function wsRenderFileTree(container, nodes, parentPath) {
+  nodes.forEach(node => {
+    const row = document.createElement('div');
+    row.className = 'ws-tree-row';
+    row.style.paddingLeft = (8 + node.depth * 16) + 'px';
+
+    if (node.t === 'folder') {
+      const chevron = document.createElement('span');
+      chevron.className = 'ws-tree-chevron' + (node.open ? ' open' : '');
+      chevron.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>';
+      row.appendChild(chevron);
+      const folderIcon = document.createElement('span');
+      folderIcon.style.cssText = 'color:var(--h-ink-mute);display:inline-flex';
+      folderIcon.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
+      row.appendChild(folderIcon);
+      const nameEl = document.createElement('span');
+      nameEl.className = 'ws-tree-name folder';
+      nameEl.textContent = node.name;
+      row.appendChild(nameEl);
+
+      const childContainer = document.createElement('div');
+      childContainer.style.display = node.open ? '' : 'none';
+
+      row.onclick = () => {
+        node.open = !node.open;
+        chevron.classList.toggle('open', node.open);
+        childContainer.style.display = node.open ? '' : 'none';
+      };
+
+      container.appendChild(row);
+      if (node.children) {
+        wsRenderFileTree(childContainer, node.children, parentPath ? parentPath + '/' + node.name : node.name);
+      }
+      container.appendChild(childContainer);
+    } else {
+      const spacer = document.createElement('span');
+      spacer.style.cssText = 'width:12px;flex:0 0 auto';
+      row.appendChild(spacer);
+      row.appendChild(wsFileGlyph(node.t, 14));
+      const nameEl = document.createElement('span');
+      nameEl.className = 'ws-tree-name file';
+      nameEl.textContent = node.name;
+      row.appendChild(nameEl);
+
+      const filePath = parentPath ? parentPath + '/' + node.name : node.name;
+      row.onclick = () => {
+        const panel = document.getElementById('workspace-panel');
+        if (!panel.classList.contains('open')) toggleWorkspacePanel();
+        wsOpenFile(filePath);
+      };
+      container.appendChild(row);
+    }
+  });
 }
 
 function wsCloseFile(name) {
@@ -4601,21 +4690,50 @@ function wsRenderContent() {
 
   if (wsActiveView === 'files') {
     wsSetToolbar(null);
-    content.innerHTML = `<div class="ws-empty-state">
-      <span class="ws-empty-icon"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h7M4 12h10M4 18h6"/><circle cx="18" cy="6" r="1.4" fill="currentColor" stroke="none"/></svg></span>
-      <div class="ws-empty-title">nothing open yet</div>
-      <div class="ws-empty-text">open a file, or click a file reference in the chat to read it here.</div>
-    </div>`;
+    if (wsFileTreeData.length) {
+      content.className = 'ws-tree ws-scroll';
+      content.style.cssText = '';
+      wsRenderFileTree(content, wsFileTreeData, '');
+    } else {
+      content.innerHTML = `<div class="ws-empty-state">
+        <span class="ws-empty-icon"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h7M4 12h10M4 18h6"/><circle cx="18" cy="6" r="1.4" fill="currentColor" stroke="none"/></svg></span>
+        <div class="ws-empty-title">nothing open yet</div>
+        <div class="ws-empty-text">open a file, or click a file reference in the chat to read it here.</div>
+      </div>`;
+    }
     return;
   }
 
   if (wsActiveView === 'git') {
-    wsSetToolbar(['working tree']);
-    content.innerHTML = `<div class="ws-empty-state">
-      <span class="ws-empty-icon"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6.5" cy="6" r="2.2"/><circle cx="6.5" cy="18" r="2.2"/><circle cx="17.5" cy="8" r="2.2"/><path d="M6.5 8.2v7.6M8.7 8c4 .2 6.5 1 8.6 .2M17.5 10.2c0 3.2-3 4.6-6.2 4.8"/></svg></span>
-      <div class="ws-empty-title">no changes</div>
-      <div class="ws-empty-text">git diff data will appear here when the backend is connected.</div>
-    </div>`;
+    if (wsGitDiffData.length) {
+      wsSetToolbar(['working tree', wsGitDiffData.length + ' file' + (wsGitDiffData.length > 1 ? 's' : '') + ' changed']);
+      wsGitDiffData.forEach(file => {
+        const hdr = document.createElement('div');
+        hdr.className = 'ws-diff-file-header';
+        hdr.appendChild(wsFileGlyph(wsGetExt(file.name), 14));
+        const fname = document.createElement('span');
+        fname.className = 'ws-mono';
+        fname.style.cssText = 'font-size:12.5px;color:var(--h-ink)';
+        fname.textContent = file.name;
+        hdr.appendChild(fname);
+        hdr.appendChild(document.createElement('span')).style.flex = '1';
+        const stat = document.createElement('span');
+        stat.className = 'ws-diff-stat';
+        stat.innerHTML = `<span class="ws-diff-add">+${file.add}</span><span class="ws-diff-del">−${file.del}</span>`;
+        hdr.appendChild(stat);
+        content.appendChild(hdr);
+        const diffContainer = document.createElement('div');
+        wsRenderDiff(diffContainer, file.hunks, 'unified');
+        content.appendChild(diffContainer);
+      });
+    } else {
+      wsSetToolbar(['working tree']);
+      content.innerHTML = `<div class="ws-empty-state">
+        <span class="ws-empty-icon"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6.5" cy="6" r="2.2"/><circle cx="6.5" cy="18" r="2.2"/><circle cx="17.5" cy="8" r="2.2"/><path d="M6.5 8.2v7.6M8.7 8c4 .2 6.5 1 8.6 .2M17.5 10.2c0 3.2-3 4.6-6.2 4.8"/></svg></span>
+        <div class="ws-empty-title">no changes</div>
+        <div class="ws-empty-text">working tree is clean.</div>
+      </div>`;
+    }
     return;
   }
 
