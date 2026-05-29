@@ -5450,9 +5450,6 @@ function appendToken(msgId, token) {
       // Copy colors from thinking bubble
       bubble.style.background = thinkBubble.style.background;
       bubble.style.borderColor  = thinkBubble.style.borderColor;
-      bubble.style.fontFamily = 'var(--h-msg)';
-      bubble.style.fontSize = '15px';
-      bubble.style.lineHeight = '1.7';
       bubble.style.letterSpacing = '';
       bubble.style.borderTopLeftRadius = '4px';
       body.replaceChild(bubble, thinkBubble);
@@ -5500,9 +5497,9 @@ function finalizeMessage(msgId, content, fileUrl, fileName, attachments) {
       bubble.classList.remove('h-thinking-bubble');
       bubble.classList.add('h-bubble');
       bubble.style.color = '';
-      bubble.style.fontFamily = 'var(--h-msg)';
-      bubble.style.fontSize = '15px';
-      bubble.style.lineHeight = '1.7';
+      bubble.style.fontFamily = '';
+      bubble.style.fontSize = '';
+      bubble.style.lineHeight = '';
       bubble.style.borderTopLeftRadius = '4px';
     }
 
