@@ -4337,6 +4337,7 @@ function connectWS(roomId) {
 
   ws.onopen = () => {
     ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+    ws.send(JSON.stringify({ type: 'file_list' }));
     setConnected(true);
   };
 
