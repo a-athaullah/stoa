@@ -4703,7 +4703,8 @@ function wsOpenFile(name, content) {
   } else {
     wsOpenFiles.push({ name, content: content || '', ext: wsGetExt(name) });
   }
-  if (!content && ws) {
+  const imgExts = new Set(['png','jpg','jpeg','gif','webp','svg','ico','bmp']);
+  if (!content && !imgExts.has(wsGetExt(name)) && ws) {
     ws.send(JSON.stringify({ type: 'file_read', path: name }));
   }
   wsActiveFile = name;
@@ -4887,6 +4888,18 @@ function wsRenderContent() {
     const ext = file.ext;
     const parts = file.name.split('/');
     wsSetToolbar(parts);
+
+    const IMG_EXTS = new Set(['png','jpg','jpeg','gif','webp','svg','ico','bmp']);
+    if (IMG_EXTS.has(ext)) {
+      content.className = 'ws-scroll';
+      content.style.cssText = 'flex:1;min-height:0;overflow:auto;display:flex;align-items:center;justify-content:center;padding:24px;background:color-mix(in srgb,var(--h-ink) 4%,var(--h-bg))';
+      const img = document.createElement('img');
+      img.src = `/api/workspace/file/${encodeURIComponent(file.name)}?room=${currentRoomId}`;
+      img.style.cssText = 'max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,.12)';
+      img.alt = file.name;
+      content.appendChild(img);
+      return;
+    }
 
     if (ext === 'md' && file.content) {
       content.className = 'ws-scroll ws-md-view';

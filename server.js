@@ -911,6 +911,26 @@ const server = http.createServer(async (req, res) => {
     return res.end(fs.readFileSync(fp, 'utf8'));
   }
 
+  // ── Workspace file serve (images, binary files) ──
+  if (req.method === 'GET' && url.pathname.startsWith('/api/workspace/file/')) {
+    const roomId = url.searchParams.get('room');
+    if (!roomId) { res.writeHead(400); return res.end('missing room'); }
+    const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(roomId);
+    if (!roomRow?.workdir_id) { res.writeHead(404); return res.end('no workdir'); }
+    const wd = db.prepare('SELECT path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
+    if (!wd?.path) { res.writeHead(404); return res.end('workdir not found'); }
+    const relPath = decodeURIComponent(url.pathname.slice('/api/workspace/file/'.length));
+    const filePath = path.resolve(wd.path, relPath);
+    if (!filePath.startsWith(path.resolve(wd.path))) { res.writeHead(403); return res.end('path traversal blocked'); }
+    if (!fs.existsSync(filePath)) { res.writeHead(404); return res.end('not found'); }
+    const ext = path.extname(filePath).toLowerCase();
+    const mimeMap = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.bmp': 'image/bmp', '.pdf': 'application/pdf' };
+    const mime = mimeMap[ext] || 'application/octet-stream';
+    const data = fs.readFileSync(filePath);
+    res.writeHead(200, { 'Content-Type': mime, 'Content-Length': data.length, 'Cache-Control': 'no-cache' });
+    return res.end(data);
+  }
+
   // ── Agent install script ──
   if (req.method === 'GET' && url.pathname === '/install.sh') {
     const host = req.headers.host || `localhost:${PORT}`;
