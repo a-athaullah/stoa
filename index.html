@@ -2626,6 +2626,9 @@
       background: color-mix(in srgb, var(--h-accent) 18%, oklch(0.550 0.020 55));
     }
 
+    .h-file-link-block { transition: outline .12s; }
+    .h-file-link-block:hover { outline: 1.5px dashed var(--h-accent); outline-offset: -1.5px; }
+
     /* Inline code */
     .h-bubble :not(pre) > code {
       font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
@@ -5312,46 +5315,36 @@ function addCopyButtons(el) {
   });
 }
 
-function linkifyFilePaths(el) {
-  const FILE_RE = /(?:[A-Za-z]:[\\\/]|\.{0,2}[\\\/]|~[\\\/])[\w\-.\\/]+\.\w{1,10}/g;
-  const KNOWN_EXTS = new Set(['js','jsx','ts','tsx','py','md','json','html','css','sql','txt','yml','yaml','toml','sh','ps1','cmd','bat','xml','csv','log','env','cfg','ini','conf','png','jpg','jpeg','gif','webp','svg','ico','bmp','pdf']);
+function looksLikePath(text) {
+  const t = text.trim();
+  if (t.length < 3) return false;
+  const hasSlash = t.includes('/') || t.includes('\\');
+  if (!hasSlash) return false;
+  if (/^https?:\/\//.test(t)) return false;
+  if (/^[A-Za-z]:[\\\/]/.test(t)) return true;
+  if (/^[~.]?[\\\/]/.test(t)) return true;
+  if (/^\/[\w.\-]/.test(t)) return true;
+  return false;
+}
 
-  el.querySelectorAll(':not(pre) > code, p, li, td').forEach(node => {
-    if (node.closest('a') || node.closest('.h-file-link')) return;
-    if (node.tagName === 'CODE') {
-      const text = node.textContent.trim();
-      const ext = (text.match(/\.(\w{1,10})$/) || [])[1];
-      if (!ext || !KNOWN_EXTS.has(ext.toLowerCase())) return;
-      if (text.includes('/') || text.includes('\\') || text.startsWith('.')) {
-        makeFileLink(node, text);
-      }
-      return;
-    }
-    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
-    const matches = [];
-    let textNode;
-    while ((textNode = walker.nextNode())) {
-      if (textNode.parentElement.closest('a, code, pre, .h-file-link')) continue;
-      let m;
-      FILE_RE.lastIndex = 0;
-      while ((m = FILE_RE.exec(textNode.textContent))) {
-        const ext = (m[0].match(/\.(\w{1,10})$/) || [])[1];
-        if (ext && KNOWN_EXTS.has(ext.toLowerCase())) {
-          matches.push({ node: textNode, start: m.index, end: m.index + m[0].length, path: m[0] });
-        }
-      }
-    }
-    for (let i = matches.length - 1; i >= 0; i--) {
-      const { node: tn, start, end, path: fp } = matches[i];
-      const before = tn.textContent.slice(0, start);
-      const after = tn.textContent.slice(end);
-      const link = document.createElement('span');
-      link.className = 'h-file-link';
-      link.textContent = fp;
-      link.onclick = () => openFileFromPath(fp);
-      tn.textContent = before;
-      tn.parentNode.insertBefore(link, tn.nextSibling);
-      if (after) tn.parentNode.insertBefore(document.createTextNode(after), link.nextSibling);
+function linkifyFilePaths(el) {
+  el.querySelectorAll('code').forEach(node => {
+    if (node.closest('a') || node.classList.contains('h-file-link')) return;
+    const text = node.textContent.trim();
+    if (looksLikePath(text)) makeFileLink(node, text);
+  });
+
+  el.querySelectorAll('pre code').forEach(codeEl => {
+    if (codeEl.closest('.h-file-link')) return;
+    const text = codeEl.textContent.trim();
+    if (looksLikePath(text) && text.split('\n').length <= 2) {
+      const pre = codeEl.closest('pre');
+      pre.style.cursor = 'pointer';
+      pre.classList.add('h-file-link-block');
+      pre.onclick = (e) => {
+        if (e.target.closest('.h-copy-btn')) return;
+        openFileFromPath(text.replace(/\n/g, ''));
+      };
     }
   });
 }
@@ -5363,9 +5356,9 @@ function makeFileLink(codeEl, filePath) {
 }
 
 function openFileFromPath(absOrRelPath) {
-  let relPath = absOrRelPath.replace(/\\/g, '/');
+  let relPath = absOrRelPath.replace(/\\/g, '/').replace(/\/+$/, '');
   if (wsFileTreeRoot) {
-    const root = wsFileTreeRoot.replace(/\\/g, '/').replace(/\/$/, '');
+    const root = wsFileTreeRoot.replace(/\\/g, '/').replace(/\/+$/, '');
     if (relPath.startsWith(root + '/')) {
       relPath = relPath.slice(root.length + 1);
     }
@@ -5375,7 +5368,13 @@ function openFileFromPath(absOrRelPath) {
   }
   const panel = document.getElementById('workspace-panel');
   if (!panel.classList.contains('open')) toggleWorkspacePanel();
-  wsOpenFile(relPath);
+  const ext = wsGetExt(relPath);
+  if (!ext) {
+    wsSetView('files');
+    showToast('Directory path — showing file tree');
+  } else {
+    wsOpenFile(relPath);
+  }
 }
 
 // ── Append message ─────────────────────────────────────────────────────────
