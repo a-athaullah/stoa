@@ -890,6 +890,80 @@
     .ws-diff-line-del { background: color-mix(in srgb, oklch(0.58 0.12 28) 16%, oklch(0.193 0.016 44)); }
     .ws-diff-line-empty { background: rgba(0,0,0,.18); }
 
+    /* ── Markdown viewer ──────────────────────────── */
+    .ws-md-body { max-width: 620px; }
+    .ws-md-body h1 {
+      font-family: var(--h-serif); font-size: 28px; font-weight: 400;
+      color: var(--h-ink); margin: 0 0 12px; line-height: 1.15;
+      padding-bottom: 10px; border-bottom: 1px solid var(--h-hair-soft);
+    }
+    .ws-md-body h2 {
+      font-family: var(--h-serif); font-size: 21px; font-weight: 400;
+      color: var(--h-ink); margin: 28px 0 10px; line-height: 1.2;
+    }
+    .ws-md-body h3 {
+      font-family: var(--h-serif); font-size: 17px; font-weight: 500;
+      color: var(--h-ink); margin: 22px 0 8px;
+    }
+    .ws-md-body h4, .ws-md-body h5, .ws-md-body h6 {
+      font-family: var(--h-serif); font-size: 15px; font-weight: 500;
+      color: var(--h-ink-mute); margin: 18px 0 6px;
+    }
+    .ws-md-body p {
+      font-family: var(--h-sans); font-size: 15px; line-height: 1.65;
+      color: var(--h-ink); margin: 0 0 16px; text-wrap: pretty;
+    }
+    .ws-md-body ul, .ws-md-body ol {
+      font-family: var(--h-sans); font-size: 15px; line-height: 1.65;
+      color: var(--h-ink); padding-left: 22px; margin: 0 0 16px;
+    }
+    .ws-md-body li { margin-bottom: 4px; }
+    .ws-md-body li > ul, .ws-md-body li > ol { margin: 4px 0 0; }
+    .ws-md-body blockquote {
+      border-left: 3px solid var(--h-hairline); margin: 0 0 16px;
+      padding: 2px 0 2px 16px; color: var(--h-ink-mute);
+    }
+    .ws-md-body hr {
+      border: none; border-top: 1px solid var(--h-hair-soft); margin: 24px 0;
+    }
+    .ws-md-body a {
+      color: var(--h-accent); text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    .ws-md-body a:hover { color: var(--h-ink); }
+    .ws-md-body strong { color: var(--h-ink); font-weight: 600; }
+    .ws-md-body em { font-style: italic; }
+    .ws-md-body :not(pre) > code {
+      font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
+      font-size: 0.85em; padding: 1px 6px; border-radius: 5px;
+      background: color-mix(in srgb, var(--h-ink) 9%, var(--h-surface));
+      color: var(--h-ink-mute);
+    }
+    .ws-md-body pre {
+      position: relative; margin: 0 0 16px; border-radius: 8px;
+      background: oklch(0.193 0.016 44); overflow-x: auto;
+    }
+    .ws-md-body pre code {
+      display: block; padding: 14px 16px; padding-right: 52px;
+      font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
+      font-size: 13px; line-height: 1.6; color: #d3c8b4;
+      white-space: pre-wrap; overflow-wrap: break-word;
+      background: transparent;
+    }
+    .ws-md-body table {
+      border-collapse: collapse; margin: 0 0 16px;
+      font-family: var(--h-sans); font-size: 14px; width: auto;
+    }
+    .ws-md-body th, .ws-md-body td {
+      border: 1px solid var(--h-hair-soft); padding: 6px 12px; text-align: left;
+    }
+    .ws-md-body th {
+      background: color-mix(in srgb, var(--h-hairline) 30%, transparent);
+      font-weight: 600; color: var(--h-ink);
+    }
+    .ws-md-body td { color: var(--h-ink-mute); }
+    .ws-md-body img { max-width: 100%; border-radius: 8px; margin: 8px 0; }
+
     /* ── Editing banner ───────────────────────────── */
     .ws-editing-banner {
       display: flex;
@@ -4811,11 +4885,12 @@ function wsRenderContent() {
     wsSetToolbar(parts);
 
     if (ext === 'md' && file.content) {
-      content.className = 'ws-scroll';
+      content.className = 'ws-scroll ws-md-view';
       content.style.cssText = 'flex:1;min-height:0;overflow:auto;padding:26px 30px 40px';
       const inner = document.createElement('div');
-      inner.style.maxWidth = '620px';
+      inner.className = 'ws-md-body';
       inner.innerHTML = DOMPurify.sanitize(marked.parse(file.content), { ADD_ATTR: ['class'] });
+      addCopyButtons(inner);
       content.appendChild(inner);
     } else if (file.content) {
       wsRenderCodeViewer(content, file.content);
