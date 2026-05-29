@@ -2600,6 +2600,32 @@
 
     .h-bubble hr { border: none; border-top: 1px solid var(--h-hair-soft); margin: 0.7em 0; }
 
+    /* File path links */
+    .h-file-link {
+      cursor: pointer;
+      text-decoration: underline;
+      text-decoration-style: dashed;
+      text-underline-offset: 3px;
+      text-decoration-color: var(--h-accent);
+      transition: background .12s;
+      border-radius: 3px;
+    }
+    .h-file-link:hover {
+      background: color-mix(in srgb, var(--h-accent) 12%, transparent);
+    }
+    code.h-file-link {
+      text-decoration: underline;
+      text-decoration-style: dashed;
+      text-underline-offset: 3px;
+      text-decoration-color: var(--h-accent);
+    }
+    code.h-file-link:hover {
+      background: color-mix(in srgb, var(--h-accent) 18%, oklch(0.820 0.028 50));
+    }
+    html.dark code.h-file-link:hover {
+      background: color-mix(in srgb, var(--h-accent) 18%, oklch(0.550 0.020 55));
+    }
+
     /* Inline code */
     .h-bubble :not(pre) > code {
       font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
@@ -5286,6 +5312,72 @@ function addCopyButtons(el) {
   });
 }
 
+function linkifyFilePaths(el) {
+  const FILE_RE = /(?:[A-Za-z]:[\\\/]|\.{0,2}[\\\/]|~[\\\/])[\w\-.\\/]+\.\w{1,10}/g;
+  const KNOWN_EXTS = new Set(['js','jsx','ts','tsx','py','md','json','html','css','sql','txt','yml','yaml','toml','sh','ps1','cmd','bat','xml','csv','log','env','cfg','ini','conf','png','jpg','jpeg','gif','webp','svg','ico','bmp','pdf']);
+
+  el.querySelectorAll(':not(pre) > code, p, li, td').forEach(node => {
+    if (node.closest('a') || node.closest('.h-file-link')) return;
+    if (node.tagName === 'CODE') {
+      const text = node.textContent.trim();
+      const ext = (text.match(/\.(\w{1,10})$/) || [])[1];
+      if (!ext || !KNOWN_EXTS.has(ext.toLowerCase())) return;
+      if (text.includes('/') || text.includes('\\') || text.startsWith('.')) {
+        makeFileLink(node, text);
+      }
+      return;
+    }
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    const matches = [];
+    let textNode;
+    while ((textNode = walker.nextNode())) {
+      if (textNode.parentElement.closest('a, code, pre, .h-file-link')) continue;
+      let m;
+      FILE_RE.lastIndex = 0;
+      while ((m = FILE_RE.exec(textNode.textContent))) {
+        const ext = (m[0].match(/\.(\w{1,10})$/) || [])[1];
+        if (ext && KNOWN_EXTS.has(ext.toLowerCase())) {
+          matches.push({ node: textNode, start: m.index, end: m.index + m[0].length, path: m[0] });
+        }
+      }
+    }
+    for (let i = matches.length - 1; i >= 0; i--) {
+      const { node: tn, start, end, path: fp } = matches[i];
+      const before = tn.textContent.slice(0, start);
+      const after = tn.textContent.slice(end);
+      const link = document.createElement('span');
+      link.className = 'h-file-link';
+      link.textContent = fp;
+      link.onclick = () => openFileFromPath(fp);
+      tn.textContent = before;
+      tn.parentNode.insertBefore(link, tn.nextSibling);
+      if (after) tn.parentNode.insertBefore(document.createTextNode(after), link.nextSibling);
+    }
+  });
+}
+
+function makeFileLink(codeEl, filePath) {
+  codeEl.classList.add('h-file-link');
+  codeEl.style.cursor = 'pointer';
+  codeEl.onclick = (e) => { e.preventDefault(); openFileFromPath(filePath); };
+}
+
+function openFileFromPath(absOrRelPath) {
+  let relPath = absOrRelPath.replace(/\\/g, '/');
+  if (wsFileTreeRoot) {
+    const root = wsFileTreeRoot.replace(/\\/g, '/').replace(/\/$/, '');
+    if (relPath.startsWith(root + '/')) {
+      relPath = relPath.slice(root.length + 1);
+    }
+  }
+  if (/^[A-Za-z]:\//.test(relPath)) {
+    relPath = relPath.replace(/^[A-Za-z]:\//, '');
+  }
+  const panel = document.getElementById('workspace-panel');
+  if (!panel.classList.contains('open')) toggleWorkspacePanel();
+  wsOpenFile(relPath);
+}
+
 // ── Append message ─────────────────────────────────────────────────────────
 function appendMessage(m, container) {
   const inner = container || document.getElementById('messages-inner');
@@ -5379,6 +5471,7 @@ function appendMessage(m, container) {
   row.appendChild(body);
   inner.appendChild(row);
   addCopyButtons(bubble);
+  linkifyFilePaths(bubble);
 }
 
 // ── Thinking bubble (before tokens arrive) ─────────────────────────────────
@@ -5511,6 +5604,7 @@ function finalizeMessage(msgId, content, fileUrl, fileName, attachments) {
     textDiv.innerHTML = highlightMentions(renderMarkdown(content || ''));
     bubble.appendChild(textDiv);
     addCopyButtons(bubble);
+  linkifyFilePaths(bubble);
   }
 
   // Add message action buttons (reply + copy) if not already present
