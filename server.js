@@ -1602,13 +1602,11 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'proxy_file_read_result' && agentActorId) {
       const op = pendingFileOps.get(msg.request_id);
-      console.log('[ws-file] proxy_file_read_result rid:', msg.request_id, 'op:', !!op, 'wsReady:', op?.clientWs?.readyState, 'error:', msg.error || 'none', 'hasContent:', !!(msg.content || msg.base64));
       if (op && op.clientWs.readyState === 1) {
-        if (msg.error) op.clientWs.send(JSON.stringify({ type: 'file_read', path: msg.path, error: msg.error }));
-        else if (msg.base64) op.clientWs.send(JSON.stringify({ type: 'file_read', path: msg.path, base64: msg.base64 }));
-        else op.clientWs.send(JSON.stringify({ type: 'file_read', path: msg.path, content: msg.content }));
-      } else {
-        console.log('[ws-file] DROPPED — op missing or ws closed');
+        const p = op.originalPath || msg.path;
+        if (msg.error) op.clientWs.send(JSON.stringify({ type: 'file_read', path: p, error: msg.error }));
+        else if (msg.base64) op.clientWs.send(JSON.stringify({ type: 'file_read', path: p, base64: msg.base64 }));
+        else op.clientWs.send(JSON.stringify({ type: 'file_read', path: p, content: msg.content }));
       }
       pendingFileOps.delete(msg.request_id);
     }
@@ -1662,11 +1660,10 @@ wss.on('connection', (ws, req) => {
         const agentWs = agentClients.get(wd.actor_id);
         if (agentWs) {
           const rid = crypto.randomBytes(6).toString('hex');
-          pendingFileOps.set(rid, { type: 'file_read', clientWs: ws });
+          pendingFileOps.set(rid, { type: 'file_read', clientWs: ws, originalPath: msg.path });
           const proxyWorkdir = msg.absolute ? path.dirname(msg.path) : wd.path;
           const proxyPath = msg.absolute ? path.basename(msg.path) : msg.path;
           agentWs.send(JSON.stringify({ type: 'proxy_file_read', request_id: rid, workdir: proxyWorkdir, path: proxyPath, binary: !!msg.binary }));
-          console.log('[ws-file] proxy_file_read sent rid:', rid, 'workdir:', proxyWorkdir, 'path:', proxyPath);
         } else { ws.send(JSON.stringify({ type: 'file_read', path: msg.path, error: 'agent offline' })); }
       }
     }
