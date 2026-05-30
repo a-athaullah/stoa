@@ -334,7 +334,7 @@ async function handleAgentMessage(msg) {
   if (msg.type === 'proxy_file_read') {
     try {
       const filePath = path.resolve(msg.workdir, msg.path);
-      if (!filePath.startsWith(path.resolve(msg.workdir))) {
+      if (!filePath.startsWith(path.resolve(msg.workdir) + path.sep) && filePath !== path.resolve(msg.workdir)) {
         send({ type: 'proxy_file_read_result', request_id: msg.request_id, error: 'path traversal blocked' });
         return;
       }
@@ -377,8 +377,13 @@ async function handleAgentMessage(msg) {
 
   if (msg.type === 'proxy_file_write') {
     try {
+      const BINARY_EXTS = new Set(['png','jpg','jpeg','gif','webp','svg','ico','bmp','woff','woff2','ttf','otf','eot','exe','dll','so','bin','zip','tar','gz','7z','mp3','mp4','avi','mov']);
+      const ext = (msg.path.match(/\.(\w+)$/) || [])[1] || '';
+      if (BINARY_EXTS.has(ext)) { send({ type: 'proxy_file_write_result', request_id: msg.request_id, error: 'binary files cannot be edited' }); return; }
+      if (typeof msg.content !== 'string' || msg.content.length > 1024 * 1024) { send({ type: 'proxy_file_write_result', request_id: msg.request_id, error: 'content too large (max 1MB)' }); return; }
       const filePath = path.resolve(msg.workdir, msg.path);
-      if (!filePath.startsWith(path.resolve(msg.workdir))) {
+      const wdBound = path.resolve(msg.workdir) + path.sep;
+      if (!filePath.startsWith(wdBound) && filePath !== path.resolve(msg.workdir)) {
         send({ type: 'proxy_file_write_result', request_id: msg.request_id, error: 'path traversal blocked' });
         return;
       }
@@ -393,8 +398,10 @@ async function handleAgentMessage(msg) {
 
   if (msg.type === 'proxy_file_create') {
     try {
+      if (/[<>"|?*]/.test(msg.path)) { send({ type: 'proxy_file_create_result', request_id: msg.request_id, error: 'invalid characters in path' }); return; }
       const filePath = path.resolve(msg.workdir, msg.path);
-      if (!filePath.startsWith(path.resolve(msg.workdir))) {
+      const wdBound = path.resolve(msg.workdir) + path.sep;
+      if (!filePath.startsWith(wdBound) && filePath !== path.resolve(msg.workdir)) {
         send({ type: 'proxy_file_create_result', request_id: msg.request_id, error: 'path traversal blocked' });
         return;
       }
@@ -414,7 +421,8 @@ async function handleAgentMessage(msg) {
   if (msg.type === 'proxy_file_delete') {
     try {
       const filePath = path.resolve(msg.workdir, msg.path);
-      if (!filePath.startsWith(path.resolve(msg.workdir))) {
+      const wdBound = path.resolve(msg.workdir) + path.sep;
+      if (!filePath.startsWith(wdBound) && filePath !== path.resolve(msg.workdir)) {
         send({ type: 'proxy_file_delete_result', request_id: msg.request_id, error: 'path traversal blocked' });
         return;
       }
@@ -430,10 +438,11 @@ async function handleAgentMessage(msg) {
 
   if (msg.type === 'proxy_file_rename') {
     try {
+      if (/[<>"|?*]/.test(msg.new_path)) { send({ type: 'proxy_file_rename_result', request_id: msg.request_id, error: 'invalid characters in new path' }); return; }
       const oldPath = path.resolve(msg.workdir, msg.path);
       const newPath = path.resolve(msg.workdir, msg.new_path);
-      const wdResolved = path.resolve(msg.workdir);
-      if (!oldPath.startsWith(wdResolved) || !newPath.startsWith(wdResolved)) {
+      const wdBound = path.resolve(msg.workdir) + path.sep;
+      if (!oldPath.startsWith(wdBound) || !newPath.startsWith(wdBound)) {
         send({ type: 'proxy_file_rename_result', request_id: msg.request_id, error: 'path traversal blocked' });
         return;
       }
