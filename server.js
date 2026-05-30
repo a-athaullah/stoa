@@ -1287,7 +1287,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
   res.end('Not found');
   } catch (err) {
     console.error('[http] unhandled error:', err.message);
-    if (!res.headersSent) { res.writeHead(400); res.end(JSON.stringify({ error: 'Bad request' })); }
+    if (!res.headersSent) { res.writeHead(500); res.end(JSON.stringify({ error: 'Internal server error' })); }
   }
 });
 

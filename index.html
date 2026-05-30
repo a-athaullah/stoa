@@ -6176,15 +6176,16 @@ async function submitNewRoom() {
   if (!workdir_id) { alert('Please select a working directory'); return; }
   document.getElementById('new-room-modal').style.display = 'none';
 
-  const room = await fjson('/api/rooms', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title, participant_ids, workdir_id }),
-  });
-
-  const rooms = await fjson('/api/rooms');
-  renderRoomList(rooms);
-  openRoom(room);
+  try {
+    const room = await fjson('/api/rooms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, participant_ids, workdir_id }),
+    });
+    const rooms = await fjson('/api/rooms');
+    renderRoomList(rooms);
+    openRoom(room);
+  } catch { showToast('Failed to create room', { error: true }); }
 }
 
 // ── Scroll ──────────────────────────────────────────────────────────────────
@@ -6368,7 +6369,12 @@ async function doRoomSearch(query) {
     countEl.textContent = '';
     return;
   }
-  const rows = await fetch(`/api/search?q=${encodeURIComponent(query)}&room_id=${currentRoomId}&limit=50`).then(r => r.json());
+  let rows;
+  try {
+    const res = await fetch(`/api/search?q=${encodeURIComponent(query)}&room_id=${currentRoomId}&limit=50`);
+    if (!res.ok) throw new Error();
+    rows = await res.json();
+  } catch { countEl.textContent = 'search failed'; return; }
   countEl.textContent = rows.length ? `${rows.length} found` : 'no results';
   if (!rows.length) { resultsEl.classList.remove('visible'); return; }
   resultsEl.classList.add('visible');

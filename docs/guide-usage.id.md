@@ -217,7 +217,7 @@ Tekan **Ctrl+F** (atau klik **ikon search** di header room) untuk mencari di dal
 
 ### Menambah Agent Baru
 
-Buka **Settings > Claude > Add Agent**. Panel Add Agent memungkinkan Anda mengonfigurasi:
+Buka **Settings > AI Agent > Add Agent**. Panel Add Agent memungkinkan Anda mengonfigurasi:
 
 - **Backend** — pilih antara **Claude Code CLI** atau **Gemini CLI** sebagai backend AI. Perintah install menyesuaikan secara otomatis berdasarkan pilihan Anda
 - **Bahasa** — pilih bahasa yang akan digunakan AI agent untuk merespons: English, Bahasa Indonesia, 日本語, 한국語, atau 中文
@@ -258,7 +258,7 @@ curl -fsSL http://SERVER_ANDA:3000/install.sh?name=Idris | bash
 
 ### Mengganti Nama Agent
 
-Klik nama agent di **Settings > Claude** untuk mengeditnya secara inline.
+Klik nama agent di **Settings > AI Agent** untuk mengeditnya secara inline.
 
 ### Mengubah Bahasa Agent
 
@@ -266,7 +266,7 @@ Bahasa respons setiap agent bisa diubah setelah pembuatan. Buka tab **Settings >
 
 ### Menghapus Agent
 
-Klik **tombol delete** di samping agent di **Settings > Claude** untuk menghapusnya. Agent akan di-unregister dan dihapus dari semua room.
+Klik **tombol delete** di samping agent di **Settings > AI Agent** untuk menghapusnya. Agent akan di-unregister dan dihapus dari semua room.
 
 ### Status Online Agent
 
@@ -283,17 +283,17 @@ Agent secara otomatis:
 
 Setiap agent memiliki satu atau lebih **working directory** — folder tempat sesi Claude agent berjalan. Anda bisa:
 
-- Melihat workdir agent di **Settings > Claude > [nama agent]**
+- Melihat workdir agent di **Settings > AI Agent > [nama agent]**
 - Menambah workdir baru via UI atau API
 - Menetapkan workdir tertentu ke room saat pembuatan
 
 ### Versi Klien
 
-Setiap agent melaporkan **versi klien** (misal `v0.2.2`) ke server. Versi bisa dilihat di **Settings > Claude** di samping nama agent. Ini membantu melacak agent mana yang menjalankan kode klien terbaru.
+Setiap agent melaporkan **versi klien** (misal `v0.2.2`) ke server. Versi bisa dilihat di **Settings > AI Agent** di samping nama agent. Ini membantu melacak agent mana yang menjalankan kode klien terbaru.
 
 ### Kontrol Agent
 
-Di **Settings > Claude**, setiap agent punya dua tombol aksi:
+Di **Settings > AI Agent**, setiap agent punya dua tombol aksi:
 
 - **Rescan** — scan ulang working directory dan skill agent
 - **Force Update** — paksa agent mengecek update klien segera (normalnya cek tiap 2 menit)
@@ -322,6 +322,12 @@ AI agent bisa **menyarankan mengundang** agent lain ke room. Saat agent merasa k
 Stoa mendukung **push notification** browser sehingga Anda mendapat notifikasi saat agent merespons, bahkan ketika tab di background.
 
 - Toggle notifikasi on/off di **Settings > General > Notifications**
+
+---
+
+## Collapse Sidebar
+
+Klik **tombol double-chevron** (‹‹) di samping logo Stoa untuk menyembunyikan sidebar room list, memberi lebih banyak ruang untuk chat dan panel workspace. Untuk mengembalikan sidebar, klik **ikon panel** yang muncul di header chat (atau di halaman kosong).
 
 ---
 
@@ -373,7 +379,7 @@ Anda bisa mengekspor seluruh riwayat percakapan room sebagai **JSON** atau **CSV
 
 Klik **ikon gear** di sidebar untuk membuka panel pengaturan. Pengaturan diorganisasi dalam empat tab:
 
-### Claude (Agent)
+### AI Agent
 
 Lihat semua agent yang terdaftar, status online, versi, workdir, dan skill mereka. Tambah agent baru, ganti nama, hapus, rescan, atau paksa update.
 
@@ -385,6 +391,7 @@ Lihat semua agent yang terdaftar, status online, versi, workdir, dan skill merek
 - **Port** — ubah port server (perlu restart; lihat [panduan ganti port](doc-port))
 - **Max AI Turns** — maksimum respons agent per pesan manusia (mencegah loop tak terbatas)
 - **Concurrent Sessions** — berapa pesan yang bisa diproses agent secara paralel di semua room (langsung diterapkan, tanpa restart)
+- **Session Idle TTL** — menit sebelum sesi AI yang idle otomatis ditutup untuk menghemat memori (default 5 menit)
 - **Cleanup Hour** — kapan pembersihan upload harian berjalan (format 24 jam)
 - **Max File Age** — berapa lama file upload disimpan sebelum dibersihkan (jam)
 

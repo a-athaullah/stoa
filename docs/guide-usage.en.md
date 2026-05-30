@@ -217,7 +217,7 @@ Press **Ctrl+F** (or click the **search icon** in the room header) to search wit
 
 ### Adding a New Agent
 
-Go to **Settings > Claude > Add Agent**. The Add Agent panel lets you configure:
+Go to **Settings > AI Agent > Add Agent**. The Add Agent panel lets you configure:
 
 - **Backend** — choose between **Claude Code CLI** or **Gemini CLI** as the AI backend. The install command adapts automatically based on your selection
 - **Language** — select the language the AI agent will use for responses: English, Bahasa Indonesia, 日本語, 한국語, or 中文
@@ -258,7 +258,7 @@ curl -fsSL http://YOUR_SERVER:3000/install.sh?name=Idris | bash
 
 ### Renaming an Agent
 
-Click the agent's name in **Settings > Claude** to edit it inline.
+Click the agent's name in **Settings > AI Agent** to edit it inline.
 
 ### Changing Agent Language
 
@@ -266,7 +266,7 @@ Each agent's response language can be changed after creation. Go to **Settings >
 
 ### Removing an Agent
 
-Click the **delete button** next to an agent in **Settings > Claude** to remove it. The agent is unregistered and removed from all rooms.
+Click the **delete button** next to an agent in **Settings > AI Agent** to remove it. The agent is unregistered and removed from all rooms.
 
 ### Agent Online Status
 
@@ -283,17 +283,17 @@ Agents automatically:
 
 Each agent has one or more **working directories** — these are the folders where the agent's Claude session runs. You can:
 
-- View an agent's workdirs in **Settings > Claude > [agent name]**
+- View an agent's workdirs in **Settings > AI Agent > [agent name]**
 - Add new workdirs via the UI or API
 - Assign a specific workdir to a room when creating it
 
 ### Client Versioning
 
-Each agent reports its **client version** (e.g., `v0.2.2`) to the server. You can see the version in **Settings > Claude** next to each agent's name. This helps track which agents are running the latest client code.
+Each agent reports its **client version** (e.g., `v0.2.2`) to the server. You can see the version in **Settings > AI Agent** next to each agent's name. This helps track which agents are running the latest client code.
 
 ### Agent Controls
 
-In **Settings > Claude**, each agent has two action buttons:
+In **Settings > AI Agent**, each agent has two action buttons:
 
 - **Rescan** — re-scan the agent's working directories and skills
 - **Force Update** — force the agent to check for client updates immediately (normally checks every 2 minutes)
@@ -322,6 +322,12 @@ AI agents can **suggest inviting** other agents into a room. When an agent think
 Stoa supports browser **push notifications** so you get alerted when agents respond, even when the tab is in the background.
 
 - Toggle notifications on/off in **Settings > General > Notifications**
+
+---
+
+## Sidebar Collapse
+
+Click the **double-chevron button** (‹‹) next to the Stoa logo to hide the room list sidebar, giving more space for the chat and workspace panel. To restore the sidebar, click the **panel icon** that appears in the chat header (or in the empty state).
 
 ---
 
@@ -373,7 +379,7 @@ You can export a room's full conversation history as **JSON** or **CSV**. Click 
 
 Click the **gear icon** in the sidebar to open the settings panel. Settings are organized into four tabs:
 
-### Claude (Agents)
+### AI Agent
 
 View all registered agents, their online status, version, workdirs, and skills. Add new agents, rename, remove, rescan, or force update.
 
@@ -385,6 +391,7 @@ View all registered agents, their online status, version, workdirs, and skills. 
 - **Port** — change the server port (requires restart; see the [port change guide](doc-port))
 - **Max AI Turns** — maximum agent responses per human message (prevents infinite loops)
 - **Concurrent Sessions** — how many messages an agent can process in parallel across all rooms (applied instantly, no restart needed)
+- **Session Idle TTL** — minutes before idle AI sessions auto-close to free memory (default 5 minutes)
 - **Cleanup Hour** — when the daily upload cleanup runs (24h format)
 - **Max File Age** — how long uploaded files are kept before cleanup (hours)
 
