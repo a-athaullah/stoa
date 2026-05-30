@@ -527,6 +527,7 @@ const server = http.createServer(async (req, res) => {
       FROM rooms r JOIN actors a ON a.id=r.created_by LEFT JOIN agent_workdirs w ON w.id=r.workdir_id
       WHERE ${archived ? 'r.archived_at IS NOT NULL' : 'r.archived_at IS NULL'}
       ORDER BY last_activity DESC
+      LIMIT 200
     `).all();
     return json(res, rows);
   }

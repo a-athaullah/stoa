@@ -4365,7 +4365,8 @@ async function restoreRoom(room) {
 async function deleteRoom(room) {
   if (!confirm(`Delete "${room.title}"? This cannot be undone.`)) return;
   try {
-    await fetch(`/api/rooms/${room.id}`, { method: 'DELETE' });
+    const res = await fetch(`/api/rooms/${room.id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('delete failed');
   } catch { showToast('Failed to delete room', { error: true }); return; }
   if (currentRoomId === room.id) {
     currentRoomId = null;
@@ -5177,7 +5178,7 @@ function showCopyFeedback(btn) {
 }
 
 async function deleteMessage(msgId) {
-  try { await fetch(`/api/messages/${msgId}`, { method: 'DELETE' }); } catch { showToast('Failed to delete message', { error: true }); }
+  try { const res = await fetch(`/api/messages/${msgId}`, { method: 'DELETE' }); if (!res.ok) throw new Error(); } catch { showToast('Failed to delete message', { error: true }); }
 }
 
 function getAttachments(m) {
