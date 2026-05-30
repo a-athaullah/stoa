@@ -15,6 +15,7 @@
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&family=Plus+Jakarta+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11/build/highlight.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -77,11 +78,49 @@
     }
 
     .h-sidebar-head {
-      padding: 0 4px 18px;
+      padding: 0 4px 16px;
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 8px;
     }
+
+    .h-sidebar-collapse {
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      padding: 0;
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--h-ink-mute);
+      transition: color .12s, background .12s;
+    }
+    .h-sidebar-collapse:hover { color: var(--h-ink); background: var(--h-surface-hi); }
+
+    .h-rooms-toggle {
+      width: 34px;
+      height: 34px;
+      border-radius: 9px;
+      cursor: pointer;
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--h-hair-soft);
+      background: transparent;
+      color: var(--h-ink-mute);
+      margin-right: 4px;
+      transition: color .12s, background .12s;
+    }
+    .h-rooms-toggle:hover { color: var(--h-ink); background: var(--h-surface-hi); }
+
+    body.sidebar-collapsed #sidebar { display: none; }
+
     #refresh-btn {
       display: none;
       background: none;
@@ -494,9 +533,522 @@
     #main {
       flex: 1;
       display: flex;
+      flex-direction: row;
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    #chat-area {
+      flex: 1;
+      display: flex;
       flex-direction: column;
       min-width: 0;
       overflow: hidden;
+    }
+
+    /* ── Dev workspace panel ─────────────────────────────── */
+    .ws-mono { font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", ui-monospace, Consolas, monospace; }
+    .ws-code { background: oklch(0.193 0.016 44); color: #d3c8b4; }
+    .ws-code .hljs { background: transparent; color: #d3c8b4; }
+    .ws-code::-webkit-scrollbar { width: 8px; height: 8px; }
+    .ws-code::-webkit-scrollbar-thumb { background: rgba(255,255,255,.12); border-radius: 4px; }
+    .ws-code::-webkit-scrollbar-track { background: transparent; }
+    .ws-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+    .ws-scroll::-webkit-scrollbar-thumb { background: var(--h-hair-soft); border-radius: 4px; }
+    .ws-scroll::-webkit-scrollbar-track { background: transparent; }
+
+    #workspace-panel {
+      display: none;
+      flex-direction: row;
+      width: var(--ws-panel-width, 560px);
+      min-width: 280px;
+      max-width: 70%;
+      overflow: hidden;
+    }
+    #workspace-panel.open { display: flex; }
+
+    #ws-drag-handle {
+      width: 7px;
+      flex: 0 0 auto;
+      cursor: col-resize;
+      position: relative;
+      background: var(--h-bg);
+      border-left: 1px solid var(--h-hairline);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .ws-grip {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      opacity: .5;
+      transition: opacity .12s;
+    }
+    #ws-drag-handle:hover .ws-grip, #ws-drag-handle.dragging .ws-grip { opacity: 1; }
+    .ws-grip-dot {
+      width: 3px;
+      height: 3px;
+      border-radius: 50%;
+      background: var(--h-ink-faint);
+    }
+
+    #ws-panel-body {
+      flex: 1;
+      min-width: 0;
+      background: var(--h-bg);
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Tab bar ───────────────────────────────────── */
+    .ws-tab-bar {
+      display: flex;
+      align-items: stretch;
+      height: 42px;
+      flex: 0 0 auto;
+      background: var(--h-header-bg);
+      border-bottom: 1px solid var(--h-hairline);
+    }
+    .ws-pin-tab {
+      position: relative;
+      width: 40px;
+      border: none;
+      cursor: pointer;
+      background: transparent;
+      color: var(--h-ink-mute);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: background .12s, color .12s;
+    }
+    .ws-pin-tab:hover { color: var(--h-ink); }
+    .ws-pin-tab.active { background: var(--h-bg); color: var(--h-ink); }
+    .ws-pin-tab .ws-tab-indicator {
+      position: absolute;
+      left: 8px; right: 8px; bottom: 0;
+      height: 2px; background: var(--h-ink); border-radius: 2px;
+      display: none;
+    }
+    .ws-pin-tab.active .ws-tab-indicator { display: block; }
+
+    .ws-git-badge {
+      position: absolute;
+      top: 5px; right: 4px;
+      min-width: 14px; height: 14px;
+      border-radius: 7px;
+      background: #d39749;
+      color: #fff;
+      font-family: var(--h-sans);
+      font-size: 9px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 3px;
+      line-height: 1;
+    }
+
+    .ws-tab-divider { width: 1px; background: var(--h-hair-soft); margin: 8px 4px; }
+
+    .ws-tab-list {
+      display: flex;
+      align-items: stretch;
+      overflow: hidden;
+      flex: 1;
+    }
+    .ws-file-tab {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px 0 12px;
+      cursor: pointer;
+      max-width: 180px;
+      flex: 0 0 auto;
+      background: transparent;
+      border: none;
+      border-right: 1px solid var(--h-hair-soft);
+      transition: background .12s;
+    }
+    .ws-file-tab:hover { background: color-mix(in srgb, var(--h-surface) 50%, transparent); }
+    .ws-file-tab.active { background: var(--h-bg); }
+    .ws-file-tab .ws-tab-indicator {
+      position: absolute;
+      left: 10px; right: 10px; bottom: 0;
+      height: 2px; background: var(--h-ink); border-radius: 2px;
+      display: none;
+    }
+    .ws-file-tab.active .ws-tab-indicator { display: block; }
+    .ws-file-tab-name {
+      font-family: var(--h-sans);
+      font-size: 12px;
+      color: var(--h-ink-mute);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .ws-file-tab.active .ws-file-tab-name { color: var(--h-ink); }
+    .ws-file-tab-modified { color: var(--h-ink-faint); }
+    .ws-file-tab-close {
+      opacity: 0;
+      transition: opacity .12s;
+      color: var(--h-ink-mute);
+      display: inline-flex;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 0;
+    }
+    .ws-file-tab:hover .ws-file-tab-close,
+    .ws-file-tab.active .ws-file-tab-close { opacity: .7; }
+    .ws-file-tab-close:hover { opacity: 1 !important; }
+
+    .ws-tab-overflow {
+      flex: 0 0 auto;
+      width: 30px;
+      border: none;
+      background: transparent;
+      color: var(--h-ink-mute);
+      cursor: pointer;
+      border-left: 1px solid var(--h-hair-soft);
+      font-size: 16px;
+    }
+    .ws-tab-close-panel {
+      flex: 0 0 auto;
+      width: 38px;
+      border: none;
+      background: transparent;
+      color: var(--h-ink-mute);
+      cursor: pointer;
+      border-left: 1px solid var(--h-hair-soft);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: color .12s;
+    }
+    .ws-tab-close-panel:hover { color: var(--h-ink); }
+
+    /* ── File glyph ───────────────────────────────── */
+    .ws-file-glyph {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 3px;
+      font-size: 7.5px;
+      font-weight: 600;
+      letter-spacing: .02em;
+    }
+
+    /* ── Panel toolbar ────────────────────────────── */
+    .ws-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 0 0 auto;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--h-hair-soft);
+      background: var(--h-bg);
+    }
+    .ws-breadcrumb {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      overflow: hidden;
+    }
+    .ws-crumb {
+      font-family: var(--h-sans);
+      font-size: 11px;
+      white-space: nowrap;
+      color: var(--h-ink-faint);
+    }
+    .ws-crumb:last-child { color: var(--h-ink-mute); }
+    .ws-crumb-sep { color: var(--h-ink-faint); font-size: 11px; }
+
+    .ws-ghost-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 7px;
+      cursor: pointer;
+      font-family: var(--h-sans);
+      font-size: 11.5px;
+      color: var(--h-ink-mute);
+      background: transparent;
+      border: 1px solid var(--h-hair-soft);
+      transition: all .12s;
+    }
+    .ws-ghost-btn:hover { border-color: var(--h-hairline); color: var(--h-ink); }
+    .ws-ghost-btn.active {
+      color: var(--h-ink);
+      background: var(--h-surface-hi);
+      border-color: var(--h-hairline);
+    }
+
+    /* ── Empty panel ──────────────────────────────── */
+    .ws-empty-state {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      padding: 32px;
+      text-align: center;
+    }
+    .ws-empty-icon { color: var(--h-ink-faint); opacity: .8; }
+    .ws-empty-title {
+      font-family: var(--h-serif);
+      font-size: 18px;
+      color: var(--h-ink-mute);
+    }
+    .ws-empty-text {
+      font-family: var(--h-sans);
+      font-size: 13px;
+      color: var(--h-ink-faint);
+      line-height: 1.55;
+      max-width: 240px;
+    }
+
+    /* ── File tree ────────────────────────────────── */
+    .ws-tree { flex: 1; min-height: 0; overflow: auto; padding: 8px 6px; }
+    .ws-tree-row {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 5px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background .12s;
+    }
+    .ws-tree-row:hover { background: var(--h-surface-hi); }
+    .ws-tree-row.active { background: var(--h-surface); }
+    .ws-tree-chevron {
+      color: var(--h-ink-faint);
+      display: inline-flex;
+      transition: transform .12s;
+    }
+    .ws-tree-chevron.open { transform: rotate(90deg); }
+    .ws-tree-name {
+      flex: 1;
+      min-width: 0;
+      font-family: var(--h-sans);
+      font-size: 13px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .ws-tree-name.folder { font-weight: 500; color: var(--h-ink); }
+    .ws-tree-name.file { font-weight: 400; color: var(--h-ink-mute); }
+    .ws-tree-name.active { color: var(--h-ink); }
+    .ws-tree-modified {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex: 0 0 auto;
+    }
+    .ws-dl {
+      opacity: 0;
+      flex: 0 0 auto;
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      border-radius: 5px;
+      border: none;
+      cursor: pointer;
+      background: transparent;
+      color: var(--h-ink-mute);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: opacity .12s, background .12s, color .12s;
+    }
+    .ws-tree-row:hover .ws-dl { opacity: .55; }
+    .ws-dl:hover { background: var(--h-surface); color: var(--h-ink) !important; opacity: 1 !important; }
+
+    /* ── Code viewer ──────────────────────────────── */
+    .ws-code-viewer {
+      flex: 1;
+      min-height: 0;
+      overflow: auto;
+      font-size: calc(var(--stoa-msg-scale, 1) * 13px);
+      line-height: 21px;
+    }
+    .ws-code-table { display: table; min-width: 100%; }
+    .ws-code-line { display: table-row; }
+    .ws-code-line.active { background: rgba(255,255,255,.045); }
+    .ws-code-gutter {
+      display: table-cell;
+      text-align: right;
+      padding: 0 12px 0 14px;
+      color: #7a7060;
+      user-select: none;
+      border-right: 1px solid rgba(255,255,255,.07);
+    }
+    .ws-code-line.active .ws-code-gutter { color: #d3c8b4; }
+    .ws-code-text {
+      display: table-cell;
+      padding: 0 18px 0 16px;
+      white-space: pre;
+    }
+
+    /* ── Diff viewer ──────────────────────────────── */
+    .ws-diff-file-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex: 0 0 auto;
+      padding: 9px 14px;
+      border-bottom: 1px solid var(--h-hair-soft);
+      background: var(--h-surface);
+    }
+    .ws-diff-stat { display: inline-flex; align-items: center; gap: 6px; font-family: var(--h-sans); font-size: 11px; font-weight: 500; }
+    .ws-diff-add { color: #7faa7c; }
+    .ws-diff-del { color: #c08378; }
+
+    .ws-diff-hunk {
+      display: table-row;
+    }
+    .ws-diff-hunk-text {
+      display: table-cell;
+      padding: 3px 14px;
+      color: #7d93b0;
+      background: rgba(91,143,212,.08);
+      white-space: pre;
+    }
+    .ws-diff-line-add { background: color-mix(in srgb, oklch(0.62 0.10 150) 16%, oklch(0.193 0.016 44)); }
+    .ws-diff-line-del { background: color-mix(in srgb, oklch(0.58 0.12 28) 16%, oklch(0.193 0.016 44)); }
+    .ws-diff-line-empty { background: rgba(0,0,0,.18); }
+
+    /* ── Markdown viewer ──────────────────────────── */
+    .ws-md-body { max-width: 620px; }
+    .ws-md-body h1 {
+      font-family: var(--h-serif); font-size: calc(var(--stoa-msg-scale, 1) * 26px); font-weight: 400;
+      color: var(--h-ink); margin: 0 0 12px; line-height: 1.15;
+      padding-bottom: 10px; border-bottom: 1px solid var(--h-hair-soft);
+    }
+    .ws-md-body h2 {
+      font-family: var(--h-serif); font-size: calc(var(--stoa-msg-scale, 1) * 20px); font-weight: 400;
+      color: var(--h-ink); margin: 28px 0 10px; line-height: 1.2;
+    }
+    .ws-md-body h3 {
+      font-family: var(--h-serif); font-size: calc(var(--stoa-msg-scale, 1) * 16px); font-weight: 500;
+      color: var(--h-ink); margin: 22px 0 8px;
+    }
+    .ws-md-body h4, .ws-md-body h5, .ws-md-body h6 {
+      font-family: var(--h-serif); font-size: calc(var(--stoa-msg-scale, 1) * 14px); font-weight: 500;
+      color: var(--h-ink-mute); margin: 18px 0 6px;
+    }
+    .ws-md-body p {
+      font-family: var(--h-sans); font-size: calc(var(--stoa-msg-scale, 1) * 15px); line-height: 1.65;
+      color: var(--h-ink); margin: 0 0 16px; text-wrap: pretty;
+    }
+    .ws-md-body ul, .ws-md-body ol {
+      font-family: var(--h-sans); font-size: calc(var(--stoa-msg-scale, 1) * 15px); line-height: 1.65;
+      color: var(--h-ink); padding-left: 22px; margin: 0 0 16px;
+    }
+    .ws-md-body li { margin-bottom: 4px; }
+    .ws-md-body li > ul, .ws-md-body li > ol { margin: 4px 0 0; }
+    .ws-md-body blockquote {
+      border-left: 3px solid var(--h-hairline); margin: 0 0 16px;
+      padding: 2px 0 2px 16px; color: var(--h-ink-mute);
+    }
+    .ws-md-body hr {
+      border: none; border-top: 1px solid var(--h-hair-soft); margin: 24px 0;
+    }
+    .ws-md-body a {
+      color: var(--h-accent); text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    .ws-md-body a:hover { color: var(--h-ink); }
+    .ws-md-body strong { color: var(--h-ink); font-weight: 600; }
+    .ws-md-body em { font-style: italic; }
+    .ws-md-body :not(pre) > code {
+      font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
+      font-size: 0.85em; padding: 1px 6px; border-radius: 5px;
+      background: color-mix(in srgb, var(--h-ink) 9%, var(--h-surface));
+      color: var(--h-ink-mute);
+    }
+    .ws-md-body pre {
+      position: relative; margin: 0 0 16px; border-radius: 8px;
+      background: oklch(0.193 0.016 44); overflow-x: auto;
+    }
+    .ws-md-body pre code {
+      display: block; padding: 14px 16px; padding-right: 52px;
+      font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
+      font-size: calc(var(--stoa-msg-scale, 1) * 13px); line-height: 1.6; color: #d3c8b4;
+      white-space: pre-wrap; overflow-wrap: break-word;
+      background: transparent;
+    }
+    .ws-md-body table {
+      border-collapse: collapse; margin: 0 0 16px;
+      font-family: var(--h-sans); font-size: calc(var(--stoa-msg-scale, 1) * 14px); width: auto;
+    }
+    .ws-md-body th, .ws-md-body td {
+      border: 1px solid var(--h-hair-soft); padding: 6px 12px; text-align: left;
+    }
+    .ws-md-body th {
+      background: color-mix(in srgb, var(--h-hairline) 30%, transparent);
+      font-weight: 600; color: var(--h-ink);
+    }
+    .ws-md-body td { color: var(--h-ink-mute); }
+    .ws-md-body img { max-width: 100%; border-radius: 8px; margin: 8px 0; }
+
+    /* ── Editing banner ───────────────────────────── */
+    .ws-editing-banner {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      flex: 0 0 auto;
+      padding: 8px 14px;
+      font-family: var(--h-sans);
+      font-size: 12.5px;
+      font-style: italic;
+    }
+
+    /* ── Toggle button ────────────────────────────── */
+    .h-ws-toggle {
+      width: 34px;
+      height: 34px;
+      border-radius: 9px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--h-hair-soft);
+      background: transparent;
+      color: var(--h-ink-mute);
+      margin-left: 6px;
+      transition: color .12s, background .12s, border-color .12s;
+    }
+    .h-ws-toggle:hover { color: var(--h-ink); border-color: var(--h-hairline); }
+    .h-ws-toggle.active {
+      color: var(--h-ink);
+      background: var(--h-surface-hi);
+      border-color: var(--h-hairline);
+    }
+
+    @media (max-width: 1200px) {
+      #workspace-panel.open {
+        position: absolute;
+        right: 0;
+        top: 0;
+        bottom: 0;
+        z-index: 50;
+        box-shadow: -4px 0 24px rgba(0,0,0,0.15);
+      }
+    }
+    @media (max-width: 680px) {
+      #workspace-panel.open {
+        width: 100% !important;
+        min-width: 0;
+        max-width: 100%;
+      }
     }
 
     /* Empty state */
@@ -659,7 +1211,7 @@
     .h-msg-seal-wrap { flex: 0 0 auto; margin-bottom: 2px; }
 
     .h-msg-body {
-      max-width: 560px;
+      max-width: var(--stoa-msg-width, 560px);
       display: flex;
       flex-direction: column;
       gap: 5px;
@@ -704,16 +1256,16 @@
     }
     .h-msg-row.ai .h-bubble {
       font-family: var(--h-msg);
-      font-size: 15px;
+      font-size: calc(var(--stoa-msg-scale, 1) * 16px);
       font-weight: 400;
-      line-height: 1.7;
+      line-height: calc(1.6 * var(--stoa-msg-leading, 1));
       border-top-left-radius: 4px;
     }
     .h-msg-row.human .h-bubble {
       font-family: var(--h-msg);
-      font-size: 15px;
+      font-size: calc(var(--stoa-msg-scale, 1) * 16px);
       font-weight: 400;
-      line-height: 1.65;
+      line-height: calc(1.6 * var(--stoa-msg-leading, 1));
       border-top-right-radius: 4px;
     }
 
@@ -1045,6 +1597,45 @@
       transition: background .15s;
     }
     .s-logout-btn:hover { background: #a33; }
+
+    /* ── Reading comfort controls ───────────────────── */
+    .s-msg-section { display: flex; flex-direction: column; gap: 18px; padding: 14px 0 6px; }
+    .s-msg-sublabel {
+      font-family: var(--h-serif); font-style: italic;
+      font-size: 12px; color: var(--h-ink-mute); letter-spacing: .04em; margin-bottom: 2px;
+    }
+    .s-msg-row { display: flex; gap: 8px; }
+    .s-msg-row-wrap { display: flex; gap: 18px; flex-wrap: wrap; }
+    .s-msg-col { flex: 1; min-width: 220px; display: flex; flex-direction: column; gap: 8px; }
+
+    .s-seg-btn {
+      flex: 1; display: flex; flex-direction: column; align-items: center;
+      justify-content: flex-end; gap: 8px; min-height: 62px;
+      padding: 12px 8px 10px; border-radius: 10px; cursor: pointer;
+      background: transparent; border: 1px solid var(--h-hair-soft);
+      color: var(--h-ink-mute); transition: background .12s, border-color .12s, color .12s;
+    }
+    .s-seg-btn:hover { border-color: var(--h-hairline); }
+    .s-seg-btn.active {
+      background: var(--h-surface-hi); border-color: var(--h-ink); color: var(--h-ink);
+    }
+    .s-seg-label { font-family: var(--h-sans); font-size: 11.5px; }
+    .s-seg-icon { font-family: var(--h-serif); line-height: 1; }
+
+    .s-seg-bars { display: flex; flex-direction: column; align-items: center; }
+    .s-seg-bar { width: 16px; height: 2px; border-radius: 2px; background: currentColor; }
+
+    .s-msg-preview {
+      display: flex; flex-direction: column; gap: 12px; padding: 16px; border-radius: 12px;
+      background: color-mix(in srgb, var(--h-bg) 55%, var(--h-surface));
+      border: 1px solid var(--h-hair-soft);
+    }
+    .s-msg-preview-row { display: flex; align-items: flex-end; gap: 10px; }
+    .s-msg-preview-row.human { flex-direction: row-reverse; }
+    .s-msg-preview-bubble {
+      padding: 10px 15px; border-radius: 15px; border: 1px solid;
+      font-family: var(--h-msg); color: var(--h-ink); text-wrap: pretty;
+    }
 
     /* Streaming cursor */
     .h-cursor {
@@ -1394,25 +1985,30 @@
     .h-msg-actions {
       display: none;
       position: absolute;
-      top: 26px;
-      gap: 2px;
-      padding: 2px;
+      top: -15px;
+      gap: 1px;
+      padding: 3px;
+      border-radius: 9px;
+      background: var(--h-surface);
+      border: 1px solid var(--h-hairline);
+      box-shadow: 0 2px 10px rgba(0,0,0,.14);
       z-index: 5;
     }
     .h-msg-row:hover .h-msg-actions, .h-msg-row.show-actions .h-msg-actions { display: flex; }
-    .h-msg-row.ai .h-msg-actions { left: calc(100% + 6px); }
-    .h-msg-row.human .h-msg-actions { right: calc(100% + 6px); }
+    .h-msg-row.ai .h-msg-actions { right: 8px; }
+    .h-msg-row.human .h-msg-actions { left: 8px; }
     .h-msg-action-btn {
       border: none;
       background: none;
-      color: var(--h-ink-faint);
+      color: var(--h-ink-mute);
       cursor: pointer;
-      padding: 4px 6px;
-      border-radius: 4px;
+      padding: 5px;
+      border-radius: 6px;
       display: flex;
       align-items: center;
+      transition: background .12s, color .12s;
     }
-    .h-msg-action-btn:hover { background: var(--h-hair-soft); color: var(--h-ink); }
+    .h-msg-action-btn:hover { background: var(--h-surface-hi); color: var(--h-ink); }
 
     .h-msg-action-btn.copied svg { stroke: #5cb85c; }
     .h-msg-action-btn.copied { background: rgba(92,184,92,.12); }
@@ -2039,6 +2635,35 @@
 
     .h-bubble hr { border: none; border-top: 1px solid var(--h-hair-soft); margin: 0.7em 0; }
 
+    /* File path links */
+    .h-file-link {
+      cursor: pointer;
+      text-decoration: underline;
+      text-decoration-style: dashed;
+      text-underline-offset: 3px;
+      text-decoration-color: var(--h-accent);
+      transition: background .12s;
+      border-radius: 3px;
+    }
+    .h-file-link:hover {
+      background: color-mix(in srgb, var(--h-accent) 12%, transparent);
+    }
+    code.h-file-link {
+      text-decoration: underline;
+      text-decoration-style: dashed;
+      text-underline-offset: 3px;
+      text-decoration-color: var(--h-accent);
+    }
+    code.h-file-link:hover {
+      background: color-mix(in srgb, var(--h-accent) 18%, oklch(0.820 0.028 50));
+    }
+    html.dark code.h-file-link:hover {
+      background: color-mix(in srgb, var(--h-accent) 18%, oklch(0.550 0.020 55));
+    }
+
+    .h-file-link-block { transition: outline .12s; }
+    .h-file-link-block:hover { outline: 1.5px dashed var(--h-accent); outline-offset: -1.5px; }
+
     /* Inline code */
     .h-bubble :not(pre) > code {
       font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
@@ -2055,6 +2680,25 @@
       color: oklch(0.150 0.010 45);
     }
 
+    /* ── Syntax highlighting (Hearth palette — matches workspace.jsx SYN) ── */
+    .hljs { background: transparent; color: #d3c8b4; }
+    .hljs-keyword, .hljs-selector-tag, .hljs-built_in { color: #c2876b; }
+    .hljs-string, .hljs-attr, .hljs-addition { color: #b59a5e; }
+    .hljs-number, .hljs-literal, .hljs-variable.constant_ { color: #c08aa0; }
+    .hljs-comment, .hljs-quote { color: #837868; font-style: italic; }
+    .hljs-function .hljs-title, .hljs-title.function_, .hljs-title.class_ { color: #6f9f8c; }
+    .hljs-type, .hljs-params { color: #6f9f8c; }
+    .hljs-property, .hljs-attribute { color: #d3c8b4; }
+    .hljs-regexp, .hljs-link { color: #c2876b; }
+    .hljs-meta, .hljs-tag { color: #9a8f7e; }
+    .hljs-name, .hljs-selector-class, .hljs-selector-id { color: #c2876b; }
+    .hljs-symbol, .hljs-bullet { color: #b59a5e; }
+    .hljs-template-variable, .hljs-subst { color: #d3c8b4; }
+    .hljs-deletion { color: #c08378; }
+    .hljs-emphasis { font-style: italic; }
+    .hljs-strong { font-weight: 600; }
+    .hljs-punctuation { color: #9a8f7e; }
+
     /* Code block */
     .h-bubble pre {
       position: relative;
@@ -2070,10 +2714,10 @@
     .h-bubble pre code {
       display: block;
       font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
-      font-size: 13px;
+      font-size: calc(var(--stoa-msg-scale, 1) * 13px);
       font-style: normal;
       line-height: 1.6;
-      color: oklch(0.875 0.010 55);
+      color: #d3c8b4;
       padding: 14px 16px;
       padding-right: 52px;
       overflow-x: auto;
@@ -2081,6 +2725,24 @@
       overflow-wrap: break-word;
       word-break: normal;
       background: transparent;
+    }
+
+    /* Language label */
+    .h-code-lang {
+      position: absolute;
+      top: 8px;
+      left: 12px;
+      font-family: var(--h-sans);
+      font-size: 10px;
+      font-weight: 500;
+      letter-spacing: 0.3px;
+      color: #837868;
+      text-transform: uppercase;
+      pointer-events: none;
+      line-height: 1;
+    }
+    .h-bubble pre:has(.h-code-lang) code {
+      padding-top: 28px;
     }
 
     /* Copy button */
@@ -2307,7 +2969,24 @@
     .s-docs-body ul, .s-docs-body ol { padding-left: 20px; margin-bottom: 12px; }
     .s-docs-body code { font-size: 12.5px; background: var(--h-hairline); padding: 1px 5px; border-radius: 4px; }
     .s-docs-body pre { background: color-mix(in srgb, var(--h-ink) 6%, var(--h-surface)); border: 1px solid var(--h-hairline); border-radius: 8px; padding: 14px 16px; overflow-x: auto; margin-bottom: 16px; position: relative; }
-    .s-docs-body pre code { background: none; padding: 0; font-size: 13px; }
+    .s-docs-body pre:has(.h-code-lang) code { padding-top: 14px; }
+    .s-docs-body .h-code-lang { color: var(--h-ink-faint); }
+    .s-docs-body pre code { background: none; padding: 0; font-size: 13px; color: var(--h-ink); }
+    .s-docs-body pre .hljs { color: var(--h-ink); }
+    .s-docs-body pre .hljs-keyword, .s-docs-body pre .hljs-selector-tag, .s-docs-body pre .hljs-built_in { color: #8c5a42; }
+    .s-docs-body pre .hljs-string, .s-docs-body pre .hljs-attr, .s-docs-body pre .hljs-addition { color: #7a6832; }
+    .s-docs-body pre .hljs-number, .s-docs-body pre .hljs-literal { color: #8a5a6e; }
+    .s-docs-body pre .hljs-comment, .s-docs-body pre .hljs-quote { color: var(--h-ink-faint); font-style: italic; }
+    .s-docs-body pre .hljs-function .hljs-title, .s-docs-body pre .hljs-title.function_, .s-docs-body pre .hljs-title.class_ { color: #4a7a68; }
+    .s-docs-body pre .hljs-type, .s-docs-body pre .hljs-params { color: #4a7a68; }
+    .s-docs-body pre .hljs-property, .s-docs-body pre .hljs-attribute { color: var(--h-ink-mute); }
+    html.dark .s-docs-body pre .hljs-keyword, html.dark .s-docs-body pre .hljs-selector-tag, html.dark .s-docs-body pre .hljs-built_in { color: #c2876b; }
+    html.dark .s-docs-body pre .hljs-string, html.dark .s-docs-body pre .hljs-attr, html.dark .s-docs-body pre .hljs-addition { color: #b59a5e; }
+    html.dark .s-docs-body pre .hljs-number, html.dark .s-docs-body pre .hljs-literal { color: #c08aa0; }
+    html.dark .s-docs-body pre .hljs-comment, html.dark .s-docs-body pre .hljs-quote { color: var(--h-ink-faint); }
+    html.dark .s-docs-body pre .hljs-function .hljs-title, html.dark .s-docs-body pre .hljs-title.function_, html.dark .s-docs-body pre .hljs-title.class_ { color: #6f9f8c; }
+    html.dark .s-docs-body pre .hljs-type, html.dark .s-docs-body pre .hljs-params { color: #6f9f8c; }
+    html.dark .s-docs-body pre .hljs-property, html.dark .s-docs-body pre .hljs-attribute { color: #d3c8b4; }
     .s-docs-body a { color: var(--h-ink-mute); text-underline-offset: 3px; }
     .s-docs-body hr { border: none; border-top: 1px solid var(--h-hair-soft); margin: 24px 0; }
     .s-docs-body strong { color: var(--h-ink); }
@@ -2583,6 +3262,9 @@
     <button id="refresh-btn" title="Reload" aria-label="Reload" onclick="location.reload(true)">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
     </button>
+    <button class="h-sidebar-collapse" id="sidebar-collapse-btn" title="Hide room list">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 7l-4 5 4 5"/><path d="M18 7l-4 5 4 5"/></svg>
+    </button>
   </div>
   <div class="h-search-wrap">
     <svg class="h-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -2609,6 +3291,7 @@
 </aside>
 
 <main id="main">
+<div id="chat-area">
   <div id="empty-state">
     <div class="h-faded-mark" aria-hidden="true">
       <svg width="165" height="127" viewBox="0 0 260 200">
@@ -2623,6 +3306,9 @@
     </div>
     <div class="h-empty-logo">the porch is quiet.</div>
     <div class="h-empty-sub">pick a room from the list on the left, or start a new one.</div>
+    <button class="h-rooms-toggle" id="empty-rooms-toggle" style="display:none;margin-top:12px" title="Show room list">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16"/></svg>
+    </button>
   </div>
 
   <div id="settings-inner">
@@ -2758,6 +3444,13 @@
     <!-- tab: general -->
     <div class="s-content" id="s-tab-general" style="display:none">
       <div class="s-content-inner">
+        <div class="s-server-card">
+          <div class="s-server-card-header">
+            <span style="font-family:var(--h-serif);font-size:16px;color:var(--h-ink)">messages</span>
+            <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)">reading comfort in chat bubbles — applies to every room</span>
+          </div>
+          <div id="s-reading-controls" class="s-msg-section" style="padding:14px 18px 18px"></div>
+        </div>
         <div class="s-server-card">
           <div class="s-server-card-header">
             <span style="font-family:var(--h-serif);font-size:16px;color:var(--h-ink)">account</span>
@@ -2921,6 +3614,49 @@
       </div>
     </div>
   </div>
+</div><!-- /chat-area -->
+
+<div id="workspace-panel">
+  <div id="ws-drag-handle">
+    <span class="ws-grip">
+      <span class="ws-grip-dot"></span>
+      <span class="ws-grip-dot"></span>
+      <span class="ws-grip-dot"></span>
+    </span>
+  </div>
+  <div id="ws-panel-body">
+    <div class="ws-tab-bar" id="ws-tab-bar">
+      <button class="ws-pin-tab active" data-ws-pin="files" title="Files">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h7M4 12h10M4 18h6"/><circle cx="18" cy="6" r="1.4" fill="currentColor" stroke="none"/></svg>
+        <span class="ws-tab-indicator"></span>
+      </button>
+      <button class="ws-pin-tab" data-ws-pin="git" title="Git">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6.5" cy="6" r="2.2"/><circle cx="6.5" cy="18" r="2.2"/><circle cx="17.5" cy="8" r="2.2"/><path d="M6.5 8.2v7.6M8.7 8c4 .2 6.5 1 8.6 .2M17.5 10.2c0 3.2-3 4.6-6.2 4.8"/></svg>
+        <span class="ws-tab-indicator"></span>
+      </button>
+      <div class="ws-tab-divider"></div>
+      <div class="ws-tab-list" id="ws-tab-list"></div>
+      <button class="ws-tab-close-panel" id="ws-panel-close-btn" title="Close panel">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <div id="ws-editing-banner"></div>
+    <div class="ws-toolbar" id="ws-toolbar" style="display:none">
+      <div class="ws-breadcrumb" id="ws-breadcrumb"></div>
+      <div id="ws-toolbar-actions"></div>
+    </div>
+    <div id="ws-panel-content">
+      <div class="ws-empty-state">
+        <span class="ws-empty-icon">
+          <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h7M4 12h10M4 18h6"/><circle cx="18" cy="6" r="1.4" fill="currentColor" stroke="none"/></svg>
+        </span>
+        <div class="ws-empty-title">nothing open yet</div>
+        <div class="ws-empty-text">open a file, or click a file reference in the chat to read it here.</div>
+      </div>
+    </div>
+  </div>
+</div><!-- /workspace-panel -->
+
 </main>
 
 <!-- New-room modal -->
@@ -3231,6 +3967,15 @@ function renderChatHeader(room, participants) {
   backBtn.onclick = () => document.body.classList.remove('in-chat');
   header.appendChild(backBtn);
 
+  if (document.body.classList.contains('sidebar-collapsed')) {
+    const roomsToggle = document.createElement('button');
+    roomsToggle.className = 'h-rooms-toggle';
+    roomsToggle.title = 'Show room list';
+    roomsToggle.innerHTML = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M9 4v16"/></svg>`;
+    roomsToggle.onclick = () => toggleSidebar();
+    header.appendChild(roomsToggle);
+  }
+
   const info = document.createElement('div');
   info.className = 'h-header-info';
 
@@ -3398,6 +4143,13 @@ function renderChatHeader(room, participants) {
   exportWrap.appendChild(exportBtn);
   exportWrap.appendChild(exportDrop);
   header.appendChild(exportWrap);
+
+  const wsToggle = document.createElement('button');
+  wsToggle.className = 'h-ws-toggle' + (document.getElementById('workspace-panel').classList.contains('open') ? ' active' : '');
+  wsToggle.title = 'Dev Workspace';
+  wsToggle.innerHTML = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M14 4v16"/></svg>`;
+  wsToggle.onclick = toggleWorkspacePanel;
+  header.appendChild(wsToggle);
 }
 
 // ── Composer seal ──────────────────────────────────────────────────────────
@@ -3626,7 +4378,8 @@ document.addEventListener('click', e => {
 
 async function archiveRoom(room) {
   try {
-    await fetch(`/api/rooms/${room.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ archived: true }) });
+    const res = await fetch(`/api/rooms/${room.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ archived: true }) });
+    if (!res.ok) throw new Error('archive failed');
   } catch { showToast('Failed to archive room', { error: true }); return; }
   if (currentRoomId === room.id) {
     currentRoomId = null;
@@ -3638,7 +4391,8 @@ async function archiveRoom(room) {
 
 async function restoreRoom(room) {
   try {
-    await fetch(`/api/rooms/${room.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ archived: false }) });
+    const res = await fetch(`/api/rooms/${room.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ archived: false }) });
+    if (!res.ok) throw new Error('restore failed');
   } catch { showToast('Failed to restore room', { error: true }); return; }
   refreshRoomList();
 }
@@ -3646,7 +4400,8 @@ async function restoreRoom(room) {
 async function deleteRoom(room) {
   if (!confirm(`Delete "${room.title}"? This cannot be undone.`)) return;
   try {
-    await fetch(`/api/rooms/${room.id}`, { method: 'DELETE' });
+    const res = await fetch(`/api/rooms/${room.id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('delete failed');
   } catch { showToast('Failed to delete room', { error: true }); return; }
   if (currentRoomId === room.id) {
     currentRoomId = null;
@@ -3726,6 +4481,8 @@ function connectWS(roomId) {
 
   ws.onopen = () => {
     ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+    ws.send(JSON.stringify({ type: 'file_list' }));
+    ws.send(JSON.stringify({ type: 'git_diff' }));
     setConnected(true);
   };
 
@@ -3811,7 +4568,10 @@ function handleWsMessage(msg) {
     finalizeMessage(msg.message_id, msg.content, msg.file_url, msg.file_name, msg.attachments);
     clearComposerProcessing(msg.message_id);
     refreshRoomList();
-    // Desktop notification for agent messages in current room (when not focused)
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: 'file_list' }));
+      ws.send(JSON.stringify({ type: 'git_diff' }));
+    }
     if (document.visibilityState !== 'visible') {
       const el = document.getElementById('msg-' + msg.message_id);
       const actorName = el?.querySelector('.h-msg-name')?.textContent || 'Agent';
@@ -3822,6 +4582,7 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'message_tool') {
     appendToolStep(msg.message_id, msg.tool);
+    wsScheduleRefresh();
     return;
   }
 
@@ -3886,6 +4647,50 @@ function handleWsMessage(msg) {
     handleServerRestart(msg);
     return;
   }
+
+  if (msg.type === 'file_list') {
+    if (msg.error) { console.warn('[ws] file_list error:', msg.error); return; }
+    wsFileTreeData = msg.tree || [];
+    wsFileTreeRoot = msg.root || '';
+    wsModifiedFiles = new Set(msg.modified || []);
+    if (wsActiveView === 'files') wsRenderContent();
+    return;
+  }
+
+  if (msg.type === 'file_read') {
+    if (msg.error) { console.warn('[ws] file_read error:', msg.error); return; }
+    const panel = document.getElementById('workspace-panel');
+    if (!panel.classList.contains('open')) toggleWorkspacePanel();
+    if (msg.base64) {
+      const ext = wsGetExt(msg.path);
+      const mimeMap = { png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', gif:'image/gif', webp:'image/webp', svg:'image/svg+xml', ico:'image/x-icon', bmp:'image/bmp' };
+      const existing = wsOpenFiles.find(f => f.name === msg.path);
+      if (existing) existing.base64 = msg.base64;
+      else wsOpenFiles.push({ name: msg.path, content: '', base64: msg.base64, ext });
+      wsActiveFile = msg.path;
+      wsActiveView = 'file';
+      wsRenderTabs();
+      wsRenderContent();
+    } else {
+      wsOpenFile(msg.path, msg.content);
+    }
+    return;
+  }
+
+  if (msg.type === 'git_diff') {
+    if (msg.error) { console.warn('[ws] git_diff error:', msg.error); return; }
+    wsGitDiffData = msg.files || [];
+    const gitTab = document.querySelector('[data-ws-pin="git"]');
+    if (gitTab) {
+      let badge = gitTab.querySelector('.ws-git-badge');
+      if (wsGitDiffData.length) {
+        if (!badge) { badge = document.createElement('span'); badge.className = 'ws-git-badge'; gitTab.appendChild(badge); }
+        badge.textContent = wsGitDiffData.length;
+      } else if (badge) { badge.remove(); }
+    }
+    if (wsActiveView === 'git') wsRenderContent();
+    return;
+  }
 }
 
 // ── Server restart notification ───────────────────────────────────────────
@@ -3917,16 +4722,569 @@ function applyTheme(dark) {
   if (btn) { btn.innerHTML = dark ? SUN_SVG : MOON_SVG; btn.title = dark ? 'switch to light' : 'switch to dark'; }
 }
 
+function toggleSidebar() {
+  const collapsed = document.body.classList.toggle('sidebar-collapsed');
+  const emptyBtn = document.getElementById('empty-rooms-toggle');
+  if (emptyBtn) emptyBtn.style.display = collapsed ? '' : 'none';
+  if (currentRoomId) {
+    const parts = roomParticipantsCache[currentRoomId] || [];
+    const room = { id: currentRoomId, title: document.querySelector('.h-room-name')?.textContent || '' };
+    renderChatHeader(room, parts);
+  }
+}
+
 function toggleTheme() {
   applyTheme(!document.documentElement.classList.contains('dark'));
 }
 
+// ── Workspace panel ───────────────────────────────────────────────────────
+const WS_FILE_COLORS = {
+  js:   { tag: 'js',  c: '#c2876b' },
+  jsx:  { tag: 'jsx', c: '#6f9f8c' },
+  ts:   { tag: 'ts',  c: '#5b8fd4' },
+  tsx:  { tag: 'tsx', c: '#5b8fd4' },
+  md:   { tag: 'md',  c: '#5b8fd4' },
+  json: { tag: '{}',  c: '#d39749' },
+  css:  { tag: 'css', c: '#c08aa0' },
+  html: { tag: 'htm', c: '#c2876b' },
+  py:   { tag: 'py',  c: '#b59a5e' },
+  sql:  { tag: 'sql', c: '#6f9f8c' },
+};
+
+function wsFileGlyph(ext, size = 15) {
+  const m = WS_FILE_COLORS[ext] || { tag: '', c: 'var(--h-ink-faint)' };
+  const el = document.createElement('span');
+  el.className = 'ws-file-glyph ws-mono';
+  el.style.cssText = `width:${size+3}px;height:${size+3}px;border:1px solid color-mix(in srgb,${m.c} 50%,transparent);background:color-mix(in srgb,${m.c} 14%,transparent);color:${m.c}`;
+  el.textContent = m.tag;
+  return el;
+}
+
+function wsGetExt(name) { return (name.match(/\.(\w+)$/) || [])[1] || ''; }
+
+let wsActiveView = 'files';
+let wsOpenFiles = [];
+let wsActiveFile = null;
+let wsFileTreeData = [];
+let wsFileTreeRoot = '';
+let wsGitDiffData = [];
+let wsModifiedFiles = new Set();
+
+function wsDownloadFile(relPath, fileName) {
+  const fullPath = wsFileTreeRoot ? wsFileTreeRoot.replace(/\\/g, '/').replace(/\/+$/, '') + '/' + relPath : relPath;
+  const isAbs = /^\//.test(fullPath) || /^[A-Za-z]:/.test(fullPath);
+  const imgExts = new Set(['png','jpg','jpeg','gif','webp','svg','ico','bmp']);
+  const ext = wsGetExt(fileName);
+  const binary = imgExts.has(ext);
+
+  const existing = wsOpenFiles.find(f => f.name === fullPath);
+  if (existing && (existing.content || existing.base64)) {
+    triggerDownload(fileName, existing.content, existing.base64, ext);
+    return;
+  }
+
+  const handler = (e) => {
+    let msg; try { msg = JSON.parse(e.data); } catch { return; }
+    if (msg.type !== 'file_read' || (msg.path !== fullPath && msg.path !== relPath)) return;
+    ws.removeEventListener('message', handler);
+    if (msg.error) { showToast('Download failed: ' + msg.error, { error: true }); return; }
+    triggerDownload(fileName, msg.content, msg.base64, ext);
+  };
+  ws.addEventListener('message', handler);
+  setTimeout(() => ws.removeEventListener('message', handler), 15000);
+
+  const req = { type: 'file_read', path: fullPath };
+  if (binary) req.binary = true;
+  if (isAbs) req.absolute = true;
+  ws.send(JSON.stringify(req));
+}
+
+function triggerDownload(name, content, base64, ext) {
+  let blob;
+  if (base64) {
+    const mimeMap = { png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', gif:'image/gif', webp:'image/webp', svg:'image/svg+xml', ico:'image/x-icon', bmp:'image/bmp', pdf:'application/pdf' };
+    const bin = atob(base64);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    blob = new Blob([arr], { type: mimeMap[ext] || 'application/octet-stream' });
+  } else {
+    blob = new Blob([content || ''], { type: 'text/plain;charset=utf-8' });
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+let wsRefreshTimer = null;
+function wsScheduleRefresh() {
+  if (wsRefreshTimer) clearTimeout(wsRefreshTimer);
+  wsRefreshTimer = setTimeout(() => {
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: 'file_list' }));
+      ws.send(JSON.stringify({ type: 'git_diff' }));
+    }
+    wsRefreshTimer = null;
+  }, 5000);
+}
+
+function toggleWorkspacePanel() {
+  const panel = document.getElementById('workspace-panel');
+  const isOpen = panel.classList.toggle('open');
+  document.querySelectorAll('.h-ws-toggle').forEach(b => b.classList.toggle('active', isOpen));
+  if (isOpen) {
+    const saved = localStorage.getItem('stoa-ws-panel-width');
+    if (saved) panel.style.setProperty('--ws-panel-width', saved);
+    if (ws && wsActiveView === 'files') ws.send(JSON.stringify({ type: 'file_list' }));
+    if (ws && wsActiveView === 'git') ws.send(JSON.stringify({ type: 'git_diff' }));
+  }
+}
+
+function wsSetView(view) {
+  wsActiveView = view;
+  wsActiveFile = null;
+  document.querySelectorAll('.ws-pin-tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.wsPin === view);
+  });
+  if (view === 'files' && ws) ws.send(JSON.stringify({ type: 'file_list' }));
+  if (view === 'git' && ws) ws.send(JSON.stringify({ type: 'git_diff' }));
+  wsRenderContent();
+}
+
+function wsOpenFile(name, content) {
+  const existing = wsOpenFiles.find(f => f.name === name);
+  if (existing) {
+    if (content != null) { existing.content = content; existing.loaded = true; }
+  } else {
+    wsOpenFiles.push({ name, content: content ?? '', ext: wsGetExt(name), loaded: content != null });
+  }
+  const imgExts = new Set(['png','jpg','jpeg','gif','webp','svg','ico','bmp']);
+  const fileExt = wsGetExt(name);
+  const isAbs = /^\//.test(name) || /^[A-Za-z]:/.test(name);
+  if (!content && ws) {
+    const req = { type: 'file_read', path: name };
+    if (imgExts.has(fileExt)) req.binary = true;
+    if (isAbs) req.absolute = true;
+    ws.send(JSON.stringify(req));
+  }
+  wsActiveFile = name;
+  wsActiveView = 'file';
+  document.querySelectorAll('.ws-pin-tab').forEach(t => t.classList.remove('active'));
+  wsRenderTabs();
+  wsRenderContent();
+}
+
+function wsRenderFileTree(container, nodes, parentPath) {
+  nodes.forEach(node => {
+    const row = document.createElement('div');
+    row.className = 'ws-tree-row';
+    row.style.paddingLeft = (8 + node.depth * 16) + 'px';
+
+    if (node.t === 'folder') {
+      const chevron = document.createElement('span');
+      chevron.className = 'ws-tree-chevron' + (node.open ? ' open' : '');
+      chevron.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>';
+      row.appendChild(chevron);
+      const folderIcon = document.createElement('span');
+      folderIcon.style.cssText = 'color:var(--h-ink-mute);display:inline-flex';
+      folderIcon.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
+      row.appendChild(folderIcon);
+      const nameEl = document.createElement('span');
+      nameEl.className = 'ws-tree-name folder';
+      nameEl.textContent = node.name;
+      row.appendChild(nameEl);
+
+      const childContainer = document.createElement('div');
+      childContainer.style.display = node.open ? '' : 'none';
+
+      row.onclick = () => {
+        node.open = !node.open;
+        chevron.classList.toggle('open', node.open);
+        childContainer.style.display = node.open ? '' : 'none';
+      };
+
+      container.appendChild(row);
+      if (node.children) {
+        wsRenderFileTree(childContainer, node.children, parentPath ? parentPath + '/' + node.name : node.name);
+      }
+      container.appendChild(childContainer);
+    } else {
+      const spacer = document.createElement('span');
+      spacer.style.cssText = 'width:12px;flex:0 0 auto';
+      row.appendChild(spacer);
+      row.appendChild(wsFileGlyph(node.t, 14));
+      const nameEl = document.createElement('span');
+      nameEl.className = 'ws-tree-name file';
+      nameEl.textContent = node.name;
+      row.appendChild(nameEl);
+
+      const relPath = parentPath ? parentPath + '/' + node.name : node.name;
+      const dlBtn = document.createElement('button');
+      dlBtn.className = 'ws-dl';
+      dlBtn.title = 'Download ' + node.name;
+      dlBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10"/><path d="M8 11l4 4 4-4"/><path d="M5 19h14"/></svg>';
+      dlBtn.onclick = (e) => { e.stopPropagation(); wsDownloadFile(relPath, node.name); };
+      row.appendChild(dlBtn);
+      if (wsModifiedFiles.has(relPath) || wsModifiedFiles.has(node.name)) {
+        const dot = document.createElement('span');
+        dot.className = 'ws-tree-modified';
+        dot.title = 'modified';
+        dot.style.background = '#d39749';
+        row.appendChild(dot);
+      }
+      const fullPath = wsFileTreeRoot ? wsFileTreeRoot.replace(/\\/g, '/').replace(/\/+$/, '') + '/' + relPath : relPath;
+      row.onclick = () => {
+        const panel = document.getElementById('workspace-panel');
+        if (!panel.classList.contains('open')) toggleWorkspacePanel();
+        wsOpenFile(fullPath);
+      };
+      container.appendChild(row);
+    }
+  });
+}
+
+function wsCloseFile(name) {
+  wsOpenFiles = wsOpenFiles.filter(f => f.name !== name);
+  if (wsActiveFile === name) {
+    wsActiveFile = wsOpenFiles.length ? wsOpenFiles[wsOpenFiles.length - 1].name : null;
+    if (!wsActiveFile) wsActiveView = 'files';
+  }
+  wsRenderTabs();
+  wsRenderContent();
+}
+
+function wsRenderTabs() {
+  const list = document.getElementById('ws-tab-list');
+  if (!list) return;
+  list.innerHTML = '';
+  wsOpenFiles.forEach(f => {
+    const tab = document.createElement('div');
+    tab.className = 'ws-file-tab' + (f.name === wsActiveFile ? ' active' : '');
+    tab.appendChild(wsFileGlyph(f.ext, 13));
+    const nameEl = document.createElement('span');
+    nameEl.className = 'ws-file-tab-name';
+    nameEl.textContent = f.name;
+    tab.appendChild(nameEl);
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'ws-file-tab-close';
+    closeBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+    closeBtn.onclick = (e) => { e.stopPropagation(); wsCloseFile(f.name); };
+    tab.appendChild(closeBtn);
+    const indicator = document.createElement('span');
+    indicator.className = 'ws-tab-indicator';
+    tab.appendChild(indicator);
+    tab.onclick = () => wsOpenFile(f.name, f.content);
+    list.appendChild(tab);
+  });
+}
+
+function wsSetToolbar(crumbs, actions) {
+  const toolbar = document.getElementById('ws-toolbar');
+  const bc = document.getElementById('ws-breadcrumb');
+  const act = document.getElementById('ws-toolbar-actions');
+  if (!crumbs || !crumbs.length) { toolbar.style.display = 'none'; return; }
+  toolbar.style.display = '';
+  bc.innerHTML = '';
+  crumbs.forEach((c, i) => {
+    if (i > 0) {
+      const sep = document.createElement('span');
+      sep.className = 'ws-crumb-sep';
+      sep.textContent = '/';
+      bc.appendChild(sep);
+    }
+    const s = document.createElement('span');
+    s.className = 'ws-crumb';
+    s.textContent = c;
+    bc.appendChild(s);
+  });
+  act.innerHTML = '';
+  if (actions) act.appendChild(actions);
+}
+
+function wsRenderContent() {
+  const content = document.getElementById('ws-panel-content');
+  const banner = document.getElementById('ws-editing-banner');
+  content.innerHTML = '';
+  banner.innerHTML = '';
+
+  if (wsActiveView === 'files') {
+    wsSetToolbar(null);
+    if (wsFileTreeData.length) {
+      content.className = 'ws-tree ws-scroll';
+      content.style.cssText = '';
+      wsRenderFileTree(content, wsFileTreeData, '');
+    } else {
+      content.innerHTML = `<div class="ws-empty-state">
+        <span class="ws-empty-icon"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h7M4 12h10M4 18h6"/><circle cx="18" cy="6" r="1.4" fill="currentColor" stroke="none"/></svg></span>
+        <div class="ws-empty-title">nothing open yet</div>
+        <div class="ws-empty-text">open a file, or click a file reference in the chat to read it here.</div>
+      </div>`;
+    }
+    return;
+  }
+
+  if (wsActiveView === 'git') {
+    if (wsGitDiffData.length) {
+      wsSetToolbar(['working tree', wsGitDiffData.length + ' file' + (wsGitDiffData.length > 1 ? 's' : '') + ' changed']);
+      wsGitDiffData.forEach(file => {
+        const hdr = document.createElement('div');
+        hdr.className = 'ws-diff-file-header';
+        hdr.appendChild(wsFileGlyph(wsGetExt(file.name), 14));
+        const fname = document.createElement('span');
+        fname.className = 'ws-mono';
+        fname.style.cssText = 'font-size:12.5px;color:var(--h-ink)';
+        fname.textContent = file.name;
+        hdr.appendChild(fname);
+        hdr.appendChild(document.createElement('span')).style.flex = '1';
+        const stat = document.createElement('span');
+        stat.className = 'ws-diff-stat';
+        stat.innerHTML = `<span class="ws-diff-add">+${file.add}</span><span class="ws-diff-del">−${file.del}</span>`;
+        hdr.appendChild(stat);
+        content.appendChild(hdr);
+        const diffContainer = document.createElement('div');
+        wsRenderDiff(diffContainer, file.hunks, 'unified');
+        content.appendChild(diffContainer);
+      });
+    } else {
+      wsSetToolbar(['working tree']);
+      content.innerHTML = `<div class="ws-empty-state">
+        <span class="ws-empty-icon"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6.5" cy="6" r="2.2"/><circle cx="6.5" cy="18" r="2.2"/><circle cx="17.5" cy="8" r="2.2"/><path d="M6.5 8.2v7.6M8.7 8c4 .2 6.5 1 8.6 .2M17.5 10.2c0 3.2-3 4.6-6.2 4.8"/></svg></span>
+        <div class="ws-empty-title">no changes</div>
+        <div class="ws-empty-text">working tree is clean.</div>
+      </div>`;
+    }
+    return;
+  }
+
+  if (wsActiveView === 'file' && wsActiveFile) {
+    const file = wsOpenFiles.find(f => f.name === wsActiveFile);
+    if (!file) return;
+    const ext = file.ext;
+    const parts = file.name.split('/');
+    wsSetToolbar(parts);
+
+    const IMG_EXTS = new Set(['png','jpg','jpeg','gif','webp','svg','ico','bmp']);
+    if (IMG_EXTS.has(ext)) {
+      content.className = 'ws-scroll';
+      content.style.cssText = 'flex:1;min-height:0;overflow:auto;display:flex;align-items:center;justify-content:center;padding:24px;background:color-mix(in srgb,var(--h-ink) 4%,var(--h-bg))';
+      const img = document.createElement('img');
+      const mimeMap = { png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', gif:'image/gif', webp:'image/webp', svg:'image/svg+xml', ico:'image/x-icon', bmp:'image/bmp' };
+      if (file.base64) {
+        img.src = `data:${mimeMap[ext] || 'image/png'};base64,${file.base64}`;
+      } else {
+        img.src = `/api/workspace/file?room=${currentRoomId}&path=${encodeURIComponent(file.name)}`;
+      }
+      img.style.cssText = 'max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,.12)';
+      img.alt = file.name;
+      content.appendChild(img);
+      return;
+    }
+
+    if (ext === 'md' && file.loaded) {
+      content.className = 'ws-scroll ws-md-view';
+      content.style.cssText = 'flex:1;min-height:0;overflow:auto;padding:26px 30px 40px';
+      const inner = document.createElement('div');
+      inner.className = 'ws-md-body';
+      inner.innerHTML = file.content ? DOMPurify.sanitize(marked.parse(file.content), { ADD_ATTR: ['class'] }) : '<p style="color:var(--h-ink-faint);font-style:italic">empty file</p>';
+      addCopyButtons(inner);
+      content.appendChild(inner);
+    } else if (file.loaded) {
+      wsRenderCodeViewer(content, file.content || '', file.name);
+    } else {
+      content.innerHTML = `<div class="ws-empty-state">
+        <div class="ws-empty-title">loading…</div>
+        <div class="ws-empty-text">fetching file from agent.</div>
+      </div>`;
+    }
+  }
+}
+
+function wsRenderCodeViewer(container, text, fileName) {
+  const lines = text.split('\n');
+  const gutW = String(lines.length).length * 9 + 22;
+  container.className = 'ws-code ws-mono ws-code-viewer';
+  container.style.cssText = '';
+  const ext = fileName ? wsGetExt(fileName) : '';
+  const langMap = { js:'javascript', jsx:'javascript', ts:'typescript', tsx:'typescript', py:'python', json:'json', html:'xml', css:'css', sql:'sql', sh:'bash', yml:'yaml', yaml:'yaml', xml:'xml', rb:'ruby', go:'go', rs:'rust', java:'java', c:'c', cpp:'cpp', ps1:'powershell' };
+  const lang = langMap[ext] || null;
+  let hlLines = null;
+  try {
+    const hlText = lang ? hljs.highlight(text, { language: lang }).value : hljs.highlightAuto(text).value;
+    hlLines = hlText.split('\n');
+  } catch {}
+  const table = document.createElement('div');
+  table.className = 'ws-code-table';
+  lines.forEach((ln, i) => {
+    const row = document.createElement('div');
+    row.className = 'ws-code-line';
+    const gutter = document.createElement('span');
+    gutter.className = 'ws-code-gutter';
+    gutter.style.cssText = `width:${gutW}px;min-width:${gutW}px`;
+    gutter.textContent = i + 1;
+    row.appendChild(gutter);
+    const code = document.createElement('span');
+    code.className = 'ws-code-text';
+    if (hlLines && hlLines[i] != null) { code.innerHTML = hlLines[i] || "&nbsp;"; } else { code.textContent = ln || " "; }
+    row.appendChild(code);
+    table.appendChild(row);
+  });
+  container.appendChild(table);
+}
+
+function wsRenderDiff(container, diffData, mode) {
+  const table = document.createElement('div');
+  table.className = 'ws-code-table';
+  diffData.forEach(r => {
+    if (r.k === 'hunk') {
+      const row = document.createElement('div');
+      row.className = 'ws-diff-hunk';
+      const cell = document.createElement('span');
+      cell.className = 'ws-diff-hunk-text';
+      cell.textContent = r.text;
+      row.appendChild(cell);
+      table.appendChild(row);
+      return;
+    }
+    const row = document.createElement('div');
+    row.className = 'ws-code-line' + (r.k === 'add' ? ' ws-diff-line-add' : r.k === 'del' ? ' ws-diff-line-del' : '');
+    const g1 = document.createElement('span');
+    g1.className = 'ws-code-gutter';
+    g1.style.cssText = 'width:34px;padding:0 6px';
+    g1.textContent = r.n1 || '';
+    row.appendChild(g1);
+    const g2 = document.createElement('span');
+    g2.className = 'ws-code-gutter';
+    g2.style.cssText = 'width:34px;padding:0 6px';
+    g2.textContent = r.n2 || '';
+    row.appendChild(g2);
+    const sign = document.createElement('span');
+    sign.style.cssText = 'display:table-cell;width:18px;text-align:center;user-select:none;color:' + (r.k === 'add' ? '#7faa7c' : r.k === 'del' ? '#c08378' : '#7a7060');
+    sign.textContent = r.k === 'add' ? '+' : r.k === 'del' ? '−' : '';
+    row.appendChild(sign);
+    const code = document.createElement('span');
+    code.className = 'ws-code-text';
+    code.style.padding = '0 16px 0 4px';
+    code.textContent = r.text;
+    row.appendChild(code);
+    table.appendChild(row);
+  });
+  container.className = 'ws-code ws-mono ws-code-viewer';
+  container.appendChild(table);
+}
+
+function wsShowEditingBanner(actorName, actorColor) {
+  const banner = document.getElementById('ws-editing-banner');
+  banner.innerHTML = '';
+  if (!actorName) return;
+  const el = document.createElement('div');
+  el.className = 'ws-editing-banner';
+  el.style.cssText = `background:color-mix(in srgb,${actorColor} 14%,var(--h-bg));border-bottom:1px solid color-mix(in srgb,${actorColor} 36%,var(--h-bg));color:${actorColor}`;
+  el.innerHTML = `<span class="h-dot"></span><span class="h-dot"></span><span class="h-dot"></span><span style="font-style:italic">${actorName} is editing this file…</span>`;
+  banner.appendChild(el);
+}
+
+(function initWorkspacePanel() {
+  const panel = document.getElementById('workspace-panel');
+  const handle = document.getElementById('ws-drag-handle');
+  const closeBtn = document.getElementById('ws-panel-close-btn');
+
+  closeBtn.onclick = toggleWorkspacePanel;
+
+  document.querySelectorAll('.ws-pin-tab').forEach(tab => {
+    tab.onclick = () => wsSetView(tab.dataset.wsPin);
+  });
+
+  let dragging = false;
+  let startX = 0;
+  let startWidth = 0;
+
+  handle.addEventListener('mousedown', e => {
+    e.preventDefault();
+    dragging = true;
+    startX = e.clientX;
+    startWidth = panel.offsetWidth;
+    handle.classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    const diff = startX - e.clientX;
+    const newWidth = Math.max(280, Math.min(startWidth + diff, window.innerWidth * 0.7));
+    panel.style.setProperty('--ws-panel-width', newWidth + 'px');
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    const w = panel.style.getPropertyValue('--ws-panel-width');
+    if (w) localStorage.setItem('stoa-ws-panel-width', w);
+  });
+
+  handle.addEventListener('dblclick', () => {
+    panel.style.removeProperty('--ws-panel-width');
+    localStorage.removeItem('stoa-ws-panel-width');
+  });
+
+  handle.addEventListener('touchstart', e => {
+    const touch = e.touches[0];
+    dragging = true;
+    startX = touch.clientX;
+    startWidth = panel.offsetWidth;
+    handle.classList.add('dragging');
+  }, { passive: true });
+
+  document.addEventListener('touchmove', e => {
+    if (!dragging) return;
+    const touch = e.touches[0];
+    const diff = startX - touch.clientX;
+    const newWidth = Math.max(280, Math.min(startWidth + diff, window.innerWidth * 0.7));
+    panel.style.setProperty('--ws-panel-width', newWidth + 'px');
+  }, { passive: true });
+
+  document.addEventListener('touchend', () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove('dragging');
+    const w = panel.style.getPropertyValue('--ws-panel-width');
+    if (w) localStorage.setItem('stoa-ws-panel-width', w);
+  });
+})();
+
 // ── Markdown rendering ─────────────────────────────────────────────────────
-marked.setOptions({ breaks: true, gfm: true });
+marked.use({
+  breaks: true, gfm: true,
+  renderer: {
+    code(token) {
+      const src = (typeof token === 'string' ? token : token.text) ?? '';
+      const lang = typeof token === 'string' ? '' : (token.lang || '');
+      if (!src) return `<pre><code>${''}</code></pre>`;
+      let highlighted;
+      const language = lang && hljs.getLanguage(lang) ? lang : null;
+      try {
+        highlighted = language
+          ? hljs.highlight(src, { language }).value
+          : hljs.highlightAuto(src).value;
+      } catch { highlighted = src.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+      const langLabel = language
+        ? `<span class="h-code-lang">${language}</span>`
+        : '';
+      return `<pre>${langLabel}<code class="hljs${language ? ' language-' + language : ''}">${highlighted}</code></pre>`;
+    }
+  }
+});
 
 function renderMarkdown(text) {
   if (!text) return '';
-  return DOMPurify.sanitize(marked.parse(text));
+  return DOMPurify.sanitize(marked.parse(text), { ADD_ATTR: ['class'] });
 }
 
 async function copyToClipboard(text) {
@@ -3957,7 +5315,7 @@ function showCopyFeedback(btn) {
 }
 
 async function deleteMessage(msgId) {
-  try { await fetch(`/api/messages/${msgId}`, { method: 'DELETE' }); } catch { showToast('Failed to delete message', { error: true }); }
+  try { const res = await fetch(`/api/messages/${msgId}`, { method: 'DELETE' }); if (!res.ok) throw new Error(); } catch { showToast('Failed to delete message', { error: true }); }
 }
 
 function getAttachments(m) {
@@ -4122,6 +5480,75 @@ function addCopyButtons(el) {
   });
 }
 
+function looksLikePath(text) {
+  const t = text.trim();
+  if (t.length < 3) return false;
+  const hasSlash = t.includes('/') || t.includes('\\');
+  if (!hasSlash) return false;
+  if (/^https?:\/\//.test(t)) return false;
+  if (/^[A-Za-z]:[\\\/]/.test(t)) return true;
+  if (/^[~.]?[\\\/]/.test(t)) return true;
+  if (/^\/[\w.\-]/.test(t)) return true;
+  return false;
+}
+
+function linkifyFilePaths(el) {
+  el.querySelectorAll('code').forEach(node => {
+    if (node.closest('a') || node.classList.contains('h-file-link')) return;
+    const text = node.textContent.trim();
+    if (looksLikePath(text)) makeFileLink(node, text);
+  });
+
+  el.querySelectorAll('pre code').forEach(codeEl => {
+    if (codeEl.closest('.h-file-link')) return;
+    const text = codeEl.textContent.trim();
+    if (looksLikePath(text) && text.split('\n').length <= 2) {
+      const pre = codeEl.closest('pre');
+      pre.style.cursor = 'pointer';
+      pre.classList.add('h-file-link-block');
+      pre.onclick = (e) => {
+        if (e.target.closest('.h-copy-btn')) return;
+        openFileFromPath(text.replace(/\n/g, ''));
+      };
+    }
+  });
+}
+
+function makeFileLink(codeEl, filePath) {
+  codeEl.classList.add('h-file-link');
+  codeEl.style.cursor = 'pointer';
+  codeEl.onclick = (e) => { e.preventDefault(); openFileFromPath(filePath); };
+}
+
+function openFileFromPath(absOrRelPath) {
+  let filePath = absOrRelPath.replace(/\\/g, '/').replace(/\/+$/, '');
+  let isAbsolute = /^\//.test(filePath) || /^[A-Za-z]:/.test(filePath);
+  if (wsFileTreeRoot) {
+    const root = wsFileTreeRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+    if (filePath.startsWith(root + '/')) {
+      filePath = filePath.slice(root.length + 1);
+      isAbsolute = false;
+    }
+  }
+  const panel = document.getElementById('workspace-panel');
+  if (!panel.classList.contains('open')) toggleWorkspacePanel();
+  const ext = wsGetExt(filePath);
+  if (!ext) {
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify(isAbsolute ? { type: 'file_list', abs_path: filePath } : { type: 'file_list' }));
+    }
+    wsActiveView = 'files';
+    wsActiveFile = null;
+    document.querySelectorAll('.ws-pin-tab').forEach(t => t.classList.toggle('active', t.dataset.wsPin === 'files'));
+    wsRenderContent();
+  } else {
+    if (isAbsolute && ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: 'file_read', path: filePath, absolute: true }));
+    }
+    wsOpenFile(filePath);
+  }
+}
+
 // ── Append message ─────────────────────────────────────────────────────────
 function appendMessage(m, container) {
   const inner = container || document.getElementById('messages-inner');
@@ -4215,6 +5642,7 @@ function appendMessage(m, container) {
   row.appendChild(body);
   inner.appendChild(row);
   addCopyButtons(bubble);
+  linkifyFilePaths(bubble);
 }
 
 // ── Thinking bubble (before tokens arrive) ─────────────────────────────────
@@ -4286,9 +5714,6 @@ function appendToken(msgId, token) {
       // Copy colors from thinking bubble
       bubble.style.background = thinkBubble.style.background;
       bubble.style.borderColor  = thinkBubble.style.borderColor;
-      bubble.style.fontFamily = 'var(--h-msg)';
-      bubble.style.fontSize = '15px';
-      bubble.style.lineHeight = '1.7';
       bubble.style.letterSpacing = '';
       bubble.style.borderTopLeftRadius = '4px';
       body.replaceChild(bubble, thinkBubble);
@@ -4336,9 +5761,9 @@ function finalizeMessage(msgId, content, fileUrl, fileName, attachments) {
       bubble.classList.remove('h-thinking-bubble');
       bubble.classList.add('h-bubble');
       bubble.style.color = '';
-      bubble.style.fontFamily = 'var(--h-msg)';
-      bubble.style.fontSize = '15px';
-      bubble.style.lineHeight = '1.7';
+      bubble.style.fontFamily = '';
+      bubble.style.fontSize = '';
+      bubble.style.lineHeight = '';
       bubble.style.borderTopLeftRadius = '4px';
     }
 
@@ -4350,6 +5775,7 @@ function finalizeMessage(msgId, content, fileUrl, fileName, attachments) {
     textDiv.innerHTML = highlightMentions(renderMarkdown(content || ''));
     bubble.appendChild(textDiv);
     addCopyButtons(bubble);
+  linkifyFilePaths(bubble);
   }
 
   // Add message action buttons (reply + copy) if not already present
@@ -4888,15 +6314,16 @@ async function submitNewRoom() {
   if (!workdir_id) { alert('Please select a working directory'); return; }
   document.getElementById('new-room-modal').style.display = 'none';
 
-  const room = await fjson('/api/rooms', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ title, participant_ids, workdir_id }),
-  });
-
-  const rooms = await fjson('/api/rooms');
-  renderRoomList(rooms);
-  openRoom(room);
+  try {
+    const room = await fjson('/api/rooms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, participant_ids, workdir_id }),
+    });
+    const rooms = await fjson('/api/rooms');
+    renderRoomList(rooms);
+    openRoom(room);
+  } catch { showToast('Failed to create room', { error: true }); }
 }
 
 // ── Scroll ──────────────────────────────────────────────────────────────────
@@ -4987,7 +6414,7 @@ function initScrollLoader() {
   async function doSearch(q) {
     try {
       const res = await fetch(`/api/search?q=${encodeURIComponent(q)}&limit=30`);
-      if (!res.ok) return;
+      if (!res.ok) { showToast('Search failed', { error: true }); return; }
       const rows = await res.json();
       showSearchResults(rows);
     } catch { showToast('Search failed', { error: true }); }
@@ -5080,7 +6507,12 @@ async function doRoomSearch(query) {
     countEl.textContent = '';
     return;
   }
-  const rows = await fetch(`/api/search?q=${encodeURIComponent(query)}&room_id=${currentRoomId}&limit=50`).then(r => r.json());
+  let rows;
+  try {
+    const res = await fetch(`/api/search?q=${encodeURIComponent(query)}&room_id=${currentRoomId}&limit=50`);
+    if (!res.ok) throw new Error();
+    rows = await res.json();
+  } catch { countEl.textContent = 'search failed'; return; }
   countEl.textContent = rows.length ? `${rows.length} found` : 'no results';
   if (!rows.length) { resultsEl.classList.remove('visible'); return; }
   resultsEl.classList.add('visible');
@@ -5495,6 +6927,16 @@ async function checkSetup() {
 async function init() {
   const saved = localStorage.getItem('stoa-theme');
   applyTheme(saved === 'dark' || (!saved && window.matchMedia('(prefers-color-scheme: dark)').matches));
+  // Restore reading comfort preferences
+  ['scale', 'leading', 'width'].forEach(k => {
+    const v = localStorage.getItem('stoa-msg-' + k);
+    if (v) {
+      const cssVar = '--stoa-msg-' + k;
+      document.documentElement.style.setProperty(cssVar, k === 'width' ? v + 'px' : v);
+    }
+  });
+  document.getElementById('sidebar-collapse-btn').onclick = toggleSidebar;
+  document.getElementById('empty-rooms-toggle').onclick = toggleSidebar;
   // Auth check — show login if not authenticated
   const isAuthed = await checkAuth();
   if (!isAuthed) { showLogin(); return; }
@@ -6230,11 +7672,12 @@ function sMakeRow(actor, flash) {
     });
     langSel.addEventListener('change', async () => {
       try {
-        await fetch(`/api/actors/${actor.id}`, {
+        const r = await fetch(`/api/actors/${actor.id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: actor.name, lang: langSel.value }),
         });
+        if (!r.ok) throw new Error();
       } catch { showToast('Failed to save language', { error: true }); }
     });
     langRow.appendChild(langLabel); langRow.appendChild(langSel);
@@ -6289,7 +7732,8 @@ function sMakeRow(actor, flash) {
         refresh.disabled = true;
         refresh.style.opacity = '0.4';
         try {
-          await fetch(`/api/actors/${actor.id}/rescan`, { method: 'POST' });
+          const rr = await fetch(`/api/actors/${actor.id}/rescan`, { method: 'POST' });
+          if (!rr.ok) throw new Error();
           setTimeout(() => {
             fjson(`/api/actors/${actor.id}/workdirs`).then(wds => {
               const sub = document.querySelector(`#s-row-${actor.id} .s-agent-sub`);
@@ -6313,7 +7757,7 @@ function sMakeRow(actor, flash) {
         e.stopPropagation();
         upd.disabled = true;
         upd.style.opacity = '0.4';
-        try { await fetch(`/api/actors/${actor.id}/force-update`, { method: 'POST' }); } catch { showToast('Failed to send update command', { error: true }); }
+        try { const fu = await fetch(`/api/actors/${actor.id}/force-update`, { method: 'POST' }); if (!fu.ok) throw new Error(); } catch { showToast('Failed to send update command', { error: true }); }
         setTimeout(() => { upd.disabled = !actor.online; upd.style.opacity = ''; }, 3000);
       });
       acts.appendChild(upd);
@@ -6773,7 +8217,7 @@ async function sOpenDoc(slug) {
     const res = await fetch(`/api/docs/${encodeURIComponent(filename)}`);
     if (!res.ok) { body.innerHTML = '<p class="s-docs-empty">document not found.</p>'; return; }
     const md = await res.text();
-    body.innerHTML = DOMPurify.sanitize(marked.parse(md));
+    body.innerHTML = DOMPurify.sanitize(marked.parse(md), { ADD_ATTR: ['class'] });
     addCopyButtons(body);
     if (lang !== docsLang) {
       const note = document.createElement('p');
@@ -6784,7 +8228,143 @@ async function sOpenDoc(slug) {
   } catch { body.innerHTML = '<p class="s-docs-empty">failed to load document.</p>'; }
 }
 
+// ── Reading comfort controls ──────────────────────────────────────────────
+const MSG_SIZES = [
+  { label: 'Tiny', v: 0.72, icon: 13 },
+  { label: 'Small', v: 0.82, icon: 15 },
+  { label: 'Compact', v: 0.9, icon: 17 },
+  { label: 'Default', v: 1.0, icon: 20 },
+];
+const MSG_LEADS = [
+  { label: 'Tight', v: 0.9, gap: 2 },
+  { label: 'Normal', v: 1.0, gap: 4 },
+  { label: 'Relaxed', v: 1.15, gap: 6 },
+];
+const MSG_WIDTHS = [
+  { label: 'Narrow', v: 460, w: 14 },
+  { label: 'Standard', v: 560, w: 20 },
+  { label: 'Wide', v: 680, w: 26 },
+];
+
+function sGetMsgPref(key, def) {
+  const v = localStorage.getItem('stoa-msg-' + key);
+  return v !== null ? parseFloat(v) : def;
+}
+
+function sApplyMsgVar(cssVar, val, storeKey) {
+  document.documentElement.style.setProperty(cssVar, typeof val === 'number' && val > 100 ? val + 'px' : String(val));
+  localStorage.setItem('stoa-msg-' + storeKey, val);
+}
+
+function sRenderReadingControls() {
+  const el = document.getElementById('s-reading-controls');
+  if (!el) return;
+
+  let scale = sGetMsgPref('scale', 1);
+  let lead = sGetMsgPref('leading', 1);
+  let width = sGetMsgPref('width', 560);
+
+  function nearest(arr, val) { return arr.reduce((b, o) => Math.abs(o.v - val) < Math.abs(b.v - val) ? o : b); }
+
+  function render() {
+    const aSize = nearest(MSG_SIZES, scale);
+    const aLead = nearest(MSG_LEADS, lead);
+    const aWid = nearest(MSG_WIDTHS, width);
+
+    el.innerHTML = '';
+
+    // Text size
+    const sizeLabel = document.createElement('div');
+    sizeLabel.className = 's-msg-sublabel';
+    sizeLabel.textContent = 'text size';
+    el.appendChild(sizeLabel);
+
+    const sizeRow = document.createElement('div');
+    sizeRow.className = 's-msg-row';
+    MSG_SIZES.forEach(o => {
+      const btn = document.createElement('button');
+      btn.className = 's-seg-btn' + (o.label === aSize.label ? ' active' : '');
+      btn.innerHTML = `<span class="s-seg-icon" style="font-size:${o.icon}px">A</span><span class="s-seg-label">${o.label}</span>`;
+      btn.onclick = () => { scale = o.v; sApplyMsgVar('--stoa-msg-scale', o.v, 'scale'); render(); };
+      sizeRow.appendChild(btn);
+    });
+    el.appendChild(sizeRow);
+
+    // Line spacing + width row
+    const wrapRow = document.createElement('div');
+    wrapRow.className = 's-msg-row-wrap';
+
+    // Line spacing
+    const leadCol = document.createElement('div');
+    leadCol.className = 's-msg-col';
+    const leadLabel = document.createElement('div');
+    leadLabel.className = 's-msg-sublabel';
+    leadLabel.textContent = 'line spacing';
+    leadCol.appendChild(leadLabel);
+    const leadRow = document.createElement('div');
+    leadRow.className = 's-msg-row';
+    MSG_LEADS.forEach(o => {
+      const btn = document.createElement('button');
+      btn.className = 's-seg-btn' + (o.label === aLead.label ? ' active' : '');
+      const bars = `<span class="s-seg-bars" style="gap:${o.gap}px"><span class="s-seg-bar"></span><span class="s-seg-bar"></span><span class="s-seg-bar"></span></span>`;
+      btn.innerHTML = `${bars}<span class="s-seg-label">${o.label}</span>`;
+      btn.onclick = () => { lead = o.v; sApplyMsgVar('--stoa-msg-leading', o.v, 'leading'); render(); };
+      leadRow.appendChild(btn);
+    });
+    leadCol.appendChild(leadRow);
+    wrapRow.appendChild(leadCol);
+
+    // Width
+    const widCol = document.createElement('div');
+    widCol.className = 's-msg-col';
+    const widLabel = document.createElement('div');
+    widLabel.className = 's-msg-sublabel';
+    widLabel.textContent = 'width';
+    widCol.appendChild(widLabel);
+    const widRow = document.createElement('div');
+    widRow.className = 's-msg-row';
+    MSG_WIDTHS.forEach(o => {
+      const btn = document.createElement('button');
+      btn.className = 's-seg-btn' + (o.label === aWid.label ? ' active' : '');
+      const bars = `<span class="s-seg-bars" style="gap:3px"><span class="s-seg-bar" style="width:${o.w}px"></span><span class="s-seg-bar" style="width:${o.w}px"></span></span>`;
+      btn.innerHTML = `${bars}<span class="s-seg-label">${o.label}</span>`;
+      btn.onclick = () => { width = o.v; sApplyMsgVar('--stoa-msg-width', o.v, 'width'); render(); };
+      widRow.appendChild(btn);
+    });
+    widCol.appendChild(widRow);
+    wrapRow.appendChild(widCol);
+    el.appendChild(wrapRow);
+
+    // Live preview
+    const preview = document.createElement('div');
+    preview.className = 's-msg-preview';
+
+    const aiRow = document.createElement('div');
+    aiRow.className = 's-msg-preview-row';
+    const aiBubble = document.createElement('div');
+    aiBubble.className = 's-msg-preview-bubble';
+    aiBubble.style.cssText = `max-width:min(var(--stoa-msg-width,560px),78%);font-size:calc(var(--stoa-msg-scale,1)*16px);line-height:calc(1.6*var(--stoa-msg-leading,1));border-top-left-radius:4px;background:color-mix(in srgb,#6f9f8c 16%,var(--h-surface));border-color:color-mix(in srgb,#6f9f8c 36%,var(--h-surface))`;
+    aiBubble.innerHTML = 'The client replays from the last <em>message_state</em> event — not from the last token, so a reconnect never loses the thread.';
+    aiRow.appendChild(aiBubble);
+    preview.appendChild(aiRow);
+
+    const humanRow = document.createElement('div');
+    humanRow.className = 's-msg-preview-row human';
+    const humanBubble = document.createElement('div');
+    humanBubble.className = 's-msg-preview-bubble';
+    humanBubble.style.cssText = `max-width:min(var(--stoa-msg-width,560px),78%);font-size:calc(var(--stoa-msg-scale,1)*16px);line-height:calc(1.6*var(--stoa-msg-leading,1));border-top-right-radius:4px;background:var(--h-slip);border-color:var(--h-hair-soft)`;
+    humanBubble.textContent = 'Got it — that reads much better at this size.';
+    humanRow.appendChild(humanBubble);
+    preview.appendChild(humanRow);
+
+    el.appendChild(preview);
+  }
+
+  render();
+}
+
 async function sLoadGeneralTab() {
+  sRenderReadingControls();
   try {
     const user = await fjson('/api/auth/me');
     document.getElementById('s-auth-email-input').value = user.email || '';
@@ -6888,9 +8468,9 @@ async function sResizeAndUploadAvatar(file) {
           renderSidebarFooter();
           renderComposerSeal();
         }
-      } catch (err) { console.error('avatar upload failed', err); }
+      } catch (err) { console.error('avatar upload failed', err); showToast('Failed to upload avatar', { error: true }); }
     };
-    img.onerror = () => console.error('Failed to load image for avatar');
+    img.onerror = () => { console.error('Failed to load image for avatar'); showToast('Invalid image file', { error: true }); };
     img.src = origDataUrl;
   };
   reader.onerror = () => console.error('Failed to read file for avatar');
@@ -6907,7 +8487,7 @@ async function sRemoveAvatar() {
     sUpdateAvatarPreview(null);
     renderSidebarFooter();
     renderComposerSeal();
-  } catch (err) { console.error('avatar remove failed', err); }
+  } catch (err) { console.error('avatar remove failed', err); showToast('Failed to remove avatar', { error: true }); }
 }
 
 async function sResizeAndUploadActorAvatar(actorId, file, avEl) {
@@ -6946,7 +8526,7 @@ async function sResizeAndUploadActorAvatar(actorId, file, avEl) {
           if (existing) avEl.replaceChild(imgEl, existing);
           else avEl.prepend(imgEl);
         }
-      } catch (err) { console.error('actor avatar upload failed', err); }
+      } catch (err) { console.error('actor avatar upload failed', err); showToast('Failed to upload avatar', { error: true }); }
     };
     img.src = e.target.result;
   };

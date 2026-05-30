@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.2.32';
+const CLIENT_VERSION = '0.2.37';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -59,6 +59,25 @@ const UPDATE_INTERVAL = 120_000; // cek tiap 2 menit
 const UPDATE_FILES = AI_BACKEND === 'gemini'
   ? ['stoa.js', 'gemini-session.js', 'gemini-adapter.js']
   : ['stoa.js', 'claude-session.js'];
+
+const TREE_IGNORE = new Set(['.git', 'node_modules', '.next', '__pycache__', '.venv', 'dist', 'build', '.claude']);
+function buildFileTreeAgent(dirPath, rootPath, depth, maxDepth) {
+  if (depth > maxDepth) return [];
+  let entries;
+  try { entries = fs.readdirSync(dirPath, { withFileTypes: true }); } catch { return []; }
+  const result = [];
+  const dirs = entries.filter(e => e.isDirectory() && !TREE_IGNORE.has(e.name) && !e.name.startsWith('.')).sort((a, b) => a.name.localeCompare(b.name));
+  const files = entries.filter(e => e.isFile() && !e.name.startsWith('.')).sort((a, b) => a.name.localeCompare(b.name));
+  for (const d of dirs) {
+    const children = buildFileTreeAgent(path.join(dirPath, d.name), rootPath, depth + 1, maxDepth);
+    result.push({ t: 'folder', name: d.name, depth, open: depth < 1, children });
+  }
+  for (const f of files) {
+    const ext = path.extname(f.name).slice(1);
+    result.push({ t: ext || 'file', name: f.name, depth });
+  }
+  return result;
+}
 
 function buildLocalManifest() {
   const manifest = {};
@@ -296,6 +315,64 @@ async function handleAgentMessage(msg) {
       } catch {}
     }
     send({ type: 'model_info', workdir: msg.workdir, model });
+  }
+
+  if (msg.type === 'proxy_file_list') {
+    try {
+      const tree = buildFileTreeAgent(msg.workdir, msg.workdir, 0, 3);
+      let modified = [];
+      try {
+        const status = spawnSync('git', ['status', '--porcelain'], { cwd: msg.workdir, encoding: 'utf8', maxBuffer: 512 * 1024, windowsHide: true, timeout: 10000 });
+        if (status.stdout) modified = status.stdout.split('\n').filter(Boolean).map(l => l.slice(3).trim());
+      } catch {}
+      send({ type: 'proxy_file_list_result', request_id: msg.request_id, root: msg.workdir, tree, modified });
+    } catch (e) {
+      send({ type: 'proxy_file_list_result', request_id: msg.request_id, error: e.message });
+    }
+  }
+
+  if (msg.type === 'proxy_file_read') {
+    try {
+      const filePath = path.resolve(msg.workdir, msg.path);
+      if (!filePath.startsWith(path.resolve(msg.workdir))) {
+        send({ type: 'proxy_file_read_result', request_id: msg.request_id, error: 'path traversal blocked' });
+        return;
+      }
+      if (msg.binary) {
+        const data = fs.readFileSync(filePath);
+        send({ type: 'proxy_file_read_result', request_id: msg.request_id, path: msg.path, base64: data.toString('base64') });
+      } else {
+        const content = fs.readFileSync(filePath, 'utf8');
+        send({ type: 'proxy_file_read_result', request_id: msg.request_id, path: msg.path, content });
+      }
+    } catch (e) {
+      send({ type: 'proxy_file_read_result', request_id: msg.request_id, path: msg.path, error: e.message });
+    }
+  }
+
+  if (msg.type === 'proxy_git_diff') {
+    try {
+      const status = spawnSync('git', ['diff'], { cwd: msg.workdir, encoding: 'utf8', maxBuffer: 1024 * 1024, windowsHide: true, timeout: 10000 });
+      const raw = status.stdout || '';
+      const files = [];
+      let current = null;
+      for (const line of raw.split('\n')) {
+        if (line.startsWith('diff --git')) {
+          const match = line.match(/b\/(.+)$/);
+          current = { name: match ? match[1] : '?', hunks: [], add: 0, del: 0 };
+          files.push(current);
+        } else if (line.startsWith('@@') && current) {
+          current.hunks.push({ k: 'hunk', text: line });
+        } else if (current && current.hunks.length) {
+          if (line.startsWith('+') && !line.startsWith('+++')) { current.hunks.push({ k: 'add', text: line.slice(1) }); current.add++; }
+          else if (line.startsWith('-') && !line.startsWith('---')) { current.hunks.push({ k: 'del', text: line.slice(1) }); current.del++; }
+          else if (line.startsWith(' ')) { current.hunks.push({ k: 'ctx', text: line.slice(1) }); }
+        }
+      }
+      send({ type: 'proxy_git_diff_result', request_id: msg.request_id, files });
+    } catch (e) {
+      send({ type: 'proxy_git_diff_result', request_id: msg.request_id, error: e.message });
+    }
   }
 
   if (msg.type === 'search_result' || msg.type === 'get_message_result') {

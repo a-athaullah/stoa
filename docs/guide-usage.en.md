@@ -217,7 +217,7 @@ Press **Ctrl+F** (or click the **search icon** in the room header) to search wit
 
 ### Adding a New Agent
 
-Go to **Settings > Claude > Add Agent**. The Add Agent panel lets you configure:
+Go to **Settings > AI Agent > Add Agent**. The Add Agent panel lets you configure:
 
 - **Backend** — choose between **Claude Code CLI** or **Gemini CLI** as the AI backend. The install command adapts automatically based on your selection
 - **Language** — select the language the AI agent will use for responses: English, Bahasa Indonesia, 日本語, 한국語, or 中文
@@ -258,7 +258,7 @@ curl -fsSL http://YOUR_SERVER:3000/install.sh?name=Idris | bash
 
 ### Renaming an Agent
 
-Click the agent's name in **Settings > Claude** to edit it inline.
+Click the agent's name in **Settings > AI Agent** to edit it inline.
 
 ### Changing Agent Language
 
@@ -266,7 +266,7 @@ Each agent's response language can be changed after creation. Go to **Settings >
 
 ### Removing an Agent
 
-Click the **delete button** next to an agent in **Settings > Claude** to remove it. The agent is unregistered and removed from all rooms.
+Click the **delete button** next to an agent in **Settings > AI Agent** to remove it. The agent is unregistered and removed from all rooms.
 
 ### Agent Online Status
 
@@ -283,17 +283,17 @@ Agents automatically:
 
 Each agent has one or more **working directories** — these are the folders where the agent's Claude session runs. You can:
 
-- View an agent's workdirs in **Settings > Claude > [agent name]**
+- View an agent's workdirs in **Settings > AI Agent > [agent name]**
 - Add new workdirs via the UI or API
 - Assign a specific workdir to a room when creating it
 
 ### Client Versioning
 
-Each agent reports its **client version** (e.g., `v0.2.2`) to the server. You can see the version in **Settings > Claude** next to each agent's name. This helps track which agents are running the latest client code.
+Each agent reports its **client version** (e.g., `v0.2.2`) to the server. You can see the version in **Settings > AI Agent** next to each agent's name. This helps track which agents are running the latest client code.
 
 ### Agent Controls
 
-In **Settings > Claude**, each agent has two action buttons:
+In **Settings > AI Agent**, each agent has two action buttons:
 
 - **Rescan** — re-scan the agent's working directories and skills
 - **Force Update** — force the agent to check for client updates immediately (normally checks every 2 minutes)
@@ -325,6 +325,54 @@ Stoa supports browser **push notifications** so you get alerted when agents resp
 
 ---
 
+## Sidebar Collapse
+
+Click the **double-chevron button** (‹‹) next to the Stoa logo to hide the room list sidebar, giving more space for the chat and workspace panel. To restore the sidebar, click the **panel icon** that appears in the chat header (or in the empty state).
+
+---
+
+## Workspace Panel
+
+The workspace panel is a code viewer and file browser that appears to the right of the chat. It lets you browse, read, and preview files on the AI agent's machine — including remote servers.
+
+### Opening the Panel
+
+Click the **panel toggle button** (split-pane icon) in the chat header. The panel opens to the right with a resizable drag handle.
+
+### File Tree (Files Tab)
+
+The **Files** tab shows the project directory tree for the room's working directory. Click any file to open it. Folders expand/collapse on click.
+
+### Code Viewer
+
+Text files open with **syntax highlighting** (powered by highlight.js), **line numbers**, and a dark code background. The breadcrumb at the top shows the file path.
+
+### Markdown Preview
+
+`.md` files render as formatted markdown with headings, lists, code blocks, tables, and links.
+
+### Image Preview
+
+Image files (PNG, JPG, GIF, WebP, SVG) display as a centered preview. For remote agents, images are fetched via the agent's WebSocket connection.
+
+### Git Diff (Git Tab)
+
+The **Git** tab shows uncommitted changes (`git diff`) with green/red line highlighting, file headers, and change statistics.
+
+### Clickable File Paths
+
+When an AI agent mentions a file path in a message (e.g., `/home/user/project/file.py`), the path becomes **clickable** — click it to open the file in the workspace panel. This works for paths inside backtick code blocks and code fences.
+
+### Download Files
+
+Hover over any file in the file tree to reveal a **download button** (arrow icon). Click it to download the file to your local device. This works for both local and remote agent files — remote files are fetched via WebSocket and delivered as a browser download.
+
+### Remote File Browsing
+
+The workspace works with both local and remote agents. For remote agents, file operations are proxied through the agent's WebSocket connection — you can browse files on any machine the agent runs on, from any device (including tablets and phones).
+
+---
+
 ## Export Conversation
 
 You can export a room's full conversation history as **JSON** or **CSV**. Click the **export button** in the chat header and select the format. The download includes all messages, timestamps, and participant names.
@@ -335,7 +383,7 @@ You can export a room's full conversation history as **JSON** or **CSV**. Click 
 
 Click the **gear icon** in the sidebar to open the settings panel. Settings are organized into four tabs:
 
-### Claude (Agents)
+### AI Agent
 
 View all registered agents, their online status, version, workdirs, and skills. Add new agents, rename, remove, rescan, or force update.
 
@@ -347,6 +395,7 @@ View all registered agents, their online status, version, workdirs, and skills. 
 - **Port** — change the server port (requires restart; see the [port change guide](doc-port))
 - **Max AI Turns** — maximum agent responses per human message (prevents infinite loops)
 - **Concurrent Sessions** — how many messages an agent can process in parallel across all rooms (applied instantly, no restart needed)
+- **Session Idle TTL** — minutes before idle AI sessions auto-close to free memory (default 5 minutes)
 - **Cleanup Hour** — when the daily upload cleanup runs (24h format)
 - **Max File Age** — how long uploaded files are kept before cleanup (hours)
 
@@ -356,6 +405,7 @@ Browse project documentation with multi-language support. Documentation files fr
 
 ### General
 
+- **Messages** — reading comfort controls: adjust text size (Compact / Cozy / Comfortable / Large), line spacing (Tight / Normal / Relaxed), and bubble width (Narrow / Standard / Wide). Changes apply to all rooms instantly with a live preview.
 - **Account** — change your email and password
 - **Notifications** — enable/disable browser push notifications
 - **Session** — log out of Stoa

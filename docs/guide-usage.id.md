@@ -217,7 +217,7 @@ Tekan **Ctrl+F** (atau klik **ikon search** di header room) untuk mencari di dal
 
 ### Menambah Agent Baru
 
-Buka **Settings > Claude > Add Agent**. Panel Add Agent memungkinkan Anda mengonfigurasi:
+Buka **Settings > AI Agent > Add Agent**. Panel Add Agent memungkinkan Anda mengonfigurasi:
 
 - **Backend** — pilih antara **Claude Code CLI** atau **Gemini CLI** sebagai backend AI. Perintah install menyesuaikan secara otomatis berdasarkan pilihan Anda
 - **Bahasa** — pilih bahasa yang akan digunakan AI agent untuk merespons: English, Bahasa Indonesia, 日本語, 한국語, atau 中文
@@ -258,7 +258,7 @@ curl -fsSL http://SERVER_ANDA:3000/install.sh?name=Idris | bash
 
 ### Mengganti Nama Agent
 
-Klik nama agent di **Settings > Claude** untuk mengeditnya secara inline.
+Klik nama agent di **Settings > AI Agent** untuk mengeditnya secara inline.
 
 ### Mengubah Bahasa Agent
 
@@ -266,7 +266,7 @@ Bahasa respons setiap agent bisa diubah setelah pembuatan. Buka tab **Settings >
 
 ### Menghapus Agent
 
-Klik **tombol delete** di samping agent di **Settings > Claude** untuk menghapusnya. Agent akan di-unregister dan dihapus dari semua room.
+Klik **tombol delete** di samping agent di **Settings > AI Agent** untuk menghapusnya. Agent akan di-unregister dan dihapus dari semua room.
 
 ### Status Online Agent
 
@@ -283,17 +283,17 @@ Agent secara otomatis:
 
 Setiap agent memiliki satu atau lebih **working directory** — folder tempat sesi Claude agent berjalan. Anda bisa:
 
-- Melihat workdir agent di **Settings > Claude > [nama agent]**
+- Melihat workdir agent di **Settings > AI Agent > [nama agent]**
 - Menambah workdir baru via UI atau API
 - Menetapkan workdir tertentu ke room saat pembuatan
 
 ### Versi Klien
 
-Setiap agent melaporkan **versi klien** (misal `v0.2.2`) ke server. Versi bisa dilihat di **Settings > Claude** di samping nama agent. Ini membantu melacak agent mana yang menjalankan kode klien terbaru.
+Setiap agent melaporkan **versi klien** (misal `v0.2.2`) ke server. Versi bisa dilihat di **Settings > AI Agent** di samping nama agent. Ini membantu melacak agent mana yang menjalankan kode klien terbaru.
 
 ### Kontrol Agent
 
-Di **Settings > Claude**, setiap agent punya dua tombol aksi:
+Di **Settings > AI Agent**, setiap agent punya dua tombol aksi:
 
 - **Rescan** — scan ulang working directory dan skill agent
 - **Force Update** — paksa agent mengecek update klien segera (normalnya cek tiap 2 menit)
@@ -325,6 +325,54 @@ Stoa mendukung **push notification** browser sehingga Anda mendapat notifikasi s
 
 ---
 
+## Collapse Sidebar
+
+Klik **tombol double-chevron** (‹‹) di samping logo Stoa untuk menyembunyikan sidebar room list, memberi lebih banyak ruang untuk chat dan panel workspace. Untuk mengembalikan sidebar, klik **ikon panel** yang muncul di header chat (atau di halaman kosong).
+
+---
+
+## Panel Workspace
+
+Panel workspace adalah file browser dan code viewer yang muncul di sebelah kanan chat. Bisa digunakan untuk melihat file di mesin AI agent — termasuk server remote.
+
+### Membuka Panel
+
+Klik **tombol panel** (ikon split-pane) di header chat. Panel terbuka di kanan dengan drag handle untuk resize.
+
+### File Tree (Tab Files)
+
+Tab **Files** menampilkan directory tree dari working directory room. Klik file untuk membuka. Folder bisa expand/collapse.
+
+### Code Viewer
+
+File teks ditampilkan dengan **syntax highlighting** (highlight.js), **nomor baris**, dan background gelap. Breadcrumb di atas menunjukkan path file.
+
+### Markdown Preview
+
+File `.md` di-render sebagai markdown terformat — heading, list, code block, tabel, dan link.
+
+### Image Preview
+
+File gambar (PNG, JPG, GIF, WebP, SVG) ditampilkan sebagai preview terpusat. Untuk agent remote, gambar diambil via koneksi WebSocket agent.
+
+### Git Diff (Tab Git)
+
+Tab **Git** menampilkan perubahan yang belum di-commit (`git diff`) dengan highlight hijau/merah, header file, dan statistik perubahan.
+
+### Path File yang Bisa Diklik
+
+Saat AI agent menyebut path file di pesan (misal `/home/user/project/file.py`), path tersebut menjadi **bisa diklik** — klik untuk membuka file di panel workspace. Ini berlaku untuk path di backtick dan code block.
+
+### Download File
+
+Hover di file mana saja di file tree untuk menampilkan **tombol download** (ikon panah). Klik untuk download file ke device lokal. Ini berlaku untuk file agent lokal maupun remote — file remote diambil via WebSocket dan dikirim sebagai download browser.
+
+### Browsing File Remote
+
+Workspace bekerja dengan agent lokal maupun remote. Untuk agent remote, operasi file di-proxy melalui koneksi WebSocket agent — bisa browse file di mesin manapun agent berjalan, dari device apapun (termasuk tablet dan HP).
+
+---
+
 ## Ekspor Percakapan
 
 Anda bisa mengekspor seluruh riwayat percakapan room sebagai **JSON** atau **CSV**. Klik **tombol export** di header chat dan pilih format. Download mencakup semua pesan, timestamp, dan nama peserta.
@@ -335,7 +383,7 @@ Anda bisa mengekspor seluruh riwayat percakapan room sebagai **JSON** atau **CSV
 
 Klik **ikon gear** di sidebar untuk membuka panel pengaturan. Pengaturan diorganisasi dalam empat tab:
 
-### Claude (Agent)
+### AI Agent
 
 Lihat semua agent yang terdaftar, status online, versi, workdir, dan skill mereka. Tambah agent baru, ganti nama, hapus, rescan, atau paksa update.
 
@@ -347,6 +395,7 @@ Lihat semua agent yang terdaftar, status online, versi, workdir, dan skill merek
 - **Port** — ubah port server (perlu restart; lihat [panduan ganti port](doc-port))
 - **Max AI Turns** — maksimum respons agent per pesan manusia (mencegah loop tak terbatas)
 - **Concurrent Sessions** — berapa pesan yang bisa diproses agent secara paralel di semua room (langsung diterapkan, tanpa restart)
+- **Session Idle TTL** — menit sebelum sesi AI yang idle otomatis ditutup untuk menghemat memori (default 5 menit)
 - **Cleanup Hour** — kapan pembersihan upload harian berjalan (format 24 jam)
 - **Max File Age** — berapa lama file upload disimpan sebelum dibersihkan (jam)
 
@@ -356,6 +405,7 @@ Jelajahi dokumentasi proyek dengan dukungan multi-bahasa. File dokumentasi dari 
 
 ### General
 
+- **Messages** — kontrol kenyamanan baca: atur ukuran teks (Compact / Cozy / Comfortable / Large), jarak baris (Tight / Normal / Relaxed), dan lebar bubble (Narrow / Standard / Wide). Perubahan langsung berlaku di semua room dengan preview langsung.
 - **Account** — ubah email dan password
 - **Notifications** — aktifkan/nonaktifkan push notification browser
 - **Session** — logout dari Stoa

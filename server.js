@@ -2,6 +2,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { execSync } = require('child_process');
 const { WebSocketServer } = require('ws');
 const db = require('./db');
 const { ClaudeSession } = require('./claude-session');
@@ -527,6 +528,7 @@ const server = http.createServer(async (req, res) => {
       FROM rooms r JOIN actors a ON a.id=r.created_by LEFT JOIN agent_workdirs w ON w.id=r.workdir_id
       WHERE ${archived ? 'r.archived_at IS NOT NULL' : 'r.archived_at IS NULL'}
       ORDER BY last_activity DESC
+      LIMIT 200
     `).all();
     return json(res, rows);
   }
@@ -911,6 +913,27 @@ const server = http.createServer(async (req, res) => {
     return res.end(fs.readFileSync(fp, 'utf8'));
   }
 
+  // ── Workspace file serve (images, binary files) ──
+  if (req.method === 'GET' && url.pathname === '/api/workspace/file') {
+    const roomId = url.searchParams.get('room');
+    const relPath = url.searchParams.get('path');
+    if (!roomId || !relPath) { res.writeHead(400); return res.end('missing room or path'); }
+    const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(roomId);
+    if (!roomRow?.workdir_id) { res.writeHead(404); return res.end('no workdir'); }
+    const wd = db.prepare('SELECT path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
+    if (!wd?.path) { res.writeHead(404); return res.end('workdir not found'); }
+    const filePath = path.resolve(wd.path, relPath);
+    const wdResolved = path.resolve(wd.path) + path.sep;
+    if (!filePath.startsWith(wdResolved) && filePath !== path.resolve(wd.path)) { res.writeHead(403); return res.end('path traversal blocked'); }
+    if (!fs.existsSync(filePath)) { res.writeHead(404); return res.end('not found'); }
+    const ext = path.extname(filePath).toLowerCase();
+    const mimeMap = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.bmp': 'image/bmp', '.pdf': 'application/pdf' };
+    const mime = mimeMap[ext] || 'application/octet-stream';
+    const data = fs.readFileSync(filePath);
+    res.writeHead(200, { 'Content-Type': mime, 'Content-Length': data.length, 'Cache-Control': 'no-cache' });
+    return res.end(data);
+  }
+
   // ── Agent install script ──
   if (req.method === 'GET' && url.pathname === '/install.sh') {
     const host = req.headers.host || `localhost:${PORT}`;
@@ -1266,7 +1289,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
   res.end('Not found');
   } catch (err) {
     console.error('[http] unhandled error:', err.message);
-    if (!res.headersSent) { res.writeHead(400); res.end(JSON.stringify({ error: 'Bad request' })); }
+    if (!res.headersSent) { res.writeHead(500); res.end(JSON.stringify({ error: 'Internal server error' })); }
   }
 });
 
@@ -1279,6 +1302,11 @@ const agentClients = new Map();   // actor_id → ws
 const agentVersions = new Map();  // actor_id → client_version string
 const pendingAgents = new Map();    // message_id → { resolve, reject }
 const pendingActorMeta = new Map(); // message_id → { name, avatar_color, avatar_symbol }
+const pendingFileOps = new Map();   // request_id → { type, clientWs }
+function addPendingFileOp(rid, op) {
+  pendingFileOps.set(rid, op);
+  setTimeout(() => pendingFileOps.delete(rid), 15000);
+}
 
 function broadcastGlobal(data) {
   const str = JSON.stringify(data);
@@ -1410,6 +1438,10 @@ wss.on('connection', (ws, req) => {
       if (reconnectCleaned.changes) console.log(`[agent] Cleaned ${reconnectCleaned.changes} orphaned message(s) on reconnect for Actor #${agentActorId}`);
       if (msg.client_version) agentVersions.set(agentActorId, msg.client_version);
       console.log(`[agent] Actor #${agentActorId} connected (v${msg.client_version || '?'})`);
+      if (EXPECTED_CLIENT_VERSION && msg.client_version && msg.client_version.localeCompare(EXPECTED_CLIENT_VERSION, undefined, { numeric: true }) < 0) {
+        console.log(`[agent] Actor #${agentActorId} outdated (v${msg.client_version} < v${EXPECTED_CLIENT_VERSION}), sending force_update`);
+        ws.send(JSON.stringify({ type: 'force_update' }));
+      }
       ws.send(JSON.stringify({ type: 'agent_ready' }));
       ws.send(JSON.stringify({ type: 'set_config', max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1, session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5 }));
       const connectedActor = db.prepare('SELECT id, name, type, avatar_color, avatar_symbol, avatar_url, created_at FROM actors WHERE id=?').get(agentActorId);
@@ -1565,6 +1597,36 @@ wss.on('connection', (ws, req) => {
       pendingActorMeta.delete(msg.message_id);
     }
 
+    // ── Agent proxy file responses
+    if (msg.type === 'proxy_file_list_result' && agentActorId) {
+      const op = pendingFileOps.get(msg.request_id);
+      if (op && op.clientWs.readyState === 1) {
+        if (msg.error) op.clientWs.send(JSON.stringify({ type: 'file_list', error: msg.error }));
+        else op.clientWs.send(JSON.stringify({ type: 'file_list', root: msg.root, tree: msg.tree, modified: msg.modified || [] }));
+      }
+      pendingFileOps.delete(msg.request_id);
+    }
+
+    if (msg.type === 'proxy_file_read_result' && agentActorId) {
+      const op = pendingFileOps.get(msg.request_id);
+      if (op && op.clientWs.readyState === 1) {
+        const p = op.originalPath || msg.path;
+        if (msg.error) op.clientWs.send(JSON.stringify({ type: 'file_read', path: p, error: msg.error }));
+        else if (msg.base64) op.clientWs.send(JSON.stringify({ type: 'file_read', path: p, base64: msg.base64 }));
+        else op.clientWs.send(JSON.stringify({ type: 'file_read', path: p, content: msg.content }));
+      }
+      pendingFileOps.delete(msg.request_id);
+    }
+
+    if (msg.type === 'proxy_git_diff_result' && agentActorId) {
+      const op = pendingFileOps.get(msg.request_id);
+      if (op && op.clientWs.readyState === 1) {
+        if (msg.error) op.clientWs.send(JSON.stringify({ type: 'git_diff', error: msg.error }));
+        else op.clientWs.send(JSON.stringify({ type: 'git_diff', files: msg.files || [] }));
+      }
+      pendingFileOps.delete(msg.request_id);
+    }
+
     // ── Agent error
     if (msg.type === 'agent_error' && agentActorId) {
       db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msg.message_id);
@@ -1573,6 +1635,94 @@ wss.on('connection', (ws, req) => {
       pendingAgents.delete(msg.message_id);
       pendingActorMeta.delete(msg.message_id);
     }
+    // ── File operations (workspace panel) ──────────────────────────────────
+    if (msg.type === 'file_list' && subscribedRoom) {
+      const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(subscribedRoom);
+      if (!roomRow?.workdir_id) { ws.send(JSON.stringify({ type: 'file_list', error: 'no workdir' })); return; }
+      const wd = db.prepare('SELECT actor_id, path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
+      if (!wd?.path) { ws.send(JSON.stringify({ type: 'file_list', error: 'workdir not found' })); return; }
+      const targetPath = msg.abs_path || wd.path;
+      const isLocal = fs.existsSync(targetPath);
+      const isBounded = !msg.abs_path || path.resolve(targetPath).startsWith(path.resolve(wd.path) + path.sep) || path.resolve(targetPath) === path.resolve(wd.path);
+      if (isLocal && isBounded) {
+        const tree = buildFileTree(targetPath, targetPath, 0, 3);
+        let modified = [];
+        try {
+
+          const status = execSync('git status --porcelain', { cwd: targetPath, encoding: 'utf8', maxBuffer: 512 * 1024, windowsHide: true, timeout: 10000 });
+          modified = status.split('\n').filter(Boolean).map(l => l.slice(3).trim());
+        } catch {}
+        ws.send(JSON.stringify({ type: 'file_list', root: targetPath, tree, modified }));
+      } else {
+        const agentWs = agentClients.get(wd.actor_id);
+        if (agentWs) {
+          const rid = crypto.randomBytes(6).toString('hex');
+          addPendingFileOp(rid, { type: 'file_list', clientWs: ws });
+          agentWs.send(JSON.stringify({ type: 'proxy_file_list', request_id: rid, workdir: targetPath }));
+        } else { ws.send(JSON.stringify({ type: 'file_list', error: 'agent offline' })); }
+      }
+    }
+
+    if (msg.type === 'file_read' && subscribedRoom) {
+      const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(subscribedRoom);
+      if (!roomRow?.workdir_id) { ws.send(JSON.stringify({ type: 'file_read', error: 'no workdir' })); return; }
+      const wd = db.prepare('SELECT actor_id, path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
+      if (!wd?.path) { ws.send(JSON.stringify({ type: 'file_read', error: 'workdir not found' })); return; }
+      if (msg.absolute) {
+        const agentWs = agentClients.get(wd.actor_id);
+        if (agentWs) {
+          const rid = crypto.randomBytes(6).toString('hex');
+          addPendingFileOp(rid, { type: 'file_read', clientWs: ws, originalPath: msg.path });
+          agentWs.send(JSON.stringify({ type: 'proxy_file_read', request_id: rid, workdir: path.dirname(msg.path), path: path.basename(msg.path), binary: !!msg.binary }));
+        } else { ws.send(JSON.stringify({ type: 'file_read', path: msg.path, error: 'agent offline' })); }
+        return;
+      }
+      const filePath = path.resolve(wd.path, msg.path);
+      if (!filePath.startsWith(path.resolve(wd.path) + path.sep) && filePath !== path.resolve(wd.path)) {
+        ws.send(JSON.stringify({ type: 'file_read', path: msg.path, error: 'path traversal blocked' })); return;
+      }
+      if (fs.existsSync(filePath)) {
+        try {
+          if (msg.binary) {
+            const data = fs.readFileSync(filePath);
+            ws.send(JSON.stringify({ type: 'file_read', path: msg.path, base64: data.toString('base64') }));
+          } else {
+            const content = fs.readFileSync(filePath, 'utf8');
+            ws.send(JSON.stringify({ type: 'file_read', path: msg.path, content }));
+          }
+        } catch (e) { ws.send(JSON.stringify({ type: 'file_read', path: msg.path, error: e.message })); }
+      } else {
+        const agentWs = agentClients.get(wd.actor_id);
+        if (agentWs) {
+          const rid = crypto.randomBytes(6).toString('hex');
+          addPendingFileOp(rid, { type: 'file_read', clientWs: ws, originalPath: msg.path });
+          agentWs.send(JSON.stringify({ type: 'proxy_file_read', request_id: rid, workdir: wd.path, path: msg.path, binary: !!msg.binary }));
+        } else { ws.send(JSON.stringify({ type: 'file_read', path: msg.path, error: 'agent offline' })); }
+      }
+    }
+
+    if (msg.type === 'git_diff' && subscribedRoom) {
+      const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(subscribedRoom);
+      if (!roomRow?.workdir_id) { ws.send(JSON.stringify({ type: 'git_diff', error: 'no workdir' })); return; }
+      const wd = db.prepare('SELECT actor_id, path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
+      if (!wd?.path) { ws.send(JSON.stringify({ type: 'git_diff', error: 'workdir not found' })); return; }
+      if (fs.existsSync(wd.path)) {
+        try {
+
+          const diff = execSync('git diff', { cwd: wd.path, encoding: 'utf8', maxBuffer: 1024 * 1024, windowsHide: true, timeout: 10000 });
+          const parsed = parseGitDiff(diff);
+          ws.send(JSON.stringify({ type: 'git_diff', files: parsed }));
+        } catch (e) { ws.send(JSON.stringify({ type: 'git_diff', error: e.message })); }
+      } else {
+        const agentWs = agentClients.get(wd.actor_id);
+        if (agentWs) {
+          const rid = crypto.randomBytes(6).toString('hex');
+          addPendingFileOp(rid, { type: 'git_diff', clientWs: ws });
+          agentWs.send(JSON.stringify({ type: 'proxy_git_diff', request_id: rid, workdir: wd.path }));
+        } else { ws.send(JSON.stringify({ type: 'git_diff', error: 'agent offline' })); }
+      }
+    }
+
    } catch (err) { console.error('[ws] unhandled message error:', err); }
   });
 
@@ -1591,6 +1741,54 @@ wss.on('connection', (ws, req) => {
     }
   });
 });
+
+// ─── Workspace helpers ──────────────────────────────────────────────────────
+
+const WS_IGNORE = new Set(['.git', 'node_modules', '.next', '__pycache__', '.venv', 'dist', 'build', '.claude']);
+
+function buildFileTree(dirPath, rootPath, depth, maxDepth) {
+  if (depth > maxDepth) return [];
+  let entries;
+  try { entries = fs.readdirSync(dirPath, { withFileTypes: true }); } catch { return []; }
+  const result = [];
+  const dirs = entries.filter(e => e.isDirectory() && !WS_IGNORE.has(e.name) && !e.name.startsWith('.')).sort((a, b) => a.name.localeCompare(b.name));
+  const files = entries.filter(e => e.isFile() && !e.name.startsWith('.')).sort((a, b) => a.name.localeCompare(b.name));
+  for (const d of dirs) {
+    const children = buildFileTree(path.join(dirPath, d.name), rootPath, depth + 1, maxDepth);
+    result.push({ t: 'folder', name: d.name, depth, open: depth < 1, children });
+  }
+  for (const f of files) {
+    const ext = path.extname(f.name).slice(1);
+    result.push({ t: ext || 'file', name: f.name, depth });
+  }
+  return result;
+}
+
+function parseGitDiff(raw) {
+  if (!raw.trim()) return [];
+  const files = [];
+  let current = null;
+  for (const line of raw.split('\n')) {
+    if (line.startsWith('diff --git')) {
+      const match = line.match(/b\/(.+)$/);
+      current = { name: match ? match[1] : '?', hunks: [], add: 0, del: 0 };
+      files.push(current);
+    } else if (line.startsWith('@@') && current) {
+      current.hunks.push({ k: 'hunk', text: line });
+    } else if (current && current.hunks.length) {
+      if (line.startsWith('+') && !line.startsWith('+++')) {
+        current.hunks.push({ k: 'add', text: line.slice(1) });
+        current.add++;
+      } else if (line.startsWith('-') && !line.startsWith('---')) {
+        current.hunks.push({ k: 'del', text: line.slice(1) });
+        current.del++;
+      } else if (line.startsWith(' ')) {
+        current.hunks.push({ k: 'ctx', text: line.slice(1) });
+      }
+    }
+  }
+  return files;
+}
 
 // ─── Message handling ─────────────────────────────────────────────────────────
 
