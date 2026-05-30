@@ -1619,15 +1619,18 @@ wss.on('connection', (ws, req) => {
       if (!roomRow?.workdir_id) { ws.send(JSON.stringify({ type: 'file_list', error: 'no workdir' })); return; }
       const wd = db.prepare('SELECT actor_id, path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
       if (!wd?.path) { ws.send(JSON.stringify({ type: 'file_list', error: 'workdir not found' })); return; }
-      try {
+      const localExists = fs.existsSync(wd.path);
+      if (localExists) {
         const tree = buildFileTree(wd.path, wd.path, 0, 3);
         ws.send(JSON.stringify({ type: 'file_list', root: wd.path, tree }));
-      } catch {
+      } else {
         const agentWs = agentClients.get(wd.actor_id);
+        console.log('[ws-file] agent ws for actor', wd.actor_id, ':', agentWs ? 'found' : 'NOT FOUND');
         if (agentWs) {
           const rid = crypto.randomBytes(6).toString('hex');
           pendingFileOps.set(rid, { type: 'file_list', clientWs: ws });
           agentWs.send(JSON.stringify({ type: 'proxy_file_list', request_id: rid, workdir: wd.path }));
+          console.log('[ws-file] proxy_file_list sent to agent, rid:', rid);
         } else { ws.send(JSON.stringify({ type: 'file_list', error: 'agent offline' })); }
       }
     }
@@ -1638,11 +1641,12 @@ wss.on('connection', (ws, req) => {
       const wd = db.prepare('SELECT actor_id, path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
       if (!wd?.path) { ws.send(JSON.stringify({ type: 'file_read', error: 'workdir not found' })); return; }
       const filePath = path.resolve(wd.path, msg.path);
-      if (!filePath.startsWith(path.resolve(wd.path))) { ws.send(JSON.stringify({ type: 'file_read', error: 'path traversal blocked' })); return; }
-      try {
-        const content = fs.readFileSync(filePath, 'utf8');
-        ws.send(JSON.stringify({ type: 'file_read', path: msg.path, content }));
-      } catch {
+      if (fs.existsSync(filePath)) {
+        try {
+          const content = fs.readFileSync(filePath, 'utf8');
+          ws.send(JSON.stringify({ type: 'file_read', path: msg.path, content }));
+        } catch (e) { ws.send(JSON.stringify({ type: 'file_read', path: msg.path, error: e.message })); }
+      } else {
         const agentWs = agentClients.get(wd.actor_id);
         if (agentWs) {
           const rid = crypto.randomBytes(6).toString('hex');

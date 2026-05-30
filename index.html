@@ -5371,7 +5371,7 @@ function openFileFromPath(absOrRelPath) {
   if (!panel.classList.contains('open')) toggleWorkspacePanel();
   const ext = wsGetExt(relPath);
   if (!ext) {
-    if (ws) ws.send(JSON.stringify({ type: 'file_list' }));
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'file_list' }));
     wsSetView('files');
   } else {
     wsOpenFile(relPath);
