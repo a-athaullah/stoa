@@ -350,9 +350,10 @@ const server = http.createServer(async (req, res) => {
     const body = await readBody(req);
     const data = parseJsonBody(body);
     if (data) {
-      const line = `[${new Date().toISOString()}] ${data.message || ''} | ${data.source || ''}\n`;
+      const sanitize = (s) => String(s || '').replace(/[\r\n]/g, ' ').slice(0, 2000);
+      const line = `[${new Date().toISOString()}] ${sanitize(data.message)} | ${sanitize(data.source)}\n`;
       try { fs.appendFileSync(path.join(__dirname, '.claude', 'client-errors.log'), line); } catch {}
-      console.log('[client-error]', data.message);
+      console.log('[client-error]', sanitize(data.message));
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end('{"ok":true}');
@@ -1889,7 +1890,7 @@ wss.on('connection', (ws, req) => {
       if (!roomRow?.workdir_id) { ws.send(JSON.stringify({ type: 'file_rename_result', error: 'no workdir' })); return; }
       const wd = db.prepare('SELECT actor_id, path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
       if (!wd?.path) { ws.send(JSON.stringify({ type: 'file_rename_result', error: 'workdir not found' })); return; }
-      if (/[<>"|?*]/.test(msg.new_path)) { ws.send(JSON.stringify({ type: 'file_rename_result', path: msg.path, error: 'invalid characters in new path' })); return; }
+      if (/[<>"|?*]/.test(msg.path) || /[<>"|?*]/.test(msg.new_path)) { ws.send(JSON.stringify({ type: 'file_rename_result', path: msg.path, error: 'invalid characters in path' })); return; }
       const oldPath = path.resolve(wd.path, msg.path);
       const newPath = path.resolve(wd.path, msg.new_path);
       const wdResolved = path.resolve(wd.path) + path.sep;

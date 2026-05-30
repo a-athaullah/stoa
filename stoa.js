@@ -438,7 +438,7 @@ async function handleAgentMessage(msg) {
 
   if (msg.type === 'proxy_file_rename') {
     try {
-      if (/[<>"|?*]/.test(msg.new_path)) { send({ type: 'proxy_file_rename_result', request_id: msg.request_id, error: 'invalid characters in new path' }); return; }
+      if (/[<>"|?*]/.test(msg.path) || /[<>"|?*]/.test(msg.new_path)) { send({ type: 'proxy_file_rename_result', request_id: msg.request_id, error: 'invalid characters in path' }); return; }
       const oldPath = path.resolve(msg.workdir, msg.path);
       const newPath = path.resolve(msg.workdir, msg.new_path);
       const wdBound = path.resolve(msg.workdir) + path.sep;

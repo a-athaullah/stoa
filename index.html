@@ -5790,7 +5790,7 @@ function wsShowEditingBanner(actorName, actorColor) {
   const el = document.createElement('div');
   el.className = 'ws-editing-banner';
   el.style.cssText = `background:color-mix(in srgb,${actorColor} 14%,var(--h-bg));border-bottom:1px solid color-mix(in srgb,${actorColor} 36%,var(--h-bg));color:${actorColor}`;
-  el.innerHTML = `<span class="h-dot"></span><span class="h-dot"></span><span class="h-dot"></span><span style="font-style:italic">${actorName} is editing this file…</span>`;
+  el.innerHTML = `<span class="h-dot"></span><span class="h-dot"></span><span class="h-dot"></span><span style="font-style:italic">${wsEscHtml(actorName)} is editing this file…</span>`;
   banner.appendChild(el);
 }
 
