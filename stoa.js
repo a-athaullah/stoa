@@ -333,8 +333,13 @@ async function handleAgentMessage(msg) {
         send({ type: 'proxy_file_read_result', request_id: msg.request_id, error: 'path traversal blocked' });
         return;
       }
-      const content = fs.readFileSync(filePath, 'utf8');
-      send({ type: 'proxy_file_read_result', request_id: msg.request_id, path: msg.path, content });
+      if (msg.binary) {
+        const data = fs.readFileSync(filePath);
+        send({ type: 'proxy_file_read_result', request_id: msg.request_id, path: msg.path, base64: data.toString('base64') });
+      } else {
+        const content = fs.readFileSync(filePath, 'utf8');
+        send({ type: 'proxy_file_read_result', request_id: msg.request_id, path: msg.path, content });
+      }
     } catch (e) {
       send({ type: 'proxy_file_read_result', request_id: msg.request_id, path: msg.path, error: e.message });
     }

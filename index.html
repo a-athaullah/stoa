@@ -4613,10 +4613,23 @@ function handleWsMessage(msg) {
     return;
   }
 
-  if (msg.type === 'file_read' && !msg.error) {
+  if (msg.type === 'file_read') {
+    if (msg.error) { console.warn('[ws] file_read error:', msg.error); return; }
     const panel = document.getElementById('workspace-panel');
     if (!panel.classList.contains('open')) toggleWorkspacePanel();
-    wsOpenFile(msg.path, msg.content);
+    if (msg.base64) {
+      const ext = wsGetExt(msg.path);
+      const mimeMap = { png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', gif:'image/gif', webp:'image/webp', svg:'image/svg+xml', ico:'image/x-icon', bmp:'image/bmp' };
+      const existing = wsOpenFiles.find(f => f.name === msg.path);
+      if (existing) existing.base64 = msg.base64;
+      else wsOpenFiles.push({ name: msg.path, content: '', base64: msg.base64, ext });
+      wsActiveFile = msg.path;
+      wsActiveView = 'file';
+      wsRenderTabs();
+      wsRenderContent();
+    } else {
+      wsOpenFile(msg.path, msg.content);
+    }
     return;
   }
 
@@ -4734,8 +4747,13 @@ function wsOpenFile(name, content) {
     wsOpenFiles.push({ name, content: content || '', ext: wsGetExt(name) });
   }
   const imgExts = new Set(['png','jpg','jpeg','gif','webp','svg','ico','bmp']);
-  if (!content && !imgExts.has(wsGetExt(name)) && ws) {
-    ws.send(JSON.stringify({ type: 'file_read', path: name }));
+  const fileExt = wsGetExt(name);
+  if (!content && ws) {
+    if (imgExts.has(fileExt)) {
+      ws.send(JSON.stringify({ type: 'file_read', path: name, binary: true }));
+    } else {
+      ws.send(JSON.stringify({ type: 'file_read', path: name }));
+    }
   }
   wsActiveFile = name;
   wsActiveView = 'file';
@@ -4924,7 +4942,15 @@ function wsRenderContent() {
       content.className = 'ws-scroll';
       content.style.cssText = 'flex:1;min-height:0;overflow:auto;display:flex;align-items:center;justify-content:center;padding:24px;background:color-mix(in srgb,var(--h-ink) 4%,var(--h-bg))';
       const img = document.createElement('img');
-      img.src = `/api/workspace/file?room=${currentRoomId}&path=${encodeURIComponent(file.name)}`;
+      const mimeMap = { png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', gif:'image/gif', webp:'image/webp', svg:'image/svg+xml', ico:'image/x-icon', bmp:'image/bmp' };
+      if (file.base64) {
+        img.src = `data:${mimeMap[ext] || 'image/png'};base64,${file.base64}`;
+      } else {
+        img.src = `/api/workspace/file?room=${currentRoomId}&path=${encodeURIComponent(file.name)}`;
+        img.onerror = () => {
+          if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'file_read', path: file.name, binary: true }));
+        };
+      }
       img.style.cssText = 'max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,.12)';
       img.alt = file.name;
       content.appendChild(img);

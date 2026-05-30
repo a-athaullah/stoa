@@ -1600,6 +1600,7 @@ wss.on('connection', (ws, req) => {
       const op = pendingFileOps.get(msg.request_id);
       if (op && op.clientWs.readyState === 1) {
         if (msg.error) op.clientWs.send(JSON.stringify({ type: 'file_read', path: msg.path, error: msg.error }));
+        else if (msg.base64) op.clientWs.send(JSON.stringify({ type: 'file_read', path: msg.path, base64: msg.base64 }));
         else op.clientWs.send(JSON.stringify({ type: 'file_read', path: msg.path, content: msg.content }));
       }
       pendingFileOps.delete(msg.request_id);
@@ -1642,8 +1643,13 @@ wss.on('connection', (ws, req) => {
       const filePath = msg.absolute ? msg.path : path.resolve(wd.path, msg.path);
       if (fs.existsSync(filePath)) {
         try {
-          const content = fs.readFileSync(filePath, 'utf8');
-          ws.send(JSON.stringify({ type: 'file_read', path: msg.path, content }));
+          if (msg.binary) {
+            const data = fs.readFileSync(filePath);
+            ws.send(JSON.stringify({ type: 'file_read', path: msg.path, base64: data.toString('base64') }));
+          } else {
+            const content = fs.readFileSync(filePath, 'utf8');
+            ws.send(JSON.stringify({ type: 'file_read', path: msg.path, content }));
+          }
         } catch (e) { ws.send(JSON.stringify({ type: 'file_read', path: msg.path, error: e.message })); }
       } else {
         const agentWs = agentClients.get(wd.actor_id);
@@ -1652,7 +1658,7 @@ wss.on('connection', (ws, req) => {
           pendingFileOps.set(rid, { type: 'file_read', clientWs: ws });
           const proxyWorkdir = msg.absolute ? path.dirname(msg.path) : wd.path;
           const proxyPath = msg.absolute ? path.basename(msg.path) : msg.path;
-          agentWs.send(JSON.stringify({ type: 'proxy_file_read', request_id: rid, workdir: proxyWorkdir, path: proxyPath }));
+          agentWs.send(JSON.stringify({ type: 'proxy_file_read', request_id: rid, workdir: proxyWorkdir, path: proxyPath, binary: !!msg.binary }));
         } else { ws.send(JSON.stringify({ type: 'file_read', path: msg.path, error: 'agent offline' })); }
       }
     }
