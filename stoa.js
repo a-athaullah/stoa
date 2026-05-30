@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.2.35';
+const CLIENT_VERSION = '0.2.36';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -347,6 +347,31 @@ async function handleAgentMessage(msg) {
       }
     } catch (e) {
       send({ type: 'proxy_file_read_result', request_id: msg.request_id, path: msg.path, error: e.message });
+    }
+  }
+
+  if (msg.type === 'proxy_git_diff') {
+    try {
+      const status = spawnSync('git', ['diff'], { cwd: msg.workdir, encoding: 'utf8', maxBuffer: 1024 * 1024 });
+      const raw = status.stdout || '';
+      const files = [];
+      let current = null;
+      for (const line of raw.split('\n')) {
+        if (line.startsWith('diff --git')) {
+          const match = line.match(/b\/(.+)$/);
+          current = { name: match ? match[1] : '?', hunks: [], add: 0, del: 0 };
+          files.push(current);
+        } else if (line.startsWith('@@') && current) {
+          current.hunks.push({ k: 'hunk', text: line });
+        } else if (current && current.hunks.length) {
+          if (line.startsWith('+') && !line.startsWith('+++')) { current.hunks.push({ k: 'add', text: line.slice(1) }); current.add++; }
+          else if (line.startsWith('-') && !line.startsWith('---')) { current.hunks.push({ k: 'del', text: line.slice(1) }); current.del++; }
+          else if (line.startsWith(' ')) { current.hunks.push({ k: 'ctx', text: line.slice(1) }); }
+        }
+      }
+      send({ type: 'proxy_git_diff_result', request_id: msg.request_id, files });
+    } catch (e) {
+      send({ type: 'proxy_git_diff_result', request_id: msg.request_id, error: e.message });
     }
   }
 

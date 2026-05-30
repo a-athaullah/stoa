@@ -632,6 +632,23 @@
     }
     .ws-pin-tab.active .ws-tab-indicator { display: block; }
 
+    .ws-git-badge {
+      position: absolute;
+      top: 5px; right: 4px;
+      min-width: 14px; height: 14px;
+      border-radius: 7px;
+      background: #d39749;
+      color: #fff;
+      font-family: var(--h-sans);
+      font-size: 9px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 3px;
+      line-height: 1;
+    }
+
     .ws-tab-divider { width: 1px; background: var(--h-hair-soft); margin: 8px 4px; }
 
     .ws-tab-list {
@@ -4447,6 +4464,7 @@ function connectWS(roomId) {
   ws.onopen = () => {
     ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
     ws.send(JSON.stringify({ type: 'file_list' }));
+    ws.send(JSON.stringify({ type: 'git_diff' }));
     setConnected(true);
   };
 
@@ -4637,8 +4655,17 @@ function handleWsMessage(msg) {
     return;
   }
 
-  if (msg.type === 'git_diff' && !msg.error) {
+  if (msg.type === 'git_diff') {
+    if (msg.error) { console.warn('[ws] git_diff error:', msg.error); return; }
     wsGitDiffData = msg.files || [];
+    const gitTab = document.querySelector('[data-ws-pin="git"]');
+    if (gitTab) {
+      let badge = gitTab.querySelector('.ws-git-badge');
+      if (wsGitDiffData.length) {
+        if (!badge) { badge = document.createElement('span'); badge.className = 'ws-git-badge'; gitTab.appendChild(badge); }
+        badge.textContent = wsGitDiffData.length;
+      } else if (badge) { badge.remove(); }
+    }
     if (wsActiveView === 'git') wsRenderContent();
     return;
   }

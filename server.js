@@ -1613,6 +1613,15 @@ wss.on('connection', (ws, req) => {
       pendingFileOps.delete(msg.request_id);
     }
 
+    if (msg.type === 'proxy_git_diff_result' && agentActorId) {
+      const op = pendingFileOps.get(msg.request_id);
+      if (op && op.clientWs.readyState === 1) {
+        if (msg.error) op.clientWs.send(JSON.stringify({ type: 'git_diff', error: msg.error }));
+        else op.clientWs.send(JSON.stringify({ type: 'git_diff', files: msg.files || [] }));
+      }
+      pendingFileOps.delete(msg.request_id);
+    }
+
     // ── Agent error
     if (msg.type === 'agent_error' && agentActorId) {
       db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msg.message_id);
@@ -1690,14 +1699,23 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'git_diff' && subscribedRoom) {
       const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(subscribedRoom);
       if (!roomRow?.workdir_id) { ws.send(JSON.stringify({ type: 'git_diff', error: 'no workdir' })); return; }
-      const wd = db.prepare('SELECT path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
+      const wd = db.prepare('SELECT actor_id, path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
       if (!wd?.path) { ws.send(JSON.stringify({ type: 'git_diff', error: 'workdir not found' })); return; }
-      try {
-        const { execSync } = require('child_process');
-        const diff = execSync('git diff', { cwd: wd.path, encoding: 'utf8', maxBuffer: 1024 * 1024 });
-        const parsed = parseGitDiff(diff);
-        ws.send(JSON.stringify({ type: 'git_diff', files: parsed }));
-      } catch (e) { ws.send(JSON.stringify({ type: 'git_diff', error: e.message })); }
+      if (fs.existsSync(wd.path)) {
+        try {
+          const { execSync } = require('child_process');
+          const diff = execSync('git diff', { cwd: wd.path, encoding: 'utf8', maxBuffer: 1024 * 1024 });
+          const parsed = parseGitDiff(diff);
+          ws.send(JSON.stringify({ type: 'git_diff', files: parsed }));
+        } catch (e) { ws.send(JSON.stringify({ type: 'git_diff', error: e.message })); }
+      } else {
+        const agentWs = agentClients.get(wd.actor_id);
+        if (agentWs) {
+          const rid = crypto.randomBytes(6).toString('hex');
+          pendingFileOps.set(rid, { type: 'git_diff', clientWs: ws });
+          agentWs.send(JSON.stringify({ type: 'proxy_git_diff', request_id: rid, workdir: wd.path }));
+        } else { ws.send(JSON.stringify({ type: 'git_diff', error: 'agent offline' })); }
+      }
     }
 
    } catch (err) { console.error('[ws] unhandled message error:', err); }
