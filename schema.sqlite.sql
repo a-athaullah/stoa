@@ -139,7 +139,6 @@ CREATE INDEX IF NOT EXISTS idx_agent_skills_workdir_id ON agent_skills(workdir_i
 CREATE INDEX IF NOT EXISTS idx_messages_participant_id ON messages(participant_id);
 CREATE INDEX IF NOT EXISTS idx_ai_sessions_participant_id ON ai_sessions(participant_id);
 CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(reply_to);
-CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_rooms_workdir_id ON rooms(workdir_id);
 CREATE INDEX IF NOT EXISTS idx_rooms_created_by ON rooms(created_by);
 
@@ -158,6 +157,8 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
   created_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
 );
+
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at);
 
 INSERT OR IGNORE INTO settings (scope, key_name, value) VALUES
   ('global','idle_timeout_seconds','300'),

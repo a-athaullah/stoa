@@ -6414,7 +6414,7 @@ function initScrollLoader() {
   async function doSearch(q) {
     try {
       const res = await fetch(`/api/search?q=${encodeURIComponent(q)}&limit=30`);
-      if (!res.ok) return;
+      if (!res.ok) { showToast('Search failed', { error: true }); return; }
       const rows = await res.json();
       showSearchResults(rows);
     } catch { showToast('Search failed', { error: true }); }
@@ -8487,7 +8487,7 @@ async function sRemoveAvatar() {
     sUpdateAvatarPreview(null);
     renderSidebarFooter();
     renderComposerSeal();
-  } catch (err) { console.error('avatar remove failed', err); }
+  } catch (err) { console.error('avatar remove failed', err); showToast('Failed to remove avatar', { error: true }); }
 }
 
 async function sResizeAndUploadActorAvatar(actorId, file, avEl) {
@@ -8526,7 +8526,7 @@ async function sResizeAndUploadActorAvatar(actorId, file, avEl) {
           if (existing) avEl.replaceChild(imgEl, existing);
           else avEl.prepend(imgEl);
         }
-      } catch (err) { console.error('actor avatar upload failed', err); }
+      } catch (err) { console.error('actor avatar upload failed', err); showToast('Failed to upload avatar', { error: true }); }
     };
     img.src = e.target.result;
   };
