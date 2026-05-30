@@ -5446,10 +5446,16 @@ function wsConfirmDelete(relPath) {
     [{ label: 'Cancel', cls: 'ghost' }, { label: 'Delete', cls: 'danger', action: () => ws.send(JSON.stringify({ type: 'file_delete', path: relPath })) }]);
 }
 
+let wsDraftTimer = null;
 function wsAutoSaveDraft() {
   if (!wsActiveFile || !wsEditMode) return;
-  const key = 'stoa-draft-' + (currentRoomId || '') + '-' + wsActiveFile;
-  try { localStorage.setItem(key, JSON.stringify({ content: wsEditContent, ts: Date.now() })); } catch {}
+  if (wsDraftTimer) return;
+  wsDraftTimer = setTimeout(() => {
+    wsDraftTimer = null;
+    if (!wsActiveFile || !wsEditMode) return;
+    const key = 'stoa-draft-' + (currentRoomId || '') + '-' + wsActiveFile;
+    try { localStorage.setItem(key, JSON.stringify({ content: wsEditContent, ts: Date.now() })); } catch {}
+  }, 3000);
 }
 
 function wsCheckDraft() {
@@ -7946,20 +7952,22 @@ async function init() {
     }
     if (fmt === 'link') {
       const text = sel.toString();
-      const url = prompt('URL:');
-      if (!url) return;
-      if (text) {
-        document.execCommand('createLink', false, url);
-      } else {
-        const a = document.createElement('a');
-        a.href = url; a.textContent = url;
-        const range = sel.getRangeAt(0);
-        range.insertNode(a);
-        range.setStartAfter(a);
-        range.collapse(true);
-        sel.removeAllRanges();
-        sel.addRange(range);
-      }
+      wsShowPrompt('Insert link', '', 'https://...', (url) => {
+        if (!url) return;
+        const s = window.getSelection();
+        if (text && s.rangeCount) {
+          document.execCommand('createLink', false, url);
+        } else if (s.rangeCount) {
+          const a = document.createElement('a');
+          a.href = url; a.textContent = url;
+          const r = s.getRangeAt(0);
+          r.insertNode(a);
+          r.setStartAfter(a);
+          r.collapse(true);
+          s.removeAllRanges();
+          s.addRange(r);
+        }
+      });
       return;
     }
 
