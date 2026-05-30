@@ -2,6 +2,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { execSync } = require('child_process');
 const { WebSocketServer } = require('ws');
 const db = require('./db');
 const { ClaudeSession } = require('./claude-session');
@@ -1302,6 +1303,10 @@ const agentVersions = new Map();  // actor_id → client_version string
 const pendingAgents = new Map();    // message_id → { resolve, reject }
 const pendingActorMeta = new Map(); // message_id → { name, avatar_color, avatar_symbol }
 const pendingFileOps = new Map();   // request_id → { type, clientWs }
+function addPendingFileOp(rid, op) {
+  pendingFileOps.set(rid, op);
+  setTimeout(() => pendingFileOps.delete(rid), 15000);
+}
 
 function broadcastGlobal(data) {
   const str = JSON.stringify(data);
@@ -1643,7 +1648,7 @@ wss.on('connection', (ws, req) => {
         const tree = buildFileTree(targetPath, targetPath, 0, 3);
         let modified = [];
         try {
-          const { execSync } = require('child_process');
+
           const status = execSync('git status --porcelain', { cwd: targetPath, encoding: 'utf8', maxBuffer: 512 * 1024, windowsHide: true, timeout: 10000 });
           modified = status.split('\n').filter(Boolean).map(l => l.slice(3).trim());
         } catch {}
@@ -1652,7 +1657,7 @@ wss.on('connection', (ws, req) => {
         const agentWs = agentClients.get(wd.actor_id);
         if (agentWs) {
           const rid = crypto.randomBytes(6).toString('hex');
-          pendingFileOps.set(rid, { type: 'file_list', clientWs: ws });
+          addPendingFileOp(rid, { type: 'file_list', clientWs: ws });
           agentWs.send(JSON.stringify({ type: 'proxy_file_list', request_id: rid, workdir: targetPath }));
         } else { ws.send(JSON.stringify({ type: 'file_list', error: 'agent offline' })); }
       }
@@ -1667,7 +1672,7 @@ wss.on('connection', (ws, req) => {
         const agentWs = agentClients.get(wd.actor_id);
         if (agentWs) {
           const rid = crypto.randomBytes(6).toString('hex');
-          pendingFileOps.set(rid, { type: 'file_read', clientWs: ws, originalPath: msg.path });
+          addPendingFileOp(rid, { type: 'file_read', clientWs: ws, originalPath: msg.path });
           agentWs.send(JSON.stringify({ type: 'proxy_file_read', request_id: rid, workdir: path.dirname(msg.path), path: path.basename(msg.path), binary: !!msg.binary }));
         } else { ws.send(JSON.stringify({ type: 'file_read', path: msg.path, error: 'agent offline' })); }
         return;
@@ -1690,7 +1695,7 @@ wss.on('connection', (ws, req) => {
         const agentWs = agentClients.get(wd.actor_id);
         if (agentWs) {
           const rid = crypto.randomBytes(6).toString('hex');
-          pendingFileOps.set(rid, { type: 'file_read', clientWs: ws, originalPath: msg.path });
+          addPendingFileOp(rid, { type: 'file_read', clientWs: ws, originalPath: msg.path });
           agentWs.send(JSON.stringify({ type: 'proxy_file_read', request_id: rid, workdir: wd.path, path: msg.path, binary: !!msg.binary }));
         } else { ws.send(JSON.stringify({ type: 'file_read', path: msg.path, error: 'agent offline' })); }
       }
@@ -1703,7 +1708,7 @@ wss.on('connection', (ws, req) => {
       if (!wd?.path) { ws.send(JSON.stringify({ type: 'git_diff', error: 'workdir not found' })); return; }
       if (fs.existsSync(wd.path)) {
         try {
-          const { execSync } = require('child_process');
+
           const diff = execSync('git diff', { cwd: wd.path, encoding: 'utf8', maxBuffer: 1024 * 1024, windowsHide: true, timeout: 10000 });
           const parsed = parseGitDiff(diff);
           ws.send(JSON.stringify({ type: 'git_diff', files: parsed }));
@@ -1712,7 +1717,7 @@ wss.on('connection', (ws, req) => {
         const agentWs = agentClients.get(wd.actor_id);
         if (agentWs) {
           const rid = crypto.randomBytes(6).toString('hex');
-          pendingFileOps.set(rid, { type: 'git_diff', clientWs: ws });
+          addPendingFileOp(rid, { type: 'git_diff', clientWs: ws });
           agentWs.send(JSON.stringify({ type: 'proxy_git_diff', request_id: rid, workdir: wd.path }));
         } else { ws.send(JSON.stringify({ type: 'git_diff', error: 'agent offline' })); }
       }

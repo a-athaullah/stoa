@@ -4829,7 +4829,7 @@ function wsScheduleRefresh() {
       ws.send(JSON.stringify({ type: 'git_diff' }));
     }
     wsRefreshTimer = null;
-  }, 3000);
+  }, 5000);
 }
 
 function toggleWorkspacePanel() {
