@@ -1730,7 +1730,7 @@ wss.on('connection', (ws, req) => {
         return;
       }
       const filePath = path.resolve(wd.path, msg.path);
-      if (!filePath.startsWith(path.resolve(wd.path) + path.sep) && filePath !== path.resolve(wd.path)) {
+      if (!isPathSafe(filePath, wd.path)) {
         ws.send(JSON.stringify({ type: 'file_read', path: msg.path, error: 'path traversal blocked' })); return;
       }
       if (fs.existsSync(filePath)) {
@@ -1796,7 +1796,7 @@ wss.on('connection', (ws, req) => {
         return;
       }
       const filePath = path.resolve(wd.path, msg.path);
-      if (!filePath.startsWith(path.resolve(wd.path) + path.sep) && filePath !== path.resolve(wd.path)) {
+      if (!isPathSafe(filePath, wd.path)) {
         ws.send(JSON.stringify({ type: 'file_write_result', path: msg.path, error: 'path traversal blocked' })); return;
       }
       if (fs.existsSync(wd.path)) {
@@ -1832,7 +1832,7 @@ wss.on('connection', (ws, req) => {
       if (!wd?.path) { ws.send(JSON.stringify({ type: 'file_create_result', error: 'workdir not found' })); return; }
       if (/[<>"|?*]/.test(msg.path)) { ws.send(JSON.stringify({ type: 'file_create_result', path: msg.path, error: 'invalid characters in path' })); return; }
       const filePath = path.resolve(wd.path, msg.path);
-      if (!filePath.startsWith(path.resolve(wd.path) + path.sep) && filePath !== path.resolve(wd.path)) {
+      if (!isPathSafe(filePath, wd.path)) {
         ws.send(JSON.stringify({ type: 'file_create_result', path: msg.path, error: 'path traversal blocked' })); return;
       }
       if (fs.existsSync(wd.path)) {
@@ -1863,7 +1863,7 @@ wss.on('connection', (ws, req) => {
       const wd = db.prepare('SELECT actor_id, path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
       if (!wd?.path) { ws.send(JSON.stringify({ type: 'file_delete_result', error: 'workdir not found' })); return; }
       const filePath = path.resolve(wd.path, msg.path);
-      if (!filePath.startsWith(path.resolve(wd.path) + path.sep) && filePath !== path.resolve(wd.path)) {
+      if (!isPathSafe(filePath, wd.path)) {
         ws.send(JSON.stringify({ type: 'file_delete_result', path: msg.path, error: 'path traversal blocked' })); return;
       }
       if (fs.existsSync(wd.path)) {
@@ -1893,8 +1893,7 @@ wss.on('connection', (ws, req) => {
       if (/[<>"|?*]/.test(msg.path) || /[<>"|?*]/.test(msg.new_path)) { ws.send(JSON.stringify({ type: 'file_rename_result', path: msg.path, error: 'invalid characters in path' })); return; }
       const oldPath = path.resolve(wd.path, msg.path);
       const newPath = path.resolve(wd.path, msg.new_path);
-      const wdResolved = path.resolve(wd.path) + path.sep;
-      if (!oldPath.startsWith(wdResolved) || !newPath.startsWith(wdResolved)) {
+      if (!isPathSafe(oldPath, wd.path) || !isPathSafe(newPath, wd.path)) {
         ws.send(JSON.stringify({ type: 'file_rename_result', path: msg.path, error: 'path traversal blocked' })); return;
       }
       if (fs.existsSync(wd.path)) {
@@ -1936,6 +1935,19 @@ wss.on('connection', (ws, req) => {
 });
 
 // ─── Workspace helpers ──────────────────────────────────────────────────────
+
+function isPathSafe(filePath, workdir) {
+  const resolved = path.resolve(filePath);
+  const wdResolved = path.resolve(workdir);
+  if (!resolved.startsWith(wdResolved + path.sep) && resolved !== wdResolved) return false;
+  try {
+    if (fs.existsSync(filePath)) {
+      const real = fs.realpathSync(filePath);
+      if (!real.startsWith(wdResolved + path.sep) && real !== wdResolved) return false;
+    }
+  } catch {}
+  return true;
+}
 
 const WS_IGNORE = new Set(['.git', 'node_modules', '.next', '__pycache__', '.venv', 'dist', 'build', '.claude']);
 

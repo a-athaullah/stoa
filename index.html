@@ -7409,7 +7409,7 @@ function highlightMentions(html) {
   if (!names.length) return html;
   const escaped = names.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
   const re = new RegExp(`@(${escaped.join('|')})(?=\\s|[.,!?;:]|$)`, 'g');
-  return html.replace(re, '<span class="h-mention-inline">@$1</span>');
+  return html.replace(re, (match, name) => '<span class="h-mention-inline">@' + name.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</span>');
 }
 
 // ── Mention autocomplete ──────────────────────────────────────────────────

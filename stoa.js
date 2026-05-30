@@ -61,6 +61,19 @@ const UPDATE_FILES = AI_BACKEND === 'gemini'
   : ['stoa.js', 'claude-session.js'];
 
 const TREE_IGNORE = new Set(['.git', 'node_modules', '.next', '__pycache__', '.venv', 'dist', 'build', '.claude']);
+function isPathSafe(filePath, workdir) {
+  const resolved = path.resolve(filePath);
+  const wdResolved = path.resolve(workdir);
+  if (!resolved.startsWith(wdResolved + path.sep) && resolved !== wdResolved) return false;
+  try {
+    if (fs.existsSync(filePath)) {
+      const real = fs.realpathSync(filePath);
+      if (!real.startsWith(wdResolved + path.sep) && real !== wdResolved) return false;
+    }
+  } catch {}
+  return true;
+}
+
 function buildFileTreeAgent(dirPath, rootPath, depth, maxDepth) {
   if (depth > maxDepth) return [];
   let entries;
@@ -334,7 +347,7 @@ async function handleAgentMessage(msg) {
   if (msg.type === 'proxy_file_read') {
     try {
       const filePath = path.resolve(msg.workdir, msg.path);
-      if (!filePath.startsWith(path.resolve(msg.workdir) + path.sep) && filePath !== path.resolve(msg.workdir)) {
+      if (!isPathSafe(filePath, msg.workdir)) {
         send({ type: 'proxy_file_read_result', request_id: msg.request_id, error: 'path traversal blocked' });
         return;
       }
@@ -382,8 +395,7 @@ async function handleAgentMessage(msg) {
       if (BINARY_EXTS.has(ext)) { send({ type: 'proxy_file_write_result', request_id: msg.request_id, error: 'binary files cannot be edited' }); return; }
       if (typeof msg.content !== 'string' || msg.content.length > 1024 * 1024) { send({ type: 'proxy_file_write_result', request_id: msg.request_id, error: 'content too large (max 1MB)' }); return; }
       const filePath = path.resolve(msg.workdir, msg.path);
-      const wdBound = path.resolve(msg.workdir) + path.sep;
-      if (!filePath.startsWith(wdBound) && filePath !== path.resolve(msg.workdir)) {
+      if (!isPathSafe(filePath, msg.workdir)) {
         send({ type: 'proxy_file_write_result', request_id: msg.request_id, error: 'path traversal blocked' });
         return;
       }
@@ -400,8 +412,7 @@ async function handleAgentMessage(msg) {
     try {
       if (/[<>"|?*]/.test(msg.path)) { send({ type: 'proxy_file_create_result', request_id: msg.request_id, error: 'invalid characters in path' }); return; }
       const filePath = path.resolve(msg.workdir, msg.path);
-      const wdBound = path.resolve(msg.workdir) + path.sep;
-      if (!filePath.startsWith(wdBound) && filePath !== path.resolve(msg.workdir)) {
+      if (!isPathSafe(filePath, msg.workdir)) {
         send({ type: 'proxy_file_create_result', request_id: msg.request_id, error: 'path traversal blocked' });
         return;
       }
@@ -421,8 +432,7 @@ async function handleAgentMessage(msg) {
   if (msg.type === 'proxy_file_delete') {
     try {
       const filePath = path.resolve(msg.workdir, msg.path);
-      const wdBound = path.resolve(msg.workdir) + path.sep;
-      if (!filePath.startsWith(wdBound) && filePath !== path.resolve(msg.workdir)) {
+      if (!isPathSafe(filePath, msg.workdir)) {
         send({ type: 'proxy_file_delete_result', request_id: msg.request_id, error: 'path traversal blocked' });
         return;
       }
@@ -441,8 +451,7 @@ async function handleAgentMessage(msg) {
       if (/[<>"|?*]/.test(msg.path) || /[<>"|?*]/.test(msg.new_path)) { send({ type: 'proxy_file_rename_result', request_id: msg.request_id, error: 'invalid characters in path' }); return; }
       const oldPath = path.resolve(msg.workdir, msg.path);
       const newPath = path.resolve(msg.workdir, msg.new_path);
-      const wdBound = path.resolve(msg.workdir) + path.sep;
-      if (!oldPath.startsWith(wdBound) || !newPath.startsWith(wdBound)) {
+      if (!isPathSafe(oldPath, msg.workdir) || !isPathSafe(newPath, msg.workdir)) {
         send({ type: 'proxy_file_rename_result', request_id: msg.request_id, error: 'path traversal blocked' });
         return;
       }
