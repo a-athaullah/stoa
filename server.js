@@ -1650,6 +1650,7 @@ wss.on('connection', (ws, req) => {
           agentWs.send(JSON.stringify({ type: 'proxy_file_read', request_id: rid, workdir: wd.path, path: msg.path }));
         } else { ws.send(JSON.stringify({ type: 'file_read', path: msg.path, error: 'agent offline' })); }
       }
+    }
 
     if (msg.type === 'git_diff' && subscribedRoom) {
       const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(subscribedRoom);
