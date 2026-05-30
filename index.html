@@ -5189,15 +5189,17 @@ function wsShowEditingBanner(actorName, actorColor) {
 marked.use({
   breaks: true, gfm: true,
   renderer: {
-    code({ text, lang, raw }) {
-      const src = text || raw?.replace(/^```\w*\n?|\n?```$/g, '') || '';
+    code(token) {
+      const src = (typeof token === 'string' ? token : token.text) ?? '';
+      const lang = typeof token === 'string' ? '' : (token.lang || '');
+      if (!src) return `<pre><code>${''}</code></pre>`;
       let highlighted;
       const language = lang && hljs.getLanguage(lang) ? lang : null;
       try {
         highlighted = language
           ? hljs.highlight(src, { language }).value
           : hljs.highlightAuto(src).value;
-      } catch { highlighted = src; }
+      } catch { highlighted = src.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
       const langLabel = language
         ? `<span class="h-code-lang">${language}</span>`
         : '';
