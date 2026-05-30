@@ -4748,12 +4748,12 @@ function wsOpenFile(name, content) {
   }
   const imgExts = new Set(['png','jpg','jpeg','gif','webp','svg','ico','bmp']);
   const fileExt = wsGetExt(name);
+  const isAbs = /^\//.test(name) || /^[A-Za-z]:/.test(name);
   if (!content && ws) {
-    if (imgExts.has(fileExt)) {
-      ws.send(JSON.stringify({ type: 'file_read', path: name, binary: true }));
-    } else {
-      ws.send(JSON.stringify({ type: 'file_read', path: name }));
-    }
+    const req = { type: 'file_read', path: name };
+    if (imgExts.has(fileExt)) req.binary = true;
+    if (isAbs) req.absolute = true;
+    ws.send(JSON.stringify(req));
   }
   wsActiveFile = name;
   wsActiveView = 'file';
@@ -4806,11 +4806,12 @@ function wsRenderFileTree(container, nodes, parentPath) {
       nameEl.textContent = node.name;
       row.appendChild(nameEl);
 
-      const filePath = parentPath ? parentPath + '/' + node.name : node.name;
+      const relPath = parentPath ? parentPath + '/' + node.name : node.name;
+      const fullPath = wsFileTreeRoot ? wsFileTreeRoot.replace(/\\/g, '/').replace(/\/+$/, '') + '/' + relPath : relPath;
       row.onclick = () => {
         const panel = document.getElementById('workspace-panel');
         if (!panel.classList.contains('open')) toggleWorkspacePanel();
-        wsOpenFile(filePath);
+        wsOpenFile(fullPath);
       };
       container.appendChild(row);
     }
