@@ -481,8 +481,8 @@ const server = http.createServer(async (req, res) => {
     const base64Data = data_url.slice(data_url.indexOf(',') + 1);
     const oldAvatar = db.prepare('SELECT avatar_url FROM actors WHERE id=?').get(id);
     if (oldAvatar?.avatar_url) {
-      const oldPath = path.join(__dirname, oldAvatar.avatar_url);
-      if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+      const oldPath = path.resolve(__dirname, oldAvatar.avatar_url);
+      if (oldPath.startsWith(path.join(__dirname, 'uploads')) && fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
     }
     const saved = `avatar-${id}-${Date.now()}.${ext}`;
     const avatarDir = path.join(UPLOADS_DIR, 'avatar');
