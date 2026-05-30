@@ -8468,9 +8468,9 @@ async function sResizeAndUploadAvatar(file) {
           renderSidebarFooter();
           renderComposerSeal();
         }
-      } catch (err) { console.error('avatar upload failed', err); }
+      } catch (err) { console.error('avatar upload failed', err); showToast('Failed to upload avatar', { error: true }); }
     };
-    img.onerror = () => console.error('Failed to load image for avatar');
+    img.onerror = () => { console.error('Failed to load image for avatar'); showToast('Invalid image file', { error: true }); };
     img.src = origDataUrl;
   };
   reader.onerror = () => console.error('Failed to read file for avatar');

@@ -363,6 +363,10 @@ Tab **Git** menampilkan perubahan yang belum di-commit (`git diff`) dengan highl
 
 Saat AI agent menyebut path file di pesan (misal `/home/user/project/file.py`), path tersebut menjadi **bisa diklik** — klik untuk membuka file di panel workspace. Ini berlaku untuk path di backtick dan code block.
 
+### Download File
+
+Hover di file mana saja di file tree untuk menampilkan **tombol download** (ikon panah). Klik untuk download file ke device lokal. Ini berlaku untuk file agent lokal maupun remote — file remote diambil via WebSocket dan dikirim sebagai download browser.
+
 ### Browsing File Remote
 
 Workspace bekerja dengan agent lokal maupun remote. Untuk agent remote, operasi file di-proxy melalui koneksi WebSocket agent — bisa browse file di mesin manapun agent berjalan, dari device apapun (termasuk tablet dan HP).

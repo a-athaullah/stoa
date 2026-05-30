@@ -363,6 +363,10 @@ The **Git** tab shows uncommitted changes (`git diff`) with green/red line highl
 
 When an AI agent mentions a file path in a message (e.g., `/home/user/project/file.py`), the path becomes **clickable** — click it to open the file in the workspace panel. This works for paths inside backtick code blocks and code fences.
 
+### Download Files
+
+Hover over any file in the file tree to reveal a **download button** (arrow icon). Click it to download the file to your local device. This works for both local and remote agent files — remote files are fetched via WebSocket and delivered as a browser download.
+
 ### Remote File Browsing
 
 The workspace works with both local and remote agents. For remote agents, file operations are proxied through the agent's WebSocket connection — you can browse files on any machine the agent runs on, from any device (including tablets and phones).
