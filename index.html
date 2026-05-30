@@ -4918,6 +4918,7 @@ let wsEditContent = '';
 let wsEditSaving = false;
 let wsExpanded = false;
 let wsCtxMenu = null;
+const WS_EDITOR_CONTAINER_CSS = WS_EDITOR_CONTAINER_CSS;
 let wsFileMtimes = {};
 
 function wsDownloadFile(relPath, fileName) {
@@ -5173,7 +5174,7 @@ async function wsLoadCodeMirror() {
 
 function wsRenderEditor(container) {
   container.className = '';
-  container.style.cssText = 'flex:1;min-height:0;display:flex;flex-direction:column;position:relative';
+  container.style.cssText = WS_EDITOR_CONTAINER_CSS;
   wsEditorView = null;
   if (window._cm) {
     wsRenderCMEditor(container);
@@ -5183,18 +5184,18 @@ function wsRenderEditor(container) {
     loading.textContent = 'loading editor…';
     container.appendChild(loading);
     const check = setInterval(() => {
-      if (window._cm) { clearInterval(check); if (wsEditMode) { const c = document.getElementById('ws-panel-content'); if (c) { c.innerHTML = ''; c.className = ''; c.style.cssText = 'flex:1;min-height:0;display:flex;flex-direction:column;position:relative'; wsRenderCMEditor(c); } } }
-      if (!wsCmLoading && !window._cm) { clearInterval(check); if (wsEditMode) { const c = document.getElementById('ws-panel-content'); if (c) { c.innerHTML = ''; c.className = ''; c.style.cssText = 'flex:1;min-height:0;display:flex;flex-direction:column;position:relative'; wsRenderTextareaEditor(c); } } }
+      if (window._cm) { clearInterval(check); if (wsEditMode) { const c = document.getElementById('ws-panel-content'); if (c) { c.innerHTML = ''; c.className = ''; c.style.cssText = WS_EDITOR_CONTAINER_CSS; wsRenderCMEditor(c); } } }
+      if (!wsCmLoading && !window._cm) { clearInterval(check); if (wsEditMode) { const c = document.getElementById('ws-panel-content'); if (c) { c.innerHTML = ''; c.className = ''; c.style.cssText = WS_EDITOR_CONTAINER_CSS; wsRenderTextareaEditor(c); } } }
     }, 100);
     setTimeout(() => clearInterval(check), 30000);
   } else {
     wsLoadCodeMirror().then(cm => {
       if (cm && wsEditMode) {
         const c = document.getElementById('ws-panel-content');
-        if (c) { c.innerHTML = ''; c.className = ''; c.style.cssText = 'flex:1;min-height:0;display:flex;flex-direction:column;position:relative'; wsRenderCMEditor(c); }
+        if (c) { c.innerHTML = ''; c.className = ''; c.style.cssText = WS_EDITOR_CONTAINER_CSS; wsRenderCMEditor(c); }
       } else if (!cm && wsEditMode) {
         const c = document.getElementById('ws-panel-content');
-        if (c) { c.innerHTML = ''; c.className = ''; c.style.cssText = 'flex:1;min-height:0;display:flex;flex-direction:column;position:relative'; wsRenderTextareaEditor(c); }
+        if (c) { c.innerHTML = ''; c.className = ''; c.style.cssText = WS_EDITOR_CONTAINER_CSS; wsRenderTextareaEditor(c); }
       }
     }).catch(() => {});
   }
@@ -5322,7 +5323,7 @@ function wsShowDialog(title, bodyHtml, actions) {
   dialog.className = 'ws-dialog';
   dialog.style.width = '420px';
   dialog.innerHTML = '<div class="h-serif" style="font-size:20px;color:var(--h-ink);margin-bottom:13px">' + wsEscHtml(title) + '</div>'
-    + '<div style="font-family:var(--h-sans);font-size:14px;line-height:1.62;color:var(--h-ink-mute);margin-bottom:22px">' + bodyHtml + '</div>';
+    + '<div style="font-family:var(--h-sans);font-size:14px;line-height:1.62;color:var(--h-ink-mute);margin-bottom:22px">' + DOMPurify.sanitize(bodyHtml) + '</div>';
   const btns = document.createElement('div');
   btns.style.cssText = 'display:flex;gap:9px;justify-content:flex-end;flex-wrap:wrap';
   actions.forEach(a => {
@@ -5373,27 +5374,70 @@ function wsCloseCtxMenu() {
   document.querySelectorAll('.ws-ctx-menu').forEach(m => m.remove());
 }
 
+function wsShowPrompt(title, defaultValue, placeholder, callback) {
+  const panel = document.getElementById('ws-panel-body') || document.getElementById('workspace-panel');
+  if (!panel) return;
+  const existing = panel.querySelector('.ws-scrim');
+  if (existing) existing.remove();
+  const scrim = document.createElement('div');
+  scrim.className = 'ws-scrim';
+  const dialog = document.createElement('div');
+  dialog.className = 'ws-dialog';
+  dialog.style.width = '380px';
+  dialog.innerHTML = '<div class="h-serif" style="font-size:20px;color:var(--h-ink);margin-bottom:16px">' + wsEscHtml(title) + '</div>';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = defaultValue || '';
+  input.placeholder = placeholder || '';
+  input.spellcheck = false;
+  input.style.cssText = 'width:100%;padding:8px 12px;border-radius:8px;border:1px solid var(--h-hair-soft);background:var(--h-bg);color:var(--h-ink);font-family:var(--h-sans);font-size:14px;outline:none;margin-bottom:18px;box-sizing:border-box';
+  input.addEventListener('focus', () => { input.style.borderColor = 'oklch(0.78 0.085 78)'; input.style.boxShadow = '0 0 0 3px color-mix(in srgb, oklch(0.78 0.085 78) 22%, transparent)'; });
+  input.addEventListener('blur', () => { input.style.borderColor = 'var(--h-hair-soft)'; input.style.boxShadow = 'none'; });
+  dialog.appendChild(input);
+  const btns = document.createElement('div');
+  btns.style.cssText = 'display:flex;gap:9px;justify-content:flex-end';
+  const submit = () => { const v = input.value.trim(); scrim.remove(); if (v) callback(v); };
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'ws-edit-btn ghost';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.onclick = () => scrim.remove();
+  btns.appendChild(cancelBtn);
+  const okBtn = document.createElement('button');
+  okBtn.className = 'ws-edit-btn primary';
+  okBtn.textContent = 'OK';
+  okBtn.onclick = submit;
+  btns.appendChild(okBtn);
+  dialog.appendChild(btns);
+  scrim.appendChild(dialog);
+  scrim.addEventListener('click', (e) => { if (e.target === scrim) scrim.remove(); });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') scrim.remove(); });
+  panel.style.position = 'relative';
+  panel.appendChild(scrim);
+  setTimeout(() => { input.focus(); input.select(); }, 50);
+}
+
 function wsPromptNewFile(parentDir) {
-  const name = prompt('New file name:');
-  if (!name || !name.trim()) return;
-  const filePath = parentDir ? parentDir + '/' + name.trim() : name.trim();
-  ws.send(JSON.stringify({ type: 'file_create', path: filePath, is_dir: false }));
+  wsShowPrompt('New file', '', 'filename.js', (name) => {
+    const filePath = parentDir ? parentDir + '/' + name : name;
+    ws.send(JSON.stringify({ type: 'file_create', path: filePath, is_dir: false }));
+  });
 }
 
 function wsPromptNewFolder(parentDir) {
-  const name = prompt('New folder name:');
-  if (!name || !name.trim()) return;
-  const filePath = parentDir ? parentDir + '/' + name.trim() : name.trim();
-  ws.send(JSON.stringify({ type: 'file_create', path: filePath, is_dir: true }));
+  wsShowPrompt('New folder', '', 'folder-name', (name) => {
+    const filePath = parentDir ? parentDir + '/' + name : name;
+    ws.send(JSON.stringify({ type: 'file_create', path: filePath, is_dir: true }));
+  });
 }
 
 function wsPromptRename(relPath) {
   const oldName = relPath.split('/').pop();
-  const newName = prompt('Rename to:', oldName);
-  if (!newName || !newName.trim() || newName.trim() === oldName) return;
-  const parentDir = relPath.split('/').slice(0, -1).join('/');
-  const newPath = parentDir ? parentDir + '/' + newName.trim() : newName.trim();
-  ws.send(JSON.stringify({ type: 'file_rename', path: relPath, new_path: newPath }));
+  wsShowPrompt('Rename', oldName, oldName, (newName) => {
+    if (newName === oldName) return;
+    const parentDir = relPath.split('/').slice(0, -1).join('/');
+    const newPath = parentDir ? parentDir + '/' + newName : newName;
+    ws.send(JSON.stringify({ type: 'file_rename', path: relPath, new_path: newPath }));
+  });
 }
 
 function wsConfirmDelete(relPath) {
