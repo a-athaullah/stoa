@@ -4991,6 +4991,7 @@ function toggleWorkspacePanel() {
     if (saved) panel.style.setProperty('--ws-panel-width', saved);
     if (ws && wsActiveView === 'files') ws.send(JSON.stringify({ type: 'file_list' }));
     if (ws && wsActiveView === 'git') ws.send(JSON.stringify({ type: 'git_diff' }));
+    if (!window._cm && !wsCmLoading) wsLoadCodeMirror();
   }
 }
 
@@ -5102,24 +5103,23 @@ async function wsLoadCodeMirror() {
   if (wsCmLoading) return null;
   wsCmLoading = true;
   try {
-    const [cmMod, viewMod, stateMod, langMod, cmdMod, searchMod, jsLang, pyLang, jsonLang, mdLang, htmlLang, cssLang] = await Promise.all([
-      import('https://esm.sh/codemirror@6.65.7'),
-      import('https://esm.sh/@codemirror/view@6.36.5'),
-      import('https://esm.sh/@codemirror/state@6.5.2'),
-      import('https://esm.sh/@codemirror/language@6.10.8'),
-      import('https://esm.sh/@codemirror/commands@6.8.0'),
-      import('https://esm.sh/@codemirror/search@6.5.10'),
-      import('https://esm.sh/@codemirror/lang-javascript@6.2.3'),
-      import('https://esm.sh/@codemirror/lang-python@6.1.7'),
-      import('https://esm.sh/@codemirror/lang-json@6.0.1'),
-      import('https://esm.sh/@codemirror/lang-markdown@6.3.2'),
-      import('https://esm.sh/@codemirror/lang-html@6.4.9'),
-      import('https://esm.sh/@codemirror/lang-css@6.3.1'),
+    const cmMod = await import('https://esm.sh/codemirror');
+    const viewMod = await import('https://esm.sh/@codemirror/view');
+    const stateMod = await import('https://esm.sh/@codemirror/state');
+    const langMod = await import('https://esm.sh/@codemirror/language');
+    const lezerHL = await import('https://esm.sh/@lezer/highlight');
+    const [jsLang, pyLang, jsonLang, mdLang, htmlLang, cssLang] = await Promise.all([
+      import('https://esm.sh/@codemirror/lang-javascript'),
+      import('https://esm.sh/@codemirror/lang-python'),
+      import('https://esm.sh/@codemirror/lang-json'),
+      import('https://esm.sh/@codemirror/lang-markdown'),
+      import('https://esm.sh/@codemirror/lang-html'),
+      import('https://esm.sh/@codemirror/lang-css'),
     ]);
     const { EditorView } = viewMod;
     const { EditorState } = stateMod;
     const { HighlightStyle, syntaxHighlighting } = langMod;
-    const { tags } = await import('https://esm.sh/@lezer/highlight@1.2.1');
+    const { tags } = lezerHL;
     const hearthTheme = EditorView.theme({
       '&': { backgroundColor: 'oklch(0.193 0.016 44)', color: '#d3c8b4', fontSize: '13px', height: '100%' },
       '.cm-content': { caretColor: 'oklch(0.78 0.085 78)', fontFamily: "'SF Mono','Cascadia Code','Fira Code','JetBrains Mono',ui-monospace,monospace", padding: '10px 0' },
@@ -5158,11 +5158,13 @@ async function wsLoadCodeMirror() {
       tsx: () => jsLang.javascript({ typescript: true, jsx: true }), py: pyLang.python, json: jsonLang.json,
       md: mdLang.markdown, html: htmlLang.html, css: cssLang.css,
     };
-    window._cm = { EditorView, EditorState, basicSetup: cmMod.basicSetup, hearthTheme, hearthHighlight: syntaxHighlighting(hearthHighlight), langMap, keymap: cmdMod.keymap, searchMod };
+    window._cm = { EditorView, EditorState, basicSetup: cmMod.basicSetup, hearthTheme, hearthHighlight: syntaxHighlighting(hearthHighlight), langMap, keymap: viewMod.keymap };
     wsCmLoading = false;
     return window._cm;
   } catch (e) {
     console.warn('[ws] CodeMirror load failed, using textarea:', e);
+    fetch('/api/client-error', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'CM load FAILED: ' + e.message, source: e.stack }) }).catch(() => {});
     wsCmLoading = false;
     return null;
   }
@@ -5174,43 +5176,69 @@ function wsRenderEditor(container) {
   wsEditorView = null;
   if (window._cm) {
     wsRenderCMEditor(container);
+  } else if (wsCmLoading) {
+    const loading = document.createElement('div');
+    loading.style.cssText = 'flex:1;display:flex;align-items:center;justify-content:center;background:oklch(0.193 0.016 44);color:#7a7060;font-family:var(--h-sans);font-size:13px';
+    loading.textContent = 'loading editor…';
+    container.appendChild(loading);
+    const check = setInterval(() => {
+      if (window._cm) { clearInterval(check); if (wsEditMode) { const c = document.getElementById('ws-panel-content'); if (c) { c.innerHTML = ''; c.className = ''; c.style.cssText = 'flex:1;min-height:0;display:flex;flex-direction:column;position:relative'; wsRenderCMEditor(c); } } }
+      if (!wsCmLoading && !window._cm) { clearInterval(check); if (wsEditMode) { const c = document.getElementById('ws-panel-content'); if (c) { c.innerHTML = ''; c.className = ''; c.style.cssText = 'flex:1;min-height:0;display:flex;flex-direction:column;position:relative'; wsRenderTextareaEditor(c); } } }
+    }, 100);
+    setTimeout(() => clearInterval(check), 30000);
   } else {
-    wsRenderTextareaEditor(container);
     wsLoadCodeMirror().then(cm => {
       if (cm && wsEditMode) {
-        const content = document.getElementById('ws-panel-content');
-        if (content) { content.innerHTML = ''; content.className = ''; content.style.cssText = 'flex:1;min-height:0;display:flex;flex-direction:column;position:relative'; wsRenderCMEditor(content); }
+        const c = document.getElementById('ws-panel-content');
+        if (c) { c.innerHTML = ''; c.className = ''; c.style.cssText = 'flex:1;min-height:0;display:flex;flex-direction:column;position:relative'; wsRenderCMEditor(c); }
+      } else if (!cm && wsEditMode) {
+        const c = document.getElementById('ws-panel-content');
+        if (c) { c.innerHTML = ''; c.className = ''; c.style.cssText = 'flex:1;min-height:0;display:flex;flex-direction:column;position:relative'; wsRenderTextareaEditor(c); }
       }
-    });
+    }).catch(() => {});
   }
 }
 
 function wsRenderCMEditor(container) {
-  const cm = window._cm;
-  const ext = wsActiveFile ? wsGetExt(wsActiveFile) : '';
-  const langFn = cm.langMap[ext];
-  const extensions = [
-    cm.basicSetup,
-    cm.hearthTheme,
-    cm.hearthHighlight,
-    cm.EditorView.updateListener.of(update => {
-      if (update.docChanged) {
-        wsEditContent = update.state.doc.toString();
-        if (!wsEditDirty) { wsEditDirty = true; wsRenderTabs(); wsRenderToolbarActions(); }
-        wsAutoSaveDraft();
-      }
-    }),
-    cm.keymap.of([{ key: 'Mod-s', run: () => { wsSaveFile(); return true; } }]),
-  ];
-  if (langFn) extensions.push(typeof langFn === 'function' ? langFn() : langFn());
-  const wrap = document.createElement('div');
-  wrap.style.cssText = 'flex:1;min-height:0;overflow:hidden';
-  container.appendChild(wrap);
-  wsEditorView = new cm.EditorView({
-    state: cm.EditorState.create({ doc: wsEditContent, extensions }),
-    parent: wrap,
-  });
-  wsEditorView.focus();
+  try {
+    const cm = window._cm;
+    const ext = wsActiveFile ? wsGetExt(wsActiveFile) : '';
+    const langFn = cm.langMap[ext];
+    const extensions = [
+      cm.basicSetup,
+      cm.hearthTheme,
+      cm.hearthHighlight,
+      cm.EditorView.updateListener.of(update => {
+        if (update.docChanged) {
+          wsEditContent = update.state.doc.toString();
+          if (!wsEditDirty) { wsEditDirty = true; wsRenderTabs(); wsRenderToolbarActions(); }
+          wsAutoSaveDraft();
+        }
+      }),
+      cm.keymap.of([
+        { key: 'Mod-s', run: () => { wsSaveFile(); return true; } },
+        { key: 'Ctrl-Shift-d', run: (view) => { const s = view.state, sel = s.selection.main, line = s.doc.lineAt(sel.head), text = s.doc.sliceString(line.from, line.to); view.dispatch({ changes: { from: line.to, insert: '\n' + text }, selection: { anchor: sel.head + text.length + 1 } }); return true; } },
+        { key: 'Alt-Shift-ArrowDown', run: (view) => { const s = view.state, sel = s.selection.main, line = s.doc.lineAt(sel.head), text = s.doc.sliceString(line.from, line.to); view.dispatch({ changes: { from: line.to, insert: '\n' + text }, selection: { anchor: sel.head + text.length + 1 } }); return true; } },
+        { key: 'Alt-Shift-ArrowUp', run: (view) => { const s = view.state, sel = s.selection.main, line = s.doc.lineAt(sel.head), text = s.doc.sliceString(line.from, line.to); view.dispatch({ changes: { from: line.from, insert: text + '\n' } }); return true; } },
+      ]),
+    ];
+    if (langFn) extensions.push(typeof langFn === 'function' ? langFn() : langFn());
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'flex:1;min-height:0;overflow:hidden';
+    container.appendChild(wrap);
+    wsEditorView = new cm.EditorView({
+      state: cm.EditorState.create({ doc: wsEditContent, extensions }),
+      parent: wrap,
+    });
+    wsEditorView.focus();
+  } catch (e) {
+    console.warn('[ws-editor] CodeMirror render failed, falling back to textarea:', e);
+    fetch('/api/client-error', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'CM render FAILED: ' + e.message, source: e.stack }) }).catch(() => {});
+    window._cm = null;
+    container.innerHTML = '';
+    wsRenderTextareaEditor(container);
+  }
 }
 
 function wsRenderTextareaEditor(container) {
@@ -5509,7 +5537,7 @@ function wsCloseFile(name) {
       [{ label: 'Keep editing', cls: 'ghost' }, { label: 'Discard', cls: 'danger', action: () => { wsEditMode = false; wsEditDirty = false; wsCloseFile(name); } }]);
     return;
   }
-  if (wsActiveFile === name) { wsEditMode = false; wsEditDirty = false; wsEditContent = ''; if (wsExpanded) wsToggleExpand(); }
+  if (wsActiveFile === name) { wsEditMode = false; wsEditDirty = false; wsEditContent = ''; if (wsEditorView) { wsEditorView.destroy(); wsEditorView = null; } if (wsExpanded) wsToggleExpand(); }
   const key = 'stoa-draft-' + (currentRoomId || '') + '-' + name;
   try { localStorage.removeItem(key); } catch {}
   wsOpenFiles = wsOpenFiles.filter(f => f.name !== name);
@@ -5732,16 +5760,16 @@ function wsRenderDiff(container, diffData, mode) {
     row.className = 'ws-code-line' + (r.k === 'add' ? ' ws-diff-line-add' : r.k === 'del' ? ' ws-diff-line-del' : '');
     const g1 = document.createElement('span');
     g1.className = 'ws-code-gutter';
-    g1.style.cssText = 'width:34px;padding:0 6px';
+    g1.style.cssText = 'width:28px;min-width:28px;padding:0 4px';
     g1.textContent = r.n1 || '';
     row.appendChild(g1);
     const g2 = document.createElement('span');
     g2.className = 'ws-code-gutter';
-    g2.style.cssText = 'width:34px;padding:0 6px';
+    g2.style.cssText = 'width:28px;min-width:28px;padding:0 4px';
     g2.textContent = r.n2 || '';
     row.appendChild(g2);
     const sign = document.createElement('span');
-    sign.style.cssText = 'display:table-cell;width:18px;text-align:center;user-select:none;color:' + (r.k === 'add' ? '#7faa7c' : r.k === 'del' ? '#c08378' : '#7a7060');
+    sign.style.cssText = 'display:table-cell;width:14px;min-width:14px;text-align:center;user-select:none;color:' + (r.k === 'add' ? '#7faa7c' : r.k === 'del' ? '#c08378' : '#7a7060');
     sign.textContent = r.k === 'add' ? '+' : r.k === 'del' ? '−' : '';
     row.appendChild(sign);
     const code = document.createElement('span');
@@ -7981,6 +8009,15 @@ async function init() {
   });
   window.addEventListener('beforeunload', (e) => {
     if (wsEditMode && wsEditDirty) { e.preventDefault(); e.returnValue = ''; }
+  });
+  window.onerror = (msg, src, line, col, err) => {
+    fetch('/api/client-error', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: msg, source: `${src}:${line}:${col}`, stack: err?.stack }) }).catch(() => {});
+  };
+  window.addEventListener('unhandledrejection', (e) => {
+    const msg = e.reason?.message || String(e.reason);
+    fetch('/api/client-error', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'Unhandled rejection: ' + msg, source: e.reason?.stack }) }).catch(() => {});
   });
 
   // Attach menu

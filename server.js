@@ -346,6 +346,18 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ── Auth routes (exempt from auth check above) ──
+  if (req.method === 'POST' && url.pathname === '/api/client-error') {
+    const body = await readBody(req);
+    const data = parseJsonBody(body);
+    if (data) {
+      const line = `[${new Date().toISOString()}] ${data.message || ''} | ${data.source || ''}\n`;
+      try { fs.appendFileSync(path.join(__dirname, '.claude', 'client-errors.log'), line); } catch {}
+      console.log('[client-error]', data.message);
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end('{"ok":true}');
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/auth/login') {
     const body = await readBody(req);
     const data = parseJsonBody(body);
@@ -1819,7 +1831,7 @@ wss.on('connection', (ws, req) => {
       if (!wd?.path) { ws.send(JSON.stringify({ type: 'file_create_result', error: 'workdir not found' })); return; }
       if (/[<>"|?*]/.test(msg.path)) { ws.send(JSON.stringify({ type: 'file_create_result', path: msg.path, error: 'invalid characters in path' })); return; }
       const filePath = path.resolve(wd.path, msg.path);
-      if (!filePath.startsWith(path.resolve(wd.path) + path.sep)) {
+      if (!filePath.startsWith(path.resolve(wd.path) + path.sep) && filePath !== path.resolve(wd.path)) {
         ws.send(JSON.stringify({ type: 'file_create_result', path: msg.path, error: 'path traversal blocked' })); return;
       }
       if (fs.existsSync(wd.path)) {
@@ -1850,7 +1862,7 @@ wss.on('connection', (ws, req) => {
       const wd = db.prepare('SELECT actor_id, path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
       if (!wd?.path) { ws.send(JSON.stringify({ type: 'file_delete_result', error: 'workdir not found' })); return; }
       const filePath = path.resolve(wd.path, msg.path);
-      if (!filePath.startsWith(path.resolve(wd.path) + path.sep)) {
+      if (!filePath.startsWith(path.resolve(wd.path) + path.sep) && filePath !== path.resolve(wd.path)) {
         ws.send(JSON.stringify({ type: 'file_delete_result', path: msg.path, error: 'path traversal blocked' })); return;
       }
       if (fs.existsSync(wd.path)) {
