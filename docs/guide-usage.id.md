@@ -325,6 +325,44 @@ Stoa mendukung **push notification** browser sehingga Anda mendapat notifikasi s
 
 ---
 
+## Panel Workspace
+
+Panel workspace adalah file browser dan code viewer yang muncul di sebelah kanan chat. Bisa digunakan untuk melihat file di mesin AI agent — termasuk server remote.
+
+### Membuka Panel
+
+Klik **tombol panel** (ikon split-pane) di header chat. Panel terbuka di kanan dengan drag handle untuk resize.
+
+### File Tree (Tab Files)
+
+Tab **Files** menampilkan directory tree dari working directory room. Klik file untuk membuka. Folder bisa expand/collapse.
+
+### Code Viewer
+
+File teks ditampilkan dengan **syntax highlighting** (highlight.js), **nomor baris**, dan background gelap. Breadcrumb di atas menunjukkan path file.
+
+### Markdown Preview
+
+File `.md` di-render sebagai markdown terformat — heading, list, code block, tabel, dan link.
+
+### Image Preview
+
+File gambar (PNG, JPG, GIF, WebP, SVG) ditampilkan sebagai preview terpusat. Untuk agent remote, gambar diambil via koneksi WebSocket agent.
+
+### Git Diff (Tab Git)
+
+Tab **Git** menampilkan perubahan yang belum di-commit (`git diff`) dengan highlight hijau/merah, header file, dan statistik perubahan.
+
+### Path File yang Bisa Diklik
+
+Saat AI agent menyebut path file di pesan (misal `/home/user/project/file.py`), path tersebut menjadi **bisa diklik** — klik untuk membuka file di panel workspace. Ini berlaku untuk path di backtick dan code block.
+
+### Browsing File Remote
+
+Workspace bekerja dengan agent lokal maupun remote. Untuk agent remote, operasi file di-proxy melalui koneksi WebSocket agent — bisa browse file di mesin manapun agent berjalan, dari device apapun (termasuk tablet dan HP).
+
+---
+
 ## Ekspor Percakapan
 
 Anda bisa mengekspor seluruh riwayat percakapan room sebagai **JSON** atau **CSV**. Klik **tombol export** di header chat dan pilih format. Download mencakup semua pesan, timestamp, dan nama peserta.
@@ -356,6 +394,7 @@ Jelajahi dokumentasi proyek dengan dukungan multi-bahasa. File dokumentasi dari 
 
 ### General
 
+- **Messages** — kontrol kenyamanan baca: atur ukuran teks (Compact / Cozy / Comfortable / Large), jarak baris (Tight / Normal / Relaxed), dan lebar bubble (Narrow / Standard / Wide). Perubahan langsung berlaku di semua room dengan preview langsung.
 - **Account** — ubah email dan password
 - **Notifications** — aktifkan/nonaktifkan push notification browser
 - **Session** — logout dari Stoa

@@ -325,6 +325,44 @@ Stoa supports browser **push notifications** so you get alerted when agents resp
 
 ---
 
+## Workspace Panel
+
+The workspace panel is a code viewer and file browser that appears to the right of the chat. It lets you browse, read, and preview files on the AI agent's machine — including remote servers.
+
+### Opening the Panel
+
+Click the **panel toggle button** (split-pane icon) in the chat header. The panel opens to the right with a resizable drag handle.
+
+### File Tree (Files Tab)
+
+The **Files** tab shows the project directory tree for the room's working directory. Click any file to open it. Folders expand/collapse on click.
+
+### Code Viewer
+
+Text files open with **syntax highlighting** (powered by highlight.js), **line numbers**, and a dark code background. The breadcrumb at the top shows the file path.
+
+### Markdown Preview
+
+`.md` files render as formatted markdown with headings, lists, code blocks, tables, and links.
+
+### Image Preview
+
+Image files (PNG, JPG, GIF, WebP, SVG) display as a centered preview. For remote agents, images are fetched via the agent's WebSocket connection.
+
+### Git Diff (Git Tab)
+
+The **Git** tab shows uncommitted changes (`git diff`) with green/red line highlighting, file headers, and change statistics.
+
+### Clickable File Paths
+
+When an AI agent mentions a file path in a message (e.g., `/home/user/project/file.py`), the path becomes **clickable** — click it to open the file in the workspace panel. This works for paths inside backtick code blocks and code fences.
+
+### Remote File Browsing
+
+The workspace works with both local and remote agents. For remote agents, file operations are proxied through the agent's WebSocket connection — you can browse files on any machine the agent runs on, from any device (including tablets and phones).
+
+---
+
 ## Export Conversation
 
 You can export a room's full conversation history as **JSON** or **CSV**. Click the **export button** in the chat header and select the format. The download includes all messages, timestamps, and participant names.
@@ -356,6 +394,7 @@ Browse project documentation with multi-language support. Documentation files fr
 
 ### General
 
+- **Messages** — reading comfort controls: adjust text size (Compact / Cozy / Comfortable / Large), line spacing (Tight / Normal / Relaxed), and bubble width (Narrow / Standard / Wide). Changes apply to all rooms instantly with a live preview.
 - **Account** — change your email and password
 - **Notifications** — enable/disable browser push notifications
 - **Session** — log out of Stoa

@@ -921,7 +921,8 @@ const server = http.createServer(async (req, res) => {
     const wd = db.prepare('SELECT path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
     if (!wd?.path) { res.writeHead(404); return res.end('workdir not found'); }
     const filePath = path.resolve(wd.path, relPath);
-    if (!filePath.startsWith(path.resolve(wd.path))) { res.writeHead(403); return res.end('path traversal blocked'); }
+    const wdResolved = path.resolve(wd.path) + path.sep;
+    if (!filePath.startsWith(wdResolved) && filePath !== path.resolve(wd.path)) { res.writeHead(403); return res.end('path traversal blocked'); }
     if (!fs.existsSync(filePath)) { res.writeHead(404); return res.end('not found'); }
     const ext = path.extname(filePath).toLowerCase();
     const mimeMap = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.bmp': 'image/bmp', '.pdf': 'application/pdf' };
@@ -1626,7 +1627,9 @@ wss.on('connection', (ws, req) => {
       const wd = db.prepare('SELECT actor_id, path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
       if (!wd?.path) { ws.send(JSON.stringify({ type: 'file_list', error: 'workdir not found' })); return; }
       const targetPath = msg.abs_path || wd.path;
-      if (fs.existsSync(targetPath)) {
+      const isLocal = fs.existsSync(targetPath);
+      const isBounded = !msg.abs_path || path.resolve(targetPath).startsWith(path.resolve(wd.path) + path.sep) || path.resolve(targetPath) === path.resolve(wd.path);
+      if (isLocal && isBounded) {
         const tree = buildFileTree(targetPath, targetPath, 0, 3);
         ws.send(JSON.stringify({ type: 'file_list', root: targetPath, tree }));
       } else {
@@ -1644,8 +1647,19 @@ wss.on('connection', (ws, req) => {
       if (!roomRow?.workdir_id) { ws.send(JSON.stringify({ type: 'file_read', error: 'no workdir' })); return; }
       const wd = db.prepare('SELECT actor_id, path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
       if (!wd?.path) { ws.send(JSON.stringify({ type: 'file_read', error: 'workdir not found' })); return; }
-      const resolveBase = msg.absolute ? '/' : wd.path;
-      const filePath = msg.absolute ? msg.path : path.resolve(wd.path, msg.path);
+      if (msg.absolute) {
+        const agentWs = agentClients.get(wd.actor_id);
+        if (agentWs) {
+          const rid = crypto.randomBytes(6).toString('hex');
+          pendingFileOps.set(rid, { type: 'file_read', clientWs: ws, originalPath: msg.path });
+          agentWs.send(JSON.stringify({ type: 'proxy_file_read', request_id: rid, workdir: path.dirname(msg.path), path: path.basename(msg.path), binary: !!msg.binary }));
+        } else { ws.send(JSON.stringify({ type: 'file_read', path: msg.path, error: 'agent offline' })); }
+        return;
+      }
+      const filePath = path.resolve(wd.path, msg.path);
+      if (!filePath.startsWith(path.resolve(wd.path) + path.sep) && filePath !== path.resolve(wd.path)) {
+        ws.send(JSON.stringify({ type: 'file_read', path: msg.path, error: 'path traversal blocked' })); return;
+      }
       if (fs.existsSync(filePath)) {
         try {
           if (msg.binary) {
@@ -1661,9 +1675,7 @@ wss.on('connection', (ws, req) => {
         if (agentWs) {
           const rid = crypto.randomBytes(6).toString('hex');
           pendingFileOps.set(rid, { type: 'file_read', clientWs: ws, originalPath: msg.path });
-          const proxyWorkdir = msg.absolute ? path.dirname(msg.path) : wd.path;
-          const proxyPath = msg.absolute ? path.basename(msg.path) : msg.path;
-          agentWs.send(JSON.stringify({ type: 'proxy_file_read', request_id: rid, workdir: proxyWorkdir, path: proxyPath, binary: !!msg.binary }));
+          agentWs.send(JSON.stringify({ type: 'proxy_file_read', request_id: rid, workdir: wd.path, path: msg.path, binary: !!msg.binary }));
         } else { ws.send(JSON.stringify({ type: 'file_read', path: msg.path, error: 'agent offline' })); }
       }
     }

@@ -4343,7 +4343,8 @@ document.addEventListener('click', e => {
 
 async function archiveRoom(room) {
   try {
-    await fetch(`/api/rooms/${room.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ archived: true }) });
+    const res = await fetch(`/api/rooms/${room.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ archived: true }) });
+    if (!res.ok) throw new Error('archive failed');
   } catch { showToast('Failed to archive room', { error: true }); return; }
   if (currentRoomId === room.id) {
     currentRoomId = null;
@@ -4355,7 +4356,8 @@ async function archiveRoom(room) {
 
 async function restoreRoom(room) {
   try {
-    await fetch(`/api/rooms/${room.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ archived: false }) });
+    const res = await fetch(`/api/rooms/${room.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ archived: false }) });
+    if (!res.ok) throw new Error('restore failed');
   } catch { showToast('Failed to restore room', { error: true }); return; }
   refreshRoomList();
 }
