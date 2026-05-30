@@ -1727,7 +1727,8 @@ wss.on('connection', (ws, req) => {
             ws.send(JSON.stringify({ type: 'file_read', path: msg.path, base64: data.toString('base64') }));
           } else {
             const content = fs.readFileSync(filePath, 'utf8');
-            ws.send(JSON.stringify({ type: 'file_read', path: msg.path, content }));
+            const mtime = fs.statSync(filePath).mtimeMs;
+            ws.send(JSON.stringify({ type: 'file_read', path: msg.path, content, mtime }));
           }
         } catch (e) { ws.send(JSON.stringify({ type: 'file_read', path: msg.path, error: e.message })); }
       } else {
@@ -1789,8 +1790,16 @@ wss.on('connection', (ws, req) => {
         try {
           const dir = path.dirname(filePath);
           if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+          if (msg.expected_mtime && fs.existsSync(filePath)) {
+            const currentMtime = fs.statSync(filePath).mtimeMs;
+            if (Math.abs(currentMtime - msg.expected_mtime) > 100) {
+              ws.send(JSON.stringify({ type: 'file_write_result', path: msg.path, error: 'conflict', current_mtime: currentMtime }));
+              return;
+            }
+          }
           fs.writeFileSync(filePath, msg.content, 'utf8');
-          ws.send(JSON.stringify({ type: 'file_write_result', path: msg.path, ok: true }));
+          const newMtime = fs.statSync(filePath).mtimeMs;
+          ws.send(JSON.stringify({ type: 'file_write_result', path: msg.path, ok: true, mtime: newMtime }));
         } catch (e) { ws.send(JSON.stringify({ type: 'file_write_result', path: msg.path, error: e.message })); }
       } else {
         const agentWs = agentClients.get(wd.actor_id);

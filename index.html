@@ -4763,6 +4763,7 @@ function handleWsMessage(msg) {
       wsRenderContent();
     } else {
       wsOpenFile(msg.path, msg.content);
+      if (msg.mtime) wsFileMtimes[msg.path] = msg.mtime;
     }
     return;
   }
@@ -4787,8 +4788,17 @@ function handleWsMessage(msg) {
       wsEditDirty = false;
       const f = wsOpenFiles.find(f => f.name === wsActiveFile);
       if (f) f.content = wsEditContent;
+      if (msg.mtime) wsFileMtimes[msg.path] = msg.mtime;
+      const key = 'stoa-draft-' + (currentRoomId || '') + '-' + msg.path;
+      try { localStorage.removeItem(key); } catch {}
       wsRenderTabs();
       wsShowToast('File saved', 'success');
+    } else if (msg.error === 'conflict') {
+      if (msg.current_mtime) wsFileMtimes[msg.path] = msg.current_mtime;
+      wsShowDialog('File changed', '<strong>' + wsEscHtml(msg.path?.split('/').pop()) + '</strong> was modified externally while you were editing. Overwrite the disk version with your edits, or reload?',
+        [{ label: 'Cancel', cls: 'ghost' },
+         { label: 'Overwrite', cls: 'danger', action: () => { delete wsFileMtimes[msg.path]; wsSaveFile(); } },
+         { label: 'Reload', cls: 'primary', action: () => { wsEditMode = false; wsEditDirty = false; ws.send(JSON.stringify({ type: 'file_read', path: msg.path })); } }]);
     } else {
       wsShowToast('Save failed — ' + (msg.error || 'unknown error'), 'error');
     }
@@ -4908,6 +4918,7 @@ let wsEditContent = '';
 let wsEditSaving = false;
 let wsExpanded = false;
 let wsCtxMenu = null;
+let wsFileMtimes = {};
 
 function wsDownloadFile(relPath, fileName) {
   const fullPath = wsFileTreeRoot ? wsFileTreeRoot.replace(/\\/g, '/').replace(/\/+$/, '') + '/' + relPath : relPath;
@@ -5020,7 +5031,9 @@ function wsSaveFile() {
   wsEditSaving = true;
   wsRenderToolbarActions();
   const isAbs = /^\//.test(wsActiveFile) || /^[A-Za-z]:/.test(wsActiveFile);
-  ws.send(JSON.stringify({ type: 'file_write', path: wsActiveFile, content: wsEditContent, absolute: isAbs }));
+  const req = { type: 'file_write', path: wsActiveFile, content: wsEditContent, absolute: isAbs };
+  if (wsFileMtimes[wsActiveFile]) req.expected_mtime = wsFileMtimes[wsActiveFile];
+  ws.send(JSON.stringify(req));
 }
 
 function wsToggleExpand() {
