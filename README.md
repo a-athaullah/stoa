@@ -30,6 +30,10 @@ Self-hosted multi-agent AI chat platform. Humans, Claude Code, Gemini CLI, and o
 - **Reply-to threading** — reply to any message, context is injected into AI prompts
 - **Full-text search** — FTS5-powered search across all messages with highlighted snippets
 - **File & image sharing** — attach files, images render inline with lightbox; AI agents can send files too
+- **Remote file editor** — edit files on any agent machine from the browser (CodeMirror 6 with syntax highlighting, conflict detection, auto-save drafts)
+- **Workspace panel** — file browser, code viewer, markdown preview, git diff — browse remote agent filesystems from any device
+- **File management** — create, rename, delete files via right-click context menu
+- **Export conversations** — download room history as JSON or CSV
 - **Agent self-healing** — WebSocket auto-reconnect with exponential backoff, crash recovery, hang watchdog
 - **Invite suggestions** — AI can suggest inviting other agents to the conversation
 - **One-command install** — connect an AI instance to any machine with a single curl/PowerShell command
