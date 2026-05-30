@@ -852,6 +852,24 @@
       border-radius: 50%;
       flex: 0 0 auto;
     }
+    .ws-dl {
+      opacity: 0;
+      flex: 0 0 auto;
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      border-radius: 5px;
+      border: none;
+      cursor: pointer;
+      background: transparent;
+      color: var(--h-ink-mute);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: opacity .12s, background .12s, color .12s;
+    }
+    .ws-tree-row:hover .ws-dl { opacity: .55; }
+    .ws-dl:hover { background: var(--h-surface); color: var(--h-ink) !important; opacity: 1 !important; }
 
     /* ── Code viewer ──────────────────────────────── */
     .ws-code-viewer {
@@ -4752,6 +4770,56 @@ let wsFileTreeRoot = '';
 let wsGitDiffData = [];
 let wsModifiedFiles = new Set();
 
+function wsDownloadFile(relPath, fileName) {
+  const fullPath = wsFileTreeRoot ? wsFileTreeRoot.replace(/\\/g, '/').replace(/\/+$/, '') + '/' + relPath : relPath;
+  const isAbs = /^\//.test(fullPath) || /^[A-Za-z]:/.test(fullPath);
+  const imgExts = new Set(['png','jpg','jpeg','gif','webp','svg','ico','bmp']);
+  const ext = wsGetExt(fileName);
+  const binary = imgExts.has(ext);
+
+  const existing = wsOpenFiles.find(f => f.name === fullPath);
+  if (existing && (existing.content || existing.base64)) {
+    triggerDownload(fileName, existing.content, existing.base64, ext);
+    return;
+  }
+
+  const handler = (e) => {
+    let msg; try { msg = JSON.parse(e.data); } catch { return; }
+    if (msg.type !== 'file_read' || (msg.path !== fullPath && msg.path !== relPath)) return;
+    ws.removeEventListener('message', handler);
+    if (msg.error) { showToast('Download failed: ' + msg.error, { error: true }); return; }
+    triggerDownload(fileName, msg.content, msg.base64, ext);
+  };
+  ws.addEventListener('message', handler);
+  setTimeout(() => ws.removeEventListener('message', handler), 15000);
+
+  const req = { type: 'file_read', path: fullPath };
+  if (binary) req.binary = true;
+  if (isAbs) req.absolute = true;
+  ws.send(JSON.stringify(req));
+}
+
+function triggerDownload(name, content, base64, ext) {
+  let blob;
+  if (base64) {
+    const mimeMap = { png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', gif:'image/gif', webp:'image/webp', svg:'image/svg+xml', ico:'image/x-icon', bmp:'image/bmp', pdf:'application/pdf' };
+    const bin = atob(base64);
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    blob = new Blob([arr], { type: mimeMap[ext] || 'application/octet-stream' });
+  } else {
+    blob = new Blob([content || ''], { type: 'text/plain;charset=utf-8' });
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 let wsRefreshTimer = null;
 function wsScheduleRefresh() {
   if (wsRefreshTimer) clearTimeout(wsRefreshTimer);
@@ -4855,6 +4923,12 @@ function wsRenderFileTree(container, nodes, parentPath) {
       row.appendChild(nameEl);
 
       const relPath = parentPath ? parentPath + '/' + node.name : node.name;
+      const dlBtn = document.createElement('button');
+      dlBtn.className = 'ws-dl';
+      dlBtn.title = 'Download ' + node.name;
+      dlBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10"/><path d="M8 11l4 4 4-4"/><path d="M5 19h14"/></svg>';
+      dlBtn.onclick = (e) => { e.stopPropagation(); wsDownloadFile(relPath, node.name); };
+      row.appendChild(dlBtn);
       if (wsModifiedFiles.has(relPath) || wsModifiedFiles.has(node.name)) {
         const dot = document.createElement('span');
         dot.className = 'ws-tree-modified';
