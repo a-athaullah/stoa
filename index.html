@@ -5357,24 +5357,28 @@ function makeFileLink(codeEl, filePath) {
 }
 
 function openFileFromPath(absOrRelPath) {
-  let relPath = absOrRelPath.replace(/\\/g, '/').replace(/\/+$/, '');
+  let filePath = absOrRelPath.replace(/\\/g, '/').replace(/\/+$/, '');
+  let isAbsolute = /^\//.test(filePath) || /^[A-Za-z]:/.test(filePath);
   if (wsFileTreeRoot) {
     const root = wsFileTreeRoot.replace(/\\/g, '/').replace(/\/+$/, '');
-    if (relPath.startsWith(root + '/')) {
-      relPath = relPath.slice(root.length + 1);
+    if (filePath.startsWith(root + '/')) {
+      filePath = filePath.slice(root.length + 1);
+      isAbsolute = false;
     }
-  }
-  if (/^[A-Za-z]:\//.test(relPath)) {
-    relPath = relPath.replace(/^[A-Za-z]:\//, '');
   }
   const panel = document.getElementById('workspace-panel');
   if (!panel.classList.contains('open')) toggleWorkspacePanel();
-  const ext = wsGetExt(relPath);
+  const ext = wsGetExt(filePath);
   if (!ext) {
-    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'file_list' }));
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify(isAbsolute ? { type: 'file_list', abs_path: filePath } : { type: 'file_list' }));
+    }
     wsSetView('files');
   } else {
-    wsOpenFile(relPath);
+    if (isAbsolute && ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: 'file_read', path: filePath, absolute: true }));
+    }
+    wsOpenFile(filePath);
   }
 }
 

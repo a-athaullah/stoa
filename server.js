@@ -1619,18 +1619,16 @@ wss.on('connection', (ws, req) => {
       if (!roomRow?.workdir_id) { ws.send(JSON.stringify({ type: 'file_list', error: 'no workdir' })); return; }
       const wd = db.prepare('SELECT actor_id, path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
       if (!wd?.path) { ws.send(JSON.stringify({ type: 'file_list', error: 'workdir not found' })); return; }
-      const localExists = fs.existsSync(wd.path);
-      if (localExists) {
-        const tree = buildFileTree(wd.path, wd.path, 0, 3);
-        ws.send(JSON.stringify({ type: 'file_list', root: wd.path, tree }));
+      const targetPath = msg.abs_path || wd.path;
+      if (fs.existsSync(targetPath)) {
+        const tree = buildFileTree(targetPath, targetPath, 0, 3);
+        ws.send(JSON.stringify({ type: 'file_list', root: targetPath, tree }));
       } else {
         const agentWs = agentClients.get(wd.actor_id);
-        console.log('[ws-file] agent ws for actor', wd.actor_id, ':', agentWs ? 'found' : 'NOT FOUND');
         if (agentWs) {
           const rid = crypto.randomBytes(6).toString('hex');
           pendingFileOps.set(rid, { type: 'file_list', clientWs: ws });
-          agentWs.send(JSON.stringify({ type: 'proxy_file_list', request_id: rid, workdir: wd.path }));
-          console.log('[ws-file] proxy_file_list sent to agent, rid:', rid);
+          agentWs.send(JSON.stringify({ type: 'proxy_file_list', request_id: rid, workdir: targetPath }));
         } else { ws.send(JSON.stringify({ type: 'file_list', error: 'agent offline' })); }
       }
     }
@@ -1640,7 +1638,8 @@ wss.on('connection', (ws, req) => {
       if (!roomRow?.workdir_id) { ws.send(JSON.stringify({ type: 'file_read', error: 'no workdir' })); return; }
       const wd = db.prepare('SELECT actor_id, path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
       if (!wd?.path) { ws.send(JSON.stringify({ type: 'file_read', error: 'workdir not found' })); return; }
-      const filePath = path.resolve(wd.path, msg.path);
+      const resolveBase = msg.absolute ? '/' : wd.path;
+      const filePath = msg.absolute ? msg.path : path.resolve(wd.path, msg.path);
       if (fs.existsSync(filePath)) {
         try {
           const content = fs.readFileSync(filePath, 'utf8');
@@ -1651,7 +1650,9 @@ wss.on('connection', (ws, req) => {
         if (agentWs) {
           const rid = crypto.randomBytes(6).toString('hex');
           pendingFileOps.set(rid, { type: 'file_read', clientWs: ws });
-          agentWs.send(JSON.stringify({ type: 'proxy_file_read', request_id: rid, workdir: wd.path, path: msg.path }));
+          const proxyWorkdir = msg.absolute ? path.dirname(msg.path) : wd.path;
+          const proxyPath = msg.absolute ? path.basename(msg.path) : msg.path;
+          agentWs.send(JSON.stringify({ type: 'proxy_file_read', request_id: rid, workdir: proxyWorkdir, path: proxyPath }));
         } else { ws.send(JSON.stringify({ type: 'file_read', path: msg.path, error: 'agent offline' })); }
       }
     }
