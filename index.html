@@ -789,6 +789,96 @@
       border-color: var(--h-hairline);
     }
 
+    /* ── Editor (remote file editing) ────────────── */
+    .ws-editor-wrap {
+      flex: 1; min-height: 0; display: flex;
+      background: oklch(0.193 0.016 44);
+      font-family: 'SF Mono','Cascadia Code','Fira Code','JetBrains Mono',ui-monospace,monospace;
+      font-size: 13px; line-height: 21px; overflow: hidden;
+    }
+    .ws-editor-gutter {
+      flex: 0 0 auto; overflow: hidden; text-align: right;
+      color: #7a7060; user-select: none; white-space: pre;
+      padding: 10px 12px 10px 14px; border-right: 1px solid rgba(255,255,255,.07);
+    }
+    .ws-editor-ta {
+      flex: 1; min-width: 0; resize: none; border: none; outline: none;
+      background: transparent; color: #d3c8b4; font: inherit; padding: 10px 16px;
+      white-space: pre; tab-size: 2; caret-color: oklch(0.78 0.085 78);
+    }
+    .ws-editor-ta::selection { background: color-mix(in srgb, oklch(0.78 0.085 78) 32%, transparent); }
+    .ws-edit-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px 13px; border-radius: 8px; cursor: pointer;
+      font-family: var(--h-sans); font-size: 11.5px; font-weight: 500;
+      border: 1px solid transparent; white-space: nowrap;
+      transition: background .12s, color .12s, border-color .12s;
+    }
+    .ws-edit-btn.ghost { background: transparent; color: var(--h-ink-mute); border-color: var(--h-hair-soft); }
+    .ws-edit-btn.ghost:hover { border-color: var(--h-hairline); color: var(--h-ink); }
+    .ws-edit-btn.accent {
+      background: oklch(0.78 0.085 78); color: oklch(0.27 0.035 72);
+      box-shadow: 0 1px 3px rgba(0,0,0,.2);
+    }
+    .ws-edit-btn.accent-muted {
+      background: color-mix(in srgb, oklch(0.78 0.085 78) 55%, var(--h-bg));
+      color: oklch(0.27 0.035 72);
+    }
+    .ws-edit-btn.primary { background: var(--h-ink); color: var(--h-bg); }
+    .ws-edit-btn.danger { background: transparent; color: #c08378; border-color: color-mix(in srgb, #c08378 48%, transparent); }
+    .ws-icon-btn {
+      width: 30px; height: 30px; border-radius: 8px; flex: 0 0 auto; cursor: pointer;
+      border: 1px solid var(--h-hair-soft); background: transparent; color: var(--h-ink-mute);
+      display: inline-flex; align-items: center; justify-content: center;
+      transition: color .12s, background .12s;
+    }
+    .ws-icon-btn:hover { color: var(--h-ink); background: var(--h-surface-hi); }
+    .ws-file-tab-unsaved {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: oklch(0.78 0.085 78); flex: 0 0 auto;
+    }
+    #workspace-panel.ws-expanded { width: 100% !important; max-width: 100%; }
+    #workspace-panel.ws-expanded #ws-drag-handle { display: none; }
+    .ws-toast-stack {
+      position: absolute; z-index: 60; right: 18px; bottom: 18px;
+      display: flex; flex-direction: column; gap: 9px; align-items: flex-end;
+    }
+    .ws-toast {
+      display: flex; align-items: center; gap: 11px; padding: 11px 13px 11px 14px;
+      border-radius: 11px; background: var(--h-surface); border: 1px solid var(--h-hairline);
+      box-shadow: 0 8px 26px rgba(0,0,0,.24); min-width: 220px; max-width: 300px;
+      font-family: var(--h-sans); font-size: 13px; color: var(--h-ink);
+      animation: ws-toast-slide .26s cubic-bezier(.2,.7,.3,1);
+    }
+    @keyframes ws-toast-slide { from { opacity: 0; transform: translateY(8px); } }
+    .ws-conflict-banner {
+      display: flex; align-items: center; gap: 10px; flex: 0 0 auto; padding: 8px 14px;
+      background: color-mix(in srgb, #c89a52 15%, var(--h-bg));
+      border-bottom: 1px solid color-mix(in srgb, #c89a52 42%, var(--h-bg));
+      font-family: var(--h-sans); font-size: 12.5px; color: var(--h-ink);
+    }
+    .ws-scrim {
+      position: absolute; inset: 0; z-index: 50;
+      background: rgba(18,12,7,.52);
+      display: flex; align-items: center; justify-content: center; padding: 24px;
+    }
+    .ws-dialog {
+      max-width: 100%; background: var(--h-surface); border: 1px solid var(--h-hairline);
+      border-radius: 16px; box-shadow: 0 26px 64px rgba(0,0,0,.42); padding: 24px 24px 20px;
+    }
+    .ws-ctx-menu {
+      position: absolute; z-index: 40; min-width: 184px;
+      background: var(--h-surface); border: 1px solid var(--h-hairline); border-radius: 11px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.3); padding: 5px;
+    }
+    .ws-ctx-item {
+      display: flex; align-items: center; gap: 10px; padding: 7px 11px;
+      border-radius: 7px; cursor: pointer; font-family: var(--h-sans); font-size: 13px;
+      color: var(--h-ink);
+    }
+    .ws-ctx-item:hover { background: var(--h-surface-hi); }
+    .ws-ctx-item.danger { color: #c08378; }
+
     /* ── Empty panel ──────────────────────────────── */
     .ws-empty-state {
       flex: 1;
@@ -4691,6 +4781,49 @@ function handleWsMessage(msg) {
     if (wsActiveView === 'git') wsRenderContent();
     return;
   }
+
+  if (msg.type === 'file_write_result') {
+    if (msg.ok) {
+      wsEditDirty = false;
+      const f = wsOpenFiles.find(f => f.name === wsActiveFile);
+      if (f) f.content = wsEditContent;
+      wsRenderTabs();
+      wsShowToast('File saved', 'success');
+    } else {
+      wsShowToast('Save failed — ' + (msg.error || 'unknown error'), 'error');
+    }
+    wsEditSaving = false;
+    wsRenderToolbarActions();
+    return;
+  }
+
+  if (msg.type === 'file_create_result') {
+    if (msg.ok) {
+      wsShowToast('Created ' + msg.path, 'success');
+      if (ws) ws.send(JSON.stringify({ type: 'file_list' }));
+    } else { wsShowToast('Create failed — ' + (msg.error || 'unknown'), 'error'); }
+    return;
+  }
+
+  if (msg.type === 'file_delete_result') {
+    if (msg.ok) {
+      wsCloseFile(msg.path);
+      wsShowToast('Deleted', 'success');
+      if (ws) ws.send(JSON.stringify({ type: 'file_list' }));
+    } else { wsShowToast('Delete failed — ' + (msg.error || 'unknown'), 'error'); }
+    return;
+  }
+
+  if (msg.type === 'file_rename_result') {
+    if (msg.ok) {
+      const f = wsOpenFiles.find(f => f.name === msg.path);
+      if (f) { f.name = msg.new_path; if (wsActiveFile === msg.path) wsActiveFile = msg.new_path; }
+      wsRenderTabs();
+      wsShowToast('Renamed', 'success');
+      if (ws) ws.send(JSON.stringify({ type: 'file_list' }));
+    } else { wsShowToast('Rename failed — ' + (msg.error || 'unknown'), 'error'); }
+    return;
+  }
 }
 
 // ── Server restart notification ───────────────────────────────────────────
@@ -4769,6 +4902,12 @@ let wsFileTreeData = [];
 let wsFileTreeRoot = '';
 let wsGitDiffData = [];
 let wsModifiedFiles = new Set();
+let wsEditMode = false;
+let wsEditDirty = false;
+let wsEditContent = '';
+let wsEditSaving = false;
+let wsExpanded = false;
+let wsCtxMenu = null;
 
 function wsDownloadFile(relPath, fileName) {
   const fullPath = wsFileTreeRoot ? wsFileTreeRoot.replace(/\\/g, '/').replace(/\/+$/, '') + '/' + relPath : relPath;
@@ -4842,6 +4981,227 @@ function toggleWorkspacePanel() {
     if (ws && wsActiveView === 'files') ws.send(JSON.stringify({ type: 'file_list' }));
     if (ws && wsActiveView === 'git') ws.send(JSON.stringify({ type: 'git_diff' }));
   }
+}
+
+// ── Editor functions ──────────────────────────────────────────────────────
+function wsEnterEditMode() {
+  if (wsEditMode) return;
+  const file = wsOpenFiles.find(f => f.name === wsActiveFile);
+  if (!file || !file.loaded) return;
+  const IMG_EXTS = new Set(['png','jpg','jpeg','gif','webp','svg','ico','bmp']);
+  if (IMG_EXTS.has(file.ext)) return;
+  wsEditMode = true;
+  wsEditContent = file.content || '';
+  wsEditDirty = false;
+  wsEditSaving = false;
+  wsRenderContent();
+  wsRenderTabs();
+}
+
+function wsExitEditMode(force) {
+  if (!wsEditMode) return;
+  if (wsEditDirty && !force) {
+    wsShowDialog('Discard changes?', 'You have unsaved changes to <strong>' + wsEscHtml(wsActiveFile?.split('/').pop()) + '</strong>. Close and discard them?',
+      [{ label: 'Keep editing', cls: 'ghost' }, { label: 'Discard', cls: 'danger', action: () => wsExitEditMode(true) }]);
+    return;
+  }
+  wsEditMode = false;
+  wsEditContent = '';
+  wsEditDirty = false;
+  wsEditSaving = false;
+  if (wsExpanded) wsToggleExpand();
+  wsRenderContent();
+  wsRenderTabs();
+}
+
+function wsSaveFile() {
+  if (!wsEditMode || !wsActiveFile || wsEditSaving) return;
+  if (!wsEditDirty) return;
+  wsEditSaving = true;
+  wsRenderToolbarActions();
+  const isAbs = /^\//.test(wsActiveFile) || /^[A-Za-z]:/.test(wsActiveFile);
+  ws.send(JSON.stringify({ type: 'file_write', path: wsActiveFile, content: wsEditContent, absolute: isAbs }));
+}
+
+function wsToggleExpand() {
+  wsExpanded = !wsExpanded;
+  const panel = document.getElementById('workspace-panel');
+  const chat = document.getElementById('chat-inner');
+  panel.classList.toggle('ws-expanded', wsExpanded);
+  if (chat) chat.style.display = wsExpanded ? 'none' : '';
+  wsRenderToolbarActions();
+}
+
+function wsRenderToolbarActions() {
+  const act = document.getElementById('ws-toolbar-actions');
+  if (!act) return;
+  act.innerHTML = '';
+  if (wsActiveView === 'file' && wsActiveFile) {
+    const file = wsOpenFiles.find(f => f.name === wsActiveFile);
+    if (!file) return;
+    const IMG_EXTS = new Set(['png','jpg','jpeg','gif','webp','svg','ico','bmp']);
+    if (IMG_EXTS.has(file.ext)) return;
+    if (wsEditMode) {
+      const saveState = wsEditSaving ? 'saving' : wsEditDirty ? 'dirty' : 'clean';
+      const saveBtn = document.createElement('button');
+      saveBtn.className = 'ws-edit-btn ' + (saveState === 'saving' ? 'accent-muted' : saveState === 'dirty' ? 'accent' : 'ghost');
+      saveBtn.textContent = saveState === 'saving' ? 'Saving…' : 'Save';
+      saveBtn.disabled = saveState === 'saving';
+      saveBtn.onclick = wsSaveFile;
+      act.appendChild(saveBtn);
+      const expBtn = document.createElement('button');
+      expBtn.className = 'ws-icon-btn';
+      expBtn.title = wsExpanded ? 'Collapse' : 'Expand';
+      expBtn.innerHTML = wsExpanded
+        ? '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M9 4v5H4"/><path d="M10 10 4 4"/><path d="M15 20v-5h5"/><path d="M14 14l6 6"/></svg>'
+        : '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 9V4h5"/><path d="M4 4l6 6"/><path d="M20 15v5h-5"/><path d="M20 20l-6-6"/></svg>';
+      expBtn.onclick = wsToggleExpand;
+      act.appendChild(expBtn);
+      const exitBtn = document.createElement('button');
+      exitBtn.className = 'ws-icon-btn';
+      exitBtn.title = 'Exit edit mode';
+      exitBtn.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+      exitBtn.onclick = () => wsExitEditMode();
+      act.appendChild(exitBtn);
+    } else {
+      const dlBtn = document.createElement('button');
+      dlBtn.className = 'ws-icon-btn';
+      dlBtn.title = 'Download';
+      dlBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 4v10"/><path d="M8 11l4 4 4-4"/><path d="M5 19h14"/></svg>';
+      dlBtn.onclick = () => wsDownloadFile(wsActiveFile, wsActiveFile.split('/').pop());
+      act.appendChild(dlBtn);
+      const editBtn = document.createElement('button');
+      editBtn.className = 'ws-edit-btn ghost';
+      editBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M16.5 4.5l3 3L8 19l-3.5.5L5 16z"/><path d="M14 7l3 3"/></svg> Edit';
+      editBtn.onclick = wsEnterEditMode;
+      act.appendChild(editBtn);
+    }
+  }
+}
+
+function wsRenderEditor(container) {
+  container.className = '';
+  container.style.cssText = 'flex:1;min-height:0;display:flex;flex-direction:column;position:relative';
+  const wrap = document.createElement('div');
+  wrap.className = 'ws-editor-wrap';
+  const lines = wsEditContent.split('\n');
+  const gutW = String(Math.max(lines.length, 2)).length * 9 + 26;
+  const gutter = document.createElement('div');
+  gutter.className = 'ws-editor-gutter';
+  gutter.style.width = gutW + 'px';
+  gutter.textContent = lines.map((_, i) => i + 1).join('\n');
+  const ta = document.createElement('textarea');
+  ta.className = 'ws-editor-ta';
+  ta.spellcheck = false;
+  ta.value = wsEditContent;
+  ta.addEventListener('input', () => {
+    wsEditContent = ta.value;
+    if (!wsEditDirty) { wsEditDirty = true; wsRenderTabs(); wsRenderToolbarActions(); wsAutoSaveDraft(); }
+    else { wsAutoSaveDraft(); }
+    const newLines = ta.value.split('\n');
+    const newGutW = String(Math.max(newLines.length, 2)).length * 9 + 26;
+    gutter.style.width = newGutW + 'px';
+    gutter.textContent = newLines.map((_, i) => i + 1).join('\n');
+  });
+  ta.addEventListener('scroll', () => { gutter.scrollTop = ta.scrollTop; });
+  ta.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); wsSaveFile(); }
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const s = ta.selectionStart, en = ta.selectionEnd;
+      const nv = wsEditContent.slice(0, s) + '  ' + wsEditContent.slice(en);
+      wsEditContent = nv; ta.value = nv;
+      ta.selectionStart = ta.selectionEnd = s + 2;
+      if (!wsEditDirty) { wsEditDirty = true; wsRenderTabs(); wsRenderToolbarActions(); }
+      const nl = nv.split('\n');
+      gutter.style.width = (String(Math.max(nl.length, 2)).length * 9 + 26) + 'px';
+      gutter.textContent = nl.map((_, i) => i + 1).join('\n');
+    }
+  });
+  wrap.appendChild(gutter);
+  wrap.appendChild(ta);
+  container.appendChild(wrap);
+  ta.focus();
+}
+
+function wsShowToast(message, kind) {
+  let stack = document.querySelector('.ws-toast-stack');
+  if (!stack) {
+    stack = document.createElement('div');
+    stack.className = 'ws-toast-stack';
+    const panel = document.getElementById('ws-panel-body') || document.getElementById('workspace-panel');
+    if (panel) { panel.style.position = 'relative'; panel.appendChild(stack); }
+  }
+  const toast = document.createElement('div');
+  toast.className = 'ws-toast';
+  const iconColor = kind === 'error' ? '#c08378' : '#7faa7c';
+  const iconSvg = kind === 'error'
+    ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 4.5l8.5 15H3.5z"/><path d="M12 10v4.5"/><circle cx="12" cy="17.6" r=".7" fill="currentColor" stroke="none"/></svg>'
+    : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+  toast.innerHTML = '<span style="color:' + iconColor + ';display:inline-flex;flex:0 0 auto">' + iconSvg + '</span><span style="flex:1;line-height:1.4">' + wsEscHtml(message) + '</span>';
+  if (kind === 'error') {
+    const closeBtn = document.createElement('button');
+    closeBtn.style.cssText = 'border:none;background:transparent;color:var(--h-ink-faint);cursor:pointer;padding:2px;display:inline-flex';
+    closeBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+    closeBtn.onclick = () => toast.remove();
+    toast.appendChild(closeBtn);
+  }
+  stack.appendChild(toast);
+  if (kind !== 'error') setTimeout(() => toast.remove(), 2500);
+}
+
+function wsShowDialog(title, bodyHtml, actions) {
+  const panel = document.getElementById('ws-panel-body') || document.getElementById('workspace-panel');
+  if (!panel) return;
+  const existing = panel.querySelector('.ws-scrim');
+  if (existing) existing.remove();
+  const scrim = document.createElement('div');
+  scrim.className = 'ws-scrim';
+  const dialog = document.createElement('div');
+  dialog.className = 'ws-dialog';
+  dialog.style.width = '420px';
+  dialog.innerHTML = '<div class="h-serif" style="font-size:20px;color:var(--h-ink);margin-bottom:13px">' + wsEscHtml(title) + '</div>'
+    + '<div style="font-family:var(--h-sans);font-size:14px;line-height:1.62;color:var(--h-ink-mute);margin-bottom:22px">' + bodyHtml + '</div>';
+  const btns = document.createElement('div');
+  btns.style.cssText = 'display:flex;gap:9px;justify-content:flex-end;flex-wrap:wrap';
+  actions.forEach(a => {
+    const btn = document.createElement('button');
+    btn.className = 'ws-edit-btn ' + (a.cls || 'ghost');
+    btn.textContent = a.label;
+    btn.onclick = () => { scrim.remove(); if (a.action) a.action(); };
+    btns.appendChild(btn);
+  });
+  dialog.appendChild(btns);
+  scrim.appendChild(dialog);
+  scrim.addEventListener('click', (e) => { if (e.target === scrim) scrim.remove(); });
+  panel.style.position = 'relative';
+  panel.appendChild(scrim);
+}
+
+function wsEscHtml(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+
+function wsAutoSaveDraft() {
+  if (!wsActiveFile || !wsEditMode) return;
+  const key = 'stoa-draft-' + (currentRoomId || '') + '-' + wsActiveFile;
+  try { localStorage.setItem(key, JSON.stringify({ content: wsEditContent, ts: Date.now() })); } catch {}
+}
+
+function wsCheckDraft() {
+  if (!wsActiveFile) return;
+  const key = 'stoa-draft-' + (currentRoomId || '') + '-' + wsActiveFile;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return;
+    const draft = JSON.parse(raw);
+    const file = wsOpenFiles.find(f => f.name === wsActiveFile);
+    if (!file || !file.loaded) return;
+    if (draft.content === file.content) { localStorage.removeItem(key); return; }
+    const ago = Math.round((Date.now() - draft.ts) / 60000);
+    const agoText = ago < 1 ? 'just now' : ago + ' minute' + (ago > 1 ? 's' : '') + ' ago';
+    wsShowDialog('Recover draft?', 'Found unsaved changes to <strong>' + wsEscHtml(wsActiveFile.split('/').pop()) + '</strong> from ' + agoText + '. Pick up where you left off?',
+      [{ label: 'Discard', cls: 'ghost', action: () => localStorage.removeItem(key) },
+       { label: 'Recover draft', cls: 'primary', action: () => { wsEditContent = draft.content; wsEditDirty = true; wsEnterEditMode(); localStorage.removeItem(key); } }]);
+  } catch {}
 }
 
 function wsSetView(view) {
@@ -4948,6 +5308,14 @@ function wsRenderFileTree(container, nodes, parentPath) {
 }
 
 function wsCloseFile(name) {
+  if (wsEditMode && wsActiveFile === name && wsEditDirty) {
+    wsShowDialog('Discard changes?', 'You have unsaved changes to <strong>' + wsEscHtml(name.split('/').pop()) + '</strong>. Close and discard them?',
+      [{ label: 'Keep editing', cls: 'ghost' }, { label: 'Discard', cls: 'danger', action: () => { wsEditMode = false; wsEditDirty = false; wsCloseFile(name); } }]);
+    return;
+  }
+  if (wsActiveFile === name) { wsEditMode = false; wsEditDirty = false; wsEditContent = ''; if (wsExpanded) wsToggleExpand(); }
+  const key = 'stoa-draft-' + (currentRoomId || '') + '-' + name;
+  try { localStorage.removeItem(key); } catch {}
   wsOpenFiles = wsOpenFiles.filter(f => f.name !== name);
   if (wsActiveFile === name) {
     wsActiveFile = wsOpenFiles.length ? wsOpenFiles[wsOpenFiles.length - 1].name : null;
@@ -4964,10 +5332,18 @@ function wsRenderTabs() {
   wsOpenFiles.forEach(f => {
     const tab = document.createElement('div');
     tab.className = 'ws-file-tab' + (f.name === wsActiveFile ? ' active' : '');
-    tab.appendChild(wsFileGlyph(f.ext, 13));
+    const isUnsaved = wsEditMode && wsEditDirty && f.name === wsActiveFile;
+    if (isUnsaved) {
+      const dot = document.createElement('span');
+      dot.className = 'ws-file-tab-unsaved';
+      dot.title = 'unsaved changes';
+      tab.appendChild(dot);
+    } else {
+      tab.appendChild(wsFileGlyph(f.ext, 13));
+    }
     const nameEl = document.createElement('span');
     nameEl.className = 'ws-file-tab-name';
-    nameEl.textContent = f.name;
+    nameEl.textContent = f.name.split('/').pop();
     tab.appendChild(nameEl);
     const closeBtn = document.createElement('button');
     closeBtn.className = 'ws-file-tab-close';
@@ -5066,6 +5442,7 @@ function wsRenderContent() {
     const ext = file.ext;
     const parts = file.name.split('/');
     wsSetToolbar(parts);
+    wsRenderToolbarActions();
 
     const IMG_EXTS = new Set(['png','jpg','jpeg','gif','webp','svg','ico','bmp']);
     if (IMG_EXTS.has(ext)) {
@@ -5081,6 +5458,12 @@ function wsRenderContent() {
       img.style.cssText = 'max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,.12)';
       img.alt = file.name;
       content.appendChild(img);
+      return;
+    }
+
+    if (wsEditMode) {
+      wsRenderEditor(content);
+      wsCheckDraft();
       return;
     }
 
@@ -7378,16 +7761,30 @@ async function init() {
     }
   });
   document.addEventListener('keydown', e => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's' && wsEditMode) {
+      e.preventDefault();
+      wsSaveFile();
+      return;
+    }
     if ((e.ctrlKey || e.metaKey) && e.key === 'f' && currentRoomId) {
       e.preventDefault();
       toggleRoomSearch();
     }
     if (e.key === 'Escape') {
+      if (wsExpanded) { wsToggleExpand(); return; }
+      if (wsEditMode && !wsEditDirty) { wsExitEditMode(true); return; }
+      const scrim = document.querySelector('.ws-scrim');
+      if (scrim) { scrim.remove(); return; }
+      const ctxMenu = document.querySelector('.ws-ctx-menu');
+      if (ctxMenu) { ctxMenu.remove(); return; }
       const bar = document.getElementById('room-search-bar');
       if (bar.classList.contains('visible')) { closeRoomSearch(); return; }
       if (processingMessages.size > 0) { stopGeneration(); return; }
       hideSkillPopup();
     }
+  });
+  window.addEventListener('beforeunload', (e) => {
+    if (wsEditMode && wsEditDirty) { e.preventDefault(); e.returnValue = ''; }
   });
 
   // Attach menu
