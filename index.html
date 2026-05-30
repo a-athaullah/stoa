@@ -5373,7 +5373,10 @@ function openFileFromPath(absOrRelPath) {
     if (ws && ws.readyState === 1) {
       ws.send(JSON.stringify(isAbsolute ? { type: 'file_list', abs_path: filePath } : { type: 'file_list' }));
     }
-    wsSetView('files');
+    wsActiveView = 'files';
+    wsActiveFile = null;
+    document.querySelectorAll('.ws-pin-tab').forEach(t => t.classList.toggle('active', t.dataset.wsPin === 'files'));
+    wsRenderContent();
   } else {
     if (isAbsolute && ws && ws.readyState === 1) {
       ws.send(JSON.stringify({ type: 'file_read', path: filePath, absolute: true }));
