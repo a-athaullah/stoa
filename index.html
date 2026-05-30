@@ -4742,9 +4742,9 @@ function wsSetView(view) {
 function wsOpenFile(name, content) {
   const existing = wsOpenFiles.find(f => f.name === name);
   if (existing) {
-    if (content) existing.content = content;
+    if (content != null) { existing.content = content; existing.loaded = true; }
   } else {
-    wsOpenFiles.push({ name, content: content || '', ext: wsGetExt(name) });
+    wsOpenFiles.push({ name, content: content ?? '', ext: wsGetExt(name), loaded: content != null });
   }
   const imgExts = new Set(['png','jpg','jpeg','gif','webp','svg','ico','bmp']);
   const fileExt = wsGetExt(name);
@@ -4957,20 +4957,20 @@ function wsRenderContent() {
       return;
     }
 
-    if (ext === 'md' && file.content) {
+    if (ext === 'md' && file.loaded) {
       content.className = 'ws-scroll ws-md-view';
       content.style.cssText = 'flex:1;min-height:0;overflow:auto;padding:26px 30px 40px';
       const inner = document.createElement('div');
       inner.className = 'ws-md-body';
-      inner.innerHTML = DOMPurify.sanitize(marked.parse(file.content), { ADD_ATTR: ['class'] });
+      inner.innerHTML = file.content ? DOMPurify.sanitize(marked.parse(file.content), { ADD_ATTR: ['class'] }) : '<p style="color:var(--h-ink-faint);font-style:italic">empty file</p>';
       addCopyButtons(inner);
       content.appendChild(inner);
-    } else if (file.content) {
-      wsRenderCodeViewer(content, file.content);
+    } else if (file.loaded) {
+      wsRenderCodeViewer(content, file.content || '');
     } else {
       content.innerHTML = `<div class="ws-empty-state">
-        <div class="ws-empty-title">file viewer</div>
-        <div class="ws-empty-text">file content will load when the backend file:read API is connected.</div>
+        <div class="ws-empty-title">loading…</div>
+        <div class="ws-empty-text">fetching file from agent.</div>
       </div>`;
     }
   }
