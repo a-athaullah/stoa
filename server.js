@@ -1299,6 +1299,7 @@ const agentClients = new Map();   // actor_id → ws
 const agentVersions = new Map();  // actor_id → client_version string
 const pendingAgents = new Map();    // message_id → { resolve, reject }
 const pendingActorMeta = new Map(); // message_id → { name, avatar_color, avatar_symbol }
+const pendingFileOps = new Map();   // request_id → { type, clientWs }
 
 function broadcastGlobal(data) {
   const str = JSON.stringify(data);
@@ -1585,6 +1586,25 @@ wss.on('connection', (ws, req) => {
       pendingActorMeta.delete(msg.message_id);
     }
 
+    // ── Agent proxy file responses
+    if (msg.type === 'proxy_file_list_result' && agentActorId) {
+      const op = pendingFileOps.get(msg.request_id);
+      if (op && op.clientWs.readyState === 1) {
+        if (msg.error) op.clientWs.send(JSON.stringify({ type: 'file_list', error: msg.error }));
+        else op.clientWs.send(JSON.stringify({ type: 'file_list', root: msg.root, tree: msg.tree }));
+      }
+      pendingFileOps.delete(msg.request_id);
+    }
+
+    if (msg.type === 'proxy_file_read_result' && agentActorId) {
+      const op = pendingFileOps.get(msg.request_id);
+      if (op && op.clientWs.readyState === 1) {
+        if (msg.error) op.clientWs.send(JSON.stringify({ type: 'file_read', path: msg.path, error: msg.error }));
+        else op.clientWs.send(JSON.stringify({ type: 'file_read', path: msg.path, content: msg.content }));
+      }
+      pendingFileOps.delete(msg.request_id);
+    }
+
     // ── Agent error
     if (msg.type === 'agent_error' && agentActorId) {
       db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msg.message_id);
@@ -1597,26 +1617,39 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'file_list' && subscribedRoom) {
       const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(subscribedRoom);
       if (!roomRow?.workdir_id) { ws.send(JSON.stringify({ type: 'file_list', error: 'no workdir' })); return; }
-      const wd = db.prepare('SELECT path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
+      const wd = db.prepare('SELECT actor_id, path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
       if (!wd?.path) { ws.send(JSON.stringify({ type: 'file_list', error: 'workdir not found' })); return; }
       try {
         const tree = buildFileTree(wd.path, wd.path, 0, 3);
         ws.send(JSON.stringify({ type: 'file_list', root: wd.path, tree }));
-      } catch (e) { ws.send(JSON.stringify({ type: 'file_list', error: e.message })); }
+      } catch {
+        const agentWs = agentClients.get(wd.actor_id);
+        if (agentWs) {
+          const rid = crypto.randomBytes(6).toString('hex');
+          pendingFileOps.set(rid, { type: 'file_list', clientWs: ws });
+          agentWs.send(JSON.stringify({ type: 'proxy_file_list', request_id: rid, workdir: wd.path }));
+        } else { ws.send(JSON.stringify({ type: 'file_list', error: 'agent offline' })); }
+      }
     }
 
     if (msg.type === 'file_read' && subscribedRoom) {
       const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(subscribedRoom);
       if (!roomRow?.workdir_id) { ws.send(JSON.stringify({ type: 'file_read', error: 'no workdir' })); return; }
-      const wd = db.prepare('SELECT path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
+      const wd = db.prepare('SELECT actor_id, path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
       if (!wd?.path) { ws.send(JSON.stringify({ type: 'file_read', error: 'workdir not found' })); return; }
       const filePath = path.resolve(wd.path, msg.path);
       if (!filePath.startsWith(path.resolve(wd.path))) { ws.send(JSON.stringify({ type: 'file_read', error: 'path traversal blocked' })); return; }
       try {
         const content = fs.readFileSync(filePath, 'utf8');
         ws.send(JSON.stringify({ type: 'file_read', path: msg.path, content }));
-      } catch (e) { ws.send(JSON.stringify({ type: 'file_read', path: msg.path, error: e.message })); }
-    }
+      } catch {
+        const agentWs = agentClients.get(wd.actor_id);
+        if (agentWs) {
+          const rid = crypto.randomBytes(6).toString('hex');
+          pendingFileOps.set(rid, { type: 'file_read', clientWs: ws });
+          agentWs.send(JSON.stringify({ type: 'proxy_file_read', request_id: rid, workdir: wd.path, path: msg.path }));
+        } else { ws.send(JSON.stringify({ type: 'file_read', path: msg.path, error: 'agent offline' })); }
+      }
 
     if (msg.type === 'git_diff' && subscribedRoom) {
       const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(subscribedRoom);

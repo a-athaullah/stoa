@@ -60,6 +60,25 @@ const UPDATE_FILES = AI_BACKEND === 'gemini'
   ? ['stoa.js', 'gemini-session.js', 'gemini-adapter.js']
   : ['stoa.js', 'claude-session.js'];
 
+const TREE_IGNORE = new Set(['.git', 'node_modules', '.next', '__pycache__', '.venv', 'dist', 'build', '.claude']);
+function buildFileTreeAgent(dirPath, rootPath, depth, maxDepth) {
+  if (depth > maxDepth) return [];
+  let entries;
+  try { entries = fs.readdirSync(dirPath, { withFileTypes: true }); } catch { return []; }
+  const result = [];
+  const dirs = entries.filter(e => e.isDirectory() && !TREE_IGNORE.has(e.name) && !e.name.startsWith('.')).sort((a, b) => a.name.localeCompare(b.name));
+  const files = entries.filter(e => e.isFile() && !e.name.startsWith('.')).sort((a, b) => a.name.localeCompare(b.name));
+  for (const d of dirs) {
+    const children = buildFileTreeAgent(path.join(dirPath, d.name), rootPath, depth + 1, maxDepth);
+    result.push({ t: 'folder', name: d.name, depth, open: depth < 1, children });
+  }
+  for (const f of files) {
+    const ext = path.extname(f.name).slice(1);
+    result.push({ t: ext || 'file', name: f.name, depth });
+  }
+  return result;
+}
+
 function buildLocalManifest() {
   const manifest = {};
   for (const name of UPDATE_FILES) {
@@ -296,6 +315,29 @@ async function handleAgentMessage(msg) {
       } catch {}
     }
     send({ type: 'model_info', workdir: msg.workdir, model });
+  }
+
+  if (msg.type === 'proxy_file_list') {
+    try {
+      const tree = buildFileTreeAgent(msg.workdir, msg.workdir, 0, 3);
+      send({ type: 'proxy_file_list_result', request_id: msg.request_id, root: msg.workdir, tree });
+    } catch (e) {
+      send({ type: 'proxy_file_list_result', request_id: msg.request_id, error: e.message });
+    }
+  }
+
+  if (msg.type === 'proxy_file_read') {
+    try {
+      const filePath = path.resolve(msg.workdir, msg.path);
+      if (!filePath.startsWith(path.resolve(msg.workdir))) {
+        send({ type: 'proxy_file_read_result', request_id: msg.request_id, error: 'path traversal blocked' });
+        return;
+      }
+      const content = fs.readFileSync(filePath, 'utf8');
+      send({ type: 'proxy_file_read_result', request_id: msg.request_id, path: msg.path, content });
+    } catch (e) {
+      send({ type: 'proxy_file_read_result', request_id: msg.request_id, path: msg.path, error: e.message });
+    }
   }
 
   if (msg.type === 'search_result' || msg.type === 'get_message_result') {
