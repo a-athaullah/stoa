@@ -4550,7 +4550,10 @@ function handleWsMessage(msg) {
     finalizeMessage(msg.message_id, msg.content, msg.file_url, msg.file_name, msg.attachments);
     clearComposerProcessing(msg.message_id);
     refreshRoomList();
-    // Desktop notification for agent messages in current room (when not focused)
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: 'file_list' }));
+      ws.send(JSON.stringify({ type: 'git_diff' }));
+    }
     if (document.visibilityState !== 'visible') {
       const el = document.getElementById('msg-' + msg.message_id);
       const actorName = el?.querySelector('.h-msg-name')?.textContent || 'Agent';
@@ -4561,6 +4564,7 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'message_tool') {
     appendToolStep(msg.message_id, msg.tool);
+    wsScheduleRefresh();
     return;
   }
 
@@ -4747,6 +4751,18 @@ let wsFileTreeData = [];
 let wsFileTreeRoot = '';
 let wsGitDiffData = [];
 let wsModifiedFiles = new Set();
+
+let wsRefreshTimer = null;
+function wsScheduleRefresh() {
+  if (wsRefreshTimer) clearTimeout(wsRefreshTimer);
+  wsRefreshTimer = setTimeout(() => {
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({ type: 'file_list' }));
+      ws.send(JSON.stringify({ type: 'git_diff' }));
+    }
+    wsRefreshTimer = null;
+  }, 3000);
+}
 
 function toggleWorkspacePanel() {
   const panel = document.getElementById('workspace-panel');
