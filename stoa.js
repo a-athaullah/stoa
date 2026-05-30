@@ -61,6 +61,22 @@ const UPDATE_FILES = AI_BACKEND === 'gemini'
   : ['stoa.js', 'claude-session.js'];
 
 const TREE_IGNORE = new Set(['.git', 'node_modules', '.next', '__pycache__', '.venv', 'dist', 'build', '.claude']);
+function isPathSafe(filePath, workdir) {
+  const resolved = path.resolve(filePath);
+  const wdResolved = path.resolve(workdir);
+  const norm = (p) => process.platform === 'win32' ? p.toLowerCase() : p;
+  if (!norm(resolved).startsWith(norm(wdResolved + path.sep)) && norm(resolved) !== norm(wdResolved)) return false;
+  try {
+    if (fs.existsSync(filePath)) {
+      const stat = fs.lstatSync(filePath);
+      if (stat.isSymbolicLink()) return false;
+      const real = fs.realpathSync(filePath);
+      if (!norm(real).startsWith(norm(wdResolved + path.sep)) && norm(real) !== norm(wdResolved)) return false;
+    }
+  } catch {}
+  return true;
+}
+
 function buildFileTreeAgent(dirPath, rootPath, depth, maxDepth) {
   if (depth > maxDepth) return [];
   let entries;
@@ -334,7 +350,7 @@ async function handleAgentMessage(msg) {
   if (msg.type === 'proxy_file_read') {
     try {
       const filePath = path.resolve(msg.workdir, msg.path);
-      if (!filePath.startsWith(path.resolve(msg.workdir))) {
+      if (!isPathSafe(filePath, msg.workdir)) {
         send({ type: 'proxy_file_read_result', request_id: msg.request_id, error: 'path traversal blocked' });
         return;
       }
@@ -372,6 +388,84 @@ async function handleAgentMessage(msg) {
       send({ type: 'proxy_git_diff_result', request_id: msg.request_id, files });
     } catch (e) {
       send({ type: 'proxy_git_diff_result', request_id: msg.request_id, error: e.message });
+    }
+  }
+
+  if (msg.type === 'proxy_file_write') {
+    try {
+      const BINARY_EXTS = new Set(['png','jpg','jpeg','gif','webp','svg','ico','bmp','woff','woff2','ttf','otf','eot','exe','dll','so','bin','zip','tar','gz','7z','mp3','mp4','avi','mov']);
+      const ext = (msg.path.match(/\.(\w+)$/) || [])[1] || '';
+      if (BINARY_EXTS.has(ext)) { send({ type: 'proxy_file_write_result', request_id: msg.request_id, error: 'binary files cannot be edited' }); return; }
+      if (typeof msg.content !== 'string' || msg.content.length > 1024 * 1024) { send({ type: 'proxy_file_write_result', request_id: msg.request_id, error: 'content too large (max 1MB)' }); return; }
+      const filePath = path.resolve(msg.workdir, msg.path);
+      if (!isPathSafe(filePath, msg.workdir)) {
+        send({ type: 'proxy_file_write_result', request_id: msg.request_id, error: 'path traversal blocked' });
+        return;
+      }
+      const dir = path.dirname(filePath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(filePath, msg.content, 'utf8');
+      send({ type: 'proxy_file_write_result', request_id: msg.request_id, path: msg.path, ok: true });
+    } catch (e) {
+      send({ type: 'proxy_file_write_result', request_id: msg.request_id, path: msg.path, error: e.message });
+    }
+  }
+
+  if (msg.type === 'proxy_file_create') {
+    try {
+      if (/[<>"|?*]/.test(msg.path)) { send({ type: 'proxy_file_create_result', request_id: msg.request_id, error: 'invalid characters in path' }); return; }
+      const filePath = path.resolve(msg.workdir, msg.path);
+      if (!isPathSafe(filePath, msg.workdir)) {
+        send({ type: 'proxy_file_create_result', request_id: msg.request_id, error: 'path traversal blocked' });
+        return;
+      }
+      if (msg.is_dir) { fs.mkdirSync(filePath, { recursive: true }); }
+      else {
+        const dir = path.dirname(filePath);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        if (fs.existsSync(filePath)) { send({ type: 'proxy_file_create_result', request_id: msg.request_id, path: msg.path, error: 'already exists' }); return; }
+        fs.writeFileSync(filePath, '', 'utf8');
+      }
+      send({ type: 'proxy_file_create_result', request_id: msg.request_id, path: msg.path, ok: true });
+    } catch (e) {
+      send({ type: 'proxy_file_create_result', request_id: msg.request_id, path: msg.path, error: e.message });
+    }
+  }
+
+  if (msg.type === 'proxy_file_delete') {
+    try {
+      const filePath = path.resolve(msg.workdir, msg.path);
+      if (!isPathSafe(filePath, msg.workdir)) {
+        send({ type: 'proxy_file_delete_result', request_id: msg.request_id, error: 'path traversal blocked' });
+        return;
+      }
+      if (!fs.existsSync(filePath)) { send({ type: 'proxy_file_delete_result', request_id: msg.request_id, path: msg.path, error: 'not found' }); return; }
+      const stat = fs.statSync(filePath);
+      if (stat.isDirectory()) { fs.rmdirSync(filePath); }
+      else { fs.unlinkSync(filePath); }
+      send({ type: 'proxy_file_delete_result', request_id: msg.request_id, path: msg.path, ok: true });
+    } catch (e) {
+      send({ type: 'proxy_file_delete_result', request_id: msg.request_id, path: msg.path, error: e.message });
+    }
+  }
+
+  if (msg.type === 'proxy_file_rename') {
+    try {
+      if (/[<>"|?*]/.test(msg.path) || /[<>"|?*]/.test(msg.new_path)) { send({ type: 'proxy_file_rename_result', request_id: msg.request_id, error: 'invalid characters in path' }); return; }
+      const oldPath = path.resolve(msg.workdir, msg.path);
+      const newPath = path.resolve(msg.workdir, msg.new_path);
+      if (!isPathSafe(oldPath, msg.workdir) || !isPathSafe(newPath, msg.workdir)) {
+        send({ type: 'proxy_file_rename_result', request_id: msg.request_id, error: 'path traversal blocked' });
+        return;
+      }
+      if (!fs.existsSync(oldPath)) { send({ type: 'proxy_file_rename_result', request_id: msg.request_id, error: 'source not found' }); return; }
+      if (fs.existsSync(newPath)) { send({ type: 'proxy_file_rename_result', request_id: msg.request_id, error: 'target already exists' }); return; }
+      const dir = path.dirname(newPath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.renameSync(oldPath, newPath);
+      send({ type: 'proxy_file_rename_result', request_id: msg.request_id, path: msg.path, new_path: msg.new_path, ok: true });
+    } catch (e) {
+      send({ type: 'proxy_file_rename_result', request_id: msg.request_id, error: e.message });
     }
   }
 
