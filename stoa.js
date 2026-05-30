@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.2.36';
+const CLIENT_VERSION = '0.2.37';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -322,7 +322,7 @@ async function handleAgentMessage(msg) {
       const tree = buildFileTreeAgent(msg.workdir, msg.workdir, 0, 3);
       let modified = [];
       try {
-        const status = spawnSync('git', ['status', '--porcelain'], { cwd: msg.workdir, encoding: 'utf8', maxBuffer: 512 * 1024 });
+        const status = spawnSync('git', ['status', '--porcelain'], { cwd: msg.workdir, encoding: 'utf8', maxBuffer: 512 * 1024, windowsHide: true, timeout: 10000 });
         if (status.stdout) modified = status.stdout.split('\n').filter(Boolean).map(l => l.slice(3).trim());
       } catch {}
       send({ type: 'proxy_file_list_result', request_id: msg.request_id, root: msg.workdir, tree, modified });
@@ -352,7 +352,7 @@ async function handleAgentMessage(msg) {
 
   if (msg.type === 'proxy_git_diff') {
     try {
-      const status = spawnSync('git', ['diff'], { cwd: msg.workdir, encoding: 'utf8', maxBuffer: 1024 * 1024 });
+      const status = spawnSync('git', ['diff'], { cwd: msg.workdir, encoding: 'utf8', maxBuffer: 1024 * 1024, windowsHide: true, timeout: 10000 });
       const raw = status.stdout || '';
       const files = [];
       let current = null;

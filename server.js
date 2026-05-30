@@ -1644,7 +1644,7 @@ wss.on('connection', (ws, req) => {
         let modified = [];
         try {
           const { execSync } = require('child_process');
-          const status = execSync('git status --porcelain', { cwd: targetPath, encoding: 'utf8', maxBuffer: 512 * 1024 });
+          const status = execSync('git status --porcelain', { cwd: targetPath, encoding: 'utf8', maxBuffer: 512 * 1024, windowsHide: true, timeout: 10000 });
           modified = status.split('\n').filter(Boolean).map(l => l.slice(3).trim());
         } catch {}
         ws.send(JSON.stringify({ type: 'file_list', root: targetPath, tree, modified }));
@@ -1704,7 +1704,7 @@ wss.on('connection', (ws, req) => {
       if (fs.existsSync(wd.path)) {
         try {
           const { execSync } = require('child_process');
-          const diff = execSync('git diff', { cwd: wd.path, encoding: 'utf8', maxBuffer: 1024 * 1024 });
+          const diff = execSync('git diff', { cwd: wd.path, encoding: 'utf8', maxBuffer: 1024 * 1024, windowsHide: true, timeout: 10000 });
           const parsed = parseGitDiff(diff);
           ws.send(JSON.stringify({ type: 'git_diff', files: parsed }));
         } catch (e) { ws.send(JSON.stringify({ type: 'git_diff', error: e.message })); }
