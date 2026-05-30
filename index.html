@@ -807,9 +807,12 @@
       white-space: pre; tab-size: 2; caret-color: oklch(0.78 0.085 78);
     }
     .ws-editor-ta::selection { background: color-mix(in srgb, oklch(0.78 0.085 78) 32%, transparent); }
+    #ws-toolbar-actions {
+      display: flex; align-items: center; gap: 6px;
+    }
     .ws-edit-btn {
       display: inline-flex; align-items: center; gap: 6px;
-      padding: 5px 13px; border-radius: 8px; cursor: pointer;
+      height: 30px; padding: 0 12px; border-radius: 8px; cursor: pointer;
       font-family: var(--h-sans); font-size: 11.5px; font-weight: 500;
       border: 1px solid transparent; white-space: nowrap;
       transition: background .12s, color .12s, border-color .12s;

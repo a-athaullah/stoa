@@ -1112,6 +1112,19 @@ async function run() {
     db.prepare('DELETE FROM invite_suggestions WHERE id=?').run(inviteId);
   });
 
+  // ── 9o. Client error logging ────────────────────────────────────────────────
+  console.log('\n9o · client error logging');
+
+  await test('POST /api/client-error accepts error report', async () => {
+    const { status } = await req('POST', '/api/client-error', { message: 'test error', source: 'test:1:1' });
+    assert.strictEqual(status, 200);
+  });
+
+  await test('POST /api/client-error sanitizes newlines', async () => {
+    const { status } = await req('POST', '/api/client-error', { message: 'line1\nline2\rline3', source: 'test' });
+    assert.strictEqual(status, 200);
+  });
+
   // ── 10. Cleanup ────────────────────────────────────────────────────────────
   console.log('\n10 · cleanup');
 

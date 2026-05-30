@@ -347,6 +347,29 @@ The **Files** tab shows the project directory tree for the room's working direct
 
 Text files open with **syntax highlighting** (powered by highlight.js), **line numbers**, and a dark code background. The breadcrumb at the top shows the file path.
 
+### File Editing
+
+Click the **Edit** button on any text file to enter edit mode. The editor uses **CodeMirror 6** with syntax highlighting for JavaScript, TypeScript, Python, JSON, HTML, CSS, and Markdown.
+
+- **Save**: Press `Ctrl+S` (or `Cmd+S`) or click the Save button
+- **Expand**: Click the expand button to use the editor full-width (hides the chat panel)
+- **Conflict detection**: If the file changes on disk while you're editing, a dialog lets you choose to reload or overwrite
+- **Auto-save drafts**: Unsaved edits are saved to browser storage. If you close and re-open the file, a recovery prompt appears
+- **Keyboard shortcuts**: `Ctrl+/` (toggle comment), `Ctrl+Shift+D` (duplicate line), `Alt+Shift+Up/Down` (copy line), `Tab` (indent)
+
+If CodeMirror fails to load (e.g., no internet for CDN), the editor falls back to a plain textarea.
+
+### File Operations (Context Menu)
+
+Right-click any file or folder in the Files tab to open the context menu:
+
+- **New File** — create a new file in the selected folder
+- **New Folder** — create a new directory
+- **Rename** — rename the file or folder
+- **Delete** — remove the file (with confirmation dialog)
+
+On tablets, long-press to open the context menu.
+
 ### Markdown Preview
 
 `.md` files render as formatted markdown with headings, lists, code blocks, tables, and links.

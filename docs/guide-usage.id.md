@@ -347,6 +347,29 @@ Tab **Files** menampilkan directory tree dari working directory room. Klik file 
 
 File teks ditampilkan dengan **syntax highlighting** (highlight.js), **nomor baris**, dan background gelap. Breadcrumb di atas menunjukkan path file.
 
+### Edit File
+
+Klik tombol **Edit** di file teks manapun untuk masuk mode edit. Editor menggunakan **CodeMirror 6** dengan syntax highlighting untuk JavaScript, TypeScript, Python, JSON, HTML, CSS, dan Markdown.
+
+- **Simpan**: Tekan `Ctrl+S` (atau `Cmd+S`) atau klik tombol Save
+- **Expand**: Klik tombol expand untuk editor full-width (panel chat tersembunyi)
+- **Deteksi konflik**: Jika file berubah di disk saat sedang diedit, dialog muncul untuk reload atau overwrite
+- **Auto-save draft**: Edit yang belum disimpan otomatis tersimpan di browser. Jika file dibuka ulang, prompt recovery muncul
+- **Shortcut keyboard**: `Ctrl+/` (toggle comment), `Ctrl+Shift+D` (duplikat baris), `Alt+Shift+Up/Down` (copy baris), `Tab` (indent)
+
+Jika CodeMirror gagal load (misal tidak ada internet), editor fallback ke textarea biasa.
+
+### Operasi File (Context Menu)
+
+Klik kanan file atau folder di tab Files untuk membuka context menu:
+
+- **New File** — buat file baru di folder yang dipilih
+- **New Folder** — buat direktori baru
+- **Rename** — ganti nama file atau folder
+- **Delete** — hapus file (dengan dialog konfirmasi)
+
+Di tablet, tekan lama (long-press) untuk membuka context menu.
+
 ### Markdown Preview
 
 File `.md` di-render sebagai markdown terformat — heading, list, code block, tabel, dan link.
