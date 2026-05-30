@@ -64,11 +64,14 @@ const TREE_IGNORE = new Set(['.git', 'node_modules', '.next', '__pycache__', '.v
 function isPathSafe(filePath, workdir) {
   const resolved = path.resolve(filePath);
   const wdResolved = path.resolve(workdir);
-  if (!resolved.startsWith(wdResolved + path.sep) && resolved !== wdResolved) return false;
+  const norm = (p) => process.platform === 'win32' ? p.toLowerCase() : p;
+  if (!norm(resolved).startsWith(norm(wdResolved + path.sep)) && norm(resolved) !== norm(wdResolved)) return false;
   try {
     if (fs.existsSync(filePath)) {
+      const stat = fs.lstatSync(filePath);
+      if (stat.isSymbolicLink()) return false;
       const real = fs.realpathSync(filePath);
-      if (!real.startsWith(wdResolved + path.sep) && real !== wdResolved) return false;
+      if (!norm(real).startsWith(norm(wdResolved + path.sep)) && norm(real) !== norm(wdResolved)) return false;
     }
   } catch {}
   return true;
