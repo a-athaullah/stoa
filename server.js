@@ -558,9 +558,7 @@ const server = http.createServer(async (req, res) => {
     const roomId = result.lastInsertRowid;
     const allIds = [...new Set([humanId, ...participant_ids])];
     const insertParticipant = db.prepare('INSERT OR IGNORE INTO room_participants (room_id, actor_id) VALUES (?,?)');
-    for (const actorId of allIds) {
-      insertParticipant.run(roomId, actorId);
-    }
+    db.transaction((ids) => { for (const id of ids) insertParticipant.run(roomId, id); })(allIds);
     const room = db.prepare('SELECT * FROM rooms WHERE id=?').get(roomId);
     console.log(`[server] Room created id=${roomId}, broadcasting to ${globalClients.size} clients`);
     broadcastGlobal({ type: 'room_created', room });
@@ -1480,12 +1478,15 @@ wss.on('connection', (ws, req) => {
       const allWds = db.prepare('SELECT id, path FROM agent_workdirs WHERE actor_id=?').all(agentActorId);
       const wdMap = new Map(allWds.map(w => [w.path, w.id]));
       db.prepare('DELETE FROM agent_skills WHERE actor_id=? AND workdir_id IS NOT NULL').run(agentActorId);
+      const batchSkills = db.transaction((skills) => { for (const s of skills) insertSkill.run(s.actorId, s.wdId, s.name, s.desc, s.scope); });
+      const allSkills = [];
       for (const wd of workdirs) {
         const wdId = wdMap.get(wd.path);
         for (const sk of (wd.skills || [])) {
-          insertSkill.run(agentActorId, wdId, sk.name, sk.description || null, sk.scope || 'project');
+          allSkills.push({ actorId: agentActorId, wdId, name: sk.name, desc: sk.description || null, scope: sk.scope || 'project' });
         }
       }
+      if (allSkills.length) batchSkills(allSkills);
       // Remove workdirs no longer reported (only if not referenced by any room)
       const staleWds = db.prepare('SELECT id, path FROM agent_workdirs WHERE actor_id=?').all(agentActorId);
       const staleIds = staleWds.filter(wd => !scannedPaths.has(wd.path)).map(wd => wd.id);
@@ -1501,11 +1502,9 @@ wss.on('connection', (ws, req) => {
           db.prepare(`DELETE FROM agent_workdirs WHERE id IN (${ph})`).run(...toDelete);
         }
       }
-      // Insert global skills
       db.prepare('DELETE FROM agent_skills WHERE actor_id=? AND workdir_id IS NULL').run(agentActorId);
-      for (const sk of globalSkills) {
-        insertSkill.run(agentActorId, null, sk.name, sk.description || null, 'global');
-      }
+      const globalBatch = globalSkills.map(sk => ({ actorId: agentActorId, wdId: null, name: sk.name, desc: sk.description || null, scope: 'global' }));
+      if (globalBatch.length) batchSkills(globalBatch);
       console.log(`[agent] Actor #${agentActorId} reported ${workdirs.length} workdirs, ${globalSkills.length} global skills`);
       broadcastGlobal({ type: 'agent_scan_complete', actor_id: agentActorId });
     }

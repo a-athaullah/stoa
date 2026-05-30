@@ -117,9 +117,51 @@ function connectAgent(actorId, secret, workdirs = []) {
         }));
         resolve(ws);
       }
+      if (msg.type === 'proxy_file_list') {
+        ws.send(JSON.stringify({ type: 'proxy_file_list_result', request_id: msg.request_id, root: msg.workdir, tree: [{ t: 'file', name: 'test.txt', depth: 0 }], modified: [] }));
+      }
+      if (msg.type === 'proxy_git_diff') {
+        ws.send(JSON.stringify({ type: 'proxy_git_diff_result', request_id: msg.request_id, files: [] }));
+      }
+      if (msg.type === 'proxy_file_read') {
+        ws.send(JSON.stringify({ type: 'proxy_file_read_result', request_id: msg.request_id, path: msg.path, content: 'test content' }));
+      }
+      if (msg.type === 'proxy_file_write') {
+        ws.send(JSON.stringify({ type: 'proxy_file_write_result', request_id: msg.request_id, path: msg.path, ok: true }));
+      }
     });
     ws.on('error', reject);
     setTimeout(() => reject(new Error('agent connect timeout')), 5000);
+  });
+}
+
+// Connect as a browser client (with auth cookie), join a room, return ws + message helper
+function connectBrowser(roomId) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(WS, { headers: { Cookie: SESSION_COOKIE } });
+    const pending = new Map();
+    let msgId = 0;
+    ws.on('open', () => {
+      ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+    });
+    ws.on('message', raw => {
+      let msg; try { msg = JSON.parse(raw); } catch { return; }
+      if (msg.type === 'history') { resolve({ ws, send: sendMsg, waitFor }); return; }
+      for (const [id, { types, resolve: res }] of pending) {
+        if (types.includes(msg.type)) { pending.delete(id); res(msg); return; }
+      }
+    });
+    function sendMsg(data) { ws.send(JSON.stringify(data)); }
+    function waitFor(types, timeout = 5000) {
+      if (!Array.isArray(types)) types = [types];
+      return new Promise((res, rej) => {
+        const id = ++msgId;
+        pending.set(id, { types, resolve: res });
+        setTimeout(() => { pending.delete(id); rej(new Error(`timeout waiting for ${types.join('|')}`)); }, timeout);
+      });
+    }
+    ws.on('error', reject);
+    setTimeout(() => reject(new Error('browser connect timeout')), 5000);
   });
 }
 
@@ -1112,8 +1154,82 @@ async function run() {
     db.prepare('DELETE FROM invite_suggestions WHERE id=?').run(inviteId);
   });
 
-  // ── 9o. Client error logging ────────────────────────────────────────────────
-  console.log('\n9o · client error logging');
+  // ── 9o. WebSocket message tests ────────────────────────────────────────────
+  console.log('\n9o · WebSocket message tests');
+
+  let browserWs;
+  await test('browser WS connects and receives history', async () => {
+    browserWs = await connectBrowser(roomId);
+    assert.ok(browserWs.ws.readyState === WebSocket.OPEN);
+  });
+
+  await test('WS file_list returns tree or proxies to agent', async () => {
+    const p = browserWs.waitFor('file_list', 8000);
+    browserWs.send({ type: 'file_list' });
+    const msg = await p;
+    assert.ok(msg.root || msg.tree || msg.error, 'expected root, tree, or error');
+  });
+
+  await test('WS send_message creates message', async () => {
+    const p = browserWs.waitFor(['message_new', 'message_complete']);
+    browserWs.send({ type: 'send_message', room_id: roomId, content: 'ws test message' });
+    const msg = await p;
+    assert.ok(msg.type);
+  });
+
+  await test('WS file_write requires valid path', async () => {
+    const p = browserWs.waitFor('file_write_result');
+    browserWs.send({ type: 'file_write', path: '../escape.txt', content: 'hack' });
+    const msg = await p;
+    assert.ok(msg.error);
+  });
+
+  await test('WS file_write blocks binary extensions', async () => {
+    const p = browserWs.waitFor('file_write_result');
+    browserWs.send({ type: 'file_write', path: 'test.exe', content: 'binary' });
+    const msg = await p;
+    assert.strictEqual(msg.error, 'binary files cannot be edited');
+  });
+
+  await test('WS file_write blocks oversized content', async () => {
+    const p = browserWs.waitFor('file_write_result');
+    browserWs.send({ type: 'file_write', path: 'big.txt', content: 'x'.repeat(1024 * 1024 + 1) });
+    const msg = await p;
+    assert.ok(msg.error.includes('too large'));
+  });
+
+  await test('WS file_create blocks invalid characters', async () => {
+    const p = browserWs.waitFor('file_create_result');
+    browserWs.send({ type: 'file_create', path: 'bad<file>.txt' });
+    const msg = await p;
+    assert.ok(msg.error.includes('invalid characters'));
+  });
+
+  await test('WS file_delete blocks path traversal', async () => {
+    const p = browserWs.waitFor('file_delete_result');
+    browserWs.send({ type: 'file_delete', path: '../../etc/passwd' });
+    const msg = await p;
+    assert.ok(msg.error);
+  });
+
+  await test('WS file_rename blocks invalid characters in new path', async () => {
+    const p = browserWs.waitFor('file_rename_result');
+    browserWs.send({ type: 'file_rename', path: 'old.txt', new_path: 'new|bad.txt' });
+    const msg = await p;
+    assert.ok(msg.error.includes('invalid characters'));
+  });
+
+  await test('WS git_diff returns result', async () => {
+    const p = browserWs.waitFor('git_diff');
+    browserWs.send({ type: 'git_diff' });
+    const msg = await p;
+    assert.ok(msg.files !== undefined || msg.error);
+  });
+
+  browserWs.ws.close();
+
+  // ── 9p. Client error logging ────────────────────────────────────────────────
+  console.log('\n9p · client error logging');
 
   await test('POST /api/client-error accepts error report', async () => {
     const { status } = await req('POST', '/api/client-error', { message: 'test error', source: 'test:1:1' });
