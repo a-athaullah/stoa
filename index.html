@@ -6214,6 +6214,15 @@ function appendMessage(m, container) {
   const inner = container || document.getElementById('messages-inner');
   if (!inner) return;
 
+  if (m.state === 'system_event') {
+    const el = document.createElement('div');
+    el.className = 'h-system-event';
+    el.id = 'msg-' + m.id;
+    el.textContent = m.content;
+    inner.appendChild(el);
+    return;
+  }
+
   // Pesan yang masih streaming/requesting → tampilkan thinking bubble
   if (m.state === 'streaming' || m.state === 'requesting') {
     showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url);

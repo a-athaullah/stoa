@@ -104,6 +104,62 @@ try {
   db.exec("CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at)");
 } catch {}
 
+// Migrate messages CHECK constraint to allow 'system_event' state
+try {
+  const tblSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'").get();
+  if (tblSql?.sql && !tblSql.sql.includes('system_event')) {
+    const cols = db.prepare("PRAGMA table_info(messages)").all().map(c => c.name);
+    const colList = cols.join(', ');
+    db.exec('BEGIN TRANSACTION');
+    try {
+      db.exec(`
+        CREATE TABLE messages_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          room_id INTEGER NOT NULL,
+          participant_id INTEGER NOT NULL,
+          content TEXT NOT NULL,
+          state TEXT DEFAULT 'complete' CHECK(state IN ('requesting','streaming','complete','error','system_event')),
+          reply_to INTEGER DEFAULT NULL,
+          image_url TEXT DEFAULT NULL,
+          file_url TEXT DEFAULT NULL,
+          file_name TEXT DEFAULT NULL,
+          attachments TEXT DEFAULT NULL,
+          created_at TEXT DEFAULT (datetime('now')),
+          completed_at TEXT DEFAULT NULL,
+          FOREIGN KEY (room_id) REFERENCES rooms(id),
+          FOREIGN KEY (participant_id) REFERENCES room_participants(id)
+        );
+        INSERT INTO messages_new (${colList}) SELECT ${colList} FROM messages;
+        DROP TABLE messages;
+        ALTER TABLE messages_new RENAME TO messages;
+      `);
+      // Recreate indexes
+      db.exec("CREATE INDEX IF NOT EXISTS idx_messages_room_id ON messages(room_id)");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_messages_room_state ON messages(room_id, state)");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_messages_participant ON messages(participant_id)");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(reply_to)");
+      // Recreate FTS triggers (dropped with old table)
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages BEGIN
+          INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+        CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE OF content ON messages BEGIN
+          INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
+          INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+        CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
+          INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
+        END;
+      `);
+      db.exec('COMMIT');
+      console.log('[db] migrated messages: added system_event to state CHECK');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      console.error('[db] messages migration failed, rolled back:', e.message);
+    }
+  }
+} catch {}
+
 // Clean up duplicate settings rows caused by NULL scope_id UNIQUE bug
 try {
   const dupes = db.prepare("SELECT key_name FROM settings WHERE scope='global' AND scope_id IS NULL GROUP BY key_name HAVING COUNT(*) > 1").all();
@@ -2338,6 +2394,31 @@ function promptStrings(lang) {
 
 async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) {
 
+  const agentWs = agentClients.get(ai.actor_id);
+
+  if (!agentWs || agentWs.readyState !== 1) {
+    console.log(`[trigger] ${ai.name} is offline, saving system_event`);
+    const sysResult = db.prepare(
+      `INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,?)`
+    ).run(roomId, ai.participant_id, `${ai.name} sedang offline`, 'system_event');
+    broadcast(roomId, {
+      type: 'message_new',
+      message: {
+        id: Number(sysResult.lastInsertRowid),
+        room_id: roomId,
+        actor_name: ai.name,
+        actor_type: 'ai',
+        avatar_color: ai.avatar_color,
+        avatar_symbol: ai.avatar_symbol,
+        avatar_url: ai.avatar_url || null,
+        content: `${ai.name} sedang offline`,
+        state: 'system_event',
+        created_at: new Date().toISOString(),
+      },
+    });
+    return;
+  }
+
   const result = db.prepare(
     `INSERT INTO messages (room_id, participant_id, content, state, reply_to) VALUES (?,?,'','streaming',?)`
   ).run(roomId, ai.participant_id, replyTo);
@@ -2352,8 +2433,6 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
     avatar_url: ai.avatar_url || null,
     state: 'streaming',
   });
-
-  const agentWs = agentClients.get(ai.actor_id);
   console.log(`[trigger] ${ai.name} actor_id=${ai.actor_id} agentConnected=${!!agentWs} readyState=${agentWs?.readyState}`);
 
   if (EXPECTED_CLIENT_VERSION && agentWs && agentWs.readyState === 1) {
@@ -2463,87 +2542,6 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
       console.log(`[trigger] sent to ${ai.name} agent, msgId=${msgId}`);
     });
 
-  } else {
-    // ── Fallback: spawn directly (no agent connected)
-    console.log(`[trigger] ${ai.name} fallback to direct spawn (${ai.adapter || 'claude'})`);
-    let fullContent = '';
-
-    const imageUrl = (attachments || []).find(a => a.type === 'image')?.url;
-    const fileUrl  = (attachments || []).find(a => a.type === 'file')?.url;
-    const fileName = (attachments || []).find(a => a.type === 'file')?.name;
-
-    try {
-      const safeAttachUrl = u => u && u.startsWith('/uploads/') && !u.includes('..');
-      const TEXT_EXTS = new Set(['.md','.txt','.json','.csv','.html','.js','.ts','.py','.yaml','.yml','.sh','.css']);
-      let spawnPrompt = fullPrompt;
-      if (fileUrl && safeAttachUrl(fileUrl) && fileName && TEXT_EXTS.has(path.extname(fileName).toLowerCase())) {
-        const filePath = path.join(__dirname, fileUrl);
-        if (fs.existsSync(filePath)) {
-          const fileContent = fs.readFileSync(filePath, 'utf8');
-          spawnPrompt = `${fullPrompt}\n\n---\nIsi file \`${fileName}\`:\n\`\`\`\n${fileContent}\n\`\`\``;
-        }
-      }
-
-      let imageData = null;
-      const imageFilePath = (imageUrl && safeAttachUrl(imageUrl)) ? path.join(__dirname, imageUrl) : null;
-      if (imageFilePath && fs.existsSync(imageFilePath)) {
-        const base64 = fs.readFileSync(imageFilePath).toString('base64');
-        const ext = path.extname(imageFilePath).toLowerCase();
-        const mimeMap = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' };
-        imageData = { base64, mimeType: mimeMap[ext] || 'image/png' };
-      }
-
-      if (ai.adapter === 'gemini') {
-        const sessionId = getSession(ai.participant_id, workdir);
-        const finalSessionId = await spawnGemini({
-          prompt: spawnPrompt,
-          sessionId,
-          imageFilePath,
-          onToken: token => {
-            fullContent += token;
-            broadcast(roomId, { type: 'message_token', message_id: msgId, token });
-          },
-          onState: state => {
-            broadcast(roomId, { type: 'message_state', message_id: msgId, state });
-          },
-          onTool: tool => {
-            broadcast(roomId, { type: 'message_tool', message_id: msgId, tool });
-          },
-        });
-        if (finalSessionId) saveSession(ai.participant_id, finalSessionId, workdir);
-      } else {
-        const session = getFallbackSession(ai.participant_id, workdir);
-        const result = await session.send({
-          prompt: spawnPrompt,
-          imageData,
-          onToken: token => {
-            fullContent += token;
-            broadcast(roomId, { type: 'message_token', message_id: msgId, token });
-          },
-          onState: state => {
-            broadcast(roomId, { type: 'message_state', message_id: msgId, state });
-          },
-          onTool: tool => {
-            broadcast(roomId, { type: 'message_tool', message_id: msgId, tool });
-          },
-        });
-        if (result.sessionId) saveSession(ai.participant_id, result.sessionId, workdir);
-      }
-
-      if (!fullContent.trim()) {
-        db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msgId);
-        broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
-        return;
-      }
-      db.prepare(
-        "UPDATE messages SET content=?, state='complete', completed_at=datetime('now') WHERE id=?"
-      ).run(fullContent, msgId);
-      broadcast(roomId, { type: 'message_complete', message_id: msgId, content: fullContent });
-
-    } catch (err) {
-      db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msgId);
-      broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
-    }
   }
 }
 

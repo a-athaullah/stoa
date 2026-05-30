@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS messages (
   room_id INTEGER NOT NULL,
   participant_id INTEGER NOT NULL,
   content TEXT NOT NULL,
-  state TEXT DEFAULT 'complete' CHECK(state IN ('requesting','streaming','complete','error')),
+  state TEXT DEFAULT 'complete' CHECK(state IN ('requesting','streaming','complete','error','system_event')),
   reply_to INTEGER DEFAULT NULL,
   image_url TEXT DEFAULT NULL,
   file_url TEXT DEFAULT NULL,
