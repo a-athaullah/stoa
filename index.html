@@ -5020,6 +5020,7 @@ function wsExitEditMode(force) {
   wsEditContent = '';
   wsEditDirty = false;
   wsEditSaving = false;
+  if (wsEditorView) { wsEditorView.destroy(); wsEditorView = null; }
   if (wsExpanded) wsToggleExpand();
   wsRenderContent();
   wsRenderTabs();
@@ -5028,6 +5029,7 @@ function wsExitEditMode(force) {
 function wsSaveFile() {
   if (!wsEditMode || !wsActiveFile || wsEditSaving) return;
   if (!wsEditDirty) return;
+  if (wsEditorView) wsEditContent = wsEditorView.state.doc.toString();
   wsEditSaving = true;
   wsRenderToolbarActions();
   const isAbs = /^\//.test(wsActiveFile) || /^[A-Za-z]:/.test(wsActiveFile);
@@ -5092,9 +5094,126 @@ function wsRenderToolbarActions() {
   }
 }
 
+let wsEditorView = null;
+let wsCmLoading = false;
+
+async function wsLoadCodeMirror() {
+  if (window._cm) return window._cm;
+  if (wsCmLoading) return null;
+  wsCmLoading = true;
+  try {
+    const [cmMod, viewMod, stateMod, langMod, cmdMod, searchMod, jsLang, pyLang, jsonLang, mdLang, htmlLang, cssLang] = await Promise.all([
+      import('https://esm.sh/codemirror@6.65.7'),
+      import('https://esm.sh/@codemirror/view@6.36.5'),
+      import('https://esm.sh/@codemirror/state@6.5.2'),
+      import('https://esm.sh/@codemirror/language@6.10.8'),
+      import('https://esm.sh/@codemirror/commands@6.8.0'),
+      import('https://esm.sh/@codemirror/search@6.5.10'),
+      import('https://esm.sh/@codemirror/lang-javascript@6.2.3'),
+      import('https://esm.sh/@codemirror/lang-python@6.1.7'),
+      import('https://esm.sh/@codemirror/lang-json@6.0.1'),
+      import('https://esm.sh/@codemirror/lang-markdown@6.3.2'),
+      import('https://esm.sh/@codemirror/lang-html@6.4.9'),
+      import('https://esm.sh/@codemirror/lang-css@6.3.1'),
+    ]);
+    const { EditorView } = viewMod;
+    const { EditorState } = stateMod;
+    const { HighlightStyle, syntaxHighlighting } = langMod;
+    const { tags } = await import('https://esm.sh/@lezer/highlight@1.2.1');
+    const hearthTheme = EditorView.theme({
+      '&': { backgroundColor: 'oklch(0.193 0.016 44)', color: '#d3c8b4', fontSize: '13px', height: '100%' },
+      '.cm-content': { caretColor: 'oklch(0.78 0.085 78)', fontFamily: "'SF Mono','Cascadia Code','Fira Code','JetBrains Mono',ui-monospace,monospace", padding: '10px 0' },
+      '.cm-cursor': { borderLeftColor: 'oklch(0.78 0.085 78)', borderLeftWidth: '2px' },
+      '&.cm-focused .cm-selectionBackground, .cm-selectionBackground': { backgroundColor: 'color-mix(in srgb, oklch(0.78 0.085 78) 32%, transparent) !important' },
+      '.cm-gutters': { backgroundColor: 'oklch(0.193 0.016 44)', color: '#7a7060', borderRight: '1px solid rgba(255,255,255,.07)', minWidth: '40px' },
+      '.cm-gutter': { fontFamily: "'SF Mono','Cascadia Code','Fira Code','JetBrains Mono',ui-monospace,monospace" },
+      '.cm-activeLineGutter': { color: '#d3c8b4', backgroundColor: 'transparent' },
+      '.cm-activeLine': { backgroundColor: 'rgba(255,255,255,.045)' },
+      '.cm-matchingBracket': { backgroundColor: 'rgba(255,255,255,.12)', outline: 'none' },
+      '.cm-searchMatch': { backgroundColor: 'color-mix(in srgb, oklch(0.78 0.085 78) 30%, transparent)' },
+      '.cm-searchMatch.cm-searchMatch-selected': { backgroundColor: 'color-mix(in srgb, oklch(0.78 0.085 78) 55%, transparent)' },
+      '.cm-panels': { backgroundColor: 'oklch(0.17 0.012 44)', color: '#d3c8b4' },
+      '.cm-panels input, .cm-panels button': { color: '#d3c8b4' },
+      '.cm-scroller': { overflow: 'auto', lineHeight: '21px' },
+      '&::-webkit-scrollbar, .cm-scroller::-webkit-scrollbar': { width: '8px', height: '8px' },
+      '&::-webkit-scrollbar-thumb, .cm-scroller::-webkit-scrollbar-thumb': { background: 'rgba(255,255,255,.12)', borderRadius: '4px' },
+    }, { dark: true });
+    const hearthHighlight = HighlightStyle.define([
+      { tag: tags.keyword, color: '#c2876b' },
+      { tag: tags.string, color: '#b59a5e' },
+      { tag: tags.comment, color: '#837868', fontStyle: 'italic' },
+      { tag: [tags.function(tags.variableName), tags.function(tags.propertyName)], color: '#6f9f8c' },
+      { tag: tags.number, color: '#c08aa0' },
+      { tag: tags.variableName, color: '#d3c8b4' },
+      { tag: tags.punctuation, color: '#9a8f7e' },
+      { tag: tags.operator, color: '#9a8f7e' },
+      { tag: tags.typeName, color: '#c2876b' },
+      { tag: tags.bool, color: '#c2876b' },
+      { tag: tags.null, color: '#c2876b' },
+      { tag: tags.propertyName, color: '#d3c8b4' },
+      { tag: tags.definition(tags.variableName), color: '#6f9f8c' },
+    ]);
+    const langMap = {
+      js: jsLang.javascript, jsx: () => jsLang.javascript({ jsx: true }), ts: () => jsLang.javascript({ typescript: true }),
+      tsx: () => jsLang.javascript({ typescript: true, jsx: true }), py: pyLang.python, json: jsonLang.json,
+      md: mdLang.markdown, html: htmlLang.html, css: cssLang.css,
+    };
+    window._cm = { EditorView, EditorState, basicSetup: cmMod.basicSetup, hearthTheme, hearthHighlight: syntaxHighlighting(hearthHighlight), langMap, keymap: cmdMod.keymap, searchMod };
+    wsCmLoading = false;
+    return window._cm;
+  } catch (e) {
+    console.warn('[ws] CodeMirror load failed, using textarea:', e);
+    wsCmLoading = false;
+    return null;
+  }
+}
+
 function wsRenderEditor(container) {
   container.className = '';
   container.style.cssText = 'flex:1;min-height:0;display:flex;flex-direction:column;position:relative';
+  wsEditorView = null;
+  if (window._cm) {
+    wsRenderCMEditor(container);
+  } else {
+    wsRenderTextareaEditor(container);
+    wsLoadCodeMirror().then(cm => {
+      if (cm && wsEditMode) {
+        const content = document.getElementById('ws-panel-content');
+        if (content) { content.innerHTML = ''; content.className = ''; content.style.cssText = 'flex:1;min-height:0;display:flex;flex-direction:column;position:relative'; wsRenderCMEditor(content); }
+      }
+    });
+  }
+}
+
+function wsRenderCMEditor(container) {
+  const cm = window._cm;
+  const ext = wsActiveFile ? wsGetExt(wsActiveFile) : '';
+  const langFn = cm.langMap[ext];
+  const extensions = [
+    cm.basicSetup,
+    cm.hearthTheme,
+    cm.hearthHighlight,
+    cm.EditorView.updateListener.of(update => {
+      if (update.docChanged) {
+        wsEditContent = update.state.doc.toString();
+        if (!wsEditDirty) { wsEditDirty = true; wsRenderTabs(); wsRenderToolbarActions(); }
+        wsAutoSaveDraft();
+      }
+    }),
+    cm.keymap.of([{ key: 'Mod-s', run: () => { wsSaveFile(); return true; } }]),
+  ];
+  if (langFn) extensions.push(typeof langFn === 'function' ? langFn() : langFn());
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'flex:1;min-height:0;overflow:hidden';
+  container.appendChild(wrap);
+  wsEditorView = new cm.EditorView({
+    state: cm.EditorState.create({ doc: wsEditContent, extensions }),
+    parent: wrap,
+  });
+  wsEditorView.focus();
+}
+
+function wsRenderTextareaEditor(container) {
   const wrap = document.createElement('div');
   wrap.className = 'ws-editor-wrap';
   const lines = wsEditContent.split('\n');
