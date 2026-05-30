@@ -4605,7 +4605,8 @@ function handleWsMessage(msg) {
     return;
   }
 
-  if (msg.type === 'file_list' && !msg.error) {
+  if (msg.type === 'file_list') {
+    if (msg.error) { console.warn('[ws] file_list error:', msg.error); return; }
     wsFileTreeData = msg.tree || [];
     wsFileTreeRoot = msg.root || '';
     if (wsActiveView === 'files') wsRenderContent();
@@ -5370,8 +5371,8 @@ function openFileFromPath(absOrRelPath) {
   if (!panel.classList.contains('open')) toggleWorkspacePanel();
   const ext = wsGetExt(relPath);
   if (!ext) {
+    if (ws) ws.send(JSON.stringify({ type: 'file_list' }));
     wsSetView('files');
-    showToast('Directory path — showing file tree');
   } else {
     wsOpenFile(relPath);
   }
