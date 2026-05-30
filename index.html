@@ -7535,11 +7535,12 @@ function sMakeRow(actor, flash) {
     });
     langSel.addEventListener('change', async () => {
       try {
-        await fetch(`/api/actors/${actor.id}`, {
+        const r = await fetch(`/api/actors/${actor.id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name: actor.name, lang: langSel.value }),
         });
+        if (!r.ok) throw new Error();
       } catch { showToast('Failed to save language', { error: true }); }
     });
     langRow.appendChild(langLabel); langRow.appendChild(langSel);
@@ -7594,7 +7595,8 @@ function sMakeRow(actor, flash) {
         refresh.disabled = true;
         refresh.style.opacity = '0.4';
         try {
-          await fetch(`/api/actors/${actor.id}/rescan`, { method: 'POST' });
+          const rr = await fetch(`/api/actors/${actor.id}/rescan`, { method: 'POST' });
+          if (!rr.ok) throw new Error();
           setTimeout(() => {
             fjson(`/api/actors/${actor.id}/workdirs`).then(wds => {
               const sub = document.querySelector(`#s-row-${actor.id} .s-agent-sub`);
@@ -7618,7 +7620,7 @@ function sMakeRow(actor, flash) {
         e.stopPropagation();
         upd.disabled = true;
         upd.style.opacity = '0.4';
-        try { await fetch(`/api/actors/${actor.id}/force-update`, { method: 'POST' }); } catch { showToast('Failed to send update command', { error: true }); }
+        try { const fu = await fetch(`/api/actors/${actor.id}/force-update`, { method: 'POST' }); if (!fu.ok) throw new Error(); } catch { showToast('Failed to send update command', { error: true }); }
         setTimeout(() => { upd.disabled = !actor.online; upd.style.opacity = ''; }, 3000);
       });
       acts.appendChild(upd);
