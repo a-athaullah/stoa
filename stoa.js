@@ -375,6 +375,79 @@ async function handleAgentMessage(msg) {
     }
   }
 
+  if (msg.type === 'proxy_file_write') {
+    try {
+      const filePath = path.resolve(msg.workdir, msg.path);
+      if (!filePath.startsWith(path.resolve(msg.workdir))) {
+        send({ type: 'proxy_file_write_result', request_id: msg.request_id, error: 'path traversal blocked' });
+        return;
+      }
+      const dir = path.dirname(filePath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(filePath, msg.content, 'utf8');
+      send({ type: 'proxy_file_write_result', request_id: msg.request_id, path: msg.path, ok: true });
+    } catch (e) {
+      send({ type: 'proxy_file_write_result', request_id: msg.request_id, path: msg.path, error: e.message });
+    }
+  }
+
+  if (msg.type === 'proxy_file_create') {
+    try {
+      const filePath = path.resolve(msg.workdir, msg.path);
+      if (!filePath.startsWith(path.resolve(msg.workdir))) {
+        send({ type: 'proxy_file_create_result', request_id: msg.request_id, error: 'path traversal blocked' });
+        return;
+      }
+      if (msg.is_dir) { fs.mkdirSync(filePath, { recursive: true }); }
+      else {
+        const dir = path.dirname(filePath);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        if (fs.existsSync(filePath)) { send({ type: 'proxy_file_create_result', request_id: msg.request_id, path: msg.path, error: 'already exists' }); return; }
+        fs.writeFileSync(filePath, '', 'utf8');
+      }
+      send({ type: 'proxy_file_create_result', request_id: msg.request_id, path: msg.path, ok: true });
+    } catch (e) {
+      send({ type: 'proxy_file_create_result', request_id: msg.request_id, path: msg.path, error: e.message });
+    }
+  }
+
+  if (msg.type === 'proxy_file_delete') {
+    try {
+      const filePath = path.resolve(msg.workdir, msg.path);
+      if (!filePath.startsWith(path.resolve(msg.workdir))) {
+        send({ type: 'proxy_file_delete_result', request_id: msg.request_id, error: 'path traversal blocked' });
+        return;
+      }
+      if (!fs.existsSync(filePath)) { send({ type: 'proxy_file_delete_result', request_id: msg.request_id, path: msg.path, error: 'not found' }); return; }
+      const stat = fs.statSync(filePath);
+      if (stat.isDirectory()) { fs.rmdirSync(filePath); }
+      else { fs.unlinkSync(filePath); }
+      send({ type: 'proxy_file_delete_result', request_id: msg.request_id, path: msg.path, ok: true });
+    } catch (e) {
+      send({ type: 'proxy_file_delete_result', request_id: msg.request_id, path: msg.path, error: e.message });
+    }
+  }
+
+  if (msg.type === 'proxy_file_rename') {
+    try {
+      const oldPath = path.resolve(msg.workdir, msg.path);
+      const newPath = path.resolve(msg.workdir, msg.new_path);
+      const wdResolved = path.resolve(msg.workdir);
+      if (!oldPath.startsWith(wdResolved) || !newPath.startsWith(wdResolved)) {
+        send({ type: 'proxy_file_rename_result', request_id: msg.request_id, error: 'path traversal blocked' });
+        return;
+      }
+      if (!fs.existsSync(oldPath)) { send({ type: 'proxy_file_rename_result', request_id: msg.request_id, error: 'source not found' }); return; }
+      if (fs.existsSync(newPath)) { send({ type: 'proxy_file_rename_result', request_id: msg.request_id, error: 'target already exists' }); return; }
+      const dir = path.dirname(newPath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.renameSync(oldPath, newPath);
+      send({ type: 'proxy_file_rename_result', request_id: msg.request_id, path: msg.path, new_path: msg.new_path, ok: true });
+    } catch (e) {
+      send({ type: 'proxy_file_rename_result', request_id: msg.request_id, error: e.message });
+    }
+  }
+
   if (msg.type === 'search_result' || msg.type === 'get_message_result') {
     const pending = pendingRequests.get(msg.request_id);
     if (pending) { pendingRequests.delete(msg.request_id); pending.resolve(msg); }

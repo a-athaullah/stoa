@@ -1627,6 +1627,45 @@ wss.on('connection', (ws, req) => {
       pendingFileOps.delete(msg.request_id);
     }
 
+    if (msg.type === 'proxy_file_write_result' && agentActorId) {
+      const op = pendingFileOps.get(msg.request_id);
+      if (op && op.clientWs.readyState === 1) {
+        const p = op.originalPath || msg.path;
+        if (msg.error) op.clientWs.send(JSON.stringify({ type: 'file_write_result', path: p, error: msg.error }));
+        else op.clientWs.send(JSON.stringify({ type: 'file_write_result', path: p, ok: true }));
+      }
+      pendingFileOps.delete(msg.request_id);
+    }
+
+    if (msg.type === 'proxy_file_create_result' && agentActorId) {
+      const op = pendingFileOps.get(msg.request_id);
+      if (op && op.clientWs.readyState === 1) {
+        const p = op.originalPath || msg.path;
+        if (msg.error) op.clientWs.send(JSON.stringify({ type: 'file_create_result', path: p, error: msg.error }));
+        else op.clientWs.send(JSON.stringify({ type: 'file_create_result', path: p, ok: true }));
+      }
+      pendingFileOps.delete(msg.request_id);
+    }
+
+    if (msg.type === 'proxy_file_delete_result' && agentActorId) {
+      const op = pendingFileOps.get(msg.request_id);
+      if (op && op.clientWs.readyState === 1) {
+        const p = op.originalPath || msg.path;
+        if (msg.error) op.clientWs.send(JSON.stringify({ type: 'file_delete_result', path: p, error: msg.error }));
+        else op.clientWs.send(JSON.stringify({ type: 'file_delete_result', path: p, ok: true }));
+      }
+      pendingFileOps.delete(msg.request_id);
+    }
+
+    if (msg.type === 'proxy_file_rename_result' && agentActorId) {
+      const op = pendingFileOps.get(msg.request_id);
+      if (op && op.clientWs.readyState === 1) {
+        if (msg.error) op.clientWs.send(JSON.stringify({ type: 'file_rename_result', path: op.originalPath, error: msg.error }));
+        else op.clientWs.send(JSON.stringify({ type: 'file_rename_result', path: op.originalPath, new_path: op.newPath, ok: true }));
+      }
+      pendingFileOps.delete(msg.request_id);
+    }
+
     // ── Agent error
     if (msg.type === 'agent_error' && agentActorId) {
       db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msg.message_id);
@@ -1720,6 +1759,138 @@ wss.on('connection', (ws, req) => {
           addPendingFileOp(rid, { type: 'git_diff', clientWs: ws });
           agentWs.send(JSON.stringify({ type: 'proxy_git_diff', request_id: rid, workdir: wd.path }));
         } else { ws.send(JSON.stringify({ type: 'git_diff', error: 'agent offline' })); }
+      }
+    }
+
+    // ── file_write ──────────────────────────────────────────────────────────
+    if (msg.type === 'file_write' && subscribedRoom) {
+      const BINARY_EXTS = new Set(['png','jpg','jpeg','gif','webp','svg','ico','bmp','woff','woff2','ttf','otf','eot','exe','dll','so','bin','zip','tar','gz','7z','mp3','mp4','avi','mov']);
+      const ext = (msg.path.match(/\.(\w+)$/) || [])[1] || '';
+      if (BINARY_EXTS.has(ext)) { ws.send(JSON.stringify({ type: 'file_write_result', path: msg.path, error: 'binary files cannot be edited' })); return; }
+      if (typeof msg.content !== 'string' || msg.content.length > 1024 * 1024) { ws.send(JSON.stringify({ type: 'file_write_result', path: msg.path, error: 'content too large (max 1MB)' })); return; }
+      const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(subscribedRoom);
+      if (!roomRow?.workdir_id) { ws.send(JSON.stringify({ type: 'file_write_result', error: 'no workdir' })); return; }
+      const wd = db.prepare('SELECT actor_id, path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
+      if (!wd?.path) { ws.send(JSON.stringify({ type: 'file_write_result', error: 'workdir not found' })); return; }
+      if (msg.absolute) {
+        const agentWs = agentClients.get(wd.actor_id);
+        if (agentWs) {
+          const rid = crypto.randomBytes(6).toString('hex');
+          addPendingFileOp(rid, { type: 'file_write', clientWs: ws, originalPath: msg.path });
+          agentWs.send(JSON.stringify({ type: 'proxy_file_write', request_id: rid, workdir: path.dirname(msg.path), path: path.basename(msg.path), content: msg.content }));
+        } else { ws.send(JSON.stringify({ type: 'file_write_result', path: msg.path, error: 'agent offline' })); }
+        return;
+      }
+      const filePath = path.resolve(wd.path, msg.path);
+      if (!filePath.startsWith(path.resolve(wd.path) + path.sep) && filePath !== path.resolve(wd.path)) {
+        ws.send(JSON.stringify({ type: 'file_write_result', path: msg.path, error: 'path traversal blocked' })); return;
+      }
+      if (fs.existsSync(wd.path)) {
+        try {
+          const dir = path.dirname(filePath);
+          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+          fs.writeFileSync(filePath, msg.content, 'utf8');
+          ws.send(JSON.stringify({ type: 'file_write_result', path: msg.path, ok: true }));
+        } catch (e) { ws.send(JSON.stringify({ type: 'file_write_result', path: msg.path, error: e.message })); }
+      } else {
+        const agentWs = agentClients.get(wd.actor_id);
+        if (agentWs) {
+          const rid = crypto.randomBytes(6).toString('hex');
+          addPendingFileOp(rid, { type: 'file_write', clientWs: ws, originalPath: msg.path });
+          agentWs.send(JSON.stringify({ type: 'proxy_file_write', request_id: rid, workdir: wd.path, path: msg.path, content: msg.content }));
+        } else { ws.send(JSON.stringify({ type: 'file_write_result', path: msg.path, error: 'agent offline' })); }
+      }
+    }
+
+    // ── file_create ─────────────────────────────────────────────────────────
+    if (msg.type === 'file_create' && subscribedRoom) {
+      const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(subscribedRoom);
+      if (!roomRow?.workdir_id) { ws.send(JSON.stringify({ type: 'file_create_result', error: 'no workdir' })); return; }
+      const wd = db.prepare('SELECT actor_id, path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
+      if (!wd?.path) { ws.send(JSON.stringify({ type: 'file_create_result', error: 'workdir not found' })); return; }
+      if (/[<>"|?*]/.test(msg.path)) { ws.send(JSON.stringify({ type: 'file_create_result', path: msg.path, error: 'invalid characters in path' })); return; }
+      const filePath = path.resolve(wd.path, msg.path);
+      if (!filePath.startsWith(path.resolve(wd.path) + path.sep)) {
+        ws.send(JSON.stringify({ type: 'file_create_result', path: msg.path, error: 'path traversal blocked' })); return;
+      }
+      if (fs.existsSync(wd.path)) {
+        try {
+          if (msg.is_dir) { fs.mkdirSync(filePath, { recursive: true }); }
+          else {
+            const dir = path.dirname(filePath);
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+            if (fs.existsSync(filePath)) { ws.send(JSON.stringify({ type: 'file_create_result', path: msg.path, error: 'already exists' })); return; }
+            fs.writeFileSync(filePath, '', 'utf8');
+          }
+          ws.send(JSON.stringify({ type: 'file_create_result', path: msg.path, ok: true }));
+        } catch (e) { ws.send(JSON.stringify({ type: 'file_create_result', path: msg.path, error: e.message })); }
+      } else {
+        const agentWs = agentClients.get(wd.actor_id);
+        if (agentWs) {
+          const rid = crypto.randomBytes(6).toString('hex');
+          addPendingFileOp(rid, { type: 'file_create', clientWs: ws, originalPath: msg.path });
+          agentWs.send(JSON.stringify({ type: 'proxy_file_create', request_id: rid, workdir: wd.path, path: msg.path, is_dir: !!msg.is_dir }));
+        } else { ws.send(JSON.stringify({ type: 'file_create_result', path: msg.path, error: 'agent offline' })); }
+      }
+    }
+
+    // ── file_delete ─────────────────────────────────────────────────────────
+    if (msg.type === 'file_delete' && subscribedRoom) {
+      const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(subscribedRoom);
+      if (!roomRow?.workdir_id) { ws.send(JSON.stringify({ type: 'file_delete_result', error: 'no workdir' })); return; }
+      const wd = db.prepare('SELECT actor_id, path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
+      if (!wd?.path) { ws.send(JSON.stringify({ type: 'file_delete_result', error: 'workdir not found' })); return; }
+      const filePath = path.resolve(wd.path, msg.path);
+      if (!filePath.startsWith(path.resolve(wd.path) + path.sep)) {
+        ws.send(JSON.stringify({ type: 'file_delete_result', path: msg.path, error: 'path traversal blocked' })); return;
+      }
+      if (fs.existsSync(wd.path)) {
+        try {
+          if (!fs.existsSync(filePath)) { ws.send(JSON.stringify({ type: 'file_delete_result', path: msg.path, error: 'not found' })); return; }
+          const stat = fs.statSync(filePath);
+          if (stat.isDirectory()) { fs.rmdirSync(filePath); }
+          else { fs.unlinkSync(filePath); }
+          ws.send(JSON.stringify({ type: 'file_delete_result', path: msg.path, ok: true }));
+        } catch (e) { ws.send(JSON.stringify({ type: 'file_delete_result', path: msg.path, error: e.message })); }
+      } else {
+        const agentWs = agentClients.get(wd.actor_id);
+        if (agentWs) {
+          const rid = crypto.randomBytes(6).toString('hex');
+          addPendingFileOp(rid, { type: 'file_delete', clientWs: ws, originalPath: msg.path });
+          agentWs.send(JSON.stringify({ type: 'proxy_file_delete', request_id: rid, workdir: wd.path, path: msg.path }));
+        } else { ws.send(JSON.stringify({ type: 'file_delete_result', path: msg.path, error: 'agent offline' })); }
+      }
+    }
+
+    // ── file_rename ─────────────────────────────────────────────────────────
+    if (msg.type === 'file_rename' && subscribedRoom) {
+      const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(subscribedRoom);
+      if (!roomRow?.workdir_id) { ws.send(JSON.stringify({ type: 'file_rename_result', error: 'no workdir' })); return; }
+      const wd = db.prepare('SELECT actor_id, path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
+      if (!wd?.path) { ws.send(JSON.stringify({ type: 'file_rename_result', error: 'workdir not found' })); return; }
+      if (/[<>"|?*]/.test(msg.new_path)) { ws.send(JSON.stringify({ type: 'file_rename_result', path: msg.path, error: 'invalid characters in new path' })); return; }
+      const oldPath = path.resolve(wd.path, msg.path);
+      const newPath = path.resolve(wd.path, msg.new_path);
+      const wdResolved = path.resolve(wd.path) + path.sep;
+      if (!oldPath.startsWith(wdResolved) || !newPath.startsWith(wdResolved)) {
+        ws.send(JSON.stringify({ type: 'file_rename_result', path: msg.path, error: 'path traversal blocked' })); return;
+      }
+      if (fs.existsSync(wd.path)) {
+        try {
+          if (!fs.existsSync(oldPath)) { ws.send(JSON.stringify({ type: 'file_rename_result', path: msg.path, error: 'source not found' })); return; }
+          if (fs.existsSync(newPath)) { ws.send(JSON.stringify({ type: 'file_rename_result', path: msg.path, error: 'target already exists' })); return; }
+          const dir = path.dirname(newPath);
+          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+          fs.renameSync(oldPath, newPath);
+          ws.send(JSON.stringify({ type: 'file_rename_result', path: msg.path, new_path: msg.new_path, ok: true }));
+        } catch (e) { ws.send(JSON.stringify({ type: 'file_rename_result', path: msg.path, error: e.message })); }
+      } else {
+        const agentWs = agentClients.get(wd.actor_id);
+        if (agentWs) {
+          const rid = crypto.randomBytes(6).toString('hex');
+          addPendingFileOp(rid, { type: 'file_rename', clientWs: ws, originalPath: msg.path, newPath: msg.new_path });
+          agentWs.send(JSON.stringify({ type: 'proxy_file_rename', request_id: rid, workdir: wd.path, path: msg.path, new_path: msg.new_path }));
+        } else { ws.send(JSON.stringify({ type: 'file_rename_result', path: msg.path, error: 'agent offline' })); }
       }
     }
 
