@@ -4865,7 +4865,7 @@ function wsOpenFile(name, content) {
   const imgExts = new Set(['png','jpg','jpeg','gif','webp','svg','ico','bmp']);
   const fileExt = wsGetExt(name);
   const isAbs = /^\//.test(name) || /^[A-Za-z]:/.test(name);
-  if (!content && ws) {
+  if (content == null && ws) {
     const req = { type: 'file_read', path: name };
     if (imgExts.has(fileExt)) req.binary = true;
     if (isAbs) req.absolute = true;
