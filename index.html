@@ -4612,6 +4612,7 @@ function handleWsMessage(msg) {
     if (msg.error) { console.warn('[ws] file_list error:', msg.error); return; }
     wsFileTreeData = msg.tree || [];
     wsFileTreeRoot = msg.root || '';
+    wsModifiedFiles = new Set(msg.modified || []);
     if (wsActiveView === 'files') wsRenderContent();
     return;
   }
@@ -4718,6 +4719,7 @@ let wsActiveFile = null;
 let wsFileTreeData = [];
 let wsFileTreeRoot = '';
 let wsGitDiffData = [];
+let wsModifiedFiles = new Set();
 
 function toggleWorkspacePanel() {
   const panel = document.getElementById('workspace-panel');
@@ -4810,6 +4812,13 @@ function wsRenderFileTree(container, nodes, parentPath) {
       row.appendChild(nameEl);
 
       const relPath = parentPath ? parentPath + '/' + node.name : node.name;
+      if (wsModifiedFiles.has(relPath) || wsModifiedFiles.has(node.name)) {
+        const dot = document.createElement('span');
+        dot.className = 'ws-tree-modified';
+        dot.title = 'modified';
+        dot.style.background = '#d39749';
+        row.appendChild(dot);
+      }
       const fullPath = wsFileTreeRoot ? wsFileTreeRoot.replace(/\\/g, '/').replace(/\/+$/, '') + '/' + relPath : relPath;
       row.onclick = () => {
         const panel = document.getElementById('workspace-panel');
@@ -4967,7 +4976,7 @@ function wsRenderContent() {
       addCopyButtons(inner);
       content.appendChild(inner);
     } else if (file.loaded) {
-      wsRenderCodeViewer(content, file.content || '');
+      wsRenderCodeViewer(content, file.content || '', file.name);
     } else {
       content.innerHTML = `<div class="ws-empty-state">
         <div class="ws-empty-title">loading…</div>
@@ -4977,11 +4986,19 @@ function wsRenderContent() {
   }
 }
 
-function wsRenderCodeViewer(container, text) {
+function wsRenderCodeViewer(container, text, fileName) {
   const lines = text.split('\n');
   const gutW = String(lines.length).length * 9 + 22;
   container.className = 'ws-code ws-mono ws-code-viewer';
   container.style.cssText = '';
+  const ext = fileName ? wsGetExt(fileName) : '';
+  const langMap = { js:'javascript', jsx:'javascript', ts:'typescript', tsx:'typescript', py:'python', json:'json', html:'xml', css:'css', sql:'sql', sh:'bash', yml:'yaml', yaml:'yaml', xml:'xml', rb:'ruby', go:'go', rs:'rust', java:'java', c:'c', cpp:'cpp', ps1:'powershell' };
+  const lang = langMap[ext] || null;
+  let hlLines = null;
+  try {
+    const hlText = lang ? hljs.highlight(text, { language: lang }).value : hljs.highlightAuto(text).value;
+    hlLines = hlText.split('\n');
+  } catch {}
   const table = document.createElement('div');
   table.className = 'ws-code-table';
   lines.forEach((ln, i) => {
@@ -4994,7 +5011,7 @@ function wsRenderCodeViewer(container, text) {
     row.appendChild(gutter);
     const code = document.createElement('span');
     code.className = 'ws-code-text';
-    code.textContent = ln || ' ';
+    if (hlLines && hlLines[i] != null) { code.innerHTML = hlLines[i] || "&nbsp;"; } else { code.textContent = ln || " "; }
     row.appendChild(code);
     table.appendChild(row);
   });

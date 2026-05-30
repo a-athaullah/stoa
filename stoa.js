@@ -320,7 +320,12 @@ async function handleAgentMessage(msg) {
   if (msg.type === 'proxy_file_list') {
     try {
       const tree = buildFileTreeAgent(msg.workdir, msg.workdir, 0, 3);
-      send({ type: 'proxy_file_list_result', request_id: msg.request_id, root: msg.workdir, tree });
+      let modified = [];
+      try {
+        const status = spawnSync('git', ['status', '--porcelain'], { cwd: msg.workdir, encoding: 'utf8', maxBuffer: 512 * 1024 });
+        if (status.stdout) modified = status.stdout.split('\n').filter(Boolean).map(l => l.slice(3).trim());
+      } catch {}
+      send({ type: 'proxy_file_list_result', request_id: msg.request_id, root: msg.workdir, tree, modified });
     } catch (e) {
       send({ type: 'proxy_file_list_result', request_id: msg.request_id, error: e.message });
     }

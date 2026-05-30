@@ -1597,7 +1597,7 @@ wss.on('connection', (ws, req) => {
       const op = pendingFileOps.get(msg.request_id);
       if (op && op.clientWs.readyState === 1) {
         if (msg.error) op.clientWs.send(JSON.stringify({ type: 'file_list', error: msg.error }));
-        else op.clientWs.send(JSON.stringify({ type: 'file_list', root: msg.root, tree: msg.tree }));
+        else op.clientWs.send(JSON.stringify({ type: 'file_list', root: msg.root, tree: msg.tree, modified: msg.modified || [] }));
       }
       pendingFileOps.delete(msg.request_id);
     }
@@ -1632,7 +1632,13 @@ wss.on('connection', (ws, req) => {
       const isBounded = !msg.abs_path || path.resolve(targetPath).startsWith(path.resolve(wd.path) + path.sep) || path.resolve(targetPath) === path.resolve(wd.path);
       if (isLocal && isBounded) {
         const tree = buildFileTree(targetPath, targetPath, 0, 3);
-        ws.send(JSON.stringify({ type: 'file_list', root: targetPath, tree }));
+        let modified = [];
+        try {
+          const { execSync } = require('child_process');
+          const status = execSync('git status --porcelain', { cwd: targetPath, encoding: 'utf8', maxBuffer: 512 * 1024 });
+          modified = status.split('\n').filter(Boolean).map(l => l.slice(3).trim());
+        } catch {}
+        ws.send(JSON.stringify({ type: 'file_list', root: targetPath, tree, modified }));
       } else {
         const agentWs = agentClients.get(wd.actor_id);
         if (agentWs) {
