@@ -4918,7 +4918,7 @@ let wsEditContent = '';
 let wsEditSaving = false;
 let wsExpanded = false;
 let wsCtxMenu = null;
-const WS_EDITOR_CONTAINER_CSS = WS_EDITOR_CONTAINER_CSS;
+const WS_EDITOR_CONTAINER_CSS = 'flex:1;min-height:0;display:flex;flex-direction:column;position:relative';
 let wsFileMtimes = {};
 
 function wsDownloadFile(relPath, fileName) {
