@@ -5180,6 +5180,67 @@ function wsShowDialog(title, bodyHtml, actions) {
 
 function wsEscHtml(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
 
+function wsShowCtxMenu(x, y, relPath, isDir) {
+  wsCloseCtxMenu();
+  const menu = document.createElement('div');
+  menu.className = 'ws-ctx-menu';
+  const panelRect = document.getElementById('ws-panel-body')?.getBoundingClientRect();
+  menu.style.left = (panelRect ? x - panelRect.left : x) + 'px';
+  menu.style.top = (panelRect ? y - panelRect.top : y) + 'px';
+  const items = [
+    { label: 'New File', icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M5 4h9l5 5v11H5z"/><path d="M14 4v5h5"/><path d="M12 12v5M9.5 14.5h5"/></svg>', action: () => wsPromptNewFile(isDir ? relPath : relPath.split('/').slice(0, -1).join('/')) },
+    { label: 'New Folder', icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v5M9.5 13.5h5"/></svg>', action: () => wsPromptNewFolder(isDir ? relPath : relPath.split('/').slice(0, -1).join('/')) },
+    { div: true },
+    { label: 'Rename', icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M16.5 4.5l3 3L8 19l-3.5.5L5 16z"/><path d="M14 7l3 3"/></svg>', action: () => wsPromptRename(relPath) },
+    { div: true },
+    { label: 'Delete', icon: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4.5 7h15"/><path d="M9.5 7V5.2a1.2 1.2 0 0 1 1.2-1.2h2.6a1.2 1.2 0 0 1 1.2 1.2V7"/><path d="M6.5 7l.9 12a2 2 0 0 0 2 1.9h5.2a2 2 0 0 0 2-1.9L17.5 7"/></svg>', danger: true, action: () => wsConfirmDelete(relPath) },
+  ];
+  items.forEach(it => {
+    if (it.div) { const d = document.createElement('div'); d.style.cssText = 'height:1px;background:var(--h-hair-soft);margin:5px 7px'; menu.appendChild(d); return; }
+    const item = document.createElement('div');
+    item.className = 'ws-ctx-item' + (it.danger ? ' danger' : '');
+    item.innerHTML = '<span style="display:inline-flex;color:' + (it.danger ? '#c08378' : 'var(--h-ink-mute)') + '">' + it.icon + '</span><span style="flex:1">' + it.label + '</span>';
+    item.onclick = () => { wsCloseCtxMenu(); it.action(); };
+    menu.appendChild(item);
+  });
+  const panel = document.getElementById('ws-panel-body');
+  if (panel) { panel.style.position = 'relative'; panel.appendChild(menu); }
+  setTimeout(() => document.addEventListener('click', wsCloseCtxMenu, { once: true }), 0);
+}
+
+function wsCloseCtxMenu() {
+  document.querySelectorAll('.ws-ctx-menu').forEach(m => m.remove());
+}
+
+function wsPromptNewFile(parentDir) {
+  const name = prompt('New file name:');
+  if (!name || !name.trim()) return;
+  const filePath = parentDir ? parentDir + '/' + name.trim() : name.trim();
+  ws.send(JSON.stringify({ type: 'file_create', path: filePath, is_dir: false }));
+}
+
+function wsPromptNewFolder(parentDir) {
+  const name = prompt('New folder name:');
+  if (!name || !name.trim()) return;
+  const filePath = parentDir ? parentDir + '/' + name.trim() : name.trim();
+  ws.send(JSON.stringify({ type: 'file_create', path: filePath, is_dir: true }));
+}
+
+function wsPromptRename(relPath) {
+  const oldName = relPath.split('/').pop();
+  const newName = prompt('Rename to:', oldName);
+  if (!newName || !newName.trim() || newName.trim() === oldName) return;
+  const parentDir = relPath.split('/').slice(0, -1).join('/');
+  const newPath = parentDir ? parentDir + '/' + newName.trim() : newName.trim();
+  ws.send(JSON.stringify({ type: 'file_rename', path: relPath, new_path: newPath }));
+}
+
+function wsConfirmDelete(relPath) {
+  const fileName = relPath.split('/').pop();
+  wsShowDialog('Delete file?', 'Delete <strong>' + wsEscHtml(fileName) + '</strong>? This removes it from disk and can\'t be undone.',
+    [{ label: 'Cancel', cls: 'ghost' }, { label: 'Delete', cls: 'danger', action: () => ws.send(JSON.stringify({ type: 'file_delete', path: relPath })) }]);
+}
+
 function wsAutoSaveDraft() {
   if (!wsActiveFile || !wsEditMode) return;
   const key = 'stoa-draft-' + (currentRoomId || '') + '-' + wsActiveFile;
@@ -5266,6 +5327,8 @@ function wsRenderFileTree(container, nodes, parentPath) {
         chevron.classList.toggle('open', node.open);
         childContainer.style.display = node.open ? '' : 'none';
       };
+      const folderRelPath = parentPath ? parentPath + '/' + node.name : node.name;
+      row.addEventListener('contextmenu', (e) => { e.preventDefault(); wsShowCtxMenu(e.clientX, e.clientY, folderRelPath, true); });
 
       container.appendChild(row);
       if (node.children) {
@@ -5302,6 +5365,7 @@ function wsRenderFileTree(container, nodes, parentPath) {
         if (!panel.classList.contains('open')) toggleWorkspacePanel();
         wsOpenFile(fullPath);
       };
+      row.addEventListener('contextmenu', (e) => { e.preventDefault(); wsShowCtxMenu(e.clientX, e.clientY, relPath, false); });
       container.appendChild(row);
     }
   });
