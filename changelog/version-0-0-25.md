@@ -1,0 +1,217 @@
+# v0.0.25 — 2026-05-31
+
+🔧 Bug fixes & improvements
+
+## Changes
+
+- bump CLIENT_VERSION to 0.3.0 — project restructure release
+- update CHANGELOG and README for project restructure release
+- add image fallback placeholder for missing uploads/workspace images
+- remove cosmetic leftovers — dead ws-md-view class, orphaned MySQL schema
+- add tests for all 17 untested WS message types
+- fix all remaining low severity audit items
+- full audit fixes — CSWSH, upload limit, dead code, docs
+- audit fixes — scoping bug, security, dead code, docs accuracy
+- add minification for app CSS/JS with production mode
+- fix init() call order — move from settings.js to init.js
+- self-host all CDN dependencies
+- restructure project into organized directories
+- split index.html into separate CSS and JS files
+- add .cookies.txt to gitignore
+- update package-lock.json for macOS
+- offline agent shows persistent system event instead of crashing server
+- update README — add remote editor, workspace, file management features
+- batch N+1 inserts, add 12 WebSocket tests with proxy mock agent
+- audit fixes — docs, tests, toolbar button alignment
+- fix avatar upload path traversal — validate before deleting old file
+- Remote File Editor — edit files from any device (#2)
+- fix empty file infinite loop — wsOpenFile re-requested file_read on empty content
+- Merge pull request #1 from a-athaullah/feature/dev-workspace
+- audit fix — avatar upload toast, document download file feature in EN+ID
+- final audit fixes — schema index order, toast feedback on silent failures
+- cleanup: top-level require, pendingFileOps TTL, increase refresh debounce to 5s
+- add download button to file tree — download files from remote agents to local device
+- fix empty code blocks — handle both string and object token formats from marked
+- fix undefined in code blocks — fallback to raw token when text is undefined
+- unified font scaling — chat bubbles, code viewer, markdown all share --stoa-msg-scale
+- hide console windows on git commands + add timeout to prevent zombie processes
+- auto-refresh workspace on agent activity — file tree and git diff update after message complete and tool steps
+- add git diff proxy for remote agents, auto-fetch on room join, badge on Git tab
+- fix markdown h1 font-size 28px → 30px per design spec
+- bump CLIENT_VERSION to 0.2.35
+- add syntax highlighting to code viewer + modified file indicators in file tree
+- audit round 4 fixes — res.ok checks on actor lang, rescan, force-update
+- audit round 3 fixes — res.ok checks, missing indexes, rooms query LIMIT
+- audit round 2 fixes — error handling, docs accuracy, top-level catch 500
+- audit fixes — close path traversal vulnerabilities, add error checks, document workspace panel
+- fix duplicate tab on image open — preserve original path in proxy response
+- fix file tree click using wrong path — use absolute path from tree root for remote files
+- fix empty files not rendering — use loaded flag instead of content truthiness
+- auto force-update agents on connect when version is outdated
+- bump CLIENT_VERSION to 0.2.34 — trigger auto-update for binary file proxy
+- fix remote file viewing — proxy text and binary (base64) through agent WebSocket
+- fix absolute path tree overwritten by workdir — avoid duplicate file_list request
+- support absolute paths from chat — browse any directory on agent's machine
+- fix remote file browsing — check fs.existsSync before assuming local read success
+- fix directory path click — force file_list request, add error logging
+- bump CLIENT_VERSION to 0.2.33 — trigger auto-update for remote agents
+- fix missing closing brace in file_read handler causing server crash
+- proxy file operations through agent WebSocket — support remote agent file browsing
+- improve file path detection — support directory paths, code blocks, no-extension paths
+- add clickable file paths in chat — click path in message to open in workspace panel
+- unify AI and human bubble font size to 16px — consistent reading controls for both
+- fix AI bubble not responding to reading controls — remove inline font-size overrides
+- fix image preview URL — use query parameter for file path to avoid slash encoding issues
+- add image preview support in workspace panel — HTTP endpoint + centered display
+- remove sidebar collapsed persistence — always start with room list open on refresh
+- fix blank screen on refresh with collapsed sidebar — show rooms toggle on empty state
+- add proper markdown styling for workspace viewer — headings, lists, code blocks, tables
+- auto-request file tree on room join — workspace ready when panel opens
+- fix message actions position (above bubble), update bubble font sizes, add sidebar collapse button
+- wire workspace panel to backend — file:list, file:read, git:diff endpoints
+- implement full dev workspace panel — tab bar, file tree, code viewer, diff viewer, markdown, editing banner
+- add reading comfort controls — text size, line spacing, bubble width in Settings General
+- update syntax highlighting colors to Hearth design palette
+- add dev workspace panel shell — resizable split-pane with toggle button
+- add syntax highlighting for code blocks — highlight.js + custom warm theme
+- add full reply chain context for agents — pass reply_to in trigger, fetch full message content
+- fix Enter to send not working inside code blocks
+- fix session idle TTL not applied to initial session
+- add session idle TTL — auto-close AI sessions after configurable idle period
+- update demo screenshots with real Stoa UI captures
+- add chat and agent settings screenshots to README
+- add demo screenshot to README
+- update CHANGELOG for README revamp, mobile upload fix, emoji search, docs IP cleanup
+- remove Tailscale IP from docs, replace with generic LAN example
+- revamp README: add badges, Why Stoa section, multi-backend table, update for Gemini support
+- update CHANGELOG for 2026-05-25 release
+- fix N+1 query in agent workdir scan — batch fetch IDs instead of per-workdir SELECT
+- audit fixes: error handling for bulk delete & rename, docs sync for archive/delete
+- add default login credentials to README
+- add per-room delete button in archived room list
+- add emoji search — filter by keyword in emoji picker
+- add startup migration to clean duplicate settings rows
+- fix setSetting duplicate rows — NULL scope_id bypasses SQLite UNIQUE
+- update CHANGELOG for 2026-05-21 release
+- add 10 new integration tests for previously untested routes
+- add toast notifications for silent error catch blocks in frontend
+- remove outdated comment — GET /api/rooms/:id is implemented
+- fix version comparison — allow agents newer than expected version
+- increase first-token timeout to 10 minutes for large session compaction
+- fix mobile image upload: use createImageBitmap, reduce maxDim on mobile, cleanup blob URLs
+- increase first-token timeout from 60s to 180s
+- add GET /api/rooms/:id endpoint
+- add tests for GET /api/rooms/:id, archived rooms, and room-scoped search
+- add parseJsonBody helper — guard all HTTP route JSON.parse with 400 Invalid JSON
+- update usage docs with archive, in-room search, delete message, concurrent sessions fix
+- add missing indexes for reply_to and auth session expiry
+- skip triggers to outdated agents, force auto-update first
+- auto-recover gemini session when resume fails
+- add safety net catch on processTrigger to prevent stuck activeTriggers
+- auto-load older messages when navigating to search result not in DOM
+- fix in-room search — show results as list instead of inline highlight
+- add message API, in-room search, and agent search/getMessage capability
+- add delete message feature with long-press support on mobile
+- fix ReferenceError in processTrigger finally block
+- clean up stuck messages on agent reconnect, close stale WS
+- filter out noisy system events (requesting, idle) from chat
+- desktop hover buttons for room actions, touch-only swipe on mobile
+- use icons for archive/restore swipe buttons instead of text
+- add updating instructions to README
+- add room archiving — tabs, swipe to archive/restore, search badges
+- show session status events in chat — compacting, warmup, etc.
+- distinguish timeout abort from user stop, add crash diagnostics logging
+- add retry on session crash + faster timeout for unresponsive triggers
+- fix /slash messages treated as skill when no matching skill exists
+- remove dead claude-adapter files, fix gemini warmup
+- update changelog for 2026-05-20 — persistent fallback sessions, warmup fix, docs sync
+- fix fallback session memory leak: add 30-min idle cleanup
+- remove claude --print usage: persistent session for fallback, version-only warmup
+- sync usage guide docs across all languages — add Enter/Send toggle and Concurrent Sessions
+- update v0.0.5 changelog — parallel sessions, security fixes, audit cleanup
+- audit fixes: API contract, dead code cleanup, docs sync
+- security fixes from audit: XSS, auth bypass, path traversal
+- fix composer unlocking on room switch during processing
+- add concurrent sessions setting to server config UI
+- parallel session support — configurable concurrent triggers
+- defer auto-restart when agent is processing a trigger
+- fallback model detection to global ~/.claude/settings.json
+- fix model detection — strip JSONC comments before parsing settings.json
+- fix model badge not updating on room switch — broadcast via room WS too
+- real-time model detection — query agent on room open, live badge update
+- add Gemini model detection to TODO
+- detect and display AI model per workdir in room UI
+- update CHANGELOG for v0.0.4 — Gemini backend, language selection, XSS fix
+- fix XSS — sanitize marked.parse() output with DOMPurify, strengthen install script tests
+- document multi-model backend (Gemini) and agent language selection in usage guides
+- @ fix voice STT docs — correct default language, toggle button, and command table
+- add Japanese, Korean, and Chinese translations for 4 docs
+- reduce dropdown font size in add-agent panel to prevent text clipping
+- change docs language selector from pill buttons to dropdown
+- add language selector in agent settings panel
+- add language selection for agents, voice STT, and docs
+- add setup progress bar during agent installation
+- use specific session ID for Gemini resume instead of 'latest'
+- remove debug logging from gemini-session.js
+- fix Gemini session resume — don't use --session-id with -r latest
+- fix create room when agent has no workdirs — show new folder option
+- scan Gemini skills via CLI command instead of filesystem
+- remove completed Gemini workdir scanner from TODO
+- skip workdir scan for Gemini agents, disable dropdown in room creation
+- redesign Add Agent panel — move above list, AI Agent dropdown, reorder fields
+- rename settings tab from 'claude' to 'AI Agent'
+- fix Gemini spawn — pass prompt via stdin, use shell: true for .cmd
+- fix Gemini spawn — use gemini.cmd on Windows instead of shell: true
+- remove resolved Gemini spawn ENOENT from TODO
+- fix Gemini spawn ENOENT — add shell: true for .cmd resolution on Windows
+- clean up TODO — remove all completed items
+- add Gemini spawn ENOENT bug to TODO priority 1
+- update TODO — Gemini CLI backend done, add workdir scanner filter item
+- fix PS1 ecosystem.config.js syntax — use colon not equals for JS object
+- wrap trust commands in try/catch for PowerShell ErrorActionPreference
+- quote install URLs in generated commands for PowerShell & safety
+- implement Gemini CLI as additional AI backend
+- fix agent file upload: authenticate via X-Agent-Id/Secret headers
+- fix agent file upload auth — exempt /api/upload/raw for agents
+- audit round 2: security fix, error handling, dead CSS, docs
+- compact table styling — smaller font, tighter padding, horizontal scroll
+- fix path traversal: validate avatar_url and attachment URLs
+- audit fixes: frontend error handling, docs accuracy and missing features
+- docs: add voice commands and Android behavior differences to browser setup guide
+- Android voice: stop instead of auto-restart on recognition end — eliminates ding and duplication
+- fix room list rows shrinking — add flex-shrink:0 so cells keep fixed height and scroll
+- fix text field accepting keyboard input during AI processing — blur on processing start
+- allow mic button to be toggled while AI is processing
+- fix Android voice ding — use continuous:true with per-index result tracking
+- fix Android voice ding — use continuous:true with per-index result tracking
+- fix Android voice input — use non-continuous mode to prevent text duplication, handle no-speech errors gracefully
+- fix voice input text duplication on Android — rebuild finalTranscript from all results instead of appending
+- changelog: voice input, audit fixes, browser setup docs
+- revert gitignore CLAUDE.md — use local exclude instead
+- gitignore root CLAUDE.md — prevent auto-created file from entering git
+- auto-stop mic on room switch and tab hide
+- clear text field when voice command 'matikan mic' is used
+- mute voice input while AI is processing — skip onresult when processingMessages active
+- add mic selection hint tooltip on voice button
+- fix voice command multi-trigger — skip stale onresult events between stop and restart
+- fix voice command double-trigger — restart recognition after send/clear to flush stale results
+- audit fixes: add missing indexes, remove redundant migrations, improve error handling, doc voice input
+- more flexible voice command patterns — accept natural variations
+- fix voice command detection — check full accumulated text, not per-segment
+- add voice command 'hapus semua' / 'clear all' to reset text field
+- voice commands (send/stop) and language toggle for speech-to-text
+- fix: Chrome autofill filling search field with saved email
+- fix search field autofill by password manager — type=search, delayed clear, clear on room open
+- fix search field autofill by password manager — type=search, delayed clear, clear on room open
+- fix search field autofill by password manager — type=search, delayed clear, clear on room open
+- fix search field autofill by password manager — type=search, delayed clear, clear on room open
+- fix search field autofill on page load — clear on init, prevent autocomplete
+- fix logout button styling in settings — solid button, consistent layout
+- docs: browser setup guide for voice input, notifications, PWA (EN+ID)
+- speech-to-text via Web Speech API on mic button
+- docs: sync usage guides with actual features (EN+ID)
+- test: add auth, path traversal, unauthenticated access, offline agent tests
+- audit fixes: dead code, error handling, schema migration, thinking-stuck bugfix
+- multi-file uploads, image compression, carousel UI, agent attachment handling
+- Update README.md
+- initial commit
