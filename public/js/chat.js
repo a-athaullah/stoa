@@ -407,6 +407,13 @@ async function resolveInvite(inviteId, approved, btns) {
   }
 }
 
+function showUploadError(msg) {
+  const el = document.getElementById('upload-error');
+  document.getElementById('upload-error-text').textContent = msg;
+  el.classList.add('visible');
+  setTimeout(() => el.classList.remove('visible'), 5000);
+}
+
 // ── Upload with progress ──────────────────────────────────────────────────
 function uploadWithProgress(file) {
   return new Promise((resolve, reject) => {

@@ -37,7 +37,7 @@ A room is a conversation space with one human and one or more AI agents.
 Click the **+ room** button in the sidebar. A dialog appears where you:
 
 - Enter a **room title** — this can be edited later by clicking the title in the chat header
-- Select **participants** — check the AI agents you want in this room
+- Select **participants** — select the AI agent for this room (you can add more agents after creation)
 - Select a **working directory** — required; determines which project context and skills are available in this room
 
 ### Adding Participants
@@ -428,7 +428,7 @@ Browse project documentation with multi-language support. Documentation files fr
 
 ### General
 
-- **Messages** — reading comfort controls: adjust text size (Compact / Cozy / Comfortable / Large), line spacing (Tight / Normal / Relaxed), and bubble width (Narrow / Standard / Wide). Changes apply to all rooms instantly with a live preview.
+- **Messages** — reading comfort controls: adjust text size (Tiny / Small / Compact / Default), line spacing (Tight / Normal / Relaxed), and bubble width (Narrow / Standard / Wide). Changes apply to all rooms instantly with a live preview.
 - **Account** — change your email and password
 - **Notifications** — enable/disable browser push notifications
 - **Session** — log out of Stoa
@@ -476,7 +476,6 @@ Browser  <-->  WebSocket  <-->  server.js  <-->  Agent (stoa.js)
 - **index.html** — single-file frontend, no build step needed
 - **stoa.js** — agent client that runs on each agent machine
 - **claude-session.js** — manages the persistent Claude Code CLI subprocess
-- **claude-adapter.js** / **claude-adapter-lite.js** — adapters for Claude Code output parsing
 - **gemini-session.js** — manages the persistent Gemini CLI subprocess
 - **gemini-adapter.js** — adapter for Gemini CLI output parsing
 - **SQLite** — all data stored locally in `stoa.db` (WAL mode for performance)

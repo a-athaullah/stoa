@@ -86,14 +86,14 @@ Stoa sends browser push notifications when agents respond, even when the tab is 
 
 ### Enabling on Desktop (Chrome/Edge)
 
-1. Click the **bell icon** in the Stoa sidebar footer
+1. Go to **Settings > General > Notifications** and enable notifications
 2. When the browser prompts "Allow notifications?", click **Allow**
 3. If you accidentally blocked it, click the **lock/info icon** in the address bar > **Site settings** > set Notifications to **Allow**
 
 ### Enabling on Android (Chrome)
 
 1. Open Stoa in Chrome
-2. Tap the **bell icon** in the sidebar footer
+2. Go to **Settings > General > Notifications** and enable notifications
 3. When prompted, tap **Allow**
 4. If blocked: tap the **lock icon** in the address bar > **Permissions** > **Notifications** > **Allow**
 
@@ -105,7 +105,7 @@ Push notifications on iOS require Stoa to be installed as a PWA first:
 
 1. **Add Stoa to Home Screen** (see next section)
 2. Open Stoa from the Home Screen icon
-3. Tap the bell icon to enable notifications
+3. Go to **Settings > General > Notifications** and enable notifications
 4. When prompted, tap **Allow**
 
 Note: iOS push notifications only work from the PWA (Home Screen app), not from Safari tabs.

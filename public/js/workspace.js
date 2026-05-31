@@ -936,17 +936,6 @@ function wsRenderDiff(container, diffData, mode) {
   container.appendChild(table);
 }
 
-function wsShowEditingBanner(actorName, actorColor) {
-  const banner = document.getElementById('ws-editing-banner');
-  banner.innerHTML = '';
-  if (!actorName) return;
-  const el = document.createElement('div');
-  el.className = 'ws-editing-banner';
-  el.style.cssText = `background:color-mix(in srgb,${actorColor} 14%,var(--h-bg));border-bottom:1px solid color-mix(in srgb,${actorColor} 36%,var(--h-bg));color:${actorColor}`;
-  el.innerHTML = `<span class="h-dot"></span><span class="h-dot"></span><span class="h-dot"></span><span style="font-style:italic">${wsEscHtml(actorName)} is editing this file…</span>`;
-  banner.appendChild(el);
-}
-
 (function initWorkspacePanel() {
   const panel = document.getElementById('workspace-panel');
   const handle = document.getElementById('ws-drag-handle');

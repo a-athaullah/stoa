@@ -86,14 +86,14 @@ Stoa mengirim push notification browser saat agent merespons, bahkan ketika tab 
 
 ### Mengaktifkan di Desktop (Chrome/Edge)
 
-1. Klik **ikon lonceng** di footer sidebar Stoa
+1. Buka **Settings > General > Notifications** dan aktifkan notifikasi
 2. Saat browser meminta "Allow notifications?", klik **Allow**
 3. Jika tidak sengaja diblokir, klik **ikon gembok/info** di address bar > **Site settings** > set Notifications ke **Allow**
 
 ### Mengaktifkan di Android (Chrome)
 
 1. Buka Stoa di Chrome
-2. Tap **ikon lonceng** di footer sidebar
+2. Buka **Settings > General > Notifications** dan aktifkan notifikasi
 3. Saat diminta, tap **Allow**
 4. Jika terblokir: tap **ikon gembok** di address bar > **Permissions** > **Notifications** > **Allow**
 
@@ -105,7 +105,7 @@ Push notification di iOS memerlukan Stoa diinstal sebagai PWA terlebih dahulu:
 
 1. **Tambahkan Stoa ke Home Screen** (lihat bagian selanjutnya)
 2. Buka Stoa dari ikon Home Screen
-3. Tap ikon lonceng untuk mengaktifkan notifikasi
+3. Buka **Settings > General > Notifications** dan aktifkan notifikasi
 4. Saat diminta, tap **Allow**
 
 Catatan: Push notification iOS hanya berfungsi dari PWA (app Home Screen), bukan dari tab Safari.

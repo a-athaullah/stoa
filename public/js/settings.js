@@ -1037,7 +1037,7 @@ async function sResizeAndUploadActorAvatar(actorId, file, avEl) {
 let globalWs = null;
 function initGlobalWs() {
   function connect() {
-    globalWs = new WebSocket(`ws://${location.host}`);
+    globalWs = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`);
     globalWs.onopen = () => globalWs.send(JSON.stringify({ type: 'subscribe_global' }));
     globalWs.onmessage = async e => {
       let msg; try { msg = JSON.parse(e.data); } catch { return; }

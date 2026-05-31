@@ -141,7 +141,6 @@
   white-space: nowrap;
 }
 .ws-file-tab.active .ws-file-tab-name { color: var(--h-ink); }
-.ws-file-tab-modified { color: var(--h-ink-faint); }
 .ws-file-tab-close {
   opacity: 0;
   transition: opacity .12s;
@@ -156,16 +155,6 @@
 .ws-file-tab.active .ws-file-tab-close { opacity: .7; }
 .ws-file-tab-close:hover { opacity: 1 !important; }
 
-.ws-tab-overflow {
-  flex: 0 0 auto;
-  width: 30px;
-  border: none;
-  background: transparent;
-  color: var(--h-ink-mute);
-  cursor: pointer;
-  border-left: 1px solid var(--h-hair-soft);
-  font-size: 16px;
-}
 .ws-tab-close-panel {
   flex: 0 0 auto;
   width: 38px;
@@ -219,27 +208,6 @@
 }
 .ws-crumb:last-child { color: var(--h-ink-mute); }
 .ws-crumb-sep { color: var(--h-ink-faint); font-size: 11px; }
-
-.ws-ghost-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-radius: 7px;
-  cursor: pointer;
-  font-family: var(--h-sans);
-  font-size: 11.5px;
-  color: var(--h-ink-mute);
-  background: transparent;
-  border: 1px solid var(--h-hair-soft);
-  transition: all .12s;
-}
-.ws-ghost-btn:hover { border-color: var(--h-hairline); color: var(--h-ink); }
-.ws-ghost-btn.active {
-  color: var(--h-ink);
-  background: var(--h-surface-hi);
-  border-color: var(--h-hairline);
-}
 
 /* ── Editor (remote file editing) ────────────── */
 .ws-editor-wrap {
@@ -306,12 +274,6 @@
   animation: ws-toast-slide .26s cubic-bezier(.2,.7,.3,1);
 }
 @keyframes ws-toast-slide { from { opacity: 0; transform: translateY(8px); } }
-.ws-conflict-banner {
-  display: flex; align-items: center; gap: 10px; flex: 0 0 auto; padding: 8px 14px;
-  background: color-mix(in srgb, #c89a52 15%, var(--h-bg));
-  border-bottom: 1px solid color-mix(in srgb, #c89a52 42%, var(--h-bg));
-  font-family: var(--h-sans); font-size: 12.5px; color: var(--h-ink);
-}
 .ws-scrim {
   position: absolute; inset: 0; z-index: 50;
   background: rgba(18,12,7,.52);
@@ -468,7 +430,6 @@
 }
 .ws-diff-line-add { background: color-mix(in srgb, oklch(0.62 0.10 150) 16%, oklch(0.193 0.016 44)); }
 .ws-diff-line-del { background: color-mix(in srgb, oklch(0.58 0.12 28) 16%, oklch(0.193 0.016 44)); }
-.ws-diff-line-empty { background: rgba(0,0,0,.18); }
 
 /* ── Markdown viewer ──────────────────────────── */
 .ws-md-body { max-width: 620px; }

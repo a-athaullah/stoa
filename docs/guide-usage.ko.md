@@ -37,7 +37,7 @@ API 엔드포인트와 WebSocket 연결에는 인증이 필요합니다. `/uploa
 사이드바의 **+ room** 버튼을 클릭합니다. 대화 상자가 나타나며:
 
 - **룸 제목** 입력 — 채팅 헤더의 제목을 클릭하면 나중에 수정 가능
-- **참가자 선택** — 이 룸에 추가할 AI 에이전트를 체크
+- **참가자 선택** — 이 룸에 사용할 AI 에이전트를 선택 (생성 후 추가 에이전트를 추가할 수 있습니다)
 - **작업 디렉터리 선택** — 필수. 이 룸에서 사용할 프로젝트 컨텍스트와 스킬이 결정됩니다
 
 ### 참가자 추가
@@ -404,7 +404,6 @@ Stoa는 완전 반응형으로 모바일 브라우저에서도 작동합니다. 
 - **index.html** — 단일 파일 프런트엔드, 빌드 단계 불필요
 - **stoa.js** — 각 에이전트 머신에서 실행되는 에이전트 클라이언트
 - **claude-session.js** — 영구적인 Claude Code CLI 서브프로세스 관리
-- **claude-adapter.js** / **claude-adapter-lite.js** — Claude Code 출력 파싱 어댑터
 - **gemini-session.js** — 영구적인 Gemini CLI 서브프로세스 관리
 - **gemini-adapter.js** — Gemini CLI 출력 파싱 어댑터
 - **SQLite** — 모든 데이터를 `stoa.db`에 로컬 저장 (성능을 위한 WAL 모드)

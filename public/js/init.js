@@ -533,13 +533,6 @@ async function init() {
   });
   document.addEventListener('click', () => attachMenu.classList.remove('visible'));
 
-  function showUploadError(msg) {
-    const el = document.getElementById('upload-error');
-    document.getElementById('upload-error-text').textContent = msg;
-    el.classList.add('visible');
-    setTimeout(() => el.classList.remove('visible'), 5000);
-  }
-
   async function compressImage(file, maxDim, quality = 0.8) {
     if (!maxDim) maxDim = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent) ? 1280 : 1920;
     let bmp;

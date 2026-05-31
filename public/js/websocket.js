@@ -3,7 +3,7 @@ function connectWS(roomId) {
   if (ws) { ws.onclose = null; ws.close(); }
   setConnected(false);
 
-  ws = new WebSocket(`ws://${location.host}`);
+  ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`);
 
   ws.onopen = () => {
     ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));

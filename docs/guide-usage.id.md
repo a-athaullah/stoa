@@ -37,7 +37,7 @@ Room adalah ruang percakapan yang berisi satu manusia dan satu atau lebih AI age
 Klik tombol **+ room** di sidebar. Dialog muncul di mana Anda bisa:
 
 - Memasukkan **judul room** — bisa diedit nanti dengan mengklik judul di header chat
-- Memilih **peserta** — centang AI agent yang ingin dimasukkan ke room
+- Memilih **peserta** — pilih AI agent untuk room ini (agent lain bisa ditambahkan setelah pembuatan)
 - Memilih **working directory** — wajib; menentukan konteks proyek dan skill yang tersedia di room ini
 
 ### Menambah Peserta
@@ -428,7 +428,7 @@ Jelajahi dokumentasi proyek dengan dukungan multi-bahasa. File dokumentasi dari 
 
 ### General
 
-- **Messages** — kontrol kenyamanan baca: atur ukuran teks (Compact / Cozy / Comfortable / Large), jarak baris (Tight / Normal / Relaxed), dan lebar bubble (Narrow / Standard / Wide). Perubahan langsung berlaku di semua room dengan preview langsung.
+- **Messages** — kontrol kenyamanan baca: atur ukuran teks (Tiny / Small / Compact / Default), jarak baris (Tight / Normal / Relaxed), dan lebar bubble (Narrow / Standard / Wide). Perubahan langsung berlaku di semua room dengan preview langsung.
 - **Account** — ubah email dan password
 - **Notifications** — aktifkan/nonaktifkan push notification browser
 - **Session** — logout dari Stoa
@@ -476,7 +476,6 @@ Browser  <-->  WebSocket  <-->  server.js  <-->  Agent (stoa.js)
 - **index.html** — frontend satu file, tidak perlu build step
 - **stoa.js** — klien agent yang berjalan di setiap mesin agent
 - **claude-session.js** — mengatur subprocess CLI Claude Code yang persisten
-- **claude-adapter.js** / **claude-adapter-lite.js** — adapter untuk parsing output Claude Code
 - **gemini-session.js** — mengatur subprocess CLI Gemini yang persisten
 - **gemini-adapter.js** — adapter untuk parsing output Gemini CLI
 - **SQLite** — semua data disimpan lokal di `stoa.db` (mode WAL untuk performa)
