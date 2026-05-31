@@ -1,5 +1,39 @@
 # Changelog
 
+## [2026-05-31]
+
+### Changed
+- **Project restructured** — monolithic `index.html` (9,769 lines) split into organized directories: `public/css/` (5 files), `public/js/` (9 modules), `public/vendor/`, `db/`, `test/`, `build/`
+- **Self-hosted dependencies** — marked, DOMPurify, highlight.js, and CodeMirror bundled locally via esbuild. Zero runtime CDN dependency (was jsdelivr + esm.sh)
+- **Build step** — `npm run build` generates minified `dist/stoa.min.css` (75KB) and `dist/stoa.min.js` (161KB). `NODE_ENV=production` serves minified bundles
+- **N+1 participant fetch eliminated** — new bulk endpoint `GET /api/rooms/participants?ids=` replaces per-room fetch loop
+- **WebSocket reconnect** — exponential backoff (3s → 30s max) instead of fixed 3s interval
+
+### Fixed
+- `showUploadError` scoping bug — function was trapped inside `init()` scope, crashed on image paste failure
+- Hardcoded `ws://` protocol — now auto-detects `wss://` when page is served over HTTPS
+- `avatar_color` XSS — sanitized before CSS injection in reply quotes
+- Server restart banner XSS — port value now uses `textContent` instead of `innerHTML`
+- Image fallback — broken images (404) show clean SVG placeholder instead of browser error icon
+
+### Security
+- **WebSocket origin validation** — rejects cross-origin connections (CSWSH prevention)
+- **Upload size limit** — `/api/upload/raw` now enforces 25MB max body size (was unlimited)
+- **Cookie Secure flag** — set automatically when served over HTTPS
+- **Constant-time auth** — HMAC-based comparison eliminates timing side channel on secret length
+
+### Removed
+- Dead CSS classes (8 classes), dead JS function (`wsShowEditingBanner`), orphaned MySQL schema
+- CDN dependencies on jsdelivr and esm.sh
+
+### Documentation
+- Fixed inaccuracies across all 5 languages (en/id/ja/ko/zh): room creation radio buttons, reading comfort labels, notification toggle location, architecture file list, agent terminology
+- All 20 doc files updated to reflect restructured project
+
+### Tests
+- Added tests for 17 previously untested WebSocket message types (agent_complete, agent_token, agent_error, stop_generation, invite_suggest, model_info, etc.)
+- Full test suite: 100+ tests, 0 failures
+
 ## [2026-05-25]
 
 ### Added

@@ -17,7 +17,7 @@ Self-hosted multi-agent AI chat platform. Humans, Claude Code, Gemini CLI, and o
 - **One browser, multiple AI agents** — talk to Claude Code and Gemini CLI side-by-side in the same chat room, no terminal juggling
 - **Agents collaborate** — @mention one agent, it can @mention another. Chain multi-agent conversations naturally
 - **Self-hosted & private** — your conversations stay on your machine. No data leaves your server
-- **Zero build step** — pure vanilla JS frontend, just `npm install` and go. No webpack, no React, no framework overhead
+- **Zero build step for dev** — vanilla JS frontend split into clean modules. `npm run build` for production minification, but not required for development
 - **Works across machines** — install agents on any machine (Linux, macOS, Windows) with one command. They connect back via WebSocket
 
 ## Features
@@ -125,21 +125,25 @@ MAX_AI_TURNS=5
 | `PORT` | `3000` | Server port |
 | `HUMAN_NAME` | `Human` | Display name for the human user |
 | `STOA_PUBLIC_URL` | *(auto-detected)* | Base URL shown in install commands |
-| `DB_PATH` | `./stoa.db` | SQLite database file path |
+| `DB_PATH` | `./db/stoa.db` | SQLite database file path |
 | `MAX_AI_TURNS` | `5` | Max AI agents triggered per human message |
 
 ## Architecture
 
 ```
-server.js            — HTTP + WebSocket server, room/message management, AI orchestration
-index.html           — Single-file frontend (vanilla JS, no build step)
-stoa.js              — Agent client (WS connection, message routing, self-healing)
-claude-session.js    — Persistent Claude Code subprocess per instance
-claude-adapter.js    — Session adapter for Claude CLI
-gemini-session.js    — Persistent Gemini CLI subprocess per instance
-gemini-adapter.js    — Session adapter for Gemini CLI
-db.js                — SQLite connection (better-sqlite3, WAL mode)
-schema.sqlite.sql    — Database schema (actors, rooms, messages, FTS, settings)
+server.js              — HTTP + WebSocket server, room/message management, AI orchestration
+stoa.js                — Agent client (WS connection, message routing, self-healing)
+claude-session.js      — Persistent Claude Code subprocess per instance
+gemini-session.js      — Persistent Gemini CLI subprocess per instance
+gemini-adapter.js      — Gemini spawn-per-message adapter
+db/                    — Database module, schema, and SQLite data
+public/                — Frontend (HTML, CSS, JS — no build step needed for dev)
+  css/                 — 5 component stylesheets (base, layout, workspace, chat, components)
+  js/                  — 9 JS modules (core, rooms, websocket, workspace, markdown, chat, composer, settings, init)
+  vendor/              — Self-hosted libraries (marked, DOMPurify, highlight.js, CodeMirror)
+  dist/                — Minified bundles for production (npm run build)
+build/                 — Build scripts (esbuild bundler)
+test/                  — Integration tests
 ```
 
 ### Data Flow
