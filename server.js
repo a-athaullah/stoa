@@ -349,6 +349,11 @@ const AUTH_EXEMPT = new Set(['/api/auth/login', '/favicon.ico']);
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const IS_PROD = process.env.NODE_ENV === 'production';
 
+function cookieFlags(req) {
+  const secure = req.headers['x-forwarded-proto'] === 'https' || req.socket?.encrypted;
+  return `Path=/; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}`;
+}
+
 function serveIndex() {
   let html = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
   if (IS_PROD && fs.existsSync(path.join(PUBLIC_DIR, 'dist', 'stoa.min.css'))) {
@@ -376,9 +381,8 @@ function requireAuth(req, res, url) {
   if (agentId && agentSecret) {
     const actor = db.prepare('SELECT secret FROM actors WHERE id=? AND type=?').get(agentId, 'ai');
     if (actor?.secret) {
-      const provided = Buffer.from(agentSecret);
-      const expected = Buffer.from(actor.secret);
-      if (provided.length === expected.length && crypto.timingSafeEqual(provided, expected)) return true;
+      const h = s => crypto.createHmac('sha256', 'stoa').update(s).digest();
+      if (crypto.timingSafeEqual(h(agentSecret), h(actor.secret))) return true;
     }
   }
 
@@ -440,7 +444,7 @@ const server = http.createServer(async (req, res) => {
     const session = createAuthSession(user.id);
     res.writeHead(200, {
       'Content-Type': 'application/json',
-      'Set-Cookie': `stoa_session=${session.token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${7*24*3600}`,
+      'Set-Cookie': `stoa_session=${session.token}; ${cookieFlags(req)}; Max-Age=${7*24*3600}`,
     });
     return res.end(JSON.stringify({ ok: true, email: user.email }));
   }
@@ -452,7 +456,7 @@ const server = http.createServer(async (req, res) => {
     }
     res.writeHead(200, {
       'Content-Type': 'application/json',
-      'Set-Cookie': 'stoa_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0',
+      'Set-Cookie': `stoa_session=; ${cookieFlags(req)}; Max-Age=0`,
     });
     return res.end(JSON.stringify({ ok: true }));
   }
@@ -618,6 +622,20 @@ const server = http.createServer(async (req, res) => {
       LIMIT 200
     `).all();
     return json(res, rows);
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/rooms/participants') {
+    const ids = (url.searchParams.get('ids') || '').split(',').map(Number).filter(Boolean);
+    if (!ids.length) return json(res, {});
+    const ph = ids.map(() => '?').join(',');
+    const rows = db.prepare(`
+      SELECT rp.room_id, rp.*, a.name, a.type, a.avatar_color, a.avatar_symbol, a.avatar_url, a.adapter
+      FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
+      WHERE rp.room_id IN (${ph})
+    `).all(...ids);
+    const grouped = {};
+    for (const r of rows) { (grouped[r.room_id] ||= []).push(r); }
+    return json(res, grouped);
   }
 
   if (req.method === 'POST' && url.pathname === '/api/rooms') {
@@ -1519,9 +1537,8 @@ wss.on('connection', (ws, req) => {
         ws.close(); return;
       }
       const provided = String(msg.secret || '');
-      const valid = provided.length === actor.secret.length &&
-        crypto.timingSafeEqual(Buffer.from(actor.secret), Buffer.from(provided));
-      if (!valid) {
+      const h = s => crypto.createHmac('sha256', 'stoa').update(s).digest();
+      if (!crypto.timingSafeEqual(h(actor.secret), h(provided))) {
         ws.send(JSON.stringify({ type: 'auth_error', message: 'invalid secret' }));
         ws.close(); return;
       }

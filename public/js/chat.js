@@ -69,7 +69,8 @@ function appendMessage(m, container) {
       const urls = replyAttachments.map(a => `<div class="h-reply-quote-file">${escHtml(a.url)}</div>`).join('');
       quoteText = urls + quoteText;
     }
-    quote.innerHTML = `<div class="h-reply-quote-name" style="color:${m.reply_msg.avatar_color || 'var(--h-ink)'}">${escHtml(m.reply_msg.actor_name)}</div><div class="h-reply-quote-text">${quoteText}</div>`;
+    const replyColor = (m.reply_msg.avatar_color || 'var(--h-ink)').replace(/[^a-zA-Z0-9().,%# \-]/g, '');
+    quote.innerHTML = `<div class="h-reply-quote-name" style="color:${replyColor}">${escHtml(m.reply_msg.actor_name)}</div><div class="h-reply-quote-text">${quoteText}</div>`;
     quote.onclick = () => { const el = document.getElementById('msg-' + m.reply_to); if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.style.transition = 'background 0.3s'; el.style.background = 'color-mix(in srgb, #d39749 15%, transparent)'; setTimeout(() => { el.style.background = ''; }, 2000); } };
     bubble.appendChild(quote);
   }

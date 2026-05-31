@@ -1036,9 +1036,10 @@ async function sResizeAndUploadActorAvatar(actorId, file, avEl) {
 
 let globalWs = null;
 function initGlobalWs() {
+  let reconnectDelay = 3000;
   function connect() {
     globalWs = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`);
-    globalWs.onopen = () => globalWs.send(JSON.stringify({ type: 'subscribe_global' }));
+    globalWs.onopen = () => { reconnectDelay = 3000; globalWs.send(JSON.stringify({ type: 'subscribe_global' })); };
     globalWs.onmessage = async e => {
       let msg; try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.type === 'actor_status') handleActorStatus(msg.actor);
@@ -1058,7 +1059,6 @@ function initGlobalWs() {
       }
       if (msg.type === 'model_update') handleModelUpdate(msg);
       if (msg.type === 'room_created' || msg.type === 'room_activity' || msg.type === 'room_updated') {
-        // Notify for activity in rooms user is not currently viewing
         if (msg.type === 'room_activity' && msg.room_id !== currentRoomId) {
           const roomEl = document.querySelector(`.h-room-row[data-room-id="${msg.room_id}"]`);
           const roomTitle = roomEl?.querySelector('.h-room-title-text')?.textContent || 'Room';
@@ -1067,7 +1067,7 @@ function initGlobalWs() {
         refreshRoomList();
       }
     };
-    globalWs.onclose = () => setTimeout(connect, 3000);
+    globalWs.onclose = () => { setTimeout(connect, reconnectDelay); reconnectDelay = Math.min(reconnectDelay * 1.5, 30000); };
     globalWs.onerror = e => console.warn('[globalWs] error', e);
   }
   connect();
@@ -1078,13 +1078,15 @@ async function refreshRoomList() {
     const isArchived = currentRoomTab === 'archived';
     const rooms = await fjson(`/api/rooms${isArchived ? '?archived=1' : ''}`);
     renderRoomList(rooms);
-    rooms.forEach(async room => {
-      try {
-        const parts = await fjson(`/api/rooms/${room.id}/participants`);
+    if (rooms.length) {
+      const ids = rooms.map(r => r.id).join(',');
+      const grouped = await fjson(`/api/rooms/participants?ids=${ids}`);
+      for (const room of rooms) {
+        const parts = grouped[room.id] || [];
         roomParticipantsCache[room.id] = parts;
         renderRoomDots(room.id, parts);
-      } catch {}
-    });
+      }
+    }
   } catch {}
 }
 

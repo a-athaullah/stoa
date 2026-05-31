@@ -1,4 +1,6 @@
 // ── WebSocket ──────────────────────────────────────────────────────────────
+let wsReconnectDelay = 3000;
+
 function connectWS(roomId) {
   if (ws) { ws.onclose = null; ws.close(); }
   setConnected(false);
@@ -6,6 +8,7 @@ function connectWS(roomId) {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`);
 
   ws.onopen = () => {
+    wsReconnectDelay = 3000;
     ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
     ws.send(JSON.stringify({ type: 'file_list' }));
     ws.send(JSON.stringify({ type: 'git_diff' }));
@@ -19,7 +22,8 @@ function connectWS(roomId) {
 
   ws.onclose = () => {
     setConnected(false);
-    setTimeout(() => { if (currentRoomId === roomId) connectWS(roomId); }, 3000);
+    setTimeout(() => { if (currentRoomId === roomId) connectWS(roomId); }, wsReconnectDelay);
+    wsReconnectDelay = Math.min(wsReconnectDelay * 1.5, 30000);
   };
 
   ws.onerror = e => console.warn('[ws] error', e);
@@ -275,11 +279,17 @@ function handleWsMessage(msg) {
 // ── Server restart notification ───────────────────────────────────────────
 let pendingRestartUrl = null;
 function handleServerRestart(msg) {
-  pendingRestartUrl = msg.new_port;
-  const newOrigin = location.protocol + '//' + location.hostname + ':' + msg.new_port;
+  const safePort = String(msg.new_port).replace(/\D/g, '');
+  pendingRestartUrl = safePort;
+  const newOrigin = location.protocol + '//' + location.hostname + ':' + safePort;
   const banner = document.createElement('div');
   banner.className = 'h-restart-banner';
-  banner.innerHTML = `Server berpindah ke port ${msg.new_port}. <a href="${newOrigin}${location.pathname}">Buka di tab baru</a> atau tunggu redirect otomatis...`;
+  banner.textContent = `Server berpindah ke port ${safePort}. `;
+  const link = document.createElement('a');
+  link.href = newOrigin + location.pathname;
+  link.textContent = 'Buka di tab baru';
+  banner.appendChild(link);
+  banner.appendChild(document.createTextNode(' atau tunggu redirect otomatis...'));
   document.body.appendChild(banner);
   if (ws) { ws.onclose = null; ws.close(); ws = null; }
   if (globalWs) { globalWs.onclose = null; globalWs.close(); globalWs = null; }

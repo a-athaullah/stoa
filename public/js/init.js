@@ -69,11 +69,17 @@ async function init() {
   try { rooms = await fjson('/api/rooms'); } catch (e) { console.error('Failed to load rooms:', e); }
   renderRoomList(rooms);
 
-  await Promise.allSettled(rooms.map(async room => {
-    const parts = await fjson(`/api/rooms/${room.id}/participants`);
-    roomParticipantsCache[room.id] = parts;
-    renderRoomDots(room.id, parts);
-  }));
+  if (rooms.length) {
+    try {
+      const ids = rooms.map(r => r.id).join(',');
+      const grouped = await fjson(`/api/rooms/participants?ids=${ids}`);
+      for (const room of rooms) {
+        const parts = grouped[room.id] || [];
+        roomParticipantsCache[room.id] = parts;
+        renderRoomDots(room.id, parts);
+      }
+    } catch (e) { console.error('Failed to load participants:', e); }
+  }
 
   // Keep messages scrolled when composer grows or virtual keyboard appears
   const composerEl = document.getElementById('composer');
