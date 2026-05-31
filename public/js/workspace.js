@@ -845,7 +845,7 @@ function wsRenderContent() {
     }
 
     if (ext === 'md' && file.loaded) {
-      content.className = 'ws-scroll ws-md-view';
+      content.className = 'ws-scroll';
       content.style.cssText = 'flex:1;min-height:0;overflow:auto;padding:26px 30px 40px';
       const inner = document.createElement('div');
       inner.className = 'ws-md-body';
