@@ -846,3 +846,5 @@ async function init() {
     if (document.visibilityState === 'hidden' && isRecording) stopRecognition();
   });
 })();
+
+init();

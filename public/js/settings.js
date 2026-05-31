@@ -1345,5 +1345,4 @@ function initSettings() {
   document.getElementById('s-logout-btn').addEventListener('click', doLogout);
 }
 
-init();
 
