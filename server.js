@@ -351,7 +351,7 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 function requireAuth(req, res, url) {
   if (AUTH_EXEMPT.has(url.pathname)) return true;
   // Static assets from public/ (CSS, JS, manifest, icons, SW)
-  if (url.pathname.match(/^\/(css|js)\//) || ['/manifest.json', '/sw.js', '/stoa-icon.svg'].includes(url.pathname)) return true;
+  if (url.pathname.match(/^\/(css|js|vendor)\//) || ['/manifest.json', '/sw.js', '/stoa-icon.svg'].includes(url.pathname)) return true;
   // Uploaded files accessible by agents (they fetch without cookies)
   if (url.pathname.startsWith('/uploads/')) return true;
   // Install scripts and agent register are public (token-protected already)

@@ -223,23 +223,8 @@ async function wsLoadCodeMirror() {
   if (wsCmLoading) return null;
   wsCmLoading = true;
   try {
-    const cmMod = await import('https://esm.sh/codemirror');
-    const viewMod = await import('https://esm.sh/@codemirror/view');
-    const stateMod = await import('https://esm.sh/@codemirror/state');
-    const langMod = await import('https://esm.sh/@codemirror/language');
-    const lezerHL = await import('https://esm.sh/@lezer/highlight');
-    const [jsLang, pyLang, jsonLang, mdLang, htmlLang, cssLang] = await Promise.all([
-      import('https://esm.sh/@codemirror/lang-javascript'),
-      import('https://esm.sh/@codemirror/lang-python'),
-      import('https://esm.sh/@codemirror/lang-json'),
-      import('https://esm.sh/@codemirror/lang-markdown'),
-      import('https://esm.sh/@codemirror/lang-html'),
-      import('https://esm.sh/@codemirror/lang-css'),
-    ]);
-    const { EditorView } = viewMod;
-    const { EditorState } = stateMod;
-    const { HighlightStyle, syntaxHighlighting } = langMod;
-    const { tags } = lezerHL;
+    const cm = await import('/vendor/codemirror.bundle.js');
+    const { EditorView, EditorState, HighlightStyle, syntaxHighlighting, tags } = cm;
     const hearthTheme = EditorView.theme({
       '&': { backgroundColor: 'oklch(0.193 0.016 44)', color: '#d3c8b4', fontSize: '13px', height: '100%' },
       '.cm-content': { caretColor: 'oklch(0.78 0.085 78)', fontFamily: "'SF Mono','Cascadia Code','Fira Code','JetBrains Mono',ui-monospace,monospace", padding: '10px 0' },
@@ -274,11 +259,11 @@ async function wsLoadCodeMirror() {
       { tag: tags.definition(tags.variableName), color: '#6f9f8c' },
     ]);
     const langMap = {
-      js: jsLang.javascript, jsx: () => jsLang.javascript({ jsx: true }), ts: () => jsLang.javascript({ typescript: true }),
-      tsx: () => jsLang.javascript({ typescript: true, jsx: true }), py: pyLang.python, json: jsonLang.json,
-      md: mdLang.markdown, html: htmlLang.html, css: cssLang.css,
+      js: cm.javascript, jsx: () => cm.javascript({ jsx: true }), ts: () => cm.javascript({ typescript: true }),
+      tsx: () => cm.javascript({ typescript: true, jsx: true }), py: cm.python, json: cm.json,
+      md: cm.markdown, html: cm.html, css: cm.css,
     };
-    window._cm = { EditorView, EditorState, basicSetup: cmMod.basicSetup, hearthTheme, hearthHighlight: syntaxHighlighting(hearthHighlight), langMap, keymap: viewMod.keymap };
+    window._cm = { EditorView, EditorState, basicSetup: cm.basicSetup, hearthTheme, hearthHighlight: syntaxHighlighting(hearthHighlight), langMap, keymap: cm.keymap };
     wsCmLoading = false;
     return window._cm;
   } catch (e) {

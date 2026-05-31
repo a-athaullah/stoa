@@ -1,0 +1,11 @@
+export { basicSetup } from 'codemirror';
+export { EditorView, keymap, lineNumbers, highlightActiveLineGutter, highlightSpecialChars, drawSelection, highlightActiveLine, rectangularSelection } from '@codemirror/view';
+export { EditorState } from '@codemirror/state';
+export { HighlightStyle, syntaxHighlighting, indentOnInput, bracketMatching, foldGutter, foldKeymap } from '@codemirror/language';
+export { tags } from '@lezer/highlight';
+export { javascript } from '@codemirror/lang-javascript';
+export { python } from '@codemirror/lang-python';
+export { json } from '@codemirror/lang-json';
+export { markdown } from '@codemirror/lang-markdown';
+export { html } from '@codemirror/lang-html';
+export { css } from '@codemirror/lang-css';
