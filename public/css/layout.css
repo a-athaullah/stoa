@@ -179,11 +179,6 @@ body.sidebar-collapsed #sidebar { display: none; }
 }
 .h-room-tab:hover { color: var(--h-ink-mute); }
 .h-room-tab.active { color: var(--h-ink); border-bottom-color: var(--h-ink); }
-.h-room-tab .h-tab-count {
-  font-size: 11px;
-  color: var(--h-ink-faint);
-  margin-left: 4px;
-}
 
 .h-rooms-row {
   display: flex;

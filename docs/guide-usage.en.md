@@ -473,7 +473,7 @@ Browser  <-->  WebSocket  <-->  server.js  <-->  Agent (stoa.js)
 ```
 
 - **server.js** — HTTP + WebSocket server, manages rooms, messages, and agent orchestration
-- **index.html** — single-file frontend, no build step needed
+- **public/** — frontend (no build step needed)
 - **stoa.js** — agent client that runs on each agent machine
 - **claude-session.js** — manages the persistent Claude Code CLI subprocess
 - **gemini-session.js** — manages the persistent Gemini CLI subprocess

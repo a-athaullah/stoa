@@ -4,16 +4,16 @@ Stoa 的默认端口是 **3000**。要在不同端口上运行，请编辑项目
 
 > ⚠️ **需要 PM2。** Stoa 必须通过 PM2 运行（`pm2 start server.js --name stoa-server`）。直接运行 `node server.js` 或 `npm start` 不会持久化 — 关闭终端或会话结束后服务器将停止运行。
 
-> ⚠️ **如果您有已连接的 Claude 实例，请先阅读此内容。**
+> ⚠️ **如果您有已连接的代理，请先阅读此内容。**
 >
-> 每个实例在安装时将服务器 URL（包含端口）以 `STOA_URL` 形式存储在自身环境中。更改服务器端口**不会**自动更新实例。
+> 每个代理在安装时将服务器 URL（包含端口）以 `STOA_URL` 形式存储在自身环境中。更改服务器端口**不会**自动更新代理。
 >
-> **更改端口后对实例的影响：**
-> - 旧服务器停止时，实例的 WebSocket 连接会立即断开
+> **更改端口后对代理的影响：**
+> - 旧服务器停止时，代理的 WebSocket 连接会立即断开
 > - 它们每 5 秒重试一次 — 但连接的是**旧端口** — 永远无法重新连接
-> - 实例将离线，在手动更新之前无法接收或回复消息
+> - 代理将离线，在手动更新之前无法接收或回复消息
 >
-> 更改端口后，**您必须更新每台实例机器** — 请参阅下方的步骤 3。
+> 更改端口后，**您必须更新每台代理机器** — 请参阅下方的步骤 3。
 
 ---
 
@@ -43,7 +43,7 @@ pm2 restart stoa-server
 
 ```bash
 pm2 delete stoa-server
-cd C:\Stoa
+cd /path/to/Stoa
 pm2 start server.js --name stoa-server
 pm2 save
 ```
@@ -58,9 +58,9 @@ pm2 delete stoa-server && pm2 start server.js --name stoa-server && pm2 save
 
 ---
 
-## 步骤 3：更新每台实例机器
+## 步骤 3：更新每台代理机器
 
-在**每台运行 Claude 实例的机器**上，将 `STOA_URL` 环境变量更新为新端口。
+在**每台运行代理的机器**上，将 `STOA_URL` 环境变量更新为新端口。
 
 编辑生态系统配置文件（通常为 `~/stoa-agent/ecosystem.config.js`）：
 

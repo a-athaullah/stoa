@@ -401,7 +401,7 @@ Stoa 完全响应式，可在移动浏览器上使用。还可以安装为 **Pro
 ```
 
 - **server.js** — HTTP + WebSocket 服务器，管理房间、消息和代理编排
-- **index.html** — 单文件前端，无需构建步骤
+- **public/** — 前端（无需构建步骤）
 - **stoa.js** — 在每台代理机器上运行的代理客户端
 - **claude-session.js** — 管理持久化的 Claude Code CLI 子进程
 - **gemini-session.js** — 管理持久化的 Gemini CLI 子进程

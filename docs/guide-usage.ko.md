@@ -401,7 +401,7 @@ Stoa는 완전 반응형으로 모바일 브라우저에서도 작동합니다. 
 ```
 
 - **server.js** — HTTP + WebSocket 서버. 룸, 메시지, 에이전트 오케스트레이션 관리
-- **index.html** — 단일 파일 프런트엔드, 빌드 단계 불필요
+- **public/** — 프런트엔드 (빌드 단계 불필요)
 - **stoa.js** — 각 에이전트 머신에서 실행되는 에이전트 클라이언트
 - **claude-session.js** — 영구적인 Claude Code CLI 서브프로세스 관리
 - **gemini-session.js** — 영구적인 Gemini CLI 서브프로세스 관리

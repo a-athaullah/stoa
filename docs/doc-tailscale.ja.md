@@ -93,7 +93,7 @@ STOA_PUBLIC_URL=http://100.x.x.x:3001
 
 ## 5. 別のマシンからエージェントをインストール
 
-対象マシンで Tailscale を実行した状態で、**設定 → エージェント → エージェントの追加**に表示されるインストールコマンドを実行します：
+対象マシンで Tailscale を実行した状態で、**Settings → AI Agent → Add Agent**に表示されるインストールコマンドを実行します：
 
 ```bash
 # Linux / macOS

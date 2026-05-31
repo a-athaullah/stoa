@@ -512,12 +512,15 @@ const server = http.createServer(async (req, res) => {
 
   // ── Upload file (raw binary)
   if (req.method === 'POST' && url.pathname === '/api/upload/raw') {
+    const MAX_UPLOAD = 25 * 1024 * 1024;
     const chunks = [];
+    let size = 0;
     await new Promise((resolve, reject) => {
-      req.on('data', c => chunks.push(c));
+      req.on('data', c => { size += c.length; if (size > MAX_UPLOAD) { req.destroy(); reject(new Error('File too large')); } else chunks.push(c); });
       req.on('end', resolve);
       req.on('error', reject);
-    });
+    }).catch(e => { res.writeHead(413, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: e.message })); return; });
+    if (res.headersSent) return;
     const buffer = Buffer.concat(chunks);
     const fileName = decodeURIComponent(req.headers['x-file-name'] || 'file');
     const mimeType = req.headers['content-type'] || 'application/octet-stream';
@@ -1409,6 +1412,19 @@ function broadcastServerRestart(newPort, newWsUrl) {
 }
 
 wss.on('connection', (ws, req) => {
+  // Origin validation: reject cross-origin browser connections (CSWSH prevention)
+  const origin = req.headers.origin;
+  if (origin) {
+    try {
+      const o = new URL(origin);
+      const host = req.headers.host?.split(':')[0];
+      if (o.hostname !== host && o.hostname !== 'localhost' && o.hostname !== '127.0.0.1') {
+        ws.close(1008, 'Origin not allowed');
+        return;
+      }
+    } catch { ws.close(1008, 'Invalid origin'); return; }
+  }
+
   let subscribedRoom = null;
   let agentActorId = null;
   let isHumanClient = false;

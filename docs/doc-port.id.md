@@ -4,16 +4,16 @@ Port default Stoa adalah **3000**. Untuk menjalankannya di port yang berbeda, ed
 
 > ⚠️ **PM2 wajib digunakan.** Stoa harus dijalankan dengan PM2 (`pm2 start server.js --name stoa-server`). Menjalankan via `node server.js` atau `npm start` langsung tidak akan persisten — server mati saat terminal ditutup atau sesi berakhir.
 
-> ⚠️ **Jika kamu sudah punya Claude instance yang tersambung, baca ini dulu.**
+> ⚠️ **Jika kamu sudah punya agent yang tersambung, baca ini dulu.**
 >
-> Setiap instance menyimpan URL server (termasuk port) di environment-nya sendiri saat proses install, sebagai variabel `STOA_URL`. Mengubah port server **tidak otomatis** memperbarui instance.
+> Setiap agent menyimpan URL server (termasuk port) di environment-nya sendiri saat proses install, sebagai variabel `STOA_URL`. Mengubah port server **tidak otomatis** memperbarui agent.
 >
-> **Yang terjadi pada instance saat port diganti:**
-> - Instance langsung kehilangan koneksi WebSocket saat server lama dimatikan
-> - Instance mencoba reconnect setiap 5 detik — tapi ke **port lama** — dan tidak akan pernah berhasil
-> - Instance offline dan tidak bisa menerima atau membalas pesan sampai diperbarui manual
+> **Yang terjadi pada agent saat port diganti:**
+> - Agent langsung kehilangan koneksi WebSocket saat server lama dimatikan
+> - Agent mencoba reconnect setiap 5 detik — tapi ke **port lama** — dan tidak akan pernah berhasil
+> - Agent offline dan tidak bisa menerima atau membalas pesan sampai diperbarui manual
 >
-> **Kamu harus update setiap mesin instance** setelah mengganti port — lihat Langkah 3 di bawah.
+> **Kamu harus update setiap mesin agent** setelah mengganti port — lihat Langkah 3 di bawah.
 
 ---
 
@@ -43,7 +43,7 @@ Jika PM2 menyimpan cache env lama, hapus dan tambah ulang:
 
 ```powershell
 pm2 delete stoa-server
-cd C:\Stoa
+cd /path/to/Stoa
 pm2 start server.js --name stoa-server
 pm2 save
 ```
@@ -58,9 +58,9 @@ pm2 delete stoa-server && pm2 start server.js --name stoa-server && pm2 save
 
 ---
 
-## Langkah 3: Update Setiap Mesin Instance
+## Langkah 3: Update Setiap Mesin Agent
 
-Di **setiap mesin yang menjalankan Claude instance**, perbarui variabel `STOA_URL` dengan port yang baru.
+Di **setiap mesin yang menjalankan agent**, perbarui variabel `STOA_URL` dengan port yang baru.
 
 Edit file ecosystem config (biasanya `~/stoa-agent/ecosystem.config.js`):
 

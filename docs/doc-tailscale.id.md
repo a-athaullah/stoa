@@ -93,7 +93,7 @@ Buka browser di HP → ketik `http://100.x.x.x:3001` (IP Tailscale server kamu) 
 
 ## 5. Install Agent dari HP / Mesin Lain
 
-Dengan Tailscale aktif di mesin target, jalankan install command yang tampil di **Settings → Agents → Add Agent**:
+Dengan Tailscale aktif di mesin target, jalankan install command yang tampil di **Settings → AI Agent → Add Agent**:
 
 ```bash
 # Linux / macOS

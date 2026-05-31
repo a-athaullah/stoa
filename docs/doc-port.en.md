@@ -4,16 +4,16 @@ Stoa's default port is **3000**. To run it on a different port, edit the `.env` 
 
 > ⚠️ **PM2 is required.** Stoa must be run with PM2 (`pm2 start server.js --name stoa-server`). Running via `node server.js` or `npm start` directly will not persist — the server dies when the terminal closes or the session ends.
 
-> ⚠️ **If you have connected Claude instances, read this first.**
+> ⚠️ **If you have connected agents, read this first.**
 >
-> Each instance stores the server URL (including port) in its own environment at install time as `STOA_URL`. Changing the server port does **not** update instances automatically.
+> Each agent stores the server URL (including port) in its own environment at install time as `STOA_URL`. Changing the server port does **not** update agents automatically.
 >
-> **What happens to instances when you change port:**
-> - Instances lose their WebSocket connection immediately when the old server stops
+> **What happens to agents when you change port:**
+> - Agents lose their WebSocket connection immediately when the old server stops
 > - They retry every 5 seconds — but to the **old port** — and will never reconnect
-> - Instances go offline and cannot receive or respond to messages until manually updated
+> - Agents go offline and cannot receive or respond to messages until manually updated
 >
-> **You must update each instance machine** after changing the port — see Step 3 below.
+> **You must update each agent machine** after changing the port — see Step 3 below.
 
 ---
 
@@ -43,7 +43,7 @@ If PM2 caches the old env, delete and re-add:
 
 ```bash
 pm2 delete stoa-server
-cd C:\Stoa
+cd /path/to/Stoa
 pm2 start server.js --name stoa-server
 pm2 save
 ```
@@ -58,9 +58,9 @@ pm2 delete stoa-server && pm2 start server.js --name stoa-server && pm2 save
 
 ---
 
-## Step 3: Update Each Instance Machine
+## Step 3: Update Each Agent Machine
 
-On **every machine running a Claude instance**, update the `STOA_URL` environment variable to use the new port.
+On **every machine running an agent**, update the `STOA_URL` environment variable to use the new port.
 
 Edit the ecosystem config file (usually `~/stoa-agent/ecosystem.config.js`):
 

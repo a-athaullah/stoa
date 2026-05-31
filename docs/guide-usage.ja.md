@@ -401,7 +401,7 @@ Stoa は完全レスポンシブで、モバイルブラウザでも動作しま
 ```
 
 - **server.js** — HTTP + WebSocket サーバー。ルーム、メッセージ、エージェントの管理を行う
-- **index.html** — 単一ファイルのフロントエンド。ビルドステップ不要
+- **public/** — フロントエンド（ビルドステップ不要）
 - **stoa.js** — 各エージェントマシンで実行されるエージェントクライアント
 - **claude-session.js** — 永続的な Claude Code CLI サブプロセスを管理
 - **gemini-session.js** — 永続的な Gemini CLI サブプロセスを管理

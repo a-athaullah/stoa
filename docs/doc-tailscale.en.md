@@ -93,7 +93,7 @@ Open a browser on your phone → type `http://100.x.x.x:3001` (your server's Tai
 
 ## 5. Installing an Agent from Another Machine
 
-With Tailscale running on the target machine, run the install command shown in **Settings → Agents → Add Agent**:
+With Tailscale running on the target machine, run the install command shown in **Settings → AI Agent → Add Agent**:
 
 ```bash
 # Linux / macOS

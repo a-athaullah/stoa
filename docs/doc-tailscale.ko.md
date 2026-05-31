@@ -93,7 +93,7 @@ STOA_PUBLIC_URL=http://100.x.x.x:3001
 
 ## 5. 다른 머신에서 에이전트 설치
 
-대상 머신에서 Tailscale이 실행 중인 상태에서 **설정 → 에이전트 → 에이전트 추가**에 표시된 설치 명령어를 실행합니다:
+대상 머신에서 Tailscale이 실행 중인 상태에서 **Settings → AI Agent → Add Agent**에 표시된 설치 명령어를 실행합니다:
 
 ```bash
 # Linux / macOS

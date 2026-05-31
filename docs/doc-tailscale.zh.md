@@ -93,7 +93,7 @@ STOA_PUBLIC_URL=http://100.x.x.x:3001
 
 ## 5. 从另一台机器安装代理
 
-在目标机器上运行 Tailscale 的情况下，执行**设置 → 代理 → 添加代理**中显示的安装命令：
+在目标机器上运行 Tailscale 的情况下，执行**Settings → AI Agent → Add Agent**中显示的安装命令：
 
 ```bash
 # Linux / macOS
