@@ -345,7 +345,7 @@ function parseDocFilename(name) {
 
 // ─── Auth helpers ────────────────────────────────────────────────────────────
 
-const AUTH_EXEMPT = new Set(['/api/auth/login', '/favicon.ico', '/stoa-icon.svg', '/manifest.json', '/sw.js']);
+const AUTH_EXEMPT = new Set(['/api/auth/login', '/favicon.ico', '/stoa-icon.svg', '/manifest.json', '/sw.js', '/stoa-ui.css', '/stoa-ui.js']);
 
 function requireAuth(req, res, url) {
   if (AUTH_EXEMPT.has(url.pathname)) return true;
@@ -568,12 +568,13 @@ const server = http.createServer(async (req, res) => {
     return res.end(svg);
   }
 
-  const STATIC_FILES = { '/manifest.json': 'application/manifest+json', '/stoa-icon.svg': 'image/svg+xml', '/sw.js': 'application/javascript' };
+  const STATIC_FILES = { '/manifest.json': 'application/manifest+json', '/stoa-icon.svg': 'image/svg+xml', '/sw.js': 'application/javascript', '/stoa-ui.css': 'text/css; charset=utf-8', '/stoa-ui.js': 'text/javascript; charset=utf-8' };
+  const NO_CACHE = new Set(['/sw.js', '/stoa-ui.css', '/stoa-ui.js']);
   if (req.method === 'GET' && STATIC_FILES[url.pathname]) {
     const filePath = path.join(__dirname, url.pathname.slice(1));
     if (!fs.existsSync(filePath)) { res.writeHead(404); return res.end('Not found'); }
     const headers = { 'Content-Type': STATIC_FILES[url.pathname] };
-    if (url.pathname === '/sw.js') headers['Cache-Control'] = 'no-cache';
+    if (NO_CACHE.has(url.pathname)) headers['Cache-Control'] = 'no-cache';
     else headers['Cache-Control'] = 'public, max-age=86400';
     res.writeHead(200, headers);
     return res.end(fs.readFileSync(filePath));
