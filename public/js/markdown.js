@@ -1,3 +1,12 @@
+function imgFallback(img) {
+  img.onerror = () => {
+    img.onerror = null;
+    img.src = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80" viewBox="0 0 120 80"><rect width="120" height="80" rx="6" fill="%23e8e0d6"/><path d="M44 50l12-16 10 12 6-7 8 11z" fill="%23c4b8a8"/><circle cx="46" cy="34" r="6" fill="%23c4b8a8"/><text x="60" y="72" text-anchor="middle" font-size="9" fill="%239a8f80" font-family="system-ui">image unavailable</text></svg>');
+    img.style.opacity = '0.6';
+    img.onclick = null;
+  };
+}
+
 // ── Markdown rendering ─────────────────────────────────────────────────────
 marked.use({
   breaks: true, gfm: true,
@@ -84,6 +93,7 @@ function renderAttachments(bubble, m) {
     img.src = images[0].url;
     img.className = 'h-msg-img';
     img.loading = 'lazy';
+    imgFallback(img);
     img.onclick = () => openLightbox(images, 0);
     bubble.appendChild(img);
   } else if (images.length > 1) {
@@ -99,6 +109,7 @@ function renderAttachments(bubble, m) {
       const img = document.createElement('img');
       img.src = a.url;
       img.loading = 'lazy';
+      imgFallback(img);
       img.onclick = () => { if (!wasDragged) openLightbox(images, i); };
       img.style.pointerEvents = 'auto';
       img.style.cursor = 'pointer';

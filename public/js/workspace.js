@@ -833,6 +833,7 @@ function wsRenderContent() {
       } else {
         img.src = `/api/workspace/file?room=${currentRoomId}&path=${encodeURIComponent(file.name)}`;
       }
+      imgFallback(img);
       img.style.cssText = 'max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;box-shadow:0 2px 12px rgba(0,0,0,.12)';
       img.alt = file.name;
       content.appendChild(img);
