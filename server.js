@@ -347,11 +347,21 @@ function parseDocFilename(name) {
 
 const AUTH_EXEMPT = new Set(['/api/auth/login', '/favicon.ico']);
 const PUBLIC_DIR = path.join(__dirname, 'public');
+const IS_PROD = process.env.NODE_ENV === 'production';
+
+function serveIndex() {
+  let html = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
+  if (IS_PROD && fs.existsSync(path.join(PUBLIC_DIR, 'dist', 'stoa.min.css'))) {
+    html = html.replace(/<!-- \{\{APP_CSS\}\} -->[\s\S]*?<!-- \{\{\/APP_CSS\}\} -->/, '<link rel="stylesheet" href="/dist/stoa.min.css">');
+    html = html.replace(/<!-- \{\{APP_JS\}\} -->[\s\S]*?<!-- \{\{\/APP_JS\}\} -->/, '<script src="/dist/stoa.min.js"></script>');
+  }
+  return html;
+}
 
 function requireAuth(req, res, url) {
   if (AUTH_EXEMPT.has(url.pathname)) return true;
   // Static assets from public/ (CSS, JS, manifest, icons, SW)
-  if (url.pathname.match(/^\/(css|js|vendor)\//) || ['/manifest.json', '/sw.js', '/stoa-icon.svg'].includes(url.pathname)) return true;
+  if (url.pathname.match(/^\/(css|js|vendor|dist)\//) || ['/manifest.json', '/sw.js', '/stoa-icon.svg'].includes(url.pathname)) return true;
   // Uploaded files accessible by agents (they fetch without cookies)
   if (url.pathname.startsWith('/uploads/')) return true;
   // Install scripts and agent register are public (token-protected already)
@@ -397,9 +407,8 @@ const server = http.createServer(async (req, res) => {
   if (authResult === false) return;
   if (authResult === 'login') {
     if (req.method === 'GET' && url.pathname === '/') {
-      const html = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
-      return res.end(html);
+      return res.end(serveIndex());
     }
     res.writeHead(401); return res.end('Unauthorized');
   }
@@ -577,9 +586,11 @@ const server = http.createServer(async (req, res) => {
     const isRoot = url.pathname === '/';
     const ext = isRoot ? '.html' : path.extname(url.pathname);
     if (STATIC_TYPES[ext]) {
-      const filePath = isRoot
-        ? path.join(PUBLIC_DIR, 'index.html')
-        : path.join(PUBLIC_DIR, url.pathname);
+      if (isRoot) {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
+        return res.end(serveIndex());
+      }
+      const filePath = path.join(PUBLIC_DIR, url.pathname);
       const resolved = path.resolve(filePath);
       if (resolved.startsWith(PUBLIC_DIR) && fs.existsSync(resolved)) {
         const cachePolicy = (ext === '.svg' || ext === '.json') ? 'public, max-age=86400' : 'no-cache';
