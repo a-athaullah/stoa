@@ -15,7 +15,7 @@ const path   = require('path');
 
 const BASE  = 'http://localhost:3001';
 const WS    = 'ws://localhost:3001';
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'stoa.db');
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'db', 'stoa.db');
 
 let db;
 let SESSION_COOKIE = '';

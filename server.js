@@ -57,7 +57,7 @@ if (fs.existsSync(envPath)) {
 }
 
 // Initialize schema on startup
-db.exec(fs.readFileSync(path.join(__dirname, 'schema.sqlite.sql'), 'utf8'));
+db.exec(fs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
 
 // Migrate ai_sessions: participant_id UNIQUE → UNIQUE(participant_id, workdir)
 try {
@@ -345,10 +345,13 @@ function parseDocFilename(name) {
 
 // ─── Auth helpers ────────────────────────────────────────────────────────────
 
-const AUTH_EXEMPT = new Set(['/api/auth/login', '/favicon.ico', '/stoa-icon.svg', '/manifest.json', '/sw.js', '/stoa-ui.css', '/stoa-ui.js']);
+const AUTH_EXEMPT = new Set(['/api/auth/login', '/favicon.ico']);
+const PUBLIC_DIR = path.join(__dirname, 'public');
 
 function requireAuth(req, res, url) {
   if (AUTH_EXEMPT.has(url.pathname)) return true;
+  // Static assets from public/ (CSS, JS, manifest, icons, SW)
+  if (url.pathname.match(/^\/(css|js)\//) || ['/manifest.json', '/sw.js', '/stoa-icon.svg'].includes(url.pathname)) return true;
   // Uploaded files accessible by agents (they fetch without cookies)
   if (url.pathname.startsWith('/uploads/')) return true;
   // Install scripts and agent register are public (token-protected already)
@@ -394,7 +397,7 @@ const server = http.createServer(async (req, res) => {
   if (authResult === false) return;
   if (authResult === 'login') {
     if (req.method === 'GET' && url.pathname === '/') {
-      const html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
+      const html = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
       return res.end(html);
     }
@@ -568,22 +571,22 @@ const server = http.createServer(async (req, res) => {
     return res.end(svg);
   }
 
-  const STATIC_FILES = { '/manifest.json': 'application/manifest+json', '/stoa-icon.svg': 'image/svg+xml', '/sw.js': 'application/javascript', '/stoa-ui.css': 'text/css; charset=utf-8', '/stoa-ui.js': 'text/javascript; charset=utf-8' };
-  const NO_CACHE = new Set(['/sw.js', '/stoa-ui.css', '/stoa-ui.js']);
-  if (req.method === 'GET' && STATIC_FILES[url.pathname]) {
-    const filePath = path.join(__dirname, url.pathname.slice(1));
-    if (!fs.existsSync(filePath)) { res.writeHead(404); return res.end('Not found'); }
-    const headers = { 'Content-Type': STATIC_FILES[url.pathname] };
-    if (NO_CACHE.has(url.pathname)) headers['Cache-Control'] = 'no-cache';
-    else headers['Cache-Control'] = 'public, max-age=86400';
-    res.writeHead(200, headers);
-    return res.end(fs.readFileSync(filePath));
-  }
-
-  if (req.method === 'GET' && url.pathname === '/') {
-    const html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
-    return res.end(html);
+  // Serve static files from public/
+  const STATIC_TYPES = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml' };
+  if (req.method === 'GET') {
+    const isRoot = url.pathname === '/';
+    const ext = isRoot ? '.html' : path.extname(url.pathname);
+    if (STATIC_TYPES[ext]) {
+      const filePath = isRoot
+        ? path.join(PUBLIC_DIR, 'index.html')
+        : path.join(PUBLIC_DIR, url.pathname);
+      const resolved = path.resolve(filePath);
+      if (resolved.startsWith(PUBLIC_DIR) && fs.existsSync(resolved)) {
+        const cachePolicy = (ext === '.svg' || ext === '.json') ? 'public, max-age=86400' : 'no-cache';
+        res.writeHead(200, { 'Content-Type': STATIC_TYPES[ext], 'Cache-Control': cachePolicy });
+        return res.end(fs.readFileSync(resolved));
+      }
+    }
   }
 
   if (req.method === 'GET' && url.pathname === '/api/rooms') {

@@ -1,0 +1,48 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --h-slip:        oklch(0.945 0.020 70);
+  --h-bg:          oklch(0.925 0.022 58);
+  --h-header-bg:   oklch(0.870 0.028 52);
+  --h-sidebar-bg:  oklch(0.820 0.030 50);
+  --h-surface:     oklch(0.985 0.012 55);
+  --h-surface-hi:  oklch(0.995 0.010 60);
+  --h-hairline:    oklch(0.770 0.026 50);
+  --h-hair-soft:   oklch(0.835 0.022 50);
+  --h-ink:         oklch(0.235 0.018 45);
+  --h-ink-mute:    oklch(0.460 0.014 50);
+  --h-ink-faint:   oklch(0.595 0.014 52);
+  --h-serif:       "Plus Jakarta Sans", "DM Sans", system-ui, sans-serif;
+  --h-sans:        "DM Sans", system-ui, sans-serif;
+  --h-msg:         "Plus Jakarta Sans", "DM Sans", system-ui, sans-serif;
+  --h-accent:      oklch(0.545 0.120 245);
+}
+
+html.dark {
+  --h-bg:          oklch(0.218 0.016 52);
+  --h-header-bg:   oklch(0.265 0.018 50);
+  --h-sidebar-bg:  oklch(0.178 0.014 50);
+  --h-surface:     oklch(0.295 0.018 50);
+  --h-surface-hi:  oklch(0.335 0.018 52);
+  --h-hairline:    oklch(0.420 0.016 48);
+  --h-hair-soft:   oklch(0.345 0.014 48);
+  --h-ink:         oklch(0.925 0.014 70);
+  --h-ink-mute:    oklch(0.740 0.014 60);
+  --h-ink-faint:   oklch(0.585 0.012 55);
+  --h-slip:        oklch(0.255 0.020 60);
+  --h-accent:      oklch(0.620 0.100 245);
+}
+
+html, body { height: 100%; overflow: hidden; }
+body {
+  background: var(--h-bg);
+  color: var(--h-ink);
+  font-family: var(--h-sans);
+  display: flex;
+}
+::selection { background: rgba(91,143,212,.22); }
+
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-thumb { background: var(--h-hair-soft); border-radius: 3px; }
+*::-webkit-scrollbar-track { background: transparent; }
+
