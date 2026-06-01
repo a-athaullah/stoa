@@ -1725,6 +1725,12 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'compact_complete' && agentActorId) {
       const state = pendingCompacts.get(msg.room_id);
       if (!state) return;
+      if (msg.claude_session_id) {
+        const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
+        if (participant) {
+          db.prepare(`UPDATE ai_sessions SET claude_session_id=?, last_active_at=datetime('now') WHERE participant_id=?`).run(msg.claude_session_id, participant.id);
+        }
+      }
       if (!state.names) state.names = [];
       const actor = db.prepare('SELECT name FROM actors WHERE id=?').get(agentActorId);
       if (actor) state.names.push(actor.name);
