@@ -1405,6 +1405,7 @@ const agentClients = new Map();   // actor_id → ws
 const agentVersions = new Map();  // actor_id → client_version string
 const pendingAgents = new Map();    // message_id → { resolve, reject }
 const pendingActorMeta = new Map(); // message_id → { name, avatar_color, avatar_symbol }
+const pendingCompacts = new Map();  // room_id → { total, completed, agents[] }
 const pendingFileOps = new Map();   // request_id → { type, clientWs }
 function addPendingFileOp(rid, op) {
   pendingFileOps.set(rid, op);
@@ -1518,6 +1519,40 @@ wss.on('connection', (ws, req) => {
         if (agentWs && agentWs.readyState === 1) {
           agentWs.send(JSON.stringify({ type: 'cancel_generation', message_id: msg.message_id, room_id: msg.room_id }));
         }
+      }
+    }
+
+    if (msg.type === 'compact_session' && !agentActorId) {
+      const roomId = msg.room_id;
+      if (pendingCompacts.has(roomId)) return;
+      const aiParts = db.prepare(`
+        SELECT rp.id as participant_id, a.id as actor_id, a.name
+        FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
+        WHERE rp.room_id=? AND a.type='ai'
+      `).all(roomId);
+      const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(roomId);
+      const targets = [];
+      for (const ai of aiParts) {
+        const agentWs = agentClients.get(ai.actor_id);
+        if (!agentWs || agentWs.readyState !== 1) continue;
+        const sessionRow = db.prepare('SELECT claude_session_id, workdir FROM ai_sessions WHERE participant_id=?').get(ai.participant_id);
+        if (!sessionRow?.claude_session_id) continue;
+        let workdir = sessionRow.workdir;
+        if (!workdir && roomRow?.workdir_id) {
+          const wd = db.prepare('SELECT path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
+          workdir = wd?.path || null;
+        }
+        targets.push({ actor_id: ai.actor_id, participant_id: ai.participant_id, name: ai.name, workdir });
+      }
+      if (!targets.length) {
+        ws.send(JSON.stringify({ type: 'compact_error', room_id: roomId, error: 'No active AI sessions to compact' }));
+        return;
+      }
+      pendingCompacts.set(roomId, { total: targets.length, completed: 0, agents: targets.map(t => t.actor_id) });
+      broadcast(roomId, { type: 'compact_start', room_id: roomId, total: targets.length });
+      for (const t of targets) {
+        const agentWs = agentClients.get(t.actor_id);
+        agentWs.send(JSON.stringify({ type: 'compact_trigger', room_id: roomId, workdir: t.workdir }));
       }
     }
 
@@ -1677,6 +1712,30 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'agent_system_event' && agentActorId) {
       const actor = db.prepare('SELECT name FROM actors WHERE id=?').get(agentActorId);
       broadcast(msg.room_id, { type: 'system_event', status: msg.status, actor_name: actor?.name });
+    }
+
+    if (msg.type === 'compact_complete' && agentActorId) {
+      const state = pendingCompacts.get(msg.room_id);
+      if (!state) return;
+      state.completed++;
+      if (state.completed >= state.total) {
+        pendingCompacts.delete(msg.room_id);
+        broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id });
+      } else {
+        broadcast(msg.room_id, { type: 'compact_progress', room_id: msg.room_id, completed: state.completed, total: state.total });
+      }
+    }
+
+    if (msg.type === 'compact_error' && agentActorId) {
+      const state = pendingCompacts.get(msg.room_id);
+      if (!state) return;
+      state.completed++;
+      if (state.completed >= state.total) {
+        pendingCompacts.delete(msg.room_id);
+        broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id });
+      } else {
+        broadcast(msg.room_id, { type: 'compact_progress', room_id: msg.room_id, completed: state.completed, total: state.total });
+      }
     }
 
     // ── Agent finished responding

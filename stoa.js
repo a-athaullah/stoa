@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.3.0';
+const CLIENT_VERSION = '0.3.1';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -472,6 +472,31 @@ async function handleAgentMessage(msg) {
   if (msg.type === 'search_result' || msg.type === 'get_message_result') {
     const pending = pendingRequests.get(msg.request_id);
     if (pending) { pendingRequests.delete(msg.request_id); pending.resolve(msg); }
+  }
+
+  if (msg.type === 'compact_trigger') {
+    const workdir = msg.workdir || process.env.STOA_WORK_DIR || os.homedir();
+    const key = path.resolve(workdir);
+    const session = sessionPool.get(key);
+    if (!session) {
+      console.log(`[stoa] compact: no session for ${key}`);
+      send({ type: 'compact_error', room_id: msg.room_id, error: 'no active session' });
+      return;
+    }
+    console.log(`[stoa] compact: starting for ${key}`);
+    session.send({
+      prompt: '/compact',
+      onState: state => {
+        console.log(`[stoa] compact status: ${state}`);
+      },
+    }).then(() => {
+      console.log(`[stoa] compact: done for ${key}`);
+      send({ type: 'compact_complete', room_id: msg.room_id });
+    }).catch(err => {
+      console.error(`[stoa] compact error: ${err.message}`);
+      send({ type: 'compact_error', room_id: msg.room_id, error: err.message });
+    });
+    return;
   }
 
   if (msg.type === 'agent_trigger') {

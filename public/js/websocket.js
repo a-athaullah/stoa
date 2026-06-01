@@ -173,6 +173,28 @@ function handleWsMessage(msg) {
     return;
   }
 
+  if (msg.type === 'compact_start') {
+    showCompactBar(msg.total);
+    return;
+  }
+
+  if (msg.type === 'compact_progress') {
+    updateCompactBar(msg.completed, msg.total);
+    return;
+  }
+
+  if (msg.type === 'compact_done') {
+    hideCompactBar();
+    showToast('Sessions compacted');
+    return;
+  }
+
+  if (msg.type === 'compact_error') {
+    hideCompactBar();
+    showToast(msg.error || 'Compact failed', { error: true });
+    return;
+  }
+
   if (msg.type === 'server_restart') {
     handleServerRestart(msg);
     return;

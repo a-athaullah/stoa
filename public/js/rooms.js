@@ -187,12 +187,71 @@ function renderChatHeader(room, participants) {
   exportWrap.appendChild(exportDrop);
   header.appendChild(exportWrap);
 
+  const compactBtn = document.createElement('button');
+  compactBtn.className = 'h-header-action-btn h-compact-btn';
+  compactBtn.title = 'Compact sessions';
+  compactBtn.style.marginLeft = '8px';
+  compactBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6l5-4 5 4"/><path d="M3 10l5 4 5-4"/></svg>`;
+  compactBtn.onclick = () => {
+    if (compactBtn.disabled) return;
+    compactSessions(room.id);
+  };
+  header.appendChild(compactBtn);
+
   const wsToggle = document.createElement('button');
   wsToggle.className = 'h-ws-toggle' + (document.getElementById('workspace-panel').classList.contains('open') ? ' active' : '');
   wsToggle.title = 'Dev Workspace';
   wsToggle.innerHTML = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M14 4v16"/></svg>`;
   wsToggle.onclick = toggleWorkspacePanel;
   header.appendChild(wsToggle);
+}
+
+// ── Compact sessions ──────────────────────────────────────────────────────
+let compactingRoomId = null;
+
+function compactSessions(roomId) {
+  if (!ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({ type: 'compact_session', room_id: roomId }));
+}
+
+function showCompactBar(total) {
+  compactingRoomId = currentRoomId;
+  const bar = document.getElementById('compact-bar');
+  const fill = document.getElementById('compact-fill');
+  if (!bar || !fill) return;
+  if (total <= 1) {
+    fill.style.width = '100%';
+    fill.classList.add('indeterminate');
+  } else {
+    fill.style.width = '0%';
+    fill.classList.remove('indeterminate');
+  }
+  bar.classList.add('visible');
+  document.querySelector('.h-composer-box')?.classList.add('ai-processing');
+  document.getElementById('msg-input')?.blur();
+  const btn = document.querySelector('.h-compact-btn');
+  if (btn) { btn.disabled = true; btn.classList.add('active'); }
+}
+
+function updateCompactBar(completed, total) {
+  const fill = document.getElementById('compact-fill');
+  if (!fill) return;
+  if (total > 1) {
+    fill.classList.remove('indeterminate');
+    fill.style.width = Math.round((completed / total) * 100) + '%';
+  }
+}
+
+function hideCompactBar() {
+  compactingRoomId = null;
+  const bar = document.getElementById('compact-bar');
+  const fill = document.getElementById('compact-fill');
+  if (bar) bar.classList.remove('visible');
+  if (fill) { fill.classList.remove('indeterminate'); fill.style.width = '0%'; }
+  document.querySelector('.h-composer-box')?.classList.remove('ai-processing');
+  document.getElementById('msg-input')?.focus();
+  const btn = document.querySelector('.h-compact-btn');
+  if (btn) { btn.disabled = false; btn.classList.remove('active'); }
 }
 
 // ── Composer seal ──────────────────────────────────────────────────────────

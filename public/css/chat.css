@@ -130,6 +130,37 @@ html.dark .h-faded-mark { opacity: 0.12; }
   padding: 10px 14px; color: var(--h-ink-faint); font-size: 13px;
 }
 
+/* Compact progress bar */
+.h-compact-bar {
+  display: none;
+  height: 3px;
+  background: var(--h-hair-soft);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.h-compact-bar.visible { display: block; }
+.h-compact-fill {
+  height: 100%;
+  width: 0%;
+  background: oklch(0.62 0.14 250);
+  transition: width 0.3s ease;
+}
+.h-compact-fill.indeterminate {
+  width: 100% !important;
+  background: linear-gradient(90deg, transparent, oklch(0.62 0.14 250), transparent);
+  background-size: 200% 100%;
+  animation: compact-shimmer 1.5s ease-in-out infinite;
+}
+@keyframes compact-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.h-compact-btn.active {
+  color: oklch(0.62 0.14 250);
+}
+.h-compact-btn:disabled { opacity: 0.4; cursor: default; }
+
 /* Messages */
 #messages {
   flex: 1;
