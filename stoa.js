@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.3.3';
+const CLIENT_VERSION = '0.3.4';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -149,6 +149,25 @@ function doRestart() {
 const sessionPool = new Map(); // workdir → ClaudeSession
 const sessionIdleTimers = new Map(); // workdir → timeout id
 let SESSION_IDLE_TTL = 5; // minutes, configurable via server
+
+function truncateSessionFile(workdir, sessionId) {
+  if (!sessionId) return;
+  try {
+    const encoded = workdir.replace(/\//g, '-').replace(/\\/g, '-').replace(/:/g, '');
+    const filePath = path.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`);
+    if (!fs.existsSync(filePath)) return;
+    const lines = fs.readFileSync(filePath, 'utf8').split('\n').filter(l => l.trim());
+    let lastBoundary = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try { if (JSON.parse(lines[i]).subtype === 'compact_boundary') { lastBoundary = i; break; } } catch {}
+    }
+    if (lastBoundary <= 0) return;
+    fs.writeFileSync(filePath, lines.slice(lastBoundary).join('\n') + '\n', 'utf8');
+    console.log(`[stoa] compact: truncated ${lastBoundary} old entries from session file`);
+  } catch (err) {
+    console.error(`[stoa] compact: truncate error: ${err.message}`);
+  }
+}
 
 function getSession(workdir) {
   const key = path.resolve(workdir);
@@ -498,6 +517,7 @@ async function handleAgentMessage(msg) {
       },
     }).then(result => {
       console.log(`[stoa] compact: done for ${key}`);
+      truncateSessionFile(key, result?.sessionId || msg.claude_session_id);
       send({ type: 'compact_complete', room_id: msg.room_id, result: result?.content || '', claude_session_id: result?.sessionId || null });
     }).catch(err => {
       console.error(`[stoa] compact error: ${err.message}`);
