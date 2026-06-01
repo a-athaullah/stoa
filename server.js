@@ -1550,6 +1550,12 @@ wss.on('connection', (ws, req) => {
       }
       pendingCompacts.set(roomId, { total: targets.length, completed: 0, agents: targets.map(t => t.actor_id) });
       broadcast(roomId, { type: 'compact_start', room_id: roomId, total: targets.length });
+      setTimeout(() => {
+        if (pendingCompacts.has(roomId)) {
+          pendingCompacts.delete(roomId);
+          broadcast(roomId, { type: 'compact_error', room_id: roomId, error: 'Compact timed out' });
+        }
+      }, 120_000);
       for (const t of targets) {
         const agentWs = agentClients.get(t.actor_id);
         agentWs.send(JSON.stringify({ type: 'compact_trigger', room_id: roomId, workdir: t.workdir }));
