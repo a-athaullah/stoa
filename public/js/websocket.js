@@ -185,7 +185,6 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'compact_done') {
     hideCompactBar();
-    showToast('Sessions compacted');
     return;
   }
 

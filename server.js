@@ -1723,9 +1723,19 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'compact_complete' && agentActorId) {
       const state = pendingCompacts.get(msg.room_id);
       if (!state) return;
+      if (!state.names) state.names = [];
+      const actor = db.prepare('SELECT name FROM actors WHERE id=?').get(agentActorId);
+      if (actor) state.names.push(actor.name);
       state.completed++;
       if (state.completed >= state.total) {
         pendingCompacts.delete(msg.room_id);
+        const label = state.names.length ? state.names.join(', ') : 'session';
+        const content = `${label} · session compacted`;
+        const participant = db.prepare('SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
+        if (participant) {
+          const sysResult = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')").run(msg.room_id, participant.id, content);
+          broadcast(msg.room_id, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: msg.room_id, content, state: 'system_event', created_at: new Date().toISOString() } });
+        }
         broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id });
       } else {
         broadcast(msg.room_id, { type: 'compact_progress', room_id: msg.room_id, completed: state.completed, total: state.total });

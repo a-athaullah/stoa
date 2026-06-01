@@ -489,9 +489,9 @@ async function handleAgentMessage(msg) {
       onState: state => {
         console.log(`[stoa] compact status: ${state}`);
       },
-    }).then(() => {
+    }).then(result => {
       console.log(`[stoa] compact: done for ${key}`);
-      send({ type: 'compact_complete', room_id: msg.room_id });
+      send({ type: 'compact_complete', room_id: msg.room_id, result: result?.content || '' });
     }).catch(err => {
       console.error(`[stoa] compact error: ${err.message}`);
       send({ type: 'compact_error', room_id: msg.room_id, error: err.message });
