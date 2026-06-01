@@ -477,11 +477,18 @@ async function handleAgentMessage(msg) {
   if (msg.type === 'compact_trigger') {
     const workdir = msg.workdir || process.env.STOA_WORK_DIR || os.homedir();
     const key = path.resolve(workdir);
-    const session = sessionPool.get(key);
+    let session = sessionPool.get(key);
     if (!session) {
-      console.log(`[stoa] compact: no session for ${key}`);
-      send({ type: 'compact_error', room_id: msg.room_id, error: 'no active session' });
-      return;
+      if (msg.claude_session_id) {
+        session = new SessionClass({ workDir: key, flags: ['--resume', msg.claude_session_id], resumeId: msg.claude_session_id });
+        sessionPool.set(key, session);
+        startSessionIdleTimer(key);
+        console.log(`[stoa] compact: resuming session ${msg.claude_session_id.slice(0, 8)}... for ${key}`);
+      } else {
+        console.log(`[stoa] compact: no session for ${key}`);
+        send({ type: 'compact_error', room_id: msg.room_id, error: 'no active session' });
+        return;
+      }
     }
     console.log(`[stoa] compact: starting for ${key}`);
     session.send({

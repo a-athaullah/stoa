@@ -1558,7 +1558,7 @@ wss.on('connection', (ws, req) => {
       }, 120_000);
       for (const t of targets) {
         const agentWs = agentClients.get(t.actor_id);
-        agentWs.send(JSON.stringify({ type: 'compact_trigger', room_id: roomId, workdir: t.workdir }));
+        agentWs.send(JSON.stringify({ type: 'compact_trigger', room_id: roomId, workdir: t.workdir, claude_session_id: sessionRow.claude_session_id }));
       }
     }
 
