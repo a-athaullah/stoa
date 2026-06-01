@@ -1531,18 +1531,19 @@ wss.on('connection', (ws, req) => {
         WHERE rp.room_id=? AND a.type='ai'
       `).all(roomId);
       const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(roomId);
+      let roomWorkdir = null;
+      if (roomRow?.workdir_id) {
+        const wd = db.prepare('SELECT path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
+        roomWorkdir = wd?.path || null;
+      }
       const targets = [];
       for (const ai of aiParts) {
         const agentWs = agentClients.get(ai.actor_id);
         if (!agentWs || agentWs.readyState !== 1) continue;
         const sessionRow = db.prepare('SELECT claude_session_id, workdir FROM ai_sessions WHERE participant_id=?').get(ai.participant_id);
         if (!sessionRow?.claude_session_id) continue;
-        let workdir = sessionRow.workdir;
-        if (!workdir && roomRow?.workdir_id) {
-          const wd = db.prepare('SELECT path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
-          workdir = wd?.path || null;
-        }
-        targets.push({ actor_id: ai.actor_id, participant_id: ai.participant_id, name: ai.name, workdir });
+        const workdir = sessionRow.workdir || roomWorkdir;
+        targets.push({ actor_id: ai.actor_id, participant_id: ai.participant_id, name: ai.name, workdir, claude_session_id: sessionRow.claude_session_id });
       }
       if (!targets.length) {
         ws.send(JSON.stringify({ type: 'compact_error', room_id: roomId, error: 'No active AI sessions to compact' }));
@@ -1558,7 +1559,8 @@ wss.on('connection', (ws, req) => {
       }, 120_000);
       for (const t of targets) {
         const agentWs = agentClients.get(t.actor_id);
-        agentWs.send(JSON.stringify({ type: 'compact_trigger', room_id: roomId, workdir: t.workdir, claude_session_id: sessionRow.claude_session_id }));
+        if (!agentWs || agentWs.readyState !== 1) continue;
+        agentWs.send(JSON.stringify({ type: 'compact_trigger', room_id: roomId, workdir: t.workdir, claude_session_id: t.claude_session_id }));
       }
     }
 
