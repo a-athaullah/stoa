@@ -1745,10 +1745,16 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'compact_error' && agentActorId) {
       const state = pendingCompacts.get(msg.room_id);
       if (!state) return;
+      if (!state.errors) state.errors = 0;
+      state.errors++;
       state.completed++;
       if (state.completed >= state.total) {
         pendingCompacts.delete(msg.room_id);
-        broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id });
+        if (state.errors >= state.total) {
+          broadcast(msg.room_id, { type: 'compact_error', room_id: msg.room_id, error: msg.error || 'Compact failed' });
+        } else {
+          broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id });
+        }
       } else {
         broadcast(msg.room_id, { type: 'compact_progress', room_id: msg.room_id, completed: state.completed, total: state.total });
       }
