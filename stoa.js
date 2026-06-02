@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.3.8';
+const CLIENT_VERSION = '0.3.9';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -517,11 +517,14 @@ async function handleAgentMessage(msg) {
       },
     }).then(result => {
       console.log(`[stoa] compact: done for ${key}`);
-      truncateSessionFile(key, msg.claude_session_id);
-      if (result?.sessionId && result.sessionId !== msg.claude_session_id) {
-        truncateSessionFile(key, result.sessionId);
-      }
       send({ type: 'compact_complete', room_id: msg.room_id, result: result?.content || '', claude_session_id: result?.sessionId || null });
+      // Delay truncate: Claude writes compact_boundary asynchronously after returning result
+      setTimeout(() => {
+        truncateSessionFile(key, msg.claude_session_id);
+        if (result?.sessionId && result.sessionId !== msg.claude_session_id) {
+          truncateSessionFile(key, result.sessionId);
+        }
+      }, 3000);
     }).catch(err => {
       console.error(`[stoa] compact error: ${err.message}`);
       send({ type: 'compact_error', room_id: msg.room_id, error: err.message });
