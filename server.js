@@ -966,6 +966,11 @@ const server = http.createServer(async (req, res) => {
       if (avatarPath.startsWith(path.join(__dirname, 'uploads')) && fs.existsSync(avatarPath)) fs.unlinkSync(avatarPath);
     }
     const affectedRooms = db.prepare('SELECT room_id FROM room_participants WHERE actor_id=?').all(id).map(r => r.room_id);
+    const actorParticipantIds = db.prepare('SELECT id FROM room_participants WHERE actor_id=?').all(id).map(r => r.id);
+    if (actorParticipantIds.length) {
+      const ph = actorParticipantIds.map(() => '?').join(',');
+      db.prepare(`DELETE FROM ai_sessions WHERE participant_id IN (${ph})`).run(...actorParticipantIds);
+    }
     db.prepare('DELETE FROM room_participants WHERE actor_id=?').run(id);
     db.prepare('DELETE FROM actors WHERE id=?').run(id);
     const ws = agentClients.get(id);
