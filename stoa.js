@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.3.9';
+const CLIENT_VERSION = '0.3.10';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -149,6 +149,19 @@ function doRestart() {
 const sessionPool = new Map(); // workdir → ClaudeSession
 const sessionIdleTimers = new Map(); // workdir → timeout id
 let SESSION_IDLE_TTL = 5; // minutes, configurable via server
+
+function deleteSessionFile(workdir, sessionId) {
+  if (!sessionId) return;
+  try {
+    const encoded = workdir.replace(/\//g, '-').replace(/\\/g, '-').replace(/:/g, '');
+    const filePath = path.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`);
+    if (!fs.existsSync(filePath)) return;
+    fs.unlinkSync(filePath);
+    console.log(`[stoa] cleanup: deleted session file ${sessionId.slice(0, 8)}...`);
+  } catch (err) {
+    console.error(`[stoa] cleanup: delete error: ${err.message}`);
+  }
+}
 
 function truncateSessionFile(workdir, sessionId) {
   if (!sessionId) return;
@@ -491,6 +504,11 @@ async function handleAgentMessage(msg) {
   if (msg.type === 'search_result' || msg.type === 'get_message_result') {
     const pending = pendingRequests.get(msg.request_id);
     if (pending) { pendingRequests.delete(msg.request_id); pending.resolve(msg); }
+  }
+
+  if (msg.type === 'cleanup_session') {
+    deleteSessionFile(msg.workdir, msg.claude_session_id);
+    return;
   }
 
   if (msg.type === 'compact_trigger') {

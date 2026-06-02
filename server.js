@@ -695,6 +695,18 @@ const server = http.createServer(async (req, res) => {
     const participantIds = db.prepare('SELECT id FROM room_participants WHERE room_id=?').all(roomId).map(r => r.id);
     if (participantIds.length) {
       const ph = participantIds.map(() => '?').join(',');
+      // Notify agents to delete session files before removing from DB
+      const sessions = db.prepare(`
+        SELECT s.claude_session_id, s.workdir, rp.actor_id
+        FROM ai_sessions s JOIN room_participants rp ON rp.id=s.participant_id
+        WHERE rp.room_id=? AND s.claude_session_id IS NOT NULL AND s.workdir IS NOT NULL
+      `).all(roomId);
+      for (const sess of sessions) {
+        const agentWs = agentClients.get(sess.actor_id);
+        if (agentWs && agentWs.readyState === 1) {
+          agentWs.send(JSON.stringify({ type: 'cleanup_session', claude_session_id: sess.claude_session_id, workdir: sess.workdir }));
+        }
+      }
       db.prepare(`DELETE FROM ai_sessions WHERE participant_id IN (${ph})`).run(...participantIds);
     }
     db.prepare('DELETE FROM invite_suggestions WHERE room_id=?').run(roomId);
@@ -1546,6 +1558,12 @@ wss.on('connection', (ws, req) => {
         ) AS recent ORDER BY created_at ASC
       `).all(subscribedRoom);
       ws.send(JSON.stringify({ type: 'history', messages: enrichReply(messages) }));
+      // Restore compact state if room is currently compacting
+      if (pendingCompacts.has(subscribedRoom)) {
+        const cs = pendingCompacts.get(subscribedRoom);
+        ws.send(JSON.stringify({ type: 'compact_start', room_id: subscribedRoom, total: cs.total }));
+        if (cs.completed > 0) ws.send(JSON.stringify({ type: 'compact_progress', room_id: subscribedRoom, completed: cs.completed, total: cs.total }));
+      }
       // Query current model from connected agent
       const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(subscribedRoom);
       if (roomRow?.workdir_id) {

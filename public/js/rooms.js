@@ -214,8 +214,8 @@ function compactSessions(roomId) {
   ws.send(JSON.stringify({ type: 'compact_session', room_id: roomId }));
 }
 
-function showCompactBar(total) {
-  compactingRoomId = currentRoomId;
+function showCompactBar(total, roomId) {
+  compactingRoomId = roomId ?? currentRoomId;
   const bar = document.getElementById('compact-bar');
   const fill = document.getElementById('compact-fill');
   if (!bar || !fill) return;
@@ -541,6 +541,13 @@ async function openRoom(room) {
 
   currentRoomId = room.id;
   currentRoomWorkdirId = room.workdir_id || null;
+  // Apply compact state: hide bar if switching away from compacting room
+  if (compactingRoomId && compactingRoomId !== room.id) {
+    const bar = document.getElementById('compact-bar');
+    const fill = document.getElementById('compact-fill');
+    if (bar) bar.classList.remove('visible');
+    if (fill) { fill.classList.remove('indeterminate'); fill.style.width = '0%'; }
+  }
   clearComposerProcessing();
 
   document.querySelectorAll('.h-room-row').forEach(el => {

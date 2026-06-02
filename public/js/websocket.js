@@ -174,23 +174,22 @@ function handleWsMessage(msg) {
   }
 
   if (msg.type === 'compact_start') {
-    showCompactBar(msg.total);
+    if (msg.room_id === currentRoomId) showCompactBar(msg.total, msg.room_id);
     return;
   }
 
   if (msg.type === 'compact_progress') {
-    updateCompactBar(msg.completed, msg.total);
+    if (msg.room_id === currentRoomId) updateCompactBar(msg.completed, msg.total);
     return;
   }
 
   if (msg.type === 'compact_done') {
-    hideCompactBar();
+    if (msg.room_id === currentRoomId) hideCompactBar();
     return;
   }
 
   if (msg.type === 'compact_error') {
-    hideCompactBar();
-    showToast(msg.error || 'Compact failed', { error: true });
+    if (msg.room_id === currentRoomId) { hideCompactBar(); showToast(msg.error || 'Compact failed', { error: true }); }
     return;
   }
 
