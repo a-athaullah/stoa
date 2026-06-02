@@ -1551,7 +1551,7 @@ wss.on('connection', (ws, req) => {
       for (const ai of aiParts) {
         const agentWs = agentClients.get(ai.actor_id);
         if (!agentWs || agentWs.readyState !== 1) continue;
-        const sessionRow = db.prepare('SELECT claude_session_id, workdir FROM ai_sessions WHERE participant_id=? ORDER BY last_active_at DESC LIMIT 1').get(ai.participant_id);
+        const sessionRow = db.prepare('SELECT claude_session_id, workdir FROM ai_sessions WHERE participant_id=? AND room_id=? ORDER BY last_active_at DESC LIMIT 1').get(ai.participant_id, roomId);
         if (!sessionRow?.claude_session_id) continue;
         const workdir = sessionRow.workdir || roomWorkdir;
         targets.push({ actor_id: ai.actor_id, participant_id: ai.participant_id, name: ai.name, workdir, claude_session_id: sessionRow.claude_session_id });
@@ -1737,7 +1737,7 @@ wss.on('connection', (ws, req) => {
       if (msg.claude_session_id) {
         const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
         if (participant) {
-          db.prepare(`UPDATE ai_sessions SET claude_session_id=?, last_active_at=datetime('now') WHERE participant_id=?`).run(msg.claude_session_id, participant.id);
+          db.prepare(`UPDATE ai_sessions SET claude_session_id=?, last_active_at=datetime('now') WHERE participant_id=? AND room_id=?`).run(msg.claude_session_id, participant.id, msg.room_id);
         }
       }
       const state = pendingCompacts.get(msg.room_id);
