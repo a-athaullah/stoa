@@ -1,5 +1,22 @@
 # Changelog
 
+## [2026-06-02] (2)
+
+### Added
+- **Proactive message** — agents can now post to a room without a user trigger via `POST /api/rooms/:id/message` (agent auth: `X-Agent-Id` + `X-Agent-Secret`). Server validates agent is a participant, room not archived, content non-empty. Does not trigger other AI agents. `sendProactiveMessage(roomId, content)` helper added to `stoa.js`
+- **Room ID in agent prompt** — every trigger now includes `Room ID: <n>` so agents know which room they're in and can use the proactive message endpoint
+- **Delete room cleans up session JSONL** — when a room is deleted, server notifies connected agents to remove the associated `.jsonl` session files (best-effort; no-op if agent offline)
+- **Compact bar per-room** — progress bar and disabled composer now only appear in the room being compacted. Switching rooms hides the bar; returning to the compacting room restores it. Server re-sends `compact_start` on `join_room` if compact is still in progress
+- **Tests**: added coverage for `POST /api/rooms/:id/message` — auth required (403), wrong secret (403), room not found (404), agent not participant (403)
+
+### Fixed
+- **Compact truncate race condition** — `truncateSessionFile` now runs 3 seconds after compact completes, giving Claude time to write `compact_boundary` to the JSONL file before scanning
+- **Compact truncate session ID mismatch** — after compact, session ID may change; truncate now prioritizes the old session file (`msg.claude_session_id`) which holds the boundary, then truncates the new file if different
+- **Frontend silent fails** — several `catch` blocks in `public/js/` that silently dropped errors now log via `console.error` or show a toast
+
+### Documentation
+- `guide-usage.en.md` + `guide-usage.id.md` updated: compact sessions flow, proactive agent messages, room ID availability in agent context
+
 ## [2026-06-02]
 
 ### Added
