@@ -1441,7 +1441,8 @@ Write-Host "Logs   : pm2 logs $AgentName"
       const escape = (s) => `"${(s || '').replace(/"/g, '""')}"`;
       const header = 'id,timestamp,actor,type,content,attachments,reply_to';
       const lines = rows.map(r => {
-        const attachments = r.attachments ? JSON.parse(r.attachments).map(a => a.name || a.url).join('; ') : (r.file_name || '');
+        let parsedAtt; try { parsedAtt = r.attachments ? JSON.parse(r.attachments) : null; } catch { parsedAtt = null; }
+        const attachments = parsedAtt ? parsedAtt.map(a => a.name || a.url).join('; ') : (r.file_name || '');
         return [r.id, r.created_at, escape(r.actor_name), r.actor_type, escape(r.content), escape(attachments), r.reply_to || ''].join(',');
       });
       const csv = [header, ...lines].join('\n');
@@ -1453,7 +1454,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
     }
 
     // Default: JSON
-    const data = { room: { id: roomId, title: room.title }, exported_at: new Date().toISOString(), messages: rows.map(r => ({ ...r, attachments: r.attachments ? JSON.parse(r.attachments) : null })) };
+    const data = { room: { id: roomId, title: room.title }, exported_at: new Date().toISOString(), messages: rows.map(r => { let att = null; try { att = r.attachments ? JSON.parse(r.attachments) : null; } catch { att = null; } return { ...r, attachments: att }; }) };
     res.writeHead(200, {
       'Content-Type': 'application/json; charset=utf-8',
       'Content-Disposition': `attachment; filename="${safeTitle}.json"`,
