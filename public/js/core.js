@@ -70,7 +70,7 @@ async function doLogin(e) {
 }
 
 async function doLogout() {
-  try { await fetch('/api/auth/logout', { method: 'POST' }); } catch {}
+  try { await fetch('/api/auth/logout', { method: 'POST' }); } catch (e) { console.error('Logout request failed:', e); }
   authUser = null;
   location.reload();
 }

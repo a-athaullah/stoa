@@ -152,7 +152,7 @@ function sMakeRow(actor, flash) {
       if (wds.length > 0) {
         sub.textContent += ` · ${wds.length} workdir${wds.length > 1 ? 's' : ''}`;
       }
-    }).catch(() => {});
+    }).catch(e => { console.error('Failed to load workdirs for actor', actor.id, e); });
   }
   info.appendChild(sub);
 
@@ -635,7 +635,7 @@ function sStartPolling() {
         const panel = document.getElementById('s-add-panel');
         if (waiting) waiting.replaceWith(sMakeConnectedSlip(newAI));
         else if (panel) panel.appendChild(sMakeConnectedSlip(newAI));
-        try { const wds = await fjson(`/api/actors/${newAI.id}/workdirs`); if (wds.length) sFinishSetupSlip(newAI.id); } catch {}
+        try { const wds = await fjson(`/api/actors/${newAI.id}/workdirs`); if (wds.length) sFinishSetupSlip(newAI.id); } catch (e) { console.error('Failed to load workdirs after connect', e); }
       }
     } catch {}
   }, 2000);
@@ -666,9 +666,11 @@ let docsCatalog = [];   // [{ slug, title, langs }]
 let docsActiveSlug = null;
 
 async function sLoadDocsTab() {
-  docsCatalog = await fjson('/api/docs');
-  sRenderDocsLangRow();
-  sRenderDocsSidebar();
+  try {
+    docsCatalog = await fjson('/api/docs');
+    sRenderDocsLangRow();
+    sRenderDocsSidebar();
+  } catch { showToast('Failed to load docs', { error: true }); }
 }
 
 function sRenderDocsLangRow() {
@@ -884,7 +886,9 @@ async function sLoadGeneralTab() {
 }
 
 async function sLoadServerTab() {
-  const data = await fjson('/api/settings');
+  let data;
+  try { data = await fjson('/api/settings'); }
+  catch { showToast('Failed to load server settings', { error: true }); return; }
   const port = data.port || 3000;
   document.getElementById('s-human-name-input').value = data.human_name || '';
   const storedUrl = data.public_url || '';
@@ -1087,7 +1091,7 @@ async function refreshRoomList() {
         renderRoomDots(room.id, parts);
       }
     }
-  } catch {}
+  } catch (e) { console.error('refreshRoomList failed:', e); }
 }
 
 document.addEventListener('visibilitychange', () => {
@@ -1122,7 +1126,7 @@ function handleActorStatus(actor) {
       const panel = document.getElementById('s-add-panel');
       if (waiting) waiting.replaceWith(sMakeConnectedSlip(actor));
       else if (panel) panel.appendChild(sMakeConnectedSlip(actor));
-      fjson(`/api/actors/${actor.id}/workdirs`).then(wds => { if (wds.length) sFinishSetupSlip(actor.id); }).catch(() => {});
+      fjson(`/api/actors/${actor.id}/workdirs`).then(wds => { if (wds.length) sFinishSetupSlip(actor.id); }).catch(e => { console.error('Failed to load workdirs in handleActorStatus', e); });
     }
   }
   // Always update status dot and word
