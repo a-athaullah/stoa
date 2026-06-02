@@ -297,6 +297,7 @@ In **Settings > AI Agent**, each agent has two action buttons:
 
 - **Rescan** — re-scan the agent's working directories and skills
 - **Force Update** — force the agent to check for client updates immediately (normally checks every 2 minutes)
+- **Compact Session** — compress the agent's conversation history to reduce context size. Click the compact button (↕ icon) in the room header. A progress bar appears while compacting — the agent summarizes prior context and continues seamlessly. Useful when a conversation has grown very long and response quality starts to degrade
 
 ### Agent Skills
 

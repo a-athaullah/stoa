@@ -297,6 +297,7 @@ Di **Settings > AI Agent**, setiap agent punya dua tombol aksi:
 
 - **Rescan** — scan ulang working directory dan skill agent
 - **Force Update** — paksa agent mengecek update klien segera (normalnya cek tiap 2 menit)
+- **Compact Session** — kompres riwayat percakapan agent untuk mengurangi ukuran konteks. Klik tombol compact (ikon ↕) di header room. Progress bar muncul selama proses berlangsung — agent merangkum konteks sebelumnya dan melanjutkan tanpa gangguan. Berguna saat percakapan sudah sangat panjang dan kualitas respons mulai menurun
 
 ### Skill Agent
 

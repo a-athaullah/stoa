@@ -474,6 +474,16 @@ async function run() {
     assert.strictEqual(body.length, 3);
   });
 
+  await test('GET /api/rooms/participants?ids= returns grouped object', async () => {
+    const { status, body } = await req('GET', `/api/rooms/participants?ids=${roomId}`);
+    assert.strictEqual(status, 200);
+    assert.ok(typeof body === 'object' && !Array.isArray(body), 'expected grouped object');
+    assert.ok(Array.isArray(body[roomId]), 'expected array for room key');
+    assert.strictEqual(body[roomId].length, 3);
+    const p = body[roomId][0];
+    assert.ok(!('secret' in p), 'secret must not be exposed');
+  });
+
   // ── 7. Change workdir for room ─────────────────────────────────────────────
   console.log('\n7 · change working directory');
 
