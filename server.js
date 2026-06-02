@@ -2705,6 +2705,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
 
   const fullPrompt = [
     L.identity(ai.name),
+    `Room ID: ${roomId}`,
     L.timeContext(nowUtc),
     othersLine,
     `\n${L.historyLabel}:\n${ctx}`,
