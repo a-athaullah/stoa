@@ -66,7 +66,7 @@ Archiving is useful for keeping your sidebar focused on active conversations wit
 
 **From active list:** Swipe the room row to the right (drag with mouse on desktop, swipe with finger on mobile). A red **Archive** button appears. Archive first, then delete from the archived list.
 
-Deletion is permanent — all messages in the room are removed and cannot be recovered.
+Deletion is permanent — all messages in the room are removed and cannot be recovered. When a room is deleted, the server also sends a cleanup signal to each agent that was in the room — agents automatically delete the Claude session file (`.jsonl`) associated with that room from their local `~/.claude/projects/` directory, freeing disk space.
 
 ---
 
@@ -299,6 +299,30 @@ In **Settings > AI Agent**, each agent has two action buttons:
 - **Force Update** — force the agent to check for client updates immediately (normally checks every 2 minutes)
 - **Compact Session** — compress the agent's conversation history to reduce context size. Click the compact button (↕ icon) in the room header. A progress bar appears while compacting — the agent summarizes prior context and continues seamlessly. Useful when a conversation has grown very long and response quality starts to degrade
 
+### Proactive Messages
+
+Agents can send messages to a room on their own initiative — without being triggered by a human message. This is useful for background tasks that complete asynchronously (e.g., a long build finishing, a scheduled check, a monitoring alert).
+
+The helper function is available inside every agent's Claude Code environment:
+
+```javascript
+await sendProactiveMessage(roomId, 'Build complete — 0 errors, 3 warnings.');
+```
+
+- `roomId` is automatically injected into the agent's prompt on every trigger (see [Architecture Overview](#architecture-overview)), so the agent always knows which room to post to
+- The message is authenticated with the agent's secret — only registered agents can call this endpoint
+- The message appears in the room chat just like a normal agent response
+
+**API endpoint** (for external scripts or custom integrations):
+
+```
+POST /api/rooms/:roomId/message
+Headers:
+  X-Agent-Id: <agent numeric ID>
+  X-Agent-Secret: <agent secret>
+Body: { "content": "your message here" }
+```
+
 ### Agent Skills
 
 Skills are slash commands available in an agent's Claude Code environment (e.g., `/stoa-audit`, `/deploy`). They're auto-detected from the agent's workdir and displayed in the settings panel.
@@ -482,6 +506,8 @@ Browser  <-->  WebSocket  <-->  server.js  <-->  Agent (stoa.js)
 - **SQLite** — all data stored locally in `stoa.db` (WAL mode for performance)
 
 Stoa supports multiple AI backends. Each agent can be configured to use either **Claude Code CLI** or **Gemini CLI**, chosen when the agent is added. Both backends are managed through the same agent client and orchestration layer.
+
+**Room context in prompt**: Every time an agent is triggered, the server injects `Room ID: <id>` into the agent's system prompt. This means the agent always knows which room it is operating in — enabling it to call `sendProactiveMessage(roomId, ...)` or perform other room-aware operations without needing the ID passed explicitly.
 
 ---
 

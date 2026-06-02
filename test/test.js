@@ -1433,6 +1433,88 @@ async function run() {
     assert.strictEqual(status, 200);
   });
 
+  // ── 9q. Proactive message (POST /api/rooms/:id/message) ───────────────────
+  console.log('\n9q · proactive message');
+
+  // helper: POST with agent auth headers + JSON body
+  function reqAgent(urlPath, body, agentId, agentSecret) {
+    return new Promise((resolve, reject) => {
+      const buf = Buffer.from(JSON.stringify(body));
+      const opts = {
+        hostname: '127.0.0.1', port: 3001, path: urlPath, method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': buf.length,
+          'x-agent-id': String(agentId),
+          'x-agent-secret': agentSecret,
+        },
+      };
+      const r = http.request(opts, res => {
+        const chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => {
+          const raw = Buffer.concat(chunks).toString();
+          let json; try { json = JSON.parse(raw); } catch { json = raw; }
+          resolve({ status: res.statusCode, body: json });
+        });
+      });
+      r.on('error', reject);
+      r.write(buf);
+      r.end();
+    });
+  }
+
+  await test('POST /api/rooms/:id/message without agent auth returns 403', async () => {
+    const { status } = await req('POST', `/api/rooms/${roomId}/message`, { content: 'hello' });
+    assert.strictEqual(status, 403);
+  });
+
+  await test('POST /api/rooms/:id/message with wrong secret returns 403', async () => {
+    const { status } = await reqAgent(`/api/rooms/${roomId}/message`, { content: 'hello' }, idrisId, 'wrongsecret');
+    assert.strictEqual(status, 403);
+  });
+
+  await test('POST /api/rooms/:id/message with empty content returns 400', async () => {
+    const { status } = await reqAgent(`/api/rooms/${roomId}/message`, { content: '   ' }, idrisId, idrisSecret);
+    assert.strictEqual(status, 400);
+  });
+
+  await test('POST /api/rooms/:id/message for non-existent room returns 404', async () => {
+    const { status } = await reqAgent('/api/rooms/999999/message', { content: 'hello' }, idrisId, idrisSecret);
+    assert.strictEqual(status, 404);
+  });
+
+  await test('POST /api/rooms/:id/message success returns message_id', async () => {
+    const { status, body } = await reqAgent(`/api/rooms/${roomId}/message`, { content: 'proactive test message' }, idrisId, idrisSecret);
+    assert.strictEqual(status, 200);
+    assert.ok(body.message_id, `expected message_id, got: ${JSON.stringify(body)}`);
+    // verify persisted
+    const row = db.prepare('SELECT id, content, state FROM messages WHERE id=?').get(body.message_id);
+    assert.ok(row, 'message must exist in DB');
+    assert.strictEqual(row.content, 'proactive test message');
+    assert.strictEqual(row.state, 'complete');
+    // cleanup
+    db.prepare('DELETE FROM messages WHERE id=?').run(body.message_id);
+  });
+
+  // ── 9r. Workspace file (GET /api/workspace/file) ──────────────────────────
+  console.log('\n9r · workspace file');
+
+  await test('GET /api/workspace/file without params returns 400', async () => {
+    const { status } = await reqRaw('GET', '/api/workspace/file');
+    assert.strictEqual(status, 400);
+  });
+
+  await test('GET /api/workspace/file for non-existent room returns 404', async () => {
+    const { status } = await reqRaw('GET', '/api/workspace/file?room=999999&path=test.txt');
+    assert.strictEqual(status, 404);
+  });
+
+  await test('GET /api/workspace/file path traversal returns 403 or 404', async () => {
+    const { status } = await reqRaw('GET', `/api/workspace/file?room=${roomId}&path=../../etc/passwd`);
+    assert.ok(status === 403 || status === 404, `expected 403 or 404, got ${status}`);
+  });
+
   // ── 10. Cleanup ────────────────────────────────────────────────────────────
   console.log('\n10 · cleanup');
 

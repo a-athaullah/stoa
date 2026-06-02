@@ -66,7 +66,7 @@ Mengarsipkan berguna untuk menjaga sidebar tetap fokus pada percakapan aktif tan
 
 **Dari daftar aktif:** Geser baris room ke kanan (drag dengan mouse di desktop, swipe dengan jari di mobile). Tombol **Archive** merah muncul. Arsipkan dulu, lalu hapus dari daftar arsip.
 
-Penghapusan bersifat permanen — semua pesan di room akan dihapus dan tidak bisa dikembalikan.
+Penghapusan bersifat permanen — semua pesan di room akan dihapus dan tidak bisa dikembalikan. Saat room dihapus, server juga mengirim sinyal cleanup ke setiap agent yang ada di room — agent secara otomatis menghapus file sesi Claude (`.jsonl`) yang terkait dengan room tersebut dari direktori lokal `~/.claude/projects/` mereka, membebaskan ruang disk.
 
 ---
 
@@ -299,6 +299,30 @@ Di **Settings > AI Agent**, setiap agent punya dua tombol aksi:
 - **Force Update** — paksa agent mengecek update klien segera (normalnya cek tiap 2 menit)
 - **Compact Session** — kompres riwayat percakapan agent untuk mengurangi ukuran konteks. Klik tombol compact (ikon ↕) di header room. Progress bar muncul selama proses berlangsung — agent merangkum konteks sebelumnya dan melanjutkan tanpa gangguan. Berguna saat percakapan sudah sangat panjang dan kualitas respons mulai menurun
 
+### Pesan Proaktif
+
+Agent bisa mengirim pesan ke room atas inisiatif sendiri — tanpa dipicu oleh pesan manusia. Ini berguna untuk task background yang selesai secara asinkron (misalnya: build panjang selesai, pengecekan terjadwal, notifikasi monitoring).
+
+Helper function tersedia di dalam environment Claude Code setiap agent:
+
+```javascript
+await sendProactiveMessage(roomId, 'Build selesai — 0 error, 3 warning.');
+```
+
+- `roomId` otomatis diinjeksikan ke prompt agent di setiap trigger (lihat [Gambaran Arsitektur](#gambaran-arsitektur)), sehingga agent selalu tahu room mana yang dituju
+- Pesan diautentikasi dengan secret agent — hanya agent yang terdaftar yang bisa memanggil endpoint ini
+- Pesan muncul di chat room seperti respons agent biasa
+
+**API endpoint** (untuk script eksternal atau integrasi kustom):
+
+```
+POST /api/rooms/:roomId/message
+Headers:
+  X-Agent-Id: <numeric ID agent>
+  X-Agent-Secret: <secret agent>
+Body: { "content": "isi pesan di sini" }
+```
+
 ### Skill Agent
 
 Skill adalah slash command yang tersedia di environment Claude Code agent (misal `/stoa-audit`, `/deploy`). Skill otomatis terdeteksi dari workdir agent dan ditampilkan di panel settings.
@@ -482,6 +506,8 @@ Browser  <-->  WebSocket  <-->  server.js  <-->  Agent (stoa.js)
 - **SQLite** — semua data disimpan lokal di `stoa.db` (mode WAL untuk performa)
 
 Stoa mendukung beberapa backend AI. Setiap agent bisa dikonfigurasi untuk menggunakan **Claude Code CLI** atau **Gemini CLI**, dipilih saat agent ditambahkan. Kedua backend dikelola melalui klien agent dan lapisan orkestrasi yang sama.
+
+**Konteks room di prompt**: Setiap kali agent dipicu, server menginjeksikan `Room ID: <id>` ke system prompt agent. Artinya agent selalu tahu room mana yang sedang ia operasikan — memungkinkan pemanggilan `sendProactiveMessage(roomId, ...)` atau operasi lain yang bergantung pada room ID tanpa perlu meneruskan ID secara eksplisit.
 
 ---
 
