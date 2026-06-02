@@ -249,7 +249,7 @@ const UPLOADS_DIR = path.join(__dirname, 'uploads');
 }
 
 // Files yang boleh di-serve sebagai client update
-const CLIENT_FILES = new Set(['stoa.js', 'claude-session.js', 'gemini-session.js', 'gemini-adapter.js']);
+const CLIENT_FILES = new Set(['stoa.js', 'claude-session.js', 'gemini-session.js', 'gemini-adapter.js', 'ollama-session.js']);
 
 // One-time install tokens (expires in 10 min)
 const installTokens = new Map();
@@ -1346,7 +1346,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
     const suffix = crypto.randomBytes(3).toString('hex');
     const name = (entry.name || '').trim() || `stoa-${suffix}`;
     const secret = crypto.randomBytes(32).toString('hex');
-    const adapter = entry.backend === 'gemini' ? 'gemini' : 'claude';
+    const adapter = entry.backend === 'gemini' ? 'gemini' : entry.backend === 'ollama' ? 'ollama' : 'claude';
     const adapterConfig = JSON.stringify({ lang: entry.lang || 'en' });
     const result = db.prepare(
       `INSERT INTO actors (name, type, adapter, adapter_config, avatar_color, avatar_symbol, secret) VALUES (?, 'ai', ?, ?, '#4d9f9f', '◈', ?)`

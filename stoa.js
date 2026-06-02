@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.3.10';
+const CLIENT_VERSION = '0.3.11';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -16,7 +16,9 @@ const { spawnSync } = require('child_process');
 const AI_BACKEND = (process.env.STOA_AI_BACKEND || 'claude').toLowerCase();
 const SessionClass = AI_BACKEND === 'gemini'
   ? require('./gemini-session').GeminiSession
-  : require('./claude-session').ClaudeSession;
+  : AI_BACKEND === 'ollama'
+    ? require('./ollama-session').OllamaSession
+    : require('./claude-session').ClaudeSession;
 
 let STOA_URL      = process.env.STOA_URL    || 'ws://localhost:3001';
 const ACTOR_ID    = parseInt(process.env.STOA_ACTOR_ID || '1');
@@ -58,7 +60,9 @@ let MAX_CONCURRENT = parseInt(process.env.STOA_MAX_CONCURRENT || '1');
 const UPDATE_INTERVAL = 120_000; // cek tiap 2 menit
 const UPDATE_FILES = AI_BACKEND === 'gemini'
   ? ['stoa.js', 'gemini-session.js', 'gemini-adapter.js']
-  : ['stoa.js', 'claude-session.js'];
+  : AI_BACKEND === 'ollama'
+    ? ['stoa.js', 'ollama-session.js']
+    : ['stoa.js', 'claude-session.js'];
 
 const TREE_IGNORE = new Set(['.git', 'node_modules', '.next', '__pycache__', '.venv', 'dist', 'build', '.claude']);
 function isPathSafe(filePath, workdir) {
@@ -903,6 +907,12 @@ const SCAN_EXCLUDE_SYSTEM = new Set([
 function scanForWorkdirs() {
   const home = os.homedir();
   const isWindows = process.platform === 'win32';
+
+  // Ollama has no per-project config folders — just report the default workdir
+  if (AI_BACKEND === 'ollama') {
+    const defaultDir = process.env.STOA_WORK_DIR || process.cwd();
+    return { workdirs: [{ path: path.resolve(defaultDir), skills: [], model: null, is_default: true }], globalSkills: [] };
+  }
 
   // Gemini has no per-project config folders — just report the default workdir + skills from CLI
   if (AI_BACKEND === 'gemini') {
