@@ -1,5 +1,27 @@
 # Changelog
 
+## [2026-06-02]
+
+### Added
+- **Compact session** — button (↕) in room header triggers `/compact` on all active AI sessions. Progress shown as progress bar; completion recorded as a system event in chat history. Timeout 300s. Documented in all 5 language guides
+- **`room_id` in `ai_sessions`** — new column with safe startup migration (ALTER TABLE + backfill from `room_participants`). Enables precise session lookup by room without ambiguity when an agent has sessions across multiple workdirs
+- **UTC timestamp context in agent prompts** — every trigger now includes current time (`2026-06-02 02:17 UTC`) and labels each history message with its UTC timestamp (`[Name @ 2026-06-02 01:15 UTC]: ...`). Agents can now answer time-related questions correctly
+
+### Changed
+- **Compact session lookup** filters by `room_id` in addition to `participant_id`, and uses `ORDER BY last_active_at DESC LIMIT 1` — prevents stale or wrong session being selected when a participant has multiple workdir sessions
+- **Compact update** after completion also filters by `room_id` — ensures only the correct session row is updated
+- **Session JSONL truncated after compact** — entries before the `compact_boundary` marker are removed, reducing disk usage and speeding up future session resumes
+- **`saveSession`** now stores `room_id` (looked up from `room_participants`) on every insert/upsert
+
+### Fixed
+- **FK violation on actor delete** — `ai_sessions` rows now deleted before `room_participants` when an actor is removed, preventing foreign key constraint errors
+- **Compact on idle session** — agent now resumes via `claude_session_id` instead of failing when the session is not in the active pool
+- **Compact error handling** — error is broadcast when all agents fail; previously silently emitted `compact_done`
+- **Stale Windows workdirs** — session rows with `C:\Users\HYPE FLEX\stoa-workspace` path corrected to Ubuntu paths; duplicate stale row removed
+
+### Tests
+- Added: `GET /api/rooms/participants?ids=` — verifies grouped response shape and that `secret` is not exposed
+
 ## [2026-05-31]
 
 ### Changed
