@@ -2479,6 +2479,7 @@ function promptStrings(lang) {
     en: {
       identity: name => `You are ${name}. You are in a conversation on the Stoa platform.`,
       participants: names => `Other participants in this room: ${names}.`,
+      timeContext: now => `Current time: ${now}. All message timestamps in the conversation history are in UTC.`,
       historyLabel: 'Conversation history',
       attachments: 'Attachments',
       attachmentsNote: 'files downloaded to .stoa-attachments/ in workdir if this is the latest message',
@@ -2492,6 +2493,7 @@ function promptStrings(lang) {
     id: {
       identity: name => `Kamu adalah ${name}. Kamu sedang dalam percakapan di platform Stoa.`,
       participants: names => `Peserta lain di room ini: ${names}.`,
+      timeContext: now => `Waktu sekarang: ${now}. Semua timestamp di riwayat percakapan adalah UTC.`,
       historyLabel: 'Riwayat percakapan',
       attachments: 'Lampiran',
       attachmentsNote: 'file sudah didownload ke .stoa-attachments/ di workdir jika ini pesan terbaru',
@@ -2505,6 +2507,7 @@ function promptStrings(lang) {
     ja: {
       identity: name => `あなたは${name}です。Stoaプラットフォームで会話中です。`,
       participants: names => `このルームの他の参加者: ${names}。`,
+      timeContext: now => `現在時刻: ${now}。会話履歴のタイムスタンプはすべてUTCです。`,
       historyLabel: '会話履歴',
       attachments: '添付ファイル',
       attachmentsNote: '最新メッセージの場合、ファイルはworkdirの.stoa-attachments/にダウンロード済み',
@@ -2518,6 +2521,7 @@ function promptStrings(lang) {
     ko: {
       identity: name => `당신은 ${name}입니다. Stoa 플랫폼에서 대화 중입니다.`,
       participants: names => `이 방의 다른 참가자: ${names}.`,
+      timeContext: now => `현재 시각: ${now}. 대화 기록의 모든 타임스탬프는 UTC입니다.`,
       historyLabel: '대화 기록',
       attachments: '첨부파일',
       attachmentsNote: '최신 메시지인 경우 파일이 workdir의 .stoa-attachments/에 다운로드됨',
@@ -2531,6 +2535,7 @@ function promptStrings(lang) {
     zh: {
       identity: name => `你是${name}。你正在Stoa平台上进行对话。`,
       participants: names => `此房间的其他参与者：${names}。`,
+      timeContext: now => `当前时间：${now}。对话历史中的所有时间戳均为UTC。`,
       historyLabel: '对话历史',
       attachments: '附件',
       attachmentsNote: '如果这是最新消息，文件已下载到workdir的.stoa-attachments/',
@@ -2603,14 +2608,19 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
   const agentLang = (() => { try { return JSON.parse(ai.adapter_config || '{}').lang || 'en'; } catch { return 'en'; } })();
   const L = promptStrings(agentLang);
 
+  const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+
   const history = db.prepare(`
-    SELECT a.name, m.content, m.image_url, m.file_url, m.file_name, m.attachments FROM messages m
+    SELECT a.name, m.content, m.image_url, m.file_url, m.file_name, m.attachments, m.created_at FROM messages m
     JOIN room_participants rp ON rp.id=m.participant_id
     JOIN actors a ON a.id=rp.actor_id
     WHERE m.room_id=? AND m.state='complete' ORDER BY m.created_at DESC LIMIT 10
   `).all(roomId);
   const ctx = history.reverse().map(r => {
-    let line = `[${r.name}]: ${r.content || ''}`;
+    const ts = r.created_at
+      ? new Date(r.created_at.replace(' ', 'T') + 'Z').toISOString().replace('T', ' ').slice(0, 16) + ' UTC'
+      : '';
+    let line = `[${r.name}${ts ? ' @ ' + ts : ''}]: ${r.content || ''}`;
     let files = [];
     if (r.attachments) {
       try { files = JSON.parse(r.attachments); } catch {}
@@ -2650,6 +2660,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
 
   const fullPrompt = [
     L.identity(ai.name),
+    L.timeContext(nowUtc),
     othersLine,
     `\n${L.historyLabel}:\n${ctx}`,
     replyCtx,
