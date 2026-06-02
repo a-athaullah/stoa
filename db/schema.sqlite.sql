@@ -58,12 +58,14 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE TABLE IF NOT EXISTS ai_sessions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   participant_id INTEGER NOT NULL,
+  room_id INTEGER DEFAULT NULL,
   claude_session_id TEXT NOT NULL,
   workdir TEXT DEFAULT NULL,
   status TEXT DEFAULT 'idle' CHECK(status IN ('active','idle')),
   last_active_at TEXT DEFAULT (datetime('now')),
   created_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (participant_id) REFERENCES room_participants(id),
+  FOREIGN KEY (room_id) REFERENCES rooms(id),
   UNIQUE (participant_id, workdir)
 );
 
@@ -138,6 +140,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_skills_actor_id ON agent_skills(actor_id);
 CREATE INDEX IF NOT EXISTS idx_agent_skills_workdir_id ON agent_skills(workdir_id);
 CREATE INDEX IF NOT EXISTS idx_messages_participant_id ON messages(participant_id);
 CREATE INDEX IF NOT EXISTS idx_ai_sessions_participant_id ON ai_sessions(participant_id);
+CREATE INDEX IF NOT EXISTS idx_ai_sessions_room_id ON ai_sessions(room_id);
 CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(reply_to);
 CREATE INDEX IF NOT EXISTS idx_rooms_workdir_id ON rooms(workdir_id);
 CREATE INDEX IF NOT EXISTS idx_rooms_created_by ON rooms(created_by);

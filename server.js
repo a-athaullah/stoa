@@ -41,10 +41,11 @@ function getSession(participantId, workdir) {
 }
 
 function saveSession(participantId, claudeSessionId, workdir) {
+  const rp = db.prepare('SELECT room_id FROM room_participants WHERE id=?').get(participantId);
   db.prepare(
-    `INSERT INTO ai_sessions (participant_id, claude_session_id, workdir, status) VALUES (?,?,?,'idle')
-     ON CONFLICT(participant_id, workdir) DO UPDATE SET claude_session_id=excluded.claude_session_id, status='idle', last_active_at=datetime('now')`
-  ).run(participantId, claudeSessionId, workdir || null);
+    `INSERT INTO ai_sessions (participant_id, room_id, claude_session_id, workdir, status) VALUES (?,?,?,?,'idle')
+     ON CONFLICT(participant_id, workdir) DO UPDATE SET claude_session_id=excluded.claude_session_id, room_id=excluded.room_id, status='idle', last_active_at=datetime('now')`
+  ).run(participantId, rp?.room_id ?? null, claudeSessionId, workdir || null);
 }
 
 // Load .env if present
@@ -95,6 +96,16 @@ try {
   if (!cols.includes('archived_at')) {
     db.prepare("ALTER TABLE rooms ADD COLUMN archived_at TEXT DEFAULT NULL").run();
     console.log('[db] added rooms.archived_at column');
+  }
+} catch {}
+
+try {
+  const cols = db.prepare("PRAGMA table_info(ai_sessions)").all().map(c => c.name);
+  if (!cols.includes('room_id')) {
+    db.prepare("ALTER TABLE ai_sessions ADD COLUMN room_id INTEGER DEFAULT NULL REFERENCES rooms(id)").run();
+    db.prepare("UPDATE ai_sessions SET room_id = (SELECT rp.room_id FROM room_participants rp WHERE rp.id = ai_sessions.participant_id)").run();
+    db.exec("CREATE INDEX IF NOT EXISTS idx_ai_sessions_room_id ON ai_sessions(room_id)");
+    console.log('[db] added ai_sessions.room_id with backfill from room_participants');
   }
 } catch {}
 
@@ -1540,7 +1551,7 @@ wss.on('connection', (ws, req) => {
       for (const ai of aiParts) {
         const agentWs = agentClients.get(ai.actor_id);
         if (!agentWs || agentWs.readyState !== 1) continue;
-        const sessionRow = db.prepare('SELECT claude_session_id, workdir FROM ai_sessions WHERE participant_id=?').get(ai.participant_id);
+        const sessionRow = db.prepare('SELECT claude_session_id, workdir FROM ai_sessions WHERE participant_id=? ORDER BY last_active_at DESC LIMIT 1').get(ai.participant_id);
         if (!sessionRow?.claude_session_id) continue;
         const workdir = sessionRow.workdir || roomWorkdir;
         targets.push({ actor_id: ai.actor_id, participant_id: ai.participant_id, name: ai.name, workdir, claude_session_id: sessionRow.claude_session_id });
