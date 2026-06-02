@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.3.4';
+const CLIENT_VERSION = '0.3.5';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -805,6 +805,27 @@ async function extractAndUploadFiles(content, workdir) {
     }
   }
   return { text, attachments };
+}
+
+async function sendProactiveMessage(roomId, content) {
+  const baseUrl = STOA_URL.replace('ws://', 'http://').replace('wss://', 'https://');
+  try {
+    const res = await fetch(`${baseUrl}/api/rooms/${roomId}/message`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Agent-Id': String(ACTOR_ID),
+        'X-Agent-Secret': STOA_SECRET,
+      },
+      body: JSON.stringify({ content }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      console.error(`[stoa] proactive message failed: ${err.error || res.status}`);
+    }
+  } catch (e) {
+    console.error(`[stoa] proactive message error: ${e.message}`);
+  }
 }
 
 function drainQueue() {

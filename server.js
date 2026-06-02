@@ -837,6 +837,51 @@ const server = http.createServer(async (req, res) => {
     return json(res, { ok: true });
   }
 
+  if (req.method === 'POST' && url.pathname.match(/^\/api\/rooms\/\d+\/message$/)) {
+    const roomId = parseInt(url.pathname.split('/')[3]);
+
+    // Only agents can post proactive messages
+    const agentId = parseInt(req.headers['x-agent-id'] || '0');
+    const agentSecret = req.headers['x-agent-secret'] || '';
+    if (!agentId || !agentSecret) return json(res, { error: 'agent auth required' }, 403);
+
+    const agentActor = db.prepare("SELECT id, secret FROM actors WHERE id=? AND type='ai'").get(agentId);
+    if (!agentActor) return json(res, { error: 'actor not found' }, 403);
+    const h = s => crypto.createHmac('sha256', 'stoa').update(s).digest();
+    if (!agentActor.secret || !crypto.timingSafeEqual(h(agentSecret), h(agentActor.secret))) {
+      return json(res, { error: 'invalid credentials' }, 403);
+    }
+
+    const data = parseJsonBody(await readBody(req));
+    if (!data) return json(res, { error: 'Invalid JSON' }, 400);
+    const content = data.content?.trim();
+    if (!content) return json(res, { error: 'content required' }, 400);
+
+    const room = db.prepare('SELECT id, archived_at FROM rooms WHERE id=?').get(roomId);
+    if (!room) return json(res, { error: 'room not found' }, 404);
+    if (room.archived_at) return json(res, { error: 'room is archived' }, 400);
+
+    const participant = db.prepare(
+      'SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=?'
+    ).get(roomId, agentId);
+    if (!participant) return json(res, { error: 'agent is not a participant in this room' }, 403);
+
+    const result = db.prepare(
+      "INSERT INTO messages (room_id, participant_id, content, state) VALUES (?, ?, ?, 'complete')"
+    ).run(roomId, participant.id, content);
+    const messageId = result.lastInsertRowid;
+
+    const row = db.prepare(`
+      SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
+      FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id
+      WHERE m.id=?
+    `).get(messageId);
+
+    broadcast(roomId, { type: 'message_new', message: row });
+    broadcastGlobal({ type: 'room_activity', room_id: roomId });
+    return json(res, { message_id: messageId });
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/setup/status') {
     const row = db.prepare(`SELECT COUNT(*) AS cnt FROM actors WHERE type='human'`).get();
     return json(res, { needsSetup: row.cnt === 0 });
