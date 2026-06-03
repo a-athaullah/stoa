@@ -60,17 +60,19 @@ async function sLoad() {
 }
 
 function sRenderList() {
-  const list = document.getElementById('s-agents-list');
-  if (!list) return;
-  list.innerHTML = '';
-  const sorted = [...settingsActors].sort((a, b) => {
-    if (a.type === 'human' && b.type !== 'human') return -1;
-    if (a.type !== 'human' && b.type === 'human') return 1;
-    return b.id - a.id;
-  });
-  for (const a of sorted) {
+  const humanList = document.getElementById('s-human-list');
+  const aiList = document.getElementById('s-agents-list');
+  if (humanList) humanList.innerHTML = '';
+  if (aiList) aiList.innerHTML = '';
+  const humans = settingsActors.filter(a => a.type === 'human');
+  const agents = [...settingsActors.filter(a => a.type !== 'human')].sort((a, b) => b.id - a.id);
+  for (const a of humans) {
     if (!sRowStates.has(a.id)) sRowStates.set(a.id, { state: 'default', draft: a.name });
-    list.appendChild(sMakeRow(a));
+    humanList?.appendChild(sMakeRow(a));
+  }
+  for (const a of agents) {
+    if (!sRowStates.has(a.id)) sRowStates.set(a.id, { state: 'default', draft: a.name });
+    aiList?.appendChild(sMakeRow(a));
   }
 }
 
