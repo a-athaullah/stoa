@@ -109,6 +109,14 @@ try {
   }
 } catch {}
 
+try {
+  const cols = db.prepare("PRAGMA table_info(actors)").all().map(c => c.name);
+  if (!cols.includes('available_models')) {
+    db.prepare("ALTER TABLE actors ADD COLUMN available_models TEXT DEFAULT NULL").run();
+    console.log('[db] added actors.available_models column');
+  }
+} catch {}
+
 // Add missing indexes for existing databases
 try {
   db.exec("CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(reply_to)");
@@ -1434,6 +1442,32 @@ Write-Host "Logs   : pm2 logs $AgentName"
     return json(res, { ok: true });
   }
 
+  // GET /api/actors/:id/capabilities — return available Ollama models
+  if (req.method === 'GET' && url.pathname.match(/^\/api\/actors\/\d+\/capabilities$/)) {
+    const actorId = parseInt(url.pathname.split('/')[3]);
+    const row = db.prepare('SELECT available_models FROM actors WHERE id=?').get(actorId);
+    const models = (() => { try { return JSON.parse(row?.available_models || 'null'); } catch { return null; } })();
+    return json(res, { models: models || [] });
+  }
+
+  // PUT /api/actors/:id/config — update name, lang, adapter_config fields
+  if (req.method === 'PUT' && url.pathname.match(/^\/api\/actors\/\d+\/config$/)) {
+    const actorId = parseInt(url.pathname.split('/')[3]);
+    const body = parseJsonBody(await readBody(req));
+    if (!body) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
+    const { name, lang, adapter_config: newCfg } = body;
+    if (name !== undefined && !name?.trim()) { res.writeHead(400); return res.end('name required'); }
+    if (name !== undefined) db.prepare('UPDATE actors SET name=? WHERE id=?').run(name.trim(), actorId);
+    if (lang !== undefined || (newCfg && typeof newCfg === 'object')) {
+      const existing = (() => { try { return JSON.parse(db.prepare('SELECT adapter_config FROM actors WHERE id=?').get(actorId)?.adapter_config || '{}'); } catch { return {}; } })();
+      if (lang !== undefined) existing.lang = lang;
+      if (newCfg && typeof newCfg === 'object') Object.assign(existing, newCfg);
+      db.prepare('UPDATE actors SET adapter_config=? WHERE id=?').run(JSON.stringify(existing), actorId);
+    }
+    const actor = db.prepare('SELECT id, name, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, created_at FROM actors WHERE id=?').get(actorId);
+    return json(res, actor);
+  }
+
 
 
   // ── Export room messages ──
@@ -1752,6 +1786,14 @@ wss.on('connection', (ws, req) => {
       if (globalBatch.length) batchSkills(globalBatch);
       console.log(`[agent] Actor #${agentActorId} reported ${workdirs.length} workdirs, ${globalSkills.length} global skills`);
       broadcastGlobal({ type: 'agent_scan_complete', actor_id: agentActorId });
+    }
+
+    // ── Agent reports available models (Ollama)
+    if (msg.type === 'agent_capabilities' && agentActorId) {
+      if (Array.isArray(msg.models)) {
+        db.prepare('UPDATE actors SET available_models=? WHERE id=?').run(JSON.stringify(msg.models), agentActorId);
+        console.log(`[capabilities] Actor #${agentActorId}: ${msg.models.length} Ollama models`);
+      }
     }
 
     // ── Agent reports model for a workdir

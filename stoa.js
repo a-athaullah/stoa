@@ -281,6 +281,17 @@ async function handleAgentMessage(msg) {
     } catch (err) {
       console.error('[stoa] Scan failed:', err.message);
     }
+    if (AI_BACKEND === 'ollama') {
+      const ollamaHost = process.env.OLLAMA_HOST || 'http://localhost:11434';
+      fetchText(`${ollamaHost}/api/tags`).then(text => {
+        const data = JSON.parse(text);
+        const models = (data?.models || []).map(m => ({ name: m.name, size: m.size }));
+        send({ type: 'agent_capabilities', models });
+        console.log(`[stoa] Reported ${models.length} Ollama models to server`);
+      }).catch(err => {
+        console.error('[stoa] Failed to fetch Ollama models:', err.message);
+      });
+    }
   }
 
   if (msg.type === 'set_config') {

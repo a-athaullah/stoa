@@ -129,6 +129,56 @@ function sMakeRow(actor, flash) {
     }, 150));
     info.appendChild(inp);
     setTimeout(() => { inp.focus(); inp.select(); }, 0);
+  } else if (rs.state === 'editing') {
+    const nameInp = document.createElement('input');
+    nameInp.className = 's-rename-input';
+    nameInp.style.cssText = `border-color:${color};width:100%;box-sizing:border-box`;
+    nameInp.value = rs.draft.name; nameInp.type = 'text'; nameInp.spellcheck = false;
+    nameInp.addEventListener('input', () => { const s = sRowStates.get(actor.id); if (s) s.draft.name = nameInp.value; });
+    nameInp.addEventListener('keydown', e => {
+      if (e.key === 'Enter')  { e.preventDefault(); sCommitEdit(actor.id); }
+      if (e.key === 'Escape') { e.preventDefault(); sCancelEdit(actor.id); }
+    });
+    info.appendChild(nameInp);
+
+    const cfgRow = document.createElement('div');
+    cfgRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:5px';
+    const mkLbl = t => { const l = document.createElement('span'); l.style.cssText = 'font-size:11px;color:var(--h-ink-faint);font-family:var(--h-serif);font-style:italic'; l.textContent = t; return l; };
+    const mkSel = (id) => { const s = document.createElement('select'); if (id) s.id = id; s.className = 's-name-input'; s.style.cssText = 'width:auto;min-width:100px;font-size:12px;padding:2px 6px;cursor:pointer'; return s; };
+
+    cfgRow.appendChild(mkLbl('lang'));
+    const langSel = mkSel();
+    Object.entries(STOA_LANGS).forEach(([code, lbl]) => {
+      const opt = document.createElement('option');
+      opt.value = code; opt.textContent = lbl;
+      if (code === rs.draft.lang) opt.selected = true;
+      langSel.appendChild(opt);
+    });
+    langSel.addEventListener('change', () => { const s = sRowStates.get(actor.id); if (s) s.draft.lang = langSel.value; });
+    cfgRow.appendChild(langSel);
+
+    if (actor.adapter === 'ollama') {
+      const addModelSel = (label, id, currentVal) => {
+        cfgRow.appendChild(mkLbl(label));
+        const sel = mkSel(id);
+        sel.disabled = rs.models === null;
+        const placeholder = document.createElement('option');
+        placeholder.value = currentVal || ''; placeholder.textContent = rs.models === null ? 'loading…' : (currentVal || '—');
+        sel.appendChild(placeholder);
+        sel.addEventListener('change', () => {
+          const s = sRowStates.get(actor.id);
+          if (s) s.draft[label === 'chat' ? 'model_chat' : 'model_vision'] = sel.value;
+        });
+        cfgRow.appendChild(sel);
+        return sel;
+      };
+      addModelSel('chat', `s-model-chat-${actor.id}`, rs.draft.model_chat);
+      addModelSel('vision', `s-model-vis-${actor.id}`, rs.draft.model_vision);
+      if (rs.models && rs.models.length > 0) sPopulateModelSelects(actor.id, rs.models, rs.draft);
+    }
+
+    info.appendChild(cfgRow);
+    setTimeout(() => nameInp.focus(), 0);
   } else {
     const nameRow = document.createElement('div');
     nameRow.className = 's-agent-name-row';
@@ -214,14 +264,25 @@ function sMakeRow(actor, flash) {
     cancel.addEventListener('click', () => sCancelRename(actor.id));
     acts.appendChild(ok); acts.appendChild(cancel);
 
+  } else if (rs.state === 'editing') {
+    const ok = document.createElement('button');
+    ok.className = 's-icon-btn s-ok'; ok.title = 'Save';
+    ok.innerHTML = svgCheck();
+    ok.addEventListener('click', () => sCommitEdit(actor.id));
+    const cancel = document.createElement('button');
+    cancel.className = 's-icon-btn'; cancel.title = 'Cancel';
+    cancel.innerHTML = svgX();
+    cancel.addEventListener('click', () => sCancelEdit(actor.id));
+    acts.appendChild(ok); acts.appendChild(cancel);
+
   } else if (rs.state === 'confirm-delete') {
     acts.appendChild(sMakeConfirmPill(actor));
 
   } else {
     const ren = document.createElement('button');
-    ren.className = 's-icon-btn'; ren.title = 'Rename';
+    ren.className = 's-icon-btn'; ren.title = isHuman ? 'Rename' : 'Edit settings';
     ren.innerHTML = svgPencil();
-    ren.addEventListener('click', e => { e.stopPropagation(); sStartRename(actor.id); });
+    ren.addEventListener('click', e => { e.stopPropagation(); isHuman ? sStartRename(actor.id) : sStartEdit(actor.id); });
 
     if (!isHuman) {
       const refresh = document.createElement('button');
@@ -299,6 +360,79 @@ function sRefreshRow(id) {
   const actor = settingsActors.find(a => a.id === id);
   const el = document.getElementById('s-row-' + id);
   if (actor && el) el.replaceWith(sMakeRow(actor));
+}
+
+function sPopulateModelSelects(actorId, models, draft) {
+  ['chat', 'vision'].forEach(kind => {
+    const sel = document.getElementById(`s-model-${kind === 'chat' ? 'chat' : 'vis'}-${actorId}`);
+    if (!sel) return;
+    const currentVal = kind === 'chat' ? draft.model_chat : draft.model_vision;
+    sel.innerHTML = '';
+    const names = models.map(m => m.name);
+    if (currentVal && !names.includes(currentVal)) names.unshift(currentVal);
+    for (const name of names) {
+      const opt = document.createElement('option');
+      opt.value = name; opt.textContent = name;
+      if (name === currentVal) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    sel.disabled = false;
+  });
+}
+
+function sStartEdit(actorId) {
+  const actor = settingsActors.find(a => a.id === actorId);
+  if (!actor) return;
+  const cfg = (() => { try { return JSON.parse(actor.adapter_config || '{}'); } catch { return {}; } })();
+  const draft = { name: actor.name, lang: cfg.lang || 'en', model_chat: cfg.model_chat || '', model_vision: cfg.model_vision || '' };
+  sRowStates.set(actorId, { state: 'editing', draft, models: null });
+  sRefreshRow(actorId);
+  if (actor.adapter === 'ollama') {
+    fjson(`/api/actors/${actorId}/capabilities`).then(data => {
+      const rs = sRowStates.get(actorId);
+      if (rs && rs.state === 'editing') {
+        rs.models = data.models || [];
+        sPopulateModelSelects(actorId, rs.models, rs.draft);
+      }
+    }).catch(() => {
+      const rs = sRowStates.get(actorId);
+      if (rs && rs.state === 'editing') rs.models = [];
+    });
+  }
+}
+
+async function sCommitEdit(actorId) {
+  const rs = sRowStates.get(actorId);
+  if (!rs) return;
+  const actor = settingsActors.find(a => a.id === actorId);
+  if (!actor) return;
+  const { name, lang, model_chat, model_vision } = rs.draft;
+  if (!name?.trim()) { showToast('Name cannot be empty', { error: true }); return; }
+  const body = { name: name.trim(), lang };
+  if (actor.adapter === 'ollama') {
+    body.adapter_config = {};
+    if (model_chat) body.adapter_config.model_chat = model_chat;
+    if (model_vision) body.adapter_config.model_vision = model_vision;
+  }
+  try {
+    const r = await fetch(`/api/actors/${actorId}/config`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error('save failed');
+    const updated = await r.json();
+    const idx = settingsActors.findIndex(a => a.id === actorId);
+    if (idx >= 0) settingsActors[idx] = { ...settingsActors[idx], ...updated };
+    const allIdx = allActors.findIndex(a => a.id === actorId);
+    if (allIdx >= 0) allActors[allIdx] = { ...allActors[allIdx], ...updated };
+    sRowStates.set(actorId, { state: 'default', draft: name.trim() });
+    sRefreshRow(actorId);
+  } catch { showToast('Failed to save agent settings', { error: true }); }
+}
+
+function sCancelEdit(actorId) {
+  const actor = settingsActors.find(a => a.id === actorId);
+  sRowStates.set(actorId, { state: 'default', draft: actor?.name || '' });
+  sRefreshRow(actorId);
 }
 
 function sStartRename(id) {
