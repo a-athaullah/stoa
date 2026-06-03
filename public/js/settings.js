@@ -392,7 +392,7 @@ function sGetCmd() {
   const base = sPublicUrl || `http://localhost:${sPort}`;
   const params = [];
   if (sAddPanel.name) params.push(`name=${encodeURIComponent(sAddPanel.name)}`);
-  if (sAddPanel.backend === 'gemini') params.push('backend=gemini');
+  if (sAddPanel.backend !== 'claude') params.push(`backend=${sAddPanel.backend}`);
   if (sAddPanel.lang && sAddPanel.lang !== 'en') params.push(`lang=${sAddPanel.lang}`);
   const q = params.length ? '?' + params.join('&') : '';
   const url = `${base}/${({unix:'install.sh',ps:'install.ps1',cmd:'install.cmd'})[sAddPanel.os]}${q}`;
@@ -479,7 +479,7 @@ function sRenderAddPanel() {
   beLbl.textContent = 'AI agent';
   const beSelect = document.createElement('select');
   beSelect.className = 's-name-input'; beSelect.style.cssText = 'width:auto;min-width:120px;cursor:pointer';
-  [['claude','Claude Code CLI'],['gemini','Gemini CLI']].forEach(([id,lbl]) => {
+  [['claude','Claude Code CLI'],['gemini','Gemini CLI'],['ollama','Ollama (local)']].forEach(([id,lbl]) => {
     const opt = document.createElement('option');
     opt.value = id; opt.textContent = lbl;
     if (sAddPanel.backend === id) opt.selected = true;

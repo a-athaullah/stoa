@@ -1123,13 +1123,22 @@ const server = http.createServer(async (req, res) => {
     installTokens.set(token, { expires: Date.now() + 600_000, name: presetName, backend, lang });
 
     const isGemini = backend === 'gemini';
+    const isOllama = backend === 'ollama';
     const clientFiles = isGemini
       ? 'stoa.js gemini-session.js gemini-adapter.js'
-      : 'stoa.js claude-session.js';
+      : isOllama
+        ? 'stoa.js ollama-session.js'
+        : 'stoa.js claude-session.js';
     const trustCmd = isGemini
       ? 'gemini --version > /dev/null 2>&1 || true'
-      : 'claude --version > /dev/null 2>&1 || true';
-    const backendEnv = isGemini ? `\n      STOA_AI_BACKEND: 'gemini',` : '';
+      : isOllama
+        ? '# no CLI trust step needed for Ollama'
+        : 'claude --version > /dev/null 2>&1 || true';
+    const backendEnv = isGemini
+      ? `\n      STOA_AI_BACKEND: 'gemini',`
+      : isOllama
+        ? `\n      STOA_AI_BACKEND: 'ollama',`
+        : '';
 
     const script = `#!/bin/bash
 set -e
@@ -1139,7 +1148,7 @@ STOA_URL="${stoaUrl}"
 REG_TOKEN="${token}"
 AGENT_DIR="\${HOME}/stoa-agent"
 
-echo "=== Stoa Agent Setup (${isGemini ? 'Gemini' : 'Claude'}) ==="
+echo "=== Stoa Agent Setup (${isGemini ? 'Gemini' : isOllama ? 'Ollama' : 'Claude'}) ==="
 echo "Server : \${BASE_URL}"
 echo ""
 
@@ -1231,13 +1240,22 @@ echo "Logs   : pm2 logs \${AGENT_NAME}"
     installTokens.set(token, { expires: Date.now() + 600_000, name: presetName, backend: ps1Backend, lang: ps1Lang });
 
     const ps1IsGemini = ps1Backend === 'gemini';
+    const ps1IsOllama = ps1Backend === 'ollama';
     const ps1Files = ps1IsGemini
       ? '"stoa.js","gemini-session.js","gemini-adapter.js"'
-      : '"stoa.js","claude-session.js"';
+      : ps1IsOllama
+        ? '"stoa.js","ollama-session.js"'
+        : '"stoa.js","claude-session.js"';
     const ps1TrustCmd = ps1IsGemini
       ? 'try { & gemini --version 2>$null } catch {}'
-      : 'try { & claude --version 2>$null } catch {}';
-    const ps1BackendEnv = ps1IsGemini ? `\n      STOA_AI_BACKEND: 'gemini',` : '';
+      : ps1IsOllama
+        ? '# no CLI trust step needed for Ollama'
+        : 'try { & claude --version 2>$null } catch {}';
+    const ps1BackendEnv = ps1IsGemini
+      ? `\n      STOA_AI_BACKEND: 'gemini',`
+      : ps1IsOllama
+        ? `\n      STOA_AI_BACKEND: 'ollama',`
+        : '';
 
     const script = `$ErrorActionPreference = "Stop"
 $BaseUrl = "${baseUrl}"
@@ -1246,7 +1264,7 @@ $RegToken = "${token}"
 $AgentDir = "$env:USERPROFILE\\stoa-agent"
 $WorkDir  = "$env:USERPROFILE\\stoa-workspace"
 
-Write-Host "=== Stoa Agent Setup (${ps1IsGemini ? 'Gemini' : 'Claude'}) ==="
+Write-Host "=== Stoa Agent Setup (${ps1IsGemini ? 'Gemini' : ps1IsOllama ? 'Ollama' : 'Claude'}) ==="
 Write-Host "Server : $BaseUrl"
 Write-Host ""
 
