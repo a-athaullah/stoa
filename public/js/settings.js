@@ -738,8 +738,74 @@ function sFinishSetupSlip(actorId) {
   const l2 = document.createElement('div'); l2.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)';
   l2.textContent = "rename them above, or leave the auto-name — they'll appear in your rooms.";
   title?.parentElement?.appendChild(l2);
-  const doneBtn = document.getElementById('s-setup-done-' + actorId);
-  if (doneBtn) { doneBtn.style.opacity = '1'; doneBtn.style.pointerEvents = 'auto'; }
+
+  const isOllama = sAddPanel.newActor?.adapter === 'ollama';
+  if (!isOllama) {
+    const doneBtn = document.getElementById('s-setup-done-' + actorId);
+    if (doneBtn) { doneBtn.style.opacity = '1'; doneBtn.style.pointerEvents = 'auto'; }
+    return;
+  }
+
+  // Ollama: fetch available models and show picker before enabling done
+  fjson(`/api/actors/${actorId}/capabilities`).then(data => {
+    const models = data.models || [];
+    const slip = document.getElementById('s-setup-slip-' + actorId);
+    const doneBtn = document.getElementById('s-setup-done-' + actorId);
+    if (!models.length || !slip || !doneBtn) {
+      if (doneBtn) { doneBtn.style.opacity = '1'; doneBtn.style.pointerEvents = 'auto'; }
+      return;
+    }
+
+    const mkLbl = t => { const l = document.createElement('span'); l.style.cssText = 'font-size:11px;color:var(--h-ink-faint);font-family:var(--h-serif);font-style:italic'; l.textContent = t; return l; };
+    const mkSel = () => { const s = document.createElement('select'); s.className = 's-name-input'; s.style.cssText = 'width:auto;min-width:120px;font-size:12px;padding:2px 6px;cursor:pointer'; return s; };
+
+    const selectedModels = { model_chat: '', model_vision: '' };
+
+    const checkDone = () => {
+      const ready = !!selectedModels.model_chat;
+      doneBtn.style.opacity = ready ? '1' : '0.4';
+      doneBtn.style.pointerEvents = ready ? 'auto' : 'none';
+    };
+
+    const modelSection = document.createElement('div');
+    modelSection.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px;padding-top:12px;border-top:1px solid var(--h-hair-soft)';
+
+    modelSection.appendChild(mkLbl('chat model'));
+    const chatSel = mkSel();
+    const chatPlaceholder = document.createElement('option');
+    chatPlaceholder.value = ''; chatPlaceholder.textContent = '— choose —';
+    chatSel.appendChild(chatPlaceholder);
+    models.forEach(m => { const o = document.createElement('option'); o.value = m.name; o.textContent = m.name; chatSel.appendChild(o); });
+    chatSel.addEventListener('change', () => { selectedModels.model_chat = chatSel.value; checkDone(); });
+    modelSection.appendChild(chatSel);
+
+    modelSection.appendChild(mkLbl('vision model'));
+    const visSel = mkSel();
+    const visPlaceholder = document.createElement('option');
+    visPlaceholder.value = ''; visPlaceholder.textContent = '— optional —';
+    visSel.appendChild(visPlaceholder);
+    models.forEach(m => { const o = document.createElement('option'); o.value = m.name; o.textContent = m.name; visSel.appendChild(o); });
+    visSel.addEventListener('change', () => { selectedModels.model_vision = visSel.value; });
+    modelSection.appendChild(visSel);
+
+    slip.appendChild(modelSection);
+
+    // Override done button: save models before closing
+    const newDone = doneBtn.cloneNode(true); // strips existing sCloseAddPanel listener
+    doneBtn.replaceWith(newDone);
+    newDone.addEventListener('click', async () => {
+      try {
+        await fetch(`/api/actors/${actorId}/config`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ adapter_config: { model_chat: selectedModels.model_chat, model_vision: selectedModels.model_vision || undefined } }),
+        });
+      } catch (e) { console.error('Failed to save Ollama models:', e); }
+      sCloseAddPanel();
+    });
+  }).catch(() => {
+    const doneBtn = document.getElementById('s-setup-done-' + actorId);
+    if (doneBtn) { doneBtn.style.opacity = '1'; doneBtn.style.pointerEvents = 'auto'; }
+  });
 }
 
 function sStartPolling() {
