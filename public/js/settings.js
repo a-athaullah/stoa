@@ -499,9 +499,12 @@ async function sCommitDelete(id) {
 }
 
 // ── Add-agent panel ─────────────────────────────────────────────────────────
+const sFinishedSlips = new Set();
+
 function sOpenAddPanel() {
   sAddPanel = { open: true, name: '', os: sDetectOS(), backend: 'claude', lang: 'en', phase: 'waiting',
     baselineIds: new Set(settingsActors.map(a => String(a.id))), newActor: null, timer: null };
+  sFinishedSlips.clear();
   document.getElementById('s-add-agent-btn').style.display = 'none';
   sRenderAddPanel();
   const panel = document.getElementById('s-add-panel');
@@ -724,6 +727,8 @@ function sMakeConnectedSlip(actor) {
 }
 
 function sFinishSetupSlip(actorId) {
+  if (sFinishedSlips.has(actorId)) return;
+  sFinishedSlips.add(actorId);
   const fill = document.getElementById('s-setup-fill-' + actorId);
   if (fill) fill.style.width = '100%';
   const step2 = document.getElementById('s-setup-step2-' + actorId);

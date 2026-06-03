@@ -274,24 +274,28 @@ async function handleAgentMessage(msg) {
   if (msg.type === 'agent_ready') {
     consecutiveFailures = 0;
     console.log('[stoa] Ready, waiting for triggers...');
-    try {
-      const scanResult = scanForWorkdirs();
-      console.log(`[stoa] Scanned: ${scanResult.workdirs.length} workdirs, ${scanResult.globalSkills.length} global skills`);
-      send({ type: 'agent_scan_result', ...scanResult });
-    } catch (err) {
-      console.error('[stoa] Scan failed:', err.message);
-    }
-    if (AI_BACKEND === 'ollama') {
-      const ollamaHost = process.env.OLLAMA_HOST || 'http://localhost:11434';
-      fetchText(`${ollamaHost}/api/tags`).then(text => {
-        const data = JSON.parse(text);
-        const models = (data?.models || []).map(m => ({ name: m.name, size: m.size }));
-        send({ type: 'agent_capabilities', models });
-        console.log(`[stoa] Reported ${models.length} Ollama models to server`);
-      }).catch(err => {
-        console.error('[stoa] Failed to fetch Ollama models:', err.message);
-      });
-    }
+    (async () => {
+      // For Ollama: send capabilities before scan result so server has models in DB
+      // before agent_scan_complete triggers the UI model picker
+      if (AI_BACKEND === 'ollama') {
+        try {
+          const ollamaHost = process.env.OLLAMA_HOST || 'http://localhost:11434';
+          const data = JSON.parse(await fetchText(`${ollamaHost}/api/tags`));
+          const models = (data?.models || []).map(m => ({ name: m.name, size: m.size }));
+          send({ type: 'agent_capabilities', models });
+          console.log(`[stoa] Reported ${models.length} Ollama models to server`);
+        } catch (err) {
+          console.error('[stoa] Failed to fetch Ollama models:', err.message);
+        }
+      }
+      try {
+        const scanResult = scanForWorkdirs();
+        console.log(`[stoa] Scanned: ${scanResult.workdirs.length} workdirs, ${scanResult.globalSkills.length} global skills`);
+        send({ type: 'agent_scan_result', ...scanResult });
+      } catch (err) {
+        console.error('[stoa] Scan failed:', err.message);
+      }
+    })();
   }
 
   if (msg.type === 'set_config') {
