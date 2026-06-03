@@ -1734,7 +1734,7 @@ wss.on('connection', (ws, req) => {
       }
       ws.send(JSON.stringify({ type: 'agent_ready' }));
       ws.send(JSON.stringify({ type: 'set_config', max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1, session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5 }));
-      const connectedActor = db.prepare('SELECT id, name, type, avatar_color, avatar_symbol, avatar_url, created_at FROM actors WHERE id=?').get(agentActorId);
+      const connectedActor = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, created_at FROM actors WHERE id=?').get(agentActorId);
       if (connectedActor) broadcastGlobal({ type: 'actor_status', actor: { ...connectedActor, online: true, client_version: msg.client_version || null } });
     }
 
