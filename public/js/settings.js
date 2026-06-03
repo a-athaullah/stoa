@@ -739,7 +739,8 @@ function sFinishSetupSlip(actorId) {
   l2.textContent = "rename them above, or leave the auto-name — they'll appear in your rooms.";
   title?.parentElement?.appendChild(l2);
 
-  const isOllama = sAddPanel.newActor?.adapter === 'ollama';
+  const actor = settingsActors.find(a => String(a.id) === String(actorId)) || sAddPanel.newActor;
+  const isOllama = actor?.adapter === 'ollama';
   if (!isOllama) {
     const doneBtn = document.getElementById('s-setup-done-' + actorId);
     if (doneBtn) { doneBtn.style.opacity = '1'; doneBtn.style.pointerEvents = 'auto'; }
