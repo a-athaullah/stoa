@@ -969,7 +969,7 @@ function sStartPolling() {
         const panel = document.getElementById('s-add-panel');
         if (waiting) waiting.replaceWith(sMakeConnectedSlip(newAI));
         else if (panel) panel.appendChild(sMakeConnectedSlip(newAI));
-        try { const wds = await fjson(`/api/actors/${newAI.id}/workdirs`); if (wds.length) sFinishSetupSlip(newAI.id); } catch (e) { console.error('Failed to load workdirs after connect', e); }
+        try { const wds = await fjson(`/api/actors/${newAI.id}/workdirs`); if (wds.length && newAI.adapter !== 'ollama') sFinishSetupSlip(newAI.id); } catch (e) { console.error('Failed to load workdirs after connect', e); }
       }
     } catch {}
   }, 2000);
@@ -1460,7 +1460,7 @@ function handleActorStatus(actor) {
       const panel = document.getElementById('s-add-panel');
       if (waiting) waiting.replaceWith(sMakeConnectedSlip(actor));
       else if (panel) panel.appendChild(sMakeConnectedSlip(actor));
-      fjson(`/api/actors/${actor.id}/workdirs`).then(wds => { if (wds.length) sFinishSetupSlip(actor.id); }).catch(e => { console.error('Failed to load workdirs in handleActorStatus', e); });
+      fjson(`/api/actors/${actor.id}/workdirs`).then(wds => { if (wds.length && actor.adapter !== 'ollama') sFinishSetupSlip(actor.id); }).catch(e => { console.error('Failed to load workdirs in handleActorStatus', e); });
     }
   }
   // Always update status dot and word
