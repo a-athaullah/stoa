@@ -63,7 +63,12 @@ function sRenderList() {
   const list = document.getElementById('s-agents-list');
   if (!list) return;
   list.innerHTML = '';
-  for (const a of settingsActors) {
+  const sorted = [...settingsActors].sort((a, b) => {
+    if (a.type === 'human' && b.type !== 'human') return -1;
+    if (a.type !== 'human' && b.type === 'human') return 1;
+    return b.id - a.id;
+  });
+  for (const a of sorted) {
     if (!sRowStates.has(a.id)) sRowStates.set(a.id, { state: 'default', draft: a.name });
     list.appendChild(sMakeRow(a));
   }
@@ -129,56 +134,6 @@ function sMakeRow(actor, flash) {
     }, 150));
     info.appendChild(inp);
     setTimeout(() => { inp.focus(); inp.select(); }, 0);
-  } else if (rs.state === 'editing') {
-    const nameInp = document.createElement('input');
-    nameInp.className = 's-rename-input';
-    nameInp.style.cssText = `border-color:${color};width:100%;box-sizing:border-box`;
-    nameInp.value = rs.draft.name; nameInp.type = 'text'; nameInp.spellcheck = false;
-    nameInp.addEventListener('input', () => { const s = sRowStates.get(actor.id); if (s) s.draft.name = nameInp.value; });
-    nameInp.addEventListener('keydown', e => {
-      if (e.key === 'Enter')  { e.preventDefault(); sCommitEdit(actor.id); }
-      if (e.key === 'Escape') { e.preventDefault(); sCancelEdit(actor.id); }
-    });
-    info.appendChild(nameInp);
-
-    const cfgRow = document.createElement('div');
-    cfgRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:5px';
-    const mkLbl = t => { const l = document.createElement('span'); l.style.cssText = 'font-size:11px;color:var(--h-ink-faint);font-family:var(--h-serif);font-style:italic'; l.textContent = t; return l; };
-    const mkSel = (id) => { const s = document.createElement('select'); if (id) s.id = id; s.className = 's-name-input'; s.style.cssText = 'width:auto;min-width:100px;font-size:12px;padding:2px 6px;cursor:pointer'; return s; };
-
-    cfgRow.appendChild(mkLbl('lang'));
-    const langSel = mkSel();
-    Object.entries(STOA_LANGS).forEach(([code, lbl]) => {
-      const opt = document.createElement('option');
-      opt.value = code; opt.textContent = lbl;
-      if (code === rs.draft.lang) opt.selected = true;
-      langSel.appendChild(opt);
-    });
-    langSel.addEventListener('change', () => { const s = sRowStates.get(actor.id); if (s) s.draft.lang = langSel.value; });
-    cfgRow.appendChild(langSel);
-
-    if (actor.adapter === 'ollama') {
-      const addModelSel = (label, id, currentVal) => {
-        cfgRow.appendChild(mkLbl(label));
-        const sel = mkSel(id);
-        sel.disabled = rs.models === null;
-        const placeholder = document.createElement('option');
-        placeholder.value = currentVal || ''; placeholder.textContent = rs.models === null ? 'loading…' : (currentVal || '—');
-        sel.appendChild(placeholder);
-        sel.addEventListener('change', () => {
-          const s = sRowStates.get(actor.id);
-          if (s) s.draft[label === 'chat' ? 'model_chat' : 'model_vision'] = sel.value;
-        });
-        cfgRow.appendChild(sel);
-        return sel;
-      };
-      addModelSel('chat', `s-model-chat-${actor.id}`, rs.draft.model_chat);
-      addModelSel('vision', `s-model-vis-${actor.id}`, rs.draft.model_vision);
-      if (rs.models && rs.models.length > 0) sPopulateModelSelects(actor.id, rs.models, rs.draft);
-    }
-
-    info.appendChild(cfgRow);
-    setTimeout(() => nameInp.focus(), 0);
   } else {
     const nameRow = document.createElement('div');
     nameRow.className = 's-agent-name-row';
@@ -186,7 +141,7 @@ function sMakeRow(actor, flash) {
     nameSpan.textContent = actor.name;
     nameRow.appendChild(nameSpan);
     nameRow.style.cursor = 'pointer';
-    nameRow.addEventListener('click', () => sStartRename(actor.id));
+    nameRow.addEventListener('click', () => isHuman ? sStartRename(actor.id) : sStartEdit(actor.id));
     info.appendChild(nameRow);
   }
 
@@ -262,17 +217,6 @@ function sMakeRow(actor, flash) {
     cancel.className = 's-icon-btn'; cancel.title = 'Cancel';
     cancel.innerHTML = svgX();
     cancel.addEventListener('click', () => sCancelRename(actor.id));
-    acts.appendChild(ok); acts.appendChild(cancel);
-
-  } else if (rs.state === 'editing') {
-    const ok = document.createElement('button');
-    ok.className = 's-icon-btn s-ok'; ok.title = 'Save';
-    ok.innerHTML = svgCheck();
-    ok.addEventListener('click', () => sCommitEdit(actor.id));
-    const cancel = document.createElement('button');
-    cancel.className = 's-icon-btn'; cancel.title = 'Cancel';
-    cancel.innerHTML = svgX();
-    cancel.addEventListener('click', () => sCancelEdit(actor.id));
     acts.appendChild(ok); acts.appendChild(cancel);
 
   } else if (rs.state === 'confirm-delete') {
@@ -362,77 +306,259 @@ function sRefreshRow(id) {
   if (actor && el) el.replaceWith(sMakeRow(actor));
 }
 
-function sPopulateModelSelects(actorId, models, draft) {
-  ['chat', 'vision'].forEach(kind => {
-    const sel = document.getElementById(`s-model-${kind === 'chat' ? 'chat' : 'vis'}-${actorId}`);
-    if (!sel) return;
-    const currentVal = kind === 'chat' ? draft.model_chat : draft.model_vision;
-    sel.innerHTML = '';
-    const names = models.map(m => m.name);
-    if (currentVal && !names.includes(currentVal)) names.unshift(currentVal);
-    for (const name of names) {
-      const opt = document.createElement('option');
-      opt.value = name; opt.textContent = name;
-      if (name === currentVal) opt.selected = true;
-      sel.appendChild(opt);
-    }
-    sel.disabled = false;
-  });
+let sActiveEditId = null;
+
+function sCloseEditAccordion() {
+  if (sActiveEditId === null) return;
+  const id = sActiveEditId;
+  sActiveEditId = null;
+  const acc = document.getElementById('s-edit-acc-' + id);
+  if (!acc) return;
+  acc.classList.remove('open');
+  setTimeout(() => acc.remove(), 220);
 }
 
 function sStartEdit(actorId) {
+  if (sActiveEditId === actorId) { sCloseEditAccordion(); return; }
+  sCloseEditAccordion();
   const actor = settingsActors.find(a => a.id === actorId);
   if (!actor) return;
+  sActiveEditId = actorId;
+  const acc = sMakeEditAccordion(actor);
+  const row = document.getElementById('s-row-' + actorId);
+  if (row) row.insertAdjacentElement('afterend', acc);
+  requestAnimationFrame(() => acc.classList.add('open'));
+}
+
+function sEditGetCmd(backend, name, lang, os) {
+  const base = sPublicUrl || `http://localhost:${sPort}`;
+  const params = [`name=${encodeURIComponent(name || '')}`];
+  if (backend !== 'claude') params.push(`backend=${backend}`);
+  if (lang && lang !== 'en') params.push(`lang=${lang}`);
+  const q = '?' + params.join('&');
+  const script = { unix: 'install.sh', ps: 'install.ps1', cmd: 'install.cmd' }[os];
+  const url = `${base}/${script}${q}`;
+  return { unix: `curl -fsSL "${url}" | bash`, ps: `irm "${url}" | iex`, cmd: `curl -fsSL "${url}" -o i.cmd && i.cmd && del i.cmd` }[os];
+}
+
+function sMakeEditAccordion(actor) {
   const cfg = (() => { try { return JSON.parse(actor.adapter_config || '{}'); } catch { return {}; } })();
-  const draft = { name: actor.name, lang: cfg.lang || 'en', model_chat: cfg.model_chat || '', model_vision: cfg.model_vision || '' };
-  sRowStates.set(actorId, { state: 'editing', draft, models: null });
-  sRefreshRow(actorId);
-  if (actor.adapter === 'ollama') {
-    fjson(`/api/actors/${actorId}/capabilities`).then(data => {
-      const rs = sRowStates.get(actorId);
-      if (rs && rs.state === 'editing') {
-        rs.models = data.models || [];
-        sPopulateModelSelects(actorId, rs.models, rs.draft);
+  const backend = actor.adapter || 'claude';
+  let editOs = sDetectOS();
+  let updateCmd = () => {};
+
+  const acc = document.createElement('div');
+  acc.className = 's-add-panel';
+  acc.id = 's-edit-acc-' + actor.id;
+
+  // Header
+  const hdr = document.createElement('div');
+  hdr.className = 's-panel-header';
+  const titleEl = document.createElement('span');
+  titleEl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:17px;color:var(--h-ink)';
+  titleEl.textContent = 'Edit AI Agent';
+  const statusEl = document.createElement('span');
+  statusEl.style.cssText = 'display:flex;align-items:center;gap:6px';
+  const dot = document.createElement('span'); dot.className = actor.online ? 's-dot-on' : 's-dot-off';
+  const word = document.createElement('span');
+  word.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)';
+  word.textContent = actor.online ? 'connected' : 'offline';
+  statusEl.append(dot, word);
+  const spacer = document.createElement('span'); spacer.style.flex = '1';
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 's-icon-btn'; closeBtn.title = 'Close'; closeBtn.innerHTML = svgX(15);
+  closeBtn.addEventListener('click', sCloseEditAccordion);
+  hdr.append(titleEl, statusEl, spacer, closeBtn);
+  acc.appendChild(hdr);
+
+  // Server
+  const hostRow = document.createElement('div');
+  hostRow.className = 's-host-row';
+  const hostLbl = document.createElement('span'); hostLbl.className = 's-host-label'; hostLbl.textContent = 'server';
+  const hostVal = document.createElement('span'); hostVal.className = 's-host-value'; hostVal.textContent = sPublicUrl || location.origin;
+  hostRow.append(hostLbl, hostVal);
+  acc.appendChild(hostRow);
+
+  // Field row: AI agent (disabled), language, name
+  const mkFieldLbl = t => { const l = document.createElement('span'); l.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);letter-spacing:.04em'; l.textContent = t; return l; };
+
+  const fieldRow = document.createElement('div');
+  fieldRow.className = 's-field-group-row';
+
+  const beGrp = document.createElement('div');
+  beGrp.className = 's-field-group'; beGrp.style.minWidth = 'auto';
+  const beSel = document.createElement('select');
+  beSel.className = 's-name-input'; beSel.style.cssText = 'width:auto;min-width:130px;opacity:0.6;cursor:not-allowed'; beSel.disabled = true;
+  [['claude','Claude Code CLI'],['gemini','Gemini CLI'],['ollama','Ollama']].forEach(([id,lbl]) => {
+    const o = document.createElement('option'); o.value = id; o.textContent = lbl;
+    if (id === backend) o.selected = true;
+    beSel.appendChild(o);
+  });
+  beGrp.append(mkFieldLbl('AI agent'), beSel);
+
+  const langGrp = document.createElement('div');
+  langGrp.className = 's-field-group'; langGrp.style.minWidth = 'auto';
+  const langSel = document.createElement('select');
+  langSel.className = 's-name-input'; langSel.style.cssText = 'width:auto;min-width:130px;cursor:pointer';
+  Object.entries(STOA_LANGS).forEach(([code, lbl]) => {
+    const o = document.createElement('option'); o.value = code; o.textContent = lbl;
+    if (code === (cfg.lang || 'en')) o.selected = true;
+    langSel.appendChild(o);
+  });
+  langSel.addEventListener('change', () => { if (backend !== 'ollama') updateCmd(); });
+  langGrp.append(mkFieldLbl('language'), langSel);
+
+  const nameGrp = document.createElement('div');
+  nameGrp.className = 's-field-group';
+  const nameInp = document.createElement('input');
+  nameInp.className = 's-name-input'; nameInp.type = 'text'; nameInp.value = actor.name;
+  nameInp.addEventListener('input', () => { if (backend !== 'ollama') updateCmd(); });
+  nameInp.addEventListener('keydown', e => { if (e.key === 'Escape') sCloseEditAccordion(); });
+  const nameHint = document.createElement('span');
+  nameHint.className = 's-field-hint'; nameHint.textContent = 'name shown in all rooms';
+  nameGrp.append(mkFieldLbl('name'), nameInp, nameHint);
+
+  fieldRow.append(beGrp, langGrp, nameGrp);
+  acc.appendChild(fieldRow);
+
+  if (backend === 'ollama') {
+    // Model dropdowns
+    const modelRow = document.createElement('div');
+    modelRow.style.cssText = 'display:flex;gap:20px;flex-wrap:wrap;align-items:flex-end';
+
+    const mkModelGrp = (label, selId, currentVal, optional) => {
+      const grp = document.createElement('div');
+      grp.className = 's-field-group'; grp.style.minWidth = 'auto';
+      const sel = document.createElement('select');
+      sel.id = selId; sel.className = 's-name-input'; sel.style.cssText = 'width:auto;min-width:150px;cursor:pointer';
+      const placeholder = document.createElement('option');
+      placeholder.value = ''; placeholder.textContent = optional ? '— optional —' : '— loading… —';
+      sel.appendChild(placeholder);
+      if (currentVal) {
+        const cur = document.createElement('option'); cur.value = currentVal; cur.textContent = currentVal; cur.selected = true;
+        sel.appendChild(cur);
       }
+      grp.append(mkFieldLbl(label), sel);
+      return grp;
+    };
+
+    modelRow.append(
+      mkModelGrp('chat model', `s-eacc-chat-${actor.id}`, cfg.model_chat || '', false),
+      mkModelGrp('vision model', `s-eacc-vis-${actor.id}`, cfg.model_vision || '', true)
+    );
+    acc.appendChild(modelRow);
+
+    fjson(`/api/actors/${actor.id}/capabilities`).then(data => {
+      const models = data.models || [];
+      const populateSel = (selId, currentVal, optional) => {
+        const sel = document.getElementById(selId);
+        if (!sel) return;
+        sel.innerHTML = '';
+        if (optional) { const o = document.createElement('option'); o.value = ''; o.textContent = '— optional —'; sel.appendChild(o); }
+        const names = models.map(m => m.name);
+        if (currentVal && !names.includes(currentVal)) names.unshift(currentVal);
+        names.forEach(name => {
+          const o = document.createElement('option'); o.value = name; o.textContent = name;
+          if (name === currentVal) o.selected = true;
+          sel.appendChild(o);
+        });
+        if (!optional && !currentVal && names.length) sel.value = names[0];
+      };
+      populateSel(`s-eacc-chat-${actor.id}`, cfg.model_chat || '', false);
+      populateSel(`s-eacc-vis-${actor.id}`, cfg.model_vision || '', true);
     }).catch(() => {
-      const rs = sRowStates.get(actorId);
-      if (rs && rs.state === 'editing') rs.models = [];
+      const sel = document.getElementById(`s-eacc-chat-${actor.id}`);
+      if (sel) { sel.innerHTML = '<option value="">— offline —</option>'; }
     });
-  }
-}
 
-async function sCommitEdit(actorId) {
-  const rs = sRowStates.get(actorId);
-  if (!rs) return;
-  const actor = settingsActors.find(a => a.id === actorId);
-  if (!actor) return;
-  const { name, lang, model_chat, model_vision } = rs.draft;
-  if (!name?.trim()) { showToast('Name cannot be empty', { error: true }); return; }
-  const body = { name: name.trim(), lang };
-  if (actor.adapter === 'ollama') {
-    body.adapter_config = {};
-    if (model_chat) body.adapter_config.model_chat = model_chat;
-    if (model_vision) body.adapter_config.model_vision = model_vision;
-  }
-  try {
-    const r = await fetch(`/api/actors/${actorId}/config`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  } else {
+    // Platform pills
+    const platGrp = document.createElement('div');
+    platGrp.className = 's-field-group'; platGrp.style.minWidth = 'auto';
+    const osPills = document.createElement('div');
+    osPills.className = 's-os-pills'; osPills.id = `s-eacc-pills-${actor.id}`;
+    [['unix','Linux / macOS'],['ps','Windows · PS'],['cmd','Windows · CMD']].forEach(([id,lbl]) => {
+      const p = document.createElement('button');
+      p.type = 'button'; p.className = 's-os-pill' + (editOs === id ? ' active' : '');
+      p.textContent = lbl; p.dataset.os = id;
+      p.addEventListener('click', () => {
+        editOs = id;
+        document.querySelectorAll(`#s-eacc-pills-${actor.id} .s-os-pill`).forEach(x => x.classList.toggle('active', x.dataset.os === id));
+        updateCmd();
+      });
+      osPills.appendChild(p);
     });
-    if (!r.ok) throw new Error('save failed');
-    const updated = await r.json();
-    const idx = settingsActors.findIndex(a => a.id === actorId);
-    if (idx >= 0) settingsActors[idx] = { ...settingsActors[idx], ...updated };
-    const allIdx = allActors.findIndex(a => a.id === actorId);
-    if (allIdx >= 0) allActors[allIdx] = { ...allActors[allIdx], ...updated };
-    sRowStates.set(actorId, { state: 'default', draft: name.trim() });
-    sRefreshRow(actorId);
-  } catch { showToast('Failed to save agent settings', { error: true }); }
-}
+    platGrp.append(mkFieldLbl('platform'), osPills);
+    acc.appendChild(platGrp);
 
-function sCancelEdit(actorId) {
-  const actor = settingsActors.find(a => a.id === actorId);
-  sRowStates.set(actorId, { state: 'default', draft: actor?.name || '' });
-  sRefreshRow(actorId);
+    // Command slip
+    const slipWrap = document.createElement('div');
+    const slipCaption = document.createElement('div');
+    slipCaption.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-faint);margin-bottom:8px;letter-spacing:.02em';
+    slipCaption.textContent = 'reinstall on the target machine';
+    const slip = document.createElement('div');
+    slip.className = 's-cmd-slip';
+    const dollar = document.createElement('span'); dollar.className = 's-cmd-dollar'; dollar.textContent = '$';
+    const cmdText = document.createElement('span'); cmdText.id = `s-eacc-cmd-${actor.id}`;
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 's-cmd-copy'; copyBtn.title = 'Copy'; copyBtn.innerHTML = svgCopy();
+    copyBtn.addEventListener('click', async () => {
+      const text = document.getElementById(`s-eacc-cmd-${actor.id}`)?.textContent || '';
+      if (await copyToClipboard(text)) {
+        copyBtn.classList.add('copied'); copyBtn.innerHTML = svgCheck(14);
+        setTimeout(() => { copyBtn.classList.remove('copied'); copyBtn.innerHTML = svgCopy(); }, 1000);
+      }
+    });
+    slip.append(dollar, cmdText, copyBtn);
+    slipWrap.append(slipCaption, slip);
+    acc.appendChild(slipWrap);
+
+    updateCmd = () => {
+      const el = document.getElementById(`s-eacc-cmd-${actor.id}`);
+      if (el) el.textContent = sEditGetCmd(backend, nameInp.value || actor.name, langSel.value, editOs);
+    };
+    updateCmd();
+  }
+
+  // Save / Cancel
+  const actionsRow = document.createElement('div');
+  actionsRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;padding-top:4px';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.style.cssText = 'background:transparent;border:none;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:13px;padding:7px 14px;border-radius:999px;cursor:pointer';
+  cancelBtn.textContent = 'cancel';
+  cancelBtn.addEventListener('click', sCloseEditAccordion);
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'h-btn-primary'; saveBtn.style.cssText = 'padding:7px 18px;font-size:13px';
+  saveBtn.textContent = 'save';
+  saveBtn.addEventListener('click', async () => {
+    const newName = nameInp.value.trim();
+    if (!newName) { showToast('Name cannot be empty', { error: true }); return; }
+    const body = { name: newName, lang: langSel.value };
+    if (backend === 'ollama') {
+      const chatVal = document.getElementById(`s-eacc-chat-${actor.id}`)?.value || '';
+      const visVal = document.getElementById(`s-eacc-vis-${actor.id}`)?.value || '';
+      body.adapter_config = {};
+      if (chatVal) body.adapter_config.model_chat = chatVal;
+      if (visVal) body.adapter_config.model_vision = visVal;
+    }
+    try {
+      const r = await fetch(`/api/actors/${actor.id}/config`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error();
+      const updated = await r.json();
+      const idx = settingsActors.findIndex(a => a.id === actor.id);
+      if (idx >= 0) settingsActors[idx] = { ...settingsActors[idx], ...updated };
+      const allIdx = allActors.findIndex(a => a.id === actor.id);
+      if (allIdx >= 0) allActors[allIdx] = { ...allActors[allIdx], ...updated };
+      sCloseEditAccordion();
+      sRefreshRow(actor.id);
+    } catch { showToast('Failed to save agent settings', { error: true }); }
+  });
+  actionsRow.append(cancelBtn, saveBtn);
+  acc.appendChild(actionsRow);
+
+  return acc;
 }
 
 function sStartRename(id) {
