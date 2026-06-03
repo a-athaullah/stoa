@@ -445,8 +445,7 @@ function sMakeEditAccordion(actor) {
     };
 
     modelRow.append(
-      mkModelGrp('chat model', `s-eacc-chat-${actor.id}`, cfg.model_chat || '', false),
-      mkModelGrp('vision model', `s-eacc-vis-${actor.id}`, cfg.model_vision || '', true)
+      mkModelGrp('model', `s-eacc-chat-${actor.id}`, cfg.model_chat || '', false)
     );
     acc.appendChild(modelRow);
 
@@ -467,7 +466,6 @@ function sMakeEditAccordion(actor) {
         if (!optional && !currentVal && names.length) sel.value = names[0];
       };
       populateSel(`s-eacc-chat-${actor.id}`, cfg.model_chat || '', false);
-      populateSel(`s-eacc-vis-${actor.id}`, cfg.model_vision || '', true);
     }).catch(() => {
       const sel = document.getElementById(`s-eacc-chat-${actor.id}`);
       if (sel) { sel.innerHTML = '<option value="">— offline —</option>'; }
@@ -538,10 +536,8 @@ function sMakeEditAccordion(actor) {
     const body = { name: newName, lang: langSel.value };
     if (backend === 'ollama') {
       const chatVal = document.getElementById(`s-eacc-chat-${actor.id}`)?.value || '';
-      const visVal = document.getElementById(`s-eacc-vis-${actor.id}`)?.value || '';
       body.adapter_config = {};
       if (chatVal) body.adapter_config.model_chat = chatVal;
-      if (visVal) body.adapter_config.model_vision = visVal;
     }
     try {
       const r = await fetch(`/api/actors/${actor.id}/config`, {
@@ -893,47 +889,38 @@ function sFinishSetupSlip(actorId) {
     const mkLbl = t => { const l = document.createElement('span'); l.style.cssText = 'font-size:11px;color:var(--h-ink-faint);font-family:var(--h-serif);font-style:italic'; l.textContent = t; return l; };
     const mkSel = () => { const s = document.createElement('select'); s.className = 's-name-input'; s.style.cssText = 'width:auto;min-width:120px;font-size:12px;padding:2px 6px;cursor:pointer'; return s; };
 
-    const selectedModels = { model_chat: '', model_vision: '' };
+    // Clone and replace before checkDone so the closure references the live button
+    const newDone = doneBtn.cloneNode(true); // strips existing sCloseAddPanel listener
+    doneBtn.replaceWith(newDone);
+
+    let selectedModel = '';
 
     const checkDone = () => {
-      const ready = !!selectedModels.model_chat;
-      doneBtn.style.opacity = ready ? '1' : '0.4';
-      doneBtn.style.pointerEvents = ready ? 'auto' : 'none';
+      const ready = !!selectedModel;
+      newDone.style.opacity = ready ? '1' : '0.4';
+      newDone.style.pointerEvents = ready ? 'auto' : 'none';
     };
 
     const modelSection = document.createElement('div');
     modelSection.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px;padding-top:12px;border-top:1px solid var(--h-hair-soft)';
 
-    modelSection.appendChild(mkLbl('chat model'));
+    modelSection.appendChild(mkLbl('model'));
     const chatSel = mkSel();
     const chatPlaceholder = document.createElement('option');
     chatPlaceholder.value = ''; chatPlaceholder.textContent = '— choose —';
     chatSel.appendChild(chatPlaceholder);
     models.forEach(m => { const o = document.createElement('option'); o.value = m.name; o.textContent = m.name; chatSel.appendChild(o); });
-    chatSel.addEventListener('change', () => { selectedModels.model_chat = chatSel.value; checkDone(); });
+    chatSel.addEventListener('change', () => { selectedModel = chatSel.value; checkDone(); });
     modelSection.appendChild(chatSel);
 
-    modelSection.appendChild(mkLbl('vision model'));
-    const visSel = mkSel();
-    const visPlaceholder = document.createElement('option');
-    visPlaceholder.value = ''; visPlaceholder.textContent = '— optional —';
-    visSel.appendChild(visPlaceholder);
-    models.forEach(m => { const o = document.createElement('option'); o.value = m.name; o.textContent = m.name; visSel.appendChild(o); });
-    visSel.addEventListener('change', () => { selectedModels.model_vision = visSel.value; });
-    modelSection.appendChild(visSel);
-
     slip.appendChild(modelSection);
-
-    // Override done button: save models before closing
-    const newDone = doneBtn.cloneNode(true); // strips existing sCloseAddPanel listener
-    doneBtn.replaceWith(newDone);
     newDone.addEventListener('click', async () => {
       try {
         await fetch(`/api/actors/${actorId}/config`, {
           method: 'PUT', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ adapter_config: { model_chat: selectedModels.model_chat, model_vision: selectedModels.model_vision || undefined } }),
+          body: JSON.stringify({ adapter_config: { model_chat: selectedModel } }),
         });
-      } catch (e) { console.error('Failed to save Ollama models:', e); }
+      } catch (e) { console.error('Failed to save Ollama model:', e); }
       sCloseAddPanel();
     });
   }).catch(() => {
