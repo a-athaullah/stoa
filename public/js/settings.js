@@ -479,7 +479,7 @@ function sRenderAddPanel() {
   beLbl.textContent = 'AI agent';
   const beSelect = document.createElement('select');
   beSelect.className = 's-name-input'; beSelect.style.cssText = 'width:auto;min-width:120px;cursor:pointer';
-  [['claude','Claude Code CLI'],['gemini','Gemini CLI'],['ollama','Ollama (local)']].forEach(([id,lbl]) => {
+  [['claude','Claude Code CLI'],['gemini','Gemini CLI'],['ollama','Ollama']].forEach(([id,lbl]) => {
     const opt = document.createElement('option');
     opt.value = id; opt.textContent = lbl;
     if (sAddPanel.backend === id) opt.selected = true;
