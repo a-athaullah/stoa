@@ -187,16 +187,19 @@ function renderChatHeader(room, participants) {
   exportWrap.appendChild(exportDrop);
   header.appendChild(exportWrap);
 
-  const compactBtn = document.createElement('button');
-  compactBtn.className = 'h-header-action-btn h-compact-btn';
-  compactBtn.title = 'Compact sessions';
-  compactBtn.style.marginLeft = '8px';
-  compactBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6l5-4 5 4"/><path d="M3 10l5 4 5-4"/></svg>`;
-  compactBtn.onclick = () => {
-    if (compactBtn.disabled) return;
-    compactSessions(room.id);
-  };
-  header.appendChild(compactBtn);
+  const hasClaudeAgent = participants.some(p => p.type === 'ai' && p.adapter === 'claude');
+  if (hasClaudeAgent) {
+    const compactBtn = document.createElement('button');
+    compactBtn.className = 'h-header-action-btn h-compact-btn';
+    compactBtn.title = 'Compact sessions';
+    compactBtn.style.marginLeft = '8px';
+    compactBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6l5-4 5 4"/><path d="M3 10l5 4 5-4"/></svg>`;
+    compactBtn.onclick = () => {
+      if (compactBtn.disabled) return;
+      compactSessions(room.id);
+    };
+    header.appendChild(compactBtn);
+  }
 
   const wsToggle = document.createElement('button');
   wsToggle.className = 'h-ws-toggle' + (document.getElementById('workspace-panel').classList.contains('open') ? ' active' : '');
