@@ -24,11 +24,12 @@ class OllamaSession extends EventEmitter {
     this.host = cfg.ollama_host || process.env.OLLAMA_HOST || 'http://localhost:11434';
     this.modelChat = cfg.model_chat || process.env.STOA_MODEL_CHAT || 'ara';
     this.modelVision = cfg.model_vision || process.env.STOA_MODEL_VISION || 'qwen2.5vl:7b';
+    this.historyLimit = parseInt(cfg.history_limit ?? 10) || 10;
     // resumeId is always null — Ollama has no session persistence
     this.resumeId = null;
   }
 
-  _startTask({ prompt, imageData, onToken, onState, onTool, resolve, reject }) {
+  _startTask({ prompt, imageData, history, onToken, onState, onTool, resolve, reject }) {
     this.busy = true;
     this._aborted = false;
     this._currentResolve = resolve;
@@ -45,9 +46,13 @@ class OllamaSession extends EventEmitter {
       ? { role: 'user', content: prompt, images: [imageData.base64] }
       : { role: 'user', content: prompt };
 
+    const messages = history && history.length
+      ? [...history.slice(-this.historyLimit), userMsg]
+      : [userMsg];
+
     const body = JSON.stringify({
       model,
-      messages: [userMsg],
+      messages,
       stream: true,
       think: false,
     });
@@ -152,9 +157,9 @@ class OllamaSession extends EventEmitter {
     }
   }
 
-  send({ prompt, imageData = null, onToken, onState, onTool } = {}) {
+  send({ prompt, imageData = null, history = null, onToken, onState, onTool } = {}) {
     return new Promise((resolve, reject) => {
-      const task = { prompt, imageData, onToken, onState, onTool, resolve, reject };
+      const task = { prompt, imageData, history, onToken, onState, onTool, resolve, reject };
       if (this.busy) {
         this._queue.push(task);
       } else {

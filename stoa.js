@@ -718,6 +718,7 @@ async function processTrigger(msg) {
 
     const sendOpts = {
       prompt: finalPrompt,
+      history: msg.rawHistory || null,
       onToken: token => {
         lastActivity = Date.now();
         fullContent += token;

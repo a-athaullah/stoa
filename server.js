@@ -2693,11 +2693,16 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
   const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
 
   const history = db.prepare(`
-    SELECT a.name, m.content, m.image_url, m.file_url, m.file_name, m.attachments, m.created_at FROM messages m
+    SELECT a.name, m.content, m.image_url, m.file_url, m.file_name, m.attachments, m.created_at, rp.actor_id FROM messages m
     JOIN room_participants rp ON rp.id=m.participant_id
     JOIN actors a ON a.id=rp.actor_id
     WHERE m.room_id=? AND m.state='complete' ORDER BY m.created_at DESC LIMIT 10
   `).all(roomId);
+  const rawHistory = history.slice().reverse().map(r => ({
+    role: r.actor_id === ai.actor_id ? 'assistant' : 'user',
+    content: r.content || '',
+  }));
+
   const ctx = history.reverse().map(r => {
     const ts = r.created_at
       ? new Date(r.created_at.replace(' ', 'T') + 'Z').toISOString().replace('T', ' ').slice(0, 16) + ' UTC'
@@ -2785,6 +2790,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
         fileUrl:  fullAttachments.find(a => a.type === 'file')?.url || undefined,
         fileName: fullAttachments.find(a => a.type === 'file')?.name || undefined,
         workdir: workdir    || undefined,
+        rawHistory: rawHistory.length ? rawHistory : undefined,
       }));
       console.log(`[trigger] sent to ${ai.name} agent, msgId=${msgId}`);
     });
