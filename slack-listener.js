@@ -13,16 +13,14 @@ class SlackListener extends EventEmitter {
     this.botName = null;
   }
 
-  async start({ appToken, botToken, userToken }) {
+  async start({ appToken, userToken }) {
     if (this.running) await this.stop();
 
     const { SocketModeClient } = require('@slack/socket-mode');
     const { WebClient } = require('@slack/web-api');
 
-    // Prefer user token for API calls (has user-level access); fall back to bot token
-    const apiToken = userToken || botToken;
-    if (!apiToken) throw new Error('Either botToken or userToken is required');
-    this.webClient = new WebClient(apiToken);
+    if (!userToken) throw new Error('userToken is required');
+    this.webClient = new WebClient(userToken);
 
     try {
       const info = await this.webClient.auth.test();

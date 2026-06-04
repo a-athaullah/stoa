@@ -1518,7 +1518,6 @@ Write-Host "Logs   : pm2 logs $AgentName"
   // ── Automation: Slack config ────────────────────────────────────────────────
   if (req.method === 'GET' && url.pathname === '/api/automations/slack') {
     const appToken = getSetting('slack_app_token');
-    const botToken = getSetting('slack_bot_token');
     const connected = getSetting('slack_connected') === '1';
     if (!connected || !appToken) return json(res, { connected: false });
     const userToken = getSetting('slack_user_token');
@@ -1528,30 +1527,27 @@ Write-Host "Logs   : pm2 logs $AgentName"
       workspaceName:  getSetting('slack_workspace_name') || workspaceName || '',
       botName:        getSetting('slack_bot_name') || botName || '',
       appTokenHint:   appToken.slice(0, 14),
-      botTokenHint:   botToken.slice(0, 10),
       userTokenHint:  userToken ? userToken.slice(0, 10) : null,
     });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/automations/slack/connect') {
     const body = parseJsonBody(await readBody(req));
-    if (!body?.appToken || (!body?.botToken && !body?.userToken)) { res.writeHead(400); return res.end(JSON.stringify({ error: 'appToken and at least one of botToken or userToken required' })); }
+    if (!body?.appToken || !body?.userToken) { res.writeHead(400); return res.end(JSON.stringify({ error: 'appToken and userToken required' })); }
     try {
-      await slackListener.start({ appToken: body.appToken, botToken: body.botToken || null, userToken: body.userToken || null });
+      await slackListener.start({ appToken: body.appToken, userToken: body.userToken });
       const { workspaceName, botName } = slackListener.getStatus();
       setSetting('slack_app_token', body.appToken);
-      setSetting('slack_bot_token', body.botToken);
+      setSetting('slack_user_token', body.userToken);
       setSetting('slack_connected', '1');
       setSetting('slack_workspace_name', workspaceName || '');
       setSetting('slack_bot_name', botName || '');
-      if (body.userToken) setSetting('slack_user_token', body.userToken);
       return json(res, {
         connected: true,
         workspaceName: workspaceName || '',
         botName: botName || '',
         appTokenHint: body.appToken.slice(0, 14),
-        botTokenHint: body.botToken.slice(0, 10),
-        userTokenHint: body.userToken ? body.userToken.slice(0, 10) : null,
+        userTokenHint: body.userToken.slice(0, 10),
       });
     } catch (e) {
       console.error('[slack] connect error:', e.message);
@@ -1563,7 +1559,6 @@ Write-Host "Logs   : pm2 logs $AgentName"
     await slackListener.stop();
     setSetting('slack_connected', '0');
     setSetting('slack_app_token', '');
-    setSetting('slack_bot_token', '');
     setSetting('slack_user_token', '');
     setSetting('slack_workspace_name', '');
     setSetting('slack_bot_name', '');
@@ -3103,11 +3098,10 @@ slackListener.on('slack_event', async ({ eventType, event, webClient }) => {
   try {
     const connected  = getSetting('slack_connected') === '1';
     const appToken   = getSetting('slack_app_token');
-    const botToken   = getSetting('slack_bot_token') || null;
     const userToken  = getSetting('slack_user_token') || null;
-    if (connected && appToken && (botToken || userToken)) {
+    if (connected && appToken && userToken) {
       console.log('[slack] reconnecting on startup…');
-      await slackListener.start({ appToken, botToken, userToken });
+      await slackListener.start({ appToken, userToken });
     }
   } catch (e) {
     console.error('[slack] startup reconnect failed:', e.message);
