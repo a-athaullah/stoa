@@ -13,18 +13,21 @@ class SlackListener extends EventEmitter {
     this.botName = null;
   }
 
-  async start({ appToken, botToken }) {
+  async start({ appToken, botToken, userToken }) {
     if (this.running) await this.stop();
 
     const { SocketModeClient } = require('@slack/socket-mode');
     const { WebClient } = require('@slack/web-api');
 
-    this.webClient = new WebClient(botToken);
+    // Prefer user token for API calls (has user-level access); fall back to bot token
+    const apiToken = userToken || botToken;
+    if (!apiToken) throw new Error('Either botToken or userToken is required');
+    this.webClient = new WebClient(apiToken);
 
     try {
       const info = await this.webClient.auth.test();
       this.workspaceName = info.team;
-      this.botName = '@' + info.user;
+      this.botName = userToken ? info.user : ('@' + info.user);
     } catch (e) {
       console.error('[slack] auth.test failed:', e.message);
       throw e;

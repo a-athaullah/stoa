@@ -178,9 +178,9 @@ function autoRenderSlackConfigPanel() {
           <span style="font-family:var(--h-sans);font-size:12px;color:var(--h-ink-faint)">Used for WebSocket connection to Slack</span>
         </div>
         <div style="display:flex;flex-direction:column;gap:5px">
-          <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-mute)">Bot Token</span>
+          <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-mute)">Bot Token <span style="font-size:11px;color:var(--h-ink-faint)">(optional if User Token provided)</span></span>
           <input class="auto-token-input" id="auto-bot-token" type="password" placeholder="xoxb-..." autocomplete="off">
-          <span style="font-family:var(--h-sans);font-size:12px;color:var(--h-ink-faint)">Used for bot identity and API calls</span>
+          <span style="font-family:var(--h-sans);font-size:12px;color:var(--h-ink-faint)">For bot identity — not needed if using User Token approach</span>
         </div>
         <div style="display:flex;flex-direction:column;gap:5px">
           <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-mute)">User Token <span style="font-size:11px;color:var(--h-ink-faint)">(optional)</span></span>

@@ -1535,9 +1535,9 @@ Write-Host "Logs   : pm2 logs $AgentName"
 
   if (req.method === 'POST' && url.pathname === '/api/automations/slack/connect') {
     const body = parseJsonBody(await readBody(req));
-    if (!body?.appToken || !body?.botToken) { res.writeHead(400); return res.end(JSON.stringify({ error: 'appToken and botToken required' })); }
+    if (!body?.appToken || (!body?.botToken && !body?.userToken)) { res.writeHead(400); return res.end(JSON.stringify({ error: 'appToken and at least one of botToken or userToken required' })); }
     try {
-      await slackListener.start({ appToken: body.appToken, botToken: body.botToken });
+      await slackListener.start({ appToken: body.appToken, botToken: body.botToken || null, userToken: body.userToken || null });
       const { workspaceName, botName } = slackListener.getStatus();
       setSetting('slack_app_token', body.appToken);
       setSetting('slack_bot_token', body.botToken);
@@ -3101,12 +3101,13 @@ slackListener.on('slack_event', async ({ eventType, event, webClient }) => {
 // Reconnect Slack on startup if previously connected
 (async () => {
   try {
-    const connected = getSetting('slack_connected') === '1';
-    const appToken  = getSetting('slack_app_token');
-    const botToken  = getSetting('slack_bot_token');
-    if (connected && appToken && botToken) {
+    const connected  = getSetting('slack_connected') === '1';
+    const appToken   = getSetting('slack_app_token');
+    const botToken   = getSetting('slack_bot_token') || null;
+    const userToken  = getSetting('slack_user_token') || null;
+    if (connected && appToken && (botToken || userToken)) {
       console.log('[slack] reconnecting on startup…');
-      await slackListener.start({ appToken, botToken });
+      await slackListener.start({ appToken, botToken, userToken });
     }
   } catch (e) {
     console.error('[slack] startup reconnect failed:', e.message);
