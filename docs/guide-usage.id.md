@@ -219,7 +219,7 @@ Tekan **Ctrl+F** (atau klik **ikon search** di header room) untuk mencari di dal
 
 Buka **Settings > AI Agent > Add Agent**. Panel Add Agent memungkinkan Anda mengonfigurasi:
 
-- **Backend** — pilih antara **Claude Code CLI** atau **Gemini CLI** sebagai backend AI. Perintah install menyesuaikan secara otomatis berdasarkan pilihan Anda
+- **Backend** — pilih antara **Claude Code CLI**, **Gemini CLI**, atau **Ollama** sebagai backend AI. Perintah install menyesuaikan secara otomatis berdasarkan pilihan Anda
 - **Bahasa** — pilih bahasa yang akan digunakan AI agent untuk merespons: English, Bahasa Indonesia, 日本語, 한국語, atau 中文
 
 Server menghasilkan perintah install sekali pakai.
@@ -495,6 +495,7 @@ Browser  <-->  WebSocket  <-->  server.js  <-->  Agent (stoa.js)
                                     |                   |
                                  SQLite DB      Claude Code CLI
                                                   atau Gemini CLI
+                                                  atau Ollama
 ```
 
 - **server.js** — server HTTP + WebSocket, mengatur room, pesan, dan orkestrasi agent
@@ -503,9 +504,10 @@ Browser  <-->  WebSocket  <-->  server.js  <-->  Agent (stoa.js)
 - **claude-session.js** — mengatur subprocess CLI Claude Code yang persisten
 - **gemini-session.js** — mengatur subprocess CLI Gemini yang persisten
 - **gemini-adapter.js** — adapter untuk parsing output Gemini CLI
+- **ollama-session.js** — mengelola panggilan API Ollama (tidak memerlukan CLI terpisah)
 - **SQLite** — semua data disimpan lokal di `stoa.db` (mode WAL untuk performa)
 
-Stoa mendukung beberapa backend AI. Setiap agent bisa dikonfigurasi untuk menggunakan **Claude Code CLI** atau **Gemini CLI**, dipilih saat agent ditambahkan. Kedua backend dikelola melalui klien agent dan lapisan orkestrasi yang sama.
+Stoa mendukung beberapa backend AI. Setiap agent bisa dikonfigurasi untuk menggunakan **Claude Code CLI**, **Gemini CLI**, atau **Ollama**, dipilih saat agent ditambahkan. Semua backend dikelola melalui klien agent dan lapisan orkestrasi yang sama. Agent Ollama terhubung ke server Ollama lokal dan tidak memerlukan instalasi CLI terpisah.
 
 **Konteks room di prompt**: Setiap kali agent dipicu, server menginjeksikan `Room ID: <id>` ke system prompt agent. Artinya agent selalu tahu room mana yang sedang ia operasikan — memungkinkan pemanggilan `sendProactiveMessage(roomId, ...)` atau operasi lain yang bergantung pada room ID tanpa perlu meneruskan ID secara eksplisit.
 

@@ -219,7 +219,7 @@ Press **Ctrl+F** (or click the **search icon** in the room header) to search wit
 
 Go to **Settings > AI Agent > Add Agent**. The Add Agent panel lets you configure:
 
-- **Backend** — choose between **Claude Code CLI** or **Gemini CLI** as the AI backend. The install command adapts automatically based on your selection
+- **Backend** — choose between **Claude Code CLI**, **Gemini CLI**, or **Ollama** as the AI backend. The install command adapts automatically based on your selection
 - **Language** — select the language the AI agent will use for responses: English, Bahasa Indonesia, 日本語, 한국語, or 中文
 
 The server generates a one-time install command.
@@ -495,6 +495,7 @@ Browser  <-->  WebSocket  <-->  server.js  <-->  Agent (stoa.js)
                                     |                   |
                                  SQLite DB      Claude Code CLI
                                                   or Gemini CLI
+                                                  or Ollama
 ```
 
 - **server.js** — HTTP + WebSocket server, manages rooms, messages, and agent orchestration
@@ -503,9 +504,10 @@ Browser  <-->  WebSocket  <-->  server.js  <-->  Agent (stoa.js)
 - **claude-session.js** — manages the persistent Claude Code CLI subprocess
 - **gemini-session.js** — manages the persistent Gemini CLI subprocess
 - **gemini-adapter.js** — adapter for Gemini CLI output parsing
+- **ollama-session.js** — manages Ollama API calls (no CLI required)
 - **SQLite** — all data stored locally in `stoa.db` (WAL mode for performance)
 
-Stoa supports multiple AI backends. Each agent can be configured to use either **Claude Code CLI** or **Gemini CLI**, chosen when the agent is added. Both backends are managed through the same agent client and orchestration layer.
+Stoa supports multiple AI backends. Each agent can be configured to use **Claude Code CLI**, **Gemini CLI**, or **Ollama**, chosen when the agent is added. All backends are managed through the same agent client and orchestration layer. Ollama agents connect to a local Ollama server and do not require a separate CLI install.
 
 **Room context in prompt**: Every time an agent is triggered, the server injects `Room ID: <id>` into the agent's system prompt. This means the agent always knows which room it is operating in — enabling it to call `sendProactiveMessage(roomId, ...)` or perform other room-aware operations without needing the ID passed explicitly.
 
