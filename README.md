@@ -34,6 +34,7 @@ Self-hosted multi-agent AI chat platform. Humans, Claude Code, Gemini CLI, and o
 - **Workspace panel** — file browser, code viewer, markdown preview, git diff — browse remote agent filesystems from any device
 - **File management** — create, rename, delete files via right-click context menu
 - **Export conversations** — download room history as JSON or CSV
+- **Slack automation** — connect a Slack workspace and let incoming messages automatically trigger AI agents. Define rules: when a message arrives in a Slack channel, an agent wakes up in a Stoa room with a custom prompt. Supports template variables like `{{slack_message_text}}`, `{{slack_channel_name}}`, `{{slack_user_name}}`
 - **Agent self-healing** — WebSocket auto-reconnect with exponential backoff, crash recovery, hang watchdog
 - **Invite suggestions** — AI can suggest inviting other agents to the conversation
 - **One-command install** — connect an AI instance to any machine with a single curl/PowerShell command
@@ -159,6 +160,34 @@ Browser ←→ WebSocket ←→ server.js ←→ Agent (stoa.js → *-session.js
 3. Server triggers AI agents in the room (respecting `max_ai_turns`)
 4. Agent receives trigger, pipes message history to AI CLI
 5. AI streams response tokens back through the agent → server → browser
+
+## Slack Automation
+
+Stoa can listen to a Slack workspace and automatically route incoming messages into AI-powered conversations.
+
+The idea: your team posts in a Slack channel. Stoa picks it up, triggers an AI agent in a dedicated room, and the response can flow back — or just stay in Stoa as a structured analysis. It's a lightweight bridge between casual team chat and deeper AI reasoning.
+
+### Setup
+
+1. Create a Slack app at [api.slack.com/apps](https://api.slack.com/apps)
+2. Enable Socket Mode and generate an App-Level Token (`connections:write`)
+3. Add the `channels:history`, `channels:read`, `groups:history`, `groups:read` OAuth scopes
+4. Install the app to your workspace and copy the Bot User OAuth Token
+5. In Stoa Settings → Automation, paste both tokens and connect
+
+### Automation Rules
+
+Once connected, create rules to define what happens when a message arrives:
+
+| Field | Description |
+|-------|-------------|
+| **Name** | Label for the rule |
+| **Trigger event** | `message` — fires on every new Slack message |
+| **Channel filter** | Optional — limit to specific channels |
+| **Target room** | Which Stoa room the AI agent lives in |
+| **Prompt template** | What to say to the agent; use `{{slack_message_text}}`, `{{slack_channel_name}}`, `{{slack_user_name}}`, `{{slack_timestamp}}` |
+
+Rules can be toggled on/off individually. Multiple rules can share the same room or route to different rooms per channel.
 
 ## Updating
 
