@@ -1,5 +1,30 @@
 # Changelog
 
+## [2026-06-05]
+
+### Added
+- **Slack Automation** — connect a Slack workspace (Socket Mode, user token only) and define rules that fire when messages arrive in public or private channels. Rules have a name, trigger event (`message`, `message.groups`, `mention`), optional AND conditions (text contains/starts_with/regex), target Stoa room, and a prompt template supporting `{{slack_message_text}}`, `{{slack_message_link}}`, `{{slack_user}}`, `{{slack_channel}}`, `{{extracted_url}}`, `{{slack_thread_ts}}`. Each rule has an enable/disable toggle
+- **Slack: private channel support** — `message.groups` event type triggers on private channels using the `groups:history` OAuth scope
+- **Slack: event deduplication** — incoming Slack events are deduplicated by `ts + channel + eventType` within a 120-second window to prevent multiple automation triggers from the same event
+- **Automation index** — `idx_automations_trigger ON automations(trigger_type, trigger_event, enabled)` added for fast event handler lookups
+- **4 new database indexes** — `idx_actors_type`, `idx_messages_state`, `idx_auth_users_email`, `idx_settings_scope_key` covering the most common WHERE clauses in server queries
+- **Slack Automation section in README** — setup guide, feature table, and template variable reference
+- **Slack setup docs** — step-by-step guide in all 5 languages (EN, ID, JA, KO, ZH)
+- **20+ new integration tests** — covering workdirs (online → 200, offline → 503), force-update, rescan, actor config, auth logout, room participants, GET single room, room skills, invite resolve 404, DELETE message 404, client-error logging, automation CRUD, setup status
+
+### Changed
+- **Slack: bot token removed** — simplified to user token only; bot token scope removed from UI and docs
+- **compact_session: N+1 eliminated** — sessions for all AI participants in a room are now batch-fetched with one `IN (...)` query before the loop instead of one query per agent
+- **Schema: index ordering fixed** — `idx_automations_trigger` was defined before the `automations` table in schema.sqlite.sql (would fail on fresh installs); moved to after all table definitions
+
+### Fixed
+- **Security: symlink attack in `/api/workspace/file`** — endpoint was using `startsWith()` to validate paths but didn't check symlinks. An attacker could create a symlink inside the workdir pointing to `/etc/passwd` and read it. Fixed by replacing the manual check with the existing `isPathSafe()` function which checks symlinks via `lstatSync` + `realpathSync`
+- **Avatar file leak** — uploading or deleting an actor avatar never removed the old file from disk. Root cause: `path.resolve(__dirname, '/uploads/…')` discards `__dirname` when the second argument is an absolute path. Old files accumulated indefinitely. Fixed using `path.join(__dirname, url.replace(/^\//, ''))`
+- **Invite resolve null crash** — `POST /api/invites/:id/resolve` with `approved: true` on a non-existent invite ID would crash with `TypeError: Cannot read properties of null (reading 'room_id')`. Now returns 404 if the invite doesn't exist
+- **Upload error handling** — `fs.writeFileSync` in `POST /api/upload/raw` was not in a try/catch; disk-full or permission errors would escape to the outer handler without a clear 500 response
+- **Docs: JA/KO/ZH section ordering** — "Export Conversation" section was placed before Sidebar Collapse and Workspace Panel in Japanese, Korean, and Chinese guides; moved to match the EN order
+- **Docs: JA/KO/ZH Workspace Panel** — all three translations were missing 9 subsections (Opening the Panel, File Tree, Code Viewer, Markdown Preview, Image Preview, Git Diff, Clickable File Paths, Download Files, Remote File Browsing) and the Sidebar Collapse section entirely; now fully in sync with EN/ID
+
 ## [2026-06-04]
 
 ### Added
