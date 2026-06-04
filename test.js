@@ -1,8 +1,218 @@
-// Stoa API Integration Tests
-// Requires a running server: node server.js
+// Stoa Tests — Unit + Integration
+// Integration tests require a running server: node server.js
 // Usage: node test.js [PORT]
 const http = require('http');
 const assert = require('assert');
+const path = require('path');
+const crypto = require('crypto');
+
+// ── Pure Unit Tests (no server required) ──────────────────────────────────────
+
+function runUnitTests() {
+  let p = 0, f = 0;
+  function ut(name, fn) {
+    try { fn(); console.log(`  ✓ ${name}`); p++; }
+    catch (e) { console.error(`  ✗ ${name}: ${e.message}`); f++; }
+  }
+
+  // parseJsonBody
+  const parseJsonBody = s => { try { return JSON.parse(s); } catch { return null; } };
+  ut('parseJsonBody — valid JSON object', () => {
+    assert.deepStrictEqual(parseJsonBody('{"ok":true}'), { ok: true });
+  });
+  ut('parseJsonBody — valid JSON array', () => {
+    assert.deepStrictEqual(parseJsonBody('[1,2,3]'), [1, 2, 3]);
+  });
+  ut('parseJsonBody — invalid JSON → null', () => {
+    assert.strictEqual(parseJsonBody('not-json'), null);
+    assert.strictEqual(parseJsonBody(''), null);
+    assert.strictEqual(parseJsonBody('{broken'), null);
+  });
+  ut('parseJsonBody — null input → null', () => {
+    assert.strictEqual(parseJsonBody(null), null);
+  });
+
+  // parseCookies
+  const parseCookies = header => {
+    const cookies = {};
+    if (!header) return cookies;
+    for (const part of header.split(';')) {
+      const [k, ...v] = part.trim().split('=');
+      if (k) cookies[k.trim()] = v.join('=').trim();
+    }
+    return cookies;
+  };
+  ut('parseCookies — parses key=value pairs', () => {
+    const c = parseCookies('session=abc123; theme=dark; lang=en');
+    assert.strictEqual(c.session, 'abc123');
+    assert.strictEqual(c.theme, 'dark');
+    assert.strictEqual(c.lang, 'en');
+  });
+  ut('parseCookies — empty/null → {}', () => {
+    assert.deepStrictEqual(parseCookies(''), {});
+    assert.deepStrictEqual(parseCookies(null), {});
+    assert.deepStrictEqual(parseCookies(undefined), {});
+  });
+  ut('parseCookies — value with = sign preserved', () => {
+    const c = parseCookies('token=a=b=c');
+    assert.strictEqual(c.token, 'a=b=c');
+  });
+
+  // isPathSafe (mirrors server logic)
+  const isPathSafe = (filePath, workdir) => {
+    const resolved = path.resolve(filePath);
+    const wdResolved = path.resolve(workdir);
+    const norm = p2 => process.platform === 'win32' ? p2.toLowerCase() : p2;
+    return norm(resolved).startsWith(norm(wdResolved + path.sep)) || norm(resolved) === norm(wdResolved);
+  };
+  ut('isPathSafe — valid file inside workdir', () => {
+    assert.ok(isPathSafe('/tmp/test/file.js', '/tmp/test'));
+  });
+  ut('isPathSafe — path equals workdir', () => {
+    assert.ok(isPathSafe('/tmp/test', '/tmp/test'));
+  });
+  ut('isPathSafe — traversal via .. blocked', () => {
+    assert.ok(!isPathSafe('/tmp/test/../../etc/passwd', '/tmp/test'));
+  });
+  ut('isPathSafe — sibling directory blocked', () => {
+    assert.ok(!isPathSafe('/tmp/other/file.js', '/tmp/test'));
+  });
+  ut('isPathSafe — nested subdirectory allowed', () => {
+    assert.ok(isPathSafe('/tmp/test/a/b/c/deep.js', '/tmp/test'));
+  });
+
+  // parseGitDiff (mirrors server logic)
+  const parseGitDiff = raw => {
+    if (!raw.trim()) return [];
+    const files = [];
+    let current = null;
+    for (const line of raw.split('\n')) {
+      if (line.startsWith('diff --git')) {
+        const match = line.match(/b\/(.+)$/);
+        current = { name: match ? match[1] : '?', hunks: [], add: 0, del: 0 };
+        files.push(current);
+      } else if (line.startsWith('@@') && current) {
+        current.hunks.push({ k: 'hunk', text: line });
+      } else if (current && current.hunks.length) {
+        if (line.startsWith('+') && !line.startsWith('+++')) { current.hunks.push({ k: 'add', text: line.slice(1) }); current.add++; }
+        else if (line.startsWith('-') && !line.startsWith('---')) { current.hunks.push({ k: 'del', text: line.slice(1) }); current.del++; }
+        else if (line.startsWith(' ')) { current.hunks.push({ k: 'ctx', text: line.slice(1) }); }
+      }
+    }
+    return files;
+  };
+  ut('parseGitDiff — empty string → []', () => {
+    assert.deepStrictEqual(parseGitDiff(''), []);
+    assert.deepStrictEqual(parseGitDiff('   '), []);
+  });
+  ut('parseGitDiff — counts adds and deletes correctly', () => {
+    const diff = 'diff --git a/foo.js b/foo.js\n--- a/foo.js\n+++ b/foo.js\n@@ -1,3 +1,4 @@\n ctx\n-old line\n+new line\n+another new\n ctx2';
+    const files = parseGitDiff(diff);
+    assert.strictEqual(files.length, 1);
+    assert.strictEqual(files[0].name, 'foo.js');
+    assert.strictEqual(files[0].add, 2);
+    assert.strictEqual(files[0].del, 1);
+  });
+  ut('parseGitDiff — multiple files', () => {
+    const diff = 'diff --git a/a.js b/a.js\n@@ -1 +1 @@\n+x\ndiff --git a/b.js b/b.js\n@@ -1 +1 @@\n-y';
+    const files = parseGitDiff(diff);
+    assert.strictEqual(files.length, 2);
+    assert.strictEqual(files[0].name, 'a.js');
+    assert.strictEqual(files[1].name, 'b.js');
+    assert.strictEqual(files[0].add, 1);
+    assert.strictEqual(files[1].del, 1);
+  });
+  ut('parseGitDiff — +++ and --- lines not counted as diff', () => {
+    const diff = 'diff --git a/x.js b/x.js\n--- a/x.js\n+++ b/x.js\n@@ -1 +1 @@\n-old\n+new';
+    const files = parseGitDiff(diff);
+    assert.strictEqual(files[0].add, 1, 'should not count +++ line');
+    assert.strictEqual(files[0].del, 1, 'should not count --- line');
+  });
+
+  // password hashing (using same algorithm as server)
+  const hashPassword = (password, salt = crypto.randomBytes(16).toString('hex')) => {
+    const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+    return `${salt}:${hash}`;
+  };
+  const verifyPassword = (password, stored) => {
+    const [salt, hash] = stored.split(':');
+    const test = crypto.scryptSync(password, salt, 64).toString('hex');
+    return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(test, 'hex'));
+  };
+  ut('password — correct password verifies', () => {
+    const hash = hashPassword('mypassword');
+    assert.ok(verifyPassword('mypassword', hash));
+  });
+  ut('password — wrong password fails', () => {
+    const hash = hashPassword('mypassword');
+    assert.ok(!verifyPassword('wrongpassword', hash));
+  });
+  ut('password — different salts → different hashes', () => {
+    const h1 = hashPassword('same');
+    const h2 = hashPassword('same');
+    assert.notStrictEqual(h1, h2);
+    assert.ok(verifyPassword('same', h1));
+    assert.ok(verifyPassword('same', h2));
+  });
+
+  // resolveAgentOrder (mirrors server logic)
+  const resolveAgentOrder = (content, agents) => {
+    const mentions = [];
+    for (const agent of agents) {
+      const idx = content.indexOf('@' + agent.name);
+      if (idx !== -1) mentions.push({ agent, idx });
+    }
+    if (mentions.length > 0) {
+      mentions.sort((a, b) => a.idx - b.idx);
+      return mentions.map(m => m.agent);
+    }
+    return [...agents];
+  };
+  ut('resolveAgentOrder — single @mention selects one agent', () => {
+    const agents = [{ name: 'Ara' }, { name: 'Idris' }];
+    const ordered = resolveAgentOrder('@Ara please help', agents);
+    assert.strictEqual(ordered.length, 1);
+    assert.strictEqual(ordered[0].name, 'Ara');
+  });
+  ut('resolveAgentOrder — multiple mentions ordered by position', () => {
+    const agents = [{ name: 'Ara' }, { name: 'Idris' }];
+    const ordered = resolveAgentOrder('hey @Idris then @Ara', agents);
+    assert.strictEqual(ordered[0].name, 'Idris');
+    assert.strictEqual(ordered[1].name, 'Ara');
+  });
+  ut('resolveAgentOrder — no mentions → all agents returned', () => {
+    const agents = [{ name: 'Ara' }, { name: 'Idris' }];
+    const ordered = resolveAgentOrder('hello everyone', agents);
+    assert.strictEqual(ordered.length, 2);
+  });
+
+  // parseDocFilename (mirrors server logic)
+  const parseDocFilename = name => {
+    const m = name.match(/^(.+)\.([a-z]{2})\.md$/);
+    if (m) return { slug: m[1], lang: m[2] };
+    if (name.endsWith('.md')) return { slug: name.slice(0, -3), lang: 'en' };
+    return null;
+  };
+  ut('parseDocFilename — lang-tagged filename', () => {
+    const r = parseDocFilename('guide-usage.en.md');
+    assert.deepStrictEqual(r, { slug: 'guide-usage', lang: 'en' });
+  });
+  ut('parseDocFilename — Indonesian', () => {
+    const r = parseDocFilename('doc-tailscale.id.md');
+    assert.deepStrictEqual(r, { slug: 'doc-tailscale', lang: 'id' });
+  });
+  ut('parseDocFilename — no lang tag → defaults to en', () => {
+    const r = parseDocFilename('readme.md');
+    assert.deepStrictEqual(r, { slug: 'readme', lang: 'en' });
+  });
+  ut('parseDocFilename — non-md file → null', () => {
+    assert.strictEqual(parseDocFilename('server.js'), null);
+    assert.strictEqual(parseDocFilename('image.png'), null);
+  });
+
+  return { p, f };
+}
+
 
 const HOST = 'localhost';
 const PORT = parseInt(process.argv[2]) || parseInt(process.env.PORT) || 3000;
@@ -73,8 +283,15 @@ async function test(name, fn) {
 }
 
 async function run() {
-  console.log(`Stoa API Tests — http://${HOST}:${PORT}`);
+  // Run unit tests first (no server needed)
+  console.log('Stoa Tests');
   console.log('='.repeat(40));
+  console.log('\n[Unit Tests — no server required]');
+  const unitResult = runUnitTests();
+  passed += unitResult.p;
+  failed += unitResult.f;
+
+  console.log(`\n[Integration Tests — http://${HOST}:${PORT}]`);
 
   // Auth
   console.log('\n[Auth]');
@@ -316,6 +533,191 @@ async function run() {
       assert.ok(first.slug, 'slug missing');
       assert.ok(Array.isArray(first.langs), 'langs missing');
     }
+  });
+
+  // Room lifecycle (create → rename → archive → restore → export → delete)
+  console.log('\n[Room Lifecycle]');
+  let testRoomId = null;
+  let testActorId = null;
+
+  await test('Register test actor for room lifecycle', async () => {
+    const scriptR = await req('GET', '/install.sh?name=test-lifecycle-agent');
+    const tokenMatch = scriptR.raw.match(/REG_TOKEN="([a-f0-9]+)"/);
+    assert.ok(tokenMatch, 'no token');
+    const r = await req('POST', '/api/agent/register', { token: tokenMatch[1] });
+    assert.strictEqual(r.status, 200);
+    testActorId = r.body.actor_id;
+    assert.ok(testActorId, 'no actor_id');
+
+    // Get default workdir id from first available agent workdir (or use human actor's default)
+    const actors = (await req('GET', '/api/actors')).body;
+    const anyAI = actors.find(a => a.type === 'ai' && a.id !== testActorId);
+    if (!anyAI) return; // skip if no other AI agents
+
+    const wds = (await req('GET', `/api/actors/${anyAI.id}/workdirs`)).body;
+    if (!wds.length) return;
+
+    const r2 = await req('POST', '/api/rooms', { title: 'Test Room lifecycle', participant_ids: [testActorId], workdir_id: wds[0].id });
+    assert.strictEqual(r2.status, 200, `create room failed: ${JSON.stringify(r2.body)}`);
+    testRoomId = r2.body.id;
+    assert.ok(testRoomId, 'room id missing');
+  });
+
+  await test('PATCH /api/rooms/:id — rename room', async () => {
+    if (!testRoomId) { console.log('    (skipped — no test room)'); return; }
+    const r = await req('PATCH', `/api/rooms/${testRoomId}`, { title: 'Renamed Test Room' });
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.ok);
+    const room = (await req('GET', `/api/rooms/${testRoomId}`)).body;
+    assert.strictEqual(room.title, 'Renamed Test Room');
+  });
+
+  await test('PATCH /api/rooms/:id — archive room', async () => {
+    if (!testRoomId) { console.log('    (skipped — no test room)'); return; }
+    const r = await req('PATCH', `/api/rooms/${testRoomId}`, { archived: true });
+    assert.strictEqual(r.status, 200);
+    const archived = (await req('GET', '/api/rooms?archived=1')).body;
+    assert.ok(archived.some(rm => rm.id === testRoomId), 'room not in archive list');
+  });
+
+  await test('PATCH /api/rooms/:id — restore room', async () => {
+    if (!testRoomId) { console.log('    (skipped — no test room)'); return; }
+    const r = await req('PATCH', `/api/rooms/${testRoomId}`, { archived: false });
+    assert.strictEqual(r.status, 200);
+    const active = (await req('GET', '/api/rooms')).body;
+    assert.ok(active.some(rm => rm.id === testRoomId), 'room not restored to active list');
+  });
+
+  await test('GET /api/rooms/:id/export — JSON format', async () => {
+    if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
+    const r = await req('GET', `/api/rooms/${firstRoomId}/export?format=json`);
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.room, 'missing room key');
+    assert.ok(Array.isArray(r.body.messages), 'messages not array');
+    assert.ok(r.body.exported_at, 'missing exported_at');
+  });
+
+  await test('GET /api/rooms/:id/export — CSV format', async () => {
+    if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
+    const r = await req('GET', `/api/rooms/${firstRoomId}/export?format=csv`);
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.raw.startsWith('id,timestamp,actor'), 'missing CSV header');
+  });
+
+  await test('DELETE /api/rooms/:id — deletes room', async () => {
+    if (!testRoomId) { console.log('    (skipped — no test room)'); return; }
+    const r = await req('DELETE', `/api/rooms/${testRoomId}`);
+    assert.strictEqual(r.status, 204);
+    const r2 = await req('GET', `/api/rooms/${testRoomId}`);
+    assert.strictEqual(r2.status, 404);
+    testRoomId = null;
+  });
+
+  await test('Cleanup test actor', async () => {
+    if (!testActorId) { console.log('    (skipped)'); return; }
+    const r = await req('DELETE', `/api/actors/${testActorId}`);
+    assert.ok([204, 200].includes(r.status));
+    testActorId = null;
+  });
+
+  // Messages
+  console.log('\n[Message Operations]');
+  let testMsgId = null;
+
+  await test('GET /api/messages/:id — get single message', async () => {
+    if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
+    const msgs = (await req('GET', `/api/rooms/${firstRoomId}/messages`)).body;
+    if (!msgs.length) { console.log('    (skipped — no messages)'); return; }
+    const r = await req('GET', `/api/messages/${msgs[0].id}`);
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.id, 'id missing');
+    assert.ok(r.body.actor_name, 'actor_name missing');
+  });
+
+  await test('GET /api/messages/999999 — nonexistent → 404', async () => {
+    const r = await req('GET', '/api/messages/999999');
+    assert.strictEqual(r.status, 404);
+  });
+
+  // Actor operations
+  console.log('\n[Actor Operations]');
+  await test('GET /api/actors/:id/capabilities — returns models array', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    const ollamaActor = actors.find(a => a.adapter === 'ollama');
+    if (!ollamaActor) { console.log('    (skipped — no Ollama actor)'); return; }
+    const r = await req('GET', `/api/actors/${ollamaActor.id}/capabilities`);
+    assert.strictEqual(r.status, 200);
+    assert.ok(Array.isArray(r.body.models), 'models not array');
+  });
+
+  await test('GET /api/actors/:id/workdirs — returns workdir list', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    const aiActor = actors.find(a => a.type === 'ai');
+    if (!aiActor) { console.log('    (skipped — no AI actors)'); return; }
+    const r = await req('GET', `/api/actors/${aiActor.id}/workdirs`);
+    assert.strictEqual(r.status, 200);
+    assert.ok(Array.isArray(r.body));
+  });
+
+  // Auth operations
+  console.log('\n[Auth Operations]');
+  await test('PATCH /api/auth/email — invalid email format → 400', async () => {
+    const r = await req('PATCH', '/api/auth/email', { email: 'not-an-email' });
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('PATCH /api/auth/password — wrong current password → 401', async () => {
+    const r = await req('PATCH', '/api/auth/password', { current_password: 'wrong', new_password: 'newpass123' });
+    assert.strictEqual(r.status, 401);
+  });
+
+  await test('PATCH /api/auth/password — too short new password → 400', async () => {
+    const r = await req('PATCH', '/api/auth/password', { current_password: 'stoa2026!', new_password: 'abc' });
+    assert.strictEqual(r.status, 400);
+  });
+
+  // Settings
+  console.log('\n[Settings Operations]');
+  await test('PATCH /api/settings — invalid JSON → 400', async () => {
+    const r = await rawReq('PATCH', '/api/settings', 'bad-json', 'application/json');
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('PATCH /api/settings — valid non-destructive update → ok', async () => {
+    const curr = (await req('GET', '/api/settings')).body;
+    const r = await req('PATCH', '/api/settings', { max_ai_turns: curr.max_ai_turns });
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.ok);
+  });
+
+  // Upload validation
+  console.log('\n[Upload Validation]');
+  await test('GET /uploads/nonexistent.txt — 404', async () => {
+    const r = await req('GET', '/uploads/nonexistent-file-xyz.txt');
+    assert.strictEqual(r.status, 404);
+  });
+
+  await test('GET /uploads/../../server.js — traversal blocked', async () => {
+    const r = await req('GET', '/uploads/../../server.js');
+    assert.strictEqual(r.status, 404);
+  });
+
+  // Docs
+  console.log('\n[Docs Fetch]');
+  await test('GET /api/docs/:file — known doc returns content', async () => {
+    const r = await req('GET', '/api/docs/guide-usage.en.md');
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.raw.includes('Stoa'), 'doc content missing');
+  });
+
+  await test('GET /api/docs/:file — non-md → 400', async () => {
+    const r = await req('GET', '/api/docs/server.js');
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('GET /api/docs/:file — nonexistent → 404', async () => {
+    const r = await req('GET', '/api/docs/nonexistent.md');
+    assert.strictEqual(r.status, 404);
   });
 
   // 404 handling
