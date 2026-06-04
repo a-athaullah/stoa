@@ -671,6 +671,11 @@ async function run() {
     assert.strictEqual(r.status, 404);
   });
 
+  await test('DELETE /api/messages/999999 — nonexistent → 404', async () => {
+    const r = await req('DELETE', '/api/messages/999999');
+    assert.strictEqual(r.status, 404);
+  });
+
   // Actor operations
   console.log('\n[Actor Operations]');
   await test('GET /api/actors/:id/capabilities — returns models array', async () => {
@@ -790,6 +795,14 @@ async function run() {
   await test('PATCH /api/settings — valid non-destructive update → ok', async () => {
     const curr = (await req('GET', '/api/settings')).body;
     const r = await req('PATCH', '/api/settings', { max_ai_turns: curr.max_ai_turns });
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.ok);
+  });
+
+  // Client error logging
+  console.log('\n[Client Error]');
+  await test('POST /api/client-error — logs error → 200 ok', async () => {
+    const r = await req('POST', '/api/client-error', { message: 'test error from test.js', source: 'test.js', line: 0 });
     assert.strictEqual(r.status, 200);
     assert.ok(r.body.ok);
   });
