@@ -22,6 +22,7 @@ function getFallbackSession(participantId, workDir) {
   return session;
 }
 const { spawnGemini } = require('./gemini-adapter');
+const slackListener = require('./slack-listener');
 
 const EXPECTED_CLIENT_VERSION = (() => {
   try {
@@ -1514,6 +1515,108 @@ Write-Host "Logs   : pm2 logs $AgentName"
     return res.end(JSON.stringify(data, null, 2));
   }
 
+  // ── Automation: Slack config ────────────────────────────────────────────────
+  if (req.method === 'GET' && url.pathname === '/api/automations/slack') {
+    const appToken = getSetting('slack_app_token');
+    const botToken = getSetting('slack_bot_token');
+    const connected = getSetting('slack_connected') === '1';
+    if (!connected || !appToken) return json(res, { connected: false });
+    const { workspaceName, botName } = slackListener.getStatus();
+    return json(res, {
+      connected: true,
+      workspaceName: getSetting('slack_workspace_name') || workspaceName || '',
+      botName:       getSetting('slack_bot_name') || botName || '',
+      appTokenHint:  appToken.slice(0, 14),
+      botTokenHint:  botToken.slice(0, 10),
+    });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/automations/slack/connect') {
+    const body = parseJsonBody(await readBody(req));
+    if (!body?.appToken || !body?.botToken) { res.writeHead(400); return res.end(JSON.stringify({ error: 'appToken and botToken required' })); }
+    try {
+      await slackListener.start({ appToken: body.appToken, botToken: body.botToken });
+      const { workspaceName, botName } = slackListener.getStatus();
+      setSetting('slack_app_token', body.appToken);
+      setSetting('slack_bot_token', body.botToken);
+      setSetting('slack_connected', '1');
+      setSetting('slack_workspace_name', workspaceName || '');
+      setSetting('slack_bot_name', botName || '');
+      return json(res, {
+        connected: true,
+        workspaceName: workspaceName || '',
+        botName: botName || '',
+        appTokenHint: body.appToken.slice(0, 14),
+        botTokenHint: body.botToken.slice(0, 10),
+      });
+    } catch (e) {
+      console.error('[slack] connect error:', e.message);
+      res.writeHead(500); return res.end(JSON.stringify({ error: e.message }));
+    }
+  }
+
+  if (req.method === 'DELETE' && url.pathname === '/api/automations/slack/disconnect') {
+    await slackListener.stop();
+    setSetting('slack_connected', '0');
+    setSetting('slack_app_token', '');
+    setSetting('slack_bot_token', '');
+    setSetting('slack_workspace_name', '');
+    setSetting('slack_bot_name', '');
+    return json(res, { ok: true });
+  }
+
+  // ── Automation: CRUD ─────────────────────────────────────────────────────────
+  if (req.method === 'GET' && url.pathname === '/api/automations') {
+    const rows = db.prepare('SELECT * FROM automations ORDER BY id DESC').all();
+    return json(res, rows);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/automations') {
+    const body = parseJsonBody(await readBody(req));
+    if (!body?.name || !body?.trigger_event || !body?.target_room_id || !body?.prompt_template) {
+      res.writeHead(400); return res.end(JSON.stringify({ error: 'Missing required fields' }));
+    }
+    const result = db.prepare(`
+      INSERT INTO automations (name, trigger_type, trigger_event, trigger_conditions, target_room_id, prompt_template)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      body.name.trim(),
+      body.trigger_type || 'slack',
+      body.trigger_event,
+      body.trigger_conditions || '[]',
+      parseInt(body.target_room_id),
+      body.prompt_template.trim(),
+    );
+    const row = db.prepare('SELECT * FROM automations WHERE id=?').get(result.lastInsertRowid);
+    return json(res, row);
+  }
+
+  const autoIdMatch = url.pathname.match(/^\/api\/automations\/(\d+)$/);
+  if (autoIdMatch) {
+    const autoId = parseInt(autoIdMatch[1]);
+    if (req.method === 'PATCH') {
+      const body = parseJsonBody(await readBody(req));
+      if (!body) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
+      const auto = db.prepare('SELECT * FROM automations WHERE id=?').get(autoId);
+      if (!auto) { res.writeHead(404); return res.end(JSON.stringify({ error: 'Not found' })); }
+      const name        = body.name !== undefined        ? body.name.trim()                          : auto.name;
+      const event       = body.trigger_event !== undefined ? body.trigger_event                       : auto.trigger_event;
+      const conds       = body.trigger_conditions !== undefined ? body.trigger_conditions             : auto.trigger_conditions;
+      const roomId      = body.target_room_id !== undefined ? parseInt(body.target_room_id)          : auto.target_room_id;
+      const prompt      = body.prompt_template !== undefined ? body.prompt_template.trim()           : auto.prompt_template;
+      const enabled     = body.enabled !== undefined     ? (body.enabled ? 1 : 0)                    : auto.enabled;
+      db.prepare(`
+        UPDATE automations SET name=?, trigger_event=?, trigger_conditions=?, target_room_id=?, prompt_template=?, enabled=? WHERE id=?
+      `).run(name, event, conds, roomId, prompt, enabled, autoId);
+      const updated = db.prepare('SELECT * FROM automations WHERE id=?').get(autoId);
+      return json(res, updated);
+    }
+    if (req.method === 'DELETE') {
+      db.prepare('DELETE FROM automations WHERE id=?').run(autoId);
+      return json(res, { ok: true });
+    }
+  }
+
   res.writeHead(404);
   res.end('Not found');
   } catch (err) {
@@ -2914,3 +3017,94 @@ if (orphaned.changes) console.log(`[startup] Cleaned ${orphaned.changes} orphane
 server.listen(PORT, () => {
   console.log(`Stoa running → http://localhost:${PORT}`);
 });
+
+// ─── Slack automation listener ────────────────────────────────────────────────
+
+slackListener.on('slack_event', async ({ eventType, event, webClient }) => {
+  try {
+    const automations = db.prepare(
+      "SELECT * FROM automations WHERE enabled=1 AND trigger_type='slack' AND trigger_event=?"
+    ).all(eventType);
+
+    for (const auto of automations) {
+      let conditions = [];
+      try { conditions = JSON.parse(auto.trigger_conditions || '[]'); } catch {}
+
+      const text = event.text || '';
+      const userId = event.user || '';
+      const channelId = event.channel || '';
+
+      // Resolve field values
+      const fieldValues = { message_text: text, slack_user: userId, slack_channel: channelId };
+
+      // Evaluate ALL conditions (AND)
+      const allMatch = conditions.every(c => {
+        const val = (fieldValues[c.field] || '').toLowerCase();
+        const target = (c.value || '').toLowerCase();
+        switch (c.op) {
+          case 'contains':      return val.includes(target);
+          case 'not_contains':  return !val.includes(target);
+          case 'starts_with':   return val.startsWith(target);
+          case 'matches_regex': try { return new RegExp(c.value, 'i').test(fieldValues[c.field] || ''); } catch { return false; }
+          default: return true;
+        }
+      });
+
+      if (!allMatch) continue;
+
+      // Resolve variables
+      const workspace = getSetting('slack_workspace_name') || '';
+      const messageLink = event.ts
+        ? `https://${workspace}.slack.com/archives/${channelId}/p${event.ts.replace('.', '')}`
+        : '';
+      const extractedUrl = (text.match(/https?:\/\/[^\s]+/) || [])[0] || '';
+
+      let slackUser = userId;
+      try {
+        const userInfo = await webClient.users.info({ user: userId });
+        slackUser = userInfo.user?.display_name || userInfo.user?.real_name || userId;
+      } catch {}
+
+      let slackChannel = channelId;
+      try {
+        const chanInfo = await webClient.conversations.info({ channel: channelId });
+        slackChannel = chanInfo.channel?.name || channelId;
+      } catch {}
+
+      const prompt = auto.prompt_template
+        .replace(/\{\{slack_message_text\}\}/g, text)
+        .replace(/\{\{slack_message_link\}\}/g, messageLink)
+        .replace(/\{\{slack_thread_ts\}\}/g, event.thread_ts || event.ts || '')
+        .replace(/\{\{slack_user\}\}/g, slackUser)
+        .replace(/\{\{slack_channel\}\}/g, slackChannel)
+        .replace(/\{\{extracted_url\}\}/g, extractedUrl);
+
+      // Send to target room (as human message to trigger agents)
+      handleHumanMessage(auto.target_room_id, prompt, null, null, null).catch(e =>
+        console.error(`[automation] room ${auto.target_room_id} trigger error:`, e.message)
+      );
+
+      // Update run stats
+      db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(auto.id);
+      console.log(`[automation] "${auto.name}" triggered → room ${auto.target_room_id}`);
+    }
+  } catch (e) {
+    console.error('[automation] slack_event handler error:', e.message);
+  }
+});
+
+// Reconnect Slack on startup if previously connected
+(async () => {
+  try {
+    const connected = getSetting('slack_connected') === '1';
+    const appToken  = getSetting('slack_app_token');
+    const botToken  = getSetting('slack_bot_token');
+    if (connected && appToken && botToken) {
+      console.log('[slack] reconnecting on startup…');
+      await slackListener.start({ appToken, botToken });
+    }
+  } catch (e) {
+    console.error('[slack] startup reconnect failed:', e.message);
+    setSetting('slack_connected', '0');
+  }
+})();
