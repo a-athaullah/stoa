@@ -659,6 +659,51 @@ async function run() {
     assert.ok(Array.isArray(r.body));
   });
 
+  await test('POST /api/actors/:id/force-update — online agent → 200', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    const online = actors.find(a => a.type === 'ai' && a.online);
+    if (!online) { console.log('    (skipped — no online AI agents)'); return; }
+    const r = await req('POST', `/api/actors/${online.id}/force-update`);
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.ok);
+  });
+
+  await test('POST /api/actors/:id/force-update — offline agent → 503', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    const offline = actors.find(a => a.type === 'ai' && !a.online);
+    if (!offline) { console.log('    (skipped — all AI agents online)'); return; }
+    const r = await req('POST', `/api/actors/${offline.id}/force-update`);
+    assert.strictEqual(r.status, 503);
+  });
+
+  await test('POST /api/actors/:id/rescan — online agent → 200', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    const online = actors.find(a => a.type === 'ai' && a.online);
+    if (!online) { console.log('    (skipped — no online AI agents)'); return; }
+    const r = await req('POST', `/api/actors/${online.id}/rescan`);
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.ok);
+  });
+
+  await test('PUT /api/actors/:id/config — updates name and lang', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    const aiActor = actors.find(a => a.type === 'ai');
+    if (!aiActor) { console.log('    (skipped — no AI actors)'); return; }
+    const origName = aiActor.name;
+    const r = await req('PUT', `/api/actors/${aiActor.id}/config`, { name: origName, lang: 'en' });
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.id, 'id missing');
+    assert.strictEqual(r.body.name, origName);
+  });
+
+  await test('PUT /api/actors/:id/config — empty name → 400', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    const aiActor = actors.find(a => a.type === 'ai');
+    if (!aiActor) { console.log('    (skipped — no AI actors)'); return; }
+    const r = await req('PUT', `/api/actors/${aiActor.id}/config`, { name: '' });
+    assert.strictEqual(r.status, 400);
+  });
+
   // Auth operations
   console.log('\n[Auth Operations]');
   await test('PATCH /api/auth/email — invalid email format → 400', async () => {
