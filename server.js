@@ -3020,7 +3020,18 @@ server.listen(PORT, () => {
 
 // ─── Slack automation listener ────────────────────────────────────────────────
 
+const _slackProcessed = new Map(); // key → expiresAt, for dedup
 slackListener.on('slack_event', async ({ eventType, event, webClient }) => {
+  // Deduplicate: Slack may deliver the same event multiple times
+  const dedupKey = `${event.ts}:${event.channel}:${eventType}`;
+  const now = Date.now();
+  if (_slackProcessed.has(dedupKey)) return;
+  _slackProcessed.set(dedupKey, now + 120_000);
+  // Cleanup expired entries periodically
+  if (_slackProcessed.size > 500) {
+    for (const [k, exp] of _slackProcessed) { if (exp < now) _slackProcessed.delete(k); }
+  }
+
   try {
     const automations = db.prepare(
       "SELECT * FROM automations WHERE enabled=1 AND trigger_type='slack' AND trigger_event=?"
