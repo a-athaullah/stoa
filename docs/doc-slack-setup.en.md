@@ -2,7 +2,7 @@
 
 Stoa connects to Slack via **Socket Mode** — an outbound WebSocket connection. No public URL or open port required.
 
-You need two tokens: an **App Token** (for the WebSocket connection) and a **Bot Token** (for reading messages).
+You need two tokens: an **App Token** (for the WebSocket connection) and a **User Token** (to receive events from your channels).
 
 ---
 
@@ -19,69 +19,56 @@ You need two tokens: an **App Token** (for the WebSocket connection) and a **Bot
 
 1. In the left sidebar, click **Socket Mode**
 2. Toggle **Enable Socket Mode** to **On**
+3. In the dialog, give the token a name (e.g. `stoa-listener`)
+4. The `connections:write` scope is added automatically — click **Generate**
+5. Copy the token starting with `xapp-1-` — this is your **App Token**
 
 ---
 
-## Step 3 — Get the App Token
-
-1. Go to **Settings → Basic Information**
-2. Scroll down to **App-Level Tokens**
-3. Click **Generate Token and Scopes**
-4. Give it a name (e.g. `stoa-socket`)
-5. Add scope: `connections:write`
-6. Click **Generate** — copy the token starting with `xapp-1-`
-
----
-
-## Step 4 — Add Bot Scopes
+## Step 3 — Add User Token Scopes
 
 1. In the left sidebar, click **OAuth & Permissions**
-2. Under **Bot Token Scopes**, add:
-   - `app_mentions:read` — read mentions of the bot
-   - `channels:history` — read messages in channels
-   - `users:read` — look up user display names
+2. Scroll to the **User Token Scopes** section (not Bot Token Scopes)
+3. Add the following scopes:
+   - `channels:history` — read messages in public channels
+   - `channels:read` — read channel info
+   - `im:history` — read direct messages
 
 ---
 
-## Step 5 — Subscribe to Events
+## Step 4 — Subscribe to User Events
 
 1. In the left sidebar, click **Event Subscriptions**
 2. Toggle **Enable Events** to **On**
-3. Under **Subscribe to bot events**, add:
-   - `app_mention` — when the bot is mentioned
-   - `message.channels` — messages in public channels
+3. Scroll to **Subscribe to events on behalf of users** (not "bot events")
+4. Click **Add Workspace Event** and add:
+   - `message.channels` — messages in channels you're a member of
+   - `message.im` — direct messages you receive
+5. Click **Save Changes**
 
 ---
 
-## Step 6 — Install the App
+## Step 5 — Install the App
 
-1. In the left sidebar, click **OAuth & Permissions**
+1. In the left sidebar, click **Install App**
 2. Click **Install to Workspace** (or **Reinstall** if already installed)
 3. Approve the permissions
-4. Copy the **Bot User OAuth Token** starting with `xoxb-`
+4. Copy the **User OAuth Token** starting with `xoxp-`
 
 ---
 
-## Step 7 — Invite the Bot to Channels
+## Step 6 — Bot invite not required
 
-The bot is a separate entity from your user account. Even if you are already in a channel, the bot still needs to be invited separately.
-
-In each Slack channel you want to monitor, type:
-
-```
-/invite @botname
-```
-
-Replace `botname` with the name of your bot (e.g. `/invite @Stoa`).
+With the User Token approach, the bot does **not** need to be invited to any channel — events come from the channels you (the user) are already a member of.
 
 ---
 
-## Step 8 — Connect in Stoa
+## Step 7 — Connect in Stoa
 
 1. Open Stoa → **Settings → automation**
 2. Click **Connect Slack**
-3. Paste the App Token (`xapp-1-...`) and Bot Token (`xoxb-...`)
-4. Click **Connect** — Stoa will verify the connection and show your workspace name
+3. Paste the **App Token** (`xapp-1-...`) and **User Token** (`xoxp-...`)
+4. Click **Connect** — Stoa will verify the connection
 
 You can now add automation rules that trigger when Slack events occur.
 
@@ -89,4 +76,4 @@ You can now add automation rules that trigger when Slack events occur.
 
 ## Note: Reinstall after changing permissions
 
-Any time you add or change Bot Token Scopes, Slack requires a reinstall. A yellow banner will appear on the **OAuth & Permissions** page — click **Reinstall to Workspace** and approve. Your Bot Token stays the same; only the permissions are updated.
+Any time you add or change User Token Scopes, Slack requires a reinstall. Click **Reinstall to Workspace** on the **Install App** page and approve. Your User Token stays the same; only the permissions are updated.
