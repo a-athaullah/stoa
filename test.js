@@ -720,6 +720,80 @@ async function run() {
     assert.strictEqual(r.status, 404);
   });
 
+  // Automation CRUD
+  console.log('\n[Automation CRUD]');
+  let testAutoId = null;
+
+  await test('GET /api/automations — returns array', async () => {
+    const r = await req('GET', '/api/automations');
+    assert.strictEqual(r.status, 200);
+    assert.ok(Array.isArray(r.body));
+  });
+
+  await test('POST /api/automations — creates rule', async () => {
+    if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
+    const r = await req('POST', '/api/automations', {
+      name: 'test-auto',
+      trigger_type: 'slack',
+      trigger_event: 'message',
+      trigger_conditions: JSON.stringify([]),
+      target_room_id: firstRoomId,
+      prompt_template: 'test {{slack_message_text}}',
+    });
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.id, 'id missing');
+    assert.strictEqual(r.body.name, 'test-auto');
+    testAutoId = r.body.id;
+  });
+
+  await test('POST /api/automations — missing required fields → 400', async () => {
+    const r = await req('POST', '/api/automations', { name: 'no-target' });
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('PATCH /api/automations/:id — updates rule', async () => {
+    if (!testAutoId) { console.log('    (skipped)'); return; }
+    const r = await req('PATCH', `/api/automations/${testAutoId}`, { name: 'renamed-auto', enabled: false });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.name, 'renamed-auto');
+    assert.strictEqual(r.body.enabled, 0);
+  });
+
+  await test('PATCH /api/automations/:id — invalid JSON → 400', async () => {
+    if (!testAutoId) { console.log('    (skipped)'); return; }
+    const r = await rawReq('PATCH', `/api/automations/${testAutoId}`, 'bad-json', 'application/json');
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('PATCH /api/automations/999999 — nonexistent → 404', async () => {
+    const r = await req('PATCH', '/api/automations/999999', { name: 'x' });
+    assert.strictEqual(r.status, 404);
+  });
+
+  await test('DELETE /api/automations/:id — deletes rule', async () => {
+    if (!testAutoId) { console.log('    (skipped)'); return; }
+    const r = await req('DELETE', `/api/automations/${testAutoId}`);
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.ok);
+    // Confirm gone
+    const list = (await req('GET', '/api/automations')).body;
+    assert.ok(!list.some(a => a.id === testAutoId), 'auto still in list after delete');
+    testAutoId = null;
+  });
+
+  await test('GET /api/automations/slack — returns connected status', async () => {
+    const r = await req('GET', '/api/automations/slack');
+    assert.strictEqual(r.status, 200);
+    assert.ok('connected' in r.body, 'connected field missing');
+  });
+
+  await test('GET /api/setup/status — returns needsSetup bool', async () => {
+    const r = await req('GET', '/api/setup/status');
+    assert.strictEqual(r.status, 200);
+    assert.ok('needsSetup' in r.body, 'needsSetup field missing');
+    assert.strictEqual(typeof r.body.needsSetup, 'boolean');
+  });
+
   // 404 handling
   console.log('\n[404]');
   await test('GET /api/nonexistent — 404', async () => {

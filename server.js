@@ -122,6 +122,7 @@ try {
 try {
   db.exec("CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(reply_to)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_automations_trigger ON automations(trigger_type, trigger_event, enabled)");
 } catch {}
 
 // Migrate messages CHECK constraint to allow 'system_event' state
@@ -576,7 +577,7 @@ const server = http.createServer(async (req, res) => {
     const base64Data = data_url.slice(data_url.indexOf(',') + 1);
     const oldAvatar = db.prepare('SELECT avatar_url FROM actors WHERE id=?').get(id);
     if (oldAvatar?.avatar_url) {
-      const oldPath = path.resolve(__dirname, oldAvatar.avatar_url);
+      const oldPath = path.join(__dirname, oldAvatar.avatar_url.replace(/^\//, ''));
       if (oldPath.startsWith(path.join(__dirname, 'uploads')) && fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
     }
     const saved = `avatar-${id}-${Date.now()}.${ext}`;
@@ -594,7 +595,7 @@ const server = http.createServer(async (req, res) => {
     const id = parseInt(avatarDeleteMatch[1]);
     const actor = db.prepare('SELECT avatar_url FROM actors WHERE id=?').get(id);
     if (actor?.avatar_url) {
-      const oldPath = path.resolve(__dirname, actor.avatar_url);
+      const oldPath = path.join(__dirname, actor.avatar_url.replace(/^\//, ''));
       if (oldPath.startsWith(path.join(__dirname, 'uploads')) && fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
     }
     db.prepare('UPDATE actors SET avatar_url=NULL WHERE id=?').run(id);
@@ -1028,7 +1029,7 @@ const server = http.createServer(async (req, res) => {
     const id = parseInt(url.pathname.split('/')[3]);
     const actor = db.prepare('SELECT avatar_url FROM actors WHERE id=?').get(id);
     if (actor?.avatar_url) {
-      const avatarPath = path.resolve(__dirname, actor.avatar_url);
+      const avatarPath = path.join(__dirname, actor.avatar_url.replace(/^\//, ''));
       if (avatarPath.startsWith(path.join(__dirname, 'uploads')) && fs.existsSync(avatarPath)) fs.unlinkSync(avatarPath);
     }
     const affectedRooms = db.prepare('SELECT room_id FROM room_participants WHERE actor_id=?').all(id).map(r => r.room_id);

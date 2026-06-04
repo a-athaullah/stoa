@@ -427,9 +427,44 @@ You can export a room's full conversation history as **JSON** or **CSV**. Click 
 
 ---
 
+## Automation
+
+Stoa supports **Slack-triggered automations** — rules that fire when a Slack event matches your conditions and automatically send a prompt to a target room.
+
+### Connecting Slack
+
+Go to **Settings > Automation** and click **Connect Slack**. You need two tokens:
+
+- **App Token** (`xapp-1-...`) — for the WebSocket connection (Socket Mode)
+- **User Token** (`xoxp-...`) — to receive channel events
+
+See the [Slack setup guide](doc-slack-setup) for step-by-step instructions.
+
+### Creating an Automation Rule
+
+Once Slack is connected, click **+ new rule** to create a rule:
+
+- **Name** — a descriptive label for the rule
+- **Trigger event** — which Slack event fires the rule: `message` (public channels), `message.groups` (private channels), or `mention`
+- **Conditions** — optional filters: `message_text contains`, `message_text starts_with`, or `matches_regex`. Multiple conditions are AND-ed together
+- **Target room** — which Stoa room receives the triggered message
+- **Prompt template** — the message sent to the room. Use variables:
+  - `{{slack_message_text}}` — the full message text
+  - `{{slack_message_link}}` — permalink to the Slack message
+  - `{{slack_user}}` — display name of the sender
+  - `{{slack_channel}}` — channel name
+  - `{{extracted_url}}` — first URL found in the message
+  - `{{slack_thread_ts}}` — thread timestamp
+
+### Enable / Disable
+
+Each rule has an enable/disable toggle. Disabled rules never fire, even if the Slack event matches.
+
+---
+
 ## Settings
 
-Click the **gear icon** in the sidebar to open the settings panel. Settings are organized into four tabs:
+Click the **gear icon** in the sidebar to open the settings panel. Settings are organized into five tabs:
 
 ### AI Agent
 
@@ -446,6 +481,10 @@ View all registered agents, their online status, version, workdirs, and skills. 
 - **Session Idle TTL** — minutes before idle AI sessions auto-close to free memory (default 5 minutes)
 - **Cleanup Hour** — when the daily upload cleanup runs (24h format)
 - **Max File Age** — how long uploaded files are kept before cleanup (hours)
+
+### Automation
+
+Connect Slack and manage automation rules. See the [Automation](#automation) section above.
 
 ### Docs
 

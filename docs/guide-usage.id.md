@@ -427,9 +427,44 @@ Anda bisa mengekspor seluruh riwayat percakapan room sebagai **JSON** atau **CSV
 
 ---
 
+## Automation
+
+Stoa mendukung **automation berbasis Slack** — aturan yang aktif saat event Slack cocok dengan kondisi yang ditentukan dan otomatis mengirim prompt ke room target.
+
+### Menghubungkan Slack
+
+Buka **Settings > Automation** dan klik **Connect Slack**. Anda butuh dua token:
+
+- **App Token** (`xapp-1-...`) — untuk koneksi WebSocket (Socket Mode)
+- **User Token** (`xoxp-...`) — untuk menerima event dari channel
+
+Lihat [panduan setup Slack](doc-slack-setup) untuk instruksi langkah demi langkah.
+
+### Membuat Aturan Automation
+
+Setelah Slack terhubung, klik **+ new rule** untuk membuat aturan:
+
+- **Name** — label deskriptif untuk aturan
+- **Trigger event** — event Slack mana yang memicu aturan: `message` (channel publik), `message.groups` (channel privat), atau `mention`
+- **Conditions** — filter opsional: `message_text contains`, `message_text starts_with`, atau `matches_regex`. Beberapa kondisi di-AND-kan
+- **Target room** — room Stoa mana yang menerima pesan yang dipicu
+- **Prompt template** — pesan yang dikirim ke room. Gunakan variabel:
+  - `{{slack_message_text}}` — teks pesan lengkap
+  - `{{slack_message_link}}` — permalink ke pesan Slack
+  - `{{slack_user}}` — nama tampilan pengirim
+  - `{{slack_channel}}` — nama channel
+  - `{{extracted_url}}` — URL pertama yang ditemukan di pesan
+  - `{{slack_thread_ts}}` — timestamp thread
+
+### Aktifkan / Nonaktifkan
+
+Setiap aturan memiliki toggle aktif/nonaktif. Aturan yang dinonaktifkan tidak pernah aktif, meski event Slack cocok.
+
+---
+
 ## Pengaturan
 
-Klik **ikon gear** di sidebar untuk membuka panel pengaturan. Pengaturan diorganisasi dalam empat tab:
+Klik **ikon gear** di sidebar untuk membuka panel pengaturan. Pengaturan diorganisasi dalam lima tab:
 
 ### AI Agent
 
@@ -446,6 +481,10 @@ Lihat semua agent yang terdaftar, status online, versi, workdir, dan skill merek
 - **Session Idle TTL** — menit sebelum sesi AI yang idle otomatis ditutup untuk menghemat memori (default 5 menit)
 - **Cleanup Hour** — kapan pembersihan upload harian berjalan (format 24 jam)
 - **Max File Age** — berapa lama file upload disimpan sebelum dibersihkan (jam)
+
+### Automation
+
+Hubungkan Slack dan kelola aturan automation. Lihat bagian [Automation](#automation) di atas.
 
 ### Docs
 
