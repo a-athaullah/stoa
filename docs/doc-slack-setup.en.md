@@ -62,7 +62,21 @@ You need two tokens: an **App Token** (for the WebSocket connection) and a **Bot
 
 ---
 
-## Step 7 — Connect in Stoa
+## Step 7 — Invite the Bot to Channels
+
+The bot is a separate entity from your user account. Even if you are already in a channel, the bot still needs to be invited separately.
+
+In each Slack channel you want to monitor, type:
+
+```
+/invite @botname
+```
+
+Replace `botname` with the name of your bot (e.g. `/invite @Stoa`).
+
+---
+
+## Step 8 — Connect in Stoa
 
 1. Open Stoa → **Settings → automation**
 2. Click **Connect Slack**
@@ -70,3 +84,9 @@ You need two tokens: an **App Token** (for the WebSocket connection) and a **Bot
 4. Click **Connect** — Stoa will verify the connection and show your workspace name
 
 You can now add automation rules that trigger when Slack events occur.
+
+---
+
+## Note: Reinstall after changing permissions
+
+Any time you add or change Bot Token Scopes, Slack requires a reinstall. A yellow banner will appear on the **OAuth & Permissions** page — click **Reinstall to Workspace** and approve. Your Bot Token stays the same; only the permissions are updated.

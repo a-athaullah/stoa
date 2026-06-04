@@ -62,7 +62,21 @@ Kamu butuh dua token: **App Token** (untuk koneksi WebSocket) dan **Bot Token** 
 
 ---
 
-## Langkah 7 — Hubungkan di Stoa
+## Langkah 7 — Invite Bot ke Channel
+
+Bot adalah entitas terpisah dari akun kamu. Meskipun kamu sudah ada di channel, bot tetap harus di-invite secara terpisah.
+
+Di setiap channel Slack yang ingin dipantau, ketik:
+
+```
+/invite @namabot
+```
+
+Ganti `namabot` dengan nama bot yang kamu buat (misal: `/invite @Stoa`).
+
+---
+
+## Langkah 8 — Hubungkan di Stoa
 
 1. Buka Stoa → **Settings → automation**
 2. Klik **Connect Slack**
@@ -70,3 +84,9 @@ Kamu butuh dua token: **App Token** (untuk koneksi WebSocket) dan **Bot Token** 
 4. Klik **Connect** — Stoa akan verifikasi koneksi dan menampilkan nama workspace
 
 Setelah terhubung, kamu bisa menambahkan automation rules yang dipicu oleh event Slack.
+
+---
+
+## Catatan: Reinstall setelah ubah permissions
+
+Setiap kali kamu menambah atau mengubah Bot Token Scopes, Slack akan meminta reinstall. Di halaman **OAuth & Permissions** akan muncul banner kuning — klik **Reinstall to Workspace** dan approve. Bot Token tidak berubah, hanya permission yang diperbarui.
