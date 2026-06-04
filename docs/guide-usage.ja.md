@@ -203,7 +203,7 @@ WhatsApp の画像共有と同様の仕組みです — 画像の視認性を保
 
 **設定 > Claude > エージェントの追加**に進みます。エージェント追加パネルでは以下を設定できます：
 
-- **バックエンド** — AI バックエンドとして **Claude Code CLI** または **Gemini CLI** を選択。インストールコマンドは選択に応じて自動的に変わります
+- **バックエンド** — AI バックエンドとして **Claude Code CLI**、**Gemini CLI**、または **Ollama** を選択。インストールコマンドは選択に応じて自動的に変わります
 - **言語** — AI エージェントが応答に使用する言語を選択：English、Bahasa Indonesia、日本語、한국語、中文
 
 サーバーがワンタイムインストールコマンドを生成します。
@@ -399,6 +399,7 @@ Stoa は完全レスポンシブで、モバイルブラウザでも動作しま
                                     |                   |
                                  SQLite DB      Claude Code CLI
                                                または Gemini CLI
+                                               または Ollama
 ```
 
 - **server.js** — HTTP + WebSocket サーバー。ルーム、メッセージ、エージェントの管理を行う
@@ -407,9 +408,10 @@ Stoa は完全レスポンシブで、モバイルブラウザでも動作しま
 - **claude-session.js** — 永続的な Claude Code CLI サブプロセスを管理
 - **gemini-session.js** — 永続的な Gemini CLI サブプロセスを管理
 - **gemini-adapter.js** — Gemini CLI 出力パース用アダプター
+- **ollama-session.js** — Ollama API 呼び出しを管理（別途 CLI インストール不要）
 - **SQLite** — すべてのデータを `stoa.db` にローカル保存（パフォーマンスのため WAL モード）
 
-Stoa は複数の AI バックエンドをサポートしています。各エージェントはエージェント追加時に **Claude Code CLI** または **Gemini CLI** のいずれかを選択して構成できます。両方のバックエンドは同じエージェントクライアントとオーケストレーション層で管理されます。
+Stoa は複数の AI バックエンドをサポートしています。各エージェントはエージェント追加時に **Claude Code CLI**、**Gemini CLI**、または **Ollama** のいずれかを選択して構成できます。すべてのバックエンドは同じエージェントクライアントとオーケストレーション層で管理されます。Ollama エージェントはローカルの Ollama サーバーに接続し、別途 CLI のインストールは不要です。
 
 ---
 

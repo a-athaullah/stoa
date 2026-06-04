@@ -203,7 +203,7 @@ Aria:   [审查代码并提供反馈]
 
 前往**设置 > Claude > 添加代理**。添加代理面板允许您配置：
 
-- **后端** — 选择 **Claude Code CLI** 或 **Gemini CLI** 作为 AI 后端。安装命令会根据您的选择自动调整
+- **后端** — 选择 **Claude Code CLI**、**Gemini CLI** 或 **Ollama** 作为 AI 后端。安装命令会根据您的选择自动调整
 - **语言** — 选择 AI 代理用于回复的语言：English、Bahasa Indonesia、日本語、한국語 或 中文
 
 服务器会生成一次性安装命令。
@@ -399,6 +399,7 @@ Stoa 完全响应式，可在移动浏览器上使用。还可以安装为 **Pro
                                     |                   |
                                  SQLite DB      Claude Code CLI
                                                  或 Gemini CLI
+                                                 或 Ollama
 ```
 
 - **server.js** — HTTP + WebSocket 服务器，管理房间、消息和代理编排
@@ -407,9 +408,10 @@ Stoa 完全响应式，可在移动浏览器上使用。还可以安装为 **Pro
 - **claude-session.js** — 管理持久化的 Claude Code CLI 子进程
 - **gemini-session.js** — 管理持久化的 Gemini CLI 子进程
 - **gemini-adapter.js** — Gemini CLI 输出解析适配器
+- **ollama-session.js** — 管理 Ollama API 调用（无需单独安装 CLI）
 - **SQLite** — 所有数据本地存储在 `stoa.db`（使用 WAL 模式提升性能）
 
-Stoa 支持多种 AI 后端。每个代理可以在添加时选择使用 **Claude Code CLI** 或 **Gemini CLI**。两种后端都通过相同的代理客户端和编排层进行管理。
+Stoa 支持多种 AI 后端。每个代理可以在添加时选择使用 **Claude Code CLI**、**Gemini CLI** 或 **Ollama**。所有后端都通过相同的代理客户端和编排层进行管理。Ollama 代理连接到本地 Ollama 服务器，无需单独安装 CLI。
 
 ---
 
