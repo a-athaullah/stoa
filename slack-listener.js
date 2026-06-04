@@ -32,19 +32,17 @@ class SlackListener extends EventEmitter {
 
     this.client = new SocketModeClient({ appToken, logLevel: 'error' });
 
-    this.client.on('app_mention', async ({ event, ack }) => {
-      try { await ack(); } catch {}
+    // v2.x: event is passed directly, no ack needed (SDK handles it automatically)
+    this.client.on('app_mention', (event) => {
       this.emit('slack_event', { eventType: 'mention', event, webClient: this.webClient });
     });
 
-    this.client.on('message', async ({ event, ack }) => {
-      try { await ack(); } catch {}
+    this.client.on('message', (event) => {
       if (event.subtype) return;
       this.emit('slack_event', { eventType: 'message', event, webClient: this.webClient });
     });
 
-    this.client.on('reaction_added', async ({ event, ack }) => {
-      try { await ack(); } catch {}
+    this.client.on('reaction_added', (event) => {
       this.emit('slack_event', { eventType: 'reaction', event, webClient: this.webClient });
     });
 
