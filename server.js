@@ -1521,13 +1521,15 @@ Write-Host "Logs   : pm2 logs $AgentName"
     const botToken = getSetting('slack_bot_token');
     const connected = getSetting('slack_connected') === '1';
     if (!connected || !appToken) return json(res, { connected: false });
+    const userToken = getSetting('slack_user_token');
     const { workspaceName, botName } = slackListener.getStatus();
     return json(res, {
       connected: true,
-      workspaceName: getSetting('slack_workspace_name') || workspaceName || '',
-      botName:       getSetting('slack_bot_name') || botName || '',
-      appTokenHint:  appToken.slice(0, 14),
-      botTokenHint:  botToken.slice(0, 10),
+      workspaceName:  getSetting('slack_workspace_name') || workspaceName || '',
+      botName:        getSetting('slack_bot_name') || botName || '',
+      appTokenHint:   appToken.slice(0, 14),
+      botTokenHint:   botToken.slice(0, 10),
+      userTokenHint:  userToken ? userToken.slice(0, 10) : null,
     });
   }
 
@@ -1542,12 +1544,14 @@ Write-Host "Logs   : pm2 logs $AgentName"
       setSetting('slack_connected', '1');
       setSetting('slack_workspace_name', workspaceName || '');
       setSetting('slack_bot_name', botName || '');
+      if (body.userToken) setSetting('slack_user_token', body.userToken);
       return json(res, {
         connected: true,
         workspaceName: workspaceName || '',
         botName: botName || '',
         appTokenHint: body.appToken.slice(0, 14),
         botTokenHint: body.botToken.slice(0, 10),
+        userTokenHint: body.userToken ? body.userToken.slice(0, 10) : null,
       });
     } catch (e) {
       console.error('[slack] connect error:', e.message);
@@ -1560,6 +1564,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
     setSetting('slack_connected', '0');
     setSetting('slack_app_token', '');
     setSetting('slack_bot_token', '');
+    setSetting('slack_user_token', '');
     setSetting('slack_workspace_name', '');
     setSetting('slack_bot_name', '');
     return json(res, { ok: true });

@@ -130,6 +130,11 @@ function autoRenderSlackCard() {
         <span style="font-family:var(--h-sans);font-size:11.5px;color:var(--h-ink-faint);letter-spacing:.03em">Bot Token</span>
         <span style="font-family:ui-monospace,Menlo,monospace;font-size:12.5px;color:var(--h-ink-mute)">${escHtml(cfg.botTokenHint || '')}<span style="color:var(--h-ink-faint);letter-spacing:.08em">••••••••</span></span>
       </div>
+      ${cfg.userTokenHint ? `
+      <div style="display:flex;flex-direction:column;gap:3px">
+        <span style="font-family:var(--h-sans);font-size:11.5px;color:var(--h-ink-faint);letter-spacing:.03em">User Token</span>
+        <span style="font-family:ui-monospace,Menlo,monospace;font-size:12.5px;color:var(--h-ink-mute)">${escHtml(cfg.userTokenHint)}<span style="color:var(--h-ink-faint);letter-spacing:.08em">••••••••</span></span>
+      </div>` : ''}
       <div style="display:flex;flex-direction:column;gap:3px">
         <span style="font-family:var(--h-sans);font-size:11.5px;color:var(--h-ink-faint);letter-spacing:.03em">workspace</span>
         <span style="font-family:var(--h-sans);font-size:13px;color:var(--h-ink-mute)">${escHtml(cfg.workspaceName || '—')} · ${escHtml(cfg.botName || '—')} · Socket Mode: Active</span>
@@ -175,7 +180,12 @@ function autoRenderSlackConfigPanel() {
         <div style="display:flex;flex-direction:column;gap:5px">
           <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-mute)">Bot Token</span>
           <input class="auto-token-input" id="auto-bot-token" type="password" placeholder="xoxb-..." autocomplete="off">
-          <span style="font-family:var(--h-sans);font-size:12px;color:var(--h-ink-faint)">Used for reading messages and posting replies</span>
+          <span style="font-family:var(--h-sans);font-size:12px;color:var(--h-ink-faint)">Used for bot identity and API calls</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:5px">
+          <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-mute)">User Token <span style="font-size:11px;color:var(--h-ink-faint)">(optional)</span></span>
+          <input class="auto-token-input" id="auto-user-token" type="password" placeholder="xoxp-..." autocomplete="off">
+          <span style="font-family:var(--h-sans);font-size:12px;color:var(--h-ink-faint)">For listening to your channels and DMs — without inviting the bot</span>
         </div>
         <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px">
           <button class="auto-cancel-btn auto-slack-config-cancel-btn">Cancel</button>
@@ -572,9 +582,10 @@ function autoShowErr(id, msg) {
 
 // ── API ───────────────────────────────────────────────────────────────────────
 async function autoDoSlackConnect() {
-  const appToken = document.getElementById('auto-app-token')?.value?.trim();
-  const botToken = document.getElementById('auto-bot-token')?.value?.trim();
-  if (!appToken || !botToken) { showToast('Both tokens are required', { error: true }); return; }
+  const appToken  = document.getElementById('auto-app-token')?.value?.trim();
+  const botToken  = document.getElementById('auto-bot-token')?.value?.trim();
+  const userToken = document.getElementById('auto-user-token')?.value?.trim() || null;
+  if (!appToken || !botToken) { showToast('App Token and Bot Token are required', { error: true }); return; }
 
   const btn = document.getElementById('auto-slack-connect-btn');
   if (btn) { btn.disabled = true; btn.innerHTML = svgSpinnerTiny() + ' Connecting…'; }
@@ -583,7 +594,7 @@ async function autoDoSlackConnect() {
     const res = await fjson('/api/automations/slack/connect', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ appToken, botToken }),
+      body: JSON.stringify({ appToken, botToken, userToken }),
     });
     autoState.slackStatus = 'connected';
     autoState.slackConfig = res;
