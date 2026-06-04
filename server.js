@@ -1390,12 +1390,12 @@ Write-Host "Logs   : pm2 logs $AgentName"
     const body = await readBody(req);
     const data = parseJsonBody(body);
     if (!data) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
+    const invite = db.prepare('SELECT * FROM invite_suggestions WHERE id=?').get(inviteId);
+    if (!invite) { res.writeHead(404); return res.end(JSON.stringify({ error: 'invite not found' })); }
     const { approved } = data;
     const status = approved ? 'approved' : 'rejected';
     db.prepare("UPDATE invite_suggestions SET status=?, resolved_at=datetime('now') WHERE id=?").run(status, inviteId);
-
     if (approved) {
-      const invite = db.prepare('SELECT * FROM invite_suggestions WHERE id=?').get(inviteId);
       db.prepare('INSERT OR IGNORE INTO room_participants (room_id, actor_id, invited_by) VALUES (?,?,?)').run(
         invite.room_id, invite.suggested_actor_id, invite.suggested_by_participant_id
       );
@@ -1775,11 +1775,22 @@ wss.on('connection', (ws, req) => {
         const wd = db.prepare('SELECT path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
         roomWorkdir = wd?.path || null;
       }
+      // Batch-fetch sessions for all participants (avoids N+1)
+      const sessionMap = new Map();
+      if (aiParts.length) {
+        const ph = aiParts.map(() => '?').join(',');
+        const allSessions = db.prepare(
+          `SELECT participant_id, claude_session_id, workdir FROM ai_sessions WHERE participant_id IN (${ph}) AND room_id=? ORDER BY last_active_at DESC`
+        ).all(...aiParts.map(a => a.participant_id), roomId);
+        for (const s of allSessions) {
+          if (!sessionMap.has(s.participant_id)) sessionMap.set(s.participant_id, s);
+        }
+      }
       const targets = [];
       for (const ai of aiParts) {
         const agentWs = agentClients.get(ai.actor_id);
         if (!agentWs || agentWs.readyState !== 1) continue;
-        const sessionRow = db.prepare('SELECT claude_session_id, workdir FROM ai_sessions WHERE participant_id=? AND room_id=? ORDER BY last_active_at DESC LIMIT 1').get(ai.participant_id, roomId);
+        const sessionRow = sessionMap.get(ai.participant_id);
         if (!sessionRow?.claude_session_id) continue;
         const workdir = sessionRow.workdir || roomWorkdir;
         targets.push({ actor_id: ai.actor_id, participant_id: ai.participant_id, name: ai.name, workdir, claude_session_id: sessionRow.claude_session_id });

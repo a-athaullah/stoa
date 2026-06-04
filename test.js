@@ -364,6 +364,18 @@ async function run() {
     assert.ok(Array.isArray(r.body));
   });
 
+  await test('POST /api/rooms/:id/participants — adds actor to room', async () => {
+    if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
+    const actors = (await req('GET', '/api/actors')).body;
+    const parts = (await req('GET', `/api/rooms/${firstRoomId}/participants`)).body;
+    const partActorIds = new Set(parts.map(p => p.actor_id));
+    const nonMember = actors.find(a => !partActorIds.has(a.id));
+    if (!nonMember) { console.log('    (skipped — all actors already in room)'); return; }
+    const r = await req('POST', `/api/rooms/${firstRoomId}/participants`, { actor_id: nonMember.id });
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.ok);
+  });
+
   // Messages
   console.log('\n[Messages]');
   await test('GET /api/rooms/:id/messages — since param, returns array', async () => {
@@ -523,6 +535,11 @@ async function run() {
   await test('POST /api/invites/:id/resolve — invalid JSON → 400', async () => {
     const r = await rawReq('POST', '/api/invites/1/resolve', 'not-json', 'application/json');
     assert.strictEqual(r.status, 400);
+  });
+
+  await test('POST /api/invites/:id/resolve — nonexistent invite → 404', async () => {
+    const r = await req('POST', '/api/invites/999999/resolve', { approved: true });
+    assert.strictEqual(r.status, 404);
   });
 
   // Upload
