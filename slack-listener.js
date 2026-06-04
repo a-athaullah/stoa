@@ -32,17 +32,26 @@ class SlackListener extends EventEmitter {
 
     this.client = new SocketModeClient({ appToken, logLevel: 'error' });
 
-    // v2.x: event is passed directly, no ack needed (SDK handles it automatically)
-    this.client.on('app_mention', (event) => {
+    // Catch-all: log every raw event from SDK for debugging
+    this.client.on('slack_event', (payload) => {
+      console.log('[slack] raw event type:', payload.type, '| inner:', payload.body?.event?.type || '—');
+    });
+
+    // v2.x: callback receives { event, ack, body, envelope_id, ... }
+    this.client.on('app_mention', ({ event }) => {
+      if (!event) return;
+      console.log('[slack] app_mention received');
       this.emit('slack_event', { eventType: 'mention', event, webClient: this.webClient });
     });
 
-    this.client.on('message', (event) => {
-      if (event.subtype) return;
+    this.client.on('message', ({ event }) => {
+      if (!event || event.subtype) return;
+      console.log('[slack] message received:', event.type, event.text?.slice(0, 50));
       this.emit('slack_event', { eventType: 'message', event, webClient: this.webClient });
     });
 
-    this.client.on('reaction_added', (event) => {
+    this.client.on('reaction_added', ({ event }) => {
+      if (!event) return;
       this.emit('slack_event', { eventType: 'reaction', event, webClient: this.webClient });
     });
 
