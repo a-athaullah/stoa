@@ -349,6 +349,21 @@ async function run() {
     assert.ok(typeof r.body === 'object');
   });
 
+  await test('GET /api/rooms/:id — returns room object', async () => {
+    if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
+    const r = await req('GET', `/api/rooms/${firstRoomId}`);
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.id === firstRoomId, 'id mismatch');
+    assert.ok(r.body.title, 'title missing');
+  });
+
+  await test('GET /api/rooms/:id/skills — returns array', async () => {
+    if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
+    const r = await req('GET', `/api/rooms/${firstRoomId}/skills`);
+    assert.strictEqual(r.status, 200);
+    assert.ok(Array.isArray(r.body));
+  });
+
   // Messages
   console.log('\n[Messages]');
   await test('GET /api/rooms/:id/messages — since param, returns array', async () => {

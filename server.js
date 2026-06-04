@@ -1112,9 +1112,8 @@ const server = http.createServer(async (req, res) => {
     if (!roomRow?.workdir_id) { res.writeHead(404); return res.end('no workdir'); }
     const wd = db.prepare('SELECT path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
     if (!wd?.path) { res.writeHead(404); return res.end('workdir not found'); }
-    const wdResolved = path.resolve(wd.path);
     const filePath = path.isAbsolute(relPath) ? path.resolve(relPath) : path.resolve(wd.path, relPath);
-    if (!filePath.startsWith(wdResolved + path.sep) && filePath !== wdResolved) { res.writeHead(403); return res.end('path outside workdir'); }
+    if (!isPathSafe(filePath, wd.path)) { res.writeHead(403); return res.end('path outside workdir'); }
     if (!fs.existsSync(filePath)) { res.writeHead(404); return res.end('not found'); }
     const ext = path.extname(filePath).toLowerCase();
     const mimeMap = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.bmp': 'image/bmp', '.pdf': 'application/pdf' };
