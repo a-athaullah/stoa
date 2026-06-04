@@ -792,7 +792,7 @@ const server = http.createServer(async (req, res) => {
             FROM messages m
             JOIN room_participants rp ON rp.id=m.participant_id
             JOIN actors a ON a.id=rp.actor_id
-            WHERE m.room_id=? AND m.id < ? AND m.state='complete'
+            WHERE m.room_id=? AND m.id < ? AND m.state IN ('complete','system_event')
               AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL)
             ORDER BY m.created_at DESC LIMIT ?
           ) t ORDER BY created_at ASC
@@ -805,7 +805,7 @@ const server = http.createServer(async (req, res) => {
         FROM messages m
         JOIN room_participants rp ON rp.id=m.participant_id
         JOIN actors a ON a.id=rp.actor_id
-        WHERE m.room_id=? AND m.id > ? AND m.state='complete'
+        WHERE m.room_id=? AND m.id > ? AND m.state IN ('complete','system_event')
           AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL)
         ORDER BY m.created_at ASC
         LIMIT 500
@@ -1980,7 +1980,26 @@ wss.on('connection', (ws, req) => {
       broadcast(msg.room_id, { type: 'system_event', status: msg.status, actor_name: actor?.name });
     }
 
+    if (msg.type === 'auto_compact_start' && agentActorId) {
+      // Look up room_id from session if not provided
+      let roomId = msg.room_id;
+      if (!roomId && msg.claude_session_id) {
+        const s = db.prepare('SELECT room_id FROM ai_sessions WHERE claude_session_id=?').get(msg.claude_session_id);
+        roomId = s?.room_id;
+      }
+      if (roomId && !pendingCompacts.has(roomId)) {
+        pendingCompacts.set(roomId, { total: 1, completed: 0, agents: [agentActorId] });
+        broadcast(roomId, { type: 'compact_start', room_id: roomId, total: 1 });
+        console.log(`[server] auto-compact started room=${roomId} by agent=${agentActorId}`);
+      }
+    }
+
     if (msg.type === 'compact_complete' && agentActorId) {
+      // Resolve room_id: use msg.room_id, or look up from session_id for auto-compact
+      if (!msg.room_id && msg.claude_session_id) {
+        const s = db.prepare('SELECT room_id FROM ai_sessions WHERE claude_session_id=?').get(msg.claude_session_id);
+        if (s?.room_id) msg.room_id = s.room_id;
+      }
       if (msg.claude_session_id) {
         const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
         if (participant) {
