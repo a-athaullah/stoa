@@ -145,7 +145,6 @@ CREATE INDEX IF NOT EXISTS idx_ai_sessions_room_id ON ai_sessions(room_id);
 CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(reply_to);
 CREATE INDEX IF NOT EXISTS idx_rooms_workdir_id ON rooms(workdir_id);
 CREATE INDEX IF NOT EXISTS idx_rooms_created_by ON rooms(created_by);
-CREATE INDEX IF NOT EXISTS idx_automations_trigger ON automations(trigger_type, trigger_event, enabled);
 
 CREATE TABLE IF NOT EXISTS automations (
   id               INTEGER PRIMARY KEY,
@@ -177,7 +176,12 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
   FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
 );
 
+CREATE INDEX IF NOT EXISTS idx_automations_trigger ON automations(trigger_type, trigger_event, enabled);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_actors_type ON actors(type);
+CREATE INDEX IF NOT EXISTS idx_messages_state ON messages(state);
+CREATE INDEX IF NOT EXISTS idx_auth_users_email ON auth_users(email);
+CREATE INDEX IF NOT EXISTS idx_settings_scope_key ON settings(scope, key_name);
 
 INSERT OR IGNORE INTO settings (scope, key_name, value) VALUES
   ('global','idle_timeout_seconds','300'),

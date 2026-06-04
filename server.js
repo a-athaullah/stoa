@@ -123,6 +123,10 @@ try {
   db.exec("CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(reply_to)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_automations_trigger ON automations(trigger_type, trigger_event, enabled)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_actors_type ON actors(type)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_messages_state ON messages(state)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_auth_users_email ON auth_users(email)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_settings_scope_key ON settings(scope, key_name)");
 } catch {}
 
 // Migrate messages CHECK constraint to allow 'system_event' state
@@ -556,7 +560,7 @@ const server = http.createServer(async (req, res) => {
     const safeExt = ext.startsWith('.') ? ext : '.' + ext;
     const saved = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}${safeExt}`;
     const savedPath = path.join(UPLOADS_DIR, saved);
-    fs.writeFileSync(savedPath, buffer);
+    try { fs.writeFileSync(savedPath, buffer); } catch { res.writeHead(500); return res.end(JSON.stringify({ error: 'Failed to save file' })); }
     return json(res, { url: `/uploads/${saved}`, name: fileName || saved });
   }
 

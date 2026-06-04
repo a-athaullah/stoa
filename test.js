@@ -704,6 +704,23 @@ async function run() {
     assert.strictEqual(r.status, 400);
   });
 
+  await test('POST /api/actors/:id/workdirs — offline agent → 503', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    const offline = actors.find(a => a.type === 'ai' && !a.online);
+    if (!offline) { console.log('    (skipped — all AI agents online)'); return; }
+    const r = await req('POST', `/api/actors/${offline.id}/workdirs`, { path: '/tmp/test-wd-stoa' });
+    assert.strictEqual(r.status, 503);
+  });
+
+  await test('POST /api/actors/:id/workdirs — online agent → 200', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    const online = actors.find(a => a.type === 'ai' && a.online);
+    if (!online) { console.log('    (skipped — no online AI agents)'); return; }
+    const r = await req('POST', `/api/actors/${online.id}/workdirs`, { path: `/tmp/test-wd-stoa-${Date.now()}` });
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.id !== undefined, 'id missing');
+  });
+
   // Auth operations
   console.log('\n[Auth Operations]');
   await test('PATCH /api/auth/email — invalid email format → 400', async () => {
@@ -719,6 +736,16 @@ async function run() {
   await test('PATCH /api/auth/password — too short new password → 400', async () => {
     const r = await req('PATCH', '/api/auth/password', { current_password: 'stoa2026!', new_password: 'abc' });
     assert.strictEqual(r.status, 400);
+  });
+
+  await test('POST /api/auth/logout — clears session → ok', async () => {
+    const r = await req('POST', '/api/auth/logout');
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.ok);
+    // Re-authenticate so subsequent tests keep working
+    const loginR = await req('POST', '/api/auth/login', { email: 'stoa@stoa.com', password: 'stoa2026!' });
+    sessionCookie = loginR.headers['set-cookie']?.[0]?.split(';')[0];
+    assert.ok(sessionCookie, 'failed to re-authenticate after logout');
   });
 
   // Settings
