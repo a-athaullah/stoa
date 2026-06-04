@@ -1,5 +1,28 @@
 # Changelog
 
+## [2026-06-04]
+
+### Added
+- **Ollama: `describe_image` vision tool** — agents can now analyze image files using a local vision model (`ara`). WebP images are auto-converted to PNG via `sips` before sending. Triggered when agent is asked to describe an image file
+- **Ollama: thinking mode** — toggle in Settings > AI Agent accordion enables/disables extended reasoning (`cfg.think`). Persisted in `adapter_config`. Default off
+- **Ollama: tool use** — `bash`, `read_file`, `write_file`, `list_dir`, `grep`, `http_get`, `web_search` tools added to `ollama-session.js`. Agent invokes them automatically based on prompt context
+- **Integration + unit tests** — `test.js` created from scratch: 26 pure unit tests (no server needed) + 54 integration tests covering auth, rooms, messages, search, actors, install scripts, upload, docs, and full room lifecycle. 80/80 passing
+
+### Changed
+- **Ollama: `modelVision` default** — now falls back to `modelChat` instead of a hardcoded `qwen2.5vl:7b`, so single-model setups work out of the box
+- **Ollama: prompt cleanup** — `[send:]` file instruction stripped from Ollama prompts (Ollama uses tool calls instead); tool-calling directive appended when prompt contains file/git-related keywords
+- **Settings: AI agent section** — human actor moved to its own section; AI agents in a separate card, sorted newest-first
+- **Settings: add agent button** — repositioned below section header, above agent list (more discoverable)
+- **Compact button** — hidden in rooms where all AI agents are Ollama (no Claude session to compact)
+- **Docs: Ollama as backend** — all 5 language guides (EN, ID, JA, KO, ZH) updated to list Ollama as a supported backend alongside Claude Code CLI and Gemini CLI
+
+### Fixed
+- **Ollama setup flow** — "Done" button no longer stays disabled after selecting a model; `sFinishSetupSlip` now waits for `agent_scan_complete` instead of triggering prematurely
+- **actor_status broadcast** — now includes `adapter` and `adapter_config` fields so newly connected Ollama agents appear with correct backend info in the UI
+- **Attachment-only messages** — when agent sends only a file with no text, `agent_complete` now sends `📎` as content placeholder so the message isn't silently dropped
+- **Schema drift** — `available_models TEXT DEFAULT NULL` added to `actors` table in `schema.sqlite.sql` (previously only added via runtime migration; fresh installs now get the column from schema directly)
+- **CLIENT_VERSION** bumped to `0.3.25`
+
 ## [2026-06-02] (2)
 
 ### Added
