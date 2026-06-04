@@ -108,6 +108,21 @@ const OLLAMA_TOOLS = [
         required: ['query']
       }
     }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'describe_image',
+      description: 'Send an image file to the vision model (qwen2.5vl) and get a text description. Use this when asked to describe what you look like or what is in a specific image file.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Absolute path to the image file' },
+          question: { type: 'string', description: 'What to ask about the image (e.g. "Describe this image in detail")' }
+        },
+        required: ['path', 'question']
+      }
+    }
   }
 ];
 
@@ -141,6 +156,49 @@ function executeTool(name, args, workDir) {
         encoding: 'utf8', timeout: 20_000,
       });
       return out.slice(0, 8000);
+    } else if (name === 'describe_image') {
+      const imagePath = args.path;
+      if (!fs.existsSync(imagePath)) return `File not found: ${imagePath}`;
+      const question = args.question || 'Describe this image in detail.';
+      const visionModel = 'ara';
+      const os = require('os');
+      const ts = Date.now();
+      let sourceFile = imagePath;
+      let tmpConverted = null;
+      // qwen2.5vl does not support webp — convert to png first
+      if (path.extname(imagePath).toLowerCase() === '.webp') {
+        tmpConverted = path.join(os.tmpdir(), `ollama-vision-conv-${ts}.png`);
+        try {
+          execSync(`sips -s format png ${JSON.stringify(imagePath)} --out ${JSON.stringify(tmpConverted)}`, {
+            encoding: 'utf8', timeout: 15_000,
+          });
+          sourceFile = tmpConverted;
+        } catch {
+          return 'Failed to convert webp image for vision model.';
+        }
+      }
+      const imageData = fs.readFileSync(sourceFile).toString('base64');
+      if (tmpConverted) try { fs.unlinkSync(tmpConverted); } catch {}
+      const reqBody = JSON.stringify({
+        model: visionModel,
+        messages: [{ role: 'user', content: question, images: [imageData] }],
+        stream: false,
+      });
+      // Write to temp file to avoid shell escaping issues with large base64 payloads
+      const tmpFile = path.join(os.tmpdir(), `ollama-vision-${ts}.json`);
+      try {
+        fs.writeFileSync(tmpFile, reqBody);
+        const out = execSync(`curl -s --max-time 180 -X POST http://localhost:11434/api/chat -H "Content-Type: application/json" -d @${tmpFile}`, {
+          encoding: 'utf8', timeout: 185_000,
+        });
+        fs.unlinkSync(tmpFile);
+        const data = JSON.parse(out);
+        if (data.error) return `Vision model error: ${JSON.stringify(data.error)}`;
+        return data.message?.content || '(no description)';
+      } catch (e) {
+        try { fs.unlinkSync(tmpFile); } catch {}
+        return `Vision model not available (${visionModel}).`;
+      }
     } else if (name === 'web_search') {
       const encoded = encodeURIComponent(args.query);
       const out = execSync(`curl -sL --max-time 15 "https://api.duckduckgo.com/?q=${encoded}&format=json&no_html=1&skip_disambig=1"`, {
@@ -185,8 +243,9 @@ class OllamaSession extends EventEmitter {
     const cfg = adapterConfig || {};
     this.host = cfg.ollama_host || process.env.OLLAMA_HOST || 'http://localhost:11434';
     this.modelChat = cfg.model_chat || process.env.STOA_MODEL_CHAT || 'ara';
-    this.modelVision = cfg.model_vision || process.env.STOA_MODEL_VISION || 'qwen2.5vl:7b';
+    this.modelVision = cfg.model_vision || process.env.STOA_MODEL_VISION || this.modelChat;
     this.historyLimit = parseInt(cfg.history_limit ?? 10) || 10;
+    this.think = cfg.think === true;
     // resumeId is always null — Ollama has no session persistence
     this.resumeId = null;
   }
@@ -204,13 +263,29 @@ class OllamaSession extends EventEmitter {
     onState?.('requesting');
 
     const model = imageData ? this.modelVision : this.modelChat;
+    // Strip [send:] instruction from prompt — Ollama agents use tools, not [send:] markers
+    const cleanedPrompt = prompt
+      .replace(/\nIf asked to send a file[^\n]*/gi, '')
+      .replace(/\nJika diminta mengirim file[^\n]*/gi, '');
+    // Append tool-calling directive at end to override chat-mode tendency from Stoa context
+    const GIT_KEYWORDS = /\b(git|branch|PR|pull request|commit|diff|repo|repository|review)\b/i;
+    const FILE_KEYWORDS = /\b(file|folder|directory|code|baca|cek|check|lihat|list)\b/i;
+    const needsTools = GIT_KEYWORDS.test(cleanedPrompt) || FILE_KEYWORDS.test(cleanedPrompt);
+    const toolDirective = needsTools
+      ? '\n\n[IMPORTANT: This task requires actual system access. Call the bash tool RIGHT NOW — do not describe what you will do.]'
+      : '';
+    const userContent = (!this.think ? '/no_think ' : '') + cleanedPrompt + toolDirective;
     const userMsg = imageData
-      ? { role: 'user', content: prompt, images: [imageData.base64] }
-      : { role: 'user', content: prompt };
+      ? { role: 'user', content: userContent, images: [imageData.base64] }
+      : { role: 'user', content: userContent };
 
-    let messages = history && history.length
-      ? [...history.slice(-this.historyLimit), userMsg]
-      : [userMsg];
+    // fullPrompt already embeds history as text — don't add rawHistory as separate messages
+    // (adding rawHistory creates duplicate consecutive user messages which breaks tool calling)
+    const systemMsg = {
+      role: 'system',
+      content: 'You have access to tools: bash, read_file, write_file, list_dir, grep, http_get, web_search. When asked to inspect files, check git repos, run commands, or review code: CALL the bash tool immediately with the actual shell command. Do NOT use [send:...] markers for code tasks — those are only for image files. Do NOT fabricate file contents or command output. Execute the tool and report what you actually find.',
+    };
+    const messages = [systemMsg, userMsg];
 
     const MAX_TOOL_ROUNDS = 10;
     let round = 0;
@@ -219,12 +294,13 @@ class OllamaSession extends EventEmitter {
       while (round < MAX_TOOL_ROUNDS) {
         if (this._aborted) break;
         round++;
+        this._accContent = '';
 
         const body = JSON.stringify({
           model,
           messages,
           stream: true,
-          think: false,
+          think: this.think,
           tools: model === this.modelVision ? undefined : OLLAMA_TOOLS,
         });
 
@@ -232,7 +308,7 @@ class OllamaSession extends EventEmitter {
         if (this._aborted) break;
 
         if (result.tool_calls && result.tool_calls.length > 0) {
-          messages.push({ role: 'assistant', content: result.content || '', tool_calls: result.tool_calls });
+          messages.push({ role: 'assistant', content: '', tool_calls: result.tool_calls });
 
           for (const tc of result.tool_calls) {
             const name = tc.function?.name;

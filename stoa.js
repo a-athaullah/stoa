@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.3.11';
+const CLIENT_VERSION = '0.3.25';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -775,7 +775,7 @@ async function processTrigger(msg) {
       console.log(`[stoa] Aborted message ${message_id}, reason=${abortReason || 'user'}, partial=${partial.length} chars`);
     } else {
       const { text: cleanContent, attachments } = await extractAndUploadFiles(content, msg.workdir);
-      const completeMsg = { type: 'agent_complete', room_id, message_id, content: cleanContent, claude_session_id: sessionId };
+      const completeMsg = { type: 'agent_complete', room_id, message_id, content: cleanContent || (attachments.length ? '📎' : cleanContent), claude_session_id: sessionId };
       if (attachments.length === 1) {
         completeMsg.file_url = attachments[0].url;
         completeMsg.file_name = attachments[0].name;

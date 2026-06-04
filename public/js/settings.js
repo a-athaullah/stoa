@@ -449,6 +449,24 @@ function sMakeEditAccordion(actor) {
     );
     acc.appendChild(modelRow);
 
+    // Thinking mode toggle
+    const thinkRow = document.createElement('div');
+    thinkRow.style.cssText = 'display:flex;align-items:center;gap:8px;padding-top:4px';
+    const thinkChk = document.createElement('input');
+    thinkChk.type = 'checkbox';
+    thinkChk.id = `s-eacc-think-${actor.id}`;
+    thinkChk.checked = cfg.think === true;
+    thinkChk.style.cssText = 'cursor:pointer;accent-color:var(--h-accent)';
+    const thinkLbl = document.createElement('label');
+    thinkLbl.htmlFor = `s-eacc-think-${actor.id}`;
+    thinkLbl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);cursor:pointer';
+    thinkLbl.textContent = 'thinking mode';
+    const thinkHint = document.createElement('span');
+    thinkHint.style.cssText = 'font-size:11px;color:var(--h-ink-faint)';
+    thinkHint.textContent = '(slower, deeper reasoning)';
+    thinkRow.append(thinkChk, thinkLbl, thinkHint);
+    acc.appendChild(thinkRow);
+
     fjson(`/api/actors/${actor.id}/capabilities`).then(data => {
       const models = data.models || [];
       const populateSel = (selId, currentVal, optional) => {
@@ -538,6 +556,7 @@ function sMakeEditAccordion(actor) {
       const chatVal = document.getElementById(`s-eacc-chat-${actor.id}`)?.value || '';
       body.adapter_config = {};
       if (chatVal) body.adapter_config.model_chat = chatVal;
+      body.adapter_config.think = document.getElementById(`s-eacc-think-${actor.id}`)?.checked || false;
     }
     try {
       const r = await fetch(`/api/actors/${actor.id}/config`, {
@@ -918,7 +937,7 @@ function sFinishSetupSlip(actorId) {
       try {
         await fetch(`/api/actors/${actorId}/config`, {
           method: 'PUT', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ adapter_config: { model_chat: selectedModel } }),
+          body: JSON.stringify({ adapter_config: { model_chat: selectedModel, think: false } }),
         });
       } catch (e) { console.error('Failed to save Ollama model:', e); }
       sCloseAddPanel();
