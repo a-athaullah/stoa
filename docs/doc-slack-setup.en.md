@@ -32,6 +32,7 @@ You need two tokens: an **App Token** (for the WebSocket connection) and a **Use
 3. Add the following scopes:
    - `channels:history` — read messages in public channels
    - `channels:read` — read channel info
+   - `groups:history` — read messages in **private channels**
    - `im:history` — read direct messages
 
 ---
@@ -42,7 +43,8 @@ You need two tokens: an **App Token** (for the WebSocket connection) and a **Use
 2. Toggle **Enable Events** to **On**
 3. Scroll to **Subscribe to events on behalf of users** (not "bot events")
 4. Click **Add Workspace Event** and add:
-   - `message.channels` — messages in channels you're a member of
+   - `message.channels` — messages in public channels you're a member of
+   - `message.groups` — messages in **private channels** you're a member of
    - `message.im` — direct messages you receive
 5. Click **Save Changes**
 

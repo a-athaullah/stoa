@@ -32,6 +32,7 @@ Kamu butuh dua token: **App Token** (untuk koneksi WebSocket) dan **User Token**
 3. Tambahkan scope berikut:
    - `channels:history` — membaca pesan di channel publik
    - `channels:read` — membaca info channel
+   - `groups:history` — membaca pesan di **private channel**
    - `im:history` — membaca pesan DM
 
 ---
@@ -42,7 +43,8 @@ Kamu butuh dua token: **App Token** (untuk koneksi WebSocket) dan **User Token**
 2. Toggle **Enable Events** ke **On**
 3. Scroll ke bagian **Subscribe to events on behalf of users** (bukan "bot events")
 4. Klik **Add Workspace Event** dan tambahkan:
-   - `message.channels` — pesan di channel yang kamu ikuti
+   - `message.channels` — pesan di channel publik yang kamu ikuti
+   - `message.groups` — pesan di **private channel** yang kamu ikuti
    - `message.im` — pesan DM yang kamu terima
 5. Klik **Save Changes**
 
