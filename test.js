@@ -583,6 +583,7 @@ async function run() {
   console.log('\n[Room Lifecycle]');
   let testRoomId = null;
   let testActorId = null;
+  let testActorSecret = null;
 
   await test('Register test actor for room lifecycle', async () => {
     const scriptR = await req('GET', '/install.sh?name=test-lifecycle-agent');
@@ -591,6 +592,7 @@ async function run() {
     const r = await req('POST', '/api/agent/register', { token: tokenMatch[1] });
     assert.strictEqual(r.status, 200);
     testActorId = r.body.actor_id;
+    testActorSecret = r.body.secret;
     assert.ok(testActorId, 'no actor_id');
 
     // Get default workdir id from first available agent workdir (or use human actor's default)
@@ -605,6 +607,23 @@ async function run() {
     assert.strictEqual(r2.status, 200, `create room failed: ${JSON.stringify(r2.body)}`);
     testRoomId = r2.body.id;
     assert.ok(testRoomId, 'room id missing');
+  });
+
+  await test('POST /api/rooms/:id/message — agent posts proactive message → 200', async () => {
+    if (!testRoomId || !testActorId || !testActorSecret) { console.log('    (skipped — no test room/actor)'); return; }
+    const r = await rawReq('POST', `/api/rooms/${testRoomId}/message`,
+      JSON.stringify({ content: 'proactive from test agent' }),
+      'application/json',
+      { 'X-Agent-Id': String(testActorId), 'X-Agent-Secret': testActorSecret }
+    );
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}: ${r.raw}`);
+    assert.ok(r.body.message_id, 'message_id missing');
+  });
+
+  await test('POST /api/rooms/:id/message — no auth → 403', async () => {
+    if (!testRoomId) { console.log('    (skipped — no test room)'); return; }
+    const r = await req('POST', `/api/rooms/${testRoomId}/message`, { content: 'test' });
+    assert.strictEqual(r.status, 403);
   });
 
   await test('PATCH /api/rooms/:id — rename room', async () => {
@@ -662,6 +681,7 @@ async function run() {
     const r = await req('DELETE', `/api/actors/${testActorId}`);
     assert.ok([204, 200].includes(r.status));
     testActorId = null;
+    testActorSecret = null;
   });
 
   // Messages
