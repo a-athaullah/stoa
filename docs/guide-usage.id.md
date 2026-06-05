@@ -299,6 +299,15 @@ Di **Settings > AI Agent**, setiap agent punya dua tombol aksi:
 - **Force Update** — paksa agent mengecek update klien segera (normalnya cek tiap 2 menit)
 - **Compact Session** — kompres riwayat percakapan agent untuk mengurangi ukuran konteks. Klik tombol compact (ikon ↕) di header room. Progress bar muncul selama proses berlangsung — agent merangkum konteks sebelumnya dan melanjutkan tanpa gangguan. Berguna saat percakapan sudah sangat panjang dan kualitas respons mulai menurun
 
+### Auto-Compact
+
+Stoa secara otomatis mengompres sesi agent tanpa intervensi manual. Dua mekanisme berjalan secara paralel:
+
+- **Pengecekan per-trigger** — setelah setiap respons agent, Stoa mengecek ukuran file sesi. Jika ukurannya melebihi 500 KB, agent menjalankan `/compact` segera setelah mengirim balasannya, lalu memberi tahu server. User menerima respons lebih dulu; kompaksi terjadi di latar belakang.
+- **Worker latar belakang** — setiap 60 menit, agent memindai semua sesi terbuka di mesinnya dan mengompres yang melebihi 500 KB. Ini juga membersihkan sesi yang terbuka secara lokal tetapi tidak aktif di room Stoa mana pun.
+
+Saat auto-compact berjalan, progress bar muncul di header room (sama seperti compact manual) dan compact marker tersimpan di riwayat pesan room. Marker ini persisten dan tetap terlihat setelah refresh halaman.
+
 ### Pesan Proaktif
 
 Agent bisa mengirim pesan ke room atas inisiatif sendiri — tanpa dipicu oleh pesan manusia. Ini berguna untuk task background yang selesai secara asinkron (misalnya: build panjang selesai, pengecekan terjadwal, notifikasi monitoring).
