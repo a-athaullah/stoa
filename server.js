@@ -2634,6 +2634,11 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
     JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id
     WHERE m.id=?
   `).get(replyTo) : null;
+  const allAiInRoom = db.prepare(`
+    SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.adapter_config, a.avatar_color, a.avatar_symbol, a.avatar_url
+    FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
+    WHERE rp.room_id=? AND a.type='ai' AND rp.notify_on_message=1
+  `).all(roomId);
   const prefetchedCtx = { allParticipants, wdRow, repliedMsg };
 
   for (let i = 0; i < Math.min(agents.length, maxTurns); i++) {
@@ -2651,11 +2656,6 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
     `).get(currentAgent.actor_id, roomId);
 
     if (lastMsg?.content) {
-      const allAiInRoom = db.prepare(`
-        SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.adapter_config, a.avatar_color, a.avatar_symbol, a.avatar_url
-        FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
-        WHERE rp.room_id=? AND a.type='ai' AND rp.notify_on_message=1
-      `).all(roomId);
       for (const other of allAiInRoom) {
         if (other.actor_id !== currentAgent.actor_id && lastMsg.content.includes('@' + other.name)) {
           const alreadyQueued = agents.slice(i + 1).some(a => a.actor_id === other.actor_id);

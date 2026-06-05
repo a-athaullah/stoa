@@ -496,6 +496,7 @@ Slack 连接后，点击 **+ new rule** 创建规则：
 - **账户** — 更改邮箱和密码
 - **通知** — 启用/禁用浏览器推送通知
 - **会话** — 登出 Stoa
+- **消息** — 阅读舒适度调整控制：调整文字大小（Tiny / Small / Compact / Default）、行间距（Tight / Normal / Relaxed）和消息气泡宽度（Narrow / Standard / Wide）。变更即时应用于所有房间，并可实时预览。
 
 ---
 
