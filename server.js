@@ -792,8 +792,11 @@ const server = http.createServer(async (req, res) => {
             FROM messages m
             JOIN room_participants rp ON rp.id=m.participant_id
             JOIN actors a ON a.id=rp.actor_id
-            WHERE m.room_id=? AND m.id < ? AND m.state='complete'
-              AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL)
+            WHERE m.room_id=? AND m.id < ?
+              AND (
+                (m.state = 'complete' AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL))
+                OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
+              )
             ORDER BY m.created_at DESC LIMIT ?
           ) t ORDER BY created_at ASC
         `).all(roomId, before, limit);
@@ -805,8 +808,11 @@ const server = http.createServer(async (req, res) => {
         FROM messages m
         JOIN room_participants rp ON rp.id=m.participant_id
         JOIN actors a ON a.id=rp.actor_id
-        WHERE m.room_id=? AND m.id > ? AND m.state='complete'
-          AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL)
+        WHERE m.room_id=? AND m.id > ?
+          AND (
+            (m.state = 'complete' AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL))
+            OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
+          )
         ORDER BY m.created_at ASC
         LIMIT 500
       `).all(roomId, since);
@@ -1036,8 +1042,9 @@ const server = http.createServer(async (req, res) => {
       const avatarPath = path.join(__dirname, actor.avatar_url.replace(/^\//, ''));
       if (avatarPath.startsWith(path.join(__dirname, 'uploads')) && fs.existsSync(avatarPath)) fs.unlinkSync(avatarPath);
     }
-    const affectedRooms = db.prepare('SELECT room_id FROM room_participants WHERE actor_id=?').all(id).map(r => r.room_id);
-    const actorParticipantIds = db.prepare('SELECT id FROM room_participants WHERE actor_id=?').all(id).map(r => r.id);
+    const actorParts = db.prepare('SELECT id, room_id FROM room_participants WHERE actor_id=?').all(id);
+    const affectedRooms = actorParts.map(r => r.room_id);
+    const actorParticipantIds = actorParts.map(r => r.id);
     if (actorParticipantIds.length) {
       const ph = actorParticipantIds.map(() => '?').join(',');
       db.prepare(`DELETE FROM ai_sessions WHERE participant_id IN (${ph})`).run(...actorParticipantIds);
@@ -1639,6 +1646,13 @@ const agentVersions = new Map();  // actor_id → client_version string
 const pendingAgents = new Map();    // message_id → { resolve, reject }
 const pendingActorMeta = new Map(); // message_id → { name, avatar_color, avatar_symbol }
 const pendingCompacts = new Map();  // room_id → { total, completed, agents[] }
+const recentCompacts = new Map();      // room_id → timestamp — suppresses duplicate auto_compact_start within 30s
+const recentCompactTimers = new Map(); // room_id → timer handle — cleared before reset to avoid early expiry
+function setRecentCompact(roomId) {
+  clearTimeout(recentCompactTimers.get(roomId));
+  recentCompacts.set(roomId, Date.now());
+  recentCompactTimers.set(roomId, setTimeout(() => { recentCompacts.delete(roomId); recentCompactTimers.delete(roomId); }, 30_000));
+}
 const pendingFileOps = new Map();   // request_id → { type, clientWs }
 function addPendingFileOp(rid, op) {
   pendingFileOps.set(rid, op);
@@ -1712,8 +1726,10 @@ wss.on('connection', (ws, req) => {
           FROM messages m
           JOIN room_participants rp ON rp.id=m.participant_id
           JOIN actors a ON a.id=rp.actor_id
-          WHERE m.room_id=? AND m.state IN ('complete','streaming','requesting')
-            AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL OR m.state IN ('streaming','requesting'))
+          WHERE m.room_id=? AND (
+            (m.state IN ('complete','streaming','requesting') AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL OR m.state IN ('streaming','requesting')))
+            OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
+          )
           ORDER BY m.created_at DESC LIMIT 100
         ) AS recent ORDER BY created_at ASC
       `).all(subscribedRoom);
@@ -1804,6 +1820,7 @@ wss.on('connection', (ws, req) => {
       setTimeout(() => {
         if (pendingCompacts.has(roomId)) {
           pendingCompacts.delete(roomId);
+          setRecentCompact(roomId); // suppress immediate re-register from auto_compact_start while original compact still finishing
           broadcast(roomId, { type: 'compact_error', room_id: roomId, error: 'Compact timed out' });
         }
       }, 300_000);
@@ -1980,7 +1997,45 @@ wss.on('connection', (ws, req) => {
       broadcast(msg.room_id, { type: 'system_event', status: msg.status, actor_name: actor?.name });
     }
 
+    if (msg.type === 'auto_compact_start' && agentActorId) {
+      // Look up room_id from session if not provided
+      let roomId = msg.room_id;
+      if (!roomId && msg.claude_session_id) {
+        const s = db.prepare('SELECT room_id FROM ai_sessions WHERE claude_session_id=?').get(msg.claude_session_id);
+        roomId = s?.room_id;
+      }
+      if (roomId) {
+        if (recentCompacts.has(roomId)) {
+          console.log(`[server] auto_compact_start suppressed for room=${roomId} (compact recently completed)`);
+        } else if (!pendingCompacts.has(roomId)) {
+          pendingCompacts.set(roomId, { total: 1, completed: 0, agents: [agentActorId], completedAgentIds: [] });
+          broadcast(roomId, { type: 'compact_start', room_id: roomId, total: 1 });
+          console.log(`[server] auto-compact started room=${roomId} by agent=${agentActorId}`);
+        } else {
+          // Another compact already registered — add this agent to the total if not already counted
+          const cs = pendingCompacts.get(roomId);
+          if (!cs.agents.includes(agentActorId)) {
+            cs.total++;
+            cs.agents.push(agentActorId);
+            console.log(`[server] auto-compact: added agent=${agentActorId} to room=${roomId} (total=${cs.total})`);
+          }
+        }
+      }
+    }
+
     if (msg.type === 'compact_complete' && agentActorId) {
+      // Resolve room_id: use msg.room_id, or look up via orig_session_id (pre-compact) then new session_id
+      if (!msg.room_id) {
+        const lookup = msg.orig_session_id || msg.claude_session_id;
+        if (lookup) {
+          const s = db.prepare('SELECT room_id FROM ai_sessions WHERE claude_session_id=?').get(lookup);
+          if (s?.room_id) msg.room_id = s.room_id;
+        }
+      }
+      if (!msg.room_id) {
+        console.warn(`[server] compact_complete: unresolvable room_id for session ${msg.claude_session_id}`);
+        return;
+      }
       if (msg.claude_session_id) {
         const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
         if (participant) {
@@ -1988,16 +2043,32 @@ wss.on('connection', (ws, req) => {
         }
       }
       const state = pendingCompacts.get(msg.room_id);
-      if (!state) return;
-      if (!state.names) state.names = [];
       const actor = db.prepare('SELECT name FROM actors WHERE id=?').get(agentActorId);
+      const participant = db.prepare('SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
+      if (!state) {
+        // No pendingCompacts entry — background compact with failed auto_compact_start, or disconnect cleared it.
+        // Still write marker and unstick any UI that may be in compacting state.
+        if (participant && actor) {
+          const content = `${actor.name} · session compacted`;
+          const sysResult = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')").run(msg.room_id, participant.id, content);
+          broadcast(msg.room_id, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: msg.room_id, content, state: 'system_event', created_at: new Date().toISOString() } });
+        }
+        if (!recentCompacts.has(msg.room_id)) {
+          broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id });
+        }
+        setRecentCompact(msg.room_id);
+        return;
+      }
+      if (!state.names) state.names = [];
+      if (!state.completedAgentIds) state.completedAgentIds = [];
       if (actor) state.names.push(actor.name);
+      state.completedAgentIds.push(agentActorId);
       state.completed++;
       if (state.completed >= state.total) {
         pendingCompacts.delete(msg.room_id);
+        setRecentCompact(msg.room_id);
         const label = state.names.length ? state.names.join(', ') : 'session';
         const content = `${label} · session compacted`;
-        const participant = db.prepare('SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
         if (participant) {
           const sysResult = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')").run(msg.room_id, participant.id, content);
           broadcast(msg.room_id, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: msg.room_id, content, state: 'system_event', created_at: new Date().toISOString() } });
@@ -2009,6 +2080,18 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'compact_error' && agentActorId) {
+      // Resolve room_id — background worker sends orig_session_id without room_id
+      if (!msg.room_id) {
+        const lookup = msg.orig_session_id || msg.claude_session_id;
+        if (lookup) {
+          const s = db.prepare('SELECT room_id FROM ai_sessions WHERE claude_session_id=?').get(lookup);
+          if (s?.room_id) msg.room_id = s.room_id;
+        }
+      }
+      if (!msg.room_id) {
+        console.warn(`[server] compact_error: unresolvable room_id for session ${msg.orig_session_id}`);
+        return;
+      }
       const state = pendingCompacts.get(msg.room_id);
       if (!state) return;
       if (!state.errors) state.errors = 0;
@@ -2016,6 +2099,7 @@ wss.on('connection', (ws, req) => {
       state.completed++;
       if (state.completed >= state.total) {
         pendingCompacts.delete(msg.room_id);
+        setRecentCompact(msg.room_id);
         if (state.errors >= state.total) {
           broadcast(msg.room_id, { type: 'compact_error', room_id: msg.room_id, error: msg.error || 'Compact failed' });
         } else {
@@ -2378,6 +2462,32 @@ wss.on('connection', (ws, req) => {
         "UPDATE messages SET state='error', content=CASE WHEN content='' THEN '(interrupted — agent disconnected)' ELSE content END WHERE state IN ('streaming','requesting') AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?)"
       ).run(agentActorId);
       if (cleaned.changes) console.log(`[agent] Cleaned ${cleaned.changes} orphaned message(s) from Actor #${agentActorId}`);
+      // Clean up pendingCompacts — remove only this agent; if no agents remain, unstick UI
+      for (const [roomId, cs] of pendingCompacts) {
+        const idx = cs.agents.indexOf(agentActorId);
+        if (idx !== -1) {
+          cs.agents.splice(idx, 1);
+          cs.total = Math.max(cs.total - 1, cs.completed); // won't complete — clamp to already-done count
+          if (cs.agents.length === 0 || cs.completed >= cs.total) {
+            pendingCompacts.delete(roomId);
+            setRecentCompact(roomId); // prevent compact_complete (if agent reconnects) from sending a redundant compact_done
+            // Write compact marker for agents that successfully completed before disconnect
+            if (cs.completed > 0 && cs.names?.length > 0) {
+              const completedActorId = cs.completedAgentIds?.[0] ?? agentActorId;
+              const participant = db.prepare('SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=? LIMIT 1').get(roomId, completedActorId);
+              if (participant) {
+                const content = `${cs.names.join(', ')} · session compacted`;
+                const sysResult = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')").run(roomId, participant.id, content);
+                broadcast(roomId, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: roomId, content, state: 'system_event', created_at: new Date().toISOString() } });
+              }
+            }
+            broadcast(roomId, { type: 'compact_done', room_id: roomId });
+            console.log(`[agent] Cleared pendingCompact room=${roomId} (agent #${agentActorId} disconnected mid-compact)`);
+          } else {
+            console.log(`[agent] Agent #${agentActorId} disconnected mid-compact room=${roomId}, ${cs.agents.length} agent(s) still pending`);
+          }
+        }
+      }
       console.log(`[agent] Actor #${agentActorId} disconnected`);
       broadcastGlobal({ type: 'actor_status', actor: { id: agentActorId, online: false } });
     }

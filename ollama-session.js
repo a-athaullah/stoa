@@ -281,11 +281,8 @@ class OllamaSession extends EventEmitter {
 
     // fullPrompt already embeds history as text — don't add rawHistory as separate messages
     // (adding rawHistory creates duplicate consecutive user messages which breaks tool calling)
-    const systemMsg = {
-      role: 'system',
-      content: 'You have access to tools: bash, read_file, write_file, list_dir, grep, http_get, web_search. When asked to inspect files, check git repos, run commands, or review code: CALL the bash tool immediately with the actual shell command. Do NOT use [send:...] markers for code tasks — those are only for image files. Do NOT fabricate file contents or command output. Execute the tool and report what you actually find.',
-    };
-    const messages = [systemMsg, userMsg];
+    // No system message here — identity and tool instructions are in the Modelfile SYSTEM block.
+    const messages = [userMsg];
 
     const MAX_TOOL_ROUNDS = 10;
     let round = 0;

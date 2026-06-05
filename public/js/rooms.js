@@ -550,6 +550,7 @@ async function openRoom(room) {
     const fill = document.getElementById('compact-fill');
     if (bar) bar.classList.remove('visible');
     if (fill) { fill.classList.remove('indeterminate'); fill.style.width = '0%'; }
+    compactingRoomId = null;
   }
   clearComposerProcessing();
 

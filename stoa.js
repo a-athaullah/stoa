@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.3.25';
+const CLIENT_VERSION = '0.3.32';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -123,9 +123,10 @@ async function checkForUpdates() {
     if (!changed.length) return;
 
     console.log(`[stoa:update] update detected: ${changed.map(([n]) => n).join(', ')}`);
-    for (const [name] of changed) {
+    for (const [name, remoteHash] of changed) {
       const content = await fetchText(`${baseUrl}/api/client/file/${encodeURIComponent(name)}`);
       fs.writeFileSync(path.join(__dirname, name), content, 'utf8');
+      localManifest[name] = remoteHash;
       console.log(`[stoa:update] ${name} updated`);
     }
     if (activeTriggers.size > 0 || triggerQueue.length > 0) {
@@ -153,6 +154,19 @@ function doRestart() {
 const sessionPool = new Map(); // workdir → ClaudeSession
 const sessionIdleTimers = new Map(); // workdir → timeout id
 let SESSION_IDLE_TTL = 5; // minutes, configurable via server
+
+const AUTO_COMPACT_THRESHOLD = 500 * 1024; // 500 KB
+const compactsInFlight = new Set(); // workdir keys currently being compacted — prevents concurrent /compact on same session
+
+async function getSessionFileSize(workdir, sessionId) {
+  if (!workdir || !sessionId) return 0;
+  try {
+    const encoded = workdir.replace(/\//g, '-').replace(/\\/g, '-').replace(/:/g, '');
+    const filePath = path.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`);
+    const stat = await fs.promises.stat(filePath);
+    return stat.size;
+  } catch { return 0; }
+}
 
 function deleteSessionFile(workdir, sessionId) {
   if (!sessionId) return;
@@ -218,6 +232,36 @@ function clearSessionIdleTimer(workdir) {
   const timer = sessionIdleTimers.get(workdir);
   if (timer) { clearTimeout(timer); sessionIdleTimers.delete(workdir); }
 }
+
+// ─── Auto-compact background worker ──────────────────────────────────────────
+setInterval(async () => {
+  if (ACTOR_TYPE !== 'ai') return;
+  const busyWorkdirs = new Set([...activeTriggers.values()].map(t => t.workdir));
+  for (const [workdir, session] of sessionPool) {
+    if (busyWorkdirs.has(workdir)) continue; // skip workdirs with an active trigger
+    const sessionId = session.resumeId;
+    if (!sessionId) continue;
+    const fileSize = await getSessionFileSize(workdir, sessionId);
+    if (fileSize <= AUTO_COMPACT_THRESHOLD) continue;
+    if (compactsInFlight.has(workdir)) continue;
+    compactsInFlight.add(workdir);
+    console.log(`[stoa] worker: auto-compacting ${sessionId.slice(0, 8)}... (${(fileSize / 1024).toFixed(0)}KB)`);
+    send({ type: 'auto_compact_start', claude_session_id: sessionId });
+    session.send({ prompt: '/compact', onState: () => {} }).then(result => {
+      compactsInFlight.delete(workdir);
+      if (result?.sessionId) session.resumeId = result.sessionId;
+      send({ type: 'compact_complete', claude_session_id: result?.sessionId || sessionId, orig_session_id: sessionId, result: result?.content || '' });
+      setTimeout(() => {
+        truncateSessionFile(workdir, sessionId);
+        if (result?.sessionId && result.sessionId !== sessionId) truncateSessionFile(workdir, result.sessionId);
+      }, 3000);
+    }).catch(err => {
+      compactsInFlight.delete(workdir);
+      console.error(`[stoa] worker auto-compact error: ${err.message}`);
+      send({ type: 'compact_error', orig_session_id: sessionId, error: err.message });
+    });
+  }
+}, 60 * 60_000); // every 60 minutes
 
 // ─── Connect ──────────────────────────────────────────────────────────────────
 function connect() {
@@ -783,6 +827,35 @@ async function processTrigger(msg) {
         completeMsg.attachments = attachments;
       }
       send(completeMsg);
+
+      // Auto-compact: check session file size and compact if needed.
+      // Runs inside setImmediate so the finally block (activeTriggers.delete + drainQueue) is not delayed by the stat() call.
+      const sessionIdForCompact = sessionId;
+      if (sessionIdForCompact && targetDir) {
+        setImmediate(async () => {
+          const fileSize = await getSessionFileSize(targetDir, sessionIdForCompact);
+          if (fileSize <= AUTO_COMPACT_THRESHOLD) return;
+          if (compactsInFlight.has(targetDir)) return;
+          const sess = sessionPool.get(targetDir);
+          if (!sess) return;
+          console.log(`[stoa] session ${sessionIdForCompact.slice(0, 8)}... is ${(fileSize / 1024).toFixed(0)}KB > ${AUTO_COMPACT_THRESHOLD / 1024}KB threshold, auto-compacting`);
+          compactsInFlight.add(targetDir);
+          send({ type: 'auto_compact_start', room_id, claude_session_id: sessionIdForCompact });
+          sess.send({ prompt: '/compact', onState: () => {} }).then(result => {
+            compactsInFlight.delete(targetDir);
+            if (result?.sessionId) sess.resumeId = result.sessionId;
+            send({ type: 'compact_complete', room_id, result: result?.content || '', claude_session_id: result?.sessionId || sessionIdForCompact, orig_session_id: sessionIdForCompact });
+            setTimeout(() => {
+              truncateSessionFile(targetDir, sessionIdForCompact);
+              if (result?.sessionId && result.sessionId !== sessionIdForCompact) truncateSessionFile(targetDir, result.sessionId);
+            }, 3000);
+          }).catch(err => {
+            compactsInFlight.delete(targetDir);
+            console.error(`[stoa] auto-compact error: ${err.message}`);
+            send({ type: 'compact_error', room_id, error: err.message });
+          });
+        });
+      }
     }
 
   } catch (err) {

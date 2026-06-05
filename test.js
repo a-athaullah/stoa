@@ -392,6 +392,18 @@ async function run() {
     assert.ok(Array.isArray(r.body));
   });
 
+  await test('GET /api/rooms/:id/messages — system_event filter: only compact markers, not offline notifications', async () => {
+    if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
+    const r = await req('GET', `/api/rooms/${firstRoomId}/messages`);
+    assert.strictEqual(r.status, 200);
+    for (const msg of r.body) {
+      if (msg.state === 'system_event') {
+        assert.ok(msg.content.endsWith('· session compacted'),
+          `system_event message must be compact marker, got: "${msg.content}"`);
+      }
+    }
+  });
+
   await test('GET /api/rooms/:id/participants — returns array', async () => {
     if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
     const r = await req('GET', `/api/rooms/${firstRoomId}/participants`);
@@ -571,6 +583,8 @@ async function run() {
   console.log('\n[Room Lifecycle]');
   let testRoomId = null;
   let testActorId = null;
+  let testActorSecret = null;
+  let testMessageId = null;
 
   await test('Register test actor for room lifecycle', async () => {
     const scriptR = await req('GET', '/install.sh?name=test-lifecycle-agent');
@@ -579,6 +593,7 @@ async function run() {
     const r = await req('POST', '/api/agent/register', { token: tokenMatch[1] });
     assert.strictEqual(r.status, 200);
     testActorId = r.body.actor_id;
+    testActorSecret = r.body.secret;
     assert.ok(testActorId, 'no actor_id');
 
     // Get default workdir id from first available agent workdir (or use human actor's default)
@@ -593,6 +608,24 @@ async function run() {
     assert.strictEqual(r2.status, 200, `create room failed: ${JSON.stringify(r2.body)}`);
     testRoomId = r2.body.id;
     assert.ok(testRoomId, 'room id missing');
+  });
+
+  await test('POST /api/rooms/:id/message — agent posts proactive message → 200', async () => {
+    if (!testRoomId || !testActorId || !testActorSecret) { console.log('    (skipped — no test room/actor)'); return; }
+    const r = await rawReq('POST', `/api/rooms/${testRoomId}/message`,
+      JSON.stringify({ content: 'proactive from test agent' }),
+      'application/json',
+      { 'X-Agent-Id': String(testActorId), 'X-Agent-Secret': testActorSecret }
+    );
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}: ${r.raw}`);
+    assert.ok(r.body.message_id, 'message_id missing');
+    testMessageId = r.body.message_id;
+  });
+
+  await test('POST /api/rooms/:id/message — no auth → 403', async () => {
+    if (!testRoomId) { console.log('    (skipped — no test room)'); return; }
+    const r = await req('POST', `/api/rooms/${testRoomId}/message`, { content: 'test' });
+    assert.strictEqual(r.status, 403);
   });
 
   await test('PATCH /api/rooms/:id — rename room', async () => {
@@ -650,6 +683,7 @@ async function run() {
     const r = await req('DELETE', `/api/actors/${testActorId}`);
     assert.ok([204, 200].includes(r.status));
     testActorId = null;
+    testActorSecret = null;
   });
 
   // Messages
@@ -664,6 +698,14 @@ async function run() {
     assert.strictEqual(r.status, 200);
     assert.ok(r.body.id, 'id missing');
     assert.ok(r.body.actor_name, 'actor_name missing');
+  });
+
+  await test('DELETE /api/messages/:id — deletes message', async () => {
+    if (!testMessageId) { console.log('    (skipped — no test message)'); return; }
+    const r = await req('DELETE', `/api/messages/${testMessageId}`);
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}`);
+    assert.ok(r.body.ok, 'ok field missing');
+    testMessageId = null;
   });
 
   await test('GET /api/messages/999999 — nonexistent → 404', async () => {

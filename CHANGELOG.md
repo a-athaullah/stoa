@@ -2,6 +2,24 @@
 
 ## [2026-06-05]
 
+### Fixed
+- **Auto-update: repeated downloads during deferred restart** — when an agent had an active trigger and couldn't restart immediately, `localManifest` was never updated after a file was written to disk. On the next 2-minute check the same file would be downloaded and written again, repeating indefinitely until the trigger finished. Fixed by updating `localManifest[name]` right after `fs.writeFileSync`.
+- **Ollama: duplicate system message removed** — `ollama-session.js` was prepending a hardcoded system message with tool instructions on every request, duplicating what's already in the Modelfile SYSTEM block. Removed the redundant message so tool instructions come from the Modelfile only.
+
+## [2026-06-05] — Auto-Compact
+
+### Added
+- **Auto-compact: per-trigger check** — after every agent response, Stoa checks the session JSONL file size. If it exceeds 500 KB, the agent runs `/compact` immediately in the background (after the response is sent) and notifies the server. The user receives the reply first; compaction is invisible.
+- **Auto-compact: 60-minute background worker** — every 60 minutes, the agent scans all open sessions on its machine and compacts any that exceed 500 KB. Also cleans up sessions that are open locally but not active in any Stoa room.
+- **Auto-compact progress bar** — when auto-compact runs, the room header shows the same progress bar as manual compact. A compact marker is saved in message history and persists across page refreshes.
+- **Auto-Compact docs** — new section in all 5 language guides (EN, ID, JA, KO, ZH) explaining both mechanisms.
+
+### Fixed
+- **Compact markers disappear on refresh** — message queries used `state='complete'` which excluded `system_event` rows. Compact markers (which have `state='system_event'`) were saved but never returned by the API. Fixed by using `state IN ('complete','system_event')` in both paginated and non-paginated message queries.
+- **Auto-compact room resolution** — `auto_compact_start` and `compact_complete` WebSocket messages from the background worker don't carry `room_id` (worker doesn't know which room a session belongs to). Server now looks up `room_id` from `ai_sessions` via `claude_session_id` when `room_id` is absent.
+
+## [2026-06-05]
+
 ### Added
 - **Slack Automation** — connect a Slack workspace (Socket Mode, user token only) and define rules that fire when messages arrive in public or private channels. Rules have a name, trigger event (`message`, `message.groups`, `mention`), optional AND conditions (text contains/starts_with/regex), target Stoa room, and a prompt template supporting `{{slack_message_text}}`, `{{slack_message_link}}`, `{{slack_user}}`, `{{slack_channel}}`, `{{extracted_url}}`, `{{slack_thread_ts}}`. Each rule has an enable/disable toggle
 - **Slack: private channel support** — `message.groups` event type triggers on private channels using the `groups:history` OAuth scope
