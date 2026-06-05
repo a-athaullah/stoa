@@ -697,7 +697,7 @@ const server = http.createServer(async (req, res) => {
       broadcastGlobal({ type: 'room_updated', room_id: roomId, title: parsed.title.trim() });
     }
     if (parsed.archived === true) {
-      db.prepare("UPDATE rooms SET archived_at=datetime('now') WHERE id=?").run(roomId);
+      db.prepare("UPDATE rooms SET archived_at=datetime('now'), is_pinned=0 WHERE id=?").run(roomId);
       broadcastGlobal({ type: 'room_archived', room_id: roomId });
     }
     if (parsed.archived === false) {
@@ -713,7 +713,7 @@ const server = http.createServer(async (req, res) => {
     const pinErr = db.transaction(() => {
       const room = db.prepare("SELECT id FROM rooms WHERE id=? AND archived_at IS NULL").get(roomId);
       if (!room) return 'not_found';
-      const pinCount = db.prepare("SELECT COUNT(*) as cnt FROM rooms WHERE is_pinned=1 AND id != ?").get(roomId).cnt;
+      const pinCount = db.prepare("SELECT COUNT(*) as cnt FROM rooms WHERE is_pinned=1 AND archived_at IS NULL AND id != ?").get(roomId).cnt;
       if (pinCount >= 5) return 'limit';
       db.prepare("UPDATE rooms SET is_pinned=1 WHERE id=?").run(roomId);
       return null;
