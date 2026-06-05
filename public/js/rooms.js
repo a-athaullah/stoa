@@ -306,7 +306,6 @@ function renderRoomList(rooms) {
   list.innerHTML = '';
   const isArchived = currentRoomTab === 'archived';
   const hasPinned = !isArchived && rooms.some(r => r.is_pinned);
-  let addedPinnedHeader = false;
   let addedDivider = false;
 
   if (hasPinned) {
@@ -314,7 +313,6 @@ function renderRoomList(rooms) {
     header.className = 'h-room-section-header';
     header.textContent = 'Pinned';
     list.appendChild(header);
-    addedPinnedHeader = true;
   }
 
   for (const room of rooms) {

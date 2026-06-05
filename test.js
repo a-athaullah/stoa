@@ -723,7 +723,10 @@ async function run() {
 
   await test('POST /api/invites/:id/resolve — approve invite (approved: true)', async () => {
     if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
-    const agentRes = await req('POST', '/api/install/agent', { name: '__test_invite_agent__' });
+    const scriptR = await req('GET', '/install.sh?name=__test_invite_agent__');
+    const tokenMatch = scriptR.raw.match(/REG_TOKEN="([a-f0-9]+)"/);
+    if (!tokenMatch) { console.log('    (skipped — install token not found)'); return; }
+    const agentRes = await req('POST', '/api/agent/register', { token: tokenMatch[1] });
     if (agentRes.status !== 200) { console.log(`    (skipped — agent creation failed: ${agentRes.status})`); return; }
     const { actor_id: agentActorId, secret: agentSecret } = agentRes.body;
     try {
@@ -738,7 +741,7 @@ async function run() {
       if (!targetActor) { console.log('    (skipped — no actors to suggest)'); return; }
       const roomWs = await openWsConnection(`ws://${HOST}:${PORT}`);
       const invitePromise = waitForWsMessage(roomWs, m => m.type === 'invite_suggestion');
-      roomWs.send(JSON.stringify({ type: 'subscribe_room', room_id: roomId }));
+      roomWs.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
       const agentWs = await openWsConnection(`ws://${HOST}:${PORT}`);
       const agentReadyPromise = waitForWsMessage(agentWs, m => m.type === 'agent_ready');
       agentWs.send(JSON.stringify({ type: 'agent_connect', actor_id: agentActorId, secret: agentSecret }));
