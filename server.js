@@ -1646,6 +1646,7 @@ const agentVersions = new Map();  // actor_id → client_version string
 const pendingAgents = new Map();    // message_id → { resolve, reject }
 const pendingActorMeta = new Map(); // message_id → { name, avatar_color, avatar_symbol }
 const pendingCompacts = new Map();  // room_id → { total, completed, agents[] }
+const recentCompacts = new Map();   // room_id → timestamp — suppresses duplicate auto_compact_start within 30s
 const pendingFileOps = new Map();   // request_id → { type, clientWs }
 function addPendingFileOp(rid, op) {
   pendingFileOps.set(rid, op);
@@ -1995,7 +1996,9 @@ wss.on('connection', (ws, req) => {
         roomId = s?.room_id;
       }
       if (roomId) {
-        if (!pendingCompacts.has(roomId)) {
+        if (recentCompacts.has(roomId)) {
+          console.log(`[server] auto_compact_start suppressed for room=${roomId} (compact recently completed)`);
+        } else if (!pendingCompacts.has(roomId)) {
           pendingCompacts.set(roomId, { total: 1, completed: 0, agents: [agentActorId] });
           broadcast(roomId, { type: 'compact_start', room_id: roomId, total: 1 });
           console.log(`[server] auto-compact started room=${roomId} by agent=${agentActorId}`);
@@ -2031,16 +2034,28 @@ wss.on('connection', (ws, req) => {
         }
       }
       const state = pendingCompacts.get(msg.room_id);
-      if (!state) return;
-      if (!state.names) state.names = [];
       const actor = db.prepare('SELECT name FROM actors WHERE id=?').get(agentActorId);
+      const participant = db.prepare('SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
+      if (!state) {
+        // No pendingCompacts entry — background compact with failed auto_compact_start, or disconnect cleared it.
+        // Still write marker and unstick any UI that may be in compacting state.
+        if (participant && actor) {
+          const content = `${actor.name} · session compacted`;
+          const sysResult = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')").run(msg.room_id, participant.id, content);
+          broadcast(msg.room_id, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: msg.room_id, content, state: 'system_event', created_at: new Date().toISOString() } });
+        }
+        broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id });
+        return;
+      }
+      if (!state.names) state.names = [];
       if (actor) state.names.push(actor.name);
       state.completed++;
       if (state.completed >= state.total) {
         pendingCompacts.delete(msg.room_id);
+        recentCompacts.set(msg.room_id, Date.now());
+        setTimeout(() => recentCompacts.delete(msg.room_id), 30_000);
         const label = state.names.length ? state.names.join(', ') : 'session';
         const content = `${label} · session compacted`;
-        const participant = db.prepare('SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
         if (participant) {
           const sysResult = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')").run(msg.room_id, participant.id, content);
           broadcast(msg.room_id, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: msg.room_id, content, state: 'system_event', created_at: new Date().toISOString() } });
@@ -2421,12 +2436,19 @@ wss.on('connection', (ws, req) => {
         "UPDATE messages SET state='error', content=CASE WHEN content='' THEN '(interrupted — agent disconnected)' ELSE content END WHERE state IN ('streaming','requesting') AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?)"
       ).run(agentActorId);
       if (cleaned.changes) console.log(`[agent] Cleaned ${cleaned.changes} orphaned message(s) from Actor #${agentActorId}`);
-      // Clean up any pendingCompacts this agent was part of — prevents UI stuck in "compacting" on agent restart/crash
+      // Clean up pendingCompacts — remove only this agent; if no agents remain, unstick UI
       for (const [roomId, cs] of pendingCompacts) {
-        if (cs.agents.includes(agentActorId)) {
-          pendingCompacts.delete(roomId);
-          broadcast(roomId, { type: 'compact_done', room_id: roomId });
-          console.log(`[agent] Cleared stuck pendingCompact for room=${roomId} (agent #${agentActorId} disconnected mid-compact)`);
+        const idx = cs.agents.indexOf(agentActorId);
+        if (idx !== -1) {
+          cs.agents.splice(idx, 1);
+          cs.total = Math.max(cs.total - 1, cs.completed); // won't complete — clamp to already-done count
+          if (cs.agents.length === 0 || cs.completed >= cs.total) {
+            pendingCompacts.delete(roomId);
+            broadcast(roomId, { type: 'compact_done', room_id: roomId });
+            console.log(`[agent] Cleared pendingCompact room=${roomId} (agent #${agentActorId} disconnected mid-compact)`);
+          } else {
+            console.log(`[agent] Agent #${agentActorId} disconnected mid-compact room=${roomId}, ${cs.agents.length} agent(s) still pending`);
+          }
         }
       }
       console.log(`[agent] Actor #${agentActorId} disconnected`);

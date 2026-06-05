@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.3.27';
+const CLIENT_VERSION = '0.3.28';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -157,12 +157,13 @@ let SESSION_IDLE_TTL = 5; // minutes, configurable via server
 const AUTO_COMPACT_THRESHOLD = 500 * 1024; // 500 KB
 const compactsInFlight = new Set(); // workdir keys currently being compacted — prevents concurrent /compact on same session
 
-function getSessionFileSize(workdir, sessionId) {
+async function getSessionFileSize(workdir, sessionId) {
   if (!workdir || !sessionId) return 0;
   try {
     const encoded = workdir.replace(/\//g, '-').replace(/\\/g, '-').replace(/:/g, '');
     const filePath = path.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`);
-    return fs.statSync(filePath).size;
+    const stat = await fs.promises.stat(filePath);
+    return stat.size;
   } catch { return 0; }
 }
 
@@ -232,13 +233,13 @@ function clearSessionIdleTimer(workdir) {
 }
 
 // ─── Auto-compact background worker ──────────────────────────────────────────
-setInterval(() => {
+setInterval(async () => {
   if (ACTOR_TYPE !== 'ai') return;
   if (activeTriggers.size > 0) return; // skip while processing
   for (const [workdir, session] of sessionPool) {
     const sessionId = session.resumeId;
     if (!sessionId) continue;
-    const fileSize = getSessionFileSize(workdir, sessionId);
+    const fileSize = await getSessionFileSize(workdir, sessionId);
     if (fileSize < AUTO_COMPACT_THRESHOLD) continue;
     if (compactsInFlight.has(workdir)) continue;
     compactsInFlight.add(workdir);
@@ -826,7 +827,7 @@ async function processTrigger(msg) {
       // Auto-compact: check session file size after sending response
       const sessionIdForCompact = sessionId;
       if (sessionIdForCompact && targetDir) {
-        const fileSize = getSessionFileSize(targetDir, sessionIdForCompact);
+        const fileSize = await getSessionFileSize(targetDir, sessionIdForCompact);
         if (fileSize > AUTO_COMPACT_THRESHOLD) {
           console.log(`[stoa] session ${sessionIdForCompact.slice(0, 8)}... is ${(fileSize / 1024).toFixed(0)}KB > ${AUTO_COMPACT_THRESHOLD / 1024}KB threshold, auto-compacting`);
           setImmediate(() => {
