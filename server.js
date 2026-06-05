@@ -2420,6 +2420,14 @@ wss.on('connection', (ws, req) => {
         "UPDATE messages SET state='error', content=CASE WHEN content='' THEN '(interrupted — agent disconnected)' ELSE content END WHERE state IN ('streaming','requesting') AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?)"
       ).run(agentActorId);
       if (cleaned.changes) console.log(`[agent] Cleaned ${cleaned.changes} orphaned message(s) from Actor #${agentActorId}`);
+      // Clean up any pendingCompacts this agent was part of — prevents UI stuck in "compacting" on agent restart/crash
+      for (const [roomId, cs] of pendingCompacts) {
+        if (cs.agents.includes(agentActorId)) {
+          pendingCompacts.delete(roomId);
+          broadcast(roomId, { type: 'compact_done', room_id: roomId });
+          console.log(`[agent] Cleared stuck pendingCompact for room=${roomId} (agent #${agentActorId} disconnected mid-compact)`);
+        }
+      }
       console.log(`[agent] Actor #${agentActorId} disconnected`);
       broadcastGlobal({ type: 'actor_status', actor: { id: agentActorId, online: false } });
     }
