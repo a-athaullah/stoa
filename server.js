@@ -711,15 +711,17 @@ const server = http.createServer(async (req, res) => {
   if (roomPinMatch) {
     const roomId = parseInt(roomPinMatch[1]);
     const pinErr = db.transaction(() => {
-      const room = db.prepare("SELECT id FROM rooms WHERE id=? AND archived_at IS NULL").get(roomId);
+      const room = db.prepare("SELECT id, is_pinned FROM rooms WHERE id=? AND archived_at IS NULL").get(roomId);
       if (!room) return 'not_found';
-      const pinCount = db.prepare("SELECT COUNT(*) as cnt FROM rooms WHERE is_pinned=1 AND archived_at IS NULL AND id != ?").get(roomId).cnt;
+      if (room.is_pinned) return 'already_pinned';
+      const pinCount = db.prepare("SELECT COUNT(*) as cnt FROM rooms WHERE is_pinned=1 AND archived_at IS NULL").get().cnt;
       if (pinCount >= 5) return 'limit';
       db.prepare("UPDATE rooms SET is_pinned=1 WHERE id=?").run(roomId);
       return null;
     })();
     if (pinErr === 'not_found') return json(res, { error: 'Room not found' }, 404);
     if (pinErr === 'limit') return json(res, { error: 'Maximum 5 pinned rooms reached' }, 400);
+    if (pinErr === 'already_pinned') return json(res, { ok: true });
     broadcastGlobal({ type: 'room_pinned', room_id: roomId });
     return json(res, { ok: true });
   }
@@ -727,7 +729,7 @@ const server = http.createServer(async (req, res) => {
   const roomUnpinMatch = req.method === 'DELETE' && url.pathname.match(/^\/api\/rooms\/(\d+)\/pin$/);
   if (roomUnpinMatch) {
     const roomId = parseInt(roomUnpinMatch[1]);
-    const room = db.prepare("SELECT id FROM rooms WHERE id=?").get(roomId);
+    const room = db.prepare("SELECT id FROM rooms WHERE id=? AND archived_at IS NULL").get(roomId);
     if (!room) return json(res, { error: 'Room not found' }, 404);
     db.prepare("UPDATE rooms SET is_pinned=0 WHERE id=?").run(roomId);
     broadcastGlobal({ type: 'room_unpinned', room_id: roomId });

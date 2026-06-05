@@ -511,9 +511,8 @@ async function togglePinRoom(room, pin) {
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       showToast(data.error || `Failed to ${pin ? 'pin' : 'unpin'} room`, { error: true });
-      return;
     }
-  } catch { showToast(`Failed to ${pin ? 'pin' : 'unpin'} room`, { error: true }); return; }
+  } catch { showToast(`Failed to ${pin ? 'pin' : 'unpin'} room`, { error: true }); }
   refreshRoomList();
 }
 
