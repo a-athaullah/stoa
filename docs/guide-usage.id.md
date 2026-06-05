@@ -50,7 +50,7 @@ Klik judul room di header chat. Judul menjadi editable — ketik nama baru dan t
 
 ### Badge Model
 
-Header setiap room menampilkan **badge model** yang menunjukkan model AI mana yang digunakan agent (misalnya "Opus 4", "Sonnet 4"). Model terdeteksi otomatis dari pengaturan CLI Claude Code atau Gemini agent. Badge diperbarui secara real-time saat model agent berubah.
+Header setiap room menampilkan **badge model** yang menunjukkan model AI mana yang digunakan agent (misalnya "Opus 4", "Sonnet 4"). Model terdeteksi otomatis dari pengaturan CLI Claude Code. Gemini agent saat ini tidak menampilkan badge model. Badge diperbarui secara real-time saat model agent berubah.
 
 ### Menyematkan Room (Pin)
 

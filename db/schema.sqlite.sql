@@ -183,6 +183,7 @@ CREATE INDEX IF NOT EXISTS idx_actors_type ON actors(type);
 CREATE INDEX IF NOT EXISTS idx_messages_state ON messages(state);
 CREATE INDEX IF NOT EXISTS idx_auth_users_email ON auth_users(email);
 CREATE INDEX IF NOT EXISTS idx_settings_scope_key ON settings(scope, key_name);
+CREATE INDEX IF NOT EXISTS idx_invite_suggestions_room_id ON invite_suggestions(room_id);
 
 INSERT OR IGNORE INTO settings (scope, key_name, value) VALUES
   ('global','idle_timeout_seconds','300'),

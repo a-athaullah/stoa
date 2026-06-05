@@ -50,7 +50,7 @@ Click the room title in the chat header. It becomes editable — type the new na
 
 ### Model Badge
 
-Each room's header shows a **model badge** indicating which AI model the agent is using (e.g., "Opus 4", "Sonnet 4"). The model is auto-detected from the agent's Claude Code or Gemini CLI settings. The badge updates in real-time when the agent's model changes.
+Each room's header shows a **model badge** indicating which AI model the agent is using (e.g., "Opus 4", "Sonnet 4"). The model is auto-detected from the agent's Claude Code settings. Gemini agents currently show no model badge. The badge updates in real-time when the agent's model changes.
 
 ### Pinning a Room
 
