@@ -729,8 +729,9 @@ const server = http.createServer(async (req, res) => {
   const roomUnpinMatch = req.method === 'DELETE' && url.pathname.match(/^\/api\/rooms\/(\d+)\/pin$/);
   if (roomUnpinMatch) {
     const roomId = parseInt(roomUnpinMatch[1]);
-    const room = db.prepare("SELECT id FROM rooms WHERE id=? AND archived_at IS NULL").get(roomId);
+    const room = db.prepare("SELECT id, is_pinned FROM rooms WHERE id=? AND archived_at IS NULL").get(roomId);
     if (!room) return json(res, { error: 'Room not found' }, 404);
+    if (!room.is_pinned) return json(res, { ok: true });
     db.prepare("UPDATE rooms SET is_pinned=0 WHERE id=?").run(roomId);
     broadcastGlobal({ type: 'room_unpinned', room_id: roomId });
     return json(res, { ok: true });

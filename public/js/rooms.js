@@ -393,7 +393,7 @@ function renderRoomList(rooms) {
       pinBtn.className = 'h-room-action h-room-pin-btn' + (room.is_pinned ? ' pinned' : '');
       pinBtn.title = room.is_pinned ? 'Unpin' : 'Pin';
       pinBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg>';
-      pinBtn.onclick = e => { e.stopPropagation(); if (pinBtn.disabled) return; pinBtn.disabled = true; togglePinRoom(room, !room.is_pinned); };
+      pinBtn.onclick = e => { e.stopPropagation(); if (pinBtn.disabled) return; pinBtn.disabled = true; togglePinRoom(room, !room.is_pinned, pinBtn); };
       top.appendChild(pinBtn);
     }
     top.appendChild(actionBtn);
@@ -505,7 +505,7 @@ document.addEventListener('click', e => {
   });
 })();
 
-async function togglePinRoom(room, pin) {
+async function togglePinRoom(room, pin, btn) {
   try {
     const res = await fetch(`/api/rooms/${room.id}/pin`, { method: pin ? 'POST' : 'DELETE' });
     if (!res.ok) {
@@ -513,7 +513,8 @@ async function togglePinRoom(room, pin) {
       showToast(data.error || `Failed to ${pin ? 'pin' : 'unpin'} room`, { error: true });
     }
   } catch { showToast(`Failed to ${pin ? 'pin' : 'unpin'} room`, { error: true }); }
-  refreshRoomList();
+  const refreshed = await refreshRoomList();
+  if (!refreshed && btn) btn.disabled = false;
 }
 
 async function archiveRoom(room) {

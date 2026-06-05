@@ -1435,7 +1435,8 @@ async function refreshRoomList() {
         renderRoomDots(room.id, parts);
       }
     }
-  } catch (e) { console.error('refreshRoomList failed:', e); }
+    return true;
+  } catch (e) { console.error('refreshRoomList failed:', e); return false; }
 }
 
 document.addEventListener('visibilitychange', () => {
