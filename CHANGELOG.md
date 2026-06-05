@@ -3,6 +3,14 @@
 ## [2026-06-05]
 
 ### Fixed
+- **Slack: Enable Events auto-disable** — Socket Mode event handlers (`app_mention`, `message`, `reaction_added`) were not calling `ack()`. Slack requires acknowledgment within 3 seconds; without it every event was marked as failed, and after sustained high failure rates Slack automatically disabled Event Subscriptions. All three handlers now call `ack()` immediately on entry.
+
+### Changed
+- **Slack: bot messages now delivered to automations** — the message handler previously dropped all events with a `subtype` field, which silently blocked `bot_message` events from other apps in the channel. The filter now only blocks non-message system subtypes (e.g. `channel_join`, `message_changed`), allowing bot messages from other Slack apps to trigger automation rules.
+
+## [2026-06-05]
+
+### Fixed
 - **Auto-update: repeated downloads during deferred restart** — when an agent had an active trigger and couldn't restart immediately, `localManifest` was never updated after a file was written to disk. On the next 2-minute check the same file would be downloaded and written again, repeating indefinitely until the trigger finished. Fixed by updating `localManifest[name]` right after `fs.writeFileSync`.
 - **Ollama: duplicate system message removed** — `ollama-session.js` was prepending a hardcoded system message with tool instructions on every request, duplicating what's already in the Modelfile SYSTEM block. Removed the redundant message so tool instructions come from the Modelfile only.
 

@@ -39,19 +39,24 @@ class SlackListener extends EventEmitter {
     });
 
     // v2.x: callback receives { event, ack, body, envelope_id, ... }
-    this.client.on('app_mention', ({ event }) => {
+    // ack() MUST be called within 3s or Slack will auto-disable Event Subscriptions
+    this.client.on('app_mention', ({ event, ack }) => {
+      ack();
       if (!event) return;
       console.log('[slack] app_mention received');
       this.emit('slack_event', { eventType: 'mention', event, webClient: this.webClient });
     });
 
-    this.client.on('message', ({ event }) => {
-      if (!event || event.subtype) return;
+    this.client.on('message', ({ event, ack }) => {
+      ack();
+      if (!event) return;
+      if (event.subtype && event.subtype !== 'bot_message') return;
       console.log('[slack] message received:', event.type, event.text?.slice(0, 50));
       this.emit('slack_event', { eventType: 'message', event, webClient: this.webClient });
     });
 
-    this.client.on('reaction_added', ({ event }) => {
+    this.client.on('reaction_added', ({ event, ack }) => {
+      ack();
       if (!event) return;
       this.emit('slack_event', { eventType: 'reaction', event, webClient: this.webClient });
     });
