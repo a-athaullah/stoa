@@ -270,9 +270,10 @@ async function rawReq(method, path, body, contentType, extraHeaders = {}) {
   });
 }
 
-function openWsConnection(url) {
+function openWsConnection(url, cookie = null) {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(url);
+    const opts = cookie ? { headers: { Cookie: cookie } } : {};
+    const ws = new WebSocket(url, opts);
     ws.on('open', () => resolve(ws));
     ws.on('error', reject);
   });
@@ -731,7 +732,7 @@ async function run() {
     const { actor_id: agentActorId, secret: agentSecret } = agentRes.body;
     try {
       const roomId = testRoomIds[0];
-      await req('POST', `/api/rooms/${roomId}/participants`, { actor_ids: [agentActorId] });
+      await req('POST', `/api/rooms/${roomId}/participants`, { actor_id: agentActorId });
       const partsRes = (await req('GET', `/api/rooms/${roomId}/participants`)).body;
       const agentPart = partsRes.find(p => p.actor_id === agentActorId);
       assert.ok(agentPart, 'agent participant not found');
@@ -739,7 +740,7 @@ async function run() {
       const partActorIds = new Set(partsRes.map(p => p.actor_id));
       const targetActor = actors.find(a => !partActorIds.has(a.id));
       if (!targetActor) { console.log('    (skipped — no actors to suggest)'); return; }
-      const roomWs = await openWsConnection(`ws://${HOST}:${PORT}`);
+      const roomWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
       const invitePromise = waitForWsMessage(roomWs, m => m.type === 'invite_suggestion');
       roomWs.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
       const agentWs = await openWsConnection(`ws://${HOST}:${PORT}`);
