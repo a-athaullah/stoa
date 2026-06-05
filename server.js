@@ -1465,9 +1465,9 @@ Write-Host "Logs   : pm2 logs $AgentName"
     if (!agentWs) { res.writeHead(503); return res.end('agent offline'); }
     agentWs.send(JSON.stringify({ type: 'create_workdir', path: dirPath.trim() }));
     db.prepare(
-      'INSERT INTO agent_workdirs (actor_id, path, label, is_default) VALUES (?,?,?,0) ON CONFLICT(actor_id, path) DO UPDATE SET label=COALESCE(excluded.label, agent_workdirs.label)'
+      'INSERT INTO agent_workdirs (actor_id, path, label, is_default) VALUES (?,?,?,0) ON CONFLICT(actor_id, path) DO UPDATE SET label=excluded.label'
     ).run(actorId, dirPath.trim(), (label || '').trim() || null);
-    const wd = db.prepare('SELECT id, path, label, is_default FROM agent_workdirs WHERE actor_id=? AND path=?').get(actorId, dirPath.trim());
+    const wd = db.prepare('SELECT id, path, label, is_default, model FROM agent_workdirs WHERE actor_id=? AND path=?').get(actorId, dirPath.trim());
     return json(res, wd);
   }
 
