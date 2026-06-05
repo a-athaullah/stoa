@@ -509,10 +509,13 @@ async function run() {
   // Proactive message — self-contained flow: create actor → room → send → delete → archive → cleanup
   console.log('\n[Proactive Message]');
   {
-    const pmActors = (await req('GET', '/api/actors')).body;
-    const pmAiActor = pmActors.find(a => a.type === 'ai');
-    const pmWds = pmAiActor ? (await req('GET', `/api/actors/${pmAiActor.id}/workdirs`)).body : [];
-    const pmWorkdirId = pmWds[0]?.id ?? null;
+    let pmWorkdirId = null;
+    try {
+      const pmActors = (await req('GET', '/api/actors')).body;
+      const pmAiActor = pmActors.find(a => a.type === 'ai');
+      const pmWds = pmAiActor ? (await req('GET', `/api/actors/${pmAiActor.id}/workdirs`)).body : [];
+      pmWorkdirId = pmWds[0]?.id ?? null;
+    } catch { /* server unreachable — all proactive tests will skip gracefully */ }
 
     let pmActorId = null, pmActorSecret = null, pmRoomId = null, pmMessageId = null;
 

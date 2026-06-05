@@ -1399,10 +1399,7 @@ function initGlobalWs() {
         }
         refreshRoomList();
       }
-      if (msg.type === 'room_restored') {
-        refreshRoomList();
-      }
-      if (msg.type === 'room_pinned' || msg.type === 'room_unpinned') {
+      if (msg.type === 'room_restored' || msg.type === 'room_pinned' || msg.type === 'room_unpinned') {
         refreshRoomList();
       }
       if (msg.type === 'model_update') handleModelUpdate(msg);
