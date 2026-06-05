@@ -792,8 +792,11 @@ const server = http.createServer(async (req, res) => {
             FROM messages m
             JOIN room_participants rp ON rp.id=m.participant_id
             JOIN actors a ON a.id=rp.actor_id
-            WHERE m.room_id=? AND m.id < ? AND m.state IN ('complete','system_event')
-              AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL)
+            WHERE m.room_id=? AND m.id < ?
+              AND (
+                (m.state = 'complete' AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL))
+                OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
+              )
             ORDER BY m.created_at DESC LIMIT ?
           ) t ORDER BY created_at ASC
         `).all(roomId, before, limit);
@@ -805,8 +808,11 @@ const server = http.createServer(async (req, res) => {
         FROM messages m
         JOIN room_participants rp ON rp.id=m.participant_id
         JOIN actors a ON a.id=rp.actor_id
-        WHERE m.room_id=? AND m.id > ? AND m.state IN ('complete','system_event')
-          AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL)
+        WHERE m.room_id=? AND m.id > ?
+          AND (
+            (m.state = 'complete' AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL))
+            OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
+          )
         ORDER BY m.created_at ASC
         LIMIT 500
       `).all(roomId, since);
@@ -1987,18 +1993,35 @@ wss.on('connection', (ws, req) => {
         const s = db.prepare('SELECT room_id FROM ai_sessions WHERE claude_session_id=?').get(msg.claude_session_id);
         roomId = s?.room_id;
       }
-      if (roomId && !pendingCompacts.has(roomId)) {
-        pendingCompacts.set(roomId, { total: 1, completed: 0, agents: [agentActorId] });
-        broadcast(roomId, { type: 'compact_start', room_id: roomId, total: 1 });
-        console.log(`[server] auto-compact started room=${roomId} by agent=${agentActorId}`);
+      if (roomId) {
+        if (!pendingCompacts.has(roomId)) {
+          pendingCompacts.set(roomId, { total: 1, completed: 0, agents: [agentActorId] });
+          broadcast(roomId, { type: 'compact_start', room_id: roomId, total: 1 });
+          console.log(`[server] auto-compact started room=${roomId} by agent=${agentActorId}`);
+        } else {
+          // Another compact already registered — add this agent to the total if not already counted
+          const cs = pendingCompacts.get(roomId);
+          if (!cs.agents.includes(agentActorId)) {
+            cs.total++;
+            cs.agents.push(agentActorId);
+            console.log(`[server] auto-compact: added agent=${agentActorId} to room=${roomId} (total=${cs.total})`);
+          }
+        }
       }
     }
 
     if (msg.type === 'compact_complete' && agentActorId) {
-      // Resolve room_id: use msg.room_id, or look up from session_id for auto-compact
-      if (!msg.room_id && msg.claude_session_id) {
-        const s = db.prepare('SELECT room_id FROM ai_sessions WHERE claude_session_id=?').get(msg.claude_session_id);
-        if (s?.room_id) msg.room_id = s.room_id;
+      // Resolve room_id: use msg.room_id, or look up via orig_session_id (pre-compact) then new session_id
+      if (!msg.room_id) {
+        const lookup = msg.orig_session_id || msg.claude_session_id;
+        if (lookup) {
+          const s = db.prepare('SELECT room_id FROM ai_sessions WHERE claude_session_id=?').get(lookup);
+          if (s?.room_id) msg.room_id = s.room_id;
+        }
+      }
+      if (!msg.room_id) {
+        console.warn(`[server] compact_complete: unresolvable room_id for session ${msg.claude_session_id}`);
+        return;
       }
       if (msg.claude_session_id) {
         const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(msg.room_id, agentActorId);

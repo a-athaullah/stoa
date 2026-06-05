@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.3.26';
+const CLIENT_VERSION = '0.3.27';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -155,6 +155,7 @@ const sessionIdleTimers = new Map(); // workdir → timeout id
 let SESSION_IDLE_TTL = 5; // minutes, configurable via server
 
 const AUTO_COMPACT_THRESHOLD = 500 * 1024; // 500 KB
+const compactsInFlight = new Set(); // workdir keys currently being compacted — prevents concurrent /compact on same session
 
 function getSessionFileSize(workdir, sessionId) {
   if (!workdir || !sessionId) return 0;
@@ -239,15 +240,19 @@ setInterval(() => {
     if (!sessionId) continue;
     const fileSize = getSessionFileSize(workdir, sessionId);
     if (fileSize < AUTO_COMPACT_THRESHOLD) continue;
+    if (compactsInFlight.has(workdir)) continue;
+    compactsInFlight.add(workdir);
     console.log(`[stoa] worker: auto-compacting ${sessionId.slice(0, 8)}... (${(fileSize / 1024).toFixed(0)}KB)`);
     send({ type: 'auto_compact_start', claude_session_id: sessionId });
     session.send({ prompt: '/compact', onState: () => {} }).then(result => {
-      send({ type: 'compact_complete', claude_session_id: result?.sessionId || sessionId, result: result?.content || '' });
+      compactsInFlight.delete(workdir);
+      send({ type: 'compact_complete', claude_session_id: result?.sessionId || sessionId, orig_session_id: sessionId, result: result?.content || '' });
       setTimeout(() => {
         truncateSessionFile(workdir, sessionId);
         if (result?.sessionId && result.sessionId !== sessionId) truncateSessionFile(workdir, result.sessionId);
       }, 3000);
     }).catch(err => {
+      compactsInFlight.delete(workdir);
       console.error(`[stoa] worker auto-compact error: ${err.message}`);
     });
   }
@@ -825,16 +830,20 @@ async function processTrigger(msg) {
         if (fileSize > AUTO_COMPACT_THRESHOLD) {
           console.log(`[stoa] session ${sessionIdForCompact.slice(0, 8)}... is ${(fileSize / 1024).toFixed(0)}KB > ${AUTO_COMPACT_THRESHOLD / 1024}KB threshold, auto-compacting`);
           setImmediate(() => {
+            if (compactsInFlight.has(targetDir)) return;
             const sess = sessionPool.get(targetDir);
             if (!sess) return;
+            compactsInFlight.add(targetDir);
             send({ type: 'auto_compact_start', room_id, claude_session_id: sessionIdForCompact });
             sess.send({ prompt: '/compact', onState: () => {} }).then(result => {
-              send({ type: 'compact_complete', room_id, result: result?.content || '', claude_session_id: result?.sessionId || sessionIdForCompact });
+              compactsInFlight.delete(targetDir);
+              send({ type: 'compact_complete', room_id, result: result?.content || '', claude_session_id: result?.sessionId || sessionIdForCompact, orig_session_id: sessionIdForCompact });
               setTimeout(() => {
                 truncateSessionFile(targetDir, sessionIdForCompact);
                 if (result?.sessionId && result.sessionId !== sessionIdForCompact) truncateSessionFile(targetDir, result.sessionId);
               }, 3000);
             }).catch(err => {
+              compactsInFlight.delete(targetDir);
               console.error(`[stoa] auto-compact error: ${err.message}`);
               send({ type: 'compact_error', room_id, error: err.message });
             });
