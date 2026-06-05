@@ -322,6 +322,24 @@ body.sidebar-collapsed #sidebar { display: none; }
   transition: color 0.12s;
 }
 .h-room-action:hover { color: var(--h-ink); }
+.h-room-action.h-room-pin-btn.pinned { display: flex; color: #d39749; }
+.h-room-action.h-room-pin-btn.pinned:hover { color: var(--h-ink); }
+
+.h-room-section-header {
+  font-family: var(--h-sans);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--h-ink-faint);
+  padding: 6px 10px 2px;
+}
+
+.h-room-section-divider {
+  height: 1px;
+  background: var(--h-hairline);
+  margin: 6px 10px;
+}
 
 @media (min-width: 681px) {
   .h-room-delete-btn, .h-room-restore-btn, .h-room-destroy-btn { display: none !important; }

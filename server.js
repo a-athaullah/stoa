@@ -98,6 +98,10 @@ try {
     db.prepare("ALTER TABLE rooms ADD COLUMN archived_at TEXT DEFAULT NULL").run();
     console.log('[db] added rooms.archived_at column');
   }
+  if (!cols.includes('is_pinned')) {
+    db.prepare("ALTER TABLE rooms ADD COLUMN is_pinned INTEGER DEFAULT 0").run();
+    console.log('[db] added rooms.is_pinned column');
+  }
 } catch {}
 
 try {
@@ -643,7 +647,7 @@ const server = http.createServer(async (req, res) => {
         COALESCE((SELECT m3.created_at FROM messages m3 WHERE m3.room_id=r.id ORDER BY m3.id DESC LIMIT 1), r.created_at) as last_activity
       FROM rooms r JOIN actors a ON a.id=r.created_by LEFT JOIN agent_workdirs w ON w.id=r.workdir_id
       WHERE ${archived ? 'r.archived_at IS NOT NULL' : 'r.archived_at IS NULL'}
-      ORDER BY last_activity DESC
+      ORDER BY r.is_pinned DESC, last_activity DESC
       LIMIT 200
     `).all();
     return json(res, rows);
@@ -700,6 +704,24 @@ const server = http.createServer(async (req, res) => {
       db.prepare('UPDATE rooms SET archived_at=NULL WHERE id=?').run(roomId);
       broadcastGlobal({ type: 'room_restored', room_id: roomId });
     }
+    return json(res, { ok: true });
+  }
+
+  const roomPinMatch = req.method === 'POST' && url.pathname.match(/^\/api\/rooms\/(\d+)\/pin$/);
+  if (roomPinMatch) {
+    const roomId = parseInt(roomPinMatch[1]);
+    const pinCount = db.prepare("SELECT COUNT(*) as cnt FROM rooms WHERE is_pinned=1 AND id != ?").get(roomId).cnt;
+    if (pinCount >= 5) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: 'Maximum 5 pinned rooms reached' })); }
+    db.prepare("UPDATE rooms SET is_pinned=1 WHERE id=?").run(roomId);
+    broadcastGlobal({ type: 'room_pinned', room_id: roomId });
+    return json(res, { ok: true });
+  }
+
+  const roomUnpinMatch = req.method === 'DELETE' && url.pathname.match(/^\/api\/rooms\/(\d+)\/pin$/);
+  if (roomUnpinMatch) {
+    const roomId = parseInt(roomUnpinMatch[1]);
+    db.prepare("UPDATE rooms SET is_pinned=0 WHERE id=?").run(roomId);
+    broadcastGlobal({ type: 'room_unpinned', room_id: roomId });
     return json(res, { ok: true });
   }
 
