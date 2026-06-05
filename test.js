@@ -5,6 +5,7 @@ const http = require('http');
 const assert = require('assert');
 const path = require('path');
 const crypto = require('crypto');
+const { WebSocket } = require('ws');
 
 // ── Pure Unit Tests (no server required) ──────────────────────────────────────
 
@@ -266,6 +267,29 @@ async function rawReq(method, path, body, contentType, extraHeaders = {}) {
     });
     r.on('error', reject);
     if (body) r.write(body); r.end();
+  });
+}
+
+function openWsConnection(url) {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url);
+    ws.on('open', () => resolve(ws));
+    ws.on('error', reject);
+  });
+}
+
+function waitForWsMessage(ws, predicate, timeoutMs = 3000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('WS message timeout')), timeoutMs);
+    const handler = (data) => {
+      const msg = JSON.parse(data.toString());
+      if (predicate(msg)) {
+        clearTimeout(timer);
+        ws.off('message', handler);
+        resolve(msg);
+      }
+    };
+    ws.on('message', handler);
   });
 }
 
@@ -697,6 +721,46 @@ async function run() {
     assert.strictEqual(r.status, 404);
   });
 
+  await test('POST /api/invites/:id/resolve — approve invite (approved: true)', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const agentRes = await req('POST', '/api/install/agent', { name: '__test_invite_agent__' });
+    if (agentRes.status !== 200) { console.log(`    (skipped — agent creation failed: ${agentRes.status})`); return; }
+    const { actor_id: agentActorId, secret: agentSecret } = agentRes.body;
+    try {
+      const roomId = testRoomIds[0];
+      await req('POST', `/api/rooms/${roomId}/participants`, { actor_ids: [agentActorId] });
+      const partsRes = (await req('GET', `/api/rooms/${roomId}/participants`)).body;
+      const agentPart = partsRes.find(p => p.actor_id === agentActorId);
+      assert.ok(agentPart, 'agent participant not found');
+      const actors = (await req('GET', '/api/actors')).body;
+      const partActorIds = new Set(partsRes.map(p => p.actor_id));
+      const targetActor = actors.find(a => !partActorIds.has(a.id));
+      if (!targetActor) { console.log('    (skipped — no actors to suggest)'); return; }
+      const roomWs = await openWsConnection(`ws://${HOST}:${PORT}`);
+      const invitePromise = waitForWsMessage(roomWs, m => m.type === 'invite_suggestion');
+      roomWs.send(JSON.stringify({ type: 'subscribe_room', room_id: roomId }));
+      const agentWs = await openWsConnection(`ws://${HOST}:${PORT}`);
+      const agentReadyPromise = waitForWsMessage(agentWs, m => m.type === 'agent_ready');
+      agentWs.send(JSON.stringify({ type: 'agent_connect', actor_id: agentActorId, secret: agentSecret }));
+      await agentReadyPromise;
+      agentWs.send(JSON.stringify({
+        type: 'invite_suggest',
+        room_id: roomId,
+        suggested_by_participant_id: agentPart.id,
+        suggested_actor_id: targetActor.id,
+        reason: 'test invite',
+      }));
+      const suggestion = await invitePromise;
+      agentWs.close();
+      roomWs.close();
+      const r = await req('POST', `/api/invites/${suggestion.invite_id}/resolve`, { approved: true });
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.ok, true);
+    } finally {
+      await req('DELETE', `/api/actors/${agentActorId}`);
+    }
+  });
+
   // Upload
   console.log('\n[Upload]');
   await test('POST /api/upload/raw — uploads text content', async () => {
@@ -935,6 +999,31 @@ async function run() {
     assert.strictEqual(r.status, 400);
   });
 
+  const MINIMAL_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+
+  await test('POST /api/actors/:id/avatar — upload avatar → 200 with avatar_url', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    const aiActor = actors.find(a => a.type === 'ai');
+    if (!aiActor) { console.log('    (skipped — no AI actors)'); return; }
+    const r = await req('POST', `/api/actors/${aiActor.id}/avatar`, { data_url: MINIMAL_PNG });
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}`);
+    assert.ok(r.body.avatar_url?.startsWith('/uploads/avatar/'), `expected /uploads/avatar/ prefix, got ${r.body.avatar_url}`);
+    await req('DELETE', `/api/actors/${aiActor.id}/avatar`);
+  });
+
+  await test('DELETE /api/actors/:id/avatar — remove avatar → 200 ok: true, clears avatar_url', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    const aiActor = actors.find(a => a.type === 'ai');
+    if (!aiActor) { console.log('    (skipped — no AI actors)'); return; }
+    await req('POST', `/api/actors/${aiActor.id}/avatar`, { data_url: MINIMAL_PNG });
+    const r = await req('DELETE', `/api/actors/${aiActor.id}/avatar`);
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.ok, true);
+    const after = (await req('GET', '/api/actors')).body;
+    const updated = after.find(a => a.id === aiActor.id);
+    assert.strictEqual(updated?.avatar_url, null);
+  });
+
   await test('POST /api/actors/:id/workdirs — offline agent → 503', async () => {
     const actors = (await req('GET', '/api/actors')).body;
     const offline = actors.find(a => a.type === 'ai' && !a.online);
@@ -1096,6 +1185,17 @@ async function run() {
     const r = await req('GET', '/api/automations/slack');
     assert.strictEqual(r.status, 200);
     assert.ok('connected' in r.body, 'connected field missing');
+  });
+
+  await test('POST /api/automations/slack/connect — missing tokens → 400', async () => {
+    const r = await req('POST', '/api/automations/slack/connect', {});
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('DELETE /api/automations/slack/disconnect — no-op disconnect → 200 ok: true', async () => {
+    const r = await req('DELETE', '/api/automations/slack/disconnect');
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.ok, true);
   });
 
   await test('GET /api/setup/status — returns needsSetup bool', async () => {
