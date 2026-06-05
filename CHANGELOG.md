@@ -1,5 +1,17 @@
 # Changelog
 
+## [2026-06-05] — Auto-Compact
+
+### Added
+- **Auto-compact: per-trigger check** — after every agent response, Stoa checks the session JSONL file size. If it exceeds 500 KB, the agent runs `/compact` immediately in the background (after the response is sent) and notifies the server. The user receives the reply first; compaction is invisible.
+- **Auto-compact: 60-minute background worker** — every 60 minutes, the agent scans all open sessions on its machine and compacts any that exceed 500 KB. Also cleans up sessions that are open locally but not active in any Stoa room.
+- **Auto-compact progress bar** — when auto-compact runs, the room header shows the same progress bar as manual compact. A compact marker is saved in message history and persists across page refreshes.
+- **Auto-Compact docs** — new section in all 5 language guides (EN, ID, JA, KO, ZH) explaining both mechanisms.
+
+### Fixed
+- **Compact markers disappear on refresh** — message queries used `state='complete'` which excluded `system_event` rows. Compact markers (which have `state='system_event'`) were saved but never returned by the API. Fixed by using `state IN ('complete','system_event')` in both paginated and non-paginated message queries.
+- **Auto-compact room resolution** — `auto_compact_start` and `compact_complete` WebSocket messages from the background worker don't carry `room_id` (worker doesn't know which room a session belongs to). Server now looks up `room_id` from `ai_sessions` via `claude_session_id` when `room_id` is absent.
+
 ## [2026-06-05]
 
 ### Added
