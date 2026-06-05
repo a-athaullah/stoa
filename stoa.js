@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.3.32';
+const CLIENT_VERSION = '0.3.33';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -1274,7 +1274,14 @@ process.on('unhandledRejection', err => {
 
 // Keep event loop alive + WebSocket heartbeat
 const keepAlive = setInterval(() => {
-  if (ws?.readyState === 1) ws.ping?.();
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.ping?.();
+  } else if (ACTOR_TYPE === 'ai' && ws?.readyState === WebSocket.CLOSED) {
+    // Safety net: reconnect if stuck in disconnected state (close event may not have fired)
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    connect();
+  }
 }, 20_000);
 
 connect();
