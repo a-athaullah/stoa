@@ -2609,11 +2609,25 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
   activeSequences.set(roomId, seq);
   let turnCount = 0;
 
+  const allParticipants = db.prepare(`
+    SELECT rp.id as participant_id, a.id as actor_id, a.name, a.type
+    FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=?
+  `).all(roomId);
+  const wdRow = db.prepare(
+    'SELECT w.path, w.actor_id FROM rooms r LEFT JOIN agent_workdirs w ON w.id=r.workdir_id WHERE r.id=?'
+  ).get(roomId);
+  const repliedMsg = replyTo ? db.prepare(`
+    SELECT m.content, a.name FROM messages m
+    JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id
+    WHERE m.id=?
+  `).get(replyTo) : null;
+  const prefetchedCtx = { allParticipants, wdRow, repliedMsg };
+
   for (let i = 0; i < Math.min(agents.length, maxTurns); i++) {
     if (seq.cancelled) break;
     turnCount++;
     const currentAgent = agents[i];
-    await triggerAiResponse(roomId, currentAgent, content, replyTo, attachments);
+    await triggerAiResponse(roomId, currentAgent, content, replyTo, attachments, prefetchedCtx);
     if (seq.cancelled) break;
 
     const lastMsg = db.prepare(`
@@ -2924,7 +2938,7 @@ function promptStrings(lang) {
   return t[lang] || t.en;
 }
 
-async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) {
+async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], prefetchedCtx = null) {
 
   const agentWs = agentClients.get(ai.actor_id);
 
@@ -3013,23 +3027,19 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
     return line;
   }).join('\n');
 
-  const otherAIs = db.prepare(`
-    SELECT a.name FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
-    WHERE rp.room_id=? AND a.id != ? AND a.type='ai'
-  `).all(roomId, ai.actor_id);
-  const otherAINames = otherAIs.map(p => p.name);
-  const humanParts = db.prepare(`
-    SELECT a.name FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
-    WHERE rp.room_id=? AND a.type='human'
+  const parts = prefetchedCtx?.allParticipants ?? db.prepare(`
+    SELECT rp.id as participant_id, a.id as actor_id, a.name, a.type
+    FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=?
   `).all(roomId);
-  const allOtherNames = [...humanParts.map(p => p.name), ...otherAINames];
+  const otherAINames = parts.filter(p => p.type === 'ai' && p.actor_id !== ai.actor_id).map(p => p.name);
+  const allOtherNames = [...parts.filter(p => p.type === 'human').map(p => p.name), ...otherAINames];
   const othersLine = allOtherNames.length
     ? L.participants(allOtherNames.join(', '))
     : '';
 
   let replyCtx = '';
   if (replyTo) {
-    const replied = db.prepare(`
+    const replied = prefetchedCtx?.repliedMsg ?? db.prepare(`
       SELECT m.content, a.name FROM messages m
       JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id
       WHERE m.id=?
@@ -3050,7 +3060,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
   ].filter(Boolean).join('\n');
 
   // Resolve workdir: use room's workdir only if it belongs to this agent, else agent's default
-  const wdRow = db.prepare(
+  const wdRow = prefetchedCtx?.wdRow ?? db.prepare(
     'SELECT w.path, w.actor_id FROM rooms r LEFT JOIN agent_workdirs w ON w.id=r.workdir_id WHERE r.id=?'
   ).get(roomId);
   const defaultWd = db.prepare(
