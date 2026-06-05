@@ -392,6 +392,18 @@ async function run() {
     assert.ok(Array.isArray(r.body));
   });
 
+  await test('GET /api/rooms/:id/messages — system_event filter: only compact markers, not offline notifications', async () => {
+    if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
+    const r = await req('GET', `/api/rooms/${firstRoomId}/messages`);
+    assert.strictEqual(r.status, 200);
+    for (const msg of r.body) {
+      if (msg.state === 'system_event') {
+        assert.ok(msg.content.endsWith('· session compacted'),
+          `system_event message must be compact marker, got: "${msg.content}"`);
+      }
+    }
+  });
+
   await test('GET /api/rooms/:id/participants — returns array', async () => {
     if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
     const r = await req('GET', `/api/rooms/${firstRoomId}/participants`);
