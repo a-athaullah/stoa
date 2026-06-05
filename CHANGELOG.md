@@ -1,5 +1,11 @@
 # Changelog
 
+## [2026-06-05]
+
+### Fixed
+- **Auto-update: repeated downloads during deferred restart** — when an agent had an active trigger and couldn't restart immediately, `localManifest` was never updated after a file was written to disk. On the next 2-minute check the same file would be downloaded and written again, repeating indefinitely until the trigger finished. Fixed by updating `localManifest[name]` right after `fs.writeFileSync`.
+- **Ollama: duplicate system message removed** — `ollama-session.js` was prepending a hardcoded system message with tool instructions on every request, duplicating what's already in the Modelfile SYSTEM block. Removed the redundant message so tool instructions come from the Modelfile only.
+
 ## [2026-06-05] — Auto-Compact
 
 ### Added
