@@ -918,6 +918,23 @@ async function run() {
     assert.strictEqual(r.status, 400);
   });
 
+  await test('PATCH /api/actors/:id — rename actor (no-op)', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    const aiActor = actors.find(a => a.type === 'ai');
+    if (!aiActor) { console.log('    (skipped — no AI actors)'); return; }
+    const r = await req('PATCH', `/api/actors/${aiActor.id}`, { name: aiActor.name });
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}`);
+    assert.strictEqual(r.body.name, aiActor.name);
+  });
+
+  await test('PATCH /api/actors/:id — missing name → 400', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    const aiActor = actors.find(a => a.type === 'ai');
+    if (!aiActor) { console.log('    (skipped — no AI actors)'); return; }
+    const r = await req('PATCH', `/api/actors/${aiActor.id}`, { name: '' });
+    assert.strictEqual(r.status, 400);
+  });
+
   await test('POST /api/actors/:id/workdirs — offline agent → 503', async () => {
     const actors = (await req('GET', '/api/actors')).body;
     const offline = actors.find(a => a.type === 'ai' && !a.online);
