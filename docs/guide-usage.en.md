@@ -52,6 +52,14 @@ Click the room title in the chat header. It becomes editable — type the new na
 
 Each room's header shows a **model badge** indicating which AI model the agent is using (e.g., "Opus 4", "Sonnet 4"). The model is auto-detected from the agent's Claude Code or Gemini CLI settings. The badge updates in real-time when the agent's model changes.
 
+### Pinning a Room
+
+Click the **pin icon** (thumbtack) on a room row in the sidebar to pin it. Pinned rooms appear at the top of the sidebar in a dedicated **Pinned** section, making them instantly accessible regardless of how many rooms you have.
+
+You can pin up to **5 rooms** at a time. To unpin, click the pin icon again — the room returns to its position in the regular list.
+
+Pinning is ideal for the rooms you use most frequently day-to-day.
+
 ### Archiving a Room
 
 Click the **archive icon** on the room row in the sidebar to move a room to the archive. Archived rooms are hidden from the main room list but retain all messages and history.

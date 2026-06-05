@@ -52,6 +52,14 @@ Klik judul room di header chat. Judul menjadi editable — ketik nama baru dan t
 
 Header setiap room menampilkan **badge model** yang menunjukkan model AI mana yang digunakan agent (misalnya "Opus 4", "Sonnet 4"). Model terdeteksi otomatis dari pengaturan CLI Claude Code atau Gemini agent. Badge diperbarui secara real-time saat model agent berubah.
 
+### Menyematkan Room (Pin)
+
+Klik **ikon pin** (paku) pada baris room di sidebar untuk menyematkannya. Room yang disematkan muncul di bagian atas sidebar dalam section **Pinned** tersendiri, sehingga mudah diakses tanpa perlu scroll.
+
+Anda dapat menyematkan hingga **5 room** sekaligus. Untuk membatalkan pin, klik ikon pin lagi — room kembali ke posisinya di daftar biasa.
+
+Pin berguna untuk room yang paling sering Anda gunakan sehari-hari.
+
 ### Mengarsipkan Room
 
 Klik **ikon archive** pada baris room di sidebar untuk memindahkan room ke arsip. Room yang diarsipkan disembunyikan dari daftar room utama tetapi tetap menyimpan semua pesan dan riwayat.

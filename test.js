@@ -411,6 +411,58 @@ async function run() {
     assert.ok(Array.isArray(r.body));
   });
 
+  // Pin rooms
+  console.log('\n[Pin Rooms]');
+  await test('POST /api/rooms/:id/pin — pins a room → 200 ok', async () => {
+    if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
+    const r = await req('POST', `/api/rooms/${firstRoomId}/pin`);
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+    assert.ok(r.body.ok, 'ok field missing');
+    // Verify is_pinned in room list
+    const rooms = (await req('GET', '/api/rooms')).body;
+    const pinned = rooms.find(rm => rm.id === firstRoomId);
+    assert.ok(pinned, 'room not found after pin');
+    assert.strictEqual(pinned.is_pinned, 1, 'is_pinned should be 1');
+  });
+
+  await test('DELETE /api/rooms/:id/pin — unpins a room → 200 ok', async () => {
+    if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
+    const r = await req('DELETE', `/api/rooms/${firstRoomId}/pin`);
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+    assert.ok(r.body.ok, 'ok field missing');
+    // Verify is_pinned cleared
+    const rooms = (await req('GET', '/api/rooms')).body;
+    const unpinned = rooms.find(rm => rm.id === firstRoomId);
+    assert.ok(unpinned, 'room not found after unpin');
+    assert.strictEqual(unpinned.is_pinned, 0, 'is_pinned should be 0');
+  });
+
+  await test('POST /api/rooms/:id/pin — max 5 limit → 400', async () => {
+    if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
+    // Get a workdir_id to create rooms
+    const actors = (await req('GET', '/api/actors')).body;
+    const aiActor = actors.find(a => a.type === 'ai');
+    if (!aiActor) { console.log('    (skipped — no AI actors)'); return; }
+    const wds = (await req('GET', `/api/actors/${aiActor.id}/workdirs`)).body;
+    if (!wds.length) { console.log('    (skipped — no workdirs)'); return; }
+    const workdirId = wds[0].id;
+    // Unpin everything, then create and pin exactly 5 rooms, then try a 6th
+    const allRooms = (await req('GET', '/api/rooms')).body;
+    for (const rm of allRooms) { if (rm.is_pinned) await req('DELETE', `/api/rooms/${rm.id}/pin`); }
+    const created = [];
+    for (let i = 0; i < 5; i++) {
+      const r = await req('POST', '/api/rooms', { title: `__pin-limit-test-${i}__`, workdir_id: workdirId });
+      if (r.status === 200) { created.push(r.body.id); await req('POST', `/api/rooms/${r.body.id}/pin`); }
+    }
+    if (created.length < 5) { for (const id of created) await req('DELETE', `/api/rooms/${id}`); console.log('    (skipped — could not create 5 rooms)'); return; }
+    // Now try to pin firstRoomId — should hit the limit
+    const r = await req('POST', `/api/rooms/${firstRoomId}/pin`);
+    assert.strictEqual(r.status, 400, `expected 400 (limit), got ${r.status}: ${JSON.stringify(r.body)}`);
+    assert.ok(r.body.error?.includes('Maximum'), `error message missing: ${JSON.stringify(r.body)}`);
+    // Cleanup
+    for (const id of created) { await req('DELETE', `/api/rooms/${id}`); }
+  });
+
   // Search
   console.log('\n[Search]');
   await test('GET /api/search?q= — empty query → []', async () => {

@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS rooms (
   max_ai_turns INTEGER DEFAULT 5,
   workdir_id INTEGER DEFAULT NULL,
   archived_at TEXT DEFAULT NULL,
+  is_pinned INTEGER DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (created_by) REFERENCES actors(id)
 );
