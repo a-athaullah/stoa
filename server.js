@@ -1464,10 +1464,11 @@ Write-Host "Logs   : pm2 logs $AgentName"
     const agentWs = agentClients.get(actorId);
     if (!agentWs) { res.writeHead(503); return res.end('agent offline'); }
     agentWs.send(JSON.stringify({ type: 'create_workdir', path: dirPath.trim() }));
-    const result = db.prepare(
+    db.prepare(
       'INSERT OR IGNORE INTO agent_workdirs (actor_id, path, label, is_default) VALUES (?,?,?,0)'
     ).run(actorId, dirPath.trim(), (label || '').trim() || null);
-    return json(res, { id: result.lastInsertRowid, path: dirPath.trim(), label: label || null, is_default: false });
+    const wd = db.prepare('SELECT id, path, label, is_default FROM agent_workdirs WHERE actor_id=? AND path=?').get(actorId, dirPath.trim());
+    return json(res, wd);
   }
 
   // POST /api/actors/:id/force-update — ask agent to check for updates immediately
