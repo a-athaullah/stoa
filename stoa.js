@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.3.28';
+const CLIENT_VERSION = '0.3.29';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -235,8 +235,9 @@ function clearSessionIdleTimer(workdir) {
 // ─── Auto-compact background worker ──────────────────────────────────────────
 setInterval(async () => {
   if (ACTOR_TYPE !== 'ai') return;
-  if (activeTriggers.size > 0) return; // skip while processing
+  const busyWorkdirs = new Set([...activeTriggers.values()].map(t => t.workdir));
   for (const [workdir, session] of sessionPool) {
+    if (busyWorkdirs.has(workdir)) continue; // skip workdirs with an active trigger
     const sessionId = session.resumeId;
     if (!sessionId) continue;
     const fileSize = await getSessionFileSize(workdir, sessionId);
@@ -247,6 +248,7 @@ setInterval(async () => {
     send({ type: 'auto_compact_start', claude_session_id: sessionId });
     session.send({ prompt: '/compact', onState: () => {} }).then(result => {
       compactsInFlight.delete(workdir);
+      if (result?.sessionId) session.resumeId = result.sessionId;
       send({ type: 'compact_complete', claude_session_id: result?.sessionId || sessionId, orig_session_id: sessionId, result: result?.content || '' });
       setTimeout(() => {
         truncateSessionFile(workdir, sessionId);
@@ -255,6 +257,7 @@ setInterval(async () => {
     }).catch(err => {
       compactsInFlight.delete(workdir);
       console.error(`[stoa] worker auto-compact error: ${err.message}`);
+      send({ type: 'compact_error', orig_session_id: sessionId, error: err.message });
     });
   }
 }, 60 * 60_000); // every 60 minutes
@@ -824,32 +827,33 @@ async function processTrigger(msg) {
       }
       send(completeMsg);
 
-      // Auto-compact: check session file size after sending response
+      // Auto-compact: check session file size and compact if needed.
+      // Runs inside setImmediate so the finally block (activeTriggers.delete + drainQueue) is not delayed by the stat() call.
       const sessionIdForCompact = sessionId;
       if (sessionIdForCompact && targetDir) {
-        const fileSize = await getSessionFileSize(targetDir, sessionIdForCompact);
-        if (fileSize > AUTO_COMPACT_THRESHOLD) {
+        setImmediate(async () => {
+          const fileSize = await getSessionFileSize(targetDir, sessionIdForCompact);
+          if (fileSize <= AUTO_COMPACT_THRESHOLD) return;
+          if (compactsInFlight.has(targetDir)) return;
+          const sess = sessionPool.get(targetDir);
+          if (!sess) return;
           console.log(`[stoa] session ${sessionIdForCompact.slice(0, 8)}... is ${(fileSize / 1024).toFixed(0)}KB > ${AUTO_COMPACT_THRESHOLD / 1024}KB threshold, auto-compacting`);
-          setImmediate(() => {
-            if (compactsInFlight.has(targetDir)) return;
-            const sess = sessionPool.get(targetDir);
-            if (!sess) return;
-            compactsInFlight.add(targetDir);
-            send({ type: 'auto_compact_start', room_id, claude_session_id: sessionIdForCompact });
-            sess.send({ prompt: '/compact', onState: () => {} }).then(result => {
-              compactsInFlight.delete(targetDir);
-              send({ type: 'compact_complete', room_id, result: result?.content || '', claude_session_id: result?.sessionId || sessionIdForCompact, orig_session_id: sessionIdForCompact });
-              setTimeout(() => {
-                truncateSessionFile(targetDir, sessionIdForCompact);
-                if (result?.sessionId && result.sessionId !== sessionIdForCompact) truncateSessionFile(targetDir, result.sessionId);
-              }, 3000);
-            }).catch(err => {
-              compactsInFlight.delete(targetDir);
-              console.error(`[stoa] auto-compact error: ${err.message}`);
-              send({ type: 'compact_error', room_id, error: err.message });
-            });
+          compactsInFlight.add(targetDir);
+          send({ type: 'auto_compact_start', room_id, claude_session_id: sessionIdForCompact });
+          sess.send({ prompt: '/compact', onState: () => {} }).then(result => {
+            compactsInFlight.delete(targetDir);
+            if (result?.sessionId) sess.resumeId = result.sessionId;
+            send({ type: 'compact_complete', room_id, result: result?.content || '', claude_session_id: result?.sessionId || sessionIdForCompact, orig_session_id: sessionIdForCompact });
+            setTimeout(() => {
+              truncateSessionFile(targetDir, sessionIdForCompact);
+              if (result?.sessionId && result.sessionId !== sessionIdForCompact) truncateSessionFile(targetDir, result.sessionId);
+            }, 3000);
+          }).catch(err => {
+            compactsInFlight.delete(targetDir);
+            console.error(`[stoa] auto-compact error: ${err.message}`);
+            send({ type: 'compact_error', room_id, error: err.message });
           });
-        }
+        });
       }
     }
 

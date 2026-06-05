@@ -1646,7 +1646,13 @@ const agentVersions = new Map();  // actor_id → client_version string
 const pendingAgents = new Map();    // message_id → { resolve, reject }
 const pendingActorMeta = new Map(); // message_id → { name, avatar_color, avatar_symbol }
 const pendingCompacts = new Map();  // room_id → { total, completed, agents[] }
-const recentCompacts = new Map();   // room_id → timestamp — suppresses duplicate auto_compact_start within 30s
+const recentCompacts = new Map();      // room_id → timestamp — suppresses duplicate auto_compact_start within 30s
+const recentCompactTimers = new Map(); // room_id → timer handle — cleared before reset to avoid early expiry
+function setRecentCompact(roomId) {
+  clearTimeout(recentCompactTimers.get(roomId));
+  recentCompacts.set(roomId, Date.now());
+  recentCompactTimers.set(roomId, setTimeout(() => { recentCompacts.delete(roomId); recentCompactTimers.delete(roomId); }, 30_000));
+}
 const pendingFileOps = new Map();   // request_id → { type, clientWs }
 function addPendingFileOp(rid, op) {
   pendingFileOps.set(rid, op);
@@ -1720,8 +1726,10 @@ wss.on('connection', (ws, req) => {
           FROM messages m
           JOIN room_participants rp ON rp.id=m.participant_id
           JOIN actors a ON a.id=rp.actor_id
-          WHERE m.room_id=? AND m.state IN ('complete','streaming','requesting')
-            AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL OR m.state IN ('streaming','requesting'))
+          WHERE m.room_id=? AND (
+            (m.state IN ('complete','streaming','requesting') AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL OR m.state IN ('streaming','requesting')))
+            OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
+          )
           ORDER BY m.created_at DESC LIMIT 100
         ) AS recent ORDER BY created_at ASC
       `).all(subscribedRoom);
@@ -2044,7 +2052,10 @@ wss.on('connection', (ws, req) => {
           const sysResult = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')").run(msg.room_id, participant.id, content);
           broadcast(msg.room_id, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: msg.room_id, content, state: 'system_event', created_at: new Date().toISOString() } });
         }
-        broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id });
+        if (!recentCompacts.has(msg.room_id)) {
+          broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id });
+        }
+        setRecentCompact(msg.room_id);
         return;
       }
       if (!state.names) state.names = [];
@@ -2052,8 +2063,7 @@ wss.on('connection', (ws, req) => {
       state.completed++;
       if (state.completed >= state.total) {
         pendingCompacts.delete(msg.room_id);
-        recentCompacts.set(msg.room_id, Date.now());
-        setTimeout(() => recentCompacts.delete(msg.room_id), 30_000);
+        setRecentCompact(msg.room_id);
         const label = state.names.length ? state.names.join(', ') : 'session';
         const content = `${label} · session compacted`;
         if (participant) {
@@ -2074,6 +2084,7 @@ wss.on('connection', (ws, req) => {
       state.completed++;
       if (state.completed >= state.total) {
         pendingCompacts.delete(msg.room_id);
+        setRecentCompact(msg.room_id);
         if (state.errors >= state.total) {
           broadcast(msg.room_id, { type: 'compact_error', room_id: msg.room_id, error: msg.error || 'Compact failed' });
         } else {
@@ -2444,6 +2455,7 @@ wss.on('connection', (ws, req) => {
           cs.total = Math.max(cs.total - 1, cs.completed); // won't complete — clamp to already-done count
           if (cs.agents.length === 0 || cs.completed >= cs.total) {
             pendingCompacts.delete(roomId);
+            setRecentCompact(roomId); // prevent compact_complete (if agent reconnects) from sending a redundant compact_done
             broadcast(roomId, { type: 'compact_done', room_id: roomId });
             console.log(`[agent] Cleared pendingCompact room=${roomId} (agent #${agentActorId} disconnected mid-compact)`);
           } else {
