@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.3.29';
+const CLIENT_VERSION = '0.3.31';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -123,9 +123,10 @@ async function checkForUpdates() {
     if (!changed.length) return;
 
     console.log(`[stoa:update] update detected: ${changed.map(([n]) => n).join(', ')}`);
-    for (const [name] of changed) {
+    for (const [name, remoteHash] of changed) {
       const content = await fetchText(`${baseUrl}/api/client/file/${encodeURIComponent(name)}`);
       fs.writeFileSync(path.join(__dirname, name), content, 'utf8');
+      localManifest[name] = remoteHash;
       console.log(`[stoa:update] ${name} updated`);
     }
     if (activeTriggers.size > 0 || triggerQueue.length > 0) {
