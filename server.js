@@ -61,82 +61,6 @@ if (fs.existsSync(envPath)) {
 // Initialize schema on startup
 db.exec(fs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
 
-// Migrate ai_sessions: participant_id UNIQUE → UNIQUE(participant_id, workdir)
-try {
-  const hasOld = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='ai_sessions'").get();
-  if (hasOld?.sql?.includes('participant_id INTEGER NOT NULL UNIQUE')) {
-    db.exec(`
-      CREATE TABLE ai_sessions_new (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        participant_id INTEGER NOT NULL,
-        claude_session_id TEXT NOT NULL,
-        workdir TEXT DEFAULT NULL,
-        status TEXT DEFAULT 'idle' CHECK(status IN ('active','idle')),
-        last_active_at TEXT DEFAULT (datetime('now')),
-        created_at TEXT DEFAULT (datetime('now')),
-        FOREIGN KEY (participant_id) REFERENCES room_participants(id),
-        UNIQUE (participant_id, workdir)
-      );
-      INSERT INTO ai_sessions_new SELECT * FROM ai_sessions;
-      DROP TABLE ai_sessions;
-      ALTER TABLE ai_sessions_new RENAME TO ai_sessions;
-    `);
-    console.log('[db] migrated ai_sessions: UNIQUE(participant_id) → UNIQUE(participant_id, workdir)');
-  }
-} catch {}
-try {
-  const cols = db.prepare("PRAGMA table_info(agent_workdirs)").all().map(c => c.name);
-  if (!cols.includes('model')) {
-    db.prepare("ALTER TABLE agent_workdirs ADD COLUMN model TEXT DEFAULT NULL").run();
-    console.log('[db] added agent_workdirs.model column');
-  }
-} catch {}
-
-try {
-  const cols = db.prepare("PRAGMA table_info(rooms)").all().map(c => c.name);
-  if (!cols.includes('archived_at')) {
-    db.prepare("ALTER TABLE rooms ADD COLUMN archived_at TEXT DEFAULT NULL").run();
-    console.log('[db] added rooms.archived_at column');
-  }
-  if (!cols.includes('is_pinned')) {
-    db.prepare("ALTER TABLE rooms ADD COLUMN is_pinned INTEGER DEFAULT 0").run();
-    console.log('[db] added rooms.is_pinned column');
-  }
-  if (!cols.includes('model')) {
-    db.prepare("ALTER TABLE rooms ADD COLUMN model TEXT DEFAULT NULL").run();
-    console.log('[db] added rooms.model column');
-  }
-} catch {}
-
-try {
-  const cols = db.prepare("PRAGMA table_info(ai_sessions)").all().map(c => c.name);
-  if (!cols.includes('room_id')) {
-    db.prepare("ALTER TABLE ai_sessions ADD COLUMN room_id INTEGER DEFAULT NULL REFERENCES rooms(id)").run();
-    db.prepare("UPDATE ai_sessions SET room_id = (SELECT rp.room_id FROM room_participants rp WHERE rp.id = ai_sessions.participant_id)").run();
-    db.exec("CREATE INDEX IF NOT EXISTS idx_ai_sessions_room_id ON ai_sessions(room_id)");
-    console.log('[db] added ai_sessions.room_id with backfill from room_participants');
-  }
-} catch {}
-
-try {
-  const cols = db.prepare("PRAGMA table_info(actors)").all().map(c => c.name);
-  if (!cols.includes('available_models')) {
-    db.prepare("ALTER TABLE actors ADD COLUMN available_models TEXT DEFAULT NULL").run();
-    console.log('[db] added actors.available_models column');
-  }
-} catch {}
-
-// Add missing indexes for existing databases
-try {
-  db.exec("CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(reply_to)");
-  db.exec("CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at)");
-  db.exec("CREATE INDEX IF NOT EXISTS idx_automations_trigger ON automations(trigger_type, trigger_event, enabled)");
-  db.exec("CREATE INDEX IF NOT EXISTS idx_actors_type ON actors(type)");
-  db.exec("CREATE INDEX IF NOT EXISTS idx_messages_state ON messages(state)");
-  db.exec("CREATE INDEX IF NOT EXISTS idx_auth_users_email ON auth_users(email)");
-  db.exec("CREATE INDEX IF NOT EXISTS idx_settings_scope_key ON settings(scope, key_name)");
-} catch {}
-
 // ─── Migration runner ─────────────────────────────────────────────────────────
 db.exec(`CREATE TABLE IF NOT EXISTS migrations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -146,6 +70,18 @@ db.exec(`CREATE TABLE IF NOT EXISTS migrations (
 
 // Seed old inline migrations as already-applied for existing DBs
 const _seedMigrations = [
+  { filename: '20260590-migrate-ai-sessions-unique.sql', applied: () => {
+    const tbl = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='ai_sessions'").get();
+    return !!(tbl?.sql && !tbl.sql.includes('participant_id INTEGER NOT NULL UNIQUE'));
+  }},
+  { filename: '20260591-add-agent-workdirs-model.sql', applied: () => {
+    const cols = db.prepare("PRAGMA table_info(agent_workdirs)").all().map(c => c.name);
+    return cols.includes('model');
+  }},
+  { filename: '20260592-add-rooms-archived-at.sql', applied: () => {
+    const cols = db.prepare("PRAGMA table_info(rooms)").all().map(c => c.name);
+    return cols.includes('archived_at');
+  }},
   { filename: '20260601-add-system-event-state.sql', applied: () => {
     const tbl = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'").get();
     return !!(tbl?.sql?.includes('system_event'));
@@ -2478,7 +2414,10 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'set_room_model' && subscribedRoom) {
       const model = msg.model;
       if (!model) return;
-      if (!ALLOWED_CLAUDE_MODELS.has(model)) return;
+      if (!ALLOWED_CLAUDE_MODELS.has(model)) {
+        ws.send(JSON.stringify({ type: 'error', code: 'invalid_model', message: `Unknown model: ${model}` }));
+        return;
+      }
       db.prepare("UPDATE rooms SET model=? WHERE id=?").run(model, subscribedRoom);
       const clients = roomClients.get(subscribedRoom);
       if (clients) {
