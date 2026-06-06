@@ -628,6 +628,7 @@ async function openRoom(room) {
   renderRoomDots(room.id, parts);
   renderChatHeader(room, parts);
   renderComposerSeal();
+  if (typeof updateModelSelector === 'function') updateModelSelector(room, parts);
   fjson(`/api/rooms/${room.id}/skills`).then(s => { allSkills = s; }).catch(e => { allSkills = []; console.error('Failed to load skills for room', room.id, e); });
 
   connectWS(room.id);
