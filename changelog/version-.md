@@ -4,6 +4,7 @@
 
 ## Changes
 
+- fix: remove inline ALTER TABLE blocks, add missing migrations, error on invalid model
 - refactor: move ALLOWED_CLAUDE_MODELS to module-level constant
 - audit fixes: model whitelist, docs sync, api contract, tests
 - remove room tagline (voices count + model badge)
