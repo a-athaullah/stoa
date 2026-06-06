@@ -463,7 +463,7 @@ Setelah Slack terhubung, klik **+ new rule** untuk membuat aturan:
 
 - **Name** — label deskriptif untuk aturan
 - **Trigger event** — event Slack mana yang memicu aturan: `message` (channel publik), `message.groups` (channel privat), atau `mention`
-- **Conditions** — filter opsional: `message_text contains`, `message_text starts_with`, atau `matches_regex`. Beberapa kondisi di-AND-kan
+- **Conditions** — filter opsional: `message_text contains`, `message_text not_contains`, `message_text starts_with`, atau `matches_regex`. Beberapa kondisi di-AND-kan
 - **Target room** — room Stoa mana yang menerima pesan yang dipicu
 - **Prompt template** — pesan yang dikirim ke room. Gunakan variabel:
   - `{{slack_message_text}}` — teks pesan lengkap

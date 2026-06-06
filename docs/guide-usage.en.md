@@ -463,7 +463,7 @@ Once Slack is connected, click **+ new rule** to create a rule:
 
 - **Name** — a descriptive label for the rule
 - **Trigger event** — which Slack event fires the rule: `message` (public channels), `message.groups` (private channels), or `mention`
-- **Conditions** — optional filters: `message_text contains`, `message_text starts_with`, or `matches_regex`. Multiple conditions are AND-ed together
+- **Conditions** — optional filters: `message_text contains`, `message_text not_contains`, `message_text starts_with`, or `matches_regex`. Multiple conditions are AND-ed together
 - **Target room** — which Stoa room receives the triggered message
 - **Prompt template** — the message sent to the room. Use variables:
   - `{{slack_message_text}}` — the full message text
