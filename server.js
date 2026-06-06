@@ -98,6 +98,10 @@ try {
     db.prepare("ALTER TABLE rooms ADD COLUMN archived_at TEXT DEFAULT NULL").run();
     console.log('[db] added rooms.archived_at column');
   }
+  if (!cols.includes('is_pinned')) {
+    db.prepare("ALTER TABLE rooms ADD COLUMN is_pinned INTEGER DEFAULT 0").run();
+    console.log('[db] added rooms.is_pinned column');
+  }
 } catch {}
 
 try {
@@ -643,7 +647,7 @@ const server = http.createServer(async (req, res) => {
         COALESCE((SELECT m3.created_at FROM messages m3 WHERE m3.room_id=r.id ORDER BY m3.id DESC LIMIT 1), r.created_at) as last_activity
       FROM rooms r JOIN actors a ON a.id=r.created_by LEFT JOIN agent_workdirs w ON w.id=r.workdir_id
       WHERE ${archived ? 'r.archived_at IS NOT NULL' : 'r.archived_at IS NULL'}
-      ORDER BY last_activity DESC
+      ORDER BY r.is_pinned DESC, last_activity DESC
       LIMIT 200
     `).all();
     return json(res, rows);
@@ -693,13 +697,42 @@ const server = http.createServer(async (req, res) => {
       broadcastGlobal({ type: 'room_updated', room_id: roomId, title: parsed.title.trim() });
     }
     if (parsed.archived === true) {
-      db.prepare("UPDATE rooms SET archived_at=datetime('now') WHERE id=?").run(roomId);
+      db.prepare("UPDATE rooms SET archived_at=datetime('now'), is_pinned=0 WHERE id=?").run(roomId);
       broadcastGlobal({ type: 'room_archived', room_id: roomId });
     }
     if (parsed.archived === false) {
       db.prepare('UPDATE rooms SET archived_at=NULL WHERE id=?').run(roomId);
       broadcastGlobal({ type: 'room_restored', room_id: roomId });
     }
+    return json(res, { ok: true });
+  }
+
+  const roomPinMatch = req.method === 'POST' && url.pathname.match(/^\/api\/rooms\/(\d+)\/pin$/);
+  if (roomPinMatch) {
+    const roomId = parseInt(roomPinMatch[1]);
+    const pinErr = db.transaction(() => {
+      const room = db.prepare("SELECT id, is_pinned FROM rooms WHERE id=? AND archived_at IS NULL").get(roomId);
+      if (!room) return 'not_found';
+      if (room.is_pinned) return 'already_pinned';
+      const pinCount = db.prepare("SELECT COUNT(*) as cnt FROM rooms WHERE is_pinned=1 AND archived_at IS NULL").get().cnt;
+      if (pinCount >= 5) return 'limit';
+      db.prepare("UPDATE rooms SET is_pinned=1 WHERE id=?").run(roomId);
+      return null;
+    })();
+    if (pinErr === 'not_found') return json(res, { error: 'Room not found' }, 404);
+    if (pinErr === 'limit') return json(res, { error: 'Maximum 5 pinned rooms reached' }, 400);
+    broadcastGlobal({ type: 'room_pinned', room_id: roomId });
+    return json(res, { ok: true });
+  }
+
+  const roomUnpinMatch = req.method === 'DELETE' && url.pathname.match(/^\/api\/rooms\/(\d+)\/pin$/);
+  if (roomUnpinMatch) {
+    const roomId = parseInt(roomUnpinMatch[1]);
+    const room = db.prepare("SELECT id, is_pinned FROM rooms WHERE id=? AND archived_at IS NULL").get(roomId);
+    if (!room) return json(res, { error: 'Room not found' }, 404);
+    if (!room.is_pinned) return json(res, { ok: true });
+    db.prepare("UPDATE rooms SET is_pinned=0 WHERE id=?").run(roomId);
+    broadcastGlobal({ type: 'room_unpinned', room_id: roomId });
     return json(res, { ok: true });
   }
 
@@ -1425,15 +1458,24 @@ Write-Host "Logs   : pm2 logs $AgentName"
     const actorId = parseInt(url.pathname.split('/')[3]);
     const data = parseJsonBody(await readBody(req));
     if (!data) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
-    const { path: dirPath, label } = data;
+    const { path: dirPath } = data;
     if (!dirPath?.trim()) { res.writeHead(400); return res.end('path required'); }
     const agentWs = agentClients.get(actorId);
     if (!agentWs) { res.writeHead(503); return res.end('agent offline'); }
     agentWs.send(JSON.stringify({ type: 'create_workdir', path: dirPath.trim() }));
-    const result = db.prepare(
-      'INSERT OR IGNORE INTO agent_workdirs (actor_id, path, label, is_default) VALUES (?,?,?,0)'
-    ).run(actorId, dirPath.trim(), (label || '').trim() || null);
-    return json(res, { id: result.lastInsertRowid, path: dirPath.trim(), label: label || null, is_default: false });
+    const labelProvided = 'label' in data;
+    if (labelProvided) {
+      const labelValue = (data.label || '').trim() || null;
+      db.prepare(
+        'INSERT INTO agent_workdirs (actor_id, path, label, is_default) VALUES (?,?,?,0) ON CONFLICT(actor_id, path) DO UPDATE SET label=excluded.label'
+      ).run(actorId, dirPath.trim(), labelValue);
+    } else {
+      db.prepare(
+        'INSERT INTO agent_workdirs (actor_id, path, label, is_default) VALUES (?,?,?,0) ON CONFLICT(actor_id, path) DO NOTHING'
+      ).run(actorId, dirPath.trim(), null);
+    }
+    const wd = db.prepare('SELECT id, path, label, is_default, model FROM agent_workdirs WHERE actor_id=? AND path=?').get(actorId, dirPath.trim());
+    return json(res, wd);
   }
 
   // POST /api/actors/:id/force-update — ask agent to check for updates immediately
@@ -2587,11 +2629,32 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
   activeSequences.set(roomId, seq);
   let turnCount = 0;
 
+  // Immutable during sequence: prefetch once
+  const wdRow = db.prepare(
+    'SELECT w.path, w.actor_id FROM rooms r LEFT JOIN agent_workdirs w ON w.id=r.workdir_id WHERE r.id=?'
+  ).get(roomId);
+  const repliedMsg = replyTo ? db.prepare(`
+    SELECT m.content, a.name FROM messages m
+    JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id
+    WHERE m.id=?
+  `).get(replyTo) : null;
+  // Mutable during sequence: prepare once, execute per-iteration
+  const participantsStmt = db.prepare(`
+    SELECT rp.id as participant_id, a.id as actor_id, a.name, a.type
+    FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=?
+  `);
+  const allAiStmt = db.prepare(`
+    SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.adapter_config, a.avatar_color, a.avatar_symbol, a.avatar_url
+    FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
+    WHERE rp.room_id=? AND a.type='ai' AND rp.notify_on_message=1
+  `);
+
   for (let i = 0; i < Math.min(agents.length, maxTurns); i++) {
     if (seq.cancelled) break;
     turnCount++;
     const currentAgent = agents[i];
-    await triggerAiResponse(roomId, currentAgent, content, replyTo, attachments);
+    const prefetchedCtx = { allParticipants: participantsStmt.all(roomId), wdRow, repliedMsg };
+    await triggerAiResponse(roomId, currentAgent, content, replyTo, attachments, prefetchedCtx);
     if (seq.cancelled) break;
 
     const lastMsg = db.prepare(`
@@ -2602,11 +2665,7 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
     `).get(currentAgent.actor_id, roomId);
 
     if (lastMsg?.content) {
-      const allAiInRoom = db.prepare(`
-        SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.adapter_config, a.avatar_color, a.avatar_symbol, a.avatar_url
-        FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
-        WHERE rp.room_id=? AND a.type='ai' AND rp.notify_on_message=1
-      `).all(roomId);
+      const allAiInRoom = allAiStmt.all(roomId);
       for (const other of allAiInRoom) {
         if (other.actor_id !== currentAgent.actor_id && lastMsg.content.includes('@' + other.name)) {
           const alreadyQueued = agents.slice(i + 1).some(a => a.actor_id === other.actor_id);
@@ -2902,7 +2961,7 @@ function promptStrings(lang) {
   return t[lang] || t.en;
 }
 
-async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) {
+async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], prefetchedCtx = null) {
 
   const agentWs = agentClients.get(ai.actor_id);
 
@@ -2991,23 +3050,19 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
     return line;
   }).join('\n');
 
-  const otherAIs = db.prepare(`
-    SELECT a.name FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
-    WHERE rp.room_id=? AND a.id != ? AND a.type='ai'
-  `).all(roomId, ai.actor_id);
-  const otherAINames = otherAIs.map(p => p.name);
-  const humanParts = db.prepare(`
-    SELECT a.name FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
-    WHERE rp.room_id=? AND a.type='human'
+  const parts = prefetchedCtx?.allParticipants ?? db.prepare(`
+    SELECT rp.id as participant_id, a.id as actor_id, a.name, a.type
+    FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=?
   `).all(roomId);
-  const allOtherNames = [...humanParts.map(p => p.name), ...otherAINames];
+  const otherAINames = parts.filter(p => p.type === 'ai' && p.actor_id !== ai.actor_id).map(p => p.name);
+  const allOtherNames = [...parts.filter(p => p.type === 'human').map(p => p.name), ...otherAINames];
   const othersLine = allOtherNames.length
     ? L.participants(allOtherNames.join(', '))
     : '';
 
   let replyCtx = '';
   if (replyTo) {
-    const replied = db.prepare(`
+    const replied = prefetchedCtx?.repliedMsg ?? db.prepare(`
       SELECT m.content, a.name FROM messages m
       JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id
       WHERE m.id=?
@@ -3028,7 +3083,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = []) 
   ].filter(Boolean).join('\n');
 
   // Resolve workdir: use room's workdir only if it belongs to this agent, else agent's default
-  const wdRow = db.prepare(
+  const wdRow = prefetchedCtx?.wdRow ?? db.prepare(
     'SELECT w.path, w.actor_id FROM rooms r LEFT JOIN agent_workdirs w ON w.id=r.workdir_id WHERE r.id=?'
   ).get(roomId);
   const defaultWd = db.prepare(

@@ -305,9 +305,26 @@ function renderRoomList(rooms) {
   const list = document.getElementById('room-list');
   list.innerHTML = '';
   const isArchived = currentRoomTab === 'archived';
+  const hasPinned = !isArchived && rooms.some(r => r.is_pinned);
+  let addedDivider = false;
+
+  if (hasPinned) {
+    const header = document.createElement('div');
+    header.className = 'h-room-section-header';
+    header.textContent = 'Pinned';
+    list.appendChild(header);
+  }
+
   for (const room of rooms) {
+    if (hasPinned && !room.is_pinned && !addedDivider) {
+      addedDivider = true;
+      const divider = document.createElement('div');
+      divider.className = 'h-room-section-divider';
+      list.appendChild(divider);
+    }
+
     const row = document.createElement('div');
-    row.className = 'h-room-row' + (room.id === currentRoomId ? ' active' : '');
+    row.className = 'h-room-row' + (room.id === currentRoomId ? ' active' : '') + (room.is_pinned ? ' pinned' : '');
     row.dataset.roomId = room.id;
 
     if (isArchived) {
@@ -328,6 +345,12 @@ function renderRoomList(rooms) {
       archiveBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>';
       archiveBtn.onclick = e => { e.stopPropagation(); archiveRoom(room); };
       row.appendChild(archiveBtn);
+      const pinMobileBtn = document.createElement('div');
+      pinMobileBtn.className = 'h-room-pin-mobile-btn';
+      pinMobileBtn.title = room.is_pinned ? 'Unpin' : 'Pin';
+      pinMobileBtn.innerHTML = pinSvg(18);
+      pinMobileBtn.onclick = e => { e.stopPropagation(); if (pinMobileBtn.disabled) return; pinMobileBtn.disabled = true; togglePinRoom(room, !room.is_pinned, pinMobileBtn); };
+      row.appendChild(pinMobileBtn);
     }
 
     const content = document.createElement('div');
@@ -371,6 +394,13 @@ function renderRoomList(rooms) {
       actionBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>';
       actionBtn.title = 'Archive';
       actionBtn.onclick = e => { e.stopPropagation(); archiveRoom(room); };
+
+      const pinBtn = document.createElement('button');
+      pinBtn.className = 'h-room-action h-room-pin-btn' + (room.is_pinned ? ' pinned' : '');
+      pinBtn.title = room.is_pinned ? 'Unpin' : 'Pin';
+      pinBtn.innerHTML = pinSvg(16);
+      pinBtn.onclick = e => { e.stopPropagation(); if (pinBtn.disabled) return; pinBtn.disabled = true; togglePinRoom(room, !room.is_pinned, pinBtn); };
+      top.appendChild(pinBtn);
     }
     top.appendChild(actionBtn);
 
@@ -480,6 +510,24 @@ document.addEventListener('click', e => {
     }
   });
 })();
+
+function pinSvg(size) {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></svg>`;
+}
+
+async function togglePinRoom(room, pin, btn) {
+  try {
+    const res = await fetch(`/api/rooms/${room.id}/pin`, { method: pin ? 'POST' : 'DELETE' });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      showToast(data.error || `Failed to ${pin ? 'pin' : 'unpin'} room`, { error: true });
+      if (btn) btn.disabled = false;
+      return;
+    }
+  } catch { showToast(`Failed to ${pin ? 'pin' : 'unpin'} room`, { error: true }); if (btn) btn.disabled = false; return; }
+  const refreshed = await refreshRoomList();
+  if (!refreshed && btn) btn.disabled = false;
+}
 
 async function archiveRoom(room) {
   try {

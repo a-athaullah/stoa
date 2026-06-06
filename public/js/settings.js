@@ -1399,7 +1399,7 @@ function initGlobalWs() {
         }
         refreshRoomList();
       }
-      if (msg.type === 'room_restored') {
+      if (msg.type === 'room_restored' || msg.type === 'room_pinned' || msg.type === 'room_unpinned') {
         refreshRoomList();
       }
       if (msg.type === 'model_update') handleModelUpdate(msg);
@@ -1432,7 +1432,8 @@ async function refreshRoomList() {
         renderRoomDots(room.id, parts);
       }
     }
-  } catch (e) { console.error('refreshRoomList failed:', e); }
+    return true;
+  } catch (e) { console.error('refreshRoomList failed:', e); return false; }
 }
 
 document.addEventListener('visibilitychange', () => {

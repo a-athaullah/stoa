@@ -1,0 +1,46 @@
+#!/bin/sh
+# Docs sync guard: all 5 guide-usage language files must change together.
+# Override: SKIP_DOCS_SYNC=1 git commit ...
+
+LANGS="en id ja ko zh"
+CHANGED=0
+MISSING=""
+
+for lang in $LANGS; do
+  file="docs/guide-usage.${lang}.md"
+  if git diff --cached --name-only | grep -qF "$file"; then
+    CHANGED=$((CHANGED + 1))
+  fi
+done
+
+# Nothing to check if no guide-usage files are staged
+if [ "$CHANGED" -eq 0 ]; then
+  exit 0
+fi
+
+# Some but not all 5 are staged — find which are missing
+if [ "$CHANGED" -lt 5 ]; then
+  for lang in $LANGS; do
+    file="docs/guide-usage.${lang}.md"
+    if ! git diff --cached --name-only | grep -qF "$file"; then
+      MISSING="$MISSING $lang"
+    fi
+  done
+
+  echo ""
+  echo "ERROR: docs sync — guide-usage changed in $CHANGED/5 languages."
+  echo "  Missing:$MISSING"
+  echo ""
+  echo "  All 5 guide-usage files (EN, ID, JA, KO, ZH) must stay in sync."
+  echo "  Fix the missing languages, then commit again."
+  echo "  To skip: SKIP_DOCS_SYNC=1 git commit ..."
+  echo ""
+
+  if [ "$SKIP_DOCS_SYNC" = "1" ]; then
+    echo "  Skipping (SKIP_DOCS_SYNC=1)"
+    exit 0
+  fi
+  exit 1
+fi
+
+exit 0

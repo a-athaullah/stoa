@@ -50,7 +50,15 @@ Click the room title in the chat header. It becomes editable — type the new na
 
 ### Model Badge
 
-Each room's header shows a **model badge** indicating which AI model the agent is using (e.g., "Opus 4", "Sonnet 4"). The model is auto-detected from the agent's Claude Code or Gemini CLI settings. The badge updates in real-time when the agent's model changes.
+Each room's header shows a **model badge** indicating which AI model the agent is using (e.g., "Opus 4", "Sonnet 4"). The model is auto-detected from the agent's Claude Code settings. Gemini agents currently show no model badge. The badge updates in real-time when the agent's model changes.
+
+### Pinning a Room
+
+Click the **pin icon** (thumbtack) on a room row in the sidebar to pin it. Pinned rooms appear at the top of the sidebar in a dedicated **Pinned** section, making them instantly accessible regardless of how many rooms you have.
+
+You can pin up to **5 rooms** at a time. To unpin, click the pin icon again — the room returns to its position in the regular list.
+
+Pinning is ideal for the rooms you use most frequently day-to-day.
 
 ### Archiving a Room
 
@@ -455,7 +463,7 @@ Once Slack is connected, click **+ new rule** to create a rule:
 
 - **Name** — a descriptive label for the rule
 - **Trigger event** — which Slack event fires the rule: `message` (public channels), `message.groups` (private channels), or `mention`
-- **Conditions** — optional filters: `message_text contains`, `message_text starts_with`, or `matches_regex`. Multiple conditions are AND-ed together
+- **Conditions** — optional filters: `message_text contains`, `message_text not_contains`, `message_text starts_with`, or `matches_regex`. Multiple conditions are AND-ed together
 - **Target room** — which Stoa room receives the triggered message
 - **Prompt template** — the message sent to the room. Use variables:
   - `{{slack_message_text}}` — the full message text

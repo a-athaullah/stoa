@@ -1,5 +1,10 @@
 # Changelog
 
+## [2026-06-05] — pin room
+
+### Added
+- **Pin rooms** — hover any room in the sidebar and click the pin icon to keep it at the top of the list. Pinned rooms appear under a "Pinned" section header separated by a divider from the rest. Maximum 5 rooms can be pinned at a time; the limit is enforced server-side with a clear error toast. Pin state syncs in real-time across browser tabs via WebSocket.
+
 ## [2026-06-05]
 
 ### Fixed

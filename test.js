@@ -5,6 +5,7 @@ const http = require('http');
 const assert = require('assert');
 const path = require('path');
 const crypto = require('crypto');
+const { WebSocket } = require('ws');
 
 // ── Pure Unit Tests (no server required) ──────────────────────────────────────
 
@@ -269,6 +270,30 @@ async function rawReq(method, path, body, contentType, extraHeaders = {}) {
   });
 }
 
+function openWsConnection(url, cookie = null) {
+  return new Promise((resolve, reject) => {
+    const opts = cookie ? { headers: { Cookie: cookie } } : {};
+    const ws = new WebSocket(url, opts);
+    ws.on('open', () => resolve(ws));
+    ws.on('error', reject);
+  });
+}
+
+function waitForWsMessage(ws, predicate, timeoutMs = 3000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('WS message timeout')), timeoutMs);
+    const handler = (data) => {
+      const msg = JSON.parse(data.toString());
+      if (predicate(msg)) {
+        clearTimeout(timer);
+        ws.off('message', handler);
+        resolve(msg);
+      }
+    };
+    ws.on('message', handler);
+  });
+}
+
 let passed = 0, failed = 0;
 
 async function test(name, fn) {
@@ -326,6 +351,24 @@ async function run() {
     assert.strictEqual(r.status, 401);
   });
 
+  // Global test rooms — created once, used by all write tests, deleted in teardown
+  let testRoomIds = [];
+  let testWorkdirId = null;
+
+  console.log('\n[Test Setup]');
+  await test('Setup — create test rooms for write operations', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    const aiActor = actors.find(a => a.type === 'ai');
+    const wds = aiActor ? (await req('GET', `/api/actors/${aiActor.id}/workdirs`)).body : [];
+    if (!wds.length) { console.log('    (no workdir found — pin/write tests will be skipped)'); return; }
+    testWorkdirId = wds[0].id;
+    for (let i = 1; i <= 6; i++) {
+      const r = await req('POST', '/api/rooms', { title: `__test-room-${i}__`, workdir_id: testWorkdirId });
+      if (r.status === 200) testRoomIds.push(r.body.id);
+    }
+    assert.ok(testRoomIds.length >= 1, 'could not create any test rooms');
+  });
+
   // Rooms
   console.log('\n[Rooms]');
   let firstRoomId = null;
@@ -365,15 +408,24 @@ async function run() {
   });
 
   await test('POST /api/rooms/:id/participants — adds actor to room', async () => {
-    if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
     const actors = (await req('GET', '/api/actors')).body;
-    const parts = (await req('GET', `/api/rooms/${firstRoomId}/participants`)).body;
-    const partActorIds = new Set(parts.map(p => p.actor_id));
-    const nonMember = actors.find(a => !partActorIds.has(a.id));
-    if (!nonMember) { console.log('    (skipped — all actors already in room)'); return; }
-    const r = await req('POST', `/api/rooms/${firstRoomId}/participants`, { actor_id: nonMember.id });
-    assert.strictEqual(r.status, 200);
-    assert.ok(r.body.ok);
+    const aiActor = actors.find(a => a.type === 'ai');
+    const wds = aiActor ? (await req('GET', `/api/actors/${aiActor.id}/workdirs`)).body : [];
+    if (!wds.length) { console.log('    (skipped — no workdir)'); return; }
+    const tempRoom = await req('POST', '/api/rooms', { title: '__participants-test__', workdir_id: wds[0].id });
+    if (tempRoom.status !== 200) { console.log('    (skipped — could not create temp room)'); return; }
+    const tempRoomId = tempRoom.body.id;
+    try {
+      const parts = (await req('GET', `/api/rooms/${tempRoomId}/participants`)).body;
+      const partActorIds = new Set(parts.map(p => p.actor_id));
+      const nonMember = actors.find(a => !partActorIds.has(a.id));
+      if (!nonMember) { console.log('    (skipped — all actors already in room)'); return; }
+      const r = await req('POST', `/api/rooms/${tempRoomId}/participants`, { actor_id: nonMember.id });
+      assert.strictEqual(r.status, 200);
+      assert.ok(r.body.ok);
+    } finally {
+      await req('DELETE', `/api/rooms/${tempRoomId}`);
+    }
   });
 
   // Messages
@@ -410,6 +462,125 @@ async function run() {
     assert.strictEqual(r.status, 200);
     assert.ok(Array.isArray(r.body));
   });
+
+  // Pin rooms — all operations use testRoomIds, never touch production rooms
+  console.log('\n[Pin Rooms]');
+  await test('POST /api/rooms/:id/pin — pins a room → 200 ok', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const r = await req('POST', `/api/rooms/${testRoomIds[0]}/pin`);
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+    assert.ok(r.body.ok, 'ok field missing');
+    const rooms = (await req('GET', '/api/rooms')).body;
+    const pinned = rooms.find(rm => rm.id === testRoomIds[0]);
+    assert.ok(pinned, 'room not found after pin');
+    assert.strictEqual(pinned.is_pinned, 1, 'is_pinned should be 1');
+  });
+
+  await test('DELETE /api/rooms/:id/pin — unpins a room → 200 ok', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const r = await req('DELETE', `/api/rooms/${testRoomIds[0]}/pin`);
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+    assert.ok(r.body.ok, 'ok field missing');
+    const rooms = (await req('GET', '/api/rooms')).body;
+    const unpinned = rooms.find(rm => rm.id === testRoomIds[0]);
+    assert.ok(unpinned, 'room not found after unpin');
+    assert.strictEqual(unpinned.is_pinned, 0, 'is_pinned should be 0');
+  });
+
+  await test('POST /api/rooms/:id/pin — max 5 limit → 400', async () => {
+    if (testRoomIds.length < 6) { console.log('    (skipped — need 6 test rooms)'); return; }
+    // Unpin only test rooms (never touch production pins)
+    for (const id of testRoomIds) { await req('DELETE', `/api/rooms/${id}/pin`); }
+    // Count how many production rooms are already pinned
+    const allRooms = (await req('GET', '/api/rooms')).body;
+    const prodPinned = allRooms.filter(rm => rm.is_pinned && !testRoomIds.includes(rm.id)).length;
+    if (prodPinned >= 5) { console.log('    (skipped — production already at max pins)'); return; }
+    // Pin enough test rooms to reach the limit of 5
+    const toPinCount = 5 - prodPinned;
+    for (let i = 0; i < toPinCount; i++) { await req('POST', `/api/rooms/${testRoomIds[i]}/pin`); }
+    // Now try to pin one more test room — should hit the limit
+    const r = await req('POST', `/api/rooms/${testRoomIds[toPinCount]}/pin`);
+    assert.strictEqual(r.status, 400, `expected 400 (limit), got ${r.status}: ${JSON.stringify(r.body)}`);
+    assert.ok(r.body.error?.includes('Maximum'), `error message missing: ${JSON.stringify(r.body)}`);
+    // Cleanup — unpin only the test rooms we just pinned
+    for (let i = 0; i < toPinCount; i++) { await req('DELETE', `/api/rooms/${testRoomIds[i]}/pin`); }
+  });
+
+  // Proactive message — self-contained flow: create actor → room → send → delete → archive → cleanup
+  console.log('\n[Proactive Message]');
+  {
+    let pmWorkdirId = null;
+    try {
+      const pmActors = (await req('GET', '/api/actors')).body;
+      const pmAiActor = pmActors.find(a => a.type === 'ai');
+      const pmWds = pmAiActor ? (await req('GET', `/api/actors/${pmAiActor.id}/workdirs`)).body : [];
+      pmWorkdirId = pmWds[0]?.id ?? null;
+    } catch { /* server unreachable — all proactive tests will skip gracefully */ }
+
+    let pmActorId = null, pmActorSecret = null, pmRoomId = null, pmMessageId = null;
+
+    await test('Setup — register proactive test actor', async () => {
+      if (!pmWorkdirId) { console.log('    (skipped — no AI agent / workdir found)'); return; }
+      const scriptR = await req('GET', '/install.sh?name=test-proactive-agent');
+      const tokenMatch = scriptR.raw.match(/REG_TOKEN="([a-f0-9]+)"/);
+      assert.ok(tokenMatch, 'no install token in script');
+      const r = await req('POST', '/api/agent/register', { token: tokenMatch[1] });
+      assert.strictEqual(r.status, 200, `register failed: ${JSON.stringify(r.body)}`);
+      pmActorId = r.body.actor_id;
+      pmActorSecret = r.body.secret;
+    });
+
+    await test('Setup — create proactive test room', async () => {
+      if (!pmWorkdirId || !pmActorId) { console.log('    (skipped)'); return; }
+      const r = await req('POST', '/api/rooms', { title: '__proactive-test-room__', workdir_id: pmWorkdirId, participant_ids: [pmActorId] });
+      assert.strictEqual(r.status, 200, `create room failed: ${JSON.stringify(r.body)}`);
+      pmRoomId = r.body.id;
+    });
+
+    await test('POST /api/rooms/:id/message — agent posts proactive message → 200', async () => {
+      if (!pmRoomId || !pmActorId || !pmActorSecret) { console.log('    (skipped)'); return; }
+      const r = await rawReq('POST', `/api/rooms/${pmRoomId}/message`,
+        JSON.stringify({ content: 'proactive test message' }),
+        'application/json',
+        { 'X-Agent-Id': String(pmActorId), 'X-Agent-Secret': pmActorSecret }
+      );
+      assert.strictEqual(r.status, 200, `expected 200, got ${r.status}: ${r.raw}`);
+      assert.ok(r.body.message_id, 'message_id missing in response');
+      pmMessageId = r.body.message_id;
+    });
+
+    await test('POST /api/rooms/:id/message — wrong secret → 401', async () => {
+      if (!pmRoomId || !pmActorId) { console.log('    (skipped)'); return; }
+      const r = await rawReq('POST', `/api/rooms/${pmRoomId}/message`,
+        JSON.stringify({ content: 'should fail' }),
+        'application/json',
+        { 'X-Agent-Id': String(pmActorId), 'X-Agent-Secret': 'wrongsecret' }
+      );
+      assert.strictEqual(r.status, 401, `expected 401, got ${r.status}`);
+    });
+
+    await test('DELETE /api/messages/:id — deletes proactive message → 204', async () => {
+      if (!pmMessageId) { console.log('    (skipped)'); return; }
+      const r = await req('DELETE', `/api/messages/${pmMessageId}`);
+      assert.strictEqual(r.status, 204, `expected 204, got ${r.status}`);
+      pmMessageId = null;
+    });
+
+    await test('Cleanup — archive and delete test room', async () => {
+      if (!pmRoomId) { console.log('    (skipped)'); return; }
+      await req('PATCH', `/api/rooms/${pmRoomId}`, { archived: true });
+      const r = await req('DELETE', `/api/rooms/${pmRoomId}`);
+      assert.strictEqual(r.status, 204, `delete room failed: ${r.status}`);
+      pmRoomId = null;
+    });
+
+    await test('Cleanup — delete proactive test actor', async () => {
+      if (!pmActorId) { console.log('    (skipped)'); return; }
+      const r = await req('DELETE', `/api/actors/${pmActorId}`);
+      assert.ok([200, 204].includes(r.status), `delete actor failed: ${r.status}`);
+      pmActorId = null;
+    });
+  }
 
   // Search
   console.log('\n[Search]');
@@ -552,6 +723,49 @@ async function run() {
   await test('POST /api/invites/:id/resolve — nonexistent invite → 404', async () => {
     const r = await req('POST', '/api/invites/999999/resolve', { approved: true });
     assert.strictEqual(r.status, 404);
+  });
+
+  await test('POST /api/invites/:id/resolve — approve invite (approved: true)', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const scriptR = await req('GET', '/install.sh?name=__test_invite_agent__');
+    const tokenMatch = scriptR.raw.match(/REG_TOKEN="([a-f0-9]+)"/);
+    if (!tokenMatch) { console.log('    (skipped — install token not found)'); return; }
+    const agentRes = await req('POST', '/api/agent/register', { token: tokenMatch[1] });
+    if (agentRes.status !== 200) { console.log(`    (skipped — agent creation failed: ${agentRes.status})`); return; }
+    const { actor_id: agentActorId, secret: agentSecret } = agentRes.body;
+    try {
+      const roomId = testRoomIds[0];
+      await req('POST', `/api/rooms/${roomId}/participants`, { actor_id: agentActorId });
+      const partsRes = (await req('GET', `/api/rooms/${roomId}/participants`)).body;
+      const agentPart = partsRes.find(p => p.actor_id === agentActorId);
+      assert.ok(agentPart, 'agent participant not found');
+      const actors = (await req('GET', '/api/actors')).body;
+      const partActorIds = new Set(partsRes.map(p => p.actor_id));
+      const targetActor = actors.find(a => !partActorIds.has(a.id));
+      if (!targetActor) { console.log('    (skipped — no actors to suggest)'); return; }
+      const roomWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      const invitePromise = waitForWsMessage(roomWs, m => m.type === 'invite_suggestion');
+      roomWs.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+      const agentWs = await openWsConnection(`ws://${HOST}:${PORT}`);
+      const agentReadyPromise = waitForWsMessage(agentWs, m => m.type === 'agent_ready');
+      agentWs.send(JSON.stringify({ type: 'agent_connect', actor_id: agentActorId, secret: agentSecret }));
+      await agentReadyPromise;
+      agentWs.send(JSON.stringify({
+        type: 'invite_suggest',
+        room_id: roomId,
+        suggested_by_participant_id: agentPart.id,
+        suggested_actor_id: targetActor.id,
+        reason: 'test invite',
+      }));
+      const suggestion = await invitePromise;
+      agentWs.close();
+      roomWs.close();
+      const r = await req('POST', `/api/invites/${suggestion.invite_id}/resolve`, { approved: true });
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.ok, true);
+    } finally {
+      await req('DELETE', `/api/actors/${agentActorId}`);
+    }
   });
 
   // Upload
@@ -700,14 +914,6 @@ async function run() {
     assert.ok(r.body.actor_name, 'actor_name missing');
   });
 
-  await test('DELETE /api/messages/:id — deletes message', async () => {
-    if (!testMessageId) { console.log('    (skipped — no test message)'); return; }
-    const r = await req('DELETE', `/api/messages/${testMessageId}`);
-    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}`);
-    assert.ok(r.body.ok, 'ok field missing');
-    testMessageId = null;
-  });
-
   await test('GET /api/messages/999999 — nonexistent → 404', async () => {
     const r = await req('GET', '/api/messages/999999');
     assert.strictEqual(r.status, 404);
@@ -781,6 +987,48 @@ async function run() {
     if (!aiActor) { console.log('    (skipped — no AI actors)'); return; }
     const r = await req('PUT', `/api/actors/${aiActor.id}/config`, { name: '' });
     assert.strictEqual(r.status, 400);
+  });
+
+  await test('PATCH /api/actors/:id — rename actor (no-op)', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    const aiActor = actors.find(a => a.type === 'ai');
+    if (!aiActor) { console.log('    (skipped — no AI actors)'); return; }
+    const r = await req('PATCH', `/api/actors/${aiActor.id}`, { name: aiActor.name });
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}`);
+    assert.strictEqual(r.body.name, aiActor.name);
+  });
+
+  await test('PATCH /api/actors/:id — missing name → 400', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    const aiActor = actors.find(a => a.type === 'ai');
+    if (!aiActor) { console.log('    (skipped — no AI actors)'); return; }
+    const r = await req('PATCH', `/api/actors/${aiActor.id}`, { name: '' });
+    assert.strictEqual(r.status, 400);
+  });
+
+  const MINIMAL_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+
+  await test('POST /api/actors/:id/avatar — upload avatar → 200 with avatar_url', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    const aiActor = actors.find(a => a.type === 'ai');
+    if (!aiActor) { console.log('    (skipped — no AI actors)'); return; }
+    const r = await req('POST', `/api/actors/${aiActor.id}/avatar`, { data_url: MINIMAL_PNG });
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}`);
+    assert.ok(r.body.avatar_url?.startsWith('/uploads/avatar/'), `expected /uploads/avatar/ prefix, got ${r.body.avatar_url}`);
+    await req('DELETE', `/api/actors/${aiActor.id}/avatar`);
+  });
+
+  await test('DELETE /api/actors/:id/avatar — remove avatar → 200 ok: true, clears avatar_url', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    const aiActor = actors.find(a => a.type === 'ai');
+    if (!aiActor) { console.log('    (skipped — no AI actors)'); return; }
+    await req('POST', `/api/actors/${aiActor.id}/avatar`, { data_url: MINIMAL_PNG });
+    const r = await req('DELETE', `/api/actors/${aiActor.id}/avatar`);
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.ok, true);
+    const after = (await req('GET', '/api/actors')).body;
+    const updated = after.find(a => a.id === aiActor.id);
+    assert.strictEqual(updated?.avatar_url, null);
   });
 
   await test('POST /api/actors/:id/workdirs — offline agent → 503', async () => {
@@ -946,6 +1194,17 @@ async function run() {
     assert.ok('connected' in r.body, 'connected field missing');
   });
 
+  await test('POST /api/automations/slack/connect — missing tokens → 400', async () => {
+    const r = await req('POST', '/api/automations/slack/connect', {});
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('DELETE /api/automations/slack/disconnect — no-op disconnect → 200 ok: true', async () => {
+    const r = await req('DELETE', '/api/automations/slack/disconnect');
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.ok, true);
+  });
+
   await test('GET /api/setup/status — returns needsSetup bool', async () => {
     const r = await req('GET', '/api/setup/status');
     assert.strictEqual(r.status, 200);
@@ -963,6 +1222,16 @@ async function run() {
   await test('GET /api/rooms/999999 — nonexistent room → 404', async () => {
     const r = await req('GET', '/api/rooms/999999');
     assert.strictEqual(r.status, 404);
+  });
+
+  // Teardown — delete all test rooms created in setup
+  console.log('\n[Test Teardown]');
+  await test('Teardown — delete all test rooms', async () => {
+    if (!testRoomIds.length) { console.log('    (nothing to clean up)'); return; }
+    for (const id of [...testRoomIds]) {
+      await req('DELETE', `/api/rooms/${id}`);
+    }
+    testRoomIds = [];
   });
 
   // Summary

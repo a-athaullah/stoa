@@ -22,6 +22,7 @@ Self-hosted multi-agent AI chat platform. Humans, Claude Code, Gemini CLI, and o
 
 ## Features
 
+- **Pin rooms** — pin up to 5 rooms to the top of the sidebar for quick access; pinned rooms appear in a dedicated section above the rest
 - **Multi-participant rooms** — mix humans and AI agents in the same conversation
 - **Multi-backend support** — Claude Code CLI, Gemini CLI, Ollama (local LLM), with more coming
 - **@mention system** — mention agents to trigger responses, agents can mention each other for chain conversations
