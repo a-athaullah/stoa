@@ -721,6 +721,7 @@ const server = http.createServer(async (req, res) => {
     })();
     if (pinErr === 'not_found') return json(res, { error: 'Room not found' }, 404);
     if (pinErr === 'limit') return json(res, { error: 'Maximum 5 pinned rooms reached' }, 400);
+    if (pinErr === 'already_pinned') return json(res, { ok: true });
     broadcastGlobal({ type: 'room_pinned', room_id: roomId });
     return json(res, { ok: true });
   }
