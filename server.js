@@ -137,71 +137,49 @@ try {
   db.exec("CREATE INDEX IF NOT EXISTS idx_settings_scope_key ON settings(scope, key_name)");
 } catch {}
 
-// Migrate messages CHECK constraint to allow 'system_event' state
+// ─── Migration runner ─────────────────────────────────────────────────────────
+db.exec(`CREATE TABLE IF NOT EXISTS migrations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  filename TEXT NOT NULL UNIQUE,
+  executed_at INTEGER NOT NULL DEFAULT (unixepoch())
+)`);
+
+// Seed old inline migrations as already-applied for existing DBs
+const _seedMigrations = [
+  { filename: '20260601-add-system-event-state.sql', applied: () => {
+    const tbl = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'").get();
+    return !!(tbl?.sql?.includes('system_event'));
+  }},
+  { filename: '20260602-clean-duplicate-settings.sql', applied: () => true },
+];
+for (const m of _seedMigrations) {
+  if (!db.prepare('SELECT 1 FROM migrations WHERE filename=?').get(m.filename) && m.applied()) {
+    db.prepare('INSERT OR IGNORE INTO migrations (filename) VALUES (?)').run(m.filename);
+  }
+}
+
+// Run pending migrations from migrations/ folder
 try {
-  const tblSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'").get();
-  if (tblSql?.sql && !tblSql.sql.includes('system_event')) {
-    const cols = db.prepare("PRAGMA table_info(messages)").all().map(c => c.name);
-    const colList = cols.join(', ');
-    db.exec('BEGIN TRANSACTION');
+  const migFiles = fs.readdirSync(path.join(__dirname, 'migrations'))
+    .filter(f => f.endsWith('.sql'))
+    .sort();
+  for (const filename of migFiles) {
+    if (db.prepare('SELECT 1 FROM migrations WHERE filename=?').get(filename)) continue;
+    const sql = fs.readFileSync(path.join(__dirname, 'migrations', filename), 'utf8');
     try {
-      db.exec(`
-        CREATE TABLE messages_new (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          room_id INTEGER NOT NULL,
-          participant_id INTEGER NOT NULL,
-          content TEXT NOT NULL,
-          state TEXT DEFAULT 'complete' CHECK(state IN ('requesting','streaming','complete','error','system_event')),
-          reply_to INTEGER DEFAULT NULL,
-          image_url TEXT DEFAULT NULL,
-          file_url TEXT DEFAULT NULL,
-          file_name TEXT DEFAULT NULL,
-          attachments TEXT DEFAULT NULL,
-          created_at TEXT DEFAULT (datetime('now')),
-          completed_at TEXT DEFAULT NULL,
-          FOREIGN KEY (room_id) REFERENCES rooms(id),
-          FOREIGN KEY (participant_id) REFERENCES room_participants(id)
-        );
-        INSERT INTO messages_new (${colList}) SELECT ${colList} FROM messages;
-        DROP TABLE messages;
-        ALTER TABLE messages_new RENAME TO messages;
-      `);
-      // Recreate indexes
-      db.exec("CREATE INDEX IF NOT EXISTS idx_messages_room_id ON messages(room_id)");
-      db.exec("CREATE INDEX IF NOT EXISTS idx_messages_room_state ON messages(room_id, state)");
-      db.exec("CREATE INDEX IF NOT EXISTS idx_messages_participant ON messages(participant_id)");
-      db.exec("CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(reply_to)");
-      // Recreate FTS triggers (dropped with old table)
-      db.exec(`
-        CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages BEGIN
-          INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
-        END;
-        CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE OF content ON messages BEGIN
-          INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
-          INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
-        END;
-        CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
-          INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
-        END;
-      `);
+      db.exec('BEGIN TRANSACTION');
+      db.exec(sql);
+      db.prepare('INSERT INTO migrations (filename) VALUES (?)').run(filename);
       db.exec('COMMIT');
-      console.log('[db] migrated messages: added system_event to state CHECK');
+      console.log(`[migration] applied: ${filename}`);
     } catch (e) {
-      db.exec('ROLLBACK');
-      console.error('[db] messages migration failed, rolled back:', e.message);
+      try { db.exec('ROLLBACK'); } catch {}
+      console.error(`[migration] failed: ${filename} —`, e.message);
     }
   }
-} catch {}
-
-// Clean up duplicate settings rows caused by NULL scope_id UNIQUE bug
-try {
-  const dupes = db.prepare("SELECT key_name FROM settings WHERE scope='global' AND scope_id IS NULL GROUP BY key_name HAVING COUNT(*) > 1").all();
-  for (const { key_name } of dupes) {
-    const keep = db.prepare("SELECT id FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name=? ORDER BY id DESC LIMIT 1").get(key_name);
-    db.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name=? AND id!=?").run(key_name, keep.id);
-  }
-  if (dupes.length) console.log(`[migration] cleaned ${dupes.length} duplicate settings keys`);
-} catch {}
+} catch (e) {
+  if (e.code !== 'ENOENT') console.error('[migration] runner error:', e.message);
+}
 
 // ─── Auth: password hashing & session management ─────────────────────────────
 

@@ -186,6 +186,12 @@ CREATE INDEX IF NOT EXISTS idx_auth_users_email ON auth_users(email);
 CREATE INDEX IF NOT EXISTS idx_settings_scope_key ON settings(scope, key_name);
 CREATE INDEX IF NOT EXISTS idx_invite_suggestions_room_id ON invite_suggestions(room_id);
 
+CREATE TABLE IF NOT EXISTS migrations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  filename TEXT NOT NULL UNIQUE,
+  executed_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
 INSERT OR IGNORE INTO settings (scope, key_name, value) VALUES
   ('global','idle_timeout_seconds','300'),
   ('global','max_active_rooms_per_ai','3'),
