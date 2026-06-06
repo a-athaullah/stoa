@@ -721,7 +721,6 @@ const server = http.createServer(async (req, res) => {
     })();
     if (pinErr === 'not_found') return json(res, { error: 'Room not found' }, 404);
     if (pinErr === 'limit') return json(res, { error: 'Maximum 5 pinned rooms reached' }, 400);
-    if (pinErr === 'already_pinned') return json(res, { ok: true });
     broadcastGlobal({ type: 'room_pinned', room_id: roomId });
     return json(res, { ok: true });
   }
@@ -2630,10 +2629,7 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
   activeSequences.set(roomId, seq);
   let turnCount = 0;
 
-  const allParticipants = db.prepare(`
-    SELECT rp.id as participant_id, a.id as actor_id, a.name, a.type
-    FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=?
-  `).all(roomId);
+  // Immutable during sequence: prefetch once
   const wdRow = db.prepare(
     'SELECT w.path, w.actor_id FROM rooms r LEFT JOIN agent_workdirs w ON w.id=r.workdir_id WHERE r.id=?'
   ).get(roomId);
@@ -2642,9 +2638,11 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
     JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id
     WHERE m.id=?
   `).get(replyTo) : null;
-  // Static context: safe to prefetch (immutable during sequence)
-  const prefetchedCtx = { allParticipants, wdRow, repliedMsg };
-  // Dynamic: allAiInRoom queried per-iteration because invite resolution can add AIs mid-sequence
+  // Mutable during sequence: prepare once, execute per-iteration
+  const participantsStmt = db.prepare(`
+    SELECT rp.id as participant_id, a.id as actor_id, a.name, a.type
+    FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=?
+  `);
   const allAiStmt = db.prepare(`
     SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.adapter_config, a.avatar_color, a.avatar_symbol, a.avatar_url
     FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
@@ -2655,6 +2653,7 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
     if (seq.cancelled) break;
     turnCount++;
     const currentAgent = agents[i];
+    const prefetchedCtx = { allParticipants: participantsStmt.all(roomId), wdRow, repliedMsg };
     await triggerAiResponse(roomId, currentAgent, content, replyTo, attachments, prefetchedCtx);
     if (seq.cancelled) break;
 
