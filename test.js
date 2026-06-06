@@ -549,14 +549,14 @@ async function run() {
       pmMessageId = r.body.message_id;
     });
 
-    await test('POST /api/rooms/:id/message — wrong secret → 403', async () => {
+    await test('POST /api/rooms/:id/message — wrong secret → 401', async () => {
       if (!pmRoomId || !pmActorId) { console.log('    (skipped)'); return; }
       const r = await rawReq('POST', `/api/rooms/${pmRoomId}/message`,
         JSON.stringify({ content: 'should fail' }),
         'application/json',
         { 'X-Agent-Id': String(pmActorId), 'X-Agent-Secret': 'wrongsecret' }
       );
-      assert.strictEqual(r.status, 403, `expected 403, got ${r.status}`);
+      assert.strictEqual(r.status, 401, `expected 401, got ${r.status}`);
     });
 
     await test('DELETE /api/messages/:id — deletes proactive message → 204', async () => {

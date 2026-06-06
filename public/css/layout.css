@@ -259,7 +259,6 @@ body.sidebar-collapsed #sidebar { display: none; }
   background: inherit;
 }
 .h-room-row.swiped .h-room-content { transform: translateX(96px); }
-.h-room-row.swiped.h-room-row-archived .h-room-content { transform: translateX(96px); }
 .h-room-delete-btn {
   position: absolute;
   left: 0; top: 0; bottom: 0;
