@@ -258,7 +258,7 @@ body.sidebar-collapsed #sidebar { display: none; }
   z-index: 1;
   background: inherit;
 }
-.h-room-row.swiped .h-room-content { transform: translateX(48px); }
+.h-room-row.swiped .h-room-content { transform: translateX(96px); }
 .h-room-row.swiped.h-room-row-archived .h-room-content { transform: translateX(96px); }
 .h-room-delete-btn {
   position: absolute;
@@ -308,6 +308,22 @@ body.sidebar-collapsed #sidebar { display: none; }
 }
 .h-room-row.swiped .h-room-destroy-btn { opacity: 1; }
 
+.h-room-pin-mobile-btn {
+  position: absolute;
+  left: 48px; top: 0; bottom: 0;
+  width: 48px;
+  background: #5b8fd4;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+  cursor: pointer;
+}
+.h-room-row.swiped .h-room-pin-mobile-btn { opacity: 1; }
+
 .h-room-action {
   display: none;
   align-items: center;
@@ -342,7 +358,7 @@ body.sidebar-collapsed #sidebar { display: none; }
 }
 
 @media (min-width: 681px) {
-  .h-room-delete-btn, .h-room-restore-btn, .h-room-destroy-btn { display: none !important; }
+  .h-room-delete-btn, .h-room-restore-btn, .h-room-destroy-btn, .h-room-pin-mobile-btn { display: none !important; }
   .h-room-row.swiped .h-room-content { transform: none !important; }
   .h-room-row:hover .h-room-action { display: flex; }
 }
