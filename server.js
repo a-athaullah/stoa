@@ -1459,14 +1459,22 @@ Write-Host "Logs   : pm2 logs $AgentName"
     const actorId = parseInt(url.pathname.split('/')[3]);
     const data = parseJsonBody(await readBody(req));
     if (!data) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
-    const { path: dirPath, label } = data;
+    const { path: dirPath } = data;
     if (!dirPath?.trim()) { res.writeHead(400); return res.end('path required'); }
     const agentWs = agentClients.get(actorId);
     if (!agentWs) { res.writeHead(503); return res.end('agent offline'); }
     agentWs.send(JSON.stringify({ type: 'create_workdir', path: dirPath.trim() }));
-    db.prepare(
-      'INSERT INTO agent_workdirs (actor_id, path, label, is_default) VALUES (?,?,?,0) ON CONFLICT(actor_id, path) DO UPDATE SET label=excluded.label'
-    ).run(actorId, dirPath.trim(), (label || '').trim() || null);
+    const labelProvided = 'label' in data;
+    if (labelProvided) {
+      const labelValue = (data.label || '').trim() || null;
+      db.prepare(
+        'INSERT INTO agent_workdirs (actor_id, path, label, is_default) VALUES (?,?,?,0) ON CONFLICT(actor_id, path) DO UPDATE SET label=excluded.label'
+      ).run(actorId, dirPath.trim(), labelValue);
+    } else {
+      db.prepare(
+        'INSERT INTO agent_workdirs (actor_id, path, label, is_default) VALUES (?,?,?,0) ON CONFLICT(actor_id, path) DO NOTHING'
+      ).run(actorId, dirPath.trim(), null);
+    }
     const wd = db.prepare('SELECT id, path, label, is_default, model FROM agent_workdirs WHERE actor_id=? AND path=?').get(actorId, dirPath.trim());
     return json(res, wd);
   }
