@@ -155,7 +155,7 @@ const sessionPool = new Map(); // workdir → ClaudeSession
 const sessionIdleTimers = new Map(); // workdir → timeout id
 let SESSION_IDLE_TTL = 5; // minutes, configurable via server
 
-let AUTO_COMPACT_THRESHOLD = parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB || 500) * 1024; // KB, configurable
+let AUTO_COMPACT_THRESHOLD = parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB || '500') * 1024; // KB, configurable
 const compactsInFlight = new Set(); // workdir keys currently being compacted — prevents concurrent /compact on same session
 
 async function getSessionFileSize(workdir, sessionId) {
