@@ -468,6 +468,48 @@ async function run() {
     await req('PATCH', `/api/rooms/${roomId}`, { archived: false });
   });
 
+  await test('POST /api/rooms/:id/pin pins a room', async () => {
+    const { status, body } = await req('POST', `/api/rooms/${roomId}/pin`);
+    assert.strictEqual(status, 200);
+    assert.ok(body.ok);
+    const { body: rooms } = await req('GET', '/api/rooms');
+    const found = rooms.find(r => r.id === roomId);
+    assert.ok(found.is_pinned, 'room should be pinned');
+  });
+
+  await test('POST /api/rooms/:id/pin idempotent — re-pin returns ok', async () => {
+    const { status, body } = await req('POST', `/api/rooms/${roomId}/pin`);
+    assert.strictEqual(status, 200);
+    assert.ok(body.ok);
+  });
+
+  await test('DELETE /api/rooms/:id/pin unpins a room', async () => {
+    const { status, body } = await req('DELETE', `/api/rooms/${roomId}/pin`);
+    assert.strictEqual(status, 200);
+    assert.ok(body.ok);
+    const { body: rooms } = await req('GET', '/api/rooms');
+    const found = rooms.find(r => r.id === roomId);
+    assert.ok(!found.is_pinned, 'room should be unpinned');
+  });
+
+  await test('POST /api/rooms/:id/pin returns 400 when limit reached', async () => {
+    // Create 5 rooms and pin them all
+    const tempRooms = [];
+    for (let i = 0; i < 5; i++) {
+      const { body: r } = await req('POST', '/api/rooms', { title: `Test Room — pin-limit-${i}`, participant_ids: [humanId], workdir_id: firstWorkdirId });
+      tempRooms.push(r.id);
+      await req('POST', `/api/rooms/${r.id}/pin`);
+    }
+    // Now try to pin roomId (6th) — should fail
+    const { status, body } = await req('POST', `/api/rooms/${roomId}/pin`);
+    assert.strictEqual(status, 400);
+    assert.ok(body.error);
+    // Cleanup: unpin all temp rooms (room deletion handled by global cleanup)
+    for (const id of tempRooms) {
+      await req('DELETE', `/api/rooms/${id}/pin`);
+    }
+  });
+
   await test('GET /api/rooms/:id/participants returns 3 participants', async () => {
     const { body } = await req('GET', `/api/rooms/${roomId}/participants`);
     assert.ok(Array.isArray(body));
