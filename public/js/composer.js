@@ -996,7 +996,7 @@ function updateModelSelector(room, parts) {
 
 document.getElementById('model-select')?.addEventListener('change', function() {
   if (!currentRoomId || !ws) return;
-  ws.send(JSON.stringify({ type: 'set_room_model', room_id: currentRoomId, model: this.value }));
+  ws.send(JSON.stringify({ type: 'set_room_model', model: this.value }));
 });
 
 function mentionPopupNavigate(dir) {

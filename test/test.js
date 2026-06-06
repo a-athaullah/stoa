@@ -1462,6 +1462,44 @@ async function run() {
 
   browserWs.ws.close();
 
+  // ── 9o3. Model switching WS tests ────────────────────────────────────────────
+  console.log('\n9o3 · model switching');
+
+  await test('WS set_room_model updates room model in DB', async () => {
+    const bws = await connectBrowser(roomId);
+    bws.send({ type: 'set_room_model', model: 'claude-opus-4-8' });
+    await sleep(200);
+    const row = db.prepare('SELECT model FROM rooms WHERE id=?').get(roomId);
+    assert.strictEqual(row.model, 'claude-opus-4-8');
+    bws.send({ type: 'set_room_model', model: 'claude-sonnet-4-6' });
+    await sleep(100);
+    bws.ws.close();
+  });
+
+  await test('WS set_room_model broadcasts room_model_changed', async () => {
+    const sender = await connectBrowser(roomId);
+    const receiver = await connectBrowser(roomId);
+    const p = receiver.waitFor('room_model_changed', 3000);
+    sender.send({ type: 'set_room_model', model: 'claude-haiku-4-5-20251001' });
+    const msg = await p;
+    assert.strictEqual(msg.model, 'claude-haiku-4-5-20251001');
+    assert.strictEqual(msg.room_id, roomId);
+    sender.send({ type: 'set_room_model', model: 'claude-sonnet-4-6' });
+    await sleep(100);
+    sender.ws.close();
+    receiver.ws.close();
+  });
+
+  await test('WS set_room_model rejects unknown model', async () => {
+    const before = db.prepare('SELECT model FROM rooms WHERE id=?').get(roomId).model;
+    const bws = await connectBrowser(roomId);
+    bws.send({ type: 'set_room_model', model: 'gpt-4-turbo' });
+    await sleep(200);
+    const after = db.prepare('SELECT model FROM rooms WHERE id=?').get(roomId).model;
+    assert.strictEqual(after, before, 'unknown model must not update DB');
+    bws.ws.close();
+  });
+
   // ── 9p. Client error logging ────────────────────────────────────────────────
   console.log('\n9p · client error logging');
 
