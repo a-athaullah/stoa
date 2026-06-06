@@ -897,6 +897,7 @@ const server = http.createServer(async (req, res) => {
       max_ai_turns: parseInt(process.env.MAX_AI_TURNS) || 5,
       max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1,
       session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5,
+      auto_compact_threshold_kb: parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB) || 500,
       cleanup_cron_hour: parseInt(process.env.CLEANUP_CRON_HOUR) || 10,
       cleanup_max_age_hours: parseInt(process.env.CLEANUP_MAX_AGE_HOURS) || 24,
     });
@@ -929,6 +930,13 @@ const server = http.createServer(async (req, res) => {
       if (val >= 1 && val <= 60) {
         writeEnv('SESSION_IDLE_TTL', String(val)); process.env.SESSION_IDLE_TTL = String(val);
         for (const [, agentWs] of agentClients) agentWs.send(JSON.stringify({ type: 'set_config', session_idle_ttl: val }));
+      }
+    }
+    if (body.auto_compact_threshold_kb !== undefined) {
+      const val = parseInt(body.auto_compact_threshold_kb);
+      if (val >= 100 && val <= 5000) {
+        writeEnv('AUTO_COMPACT_THRESHOLD_KB', String(val)); process.env.AUTO_COMPACT_THRESHOLD_KB = String(val);
+        for (const [, agentWs] of agentClients) agentWs.send(JSON.stringify({ type: 'set_config', auto_compact_threshold_kb: val }));
       }
     }
     if (body.cleanup_cron_hour !== undefined) {
@@ -1830,7 +1838,7 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ type: 'force_update' }));
       }
       ws.send(JSON.stringify({ type: 'agent_ready' }));
-      ws.send(JSON.stringify({ type: 'set_config', max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1, session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5 }));
+      ws.send(JSON.stringify({ type: 'set_config', max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1, session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5, auto_compact_threshold_kb: parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB) || 500 }));
       const connectedActor = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, created_at FROM actors WHERE id=?').get(agentActorId);
       if (connectedActor) broadcastGlobal({ type: 'actor_status', actor: { ...connectedActor, online: true, client_version: msg.client_version || null } });
     }

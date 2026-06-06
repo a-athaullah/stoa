@@ -317,8 +317,8 @@ Di **Settings > AI Agent**, setiap agent punya dua tombol aksi:
 
 Stoa secara otomatis mengompres sesi agent tanpa intervensi manual. Dua mekanisme berjalan secara paralel:
 
-- **Pengecekan per-trigger** — setelah setiap respons agent, Stoa mengecek ukuran file sesi. Jika ukurannya melebihi 500 KB, agent menjalankan `/compact` segera setelah mengirim balasannya, lalu memberi tahu server. User menerima respons lebih dulu; kompaksi terjadi di latar belakang.
-- **Worker latar belakang** — setiap 60 menit, agent memindai semua sesi terbuka di mesinnya dan mengompres yang melebihi 500 KB. Ini juga membersihkan sesi yang terbuka secara lokal tetapi tidak aktif di room Stoa mana pun.
+- **Pengecekan per-trigger** — setelah setiap respons agent, Stoa mengecek ukuran file sesi. Jika ukurannya melebihi ambang batas compact yang dikonfigurasi (default 500 KB, dapat diubah di Settings → Server), agent menjalankan `/compact` segera setelah mengirim balasannya, lalu memberi tahu server. User menerima respons lebih dulu; kompaksi terjadi di latar belakang.
+- **Worker latar belakang** — setiap 60 menit, agent memindai semua sesi terbuka di mesinnya dan mengompres yang melebihi ambang batas compact yang dikonfigurasi. Ini juga membersihkan sesi yang terbuka secara lokal tetapi tidak aktif di room Stoa mana pun.
 
 Saat auto-compact berjalan, progress bar muncul di header room (sama seperti compact manual) dan compact marker tersimpan di riwayat pesan room. Marker ini persisten dan tetap terlihat setelah refresh halaman.
 

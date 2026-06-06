@@ -317,8 +317,8 @@ In **Settings > AI Agent**, each agent has two action buttons:
 
 Stoa automatically compacts agent sessions without manual intervention. Two mechanisms run in parallel:
 
-- **Per-trigger check** — after every agent response, Stoa checks the session file size. If it exceeds 500 KB, the agent runs `/compact` immediately after sending its reply, then notifies the server. The user receives the response first; compaction happens in the background.
-- **Background worker** — every 60 minutes, the agent scans all open sessions on its machine and compacts any that exceed 500 KB. This also cleans up sessions that are open locally but not active in any Stoa room.
+- **Per-trigger check** — after every agent response, Stoa checks the session file size. If it exceeds the configured compact threshold (default 500 KB, adjustable in Settings → Server), the agent runs `/compact` immediately after sending its reply, then notifies the server. The user receives the response first; compaction happens in the background.
+- **Background worker** — every 60 minutes, the agent scans all open sessions on its machine and compacts any that exceed the configured compact threshold. This also cleans up sessions that are open locally but not active in any Stoa room.
 
 When auto-compact runs, a progress bar appears in the room header (same as manual compact) and a compact marker is saved in the room's message history. The marker persists across page refreshes.
 

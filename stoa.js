@@ -155,7 +155,7 @@ const sessionPool = new Map(); // workdir → ClaudeSession
 const sessionIdleTimers = new Map(); // workdir → timeout id
 let SESSION_IDLE_TTL = 5; // minutes, configurable via server
 
-const AUTO_COMPACT_THRESHOLD = 500 * 1024; // 500 KB
+let AUTO_COMPACT_THRESHOLD = parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB || '500') * 1024; // KB, configurable
 const compactsInFlight = new Set(); // workdir keys currently being compacted — prevents concurrent /compact on same session
 
 async function getSessionFileSize(workdir, sessionId) {
@@ -353,6 +353,11 @@ async function handleAgentMessage(msg) {
       const prev = SESSION_IDLE_TTL;
       SESSION_IDLE_TTL = Math.max(1, Math.min(60, parseInt(msg.session_idle_ttl) || 5));
       if (prev !== SESSION_IDLE_TTL) console.log(`[stoa] session_idle_ttl: ${prev} → ${SESSION_IDLE_TTL}m`);
+    }
+    if (msg.auto_compact_threshold_kb !== undefined) {
+      const prev = AUTO_COMPACT_THRESHOLD;
+      AUTO_COMPACT_THRESHOLD = Math.max(100, Math.min(5000, parseInt(msg.auto_compact_threshold_kb) || 500)) * 1024;
+      if (prev !== AUTO_COMPACT_THRESHOLD) console.log(`[stoa] auto_compact_threshold: ${prev/1024}KB → ${AUTO_COMPACT_THRESHOLD/1024}KB`);
     }
   }
 
