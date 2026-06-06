@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS rooms (
   workdir_id INTEGER DEFAULT NULL,
   archived_at TEXT DEFAULT NULL,
   is_pinned INTEGER DEFAULT 0,
+  model TEXT DEFAULT NULL,
   created_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (created_by) REFERENCES actors(id)
 );

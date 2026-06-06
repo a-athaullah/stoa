@@ -102,6 +102,10 @@ try {
     db.prepare("ALTER TABLE rooms ADD COLUMN is_pinned INTEGER DEFAULT 0").run();
     console.log('[db] added rooms.is_pinned column');
   }
+  if (!cols.includes('model')) {
+    db.prepare("ALTER TABLE rooms ADD COLUMN model TEXT DEFAULT NULL").run();
+    console.log('[db] added rooms.model column');
+  }
 } catch {}
 
 try {
@@ -2491,6 +2495,19 @@ wss.on('connection', (ws, req) => {
       }
     }
 
+    if (msg.type === 'set_room_model' && subscribedRoom) {
+      const model = msg.model;
+      if (!model) return;
+      db.prepare("UPDATE rooms SET model=? WHERE id=?").run(model, subscribedRoom);
+      const clients = roomClients.get(subscribedRoom);
+      if (clients) {
+        for (const c of clients) {
+          if (c.readyState === 1) c.send(JSON.stringify({ type: 'room_model_changed', model, room_id: subscribedRoom }));
+        }
+      }
+      console.log(`[room] model set to ${model} for room ${subscribedRoom}`);
+    }
+
    } catch (err) { console.error('[ws] unhandled message error:', err); }
   });
 
@@ -3086,6 +3103,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   const wdRow = prefetchedCtx?.wdRow ?? db.prepare(
     'SELECT w.path, w.actor_id FROM rooms r LEFT JOIN agent_workdirs w ON w.id=r.workdir_id WHERE r.id=?'
   ).get(roomId);
+  const roomModel = db.prepare('SELECT model FROM rooms WHERE id=?').get(roomId)?.model || null;
   const defaultWd = db.prepare(
     'SELECT path FROM agent_workdirs WHERE actor_id=? AND is_default=1 LIMIT 1'
   ).get(ai.actor_id);
@@ -3115,6 +3133,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         fileUrl:  fullAttachments.find(a => a.type === 'file')?.url || undefined,
         fileName: fullAttachments.find(a => a.type === 'file')?.name || undefined,
         workdir: workdir    || undefined,
+        model: roomModel    || undefined,
         rawHistory: rawHistory.length ? rawHistory : undefined,
       }));
       console.log(`[trigger] sent to ${ai.name} agent, msgId=${msgId}`);
