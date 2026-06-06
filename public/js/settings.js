@@ -1240,6 +1240,7 @@ async function sLoadServerTab() {
   document.getElementById('s-max-ai-turns-input').value = data.max_ai_turns || 15;
   document.getElementById('s-max-concurrent-input').value = data.max_concurrent || 1;
   document.getElementById('s-session-idle-ttl-input').value = data.session_idle_ttl || 5;
+  document.getElementById('s-compact-threshold-input').value = data.auto_compact_threshold_kb || 500;
   document.getElementById('s-cleanup-hour-input').value = data.cleanup_cron_hour ?? 10;
   document.getElementById('s-cleanup-age-input').value = data.cleanup_max_age_hours || 24;
   sPublicUrl = data.public_url || '';
@@ -1573,6 +1574,11 @@ function initSettings() {
     const val = parseInt(document.getElementById('s-session-idle-ttl-input').value);
     if (!val || val < 1 || val > 60) return;
     sSaveSetting('session_idle_ttl', val, 's-session-idle-ttl-saved');
+  });
+  document.getElementById('s-compact-threshold-save')?.addEventListener('click', () => {
+    const val = parseInt(document.getElementById('s-compact-threshold-input').value);
+    if (!val || val < 100 || val > 5000) return;
+    sSaveSetting('auto_compact_threshold_kb', val, 's-compact-threshold-saved');
   });
   document.getElementById('s-cleanup-hour-save').addEventListener('click', () => {
     const val = parseInt(document.getElementById('s-cleanup-hour-input').value);

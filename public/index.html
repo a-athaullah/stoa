@@ -228,6 +228,13 @@
             <span class="s-server-value-hint">minutes before idle AI sessions auto-close — frees memory</span>
           </div>
           <div class="s-server-field">
+            <span class="s-server-field-label">compact threshold</span>
+            <input class="s-server-input" id="s-compact-threshold-input" type="number" min="100" max="5000" style="width:80px" autocomplete="off">
+            <span class="s-server-saved" id="s-compact-threshold-saved">saved</span>
+            <button class="s-server-save" id="s-compact-threshold-save">save</button>
+            <span class="s-server-value-hint">KB before auto-compact triggers — applied instantly (default 500)</span>
+          </div>
+          <div class="s-server-field">
             <span class="s-server-field-label">cleanup hour</span>
             <input class="s-server-input" id="s-cleanup-hour-input" type="number" min="0" max="23" style="width:70px" autocomplete="off">
             <span class="s-server-saved" id="s-cleanup-hour-saved">saved</span>
