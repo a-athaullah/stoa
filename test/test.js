@@ -1511,9 +1511,9 @@ async function run() {
     assert.strictEqual(status, 403);
   });
 
-  await test('POST /api/rooms/:id/message with wrong secret returns 403', async () => {
+  await test('POST /api/rooms/:id/message with wrong secret returns 401', async () => {
     const { status } = await reqAgent(`/api/rooms/${roomId}/message`, { content: 'hello' }, idrisId, 'wrongsecret');
-    assert.strictEqual(status, 403);
+    assert.strictEqual(status, 401);
   });
 
   await test('POST /api/rooms/:id/message with empty content returns 400', async () => {
