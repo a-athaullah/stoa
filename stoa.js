@@ -746,13 +746,17 @@ async function processTrigger(msg) {
     let session = getSession(targetDir);
     const needsResume = rid && session.resumeId !== rid;
     const needsFreshSession = !rid && session.resumeId;
+    const targetModel = msg.model || null;
+    const currentModel = session.flags.find((f, i, arr) => arr[i - 1] === '--model') || null;
+    const needsModelChange = targetModel && currentModel !== targetModel;
 
-    if (needsResume || needsFreshSession) {
+    if (needsResume || needsFreshSession || needsModelChange) {
       session.shutdown();
       const flags = rid ? ['--resume', rid] : [];
+      if (targetModel) flags.push('--model', targetModel);
       session = new SessionClass({ workDir: targetDir, flags, resumeId: rid || null });
       sessionPool.set(targetDir, session);
-      console.log(`[stoa] Session restarted: workdir=${targetDir}${rid ? ' resume=' + rid.slice(0, 8) + '...' : ' (fresh)'}`);
+      console.log(`[stoa] Session restarted: workdir=${targetDir}${rid ? ' resume=' + rid.slice(0, 8) + '...' : ' (fresh)'}${targetModel ? ' model=' + targetModel : ''}`);
     }
     activeTriggers.set(message_id, { workdir: targetDir, session });
     let fullContent = '';

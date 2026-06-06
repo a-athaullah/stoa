@@ -48,9 +48,15 @@ Click the **+** button in the room header to add AI agents to an existing room. 
 
 Click the room title in the chat header. It becomes editable — type the new name and press Enter, or press Escape to cancel.
 
-### Model Badge
+### Switching Claude Model
 
-Each room's header shows a **model badge** indicating which AI model the agent is using (e.g., "Opus 4", "Sonnet 4"). The model is auto-detected from the agent's Claude Code settings. Gemini agents currently show no model badge. The badge updates in real-time when the agent's model changes.
+When a room contains a Claude agent, a **model selector** appears at the right side of the formatting toolbar in the composer. Use it to override the model the agent will use for its next response:
+
+- **Haiku 4.5** — fastest and most economical
+- **Sonnet 4.5 / 4.6** — balanced performance and quality (default: Sonnet 4.6)
+- **Opus 4.6 / 4.7 / 4.8** — highest capability, best for complex or long-context tasks
+
+The selection is saved per room and takes effect immediately on the next message — no restart required. The selector is hidden when the room has no Claude agent (Gemini and Ollama agents are not affected).
 
 ### Pinning a Room
 

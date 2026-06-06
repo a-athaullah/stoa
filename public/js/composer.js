@@ -982,6 +982,23 @@ function applyMention(name) {
   hideMentionPopup();
 }
 
+// ── Model selector ────────────────────────────────────────────────────────
+function updateModelSelector(room, parts) {
+  const wrap = document.getElementById('model-selector-wrap');
+  const sel = document.getElementById('model-select');
+  if (!wrap || !sel) return;
+  const hasClaudeAgent = (parts || []).some(p => p.adapter === 'claude');
+  wrap.style.display = hasClaudeAgent ? 'flex' : 'none';
+  if (hasClaudeAgent) {
+    sel.value = room.model || 'claude-sonnet-4-6';
+  }
+}
+
+document.getElementById('model-select')?.addEventListener('change', function() {
+  if (!currentRoomId || !ws) return;
+  ws.send(JSON.stringify({ type: 'set_room_model', model: this.value }));
+});
+
 function mentionPopupNavigate(dir) {
   const popup = document.getElementById('mention-popup');
   if (popup.style.display === 'none') return false;

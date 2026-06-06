@@ -62,18 +62,7 @@ function renderChatHeader(room, participants) {
   });
   info.appendChild(name);
 
-  const tagline = document.createElement('div');
-  tagline.className = 'h-room-tagline';
-  const n = participants.length;
-  tagline.textContent = n === 1 ? 'one voice.' : n === 2 ? 'two voices.' : n + ' voices.';
-  const modelLabel = formatModelName(room.workdir_model);
-  if (modelLabel) {
-    const badge = document.createElement('span');
-    badge.className = 'h-model-badge';
-    badge.textContent = modelLabel;
-    tagline.appendChild(badge);
-  }
-  info.appendChild(tagline);
+
 
   header.appendChild(info);
 
@@ -628,6 +617,7 @@ async function openRoom(room) {
   renderRoomDots(room.id, parts);
   renderChatHeader(room, parts);
   renderComposerSeal();
+  if (typeof updateModelSelector === 'function') updateModelSelector(room, parts);
   fjson(`/api/rooms/${room.id}/skills`).then(s => { allSkills = s; }).catch(e => { allSkills = []; console.error('Failed to load skills for room', room.id, e); });
 
   connectWS(room.id);

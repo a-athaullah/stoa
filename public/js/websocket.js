@@ -294,6 +294,12 @@ function handleWsMessage(msg) {
     } else { wsShowToast('Rename failed — ' + (msg.error || 'unknown'), 'error'); }
     return;
   }
+
+  if (msg.type === 'room_model_changed') {
+    const sel = document.getElementById('model-select');
+    if (sel) sel.value = msg.model;
+    return;
+  }
 }
 
 // ── Server restart notification ───────────────────────────────────────────

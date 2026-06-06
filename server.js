@@ -61,143 +61,63 @@ if (fs.existsSync(envPath)) {
 // Initialize schema on startup
 db.exec(fs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
 
-// Migrate ai_sessions: participant_id UNIQUE → UNIQUE(participant_id, workdir)
-try {
-  const hasOld = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='ai_sessions'").get();
-  if (hasOld?.sql?.includes('participant_id INTEGER NOT NULL UNIQUE')) {
-    db.exec(`
-      CREATE TABLE ai_sessions_new (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        participant_id INTEGER NOT NULL,
-        claude_session_id TEXT NOT NULL,
-        workdir TEXT DEFAULT NULL,
-        status TEXT DEFAULT 'idle' CHECK(status IN ('active','idle')),
-        last_active_at TEXT DEFAULT (datetime('now')),
-        created_at TEXT DEFAULT (datetime('now')),
-        FOREIGN KEY (participant_id) REFERENCES room_participants(id),
-        UNIQUE (participant_id, workdir)
-      );
-      INSERT INTO ai_sessions_new SELECT * FROM ai_sessions;
-      DROP TABLE ai_sessions;
-      ALTER TABLE ai_sessions_new RENAME TO ai_sessions;
-    `);
-    console.log('[db] migrated ai_sessions: UNIQUE(participant_id) → UNIQUE(participant_id, workdir)');
-  }
-} catch {}
-try {
-  const cols = db.prepare("PRAGMA table_info(agent_workdirs)").all().map(c => c.name);
-  if (!cols.includes('model')) {
-    db.prepare("ALTER TABLE agent_workdirs ADD COLUMN model TEXT DEFAULT NULL").run();
-    console.log('[db] added agent_workdirs.model column');
-  }
-} catch {}
+// ─── Migration runner ─────────────────────────────────────────────────────────
+db.exec(`CREATE TABLE IF NOT EXISTS migrations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  filename TEXT NOT NULL UNIQUE,
+  executed_at INTEGER NOT NULL DEFAULT (unixepoch())
+)`);
 
-try {
-  const cols = db.prepare("PRAGMA table_info(rooms)").all().map(c => c.name);
-  if (!cols.includes('archived_at')) {
-    db.prepare("ALTER TABLE rooms ADD COLUMN archived_at TEXT DEFAULT NULL").run();
-    console.log('[db] added rooms.archived_at column');
+// Seed old inline migrations as already-applied for existing DBs
+const _seedMigrations = [
+  { filename: '20260590-migrate-ai-sessions-unique.sql', applied: () => {
+    const tbl = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='ai_sessions'").get();
+    return !!(tbl?.sql && !tbl.sql.includes('participant_id INTEGER NOT NULL UNIQUE'));
+  }},
+  { filename: '20260591-add-agent-workdirs-model.sql', applied: () => {
+    const cols = db.prepare("PRAGMA table_info(agent_workdirs)").all().map(c => c.name);
+    return cols.includes('model');
+  }},
+  { filename: '20260592-add-rooms-archived-at.sql', applied: () => {
+    const cols = db.prepare("PRAGMA table_info(rooms)").all().map(c => c.name);
+    return cols.includes('archived_at');
+  }},
+  { filename: '20260601-add-system-event-state.sql', applied: () => {
+    const tbl = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'").get();
+    return !!(tbl?.sql?.includes('system_event'));
+  }},
+  { filename: '20260602-clean-duplicate-settings.sql', applied: () => true },
+];
+for (const m of _seedMigrations) {
+  if (!db.prepare('SELECT 1 FROM migrations WHERE filename=?').get(m.filename) && m.applied()) {
+    db.prepare('INSERT OR IGNORE INTO migrations (filename) VALUES (?)').run(m.filename);
   }
-  if (!cols.includes('is_pinned')) {
-    db.prepare("ALTER TABLE rooms ADD COLUMN is_pinned INTEGER DEFAULT 0").run();
-    console.log('[db] added rooms.is_pinned column');
-  }
-} catch {}
+}
 
+// Run pending migrations from migrations/ folder
 try {
-  const cols = db.prepare("PRAGMA table_info(ai_sessions)").all().map(c => c.name);
-  if (!cols.includes('room_id')) {
-    db.prepare("ALTER TABLE ai_sessions ADD COLUMN room_id INTEGER DEFAULT NULL REFERENCES rooms(id)").run();
-    db.prepare("UPDATE ai_sessions SET room_id = (SELECT rp.room_id FROM room_participants rp WHERE rp.id = ai_sessions.participant_id)").run();
-    db.exec("CREATE INDEX IF NOT EXISTS idx_ai_sessions_room_id ON ai_sessions(room_id)");
-    console.log('[db] added ai_sessions.room_id with backfill from room_participants');
-  }
-} catch {}
-
-try {
-  const cols = db.prepare("PRAGMA table_info(actors)").all().map(c => c.name);
-  if (!cols.includes('available_models')) {
-    db.prepare("ALTER TABLE actors ADD COLUMN available_models TEXT DEFAULT NULL").run();
-    console.log('[db] added actors.available_models column');
-  }
-} catch {}
-
-// Add missing indexes for existing databases
-try {
-  db.exec("CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(reply_to)");
-  db.exec("CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at)");
-  db.exec("CREATE INDEX IF NOT EXISTS idx_automations_trigger ON automations(trigger_type, trigger_event, enabled)");
-  db.exec("CREATE INDEX IF NOT EXISTS idx_actors_type ON actors(type)");
-  db.exec("CREATE INDEX IF NOT EXISTS idx_messages_state ON messages(state)");
-  db.exec("CREATE INDEX IF NOT EXISTS idx_auth_users_email ON auth_users(email)");
-  db.exec("CREATE INDEX IF NOT EXISTS idx_settings_scope_key ON settings(scope, key_name)");
-} catch {}
-
-// Migrate messages CHECK constraint to allow 'system_event' state
-try {
-  const tblSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'").get();
-  if (tblSql?.sql && !tblSql.sql.includes('system_event')) {
-    const cols = db.prepare("PRAGMA table_info(messages)").all().map(c => c.name);
-    const colList = cols.join(', ');
-    db.exec('BEGIN TRANSACTION');
+  const migFiles = fs.readdirSync(path.join(__dirname, 'migrations'))
+    .filter(f => f.endsWith('.sql'))
+    .sort();
+  for (const filename of migFiles) {
+    if (db.prepare('SELECT 1 FROM migrations WHERE filename=?').get(filename)) continue;
+    const sql = fs.readFileSync(path.join(__dirname, 'migrations', filename), 'utf8');
     try {
-      db.exec(`
-        CREATE TABLE messages_new (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          room_id INTEGER NOT NULL,
-          participant_id INTEGER NOT NULL,
-          content TEXT NOT NULL,
-          state TEXT DEFAULT 'complete' CHECK(state IN ('requesting','streaming','complete','error','system_event')),
-          reply_to INTEGER DEFAULT NULL,
-          image_url TEXT DEFAULT NULL,
-          file_url TEXT DEFAULT NULL,
-          file_name TEXT DEFAULT NULL,
-          attachments TEXT DEFAULT NULL,
-          created_at TEXT DEFAULT (datetime('now')),
-          completed_at TEXT DEFAULT NULL,
-          FOREIGN KEY (room_id) REFERENCES rooms(id),
-          FOREIGN KEY (participant_id) REFERENCES room_participants(id)
-        );
-        INSERT INTO messages_new (${colList}) SELECT ${colList} FROM messages;
-        DROP TABLE messages;
-        ALTER TABLE messages_new RENAME TO messages;
-      `);
-      // Recreate indexes
-      db.exec("CREATE INDEX IF NOT EXISTS idx_messages_room_id ON messages(room_id)");
-      db.exec("CREATE INDEX IF NOT EXISTS idx_messages_room_state ON messages(room_id, state)");
-      db.exec("CREATE INDEX IF NOT EXISTS idx_messages_participant ON messages(participant_id)");
-      db.exec("CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(reply_to)");
-      // Recreate FTS triggers (dropped with old table)
-      db.exec(`
-        CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages BEGIN
-          INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
-        END;
-        CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE OF content ON messages BEGIN
-          INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
-          INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
-        END;
-        CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
-          INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
-        END;
-      `);
+      db.exec('BEGIN TRANSACTION');
+      db.exec(sql);
+      db.prepare('INSERT INTO migrations (filename) VALUES (?)').run(filename);
       db.exec('COMMIT');
-      console.log('[db] migrated messages: added system_event to state CHECK');
+      console.log(`[migration] applied: ${filename}`);
     } catch (e) {
-      db.exec('ROLLBACK');
-      console.error('[db] messages migration failed, rolled back:', e.message);
+      try { db.exec('ROLLBACK'); } catch {}
+      console.error(`[migration] failed: ${filename} —`, e.message);
     }
   }
-} catch {}
+} catch (e) {
+  if (e.code !== 'ENOENT') console.error('[migration] runner error:', e.message);
+}
 
-// Clean up duplicate settings rows caused by NULL scope_id UNIQUE bug
-try {
-  const dupes = db.prepare("SELECT key_name FROM settings WHERE scope='global' AND scope_id IS NULL GROUP BY key_name HAVING COUNT(*) > 1").all();
-  for (const { key_name } of dupes) {
-    const keep = db.prepare("SELECT id FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name=? ORDER BY id DESC LIMIT 1").get(key_name);
-    db.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name=? AND id!=?").run(key_name, keep.id);
-  }
-  if (dupes.length) console.log(`[migration] cleaned ${dupes.length} duplicate settings keys`);
-} catch {}
+const ALLOWED_CLAUDE_MODELS = new Set(['claude-haiku-4-5-20251001','claude-sonnet-4-5','claude-sonnet-4-6','claude-opus-4-6','claude-opus-4-7','claude-opus-4-8']);
 
 // ─── Auth: password hashing & session management ─────────────────────────────
 
@@ -2491,6 +2411,23 @@ wss.on('connection', (ws, req) => {
       }
     }
 
+    if (msg.type === 'set_room_model' && subscribedRoom) {
+      const model = msg.model;
+      if (!model) return;
+      if (!ALLOWED_CLAUDE_MODELS.has(model)) {
+        ws.send(JSON.stringify({ type: 'error', code: 'invalid_model', message: `Unknown model: ${model}` }));
+        return;
+      }
+      db.prepare("UPDATE rooms SET model=? WHERE id=?").run(model, subscribedRoom);
+      const clients = roomClients.get(subscribedRoom);
+      if (clients) {
+        for (const c of clients) {
+          if (c.readyState === 1) c.send(JSON.stringify({ type: 'room_model_changed', model, room_id: subscribedRoom }));
+        }
+      }
+      console.log(`[room] model set to ${model} for room ${subscribedRoom}`);
+    }
+
    } catch (err) { console.error('[ws] unhandled message error:', err); }
   });
 
@@ -3086,6 +3023,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   const wdRow = prefetchedCtx?.wdRow ?? db.prepare(
     'SELECT w.path, w.actor_id FROM rooms r LEFT JOIN agent_workdirs w ON w.id=r.workdir_id WHERE r.id=?'
   ).get(roomId);
+  const roomModel = db.prepare('SELECT model FROM rooms WHERE id=?').get(roomId)?.model || null;
   const defaultWd = db.prepare(
     'SELECT path FROM agent_workdirs WHERE actor_id=? AND is_default=1 LIMIT 1'
   ).get(ai.actor_id);
@@ -3115,6 +3053,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         fileUrl:  fullAttachments.find(a => a.type === 'file')?.url || undefined,
         fileName: fullAttachments.find(a => a.type === 'file')?.name || undefined,
         workdir: workdir    || undefined,
+        model: roomModel    || undefined,
         rawHistory: rawHistory.length ? rawHistory : undefined,
       }));
       console.log(`[trigger] sent to ${ai.name} agent, msgId=${msgId}`);
