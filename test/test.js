@@ -1493,8 +1493,10 @@ async function run() {
   await test('WS set_room_model rejects unknown model', async () => {
     const before = db.prepare('SELECT model FROM rooms WHERE id=?').get(roomId).model;
     const bws = await connectBrowser(roomId);
+    const errP = bws.waitFor('error', 2000);
     bws.send({ type: 'set_room_model', model: 'gpt-4-turbo' });
-    await sleep(200);
+    const errMsg = await errP;
+    assert.strictEqual(errMsg.code, 'invalid_model', 'error code must be invalid_model');
     const after = db.prepare('SELECT model FROM rooms WHERE id=?').get(roomId).model;
     assert.strictEqual(after, before, 'unknown model must not update DB');
     bws.ws.close();
