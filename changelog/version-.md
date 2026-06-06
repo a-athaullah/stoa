@@ -4,6 +4,7 @@
 
 ## Changes
 
+- fix: string fallback for AUTO_COMPACT_THRESHOLD_KB env parse
 - configurable auto-compact threshold via settings UI
 - feat: configurable auto-compact threshold [WIP]
 - feat: migration system + model switching (#5)
