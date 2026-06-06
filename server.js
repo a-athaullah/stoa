@@ -181,6 +181,8 @@ try {
   if (e.code !== 'ENOENT') console.error('[migration] runner error:', e.message);
 }
 
+const ALLOWED_CLAUDE_MODELS = new Set(['claude-haiku-4-5-20251001','claude-sonnet-4-5','claude-sonnet-4-6','claude-opus-4-6','claude-opus-4-7','claude-opus-4-8']);
+
 // ─── Auth: password hashing & session management ─────────────────────────────
 
 function hashPassword(password) {
@@ -2476,8 +2478,7 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'set_room_model' && subscribedRoom) {
       const model = msg.model;
       if (!model) return;
-      const _ALLOWED_MODELS = new Set(['claude-haiku-4-5-20251001','claude-sonnet-4-5','claude-sonnet-4-6','claude-opus-4-6','claude-opus-4-7','claude-opus-4-8']);
-      if (!_ALLOWED_MODELS.has(model)) return;
+      if (!ALLOWED_CLAUDE_MODELS.has(model)) return;
       db.prepare("UPDATE rooms SET model=? WHERE id=?").run(model, subscribedRoom);
       const clients = roomClients.get(subscribedRoom);
       if (clients) {
