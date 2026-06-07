@@ -197,6 +197,7 @@ function autoRenderConnectionCard(conn) {
       btns.push(`<button class="auto-small-btn auto-conn-delete-btn" data-id="${conn.id}" style="color:#b35a4b;border-color:color-mix(in srgb,#b35a4b 40%,transparent)">Delete</button>`);
     } else if (isError) {
       btns.push(`<button class="auto-small-btn auto-conn-retry-btn" data-id="${conn.id}" style="color:#b35a4b;border-color:color-mix(in srgb,#b35a4b 40%,transparent)">Retry</button>`);
+      btns.push(`<button class="auto-small-btn auto-conn-delete-btn" data-id="${conn.id}" style="color:#b35a4b;border-color:color-mix(in srgb,#b35a4b 40%,transparent)">Delete</button>`);
     }
     actions = `<div class="auto-row-actions" style="display:flex;gap:6px;opacity:0;transition:opacity .12s;margin-left:auto">${btns.join('')}</div>`;
   }
