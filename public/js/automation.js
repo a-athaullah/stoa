@@ -283,13 +283,13 @@ function autoRenderConnectionForm() {
         <!-- App Token -->
         <div style="display:flex;flex-direction:column;gap:5px">
           <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-mute)">App Token (Socket Mode)</span>
-          <input class="auto-token-input" id="auto-conn-app-token" type="password" placeholder="xapp-1-..." autocomplete="off" value="${escHtml(f.appToken)}">
+          <input class="auto-token-input" id="auto-conn-app-token" type="text" placeholder="xapp-1-..." autocomplete="off" value="${escHtml(f.appToken)}">
         </div>
 
         <!-- Bot/User Token -->
         <div style="display:flex;flex-direction:column;gap:5px">
           <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-mute)">${tokenLabel}</span>
-          <input class="auto-token-input" id="auto-conn-token" type="password" placeholder="${tokenPlaceholder}" autocomplete="off" value="${escHtml(f.token)}">
+          <input class="auto-token-input" id="auto-conn-token" type="text" placeholder="${tokenPlaceholder}" autocomplete="off" value="${escHtml(f.token)}">
         </div>
 
         ${autoState.connFormError ? `
