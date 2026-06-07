@@ -67,10 +67,11 @@ Dengan pendekatan User Token, bot **tidak perlu di-invite** ke channel — event
 
 ## Langkah 7 — Hubungkan di Stoa
 
-1. Buka Stoa → **Settings → automation**
-2. Klik **Connect Slack**
-3. Paste **App Token** (`xapp-1-...`) dan **User Token** (`xoxp-...`)
-4. Klik **Connect** — Stoa akan verifikasi koneksi
+1. Buka Stoa → **Settings → Automation → Connections**
+2. Klik **Add Connection**
+3. Masukkan nama, pilih **Slack** sebagai provider, pilih **User** sebagai token type
+4. Paste **App Token** (`xapp-1-...`) dan **User Token** (`xoxp-...`)
+5. Klik **Save** — Stoa akan memulai koneksi
 
 Setelah terhubung, kamu bisa menambahkan automation rules yang dipicu oleh event Slack.
 

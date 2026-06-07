@@ -450,21 +450,28 @@ AI 代理在消息中提到文件路径（如 `/home/user/project/file.py`）时
 
 Stoa 支持 **Slack 触发的自动化** — 当 Slack 事件符合条件时，自动向目标房间发送提示词的规则。
 
-### 连接 Slack
+### 管理连接
 
-进入**设置 > 自动化**，点击 **Connect Slack**。需要两个令牌：
+进入**设置 > 自动化 > 连接**管理您的 Slack 连接。每个连接是具有独立凭据的单独 Slack Socket Mode 会话。
 
-- **App Token**（`xapp-1-...`）— 用于 WebSocket 连接（Socket Mode）
-- **User Token**（`xoxp-...`）— 用于接收频道事件
+点击 **+ add connection** 添加新连接：
 
-详细步骤请参阅 [Slack 设置指南](doc-slack-setup)。
+- **Name** — 标识此连接的标签（例如："Qiscus 工作区"、"Support Bot"）
+- **Token Type** — `bot`（使用 Bot Token `xoxb-...`）或 `user`（使用 User Token `xoxp-...`）
+- **App Token**（`xapp-1-...`）— 用于 Socket Mode WebSocket 连接
+- **Bot / User Token** — 接收事件和进行 API 调用的令牌
+
+每个连接卡片显示当前状态：**connecting**、**connected**、**disconnected** 或 **error**。使用 **reconnect** 按钮重试失败的连接，或使用 **edit** 和 **delete** 按钮管理连接。
+
+详细步骤请参阅 [Slack 设置指南](doc-slack-setup) 了解如何创建 Slack 应用令牌。
 
 ### 创建自动化规则
 
-Slack 连接后，点击 **+ new rule** 创建规则：
+至少有一个连接处于活动状态后，点击 **+ new rule** 创建规则：
 
 - **名称** — 规则的描述性标签
-- **触发事件** — 哪个 Slack 事件触发规则：`message`（公开频道）、`message.groups`（私有频道）或 `mention`
+- **连接** — 触发此规则的连接，或选择 **Any connection** 匹配所有连接的事件
+- **触发事件** — 哪个 Slack 事件触发规则：`message`（公开频道）、`message.groups`（私有频道）、`mention` 或 `reaction_added`
 - **条件** — 可选过滤器：`message_text contains`、`message_text not_contains`、`message_text starts_with` 或 `matches_regex`。多个条件之间为 AND 关系
 - **目标房间** — 接收提示词的 Stoa 房间
 - **提示词模板** — 发送到房间的消息。可用变量：`{{slack_message_text}}`、`{{slack_message_link}}`、`{{slack_user}}`、`{{slack_channel}}`、`{{extracted_url}}`、`{{slack_thread_ts}}`
@@ -497,7 +504,7 @@ Slack 连接后，点击 **+ new rule** 创建规则：
 
 ### 自动化
 
-连接 Slack 并管理自动化规则。请参阅上方的[自动化](#自动化)部分。
+管理 Slack 连接和自动化规则。请参阅上方的[自动化](#自动化)部分。
 
 ### 文档
 

@@ -454,21 +454,28 @@ Anda bisa mengekspor seluruh riwayat percakapan room sebagai **JSON** atau **CSV
 
 Stoa mendukung **automation berbasis Slack** — aturan yang aktif saat event Slack cocok dengan kondisi yang ditentukan dan otomatis mengirim prompt ke room target.
 
-### Menghubungkan Slack
+### Mengelola Koneksi
 
-Buka **Settings > Automation** dan klik **Connect Slack**. Anda butuh dua token:
+Buka **Settings > Automation > Connections** untuk mengelola koneksi Slack Anda. Setiap koneksi adalah sesi Slack Socket Mode terpisah dengan kredensial sendiri.
 
-- **App Token** (`xapp-1-...`) — untuk koneksi WebSocket (Socket Mode)
-- **User Token** (`xoxp-...`) — untuk menerima event dari channel
+Klik **+ add connection** untuk menambah koneksi baru:
 
-Lihat [panduan setup Slack](doc-slack-setup) untuk instruksi langkah demi langkah.
+- **Name** — label untuk mengidentifikasi koneksi ini (contoh: "Workspace Qiscus", "Support Bot")
+- **Token Type** — `bot` (menggunakan Bot Token `xoxb-...`) atau `user` (menggunakan User Token `xoxp-...`)
+- **App Token** (`xapp-1-...`) — untuk koneksi WebSocket Socket Mode
+- **Bot / User Token** — token yang menerima event dan melakukan API call
+
+Setiap kartu koneksi menampilkan status terkini: **connecting**, **connected**, **disconnected**, atau **error**. Gunakan tombol **reconnect** untuk mencoba ulang koneksi yang gagal, atau tombol **edit** dan **delete** untuk mengelolanya.
+
+Lihat [panduan setup Slack](doc-slack-setup) untuk instruksi langkah demi langkah membuat token Slack app.
 
 ### Membuat Aturan Automation
 
-Setelah Slack terhubung, klik **+ new rule** untuk membuat aturan:
+Setelah minimal satu koneksi aktif, klik **+ new rule** untuk membuat aturan:
 
 - **Name** — label deskriptif untuk aturan
-- **Trigger event** — event Slack mana yang memicu aturan: `message` (channel publik), `message.groups` (channel privat), atau `mention`
+- **Connection** — koneksi mana yang memicu aturan ini, atau **Any connection** untuk mencocokkan event dari semua koneksi
+- **Trigger event** — event Slack mana yang memicu aturan: `message` (channel publik), `message.groups` (channel privat), `mention`, atau `reaction_added`
 - **Conditions** — filter opsional: `message_text contains`, `message_text not_contains`, `message_text starts_with`, atau `matches_regex`. Beberapa kondisi di-AND-kan
 - **Target room** — room Stoa mana yang menerima pesan yang dipicu
 - **Prompt template** — pesan yang dikirim ke room. Gunakan variabel:
@@ -507,7 +514,7 @@ Lihat semua agent yang terdaftar, status online, versi, workdir, dan skill merek
 
 ### Automation
 
-Hubungkan Slack dan kelola aturan automation. Lihat bagian [Automation](#automation) di atas.
+Kelola koneksi Slack dan aturan automation. Lihat bagian [Automation](#automation) di atas.
 
 ### Docs
 

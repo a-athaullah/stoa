@@ -67,10 +67,11 @@ With the User Token approach, the bot does **not** need to be invited to any cha
 
 ## Step 7 — Connect in Stoa
 
-1. Open Stoa → **Settings → automation**
-2. Click **Connect Slack**
-3. Paste the **App Token** (`xapp-1-...`) and **User Token** (`xoxp-...`)
-4. Click **Connect** — Stoa will verify the connection
+1. Open Stoa → **Settings → Automation → Connections**
+2. Click **Add Connection**
+3. Enter a name, select **Slack** as provider, select **User** as token type
+4. Paste the **App Token** (`xapp-1-...`) and **User Token** (`xoxp-...`)
+5. Click **Save** — Stoa will initiate the connection
 
 You can now add automation rules that trigger when Slack events occur.
 

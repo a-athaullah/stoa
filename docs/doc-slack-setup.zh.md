@@ -67,10 +67,11 @@ Stoa 通过 **Socket Mode** 连接 Slack — 这是一个出站 WebSocket 连接
 
 ## 第7步 — 在 Stoa 中连接
 
-1. 打开 Stoa → **Settings → automation**
-2. 点击 **Connect Slack**
-3. 粘贴 **App Token**（`xapp-1-...`）和 **User Token**（`xoxp-...`）
-4. 点击 **Connect** — Stoa 将验证连接
+1. 打开 Stoa → **Settings → Automation → Connections**
+2. 点击 **Add Connection**
+3. 输入名称，选择 **Slack** 作为提供商，选择 **User** 作为令牌类型
+4. 粘贴 **App Token**（`xapp-1-...`）和 **User Token**（`xoxp-...`）
+5. 点击 **Save** — Stoa 将建立连接
 
 连接成功后，你可以添加由 Slack 事件触发的自动化规则。
 

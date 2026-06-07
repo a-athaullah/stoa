@@ -148,6 +148,20 @@ CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(reply_to);
 CREATE INDEX IF NOT EXISTS idx_rooms_workdir_id ON rooms(workdir_id);
 CREATE INDEX IF NOT EXISTS idx_rooms_created_by ON rooms(created_by);
 
+CREATE TABLE IF NOT EXISTS automation_connections (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  name         TEXT NOT NULL,
+  provider     TEXT NOT NULL DEFAULT 'slack' CHECK(provider IN ('slack')),
+  token_type   TEXT NOT NULL DEFAULT 'bot' CHECK(token_type IN ('bot','user')),
+  credentials  TEXT NOT NULL DEFAULT '{}',
+  metadata     TEXT NOT NULL DEFAULT '{}',
+  status       TEXT NOT NULL DEFAULT 'disconnected' CHECK(status IN ('connected','disconnected','error','connecting')),
+  error_msg    TEXT DEFAULT NULL,
+  created_at   TEXT DEFAULT (datetime('now')),
+  updated_at   TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_automation_connections_provider ON automation_connections(provider, status);
+
 CREATE TABLE IF NOT EXISTS automations (
   id               INTEGER PRIMARY KEY,
   name             TEXT NOT NULL,
@@ -159,7 +173,8 @@ CREATE TABLE IF NOT EXISTS automations (
   enabled          INTEGER DEFAULT 1,
   last_run_at      TEXT,
   run_count        INTEGER DEFAULT 0,
-  created_at       TEXT DEFAULT (datetime('now'))
+  created_at       TEXT DEFAULT (datetime('now')),
+  connection_id    INTEGER DEFAULT NULL REFERENCES automation_connections(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS auth_users (
@@ -179,6 +194,7 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_automations_trigger ON automations(trigger_type, trigger_event, enabled);
+CREATE INDEX IF NOT EXISTS idx_automations_connection_id ON automations(connection_id);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_actors_type ON actors(type);
 CREATE INDEX IF NOT EXISTS idx_messages_state ON messages(state);
@@ -196,3 +212,4 @@ INSERT OR IGNORE INTO settings (scope, key_name, value) VALUES
   ('global','idle_timeout_seconds','300'),
   ('global','max_active_rooms_per_ai','3'),
   ('global','max_ai_turns_per_round','5');
+

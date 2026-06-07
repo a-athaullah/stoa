@@ -67,10 +67,11 @@ User Token 방식에서는 Bot을 채널에 초대할 필요가 없습니다 —
 
 ## 7단계 — Stoa에서 연결
 
-1. Stoa → **Settings → automation** 열기
-2. **Connect Slack** 클릭
-3. **App Token**(`xapp-1-...`)과 **User Token**(`xoxp-...`) 붙여넣기
-4. **Connect** 클릭 — Stoa가 연결을 확인합니다
+1. Stoa → **Settings → Automation → Connections** 열기
+2. **Add Connection** 클릭
+3. 이름 입력, 공급자 **Slack**, 토큰 유형 **User** 선택
+4. **App Token**(`xapp-1-...`)과 **User Token**(`xoxp-...`) 붙여넣기
+5. **Save** 클릭 — Stoa가 연결을 시작합니다
 
 연결 후, Slack 이벤트로 트리거되는 자동화 규칙을 추가할 수 있습니다.
 

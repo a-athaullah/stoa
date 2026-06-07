@@ -22,7 +22,7 @@ function getFallbackSession(participantId, workDir) {
   return session;
 }
 const { spawnGemini } = require('./gemini-adapter');
-const slackListener = require('./slack-listener');
+const connectionManager = require('./connection-manager');
 
 const EXPECTED_CLIENT_VERSION = (() => {
   try {
@@ -59,7 +59,11 @@ if (fs.existsSync(envPath)) {
 }
 
 // Initialize schema on startup
-db.exec(fs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
+try {
+  db.exec(fs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
+} catch (e) {
+  console.error('[schema] init warning (non-fatal):', e.message);
+}
 
 // ─── Migration runner ─────────────────────────────────────────────────────────
 db.exec(`CREATE TABLE IF NOT EXISTS migrations (
@@ -87,6 +91,11 @@ const _seedMigrations = [
     return !!(tbl?.sql?.includes('system_event'));
   }},
   { filename: '20260602-clean-duplicate-settings.sql', applied: () => true },
+  { filename: '20260609-automation-connections.sql', applied: () => {
+    const hasTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='automation_connections'").get();
+    const cols = db.prepare('PRAGMA table_info(automations)').all().map(c => c.name);
+    return !!(hasTable && cols.includes('connection_id'));
+  }},
 ];
 for (const m of _seedMigrations) {
   if (!db.prepare('SELECT 1 FROM migrations WHERE filename=?').get(m.filename) && m.applied()) {
@@ -350,6 +359,12 @@ function requireAuth(req, res, url) {
 }
 
 // ─── HTTP server ──────────────────────────────────────────────────────────────
+
+function updateConnStatus(id, status, errorMsg, meta) {
+  const md = JSON.stringify({ workspaceName: meta.workspaceName || '', botName: meta.botName || '' });
+  db.prepare("UPDATE automation_connections SET status=?, error_msg=?, metadata=?, updated_at=datetime('now') WHERE id=?")
+    .run(status, errorMsg || null, md, id);
+}
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -1496,54 +1511,111 @@ Write-Host "Logs   : pm2 logs $AgentName"
     return res.end(JSON.stringify(data, null, 2));
   }
 
-  // ── Automation: Slack config ────────────────────────────────────────────────
-  if (req.method === 'GET' && url.pathname === '/api/automations/slack') {
-    const appToken = getSetting('slack_app_token');
-    const connected = getSetting('slack_connected') === '1';
-    if (!connected || !appToken) return json(res, { connected: false });
-    const userToken = getSetting('slack_user_token');
-    const { workspaceName, botName } = slackListener.getStatus();
-    return json(res, {
-      connected: true,
-      workspaceName:  getSetting('slack_workspace_name') || workspaceName || '',
-      botName:        getSetting('slack_bot_name') || botName || '',
-      appTokenHint:   appToken.slice(0, 14),
-      userTokenHint:  userToken ? userToken.slice(0, 10) : null,
-    });
+  // ── Automation: Connections CRUD ──────────────────────────────────────────
+  if (req.method === 'GET' && url.pathname === '/api/automations/connections') {
+    const rows = db.prepare('SELECT id,name,provider,token_type,metadata,status,error_msg,created_at FROM automation_connections ORDER BY id ASC').all();
+    return json(res, rows.map(r => {
+      let meta = {}; try { meta = JSON.parse(r.metadata || '{}'); } catch {}
+      return { ...r, metadata: meta };
+    }));
   }
 
-  if (req.method === 'POST' && url.pathname === '/api/automations/slack/connect') {
+  if (req.method === 'POST' && url.pathname === '/api/automations/connections') {
     const body = parseJsonBody(await readBody(req));
-    if (!body?.appToken || !body?.userToken) { res.writeHead(400); return res.end(JSON.stringify({ error: 'appToken and userToken required' })); }
+    if (!body?.name || !body?.appToken || !body?.token) {
+      res.writeHead(400); return res.end(JSON.stringify({ error: 'name, appToken, token required' }));
+    }
+    const creds = JSON.stringify({ appToken: body.appToken, token: body.token });
+    const provider = body.provider || 'slack';
+    if (!['slack'].includes(provider)) {
+      res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid provider' }));
+    }
+    const tokenType = body.tokenType || 'bot';
+    if (!['bot','user'].includes(tokenType)) {
+      res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid tokenType' }));
+    }
+    const result = db.prepare(
+      'INSERT INTO automation_connections (name,provider,token_type,credentials,metadata,status) VALUES (?,?,?,?,?,?)'
+    ).run((body.name || '').trim(), provider, tokenType, creds, '{}', 'connecting');
+    const conn = db.prepare('SELECT * FROM automation_connections WHERE id=?').get(result.lastInsertRowid);
     try {
-      await slackListener.start({ appToken: body.appToken, userToken: body.userToken });
-      const { workspaceName, botName } = slackListener.getStatus();
-      setSetting('slack_app_token', body.appToken);
-      setSetting('slack_user_token', body.userToken);
-      setSetting('slack_connected', '1');
-      setSetting('slack_workspace_name', workspaceName || '');
-      setSetting('slack_bot_name', botName || '');
-      return json(res, {
-        connected: true,
-        workspaceName: workspaceName || '',
-        botName: botName || '',
-        appTokenHint: body.appToken.slice(0, 14),
-        userTokenHint: body.userToken.slice(0, 10),
-      });
+      await connectionManager.startConnection(conn, updateConnStatus);
+      const updated = db.prepare('SELECT id,name,provider,token_type,metadata,status,error_msg,created_at FROM automation_connections WHERE id=?').get(conn.id);
+      let meta = {}; try { meta = JSON.parse(updated.metadata || '{}'); } catch {}
+      return json(res, { ...updated, metadata: meta });
     } catch (e) {
-      console.error('[slack] connect error:', e.message);
-      res.writeHead(500); return res.end(JSON.stringify({ error: e.message }));
+      const updated = db.prepare('SELECT id,name,provider,token_type,metadata,status,error_msg,created_at FROM automation_connections WHERE id=?').get(conn.id);
+      let meta = {}; try { meta = JSON.parse(updated.metadata || '{}'); } catch {}
+      res.writeHead(500); return res.end(JSON.stringify({ ...updated, metadata: meta, error: e.message }));
     }
   }
 
-  if (req.method === 'DELETE' && url.pathname === '/api/automations/slack/disconnect') {
-    await slackListener.stop();
-    setSetting('slack_connected', '0');
-    setSetting('slack_app_token', '');
-    setSetting('slack_user_token', '');
-    setSetting('slack_workspace_name', '');
-    setSetting('slack_bot_name', '');
-    return json(res, { ok: true });
+  const connMatch = url.pathname.match(/^\/api\/automations\/connections\/(\d+)(\/.*)?$/);
+  if (connMatch) {
+    const connId = Number(connMatch[1]);
+    const sub = connMatch[2] || '';
+    const conn = db.prepare('SELECT * FROM automation_connections WHERE id=?').get(connId);
+    if (!conn) { res.writeHead(404); return res.end(JSON.stringify({ error: 'Not found' })); }
+
+    if (req.method === 'GET' && sub === '') {
+      let meta = {}; try { meta = JSON.parse(conn.metadata || '{}'); } catch {}
+      return json(res, { id: conn.id, name: conn.name, provider: conn.provider,
+        token_type: conn.token_type, metadata: meta, status: conn.status,
+        error_msg: conn.error_msg, created_at: conn.created_at });
+    }
+
+    if (req.method === 'PATCH' && sub === '') {
+      const body = parseJsonBody(await readBody(req));
+      const name = body.name !== undefined ? body.name.trim() : conn.name;
+      if (!name) { res.writeHead(400); return res.end(JSON.stringify({ error: 'name cannot be empty' })); }
+      let creds = {}; try { creds = JSON.parse(conn.credentials || '{}'); } catch {}
+      if (body.appToken) creds.appToken = body.appToken;
+      if (body.token) creds.token = body.token;
+      if (body.tokenType && !['bot','user'].includes(body.tokenType)) {
+        res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid tokenType' }));
+      }
+      const tokenType = body.tokenType || conn.token_type;
+      const tokenChanged = (body.appToken || body.token);
+      db.prepare("UPDATE automation_connections SET name=?,token_type=?,credentials=?,updated_at=datetime('now') WHERE id=?")
+        .run(name, tokenType, JSON.stringify(creds), connId);
+      if (tokenChanged && conn.status === 'connected') {
+        await connectionManager.stopConnection(connId);
+        db.prepare("UPDATE automation_connections SET status='disconnected',updated_at=datetime('now') WHERE id=?").run(connId);
+      }
+      const updated = db.prepare('SELECT id,name,provider,token_type,metadata,status,error_msg,created_at FROM automation_connections WHERE id=?').get(connId);
+      let meta = {}; try { meta = JSON.parse(updated.metadata || '{}'); } catch {}
+      return json(res, { ...updated, metadata: meta });
+    }
+
+    if (req.method === 'POST' && sub === '/disconnect') {
+      await connectionManager.stopConnection(connId);
+      db.prepare("UPDATE automation_connections SET status='disconnected',updated_at=datetime('now') WHERE id=?").run(connId);
+      return json(res, { ok: true });
+    }
+
+    if (req.method === 'POST' && sub === '/reconnect') {
+      db.prepare("UPDATE automation_connections SET status='connecting',updated_at=datetime('now') WHERE id=?").run(connId);
+      const freshConn = db.prepare('SELECT * FROM automation_connections WHERE id=?').get(connId);
+      try {
+        await connectionManager.startConnection(freshConn, updateConnStatus);
+        const updated = db.prepare('SELECT id,name,provider,token_type,metadata,status,error_msg,created_at FROM automation_connections WHERE id=?').get(connId);
+        let meta = {}; try { meta = JSON.parse(updated.metadata || '{}'); } catch {}
+        return json(res, { ...updated, metadata: meta });
+      } catch (e) {
+        const updated = db.prepare('SELECT id,name,provider,token_type,metadata,status,error_msg,created_at FROM automation_connections WHERE id=?').get(connId);
+        let meta = {}; try { meta = JSON.parse(updated.metadata || '{}'); } catch {}
+        res.writeHead(500); return res.end(JSON.stringify({ ...updated, metadata: meta, error: e.message }));
+      }
+    }
+
+    if (req.method === 'DELETE' && sub === '') {
+      if (connectionManager.isRunning(connId)) {
+        res.writeHead(409); return res.end(JSON.stringify({ error: 'Disconnect first' }));
+      }
+      db.prepare('DELETE FROM automation_connections WHERE id=?').run(connId);
+      return json(res, { ok: true });
+    }
+    res.writeHead(405); return res.end(JSON.stringify({ error: 'Method not allowed' }));
   }
 
   // ── Automation: CRUD ─────────────────────────────────────────────────────────
@@ -1558,8 +1630,8 @@ Write-Host "Logs   : pm2 logs $AgentName"
       res.writeHead(400); return res.end(JSON.stringify({ error: 'Missing required fields' }));
     }
     const result = db.prepare(`
-      INSERT INTO automations (name, trigger_type, trigger_event, trigger_conditions, target_room_id, prompt_template)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO automations (name, trigger_type, trigger_event, trigger_conditions, target_room_id, prompt_template, connection_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(
       body.name.trim(),
       body.trigger_type || 'slack',
@@ -1567,6 +1639,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
       body.trigger_conditions || '[]',
       parseInt(body.target_room_id),
       body.prompt_template.trim(),
+      parseInt(body.connection_id) || null,
     );
     const row = db.prepare('SELECT * FROM automations WHERE id=?').get(result.lastInsertRowid);
     return json(res, row);
@@ -1586,9 +1659,10 @@ Write-Host "Logs   : pm2 logs $AgentName"
       const roomId      = body.target_room_id !== undefined ? parseInt(body.target_room_id)          : auto.target_room_id;
       const prompt      = body.prompt_template !== undefined ? body.prompt_template.trim()           : auto.prompt_template;
       const enabled     = body.enabled !== undefined     ? (body.enabled ? 1 : 0)                    : auto.enabled;
+      const connId      = body.connection_id !== undefined ? (parseInt(body.connection_id) || null)  : auto.connection_id;
       db.prepare(`
-        UPDATE automations SET name=?, trigger_event=?, trigger_conditions=?, target_room_id=?, prompt_template=?, enabled=? WHERE id=?
-      `).run(name, event, conds, roomId, prompt, enabled, autoId);
+        UPDATE automations SET name=?, trigger_event=?, trigger_conditions=?, target_room_id=?, prompt_template=?, enabled=?, connection_id=? WHERE id=?
+      `).run(name, event, conds, roomId, prompt, enabled, connId, autoId);
       const updated = db.prepare('SELECT * FROM automations WHERE id=?').get(autoId);
       return json(res, updated);
     }
@@ -3148,9 +3222,12 @@ server.listen(PORT, () => {
 // ─── Slack automation listener ────────────────────────────────────────────────
 
 const _slackProcessed = new Map(); // key → expiresAt, for dedup
-slackListener.on('slack_event', async ({ eventType, event, webClient }) => {
+connectionManager.on('slack_event', async ({ eventType, event, webClient, connId }) => {
   // Deduplicate: Slack may deliver the same event multiple times
-  const dedupKey = `${event.ts}:${event.channel}:${eventType}`;
+  const isReaction = eventType === 'reaction_added';
+  const dedupKey = isReaction
+    ? `${event.event_ts}:${event.item?.channel}:${eventType}`
+    : `${event.ts}:${event.channel}:${eventType}`;
   const now = Date.now();
   if (_slackProcessed.has(dedupKey)) return;
   _slackProcessed.set(dedupKey, now + 120_000);
@@ -3161,19 +3238,37 @@ slackListener.on('slack_event', async ({ eventType, event, webClient }) => {
 
   try {
     const automations = db.prepare(
-      "SELECT * FROM automations WHERE enabled=1 AND trigger_type='slack' AND trigger_event=?"
-    ).all(eventType);
+      "SELECT * FROM automations WHERE enabled=1 AND trigger_type='slack' AND trigger_event=? AND (connection_id IS NULL OR connection_id=?)"
+    ).all(eventType, connId || null);
+
+    // Resolve event-level variables once (avoids N+1 Slack API calls per matched automation)
+    const text = isReaction ? (event.reaction || '') : (event.text || '');
+    const userId = event.user || '';
+    const channelId = isReaction ? (event.item?.channel || '') : (event.channel || '');
+    const workspace = getSetting('slack_workspace_name') || '';
+    const tsForLink = isReaction ? (event.item?.ts || '') : (event.ts || '');
+    const messageLink = tsForLink
+      ? `https://${workspace}.slack.com/archives/${channelId}/p${tsForLink.replace('.', '')}`
+      : '';
+    const extractedUrl = (text.match(/https?:\/\/[^\s]+/) || [])[0] || '';
+    const fieldValues = { message_text: text, slack_user: userId, slack_channel: channelId, reaction: text };
+
+    let slackUser = userId;
+    let slackChannel = channelId;
+    if (automations.length > 0) {
+      try {
+        const userInfo = await webClient.users.info({ user: userId });
+        slackUser = userInfo.user?.display_name || userInfo.user?.real_name || userId;
+      } catch {}
+      try {
+        const chanInfo = await webClient.conversations.info({ channel: channelId });
+        slackChannel = chanInfo.channel?.name || channelId;
+      } catch {}
+    }
 
     for (const auto of automations) {
       let conditions = [];
       try { conditions = JSON.parse(auto.trigger_conditions || '[]'); } catch {}
-
-      const text = event.text || '';
-      const userId = event.user || '';
-      const channelId = event.channel || '';
-
-      // Resolve field values
-      const fieldValues = { message_text: text, slack_user: userId, slack_channel: channelId };
 
       // Evaluate ALL conditions (AND)
       const allMatch = conditions.every(c => {
@@ -3189,25 +3284,6 @@ slackListener.on('slack_event', async ({ eventType, event, webClient }) => {
       });
 
       if (!allMatch) continue;
-
-      // Resolve variables
-      const workspace = getSetting('slack_workspace_name') || '';
-      const messageLink = event.ts
-        ? `https://${workspace}.slack.com/archives/${channelId}/p${event.ts.replace('.', '')}`
-        : '';
-      const extractedUrl = (text.match(/https?:\/\/[^\s]+/) || [])[0] || '';
-
-      let slackUser = userId;
-      try {
-        const userInfo = await webClient.users.info({ user: userId });
-        slackUser = userInfo.user?.display_name || userInfo.user?.real_name || userId;
-      } catch {}
-
-      let slackChannel = channelId;
-      try {
-        const chanInfo = await webClient.conversations.info({ channel: channelId });
-        slackChannel = chanInfo.channel?.name || channelId;
-      } catch {}
 
       const prompt = auto.prompt_template
         .replace(/\{\{slack_message_text\}\}/g, text)
@@ -3233,16 +3309,29 @@ slackListener.on('slack_event', async ({ eventType, event, webClient }) => {
 
 // Reconnect Slack on startup if previously connected
 (async () => {
-  try {
-    const connected  = getSetting('slack_connected') === '1';
-    const appToken   = getSetting('slack_app_token');
-    const userToken  = getSetting('slack_user_token') || null;
-    if (connected && appToken && userToken) {
-      console.log('[slack] reconnecting on startup…');
-      await slackListener.start({ appToken, userToken });
+  const legacyConnected = getSetting('slack_connected') === '1';
+  const legacyAppToken  = getSetting('slack_app_token');
+  const legacyToken     = getSetting('slack_user_token') || null;
+  if (legacyConnected && legacyAppToken && legacyToken) {
+    const existing = db.prepare('SELECT id FROM automation_connections LIMIT 1').get();
+    if (!existing) {
+      console.log('[conn] migrating legacy Slack settings -> automation_connections');
+      const creds = JSON.stringify({ appToken: legacyAppToken, token: legacyToken });
+      const wname = getSetting('slack_workspace_name') || '';
+      const bname = getSetting('slack_bot_name') || '';
+      const meta  = JSON.stringify({ workspaceName: wname, botName: bname });
+      db.prepare(
+        'INSERT INTO automation_connections (name,provider,token_type,credentials,metadata,status) VALUES (?,?,?,?,?,?)'
+      ).run('Slack — ' + (bname || 'default'), 'slack', 'user', creds, meta, 'disconnected');
     }
-  } catch (e) {
-    console.error('[slack] startup reconnect failed:', e.message);
-    setSetting('slack_connected', '0');
+  }
+  const conns = db.prepare("SELECT * FROM automation_connections WHERE status='connected'").all();
+  for (const conn of conns) {
+    try {
+      console.log(`[conn:${conn.id}] reconnecting on startup...`);
+      await connectionManager.startConnection(conn, updateConnStatus);
+    } catch (e) {
+      console.error(`[conn:${conn.id}] startup reconnect failed:`, e.message);
+    }
   }
 })();

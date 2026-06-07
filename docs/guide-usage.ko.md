@@ -450,21 +450,28 @@ AI 에이전트가 메시지에서 파일 경로(예: `/home/user/project/file.p
 
 Stoa는 **Slack 트리거 자동화**를 지원합니다 — Slack 이벤트가 조건과 일치할 때 자동으로 대상 룸에 프롬프트를 전송하는 규칙입니다.
 
-### Slack 연결
+### 연결 관리
 
-**설정 > 자동화**를 열고 **Connect Slack**을 클릭합니다. 두 가지 토큰이 필요합니다:
+**설정 > 자동화 > 연결**을 열어 Slack 연결을 관리합니다. 각 연결은 고유한 자격 증명을 가진 독립적인 Slack Socket Mode 세션입니다.
 
-- **App Token**(`xapp-1-...`) — WebSocket 연결용(Socket Mode)
-- **User Token**(`xoxp-...`) — 채널 이벤트 수신용
+**+ add connection**을 클릭하여 새 연결을 추가합니다:
 
-단계별 안내는 [Slack 설정 가이드](doc-slack-setup)를 참조하세요.
+- **Name** — 연결을 식별하는 레이블 (예: "Qiscus 워크스페이스", "Support Bot")
+- **Token Type** — `bot` (Bot Token `xoxb-...` 사용) 또는 `user` (User Token `xoxp-...` 사용)
+- **App Token** (`xapp-1-...`) — Socket Mode WebSocket 연결용
+- **Bot / User Token** — 이벤트를 수신하고 API 호출을 수행하는 토큰
+
+각 연결 카드에는 현재 상태가 표시됩니다: **connecting**, **connected**, **disconnected**, 또는 **error**. 실패한 연결을 재시도하려면 **reconnect** 버튼을, 관리하려면 **edit**과 **delete** 버튼을 사용하세요.
+
+Slack 앱 토큰 생성 방법은 [Slack 설정 가이드](doc-slack-setup)를 참조하세요.
 
 ### 자동화 규칙 만들기
 
-Slack이 연결되면 **+ new rule**을 클릭하여 규칙을 만듭니다:
+하나 이상의 연결이 활성화되면 **+ new rule**을 클릭하여 규칙을 만듭니다:
 
 - **이름** — 규칙의 설명 레이블
-- **트리거 이벤트** — 어떤 Slack 이벤트가 규칙을 실행할지: `message`(공개 채널), `message.groups`(비공개 채널), 또는 `mention`
+- **연결** — 이 규칙을 실행할 연결, 또는 모든 연결의 이벤트와 일치하는 **Any connection**
+- **트리거 이벤트** — 어떤 Slack 이벤트가 규칙을 실행할지: `message`(공개 채널), `message.groups`(비공개 채널), `mention`, 또는 `reaction_added`
 - **조건** — 선택적 필터: `message_text contains`, `message_text not_contains`, `message_text starts_with`, 또는 `matches_regex`. 여러 조건은 AND로 결합
 - **대상 룸** — 프롬프트를 받을 Stoa 룸
 - **프롬프트 템플릿** — 룸으로 보낼 메시지. 사용 가능한 변수: `{{slack_message_text}}`, `{{slack_message_link}}`, `{{slack_user}}`, `{{slack_channel}}`, `{{extracted_url}}`, `{{slack_thread_ts}}`
@@ -497,7 +504,7 @@ Slack이 연결되면 **+ new rule**을 클릭하여 규칙을 만듭니다:
 
 ### 자동화
 
-Slack을 연결하고 자동화 규칙을 관리합니다. 위의 [자동화](#자동화) 섹션을 참조하세요.
+Slack 연결과 자동화 규칙을 관리합니다. 위의 [자동화](#자동화) 섹션을 참조하세요.
 
 ### 문서
 

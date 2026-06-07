@@ -173,9 +173,11 @@ The idea: your team posts in a Slack channel. Stoa picks it up, triggers an AI a
 
 1. Create a Slack app at [api.slack.com/apps](https://api.slack.com/apps)
 2. Enable Socket Mode and generate an App-Level Token (`connections:write`)
-3. Add the `channels:history`, `channels:read`, `groups:history`, `groups:read` OAuth scopes
-4. Install the app to your workspace and copy the Bot User OAuth Token
-5. In Stoa Settings → Automation, paste both tokens and connect
+3. Add the `channels:history`, `channels:read`, `groups:history`, `groups:read` OAuth scopes (User Token Scopes for `xoxp-`, or Bot Token Scopes for `xoxb-`)
+4. Subscribe to events (`message.channels`, `message.groups`, `reaction_added`, etc.) and install the app to your workspace
+5. In Stoa → **Settings → Automation → Connections**, click **Add Connection** and paste both tokens
+
+See [`docs/doc-slack-setup.en.md`](docs/doc-slack-setup.en.md) for the full step-by-step guide.
 
 ### Automation Rules
 

@@ -1597,6 +1597,75 @@ async function run() {
     assert.ok(status === 403 || status === 404, `expected 403 or 404, got ${status}`);
   });
 
+
+  // ── 9s. Automation connections (CRUD + error cases) ──────────────────────
+  console.log('\n9s · automation connections');
+
+  // Automated: input validation & 404 cases (no Slack token required)
+
+  await test('POST /api/automations/connections — missing name returns 400', async () => {
+    const { status, body } = await req('POST', '/api/automations/connections', {
+      provider: 'slack', tokenType: 'bot', appToken: 'xapp-test', token: 'xoxb-test'
+    });
+    assert.strictEqual(status, 400);
+    assert.ok(body.error, 'should have error field');
+  });
+
+  await test('POST /api/automations/connections — invalid provider returns 400', async () => {
+    const { status, body } = await req('POST', '/api/automations/connections', {
+      name: 'Test Conn', provider: 'discord', tokenType: 'bot', appToken: 'xapp-test', token: 'xoxb-test'
+    });
+    assert.strictEqual(status, 400);
+    assert.ok(body.error);
+  });
+
+  await test('POST /api/automations/connections — invalid tokenType returns 400', async () => {
+    const { status, body } = await req('POST', '/api/automations/connections', {
+      name: 'Test Conn', provider: 'slack', tokenType: 'admin', appToken: 'xapp-test', token: 'xoxb-test'
+    });
+    assert.strictEqual(status, 400);
+    assert.ok(body.error);
+  });
+
+  await test('POST /api/automations/connections — missing appToken returns 400', async () => {
+    const { status, body } = await req('POST', '/api/automations/connections', {
+      name: 'Test Conn', provider: 'slack', tokenType: 'bot', token: 'xoxb-test'
+    });
+    assert.strictEqual(status, 400);
+    assert.ok(body.error);
+  });
+
+  await test('GET /api/automations/connections — returns array without credentials', async () => {
+    const { status, body } = await req('GET', '/api/automations/connections');
+    assert.strictEqual(status, 200);
+    assert.ok(Array.isArray(body), 'should return array');
+    for (const c of body) {
+      assert.ok(!c.credentials, 'credentials must not be in list response');
+    }
+  });
+
+  await test('GET /api/automations/connections/999999 — returns 404', async () => {
+    const { status } = await req('GET', '/api/automations/connections/999999');
+    assert.strictEqual(status, 404);
+  });
+
+  await test('PATCH /api/automations/connections/999999 — returns 404', async () => {
+    const { status } = await req('PATCH', '/api/automations/connections/999999', { name: 'x' });
+    assert.strictEqual(status, 404);
+  });
+
+  await test('DELETE /api/automations/connections/999999 — returns 404', async () => {
+    const { status } = await req('DELETE', '/api/automations/connections/999999');
+    assert.strictEqual(status, 404);
+  });
+
+  // Manual tests — require valid Slack tokens (xapp-1-... + xoxb-...)
+  console.log('  [MANUAL] POST /api/automations/connections — create with real tokens: name trimmed, credentials not in response, status=connecting');
+  console.log('  [MANUAL] GET /api/automations/connections/:id — returns connection without credentials');
+  console.log('  [MANUAL] PATCH /api/automations/connections/:id — invalid tokenType → 400, empty name → 400, valid name → 200');
+  console.log('  [MANUAL] POST /api/automations/connections/:id/reconnect — reconnects stopped connection → 200');
+  console.log('  [MANUAL] DELETE /api/automations/connections/:id — connected → 409 (must disconnect first), disconnected → 200');
+
   // ── 10. Cleanup ────────────────────────────────────────────────────────────
   console.log('\n10 · cleanup');
 
