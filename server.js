@@ -1513,10 +1513,12 @@ Write-Host "Logs   : pm2 logs $AgentName"
 
   // ── Automation: Connections CRUD ──────────────────────────────────────────
   if (req.method === 'GET' && url.pathname === '/api/automations/connections') {
-    const rows = db.prepare('SELECT id,name,provider,token_type,metadata,status,error_msg,created_at FROM automation_connections ORDER BY id ASC').all();
+    const rows = db.prepare('SELECT id,name,provider,token_type,credentials,metadata,status,error_msg,created_at FROM automation_connections ORDER BY id ASC').all();
     return json(res, rows.map(r => {
       let meta = {}; try { meta = JSON.parse(r.metadata || '{}'); } catch {}
-      return { ...r, metadata: meta };
+      let creds = {}; try { creds = JSON.parse(r.credentials || '{}'); } catch {}
+      const { credentials: _c, ...rest } = r;
+      return { ...rest, metadata: meta, appToken: creds.appToken || '', token: creds.token || '' };
     }));
   }
 
@@ -1559,9 +1561,11 @@ Write-Host "Logs   : pm2 logs $AgentName"
 
     if (req.method === 'GET' && sub === '') {
       let meta = {}; try { meta = JSON.parse(conn.metadata || '{}'); } catch {}
+      let creds2 = {}; try { creds2 = JSON.parse(conn.credentials || '{}'); } catch {}
       return json(res, { id: conn.id, name: conn.name, provider: conn.provider,
         token_type: conn.token_type, metadata: meta, status: conn.status,
-        error_msg: conn.error_msg, created_at: conn.created_at });
+        error_msg: conn.error_msg, created_at: conn.created_at,
+        appToken: creds2.appToken || '', token: creds2.token || '' });
     }
 
     if (req.method === 'PATCH' && sub === '') {

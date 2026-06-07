@@ -588,8 +588,8 @@ function autoBindEvents(container) {
       name: conn.name,
       provider: conn.provider || 'slack',
       tokenType: conn.token_type || 'bot',
-      appToken: '',
-      token: '',
+      appToken: conn.appToken || '',
+      token: conn.token || '',
     };
     autoRender();
   }));
