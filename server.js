@@ -3336,12 +3336,10 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
         await waitForRoomIdle(_roomId);
         await handleHumanMessage(_roomId, _prompt, null, null, null);
         await waitForRoomIdle(_roomId);
+        db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(_autoId);
       }, { automation: _autoName }).catch(e =>
         console.error(`[automation] room ${_roomId} trigger error:`, e.message)
       );
-
-      // Update run stats
-      db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(_autoId);
       console.log(`[automation] "${_autoName}" queued → room ${_roomId} (pending: ${automationQueue.pending(_roomId)})`);
     }
   } catch (e) {
