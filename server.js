@@ -2652,6 +2652,8 @@ function resolveAgentOrder(content, agents) {
 }
 
 const activeSequences = new Map(); // roomId → { cancelled: bool }
+const roomIdleBus = new (require('events').EventEmitter)();
+roomIdleBus.setMaxListeners(0); // unbounded — one listener per queued room
 
 async function triggerAgentsSequential(roomId, agents, content, replyTo, attachments) {
   const maxTurns = parseInt(process.env.MAX_AI_TURNS || '5');
@@ -2713,7 +2715,7 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
     }
   } finally {
     activeSequences.delete(roomId);
-    process.emit('stoa:room_idle', roomId);
+    roomIdleBus.emit('idle', roomId);
   }
 }
 
@@ -3238,16 +3240,16 @@ function waitForRoomIdle(roomId, timeoutMs = 300000) {
     if (!activeSequences.has(roomId)) return resolve();
     const onIdle = (id) => {
       if (id !== roomId) return;
-      process.removeListener('stoa:room_idle', onIdle);
+      roomIdleBus.removeListener('idle', onIdle);
       clearTimeout(timer);
       resolve();
     };
     const timer = setTimeout(() => {
-      process.removeListener('stoa:room_idle', onIdle);
+      roomIdleBus.removeListener('idle', onIdle);
       console.warn(`[queue] room ${roomId} idle timeout after ${timeoutMs}ms`);
       resolve();
     }, timeoutMs);
-    process.on('stoa:room_idle', onIdle);
+    roomIdleBus.on('idle', onIdle);
   });
 }
 
