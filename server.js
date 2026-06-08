@@ -3335,7 +3335,6 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
       automationQueue.enqueue(_roomId, async () => {
         await waitForRoomIdle(_roomId);
         await handleHumanMessage(_roomId, _prompt, null, null, null);
-        await new Promise(r => setTimeout(r, 300));
         await waitForRoomIdle(_roomId);
       }, { automation: _autoName }).catch(e =>
         console.error(`[automation] room ${_roomId} trigger error:`, e.message)
