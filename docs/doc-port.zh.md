@@ -62,7 +62,7 @@ pm2 delete stoa-server && pm2 start server.js --name stoa-server && pm2 save
 
 在**每台运行代理的机器**上，将 `STOA_URL` 环境变量更新为新端口。
 
-编辑生态系统配置文件（通常为 `~/stoa-agent/ecosystem.config.js`）：
+编辑生态系统配置文件（通常为 `~/.stoa/agent/ecosystem.config.js`）：
 
 ```js
 env: {

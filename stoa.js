@@ -1086,14 +1086,16 @@ function scanForWorkdirs() {
     if (depth > maxDepth) return;
     try {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
-      if (dir !== home && path.basename(dir) !== '.claude' && hasClaudeMarker(dir)) {
+      const base = path.basename(dir);
+      if (dir !== home && base !== '.claude' && base !== '.stoa' && hasClaudeMarker(dir)) {
         const skills = readSkills(dir);
         const model = readModel(dir);
-        results.push({ path: dir, skills, model, is_default: dir === home + '/stoa-workspace' || dir === path.join(home, 'stoa-workspace') });
+        const defaultWorkspace = path.join(home, '.stoa', 'workspace');
+        results.push({ path: dir, skills, model, is_default: dir === defaultWorkspace });
       }
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
-        if (entry.name.startsWith('.') && entry.name !== '.claude') continue;
+        if (entry.name.startsWith('.') && entry.name !== '.claude' && entry.name !== '.stoa') continue;
         if (excludeSet.has(entry.name.toLowerCase())) continue;
         // Skip .claude/projects — Claude Code internal session state, not real workdirs
         if (path.basename(dir) === '.claude' && entry.name === 'projects') continue;

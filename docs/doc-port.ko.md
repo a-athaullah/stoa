@@ -62,7 +62,7 @@ pm2 delete stoa-server && pm2 start server.js --name stoa-server && pm2 save
 
 에이전트가 실행 중인 **모든 머신**에서 `STOA_URL` 환경 변수를 새 포트로 업데이트합니다.
 
-에코시스템 설정 파일(일반적으로 `~/stoa-agent/ecosystem.config.js`)을 편집합니다:
+에코시스템 설정 파일(일반적으로 `~/.stoa/agent/ecosystem.config.js`)을 편집합니다:
 
 ```js
 env: {

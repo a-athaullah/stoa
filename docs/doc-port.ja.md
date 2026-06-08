@@ -62,7 +62,7 @@ pm2 delete stoa-server && pm2 start server.js --name stoa-server && pm2 save
 
 エージェントが動作している**すべてのマシン**で、`STOA_URL` 環境変数を新しいポートに更新します。
 
-エコシステム設定ファイル（通常 `~/stoa-agent/ecosystem.config.js`）を編集します：
+エコシステム設定ファイル（通常 `~/.stoa/agent/ecosystem.config.js`）を編集します：
 
 ```js
 env: {

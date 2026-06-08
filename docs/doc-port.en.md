@@ -62,7 +62,7 @@ pm2 delete stoa-server && pm2 start server.js --name stoa-server && pm2 save
 
 On **every machine running an agent**, update the `STOA_URL` environment variable to use the new port.
 
-Edit the ecosystem config file (usually `~/stoa-agent/ecosystem.config.js`):
+Edit the ecosystem config file (usually `~/.stoa/agent/ecosystem.config.js`):
 
 ```js
 env: {

@@ -1142,14 +1142,27 @@ set -e
 BASE_URL="${baseUrl}"
 STOA_URL="${stoaUrl}"
 REG_TOKEN="${token}"
-AGENT_DIR="\${HOME}/stoa-agent"
+AGENT_DIR="\${HOME}/.stoa/agent"
+WORK_DIR="\${HOME}/.stoa/workspace"
 
 echo "=== Stoa Agent Setup (${isGemini ? 'Gemini' : isOllama ? 'Ollama' : 'Claude'}) ==="
 echo "Server : \${BASE_URL}"
 echo ""
 
+# Migrate legacy locations (~/stoa-agent, ~/stoa-workspace) into ~/.stoa/
+if [ -d "\${HOME}/stoa-agent" ] && [ ! -d "\${AGENT_DIR}" ]; then
+  mkdir -p "\${HOME}/.stoa"
+  mv "\${HOME}/stoa-agent" "\${AGENT_DIR}"
+  echo "  migrated ~/stoa-agent -> ~/.stoa/agent"
+fi
+if [ -d "\${HOME}/stoa-workspace" ] && [ ! -d "\${WORK_DIR}" ]; then
+  mkdir -p "\${HOME}/.stoa"
+  mv "\${HOME}/stoa-workspace" "\${WORK_DIR}"
+  echo "  migrated ~/stoa-workspace -> ~/.stoa/workspace"
+fi
+
 mkdir -p "\${AGENT_DIR}"
-mkdir -p "\${HOME}/stoa-workspace"
+mkdir -p "\${WORK_DIR}"
 
 echo "[1/5] Downloading client files..."
 cd "\${AGENT_DIR}"
@@ -1177,7 +1190,7 @@ fi
 echo "  ok Actor #\${ACTOR_ID} (\${AGENT_NAME})"
 
 echo "[4/5] Approving workspace trust..."
-cd "\${HOME}/stoa-workspace"
+cd "\${WORK_DIR}"
 ${trustCmd}
 cd "\${AGENT_DIR}"
 
@@ -1191,13 +1204,13 @@ module.exports = {
   apps: [{
     name: '\${AGENT_NAME}',
     script: 'stoa.js',
-    cwd: process.env.HOME + '/stoa-agent',
+    cwd: process.env.HOME + '/.stoa/agent',
     env: {
       STOA_URL: '\${STOA_URL}',
       STOA_TYPE: 'ai',
       STOA_ACTOR_ID: '\${ACTOR_ID}',
       STOA_SECRET: '\${STOA_SECRET}',
-      STOA_WORK_DIR: process.env.HOME + '/stoa-workspace',${backendEnv}
+      STOA_WORK_DIR: process.env.HOME + '/.stoa/workspace',${backendEnv}
     },
     restart_delay: 3000,
     max_restarts: 50,
@@ -1257,12 +1270,27 @@ echo "Logs   : pm2 logs \${AGENT_NAME}"
 $BaseUrl = "${baseUrl}"
 $StoaUrl = "${stoaUrl}"
 $RegToken = "${token}"
-$AgentDir = "$env:USERPROFILE\\stoa-agent"
-$WorkDir  = "$env:USERPROFILE\\stoa-workspace"
+$StoaRoot = "$env:USERPROFILE\\.stoa"
+$AgentDir = "$StoaRoot\\agent"
+$WorkDir  = "$StoaRoot\\workspace"
+$LegacyAgent = "$env:USERPROFILE\\stoa-agent"
+$LegacyWork  = "$env:USERPROFILE\\stoa-workspace"
 
 Write-Host "=== Stoa Agent Setup (${ps1IsGemini ? 'Gemini' : ps1IsOllama ? 'Ollama' : 'Claude'}) ==="
 Write-Host "Server : $BaseUrl"
 Write-Host ""
+
+# Migrate legacy locations (~/stoa-agent, ~/stoa-workspace) into ~/.stoa/
+if ((Test-Path $LegacyAgent) -and -not (Test-Path $AgentDir)) {
+  New-Item -ItemType Directory -Force $StoaRoot | Out-Null
+  Move-Item $LegacyAgent $AgentDir
+  Write-Host "  migrated stoa-agent -> .stoa\\agent"
+}
+if ((Test-Path $LegacyWork) -and -not (Test-Path $WorkDir)) {
+  New-Item -ItemType Directory -Force $StoaRoot | Out-Null
+  Move-Item $LegacyWork $WorkDir
+  Write-Host "  migrated stoa-workspace -> .stoa\\workspace"
+}
 
 New-Item -ItemType Directory -Force $AgentDir | Out-Null
 New-Item -ItemType Directory -Force $WorkDir  | Out-Null
@@ -1301,13 +1329,13 @@ module.exports = {
   apps: [{
     name: '$AgentName',
     script: 'stoa.js',
-    cwd: require('os').homedir() + '/stoa-agent',
+    cwd: require('os').homedir() + '/.stoa/agent',
     env: {
       STOA_URL: '$StoaUrl',
       STOA_TYPE: 'ai',
       STOA_ACTOR_ID: String($ActorId),
       STOA_SECRET: '$Secret',
-      STOA_WORK_DIR: require('os').homedir() + '/stoa-workspace',${ps1BackendEnv}
+      STOA_WORK_DIR: require('os').homedir() + '/.stoa/workspace',${ps1BackendEnv}
     },
     restart_delay: 3000,
     max_restarts: 50,
