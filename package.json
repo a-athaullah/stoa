@@ -3,10 +3,18 @@
   "version": "0.0.38",
   "description": "",
   "main": "index.js",
+  "bin": {
+    "stoa": "cli.js"
+  },
   "scripts": {
     "start": "node server.js",
+    "link": "npm link",
+    "chat": "node cli.js chat",
+    "dashboard": "node cli.js dashboard",
+    "gateway": "node cli.js gateway",
+    "cli": "node cli.js",
+    "doctor": "node cli.js doctor",
     "build": "node build/build.js",
-    "cli": "STOA_TYPE=human STOA_ACTOR_ID=1 node stoa.js",
     "setup": "git config core.hooksPath .githooks && chmod +x .githooks/pre-push && echo 'Git hooks configured'"
   },
   "keywords": [],

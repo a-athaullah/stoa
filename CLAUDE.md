@@ -9,15 +9,29 @@ Stoa is a self-hosted multi-agent AI chat platform. Humans and AI agents (Claude
 ## Commands
 
 ```bash
-npm start              # run the server (node server.js) — but prefer PM2 in practice
-pm2 start server.js --name stoa-server   # how the server is actually run (survives terminal close)
+npm start              # run the server in the foreground (node server.js) — dev mode, data in repo
 npm run build          # bundle/minify frontend → public/dist + public/vendor (esbuild). NOT needed for dev.
-npm run cli            # run a human terminal client (STOA_TYPE=human STOA_ACTOR_ID=1 node stoa.js)
+npm run cli            # Stoa CLI dispatcher (node cli.js) — no args opens interactive chat
+npm run doctor         # node cli.js doctor — diagnose the local setup
 npm run setup          # configure git hooks (core.hooksPath = .githooks)
+
+node cli.js gateway enable   # run the server as a native background service (launchd/systemd), installed mode
 
 node test.js           # run all tests. Unit tests always run; integration tests need a running server.
 node test.js 3000      # run tests against a server on PORT 3000 (integration tests connect via HTTP/WS)
 ```
+
+### Dev vs installed: `paths.js`
+
+`paths.js` is the single source of truth for *where data lives*. **Development** (running from a git checkout, or `STOA_DEV=1`) keeps data in the repo — `db/stoa.db`, `./uploads`, `./.env` (the historical layout). **Installed** (no `.git`, or `STOA_DEV=0`) puts data under `~/.stoa/server/` — like Hermes' `~/.hermes`. Overrides: `STOA_HOME` (base, default `~/.stoa`), `STOA_DATA_DIR` (absolute server data dir), `DB_PATH` (db file only). `server.js`, `db/index.js`, and `cli.js` all resolve paths through this module — do not hardcode `path.join(__dirname, 'uploads' | '.env' | 'stoa.db')` for data; use `paths.*`. (Code/assets like `schema.sqlite.sql`, `migrations/`, `public/` still resolve from `__dirname` — they ship with the code.)
+
+> Note: `db` is `require`d before `.env` is loaded in `server.js`, so a `DB_PATH` set in `.env` is ignored for the DB — `paths.js` does not read `.env`. Set `DB_PATH`/`STOA_HOME` via the real environment if you need to override.
+
+### Stoa CLI (`cli.js`) + gateway (`gateway.js`)
+
+`cli.js` is a dependency-free, Hermes-style command dispatcher (`bin: stoa`). It derives `STOA_URL` from `PORT` in the resolved `.env` (the WS server shares the HTTP port), avoiding the stale `ws://localhost:3001` default baked into `stoa.js`. Subcommands: `chat [room]` (default), `install` (= `gateway enable`), `dashboard` (open the web UI in a browser, starting the gateway if needed), `gateway <cmd>`, `doctor`, `update`, `config <list|get|set>`, `rooms` (reads the local DB), `version`, `help`. To add one: add a `case` in the `main()` dispatch switch plus a line in `cmdHelp`.
+
+`gateway.js` runs the server as a **native background service** — launchd (`~/Library/LaunchAgents/com.stoa.server.plist`) on macOS, systemd user unit on Linux — with **no PM2 dependency**. `stoa gateway enable|disable|start|stop|restart|status|logs`. The service launches `server.js` from the repo but with `STOA_DEV=0`, so code stays in the dev checkout while data lives in `~/.stoa/server` (logs in `~/.stoa/logs`). This is the "run like an install, keep developing" split: `node server.js` = dev (repo data), `gateway` = installed (home data) — they use *separate* databases.
 
 There is no lint step and no test framework — `test.js` is a hand-rolled runner using `assert`. To run a single test, comment out others or temporarily guard the `ut(...)` / integration call you want; tests are plain function calls, not a registry you can filter by name.
 
@@ -25,7 +39,7 @@ The frontend has **no build step for development** — `server.js` serves raw fi
 
 ## Running the app to see changes
 
-Server changes: restart the server (`pm2 restart stoa-server`, or kill/rerun `node server.js`). Default login is `stoa@stoa.com` / `stoa2026!` at `http://localhost:3000`.
+Server changes: in dev, kill/rerun `node server.js`; if running as a service, `node cli.js gateway restart`. Default login is `stoa@stoa.com` / `stoa2026!` at `http://localhost:3030` (or the `PORT` in your `.env`).
 
 Agent-side changes (`stoa.js`, `*-session.js`): connected agents **auto-update within ~2 minutes** by pulling changed files from the server (see `UPDATE_FILES` / `UPDATE_INTERVAL` in `stoa.js`). For immediate testing, restart the agent process or trigger `force_update`.
 
@@ -85,4 +99,4 @@ Note `stoa.js` carries its own `CLIENT_VERSION` constant (separate from `package
 
 ## Environment
 
-Config is via `.env` (see `.env.example`). Key vars: `PORT` (3000), `HUMAN_NAME`, `STOA_PUBLIC_URL` (base URL in install commands), `DB_PATH`, `MAX_AI_TURNS`, `CLEANUP_CRON_HOUR`/`CLEANUP_MAX_AGE_HOURS` (daily upload cleanup). Agent-side env: `STOA_URL`, `STOA_ACTOR_ID`, `STOA_TYPE`, `STOA_SECRET`, `STOA_AI_BACKEND`, `STOA_MAX_CONCURRENT`.
+Config is via `.env` (see `.env.example`). Key vars: `PORT` (3030), `HUMAN_NAME`, `STOA_EMAIL`/`STOA_PASSWORD` (dashboard login — seeds on first run, and when set, syncs the auth user on every restart), `STOA_PUBLIC_URL` (base URL in install commands), `DB_PATH`, `MAX_AI_TURNS`, `CLEANUP_CRON_HOUR`/`CLEANUP_MAX_AGE_HOURS` (daily upload cleanup). Agent-side env: `STOA_URL`, `STOA_ACTOR_ID`, `STOA_TYPE`, `STOA_SECRET`, `STOA_AI_BACKEND`, `STOA_MAX_CONCURRENT`.
