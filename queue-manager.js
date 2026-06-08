@@ -28,26 +28,28 @@ class QueueManager extends EventEmitter {
     if (this._running.get(key)) return;
     this._running.set(key, true);
 
-    const queue = this._queues.get(key);
-    while (queue && queue.length > 0) {
-      const { fn, meta, resolve, reject } = queue.shift();
-      this.emit('processing', { key, pending: queue.length, meta });
+    try {
+      const queue = this._queues.get(key);
+      while (queue && queue.length > 0) {
+        const { fn, meta, resolve, reject } = queue.shift();
+        this.emit('processing', { key, pending: queue.length, meta });
 
-      try {
-        const result = await fn();
-        this.emit('completed', { key, pending: queue.length, meta });
-        this._stats.totalProcessed++;
-        resolve(result);
-      } catch (e) {
-        this.emit('error', { key, error: e, pending: queue.length, meta });
-        this._stats.totalProcessed++;
-        reject(e);
+        try {
+          const result = await fn();
+          this.emit('completed', { key, pending: queue.length, meta });
+          this._stats.totalProcessed++;
+          resolve(result);
+        } catch (e) {
+          this.emit('item_error', { key, error: e, pending: queue.length, meta });
+          this._stats.totalProcessed++;
+          reject(e);
+        }
       }
+    } finally {
+      this._running.delete(key);
+      this._queues.delete(key);
+      this.emit('drained', { key });
     }
-
-    this._running.delete(key);
-    this._queues.delete(key);
-    this.emit('drained', { key });
   }
 
   pending(key) {
