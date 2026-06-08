@@ -23,6 +23,13 @@ function getFallbackSession(participantId, workDir) {
 }
 const { spawnGemini } = require('./gemini-adapter');
 const connectionManager = require('./connection-manager');
+const automationQueue = require('./queue-manager');
+automationQueue.on('processing', ({ key, pending, meta }) => {
+  if (pending > 0) console.log(`[queue] room ${key}: processing "${meta?.automation || 'unknown'}" (${pending} waiting)`);
+});
+automationQueue.on('drained', ({ key }) => {
+  console.log(`[queue] room ${key}: queue drained`);
+});
 
 const EXPECTED_CLIENT_VERSION = (() => {
   try {
@@ -2645,6 +2652,8 @@ function resolveAgentOrder(content, agents) {
 }
 
 const activeSequences = new Map(); // roomId → { cancelled: bool }
+const roomIdleBus = new (require('events').EventEmitter)();
+roomIdleBus.setMaxListeners(0); // unbounded — one listener per queued room
 
 async function triggerAgentsSequential(roomId, agents, content, replyTo, attachments) {
   const maxTurns = parseInt(process.env.MAX_AI_TURNS || '5');
@@ -2652,59 +2661,62 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
   activeSequences.set(roomId, seq);
   let turnCount = 0;
 
-  // Immutable during sequence: prefetch once
-  const wdRow = db.prepare(
-    'SELECT w.path, w.actor_id FROM rooms r LEFT JOIN agent_workdirs w ON w.id=r.workdir_id WHERE r.id=?'
-  ).get(roomId);
-  const repliedMsg = replyTo ? db.prepare(`
-    SELECT m.content, a.name FROM messages m
-    JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id
-    WHERE m.id=?
-  `).get(replyTo) : null;
-  // Mutable during sequence: prepare once, execute per-iteration
-  const participantsStmt = db.prepare(`
-    SELECT rp.id as participant_id, a.id as actor_id, a.name, a.type
-    FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=?
-  `);
-  const allAiStmt = db.prepare(`
-    SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.adapter_config, a.avatar_color, a.avatar_symbol, a.avatar_url
-    FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
-    WHERE rp.room_id=? AND a.type='ai' AND rp.notify_on_message=1
-  `);
+  try {
+    // Immutable during sequence: prefetch once
+    const wdRow = db.prepare(
+      'SELECT w.path, w.actor_id FROM rooms r LEFT JOIN agent_workdirs w ON w.id=r.workdir_id WHERE r.id=?'
+    ).get(roomId);
+    const repliedMsg = replyTo ? db.prepare(`
+      SELECT m.content, a.name FROM messages m
+      JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id
+      WHERE m.id=?
+    `).get(replyTo) : null;
+    // Mutable during sequence: prepare once, execute per-iteration
+    const participantsStmt = db.prepare(`
+      SELECT rp.id as participant_id, a.id as actor_id, a.name, a.type
+      FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=?
+    `);
+    const allAiStmt = db.prepare(`
+      SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.adapter_config, a.avatar_color, a.avatar_symbol, a.avatar_url
+      FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
+      WHERE rp.room_id=? AND a.type='ai' AND rp.notify_on_message=1
+    `);
 
-  for (let i = 0; i < Math.min(agents.length, maxTurns); i++) {
-    if (seq.cancelled) break;
-    turnCount++;
-    const currentAgent = agents[i];
-    const prefetchedCtx = { allParticipants: participantsStmt.all(roomId), wdRow, repliedMsg };
-    await triggerAiResponse(roomId, currentAgent, content, replyTo, attachments, prefetchedCtx);
-    if (seq.cancelled) break;
+    for (let i = 0; i < Math.min(agents.length, maxTurns); i++) {
+      if (seq.cancelled) break;
+      turnCount++;
+      const currentAgent = agents[i];
+      const prefetchedCtx = { allParticipants: participantsStmt.all(roomId), wdRow, repliedMsg };
+      await triggerAiResponse(roomId, currentAgent, content, replyTo, attachments, prefetchedCtx);
+      if (seq.cancelled) break;
 
-    const lastMsg = db.prepare(`
-      SELECT m.content FROM messages m
-      JOIN room_participants rp ON rp.id=m.participant_id
-      WHERE rp.actor_id=? AND m.room_id=? AND m.state='complete'
-      ORDER BY m.id DESC LIMIT 1
-    `).get(currentAgent.actor_id, roomId);
+      const lastMsg = db.prepare(`
+        SELECT m.content FROM messages m
+        JOIN room_participants rp ON rp.id=m.participant_id
+        WHERE rp.actor_id=? AND m.room_id=? AND m.state='complete'
+        ORDER BY m.id DESC LIMIT 1
+      `).get(currentAgent.actor_id, roomId);
 
-    if (lastMsg?.content) {
-      const allAiInRoom = allAiStmt.all(roomId);
-      for (const other of allAiInRoom) {
-        if (other.actor_id !== currentAgent.actor_id && lastMsg.content.includes('@' + other.name)) {
-          const alreadyQueued = agents.slice(i + 1).some(a => a.actor_id === other.actor_id);
-          if (!alreadyQueued) agents.push(other);
+      if (lastMsg?.content) {
+        const allAiInRoom = allAiStmt.all(roomId);
+        for (const other of allAiInRoom) {
+          if (other.actor_id !== currentAgent.actor_id && lastMsg.content.includes('@' + other.name)) {
+            const alreadyQueued = agents.slice(i + 1).some(a => a.actor_id === other.actor_id);
+            if (!alreadyQueued) agents.push(other);
+          }
+        }
+
+        if (i < agents.length - 1) {
+          content = content + '\n\n' + `[${agents[i].name} sudah merespons: ${lastMsg.content}]`;
         }
       }
 
-      if (i < agents.length - 1) {
-        content = content + '\n\n' + `[${agents[i].name} sudah merespons: ${lastMsg.content}]`;
-      }
+      if (turnCount >= maxTurns) break;
     }
-
-    if (turnCount >= maxTurns) break;
+  } finally {
+    activeSequences.delete(roomId);
+    roomIdleBus.emit('idle', roomId);
   }
-
-  activeSequences.delete(roomId);
 }
 
 async function handleHumanMessage(roomId, content, attachments, replyTo, senderWs) {
@@ -3223,6 +3235,24 @@ server.listen(PORT, () => {
   console.log(`Stoa running → http://localhost:${PORT}`);
 });
 
+function waitForRoomIdle(roomId, timeoutMs = 300000) {
+  return new Promise(resolve => {
+    if (!activeSequences.has(roomId)) return resolve();
+    const onIdle = (id) => {
+      if (id !== roomId) return;
+      roomIdleBus.removeListener('idle', onIdle);
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      roomIdleBus.removeListener('idle', onIdle);
+      console.warn(`[queue] room ${roomId} idle timeout after ${timeoutMs}ms`);
+      resolve();
+    }, timeoutMs);
+    roomIdleBus.on('idle', onIdle);
+  });
+}
+
 // ─── Slack automation listener ────────────────────────────────────────────────
 
 const _slackProcessed = new Map(); // key → expiresAt, for dedup
@@ -3297,14 +3327,20 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
         .replace(/\{\{slack_channel\}\}/g, slackChannel)
         .replace(/\{\{extracted_url\}\}/g, extractedUrl);
 
-      // Send to target room (as human message to trigger agents)
-      handleHumanMessage(auto.target_room_id, prompt, null, null, null).catch(e =>
-        console.error(`[automation] room ${auto.target_room_id} trigger error:`, e.message)
+      // Queue automation — one at a time per room
+      const _roomId = auto.target_room_id;
+      const _prompt = prompt;
+      const _autoName = auto.name;
+      const _autoId = auto.id;
+      automationQueue.enqueue(_roomId, async () => {
+        await waitForRoomIdle(_roomId);
+        await handleHumanMessage(_roomId, _prompt, null, null, null);
+        await waitForRoomIdle(_roomId);
+        db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(_autoId);
+      }, { automation: _autoName }).catch(e =>
+        console.error(`[automation] room ${_roomId} trigger error:`, e.message)
       );
-
-      // Update run stats
-      db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(auto.id);
-      console.log(`[automation] "${auto.name}" triggered → room ${auto.target_room_id}`);
+      console.log(`[automation] "${_autoName}" queued → room ${_roomId} (pending: ${automationQueue.pending(_roomId)})`);
     }
   } catch (e) {
     console.error('[automation] slack_event handler error:', e.message);

@@ -1,9 +1,14 @@
-# v — 2026-06-07
+# v — 2026-06-08
 
 ✨ New features
 
 ## Changes
 
+- fix queue-manager: emit error crash + missing drain cleanup
+- remove unnecessary 300ms delay in automation queue
+- use dedicated roomIdleBus instead of process for room idle signals
+- wrap triggerAgentsSequential in try/finally for reliable cleanup
+- add per-room automation queue system
 - show token plain text in edit connection form
 - show existing tokens pre-filled in edit connection form
 - show delete button on error state connections
