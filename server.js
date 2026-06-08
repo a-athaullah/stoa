@@ -23,6 +23,13 @@ function getFallbackSession(participantId, workDir) {
 }
 const { spawnGemini } = require('./gemini-adapter');
 const connectionManager = require('./connection-manager');
+const automationQueue = require('./queue-manager');
+automationQueue.on('processing', ({ key, pending, meta }) => {
+  if (pending > 0) console.log(`[queue] room ${key}: processing "${meta?.automation || 'unknown'}" (${pending} waiting)`);
+});
+automationQueue.on('drained', ({ key }) => {
+  console.log(`[queue] room ${key}: queue drained`);
+});
 
 const EXPECTED_CLIENT_VERSION = (() => {
   try {
@@ -2705,6 +2712,7 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
   }
 
   activeSequences.delete(roomId);
+  process.emit('stoa:room_idle', roomId);
 }
 
 async function handleHumanMessage(roomId, content, attachments, replyTo, senderWs) {
@@ -3223,6 +3231,24 @@ server.listen(PORT, () => {
   console.log(`Stoa running → http://localhost:${PORT}`);
 });
 
+function waitForRoomIdle(roomId, timeoutMs = 300000) {
+  return new Promise(resolve => {
+    if (!activeSequences.has(roomId)) return resolve();
+    const onIdle = (id) => {
+      if (id !== roomId) return;
+      process.removeListener('stoa:room_idle', onIdle);
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      process.removeListener('stoa:room_idle', onIdle);
+      console.warn(`[queue] room ${roomId} idle timeout after ${timeoutMs}ms`);
+      resolve();
+    }, timeoutMs);
+    process.on('stoa:room_idle', onIdle);
+  });
+}
+
 // ─── Slack automation listener ────────────────────────────────────────────────
 
 const _slackProcessed = new Map(); // key → expiresAt, for dedup
@@ -3297,14 +3323,23 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
         .replace(/\{\{slack_channel\}\}/g, slackChannel)
         .replace(/\{\{extracted_url\}\}/g, extractedUrl);
 
-      // Send to target room (as human message to trigger agents)
-      handleHumanMessage(auto.target_room_id, prompt, null, null, null).catch(e =>
-        console.error(`[automation] room ${auto.target_room_id} trigger error:`, e.message)
+      // Queue automation — one at a time per room
+      const _roomId = auto.target_room_id;
+      const _prompt = prompt;
+      const _autoName = auto.name;
+      const _autoId = auto.id;
+      automationQueue.enqueue(_roomId, async () => {
+        await waitForRoomIdle(_roomId);
+        await handleHumanMessage(_roomId, _prompt, null, null, null);
+        await new Promise(r => setTimeout(r, 300));
+        await waitForRoomIdle(_roomId);
+      }, { automation: _autoName }).catch(e =>
+        console.error(`[automation] room ${_roomId} trigger error:`, e.message)
       );
 
       // Update run stats
-      db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(auto.id);
-      console.log(`[automation] "${auto.name}" triggered → room ${auto.target_room_id}`);
+      db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(_autoId);
+      console.log(`[automation] "${_autoName}" queued → room ${_roomId} (pending: ${automationQueue.pending(_roomId)})`);
     }
   } catch (e) {
     console.error('[automation] slack_event handler error:', e.message);
