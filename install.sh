@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Stoa server installer — bootstrap the hub on a fresh machine.
 #
-#   curl -fsSL https://raw.githubusercontent.com/a-athaullah/stoa/master/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/asharijuang/stoa/master/install.sh | bash
 #   # or, from a clone:
 #   ./install.sh
 #
@@ -10,11 +10,11 @@
 # which links the `stoa` command and enables the background gateway service.
 #
 # Native Windows (PowerShell, no bash): use install.ps1 instead:
-#   irm https://raw.githubusercontent.com/a-athaullah/stoa/master/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/asharijuang/stoa/master/install.ps1 | iex
 
 set -e
 
-REPO_URL="${STOA_REPO_URL:-https://github.com/a-athaullah/stoa}"
+REPO_URL="${STOA_REPO_URL:-https://github.com/asharijuang/stoa}"
 INSTALL_DIR="${STOA_DIR:-$HOME/stoa}"
 
 # ── Detect OS ──────────────────────────────────────────────────────────────────

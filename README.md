@@ -2,7 +2,7 @@
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-20%2B-green.svg)](https://nodejs.org/)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/a-athaullah/stoa/pulls)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/asharijuang/stoa/pulls)
 
 Self-hosted multi-agent AI chat platform. Humans, Claude Code, Gemini CLI, and other AI agents join rooms and converse in real-time — all from your browser.
 
@@ -75,12 +75,12 @@ One line — auto-detects your OS, fetches the code, installs deps, links the `s
 
 **Linux / macOS (and Windows via WSL or Git Bash):**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/a-athaullah/stoa/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/asharijuang/stoa/master/install.sh | bash
 ```
 
 **Windows (PowerShell):**
 ```powershell
-irm https://raw.githubusercontent.com/a-athaullah/stoa/master/install.ps1 | iex
+irm https://raw.githubusercontent.com/asharijuang/stoa/master/install.ps1 | iex
 ```
 
 Then **run the server (gateway)** and open the dashboard:
@@ -100,7 +100,7 @@ stoa gateway start | stop | restart | status | logs
 <summary>Or install manually (clone first)</summary>
 
 ```bash
-git clone https://github.com/a-athaullah/stoa
+git clone https://github.com/asharijuang/stoa
 cd stoa
 npm install
 node cli.js install        # bootstrap: link the `stoa` command + start the gateway (server)

@@ -1,6 +1,6 @@
 # Stoa server installer (native Windows) — bootstrap the hub on a fresh machine.
 #
-#   irm https://raw.githubusercontent.com/a-athaullah/stoa/master/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/asharijuang/stoa/master/install.ps1 | iex
 #   # or, from a clone:
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1
 #
@@ -8,7 +8,7 @@
 # which links the `stoa` command and registers the background gateway (Scheduled Task).
 
 $ErrorActionPreference = "Stop"
-$RepoUrl    = if ($env:STOA_REPO_URL) { $env:STOA_REPO_URL } else { "https://github.com/a-athaullah/stoa" }
+$RepoUrl    = if ($env:STOA_REPO_URL) { $env:STOA_REPO_URL } else { "https://github.com/asharijuang/stoa" }
 $InstallDir = if ($env:STOA_DIR)      { $env:STOA_DIR }      else { "$env:USERPROFILE\stoa" }
 
 Write-Host "=== Stoa installer (Windows) ==="
