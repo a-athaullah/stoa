@@ -1,0 +1,69 @@
+name: Release
+
+# Build the frontend bundles in CI (plenty of RAM) and publish a ready-to-use
+# tarball to GitHub Releases, so low-memory servers never have to run the build.
+#
+# Trigger: push a tag like v0.1.0  →  git tag v0.1.0 && git push origin v0.1.0
+# (Or run manually from the Actions tab.)
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag/name for the release artifact (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend bundles (public/dist + public/vendor)
+        run: npm run build
+
+      - name: Determine version
+        id: ver
+        run: echo "name=${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}" >> "$GITHUB_OUTPUT"
+
+      - name: Package ready-to-use tarball (source + built dist, no node_modules)
+        run: |
+          PKG="stoa-${{ steps.ver.outputs.name }}"
+          mkdir -p "out/${PKG}"
+          # node_modules is platform/arch-specific (native better-sqlite3) so it is
+          # NOT shipped — the server runs `npm install --omit=dev` to fetch a prebuilt.
+          rsync -a \
+            --exclude='.git' \
+            --exclude='node_modules' \
+            --exclude='out' \
+            --exclude='*.db' --exclude='*.db-shm' --exclude='*.db-wal' \
+            --exclude='uploads' \
+            --exclude='.env' \
+            --exclude='*.log' --exclude='*.err' \
+            ./ "out/${PKG}/"
+          tar -czf "${PKG}.tar.gz" -C out "${PKG}"
+          ls -lh "${PKG}.tar.gz"
+
+      - name: Publish to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.ver.outputs.name }}" \
+            "stoa-${{ steps.ver.outputs.name }}.tar.gz" \
+            --title "${{ steps.ver.outputs.name }}" \
+            --generate-notes \
+            || gh release upload "${{ steps.ver.outputs.name }}" \
+                 "stoa-${{ steps.ver.outputs.name }}.tar.gz" --clobber

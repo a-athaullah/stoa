@@ -84,6 +84,7 @@ function plistContent() {
   <dict>
     <key>STOA_DEV</key><string>0</string>
     <key>STOA_HOME</key><string>${homeDir()}</string>
+    <key>NODE_ENV</key><string>production</string>
     <key>PATH</key><string>${pathEnv}</string>
   </dict>
   <key>RunAtLoad</key><true/>
@@ -124,6 +125,7 @@ Type=simple
 WorkingDirectory=${REPO}
 Environment=STOA_DEV=0
 Environment=STOA_HOME=${homeDir()}
+Environment=NODE_ENV=production
 ExecStart=${NODE} ${path.join(REPO, 'server.js')}
 Restart=always
 RestartSec=3
@@ -160,6 +162,7 @@ const win = {
     const lines = [
       `$env:STOA_DEV = "0"`,
       `$env:STOA_HOME = "${homeDir()}"`,
+      `$env:NODE_ENV = "production"`,
       `Set-Location "${REPO}"`,
       `& "${NODE}" "${path.join(REPO, 'server.js')}" *>> "${logFile()}"`,
     ];

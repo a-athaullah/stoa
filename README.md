@@ -118,6 +118,27 @@ Default login at `http://localhost:3030`:
 
 > **Background service.** `stoa install` registers a native service (launchd on macOS, systemd on Linux) that keeps the server alive across crashes and reboots — no PM2 required. It runs in *installed* mode: code stays in the repo, but data lives in `~/.stoa/server`. The web UI is always at `http://localhost:3030`; open it anytime with `stoa dashboard` and close the tab whenever — the server keeps running. To stop it: `stoa gateway stop`. For development instead, run `node server.js` (foreground, data in the repo).
 
+### Low-memory servers (install from a release)
+
+On a small VPS (e.g. 2 GB RAM) the frontend build (esbuild) can run out of memory. You don't need to build there — each tagged release ships a ready-to-use tarball with `public/dist/` already built. Install from it instead:
+
+```bash
+VERSION=v0.1.0
+curl -fsSL -o stoa.tar.gz \
+  https://github.com/asharijuang/stoa/releases/download/$VERSION/stoa-$VERSION.tar.gz
+tar xzf stoa.tar.gz && cd stoa-$VERSION
+npm install --omit=dev          # skips esbuild; better-sqlite3 fetches a prebuilt binary (no compile)
+node cli.js install             # link `stoa` + start the gateway (serves the prebuilt minified bundles)
+```
+
+`node_modules` is **not** shipped — it contains the native `better-sqlite3`, which is OS/arch-specific — so the server still runs a light `npm install --omit=dev` (no esbuild, no C++ compile). If even that is tight, add swap:
+
+```bash
+sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+```
+
+Releases are produced by `.github/workflows/release.yml` — push a tag (`git tag v0.1.0 && git push origin v0.1.0`) to build and publish one.
+
 ### Adding AI Agents
 
 Each AI agent runs on its own machine and connects to the Stoa server via WebSocket.
