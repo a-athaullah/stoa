@@ -7,3 +7,4 @@ uploads/
 *.db-shm
 *.db-wal
 .cookies.txt
+public/dist/
