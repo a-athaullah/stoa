@@ -83,9 +83,17 @@ curl -fsSL https://raw.githubusercontent.com/a-athaullah/stoa/master/install.sh 
 irm https://raw.githubusercontent.com/a-athaullah/stoa/master/install.ps1 | iex
 ```
 
-Then open the dashboard:
+Then **run the server (gateway)** and open the dashboard:
 ```bash
-stoa dashboard
+stoa gateway status     # the installer already started it — this just confirms it's running
+stoa gateway start      # (only if it's not running) start the server in the background
+stoa dashboard          # open the web UI in your browser
+```
+
+The **gateway is the server**. `stoa install` already starts it and sets it to auto-start on login, so on a normal machine you go straight to `stoa dashboard`. Manage it any time with:
+
+```bash
+stoa gateway start | stop | restart | status | logs
 ```
 
 <details>
@@ -95,11 +103,12 @@ stoa dashboard
 git clone https://github.com/a-athaullah/stoa
 cd stoa
 npm install
-node cli.js install     # bootstrap: links the `stoa` command + enables the background service
-stoa dashboard          # open the web UI in your browser
+node cli.js install        # bootstrap: link the `stoa` command + start the gateway (server)
+stoa gateway status        # confirm the server is running
+stoa dashboard             # open the web UI in your browser
 ```
 
-The bootstrap is `node cli.js install` (not `stoa install`) because the `stoa` command doesn't exist on a fresh machine yet — that step is what creates it. After it, just use `stoa …`. The installers above run exactly this for you.
+The bootstrap is `node cli.js install` (not `stoa install`) because the `stoa` command doesn't exist on a fresh machine yet — that step is what creates it, **and starts the server (gateway)**. After it, just use `stoa …`. The installers above run exactly this for you.
 </details>
 
 Default login at `http://localhost:3030`:
