@@ -146,9 +146,20 @@ function linkCommand() {
   return false;
 }
 
+// Rebuild native modules (better-sqlite3) for THIS Node — the same one the gateway
+// service will run with (gateway.js bakes process.execPath). Keeps the ABI in sync
+// no matter which Node version installs, avoiding NODE_MODULE_VERSION crashes.
+function rebuildNative() {
+  const env = { ...process.env, PATH: `${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH}` };
+  const r = spawnSync('npm', ['rebuild', 'better-sqlite3'], { cwd: ROOT, stdio: 'ignore', env });
+  if (r.status === 0) console.log(ok(`native modules built for ${process.version}`));
+  else console.log(warn('better-sqlite3 rebuild failed — run `npm rebuild better-sqlite3` if the server won\'t start'));
+}
+
 async function cmdInstall() {
   console.log(`${C.bold}Installing Stoa…${C.reset}`);
   linkCommand();
+  rebuildNative();
   await require('./gateway').enable();
   console.log(`${C.gray}Done. Open the dashboard: ${C.reset}${C.cyan}stoa dashboard${C.reset}`);
 }
@@ -228,6 +239,7 @@ function cmdUpdate() {
   const after = pkg().version;
   console.log(ok(before === after ? `already at v${after}` : `v${before} → v${after}`));
 
+  rebuildNative();
   console.log(`${C.gray}Restarting gateway (if enabled)…${C.reset}`);
   require('./gateway').restart().catch(() => warn('Gateway not enabled — restart your server manually to apply.'));
   console.log(`${C.gray}Connected agents auto-update within ~2 minutes.${C.reset}`);
