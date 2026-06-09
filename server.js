@@ -62,6 +62,7 @@ if (fs.existsSync(envPath)) {
 // Non-secret settings live in config.yaml (see config.js). Seed it on first run.
 const config = require('./config');
 config.ensureFile();
+config.ensureEnvFile();
 let cfg = config.load();
 
 // Initialize schema on startup

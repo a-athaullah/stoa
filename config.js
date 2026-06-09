@@ -74,4 +74,20 @@ function ensureFile(seed = {}) {
   fs.writeFileSync(configPath(), yaml.dump(deepMerge(DEFAULTS, seed), { lineWidth: 100 }), 'utf8');
 }
 
-module.exports = { DEFAULTS, configPath, load, update, ensureFile };
+// In installed mode, drop a commented .env stub (from .env.example) next to
+// config.yaml so secrets have an obvious home. Dev keeps its own repo .env.
+function ensureEnvFile() {
+  if (paths.isDev()) return;
+  const target = paths.envFile();
+  if (fs.existsSync(target)) return;
+  const example = path.join(paths.REPO, '.env.example');
+  try {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const content = fs.existsSync(example)
+      ? fs.readFileSync(example, 'utf8')
+      : '# Stoa secrets (STOA_EMAIL / STOA_PASSWORD) and infra overrides — see .env.example\n';
+    fs.writeFileSync(target, content, 'utf8');
+  } catch {}
+}
+
+module.exports = { DEFAULTS, configPath, load, update, ensureFile, ensureEnvFile };
