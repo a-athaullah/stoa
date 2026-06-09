@@ -144,10 +144,46 @@ const linux = {
   logsCmd(follow) { return ['journalctl', ['--user', '-u', UNIT, '-n', '120', ...(follow ? ['-f'] : [])]]; },
 };
 
+// ─── Windows (Scheduled Task, at logon) ──────────────────────────────────────────
+const TASK = 'StoaServer';
+const LAUNCHER = path.join(serverDir(), 'run-server.ps1');
+
+function pwsh(cmd) { return spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', cmd], { encoding: 'utf8' }); }
+
+const win = {
+  writeLauncher() {
+    const lines = [
+      `$env:STOA_DEV = "0"`,
+      `$env:STOA_HOME = "${homeDir()}"`,
+      `Set-Location "${REPO}"`,
+      `& "${NODE}" "${path.join(REPO, 'server.js')}" *>> "${logFile()}"`,
+    ];
+    fs.writeFileSync(LAUNCHER, lines.join('\r\n'), 'utf8');
+  },
+  enable() {
+    this.writeLauncher();
+    const arg = `-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "${LAUNCHER}"`;
+    pwsh([
+      `$A = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '${arg}'`,
+      `$T = New-ScheduledTaskTrigger -AtLogOn`,
+      `$S = New-ScheduledTaskSettingsSet -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)`,
+      `Register-ScheduledTask -TaskName '${TASK}' -Action $A -Trigger $T -Settings $S -Force | Out-Null`,
+      `Start-ScheduledTask -TaskName '${TASK}'`,
+    ].join('; '));
+  },
+  disable() { pwsh(`Stop-ScheduledTask -TaskName '${TASK}' -EA SilentlyContinue; Unregister-ScheduledTask -TaskName '${TASK}' -Confirm:$false -EA SilentlyContinue`); },
+  start() { if (!this.installed()) this.enable(); else pwsh(`Start-ScheduledTask -TaskName '${TASK}'`); },
+  stop() { pwsh(`Stop-ScheduledTask -TaskName '${TASK}'`); },
+  loaded() { return /Running|Ready/i.test(pwsh(`(Get-ScheduledTask -TaskName '${TASK}' -EA SilentlyContinue).State`).stdout || ''); },
+  installed() { return /yes/.test(pwsh(`if (Get-ScheduledTask -TaskName '${TASK}' -EA SilentlyContinue) {'yes'}`).stdout || ''); },
+  logsCmd(follow) { return ['powershell', ['-NoProfile', '-Command', `Get-Content "${logFile()}" -Tail 120${follow ? ' -Wait' : ''}`]]; },
+};
+
 // ─── platform selection ─────────────────────────────────────────────────────────
 function impl() {
   if (process.platform === 'darwin') return mac;
   if (process.platform === 'linux') return linux;
+  if (process.platform === 'win32') return win;
   return null;
 }
 

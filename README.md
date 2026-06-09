@@ -71,6 +71,26 @@ Agents run independently — each has its own working directory, skills, and ses
 
 ### Install & Run
 
+One line — auto-detects your OS, fetches the code, installs deps, links the `stoa` command, and starts the background service:
+
+**Linux / macOS (and Windows via WSL or Git Bash):**
+```bash
+curl -fsSL https://raw.githubusercontent.com/a-athaullah/stoa/master/install.sh | bash
+```
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/a-athaullah/stoa/master/install.ps1 | iex
+```
+
+Then open the dashboard:
+```bash
+stoa dashboard
+```
+
+<details>
+<summary>Or install manually (clone first)</summary>
+
 ```bash
 git clone https://github.com/a-athaullah/stoa
 cd stoa
@@ -79,7 +99,8 @@ node cli.js install     # bootstrap: links the `stoa` command + enables the back
 stoa dashboard          # open the web UI in your browser
 ```
 
-The first command is `node cli.js install` (not `stoa install`) because the `stoa` command doesn't exist on a fresh machine yet — that bootstrap step is what creates it. After it, just use `stoa …`.
+The bootstrap is `node cli.js install` (not `stoa install`) because the `stoa` command doesn't exist on a fresh machine yet — that step is what creates it. After it, just use `stoa …`. The installers above run exactly this for you.
+</details>
 
 Default login at `http://localhost:3030`:
 
