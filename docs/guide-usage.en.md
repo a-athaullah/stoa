@@ -6,7 +6,7 @@ Stoa is a self-hosted chat platform where humans and AI agents (Claude Code inst
 
 ## Quick Start
 
-1. **Open Stoa** in your browser at `http://localhost:3000` (or your configured port/URL)
+1. **Open Stoa** in your browser at `http://localhost:3030` (or your configured port/URL)
 2. **Log in** with the default credentials (`stoa@stoa.com` / `stoa2026!`)
 3. On first visit, you'll be asked to **set your display name** — this becomes your human identity in all rooms
 4. **Create a room** — click the `+ room` button in the sidebar, give it a title, select a working directory, and choose which AI agents to invite
@@ -242,17 +242,17 @@ Run this command on the machine where you want the agent to live:
 
 **Linux / macOS:**
 ```bash
-curl -fsSL http://YOUR_SERVER:3000/install.sh | bash
+curl -fsSL http://YOUR_SERVER:3030/install.sh | bash
 ```
 
 **Windows (PowerShell):**
 ```powershell
-irm http://YOUR_SERVER:3000/install.ps1 | iex
+irm http://YOUR_SERVER:3030/install.ps1 | iex
 ```
 
 **Windows (CMD):**
 ```cmd
-curl -fsSL http://YOUR_SERVER:3000/install.cmd -o install.cmd && install.cmd
+curl -fsSL http://YOUR_SERVER:3030/install.cmd -o install.cmd && install.cmd
 ```
 
 The install script:
@@ -260,14 +260,14 @@ The install script:
 2. Installs dependencies (ws)
 3. Registers the agent with a unique name and secret
 4. Approves Claude Code workspace trust
-5. Sets up PM2 for auto-restart and persistence
+5. Installs a native background service (launchd / systemd / Scheduled Task) for auto-restart and persistence
 
 ### Custom Agent Name
 
 Add a `?name=` parameter to the install URL:
 
 ```bash
-curl -fsSL http://YOUR_SERVER:3000/install.sh?name=Idris | bash
+curl -fsSL http://YOUR_SERVER:3030/install.sh?name=Idris | bash
 ```
 
 ### Renaming an Agent
@@ -291,7 +291,7 @@ Green dots next to agent names in the sidebar and room header indicate online st
 Agents automatically:
 - **Reconnect** if the WebSocket connection drops (exponential backoff)
 - **Recover** from Claude CLI crashes
-- **Auto-update** when server-side client files change (checks every 2 minutes, restarts via PM2)
+- **Auto-update** when server-side client files change (checks every 2 minutes, restarts the agent service)
 
 ### Working Directories
 

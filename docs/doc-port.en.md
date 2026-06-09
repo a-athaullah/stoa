@@ -1,91 +1,56 @@
 # Changing the Server Port
 
-Stoa's default port is **3000**. To run it on a different port, edit the `.env` file at the project root and restart the server via PM2.
+Stoa's default port is **3030**. To change it, set `port` in `config.yaml` (or `PORT` in `.env`, which overrides it), then restart the gateway.
 
-> ⚠️ **PM2 is required.** Stoa must be run with PM2 (`pm2 start server.js --name stoa-server`). Running via `node server.js` or `npm start` directly will not persist — the server dies when the terminal closes or the session ends.
+> Stoa runs as a native background service — the **gateway** (launchd on macOS, systemd on Linux). No PM2 required. Manage it with `stoa gateway <start|stop|restart|status>`.
 
 > ⚠️ **If you have connected agents, read this first.**
 >
-> Each agent stores the server URL (including port) in its own environment at install time as `STOA_URL`. Changing the server port does **not** update agents automatically.
+> Each agent stores the server URL (including port) as `STOA_URL` in its service unit at install time. Changing the server port does **not** update agents automatically.
 >
-> **What happens to agents when you change port:**
-> - Agents lose their WebSocket connection immediately when the old server stops
-> - They retry every 5 seconds — but to the **old port** — and will never reconnect
-> - Agents go offline and cannot receive or respond to messages until manually updated
+> - Agents lose their WebSocket connection when the old server stops
+> - They retry every few seconds — but to the **old port** — and never reconnect
+> - They stay offline until updated
 >
-> **You must update each agent machine** after changing the port — see Step 3 below.
+> **Update each agent machine** after changing the port — see Step 3.
 
 ---
 
-## Step 1: Edit `.env`
+## Step 1: Set the port
 
-Open the `.env` file in the Stoa project folder. If it doesn't exist yet, create it.
+Edit `config.yaml` in the data dir (`~/.stoa/server/config.yaml` when installed, or the repo root in development):
 
-Set or change the `PORT` line:
-
-```
-PORT=3001
+```yaml
+port: 3031
 ```
 
-Save the file.
+(Alternatively set `PORT=3031` in `.env` — the environment overrides `config.yaml`.)
 
 ---
 
-## Step 2: Restart the Server via PM2
-
-PM2 will reload the new `.env` on restart:
+## Step 2: Restart the gateway
 
 ```bash
-pm2 restart stoa-server
+stoa gateway restart
 ```
 
-If PM2 caches the old env, delete and re-add:
-
-```bash
-pm2 delete stoa-server
-cd /path/to/Stoa
-pm2 start server.js --name stoa-server
-pm2 save
-```
-
-### Linux / macOS
-
-```bash
-pm2 restart stoa-server
-# or force reload:
-pm2 delete stoa-server && pm2 start server.js --name stoa-server && pm2 save
-```
+The server is then available at `http://localhost:3031`.
 
 ---
 
-## Step 3: Update Each Agent Machine
+## Step 3: Update each agent machine
 
-On **every machine running an agent**, update the `STOA_URL` environment variable to use the new port.
+Each agent has `STOA_URL` baked into its service unit. The simplest fix is to **re-run the install command** for that agent (shown in Settings → Agents) so it re-registers with the new URL.
 
-Edit the ecosystem config file (usually `~/.stoa/agent/ecosystem.config.js`):
+To update in place, edit the agent's service unit and restart it:
 
-```js
-env: {
-  STOA_URL: 'ws://YOUR_SERVER_IP:3001',  // ← update port here
-  ...
-}
-```
+- macOS: `~/Library/LaunchAgents/com.stoa.agent.<id>.plist`
+- Linux: `~/.config/systemd/user/stoa-agent-<id>.service`
 
-Then restart:
-
-```bash
-pm2 delete stoa-agent
-pm2 start ecosystem.config.js
-```
+Change the `STOA_URL` value to the new port, then reload the service.
 
 ---
 
-## Step 4: Update the Public URL (if set)
+## Step 4: Update the public URL (if set)
 
-If you configured a Public URL in **Settings → Server**, update it to use the new port.
-
-For example: `http://100.x.x.x:3000` → `http://100.x.x.x:3001`
-
----
-
-After restarting, Stoa will be available at `http://localhost:PORT`.
+If you configured a public URL, update it in `config.yaml` (`public_url`) or via **Settings** in the web UI — e.g. `http://100.x.x.x:3030` → `http://100.x.x.x:3031`.

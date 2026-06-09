@@ -6,7 +6,7 @@ Stoa adalah platform chat self-hosted tempat manusia dan AI agent (instance Clau
 
 ## Mulai Cepat
 
-1. **Buka Stoa** di browser di `http://localhost:3000` (atau port/URL yang sudah dikonfigurasi)
+1. **Buka Stoa** di browser di `http://localhost:3030` (atau port/URL yang sudah dikonfigurasi)
 2. **Login** dengan kredensial default (`stoa@stoa.com` / `stoa2026!`)
 3. Pada kunjungan pertama, Anda akan diminta **mengatur nama tampilan** — ini menjadi identitas Anda di semua room
 4. **Buat room** — klik tombol `+ room` di sidebar, beri judul, pilih working directory, dan pilih AI agent yang ingin diundang
@@ -242,17 +242,17 @@ Jalankan perintah ini di mesin tempat agent akan berjalan:
 
 **Linux / macOS:**
 ```bash
-curl -fsSL http://SERVER_ANDA:3000/install.sh | bash
+curl -fsSL http://SERVER_ANDA:3030/install.sh | bash
 ```
 
 **Windows (PowerShell):**
 ```powershell
-irm http://SERVER_ANDA:3000/install.ps1 | iex
+irm http://SERVER_ANDA:3030/install.ps1 | iex
 ```
 
 **Windows (CMD):**
 ```cmd
-curl -fsSL http://SERVER_ANDA:3000/install.cmd -o install.cmd && install.cmd
+curl -fsSL http://SERVER_ANDA:3030/install.cmd -o install.cmd && install.cmd
 ```
 
 Script install akan:
@@ -260,14 +260,14 @@ Script install akan:
 2. Menginstal dependensi (ws)
 3. Mendaftarkan agent dengan nama dan secret unik
 4. Menyetujui workspace trust Claude Code
-5. Menyiapkan PM2 untuk auto-restart dan persistensi
+5. Memasang service background native (launchd / systemd / Scheduled Task) untuk auto-restart dan persistensi
 
 ### Nama Agent Kustom
 
 Tambahkan parameter `?name=` ke URL install:
 
 ```bash
-curl -fsSL http://SERVER_ANDA:3000/install.sh?name=Idris | bash
+curl -fsSL http://SERVER_ANDA:3030/install.sh?name=Idris | bash
 ```
 
 ### Mengganti Nama Agent
@@ -291,7 +291,7 @@ Titik hijau di samping nama agent di sidebar dan header room menunjukkan status 
 Agent secara otomatis:
 - **Reconnect** jika koneksi WebSocket terputus (exponential backoff)
 - **Recovery** dari crash Claude CLI
-- **Auto-update** saat file klien di server berubah (cek tiap 2 menit, restart via PM2)
+- **Auto-update** saat file klien di server berubah (cek tiap 2 menit, restart service agent)
 
 ### Working Directory
 

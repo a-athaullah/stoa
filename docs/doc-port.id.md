@@ -1,91 +1,56 @@
 # Mengubah Port Server
 
-Port default Stoa adalah **3000**. Untuk menjalankannya di port yang berbeda, edit file `.env` di folder project dan restart server via PM2.
+Port default Stoa adalah **3030**. Untuk mengubahnya, atur `port` di `config.yaml` (atau `PORT` di `.env`, yang akan menimpa config.yaml), lalu restart gateway.
 
-> ⚠️ **PM2 wajib digunakan.** Stoa harus dijalankan dengan PM2 (`pm2 start server.js --name stoa-server`). Menjalankan via `node server.js` atau `npm start` langsung tidak akan persisten — server mati saat terminal ditutup atau sesi berakhir.
+> Stoa berjalan sebagai service background native — **gateway** (launchd di macOS, systemd di Linux). Tidak perlu PM2. Kelola dengan `stoa gateway <start|stop|restart|status>`.
 
 > ⚠️ **Jika kamu sudah punya agent yang tersambung, baca ini dulu.**
 >
-> Setiap agent menyimpan URL server (termasuk port) di environment-nya sendiri saat proses install, sebagai variabel `STOA_URL`. Mengubah port server **tidak otomatis** memperbarui agent.
+> Setiap agent menyimpan URL server (termasuk port) sebagai `STOA_URL` di service unit-nya saat install. Mengubah port server **tidak** otomatis memperbarui agent.
 >
-> **Yang terjadi pada agent saat port diganti:**
-> - Agent langsung kehilangan koneksi WebSocket saat server lama dimatikan
-> - Agent mencoba reconnect setiap 5 detik — tapi ke **port lama** — dan tidak akan pernah berhasil
-> - Agent offline dan tidak bisa menerima atau membalas pesan sampai diperbarui manual
+> - Agent kehilangan koneksi WebSocket saat server lama dimatikan
+> - Agent reconnect tiap beberapa detik — tapi ke **port lama** — dan tidak akan berhasil
+> - Agent tetap offline sampai diperbarui
 >
-> **Kamu harus update setiap mesin agent** setelah mengganti port — lihat Langkah 3 di bawah.
+> **Update setiap mesin agent** setelah mengganti port — lihat Langkah 3.
 
 ---
 
-## Langkah 1: Edit `.env`
+## Langkah 1: Atur port
 
-Buka file `.env` di folder Stoa. Jika belum ada, buat baru.
+Edit `config.yaml` di folder data (`~/.stoa/server/config.yaml` saat installed, atau root repo saat development):
 
-Tambahkan atau ubah baris `PORT`:
-
-```
-PORT=3001
+```yaml
+port: 3031
 ```
 
-Simpan file.
+(Alternatif: atur `PORT=3031` di `.env` — environment menimpa `config.yaml`.)
 
 ---
 
-## Langkah 2: Restart Server via PM2
-
-PM2 akan memuat `.env` baru saat restart:
+## Langkah 2: Restart gateway
 
 ```bash
-pm2 restart stoa-server
+stoa gateway restart
 ```
 
-Jika PM2 menyimpan cache env lama, hapus dan tambah ulang:
-
-```powershell
-pm2 delete stoa-server
-cd /path/to/Stoa
-pm2 start server.js --name stoa-server
-pm2 save
-```
-
-### Linux / macOS
-
-```bash
-pm2 restart stoa-server
-# atau paksa reload:
-pm2 delete stoa-server && pm2 start server.js --name stoa-server && pm2 save
-```
+Setelah itu server tersedia di `http://localhost:3031`.
 
 ---
 
-## Langkah 3: Update Setiap Mesin Agent
+## Langkah 3: Update setiap mesin agent
 
-Di **setiap mesin yang menjalankan agent**, perbarui variabel `STOA_URL` dengan port yang baru.
+Setiap agent punya `STOA_URL` tertanam di service unit-nya. Cara termudah: **jalankan ulang perintah install** untuk agent itu (lihat di Settings → Agents) supaya agent mendaftar ulang dengan URL baru.
 
-Edit file ecosystem config (biasanya `~/.stoa/agent/ecosystem.config.js`):
+Untuk mengubah langsung, edit service unit agent lalu restart:
 
-```js
-env: {
-  STOA_URL: 'ws://IP_SERVER_KAMU:3001',  // ← update port di sini
-  ...
-}
-```
+- macOS: `~/Library/LaunchAgents/com.stoa.agent.<id>.plist`
+- Linux: `~/.config/systemd/user/stoa-agent-<id>.service`
 
-Kemudian restart:
-
-```bash
-pm2 delete stoa-agent
-pm2 start ecosystem.config.js
-```
+Ubah nilai `STOA_URL` ke port baru, lalu reload service-nya.
 
 ---
 
 ## Langkah 4: Perbarui Public URL (jika ada)
 
-Jika kamu sudah mengatur Public URL di **Settings → Server**, perbarui dengan port yang baru.
-
-Contoh: `http://100.x.x.x:3000` → `http://100.x.x.x:3001`
-
----
-
-Setelah restart, Stoa akan tersedia di `http://localhost:PORT`.
+Jika kamu mengatur public URL, perbarui di `config.yaml` (`public_url`) atau lewat **Settings** di web UI — mis. `http://100.x.x.x:3030` → `http://100.x.x.x:3031`.
