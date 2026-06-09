@@ -50,7 +50,7 @@ function saveSession(participantId, claudeSessionId, workdir) {
   ).run(participantId, rp?.room_id ?? null, claudeSessionId, workdir || null);
 }
 
-// Load .env if present
+// Load .env if present (secrets only: STOA_SECRET, STOA_PASSWORD, tokens, …)
 const envPath = paths.envFile();
 if (fs.existsSync(envPath)) {
   for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
@@ -58,6 +58,11 @@ if (fs.existsSync(envPath)) {
     if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim();
   }
 }
+
+// Non-secret settings live in config.yaml (see config.js). Seed it on first run.
+const config = require('./config');
+config.ensureFile();
+let cfg = config.load();
 
 // Initialize schema on startup
 try {
@@ -193,12 +198,12 @@ setInterval(() => {
   db.exec("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')");
 }
 
-const PORT = parseInt(process.env.PORT) || 3030;
+const PORT = cfg.port;
 const UPLOADS_DIR = paths.uploadsDir();
 
 // Sync HUMAN_NAME env → human actor on startup (default: "Human")
 {
-  const humanName = process.env.HUMAN_NAME || 'Human';
+  const humanName = cfg.human_name;
   const human = db.prepare(`SELECT id FROM actors WHERE type='human' LIMIT 1`).get();
   if (human) db.prepare('UPDATE actors SET name=? WHERE id=?').run(humanName, human.id);
 }
@@ -222,8 +227,8 @@ if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
 // ── Scheduled cleanup: delete uploaded files older than CLEANUP_MAX_AGE_HOURS (skip avatar/)
 {
-  const CLEANUP_HOUR = parseInt(process.env.CLEANUP_CRON_HOUR) || 10;
-  const CLEANUP_MAX_AGE = (parseInt(process.env.CLEANUP_MAX_AGE_HOURS) || 24) * 3600_000;
+  const CLEANUP_HOUR = cfg.cleanup.cron_hour;
+  const CLEANUP_MAX_AGE = cfg.cleanup.max_age_hours * 3600_000;
 
   const cleanupUploads = () => {
     const now = Date.now();
@@ -268,8 +273,8 @@ function setSetting(key, value) {
 }
 
 function getPublicUrl(fallbackHost) {
-  const dbVal = getSetting('public_url');
-  if (dbVal) return dbVal;
+  const cfgVal = cfg.public_url || getSetting('public_url'); // config.yaml first, legacy DB fallback
+  if (cfgVal) return cfgVal;
   const envVal = process.env.STOA_PUBLIC_URL;
   if (envVal) {
     try {
@@ -917,63 +922,64 @@ const server = http.createServer(async (req, res) => {
       human_id:    human?.id ?? null,
       port:        PORT,
       human_name_from_env: !!process.env.HUMAN_NAME,
-      max_ai_turns: parseInt(process.env.MAX_AI_TURNS) || 5,
-      max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1,
-      session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5,
-      auto_compact_threshold_kb: parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB) || 500,
-      cleanup_cron_hour: parseInt(process.env.CLEANUP_CRON_HOUR) || 10,
-      cleanup_max_age_hours: parseInt(process.env.CLEANUP_MAX_AGE_HOURS) || 24,
+      max_ai_turns: cfg.max_ai_turns,
+      max_concurrent: cfg.max_concurrent,
+      session_idle_ttl: cfg.session_idle_ttl,
+      auto_compact_threshold_kb: cfg.auto_compact_threshold_kb,
+      cleanup_cron_hour: cfg.cleanup.cron_hour,
+      cleanup_max_age_hours: cfg.cleanup.max_age_hours,
     });
   }
 
   if (req.method === 'PATCH' && url.pathname === '/api/settings') {
     const body = parseJsonBody(await readBody(req));
     if (!body) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
-    if (body.public_url !== undefined) setSetting('public_url', body.public_url.trim());
+    const patch = {};
+    if (body.public_url !== undefined) patch.public_url = body.public_url.trim() || null;
     if (body.human_name !== undefined) {
       const name = body.human_name.trim() || 'Human';
-      writeEnv('HUMAN_NAME', name);
-      process.env.HUMAN_NAME = name;
+      patch.human_name = name;
       const human = db.prepare(`SELECT id FROM actors WHERE type='human' LIMIT 1`).get();
       if (human) db.prepare('UPDATE actors SET name=? WHERE id=?').run(name, human.id);
     }
     if (body.max_ai_turns !== undefined) {
       const val = parseInt(body.max_ai_turns);
-      if (val >= 1 && val <= 100) { writeEnv('MAX_AI_TURNS', String(val)); process.env.MAX_AI_TURNS = String(val); }
+      if (val >= 1 && val <= 100) patch.max_ai_turns = val;
     }
     if (body.max_concurrent !== undefined) {
       const val = parseInt(body.max_concurrent);
       if (val >= 1 && val <= 10) {
-        writeEnv('MAX_CONCURRENT', String(val)); process.env.MAX_CONCURRENT = String(val);
+        patch.max_concurrent = val;
         for (const [, agentWs] of agentClients) agentWs.send(JSON.stringify({ type: 'set_config', max_concurrent: val }));
       }
     }
     if (body.session_idle_ttl !== undefined) {
       const val = parseInt(body.session_idle_ttl);
       if (val >= 1 && val <= 60) {
-        writeEnv('SESSION_IDLE_TTL', String(val)); process.env.SESSION_IDLE_TTL = String(val);
+        patch.session_idle_ttl = val;
         for (const [, agentWs] of agentClients) agentWs.send(JSON.stringify({ type: 'set_config', session_idle_ttl: val }));
       }
     }
     if (body.auto_compact_threshold_kb !== undefined) {
       const val = parseInt(body.auto_compact_threshold_kb);
       if (val >= 100 && val <= 5000) {
-        writeEnv('AUTO_COMPACT_THRESHOLD_KB', String(val)); process.env.AUTO_COMPACT_THRESHOLD_KB = String(val);
+        patch.auto_compact_threshold_kb = val;
         for (const [, agentWs] of agentClients) agentWs.send(JSON.stringify({ type: 'set_config', auto_compact_threshold_kb: val }));
       }
     }
     if (body.cleanup_cron_hour !== undefined) {
       const val = parseInt(body.cleanup_cron_hour);
-      if (val >= 0 && val <= 23) { writeEnv('CLEANUP_CRON_HOUR', String(val)); process.env.CLEANUP_CRON_HOUR = String(val); }
+      if (val >= 0 && val <= 23) patch.cleanup = { ...(patch.cleanup || {}), cron_hour: val };
     }
     if (body.cleanup_max_age_hours !== undefined) {
       const val = parseInt(body.cleanup_max_age_hours);
-      if (val >= 1 && val <= 720) { writeEnv('CLEANUP_MAX_AGE_HOURS', String(val)); process.env.CLEANUP_MAX_AGE_HOURS = String(val); }
+      if (val >= 1 && val <= 720) patch.cleanup = { ...(patch.cleanup || {}), max_age_hours: val };
     }
+    if (Object.keys(patch).length) cfg = config.update(patch);
     if (body.port !== undefined) {
       const newPort = parseInt(body.port);
       if (newPort && newPort !== PORT && newPort >= 1 && newPort <= 65535) {
-        writeEnv('PORT', String(newPort));
+        cfg = config.update({ port: newPort });
         const host = req.headers.host || `localhost:${PORT}`;
         const pubUrl = getPublicUrl(host);
         const newPubUrl = pubUrl.replace(`:${PORT}`, `:${newPort}`);
@@ -1013,8 +1019,7 @@ const server = http.createServer(async (req, res) => {
     }
     const actor = db.prepare('SELECT type FROM actors WHERE id=?').get(id);
     if (actor?.type === 'human') {
-      writeEnv('HUMAN_NAME', name.trim());
-      process.env.HUMAN_NAME = name.trim();
+      cfg = config.update({ human_name: name.trim() });
     }
     return json(res, { id, name: name.trim() });
   }
@@ -1993,7 +1998,7 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ type: 'force_update' }));
       }
       ws.send(JSON.stringify({ type: 'agent_ready' }));
-      ws.send(JSON.stringify({ type: 'set_config', max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1, session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5, auto_compact_threshold_kb: parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB) || 500 }));
+      ws.send(JSON.stringify({ type: 'set_config', max_concurrent: cfg.max_concurrent, session_idle_ttl: cfg.session_idle_ttl, auto_compact_threshold_kb: cfg.auto_compact_threshold_kb }));
       const connectedActor = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, created_at FROM actors WHERE id=?').get(agentActorId);
       if (connectedActor) broadcastGlobal({ type: 'actor_status', actor: { ...connectedActor, online: true, client_version: msg.client_version || null } });
     }
@@ -2724,7 +2729,7 @@ function resolveAgentOrder(content, agents) {
 const activeSequences = new Map(); // roomId → { cancelled: bool }
 
 async function triggerAgentsSequential(roomId, agents, content, replyTo, attachments) {
-  const maxTurns = parseInt(process.env.MAX_AI_TURNS || '5');
+  const maxTurns = cfg.max_ai_turns;
   const seq = { cancelled: false };
   activeSequences.set(roomId, seq);
   let turnCount = 0;
@@ -3286,7 +3291,7 @@ function parseJsonBody(raw) {
 // ─── Idle session cleanup ─────────────────────────────────────────────────────
 
 setInterval(() => {
-  const timeout = parseInt(getSetting('idle_timeout_seconds') ?? '300');
+  const timeout = cfg.idle_timeout_seconds;
   db.prepare(
     "UPDATE ai_sessions SET status='idle' WHERE status='active' AND last_active_at < datetime('now', '-' || ? || ' seconds')"
   ).run(timeout);

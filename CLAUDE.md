@@ -97,6 +97,11 @@ Run `npm run setup` once so these are active (`.githooks/`):
 
 Note `stoa.js` carries its own `CLIENT_VERSION` constant (separate from `package.json`) used for agent auto-update — bump it when changing agent-side wire behavior.
 
-## Environment
+## Configuration (`config.js` / config.yaml vs `.env`)
 
-Config is via `.env` (see `.env.example`). Key vars: `PORT` (3030), `HUMAN_NAME`, `STOA_EMAIL`/`STOA_PASSWORD` (dashboard login — seeds on first run, and when set, syncs the auth user on every restart), `STOA_PUBLIC_URL` (base URL in install commands), `DB_PATH`, `MAX_AI_TURNS`, `CLEANUP_CRON_HOUR`/`CLEANUP_MAX_AGE_HOURS` (daily upload cleanup). Agent-side env: `STOA_URL`, `STOA_ACTOR_ID`, `STOA_TYPE`, `STOA_SECRET`, `STOA_AI_BACKEND`, `STOA_MAX_CONCURRENT`.
+Three-way split, Hermes-style:
+- **`config.yaml`** (in the data dir — repo in dev, `~/.stoa/server` when installed) holds **non-secret server settings**: `port`, `public_url`, `human_name`, `max_ai_turns`, `max_concurrent`, `session_idle_ttl`, `auto_compact_threshold_kb`, `idle_timeout_seconds`, `cleanup.{cron_hour,max_age_hours}`. `config.js` resolves them as **DEFAULTS < config.yaml < environment** (env overrides remain for back-compat/ops). It's auto-seeded on first server start; the web UI Settings and `PATCH /api/settings` write to it via `config.update()`. See `config.yaml.example`.
+- **`.env`** holds **secrets / machine overrides only**: `STOA_EMAIL`/`STOA_PASSWORD` (dashboard login — password is sensitive; seeds on first run and syncs the auth user on every restart when set), and infra overrides `DB_PATH`/`STOA_HOME`/`STOA_DATA_DIR`. The older `PORT`/`HUMAN_NAME`/`STOA_PUBLIC_URL`/`MAX_AI_TURNS`/`CLEANUP_*` still work as env overrides but config.yaml is their home now.
+- **The DB** is data-only — no more config in the `settings` table (legacy `getSetting('public_url')` is kept only as a read-fallback during migration).
+
+Agent-side env (set by the installer's service unit, not config.yaml): `STOA_URL`, `STOA_ACTOR_ID`, `STOA_TYPE`, `STOA_SECRET`, `STOA_WORK_DIR`, `STOA_AI_BACKEND`.

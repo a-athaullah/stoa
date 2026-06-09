@@ -60,7 +60,7 @@ function writeEnvKey(key, value) {
 }
 
 function getPort() {
-  return parseInt(process.env.PORT || readEnv().PORT || '3030', 10);
+  return require('./config').load().port;
 }
 
 // Resolve the DB exactly like the server (paths.js): repo db/stoa.db in dev,

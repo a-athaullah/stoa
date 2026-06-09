@@ -1,0 +1,30 @@
+# config.yaml — non-secret Stoa server settings.
+# Created automatically on first run (in the data dir: repo in dev, ~/.stoa/server when installed).
+# Edit here or via the web UI (Settings). Secrets stay in .env; data stays in the DB.
+
+port: 3030
+
+# Base URL shown in agent install commands (without trailing slash).
+# null = auto-detect from the request host.
+public_url: null
+
+# Display name for the human user in rooms.
+human_name: Human
+
+# Max AI agents triggered per human message (prevents runaway @mention chains).
+max_ai_turns: 5
+
+# Max concurrent triggers per agent, and idle TTL (minutes) before a session sleeps.
+max_concurrent: 1
+session_idle_ttl: 5
+
+# Auto-compact a Claude session when its context file grows past this size (KB).
+auto_compact_threshold_kb: 500
+
+# Mark an active AI session idle after this many seconds of inactivity.
+idle_timeout_seconds: 300
+
+# Daily upload cleanup: delete non-avatar files older than max_age_hours, at cron_hour.
+cleanup:
+  cron_hour: 10
+  max_age_hours: 24

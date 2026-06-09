@@ -11,6 +11,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
+const yaml = require('js-yaml');
 const { spawnSync } = require('child_process');
 
 const REPO = __dirname;
@@ -32,8 +33,12 @@ function logsDir() { return path.join(homeDir(), 'logs'); }
 function logFile() { return path.join(logsDir(), 'server.log'); }
 function errFile() { return path.join(logsDir(), 'server.err.log'); }
 
-// Port the *installed* server listens on (its own .env, default 3030).
+// Port the *installed* server listens on (config.yaml, with legacy .env fallback).
 function installedPort() {
+  try {
+    const c = yaml.load(fs.readFileSync(path.join(serverDir(), 'config.yaml'), 'utf8')) || {};
+    if (c.port) return parseInt(c.port, 10);
+  } catch {}
   try {
     const env = fs.readFileSync(path.join(serverDir(), '.env'), 'utf8');
     const m = env.match(/^\s*PORT\s*=\s*(\d+)/m);

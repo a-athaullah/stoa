@@ -38,6 +38,7 @@
     "codemirror": "^6.0.2",
     "dompurify": "^3.4.7",
     "highlight.js": "^11.11.1",
+    "js-yaml": "^4.2.0",
     "marked": "^18.0.4",
     "ws": "^8.20.1"
   },
