@@ -5,6 +5,7 @@
 //   stoa dashboard      open the web dashboard in your browser
 //   stoa chat [room]    start the interactive terminal chat client
 //   stoa install        bootstrap: link the `stoa` command + enable the gateway (run as `node cli.js install`)
+//   stoa uninstall      remove Stoa (service + command + ~/.stoa), with optional backup
 //   stoa gateway <cmd>  run server as a background service (enable|disable|start|stop|restart|status|logs)
 //   stoa doctor         diagnose the local setup
 //   stoa update         pull latest code, install deps, restart gateway
@@ -16,6 +17,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const readline = require('readline');
 const { spawn, spawnSync } = require('child_process');
 const http = require('http');
 const paths = require('./paths');
@@ -162,6 +164,86 @@ async function cmdInstall() {
   rebuildNative();
   await require('./gateway').enable();
   console.log(`${C.gray}Done. Open the dashboard: ${C.reset}${C.cyan}stoa dashboard${C.reset}`);
+}
+
+// ─── uninstall: remove the service + command + ~/.stoa (with optional backup) ───
+function ask(question, def) {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(question, (a) => { rl.close(); resolve((a || def).trim().toLowerCase()); });
+  });
+}
+
+// Remove the global `stoa` command (npm link + ~/.local/bin symlink).
+function unlinkCommand() {
+  spawnSync('npm', ['rm', '-g', 'stoa'], { cwd: ROOT, stdio: 'ignore' });
+  const link = path.join(os.homedir(), '.local', 'bin', 'stoa');
+  try { fs.lstatSync(link); fs.unlinkSync(link); } catch {}
+}
+
+// Best-effort removal of any agent services on this machine (launchd / systemd).
+function removeAgentServices() {
+  if (process.platform === 'darwin') {
+    const dir = path.join(os.homedir(), 'Library', 'LaunchAgents');
+    let files = [];
+    try { files = fs.readdirSync(dir).filter(f => /^com\.stoa\.agent\..*\.plist$/.test(f)); } catch {}
+    for (const f of files) {
+      const p = path.join(dir, f);
+      spawnSync('launchctl', ['unload', '-w', p], { stdio: 'ignore' });
+      try { fs.unlinkSync(p); } catch {}
+    }
+    if (files.length) console.log(ok(`removed ${files.length} agent service(s)`));
+  } else if (process.platform === 'linux') {
+    const dir = path.join(os.homedir(), '.config', 'systemd', 'user');
+    let files = [];
+    try { files = fs.readdirSync(dir).filter(f => /^stoa-agent-.*\.service$/.test(f)); } catch {}
+    for (const f of files) {
+      spawnSync('systemctl', ['--user', 'disable', '--now', f.replace(/\.service$/, '')], { stdio: 'ignore' });
+      try { fs.unlinkSync(path.join(dir, f)); } catch {}
+    }
+    if (files.length) { spawnSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' }); console.log(ok(`removed ${files.length} agent service(s)`)); }
+  }
+}
+
+async function cmdUninstall(args) {
+  const yes = args.includes('--yes') || args.includes('-y');
+  const home = paths.home();           // ~/.stoa
+  console.log(`${C.bold}Uninstall Stoa${C.reset}`);
+  console.log('This will:');
+  console.log('  • stop & remove the gateway (and any agent) background service');
+  console.log('  • remove the `stoa` command from your PATH');
+  console.log(`  • delete ${C.yellow}${home.replace(os.homedir(), '~')}${C.reset} (server data + DB, agent, workspace, logs)`);
+  console.log(`${C.gray}(your cloned source repo and node_modules are left untouched)${C.reset}\n`);
+
+  if (!yes) {
+    const go = await ask(`${C.red}Proceed with uninstall?${C.reset} [y/N] `, 'n');
+    if (go !== 'y' && go !== 'yes') { console.log('Aborted — nothing changed.'); return; }
+  }
+
+  // Offer a backup of ~/.stoa (workspace + agent + server data) first.
+  if (fs.existsSync(home)) {
+    let doBackup = true;
+    if (!yes) {
+      const b = await ask('Back up workspace + agent + data first? [Y/n] ', 'y');
+      doBackup = (b !== 'n' && b !== 'no');
+    }
+    if (doBackup) {
+      const stamp = new Date().toISOString().replace(/[:T]/g, '-').replace(/\..+/, '');
+      const backup = path.join(os.homedir(), `stoa-backup-${stamp}.tar.gz`);
+      const r = spawnSync('tar', ['-czf', backup, '-C', os.homedir(), path.basename(home)], { stdio: 'ignore' });
+      if (r.status === 0) console.log(ok(`backup saved → ${backup.replace(os.homedir(), '~')}`));
+      else { console.log(bad('backup failed — aborting to keep your data safe.')); return; }
+    }
+  }
+
+  // Remove services, command, then the data dir.
+  try { await require('./gateway').disable(); } catch {}
+  removeAgentServices();
+  unlinkCommand();
+  try { fs.rmSync(home, { recursive: true, force: true }); } catch (e) { console.log(warn(`could not remove ${home}: ${e.message}`)); }
+
+  console.log(`\n${C.green}${C.bold}Stoa uninstalled.${C.reset}`);
+  console.log(`${C.gray}Reinstall any time with: node cli.js install${C.reset}`);
 }
 
 // ─── dashboard (open the web UI in a browser) ──────────────────────────────────
@@ -378,6 +460,7 @@ function cmdHelp(args) {
   const details = {
     chat:    'stoa chat [room_id]\n  Start the interactive terminal chat client (human mode).\n  Defaults to room 1. STOA_URL is derived from PORT in .env.',
     install: 'stoa install\n  Bootstrap on a fresh machine: link the `stoa` command onto PATH + enable the gateway.\n  Run once as `node cli.js install` (the `stoa` command does not exist yet); afterwards use `stoa ...`.\n  Code stays in the repo; data lives in ~/.stoa/server. Then run "stoa dashboard".',
+    uninstall: 'stoa uninstall [--yes]\n  Remove Stoa: stop & remove the gateway/agent services, unlink the `stoa` command,\n  and delete ~/.stoa. Offers to back up workspace + agent + data (tar.gz in your home) first.\n  Your cloned repo and node_modules are left untouched. --yes skips prompts.',
     link:    'stoa link\n  Make the `stoa` command available on PATH (npm link, or a symlink into ~/.local/bin).',
     dashboard: 'stoa dashboard\n  Open the web dashboard in your browser. Starts the gateway first if nothing is running.\n  Targets the installed server (~/.stoa, default :3030), else the dev server from .env.',
     gateway: 'stoa gateway <enable|disable|start|stop|restart|status|logs>\n  Run the server as a native background service (launchd on macOS, systemd on Linux).\n  enable  = start now + autostart on login/boot + restart on crash (data in ~/.stoa/server)\n  disable = stop + remove autostart.  logs -f to follow.  No PM2 required.',
@@ -397,6 +480,7 @@ ${C.bold}Commands:${C.reset}
   ${C.cyan}dashboard${C.reset}          open the web dashboard (default when no command); starts the gateway if needed
   ${C.cyan}chat${C.reset} [room]        start the interactive terminal chat client
   ${C.cyan}install${C.reset}            bootstrap: link the \`stoa\` command + enable the gateway
+  ${C.cyan}uninstall${C.reset}          remove Stoa (offers to back up workspace + agent + data first)
   ${C.cyan}gateway${C.reset} <cmd>      run server as a background service (enable|disable|start|stop|restart|status|logs)
   ${C.cyan}doctor${C.reset}             diagnose the local setup
   ${C.cyan}update${C.reset}             pull latest code + restart gateway
@@ -423,6 +507,7 @@ function cmdVersion() {
     case 'dashboard':            await cmdDashboard(); break;
     case 'chat':                       cmdChat(args); break;
     case 'install':              await cmdInstall(); break;
+    case 'uninstall':            await cmdUninstall(args); break;
     case 'link':                       linkCommand(); break;
     case 'gateway':              await cmdGateway(args); break;
     case 'update':                     cmdUpdate(); break;
