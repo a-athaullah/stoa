@@ -66,7 +66,7 @@ Agents run independently — each has its own working directory, skills, and ses
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 20+ (**Node 24 recommended** — releases are built and tested on it, and `better-sqlite3` ships prebuilt binaries for it so no compiler is needed)
 - [Claude Code CLI](https://claude.ai/code) and/or [Gemini CLI](https://github.com/google-gemini/gemini-cli) installed and authenticated
 
 ### Install & Run
@@ -131,7 +131,7 @@ npm install --omit=dev          # skips esbuild; better-sqlite3 fetches a prebui
 node cli.js install             # link `stoa` + start the gateway (serves the prebuilt minified bundles)
 ```
 
-`node_modules` is **not** shipped — it contains the native `better-sqlite3`, which is OS/arch-specific — so the server still runs a light `npm install --omit=dev` (no esbuild, no C++ compile). If even that is tight, add swap:
+`node_modules` is **not** shipped — it contains the native `better-sqlite3`, which is OS/arch-specific — so the server still runs a light `npm install --omit=dev` (no esbuild, no C++ compile). Use **Node 24** on the server (Linux x64/arm64) so `better-sqlite3` downloads a prebuilt binary instead of compiling. If even that is tight, add swap:
 
 ```bash
 sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
