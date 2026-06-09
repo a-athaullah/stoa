@@ -1,6 +1,6 @@
 # Stoa server installer (native Windows) — bootstrap the hub on a fresh machine.
 #
-#   irm https://raw.githubusercontent.com/asharijuang/stoa/master/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/a-athaullah/stoa/master/install.ps1 | iex
 #   # or, from a clone:
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1
 #
@@ -8,8 +8,19 @@
 # which links the `stoa` command and registers the background gateway (Scheduled Task).
 
 $ErrorActionPreference = "Stop"
-$RepoUrl    = if ($env:STOA_REPO_URL) { $env:STOA_REPO_URL } else { "https://github.com/asharijuang/stoa" }
-$InstallDir = if ($env:STOA_DIR)      { $env:STOA_DIR }      else { "$env:USERPROFILE\stoa" }
+
+# Repo to clone (only used when not already inside a checkout). Auto-detects from
+# this script's git origin so it follows whatever fork you cloned; falls back to
+# upstream. Override with STOA_REPO_URL.
+function Get-RepoUrl {
+  if ($env:STOA_REPO_URL) { return $env:STOA_REPO_URL }
+  $o = $null
+  if ($PSScriptRoot) { $o = (git -C $PSScriptRoot remote get-url origin 2>$null) }
+  if (-not $o) { $o = (git remote get-url origin 2>$null) }
+  if ($o) { return $o } else { return "https://github.com/a-athaullah/stoa" }
+}
+$RepoUrl    = Get-RepoUrl
+$InstallDir = if ($env:STOA_DIR) { $env:STOA_DIR } else { "$env:USERPROFILE\stoa" }
 
 Write-Host "=== Stoa installer (Windows) ==="
 
