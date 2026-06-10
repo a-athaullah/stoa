@@ -989,7 +989,7 @@ const server = http.createServer(async (req, res) => {
   // ── AI Platform config ──
   if (req.method === 'GET' && url.pathname === '/api/ai/platforms') {
     const raw = getSetting('ai_platforms');
-    const platforms = raw ? JSON.parse(raw) : [{ id: 'anthropic', name: 'Anthropic', type: 'subscription', enabled: true }];
+    const platforms = raw ? JSON.parse(raw) : [];
     return json(res, platforms);
   }
 
@@ -997,7 +997,7 @@ const server = http.createServer(async (req, res) => {
     const body = parseJsonBody(await readBody(req));
     if (!body || !body.name?.trim()) { res.writeHead(400); return res.end(JSON.stringify({ error: 'name required' })); }
     const raw = getSetting('ai_platforms');
-    const platforms = raw ? JSON.parse(raw) : [{ id: 'anthropic', name: 'Anthropic', type: 'subscription', enabled: true }];
+    const platforms = raw ? JSON.parse(raw) : [];
     const id = body.id || body.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
     if (platforms.find(p => p.id === id)) { res.writeHead(409); return res.end(JSON.stringify({ error: 'platform already exists' })); }
     const platform = { id, name: body.name.trim(), base_url: body.base_url || '', api_key: body.api_key || '', enabled: true };
@@ -1024,7 +1024,6 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'DELETE' && url.pathname.match(/^\/api\/ai\/platforms\/[^/]+$/)) {
     const platformId = decodeURIComponent(url.pathname.split('/')[4]);
-    if (platformId === 'anthropic') { res.writeHead(400); return res.end(JSON.stringify({ error: 'cannot delete default platform' })); }
     const raw = getSetting('ai_platforms');
     const platforms = raw ? JSON.parse(raw) : [];
     const filtered = platforms.filter(p => p.id !== platformId);
@@ -1035,7 +1034,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/api/ai/models') {
     const raw = getSetting('ai_platforms');
-    const platforms = raw ? JSON.parse(raw) : [{ id: 'anthropic', name: 'Anthropic', type: 'subscription', enabled: true }];
+    const platforms = raw ? JSON.parse(raw) : [];
     const ANTHROPIC_MODELS = [
       { value: 'claude-opus-4-8', label: 'Opus 4.8' },
       { value: 'claude-opus-4-7', label: 'Opus 4.7' },
@@ -1044,24 +1043,20 @@ const server = http.createServer(async (req, res) => {
       { value: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
       { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
     ];
-    const result = [];
+    const result = [{ platform_id: 'anthropic', platform_name: 'Claude (built-in)', models: ANTHROPIC_MODELS }];
     for (const p of platforms) {
       if (!p.enabled) continue;
       const group = { platform_id: p.id, platform_name: p.name, base_url: p.base_url || null, models: [] };
-      if (p.id === 'anthropic' || p.type === 'subscription') {
-        group.models = ANTHROPIC_MODELS;
-      } else {
-        const agents = db.prepare("SELECT available_models FROM actors WHERE type='ai' AND available_models IS NOT NULL").all();
-        for (const a of agents) {
-          try {
-            const models = JSON.parse(a.available_models);
-            for (const m of models) {
-              if (!group.models.find(x => x.value === m.name)) {
-                group.models.push({ value: m.name, label: m.name });
-              }
+      const agents = db.prepare("SELECT available_models FROM actors WHERE type='ai' AND available_models IS NOT NULL").all();
+      for (const a of agents) {
+        try {
+          const models = JSON.parse(a.available_models);
+          for (const m of models) {
+            if (!group.models.find(x => x.value === m.name)) {
+              group.models.push({ value: m.name, label: m.name });
             }
-          } catch {}
-        }
+          }
+        } catch {}
       }
       result.push(group);
     }

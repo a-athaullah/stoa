@@ -1063,6 +1063,13 @@ async function sLoadPlatformsTab() {
   let platforms;
   try { platforms = await fjson('/api/ai/platforms'); } catch { showToast('Failed to load platforms', { error: true }); return; }
 
+  if (!platforms.length) {
+    const empty = document.createElement('div');
+    empty.style.cssText = 'padding:16px 18px;font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-mute)';
+    empty.textContent = 'No external platforms configured. Claude models are available by default.';
+    container.appendChild(empty);
+  }
+
   for (const p of platforms) {
     const card = document.createElement('div');
     card.className = 's-server-field';
@@ -1075,25 +1082,18 @@ async function sLoadPlatformsTab() {
 
     const urlEl = document.createElement('span');
     urlEl.style.cssText = 'font-family:ui-monospace,monospace;font-size:12px;color:var(--h-ink-faint);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-    urlEl.textContent = p.id === 'anthropic' ? 'api.anthropic.com (default)' : (p.base_url || '—');
+    urlEl.textContent = p.base_url || '—';
 
     const btnWrap = document.createElement('span');
     btnWrap.style.cssText = 'display:flex;gap:6px;align-items:center';
 
-    if (p.id !== 'anthropic') {
-      const editBtn = document.createElement('button');
-      editBtn.className = 's-icon-btn'; editBtn.title = 'Edit'; editBtn.innerHTML = svgPencil(13);
-      editBtn.addEventListener('click', () => sEditPlatform(p));
-      const delBtn = document.createElement('button');
-      delBtn.className = 's-icon-btn'; delBtn.title = 'Delete'; delBtn.innerHTML = svgX(13);
-      delBtn.addEventListener('click', () => sDeletePlatform(p.id));
-      btnWrap.append(editBtn, delBtn);
-    } else {
-      const tag = document.createElement('span');
-      tag.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:11px;color:var(--h-ink-mute);letter-spacing:.04em';
-      tag.textContent = 'default';
-      btnWrap.appendChild(tag);
-    }
+    const editBtn = document.createElement('button');
+    editBtn.className = 's-icon-btn'; editBtn.title = 'Edit'; editBtn.innerHTML = svgPencil(13);
+    editBtn.addEventListener('click', () => sEditPlatform(p));
+    const delBtn = document.createElement('button');
+    delBtn.className = 's-icon-btn'; delBtn.title = 'Delete'; delBtn.innerHTML = svgX(13);
+    delBtn.addEventListener('click', () => sDeletePlatform(p.id));
+    btnWrap.append(editBtn, delBtn);
 
     card.append(nameEl, urlEl, btnWrap);
     container.appendChild(card);
