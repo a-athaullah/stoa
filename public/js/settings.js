@@ -1133,13 +1133,61 @@ function sShowPlatformForm(existing) {
   const keysLbl = document.createElement('span');
   keysLbl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);min-width:70px;padding-top:6px';
   keysLbl.textContent = 'api keys';
-  const keysInp = document.createElement('textarea');
-  keysInp.className = 's-server-input';
-  keysInp.style.cssText = 'flex:1;min-height:36px;resize:vertical;font-family:ui-monospace,monospace;font-size:12px';
-  keysInp.placeholder = 'one key per line (first = primary, rest = fallback)';
+  const keysWrap = document.createElement('div');
+  keysWrap.style.cssText = 'flex:1;display:flex;flex-direction:column;gap:6px';
+  const keysList = document.createElement('div');
+  keysList.style.cssText = 'display:flex;flex-direction:column;gap:4px';
+  const keyStore = [];
   const existingKeys = existing?.api_keys || (existing?.api_key ? [existing.api_key] : []);
-  keysInp.value = existingKeys.join('\n');
-  keysRow.append(keysLbl, keysInp);
+
+  function renderKeyPill(key, idx) {
+    const pill = document.createElement('div');
+    pill.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 8px;border-radius:4px;background:var(--h-surface-raised,rgba(255,255,255,.06));font-family:ui-monospace,monospace;font-size:11.5px;color:var(--h-ink-faint)';
+    const label = document.createElement('span');
+    label.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    const masked = key.length > 10 ? key.slice(0, 6) + '····' + key.slice(-4) : key;
+    label.textContent = (idx === 0 ? '① ' : idx === 1 ? '② ' : '③ ') + masked;
+    const rmBtn = document.createElement('button');
+    rmBtn.style.cssText = 'background:none;border:none;cursor:pointer;color:var(--h-ink-mute);padding:0;line-height:1';
+    rmBtn.innerHTML = svgX(11);
+    rmBtn.title = 'Remove';
+    rmBtn.addEventListener('click', () => {
+      const i = keyStore.indexOf(key);
+      if (i !== -1) keyStore.splice(i, 1);
+      refreshKeys();
+    });
+    pill.append(label, rmBtn);
+    return pill;
+  }
+
+  function refreshKeys() {
+    keysList.innerHTML = '';
+    keyStore.forEach((k, i) => keysList.appendChild(renderKeyPill(k, i)));
+  }
+
+  existingKeys.forEach(k => keyStore.push(k));
+  refreshKeys();
+
+  const addRow = document.createElement('div');
+  addRow.style.cssText = 'display:flex;gap:6px';
+  const keyInp = document.createElement('input');
+  keyInp.className = 's-server-input'; keyInp.type = 'password'; keyInp.placeholder = 'sk-...';
+  keyInp.style.cssText = 'flex:1;font-family:ui-monospace,monospace;font-size:12px';
+  const addKeyBtn = document.createElement('button');
+  addKeyBtn.className = 's-server-save'; addKeyBtn.textContent = '+ add';
+  addKeyBtn.style.cssText = 'font-size:12px;padding:4px 10px;white-space:nowrap';
+  addKeyBtn.addEventListener('click', () => {
+    const v = keyInp.value.trim();
+    if (!v) return;
+    keyStore.push(v);
+    keyInp.value = '';
+    refreshKeys();
+  });
+  keyInp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addKeyBtn.click(); } });
+  addRow.append(keyInp, addKeyBtn);
+
+  keysWrap.append(keysList, addRow);
+  keysRow.append(keysLbl, keysWrap);
 
   const btnRow = document.createElement('div');
   btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;padding-top:4px';
@@ -1157,7 +1205,7 @@ function sShowPlatformForm(existing) {
   saveBtn.addEventListener('click', async () => {
     const name = nameF.inp.value.trim();
     const base_url = urlF.inp.value.trim();
-    const api_keys = keysInp.value.split('\n').map(k => k.trim()).filter(Boolean);
+    const api_keys = [...keyStore];
     if (!name) { showToast('Name is required', { error: true }); return; }
     if (!base_url) { showToast('Base URL is required', { error: true }); return; }
     try {
