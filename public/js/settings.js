@@ -1126,12 +1126,40 @@ function sShowPlatformForm(existing) {
     return { row, inp };
   };
 
+  const VENDORS = [
+    { value: 'generic', label: 'Generic (OpenAI-compat)' },
+    { value: 'ollama', label: 'Ollama' },
+  ];
+  const vendorRow = document.createElement('div');
+  vendorRow.style.cssText = 'display:flex;align-items:center;gap:10px';
+  const vendorLbl = document.createElement('span');
+  vendorLbl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);min-width:70px';
+  vendorLbl.textContent = 'vendor';
+  const vendorSel = document.createElement('select');
+  vendorSel.className = 's-server-input'; vendorSel.style.flex = '1';
+  for (const v of VENDORS) {
+    const o = document.createElement('option'); o.value = v.value; o.textContent = v.label;
+    if ((existing?.vendor || 'generic') === v.value) o.selected = true;
+    vendorSel.appendChild(o);
+  }
+  vendorRow.append(vendorLbl, vendorSel);
+
   const nameF = mkField('name', 'text', existing?.name, 'e.g. Ollama Cloud');
-  const urlF = mkField('base url', 'url', existing?.base_url, 'https://ollama.com/v1');
+  const urlF = mkField('base url', 'url', existing?.base_url, 'http://localhost:11434');
+  const catalogF = mkField('catalog url', 'url', existing?.catalog_url, 'https://ollama.com/v1');
 
   const urlHint = document.createElement('div');
   urlHint.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:11px;color:var(--h-ink-mute);padding:0 0 0 80px;margin-top:-4px';
-  urlHint.textContent = 'e.g: https://ollama.com/v1 · https://openrouter.ai/api/v1 · https://api.groq.com/openai/v1';
+  const updateHints = () => {
+    const isOllama = vendorSel.value === 'ollama';
+    urlF.inp.placeholder = isOllama ? 'http://localhost:11434' : 'https://openrouter.ai/api/v1';
+    urlHint.textContent = isOllama
+      ? 'local Ollama daemon — handles routing to cloud models'
+      : 'e.g: https://openrouter.ai/api/v1 · https://api.groq.com/openai/v1';
+    catalogF.row.style.display = isOllama ? 'flex' : 'none';
+  };
+  vendorSel.addEventListener('change', updateHints);
+  updateHints();
 
   const keysRow = document.createElement('div');
   keysRow.style.cssText = 'display:flex;align-items:flex-start;gap:10px';
@@ -1211,6 +1239,8 @@ function sShowPlatformForm(existing) {
   saveBtn.addEventListener('click', async () => {
     const name = nameF.inp.value.trim();
     const base_url = urlF.inp.value.trim();
+    const vendor = vendorSel.value;
+    const catalog_url = vendor === 'ollama' ? catalogF.inp.value.trim() : '';
     const pending = keyInp.value.trim();
     if (pending && !keyStore.includes(pending)) { keyStore.push(pending); keyInp.value = ''; refreshKeys(); }
     const api_keys = [...keyStore];
@@ -1220,12 +1250,12 @@ function sShowPlatformForm(existing) {
       if (existing) {
         await fetch(`/api/ai/platforms/${encodeURIComponent(existing.id)}`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, base_url, api_keys }),
+          body: JSON.stringify({ name, base_url, api_keys, vendor, catalog_url }),
         });
       } else {
         const resp = await fetch('/api/ai/platforms', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, base_url, api_keys }),
+          body: JSON.stringify({ name, base_url, api_keys, vendor, catalog_url }),
         });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({}));
@@ -1302,7 +1332,7 @@ function sShowPlatformForm(existing) {
 
   btnRow.append(cancelBtn, healthBtn, saveBtn);
 
-  form.append(nameF.row, urlF.row, urlHint, keysRow, progressWrap, btnRow);
+  form.append(vendorRow, nameF.row, urlF.row, urlHint, catalogF.row, keysRow, progressWrap, btnRow);
   container.appendChild(form);
 }
 

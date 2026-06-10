@@ -1006,7 +1006,7 @@ const server = http.createServer(async (req, res) => {
     const id = body.id || body.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
     if (platforms.find(p => p.id === id)) { res.writeHead(409); return res.end(JSON.stringify({ error: 'platform already exists' })); }
     const keys = body.api_keys || (body.api_key ? [body.api_key] : []);
-    const platform = { id, name: body.name.trim(), base_url: body.base_url || '', api_keys: keys, enabled: true };
+    const platform = { id, name: body.name.trim(), base_url: body.base_url || '', api_keys: keys, enabled: true, vendor: body.vendor || 'generic', catalog_url: body.catalog_url || '' };
     platforms.push(platform);
     setSetting('ai_platforms', JSON.stringify(platforms));
     return json(res, platform);
@@ -1026,6 +1026,8 @@ const server = http.createServer(async (req, res) => {
       platforms[idx].api_keys = body.api_keys.filter(Boolean);
     }
     if (body.enabled !== undefined) platforms[idx].enabled = body.enabled;
+    if (body.vendor !== undefined) platforms[idx].vendor = body.vendor;
+    if (body.catalog_url !== undefined) platforms[idx].catalog_url = body.catalog_url;
     setSetting('ai_platforms', JSON.stringify(platforms));
     return json(res, platforms[idx]);
   }
@@ -1048,25 +1050,43 @@ const server = http.createServer(async (req, res) => {
     if (!plat) { res.writeHead(404); return res.end(JSON.stringify({ error: 'not found' })); }
     if (!plat.base_url) { return json(res, { status: 'error', message: 'No base URL configured' }); }
     const keys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : []);
-    if (!keys.length) { return json(res, { status: 'error', message: 'No API key configured' }); }
     try {
       const url2 = new URL(plat.base_url);
       const baseClean = url2.origin + url2.pathname.replace(/\/+$/, '');
-      const headers = { 'Authorization': `Bearer ${keys[0]}`, 'Content-Type': 'application/json' };
-      const ctrl1 = new AbortController();
-      const timer1 = setTimeout(() => ctrl1.abort(), 10000);
-      const listResp = await fetch(baseClean + '/models', { headers, signal: ctrl1.signal });
-      clearTimeout(timer1);
-      if (!listResp.ok) return json(res, { status: 'error', message: `Failed to list models: HTTP ${listResp.status}` });
-      const listData = await listResp.json().catch(() => null);
-      const candidates = listData?.data?.map(m => m.id) || listData?.models?.map(m => m.name || m.model) || [];
+      const headers = { 'Content-Type': 'application/json' };
+      if (keys[0]) headers['Authorization'] = `Bearer ${keys[0]}`;
+
+      let candidates = [];
+      if (plat.vendor === 'ollama') {
+        const catalogUrl = plat.catalog_url || 'https://ollama.com/v1';
+        const catalogHeaders = { 'Content-Type': 'application/json' };
+        if (keys[0]) catalogHeaders['Authorization'] = `Bearer ${keys[0]}`;
+        const ctrl1 = new AbortController();
+        const timer1 = setTimeout(() => ctrl1.abort(), 10000);
+        const listResp = await fetch(catalogUrl.replace(/\/+$/, '') + '/models', { headers: catalogHeaders, signal: ctrl1.signal });
+        clearTimeout(timer1);
+        if (!listResp.ok) return json(res, { status: 'error', message: `Failed to list cloud models: HTTP ${listResp.status}` });
+        const listData = await listResp.json().catch(() => null);
+        const rawModels = listData?.data?.map(m => m.id) || listData?.models?.map(m => m.name || m.model) || [];
+        candidates = rawModels.map(m => m.endsWith('-cloud') || m.endsWith(':cloud') ? m : m + ':cloud');
+      } else {
+        if (!keys.length) { return json(res, { status: 'error', message: 'No API key configured' }); }
+        const ctrl1 = new AbortController();
+        const timer1 = setTimeout(() => ctrl1.abort(), 10000);
+        const listResp = await fetch(baseClean + '/models', { headers, signal: ctrl1.signal });
+        clearTimeout(timer1);
+        if (!listResp.ok) return json(res, { status: 'error', message: `Failed to list models: HTTP ${listResp.status}` });
+        const listData = await listResp.json().catch(() => null);
+        candidates = listData?.data?.map(m => m.id) || listData?.models?.map(m => m.name || m.model) || [];
+      }
       if (!candidates.length) return json(res, { status: 'error', message: 'No models returned by platform' });
 
+      const probeBase = plat.vendor === 'ollama' ? baseClean + '/v1' : baseClean;
       async function probe(model) {
         const ctrl = new AbortController();
         const timer = setTimeout(() => ctrl.abort(), 12000);
         try {
-          const r = await fetch(baseClean + '/chat/completions', {
+          const r = await fetch(probeBase + '/chat/completions', {
             method: 'POST', headers, signal: ctrl.signal,
             body: JSON.stringify({ model, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1, stream: false }),
           });
