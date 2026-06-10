@@ -1061,12 +1061,16 @@ const server = http.createServer(async (req, res) => {
 
       const ctrl1 = new AbortController();
       const timer1 = setTimeout(() => ctrl1.abort(), 10000);
-      const listResp = await fetch('https://ollama.com/v1/models', { headers, signal: ctrl1.signal });
+      const listResp = await fetch(baseClean + '/models', { headers, signal: ctrl1.signal });
       clearTimeout(timer1);
-      if (!listResp.ok) return json(res, { status: 'error', message: `Failed to list cloud models: HTTP ${listResp.status}` });
+      if (!listResp.ok) return json(res, { status: 'error', message: `Failed to list models: HTTP ${listResp.status}` });
       const listData = await listResp.json().catch(() => null);
       const rawModels = listData?.data?.map(m => m.id) || listData?.models?.map(m => m.name || m.model) || [];
-      const candidates = rawModels.map(m => m.endsWith('-cloud') || m.endsWith(':cloud') ? m : m + ':cloud');
+      // Ollama Cloud requires :cloud suffix — only append for ollama.com endpoints
+      const isOllamaCloud = url2.hostname.includes('ollama.com');
+      const candidates = rawModels.map(m =>
+        isOllamaCloud && !m.endsWith('-cloud') && !m.endsWith(':cloud') ? m + ':cloud' : m
+      );
       if (!candidates.length) return json(res, { status: 'error', message: 'No models returned by Ollama Cloud' });
 
       const probeBase = baseClean + '/v1';
@@ -2667,6 +2671,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'set_room_model' && subscribedRoom) {
+      if (msg.model !== null && msg.model !== undefined && (typeof msg.model !== 'string' || !msg.model.trim() || msg.model.length > 200)) break;
       const model = msg.model || null;
       const modelConfig = msg.model_config ? JSON.stringify(msg.model_config) : null;
       db.prepare("UPDATE rooms SET model=?, model_config=? WHERE id=?").run(model, modelConfig, subscribedRoom);

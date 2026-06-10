@@ -1013,13 +1013,16 @@ function getAvailableModels() {
 function populateModelDropdown(sel, currentModel) {
   const models = getAvailableModels();
   sel.innerHTML = '';
-  let lastPlatform = '';
-  for (const m of models) {
-    if (m.platform !== lastPlatform && models.length > ANTHROPIC_MODELS.length) {
+  const hasMultiplePlatforms = models.length > ANTHROPIC_MODELS.length;
+  if (hasMultiplePlatforms) {
+    // Group by platform using optgroups
+    const seen = new Set();
+    for (const m of models) {
+      if (seen.has(m.platform)) continue;
+      seen.add(m.platform);
       const optgroup = document.createElement('optgroup');
       optgroup.label = m.platform === 'anthropic' ? 'Anthropic' : m.platform;
-      const platformModelsForGroup = models.filter(x => x.platform === m.platform).sort((a, b) => a.label.localeCompare(b.label));
-      for (const pm of platformModelsForGroup) {
+      for (const pm of models.filter(x => x.platform === m.platform).sort((a, b) => a.label.localeCompare(b.label))) {
         const opt = document.createElement('option');
         opt.value = pm.value;
         opt.textContent = pm.vision ? '👁 ' + pm.label : pm.label;
@@ -1028,8 +1031,9 @@ function populateModelDropdown(sel, currentModel) {
         optgroup.appendChild(opt);
       }
       sel.appendChild(optgroup);
-      lastPlatform = m.platform;
-    } else if (models.length <= ANTHROPIC_MODELS.length) {
+    }
+  } else {
+    for (const m of models) {
       const opt = document.createElement('option');
       opt.value = m.value;
       opt.textContent = m.label;

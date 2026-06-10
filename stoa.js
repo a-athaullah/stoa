@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.21';
+const CLIENT_VERSION = '0.4.22';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -839,6 +839,7 @@ async function processTrigger(msg) {
           session = new ClaudeSession({ workDir: targetDir, flags, resumeId: rid || null, env: rotatedEnv });
           sessionPool.set(targetDir, session);
           activeTriggers.set(message_id, { workdir: targetDir, session });
+          sessionRef = session;
           session.on('status', statusHandler);
           try {
             lastActivity = Date.now();
@@ -853,7 +854,7 @@ async function processTrigger(msg) {
       } else if (retryErr.message.includes('exited unexpectedly') && !fullContent) {
         console.log(`[stoa] session crashed before output, retrying in 4s...`);
         await new Promise(r => setTimeout(r, 4000));
-        session = getSession(targetDir);
+        session = getSession(targetDir, envToUse);
         activeTriggers.set(message_id, { workdir: targetDir, session });
         lastActivity = Date.now();
         result = await session.send(sendOpts);
