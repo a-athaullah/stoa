@@ -530,7 +530,7 @@ After saving, click **discover models** to probe which models are available and 
 
 **Enabling and disabling models**: After discovery, a checklist appears showing all found models. Check only the models you want available in the room selector, then click **save selection**. This keeps the selector uncluttered when a platform has many models. Use **select all / deselect all** to quickly toggle everything. The enabled selection persists across sessions and updates automatically when you re-discover.
 
-The API key is stored securely on the server and never sent to the browser.
+The API key is stored on the server and returned to the browser only in the Settings edit form (single-user app — you are the only one with access).
 
 **Supported providers** — any OpenAI-compatible API endpoint works:
 - **Ollama Cloud** — `https://ollama.com/v1` (free tier available)

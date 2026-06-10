@@ -2661,22 +2661,17 @@ wss.on('connection', (ws, req) => {
         return;
       }
       if (msg.model && !msg.model.startsWith('claude-')) {
-        // Non-Anthropic model must exist in a platform's enabled_models
+        // Non-Anthropic model must exist in a platform's enabled_models list
         let known = false;
         try {
           const raw = getSetting('ai_platforms');
           if (raw) {
-            const em = getSetting('enabled_models');
-            const enabledSet = em ? new Set(JSON.parse(em)) : new Set();
             const platforms = JSON.parse(raw);
             for (const p of platforms) {
               if (!p.enabled) continue;
-              const cached = p.cached_models || [];
-              for (const m of cached) {
-                const name = typeof m === 'string' ? m : m.model;
-                if (name === msg.model && enabledSet.has(name)) { known = true; break; }
-              }
-              if (known) break;
+              const enabledSet = Array.isArray(p.enabled_models) ? new Set(p.enabled_models) : null;
+              if (!enabledSet) continue;
+              if (enabledSet.has(msg.model)) { known = true; break; }
             }
           }
         } catch {}

@@ -530,7 +530,7 @@ Setelah menyimpan, klik **discover models** untuk mendeteksi model yang tersedia
 
 **Mengaktifkan dan menonaktifkan model**: Setelah discovery, muncul checklist semua model yang ditemukan. Centang hanya model yang ingin tampil di selector room, lalu klik **save selection**. Gunakan **select all / deselect all** untuk toggle cepat. Pilihan disimpan permanen dan diperbarui otomatis saat Anda re-discover.
 
-API key disimpan di sisi server dan tidak pernah dikirim ke browser.
+API key disimpan di server dan dikembalikan ke browser hanya di form edit Settings (single-user app — hanya Anda yang punya akses).
 
 **Provider yang didukung** — endpoint API apapun yang kompatibel dengan OpenAI bisa digunakan:
 - **Ollama Cloud** — `https://ollama.com/v1` (tersedia tier gratis)
