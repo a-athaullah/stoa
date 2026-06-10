@@ -1211,6 +1211,8 @@ function sShowPlatformForm(existing) {
   saveBtn.addEventListener('click', async () => {
     const name = nameF.inp.value.trim();
     const base_url = urlF.inp.value.trim();
+    const pending = keyInp.value.trim();
+    if (pending && !keyStore.includes(pending)) { keyStore.push(pending); keyInp.value = ''; refreshKeys(); }
     const api_keys = [...keyStore];
     if (!name) { showToast('Name is required', { error: true }); return; }
     if (!base_url) { showToast('Base URL is required', { error: true }); return; }
