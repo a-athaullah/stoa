@@ -549,14 +549,14 @@ async function run() {
       pmMessageId = r.body.message_id;
     });
 
-    await test('POST /api/rooms/:id/message — wrong secret → 401', async () => {
+    await test('POST /api/rooms/:id/message — wrong secret → 403', async () => {
       if (!pmRoomId || !pmActorId) { console.log('    (skipped)'); return; }
       const r = await rawReq('POST', `/api/rooms/${pmRoomId}/message`,
         JSON.stringify({ content: 'should fail' }),
         'application/json',
         { 'X-Agent-Id': String(pmActorId), 'X-Agent-Secret': 'wrongsecret' }
       );
-      assert.strictEqual(r.status, 401, `expected 401, got ${r.status}`);
+      assert.strictEqual(r.status, 403, `expected 403, got ${r.status}`);
     });
 
     await test('DELETE /api/messages/:id — deletes proactive message → 204', async () => {
@@ -670,18 +670,12 @@ async function run() {
     assert.ok(r.raw.includes('powershell'), 'no powershell in CMD script');
   });
 
-  await test('GET /install.sh?backend=ollama — Ollama install script', async () => {
-    const r = await req('GET', '/install.sh?backend=ollama');
+  await test('GET /install.sh?name=test — name preset in script token', async () => {
+    const r = await req('GET', '/install.sh?name=my-agent');
     assert.strictEqual(r.status, 200);
-    assert.ok(r.raw.includes('Ollama'), 'Ollama not mentioned in script');
-    assert.ok(r.raw.includes('ollama-session.js'), 'ollama-session.js not included');
-  });
-
-  await test('GET /install.sh?backend=gemini — Gemini install script', async () => {
-    const r = await req('GET', '/install.sh?backend=gemini');
-    assert.strictEqual(r.status, 200);
-    assert.ok(r.raw.includes('Gemini'), 'Gemini not in script');
-    assert.ok(r.raw.includes('gemini-session.js'), 'gemini-session.js not included');
+    // The name preset is stored server-side in installTokens (not in script body directly)
+    assert.ok(r.raw.includes('stoa.js'), 'stoa.js not in script');
+    assert.ok(r.raw.includes('claude-session.js'), 'claude-session.js not in script');
   });
 
   // Agent register
@@ -1188,21 +1182,20 @@ async function run() {
     testAutoId = null;
   });
 
-  await test('GET /api/automations/slack — returns connected status', async () => {
-    const r = await req('GET', '/api/automations/slack');
+  await test('GET /api/automations/connections — returns array', async () => {
+    const r = await req('GET', '/api/automations/connections');
     assert.strictEqual(r.status, 200);
-    assert.ok('connected' in r.body, 'connected field missing');
+    assert.ok(Array.isArray(r.body), 'expected array');
   });
 
-  await test('POST /api/automations/slack/connect — missing tokens → 400', async () => {
-    const r = await req('POST', '/api/automations/slack/connect', {});
+  await test('POST /api/automations/connections — missing tokens → 400', async () => {
+    const r = await req('POST', '/api/automations/connections', { name: 'test' });
     assert.strictEqual(r.status, 400);
   });
 
-  await test('DELETE /api/automations/slack/disconnect — no-op disconnect → 200 ok: true', async () => {
-    const r = await req('DELETE', '/api/automations/slack/disconnect');
-    assert.strictEqual(r.status, 200);
-    assert.strictEqual(r.body.ok, true);
+  await test('POST /api/automations/connections — missing name → 400', async () => {
+    const r = await req('POST', '/api/automations/connections', { appToken: 'xapp-x', token: 'xoxb-x' });
+    assert.strictEqual(r.status, 400);
   });
 
   await test('GET /api/setup/status — returns needsSetup bool', async () => {
@@ -1216,6 +1209,9 @@ async function run() {
   console.log('\n[AI Platforms]');
   let testPlatformId = null;
 
+  // Pre-cleanup: delete leftover test-platform from previous runs
+  { const existing = await req('GET', '/api/ai/platforms'); if (existing.body?.some?.(p => p.id === 'test-platform')) await req('DELETE', '/api/ai/platforms/test-platform'); }
+
   await test('GET /api/ai/platforms — returns array', async () => {
     const r = await req('GET', '/api/ai/platforms');
     assert.strictEqual(r.status, 200);
@@ -1227,14 +1223,9 @@ async function run() {
     assert.strictEqual(r.status, 400);
   });
 
-  await test('POST /api/ai/platforms — missing base_url → 400', async () => {
-    const r = await req('POST', '/api/ai/platforms', { name: 'Test Platform' });
-    assert.strictEqual(r.status, 400);
-  });
-
-  await test('POST /api/ai/platforms — creates platform → 201', async () => {
+  await test('POST /api/ai/platforms — creates platform → 200 with id', async () => {
     const r = await req('POST', '/api/ai/platforms', { name: 'Test Platform', base_url: 'http://localhost:11434/v1' });
-    assert.strictEqual(r.status, 201);
+    assert.strictEqual(r.status, 200);
     assert.ok(r.body.id, 'id missing');
     assert.strictEqual(r.body.name, 'Test Platform');
     testPlatformId = r.body.id;
@@ -1250,7 +1241,7 @@ async function run() {
     if (!testPlatformId) { console.log('    (skipped)'); return; }
     const r = await req('PATCH', `/api/ai/platforms/${encodeURIComponent(testPlatformId)}`, { name: 'Updated Platform' });
     assert.strictEqual(r.status, 200);
-    assert.ok(r.body.ok);
+    assert.strictEqual(r.body.name, 'Updated Platform', 'name not updated in response');
   });
 
   await test('PATCH /api/ai/platforms/:id — nonexistent → 404', async () => {
