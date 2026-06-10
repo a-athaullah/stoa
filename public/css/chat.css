@@ -1352,17 +1352,37 @@ html.dark .h-faded-mark { opacity: 0.12; }
 .h-actor-check:hover { background: var(--h-bg); }
 
 .h-actor-check input[type=radio] {
+  display: none;
+}
+
+.h-actor-check::before {
+  content: '';
   width: 15px;
   height: 15px;
-  accent-color: var(--h-ink);
-  cursor: pointer;
+  border-radius: 50%;
+  border: 2px solid var(--h-ink-mute);
   flex: 0 0 auto;
+  transition: background 0.12s, border-color 0.12s;
+  box-sizing: border-box;
+}
+
+.h-actor-check:has(input[type=radio]:checked)::before {
+  background: var(--h-accent);
+  border-color: var(--h-accent);
+}
+
+.h-actor-check:has(input[type=radio]:checked) {
+  background: var(--h-bg);
 }
 
 .h-actor-check-name {
   font-family: var(--h-sans);
   font-size: 14px;
   color: var(--h-ink-mute);
+}
+
+.h-actor-check:has(input[type=radio]:checked) .h-actor-check-name {
+  color: var(--h-ink);
 }
 
 /* ── Markdown in bubbles ─────────────────────────────── */
