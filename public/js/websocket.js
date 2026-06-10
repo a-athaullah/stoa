@@ -95,7 +95,7 @@ function handleWsMessage(msg) {
   }
 
   if (msg.type === 'message_complete') {
-    finalizeMessage(msg.message_id, msg.content, msg.file_url, msg.file_name, msg.attachments);
+    finalizeMessage(msg.message_id, msg.content, msg.file_url, msg.file_name, msg.attachments, msg.ai_model);
     clearComposerProcessing(msg.message_id);
     refreshRoomList();
     if (ws && ws.readyState === 1) {

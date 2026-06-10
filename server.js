@@ -2309,9 +2309,9 @@ wss.on('connection', (ws, req) => {
       }
       const attachJson = msg.attachments?.length ? JSON.stringify(msg.attachments) : null;
       db.prepare(
-        "UPDATE messages SET content=?, file_url=?, file_name=?, attachments=?, state='complete', completed_at=datetime('now') WHERE id=?"
-      ).run(msg.content, msg.file_url || null, msg.file_name || null, attachJson, msg.message_id);
-      const completePayload = { type: 'message_complete', message_id: msg.message_id, content: msg.content };
+        "UPDATE messages SET content=?, file_url=?, file_name=?, attachments=?, ai_model=?, state='complete', completed_at=datetime('now') WHERE id=?"
+      ).run(msg.content, msg.file_url || null, msg.file_name || null, attachJson, msg.ai_model || null, msg.message_id);
+      const completePayload = { type: 'message_complete', message_id: msg.message_id, content: msg.content, ai_model: msg.ai_model || null };
       if (msg.attachments?.length) { completePayload.attachments = msg.attachments; }
       else if (msg.file_url) { completePayload.file_url = msg.file_url; completePayload.file_name = msg.file_name; }
       broadcast(msg.room_id, completePayload);
