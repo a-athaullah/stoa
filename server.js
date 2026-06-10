@@ -1121,10 +1121,12 @@ const server = http.createServer(async (req, res) => {
           return { model, vision: Array.isArray(d?.capabilities) && d.capabilities.includes('vision') };
         } catch { return { model, vision: false }; }
       }));
-      const idx = platforms.findIndex(p => p.id === platformId);
-      if (idx !== -1) {
-        platforms[idx].cached_models = usable;
-        setSetting('ai_platforms', JSON.stringify(platforms));
+      const freshRaw = getSetting('ai_platforms');
+      const freshPlatforms = freshRaw ? JSON.parse(freshRaw) : [];
+      const freshIdx = freshPlatforms.findIndex(p => p.id === platformId);
+      if (freshIdx !== -1) {
+        freshPlatforms[freshIdx].cached_models = usable;
+        setSetting('ai_platforms', JSON.stringify(freshPlatforms));
       }
       res.write(JSON.stringify({ type: 'done', tested: candidates.length, usable }) + '\n');
       return res.end();
@@ -2670,8 +2672,7 @@ wss.on('connection', (ws, req) => {
             for (const p of platforms) {
               if (!p.enabled) continue;
               const enabledSet = Array.isArray(p.enabled_models) ? new Set(p.enabled_models) : null;
-              if (!enabledSet) continue;
-              if (enabledSet.has(msg.model)) { known = true; break; }
+              if (!enabledSet || enabledSet.has(msg.model)) { known = true; break; }
             }
           }
         } catch {}

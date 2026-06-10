@@ -996,6 +996,7 @@ async function fetchPlatformModels() {
         platformModels.push({ value: m.value, label: m.label, vision: m.vision || false, platform: g.platform_name, platform_id: g.platform_id, base_url: g.base_url || '' });
       }
     }
+    populateModelDropdown();
   } catch {}
 }
 
