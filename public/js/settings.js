@@ -1367,18 +1367,27 @@ function sRenderModelChecklist(container, cachedModels, enabledModels, platformI
 
   const checkboxes = [];
 
-  for (const model of cachedModels) {
+  for (const m of cachedModels) {
+    const modelName = typeof m === 'string' ? m : m.model;
+    const vision = typeof m === 'object' && m.vision;
     const row = document.createElement('label');
     row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 2px;cursor:pointer;border-radius:3px';
     const cb = document.createElement('input');
     cb.type = 'checkbox';
-    cb.value = model;
-    cb.checked = enabledSet ? enabledSet.has(model) : true;
+    cb.value = modelName;
+    cb.checked = enabledSet ? enabledSet.has(modelName) : true;
     cb.className = 's-model-cb';
     const lbl = document.createElement('span');
-    lbl.style.cssText = 'font-family:ui-monospace,monospace;font-size:11.5px;color:var(--h-ink-faint)';
-    lbl.textContent = model;
+    lbl.style.cssText = 'font-family:ui-monospace,monospace;font-size:11.5px;color:var(--h-ink-faint);flex:1';
+    lbl.textContent = modelName;
     row.append(cb, lbl);
+    if (vision) {
+      const icon = document.createElement('span');
+      icon.textContent = '👁';
+      icon.title = 'vision capable';
+      icon.style.cssText = 'font-size:10px;opacity:0.55;flex-shrink:0';
+      row.appendChild(icon);
+    }
     list.appendChild(row);
     checkboxes.push(cb);
     cb.addEventListener('change', updateSelectAllLabel);

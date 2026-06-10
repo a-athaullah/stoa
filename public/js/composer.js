@@ -991,7 +991,7 @@ async function fetchPlatformModels() {
     for (const g of groups) {
       if (g.platform_id === 'anthropic') continue;
       for (const m of g.models) {
-        platformModels.push({ value: m.value, label: m.label, platform: g.platform_name, platform_id: g.platform_id, base_url: g.base_url || '' });
+        platformModels.push({ value: m.value, label: m.label, vision: m.vision || false, platform: g.platform_name, platform_id: g.platform_id, base_url: g.base_url || '' });
       }
     }
   } catch {}
@@ -1020,7 +1020,7 @@ function populateModelDropdown(sel, currentModel) {
       for (const pm of platformModelsForGroup) {
         const opt = document.createElement('option');
         opt.value = pm.value;
-        opt.textContent = pm.label;
+        opt.textContent = pm.vision ? '👁 ' + pm.label : pm.label;
         if (pm.base_url) opt.dataset.baseUrl = pm.base_url;
         if (pm.platform_id) opt.dataset.platformId = pm.platform_id;
         optgroup.appendChild(opt);

@@ -1103,7 +1103,19 @@ const server = http.createServer(async (req, res) => {
       }
       await Promise.all(Array.from({ length: Math.min(concurrency, candidates.length) }, worker));
 
-      const usable = results.filter(r => r.ok).map(r => r.model);
+      const usableNames = results.filter(r => r.ok).map(r => r.model);
+      const showUrl = url2.origin + '/api/show';
+      const usable = await Promise.all(usableNames.map(async (model) => {
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 8000);
+          const r = await fetch(showUrl, { method: 'POST', headers, signal: ctrl.signal, body: JSON.stringify({ model }) });
+          clearTimeout(t);
+          if (!r.ok) return { model, vision: false };
+          const d = await r.json().catch(() => null);
+          return { model, vision: Array.isArray(d?.capabilities) && d.capabilities.includes('vision') };
+        } catch { return { model, vision: false }; }
+      }));
       const idx = platforms.findIndex(p => p.id === platformId);
       if (idx !== -1) {
         platforms[idx].cached_models = usable;
@@ -1137,7 +1149,19 @@ const server = http.createServer(async (req, res) => {
       clearTimeout(timer);
       if (resp.ok) {
         const data = await resp.json().catch(() => null);
-        const models = data?.data?.map(m => m.id) || data?.models?.map(m => m.name || m.model) || [];
+        const modelNames = data?.data?.map(m => m.id) || data?.models?.map(m => m.name || m.model) || [];
+        const showUrl2 = url2.origin + '/api/show';
+        const models = await Promise.all(modelNames.map(async (model) => {
+          try {
+            const ctrl = new AbortController();
+            const t = setTimeout(() => ctrl.abort(), 8000);
+            const r = await fetch(showUrl2, { method: 'POST', headers, signal: ctrl.signal, body: JSON.stringify({ model }) });
+            clearTimeout(t);
+            if (!r.ok) return { model, vision: false };
+            const d = await r.json().catch(() => null);
+            return { model, vision: Array.isArray(d?.capabilities) && d.capabilities.includes('vision') };
+          } catch { return { model, vision: false }; }
+        }));
         const idx = platforms.findIndex(p => p.id === platformId);
         if (idx !== -1) {
           platforms[idx].cached_models = models;
@@ -1169,8 +1193,10 @@ const server = http.createServer(async (req, res) => {
       if (p.cached_models?.length) {
         const enabled = Array.isArray(p.enabled_models) ? new Set(p.enabled_models) : null;
         for (const m of p.cached_models) {
-          if (enabled && !enabled.has(m)) continue;
-          group.models.push({ value: m, label: m });
+          const modelName = typeof m === 'string' ? m : m.model;
+          const vision = typeof m === 'object' ? (m.vision || false) : false;
+          if (enabled && !enabled.has(modelName)) continue;
+          group.models.push({ value: modelName, label: modelName, vision });
         }
       }
       result.push(group);
