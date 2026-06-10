@@ -1106,7 +1106,7 @@ async function sLoadPlatformsTab() {
 function sShowPlatformForm(existing) {
   const container = document.getElementById('s-platforms-list');
   if (!container) return;
-  if (document.getElementById('s-platform-form')) return;
+  if (document.getElementById('s-platform-form')) document.getElementById('s-platform-form').remove();
 
   const form = document.createElement('div');
   form.id = 's-platform-form';

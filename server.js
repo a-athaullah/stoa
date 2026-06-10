@@ -1004,7 +1004,7 @@ const server = http.createServer(async (req, res) => {
     const raw = getSetting('ai_platforms');
     const platforms = raw ? JSON.parse(raw) : [];
     const id = body.id || body.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-    if (platforms.find(p => p.id === id)) { res.writeHead(409); return res.end(JSON.stringify({ error: 'platform already exists' })); }
+    if (platforms.find(p => p.id === id)) { res.writeHead(409); return res.end(JSON.stringify({ error: 'A platform with this name already exists' })); }
     const keys = body.api_keys || (body.api_key ? [body.api_key] : []);
     const platform = { id, name: body.name.trim(), base_url: body.base_url || '', api_keys: keys, enabled: true, vendor: body.vendor || 'generic' };
     platforms.push(platform);
