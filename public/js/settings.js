@@ -1306,11 +1306,25 @@ function sShowPlatformForm(existing) {
   btnRow.append(cancelBtn, healthBtn, saveBtn);
 
   form.append(nameF.row, urlF.row, urlHint, keysRow, progressWrap, btnRow);
-  container.appendChild(form);
+
+  if (existing) {
+    const card = document.getElementById('s-platform-' + existing.id);
+    if (card) { card.style.display = 'none'; card.after(form); }
+    else container.appendChild(form);
+    const origCancel = cancelBtn.onclick;
+    cancelBtn.addEventListener('click', () => { if (card) card.style.display = ''; });
+  } else {
+    container.appendChild(form);
+  }
 }
 
 function sEditPlatform(platform) {
-  if (document.getElementById('s-platform-form')) document.getElementById('s-platform-form').remove();
+  if (document.getElementById('s-platform-form')) {
+    const prev = document.getElementById('s-platform-form');
+    const hiddenCard = prev.previousElementSibling;
+    if (hiddenCard?.style.display === 'none') hiddenCard.style.display = '';
+    prev.remove();
+  }
   sShowPlatformForm(platform);
 }
 
