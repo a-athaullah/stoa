@@ -1156,7 +1156,11 @@ const server = http.createServer(async (req, res) => {
       clearTimeout(timer);
       if (resp.ok) {
         const data = await resp.json().catch(() => null);
-        const modelNames = data?.data?.map(m => m.id) || data?.models?.map(m => m.name || m.model) || [];
+        const rawNames = data?.data?.map(m => m.id) || data?.models?.map(m => m.name || m.model) || [];
+        const isOllamaCloud = url2.hostname.includes('ollama.com');
+        const modelNames = rawNames.map(m =>
+          isOllamaCloud && !m.endsWith('-cloud') && !m.endsWith(':cloud') ? m + ':cloud' : m
+        );
         const showUrl2 = url2.origin + '/api/show';
         const models = await Promise.all(modelNames.map(async (model) => {
           try {
@@ -1169,10 +1173,12 @@ const server = http.createServer(async (req, res) => {
             return { model, vision: Array.isArray(d?.capabilities) && d.capabilities.includes('vision') };
           } catch { return { model, vision: false }; }
         }));
-        const idx = platforms.findIndex(p => p.id === platformId);
-        if (idx !== -1) {
-          platforms[idx].cached_models = models;
-          setSetting('ai_platforms', JSON.stringify(platforms));
+        const freshRaw = getSetting('ai_platforms');
+        const freshPlatforms = freshRaw ? JSON.parse(freshRaw) : [];
+        const freshIdx = freshPlatforms.findIndex(p => p.id === platformId);
+        if (freshIdx !== -1) {
+          freshPlatforms[freshIdx].cached_models = models;
+          setSetting('ai_platforms', JSON.stringify(freshPlatforms));
         }
         return json(res, { status: 'ok', models });
       }
@@ -2671,8 +2677,10 @@ wss.on('connection', (ws, req) => {
             const platforms = JSON.parse(raw);
             for (const p of platforms) {
               if (!p.enabled) continue;
+              const cachedNames = Array.isArray(p.cached_models) ? p.cached_models.map(m => typeof m === 'string' ? m : m.model) : [];
               const enabledSet = Array.isArray(p.enabled_models) ? new Set(p.enabled_models) : null;
-              if (!enabledSet || enabledSet.has(msg.model)) { known = true; break; }
+              const inCached = cachedNames.includes(msg.model);
+              if (inCached && (!enabledSet || enabledSet.has(msg.model))) { known = true; break; }
             }
           }
         } catch {}
@@ -3284,14 +3292,13 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   if (roomRow2?.model_config) {
     try {
       const cfg = JSON.parse(roomRow2.model_config);
-      modelBaseUrl = cfg.base_url || undefined;
       if (cfg.platform_id) {
         const raw = getSetting('ai_platforms');
         if (raw) {
           const platforms = JSON.parse(raw);
           const plat = platforms.find(p => p.id === cfg.platform_id && p.enabled);
           if (plat) {
-            modelBaseUrl = modelBaseUrl || plat.base_url || undefined;
+            modelBaseUrl = plat.base_url || cfg.base_url || undefined;
             modelApiKeys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : undefined);
           }
         }
