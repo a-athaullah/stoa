@@ -957,14 +957,7 @@ async function run() {
 
   // Actor operations
   console.log('\n[Actor Operations]');
-  await test('GET /api/actors/:id/capabilities — returns models array', async () => {
-    const actors = (await req('GET', '/api/actors')).body;
-    const ollamaActor = actors.find(a => a.adapter === 'ollama');
-    if (!ollamaActor) { console.log('    (skipped — no Ollama actor)'); return; }
-    const r = await req('GET', `/api/actors/${ollamaActor.id}/capabilities`);
-    assert.strictEqual(r.status, 200);
-    assert.ok(Array.isArray(r.body.models), 'models not array');
-  });
+  // GET /api/actors/:id/capabilities — removed in a8a735c (vision detection moved to server-side /api/show)
 
   await test('GET /api/actors/:id/workdirs — returns workdir list', async () => {
     const actors = (await req('GET', '/api/actors')).body;

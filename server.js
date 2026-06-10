@@ -2687,10 +2687,10 @@ wss.on('connection', (ws, req) => {
         // base_url is stored for display but platform lookup always re-fetches from server settings
         const { platform_id, base_url } = msg.model_config;
         if (platform_id !== undefined || base_url !== undefined) {
-          if (base_url !== undefined) {
+          if (base_url) {
             try { new URL(base_url); } catch { ws.send(JSON.stringify({ type: 'error', message: 'invalid model_config: bad base_url' })); return; }
           }
-          modelConfig = JSON.stringify({ ...(platform_id !== undefined ? { platform_id } : {}), ...(base_url !== undefined ? { base_url } : {}) });
+          modelConfig = JSON.stringify({ ...(platform_id !== undefined ? { platform_id } : {}), ...(base_url ? { base_url } : {}) });
         }
       }
       db.prepare("UPDATE rooms SET model=?, model_config=? WHERE id=?").run(model, modelConfig, subscribedRoom);
