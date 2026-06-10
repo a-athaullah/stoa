@@ -1016,7 +1016,7 @@ function populateModelDropdown(sel, currentModel) {
     if (m.platform !== lastPlatform && models.length > ANTHROPIC_MODELS.length) {
       const optgroup = document.createElement('optgroup');
       optgroup.label = m.platform === 'anthropic' ? 'Anthropic' : m.platform;
-      const platformModelsForGroup = models.filter(x => x.platform === m.platform);
+      const platformModelsForGroup = models.filter(x => x.platform === m.platform).sort((a, b) => a.label.localeCompare(b.label));
       for (const pm of platformModelsForGroup) {
         const opt = document.createElement('option');
         opt.value = pm.value;
