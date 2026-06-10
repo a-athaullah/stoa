@@ -1258,6 +1258,15 @@ async function run() {
     assert.strictEqual(r.status, 404);
   });
 
+  await test('POST /api/ai/platforms/:id/health — returns status field', async () => {
+    if (!testPlatformId) { console.log('    (skipped)'); return; }
+    const r = await req('POST', `/api/ai/platforms/${encodeURIComponent(testPlatformId)}/health`);
+    assert.strictEqual(r.status, 200);
+    assert.ok('status' in r.body, 'status field missing');
+    assert.ok(r.body.status === 'ok' || r.body.status === 'error', 'unexpected status value');
+    if (r.body.status === 'ok') assert.ok(Array.isArray(r.body.models), 'models not array on ok');
+  });
+
   await test('GET /api/ai/models — returns array with anthropic group', async () => {
     const r = await req('GET', '/api/ai/models');
     assert.strictEqual(r.status, 200);
