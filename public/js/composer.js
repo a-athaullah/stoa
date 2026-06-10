@@ -300,9 +300,6 @@ async function loadWorkdirsForActor(actorId) {
   const newWdRow = document.getElementById('new-room-new-workdir-row');
   if (!actorId) { section.style.display = 'none'; return; }
 
-  const actor = allActors.find(a => a.id === parseInt(actorId));
-  const isGemini = actor?.adapter === 'gemini';
-
   let workdirs;
   try { workdirs = await fjson(`/api/actors/${actorId}/workdirs`); } catch { workdirs = []; }
   sel.innerHTML = '';
@@ -311,25 +308,19 @@ async function loadWorkdirsForActor(actorId) {
   workdirs.forEach(w => {
     const opt = document.createElement('option');
     opt.value = w.id;
-    const modelTag = formatModelName(w.model);
-    opt.textContent = (w.label || w.path) + (modelTag ? ` [${modelTag}]` : '') + (w.is_default ? ' (default)' : '');
+    opt.textContent = (w.label || w.path) + (w.is_default ? ' (default)' : '');
     if (w.is_default) opt.selected = true;
     sel.appendChild(opt);
   });
 
-  if (isGemini) {
-    sel.disabled = true;
-    if (workdirs.length === 0) { section.style.display = 'none'; }
-  } else {
-    sel.disabled = false;
-    const newOpt = document.createElement('option');
-    newOpt.value = '__new__';
-    newOpt.textContent = '+ new folder…';
-    sel.appendChild(newOpt);
-    if (workdirs.length === 0) {
-      newOpt.selected = true;
-      newWdRow.style.display = 'flex';
-    }
+  sel.disabled = false;
+  const newOpt = document.createElement('option');
+  newOpt.value = '__new__';
+  newOpt.textContent = '+ new folder…';
+  sel.appendChild(newOpt);
+  if (workdirs.length === 0) {
+    newOpt.selected = true;
+    newWdRow.style.display = 'flex';
   }
 
   // Remove old listener by cloning
@@ -705,7 +696,7 @@ function formatModelName(model) {
 }
 
 function handleModelUpdate(msg) {
-  if (currentRoomWorkdirId !== msg.workdir_id) return;
+  if (msg.room_id && msg.room_id !== currentRoomId) return;
   const badge = document.querySelector('.h-model-badge');
   const label = formatModelName(msg.model);
   if (badge && label) badge.textContent = label;
@@ -983,20 +974,79 @@ function applyMention(name) {
 }
 
 // ── Model selector ────────────────────────────────────────────────────────
+const ANTHROPIC_MODELS = [
+  { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
+  { value: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
+  { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+  { value: 'claude-opus-4-6', label: 'Opus 4.6' },
+  { value: 'claude-opus-4-7', label: 'Opus 4.7' },
+  { value: 'claude-opus-4-8', label: 'Opus 4.8' },
+];
+
+let platformModels = [];
+
+function getAvailableModels() {
+  const models = [];
+  for (const m of ANTHROPIC_MODELS) {
+    models.push({ ...m, platform: 'anthropic' });
+  }
+  for (const m of platformModels) {
+    models.push(m);
+  }
+  return models;
+}
+
+function populateModelDropdown(sel, currentModel) {
+  const models = getAvailableModels();
+  sel.innerHTML = '';
+  let lastPlatform = '';
+  for (const m of models) {
+    if (m.platform !== lastPlatform && models.length > ANTHROPIC_MODELS.length) {
+      const optgroup = document.createElement('optgroup');
+      optgroup.label = m.platform === 'anthropic' ? 'Anthropic' : m.platform;
+      const platformModelsForGroup = models.filter(x => x.platform === m.platform);
+      for (const pm of platformModelsForGroup) {
+        const opt = document.createElement('option');
+        opt.value = pm.value;
+        opt.textContent = pm.label;
+        if (pm.base_url) opt.dataset.baseUrl = pm.base_url;
+        if (pm.api_key) opt.dataset.apiKey = pm.api_key;
+        optgroup.appendChild(opt);
+      }
+      sel.appendChild(optgroup);
+      lastPlatform = m.platform;
+    } else if (models.length <= ANTHROPIC_MODELS.length) {
+      const opt = document.createElement('option');
+      opt.value = m.value;
+      opt.textContent = m.label;
+      sel.appendChild(opt);
+    }
+  }
+  sel.value = currentModel || 'claude-sonnet-4-6';
+}
+
 function updateModelSelector(room, parts) {
   const wrap = document.getElementById('model-selector-wrap');
   const sel = document.getElementById('model-select');
   if (!wrap || !sel) return;
-  const hasClaudeAgent = (parts || []).some(p => p.adapter === 'claude');
-  wrap.style.display = hasClaudeAgent ? 'flex' : 'none';
-  if (hasClaudeAgent) {
-    sel.value = room.model || 'claude-sonnet-4-6';
+  const hasAIAgent = (parts || []).some(p => p.type === 'ai');
+  wrap.style.display = hasAIAgent ? 'flex' : 'none';
+  if (hasAIAgent) {
+    populateModelDropdown(sel, room.model);
   }
 }
 
 document.getElementById('model-select')?.addEventListener('change', function() {
   if (!currentRoomId || !ws) return;
-  ws.send(JSON.stringify({ type: 'set_room_model', model: this.value }));
+  const opt = this.selectedOptions[0];
+  const msg = { type: 'set_room_model', model: this.value };
+  if (opt?.dataset.baseUrl) {
+    msg.model_config = { base_url: opt.dataset.baseUrl };
+    if (opt.dataset.apiKey) msg.model_config.api_key = opt.dataset.apiKey;
+  } else {
+    msg.model_config = null;
+  }
+  ws.send(JSON.stringify(msg));
 });
 
 function mentionPopupNavigate(dir) {
