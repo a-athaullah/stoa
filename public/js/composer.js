@@ -1012,6 +1012,8 @@ function getAvailableModels() {
 }
 
 function populateModelDropdown(sel, currentModel) {
+  if (!sel) sel = document.getElementById('model-select');
+  if (!sel) return;
   const models = getAvailableModels();
   sel.innerHTML = '';
   const hasMultiplePlatforms = models.length > ANTHROPIC_MODELS.length;
