@@ -1348,10 +1348,10 @@ function sRenderModelChecklist(container, cachedModels, enabledModels, platformI
   const enabledSet = Array.isArray(enabledModels) ? new Set(enabledModels) : null;
 
   const wrap = document.createElement('div');
-  wrap.style.cssText = 'border-top:1px solid var(--h-hair-soft);padding:10px 0 4px';
+  wrap.style.cssText = 'border-top:1px solid var(--h-hair-soft);padding:10px 0 4px;width:100%;box-sizing:border-box';
 
   const header = document.createElement('div');
-  header.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px';
+  header.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;padding-right:2px';
 
   const title = document.createElement('span');
   title.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);flex:1;min-width:80px';
