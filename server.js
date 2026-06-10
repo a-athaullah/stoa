@@ -1045,6 +1045,58 @@ const server = http.createServer(async (req, res) => {
     return json(res, { ok: true });
   }
 
+  function platformHeaders(plat) {
+    const keys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : []);
+    const h = { 'Content-Type': 'application/json' };
+    if (keys[0]) h['Authorization'] = `Bearer ${keys[0]}`;
+    return h;
+  }
+
+  function applyCloudSuffix(modelNames, baseUrl) {
+    const isOllamaCloud = new URL(baseUrl).hostname.includes('ollama.com');
+    return modelNames.map(m =>
+      isOllamaCloud && !m.endsWith('-cloud') && !m.endsWith(':cloud') ? m + ':cloud' : m
+    );
+  }
+
+  async function probeVision(modelNames, baseUrl, headers) {
+    const showUrl = new URL(baseUrl).origin + '/api/show';
+    return Promise.all(modelNames.map(async (model) => {
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 8000);
+        const r = await fetch(showUrl, { method: 'POST', headers, signal: ctrl.signal, body: JSON.stringify({ model }) });
+        clearTimeout(t);
+        if (!r.ok) return { model, vision: false };
+        const d = await r.json().catch(() => null);
+        return { model, vision: Array.isArray(d?.capabilities) && d.capabilities.includes('vision') };
+      } catch { return { model, vision: false }; }
+    }));
+  }
+
+  function saveCachedModels(platformId, models) {
+    const freshRaw = getSetting('ai_platforms');
+    const freshPlatforms = freshRaw ? JSON.parse(freshRaw) : [];
+    const freshIdx = freshPlatforms.findIndex(p => p.id === platformId);
+    if (freshIdx !== -1) {
+      freshPlatforms[freshIdx].cached_models = models;
+      setSetting('ai_platforms', JSON.stringify(freshPlatforms));
+    }
+  }
+
+  async function fetchModelList(baseUrl, headers, timeoutMs = 10000) {
+    const url2 = new URL(baseUrl);
+    const baseClean = url2.origin + url2.pathname.replace(/\/+$/, '');
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const resp = await fetch(baseClean + '/models', { headers, signal: ctrl.signal });
+    clearTimeout(timer);
+    if (!resp.ok) return { ok: false, status: resp.status, models: [] };
+    const data = await resp.json().catch(() => null);
+    const raw = data?.data?.map(m => m.id) || data?.models?.map(m => m.name || m.model) || [];
+    return { ok: true, status: resp.status, models: applyCloudSuffix(raw, baseUrl) };
+  }
+
   if (req.method === 'POST' && url.pathname.match(/^\/api\/ai\/platforms\/[^/]+\/discover-models$/)) {
     const platformId = decodeURIComponent(url.pathname.split('/')[4]);
     const raw = getSetting('ai_platforms');
@@ -1052,28 +1104,15 @@ const server = http.createServer(async (req, res) => {
     const plat = platforms.find(p => p.id === platformId);
     if (!plat) { res.writeHead(404); return res.end(JSON.stringify({ error: 'not found' })); }
     if (!plat.base_url) { return json(res, { status: 'error', message: 'No base URL configured' }); }
-    const keys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : []);
+    const headers = platformHeaders(plat);
     try {
-      const url2 = new URL(plat.base_url);
-      const baseClean = url2.origin + url2.pathname.replace(/\/+$/, '');
-      const headers = { 'Content-Type': 'application/json' };
-      if (keys[0]) headers['Authorization'] = `Bearer ${keys[0]}`;
-
-      const ctrl1 = new AbortController();
-      const timer1 = setTimeout(() => ctrl1.abort(), 10000);
-      const listResp = await fetch(baseClean + '/models', { headers, signal: ctrl1.signal });
-      clearTimeout(timer1);
-      if (!listResp.ok) return json(res, { status: 'error', message: `Failed to list models: HTTP ${listResp.status}` });
-      const listData = await listResp.json().catch(() => null);
-      const rawModels = listData?.data?.map(m => m.id) || listData?.models?.map(m => m.name || m.model) || [];
-      // Ollama Cloud requires :cloud suffix — only append for ollama.com endpoints
-      const isOllamaCloud = url2.hostname.includes('ollama.com');
-      const candidates = rawModels.map(m =>
-        isOllamaCloud && !m.endsWith('-cloud') && !m.endsWith(':cloud') ? m + ':cloud' : m
-      );
+      const listResult = await fetchModelList(plat.base_url, headers);
+      if (!listResult.ok) return json(res, { status: 'error', message: `Failed to list models: HTTP ${listResult.status}` });
+      const candidates = listResult.models;
       if (!candidates.length) return json(res, { status: 'error', message: 'No models returned by Ollama Cloud' });
 
-      const probeBase = baseClean.replace(/\/v1$/, '') + '/v1';
+      const url2 = new URL(plat.base_url);
+      const probeBase = (url2.origin + url2.pathname.replace(/\/+$/, '')).replace(/\/v1$/, '') + '/v1';
       async function probe(model) {
         const ctrl = new AbortController();
         const timer = setTimeout(() => ctrl.abort(), 12000);
@@ -1109,25 +1148,8 @@ const server = http.createServer(async (req, res) => {
       await Promise.all(Array.from({ length: Math.min(concurrency, candidates.length) }, worker));
 
       const usableNames = results.filter(r => r.ok).map(r => r.model);
-      const showUrl = url2.origin + '/api/show';
-      const usable = await Promise.all(usableNames.map(async (model) => {
-        try {
-          const ctrl = new AbortController();
-          const t = setTimeout(() => ctrl.abort(), 8000);
-          const r = await fetch(showUrl, { method: 'POST', headers, signal: ctrl.signal, body: JSON.stringify({ model }) });
-          clearTimeout(t);
-          if (!r.ok) return { model, vision: false };
-          const d = await r.json().catch(() => null);
-          return { model, vision: Array.isArray(d?.capabilities) && d.capabilities.includes('vision') };
-        } catch { return { model, vision: false }; }
-      }));
-      const freshRaw = getSetting('ai_platforms');
-      const freshPlatforms = freshRaw ? JSON.parse(freshRaw) : [];
-      const freshIdx = freshPlatforms.findIndex(p => p.id === platformId);
-      if (freshIdx !== -1) {
-        freshPlatforms[freshIdx].cached_models = usable;
-        setSetting('ai_platforms', JSON.stringify(freshPlatforms));
-      }
+      const usable = await probeVision(usableNames, plat.base_url, headers);
+      saveCachedModels(platformId, usable);
       res.write(JSON.stringify({ type: 'done', tested: candidates.length, usable }) + '\n');
       return res.end();
     } catch (e) {
@@ -1144,45 +1166,13 @@ const server = http.createServer(async (req, res) => {
     const plat = platforms.find(p => p.id === platformId);
     if (!plat) { res.writeHead(404); return res.end(JSON.stringify({ error: 'not found' })); }
     if (!plat.base_url) { return json(res, { status: 'error', message: 'No base URL configured' }); }
+    const headers = platformHeaders(plat);
     try {
-      const url2 = new URL(plat.base_url);
-      const modelsUrl = url2.origin + (url2.pathname.replace(/\/+$/, '')) + '/models';
-      const headers = {};
-      const keys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : []);
-      if (keys[0]) headers['Authorization'] = `Bearer ${keys[0]}`;
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 8000);
-      const resp = await fetch(modelsUrl, { headers, signal: ctrl.signal });
-      clearTimeout(timer);
-      if (resp.ok) {
-        const data = await resp.json().catch(() => null);
-        const rawNames = data?.data?.map(m => m.id) || data?.models?.map(m => m.name || m.model) || [];
-        const isOllamaCloud = url2.hostname.includes('ollama.com');
-        const modelNames = rawNames.map(m =>
-          isOllamaCloud && !m.endsWith('-cloud') && !m.endsWith(':cloud') ? m + ':cloud' : m
-        );
-        const showUrl2 = url2.origin + '/api/show';
-        const models = await Promise.all(modelNames.map(async (model) => {
-          try {
-            const ctrl = new AbortController();
-            const t = setTimeout(() => ctrl.abort(), 8000);
-            const r = await fetch(showUrl2, { method: 'POST', headers, signal: ctrl.signal, body: JSON.stringify({ model }) });
-            clearTimeout(t);
-            if (!r.ok) return { model, vision: false };
-            const d = await r.json().catch(() => null);
-            return { model, vision: Array.isArray(d?.capabilities) && d.capabilities.includes('vision') };
-          } catch { return { model, vision: false }; }
-        }));
-        const freshRaw = getSetting('ai_platforms');
-        const freshPlatforms = freshRaw ? JSON.parse(freshRaw) : [];
-        const freshIdx = freshPlatforms.findIndex(p => p.id === platformId);
-        if (freshIdx !== -1) {
-          freshPlatforms[freshIdx].cached_models = models;
-          setSetting('ai_platforms', JSON.stringify(freshPlatforms));
-        }
-        return json(res, { status: 'ok', models });
-      }
-      return json(res, { status: 'error', message: `HTTP ${resp.status}` });
+      const listResult = await fetchModelList(plat.base_url, headers, 8000);
+      if (!listResult.ok) return json(res, { status: 'error', message: `HTTP ${listResult.status}` });
+      const models = await probeVision(listResult.models, plat.base_url, headers);
+      saveCachedModels(platformId, models);
+      return json(res, { status: 'ok', models });
     } catch (e) {
       return json(res, { status: 'error', message: e.name === 'AbortError' ? 'Timeout (8s)' : (e.message || 'Connection failed') });
     }
@@ -3304,6 +3294,12 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         }
       }
     } catch {}
+  }
+  if (roomModel && !roomModel.startsWith('claude-') && !modelBaseUrl) {
+    const errContent = `⚠ Model "${roomModel}" tidak bisa digunakan — platform-nya sudah di-disable atau dihapus. Ubah model room di Settings.`;
+    db.prepare("UPDATE messages SET content=?, state='complete', completed_at=datetime('now') WHERE id=?").run(errContent, msgId);
+    broadcast(roomId, { type: 'message_complete', message_id: msgId, content: errContent });
+    return;
   }
   const defaultWd = db.prepare(
     'SELECT path FROM agent_workdirs WHERE actor_id=? AND is_default=1 LIMIT 1'

@@ -975,7 +975,7 @@ function applyMention(name) {
 }
 
 // ── Model selector ────────────────────────────────────────────────────────
-const ANTHROPIC_MODELS = [
+const ANTHROPIC_MODELS_FALLBACK = [
   { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
   { value: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
   { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
@@ -984,16 +984,16 @@ const ANTHROPIC_MODELS = [
   { value: 'claude-opus-4-8', label: 'Opus 4.8' },
 ];
 
-let platformModels = [];
+let allServerModels = null;
 
 async function fetchPlatformModels() {
   try {
     const groups = await fjson('/api/ai/models');
-    platformModels = [];
+    allServerModels = [];
     for (const g of groups) {
-      if (g.platform_id === 'anthropic') continue;
+      const platKey = g.platform_id === 'anthropic' ? 'anthropic' : g.platform_name;
       for (const m of g.models) {
-        platformModels.push({ value: m.value, label: m.label, vision: m.vision || false, platform: g.platform_name, platform_id: g.platform_id, base_url: g.base_url || '' });
+        allServerModels.push({ value: m.value, label: m.label, vision: m.vision || false, platform: platKey, platform_id: g.platform_id, base_url: g.base_url || '' });
       }
     }
     populateModelDropdown();
@@ -1001,14 +1001,8 @@ async function fetchPlatformModels() {
 }
 
 function getAvailableModels() {
-  const models = [];
-  for (const m of ANTHROPIC_MODELS) {
-    models.push({ ...m, platform: 'anthropic' });
-  }
-  for (const m of platformModels) {
-    models.push(m);
-  }
-  return models;
+  if (allServerModels) return allServerModels;
+  return ANTHROPIC_MODELS_FALLBACK.map(m => ({ ...m, platform: 'anthropic' }));
 }
 
 function populateModelDropdown(sel, currentModel) {
@@ -1016,7 +1010,7 @@ function populateModelDropdown(sel, currentModel) {
   if (!sel) return;
   const models = getAvailableModels();
   sel.innerHTML = '';
-  const hasMultiplePlatforms = models.length > ANTHROPIC_MODELS.length;
+  const hasMultiplePlatforms = models.some(m => m.platform !== 'anthropic');
   if (hasMultiplePlatforms) {
     // Group by platform using optgroups
     const seen = new Set();
