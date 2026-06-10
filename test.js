@@ -1338,6 +1338,71 @@ async function run() {
     assert.ok(Array.isArray(anthropic.models) && anthropic.models.length > 0, 'anthropic models empty');
   });
 
+  // WS: set_room_model
+  console.log('\n[WS: set_room_model]');
+  await test('set_room_model — valid claude model → room_model_changed broadcast', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const roomId = testRoomIds[0];
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    try {
+      ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+      const changed = waitForWsMessage(ws, m => m.type === 'room_model_changed' && m.room_id === roomId);
+      ws.send(JSON.stringify({ type: 'set_room_model', model: 'claude-opus-4-5', model_config: null }));
+      const msg = await changed;
+      assert.strictEqual(msg.model, 'claude-opus-4-5');
+    } finally {
+      ws.close();
+    }
+  });
+
+  await test('set_room_model — non-claude model not in enabled list → error', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const roomId = testRoomIds[0];
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    try {
+      ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+      await new Promise(r => setTimeout(r, 50));
+      const errPromise = waitForWsMessage(ws, m => m.type === 'error');
+      ws.send(JSON.stringify({ type: 'set_room_model', model: 'llama3-unknown-model' }));
+      const msg = await errPromise;
+      assert.ok(msg.message.includes('enabled list'), `unexpected error: ${msg.message}`);
+    } finally {
+      ws.close();
+    }
+  });
+
+  await test('set_room_model — invalid model value (empty string) → error', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const roomId = testRoomIds[0];
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    try {
+      ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+      await new Promise(r => setTimeout(r, 50));
+      const errPromise = waitForWsMessage(ws, m => m.type === 'error');
+      ws.send(JSON.stringify({ type: 'set_room_model', model: '' }));
+      const msg = await errPromise;
+      assert.ok(msg.message.includes('invalid model'), `unexpected error: ${msg.message}`);
+    } finally {
+      ws.close();
+    }
+  });
+
+  await test('set_room_model — invalid base_url → error', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const roomId = testRoomIds[0];
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    try {
+      ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+      await new Promise(r => setTimeout(r, 50));
+      const errPromise = waitForWsMessage(ws, m => m.type === 'error');
+      ws.send(JSON.stringify({ type: 'set_room_model', model: 'claude-opus-4-5', model_config: { platform_id: 'test', base_url: 'not-a-valid-url' } }));
+      const msg = await errPromise;
+      assert.ok(msg.message.includes('bad base_url'), `unexpected error: ${msg.message}`);
+    } finally {
+      ws.close();
+    }
+  });
+
   await test('DELETE /api/ai/platforms/:id — deletes platform', async () => {
     if (!testPlatformId) { console.log('    (skipped)'); return; }
     const r = await req('DELETE', `/api/ai/platforms/${encodeURIComponent(testPlatformId)}`);

@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.23';
+const CLIENT_VERSION = '0.4.24';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -884,7 +884,10 @@ async function processTrigger(msg) {
 
       // Strip base64 image data from session file to prevent errors on models without image support
       if (sessionId && targetDir && !compactsInFlight.has(targetDir)) {
-        setImmediate(() => stripSessionImages(targetDir, sessionId));
+        setImmediate(() => {
+          if (compactsInFlight.has(targetDir)) return;
+          stripSessionImages(targetDir, sessionId);
+        });
       }
 
       // Auto-compact: check session file size and compact if needed.
