@@ -1279,6 +1279,25 @@ async function run() {
     assert.strictEqual(r.status, 404);
   });
 
+  await test('PATCH /api/ai/platforms/:id — invalid JSON body → 400', async () => {
+    if (!testPlatformId) { console.log('    (skipped)'); return; }
+    const r = await rawReq('PATCH', `/api/ai/platforms/${encodeURIComponent(testPlatformId)}`, 'not-json', 'application/json');
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('PATCH /api/ai/platforms/:id — empty name → 400', async () => {
+    if (!testPlatformId) { console.log('    (skipped)'); return; }
+    const r = await req('PATCH', `/api/ai/platforms/${encodeURIComponent(testPlatformId)}`, { name: '' });
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('POST /api/ai/platforms — duplicate id → 409', async () => {
+    if (!testPlatformId) { console.log('    (skipped)'); return; }
+    // The id is derived from name — use the same name to trigger conflict
+    const r = await req('POST', '/api/ai/platforms', { name: 'Updated Platform', base_url: 'http://localhost:11434/v1' });
+    assert.strictEqual(r.status, 409);
+  });
+
   await test('POST /api/ai/platforms/:id/health — returns status field', async () => {
     if (!testPlatformId) { console.log('    (skipped)'); return; }
     const r = await req('POST', `/api/ai/platforms/${encodeURIComponent(testPlatformId)}/health`);

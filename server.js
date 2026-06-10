@@ -1020,7 +1020,10 @@ const server = http.createServer(async (req, res) => {
     const platforms = raw ? JSON.parse(raw) : [];
     const idx = platforms.findIndex(p => p.id === platformId);
     if (idx === -1) { res.writeHead(404); return res.end(JSON.stringify({ error: 'not found' })); }
-    if (body.name !== undefined) platforms[idx].name = body.name.trim();
+    if (body.name !== undefined) {
+      if (!body.name?.trim()) { res.writeHead(400); return res.end(JSON.stringify({ error: 'name cannot be empty' })); }
+      platforms[idx].name = body.name.trim();
+    }
     if (body.base_url !== undefined) platforms[idx].base_url = body.base_url;
     if (body.api_keys !== undefined) {
       platforms[idx].api_keys = body.api_keys.filter(Boolean);
@@ -1056,11 +1059,9 @@ const server = http.createServer(async (req, res) => {
       const headers = { 'Content-Type': 'application/json' };
       if (keys[0]) headers['Authorization'] = `Bearer ${keys[0]}`;
 
-      const catalogHeaders = { 'Content-Type': 'application/json' };
-      if (keys[0]) catalogHeaders['Authorization'] = `Bearer ${keys[0]}`;
       const ctrl1 = new AbortController();
       const timer1 = setTimeout(() => ctrl1.abort(), 10000);
-      const listResp = await fetch('https://ollama.com/v1/models', { headers: catalogHeaders, signal: ctrl1.signal });
+      const listResp = await fetch('https://ollama.com/v1/models', { headers, signal: ctrl1.signal });
       clearTimeout(timer1);
       if (!listResp.ok) return json(res, { status: 'error', message: `Failed to list cloud models: HTTP ${listResp.status}` });
       const listData = await listResp.json().catch(() => null);
