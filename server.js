@@ -21,7 +21,7 @@ function getFallbackSession(participantId, workDir) {
   fallbackSessions.set(key, { session, timer });
   return session;
 }
-const { spawnGemini } = require('./gemini-adapter');
+
 const connectionManager = require('./connection-manager');
 const automationQueue = require('./queue-manager');
 automationQueue.on('processing', ({ key, pending, meta }) => {
@@ -202,7 +202,7 @@ const UPLOADS_DIR = path.join(__dirname, 'uploads');
 }
 
 // Files yang boleh di-serve sebagai client update
-const CLIENT_FILES = new Set(['stoa.js', 'claude-session.js', 'gemini-session.js', 'gemini-adapter.js', 'ollama-session.js']);
+const CLIENT_FILES = new Set(['stoa.js', 'claude-session.js']);
 
 // One-time install tokens (expires in 10 min)
 const installTokens = new Map();
@@ -1120,27 +1120,11 @@ const server = http.createServer(async (req, res) => {
     const stoaUrl = baseUrl.replace(/^https?/, wsProto);
     const token = crypto.randomBytes(12).toString('hex');
     const presetName = url.searchParams.get('name') || '';
-    const backend = (url.searchParams.get('backend') || 'claude').toLowerCase();
     const lang = url.searchParams.get('lang') || 'en';
-    installTokens.set(token, { expires: Date.now() + 600_000, name: presetName, backend, lang });
+    installTokens.set(token, { expires: Date.now() + 600_000, name: presetName, lang });
 
-    const isGemini = backend === 'gemini';
-    const isOllama = backend === 'ollama';
-    const clientFiles = isGemini
-      ? 'stoa.js gemini-session.js gemini-adapter.js'
-      : isOllama
-        ? 'stoa.js ollama-session.js'
-        : 'stoa.js claude-session.js';
-    const trustCmd = isGemini
-      ? 'gemini --version > /dev/null 2>&1 || true'
-      : isOllama
-        ? '# no CLI trust step needed for Ollama'
-        : 'claude --version > /dev/null 2>&1 || true';
-    const backendEnv = isGemini
-      ? `\n      STOA_AI_BACKEND: 'gemini',`
-      : isOllama
-        ? `\n      STOA_AI_BACKEND: 'ollama',`
-        : '';
+    const clientFiles = 'stoa.js claude-session.js';
+    const trustCmd = 'claude --version > /dev/null 2>&1 || true';
 
     const script = `#!/bin/bash
 set -e
@@ -1150,7 +1134,7 @@ STOA_URL="${stoaUrl}"
 REG_TOKEN="${token}"
 AGENT_DIR="\${HOME}/stoa-agent"
 
-echo "=== Stoa Agent Setup (${isGemini ? 'Gemini' : isOllama ? 'Ollama' : 'Claude'}) ==="
+echo "=== Stoa Agent Setup ==="
 echo "Server : \${BASE_URL}"
 echo ""
 
@@ -1203,7 +1187,7 @@ module.exports = {
       STOA_TYPE: 'ai',
       STOA_ACTOR_ID: '\${ACTOR_ID}',
       STOA_SECRET: '\${STOA_SECRET}',
-      STOA_WORK_DIR: process.env.HOME + '/stoa-workspace',${backendEnv}
+      STOA_WORK_DIR: process.env.HOME + '/stoa-workspace',
     },
     restart_delay: 3000,
     max_restarts: 50,
@@ -1237,27 +1221,11 @@ echo "Logs   : pm2 logs \${AGENT_NAME}"
     const stoaUrl = baseUrl.replace(/^https?/, wsProto);
     const token = crypto.randomBytes(12).toString('hex');
     const presetName = url.searchParams.get('name') || '';
-    const ps1Backend = (url.searchParams.get('backend') || 'claude').toLowerCase();
     const ps1Lang = url.searchParams.get('lang') || 'en';
-    installTokens.set(token, { expires: Date.now() + 600_000, name: presetName, backend: ps1Backend, lang: ps1Lang });
+    installTokens.set(token, { expires: Date.now() + 600_000, name: presetName, lang: ps1Lang });
 
-    const ps1IsGemini = ps1Backend === 'gemini';
-    const ps1IsOllama = ps1Backend === 'ollama';
-    const ps1Files = ps1IsGemini
-      ? '"stoa.js","gemini-session.js","gemini-adapter.js"'
-      : ps1IsOllama
-        ? '"stoa.js","ollama-session.js"'
-        : '"stoa.js","claude-session.js"';
-    const ps1TrustCmd = ps1IsGemini
-      ? 'try { & gemini --version 2>$null } catch {}'
-      : ps1IsOllama
-        ? '# no CLI trust step needed for Ollama'
-        : 'try { & claude --version 2>$null } catch {}';
-    const ps1BackendEnv = ps1IsGemini
-      ? `\n      STOA_AI_BACKEND: 'gemini',`
-      : ps1IsOllama
-        ? `\n      STOA_AI_BACKEND: 'ollama',`
-        : '';
+    const ps1Files = '"stoa.js","claude-session.js"';
+    const ps1TrustCmd = 'try { & claude --version 2>$null } catch {}';
 
     const script = `$ErrorActionPreference = "Stop"
 $BaseUrl = "${baseUrl}"
@@ -1266,7 +1234,7 @@ $RegToken = "${token}"
 $AgentDir = "$env:USERPROFILE\\stoa-agent"
 $WorkDir  = "$env:USERPROFILE\\stoa-workspace"
 
-Write-Host "=== Stoa Agent Setup (${ps1IsGemini ? 'Gemini' : ps1IsOllama ? 'Ollama' : 'Claude'}) ==="
+Write-Host "=== Stoa Agent Setup ==="
 Write-Host "Server : $BaseUrl"
 Write-Host ""
 
@@ -1313,7 +1281,7 @@ module.exports = {
       STOA_TYPE: 'ai',
       STOA_ACTOR_ID: String($ActorId),
       STOA_SECRET: '$Secret',
-      STOA_WORK_DIR: require('os').homedir() + '/stoa-workspace',${ps1BackendEnv}
+      STOA_WORK_DIR: require('os').homedir() + '/stoa-workspace',
     },
     restart_delay: 3000,
     max_restarts: 50,
@@ -1344,7 +1312,6 @@ Write-Host "Logs   : pm2 logs $AgentName"
     const baseUrl = getPublicUrl(host);
     const cmdParams = [];
     if (url.searchParams.get('name')) cmdParams.push(`name=${encodeURIComponent(url.searchParams.get('name'))}`);
-    if (url.searchParams.get('backend')) cmdParams.push(`backend=${encodeURIComponent(url.searchParams.get('backend'))}`);
     if (url.searchParams.get('lang')) cmdParams.push(`lang=${encodeURIComponent(url.searchParams.get('lang'))}`);
     const qs = cmdParams.length ? '?' + cmdParams.join('&') : '';
     const script = `@echo off\r\npowershell -ExecutionPolicy Bypass -Command "irm ${baseUrl}/install.ps1${qs} | iex"\r\n`;
@@ -1366,7 +1333,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
     const suffix = crypto.randomBytes(3).toString('hex');
     const name = (entry.name || '').trim() || `stoa-${suffix}`;
     const secret = crypto.randomBytes(32).toString('hex');
-    const adapter = entry.backend === 'gemini' ? 'gemini' : entry.backend === 'ollama' ? 'ollama' : 'claude';
+    const adapter = 'claude';
     const adapterConfig = JSON.stringify({ lang: entry.lang || 'en' });
     const result = db.prepare(
       `INSERT INTO actors (name, type, adapter, adapter_config, avatar_color, avatar_symbol, secret) VALUES (?, 'ai', ?, ?, '#4d9f9f', '◈', ?)`
@@ -2834,33 +2801,7 @@ async function triggerSkillResponse(roomId, ai, prompt) {
   } else {
     const meta = { actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null };
     let fullContent = '';
-    if (ai.adapter === 'gemini') {
-      try {
-        await spawnGemini({
-          prompt,
-          onToken: token => {
-            fullContent += token;
-            broadcast(roomId, { type: 'message_token', message_id: msgId, token });
-          },
-          onState: state => {
-            broadcast(roomId, { type: 'message_state', message_id: msgId, state, ...meta });
-          },
-          onTool: tool => {
-            broadcast(roomId, { type: 'message_tool', message_id: msgId, tool });
-          },
-        });
-        if (!fullContent.trim()) {
-          db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msgId);
-          broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
-          return;
-        }
-        db.prepare("UPDATE messages SET content=?, state='complete', completed_at=datetime('now') WHERE id=?").run(fullContent, msgId);
-        broadcast(roomId, { type: 'message_complete', message_id: msgId, content: fullContent });
-      } catch {
-        db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msgId);
-        broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
-      }
-    } else {
+    {
       const session = getFallbackSession(ai.participant_id, workdir);
       try {
         const result = await session.send({
