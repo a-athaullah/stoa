@@ -1120,6 +1120,7 @@ function sShowPlatformForm(existing) {
     lbl.textContent = label;
     const inp = document.createElement('input');
     inp.className = 's-server-input'; inp.type = type; inp.value = value || ''; inp.placeholder = placeholder || '';
+    inp.autocomplete = 'off'; inp.setAttribute('data-1p-ignore', ''); inp.setAttribute('data-lpignore', 'true');
     inp.style.flex = '1';
     row.append(lbl, inp);
     return { row, inp };
@@ -1175,7 +1176,8 @@ function sShowPlatformForm(existing) {
   const addRow = document.createElement('div');
   addRow.style.cssText = 'display:flex;gap:6px';
   const keyInp = document.createElement('input');
-  keyInp.className = 's-server-input'; keyInp.type = 'password'; keyInp.placeholder = 'sk-...';
+  keyInp.className = 's-server-input'; keyInp.type = 'text'; keyInp.placeholder = 'sk-...';
+  keyInp.autocomplete = 'off'; keyInp.setAttribute('data-1p-ignore', ''); keyInp.setAttribute('data-lpignore', 'true');
   keyInp.style.cssText = 'flex:1;font-family:ui-monospace,monospace;font-size:12px';
   const addKeyBtn = document.createElement('button');
   addKeyBtn.className = 's-icon-btn'; addKeyBtn.title = 'Add key';
