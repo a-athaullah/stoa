@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.0';
+const CLIENT_VERSION = '0.4.1';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -709,9 +709,10 @@ async function processTrigger(msg) {
       } catch {}
     }
 
+    const apiKeys = msg.api_keys || (msg.api_key ? [msg.api_key] : []);
     const platformEnv = {};
     if (msg.base_url) platformEnv.ANTHROPIC_BASE_URL = msg.base_url;
-    if (msg.api_key) platformEnv.ANTHROPIC_AUTH_TOKEN = msg.api_key;
+    if (apiKeys[0]) platformEnv.ANTHROPIC_AUTH_TOKEN = apiKeys[0];
     const envToUse = Object.keys(platformEnv).length ? platformEnv : null;
 
     let session = getSession(targetDir, envToUse);
@@ -775,7 +776,30 @@ async function processTrigger(msg) {
     try {
       result = await session.send(sendOpts);
     } catch (retryErr) {
-      if (retryErr.message.includes('exited unexpectedly') && !fullContent) {
+      const isAuthOrQuota = /auth|unauthorized|quota|rate.limit|429|401|403/i.test(retryErr.message);
+      if (isAuthOrQuota && apiKeys.length > 1 && !fullContent) {
+        let rotated = false;
+        for (let ki = 1; ki < apiKeys.length; ki++) {
+          console.log(`[stoa] API key #1 failed (${retryErr.message}), rotating to key #${ki + 1}...`);
+          const rotatedEnv = { ...platformEnv, ANTHROPIC_AUTH_TOKEN: apiKeys[ki] };
+          session.shutdown();
+          const flags = rid ? ['--resume', rid] : [];
+          if (targetModel) flags.push('--model', targetModel);
+          session = new ClaudeSession({ workDir: targetDir, flags, resumeId: rid || null, env: rotatedEnv });
+          sessionPool.set(targetDir, session);
+          activeTriggers.set(message_id, { workdir: targetDir, session });
+          session.on('status', statusHandler);
+          try {
+            lastActivity = Date.now();
+            result = await session.send(sendOpts);
+            rotated = true;
+            break;
+          } catch (e2) {
+            if (ki === apiKeys.length - 1) throw new Error(`All ${apiKeys.length} API keys exhausted. Last error: ${e2.message}`);
+          }
+        }
+        if (!rotated) throw retryErr;
+      } else if (retryErr.message.includes('exited unexpectedly') && !fullContent) {
         console.log(`[stoa] session crashed before output, retrying in 4s...`);
         await new Promise(r => setTimeout(r, 4000));
         session = getSession(targetDir);

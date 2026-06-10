@@ -990,7 +990,12 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/ai/platforms') {
     const raw = getSetting('ai_platforms');
     const platforms = raw ? JSON.parse(raw) : [];
-    return json(res, platforms);
+    const safe = platforms.map(p => ({
+      ...p,
+      api_keys: (p.api_keys || (p.api_key ? [p.api_key] : [])).map(k => k ? k.slice(0, 6) + '...' : ''),
+      api_key: undefined,
+    }));
+    return json(res, safe);
   }
 
   if (req.method === 'POST' && url.pathname === '/api/ai/platforms') {
@@ -1000,7 +1005,8 @@ const server = http.createServer(async (req, res) => {
     const platforms = raw ? JSON.parse(raw) : [];
     const id = body.id || body.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
     if (platforms.find(p => p.id === id)) { res.writeHead(409); return res.end(JSON.stringify({ error: 'platform already exists' })); }
-    const platform = { id, name: body.name.trim(), base_url: body.base_url || '', api_key: body.api_key || '', enabled: true };
+    const keys = body.api_keys || (body.api_key ? [body.api_key] : []);
+    const platform = { id, name: body.name.trim(), base_url: body.base_url || '', api_keys: keys, enabled: true };
     platforms.push(platform);
     setSetting('ai_platforms', JSON.stringify(platforms));
     return json(res, platform);
@@ -1016,7 +1022,10 @@ const server = http.createServer(async (req, res) => {
     if (idx === -1) { res.writeHead(404); return res.end(JSON.stringify({ error: 'not found' })); }
     if (body.name !== undefined) platforms[idx].name = body.name.trim();
     if (body.base_url !== undefined) platforms[idx].base_url = body.base_url;
-    if (body.api_key !== undefined) platforms[idx].api_key = body.api_key;
+    if (body.api_keys !== undefined) {
+      const isMasked = body.api_keys.every(k => k.endsWith('...'));
+      if (!isMasked) platforms[idx].api_keys = body.api_keys.filter(k => k && !k.endsWith('...'));
+    }
     if (body.enabled !== undefined) platforms[idx].enabled = body.enabled;
     setSetting('ai_platforms', JSON.stringify(platforms));
     return json(res, platforms[idx]);
@@ -1030,6 +1039,39 @@ const server = http.createServer(async (req, res) => {
     if (filtered.length === platforms.length) { res.writeHead(404); return res.end(JSON.stringify({ error: 'not found' })); }
     setSetting('ai_platforms', JSON.stringify(filtered));
     return json(res, { ok: true });
+  }
+
+  if (req.method === 'POST' && url.pathname.match(/^\/api\/ai\/platforms\/[^/]+\/health$/)) {
+    const platformId = decodeURIComponent(url.pathname.split('/')[4]);
+    const raw = getSetting('ai_platforms');
+    const platforms = raw ? JSON.parse(raw) : [];
+    const plat = platforms.find(p => p.id === platformId);
+    if (!plat) { res.writeHead(404); return res.end(JSON.stringify({ error: 'not found' })); }
+    if (!plat.base_url) { return json(res, { status: 'error', message: 'No base URL configured' }); }
+    try {
+      const url2 = new URL(plat.base_url);
+      const modelsUrl = url2.origin + (url2.pathname.replace(/\/+$/, '')) + '/models';
+      const headers = {};
+      const keys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : []);
+      if (keys[0]) headers['Authorization'] = `Bearer ${keys[0]}`;
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8000);
+      const resp = await fetch(modelsUrl, { headers, signal: ctrl.signal });
+      clearTimeout(timer);
+      if (resp.ok) {
+        const data = await resp.json().catch(() => null);
+        const models = data?.data?.map(m => m.id) || data?.models?.map(m => m.name || m.model) || [];
+        const idx = platforms.findIndex(p => p.id === platformId);
+        if (idx !== -1) {
+          platforms[idx].cached_models = models;
+          setSetting('ai_platforms', JSON.stringify(platforms));
+        }
+        return json(res, { status: 'ok', models });
+      }
+      return json(res, { status: 'error', message: `HTTP ${resp.status}` });
+    } catch (e) {
+      return json(res, { status: 'error', message: e.name === 'AbortError' ? 'Timeout (8s)' : (e.message || 'Connection failed') });
+    }
   }
 
   if (req.method === 'GET' && url.pathname === '/api/ai/models') {
@@ -1047,16 +1089,10 @@ const server = http.createServer(async (req, res) => {
     for (const p of platforms) {
       if (!p.enabled) continue;
       const group = { platform_id: p.id, platform_name: p.name, base_url: p.base_url || null, models: [] };
-      const agents = db.prepare("SELECT available_models FROM actors WHERE type='ai' AND available_models IS NOT NULL").all();
-      for (const a of agents) {
-        try {
-          const models = JSON.parse(a.available_models);
-          for (const m of models) {
-            if (!group.models.find(x => x.value === m.name)) {
-              group.models.push({ value: m.name, label: m.name });
-            }
-          }
-        } catch {}
+      if (p.cached_models?.length) {
+        for (const m of p.cached_models) {
+          group.models.push({ value: m, label: m });
+        }
       }
       result.push(group);
     }
@@ -3113,7 +3149,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   ).get(roomId);
   const roomRow2 = db.prepare('SELECT model, model_config FROM rooms WHERE id=?').get(roomId);
   const roomModel = roomRow2?.model || null;
-  let modelBaseUrl, modelApiKey;
+  let modelBaseUrl, modelApiKeys;
   if (roomRow2?.model_config) {
     try {
       const cfg = JSON.parse(roomRow2.model_config);
@@ -3125,11 +3161,9 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
           const plat = platforms.find(p => p.id === cfg.platform_id && p.enabled);
           if (plat) {
             modelBaseUrl = modelBaseUrl || plat.base_url || undefined;
-            modelApiKey = plat.api_key || undefined;
+            modelApiKeys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : undefined);
           }
         }
-      } else {
-        modelApiKey = cfg.api_key || undefined;
       }
     } catch {}
   } else if (roomModel && !roomModel.startsWith('claude-')) {
@@ -3140,7 +3174,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         for (const p of platforms) {
           if (p.base_url && p.enabled) {
             modelBaseUrl = p.base_url;
-            modelApiKey = p.api_key || undefined;
+            modelApiKeys = p.api_keys?.length ? p.api_keys : (p.api_key ? [p.api_key] : undefined);
             break;
           }
         }
@@ -3178,7 +3212,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         workdir: workdir    || undefined,
         model: roomModel    || undefined,
         base_url: modelBaseUrl,
-        api_key: modelApiKey,
+        api_keys: modelApiKeys,
         rawHistory: rawHistory.length ? rawHistory : undefined,
       }));
       console.log(`[trigger] sent to ${ai.name} agent, msgId=${msgId}`);

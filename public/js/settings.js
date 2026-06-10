@@ -1082,7 +1082,8 @@ async function sLoadPlatformsTab() {
 
     const urlEl = document.createElement('span');
     urlEl.style.cssText = 'font-family:ui-monospace,monospace;font-size:12px;color:var(--h-ink-faint);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-    urlEl.textContent = p.base_url || '—';
+    const keyCount = p.api_keys?.length || (p.api_key ? 1 : 0);
+    urlEl.textContent = (p.base_url || '—') + (keyCount > 1 ? ` · ${keyCount} keys` : '');
 
     const btnWrap = document.createElement('span');
     btnWrap.style.cssText = 'display:flex;gap:6px;align-items:center';
@@ -1126,7 +1127,19 @@ function sShowPlatformForm(existing) {
 
   const nameF = mkField('name', 'text', existing?.name, 'e.g. Ollama Cloud');
   const urlF = mkField('base url', 'url', existing?.base_url, 'https://api.ollama.com/v1');
-  const keyF = mkField('api key', 'password', existing?.api_key, 'sk-...');
+
+  const keysRow = document.createElement('div');
+  keysRow.style.cssText = 'display:flex;align-items:flex-start;gap:10px';
+  const keysLbl = document.createElement('span');
+  keysLbl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);min-width:70px;padding-top:6px';
+  keysLbl.textContent = 'api keys';
+  const keysInp = document.createElement('textarea');
+  keysInp.className = 's-server-input';
+  keysInp.style.cssText = 'flex:1;min-height:36px;resize:vertical;font-family:ui-monospace,monospace;font-size:12px';
+  keysInp.placeholder = 'one key per line (first = primary, rest = fallback)';
+  const existingKeys = existing?.api_keys || (existing?.api_key ? [existing.api_key] : []);
+  keysInp.value = existingKeys.join('\n');
+  keysRow.append(keysLbl, keysInp);
 
   const btnRow = document.createElement('div');
   btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;padding-top:4px';
@@ -1134,24 +1147,29 @@ function sShowPlatformForm(existing) {
   cancelBtn.className = 's-server-save'; cancelBtn.textContent = 'cancel';
   cancelBtn.style.cssText = 'background:transparent;color:var(--h-ink-faint)';
   cancelBtn.addEventListener('click', () => form.remove());
+
+  const healthBtn = document.createElement('button');
+  healthBtn.className = 's-server-save'; healthBtn.textContent = 'test connection';
+  healthBtn.style.cssText = 'background:transparent;color:var(--h-ink-faint)';
+
   const saveBtn = document.createElement('button');
   saveBtn.className = 's-server-save'; saveBtn.textContent = existing ? 'update' : 'add';
   saveBtn.addEventListener('click', async () => {
     const name = nameF.inp.value.trim();
     const base_url = urlF.inp.value.trim();
-    const api_key = keyF.inp.value.trim();
+    const api_keys = keysInp.value.split('\n').map(k => k.trim()).filter(Boolean);
     if (!name) { showToast('Name is required', { error: true }); return; }
     if (!base_url) { showToast('Base URL is required', { error: true }); return; }
     try {
       if (existing) {
         await fetch(`/api/ai/platforms/${encodeURIComponent(existing.id)}`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, base_url, api_key }),
+          body: JSON.stringify({ name, base_url, api_keys }),
         });
       } else {
         const resp = await fetch('/api/ai/platforms', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, base_url, api_key }),
+          body: JSON.stringify({ name, base_url, api_keys }),
         });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({}));
@@ -1162,9 +1180,26 @@ function sShowPlatformForm(existing) {
       fetchPlatformModels();
     } catch { showToast('Failed to save platform', { error: true }); }
   });
-  btnRow.append(cancelBtn, saveBtn);
 
-  form.append(nameF.row, urlF.row, keyF.row, btnRow);
+  healthBtn.addEventListener('click', async () => {
+    const id = existing?.id;
+    if (!id) { showToast('Save the platform first, then test', { error: true }); return; }
+    healthBtn.textContent = 'testing...'; healthBtn.disabled = true;
+    try {
+      const r = await fjson(`/api/ai/platforms/${encodeURIComponent(id)}/health`, { method: 'POST' });
+      if (r.status === 'ok') {
+        showToast(`Connected — ${r.models?.length || 0} models found`);
+        fetchPlatformModels();
+      } else {
+        showToast(r.message || 'Connection failed', { error: true });
+      }
+    } catch { showToast('Health check failed', { error: true }); }
+    healthBtn.textContent = 'test connection'; healthBtn.disabled = false;
+  });
+
+  btnRow.append(cancelBtn, healthBtn, saveBtn);
+
+  form.append(nameF.row, urlF.row, keysRow, btnRow);
   container.appendChild(form);
 }
 
