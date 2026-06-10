@@ -1085,7 +1085,10 @@ async function sLoadPlatformsTab() {
     const urlEl = document.createElement('span');
     urlEl.style.cssText = 'font-family:ui-monospace,monospace;font-size:12px;color:var(--h-ink-faint);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
     const keyCount = p.api_keys?.length || (p.api_key ? 1 : 0);
-    urlEl.textContent = (p.base_url || '—') + (keyCount > 1 ? ` · ${keyCount} keys` : '');
+    const totalModels = p.cached_models?.length || 0;
+    const enabledCount = Array.isArray(p.enabled_models) ? p.enabled_models.length : totalModels;
+    const modelInfo = totalModels ? ` · ${enabledCount === totalModels ? totalModels + ' models' : enabledCount + '/' + totalModels + ' enabled'}` : '';
+    urlEl.textContent = (p.base_url || '—') + (keyCount > 1 ? ` · ${keyCount} keys` : '') + modelInfo;
 
     const btnWrap = document.createElement('span');
     btnWrap.style.cssText = 'display:flex;gap:6px;align-items:center';
@@ -1290,13 +1293,14 @@ function sShowPlatformForm(existing) {
             progressBar.style.width = '100%';
             progressLabel.textContent = `done — ${ev.usable.length} of ${ev.tested} usable`;
             showToast(`Discovered ${ev.usable.length} of ${ev.tested} usable models`);
+            const wrap = document.getElementById('s-model-checklist-wrap');
+            if (wrap) sRenderModelChecklist(wrap, ev.usable, null, id);
           } else if (ev.type === 'error') {
             throw new Error(ev.message || 'discovery failed');
           }
         }
       }
       fetchPlatformModels();
-      sLoadPlatformsTab();
     } catch (e) {
       progressLabel.textContent = 'discovery failed';
       showToast(e.message || 'Discovery failed', { error: true });
@@ -1307,7 +1311,13 @@ function sShowPlatformForm(existing) {
 
   btnRow.append(cancelBtn, healthBtn, saveBtn);
 
-  form.append(nameF.row, urlF.row, urlHint, keysRow, progressWrap, btnRow);
+  const modelSection = document.createElement('div');
+  modelSection.id = 's-model-checklist-wrap';
+  if (existing?.cached_models?.length) {
+    sRenderModelChecklist(modelSection, existing.cached_models, existing.enabled_models ?? null, existing.id);
+  }
+
+  form.append(nameF.row, urlF.row, urlHint, keysRow, progressWrap, modelSection, btnRow);
 
   if (existing) {
     const card = document.getElementById('s-platform-' + existing.id);
@@ -1329,6 +1339,85 @@ function sEditPlatform(platform) {
     prev.remove();
   }
   sShowPlatformForm(platform);
+}
+
+function sRenderModelChecklist(container, cachedModels, enabledModels, platformId) {
+  container.innerHTML = '';
+  if (!cachedModels?.length) return;
+
+  const enabledSet = Array.isArray(enabledModels) ? new Set(enabledModels) : null;
+
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'border-top:1px solid var(--h-hair-soft);padding:10px 0 4px';
+
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:6px';
+
+  const title = document.createElement('span');
+  title.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute)';
+  title.textContent = 'enabled models';
+
+  const selectAllBtn = document.createElement('button');
+  selectAllBtn.className = 's-icon-btn';
+  selectAllBtn.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:11px;padding:2px 6px;height:auto';
+  header.append(title, selectAllBtn);
+
+  const list = document.createElement('div');
+  list.style.cssText = 'display:flex;flex-direction:column;gap:2px;max-height:200px;overflow-y:auto;padding-right:4px';
+
+  const checkboxes = [];
+
+  for (const model of cachedModels) {
+    const row = document.createElement('label');
+    row.style.cssText = 'display:flex;align-items:center;gap:7px;padding:3px 2px;cursor:pointer;border-radius:3px';
+    row.style.cssText += ';font-family:ui-monospace,monospace;font-size:11.5px;color:var(--h-ink-faint)';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = model;
+    cb.checked = enabledSet ? enabledSet.has(model) : true;
+    cb.style.cssText = 'accent-color:var(--h-ink);width:13px;height:13px;flex-shrink:0';
+    row.append(cb, document.createTextNode(model));
+    list.appendChild(row);
+    checkboxes.push(cb);
+    cb.addEventListener('change', updateSelectAllLabel);
+  }
+
+  function updateSelectAllLabel() {
+    const all = checkboxes.every(c => c.checked);
+    const none = checkboxes.every(c => !c.checked);
+    selectAllBtn.textContent = all ? 'deselect all' : 'select all';
+  }
+  updateSelectAllLabel();
+
+  selectAllBtn.addEventListener('click', () => {
+    const all = checkboxes.every(c => c.checked);
+    checkboxes.forEach(c => { c.checked = !all; });
+    updateSelectAllLabel();
+  });
+
+  const saveRow = document.createElement('div');
+  saveRow.style.cssText = 'display:flex;justify-content:flex-end;margin-top:8px';
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 's-save-btn';
+  saveBtn.textContent = 'save selection';
+  saveBtn.addEventListener('click', async () => {
+    const selected = checkboxes.filter(c => c.checked).map(c => c.value);
+    saveBtn.disabled = true; saveBtn.textContent = 'saving...';
+    try {
+      await fetch(`/api/ai/platforms/${encodeURIComponent(platformId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled_models: selected.length === cachedModels.length ? null : selected }),
+      });
+      showToast(`Saved — ${selected.length} of ${cachedModels.length} models enabled`);
+      fetchPlatformModels();
+    } catch { showToast('Failed to save', { error: true }); }
+    saveBtn.disabled = false; saveBtn.textContent = 'save selection';
+  });
+  saveRow.appendChild(saveBtn);
+
+  wrap.append(header, list, saveRow);
+  container.appendChild(wrap);
 }
 
 async function sDeletePlatform(id) {

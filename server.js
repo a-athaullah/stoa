@@ -1027,6 +1027,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (body.enabled !== undefined) platforms[idx].enabled = body.enabled;
     if (body.vendor !== undefined) platforms[idx].vendor = body.vendor;
+    if (body.enabled_models !== undefined) platforms[idx].enabled_models = Array.isArray(body.enabled_models) ? body.enabled_models : null;
     setSetting('ai_platforms', JSON.stringify(platforms));
     return json(res, platforms[idx]);
   }
@@ -1166,7 +1167,9 @@ const server = http.createServer(async (req, res) => {
       if (!p.enabled) continue;
       const group = { platform_id: p.id, platform_name: p.name, base_url: p.base_url || null, models: [] };
       if (p.cached_models?.length) {
+        const enabled = Array.isArray(p.enabled_models) ? new Set(p.enabled_models) : null;
         for (const m of p.cached_models) {
+          if (enabled && !enabled.has(m)) continue;
           group.models.push({ value: m, label: m });
         }
       }
