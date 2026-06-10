@@ -13,12 +13,7 @@ const path = require('path');
 const os = require('os');
 const { spawnSync } = require('child_process');
 
-const AI_BACKEND = (process.env.STOA_AI_BACKEND || 'claude').toLowerCase();
-const SessionClass = AI_BACKEND === 'gemini'
-  ? require('./gemini-session').GeminiSession
-  : AI_BACKEND === 'ollama'
-    ? require('./ollama-session').OllamaSession
-    : require('./claude-session').ClaudeSession;
+const { ClaudeSession } = require('./claude-session');
 
 let STOA_URL      = process.env.STOA_URL    || 'ws://localhost:3001';
 const ACTOR_ID    = parseInt(process.env.STOA_ACTOR_ID || '1');
@@ -58,11 +53,7 @@ let MAX_CONCURRENT = parseInt(process.env.STOA_MAX_CONCURRENT || '1');
 
 // ─── Auto-update (agent mode only) ───────────────────────────────────────────
 const UPDATE_INTERVAL = 120_000; // cek tiap 2 menit
-const UPDATE_FILES = AI_BACKEND === 'gemini'
-  ? ['stoa.js', 'gemini-session.js', 'gemini-adapter.js']
-  : AI_BACKEND === 'ollama'
-    ? ['stoa.js', 'ollama-session.js']
-    : ['stoa.js', 'claude-session.js'];
+const UPDATE_FILES = ['stoa.js', 'claude-session.js'];
 
 const TREE_IGNORE = new Set(['.git', 'node_modules', '.next', '__pycache__', '.venv', 'dist', 'build', '.claude']);
 function isPathSafe(filePath, workdir) {
@@ -200,14 +191,14 @@ function truncateSessionFile(workdir, sessionId) {
   }
 }
 
-function getSession(workdir) {
+function getSession(workdir, env) {
   const key = path.resolve(workdir);
   clearSessionIdleTimer(key);
   let session = sessionPool.get(key);
   if (!session) {
-    session = new SessionClass({ workDir: key });
+    session = new ClaudeSession({ workDir: key, env: env || null });
     sessionPool.set(key, session);
-    console.log(`[stoa] ${AI_BACKEND} session started for ${key}`);
+    console.log(`[stoa] claude session started for ${key}`);
     startSessionIdleTimer(key);
   }
   return session;
@@ -319,19 +310,6 @@ async function handleAgentMessage(msg) {
     consecutiveFailures = 0;
     console.log('[stoa] Ready, waiting for triggers...');
     (async () => {
-      // For Ollama: send capabilities before scan result so server has models in DB
-      // before agent_scan_complete triggers the UI model picker
-      if (AI_BACKEND === 'ollama') {
-        try {
-          const ollamaHost = process.env.OLLAMA_HOST || 'http://localhost:11434';
-          const data = JSON.parse(await fetchText(`${ollamaHost}/api/tags`));
-          const models = (data?.models || []).map(m => ({ name: m.name, size: m.size }));
-          send({ type: 'agent_capabilities', models });
-          console.log(`[stoa] Reported ${models.length} Ollama models to server`);
-        } catch (err) {
-          console.error('[stoa] Failed to fetch Ollama models:', err.message);
-        }
-      }
       try {
         const scanResult = scanForWorkdirs();
         console.log(`[stoa] Scanned: ${scanResult.workdirs.length} workdirs, ${scanResult.globalSkills.length} global skills`);
@@ -748,20 +726,28 @@ async function processTrigger(msg) {
       } catch {}
     }
 
-    let session = getSession(targetDir);
+    const platformEnv = {};
+    if (msg.base_url) platformEnv.ANTHROPIC_BASE_URL = msg.base_url;
+    if (msg.api_key) platformEnv.ANTHROPIC_AUTH_TOKEN = msg.api_key;
+    const envToUse = Object.keys(platformEnv).length ? platformEnv : null;
+
+    let session = getSession(targetDir, envToUse);
     const needsResume = rid && session.resumeId !== rid;
     const needsFreshSession = !rid && session.resumeId;
     const targetModel = msg.model || null;
     const currentModel = session.flags.find((f, i, arr) => arr[i - 1] === '--model') || null;
     const needsModelChange = targetModel && currentModel !== targetModel;
+    const currentEnv = JSON.stringify(session.env || {});
+    const newEnv = JSON.stringify(envToUse || {});
+    const needsEnvChange = currentEnv !== newEnv;
 
-    if (needsResume || needsFreshSession || needsModelChange) {
+    if (needsResume || needsFreshSession || needsModelChange || needsEnvChange) {
       session.shutdown();
       const flags = rid ? ['--resume', rid] : [];
       if (targetModel) flags.push('--model', targetModel);
-      session = new SessionClass({ workDir: targetDir, flags, resumeId: rid || null });
+      session = new ClaudeSession({ workDir: targetDir, flags, resumeId: rid || null, env: envToUse });
       sessionPool.set(targetDir, session);
-      console.log(`[stoa] Session restarted: workdir=${targetDir}${rid ? ' resume=' + rid.slice(0, 8) + '...' : ' (fresh)'}${targetModel ? ' model=' + targetModel : ''}`);
+      console.log(`[stoa] Session restarted: workdir=${targetDir}${rid ? ' resume=' + rid.slice(0, 8) + '...' : ' (fresh)'}${targetModel ? ' model=' + targetModel : ''}${msg.base_url ? ' base_url=' + msg.base_url : ''}`);
     }
     activeTriggers.set(message_id, { workdir: targetDir, session });
     let fullContent = '';
@@ -1005,38 +991,6 @@ const SCAN_EXCLUDE_SYSTEM = new Set([
 function scanForWorkdirs() {
   const home = os.homedir();
   const isWindows = process.platform === 'win32';
-
-  // Ollama has no per-project config folders — just report the default workdir
-  if (AI_BACKEND === 'ollama') {
-    const defaultDir = process.env.STOA_WORK_DIR || process.cwd();
-    return { workdirs: [{ path: path.resolve(defaultDir), skills: [], model: null, is_default: true }], globalSkills: [] };
-  }
-
-  // Gemini has no per-project config folders — just report the default workdir + skills from CLI
-  if (AI_BACKEND === 'gemini') {
-    const defaultDir = process.env.STOA_WORK_DIR || process.cwd();
-    const globalSkills = [];
-    try {
-      const result = spawnSync('gemini', ['skills', 'list', '--all'], {
-        encoding: 'utf8', shell: true, timeout: 10000, windowsHide: true,
-      });
-      const lines = (result.stdout || '').split('\n');
-      let current = null;
-      for (const line of lines) {
-        const m = line.match(/^(\S+)\s+\[(Enabled|Disabled)\]\s+\[(.+)\]$/);
-        if (m) {
-          if (current) globalSkills.push(current);
-          current = { name: m[1], description: null, scope: 'global' };
-          continue;
-        }
-        if (current && line.trim().startsWith('Description:')) {
-          current.description = line.trim().replace(/^Description:\s*/, '').trim() || null;
-        }
-      }
-      if (current) globalSkills.push(current);
-    } catch {}
-    return { workdirs: [{ path: path.resolve(defaultDir), skills: [], model: null, is_default: true }], globalSkills };
-  }
 
   const results = [];
 

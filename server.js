@@ -580,7 +580,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/rooms') {
     const archived = url.searchParams.get('archived') === '1';
     const rows = db.prepare(`
-      SELECT r.*, a.name as creator_name, w.model as workdir_model,
+      SELECT r.*, a.name as creator_name,
         (SELECT COUNT(*) FROM room_participants WHERE room_id=r.id) as participant_count,
         (SELECT COUNT(*) FROM messages WHERE room_id=r.id) as message_count,
         (SELECT m.content FROM messages m WHERE m.room_id=r.id AND m.state='complete' AND m.content != '' ORDER BY m.id DESC LIMIT 1) as last_message,
@@ -2482,7 +2482,8 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'set_room_model' && subscribedRoom) {
       const model = msg.model || null;
-      db.prepare("UPDATE rooms SET model=? WHERE id=?").run(model, subscribedRoom);
+      const modelConfig = msg.model_config ? JSON.stringify(msg.model_config) : null;
+      db.prepare("UPDATE rooms SET model=?, model_config=? WHERE id=?").run(model, modelConfig, subscribedRoom);
       const clients = roomClients.get(subscribedRoom);
       if (clients) {
         for (const c of clients) {
@@ -3092,7 +3093,16 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   const wdRow = prefetchedCtx?.wdRow ?? db.prepare(
     'SELECT w.path, w.actor_id FROM rooms r LEFT JOIN agent_workdirs w ON w.id=r.workdir_id WHERE r.id=?'
   ).get(roomId);
-  const roomModel = db.prepare('SELECT model FROM rooms WHERE id=?').get(roomId)?.model || null;
+  const roomRow2 = db.prepare('SELECT model, model_config FROM rooms WHERE id=?').get(roomId);
+  const roomModel = roomRow2?.model || null;
+  let modelBaseUrl, modelApiKey;
+  if (roomRow2?.model_config) {
+    try {
+      const cfg = JSON.parse(roomRow2.model_config);
+      modelBaseUrl = cfg.base_url || undefined;
+      modelApiKey = cfg.api_key || undefined;
+    } catch {}
+  }
   const defaultWd = db.prepare(
     'SELECT path FROM agent_workdirs WHERE actor_id=? AND is_default=1 LIMIT 1'
   ).get(ai.actor_id);
@@ -3123,6 +3133,8 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         fileName: fullAttachments.find(a => a.type === 'file')?.name || undefined,
         workdir: workdir    || undefined,
         model: roomModel    || undefined,
+        base_url: modelBaseUrl,
+        api_key: modelApiKey,
         rawHistory: rawHistory.length ? rawHistory : undefined,
       }));
       console.log(`[trigger] sent to ${ai.name} agent, msgId=${msgId}`);
