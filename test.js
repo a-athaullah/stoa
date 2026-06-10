@@ -1212,6 +1212,76 @@ async function run() {
     assert.strictEqual(typeof r.body.needsSetup, 'boolean');
   });
 
+  // AI platforms
+  console.log('\n[AI Platforms]');
+  let testPlatformId = null;
+
+  await test('GET /api/ai/platforms — returns array', async () => {
+    const r = await req('GET', '/api/ai/platforms');
+    assert.strictEqual(r.status, 200);
+    assert.ok(Array.isArray(r.body), 'expected array');
+  });
+
+  await test('POST /api/ai/platforms — missing name → 400', async () => {
+    const r = await req('POST', '/api/ai/platforms', { base_url: 'http://localhost:11434/v1' });
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('POST /api/ai/platforms — missing base_url → 400', async () => {
+    const r = await req('POST', '/api/ai/platforms', { name: 'Test Platform' });
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('POST /api/ai/platforms — creates platform → 201', async () => {
+    const r = await req('POST', '/api/ai/platforms', { name: 'Test Platform', base_url: 'http://localhost:11434/v1' });
+    assert.strictEqual(r.status, 201);
+    assert.ok(r.body.id, 'id missing');
+    assert.strictEqual(r.body.name, 'Test Platform');
+    testPlatformId = r.body.id;
+  });
+
+  await test('GET /api/ai/platforms — includes newly created platform', async () => {
+    if (!testPlatformId) { console.log('    (skipped)'); return; }
+    const r = await req('GET', '/api/ai/platforms');
+    assert.ok(r.body.some(p => p.id === testPlatformId), 'platform not in list');
+  });
+
+  await test('PATCH /api/ai/platforms/:id — updates name', async () => {
+    if (!testPlatformId) { console.log('    (skipped)'); return; }
+    const r = await req('PATCH', `/api/ai/platforms/${encodeURIComponent(testPlatformId)}`, { name: 'Updated Platform' });
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.ok);
+  });
+
+  await test('PATCH /api/ai/platforms/:id — nonexistent → 404', async () => {
+    const r = await req('PATCH', '/api/ai/platforms/nonexistent-id-xyz', { name: 'x' });
+    assert.strictEqual(r.status, 404);
+  });
+
+  await test('GET /api/ai/models — returns array with anthropic group', async () => {
+    const r = await req('GET', '/api/ai/models');
+    assert.strictEqual(r.status, 200);
+    assert.ok(Array.isArray(r.body), 'expected array');
+    const anthropic = r.body.find(g => g.platform_id === 'anthropic');
+    assert.ok(anthropic, 'anthropic group missing');
+    assert.ok(Array.isArray(anthropic.models) && anthropic.models.length > 0, 'anthropic models empty');
+  });
+
+  await test('DELETE /api/ai/platforms/:id — deletes platform', async () => {
+    if (!testPlatformId) { console.log('    (skipped)'); return; }
+    const r = await req('DELETE', `/api/ai/platforms/${encodeURIComponent(testPlatformId)}`);
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.ok);
+    const list = (await req('GET', '/api/ai/platforms')).body;
+    assert.ok(!list.some(p => p.id === testPlatformId), 'platform still in list after delete');
+    testPlatformId = null;
+  });
+
+  await test('DELETE /api/ai/platforms/:id — nonexistent → 404', async () => {
+    const r = await req('DELETE', '/api/ai/platforms/nonexistent-id-xyz');
+    assert.strictEqual(r.status, 404);
+  });
+
   // 404 handling
   console.log('\n[404]');
   await test('GET /api/nonexistent — 404', async () => {

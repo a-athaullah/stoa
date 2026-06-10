@@ -57,9 +57,13 @@ A **model selector** appears at the right side of the formatting toolbar in the 
 - **Sonnet 4.5 / 4.6** — balanced performance and quality (default: Sonnet 4.6)
 - **Opus 4.6 / 4.7 / 4.8** — highest capability, best for complex or long-context tasks
 
-**External platform models**: If you've configured additional platforms in **Settings > Platforms** (e.g., Ollama Cloud, OpenRouter), their models also appear in the selector, grouped by platform name.
+**External platform models**: If you've configured additional platforms in **Settings > Platforms** (e.g., Ollama Cloud, OpenRouter), their enabled models also appear in the selector, grouped by platform name. Models with vision capability are marked with a 👁 icon.
 
 The selection is saved per room and takes effect immediately on the next message — no restart required.
+
+### Model in Chat Bubbles
+
+Each AI response shows a small model indicator at the bottom right of the bubble (e.g., `qwen3-coder:480b:cloud`), making it easy to track which model generated each reply.
 
 ### Pinning a Room
 
@@ -519,13 +523,17 @@ View all registered agents, their online status, version, workdirs, and skills. 
 Configure external AI model providers beyond the built-in Claude models. Click **+ add platform** to register a new provider:
 
 - **Name** — a label for the platform (e.g., "Ollama Cloud", "OpenRouter")
-- **Base URL** — the API endpoint (e.g., `https://api.ollama.com/v1`, `https://openrouter.ai/api/v1`)
+- **Base URL** — the API endpoint (e.g., `https://ollama.com/v1`, `https://openrouter.ai/api/v1`)
 - **API Key** — your API key for that provider
 
-Once added, models from that platform appear in the **model selector** dropdown in room composers, grouped by platform name. The API key is stored securely on the server and never sent to the browser.
+After saving, click **discover models** to probe which models are available and accessible with your API key. Discovery also detects vision capability per model — models that support image input are marked with a 👁 icon.
+
+**Enabling and disabling models**: After discovery, a checklist appears showing all found models. Check only the models you want available in the room selector, then click **save selection**. This keeps the selector uncluttered when a platform has many models. Use **select all / deselect all** to quickly toggle everything. The enabled selection persists across sessions and updates automatically when you re-discover.
+
+The API key is stored securely on the server and never sent to the browser.
 
 **Supported providers** — any OpenAI-compatible API endpoint works:
-- **Ollama Cloud** — `https://api.ollama.com/v1` (free tier available)
+- **Ollama Cloud** — `https://ollama.com/v1` (free tier available)
 - **OpenRouter** — `https://openrouter.ai/api/v1`
 - **Together AI** — `https://api.together.xyz/v1`
 - **Groq** — `https://api.groq.com/openai/v1`

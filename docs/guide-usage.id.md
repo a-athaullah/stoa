@@ -57,9 +57,13 @@ Klik judul room di header chat. Judul menjadi editable — ketik nama baru dan t
 - **Sonnet 4.5 / 4.6** — performa dan kualitas seimbang (default: Sonnet 4.6)
 - **Opus 4.6 / 4.7 / 4.8** — kapabilitas tertinggi, cocok untuk tugas kompleks atau konteks panjang
 
-**Model platform eksternal**: Jika Anda sudah mengonfigurasi platform tambahan di **Settings > Platforms** (misal Ollama Cloud, OpenRouter), model dari platform tersebut juga muncul di selector, dikelompokkan berdasarkan nama platform.
+**Model platform eksternal**: Jika Anda sudah mengonfigurasi platform tambahan di **Settings > Platforms** (misal Ollama Cloud, OpenRouter), model yang diaktifkan dari platform tersebut juga muncul di selector, dikelompokkan berdasarkan nama platform. Model yang mendukung input gambar ditandai dengan ikon 👁.
 
 Pilihan disimpan per room dan langsung berlaku pada pesan berikutnya — tanpa restart.
+
+### Model di Chat Bubble
+
+Setiap respons AI menampilkan indikator model kecil di pojok kanan bawah bubble (contoh: `qwen3-coder:480b:cloud`), sehingga mudah melacak model mana yang menghasilkan setiap balasan.
 
 ### Menyematkan Room (Pin)
 
@@ -519,13 +523,17 @@ Lihat semua agent yang terdaftar, status online, versi, workdir, dan skill merek
 Konfigurasi provider model AI eksternal di luar model Claude bawaan. Klik **+ add platform** untuk mendaftarkan provider baru:
 
 - **Name** — label untuk platform (misal "Ollama Cloud", "OpenRouter")
-- **Base URL** — endpoint API (misal `https://api.ollama.com/v1`, `https://openrouter.ai/api/v1`)
+- **Base URL** — endpoint API (misal `https://ollama.com/v1`, `https://openrouter.ai/api/v1`)
 - **API Key** — API key untuk provider tersebut
 
-Setelah ditambahkan, model dari platform tersebut muncul di **selector model** di composer room, dikelompokkan berdasarkan nama platform. API key disimpan di sisi server dan tidak pernah dikirim ke browser.
+Setelah menyimpan, klik **discover models** untuk mendeteksi model yang tersedia dan dapat diakses dengan API key Anda. Discovery juga mendeteksi kemampuan vision per model — model yang mendukung input gambar ditandai dengan ikon 👁.
+
+**Mengaktifkan dan menonaktifkan model**: Setelah discovery, muncul checklist semua model yang ditemukan. Centang hanya model yang ingin tampil di selector room, lalu klik **save selection**. Gunakan **select all / deselect all** untuk toggle cepat. Pilihan disimpan permanen dan diperbarui otomatis saat Anda re-discover.
+
+API key disimpan di sisi server dan tidak pernah dikirim ke browser.
 
 **Provider yang didukung** — endpoint API apapun yang kompatibel dengan OpenAI bisa digunakan:
-- **Ollama Cloud** — `https://api.ollama.com/v1` (tersedia tier gratis)
+- **Ollama Cloud** — `https://ollama.com/v1` (tersedia tier gratis)
 - **OpenRouter** — `https://openrouter.ai/api/v1`
 - **Together AI** — `https://api.together.xyz/v1`
 - **Groq** — `https://api.groq.com/openai/v1`
