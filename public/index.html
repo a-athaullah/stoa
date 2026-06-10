@@ -114,6 +114,7 @@
       <span class="s-tab" data-tab="server">server<span class="s-tab-ul"></span></span>
       <span class="s-tab" data-tab="docs">docs<span class="s-tab-ul"></span></span>
       <span class="s-tab" data-tab="general">general<span class="s-tab-ul"></span></span>
+      <span class="s-tab" data-tab="platforms">platforms<span class="s-tab-ul"></span></span>
       <span class="s-tab" data-tab="automation">automation<span class="s-tab-ul"></span></span>
     </div>
 
@@ -304,6 +305,22 @@
           </div>
           <div class="s-server-field" style="justify-content:flex-end">
             <button class="s-logout-btn" id="s-logout-btn">logout</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- tab: platforms -->
+    <div class="s-content" id="s-tab-platforms" style="display:none">
+      <div class="s-content-inner">
+        <div class="s-server-card">
+          <div class="s-server-card-header">
+            <span style="font-family:var(--h-serif);font-size:16px;color:var(--h-ink)">AI platforms</span>
+            <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)">configure model providers — Anthropic, OpenRouter, Ollama, etc.</span>
+          </div>
+          <div id="s-platforms-list"></div>
+          <div style="padding:10px 18px 14px">
+            <button class="s-add-btn" id="s-add-platform-btn" style="font-size:13px;padding:6px 14px">+ add platform</button>
           </div>
         </div>
       </div>

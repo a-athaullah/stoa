@@ -335,7 +335,6 @@ function sStartEdit(actorId) {
 function sEditGetCmd(backend, name, lang, os) {
   const base = sPublicUrl || `http://localhost:${sPort}`;
   const params = [`name=${encodeURIComponent(name || '')}`];
-  if (backend !== 'claude') params.push(`backend=${backend}`);
   if (lang && lang !== 'en') params.push(`lang=${lang}`);
   const q = '?' + params.join('&');
   const script = { unix: 'install.sh', ps: 'install.ps1', cmd: 'install.cmd' }[os];
@@ -391,11 +390,8 @@ function sMakeEditAccordion(actor) {
   beGrp.className = 's-field-group'; beGrp.style.minWidth = 'auto';
   const beSel = document.createElement('select');
   beSel.className = 's-name-input'; beSel.style.cssText = 'width:auto;min-width:130px;opacity:0.6;cursor:not-allowed'; beSel.disabled = true;
-  [['claude','Claude Code CLI'],['gemini','Gemini CLI'],['ollama','Ollama']].forEach(([id,lbl]) => {
-    const o = document.createElement('option'); o.value = id; o.textContent = lbl;
-    if (id === backend) o.selected = true;
-    beSel.appendChild(o);
-  });
+  const o = document.createElement('option'); o.value = 'claude'; o.textContent = 'Claude Code CLI'; o.selected = true;
+  beSel.appendChild(o);
   beGrp.append(mkFieldLbl('AI agent'), beSel);
 
   const langGrp = document.createElement('div');
@@ -407,14 +403,14 @@ function sMakeEditAccordion(actor) {
     if (code === (cfg.lang || 'en')) o.selected = true;
     langSel.appendChild(o);
   });
-  langSel.addEventListener('change', () => { if (backend !== 'ollama') updateCmd(); });
+  langSel.addEventListener('change', () => { updateCmd(); });
   langGrp.append(mkFieldLbl('language'), langSel);
 
   const nameGrp = document.createElement('div');
   nameGrp.className = 's-field-group';
   const nameInp = document.createElement('input');
   nameInp.className = 's-name-input'; nameInp.type = 'text'; nameInp.value = actor.name;
-  nameInp.addEventListener('input', () => { if (backend !== 'ollama') updateCmd(); });
+  nameInp.addEventListener('input', () => { updateCmd(); });
   nameInp.addEventListener('keydown', e => { if (e.key === 'Escape') sCloseEditAccordion(); });
   const nameHint = document.createElement('span');
   nameHint.className = 's-field-hint'; nameHint.textContent = 'name shown in all rooms';
@@ -423,120 +419,52 @@ function sMakeEditAccordion(actor) {
   fieldRow.append(beGrp, langGrp, nameGrp);
   acc.appendChild(fieldRow);
 
-  if (backend === 'ollama') {
-    // Model dropdowns
-    const modelRow = document.createElement('div');
-    modelRow.style.cssText = 'display:flex;gap:20px;flex-wrap:wrap;align-items:flex-end';
-
-    const mkModelGrp = (label, selId, currentVal, optional) => {
-      const grp = document.createElement('div');
-      grp.className = 's-field-group'; grp.style.minWidth = 'auto';
-      const sel = document.createElement('select');
-      sel.id = selId; sel.className = 's-name-input'; sel.style.cssText = 'width:auto;min-width:150px;cursor:pointer';
-      const placeholder = document.createElement('option');
-      placeholder.value = ''; placeholder.textContent = optional ? '— optional —' : '— loading… —';
-      sel.appendChild(placeholder);
-      if (currentVal) {
-        const cur = document.createElement('option'); cur.value = currentVal; cur.textContent = currentVal; cur.selected = true;
-        sel.appendChild(cur);
-      }
-      grp.append(mkFieldLbl(label), sel);
-      return grp;
-    };
-
-    modelRow.append(
-      mkModelGrp('model', `s-eacc-chat-${actor.id}`, cfg.model_chat || '', false)
-    );
-    acc.appendChild(modelRow);
-
-    // Thinking mode toggle
-    const thinkRow = document.createElement('div');
-    thinkRow.style.cssText = 'display:flex;align-items:center;gap:8px;padding-top:4px';
-    const thinkChk = document.createElement('input');
-    thinkChk.type = 'checkbox';
-    thinkChk.id = `s-eacc-think-${actor.id}`;
-    thinkChk.checked = cfg.think === true;
-    thinkChk.style.cssText = 'cursor:pointer;accent-color:var(--h-accent)';
-    const thinkLbl = document.createElement('label');
-    thinkLbl.htmlFor = `s-eacc-think-${actor.id}`;
-    thinkLbl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);cursor:pointer';
-    thinkLbl.textContent = 'thinking mode';
-    const thinkHint = document.createElement('span');
-    thinkHint.style.cssText = 'font-size:11px;color:var(--h-ink-faint)';
-    thinkHint.textContent = '(slower, deeper reasoning)';
-    thinkRow.append(thinkChk, thinkLbl, thinkHint);
-    acc.appendChild(thinkRow);
-
-    fjson(`/api/actors/${actor.id}/capabilities`).then(data => {
-      const models = data.models || [];
-      const populateSel = (selId, currentVal, optional) => {
-        const sel = document.getElementById(selId);
-        if (!sel) return;
-        sel.innerHTML = '';
-        if (optional) { const o = document.createElement('option'); o.value = ''; o.textContent = '— optional —'; sel.appendChild(o); }
-        const names = models.map(m => m.name);
-        if (currentVal && !names.includes(currentVal)) names.unshift(currentVal);
-        names.forEach(name => {
-          const o = document.createElement('option'); o.value = name; o.textContent = name;
-          if (name === currentVal) o.selected = true;
-          sel.appendChild(o);
-        });
-        if (!optional && !currentVal && names.length) sel.value = names[0];
-      };
-      populateSel(`s-eacc-chat-${actor.id}`, cfg.model_chat || '', false);
-    }).catch(() => {
-      const sel = document.getElementById(`s-eacc-chat-${actor.id}`);
-      if (sel) { sel.innerHTML = '<option value="">— offline —</option>'; }
+  // Platform pills
+  const platGrp = document.createElement('div');
+  platGrp.className = 's-field-group'; platGrp.style.minWidth = 'auto';
+  const osPills = document.createElement('div');
+  osPills.className = 's-os-pills'; osPills.id = `s-eacc-pills-${actor.id}`;
+  [['unix','Linux / macOS'],['ps','Windows · PS'],['cmd','Windows · CMD']].forEach(([id,lbl]) => {
+    const p = document.createElement('button');
+    p.type = 'button'; p.className = 's-os-pill' + (editOs === id ? ' active' : '');
+    p.textContent = lbl; p.dataset.os = id;
+    p.addEventListener('click', () => {
+      editOs = id;
+      document.querySelectorAll(`#s-eacc-pills-${actor.id} .s-os-pill`).forEach(x => x.classList.toggle('active', x.dataset.os === id));
+      updateCmd();
     });
+    osPills.appendChild(p);
+  });
+  platGrp.append(mkFieldLbl('platform'), osPills);
+  acc.appendChild(platGrp);
 
-  } else {
-    // Platform pills
-    const platGrp = document.createElement('div');
-    platGrp.className = 's-field-group'; platGrp.style.minWidth = 'auto';
-    const osPills = document.createElement('div');
-    osPills.className = 's-os-pills'; osPills.id = `s-eacc-pills-${actor.id}`;
-    [['unix','Linux / macOS'],['ps','Windows · PS'],['cmd','Windows · CMD']].forEach(([id,lbl]) => {
-      const p = document.createElement('button');
-      p.type = 'button'; p.className = 's-os-pill' + (editOs === id ? ' active' : '');
-      p.textContent = lbl; p.dataset.os = id;
-      p.addEventListener('click', () => {
-        editOs = id;
-        document.querySelectorAll(`#s-eacc-pills-${actor.id} .s-os-pill`).forEach(x => x.classList.toggle('active', x.dataset.os === id));
-        updateCmd();
-      });
-      osPills.appendChild(p);
-    });
-    platGrp.append(mkFieldLbl('platform'), osPills);
-    acc.appendChild(platGrp);
+  // Command slip
+  const slipWrap = document.createElement('div');
+  const slipCaption = document.createElement('div');
+  slipCaption.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-faint);margin-bottom:8px;letter-spacing:.02em';
+  slipCaption.textContent = 'reinstall on the target machine';
+  const slip = document.createElement('div');
+  slip.className = 's-cmd-slip';
+  const dollar = document.createElement('span'); dollar.className = 's-cmd-dollar'; dollar.textContent = '$';
+  const cmdText = document.createElement('span'); cmdText.id = `s-eacc-cmd-${actor.id}`;
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 's-cmd-copy'; copyBtn.title = 'Copy'; copyBtn.innerHTML = svgCopy();
+  copyBtn.addEventListener('click', async () => {
+    const text = document.getElementById(`s-eacc-cmd-${actor.id}`)?.textContent || '';
+    if (await copyToClipboard(text)) {
+      copyBtn.classList.add('copied'); copyBtn.innerHTML = svgCheck(14);
+      setTimeout(() => { copyBtn.classList.remove('copied'); copyBtn.innerHTML = svgCopy(); }, 1000);
+    }
+  });
+  slip.append(dollar, cmdText, copyBtn);
+  slipWrap.append(slipCaption, slip);
+  acc.appendChild(slipWrap);
 
-    // Command slip
-    const slipWrap = document.createElement('div');
-    const slipCaption = document.createElement('div');
-    slipCaption.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-faint);margin-bottom:8px;letter-spacing:.02em';
-    slipCaption.textContent = 'reinstall on the target machine';
-    const slip = document.createElement('div');
-    slip.className = 's-cmd-slip';
-    const dollar = document.createElement('span'); dollar.className = 's-cmd-dollar'; dollar.textContent = '$';
-    const cmdText = document.createElement('span'); cmdText.id = `s-eacc-cmd-${actor.id}`;
-    const copyBtn = document.createElement('button');
-    copyBtn.className = 's-cmd-copy'; copyBtn.title = 'Copy'; copyBtn.innerHTML = svgCopy();
-    copyBtn.addEventListener('click', async () => {
-      const text = document.getElementById(`s-eacc-cmd-${actor.id}`)?.textContent || '';
-      if (await copyToClipboard(text)) {
-        copyBtn.classList.add('copied'); copyBtn.innerHTML = svgCheck(14);
-        setTimeout(() => { copyBtn.classList.remove('copied'); copyBtn.innerHTML = svgCopy(); }, 1000);
-      }
-    });
-    slip.append(dollar, cmdText, copyBtn);
-    slipWrap.append(slipCaption, slip);
-    acc.appendChild(slipWrap);
-
-    updateCmd = () => {
-      const el = document.getElementById(`s-eacc-cmd-${actor.id}`);
-      if (el) el.textContent = sEditGetCmd(backend, nameInp.value || actor.name, langSel.value, editOs);
-    };
-    updateCmd();
-  }
+  updateCmd = () => {
+    const el = document.getElementById(`s-eacc-cmd-${actor.id}`);
+    if (el) el.textContent = sEditGetCmd(backend, nameInp.value || actor.name, langSel.value, editOs);
+  };
+  updateCmd();
 
   // Save / Cancel
   const actionsRow = document.createElement('div');
@@ -552,12 +480,6 @@ function sMakeEditAccordion(actor) {
     const newName = nameInp.value.trim();
     if (!newName) { showToast('Name cannot be empty', { error: true }); return; }
     const body = { name: newName, lang: langSel.value };
-    if (backend === 'ollama') {
-      const chatVal = document.getElementById(`s-eacc-chat-${actor.id}`)?.value || '';
-      body.adapter_config = {};
-      if (chatVal) body.adapter_config.model_chat = chatVal;
-      body.adapter_config.think = document.getElementById(`s-eacc-think-${actor.id}`)?.checked || false;
-    }
     try {
       const r = await fetch(`/api/actors/${actor.id}/config`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -645,7 +567,7 @@ async function sCommitDelete(id) {
 const sFinishedSlips = new Set();
 
 function sOpenAddPanel() {
-  sAddPanel = { open: true, name: '', os: sDetectOS(), backend: 'claude', lang: 'en', phase: 'waiting',
+  sAddPanel = { open: true, name: '', os: sDetectOS(), lang: 'en', phase: 'waiting',
     baselineIds: new Set(settingsActors.map(a => String(a.id))), newActor: null, timer: null };
   sFinishedSlips.clear();
   document.getElementById('s-add-agent-btn').style.display = 'none';
@@ -672,7 +594,6 @@ function sGetCmd() {
   const base = sPublicUrl || `http://localhost:${sPort}`;
   const params = [];
   if (sAddPanel.name) params.push(`name=${encodeURIComponent(sAddPanel.name)}`);
-  if (sAddPanel.backend !== 'claude') params.push(`backend=${sAddPanel.backend}`);
   if (sAddPanel.lang && sAddPanel.lang !== 'en') params.push(`lang=${sAddPanel.lang}`);
   const q = params.length ? '?' + params.join('&') : '';
   const url = `${base}/${({unix:'install.sh',ps:'install.ps1',cmd:'install.cmd'})[sAddPanel.os]}${q}`;
@@ -695,7 +616,7 @@ function sRenderAddPanel() {
   title.textContent = 'invite a new AI agent';
   const sub = document.createElement('span');
   sub.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)';
-  sub.textContent = 'choose a backend and run the command on the target machine';
+  sub.textContent = 'run the install command on the target machine';
   const spacer = document.createElement('span'); spacer.style.flex = '1';
   const closeBtn = document.createElement('button');
   closeBtn.className = 's-icon-btn'; closeBtn.title = 'Close'; closeBtn.innerHTML = svgX(15);
@@ -751,23 +672,6 @@ function sRenderAddPanel() {
   });
   osGrp.appendChild(osLbl); osGrp.appendChild(osPills);
 
-  // AI Agent dropdown (backend selector)
-  const beGrp = document.createElement('div');
-  beGrp.className = 's-field-group'; beGrp.style.minWidth = 'auto';
-  const beLbl = document.createElement('span');
-  beLbl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);letter-spacing:.04em';
-  beLbl.textContent = 'AI agent';
-  const beSelect = document.createElement('select');
-  beSelect.className = 's-name-input'; beSelect.style.cssText = 'width:auto;min-width:120px;cursor:pointer';
-  [['claude','Claude Code CLI'],['gemini','Gemini CLI'],['ollama','Ollama']].forEach(([id,lbl]) => {
-    const opt = document.createElement('option');
-    opt.value = id; opt.textContent = lbl;
-    if (sAddPanel.backend === id) opt.selected = true;
-    beSelect.appendChild(opt);
-  });
-  beSelect.addEventListener('change', () => { sAddPanel.backend = beSelect.value; sUpdateCmd(); });
-  beGrp.appendChild(beLbl); beGrp.appendChild(beSelect);
-
   // Language group
   const langGrp = document.createElement('div');
   langGrp.className = 's-field-group'; langGrp.style.minWidth = 'auto';
@@ -785,7 +689,7 @@ function sRenderAddPanel() {
   langSelect.addEventListener('change', () => { sAddPanel.lang = langSelect.value; sUpdateCmd(); });
   langGrp.appendChild(langLbl); langGrp.appendChild(langSelect);
 
-  fieldRow.appendChild(beGrp); fieldRow.appendChild(langGrp); fieldRow.appendChild(nameGrp); fieldRow.appendChild(osGrp);
+  fieldRow.appendChild(langGrp); fieldRow.appendChild(nameGrp); fieldRow.appendChild(osGrp);
   panel.appendChild(fieldRow);
 
   // Command slip
@@ -887,65 +791,8 @@ function sFinishSetupSlip(actorId) {
   l2.textContent = "rename them above, or leave the auto-name — they'll appear in your rooms.";
   title?.parentElement?.appendChild(l2);
 
-  const actor = settingsActors.find(a => String(a.id) === String(actorId)) || sAddPanel.newActor;
-  const isOllama = actor?.adapter === 'ollama';
-  if (!isOllama) {
-    const doneBtn = document.getElementById('s-setup-done-' + actorId);
-    if (doneBtn) { doneBtn.style.opacity = '1'; doneBtn.style.pointerEvents = 'auto'; }
-    return;
-  }
-
-  // Ollama: fetch available models and show picker before enabling done
-  fjson(`/api/actors/${actorId}/capabilities`).then(data => {
-    const models = data.models || [];
-    const slip = document.getElementById('s-setup-slip-' + actorId);
-    const doneBtn = document.getElementById('s-setup-done-' + actorId);
-    if (!models.length || !slip || !doneBtn) {
-      if (doneBtn) { doneBtn.style.opacity = '1'; doneBtn.style.pointerEvents = 'auto'; }
-      return;
-    }
-
-    const mkLbl = t => { const l = document.createElement('span'); l.style.cssText = 'font-size:11px;color:var(--h-ink-faint);font-family:var(--h-serif);font-style:italic'; l.textContent = t; return l; };
-    const mkSel = () => { const s = document.createElement('select'); s.className = 's-name-input'; s.style.cssText = 'width:auto;min-width:120px;font-size:12px;padding:2px 6px;cursor:pointer'; return s; };
-
-    // Clone and replace before checkDone so the closure references the live button
-    const newDone = doneBtn.cloneNode(true); // strips existing sCloseAddPanel listener
-    doneBtn.replaceWith(newDone);
-
-    let selectedModel = '';
-
-    const checkDone = () => {
-      const ready = !!selectedModel;
-      newDone.style.opacity = ready ? '1' : '0.4';
-      newDone.style.pointerEvents = ready ? 'auto' : 'none';
-    };
-
-    const modelSection = document.createElement('div');
-    modelSection.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px;padding-top:12px;border-top:1px solid var(--h-hair-soft)';
-
-    modelSection.appendChild(mkLbl('model'));
-    const chatSel = mkSel();
-    const chatPlaceholder = document.createElement('option');
-    chatPlaceholder.value = ''; chatPlaceholder.textContent = '— choose —';
-    chatSel.appendChild(chatPlaceholder);
-    models.forEach(m => { const o = document.createElement('option'); o.value = m.name; o.textContent = m.name; chatSel.appendChild(o); });
-    chatSel.addEventListener('change', () => { selectedModel = chatSel.value; checkDone(); });
-    modelSection.appendChild(chatSel);
-
-    slip.appendChild(modelSection);
-    newDone.addEventListener('click', async () => {
-      try {
-        await fetch(`/api/actors/${actorId}/config`, {
-          method: 'PUT', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ adapter_config: { model_chat: selectedModel, think: false } }),
-        });
-      } catch (e) { console.error('Failed to save Ollama model:', e); }
-      sCloseAddPanel();
-    });
-  }).catch(() => {
-    const doneBtn = document.getElementById('s-setup-done-' + actorId);
-    if (doneBtn) { doneBtn.style.opacity = '1'; doneBtn.style.pointerEvents = 'auto'; }
-  });
+  const doneBtn = document.getElementById('s-setup-done-' + actorId);
+  if (doneBtn) { doneBtn.style.opacity = '1'; doneBtn.style.pointerEvents = 'auto'; }
 }
 
 function sStartPolling() {
@@ -975,7 +822,7 @@ function sStartPolling() {
         const panel = document.getElementById('s-add-panel');
         if (waiting) waiting.replaceWith(sMakeConnectedSlip(newAI));
         else if (panel) panel.appendChild(sMakeConnectedSlip(newAI));
-        try { const wds = await fjson(`/api/actors/${newAI.id}/workdirs`); if (wds.length && newAI.adapter !== 'ollama') sFinishSetupSlip(newAI.id); } catch (e) { console.error('Failed to load workdirs after connect', e); }
+        try { const wds = await fjson(`/api/actors/${newAI.id}/workdirs`); if (wds.length) sFinishSetupSlip(newAI.id); } catch (e) { console.error('Failed to load workdirs after connect', e); }
       }
     } catch {}
   }, 2000);
@@ -991,13 +838,14 @@ function sActivateTab(name) {
     const isActive = el.dataset.tab === name;
     el.classList.toggle('active', isActive);
   });
-  ['agents', 'server', 'general', 'docs', 'automation'].forEach(t => {
+  ['agents', 'server', 'general', 'docs', 'platforms', 'automation'].forEach(t => {
     const el = document.getElementById('s-tab-' + t);
     if (el) el.style.display = t === name ? '' : 'none';
   });
   if (name === 'server')     sLoadServerTab();
   if (name === 'general')    sLoadGeneralTab();
   if (name === 'docs')       sLoadDocsTab();
+  if (name === 'platforms')   sLoadPlatformsTab();
   if (name === 'automation') sLoadAutomationTab();
 }
 
@@ -1205,6 +1053,133 @@ function sRenderReadingControls() {
   }
 
   render();
+}
+
+// ── Platforms tab ────────────────────────────────────────────────────────────
+async function sLoadPlatformsTab() {
+  const container = document.getElementById('s-platforms-list');
+  if (!container) return;
+  container.innerHTML = '';
+  let platforms;
+  try { platforms = await fjson('/api/ai/platforms'); } catch { showToast('Failed to load platforms', { error: true }); return; }
+
+  for (const p of platforms) {
+    const card = document.createElement('div');
+    card.className = 's-server-field';
+    card.style.cssText = 'flex-wrap:wrap;gap:8px;padding:12px 18px;border-bottom:1px solid var(--h-hair-soft)';
+    card.id = 's-platform-' + p.id;
+
+    const nameEl = document.createElement('span');
+    nameEl.style.cssText = 'font-family:var(--h-serif);font-size:14px;color:var(--h-ink);min-width:100px';
+    nameEl.textContent = p.name;
+
+    const urlEl = document.createElement('span');
+    urlEl.style.cssText = 'font-family:ui-monospace,monospace;font-size:12px;color:var(--h-ink-faint);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    urlEl.textContent = p.id === 'anthropic' ? 'api.anthropic.com (default)' : (p.base_url || '—');
+
+    const btnWrap = document.createElement('span');
+    btnWrap.style.cssText = 'display:flex;gap:6px;align-items:center';
+
+    if (p.id !== 'anthropic') {
+      const editBtn = document.createElement('button');
+      editBtn.className = 's-icon-btn'; editBtn.title = 'Edit'; editBtn.innerHTML = svgPencil(13);
+      editBtn.addEventListener('click', () => sEditPlatform(p));
+      const delBtn = document.createElement('button');
+      delBtn.className = 's-icon-btn'; delBtn.title = 'Delete'; delBtn.innerHTML = svgX(13);
+      delBtn.addEventListener('click', () => sDeletePlatform(p.id));
+      btnWrap.append(editBtn, delBtn);
+    } else {
+      const tag = document.createElement('span');
+      tag.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:11px;color:var(--h-ink-mute);letter-spacing:.04em';
+      tag.textContent = 'default';
+      btnWrap.appendChild(tag);
+    }
+
+    card.append(nameEl, urlEl, btnWrap);
+    container.appendChild(card);
+  }
+
+  document.getElementById('s-add-platform-btn')?.addEventListener('click', () => sShowPlatformForm());
+}
+
+function sShowPlatformForm(existing) {
+  const container = document.getElementById('s-platforms-list');
+  if (!container) return;
+  if (document.getElementById('s-platform-form')) return;
+
+  const form = document.createElement('div');
+  form.id = 's-platform-form';
+  form.style.cssText = 'padding:14px 18px;border-bottom:1px solid var(--h-hair-soft);display:flex;flex-direction:column;gap:10px';
+
+  const mkField = (label, type, value, placeholder) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:10px';
+    const lbl = document.createElement('span');
+    lbl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);min-width:70px';
+    lbl.textContent = label;
+    const inp = document.createElement('input');
+    inp.className = 's-server-input'; inp.type = type; inp.value = value || ''; inp.placeholder = placeholder || '';
+    inp.style.flex = '1';
+    row.append(lbl, inp);
+    return { row, inp };
+  };
+
+  const nameF = mkField('name', 'text', existing?.name, 'e.g. OpenRouter');
+  const urlF = mkField('base url', 'url', existing?.base_url, 'https://openrouter.ai/api/v1');
+  const keyF = mkField('api key', 'password', existing?.api_key, 'sk-or-...');
+
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;padding-top:4px';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 's-server-save'; cancelBtn.textContent = 'cancel';
+  cancelBtn.style.cssText = 'background:transparent;color:var(--h-ink-faint)';
+  cancelBtn.addEventListener('click', () => form.remove());
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 's-server-save'; saveBtn.textContent = existing ? 'update' : 'add';
+  saveBtn.addEventListener('click', async () => {
+    const name = nameF.inp.value.trim();
+    const base_url = urlF.inp.value.trim();
+    const api_key = keyF.inp.value.trim();
+    if (!name) { showToast('Name is required', { error: true }); return; }
+    if (!base_url) { showToast('Base URL is required', { error: true }); return; }
+    try {
+      if (existing) {
+        await fetch(`/api/ai/platforms/${encodeURIComponent(existing.id)}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, base_url, api_key }),
+        });
+      } else {
+        const resp = await fetch('/api/ai/platforms', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, base_url, api_key }),
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          showToast(err.error || 'Failed to add platform', { error: true }); return;
+        }
+      }
+      sLoadPlatformsTab();
+      fetchPlatformModels();
+    } catch { showToast('Failed to save platform', { error: true }); }
+  });
+  btnRow.append(cancelBtn, saveBtn);
+
+  form.append(nameF.row, urlF.row, keyF.row, btnRow);
+  container.appendChild(form);
+}
+
+function sEditPlatform(platform) {
+  if (document.getElementById('s-platform-form')) document.getElementById('s-platform-form').remove();
+  sShowPlatformForm(platform);
+}
+
+async function sDeletePlatform(id) {
+  if (!confirm('Remove this platform?')) return;
+  try {
+    await fetch(`/api/ai/platforms/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    sLoadPlatformsTab();
+    fetchPlatformModels();
+  } catch { showToast('Failed to delete platform', { error: true }); }
 }
 
 async function sLoadGeneralTab() {
@@ -1469,7 +1444,7 @@ function handleActorStatus(actor) {
       const panel = document.getElementById('s-add-panel');
       if (waiting) waiting.replaceWith(sMakeConnectedSlip(actor));
       else if (panel) panel.appendChild(sMakeConnectedSlip(actor));
-      fjson(`/api/actors/${actor.id}/workdirs`).then(wds => { if (wds.length && actor.adapter !== 'ollama') sFinishSetupSlip(actor.id); }).catch(e => { console.error('Failed to load workdirs in handleActorStatus', e); });
+      fjson(`/api/actors/${actor.id}/workdirs`).then(wds => { if (wds.length) sFinishSetupSlip(actor.id); }).catch(e => { console.error('Failed to load workdirs in handleActorStatus', e); });
     }
   }
   // Always update status dot and word

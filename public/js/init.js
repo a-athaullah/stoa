@@ -64,6 +64,7 @@ async function init() {
   syncNewRoomBtn();
   renderSidebarFooter();
   renderComposerSeal();
+  fetchPlatformModels();
 
   let rooms = [];
   try { rooms = await fjson('/api/rooms'); } catch (e) { console.error('Failed to load rooms:', e); }

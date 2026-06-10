@@ -985,6 +985,19 @@ const ANTHROPIC_MODELS = [
 
 let platformModels = [];
 
+async function fetchPlatformModels() {
+  try {
+    const groups = await fjson('/api/ai/models');
+    platformModels = [];
+    for (const g of groups) {
+      if (g.platform_id === 'anthropic') continue;
+      for (const m of g.models) {
+        platformModels.push({ value: m.value, label: m.label, platform: g.platform_name, base_url: g.base_url || '', api_key: '' });
+      }
+    }
+  } catch {}
+}
+
 function getAvailableModels() {
   const models = [];
   for (const m of ANTHROPIC_MODELS) {
