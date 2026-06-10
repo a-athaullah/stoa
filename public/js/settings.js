@@ -1237,26 +1237,72 @@ function sShowPlatformForm(existing) {
     } catch { showToast('Failed to save platform', { error: true }); }
   });
 
+  const progressWrap = document.createElement('div');
+  progressWrap.style.cssText = 'display:none;flex-direction:column;gap:4px;padding:6px 0';
+  const progressLabel = document.createElement('div');
+  progressLabel.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:11px;color:var(--h-ink-mute)';
+  const progressTrack = document.createElement('div');
+  progressTrack.style.cssText = 'height:6px;background:var(--h-rule, rgba(0,0,0,0.1));border-radius:3px;overflow:hidden';
+  const progressBar = document.createElement('div');
+  progressBar.style.cssText = 'height:100%;width:0%;background:var(--h-ink, #333);transition:width 120ms ease';
+  progressTrack.appendChild(progressBar);
+  progressWrap.append(progressLabel, progressTrack);
+
   healthBtn.addEventListener('click', async () => {
     const id = existing?.id;
     if (!id) { showToast('Save the platform first, then discover', { error: true }); return; }
-    healthBtn.textContent = 'probing models...'; healthBtn.disabled = true;
+    healthBtn.disabled = true;
+    healthBtn.textContent = 'discovering...';
+    progressWrap.style.display = 'flex';
+    progressLabel.textContent = 'fetching model list...';
+    progressBar.style.width = '0%';
+    let usable = 0, tested = 0;
     try {
-      const r = await fjson(`/api/ai/platforms/${encodeURIComponent(id)}/discover-models`, { method: 'POST' });
-      if (r.status === 'ok') {
-        showToast(`Discovered ${r.usable.length} of ${r.tested} usable models`);
-        fetchPlatformModels();
-        sLoadPlatformsTab();
-      } else {
-        showToast(r.message || 'Discovery failed', { error: true });
+      const resp = await fetch(`/api/ai/platforms/${encodeURIComponent(id)}/discover-models`, { method: 'POST' });
+      if (!resp.ok || !resp.body) throw new Error('http ' + resp.status);
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf('\n')) !== -1) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (!line) continue;
+          let ev; try { ev = JSON.parse(line); } catch { continue; }
+          if (ev.type === 'start') {
+            tested = ev.total;
+            progressLabel.textContent = `probing 0 / ${tested} models...`;
+          } else if (ev.type === 'progress') {
+            if (ev.ok) usable++;
+            const pct = Math.round((ev.done / ev.total) * 100);
+            progressBar.style.width = pct + '%';
+            progressLabel.textContent = `probing ${ev.done} / ${ev.total} — ${usable} usable so far`;
+          } else if (ev.type === 'done') {
+            progressBar.style.width = '100%';
+            progressLabel.textContent = `done — ${ev.usable.length} of ${ev.tested} usable`;
+            showToast(`Discovered ${ev.usable.length} of ${ev.tested} usable models`);
+          } else if (ev.type === 'error') {
+            throw new Error(ev.message || 'discovery failed');
+          }
+        }
       }
-    } catch { showToast('Discovery failed', { error: true }); }
+      fetchPlatformModels();
+      sLoadPlatformsTab();
+    } catch (e) {
+      progressLabel.textContent = 'discovery failed';
+      showToast(e.message || 'Discovery failed', { error: true });
+    }
+    setTimeout(() => { progressWrap.style.display = 'none'; }, 1800);
     healthBtn.textContent = 'discover models'; healthBtn.disabled = false;
   });
 
   btnRow.append(cancelBtn, healthBtn, saveBtn);
 
-  form.append(nameF.row, urlF.row, urlHint, keysRow, btnRow);
+  form.append(nameF.row, urlF.row, urlHint, keysRow, progressWrap, btnRow);
   container.appendChild(form);
 }
 

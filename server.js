@@ -1078,22 +1078,36 @@ const server = http.createServer(async (req, res) => {
         }
       }
 
+      res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' });
+      res.write(JSON.stringify({ type: 'start', total: candidates.length }) + '\n');
+
       const concurrency = 4;
       const results = [];
-      for (let i = 0; i < candidates.length; i += concurrency) {
-        const batch = candidates.slice(i, i + concurrency);
-        const batchRes = await Promise.all(batch.map(probe));
-        results.push(...batchRes);
+      let done = 0;
+      let cursor = 0;
+      async function worker() {
+        while (cursor < candidates.length) {
+          const m = candidates[cursor++];
+          const r = await probe(m);
+          results.push(r);
+          done++;
+          res.write(JSON.stringify({ type: 'progress', done, total: candidates.length, model: r.model, ok: r.ok, status: r.status }) + '\n');
+        }
       }
+      await Promise.all(Array.from({ length: Math.min(concurrency, candidates.length) }, worker));
+
       const usable = results.filter(r => r.ok).map(r => r.model);
       const idx = platforms.findIndex(p => p.id === platformId);
       if (idx !== -1) {
         platforms[idx].cached_models = usable;
         setSetting('ai_platforms', JSON.stringify(platforms));
       }
-      return json(res, { status: 'ok', tested: candidates.length, usable, results });
+      res.write(JSON.stringify({ type: 'done', tested: candidates.length, usable }) + '\n');
+      return res.end();
     } catch (e) {
-      return json(res, { status: 'error', message: e.message || 'Discovery failed' });
+      if (!res.headersSent) return json(res, { status: 'error', message: e.message || 'Discovery failed' });
+      try { res.write(JSON.stringify({ type: 'error', message: e.message || 'Discovery failed' }) + '\n'); } catch {}
+      return res.end();
     }
   }
 
