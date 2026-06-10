@@ -381,9 +381,10 @@ async function run() {
     assert.strictEqual(r.status, 401);
   });
 
-  // Global test rooms — created once, used by all write tests, deleted in teardown
+  // Global test rooms/actors — created once, used by all write tests, deleted in teardown
   let testRoomIds = [];
   let testWorkdirId = null;
+  let orphanActorIds = [];   // actors created mid-test that teardown must clean up
 
   console.log('\n[Test Setup]');
   await test('Setup — create test rooms for write operations', async () => {
@@ -558,6 +559,7 @@ async function run() {
       assert.strictEqual(r.status, 200, `register failed: ${JSON.stringify(r.body)}`);
       pmActorId = r.body.actor_id;
       pmActorSecret = r.body.secret;
+      orphanActorIds.push(pmActorId);
     });
 
     await test('Setup — create proactive test room', async () => {
@@ -608,6 +610,7 @@ async function run() {
       if (!pmActorId) { console.log('    (skipped)'); return; }
       const r = await req('DELETE', `/api/actors/${pmActorId}`);
       assert.ok([200, 204].includes(r.status), `delete actor failed: ${r.status}`);
+      orphanActorIds = orphanActorIds.filter(id => id !== pmActorId);
       pmActorId = null;
     });
   }
@@ -1365,7 +1368,7 @@ async function run() {
     assert.strictEqual(r.status, 404);
   });
 
-  // Teardown — delete all test rooms created in setup
+  // Teardown — delete all test rooms and actors created during the run
   console.log('\n[Test Teardown]');
   await test('Teardown — delete all test rooms', async () => {
     if (!testRoomIds.length) { console.log('    (nothing to clean up)'); return; }
@@ -1373,6 +1376,14 @@ async function run() {
       await req('DELETE', `/api/rooms/${id}`);
     }
     testRoomIds = [];
+  });
+
+  await test('Teardown — delete orphaned test actors', async () => {
+    if (!orphanActorIds.length) { console.log('    (nothing to clean up)'); return; }
+    for (const id of [...orphanActorIds]) {
+      await req('DELETE', `/api/actors/${id}`);
+    }
+    orphanActorIds = [];
   });
 
   // Summary
