@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.14';
+const CLIENT_VERSION = '0.4.15';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -189,6 +189,57 @@ function truncateSessionFile(workdir, sessionId) {
   } catch (err) {
     console.error(`[stoa] compact: truncate error: ${err.message}`);
   }
+}
+
+function stripSessionImages(workdir, sessionId) {
+  if (!sessionId) return;
+  try {
+    const encoded = workdir.replace(/\//g, '-').replace(/\\/g, '-').replace(/:/g, '');
+    const filePath = path.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`);
+    if (!fs.existsSync(filePath)) return;
+    const raw = fs.readFileSync(filePath, 'utf8');
+    if (!raw.includes('"type":"image"') && !raw.includes('"type": "image"')) return;
+    const lines = raw.split('\n');
+    let changed = false;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line.trim()) continue;
+      if (!line.includes('"type":"image"') && !line.includes('"type": "image"')) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (stripImagesFromEntry(entry)) {
+          lines[i] = JSON.stringify(entry);
+          changed = true;
+        }
+      } catch {}
+    }
+    if (changed) {
+      fs.writeFileSync(filePath, lines.join('\n'), 'utf8');
+      console.log(`[stoa] stripped image data from session ${sessionId.slice(0, 8)}...`);
+    }
+  } catch (err) {
+    console.error(`[stoa] strip images error: ${err.message}`);
+  }
+}
+
+function stripImagesFromEntry(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+  let stripped = false;
+  if (Array.isArray(obj)) {
+    for (let i = 0; i < obj.length; i++) {
+      if (obj[i] && obj[i].type === 'image' && obj[i].source) {
+        obj[i] = { type: 'text', text: '[image]' };
+        stripped = true;
+      } else if (stripImagesFromEntry(obj[i])) {
+        stripped = true;
+      }
+    }
+  } else {
+    for (const key of Object.keys(obj)) {
+      if (stripImagesFromEntry(obj[key])) stripped = true;
+    }
+  }
+  return stripped;
 }
 
 function getSession(workdir, env) {
@@ -829,6 +880,11 @@ async function processTrigger(msg) {
         completeMsg.attachments = attachments;
       }
       send(completeMsg);
+
+      // Strip base64 image data from session file to prevent errors on models without image support
+      if (sessionId && targetDir && !compactsInFlight.has(targetDir)) {
+        setImmediate(() => stripSessionImages(targetDir, sessionId));
+      }
 
       // Auto-compact: check session file size and compact if needed.
       // Runs inside setImmediate so the finally block (activeTriggers.delete + drainQueue) is not delayed by the stat() call.
