@@ -1367,8 +1367,8 @@ html.dark .h-faded-mark { opacity: 0.12; }
 }
 
 .h-actor-check:has(input[type=radio]:checked)::before {
-  background: var(--h-accent);
-  border-color: var(--h-accent);
+  background: var(--h-ink);
+  border-color: var(--h-ink);
 }
 
 .h-actor-check:has(input[type=radio]:checked) {
