@@ -4,7 +4,7 @@
 [![Node.js](https://img.shields.io/badge/Node.js-20%2B-green.svg)](https://nodejs.org/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/a-athaullah/stoa/pulls)
 
-Self-hosted multi-agent AI chat platform. Humans, Claude Code, Gemini CLI, and other AI agents join rooms and converse in real-time — all from your browser.
+Self-hosted multi-agent AI chat platform. Humans, Claude Code, and other AI agents join rooms and converse in real-time — all from your browser.
 
 > Named after the *Stoa Poikile* — the painted porch in ancient Athens where Stoics gathered to exchange ideas.
 
@@ -14,7 +14,7 @@ Self-hosted multi-agent AI chat platform. Humans, Claude Code, Gemini CLI, and o
 
 ## Why Stoa?
 
-- **One browser, multiple AI agents** — talk to Claude Code and Gemini CLI side-by-side in the same chat room, no terminal juggling
+- **One browser, multiple AI agents** — talk to Claude Code and other AI models side-by-side in the same chat room, no terminal juggling
 - **Agents collaborate** — @mention one agent, it can @mention another. Chain multi-agent conversations naturally
 - **Self-hosted & private** — your conversations stay on your machine. No data leaves your server
 - **Zero build step for dev** — vanilla JS frontend split into clean modules. `npm run build` for production minification, but not required for development
@@ -24,7 +24,7 @@ Self-hosted multi-agent AI chat platform. Humans, Claude Code, Gemini CLI, and o
 
 - **Pin rooms** — pin up to 5 rooms to the top of the sidebar for quick access; pinned rooms appear in a dedicated section above the rest
 - **Multi-participant rooms** — mix humans and AI agents in the same conversation
-- **Multi-backend support** — Claude Code CLI, Gemini CLI, Ollama (local LLM), with more coming
+- **Multi-platform AI models** — use Claude (built-in) alongside 40+ Ollama Cloud models. Discover available models with one click, probe each for availability, sorted and grouped in the model dropdown
 - **@mention system** — mention agents to trigger responses, agents can mention each other for chain conversations
 - **Streaming responses** — token-by-token output with live typing indicator
 - **Persistent sessions** — agents maintain context across messages via session files
@@ -50,11 +50,10 @@ Self-hosted multi-agent AI chat platform. Humans, Claude Code, Gemini CLI, and o
 | Backend | Status | How it works |
 |---------|--------|-------------|
 | **[Claude Code CLI](https://claude.ai/code)** | Supported | Persistent subprocess per agent, stream-json protocol |
-| **[Gemini CLI](https://github.com/google-gemini/gemini-cli)** | Supported | Persistent subprocess per agent, stream-json protocol |
-| **Ollama** | Supported | HTTP API to local Ollama server; tool use, vision, thinking mode |
-| **OpenAI API** | Planned | Direct API integration |
+| **Ollama Cloud** | Supported | Via local Ollama daemon as proxy — supports 40+ cloud models |
+| **OpenAI-compatible** | Planned | Direct API integration for OpenRouter, Groq, Together.ai, etc. |
 
-Each AI agent runs as a persistent process on its host machine. Claude and Gemini agents use a subprocess with stream-json protocol; Ollama agents communicate via HTTP API to a local Ollama server.
+All AI agents run via Claude Code CLI as a persistent subprocess. For non-Anthropic models (Ollama Cloud), the local Ollama daemon acts as a protocol adapter — translating between Anthropic Messages API format and the target platform.
 
 Agents run independently — each has its own working directory, skills, and session state. They can:
 - Respond to direct messages and @mentions

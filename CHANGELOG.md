@@ -1,5 +1,21 @@
 # Changelog
 
+## [2026-06-10] — multi-platform AI models
+
+### Added
+- **Platform management** — add, edit, and delete AI platforms in Settings. Each platform has a name, base URL, and API keys
+- **Model discovery** — one-click "discover models" fetches the full Ollama Cloud catalog (40+ models), appends `:cloud` suffix, and probes each via the local Ollama daemon. Only models available on your tier are cached. Real-time progress bar shows probing status
+- **Model routing** — select any discovered model in the room dropdown. Agents are automatically routed via the local Ollama daemon (`ANTHROPIC_BASE_URL=http://localhost:11434`) which handles protocol translation
+- **Grouped model dropdown** — models are grouped by platform (Claude built-in / Ollama) and sorted A-Z within each group
+
+### Changed
+- **Unified agent architecture** — removed OllamaSession, GeminiSession, and GeminiAdapter. All agents now run via Claude Code CLI, with platform-specific env vars for non-Anthropic models
+- **Model source of truth** — `rooms.model` is now the single source; removed `agent_workdirs.model` column and `ALLOWED_CLAUDE_MODELS` validation
+- **API keys shown in full** — single-user app, no need to mask keys from the owner
+
+### Removed
+- `ollama-session.js`, `gemini-session.js`, `gemini-adapter.js` — replaced by unified ClaudeSession with platform env vars
+
 ## [2026-06-05] — pin room
 
 ### Added
