@@ -1055,31 +1055,19 @@ const server = http.createServer(async (req, res) => {
       const headers = { 'Content-Type': 'application/json' };
       if (keys[0]) headers['Authorization'] = `Bearer ${keys[0]}`;
 
-      let candidates = [];
-      if (plat.vendor === 'ollama') {
-        const catalogHeaders = { 'Content-Type': 'application/json' };
-        if (keys[0]) catalogHeaders['Authorization'] = `Bearer ${keys[0]}`;
-        const ctrl1 = new AbortController();
-        const timer1 = setTimeout(() => ctrl1.abort(), 10000);
-        const listResp = await fetch('https://ollama.com/v1/models', { headers: catalogHeaders, signal: ctrl1.signal });
-        clearTimeout(timer1);
-        if (!listResp.ok) return json(res, { status: 'error', message: `Failed to list cloud models: HTTP ${listResp.status}` });
-        const listData = await listResp.json().catch(() => null);
-        const rawModels = listData?.data?.map(m => m.id) || listData?.models?.map(m => m.name || m.model) || [];
-        candidates = rawModels.map(m => m.endsWith('-cloud') || m.endsWith(':cloud') ? m : m + ':cloud');
-      } else {
-        if (!keys.length) { return json(res, { status: 'error', message: 'No API key configured' }); }
-        const ctrl1 = new AbortController();
-        const timer1 = setTimeout(() => ctrl1.abort(), 10000);
-        const listResp = await fetch(baseClean + '/models', { headers, signal: ctrl1.signal });
-        clearTimeout(timer1);
-        if (!listResp.ok) return json(res, { status: 'error', message: `Failed to list models: HTTP ${listResp.status}` });
-        const listData = await listResp.json().catch(() => null);
-        candidates = listData?.data?.map(m => m.id) || listData?.models?.map(m => m.name || m.model) || [];
-      }
-      if (!candidates.length) return json(res, { status: 'error', message: 'No models returned by platform' });
+      const catalogHeaders = { 'Content-Type': 'application/json' };
+      if (keys[0]) catalogHeaders['Authorization'] = `Bearer ${keys[0]}`;
+      const ctrl1 = new AbortController();
+      const timer1 = setTimeout(() => ctrl1.abort(), 10000);
+      const listResp = await fetch('https://ollama.com/v1/models', { headers: catalogHeaders, signal: ctrl1.signal });
+      clearTimeout(timer1);
+      if (!listResp.ok) return json(res, { status: 'error', message: `Failed to list cloud models: HTTP ${listResp.status}` });
+      const listData = await listResp.json().catch(() => null);
+      const rawModels = listData?.data?.map(m => m.id) || listData?.models?.map(m => m.name || m.model) || [];
+      const candidates = rawModels.map(m => m.endsWith('-cloud') || m.endsWith(':cloud') ? m : m + ':cloud');
+      if (!candidates.length) return json(res, { status: 'error', message: 'No models returned by Ollama Cloud' });
 
-      const probeBase = plat.vendor === 'ollama' ? baseClean + '/v1' : baseClean;
+      const probeBase = baseClean + '/v1';
       async function probe(model) {
         const ctrl = new AbortController();
         const timer = setTimeout(() => ctrl.abort(), 12000);
