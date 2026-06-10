@@ -533,11 +533,11 @@ Setelah menyimpan, klik **discover models** untuk mendeteksi model yang tersedia
 API key disimpan di server dan dikembalikan ke browser hanya di form edit Settings (single-user app — hanya Anda yang punya akses).
 
 **Provider yang didukung** — endpoint API apapun yang kompatibel dengan OpenAI bisa digunakan:
-- **Ollama Cloud** — `https://ollama.com/v1` (tersedia tier gratis)
+- **Ollama Cloud** — `https://ollama.com/v1` (tier gratis, 40+ model hingga 480B)
+- **Local Ollama** — `http://localhost:11434/v1` (gratis, privat, bisa offline — lihat [panduan Ollama](doc-ollama))
 - **OpenRouter** — `https://openrouter.ai/api/v1`
 - **Together AI** — `https://api.together.xyz/v1`
 - **Groq** — `https://api.groq.com/openai/v1`
-- **Local Ollama** — `http://localhost:11434/v1`
 
 ### Automation
 

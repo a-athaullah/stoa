@@ -533,11 +533,11 @@ After saving, click **discover models** to probe which models are available and 
 The API key is stored on the server and returned to the browser only in the Settings edit form (single-user app — you are the only one with access).
 
 **Supported providers** — any OpenAI-compatible API endpoint works:
-- **Ollama Cloud** — `https://ollama.com/v1` (free tier available)
+- **Ollama Cloud** — `https://ollama.com/v1` (free tier, 40+ models up to 480B)
+- **Local Ollama** — `http://localhost:11434/v1` (free, private, works offline — see [Ollama setup guide](doc-ollama))
 - **OpenRouter** — `https://openrouter.ai/api/v1`
 - **Together AI** — `https://api.together.xyz/v1`
 - **Groq** — `https://api.groq.com/openai/v1`
-- **Local Ollama** — `http://localhost:11434/v1`
 
 ### Automation
 

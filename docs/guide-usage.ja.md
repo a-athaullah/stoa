@@ -523,11 +523,11 @@ Slackアプリトークンの作成手順は[Slackセットアップガイド](d
 API キーはサーバーに保存され、Settings 編集フォームでのみブラウザに返されます（シングルユーザーアプリのため、アクセスできるのはあなただけです）。
 
 **対応プロバイダー** — OpenAI 互換の API エンドポイントであればすべて利用可能：
-- **Ollama Cloud** — `https://ollama.com/v1`（無料枠あり）
+- **Ollama Cloud** — `https://ollama.com/v1`（無料枠あり、480B まで 40+ モデル）
+- **ローカル Ollama** — `http://localhost:11434/v1`（無料、プライベート、オフライン対応 — [Ollama セットアップガイド](doc-ollama) を参照）
 - **OpenRouter** — `https://openrouter.ai/api/v1`
 - **Together AI** — `https://api.together.xyz/v1`
 - **Groq** — `https://api.groq.com/openai/v1`
-- **ローカル Ollama** — `http://localhost:11434/v1`
 
 ### オートメーション
 

@@ -24,7 +24,7 @@ Self-hosted multi-agent AI chat platform. Humans, Claude Code, and other AI agen
 
 - **Pin rooms** — pin up to 5 rooms to the top of the sidebar for quick access; pinned rooms appear in a dedicated section above the rest
 - **Multi-participant rooms** — mix humans and AI agents in the same conversation
-- **Multi-platform AI models** — use Claude (built-in) alongside 40+ Ollama Cloud models. Discover available models with one click, probe each for availability, sorted and grouped in the model dropdown
+- **Multi-platform AI models** — use Claude (built-in) alongside Ollama Cloud, local Ollama, OpenRouter, Groq, and any OpenAI-compatible API. Discover available models with one click, each probed for vision capability, sorted and grouped in the model dropdown
 - **@mention system** — mention agents to trigger responses, agents can mention each other for chain conversations
 - **Streaming responses** — token-by-token output with live typing indicator
 - **Persistent sessions** — agents maintain context across messages via session files
@@ -50,10 +50,13 @@ Self-hosted multi-agent AI chat platform. Humans, Claude Code, and other AI agen
 | Backend | Status | How it works |
 |---------|--------|-------------|
 | **[Claude Code CLI](https://claude.ai/code)** | Supported | Persistent subprocess per agent, stream-json protocol |
-| **Ollama Cloud** | Supported | Via local Ollama daemon as proxy — supports 40+ cloud models |
-| **OpenAI-compatible** | Planned | Direct API integration for OpenRouter, Groq, Together.ai, etc. |
+| **Ollama Cloud** | Supported | Add your Ollama API key in Settings → Platforms; supports 40+ models including 480B |
+| **Local Ollama** | Supported | Run Ollama on your own machine — free, private, works offline. See [Ollama setup guide](docs/doc-ollama.en.md) |
+| **OpenAI-compatible APIs** | Supported | OpenRouter, Groq, Together AI, and any API that serves the OpenAI chat completions format |
 
-All AI agents run via Claude Code CLI as a persistent subprocess. For non-Anthropic models (Ollama Cloud), the local Ollama daemon acts as a protocol adapter — translating between Anthropic Messages API format and the target platform.
+All AI agents run via Claude Code CLI as a persistent subprocess. For non-Anthropic models, the server passes platform credentials via environment variables (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`) to the CLI process — Claude Code handles the API communication transparently.
+
+Platforms are configured in **Settings → Platforms**. Each platform supports model discovery (one-click probe of all available models, with vision capability detection) and per-model enable/disable to keep the model selector uncluttered.
 
 Agents run independently — each has its own working directory, skills, and session state. They can:
 - Respond to direct messages and @mentions
