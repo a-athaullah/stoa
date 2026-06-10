@@ -1203,7 +1203,7 @@ function sShowPlatformForm(existing) {
   cancelBtn.addEventListener('click', () => form.remove());
 
   const healthBtn = document.createElement('button');
-  healthBtn.className = 's-server-save'; healthBtn.textContent = 'test connection';
+  healthBtn.className = 's-server-save'; healthBtn.textContent = 'discover models';
   healthBtn.style.cssText = 'background:transparent;color:var(--h-ink-faint)';
 
   const saveBtn = document.createElement('button');
@@ -1239,18 +1239,19 @@ function sShowPlatformForm(existing) {
 
   healthBtn.addEventListener('click', async () => {
     const id = existing?.id;
-    if (!id) { showToast('Save the platform first, then test', { error: true }); return; }
-    healthBtn.textContent = 'testing...'; healthBtn.disabled = true;
+    if (!id) { showToast('Save the platform first, then discover', { error: true }); return; }
+    healthBtn.textContent = 'probing models...'; healthBtn.disabled = true;
     try {
-      const r = await fjson(`/api/ai/platforms/${encodeURIComponent(id)}/health`, { method: 'POST' });
+      const r = await fjson(`/api/ai/platforms/${encodeURIComponent(id)}/discover-models`, { method: 'POST' });
       if (r.status === 'ok') {
-        showToast(`Connected — ${r.models?.length || 0} models found`);
+        showToast(`Discovered ${r.usable.length} of ${r.tested} usable models`);
         fetchPlatformModels();
+        sLoadPlatformsTab();
       } else {
-        showToast(r.message || 'Connection failed', { error: true });
+        showToast(r.message || 'Discovery failed', { error: true });
       }
-    } catch { showToast('Health check failed', { error: true }); }
-    healthBtn.textContent = 'test connection'; healthBtn.disabled = false;
+    } catch { showToast('Discovery failed', { error: true }); }
+    healthBtn.textContent = 'discover models'; healthBtn.disabled = false;
   });
 
   btnRow.append(cancelBtn, healthBtn, saveBtn);

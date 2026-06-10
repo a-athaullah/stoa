@@ -1040,6 +1040,63 @@ const server = http.createServer(async (req, res) => {
     return json(res, { ok: true });
   }
 
+  if (req.method === 'POST' && url.pathname.match(/^\/api\/ai\/platforms\/[^/]+\/discover-models$/)) {
+    const platformId = decodeURIComponent(url.pathname.split('/')[4]);
+    const raw = getSetting('ai_platforms');
+    const platforms = raw ? JSON.parse(raw) : [];
+    const plat = platforms.find(p => p.id === platformId);
+    if (!plat) { res.writeHead(404); return res.end(JSON.stringify({ error: 'not found' })); }
+    if (!plat.base_url) { return json(res, { status: 'error', message: 'No base URL configured' }); }
+    const keys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : []);
+    if (!keys.length) { return json(res, { status: 'error', message: 'No API key configured' }); }
+    try {
+      const url2 = new URL(plat.base_url);
+      const baseClean = url2.origin + url2.pathname.replace(/\/+$/, '');
+      const headers = { 'Authorization': `Bearer ${keys[0]}`, 'Content-Type': 'application/json' };
+      const ctrl1 = new AbortController();
+      const timer1 = setTimeout(() => ctrl1.abort(), 10000);
+      const listResp = await fetch(baseClean + '/models', { headers, signal: ctrl1.signal });
+      clearTimeout(timer1);
+      if (!listResp.ok) return json(res, { status: 'error', message: `Failed to list models: HTTP ${listResp.status}` });
+      const listData = await listResp.json().catch(() => null);
+      const candidates = listData?.data?.map(m => m.id) || listData?.models?.map(m => m.name || m.model) || [];
+      if (!candidates.length) return json(res, { status: 'error', message: 'No models returned by platform' });
+
+      async function probe(model) {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 12000);
+        try {
+          const r = await fetch(baseClean + '/chat/completions', {
+            method: 'POST', headers, signal: ctrl.signal,
+            body: JSON.stringify({ model, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1, stream: false }),
+          });
+          clearTimeout(timer);
+          return { model, ok: r.ok, status: r.status };
+        } catch (e) {
+          clearTimeout(timer);
+          return { model, ok: false, status: e.name === 'AbortError' ? 'timeout' : 'error' };
+        }
+      }
+
+      const concurrency = 4;
+      const results = [];
+      for (let i = 0; i < candidates.length; i += concurrency) {
+        const batch = candidates.slice(i, i + concurrency);
+        const batchRes = await Promise.all(batch.map(probe));
+        results.push(...batchRes);
+      }
+      const usable = results.filter(r => r.ok).map(r => r.model);
+      const idx = platforms.findIndex(p => p.id === platformId);
+      if (idx !== -1) {
+        platforms[idx].cached_models = usable;
+        setSetting('ai_platforms', JSON.stringify(platforms));
+      }
+      return json(res, { status: 'ok', tested: candidates.length, usable, results });
+    } catch (e) {
+      return json(res, { status: 'error', message: e.message || 'Discovery failed' });
+    }
+  }
+
   if (req.method === 'POST' && url.pathname.match(/^\/api\/ai\/platforms\/[^/]+\/health$/)) {
     const platformId = decodeURIComponent(url.pathname.split('/')[4]);
     const raw = getSetting('ai_platforms');
