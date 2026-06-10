@@ -597,7 +597,7 @@ async function handleAgentMessage(msg) {
     let session = sessionPool.get(key);
     if (!session) {
       if (msg.claude_session_id) {
-        session = new SessionClass({ workDir: key, flags: ['--resume', msg.claude_session_id], resumeId: msg.claude_session_id });
+        session = new ClaudeSession({ workDir: key, flags: ['--resume', msg.claude_session_id], resumeId: msg.claude_session_id });
         sessionPool.set(key, session);
         startSessionIdleTimer(key);
         console.log(`[stoa] compact: resuming session ${msg.claude_session_id.slice(0, 8)}... for ${key}`);

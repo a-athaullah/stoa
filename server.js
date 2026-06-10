@@ -2058,7 +2058,7 @@ wss.on('connection', (ws, req) => {
           setRecentCompact(roomId); // suppress immediate re-register from auto_compact_start while original compact still finishing
           broadcast(roomId, { type: 'compact_error', room_id: roomId, error: 'Compact timed out' });
         }
-      }, 300_000);
+      }, 600_000);
       for (const t of targets) {
         const agentWs = agentClients.get(t.actor_id);
         if (!agentWs || agentWs.readyState !== 1) continue;
