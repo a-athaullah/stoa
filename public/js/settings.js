@@ -1124,9 +1124,9 @@ function sShowPlatformForm(existing) {
     return { row, inp };
   };
 
-  const nameF = mkField('name', 'text', existing?.name, 'e.g. OpenRouter');
-  const urlF = mkField('base url', 'url', existing?.base_url, 'https://openrouter.ai/api/v1');
-  const keyF = mkField('api key', 'password', existing?.api_key, 'sk-or-...');
+  const nameF = mkField('name', 'text', existing?.name, 'e.g. Ollama Cloud');
+  const urlF = mkField('base url', 'url', existing?.base_url, 'https://api.ollama.com/v1');
+  const keyF = mkField('api key', 'password', existing?.api_key, 'sk-...');
 
   const btnRow = document.createElement('div');
   btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;padding-top:4px';
