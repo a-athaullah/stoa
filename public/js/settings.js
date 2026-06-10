@@ -1150,8 +1150,7 @@ function sShowPlatformForm(existing) {
     pill.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 8px;border-radius:4px;background:var(--h-surface-raised,rgba(255,255,255,.06));font-family:ui-monospace,monospace;font-size:11.5px;color:var(--h-ink-faint)';
     const label = document.createElement('span');
     label.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-    const masked = key.length > 10 ? key.slice(0, 6) + '····' + key.slice(-4) : key;
-    label.textContent = (idx === 0 ? '① ' : idx === 1 ? '② ' : '③ ') + masked;
+    label.textContent = (idx === 0 ? '① ' : idx === 1 ? '② ' : '③ ') + key;
     const rmBtn = document.createElement('button');
     rmBtn.style.cssText = 'background:none;border:none;cursor:pointer;color:var(--h-ink-mute);padding:0;line-height:1';
     rmBtn.innerHTML = svgX(11);

@@ -992,7 +992,7 @@ const server = http.createServer(async (req, res) => {
     const platforms = raw ? JSON.parse(raw) : [];
     const safe = platforms.map(p => ({
       ...p,
-      api_keys: (p.api_keys || (p.api_key ? [p.api_key] : [])).map(k => k ? k.slice(0, 6) + '...' : ''),
+      api_keys: p.api_keys || (p.api_key ? [p.api_key] : []),
       api_key: undefined,
     }));
     return json(res, safe);
@@ -1023,8 +1023,7 @@ const server = http.createServer(async (req, res) => {
     if (body.name !== undefined) platforms[idx].name = body.name.trim();
     if (body.base_url !== undefined) platforms[idx].base_url = body.base_url;
     if (body.api_keys !== undefined) {
-      const isMasked = body.api_keys.every(k => k.endsWith('...'));
-      if (!isMasked) platforms[idx].api_keys = body.api_keys.filter(k => k && !k.endsWith('...'));
+      platforms[idx].api_keys = body.api_keys.filter(Boolean);
     }
     if (body.enabled !== undefined) platforms[idx].enabled = body.enabled;
     setSetting('ai_platforms', JSON.stringify(platforms));
