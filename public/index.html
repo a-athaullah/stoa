@@ -313,16 +313,23 @@
     <!-- tab: platforms -->
     <div class="s-content" id="s-tab-platforms" style="display:none">
       <div class="s-content-inner">
-        <div class="s-server-card">
+        <div class="s-server-card" style="margin-bottom:10px">
           <div class="s-server-card-header">
-            <span style="font-family:var(--h-serif);font-size:16px;color:var(--h-ink)">AI platforms</span>
-            <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)">add external model providers — OpenRouter, Ollama, etc.</span>
+            <span style="font-family:var(--h-serif);font-size:16px;color:var(--h-ink)">add platform</span>
+            <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)">connect external model providers — OpenRouter, Ollama, etc.</span>
           </div>
-          <div style="padding:12px 18px;border-bottom:1px solid var(--h-hair-soft)">
+          <div style="padding:12px 18px">
             <button class="h-btn-primary" id="s-add-platform-btn" style="padding:6px 12px 6px 10px;display:inline-flex;align-items:center;gap:6px;font-size:13px;letter-spacing:.005em">
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
               add platform
             </button>
+          </div>
+          <div id="s-add-platform-panel"></div>
+        </div>
+        <div class="s-server-card">
+          <div class="s-server-card-header">
+            <span style="font-family:var(--h-serif);font-size:16px;color:var(--h-ink)">platforms</span>
+            <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)">configured model providers</span>
           </div>
           <div id="s-platforms-list"></div>
         </div>

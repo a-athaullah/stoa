@@ -1060,6 +1060,8 @@ async function sLoadPlatformsTab() {
   const container = document.getElementById('s-platforms-list');
   if (!container) return;
   container.innerHTML = '';
+  const addPanel = document.getElementById('s-add-platform-panel');
+  if (addPanel) addPanel.innerHTML = '';
   let platforms;
   try { platforms = await fjson('/api/ai/platforms'); } catch { showToast('Failed to load platforms', { error: true }); return; }
 
@@ -1311,10 +1313,11 @@ function sShowPlatformForm(existing) {
     const card = document.getElementById('s-platform-' + existing.id);
     if (card) { card.style.display = 'none'; card.after(form); }
     else container.appendChild(form);
-    const origCancel = cancelBtn.onclick;
     cancelBtn.addEventListener('click', () => { if (card) card.style.display = ''; });
   } else {
-    container.appendChild(form);
+    const addPanel = document.getElementById('s-add-platform-panel');
+    if (addPanel) addPanel.appendChild(form);
+    else container.appendChild(form);
   }
 }
 
