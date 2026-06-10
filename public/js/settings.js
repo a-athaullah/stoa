@@ -1128,6 +1128,10 @@ function sShowPlatformForm(existing) {
   const nameF = mkField('name', 'text', existing?.name, 'e.g. Ollama Cloud');
   const urlF = mkField('base url', 'url', existing?.base_url, 'https://api.ollama.com/v1');
 
+  const urlHint = document.createElement('div');
+  urlHint.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:11px;color:var(--h-ink-mute);padding:0 0 0 80px;margin-top:-4px';
+  urlHint.textContent = 'e.g: https://api.ollama.com/v1 · https://openrouter.ai/api/v1 · https://api.groq.com/openai/v1';
+
   const keysRow = document.createElement('div');
   keysRow.style.cssText = 'display:flex;align-items:flex-start;gap:10px';
   const keysLbl = document.createElement('span');
@@ -1248,7 +1252,7 @@ function sShowPlatformForm(existing) {
 
   btnRow.append(cancelBtn, healthBtn, saveBtn);
 
-  form.append(nameF.row, urlF.row, keysRow, btnRow);
+  form.append(nameF.row, urlF.row, urlHint, keysRow, btnRow);
   container.appendChild(form);
 }
 
