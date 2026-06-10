@@ -1073,7 +1073,7 @@ const server = http.createServer(async (req, res) => {
       );
       if (!candidates.length) return json(res, { status: 'error', message: 'No models returned by Ollama Cloud' });
 
-      const probeBase = baseClean + '/v1';
+      const probeBase = baseClean.replace(/\/v1$/, '') + '/v1';
       async function probe(model) {
         const ctrl = new AbortController();
         const timer = setTimeout(() => ctrl.abort(), 12000);
@@ -2660,8 +2660,44 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ type: 'error', message: 'invalid model value' }));
         return;
       }
+      if (msg.model && !msg.model.startsWith('claude-')) {
+        // Non-Anthropic model must exist in a platform's enabled_models
+        let known = false;
+        try {
+          const raw = getSetting('ai_platforms');
+          if (raw) {
+            const em = getSetting('enabled_models');
+            const enabledSet = em ? new Set(JSON.parse(em)) : new Set();
+            const platforms = JSON.parse(raw);
+            for (const p of platforms) {
+              if (!p.enabled) continue;
+              const cached = p.cached_models || [];
+              for (const m of cached) {
+                const name = typeof m === 'string' ? m : m.model;
+                if (name === msg.model && enabledSet.has(name)) { known = true; break; }
+              }
+              if (known) break;
+            }
+          }
+        } catch {}
+        if (!known) {
+          ws.send(JSON.stringify({ type: 'error', message: 'model not in enabled list' }));
+          return;
+        }
+      }
       const model = msg.model || null;
-      const modelConfig = msg.model_config ? JSON.stringify(msg.model_config) : null;
+      let modelConfig = null;
+      if (msg.model_config && typeof msg.model_config === 'object') {
+        // Only persist known safe fields — never trust client-provided base_url as authoritative
+        // base_url is stored for display but platform lookup always re-fetches from server settings
+        const { platform_id, base_url } = msg.model_config;
+        if (platform_id !== undefined || base_url !== undefined) {
+          if (base_url !== undefined) {
+            try { new URL(base_url); } catch { ws.send(JSON.stringify({ type: 'error', message: 'invalid model_config: bad base_url' })); return; }
+          }
+          modelConfig = JSON.stringify({ ...(platform_id !== undefined ? { platform_id } : {}), ...(base_url !== undefined ? { base_url } : {}) });
+        }
+      }
       db.prepare("UPDATE rooms SET model=?, model_config=? WHERE id=?").run(model, modelConfig, subscribedRoom);
       const clients = roomClients.get(subscribedRoom);
       if (clients) {
@@ -2735,7 +2771,7 @@ function isPathSafe(filePath, workdir) {
   return true;
 }
 
-const WS_IGNORE = new Set(['.git', 'node_modules', '.next', '__pycache__', '.venv', 'dist', 'build']);
+const WS_IGNORE = new Set(['.git', 'node_modules', '.next', '__pycache__', '.venv', 'dist', 'build', '.claude']);
 
 function buildFileTree(dirPath, rootPath, depth, maxDepth) {
   if (depth > maxDepth) return [];
@@ -3265,20 +3301,6 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         }
       }
     } catch {}
-  } else if (roomModel && !roomModel.startsWith('claude-')) {
-    const raw = getSetting('ai_platforms');
-    if (raw) {
-      try {
-        const platforms = JSON.parse(raw);
-        for (const p of platforms) {
-          if (p.base_url && p.enabled) {
-            modelBaseUrl = p.base_url;
-            modelApiKeys = p.api_keys?.length ? p.api_keys : (p.api_key ? [p.api_key] : undefined);
-            break;
-          }
-        }
-      } catch {}
-    }
   }
   const defaultWd = db.prepare(
     'SELECT path FROM agent_workdirs WHERE actor_id=? AND is_default=1 LIMIT 1'

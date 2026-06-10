@@ -1105,7 +1105,8 @@ async function sLoadPlatformsTab() {
     container.appendChild(card);
   }
 
-  document.getElementById('s-add-platform-btn')?.addEventListener('click', () => sShowPlatformForm());
+  const addPlatBtn = document.getElementById('s-add-platform-btn');
+  if (addPlatBtn) addPlatBtn.onclick = () => sShowPlatformForm();
 }
 
 function sShowPlatformForm(existing) {
