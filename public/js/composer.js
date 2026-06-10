@@ -690,7 +690,6 @@ function formatModelName(model) {
   if (!model) return null;
   return model
     .replace(/^claude-/, '')
-    .replace(/^gemini-/, 'gemini ')
     .replace(/-(\d)/, ' $1')
     .replace(/-preview$/, '');
 }
@@ -992,7 +991,7 @@ async function fetchPlatformModels() {
     for (const g of groups) {
       if (g.platform_id === 'anthropic') continue;
       for (const m of g.models) {
-        platformModels.push({ value: m.value, label: m.label, platform: g.platform_name, base_url: g.base_url || '', api_key: '' });
+        platformModels.push({ value: m.value, label: m.label, platform: g.platform_name, platform_id: g.platform_id, base_url: g.base_url || '' });
       }
     }
   } catch {}
@@ -1023,7 +1022,7 @@ function populateModelDropdown(sel, currentModel) {
         opt.value = pm.value;
         opt.textContent = pm.label;
         if (pm.base_url) opt.dataset.baseUrl = pm.base_url;
-        if (pm.api_key) opt.dataset.apiKey = pm.api_key;
+        if (pm.platform_id) opt.dataset.platformId = pm.platform_id;
         optgroup.appendChild(opt);
       }
       sel.appendChild(optgroup);
@@ -1053,9 +1052,8 @@ document.getElementById('model-select')?.addEventListener('change', function() {
   if (!currentRoomId || !ws) return;
   const opt = this.selectedOptions[0];
   const msg = { type: 'set_room_model', model: this.value };
-  if (opt?.dataset.baseUrl) {
-    msg.model_config = { base_url: opt.dataset.baseUrl };
-    if (opt.dataset.apiKey) msg.model_config.api_key = opt.dataset.apiKey;
+  if (opt?.dataset.platformId) {
+    msg.model_config = { platform_id: opt.dataset.platformId, base_url: opt.dataset.baseUrl || '' };
   } else {
     msg.model_config = null;
   }

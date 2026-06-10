@@ -1494,7 +1494,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
     return json(res, { ok: true });
   }
 
-  // GET /api/actors/:id/capabilities — return available Ollama models
+  // GET /api/actors/:id/capabilities — return available models reported by agent
   if (req.method === 'GET' && url.pathname.match(/^\/api\/actors\/\d+\/capabilities$/)) {
     const actorId = parseInt(url.pathname.split('/')[3]);
     const row = db.prepare('SELECT available_models FROM actors WHERE id=?').get(actorId);
@@ -2017,11 +2017,11 @@ wss.on('connection', (ws, req) => {
       broadcastGlobal({ type: 'agent_scan_complete', actor_id: agentActorId });
     }
 
-    // ── Agent reports available models (Ollama)
+    // ── Agent reports available models
     if (msg.type === 'agent_capabilities' && agentActorId) {
       if (Array.isArray(msg.models)) {
         db.prepare('UPDATE actors SET available_models=? WHERE id=?').run(JSON.stringify(msg.models), agentActorId);
-        console.log(`[capabilities] Actor #${agentActorId}: ${msg.models.length} Ollama models`);
+        console.log(`[capabilities] Actor #${agentActorId}: ${msg.models.length} models`);
       }
     }
 
@@ -3123,7 +3123,19 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     try {
       const cfg = JSON.parse(roomRow2.model_config);
       modelBaseUrl = cfg.base_url || undefined;
-      modelApiKey = cfg.api_key || undefined;
+      if (cfg.platform_id) {
+        const raw = getSetting('ai_platforms');
+        if (raw) {
+          const platforms = JSON.parse(raw);
+          const plat = platforms.find(p => p.id === cfg.platform_id && p.enabled);
+          if (plat) {
+            modelBaseUrl = modelBaseUrl || plat.base_url || undefined;
+            modelApiKey = plat.api_key || undefined;
+          }
+        }
+      } else {
+        modelApiKey = cfg.api_key || undefined;
+      }
     } catch {}
   } else if (roomModel && !roomModel.startsWith('claude-')) {
     const raw = getSetting('ai_platforms');
