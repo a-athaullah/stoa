@@ -1146,7 +1146,6 @@ function sShowPlatformForm(existing) {
 
   const nameF = mkField('name', 'text', existing?.name, 'e.g. Ollama Cloud');
   const urlF = mkField('base url', 'url', existing?.base_url, 'http://localhost:11434');
-  const catalogF = mkField('catalog url', 'url', existing?.catalog_url, 'https://ollama.com/v1');
 
   const urlHint = document.createElement('div');
   urlHint.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:11px;color:var(--h-ink-mute);padding:0 0 0 80px;margin-top:-4px';
@@ -1156,7 +1155,6 @@ function sShowPlatformForm(existing) {
     urlHint.textContent = isOllama
       ? 'local Ollama daemon — handles routing to cloud models'
       : 'e.g: https://openrouter.ai/api/v1 · https://api.groq.com/openai/v1';
-    catalogF.row.style.display = isOllama ? 'flex' : 'none';
   };
   vendorSel.addEventListener('change', updateHints);
   updateHints();
@@ -1240,7 +1238,6 @@ function sShowPlatformForm(existing) {
     const name = nameF.inp.value.trim();
     const base_url = urlF.inp.value.trim();
     const vendor = vendorSel.value;
-    const catalog_url = vendor === 'ollama' ? catalogF.inp.value.trim() : '';
     const pending = keyInp.value.trim();
     if (pending && !keyStore.includes(pending)) { keyStore.push(pending); keyInp.value = ''; refreshKeys(); }
     const api_keys = [...keyStore];
@@ -1250,12 +1247,12 @@ function sShowPlatformForm(existing) {
       if (existing) {
         await fetch(`/api/ai/platforms/${encodeURIComponent(existing.id)}`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, base_url, api_keys, vendor, catalog_url }),
+          body: JSON.stringify({ name, base_url, api_keys, vendor }),
         });
       } else {
         const resp = await fetch('/api/ai/platforms', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, base_url, api_keys, vendor, catalog_url }),
+          body: JSON.stringify({ name, base_url, api_keys, vendor }),
         });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({}));
@@ -1332,7 +1329,7 @@ function sShowPlatformForm(existing) {
 
   btnRow.append(cancelBtn, healthBtn, saveBtn);
 
-  form.append(vendorRow, nameF.row, urlF.row, urlHint, catalogF.row, keysRow, progressWrap, btnRow);
+  form.append(vendorRow, nameF.row, urlF.row, urlHint, keysRow, progressWrap, btnRow);
   container.appendChild(form);
 }
 
