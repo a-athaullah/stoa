@@ -2643,8 +2643,8 @@ function buildFileTree(dirPath, rootPath, depth, maxDepth) {
   let entries;
   try { entries = fs.readdirSync(dirPath, { withFileTypes: true }); } catch { return []; }
   const result = [];
-  const dirs = entries.filter(e => e.isDirectory() && !WS_IGNORE.has(e.name) && !e.name.startsWith('.')).sort((a, b) => a.name.localeCompare(b.name));
-  const files = entries.filter(e => e.isFile() && !e.name.startsWith('.')).sort((a, b) => a.name.localeCompare(b.name));
+  const dirs = entries.filter(e => e.isDirectory() && !WS_IGNORE.has(e.name)).sort((a, b) => a.name.localeCompare(b.name));
+  const files = entries.filter(e => e.isFile()).sort((a, b) => a.name.localeCompare(b.name));
   for (const d of dirs) {
     const children = buildFileTree(path.join(dirPath, d.name), rootPath, depth + 1, maxDepth);
     result.push({ t: 'folder', name: d.name, depth, open: depth < 1, children });
