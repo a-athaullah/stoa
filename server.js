@@ -986,6 +986,88 @@ const server = http.createServer(async (req, res) => {
     return json(res, { ok: true });
   }
 
+  // ── AI Platform config ──
+  if (req.method === 'GET' && url.pathname === '/api/ai/platforms') {
+    const raw = getSetting('ai_platforms');
+    const platforms = raw ? JSON.parse(raw) : [{ id: 'anthropic', name: 'Anthropic', type: 'subscription', enabled: true }];
+    return json(res, platforms);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/ai/platforms') {
+    const body = parseJsonBody(await readBody(req));
+    if (!body || !body.name?.trim()) { res.writeHead(400); return res.end(JSON.stringify({ error: 'name required' })); }
+    const raw = getSetting('ai_platforms');
+    const platforms = raw ? JSON.parse(raw) : [{ id: 'anthropic', name: 'Anthropic', type: 'subscription', enabled: true }];
+    const id = body.id || body.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    if (platforms.find(p => p.id === id)) { res.writeHead(409); return res.end(JSON.stringify({ error: 'platform already exists' })); }
+    const platform = { id, name: body.name.trim(), base_url: body.base_url || '', api_key: body.api_key || '', enabled: true };
+    platforms.push(platform);
+    setSetting('ai_platforms', JSON.stringify(platforms));
+    return json(res, platform);
+  }
+
+  if (req.method === 'PATCH' && url.pathname.match(/^\/api\/ai\/platforms\/[^/]+$/)) {
+    const platformId = decodeURIComponent(url.pathname.split('/')[4]);
+    const body = parseJsonBody(await readBody(req));
+    if (!body) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
+    const raw = getSetting('ai_platforms');
+    const platforms = raw ? JSON.parse(raw) : [];
+    const idx = platforms.findIndex(p => p.id === platformId);
+    if (idx === -1) { res.writeHead(404); return res.end(JSON.stringify({ error: 'not found' })); }
+    if (body.name !== undefined) platforms[idx].name = body.name.trim();
+    if (body.base_url !== undefined) platforms[idx].base_url = body.base_url;
+    if (body.api_key !== undefined) platforms[idx].api_key = body.api_key;
+    if (body.enabled !== undefined) platforms[idx].enabled = body.enabled;
+    setSetting('ai_platforms', JSON.stringify(platforms));
+    return json(res, platforms[idx]);
+  }
+
+  if (req.method === 'DELETE' && url.pathname.match(/^\/api\/ai\/platforms\/[^/]+$/)) {
+    const platformId = decodeURIComponent(url.pathname.split('/')[4]);
+    if (platformId === 'anthropic') { res.writeHead(400); return res.end(JSON.stringify({ error: 'cannot delete default platform' })); }
+    const raw = getSetting('ai_platforms');
+    const platforms = raw ? JSON.parse(raw) : [];
+    const filtered = platforms.filter(p => p.id !== platformId);
+    if (filtered.length === platforms.length) { res.writeHead(404); return res.end(JSON.stringify({ error: 'not found' })); }
+    setSetting('ai_platforms', JSON.stringify(filtered));
+    return json(res, { ok: true });
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/ai/models') {
+    const raw = getSetting('ai_platforms');
+    const platforms = raw ? JSON.parse(raw) : [{ id: 'anthropic', name: 'Anthropic', type: 'subscription', enabled: true }];
+    const ANTHROPIC_MODELS = [
+      { value: 'claude-opus-4-8', label: 'Opus 4.8' },
+      { value: 'claude-opus-4-7', label: 'Opus 4.7' },
+      { value: 'claude-opus-4-6', label: 'Opus 4.6' },
+      { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+      { value: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
+      { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
+    ];
+    const result = [];
+    for (const p of platforms) {
+      if (!p.enabled) continue;
+      const group = { platform_id: p.id, platform_name: p.name, base_url: p.base_url || null, models: [] };
+      if (p.id === 'anthropic' || p.type === 'subscription') {
+        group.models = ANTHROPIC_MODELS;
+      } else {
+        const agents = db.prepare("SELECT available_models FROM actors WHERE type='ai' AND available_models IS NOT NULL").all();
+        for (const a of agents) {
+          try {
+            const models = JSON.parse(a.available_models);
+            for (const m of models) {
+              if (!group.models.find(x => x.value === m.name)) {
+                group.models.push({ value: m.name, label: m.name });
+              }
+            }
+          } catch {}
+        }
+      }
+      result.push(group);
+    }
+    return json(res, result);
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/actors') {
     const rows = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, created_at FROM actors ORDER BY id').all();
     const result = rows.map(r => ({ ...r, online: agentClients.has(r.id), client_version: agentVersions.get(r.id) || null }));
@@ -3043,6 +3125,20 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
       modelBaseUrl = cfg.base_url || undefined;
       modelApiKey = cfg.api_key || undefined;
     } catch {}
+  } else if (roomModel && !roomModel.startsWith('claude-')) {
+    const raw = getSetting('ai_platforms');
+    if (raw) {
+      try {
+        const platforms = JSON.parse(raw);
+        for (const p of platforms) {
+          if (p.base_url && p.enabled) {
+            modelBaseUrl = p.base_url;
+            modelApiKey = p.api_key || undefined;
+            break;
+          }
+        }
+      } catch {}
+    }
   }
   const defaultWd = db.prepare(
     'SELECT path FROM agent_workdirs WHERE actor_id=? AND is_default=1 LIMIT 1'
