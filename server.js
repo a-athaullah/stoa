@@ -2771,7 +2771,7 @@ function isPathSafe(filePath, workdir) {
   return true;
 }
 
-const WS_IGNORE = new Set(['.git', 'node_modules', '.next', '__pycache__', '.venv', 'dist', 'build', '.claude']);
+const WS_IGNORE = new Set(['.git', 'node_modules', '.next', '__pycache__', '.venv', 'dist', 'build']);
 
 function buildFileTree(dirPath, rootPath, depth, maxDepth) {
   if (depth > maxDepth) return [];

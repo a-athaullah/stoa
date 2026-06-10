@@ -16,6 +16,18 @@
 ### Removed
 - `ollama-session.js`, `gemini-session.js`, `gemini-adapter.js` — replaced by unified ClaudeSession with platform env vars
 
+### Fixed
+- **Vision icon in model dropdown** — models with vision capability show 👁 prefix; detect via `POST /api/show` (metadata-only, no token usage) instead of image probe
+- **Model selector grouping** — removed dead `else-if` branch; dropdown now uses `optgroup` per platform with a `seen` Set for correct deduplication
+- **Discover-models double `/v1`** — `probeBase` is now idempotent when `base_url` already ends with `/v1`; standard Ollama OpenAI-compat URLs (`host:11434/v1`) work correctly
+- **Model config injection** — `model_config` from WebSocket payload is now stripped to `{platform_id, base_url}` only; `base_url` validated as a valid URL before persisting
+- **Non-Claude model validation** — model names that don't start with `claude-` are validated against the platform's `enabled_models` list before being accepted
+- **Platform fallback routing removed** — rooms without `model_config` no longer blindly route to the first enabled platform, preventing wrong provider selection
+- **Add Platform button double-fire** — replaced stacking `addEventListener` with `onclick` assignment so repeated Settings tab opens don't multiply handlers
+- **Timestamp display** — relative timestamps (e.g. "2m ago") now correctly parse SQLite UTC timestamps instead of treating them as local time
+- **Crash-retry env** — API key rotation retry loop now passes `envToUse` so platform-specific env vars survive across crash retries
+- **Session ref after key rotation** — `sessionRef` is updated after rotation so `finally` cleanup targets the correct session
+
 ## [2026-06-05] — pin room
 
 ### Added
