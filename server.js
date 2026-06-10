@@ -1635,14 +1635,6 @@ Write-Host "Logs   : pm2 logs $AgentName"
     return json(res, { ok: true });
   }
 
-  // GET /api/actors/:id/capabilities — return available models reported by agent
-  if (req.method === 'GET' && url.pathname.match(/^\/api\/actors\/\d+\/capabilities$/)) {
-    const actorId = parseInt(url.pathname.split('/')[3]);
-    const row = db.prepare('SELECT available_models FROM actors WHERE id=?').get(actorId);
-    const models = (() => { try { return JSON.parse(row?.available_models || 'null'); } catch { return null; } })();
-    return json(res, { models: models || [] });
-  }
-
   // PUT /api/actors/:id/config — update name, lang, adapter_config fields
   if (req.method === 'PUT' && url.pathname.match(/^\/api\/actors\/\d+\/config$/)) {
     const actorId = parseInt(url.pathname.split('/')[3]);
@@ -2158,13 +2150,6 @@ wss.on('connection', (ws, req) => {
       broadcastGlobal({ type: 'agent_scan_complete', actor_id: agentActorId });
     }
 
-    // ── Agent reports available models
-    if (msg.type === 'agent_capabilities' && agentActorId) {
-      if (Array.isArray(msg.models)) {
-        db.prepare('UPDATE actors SET available_models=? WHERE id=?').run(JSON.stringify(msg.models), agentActorId);
-        console.log(`[capabilities] Actor #${agentActorId}: ${msg.models.length} models`);
-      }
-    }
 
     // ── Agent streams a token
     if (msg.type === 'agent_token' && agentActorId) {
