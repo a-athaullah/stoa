@@ -387,6 +387,14 @@ async function run() {
   let orphanActorIds = [];   // actors created mid-test that teardown must clean up
 
   console.log('\n[Test Setup]');
+  await test('Setup — pre-cleanup leftover test actors from prior runs', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    if (!Array.isArray(actors)) return;
+    const stale = actors.filter(a => a.name?.startsWith('__test'));
+    for (const a of stale) await req('DELETE', `/api/actors/${a.id}`);
+    if (stale.length) console.log(`    cleaned up ${stale.length} stale test actor(s)`);
+  });
+
   await test('Setup — create test rooms for write operations', async () => {
     const actors = (await req('GET', '/api/actors')).body;
     const aiActor = actors.find(a => a.type === 'ai');
