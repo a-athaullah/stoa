@@ -270,6 +270,36 @@ async function rawReq(method, path, body, contentType, extraHeaders = {}) {
   });
 }
 
+async function streamReq(method, path, timeoutMs = 300000) {
+  return new Promise((resolve, reject) => {
+    const opts = {
+      hostname: HOST, port: PORT, path, method,
+      headers: { 'Content-Type': 'application/json', ...(sessionCookie ? { Cookie: sessionCookie } : {}) },
+    };
+    const r = http.request(opts, res => {
+      const events = [];
+      let buf = '';
+      const timer = setTimeout(() => { r.destroy(); reject(new Error(`stream timeout after ${timeoutMs}ms`)); }, timeoutMs);
+      res.on('data', chunk => {
+        buf += chunk.toString();
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (line.trim()) try { events.push(JSON.parse(line)); } catch {}
+        }
+      });
+      res.on('end', () => {
+        clearTimeout(timer);
+        if (buf.trim()) try { events.push(JSON.parse(buf)); } catch {}
+        resolve({ status: res.statusCode, headers: res.headers, events });
+      });
+      res.on('error', e => { clearTimeout(timer); reject(e); });
+    });
+    r.on('error', reject);
+    r.end();
+  });
+}
+
 function openWsConnection(url, cookie = null) {
   return new Promise((resolve, reject) => {
     const opts = cookie ? { headers: { Cookie: cookie } } : {};
@@ -1256,6 +1286,28 @@ async function run() {
     assert.ok('status' in r.body, 'status field missing');
     assert.ok(r.body.status === 'ok' || r.body.status === 'error', 'unexpected status value');
     if (r.body.status === 'ok') assert.ok(Array.isArray(r.body.models), 'models not array on ok');
+  });
+
+  await test('POST /api/ai/platforms/:id/discover-models — streams NDJSON, done event has usable array [slow ~3min]', async () => {
+    const platforms = (await req('GET', '/api/ai/platforms')).body;
+    const ollamaCloud = Array.isArray(platforms) && platforms.find(p => p.base_url && p.base_url.includes('ollama.com'));
+    if (!ollamaCloud) { console.log('    (skipped — no Ollama Cloud platform configured)'); return; }
+    console.log(`    probing models on platform "${ollamaCloud.name}" — may take a few minutes...`);
+    const r = await streamReq('POST', `/api/ai/platforms/${encodeURIComponent(ollamaCloud.id)}/discover-models`, 300000);
+    assert.strictEqual(r.status, 200);
+    const startEv = r.events.find(e => e.type === 'start');
+    assert.ok(startEv, 'no start event');
+    assert.ok(typeof startEv.total === 'number', 'start.total not a number');
+    const doneEv = r.events.find(e => e.type === 'done');
+    assert.ok(doneEv, 'no done event');
+    assert.ok(Array.isArray(doneEv.usable), 'done.usable not array');
+    assert.ok(typeof doneEv.tested === 'number', 'done.tested not a number');
+    // usable is [{model, vision}] objects
+    if (doneEv.usable.length > 0) {
+      assert.ok(typeof doneEv.usable[0].model === 'string', 'usable[0].model not string');
+      assert.ok(typeof doneEv.usable[0].vision === 'boolean', 'usable[0].vision not boolean');
+    }
+    console.log(`    discovered ${doneEv.usable.length} of ${doneEv.tested} usable models`);
   });
 
   await test('GET /api/ai/models — returns array with anthropic group', async () => {
