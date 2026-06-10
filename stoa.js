@@ -394,23 +394,6 @@ async function handleAgentMessage(msg) {
     }
   }
 
-  if (msg.type === 'query_model') {
-    let model = null;
-    try {
-      const raw = fs.readFileSync(path.join(msg.workdir, '.claude', 'settings.json'), 'utf8');
-      const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
-      model = JSON.parse(stripped).model || null;
-    } catch {}
-    if (!model) {
-      try {
-        const raw = fs.readFileSync(path.join(os.homedir(), '.claude', 'settings.json'), 'utf8');
-        const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
-        model = JSON.parse(stripped).model || null;
-      } catch {}
-    }
-    send({ type: 'model_info', workdir: msg.workdir, model });
-  }
-
   if (msg.type === 'proxy_file_list') {
     try {
       const tree = buildFileTreeAgent(msg.workdir, msg.workdir, 0, 3);
@@ -1009,13 +992,6 @@ function scanForWorkdirs() {
     } catch { return null; }
   }
 
-  function readModel(dir) {
-    const local = parseJsonc(path.join(dir, '.claude', 'settings.json'));
-    if (local?.model) return local.model;
-    const global = parseJsonc(path.join(os.homedir(), '.claude', 'settings.json'));
-    return global?.model || null;
-  }
-
   function readSkills(dir) {
     const skills = [];
     const commandsDir = path.join(dir, '.claude', 'commands');
@@ -1042,8 +1018,7 @@ function scanForWorkdirs() {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       if (dir !== home && path.basename(dir) !== '.claude' && hasClaudeMarker(dir)) {
         const skills = readSkills(dir);
-        const model = readModel(dir);
-        results.push({ path: dir, skills, model, is_default: dir === home + '/stoa-workspace' || dir === path.join(home, 'stoa-workspace') });
+        results.push({ path: dir, skills, is_default: dir === home + '/stoa-workspace' || dir === path.join(home, 'stoa-workspace') });
       }
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
@@ -1080,8 +1055,7 @@ function scanForWorkdirs() {
     const normalized = path.resolve(defaultWorkDir);
     if (!results.find(r => path.resolve(r.path) === normalized)) {
       const skills = readSkills(normalized);
-      const model = readModel(normalized);
-      results.unshift({ path: normalized, skills, model, is_default: true });
+      results.unshift({ path: normalized, skills, is_default: true });
     } else {
       // Mark it as default if already found via scan
       const existing = results.find(r => path.resolve(r.path) === normalized);
