@@ -1351,32 +1351,34 @@ function sRenderModelChecklist(container, cachedModels, enabledModels, platformI
   wrap.style.cssText = 'border-top:1px solid var(--h-hair-soft);padding:10px 0 4px';
 
   const header = document.createElement('div');
-  header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:6px';
+  header.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px';
 
   const title = document.createElement('span');
-  title.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute)';
+  title.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);flex:1;min-width:80px';
   title.textContent = 'enabled models';
 
   const selectAllBtn = document.createElement('button');
   selectAllBtn.className = 's-icon-btn';
-  selectAllBtn.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:11px;padding:2px 6px;height:auto';
+  selectAllBtn.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:11px;padding:2px 8px;height:auto;white-space:nowrap;flex-shrink:0';
   header.append(title, selectAllBtn);
 
   const list = document.createElement('div');
-  list.style.cssText = 'display:flex;flex-direction:column;gap:2px;max-height:200px;overflow-y:auto;padding-right:4px';
+  list.style.cssText = 'display:flex;flex-direction:column;gap:1px;max-height:200px;overflow-y:auto;padding-right:4px';
 
   const checkboxes = [];
 
   for (const model of cachedModels) {
     const row = document.createElement('label');
-    row.style.cssText = 'display:flex;align-items:center;gap:7px;padding:3px 2px;cursor:pointer;border-radius:3px';
-    row.style.cssText += ';font-family:ui-monospace,monospace;font-size:11.5px;color:var(--h-ink-faint)';
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 2px;cursor:pointer;border-radius:3px';
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.value = model;
     cb.checked = enabledSet ? enabledSet.has(model) : true;
-    cb.style.cssText = 'accent-color:var(--h-ink);width:13px;height:13px;flex-shrink:0';
-    row.append(cb, document.createTextNode(model));
+    cb.className = 's-model-cb';
+    const lbl = document.createElement('span');
+    lbl.style.cssText = 'font-family:ui-monospace,monospace;font-size:11.5px;color:var(--h-ink-faint)';
+    lbl.textContent = model;
+    row.append(cb, lbl);
     list.appendChild(row);
     checkboxes.push(cb);
     cb.addEventListener('change', updateSelectAllLabel);
