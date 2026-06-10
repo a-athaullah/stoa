@@ -1359,7 +1359,7 @@ function sRenderModelChecklist(container, cachedModels, enabledModels, platformI
 
   const selectAllBtn = document.createElement('button');
   selectAllBtn.className = 's-icon-btn';
-  selectAllBtn.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:11px;padding:2px 8px;height:auto;white-space:nowrap;flex-shrink:0';
+  selectAllBtn.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:11px;padding:2px 8px;width:auto;height:auto;white-space:nowrap;flex-shrink:0';
   header.append(title, selectAllBtn);
 
   const list = document.createElement('div');
