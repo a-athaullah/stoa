@@ -133,7 +133,6 @@ try {
   if (e.code !== 'ENOENT') console.error('[migration] runner error:', e.message);
 }
 
-const ALLOWED_CLAUDE_MODELS = new Set(['claude-haiku-4-5-20251001','claude-sonnet-4-5','claude-sonnet-4-6','claude-opus-4-6','claude-opus-4-7','claude-opus-4-8']);
 
 // ─── Auth: password hashing & session management ─────────────────────────────
 
@@ -1398,7 +1397,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
   if (req.method === 'GET' && url.pathname.match(/^\/api\/actors\/\d+\/workdirs$/)) {
     const actorId = parseInt(url.pathname.split('/')[3]);
     const rows = db.prepare(
-      'SELECT id, path, label, is_default, model FROM agent_workdirs WHERE actor_id=? ORDER BY is_default DESC, id ASC'
+      'SELECT id, path, label, is_default FROM agent_workdirs WHERE actor_id=? ORDER BY is_default DESC, id ASC'
     ).all(actorId);
     return json(res, rows);
   }
@@ -1424,7 +1423,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
         'INSERT INTO agent_workdirs (actor_id, path, label, is_default) VALUES (?,?,?,0) ON CONFLICT(actor_id, path) DO NOTHING'
       ).run(actorId, dirPath.trim(), null);
     }
-    const wd = db.prepare('SELECT id, path, label, is_default, model FROM agent_workdirs WHERE actor_id=? AND path=?').get(actorId, dirPath.trim());
+    const wd = db.prepare('SELECT id, path, label, is_default FROM agent_workdirs WHERE actor_id=? AND path=?').get(actorId, dirPath.trim());
     return json(res, wd);
   }
 
@@ -1795,15 +1794,6 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ type: 'compact_start', room_id: subscribedRoom, total: cs.total }));
         if (cs.completed > 0) ws.send(JSON.stringify({ type: 'compact_progress', room_id: subscribedRoom, completed: cs.completed, total: cs.total }));
       }
-      // Query current model from connected agent
-      const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(subscribedRoom);
-      if (roomRow?.workdir_id) {
-        const wd = db.prepare('SELECT actor_id, path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
-        if (wd) {
-          const agentWs = agentClients.get(wd.actor_id);
-          if (agentWs) agentWs.send(JSON.stringify({ type: 'query_model', workdir: wd.path }));
-        }
-      }
     }
 
     if (msg.type === 'send_message') {
@@ -1933,7 +1923,7 @@ wss.on('connection', (ws, req) => {
       const { workdirs = [], globalSkills = [] } = msg;
       // UPSERT workdirs — preserve IDs so room references stay valid
       const upsertWorkdir = db.prepare(
-        'INSERT INTO agent_workdirs (actor_id, path, label, is_default, model) VALUES (?,?,?,?,?) ON CONFLICT(actor_id, path) DO UPDATE SET label=excluded.label, is_default=excluded.is_default, model=excluded.model'
+        'INSERT INTO agent_workdirs (actor_id, path, label, is_default) VALUES (?,?,?,?) ON CONFLICT(actor_id, path) DO UPDATE SET label=excluded.label, is_default=excluded.is_default'
       );
       const insertSkill = db.prepare(
         'INSERT OR IGNORE INTO agent_skills (actor_id, workdir_id, name, description, scope) VALUES (?,?,?,?,?)'
@@ -1941,7 +1931,7 @@ wss.on('connection', (ws, req) => {
       const scannedPaths = new Set();
       for (const wd of workdirs) {
         const label = wd.path.split(/[\/\\]/).pop() || wd.path;
-        upsertWorkdir.run(agentActorId, wd.path, label, wd.is_default ? 1 : 0, wd.model || null);
+        upsertWorkdir.run(agentActorId, wd.path, label, wd.is_default ? 1 : 0);
         scannedPaths.add(wd.path);
       }
       const allWds = db.prepare('SELECT id, path FROM agent_workdirs WHERE actor_id=?').all(agentActorId);
@@ -1983,20 +1973,6 @@ wss.on('connection', (ws, req) => {
       if (Array.isArray(msg.models)) {
         db.prepare('UPDATE actors SET available_models=? WHERE id=?').run(JSON.stringify(msg.models), agentActorId);
         console.log(`[capabilities] Actor #${agentActorId}: ${msg.models.length} Ollama models`);
-      }
-    }
-
-    // ── Agent reports model for a workdir
-    if (msg.type === 'model_info' && agentActorId) {
-      const wd = db.prepare('SELECT id, model FROM agent_workdirs WHERE actor_id=? AND path=?').get(agentActorId, msg.workdir);
-      if (wd) {
-        if (wd.model !== (msg.model || null)) {
-          db.prepare('UPDATE agent_workdirs SET model=? WHERE id=?').run(msg.model || null, wd.id);
-        }
-        const payload = { type: 'model_update', workdir_id: wd.id, model: msg.model || null };
-        broadcastGlobal(payload);
-        const affectedRooms = db.prepare('SELECT id FROM rooms WHERE workdir_id=?').all(wd.id);
-        for (const r of affectedRooms) broadcast(r.id, payload);
       }
     }
 
@@ -2505,12 +2481,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'set_room_model' && subscribedRoom) {
-      const model = msg.model;
-      if (!model) return;
-      if (!ALLOWED_CLAUDE_MODELS.has(model)) {
-        ws.send(JSON.stringify({ type: 'error', code: 'invalid_model', message: `Unknown model: ${model}` }));
-        return;
-      }
+      const model = msg.model || null;
       db.prepare("UPDATE rooms SET model=? WHERE id=?").run(model, subscribedRoom);
       const clients = roomClients.get(subscribedRoom);
       if (clients) {
@@ -2518,7 +2489,7 @@ wss.on('connection', (ws, req) => {
           if (c.readyState === 1) c.send(JSON.stringify({ type: 'room_model_changed', model, room_id: subscribedRoom }));
         }
       }
-      console.log(`[room] model set to ${model} for room ${subscribedRoom}`);
+      console.log(`[room] model set to ${model || '(default)'} for room ${subscribedRoom}`);
     }
 
    } catch (err) { console.error('[ws] unhandled message error:', err); }
