@@ -1174,8 +1174,9 @@ function sShowPlatformForm(existing) {
   keyInp.className = 's-server-input'; keyInp.type = 'password'; keyInp.placeholder = 'sk-...';
   keyInp.style.cssText = 'flex:1;font-family:ui-monospace,monospace;font-size:12px';
   const addKeyBtn = document.createElement('button');
-  addKeyBtn.className = 's-server-save'; addKeyBtn.textContent = '+ add';
-  addKeyBtn.style.cssText = 'font-size:12px;padding:4px 10px;white-space:nowrap';
+  addKeyBtn.className = 's-icon-btn'; addKeyBtn.title = 'Add key';
+  addKeyBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>';
+  addKeyBtn.style.cssText = 'flex-shrink:0';
   addKeyBtn.addEventListener('click', () => {
     const v = keyInp.value.trim();
     if (!v) return;
