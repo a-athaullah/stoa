@@ -48,15 +48,18 @@ Click the **+** button in the room header to add AI agents to an existing room. 
 
 Click the room title in the chat header. It becomes editable — type the new name and press Enter, or press Escape to cancel.
 
-### Switching Claude Model
+### Switching Model
 
-When a room contains a Claude agent, a **model selector** appears at the right side of the formatting toolbar in the composer. Use it to override the model the agent will use for its next response:
+A **model selector** appears at the right side of the formatting toolbar in the composer. Use it to override the model the agent will use for its next response.
 
+**Built-in Claude models** (via Claude Code subscription):
 - **Haiku 4.5** — fastest and most economical
 - **Sonnet 4.5 / 4.6** — balanced performance and quality (default: Sonnet 4.6)
 - **Opus 4.6 / 4.7 / 4.8** — highest capability, best for complex or long-context tasks
 
-The selection is saved per room and takes effect immediately on the next message — no restart required. The selector is hidden when the room has no Claude agent (Gemini and Ollama agents are not affected).
+**External platform models**: If you've configured additional platforms in **Settings > Platforms** (e.g., Ollama Cloud, OpenRouter), their models also appear in the selector, grouped by platform name.
+
+The selection is saved per room and takes effect immediately on the next message — no restart required.
 
 ### Pinning a Room
 
@@ -233,8 +236,7 @@ Press **Ctrl+F** (or click the **search icon** in the room header) to search wit
 
 Go to **Settings > AI Agent > Add Agent**. The Add Agent panel lets you configure:
 
-- **Backend** — choose between **Claude Code CLI**, **Gemini CLI**, or **Ollama** as the AI backend. The install command adapts automatically based on your selection
-- **Language** — select the language the AI agent will use for responses: English, Bahasa Indonesia, 日本語, 한국語, or 中文
+- **Language** — select the language the AI agent will use for responses: English, Bahasa Indonesia, 日本語, 한국어, or 中文
 
 The server generates a one-time install command.
 
@@ -494,7 +496,7 @@ Each rule has an enable/disable toggle. Disabled rules never fire, even if the S
 
 ## Settings
 
-Click the **gear icon** in the sidebar to open the settings panel. Settings are organized into five tabs:
+Click the **gear icon** in the sidebar to open the settings panel. Settings are organized into six tabs:
 
 ### AI Agent
 
@@ -511,6 +513,23 @@ View all registered agents, their online status, version, workdirs, and skills. 
 - **Session Idle TTL** — minutes before idle AI sessions auto-close to free memory (default 5 minutes)
 - **Cleanup Hour** — when the daily upload cleanup runs (24h format)
 - **Max File Age** — how long uploaded files are kept before cleanup (hours)
+
+### Platforms
+
+Configure external AI model providers beyond the built-in Claude models. Click **+ add platform** to register a new provider:
+
+- **Name** — a label for the platform (e.g., "Ollama Cloud", "OpenRouter")
+- **Base URL** — the API endpoint (e.g., `https://api.ollama.com/v1`, `https://openrouter.ai/api/v1`)
+- **API Key** — your API key for that provider
+
+Once added, models from that platform appear in the **model selector** dropdown in room composers, grouped by platform name. The API key is stored securely on the server and never sent to the browser.
+
+**Supported providers** — any OpenAI-compatible API endpoint works:
+- **Ollama Cloud** — `https://api.ollama.com/v1` (free tier available)
+- **OpenRouter** — `https://openrouter.ai/api/v1`
+- **Together AI** — `https://api.together.xyz/v1`
+- **Groq** — `https://api.groq.com/openai/v1`
+- **Local Ollama** — `http://localhost:11434/v1`
 
 ### Automation
 
@@ -563,20 +582,17 @@ For mobile access from another device, set up **Tailscale** — see the [Tailsca
 Browser  <-->  WebSocket  <-->  server.js  <-->  Agent (stoa.js)
                                     |                   |
                                  SQLite DB      Claude Code CLI
-                                                  or Gemini CLI
-                                                  or Ollama
+                                                  (+ external platforms
+                                                   via env vars)
 ```
 
 - **server.js** — HTTP + WebSocket server, manages rooms, messages, and agent orchestration
 - **public/** — frontend (no build step needed)
 - **stoa.js** — agent client that runs on each agent machine
 - **claude-session.js** — manages the persistent Claude Code CLI subprocess
-- **gemini-session.js** — manages the persistent Gemini CLI subprocess
-- **gemini-adapter.js** — adapter for Gemini CLI output parsing
-- **ollama-session.js** — manages Ollama API calls (no CLI required)
 - **SQLite** — all data stored locally in `stoa.db` (WAL mode for performance)
 
-Stoa supports multiple AI backends. Each agent can be configured to use **Claude Code CLI**, **Gemini CLI**, or **Ollama**, chosen when the agent is added. All backends are managed through the same agent client and orchestration layer. Ollama agents connect to a local Ollama server and do not require a separate CLI install.
+All AI models are routed through **Claude Code CLI**. For external platforms (Ollama Cloud, OpenRouter, etc.), the server passes platform-specific environment variables (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`) to the CLI process, which handles the API communication transparently.
 
 **Room context in prompt**: Every time an agent is triggered, the server injects `Room ID: <id>` into the agent's system prompt. This means the agent always knows which room it is operating in — enabling it to call `sendProactiveMessage(roomId, ...)` or perform other room-aware operations without needing the ID passed explicitly.
 
