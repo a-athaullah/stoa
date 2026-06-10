@@ -2671,7 +2671,10 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'set_room_model' && subscribedRoom) {
-      if (msg.model !== null && msg.model !== undefined && (typeof msg.model !== 'string' || !msg.model.trim() || msg.model.length > 200)) break;
+      if (msg.model !== null && msg.model !== undefined && (typeof msg.model !== 'string' || !msg.model.trim() || msg.model.length > 200)) {
+        ws.send(JSON.stringify({ type: 'error', message: 'invalid model value' }));
+        return;
+      }
       const model = msg.model || null;
       const modelConfig = msg.model_config ? JSON.stringify(msg.model_config) : null;
       db.prepare("UPDATE rooms SET model=?, model_config=? WHERE id=?").run(model, modelConfig, subscribedRoom);
