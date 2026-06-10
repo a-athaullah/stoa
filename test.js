@@ -760,6 +760,7 @@ async function run() {
     const agentRes = await req('POST', '/api/agent/register', { token: tokenMatch[1] });
     if (agentRes.status !== 200) { console.log(`    (skipped — agent creation failed: ${agentRes.status})`); return; }
     const { actor_id: agentActorId, secret: agentSecret } = agentRes.body;
+    orphanActorIds.push(agentActorId);
     try {
       const roomId = testRoomIds[0];
       await req('POST', `/api/rooms/${roomId}/participants`, { actor_id: agentActorId });
@@ -792,6 +793,7 @@ async function run() {
       assert.strictEqual(r.body.ok, true);
     } finally {
       await req('DELETE', `/api/actors/${agentActorId}`);
+      orphanActorIds = orphanActorIds.filter(id => id !== agentActorId);
     }
   });
 
@@ -835,6 +837,7 @@ async function run() {
     assert.strictEqual(r.status, 200);
     testActorId = r.body.actor_id;
     testActorSecret = r.body.secret;
+    orphanActorIds.push(testActorId);
     assert.ok(testActorId, 'no actor_id');
 
     // Get default workdir id from first available agent workdir (or use human actor's default)
@@ -923,6 +926,7 @@ async function run() {
     if (!testActorId) { console.log('    (skipped)'); return; }
     const r = await req('DELETE', `/api/actors/${testActorId}`);
     assert.ok([204, 200].includes(r.status));
+    orphanActorIds = orphanActorIds.filter(id => id !== testActorId);
     testActorId = null;
     testActorSecret = null;
   });
