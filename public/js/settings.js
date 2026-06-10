@@ -1227,10 +1227,14 @@ function sShowPlatformForm(existing) {
     if (!base_url) { showToast('Base URL is required', { error: true }); return; }
     try {
       if (existing) {
-        await fetch(`/api/ai/platforms/${encodeURIComponent(existing.id)}`, {
+        const resp = await fetch(`/api/ai/platforms/${encodeURIComponent(existing.id)}`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name, base_url, api_keys, vendor }),
         });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          showToast(err.error || 'Failed to update platform', { error: true }); return;
+        }
       } else {
         const resp = await fetch('/api/ai/platforms', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
