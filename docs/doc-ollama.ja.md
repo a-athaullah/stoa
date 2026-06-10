@@ -131,27 +131,88 @@ ollama list
 
 ---
 
+## 複数マシン間でのOllama共有（マルチエージェント設定）
+
+デフォルトでは、Ollamaは`127.0.0.1`（localhost）のみでリッスンします。異なるマシンで動作する複数のStoaエージェントが同じOllamaインスタンスを使用するには、OllamaをネットワークからアクセスできるようにするOllamaを設定する必要があります。
+
+これは、**Tailscale IP**（例：`http://100.x.x.x:11434/v1`）経由でOllamaにアクセスする場合にも必要です。Tailscaleインターフェースは独立したネットワークインターフェースとして扱われるため、自分のマシンからアクセスする場合でも同様です。
+
+### ステップ 1 — Ollamaがすべてのインターフェースでリッスンできるようにする
+
+**macOS (Ollama.app):**
+
+```bash
+launchctl setenv OLLAMA_HOST "0.0.0.0"
+```
+
+次にOllamaを再起動します：メニューバーから終了し、再度開いてください。
+
+> この設定は次回の再起動まで有効です。永続的にするには、シェル設定に追加してターミナルからOllamaを再起動してください：
+> ```bash
+> echo 'export OLLAMA_HOST=0.0.0.0' >> ~/.zshrc
+> source ~/.zshrc
+> ollama serve
+> ```
+
+**macOS (Homebrew / CLI):**
+
+```bash
+OLLAMA_HOST=0.0.0.0 ollama serve
+```
+
+または`~/.zshrc`に`export OLLAMA_HOST=0.0.0.0`を追加し、ターミナルから`ollama serve`を実行してください。
+
+**Linux (systemd):**
+
+```bash
+sudo systemctl edit ollama
+```
+
+以下を追加：
+```ini
+[Service]
+Environment="OLLAMA_HOST=0.0.0.0"
+```
+
+次に：
+```bash
+sudo systemctl restart ollama
+```
+
+### ステップ 2 — StoaでOllamaに接続するURLを設定する
+
+Ollamaがすべてのインターフェースでリッスンするようになったら、次のいずれかを使用します：
+- **LAN IP**: `http://192.168.x.x:11434/v1`
+- **Tailscale IP**: `http://100.x.x.x:11434/v1`
+
+Stoa内の各エージェントはこのURLを使用するよう設定できます — 同じTailscaleネットワーク内のどのマシンのエージェントも、同じOllamaインスタンスを共有できます。
+
+### 接続の確認
+
+Ollamaに到達できるはずのマシンから：
+
+```bash
+curl http://<ollama-machine-ip>:11434/api/tags
+```
+
+モデルの一覧が返ってきたら、接続は成功しており、Stoaはそのアドレスからモデルを検出できます。
+
+---
+
 ## トラブルシューティング
 
-**Discover後に「No models found」と表示される**
+**Discoverの後に「No models found」と表示される**
 
-- Ollamaが実行中か確認: `ollama list`が結果を返すはず
-- URLを確認 — ローカルOllamaは`http://localhost:11434/v1`（`https://`ではない）
-- StoaがリモートマシンでP実行されている場合、`localhost`の代わりにマシンのIPを使用: `http://192.168.x.x:11434/v1`
+- Ollamaが起動していることを確認してください：`ollama list`が結果を返すはずです
+- URLを確認してください — ローカルのOllamaは`http://localhost:11434/v1`です（`https://`ではありません）
+- Tailscale IP経由でアクセスしていますか？上記の[マルチエージェント設定](#複数マシン間でのollama共有マルチエージェント設定)セクションを参照してください — まず`OLLAMA_HOST=0.0.0.0`の設定が必要です
 
 **モデルが応答しない**
 
-- モデルがまだ取得されていない可能性があります。ターミナルで`ollama pull <model-name>`を実行
-- 利用可能なメモリを確認 — 大型モデルには大量のRAMが必要（7Bモデルには~5GBが必要）
+- モデルがまだpullされていない可能性があります。ターミナルで`ollama pull <model-name>`を実行してください
+- 使用可能なメモリを確認してください — 大きなモデルには相当なRAMが必要です（7Bモデルには約5GBが必要）
 
 **応答が遅い**
 
-- 大型モデルのCPU推論は遅い。小型モデル（3B–7B）またはCPU向けに最適化されたモデルを試す
-- Apple SiliconではOllamaがNeural Engineを使用 — x86 CPUよりもはるかに優れたパフォーマンス
-
-**リモートエージェントがローカルOllamaに接続できない**
-
-StoaエージェントがOllamaとは異なるマシンで実行されている場合、エージェントはOllamaへのルートが必要です。オプション:
-- エージェントと同じマシンでOllamaを実行
-- `OLLAMA_HOST=0.0.0.0 ollama serve`を使用してすべてのインターフェースでOllamaを公開し、マシンのIPを使用
-- Tailscaleを使用 — 両方のマシンを同じTailscaleネットワークに接続し、Tailscale IPを使用
+- 大きなモデルではCPU推論は遅くなります。小さいモデル（3B〜7B）またはCPU向けに最適化されたモデルを試してください
+- Apple Siliconでは、OllamaはNeural Engineを使用します — x86 CPUよりもパフォーマンスが大幅に向上します

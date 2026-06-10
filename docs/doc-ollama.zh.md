@@ -131,27 +131,88 @@ ollama list
 
 ---
 
+## 跨多台机器共享 Ollama（多智能体设置）
+
+默认情况下，Ollama 仅监听 `127.0.0.1`（本地回环地址）。如果你希望运行在不同机器上的多个 Stoa 智能体都使用同一个 Ollama 实例，你需要让 Ollama 在网络上可访问。
+
+即使从你自己的机器通过 **Tailscale IP**（例如 `http://100.x.x.x:11434/v1`）访问 Ollama 也需要此设置，因为 Tailscale 接口被视为独立的网络接口。
+
+### 第一步 — 允许 Ollama 监听所有接口
+
+**macOS (Ollama.app):**
+
+```bash
+launchctl setenv OLLAMA_HOST "0.0.0.0"
+```
+
+然后重启 Ollama：从菜单栏退出后重新打开。
+
+> 此设置在下次重启前持续有效。若要使其永久生效，请将其添加到你的 shell 配置中，并从终端重启 Ollama：
+> ```bash
+> echo 'export OLLAMA_HOST=0.0.0.0' >> ~/.zshrc
+> source ~/.zshrc
+> ollama serve
+> ```
+
+**macOS (Homebrew / CLI):**
+
+```bash
+OLLAMA_HOST=0.0.0.0 ollama serve
+```
+
+或将 `export OLLAMA_HOST=0.0.0.0` 添加到 `~/.zshrc`，然后从终端运行 `ollama serve`。
+
+**Linux (systemd):**
+
+```bash
+sudo systemctl edit ollama
+```
+
+添加以下内容：
+```ini
+[Service]
+Environment="OLLAMA_HOST=0.0.0.0"
+```
+
+然后：
+```bash
+sudo systemctl restart ollama
+```
+
+### 第二步 — 在 Stoa 中使用正确的 URL
+
+Ollama 监听所有接口后，使用以下任一地址：
+- **LAN IP**: `http://192.168.x.x:11434/v1`
+- **Tailscale IP**: `http://100.x.x.x:11434/v1`
+
+Stoa 中的每个智能体都可以配置为使用此 URL — 同一 Tailscale 网络中任何机器上的智能体都可以共享同一个 Ollama 实例。
+
+### 验证连接
+
+从任何需要访问 Ollama 的机器上运行：
+
+```bash
+curl http://<ollama-machine-ip>:11434/api/tags
+```
+
+如果返回了模型列表，则连接正常，Stoa 将能够从该地址发现模型。
+
+---
+
 ## 故障排查
 
 **Discover 后显示"No models found"**
 
-- 确认 Ollama 正在运行：`ollama list` 应该返回结果
-- 检查 URL — 本地 Ollama 使用 `http://localhost:11434/v1`（不是 `https://`）
-- 如果 Stoa 运行在远程机器上，请使用该机器的 IP 替换 `localhost`：`http://192.168.x.x:11434/v1`
+- 确保 Ollama 正在运行：`ollama list` 应该返回结果
+- 检查 URL — 本地 Ollama 地址为 `http://localhost:11434/v1`（不是 `https://`）
+- 通过 Tailscale IP 访问？请参阅上面的[多智能体设置](#跨多台机器共享-ollama多智能体设置)部分 — 需要先设置 `OLLAMA_HOST=0.0.0.0`
 
-**模型无响应**
+**模型没有响应**
 
-- 该模型可能尚未下载。在终端运行 `ollama pull <model-name>`
+- 模型可能尚未拉取。在终端中运行 `ollama pull <model-name>`
 - 检查可用内存 — 大型模型需要大量 RAM（7B 模型需要约 5GB）
 
-**响应速度慢**
+**响应缓慢**
 
-- CPU 推理对大型模型来说较慢。尝试更小的模型（3B–7B）或针对 CPU 优化的模型
+- 大型模型的 CPU 推理较慢。尝试使用较小的模型（3B–7B）或针对 CPU 优化的模型
 - 在 Apple Silicon 上，Ollama 使用 Neural Engine — 性能远优于 x86 CPU
-
-**远程 Agent 无法访问本地 Ollama**
-
-如果 Stoa Agent 运行在与 Ollama 不同的机器上，Agent 需要能够访问 Ollama 的路由。可选方案：
-- 在与 Agent 相同的机器上运行 Ollama
-- 使用 `OLLAMA_HOST=0.0.0.0 ollama serve` 将 Ollama 暴露在所有网络接口上，然后使用该机器的 IP
-- 使用 Tailscale — 将两台机器加入同一个 Tailscale 网络，然后使用 Tailscale IP

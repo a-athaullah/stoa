@@ -131,13 +131,81 @@ Your local models now appear in the model dropdown in the composer, grouped unde
 
 ---
 
+## Sharing Ollama Across Multiple Machines (Multi-Agent Setup)
+
+By default, Ollama only listens on `127.0.0.1` (localhost). If you want multiple Stoa agents — running on different machines — to all use the same Ollama instance, you need to make Ollama accessible on the network.
+
+This is also needed if you access Ollama via a **Tailscale IP** (e.g. `http://100.x.x.x:11434/v1`) even from your own machine, because the Tailscale interface is treated as a separate network interface.
+
+### Step 1 — Allow Ollama to listen on all interfaces
+
+**macOS (Ollama.app):**
+
+```bash
+launchctl setenv OLLAMA_HOST "0.0.0.0"
+```
+
+Then restart Ollama: quit from the menu bar and reopen it.
+
+> This setting persists until the next reboot. To make it permanent, add it to your shell config and restart Ollama from the terminal:
+> ```bash
+> echo 'export OLLAMA_HOST=0.0.0.0' >> ~/.zshrc
+> source ~/.zshrc
+> ollama serve
+> ```
+
+**macOS (Homebrew / CLI):**
+
+```bash
+OLLAMA_HOST=0.0.0.0 ollama serve
+```
+
+Or add `export OLLAMA_HOST=0.0.0.0` to `~/.zshrc` and run `ollama serve` from the terminal.
+
+**Linux (systemd):**
+
+```bash
+sudo systemctl edit ollama
+```
+
+Add:
+```ini
+[Service]
+Environment="OLLAMA_HOST=0.0.0.0"
+```
+
+Then:
+```bash
+sudo systemctl restart ollama
+```
+
+### Step 2 — Use the correct URL in Stoa
+
+Once Ollama listens on all interfaces, use either:
+- **LAN IP**: `http://192.168.x.x:11434/v1`
+- **Tailscale IP**: `http://100.x.x.x:11434/v1`
+
+Each agent in Stoa can be configured to use this URL — agents on any machine in the same Tailscale network can then share the same Ollama instance.
+
+### Verify the connection
+
+From any machine that should reach Ollama:
+
+```bash
+curl http://<ollama-machine-ip>:11434/api/tags
+```
+
+If it returns a list of models, the connection works and Stoa will be able to discover models from that address.
+
+---
+
 ## Troubleshooting
 
 **"No models found" after Discover**
 
 - Make sure Ollama is running: `ollama list` should return results
 - Check the URL — local Ollama is `http://localhost:11434/v1` (not `https://`)
-- If Stoa is running on a remote machine, use the machine's IP instead of `localhost`: `http://192.168.x.x:11434/v1`
+- Accessing via Tailscale IP? See the [Multi-Agent Setup](#sharing-ollama-across-multiple-machines-multi-agent-setup) section above — Ollama needs `OLLAMA_HOST=0.0.0.0` first
 
 **Model doesn't respond**
 
@@ -148,10 +216,3 @@ Your local models now appear in the model dropdown in the composer, grouped unde
 
 - CPU inference is slow for large models. Try smaller models (3B–7B) or models optimized for CPU
 - On Apple Silicon, Ollama uses the Neural Engine — performance is much better than x86 CPU
-
-**Remote agent can't reach local Ollama**
-
-If your Stoa agent runs on a different machine than Ollama, the agent needs a route to reach Ollama. Options:
-- Run Ollama on the same machine as the agent
-- Use `OLLAMA_HOST=0.0.0.0 ollama serve` to expose Ollama on all interfaces, then use the machine's IP
-- Use Tailscale — put both machines on the same Tailscale network and use the Tailscale IP
