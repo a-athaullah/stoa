@@ -1087,7 +1087,7 @@ const server = http.createServer(async (req, res) => {
   async function fetchModelList(baseUrl, headers, timeoutMs = 10000) {
     const url2 = new URL(baseUrl);
     const baseClean = url2.origin + url2.pathname.replace(/\/+$/, '');
-    const endpoints = [baseClean + '/models', url2.origin + '/v1/models'];
+    const endpoints = [url2.origin + '/api/tags', baseClean + '/models', url2.origin + '/v1/models'];
     for (const ep of endpoints) {
       try {
         const ctrl = new AbortController();
@@ -1096,11 +1096,13 @@ const server = http.createServer(async (req, res) => {
         clearTimeout(timer);
         if (!resp.ok) continue;
         const data = await resp.json().catch(() => null);
-        const models = data?.data || data?.models || [];
-        const raw = data?.data
-          ? models.map(m => m.id)
-          : models.filter(m => !m.remote_model).map(m => m.name || m.model);
-        return { ok: true, status: resp.status, models: raw };
+        if (data?.models) {
+          const raw = data.models.filter(m => !m.remote_model).map(m => m.name || m.model);
+          return { ok: true, status: resp.status, models: raw };
+        }
+        if (data?.data) {
+          return { ok: true, status: resp.status, models: data.data.map(m => m.id) };
+        }
       } catch { continue; }
     }
     return { ok: false, status: 404, models: [] };
