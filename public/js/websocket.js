@@ -296,8 +296,8 @@ function handleWsMessage(msg) {
   }
 
   if (msg.type === 'room_model_changed') {
-    const sel = document.getElementById('model-select');
-    if (sel) sel.value = msg.model;
+    if (typeof handleModelUpdate === 'function') handleModelUpdate(msg);
+    if (typeof _setDropdownValue === 'function') _setDropdownValue(msg.model);
     return;
   }
 }
