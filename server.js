@@ -1172,7 +1172,9 @@ const server = http.createServer(async (req, res) => {
       await Promise.all(Array.from({ length: Math.min(concurrency, candidates.length) }, worker));
 
       const usableNames = results.filter(r => r.ok).map(r => r.model);
-      const usable = await probeCapabilities(usableNames, plat.base_url, headers);
+      const localSet = new Set(localModels);
+      const usable = (await probeCapabilities(usableNames, plat.base_url, headers))
+        .map(m => ({ ...m, local: localSet.has(m.model) }));
       saveCachedModels(platformId, usable);
       res.write(JSON.stringify({ type: 'done', tested: candidates.length, usable }) + '\n');
       return res.end();
@@ -1230,8 +1232,9 @@ const server = http.createServer(async (req, res) => {
           const modelName = typeof m === 'string' ? m : m.model;
           const vision = typeof m === 'object' ? (m.vision || false) : false;
           const tools = typeof m === 'object' ? (m.tools || false) : false;
+          const local = typeof m === 'object' ? (m.local || false) : false;
           if (enabled && !enabled.has(modelName)) continue;
-          group.models.push({ value: modelName, label: modelName, vision, tools });
+          group.models.push({ value: modelName, label: modelName, vision, tools, local });
         }
       }
       result.push(group);

@@ -993,7 +993,7 @@ async function fetchPlatformModels() {
     for (const g of groups) {
       const platKey = g.platform_id === 'anthropic' ? 'anthropic' : g.platform_name;
       for (const m of g.models) {
-        allServerModels.push({ value: m.value, label: m.label, vision: m.vision || false, tools: m.tools || false, platform: platKey, platform_id: g.platform_id, base_url: g.base_url || '' });
+        allServerModels.push({ value: m.value, label: m.label, vision: m.vision || false, tools: m.tools || false, local: m.local || false, platform: platKey, platform_id: g.platform_id, base_url: g.base_url || '' });
       }
     }
     populateModelDropdown();
@@ -1008,11 +1008,13 @@ function getAvailableModels() {
 const _capIcon = (type, size = 11) => {
   if (type === 'vision') return `<svg title="Vision" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
   if (type === 'tools') return `<svg title="Tools" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`;
+  if (type === 'local') return `<svg title="Local" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><circle cx="6" cy="6" r="1" fill="currentColor"/><circle cx="6" cy="18" r="1" fill="currentColor"/></svg>`;
   return '';
 };
 
 function _capIconsHtml(m, size = 11) {
   let h = '';
+  if (m.local) h += _capIcon('local', size);
   if (m.vision) h += _capIcon('vision', size);
   if (m.tools) h += _capIcon('tools', size);
   return h;
