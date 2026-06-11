@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS rooms (
   archived_at TEXT DEFAULT NULL,
   is_pinned INTEGER DEFAULT 0,
   model TEXT DEFAULT NULL,
+  model_config TEXT DEFAULT NULL,
   created_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (created_by) REFERENCES actors(id)
 );
@@ -52,6 +53,7 @@ CREATE TABLE IF NOT EXISTS messages (
   file_url TEXT DEFAULT NULL,
   file_name TEXT DEFAULT NULL,
   attachments TEXT DEFAULT NULL,
+  ai_model TEXT DEFAULT NULL,
   created_at TEXT DEFAULT (datetime('now')),
   completed_at TEXT DEFAULT NULL,
   FOREIGN KEY (room_id) REFERENCES rooms(id),
@@ -92,7 +94,6 @@ CREATE TABLE IF NOT EXISTS agent_workdirs (
   path TEXT NOT NULL,
   label TEXT DEFAULT NULL,
   is_default INTEGER DEFAULT 0,
-  model TEXT DEFAULT NULL,
   created_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (actor_id) REFERENCES actors(id) ON DELETE CASCADE,
   UNIQUE (actor_id, path)

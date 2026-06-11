@@ -270,6 +270,36 @@ async function rawReq(method, path, body, contentType, extraHeaders = {}) {
   });
 }
 
+async function streamReq(method, path, timeoutMs = 300000) {
+  return new Promise((resolve, reject) => {
+    const opts = {
+      hostname: HOST, port: PORT, path, method,
+      headers: { 'Content-Type': 'application/json', ...(sessionCookie ? { Cookie: sessionCookie } : {}) },
+    };
+    const r = http.request(opts, res => {
+      const events = [];
+      let buf = '';
+      const timer = setTimeout(() => { r.destroy(); reject(new Error(`stream timeout after ${timeoutMs}ms`)); }, timeoutMs);
+      res.on('data', chunk => {
+        buf += chunk.toString();
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (line.trim()) try { events.push(JSON.parse(line)); } catch {}
+        }
+      });
+      res.on('end', () => {
+        clearTimeout(timer);
+        if (buf.trim()) try { events.push(JSON.parse(buf)); } catch {}
+        resolve({ status: res.statusCode, headers: res.headers, events });
+      });
+      res.on('error', e => { clearTimeout(timer); reject(e); });
+    });
+    r.on('error', reject);
+    r.end();
+  });
+}
+
 function openWsConnection(url, cookie = null) {
   return new Promise((resolve, reject) => {
     const opts = cookie ? { headers: { Cookie: cookie } } : {};
@@ -351,11 +381,20 @@ async function run() {
     assert.strictEqual(r.status, 401);
   });
 
-  // Global test rooms — created once, used by all write tests, deleted in teardown
+  // Global test rooms/actors — created once, used by all write tests, deleted in teardown
   let testRoomIds = [];
   let testWorkdirId = null;
+  let orphanActorIds = [];   // actors created mid-test that teardown must clean up
 
   console.log('\n[Test Setup]');
+  await test('Setup — pre-cleanup leftover test actors from prior runs', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    if (!Array.isArray(actors)) return;
+    const stale = actors.filter(a => a.name?.startsWith('__test'));
+    for (const a of stale) await req('DELETE', `/api/actors/${a.id}`);
+    if (stale.length) console.log(`    cleaned up ${stale.length} stale test actor(s)`);
+  });
+
   await test('Setup — create test rooms for write operations', async () => {
     const actors = (await req('GET', '/api/actors')).body;
     const aiActor = actors.find(a => a.type === 'ai');
@@ -528,6 +567,7 @@ async function run() {
       assert.strictEqual(r.status, 200, `register failed: ${JSON.stringify(r.body)}`);
       pmActorId = r.body.actor_id;
       pmActorSecret = r.body.secret;
+      orphanActorIds.push(pmActorId);
     });
 
     await test('Setup — create proactive test room', async () => {
@@ -549,14 +589,14 @@ async function run() {
       pmMessageId = r.body.message_id;
     });
 
-    await test('POST /api/rooms/:id/message — wrong secret → 401', async () => {
+    await test('POST /api/rooms/:id/message — wrong secret → 403', async () => {
       if (!pmRoomId || !pmActorId) { console.log('    (skipped)'); return; }
       const r = await rawReq('POST', `/api/rooms/${pmRoomId}/message`,
         JSON.stringify({ content: 'should fail' }),
         'application/json',
         { 'X-Agent-Id': String(pmActorId), 'X-Agent-Secret': 'wrongsecret' }
       );
-      assert.strictEqual(r.status, 401, `expected 401, got ${r.status}`);
+      assert.strictEqual(r.status, 403, `expected 403, got ${r.status}`);
     });
 
     await test('DELETE /api/messages/:id — deletes proactive message → 204', async () => {
@@ -578,6 +618,7 @@ async function run() {
       if (!pmActorId) { console.log('    (skipped)'); return; }
       const r = await req('DELETE', `/api/actors/${pmActorId}`);
       assert.ok([200, 204].includes(r.status), `delete actor failed: ${r.status}`);
+      orphanActorIds = orphanActorIds.filter(id => id !== pmActorId);
       pmActorId = null;
     });
   }
@@ -670,18 +711,12 @@ async function run() {
     assert.ok(r.raw.includes('powershell'), 'no powershell in CMD script');
   });
 
-  await test('GET /install.sh?backend=ollama — Ollama install script', async () => {
-    const r = await req('GET', '/install.sh?backend=ollama');
+  await test('GET /install.sh?name=test — name preset in script token', async () => {
+    const r = await req('GET', '/install.sh?name=my-agent');
     assert.strictEqual(r.status, 200);
-    assert.ok(r.raw.includes('Ollama'), 'Ollama not mentioned in script');
-    assert.ok(r.raw.includes('ollama-session.js'), 'ollama-session.js not included');
-  });
-
-  await test('GET /install.sh?backend=gemini — Gemini install script', async () => {
-    const r = await req('GET', '/install.sh?backend=gemini');
-    assert.strictEqual(r.status, 200);
-    assert.ok(r.raw.includes('Gemini'), 'Gemini not in script');
-    assert.ok(r.raw.includes('gemini-session.js'), 'gemini-session.js not included');
+    // The name preset is stored server-side in installTokens (not in script body directly)
+    assert.ok(r.raw.includes('stoa.js'), 'stoa.js not in script');
+    assert.ok(r.raw.includes('claude-session.js'), 'claude-session.js not in script');
   });
 
   // Agent register
@@ -733,6 +768,7 @@ async function run() {
     const agentRes = await req('POST', '/api/agent/register', { token: tokenMatch[1] });
     if (agentRes.status !== 200) { console.log(`    (skipped — agent creation failed: ${agentRes.status})`); return; }
     const { actor_id: agentActorId, secret: agentSecret } = agentRes.body;
+    orphanActorIds.push(agentActorId);
     try {
       const roomId = testRoomIds[0];
       await req('POST', `/api/rooms/${roomId}/participants`, { actor_id: agentActorId });
@@ -765,6 +801,7 @@ async function run() {
       assert.strictEqual(r.body.ok, true);
     } finally {
       await req('DELETE', `/api/actors/${agentActorId}`);
+      orphanActorIds = orphanActorIds.filter(id => id !== agentActorId);
     }
   });
 
@@ -808,6 +845,7 @@ async function run() {
     assert.strictEqual(r.status, 200);
     testActorId = r.body.actor_id;
     testActorSecret = r.body.secret;
+    orphanActorIds.push(testActorId);
     assert.ok(testActorId, 'no actor_id');
 
     // Get default workdir id from first available agent workdir (or use human actor's default)
@@ -896,6 +934,7 @@ async function run() {
     if (!testActorId) { console.log('    (skipped)'); return; }
     const r = await req('DELETE', `/api/actors/${testActorId}`);
     assert.ok([204, 200].includes(r.status));
+    orphanActorIds = orphanActorIds.filter(id => id !== testActorId);
     testActorId = null;
     testActorSecret = null;
   });
@@ -926,14 +965,7 @@ async function run() {
 
   // Actor operations
   console.log('\n[Actor Operations]');
-  await test('GET /api/actors/:id/capabilities — returns models array', async () => {
-    const actors = (await req('GET', '/api/actors')).body;
-    const ollamaActor = actors.find(a => a.adapter === 'ollama');
-    if (!ollamaActor) { console.log('    (skipped — no Ollama actor)'); return; }
-    const r = await req('GET', `/api/actors/${ollamaActor.id}/capabilities`);
-    assert.strictEqual(r.status, 200);
-    assert.ok(Array.isArray(r.body.models), 'models not array');
-  });
+  // GET /api/actors/:id/capabilities — removed in a8a735c (vision detection moved to server-side /api/show)
 
   await test('GET /api/actors/:id/workdirs — returns workdir list', async () => {
     const actors = (await req('GET', '/api/actors')).body;
@@ -1188,21 +1220,20 @@ async function run() {
     testAutoId = null;
   });
 
-  await test('GET /api/automations/slack — returns connected status', async () => {
-    const r = await req('GET', '/api/automations/slack');
+  await test('GET /api/automations/connections — returns array', async () => {
+    const r = await req('GET', '/api/automations/connections');
     assert.strictEqual(r.status, 200);
-    assert.ok('connected' in r.body, 'connected field missing');
+    assert.ok(Array.isArray(r.body), 'expected array');
   });
 
-  await test('POST /api/automations/slack/connect — missing tokens → 400', async () => {
-    const r = await req('POST', '/api/automations/slack/connect', {});
+  await test('POST /api/automations/connections — missing tokens → 400', async () => {
+    const r = await req('POST', '/api/automations/connections', { name: 'test' });
     assert.strictEqual(r.status, 400);
   });
 
-  await test('DELETE /api/automations/slack/disconnect — no-op disconnect → 200 ok: true', async () => {
-    const r = await req('DELETE', '/api/automations/slack/disconnect');
-    assert.strictEqual(r.status, 200);
-    assert.strictEqual(r.body.ok, true);
+  await test('POST /api/automations/connections — missing name → 400', async () => {
+    const r = await req('POST', '/api/automations/connections', { appToken: 'xapp-x', token: 'xoxb-x' });
+    assert.strictEqual(r.status, 400);
   });
 
   await test('GET /api/setup/status — returns needsSetup bool', async () => {
@@ -1210,6 +1241,250 @@ async function run() {
     assert.strictEqual(r.status, 200);
     assert.ok('needsSetup' in r.body, 'needsSetup field missing');
     assert.strictEqual(typeof r.body.needsSetup, 'boolean');
+  });
+
+  // AI platforms
+  console.log('\n[AI Platforms]');
+  let testPlatformId = null;
+
+  // Pre-cleanup: delete leftover test-platform from previous runs
+  { const existing = await req('GET', '/api/ai/platforms'); if (existing.body?.some?.(p => p.id === 'test-platform')) await req('DELETE', '/api/ai/platforms/test-platform'); }
+
+  await test('GET /api/ai/platforms — returns array', async () => {
+    const r = await req('GET', '/api/ai/platforms');
+    assert.strictEqual(r.status, 200);
+    assert.ok(Array.isArray(r.body), 'expected array');
+  });
+
+  await test('POST /api/ai/platforms — missing name → 400', async () => {
+    const r = await req('POST', '/api/ai/platforms', { base_url: 'http://localhost:11434/v1' });
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('POST /api/ai/platforms — creates platform → 200 with id', async () => {
+    const r = await req('POST', '/api/ai/platforms', { name: 'Test Platform', base_url: 'http://localhost:11434/v1' });
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.id, 'id missing');
+    assert.strictEqual(r.body.name, 'Test Platform');
+    testPlatformId = r.body.id;
+  });
+
+  await test('GET /api/ai/platforms — includes newly created platform', async () => {
+    if (!testPlatformId) { console.log('    (skipped)'); return; }
+    const r = await req('GET', '/api/ai/platforms');
+    assert.ok(r.body.some(p => p.id === testPlatformId), 'platform not in list');
+  });
+
+  await test('PATCH /api/ai/platforms/:id — updates name', async () => {
+    if (!testPlatformId) { console.log('    (skipped)'); return; }
+    const r = await req('PATCH', `/api/ai/platforms/${encodeURIComponent(testPlatformId)}`, { name: 'Updated Platform' });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.name, 'Updated Platform', 'name not updated in response');
+  });
+
+  await test('PATCH /api/ai/platforms/:id — nonexistent → 404', async () => {
+    const r = await req('PATCH', '/api/ai/platforms/nonexistent-id-xyz', { name: 'x' });
+    assert.strictEqual(r.status, 404);
+  });
+
+  await test('PATCH /api/ai/platforms/:id — invalid JSON body → 400', async () => {
+    if (!testPlatformId) { console.log('    (skipped)'); return; }
+    const r = await rawReq('PATCH', `/api/ai/platforms/${encodeURIComponent(testPlatformId)}`, 'not-json', 'application/json');
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('PATCH /api/ai/platforms/:id — empty name → 400', async () => {
+    if (!testPlatformId) { console.log('    (skipped)'); return; }
+    const r = await req('PATCH', `/api/ai/platforms/${encodeURIComponent(testPlatformId)}`, { name: '' });
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('POST /api/ai/platforms — duplicate id → 409', async () => {
+    if (!testPlatformId) { console.log('    (skipped)'); return; }
+    // The id is derived from name — use the same name to trigger conflict
+    const r = await req('POST', '/api/ai/platforms', { name: 'Updated Platform', base_url: 'http://localhost:11434/v1' });
+    assert.strictEqual(r.status, 409);
+  });
+
+  await test('POST /api/ai/platforms/:id/health — returns status field', async () => {
+    if (!testPlatformId) { console.log('    (skipped)'); return; }
+    const r = await req('POST', `/api/ai/platforms/${encodeURIComponent(testPlatformId)}/health`);
+    assert.strictEqual(r.status, 200);
+    assert.ok('status' in r.body, 'status field missing');
+    assert.ok(r.body.status === 'ok' || r.body.status === 'error', 'unexpected status value');
+    if (r.body.status === 'ok') assert.ok(Array.isArray(r.body.models), 'models not array on ok');
+  });
+
+  await test('POST /api/ai/platforms/:id/health — no base_url configured → error status', async () => {
+    const r1 = await req('POST', '/api/ai/platforms', { name: '__test-no-baseurl__' });
+    assert.strictEqual(r1.status, 200);
+    const noBuId = r1.body.id;
+    try {
+      const r = await req('POST', `/api/ai/platforms/${encodeURIComponent(noBuId)}/health`);
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.status, 'error', 'expected error status when no base_url');
+    } finally {
+      await req('DELETE', `/api/ai/platforms/${encodeURIComponent(noBuId)}`);
+    }
+  });
+
+  await test('POST /api/ai/platforms/:id/discover-models — nonexistent platform → 404', async () => {
+    const r = await streamReq('POST', '/api/ai/platforms/nonexistent-platform-xyz/discover-models', 5000);
+    assert.strictEqual(r.status, 404);
+  });
+
+  await test('POST /api/ai/platforms/:id/discover-models — no base_url configured → error response', async () => {
+    const r1 = await req('POST', '/api/ai/platforms', { name: '__test-no-baseurl-disc__' });
+    assert.strictEqual(r1.status, 200);
+    const noBuId = r1.body.id;
+    try {
+      const r = await req('POST', `/api/ai/platforms/${encodeURIComponent(noBuId)}/discover-models`);
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.status, 'error', 'expected error when no base_url');
+    } finally {
+      await req('DELETE', `/api/ai/platforms/${encodeURIComponent(noBuId)}`);
+    }
+  });
+
+  await test('POST /api/ai/platforms/:id/discover-models — unreachable base_url → error or empty usable', async () => {
+    const r1 = await req('POST', '/api/ai/platforms', { name: '__test-unreachable__', base_url: 'http://127.0.0.1:19999/v1' });
+    assert.strictEqual(r1.status, 200);
+    const unreachId = r1.body.id;
+    try {
+      const r = await streamReq('POST', `/api/ai/platforms/${encodeURIComponent(unreachId)}/discover-models`, 30000);
+      assert.strictEqual(r.status, 200);
+      assert.ok(r.events.length > 0, 'expected at least one response event');
+      // server may return {status:'error'} (regular JSON) or NDJSON {type:'done', usable:[]}
+      const ev = r.events[r.events.length - 1];
+      const isError = ev.status === 'error' || ev.type === 'error';
+      const isDoneEmpty = ev.type === 'done' && ev.usable.length === 0;
+      assert.ok(isError || isDoneEmpty, `expected error or empty done, got: ${JSON.stringify(ev)}`);
+    } finally {
+      await req('DELETE', `/api/ai/platforms/${encodeURIComponent(unreachId)}`);
+    }
+  });
+
+  await test('POST /api/ai/platforms/:id/discover-models — streams NDJSON, done event has usable array [slow ~3min]', async () => {
+    const platforms = (await req('GET', '/api/ai/platforms')).body;
+    const ollamaCloud = Array.isArray(platforms) && platforms.find(p => p.base_url && p.base_url.includes('ollama.com'));
+    if (!ollamaCloud) { console.log('    (skipped — no Ollama Cloud platform configured)'); return; }
+    console.log(`    probing models on platform "${ollamaCloud.name}" — may take a few minutes...`);
+    const r = await streamReq('POST', `/api/ai/platforms/${encodeURIComponent(ollamaCloud.id)}/discover-models`, 300000);
+    assert.strictEqual(r.status, 200);
+    const startEv = r.events.find(e => e.type === 'start');
+    assert.ok(startEv, 'no start event');
+    assert.ok(typeof startEv.total === 'number', 'start.total not a number');
+    const doneEv = r.events.find(e => e.type === 'done');
+    assert.ok(doneEv, 'no done event');
+    assert.ok(Array.isArray(doneEv.usable), 'done.usable not array');
+    assert.ok(typeof doneEv.tested === 'number', 'done.tested not a number');
+    // usable is [{model, vision}] objects
+    if (doneEv.usable.length > 0) {
+      assert.ok(typeof doneEv.usable[0].model === 'string', 'usable[0].model not string');
+      assert.ok(typeof doneEv.usable[0].vision === 'boolean', 'usable[0].vision not boolean');
+    }
+    console.log(`    discovered ${doneEv.usable.length} of ${doneEv.tested} usable models`);
+  });
+
+  await test('GET /api/ai/models — returns array with anthropic group', async () => {
+    const r = await req('GET', '/api/ai/models');
+    assert.strictEqual(r.status, 200);
+    assert.ok(Array.isArray(r.body), 'expected array');
+    const anthropic = r.body.find(g => g.platform_id === 'anthropic');
+    assert.ok(anthropic, 'anthropic group missing');
+    assert.ok(Array.isArray(anthropic.models) && anthropic.models.length > 0, 'anthropic models empty');
+  });
+
+  await test('GET /api/ai/models — anthropic models have vision+tools boolean fields', async () => {
+    const r = await req('GET', '/api/ai/models');
+    assert.strictEqual(r.status, 200);
+    const anthropic = r.body.find(g => g.platform_id === 'anthropic');
+    assert.ok(anthropic && anthropic.models.length > 0, 'anthropic group missing');
+    const m = anthropic.models[0];
+    assert.ok(typeof m.vision === 'boolean', 'vision field not boolean');
+    assert.ok(typeof m.tools === 'boolean', 'tools field not boolean');
+    assert.ok(m.vision === true, 'anthropic model should have vision=true');
+    assert.ok(m.tools === true, 'anthropic model should have tools=true');
+  });
+
+  // WS: set_room_model
+  console.log('\n[WS: set_room_model]');
+  await test('set_room_model — valid claude model → room_model_changed broadcast', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const roomId = testRoomIds[0];
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    try {
+      ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+      const changed = waitForWsMessage(ws, m => m.type === 'room_model_changed' && m.room_id === roomId);
+      ws.send(JSON.stringify({ type: 'set_room_model', model: 'claude-opus-4-5', model_config: null }));
+      const msg = await changed;
+      assert.strictEqual(msg.model, 'claude-opus-4-5');
+    } finally {
+      ws.close();
+    }
+  });
+
+  await test('set_room_model — non-claude model not in enabled list → error', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const roomId = testRoomIds[0];
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    try {
+      ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+      await new Promise(r => setTimeout(r, 50));
+      const errPromise = waitForWsMessage(ws, m => m.type === 'error');
+      ws.send(JSON.stringify({ type: 'set_room_model', model: 'llama3-unknown-model' }));
+      const msg = await errPromise;
+      assert.ok(msg.message.includes('enabled list'), `unexpected error: ${msg.message}`);
+    } finally {
+      ws.close();
+    }
+  });
+
+  await test('set_room_model — invalid model value (empty string) → error', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const roomId = testRoomIds[0];
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    try {
+      ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+      await new Promise(r => setTimeout(r, 50));
+      const errPromise = waitForWsMessage(ws, m => m.type === 'error');
+      ws.send(JSON.stringify({ type: 'set_room_model', model: '' }));
+      const msg = await errPromise;
+      assert.ok(msg.message.includes('invalid model'), `unexpected error: ${msg.message}`);
+    } finally {
+      ws.close();
+    }
+  });
+
+  await test('set_room_model — invalid base_url → error', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const roomId = testRoomIds[0];
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    try {
+      ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+      await new Promise(r => setTimeout(r, 50));
+      const errPromise = waitForWsMessage(ws, m => m.type === 'error');
+      ws.send(JSON.stringify({ type: 'set_room_model', model: 'claude-opus-4-5', model_config: { platform_id: 'test', base_url: 'not-a-valid-url' } }));
+      const msg = await errPromise;
+      assert.ok(msg.message.includes('bad base_url'), `unexpected error: ${msg.message}`);
+    } finally {
+      ws.close();
+    }
+  });
+
+  await test('DELETE /api/ai/platforms/:id — deletes platform', async () => {
+    if (!testPlatformId) { console.log('    (skipped)'); return; }
+    const r = await req('DELETE', `/api/ai/platforms/${encodeURIComponent(testPlatformId)}`);
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.ok);
+    const list = (await req('GET', '/api/ai/platforms')).body;
+    assert.ok(!list.some(p => p.id === testPlatformId), 'platform still in list after delete');
+    testPlatformId = null;
+  });
+
+  await test('DELETE /api/ai/platforms/:id — nonexistent → 404', async () => {
+    const r = await req('DELETE', '/api/ai/platforms/nonexistent-id-xyz');
+    assert.strictEqual(r.status, 404);
   });
 
   // 404 handling
@@ -1224,7 +1499,7 @@ async function run() {
     assert.strictEqual(r.status, 404);
   });
 
-  // Teardown — delete all test rooms created in setup
+  // Teardown — delete all test rooms and actors created during the run
   console.log('\n[Test Teardown]');
   await test('Teardown — delete all test rooms', async () => {
     if (!testRoomIds.length) { console.log('    (nothing to clean up)'); return; }
@@ -1232,6 +1507,14 @@ async function run() {
       await req('DELETE', `/api/rooms/${id}`);
     }
     testRoomIds = [];
+  });
+
+  await test('Teardown — delete orphaned test actors', async () => {
+    if (!orphanActorIds.length) { console.log('    (nothing to clean up)'); return; }
+    for (const id of [...orphanActorIds]) {
+      await req('DELETE', `/api/actors/${id}`);
+    }
+    orphanActorIds = [];
   });
 
   // Summary

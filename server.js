@@ -21,7 +21,7 @@ function getFallbackSession(participantId, workDir) {
   fallbackSessions.set(key, { session, timer });
   return session;
 }
-const { spawnGemini } = require('./gemini-adapter');
+
 const connectionManager = require('./connection-manager');
 const automationQueue = require('./queue-manager');
 automationQueue.on('processing', ({ key, pending, meta }) => {
@@ -133,7 +133,6 @@ try {
   if (e.code !== 'ENOENT') console.error('[migration] runner error:', e.message);
 }
 
-const ALLOWED_CLAUDE_MODELS = new Set(['claude-haiku-4-5-20251001','claude-sonnet-4-5','claude-sonnet-4-6','claude-opus-4-6','claude-opus-4-7','claude-opus-4-8']);
 
 // ─── Auth: password hashing & session management ─────────────────────────────
 
@@ -203,7 +202,7 @@ const UPLOADS_DIR = path.join(__dirname, 'uploads');
 }
 
 // Files yang boleh di-serve sebagai client update
-const CLIENT_FILES = new Set(['stoa.js', 'claude-session.js', 'gemini-session.js', 'gemini-adapter.js', 'ollama-session.js']);
+const CLIENT_FILES = new Set(['stoa.js', 'claude-session.js']);
 
 // One-time install tokens (expires in 10 min)
 const installTokens = new Map();
@@ -581,7 +580,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/rooms') {
     const archived = url.searchParams.get('archived') === '1';
     const rows = db.prepare(`
-      SELECT r.*, a.name as creator_name, w.model as workdir_model,
+      SELECT r.*, a.name as creator_name,
         (SELECT COUNT(*) FROM room_participants WHERE room_id=r.id) as participant_count,
         (SELECT COUNT(*) FROM messages WHERE room_id=r.id) as message_count,
         (SELECT m.content FROM messages m WHERE m.room_id=r.id AND m.state='complete' AND m.content != '' ORDER BY m.id DESC LIMIT 1) as last_message,
@@ -987,6 +986,274 @@ const server = http.createServer(async (req, res) => {
     return json(res, { ok: true });
   }
 
+  // ── AI Platform config ──
+  if (req.method === 'GET' && url.pathname === '/api/ai/platforms') {
+    const raw = getSetting('ai_platforms');
+    const platforms = raw ? JSON.parse(raw) : [];
+    const safe = platforms.map(p => ({
+      ...p,
+      api_keys: p.api_keys || (p.api_key ? [p.api_key] : []),
+      api_key: undefined,
+    }));
+    return json(res, safe);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/ai/platforms') {
+    const body = parseJsonBody(await readBody(req));
+    if (!body || !body.name?.trim()) { res.writeHead(400); return res.end(JSON.stringify({ error: 'name required' })); }
+    const raw = getSetting('ai_platforms');
+    const platforms = raw ? JSON.parse(raw) : [];
+    const id = body.id || body.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    if (platforms.find(p => p.id === id)) { res.writeHead(409); return res.end(JSON.stringify({ error: 'A platform with this name already exists' })); }
+    const keys = Array.isArray(body.api_keys) ? body.api_keys : (body.api_key ? [body.api_key] : []);
+    const platform = { id, name: body.name.trim(), base_url: body.base_url || '', api_keys: keys, enabled: true, vendor: body.vendor || 'generic' };
+    platforms.push(platform);
+    setSetting('ai_platforms', JSON.stringify(platforms));
+    return json(res, platform);
+  }
+
+  if (req.method === 'PATCH' && url.pathname.match(/^\/api\/ai\/platforms\/[^/]+$/)) {
+    const platformId = decodeURIComponent(url.pathname.split('/')[4]);
+    const body = parseJsonBody(await readBody(req));
+    if (!body) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
+    const raw = getSetting('ai_platforms');
+    const platforms = raw ? JSON.parse(raw) : [];
+    const idx = platforms.findIndex(p => p.id === platformId);
+    if (idx === -1) { res.writeHead(404); return res.end(JSON.stringify({ error: 'not found' })); }
+    if (body.name !== undefined) {
+      if (!body.name?.trim()) { res.writeHead(400); return res.end(JSON.stringify({ error: 'name cannot be empty' })); }
+      platforms[idx].name = body.name.trim();
+    }
+    if (body.base_url !== undefined) platforms[idx].base_url = body.base_url;
+    if (body.api_keys !== undefined) {
+      platforms[idx].api_keys = Array.isArray(body.api_keys) ? body.api_keys.filter(Boolean) : [];
+    }
+    if (body.enabled !== undefined) platforms[idx].enabled = body.enabled;
+    if (body.vendor !== undefined) platforms[idx].vendor = body.vendor;
+    if (body.enabled_models !== undefined) platforms[idx].enabled_models = Array.isArray(body.enabled_models) ? body.enabled_models : null;
+    setSetting('ai_platforms', JSON.stringify(platforms));
+    return json(res, platforms[idx]);
+  }
+
+  if (req.method === 'DELETE' && url.pathname.match(/^\/api\/ai\/platforms\/[^/]+$/)) {
+    const platformId = decodeURIComponent(url.pathname.split('/')[4]);
+    const raw = getSetting('ai_platforms');
+    const platforms = raw ? JSON.parse(raw) : [];
+    const filtered = platforms.filter(p => p.id !== platformId);
+    if (filtered.length === platforms.length) { res.writeHead(404); return res.end(JSON.stringify({ error: 'not found' })); }
+    setSetting('ai_platforms', JSON.stringify(filtered));
+    return json(res, { ok: true });
+  }
+
+  function platformHeaders(plat) {
+    const keys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : []);
+    const h = { 'Content-Type': 'application/json' };
+    if (keys[0]) h['Authorization'] = `Bearer ${keys[0]}`;
+    return h;
+  }
+
+  async function probeCapabilities(modelNames, baseUrl, headers) {
+    const showUrl = new URL(baseUrl).origin + '/api/show';
+    return Promise.all(modelNames.map(async (model) => {
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 8000);
+        const r = await fetch(showUrl, { method: 'POST', headers, signal: ctrl.signal, body: JSON.stringify({ model }) });
+        clearTimeout(t);
+        if (!r.ok) return { model, vision: false, tools: false };
+        const d = await r.json().catch(() => null);
+        const caps = Array.isArray(d?.capabilities) ? d.capabilities : [];
+        return { model, vision: caps.includes('vision'), tools: caps.includes('tools') };
+      } catch { return { model, vision: false, tools: false }; }
+    }));
+  }
+
+  function saveCachedModels(platformId, models) {
+    const freshRaw = getSetting('ai_platforms');
+    const freshPlatforms = freshRaw ? JSON.parse(freshRaw) : [];
+    const freshIdx = freshPlatforms.findIndex(p => p.id === platformId);
+    if (freshIdx !== -1) {
+      const plat = freshPlatforms[freshIdx];
+      plat.cached_models = models;
+      if (Array.isArray(plat.enabled_models)) {
+        const validNames = new Set(models.map(m => typeof m === 'string' ? m : m.model));
+        plat.enabled_models = plat.enabled_models.filter(n => validNames.has(n));
+        if (!plat.enabled_models.length) plat.enabled_models = null;
+      }
+      setSetting('ai_platforms', JSON.stringify(freshPlatforms));
+    }
+  }
+
+  async function fetchModelList(baseUrl, headers, timeoutMs = 10000) {
+    const url2 = new URL(baseUrl);
+    const baseClean = url2.origin + url2.pathname.replace(/\/+$/, '');
+    const endpoints = [url2.origin + '/api/tags', baseClean + '/models', url2.origin + '/v1/models'];
+    for (const ep of endpoints) {
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+        const resp = await fetch(ep, { headers, signal: ctrl.signal });
+        clearTimeout(timer);
+        if (!resp.ok) continue;
+        const data = await resp.json().catch(() => null);
+        if (data?.models) {
+          const raw = data.models.filter(m => !m.remote_model).map(m => m.name || m.model);
+          return { ok: true, status: resp.status, models: raw };
+        }
+        if (data?.data) {
+          return { ok: true, status: resp.status, models: data.data.map(m => m.id) };
+        }
+      } catch { continue; }
+    }
+    return { ok: false, status: 404, models: [] };
+  }
+
+  async function fetchOllamaCloudModels(apiKey) {
+    const headers = { 'Content-Type': 'application/json' };
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 10000);
+      const resp = await fetch('https://api.ollama.com/v1/models', { headers, signal: ctrl.signal });
+      clearTimeout(timer);
+      if (!resp.ok) return [];
+      const data = await resp.json().catch(() => null);
+      const raw = data?.data?.map(m => m.id) || data?.models?.map(m => m.name || m.model) || [];
+      return raw.map(m => m.endsWith(':cloud') || m.endsWith('-cloud') ? m : m + ':cloud');
+    } catch { return []; }
+  }
+
+  if (req.method === 'POST' && url.pathname.match(/^\/api\/ai\/platforms\/[^/]+\/discover-models$/)) {
+    const platformId = decodeURIComponent(url.pathname.split('/')[4]);
+    const raw = getSetting('ai_platforms');
+    const platforms = raw ? JSON.parse(raw) : [];
+    const plat = platforms.find(p => p.id === platformId);
+    if (!plat) { res.writeHead(404); return res.end(JSON.stringify({ error: 'not found' })); }
+    if (!plat.base_url) { return json(res, { status: 'error', message: 'No base URL configured' }); }
+    const headers = platformHeaders(plat);
+    try {
+      const localResult = await fetchModelList(plat.base_url, headers);
+      const localModels = localResult.ok ? localResult.models : [];
+
+      const keys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : []);
+      const isOllamaComUrl = new URL(plat.base_url).hostname.includes('ollama.com');
+      let cloudModels = [];
+      if (keys[0] && !isOllamaComUrl) {
+        cloudModels = await fetchOllamaCloudModels(keys[0]);
+      }
+
+      const seen = new Set(localModels);
+      const candidates = [...localModels, ...cloudModels.filter(m => !seen.has(m))];
+      if (!candidates.length) return json(res, { status: 'error', message: 'No models found (local or cloud)' });
+
+      const url2 = new URL(plat.base_url);
+      const probeBase = (url2.origin + url2.pathname.replace(/\/+$/, '')).replace(/\/v1$/, '') + '/v1';
+      async function probe(model) {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 12000);
+        try {
+          const r = await fetch(probeBase + '/chat/completions', {
+            method: 'POST', headers, signal: ctrl.signal,
+            body: JSON.stringify({ model, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1, stream: false }),
+          });
+          clearTimeout(timer);
+          return { model, ok: r.ok, status: r.status };
+        } catch (e) {
+          clearTimeout(timer);
+          return { model, ok: false, status: e.name === 'AbortError' ? 'timeout' : 'error' };
+        }
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' });
+      res.write(JSON.stringify({ type: 'start', total: candidates.length }) + '\n');
+
+      const concurrency = 4;
+      const results = [];
+      let done = 0;
+      let cursor = 0;
+      async function worker() {
+        while (cursor < candidates.length) {
+          const m = candidates[cursor++];
+          const r = await probe(m);
+          results.push(r);
+          done++;
+          res.write(JSON.stringify({ type: 'progress', done, total: candidates.length, model: r.model, ok: r.ok, status: r.status }) + '\n');
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(concurrency, candidates.length) }, worker));
+
+      const usableNames = results.filter(r => r.ok).map(r => r.model);
+      const localSet = new Set(localModels);
+      const usable = (await probeCapabilities(usableNames, plat.base_url, headers))
+        .filter(m => m.tools)
+        .map(m => ({ ...m, local: localSet.has(m.model) }));
+      saveCachedModels(platformId, usable);
+      res.write(JSON.stringify({ type: 'done', tested: candidates.length, usable }) + '\n');
+      return res.end();
+    } catch (e) {
+      if (!res.headersSent) return json(res, { status: 'error', message: e.message || 'Discovery failed' });
+      try { res.write(JSON.stringify({ type: 'error', message: e.message || 'Discovery failed' }) + '\n'); } catch {}
+      return res.end();
+    }
+  }
+
+  if (req.method === 'POST' && url.pathname.match(/^\/api\/ai\/platforms\/[^/]+\/health$/)) {
+    const platformId = decodeURIComponent(url.pathname.split('/')[4]);
+    const raw = getSetting('ai_platforms');
+    const platforms = raw ? JSON.parse(raw) : [];
+    const plat = platforms.find(p => p.id === platformId);
+    if (!plat) { res.writeHead(404); return res.end(JSON.stringify({ error: 'not found' })); }
+    if (!plat.base_url) { return json(res, { status: 'error', message: 'No base URL configured' }); }
+    const headers = platformHeaders(plat);
+    try {
+      const localResult = await fetchModelList(plat.base_url, headers, 8000);
+      const localModels = localResult.ok ? localResult.models : [];
+      const keys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : []);
+      const isOllamaComUrl = new URL(plat.base_url).hostname.includes('ollama.com');
+      let cloudModels = [];
+      if (keys[0] && !isOllamaComUrl) cloudModels = await fetchOllamaCloudModels(keys[0]);
+      const seen = new Set(localModels);
+      const allModels = [...localModels, ...cloudModels.filter(m => !seen.has(m))];
+      if (!allModels.length) return json(res, { status: 'error', message: 'No models found' });
+      const models = (await probeCapabilities(allModels, plat.base_url, headers)).filter(m => m.tools);
+      saveCachedModels(platformId, models);
+      return json(res, { status: 'ok', models });
+    } catch (e) {
+      return json(res, { status: 'error', message: e.name === 'AbortError' ? 'Timeout (8s)' : (e.message || 'Connection failed') });
+    }
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/ai/models') {
+    const raw = getSetting('ai_platforms');
+    const platforms = raw ? JSON.parse(raw) : [];
+    const ANTHROPIC_MODELS = [
+      { value: 'claude-opus-4-8', label: 'Opus 4.8', vision: true, tools: true },
+      { value: 'claude-opus-4-7', label: 'Opus 4.7', vision: true, tools: true },
+      { value: 'claude-opus-4-6', label: 'Opus 4.6', vision: true, tools: true },
+      { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6', vision: true, tools: true },
+      { value: 'claude-sonnet-4-5', label: 'Sonnet 4.5', vision: true, tools: true },
+      { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', vision: true, tools: true },
+    ];
+    const result = [{ platform_id: 'anthropic', platform_name: 'Claude (built-in)', models: ANTHROPIC_MODELS }];
+    for (const p of platforms) {
+      if (!p.enabled) continue;
+      const group = { platform_id: p.id, platform_name: p.name, base_url: p.base_url || null, models: [] };
+      if (p.cached_models?.length) {
+        const enabled = Array.isArray(p.enabled_models) ? new Set(p.enabled_models) : null;
+        for (const m of p.cached_models) {
+          const modelName = typeof m === 'string' ? m : m.model;
+          const vision = typeof m === 'object' ? (m.vision || false) : false;
+          const tools = typeof m === 'object' ? (m.tools || false) : false;
+          const local = typeof m === 'object' ? (m.local || false) : false;
+          if (enabled && !enabled.has(modelName)) continue;
+          group.models.push({ value: modelName, label: modelName, vision, tools, local });
+        }
+      }
+      result.push(group);
+    }
+    return json(res, result);
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/actors') {
     const rows = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, created_at FROM actors ORDER BY id').all();
     const result = rows.map(r => ({ ...r, online: agentClients.has(r.id), client_version: agentVersions.get(r.id) || null }));
@@ -1121,27 +1388,11 @@ const server = http.createServer(async (req, res) => {
     const stoaUrl = baseUrl.replace(/^https?/, wsProto);
     const token = crypto.randomBytes(12).toString('hex');
     const presetName = url.searchParams.get('name') || '';
-    const backend = (url.searchParams.get('backend') || 'claude').toLowerCase();
     const lang = url.searchParams.get('lang') || 'en';
-    installTokens.set(token, { expires: Date.now() + 600_000, name: presetName, backend, lang });
+    installTokens.set(token, { expires: Date.now() + 600_000, name: presetName, lang });
 
-    const isGemini = backend === 'gemini';
-    const isOllama = backend === 'ollama';
-    const clientFiles = isGemini
-      ? 'stoa.js gemini-session.js gemini-adapter.js'
-      : isOllama
-        ? 'stoa.js ollama-session.js'
-        : 'stoa.js claude-session.js';
-    const trustCmd = isGemini
-      ? 'gemini --version > /dev/null 2>&1 || true'
-      : isOllama
-        ? '# no CLI trust step needed for Ollama'
-        : 'claude --version > /dev/null 2>&1 || true';
-    const backendEnv = isGemini
-      ? `\n      STOA_AI_BACKEND: 'gemini',`
-      : isOllama
-        ? `\n      STOA_AI_BACKEND: 'ollama',`
-        : '';
+    const clientFiles = 'stoa.js claude-session.js';
+    const trustCmd = 'claude --version > /dev/null 2>&1 || true';
 
     const script = `#!/bin/bash
 set -e
@@ -1151,7 +1402,7 @@ STOA_URL="${stoaUrl}"
 REG_TOKEN="${token}"
 AGENT_DIR="\${HOME}/stoa-agent"
 
-echo "=== Stoa Agent Setup (${isGemini ? 'Gemini' : isOllama ? 'Ollama' : 'Claude'}) ==="
+echo "=== Stoa Agent Setup ==="
 echo "Server : \${BASE_URL}"
 echo ""
 
@@ -1204,7 +1455,7 @@ module.exports = {
       STOA_TYPE: 'ai',
       STOA_ACTOR_ID: '\${ACTOR_ID}',
       STOA_SECRET: '\${STOA_SECRET}',
-      STOA_WORK_DIR: process.env.HOME + '/stoa-workspace',${backendEnv}
+      STOA_WORK_DIR: process.env.HOME + '/stoa-workspace',
     },
     restart_delay: 3000,
     max_restarts: 50,
@@ -1238,27 +1489,11 @@ echo "Logs   : pm2 logs \${AGENT_NAME}"
     const stoaUrl = baseUrl.replace(/^https?/, wsProto);
     const token = crypto.randomBytes(12).toString('hex');
     const presetName = url.searchParams.get('name') || '';
-    const ps1Backend = (url.searchParams.get('backend') || 'claude').toLowerCase();
     const ps1Lang = url.searchParams.get('lang') || 'en';
-    installTokens.set(token, { expires: Date.now() + 600_000, name: presetName, backend: ps1Backend, lang: ps1Lang });
+    installTokens.set(token, { expires: Date.now() + 600_000, name: presetName, lang: ps1Lang });
 
-    const ps1IsGemini = ps1Backend === 'gemini';
-    const ps1IsOllama = ps1Backend === 'ollama';
-    const ps1Files = ps1IsGemini
-      ? '"stoa.js","gemini-session.js","gemini-adapter.js"'
-      : ps1IsOllama
-        ? '"stoa.js","ollama-session.js"'
-        : '"stoa.js","claude-session.js"';
-    const ps1TrustCmd = ps1IsGemini
-      ? 'try { & gemini --version 2>$null } catch {}'
-      : ps1IsOllama
-        ? '# no CLI trust step needed for Ollama'
-        : 'try { & claude --version 2>$null } catch {}';
-    const ps1BackendEnv = ps1IsGemini
-      ? `\n      STOA_AI_BACKEND: 'gemini',`
-      : ps1IsOllama
-        ? `\n      STOA_AI_BACKEND: 'ollama',`
-        : '';
+    const ps1Files = '"stoa.js","claude-session.js"';
+    const ps1TrustCmd = 'try { & claude --version 2>$null } catch {}';
 
     const script = `$ErrorActionPreference = "Stop"
 $BaseUrl = "${baseUrl}"
@@ -1267,7 +1502,7 @@ $RegToken = "${token}"
 $AgentDir = "$env:USERPROFILE\\stoa-agent"
 $WorkDir  = "$env:USERPROFILE\\stoa-workspace"
 
-Write-Host "=== Stoa Agent Setup (${ps1IsGemini ? 'Gemini' : ps1IsOllama ? 'Ollama' : 'Claude'}) ==="
+Write-Host "=== Stoa Agent Setup ==="
 Write-Host "Server : $BaseUrl"
 Write-Host ""
 
@@ -1314,7 +1549,7 @@ module.exports = {
       STOA_TYPE: 'ai',
       STOA_ACTOR_ID: String($ActorId),
       STOA_SECRET: '$Secret',
-      STOA_WORK_DIR: require('os').homedir() + '/stoa-workspace',${ps1BackendEnv}
+      STOA_WORK_DIR: require('os').homedir() + '/stoa-workspace',
     },
     restart_delay: 3000,
     max_restarts: 50,
@@ -1345,7 +1580,6 @@ Write-Host "Logs   : pm2 logs $AgentName"
     const baseUrl = getPublicUrl(host);
     const cmdParams = [];
     if (url.searchParams.get('name')) cmdParams.push(`name=${encodeURIComponent(url.searchParams.get('name'))}`);
-    if (url.searchParams.get('backend')) cmdParams.push(`backend=${encodeURIComponent(url.searchParams.get('backend'))}`);
     if (url.searchParams.get('lang')) cmdParams.push(`lang=${encodeURIComponent(url.searchParams.get('lang'))}`);
     const qs = cmdParams.length ? '?' + cmdParams.join('&') : '';
     const script = `@echo off\r\npowershell -ExecutionPolicy Bypass -Command "irm ${baseUrl}/install.ps1${qs} | iex"\r\n`;
@@ -1367,7 +1601,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
     const suffix = crypto.randomBytes(3).toString('hex');
     const name = (entry.name || '').trim() || `stoa-${suffix}`;
     const secret = crypto.randomBytes(32).toString('hex');
-    const adapter = entry.backend === 'gemini' ? 'gemini' : entry.backend === 'ollama' ? 'ollama' : 'claude';
+    const adapter = 'claude';
     const adapterConfig = JSON.stringify({ lang: entry.lang || 'en' });
     const result = db.prepare(
       `INSERT INTO actors (name, type, adapter, adapter_config, avatar_color, avatar_symbol, secret) VALUES (?, 'ai', ?, ?, '#4d9f9f', '◈', ?)`
@@ -1398,7 +1632,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
   if (req.method === 'GET' && url.pathname.match(/^\/api\/actors\/\d+\/workdirs$/)) {
     const actorId = parseInt(url.pathname.split('/')[3]);
     const rows = db.prepare(
-      'SELECT id, path, label, is_default, model FROM agent_workdirs WHERE actor_id=? ORDER BY is_default DESC, id ASC'
+      'SELECT id, path, label, is_default FROM agent_workdirs WHERE actor_id=? ORDER BY is_default DESC, id ASC'
     ).all(actorId);
     return json(res, rows);
   }
@@ -1424,7 +1658,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
         'INSERT INTO agent_workdirs (actor_id, path, label, is_default) VALUES (?,?,?,0) ON CONFLICT(actor_id, path) DO NOTHING'
       ).run(actorId, dirPath.trim(), null);
     }
-    const wd = db.prepare('SELECT id, path, label, is_default, model FROM agent_workdirs WHERE actor_id=? AND path=?').get(actorId, dirPath.trim());
+    const wd = db.prepare('SELECT id, path, label, is_default FROM agent_workdirs WHERE actor_id=? AND path=?').get(actorId, dirPath.trim());
     return json(res, wd);
   }
 
@@ -1444,14 +1678,6 @@ Write-Host "Logs   : pm2 logs $AgentName"
     if (!agentWs) { res.writeHead(503); return res.end('agent offline'); }
     agentWs.send(JSON.stringify({ type: 'request_scan' }));
     return json(res, { ok: true });
-  }
-
-  // GET /api/actors/:id/capabilities — return available Ollama models
-  if (req.method === 'GET' && url.pathname.match(/^\/api\/actors\/\d+\/capabilities$/)) {
-    const actorId = parseInt(url.pathname.split('/')[3]);
-    const row = db.prepare('SELECT available_models FROM actors WHERE id=?').get(actorId);
-    const models = (() => { try { return JSON.parse(row?.available_models || 'null'); } catch { return null; } })();
-    return json(res, { models: models || [] });
   }
 
   // PUT /api/actors/:id/config — update name, lang, adapter_config fields
@@ -1795,15 +2021,6 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ type: 'compact_start', room_id: subscribedRoom, total: cs.total }));
         if (cs.completed > 0) ws.send(JSON.stringify({ type: 'compact_progress', room_id: subscribedRoom, completed: cs.completed, total: cs.total }));
       }
-      // Query current model from connected agent
-      const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(subscribedRoom);
-      if (roomRow?.workdir_id) {
-        const wd = db.prepare('SELECT actor_id, path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
-        if (wd) {
-          const agentWs = agentClients.get(wd.actor_id);
-          if (agentWs) agentWs.send(JSON.stringify({ type: 'query_model', workdir: wd.path }));
-        }
-      }
     }
 
     if (msg.type === 'send_message') {
@@ -1878,7 +2095,7 @@ wss.on('connection', (ws, req) => {
           setRecentCompact(roomId); // suppress immediate re-register from auto_compact_start while original compact still finishing
           broadcast(roomId, { type: 'compact_error', room_id: roomId, error: 'Compact timed out' });
         }
-      }, 300_000);
+      }, 600_000);
       for (const t of targets) {
         const agentWs = agentClients.get(t.actor_id);
         if (!agentWs || agentWs.readyState !== 1) continue;
@@ -1933,7 +2150,7 @@ wss.on('connection', (ws, req) => {
       const { workdirs = [], globalSkills = [] } = msg;
       // UPSERT workdirs — preserve IDs so room references stay valid
       const upsertWorkdir = db.prepare(
-        'INSERT INTO agent_workdirs (actor_id, path, label, is_default, model) VALUES (?,?,?,?,?) ON CONFLICT(actor_id, path) DO UPDATE SET label=excluded.label, is_default=excluded.is_default, model=excluded.model'
+        'INSERT INTO agent_workdirs (actor_id, path, label, is_default) VALUES (?,?,?,?) ON CONFLICT(actor_id, path) DO UPDATE SET label=excluded.label, is_default=excluded.is_default'
       );
       const insertSkill = db.prepare(
         'INSERT OR IGNORE INTO agent_skills (actor_id, workdir_id, name, description, scope) VALUES (?,?,?,?,?)'
@@ -1941,7 +2158,7 @@ wss.on('connection', (ws, req) => {
       const scannedPaths = new Set();
       for (const wd of workdirs) {
         const label = wd.path.split(/[\/\\]/).pop() || wd.path;
-        upsertWorkdir.run(agentActorId, wd.path, label, wd.is_default ? 1 : 0, wd.model || null);
+        upsertWorkdir.run(agentActorId, wd.path, label, wd.is_default ? 1 : 0);
         scannedPaths.add(wd.path);
       }
       const allWds = db.prepare('SELECT id, path FROM agent_workdirs WHERE actor_id=?').all(agentActorId);
@@ -1978,27 +2195,6 @@ wss.on('connection', (ws, req) => {
       broadcastGlobal({ type: 'agent_scan_complete', actor_id: agentActorId });
     }
 
-    // ── Agent reports available models (Ollama)
-    if (msg.type === 'agent_capabilities' && agentActorId) {
-      if (Array.isArray(msg.models)) {
-        db.prepare('UPDATE actors SET available_models=? WHERE id=?').run(JSON.stringify(msg.models), agentActorId);
-        console.log(`[capabilities] Actor #${agentActorId}: ${msg.models.length} Ollama models`);
-      }
-    }
-
-    // ── Agent reports model for a workdir
-    if (msg.type === 'model_info' && agentActorId) {
-      const wd = db.prepare('SELECT id, model FROM agent_workdirs WHERE actor_id=? AND path=?').get(agentActorId, msg.workdir);
-      if (wd) {
-        if (wd.model !== (msg.model || null)) {
-          db.prepare('UPDATE agent_workdirs SET model=? WHERE id=?').run(msg.model || null, wd.id);
-        }
-        const payload = { type: 'model_update', workdir_id: wd.id, model: msg.model || null };
-        broadcastGlobal(payload);
-        const affectedRooms = db.prepare('SELECT id FROM rooms WHERE workdir_id=?').all(wd.id);
-        for (const r of affectedRooms) broadcast(r.id, payload);
-      }
-    }
 
     // ── Agent streams a token
     if (msg.type === 'agent_token' && agentActorId) {
@@ -2177,9 +2373,9 @@ wss.on('connection', (ws, req) => {
       }
       const attachJson = msg.attachments?.length ? JSON.stringify(msg.attachments) : null;
       db.prepare(
-        "UPDATE messages SET content=?, file_url=?, file_name=?, attachments=?, state='complete', completed_at=datetime('now') WHERE id=?"
-      ).run(msg.content, msg.file_url || null, msg.file_name || null, attachJson, msg.message_id);
-      const completePayload = { type: 'message_complete', message_id: msg.message_id, content: msg.content };
+        "UPDATE messages SET content=?, file_url=?, file_name=?, attachments=?, ai_model=?, state='complete', completed_at=datetime('now') WHERE id=?"
+      ).run(msg.content, msg.file_url || null, msg.file_name || null, attachJson, msg.ai_model || null, msg.message_id);
+      const completePayload = { type: 'message_complete', message_id: msg.message_id, content: msg.content, ai_model: msg.ai_model || null };
       if (msg.attachments?.length) { completePayload.attachments = msg.attachments; }
       else if (msg.file_url) { completePayload.file_url = msg.file_url; completePayload.file_name = msg.file_name; }
       broadcast(msg.room_id, completePayload);
@@ -2505,20 +2701,52 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'set_room_model' && subscribedRoom) {
-      const model = msg.model;
-      if (!model) return;
-      if (!ALLOWED_CLAUDE_MODELS.has(model)) {
-        ws.send(JSON.stringify({ type: 'error', code: 'invalid_model', message: `Unknown model: ${model}` }));
+      if (msg.model !== null && msg.model !== undefined && (typeof msg.model !== 'string' || !msg.model.trim() || msg.model.length > 200)) {
+        ws.send(JSON.stringify({ type: 'error', message: 'invalid model value' }));
         return;
       }
-      db.prepare("UPDATE rooms SET model=? WHERE id=?").run(model, subscribedRoom);
+      if (msg.model && !msg.model.startsWith('claude-')) {
+        // Non-Anthropic model must exist in a platform's enabled_models list
+        let known = false;
+        try {
+          const raw = getSetting('ai_platforms');
+          if (raw) {
+            const platforms = JSON.parse(raw);
+            for (const p of platforms) {
+              if (!p.enabled) continue;
+              const cachedNames = Array.isArray(p.cached_models) ? p.cached_models.map(m => typeof m === 'string' ? m : m.model) : [];
+              const enabledSet = Array.isArray(p.enabled_models) ? new Set(p.enabled_models) : null;
+              const inCached = cachedNames.includes(msg.model);
+              if (inCached && (!enabledSet || enabledSet.has(msg.model))) { known = true; break; }
+            }
+          }
+        } catch {}
+        if (!known) {
+          ws.send(JSON.stringify({ type: 'error', message: 'model not in enabled list' }));
+          return;
+        }
+      }
+      const model = msg.model || null;
+      let modelConfig = null;
+      if (msg.model_config && typeof msg.model_config === 'object') {
+        // Only persist known safe fields — never trust client-provided base_url as authoritative
+        // base_url is stored for display but platform lookup always re-fetches from server settings
+        const { platform_id, base_url } = msg.model_config;
+        if (platform_id !== undefined || base_url !== undefined) {
+          if (base_url) {
+            try { new URL(base_url); } catch { ws.send(JSON.stringify({ type: 'error', message: 'invalid model_config: bad base_url' })); return; }
+          }
+          modelConfig = JSON.stringify({ ...(platform_id !== undefined ? { platform_id } : {}), ...(base_url ? { base_url } : {}) });
+        }
+      }
+      db.prepare("UPDATE rooms SET model=?, model_config=? WHERE id=?").run(model, modelConfig, subscribedRoom);
       const clients = roomClients.get(subscribedRoom);
       if (clients) {
         for (const c of clients) {
           if (c.readyState === 1) c.send(JSON.stringify({ type: 'room_model_changed', model, room_id: subscribedRoom }));
         }
       }
-      console.log(`[room] model set to ${model} for room ${subscribedRoom}`);
+      console.log(`[room] model set to ${model || '(default)'} for room ${subscribedRoom}`);
     }
 
    } catch (err) { console.error('[ws] unhandled message error:', err); }
@@ -2584,15 +2812,15 @@ function isPathSafe(filePath, workdir) {
   return true;
 }
 
-const WS_IGNORE = new Set(['.git', 'node_modules', '.next', '__pycache__', '.venv', 'dist', 'build', '.claude']);
+const WS_IGNORE = new Set(['.git', 'node_modules', '.next', '__pycache__', '.venv', 'dist', 'build']);
 
 function buildFileTree(dirPath, rootPath, depth, maxDepth) {
   if (depth > maxDepth) return [];
   let entries;
   try { entries = fs.readdirSync(dirPath, { withFileTypes: true }); } catch { return []; }
   const result = [];
-  const dirs = entries.filter(e => e.isDirectory() && !WS_IGNORE.has(e.name) && !e.name.startsWith('.')).sort((a, b) => a.name.localeCompare(b.name));
-  const files = entries.filter(e => e.isFile() && !e.name.startsWith('.')).sort((a, b) => a.name.localeCompare(b.name));
+  const dirs = entries.filter(e => e.isDirectory() && !WS_IGNORE.has(e.name)).sort((a, b) => a.name.localeCompare(b.name));
+  const files = entries.filter(e => e.isFile()).sort((a, b) => a.name.localeCompare(b.name));
   for (const d of dirs) {
     const children = buildFileTree(path.join(dirPath, d.name), rootPath, depth + 1, maxDepth);
     result.push({ t: 'folder', name: d.name, depth, open: depth < 1, children });
@@ -2862,33 +3090,7 @@ async function triggerSkillResponse(roomId, ai, prompt) {
   } else {
     const meta = { actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null };
     let fullContent = '';
-    if (ai.adapter === 'gemini') {
-      try {
-        await spawnGemini({
-          prompt,
-          onToken: token => {
-            fullContent += token;
-            broadcast(roomId, { type: 'message_token', message_id: msgId, token });
-          },
-          onState: state => {
-            broadcast(roomId, { type: 'message_state', message_id: msgId, state, ...meta });
-          },
-          onTool: tool => {
-            broadcast(roomId, { type: 'message_tool', message_id: msgId, tool });
-          },
-        });
-        if (!fullContent.trim()) {
-          db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msgId);
-          broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
-          return;
-        }
-        db.prepare("UPDATE messages SET content=?, state='complete', completed_at=datetime('now') WHERE id=?").run(fullContent, msgId);
-        broadcast(roomId, { type: 'message_complete', message_id: msgId, content: fullContent });
-      } catch {
-        db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msgId);
-        broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
-      }
-    } else {
+    {
       const session = getFallbackSession(ai.participant_id, workdir);
       try {
         const result = await session.send({
@@ -3121,7 +3323,31 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   const wdRow = prefetchedCtx?.wdRow ?? db.prepare(
     'SELECT w.path, w.actor_id FROM rooms r LEFT JOIN agent_workdirs w ON w.id=r.workdir_id WHERE r.id=?'
   ).get(roomId);
-  const roomModel = db.prepare('SELECT model FROM rooms WHERE id=?').get(roomId)?.model || null;
+  const roomRow2 = db.prepare('SELECT model, model_config FROM rooms WHERE id=?').get(roomId);
+  const roomModel = roomRow2?.model || null;
+  let modelBaseUrl, modelApiKeys;
+  if (roomRow2?.model_config) {
+    try {
+      const cfg = JSON.parse(roomRow2.model_config);
+      if (cfg.platform_id) {
+        const raw = getSetting('ai_platforms');
+        if (raw) {
+          const platforms = JSON.parse(raw);
+          const plat = platforms.find(p => p.id === cfg.platform_id && p.enabled);
+          if (plat) {
+            modelBaseUrl = plat.base_url || cfg.base_url || undefined;
+            modelApiKeys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : undefined);
+          }
+        }
+      }
+    } catch {}
+  }
+  if (roomModel && !roomModel.startsWith('claude-') && !modelBaseUrl) {
+    const errContent = `⚠ Model "${roomModel}" tidak bisa digunakan — platform-nya sudah di-disable atau dihapus. Ubah model room di Settings.`;
+    db.prepare("UPDATE messages SET content=?, state='complete', completed_at=datetime('now') WHERE id=?").run(errContent, msgId);
+    broadcast(roomId, { type: 'message_complete', message_id: msgId, content: errContent });
+    return;
+  }
   const defaultWd = db.prepare(
     'SELECT path FROM agent_workdirs WHERE actor_id=? AND is_default=1 LIMIT 1'
   ).get(ai.actor_id);
@@ -3152,6 +3378,8 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         fileName: fullAttachments.find(a => a.type === 'file')?.name || undefined,
         workdir: workdir    || undefined,
         model: roomModel    || undefined,
+        base_url: modelBaseUrl,
+        api_keys: modelApiKeys,
         rawHistory: rawHistory.length ? rawHistory : undefined,
       }));
       console.log(`[trigger] sent to ${ai.name} agent, msgId=${msgId}`);

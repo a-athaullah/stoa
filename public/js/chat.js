@@ -83,6 +83,13 @@ function appendMessage(m, container) {
     bubble.appendChild(textDiv);
   }
 
+  if (m.ai_model) {
+    const modelTag = document.createElement('div');
+    modelTag.className = 'h-msg-model';
+    modelTag.textContent = m.ai_model;
+    bubble.appendChild(modelTag);
+  }
+
   const actions = document.createElement('div');
   actions.className = 'h-msg-actions';
   actions.innerHTML =
@@ -208,7 +215,7 @@ function appendToken(msgId, token) {
 }
 
 // ── Finalize streaming message ─────────────────────────────────────────────
-function finalizeMessage(msgId, content, fileUrl, fileName, attachments) {
+function finalizeMessage(msgId, content, fileUrl, fileName, attachments, aiModel) {
   const row = document.getElementById('msg-' + msgId);
   if (!row) return;
 
@@ -233,6 +240,12 @@ function finalizeMessage(msgId, content, fileUrl, fileName, attachments) {
     const textDiv = document.createElement('div');
     textDiv.innerHTML = highlightMentions(renderMarkdown(content || ''));
     bubble.appendChild(textDiv);
+    if (aiModel) {
+      const modelTag = document.createElement('div');
+      modelTag.className = 'h-msg-model';
+      modelTag.textContent = aiModel;
+      bubble.appendChild(modelTag);
+    }
     addCopyButtons(bubble);
   linkifyFilePaths(bubble);
   }

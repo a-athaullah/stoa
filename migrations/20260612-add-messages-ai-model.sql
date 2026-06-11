@@ -1,0 +1,1 @@
+ALTER TABLE messages ADD COLUMN ai_model TEXT DEFAULT NULL;
