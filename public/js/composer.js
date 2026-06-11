@@ -1005,76 +1005,121 @@ function getAvailableModels() {
   return ANTHROPIC_MODELS_FALLBACK.map(m => ({ ...m, platform: 'anthropic' }));
 }
 
-function populateModelDropdown(sel, currentModel) {
-  if (!sel) sel = document.getElementById('model-select');
-  if (!sel) return;
+const _capIcon = (type, size = 11) => {
+  if (type === 'vision') return `<svg title="Vision" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+  if (type === 'tools') return `<svg title="Tools" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`;
+  return '';
+};
+
+function _capIconsHtml(m, size = 11) {
+  let h = '';
+  if (m.vision) h += _capIcon('vision', size);
+  if (m.tools) h += _capIcon('tools', size);
+  return h;
+}
+
+let _dropdownSelected = null;
+
+function populateModelDropdown(ignored, currentModel) {
+  const list = document.getElementById('model-dropdown-list');
+  const textEl = document.getElementById('model-dropdown-text');
+  const badgesEl = document.getElementById('model-capability-badges');
+  if (!list || !textEl) return;
+
   const models = getAvailableModels();
-  sel.innerHTML = '';
+  list.innerHTML = '';
   const hasMultiplePlatforms = models.some(m => m.platform !== 'anthropic');
+
+  const makeOption = (m) => {
+    const div = document.createElement('div');
+    div.className = 'h-model-option';
+    div.dataset.value = m.value;
+    if (m.base_url) div.dataset.baseUrl = m.base_url;
+    if (m.platform_id) div.dataset.platformId = m.platform_id;
+    const icons = _capIconsHtml(m);
+    div.innerHTML = `<span>${m.label}</span>${icons ? `<span class="h-model-cap-icons">${icons}</span>` : ''}`;
+    div.addEventListener('click', () => selectModelOption(m.value));
+    return div;
+  };
+
   if (hasMultiplePlatforms) {
-    // Group by platform using optgroups
     const seen = new Set();
     for (const m of models) {
       if (seen.has(m.platform)) continue;
       seen.add(m.platform);
-      const optgroup = document.createElement('optgroup');
-      optgroup.label = m.platform === 'anthropic' ? 'Anthropic' : m.platform;
+      const header = document.createElement('div');
+      header.className = 'h-model-optgroup';
+      header.textContent = m.platform === 'anthropic' ? 'Anthropic' : m.platform;
+      list.appendChild(header);
       for (const pm of models.filter(x => x.platform === m.platform).sort((a, b) => a.label.localeCompare(b.label))) {
-        const opt = document.createElement('option');
-        opt.value = pm.value;
-        opt.textContent = pm.label;
-        if (pm.base_url) opt.dataset.baseUrl = pm.base_url;
-        if (pm.platform_id) opt.dataset.platformId = pm.platform_id;
-        optgroup.appendChild(opt);
+        list.appendChild(makeOption(pm));
       }
-      sel.appendChild(optgroup);
     }
   } else {
-    for (const m of models) {
-      const opt = document.createElement('option');
-      opt.value = m.value;
-      opt.textContent = m.label;
-      sel.appendChild(opt);
-    }
+    for (const m of models) list.appendChild(makeOption(m));
   }
-  sel.value = currentModel || 'claude-sonnet-4-6';
-  updateModelBadges(sel.value);
+
+  const target = currentModel || 'claude-sonnet-4-6';
+  _setDropdownValue(target, models);
 }
 
-function updateModelBadges(modelValue) {
-  const wrap = document.getElementById('model-capability-badges');
-  if (!wrap) return;
-  const models = getAvailableModels();
-  const m = models.find(x => x.value === modelValue);
-  if (!m) { wrap.innerHTML = ''; return; }
-  let html = '';
-  if (m.vision) html += '<svg title="Vision" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
-  if (m.tools) html += '<svg title="Tools" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
-  wrap.innerHTML = html;
+function _setDropdownValue(value, models) {
+  if (!models) models = getAvailableModels();
+  const list = document.getElementById('model-dropdown-list');
+  const textEl = document.getElementById('model-dropdown-text');
+  const badgesEl = document.getElementById('model-capability-badges');
+  if (!list || !textEl) return;
+
+  _dropdownSelected = value;
+  const m = models.find(x => x.value === value);
+  textEl.textContent = m ? m.label : value;
+  if (badgesEl) badgesEl.innerHTML = m ? _capIconsHtml(m, 13) : '';
+
+  list.querySelectorAll('.h-model-option').forEach(el => {
+    el.classList.toggle('selected', el.dataset.value === value);
+  });
 }
 
-function updateModelSelector(room, parts) {
-  const wrap = document.getElementById('model-selector-wrap');
-  const sel = document.getElementById('model-select');
-  if (!wrap || !sel) return;
-  const hasAIAgent = (parts || []).some(p => p.type === 'ai');
-  wrap.style.display = hasAIAgent ? 'flex' : 'none';
-  if (hasAIAgent) {
-    populateModelDropdown(sel, room.model);
-  }
-}
+function selectModelOption(value) {
+  _setDropdownValue(value);
+  const list = document.getElementById('model-dropdown-list');
+  if (list) list.classList.remove('open');
 
-document.getElementById('model-select')?.addEventListener('change', function() {
   if (!currentRoomId || !ws) return;
-  const opt = this.selectedOptions[0];
-  const msg = { type: 'set_room_model', model: this.value };
-  if (opt?.dataset.platformId) {
-    msg.model_config = { platform_id: opt.dataset.platformId, base_url: opt.dataset.baseUrl || '' };
+  const models = getAvailableModels();
+  const m = models.find(x => x.value === value);
+  const msg = { type: 'set_room_model', model: value };
+  if (m?.platform_id && m.platform_id !== 'anthropic') {
+    msg.model_config = { platform_id: m.platform_id, base_url: m.base_url || '' };
   } else {
     msg.model_config = null;
   }
   ws.send(JSON.stringify(msg));
-  updateModelBadges(this.value);
+}
+
+function updateModelSelector(room, parts) {
+  const wrap = document.getElementById('model-selector-wrap');
+  if (!wrap) return;
+  const hasAIAgent = (parts || []).some(p => p.type === 'ai');
+  wrap.style.display = hasAIAgent ? 'flex' : 'none';
+  if (hasAIAgent) {
+    populateModelDropdown(null, room.model);
+  }
+}
+
+document.getElementById('model-dropdown-trigger')?.addEventListener('click', function(e) {
+  e.stopPropagation();
+  const list = document.getElementById('model-dropdown-list');
+  if (!list) return;
+  const isOpen = list.classList.toggle('open');
+  if (isOpen && _dropdownSelected) {
+    const sel = list.querySelector('.h-model-option.selected');
+    if (sel) sel.scrollIntoView({ block: 'nearest' });
+  }
+});
+
+document.addEventListener('click', () => {
+  document.getElementById('model-dropdown-list')?.classList.remove('open');
 });
 
 function mentionPopupNavigate(dir) {

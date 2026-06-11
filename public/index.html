@@ -410,9 +410,14 @@
           <button class="h-fmt-btn" data-fmt="link" title="Link (Ctrl+K)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.5-1.5"/></svg></button>
           <span id="model-selector-wrap" style="display:none;align-items:center;gap:4px;font-size:11px;opacity:0.7;margin-left:auto">
             <span id="model-selector-label">AI Model:</span>
-            <select id="model-select" title="Switch AI model" style="font-size:11px;background:transparent;border:none;cursor:pointer;color:inherit;outline:none;padding:0 2px">
-            </select>
-            <span id="model-capability-badges" style="display:inline-flex;gap:2px;opacity:0.6"></span>
+            <div id="model-dropdown" class="h-model-dropdown">
+              <button id="model-dropdown-trigger" class="h-model-dropdown-trigger" title="Switch AI model">
+                <span id="model-dropdown-text">Select model</span>
+                <span id="model-capability-badges" style="display:inline-flex;gap:2px;opacity:0.6"></span>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <div id="model-dropdown-list" class="h-model-dropdown-list"></div>
+            </div>
           </span>
         </div>
         <div class="h-composer-top">

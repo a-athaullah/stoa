@@ -1567,3 +1567,35 @@ html.dark .h-bubble :not(pre) > code {
 }
 .h-bubble th { background: color-mix(in srgb, var(--h-hairline) 30%, transparent); font-weight: 600; }
 
+/* model dropdown */
+.h-model-dropdown { position: relative; }
+.h-model-dropdown-trigger {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: transparent; border: none; cursor: pointer;
+  color: inherit; font-size: 11px; padding: 2px 4px;
+  border-radius: 4px;
+}
+.h-model-dropdown-trigger:hover { background: var(--h-surface-hi, rgba(255,255,255,0.08)); }
+.h-model-dropdown-list {
+  display: none; position: absolute; bottom: 100%; left: 0;
+  min-width: 220px; max-height: 320px; overflow-y: auto;
+  background: var(--h-surface, #1e1e1e); border: 1px solid var(--h-hairline, #333);
+  border-radius: 6px; box-shadow: 0 -4px 16px rgba(0,0,0,0.4);
+  z-index: 200; margin-bottom: 4px; padding: 4px 0;
+}
+.h-model-dropdown-list.open { display: block; }
+.h-model-dropdown-list .h-model-optgroup {
+  padding: 4px 10px 2px; font-size: 10px; font-weight: 600;
+  color: var(--h-ink-soft, #888); text-transform: uppercase; letter-spacing: 0.5px;
+}
+.h-model-dropdown-list .h-model-option {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 10px; cursor: pointer; font-size: 11px;
+  color: var(--h-ink, #ddd);
+}
+.h-model-dropdown-list .h-model-option:hover { background: var(--h-surface-hi, rgba(255,255,255,0.08)); }
+.h-model-dropdown-list .h-model-option.selected { background: var(--h-accent, #4a9eff); color: #fff; }
+.h-model-dropdown-list .h-model-option .h-model-cap-icons {
+  display: inline-flex; gap: 2px; opacity: 0.5; margin-left: auto; flex-shrink: 0;
+}
+
