@@ -1088,14 +1088,20 @@ const server = http.createServer(async (req, res) => {
   async function fetchModelList(baseUrl, headers, timeoutMs = 10000) {
     const url2 = new URL(baseUrl);
     const baseClean = url2.origin + url2.pathname.replace(/\/+$/, '');
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    const resp = await fetch(baseClean + '/models', { headers, signal: ctrl.signal });
-    clearTimeout(timer);
-    if (!resp.ok) return { ok: false, status: resp.status, models: [] };
-    const data = await resp.json().catch(() => null);
-    const raw = data?.data?.map(m => m.id) || data?.models?.map(m => m.name || m.model) || [];
-    return { ok: true, status: resp.status, models: applyCloudSuffix(raw, baseUrl) };
+    const endpoints = [baseClean + '/models', url2.origin + '/v1/models'];
+    for (const ep of endpoints) {
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+        const resp = await fetch(ep, { headers, signal: ctrl.signal });
+        clearTimeout(timer);
+        if (!resp.ok) continue;
+        const data = await resp.json().catch(() => null);
+        const raw = data?.data?.map(m => m.id) || data?.models?.map(m => m.name || m.model) || [];
+        return { ok: true, status: resp.status, models: applyCloudSuffix(raw, baseUrl) };
+      } catch { continue; }
+    }
+    return { ok: false, status: 404, models: [] };
   }
 
   if (req.method === 'POST' && url.pathname.match(/^\/api\/ai\/platforms\/[^/]+\/discover-models$/)) {
