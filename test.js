@@ -1315,6 +1315,55 @@ async function run() {
     if (r.body.status === 'ok') assert.ok(Array.isArray(r.body.models), 'models not array on ok');
   });
 
+  await test('POST /api/ai/platforms/:id/health — no base_url configured → error status', async () => {
+    const r1 = await req('POST', '/api/ai/platforms', { name: '__test-no-baseurl__' });
+    assert.strictEqual(r1.status, 200);
+    const noBuId = r1.body.id;
+    try {
+      const r = await req('POST', `/api/ai/platforms/${encodeURIComponent(noBuId)}/health`);
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.status, 'error', 'expected error status when no base_url');
+    } finally {
+      await req('DELETE', `/api/ai/platforms/${encodeURIComponent(noBuId)}`);
+    }
+  });
+
+  await test('POST /api/ai/platforms/:id/discover-models — nonexistent platform → 404', async () => {
+    const r = await streamReq('POST', '/api/ai/platforms/nonexistent-platform-xyz/discover-models', 5000);
+    assert.strictEqual(r.status, 404);
+  });
+
+  await test('POST /api/ai/platforms/:id/discover-models — no base_url configured → error response', async () => {
+    const r1 = await req('POST', '/api/ai/platforms', { name: '__test-no-baseurl-disc__' });
+    assert.strictEqual(r1.status, 200);
+    const noBuId = r1.body.id;
+    try {
+      const r = await req('POST', `/api/ai/platforms/${encodeURIComponent(noBuId)}/discover-models`);
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.status, 'error', 'expected error when no base_url');
+    } finally {
+      await req('DELETE', `/api/ai/platforms/${encodeURIComponent(noBuId)}`);
+    }
+  });
+
+  await test('POST /api/ai/platforms/:id/discover-models — unreachable base_url → error or empty usable', async () => {
+    const r1 = await req('POST', '/api/ai/platforms', { name: '__test-unreachable__', base_url: 'http://127.0.0.1:19999/v1' });
+    assert.strictEqual(r1.status, 200);
+    const unreachId = r1.body.id;
+    try {
+      const r = await streamReq('POST', `/api/ai/platforms/${encodeURIComponent(unreachId)}/discover-models`, 30000);
+      assert.strictEqual(r.status, 200);
+      assert.ok(r.events.length > 0, 'expected at least one response event');
+      // server may return {status:'error'} (regular JSON) or NDJSON {type:'done', usable:[]}
+      const ev = r.events[r.events.length - 1];
+      const isError = ev.status === 'error' || ev.type === 'error';
+      const isDoneEmpty = ev.type === 'done' && ev.usable.length === 0;
+      assert.ok(isError || isDoneEmpty, `expected error or empty done, got: ${JSON.stringify(ev)}`);
+    } finally {
+      await req('DELETE', `/api/ai/platforms/${encodeURIComponent(unreachId)}`);
+    }
+  });
+
   await test('POST /api/ai/platforms/:id/discover-models — streams NDJSON, done event has usable array [slow ~3min]', async () => {
     const platforms = (await req('GET', '/api/ai/platforms')).body;
     const ollamaCloud = Array.isArray(platforms) && platforms.find(p => p.base_url && p.base_url.includes('ollama.com'));
@@ -1344,6 +1393,18 @@ async function run() {
     const anthropic = r.body.find(g => g.platform_id === 'anthropic');
     assert.ok(anthropic, 'anthropic group missing');
     assert.ok(Array.isArray(anthropic.models) && anthropic.models.length > 0, 'anthropic models empty');
+  });
+
+  await test('GET /api/ai/models — anthropic models have vision+tools boolean fields', async () => {
+    const r = await req('GET', '/api/ai/models');
+    assert.strictEqual(r.status, 200);
+    const anthropic = r.body.find(g => g.platform_id === 'anthropic');
+    assert.ok(anthropic && anthropic.models.length > 0, 'anthropic group missing');
+    const m = anthropic.models[0];
+    assert.ok(typeof m.vision === 'boolean', 'vision field not boolean');
+    assert.ok(typeof m.tools === 'boolean', 'tools field not boolean');
+    assert.ok(m.vision === true, 'anthropic model should have vision=true');
+    assert.ok(m.tools === true, 'anthropic model should have tools=true');
   });
 
   // WS: set_room_model
