@@ -1052,13 +1052,6 @@ const server = http.createServer(async (req, res) => {
     return h;
   }
 
-  function applyCloudSuffix(modelNames, baseUrl) {
-    const isOllamaCloud = new URL(baseUrl).hostname.includes('ollama.com');
-    return modelNames.map(m =>
-      isOllamaCloud && !m.endsWith('-cloud') && !m.endsWith(':cloud') ? m + ':cloud' : m
-    );
-  }
-
   async function probeCapabilities(modelNames, baseUrl, headers) {
     const showUrl = new URL(baseUrl).origin + '/api/show';
     return Promise.all(modelNames.map(async (model) => {
@@ -1098,10 +1091,25 @@ const server = http.createServer(async (req, res) => {
         if (!resp.ok) continue;
         const data = await resp.json().catch(() => null);
         const raw = data?.data?.map(m => m.id) || data?.models?.map(m => m.name || m.model) || [];
-        return { ok: true, status: resp.status, models: applyCloudSuffix(raw, baseUrl) };
+        return { ok: true, status: resp.status, models: raw };
       } catch { continue; }
     }
     return { ok: false, status: 404, models: [] };
+  }
+
+  async function fetchOllamaCloudModels(apiKey) {
+    const headers = { 'Content-Type': 'application/json' };
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 10000);
+      const resp = await fetch('https://api.ollama.com/v1/models', { headers, signal: ctrl.signal });
+      clearTimeout(timer);
+      if (!resp.ok) return [];
+      const data = await resp.json().catch(() => null);
+      const raw = data?.data?.map(m => m.id) || data?.models?.map(m => m.name || m.model) || [];
+      return raw.map(m => m.endsWith(':cloud') || m.endsWith('-cloud') ? m : m + ':cloud');
+    } catch { return []; }
   }
 
   if (req.method === 'POST' && url.pathname.match(/^\/api\/ai\/platforms\/[^/]+\/discover-models$/)) {
@@ -1113,10 +1121,19 @@ const server = http.createServer(async (req, res) => {
     if (!plat.base_url) { return json(res, { status: 'error', message: 'No base URL configured' }); }
     const headers = platformHeaders(plat);
     try {
-      const listResult = await fetchModelList(plat.base_url, headers);
-      if (!listResult.ok) return json(res, { status: 'error', message: `Failed to list models: HTTP ${listResult.status}` });
-      const candidates = listResult.models;
-      if (!candidates.length) return json(res, { status: 'error', message: 'No models returned by Ollama Cloud' });
+      const localResult = await fetchModelList(plat.base_url, headers);
+      const localModels = localResult.ok ? localResult.models : [];
+
+      const keys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : []);
+      const isOllamaComUrl = new URL(plat.base_url).hostname.includes('ollama.com');
+      let cloudModels = [];
+      if (keys[0] && !isOllamaComUrl) {
+        cloudModels = await fetchOllamaCloudModels(keys[0]);
+      }
+
+      const seen = new Set(localModels);
+      const candidates = [...localModels, ...cloudModels.filter(m => !seen.has(m))];
+      if (!candidates.length) return json(res, { status: 'error', message: 'No models found (local or cloud)' });
 
       const url2 = new URL(plat.base_url);
       const probeBase = (url2.origin + url2.pathname.replace(/\/+$/, '')).replace(/\/v1$/, '') + '/v1';
@@ -1175,9 +1192,16 @@ const server = http.createServer(async (req, res) => {
     if (!plat.base_url) { return json(res, { status: 'error', message: 'No base URL configured' }); }
     const headers = platformHeaders(plat);
     try {
-      const listResult = await fetchModelList(plat.base_url, headers, 8000);
-      if (!listResult.ok) return json(res, { status: 'error', message: `HTTP ${listResult.status}` });
-      const models = await probeCapabilities(listResult.models, plat.base_url, headers);
+      const localResult = await fetchModelList(plat.base_url, headers, 8000);
+      const localModels = localResult.ok ? localResult.models : [];
+      const keys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : []);
+      const isOllamaComUrl = new URL(plat.base_url).hostname.includes('ollama.com');
+      let cloudModels = [];
+      if (keys[0] && !isOllamaComUrl) cloudModels = await fetchOllamaCloudModels(keys[0]);
+      const seen = new Set(localModels);
+      const allModels = [...localModels, ...cloudModels.filter(m => !seen.has(m))];
+      if (!allModels.length) return json(res, { status: 'error', message: 'No models found' });
+      const models = await probeCapabilities(allModels, plat.base_url, headers);
       saveCachedModels(platformId, models);
       return json(res, { status: 'ok', models });
     } catch (e) {
