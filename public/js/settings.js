@@ -1299,7 +1299,14 @@ function sShowPlatformForm(existing) {
             progressLabel.textContent = `done — ${ev.usable.length} of ${ev.tested} usable`;
             showToast(`Discovered ${ev.usable.length} of ${ev.tested} usable models`);
             const wrap = document.getElementById('s-model-checklist-wrap');
-            if (wrap) sRenderModelChecklist(wrap, ev.usable, null, id);
+            const prevEnabled = existing?.enabled_models ?? null;
+            if (prevEnabled) {
+              const newNames = new Set(ev.usable.map(m => typeof m === 'string' ? m : m.model));
+              const pruned = prevEnabled.filter(n => newNames.has(n));
+              if (wrap) sRenderModelChecklist(wrap, ev.usable, pruned.length ? pruned : null, id);
+            } else {
+              if (wrap) sRenderModelChecklist(wrap, ev.usable, null, id);
+            }
           } else if (ev.type === 'error') {
             throw new Error(ev.message || 'discovery failed');
           }

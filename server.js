@@ -1073,7 +1073,13 @@ const server = http.createServer(async (req, res) => {
     const freshPlatforms = freshRaw ? JSON.parse(freshRaw) : [];
     const freshIdx = freshPlatforms.findIndex(p => p.id === platformId);
     if (freshIdx !== -1) {
-      freshPlatforms[freshIdx].cached_models = models;
+      const plat = freshPlatforms[freshIdx];
+      plat.cached_models = models;
+      if (Array.isArray(plat.enabled_models)) {
+        const validNames = new Set(models.map(m => typeof m === 'string' ? m : m.model));
+        plat.enabled_models = plat.enabled_models.filter(n => validNames.has(n));
+        if (!plat.enabled_models.length) plat.enabled_models = null;
+      }
       setSetting('ai_platforms', JSON.stringify(freshPlatforms));
     }
   }
