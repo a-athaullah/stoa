@@ -1,10 +1,7 @@
-# v — 2026-06-10
+# v — 2026-06-11
 
 🔧 Bug fixes & improvements
 
 ## Changes
 
-- rebuild minified assets
-- fix populateModelDropdown crash when called without sel argument
-- fix health stale write + missing :cloud suffix, stale base_url priority, set_room_model cached_models check
-- fix set_room_model null enabled_models, discover-models stale write, fetchPlatformModels race
+- refactor: split all JS files into per-section subfolders
