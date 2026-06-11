@@ -5,11 +5,12 @@ const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
 
 class ClaudeSession extends EventEmitter {
-  constructor({ workDir = process.cwd(), flags = [], resumeId = null } = {}) {
+  constructor({ workDir = process.cwd(), flags = [], resumeId = null, env = null } = {}) {
     super();
     this.workDir = workDir;
     this.flags = flags;
     this.resumeId = resumeId;
+    this.env = env;
     this.proc = null;
     this.buffer = '';
     this.busy = false;
@@ -34,7 +35,9 @@ class ClaudeSession extends EventEmitter {
       '--dangerously-skip-permissions',
       ...this.flags,
     ];
-    this.proc = spawn('claude', args, { cwd: this.workDir, windowsHide: true });
+    const spawnOpts = { cwd: this.workDir, windowsHide: true };
+    if (this.env) spawnOpts.env = { ...process.env, ...this.env };
+    this.proc = spawn('claude', args, spawnOpts);
     this.proc.stdin.on('error', () => {});
     this.buffer = '';
 

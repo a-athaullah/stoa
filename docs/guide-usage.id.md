@@ -48,15 +48,22 @@ Klik tombol **+** di header room untuk menambahkan AI agent ke room yang sudah a
 
 Klik judul room di header chat. Judul menjadi editable — ketik nama baru dan tekan Enter, atau tekan Escape untuk batal.
 
-### Mengganti Model Claude
+### Mengganti Model
 
-Saat room berisi Claude agent, **selector model** muncul di sisi kanan toolbar formatting di composer. Gunakan untuk mengganti model yang akan digunakan agent untuk respons berikutnya:
+**Selector model** muncul di sisi kanan toolbar formatting di composer. Gunakan untuk mengganti model yang akan digunakan agent untuk respons berikutnya.
 
+**Model Claude bawaan** (via langganan Claude Code):
 - **Haiku 4.5** — tercepat dan paling ekonomis
 - **Sonnet 4.5 / 4.6** — performa dan kualitas seimbang (default: Sonnet 4.6)
 - **Opus 4.6 / 4.7 / 4.8** — kapabilitas tertinggi, cocok untuk tugas kompleks atau konteks panjang
 
-Pilihan disimpan per room dan langsung berlaku pada pesan berikutnya — tanpa restart. Selector disembunyikan jika room tidak memiliki Claude agent (Gemini dan Ollama agent tidak terpengaruh).
+**Model platform eksternal**: Jika Anda sudah mengonfigurasi platform tambahan di **Settings > Platforms** (misal Ollama Cloud, OpenRouter), model yang diaktifkan dari platform tersebut juga muncul di selector, dikelompokkan berdasarkan nama platform. Model yang mendukung input gambar ditandai dengan ikon 👁.
+
+Pilihan disimpan per room dan langsung berlaku pada pesan berikutnya — tanpa restart.
+
+### Model di Chat Bubble
+
+Setiap respons AI menampilkan indikator model kecil di pojok kanan bawah bubble (contoh: `qwen3-coder:480b:cloud`), sehingga mudah melacak model mana yang menghasilkan setiap balasan.
 
 ### Menyematkan Room (Pin)
 
@@ -233,7 +240,6 @@ Tekan **Ctrl+F** (atau klik **ikon search** di header room) untuk mencari di dal
 
 Buka **Settings > AI Agent > Add Agent**. Panel Add Agent memungkinkan Anda mengonfigurasi:
 
-- **Backend** — pilih antara **Claude Code CLI**, **Gemini CLI**, atau **Ollama** sebagai backend AI. Perintah install menyesuaikan secara otomatis berdasarkan pilihan Anda
 - **Bahasa** — pilih bahasa yang akan digunakan AI agent untuk merespons: English, Bahasa Indonesia, 日本語, 한국語, atau 中文
 
 Server menghasilkan perintah install sekali pakai.
@@ -494,7 +500,7 @@ Setiap aturan memiliki toggle aktif/nonaktif. Aturan yang dinonaktifkan tidak pe
 
 ## Pengaturan
 
-Klik **ikon gear** di sidebar untuk membuka panel pengaturan. Pengaturan diorganisasi dalam lima tab:
+Klik **ikon gear** di sidebar untuk membuka panel pengaturan. Pengaturan diorganisasi dalam enam tab:
 
 ### AI Agent
 
@@ -511,6 +517,27 @@ Lihat semua agent yang terdaftar, status online, versi, workdir, dan skill merek
 - **Session Idle TTL** — menit sebelum sesi AI yang idle otomatis ditutup untuk menghemat memori (default 5 menit)
 - **Cleanup Hour** — kapan pembersihan upload harian berjalan (format 24 jam)
 - **Max File Age** — berapa lama file upload disimpan sebelum dibersihkan (jam)
+
+### Platforms
+
+Konfigurasi provider model AI eksternal di luar model Claude bawaan. Klik **+ add platform** untuk mendaftarkan provider baru:
+
+- **Name** — label untuk platform (misal "Ollama Cloud", "OpenRouter")
+- **Base URL** — endpoint API (misal `https://ollama.com/v1`, `https://openrouter.ai/api/v1`)
+- **API Key** — API key untuk provider tersebut
+
+Setelah menyimpan, klik **discover models** untuk mendeteksi model yang tersedia dan dapat diakses dengan API key Anda. Discovery juga mendeteksi kemampuan vision per model — model yang mendukung input gambar ditandai dengan ikon 👁.
+
+**Mengaktifkan dan menonaktifkan model**: Setelah discovery, muncul checklist semua model yang ditemukan. Centang hanya model yang ingin tampil di selector room, lalu klik **save selection**. Gunakan **select all / deselect all** untuk toggle cepat. Pilihan disimpan permanen dan diperbarui otomatis saat Anda re-discover.
+
+API key disimpan di server dan dikembalikan ke browser hanya di form edit Settings (single-user app — hanya Anda yang punya akses).
+
+**Provider yang didukung** — endpoint API apapun yang kompatibel dengan OpenAI bisa digunakan:
+- **Ollama Cloud** — `https://ollama.com/v1` (tier gratis, 40+ model hingga 480B)
+- **Local Ollama** — `http://localhost:11434/v1` (gratis, privat, bisa offline — lihat [panduan Ollama](doc-ollama))
+- **OpenRouter** — `https://openrouter.ai/api/v1`
+- **Together AI** — `https://api.together.xyz/v1`
+- **Groq** — `https://api.groq.com/openai/v1`
 
 ### Automation
 
@@ -563,20 +590,17 @@ Untuk akses mobile dari perangkat lain, siapkan **Tailscale** — lihat [panduan
 Browser  <-->  WebSocket  <-->  server.js  <-->  Agent (stoa.js)
                                     |                   |
                                  SQLite DB      Claude Code CLI
-                                                  atau Gemini CLI
-                                                  atau Ollama
+                                                  (+ external platforms
+                                                   via env vars)
 ```
 
 - **server.js** — server HTTP + WebSocket, mengatur room, pesan, dan orkestrasi agent
 - **public/** — frontend (tidak perlu build step)
 - **stoa.js** — klien agent yang berjalan di setiap mesin agent
 - **claude-session.js** — mengatur subprocess CLI Claude Code yang persisten
-- **gemini-session.js** — mengatur subprocess CLI Gemini yang persisten
-- **gemini-adapter.js** — adapter untuk parsing output Gemini CLI
-- **ollama-session.js** — mengelola panggilan API Ollama (tidak memerlukan CLI terpisah)
 - **SQLite** — semua data disimpan lokal di `stoa.db` (mode WAL untuk performa)
 
-Stoa mendukung beberapa backend AI. Setiap agent bisa dikonfigurasi untuk menggunakan **Claude Code CLI**, **Gemini CLI**, atau **Ollama**, dipilih saat agent ditambahkan. Semua backend dikelola melalui klien agent dan lapisan orkestrasi yang sama. Agent Ollama terhubung ke server Ollama lokal dan tidak memerlukan instalasi CLI terpisah.
+Semua model AI dirutekan melalui **Claude Code CLI**. Untuk platform eksternal (Ollama Cloud, OpenRouter, dll.), server meneruskan environment variable khusus platform (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`) ke proses CLI, yang menangani komunikasi API secara transparan.
 
 **Konteks room di prompt**: Setiap kali agent dipicu, server menginjeksikan `Room ID: <id>` ke system prompt agent. Artinya agent selalu tahu room mana yang sedang ia operasikan — memungkinkan pemanggilan `sendProactiveMessage(roomId, ...)` atau operasi lain yang bergantung pada room ID tanpa perlu meneruskan ID secara eksplisit.
 

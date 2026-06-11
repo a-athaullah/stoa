@@ -218,6 +218,14 @@ html.dark .h-faded-mark { opacity: 0.12; }
   font-size: 12.5px;
   color: var(--h-ink-faint);
 }
+.h-msg-model {
+  text-align: right;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--h-ink-faint);
+  opacity: 0.6;
+  margin-top: 6px;
+}
 
 .h-bubble {
   color: var(--h-ink);
@@ -1344,17 +1352,37 @@ html.dark .h-faded-mark { opacity: 0.12; }
 .h-actor-check:hover { background: var(--h-bg); }
 
 .h-actor-check input[type=radio] {
+  display: none;
+}
+
+.h-actor-check::before {
+  content: '';
   width: 15px;
   height: 15px;
-  accent-color: var(--h-ink);
-  cursor: pointer;
+  border-radius: 50%;
+  border: 2px solid var(--h-ink-mute);
   flex: 0 0 auto;
+  transition: background 0.12s, border-color 0.12s;
+  box-sizing: border-box;
+}
+
+.h-actor-check:has(input[type=radio]:checked)::before {
+  background: var(--h-ink);
+  border-color: var(--h-ink);
+}
+
+.h-actor-check:has(input[type=radio]:checked) {
+  background: var(--h-bg);
 }
 
 .h-actor-check-name {
   font-family: var(--h-sans);
   font-size: 14px;
   color: var(--h-ink-mute);
+}
+
+.h-actor-check:has(input[type=radio]:checked) .h-actor-check-name {
+  color: var(--h-ink);
 }
 
 /* ── Markdown in bubbles ─────────────────────────────── */
@@ -1538,4 +1566,36 @@ html.dark .h-bubble :not(pre) > code {
   white-space: nowrap;
 }
 .h-bubble th { background: color-mix(in srgb, var(--h-hairline) 30%, transparent); font-weight: 600; }
+
+/* model dropdown */
+.h-model-dropdown { position: relative; }
+.h-model-dropdown-trigger {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: transparent; border: none; cursor: pointer;
+  color: inherit; font-size: 11px; padding: 2px 4px;
+  border-radius: 4px;
+}
+.h-model-dropdown-trigger:hover { background: var(--h-surface-hi, rgba(255,255,255,0.08)); }
+.h-model-dropdown-list {
+  display: none; position: absolute; bottom: 100%; left: 0;
+  min-width: 220px; max-height: 320px; overflow-y: auto;
+  background: var(--h-bg, #1a1a1a); border: 1px solid var(--h-hairline, #333);
+  border-radius: 6px; box-shadow: 0 -4px 16px rgba(0,0,0,0.4);
+  z-index: 200; margin-bottom: 4px; padding: 4px 0;
+}
+.h-model-dropdown-list.open { display: block; }
+.h-model-dropdown-list .h-model-optgroup {
+  padding: 4px 10px 2px; font-size: 10px; font-weight: 600;
+  color: var(--h-ink-soft, #888); text-transform: uppercase; letter-spacing: 0.5px;
+}
+.h-model-dropdown-list .h-model-option {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 10px; cursor: pointer; font-size: 11px;
+  color: var(--h-ink, #ddd);
+}
+.h-model-dropdown-list .h-model-option:hover { background: var(--h-surface-hi, rgba(255,255,255,0.08)); }
+.h-model-dropdown-list .h-model-option.selected { background: var(--h-accent, #4a9eff); color: #fff; }
+.h-model-dropdown-list .h-model-option .h-model-cap-icons {
+  display: inline-flex; gap: 2px; opacity: 0.5; margin-left: auto; flex-shrink: 0;
+}
 

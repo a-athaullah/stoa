@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.3.33';
+const CLIENT_VERSION = '0.4.38';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -13,12 +13,7 @@ const path = require('path');
 const os = require('os');
 const { spawnSync } = require('child_process');
 
-const AI_BACKEND = (process.env.STOA_AI_BACKEND || 'claude').toLowerCase();
-const SessionClass = AI_BACKEND === 'gemini'
-  ? require('./gemini-session').GeminiSession
-  : AI_BACKEND === 'ollama'
-    ? require('./ollama-session').OllamaSession
-    : require('./claude-session').ClaudeSession;
+const { ClaudeSession } = require('./claude-session');
 
 let STOA_URL      = process.env.STOA_URL    || 'ws://localhost:3001';
 const ACTOR_ID    = parseInt(process.env.STOA_ACTOR_ID || '1');
@@ -58,11 +53,7 @@ let MAX_CONCURRENT = parseInt(process.env.STOA_MAX_CONCURRENT || '1');
 
 // ─── Auto-update (agent mode only) ───────────────────────────────────────────
 const UPDATE_INTERVAL = 120_000; // cek tiap 2 menit
-const UPDATE_FILES = AI_BACKEND === 'gemini'
-  ? ['stoa.js', 'gemini-session.js', 'gemini-adapter.js']
-  : AI_BACKEND === 'ollama'
-    ? ['stoa.js', 'ollama-session.js']
-    : ['stoa.js', 'claude-session.js'];
+const UPDATE_FILES = ['stoa.js', 'claude-session.js'];
 
 const TREE_IGNORE = new Set(['.git', 'node_modules', '.next', '__pycache__', '.venv', 'dist', 'build', '.claude']);
 function isPathSafe(filePath, workdir) {
@@ -200,14 +191,65 @@ function truncateSessionFile(workdir, sessionId) {
   }
 }
 
-function getSession(workdir) {
+function stripSessionImages(workdir, sessionId) {
+  if (!sessionId) return;
+  try {
+    const encoded = workdir.replace(/\//g, '-').replace(/\\/g, '-').replace(/:/g, '');
+    const filePath = path.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`);
+    if (!fs.existsSync(filePath)) return;
+    const raw = fs.readFileSync(filePath, 'utf8');
+    if (!raw.includes('"type":"image"') && !raw.includes('"type": "image"')) return;
+    const lines = raw.split('\n');
+    let changed = false;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line.trim()) continue;
+      if (!line.includes('"type":"image"') && !line.includes('"type": "image"')) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (stripImagesFromEntry(entry)) {
+          lines[i] = JSON.stringify(entry);
+          changed = true;
+        }
+      } catch {}
+    }
+    if (changed) {
+      fs.writeFileSync(filePath, lines.join('\n'), 'utf8');
+      console.log(`[stoa] stripped image data from session ${sessionId.slice(0, 8)}...`);
+    }
+  } catch (err) {
+    console.error(`[stoa] strip images error: ${err.message}`);
+  }
+}
+
+function stripImagesFromEntry(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+  let stripped = false;
+  if (Array.isArray(obj)) {
+    for (let i = 0; i < obj.length; i++) {
+      if (obj[i] && obj[i].type === 'image' && obj[i].source) {
+        obj[i] = { type: 'text', text: '[image]' };
+        stripped = true;
+      } else if (stripImagesFromEntry(obj[i])) {
+        stripped = true;
+      }
+    }
+  } else {
+    for (const key of Object.keys(obj)) {
+      if (stripImagesFromEntry(obj[key])) stripped = true;
+    }
+  }
+  return stripped;
+}
+
+function getSession(workdir, env) {
   const key = path.resolve(workdir);
   clearSessionIdleTimer(key);
   let session = sessionPool.get(key);
   if (!session) {
-    session = new SessionClass({ workDir: key });
+    session = new ClaudeSession({ workDir: key, env: env || null });
     sessionPool.set(key, session);
-    console.log(`[stoa] ${AI_BACKEND} session started for ${key}`);
+    console.log(`[stoa] claude session started for ${key}`);
     startSessionIdleTimer(key);
   }
   return session;
@@ -319,19 +361,6 @@ async function handleAgentMessage(msg) {
     consecutiveFailures = 0;
     console.log('[stoa] Ready, waiting for triggers...');
     (async () => {
-      // For Ollama: send capabilities before scan result so server has models in DB
-      // before agent_scan_complete triggers the UI model picker
-      if (AI_BACKEND === 'ollama') {
-        try {
-          const ollamaHost = process.env.OLLAMA_HOST || 'http://localhost:11434';
-          const data = JSON.parse(await fetchText(`${ollamaHost}/api/tags`));
-          const models = (data?.models || []).map(m => ({ name: m.name, size: m.size }));
-          send({ type: 'agent_capabilities', models });
-          console.log(`[stoa] Reported ${models.length} Ollama models to server`);
-        } catch (err) {
-          console.error('[stoa] Failed to fetch Ollama models:', err.message);
-        }
-      }
       try {
         const scanResult = scanForWorkdirs();
         console.log(`[stoa] Scanned: ${scanResult.workdirs.length} workdirs, ${scanResult.globalSkills.length} global skills`);
@@ -414,23 +443,6 @@ async function handleAgentMessage(msg) {
     } catch (err) {
       console.error('[stoa] Failed to create workdir:', err.message);
     }
-  }
-
-  if (msg.type === 'query_model') {
-    let model = null;
-    try {
-      const raw = fs.readFileSync(path.join(msg.workdir, '.claude', 'settings.json'), 'utf8');
-      const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
-      model = JSON.parse(stripped).model || null;
-    } catch {}
-    if (!model) {
-      try {
-        const raw = fs.readFileSync(path.join(os.homedir(), '.claude', 'settings.json'), 'utf8');
-        const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
-        model = JSON.parse(stripped).model || null;
-      } catch {}
-    }
-    send({ type: 'model_info', workdir: msg.workdir, model });
   }
 
   if (msg.type === 'proxy_file_list') {
@@ -585,7 +597,7 @@ async function handleAgentMessage(msg) {
     let session = sessionPool.get(key);
     if (!session) {
       if (msg.claude_session_id) {
-        session = new SessionClass({ workDir: key, flags: ['--resume', msg.claude_session_id], resumeId: msg.claude_session_id });
+        session = new ClaudeSession({ workDir: key, flags: ['--resume', msg.claude_session_id], resumeId: msg.claude_session_id });
         sessionPool.set(key, session);
         startSessionIdleTimer(key);
         console.log(`[stoa] compact: resuming session ${msg.claude_session_id.slice(0, 8)}... for ${key}`);
@@ -748,20 +760,29 @@ async function processTrigger(msg) {
       } catch {}
     }
 
-    let session = getSession(targetDir);
+    const apiKeys = msg.api_keys || (msg.api_key ? [msg.api_key] : []);
+    const platformEnv = {};
+    if (msg.base_url) platformEnv.ANTHROPIC_BASE_URL = msg.base_url;
+    if (apiKeys[0]) platformEnv.ANTHROPIC_AUTH_TOKEN = apiKeys[0];
+    const envToUse = Object.keys(platformEnv).length ? platformEnv : null;
+
+    let session = getSession(targetDir, envToUse);
     const needsResume = rid && session.resumeId !== rid;
     const needsFreshSession = !rid && session.resumeId;
     const targetModel = msg.model || null;
     const currentModel = session.flags.find((f, i, arr) => arr[i - 1] === '--model') || null;
     const needsModelChange = targetModel && currentModel !== targetModel;
+    const currentEnv = JSON.stringify(session.env || {});
+    const newEnv = JSON.stringify(envToUse || {});
+    const needsEnvChange = currentEnv !== newEnv;
 
-    if (needsResume || needsFreshSession || needsModelChange) {
+    if (needsResume || needsFreshSession || needsModelChange || needsEnvChange) {
       session.shutdown();
       const flags = rid ? ['--resume', rid] : [];
       if (targetModel) flags.push('--model', targetModel);
-      session = new SessionClass({ workDir: targetDir, flags, resumeId: rid || null });
+      session = new ClaudeSession({ workDir: targetDir, flags, resumeId: rid || null, env: envToUse });
       sessionPool.set(targetDir, session);
-      console.log(`[stoa] Session restarted: workdir=${targetDir}${rid ? ' resume=' + rid.slice(0, 8) + '...' : ' (fresh)'}${targetModel ? ' model=' + targetModel : ''}`);
+      console.log(`[stoa] Session restarted: workdir=${targetDir}${rid ? ' resume=' + rid.slice(0, 8) + '...' : ' (fresh)'}${targetModel ? ' model=' + targetModel : ''}${msg.base_url ? ' base_url=' + msg.base_url : ''}`);
     }
     activeTriggers.set(message_id, { workdir: targetDir, session });
     let fullContent = '';
@@ -806,10 +827,34 @@ async function processTrigger(msg) {
     try {
       result = await session.send(sendOpts);
     } catch (retryErr) {
-      if (retryErr.message.includes('exited unexpectedly') && !fullContent) {
+      const isAuthOrQuota = /auth|unauthorized|quota|rate.limit|429|401|403/i.test(retryErr.message);
+      if (isAuthOrQuota && apiKeys.length > 1 && !fullContent) {
+        let rotated = false;
+        for (let ki = 1; ki < apiKeys.length; ki++) {
+          console.log(`[stoa] API key #1 failed (${retryErr.message}), rotating to key #${ki + 1}...`);
+          const rotatedEnv = { ...platformEnv, ANTHROPIC_AUTH_TOKEN: apiKeys[ki] };
+          session.shutdown();
+          const flags = rid ? ['--resume', rid] : [];
+          if (targetModel) flags.push('--model', targetModel);
+          session = new ClaudeSession({ workDir: targetDir, flags, resumeId: rid || null, env: rotatedEnv });
+          sessionPool.set(targetDir, session);
+          activeTriggers.set(message_id, { workdir: targetDir, session });
+          sessionRef = session;
+          session.on('status', statusHandler);
+          try {
+            lastActivity = Date.now();
+            result = await session.send(sendOpts);
+            rotated = true;
+            break;
+          } catch (e2) {
+            if (ki === apiKeys.length - 1) throw new Error(`All ${apiKeys.length} API keys exhausted. Last error: ${e2.message}`);
+          }
+        }
+        if (!rotated) throw retryErr;
+      } else if (retryErr.message.includes('exited unexpectedly') && !fullContent) {
         console.log(`[stoa] session crashed before output, retrying in 4s...`);
         await new Promise(r => setTimeout(r, 4000));
-        session = getSession(targetDir);
+        session = getSession(targetDir, envToUse);
         activeTriggers.set(message_id, { workdir: targetDir, session });
         lastActivity = Date.now();
         result = await session.send(sendOpts);
@@ -828,7 +873,7 @@ async function processTrigger(msg) {
       console.log(`[stoa] Aborted message ${message_id}, reason=${abortReason || 'user'}, partial=${partial.length} chars`);
     } else {
       const { text: cleanContent, attachments } = await extractAndUploadFiles(content, msg.workdir);
-      const completeMsg = { type: 'agent_complete', room_id, message_id, content: cleanContent || (attachments.length ? '📎' : cleanContent), claude_session_id: sessionId };
+      const completeMsg = { type: 'agent_complete', room_id, message_id, content: cleanContent || (attachments.length ? '📎' : cleanContent), claude_session_id: sessionId, ai_model: targetModel || undefined };
       if (attachments.length === 1) {
         completeMsg.file_url = attachments[0].url;
         completeMsg.file_name = attachments[0].name;
@@ -836,6 +881,14 @@ async function processTrigger(msg) {
         completeMsg.attachments = attachments;
       }
       send(completeMsg);
+
+      // Strip base64 image data from session file to prevent errors on models without image support
+      if (sessionId && targetDir && !compactsInFlight.has(targetDir)) {
+        setImmediate(() => {
+          if (compactsInFlight.has(targetDir)) return;
+          stripSessionImages(targetDir, sessionId);
+        });
+      }
 
       // Auto-compact: check session file size and compact if needed.
       // Runs inside setImmediate so the finally block (activeTriggers.delete + drainQueue) is not delayed by the stat() call.
@@ -1006,38 +1059,6 @@ function scanForWorkdirs() {
   const home = os.homedir();
   const isWindows = process.platform === 'win32';
 
-  // Ollama has no per-project config folders — just report the default workdir
-  if (AI_BACKEND === 'ollama') {
-    const defaultDir = process.env.STOA_WORK_DIR || process.cwd();
-    return { workdirs: [{ path: path.resolve(defaultDir), skills: [], model: null, is_default: true }], globalSkills: [] };
-  }
-
-  // Gemini has no per-project config folders — just report the default workdir + skills from CLI
-  if (AI_BACKEND === 'gemini') {
-    const defaultDir = process.env.STOA_WORK_DIR || process.cwd();
-    const globalSkills = [];
-    try {
-      const result = spawnSync('gemini', ['skills', 'list', '--all'], {
-        encoding: 'utf8', shell: true, timeout: 10000, windowsHide: true,
-      });
-      const lines = (result.stdout || '').split('\n');
-      let current = null;
-      for (const line of lines) {
-        const m = line.match(/^(\S+)\s+\[(Enabled|Disabled)\]\s+\[(.+)\]$/);
-        if (m) {
-          if (current) globalSkills.push(current);
-          current = { name: m[1], description: null, scope: 'global' };
-          continue;
-        }
-        if (current && line.trim().startsWith('Description:')) {
-          current.description = line.trim().replace(/^Description:\s*/, '').trim() || null;
-        }
-      }
-      if (current) globalSkills.push(current);
-    } catch {}
-    return { workdirs: [{ path: path.resolve(defaultDir), skills: [], model: null, is_default: true }], globalSkills };
-  }
-
   const results = [];
 
   function hasClaudeMarker(dir) {
@@ -1053,13 +1074,6 @@ function scanForWorkdirs() {
       const stripped = raw.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
       return JSON.parse(stripped);
     } catch { return null; }
-  }
-
-  function readModel(dir) {
-    const local = parseJsonc(path.join(dir, '.claude', 'settings.json'));
-    if (local?.model) return local.model;
-    const global = parseJsonc(path.join(os.homedir(), '.claude', 'settings.json'));
-    return global?.model || null;
   }
 
   function readSkills(dir) {
@@ -1088,8 +1102,7 @@ function scanForWorkdirs() {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       if (dir !== home && path.basename(dir) !== '.claude' && hasClaudeMarker(dir)) {
         const skills = readSkills(dir);
-        const model = readModel(dir);
-        results.push({ path: dir, skills, model, is_default: dir === home + '/stoa-workspace' || dir === path.join(home, 'stoa-workspace') });
+        results.push({ path: dir, skills, is_default: dir === home + '/stoa-workspace' || dir === path.join(home, 'stoa-workspace') });
       }
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
@@ -1126,8 +1139,7 @@ function scanForWorkdirs() {
     const normalized = path.resolve(defaultWorkDir);
     if (!results.find(r => path.resolve(r.path) === normalized)) {
       const skills = readSkills(normalized);
-      const model = readModel(normalized);
-      results.unshift({ path: normalized, skills, model, is_default: true });
+      results.unshift({ path: normalized, skills, is_default: true });
     } else {
       // Mark it as default if already found via scan
       const existing = results.find(r => path.resolve(r.path) === normalized);

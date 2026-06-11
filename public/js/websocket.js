@@ -95,7 +95,7 @@ function handleWsMessage(msg) {
   }
 
   if (msg.type === 'message_complete') {
-    finalizeMessage(msg.message_id, msg.content, msg.file_url, msg.file_name, msg.attachments);
+    finalizeMessage(msg.message_id, msg.content, msg.file_url, msg.file_name, msg.attachments, msg.ai_model);
     clearComposerProcessing(msg.message_id);
     refreshRoomList();
     if (ws && ws.readyState === 1) {
@@ -296,8 +296,8 @@ function handleWsMessage(msg) {
   }
 
   if (msg.type === 'room_model_changed') {
-    const sel = document.getElementById('model-select');
-    if (sel) sel.value = msg.model;
+    if (typeof handleModelUpdate === 'function') handleModelUpdate(msg);
+    if (typeof _setDropdownValue === 'function') _setDropdownValue(msg.model);
     return;
   }
 }

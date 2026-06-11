@@ -300,9 +300,6 @@ async function loadWorkdirsForActor(actorId) {
   const newWdRow = document.getElementById('new-room-new-workdir-row');
   if (!actorId) { section.style.display = 'none'; return; }
 
-  const actor = allActors.find(a => a.id === parseInt(actorId));
-  const isGemini = actor?.adapter === 'gemini';
-
   let workdirs;
   try { workdirs = await fjson(`/api/actors/${actorId}/workdirs`); } catch { workdirs = []; }
   sel.innerHTML = '';
@@ -311,25 +308,19 @@ async function loadWorkdirsForActor(actorId) {
   workdirs.forEach(w => {
     const opt = document.createElement('option');
     opt.value = w.id;
-    const modelTag = formatModelName(w.model);
-    opt.textContent = (w.label || w.path) + (modelTag ? ` [${modelTag}]` : '') + (w.is_default ? ' (default)' : '');
+    opt.textContent = (w.label || w.path) + (w.is_default ? ' (default)' : '');
     if (w.is_default) opt.selected = true;
     sel.appendChild(opt);
   });
 
-  if (isGemini) {
-    sel.disabled = true;
-    if (workdirs.length === 0) { section.style.display = 'none'; }
-  } else {
-    sel.disabled = false;
-    const newOpt = document.createElement('option');
-    newOpt.value = '__new__';
-    newOpt.textContent = '+ new folder…';
-    sel.appendChild(newOpt);
-    if (workdirs.length === 0) {
-      newOpt.selected = true;
-      newWdRow.style.display = 'flex';
-    }
+  sel.disabled = false;
+  const newOpt = document.createElement('option');
+  newOpt.value = '__new__';
+  newOpt.textContent = '+ new folder…';
+  sel.appendChild(newOpt);
+  if (workdirs.length === 0) {
+    newOpt.selected = true;
+    newWdRow.style.display = 'flex';
   }
 
   // Remove old listener by cloning
@@ -680,7 +671,9 @@ async function scrollToMessage(msgId) {
 
 // ── Utility ─────────────────────────────────────────────────────────────────
 function relativeTime(ts) {
-  const diff = (Date.now() - new Date(ts)) / 1000;
+  // SQLite returns UTC without timezone — force UTC parse to avoid 7h offset in WIB
+  const utc = typeof ts === 'string' && !ts.endsWith('Z') ? ts.trim().replace(' ', 'T') + 'Z' : ts;
+  const diff = (Date.now() - new Date(utc)) / 1000;
   if (diff < 60)   return 'now';
   if (diff < 3600) return Math.floor(diff / 60) + 'm';
   if (diff < 86400)return Math.floor(diff / 3600) + 'h';
@@ -699,13 +692,12 @@ function formatModelName(model) {
   if (!model) return null;
   return model
     .replace(/^claude-/, '')
-    .replace(/^gemini-/, 'gemini ')
     .replace(/-(\d)/, ' $1')
     .replace(/-preview$/, '');
 }
 
 function handleModelUpdate(msg) {
-  if (currentRoomWorkdirId !== msg.workdir_id) return;
+  if (msg.room_id && msg.room_id !== currentRoomId) return;
   const badge = document.querySelector('.h-model-badge');
   const label = formatModelName(msg.model);
   if (badge && label) badge.textContent = label;
@@ -983,20 +975,155 @@ function applyMention(name) {
 }
 
 // ── Model selector ────────────────────────────────────────────────────────
+const ANTHROPIC_MODELS_FALLBACK = [
+  { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
+  { value: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
+  { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
+  { value: 'claude-opus-4-6', label: 'Opus 4.6' },
+  { value: 'claude-opus-4-7', label: 'Opus 4.7' },
+  { value: 'claude-opus-4-8', label: 'Opus 4.8' },
+];
+
+let allServerModels = null;
+
+async function fetchPlatformModels() {
+  try {
+    const groups = await fjson('/api/ai/models');
+    allServerModels = [];
+    for (const g of groups) {
+      const platKey = g.platform_id === 'anthropic' ? 'anthropic' : g.platform_name;
+      for (const m of g.models) {
+        allServerModels.push({ value: m.value, label: m.label, vision: m.vision || false, tools: m.tools || false, local: m.local || false, platform: platKey, platform_id: g.platform_id, base_url: g.base_url || '' });
+      }
+    }
+    populateModelDropdown();
+  } catch {}
+}
+
+function getAvailableModels() {
+  if (allServerModels) return allServerModels;
+  return ANTHROPIC_MODELS_FALLBACK.map(m => ({ ...m, platform: 'anthropic' }));
+}
+
+const _capIcon = (type, size = 11) => {
+  const labels = { vision: 'Vision', tools: 'Tools', local: 'Local model' };
+  const label = labels[type] || '';
+  if (type === 'vision') return `<span title="${label}" style="display:inline-flex"><svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></span>`;
+  if (type === 'tools') return `<span title="${label}" style="display:inline-flex"><svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span>`;
+  if (type === 'local') return `<span title="${label}" style="display:inline-flex"><svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><circle cx="6" cy="6" r="1" fill="currentColor"/><circle cx="6" cy="18" r="1" fill="currentColor"/></svg></span>`;
+  return '';
+};
+
+function _capIconsHtml(m, size = 11) {
+  let h = '';
+  if (m.local) h += _capIcon('local', size);
+  if (m.vision) h += _capIcon('vision', size);
+  if (m.tools) h += _capIcon('tools', size);
+  return h;
+}
+
+let _dropdownSelected = null;
+
+function populateModelDropdown(ignored, currentModel) {
+  const list = document.getElementById('model-dropdown-list');
+  const textEl = document.getElementById('model-dropdown-text');
+  const badgesEl = document.getElementById('model-capability-badges');
+  if (!list || !textEl) return;
+
+  const models = getAvailableModels();
+  list.innerHTML = '';
+  const hasMultiplePlatforms = models.some(m => m.platform !== 'anthropic');
+
+  const makeOption = (m) => {
+    const div = document.createElement('div');
+    div.className = 'h-model-option';
+    div.dataset.value = m.value;
+    if (m.base_url) div.dataset.baseUrl = m.base_url;
+    if (m.platform_id) div.dataset.platformId = m.platform_id;
+    const icons = _capIconsHtml(m);
+    div.innerHTML = `<span>${m.label}</span>${icons ? `<span class="h-model-cap-icons">${icons}</span>` : ''}`;
+    div.addEventListener('click', () => selectModelOption(m.value));
+    return div;
+  };
+
+  if (hasMultiplePlatforms) {
+    const seen = new Set();
+    for (const m of models) {
+      if (seen.has(m.platform)) continue;
+      seen.add(m.platform);
+      const header = document.createElement('div');
+      header.className = 'h-model-optgroup';
+      header.textContent = m.platform === 'anthropic' ? 'Anthropic' : m.platform;
+      list.appendChild(header);
+      for (const pm of models.filter(x => x.platform === m.platform).sort((a, b) => a.label.localeCompare(b.label))) {
+        list.appendChild(makeOption(pm));
+      }
+    }
+  } else {
+    for (const m of models) list.appendChild(makeOption(m));
+  }
+
+  const target = currentModel || 'claude-sonnet-4-6';
+  _setDropdownValue(target, models);
+}
+
+function _setDropdownValue(value, models) {
+  if (!models) models = getAvailableModels();
+  const list = document.getElementById('model-dropdown-list');
+  const textEl = document.getElementById('model-dropdown-text');
+  const badgesEl = document.getElementById('model-capability-badges');
+  if (!list || !textEl) return;
+
+  _dropdownSelected = value;
+  const m = models.find(x => x.value === value);
+  textEl.textContent = m ? m.label : value;
+  if (badgesEl) badgesEl.innerHTML = m ? _capIconsHtml(m, 13) : '';
+
+  list.querySelectorAll('.h-model-option').forEach(el => {
+    el.classList.toggle('selected', el.dataset.value === value);
+  });
+}
+
+function selectModelOption(value) {
+  _setDropdownValue(value);
+  const list = document.getElementById('model-dropdown-list');
+  if (list) list.classList.remove('open');
+
+  if (!currentRoomId || !ws) return;
+  const models = getAvailableModels();
+  const m = models.find(x => x.value === value);
+  const msg = { type: 'set_room_model', model: value };
+  if (m?.platform_id && m.platform_id !== 'anthropic') {
+    msg.model_config = { platform_id: m.platform_id, base_url: m.base_url || '' };
+  } else {
+    msg.model_config = null;
+  }
+  ws.send(JSON.stringify(msg));
+}
+
 function updateModelSelector(room, parts) {
   const wrap = document.getElementById('model-selector-wrap');
-  const sel = document.getElementById('model-select');
-  if (!wrap || !sel) return;
-  const hasClaudeAgent = (parts || []).some(p => p.adapter === 'claude');
-  wrap.style.display = hasClaudeAgent ? 'flex' : 'none';
-  if (hasClaudeAgent) {
-    sel.value = room.model || 'claude-sonnet-4-6';
+  if (!wrap) return;
+  const hasAIAgent = (parts || []).some(p => p.type === 'ai');
+  wrap.style.display = hasAIAgent ? 'flex' : 'none';
+  if (hasAIAgent) {
+    populateModelDropdown(null, room.model);
   }
 }
 
-document.getElementById('model-select')?.addEventListener('change', function() {
-  if (!currentRoomId || !ws) return;
-  ws.send(JSON.stringify({ type: 'set_room_model', model: this.value }));
+document.getElementById('model-dropdown-trigger')?.addEventListener('click', function(e) {
+  e.stopPropagation();
+  const list = document.getElementById('model-dropdown-list');
+  if (!list) return;
+  const isOpen = list.classList.toggle('open');
+  if (isOpen && _dropdownSelected) {
+    const sel = list.querySelector('.h-model-option.selected');
+    if (sel) sel.scrollIntoView({ block: 'nearest' });
+  }
+});
+
+document.addEventListener('click', () => {
+  document.getElementById('model-dropdown-list')?.classList.remove('open');
 });
 
 function mentionPopupNavigate(dir) {

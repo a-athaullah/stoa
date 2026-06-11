@@ -114,6 +114,7 @@
       <span class="s-tab" data-tab="server">server<span class="s-tab-ul"></span></span>
       <span class="s-tab" data-tab="docs">docs<span class="s-tab-ul"></span></span>
       <span class="s-tab" data-tab="general">general<span class="s-tab-ul"></span></span>
+      <span class="s-tab" data-tab="platforms">platforms<span class="s-tab-ul"></span></span>
       <span class="s-tab" data-tab="automation">automation<span class="s-tab-ul"></span></span>
     </div>
 
@@ -309,6 +310,32 @@
       </div>
     </div>
 
+    <!-- tab: platforms -->
+    <div class="s-content" id="s-tab-platforms" style="display:none">
+      <div class="s-content-inner">
+        <div class="s-server-card" style="margin-bottom:10px">
+          <div class="s-server-card-header">
+            <span style="font-family:var(--h-serif);font-size:16px;color:var(--h-ink)">add platform</span>
+            <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)">connect external model providers — OpenRouter, Ollama, etc.</span>
+          </div>
+          <div style="padding:12px 18px">
+            <button class="h-btn-primary" id="s-add-platform-btn" style="padding:6px 12px 6px 10px;display:inline-flex;align-items:center;gap:6px;font-size:13px;letter-spacing:.005em">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
+              add platform
+            </button>
+          </div>
+          <div id="s-add-platform-panel"></div>
+        </div>
+        <div class="s-server-card">
+          <div class="s-server-card-header">
+            <span style="font-family:var(--h-serif);font-size:16px;color:var(--h-ink)">platforms</span>
+            <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)">configured model providers</span>
+          </div>
+          <div id="s-platforms-list"></div>
+        </div>
+      </div>
+    </div>
+
     <!-- tab: automation -->
     <div class="s-content" id="s-tab-automation" style="display:none"></div>
 
@@ -382,15 +409,15 @@
           <div class="h-fmt-sep"></div>
           <button class="h-fmt-btn" data-fmt="link" title="Link (Ctrl+K)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.5-1.5"/></svg></button>
           <span id="model-selector-wrap" style="display:none;align-items:center;gap:4px;font-size:11px;opacity:0.7;margin-left:auto">
-            <span>Claude:</span>
-            <select id="model-select" title="Switch Claude model" style="font-size:11px;background:transparent;border:none;cursor:pointer;color:inherit;outline:none;padding:0 2px">
-              <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
-              <option value="claude-sonnet-4-5">Sonnet 4.5</option>
-              <option value="claude-sonnet-4-6">Sonnet 4.6</option>
-              <option value="claude-opus-4-6">Opus 4.6</option>
-              <option value="claude-opus-4-7">Opus 4.7</option>
-              <option value="claude-opus-4-8">Opus 4.8</option>
-            </select>
+            <span id="model-selector-label">AI Model:</span>
+            <div id="model-dropdown" class="h-model-dropdown">
+              <button id="model-dropdown-trigger" class="h-model-dropdown-trigger" title="Switch AI model">
+                <span id="model-dropdown-text">Select model</span>
+                <span id="model-capability-badges" style="display:inline-flex;gap:2px;opacity:0.6"></span>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <div id="model-dropdown-list" class="h-model-dropdown-list"></div>
+            </div>
           </span>
         </div>
         <div class="h-composer-top">
