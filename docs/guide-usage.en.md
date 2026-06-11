@@ -57,7 +57,7 @@ A **model selector** appears at the right side of the formatting toolbar in the 
 - **Sonnet 4.5 / 4.6** — balanced performance and quality (default: Sonnet 4.6)
 - **Opus 4.6 / 4.7 / 4.8** — highest capability, best for complex or long-context tasks
 
-**External platform models**: If you've configured additional platforms in **Settings > Platforms** (e.g., Ollama Cloud, OpenRouter), their enabled models also appear in the selector, grouped by platform name. Models with vision capability are marked with a 👁 icon.
+**External platform models**: If you've configured additional platforms in **Settings > Platforms** (e.g., Ollama Cloud, OpenRouter), their enabled models also appear in the selector, grouped by platform name. Models with vision capability are marked with a 👁 icon; models with tool-calling support are marked with a ⚙ icon. Models without tool-calling run in text-only mode (no file reading, no code execution via tools).
 
 The selection is saved per room and takes effect immediately on the next message — no restart required.
 
@@ -526,7 +526,7 @@ Configure external AI model providers beyond the built-in Claude models. Click *
 - **Base URL** — the API endpoint (e.g., `https://ollama.com/v1`, `https://openrouter.ai/api/v1`)
 - **API Key** — your API key for that provider
 
-After saving, click **discover models** to probe which models are available and accessible with your API key. Discovery also detects vision capability per model — models that support image input are marked with a 👁 icon.
+After saving, click **discover models** to probe which models are available and accessible with your API key. Discovery detects capabilities per model — vision support (👁) and tool-calling support (⚙). Models without tool-calling are included and usable, but run in text-only mode.
 
 **Enabling and disabling models**: After discovery, a checklist appears showing all found models. Check only the models you want available in the room selector, then click **save selection**. This keeps the selector uncluttered when a platform has many models. Use **select all / deselect all** to quickly toggle everything. The enabled selection persists across sessions and updates automatically when you re-discover.
 

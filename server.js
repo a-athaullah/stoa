@@ -1185,7 +1185,6 @@ const server = http.createServer(async (req, res) => {
       const usableNames = results.filter(r => r.ok).map(r => r.model);
       const localSet = new Set(localModels);
       const usable = (await probeCapabilities(usableNames, plat.base_url, headers))
-        .filter(m => m.tools)
         .map(m => ({ ...m, local: localSet.has(m.model) }));
       saveCachedModels(platformId, usable);
       res.write(JSON.stringify({ type: 'done', tested: candidates.length, usable }) + '\n');
@@ -1215,7 +1214,7 @@ const server = http.createServer(async (req, res) => {
       const seen = new Set(localModels);
       const allModels = [...localModels, ...cloudModels.filter(m => !seen.has(m))];
       if (!allModels.length) return json(res, { status: 'error', message: 'No models found' });
-      const models = (await probeCapabilities(allModels, plat.base_url, headers)).filter(m => m.tools);
+      const models = await probeCapabilities(allModels, plat.base_url, headers);
       saveCachedModels(platformId, models);
       return json(res, { status: 'ok', models });
     } catch (e) {
@@ -3325,7 +3324,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   ).get(roomId);
   const roomRow2 = db.prepare('SELECT model, model_config FROM rooms WHERE id=?').get(roomId);
   const roomModel = roomRow2?.model || null;
-  let modelBaseUrl, modelApiKeys;
+  let modelBaseUrl, modelApiKeys, modelToolsSupported;
   if (roomRow2?.model_config) {
     try {
       const cfg = JSON.parse(roomRow2.model_config);
@@ -3337,6 +3336,10 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
           if (plat) {
             modelBaseUrl = plat.base_url || cfg.base_url || undefined;
             modelApiKeys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : undefined);
+            if (Array.isArray(plat.cached_models) && roomModel) {
+              const modelInfo = plat.cached_models.find(m => (typeof m === 'string' ? m : m.model) === roomModel);
+              if (modelInfo && typeof modelInfo === 'object') modelToolsSupported = modelInfo.tools === true;
+            }
           }
         }
       }
@@ -3380,6 +3383,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         model: roomModel    || undefined,
         base_url: modelBaseUrl,
         api_keys: modelApiKeys,
+        tools_supported: modelToolsSupported === false ? false : undefined,
         rawHistory: rawHistory.length ? rawHistory : undefined,
       }));
       console.log(`[trigger] sent to ${ai.name} agent, msgId=${msgId}`);
