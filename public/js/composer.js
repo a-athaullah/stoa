@@ -1022,8 +1022,7 @@ function populateModelDropdown(sel, currentModel) {
       for (const pm of models.filter(x => x.platform === m.platform).sort((a, b) => a.label.localeCompare(b.label))) {
         const opt = document.createElement('option');
         opt.value = pm.value;
-        const caps = [pm.vision ? 'V' : '', pm.tools ? 'T' : ''].filter(Boolean).join('');
-        opt.textContent = caps ? `[${caps}] ${pm.label}` : pm.label;
+        opt.textContent = pm.label;
         if (pm.base_url) opt.dataset.baseUrl = pm.base_url;
         if (pm.platform_id) opt.dataset.platformId = pm.platform_id;
         optgroup.appendChild(opt);
