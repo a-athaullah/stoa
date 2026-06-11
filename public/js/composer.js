@@ -993,7 +993,7 @@ async function fetchPlatformModels() {
     for (const g of groups) {
       const platKey = g.platform_id === 'anthropic' ? 'anthropic' : g.platform_name;
       for (const m of g.models) {
-        allServerModels.push({ value: m.value, label: m.label, vision: m.vision || false, platform: platKey, platform_id: g.platform_id, base_url: g.base_url || '' });
+        allServerModels.push({ value: m.value, label: m.label, vision: m.vision || false, tools: m.tools || false, platform: platKey, platform_id: g.platform_id, base_url: g.base_url || '' });
       }
     }
     populateModelDropdown();
@@ -1022,7 +1022,8 @@ function populateModelDropdown(sel, currentModel) {
       for (const pm of models.filter(x => x.platform === m.platform).sort((a, b) => a.label.localeCompare(b.label))) {
         const opt = document.createElement('option');
         opt.value = pm.value;
-        opt.textContent = pm.vision ? '👁 ' + pm.label : pm.label;
+        const caps = [pm.vision ? 'V' : '', pm.tools ? 'T' : ''].filter(Boolean).join('');
+        opt.textContent = caps ? `[${caps}] ${pm.label}` : pm.label;
         if (pm.base_url) opt.dataset.baseUrl = pm.base_url;
         if (pm.platform_id) opt.dataset.platformId = pm.platform_id;
         optgroup.appendChild(opt);
@@ -1038,6 +1039,19 @@ function populateModelDropdown(sel, currentModel) {
     }
   }
   sel.value = currentModel || 'claude-sonnet-4-6';
+  updateModelBadges(sel.value);
+}
+
+function updateModelBadges(modelValue) {
+  const wrap = document.getElementById('model-capability-badges');
+  if (!wrap) return;
+  const models = getAvailableModels();
+  const m = models.find(x => x.value === modelValue);
+  if (!m) { wrap.innerHTML = ''; return; }
+  let html = '';
+  if (m.vision) html += '<svg title="Vision" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+  if (m.tools) html += '<svg title="Tools" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
+  wrap.innerHTML = html;
 }
 
 function updateModelSelector(room, parts) {
@@ -1061,6 +1075,7 @@ document.getElementById('model-select')?.addEventListener('change', function() {
     msg.model_config = null;
   }
   ws.send(JSON.stringify(msg));
+  updateModelBadges(this.value);
 });
 
 function mentionPopupNavigate(dir) {

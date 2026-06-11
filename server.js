@@ -1059,7 +1059,7 @@ const server = http.createServer(async (req, res) => {
     );
   }
 
-  async function probeVision(modelNames, baseUrl, headers) {
+  async function probeCapabilities(modelNames, baseUrl, headers) {
     const showUrl = new URL(baseUrl).origin + '/api/show';
     return Promise.all(modelNames.map(async (model) => {
       try {
@@ -1067,10 +1067,11 @@ const server = http.createServer(async (req, res) => {
         const t = setTimeout(() => ctrl.abort(), 8000);
         const r = await fetch(showUrl, { method: 'POST', headers, signal: ctrl.signal, body: JSON.stringify({ model }) });
         clearTimeout(t);
-        if (!r.ok) return { model, vision: false };
+        if (!r.ok) return { model, vision: false, tools: false };
         const d = await r.json().catch(() => null);
-        return { model, vision: Array.isArray(d?.capabilities) && d.capabilities.includes('vision') };
-      } catch { return { model, vision: false }; }
+        const caps = Array.isArray(d?.capabilities) ? d.capabilities : [];
+        return { model, vision: caps.includes('vision'), tools: caps.includes('tools') };
+      } catch { return { model, vision: false, tools: false }; }
     }));
   }
 
@@ -1148,7 +1149,7 @@ const server = http.createServer(async (req, res) => {
       await Promise.all(Array.from({ length: Math.min(concurrency, candidates.length) }, worker));
 
       const usableNames = results.filter(r => r.ok).map(r => r.model);
-      const usable = await probeVision(usableNames, plat.base_url, headers);
+      const usable = await probeCapabilities(usableNames, plat.base_url, headers);
       saveCachedModels(platformId, usable);
       res.write(JSON.stringify({ type: 'done', tested: candidates.length, usable }) + '\n');
       return res.end();
@@ -1170,7 +1171,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const listResult = await fetchModelList(plat.base_url, headers, 8000);
       if (!listResult.ok) return json(res, { status: 'error', message: `HTTP ${listResult.status}` });
-      const models = await probeVision(listResult.models, plat.base_url, headers);
+      const models = await probeCapabilities(listResult.models, plat.base_url, headers);
       saveCachedModels(platformId, models);
       return json(res, { status: 'ok', models });
     } catch (e) {
@@ -1182,12 +1183,12 @@ const server = http.createServer(async (req, res) => {
     const raw = getSetting('ai_platforms');
     const platforms = raw ? JSON.parse(raw) : [];
     const ANTHROPIC_MODELS = [
-      { value: 'claude-opus-4-8', label: 'Opus 4.8' },
-      { value: 'claude-opus-4-7', label: 'Opus 4.7' },
-      { value: 'claude-opus-4-6', label: 'Opus 4.6' },
-      { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
-      { value: 'claude-sonnet-4-5', label: 'Sonnet 4.5' },
-      { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
+      { value: 'claude-opus-4-8', label: 'Opus 4.8', vision: true, tools: true },
+      { value: 'claude-opus-4-7', label: 'Opus 4.7', vision: true, tools: true },
+      { value: 'claude-opus-4-6', label: 'Opus 4.6', vision: true, tools: true },
+      { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6', vision: true, tools: true },
+      { value: 'claude-sonnet-4-5', label: 'Sonnet 4.5', vision: true, tools: true },
+      { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', vision: true, tools: true },
     ];
     const result = [{ platform_id: 'anthropic', platform_name: 'Claude (built-in)', models: ANTHROPIC_MODELS }];
     for (const p of platforms) {
@@ -1198,8 +1199,9 @@ const server = http.createServer(async (req, res) => {
         for (const m of p.cached_models) {
           const modelName = typeof m === 'string' ? m : m.model;
           const vision = typeof m === 'object' ? (m.vision || false) : false;
+          const tools = typeof m === 'object' ? (m.tools || false) : false;
           if (enabled && !enabled.has(modelName)) continue;
-          group.models.push({ value: modelName, label: modelName, vision });
+          group.models.push({ value: modelName, label: modelName, vision, tools });
         }
       }
       result.push(group);
