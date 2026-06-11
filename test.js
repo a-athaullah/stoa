@@ -1378,12 +1378,33 @@ async function run() {
     assert.ok(doneEv, 'no done event');
     assert.ok(Array.isArray(doneEv.usable), 'done.usable not array');
     assert.ok(typeof doneEv.tested === 'number', 'done.tested not a number');
-    // usable is [{model, vision}] objects
+    // usable is [{model, vision, tools, local}] objects — includes non-tool-calling models
     if (doneEv.usable.length > 0) {
       assert.ok(typeof doneEv.usable[0].model === 'string', 'usable[0].model not string');
       assert.ok(typeof doneEv.usable[0].vision === 'boolean', 'usable[0].vision not boolean');
+      assert.ok(typeof doneEv.usable[0].tools === 'boolean', 'usable[0].tools not boolean');
     }
-    console.log(`    discovered ${doneEv.usable.length} of ${doneEv.tested} usable models`);
+    const noToolsModels = doneEv.usable.filter(m => !m.tools);
+    console.log(`    discovered ${doneEv.usable.length} of ${doneEv.tested} usable models (${noToolsModels.length} without tool-calling)`);
+  });
+
+  await test('POST /api/ai/platforms/:id/discover-models — non-tool-calling models included in results [slow ~3min]', async () => {
+    const platforms = (await req('GET', '/api/ai/platforms')).body;
+    const ollamaCloud = Array.isArray(platforms) && platforms.find(p => p.base_url && p.base_url.includes('ollama.com'));
+    if (!ollamaCloud) { console.log('    (skipped — no Ollama Cloud platform configured)'); return; }
+    const r = await streamReq('POST', `/api/ai/platforms/${encodeURIComponent(ollamaCloud.id)}/discover-models`, 300000);
+    assert.strictEqual(r.status, 200);
+    const doneEv = r.events.find(e => e.type === 'done');
+    assert.ok(doneEv, 'no done event');
+    assert.ok(Array.isArray(doneEv.usable), 'done.usable not array');
+    // usable must equal all ok probes — non-tool-calling models are no longer filtered out
+    const okCount = r.events.filter(e => e.type === 'progress' && e.ok).length;
+    assert.strictEqual(doneEv.usable.length, okCount, `usable count (${doneEv.usable.length}) should match ok probes (${okCount}) — filtering by tools would cause mismatch`);
+    // Each model must have a tools boolean field
+    for (const m of doneEv.usable) {
+      assert.ok(typeof m.tools === 'boolean', `model ${m.model} missing boolean tools field`);
+    }
+    console.log(`    ${doneEv.usable.filter(m => !m.tools).length} non-tool-calling models included`);
   });
 
   await test('GET /api/ai/models — returns array with anthropic group', async () => {

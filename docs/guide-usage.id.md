@@ -57,7 +57,7 @@ Klik judul room di header chat. Judul menjadi editable — ketik nama baru dan t
 - **Sonnet 4.5 / 4.6** — performa dan kualitas seimbang (default: Sonnet 4.6)
 - **Opus 4.6 / 4.7 / 4.8** — kapabilitas tertinggi, cocok untuk tugas kompleks atau konteks panjang
 
-**Model platform eksternal**: Jika Anda sudah mengonfigurasi platform tambahan di **Settings > Platforms** (misal Ollama Cloud, OpenRouter), model yang diaktifkan dari platform tersebut juga muncul di selector, dikelompokkan berdasarkan nama platform. Model yang mendukung input gambar ditandai dengan ikon 👁.
+**Model platform eksternal**: Jika Anda sudah mengonfigurasi platform tambahan di **Settings > Platforms** (misal Ollama Cloud, OpenRouter), model yang diaktifkan dari platform tersebut juga muncul di selector, dikelompokkan berdasarkan nama platform. Model yang mendukung input gambar ditandai dengan ikon 👁; model yang mendukung tool-calling ditandai dengan ikon ⚙. Model tanpa tool-calling berjalan dalam mode teks saja (tidak bisa baca file atau eksekusi kode via tools).
 
 Pilihan disimpan per room dan langsung berlaku pada pesan berikutnya — tanpa restart.
 
@@ -526,7 +526,7 @@ Konfigurasi provider model AI eksternal di luar model Claude bawaan. Klik **+ ad
 - **Base URL** — endpoint API (misal `https://ollama.com/v1`, `https://openrouter.ai/api/v1`)
 - **API Key** — API key untuk provider tersebut
 
-Setelah menyimpan, klik **discover models** untuk mendeteksi model yang tersedia dan dapat diakses dengan API key Anda. Discovery juga mendeteksi kemampuan vision per model — model yang mendukung input gambar ditandai dengan ikon 👁.
+Setelah menyimpan, klik **discover models** untuk mendeteksi model yang tersedia dan dapat diakses dengan API key Anda. Discovery mendeteksi kapabilitas per model — vision (👁) dan tool-calling (⚙). Model tanpa tool-calling tetap ditampilkan dan bisa digunakan, namun berjalan dalam mode teks saja.
 
 **Mengaktifkan dan menonaktifkan model**: Setelah discovery, muncul checklist semua model yang ditemukan. Centang hanya model yang ingin tampil di selector room, lalu klik **save selection**. Gunakan **select all / deselect all** untuk toggle cepat. Pilihan disimpan permanen dan diperbarui otomatis saat Anda re-discover.
 
