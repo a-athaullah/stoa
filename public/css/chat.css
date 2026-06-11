@@ -1579,7 +1579,7 @@ html.dark .h-bubble :not(pre) > code {
 .h-model-dropdown-list {
   display: none; position: absolute; bottom: 100%; left: 0;
   min-width: 220px; max-height: 320px; overflow-y: auto;
-  background: var(--h-surface, #1e1e1e); border: 1px solid var(--h-hairline, #333);
+  background: var(--h-bg, #1a1a1a); border: 1px solid var(--h-hairline, #333);
   border-radius: 6px; box-shadow: 0 -4px 16px rgba(0,0,0,0.4);
   z-index: 200; margin-bottom: 4px; padding: 4px 0;
 }
