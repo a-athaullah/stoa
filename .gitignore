@@ -7,3 +7,6 @@ uploads/
 *.db-shm
 *.db-wal
 .cookies.txt
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
