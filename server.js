@@ -1096,7 +1096,10 @@ const server = http.createServer(async (req, res) => {
         clearTimeout(timer);
         if (!resp.ok) continue;
         const data = await resp.json().catch(() => null);
-        const raw = data?.data?.map(m => m.id) || data?.models?.map(m => m.name || m.model) || [];
+        const models = data?.data || data?.models || [];
+        const raw = data?.data
+          ? models.map(m => m.id)
+          : models.filter(m => !m.remote_model).map(m => m.name || m.model);
         return { ok: true, status: resp.status, models: raw };
       } catch { continue; }
     }
