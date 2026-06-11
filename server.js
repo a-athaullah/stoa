@@ -1185,6 +1185,7 @@ const server = http.createServer(async (req, res) => {
       const usableNames = results.filter(r => r.ok).map(r => r.model);
       const localSet = new Set(localModels);
       const usable = (await probeCapabilities(usableNames, plat.base_url, headers))
+        .filter(m => m.tools)
         .map(m => ({ ...m, local: localSet.has(m.model) }));
       saveCachedModels(platformId, usable);
       res.write(JSON.stringify({ type: 'done', tested: candidates.length, usable }) + '\n');
@@ -1214,7 +1215,7 @@ const server = http.createServer(async (req, res) => {
       const seen = new Set(localModels);
       const allModels = [...localModels, ...cloudModels.filter(m => !seen.has(m))];
       if (!allModels.length) return json(res, { status: 'error', message: 'No models found' });
-      const models = await probeCapabilities(allModels, plat.base_url, headers);
+      const models = (await probeCapabilities(allModels, plat.base_url, headers)).filter(m => m.tools);
       saveCachedModels(platformId, models);
       return json(res, { status: 'ok', models });
     } catch (e) {
