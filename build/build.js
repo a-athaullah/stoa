@@ -25,7 +25,21 @@ execSync(`npx esbuild public/dist/_app.css --bundle --minify --outfile=public/di
 fs.unlinkSync(path.join(dist, '_app.css'));
 
 // ── Minify app JS → dist/stoa.min.js ──
-const jsFiles = ['core', 'rooms', 'websocket', 'workspace', 'markdown', 'chat', 'composer', 'settings', 'init'];
+const jsFiles = [
+  'core',
+  'rooms/header', 'rooms/sidebar', 'rooms/list', 'rooms/open',
+  'websocket',
+  'workspace/panel', 'workspace/edit-mode', 'workspace/codemirror', 'workspace/dialogs', 'workspace/files',
+  'markdown',
+  'chat/append', 'chat/thinking', 'chat/stream', 'chat/trail', 'chat/invite', 'chat/upload',
+  'composer/emoji', 'composer/input', 'composer/rooms-modal',
+  'composer/scroll', 'composer/search', 'composer/utils', 'composer/models',
+  'settings/agents', 'settings/agents-add', 'settings/tabs',
+  'settings/docs', 'settings/appearance', 'settings/platforms', 'settings/account',
+  'settings/init',
+  'init/setup', 'init/main', 'init/pwa', 'init/speech',
+  'automation/state', 'automation/connections', 'automation/automations', 'automation/events', 'automation/api',
+];
 const jsConcat = jsFiles.map(f => fs.readFileSync(path.join(pub, 'js', `${f}.js`), 'utf8')).join('\n;\n');
 fs.writeFileSync(path.join(dist, '_app.js'), jsConcat);
 execSync(`npx esbuild public/dist/_app.js --bundle --minify --outfile=public/dist/stoa.min.js`, { cwd: root, stdio: 'inherit' });
