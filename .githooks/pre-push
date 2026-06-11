@@ -2,6 +2,8 @@
 # Auto-bump version on every push
 # Conventional commits: fix: → patch, feat: → minor, feat!/BREAKING: → major
 
+export PATH="/opt/homebrew/bin:/opt/homebrew/opt/node/bin:/usr/local/bin:/usr/bin:/bin:/home/ubuntu/.local/bin:/home/ubuntu/omnichannel-probe/app/node_modules/.bin:/home/ubuntu/omnichannel-probe/node_modules/.bin:/home/ubuntu/node_modules/.bin:/home/node_modules/.bin:/node_modules/.bin:/usr/lib/node_modules/npm/node_modules/@npmcli/run-script/lib/node-gyp-bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
 # Skip if last commit is already a version bump
 LAST_MSG=$(git log -1 --format="%s" 2>/dev/null)
 if echo "$LAST_MSG" | grep -q "\[version\]"; then
