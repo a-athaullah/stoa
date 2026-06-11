@@ -99,6 +99,8 @@ Untuk melihat daftar model yang sudah diunduh:
 ollama list
 ```
 
+> **Penting:** Stoa memerlukan model yang mendukung **tool calling**. Model tanpa dukungan tools otomatis dikecualikan saat discovery. Cek kemampuan model di halaman Ollama library — cari tag "Tools". Sebagian besar model terbaru (Qwen 2.5+, Llama 3.1+, Mistral, Gemma 4) mendukung tools.
+
 ---
 
 ## Menambahkan Ollama Lokal ke Stoa
@@ -206,6 +208,10 @@ Jika mengembalikan daftar model, koneksi berhasil dan Stoa akan dapat menemukan 
 - Pastikan Ollama sedang berjalan: `ollama list` harus mengembalikan hasil
 - Periksa URL — Ollama lokal adalah `http://localhost:11434/v1` (bukan `https://`)
 - Mengakses melalui Tailscale IP? Lihat bagian [Multi-Agent Setup](#berbagi-ollama-di-beberapa-mesin-multi-agent-setup) di atas — Ollama memerlukan `OLLAMA_HOST=0.0.0.0` terlebih dahulu
+
+**Model tidak muncul setelah Discover (padahal sudah di-pull)**
+
+- Model kemungkinan tidak mendukung **tool calling**, yang diperlukan oleh Stoa. Hanya model dengan dukungan tools yang ditampilkan. Coba model yang mendukung tools (misalnya `qwen2.5-coder:7b`, `llama3.1:8b`, `gemma4:12b`).
 
 **Model tidak merespons**
 

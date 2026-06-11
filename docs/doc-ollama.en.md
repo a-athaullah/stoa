@@ -99,6 +99,8 @@ To list models already downloaded:
 ollama list
 ```
 
+> **Important:** Stoa requires models that support **tool calling**. Models without tool support are automatically excluded during discovery. Check a model's capabilities on its Ollama library page — look for the "Tools" tag. Most recent models (Qwen 2.5+, Llama 3.1+, Mistral, Gemma 4) support tools.
+
 ---
 
 ## Adding Local Ollama to Stoa
@@ -206,6 +208,10 @@ If it returns a list of models, the connection works and Stoa will be able to di
 - Make sure Ollama is running: `ollama list` should return results
 - Check the URL — local Ollama is `http://localhost:11434/v1` (not `https://`)
 - Accessing via Tailscale IP? See the [Multi-Agent Setup](#sharing-ollama-across-multiple-machines-multi-agent-setup) section above — Ollama needs `OLLAMA_HOST=0.0.0.0` first
+
+**Model doesn't appear after Discover (but it's pulled)**
+
+- The model likely doesn't support **tool calling**, which Stoa requires. Only models with tool support are shown. Try a model that supports tools (e.g. `qwen2.5-coder:7b`, `llama3.1:8b`, `gemma4:12b`).
 
 **Model doesn't respond**
 

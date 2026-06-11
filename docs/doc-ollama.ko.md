@@ -99,6 +99,8 @@ ollama pull llama3.1:8b
 ollama list
 ```
 
+> **중요:** Stoa는 **도구 호출(tool calling)**을 지원하는 모델이 필요합니다. 도구를 지원하지 않는 모델은 디스커버리 시 자동으로 제외됩니다. Ollama 라이브러리 페이지에서 모델의 기능을 확인하세요 — "Tools" 태그를 찾으세요. 대부분의 최신 모델(Qwen 2.5+, Llama 3.1+, Mistral, Gemma 4)은 도구를 지원합니다.
+
 ---
 
 ## 로컬 Ollama를 Stoa에 추가
@@ -206,6 +208,10 @@ curl http://<ollama-machine-ip>:11434/api/tags
 - Ollama가 실행 중인지 확인하세요: `ollama list`가 결과를 반환해야 합니다
 - URL을 확인하세요 — 로컬 Ollama는 `http://localhost:11434/v1`입니다 (`https://`가 아님)
 - Tailscale IP를 통해 접근하고 있나요? 위의 [멀티 에이전트 설정](#여러-머신에서-ollama-공유하기-멀티-에이전트-설정) 섹션을 참조하세요 — 먼저 `OLLAMA_HOST=0.0.0.0` 설정이 필요합니다
+
+**디스커버리 후 모델이 표시되지 않음 (이미 pull됨)**
+
+- 해당 모델이 Stoa에 필요한 **도구 호출**을 지원하지 않을 수 있습니다. 도구를 지원하는 모델만 표시됩니다. 도구를 지원하는 모델을 사용해 보세요 (예: `qwen2.5-coder:7b`, `llama3.1:8b`, `gemma4:12b`).
 
 **모델이 응답하지 않음**
 

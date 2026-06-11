@@ -99,6 +99,8 @@ ollama pull llama3.1:8b
 ollama list
 ```
 
+> **重要：** Stoa 需要支持**工具调用（tool calling）**的模型。不支持工具的模型在发现时会自动排除。请在 Ollama 库页面查看模型的功能 — 寻找 "Tools" 标签。大多数较新的模型（Qwen 2.5+、Llama 3.1+、Mistral、Gemma 4）都支持工具。
+
 ---
 
 ## 将本地 Ollama 添加到 Stoa
@@ -206,6 +208,10 @@ curl http://<ollama-machine-ip>:11434/api/tags
 - 确保 Ollama 正在运行：`ollama list` 应该返回结果
 - 检查 URL — 本地 Ollama 地址为 `http://localhost:11434/v1`（不是 `https://`）
 - 通过 Tailscale IP 访问？请参阅上面的[多智能体设置](#跨多台机器共享-ollama多智能体设置)部分 — 需要先设置 `OLLAMA_HOST=0.0.0.0`
+
+**发现后模型未显示（已经 pull 过）**
+
+- 该模型可能不支持 Stoa 所需的**工具调用**。只有支持工具的模型才会显示。请尝试支持工具的模型（例如 `qwen2.5-coder:7b`、`llama3.1:8b`、`gemma4:12b`）。
 
 **模型没有响应**
 
