@@ -1397,8 +1397,9 @@ async function run() {
     const doneEv = r.events.find(e => e.type === 'done');
     assert.ok(doneEv, 'no done event');
     assert.ok(Array.isArray(doneEv.usable), 'done.usable not array');
-    // All probed models (tools:true and tools:false) must be included — no filtering by tools
-    assert.ok(doneEv.usable.length >= doneEv.usable.filter(m => m.tools).length, 'usable should include non-tool models');
+    // usable must equal all ok probes — non-tool-calling models are no longer filtered out
+    const okCount = r.events.filter(e => e.type === 'progress' && e.ok).length;
+    assert.strictEqual(doneEv.usable.length, okCount, `usable count (${doneEv.usable.length}) should match ok probes (${okCount}) — filtering by tools would cause mismatch`);
     // Each model must have a tools boolean field
     for (const m of doneEv.usable) {
       assert.ok(typeof m.tools === 'boolean', `model ${m.model} missing boolean tools field`);
