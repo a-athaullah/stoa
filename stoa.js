@@ -743,7 +743,11 @@ async function processTrigger(msg) {
 
   if (localFiles.length) {
     const fileList = localFiles.map(f => `- ${f.name}: ${f.path}`).join('\n');
-    finalPrompt += `\n\n---\nFile yang dilampirkan (sudah didownload ke lokal, gunakan Read tool untuk membaca/melihat):\n${fileList}`;
+    if (msg.tools_supported === false) {
+      finalPrompt += `\n\n---\nFile yang dilampirkan:\n${fileList}`;
+    } else {
+      finalPrompt += `\n\n---\nFile yang dilampirkan (sudah didownload ke lokal, gunakan Read tool untuk membaca/melihat):\n${fileList}`;
+    }
   }
 
   let sessionRef = null;
@@ -780,9 +784,10 @@ async function processTrigger(msg) {
       session.shutdown();
       const flags = rid ? ['--resume', rid] : [];
       if (targetModel) flags.push('--model', targetModel);
+      if (msg.tools_supported === false) flags.push('--tools', '');
       session = new ClaudeSession({ workDir: targetDir, flags, resumeId: rid || null, env: envToUse });
       sessionPool.set(targetDir, session);
-      console.log(`[stoa] Session restarted: workdir=${targetDir}${rid ? ' resume=' + rid.slice(0, 8) + '...' : ' (fresh)'}${targetModel ? ' model=' + targetModel : ''}${msg.base_url ? ' base_url=' + msg.base_url : ''}`);
+      console.log(`[stoa] Session restarted: workdir=${targetDir}${rid ? ' resume=' + rid.slice(0, 8) + '...' : ' (fresh)'}${targetModel ? ' model=' + targetModel : ''}${msg.base_url ? ' base_url=' + msg.base_url : ''}${msg.tools_supported === false ? ' tools=disabled' : ''}`);
     }
     activeTriggers.set(message_id, { workdir: targetDir, session });
     let fullContent = '';
@@ -836,6 +841,7 @@ async function processTrigger(msg) {
           session.shutdown();
           const flags = rid ? ['--resume', rid] : [];
           if (targetModel) flags.push('--model', targetModel);
+          if (msg.tools_supported === false) flags.push('--tools', '');
           session = new ClaudeSession({ workDir: targetDir, flags, resumeId: rid || null, env: rotatedEnv });
           sessionPool.set(targetDir, session);
           activeTriggers.set(message_id, { workdir: targetDir, session });
