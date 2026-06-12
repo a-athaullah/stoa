@@ -62,7 +62,9 @@ function renderChatHeader(room, participants) {
   });
   info.appendChild(name);
 
-
+  const tagline = document.createElement('div');
+  tagline.className = 'h-room-tagline';
+  info.appendChild(tagline);
 
   header.appendChild(info);
 

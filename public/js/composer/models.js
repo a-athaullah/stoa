@@ -393,6 +393,7 @@ function updateModelSelector(room, parts) {
   wrap.style.display = hasAIAgent ? 'flex' : 'none';
   if (hasAIAgent) {
     populateModelDropdown(null, room.model);
+    handleModelUpdate({ model: room.model || 'claude-sonnet-4-6' });
   }
 }
 
