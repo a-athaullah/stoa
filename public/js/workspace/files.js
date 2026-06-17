@@ -42,7 +42,7 @@ function wsSetView(view) {
 function wsOpenFile(name, content) {
   const existing = wsOpenFiles.find(f => f.name === name);
   if (existing) {
-    if (content != null) { existing.content = content; existing.loaded = true; }
+    if (content != null) { existing.content = content; existing.loaded = true; existing.error = null; }
   } else {
     wsOpenFiles.push({ name, content: content ?? '', ext: wsGetExt(name), loaded: content != null });
   }
@@ -304,6 +304,11 @@ function wsRenderContent() {
       content.appendChild(inner);
     } else if (file.loaded) {
       wsRenderCodeViewer(content, file.content || '', file.name);
+    } else if (file.error) {
+      content.innerHTML = `<div class="ws-empty-state">
+        <div class="ws-empty-title">could not open file</div>
+        <div class="ws-empty-text">${wsEscHtml(file.error)}</div>
+      </div>`;
     } else {
       content.innerHTML = `<div class="ws-empty-state">
         <div class="ws-empty-title">loading…</div>

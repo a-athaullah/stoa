@@ -208,7 +208,13 @@ function handleWsMessage(msg) {
   }
 
   if (msg.type === 'file_read') {
-    if (msg.error) { console.warn('[ws] file_read error:', msg.error); return; }
+    if (msg.error) {
+      console.warn('[ws] file_read error:', msg.error);
+      const f = wsOpenFiles.find(f => f.name === msg.path);
+      if (f) { f.error = msg.error; f.loaded = false; }
+      if (wsActiveView === 'file' && wsActiveFile === msg.path) wsRenderContent();
+      return;
+    }
     const panel = document.getElementById('workspace-panel');
     if (!panel.classList.contains('open')) toggleWorkspacePanel();
     if (msg.base64) {
