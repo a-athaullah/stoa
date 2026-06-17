@@ -16,8 +16,8 @@ Ollama 提供了丰富的开源模型库：Llama、Qwen、Mistral、Gemma、Deep
 
 | | Ollama Cloud | 本地 Ollama |
 |---|---|---|
-| **URL** | `https://ollama.com/v1` | `http://localhost:11434/v1` |
-| **需要本地安装** | 否 | 是 |
+| **URL** | `http://localhost:11434/v1`（通过本地守护进程） | `http://localhost:11434/v1` |
+| **需要本地安装** | 是 — 需要 Ollama CLI | 是 |
 | **需要网络连接** | 是 | 否（下载模型后） |
 | **费用** | 免费额度 + 付费 | 免费（电费 + 硬件） |
 | **模型规模** | 最高 480B+ 参数 | 受 RAM/VRAM 限制 |
@@ -122,11 +122,27 @@ ollama list
 
 ## 将 Ollama Cloud 添加到 Stoa
 
+Ollama Cloud 通过本地 Ollama 守护进程路由请求 — 你的机器将提示词转发至 Ollama 服务器。因此，即使访问云端模型，也**必须安装并登录 Ollama CLI**。
+
+### 第一步 — 安装 Ollama CLI
+
+按照上面的[安装本地 Ollama](#安装本地-ollama) 部分操作。守护进程需要处于运行状态。
+
+### 第二步 — 登录 Ollama 账号
+
+```bash
+ollama login
+```
+
+按提示使用 Ollama 账号进行身份验证。这样守护进程才能将请求路由到你有权访问的云端模型。
+
+### 第三步 — 在 Stoa 中添加平台
+
 1. 在 [ollama.com](https://ollama.com) 注册账号，并从账号设置中获取 API Key
 2. 进入 **Settings > Platforms > + add platform**
 3. 填写：
    - **Name**：`Ollama Cloud`
-   - **Base URL**：`https://ollama.com/v1`
+   - **Base URL**：`http://localhost:11434/v1`
    - **API Key**：你的 Ollama API Key
 4. 点击 **Save**，然后点击 **Discover Models**
 5. 选择所需模型并点击 **Save Selection**
@@ -208,6 +224,12 @@ curl http://<ollama-machine-ip>:11434/api/tags
 - 确保 Ollama 正在运行：`ollama list` 应该返回结果
 - 检查 URL — 本地 Ollama 地址为 `http://localhost:11434/v1`（不是 `https://`）
 - 通过 Tailscale IP 访问？请参阅上面的[多智能体设置](#跨多台机器共享-ollama多智能体设置)部分 — 需要先设置 `OLLAMA_HOST=0.0.0.0`
+
+**Discover 后显示"N 个中 0 个可用"（模型已列出但均不可用）**
+
+- 对于 **Ollama Cloud**：守护进程未经过身份验证。在终端中运行 `ollama login`，然后重新点击 Discover Models。
+- Stoa 会通过测试请求探测每个模型，以验证其在你的订阅等级下是否可用。未经身份验证时，所有探测均会失败，模型显示为不可用。
+- 登录后无需重启任何服务 — 只需重新运行 Discover Models 即可。
 
 **发现后模型未显示（已经 pull 过）**
 

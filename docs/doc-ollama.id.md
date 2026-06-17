@@ -16,8 +16,8 @@ Ollama memberi akses ke perpustakaan model open-source yang besar: Llama, Qwen, 
 
 | | Ollama Cloud | Ollama Lokal |
 |---|---|---|
-| **URL** | `https://ollama.com/v1` | `http://localhost:11434/v1` |
-| **Perlu instalasi lokal** | Tidak | Ya |
+| **URL** | `http://localhost:11434/v1` (via daemon lokal) | `http://localhost:11434/v1` |
+| **Perlu instalasi lokal** | Ya — Ollama CLI diperlukan | Ya |
 | **Perlu internet** | Ya | Tidak (setelah unduh model) |
 | **Biaya** | Tier gratis + berbayar | Gratis (listrik + hardware) |
 | **Ukuran model** | Hingga 480B+ parameter | Dibatasi RAM/VRAM kamu |
@@ -122,11 +122,27 @@ Model lokal kamu sekarang muncul di dropdown model di composer, dikelompokkan di
 
 ## Menambahkan Ollama Cloud ke Stoa
 
+Ollama Cloud merutekan request melalui daemon Ollama lokal — mesinmu meneruskan prompt ke server Ollama. Artinya **Ollama CLI harus terinstal dan terautentikasi** bahkan untuk akses model cloud.
+
+### Langkah 1 — Install Ollama CLI
+
+Ikuti bagian [Menginstal Ollama Lokal](#menginstal-ollama-lokal) di atas. Daemon harus sedang berjalan.
+
+### Langkah 2 — Login ke akun Ollama
+
+```bash
+ollama login
+```
+
+Ikuti instruksi untuk autentikasi dengan akun Ollama-mu. Ini memungkinkan daemon untuk merutekan request ke model cloud yang kamu miliki aksesnya.
+
+### Langkah 3 — Tambahkan platform di Stoa
+
 1. Daftar di [ollama.com](https://ollama.com) dan dapatkan API key dari pengaturan akun
 2. Buka **Settings > Platforms > + add platform**
 3. Isi:
    - **Name**: `Ollama Cloud`
-   - **Base URL**: `https://ollama.com/v1`
+   - **Base URL**: `http://localhost:11434/v1`
    - **API Key**: API key Ollama kamu
 4. Klik **Save**, lalu **Discover Models**
 5. Pilih model yang kamu inginkan dan klik **Save Selection**
@@ -208,6 +224,12 @@ Jika mengembalikan daftar model, koneksi berhasil dan Stoa akan dapat menemukan 
 - Pastikan Ollama sedang berjalan: `ollama list` harus mengembalikan hasil
 - Periksa URL — Ollama lokal adalah `http://localhost:11434/v1` (bukan `https://`)
 - Mengakses melalui Tailscale IP? Lihat bagian [Multi-Agent Setup](#berbagi-ollama-di-beberapa-mesin-multi-agent-setup) di atas — Ollama memerlukan `OLLAMA_HOST=0.0.0.0` terlebih dahulu
+
+**"0 dari N usable" setelah Discover (model terdeteksi tapi semua tidak usable)**
+
+- Untuk **Ollama Cloud**: daemon belum terautentikasi. Jalankan `ollama login` di terminal, lalu klik Discover Models lagi.
+- Stoa melakukan probe ke setiap model dengan request percobaan untuk memverifikasi apakah model bisa digunakan di tier subscripsi kamu. Tanpa autentikasi, semua probe gagal dan model tampil sebagai not usable.
+- Setelah login, tidak perlu restart apapun — cukup jalankan ulang Discover Models.
 
 **Model tidak muncul setelah Discover (padahal sudah di-pull)**
 

@@ -16,8 +16,8 @@ OllamaはLlama、Qwen、Mistral、Gemma、DeepSeekなど、多数のオープン
 
 | | Ollama Cloud | ローカルOllama |
 |---|---|---|
-| **URL** | `https://ollama.com/v1` | `http://localhost:11434/v1` |
-| **ローカルインストール** | 不要 | 必要 |
+| **URL** | `http://localhost:11434/v1`（ローカルデーモン経由） | `http://localhost:11434/v1` |
+| **ローカルインストール** | 必要 — Ollama CLI が必要 | 必要 |
 | **インターネット接続** | 必要 | 不要（モデルダウンロード後） |
 | **コスト** | 無料枠 + 有料 | 無料（電気代 + ハードウェア） |
 | **モデルサイズ** | 480B+パラメーターまで | RAM/VRAMに依存 |
@@ -122,11 +122,27 @@ ollama list
 
 ## Ollama CloudをStoaに追加
 
+Ollama Cloudはローカルのollamaデーモンを通じてリクエストをルーティングします — あなたのマシンがOllamaのサーバーにプロンプトを転送します。つまり、クラウドモデルへのアクセスにも**Ollama CLIのインストールと認証が必要**です。
+
+### ステップ 1 — Ollama CLIをインストール
+
+上記の[ローカルOllamaのインストール](#ローカルollamaのインストール)セクションに従ってください。デーモンが起動している必要があります。
+
+### ステップ 2 — Ollamaアカウントにログイン
+
+```bash
+ollama login
+```
+
+プロンプトに従ってOllamaアカウントで認証します。これにより、デーモンがアクセス可能なクラウドモデルへのリクエストをルーティングできるようになります。
+
+### ステップ 3 — StoaにプラットフォームでOllamaを追加
+
 1. [ollama.com](https://ollama.com)でサインアップし、アカウント設定からAPIキーを取得
 2. **Settings > Platforms > + add platform**に移動
 3. 入力:
    - **Name**: `Ollama Cloud`
-   - **Base URL**: `https://ollama.com/v1`
+   - **Base URL**: `http://localhost:11434/v1`
    - **API Key**: OllamaのAPIキー
 4. **Save**、次に**Discover Models**をクリック
 5. 使用したいモデルを選択し、**Save Selection**をクリック
@@ -208,6 +224,12 @@ curl http://<ollama-machine-ip>:11434/api/tags
 - Ollamaが起動していることを確認してください：`ollama list`が結果を返すはずです
 - URLを確認してください — ローカルのOllamaは`http://localhost:11434/v1`です（`https://`ではありません）
 - Tailscale IP経由でアクセスしていますか？上記の[マルチエージェント設定](#複数マシン間でのollama共有マルチエージェント設定)セクションを参照してください — まず`OLLAMA_HOST=0.0.0.0`の設定が必要です
+
+**Discoverの後に「N個中0個がusable」と表示される（モデルは一覧にあるが使用不可）**
+
+- **Ollama Cloud**の場合：デーモンが認証されていません。ターミナルで`ollama login`を実行し、再度Discover Modelsをクリックしてください。
+- Stoaはサブスクリプションティアで各モデルが使用可能かどうかを確認するために、テストリクエストを送信してプローブします。認証なしではすべてのプローブが失敗し、モデルが「not usable」と表示されます。
+- ログイン後は何も再起動する必要はありません — Discover Modelsを再実行するだけです。
 
 **ディスカバリー後にモデルが表示されない（pullはされている）**
 
