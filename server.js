@@ -824,7 +824,7 @@ const server = http.createServer(async (req, res) => {
         WHERE s.actor_id IN (${ph})
           AND ((s.scope IN ('project','local') AND s.workdir_id = ?) OR s.scope = 'global')
         ORDER BY s.scope, s.name
-      `).all(...agentIds, room.workdir_id);
+      `).all(...agentIds, room.workdir_id ?? -1);
       return json(res, skills);
     }
   }
