@@ -10,10 +10,16 @@ async function loadWorkdirsForActor(actorId) {
   sel.innerHTML = '';
   section.style.display = 'block';
   newWdRow.style.display = 'none';
+  const nameCounts = {};
+  workdirs.forEach(w => {
+    const n = w.label || w.path.split(/[/\\]/).pop() || w.path;
+    nameCounts[n] = (nameCounts[n] || 0) + 1;
+  });
   workdirs.forEach(w => {
     const opt = document.createElement('option');
     opt.value = w.id;
-    const wdName = w.label || w.path.split(/[/\\]/).pop() || w.path;
+    const basename = w.label || w.path.split(/[/\\]/).pop() || w.path;
+    const wdName = nameCounts[basename] > 1 ? w.path : basename;
     opt.textContent = wdName + (w.is_default ? ' (default)' : '');
     if (w.is_default) opt.selected = true;
     sel.appendChild(opt);
