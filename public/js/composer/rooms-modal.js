@@ -10,10 +10,17 @@ async function loadWorkdirsForActor(actorId) {
   sel.innerHTML = '';
   section.style.display = 'block';
   newWdRow.style.display = 'none';
+  const nameCounts = {};
+  workdirs.forEach(w => {
+    const n = w.label || w.path.split(/[/\\]/).pop() || w.path;
+    nameCounts[n] = (nameCounts[n] || 0) + 1;
+  });
   workdirs.forEach(w => {
     const opt = document.createElement('option');
     opt.value = w.id;
-    opt.textContent = (w.label || w.path) + (w.is_default ? ' (default)' : '');
+    const basename = w.label || w.path.split(/[/\\]/).pop() || w.path;
+    const wdName = nameCounts[basename] > 1 ? w.path : basename;
+    opt.textContent = wdName + (w.is_default ? ' (default)' : '');
     if (w.is_default) opt.selected = true;
     sel.appendChild(opt);
   });
@@ -23,16 +30,20 @@ async function loadWorkdirsForActor(actorId) {
   newOpt.value = '__new__';
   newOpt.textContent = '+ new folder…';
   sel.appendChild(newOpt);
+  const newWdInput = document.getElementById('new-room-new-workdir-input');
   if (workdirs.length === 0) {
     newOpt.selected = true;
     newWdRow.style.display = 'flex';
+    if (newWdInput && !newWdInput.value) newWdInput.value = '~/';
   }
 
   // Remove old listener by cloning
   const newSel = sel.cloneNode(true);
   sel.parentNode.replaceChild(newSel, sel);
   newSel.addEventListener('change', () => {
-    newWdRow.style.display = newSel.value === '__new__' ? 'flex' : 'none';
+    const showing = newSel.value === '__new__';
+    newWdRow.style.display = showing ? 'flex' : 'none';
+    if (showing && newWdInput && !newWdInput.value) newWdInput.value = '~/';
   });
 }
 

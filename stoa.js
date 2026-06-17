@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.44';
+const CLIENT_VERSION = '0.4.54';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -351,7 +351,17 @@ function connect() {
 }
 
 // ─── Agent mode ───────────────────────────────────────────────────────────────
+function expandHome(p) {
+  if (typeof p !== 'string' || !p) return p;
+  if (p === '~') return os.homedir();
+  if (p.startsWith('~/') || p.startsWith('~\\')) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
 async function handleAgentMessage(msg) {
+  // Normalize tilde in workdir for every proxy/file op (handles legacy DB rows too)
+  if (msg && typeof msg.workdir === 'string') msg.workdir = expandHome(msg.workdir);
+
   if (msg.type === 'auth_error') {
     console.error(`[stoa] Auth failed: ${msg.message}. Set STOA_SECRET correctly and restart.`);
     process.exit(1);
@@ -435,13 +445,17 @@ async function handleAgentMessage(msg) {
 
   if (msg.type === 'create_workdir') {
     try {
-      fs.mkdirSync(msg.path, { recursive: true });
+      const resolved = path.resolve(expandHome(msg.path));
+      fs.mkdirSync(resolved, { recursive: true });
       // Write CLAUDE.md so Claude Code trusts this directory without interactive prompt
-      const claudeMd = path.join(msg.path, 'CLAUDE.md');
+      const claudeMd = path.join(resolved, 'CLAUDE.md');
       if (!fs.existsSync(claudeMd)) fs.writeFileSync(claudeMd, '', 'utf8');
-      console.log(`[stoa] Created workdir: ${msg.path}`);
+      console.log(`[stoa] Created workdir: ${resolved}`);
+      // Report the resolved absolute path so the server stores the canonical path (not "~/...")
+      send({ type: 'workdir_created', requested: msg.path, path: resolved });
     } catch (err) {
       console.error('[stoa] Failed to create workdir:', err.message);
+      send({ type: 'workdir_created', requested: msg.path, error: err.message });
     }
   }
 

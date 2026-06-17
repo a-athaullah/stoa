@@ -2395,6 +2395,45 @@ wss.on('connection', (ws, req) => {
     }
 
     // ── Agent proxy file responses
+    if (msg.type === 'workdir_created' && agentActorId) {
+      // Agent resolved the requested path (e.g. expanded "~") to an absolute path.
+      // Store the canonical absolute path so file ops resolve correctly.
+      if (msg.error && msg.requested) {
+        // Workdir creation failed — remove the ghost row and null out any rooms that already
+        // reference it (browser may have created a room optimistically before agent confirmed)
+        try {
+          const ghostRow = db.prepare('SELECT id FROM agent_workdirs WHERE actor_id=? AND path=?').get(agentActorId, msg.requested);
+          if (ghostRow) {
+            db.transaction(() => {
+              db.prepare('UPDATE rooms SET workdir_id=NULL WHERE workdir_id=?').run(ghostRow.id);
+              db.prepare('DELETE FROM agent_workdirs WHERE id=?').run(ghostRow.id);
+            })();
+          }
+        } catch (e) { console.warn('[workdir] could not remove ghost row:', e.message); }
+        return;
+      }
+      if (!msg.error && msg.path && msg.requested && msg.path !== msg.requested) {
+        try {
+          const requestedRow = db.prepare('SELECT id FROM agent_workdirs WHERE actor_id=? AND path=?').get(agentActorId, msg.requested);
+          if (requestedRow) {
+            const existingResolved = db.prepare('SELECT id FROM agent_workdirs WHERE actor_id=? AND path=?').get(agentActorId, msg.path);
+            if (existingResolved && existingResolved.id !== requestedRow.id) {
+              // Canonical row already exists — repoint rooms and drop the duplicate tilde row (atomic)
+              db.transaction(() => {
+                db.prepare('UPDATE rooms SET workdir_id=? WHERE workdir_id=?').run(existingResolved.id, requestedRow.id);
+                db.prepare('DELETE FROM agent_workdirs WHERE id=?').run(requestedRow.id);
+              })();
+            } else {
+              db.prepare('UPDATE agent_workdirs SET path=? WHERE id=?').run(msg.path, requestedRow.id);
+            }
+          }
+        } catch (e) {
+          console.warn('[workdir] could not canonicalize path:', e.message);
+        }
+      }
+      return;
+    }
+
     if (msg.type === 'proxy_file_list_result' && agentActorId) {
       const op = pendingFileOps.get(msg.request_id);
       if (op && op.clientWs.readyState === 1) {
