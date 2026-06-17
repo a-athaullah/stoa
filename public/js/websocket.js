@@ -221,8 +221,8 @@ function handleWsMessage(msg) {
       const ext = wsGetExt(msg.path);
       const mimeMap = { png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', gif:'image/gif', webp:'image/webp', svg:'image/svg+xml', ico:'image/x-icon', bmp:'image/bmp' };
       const existing = wsOpenFiles.find(f => f.name === msg.path);
-      if (existing) existing.base64 = msg.base64;
-      else wsOpenFiles.push({ name: msg.path, content: '', base64: msg.base64, ext });
+      if (existing) { existing.base64 = msg.base64; existing.loaded = true; }
+      else wsOpenFiles.push({ name: msg.path, content: '', base64: msg.base64, ext, loaded: true });
       wsActiveFile = msg.path;
       wsActiveView = 'file';
       wsRenderTabs();
