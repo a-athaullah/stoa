@@ -42,7 +42,8 @@ function wsSetView(view) {
 function wsOpenFile(name, content) {
   const existing = wsOpenFiles.find(f => f.name === name);
   if (existing) {
-    if (content != null) { existing.content = content; existing.loaded = true; }
+    if (content != null) { existing.content = content; existing.loaded = true; existing.error = null; }
+    else if (ws) { existing.error = null; }
   } else {
     wsOpenFiles.push({ name, content: content ?? '', ext: wsGetExt(name), loaded: content != null });
   }
@@ -180,7 +181,7 @@ function wsRenderTabs() {
     const indicator = document.createElement('span');
     indicator.className = 'ws-tab-indicator';
     tab.appendChild(indicator);
-    tab.onclick = () => wsOpenFile(f.name, f.content);
+    tab.onclick = () => wsOpenFile(f.name, f.loaded ? f.content : null);
     list.appendChild(tab);
   });
 }
@@ -272,6 +273,13 @@ function wsRenderContent() {
     wsRenderToolbarActions();
 
     const IMG_EXTS = new Set(['png','jpg','jpeg','gif','webp','svg','ico','bmp']);
+    if (file.error && !file.base64) {
+      content.innerHTML = `<div class="ws-empty-state">
+        <div class="ws-empty-title">could not open file</div>
+        <div class="ws-empty-text">${wsEscHtml(file.error)}</div>
+      </div>`;
+      return;
+    }
     if (IMG_EXTS.has(ext)) {
       content.className = 'ws-scroll';
       content.style.cssText = 'flex:1;min-height:0;overflow:auto;display:flex;align-items:center;justify-content:center;padding:24px;background:color-mix(in srgb,var(--h-ink) 4%,var(--h-bg))';
