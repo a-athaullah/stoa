@@ -273,14 +273,14 @@ function wsRenderContent() {
     wsRenderToolbarActions();
 
     const IMG_EXTS = new Set(['png','jpg','jpeg','gif','webp','svg','ico','bmp']);
+    if (file.error && !file.base64) {
+      content.innerHTML = `<div class="ws-empty-state">
+        <div class="ws-empty-title">could not open file</div>
+        <div class="ws-empty-text">${wsEscHtml(file.error)}</div>
+      </div>`;
+      return;
+    }
     if (IMG_EXTS.has(ext)) {
-      if (file.error && !file.base64) {
-        content.innerHTML = `<div class="ws-empty-state">
-          <div class="ws-empty-title">could not open file</div>
-          <div class="ws-empty-text">${wsEscHtml(file.error)}</div>
-        </div>`;
-        return;
-      }
       content.className = 'ws-scroll';
       content.style.cssText = 'flex:1;min-height:0;overflow:auto;display:flex;align-items:center;justify-content:center;padding:24px;background:color-mix(in srgb,var(--h-ink) 4%,var(--h-bg))';
       const img = document.createElement('img');
@@ -312,11 +312,6 @@ function wsRenderContent() {
       content.appendChild(inner);
     } else if (file.loaded) {
       wsRenderCodeViewer(content, file.content || '', file.name);
-    } else if (file.error) {
-      content.innerHTML = `<div class="ws-empty-state">
-        <div class="ws-empty-title">could not open file</div>
-        <div class="ws-empty-text">${wsEscHtml(file.error)}</div>
-      </div>`;
     } else {
       content.innerHTML = `<div class="ws-empty-state">
         <div class="ws-empty-title">loading…</div>
