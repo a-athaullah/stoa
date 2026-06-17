@@ -2404,9 +2404,11 @@ wss.on('connection', (ws, req) => {
           if (requestedRow) {
             const existingResolved = db.prepare('SELECT id FROM agent_workdirs WHERE actor_id=? AND path=?').get(agentActorId, msg.path);
             if (existingResolved && existingResolved.id !== requestedRow.id) {
-              // Canonical row already exists — repoint rooms and drop the duplicate tilde row
-              db.prepare('UPDATE rooms SET workdir_id=? WHERE workdir_id=?').run(existingResolved.id, requestedRow.id);
-              db.prepare('DELETE FROM agent_workdirs WHERE id=?').run(requestedRow.id);
+              // Canonical row already exists — repoint rooms and drop the duplicate tilde row (atomic)
+              db.transaction(() => {
+                db.prepare('UPDATE rooms SET workdir_id=? WHERE workdir_id=?').run(existingResolved.id, requestedRow.id);
+                db.prepare('DELETE FROM agent_workdirs WHERE id=?').run(requestedRow.id);
+              })();
             } else {
               db.prepare('UPDATE agent_workdirs SET path=? WHERE id=?').run(msg.path, requestedRow.id);
             }

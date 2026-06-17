@@ -180,7 +180,7 @@ function wsRenderTabs() {
     const indicator = document.createElement('span');
     indicator.className = 'ws-tab-indicator';
     tab.appendChild(indicator);
-    tab.onclick = () => wsOpenFile(f.name, f.content);
+    tab.onclick = () => wsOpenFile(f.name, f.loaded ? f.content : null);
     list.appendChild(tab);
   });
 }
