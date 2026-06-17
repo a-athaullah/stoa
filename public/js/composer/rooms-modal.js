@@ -13,7 +13,7 @@ async function loadWorkdirsForActor(actorId) {
   workdirs.forEach(w => {
     const opt = document.createElement('option');
     opt.value = w.id;
-    const wdName = w.label || w.path.split('/').pop() || w.path;
+    const wdName = w.label || w.path.split(/[/\\]/).pop() || w.path;
     opt.textContent = wdName + (w.is_default ? ' (default)' : '');
     if (w.is_default) opt.selected = true;
     sel.appendChild(opt);
