@@ -2399,9 +2399,16 @@ wss.on('connection', (ws, req) => {
       // Agent resolved the requested path (e.g. expanded "~") to an absolute path.
       // Store the canonical absolute path so file ops resolve correctly.
       if (msg.error && msg.requested) {
-        // Workdir creation failed — remove the ghost row so it doesn't appear in listings
+        // Workdir creation failed — remove the ghost row and null out any rooms that already
+        // reference it (browser may have created a room optimistically before agent confirmed)
         try {
-          db.prepare('DELETE FROM agent_workdirs WHERE actor_id=? AND path=?').run(agentActorId, msg.requested);
+          const ghostRow = db.prepare('SELECT id FROM agent_workdirs WHERE actor_id=? AND path=?').get(agentActorId, msg.requested);
+          if (ghostRow) {
+            db.transaction(() => {
+              db.prepare('UPDATE rooms SET workdir_id=NULL WHERE workdir_id=?').run(ghostRow.id);
+              db.prepare('DELETE FROM agent_workdirs WHERE id=?').run(ghostRow.id);
+            })();
+          }
         } catch (e) { console.warn('[workdir] could not remove ghost row:', e.message); }
         return;
       }

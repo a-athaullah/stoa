@@ -43,6 +43,7 @@ function wsOpenFile(name, content) {
   const existing = wsOpenFiles.find(f => f.name === name);
   if (existing) {
     if (content != null) { existing.content = content; existing.loaded = true; existing.error = null; }
+    else { existing.error = null; }
   } else {
     wsOpenFiles.push({ name, content: content ?? '', ext: wsGetExt(name), loaded: content != null });
   }
