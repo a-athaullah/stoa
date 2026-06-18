@@ -1349,6 +1349,7 @@ const server = http.createServer(async (req, res) => {
       const ph = actorParticipantIds.map(() => '?').join(',');
       db.prepare(`DELETE FROM ai_sessions WHERE participant_id IN (${ph})`).run(...actorParticipantIds);
     }
+    db.prepare('DELETE FROM invite_suggestions WHERE suggested_actor_id=?').run(id);
     db.prepare('DELETE FROM room_participants WHERE actor_id=?').run(id);
     db.prepare('DELETE FROM actors WHERE id=?').run(id);
     const ws = agentClients.get(id);
