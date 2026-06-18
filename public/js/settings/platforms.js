@@ -75,7 +75,22 @@ function sShowPlatformForm(existing) {
     return { row, inp };
   };
 
-  const vendor = existing?.vendor || 'custom';
+  // Type selector row
+  const typeRow = document.createElement('div');
+  typeRow.style.cssText = 'display:flex;align-items:center;gap:10px';
+  const typeLbl = document.createElement('span');
+  typeLbl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);min-width:70px';
+  typeLbl.textContent = 'type';
+  const typeSel = document.createElement('select');
+  typeSel.className = 's-server-input';
+  typeSel.style.cssText = 'flex:1;cursor:pointer';
+  [['custom', 'Custom Platform'], ['ollama', 'Ollama Cloud']].forEach(([val, label]) => {
+    const opt = document.createElement('option');
+    opt.value = val; opt.textContent = label;
+    if ((existing?.vendor || 'custom') === val) opt.selected = true;
+    typeSel.appendChild(opt);
+  });
+  typeRow.append(typeLbl, typeSel);
 
   const nameF = mkField('name', 'text', existing?.name, 'e.g. Custom Platform');
   const urlF = mkField('base url', 'url', existing?.base_url, 'http://localhost:11434');
@@ -143,6 +158,17 @@ function sShowPlatformForm(existing) {
   keyInp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addKeyBtn.click(); } });
   addRow.append(keyInp, addKeyBtn);
 
+  function applyTypeMode() {
+    const isOllama = typeSel.value === 'ollama';
+    urlF.row.style.display = isOllama ? 'none' : '';
+    urlHint.style.display = isOllama ? 'none' : '';
+    if (isOllama && !nameF.inp.value) nameF.inp.value = 'Ollama Cloud';
+    else if (!isOllama && nameF.inp.value === 'Ollama Cloud') nameF.inp.value = '';
+    keyInp.placeholder = isOllama ? 'Ollama API key...' : 'sk-...';
+  }
+  typeSel.addEventListener('change', applyTypeMode);
+  applyTypeMode();
+
   keysWrap.append(keysList, addRow);
   keysRow.append(keysLbl, keysWrap);
 
@@ -161,13 +187,14 @@ function sShowPlatformForm(existing) {
   saveBtn.className = 's-server-save'; saveBtn.textContent = existing ? 'update' : 'add';
   saveBtn.addEventListener('click', async () => {
     const name = nameF.inp.value.trim();
-    const base_url = urlF.inp.value.trim();
+    const vendor = typeSel.value;
+    const base_url = vendor === 'ollama' ? '' : urlF.inp.value.trim();
 
     const pending = keyInp.value.trim();
     if (pending && !keyStore.includes(pending)) { keyStore.push(pending); keyInp.value = ''; refreshKeys(); }
     const api_keys = [...keyStore];
     if (!name) { showToast('Name is required', { error: true }); return; }
-    if (!base_url) { showToast('Base URL is required', { error: true }); return; }
+    if (vendor !== 'ollama' && !base_url) { showToast('Base URL is required', { error: true }); return; }
     try {
       if (existing) {
         const resp = await fetch(`/api/ai/platforms/${encodeURIComponent(existing.id)}`, {
@@ -272,7 +299,7 @@ function sShowPlatformForm(existing) {
     sRenderModelChecklist(modelSection, existing.cached_models, existing.enabled_models ?? null, existing.id);
   }
 
-  form.append(nameF.row, urlF.row, urlHint, keysRow, progressWrap, modelSection, btnRow);
+  form.append(typeRow, nameF.row, urlF.row, urlHint, keysRow, progressWrap, modelSection, btnRow);
 
   if (existing) {
     const card = document.getElementById('s-platform-' + existing.id);
