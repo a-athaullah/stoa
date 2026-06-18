@@ -65,7 +65,7 @@ function sShowPlatformForm(existing) {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;align-items:center;gap:10px';
     const lbl = document.createElement('span');
-    lbl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);min-width:80px;white-space:nowrap';
+    lbl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);width:80px;flex-shrink:0;white-space:nowrap';
     lbl.textContent = label;
     const inp = document.createElement('input');
     inp.className = 's-server-input'; inp.type = type; inp.value = value || ''; inp.placeholder = placeholder || '';
@@ -79,7 +79,7 @@ function sShowPlatformForm(existing) {
   const typeRow = document.createElement('div');
   typeRow.style.cssText = 'display:flex;align-items:center;gap:10px';
   const typeLbl = document.createElement('span');
-  typeLbl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);min-width:80px;white-space:nowrap';
+  typeLbl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);width:80px;flex-shrink:0;white-space:nowrap';
   typeLbl.textContent = 'type';
   const typeSel = document.createElement('select');
   typeSel.className = 's-server-input';
@@ -93,7 +93,7 @@ function sShowPlatformForm(existing) {
   typeRow.append(typeLbl, typeSel);
 
   const nameF = mkField('name', 'text', existing?.name, 'e.g. Custom Platform');
-  const urlF = mkField('base url', 'url', existing?.base_url, 'http://localhost:11434');
+  const urlF = mkField('base url', 'text', existing?.base_url, 'http://localhost:11434');
 
   const urlHint = document.createElement('div');
   urlHint.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:11px;color:var(--h-ink-mute);padding:0 0 0 90px;margin-top:-4px';
@@ -102,7 +102,7 @@ function sShowPlatformForm(existing) {
   const keysRow = document.createElement('div');
   keysRow.style.cssText = 'display:flex;align-items:flex-start;gap:10px';
   const keysLbl = document.createElement('span');
-  keysLbl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);min-width:70px;padding-top:6px';
+  keysLbl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);width:80px;flex-shrink:0;white-space:nowrap;padding-top:6px';
   keysLbl.textContent = 'api keys';
   const keysWrap = document.createElement('div');
   keysWrap.style.cssText = 'flex:1;display:flex;flex-direction:column;gap:6px';
