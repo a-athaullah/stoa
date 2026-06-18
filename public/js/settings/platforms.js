@@ -75,14 +75,14 @@ function sShowPlatformForm(existing) {
     return { row, inp };
   };
 
-  const vendor = 'ollama';
+  const vendor = existing?.vendor || 'custom';
 
-  const nameF = mkField('name', 'text', existing?.name, 'e.g. Ollama Cloud');
+  const nameF = mkField('name', 'text', existing?.name, 'e.g. Custom Platform');
   const urlF = mkField('base url', 'url', existing?.base_url, 'http://localhost:11434');
 
   const urlHint = document.createElement('div');
   urlHint.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:11px;color:var(--h-ink-mute);padding:0 0 0 80px;margin-top:-4px';
-  urlHint.textContent = 'local Ollama daemon — handles routing to cloud models';
+  urlHint.textContent = 'OpenAI-compatible base URL (e.g. local daemon, custom server)';
 
   const keysRow = document.createElement('div');
   keysRow.style.cssText = 'display:flex;align-items:flex-start;gap:10px';
