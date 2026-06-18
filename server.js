@@ -1154,7 +1154,7 @@ const server = http.createServer(async (req, res) => {
           clearTimeout(timer);
           ok = r.status === 200 || r.status === 529;
         } catch { ok = false; }
-        if (ok) usable.push(model);
+        if (ok) usable.push({ model, vision: false, tools: true, local: false });
         res.write(JSON.stringify({ type: 'progress', model, ok, done: i + 1, total: cloudModels.length }) + '\n');
       }
       saveCachedModels(platformId, usable);

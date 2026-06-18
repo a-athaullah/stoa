@@ -1366,7 +1366,7 @@ async function run() {
 
   await test('POST /api/ai/platforms/:id/discover-models — streams NDJSON, done event has usable array [slow ~3min]', async () => {
     const platforms = (await req('GET', '/api/ai/platforms')).body;
-    const ollamaCloud = Array.isArray(platforms) && platforms.find(p => p.base_url && p.base_url.includes('ollama.com'));
+    const ollamaCloud = Array.isArray(platforms) && platforms.find(p => p.vendor === 'ollama');
     if (!ollamaCloud) { console.log('    (skipped — no Ollama Cloud platform configured)'); return; }
     console.log(`    probing models on platform "${ollamaCloud.name}" — may take a few minutes...`);
     const r = await streamReq('POST', `/api/ai/platforms/${encodeURIComponent(ollamaCloud.id)}/discover-models`, 300000);
@@ -1390,7 +1390,7 @@ async function run() {
 
   await test('POST /api/ai/platforms/:id/discover-models — non-tool-calling models included in results [slow ~3min]', async () => {
     const platforms = (await req('GET', '/api/ai/platforms')).body;
-    const ollamaCloud = Array.isArray(platforms) && platforms.find(p => p.base_url && p.base_url.includes('ollama.com'));
+    const ollamaCloud = Array.isArray(platforms) && platforms.find(p => p.vendor === 'ollama');
     if (!ollamaCloud) { console.log('    (skipped — no Ollama Cloud platform configured)'); return; }
     const r = await streamReq('POST', `/api/ai/platforms/${encodeURIComponent(ollamaCloud.id)}/discover-models`, 300000);
     assert.strictEqual(r.status, 200);
