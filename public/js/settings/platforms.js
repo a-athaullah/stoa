@@ -196,6 +196,7 @@ function sShowPlatformForm(existing) {
     if (!name) { showToast('Name is required', { error: true }); return; }
     if (vendor !== 'ollama' && !base_url) { showToast('Base URL is required', { error: true }); return; }
     try {
+      let platformId;
       if (existing) {
         const resp = await fetch(`/api/ai/platforms/${encodeURIComponent(existing.id)}`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
@@ -205,6 +206,7 @@ function sShowPlatformForm(existing) {
           const err = await resp.json().catch(() => ({}));
           showToast(err.error || 'Failed to update platform', { error: true }); return;
         }
+        platformId = existing.id;
       } else {
         const resp = await fetch('/api/ai/platforms', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -214,6 +216,16 @@ function sShowPlatformForm(existing) {
           const err = await resp.json().catch(() => ({}));
           showToast(err.error || 'Failed to add platform', { error: true }); return;
         }
+        const created = await resp.json();
+        platformId = created.id;
+      }
+      const cbs = modelSection.querySelectorAll('.s-model-cb');
+      if (cbs.length) {
+        const selected = [...cbs].filter(c => c.checked).map(c => c.value);
+        await fetch(`/api/ai/platforms/${encodeURIComponent(platformId)}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled_models: selected.length === cbs.length ? null : selected }),
+        }).catch(() => {});
       }
       sLoadPlatformsTab();
       fetchPlatformModels();
@@ -232,8 +244,29 @@ function sShowPlatformForm(existing) {
   progressWrap.append(progressLabel, progressTrack);
 
   healthBtn.addEventListener('click', async () => {
-    const id = existing?.id;
-    if (!id) { showToast('Save the platform first, then discover', { error: true }); return; }
+    let id = existing?.id;
+    if (!id) {
+      const name = nameF.inp.value.trim();
+      const vendor = typeSel.value;
+      const base_url = vendor === 'ollama' ? '' : urlF.inp.value.trim();
+      const pending = keyInp.value.trim();
+      if (pending && !keyStore.includes(pending)) { keyStore.push(pending); keyInp.value = ''; refreshKeys(); }
+      const api_keys = [...keyStore];
+      if (!name) { showToast('Name is required', { error: true }); return; }
+      if (vendor !== 'ollama' && !base_url) { showToast('Base URL is required', { error: true }); return; }
+      try {
+        const resp = await fetch('/api/ai/platforms', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, base_url, api_keys, vendor }),
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          showToast(err.error || 'Failed to save platform', { error: true }); return;
+        }
+        const created = await resp.json();
+        id = created.id;
+      } catch { showToast('Failed to save platform', { error: true }); return; }
+    }
     healthBtn.disabled = true;
     healthBtn.textContent = 'discovering...';
     progressWrap.style.display = 'flex';
@@ -391,28 +424,7 @@ function sRenderModelChecklist(container, cachedModels, enabledModels, platformI
     updateSelectAllLabel();
   });
 
-  const saveRow = document.createElement('div');
-  saveRow.style.cssText = 'display:flex;justify-content:flex-end;margin-top:8px';
-  const saveBtn = document.createElement('button');
-  saveBtn.className = 's-save-btn';
-  saveBtn.textContent = 'save selection';
-  saveBtn.addEventListener('click', async () => {
-    const selected = checkboxes.filter(c => c.checked).map(c => c.value);
-    saveBtn.disabled = true; saveBtn.textContent = 'saving...';
-    try {
-      await fetch(`/api/ai/platforms/${encodeURIComponent(platformId)}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled_models: selected.length === cachedModels.length ? null : selected }),
-      });
-      showToast(`Saved — ${selected.length} of ${cachedModels.length} models enabled`);
-      fetchPlatformModels();
-    } catch { showToast('Failed to save', { error: true }); }
-    saveBtn.disabled = false; saveBtn.textContent = 'save selection';
-  });
-  saveRow.appendChild(saveBtn);
-
-  wrap.append(header, list, saveRow);
+  wrap.append(header, list);
   container.appendChild(wrap);
 }
 
