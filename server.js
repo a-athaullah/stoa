@@ -1129,6 +1129,19 @@ const server = http.createServer(async (req, res) => {
     const platforms = raw ? JSON.parse(raw) : [];
     const plat = platforms.find(p => p.id === platformId);
     if (!plat) { res.writeHead(404); return res.end(JSON.stringify({ error: 'not found' })); }
+    if (plat.vendor === 'ollama') {
+      const keys = plat.api_keys?.length ? plat.api_keys : [];
+      if (!keys[0]) return json(res, { status: 'error', message: 'No API key configured for Ollama Cloud' });
+      const cloudModels = await fetchOllamaCloudModels(keys[0]);
+      if (!cloudModels.length) return json(res, { status: 'error', message: 'No models found from Ollama Cloud' });
+      res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' });
+      res.write(JSON.stringify({ type: 'start', total: cloudModels.length }) + '\n');
+      for (let i = 0; i < cloudModels.length; i++) {
+        res.write(JSON.stringify({ type: 'progress', model: cloudModels[i], ok: true, done: i + 1, total: cloudModels.length }) + '\n');
+      }
+      res.write(JSON.stringify({ type: 'done', usable: cloudModels, tested: cloudModels.length }) + '\n');
+      return res.end();
+    }
     if (!plat.base_url) { return json(res, { status: 'error', message: 'No base URL configured' }); }
     const headers = platformHeaders(plat);
     try {
@@ -1210,6 +1223,12 @@ const server = http.createServer(async (req, res) => {
     const platforms = raw ? JSON.parse(raw) : [];
     const plat = platforms.find(p => p.id === platformId);
     if (!plat) { res.writeHead(404); return res.end(JSON.stringify({ error: 'not found' })); }
+    if (plat.vendor === 'ollama') {
+      const keys = plat.api_keys?.length ? plat.api_keys : [];
+      if (!keys[0]) return json(res, { status: 'error', message: 'No API key configured' });
+      const cloudModels = await fetchOllamaCloudModels(keys[0]);
+      return json(res, { status: 'ok', models: cloudModels });
+    }
     if (!plat.base_url) { return json(res, { status: 'error', message: 'No base URL configured' }); }
     const headers = platformHeaders(plat);
     try {
