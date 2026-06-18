@@ -180,7 +180,7 @@ function sShowPlatformForm(existing) {
   cancelBtn.addEventListener('click', () => form.remove());
 
   const healthBtn = document.createElement('button');
-  healthBtn.className = 's-server-save'; healthBtn.textContent = 'discover models';
+  healthBtn.className = 's-server-save'; healthBtn.textContent = existing ? 'discover models' : 'add & discover';
   healthBtn.style.cssText = 'background:transparent;color:var(--h-ink-faint)';
 
   const saveBtn = document.createElement('button');
@@ -267,6 +267,7 @@ function sShowPlatformForm(existing) {
         id = created.id;
         existing = created;
         saveBtn.textContent = 'update';
+        healthBtn.textContent = 'discover models';
       } catch { showToast('Failed to save platform', { error: true }); return; }
     }
     healthBtn.disabled = true;
