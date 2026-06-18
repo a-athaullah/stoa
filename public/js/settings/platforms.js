@@ -245,15 +245,16 @@ function sShowPlatformForm(existing) {
 
   healthBtn.addEventListener('click', async () => {
     let id = existing?.id;
+    const name = nameF.inp.value.trim();
+    const vendor = typeSel.value;
+    const base_url = vendor === 'ollama' ? '' : urlF.inp.value.trim();
+    const pending = keyInp.value.trim();
+    if (pending && !keyStore.includes(pending)) { keyStore.push(pending); keyInp.value = ''; refreshKeys(); }
+    const api_keys = [...keyStore];
+    if (!name) { showToast('Name is required', { error: true }); return; }
+    if (vendor !== 'ollama' && !base_url) { showToast('Base URL is required', { error: true }); return; }
     if (!id) {
-      const name = nameF.inp.value.trim();
-      const vendor = typeSel.value;
-      const base_url = vendor === 'ollama' ? '' : urlF.inp.value.trim();
-      const pending = keyInp.value.trim();
-      if (pending && !keyStore.includes(pending)) { keyStore.push(pending); keyInp.value = ''; refreshKeys(); }
-      const api_keys = [...keyStore];
-      if (!name) { showToast('Name is required', { error: true }); return; }
-      if (vendor !== 'ollama' && !base_url) { showToast('Base URL is required', { error: true }); return; }
+      // new platform — create first, then discover
       try {
         const resp = await fetch('/api/ai/platforms', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -268,6 +269,15 @@ function sShowPlatformForm(existing) {
         existing = created;
         saveBtn.textContent = 'update';
         healthBtn.textContent = 'discover models';
+      } catch { showToast('Failed to save platform', { error: true }); return; }
+    } else {
+      // existing platform — PATCH current form state so discover uses fresh values
+      try {
+        const resp = await fetch(`/api/ai/platforms/${encodeURIComponent(id)}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, base_url, api_keys, vendor }),
+        });
+        if (!resp.ok) { const err = await resp.json().catch(() => ({})); showToast(err.error || 'Failed to save platform', { error: true }); return; }
       } catch { showToast('Failed to save platform', { error: true }); return; }
     }
     healthBtn.disabled = true;

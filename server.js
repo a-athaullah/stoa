@@ -248,15 +248,22 @@ if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
   scheduleNext();
 }
 
+const _settingCache = new Map();
 function getSetting(key, scopeId = null) {
+  const cacheKey = `${key}:${scopeId}`;
+  const cached = _settingCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < 1000) return cached.value;
   const scope = scopeId ? 'room' : 'global';
   const row = db.prepare(
     'SELECT value FROM settings WHERE scope=? AND (scope_id=? OR scope_id IS NULL) AND key_name=? ORDER BY scope DESC LIMIT 1'
   ).get(scope, scopeId, key);
-  return row?.value ?? null;
+  const value = row?.value ?? null;
+  _settingCache.set(cacheKey, { value, ts: Date.now() });
+  return value;
 }
 
 function setSetting(key, value) {
+  for (const k of _settingCache.keys()) { if (k.startsWith(key + ':')) _settingCache.delete(k); }
   const existing = db.prepare("SELECT id FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name=?").get(key);
   if (existing) {
     db.prepare('UPDATE settings SET value=? WHERE id=?').run(value, existing.id);
@@ -1142,18 +1149,22 @@ const server = http.createServer(async (req, res) => {
       for (let i = 0; i < cloudModels.length; i++) {
         const model = cloudModels[i];
         let ok = false;
-        try {
-          const ctrl = new AbortController();
-          const timer = setTimeout(() => ctrl.abort(), 15000);
-          const r = await fetch('https://ollama.com/v1/messages', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${keys[0]}`, 'anthropic-version': '2023-06-01' },
-            body: JSON.stringify({ model, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
-            signal: ctrl.signal,
-          });
-          clearTimeout(timer);
-          ok = r.status === 200 || r.status === 529;
-        } catch { ok = false; }
+        for (const key of keys) {
+          try {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 15000);
+            const r = await fetch('https://ollama.com/v1/messages', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}`, 'anthropic-version': '2023-06-01' },
+              body: JSON.stringify({ model, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
+              signal: ctrl.signal,
+            });
+            clearTimeout(timer);
+            if (r.status === 429 || r.status === 401 || r.status === 402) continue;
+            ok = r.status === 200 || r.status === 529;
+            break;
+          } catch { }
+        }
         if (ok) usable.push({ model, vision: false, tools: true, local: false });
         res.write(JSON.stringify({ type: 'progress', model, ok, done: i + 1, total: cloudModels.length }) + '\n');
       }
@@ -1964,7 +1975,8 @@ Write-Host "Logs   : pm2 logs $AgentName"
   if (req.method === 'POST' && url.pathname === '/v1/messages') {
     const raw = getSetting('ai_platforms');
     const platforms = raw ? JSON.parse(raw) : [];
-    const plat = platforms.find(p => p.vendor === 'ollama');
+    // vendor==='ollama' for platforms created after this feature; base_url fallback for legacy platforms
+    const plat = platforms.find(p => p.vendor === 'ollama') || platforms.find(p => p.base_url?.includes('ollama.com'));
     if (!plat) { res.writeHead(503); return res.end(JSON.stringify({ type: 'error', error: { type: 'service_unavailable', message: 'No Ollama Cloud platform configured' } })); }
     const keys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : []);
     if (!keys.length) { res.writeHead(503); return res.end(JSON.stringify({ type: 'error', error: { type: 'service_unavailable', message: 'No API keys configured for Ollama Cloud' } })); }
