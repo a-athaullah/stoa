@@ -338,6 +338,8 @@ function requireAuth(req, res, url) {
   if (url.pathname === '/api/agent/register') return true;
   // Client file API used by agents for auto-update
   if (url.pathname === '/api/client/manifest' || url.pathname.startsWith('/api/client/file/')) return true;
+  // Ollama Cloud proxy — called by Claude Code SDK, no browser cookie
+  if (url.pathname === '/v1/messages') return true;
 
   // Agent HTTP auth via headers (for upload etc.)
   const agentId = req.headers['x-agent-id'];
