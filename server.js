@@ -3479,8 +3479,14 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
           const platforms = JSON.parse(raw);
           const plat = platforms.find(p => p.id === cfg.platform_id && p.enabled);
           if (plat) {
-            modelBaseUrl = plat.base_url || cfg.base_url || undefined;
-            modelApiKeys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : undefined);
+            if (plat.vendor === 'ollama') {
+              // Route through Stoa's own /v1/messages proxy — keys + rotation handled server-side
+              modelBaseUrl = getPublicUrl(`localhost:${PORT}`);
+              modelApiKeys = ['stoa-ollama-proxy'];
+            } else {
+              modelBaseUrl = plat.base_url || cfg.base_url || undefined;
+              modelApiKeys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : undefined);
+            }
             if (Array.isArray(plat.cached_models) && roomModel) {
               const modelInfo = plat.cached_models.find(m => (typeof m === 'string' ? m : m.model) === roomModel);
               if (modelInfo && typeof modelInfo === 'object') modelToolsSupported = modelInfo.tools === true;
