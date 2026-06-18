@@ -1136,10 +1136,26 @@ const server = http.createServer(async (req, res) => {
       if (!cloudModels.length) return json(res, { status: 'error', message: 'No models found from Ollama Cloud' });
       res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' });
       res.write(JSON.stringify({ type: 'start', total: cloudModels.length }) + '\n');
+      const usable = [];
       for (let i = 0; i < cloudModels.length; i++) {
-        res.write(JSON.stringify({ type: 'progress', model: cloudModels[i], ok: true, done: i + 1, total: cloudModels.length }) + '\n');
+        const model = cloudModels[i];
+        let ok = false;
+        try {
+          const ctrl = new AbortController();
+          const timer = setTimeout(() => ctrl.abort(), 15000);
+          const r = await fetch('https://ollama.com/v1/messages', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${keys[0]}`, 'anthropic-version': '2023-06-01' },
+            body: JSON.stringify({ model, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
+            signal: ctrl.signal,
+          });
+          clearTimeout(timer);
+          ok = r.status === 200 || r.status === 529;
+        } catch { ok = false; }
+        if (ok) usable.push(model);
+        res.write(JSON.stringify({ type: 'progress', model, ok, done: i + 1, total: cloudModels.length }) + '\n');
       }
-      res.write(JSON.stringify({ type: 'done', usable: cloudModels, tested: cloudModels.length }) + '\n');
+      res.write(JSON.stringify({ type: 'done', usable, tested: cloudModels.length }) + '\n');
       return res.end();
     }
     if (!plat.base_url) { return json(res, { status: 'error', message: 'No base URL configured' }); }
