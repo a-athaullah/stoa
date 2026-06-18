@@ -522,18 +522,19 @@ View all registered agents, their online status, version, workdirs, and skills. 
 
 Configure external AI model providers beyond the built-in Claude models. Click **+ add platform** to register a new provider:
 
-- **Name** — a label for the platform (e.g., "Ollama Cloud", "OpenRouter")
-- **Base URL** — the API endpoint (e.g., `https://ollama.com/v1`, `https://openrouter.ai/api/v1`)
+- **Type** — **Ollama Cloud** (built-in proxy, no URL needed) or **Custom Platform** (any OpenAI-compatible API)
+- **Name** — a label for the platform (e.g., "My OpenRouter")
+- **Base URL** — required for Custom Platform (e.g., `https://openrouter.ai/api/v1`)
 - **API Key** — your API key for that provider
 
-After saving, click **discover models** to probe which models are available and accessible with your API key. Discovery detects capabilities per model — vision support (👁) and tool-calling support (⚙). Models without tool-calling are included and usable, but run in text-only mode.
+On a new platform, click **add & discover** to save and probe available models in one step. On existing platforms, click **discover models** to re-probe. Discovery detects capabilities per model — vision support (👁) and tool-calling support (⚙). Models without tool-calling are included and usable, but run in text-only mode.
 
-**Enabling and disabling models**: After discovery, a checklist appears showing all found models. Check only the models you want available in the room selector, then click **save selection**. This keeps the selector uncluttered when a platform has many models. Use **select all / deselect all** to quickly toggle everything. The enabled selection persists across sessions and updates automatically when you re-discover.
+**Enabling and disabling models**: After discovery, a checklist appears showing all found models. Check only the models you want available in the room selector, then click **update** to save. This keeps the selector uncluttered when a platform has many models. Use **select all / deselect all** to quickly toggle everything. The enabled selection persists across sessions and updates automatically when you re-discover.
 
 The API key is stored on the server and returned to the browser only in the Settings edit form (single-user app — you are the only one with access).
 
 **Supported providers** — any OpenAI-compatible API endpoint works:
-- **Ollama Cloud** — `https://ollama.com/v1` (free tier, 40+ models up to 480B)
+- **Ollama Cloud** — select the "Ollama Cloud" type (built-in proxy with key rotation, 40+ models up to 480B)
 - **Local Ollama** — `http://localhost:11434/v1` (free, private, works offline — see [Ollama setup guide](doc-ollama))
 - **OpenRouter** — `https://openrouter.ai/api/v1`
 - **Together AI** — `https://api.together.xyz/v1`
@@ -600,7 +601,7 @@ Browser  <-->  WebSocket  <-->  server.js  <-->  Agent (stoa.js)
 - **claude-session.js** — manages the persistent Claude Code CLI subprocess
 - **SQLite** — all data stored locally in `stoa.db` (WAL mode for performance)
 
-All AI models are routed through **Claude Code CLI**. For external platforms (Ollama Cloud, OpenRouter, etc.), the server passes platform-specific environment variables (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`) to the CLI process, which handles the API communication transparently.
+All AI models are routed through **Claude Code CLI**. For custom external platforms (OpenRouter, Together AI, etc.), the server passes platform-specific environment variables (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`) to the CLI process. For **Ollama Cloud**, requests are routed through a built-in Stoa proxy (`/v1/messages`) with server-side API key rotation — agents connect to Stoa, not directly to ollama.com.
 
 **Room context in prompt**: Every time an agent is triggered, the server injects `Room ID: <id>` into the agent's system prompt. This means the agent always knows which room it is operating in — enabling it to call `sendProactiveMessage(roomId, ...)` or perform other room-aware operations without needing the ID passed explicitly.
 

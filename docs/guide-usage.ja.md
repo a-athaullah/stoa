@@ -512,18 +512,19 @@ Slackアプリトークンの作成手順は[Slackセットアップガイド](d
 
 組み込みの Claude モデル以外に、外部 AI モデルプロバイダーを設定できます。**+ add platform** をクリックして新しいプロバイダーを登録します：
 
-- **Name** — プラットフォームのラベル（例：「Ollama Cloud」、「OpenRouter」）
-- **Base URL** — API エンドポイント（例：`https://ollama.com/v1`、`https://openrouter.ai/api/v1`）
+- **Type** — **Ollama Cloud**（組み込みプロキシ、URL 不要）または **Custom Platform**（任意の OpenAI 互換 API）
+- **Name** — プラットフォームのラベル（例：「My OpenRouter」）
+- **Base URL** — Custom Platform に必要（例：`https://openrouter.ai/api/v1`）
 - **API Key** — そのプロバイダーの API キー
 
-保存後、**discover models** をクリックして、API キーでアクセス可能なモデルを検出します。Discovery ではモデルごとの機能（vision 👁 およびツール呼び出し ⚙）を検出します。ツール呼び出し非対応のモデルも含まれ使用できますが、テキストのみモードで動作します。
+新しいプラットフォームでは **add & discover** をクリックして保存と検出を一括で行えます。既存のプラットフォームでは **discover models** をクリックして再検出します。Discovery ではモデルごとの機能（vision 👁 およびツール呼び出し ⚙）を検出します。ツール呼び出し非対応のモデルも含まれ使用できますが、テキストのみモードで動作します。
 
-**モデルの有効化/無効化**：Discovery 後、検出されたすべてのモデルのチェックリストが表示されます。ルームセレクターに表示したいモデルのみチェックして **save selection** をクリック。**select all / deselect all** で一括切り替えも可能。選択はセッションをまたいで保存され、再 discover 時に自動更新されます。
+**モデルの有効化/無効化**：Discovery 後、検出されたすべてのモデルのチェックリストが表示されます。ルームセレクターに表示したいモデルのみチェックして **update** をクリックして保存。**select all / deselect all** で一括切り替えも可能。選択はセッションをまたいで保存され、再 discover 時に自動更新されます。
 
 API キーはサーバーに保存され、Settings 編集フォームでのみブラウザに返されます（シングルユーザーアプリのため、アクセスできるのはあなただけです）。
 
 **対応プロバイダー** — OpenAI 互換の API エンドポイントであればすべて利用可能：
-- **Ollama Cloud** — `https://ollama.com/v1`（無料枠あり、480B まで 40+ モデル）
+- **Ollama Cloud** — 「Ollama Cloud」タイプを選択（組み込みプロキシ、キーローテーション付き、40+ モデル、480B まで）
 - **ローカル Ollama** — `http://localhost:11434/v1`（無料、プライベート、オフライン対応 — [Ollama セットアップガイド](doc-ollama) を参照）
 - **OpenRouter** — `https://openrouter.ai/api/v1`
 - **Together AI** — `https://api.together.xyz/v1`
@@ -590,7 +591,7 @@ Stoa は完全レスポンシブで、モバイルブラウザでも動作しま
 - **claude-session.js** — 永続的な Claude Code CLI サブプロセスを管理
 - **SQLite** — すべてのデータを `stoa.db` にローカル保存（パフォーマンスのため WAL モード）
 
-すべての AI モデルは **Claude Code CLI** を経由してルーティングされます。外部プラットフォーム（Ollama Cloud、OpenRouter など）の場合、サーバーはプラットフォーム固有の環境変数（`ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`）を CLI プロセスに渡し、API 通信を透過的に処理します。
+すべての AI モデルは **Claude Code CLI** を経由してルーティングされます。カスタム外部プラットフォーム（OpenRouter、Together AI など）の場合、サーバーはプラットフォーム固有の環境変数（`ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`）を CLI プロセスに渡します。**Ollama Cloud** の場合、リクエストは Stoa の組み込みプロキシ（`/v1/messages`）を経由し、サーバー側で API キーのローテーションを処理します — エージェントは Stoa に接続し、ollama.com には直接接続しません。
 
 **プロンプトへのルームコンテキスト注入**: エージェントがトリガーされるたびに、サーバーはエージェントのシステムプロンプトに `Room ID: <id>` を注入します。これにより、エージェントは常に自分がどのルームで動作しているかを把握でき、ID を明示的に渡すことなく `sendProactiveMessage(roomId, ...)` などのルーム対応操作を実行できます。
 

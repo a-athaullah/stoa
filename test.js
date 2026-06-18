@@ -1301,8 +1301,8 @@ async function run() {
 
   await test('POST /api/ai/platforms — duplicate id → 409', async () => {
     if (!testPlatformId) { console.log('    (skipped)'); return; }
-    // The id is derived from name — use the same name to trigger conflict
-    const r = await req('POST', '/api/ai/platforms', { name: 'Updated Platform', base_url: 'http://localhost:11434/v1' });
+    // The id is derived from the original name (PATCH rename doesn't change id)
+    const r = await req('POST', '/api/ai/platforms', { name: 'Test Platform', base_url: 'http://localhost:11434/v1' });
     assert.strictEqual(r.status, 409);
   });
 
