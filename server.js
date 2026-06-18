@@ -1139,7 +1139,15 @@ const server = http.createServer(async (req, res) => {
       const isOllamaComUrl = new URL(plat.base_url).hostname.includes('ollama.com');
       let cloudModels = [];
       if (keys[0] && !isOllamaComUrl) {
-        cloudModels = await fetchOllamaCloudModels(keys[0]);
+        const isOllamaDaemon = await (async () => {
+          try {
+            const r = await fetch(new URL(plat.base_url).origin + '/api/version', { signal: AbortSignal.timeout(3000) });
+            if (!r.ok) return false;
+            const d = await r.json().catch(() => null);
+            return d && typeof d.version === 'string';
+          } catch { return false; }
+        })();
+        if (isOllamaDaemon) cloudModels = await fetchOllamaCloudModels(keys[0]);
       }
 
       const seen = new Set(localModels);
@@ -1210,7 +1218,12 @@ const server = http.createServer(async (req, res) => {
       const keys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : []);
       const isOllamaComUrl = new URL(plat.base_url).hostname.includes('ollama.com');
       let cloudModels = [];
-      if (keys[0] && !isOllamaComUrl) cloudModels = await fetchOllamaCloudModels(keys[0]);
+      if (keys[0] && !isOllamaComUrl) {
+        try {
+          const vr = await fetch(new URL(plat.base_url).origin + '/api/version', { signal: AbortSignal.timeout(3000) });
+          if (vr.ok) { const vd = await vr.json().catch(() => null); if (vd && typeof vd.version === 'string') cloudModels = await fetchOllamaCloudModels(keys[0]); }
+        } catch {}
+      }
       const seen = new Set(localModels);
       const allModels = [...localModels, ...cloudModels.filter(m => !seen.has(m))];
       if (!allModels.length) return json(res, { status: 'error', message: 'No models found' });
