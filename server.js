@@ -1155,6 +1155,7 @@ const server = http.createServer(async (req, res) => {
         if (ok) usable.push(model);
         res.write(JSON.stringify({ type: 'progress', model, ok, done: i + 1, total: cloudModels.length }) + '\n');
       }
+      saveCachedModels(platformId, usable);
       res.write(JSON.stringify({ type: 'done', usable, tested: cloudModels.length }) + '\n');
       return res.end();
     }
