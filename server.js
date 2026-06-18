@@ -1982,7 +1982,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
       if (req.headers['anthropic-beta']) fwdHeaders['anthropic-beta'] = req.headers['anthropic-beta'];
       try {
         const upstream = await fetch(TARGET, { method: 'POST', headers: fwdHeaders, body });
-        if (upstream.status === 429) {
+        if (upstream.status === 429 || upstream.status === 401 || upstream.status === 402) {
           const next = await tryWithKey(keyIdx + 1);
           return next || upstream;
         }
