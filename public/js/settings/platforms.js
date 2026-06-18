@@ -161,7 +161,7 @@ function sShowPlatformForm(existing) {
   function applyTypeMode() {
     const isOllama = typeSel.value === 'ollama';
     urlF.row.style.display = isOllama ? 'none' : 'flex';
-    urlHint.style.display = isOllama ? 'none' : '';
+    urlHint.style.display = isOllama ? 'none' : 'block';
     if (isOllama && !nameF.inp.value) nameF.inp.value = 'Ollama Cloud';
     else if (!isOllama && nameF.inp.value === 'Ollama Cloud') nameF.inp.value = '';
     keyInp.placeholder = isOllama ? 'Ollama API key...' : 'sk-...';
