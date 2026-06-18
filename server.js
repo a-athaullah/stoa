@@ -1989,8 +1989,11 @@ Write-Host "Logs   : pm2 logs $AgentName"
       }
     }
 
+    let reqModel = '?';
+    try { reqModel = JSON.parse(body)?.model || '?'; } catch {}
     const upstream = await tryWithKey(0);
     if (!upstream) { res.writeHead(502); return res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: 'Ollama Cloud unreachable' } })); }
+    console.log(`[ollama-proxy] ${reqModel} → ollama.com status=${upstream.status}`);
 
     const isStream = upstream.headers.get('content-type')?.includes('text/event-stream');
     const headers = { 'Content-Type': upstream.headers.get('content-type') || 'application/json' };
