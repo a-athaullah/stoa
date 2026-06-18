@@ -70,7 +70,7 @@ function sShowPlatformForm(existing) {
     const inp = document.createElement('input');
     inp.className = 's-server-input'; inp.type = type; inp.value = value || ''; inp.placeholder = placeholder || '';
     inp.autocomplete = 'off'; inp.setAttribute('data-1p-ignore', ''); inp.setAttribute('data-lpignore', 'true');
-    inp.style.flex = '1';
+    inp.style.cssText = 'flex:1;min-width:0';
     row.append(lbl, inp);
     return { row, inp };
   };
@@ -160,7 +160,7 @@ function sShowPlatformForm(existing) {
 
   function applyTypeMode() {
     const isOllama = typeSel.value === 'ollama';
-    urlF.row.style.display = isOllama ? 'none' : '';
+    urlF.row.style.display = isOllama ? 'none' : 'flex';
     urlHint.style.display = isOllama ? 'none' : '';
     if (isOllama && !nameF.inp.value) nameF.inp.value = 'Ollama Cloud';
     else if (!isOllama && nameF.inp.value === 'Ollama Cloud') nameF.inp.value = '';
