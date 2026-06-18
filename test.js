@@ -1247,8 +1247,16 @@ async function run() {
   console.log('\n[AI Platforms]');
   let testPlatformId = null;
 
-  // Pre-cleanup: delete leftover test-platform from previous runs
-  { const existing = await req('GET', '/api/ai/platforms'); if (existing.body?.some?.(p => p.id === 'test-platform')) await req('DELETE', '/api/ai/platforms/test-platform'); }
+  // Pre-cleanup: delete leftover test platforms from previous runs
+  {
+    const existing = await req('GET', '/api/ai/platforms');
+    const testPlatformIds = ['test-platform', 'updated-platform', '__test-no-baseurl__', '__test-no-baseurl-disc__', '__test-unreachable__'];
+    if (Array.isArray(existing.body)) {
+      for (const id of testPlatformIds) {
+        if (existing.body.some(p => p.id === id)) await req('DELETE', `/api/ai/platforms/${encodeURIComponent(id)}`);
+      }
+    }
+  }
 
   await test('GET /api/ai/platforms — returns array', async () => {
     const r = await req('GET', '/api/ai/platforms');
@@ -1301,8 +1309,8 @@ async function run() {
 
   await test('POST /api/ai/platforms — duplicate id → 409', async () => {
     if (!testPlatformId) { console.log('    (skipped)'); return; }
-    // The id is derived from name — use the same name to trigger conflict
-    const r = await req('POST', '/api/ai/platforms', { name: 'Updated Platform', base_url: 'http://localhost:11434/v1' });
+    // The id is derived from the original name (PATCH rename doesn't change id)
+    const r = await req('POST', '/api/ai/platforms', { name: 'Test Platform', base_url: 'http://localhost:11434/v1' });
     assert.strictEqual(r.status, 409);
   });
 
@@ -1366,7 +1374,7 @@ async function run() {
 
   await test('POST /api/ai/platforms/:id/discover-models — streams NDJSON, done event has usable array [slow ~3min]', async () => {
     const platforms = (await req('GET', '/api/ai/platforms')).body;
-    const ollamaCloud = Array.isArray(platforms) && platforms.find(p => p.base_url && p.base_url.includes('ollama.com'));
+    const ollamaCloud = Array.isArray(platforms) && platforms.find(p => p.vendor === 'ollama');
     if (!ollamaCloud) { console.log('    (skipped — no Ollama Cloud platform configured)'); return; }
     console.log(`    probing models on platform "${ollamaCloud.name}" — may take a few minutes...`);
     const r = await streamReq('POST', `/api/ai/platforms/${encodeURIComponent(ollamaCloud.id)}/discover-models`, 300000);
@@ -1390,7 +1398,7 @@ async function run() {
 
   await test('POST /api/ai/platforms/:id/discover-models — non-tool-calling models included in results [slow ~3min]', async () => {
     const platforms = (await req('GET', '/api/ai/platforms')).body;
-    const ollamaCloud = Array.isArray(platforms) && platforms.find(p => p.base_url && p.base_url.includes('ollama.com'));
+    const ollamaCloud = Array.isArray(platforms) && platforms.find(p => p.vendor === 'ollama');
     if (!ollamaCloud) { console.log('    (skipped — no Ollama Cloud platform configured)'); return; }
     const r = await streamReq('POST', `/api/ai/platforms/${encodeURIComponent(ollamaCloud.id)}/discover-models`, 300000);
     assert.strictEqual(r.status, 200);
@@ -1520,6 +1528,12 @@ async function run() {
     assert.strictEqual(r.status, 404);
   });
 
+  // Teardown — delete test platform if still set (e.g. DELETE test was skipped/failed)
+  if (testPlatformId) {
+    await req('DELETE', `/api/ai/platforms/${encodeURIComponent(testPlatformId)}`).catch(() => {});
+    testPlatformId = null;
+  }
+
   // Teardown — delete all test rooms and actors created during the run
   console.log('\n[Test Teardown]');
   await test('Teardown — delete all test rooms', async () => {
@@ -1531,11 +1545,24 @@ async function run() {
   });
 
   await test('Teardown — delete orphaned test actors', async () => {
-    if (!orphanActorIds.length) { console.log('    (nothing to clean up)'); return; }
+    // Delete by id (actors registered mid-test)
     for (const id of [...orphanActorIds]) {
       await req('DELETE', `/api/actors/${id}`);
     }
     orphanActorIds = [];
+    // Safety net: sweep any __test-prefixed actors still in DB (e.g. if finally block failed)
+    const remaining = (await req('GET', '/api/actors')).body;
+    if (Array.isArray(remaining)) {
+      const stale = remaining.filter(a => a.name?.startsWith('__test'));
+      let swept = 0;
+      for (const a of stale) {
+        const dr = await req('DELETE', `/api/actors/${a.id}`);
+        if (dr.status === 204 || dr.status === 200) swept++;
+        else console.log(`    warn: DELETE actor ${a.id} (${a.name}) → ${dr.status}`);
+      }
+      if (stale.length) console.log(`    swept ${swept}/${stale.length} stale actor(s) by name`);
+      else console.log('    (nothing to clean up)');
+    }
   });
 
   // Summary

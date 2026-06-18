@@ -1,6 +1,20 @@
 #!/bin/sh
 # Docs sync guard: all 5 guide-usage language files must change together.
 # Override: SKIP_DOCS_SYNC=1 git commit ...
+#
+# Bundle auto-rebuild: if any public/js/** file is staged, rebuild stoa.min.js and stage it.
+
+JS_CHANGED=$(git diff --cached --name-only | grep -c '^public/js/')
+if [ "$JS_CHANGED" -gt 0 ]; then
+  echo "  Rebuilding bundle (public/js changed)..."
+  node build/build.js
+  if [ $? -ne 0 ]; then
+    echo "ERROR: bundle build failed — commit aborted."
+    exit 1
+  fi
+  git add public/dist/stoa.min.js public/dist/stoa.min.css 2>/dev/null
+  echo "  Bundle rebuilt and staged."
+fi
 
 LANGS="en id ja ko zh"
 CHANGED=0

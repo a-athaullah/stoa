@@ -248,21 +248,52 @@ if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
   scheduleNext();
 }
 
+const _settingCache = new Map();
 function getSetting(key, scopeId = null) {
+  const cacheKey = `${key}:${scopeId}`;
+  const cached = _settingCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < 1000) return cached.value;
+  if (cached) _settingCache.delete(cacheKey);
   const scope = scopeId ? 'room' : 'global';
   const row = db.prepare(
     'SELECT value FROM settings WHERE scope=? AND (scope_id=? OR scope_id IS NULL) AND key_name=? ORDER BY scope DESC LIMIT 1'
   ).get(scope, scopeId, key);
-  return row?.value ?? null;
+  const value = row?.value ?? null;
+  _settingCache.set(cacheKey, { value, ts: Date.now() });
+  return value;
+}
+function getParsedSetting(key) {
+  const cacheKey = `${key}:null:parsed`;
+  const cached = _settingCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < 1000) return cached.value;
+  if (cached) _settingCache.delete(cacheKey);
+  const raw = getSetting(key);
+  const value = raw ? JSON.parse(raw) : null;
+  _settingCache.set(cacheKey, { value, ts: Date.now() });
+  return value;
 }
 
 function setSetting(key, value) {
+  for (const k of _settingCache.keys()) { if (k.startsWith(key + ':')) _settingCache.delete(k); }
   const existing = db.prepare("SELECT id FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name=?").get(key);
   if (existing) {
     db.prepare('UPDATE settings SET value=? WHERE id=?').run(value, existing.id);
   } else {
     db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, ?, ?)").run(key, value);
   }
+}
+
+function getPlatKeys(plat) {
+  return plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : []);
+}
+
+async function isOllamaDaemonUrl(baseUrl) {
+  try {
+    const r = await fetch(new URL(baseUrl).origin + '/api/version', { signal: AbortSignal.timeout(3000) });
+    if (!r.ok) return false;
+    const d = await r.json().catch(() => null);
+    return d != null && typeof d.version === 'string';
+  } catch { return false; }
 }
 
 function getPublicUrl(fallbackHost) {
@@ -338,6 +369,10 @@ function requireAuth(req, res, url) {
   if (url.pathname === '/api/agent/register') return true;
   // Client file API used by agents for auto-update
   if (url.pathname === '/api/client/manifest' || url.pathname.startsWith('/api/client/file/')) return true;
+  // Ollama Cloud proxy — called by Claude Code SDK which sends a Bearer token, not a browser cookie.
+  // Auth relies on Stoa's trusted-network model (Tailscale): same as /api/agent/register.
+  // The bearer token encodes platform_id (stoa-proxy:<id>) but is NOT a secret — do not treat it as one.
+  if (url.pathname === '/v1/messages') return true;
 
   // Agent HTTP auth via headers (for upload etc.)
   const agentId = req.headers['x-agent-id'];
@@ -988,8 +1023,7 @@ const server = http.createServer(async (req, res) => {
 
   // ── AI Platform config ──
   if (req.method === 'GET' && url.pathname === '/api/ai/platforms') {
-    const raw = getSetting('ai_platforms');
-    const platforms = raw ? JSON.parse(raw) : [];
+    const platforms = getParsedSetting('ai_platforms') ?? [];
     const safe = platforms.map(p => ({
       ...p,
       api_keys: p.api_keys || (p.api_key ? [p.api_key] : []),
@@ -1001,8 +1035,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/api/ai/platforms') {
     const body = parseJsonBody(await readBody(req));
     if (!body || !body.name?.trim()) { res.writeHead(400); return res.end(JSON.stringify({ error: 'name required' })); }
-    const raw = getSetting('ai_platforms');
-    const platforms = raw ? JSON.parse(raw) : [];
+    const platforms = structuredClone(getParsedSetting('ai_platforms') ?? []);
     const id = body.id || body.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
     if (platforms.find(p => p.id === id)) { res.writeHead(409); return res.end(JSON.stringify({ error: 'A platform with this name already exists' })); }
     const keys = Array.isArray(body.api_keys) ? body.api_keys : (body.api_key ? [body.api_key] : []);
@@ -1016,8 +1049,7 @@ const server = http.createServer(async (req, res) => {
     const platformId = decodeURIComponent(url.pathname.split('/')[4]);
     const body = parseJsonBody(await readBody(req));
     if (!body) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
-    const raw = getSetting('ai_platforms');
-    const platforms = raw ? JSON.parse(raw) : [];
+    const platforms = structuredClone(getParsedSetting('ai_platforms') ?? []);
     const idx = platforms.findIndex(p => p.id === platformId);
     if (idx === -1) { res.writeHead(404); return res.end(JSON.stringify({ error: 'not found' })); }
     if (body.name !== undefined) {
@@ -1037,8 +1069,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'DELETE' && url.pathname.match(/^\/api\/ai\/platforms\/[^/]+$/)) {
     const platformId = decodeURIComponent(url.pathname.split('/')[4]);
-    const raw = getSetting('ai_platforms');
-    const platforms = raw ? JSON.parse(raw) : [];
+    const platforms = getParsedSetting('ai_platforms') ?? [];
     const filtered = platforms.filter(p => p.id !== platformId);
     if (filtered.length === platforms.length) { res.writeHead(404); return res.end(JSON.stringify({ error: 'not found' })); }
     setSetting('ai_platforms', JSON.stringify(filtered));
@@ -1046,7 +1077,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   function platformHeaders(plat) {
-    const keys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : []);
+    const keys = getPlatKeys(plat);
     const h = { 'Content-Type': 'application/json' };
     if (keys[0]) h['Authorization'] = `Bearer ${keys[0]}`;
     return h;
@@ -1055,16 +1086,16 @@ const server = http.createServer(async (req, res) => {
   async function probeCapabilities(modelNames, baseUrl, headers) {
     const showUrl = new URL(baseUrl).origin + '/api/show';
     return Promise.all(modelNames.map(async (model) => {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8000);
       try {
-        const ctrl = new AbortController();
-        const t = setTimeout(() => ctrl.abort(), 8000);
         const r = await fetch(showUrl, { method: 'POST', headers, signal: ctrl.signal, body: JSON.stringify({ model }) });
         clearTimeout(t);
         if (!r.ok) return { model, vision: false, tools: false };
         const d = await r.json().catch(() => null);
         const caps = Array.isArray(d?.capabilities) ? d.capabilities : [];
         return { model, vision: caps.includes('vision'), tools: caps.includes('tools') };
-      } catch { return { model, vision: false, tools: false }; }
+      } catch { clearTimeout(t); return { model, vision: false, tools: false }; }
     }));
   }
 
@@ -1078,7 +1109,7 @@ const server = http.createServer(async (req, res) => {
       if (Array.isArray(plat.enabled_models)) {
         const validNames = new Set(models.map(m => typeof m === 'string' ? m : m.model));
         plat.enabled_models = plat.enabled_models.filter(n => validNames.has(n));
-        if (!plat.enabled_models.length) plat.enabled_models = null;
+        // enabled_models:[] is valid — platform simply won't appear in room model selector (GET /api/ai/models skips empty groups)
       }
       setSetting('ai_platforms', JSON.stringify(freshPlatforms));
     }
@@ -1125,21 +1156,59 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && url.pathname.match(/^\/api\/ai\/platforms\/[^/]+\/discover-models$/)) {
     const platformId = decodeURIComponent(url.pathname.split('/')[4]);
-    const raw = getSetting('ai_platforms');
-    const platforms = raw ? JSON.parse(raw) : [];
+    const platforms = getParsedSetting('ai_platforms') ?? [];
     const plat = platforms.find(p => p.id === platformId);
     if (!plat) { res.writeHead(404); return res.end(JSON.stringify({ error: 'not found' })); }
+    if (plat.vendor === 'ollama') {
+      const keys = getPlatKeys(plat);
+      if (!keys[0]) return json(res, { status: 'error', message: 'No API key configured for Ollama Cloud' });
+      let cloudModels = [];
+      for (const key of keys) { cloudModels = await fetchOllamaCloudModels(key); if (cloudModels.length) break; }
+      if (!cloudModels.length) return json(res, { status: 'error', message: 'No models found from Ollama Cloud' });
+      res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no' });
+      res.write(JSON.stringify({ type: 'start', total: cloudModels.length }) + '\n');
+      const usable = [];
+      for (let i = 0; i < cloudModels.length; i++) {
+        const model = cloudModels[i];
+        let ok = false;
+        for (const key of keys) {
+          let timer;
+          try {
+            const ctrl = new AbortController();
+            timer = setTimeout(() => ctrl.abort(), 15000);
+            const r = await fetch('https://ollama.com/v1/messages', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}`, 'anthropic-version': '2023-06-01' },
+              body: JSON.stringify({ model, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
+              signal: ctrl.signal,
+            });
+            clearTimeout(timer);
+            if (r.status === 429 || r.status === 401 || r.status === 402) continue;
+            ok = r.status === 200;
+            break;
+          } catch { clearTimeout(timer); }
+        }
+        if (ok) usable.push({ model, vision: false, tools: true, local: false });
+        if (res.destroyed) break;
+        res.write(JSON.stringify({ type: 'progress', model, ok, done: i + 1, total: cloudModels.length }) + '\n');
+      }
+      if (!res.destroyed) {
+        saveCachedModels(platformId, usable);
+        res.write(JSON.stringify({ type: 'done', usable, tested: cloudModels.length }) + '\n');
+      }
+      return res.end();
+    }
     if (!plat.base_url) { return json(res, { status: 'error', message: 'No base URL configured' }); }
     const headers = platformHeaders(plat);
     try {
       const localResult = await fetchModelList(plat.base_url, headers);
       const localModels = localResult.ok ? localResult.models : [];
 
-      const keys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : []);
+      const keys = getPlatKeys(plat);
       const isOllamaComUrl = new URL(plat.base_url).hostname.includes('ollama.com');
       let cloudModels = [];
       if (keys[0] && !isOllamaComUrl) {
-        cloudModels = await fetchOllamaCloudModels(keys[0]);
+        if (await isOllamaDaemonUrl(plat.base_url)) cloudModels = await fetchOllamaCloudModels(keys[0]);
       }
 
       const seen = new Set(localModels);
@@ -1198,19 +1267,28 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'POST' && url.pathname.match(/^\/api\/ai\/platforms\/[^/]+\/health$/)) {
     const platformId = decodeURIComponent(url.pathname.split('/')[4]);
-    const raw = getSetting('ai_platforms');
-    const platforms = raw ? JSON.parse(raw) : [];
+    const platforms = getParsedSetting('ai_platforms') ?? [];
     const plat = platforms.find(p => p.id === platformId);
     if (!plat) { res.writeHead(404); return res.end(JSON.stringify({ error: 'not found' })); }
+    if (plat.vendor === 'ollama') {
+      const keys = getPlatKeys(plat);
+      if (!keys[0]) return json(res, { status: 'error', message: 'No API key configured' });
+      let cloudModels = [];
+      for (const key of keys) { cloudModels = await fetchOllamaCloudModels(key); if (cloudModels.length) break; }
+      if (!cloudModels.length) return json(res, { status: 'error', message: 'No models found from Ollama Cloud' });
+      return json(res, { status: 'ok', models: cloudModels });
+    }
     if (!plat.base_url) { return json(res, { status: 'error', message: 'No base URL configured' }); }
     const headers = platformHeaders(plat);
     try {
       const localResult = await fetchModelList(plat.base_url, headers, 8000);
       const localModels = localResult.ok ? localResult.models : [];
-      const keys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : []);
+      const keys = getPlatKeys(plat);
       const isOllamaComUrl = new URL(plat.base_url).hostname.includes('ollama.com');
       let cloudModels = [];
-      if (keys[0] && !isOllamaComUrl) cloudModels = await fetchOllamaCloudModels(keys[0]);
+      if (keys[0] && !isOllamaComUrl) {
+        if (await isOllamaDaemonUrl(plat.base_url)) cloudModels = await fetchOllamaCloudModels(keys[0]);
+      }
       const seen = new Set(localModels);
       const allModels = [...localModels, ...cloudModels.filter(m => !seen.has(m))];
       if (!allModels.length) return json(res, { status: 'error', message: 'No models found' });
@@ -1223,8 +1301,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/ai/models') {
-    const raw = getSetting('ai_platforms');
-    const platforms = raw ? JSON.parse(raw) : [];
+    const platforms = getParsedSetting('ai_platforms') ?? [];
     const ANTHROPIC_MODELS = [
       { value: 'claude-opus-4-8', label: 'Opus 4.8', vision: true, tools: true },
       { value: 'claude-opus-4-7', label: 'Opus 4.7', vision: true, tools: true },
@@ -1248,7 +1325,7 @@ const server = http.createServer(async (req, res) => {
           group.models.push({ value: modelName, label: modelName, vision, tools, local });
         }
       }
-      result.push(group);
+      if (group.models.length) result.push(group); // enabled_models:[] is valid — skip platforms with no usable models
     }
     return json(res, result);
   }
@@ -1298,6 +1375,7 @@ const server = http.createServer(async (req, res) => {
       const ph = actorParticipantIds.map(() => '?').join(',');
       db.prepare(`DELETE FROM ai_sessions WHERE participant_id IN (${ph})`).run(...actorParticipantIds);
     }
+    db.prepare('DELETE FROM invite_suggestions WHERE suggested_actor_id=?').run(id);
     db.prepare('DELETE FROM room_participants WHERE actor_id=?').run(id);
     db.prepare('DELETE FROM actors WHERE id=?').run(id);
     const ws = agentClients.get(id);
@@ -1906,6 +1984,80 @@ Write-Host "Logs   : pm2 logs $AgentName"
       db.prepare('DELETE FROM automations WHERE id=?').run(autoId);
       return json(res, { ok: true });
     }
+  }
+
+  // Ollama Cloud proxy — forward /v1/messages to ollama.com with API key rotation
+  if (req.method === 'POST' && url.pathname === '/v1/messages') {
+    const platforms = getParsedSetting('ai_platforms') ?? [];
+    // Bearer token carries platform_id: "stoa-proxy:<id>". Fall back to first vendor='ollama' for legacy callers.
+    const bearer = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
+    const proxyPlatId = bearer.startsWith('stoa-proxy:') ? bearer.slice('stoa-proxy:'.length) : null;
+    const plat = (proxyPlatId && platforms.find(p => p.id === proxyPlatId && p.vendor === 'ollama'))
+      || platforms.find(p => p.vendor === 'ollama')
+      || platforms.find(p => p.base_url?.includes('ollama.com'));
+    if (!plat) { res.writeHead(503); return res.end(JSON.stringify({ type: 'error', error: { type: 'service_unavailable', message: 'No Ollama Cloud platform configured' } })); }
+    const keys = getPlatKeys(plat);
+    if (!keys.length) { res.writeHead(503); return res.end(JSON.stringify({ type: 'error', error: { type: 'service_unavailable', message: 'No API keys configured for Ollama Cloud' } })); }
+
+    const body = await readBody(req);
+    const TARGET = 'https://ollama.com/v1/messages';
+
+    async function tryWithKey(keyIdx) {
+      if (keyIdx >= keys.length) return null;
+      const fwdHeaders = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${keys[keyIdx]}`,
+      };
+      if (req.headers['anthropic-version']) fwdHeaders['anthropic-version'] = req.headers['anthropic-version'];
+      if (req.headers['anthropic-beta']) fwdHeaders['anthropic-beta'] = req.headers['anthropic-beta'];
+      let connTimer;
+      try {
+        const ctrl = new AbortController();
+        connTimer = setTimeout(() => ctrl.abort(), 30000);
+        const upstream = await fetch(TARGET, { method: 'POST', headers: fwdHeaders, body, signal: ctrl.signal });
+        clearTimeout(connTimer);
+        // 429=rate-limited, 401=key invalid (next key may be valid), 402=quota exhausted (next key may have remaining quota)
+        if (upstream.status === 429 || upstream.status === 401 || upstream.status === 402) {
+          const next = await tryWithKey(keyIdx + 1);
+          return next || upstream;
+        }
+        return upstream;
+      } catch (e) {
+        clearTimeout(connTimer);
+        return tryWithKey(keyIdx + 1);
+      }
+    }
+
+    let reqModel = '?';
+    try { reqModel = JSON.parse(body)?.model || '?'; } catch {}
+    const upstream = await tryWithKey(0);
+    if (!upstream) { res.writeHead(502); return res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: 'Ollama Cloud unreachable' } })); }
+    console.log(`[ollama-proxy] ${reqModel} → ollama.com status=${upstream.status}`);
+
+    const isStream = upstream.headers.get('content-type')?.includes('text/event-stream');
+    const headers = { 'Content-Type': upstream.headers.get('content-type') || 'application/json' };
+    if (isStream) { headers['Cache-Control'] = 'no-cache'; headers['X-Accel-Buffering'] = 'no'; }
+    res.writeHead(upstream.status, headers);
+
+    if (isStream) {
+      const reader = upstream.body.getReader();
+      res.on('close', () => reader.cancel());
+      const pump = async () => {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) { res.end(); return; }
+          // res.write() back-pressure (drain) not awaited — acceptable for single-user loopback
+          // where downstream drains faster than upstream LLM generates. TODO: add drain handling
+          // if Stoa ever serves remote or multi-tenant clients.
+          res.write(value);
+        }
+      };
+      pump().catch(() => res.end());
+    } else {
+      const text = await upstream.text();
+      res.end(text);
+    }
+    return;
   }
 
   res.writeHead(404);
@@ -2747,9 +2899,8 @@ wss.on('connection', (ws, req) => {
         // Non-Anthropic model must exist in a platform's enabled_models list
         let known = false;
         try {
-          const raw = getSetting('ai_platforms');
-          if (raw) {
-            const platforms = JSON.parse(raw);
+          const platforms = getParsedSetting('ai_platforms');
+          if (platforms) {
             for (const p of platforms) {
               if (!p.enabled) continue;
               const cachedNames = Array.isArray(p.cached_models) ? p.cached_models.map(m => typeof m === 'string' ? m : m.model) : [];
@@ -3368,13 +3519,20 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     try {
       const cfg = JSON.parse(roomRow2.model_config);
       if (cfg.platform_id) {
-        const raw = getSetting('ai_platforms');
-        if (raw) {
-          const platforms = JSON.parse(raw);
+        const platforms = getParsedSetting('ai_platforms');
+        if (platforms) {
           const plat = platforms.find(p => p.id === cfg.platform_id && p.enabled);
           if (plat) {
-            modelBaseUrl = plat.base_url || cfg.base_url || undefined;
-            modelApiKeys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : undefined);
+            if (plat.vendor === 'ollama') {
+              // Route through Stoa's own /v1/messages proxy — keys + rotation handled server-side.
+              // Use 127.0.0.1 directly (not getPublicUrl) — getPublicUrl returns the external public_url
+              // when configured, which would route the SDK call through the public internet.
+              modelBaseUrl = `http://127.0.0.1:${PORT}`;
+              modelApiKeys = [`stoa-proxy:${cfg.platform_id}`];
+            } else {
+              modelBaseUrl = plat.base_url || cfg.base_url || undefined;
+              modelApiKeys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : undefined);
+            }
             if (Array.isArray(plat.cached_models) && roomModel) {
               const modelInfo = plat.cached_models.find(m => (typeof m === 'string' ? m : m.model) === roomModel);
               if (modelInfo && typeof modelInfo === 'object') modelToolsSupported = modelInfo.tools === true;

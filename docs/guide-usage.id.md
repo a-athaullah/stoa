@@ -522,18 +522,19 @@ Lihat semua agent yang terdaftar, status online, versi, workdir, dan skill merek
 
 Konfigurasi provider model AI eksternal di luar model Claude bawaan. Klik **+ add platform** untuk mendaftarkan provider baru:
 
-- **Name** — label untuk platform (misal "Ollama Cloud", "OpenRouter")
-- **Base URL** — endpoint API (misal `https://ollama.com/v1`, `https://openrouter.ai/api/v1`)
+- **Type** — **Ollama Cloud** (proxy bawaan, tidak perlu URL) atau **Custom Platform** (API OpenAI-compatible apa pun)
+- **Name** — label untuk platform (misal "My OpenRouter")
+- **Base URL** — wajib untuk Custom Platform (misal `https://openrouter.ai/api/v1`)
 - **API Key** — API key untuk provider tersebut
 
-Setelah menyimpan, klik **discover models** untuk mendeteksi model yang tersedia dan dapat diakses dengan API key Anda. Discovery mendeteksi kapabilitas per model — vision (👁) dan tool-calling (⚙). Model tanpa tool-calling tetap ditampilkan dan bisa digunakan, namun berjalan dalam mode teks saja.
+Untuk platform baru, klik **add & discover** untuk menyimpan dan mendeteksi model sekaligus. Untuk platform yang sudah ada, klik **discover models** untuk deteksi ulang. Discovery mendeteksi kapabilitas per model — vision (👁) dan tool-calling (⚙). Model tanpa tool-calling tetap ditampilkan dan bisa digunakan, namun berjalan dalam mode teks saja.
 
-**Mengaktifkan dan menonaktifkan model**: Setelah discovery, muncul checklist semua model yang ditemukan. Centang hanya model yang ingin tampil di selector room, lalu klik **save selection**. Gunakan **select all / deselect all** untuk toggle cepat. Pilihan disimpan permanen dan diperbarui otomatis saat Anda re-discover.
+**Mengaktifkan dan menonaktifkan model**: Setelah discovery, muncul checklist semua model yang ditemukan. Centang hanya model yang ingin tampil di selector room, lalu klik **update** untuk menyimpan. Gunakan **select all / deselect all** untuk toggle cepat. Pilihan disimpan permanen dan diperbarui otomatis saat Anda re-discover.
 
 API key disimpan di server dan dikembalikan ke browser hanya di form edit Settings (single-user app — hanya Anda yang punya akses).
 
 **Provider yang didukung** — endpoint API apapun yang kompatibel dengan OpenAI bisa digunakan:
-- **Ollama Cloud** — `https://ollama.com/v1` (tier gratis, 40+ model hingga 480B)
+- **Ollama Cloud** — pilih tipe "Ollama Cloud" (proxy bawaan dengan rotasi key, 40+ model hingga 480B)
 - **Local Ollama** — `http://localhost:11434/v1` (gratis, privat, bisa offline — lihat [panduan Ollama](doc-ollama))
 - **OpenRouter** — `https://openrouter.ai/api/v1`
 - **Together AI** — `https://api.together.xyz/v1`
@@ -600,7 +601,7 @@ Browser  <-->  WebSocket  <-->  server.js  <-->  Agent (stoa.js)
 - **claude-session.js** — mengatur subprocess CLI Claude Code yang persisten
 - **SQLite** — semua data disimpan lokal di `stoa.db` (mode WAL untuk performa)
 
-Semua model AI dirutekan melalui **Claude Code CLI**. Untuk platform eksternal (Ollama Cloud, OpenRouter, dll.), server meneruskan environment variable khusus platform (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`) ke proses CLI, yang menangani komunikasi API secara transparan.
+Semua model AI dirutekan melalui **Claude Code CLI**. Untuk platform eksternal kustom (OpenRouter, Together AI, dll.), server meneruskan environment variable khusus platform (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`) ke proses CLI. Untuk **Ollama Cloud**, request dirutekan melalui proxy bawaan Stoa (`/v1/messages`) dengan rotasi API key di sisi server — agent terhubung ke Stoa, bukan langsung ke ollama.com.
 
 **Konteks room di prompt**: Setiap kali agent dipicu, server menginjeksikan `Room ID: <id>` ke system prompt agent. Artinya agent selalu tahu room mana yang sedang ia operasikan — memungkinkan pemanggilan `sendProactiveMessage(roomId, ...)` atau operasi lain yang bergantung pada room ID tanpa perlu meneruskan ID secara eksplisit.
 

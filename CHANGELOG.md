@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026-06-18] — Ollama Cloud proxy
+
+### Added
+- **Ollama Cloud platform type** — new platform type "Ollama Cloud" in Settings. No local Ollama daemon required; models run entirely in the cloud via Ollama's hosted API
+- **Server-side proxy** — Stoa exposes `POST /v1/messages` that forwards requests to `ollama.com/v1/messages` with automatic API key rotation on 429/401 responses
+- **Per-platform key rotation** — multiple API keys can be configured per Ollama Cloud platform; the proxy cycles through them on rate limit or auth failure
+- **Real probe on model discovery** — each discovered Ollama Cloud model is now probed via an actual API call instead of being marked usable by default; only models accessible on the configured tier are cached
+- **Persistent cached models** — discovered models now persist to the database and survive server restarts
+
+### Changed
+- **Platform vendor renamed** — existing "Ollama" platforms are now labeled "Custom Platform" (`vendor: custom`); the `ollama` vendor name is reserved for Ollama Cloud
+- **Agent routing for Ollama Cloud** — agents using an Ollama Cloud platform are routed through the Stoa proxy (`ANTHROPIC_BASE_URL` → Stoa `/v1/messages`) instead of hitting a local daemon
+
 ## [2026-06-10] — multi-platform AI models
 
 ### Added
