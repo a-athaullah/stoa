@@ -265,6 +265,8 @@ function sShowPlatformForm(existing) {
         }
         const created = await resp.json();
         id = created.id;
+        existing = created;
+        saveBtn.textContent = 'update';
       } catch { showToast('Failed to save platform', { error: true }); return; }
     }
     healthBtn.disabled = true;
