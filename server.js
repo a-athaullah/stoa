@@ -1921,6 +1921,63 @@ Write-Host "Logs   : pm2 logs $AgentName"
     }
   }
 
+  // Ollama Cloud proxy — forward /v1/messages to ollama.com with API key rotation
+  if (req.method === 'POST' && url.pathname === '/v1/messages') {
+    const raw = getSetting('ai_platforms');
+    const platforms = raw ? JSON.parse(raw) : [];
+    const plat = platforms.find(p => p.vendor === 'ollama');
+    if (!plat) { res.writeHead(503); return res.end(JSON.stringify({ type: 'error', error: { type: 'service_unavailable', message: 'No Ollama Cloud platform configured' } })); }
+    const keys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : []);
+    if (!keys.length) { res.writeHead(503); return res.end(JSON.stringify({ type: 'error', error: { type: 'service_unavailable', message: 'No API keys configured for Ollama Cloud' } })); }
+
+    const body = await readBody(req);
+    const TARGET = 'https://ollama.com/v1/messages';
+
+    async function tryWithKey(keyIdx) {
+      if (keyIdx >= keys.length) return null;
+      const fwdHeaders = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${keys[keyIdx]}`,
+      };
+      if (req.headers['anthropic-version']) fwdHeaders['anthropic-version'] = req.headers['anthropic-version'];
+      if (req.headers['anthropic-beta']) fwdHeaders['anthropic-beta'] = req.headers['anthropic-beta'];
+      try {
+        const upstream = await fetch(TARGET, { method: 'POST', headers: fwdHeaders, body });
+        if (upstream.status === 429 || upstream.status === 401) {
+          const next = await tryWithKey(keyIdx + 1);
+          return next || upstream;
+        }
+        return upstream;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    const upstream = await tryWithKey(0);
+    if (!upstream) { res.writeHead(502); return res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: 'Ollama Cloud unreachable' } })); }
+
+    const isStream = upstream.headers.get('content-type')?.includes('text/event-stream');
+    const headers = { 'Content-Type': upstream.headers.get('content-type') || 'application/json' };
+    if (isStream) { headers['Cache-Control'] = 'no-cache'; headers['X-Accel-Buffering'] = 'no'; }
+    res.writeHead(upstream.status, headers);
+
+    if (isStream) {
+      const reader = upstream.body.getReader();
+      const pump = async () => {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) { res.end(); return; }
+          res.write(value);
+        }
+      };
+      pump().catch(() => res.end());
+    } else {
+      const text = await upstream.text();
+      res.end(text);
+    }
+    return;
+  }
+
   res.writeHead(404);
   res.end('Not found');
   } catch (err) {
