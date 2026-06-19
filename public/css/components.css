@@ -851,39 +851,39 @@ html.dark .h-toast.h-toast-error { background: oklch(0.42 0.12 25); }
 .usage-stat-card {
   background: var(--h-surface-raised, var(--h-surface));
   border: 1px solid var(--h-rule);
-  border-radius: 8px;
-  padding: 14px 16px;
+  border-radius: 6px;
+  padding: 10px 12px;
 }
 .usage-stat-value {
-  font-size: 22px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--h-ink);
   line-height: 1.1;
-  margin-bottom: 4px;
+  margin-bottom: 3px;
   font-family: var(--h-mono);
 }
 .usage-stat-label {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--h-ink-faint);
   text-transform: uppercase;
   letter-spacing: .05em;
 }
 
 /* usage — topbar & segmented controls */
-.usage-topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:18px; flex-wrap:wrap; }
-.usage-seg { display:inline-flex; background:var(--h-surface); border:1px solid var(--h-rule); border-radius:8px; padding:2px; gap:2px; }
-.usage-seg-btn { background:none; border:none; padding:5px 12px; font-size:12.5px; color:var(--h-ink-faint); border-radius:6px; cursor:pointer; font-family:inherit; transition:all .12s; }
+.usage-topbar { display:flex; justify-content:space-between; align-items:center; gap:9px; margin-bottom:13px; flex-wrap:wrap; }
+.usage-seg { display:inline-flex; background:var(--h-surface); border:1px solid var(--h-rule); border-radius:6px; padding:2px; gap:2px; }
+.usage-seg-btn { background:none; border:none; padding:4px 9px; font-size:11px; color:var(--h-ink-faint); border-radius:5px; cursor:pointer; font-family:inherit; transition:all .12s; }
 .usage-seg-btn:hover { color:var(--h-ink); }
 .usage-seg-btn.active { background:var(--h-surface-raised, rgba(255,255,255,.06)); color:var(--h-ink); box-shadow:0 1px 2px rgba(0,0,0,.15); }
 
 /* usage — cards grid */
-.usage-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; margin-bottom:20px; }
-.usage-cards .usage-stat-card { padding:12px 14px; }
-.usage-cards .usage-stat-label { margin-bottom:6px; }
-.usage-cards .usage-stat-value { font-size:20px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.usage-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(112px,1fr)); gap:8px; margin-bottom:15px; }
+.usage-cards .usage-stat-card { padding:9px 10px; }
+.usage-cards .usage-stat-label { margin-bottom:4px; }
+.usage-cards .usage-stat-value { font-size:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
 /* usage — heatmap */
-.usage-heatmap { display:grid; grid-template-rows:repeat(7,1fr); grid-auto-flow:column; grid-auto-columns:1fr; gap:3px; margin:4px 0 16px; }
+.usage-heatmap { display:grid; grid-template-rows:repeat(7,1fr); grid-auto-flow:column; grid-auto-columns:1fr; gap:2px; margin:3px 0 12px; }
 .usage-cell { width:100%; aspect-ratio:1; border-radius:2px; background:var(--h-hair-soft); }
 .usage-cell-1 { background:rgba(82,138,245,.35); }
 .usage-cell-2 { background:rgba(82,138,245,.55); }
@@ -891,12 +891,12 @@ html.dark .h-toast.h-toast-error { background: oklch(0.42 0.12 25); }
 .usage-cell-4 { background:rgba(82,138,245,1); }
 
 /* usage — footer comparison */
-.usage-footer { font-size:12.5px; color:var(--h-ink-faint); font-style:italic; padding-top:4px; }
+.usage-footer { font-size:11px; color:var(--h-ink-faint); font-style:italic; padding-top:3px; }
 .usage-footer em { color:var(--h-ink); font-style:italic; }
 
 /* usage — model table */
-.usage-table { width:100%; border-collapse:collapse; font-size:13px; }
-.usage-table th { text-align:right; padding:7px 8px; font-weight:500; color:var(--h-ink-faint); border-bottom:1px solid var(--h-rule); font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
-.usage-table td { text-align:right; padding:8px; border-bottom:1px solid var(--h-rule); color:var(--h-ink-faint); }
-.usage-table .usage-model-name { text-align:left; font-family:var(--h-mono); font-size:12px; color:var(--h-ink); }
+.usage-table { width:100%; border-collapse:collapse; font-size:12px; }
+.usage-table th { text-align:right; padding:5px 6px; font-weight:500; color:var(--h-ink-faint); border-bottom:1px solid var(--h-rule); font-size:10px; text-transform:uppercase; letter-spacing:.05em; }
+.usage-table td { text-align:right; padding:6px; border-bottom:1px solid var(--h-rule); color:var(--h-ink-faint); }
+.usage-table .usage-model-name { text-align:left; font-family:var(--h-mono); font-size:11px; color:var(--h-ink); }
 .usage-table .usage-model-cost { color:var(--h-ink); }
