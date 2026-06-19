@@ -3048,7 +3048,7 @@ wss.on('connection', (ws, req) => {
       const clients = roomClients.get(subscribedRoom);
       if (clients) {
         for (const c of clients) {
-          if (c.readyState === 1) c.send(JSON.stringify({ type: 'room_model_changed', model, room_id: subscribedRoom }));
+          if (c.readyState === 1) c.send(JSON.stringify({ type: 'room_model_changed', model, model_config: modelConfig, room_id: subscribedRoom }));
         }
       }
       console.log(`[room] model set to ${model || '(default)'} for room ${subscribedRoom}`);

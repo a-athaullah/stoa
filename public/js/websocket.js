@@ -303,7 +303,18 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'room_model_changed') {
     if (typeof handleModelUpdate === 'function') handleModelUpdate(msg);
-    if (typeof _setDropdownValue === 'function') _setDropdownValue(msg.model);
+    if (typeof _setDropdownValue === 'function') {
+      // model_config carries platform_id — a model name can exist in multiple platforms,
+      // so pass it through to highlight only the correct row (not every matching name).
+      let platformId = null;
+      if (msg.model_config) {
+        try {
+          const cfg = typeof msg.model_config === 'string' ? JSON.parse(msg.model_config) : msg.model_config;
+          platformId = cfg?.platform_id || null;
+        } catch {}
+      }
+      _setDropdownValue(msg.model, null, platformId);
+    }
     return;
   }
 }
