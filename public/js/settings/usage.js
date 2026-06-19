@@ -62,9 +62,10 @@ function _renderUsageRingkasan(d) {
     ['Output token', _usageFmt(t.output_tokens)],
     ['Cache hits', _usageFmt(t.cache_read_tokens)],
   ];
-  const cardsHtml = cards.map(([label,val]) =>
-    `<div class="usage-stat-card"><div class="usage-stat-label">${label}</div><div class="usage-stat-value" title="${val}">${val}</div></div>`
-  ).join('');
+  const cardsHtml = cards.map(([label,val]) => {
+    const wide = label === 'Model favorit' ? ' usage-stat-card--wide' : '';
+    return `<div class="usage-stat-card${wide}"><div class="usage-stat-label">${label}</div><div class="usage-stat-value" title="${val}">${val}</div></div>`;
+  }).join('');
 
   return `
     <div class="usage-cards">${cardsHtml}</div>
