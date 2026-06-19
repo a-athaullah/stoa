@@ -942,7 +942,6 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/usage/stats') {
-    requireAuth(req, res, () => {});
     if (!req._authUser) { res.writeHead(401); return res.end(JSON.stringify({ error: 'unauthorized' })); }
     const days = parseInt(url.searchParams.get('days') || '30');
     const since = `datetime('now', '-${days} days')`;
