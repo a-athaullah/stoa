@@ -1017,10 +1017,19 @@ const server = http.createServer(async (req, res) => {
       streakCurrent = cs;
     }
 
+    const dailyByModel = db.prepare(`
+      SELECT date(created_at) as day,
+        model,
+        COALESCE(SUM(input_tokens),0) as input_tokens,
+        COALESCE(SUM(output_tokens),0) as output_tokens
+      FROM usage_log WHERE created_at >= ${since}
+      GROUP BY date(created_at), model ORDER BY day ASC
+    `).all();
+
     const favoriteModel = byModel.length ? byModel.reduce((a,b) => b.turns > a.turns ? b : a).model : null;
 
     return json(res, {
-      totals, byModel, daily,
+      totals, byModel, daily, dailyByModel,
       activeDays, sessions, peakHour,
       streakCurrent, streakLongest, favoriteModel,
       period,

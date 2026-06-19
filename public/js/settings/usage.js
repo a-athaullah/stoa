@@ -93,20 +93,71 @@ function _renderHeatmap(daily) {
 
 function _renderUsageModel(d) {
   if (!d.byModel?.length) return '<div style="color:var(--h-ink-faint);font-size:13px;padding:8px 0">No model data yet.</div>';
-  const rows = d.byModel.map(m => `
-    <tr>
-      <td class="usage-model-name">${m.model}</td>
-      <td>${m.turns}</td>
-      <td>${_usageFmt(m.input_tokens)}</td>
-      <td>${_usageFmt(m.output_tokens)}</td>
-      <td>${_usageFmt(m.cache_read_tokens)}</td>
-      <td class="usage-model-cost">${_usageCost(m.cost_usd)}</td>
-    </tr>`).join('');
-  return `
-    <table class="usage-table">
-      <thead><tr>
-        <th style="text-align:left">model</th><th>turns</th><th>input</th><th>output</th><th>cache</th><th>cost</th>
-      </tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`;
+
+  const COLORS = ['#528AF5','#3A6FD8','#7FAAFF','#2855B5','#9FC4FF','#1E44A8','#B3D0FF','#4E8AFF','#6CA0F6','#A0BFFA'];
+  const models = d.byModel.map(m => m.model);
+  const colorMap = {};
+  models.forEach((m, i) => { colorMap[m] = COLORS[i % COLORS.length]; });
+
+  // build day→model→tokens map from dailyByModel
+  const dailyByModel = d.dailyByModel || [];
+  const dayMap = {};
+  dailyByModel.forEach(r => {
+    if (!dayMap[r.day]) dayMap[r.day] = {};
+    dayMap[r.day][r.model] = (r.input_tokens || 0) + (r.output_tokens || 0);
+  });
+  const days = Object.keys(dayMap).sort();
+
+  // SVG chart
+  const W = 680, H = 160, padL = 46, padR = 8, padT = 10, padB = 28;
+  const cW = W - padL - padR, cH = H - padT - padB;
+  const maxTotal = Math.max(1, ...days.map(day => Object.values(dayMap[day]).reduce((s,v)=>s+v,0)));
+  const barSlot = days.length ? cW / days.length : cW;
+  const barW = Math.max(1, Math.min(14, barSlot - 1));
+
+  const barsEl = days.map((day, i) => {
+    const x = padL + i * barSlot + barSlot/2 - barW/2;
+    let stackY = padT + cH;
+    return models.map(model => {
+      const v = dayMap[day][model] || 0;
+      if (!v) return '';
+      const h = v / maxTotal * cH;
+      stackY -= h;
+      return `<rect x="${x.toFixed(1)}" y="${stackY.toFixed(1)}" width="${barW}" height="${h.toFixed(1)}" fill="${colorMap[model]}"/>`;
+    }).join('');
+  }).join('');
+
+  const yTicks = [0.25,0.5,0.75,1.0].map(r => ({ v: Math.round(maxTotal*r), y: padT + cH*(1-r) }));
+  const yEl = yTicks.map(t =>
+    `<text x="${padL-4}" y="${t.y+3}" text-anchor="end" fill="var(--h-ink-faint)" font-size="9">${_usageFmt(t.v)}</text>`+
+    `<line x1="${padL}" y1="${t.y}" x2="${W-padR}" y2="${t.y}" stroke="var(--h-hair-soft)" stroke-width="0.5"/>`
+  ).join('');
+
+  const labelStep = Math.max(1, Math.ceil(days.length / 10));
+  const xEl = days.filter((_,i) => i % labelStep === 0 || i === days.length-1).map(day => {
+    const i = days.indexOf(day);
+    const x = padL + i * barSlot + barSlot/2;
+    const mm = day.slice(5,7), dd = day.slice(8,10);
+    const months = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return `<text x="${x.toFixed(1)}" y="${H-6}" text-anchor="middle" fill="var(--h-ink-faint)" font-size="9">${parseInt(dd)} ${months[parseInt(mm)]}</text>`;
+  }).join('');
+
+  const baselineEl = `<line x1="${padL}" y1="${padT+cH}" x2="${W-padR}" y2="${padT+cH}" stroke="var(--h-hair-soft)" stroke-width="1"/>`;
+  const chartSvg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;display:block;margin-bottom:10px">${yEl}${baselineEl}${barsEl}${xEl}</svg>`;
+
+  // model list
+  const totalTok = d.byModel.reduce((s,m) => s + m.input_tokens + m.output_tokens, 0) || 1;
+  const listRows = d.byModel.map(m => {
+    const tok = m.input_tokens + m.output_tokens;
+    const pct = (tok / totalTok * 100).toFixed(1);
+    const color = colorMap[m.model] || '#888';
+    return `<div style="display:flex;align-items:center;gap:8px;padding:3px 0">
+      <span style="width:10px;height:10px;border-radius:2px;background:${color};flex-shrink:0"></span>
+      <span style="flex:1;font-size:11px;color:var(--h-ink);font-family:var(--h-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${m.model}</span>
+      <span style="font-size:10px;color:var(--h-ink-faint);white-space:nowrap">${_usageFmt(m.input_tokens)}in · ${_usageFmt(m.output_tokens)}out</span>
+      <span style="font-size:11px;font-weight:600;color:var(--h-ink);min-width:40px;text-align:right">${pct}%</span>
+    </div>`;
+  }).join('');
+
+  return `${chartSvg}<div style="max-width:${W}px">${listRows}</div>`;
 }
