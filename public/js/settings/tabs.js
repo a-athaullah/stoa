@@ -13,5 +13,6 @@ function sActivateTab(name) {
   if (name === 'docs')       sLoadDocsTab();
   if (name === 'platforms')   sLoadPlatformsTab();
   if (name === 'automation') sLoadAutomationTab();
+  if (name === 'usage')      sLoadUsageTab();
 }
 

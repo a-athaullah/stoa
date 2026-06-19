@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.79';
+const CLIENT_VERSION = '0.4.80';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -882,7 +882,7 @@ async function processTrigger(msg) {
         throw retryErr;
       }
     }
-    const { content, sessionId, aborted } = result;
+    const { content, sessionId, aborted, usage, modelUsage, totalCostUsd } = result;
     clearInterval(hangWatchdog);
 
     consecutiveTriggerErrors = 0;
@@ -901,6 +901,11 @@ async function processTrigger(msg) {
         completeMsg.attachments = attachments;
       }
       send(completeMsg);
+
+      // Report token usage to server for tracking
+      if (usage || modelUsage) {
+        send({ type: 'usage_report', room_id, actor_id: ACTOR_ID, model: targetModel || 'unknown', usage: usage || {}, modelUsage: modelUsage || {}, totalCostUsd: totalCostUsd || 0 });
+      }
 
       // Strip base64 image data from session file to prevent errors on models without image support
       if (sessionId && targetDir && !compactsInFlight.has(targetDir)) {

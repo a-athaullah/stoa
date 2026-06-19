@@ -846,3 +846,25 @@ html.dark .h-toast.h-toast-error { background: oklch(0.42 0.12 25); }
   border-top: none; border-left: none;
   transform: rotate(45deg);
 }
+
+/* usage stats panel */
+.usage-stat-card {
+  background: var(--h-surface-raised, var(--h-surface));
+  border: 1px solid var(--h-rule);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+.usage-stat-value {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--h-ink);
+  line-height: 1.1;
+  margin-bottom: 4px;
+  font-family: var(--h-mono);
+}
+.usage-stat-label {
+  font-size: 11px;
+  color: var(--h-ink-faint);
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}

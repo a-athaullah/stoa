@@ -941,6 +941,36 @@ const server = http.createServer(async (req, res) => {
     return json(res, { ok: true });
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/usage/stats') {
+    requireAuth(req, res, () => {});
+    if (!req._authUser) { res.writeHead(401); return res.end(JSON.stringify({ error: 'unauthorized' })); }
+    const days = parseInt(url.searchParams.get('days') || '30');
+    const since = `datetime('now', '-${days} days')`;
+    const totals = db.prepare(`
+      SELECT
+        COALESCE(SUM(input_tokens),0) as input_tokens,
+        COALESCE(SUM(output_tokens),0) as output_tokens,
+        COALESCE(SUM(cache_read_tokens),0) as cache_read_tokens,
+        COALESCE(SUM(cache_creation_tokens),0) as cache_creation_tokens,
+        COALESCE(SUM(cost_usd),0) as cost_usd,
+        COUNT(*) as turns
+      FROM usage_log WHERE created_at >= ${since}
+    `).get();
+    const byModel = db.prepare(`
+      SELECT model,
+        COALESCE(SUM(input_tokens),0) as input_tokens,
+        COALESCE(SUM(output_tokens),0) as output_tokens,
+        COALESCE(SUM(cost_usd),0) as cost_usd,
+        COUNT(*) as turns
+      FROM usage_log WHERE created_at >= ${since}
+      GROUP BY model ORDER BY cost_usd DESC
+    `).all();
+    const activeDays = db.prepare(`
+      SELECT COUNT(DISTINCT date(created_at)) as days FROM usage_log WHERE created_at >= ${since}
+    `).get()?.days || 0;
+    return json(res, { totals, byModel, activeDays, periodDays: days });
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/settings') {
     const host = req.headers.host || `localhost:${PORT}`;
     const human = db.prepare(`SELECT id, name FROM actors WHERE type='human' LIMIT 1`).get();
@@ -2662,6 +2692,29 @@ wss.on('connection', (ws, req) => {
       pendingAgents.delete(msg.message_id);
       pendingActorMeta.delete(msg.message_id);
     }
+
+    if (msg.type === 'usage_report' && agentActorId) {
+      const u = msg.usage || {};
+      const model = msg.model || 'unknown';
+      try {
+        db.prepare(`
+          INSERT INTO usage_log (actor_id, room_id, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          agentActorId,
+          msg.room_id || null,
+          model,
+          u.input_tokens || 0,
+          u.output_tokens || 0,
+          u.cache_read_input_tokens || 0,
+          u.cache_creation_input_tokens || 0,
+          msg.totalCostUsd || 0
+        );
+      } catch (e) {
+        console.error('[usage_report] insert failed:', e.message);
+      }
+    }
+
     // ── File operations (workspace panel) ──────────────────────────────────
     if (msg.type === 'file_list' && subscribedRoom) {
       const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(subscribedRoom);
