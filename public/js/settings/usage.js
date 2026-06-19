@@ -56,11 +56,11 @@ function _renderUsageRingkasan(d) {
     ['Streak saat ini', (d.streakCurrent||0)+'h'],
     ['Streak terpanjang', (d.streakLongest||0)+'h'],
     ['Jam puncak', peak],
-    ['Model favorit', d.favoriteModel || '—'],
     // extra info (not in original mock)
     ['Total biaya', _usageCost(t.cost_usd)],
     ['Output token', _usageFmt(t.output_tokens)],
     ['Cache hits', _usageFmt(t.cache_read_tokens)],
+    ['Model favorit', d.favoriteModel || '—'],
   ];
   const cardsHtml = cards.map(([label,val]) => {
     const wide = label === 'Model favorit' ? ' usage-stat-card--wide' : '';
