@@ -309,7 +309,7 @@ function _capIconsHtml(m, size = 11) {
 
 let _dropdownSelected = null;
 
-function populateModelDropdown(ignored, currentModel) {
+function populateModelDropdown(ignored, currentModel, currentPlatformId) {
   const list = document.getElementById('model-dropdown-list');
   const textEl = document.getElementById('model-dropdown-text');
   const badgesEl = document.getElementById('model-capability-badges');
@@ -349,7 +349,7 @@ function populateModelDropdown(ignored, currentModel) {
   }
 
   const target = currentModel || 'claude-sonnet-4-6';
-  _setDropdownValue(target, models);
+  _setDropdownValue(target, models, currentPlatformId);
 }
 
 function _setDropdownValue(value, models, platformId) {
@@ -397,7 +397,14 @@ function updateModelSelector(room, parts) {
   const hasAIAgent = (parts || []).some(p => p.type === 'ai');
   wrap.style.display = hasAIAgent ? 'flex' : 'none';
   if (hasAIAgent) {
-    populateModelDropdown(null, room.model);
+    let platformId = null;
+    if (room.model_config) {
+      try {
+        const cfg = typeof room.model_config === 'string' ? JSON.parse(room.model_config) : room.model_config;
+        platformId = cfg?.platform_id || null;
+      } catch {}
+    }
+    populateModelDropdown(null, room.model, platformId);
     handleModelUpdate({ model: room.model || 'claude-sonnet-4-6' });
   }
 }
