@@ -877,7 +877,7 @@ html.dark .h-toast.h-toast-error { background: oklch(0.42 0.12 25); }
 .usage-seg-btn.active { background:var(--h-surface-raised, rgba(255,255,255,.06)); color:var(--h-ink); box-shadow:0 1px 2px rgba(0,0,0,.15); }
 
 /* usage — cards grid */
-.usage-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(84px,1fr)); gap:6px; margin-bottom:11px; }
+.usage-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(100px,1fr)); gap:6px; margin-bottom:11px; }
 .usage-cards .usage-stat-card { padding:7px 8px; }
 .usage-cards .usage-stat-label { margin-bottom:3px; }
 .usage-cards .usage-stat-value { font-size:15px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
