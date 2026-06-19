@@ -79,6 +79,8 @@ function _renderHeatmap(daily) {
   const max = Math.max(1, ...daily.map(x => x.tokens));
   const WEEKS = 26, DAYS = WEEKS*7;
   const today = new Date(Date.now() + 7*3600000);
+  const _DAY = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const _MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   const cells = [];
   for (let i = DAYS-1; i >= 0; i--) {
     const dt = new Date(today.getTime() - i*86400000);
@@ -86,7 +88,8 @@ function _renderHeatmap(daily) {
     const v = map[key] || 0;
     let lvl = 0;
     if (v > 0) { const r = v/max; lvl = r > 0.66 ? 4 : r > 0.33 ? 3 : r > 0.1 ? 2 : 1; }
-    cells.push(`<span class="usage-cell usage-cell-${lvl}" title="${key}: ${_usageFmt(v)} token"></span>`);
+    const tip = `${_DAY[dt.getDay()]}, ${dt.getDate()} ${_MON[dt.getMonth()]} — ${v > 0 ? _usageFmt(v)+' tokens' : 'no activity'}`;
+    cells.push(`<span class="usage-cell usage-cell-${lvl}" data-tip="${tip}"></span>`);
   }
   return `<div class="usage-heatmap">${cells.join('')}</div>`;
 }
