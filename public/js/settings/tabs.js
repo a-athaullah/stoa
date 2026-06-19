@@ -4,7 +4,7 @@ function sActivateTab(name) {
     const isActive = el.dataset.tab === name;
     el.classList.toggle('active', isActive);
   });
-  ['agents', 'server', 'general', 'docs', 'platforms', 'automation'].forEach(t => {
+  ['agents', 'server', 'general', 'docs', 'platforms', 'automation', 'usage'].forEach(t => {
     const el = document.getElementById('s-tab-' + t);
     if (el) el.style.display = t === name ? '' : 'none';
   });
