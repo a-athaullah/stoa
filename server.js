@@ -962,6 +962,7 @@ const server = http.createServer(async (req, res) => {
         COALESCE(SUM(input_tokens),0) as input_tokens,
         COALESCE(SUM(output_tokens),0) as output_tokens,
         COALESCE(SUM(cache_read_tokens),0) as cache_read_tokens,
+        COALESCE(SUM(cache_creation_tokens),0) as cache_creation_tokens,
         COALESCE(SUM(cost_usd),0) as cost_usd,
         COUNT(*) as turns
       FROM usage_log WHERE created_at >= ${since}
@@ -986,9 +987,6 @@ const server = http.createServer(async (req, res) => {
       GROUP BY hour ORDER BY n DESC LIMIT 1
     `).get();
     const peakHour = peakRow ? peakRow.hour : null;
-
-    // sessions: distinct claude sessions tracked
-    const sessions = db.prepare('SELECT COUNT(*) as n FROM ai_sessions').get()?.n || 0;
 
     // streaks (consecutive calendar days, computed from daily set)
     const daySet = new Set(daily.map(d => d.day));
@@ -1030,7 +1028,7 @@ const server = http.createServer(async (req, res) => {
 
     return json(res, {
       totals, byModel, daily, dailyByModel,
-      activeDays, sessions, peakHour,
+      activeDays, peakHour,
       streakCurrent, streakLongest, favoriteModel,
       period,
     });

@@ -5,6 +5,7 @@ let _usageData = null;
 
 const _usageFmt = n => n >= 1e9 ? (n/1e9).toFixed(2)+'B' : n >= 1e6 ? (n/1e6).toFixed(2)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : String(n||0);
 const _usageCost = n => '$' + (n||0).toFixed(2);
+const _esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
 async function sLoadUsageTab() {
   const panel = document.getElementById('usage-panel');
@@ -36,14 +37,14 @@ function _renderUsage() {
       <button class="usage-seg-btn${_usagePeriod==='7'?' active':''}" onclick="_setUsagePeriod('7')">7d</button>
     </div>`;
 
-  let body = _usageView === 'summary' ? _renderUsageRingkasan(d) : _renderUsageModel(d);
+  let body = _usageView === 'summary' ? _renderUsageSummary(d) : _renderUsageModel(d);
 
   panel.innerHTML = `
     <div class="usage-topbar">${viewSeg}${periodSeg}</div>
     ${body}`;
 }
 
-function _renderUsageRingkasan(d) {
+function _renderUsageSummary(d) {
   const t = d.totals || {};
   const totalTokens = (t.input_tokens||0)+(t.output_tokens||0)+(t.cache_read_tokens||0)+(t.cache_creation_tokens||0);
   const peak = d.peakHour != null ? String(d.peakHour).padStart(2,'0')+':00' : '—';
@@ -137,8 +138,7 @@ function _renderUsageModel(d) {
   ).join('');
 
   const labelStep = Math.max(1, Math.ceil(days.length / 10));
-  const xEl = days.filter((_,i) => i % labelStep === 0 || i === days.length-1).map(day => {
-    const i = days.indexOf(day);
+  const xEl = days.map((day, i) => [day, i]).filter(([_, i]) => i % labelStep === 0 || i === days.length-1).map(([day, i]) => {
     const x = padL + i * barSlot + barSlot/2;
     const mm = day.slice(5,7), dd = day.slice(8,10);
     const months = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -156,7 +156,7 @@ function _renderUsageModel(d) {
     const color = colorMap[m.model] || '#888';
     return `<div style="display:flex;align-items:center;gap:8px;padding:3px 0">
       <span style="width:10px;height:10px;border-radius:2px;background:${color};flex-shrink:0"></span>
-      <span style="flex:1;font-size:11px;color:var(--h-ink);font-family:var(--h-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${m.model}</span>
+      <span style="flex:1;font-size:11px;color:var(--h-ink);font-family:var(--h-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_esc(m.model)}</span>
       <span style="font-size:10px;color:var(--h-ink-faint);white-space:nowrap">${_usageFmt(m.input_tokens)}in · ${_usageFmt(m.output_tokens)}out</span>
       <span style="font-size:11px;font-weight:600;color:var(--h-ink);min-width:40px;text-align:right">${pct}%</span>
     </div>`;
