@@ -59,8 +59,8 @@ function _renderUsageRingkasan(d) {
     // extra info (not in original mock)
     ['Total biaya', _usageCost(t.cost_usd)],
     ['Output token', _usageFmt(t.output_tokens)],
-    ['Cache hits', _usageFmt(t.cache_read_tokens)],
     ['Model favorit', d.favoriteModel || '—'],
+    ['Cache hits', _usageFmt(t.cache_read_tokens)],
   ];
   const cardsHtml = cards.map(([label,val]) => {
     const wide = label === 'Model favorit' ? ' usage-stat-card--wide' : '';
