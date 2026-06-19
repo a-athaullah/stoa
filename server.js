@@ -943,8 +943,9 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/api/usage/stats') {
     if (!req._authUser) { res.writeHead(401); return res.end(JSON.stringify({ error: 'unauthorized' })); }
-    const days = parseInt(url.searchParams.get('days') || '30');
-    const since = `datetime('now', '-${days} days')`;
+    const period = url.searchParams.get('period') || 'all'; // 'all' | '30' | '7'
+    const since = period === 'all' ? `'1970-01-01'` : `datetime('now', '-${parseInt(period)} days')`;
+
     const totals = db.prepare(`
       SELECT
         COALESCE(SUM(input_tokens),0) as input_tokens,
@@ -955,19 +956,75 @@ const server = http.createServer(async (req, res) => {
         COUNT(*) as turns
       FROM usage_log WHERE created_at >= ${since}
     `).get();
+
     const byModel = db.prepare(`
       SELECT model,
         COALESCE(SUM(input_tokens),0) as input_tokens,
         COALESCE(SUM(output_tokens),0) as output_tokens,
+        COALESCE(SUM(cache_read_tokens),0) as cache_read_tokens,
         COALESCE(SUM(cost_usd),0) as cost_usd,
         COUNT(*) as turns
       FROM usage_log WHERE created_at >= ${since}
       GROUP BY model ORDER BY cost_usd DESC
     `).all();
-    const activeDays = db.prepare(`
-      SELECT COUNT(DISTINCT date(created_at)) as days FROM usage_log WHERE created_at >= ${since}
-    `).get()?.days || 0;
-    return json(res, { totals, byModel, activeDays, periodDays: days });
+
+    // daily aggregation (for heatmap + streaks)
+    const daily = db.prepare(`
+      SELECT date(created_at) as day,
+        COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens),0) as tokens,
+        COUNT(*) as turns
+      FROM usage_log WHERE created_at >= ${since}
+      GROUP BY date(created_at) ORDER BY day ASC
+    `).all();
+
+    const activeDays = daily.length;
+
+    // peak hour in WIB (UTC+7)
+    const peakRow = db.prepare(`
+      SELECT CAST(strftime('%H', datetime(created_at, '+7 hours')) AS INTEGER) as hour, COUNT(*) as n
+      FROM usage_log WHERE created_at >= ${since}
+      GROUP BY hour ORDER BY n DESC LIMIT 1
+    `).get();
+    const peakHour = peakRow ? peakRow.hour : null;
+
+    // sessions: distinct claude sessions tracked
+    const sessions = db.prepare('SELECT COUNT(*) as n FROM ai_sessions').get()?.n || 0;
+
+    // streaks (consecutive calendar days, computed from daily set)
+    const daySet = new Set(daily.map(d => d.day));
+    let streakLongest = 0, streakCurrent = 0;
+    if (daily.length) {
+      const allDays = daily.map(d => d.day).sort();
+      let run = 1, best = 1;
+      for (let i = 1; i < allDays.length; i++) {
+        const prev = new Date(allDays[i-1] + 'T00:00:00Z');
+        const cur = new Date(allDays[i] + 'T00:00:00Z');
+        const diff = Math.round((cur - prev) / 86400000);
+        if (diff === 1) { run++; best = Math.max(best, run); }
+        else { run = 1; }
+      }
+      streakLongest = best;
+      // current streak: count back from today (WIB)
+      const todayStr = new Date(Date.now() + 7*3600000).toISOString().slice(0,10);
+      let cursor = new Date(todayStr + 'T00:00:00Z');
+      // allow streak to count even if today has no activity yet (start from yesterday)
+      if (!daySet.has(todayStr)) cursor = new Date(cursor - 86400000);
+      let cs = 0;
+      while (daySet.has(cursor.toISOString().slice(0,10))) {
+        cs++;
+        cursor = new Date(cursor - 86400000);
+      }
+      streakCurrent = cs;
+    }
+
+    const favoriteModel = byModel.length ? byModel.reduce((a,b) => b.turns > a.turns ? b : a).model : null;
+
+    return json(res, {
+      totals, byModel, daily,
+      activeDays, sessions, peakHour,
+      streakCurrent, streakLongest, favoriteModel,
+      period,
+    });
   }
 
   if (req.method === 'GET' && url.pathname === '/api/settings') {
