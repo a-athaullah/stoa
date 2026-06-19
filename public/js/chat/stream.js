@@ -1,3 +1,7 @@
+// Leaked "[thinking]" marker that weaker non-Anthropic models prefix onto their reply. The agent
+// strips it from the final content server-side; mirror that here so it doesn't flicker mid-stream.
+const THINKING_MARKER_RE = /^\s*(?:\[thinking\]\s*)+/;
+
 // ── Append streaming token ─────────────────────────────────────────────────
 function appendToken(msgId, token) {
   const row = document.getElementById('msg-' + msgId);
@@ -41,7 +45,7 @@ function appendToken(msgId, token) {
 
   const color = row.querySelector('.h-msg-name').style.color;
   bubble.innerHTML = '';
-  bubble.appendChild(document.createTextNode(streaming[msgId]));
+  bubble.appendChild(document.createTextNode(streaming[msgId].replace(THINKING_MARKER_RE, '')));
   const cursor = document.createElement('span');
   cursor.className = 'h-cursor';
   cursor.style.color = color;

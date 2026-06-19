@@ -287,7 +287,17 @@ async function fetchPlatformModels() {
 
 function getAvailableModels() {
   if (allServerModels) return allServerModels;
-  return ANTHROPIC_MODELS_FALLBACK.map(m => ({ ...m, platform: 'anthropic' }));
+  // platform_id: 'anthropic' so fallback models disambiguate the same way server models do.
+  return ANTHROPIC_MODELS_FALLBACK.map(m => ({ ...m, platform: 'anthropic', platform_id: 'anthropic' }));
+}
+
+// Find a model by value, disambiguating by platform when a name exists on multiple platforms.
+// No platform → Anthropic native model (model_config is null), so default to 'anthropic' rather
+// than matching every platform that shares this name. Falls back to any-platform match.
+function _findModel(models, value, platformId) {
+  const pid = platformId || 'anthropic';
+  return models.find(x => x.value === value && x.platform_id === pid)
+    || models.find(x => x.value === value);
 }
 
 const _capIcon = (type, size = 11) => {
@@ -309,7 +319,17 @@ function _capIconsHtml(m, size = 11) {
 
 let _dropdownSelected = null;
 
-function populateModelDropdown(ignored, currentModel) {
+// model_config is stored as a JSON string (or already-parsed object). Extract platform_id safely —
+// a model name can exist in multiple platforms, so the dropdown needs it to disambiguate.
+function parsePlatformId(modelConfig) {
+  if (!modelConfig) return null;
+  try {
+    const cfg = typeof modelConfig === 'string' ? JSON.parse(modelConfig) : modelConfig;
+    return cfg?.platform_id || null;
+  } catch { return null; }
+}
+
+function populateModelDropdown(ignored, currentModel, currentPlatformId) {
   const list = document.getElementById('model-dropdown-list');
   const textEl = document.getElementById('model-dropdown-text');
   const badgesEl = document.getElementById('model-capability-badges');
@@ -327,7 +347,7 @@ function populateModelDropdown(ignored, currentModel) {
     if (m.platform_id) div.dataset.platformId = m.platform_id;
     const icons = _capIconsHtml(m);
     div.innerHTML = `<span>${m.label}</span>${icons ? `<span class="h-model-cap-icons">${icons}</span>` : ''}`;
-    div.addEventListener('click', () => selectModelOption(m.value));
+    div.addEventListener('click', () => selectModelOption(m.value, m.platform_id));
     return div;
   };
 
@@ -349,10 +369,10 @@ function populateModelDropdown(ignored, currentModel) {
   }
 
   const target = currentModel || 'claude-sonnet-4-6';
-  _setDropdownValue(target, models);
+  _setDropdownValue(target, models, currentPlatformId);
 }
 
-function _setDropdownValue(value, models) {
+function _setDropdownValue(value, models, platformId) {
   if (!models) models = getAvailableModels();
   const list = document.getElementById('model-dropdown-list');
   const textEl = document.getElementById('model-dropdown-text');
@@ -360,23 +380,26 @@ function _setDropdownValue(value, models) {
   if (!list || !textEl) return;
 
   _dropdownSelected = value;
-  const m = models.find(x => x.value === value);
+  // No platform → Anthropic native model, so default to 'anthropic'. Highlighting must match the
+  // same single platform, otherwise a model name shared across platforms double-highlights.
+  const pid = platformId || 'anthropic';
+  const m = _findModel(models, value, pid);
   textEl.textContent = m ? m.label : value;
   if (badgesEl) badgesEl.innerHTML = m ? _capIconsHtml(m, 13) : '';
 
   list.querySelectorAll('.h-model-option').forEach(el => {
-    el.classList.toggle('selected', el.dataset.value === value);
+    el.classList.toggle('selected', el.dataset.value === value && el.dataset.platformId === pid);
   });
 }
 
-function selectModelOption(value) {
-  _setDropdownValue(value);
+function selectModelOption(value, platformId) {
+  _setDropdownValue(value, null, platformId);
   const list = document.getElementById('model-dropdown-list');
   if (list) list.classList.remove('open');
 
   if (!currentRoomId || !ws) return;
   const models = getAvailableModels();
-  const m = models.find(x => x.value === value);
+  const m = _findModel(models, value, platformId);
   const msg = { type: 'set_room_model', model: value };
   if (m?.platform_id && m.platform_id !== 'anthropic') {
     msg.model_config = { platform_id: m.platform_id, base_url: m.base_url || '' };
@@ -392,7 +415,7 @@ function updateModelSelector(room, parts) {
   const hasAIAgent = (parts || []).some(p => p.type === 'ai');
   wrap.style.display = hasAIAgent ? 'flex' : 'none';
   if (hasAIAgent) {
-    populateModelDropdown(null, room.model);
+    populateModelDropdown(null, room.model, parsePlatformId(room.model_config));
     handleModelUpdate({ model: room.model || 'claude-sonnet-4-6' });
   }
 }

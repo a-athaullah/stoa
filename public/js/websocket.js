@@ -303,7 +303,11 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'room_model_changed') {
     if (typeof handleModelUpdate === 'function') handleModelUpdate(msg);
-    if (typeof _setDropdownValue === 'function') _setDropdownValue(msg.model);
+    if (typeof _setDropdownValue === 'function') {
+      // model_config carries platform_id — pass it through so only the correct row is highlighted.
+      const platformId = typeof parsePlatformId === 'function' ? parsePlatformId(msg.model_config) : null;
+      _setDropdownValue(msg.model, null, platformId);
+    }
     return;
   }
 }

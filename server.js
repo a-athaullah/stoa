@@ -3048,7 +3048,7 @@ wss.on('connection', (ws, req) => {
       const clients = roomClients.get(subscribedRoom);
       if (clients) {
         for (const c of clients) {
-          if (c.readyState === 1) c.send(JSON.stringify({ type: 'room_model_changed', model, room_id: subscribedRoom }));
+          if (c.readyState === 1) c.send(JSON.stringify({ type: 'room_model_changed', model, model_config: modelConfig, room_id: subscribedRoom }));
         }
       }
       console.log(`[room] model set to ${model || '(default)'} for room ${subscribedRoom}`);
@@ -3641,9 +3641,10 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
           if (plat) {
             if (plat.vendor === 'ollama') {
               // Route through Stoa's own /v1/messages proxy — keys + rotation handled server-side.
-              // Use 127.0.0.1 directly (not getPublicUrl) — getPublicUrl returns the external public_url
-              // when configured, which would route the SDK call through the public internet.
-              modelBaseUrl = `http://127.0.0.1:${PORT}`;
+              // Use getPublicUrl (not hardcoded 127.0.0.1): remote agents (e.g. Kira on another host)
+              // resolve 127.0.0.1 to themselves, where nothing listens → ECONNREFUSED. The public/tailscale
+              // URL is reachable by both local and remote agents (loopback cost is negligible for local).
+              modelBaseUrl = getPublicUrl(`localhost:${PORT}`);
               modelApiKeys = [`stoa-proxy:${cfg.platform_id}`];
             } else {
               modelBaseUrl = plat.base_url || cfg.base_url || undefined;
