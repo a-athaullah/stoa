@@ -287,7 +287,17 @@ async function fetchPlatformModels() {
 
 function getAvailableModels() {
   if (allServerModels) return allServerModels;
-  return ANTHROPIC_MODELS_FALLBACK.map(m => ({ ...m, platform: 'anthropic' }));
+  // platform_id: 'anthropic' so fallback models disambiguate the same way server models do.
+  return ANTHROPIC_MODELS_FALLBACK.map(m => ({ ...m, platform: 'anthropic', platform_id: 'anthropic' }));
+}
+
+// Find a model by value, disambiguating by platform when a name exists on multiple platforms.
+// No platform → Anthropic native model (model_config is null), so default to 'anthropic' rather
+// than matching every platform that shares this name. Falls back to any-platform match.
+function _findModel(models, value, platformId) {
+  const pid = platformId || 'anthropic';
+  return models.find(x => x.value === value && x.platform_id === pid)
+    || models.find(x => x.value === value);
 }
 
 const _capIcon = (type, size = 11) => {
@@ -370,15 +380,15 @@ function _setDropdownValue(value, models, platformId) {
   if (!list || !textEl) return;
 
   _dropdownSelected = value;
-  // A model name can exist in multiple platforms — disambiguate by platform_id when given.
-  const m = (platformId ? models.find(x => x.value === value && x.platform_id === platformId) : null)
-    || models.find(x => x.value === value);
+  // No platform → Anthropic native model, so default to 'anthropic'. Highlighting must match the
+  // same single platform, otherwise a model name shared across platforms double-highlights.
+  const pid = platformId || 'anthropic';
+  const m = _findModel(models, value, pid);
   textEl.textContent = m ? m.label : value;
   if (badgesEl) badgesEl.innerHTML = m ? _capIconsHtml(m, 13) : '';
 
   list.querySelectorAll('.h-model-option').forEach(el => {
-    el.classList.toggle('selected', el.dataset.value === value
-      && (!platformId || el.dataset.platformId === platformId));
+    el.classList.toggle('selected', el.dataset.value === value && el.dataset.platformId === pid);
   });
 }
 
@@ -389,9 +399,7 @@ function selectModelOption(value, platformId) {
 
   if (!currentRoomId || !ws) return;
   const models = getAvailableModels();
-  // Disambiguate by platform_id — same model name may appear in multiple platforms.
-  const m = (platformId ? models.find(x => x.value === value && x.platform_id === platformId) : null)
-    || models.find(x => x.value === value);
+  const m = _findModel(models, value, platformId);
   const msg = { type: 'set_room_model', model: value };
   if (m?.platform_id && m.platform_id !== 'anthropic') {
     msg.model_config = { platform_id: m.platform_id, base_url: m.base_url || '' };

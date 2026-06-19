@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.110';
+const CLIENT_VERSION = '0.4.111';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -940,12 +940,13 @@ async function processTrigger(msg) {
         send({ type: 'usage_report', room_id, actor_id: ACTOR_ID, model: targetModel || 'unknown', usage: usage || {}, modelUsage: modelUsage || {}, totalCostUsd: totalCostUsd || 0 });
       }
 
-      // Strip base64 image data from session file to prevent errors on models without image support
+      // Strip base64 image data from the session file so a later resume by a model without image
+      // support doesn't choke. Awaited (not fire-and-forget) so it finishes before the finally block
+      // runs drainQueue() — otherwise the next queued trigger could resume and read the file while
+      // sanitizeSession is still mid-write. sanitizeSession uses async fs, so awaiting here keeps the
+      // ordering guarantee without blocking the event loop.
       if (sessionId && targetDir && !compactsInFlight.has(targetDir)) {
-        setImmediate(() => {
-          if (compactsInFlight.has(targetDir)) return;
-          stripSessionImages(targetDir, sessionId);
-        });
+        await stripSessionImages(targetDir, sessionId);
       }
 
       // Auto-compact: check session file size and compact if needed.
