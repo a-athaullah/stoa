@@ -945,6 +945,12 @@ const server = http.createServer(async (req, res) => {
     if (!req._authUser) { res.writeHead(401); return res.end(JSON.stringify({ error: 'unauthorized' })); }
     const period = url.searchParams.get('period') || 'all'; // 'all' | '30' | '7'
     const since = period === 'all' ? `'1970-01-01'` : `datetime('now', '-${parseInt(period)} days')`;
+    // Client sends its UTC offset in minutes (WIB = +420) so day-bucketing, peak hour, and
+    // streaks align to the viewer's local calendar instead of UTC. Integer-clamped, so it's
+    // safe to interpolate into the SQLite datetime modifier below.
+    const rawOff = parseInt(url.searchParams.get('tz_offset'), 10);
+    const tzOff = Number.isFinite(rawOff) ? Math.max(-840, Math.min(840, rawOff)) : 0;
+    const tzMod = `'${tzOff} minutes'`;
 
     const totals = db.prepare(`
       SELECT
@@ -969,20 +975,20 @@ const server = http.createServer(async (req, res) => {
       GROUP BY model ORDER BY cost_usd DESC
     `).all();
 
-    // daily aggregation (for heatmap + streaks)
+    // daily aggregation (for heatmap + streaks), bucketed by the client's local calendar day
     const daily = db.prepare(`
-      SELECT date(created_at) as day,
+      SELECT date(created_at, ${tzMod}) as day,
         COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens),0) as tokens,
         COUNT(*) as turns
       FROM usage_log WHERE created_at >= ${since}
-      GROUP BY date(created_at) ORDER BY day ASC
+      GROUP BY day ORDER BY day ASC
     `).all();
 
     const activeDays = daily.length;
 
-    // peak hour in WIB (UTC+7)
+    // peak hour in the client's local timezone
     const peakRow = db.prepare(`
-      SELECT CAST(strftime('%H', datetime(created_at, '+7 hours')) AS INTEGER) as hour, COUNT(*) as n
+      SELECT CAST(strftime('%H', datetime(created_at, ${tzMod})) AS INTEGER) as hour, COUNT(*) as n
       FROM usage_log WHERE created_at >= ${since}
       GROUP BY hour ORDER BY n DESC LIMIT 1
     `).get();
@@ -1002,8 +1008,8 @@ const server = http.createServer(async (req, res) => {
         else { run = 1; }
       }
       streakLongest = best;
-      // current streak: count back from today (WIB)
-      const todayStr = new Date(Date.now() + 7*3600000).toISOString().slice(0,10);
+      // current streak: count back from today in the client's local timezone
+      const todayStr = new Date(Date.now() + tzOff*60000).toISOString().slice(0,10);
       let cursor = new Date(todayStr + 'T00:00:00Z');
       // allow streak to count even if today has no activity yet (start from yesterday)
       if (!daySet.has(todayStr)) cursor = new Date(cursor - 86400000);
@@ -1016,12 +1022,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     const dailyByModel = db.prepare(`
-      SELECT date(created_at) as day,
+      SELECT date(created_at, ${tzMod}) as day,
         model,
         COALESCE(SUM(input_tokens),0) as input_tokens,
         COALESCE(SUM(output_tokens),0) as output_tokens
       FROM usage_log WHERE created_at >= ${since}
-      GROUP BY date(created_at), model ORDER BY day ASC
+      GROUP BY day, model ORDER BY day ASC
     `).all();
 
     const favoriteModel = byModel.length ? byModel.reduce((a,b) => b.turns > a.turns ? b : a).model : null;

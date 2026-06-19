@@ -11,7 +11,8 @@ async function sLoadUsageTab() {
   const panel = document.getElementById('usage-panel');
   if (!panel) return;
   panel.innerHTML = '<div style="color:var(--h-ink-faint);font-size:13px;padding:24px 0">Loading…</div>';
-  try { _usageData = await fjson('/api/usage/stats?period=' + _usagePeriod); }
+  const tzOffset = -new Date().getTimezoneOffset(); // minutes east of UTC (WIB = +420)
+  try { _usageData = await fjson('/api/usage/stats?period=' + _usagePeriod + '&tz_offset=' + tzOffset); }
   catch { panel.innerHTML = '<div style="color:var(--h-ink-faint);font-size:13px;padding:24px 0">Failed to load usage data.</div>'; return; }
   _renderUsage();
 }
@@ -79,13 +80,16 @@ function _renderHeatmap(daily) {
   daily.forEach(x => map[x.day] = x.tokens);
   const max = Math.max(1, ...daily.map(x => x.tokens));
   const WEEKS = 26, DAYS = WEEKS*7;
-  const today = new Date(Date.now() + 7*3600000);
   const _DAY = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   const _MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const _pad = n => String(n).padStart(2,'0');
+  // Walk back from local midnight; keys are local calendar dates to match the server's
+  // tz-offset day-bucketing (see /api/usage/stats).
+  const today = new Date(); today.setHours(0,0,0,0);
   const cells = [];
   for (let i = DAYS-1; i >= 0; i--) {
     const dt = new Date(today.getTime() - i*86400000);
-    const key = dt.toISOString().slice(0,10);
+    const key = dt.getFullYear()+'-'+_pad(dt.getMonth()+1)+'-'+_pad(dt.getDate());
     const v = map[key] || 0;
     let lvl = 0;
     if (v > 0) { const r = v/max; lvl = r > 0.66 ? 4 : r > 0.33 ? 3 : r > 0.1 ? 2 : 1; }
