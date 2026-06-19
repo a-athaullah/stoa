@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.108';
+const CLIENT_VERSION = '0.4.109';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -149,21 +149,25 @@ let SESSION_IDLE_TTL = 5; // minutes, configurable via server
 let AUTO_COMPACT_THRESHOLD = parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB || '500') * 1024; // KB, configurable
 const compactsInFlight = new Set(); // workdir keys currently being compacted — prevents concurrent /compact on same session
 
+function sessionFilePath(workdir, sessionId) {
+  if (!workdir || !sessionId) return null;
+  const encoded = workdir.replace(/\//g, '-').replace(/\\/g, '-').replace(/:/g, '');
+  return path.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`);
+}
+
 async function getSessionFileSize(workdir, sessionId) {
-  if (!workdir || !sessionId) return 0;
+  const filePath = sessionFilePath(workdir, sessionId);
+  if (!filePath) return 0;
   try {
-    const encoded = workdir.replace(/\//g, '-').replace(/\\/g, '-').replace(/:/g, '');
-    const filePath = path.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`);
     const stat = await fs.promises.stat(filePath);
     return stat.size;
   } catch { return 0; }
 }
 
 function deleteSessionFile(workdir, sessionId) {
-  if (!sessionId) return;
+  const filePath = sessionFilePath(workdir, sessionId);
+  if (!filePath) return;
   try {
-    const encoded = workdir.replace(/\//g, '-').replace(/\\/g, '-').replace(/:/g, '');
-    const filePath = path.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`);
     if (!fs.existsSync(filePath)) return;
     fs.unlinkSync(filePath);
     console.log(`[stoa] cleanup: deleted session file ${sessionId.slice(0, 8)}...`);
@@ -173,10 +177,9 @@ function deleteSessionFile(workdir, sessionId) {
 }
 
 function truncateSessionFile(workdir, sessionId) {
-  if (!sessionId) return;
+  const filePath = sessionFilePath(workdir, sessionId);
+  if (!filePath) return;
   try {
-    const encoded = workdir.replace(/\//g, '-').replace(/\\/g, '-').replace(/:/g, '');
-    const filePath = path.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`);
     if (!fs.existsSync(filePath)) return;
     const lines = fs.readFileSync(filePath, 'utf8').split('\n').filter(l => l.trim());
     let lastBoundary = -1;
@@ -191,111 +194,79 @@ function truncateSessionFile(workdir, sessionId) {
   }
 }
 
-function stripSessionImages(workdir, sessionId) {
-  if (!sessionId) return;
+// Recursively replace any content block matching matchFn with the value from makeReplacement.
+// Used to sanitize session entries (images, unsigned thinking blocks) before the CLI re-reads them.
+function stripBlocksFromEntry(obj, matchFn, makeReplacement) {
+  if (!obj || typeof obj !== 'object') return false;
+  let stripped = false;
+  if (Array.isArray(obj)) {
+    for (let i = 0; i < obj.length; i++) {
+      if (obj[i] && typeof obj[i] === 'object' && matchFn(obj[i])) {
+        obj[i] = makeReplacement(obj[i]);
+        stripped = true;
+      } else if (stripBlocksFromEntry(obj[i], matchFn, makeReplacement)) {
+        stripped = true;
+      }
+    }
+  } else {
+    for (const key of Object.keys(obj)) {
+      if (stripBlocksFromEntry(obj[key], matchFn, makeReplacement)) stripped = true;
+    }
+  }
+  return stripped;
+}
+
+// Shared async scaffold: rewrite a session jsonl, replacing blocks that match. Async fs (not
+// readFileSync) so it never blocks the event loop even when called inline before a session resume.
+async function sanitizeSession(workdir, sessionId, marker, matchFn, makeReplacement, label) {
+  const filePath = sessionFilePath(workdir, sessionId);
+  if (!filePath) return;
   try {
-    const encoded = workdir.replace(/\//g, '-').replace(/\\/g, '-').replace(/:/g, '');
-    const filePath = path.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`);
-    if (!fs.existsSync(filePath)) return;
-    const raw = fs.readFileSync(filePath, 'utf8');
-    if (!raw.includes('"type":"image"') && !raw.includes('"type": "image"')) return;
+    let raw;
+    try { raw = await fs.promises.readFile(filePath, 'utf8'); } catch { return; }
+    const m1 = `"type":"${marker}"`, m2 = `"type": "${marker}"`;
+    if (!raw.includes(m1) && !raw.includes(m2)) return;
     const lines = raw.split('\n');
     let changed = false;
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      if (!line.trim()) continue;
-      if (!line.includes('"type":"image"') && !line.includes('"type": "image"')) continue;
+      if (!line.trim() || (!line.includes(m1) && !line.includes(m2))) continue;
       try {
         const entry = JSON.parse(line);
-        if (stripImagesFromEntry(entry)) {
+        if (stripBlocksFromEntry(entry, matchFn, makeReplacement)) {
           lines[i] = JSON.stringify(entry);
           changed = true;
         }
       } catch {}
     }
     if (changed) {
-      fs.writeFileSync(filePath, lines.join('\n'), 'utf8');
-      console.log(`[stoa] stripped image data from session ${sessionId.slice(0, 8)}...`);
+      await fs.promises.writeFile(filePath, lines.join('\n'), 'utf8');
+      console.log(`[stoa] ${label} in session ${sessionId.slice(0, 8)}...`);
     }
   } catch (err) {
-    console.error(`[stoa] strip images error: ${err.message}`);
+    console.error(`[stoa] sanitize (${label}) error: ${err.message}`);
   }
+}
+
+// Strip base64 image data so models without image support don't choke on a resumed session.
+function stripSessionImages(workdir, sessionId) {
+  return sanitizeSession(workdir, sessionId, 'image',
+    b => b.type === 'image' && b.source,
+    () => ({ type: 'text', text: '[image]' }),
+    'stripped image data');
 }
 
 // Non-Anthropic models (ollama/qwen/nemotron via proxy) emit `thinking` blocks with an
 // empty/missing `signature`. Claude Code writes them into the resumed session file. The next
 // time a Claude model resumes that session, the CLI replays the history to api.anthropic.com,
 // which rejects unsigned thinking blocks with: 400 "Invalid `signature` in `thinking` block".
-// Convert any unsigned thinking block to a plain text block (mirrors stripSessionImages) so the
-// uuid chain and content-array length stay intact and no assistant turn becomes empty.
+// Convert any unsigned thinking block to a plain text block so the uuid chain and content-array
+// length stay intact and no assistant turn becomes empty.
 function stripUnsignedThinking(workdir, sessionId) {
-  if (!sessionId) return;
-  try {
-    const encoded = workdir.replace(/\//g, '-').replace(/\\/g, '-').replace(/:/g, '');
-    const filePath = path.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`);
-    if (!fs.existsSync(filePath)) return;
-    const raw = fs.readFileSync(filePath, 'utf8');
-    if (!raw.includes('"type":"thinking"') && !raw.includes('"type": "thinking"')) return;
-    const lines = raw.split('\n');
-    let changed = false;
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      if (!line.trim() || (!line.includes('"type":"thinking"') && !line.includes('"type": "thinking"'))) continue;
-      try {
-        const entry = JSON.parse(line);
-        if (stripUnsignedThinkingFromEntry(entry)) {
-          lines[i] = JSON.stringify(entry);
-          changed = true;
-        }
-      } catch {}
-    }
-    if (changed) {
-      fs.writeFileSync(filePath, lines.join('\n'), 'utf8');
-      console.log(`[stoa] stripped unsigned thinking blocks from session ${sessionId.slice(0, 8)}...`);
-    }
-  } catch (err) {
-    console.error(`[stoa] strip thinking error: ${err.message}`);
-  }
-}
-
-function stripUnsignedThinkingFromEntry(obj) {
-  if (!obj || typeof obj !== 'object') return false;
-  let stripped = false;
-  if (Array.isArray(obj)) {
-    for (let i = 0; i < obj.length; i++) {
-      if (obj[i] && obj[i].type === 'thinking' && !obj[i].signature) {
-        obj[i] = { type: 'text', text: '[thinking]' };
-        stripped = true;
-      } else if (stripUnsignedThinkingFromEntry(obj[i])) {
-        stripped = true;
-      }
-    }
-  } else {
-    for (const key of Object.keys(obj)) {
-      if (stripUnsignedThinkingFromEntry(obj[key])) stripped = true;
-    }
-  }
-  return stripped;
-}
-
-function stripImagesFromEntry(obj) {
-  if (!obj || typeof obj !== 'object') return false;
-  let stripped = false;
-  if (Array.isArray(obj)) {
-    for (let i = 0; i < obj.length; i++) {
-      if (obj[i] && obj[i].type === 'image' && obj[i].source) {
-        obj[i] = { type: 'text', text: '[image]' };
-        stripped = true;
-      } else if (stripImagesFromEntry(obj[i])) {
-        stripped = true;
-      }
-    }
-  } else {
-    for (const key of Object.keys(obj)) {
-      if (stripImagesFromEntry(obj[key])) stripped = true;
-    }
-  }
-  return stripped;
+  return sanitizeSession(workdir, sessionId, 'thinking',
+    b => b.type === 'thinking' && !b.signature,
+    () => ({ type: 'text', text: '[thinking]' }),
+    'stripped unsigned thinking blocks');
 }
 
 function getSession(workdir, env) {
@@ -854,7 +825,7 @@ async function processTrigger(msg) {
       session.shutdown();
       // Sanitize the session file before the new CLI process reads it on --resume, so unsigned
       // thinking blocks left by non-Anthropic models don't break the next Claude run.
-      if (rid && !compactsInFlight.has(targetDir)) stripUnsignedThinking(targetDir, rid);
+      if (rid && !compactsInFlight.has(targetDir)) await stripUnsignedThinking(targetDir, rid);
       const flags = rid ? ['--resume', rid] : [];
       if (targetModel) flags.push('--model', targetModel);
       if (msg.tools_supported === false) flags.push('--tools', '');
@@ -912,7 +883,7 @@ async function processTrigger(msg) {
           console.log(`[stoa] API key #1 failed (${retryErr.message}), rotating to key #${ki + 1}...`);
           const rotatedEnv = { ...platformEnv, ANTHROPIC_AUTH_TOKEN: apiKeys[ki] };
           session.shutdown();
-          if (rid && !compactsInFlight.has(targetDir)) stripUnsignedThinking(targetDir, rid);
+          if (rid && !compactsInFlight.has(targetDir)) await stripUnsignedThinking(targetDir, rid);
           const flags = rid ? ['--resume', rid] : [];
           if (targetModel) flags.push('--model', targetModel);
           if (msg.tools_supported === false) flags.push('--tools', '');

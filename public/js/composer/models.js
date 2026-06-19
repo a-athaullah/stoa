@@ -309,6 +309,16 @@ function _capIconsHtml(m, size = 11) {
 
 let _dropdownSelected = null;
 
+// model_config is stored as a JSON string (or already-parsed object). Extract platform_id safely —
+// a model name can exist in multiple platforms, so the dropdown needs it to disambiguate.
+function parsePlatformId(modelConfig) {
+  if (!modelConfig) return null;
+  try {
+    const cfg = typeof modelConfig === 'string' ? JSON.parse(modelConfig) : modelConfig;
+    return cfg?.platform_id || null;
+  } catch { return null; }
+}
+
 function populateModelDropdown(ignored, currentModel, currentPlatformId) {
   const list = document.getElementById('model-dropdown-list');
   const textEl = document.getElementById('model-dropdown-text');
@@ -397,14 +407,7 @@ function updateModelSelector(room, parts) {
   const hasAIAgent = (parts || []).some(p => p.type === 'ai');
   wrap.style.display = hasAIAgent ? 'flex' : 'none';
   if (hasAIAgent) {
-    let platformId = null;
-    if (room.model_config) {
-      try {
-        const cfg = typeof room.model_config === 'string' ? JSON.parse(room.model_config) : room.model_config;
-        platformId = cfg?.platform_id || null;
-      } catch {}
-    }
-    populateModelDropdown(null, room.model, platformId);
+    populateModelDropdown(null, room.model, parsePlatformId(room.model_config));
     handleModelUpdate({ model: room.model || 'claude-sonnet-4-6' });
   }
 }
