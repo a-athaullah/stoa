@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.109';
+const CLIENT_VERSION = '0.4.110';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -200,9 +200,10 @@ function stripBlocksFromEntry(obj, matchFn, makeReplacement) {
   if (!obj || typeof obj !== 'object') return false;
   let stripped = false;
   if (Array.isArray(obj)) {
-    for (let i = 0; i < obj.length; i++) {
+    for (let i = obj.length - 1; i >= 0; i--) {
       if (obj[i] && typeof obj[i] === 'object' && matchFn(obj[i])) {
-        obj[i] = makeReplacement(obj[i]);
+        const replacement = makeReplacement(obj[i]);
+        if (replacement === null) { obj.splice(i, 1); } else { obj[i] = replacement; }
         stripped = true;
       } else if (stripBlocksFromEntry(obj[i], matchFn, makeReplacement)) {
         stripped = true;
@@ -260,12 +261,13 @@ function stripSessionImages(workdir, sessionId) {
 // empty/missing `signature`. Claude Code writes them into the resumed session file. The next
 // time a Claude model resumes that session, the CLI replays the history to api.anthropic.com,
 // which rejects unsigned thinking blocks with: 400 "Invalid `signature` in `thinking` block".
-// Convert any unsigned thinking block to a plain text block so the uuid chain and content-array
-// length stay intact and no assistant turn becomes empty.
+// Remove unsigned thinking blocks entirely (return null → splice) rather than replacing with a
+// text placeholder — thinking is internal monologue, a placeholder leaks "[thinking]" into the
+// visible assistant history and the model can see/react to it.
 function stripUnsignedThinking(workdir, sessionId) {
   return sanitizeSession(workdir, sessionId, 'thinking',
     b => b.type === 'thinking' && !b.signature,
-    () => ({ type: 'text', text: '[thinking]' }),
+    () => null,
     'stripped unsigned thinking blocks');
 }
 
