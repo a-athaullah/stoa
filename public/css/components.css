@@ -870,7 +870,7 @@ html.dark .h-toast.h-toast-error { background: oklch(0.42 0.12 25); }
 }
 
 /* usage — topbar & segmented controls */
-.usage-topbar { display:flex; justify-content:space-between; align-items:center; gap:7px; margin-bottom:10px; flex-wrap:wrap; }
+.usage-topbar { display:flex; justify-content:space-between; align-items:center; gap:7px; margin-bottom:10px; flex-wrap:wrap; max-width:720px; }
 .usage-seg { display:inline-flex; background:var(--h-surface); border:1px solid var(--h-rule); border-radius:5px; padding:2px; gap:2px; }
 .usage-seg-btn { background:none; border:none; padding:3px 7px; font-size:11px; color:var(--h-ink-faint); border-radius:4px; cursor:pointer; font-family:inherit; transition:all .12s; }
 .usage-seg-btn:hover { color:var(--h-ink); }
