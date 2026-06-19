@@ -941,6 +941,99 @@ const server = http.createServer(async (req, res) => {
     return json(res, { ok: true });
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/usage/stats') {
+    if (!req._authUser) { res.writeHead(401); return res.end(JSON.stringify({ error: 'unauthorized' })); }
+    const period = url.searchParams.get('period') || 'all'; // 'all' | '30' | '7'
+    const since = period === 'all' ? `'1970-01-01'` : `datetime('now', '-${parseInt(period)} days')`;
+
+    const totals = db.prepare(`
+      SELECT
+        COALESCE(SUM(input_tokens),0) as input_tokens,
+        COALESCE(SUM(output_tokens),0) as output_tokens,
+        COALESCE(SUM(cache_read_tokens),0) as cache_read_tokens,
+        COALESCE(SUM(cache_creation_tokens),0) as cache_creation_tokens,
+        COALESCE(SUM(cost_usd),0) as cost_usd,
+        COUNT(*) as turns
+      FROM usage_log WHERE created_at >= ${since}
+    `).get();
+
+    const byModel = db.prepare(`
+      SELECT model,
+        COALESCE(SUM(input_tokens),0) as input_tokens,
+        COALESCE(SUM(output_tokens),0) as output_tokens,
+        COALESCE(SUM(cache_read_tokens),0) as cache_read_tokens,
+        COALESCE(SUM(cache_creation_tokens),0) as cache_creation_tokens,
+        COALESCE(SUM(cost_usd),0) as cost_usd,
+        COUNT(*) as turns
+      FROM usage_log WHERE created_at >= ${since}
+      GROUP BY model ORDER BY cost_usd DESC
+    `).all();
+
+    // daily aggregation (for heatmap + streaks)
+    const daily = db.prepare(`
+      SELECT date(created_at) as day,
+        COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens),0) as tokens,
+        COUNT(*) as turns
+      FROM usage_log WHERE created_at >= ${since}
+      GROUP BY date(created_at) ORDER BY day ASC
+    `).all();
+
+    const activeDays = daily.length;
+
+    // peak hour in WIB (UTC+7)
+    const peakRow = db.prepare(`
+      SELECT CAST(strftime('%H', datetime(created_at, '+7 hours')) AS INTEGER) as hour, COUNT(*) as n
+      FROM usage_log WHERE created_at >= ${since}
+      GROUP BY hour ORDER BY n DESC LIMIT 1
+    `).get();
+    const peakHour = peakRow ? peakRow.hour : null;
+
+    // streaks (consecutive calendar days, computed from daily set)
+    const daySet = new Set(daily.map(d => d.day));
+    let streakLongest = 0, streakCurrent = 0;
+    if (daily.length) {
+      const allDays = daily.map(d => d.day).sort();
+      let run = 1, best = 1;
+      for (let i = 1; i < allDays.length; i++) {
+        const prev = new Date(allDays[i-1] + 'T00:00:00Z');
+        const cur = new Date(allDays[i] + 'T00:00:00Z');
+        const diff = Math.round((cur - prev) / 86400000);
+        if (diff === 1) { run++; best = Math.max(best, run); }
+        else { run = 1; }
+      }
+      streakLongest = best;
+      // current streak: count back from today (WIB)
+      const todayStr = new Date(Date.now() + 7*3600000).toISOString().slice(0,10);
+      let cursor = new Date(todayStr + 'T00:00:00Z');
+      // allow streak to count even if today has no activity yet (start from yesterday)
+      if (!daySet.has(todayStr)) cursor = new Date(cursor - 86400000);
+      let cs = 0;
+      while (daySet.has(cursor.toISOString().slice(0,10))) {
+        cs++;
+        cursor = new Date(cursor - 86400000);
+      }
+      streakCurrent = cs;
+    }
+
+    const dailyByModel = db.prepare(`
+      SELECT date(created_at) as day,
+        model,
+        COALESCE(SUM(input_tokens),0) as input_tokens,
+        COALESCE(SUM(output_tokens),0) as output_tokens
+      FROM usage_log WHERE created_at >= ${since}
+      GROUP BY date(created_at), model ORDER BY day ASC
+    `).all();
+
+    const favoriteModel = byModel.length ? byModel.reduce((a,b) => b.turns > a.turns ? b : a).model : null;
+
+    return json(res, {
+      totals, byModel, daily, dailyByModel,
+      activeDays, peakHour,
+      streakCurrent, streakLongest, favoriteModel,
+      period,
+    });
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/settings') {
     const host = req.headers.host || `localhost:${PORT}`;
     const human = db.prepare(`SELECT id, name FROM actors WHERE type='human' LIMIT 1`).get();
@@ -2662,6 +2755,29 @@ wss.on('connection', (ws, req) => {
       pendingAgents.delete(msg.message_id);
       pendingActorMeta.delete(msg.message_id);
     }
+
+    if (msg.type === 'usage_report' && agentActorId) {
+      const u = msg.usage || {};
+      const model = msg.model || 'unknown';
+      try {
+        db.prepare(`
+          INSERT INTO usage_log (actor_id, room_id, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          agentActorId,
+          msg.room_id || null,
+          model,
+          u.input_tokens || 0,
+          u.output_tokens || 0,
+          u.cache_read_input_tokens || 0,
+          u.cache_creation_input_tokens || 0,
+          msg.totalCostUsd || 0
+        );
+      } catch (e) {
+        console.error('[usage_report] insert failed:', e.message);
+      }
+    }
+
     // ── File operations (workspace panel) ──────────────────────────────────
     if (msg.type === 'file_list' && subscribedRoom) {
       const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(subscribedRoom);

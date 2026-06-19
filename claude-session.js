@@ -146,9 +146,12 @@ class ClaudeSession extends EventEmitter {
       // Use streamed tokens if available, otherwise fall back to result field
       const content = this._accContent || event.result || '';
       const sessionId = event.session_id;
+      const usage = event.usage || null;
+      const modelUsage = event.modelUsage || null;
+      const totalCostUsd = event.total_cost_usd || 0;
       const resolve = this._currentResolve;
       this._clearCurrent();
-      resolve?.({ content, sessionId });
+      resolve?.({ content, sessionId, usage, modelUsage, totalCostUsd });
     }
   }
 

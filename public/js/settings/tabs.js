@@ -4,7 +4,7 @@ function sActivateTab(name) {
     const isActive = el.dataset.tab === name;
     el.classList.toggle('active', isActive);
   });
-  ['agents', 'server', 'general', 'docs', 'platforms', 'automation'].forEach(t => {
+  ['agents', 'server', 'general', 'docs', 'platforms', 'automation', 'usage'].forEach(t => {
     const el = document.getElementById('s-tab-' + t);
     if (el) el.style.display = t === name ? '' : 'none';
   });
@@ -13,5 +13,6 @@ function sActivateTab(name) {
   if (name === 'docs')       sLoadDocsTab();
   if (name === 'platforms')   sLoadPlatformsTab();
   if (name === 'automation') sLoadAutomationTab();
+  if (name === 'usage')      sLoadUsageTab();
 }
 
