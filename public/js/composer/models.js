@@ -327,7 +327,7 @@ function populateModelDropdown(ignored, currentModel) {
     if (m.platform_id) div.dataset.platformId = m.platform_id;
     const icons = _capIconsHtml(m);
     div.innerHTML = `<span>${m.label}</span>${icons ? `<span class="h-model-cap-icons">${icons}</span>` : ''}`;
-    div.addEventListener('click', () => selectModelOption(m.value));
+    div.addEventListener('click', () => selectModelOption(m.value, m.platform_id));
     return div;
   };
 
@@ -352,7 +352,7 @@ function populateModelDropdown(ignored, currentModel) {
   _setDropdownValue(target, models);
 }
 
-function _setDropdownValue(value, models) {
+function _setDropdownValue(value, models, platformId) {
   if (!models) models = getAvailableModels();
   const list = document.getElementById('model-dropdown-list');
   const textEl = document.getElementById('model-dropdown-text');
@@ -360,23 +360,28 @@ function _setDropdownValue(value, models) {
   if (!list || !textEl) return;
 
   _dropdownSelected = value;
-  const m = models.find(x => x.value === value);
+  // A model name can exist in multiple platforms — disambiguate by platform_id when given.
+  const m = (platformId ? models.find(x => x.value === value && x.platform_id === platformId) : null)
+    || models.find(x => x.value === value);
   textEl.textContent = m ? m.label : value;
   if (badgesEl) badgesEl.innerHTML = m ? _capIconsHtml(m, 13) : '';
 
   list.querySelectorAll('.h-model-option').forEach(el => {
-    el.classList.toggle('selected', el.dataset.value === value);
+    el.classList.toggle('selected', el.dataset.value === value
+      && (!platformId || el.dataset.platformId === platformId));
   });
 }
 
-function selectModelOption(value) {
-  _setDropdownValue(value);
+function selectModelOption(value, platformId) {
+  _setDropdownValue(value, null, platformId);
   const list = document.getElementById('model-dropdown-list');
   if (list) list.classList.remove('open');
 
   if (!currentRoomId || !ws) return;
   const models = getAvailableModels();
-  const m = models.find(x => x.value === value);
+  // Disambiguate by platform_id — same model name may appear in multiple platforms.
+  const m = (platformId ? models.find(x => x.value === value && x.platform_id === platformId) : null)
+    || models.find(x => x.value === value);
   const msg = { type: 'set_room_model', model: value };
   if (m?.platform_id && m.platform_id !== 'anthropic') {
     msg.model_config = { platform_id: m.platform_id, base_url: m.base_url || '' };
