@@ -49,7 +49,7 @@ function _renderUsageRingkasan(d) {
   const peak = d.peakHour != null ? String(d.peakHour).padStart(2,'0')+':00' : '—';
 
   const cards = [
-    ['Sesi', _usageFmt(d.sessions)],
+    ['Avg token/pesan', _usageFmt(t.turns ? Math.round(totalTokens / t.turns) : 0)],
     ['Pesan', _usageFmt(t.turns)],
     ['Total token', _usageFmt(totalTokens)],
     ['Hari aktif', _usageFmt(d.activeDays)],
@@ -57,6 +57,7 @@ function _renderUsageRingkasan(d) {
     ['Streak terpanjang', (d.streakLongest||0)+'h'],
     ['Jam puncak', peak],
     // extra info (not in original mock)
+    ['Input token', _usageFmt(t.input_tokens)],
     ['Total biaya', _usageCost(t.cost_usd)],
     ['Model favorit', d.favoriteModel || '—'],
     ['Cache hits', _usageFmt(t.cache_read_tokens)],
