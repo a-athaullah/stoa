@@ -70,7 +70,7 @@ function _renderUsageRingkasan(d) {
   return `
     <div class="usage-cards">${cardsHtml}</div>
     ${_renderHeatmap(d.daily || [])}
-    <div class="usage-footer">${_usageComparison(totalTokens)}</div>`;
+`;
 }
 
 function _renderHeatmap(daily) {
@@ -89,27 +89,6 @@ function _renderHeatmap(daily) {
     cells.push(`<span class="usage-cell usage-cell-${lvl}" title="${key}: ${_usageFmt(v)} token"></span>`);
   }
   return `<div class="usage-heatmap">${cells.join('')}</div>`;
-}
-
-function _usageComparison(tokens) {
-  // ~1.3 tokens per word approximation
-  const books = [
-    { name: 'Dune', words: 188000 },
-    { name: 'War and Peace', words: 587000 },
-    { name: 'Lord of the Rings', words: 481000 },
-    { name: 'Harry Potter (seri lengkap)', words: 1084000 },
-  ];
-  const bookTokens = b => b.words * 1.3;
-  // pick the largest book the user still surpasses, else smallest
-  let chosen = books[0];
-  for (const b of books) { if (tokens >= bookTokens(b)) chosen = b; }
-  const ratio = tokens / bookTokens(chosen);
-  if (ratio < 1) {
-    const pct = Math.round(ratio*100);
-    return `Kamu sudah menggunakan ~${pct}% dari token yang setara novel <em>${chosen.name}</em>.`;
-  }
-  const x = ratio >= 10 ? Math.round(ratio) : ratio.toFixed(1);
-  return `Kamu telah menggunakan ~${x}× lebih banyak token dibandingkan <em>${chosen.name}</em>.`;
 }
 
 function _renderUsageModel(d) {
