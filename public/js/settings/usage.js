@@ -77,7 +77,7 @@ function _renderHeatmap(daily) {
   const map = {};
   daily.forEach(x => map[x.day] = x.tokens);
   const max = Math.max(1, ...daily.map(x => x.tokens));
-  const WEEKS = 17, DAYS = WEEKS*7;
+  const WEEKS = 25, DAYS = WEEKS*7;
   const today = new Date(Date.now() + 7*3600000);
   const cells = [];
   for (let i = DAYS-1; i >= 0; i--) {
