@@ -35,7 +35,7 @@ const jsFiles = [
   'composer/emoji', 'composer/input', 'composer/rooms-modal',
   'composer/scroll', 'composer/search', 'composer/utils', 'composer/models',
   'settings/agents', 'settings/agents-add', 'settings/tabs',
-  'settings/docs', 'settings/appearance', 'settings/platforms', 'settings/account',
+  'settings/docs', 'settings/appearance', 'settings/platforms', 'settings/account', 'settings/usage',
   'settings/init',
   'init/setup', 'init/main', 'init/pwa', 'init/speech',
   'automation/state', 'automation/connections', 'automation/automations', 'automation/events', 'automation/api',
