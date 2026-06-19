@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.111';
+const CLIENT_VERSION = '0.4.112';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -217,21 +217,30 @@ function stripBlocksFromEntry(obj, matchFn, makeReplacement) {
   return stripped;
 }
 
-// Shared async scaffold: rewrite a session jsonl, replacing blocks that match. Async fs (not
-// readFileSync) so it never blocks the event loop even when called inline before a session resume.
-async function sanitizeSession(workdir, sessionId, marker, matchFn, makeReplacement, label) {
+// Strip the literal "[thinking]" marker from the start of a string (one or more, with surrounding
+// whitespace). Older Stoa versions replaced unsigned thinking blocks with a {type:'text',
+// text:'[thinking]'} placeholder; weaker non-Anthropic models then few-shot-mimic that pattern and
+// prefix their own replies with "[thinking]". Used both on live output and on the stored history.
+const THINKING_MARKER_RE = /^\s*(?:\[thinking\]\s*)+/;
+function stripLeadingThinkingMarker(text) {
+  return typeof text === 'string' ? text.replace(THINKING_MARKER_RE, '') : text;
+}
+
+// Shared async scaffold: rewrite a session jsonl, replacing blocks that match. `needles` are raw
+// substrings used as a cheap early-exit (whole file, then per-line) before JSON.parse. Async fs
+// (not readFileSync) so it never blocks the event loop even when called inline before a resume.
+async function sanitizeSession(workdir, sessionId, needles, matchFn, makeReplacement, label) {
   const filePath = sessionFilePath(workdir, sessionId);
   if (!filePath) return;
   try {
     let raw;
     try { raw = await fs.promises.readFile(filePath, 'utf8'); } catch { return; }
-    const m1 = `"type":"${marker}"`, m2 = `"type": "${marker}"`;
-    if (!raw.includes(m1) && !raw.includes(m2)) return;
+    if (!needles.some(n => raw.includes(n))) return;
     const lines = raw.split('\n');
     let changed = false;
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      if (!line.trim() || (!line.includes(m1) && !line.includes(m2))) continue;
+      if (!line.trim() || !needles.some(n => line.includes(n))) continue;
       try {
         const entry = JSON.parse(line);
         if (stripBlocksFromEntry(entry, matchFn, makeReplacement)) {
@@ -251,24 +260,31 @@ async function sanitizeSession(workdir, sessionId, marker, matchFn, makeReplacem
 
 // Strip base64 image data so models without image support don't choke on a resumed session.
 function stripSessionImages(workdir, sessionId) {
-  return sanitizeSession(workdir, sessionId, 'image',
+  return sanitizeSession(workdir, sessionId, ['"type":"image"', '"type": "image"'],
     b => b.type === 'image' && b.source,
     () => ({ type: 'text', text: '[image]' }),
     'stripped image data');
 }
 
-// Non-Anthropic models (ollama/qwen/nemotron via proxy) emit `thinking` blocks with an
-// empty/missing `signature`. Claude Code writes them into the resumed session file. The next
-// time a Claude model resumes that session, the CLI replays the history to api.anthropic.com,
-// which rejects unsigned thinking blocks with: 400 "Invalid `signature` in `thinking` block".
-// Remove unsigned thinking blocks entirely (return null → splice) rather than replacing with a
-// text placeholder — thinking is internal monologue, a placeholder leaks "[thinking]" into the
-// visible assistant history and the model can see/react to it.
-function stripUnsignedThinking(workdir, sessionId) {
-  return sanitizeSession(workdir, sessionId, 'thinking',
-    b => b.type === 'thinking' && !b.signature,
-    () => null,
-    'stripped unsigned thinking blocks');
+// Sanitize thinking residue from the session file before a resume, in one pass:
+//   1. Unsigned thinking blocks (ollama/qwen/nemotron via proxy emit `thinking` with empty/missing
+//      `signature`). On the next Claude resume the CLI replays history to api.anthropic.com, which
+//      rejects them with 400 "Invalid `signature` in `thinking` block". Remove the block entirely.
+//   2. Leaked "[thinking]" text markers — leftover {type:'text', text:'[thinking]'} placeholders
+//      written by older Stoa versions, plus replies where a model already mimicked the pattern and
+//      glued "[thinking]" onto the front of its text. Strip the leading marker (drop the block if
+//      nothing else remains) so the pattern stops being reinforced into the model's few-shot context.
+function sanitizeThinking(workdir, sessionId) {
+  return sanitizeSession(workdir, sessionId,
+    ['"type":"thinking"', '"type": "thinking"', '[thinking]'],
+    b => (b.type === 'thinking' && !b.signature)
+      || (b.type === 'text' && typeof b.text === 'string' && THINKING_MARKER_RE.test(b.text)),
+    b => {
+      if (b.type === 'thinking') return null;
+      const cleaned = stripLeadingThinkingMarker(b.text);
+      return cleaned ? { ...b, text: cleaned } : null;
+    },
+    'sanitized thinking residue');
 }
 
 function getSession(workdir, env) {
@@ -827,7 +843,7 @@ async function processTrigger(msg) {
       session.shutdown();
       // Sanitize the session file before the new CLI process reads it on --resume, so unsigned
       // thinking blocks left by non-Anthropic models don't break the next Claude run.
-      if (rid && !compactsInFlight.has(targetDir)) await stripUnsignedThinking(targetDir, rid);
+      if (rid && !compactsInFlight.has(targetDir)) await sanitizeThinking(targetDir, rid);
       const flags = rid ? ['--resume', rid] : [];
       if (targetModel) flags.push('--model', targetModel);
       if (msg.tools_supported === false) flags.push('--tools', '');
@@ -885,7 +901,7 @@ async function processTrigger(msg) {
           console.log(`[stoa] API key #1 failed (${retryErr.message}), rotating to key #${ki + 1}...`);
           const rotatedEnv = { ...platformEnv, ANTHROPIC_AUTH_TOKEN: apiKeys[ki] };
           session.shutdown();
-          if (rid && !compactsInFlight.has(targetDir)) await stripUnsignedThinking(targetDir, rid);
+          if (rid && !compactsInFlight.has(targetDir)) await sanitizeThinking(targetDir, rid);
           const flags = rid ? ['--resume', rid] : [];
           if (targetModel) flags.push('--model', targetModel);
           if (msg.tools_supported === false) flags.push('--tools', '');
@@ -915,12 +931,16 @@ async function processTrigger(msg) {
         throw retryErr;
       }
     }
-    const { content, sessionId, aborted, usage, modelUsage, totalCostUsd } = result;
+    let { content, sessionId, aborted, usage, modelUsage, totalCostUsd } = result;
+    // Defensive: a model with a poisoned history may still prefix its reply with a literal
+    // "[thinking]" marker. Strip it from the visible output (the resumed history is cleaned
+    // separately by sanitizeThinking, which eventually stops the model from producing it).
+    content = stripLeadingThinkingMarker(content);
     clearInterval(hangWatchdog);
 
     consecutiveTriggerErrors = 0;
     if (aborted) {
-      const partial = fullContent || content || '';
+      const partial = stripLeadingThinkingMarker(fullContent) || content || '';
       const fallback = abortReason === 'timeout' ? '(timed out — session not responding)' : '(stopped by user)';
       send({ type: 'agent_complete', room_id, message_id, content: partial || fallback });
       console.log(`[stoa] Aborted message ${message_id}, reason=${abortReason || 'user'}, partial=${partial.length} chars`);
