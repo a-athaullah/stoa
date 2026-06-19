@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.107';
+const CLIENT_VERSION = '0.4.108';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -220,6 +220,62 @@ function stripSessionImages(workdir, sessionId) {
   } catch (err) {
     console.error(`[stoa] strip images error: ${err.message}`);
   }
+}
+
+// Non-Anthropic models (ollama/qwen/nemotron via proxy) emit `thinking` blocks with an
+// empty/missing `signature`. Claude Code writes them into the resumed session file. The next
+// time a Claude model resumes that session, the CLI replays the history to api.anthropic.com,
+// which rejects unsigned thinking blocks with: 400 "Invalid `signature` in `thinking` block".
+// Convert any unsigned thinking block to a plain text block (mirrors stripSessionImages) so the
+// uuid chain and content-array length stay intact and no assistant turn becomes empty.
+function stripUnsignedThinking(workdir, sessionId) {
+  if (!sessionId) return;
+  try {
+    const encoded = workdir.replace(/\//g, '-').replace(/\\/g, '-').replace(/:/g, '');
+    const filePath = path.join(os.homedir(), '.claude', 'projects', encoded, `${sessionId}.jsonl`);
+    if (!fs.existsSync(filePath)) return;
+    const raw = fs.readFileSync(filePath, 'utf8');
+    if (!raw.includes('"type":"thinking"') && !raw.includes('"type": "thinking"')) return;
+    const lines = raw.split('\n');
+    let changed = false;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line.trim() || (!line.includes('"type":"thinking"') && !line.includes('"type": "thinking"'))) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (stripUnsignedThinkingFromEntry(entry)) {
+          lines[i] = JSON.stringify(entry);
+          changed = true;
+        }
+      } catch {}
+    }
+    if (changed) {
+      fs.writeFileSync(filePath, lines.join('\n'), 'utf8');
+      console.log(`[stoa] stripped unsigned thinking blocks from session ${sessionId.slice(0, 8)}...`);
+    }
+  } catch (err) {
+    console.error(`[stoa] strip thinking error: ${err.message}`);
+  }
+}
+
+function stripUnsignedThinkingFromEntry(obj) {
+  if (!obj || typeof obj !== 'object') return false;
+  let stripped = false;
+  if (Array.isArray(obj)) {
+    for (let i = 0; i < obj.length; i++) {
+      if (obj[i] && obj[i].type === 'thinking' && !obj[i].signature) {
+        obj[i] = { type: 'text', text: '[thinking]' };
+        stripped = true;
+      } else if (stripUnsignedThinkingFromEntry(obj[i])) {
+        stripped = true;
+      }
+    }
+  } else {
+    for (const key of Object.keys(obj)) {
+      if (stripUnsignedThinkingFromEntry(obj[key])) stripped = true;
+    }
+  }
+  return stripped;
 }
 
 function stripImagesFromEntry(obj) {
@@ -796,6 +852,9 @@ async function processTrigger(msg) {
 
     if (needsResume || needsFreshSession || needsModelChange || needsEnvChange) {
       session.shutdown();
+      // Sanitize the session file before the new CLI process reads it on --resume, so unsigned
+      // thinking blocks left by non-Anthropic models don't break the next Claude run.
+      if (rid && !compactsInFlight.has(targetDir)) stripUnsignedThinking(targetDir, rid);
       const flags = rid ? ['--resume', rid] : [];
       if (targetModel) flags.push('--model', targetModel);
       if (msg.tools_supported === false) flags.push('--tools', '');
@@ -853,6 +912,7 @@ async function processTrigger(msg) {
           console.log(`[stoa] API key #1 failed (${retryErr.message}), rotating to key #${ki + 1}...`);
           const rotatedEnv = { ...platformEnv, ANTHROPIC_AUTH_TOKEN: apiKeys[ki] };
           session.shutdown();
+          if (rid && !compactsInFlight.has(targetDir)) stripUnsignedThinking(targetDir, rid);
           const flags = rid ? ['--resume', rid] : [];
           if (targetModel) flags.push('--model', targetModel);
           if (msg.tools_supported === false) flags.push('--tools', '');
