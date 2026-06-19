@@ -3,7 +3,7 @@ function wsEnterEditMode() {
   if (wsEditMode) return;
   const file = wsOpenFiles.find(f => f.name === wsActiveFile);
   if (!file || !file.loaded) return;
-  const IMG_EXTS = new Set(['png','jpg','jpeg','gif','webp','svg','ico','bmp']);
+  const IMG_EXTS = new Set(['png','jpg','jpeg','gif','webp','svg','ico','bmp','pdf']);
   if (IMG_EXTS.has(file.ext)) return;
   wsEditMode = true;
   wsEditContent = file.content || '';
@@ -59,7 +59,7 @@ function wsRenderToolbarActions() {
   if (wsActiveView === 'file' && wsActiveFile) {
     const file = wsOpenFiles.find(f => f.name === wsActiveFile);
     if (!file) return;
-    const IMG_EXTS = new Set(['png','jpg','jpeg','gif','webp','svg','ico','bmp']);
+    const IMG_EXTS = new Set(['png','jpg','jpeg','gif','webp','svg','ico','bmp','pdf']);
     if (IMG_EXTS.has(file.ext)) return;
     if (wsEditMode) {
       const saveState = wsEditSaving ? 'saving' : wsEditDirty ? 'dirty' : 'clean';

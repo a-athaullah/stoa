@@ -47,12 +47,12 @@ function wsOpenFile(name, content) {
   } else {
     wsOpenFiles.push({ name, content: content ?? '', ext: wsGetExt(name), loaded: content != null });
   }
-  const imgExts = new Set(['png','jpg','jpeg','gif','webp','svg','ico','bmp']);
+  const binaryExts = new Set(['png','jpg','jpeg','gif','webp','svg','ico','bmp','pdf']);
   const fileExt = wsGetExt(name);
   const isAbs = /^\//.test(name) || /^[A-Za-z]:/.test(name);
   if (content == null && ws) {
     const req = { type: 'file_read', path: name };
-    if (imgExts.has(fileExt)) req.binary = true;
+    if (binaryExts.has(fileExt)) req.binary = true;
     if (isAbs) req.absolute = true;
     ws.send(JSON.stringify(req));
   }
@@ -297,6 +297,17 @@ function wsRenderContent() {
       return;
     }
 
+
+    if (ext === 'pdf') {
+      content.className = 'ws-scroll';
+      content.style.cssText = 'flex:1;min-height:0;overflow:auto;background:color-mix(in srgb,var(--h-ink) 6%,var(--h-bg))';
+      if (!file.base64 && !file.loaded) {
+        content.innerHTML = '<div class="ws-empty-state"><div class="ws-empty-title">loading…</div><div class="ws-empty-text">fetching PDF from agent.</div></div>';
+        return;
+      }
+      wsRenderPdf(content, file);
+      return;
+    }
     if (wsEditMode) {
       wsRenderEditor(content);
       return;
@@ -318,6 +329,131 @@ function wsRenderContent() {
         <div class="ws-empty-text">fetching file from agent.</div>
       </div>`;
     }
+  }
+}
+
+
+function wsRenderPdf(container, file) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'ws-pdf-viewer';
+  container.appendChild(wrapper);
+
+  const loading = document.createElement('div');
+  loading.className = 'ws-empty-state';
+  loading.innerHTML = '<div class="ws-empty-title">rendering PDF\u2026</div>';
+  wrapper.appendChild(loading);
+
+  const showError = (msg) => {
+    wrapper.textContent = '';
+    const state = document.createElement('div');
+    state.className = 'ws-empty-state';
+    const title = document.createElement('div');
+    title.className = 'ws-empty-title';
+    title.textContent = msg;
+    state.appendChild(title);
+    wrapper.appendChild(state);
+  };
+
+  const renderPdf = () => {
+    let src;
+    if (file.base64) {
+      const raw = atob(file.base64);
+      const arr = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+      src = { data: arr };
+    } else {
+      src = '/api/workspace/file?room=' + currentRoomId + '&path=' + encodeURIComponent(file.name);
+    }
+
+    pdfjsLib.GlobalWorkerOptions.workerSrc = '/vendor/pdf.worker.min.js';
+    const loadingTask = pdfjsLib.getDocument(src);
+    loadingTask.promise.then(pdf => {
+      wrapper.textContent = '';
+      const toolbar = document.createElement('div');
+      toolbar.className = 'ws-pdf-toolbar';
+      toolbar.textContent = pdf.numPages + ' page' + (pdf.numPages > 1 ? 's' : '');
+      wrapper.appendChild(toolbar);
+
+      const pages = document.createElement('div');
+      pages.className = 'ws-pdf-pages';
+      wrapper.appendChild(pages);
+
+      const scale = 1.5;
+      const rendered = new Set();
+
+      pdf.getPage(1).then(firstPage => {
+        const vp = firstPage.getViewport({ scale });
+        const ratio = (vp.width / vp.height).toFixed(4);
+
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const pageDiv = document.createElement('div');
+          pageDiv.className = 'ws-pdf-page ws-pdf-placeholder';
+          pageDiv.dataset.page = i;
+          pageDiv.style.aspectRatio = ratio;
+          const label = document.createElement('div');
+          label.className = 'ws-pdf-page-label';
+          label.textContent = i + ' / ' + pdf.numPages;
+          pageDiv.appendChild(label);
+          pages.appendChild(pageDiv);
+        }
+
+        const renderPage = (pageDiv) => {
+          const num = parseInt(pageDiv.dataset.page);
+          if (rendered.has(num)) return;
+          rendered.add(num);
+          pdf.getPage(num).then(page => {
+            const viewport = page.getViewport({ scale });
+            const canvas = document.createElement('canvas');
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            canvas.style.cssText = 'width:100%;height:auto;display:block';
+            pageDiv.classList.remove('ws-pdf-placeholder');
+            pageDiv.style.aspectRatio = '';
+            pageDiv.insertBefore(canvas, pageDiv.firstChild);
+            page.render({ canvasContext: canvas.getContext('2d'), viewport });
+          }).catch(() => {
+            pageDiv.classList.remove('ws-pdf-placeholder');
+            pageDiv.style.aspectRatio = '';
+            pageDiv.style.cssText = 'padding:16px;font-size:11px;color:var(--h-ink-faint);text-align:center';
+            pageDiv.textContent = 'page ' + num + ' could not be rendered';
+          });
+        };
+
+        const observer = new IntersectionObserver(entries => {
+          entries.forEach(entry => {
+            if (entry.isIntersecting) {
+              observer.unobserve(entry.target);
+              renderPage(entry.target);
+            }
+          });
+        }, { rootMargin: '200px' });
+
+        pages.querySelectorAll('.ws-pdf-page').forEach(p => observer.observe(p));
+      }).catch(() => showError('could not read PDF pages'));
+    }).catch(err => {
+      wrapper.textContent = '';
+      const state = document.createElement('div');
+      state.className = 'ws-empty-state';
+      const title = document.createElement('div');
+      title.className = 'ws-empty-title';
+      title.textContent = 'could not render PDF';
+      state.appendChild(title);
+      const text = document.createElement('div');
+      text.className = 'ws-empty-text';
+      text.textContent = err.message || String(err);
+      state.appendChild(text);
+      wrapper.appendChild(state);
+    });
+  };
+
+  if (typeof pdfjsLib !== 'undefined') {
+    renderPdf();
+  } else {
+    const script = document.createElement('script');
+    script.src = '/vendor/pdf.min.js';
+    script.onload = renderPdf;
+    script.onerror = () => showError('PDF.js failed to load');
+    document.head.appendChild(script);
   }
 }
 
