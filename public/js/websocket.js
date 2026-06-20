@@ -174,12 +174,12 @@ function handleWsMessage(msg) {
   }
 
   if (msg.type === 'compact_start') {
-    if (msg.room_id === currentRoomId) showCompactBar(msg.total, msg.room_id);
+    if (msg.room_id === currentRoomId) showCompactBar(msg.total, msg.room_id, msg.participants);
     return;
   }
 
   if (msg.type === 'compact_progress') {
-    if (msg.room_id === currentRoomId) updateCompactBar(msg.completed, msg.total);
+    if (msg.room_id === currentRoomId) updateCompactBar(msg.completed, msg.total, msg.completed_participant_ids);
     return;
   }
 

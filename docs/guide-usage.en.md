@@ -317,7 +317,7 @@ In **Settings > AI Agent**, each agent has two action buttons:
 
 - **Rescan** — re-scan the agent's working directories and skills
 - **Force Update** — force the agent to check for client updates immediately (normally checks every 2 minutes)
-- **Compact Session** — compress the agent's conversation history to reduce context size. Click the compact button (↕ icon) in the room header. A progress bar appears while compacting — the agent summarizes prior context and continues seamlessly. Useful when a conversation has grown very long and response quality starts to degrade
+- **Compact Session** — compress the agent's conversation history to reduce context size. Click the compact button (↕ icon) in the room header. Per-agent progress indicators appear below the room header while compacting — the agent summarizes prior context and continues seamlessly. Useful when a conversation has grown very long and response quality starts to degrade
 
 ### Auto-Compact
 
@@ -326,7 +326,7 @@ Stoa automatically compacts agent sessions without manual intervention. Two mech
 - **Per-trigger check** — after every agent response, Stoa checks the session file size. If it exceeds the configured compact threshold (default 500 KB, adjustable in Settings → Server), the agent runs `/compact` immediately after sending its reply, then notifies the server. The user receives the response first; compaction happens in the background.
 - **Background worker** — every 60 minutes, the agent scans all open sessions on its machine and compacts any that exceed the configured compact threshold. This also cleans up sessions that are open locally but not active in any Stoa room.
 
-When auto-compact runs, a progress bar appears in the room header (same as manual compact) and a compact marker is saved in the room's message history. The marker persists across page refreshes.
+When auto-compact runs, per-agent progress indicators appear below the room header (same as manual compact) and a compact marker is saved in the room's message history. The marker persists across page refreshes.
 
 ### Proactive Messages
 

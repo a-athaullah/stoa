@@ -115,27 +115,59 @@ html.dark .h-faded-mark { opacity: 0.12; }
 /* Compact progress bar */
 .h-compact-bar {
   display: none;
-  height: 3px;
   background: var(--h-hair-soft);
-  overflow: hidden;
   flex-shrink: 0;
+  padding: 10px 16px;
+  gap: 8px;
+  flex-direction: column;
 }
-.h-compact-bar.visible { display: block; }
-.h-compact-fill {
-  height: 100%;
-  width: 0%;
+.h-compact-bar.visible { display: flex; }
+.h-compact-message {
+  font-size: 13px;
+  color: var(--h-fg-soft);
+  text-align: center;
+}
+.h-compact-agents {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  align-items: center;
+}
+.h-compact-agent {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--h-fg-soft);
+}
+.h-compact-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--h-hair);
+  border-top-color: oklch(0.62 0.14 250);
+  border-radius: 50%;
+  animation: compact-spin 0.8s linear infinite;
+}
+.h-compact-check {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
   background: oklch(0.62 0.14 250);
-  transition: width 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-.h-compact-fill.indeterminate {
-  width: 100% !important;
-  background: linear-gradient(90deg, transparent, oklch(0.62 0.14 250), transparent);
-  background-size: 200% 100%;
-  animation: compact-shimmer 1.5s ease-in-out infinite;
+.h-compact-check::after {
+  content: '✓';
+  color: white;
+  font-size: 10px;
+  font-weight: bold;
 }
-@keyframes compact-shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+.h-compact-agent.completed .h-compact-label {
+  color: oklch(0.62 0.14 250);
+}
+@keyframes compact-spin {
+  to { transform: rotate(360deg); }
 }
 
 .h-compact-btn.active {

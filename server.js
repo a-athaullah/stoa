@@ -2439,8 +2439,8 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ type: 'compact_error', room_id: roomId, error: 'No active AI sessions to compact' }));
         return;
       }
-      pendingCompacts.set(roomId, { total: targets.length, completed: 0, agents: targets.map(t => t.actor_id) });
-      broadcast(roomId, { type: 'compact_start', room_id: roomId, total: targets.length });
+      pendingCompacts.set(roomId, { total: targets.length, completed: 0, agents: targets.map(t => t.actor_id), targets, completedParticipantIds: [] });
+      broadcast(roomId, { type: 'compact_start', room_id: roomId, total: targets.length, participants: targets.map(t => ({ participant_id: t.participant_id, actor_id: t.actor_id, name: t.name })) });
       setTimeout(() => {
         if (pendingCompacts.has(roomId)) {
           pendingCompacts.delete(roomId);
@@ -2675,6 +2675,7 @@ wss.on('connection', (ws, req) => {
       if (!state.completedAgentIds) state.completedAgentIds = [];
       if (actor) state.names.push(actor.name);
       state.completedAgentIds.push(agentActorId);
+      if (participant) state.completedParticipantIds.push(participant.id);
       state.completed++;
       if (state.completed >= state.total) {
         pendingCompacts.delete(msg.room_id);
@@ -2687,7 +2688,7 @@ wss.on('connection', (ws, req) => {
         }
         broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id });
       } else {
-        broadcast(msg.room_id, { type: 'compact_progress', room_id: msg.room_id, completed: state.completed, total: state.total });
+        broadcast(msg.room_id, { type: 'compact_progress', room_id: msg.room_id, completed: state.completed, total: state.total, completed_participant_ids: state.completedParticipantIds });
       }
     }
 
@@ -2718,7 +2719,7 @@ wss.on('connection', (ws, req) => {
           broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id });
         }
       } else {
-        broadcast(msg.room_id, { type: 'compact_progress', room_id: msg.room_id, completed: state.completed, total: state.total });
+        broadcast(msg.room_id, { type: 'compact_progress', room_id: msg.room_id, completed: state.completed, total: state.total, completed_participant_ids: state.completedParticipantIds });
       }
     }
 
