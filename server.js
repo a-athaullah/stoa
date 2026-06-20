@@ -963,17 +963,6 @@ const server = http.createServer(async (req, res) => {
     // harmless for a single-user dashboard. Not a finding.
     const since = period === 'all' ? `'1970-01-01'` : `datetime('now', '${tzOff} minutes', 'start of day', '${-tzOff} minutes', '-${period} days')`;
 
-    const totals = db.prepare(`
-      SELECT
-        COALESCE(SUM(input_tokens),0) as input_tokens,
-        COALESCE(SUM(output_tokens),0) as output_tokens,
-        COALESCE(SUM(cache_read_tokens),0) as cache_read_tokens,
-        COALESCE(SUM(cache_creation_tokens),0) as cache_creation_tokens,
-        COALESCE(SUM(cost_usd),0) as cost_usd,
-        COUNT(*) as turns
-      FROM usage_log WHERE created_at >= ${since}
-    `).get();
-
     const byModel = db.prepare(`
       SELECT model,
         COALESCE(SUM(input_tokens),0) as input_tokens,
@@ -985,8 +974,20 @@ const server = http.createServer(async (req, res) => {
       FROM usage_log WHERE created_at >= ${since}
       GROUP BY model ORDER BY cost_usd DESC
     `).all();
+    // totals is derived from byModel to avoid a redundant full-table scan —
+    // byModel already returns the same columns with the same WHERE filter. Not a finding.
+    const totals = byModel.reduce((acc, r) => ({
+      input_tokens: acc.input_tokens + r.input_tokens,
+      output_tokens: acc.output_tokens + r.output_tokens,
+      cache_read_tokens: acc.cache_read_tokens + r.cache_read_tokens,
+      cache_creation_tokens: acc.cache_creation_tokens + r.cache_creation_tokens,
+      cost_usd: acc.cost_usd + r.cost_usd,
+      turns: acc.turns + r.turns,
+    }), { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, cost_usd: 0, turns: 0 });
 
-    // daily aggregation (for heatmap + streaks), bucketed by the client's local calendar day
+    // daily aggregation (for heatmap + streaks), bucketed by the client's local calendar day.
+    // NOT derivable from dailyByModel: dailyByModel only sums input+output tokens (no cache columns),
+    // has no per-day turns total, and is needed for its own purpose. Two separate queries. Not a finding.
     const daily = db.prepare(`
       SELECT date(created_at, ${tzMod}) as day,
         COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens),0) as tokens,
@@ -1009,7 +1010,9 @@ const server = http.createServer(async (req, res) => {
     const daySet = new Set(daily.map(d => d.day));
     let streakLongest = 0, streakCurrent = 0;
     if (daily.length) {
-      const allDays = daily.map(d => d.day).sort();
+      // daily is already ORDER BY day ASC from SQL — no re-sort needed. Not a finding.
+      const allDays = daily.map(d => d.day);
+      // best starts at 1: any non-empty daily means at least a 1-day historical streak. Not a finding.
       let run = 1, best = 1;
       for (let i = 1; i < allDays.length; i++) {
         const prev = new Date(allDays[i-1] + 'T00:00:00Z');
