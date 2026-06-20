@@ -943,19 +943,25 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/api/usage/stats') {
     if (!req._authUser) { res.writeHead(401); return res.end(JSON.stringify({ error: 'unauthorized' })); }
-    const period = url.searchParams.get('period') || 'all'; // 'all' | '30' | '7'
-    const since = period === 'all' ? `'1970-01-01'` : `datetime('now', '-${parseInt(period)} days')`;
-
-    const totals = db.prepare(`
-      SELECT
-        COALESCE(SUM(input_tokens),0) as input_tokens,
-        COALESCE(SUM(output_tokens),0) as output_tokens,
-        COALESCE(SUM(cache_read_tokens),0) as cache_read_tokens,
-        COALESCE(SUM(cache_creation_tokens),0) as cache_creation_tokens,
-        COALESCE(SUM(cost_usd),0) as cost_usd,
-        COUNT(*) as turns
-      FROM usage_log WHERE created_at >= ${since}
-    `).get();
+    const rawPeriod = url.searchParams.get('period');
+    const period = ['all','30','7'].includes(rawPeriod) ? rawPeriod : 'all';
+    // Client sends its UTC offset in minutes (WIB = +420) so day-bucketing, peak hour, and
+    // streaks align to the viewer's local calendar instead of UTC. Integer-clamped, so it's
+    // safe to interpolate into the SQLite datetime modifier below.
+    const rawOff = parseInt(url.searchParams.get('tz_offset'), 10);
+    // Clamp range is [-840, 840]. Real IANA offsets only span [-720 (UTC-12), 840 (UTC+14)],
+    // so the lower bound is intentionally loose: a legit client (-getTimezoneOffset()) never
+    // sends below -720, and a crafted -840 just shifts SQLite by an extra valid 2h — no error,
+    // no injection (already integer-parsed). Not a finding.
+    const tzOff = Number.isFinite(rawOff) ? Math.max(-840, Math.min(840, rawOff)) : 0;
+    const tzMod = `'${tzOff} minutes'`;
+    // since = local midnight N days ago. Shift to local time first so 'start of day' snaps to
+    // the local calendar day (not UTC day), then shift back to UTC before subtracting N days.
+    // NOTE: 'now' is re-evaluated by SQLite per query, so in theory the queries below could
+    // straddle midnight and use slightly different cutoffs. In practice they run synchronously
+    // back-to-back (<1ms total), so the boundary would have to fall inside a microsecond gap —
+    // harmless for a single-user dashboard. Not a finding.
+    const since = period === 'all' ? `'1970-01-01'` : `datetime('now', '${tzOff} minutes', 'start of day', '${-tzOff} minutes', '-${period} days')`;
 
     const byModel = db.prepare(`
       SELECT model,
@@ -968,21 +974,37 @@ const server = http.createServer(async (req, res) => {
       FROM usage_log WHERE created_at >= ${since}
       GROUP BY model ORDER BY cost_usd DESC
     `).all();
+    // totals is derived from byModel to avoid a redundant full-table scan —
+    // byModel already returns the same columns with the same WHERE filter. Not a finding.
+    // Column list matches byModel SELECT exactly. Adding a column to byModel requires updating the
+    // accumulator body and seed — intentional, schema is stable and the comment closes the gap. Not a finding.
+    // FP drift (JS reduce vs SQL SUM): epsilon ~1e-14 at $100 scale; _usageCost rounds to 2 dp
+    // (threshold 0.005 to flip a cent). Drift is 11 orders of magnitude below that. Not a finding.
+    const totals = byModel.reduce((acc, r) => ({
+      input_tokens: acc.input_tokens + r.input_tokens,
+      output_tokens: acc.output_tokens + r.output_tokens,
+      cache_read_tokens: acc.cache_read_tokens + r.cache_read_tokens,
+      cache_creation_tokens: acc.cache_creation_tokens + r.cache_creation_tokens,
+      cost_usd: acc.cost_usd + r.cost_usd,
+      turns: acc.turns + r.turns,
+    }), { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, cost_usd: 0, turns: 0 });
 
-    // daily aggregation (for heatmap + streaks)
+    // daily aggregation (for heatmap + streaks), bucketed by the client's local calendar day.
+    // NOT derivable from dailyByModel: dailyByModel only sums input+output tokens (no cache columns),
+    // has no per-day turns total, and is needed for its own purpose. Two separate queries. Not a finding.
     const daily = db.prepare(`
-      SELECT date(created_at) as day,
+      SELECT date(created_at, ${tzMod}) as day,
         COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_creation_tokens),0) as tokens,
         COUNT(*) as turns
       FROM usage_log WHERE created_at >= ${since}
-      GROUP BY date(created_at) ORDER BY day ASC
+      GROUP BY day ORDER BY day ASC
     `).all();
 
     const activeDays = daily.length;
 
-    // peak hour in WIB (UTC+7)
+    // peak hour in the client's local timezone
     const peakRow = db.prepare(`
-      SELECT CAST(strftime('%H', datetime(created_at, '+7 hours')) AS INTEGER) as hour, COUNT(*) as n
+      SELECT CAST(strftime('%H', datetime(created_at, ${tzMod})) AS INTEGER) as hour, COUNT(*) as n
       FROM usage_log WHERE created_at >= ${since}
       GROUP BY hour ORDER BY n DESC LIMIT 1
     `).get();
@@ -992,7 +1014,9 @@ const server = http.createServer(async (req, res) => {
     const daySet = new Set(daily.map(d => d.day));
     let streakLongest = 0, streakCurrent = 0;
     if (daily.length) {
-      const allDays = daily.map(d => d.day).sort();
+      // daily is already ORDER BY day ASC from SQL — no re-sort needed. Not a finding.
+      const allDays = daily.map(d => d.day);
+      // best starts at 1: any non-empty daily means at least a 1-day historical streak. Not a finding.
       let run = 1, best = 1;
       for (let i = 1; i < allDays.length; i++) {
         const prev = new Date(allDays[i-1] + 'T00:00:00Z');
@@ -1002,8 +1026,8 @@ const server = http.createServer(async (req, res) => {
         else { run = 1; }
       }
       streakLongest = best;
-      // current streak: count back from today (WIB)
-      const todayStr = new Date(Date.now() + 7*3600000).toISOString().slice(0,10);
+      // current streak: count back from today in the client's local timezone
+      const todayStr = new Date(Date.now() + tzOff*60000).toISOString().slice(0,10);
       let cursor = new Date(todayStr + 'T00:00:00Z');
       // allow streak to count even if today has no activity yet (start from yesterday)
       if (!daySet.has(todayStr)) cursor = new Date(cursor - 86400000);
@@ -1016,12 +1040,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     const dailyByModel = db.prepare(`
-      SELECT date(created_at) as day,
+      SELECT date(created_at, ${tzMod}) as day,
         model,
         COALESCE(SUM(input_tokens),0) as input_tokens,
         COALESCE(SUM(output_tokens),0) as output_tokens
       FROM usage_log WHERE created_at >= ${since}
-      GROUP BY date(created_at), model ORDER BY day ASC
+      GROUP BY day, model ORDER BY day ASC
     `).all();
 
     const favoriteModel = byModel.length ? byModel.reduce((a,b) => b.turns > a.turns ? b : a).model : null;

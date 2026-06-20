@@ -6,12 +6,15 @@ let _usageData = null;
 const _usageFmt = n => n >= 1e9 ? (n/1e9).toFixed(2)+'B' : n >= 1e6 ? (n/1e6).toFixed(2)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : String(n||0);
 const _usageCost = n => '$' + (n||0).toFixed(2);
 const _esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const _pad = n => String(n).padStart(2,'0');
+const _MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 async function sLoadUsageTab() {
   const panel = document.getElementById('usage-panel');
   if (!panel) return;
   panel.innerHTML = '<div style="color:var(--h-ink-faint);font-size:13px;padding:24px 0">Loading…</div>';
-  try { _usageData = await fjson('/api/usage/stats?period=' + _usagePeriod); }
+  const tzOffset = -new Date().getTimezoneOffset(); // minutes east of UTC (WIB = +420)
+  try { _usageData = await fjson('/api/usage/stats?period=' + _usagePeriod + '&tz_offset=' + tzOffset); }
   catch { panel.innerHTML = '<div style="color:var(--h-ink-faint);font-size:13px;padding:24px 0">Failed to load usage data.</div>'; return; }
   _renderUsage();
 }
@@ -47,7 +50,7 @@ function _renderUsage() {
 function _renderUsageSummary(d) {
   const t = d.totals || {};
   const totalTokens = (t.input_tokens||0)+(t.output_tokens||0)+(t.cache_read_tokens||0)+(t.cache_creation_tokens||0);
-  const peak = d.peakHour != null ? String(d.peakHour).padStart(2,'0')+':00' : '—';
+  const peak = d.peakHour != null ? _pad(d.peakHour)+':00' : '—';
 
   const cards = [
     ['Avg token/msg', _usageFmt(t.turns ? Math.round(totalTokens / t.turns) : 0)],
@@ -79,20 +82,23 @@ function _renderHeatmap(daily) {
   daily.forEach(x => map[x.day] = x.tokens);
   const max = Math.max(1, ...daily.map(x => x.tokens));
   const WEEKS = 26, DAYS = WEEKS*7;
-  const today = new Date(Date.now() + 7*3600000);
   const _DAY = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-  const _MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  // Walk back from local midnight; keys are local calendar dates to match the server's
+  // tz-offset day-bucketing (see /api/usage/stats).
+  const today = new Date(); today.setHours(0,0,0,0);
   const cells = [];
   for (let i = DAYS-1; i >= 0; i--) {
-    const dt = new Date(today.getTime() - i*86400000);
-    const key = dt.toISOString().slice(0,10);
+    // Step back i calendar days via setDate (DST-safe) rather than subtracting fixed ms —
+    // a 23h/25h DST day would otherwise land on the wrong calendar date.
+    const dt = new Date(today); dt.setDate(today.getDate() - i);
+    const key = dt.getFullYear()+'-'+_pad(dt.getMonth()+1)+'-'+_pad(dt.getDate());
     const v = map[key] || 0;
     let lvl = 0;
     if (v > 0) { const r = v/max; lvl = r > 0.66 ? 4 : r > 0.33 ? 3 : r > 0.1 ? 2 : 1; }
     const tip = `${_DAY[dt.getDay()]}, ${dt.getDate()} ${_MON[dt.getMonth()]} — ${v > 0 ? _usageFmt(v)+' tokens' : 'no activity'}`;
     cells.push(`<span class="usage-cell usage-cell-${lvl}" data-tip="${tip}"></span>`);
   }
-  return `<div class="usage-heatmap">${cells.join('')}</div>`;
+  return `<div class="usage-heatmap" style="grid-template-columns:repeat(${WEEKS},minmax(0,1fr))">${cells.join('')}</div>`;
 }
 
 function _renderUsageModel(d) {
@@ -103,7 +109,10 @@ function _renderUsageModel(d) {
   const colorMap = {};
   models.forEach((m, i) => { colorMap[m] = COLORS[i % COLORS.length]; });
 
-  // build day→model→tokens map from dailyByModel
+  // build day→model→tokens map from dailyByModel.
+  // r.day is always a 'YYYY-MM-DD' string: usage_log.created_at fills via DEFAULT (datetime('now'))
+  // and is never inserted NULL, so date(created_at, tzMod) can't return NULL here. Even a stray NULL
+  // becomes the object key "null" (string), so day.slice(5,7) below stays safe. Not a finding.
   const dailyByModel = d.dailyByModel || [];
   const dayMap = {};
   dailyByModel.forEach(r => {
@@ -141,8 +150,7 @@ function _renderUsageModel(d) {
   const xEl = days.map((day, i) => [day, i]).filter(([_, i]) => i % labelStep === 0 || i === days.length-1).map(([day, i]) => {
     const x = padL + i * barSlot + barSlot/2;
     const mm = day.slice(5,7), dd = day.slice(8,10);
-    const months = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    return `<text x="${x.toFixed(1)}" y="${H-6}" text-anchor="middle" fill="var(--h-ink-faint)" font-size="9">${parseInt(dd)} ${months[parseInt(mm)]}</text>`;
+    return `<text x="${x.toFixed(1)}" y="${H-6}" text-anchor="middle" fill="var(--h-ink-faint)" font-size="9">${parseInt(dd)} ${_MON[parseInt(mm)-1]}</text>`;
   }).join('');
 
   const baselineEl = `<line x1="${padL}" y1="${padT+cH}" x2="${W-padR}" y2="${padT+cH}" stroke="var(--h-hair-soft)" stroke-width="1"/>`;

@@ -500,7 +500,7 @@ Setiap aturan memiliki toggle aktif/nonaktif. Aturan yang dinonaktifkan tidak pe
 
 ## Pengaturan
 
-Klik **ikon gear** di sidebar untuk membuka panel pengaturan. Pengaturan diorganisasi dalam enam tab:
+Klik **ikon gear** di sidebar untuk membuka panel pengaturan. Pengaturan diorganisasi dalam tujuh tab:
 
 ### AI Agent
 
@@ -554,6 +554,26 @@ Jelajahi dokumentasi proyek dengan dukungan multi-bahasa. File dokumentasi dari 
 - **Account** — ubah email dan password
 - **Notifications** — aktifkan/nonaktifkan push notification browser
 - **Session** — logout dari Stoa
+
+### Usage
+
+Tab **Usage** adalah dashboard analitik personal untuk konsumsi token AI kamu. Semua data dikelompokkan berdasarkan hari kalender lokal — timezone browser kamu dikirim setiap kali tab dibuka, jadi batas hari, peak hour, dan streak selaras dengan tengah malam lokal kamu, bukan UTC.
+
+Dua kontrol segmen ada di bagian atas:
+
+- **View** — beralih antara **Summary** dan **Model**
+- **Period** — **All**, **30d**, atau **7d** — memfilter semua statistik di bawahnya ke rentang tersebut
+
+**Tampilan Summary** menampilkan grid kartu statistik: rata-rata token per pesan, total pesan, total token (input + output + cache read + cache creation), hari aktif, streak saat ini dan terpanjang (hari aktif berturut-turut, yang saat ini dihitung mundur dari hari ini), peak hour (dalam timezone lokal kamu), token input/output, cache hits, estimasi total biaya dalam USD, dan model paling sering kamu pakai.
+
+Di bawah kartu, ada **heatmap aktivitas** yang mencakup 26 minggu terakhir. Tiap sel adalah satu hari; sel lebih gelap berarti lebih banyak token. Arahkan kursor ke sel untuk melihat tanggal dan jumlah token persisnya. Layout-nya fluid — mengecil menyesuaikan layar mobile, bukan scroll ke samping.
+
+**Tampilan Model** memecah penggunaan per model:
+
+- **Bar chart bertumpuk** menampilkan volume token harian, tiap model warna berbeda
+- **Daftar model** di bawahnya menampilkan setiap model dengan total token input/output dan persentase porsinya
+
+Semua angka bersifat read-only dan diperbarui setiap kali kamu membuka ulang tab atau mengubah period.
 
 ---
 
