@@ -664,6 +664,39 @@ async function run() {
     }
   });
 
+  // Usage stats
+  console.log('\n[Usage]');
+  await test('GET /api/usage/stats — returns expected keys', async () => {
+    const r = await req('GET', '/api/usage/stats');
+    assert.strictEqual(r.status, 200);
+    for (const key of ['totals', 'byModel', 'daily', 'activeDays', 'peakHour', 'streakCurrent', 'streakLongest', 'favoriteModel', 'dailyByModel']) {
+      assert.ok(key in r.body, `missing key: ${key}`);
+    }
+  });
+
+  await test('GET /api/usage/stats — unauthenticated → 401', async () => {
+    const saved = sessionCookie; sessionCookie = null;
+    const r = await req('GET', '/api/usage/stats');
+    sessionCookie = saved;
+    assert.strictEqual(r.status, 401);
+  });
+
+  await test('GET /api/usage/stats — invalid period falls back to 200', async () => {
+    const r = await req('GET', '/api/usage/stats?period=bogus');
+    assert.strictEqual(r.status, 200);
+    for (const p of ['7', '30', 'all']) {
+      const rp = await req('GET', '/api/usage/stats?period=' + p);
+      assert.strictEqual(rp.status, 200, `period=${p} should be 200`);
+    }
+  });
+
+  await test('GET /api/usage/stats — tz_offset accepted and clamped', async () => {
+    const r = await req('GET', '/api/usage/stats?tz_offset=-420');
+    assert.strictEqual(r.status, 200);
+    const rClamp = await req('GET', '/api/usage/stats?tz_offset=99999'); // out of range → clamped, not rejected
+    assert.strictEqual(rClamp.status, 200);
+  });
+
   // Client auto-update
   console.log('\n[Client Files]');
   await test('GET /api/client/manifest — returns files map', async () => {
