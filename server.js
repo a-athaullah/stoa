@@ -2529,9 +2529,18 @@ wss.on('connection', (ws, req) => {
       const staleWds = db.prepare('SELECT id, path FROM agent_workdirs WHERE actor_id=?').all(agentActorId);
       const staleIds = staleWds.filter(wd => !scannedPaths.has(wd.path)).map(wd => wd.id);
       if (staleIds.length) {
+        // "In use" = referenced by a room's workdir_id OR a participant's workdir_id.
+        // room_participants.workdir_id is the per-participant FK this branch added; omitting it
+        // let cleanup try to DELETE a workdir still referenced by a participant → FOREIGN KEY
+        // constraint failed. UNION both sources. The `IN (...)` filter naturally excludes NULL
+        // workdir_id (NULL never matches IN), so no NOT-IN/NULL pitfall here.
+        const ph0 = staleIds.map(() => '?').join(',');
         const inUseIds = new Set(
-          db.prepare(`SELECT DISTINCT workdir_id FROM rooms WHERE workdir_id IN (${staleIds.map(() => '?').join(',')})`)
-            .all(...staleIds).map(r => r.workdir_id)
+          db.prepare(
+            `SELECT workdir_id FROM rooms WHERE workdir_id IN (${ph0})
+             UNION
+             SELECT workdir_id FROM room_participants WHERE workdir_id IN (${ph0})`
+          ).all(...staleIds, ...staleIds).map(r => r.workdir_id)
         );
         const toDelete = staleIds.filter(id => !inUseIds.has(id));
         if (toDelete.length) {

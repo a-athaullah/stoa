@@ -688,6 +688,55 @@ async function run() {
     }
   });
 
+  // ── 6d. stale-workdir cleanup must respect room_participants.workdir_id ──────
+  console.log('\n6d · stale-workdir cleanup respects room_participants.workdir_id');
+
+  await test('workdir referenced only by a participant is kept (no FOREIGN KEY constraint failed)', () => {
+    const part = db.prepare(
+      'SELECT id, workdir_id FROM room_participants WHERE room_id=? AND actor_id=?'
+    ).get(addRoomId, kiraId);
+    // A workdir the agent will NOT report in its next scan (so it's "stale"), but that a
+    // participant actively references via workdir_id — the case that raised FK errors.
+    const ins = db.prepare(
+      'INSERT INTO agent_workdirs (actor_id, path, label, is_default) VALUES (?,?,?,0)'
+    ).run(kiraId, '/tmp/stale-used-by-participant', 'stale-used');
+    const staleId = ins.lastInsertRowid;
+    try {
+      db.prepare('UPDATE room_participants SET workdir_id=? WHERE id=?').run(staleId, part.id);
+      const staleIds = [staleId];
+      const ph0 = staleIds.map(() => '?').join(',');
+
+      // OLD logic (rooms only) — the bug: the participant reference is invisible.
+      const oldInUse = new Set(
+        db.prepare(`SELECT DISTINCT workdir_id FROM rooms WHERE workdir_id IN (${ph0})`)
+          .all(...staleIds).map(r => r.workdir_id)
+      );
+      assert.ok(!oldInUse.has(staleId),
+        'sanity: old rooms-only logic would have flagged this workdir for deletion (the bug)');
+
+      // NEW logic (UNION rooms + room_participants) — must see the participant reference.
+      const newInUse = new Set(
+        db.prepare(
+          `SELECT workdir_id FROM rooms WHERE workdir_id IN (${ph0})
+           UNION
+           SELECT workdir_id FROM room_participants WHERE workdir_id IN (${ph0})`
+        ).all(...staleIds, ...staleIds).map(r => r.workdir_id)
+      );
+      assert.ok(newInUse.has(staleId),
+        'fixed logic must keep a workdir still referenced by a participant');
+
+      // Prove the bug was real: deleting it while the FK reference stands fails.
+      assert.throws(
+        () => db.prepare('DELETE FROM agent_workdirs WHERE id=?').run(staleId),
+        /FOREIGN KEY constraint failed/,
+        'deleting a participant-referenced workdir must raise FK error (what old logic risked)'
+      );
+    } finally {
+      db.prepare('UPDATE room_participants SET workdir_id=? WHERE id=?').run(part.workdir_id, part.id);
+      db.prepare('DELETE FROM agent_workdirs WHERE id=?').run(staleId);
+    }
+  });
+
   // ── 7. Change workdir for room ─────────────────────────────────────────────
   console.log('\n7 · change working directory');
 
