@@ -115,23 +115,24 @@ html.dark .h-faded-mark { opacity: 0.12; }
 /* Compact progress bar */
 .h-compact-bar {
   display: none;
-  height: 3px;
+  flex-direction: column;
+  gap: 1px;
   background: var(--h-hair-soft);
-  overflow: hidden;
   flex-shrink: 0;
+  padding: 1px 0;
 }
-.h-compact-bar.visible { display: block; }
+.h-compact-bar.visible { display: flex; }
 .h-compact-fill {
-  height: 100%;
-  width: 0%;
-  background: oklch(0.62 0.14 250);
-  transition: width 0.3s ease;
-}
-.h-compact-fill.indeterminate {
-  width: 100% !important;
+  height: 3px;
+  width: 100%;
   background: linear-gradient(90deg, transparent, oklch(0.62 0.14 250), transparent);
   background-size: 200% 100%;
   animation: compact-shimmer 1.5s ease-in-out infinite;
+  transition: opacity 0.3s ease;
+}
+.h-compact-fill.completed {
+  opacity: 0;
+  pointer-events: none;
 }
 @keyframes compact-shimmer {
   0% { background-position: 200% 0; }

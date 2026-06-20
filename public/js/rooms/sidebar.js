@@ -1,23 +1,24 @@
 // ── Compact sessions ──────────────────────────────────────────────────────
 let compactingRoomId = null;
+let compactingParticipants = [];
 
 function compactSessions(roomId) {
   if (!ws || ws.readyState !== 1) return;
   ws.send(JSON.stringify({ type: 'compact_session', room_id: roomId }));
 }
 
-function showCompactBar(total, roomId) {
+function showCompactBar(roomId, participants) {
   compactingRoomId = roomId ?? currentRoomId;
+  compactingParticipants = participants || [];
   const bar = document.getElementById('compact-bar');
-  const fill = document.getElementById('compact-fill');
-  if (!bar || !fill) return;
-  if (total <= 1) {
-    fill.style.width = '100%';
-    fill.classList.add('indeterminate');
-  } else {
-    fill.style.width = '0%';
-    fill.classList.remove('indeterminate');
-  }
+  if (!bar) return;
+  bar.innerHTML = '';
+  compactingParticipants.forEach(p => {
+    const fill = document.createElement('div');
+    fill.className = 'h-compact-fill';
+    fill.dataset.participantId = p.participant_id;
+    bar.appendChild(fill);
+  });
   bar.classList.add('visible');
   document.querySelector('.h-composer-box')?.classList.add('ai-processing');
   document.getElementById('msg-input')?.blur();
@@ -25,21 +26,27 @@ function showCompactBar(total, roomId) {
   if (btn) { btn.disabled = true; btn.classList.add('active'); }
 }
 
-function updateCompactBar(completed, total) {
-  const fill = document.getElementById('compact-fill');
-  if (!fill) return;
-  if (total > 1) {
-    fill.classList.remove('indeterminate');
-    fill.style.width = Math.round((completed / total) * 100) + '%';
-  }
+function updateCompactBar(completedParticipantIds) {
+  const completedIds = completedParticipantIds || [];
+  if (completedIds.length === 0) return;
+  const bar = document.getElementById('compact-bar');
+  if (!bar) return;
+  completedIds.forEach(pid => {
+    const fill = bar.querySelector(`[data-participant-id="${pid}"]`);
+    if (fill && !fill.classList.contains('completed')) {
+      fill.classList.add('completed');
+    }
+  });
 }
 
 function hideCompactBar() {
   compactingRoomId = null;
+  compactingParticipants = [];
   const bar = document.getElementById('compact-bar');
-  const fill = document.getElementById('compact-fill');
-  if (bar) bar.classList.remove('visible');
-  if (fill) { fill.classList.remove('indeterminate'); fill.style.width = '0%'; }
+  if (bar) {
+    bar.classList.remove('visible');
+    bar.innerHTML = '';
+  }
   document.querySelector('.h-composer-box')?.classList.remove('ai-processing');
   document.getElementById('msg-input')?.focus();
   const btn = document.querySelector('.h-compact-btn');

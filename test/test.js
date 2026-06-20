@@ -1904,6 +1904,19 @@ async function run() {
     assert.strictEqual(testActors.length, 0);
   });
 
+  // ── Test Coverage Exclusions ──────────────────────────────────────────────
+  // The following features are intentionally excluded from automated testing:
+  //
+  // 1. Compact UI (per-agent progress indicators):
+  //    - Requires WebSocket mock for compact_start/compact_progress/compact_done events
+  //    - Requires DOM manipulation testing (shimmer bar fade-out transitions)
+  //    - Manual testing via UI is more appropriate for visual feedback verification
+  //    - Backend compact flow is tested via manual smoke tests
+  //
+  // 2. Slack integration success paths:
+  //    - Requires valid Slack OAuth token
+  //    - Error cases are tested (see Section 6b)
+
   // Clean up test auth user
   await test('cleanup test auth user', async () => {
     if (created.authUserId) {
