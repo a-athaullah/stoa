@@ -39,6 +39,17 @@ const EXPECTED_CLIENT_VERSION = (() => {
   } catch { return null; }
 })();
 
+// Hash of stoa.js at server startup — used as the "safe" baseline for the monotonic
+// downgrade guard in the manifest endpoint. If someone edits stoa.js to a lower version
+// while the server is running, clients must not auto-download it (they'd restart into a
+// version older than EXPECTED_CLIENT_VERSION and get stuck in a force_update loop).
+const SAFE_CLIENT_HASH = (() => {
+  try {
+    const fp = path.join(__dirname, 'stoa.js');
+    return crypto.createHash('sha256').update(fs.readFileSync(fp)).digest('hex').slice(0, 12);
+  } catch { return null; }
+})();
+
 function getSession(participantId, workdir) {
   if (workdir) {
     const row = db.prepare('SELECT claude_session_id FROM ai_sessions WHERE participant_id=? AND workdir=?').get(participantId, workdir);
@@ -651,17 +662,33 @@ const server = http.createServer(async (req, res) => {
     if (!workdir_id) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: 'workdir_id is required' })); }
     const human = db.prepare(`SELECT id FROM actors WHERE type='human' LIMIT 1`).get();
     const humanId = human?.id ?? 1;
+    const allIds = [...new Set([humanId, ...participant_ids])];
+    // Validate the workdir exists and belongs to one of the participants before creating the
+    // room — mirrors the ownership check on POST /api/rooms/:id/participants and prevents a
+    // dangling rooms.workdir_id whose participant assignment would otherwise silently no-op.
+    const wdOwner = db.prepare('SELECT actor_id FROM agent_workdirs WHERE id=?').get(workdir_id);
+    if (!wdOwner) { res.writeHead(404, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: 'workdir not found' })); }
+    if (!allIds.includes(wdOwner.actor_id)) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: 'workdir must belong to one of the participants' })); }
+    // Every AI participant must be online at creation time — a room is only useful with an
+    // agent that can actually respond, and an offline agent can't be "prepared ahead". Human
+    // participants are never gated (they hold no agent connection). The frontend mirrors this
+    // by disabling offline agents; enforced here too because the API can be called directly.
+    if (participant_ids.length) {
+      const ph = participant_ids.map(() => '?').join(',');
+      const agentRows = db.prepare(`SELECT id, name FROM actors WHERE type='ai' AND id IN (${ph})`).all(...participant_ids);
+      const offline = agentRows.filter(a => !agentClients.has(a.id));
+      if (offline.length) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: `agent offline: ${offline.map(a => a.name).join(', ')}` }));
+      }
+    }
     const result = db.prepare('INSERT INTO rooms (title, created_by, workdir_id) VALUES (?,?,?)').run(title, humanId, workdir_id);
     const roomId = result.lastInsertRowid;
-    const allIds = [...new Set([humanId, ...participant_ids])];
     const insertParticipant = db.prepare('INSERT OR IGNORE INTO room_participants (room_id, actor_id) VALUES (?,?)');
     db.transaction((ids) => { for (const id of ids) insertParticipant.run(roomId, id); })(allIds);
     // Assign the room's workdir to the participant that owns it (the chosen agent), so every
     // participant carries an explicit workdir_id — consistent with the backfill migration.
-    const wdOwner = db.prepare('SELECT actor_id FROM agent_workdirs WHERE id=?').get(workdir_id);
-    if (wdOwner) {
-      db.prepare('UPDATE room_participants SET workdir_id=? WHERE room_id=? AND actor_id=?').run(workdir_id, roomId, wdOwner.actor_id);
-    }
+    db.prepare('UPDATE room_participants SET workdir_id=? WHERE room_id=? AND actor_id=?').run(workdir_id, roomId, wdOwner.actor_id);
     const room = db.prepare('SELECT * FROM rooms WHERE id=?').get(roomId);
     console.log(`[server] Room created id=${roomId}, broadcasting to ${globalClients.size} clients`);
     broadcastGlobal({ type: 'room_created', room });
@@ -879,8 +906,13 @@ const server = http.createServer(async (req, res) => {
     if (!data) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
     const { actor_id, workdir_id = null } = data;
     if (!actor_id) return json(res, { error: 'actor_id required' }, 400);
-    const actor = db.prepare('SELECT id, name FROM actors WHERE id=?').get(actor_id);
+    const actor = db.prepare('SELECT id, name, type FROM actors WHERE id=?').get(actor_id);
     if (!actor) return json(res, { error: 'actor not found' }, 404);
+    // An AI participant must be online to be added — same rule as room creation. Enforced
+    // server-side (not just disabled in the UI) since this endpoint can be called directly.
+    if (actor.type === 'ai' && !agentClients.has(actor.id)) {
+      return json(res, { error: `agent offline: ${actor.name}` }, 409);
+    }
     // Validate workdir ownership: a workdir may only be assigned to the agent that owns it.
     if (workdir_id != null) {
       const wd = db.prepare('SELECT id FROM agent_workdirs WHERE id=? AND actor_id=?').get(workdir_id, actor_id);
@@ -1524,8 +1556,25 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/client/manifest') {
     const files = {};
     for (const name of CLIENT_FILES) {
-      const hash = clientFileHash(name);
-      if (hash) files[name] = hash;
+      let hash = clientFileHash(name);
+      if (!hash) continue;
+      // Monotonic downgrade guard: if stoa.js on disk has changed from startup and is now
+      // a lower version than EXPECTED_CLIENT_VERSION, report the startup hash instead.
+      // This prevents clients from auto-downloading a downgrade that would send them into a
+      // force_update loop (EXPECTED is cached at startup; serving a lower version causes
+      // client to restart with client_version < expected indefinitely).
+      if (name === 'stoa.js' && SAFE_CLIENT_HASH && EXPECTED_CLIENT_VERSION && hash !== SAFE_CLIENT_HASH) {
+        try {
+          const diskSrc = fs.readFileSync(path.join(__dirname, name), 'utf8');
+          const m = diskSrc.match(/^const CLIENT_VERSION\s*=\s*'([^']+)'/m);
+          const diskVer = m ? m[1] : null;
+          if (diskVer && diskVer.localeCompare(EXPECTED_CLIENT_VERSION, undefined, { numeric: true }) < 0) {
+            console.warn(`[update-guard] stoa.js on disk (v${diskVer}) < expected (v${EXPECTED_CLIENT_VERSION}) — suppressing manifest to prevent downgrade loop`);
+            hash = SAFE_CLIENT_HASH;
+          }
+        } catch {}
+      }
+      files[name] = hash;
     }
     return json(res, { files });
   }
@@ -3051,7 +3100,7 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'set_room_model' && subscribedRoom) {
       if (msg.model !== null && msg.model !== undefined && (typeof msg.model !== 'string' || !msg.model.trim() || msg.model.length > 200)) {
-        ws.send(JSON.stringify({ type: 'error', message: 'invalid model value' }));
+        ws.send(JSON.stringify({ type: 'error', code: 'invalid_model', message: 'invalid model value' }));
         return;
       }
       if (msg.model && !msg.model.startsWith('claude-')) {
@@ -3070,7 +3119,7 @@ wss.on('connection', (ws, req) => {
           }
         } catch {}
         if (!known) {
-          ws.send(JSON.stringify({ type: 'error', message: 'model not in enabled list' }));
+          ws.send(JSON.stringify({ type: 'error', code: 'invalid_model', message: 'model not in enabled list' }));
           return;
         }
       }
@@ -3410,6 +3459,9 @@ async function triggerSkillResponse(roomId, ai, prompt) {
   const defaultWd = db.prepare(
     'SELECT path FROM agent_workdirs WHERE actor_id=? AND is_default=1 LIMIT 1'
   ).get(ai.actor_id);
+  // NULL here is intentional & safe (e.g. an AI without a default workdir): the trigger sends
+  // `workdir || undefined`, so the agent client falls back to its own cwd. Not a defect —
+  // migration 20260620 backfill deliberately mirrors this runtime resolution.
   const workdir = partWd?.path ?? ((wdRow?.path && wdRow.actor_id === ai.actor_id) ? wdRow.path : (defaultWd?.path || null));
   const sessionId = getSession(ai.participant_id, workdir);
 
@@ -3720,6 +3772,9 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   const partWd = db.prepare(
     'SELECT w.path FROM room_participants rp JOIN agent_workdirs w ON w.id=rp.workdir_id WHERE rp.id=?'
   ).get(ai.participant_id);
+  // NULL here is intentional & safe (e.g. an AI without a default workdir): the trigger sends
+  // `workdir || undefined`, so the agent client falls back to its own cwd. Not a defect —
+  // migration 20260620 backfill deliberately mirrors this runtime resolution.
   const workdir = partWd?.path ?? ((wdRow?.path && wdRow.actor_id === ai.actor_id) ? wdRow.path : (defaultWd?.path || null));
 
   if (agentWs && agentWs.readyState === 1) {
