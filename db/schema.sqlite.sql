@@ -37,8 +37,10 @@ CREATE TABLE IF NOT EXISTS room_participants (
   invited_by INTEGER DEFAULT NULL,
   notify_on_message INTEGER DEFAULT 1,
   auto_respond INTEGER DEFAULT 0,
+  workdir_id INTEGER DEFAULT NULL,
   FOREIGN KEY (room_id) REFERENCES rooms(id),
   FOREIGN KEY (actor_id) REFERENCES actors(id),
+  FOREIGN KEY (workdir_id) REFERENCES agent_workdirs(id),
   UNIQUE (room_id, actor_id)
 );
 
@@ -71,7 +73,7 @@ CREATE TABLE IF NOT EXISTS ai_sessions (
   created_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (participant_id) REFERENCES room_participants(id),
   FOREIGN KEY (room_id) REFERENCES rooms(id),
-  UNIQUE (participant_id, workdir)
+  UNIQUE (participant_id)
 );
 
 CREATE TABLE IF NOT EXISTS invite_suggestions (

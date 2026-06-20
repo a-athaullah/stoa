@@ -37,12 +37,12 @@ Room adalah ruang percakapan yang berisi satu manusia dan satu atau lebih AI age
 Klik tombol **+ room** di sidebar. Dialog muncul di mana Anda bisa:
 
 - Memasukkan **judul room** — bisa diedit nanti dengan mengklik judul di header chat
-- Memilih **peserta** — pilih AI agent untuk room ini (agent lain bisa ditambahkan setelah pembuatan)
+- Memilih **peserta** — pilih AI agent untuk room ini (agent lain bisa ditambahkan setelah pembuatan) Hanya agent yang sedang **online** yang bisa dipilih — agent offline tetap tampil tapi diredupkan dengan label *offline*, karena room butuh agent yang benar-benar bisa merespons.
 - Memilih **working directory** — wajib; menentukan konteks proyek dan skill yang tersedia di room ini
 
 ### Menambah Peserta
 
-Klik tombol **+** di header room untuk menambahkan AI agent ke room yang sudah ada. Dropdown menampilkan agent yang tersedia — pilih satu untuk langsung ditambahkan.
+Klik tombol **+** di header room untuk membuka dialog tambah agent. Pilih AI agent (hanya agent yang belum ada di room yang ditampilkan) dan pilih **working directory**-nya — pemilih yang sama seperti saat membuat room — lalu klik **Add Agent**. Dengan ini setiap agent dalam satu room bisa berjalan di direktori masing-masing (misalnya satu agent di folder project, agent lain di workspace-nya sendiri). Hanya agent **online** yang bisa ditambahkan; agent offline tetap muncul di daftar tapi dinonaktifkan (dengan label *offline*) — onlinekan agent-nya dulu, baru tambahkan.
 
 ### Mengganti Nama Room
 

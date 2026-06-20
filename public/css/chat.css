@@ -112,24 +112,6 @@ html.dark .h-faded-mark { opacity: 0.12; }
 }
 .h-add-participant:hover { border-color: var(--h-accent); color: var(--h-accent); }
 
-.h-add-dropdown {
-  position: absolute; top: 34px; right: 0;
-  background: var(--h-surface); border: 1px solid var(--h-hair-soft);
-  border-radius: 8px; padding: 6px 0; min-width: 180px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.25); z-index: 100;
-  display: none;
-}
-.h-add-dropdown.open { display: block; }
-.h-add-dropdown-item {
-  padding: 8px 14px; cursor: pointer;
-  display: flex; align-items: center; gap: 8px;
-  font-size: 13px; color: var(--h-ink);
-}
-.h-add-dropdown-item:hover { background: var(--h-surface-hi); }
-.h-add-dropdown-empty {
-  padding: 10px 14px; color: var(--h-ink-faint); font-size: 13px;
-}
-
 /* Compact progress bar */
 .h-compact-bar {
   display: none;
@@ -1599,3 +1581,15 @@ html.dark .h-bubble :not(pre) > code {
   display: inline-flex; gap: 2px; opacity: 0.5; margin-left: auto; flex-shrink: 0;
 }
 
+/* Offline agents in the create-room / add-agent pickers: visible but not selectable,
+   with an explicit online/offline badge so the user understands why. */
+.h-actor-check.is-offline { cursor: not-allowed; opacity: 0.55; }
+.h-actor-check.is-offline:hover { background: none; }
+.h-actor-status {
+  margin-left: auto;
+  font-family: var(--h-sans);
+  font-size: 11px;
+  color: var(--h-ink-faint);
+  letter-spacing: 0.02em;
+}
+.h-actor-status.is-online { color: #7fb98c; }

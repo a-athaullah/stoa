@@ -39,12 +39,43 @@ const EXPECTED_CLIENT_VERSION = (() => {
   } catch { return null; }
 })();
 
-function getSession(participantId, workdir) {
-  if (workdir) {
-    const row = db.prepare('SELECT claude_session_id FROM ai_sessions WHERE participant_id=? AND workdir=?').get(participantId, workdir);
-    return row?.claude_session_id ?? null;
+// Hash of stoa.js at server startup — used as the "safe" baseline for the monotonic
+// downgrade guard in the manifest endpoint. If someone edits stoa.js to a lower version
+// while the server is running, clients must not auto-download it (they'd restart into a
+// version older than EXPECTED_CLIENT_VERSION and get stuck in a force_update loop).
+const SAFE_CLIENT_HASH = (() => {
+  try {
+    const fp = path.join(__dirname, 'stoa.js');
+    return crypto.createHash('sha256').update(fs.readFileSync(fp)).digest('hex').slice(0, 12);
+  } catch { return null; }
+})();
+
+// Resolve a participant's workspace directory: their own workdir_id, else the room workdir
+// (only if it belongs to this agent), else the agent's default workdir, else null (the agent
+// then falls back to its own cwd via `workdir || undefined`). This is the SINGLE source of
+// truth for routing workdir — dispatch, session save, and compact all call it, so the saved
+// session key can never drift from the lookup key (the bug fixed by migration
+// 20260620-rekey-ai-sessions-participant). `prefetchedRoomWd` lets a multi-agent sequence
+// reuse one room-workdir query instead of re-running it per turn.
+function resolveParticipantWorkdir(participantId, prefetchedRoomWd = null) {
+  const part = db.prepare('SELECT actor_id, room_id, workdir_id FROM room_participants WHERE id=?').get(participantId);
+  if (!part) return null;
+  if (part.workdir_id) {
+    const w = db.prepare('SELECT path FROM agent_workdirs WHERE id=?').get(part.workdir_id);
+    if (w?.path) return w.path;
   }
-  const row = db.prepare('SELECT claude_session_id FROM ai_sessions WHERE participant_id=? AND workdir IS NULL').get(participantId);
+  const roomWd = prefetchedRoomWd ?? db.prepare(
+    'SELECT w.path, w.actor_id FROM rooms r LEFT JOIN agent_workdirs w ON w.id=r.workdir_id WHERE r.id=?'
+  ).get(part.room_id);
+  if (roomWd?.path && roomWd.actor_id === part.actor_id) return roomWd.path;
+  const def = db.prepare('SELECT path FROM agent_workdirs WHERE actor_id=? AND is_default=1 LIMIT 1').get(part.actor_id);
+  return def?.path || null;
+}
+
+// Keyed by participant alone: a participant maps to exactly one workdir (room_participants.workdir_id),
+// so its session is unique per participant. See migration 20260620-rekey-ai-sessions-participant.
+function getSession(participantId) {
+  const row = db.prepare('SELECT claude_session_id FROM ai_sessions WHERE participant_id=?').get(participantId);
   return row?.claude_session_id ?? null;
 }
 
@@ -52,7 +83,7 @@ function saveSession(participantId, claudeSessionId, workdir) {
   const rp = db.prepare('SELECT room_id FROM room_participants WHERE id=?').get(participantId);
   db.prepare(
     `INSERT INTO ai_sessions (participant_id, room_id, claude_session_id, workdir, status) VALUES (?,?,?,?,'idle')
-     ON CONFLICT(participant_id, workdir) DO UPDATE SET claude_session_id=excluded.claude_session_id, room_id=excluded.room_id, status='idle', last_active_at=datetime('now')`
+     ON CONFLICT(participant_id) DO UPDATE SET claude_session_id=excluded.claude_session_id, room_id=excluded.room_id, workdir=excluded.workdir, status='idle', last_active_at=datetime('now')`
   ).run(participantId, rp?.room_id ?? null, claudeSessionId, workdir || null);
 }
 
@@ -651,11 +682,33 @@ const server = http.createServer(async (req, res) => {
     if (!workdir_id) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: 'workdir_id is required' })); }
     const human = db.prepare(`SELECT id FROM actors WHERE type='human' LIMIT 1`).get();
     const humanId = human?.id ?? 1;
+    const allIds = [...new Set([humanId, ...participant_ids])];
+    // Validate the workdir exists and belongs to one of the participants before creating the
+    // room — mirrors the ownership check on POST /api/rooms/:id/participants and prevents a
+    // dangling rooms.workdir_id whose participant assignment would otherwise silently no-op.
+    const wdOwner = db.prepare('SELECT actor_id FROM agent_workdirs WHERE id=?').get(workdir_id);
+    if (!wdOwner) { res.writeHead(404, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: 'workdir not found' })); }
+    if (!allIds.includes(wdOwner.actor_id)) { res.writeHead(400, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ error: 'workdir must belong to one of the participants' })); }
+    // Every AI participant must be online at creation time — a room is only useful with an
+    // agent that can actually respond, and an offline agent can't be "prepared ahead". Human
+    // participants are never gated (they hold no agent connection). The frontend mirrors this
+    // by disabling offline agents; enforced here too because the API can be called directly.
+    if (participant_ids.length) {
+      const ph = participant_ids.map(() => '?').join(',');
+      const agentRows = db.prepare(`SELECT id, name FROM actors WHERE type='ai' AND id IN (${ph})`).all(...participant_ids);
+      const offline = agentRows.filter(a => !agentClients.has(a.id));
+      if (offline.length) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: `agent offline: ${offline.map(a => a.name).join(', ')}` }));
+      }
+    }
     const result = db.prepare('INSERT INTO rooms (title, created_by, workdir_id) VALUES (?,?,?)').run(title, humanId, workdir_id);
     const roomId = result.lastInsertRowid;
-    const allIds = [...new Set([humanId, ...participant_ids])];
     const insertParticipant = db.prepare('INSERT OR IGNORE INTO room_participants (room_id, actor_id) VALUES (?,?)');
     db.transaction((ids) => { for (const id of ids) insertParticipant.run(roomId, id); })(allIds);
+    // Assign the room's workdir to the participant that owns it (the chosen agent), so every
+    // participant carries an explicit workdir_id — consistent with the backfill migration.
+    db.prepare('UPDATE room_participants SET workdir_id=? WHERE room_id=? AND actor_id=?').run(workdir_id, roomId, wdOwner.actor_id);
     const room = db.prepare('SELECT * FROM rooms WHERE id=?').get(roomId);
     console.log(`[server] Room created id=${roomId}, broadcasting to ${globalClients.size} clients`);
     broadcastGlobal({ type: 'room_created', room });
@@ -830,8 +883,10 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname.endsWith('/participants')) {
       const rows = db.prepare(`
-        SELECT rp.*, a.name, a.type, a.avatar_color, a.avatar_symbol, a.avatar_url, a.adapter
+        SELECT rp.*, a.name, a.type, a.avatar_color, a.avatar_symbol, a.avatar_url, a.adapter,
+               w.path AS workdir_path, w.label AS workdir_label
         FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
+        LEFT JOIN agent_workdirs w ON w.id=rp.workdir_id
         WHERE rp.room_id=?
       `).all(roomId);
       return json(res, rows);
@@ -869,11 +924,27 @@ const server = http.createServer(async (req, res) => {
     const body = await readBody(req);
     const data = parseJsonBody(body);
     if (!data) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
-    const { actor_id } = data;
+    const { actor_id, workdir_id = null } = data;
     if (!actor_id) return json(res, { error: 'actor_id required' }, 400);
-    const actor = db.prepare('SELECT id, name FROM actors WHERE id=?').get(actor_id);
+    const actor = db.prepare('SELECT id, name, type FROM actors WHERE id=?').get(actor_id);
     if (!actor) return json(res, { error: 'actor not found' }, 404);
-    db.prepare('INSERT OR IGNORE INTO room_participants (room_id, actor_id) VALUES (?,?)').run(roomId, actor_id);
+    // An AI participant must be online to be added — same rule as room creation. Enforced
+    // server-side (not just disabled in the UI) since this endpoint can be called directly.
+    if (actor.type === 'ai' && !agentClients.has(actor.id)) {
+      return json(res, { error: `agent offline: ${actor.name}` }, 409);
+    }
+    // Validate workdir ownership: a workdir may only be assigned to the agent that owns it.
+    if (workdir_id != null) {
+      const wd = db.prepare('SELECT id FROM agent_workdirs WHERE id=? AND actor_id=?').get(workdir_id, actor_id);
+      if (!wd) return json(res, { error: 'workdir not found for this agent' }, 400);
+    }
+    const room = db.prepare('SELECT id FROM rooms WHERE id=?').get(roomId);
+    if (!room) return json(res, { error: 'room not found' }, 404);
+    db.prepare('INSERT OR IGNORE INTO room_participants (room_id, actor_id, workdir_id) VALUES (?,?,?)').run(roomId, actor_id, workdir_id);
+    // If the participant already existed, update its workdir when a new one is provided.
+    if (workdir_id != null) {
+      db.prepare('UPDATE room_participants SET workdir_id=? WHERE room_id=? AND actor_id=?').run(workdir_id, roomId, actor_id);
+    }
     broadcast(roomId, { type: 'participant_joined', actor_id });
     return json(res, { ok: true });
   }
@@ -1505,8 +1576,25 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/client/manifest') {
     const files = {};
     for (const name of CLIENT_FILES) {
-      const hash = clientFileHash(name);
-      if (hash) files[name] = hash;
+      let hash = clientFileHash(name);
+      if (!hash) continue;
+      // Monotonic downgrade guard: if stoa.js on disk has changed from startup and is now
+      // a lower version than EXPECTED_CLIENT_VERSION, report the startup hash instead.
+      // This prevents clients from auto-downloading a downgrade that would send them into a
+      // force_update loop (EXPECTED is cached at startup; serving a lower version causes
+      // client to restart with client_version < expected indefinitely).
+      if (name === 'stoa.js' && SAFE_CLIENT_HASH && EXPECTED_CLIENT_VERSION && hash !== SAFE_CLIENT_HASH) {
+        try {
+          const diskSrc = fs.readFileSync(path.join(__dirname, name), 'utf8');
+          const m = diskSrc.match(/^const CLIENT_VERSION\s*=\s*'([^']+)'/m);
+          const diskVer = m ? m[1] : null;
+          if (diskVer && diskVer.localeCompare(EXPECTED_CLIENT_VERSION, undefined, { numeric: true }) < 0) {
+            console.warn(`[update-guard] stoa.js on disk (v${diskVer}) < expected (v${EXPECTED_CLIENT_VERSION}) — suppressing manifest to prevent downgrade loop`);
+            hash = SAFE_CLIENT_HASH;
+          }
+        } catch {}
+      }
+      files[name] = hash;
     }
     return json(res, { files });
   }
@@ -2325,18 +2413,12 @@ wss.on('connection', (ws, req) => {
         FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
         WHERE rp.room_id=? AND a.type='ai'
       `).all(roomId);
-      const roomRow = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(roomId);
-      let roomWorkdir = null;
-      if (roomRow?.workdir_id) {
-        const wd = db.prepare('SELECT path FROM agent_workdirs WHERE id=?').get(roomRow.workdir_id);
-        roomWorkdir = wd?.path || null;
-      }
       // Batch-fetch sessions for all participants (avoids N+1)
       const sessionMap = new Map();
       if (aiParts.length) {
         const ph = aiParts.map(() => '?').join(',');
         const allSessions = db.prepare(
-          `SELECT participant_id, claude_session_id, workdir FROM ai_sessions WHERE participant_id IN (${ph}) AND room_id=? ORDER BY last_active_at DESC`
+          `SELECT participant_id, claude_session_id FROM ai_sessions WHERE participant_id IN (${ph}) AND room_id=? ORDER BY last_active_at DESC`
         ).all(...aiParts.map(a => a.participant_id), roomId);
         for (const s of allSessions) {
           if (!sessionMap.has(s.participant_id)) sessionMap.set(s.participant_id, s);
@@ -2348,7 +2430,9 @@ wss.on('connection', (ws, req) => {
         if (!agentWs || agentWs.readyState !== 1) continue;
         const sessionRow = sessionMap.get(ai.participant_id);
         if (!sessionRow?.claude_session_id) continue;
-        const workdir = sessionRow.workdir || roomWorkdir;
+        // Resolve the workdir the same way dispatch does, so compact targets the dir where this
+        // agent actually ran — not a stale stored value or the room workdir.
+        const workdir = resolveParticipantWorkdir(ai.participant_id);
         targets.push({ actor_id: ai.actor_id, participant_id: ai.participant_id, name: ai.name, workdir, claude_session_id: sessionRow.claude_session_id });
       }
       if (!targets.length) {
@@ -2445,9 +2529,18 @@ wss.on('connection', (ws, req) => {
       const staleWds = db.prepare('SELECT id, path FROM agent_workdirs WHERE actor_id=?').all(agentActorId);
       const staleIds = staleWds.filter(wd => !scannedPaths.has(wd.path)).map(wd => wd.id);
       if (staleIds.length) {
+        // "In use" = referenced by a room's workdir_id OR a participant's workdir_id.
+        // room_participants.workdir_id is the per-participant FK this branch added; omitting it
+        // let cleanup try to DELETE a workdir still referenced by a participant → FOREIGN KEY
+        // constraint failed. UNION both sources. The `IN (...)` filter naturally excludes NULL
+        // workdir_id (NULL never matches IN), so no NOT-IN/NULL pitfall here.
+        const ph0 = staleIds.map(() => '?').join(',');
         const inUseIds = new Set(
-          db.prepare(`SELECT DISTINCT workdir_id FROM rooms WHERE workdir_id IN (${staleIds.map(() => '?').join(',')})`)
-            .all(...staleIds).map(r => r.workdir_id)
+          db.prepare(
+            `SELECT workdir_id FROM rooms WHERE workdir_id IN (${ph0})
+             UNION
+             SELECT workdir_id FROM room_participants WHERE workdir_id IN (${ph0})`
+          ).all(...staleIds, ...staleIds).map(r => r.workdir_id)
         );
         const toDelete = staleIds.filter(id => !inUseIds.has(id));
         if (toDelete.length) {
@@ -2650,12 +2743,11 @@ wss.on('connection', (ws, req) => {
       broadcastGlobal({ type: 'room_activity', room_id: msg.room_id });
       if (msg.claude_session_id) {
         try {
-          const row = db.prepare(`
-            SELECT m.participant_id, w.path as workdir
-            FROM messages m JOIN rooms r ON r.id=m.room_id LEFT JOIN agent_workdirs w ON w.id=r.workdir_id
-            WHERE m.id=?
-          `).get(msg.message_id);
-          if (row) saveSession(row.participant_id, msg.claude_session_id, row.workdir);
+          const row = db.prepare('SELECT participant_id FROM messages WHERE id=?').get(msg.message_id);
+          // Resolve the participant's workdir the SAME way dispatch does (single source) so the
+          // saved key matches the lookup key. Re-deriving from the ROOM workdir here was the bug:
+          // for a participant whose workdir != room workdir the session never matched on resume.
+          if (row) saveSession(row.participant_id, msg.claude_session_id, resolveParticipantWorkdir(row.participant_id));
         } catch (e) { console.error('[agent] saveSession error:', e.message); }
       }
       pendingAgents.get(msg.message_id)?.resolve(msg.content);
@@ -3032,7 +3124,7 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'set_room_model' && subscribedRoom) {
       if (msg.model !== null && msg.model !== undefined && (typeof msg.model !== 'string' || !msg.model.trim() || msg.model.length > 200)) {
-        ws.send(JSON.stringify({ type: 'error', message: 'invalid model value' }));
+        ws.send(JSON.stringify({ type: 'error', code: 'invalid_model', message: 'invalid model value' }));
         return;
       }
       if (msg.model && !msg.model.startsWith('claude-')) {
@@ -3051,7 +3143,7 @@ wss.on('connection', (ws, req) => {
           }
         } catch {}
         if (!known) {
-          ws.send(JSON.stringify({ type: 'error', message: 'model not in enabled list' }));
+          ws.send(JSON.stringify({ type: 'error', code: 'invalid_model', message: 'model not in enabled list' }));
           return;
         }
       }
@@ -3380,15 +3472,10 @@ async function triggerSkillResponse(roomId, ai, prompt) {
   ).run(roomId, ai.participant_id);
   const msgId = result.lastInsertRowid;
 
-  // Resolve workdir: use room's workdir only if it belongs to this agent, else agent's default
-  const wdRow = db.prepare(
-    'SELECT w.path, w.actor_id FROM rooms r LEFT JOIN agent_workdirs w ON w.id=r.workdir_id WHERE r.id=?'
-  ).get(roomId);
-  const defaultWd = db.prepare(
-    'SELECT path FROM agent_workdirs WHERE actor_id=? AND is_default=1 LIMIT 1'
-  ).get(ai.actor_id);
-  const workdir = (wdRow?.path && wdRow.actor_id === ai.actor_id) ? wdRow.path : (defaultWd?.path || null);
-  const sessionId = getSession(ai.participant_id, workdir);
+  // Single source for the participant's workdir (see resolveParticipantWorkdir). NULL is safe:
+  // the trigger sends `workdir || undefined` so the agent falls back to its own cwd.
+  const workdir = resolveParticipantWorkdir(ai.participant_id);
+  const sessionId = getSession(ai.participant_id);
 
   broadcast(roomId, {
     type: 'message_state',
@@ -3648,10 +3735,6 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     '\n' + L.sendFileInstruction,
   ].filter(Boolean).join('\n');
 
-  // Resolve workdir: use room's workdir only if it belongs to this agent, else agent's default
-  const wdRow = prefetchedCtx?.wdRow ?? db.prepare(
-    'SELECT w.path, w.actor_id FROM rooms r LEFT JOIN agent_workdirs w ON w.id=r.workdir_id WHERE r.id=?'
-  ).get(roomId);
   const roomRow2 = db.prepare('SELECT model, model_config FROM rooms WHERE id=?').get(roomId);
   const roomModel = roomRow2?.model || null;
   let modelBaseUrl, modelApiKeys, modelToolsSupported;
@@ -3689,14 +3772,13 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     broadcast(roomId, { type: 'message_complete', message_id: msgId, content: errContent });
     return;
   }
-  const defaultWd = db.prepare(
-    'SELECT path FROM agent_workdirs WHERE actor_id=? AND is_default=1 LIMIT 1'
-  ).get(ai.actor_id);
-  const workdir = (wdRow?.path && wdRow.actor_id === ai.actor_id) ? wdRow.path : (defaultWd?.path || null);
+  // Single source for the participant's workdir (see resolveParticipantWorkdir). Pass the
+  // prefetched room-workdir row so a multi-agent sequence doesn't re-query it per turn.
+  const workdir = resolveParticipantWorkdir(ai.participant_id, prefetchedCtx?.wdRow);
 
   if (agentWs && agentWs.readyState === 1) {
     // ── Route to connected agent client
-    const sessionId = getSession(ai.participant_id, workdir);
+    const sessionId = getSession(ai.participant_id);
     await new Promise((resolve, reject) => {
       pendingAgents.set(msgId, { resolve, reject });
       pendingActorMeta.set(msgId, { actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null });
