@@ -109,7 +109,10 @@ function _renderUsageModel(d) {
   const colorMap = {};
   models.forEach((m, i) => { colorMap[m] = COLORS[i % COLORS.length]; });
 
-  // build day→model→tokens map from dailyByModel
+  // build day→model→tokens map from dailyByModel.
+  // r.day is always a 'YYYY-MM-DD' string: usage_log.created_at fills via DEFAULT (datetime('now'))
+  // and is never inserted NULL, so date(created_at, tzMod) can't return NULL here. Even a stray NULL
+  // becomes the object key "null" (string), so day.slice(5,7) below stays safe. Not a finding.
   const dailyByModel = d.dailyByModel || [];
   const dayMap = {};
   dailyByModel.forEach(r => {

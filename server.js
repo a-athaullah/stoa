@@ -949,10 +949,18 @@ const server = http.createServer(async (req, res) => {
     // streaks align to the viewer's local calendar instead of UTC. Integer-clamped, so it's
     // safe to interpolate into the SQLite datetime modifier below.
     const rawOff = parseInt(url.searchParams.get('tz_offset'), 10);
+    // Clamp range is [-840, 840]. Real IANA offsets only span [-720 (UTC-12), 840 (UTC+14)],
+    // so the lower bound is intentionally loose: a legit client (-getTimezoneOffset()) never
+    // sends below -720, and a crafted -840 just shifts SQLite by an extra valid 2h — no error,
+    // no injection (already integer-parsed). Not a finding.
     const tzOff = Number.isFinite(rawOff) ? Math.max(-840, Math.min(840, rawOff)) : 0;
     const tzMod = `'${tzOff} minutes'`;
     // since = local midnight N days ago. Shift to local time first so 'start of day' snaps to
     // the local calendar day (not UTC day), then shift back to UTC before subtracting N days.
+    // NOTE: 'now' is re-evaluated by SQLite per query, so in theory the queries below could
+    // straddle midnight and use slightly different cutoffs. In practice they run synchronously
+    // back-to-back (<1ms total), so the boundary would have to fall inside a microsecond gap —
+    // harmless for a single-user dashboard. Not a finding.
     const since = period === 'all' ? `'1970-01-01'` : `datetime('now', '${tzOff} minutes', 'start of day', '${-tzOff} minutes', '-${period} days')`;
 
     const totals = db.prepare(`

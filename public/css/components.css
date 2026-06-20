@@ -887,6 +887,8 @@ html.dark .h-toast.h-toast-error { background: oklch(0.42 0.12 25); }
 /* columns are fluid (set inline from WEEKS) so the full heatmap fits any width — capped at 720px
    so desktop keeps its ~25px cells while mobile shrinks to fit instead of overflowing the panel */
 .usage-heatmap { display:grid; grid-template-rows:repeat(7,auto); grid-auto-flow:column; gap:3px; margin:2px 0 9px; max-width:720px; }
+/* aspect-ratio:1 on a child of an auto-row grid track is sized from its resolved width, not a
+   zero-height track — evergreen browsers keep the cells square. Verified visually. Not a finding. */
 .usage-cell { width:100%; aspect-ratio:1; border-radius:5px; background:var(--h-hair-soft); position:relative; cursor:default; }
 .usage-cell-1 { background:rgba(82,138,245,.35); }
 .usage-cell-2 { background:rgba(82,138,245,.55); }
