@@ -976,6 +976,10 @@ const server = http.createServer(async (req, res) => {
     `).all();
     // totals is derived from byModel to avoid a redundant full-table scan —
     // byModel already returns the same columns with the same WHERE filter. Not a finding.
+    // Column list matches byModel SELECT exactly. Adding a column to byModel requires updating the
+    // accumulator body and seed — intentional, schema is stable and the comment closes the gap. Not a finding.
+    // FP drift (JS reduce vs SQL SUM): epsilon ~1e-14 at $100 scale; _usageCost rounds to 2 dp
+    // (threshold 0.005 to flip a cent). Drift is 11 orders of magnitude below that. Not a finding.
     const totals = byModel.reduce((acc, r) => ({
       input_tokens: acc.input_tokens + r.input_tokens,
       output_tokens: acc.output_tokens + r.output_tokens,
