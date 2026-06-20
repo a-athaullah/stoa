@@ -2440,7 +2440,10 @@ wss.on('connection', (ws, req) => {
         return;
       }
       pendingCompacts.set(roomId, { total: targets.length, completed: 0, agents: targets.map(t => t.actor_id), targets, completedParticipantIds: [] });
-      broadcast(roomId, { type: 'compact_start', room_id: roomId, total: targets.length, participants: targets.map(t => ({ participant_id: t.participant_id, actor_id: t.actor_id, name: t.name })) });
+      const participants = targets.map(t => ({ participant_id: t.participant_id, actor_id: t.actor_id, name: t.name }));
+      broadcast(roomId, { type: 'compact_start', room_id: roomId, total: targets.length, participants });
+      const names = targets.map(t => t.name).join(', ');
+      broadcast(roomId, { type: 'system_event', actor_name: names, status: 'session compacting' });
       setTimeout(() => {
         if (pendingCompacts.has(roomId)) {
           pendingCompacts.delete(roomId);
@@ -2625,6 +2628,7 @@ wss.on('connection', (ws, req) => {
           const participants = actor && participant ? [{ participant_id: participant.id, actor_id: actor.id, name: actor.name }] : [];
           pendingCompacts.set(roomId, { total: 1, completed: 0, agents: [agentActorId], completedAgentIds: [], completedParticipantIds: [], targets: participants });
           broadcast(roomId, { type: 'compact_start', room_id: roomId, total: 1, participants });
+          if (actor) broadcast(roomId, { type: 'system_event', actor_name: actor.name, status: 'session compacting' });
           console.log(`[server] auto-compact started room=${roomId} by agent=${agentActorId}`);
         } else {
           // Another compact already registered — add this agent to the total if not already counted

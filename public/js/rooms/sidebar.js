@@ -11,29 +11,14 @@ function showCompactBar(roomId, participants) {
   compactingRoomId = roomId ?? currentRoomId;
   compactingParticipants = participants || [];
   const bar = document.getElementById('compact-bar');
-  const msgEl = document.getElementById('compact-message');
-  const agentsEl = document.getElementById('compact-agents');
   if (!bar) return;
-  if (compactingParticipants.length > 0) {
-    const names = compactingParticipants.map(p => p.name).join(', ');
-    if (msgEl) msgEl.textContent = `${names} session compacting…`;
-    if (agentsEl) {
-      agentsEl.innerHTML = '';
-      compactingParticipants.forEach(p => {
-        const indicator = document.createElement('div');
-        indicator.className = 'h-compact-agent';
-        indicator.dataset.participantId = p.participant_id;
-        const spinner = document.createElement('div');
-        spinner.className = 'h-compact-spinner';
-        const label = document.createElement('span');
-        label.className = 'h-compact-label';
-        label.textContent = p.name;
-        indicator.appendChild(spinner);
-        indicator.appendChild(label);
-        agentsEl.appendChild(indicator);
-      });
-    }
-  }
+  bar.innerHTML = '';
+  compactingParticipants.forEach(p => {
+    const fill = document.createElement('div');
+    fill.className = 'h-compact-fill';
+    fill.dataset.participantId = p.participant_id;
+    bar.appendChild(fill);
+  });
   bar.classList.add('visible');
   document.querySelector('.h-composer-box')?.classList.add('ai-processing');
   document.getElementById('msg-input')?.blur();
@@ -44,14 +29,12 @@ function showCompactBar(roomId, participants) {
 function updateCompactBar(completedParticipantIds) {
   const completedIds = completedParticipantIds || [];
   if (completedIds.length === 0) return;
-  const agentsEl = document.getElementById('compact-agents');
-  if (!agentsEl) return;
+  const bar = document.getElementById('compact-bar');
+  if (!bar) return;
   completedIds.forEach(pid => {
-    const indicator = agentsEl.querySelector(`[data-participant-id="${pid}"]`);
-    if (indicator && !indicator.classList.contains('completed')) {
-      indicator.classList.add('completed');
-      const spinner = indicator.querySelector('.h-compact-spinner');
-      if (spinner) spinner.className = 'h-compact-check';
+    const fill = bar.querySelector(`[data-participant-id="${pid}"]`);
+    if (fill && !fill.classList.contains('completed')) {
+      fill.classList.add('completed');
     }
   });
 }
@@ -60,11 +43,10 @@ function hideCompactBar() {
   compactingRoomId = null;
   compactingParticipants = [];
   const bar = document.getElementById('compact-bar');
-  const msgEl = document.getElementById('compact-message');
-  const agentsEl = document.getElementById('compact-agents');
-  if (bar) bar.classList.remove('visible');
-  if (msgEl) msgEl.textContent = '';
-  if (agentsEl) agentsEl.innerHTML = '';
+  if (bar) {
+    bar.classList.remove('visible');
+    bar.innerHTML = '';
+  }
   document.querySelector('.h-composer-box')?.classList.remove('ai-processing');
   document.getElementById('msg-input')?.focus();
   const btn = document.querySelector('.h-compact-btn');
