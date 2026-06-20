@@ -7,7 +7,7 @@ function compactSessions(roomId) {
   ws.send(JSON.stringify({ type: 'compact_session', room_id: roomId }));
 }
 
-function showCompactBar(total, roomId, participants) {
+function showCompactBar(roomId, participants) {
   compactingRoomId = roomId ?? currentRoomId;
   compactingParticipants = participants || [];
   const bar = document.getElementById('compact-bar');
@@ -41,7 +41,7 @@ function showCompactBar(total, roomId, participants) {
   if (btn) { btn.disabled = true; btn.classList.add('active'); }
 }
 
-function updateCompactBar(completed, total, completedParticipantIds) {
+function updateCompactBar(completedParticipantIds) {
   const completedIds = completedParticipantIds || [];
   if (completedIds.length === 0) return;
   const agentsEl = document.getElementById('compact-agents');

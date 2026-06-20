@@ -2676,6 +2676,7 @@ wss.on('connection', (ws, req) => {
       }
       if (!state.names) state.names = [];
       if (!state.completedAgentIds) state.completedAgentIds = [];
+      if (!state.completedParticipantIds) state.completedParticipantIds = [];
       if (actor) state.names.push(actor.name);
       state.completedAgentIds.push(agentActorId);
       if (participant) state.completedParticipantIds.push(participant.id);
@@ -2710,6 +2711,7 @@ wss.on('connection', (ws, req) => {
       }
       const state = pendingCompacts.get(msg.room_id);
       if (!state) return;
+      if (!state.completedParticipantIds) state.completedParticipantIds = [];
       const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
       if (participant) state.completedParticipantIds.push(participant.id);
       if (!state.errors) state.errors = 0;
