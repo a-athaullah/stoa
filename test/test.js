@@ -526,6 +526,72 @@ async function run() {
     assert.ok(!('secret' in p), 'secret must not be exposed');
   });
 
+  // ── 6b. Add agent with per-participant workdir ─────────────────────────────
+  console.log('\n6b · add agent with workdir');
+
+  let addRoomId, kiraWdId;
+
+  await test('create room (human + idris) for add-agent flow', async () => {
+    const { status, body } = await req('POST', '/api/rooms', {
+      title:           'Test Room — add agent',
+      participant_ids: [humanId, idrisId],
+      workdir_id:      firstWorkdirId,        // idris owns this workdir
+    });
+    assert.strictEqual(status, 200);
+    addRoomId = body.id;
+    created.rooms.push(addRoomId);
+    // The creator agent (idris) participant should carry the room workdir explicitly.
+    const row = db.prepare(
+      'SELECT workdir_id FROM room_participants WHERE room_id=? AND actor_id=?'
+    ).get(addRoomId, idrisId);
+    assert.strictEqual(row.workdir_id, firstWorkdirId, 'idris participant workdir_id should equal room workdir');
+  });
+
+  await test('create a workdir owned by kira', async () => {
+    const { status, body } = await req('POST', `/api/actors/${kiraId}/workdirs`, { path: '/tmp/kira-add-wd' });
+    assert.strictEqual(status, 200);
+    kiraWdId = body.id;
+    created.workdirs.push(kiraWdId);
+  });
+
+  await test('POST participants rejects a workdir not owned by the agent', async () => {
+    const { status } = await req('POST', `/api/rooms/${addRoomId}/participants`, {
+      actor_id:   kiraId,
+      workdir_id: firstWorkdirId,             // belongs to idris, not kira
+    });
+    assert.strictEqual(status, 400);
+  });
+
+  await test('POST participants to a missing room returns 404', async () => {
+    const { status } = await req('POST', '/api/rooms/999999/participants', { actor_id: kiraId });
+    assert.strictEqual(status, 404);
+  });
+
+  await test('POST participants without actor_id returns 400', async () => {
+    const { status } = await req('POST', `/api/rooms/${addRoomId}/participants`, {});
+    assert.strictEqual(status, 400);
+  });
+
+  await test('POST participants adds kira with her own workdir', async () => {
+    const { status } = await req('POST', `/api/rooms/${addRoomId}/participants`, {
+      actor_id:   kiraId,
+      workdir_id: kiraWdId,
+    });
+    assert.strictEqual(status, 200);
+    const row = db.prepare(
+      'SELECT workdir_id FROM room_participants WHERE room_id=? AND actor_id=?'
+    ).get(addRoomId, kiraId);
+    assert.strictEqual(row.workdir_id, kiraWdId);
+  });
+
+  await test('GET participants exposes workdir_path per participant', async () => {
+    const { body } = await req('GET', `/api/rooms/${addRoomId}/participants`);
+    const kira = body.find(p => p.actor_id === kiraId);
+    assert.ok(kira, 'kira should be a participant');
+    assert.strictEqual(kira.workdir_id, kiraWdId);
+    assert.strictEqual(kira.workdir_path, '/tmp/kira-add-wd');
+  });
+
   // ── 7. Change workdir for room ─────────────────────────────────────────────
   console.log('\n7 · change working directory');
 

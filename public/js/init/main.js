@@ -461,6 +461,15 @@ async function init() {
       document.getElementById('new-room-modal').style.display = 'none';
     }
   });
+  document.getElementById('add-agent-submit').addEventListener('click', submitAddAgent);
+  document.getElementById('add-agent-cancel').addEventListener('click', () => {
+    document.getElementById('add-agent-modal').style.display = 'none';
+  });
+  document.getElementById('add-agent-modal').addEventListener('click', e => {
+    if (e.target === document.getElementById('add-agent-modal')) {
+      document.getElementById('add-agent-modal').style.display = 'none';
+    }
+  });
   document.addEventListener('keydown', e => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's' && wsEditMode) {
       e.preventDefault();

@@ -77,62 +77,18 @@ function renderChatHeader(room, participants) {
     sealsWrap.appendChild(wrap);
   }
 
-  const addWrap = document.createElement('div');
-  addWrap.style.cssText = 'position:relative;display:inline-flex';
-
   const addBtn = document.createElement('button');
   addBtn.className = 'h-add-participant';
   addBtn.textContent = '+';
-  addBtn.title = 'Add participant';
+  addBtn.title = 'Add agent';
 
-  const dropdown = document.createElement('div');
-  dropdown.className = 'h-add-dropdown';
-
+  // Opens the add-agent modal (mirrors new-room: pick an AI + its workspace directory).
   addBtn.onclick = (e) => {
     e.stopPropagation();
-    if (dropdown.classList.contains('open')) {
-      dropdown.classList.remove('open');
-      return;
-    }
-    dropdown.innerHTML = '';
-    const currentIds = new Set(participants.map(p => p.actor_id));
-    const available = allActors.filter(a => !currentIds.has(a.id));
-    if (!available.length) {
-      const empty = document.createElement('div');
-      empty.className = 'h-add-dropdown-empty';
-      empty.textContent = 'No participants to add';
-      dropdown.appendChild(empty);
-    } else {
-      for (const actor of available) {
-        const item = document.createElement('div');
-        item.className = 'h-add-dropdown-item';
-        item.appendChild(makeAvatar(actor.name, actor.avatar_color, actor.avatar_url, 20));
-        const label = document.createElement('span');
-        label.textContent = actor.name;
-        item.appendChild(label);
-        item.onclick = async (ev) => {
-          ev.stopPropagation();
-          dropdown.classList.remove('open');
-          try {
-            await fjson(`/api/rooms/${currentRoomId}/participants`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ actor_id: actor.id }),
-            });
-          } catch { showToast('Failed to add participant', { error: true }); }
-        };
-        dropdown.appendChild(item);
-      }
-    }
-    dropdown.classList.add('open');
-    setTimeout(() => {
-      document.addEventListener('click', () => dropdown.classList.remove('open'), { once: true });
-    }, 0);
+    openAddAgentModal(currentRoomId, participants);
   };
 
-  addWrap.appendChild(addBtn);
-  addWrap.appendChild(dropdown);
-  sealsWrap.appendChild(addWrap);
+  sealsWrap.appendChild(addBtn);
   header.appendChild(sealsWrap);
 
   // Search button

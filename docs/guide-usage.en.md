@@ -42,7 +42,7 @@ Click the **+ room** button in the sidebar. A dialog appears where you:
 
 ### Adding Participants
 
-Click the **+** button in the room header to add AI agents to an existing room. A dropdown shows available agents — select one to add them immediately.
+Click the **+** button in the room header to open the add-agent dialog. Choose an AI agent (only agents not already in the room are listed) and select its **working directory** — the same picker as when creating a room — then click **Add Agent**. This lets each agent in a room run in its own directory (for example, one agent in a project folder and another in its own workspace).
 
 ### Renaming a Room
 

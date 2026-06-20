@@ -42,7 +42,7 @@ Klik tombol **+ room** di sidebar. Dialog muncul di mana Anda bisa:
 
 ### Menambah Peserta
 
-Klik tombol **+** di header room untuk menambahkan AI agent ke room yang sudah ada. Dropdown menampilkan agent yang tersedia — pilih satu untuk langsung ditambahkan.
+Klik tombol **+** di header room untuk membuka dialog tambah agent. Pilih AI agent (hanya agent yang belum ada di room yang ditampilkan) dan pilih **working directory**-nya — pemilih yang sama seperti saat membuat room — lalu klik **Add Agent**. Dengan ini setiap agent dalam satu room bisa berjalan di direktori masing-masing (misalnya satu agent di folder project, agent lain di workspace-nya sendiri).
 
 ### Mengganti Nama Room
 
