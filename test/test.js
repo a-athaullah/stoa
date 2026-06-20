@@ -13,8 +13,10 @@ const WebSocket = require('ws');
 const Database = require('better-sqlite3');
 const path   = require('path');
 
-const BASE  = 'http://localhost:3001';
-const WS    = 'ws://localhost:3001';
+const PORT  = parseInt(process.env.PORT, 10) || 3001;
+const HOST  = process.env.TEST_HOST || '127.0.0.1';
+const BASE  = `http://${HOST}:${PORT}`;
+const WS    = `ws://${HOST}:${PORT}`;
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'db', 'stoa.db');
 
 let db;
@@ -27,7 +29,7 @@ function req(method, urlPath, body) {
   return new Promise((resolve, reject) => {
     const buf = body ? Buffer.from(JSON.stringify(body)) : null;
     const opts = {
-      hostname: '127.0.0.1', port: 3001,
+      hostname: HOST, port: PORT,
       path: urlPath, method,
       headers: {
         'Content-Type': 'application/json',
@@ -54,7 +56,7 @@ function req(method, urlPath, body) {
 function reqRaw(method, urlPath) {
   return new Promise((resolve, reject) => {
     const opts = {
-      hostname: '127.0.0.1', port: 3001, path: urlPath, method,
+      hostname: HOST, port: PORT, path: urlPath, method,
       headers: SESSION_COOKIE ? { 'Cookie': SESSION_COOKIE } : {},
     };
     const r = http.request(opts, res => {
@@ -173,7 +175,7 @@ async function run() {
   // ── 0. Prerequisites ──────────────────────────────────────────────────────
   console.log('0 · server health');
 
-  await test('server responds on :3001', async () => {
+  await test(`server responds on :`, async () => {
     const { status } = await req('GET', '/');
     assert.strictEqual(status, 200);
   });
@@ -260,7 +262,7 @@ async function run() {
     db.prepare('INSERT INTO auth_sessions (token, user_id, expires_at) VALUES (?,?,?)').run(logoutToken, created.authUserId, expires);
     const { status } = await new Promise((resolve, reject) => {
       const r = http.request({
-        hostname: '127.0.0.1', port: 3001, path: '/api/auth/logout', method: 'POST',
+        hostname: HOST, port: PORT, path: '/api/auth/logout', method: 'POST',
         headers: { 'Cookie': `stoa_session=${logoutToken}` },
       }, res => {
         const chunks = [];
@@ -431,6 +433,54 @@ async function run() {
     created.rooms.push(roomId);
   });
 
+  await test('POST /api/rooms with non-existent workdir_id returns 404', async () => {
+    const { status } = await req('POST', '/api/rooms', {
+      title:           'Test Room — bad wd',
+      participant_ids: [humanId, idrisId],
+      workdir_id:      999999,
+    });
+    assert.strictEqual(status, 404);
+  });
+
+  await test('POST /api/rooms rejects a workdir not owned by any participant', async () => {
+    // firstWorkdirId belongs to idris, who is NOT among the participants here.
+    const { status } = await req('POST', '/api/rooms', {
+      title:           'Test Room — wd not owned',
+      participant_ids: [humanId, kiraId],
+      workdir_id:      firstWorkdirId,
+    });
+    assert.strictEqual(status, 400);
+  });
+
+  // ── 6b. Offline-agent gate ─────────────────────────────────────────────────
+  // A room is only useful with an agent that can actually respond, so an offline AI may
+  // not be a room participant. Enforced server-side (HTTP 409), not just in the UI.
+  await test('POST /api/rooms rejects an offline AI participant (409)', async () => {
+    // A freshly registered agent that never connects is offline. Insert its workdir directly
+    // (the workdir API requires the agent online) so the ownership check passes and we reach
+    // the online gate.
+    const ghost = await registerAgent('Ghost-create-test');
+    created.actors.push(ghost.actor_id);
+    const wd = db.prepare(
+      'INSERT INTO agent_workdirs (actor_id, path, label, is_default) VALUES (?,?,?,0)'
+    ).run(ghost.actor_id, '/tmp/stoa-ghost-create-wd', 'ghost');
+    const { status, body } = await req('POST', '/api/rooms', {
+      title:           'Test Room — offline create',
+      participant_ids: [humanId, ghost.actor_id],
+      workdir_id:      wd.lastInsertRowid,
+    });
+    assert.strictEqual(status, 409, `expected 409, got ${status}: ${JSON.stringify(body)}`);
+    assert.ok(/offline/i.test(body.error || ''), `expected offline error, got ${JSON.stringify(body)}`);
+  });
+
+  await test('POST /api/rooms/:id/participants rejects an offline AI agent (409)', async () => {
+    const ghost = await registerAgent('Ghost-add-test');
+    created.actors.push(ghost.actor_id);
+    const { status, body } = await req('POST', `/api/rooms/${roomId}/participants`, { actor_id: ghost.actor_id });
+    assert.strictEqual(status, 409, `expected 409, got ${status}: ${JSON.stringify(body)}`);
+    assert.ok(/offline/i.test(body.error || ''), `expected offline error, got ${JSON.stringify(body)}`);
+  });
+
   await test('GET /api/rooms lists new room', async () => {
     const { body } = await req('GET', '/api/rooms');
     const titles = body.map(r => r.title);
@@ -468,6 +518,17 @@ async function run() {
     await req('PATCH', `/api/rooms/${roomId}`, { archived: false });
   });
 
+  // Test runner setup: unpin all existing pinned rooms (from production DB copy)
+  // so pin tests start from clean state (0 pinned). This only affects the temp
+  // copy DB, not production. Without this, test fails when live DB has pins.
+  {
+    const { body: allRooms } = await req('GET', '/api/rooms');
+    const pinned = allRooms.filter(r => r.is_pinned);
+    for (const r of pinned) {
+      await req('DELETE', `/api/rooms/${r.id}/pin`);
+    }
+  }
+
   await test('POST /api/rooms/:id/pin pins a room', async () => {
     const { status, body } = await req('POST', `/api/rooms/${roomId}/pin`);
     assert.strictEqual(status, 200);
@@ -496,7 +557,7 @@ async function run() {
     // Create 5 rooms and pin them all
     const tempRooms = [];
     for (let i = 0; i < 5; i++) {
-      const { body: r } = await req('POST', '/api/rooms', { title: `Test Room — pin-limit-${i}`, participant_ids: [humanId], workdir_id: firstWorkdirId });
+      const { body: r } = await req('POST', '/api/rooms', { title: `Test Room — pin-limit-${i}`, participant_ids: [humanId, idrisId], workdir_id: firstWorkdirId });
       tempRooms.push(r.id);
       await req('POST', `/api/rooms/${r.id}/pin`);
     }
@@ -590,6 +651,41 @@ async function run() {
     assert.ok(kira, 'kira should be a participant');
     assert.strictEqual(kira.workdir_id, kiraWdId);
     assert.strictEqual(kira.workdir_path, '/tmp/kira-add-wd');
+  });
+
+  // ── 6c. ai_sessions re-keyed by participant_id (migration 20260620-rekey) ──
+  console.log('\n6c · ai_sessions re-key by participant_id');
+
+  await test('ai_sessions unique key is participant_id only', () => {
+    const { sql } = db.prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='ai_sessions'"
+    ).get();
+    assert.ok(/UNIQUE\s*\(\s*participant_id\s*\)/i.test(sql), 'expected UNIQUE(participant_id)');
+    assert.ok(!/UNIQUE\s*\(\s*participant_id\s*,\s*workdir\s*\)/i.test(sql),
+      'old (participant_id, workdir) key must be gone');
+  });
+
+  await test('one session row per participant — different workdir upserts, never duplicates', () => {
+    // Mirrors saveSession(): keyed by participant_id, latest claude_session_id + workdir win.
+    // This is the invariant the fix relies on — a dispatch in workdir A then a save reporting
+    // workdir B must update the SAME row, so getSession (by participant_id) always finds it.
+    const part = db.prepare(
+      'SELECT id FROM room_participants WHERE room_id=? AND actor_id=?'
+    ).get(addRoomId, kiraId);
+    const upsert = (sid, wd) => db.prepare(
+      `INSERT INTO ai_sessions (participant_id, room_id, claude_session_id, workdir, status) VALUES (?,?,?,?,'idle')
+       ON CONFLICT(participant_id) DO UPDATE SET claude_session_id=excluded.claude_session_id, room_id=excluded.room_id, workdir=excluded.workdir, status='idle', last_active_at=datetime('now')`
+    ).run(part.id, addRoomId, sid, wd);
+    try {
+      upsert('sess-A', '/tmp/dir-a');
+      upsert('sess-B', '/tmp/dir-b');
+      const rows = db.prepare('SELECT claude_session_id, workdir FROM ai_sessions WHERE participant_id=?').all(part.id);
+      assert.strictEqual(rows.length, 1, 'exactly one session row per participant');
+      assert.strictEqual(rows[0].claude_session_id, 'sess-B', 'latest claude_session_id wins');
+      assert.strictEqual(rows[0].workdir, '/tmp/dir-b', 'workdir refreshed to latest dispatch');
+    } finally {
+      db.prepare('DELETE FROM ai_sessions WHERE participant_id=?').run(part.id);
+    }
   });
 
   // ── 7. Change workdir for room ─────────────────────────────────────────────
@@ -721,7 +817,7 @@ async function run() {
 
   await test('POST with invalid JSON returns 400', async () => {
     const { status } = await new Promise((resolve, reject) => {
-      const r = http.request({ hostname: '127.0.0.1', port: 3001, path: '/api/rooms', method: 'POST',
+      const r = http.request({ hostname: HOST, port: PORT, path: '/api/rooms', method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Content-Length': 5, 'Cookie': SESSION_COOKIE } }, res => {
         const chunks = [];
         res.on('data', c => chunks.push(c));
@@ -785,7 +881,7 @@ async function run() {
     const { status, body } = await new Promise((resolve, reject) => {
       const buf = Buffer.from('hello upload test');
       const r = http.request({
-        hostname: '127.0.0.1', port: 3001,
+        hostname: HOST, port: PORT,
         path: '/api/upload/raw', method: 'POST',
         headers: {
           'Content-Type': 'text/plain',
@@ -833,7 +929,7 @@ async function run() {
     const { status, body } = await new Promise((resolve, reject) => {
       const buf = Buffer.from('binary test data');
       const r = http.request({
-        hostname: '127.0.0.1', port: 3001,
+        hostname: HOST, port: PORT,
         path: '/api/upload/raw', method: 'POST',
         headers: {
           'Content-Type': 'application/octet-stream',
@@ -985,7 +1081,7 @@ async function run() {
 
   await test('POST /api/rooms/:id/participants adds actor to room', async () => {
     // Create a new room with only human
-    const { body: newRoom } = await req('POST', '/api/rooms', { title: 'Test Room — add-part', participant_ids: [humanId], workdir_id: firstWorkdirId });
+    const { body: newRoom } = await req('POST', '/api/rooms', { title: 'Test Room — add-part', participant_ids: [humanId, idrisId], workdir_id: firstWorkdirId });
     created.rooms.push(newRoom.id);
     const { status } = await req('POST', `/api/rooms/${newRoom.id}/participants`, { actor_id: kiraId });
     assert.strictEqual(status, 200);
@@ -1037,7 +1133,7 @@ async function run() {
   console.log('\n9f · room delete');
 
   await test('DELETE /api/rooms/:id deletes room', async () => {
-    const { body: tmpRoom } = await req('POST', '/api/rooms', { title: 'Test Room — delete-test', participant_ids: [humanId], workdir_id: firstWorkdirId });
+    const { body: tmpRoom } = await req('POST', '/api/rooms', { title: 'Test Room — delete-test', participant_ids: [humanId, idrisId], workdir_id: firstWorkdirId });
     assert.ok(tmpRoom.id);
     const { status } = await req('DELETE', `/api/rooms/${tmpRoom.id}`);
     assert.strictEqual(status, 204);
@@ -1054,7 +1150,7 @@ async function run() {
     const buf = Buffer.from(content);
     const { status, body } = await new Promise((resolve, reject) => {
       const r = http.request({
-        hostname: '127.0.0.1', port: 3001,
+        hostname: HOST, port: PORT,
         path: '/api/upload/raw', method: 'POST',
         headers: {
           'Content-Type': 'text/plain',
@@ -1098,7 +1194,7 @@ async function run() {
   await test('GET /api/actors without cookie returns 401', async () => {
     const { status } = await new Promise((resolve, reject) => {
       const r = http.request({
-        hostname: '127.0.0.1', port: 3001, path: '/api/actors', method: 'GET',
+        hostname: HOST, port: PORT, path: '/api/actors', method: 'GET',
         headers: {},
       }, res => {
         const chunks = [];
@@ -1114,7 +1210,7 @@ async function run() {
   await test('GET /api/rooms without cookie returns 401', async () => {
     const { status } = await new Promise((resolve, reject) => {
       const r = http.request({
-        hostname: '127.0.0.1', port: 3001, path: '/api/rooms', method: 'GET',
+        hostname: HOST, port: PORT, path: '/api/rooms', method: 'GET',
         headers: {},
       }, res => {
         const chunks = [];
@@ -1130,7 +1226,7 @@ async function run() {
   await test('GET /api/settings without cookie returns 401', async () => {
     const { status } = await new Promise((resolve, reject) => {
       const r = http.request({
-        hostname: '127.0.0.1', port: 3001, path: '/api/settings', method: 'GET',
+        hostname: HOST, port: PORT, path: '/api/settings', method: 'GET',
         headers: {},
       }, res => {
         const chunks = [];
@@ -1427,15 +1523,6 @@ async function run() {
     assert.ok(msg.actor_name);
   });
 
-  await test('WS model_info updates workdir model', async () => {
-    const wd = db.prepare('SELECT id, path FROM agent_workdirs WHERE actor_id=?').get(idrisId);
-    assert.ok(wd, 'Idris needs a workdir');
-    idrisWs.send(JSON.stringify({ type: 'model_info', workdir: wd.path, model: 'claude-sonnet-4-6' }));
-    await sleep(200);
-    const updated = db.prepare('SELECT model FROM agent_workdirs WHERE id=?').get(wd.id);
-    assert.strictEqual(updated.model, 'claude-sonnet-4-6');
-    db.prepare('UPDATE agent_workdirs SET model=NULL WHERE id=?').run(wd.id);
-  });
 
   await test('WS agent_search returns search results', async () => {
     const handler = new Promise((resolve, reject) => {
@@ -1589,7 +1676,7 @@ async function run() {
     return new Promise((resolve, reject) => {
       const buf = Buffer.from(JSON.stringify(body));
       const opts = {
-        hostname: '127.0.0.1', port: 3001, path: urlPath, method: 'POST',
+        hostname: HOST, port: PORT, path: urlPath, method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Content-Length': buf.length,

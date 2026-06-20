@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS ai_sessions (
   created_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (participant_id) REFERENCES room_participants(id),
   FOREIGN KEY (room_id) REFERENCES rooms(id),
-  UNIQUE (participant_id, workdir)
+  UNIQUE (participant_id)
 );
 
 CREATE TABLE IF NOT EXISTS invite_suggestions (
