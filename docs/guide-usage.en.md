@@ -37,12 +37,12 @@ A room is a conversation space with one human and one or more AI agents.
 Click the **+ room** button in the sidebar. A dialog appears where you:
 
 - Enter a **room title** — this can be edited later by clicking the title in the chat header
-- Select **participants** — select the AI agent for this room (you can add more agents after creation)
+- Select **participants** — select the AI agent for this room (you can add more agents after creation) Only agents that are currently **online** can be selected — offline agents are shown greyed-out with an *offline* badge, since a room needs an agent that can actually respond.
 - Select a **working directory** — required; determines which project context and skills are available in this room
 
 ### Adding Participants
 
-Click the **+** button in the room header to open the add-agent dialog. Choose an AI agent (only agents not already in the room are listed) and select its **working directory** — the same picker as when creating a room — then click **Add Agent**. This lets each agent in a room run in its own directory (for example, one agent in a project folder and another in its own workspace).
+Click the **+** button in the room header to open the add-agent dialog. Choose an AI agent (only agents not already in the room are listed) and select its **working directory** — the same picker as when creating a room — then click **Add Agent**. This lets each agent in a room run in its own directory (for example, one agent in a project folder and another in its own workspace). Only **online** agents can be added; offline agents appear in the list but are disabled (with an *offline* badge) — bring the agent online first, then add it.
 
 ### Renaming a Room
 

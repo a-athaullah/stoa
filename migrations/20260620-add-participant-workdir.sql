@@ -18,6 +18,8 @@ WHERE workdir_id IS NULL
 
 -- Step 2: other AI participants resolve to their own default workdir (is_default=1).
 -- Human participants intentionally stay NULL (they have no workdir).
+-- An AI without a default workdir also stays NULL by design: at dispatch, NULL resolves to the
+-- agent's own cwd (server.js: `workdir || undefined`). Intentional, not a missing-backfill bug.
 UPDATE room_participants
 SET workdir_id = (
   SELECT w.id FROM agent_workdirs w

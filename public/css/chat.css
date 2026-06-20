@@ -1581,3 +1581,15 @@ html.dark .h-bubble :not(pre) > code {
   display: inline-flex; gap: 2px; opacity: 0.5; margin-left: auto; flex-shrink: 0;
 }
 
+/* Offline agents in the create-room / add-agent pickers: visible but not selectable,
+   with an explicit online/offline badge so the user understands why. */
+.h-actor-check.is-offline { cursor: not-allowed; opacity: 0.55; }
+.h-actor-check.is-offline:hover { background: none; }
+.h-actor-status {
+  margin-left: auto;
+  font-family: var(--h-sans);
+  font-size: 11px;
+  color: var(--h-ink-faint);
+  letter-spacing: 0.02em;
+}
+.h-actor-status.is-online { color: #7fb98c; }
