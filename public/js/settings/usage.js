@@ -88,7 +88,9 @@ function _renderHeatmap(daily) {
   const today = new Date(); today.setHours(0,0,0,0);
   const cells = [];
   for (let i = DAYS-1; i >= 0; i--) {
-    const dt = new Date(today.getTime() - i*86400000);
+    // Step back i calendar days via setDate (DST-safe) rather than subtracting fixed ms —
+    // a 23h/25h DST day would otherwise land on the wrong calendar date.
+    const dt = new Date(today); dt.setDate(today.getDate() - i);
     const key = dt.getFullYear()+'-'+_pad(dt.getMonth()+1)+'-'+_pad(dt.getDate());
     const v = map[key] || 0;
     let lvl = 0;
