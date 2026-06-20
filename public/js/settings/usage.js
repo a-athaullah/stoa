@@ -96,7 +96,7 @@ function _renderHeatmap(daily) {
     const tip = `${_DAY[dt.getDay()]}, ${dt.getDate()} ${_MON[dt.getMonth()]} — ${v > 0 ? _usageFmt(v)+' tokens' : 'no activity'}`;
     cells.push(`<span class="usage-cell usage-cell-${lvl}" data-tip="${tip}"></span>`);
   }
-  return `<div class="usage-heatmap">${cells.join('')}</div>`;
+  return `<div class="usage-heatmap" style="grid-template-columns:repeat(${WEEKS},minmax(0,1fr))">${cells.join('')}</div>`;
 }
 
 function _renderUsageModel(d) {
