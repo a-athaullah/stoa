@@ -943,16 +943,17 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/api/usage/stats') {
     if (!req._authUser) { res.writeHead(401); return res.end(JSON.stringify({ error: 'unauthorized' })); }
-    const period = ['all','30','7'].includes(url.searchParams.get('period')) ? url.searchParams.get('period') : 'all';
+    const rawPeriod = url.searchParams.get('period');
+    const period = ['all','30','7'].includes(rawPeriod) ? rawPeriod : 'all';
     // Client sends its UTC offset in minutes (WIB = +420) so day-bucketing, peak hour, and
     // streaks align to the viewer's local calendar instead of UTC. Integer-clamped, so it's
     // safe to interpolate into the SQLite datetime modifier below.
     const rawOff = parseInt(url.searchParams.get('tz_offset'), 10);
     const tzOff = Number.isFinite(rawOff) ? Math.max(-840, Math.min(840, rawOff)) : 0;
     const tzMod = `'${tzOff} minutes'`;
-    // since is anchored to local midnight N days ago so the period boundary aligns with the
-    // same tz-offset used for day-bucketing — avoids partial boundary day for non-UTC users.
-    const since = period === 'all' ? `'1970-01-01'` : `datetime('now', 'start of day', '${-tzOff} minutes', '-${period} days')`;
+    // since = local midnight N days ago. Shift to local time first so 'start of day' snaps to
+    // the local calendar day (not UTC day), then shift back to UTC before subtracting N days.
+    const since = period === 'all' ? `'1970-01-01'` : `datetime('now', '${tzOff} minutes', 'start of day', '${-tzOff} minutes', '-${period} days')`;
 
     const totals = db.prepare(`
       SELECT
