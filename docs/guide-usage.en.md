@@ -500,7 +500,7 @@ Each rule has an enable/disable toggle. Disabled rules never fire, even if the S
 
 ## Settings
 
-Click the **gear icon** in the sidebar to open the settings panel. Settings are organized into six tabs:
+Click the **gear icon** in the sidebar to open the settings panel. Settings are organized into seven tabs:
 
 ### AI Agent
 
@@ -554,6 +554,26 @@ Browse project documentation with multi-language support. Documentation files fr
 - **Account** — change your email and password
 - **Notifications** — enable/disable browser push notifications
 - **Session** — log out of Stoa
+
+### Usage
+
+The **Usage** tab is a personal analytics dashboard for your AI token consumption. Everything is bucketed to your local calendar day — your browser's timezone is sent with each load, so day boundaries, peak hour, and streaks align to your local midnight rather than UTC.
+
+Two segmented controls sit at the top:
+
+- **View** — switch between **Summary** and **Model**
+- **Period** — **All**, **30d**, or **7d** — filters every stat below to that window
+
+**Summary view** shows a grid of stat cards: average tokens per message, total messages, total tokens (input + output + cache read + cache creation), active days, current and longest streak (consecutive active days, current counting back from today), peak hour (in your local timezone), input/output tokens, cache hits, estimated total cost in USD, and your top model.
+
+Below the cards, an **activity heatmap** covers the last 26 weeks. Each cell is one day; darker cells mean more tokens. Hover a cell for the exact date and token count. The layout is fluid — it shrinks to fit on mobile instead of scrolling sideways.
+
+**Model view** breaks usage down per model:
+
+- A **stacked bar chart** shows daily token volume, each model a different color
+- A **model list** below shows every model with its input/output token totals and percentage share
+
+All figures are read-only and refresh whenever you reopen the tab or change the period.
 
 ---
 
