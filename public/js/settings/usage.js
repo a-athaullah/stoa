@@ -6,6 +6,8 @@ let _usageData = null;
 const _usageFmt = n => n >= 1e9 ? (n/1e9).toFixed(2)+'B' : n >= 1e6 ? (n/1e6).toFixed(2)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : String(n||0);
 const _usageCost = n => '$' + (n||0).toFixed(2);
 const _esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const _pad = n => String(n).padStart(2,'0');
+const _MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 async function sLoadUsageTab() {
   const panel = document.getElementById('usage-panel');
@@ -48,7 +50,7 @@ function _renderUsage() {
 function _renderUsageSummary(d) {
   const t = d.totals || {};
   const totalTokens = (t.input_tokens||0)+(t.output_tokens||0)+(t.cache_read_tokens||0)+(t.cache_creation_tokens||0);
-  const peak = d.peakHour != null ? String(d.peakHour).padStart(2,'0')+':00' : '—';
+  const peak = d.peakHour != null ? _pad(d.peakHour)+':00' : '—';
 
   const cards = [
     ['Avg token/msg', _usageFmt(t.turns ? Math.round(totalTokens / t.turns) : 0)],
@@ -81,8 +83,6 @@ function _renderHeatmap(daily) {
   const max = Math.max(1, ...daily.map(x => x.tokens));
   const WEEKS = 26, DAYS = WEEKS*7;
   const _DAY = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-  const _MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const _pad = n => String(n).padStart(2,'0');
   // Walk back from local midnight; keys are local calendar dates to match the server's
   // tz-offset day-bucketing (see /api/usage/stats).
   const today = new Date(); today.setHours(0,0,0,0);
@@ -145,8 +145,7 @@ function _renderUsageModel(d) {
   const xEl = days.map((day, i) => [day, i]).filter(([_, i]) => i % labelStep === 0 || i === days.length-1).map(([day, i]) => {
     const x = padL + i * barSlot + barSlot/2;
     const mm = day.slice(5,7), dd = day.slice(8,10);
-    const months = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    return `<text x="${x.toFixed(1)}" y="${H-6}" text-anchor="middle" fill="var(--h-ink-faint)" font-size="9">${parseInt(dd)} ${months[parseInt(mm)]}</text>`;
+    return `<text x="${x.toFixed(1)}" y="${H-6}" text-anchor="middle" fill="var(--h-ink-faint)" font-size="9">${parseInt(dd)} ${_MON[parseInt(mm)-1]}</text>`;
   }).join('');
 
   const baselineEl = `<line x1="${padL}" y1="${padT+cH}" x2="${W-padR}" y2="${padT+cH}" stroke="var(--h-hair-soft)" stroke-width="1"/>`;
