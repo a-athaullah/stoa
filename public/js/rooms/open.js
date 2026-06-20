@@ -15,11 +15,7 @@ async function openRoom(room) {
   currentRoomWorkdirId = room.workdir_id || null;
   // Apply compact state: hide bar if switching away from compacting room
   if (compactingRoomId && compactingRoomId !== room.id) {
-    const bar = document.getElementById('compact-bar');
-    const fill = document.getElementById('compact-fill');
-    if (bar) bar.classList.remove('visible');
-    if (fill) { fill.classList.remove('indeterminate'); fill.style.width = '0%'; }
-    compactingRoomId = null;
+    hideCompactBar();
   }
   clearComposerProcessing();
 

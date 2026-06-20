@@ -2374,8 +2374,8 @@ wss.on('connection', (ws, req) => {
       // Restore compact state if room is currently compacting
       if (pendingCompacts.has(subscribedRoom)) {
         const cs = pendingCompacts.get(subscribedRoom);
-        ws.send(JSON.stringify({ type: 'compact_start', room_id: subscribedRoom, total: cs.total }));
-        if (cs.completed > 0) ws.send(JSON.stringify({ type: 'compact_progress', room_id: subscribedRoom, completed: cs.completed, total: cs.total }));
+        ws.send(JSON.stringify({ type: 'compact_start', room_id: subscribedRoom, total: cs.total, participants: cs.targets || [] }));
+        if (cs.completed > 0) ws.send(JSON.stringify({ type: 'compact_progress', room_id: subscribedRoom, completed: cs.completed, total: cs.total, completed_participant_ids: cs.completedParticipantIds || [] }));
       }
     }
 
@@ -2620,8 +2620,11 @@ wss.on('connection', (ws, req) => {
         if (recentCompacts.has(roomId)) {
           console.log(`[server] auto_compact_start suppressed for room=${roomId} (compact recently completed)`);
         } else if (!pendingCompacts.has(roomId)) {
-          pendingCompacts.set(roomId, { total: 1, completed: 0, agents: [agentActorId], completedAgentIds: [] });
-          broadcast(roomId, { type: 'compact_start', room_id: roomId, total: 1 });
+          const actor = db.prepare('SELECT id, name FROM actors WHERE id=?').get(agentActorId);
+          const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(roomId, agentActorId);
+          const participants = actor && participant ? [{ participant_id: participant.id, actor_id: actor.id, name: actor.name }] : [];
+          pendingCompacts.set(roomId, { total: 1, completed: 0, agents: [agentActorId], completedAgentIds: [], completedParticipantIds: [], targets: participants });
+          broadcast(roomId, { type: 'compact_start', room_id: roomId, total: 1, participants });
           console.log(`[server] auto-compact started room=${roomId} by agent=${agentActorId}`);
         } else {
           // Another compact already registered — add this agent to the total if not already counted
@@ -2707,6 +2710,8 @@ wss.on('connection', (ws, req) => {
       }
       const state = pendingCompacts.get(msg.room_id);
       if (!state) return;
+      const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
+      if (participant) state.completedParticipantIds.push(participant.id);
       if (!state.errors) state.errors = 0;
       state.errors++;
       state.completed++;
