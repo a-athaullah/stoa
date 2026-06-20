@@ -37,8 +37,10 @@ CREATE TABLE IF NOT EXISTS room_participants (
   invited_by INTEGER DEFAULT NULL,
   notify_on_message INTEGER DEFAULT 1,
   auto_respond INTEGER DEFAULT 0,
+  workdir_id INTEGER DEFAULT NULL,
   FOREIGN KEY (room_id) REFERENCES rooms(id),
   FOREIGN KEY (actor_id) REFERENCES actors(id),
+  FOREIGN KEY (workdir_id) REFERENCES agent_workdirs(id),
   UNIQUE (room_id, actor_id)
 );
 

@@ -656,6 +656,12 @@ const server = http.createServer(async (req, res) => {
     const allIds = [...new Set([humanId, ...participant_ids])];
     const insertParticipant = db.prepare('INSERT OR IGNORE INTO room_participants (room_id, actor_id) VALUES (?,?)');
     db.transaction((ids) => { for (const id of ids) insertParticipant.run(roomId, id); })(allIds);
+    // Assign the room's workdir to the participant that owns it (the chosen agent), so every
+    // participant carries an explicit workdir_id — consistent with the backfill migration.
+    const wdOwner = db.prepare('SELECT actor_id FROM agent_workdirs WHERE id=?').get(workdir_id);
+    if (wdOwner) {
+      db.prepare('UPDATE room_participants SET workdir_id=? WHERE room_id=? AND actor_id=?').run(workdir_id, roomId, wdOwner.actor_id);
+    }
     const room = db.prepare('SELECT * FROM rooms WHERE id=?').get(roomId);
     console.log(`[server] Room created id=${roomId}, broadcasting to ${globalClients.size} clients`);
     broadcastGlobal({ type: 'room_created', room });
@@ -830,8 +836,10 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname.endsWith('/participants')) {
       const rows = db.prepare(`
-        SELECT rp.*, a.name, a.type, a.avatar_color, a.avatar_symbol, a.avatar_url, a.adapter
+        SELECT rp.*, a.name, a.type, a.avatar_color, a.avatar_symbol, a.avatar_url, a.adapter,
+               w.path AS workdir_path, w.label AS workdir_label
         FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
+        LEFT JOIN agent_workdirs w ON w.id=rp.workdir_id
         WHERE rp.room_id=?
       `).all(roomId);
       return json(res, rows);
@@ -869,11 +877,22 @@ const server = http.createServer(async (req, res) => {
     const body = await readBody(req);
     const data = parseJsonBody(body);
     if (!data) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
-    const { actor_id } = data;
+    const { actor_id, workdir_id = null } = data;
     if (!actor_id) return json(res, { error: 'actor_id required' }, 400);
     const actor = db.prepare('SELECT id, name FROM actors WHERE id=?').get(actor_id);
     if (!actor) return json(res, { error: 'actor not found' }, 404);
-    db.prepare('INSERT OR IGNORE INTO room_participants (room_id, actor_id) VALUES (?,?)').run(roomId, actor_id);
+    // Validate workdir ownership: a workdir may only be assigned to the agent that owns it.
+    if (workdir_id != null) {
+      const wd = db.prepare('SELECT id FROM agent_workdirs WHERE id=? AND actor_id=?').get(workdir_id, actor_id);
+      if (!wd) return json(res, { error: 'workdir not found for this agent' }, 400);
+    }
+    const room = db.prepare('SELECT id FROM rooms WHERE id=?').get(roomId);
+    if (!room) return json(res, { error: 'room not found' }, 404);
+    db.prepare('INSERT OR IGNORE INTO room_participants (room_id, actor_id, workdir_id) VALUES (?,?,?)').run(roomId, actor_id, workdir_id);
+    // If the participant already existed, update its workdir when a new one is provided.
+    if (workdir_id != null) {
+      db.prepare('UPDATE room_participants SET workdir_id=? WHERE room_id=? AND actor_id=?').run(workdir_id, roomId, actor_id);
+    }
     broadcast(roomId, { type: 'participant_joined', actor_id });
     return json(res, { ok: true });
   }
@@ -3380,14 +3399,18 @@ async function triggerSkillResponse(roomId, ai, prompt) {
   ).run(roomId, ai.participant_id);
   const msgId = result.lastInsertRowid;
 
-  // Resolve workdir: use room's workdir only if it belongs to this agent, else agent's default
+  // Resolve workdir: prefer this participant's own workdir_id; fall back to the room workdir
+  // (only if it belongs to this agent), then the agent's default workdir.
+  const partWd = db.prepare(
+    'SELECT w.path FROM room_participants rp JOIN agent_workdirs w ON w.id=rp.workdir_id WHERE rp.id=?'
+  ).get(ai.participant_id);
   const wdRow = db.prepare(
     'SELECT w.path, w.actor_id FROM rooms r LEFT JOIN agent_workdirs w ON w.id=r.workdir_id WHERE r.id=?'
   ).get(roomId);
   const defaultWd = db.prepare(
     'SELECT path FROM agent_workdirs WHERE actor_id=? AND is_default=1 LIMIT 1'
   ).get(ai.actor_id);
-  const workdir = (wdRow?.path && wdRow.actor_id === ai.actor_id) ? wdRow.path : (defaultWd?.path || null);
+  const workdir = partWd?.path ?? ((wdRow?.path && wdRow.actor_id === ai.actor_id) ? wdRow.path : (defaultWd?.path || null));
   const sessionId = getSession(ai.participant_id, workdir);
 
   broadcast(roomId, {
@@ -3648,7 +3671,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     '\n' + L.sendFileInstruction,
   ].filter(Boolean).join('\n');
 
-  // Resolve workdir: use room's workdir only if it belongs to this agent, else agent's default
+  // Room-level workdir row (used as a fallback after the participant's own workdir_id below).
   const wdRow = prefetchedCtx?.wdRow ?? db.prepare(
     'SELECT w.path, w.actor_id FROM rooms r LEFT JOIN agent_workdirs w ON w.id=r.workdir_id WHERE r.id=?'
   ).get(roomId);
@@ -3692,7 +3715,12 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   const defaultWd = db.prepare(
     'SELECT path FROM agent_workdirs WHERE actor_id=? AND is_default=1 LIMIT 1'
   ).get(ai.actor_id);
-  const workdir = (wdRow?.path && wdRow.actor_id === ai.actor_id) ? wdRow.path : (defaultWd?.path || null);
+  // Prefer this participant's own workdir_id; fall back to the room workdir (only if it belongs
+  // to this agent), then the agent's default workdir.
+  const partWd = db.prepare(
+    'SELECT w.path FROM room_participants rp JOIN agent_workdirs w ON w.id=rp.workdir_id WHERE rp.id=?'
+  ).get(ai.participant_id);
+  const workdir = partWd?.path ?? ((wdRow?.path && wdRow.actor_id === ai.actor_id) ? wdRow.path : (defaultWd?.path || null));
 
   if (agentWs && agentWs.readyState === 1) {
     // ── Route to connected agent client
