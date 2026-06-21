@@ -183,7 +183,7 @@ function highlightMentions(html) {
   const names = (roomParticipantsCache[currentRoomId] || []).map(p => p.name);
   if (!names.length) return html;
   const escaped = names.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  const re = new RegExp(`@(${escaped.join('|')})(?=\\s|[.,!?;:]|$)`, 'g');
+  const re = new RegExp(`@(${escaped.join('|')})(?=\\s|&nbsp;|[.,!?;:]|$)`, 'g');
   return html.replace(re, (match, name) => '<span class="h-mention-inline">@' + wsEscHtml(name) + '</span>');
 }
 

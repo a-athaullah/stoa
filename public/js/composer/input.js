@@ -1,6 +1,6 @@
 // ── HTML → Markdown ─────────────────────────────────────────────────────────
 function htmlToMarkdown(node) {
-  if (node.nodeType === Node.TEXT_NODE) return node.textContent.replace(/​/g, '');
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent.replace(/​/g, '').replace(/ /g, ' ');
   if (node.nodeType !== Node.ELEMENT_NODE) return '';
   const tag = node.tagName.toLowerCase();
   const inner = () => Array.from(node.childNodes).map(htmlToMarkdown).join('');
