@@ -533,19 +533,19 @@ async function run() {
   });
 
   await test('POST /api/rooms/:id/participants — adds actor to room', async () => {
-    const actors = (await req('GET', '/api/actors')).body;
-    const aiActor = actors.find(a => a.type === 'ai');
-    const wds = aiActor ? (await req('GET', `/api/actors/${aiActor.id}/workdirs`)).body : [];
-    if (!wds.length) { console.log('    (skipped — no workdir)'); return; }
-    const tempRoom = await req('POST', '/api/rooms', { title: '__participants-test__', workdir_id: wds[0].id });
+    // Room creation requires workdir owner online as participant; POST /participants also
+    // requires the added AI to be online — use two throwaway agents.
+    const roomAgent = await createOnlineTestAgent('__test-participants-room-agent', '/tmp/stoa-test-participants-room');
+    if (!roomAgent?.workdirId) { console.log('    (skipped — could not set up online test agent for room)'); return; }
+    const tempRoom = await req('POST', '/api/rooms', { title: '__participants-test__', workdir_id: roomAgent.workdirId, participant_ids: [roomAgent.actorId] });
+    roomAgent.ws.close(); // room created; agent only needed online at creation
     if (tempRoom.status !== 200) { console.log('    (skipped — could not create temp room)'); return; }
     const tempRoomId = tempRoom.body.id;
     try {
-      const parts = (await req('GET', `/api/rooms/${tempRoomId}/participants`)).body;
-      const partActorIds = new Set(parts.map(p => p.actor_id));
-      const nonMember = actors.find(a => !partActorIds.has(a.id));
-      if (!nonMember) { console.log('    (skipped — all actors already in room)'); return; }
-      const r = await req('POST', `/api/rooms/${tempRoomId}/participants`, { actor_id: nonMember.id });
+      const joinAgent = await createOnlineTestAgent('__test-participants-join-agent', '/tmp/stoa-test-participants-join');
+      if (!joinAgent) { console.log('    (skipped — could not set up join agent)'); return; }
+      const r = await req('POST', `/api/rooms/${tempRoomId}/participants`, { actor_id: joinAgent.actorId });
+      joinAgent.ws.close();
       assert.strictEqual(r.status, 200);
       assert.ok(r.body.ok);
     } finally {
