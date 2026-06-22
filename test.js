@@ -211,6 +211,67 @@ function runUnitTests() {
     assert.strictEqual(parseDocFilename('image.png'), null);
   });
 
+  // deriveUsageModel (mirrors server.js usage_report handler)
+  // Default-model turns send model 'unknown'/null but carry modelUsage keyed by real model name.
+  const deriveUsageModel = (msg) => {
+    let model = (msg.model && msg.model !== 'unknown') ? msg.model : null;
+    if (!model && msg.modelUsage && typeof msg.modelUsage === 'object') {
+      const top = Object.entries(msg.modelUsage)
+        .sort((a, b) => (b[1].costUSD || 0) - (a[1].costUSD || 0)
+                     || (b[1].outputTokens || 0) - (a[1].outputTokens || 0))[0];
+      if (top) model = top[0];
+    }
+    return model || 'unknown';
+  };
+  ut('deriveUsageModel — explicit model is preserved', () => {
+    assert.strictEqual(deriveUsageModel({ model: 'claude-opus-4-8', modelUsage: {} }), 'claude-opus-4-8');
+  });
+  ut("deriveUsageModel — model 'unknown' + modelUsage → real model name", () => {
+    const msg = { model: 'unknown', modelUsage: { 'claude-sonnet-4-6': { costUSD: 0.5, outputTokens: 100 } } };
+    assert.strictEqual(deriveUsageModel(msg), 'claude-sonnet-4-6');
+  });
+  ut('deriveUsageModel — null model + modelUsage → real model name', () => {
+    const msg = { model: null, modelUsage: { 'claude-haiku-4-5-20251001': { costUSD: 0.01, outputTokens: 161 } } };
+    assert.strictEqual(deriveUsageModel(msg), 'claude-haiku-4-5-20251001');
+  });
+  ut('deriveUsageModel — multi-model → dominant by costUSD', () => {
+    const msg = { model: 'unknown', modelUsage: {
+      'claude-haiku-4-5-20251001': { costUSD: 0.01, outputTokens: 5000 },
+      'claude-opus-4-8': { costUSD: 2.0, outputTokens: 50 },
+    } };
+    assert.strictEqual(deriveUsageModel(msg), 'claude-opus-4-8');
+  });
+  ut('deriveUsageModel — equal cost → tie-break by outputTokens', () => {
+    const msg = { model: 'unknown', modelUsage: {
+      'claude-sonnet-4-6': { costUSD: 1.0, outputTokens: 100 },
+      'claude-opus-4-8': { costUSD: 1.0, outputTokens: 900 },
+    } };
+    assert.strictEqual(deriveUsageModel(msg), 'claude-opus-4-8');
+  });
+  ut("deriveUsageModel — empty/absent modelUsage → 'unknown' fallback", () => {
+    assert.strictEqual(deriveUsageModel({ model: 'unknown', modelUsage: {} }), 'unknown');
+    assert.strictEqual(deriveUsageModel({ model: null }), 'unknown');
+  });
+
+  // pickFavoriteModel (mirrors server.js favoriteModel logic)
+  // Historical "unknown" rows must not win the headline Top Model; rank only real model names.
+  const pickFavoriteModel = (byModel) => {
+    const rankable = byModel.filter(m => m.model && m.model !== 'unknown');
+    return rankable.length ? rankable.reduce((a, b) => b.turns > a.turns ? b : a).model : null;
+  };
+  ut('pickFavoriteModel — ignores "unknown" even when it has the most turns', () => {
+    const byModel = [
+      { model: 'unknown', turns: 431 },
+      { model: 'claude-sonnet-4-6', turns: 186 },
+      { model: 'claude-opus-4-8', turns: 101 },
+    ];
+    assert.strictEqual(pickFavoriteModel(byModel), 'claude-sonnet-4-6');
+  });
+  ut('pickFavoriteModel — all rows unknown → null (UI renders placeholder)', () => {
+    assert.strictEqual(pickFavoriteModel([{ model: 'unknown', turns: 10 }]), null);
+    assert.strictEqual(pickFavoriteModel([]), null);
+  });
+
   return { p, f };
 }
 
@@ -386,6 +447,29 @@ async function run() {
   let testWorkdirId = null;
   let orphanActorIds = [];   // actors created mid-test that teardown must clean up
 
+  // Room/participant creation enforces two server rules (server.js): the workdir owner must be among
+  // the participants, and every AI participant must be online at creation time. A writable test room
+  // therefore needs a throwaway AI that is (a) online via the agent_connect ws handshake and (b) owns
+  // the workdir it uses. Returns { actorId, secret, workdirId, ws }; the ws stays open so the caller
+  // can create the room (agent only needs to be online at that moment), then the caller closes it.
+  // Returns null if registration fails. The actor is registered into orphanActorIds for teardown.
+  const createOnlineTestAgent = async (name, wdPath) => {
+    const scriptR = await req('GET', `/install.sh?name=${name}`);
+    const tokenMatch = scriptR.raw.match(/REG_TOKEN="([a-f0-9]+)"/);
+    if (!tokenMatch) return null;
+    const reg = await req('POST', '/api/agent/register', { token: tokenMatch[1] });
+    if (reg.status !== 200) return null;
+    const { actor_id: actorId, secret } = reg.body;
+    orphanActorIds.push(actorId); // ensure teardown cleans it up even if a later step throws
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready = waitForWsMessage(ws, m => m.type === 'agent_ready');
+    ws.send(JSON.stringify({ type: 'agent_connect', actor_id: actorId, secret }));
+    await ready;
+    // Workdir must be owned by this agent; the POST requires the agent online (connected just above).
+    const wd = await req('POST', `/api/actors/${actorId}/workdirs`, { path: wdPath, label: 'test' });
+    return { actorId, secret, workdirId: wd.body?.id ?? null, ws };
+  };
+
   console.log('\n[Test Setup]');
   await test('Setup — pre-cleanup leftover test actors from prior runs', async () => {
     const actors = (await req('GET', '/api/actors')).body;
@@ -395,16 +479,18 @@ async function run() {
     if (stale.length) console.log(`    cleaned up ${stale.length} stale test actor(s)`);
   });
 
+  let writeAgentWs = null;
   await test('Setup — create test rooms for write operations', async () => {
-    const actors = (await req('GET', '/api/actors')).body;
-    const aiActor = actors.find(a => a.type === 'ai');
-    const wds = aiActor ? (await req('GET', `/api/actors/${aiActor.id}/workdirs`)).body : [];
-    if (!wds.length) { console.log('    (no workdir found — pin/write tests will be skipped)'); return; }
-    testWorkdirId = wds[0].id;
+    // Room creation now requires the workdir owner among participants AND that AI online (server.js).
+    const agent = await createOnlineTestAgent('__test-write-agent', '/tmp/stoa-test-write');
+    if (!agent?.workdirId) { console.log('    (could not set up online test agent — pin/write tests will be skipped)'); return; }
+    writeAgentWs = agent.ws;
+    testWorkdirId = agent.workdirId;
     for (let i = 1; i <= 6; i++) {
-      const r = await req('POST', '/api/rooms', { title: `__test-room-${i}__`, workdir_id: testWorkdirId });
+      const r = await req('POST', '/api/rooms', { title: `__test-room-${i}__`, workdir_id: testWorkdirId, participant_ids: [agent.actorId] });
       if (r.status === 200) testRoomIds.push(r.body.id);
     }
+    if (writeAgentWs) { writeAgentWs.close(); writeAgentWs = null; } // rooms persist; agent only needed at creation
     assert.ok(testRoomIds.length >= 1, 'could not create any test rooms');
   });
 
@@ -447,19 +533,19 @@ async function run() {
   });
 
   await test('POST /api/rooms/:id/participants — adds actor to room', async () => {
-    const actors = (await req('GET', '/api/actors')).body;
-    const aiActor = actors.find(a => a.type === 'ai');
-    const wds = aiActor ? (await req('GET', `/api/actors/${aiActor.id}/workdirs`)).body : [];
-    if (!wds.length) { console.log('    (skipped — no workdir)'); return; }
-    const tempRoom = await req('POST', '/api/rooms', { title: '__participants-test__', workdir_id: wds[0].id });
+    // Room creation requires workdir owner online as participant; POST /participants also
+    // requires the added AI to be online — use two throwaway agents.
+    const roomAgent = await createOnlineTestAgent('__test-participants-room-agent', '/tmp/stoa-test-participants-room');
+    if (!roomAgent?.workdirId) { console.log('    (skipped — could not set up online test agent for room)'); return; }
+    const tempRoom = await req('POST', '/api/rooms', { title: '__participants-test__', workdir_id: roomAgent.workdirId, participant_ids: [roomAgent.actorId] });
+    roomAgent.ws.close(); // room created; agent only needed online at creation
     if (tempRoom.status !== 200) { console.log('    (skipped — could not create temp room)'); return; }
     const tempRoomId = tempRoom.body.id;
     try {
-      const parts = (await req('GET', `/api/rooms/${tempRoomId}/participants`)).body;
-      const partActorIds = new Set(parts.map(p => p.actor_id));
-      const nonMember = actors.find(a => !partActorIds.has(a.id));
-      if (!nonMember) { console.log('    (skipped — all actors already in room)'); return; }
-      const r = await req('POST', `/api/rooms/${tempRoomId}/participants`, { actor_id: nonMember.id });
+      const joinAgent = await createOnlineTestAgent('__test-participants-join-agent', '/tmp/stoa-test-participants-join');
+      if (!joinAgent) { console.log('    (skipped — could not set up join agent)'); return; }
+      const r = await req('POST', `/api/rooms/${tempRoomId}/participants`, { actor_id: joinAgent.actorId });
+      joinAgent.ws.close();
       assert.strictEqual(r.status, 200);
       assert.ok(r.body.ok);
     } finally {
@@ -548,26 +634,17 @@ async function run() {
   // Proactive message — self-contained flow: create actor → room → send → delete → archive → cleanup
   console.log('\n[Proactive Message]');
   {
-    let pmWorkdirId = null;
-    try {
-      const pmActors = (await req('GET', '/api/actors')).body;
-      const pmAiActor = pmActors.find(a => a.type === 'ai');
-      const pmWds = pmAiActor ? (await req('GET', `/api/actors/${pmAiActor.id}/workdirs`)).body : [];
-      pmWorkdirId = pmWds[0]?.id ?? null;
-    } catch { /* server unreachable — all proactive tests will skip gracefully */ }
-
-    let pmActorId = null, pmActorSecret = null, pmRoomId = null, pmMessageId = null;
+    let pmActorId = null, pmActorSecret = null, pmWorkdirId = null, pmRoomId = null, pmMessageId = null;
+    let pmAgentWs = null;
 
     await test('Setup — register proactive test actor', async () => {
-      if (!pmWorkdirId) { console.log('    (skipped — no AI agent / workdir found)'); return; }
-      const scriptR = await req('GET', '/install.sh?name=test-proactive-agent');
-      const tokenMatch = scriptR.raw.match(/REG_TOKEN="([a-f0-9]+)"/);
-      assert.ok(tokenMatch, 'no install token in script');
-      const r = await req('POST', '/api/agent/register', { token: tokenMatch[1] });
-      assert.strictEqual(r.status, 200, `register failed: ${JSON.stringify(r.body)}`);
-      pmActorId = r.body.actor_id;
-      pmActorSecret = r.body.secret;
-      orphanActorIds.push(pmActorId);
+      // Needs an online agent owning its workdir (room-creation rules) — see createOnlineTestAgent.
+      const agent = await createOnlineTestAgent('__test-proactive-agent', '/tmp/stoa-test-proactive');
+      if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+      pmActorId = agent.actorId;
+      pmActorSecret = agent.secret;
+      pmWorkdirId = agent.workdirId;
+      pmAgentWs = agent.ws;
     });
 
     await test('Setup — create proactive test room', async () => {
@@ -575,6 +652,7 @@ async function run() {
       const r = await req('POST', '/api/rooms', { title: '__proactive-test-room__', workdir_id: pmWorkdirId, participant_ids: [pmActorId] });
       assert.strictEqual(r.status, 200, `create room failed: ${JSON.stringify(r.body)}`);
       pmRoomId = r.body.id;
+      if (pmAgentWs) { pmAgentWs.close(); pmAgentWs = null; } // proactive post uses HTTP secret, not ws
     });
 
     await test('POST /api/rooms/:id/message — agent posts proactive message → 200', async () => {
@@ -802,8 +880,15 @@ async function run() {
     if (agentRes.status !== 200) { console.log(`    (skipped — agent creation failed: ${agentRes.status})`); return; }
     const { actor_id: agentActorId, secret: agentSecret } = agentRes.body;
     orphanActorIds.push(agentActorId);
+    let agentWs = null;
     try {
       const roomId = testRoomIds[0];
+      // Adding an AI participant requires it online (server.js rule, same as room creation), so the
+      // agent_connect handshake must happen BEFORE the POST /participants — not just before invite_suggest.
+      agentWs = await openWsConnection(`ws://${HOST}:${PORT}`);
+      const agentReadyPromise = waitForWsMessage(agentWs, m => m.type === 'agent_ready');
+      agentWs.send(JSON.stringify({ type: 'agent_connect', actor_id: agentActorId, secret: agentSecret }));
+      await agentReadyPromise;
       await req('POST', `/api/rooms/${roomId}/participants`, { actor_id: agentActorId });
       const partsRes = (await req('GET', `/api/rooms/${roomId}/participants`)).body;
       const agentPart = partsRes.find(p => p.actor_id === agentActorId);
@@ -815,10 +900,6 @@ async function run() {
       const roomWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
       const invitePromise = waitForWsMessage(roomWs, m => m.type === 'invite_suggestion');
       roomWs.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
-      const agentWs = await openWsConnection(`ws://${HOST}:${PORT}`);
-      const agentReadyPromise = waitForWsMessage(agentWs, m => m.type === 'agent_ready');
-      agentWs.send(JSON.stringify({ type: 'agent_connect', actor_id: agentActorId, secret: agentSecret }));
-      await agentReadyPromise;
       agentWs.send(JSON.stringify({
         type: 'invite_suggest',
         room_id: roomId,
@@ -827,12 +908,12 @@ async function run() {
         reason: 'test invite',
       }));
       const suggestion = await invitePromise;
-      agentWs.close();
       roomWs.close();
       const r = await req('POST', `/api/invites/${suggestion.invite_id}/resolve`, { approved: true });
       assert.strictEqual(r.status, 200);
       assert.strictEqual(r.body.ok, true);
     } finally {
+      if (agentWs) agentWs.close();
       await req('DELETE', `/api/actors/${agentActorId}`);
       orphanActorIds = orphanActorIds.filter(id => id !== agentActorId);
     }
@@ -871,25 +952,16 @@ async function run() {
   let testMessageId = null;
 
   await test('Register test actor for room lifecycle', async () => {
-    const scriptR = await req('GET', '/install.sh?name=test-lifecycle-agent');
-    const tokenMatch = scriptR.raw.match(/REG_TOKEN="([a-f0-9]+)"/);
-    assert.ok(tokenMatch, 'no token');
-    const r = await req('POST', '/api/agent/register', { token: tokenMatch[1] });
-    assert.strictEqual(r.status, 200);
-    testActorId = r.body.actor_id;
-    testActorSecret = r.body.secret;
-    orphanActorIds.push(testActorId);
+    // Lifecycle room needs its participant online and owning the workdir (server.js rules).
+    const agent = await createOnlineTestAgent('__test-lifecycle-agent', '/tmp/stoa-test-lifecycle');
+    assert.ok(agent, 'could not register online test agent');
+    testActorId = agent.actorId;
+    testActorSecret = agent.secret;
     assert.ok(testActorId, 'no actor_id');
 
-    // Get default workdir id from first available agent workdir (or use human actor's default)
-    const actors = (await req('GET', '/api/actors')).body;
-    const anyAI = actors.find(a => a.type === 'ai' && a.id !== testActorId);
-    if (!anyAI) return; // skip if no other AI agents
-
-    const wds = (await req('GET', `/api/actors/${anyAI.id}/workdirs`)).body;
-    if (!wds.length) return;
-
-    const r2 = await req('POST', '/api/rooms', { title: 'Test Room lifecycle', participant_ids: [testActorId], workdir_id: wds[0].id });
+    if (!agent.workdirId) { agent.ws.close(); return; } // skip room creation if workdir unavailable
+    const r2 = await req('POST', '/api/rooms', { title: 'Test Room lifecycle', participant_ids: [testActorId], workdir_id: agent.workdirId });
+    agent.ws.close(); // room created; agent only needed online at creation
     assert.strictEqual(r2.status, 200, `create room failed: ${JSON.stringify(r2.body)}`);
     testRoomId = r2.body.id;
     assert.ok(testRoomId, 'room id missing');
