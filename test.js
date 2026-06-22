@@ -211,6 +211,67 @@ function runUnitTests() {
     assert.strictEqual(parseDocFilename('image.png'), null);
   });
 
+  // deriveUsageModel (mirrors server.js usage_report handler)
+  // Default-model turns send model 'unknown'/null but carry modelUsage keyed by real model name.
+  const deriveUsageModel = (msg) => {
+    let model = (msg.model && msg.model !== 'unknown') ? msg.model : null;
+    if (!model && msg.modelUsage && typeof msg.modelUsage === 'object') {
+      const top = Object.entries(msg.modelUsage)
+        .sort((a, b) => (b[1].costUSD || 0) - (a[1].costUSD || 0)
+                     || (b[1].outputTokens || 0) - (a[1].outputTokens || 0))[0];
+      if (top) model = top[0];
+    }
+    return model || 'unknown';
+  };
+  ut('deriveUsageModel — explicit model is preserved', () => {
+    assert.strictEqual(deriveUsageModel({ model: 'claude-opus-4-8', modelUsage: {} }), 'claude-opus-4-8');
+  });
+  ut("deriveUsageModel — model 'unknown' + modelUsage → real model name", () => {
+    const msg = { model: 'unknown', modelUsage: { 'claude-sonnet-4-6': { costUSD: 0.5, outputTokens: 100 } } };
+    assert.strictEqual(deriveUsageModel(msg), 'claude-sonnet-4-6');
+  });
+  ut('deriveUsageModel — null model + modelUsage → real model name', () => {
+    const msg = { model: null, modelUsage: { 'claude-haiku-4-5-20251001': { costUSD: 0.01, outputTokens: 161 } } };
+    assert.strictEqual(deriveUsageModel(msg), 'claude-haiku-4-5-20251001');
+  });
+  ut('deriveUsageModel — multi-model → dominant by costUSD', () => {
+    const msg = { model: 'unknown', modelUsage: {
+      'claude-haiku-4-5-20251001': { costUSD: 0.01, outputTokens: 5000 },
+      'claude-opus-4-8': { costUSD: 2.0, outputTokens: 50 },
+    } };
+    assert.strictEqual(deriveUsageModel(msg), 'claude-opus-4-8');
+  });
+  ut('deriveUsageModel — equal cost → tie-break by outputTokens', () => {
+    const msg = { model: 'unknown', modelUsage: {
+      'claude-sonnet-4-6': { costUSD: 1.0, outputTokens: 100 },
+      'claude-opus-4-8': { costUSD: 1.0, outputTokens: 900 },
+    } };
+    assert.strictEqual(deriveUsageModel(msg), 'claude-opus-4-8');
+  });
+  ut("deriveUsageModel — empty/absent modelUsage → 'unknown' fallback", () => {
+    assert.strictEqual(deriveUsageModel({ model: 'unknown', modelUsage: {} }), 'unknown');
+    assert.strictEqual(deriveUsageModel({ model: null }), 'unknown');
+  });
+
+  // pickFavoriteModel (mirrors server.js favoriteModel logic)
+  // Historical "unknown" rows must not win the headline Top Model; rank only real model names.
+  const pickFavoriteModel = (byModel) => {
+    const rankable = byModel.filter(m => m.model && m.model !== 'unknown');
+    return rankable.length ? rankable.reduce((a, b) => b.turns > a.turns ? b : a).model : null;
+  };
+  ut('pickFavoriteModel — ignores "unknown" even when it has the most turns', () => {
+    const byModel = [
+      { model: 'unknown', turns: 431 },
+      { model: 'claude-sonnet-4-6', turns: 186 },
+      { model: 'claude-opus-4-8', turns: 101 },
+    ];
+    assert.strictEqual(pickFavoriteModel(byModel), 'claude-sonnet-4-6');
+  });
+  ut('pickFavoriteModel — all rows unknown → null (UI renders placeholder)', () => {
+    assert.strictEqual(pickFavoriteModel([{ model: 'unknown', turns: 10 }]), null);
+    assert.strictEqual(pickFavoriteModel([]), null);
+  });
+
   return { p, f };
 }
 

@@ -1119,7 +1119,11 @@ const server = http.createServer(async (req, res) => {
       GROUP BY day, model ORDER BY day ASC
     `).all();
 
-    const favoriteModel = byModel.length ? byModel.reduce((a,b) => b.turns > a.turns ? b : a).model : null;
+    // "unknown" rows (historical, pre-fix) must not surface as the headline Top Model — rank only
+    // real model names. byModel itself stays intact (totals derives from it; unknown cost is real).
+    // All-unknown -> null -> UI renders the em-dash placeholder (handler already in usage.js:65). Not a finding.
+    const rankable = byModel.filter(m => m.model && m.model !== 'unknown');
+    const favoriteModel = rankable.length ? rankable.reduce((a,b) => b.turns > a.turns ? b : a).model : null;
 
     return json(res, {
       totals, byModel, daily, dailyByModel,
@@ -2886,7 +2890,18 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'usage_report' && agentActorId) {
       const u = msg.usage || {};
-      const model = msg.model || 'unknown';
+      // Default-model turns arrive with model 'unknown'/null, but modelUsage (from the Claude CLI
+      // result event) is keyed by the real model name. Derive from it so usage_log stores the
+      // actual model. Multi-model turns can have >1 key -> pick dominant by cost (tie-break output
+      // tokens). Field names are camelCase (costUSD/outputTokens) per the CLI result event.
+      let model = (msg.model && msg.model !== 'unknown') ? msg.model : null;
+      if (!model && msg.modelUsage && typeof msg.modelUsage === 'object') {
+        const top = Object.entries(msg.modelUsage)
+          .sort((a, b) => (b[1].costUSD || 0) - (a[1].costUSD || 0)
+                       || (b[1].outputTokens || 0) - (a[1].outputTokens || 0))[0];
+        if (top) model = top[0];
+      }
+      model = model || 'unknown'; // last-resort fallback if modelUsage is empty too
       try {
         db.prepare(`
           INSERT INTO usage_log (actor_id, room_id, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd)
