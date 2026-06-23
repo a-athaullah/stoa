@@ -2289,6 +2289,8 @@ const pendingActorMeta = new Map(); // message_id → { name, avatar_color, avat
 const pendingCompacts = new Map();  // room_id → { total, completed, agents[] }
 const recentCompacts = new Map();      // room_id → timestamp — suppresses duplicate auto_compact_start within 30s
 const recentCompactTimers = new Map(); // room_id → timer handle — cleared before reset to avoid early expiry
+let reauthProcess = null;  // active claude auth login subprocess
+let reauthRoomId = null;   // room that triggered /reauth
 function setRecentCompact(roomId) {
   clearTimeout(recentCompactTimers.get(roomId));
   recentCompacts.set(roomId, Date.now());
@@ -2384,6 +2386,17 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'send_message') {
+      // /reauth: human-only command that spawns claude auth login and captures the OAuth URL
+      if (msg.content?.trim() === '/reauth' && !agentActorId) {
+        handleReauth(msg.room_id);
+        return;
+      }
+      // REAUTH:<code>: user pastes the OAuth code returned by the browser after authorizing
+      if (reauthProcess && !agentActorId && msg.content?.startsWith('REAUTH:')) {
+        const code = msg.content.slice('REAUTH:'.length).trim();
+        if (code) reauthProcess.stdin.write(code + '\n');
+        return;
+      }
       let handled = false;
       if (msg.content?.startsWith('/')) {
         handled = await handleSkillCommand(msg.room_id, msg.content, ws);
@@ -3863,6 +3876,53 @@ function enrichReply(rows) {
   const replied = {};
   for (const r of repliedRows) replied[r.id] = r;
   return rows.map(r => r.reply_to && replied[r.reply_to] ? { ...r, reply_msg: replied[r.reply_to] } : r);
+}
+
+function handleReauth(roomId) {
+  if (reauthProcess) {
+    broadcast(roomId, { type: 'system_event', status: '[reauth] Already in progress. Paste your code with REAUTH:<code> to complete it.' });
+    return;
+  }
+  const { spawn } = require('child_process');
+  const claudePath = (process.env.HOME || '') + '/.local/bin/claude';
+  reauthProcess = spawn(claudePath, ['auth', 'login'], { stdio: ['pipe', 'pipe', 'pipe'] });
+  reauthRoomId = roomId;
+  let urlSent = false;
+  const URL_REGEX = /https:\/\/claude\.com\/cai\/oauth\/[^\s]+/;
+  const timer = setTimeout(() => {
+    if (reauthProcess) {
+      reauthProcess.kill();
+      reauthProcess = null;
+      broadcast(roomId, { type: 'system_event', status: '[reauth] Timeout — no response in 5 minutes.' });
+    }
+  }, 5 * 60 * 1000);
+  const onData = (chunk) => {
+    if (urlSent) return;
+    const match = chunk.toString().match(URL_REGEX);
+    if (match) {
+      urlSent = true;
+      broadcast(roomId, {
+        type: 'system_event',
+        status: '[reauth] Open this URL in your browser and authorize:\n' + match[0] + '\n\nThen paste the code here as: REAUTH:<code>'
+      });
+    }
+  };
+  reauthProcess.stdout.on('data', onData);
+  reauthProcess.stderr.on('data', onData);
+  reauthProcess.on('close', (code) => {
+    clearTimeout(timer);
+    reauthProcess = null;
+    if (code === 0) {
+      broadcast(roomId, { type: 'system_event', status: '[reauth] Re-auth successful. New credentials active for next agent message.' });
+    } else if (code !== null) {
+      broadcast(roomId, { type: 'system_event', status: `[reauth] Failed (exit ${code}). Try /reauth again.` });
+    }
+  });
+  reauthProcess.on('error', (err) => {
+    clearTimeout(timer);
+    reauthProcess = null;
+    broadcast(roomId, { type: 'system_event', status: `[reauth] Error: ${err.message}` });
+  });
 }
 
 function broadcast(roomId, data) {
