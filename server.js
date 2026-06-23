@@ -2397,6 +2397,11 @@ wss.on('connection', (ws, req) => {
         if (code && reauthProcess?.stdin?.writable) reauthProcess.stdin.write(code + '\n');
         return;
       }
+      // /logout: human-only, runs claude auth logout for the agent in this room
+      if (msg.content?.trim() === '/logout' && !agentActorId) {
+        handleLogout(msg.room_id);
+        return;
+      }
       let handled = false;
       if (msg.content?.startsWith('/')) {
         handled = await handleSkillCommand(msg.room_id, msg.content, ws);
@@ -3876,6 +3881,29 @@ function enrichReply(rows) {
   const replied = {};
   for (const r of repliedRows) replied[r.id] = r;
   return rows.map(r => r.reply_to && replied[r.reply_to] ? { ...r, reply_msg: replied[r.reply_to] } : r);
+}
+
+function handleLogout(roomId) {
+  // Same single-agent guard as /reauth — credentials are machine-global.
+  const aiParticipants = db.prepare(
+    'SELECT COUNT(*) as count FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type=\'ai\''
+  ).get(roomId);
+  if (aiParticipants.count !== 1) {
+    broadcast(roomId, { type: 'system_event', status: '/logout can only be used in a room with exactly one AI agent.' });
+    return;
+  }
+  const { spawn } = require('child_process');
+  const proc = spawn('claude', ['auth', 'logout'], { stdio: ['pipe', 'pipe', 'pipe'] });
+  proc.on('close', (code) => {
+    if (code === 0) {
+      reauthBubble(roomId, 'Logged out successfully. Use `/reauth` to sign in again.');
+    } else {
+      broadcast(roomId, { type: 'system_event', status: `[logout] Failed (exit ${code}).` });
+    }
+  });
+  proc.on('error', (err) => {
+    broadcast(roomId, { type: 'system_event', status: `[logout] Error: ${err.message}` });
+  });
 }
 
 function reauthBubble(roomId, content) {
