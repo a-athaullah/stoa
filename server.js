@@ -2394,7 +2394,7 @@ wss.on('connection', (ws, req) => {
       // REAUTH:<code>: user pastes the OAuth code returned by the browser after authorizing
       if (reauthProcess && !agentActorId && msg.content?.startsWith('REAUTH:')) {
         const code = msg.content.slice('REAUTH:'.length).trim();
-        if (code) reauthProcess.stdin.write(code + '\n');
+        if (code && reauthProcess?.stdin?.writable) reauthProcess.stdin.write(code + '\n');
         return;
       }
       let handled = false;
@@ -3884,8 +3884,7 @@ function handleReauth(roomId) {
     return;
   }
   const { spawn } = require('child_process');
-  const claudePath = (process.env.HOME || '') + '/.local/bin/claude';
-  reauthProcess = spawn(claudePath, ['auth', 'login'], { stdio: ['pipe', 'pipe', 'pipe'] });
+  reauthProcess = spawn('claude', ['auth', 'login'], { stdio: ['pipe', 'pipe', 'pipe'] });
   reauthRoomId = roomId;
   let urlSent = false;
   const URL_REGEX = /https:\/\/claude\.com\/cai\/oauth\/[^\s]+/;
