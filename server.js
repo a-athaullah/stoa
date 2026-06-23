@@ -858,6 +858,7 @@ const server = http.createServer(async (req, res) => {
               AND (
                 (m.state = 'complete' AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL))
                 OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
+                OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
               )
             ORDER BY m.created_at DESC LIMIT ?
           ) t ORDER BY created_at ASC
@@ -874,6 +875,7 @@ const server = http.createServer(async (req, res) => {
           AND (
             (m.state = 'complete' AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL))
             OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
+                OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
           )
         ORDER BY m.created_at ASC
         LIMIT 500
@@ -2372,6 +2374,7 @@ wss.on('connection', (ws, req) => {
           WHERE m.room_id=? AND (
             (m.state IN ('complete','streaming','requesting') AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL OR m.state IN ('streaming','requesting')))
             OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
+                OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
           )
           ORDER BY m.created_at DESC LIMIT 100
         ) AS recent ORDER BY created_at ASC
@@ -3896,24 +3899,35 @@ function handleLogout(roomId) {
   const proc = spawn('claude', ['auth', 'logout'], { stdio: ['pipe', 'pipe', 'pipe'] });
   proc.on('close', (code) => {
     if (code === 0) {
-      reauthBubble(roomId, 'Logged out successfully. Use `/reauth` to sign in again.');
+      reauthBubble(roomId, 'Logged out successfully');
     } else {
-      broadcast(roomId, { type: 'system_event', status: `[logout] Failed (exit ${code}).` });
+      reauthBubble(roomId, `Logout failed (exit ${code})`);
     }
   });
   proc.on('error', (err) => {
-    broadcast(roomId, { type: 'system_event', status: `[logout] Error: ${err.message}` });
+    reauthBubble(roomId, `Logout error: ${err.message}`);
   });
 }
 
-function reauthBubble(roomId, content) {
-  // Persistent bubble — stored in DB like compact notifications, survives refresh.
+function reauthBubble(roomId, label) {
+  // Persistent system_event — '· reauth' suffix matches WHERE filter so message survives refresh.
+  const content = label + ' · reauth';
   const participant = db.prepare(
     'SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type=\'ai\' LIMIT 1'
   ).get(roomId);
   if (!participant) return;
   const result = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')").run(roomId, participant.id, content);
   broadcast(roomId, { type: 'message_new', message: { id: Number(result.lastInsertRowid), room_id: roomId, content, state: 'system_event', created_at: new Date().toISOString() } });
+}
+
+function reauthLinkBubble(roomId, content) {
+  // Regular chat bubble (state='complete') so markdown hyperlinks are clickable.
+  const participant = db.prepare(
+    'SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type=\'ai\' LIMIT 1'
+  ).get(roomId);
+  if (!participant) return;
+  const result = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'complete')").run(roomId, participant.id, content);
+  broadcast(roomId, { type: 'message_new', message: { id: Number(result.lastInsertRowid), room_id: roomId, content, state: 'complete', created_at: new Date().toISOString() } });
 }
 
 function handleReauth(roomId) {
@@ -3929,6 +3943,7 @@ function handleReauth(roomId) {
     broadcast(roomId, { type: 'system_event', status: '/reauth can only be used in a room with exactly one AI agent.' });
     return;
   }
+  reauthBubble(roomId, 'Re-authentication started');
   const { spawn } = require('child_process');
   // Prepend PATH with a dir containing a no-op 'open' script to prevent macOS from launching a browser
   // on the server machine — user will open the URL manually from their device.
@@ -3942,7 +3957,7 @@ function handleReauth(roomId) {
     if (reauthProcess) {
       reauthProcess.kill();
       reauthProcess = null;
-      broadcast(roomId, { type: 'system_event', status: '[reauth] Timeout — no response in 5 minutes.' });
+      reauthBubble(roomId, 'Re-auth timed out — no response in 5 minutes');
     }
   }, 5 * 60 * 1000);
   const onData = (chunk) => {
@@ -3952,7 +3967,7 @@ function handleReauth(roomId) {
       urlSent = true;
       const url = match[0];
       const content = `Please authenticate by clicking this link: [Authenticate with Claude](${url})\n\nThen paste the code here as: \`REAUTH:<code>\``;
-      reauthBubble(roomId, content);
+      reauthLinkBubble(roomId, content);
     }
   };
   reauthProcess.stdout.on('data', onData);
@@ -3961,15 +3976,15 @@ function handleReauth(roomId) {
     clearTimeout(timer);
     reauthProcess = null;
     if (code === 0) {
-      reauthBubble(roomId, 'Re-authentication successful. New credentials are active for the next agent message.');
+      reauthBubble(roomId, 'Re-authenticated successfully');
     } else if (code !== null) {
-      broadcast(roomId, { type: 'system_event', status: `[reauth] Failed (exit ${code}). Try /reauth again.` });
+      reauthBubble(roomId, `Re-auth failed (exit ${code}) — try /reauth again`);
     }
   });
   reauthProcess.on('error', (err) => {
     clearTimeout(timer);
     reauthProcess = null;
-    broadcast(roomId, { type: 'system_event', status: `[reauth] Error: ${err.message}` });
+    reauthBubble(roomId, `Re-auth error: ${err.message}`);
   });
 }
 
