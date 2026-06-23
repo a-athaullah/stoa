@@ -3878,13 +3878,35 @@ function enrichReply(rows) {
   return rows.map(r => r.reply_to && replied[r.reply_to] ? { ...r, reply_msg: replied[r.reply_to] } : r);
 }
 
+function reauthBubble(roomId, content) {
+  // Persistent bubble — stored in DB like compact notifications, survives refresh.
+  const participant = db.prepare(
+    'SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type=\'ai\' LIMIT 1'
+  ).get(roomId);
+  if (!participant) return;
+  const result = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')").run(roomId, participant.id, content);
+  broadcast(roomId, { type: 'message_new', message: { id: Number(result.lastInsertRowid), room_id: roomId, content, state: 'system_event', created_at: new Date().toISOString() } });
+}
+
 function handleReauth(roomId) {
   if (reauthProcess) {
-    broadcast(roomId, { type: 'system_event', status: '[reauth] Already in progress. Paste your code with REAUTH:<code> to complete it.' });
+    broadcast(roomId, { type: 'system_event', status: 'Re-auth already in progress. Paste the code as REAUTH:<code> to complete it.' });
+    return;
+  }
+  // /reauth only works in rooms with exactly one AI agent (credentials are machine-global).
+  const aiParticipants = db.prepare(
+    'SELECT COUNT(*) as count FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type=\'ai\''
+  ).get(roomId);
+  if (aiParticipants.count !== 1) {
+    broadcast(roomId, { type: 'system_event', status: '/reauth can only be used in a room with exactly one AI agent.' });
     return;
   }
   const { spawn } = require('child_process');
-  reauthProcess = spawn('claude', ['auth', 'login'], { stdio: ['pipe', 'pipe', 'pipe'] });
+  // Prepend PATH with a dir containing a no-op 'open' script to prevent macOS from launching a browser
+  // on the server machine — user will open the URL manually from their device.
+  const fakeBinDir = __dirname + '/.reauth-bin';
+  const spawnEnv = { ...process.env, PATH: fakeBinDir + ':' + (process.env.PATH || '') };
+  reauthProcess = spawn('claude', ['auth', 'login'], { stdio: ['pipe', 'pipe', 'pipe'], env: spawnEnv });
   reauthRoomId = roomId;
   let urlSent = false;
   const URL_REGEX = /https:\/\/claude\.com\/cai\/oauth\/[^\s]+/;
@@ -3900,10 +3922,9 @@ function handleReauth(roomId) {
     const match = chunk.toString().match(URL_REGEX);
     if (match) {
       urlSent = true;
-      broadcast(roomId, {
-        type: 'system_event',
-        status: '[reauth] Open this URL in your browser and authorize:\n' + match[0] + '\n\nThen paste the code here as: REAUTH:<code>'
-      });
+      const url = match[0];
+      const content = `Please authenticate by clicking this link: [Authenticate with Claude](${url})\n\nThen paste the code here as: \`REAUTH:<code>\``;
+      reauthBubble(roomId, content);
     }
   };
   reauthProcess.stdout.on('data', onData);
@@ -3912,7 +3933,7 @@ function handleReauth(roomId) {
     clearTimeout(timer);
     reauthProcess = null;
     if (code === 0) {
-      broadcast(roomId, { type: 'system_event', status: '[reauth] Re-auth successful. New credentials active for next agent message.' });
+      reauthBubble(roomId, 'Re-authentication successful. New credentials are active for the next agent message.');
     } else if (code !== null) {
       broadcast(roomId, { type: 'system_event', status: `[reauth] Failed (exit ${code}). Try /reauth again.` });
     }
