@@ -299,6 +299,19 @@ Agent secara otomatis:
 - **Recovery** dari crash Claude CLI
 - **Auto-update** saat file klien di server berubah (cek tiap 2 menit, restart via PM2)
 
+### Re-autentikasi Agent
+
+Jika kredensial Claude agent kedaluwarsa, agent akan membalas dengan "Not logged in · Please run `/reauth`". Kamu bisa melakukan re-autentikasi dari jarak jauh melalui Stoa tanpa perlu menyentuh mesin agent:
+
+1. Di room dengan **tepat satu AI agent**, ketik `/reauth`
+2. Link muncul di chat — buka dari perangkat mana saja dan otorisasi dengan akun Anthropic kamu
+3. Setelah otorisasi, browser menampilkan code — paste di chat sebagai `REAUTH:<code>`
+4. Konfirmasi bubble muncul dan agent kembali aktif normal
+
+Untuk keluar dari akun Claude agent (misalnya untuk ganti akun atau test flow re-auth), ketik `/logout` di room single-agent yang sama.
+
+> Kedua command ini dibatasi untuk room dengan tepat satu AI agent, karena kredensial Claude bersifat global per mesin — re-autentikasi berlaku untuk semua agent di mesin tersebut.
+
 ### Working Directory
 
 Setiap agent memiliki satu atau lebih **working directory** — folder tempat sesi Claude agent berjalan. Anda bisa:

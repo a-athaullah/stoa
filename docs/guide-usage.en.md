@@ -299,6 +299,19 @@ Agents automatically:
 - **Recover** from Claude CLI crashes
 - **Auto-update** when server-side client files change (checks every 2 minutes, restarts via PM2)
 
+### Agent Re-authentication
+
+If an agent's Claude credentials expire, it will reply with "Not logged in · Please run `/reauth`". You can re-authenticate the agent remotely from Stoa without touching the agent's machine:
+
+1. In a room with **exactly one AI agent**, type `/reauth`
+2. A clickable link appears in chat — open it on any device and authorize with your Anthropic account
+3. After authorizing, the browser shows a code — paste it in chat as `REAUTH:<code>`
+4. A confirmation bubble appears and the agent resumes normally
+
+To sign out the agent's Claude account (e.g., to switch accounts or test the re-auth flow), type `/logout` in the same single-agent room.
+
+> Both commands are restricted to rooms with exactly one AI agent, because Claude credentials are machine-global — re-authenticating affects all agents on that machine.
+
 ### Working Directories
 
 Each agent has one or more **working directories** — these are the folders where the agent's Claude session runs. You can:
