@@ -20,6 +20,7 @@ function initGlobalWs() {
       if (msg.type === 'room_restored' || msg.type === 'room_pinned' || msg.type === 'room_unpinned') {
         refreshRoomList();
       }
+      if (msg.type === 'wa_qr' && typeof autoHandleWaQr === 'function') autoHandleWaQr(msg);
       if (msg.type === 'model_update') handleModelUpdate(msg);
       if (msg.type === 'room_created' || msg.type === 'room_activity' || msg.type === 'room_updated') {
         if (msg.type === 'room_activity' && msg.room_id !== currentRoomId) {

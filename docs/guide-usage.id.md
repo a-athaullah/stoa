@@ -471,22 +471,30 @@ Anda bisa mengekspor seluruh riwayat percakapan room sebagai **JSON** atau **CSV
 
 ## Automation
 
-Stoa mendukung **automation berbasis Slack** — aturan yang aktif saat event Slack cocok dengan kondisi yang ditentukan dan otomatis mengirim prompt ke room target.
+Stoa mendukung **automation berbasis Slack dan WhatsApp** — aturan yang aktif saat event masuk cocok dengan kondisi yang ditentukan dan otomatis mengirim prompt ke room target.
 
 ### Mengelola Koneksi
 
-Buka **Settings > Automation > Connections** untuk mengelola koneksi Slack Anda. Setiap koneksi adalah sesi Slack Socket Mode terpisah dengan kredensial sendiri.
+Buka **Settings > Automation > Connections** untuk mengelola koneksi. Setiap koneksi adalah sesi live terpisah dengan kredensial sendiri.
 
-Klik **+ add connection** untuk menambah koneksi baru:
+Klik **+ add connection** untuk menambah koneksi baru. Pilih **Provider** terlebih dahulu:
 
-- **Name** — label untuk mengidentifikasi koneksi ini (contoh: "Workspace Qiscus", "Support Bot")
-- **Token Type** — `bot` (menggunakan Bot Token `xoxb-...`) atau `user` (menggunakan User Token `xoxp-...`)
+**Koneksi Slack:**
+- **Name** — label untuk koneksi ini (contoh: "Workspace Qiscus")
+- **Token Type** — `bot` (Bot Token `xoxb-...`) atau `user` (User Token `xoxp-...`)
 - **App Token** (`xapp-1-...`) — untuk koneksi WebSocket Socket Mode
 - **Bot / User Token** — token yang menerima event dan melakukan API call
 
-Setiap kartu koneksi menampilkan status terkini: **connecting**, **connected**, **disconnected**, atau **error**. Gunakan tombol **reconnect** untuk mencoba ulang koneksi yang gagal, atau tombol **edit** dan **delete** untuk mengelolanya.
-
 Lihat [panduan setup Slack](doc-slack-setup) untuk instruksi langkah demi langkah membuat token Slack app.
+
+**Koneksi WhatsApp:**
+- **Name** — label untuk koneksi ini (contoh: "Support WA")
+- **Phone Number** — opsional, hanya untuk referensi
+- **Max Media Size (MB)** — ukuran maksimum file media yang diunduh (default 100 MB)
+
+Klik **Connect & Show QR** untuk memulai sesi WhatsApp dan membuka modal QR code. Scan QR dengan aplikasi WhatsApp Anda untuk autentikasi. Setelah terhubung, kartu menampilkan JID ponsel yang terhubung dan titik hijau. Gunakan **Show QR** untuk menampilkan QR code baru jika sesi kedaluwarsa.
+
+Setiap kartu koneksi menampilkan status terkini: **connecting**, **connected**, **disconnected**, atau **error**. Gunakan tombol **reconnect** untuk mencoba ulang, atau tombol **edit** dan **delete** untuk mengelolanya.
 
 ### Membuat Aturan Automation
 
@@ -494,20 +502,27 @@ Setelah minimal satu koneksi aktif, klik **+ new rule** untuk membuat aturan:
 
 - **Name** — label deskriptif untuk aturan
 - **Connection** — koneksi mana yang memicu aturan ini, atau **Any connection** untuk mencocokkan event dari semua koneksi
-- **Trigger event** — event Slack mana yang memicu aturan: `message` (channel publik), `message.groups` (channel privat), `mention`, atau `reaction_added`
-- **Conditions** — filter opsional: `message_text contains`, `message_text not_contains`, `message_text starts_with`, atau `matches_regex`. Beberapa kondisi di-AND-kan
+- **Trigger event** — event yang memicu aturan (opsi bergantung pada provider):
+  - *Slack:* `message`, `message.groups`, `mention`, `reaction_added`
+  - *WhatsApp:* `message` (pesan teks masuk)
+- **Conditions** — filter opsional pada teks pesan: `contains`, `not_contains`, `starts_with`, atau `matches_regex`. Beberapa kondisi di-AND-kan
 - **Target room** — room Stoa mana yang menerima pesan yang dipicu
 - **Prompt template** — pesan yang dikirim ke room. Gunakan variabel:
-  - `{{slack_message_text}}` — teks pesan lengkap
-  - `{{slack_message_link}}` — permalink ke pesan Slack
-  - `{{slack_user}}` — nama tampilan pengirim
-  - `{{slack_channel}}` — nama channel
-  - `{{extracted_url}}` — URL pertama yang ditemukan di pesan
-  - `{{slack_thread_ts}}` — timestamp thread
+  - *Slack:* `{{slack_message_text}}`, `{{slack_message_link}}`, `{{slack_user}}`, `{{slack_channel}}`, `{{extracted_url}}`, `{{slack_thread_ts}}`
+  - *WhatsApp:* `{{wa_message_text}}`, `{{wa_sender}}`, `{{wa_chat_id}}`, `{{extracted_url}}`
+- **Reply to WhatsApp** *(hanya koneksi WhatsApp)* — jika diaktifkan, respons AI secara otomatis dikirim balik ke chat WhatsApp asal setelah room idle
 
 ### Aktifkan / Nonaktifkan
 
-Setiap aturan memiliki toggle aktif/nonaktif. Aturan yang dinonaktifkan tidak pernah aktif, meski event Slack cocok.
+Setiap aturan memiliki toggle aktif/nonaktif. Aturan yang dinonaktifkan tidak pernah aktif, meski event cocok.
+
+### Connector Action API
+
+Agent yang memiliki akses tool dapat berinteraksi langsung dengan koneksi aktif melalui pesan WebSocket:
+
+- **`connector_list`** — daftar semua koneksi yang berjalan. Respons: `connector_list_result` dengan array `connectors` (id, provider, name, status)
+- **`connector_send`** — kirim pesan ke chat via koneksi. Field: `connector_id`, `chat_id`, `text`. Respons: `connector_send_result` dengan `ok` (bool) dan `error` jika gagal. Untuk WhatsApp, `chat_id` harus JID (contoh: `628xxx@s.whatsapp.net`)
+- **`connector_read`** — baca riwayat percakapan. Field: `connector_id`, `chat_id`, `limit` (maks 200, default 50). Respons: `connector_read_result` dengan `ok` dan array `messages` (sender, text, direction, timestamp)
 
 ---
 
@@ -555,7 +570,7 @@ API key disimpan di server dan dikembalikan ke browser hanya di form edit Settin
 
 ### Automation
 
-Kelola koneksi Slack dan aturan automation. Lihat bagian [Automation](#automation) di atas.
+Kelola koneksi Slack dan WhatsApp serta aturan automation. Lihat bagian [Automation](#automation) di atas.
 
 ### Docs
 

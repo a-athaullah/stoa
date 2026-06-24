@@ -2140,18 +2140,27 @@ Write-Host "Logs   : pm2 logs $AgentName"
       const name = body.name !== undefined ? body.name.trim() : conn.name;
       if (!name) { res.writeHead(400); return res.end(JSON.stringify({ error: 'name cannot be empty' })); }
       let creds = {}; try { creds = JSON.parse(conn.credentials || '{}'); } catch {}
-      if (body.appToken) creds.appToken = body.appToken;
-      if (body.token) creds.token = body.token;
-      if (body.tokenType && !['bot','user'].includes(body.tokenType)) {
-        res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid tokenType' }));
-      }
-      const tokenType = body.tokenType || conn.token_type;
-      const tokenChanged = (body.appToken || body.token);
-      db.prepare("UPDATE automation_connections SET name=?,token_type=?,credentials=?,updated_at=datetime('now') WHERE id=?")
-        .run(name, tokenType, JSON.stringify(creds), connId);
-      if (tokenChanged && conn.status === 'connected') {
-        await connectionManager.stopConnection(connId);
-        db.prepare("UPDATE automation_connections SET status='disconnected',updated_at=datetime('now') WHERE id=?").run(connId);
+      let meta3 = {}; try { meta3 = JSON.parse(conn.metadata || '{}'); } catch {}
+      let tokenType = conn.token_type;
+      let tokenChanged = false;
+      if (conn.provider === 'whatsapp') {
+        if (body.phoneNumber !== undefined)   meta3.phoneNumber   = (body.phoneNumber || '').trim();
+        if (body.maxMediaSizeMb !== undefined) meta3.maxMediaSizeMb = Number(body.maxMediaSizeMb) || 100;
+        db.prepare("UPDATE automation_connections SET name=?,metadata=?,updated_at=datetime('now') WHERE id=?")
+          .run(name, JSON.stringify(meta3), connId);
+      } else {
+        if (body.appToken) { creds.appToken = body.appToken; tokenChanged = true; }
+        if (body.token)    { creds.token    = body.token;    tokenChanged = true; }
+        if (body.tokenType && !['bot','user'].includes(body.tokenType)) {
+          res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid tokenType' }));
+        }
+        tokenType = body.tokenType || conn.token_type;
+        db.prepare("UPDATE automation_connections SET name=?,token_type=?,credentials=?,updated_at=datetime('now') WHERE id=?")
+          .run(name, tokenType, JSON.stringify(creds), connId);
+        if (tokenChanged && conn.status === 'connected') {
+          await connectionManager.stopConnection(connId);
+          db.prepare("UPDATE automation_connections SET status='disconnected',updated_at=datetime('now') WHERE id=?").run(connId);
+        }
       }
       const updated = db.prepare('SELECT id,name,provider,token_type,metadata,status,error_msg,created_at FROM automation_connections WHERE id=?').get(connId);
       let meta = {}; try { meta = JSON.parse(updated.metadata || '{}'); } catch {}
@@ -2201,8 +2210,8 @@ Write-Host "Logs   : pm2 logs $AgentName"
       res.writeHead(400); return res.end(JSON.stringify({ error: 'Missing required fields' }));
     }
     const result = db.prepare(`
-      INSERT INTO automations (name, trigger_type, trigger_event, trigger_conditions, target_room_id, prompt_template, connection_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO automations (name, trigger_type, trigger_event, trigger_conditions, target_room_id, prompt_template, connection_id, reply_mode)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       body.name.trim(),
       body.trigger_type || 'slack',
@@ -2211,6 +2220,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
       parseInt(body.target_room_id),
       body.prompt_template.trim(),
       parseInt(body.connection_id) || null,
+      body.reply_mode || 'none',
     );
     const row = db.prepare('SELECT * FROM automations WHERE id=?').get(result.lastInsertRowid);
     return json(res, row);
@@ -2231,9 +2241,10 @@ Write-Host "Logs   : pm2 logs $AgentName"
       const prompt      = body.prompt_template !== undefined ? body.prompt_template.trim()           : auto.prompt_template;
       const enabled     = body.enabled !== undefined     ? (body.enabled ? 1 : 0)                    : auto.enabled;
       const connId      = body.connection_id !== undefined ? (parseInt(body.connection_id) || null)  : auto.connection_id;
+      const replyMode   = body.reply_mode !== undefined    ? (body.reply_mode || 'none')              : (auto.reply_mode || 'none');
       db.prepare(`
-        UPDATE automations SET name=?, trigger_event=?, trigger_conditions=?, target_room_id=?, prompt_template=?, enabled=?, connection_id=? WHERE id=?
-      `).run(name, event, conds, roomId, prompt, enabled, connId, autoId);
+        UPDATE automations SET name=?, trigger_event=?, trigger_conditions=?, target_room_id=?, prompt_template=?, enabled=?, connection_id=?, reply_mode=? WHERE id=?
+      `).run(name, event, conds, roomId, prompt, enabled, connId, replyMode, autoId);
       const updated = db.prepare('SELECT * FROM automations WHERE id=?').get(autoId);
       return json(res, updated);
     }
@@ -4409,11 +4420,35 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, text, isMenti
       const _prompt = prompt;
       const _autoName = auto.name;
       const _autoId = auto.id;
+      const _replyMode = auto.reply_mode || 'none';
+      const _connId = connId;
+      const _chatId = chatId;
       automationQueue.enqueue(_roomId, async () => {
         await waitForRoomIdle(_roomId);
         await handleHumanMessage(_roomId, _prompt, null, null, null);
         await waitForRoomIdle(_roomId);
         db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(_autoId);
+        if (_replyMode === 'reply_wa') {
+          try {
+            const lastAiMsg = db.prepare(`
+              SELECT m.content FROM messages m
+              JOIN room_participants rp ON m.participant_id = rp.id
+              JOIN actors a ON rp.actor_id = a.id
+              WHERE m.room_id=? AND a.type='ai' AND m.state='complete'
+              ORDER BY m.id DESC LIMIT 1
+            `).get(_roomId);
+            if (lastAiMsg?.content) {
+              await new Promise(r => setTimeout(r, 1500));
+              await connectionManager.connectorSend(_connId, _chatId, lastAiMsg.content);
+              try {
+                db.prepare(`INSERT OR IGNORE INTO wa_incoming_messages (connection_id,chat_id,sender,text,msg_key,direction) VALUES (?,?,'bot',?,?,'out')`)
+                  .run(_connId, _chatId, lastAiMsg.content, `out-${crypto.randomUUID()}`);
+              } catch {}
+            }
+          } catch (e) {
+            console.error(`[automation] reply_wa failed (conn:${_connId}, chat:${_chatId}):`, e.message);
+          }
+        }
       }, { automation: _autoName }).catch(e =>
         console.error(`[automation] room ${_roomId} trigger error:`, e.message)
       );
@@ -4422,6 +4457,11 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, text, isMenti
   } catch (e) {
     console.error('[automation] wa_event handler error:', e.message);
   }
+});
+
+// ─── WhatsApp QR broadcast ────────────────────────────────────────────────────
+connectionManager.on('wa_qr', ({ connId, qr }) => {
+  broadcastGlobal({ type: 'wa_qr', connId, qr });
 });
 
 // Reconnect Slack on startup if previously connected

@@ -30,7 +30,8 @@ function autoRenderAutomationRow(auto) {
     : 'background:transparent;border:1.5px solid var(--h-ink-faint)';
   const nameColor = isEnabled ? 'var(--h-ink)' : 'var(--h-ink-mute)';
 
-  const triggerParts = [`Slack ${auto.trigger_event}`];
+  const triggerProvider = auto.trigger_type === 'whatsapp' ? 'WhatsApp' : 'Slack';
+  const triggerParts = [`${triggerProvider} ${auto.trigger_event}`];
   try {
     JSON.parse(auto.trigger_conditions || '[]').forEach(c => {
       if (c.value) triggerParts.push(`"${escHtml(c.value)}"`);
@@ -84,14 +85,32 @@ function autoRenderAutomationRow(auto) {
 }
 
 // ── Automation Form ───────────────────────────────────────────────────────────
+function autoGetFormProvider() {
+  const connId = autoState.form.connectionId;
+  if (!connId) return 'slack';
+  const conn = autoState.connections.find(c => String(c.id) === String(connId));
+  return conn?.provider || 'slack';
+}
+
 function autoRenderForm() {
   const f = autoState.form;
-  const events = [
+  const provider = autoGetFormProvider();
+  const isWa = provider === 'whatsapp';
+
+  const slackEvents = [
     { value: 'mention',  label: 'Mention' },
     { value: 'message',  label: 'Message in channel' },
     { value: 'reaction_added', label: 'Reaction added' },
   ];
-  const condFields = f.triggerEvent === 'reaction_added'
+  const waEvents = [
+    { value: 'message',       label: 'Direct message' },
+    { value: 'group_message', label: 'Group message' },
+    { value: 'group_mention', label: 'Group mention (bot tagged)' },
+    { value: 'message_any',   label: 'Any message (DM + group)' },
+  ];
+  const events = isWa ? waEvents : slackEvents;
+
+  const slackCondFields = f.triggerEvent === 'reaction_added'
     ? [
         { value: 'reaction',      label: 'reaction' },
         { value: 'slack_user',    label: 'slack_user' },
@@ -102,6 +121,12 @@ function autoRenderForm() {
         { value: 'slack_user',    label: 'slack_user' },
         { value: 'slack_channel', label: 'slack_channel' },
       ];
+  const waCondFields = [
+    { value: 'message_text', label: 'message text' },
+    { value: 'wa_sender',    label: 'sender JID' },
+    { value: 'wa_chat_id',   label: 'chat ID' },
+  ];
+  const condFields = isWa ? waCondFields : slackCondFields;
   const condOps = [
     { value: 'contains',      label: 'contains' },
     { value: 'not_contains',  label: 'not contains' },
@@ -128,7 +153,7 @@ function autoRenderForm() {
   }).join('');
 
   const condEmpty = f.conditions.length === 0
-    ? `<div style="padding:12px;font-family:var(--h-sans);font-size:13px;color:var(--h-ink-faint);text-align:center">No conditions — any Slack event will match</div>`
+    ? `<div style="padding:12px;font-family:var(--h-sans);font-size:13px;color:var(--h-ink-faint);text-align:center">No conditions — any ${isWa ? 'WhatsApp' : 'Slack'} event will match</div>`
     : '';
 
   const roomOptions = autoState.rooms
@@ -136,36 +161,54 @@ function autoRenderForm() {
     .map(r => `<option value="${r.id}" ${String(f.targetRoomId) === String(r.id) ? 'selected' : ''}>${escHtml(r.title)}</option>`)
     .join('');
 
-  const slackConns = autoState.connections.filter(c => c.provider === 'slack');
+  const allConns = autoState.connections.filter(c => c.status === 'connected' || c.status === 'connecting');
   let connField = '';
-  if (slackConns.length === 0) {
+  if (allConns.length === 0) {
     connField = `
       <div style="display:flex;flex-direction:column;gap:5px">
         <span style="font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute)">Connection</span>
         <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;background:color-mix(in srgb,#b35a4b 6%,var(--h-surface));border:1px solid color-mix(in srgb,#b35a4b 22%,transparent);border-radius:7px">
-          <span style="font-family:var(--h-sans);font-size:13px;color:#b35a4b;flex:1">No Slack connections — add one first</span>
+          <span style="font-family:var(--h-sans);font-size:13px;color:#b35a4b;flex:1">No active connections — add one first</span>
           <button class="auto-pill-btn auto-goto-add-conn-btn" style="font-size:12px;padding:4px 10px;white-space:nowrap">+ add connection</button>
         </div>
       </div>
     `;
   } else {
-    // Auto-select if only one, or use existing selection
-    const selectedId = f.connectionId || (slackConns.length === 1 ? String(slackConns[0].id) : '');
-    const connOptions = slackConns.map(c => {
-      const label = `${escHtml(c.name)} (${c.token_type})`;
-      return `<option value="${c.id}" ${String(selectedId) === String(c.id) ? 'selected' : ''}>${escHtml(label)}</option>`;
+    const selectedId = f.connectionId || (allConns.length === 1 ? String(allConns[0].id) : '');
+    const connOptions = allConns.map(c => {
+      const provLabel = c.provider === 'whatsapp' ? 'WhatsApp' : `Slack/${c.token_type}`;
+      return `<option value="${c.id}" ${String(selectedId) === String(c.id) ? 'selected' : ''}>${escHtml(c.name)} (${provLabel})</option>`;
     }).join('');
     connField = `
       <div style="display:flex;flex-direction:column;gap:5px">
         <span style="font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute)">Connection</span>
         <select class="auto-sel" id="auto-form-conn" style="min-width:200px">
-          ${slackConns.length > 1 ? '<option value="">— select connection —</option>' : ''}
+          ${allConns.length > 1 ? '<option value="">— select connection —</option>' : ''}
           ${connOptions}
         </select>
         <span class="auto-field-err" id="auto-err-conn"></span>
       </div>
     `;
   }
+
+  const autoVars = isWa ? AUTO_VARS_WA : AUTO_VARS_SLACK;
+
+  const replyModeField = isWa ? `
+    <!-- Reply Mode -->
+    <div style="display:flex;flex-direction:column;gap:7px">
+      <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-mute)">Reply to WhatsApp</span>
+      <div style="display:flex;gap:18px" id="auto-form-reply-mode">
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-family:var(--h-sans);font-size:13px;color:var(--h-ink-mute)">
+          <input type="radio" name="auto-reply-mode" value="none" ${(f.replyMode || 'none') === 'none' ? 'checked' : ''} style="accent-color:var(--h-accent)">
+          No reply (Stoa room only)
+        </label>
+        <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-family:var(--h-sans);font-size:13px;color:var(--h-ink-mute)">
+          <input type="radio" name="auto-reply-mode" value="reply_wa" ${(f.replyMode || 'none') === 'reply_wa' ? 'checked' : ''} style="accent-color:var(--h-accent)">
+          Send AI reply back to WA
+        </label>
+      </div>
+    </div>
+  ` : '';
 
   return `
     <div class="auto-card">
@@ -190,7 +233,7 @@ function autoRenderForm() {
         <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
           <div style="display:flex;flex-direction:column;gap:5px">
             <span style="font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute)">Integration</span>
-            <div class="auto-fake-select" style="pointer-events:none;min-width:120px">Slack <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 6l4 4 4-4"/></svg></div>
+            <div class="auto-fake-select" style="pointer-events:none;min-width:120px">${isWa ? 'WhatsApp' : 'Slack'} <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 6l4 4 4-4"/></svg></div>
           </div>
           <div style="display:flex;flex-direction:column;gap:5px">
             <span style="font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute)">Event</span>
@@ -240,10 +283,12 @@ function autoRenderForm() {
           <div style="display:flex;flex-direction:column;gap:6px">
             <span style="font-family:var(--h-sans);font-size:12px;color:var(--h-ink-faint)">Available variables — click to insert at cursor:</span>
             <div style="display:flex;flex-wrap:wrap;gap:6px">
-              ${AUTO_VARS.map(v => `<span class="auto-var-chip" data-var="${v}">${v}</span>`).join('')}
+              ${autoVars.map(v => `<span class="auto-var-chip" data-var="${v}">${v}</span>`).join('')}
             </div>
           </div>
         </div>
+
+        ${replyModeField}
 
         <!-- Footer -->
         <div style="display:flex;justify-content:flex-end;gap:8px;padding-top:16px;border-top:1px solid var(--h-hair-soft)">

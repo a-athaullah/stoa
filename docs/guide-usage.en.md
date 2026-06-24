@@ -471,22 +471,30 @@ You can export a room's full conversation history as **JSON** or **CSV**. Click 
 
 ## Automation
 
-Stoa supports **Slack-triggered automations** — rules that fire when a Slack event matches your conditions and automatically send a prompt to a target room.
+Stoa supports **automations triggered by Slack and WhatsApp** — rules that fire when an incoming event matches your conditions and automatically send a prompt to a target room.
 
 ### Managing Connections
 
-Go to **Settings > Automation > Connections** to manage your Slack connections. Each connection is a separate Slack Socket Mode session with its own credentials.
+Go to **Settings > Automation > Connections** to manage your connections. Each connection is a separate live session with its own credentials.
 
-Click **+ add connection** to add a new connection:
+Click **+ add connection** to add a new connection. First select the **Provider**:
 
-- **Name** — a label to identify this connection (e.g., "Qiscus Workspace", "Support Bot")
-- **Token Type** — `bot` (uses a Bot Token `xoxb-...`) or `user` (uses a User Token `xoxp-...`)
+**Slack connection:**
+- **Name** — a label for this connection (e.g., "Qiscus Workspace")
+- **Token Type** — `bot` (Bot Token `xoxb-...`) or `user` (User Token `xoxp-...`)
 - **App Token** (`xapp-1-...`) — for the Socket Mode WebSocket connection
 - **Bot / User Token** — the token that receives events and makes API calls
 
-Each connection card shows its current status: **connecting**, **connected**, **disconnected**, or **error**. Use the **reconnect** button to retry a failed connection, or the **edit** and **delete** buttons to manage it.
-
 See the [Slack setup guide](doc-slack-setup) for step-by-step instructions on creating Slack app tokens.
+
+**WhatsApp connection:**
+- **Name** — a label for this connection (e.g., "Support WA")
+- **Phone Number** — optional, for reference only
+- **Max Media Size (MB)** — maximum size for downloaded media files (default 100 MB)
+
+Clicking **Connect & Show QR** starts the WhatsApp session and opens a QR code modal. Scan the QR with your WhatsApp app to authenticate. Once connected, the card shows the connected phone JID and a green dot. Use **Show QR** to display a new QR code if the session expires.
+
+Each connection card shows its status: **connecting**, **connected**, **disconnected**, or **error**. Use the **reconnect** button to retry, or the **edit** and **delete** buttons to manage it.
 
 ### Creating an Automation Rule
 
@@ -494,20 +502,27 @@ Once at least one connection is active, click **+ new rule** to create a rule:
 
 - **Name** — a descriptive label for the rule
 - **Connection** — which connection triggers this rule, or **Any connection** to match events from all connections
-- **Trigger event** — which Slack event fires the rule: `message` (public channels), `message.groups` (private channels), `mention`, or `reaction_added`
-- **Conditions** — optional filters: `message_text contains`, `message_text not_contains`, `message_text starts_with`, or `matches_regex`. Multiple conditions are AND-ed together
+- **Trigger event** — the event that fires the rule (options depend on provider):
+  - *Slack:* `message`, `message.groups`, `mention`, `reaction_added`
+  - *WhatsApp:* `message` (incoming text message)
+- **Conditions** — optional filters applied to the message text: `contains`, `not_contains`, `starts_with`, or `matches_regex`. Multiple conditions are AND-ed together
 - **Target room** — which Stoa room receives the triggered message
 - **Prompt template** — the message sent to the room. Use variables:
-  - `{{slack_message_text}}` — the full message text
-  - `{{slack_message_link}}` — permalink to the Slack message
-  - `{{slack_user}}` — display name of the sender
-  - `{{slack_channel}}` — channel name
-  - `{{extracted_url}}` — first URL found in the message
-  - `{{slack_thread_ts}}` — thread timestamp
+  - *Slack:* `{{slack_message_text}}`, `{{slack_message_link}}`, `{{slack_user}}`, `{{slack_channel}}`, `{{extracted_url}}`, `{{slack_thread_ts}}`
+  - *WhatsApp:* `{{wa_message_text}}`, `{{wa_sender}}`, `{{wa_chat_id}}`, `{{extracted_url}}`
+- **Reply to WhatsApp** *(WhatsApp connections only)* — when enabled, the AI's response is automatically sent back to the originating WhatsApp chat after the room goes idle
 
 ### Enable / Disable
 
-Each rule has an enable/disable toggle. Disabled rules never fire, even if the Slack event matches.
+Each rule has an enable/disable toggle. Disabled rules never fire, even if the event matches.
+
+### Connector Action API
+
+Agents with tool access can interact with active connections directly via WebSocket messages:
+
+- **`connector_list`** — list all running connections. Response: `connector_list_result` with `connectors` array (id, provider, name, status)
+- **`connector_send`** — send a message to a chat via a connector. Fields: `connector_id`, `chat_id`, `text`. Response: `connector_send_result` with `ok` (bool) and `error` on failure. For WhatsApp, `chat_id` must be a JID (e.g., `628xxx@s.whatsapp.net`)
+- **`connector_read`** — read conversation history. Fields: `connector_id`, `chat_id`, `limit` (max 200, default 50). Response: `connector_read_result` with `ok` and `messages` array (sender, text, direction, timestamp)
 
 ---
 
@@ -555,7 +570,7 @@ The API key is stored on the server and returned to the browser only in the Sett
 
 ### Automation
 
-Manage Slack connections and automation rules. See the [Automation](#automation) section above.
+Manage Slack and WhatsApp connections and automation rules. See the [Automation](#automation) section above.
 
 ### Docs
 

@@ -1606,6 +1606,72 @@ async function run() {
     }
   });
 
+  // WS: connector API
+  console.log('\n[WS: connector API]');
+  await test('connector_list — returns connector_list_result with connectors array', async () => {
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    try {
+      const resultPromise = waitForWsMessage(ws, m => m.type === 'connector_list_result');
+      ws.send(JSON.stringify({ type: 'connector_list' }));
+      const msg = await resultPromise;
+      assert.ok(Array.isArray(msg.connectors), 'connectors should be an array');
+    } finally {
+      ws.close();
+    }
+  });
+
+  await test('connector_send — missing params → ok:false', async () => {
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    try {
+      const resultPromise = waitForWsMessage(ws, m => m.type === 'connector_send_result');
+      ws.send(JSON.stringify({ type: 'connector_send' }));
+      const msg = await resultPromise;
+      assert.strictEqual(msg.ok, false);
+      assert.ok(msg.error.includes('required'), `unexpected error: ${msg.error}`);
+    } finally {
+      ws.close();
+    }
+  });
+
+  await test('connector_send — unknown connector_id → ok:false connector not found', async () => {
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    try {
+      const resultPromise = waitForWsMessage(ws, m => m.type === 'connector_send_result');
+      ws.send(JSON.stringify({ type: 'connector_send', connector_id: 999999, chat_id: 'C123', text: 'hi' }));
+      const msg = await resultPromise;
+      assert.strictEqual(msg.ok, false);
+      assert.ok(msg.error.includes('connector not found'), `unexpected error: ${msg.error}`);
+    } finally {
+      ws.close();
+    }
+  });
+
+  await test('connector_read — missing params → ok:false', async () => {
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    try {
+      const resultPromise = waitForWsMessage(ws, m => m.type === 'connector_read_result');
+      ws.send(JSON.stringify({ type: 'connector_read' }));
+      const msg = await resultPromise;
+      assert.strictEqual(msg.ok, false);
+      assert.ok(msg.error.includes('required'), `unexpected error: ${msg.error}`);
+    } finally {
+      ws.close();
+    }
+  });
+
+  await test('connector_read — unknown connector_id → ok:false connector not found', async () => {
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    try {
+      const resultPromise = waitForWsMessage(ws, m => m.type === 'connector_read_result');
+      ws.send(JSON.stringify({ type: 'connector_read', connector_id: 999999, chat_id: 'C123' }));
+      const msg = await resultPromise;
+      assert.strictEqual(msg.ok, false);
+      assert.ok(msg.error.includes('connector not found'), `unexpected error: ${msg.error}`);
+    } finally {
+      ws.close();
+    }
+  });
+
   await test('DELETE /api/ai/platforms/:id — deletes platform', async () => {
     if (!testPlatformId) { console.log('    (skipped)'); return; }
     const r = await req('DELETE', `/api/ai/platforms/${encodeURIComponent(testPlatformId)}`);

@@ -15,10 +15,17 @@ async function autoDoConnSave() {
 
   try {
     let res;
+    const isWa = f.provider === 'whatsapp';
     if (isEdit) {
-      const payload = { name: f.name.trim(), tokenType: f.tokenType };
-      if (f.appToken) payload.appToken = f.appToken;
-      if (f.token)    payload.token    = f.token;
+      const payload = { name: f.name.trim() };
+      if (!isWa) {
+        payload.tokenType = f.tokenType;
+        if (f.appToken) payload.appToken = f.appToken;
+        if (f.token)    payload.token    = f.token;
+      } else {
+        if (f.phoneNumber)   payload.phoneNumber   = f.phoneNumber;
+        if (f.maxMediaSizeMb) payload.maxMediaSizeMb = f.maxMediaSizeMb;
+      }
       res = await fjson(`/api/automations/connections/${autoState.editingConnId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -31,29 +38,49 @@ async function autoDoConnSave() {
         const savedConnId = autoState.editingConnId || res.id;
         autoState.connFormLoading = false;
         autoConnFormClose();
+        if (isWa) {
+          // Open QR modal immediately for WA reconnect
+          autoState.qrModal = { open: true, connId: savedConnId, qrData: null };
+          autoRender();
+        }
         await autoDoConnReconnect(savedConnId);
         return;
       }
       showToast('Connection updated');
     } else {
-      if (!f.appToken) { throw new Error('App Token is required'); }
-      if (!f.token)    { throw new Error('Bot/User Token is required'); }
+      if (!isWa) {
+        if (!f.appToken) { throw new Error('App Token is required'); }
+        if (!f.token)    { throw new Error('Bot/User Token is required'); }
+      }
+      const payload = {
+        name: f.name.trim(),
+        provider: f.provider,
+        tokenType: f.tokenType,
+      };
+      if (!isWa) {
+        payload.appToken = f.appToken;
+        payload.token    = f.token;
+      } else {
+        payload.phoneNumber   = f.phoneNumber;
+        payload.maxMediaSizeMb = f.maxMediaSizeMb || 100;
+      }
       res = await fjson('/api/automations/connections', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: f.name.trim(),
-          provider: f.provider,
-          tokenType: f.tokenType,
-          appToken: f.appToken,
-          token: f.token,
-        }),
+        body: JSON.stringify(payload),
       });
       autoState.connections.push(res);
-      showToast('Connection added');
+      if (isWa) {
+        // Open QR modal and wait for QR from server
+        autoState.qrModal = { open: true, connId: res.id, qrData: null };
+        showToast('WhatsApp connecting — scan the QR code');
+      } else {
+        showToast('Connection added');
+      }
     }
     autoState.connFormLoading = false;
     autoConnFormClose();
+    autoRender();
   } catch (err) {
     autoState.connFormLoading = false;
     autoState.connFormError = err?.message || 'Failed to save connection';
@@ -139,8 +166,10 @@ async function autoDoFormSave() {
   autoSyncForm();
   const f = autoState.form;
 
-  const slackConns = autoState.connections.filter(c => c.provider === 'slack');
-  const needsConn = slackConns.length > 0;
+  const activeConns = autoState.connections.filter(c => c.status === 'connected' || c.status === 'connecting');
+  const needsConn = activeConns.length > 0;
+  const selectedConn = f.connectionId ? autoState.connections.find(c => String(c.id) === String(f.connectionId)) : null;
+  const triggerType = selectedConn?.provider === 'whatsapp' ? 'whatsapp' : 'slack';
 
   autoShowErr('auto-err-name',   f.name.trim()           ? '' : 'Name is required');
   autoShowErr('auto-err-conn',   (!needsConn || f.connectionId) ? '' : 'Select a connection');
@@ -155,12 +184,13 @@ async function autoDoFormSave() {
 
   const payload = {
     name:               f.name.trim(),
-    trigger_type:       'slack',
+    trigger_type:       triggerType,
     trigger_event:      f.triggerEvent,
     trigger_conditions: JSON.stringify(f.conditions),
     target_room_id:     parseInt(f.targetRoomId),
     prompt_template:    f.promptTemplate.trim(),
     connection_id:      parseInt(f.connectionId) || null,
+    reply_mode:         f.replyMode || 'none',
   };
 
   try {
