@@ -4482,7 +4482,7 @@ connectionManager.on('wa_qr', ({ connId, qr }) => {
       ).run('Slack — ' + (bname || 'default'), 'slack', 'user', creds, meta, 'disconnected');
     }
   }
-  const conns = db.prepare("SELECT * FROM automation_connections WHERE status='connected'").all();
+  const conns = db.prepare("SELECT * FROM automation_connections WHERE status IN ('connected','connecting')").all();
   for (const conn of conns) {
     try {
       console.log(`[conn:${conn.id}] reconnecting on startup...`);

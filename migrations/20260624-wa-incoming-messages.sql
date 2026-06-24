@@ -1,5 +1,3 @@
-BEGIN;
-
 CREATE TABLE IF NOT EXISTS wa_incoming_messages (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   connection_id INTEGER NOT NULL REFERENCES automation_connections(id) ON DELETE CASCADE,
@@ -16,5 +14,3 @@ CREATE TABLE IF NOT EXISTS wa_incoming_messages (
 
 CREATE INDEX IF NOT EXISTS idx_wa_incoming_conn_chat
   ON wa_incoming_messages(connection_id, chat_id, created_at DESC);
-
-COMMIT;

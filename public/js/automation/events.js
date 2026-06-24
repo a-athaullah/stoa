@@ -49,10 +49,11 @@ function autoBindEvents(container) {
   }));
 
   container.querySelectorAll('.auto-conn-show-qr-btn').forEach(btn => btn.addEventListener('click', () => {
+    const connId = parseInt(btn.dataset.id);
     autoState.qrModal.open = true;
-    autoState.qrModal.connId = parseInt(btn.dataset.id);
+    autoState.qrModal.connId = connId;
     autoRender();
-    autoRenderQrCanvas();
+    autoDoConnReconnect(connId);
   }));
 
   container.querySelectorAll('.auto-conn-confirm-cancel-btn').forEach(btn => btn.addEventListener('click', () => {
