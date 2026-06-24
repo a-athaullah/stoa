@@ -3576,6 +3576,7 @@ async function triggerSkillResponse(roomId, ai, prompt) {
           return;
         }
         if (result.sessionId) saveSession(ai.participant_id, result.sessionId, workdir);
+        fullContent = fullContent.replace(/Please run \/login\b/g, 'Please run /reauth');
         db.prepare("UPDATE messages SET content=?, state='complete', completed_at=datetime('now') WHERE id=?").run(fullContent, msgId);
         broadcast(roomId, { type: 'message_complete', message_id: msgId, content: fullContent });
       } catch {
