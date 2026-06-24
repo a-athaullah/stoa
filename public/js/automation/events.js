@@ -288,6 +288,16 @@ function autoHandleWaQr(msg) {
   requestAnimationFrame(() => autoRenderQrCanvas());
 }
 
+function autoHandleConnStatus(msg) {
+  if (msg.connId === autoState.qrModal.connId && autoState.qrModal.open) {
+    autoState.qrModal.open = false;
+    autoState.qrModal.qrData = null;
+    const overlay = document.getElementById('auto-qr-modal-overlay');
+    if (overlay) overlay.remove();
+  }
+  if (autoState.loaded) sLoadAutomationTab();
+}
+
 function autoRenderQrCanvas() {
   const canvas = document.getElementById('auto-qr-canvas');
   if (!canvas || !autoState.qrModal.qrData) return;

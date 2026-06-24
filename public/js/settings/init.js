@@ -21,6 +21,7 @@ function initGlobalWs() {
         refreshRoomList();
       }
       if (msg.type === 'wa_qr' && typeof autoHandleWaQr === 'function') autoHandleWaQr(msg);
+      if (msg.type === 'conn_status' && typeof autoHandleConnStatus === 'function') autoHandleConnStatus(msg);
       if (msg.type === 'model_update') handleModelUpdate(msg);
       if (msg.type === 'room_created' || msg.type === 'room_activity' || msg.type === 'room_updated') {
         if (msg.type === 'room_activity' && msg.room_id !== currentRoomId) {

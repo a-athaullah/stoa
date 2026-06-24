@@ -285,10 +285,12 @@ class ConnectionManager extends EventEmitter {
     wc.on('qr', (qr) => this.emit('wa_qr', { connId: conn.id, qr }));
     wc.on('ready', () => {
       updateStatus(conn.id, 'connected', null, { ...meta, sessionDir: meta.sessionDir || `.wa-sessions/${conn.id}` });
+      this.emit('conn_status', { connId: conn.id, status: 'connected' });
     });
     wc.on('error', (err) => {
       this._conns.delete(conn.id);
       updateStatus(conn.id, 'error', err.message, meta);
+      this.emit('conn_status', { connId: conn.id, status: 'error', error: err.message });
     });
 
     // Store immediately so stopConnection/isRunning work before ready fires

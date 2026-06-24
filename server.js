@@ -4464,6 +4464,10 @@ connectionManager.on('wa_qr', ({ connId, qr }) => {
   broadcastGlobal({ type: 'wa_qr', connId, qr });
 });
 
+connectionManager.on('conn_status', ({ connId, status, error }) => {
+  broadcastGlobal({ type: 'conn_status', connId, status, error: error || null });
+});
+
 // Reconnect Slack on startup if previously connected
 (async () => {
   const legacyConnected = getSetting('slack_connected') === '1';
