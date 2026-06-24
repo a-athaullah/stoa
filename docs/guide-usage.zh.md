@@ -500,7 +500,7 @@ Stoa 支持 **由 Slack 和 WhatsApp 触发的自动化** — 当传入事件符
 - **连接** — 触发此规则的连接，或选择 **Any connection** 匹配所有连接的事件
 - **触发事件** — 触发规则的事件（取决于提供商）：
   - *Slack:* `message`（公开频道）、`message.groups`（私有频道）、`mention`、`reaction_added`
-  - *WhatsApp:* `message`（传入文本消息）
+  - *WhatsApp:* `message`（私信）、`group_message`（群消息）、`group_mention`（群中被@机器人）、`message_any`（私信＋群）
 - **条件** — 针对消息文本的可选过滤器：`contains`、`not_contains`、`starts_with` 或 `matches_regex`。多个条件之间为 AND 关系
 - **目标房间** — 接收提示词的 Stoa 房间
 - **提示词模板** — 发送到房间的消息。可用变量：

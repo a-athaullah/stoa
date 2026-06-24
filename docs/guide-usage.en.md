@@ -504,7 +504,7 @@ Once at least one connection is active, click **+ new rule** to create a rule:
 - **Connection** — which connection triggers this rule, or **Any connection** to match events from all connections
 - **Trigger event** — the event that fires the rule (options depend on provider):
   - *Slack:* `message`, `message.groups`, `mention`, `reaction_added`
-  - *WhatsApp:* `message` (incoming text message)
+  - *WhatsApp:* `message` (direct message), `group_message` (group message), `group_mention` (bot tagged in group), `message_any` (DM + group)
 - **Conditions** — optional filters applied to the message text: `contains`, `not_contains`, `starts_with`, or `matches_regex`. Multiple conditions are AND-ed together
 - **Target room** — which Stoa room receives the triggered message
 - **Prompt template** — the message sent to the room. Use variables:

@@ -500,7 +500,7 @@ Slackアプリトークンの作成手順は[Slackセットアップガイド](d
 - **接続** — このルールを発火する接続、またはすべての接続のイベントに一致する **Any connection**
 - **トリガーイベント** — ルールを発火するイベント（プロバイダーにより異なる）：
   - *Slack:* `message`、`message.groups`、`mention`、`reaction_added`
-  - *WhatsApp:* `message`（受信テキストメッセージ）
+  - *WhatsApp:* `message`（ダイレクトメッセージ）、`group_message`（グループメッセージ）、`group_mention`（グループでbotがタグ付け）、`message_any`（DM＋グループ）
 - **条件** — メッセージテキストへのオプションフィルター：`contains`、`not_contains`、`starts_with`、または `matches_regex`。複数の条件はAND結合
 - **対象ルーム** — プロンプトを送信するStoaルーム
 - **プロンプトテンプレート** — ルームに送られるメッセージ。使用可能な変数：

@@ -504,7 +504,7 @@ Setelah minimal satu koneksi aktif, klik **+ new rule** untuk membuat aturan:
 - **Connection** — koneksi mana yang memicu aturan ini, atau **Any connection** untuk mencocokkan event dari semua koneksi
 - **Trigger event** — event yang memicu aturan (opsi bergantung pada provider):
   - *Slack:* `message`, `message.groups`, `mention`, `reaction_added`
-  - *WhatsApp:* `message` (pesan teks masuk)
+  - *WhatsApp:* `message` (pesan langsung), `group_message` (pesan grup), `group_mention` (bot di-tag di grup), `message_any` (DM + grup)
 - **Conditions** — filter opsional pada teks pesan: `contains`, `not_contains`, `starts_with`, atau `matches_regex`. Beberapa kondisi di-AND-kan
 - **Target room** — room Stoa mana yang menerima pesan yang dipicu
 - **Prompt template** — pesan yang dikirim ke room. Gunakan variabel:
