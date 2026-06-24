@@ -137,6 +137,14 @@ function autoRender() {
     </div>
   `;
 
+  if (autoState.qrModal.open) {
+    const existing = document.getElementById('auto-qr-modal-overlay');
+    if (!existing) {
+      document.body.insertAdjacentHTML('beforeend', autoRenderQrModal());
+    }
+    requestAnimationFrame(() => autoRenderQrCanvas());
+  }
+
   autoBindEvents(el);
 }
 
