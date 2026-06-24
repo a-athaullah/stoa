@@ -224,6 +224,7 @@ setInterval(() => {
 
 const PORT = parseInt(process.env.PORT) || 3000;
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
+const CONNECTOR_MEDIA_DIR = path.join(__dirname, 'connector-media');
 
 // Sync HUMAN_NAME env → human actor on startup (default: "Human")
 {
@@ -248,6 +249,7 @@ function clientFileHash(name) {
   return crypto.createHash('sha256').update(fs.readFileSync(fp)).digest('hex').slice(0, 12);
 }
 if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
+if (!fs.existsSync(CONNECTOR_MEDIA_DIR)) fs.mkdirSync(CONNECTOR_MEDIA_DIR);
 
 // ── Scheduled cleanup: delete uploaded files older than CLEANUP_MAX_AGE_HOURS (skip avatar/)
 {
@@ -395,6 +397,8 @@ function requireAuth(req, res, url) {
   if (url.pathname.match(/^\/(css|js|vendor|dist)\//) || ['/manifest.json', '/sw.js', '/stoa-icon.svg'].includes(url.pathname)) return true;
   // Uploaded files accessible by agents (they fetch without cookies)
   if (url.pathname.startsWith('/uploads/')) return true;
+  // Connector media files (WA downloads) accessible without cookie auth
+  if (url.pathname.startsWith('/connector-media/')) return true;
   // Install scripts and agent register are public (token-protected already)
   if (url.pathname === '/install.sh' || url.pathname === '/install.ps1' || url.pathname === '/install.cmd') return true;
   if (url.pathname === '/api/agent/register') return true;
@@ -546,6 +550,24 @@ const server = http.createServer(async (req, res) => {
     };
     const mime = MIMES[ext] || 'application/octet-stream';
     const disp = mime.startsWith('text/') || mime.includes('json') ? 'inline' : 'attachment';
+    res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'public, max-age=86400', 'Content-Disposition': disp });
+    return res.end(fs.readFileSync(filepath));
+  }
+
+  // ── Static: connector media files (WA downloads, etc.)
+  if (req.method === 'GET' && url.pathname.startsWith('/connector-media/')) {
+    const relative = path.normalize(url.pathname.slice('/connector-media/'.length)).replace(/^(\.\.[\/\\])+/, '');
+    const filepath = path.join(CONNECTOR_MEDIA_DIR, relative);
+    if (!filepath.startsWith(CONNECTOR_MEDIA_DIR + path.sep) || !fs.existsSync(filepath)) { res.writeHead(404); return res.end('Not found'); }
+    const ext = path.extname(filepath).toLowerCase();
+    const MIMES = {
+      '.png':'image/png', '.jpg':'image/jpeg', '.jpeg':'image/jpeg',
+      '.gif':'image/gif', '.webp':'image/webp',
+      '.mp4':'video/mp4', '.mp3':'audio/mpeg', '.ogg':'audio/ogg',
+      '.pdf':'application/pdf', '.txt':'text/plain; charset=utf-8',
+    };
+    const mime = MIMES[ext] || 'application/octet-stream';
+    const disp = mime.startsWith('text/') ? 'inline' : 'attachment';
     res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'public, max-age=86400', 'Content-Disposition': disp });
     return res.end(fs.readFileSync(filepath));
   }
@@ -3244,6 +3266,119 @@ wss.on('connection', (ws, req) => {
       console.log(`[room] model set to ${model || '(default)'} for room ${subscribedRoom}`);
     }
 
+    // ── Connector Action API ────────────────────────────────────────────────
+
+    if (msg.type === 'connector_list') {
+      // List connected connectors with DB metadata
+      const running = connectionManager.listRunning();
+      const ids = running.map(r => r.connId);
+      const rows = ids.length
+        ? db.prepare(`SELECT id, name, provider, status FROM automation_connections WHERE id IN (${ids.map(() => '?').join(',')})`)
+            .all(...ids)
+        : [];
+      const byId = Object.fromEntries(rows.map(r => [r.id, r]));
+      const connectors = running.map(r => ({
+        id: r.connId,
+        provider: r.provider,
+        name: byId[r.connId]?.name || String(r.connId),
+        status: byId[r.connId]?.status || 'connected',
+      }));
+      ws.send(JSON.stringify({ type: 'connector_list_result', connectors }));
+    }
+
+    if (msg.type === 'connector_send') {
+      // Send message via connector
+      // msg: { connector_id, chat_id, text }
+      const connId2 = parseInt(msg.connector_id, 10);
+      const chatId2 = String(msg.chat_id || '').trim();
+      const text2   = String(msg.text || '').trim();
+      if (!connId2 || !chatId2 || !text2) {
+        ws.send(JSON.stringify({ type: 'connector_send_result', ok: false, error: 'connector_id, chat_id, and text are required' }));
+        return;
+      }
+      // chat_id format validation per provider
+      const connRow = db.prepare('SELECT provider FROM automation_connections WHERE id=?').get(connId2);
+      if (!connRow) {
+        ws.send(JSON.stringify({ type: 'connector_send_result', ok: false, error: 'connector not found' }));
+        return;
+      }
+      if (connRow.provider === 'whatsapp' && !/^[\d+]+@(s\.whatsapp\.net|g\.us)$/.test(chatId2)) {
+        ws.send(JSON.stringify({ type: 'connector_send_result', ok: false, error: 'invalid chat_id for whatsapp (expected JID like 628xxx@s.whatsapp.net)' }));
+        return;
+      }
+      if (connRow.provider === 'slack' && !/^[A-Z0-9]+$/.test(chatId2)) {
+        ws.send(JSON.stringify({ type: 'connector_send_result', ok: false, error: 'invalid chat_id for slack (expected channel ID like C0B6Q16RNTH)' }));
+        return;
+      }
+      try {
+        // Rate-limit for WA: 1.5s delay to avoid triggering spam detection
+        if (connRow.provider === 'whatsapp') await new Promise(r => setTimeout(r, 1500));
+        await connectionManager.connectorSend(connId2, chatId2, text2);
+        // Store outgoing message for WA connectors
+        if (connRow.provider === 'whatsapp') {
+          try {
+            db.prepare(`
+              INSERT OR IGNORE INTO wa_incoming_messages
+                (connection_id, chat_id, sender, text, msg_key, direction)
+              VALUES (?, ?, 'bot', ?, ?, 'out')
+            `).run(connId2, chatId2, text2, `out-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+          } catch {}
+        }
+        ws.send(JSON.stringify({ type: 'connector_send_result', ok: true }));
+      } catch (e) {
+        ws.send(JSON.stringify({ type: 'connector_send_result', ok: false, error: e.message }));
+      }
+    }
+
+    if (msg.type === 'connector_read') {
+      // Read conversation history via connector
+      // msg: { connector_id, chat_id, limit? }
+      const connId3  = parseInt(msg.connector_id, 10);
+      const chatId3  = String(msg.chat_id || '').trim();
+      const limit3   = Math.min(parseInt(msg.limit, 10) || 50, 200);
+      if (!connId3 || !chatId3) {
+        ws.send(JSON.stringify({ type: 'connector_read_result', ok: false, error: 'connector_id and chat_id are required' }));
+        return;
+      }
+      const connRow3 = db.prepare('SELECT provider FROM automation_connections WHERE id=?').get(connId3);
+      if (!connRow3) {
+        ws.send(JSON.stringify({ type: 'connector_read_result', ok: false, error: 'connector not found' }));
+        return;
+      }
+      try {
+        let messages3 = [];
+        if (connRow3.provider === 'whatsapp') {
+          const rows3 = db.prepare(`
+            SELECT sender, text, direction, media_path, media_type, created_at
+            FROM wa_incoming_messages
+            WHERE connection_id=? AND chat_id=?
+            ORDER BY created_at DESC LIMIT ?
+          `).all(connId3, chatId3, limit3);
+          messages3 = rows3.reverse().map(r => ({
+            sender:     r.direction === 'out' ? 'bot' : r.sender,
+            text:       r.text,
+            direction:  r.direction,
+            media_type: r.media_type || null,
+            media_url:  r.media_path || null,
+            timestamp:  r.created_at,
+          }));
+        } else if (connRow3.provider === 'slack') {
+          const slackConn = connectionManager.getSlackConnection(connId3);
+          if (!slackConn) throw new Error('slack connector not running');
+          const result = await slackConn.getHistory(chatId3, limit3);
+          messages3 = (result.messages || []).reverse().map(m => ({
+            sender:    m.user || m.bot_id || 'unknown',
+            text:      m.text || '',
+            direction: 'in',
+            timestamp: m.ts,
+          }));
+        }
+        ws.send(JSON.stringify({ type: 'connector_read_result', ok: true, messages: messages3 }));
+      } catch (e) {
+        ws.send(JSON.stringify({ type: 'connector_read_result', ok: false, error: e.message }));
+      }
+    }
+
    } catch (err) { console.error('[ws] unhandled message error:', err); }
   });
 
@@ -4179,8 +4314,49 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
 
 // ─── WhatsApp automation listener ────────────────────────────────────────────
 
-connectionManager.on('wa_event', async ({ chatId, isGroup, sender, text, isMentioned, connId }) => {
+connectionManager.on('wa_event', async ({ chatId, isGroup, sender, text, isMentioned, connId, msg, mediaType, mediaSizeBytes }) => {
   try {
+    // ── Store incoming message to wa_incoming_messages
+    const msgKey = msg?.key?.id || null;
+    let mediaPath = null;
+    if (msgKey) {
+      // Download media if present and under per-connector size limit
+      if (mediaType && mediaSizeBytes > 0) {
+        let conn = null;
+        try { conn = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(connId); } catch {}
+        let meta2 = {};
+        try { meta2 = JSON.parse(conn?.metadata || '{}'); } catch {}
+        const limitBytes = (meta2.maxMediaSizeMb || 100) * 1024 * 1024;
+        if (mediaSizeBytes <= limitBytes) {
+          try {
+            const buf = await connectionManager.downloadWaMedia(connId, msg);
+            if (buf) {
+              const extMap = { image: '.jpg', audio: '.ogg', video: '.mp4', document: '.bin' };
+              const ext = extMap[mediaType] || '.bin';
+              const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+              const safeKey = msgKey.replace(/[^a-zA-Z0-9_-]/g, '_');
+              const dir = path.join(CONNECTOR_MEDIA_DIR, String(connId), dateStr);
+              if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+              const filePath = path.join(dir, safeKey + ext);
+              fs.writeFileSync(filePath, buf);
+              mediaPath = `/connector-media/${connId}/${dateStr}/${safeKey}${ext}`;
+            }
+          } catch (e) {
+            console.error(`[wa] media download failed (conn:${connId}):`, e.message);
+          }
+        }
+      }
+      try {
+        db.prepare(`
+          INSERT OR IGNORE INTO wa_incoming_messages
+            (connection_id, chat_id, sender, text, msg_key, media_path, media_type, direction)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'in')
+        `).run(connId, chatId, sender, text || '', msgKey, mediaPath, mediaType || null);
+      } catch (e) {
+        console.error(`[wa] store message failed (conn:${connId}):`, e.message);
+      }
+    }
+
     // Determine which trigger_events this incoming message qualifies for
     const applicableEvents = ['message_any'];
     if (isGroup) {

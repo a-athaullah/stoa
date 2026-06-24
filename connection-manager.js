@@ -63,6 +63,16 @@ class SlackConnection extends EventEmitter {
     console.log(`[conn:${this.connId}] connected — workspace: ${this.workspaceName}, handle: ${this.botName}`);
   }
 
+  async sendMessage(channelId, text) {
+    if (!this.webClient) throw new Error('not connected');
+    return this.webClient.chat.postMessage({ channel: channelId, text });
+  }
+
+  async getHistory(channelId, limit) {
+    if (!this.webClient) throw new Error('not connected');
+    return this.webClient.conversations.history({ channel: channelId, limit: limit || 50 });
+  }
+
   async stop() {
     if (this.client) {
       try { await this.client.disconnect(); } catch {}
@@ -170,16 +180,35 @@ class WhatsAppConnection extends EventEmitter {
       ? mentionedJids.some(jid => jid === this.botJid || jid.startsWith(botBase))
       : false;
 
+    // Detect media type and size for storage
+    let mediaType = null;
+    let mediaSizeBytes = 0;
+    const imgMsg  = msg.message?.imageMessage;
+    const audMsg  = msg.message?.audioMessage;
+    const vidMsg  = msg.message?.videoMessage;
+    const docMsg  = msg.message?.documentMessage;
+    if (imgMsg)  { mediaType = 'image';    mediaSizeBytes = Number(imgMsg.fileLength  || 0); }
+    else if (audMsg) { mediaType = 'audio'; mediaSizeBytes = Number(audMsg.fileLength || 0); }
+    else if (vidMsg) { mediaType = 'video'; mediaSizeBytes = Number(vidMsg.fileLength || 0); }
+    else if (docMsg) { mediaType = 'document'; mediaSizeBytes = Number(docMsg.fileLength || 0); }
+
     this.emit('wa_event', {
       eventType: isGroup ? 'group_message' : 'message',
       msg, chatId, isGroup, sender, text, isMentioned,
+      mediaType, mediaSizeBytes,
       connId: this.connId,
     });
   }
 
-  // Phase 3: send reply back to WhatsApp
   async sendMessage(chatId, text) {
+    if (!this.sock) throw new Error('not connected');
     return this.sock.sendMessage(chatId, { text });
+  }
+
+  async downloadMedia(msg) {
+    if (!this.sock) throw new Error('not connected');
+    const { downloadMediaMessage } = require('@whiskeysockets/baileys');
+    return downloadMediaMessage(msg, 'buffer', {}, { logger: require('pino')({ level: 'silent' }) });
   }
 
   async stop() {
@@ -287,6 +316,47 @@ class ConnectionManager extends EventEmitter {
 
   isRunning(connId) {
     return this._conns.get(connId)?.running === true;
+  }
+
+  // Return list of running connections with their provider
+  listRunning() {
+    const result = [];
+    for (const [connId, conn] of this._conns) {
+      if (conn.running) {
+        const provider = conn instanceof WhatsAppConnection ? 'whatsapp' : 'slack';
+        result.push({ connId, provider });
+      }
+    }
+    return result;
+  }
+
+  // Send a message via connector — routes by provider
+  async connectorSend(connId, chatId, text) {
+    const conn = this._conns.get(connId);
+    if (!conn) throw new Error(`connector ${connId} not found`);
+    if (!conn.running) throw new Error(`connector ${connId} not connected`);
+    return conn.sendMessage(chatId, text);
+  }
+
+  // Download WA media via connector
+  async downloadWaMedia(connId, msg) {
+    const conn = this._conns.get(connId);
+    if (!conn || !(conn instanceof WhatsAppConnection)) return null;
+    return conn.downloadMedia(msg);
+  }
+
+  // Get Slack WebClient for history reads
+  getSlackWebClient(connId) {
+    const conn = this._conns.get(connId);
+    if (!conn || !(conn instanceof SlackConnection)) return null;
+    return conn.webClient;
+  }
+
+  // Get Slack connection for history reads
+  getSlackConnection(connId) {
+    const conn = this._conns.get(connId);
+    if (!conn || !(conn instanceof SlackConnection)) return null;
+    return conn;
   }
 }
 

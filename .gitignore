@@ -1,6 +1,7 @@
 node_modules/
 uploads/
 .wa-sessions/
+connector-media/
 *.log
 *.err
 .env
