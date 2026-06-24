@@ -3564,7 +3564,8 @@ async function triggerSkillResponse(roomId, ai, prompt) {
             broadcast(roomId, { type: 'message_token', message_id: msgId, token });
           },
           onState: state => {
-            broadcast(roomId, { type: 'message_state', message_id: msgId, state, ...meta });
+            const displayState = typeof state === 'string' ? state.replace(/Please run \/login\b/g, 'Please run /reauth') : state;
+            broadcast(roomId, { type: 'message_state', message_id: msgId, state: displayState, ...meta });
           },
           onTool: tool => {
             broadcast(roomId, { type: 'message_tool', message_id: msgId, tool });
