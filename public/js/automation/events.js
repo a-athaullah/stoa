@@ -280,11 +280,11 @@ function autoConnFormClose() {
 function autoHandleWaQr(msg) {
   autoState.qrModal.connId = msg.connId;
   autoState.qrModal.qrData = msg.qr;
-  if (!autoState.qrModal.open) {
-    autoState.qrModal.open = true;
-    autoRender();
-  }
-  autoRenderQrCanvas();
+  if (!autoState.qrModal.open) autoState.qrModal.open = true;
+  const overlay = document.getElementById('auto-qr-modal-overlay');
+  if (overlay) overlay.remove();
+  document.body.insertAdjacentHTML('beforeend', autoRenderQrModal());
+  requestAnimationFrame(() => autoRenderQrCanvas());
 }
 
 function autoRenderQrCanvas() {
