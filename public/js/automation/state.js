@@ -137,12 +137,15 @@ function autoRender() {
     </div>
   `;
 
+  const existingOverlay = document.getElementById('auto-qr-modal-overlay');
   if (autoState.qrModal.open) {
-    const existing = document.getElementById('auto-qr-modal-overlay');
-    if (!existing) {
+    if (!existingOverlay) {
       document.body.insertAdjacentHTML('beforeend', autoRenderQrModal());
+      autoBindQrModalEvents();
     }
     requestAnimationFrame(() => autoRenderQrCanvas());
+  } else if (existingOverlay) {
+    existingOverlay.remove();
   }
 
   autoBindEvents(el);

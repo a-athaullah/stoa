@@ -86,11 +86,7 @@ function autoBindEvents(container) {
     autoRender();
   });
 
-  // QR modal close
-  container.querySelectorAll('.auto-qr-close-btn').forEach(btn => btn.addEventListener('click', () => {
-    autoState.qrModal.open = false;
-    autoRender();
-  }));
+  // QR modal close handled by autoBindQrModalEvents (modal lives in body, not container)
 
   container.querySelectorAll('.auto-conn-form-cancel-btn').forEach(btn => btn.addEventListener('click', autoConnFormClose));
 
@@ -278,6 +274,23 @@ function autoConnFormClose() {
 }
 
 // ── QR handling ───────────────────────────────────────────────────────────────
+function autoCloseQrModal() {
+  autoState.qrModal.open = false;
+  autoState.qrModal.qrData = null;
+  const overlay = document.getElementById('auto-qr-modal-overlay');
+  if (overlay) overlay.remove();
+}
+
+function autoBindQrModalEvents() {
+  const overlay = document.getElementById('auto-qr-modal-overlay');
+  if (!overlay) return;
+  overlay.querySelectorAll('.auto-qr-close-btn').forEach(btn =>
+    btn.addEventListener('click', () => { autoCloseQrModal(); autoRender(); }));
+  overlay.addEventListener('click', e => {
+    if (e.target === overlay) { autoCloseQrModal(); autoRender(); }
+  });
+}
+
 function autoHandleWaQr(msg) {
   autoState.qrModal.connId = msg.connId;
   autoState.qrModal.qrData = msg.qr;
@@ -285,15 +298,13 @@ function autoHandleWaQr(msg) {
   const overlay = document.getElementById('auto-qr-modal-overlay');
   if (overlay) overlay.remove();
   document.body.insertAdjacentHTML('beforeend', autoRenderQrModal());
+  autoBindQrModalEvents();
   requestAnimationFrame(() => autoRenderQrCanvas());
 }
 
 function autoHandleConnStatus(msg) {
   if (msg.connId === autoState.qrModal.connId && autoState.qrModal.open) {
-    autoState.qrModal.open = false;
-    autoState.qrModal.qrData = null;
-    const overlay = document.getElementById('auto-qr-modal-overlay');
-    if (overlay) overlay.remove();
+    autoCloseQrModal();
   }
   if (autoState.loaded) sLoadAutomationTab();
 }
