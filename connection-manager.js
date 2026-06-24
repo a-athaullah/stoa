@@ -241,9 +241,12 @@ class ConnectionManager extends EventEmitter {
   async _startWhatsAppConnection(conn, updateStatus) {
     let meta = {};
     try { meta = JSON.parse(conn.metadata || '{}'); } catch {}
-    const sessionDir = meta.sessionDir
-      ? path.resolve(__dirname, meta.sessionDir)
-      : path.join(__dirname, '.wa-sessions', String(conn.id));
+    const safeDefault = path.join(__dirname, '.wa-sessions', String(conn.id));
+    const resolved = meta.sessionDir ? path.resolve(__dirname, meta.sessionDir) : safeDefault;
+    // Guard: session dir must stay within project directory
+    const sessionDir = resolved.startsWith(__dirname + path.sep) || resolved === __dirname
+      ? resolved
+      : safeDefault;
 
     const existing = this._conns.get(conn.id);
     if (existing) await existing.stop();

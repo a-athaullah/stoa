@@ -4179,7 +4179,7 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
 
 // ─── WhatsApp automation listener ────────────────────────────────────────────
 
-connectionManager.on('wa_event', async ({ eventType, msg, chatId, isGroup, sender, text, isMentioned, connId }) => {
+connectionManager.on('wa_event', async ({ chatId, isGroup, sender, text, isMentioned, connId }) => {
   try {
     // Determine which trigger_events this incoming message qualifies for
     const applicableEvents = ['message_any'];
