@@ -858,6 +858,7 @@ const server = http.createServer(async (req, res) => {
               AND (
                 (m.state = 'complete' AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL))
                 OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
+                OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
               )
             ORDER BY m.created_at DESC LIMIT ?
           ) t ORDER BY created_at ASC
@@ -874,6 +875,7 @@ const server = http.createServer(async (req, res) => {
           AND (
             (m.state = 'complete' AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL))
             OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
+            OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
           )
         ORDER BY m.created_at ASC
         LIMIT 500
@@ -2289,6 +2291,8 @@ const pendingActorMeta = new Map(); // message_id → { name, avatar_color, avat
 const pendingCompacts = new Map();  // room_id → { total, completed, agents[] }
 const recentCompacts = new Map();      // room_id → timestamp — suppresses duplicate auto_compact_start within 30s
 const recentCompactTimers = new Map(); // room_id → timer handle — cleared before reset to avoid early expiry
+let reauthProcess = null;  // active claude auth login subprocess
+let reauthRoomId = null;   // room that triggered /reauth
 function setRecentCompact(roomId) {
   clearTimeout(recentCompactTimers.get(roomId));
   recentCompacts.set(roomId, Date.now());
@@ -2370,6 +2374,7 @@ wss.on('connection', (ws, req) => {
           WHERE m.room_id=? AND (
             (m.state IN ('complete','streaming','requesting') AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL OR m.state IN ('streaming','requesting')))
             OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
+            OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
           )
           ORDER BY m.created_at DESC LIMIT 100
         ) AS recent ORDER BY created_at ASC
@@ -2384,6 +2389,23 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'send_message') {
+      // /reauth: human-only command that spawns claude auth login and captures the OAuth URL
+      if (msg.content?.trim() === '/reauth' && !agentActorId) {
+        handleReauth(msg.room_id);
+        return;
+      }
+      // REAUTH:<code>: user pastes the OAuth code returned by the browser after authorizing
+      if (reauthProcess && !agentActorId && msg.content?.startsWith('REAUTH:')) {
+        if (reauthRoomId !== msg.room_id) return;
+        const code = msg.content.slice('REAUTH:'.length).trim();
+        if (code && reauthProcess?.stdin?.writable) reauthProcess.stdin.write(code + '\n');
+        return;
+      }
+      // /logout: human-only, runs claude auth logout for the agent in this room
+      if (msg.content?.trim() === '/logout' && !agentActorId) {
+        handleLogout(msg.room_id);
+        return;
+      }
       let handled = false;
       if (msg.content?.startsWith('/')) {
         handled = await handleSkillCommand(msg.room_id, msg.content, ws);
@@ -2749,10 +2771,11 @@ wss.on('connection', (ws, req) => {
         return;
       }
       const attachJson = msg.attachments?.length ? JSON.stringify(msg.attachments) : null;
+      const agentContent = (msg.content || '').replace(/Please run \/login\b/g, 'Please run /reauth');
       db.prepare(
         "UPDATE messages SET content=?, file_url=?, file_name=?, attachments=?, ai_model=?, state='complete', completed_at=datetime('now') WHERE id=?"
-      ).run(msg.content, msg.file_url || null, msg.file_name || null, attachJson, msg.ai_model || null, msg.message_id);
-      const completePayload = { type: 'message_complete', message_id: msg.message_id, content: msg.content, ai_model: msg.ai_model || null };
+      ).run(agentContent, msg.file_url || null, msg.file_name || null, attachJson, msg.ai_model || null, msg.message_id);
+      const completePayload = { type: 'message_complete', message_id: msg.message_id, content: agentContent, ai_model: msg.ai_model || null };
       if (msg.attachments?.length) { completePayload.attachments = msg.attachments; }
       else if (msg.file_url) { completePayload.file_url = msg.file_url; completePayload.file_name = msg.file_name; }
       broadcast(msg.room_id, completePayload);
@@ -3543,7 +3566,8 @@ async function triggerSkillResponse(roomId, ai, prompt) {
             broadcast(roomId, { type: 'message_token', message_id: msgId, token });
           },
           onState: state => {
-            broadcast(roomId, { type: 'message_state', message_id: msgId, state, ...meta });
+            const displayState = typeof state === 'string' ? state.replace(/Please run \/login\b/g, 'Please run /reauth') : state;
+            broadcast(roomId, { type: 'message_state', message_id: msgId, state: displayState, ...meta });
           },
           onTool: tool => {
             broadcast(roomId, { type: 'message_tool', message_id: msgId, tool });
@@ -3555,6 +3579,7 @@ async function triggerSkillResponse(roomId, ai, prompt) {
           return;
         }
         if (result.sessionId) saveSession(ai.participant_id, result.sessionId, workdir);
+        fullContent = fullContent.replace(/Please run \/login\b/g, 'Please run /reauth');
         db.prepare("UPDATE messages SET content=?, state='complete', completed_at=datetime('now') WHERE id=?").run(fullContent, msgId);
         broadcast(roomId, { type: 'message_complete', message_id: msgId, content: fullContent });
       } catch {
@@ -3863,6 +3888,108 @@ function enrichReply(rows) {
   const replied = {};
   for (const r of repliedRows) replied[r.id] = r;
   return rows.map(r => r.reply_to && replied[r.reply_to] ? { ...r, reply_msg: replied[r.reply_to] } : r);
+}
+
+function handleLogout(roomId) {
+  // Same single-agent guard as /reauth — credentials are machine-global.
+  const aiParticipants = db.prepare(
+    'SELECT COUNT(*) as count FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type=\'ai\''
+  ).get(roomId);
+  if (aiParticipants.count !== 1) {
+    broadcast(roomId, { type: 'system_event', status: '/logout can only be used in a room with exactly one AI agent.' });
+    return;
+  }
+  const { spawn } = require('child_process');
+  const proc = spawn('claude', ['auth', 'logout'], { stdio: ['pipe', 'pipe', 'pipe'] });
+  proc.on('close', (code) => {
+    if (code === 0) {
+      reauthBubble(roomId, 'Logged out successfully');
+    } else {
+      reauthBubble(roomId, `Logout failed (exit ${code})`);
+    }
+  });
+  proc.on('error', (err) => {
+    reauthBubble(roomId, `Logout error: ${err.message}`);
+  });
+}
+
+function reauthBubble(roomId, label) {
+  // Persistent system_event — '· reauth' suffix matches WHERE filter so message survives refresh.
+  const content = label + ' · reauth';
+  const participant = db.prepare(
+    'SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type=\'ai\' LIMIT 1'
+  ).get(roomId);
+  if (!participant) return;
+  const result = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')").run(roomId, participant.id, content);
+  broadcast(roomId, { type: 'message_new', message: { id: Number(result.lastInsertRowid), room_id: roomId, content, state: 'system_event', created_at: new Date().toISOString() } });
+}
+
+function reauthLinkBubble(roomId, content) {
+  // Regular chat bubble (state='complete') so markdown hyperlinks are clickable.
+  const participant = db.prepare(
+    'SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type=\'ai\' LIMIT 1'
+  ).get(roomId);
+  if (!participant) return;
+  const result = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'complete')").run(roomId, participant.id, content);
+  broadcast(roomId, { type: 'message_new', message: { id: Number(result.lastInsertRowid), room_id: roomId, content, state: 'complete', created_at: new Date().toISOString() } });
+}
+
+function handleReauth(roomId) {
+  if (reauthProcess) {
+    broadcast(roomId, { type: 'system_event', status: 'Re-auth already in progress. Paste the code as REAUTH:<code> to complete it.' });
+    return;
+  }
+  // /reauth only works in rooms with exactly one AI agent (credentials are machine-global).
+  const aiParticipants = db.prepare(
+    'SELECT COUNT(*) as count FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type=\'ai\''
+  ).get(roomId);
+  if (aiParticipants.count !== 1) {
+    broadcast(roomId, { type: 'system_event', status: '/reauth can only be used in a room with exactly one AI agent.' });
+    return;
+  }
+  reauthBubble(roomId, 'Re-authentication started');
+  const { spawn } = require('child_process');
+  // Prepend PATH with a dir containing a no-op 'open' script to prevent macOS from launching a browser
+  // on the server machine — user will open the URL manually from their device.
+  const fakeBinDir = __dirname + '/.reauth-bin';
+  const spawnEnv = { ...process.env, PATH: fakeBinDir + ':' + (process.env.PATH || '') };
+  reauthProcess = spawn('claude', ['auth', 'login'], { stdio: ['pipe', 'pipe', 'pipe'], env: spawnEnv });
+  reauthRoomId = roomId;
+  let urlSent = false;
+  const URL_REGEX = /https:\/\/claude\.com\/cai\/oauth\/[^\s]+/;
+  const timer = setTimeout(() => {
+    if (reauthProcess) {
+      reauthProcess.kill();
+      reauthProcess = null;
+      reauthBubble(roomId, 'Re-auth timed out — no response in 5 minutes');
+    }
+  }, 5 * 60 * 1000);
+  const onData = (chunk) => {
+    if (urlSent) return;
+    const match = chunk.toString().match(URL_REGEX);
+    if (match) {
+      urlSent = true;
+      const url = match[0];
+      const content = `Please authenticate by clicking this link: [Authenticate with Claude](${url})\n\nThen paste the code here as: \`REAUTH:<code>\``;
+      reauthLinkBubble(roomId, content);
+    }
+  };
+  reauthProcess.stdout.on('data', onData);
+  reauthProcess.stderr.on('data', onData);
+  reauthProcess.on('close', (code) => {
+    clearTimeout(timer);
+    reauthProcess = null;
+    if (code === 0) {
+      reauthBubble(roomId, 'Re-authenticated successfully');
+    } else if (code !== null) {
+      reauthBubble(roomId, `Re-auth failed (exit ${code}) — try /reauth again`);
+    }
+  });
+  reauthProcess.on('error', (err) => {
+    clearTimeout(timer);
+    reauthProcess = null;
+    reauthBubble(roomId, `Re-auth error: ${err.message}`);
+  });
 }
 
 function broadcast(roomId, data) {
