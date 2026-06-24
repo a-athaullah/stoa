@@ -306,7 +306,12 @@ function autoHandleConnStatus(msg) {
   if (msg.connId === autoState.qrModal.connId && autoState.qrModal.open) {
     autoCloseQrModal();
   }
-  if (autoState.loaded) sLoadAutomationTab();
+  const conn = autoState.connections.find(c => c.id === msg.connId);
+  if (conn) {
+    conn.status = msg.status;
+    conn.error_msg = msg.error || null;
+  }
+  autoRender();
 }
 
 function autoRenderQrCanvas() {
