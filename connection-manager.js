@@ -345,13 +345,6 @@ class ConnectionManager extends EventEmitter {
     return conn.downloadMedia(msg);
   }
 
-  // Get Slack WebClient for history reads
-  getSlackWebClient(connId) {
-    const conn = this._conns.get(connId);
-    if (!conn || !(conn instanceof SlackConnection)) return null;
-    return conn.webClient;
-  }
-
   // Get Slack connection for history reads
   getSlackConnection(connId) {
     const conn = this._conns.get(connId);

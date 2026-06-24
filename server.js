@@ -3321,7 +3321,7 @@ wss.on('connection', (ws, req) => {
               INSERT OR IGNORE INTO wa_incoming_messages
                 (connection_id, chat_id, sender, text, msg_key, direction)
               VALUES (?, ?, 'bot', ?, ?, 'out')
-            `).run(connId2, chatId2, text2, `out-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+            `).run(connId2, chatId2, text2, `out-${crypto.randomUUID()}`);
           } catch {}
         }
         ws.send(JSON.stringify({ type: 'connector_send_result', ok: true }));
