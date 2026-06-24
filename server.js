@@ -875,7 +875,7 @@ const server = http.createServer(async (req, res) => {
           AND (
             (m.state = 'complete' AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL))
             OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
-                OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
+            OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
           )
         ORDER BY m.created_at ASC
         LIMIT 500
@@ -2374,7 +2374,7 @@ wss.on('connection', (ws, req) => {
           WHERE m.room_id=? AND (
             (m.state IN ('complete','streaming','requesting') AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL OR m.state IN ('streaming','requesting')))
             OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
-                OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
+            OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
           )
           ORDER BY m.created_at DESC LIMIT 100
         ) AS recent ORDER BY created_at ASC
@@ -2396,6 +2396,7 @@ wss.on('connection', (ws, req) => {
       }
       // REAUTH:<code>: user pastes the OAuth code returned by the browser after authorizing
       if (reauthProcess && !agentActorId && msg.content?.startsWith('REAUTH:')) {
+        if (reauthRoomId !== msg.room_id) return;
         const code = msg.content.slice('REAUTH:'.length).trim();
         if (code && reauthProcess?.stdin?.writable) reauthProcess.stdin.write(code + '\n');
         return;
