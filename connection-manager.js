@@ -260,9 +260,11 @@ class ConnectionManager extends EventEmitter {
       this._conns.set(conn.id, sc);
       const { workspaceName, botName } = sc.getStatus();
       updateStatus(conn.id, 'connected', null, { workspaceName, botName });
+      this.emit('conn_status', { connId: conn.id, status: 'connected' });
     } catch (e) {
       this._conns.delete(conn.id);
       updateStatus(conn.id, 'error', e.message, {});
+      this.emit('conn_status', { connId: conn.id, status: 'error', error: e.message });
       throw e;
     }
   }

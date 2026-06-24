@@ -4288,7 +4288,7 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
           case 'contains':      return val.includes(target);
           case 'not_contains':  return !val.includes(target);
           case 'starts_with':   return val.startsWith(target);
-          case 'matches_regex': try { return new RegExp(c.value, 'i').test(fieldValues[c.field] || ''); } catch { return false; }
+          case 'matches_regex': try { if (c.value.length > 200) return false; return new RegExp(c.value, 'i').test((fieldValues[c.field] || '').slice(0, 5000)); } catch { return false; }
           default: return true;
         }
       });
@@ -4399,7 +4399,7 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, text, isMenti
           case 'contains':      return val.includes(target);
           case 'not_contains':  return !val.includes(target);
           case 'starts_with':   return val.startsWith(target);
-          case 'matches_regex': try { return new RegExp(c.value, 'i').test(fieldValues[c.field] || ''); } catch { return false; }
+          case 'matches_regex': try { if (c.value.length > 200) return false; return new RegExp(c.value, 'i').test((fieldValues[c.field] || '').slice(0, 5000)); } catch { return false; }
           default: return true;
         }
       });
