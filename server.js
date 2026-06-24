@@ -433,7 +433,7 @@ function requireAuth(req, res, url) {
 // ─── HTTP server ──────────────────────────────────────────────────────────────
 
 function updateConnStatus(id, status, errorMsg, meta) {
-  const md = JSON.stringify({ workspaceName: meta.workspaceName || '', botName: meta.botName || '' });
+  const md = JSON.stringify(meta || {});
   db.prepare("UPDATE automation_connections SET status=?, error_msg=?, metadata=?, updated_at=datetime('now') WHERE id=?")
     .run(status, errorMsg || null, md, id);
 }
@@ -2045,22 +2045,46 @@ Write-Host "Logs   : pm2 logs $AgentName"
 
   if (req.method === 'POST' && url.pathname === '/api/automations/connections') {
     const body = parseJsonBody(await readBody(req));
-    if (!body?.name || !body?.appToken || !body?.token) {
-      res.writeHead(400); return res.end(JSON.stringify({ error: 'name, appToken, token required' }));
-    }
-    const creds = JSON.stringify({ appToken: body.appToken, token: body.token });
-    const provider = body.provider || 'slack';
-    if (!['slack'].includes(provider)) {
+    const provider = body?.provider || 'slack';
+    if (!['slack', 'whatsapp'].includes(provider)) {
       res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid provider' }));
     }
-    const tokenType = body.tokenType || 'bot';
-    if (!['bot','user'].includes(tokenType)) {
-      res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid tokenType' }));
+
+    let creds, tokenType, initialMeta;
+    if (provider === 'slack') {
+      if (!body?.name || !body?.appToken || !body?.token) {
+        res.writeHead(400); return res.end(JSON.stringify({ error: 'name, appToken, token required' }));
+      }
+      tokenType = body.tokenType || 'bot';
+      if (!['bot', 'user'].includes(tokenType)) {
+        res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid tokenType' }));
+      }
+      creds = JSON.stringify({ appToken: body.appToken, token: body.token });
+      initialMeta = '{}';
+    } else { // whatsapp
+      if (!body?.name) {
+        res.writeHead(400); return res.end(JSON.stringify({ error: 'name required' }));
+      }
+      tokenType = 'qr';
+      creds = '{}';
+      initialMeta = '{}'; // sessionDir set after insert (needs id)
     }
+
     const result = db.prepare(
       'INSERT INTO automation_connections (name,provider,token_type,credentials,metadata,status) VALUES (?,?,?,?,?,?)'
-    ).run((body.name || '').trim(), provider, tokenType, creds, '{}', 'connecting');
-    const conn = db.prepare('SELECT * FROM automation_connections WHERE id=?').get(result.lastInsertRowid);
+    ).run((body.name || '').trim(), provider, tokenType, creds, initialMeta, 'connecting');
+    const connId = Number(result.lastInsertRowid);
+
+    // For WA: set sessionDir now that we have the connection id
+    if (provider === 'whatsapp') {
+      const waMeta = JSON.stringify({
+        sessionDir: `.wa-sessions/${connId}`,
+        phoneNumber: (body.phoneNumber || '').trim(),
+      });
+      db.prepare("UPDATE automation_connections SET metadata=? WHERE id=?").run(waMeta, connId);
+    }
+
+    const conn = db.prepare('SELECT * FROM automation_connections WHERE id=?').get(connId);
     try {
       await connectionManager.startConnection(conn, updateConnStatus);
       const updated = db.prepare('SELECT id,name,provider,token_type,metadata,status,error_msg,created_at FROM automation_connections WHERE id=?').get(conn.id);
@@ -4150,6 +4174,77 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
     }
   } catch (e) {
     console.error('[automation] slack_event handler error:', e.message);
+  }
+});
+
+// ─── WhatsApp automation listener ────────────────────────────────────────────
+
+connectionManager.on('wa_event', async ({ eventType, msg, chatId, isGroup, sender, text, isMentioned, connId }) => {
+  try {
+    // Determine which trigger_events this incoming message qualifies for
+    const applicableEvents = ['message_any'];
+    if (isGroup) {
+      applicableEvents.push('group_message');
+      if (isMentioned) applicableEvents.push('group_mention');
+    } else {
+      applicableEvents.push('message');
+    }
+
+    const placeholders = applicableEvents.map(() => '?').join(',');
+    const automations = db.prepare(
+      `SELECT * FROM automations WHERE enabled=1 AND trigger_type='whatsapp' AND trigger_event IN (${placeholders}) AND (connection_id IS NULL OR connection_id=?)`
+    ).all(...applicableEvents, connId || null);
+
+    if (!automations.length) return;
+
+    const truncText = text.length > 4000 ? text.slice(0, 4000) + ' [truncated]' : text;
+    const extractedUrl = (text.match(/https?:\/\/[^\s]+/) || [])[0] || '';
+    const fieldValues = { message_text: text, wa_sender: sender, wa_chat_id: chatId };
+
+    for (const auto of automations) {
+      let conditions = [];
+      try { conditions = JSON.parse(auto.trigger_conditions || '[]'); } catch {}
+
+      const allMatch = conditions.every(c => {
+        const val = (fieldValues[c.field] || '').toLowerCase();
+        const target = (c.value || '').toLowerCase();
+        switch (c.op) {
+          case 'contains':      return val.includes(target);
+          case 'not_contains':  return !val.includes(target);
+          case 'starts_with':   return val.startsWith(target);
+          case 'matches_regex': try { return new RegExp(c.value, 'i').test(fieldValues[c.field] || ''); } catch { return false; }
+          default: return true;
+        }
+      });
+
+      if (!allMatch) continue;
+
+      const prompt = auto.prompt_template
+        .replace(/\{\{wa_message_text\}\}/g, truncText)
+        .replace(/\{\{wa_sender\}\}/g, sender)
+        .replace(/\{\{wa_sender_name\}\}/g, sender) // Phase 2: replace with contact name from store
+        .replace(/\{\{wa_chat_id\}\}/g, chatId)
+        .replace(/\{\{wa_chat_name\}\}/g, chatId)   // Phase 2: replace with group/contact name
+        .replace(/\{\{wa_is_group\}\}/g, String(isGroup))
+        .replace(/\{\{wa_is_mentioned\}\}/g, String(isMentioned))
+        .replace(/\{\{extracted_url\}\}/g, extractedUrl);
+
+      const _roomId = auto.target_room_id;
+      const _prompt = prompt;
+      const _autoName = auto.name;
+      const _autoId = auto.id;
+      automationQueue.enqueue(_roomId, async () => {
+        await waitForRoomIdle(_roomId);
+        await handleHumanMessage(_roomId, _prompt, null, null, null);
+        await waitForRoomIdle(_roomId);
+        db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(_autoId);
+      }, { automation: _autoName }).catch(e =>
+        console.error(`[automation] room ${_roomId} trigger error:`, e.message)
+      );
+      console.log(`[automation] "${_autoName}" queued → room ${_roomId} (wa:${connId}, sender: ${sender})`);
+    }
+  } catch (e) {
+    console.error('[automation] wa_event handler error:', e.message);
   }
 });
 

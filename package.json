@@ -26,6 +26,7 @@
     "@lezer/highlight": "^1.2.3",
     "@slack/socket-mode": "^2.0.7",
     "@slack/web-api": "^7.16.0",
+    "@whiskeysockets/baileys": "^7.0.0-rc13",
     "better-sqlite3": "^12.10.0",
     "codemirror": "^6.0.2",
     "dompurify": "^3.4.7",
