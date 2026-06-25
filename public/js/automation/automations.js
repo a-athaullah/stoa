@@ -204,7 +204,7 @@ function autoRenderForm() {
         </label>
         <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-family:var(--h-sans);font-size:13px;color:var(--h-ink-mute)">
           <input type="radio" name="auto-reply-mode" value="reply_wa" ${(f.replyMode || 'none') === 'reply_wa' ? 'checked' : ''} style="accent-color:var(--h-accent)">
-          Send AI reply back to WA
+          Enable AI to reply via WA
         </label>
       </div>
     </div>
