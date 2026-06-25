@@ -194,7 +194,7 @@ class WhatsAppConnection extends EventEmitter {
 
     this.emit('wa_event', {
       eventType: isGroup ? 'group_message' : 'message',
-      msg, chatId, isGroup, sender, text, isMentioned,
+      msg, chatId, isGroup, sender, senderName: msg.pushName || sender, text, isMentioned,
       mediaType, mediaSizeBytes,
       connId: this.connId,
     });

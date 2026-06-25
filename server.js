@@ -4386,7 +4386,7 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
 
 // ─── WhatsApp automation listener ────────────────────────────────────────────
 
-connectionManager.on('wa_event', async ({ chatId, isGroup, sender, text, isMentioned, connId, msg, mediaType, mediaSizeBytes }) => {
+connectionManager.on('wa_event', async ({ chatId, isGroup, sender, senderName, text, isMentioned, connId, msg, mediaType, mediaSizeBytes }) => {
   try {
     // ── Store incoming message to wa_incoming_messages
     const msgKey = msg?.key?.id || null;
@@ -4470,7 +4470,7 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, text, isMenti
       let prompt = auto.prompt_template
         .replace(/\{\{wa_message_text\}\}/g, truncText)
         .replace(/\{\{wa_sender\}\}/g, sender)
-        .replace(/\{\{wa_sender_name\}\}/g, sender) // Phase 2: replace with contact name from store
+        .replace(/\{\{wa_sender_name\}\}/g, senderName || sender)
         .replace(/\{\{wa_chat_id\}\}/g, chatId)
         .replace(/\{\{wa_chat_name\}\}/g, chatId)   // Phase 2: replace with group/contact name
         .replace(/\{\{wa_is_group\}\}/g, String(isGroup))
@@ -4479,7 +4479,7 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, text, isMenti
 
       if ((auto.reply_mode || 'none') === 'reply_wa') {
         const baseUrl = getPublicUrl(`localhost:${PORT}`);
-        prompt = `${prompt}\n\n---\n[WhatsApp Context]\nSender: ${sender}\nChat: ${chatId}\nType: ${isGroup ? 'group' : 'direct_message'}\nConnection ID: ${connId}\n\nTo reply to this sender via WhatsApp, write:\n[wa:reply]Your message here[/wa:reply]\n\nTo read recent chat history:\ncurl ${baseUrl}/api/automations/connections/${connId}/messages?chatId=${encodeURIComponent(chatId)}&limit=20\n---`;
+        prompt = `${prompt}\n\n---\n[WhatsApp Context]\nSender: ${senderName || sender} (${sender})\nChat: ${chatId}\nType: ${isGroup ? 'group' : 'direct_message'}\nConnection ID: ${connId}\n\nTo reply to this sender via WhatsApp, write:\n[wa:reply]Your message here[/wa:reply]\n\nTo read recent chat history:\ncurl ${baseUrl}/api/automations/connections/${connId}/messages?chatId=${encodeURIComponent(chatId)}&limit=20\n---`;
       }
 
       const _roomId = auto.target_room_id;

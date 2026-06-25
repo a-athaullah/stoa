@@ -509,7 +509,7 @@ Once at least one connection is active, click **+ new rule** to create a rule:
 - **Target room** — which Stoa room receives the triggered message
 - **Prompt template** — the message sent to the room. Use variables:
   - *Slack:* `{{slack_message_text}}`, `{{slack_message_link}}`, `{{slack_user}}`, `{{slack_channel}}`, `{{extracted_url}}`, `{{slack_thread_ts}}`
-  - *WhatsApp:* `{{wa_message_text}}`, `{{wa_sender}}`, `{{wa_chat_id}}`, `{{extracted_url}}`
+  - *WhatsApp:* `{{wa_message_text}}`, `{{wa_sender}}`, `{{wa_sender_name}}`, `{{wa_chat_id}}`, `{{extracted_url}}`
 - **Reply to WhatsApp** *(WhatsApp connections only)* — when enabled, the server injects a WhatsApp context block into the prompt with sender info, chat ID, and instructions for the agent. The agent can reply to WhatsApp using the `[wa:reply]` marker in its output:
 
   ```

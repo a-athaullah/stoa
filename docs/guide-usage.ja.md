@@ -505,7 +505,7 @@ Slackアプリトークンの作成手順は[Slackセットアップガイド](d
 - **対象ルーム** — プロンプトを送信するStoaルーム
 - **プロンプトテンプレート** — ルームに送られるメッセージ。使用可能な変数：
   - *Slack:* `{{slack_message_text}}`、`{{slack_message_link}}`、`{{slack_user}}`、`{{slack_channel}}`、`{{extracted_url}}`、`{{slack_thread_ts}}`
-  - *WhatsApp:* `{{wa_message_text}}`、`{{wa_sender}}`、`{{wa_chat_id}}`、`{{extracted_url}}`
+  - *WhatsApp:* `{{wa_message_text}}`、`{{wa_sender}}`、`{{wa_sender_name}}`、`{{wa_chat_id}}`、`{{extracted_url}}`
 - **WhatsAppへ返信** *（WhatsApp接続のみ）* — 有効にすると、サーバーは送信者情報、チャットID、エージェントへの指示を含むWhatsAppコンテキストブロックをプロンプトに挿入します。エージェントは出力で`[wa:reply]`マーカーを使用してWhatsAppに返信できます：
 
   ```

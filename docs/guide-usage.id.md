@@ -509,7 +509,7 @@ Setelah minimal satu koneksi aktif, klik **+ new rule** untuk membuat aturan:
 - **Target room** — room Stoa mana yang menerima pesan yang dipicu
 - **Prompt template** — pesan yang dikirim ke room. Gunakan variabel:
   - *Slack:* `{{slack_message_text}}`, `{{slack_message_link}}`, `{{slack_user}}`, `{{slack_channel}}`, `{{extracted_url}}`, `{{slack_thread_ts}}`
-  - *WhatsApp:* `{{wa_message_text}}`, `{{wa_sender}}`, `{{wa_chat_id}}`, `{{extracted_url}}`
+  - *WhatsApp:* `{{wa_message_text}}`, `{{wa_sender}}`, `{{wa_sender_name}}`, `{{wa_chat_id}}`, `{{extracted_url}}`
 - **Reply to WhatsApp** *(hanya koneksi WhatsApp)* — jika diaktifkan, server menyisipkan blok konteks WhatsApp ke dalam prompt yang berisi info pengirim, chat ID, dan instruksi untuk agent. Agent dapat membalas ke WhatsApp menggunakan marker `[wa:reply]` di output-nya:
 
   ```

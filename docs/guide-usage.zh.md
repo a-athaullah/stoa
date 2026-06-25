@@ -505,7 +505,7 @@ Stoa 支持 **由 Slack 和 WhatsApp 触发的自动化** — 当传入事件符
 - **目标房间** — 接收提示词的 Stoa 房间
 - **提示词模板** — 发送到房间的消息。可用变量：
   - *Slack:* `{{slack_message_text}}`、`{{slack_message_link}}`、`{{slack_user}}`、`{{slack_channel}}`、`{{extracted_url}}`、`{{slack_thread_ts}}`
-  - *WhatsApp:* `{{wa_message_text}}`、`{{wa_sender}}`、`{{wa_chat_id}}`、`{{extracted_url}}`
+  - *WhatsApp:* `{{wa_message_text}}`、`{{wa_sender}}`、`{{wa_sender_name}}`、`{{wa_chat_id}}`、`{{extracted_url}}`
 - **回复 WhatsApp** *（仅 WhatsApp 连接）* — 启用后，服务器会在提示词中插入包含发送者信息、聊天 ID 和代理指令的 WhatsApp 上下文块。代理可以在输出中使用 `[wa:reply]` 标记回复 WhatsApp：
 
   ```
