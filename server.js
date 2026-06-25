@@ -2853,7 +2853,7 @@ wss.on('connection', (ws, req) => {
         extractAndSendWaReplies(rawContent, msg.room_id).catch(e =>
           console.error('[wa:reply] extraction error:', e.message));
       }
-      const agentContent = stripWaReplyMarkers(rawContent) || (rawContent.includes('[wa:reply]') ? '(sent via WhatsApp)' : rawContent);
+      const agentContent = stripWaReplyMarkers(rawContent) || rawContent;
       db.prepare(
         "UPDATE messages SET content=?, file_url=?, file_name=?, attachments=?, ai_model=?, state='complete', completed_at=datetime('now') WHERE id=?"
       ).run(agentContent, msg.file_url || null, msg.file_name || null, attachJson, msg.ai_model || null, msg.message_id);
@@ -4220,7 +4220,10 @@ async function extractAndSendWaReplies(content, roomId) {
 }
 
 function stripWaReplyMarkers(content) {
-  return content.replace(/\[wa:reply(?:\s+to=[^\]]+)?\][\s\S]*?\[\/wa:reply\]/g, '').trim();
+  const replaced = content.replace(/\[wa:reply(?:\s+to=[^\]]+)?\]([\s\S]*?)\[\/wa:reply\]/g, (_, body) => {
+    return `\n---\n[Sent to WhatsApp]\n${body.trim()}\n---\n`;
+  }).trim();
+  return replaced;
 }
 
 function broadcast(roomId, data) {
