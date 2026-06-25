@@ -4479,7 +4479,7 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, text, isMenti
 
       if ((auto.reply_mode || 'none') === 'reply_wa') {
         const baseUrl = getPublicUrl(`localhost:${PORT}`);
-        prompt = `---\n[WhatsApp Context]\nSender: ${sender}\nChat: ${chatId}\nType: ${isGroup ? 'group' : 'direct_message'}\nConnection ID: ${connId}\n\nTo reply to this sender via WhatsApp, write:\n[wa:reply]Your message here[/wa:reply]\n\nTo read recent chat history:\ncurl ${baseUrl}/api/automations/connections/${connId}/messages?chatId=${encodeURIComponent(chatId)}&limit=20\n---\n\n${prompt}`;
+        prompt = `${prompt}\n\n---\n[WhatsApp Context]\nSender: ${sender}\nChat: ${chatId}\nType: ${isGroup ? 'group' : 'direct_message'}\nConnection ID: ${connId}\n\nTo reply to this sender via WhatsApp, write:\n[wa:reply]Your message here[/wa:reply]\n\nTo read recent chat history:\ncurl ${baseUrl}/api/automations/connections/${connId}/messages?chatId=${encodeURIComponent(chatId)}&limit=20\n---`;
       }
 
       const _roomId = auto.target_room_id;

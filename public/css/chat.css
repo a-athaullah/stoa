@@ -1594,3 +1594,17 @@ html.dark .h-bubble :not(pre) > code {
   letter-spacing: 0.02em;
 }
 .h-actor-status.is-online { color: #7fb98c; }
+
+.wa-context {
+  margin-top: 8px;
+  border-top: 1px solid var(--h-border, rgba(128,128,128,.2));
+  padding-top: 6px;
+}
+.wa-context summary {
+  font-size: 11px;
+  color: var(--h-ink-faint, #888);
+  cursor: pointer;
+  user-select: none;
+}
+.wa-context > :not(summary) { font-size: 11px; color: var(--h-ink-faint, #888); }
+.wa-context p, .wa-context code { font-size: 11px; }

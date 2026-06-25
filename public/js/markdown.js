@@ -32,6 +32,15 @@ marked.use({
 
 function renderMarkdown(text) {
   if (!text) return '';
+  const waCtxRe = /\n*---\n\[WhatsApp Context\]\n([\s\S]*?)\n---\s*$/;
+  const m = text.match(waCtxRe);
+  if (m) {
+    const main = text.slice(0, m.index).trim();
+    const ctx = m[1].trim();
+    const mainHtml = DOMPurify.sanitize(marked.parse(main || ''), { ADD_ATTR: ['class'] });
+    const ctxHtml = DOMPurify.sanitize(marked.parse(ctx), { ADD_ATTR: ['class'] });
+    return mainHtml + `<details class="wa-context"><summary>WhatsApp Context</summary>${ctxHtml}</details>`;
+  }
   return DOMPurify.sanitize(marked.parse(text), { ADD_ATTR: ['class'] });
 }
 
