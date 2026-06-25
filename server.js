@@ -2853,7 +2853,7 @@ wss.on('connection', (ws, req) => {
         extractAndSendWaReplies(rawContent, msg.room_id).catch(e =>
           console.error('[wa:reply] extraction error:', e.message));
       }
-      const agentContent = stripWaReplyMarkers(rawContent) || rawContent;
+      const agentContent = stripWaReplyMarkers(rawContent) || (rawContent.includes('[wa:reply]') ? '(sent via WhatsApp)' : rawContent);
       db.prepare(
         "UPDATE messages SET content=?, file_url=?, file_name=?, attachments=?, ai_model=?, state='complete', completed_at=datetime('now') WHERE id=?"
       ).run(agentContent, msg.file_url || null, msg.file_name || null, attachJson, msg.ai_model || null, msg.message_id);
@@ -4495,25 +4495,9 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, text, isMenti
         await waitForRoomIdle(_roomId);
         db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(_autoId);
         if (_replyMode === 'reply_wa') {
-          try {
-            const lastAiMsg = db.prepare(`
-              SELECT m.content FROM messages m
-              JOIN room_participants rp ON m.participant_id = rp.id
-              JOIN actors a ON rp.actor_id = a.id
-              WHERE m.room_id=? AND a.type='ai' AND m.state='complete'
-              ORDER BY m.id DESC LIMIT 1
-            `).get(_roomId);
-            if (lastAiMsg?.content && !/\[wa:reply[\s\S]*?\[\/wa:reply\]/.test(lastAiMsg.content)) {
-              await new Promise(r => setTimeout(r, 1500));
-              await connectionManager.connectorSend(_connId, _chatId, lastAiMsg.content);
-              try {
-                db.prepare(`INSERT OR IGNORE INTO wa_incoming_messages (connection_id,chat_id,sender,text,msg_key,direction) VALUES (?,?,'bot',?,?,'out')`)
-                  .run(_connId, _chatId, lastAiMsg.content, `out-${crypto.randomUUID()}`);
-              } catch {}
-            }
-          } catch (e) {
-            console.error(`[automation] reply_wa failed (conn:${_connId}, chat:${_chatId}):`, e.message);
-          }
+          // Context injection active → agent has [wa:reply] markers instruction.
+          // Marker replies already sent in agent_complete handler (extractAndSendWaReplies).
+          // No fallback needed — agent decides whether to reply via markers.
         }
       }, { automation: _autoName }).catch(e =>
         console.error(`[automation] room ${_roomId} trigger error:`, e.message)
