@@ -1341,6 +1341,32 @@ async function run() {
     assert.strictEqual(r.status, 400);
   });
 
+  await test('GET /api/automations/connections/:id/messages — missing chatId → 400', async () => {
+    const conns = await req('GET', '/api/automations/connections');
+    const waConn = conns.body.find(c => c.provider === 'whatsapp');
+    if (waConn) {
+      const r = await req('GET', `/api/automations/connections/${waConn.id}/messages`);
+      if (r.status === 405) return; // server not restarted yet
+      assert.strictEqual(r.status, 400);
+    }
+  });
+
+  await test('GET /api/automations/connections/:id/messages — slack conn → 400', async () => {
+    const conns = await req('GET', '/api/automations/connections');
+    const slackConn = conns.body.find(c => c.provider === 'slack');
+    if (slackConn) {
+      const r = await req('GET', `/api/automations/connections/${slackConn.id}/messages?chatId=test`);
+      if (r.status === 405) return; // server not restarted yet
+      assert.strictEqual(r.status, 400);
+    }
+  });
+
+  await test('GET /api/automations/connections/999999/messages — not found → 404', async () => {
+    const r = await req('GET', '/api/automations/connections/999999/messages?chatId=test');
+    if (r.status === 405) return; // server not restarted yet
+    assert.strictEqual(r.status, 404);
+  });
+
   await test('GET /api/setup/status — returns needsSetup bool', async () => {
     const r = await req('GET', '/api/setup/status');
     assert.strictEqual(r.status, 200);

@@ -506,7 +506,21 @@ Slackアプリトークンの作成手順は[Slackセットアップガイド](d
 - **プロンプトテンプレート** — ルームに送られるメッセージ。使用可能な変数：
   - *Slack:* `{{slack_message_text}}`、`{{slack_message_link}}`、`{{slack_user}}`、`{{slack_channel}}`、`{{extracted_url}}`、`{{slack_thread_ts}}`
   - *WhatsApp:* `{{wa_message_text}}`、`{{wa_sender}}`、`{{wa_chat_id}}`、`{{extracted_url}}`
-- **WhatsAppへ返信** *（WhatsApp接続のみ）* — 有効にすると、AIの応答がルームアイドル後に元のWhatsAppチャットへ自動送信されます
+- **WhatsAppへ返信** *（WhatsApp接続のみ）* — 有効にすると、サーバーは送信者情報、チャットID、エージェントへの指示を含むWhatsAppコンテキストブロックをプロンプトに挿入します。エージェントは出力で`[wa:reply]`マーカーを使用してWhatsAppに返信できます：
+
+  ```
+  [wa:reply]返信メッセージをここに入力[/wa:reply]
+  ```
+
+  サーバーはマーカーを検出し、テキストをWhatsApp送信者に送信し、ルームメッセージからマーカーを除去し、送信メッセージを記録します。エージェントがマーカーを使用しない場合、サーバーは従来通りAIの全応答を送信します。
+
+  コンテキストブロックは**メッセージ履歴API**についてもエージェントに通知します — エージェントは以下で最近のチャット履歴を読めます：
+
+  ```
+  curl <base_url>/api/automations/connections/<connId>/messages?chatId=<chatId>&limit=20
+  ```
+
+  ルームのCLAUDE.mdで、エージェントにいつ履歴を読むか、どう応答するかを指示してください。
 
 ### 有効化 / 無効化
 
@@ -519,6 +533,19 @@ Slackアプリトークンの作成手順は[Slackセットアップガイド](d
 - **`connector_list`** — 実行中のすべての接続を一覧表示。応答：`connectors`配列（id、provider、name、status）を含む`connector_list_result`
 - **`connector_send`** — コネクター経由でチャットにメッセージを送信。フィールド：`connector_id`、`chat_id`、`text`。応答：`ok`（bool）と失敗時の`error`を含む`connector_send_result`。WhatsAppの場合、`chat_id`はJID形式（例：`628xxx@s.whatsapp.net`）
 - **`connector_read`** — 会話履歴を読み取る。フィールド：`connector_id`、`chat_id`、`limit`（最大200、デフォルト50）。応答：`ok`と`messages`配列（sender、text、direction、timestamp）を含む`connector_read_result`
+
+### メッセージ履歴REST API
+
+エージェントが`curl`でWhatsAppチャット履歴を読む必要がある場合（例：ルーム内から）、RESTエンドポイントが利用可能です：
+
+```
+GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
+```
+
+- `chatId`（必須） — WhatsApp JID（例：`628xxx@s.whatsapp.net`）
+- `limit`（任意、デフォルト50、最大200） — 返される最近のメッセージ数
+- `{ sender, text, direction, media_type, timestamp }` の配列を返します
+- WhatsApp接続でのみ利用可能
 
 ---
 

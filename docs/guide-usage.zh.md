@@ -506,7 +506,21 @@ Stoa 支持 **由 Slack 和 WhatsApp 触发的自动化** — 当传入事件符
 - **提示词模板** — 发送到房间的消息。可用变量：
   - *Slack:* `{{slack_message_text}}`、`{{slack_message_link}}`、`{{slack_user}}`、`{{slack_channel}}`、`{{extracted_url}}`、`{{slack_thread_ts}}`
   - *WhatsApp:* `{{wa_message_text}}`、`{{wa_sender}}`、`{{wa_chat_id}}`、`{{extracted_url}}`
-- **回复 WhatsApp** *（仅 WhatsApp 连接）* — 启用后，AI 响应在房间空闲后将自动发送回原始 WhatsApp 对话
+- **回复 WhatsApp** *（仅 WhatsApp 连接）* — 启用后，服务器会在提示词中插入包含发送者信息、聊天 ID 和代理指令的 WhatsApp 上下文块。代理可以在输出中使用 `[wa:reply]` 标记回复 WhatsApp：
+
+  ```
+  [wa:reply]在此输入回复消息[/wa:reply]
+  ```
+
+  服务器会拦截标记，将文本发送给 WhatsApp 发送者，从房间消息中移除标记，并记录发出的消息。如果代理未使用标记，服务器将像以前一样发送完整的 AI 响应。
+
+  上下文块还会告知代理**消息历史 API** — 代理可以通过以下方式读取最近的聊天记录：
+
+  ```
+  curl <base_url>/api/automations/connections/<connId>/messages?chatId=<chatId>&limit=20
+  ```
+
+  使用房间的 CLAUDE.md 指示代理何时读取历史记录以及如何回复。
 
 ### 启用 / 禁用
 
@@ -519,6 +533,19 @@ Stoa 支持 **由 Slack 和 WhatsApp 触发的自动化** — 当传入事件符
 - **`connector_list`** — 列出所有运行中的连接。响应：包含 `connectors` 数组（id、provider、name、status）的 `connector_list_result`
 - **`connector_send`** — 通过连接器向对话发送消息。字段：`connector_id`、`chat_id`、`text`。响应：包含 `ok`（布尔值）和失败时 `error` 的 `connector_send_result`。WhatsApp 的 `chat_id` 必须为 JID 格式（例如：`628xxx@s.whatsapp.net`）
 - **`connector_read`** — 读取对话历史。字段：`connector_id`、`chat_id`、`limit`（最大 200，默认 50）。响应：包含 `ok` 和 `messages` 数组（sender、text、direction、timestamp）的 `connector_read_result`
+
+### 消息历史 REST API
+
+当代理需要通过 `curl` 读取 WhatsApp 聊天记录时（例如从房间内），可使用 REST 端点：
+
+```
+GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
+```
+
+- `chatId`（必填） — WhatsApp JID（例如：`628xxx@s.whatsapp.net`）
+- `limit`（可选，默认 50，最大 200） — 返回的最近消息数量
+- 返回 `{ sender, text, direction, media_type, timestamp }` 数组
+- 仅适用于 WhatsApp 连接
 
 ---
 

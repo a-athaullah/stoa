@@ -510,7 +510,21 @@ Once at least one connection is active, click **+ new rule** to create a rule:
 - **Prompt template** — the message sent to the room. Use variables:
   - *Slack:* `{{slack_message_text}}`, `{{slack_message_link}}`, `{{slack_user}}`, `{{slack_channel}}`, `{{extracted_url}}`, `{{slack_thread_ts}}`
   - *WhatsApp:* `{{wa_message_text}}`, `{{wa_sender}}`, `{{wa_chat_id}}`, `{{extracted_url}}`
-- **Reply to WhatsApp** *(WhatsApp connections only)* — when enabled, the AI's response is automatically sent back to the originating WhatsApp chat after the room goes idle
+- **Reply to WhatsApp** *(WhatsApp connections only)* — when enabled, the server injects a WhatsApp context block into the prompt with sender info, chat ID, and instructions for the agent. The agent can reply to WhatsApp using the `[wa:reply]` marker in its output:
+
+  ```
+  [wa:reply]Your reply message here[/wa:reply]
+  ```
+
+  The server intercepts the marker, sends the text to the WhatsApp sender, strips the marker from the room message, and logs the outgoing message. If the agent does not use the marker, the server falls back to sending the entire AI response as before.
+
+  The context block also tells the agent about the **message history API** — the agent can read recent chat history via:
+
+  ```
+  curl <base_url>/api/automations/connections/<connId>/messages?chatId=<chatId>&limit=20
+  ```
+
+  Use the room's CLAUDE.md to instruct the agent when to read history and how to respond.
 
 ### Enable / Disable
 
@@ -523,6 +537,19 @@ Agents with tool access can interact with active connections directly via WebSoc
 - **`connector_list`** — list all running connections. Response: `connector_list_result` with `connectors` array (id, provider, name, status)
 - **`connector_send`** — send a message to a chat via a connector. Fields: `connector_id`, `chat_id`, `text`. Response: `connector_send_result` with `ok` (bool) and `error` on failure. For WhatsApp, `chat_id` must be a JID (e.g., `628xxx@s.whatsapp.net`)
 - **`connector_read`** — read conversation history. Fields: `connector_id`, `chat_id`, `limit` (max 200, default 50). Response: `connector_read_result` with `ok` and `messages` array (sender, text, direction, timestamp)
+
+### Message History REST API
+
+For agents that need to read WhatsApp chat history via `curl` (e.g., from within a room), a REST endpoint is available:
+
+```
+GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
+```
+
+- `chatId` (required) — the WhatsApp JID (e.g., `628xxx@s.whatsapp.net`)
+- `limit` (optional, default 50, max 200) — number of recent messages to return
+- Returns an array of `{ sender, text, direction, media_type, timestamp }`
+- Only available for WhatsApp connections
 
 ---
 

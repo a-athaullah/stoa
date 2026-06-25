@@ -2188,6 +2188,26 @@ Write-Host "Logs   : pm2 logs $AgentName"
       }
     }
 
+    if (req.method === 'GET' && sub === '/messages') {
+      const chatId = url.searchParams.get('chatId');
+      if (!chatId) { res.writeHead(400); return res.end(JSON.stringify({ error: 'chatId is required' })); }
+      const limit = Math.min(parseInt(url.searchParams.get('limit')) || 50, 200);
+      if (conn.provider === 'whatsapp') {
+        const rows = db.prepare(`
+          SELECT sender, text, direction, media_type, created_at
+          FROM wa_incoming_messages
+          WHERE connection_id=? AND chat_id=?
+          ORDER BY created_at DESC LIMIT ?
+        `).all(connId, chatId, limit);
+        return json(res, rows.reverse().map(r => ({
+          sender: r.direction === 'out' ? 'bot' : r.sender,
+          text: r.text, direction: r.direction,
+          media_type: r.media_type || null, timestamp: r.created_at,
+        })));
+      }
+      res.writeHead(400); return res.end(JSON.stringify({ error: 'history only available for whatsapp connections' }));
+    }
+
     if (req.method === 'DELETE' && sub === '') {
       if (connectionManager.isRunning(connId)) {
         res.writeHead(409); return res.end(JSON.stringify({ error: 'Disconnect first' }));
@@ -2828,7 +2848,12 @@ wss.on('connection', (ws, req) => {
         return;
       }
       const attachJson = msg.attachments?.length ? JSON.stringify(msg.attachments) : null;
-      const agentContent = (msg.content || '').replace(/Please run \/login\b/g, 'Please run /reauth');
+      const rawContent = (msg.content || '').replace(/Please run \/login\b/g, 'Please run /reauth');
+      if (/\[wa:reply[\s\S]*?\[\/wa:reply\]/.test(rawContent)) {
+        extractAndSendWaReplies(rawContent, msg.room_id).catch(e =>
+          console.error('[wa:reply] extraction error:', e.message));
+      }
+      const agentContent = stripWaReplyMarkers(rawContent) || rawContent;
       db.prepare(
         "UPDATE messages SET content=?, file_url=?, file_name=?, attachments=?, ai_model=?, state='complete', completed_at=datetime('now') WHERE id=?"
       ).run(agentContent, msg.file_url || null, msg.file_name || null, attachJson, msg.ai_model || null, msg.message_id);
@@ -4162,6 +4187,42 @@ function handleReauth(roomId) {
   });
 }
 
+async function extractAndSendWaReplies(content, roomId) {
+  const re = /\[wa:reply(?:\s+to=([^\]]+))?\]([\s\S]*?)\[\/wa:reply\]/g;
+  let match;
+  const sent = [];
+  while ((match = re.exec(content)) !== null) {
+    const explicitJid = match[1]?.trim();
+    const replyText = match[2].trim();
+    if (!replyText) continue;
+    const auto = db.prepare(`
+      SELECT a.connection_id, a.id AS auto_id FROM automations a
+      WHERE a.target_room_id=? AND a.reply_mode='reply_wa' AND a.enabled=1 LIMIT 1
+    `).get(roomId);
+    if (!auto) continue;
+    const conn = db.prepare('SELECT id, provider FROM automation_connections WHERE id=?').get(auto.connection_id);
+    if (!conn || conn.provider !== 'whatsapp') continue;
+    const chatId = explicitJid || db.prepare(`
+      SELECT chat_id FROM wa_incoming_messages WHERE connection_id=? ORDER BY id DESC LIMIT 1
+    `).get(conn.id)?.chat_id;
+    if (!chatId) continue;
+    try {
+      await new Promise(r => setTimeout(r, 1500));
+      await connectionManager.connectorSend(conn.id, chatId, replyText);
+      db.prepare(`INSERT OR IGNORE INTO wa_incoming_messages (connection_id,chat_id,sender,text,msg_key,direction) VALUES (?,?,'bot',?,?,'out')`)
+        .run(conn.id, chatId, replyText, `out-${crypto.randomUUID()}`);
+      sent.push({ connId: conn.id, chatId, text: replyText });
+    } catch (e) {
+      console.error(`[wa:reply] send failed (conn:${conn.id}, chat:${chatId}):`, e.message);
+    }
+  }
+  return sent;
+}
+
+function stripWaReplyMarkers(content) {
+  return content.replace(/\[wa:reply(?:\s+to=[^\]]+)?\][\s\S]*?\[\/wa:reply\]/g, '').trim();
+}
+
 function broadcast(roomId, data) {
   const clients = roomClients.get(roomId);
   if (!clients) return;
@@ -4406,7 +4467,7 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, text, isMenti
 
       if (!allMatch) continue;
 
-      const prompt = auto.prompt_template
+      let prompt = auto.prompt_template
         .replace(/\{\{wa_message_text\}\}/g, truncText)
         .replace(/\{\{wa_sender\}\}/g, sender)
         .replace(/\{\{wa_sender_name\}\}/g, sender) // Phase 2: replace with contact name from store
@@ -4415,6 +4476,11 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, text, isMenti
         .replace(/\{\{wa_is_group\}\}/g, String(isGroup))
         .replace(/\{\{wa_is_mentioned\}\}/g, String(isMentioned))
         .replace(/\{\{extracted_url\}\}/g, extractedUrl);
+
+      if ((auto.reply_mode || 'none') === 'reply_wa') {
+        const baseUrl = getPublicUrl(`localhost:${PORT}`);
+        prompt = `---\n[WhatsApp Context]\nSender: ${sender}\nChat: ${chatId}\nType: ${isGroup ? 'group' : 'direct_message'}\nConnection ID: ${connId}\n\nTo reply to this sender via WhatsApp, write:\n[wa:reply]Your message here[/wa:reply]\n\nTo read recent chat history:\ncurl ${baseUrl}/api/automations/connections/${connId}/messages?chatId=${encodeURIComponent(chatId)}&limit=20\n---\n\n${prompt}`;
+      }
 
       const _roomId = auto.target_room_id;
       const _prompt = prompt;
@@ -4437,7 +4503,7 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, text, isMenti
               WHERE m.room_id=? AND a.type='ai' AND m.state='complete'
               ORDER BY m.id DESC LIMIT 1
             `).get(_roomId);
-            if (lastAiMsg?.content) {
+            if (lastAiMsg?.content && !/\[wa:reply[\s\S]*?\[\/wa:reply\]/.test(lastAiMsg.content)) {
               await new Promise(r => setTimeout(r, 1500));
               await connectionManager.connectorSend(_connId, _chatId, lastAiMsg.content);
               try {

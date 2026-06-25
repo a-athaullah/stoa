@@ -510,7 +510,21 @@ Setelah minimal satu koneksi aktif, klik **+ new rule** untuk membuat aturan:
 - **Prompt template** — pesan yang dikirim ke room. Gunakan variabel:
   - *Slack:* `{{slack_message_text}}`, `{{slack_message_link}}`, `{{slack_user}}`, `{{slack_channel}}`, `{{extracted_url}}`, `{{slack_thread_ts}}`
   - *WhatsApp:* `{{wa_message_text}}`, `{{wa_sender}}`, `{{wa_chat_id}}`, `{{extracted_url}}`
-- **Reply to WhatsApp** *(hanya koneksi WhatsApp)* — jika diaktifkan, respons AI secara otomatis dikirim balik ke chat WhatsApp asal setelah room idle
+- **Reply to WhatsApp** *(hanya koneksi WhatsApp)* — jika diaktifkan, server menyisipkan blok konteks WhatsApp ke dalam prompt yang berisi info pengirim, chat ID, dan instruksi untuk agent. Agent dapat membalas ke WhatsApp menggunakan marker `[wa:reply]` di output-nya:
+
+  ```
+  [wa:reply]Pesan balasan Anda di sini[/wa:reply]
+  ```
+
+  Server akan menangkap marker tersebut, mengirim teks ke pengirim WhatsApp, menghapus marker dari pesan room, dan mencatat pesan keluar. Jika agent tidak menggunakan marker, server akan mengirim seluruh respons AI seperti sebelumnya.
+
+  Blok konteks juga memberi tahu agent tentang **API riwayat pesan** — agent dapat membaca riwayat chat terbaru via:
+
+  ```
+  curl <base_url>/api/automations/connections/<connId>/messages?chatId=<chatId>&limit=20
+  ```
+
+  Gunakan CLAUDE.md room untuk menginstruksikan agent kapan harus membaca riwayat dan bagaimana merespons.
 
 ### Aktifkan / Nonaktifkan
 
@@ -523,6 +537,19 @@ Agent yang memiliki akses tool dapat berinteraksi langsung dengan koneksi aktif 
 - **`connector_list`** — daftar semua koneksi yang berjalan. Respons: `connector_list_result` dengan array `connectors` (id, provider, name, status)
 - **`connector_send`** — kirim pesan ke chat via koneksi. Field: `connector_id`, `chat_id`, `text`. Respons: `connector_send_result` dengan `ok` (bool) dan `error` jika gagal. Untuk WhatsApp, `chat_id` harus JID (contoh: `628xxx@s.whatsapp.net`)
 - **`connector_read`** — baca riwayat percakapan. Field: `connector_id`, `chat_id`, `limit` (maks 200, default 50). Respons: `connector_read_result` dengan `ok` dan array `messages` (sender, text, direction, timestamp)
+
+### API Riwayat Pesan (REST)
+
+Untuk agent yang perlu membaca riwayat chat WhatsApp via `curl` (misalnya dari dalam room), tersedia endpoint REST:
+
+```
+GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
+```
+
+- `chatId` (wajib) — JID WhatsApp (contoh: `628xxx@s.whatsapp.net`)
+- `limit` (opsional, default 50, maks 200) — jumlah pesan terbaru yang dikembalikan
+- Mengembalikan array `{ sender, text, direction, media_type, timestamp }`
+- Hanya tersedia untuk koneksi WhatsApp
 
 ---
 
