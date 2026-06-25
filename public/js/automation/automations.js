@@ -230,6 +230,9 @@ function autoRenderForm() {
         <!-- TRIGGER -->
         <div class="auto-form-divider"><span></span><span class="auto-section-label">trigger</span><span></span></div>
 
+        <!-- Connection (determines integration type) -->
+        ${connField}
+
         <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
           <div style="display:flex;flex-direction:column;gap:5px">
             <span style="font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute)">Integration</span>
@@ -242,9 +245,6 @@ function autoRenderForm() {
             </select>
           </div>
         </div>
-
-        <!-- Connection -->
-        ${connField}
 
         <!-- Conditions -->
         <div style="display:flex;flex-direction:column;gap:5px">

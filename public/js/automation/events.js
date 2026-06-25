@@ -92,6 +92,20 @@ function autoBindEvents(container) {
 
   container.querySelector('#auto-conn-save-btn')?.addEventListener('click', autoDoConnSave);
 
+  // ── Connection dropdown change → re-render form (updates Integration, Event, Conditions, Variables) ──
+  container.querySelector('#auto-form-conn')?.addEventListener('change', () => {
+    autoSyncForm();
+    const prevProvider = autoGetFormProvider();
+    autoState.form.connectionId = document.getElementById('auto-form-conn').value;
+    const newProvider = autoGetFormProvider();
+    if (newProvider !== prevProvider) {
+      autoState.form.triggerEvent = newProvider === 'whatsapp' ? 'message' : 'mention';
+      autoState.form.conditions = [];
+      autoState.form.replyMode = 'none';
+    }
+    autoRender();
+  });
+
   // ── Automation row hover ──
   container.querySelectorAll('.auto-row').forEach(row => {
     const actions = row.querySelector('.auto-row-actions');
@@ -116,7 +130,7 @@ function autoBindEvents(container) {
   }));
 
   // ── Edit automation ──
-  container.querySelectorAll('.auto-edit-btn').forEach(btn => btn.addEventListener('click', () => {
+  container.querySelectorAll('.auto-edit-btn').forEach(btn => btn.addEventListener('click', async () => {
     const id = parseInt(btn.dataset.id);
     const auto = autoState.automations.find(a => a.id === id);
     if (!auto) return;
@@ -134,6 +148,7 @@ function autoBindEvents(container) {
       promptTemplate: auto.prompt_template,
       replyMode: auto.reply_mode || 'none',
     };
+    try { autoState.rooms = await fjson('/api/rooms'); } catch {}
     autoRender();
   }));
 
@@ -151,7 +166,7 @@ function autoBindEvents(container) {
   }));
 
   // ── Add automation ──
-  container.querySelector('.auto-add-btn')?.addEventListener('click', () => {
+  container.querySelector('.auto-add-btn')?.addEventListener('click', async () => {
     const activeConns = autoState.connections.filter(c => c.status === 'connected' || c.status === 'connecting');
     const defaultConnId = activeConns.length === 1 ? String(activeConns[0].id) : '';
     const defaultConn = activeConns.find(c => String(c.id) === defaultConnId);
@@ -168,6 +183,7 @@ function autoBindEvents(container) {
       promptTemplate: '',
       replyMode: 'none',
     };
+    try { autoState.rooms = await fjson('/api/rooms'); } catch {}
     autoRender();
   });
 
