@@ -94,9 +94,8 @@ function autoBindEvents(container) {
 
   // ── Connection dropdown change → re-render form (updates Integration, Event, Conditions, Variables) ──
   container.querySelector('#auto-form-conn')?.addEventListener('change', () => {
-    autoSyncForm();
     const prevProvider = autoGetFormProvider();
-    autoState.form.connectionId = document.getElementById('auto-form-conn').value;
+    autoSyncForm();
     const newProvider = autoGetFormProvider();
     if (newProvider !== prevProvider) {
       autoState.form.triggerEvent = newProvider === 'whatsapp' ? 'message' : 'mention';
