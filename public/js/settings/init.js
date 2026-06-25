@@ -2,7 +2,16 @@ function initGlobalWs() {
   let reconnectDelay = 3000;
   function connect() {
     globalWs = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`);
-    globalWs.onopen = () => { reconnectDelay = 3000; globalWs.send(JSON.stringify({ type: 'subscribe_global' })); };
+    globalWs.onopen = () => {
+      reconnectDelay = 3000;
+      globalWs.send(JSON.stringify({ type: 'subscribe_global' }));
+      if (typeof autoState !== 'undefined' && autoState.loaded) {
+        autoState.loaded = false;
+        if (document.getElementById('s-tab-automation')?.style.display !== 'none') {
+          sLoadAutomationTab();
+        }
+      }
+    };
     globalWs.onmessage = async e => {
       let msg; try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.type === 'actor_status') handleActorStatus(msg.actor);
@@ -57,7 +66,15 @@ async function refreshRoomList() {
 }
 
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') refreshRoomList();
+  if (document.visibilityState === 'visible') {
+    refreshRoomList();
+    if (typeof autoState !== 'undefined' && autoState.loaded) {
+      autoState.loaded = false;
+      if (document.getElementById('s-tab-automation')?.style.display !== 'none') {
+        sLoadAutomationTab();
+      }
+    }
+  }
 });
 
 function handleActorStatus(actor) {

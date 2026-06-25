@@ -4465,6 +4465,7 @@ connectionManager.on('wa_qr', ({ connId, qr }) => {
 });
 
 connectionManager.on('conn_status', ({ connId, status, error }) => {
+  console.log(`[conn:${connId}] status → ${status} (broadcast to ${globalClients.size} browsers)`);
   broadcastGlobal({ type: 'conn_status', connId, status, error: error || null });
 });
 
