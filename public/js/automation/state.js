@@ -20,7 +20,7 @@ function autoShowErr(id, msg) {
 }
 
 // ── State ─────────────────────────────────────────────────────────────────────
-const AUTO_VARS = [
+const AUTO_VARS_SLACK = [
   '{{slack_message_text}}',
   '{{slack_message_link}}',
   '{{slack_thread_ts}}',
@@ -28,6 +28,19 @@ const AUTO_VARS = [
   '{{slack_channel}}',
   '{{extracted_url}}',
 ];
+
+const AUTO_VARS_WA = [
+  '{{wa_message_text}}',
+  '{{wa_sender}}',
+  '{{wa_sender_name}}',
+  '{{wa_chat_id}}',
+  '{{wa_chat_name}}',
+  '{{wa_is_group}}',
+  '{{wa_is_mentioned}}',
+  '{{extracted_url}}',
+];
+
+const AUTO_VARS = AUTO_VARS_SLACK;
 
 let autoState = {
   loaded: false,
@@ -43,13 +56,17 @@ let autoState = {
   connForm: {
     name: '',
     provider: 'slack',
-    tokenType: 'bot',       // 'bot' | 'user'
+    tokenType: 'bot',       // 'bot' | 'user' | 'qr'
     appToken: '',
     token: '',
+    phoneNumber: '',
+    maxMediaSizeMb: 100,
   },
   // Connection confirm
   connConfirmId: null,
   connConfirmAction: null,  // 'disconnect' | 'delete'
+  // QR modal
+  qrModal: { open: false, connId: null, qrData: null },
   // Automation form
   confirmDeleteId: null,
   formOpen: false,
@@ -62,6 +79,7 @@ let autoState = {
     conditions: [],
     targetRoomId: '',
     promptTemplate: '',
+    replyMode: 'none',
   },
 };
 
@@ -118,6 +136,17 @@ function autoRender() {
       </div>
     </div>
   `;
+
+  const existingOverlay = document.getElementById('auto-qr-modal-overlay');
+  if (autoState.qrModal.open) {
+    if (!existingOverlay) {
+      document.body.insertAdjacentHTML('beforeend', autoRenderQrModal());
+      autoBindQrModalEvents();
+    }
+    requestAnimationFrame(() => autoRenderQrCanvas());
+  } else if (existingOverlay) {
+    existingOverlay.remove();
+  }
 
   autoBindEvents(el);
 }

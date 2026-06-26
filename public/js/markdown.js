@@ -32,7 +32,20 @@ marked.use({
 
 function renderMarkdown(text) {
   if (!text) return '';
-  return DOMPurify.sanitize(marked.parse(text), { ADD_ATTR: ['class'] });
+  const waBlockRe = /\n*---\n\[(WhatsApp Context|Sent to WhatsApp)\]\n([\s\S]*?)\n---/g;
+  if (!waBlockRe.test(text)) return DOMPurify.sanitize(marked.parse(text), { ADD_ATTR: ['class'] });
+  waBlockRe.lastIndex = 0;
+  let result = '', lastIdx = 0, match;
+  while ((match = waBlockRe.exec(text)) !== null) {
+    const before = text.slice(lastIdx, match.index).trim();
+    if (before) result += DOMPurify.sanitize(marked.parse(before), { ADD_ATTR: ['class'] });
+    const label = match[1], body = DOMPurify.sanitize(marked.parse(match[2].trim()), { ADD_ATTR: ['class'] });
+    result += `<details class="wa-context"><summary>${label}</summary>${body}</details>`;
+    lastIdx = match.index + match[0].length;
+  }
+  const after = text.slice(lastIdx).trim();
+  if (after) result += DOMPurify.sanitize(marked.parse(after), { ADD_ATTR: ['class'] });
+  return result;
 }
 
 async function copyToClipboard(text) {

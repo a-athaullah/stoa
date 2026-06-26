@@ -3,6 +3,7 @@
 'use strict';
 
 const EventEmitter = require('events');
+const path = require('path');
 
 class SlackConnection extends EventEmitter {
   constructor(connId) {
@@ -62,6 +63,16 @@ class SlackConnection extends EventEmitter {
     console.log(`[conn:${this.connId}] connected — workspace: ${this.workspaceName}, handle: ${this.botName}`);
   }
 
+  async sendMessage(channelId, text) {
+    if (!this.webClient) throw new Error('not connected');
+    return this.webClient.chat.postMessage({ channel: channelId, text });
+  }
+
+  async getHistory(channelId, limit) {
+    if (!this.webClient) throw new Error('not connected');
+    return this.webClient.conversations.history({ channel: channelId, limit: limit || 50 });
+  }
+
   async stop() {
     if (this.client) {
       try { await this.client.disconnect(); } catch {}
@@ -79,14 +90,157 @@ class SlackConnection extends EventEmitter {
   }
 }
 
+class WhatsAppConnection extends EventEmitter {
+  constructor(connId) {
+    super();
+    this.connId = connId;
+    this.sock = null;
+    this.running = false;
+    this.botJid = null;
+    this._processed = new Map(); // messageId → expiresAt, for dedup after reconnect
+  }
+
+  async start({ sessionDir }) {
+    const {
+      makeWASocket, useMultiFileAuthState, DisconnectReason,
+    } = require('@whiskeysockets/baileys');
+    const pino = require('pino');
+
+    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+
+    this.sock = makeWASocket({
+      auth: state,
+      printQRInTerminal: false,
+      markOnlineOnConnect: false,
+      generateHighQualityLinkPreview: false,
+      logger: pino({ level: 'silent' }),
+    });
+
+    this.sock.ev.on('creds.update', saveCreds);
+
+    this.sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
+      if (qr) {
+        console.log(`[wa:${this.connId}] QR received — scan with WhatsApp to authenticate`);
+        this.emit('qr', qr);
+      }
+      if (connection === 'open') {
+        this.running = true;
+        this.botJid = this.sock.user?.id || null;
+        console.log(`[wa:${this.connId}] connected — jid: ${this.botJid}`);
+        this.emit('ready');
+      }
+      if (connection === 'close') {
+        this.running = false;
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        if (statusCode === DisconnectReason.loggedOut || statusCode === DisconnectReason.forbidden) {
+          console.log(`[wa:${this.connId}] logged out — session cleared`);
+          this.emit('error', new Error('logged_out'));
+        } else {
+          console.log(`[wa:${this.connId}] disconnected (${statusCode}), reconnecting in 5s...`);
+          setTimeout(() => this.start({ sessionDir }).catch(() => {}), 5000);
+        }
+      }
+    });
+
+    this.sock.ev.on('messages.upsert', ({ messages, type }) => {
+      if (type !== 'notify') return; // skip history sync on connect
+      for (const msg of messages) {
+        this._handleMessage(msg);
+      }
+    });
+  }
+
+  _handleMessage(msg) {
+    if (msg.key.fromMe) return;
+    if (msg.key.remoteJid === 'status@broadcast') return;
+    if (msg.message?.protocolMessage) return;
+    if (msg.message?.reactionMessage) return;
+    if (msg.messageStubType) return;
+
+    // Dedup: prevent double-trigger after reconnect re-delivery
+    const now = Date.now();
+    const dedupKey = msg.key.id;
+    if (this._processed.has(dedupKey)) return;
+    this._processed.set(dedupKey, now + 120_000);
+    if (this._processed.size > 500) {
+      for (const [k, exp] of this._processed) { if (exp < now) this._processed.delete(k); }
+    }
+
+    const chatId = msg.key.remoteJid;
+    const isGroup = chatId.endsWith('@g.us');
+    const sender = isGroup ? msg.key.participant : chatId;
+    const text = msg.message?.conversation
+      || msg.message?.extendedTextMessage?.text
+      || '';
+    if (!text.trim()) return; // skip media-only messages without caption
+
+    const mentionedJids = msg.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+    const botBase = this.botJid ? this.botJid.split(':')[0] : null;
+    const isMentioned = botBase
+      ? mentionedJids.some(jid => jid === this.botJid || jid.startsWith(botBase))
+      : false;
+
+    // Detect media type and size for storage
+    let mediaType = null;
+    let mediaSizeBytes = 0;
+    const imgMsg  = msg.message?.imageMessage;
+    const audMsg  = msg.message?.audioMessage;
+    const vidMsg  = msg.message?.videoMessage;
+    const docMsg  = msg.message?.documentMessage;
+    if (imgMsg)  { mediaType = 'image';    mediaSizeBytes = Number(imgMsg.fileLength  || 0); }
+    else if (audMsg) { mediaType = 'audio'; mediaSizeBytes = Number(audMsg.fileLength || 0); }
+    else if (vidMsg) { mediaType = 'video'; mediaSizeBytes = Number(vidMsg.fileLength || 0); }
+    else if (docMsg) { mediaType = 'document'; mediaSizeBytes = Number(docMsg.fileLength || 0); }
+
+    this.emit('wa_event', {
+      eventType: isGroup ? 'group_message' : 'message',
+      msg, chatId, isGroup, sender, senderName: msg.pushName || sender, text, isMentioned,
+      mediaType, mediaSizeBytes,
+      connId: this.connId,
+    });
+  }
+
+  async sendMessage(chatId, text) {
+    if (!this.sock) throw new Error('not connected');
+    return this.sock.sendMessage(chatId, { text });
+  }
+
+  async downloadMedia(msg) {
+    if (!this.sock) throw new Error('not connected');
+    const { downloadMediaMessage } = require('@whiskeysockets/baileys');
+    return downloadMediaMessage(msg, 'buffer', {}, { logger: require('pino')({ level: 'silent' }) });
+  }
+
+  async stop() {
+    if (this.sock) {
+      try { await this.sock.end(); } catch {}
+      this.sock = null;
+    }
+    this.running = false;
+    this.botJid = null;
+    console.log(`[wa:${this.connId}] stopped`);
+  }
+
+  getStatus() {
+    return { running: this.running, botJid: this.botJid };
+  }
+}
+
 class ConnectionManager extends EventEmitter {
   constructor() {
     super();
-    this._conns = new Map(); // connId -> SlackConnection
+    this._conns = new Map(); // connId -> SlackConnection | WhatsAppConnection
   }
 
   // Start a connection from a DB row. Updates DB status via callback.
   async startConnection(conn, updateStatus) {
+    if (conn.provider === 'whatsapp') {
+      return this._startWhatsAppConnection(conn, updateStatus);
+    }
+    return this._startSlackConnection(conn, updateStatus);
+  }
+
+  async _startSlackConnection(conn, updateStatus) {
     let creds = {};
     try { creds = JSON.parse(conn.credentials || '{}'); } catch {}
 
@@ -106,11 +260,48 @@ class ConnectionManager extends EventEmitter {
       this._conns.set(conn.id, sc);
       const { workspaceName, botName } = sc.getStatus();
       updateStatus(conn.id, 'connected', null, { workspaceName, botName });
+      this.emit('conn_status', { connId: conn.id, status: 'connected' });
     } catch (e) {
       this._conns.delete(conn.id);
       updateStatus(conn.id, 'error', e.message, {});
+      this.emit('conn_status', { connId: conn.id, status: 'error', error: e.message });
       throw e;
     }
+  }
+
+  async _startWhatsAppConnection(conn, updateStatus) {
+    let meta = {};
+    try { meta = JSON.parse(conn.metadata || '{}'); } catch {}
+    const safeDefault = path.join(__dirname, '.wa-sessions', String(conn.id));
+    const resolved = meta.sessionDir ? path.resolve(__dirname, meta.sessionDir) : safeDefault;
+    // Guard: session dir must stay within project directory
+    const sessionDir = resolved.startsWith(__dirname + path.sep) || resolved === __dirname
+      ? resolved
+      : safeDefault;
+
+    const existing = this._conns.get(conn.id);
+    if (existing) await existing.stop();
+
+    const wc = new WhatsAppConnection(conn.id);
+    wc.on('wa_event', (payload) => this.emit('wa_event', payload));
+    wc.on('qr', (qr) => this.emit('wa_qr', { connId: conn.id, qr }));
+    wc.on('ready', () => {
+      updateStatus(conn.id, 'connected', null, { ...meta, sessionDir: meta.sessionDir || `.wa-sessions/${conn.id}` });
+      this.emit('conn_status', { connId: conn.id, status: 'connected' });
+    });
+    wc.on('error', (err) => {
+      this._conns.delete(conn.id);
+      updateStatus(conn.id, 'error', err.message, meta);
+      this.emit('conn_status', { connId: conn.id, status: 'error', error: err.message });
+    });
+
+    // Store immediately so stopConnection/isRunning work before ready fires
+    this._conns.set(conn.id, wc);
+    // Start async — doesn't block (QR scan may be required)
+    wc.start({ sessionDir }).catch((err) => {
+      this._conns.delete(conn.id);
+      updateStatus(conn.id, 'error', err.message, meta);
+    });
   }
 
   async stopConnection(connId) {
@@ -129,6 +320,40 @@ class ConnectionManager extends EventEmitter {
 
   isRunning(connId) {
     return this._conns.get(connId)?.running === true;
+  }
+
+  // Return list of running connections with their provider
+  listRunning() {
+    const result = [];
+    for (const [connId, conn] of this._conns) {
+      if (conn.running) {
+        const provider = conn instanceof WhatsAppConnection ? 'whatsapp' : 'slack';
+        result.push({ connId, provider });
+      }
+    }
+    return result;
+  }
+
+  // Send a message via connector — routes by provider
+  async connectorSend(connId, chatId, text) {
+    const conn = this._conns.get(connId);
+    if (!conn) throw new Error(`connector ${connId} not found`);
+    if (!conn.running) throw new Error(`connector ${connId} not connected`);
+    return conn.sendMessage(chatId, text);
+  }
+
+  // Download WA media via connector
+  async downloadWaMedia(connId, msg) {
+    const conn = this._conns.get(connId);
+    if (!conn || !(conn instanceof WhatsAppConnection)) return null;
+    return conn.downloadMedia(msg);
+  }
+
+  // Get Slack connection for history reads
+  getSlackConnection(connId) {
+    const conn = this._conns.get(connId);
+    if (!conn || !(conn instanceof SlackConnection)) return null;
+    return conn;
   }
 }
 

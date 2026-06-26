@@ -48,6 +48,14 @@ function autoBindEvents(container) {
     autoDoConnReconnect(parseInt(btn.dataset.id));
   }));
 
+  container.querySelectorAll('.auto-conn-show-qr-btn').forEach(btn => btn.addEventListener('click', () => {
+    const connId = parseInt(btn.dataset.id);
+    autoState.qrModal.open = true;
+    autoState.qrModal.connId = connId;
+    autoRender();
+    autoDoConnReconnect(connId);
+  }));
+
   container.querySelectorAll('.auto-conn-confirm-cancel-btn').forEach(btn => btn.addEventListener('click', () => {
     autoState.connConfirmId = null;
     autoState.connConfirmAction = null;
@@ -61,19 +69,41 @@ function autoBindEvents(container) {
     else if (action === 'delete') autoDoConnDelete(id);
   }));
 
-  // Token type radio
+  // Token type radio (Slack)
   container.querySelectorAll('#auto-conn-token-type input[type=radio]').forEach(radio => {
     radio.addEventListener('change', () => {
       autoConnSyncForm();
       autoState.connForm.tokenType = radio.value;
-      // Re-render just the form part — re-render full for simplicity
       autoRender();
     });
   });
 
+  // Provider select
+  container.querySelector('#auto-conn-provider')?.addEventListener('change', e => {
+    autoConnSyncForm();
+    autoState.connForm.provider = e.target.value;
+    autoState.connForm.tokenType = e.target.value === 'whatsapp' ? 'qr' : 'bot';
+    autoRender();
+  });
+
+  // QR modal close handled by autoBindQrModalEvents (modal lives in body, not container)
+
   container.querySelectorAll('.auto-conn-form-cancel-btn').forEach(btn => btn.addEventListener('click', autoConnFormClose));
 
   container.querySelector('#auto-conn-save-btn')?.addEventListener('click', autoDoConnSave);
+
+  // ── Connection dropdown change → re-render form (updates Integration, Event, Conditions, Variables) ──
+  container.querySelector('#auto-form-conn')?.addEventListener('change', () => {
+    const prevProvider = autoGetFormProvider();
+    autoSyncForm();
+    const newProvider = autoGetFormProvider();
+    if (newProvider !== prevProvider) {
+      autoState.form.triggerEvent = newProvider === 'whatsapp' ? 'message' : 'mention';
+      autoState.form.conditions = [];
+      autoState.form.replyMode = 'none';
+    }
+    autoRender();
+  });
 
   // ── Automation row hover ──
   container.querySelectorAll('.auto-row').forEach(row => {
@@ -99,7 +129,7 @@ function autoBindEvents(container) {
   }));
 
   // ── Edit automation ──
-  container.querySelectorAll('.auto-edit-btn').forEach(btn => btn.addEventListener('click', () => {
+  container.querySelectorAll('.auto-edit-btn').forEach(btn => btn.addEventListener('click', async () => {
     const id = parseInt(btn.dataset.id);
     const auto = autoState.automations.find(a => a.id === id);
     if (!auto) return;
@@ -115,7 +145,9 @@ function autoBindEvents(container) {
       conditions: conds,
       targetRoomId: auto.target_room_id,
       promptTemplate: auto.prompt_template,
+      replyMode: auto.reply_mode || 'none',
     };
+    try { autoState.rooms = await fjson('/api/rooms'); } catch {}
     autoRender();
   }));
 
@@ -133,19 +165,24 @@ function autoBindEvents(container) {
   }));
 
   // ── Add automation ──
-  container.querySelector('.auto-add-btn')?.addEventListener('click', () => {
-    const slackConns = autoState.connections.filter(c => c.provider === 'slack');
+  container.querySelector('.auto-add-btn')?.addEventListener('click', async () => {
+    const activeConns = autoState.connections.filter(c => c.status === 'connected' || c.status === 'connecting');
+    const defaultConnId = activeConns.length === 1 ? String(activeConns[0].id) : '';
+    const defaultConn = activeConns.find(c => String(c.id) === defaultConnId);
+    const isWa = defaultConn?.provider === 'whatsapp';
     autoState.formOpen = true;
     autoState.formMode = 'new';
     autoState.editingId = null;
     autoState.form = {
       name: '',
-      triggerEvent: 'mention',
-      connectionId: slackConns.length === 1 ? String(slackConns[0].id) : '',
+      triggerEvent: isWa ? 'message' : 'mention',
+      connectionId: defaultConnId,
       conditions: [],
       targetRoomId: '',
       promptTemplate: '',
+      replyMode: 'none',
     };
+    try { autoState.rooms = await fjson('/api/rooms'); } catch {}
     autoRender();
   });
 
@@ -200,16 +237,18 @@ function autoBindEvents(container) {
 
 // ── Form helpers ──────────────────────────────────────────────────────────────
 function autoSyncForm() {
-  const name   = document.getElementById('auto-form-name');
-  const event  = document.getElementById('auto-form-event');
-  const conn   = document.getElementById('auto-form-conn');
-  const room   = document.getElementById('auto-form-room');
-  const prompt = document.getElementById('auto-form-prompt');
-  if (name)   autoState.form.name           = name.value;
-  if (event)  autoState.form.triggerEvent   = event.value;
-  if (conn)   autoState.form.connectionId   = conn.value;
-  if (room)   autoState.form.targetRoomId   = room.value;
-  if (prompt) autoState.form.promptTemplate = prompt.value;
+  const name      = document.getElementById('auto-form-name');
+  const event     = document.getElementById('auto-form-event');
+  const conn      = document.getElementById('auto-form-conn');
+  const room      = document.getElementById('auto-form-room');
+  const prompt    = document.getElementById('auto-form-prompt');
+  const replyMode = document.querySelector('#auto-form-reply-mode input[type=radio]:checked');
+  if (name)      autoState.form.name           = name.value;
+  if (event)     autoState.form.triggerEvent   = event.value;
+  if (conn)      autoState.form.connectionId   = conn.value;
+  if (room)      autoState.form.targetRoomId   = room.value;
+  if (prompt)    autoState.form.promptTemplate = prompt.value;
+  if (replyMode) autoState.form.replyMode      = replyMode.value;
 
   const cfs = document.querySelectorAll('.auto-cond-field');
   const cos = document.querySelectorAll('.auto-cond-op');
@@ -228,14 +267,18 @@ function autoFormClose() {
 }
 
 function autoConnSyncForm() {
-  const name     = document.getElementById('auto-conn-name');
-  const appToken = document.getElementById('auto-conn-app-token');
-  const token    = document.getElementById('auto-conn-token');
-  const ttRadio  = document.querySelector('#auto-conn-token-type input[type=radio]:checked');
-  if (name)     autoState.connForm.name     = name.value;
-  if (appToken) autoState.connForm.appToken = appToken.value;
-  if (token)    autoState.connForm.token    = token.value;
-  if (ttRadio)  autoState.connForm.tokenType = ttRadio.value;
+  const name      = document.getElementById('auto-conn-name');
+  const appToken  = document.getElementById('auto-conn-app-token');
+  const token     = document.getElementById('auto-conn-token');
+  const ttRadio   = document.querySelector('#auto-conn-token-type input[type=radio]:checked');
+  const phone     = document.getElementById('auto-conn-phone');
+  const mediaSize = document.getElementById('auto-conn-media-size');
+  if (name)      autoState.connForm.name         = name.value;
+  if (appToken)  autoState.connForm.appToken      = appToken.value;
+  if (token)     autoState.connForm.token         = token.value;
+  if (ttRadio)   autoState.connForm.tokenType     = ttRadio.value;
+  if (phone)     autoState.connForm.phoneNumber   = phone.value;
+  if (mediaSize) autoState.connForm.maxMediaSizeMb = parseInt(mediaSize.value) || 100;
 }
 
 function autoConnFormClose() {
@@ -243,5 +286,53 @@ function autoConnFormClose() {
   autoState.editingConnId = null;
   autoState.connFormError = null;
   autoRender();
+}
+
+// ── QR handling ───────────────────────────────────────────────────────────────
+function autoCloseQrModal() {
+  autoState.qrModal.open = false;
+  autoState.qrModal.qrData = null;
+  const overlay = document.getElementById('auto-qr-modal-overlay');
+  if (overlay) overlay.remove();
+}
+
+function autoBindQrModalEvents() {
+  const overlay = document.getElementById('auto-qr-modal-overlay');
+  if (!overlay) return;
+  overlay.querySelectorAll('.auto-qr-close-btn').forEach(btn =>
+    btn.addEventListener('click', () => { autoCloseQrModal(); autoRender(); }));
+  overlay.addEventListener('click', e => {
+    if (e.target === overlay) { autoCloseQrModal(); autoRender(); }
+  });
+}
+
+function autoHandleWaQr(msg) {
+  autoState.qrModal.connId = msg.connId;
+  autoState.qrModal.qrData = msg.qr;
+  if (!autoState.qrModal.open) autoState.qrModal.open = true;
+  const overlay = document.getElementById('auto-qr-modal-overlay');
+  if (overlay) overlay.remove();
+  document.body.insertAdjacentHTML('beforeend', autoRenderQrModal());
+  autoBindQrModalEvents();
+  requestAnimationFrame(() => autoRenderQrCanvas());
+}
+
+function autoHandleConnStatus(msg) {
+  if (msg.connId === autoState.qrModal.connId && autoState.qrModal.open) {
+    autoCloseQrModal();
+  }
+  const conn = autoState.connections.find(c => c.id === msg.connId);
+  if (conn) {
+    conn.status = msg.status;
+    conn.error_msg = msg.error || null;
+  }
+  autoRender();
+}
+
+function autoRenderQrCanvas() {
+  const canvas = document.getElementById('auto-qr-canvas');
+  if (!canvas || !autoState.qrModal.qrData) return;
+  if (typeof QRCode === 'undefined') return;
+  QRCode.toCanvas(canvas, autoState.qrModal.qrData, { width: 220, margin: 1 }, () => {});
 }
 
