@@ -56,6 +56,7 @@ const EMOJI_KW = {
 };
 
 let emojiPickerOpen = false;
+let savedRange = null;
 
 function initEmojiPicker() {
   const btn = document.getElementById('emoji-btn');
@@ -82,7 +83,13 @@ function initEmojiPicker() {
       b.type = 'button';
       b.onclick = () => {
         input.focus();
+        if (savedRange) {
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(savedRange);
+        }
         document.execCommand('insertText', false, em);
+        savedRange = null;
         closePicker();
       };
       grid.appendChild(b);
@@ -99,6 +106,12 @@ function initEmojiPicker() {
   }
 
   function openPicker() {
+    const sel = window.getSelection();
+    if (sel.rangeCount > 0 && input.contains(sel.anchorNode)) {
+      savedRange = sel.getRangeAt(0).cloneRange();
+    } else {
+      savedRange = null;
+    }
     picker.classList.add('open');
     search.value = '';
     renderGrid(EMOJIS);
