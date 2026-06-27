@@ -32,7 +32,11 @@ async function init() {
   fetchPlatformModels();
 
   let rooms = [];
-  try { rooms = await fjson('/api/rooms'); } catch (e) { console.error('Failed to load rooms:', e); }
+  try { rooms = await fjson('/api/rooms'); } catch (e) {
+    console.error('Failed to load rooms, retrying:', e);
+    await new Promise(r => setTimeout(r, 1000));
+    try { rooms = await fjson('/api/rooms'); } catch (e2) { console.error('Retry failed:', e2); }
+  }
   renderRoomList(rooms);
 
   if (rooms.length) {

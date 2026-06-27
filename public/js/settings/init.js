@@ -5,6 +5,7 @@ function initGlobalWs() {
     globalWs.onopen = () => {
       reconnectDelay = 3000;
       globalWs.send(JSON.stringify({ type: 'subscribe_global' }));
+      refreshRoomList();
       if (typeof autoState !== 'undefined' && autoState.loaded) {
         autoState.loaded = false;
         if (document.getElementById('s-tab-automation')?.style.display !== 'none') {
