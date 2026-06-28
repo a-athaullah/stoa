@@ -88,6 +88,7 @@ function finalizeMessage(msgId, content, fileUrl, fileName, attachments, aiModel
     }
     addCopyButtons(bubble);
   linkifyFilePaths(bubble);
+  externalLinksNewTab(bubble);
   }
 
   // Add message action buttons (reply + copy) if not already present
