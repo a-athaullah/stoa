@@ -312,3 +312,19 @@ function openFileFromPath(absOrRelPath) {
   }
 }
 
+
+function externalLinksNewTab(el) {
+  const origin = window.location.origin;
+  el.querySelectorAll('a[href]').forEach(a => {
+    if (a.classList.contains('h-file-link') || a.classList.contains('h-msg-file')) return;
+    const href = a.getAttribute('href');
+    if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
+    try {
+      const url = new URL(href, origin);
+      if (url.origin !== origin) {
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+      }
+    } catch {}
+  });
+}

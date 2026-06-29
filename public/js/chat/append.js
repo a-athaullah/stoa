@@ -109,5 +109,6 @@ function appendMessage(m, container) {
   inner.appendChild(row);
   addCopyButtons(bubble);
   linkifyFilePaths(bubble);
+  externalLinksNewTab(bubble);
 }
 
