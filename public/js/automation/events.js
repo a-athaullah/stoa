@@ -52,6 +52,7 @@ function autoBindEvents(container) {
     const connId = parseInt(btn.dataset.id);
     autoState.qrModal.open = true;
     autoState.qrModal.connId = connId;
+    autoState.qrModal.dismissedConnId = null;
     autoRender();
     autoDoConnReconnect(connId);
   }));
@@ -290,6 +291,7 @@ function autoConnFormClose() {
 
 // ── QR handling ───────────────────────────────────────────────────────────────
 function autoCloseQrModal() {
+  autoState.qrModal.dismissedConnId = autoState.qrModal.connId;
   autoState.qrModal.open = false;
   autoState.qrModal.qrData = null;
   const overlay = document.getElementById('auto-qr-modal-overlay');
@@ -307,6 +309,7 @@ function autoBindQrModalEvents() {
 }
 
 function autoHandleWaQr(msg) {
+  if (autoState.qrModal.dismissedConnId === msg.connId) return;
   autoState.qrModal.connId = msg.connId;
   autoState.qrModal.qrData = msg.qr;
   if (!autoState.qrModal.open) autoState.qrModal.open = true;
@@ -320,6 +323,9 @@ function autoHandleWaQr(msg) {
 function autoHandleConnStatus(msg) {
   if (msg.connId === autoState.qrModal.connId && autoState.qrModal.open) {
     autoCloseQrModal();
+  }
+  if (msg.connId === autoState.qrModal.dismissedConnId) {
+    autoState.qrModal.dismissedConnId = null;
   }
   const conn = autoState.connections.find(c => c.id === msg.connId);
   if (conn) {
