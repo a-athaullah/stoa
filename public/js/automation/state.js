@@ -66,7 +66,7 @@ let autoState = {
   connConfirmId: null,
   connConfirmAction: null,  // 'disconnect' | 'delete'
   // QR modal
-  qrModal: { open: false, connId: null, qrData: null },
+  qrModal: { open: false, connId: null, qrData: null, dismissedConnId: null },
   // Automation form
   confirmDeleteId: null,
   formOpen: false,
