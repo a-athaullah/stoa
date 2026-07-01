@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.139';
+const CLIENT_VERSION = '0.4.140';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -77,8 +77,8 @@ function buildFileTreeAgent(dirPath, rootPath, depth, maxDepth) {
   let entries;
   try { entries = fs.readdirSync(dirPath, { withFileTypes: true }); } catch { return []; }
   const result = [];
-  const dirs = entries.filter(e => e.isDirectory() && !TREE_IGNORE.has(e.name) && !e.name.startsWith('.')).sort((a, b) => a.name.localeCompare(b.name));
-  const files = entries.filter(e => e.isFile() && !e.name.startsWith('.')).sort((a, b) => a.name.localeCompare(b.name));
+  const dirs = entries.filter(e => e.isDirectory() && !TREE_IGNORE.has(e.name)).sort((a, b) => a.name.localeCompare(b.name));
+  const files = entries.filter(e => e.isFile()).sort((a, b) => a.name.localeCompare(b.name));
   for (const d of dirs) {
     const children = buildFileTreeAgent(path.join(dirPath, d.name), rootPath, depth + 1, maxDepth);
     result.push({ t: 'folder', name: d.name, depth, open: depth < 1, children });
