@@ -1892,7 +1892,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
     if (url.searchParams.get('name')) cmdParams.push(`name=${encodeURIComponent(url.searchParams.get('name'))}`);
     if (url.searchParams.get('lang')) cmdParams.push(`lang=${encodeURIComponent(url.searchParams.get('lang'))}`);
     const qs = cmdParams.length ? '?' + cmdParams.join('&') : '';
-    const script = `@echo off\r\npowershell -ExecutionPolicy Bypass -Command "irm ${baseUrl}/install.ps1${qs} | iex"\r\n`;
+    const script = `@echo off\r\npowershell -ExecutionPolicy Bypass -Command "irm '${baseUrl}/install.ps1${qs}' | iex"\r\n`;
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
     return res.end(script);
   }
