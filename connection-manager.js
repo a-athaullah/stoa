@@ -40,6 +40,8 @@ class SlackConnection extends EventEmitter {
       this.client.on(eventType, ({ event, ack }) => {
         ack();
         if (!event) return;
+        const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
+        console.log(`[${ts}] [slack:recv] type=${eventType} channel=${event.channel || event.item?.channel || '-'} ts=${event.ts || event.event_ts || '-'}`);
         this.emit('slack_event', { eventType, event, webClient: this.webClient, connId: this.connId });
       });
     };
@@ -48,6 +50,8 @@ class SlackConnection extends EventEmitter {
     this.client.on('app_mention', ({ event, ack }) => {
       ack();
       if (!event) return;
+      const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
+      console.log(`[${ts}] [slack:recv] type=mention channel=${event.channel || '-'} ts=${event.ts || '-'}`);
       this.emit('slack_event', { eventType: 'mention', event, webClient: this.webClient, connId: this.connId });
     });
     fwd('message');
