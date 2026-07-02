@@ -4359,6 +4359,11 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
 
       if (!allMatch) continue;
 
+      {
+        const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
+        console.log(`[${ts}] [automation:${auto.name}] condition_matched - event=${eventType} channel=${channelId} slack_ts=${event.ts || event.event_ts || '-'}`);
+      }
+
       const prompt = auto.prompt_template
         .replace(/\{\{slack_message_text\}\}/g, text)
         .replace(/\{\{slack_message_link\}\}/g, messageLink)
@@ -4372,9 +4377,25 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
       const _prompt = prompt;
       const _autoName = auto.name;
       const _autoId = auto.id;
+      {
+        const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
+        console.log(`[${ts}] [automation:${_autoName}] enqueued - room=${_roomId} pending=${automationQueue.pending(_roomId)}`);
+      }
       automationQueue.enqueue(_roomId, async () => {
+        {
+          const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
+          console.log(`[${ts}] [automation:${_autoName}] dequeued - room=${_roomId} waiting_idle`);
+        }
         await waitForRoomIdle(_roomId);
+        {
+          const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
+          console.log(`[${ts}] [automation:${_autoName}] sending_message - room=${_roomId}`);
+        }
         await handleHumanMessage(_roomId, _prompt, null, null, null);
+        {
+          const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
+          console.log(`[${ts}] [automation:${_autoName}] message_sent - room=${_roomId}`);
+        }
         await waitForRoomIdle(_roomId);
         db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(_autoId);
       }, { automation: _autoName }).catch(e =>
