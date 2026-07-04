@@ -227,7 +227,12 @@ function initSettings() {
     if (!val || val < 1 || val > 720) return;
     sSaveSetting('cleanup_max_age_hours', val, 's-cleanup-age-saved');
   });
-  ['s-human-name-input', 's-public-url-input', 's-port-input', 's-max-ai-turns-input', 's-max-concurrent-input', 's-session-idle-ttl-input', 's-cleanup-hour-input', 's-cleanup-age-input'].forEach(id => {
+  document.getElementById("s-max-pinned-save").addEventListener("click", () => {
+    const val = parseInt(document.getElementById("s-max-pinned-input").value);
+    if (!val || val < 1 || val > 20) return;
+    sSaveSetting("max_pinned_rooms", val, "s-max-pinned-saved");
+  });
+  ['s-human-name-input', 's-public-url-input', 's-port-input', 's-max-ai-turns-input', 's-max-concurrent-input', 's-session-idle-ttl-input', 's-cleanup-hour-input', 's-cleanup-age-input', 's-max-pinned-input'].forEach(id => {
     document.getElementById(id).addEventListener('keydown', e => {
       if (e.key === 'Enter') e.target.closest('.s-server-field').querySelector('.s-server-save').click();
     });

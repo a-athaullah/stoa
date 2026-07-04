@@ -69,7 +69,7 @@ Each AI response shows a small model indicator at the bottom right of the bubble
 
 Click the **pin icon** (thumbtack) on a room row in the sidebar to pin it. Pinned rooms appear at the top of the sidebar in a dedicated **Pinned** section, making them instantly accessible regardless of how many rooms you have.
 
-You can pin up to **5 rooms** at a time. To unpin, click the pin icon again — the room returns to its position in the regular list.
+You can pin up to **3 rooms** by default (configurable in Settings → max pinned rooms, up to 20). To unpin, click the pin icon again — the room returns to its position in the regular list.
 
 Pinning is ideal for the rooms you use most frequently day-to-day.
 
