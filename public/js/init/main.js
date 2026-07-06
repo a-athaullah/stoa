@@ -272,8 +272,8 @@ async function init() {
     // Inline patterns: *bold*, _italic_, ~strike~
     const patterns = [
       { re: /\*([^\*]+?)\*$/, tag: 'strong' },
-      { re: /_([^_]+?)_$/, tag: 'em' },
-      { re: /~([^~]+?)~$/, tag: 's' },
+      { re: /(?:^|(?<=\s))_([^_]+?)_$/, tag: 'em' },
+      { re: /~(?!\/)([^~]+?)~$/, tag: 's' },
     ];
     for (const p of patterns) {
       const m = before.match(p.re);
