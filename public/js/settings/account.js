@@ -33,7 +33,8 @@ async function sLoadServerTab() {
   document.getElementById('s-session-idle-ttl-input').value = data.session_idle_ttl || 5;
   document.getElementById('s-compact-threshold-input').value = data.auto_compact_threshold_kb || 500;
   document.getElementById('s-cleanup-hour-input').value = data.cleanup_cron_hour ?? 10;
-  document.getElementById('s-cleanup-age-input').value = data.cleanup_max_age_hours || 24;
+  document.getElementById("s-cleanup-age-input").value = data.cleanup_max_age_hours || 24;
+  document.getElementById("s-max-pinned-input").value = data.max_pinned_rooms || 3;
   sPublicUrl = data.public_url || '';
   sPort = port;
   // Populate avatar preview from current humanActor

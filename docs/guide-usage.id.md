@@ -69,7 +69,7 @@ Setiap respons AI menampilkan indikator model kecil di pojok kanan bawah bubble 
 
 Klik **ikon pin** (paku) pada baris room di sidebar untuk menyematkannya. Room yang disematkan muncul di bagian atas sidebar dalam section **Pinned** tersendiri, sehingga mudah diakses tanpa perlu scroll.
 
-Anda dapat menyematkan hingga **5 room** sekaligus. Untuk membatalkan pin, klik ikon pin lagi — room kembali ke posisinya di daftar biasa.
+Anda dapat menyematkan hingga **3 room** secara default (dapat diubah di Settings → max pinned rooms, maksimal 20). Untuk membatalkan pin, klik ikon pin lagi — room kembali ke posisinya di daftar biasa.
 
 Pin berguna untuk room yang paling sering Anda gunakan sehari-hari.
 

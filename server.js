@@ -766,12 +766,12 @@ const server = http.createServer(async (req, res) => {
       if (!room) return 'not_found';
       if (room.is_pinned) return 'already_pinned';
       const pinCount = db.prepare("SELECT COUNT(*) as cnt FROM rooms WHERE is_pinned=1 AND archived_at IS NULL").get().cnt;
-      if (pinCount >= 5) return 'limit';
+      const maxPin = parseInt(process.env.MAX_PINNED_ROOMS) || 3; if (pinCount >= maxPin) return 'limit';
       db.prepare("UPDATE rooms SET is_pinned=1 WHERE id=?").run(roomId);
       return null;
     })();
     if (pinErr === 'not_found') return json(res, { error: 'Room not found' }, 404);
-    if (pinErr === 'limit') return json(res, { error: 'Maximum 5 pinned rooms reached' }, 400);
+    const maxPinDisplay = parseInt(process.env.MAX_PINNED_ROOMS) || 3; if (pinErr === 'limit') return json(res, { error: `Maximum ${maxPinDisplay} pinned rooms reached` }, 400);
     broadcastGlobal({ type: 'room_pinned', room_id: roomId });
     return json(res, { ok: true });
   }
@@ -1171,7 +1171,7 @@ const server = http.createServer(async (req, res) => {
       session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5,
       auto_compact_threshold_kb: parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB) || 500,
       cleanup_cron_hour: parseInt(process.env.CLEANUP_CRON_HOUR) || 10,
-      cleanup_max_age_hours: parseInt(process.env.CLEANUP_MAX_AGE_HOURS) || 24,
+      cleanup_max_age_hours: parseInt(process.env.CLEANUP_MAX_AGE_HOURS) || 24, max_pinned_rooms: parseInt(process.env.MAX_PINNED_ROOMS) || 3,
     });
   }
 
@@ -1218,6 +1218,10 @@ const server = http.createServer(async (req, res) => {
     if (body.cleanup_max_age_hours !== undefined) {
       const val = parseInt(body.cleanup_max_age_hours);
       if (val >= 1 && val <= 720) { writeEnv('CLEANUP_MAX_AGE_HOURS', String(val)); process.env.CLEANUP_MAX_AGE_HOURS = String(val); }
+    }
+    if (body.max_pinned_rooms !== undefined) {
+      const val = parseInt(body.max_pinned_rooms);
+      if (val >= 1 && val <= 20) { writeEnv("MAX_PINNED_ROOMS", String(val)); process.env.MAX_PINNED_ROOMS = String(val); }
     }
     if (body.port !== undefined) {
       const newPort = parseInt(body.port);
