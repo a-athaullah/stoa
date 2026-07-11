@@ -819,15 +819,18 @@ async function processTrigger(msg) {
       try {
         fs.mkdirSync(msg.workdir, { recursive: true });
         const claudeMd = path.join(msg.workdir, 'CLAUDE.md');
-        if (!fs.existsSync(claudeMd)) fs.writeFileSync(claudeMd, '', 'utf8');
+        if (!fs.existsSync(claudeMd)) {
+          const proactiveInstructions = '# Stoa Agent Context\n\n## Proactive Message\n\nKamu bisa mengirim pesan ke room Stoa secara proaktif tanpa menunggu user bertanya.\nGunakan ini saat background task selesai atau ada info penting.\n\n```bash\nBASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\ncurl -s -X POST "$BASE_URL/api/rooms/$STOA_ROOM_ID/message" \\\\\n  -H "Content-Type: application/json" \\\\\n  -H "x-agent-id: $STOA_ACTOR_ID" \\\\\n  -H "x-agent-secret: $STOA_SECRET" \\\\\n  -d \\\'{"content": "Pesan kamu di sini"}\\\'\n```\n\n`$STOA_URL`, `$STOA_ACTOR_ID`, `$STOA_SECRET`, dan `$STOA_ROOM_ID` tersedia sebagai env var.';
+          fs.writeFileSync(claudeMd, proactiveInstructions, 'utf8');
+        }
       } catch {}
     }
 
     const apiKeys = msg.api_keys || (msg.api_key ? [msg.api_key] : []);
-    const platformEnv = {};
+    const platformEnv = { STOA_ROOM_ID: String(room_id) };
     if (msg.base_url) platformEnv.ANTHROPIC_BASE_URL = msg.base_url;
     if (apiKeys[0]) platformEnv.ANTHROPIC_AUTH_TOKEN = apiKeys[0];
-    const envToUse = Object.keys(platformEnv).length ? platformEnv : null;
+    const envToUse = platformEnv;
 
     let session = getSession(targetDir, envToUse);
     const needsResume = rid && session.resumeId !== rid;
