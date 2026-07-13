@@ -301,7 +301,7 @@ async function init() {
 
   input.addEventListener('paste', e => {
     const items = [...(e.clipboardData?.items || [])];
-    if (items.find(i => i.type.startsWith('image/'))) { handleImagePaste(e); return; }
+    if (items.find(i => i.type.startsWith('image/'))) { hideMentionPopup(); hideSkillPopup(); handleImagePaste(e); return; }
     e.preventDefault();
     const text = e.clipboardData.getData('text/plain');
     const urlRe = /^https?:\/\/\S+$/;
