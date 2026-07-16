@@ -27,6 +27,8 @@ const AUTO_VARS_SLACK = [
   '{{slack_user}}',
   '{{slack_channel}}',
   '{{extracted_url}}',
+  '{{slack_full_text}}',
+  '{{slack_bot_id}}',
 ];
 
 const AUTO_VARS_WA = [

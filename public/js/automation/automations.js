@@ -118,8 +118,10 @@ function autoRenderForm() {
       ]
     : [
         { value: 'message_text',  label: 'message text' },
+        { value: 'slack_full_text', label: 'full text (incl. attachments)' },
         { value: 'slack_user',    label: 'slack_user' },
         { value: 'slack_channel', label: 'slack_channel' },
+        { value: 'slack_bot_id',  label: 'slack_bot_id' },
       ];
   const waCondFields = [
     { value: 'message_text', label: 'message text' },
