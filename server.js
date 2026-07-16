@@ -4297,6 +4297,32 @@ function waitForRoomIdle(roomId, timeoutMs = 300000) {
   });
 }
 
+function extractSlackFullText(event) {
+  const parts = [];
+  if (event.text) parts.push(event.text);
+  for (const att of (event.attachments || [])) {
+    if (att.pretext) parts.push(att.pretext);
+    if (att.text) parts.push(att.text);
+    if (att.fallback && !att.text) parts.push(att.fallback);
+    for (const block of (att.blocks || [])) {
+      if (block.text?.text) parts.push(block.text.text);
+      for (const el of (block.elements || [])) {
+        if (el.text?.text) parts.push(el.text.text);
+        for (const subEl of (el.elements || [])) {
+          if (subEl.text) parts.push(subEl.text);
+        }
+      }
+    }
+  }
+  for (const block of (event.blocks || [])) {
+    if (block.text?.text) parts.push(block.text.text);
+    for (const el of (block.elements || [])) {
+      if (el.text?.text) parts.push(el.text.text);
+    }
+  }
+  return parts.join('\n');
+}
+
 // ─── Slack automation listener ────────────────────────────────────────────────
 
 const _slackProcessed = new Map(); // key → expiresAt, for dedup
@@ -4329,7 +4355,9 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
       ? `https://${workspace}.slack.com/archives/${channelId}/p${tsForLink.replace('.', '')}`
       : '';
     const extractedUrl = (text.match(/https?:\/\/[^\s]+/) || [])[0] || '';
-    const fieldValues = { message_text: text, slack_user: userId, slack_channel: channelId, reaction: text };
+    const botId = event.bot_id || '';
+    const fullText = isReaction ? '' : extractSlackFullText(event);
+    const fieldValues = { message_text: text, slack_full_text: fullText, slack_bot_id: botId, slack_user: userId, slack_channel: channelId, reaction: text };
 
     let slackUser = userId;
     let slackChannel = channelId;
@@ -4374,7 +4402,9 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
         .replace(/\{\{slack_thread_ts\}\}/g, event.thread_ts || event.ts || '')
         .replace(/\{\{slack_user\}\}/g, slackUser)
         .replace(/\{\{slack_channel\}\}/g, slackChannel)
-        .replace(/\{\{extracted_url\}\}/g, extractedUrl);
+        .replace(/\{\{extracted_url\}\}/g, extractedUrl)
+        .replace(/\{\{slack_full_text\}\}/g, fullText)
+        .replace(/\{\{slack_bot_id\}\}/g, botId);
 
       // Queue automation — one at a time per room
       const _roomId = auto.target_room_id;
