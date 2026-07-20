@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.145';
+const CLIENT_VERSION = '0.4.146';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -46,6 +46,7 @@ const pendingRequests = new Map(); // request_id → { resolve }
 let requestIdCounter = 0;
 let pendingRestart = false;
 let consecutiveFailures = 0;
+let reauthProc = null;  // active claude auth login process for /reauth
 let consecutiveTriggerErrors = 0;
 const MAX_TRIGGER_ERRORS = 3;
 const TRIGGER_TIMEOUT = 5 * 60_000;
@@ -643,6 +644,41 @@ async function handleAgentMessage(msg) {
   if (msg.type === 'search_result' || msg.type === 'get_message_result') {
     const pending = pendingRequests.get(msg.request_id);
     if (pending) { pendingRequests.delete(msg.request_id); pending.resolve(msg); }
+  }
+
+  if (msg.type === 'reauth_request') {
+    if (reauthProc) {
+      // Already in progress — server will timeout on its own
+      return;
+    }
+    const { spawn } = require('child_process');
+    const URL_REGEX = /https:\/\/claude\.com\/cai\/oauth\/[^\s]+/;
+    let urlSent = false;
+    reauthProc = spawn('claude', ['auth', 'login'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const onData = (chunk) => {
+      if (urlSent) return;
+      const match = chunk.toString().match(URL_REGEX);
+      if (match) {
+        urlSent = true;
+        send({ type: 'reauth_url', url: match[0] });
+      }
+    };
+    reauthProc.stdout.on('data', onData);
+    reauthProc.stderr.on('data', onData);
+    reauthProc.on('close', (code) => {
+      reauthProc = null;
+      send({ type: 'reauth_complete', success: code === 0, code });
+    });
+    reauthProc.on('error', (err) => {
+      reauthProc = null;
+      send({ type: 'reauth_complete', success: false, code: -1, error: err.message });
+    });
+    return;
+  }
+
+  if (msg.type === 'reauth_code') {
+    if (reauthProc?.stdin?.writable) reauthProc.stdin.write((msg.code || '') + '\n');
+    return;
   }
 
   if (msg.type === 'cleanup_session') {
