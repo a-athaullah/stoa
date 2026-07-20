@@ -2372,8 +2372,10 @@ const pendingActorMeta = new Map(); // message_id → { name, avatar_color, avat
 const pendingCompacts = new Map();  // room_id → { total, completed, agents[] }
 const recentCompacts = new Map();      // room_id → timestamp — suppresses duplicate auto_compact_start within 30s
 const recentCompactTimers = new Map(); // room_id → timer handle — cleared before reset to avoid early expiry
-let reauthProcess = null;  // active claude auth login subprocess
+let reauthProcess = null;  // true when remote reauth is in progress
 let reauthRoomId = null;   // room that triggered /reauth
+let reauthAgentActorId = null; // actor_id of the agent handling reauth
+let reauthTimer = null;    // timeout handle for reauth
 function setRecentCompact(roomId) {
   clearTimeout(recentCompactTimers.get(roomId));
   recentCompacts.set(roomId, Date.now());
@@ -2479,7 +2481,8 @@ wss.on('connection', (ws, req) => {
       if (reauthProcess && !agentActorId && msg.content?.startsWith('REAUTH:')) {
         if (reauthRoomId !== msg.room_id) return;
         const code = msg.content.slice('REAUTH:'.length).trim();
-        if (code && reauthProcess?.stdin?.writable) reauthProcess.stdin.write(code + '\n');
+        const aw = agentClients.get(reauthAgentActorId);
+        if (code && aw?.readyState === 1) aw.send(JSON.stringify({ type: 'reauth_code', code }));
         return;
       }
       // /logout: human-only, runs claude auth logout for the agent in this room
@@ -2986,6 +2989,26 @@ wss.on('connection', (ws, req) => {
         else op.clientWs.send(JSON.stringify({ type: 'file_rename_result', path: op.originalPath, new_path: op.newPath, ok: true }));
       }
       pendingFileOps.delete(msg.request_id);
+    }
+
+    if (msg.type === 'reauth_url' && agentActorId) {
+      if (reauthRoomId) {
+        const url = msg.url || '';
+        const bubbleContent = `Please authenticate by clicking this link: [Authenticate with Claude](${url})\n\nThen paste the code here as: \`REAUTH:<code>\``;
+        reauthLinkBubble(reauthRoomId, bubbleContent);
+      }
+      return;
+    }
+
+    if (msg.type === 'reauth_complete' && agentActorId) {
+      clearTimeout(reauthTimer);
+      const rid = reauthRoomId;
+      reauthProcess = null; reauthRoomId = null; reauthAgentActorId = null; reauthTimer = null;
+      if (rid) {
+        if (msg.success) reauthBubble(rid, 'Re-authenticated successfully');
+        else reauthBubble(rid, `Re-auth failed (exit ${msg.code ?? '?'}) — try /reauth again`);
+      }
+      return;
     }
 
     // ── Agent error
@@ -4138,57 +4161,31 @@ function handleReauth(roomId) {
     broadcast(roomId, { type: 'system_event', status: 'Re-auth already in progress. Paste the code as REAUTH:<code> to complete it.' });
     return;
   }
-  // /reauth only works in rooms with exactly one AI agent (credentials are machine-global).
-  const aiParticipants = db.prepare(
-    'SELECT COUNT(*) as count FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type=\'ai\''
+  // Find the single AI agent in the room — credentials live on the agent machine, not the server.
+  const aiParticipant = db.prepare(
+    "SELECT a.id as actor_id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='ai' LIMIT 1"
   ).get(roomId);
-  if (aiParticipants.count !== 1) {
-    broadcast(roomId, { type: 'system_event', status: '/reauth can only be used in a room with exactly one AI agent.' });
+  if (!aiParticipant) {
+    broadcast(roomId, { type: 'system_event', status: '/reauth can only be used in a room with an AI agent.' });
     return;
   }
-  reauthBubble(roomId, 'Re-authentication started');
-  const { spawn } = require('child_process');
-  // Prepend PATH with a dir containing a no-op 'open' script to prevent macOS from launching a browser
-  // on the server machine — user will open the URL manually from their device.
-  const fakeBinDir = __dirname + '/.reauth-bin';
-  const spawnEnv = { ...process.env, PATH: fakeBinDir + ':' + (process.env.PATH || '') };
-  reauthProcess = spawn('claude', ['auth', 'login'], { stdio: ['pipe', 'pipe', 'pipe'], env: spawnEnv });
+  const agentWs = agentClients.get(aiParticipant.actor_id);
+  if (!agentWs || agentWs.readyState !== 1) {
+    broadcast(roomId, { type: 'system_event', status: 'Agent is not connected — cannot initiate re-auth.' });
+    return;
+  }
+  reauthProcess = true;
   reauthRoomId = roomId;
-  let urlSent = false;
-  const URL_REGEX = /https:\/\/claude\.com\/cai\/oauth\/[^\s]+/;
-  const timer = setTimeout(() => {
-    if (reauthProcess) {
-      reauthProcess.kill();
-      reauthProcess = null;
-      reauthBubble(roomId, 'Re-auth timed out — no response in 5 minutes');
+  reauthAgentActorId = aiParticipant.actor_id;
+  reauthBubble(roomId, 'Re-authentication started');
+  agentWs.send(JSON.stringify({ type: 'reauth_request' }));
+  reauthTimer = setTimeout(() => {
+    if (reauthRoomId) {
+      const rid = reauthRoomId;
+      reauthProcess = null; reauthRoomId = null; reauthAgentActorId = null; reauthTimer = null;
+      reauthBubble(rid, 'Re-auth timed out — no response in 5 minutes');
     }
   }, 5 * 60 * 1000);
-  const onData = (chunk) => {
-    if (urlSent) return;
-    const match = chunk.toString().match(URL_REGEX);
-    if (match) {
-      urlSent = true;
-      const url = match[0];
-      const content = `Please authenticate by clicking this link: [Authenticate with Claude](${url})\n\nThen paste the code here as: \`REAUTH:<code>\``;
-      reauthLinkBubble(roomId, content);
-    }
-  };
-  reauthProcess.stdout.on('data', onData);
-  reauthProcess.stderr.on('data', onData);
-  reauthProcess.on('close', (code) => {
-    clearTimeout(timer);
-    reauthProcess = null;
-    if (code === 0) {
-      reauthBubble(roomId, 'Re-authenticated successfully');
-    } else if (code !== null) {
-      reauthBubble(roomId, `Re-auth failed (exit ${code}) — try /reauth again`);
-    }
-  });
-  reauthProcess.on('error', (err) => {
-    clearTimeout(timer);
-    reauthProcess = null;
-    reauthBubble(roomId, `Re-auth error: ${err.message}`);
-  });
 }
 
 async function extractAndSendWaReplies(content, roomId) {
