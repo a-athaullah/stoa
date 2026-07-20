@@ -614,18 +614,22 @@ async function run() {
 
   await test('POST /api/rooms/:id/pin returns 400 when limit reached', async () => {
     if (testRoomIds.length < 4) { console.log("    (skipped — need 4 test rooms)"); return; }
+    // Read actual limit from server config
+    const settings = (await req('GET', '/api/settings')).body;
+    const pinLimit = settings.max_pinned_rooms ?? 3;
     // Unpin only test rooms (never touch production pins)
     for (const id of testRoomIds) { await req('DELETE', `/api/rooms/${id}/pin`); }
     // Count how many production rooms are already pinned
     const allRooms = (await req('GET', '/api/rooms')).body;
     const prodPinned = allRooms.filter(rm => rm.is_pinned && !testRoomIds.includes(rm.id)).length;
-    if (prodPinned >= 3) { console.log("    (skipped — production already at max pins)"); return; }
+    if (prodPinned >= pinLimit) { console.log(`    (skipped — production already at max pins: ${prodPinned}/${pinLimit})`); return; }
     // Pin enough test rooms to reach the limit
-    const toPinCount = 3 - prodPinned;
+    const toPinCount = pinLimit - prodPinned;
+    if (testRoomIds.length < toPinCount + 1) { console.log(`    (skipped — not enough test rooms to reach limit: need ${toPinCount + 1}, have ${testRoomIds.length})`); return; }
     for (let i = 0; i < toPinCount; i++) { await req('POST', `/api/rooms/${testRoomIds[i]}/pin`); }
     // Now try to pin one more test room — should hit the limit
     const r = await req('POST', `/api/rooms/${testRoomIds[toPinCount]}/pin`);
-    assert.strictEqual(r.status, 400, `expected 400 (limit), got ${r.status}: ${JSON.stringify(r.body)}`);
+    assert.strictEqual(r.status, 400, `expected 400 (limit ${pinLimit}), got ${r.status}: ${JSON.stringify(r.body)}`);
     assert.ok(r.body.error?.includes('Maximum'), `error message missing: ${JSON.stringify(r.body)}`);
     // Cleanup — unpin only the test rooms we just pinned
     for (let i = 0; i < toPinCount; i++) { await req('DELETE', `/api/rooms/${testRoomIds[i]}/pin`); }
