@@ -1523,6 +1523,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/ai/models') {
     const platforms = getParsedSetting('ai_platforms') ?? [];
     const ANTHROPIC_MODELS = [
+      { value: 'claude-sonnet-5', label: 'Sonnet 5', vision: true, tools: true },
       { value: 'claude-fable-5', label: 'Fable 5', vision: true, tools: true },
       { value: 'claude-opus-4-8', label: 'Opus 4.8', vision: true, tools: true },
       { value: 'claude-opus-4-7', label: 'Opus 4.7', vision: true, tools: true },
