@@ -143,8 +143,8 @@ function doRestart() {
 }
 
 // ─── Session pool (agent mode only) ──────────────────────────────────────────
-const sessionPool = new Map(); // workdir → ClaudeSession
-const sessionIdleTimers = new Map(); // workdir → timeout id
+const sessionPool = new Map(); // `${workdir}::${room_id}` → ClaudeSession
+const sessionIdleTimers = new Map(); // `${workdir}::${room_id}` → timeout id
 let SESSION_IDLE_TTL = 5; // minutes, configurable via server
 
 let AUTO_COMPACT_THRESHOLD = parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB || '500') * 1024; // KB, configurable
@@ -288,12 +288,13 @@ function sanitizeThinking(workdir, sessionId) {
     'sanitized thinking residue');
 }
 
-function getSession(workdir, env) {
-  const key = path.resolve(workdir);
+function getSession(workdir, roomId, env) {
+  const workdirResolved = path.resolve(workdir);
+  const key = `${workdirResolved}::${roomId || 'default'}`;
   clearSessionIdleTimer(key);
   let session = sessionPool.get(key);
   if (!session) {
-    session = new ClaudeSession({ workDir: key, env: env || null });
+    session = new ClaudeSession({ workDir: workdirResolved, env: env || null });
     sessionPool.set(key, session);
     console.log(`[stoa] claude session started for ${key}`);
     startSessionIdleTimer(key);
@@ -325,7 +326,8 @@ function clearSessionIdleTimer(workdir) {
 setInterval(async () => {
   if (ACTOR_TYPE !== 'ai') return;
   const busyWorkdirs = new Set([...activeTriggers.values()].map(t => t.workdir));
-  for (const [workdir, session] of sessionPool) {
+  for (const [sessionKey, session] of sessionPool) {
+    const workdir = sessionKey.split('::')[0]; // extract bare workdir from compound key
     if (busyWorkdirs.has(workdir)) continue; // skip workdirs with an active trigger
     const sessionId = session.resumeId;
     if (!sessionId) continue;
@@ -357,7 +359,7 @@ function connect() {
 
   ws.on('open', () => {
     if (ACTOR_TYPE === 'ai') {
-      getSession(process.env.STOA_WORK_DIR || os.homedir());
+      getSession(process.env.STOA_WORK_DIR || os.homedir(), 'default');
       ws.send(JSON.stringify({ type: 'agent_connect', actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION }));
       console.log(`[stoa] Agent #${ACTOR_ID} v${CLIENT_VERSION} connected to ${STOA_URL} (max_concurrent=${MAX_CONCURRENT})`);
     } else {
@@ -688,11 +690,12 @@ async function handleAgentMessage(msg) {
 
   if (msg.type === 'compact_trigger') {
     const workdir = msg.workdir || process.env.STOA_WORK_DIR || os.homedir();
-    const key = path.resolve(workdir);
+    const workdirResolved = path.resolve(workdir);
+    const key = `${workdirResolved}::${msg.room_id || 'default'}`;
     let session = sessionPool.get(key);
     if (!session) {
       if (msg.claude_session_id) {
-        session = new ClaudeSession({ workDir: key, flags: ['--resume', msg.claude_session_id], resumeId: msg.claude_session_id });
+        session = new ClaudeSession({ workDir: workdirResolved, flags: ['--resume', msg.claude_session_id], resumeId: msg.claude_session_id });
         sessionPool.set(key, session);
         startSessionIdleTimer(key);
         console.log(`[stoa] compact: resuming session ${msg.claude_session_id.slice(0, 8)}... for ${key}`);
@@ -868,7 +871,7 @@ async function processTrigger(msg) {
     if (apiKeys[0]) platformEnv.ANTHROPIC_AUTH_TOKEN = apiKeys[0];
     const envToUse = platformEnv;
 
-    let session = getSession(targetDir, envToUse);
+    let session = getSession(targetDir, room_id, envToUse);
     const needsResume = rid && session.resumeId !== rid;
     const needsFreshSession = !rid && session.resumeId;
     const targetModel = msg.model || null;
@@ -887,8 +890,8 @@ async function processTrigger(msg) {
       if (targetModel) flags.push('--model', targetModel);
       if (msg.tools_supported === false) flags.push('--tools', '');
       session = new ClaudeSession({ workDir: targetDir, flags, resumeId: rid || null, env: envToUse });
-      sessionPool.set(targetDir, session);
-      console.log(`[stoa] Session restarted: workdir=${targetDir}${rid ? ' resume=' + rid.slice(0, 8) + '...' : ' (fresh)'}${targetModel ? ' model=' + targetModel : ''}${msg.base_url ? ' base_url=' + msg.base_url : ''}${msg.tools_supported === false ? ' tools=disabled' : ''}`);
+      sessionPool.set(`${targetDir}::${room_id}`, session);
+      console.log(`[stoa] Session restarted: workdir=${targetDir} room=${room_id}${rid ? ' resume=' + rid.slice(0, 8) + '...' : ' (fresh)'}${targetModel ? ' model=' + targetModel : ''}${msg.base_url ? ' base_url=' + msg.base_url : ''}${msg.tools_supported === false ? ' tools=disabled' : ''}`);
     }
     activeTriggers.set(message_id, { workdir: targetDir, session });
     let fullContent = '';
@@ -945,7 +948,7 @@ async function processTrigger(msg) {
           if (targetModel) flags.push('--model', targetModel);
           if (msg.tools_supported === false) flags.push('--tools', '');
           session = new ClaudeSession({ workDir: targetDir, flags, resumeId: rid || null, env: rotatedEnv });
-          sessionPool.set(targetDir, session);
+          sessionPool.set(`${targetDir}::${room_id}`, session);
           activeTriggers.set(message_id, { workdir: targetDir, session });
           sessionRef = session;
           session.on('status', statusHandler);
@@ -962,7 +965,7 @@ async function processTrigger(msg) {
       } else if (retryErr.message.includes('exited unexpectedly') && !fullContent) {
         console.log(`[stoa] session crashed before output, retrying in 4s...`);
         await new Promise(r => setTimeout(r, 4000));
-        session = getSession(targetDir, envToUse);
+        session = getSession(targetDir, room_id, envToUse);
         activeTriggers.set(message_id, { workdir: targetDir, session });
         lastActivity = Date.now();
         result = await session.send(sendOpts);
@@ -1017,7 +1020,7 @@ async function processTrigger(msg) {
           const fileSize = await getSessionFileSize(targetDir, sessionIdForCompact);
           if (fileSize <= AUTO_COMPACT_THRESHOLD) return;
           if (compactsInFlight.has(targetDir)) return;
-          const sess = sessionPool.get(targetDir);
+          const sess = sessionPool.get(`${targetDir}::${room_id}`);
           if (!sess) return;
           console.log(`[stoa] session ${sessionIdForCompact.slice(0, 8)}... is ${(fileSize / 1024).toFixed(0)}KB > ${AUTO_COMPACT_THRESHOLD / 1024}KB threshold, auto-compacting`);
           compactsInFlight.add(targetDir);
@@ -1051,7 +1054,7 @@ async function processTrigger(msg) {
   } finally {
     if (sessionRef && statusHandler) sessionRef.removeListener('status', statusHandler);
     activeTriggers.delete(message_id);
-    if (targetDir) startSessionIdleTimer(targetDir);
+    if (targetDir) startSessionIdleTimer(`${targetDir}::${room_id}`);
     drainQueue();
   }
 }
