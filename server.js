@@ -4348,7 +4348,7 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
     const text = isReaction ? (event.reaction || '') : (event.text || '');
     const userId = event.user || '';
     const channelId = isReaction ? (event.item?.channel || '') : (event.channel || '');
-    const workspace = connectionManager.getSlackConnection(connId)?.workspaceName || getSetting('slack_workspace_name') || '';
+    const workspace = connectionManager.getSlackConnection(connId)?.workspaceDomain || getSetting('slack_workspace_name') || '';
     const tsForLink = isReaction ? (event.item?.ts || '') : (event.ts || '');
     const messageLink = tsForLink
       ? `https://${workspace}.slack.com/archives/${channelId}/p${tsForLink.replace('.', '')}`
