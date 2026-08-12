@@ -13,6 +13,7 @@ class SlackConnection extends EventEmitter {
     this.webClient = null;
     this.running = false;
     this.workspaceName = null;
+    this.workspaceDomain = null;
     this.botName = null;
   }
 
@@ -28,6 +29,9 @@ class SlackConnection extends EventEmitter {
     try {
       const info = await this.webClient.auth.test();
       this.workspaceName = info.team;
+      // info.team is the display name (may contain spaces, e.g. "Qiscus Tech") —
+      // unusable in URLs. info.url carries the real subdomain (https://qiscustech.slack.com/).
+      try { this.workspaceDomain = new URL(info.url).hostname.split('.')[0]; } catch { this.workspaceDomain = null; }
       this.botName = tokenType === 'bot' ? ('@' + info.user) : info.user;
     } catch (e) {
       console.error(`[conn:${this.connId}] auth.test failed:`, e.message);
@@ -85,6 +89,7 @@ class SlackConnection extends EventEmitter {
     this.webClient = null;
     this.running = false;
     this.workspaceName = null;
+    this.workspaceDomain = null;
     this.botName = null;
     console.log(`[conn:${this.connId}] stopped`);
   }
