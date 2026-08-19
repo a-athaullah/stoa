@@ -322,7 +322,11 @@ async function init() {
       range.collapse(true);
       sel.removeAllRanges(); sel.addRange(range);
     } else {
-      document.execCommand('insertText', false, text);
+      const r = sel.getRangeAt(0);
+      r.deleteContents();
+      r.insertNode(document.createTextNode(text));
+      r.collapse(false);
+      sel.removeAllRanges(); sel.addRange(r);
     }
   });
 
