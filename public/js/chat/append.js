@@ -1,3 +1,37 @@
+// ── Day separator ───────────────────────────────────────────────────────────
+let _lastDayKey = null;
+
+function resetDaySeparator() { _lastDayKey = null; }
+
+function dayLabel(date) {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
+  const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  if (d.getTime() === today.getTime()) return 'Today';
+  if (d.getTime() === yesterday.getTime()) return 'Yesterday';
+  return date.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+}
+
+function makeDaySeparator(dateStr) {
+  const el = document.createElement('div');
+  el.className = 'h-day-separator';
+  el.setAttribute('data-day', dateStr);
+  const label = document.createElement('span');
+  label.className = 'h-day-separator-label';
+  label.textContent = dateStr;
+  el.appendChild(label);
+  return el;
+}
+
+function maybeInsertDaySep(inner, ts) {
+  const d = new Date(ts);
+  const key = d.toLocaleDateString();
+  if (key === _lastDayKey) return;
+  _lastDayKey = key;
+  inner.appendChild(makeDaySeparator(dayLabel(d)));
+}
+
 // ── Append message ─────────────────────────────────────────────────────────
 function appendMessage(m, container) {
   const inner = container || document.getElementById('messages-inner');
@@ -48,8 +82,11 @@ function appendMessage(m, container) {
     const timeEl = document.createElement('span');
     timeEl.className = 'h-msg-time';
     const ts = m.created_at.endsWith('Z') ? m.created_at : m.created_at.replace(' ', 'T') + 'Z';
-    timeEl.textContent = new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const dateObj = new Date(ts);
+    timeEl.textContent = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    timeEl.title = dateObj.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     meta.appendChild(timeEl);
+    maybeInsertDaySep(inner, ts);
   }
 
   body.appendChild(meta);

@@ -35,6 +35,7 @@ function handleWsMessage(msg) {
     inner.innerHTML = '';
     oldestMessageId = null;
     noMoreOlder = false;
+    resetDaySeparator();
     msg.messages.forEach(m => appendMessage(m));
     if (msg.messages.length > 0) oldestMessageId = msg.messages[0].id;
     noMoreOlder = msg.messages.length < 100;
