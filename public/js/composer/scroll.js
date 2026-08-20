@@ -40,6 +40,10 @@ async function loadOlderMessages() {
     const prevHeight = inner.scrollHeight;
     const prevTop    = container.scrollTop;
     inner.prepend(frag);
+    const seps = inner.querySelectorAll('.h-day-separator');
+    for (let i = 1; i < seps.length; i++) {
+      if (seps[i].getAttribute('data-day') === seps[i-1].getAttribute('data-day')) seps[i].remove();
+    }
     container.scrollTop = prevTop + (inner.scrollHeight - prevHeight);
 
     oldestMessageId = msgs[0].id;
