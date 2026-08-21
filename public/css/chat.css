@@ -1230,6 +1230,7 @@ html.dark .h-faded-mark { opacity: 0.12; }
   z-index: 10;
   display: flex;
   justify-content: center;
+  align-items: flex-start;
   pointer-events: none;
   height: 0;
   overflow: visible;
