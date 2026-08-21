@@ -1210,20 +1210,8 @@ html.dark .h-faded-mark { opacity: 0.12; }
 
 .h-day-separator {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 0;
-  position: sticky;
-  top: 0;
-  z-index: 5;
-  background: var(--h-bg);
-}
-.h-day-separator::before,
-.h-day-separator::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: var(--h-border);
+  justify-content: center;
+  padding: 10px 0;
 }
 .h-day-separator-label {
   font-family: var(--h-sans);
@@ -1235,6 +1223,31 @@ html.dark .h-faded-mark { opacity: 0.12; }
   border-radius: 999px;
   background: var(--h-surface);
   border: 1px solid var(--h-border);
+}
+.h-day-floater {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  pointer-events: none;
+  height: 0;
+  overflow: visible;
+}
+.h-day-floater-label {
+  display: inline-block;
+  margin-top: 8px;
+  font-family: var(--h-sans);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--h-ink-mute);
+  white-space: nowrap;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--h-surface);
+  border: 1px solid var(--h-border);
+  box-shadow: 0 1px 4px rgba(0,0,0,0.08);
 }
 
 .h-system-event {

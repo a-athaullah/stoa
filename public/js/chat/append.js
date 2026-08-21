@@ -149,3 +149,56 @@ function appendMessage(m, container) {
   externalLinksNewTab(bubble);
 }
 
+
+// ── Day floater — single sticky pill driven by scroll (Slack-style) ────────
+let _dayScrollHandler = null;
+
+function initDayFloater() {
+  const container = document.getElementById('messages');
+  const inner = document.getElementById('messages-inner');
+  if (!container || !inner) return;
+  let floater = document.getElementById('h-day-floater');
+  if (!floater) {
+    floater = document.createElement('div');
+    floater.id = 'h-day-floater';
+    floater.className = 'h-day-floater';
+    const lbl = document.createElement('span');
+    lbl.className = 'h-day-floater-label';
+    floater.appendChild(lbl);
+    floater.style.visibility = 'hidden';
+  }
+  // Keep floater as first child of inner so position:sticky works within scroll container
+  if (inner.firstChild !== floater) inner.prepend(floater);
+  if (_dayScrollHandler) container.removeEventListener('scroll', _dayScrollHandler);
+  _dayScrollHandler = () => updateDayFloater();
+  container.addEventListener('scroll', _dayScrollHandler, { passive: true });
+  updateDayFloater();
+}
+
+function updateDayFloater() {
+  const container = document.getElementById('messages');
+  const inner = document.getElementById('messages-inner');
+  const floater = document.getElementById('h-day-floater');
+  if (!container || !inner || !floater) return;
+  const lbl = floater.querySelector('.h-day-floater-label');
+  const containerTop = container.getBoundingClientRect().top;
+  const seps = inner.querySelectorAll('.h-day-separator');
+  let currentDay = null;
+  let anySepVisibleAtTop = false;
+  for (const sep of seps) {
+    const r = sep.getBoundingClientRect();
+    if (r.top < containerTop + 8) {
+      currentDay = sep.getAttribute('data-day');
+      // If the inline separator itself is right at the top edge, hide floater to avoid double pill
+      if (r.bottom > containerTop) anySepVisibleAtTop = true;
+    } else {
+      break;
+    }
+  }
+  if (currentDay && !anySepVisibleAtTop) {
+    lbl.textContent = currentDay;
+    floater.style.visibility = 'visible';
+  } else {
+    floater.style.visibility = 'hidden';
+  }
+}
