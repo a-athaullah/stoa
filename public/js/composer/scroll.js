@@ -45,6 +45,7 @@ async function loadOlderMessages() {
       if (seps[i].getAttribute('data-day') === seps[i-1].getAttribute('data-day')) seps[i].remove();
     }
     container.scrollTop = prevTop + (inner.scrollHeight - prevHeight);
+    initDayFloater();
 
     oldestMessageId = msgs[0].id;
     if (msgs.length < 50) noMoreOlder = true;
