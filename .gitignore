@@ -12,3 +12,4 @@ connector-media/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+.stoa-attachments/
