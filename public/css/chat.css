@@ -1210,20 +1210,12 @@ html.dark .h-faded-mark { opacity: 0.12; }
 
 .h-day-separator {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 0;
+  justify-content: center;
+  padding: 10px 0;
   position: sticky;
   top: 0;
   z-index: 5;
-  background: var(--h-bg);
-}
-.h-day-separator::before,
-.h-day-separator::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: var(--h-border);
+  background: transparent;
 }
 .h-day-separator-label {
   font-family: var(--h-sans);
