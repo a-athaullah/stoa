@@ -1213,10 +1213,6 @@ html.dark .h-faded-mark { opacity: 0.12; }
   align-items: center;
   gap: 12px;
   padding: 12px 0;
-  position: sticky;
-  top: 0;
-  z-index: 5;
-  background: var(--h-bg);
 }
 .h-day-separator::before,
 .h-day-separator::after {
