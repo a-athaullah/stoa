@@ -152,7 +152,6 @@ function appendMessage(m, container) {
 
 // ── Day floater — single sticky pill driven by scroll (Slack-style) ────────
 let _dayScrollHandler = null;
-let _floaterHideTimer = null;
 
 function initDayFloater() {
   const container = document.getElementById('messages');
