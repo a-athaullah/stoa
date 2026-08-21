@@ -1216,9 +1216,7 @@ html.dark .h-faded-mark { opacity: 0.12; }
   position: sticky;
   top: 0;
   z-index: 5;
-  background: color-mix(in srgb, var(--h-bg) 85%, transparent);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
+  background: transparent;
 }
 .h-day-separator::before,
 .h-day-separator::after {
