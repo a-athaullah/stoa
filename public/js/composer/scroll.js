@@ -28,15 +28,22 @@ async function loadOlderMessages() {
     if (!msgs.length) { noMoreOlder = true; loadingOlder = false; return; }
 
     // Build rows into a fragment using appendMessage's container param
+    const savedDay = _lastDayKey;
+    _lastDayKey = null;
     const frag = document.createDocumentFragment();
     msgs.forEach(m => {
       if (!document.getElementById('msg-' + m.id)) appendMessage(m, frag);
     });
+    _lastDayKey = savedDay;
 
     // Snapshot scroll anchor, then prepend, then restore
     const prevHeight = inner.scrollHeight;
     const prevTop    = container.scrollTop;
     inner.prepend(frag);
+    const seps = inner.querySelectorAll('.h-day-separator');
+    for (let i = 1; i < seps.length; i++) {
+      if (seps[i].getAttribute('data-day') === seps[i-1].getAttribute('data-day')) seps[i].remove();
+    }
     container.scrollTop = prevTop + (inner.scrollHeight - prevHeight);
 
     oldestMessageId = msgs[0].id;
