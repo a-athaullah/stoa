@@ -1215,7 +1215,7 @@ html.dark .h-faded-mark { opacity: 0.12; }
   position: sticky;
   top: 0;
   z-index: 5;
-  background: transparent;
+  background: var(--h-bg);
 }
 .h-day-separator-label {
   font-family: var(--h-sans);
