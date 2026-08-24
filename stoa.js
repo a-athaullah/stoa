@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.151';
+const CLIENT_VERSION = '0.4.152';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -962,6 +962,19 @@ async function processTrigger(msg) {
           }
         }
         if (!rotated) throw retryErr;
+      } else if (isAuthOrQuota && !fullContent) {
+        console.log(`[stoa] OAuth/auth error (${retryErr.message}), killing session and retrying fresh...`);
+        send({ type: 'agent_stream_reset', room_id, message_id });
+        session.shutdown();
+        sessionPool.delete(`${targetDir}::${room_id}`);
+        await new Promise(r => setTimeout(r, 2000));
+        fullContent = '';
+        session = getSession(targetDir, room_id, envToUse);
+        activeTriggers.set(message_id, { workdir: targetDir, session });
+        if (statusHandler) session.on('status', statusHandler);
+        sessionRef = session;
+        lastActivity = Date.now();
+        result = await session.send(sendOpts);
       } else if (retryErr.message.includes('exited unexpectedly') && !fullContent) {
         console.log(`[stoa] session crashed before output, retrying in 4s...`);
         await new Promise(r => setTimeout(r, 4000));
@@ -978,6 +991,28 @@ async function processTrigger(msg) {
     // "[thinking]" marker. Strip it from the visible output (the resumed history is cleaned
     // separately by sanitizeThinking, which eventually stops the model from producing it).
     content = stripLeadingThinkingMarker(content);
+
+    // OAuth expired: intercept "Not logged in" before user sees it, auto-restart and retry
+    const AUTH_EXPIRED_RE = /not logged in|please run \/(reauth|login)/i;
+    if (!aborted && AUTH_EXPIRED_RE.test(content) && content.length < 200) {
+      console.log(`[stoa] OAuth expired detected in room=${room_id} msg=${message_id}, content="${content.slice(0, 100)}"`);
+      console.log(`[stoa] Killing session and retrying...`);
+      send({ type: 'agent_stream_reset', room_id, message_id });
+      session.shutdown();
+      sessionPool.delete(`${targetDir}::${room_id}`);
+      await new Promise(r => setTimeout(r, 2000));
+      fullContent = '';
+      session = getSession(targetDir, room_id, envToUse);
+      activeTriggers.set(message_id, { workdir: targetDir, session });
+      if (statusHandler) session.on('status', statusHandler);
+      sessionRef = session;
+      lastActivity = Date.now();
+      result = await session.send(sendOpts);
+      ({ content, sessionId, aborted, usage, modelUsage, totalCostUsd } = result);
+      content = stripLeadingThinkingMarker(content);
+      console.log(`[stoa] OAuth retry completed for room=${room_id} msg=${message_id}, content=${content.length} chars`);
+    }
+
     clearInterval(hangWatchdog);
 
     consecutiveTriggerErrors = 0;
