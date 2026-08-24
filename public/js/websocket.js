@@ -91,6 +91,15 @@ function handleWsMessage(msg) {
     return;
   }
 
+  if (msg.type === 'message_stream_reset') {
+    const el = document.getElementById('msg-' + msg.message_id);
+    if (el) {
+      const bubble = el.querySelector('.h-bubble');
+      if (bubble) { bubble.innerHTML = ''; bubble.classList.add('streaming'); }
+    }
+    return;
+  }
+
   if (msg.type === 'message_token') {
     appendToken(msg.message_id, msg.token);
     return;

@@ -3013,6 +3013,17 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    // ── Agent stream reset (OAuth expired auto-retry — discard streamed tokens and clear stale session)
+    if (msg.type === 'agent_stream_reset' && agentActorId) {
+      const mRow = db.prepare('SELECT participant_id, room_id FROM messages WHERE id=?').get(msg.message_id);
+      const pid = mRow?.participant_id;
+      const rid = mRow?.room_id || msg.room_id;
+      console.log(`[server] stream reset for msg=${msg.message_id} room=${rid} participant=${pid} (OAuth expired, agent retrying)`);
+      db.prepare("UPDATE messages SET content='', state='streaming' WHERE id=?").run(msg.message_id);
+      if (pid) db.prepare('DELETE FROM ai_sessions WHERE participant_id=? AND room_id=?').run(pid, rid);
+      broadcast(rid, { type: 'message_stream_reset', message_id: msg.message_id });
+    }
+
     // ── Agent error
     if (msg.type === 'agent_error' && agentActorId) {
       db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msg.message_id);
