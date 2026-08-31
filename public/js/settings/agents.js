@@ -489,10 +489,10 @@ function sMakeEditAccordion(actor) {
   saSection.appendChild(saForm);
 
   function saMakeFormFields(existing) {
-    saForm.style.display = 'block';
+    saForm.style.cssText = 'display:flex;flex-direction:column;gap:6px';
     saForm.innerHTML = '';
     const row1 = document.createElement('div');
-    row1.style.cssText = 'display:flex;gap:8px;margin-bottom:6px';
+    row1.style.cssText = 'display:flex;gap:8px';
     const labelInp = document.createElement('input');
     labelInp.className = 's-name-input'; labelInp.placeholder = 'label (e.g. probe)';
     labelInp.style.cssText = 'flex:2;font-size:13px'; labelInp.value = existing?.label || '';
@@ -507,7 +507,7 @@ function sMakeEditAccordion(actor) {
     // Model override — "Use tier" (default) leaves model NULL so the tier's
     // fallback chain applies; picking one pins sub_agents.model to a single model.
     const modelSel = document.createElement('select');
-    modelSel.className = 's-name-input'; modelSel.style.cssText = 'font-size:13px;margin-bottom:6px';
+    modelSel.className = 's-name-input'; modelSel.style.cssText = 'font-size:13px;width:100%;box-sizing:border-box';
     const useTierOpt = document.createElement('option');
     useTierOpt.value = ''; useTierOpt.textContent = 'model override: use tier';
     modelSel.appendChild(useTierOpt);
@@ -523,10 +523,10 @@ function sMakeEditAccordion(actor) {
     }
     const wdInp = document.createElement('input');
     wdInp.className = 's-name-input'; wdInp.placeholder = 'workdir (optional)';
-    wdInp.style.cssText = 'font-size:13px;margin-bottom:6px'; wdInp.value = existing?.workdir || '';
+    wdInp.style.cssText = 'font-size:13px;width:100%;box-sizing:border-box'; wdInp.value = existing?.workdir || '';
     const spInp = document.createElement('textarea');
     spInp.className = 's-name-input'; spInp.placeholder = 'system prompt (optional)';
-    spInp.style.cssText = 'font-size:13px;min-height:48px;resize:vertical;margin-bottom:6px;font-family:var(--h-sans)';
+    spInp.style.cssText = 'font-size:13px;min-height:48px;height:auto;resize:vertical;width:100%;box-sizing:border-box;font-family:var(--h-sans)';
     spInp.value = existing?.system_prompt || '';
     const btns = document.createElement('div');
     btns.style.cssText = 'display:flex;gap:6px;justify-content:flex-end';
