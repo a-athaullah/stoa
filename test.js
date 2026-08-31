@@ -1003,6 +1003,43 @@ async function run() {
       assert.strictEqual(r.status, 404);
     });
 
+    await test('PATCH room — model_tiers valid object persisted', async () => {
+      if (!soRoomId) { console.log('    (skipped)'); return; }
+      await req('PATCH', `/api/rooms/${soRoomId}`, { model_tiers: {
+        quick: ['claude-haiku-4-5'],
+        deep: ['claude-opus-5', 'claude-sonnet-5'],
+      } });
+      const room = await req('GET', `/api/rooms/${soRoomId}`);
+      const mt = JSON.parse(room.body.model_tiers);
+      assert.deepStrictEqual(mt.quick, ['claude-haiku-4-5']);
+      assert.deepStrictEqual(mt.deep, ['claude-opus-5', 'claude-sonnet-5']);
+    });
+
+    await test('PATCH room — model_tiers sanitizes unknown keys + non-strings', async () => {
+      if (!soRoomId) { console.log('    (skipped)'); return; }
+      await req('PATCH', `/api/rooms/${soRoomId}`, { model_tiers: {
+        standard: ['claude-sonnet-5', 123, '', '  ', 'x'],
+        bogus: ['evil'],           // unknown tier dropped
+      } });
+      const room = await req('GET', `/api/rooms/${soRoomId}`);
+      const mt = JSON.parse(room.body.model_tiers);
+      assert.deepStrictEqual(mt.standard, ['claude-sonnet-5', 'x']); // non-strings/blanks removed
+      assert.strictEqual(mt.bogus, undefined);                        // unknown key dropped
+    });
+
+    await test('PATCH room — model_tiers null resets to server defaults', async () => {
+      if (!soRoomId) { console.log('    (skipped)'); return; }
+      await req('PATCH', `/api/rooms/${soRoomId}`, { model_tiers: null });
+      const room = await req('GET', `/api/rooms/${soRoomId}`);
+      assert.strictEqual(room.body.model_tiers, null);
+    });
+
+    await test('PATCH room — model_tiers wrong type → 400', async () => {
+      if (!soRoomId) { console.log('    (skipped)'); return; }
+      const r = await req('PATCH', `/api/rooms/${soRoomId}`, { model_tiers: ['not', 'an', 'object'] });
+      assert.strictEqual(r.status, 400);
+    });
+
     await test('Cleanup — delete suborch room + sub-agent + actor', async () => {
       if (soRoomId) {
         await req('PATCH', `/api/rooms/${soRoomId}`, { archived: true });

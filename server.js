@@ -72,6 +72,40 @@ function resolveParticipantWorkdir(participantId, prefetchedRoomWd = null) {
   return def?.path || null;
 }
 
+// Phase 3 — model tier routing. Server default fallback chain per tier (9Router
+// pattern: primary first, the rest tried in order when a model is unavailable).
+// A room may override this via rooms.model_tiers; a sub-agent may pin one model.
+const SERVER_DEFAULT_TIERS = {
+  quick:    ['claude-haiku-4-5'],
+  standard: ['claude-sonnet-5', 'claude-haiku-4-5'],
+  deep:     ['claude-opus-5', 'claude-sonnet-5'],
+};
+
+// Resolve the ordered model fallback chain for a trigger. Precedence:
+//   1. sub_agent explicit model override  → [that model]   (user pinned it)
+//   2. room.model_tiers[tier] chain       → configured per-room override
+//   3. server default chain for the tier  → SERVER_DEFAULT_TIERS
+//   4. last resort                        → [roomModel] (unchanged single-model)
+// A main-agent trigger (no sub-agent / no tier) always returns [roomModel] so
+// existing behaviour is untouched — tier routing applies to sub-agents only.
+function resolveModelChain(subAgent, roomModel, roomModelTiersJson) {
+  if (!subAgent || !subAgent.tier) return roomModel ? [roomModel] : [];
+  if (subAgent.model) return [subAgent.model];
+  const tier = subAgent.tier;
+  if (roomModelTiersJson) {
+    try {
+      const chain = JSON.parse(roomModelTiersJson)?.[tier];
+      if (Array.isArray(chain)) {
+        const clean = chain.filter(m => typeof m === 'string' && m.trim());
+        if (clean.length) return clean;
+      }
+    } catch {}
+  }
+  const def = SERVER_DEFAULT_TIERS[tier];
+  if (def?.length) return def.slice();
+  return roomModel ? [roomModel] : [];
+}
+
 // Main-agent session lookup: explicit sub_agent_id IS NULL to avoid matching sub-agent sessions.
 // See migration 20260831-sub-agent-definitions.sql for the partial unique index design.
 function getSession(participantId) {
@@ -878,6 +912,26 @@ const server = http.createServer(async (req, res) => {
     if (Number.isInteger(parsed.max_spawns_per_hour)) {
       const v = Math.max(1, Math.min(100, parsed.max_spawns_per_hour));
       db.prepare('UPDATE rooms SET max_spawns_per_hour=? WHERE id=?').run(v, roomId);
+    }
+    // Phase 3: per-room model tier fallback chains. null resets to server defaults.
+    // Only known tier keys are kept, each a chain of up to 8 model-name strings.
+    if ('model_tiers' in parsed) {
+      const mt = parsed.model_tiers;
+      if (mt === null) {
+        db.prepare('UPDATE rooms SET model_tiers=NULL WHERE id=?').run(roomId);
+      } else if (mt && typeof mt === 'object' && !Array.isArray(mt)) {
+        const clean = {};
+        for (const tier of ['quick', 'standard', 'deep']) {
+          const chain = mt[tier];
+          if (Array.isArray(chain)) {
+            const models = chain.filter(m => typeof m === 'string' && m.trim() && m.length <= 200).slice(0, 8);
+            if (models.length) clean[tier] = models;
+          }
+        }
+        db.prepare('UPDATE rooms SET model_tiers=? WHERE id=?').run(Object.keys(clean).length ? JSON.stringify(clean) : null, roomId);
+      } else {
+        return json(res, { error: 'model_tiers must be an object or null' }, 400);
+      }
     }
     return json(res, { ok: true });
   }
@@ -4496,7 +4550,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     '\n' + L.sendFileInstruction,
   ].filter(Boolean).join('\n');
 
-  const roomRow2 = db.prepare('SELECT model, model_config FROM rooms WHERE id=?').get(roomId);
+  const roomRow2 = db.prepare('SELECT model, model_config, model_tiers FROM rooms WHERE id=?').get(roomId);
   const roomModel = roomRow2?.model || null;
   let modelBaseUrl, modelApiKeys, modelToolsSupported;
   if (roomRow2?.model_config) {
@@ -4537,8 +4591,10 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   const baseWorkdir = resolveParticipantWorkdir(ai.participant_id, prefetchedCtx?.wdRow);
   const workdir = subAgent?.workdir || baseWorkdir;
 
-  // Sub-agent model overrides room model when set
-  const effectiveModel = subAgent?.model || roomModel;
+  // Sub-agent model overrides room model when set. Phase 3: sub-agents also
+  // resolve a tier → ordered fallback chain; the agent tries each in order.
+  const modelChain = resolveModelChain(subAgent, roomModel, roomRow2?.model_tiers);
+  const effectiveModel = modelChain[0] || null;
 
   if (agentWs && agentWs.readyState === 1) {
     // ── Route to connected agent client
@@ -4568,6 +4624,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         fileName: fullAttachments.find(a => a.type === 'file')?.name || undefined,
         workdir: workdir    || undefined,
         model: effectiveModel || undefined,
+        models: modelChain.length > 1 ? modelChain : undefined,
         base_url: modelBaseUrl,
         api_keys: modelApiKeys,
         tools_supported: modelToolsSupported === false ? false : undefined,
