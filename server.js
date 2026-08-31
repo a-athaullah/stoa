@@ -175,7 +175,7 @@ async function drainWake(wakeId) {
   const body = (sub.content || '').length > MAX_WAKE_CHARS
     ? (sub.content.slice(0, MAX_WAKE_CHARS) + `\n… (dipotong — teks lengkap ada di pesan "${parent.name} (${label})" di room)`)
     : (sub.content || '');
-  const wakePrompt = `[sub-agent result] Sub-agent "${label}" yang kamu picu sudah selesai. Hasilnya:\n\n${body}\n\nSintesiskan dan lanjutkan menjawab. (Pesan ini tidak memicu agent lain tanpa @mention eksplisit.)`;
+  const wakePrompt = `[sub-agent result] Sub-agent "${label}" yang kamu picu sudah selesai. Hasilnya:\n\n${body}\n\nSintesiskan dan lanjutkan menjawab. (Ini giliran sintesis kamu — jawabanmu tidak otomatis memicu agent lain, termasuk kalau kamu tulis @mention.)`;
 
   try {
     await triggerAiResponse(row.room_id, { ...parent, sub_agent: null }, wakePrompt, null, []);

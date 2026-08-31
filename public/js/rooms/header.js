@@ -382,6 +382,10 @@ function startRunControls(container, room) {
   });
 
   refresh();
-  window.__runCtlTimer = setInterval(refresh, 3000);
+  window.__runCtlTimer = setInterval(() => {
+    if (document.hidden) return;   // don't poll a backgrounded tab (idle waste)
+    if (popoverOpen) return;       // don't wipe/rebuild an open popover (loses hover + in-flight stop state)
+    refresh();
+  }, 3000);
 }
 
