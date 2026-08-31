@@ -862,7 +862,7 @@ async function run() {
   console.log('\n[Cost visibility]');
   {
     let cvActorId = null, cvSecret = null, cvWorkdirId = null, cvRoomId = null;
-    let cvMsgId = null, cvAgentWs = null;
+    let cvMsgId = null, cvAgentWs = null, cvSubAgentId = null;
 
     await test('Setup — register cost-visibility test actor + room', async () => {
       const agent = await createOnlineTestAgent('__test-cost-vis', '/tmp/stoa-test-cost-vis');
@@ -915,10 +915,14 @@ async function run() {
     await test('Cost rollup — per-sub-agent usage_log aggregates attributed spend', async () => {
       if (!cvRoomId) { console.log('    (skipped)'); return; }
       const db = require('./db');
+      // Insert ephemeral sub_agent row so FK constraint is satisfied, then clean up.
+      cvSubAgentId = db.prepare(
+        `INSERT INTO sub_agents (parent_actor_id, label, enabled) VALUES (?,?,1)`
+      ).run(cvActorId, '__probe').lastInsertRowid;
       // Seed 2 attributed usage rows (rollup requires >=2 runs) for one label.
       const ins = db.prepare(`INSERT INTO usage_log (actor_id, room_id, model, input_tokens, output_tokens, cost_usd, sub_agent_id, sub_agent_label) VALUES (?,?,?,?,?,?,?,?)`);
-      ins.run(cvActorId, cvRoomId, 'claude-haiku-4-5', 800, 200, 0.01, 9990001, '__probe');
-      ins.run(cvActorId, cvRoomId, 'claude-haiku-4-5', 300, 100, 0.005, 9990001, '__probe');
+      ins.run(cvActorId, cvRoomId, 'claude-haiku-4-5', 800, 200, 0.01, cvSubAgentId, '__probe');
+      ins.run(cvActorId, cvRoomId, 'claude-haiku-4-5', 300, 100, 0.005, cvSubAgentId, '__probe');
       // Mirror buildRoomCostRollup's query.
       const perAgent = db.prepare(`
         SELECT sub_agent_label AS label, COUNT(*) AS runs,
@@ -940,6 +944,7 @@ async function run() {
       if (cvRoomId) {
         const db = require('./db');
         db.prepare('DELETE FROM usage_log WHERE room_id=?').run(cvRoomId);
+        if (cvSubAgentId) { db.prepare('DELETE FROM sub_agents WHERE id=?').run(cvSubAgentId); cvSubAgentId = null; }
         await req('PATCH', `/api/rooms/${cvRoomId}`, { archived: true });
         await req('DELETE', `/api/rooms/${cvRoomId}`); // cascades its messages
         cvRoomId = null;
