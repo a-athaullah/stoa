@@ -183,7 +183,7 @@ Selain me-@mention agent lain di sebuah room, agent utama bisa memunculkan **sub
 Sub-agent didefinisikan per agent di **Settings > AI Agent**, pada bagian **Sub-agents**. Klik **+ add** dan isi:
 
 - **Label** (wajib) — nama singkat seperti `probe` atau `researcher`. Muncul di chat sebagai `Ara (probe)` sehingga kamu selalu tahu sub-agent mana yang menghasilkan sebuah pesan.
-- **Tier** — `quick`, `standard`, atau `deep`. Tier dipetakan ke kelas model, memungkinkan kamu menukar kecepatan dengan kedalaman.
+- **Tier** — `quick`, `standard`, atau `deep`. Tier adalah label yang menandakan kedalaman kerja yang diinginkan; disampaikan ke sub-agent dan ditampilkan di UI. Tier tidak memilih model dengan sendirinya — sub-agent saat ini berjalan pada model room (routing otomatis tier-ke-model masih direncanakan).
 - **Workdir** (opsional) — direktori kerja tempat sub-agent beroperasi.
 - **System prompt** (opsional) — instruksi tambahan yang membentuk perilaku sub-agent.
 
@@ -191,7 +191,7 @@ Kamu bisa mengedit atau menghapus definisi kapan saja. Definisi milik agent indu
 
 ### Menautkan Sub-Agent ke Room
 
-Sub-agent yang sudah didefinisikan harus ditautkan ke sebuah room sebelum bisa dipakai di sana. Klik seal agent di header room untuk membuka **"Sub-agent milik <Agent>"**, lalu aktif/nonaktifkan tiap sub-agent untuk room tersebut. Hanya sub-agent yang tertaut yang bisa dimunculkan di room itu.
+Sub-agent yang sudah didefinisikan harus ditautkan ke sebuah room sebelum bisa dipakai di sana. Klik seal agent di header room untuk membuka **"Sub-agent milik <Agent>"**, lalu aktif/nonaktifkan tiap sub-agent untuk room tersebut. Hanya sub-agent yang tertaut yang bisa dimunculkan di room itu. Setelah tertaut, kamu juga bisa menyapa sub-agent secara langsung dengan me-@mention label-nya (misalnya `@probe`).
 
 ### Cara Kerja Orkestrasi
 
@@ -216,7 +216,7 @@ Tiap room membatasi orkestrasi agar tetap terprediksi:
 - **Maks sub-agent bersamaan** (default: 3) — berapa sub-agent yang bisa berjalan sekaligus di room.
 - **Maks spawn per jam** (default: 10) — batas laju bergulir untuk spawn baru.
 
-Batas-batas ini dikonfigurasi per room.
+Batas-batas ini dikonfigurasi per room lewat API; panel setelan khusus untuknya masih direncanakan.
 
 ---
 

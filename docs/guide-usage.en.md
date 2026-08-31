@@ -183,7 +183,7 @@ Beyond @mentioning other agents in a room, a main agent can spawn its own **sub-
 Sub-agents are defined per agent in **Settings > AI Agent**, under the **Sub-agents** section. Click **+ add** and fill in:
 
 - **Label** (required) — a short name like `probe` or `researcher`. It appears in chat as `Ara (probe)` so you always know which sub-agent produced a message.
-- **Tier** — `quick`, `standard`, or `deep`. The tier maps to a model class, letting you trade speed for depth.
+- **Tier** — `quick`, `standard`, or `deep`. The tier is a label that signals the intended depth of the work; it is passed to the sub-agent and shown in the UI. It does not pick a model on its own — sub-agents currently run on the room's model (automatic tier-to-model routing is planned).
 - **Workdir** (optional) — a working directory the sub-agent operates in.
 - **System prompt** (optional) — extra instructions that shape the sub-agent's behavior.
 
@@ -191,7 +191,7 @@ You can edit or delete a definition anytime. Definitions belong to the parent ag
 
 ### Linking Sub-Agents to a Room
 
-A defined sub-agent must be linked to a room before it can be used there. Click the agent's seal in the room header to open **"<Agent>'s sub-agents"**, then toggle each sub-agent on or off for that room. Only linked sub-agents can be spawned in that room.
+A defined sub-agent must be linked to a room before it can be used there. Click the agent's seal in the room header to open **"<Agent>'s sub-agents"**, then toggle each sub-agent on or off for that room. Only linked sub-agents can be spawned in that room. Once linked, you can also address a sub-agent directly by @mentioning its label (e.g. `@probe`).
 
 ### How Orchestration Works
 
@@ -216,7 +216,7 @@ Each room caps orchestration to keep it predictable:
 - **Max concurrent sub-agents** (default: 3) — how many sub-agents can run at once in the room.
 - **Max spawns per hour** (default: 10) — a rolling rate limit on new spawns.
 
-These limits are configured per room.
+These limits are configured per room through the API; a dedicated settings panel for them is planned.
 
 ---
 
