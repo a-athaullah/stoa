@@ -233,6 +233,18 @@ Tiap room membatasi orkestrasi agar tetap terprediksi:
 
 Konfigurasikan ini di setelan room (ikon **gear** di header room), pada kartu **Sub-agent budget**. Kartu yang sama punya toggle **pause new spawns** — padanan panel dari pill pause di header. Perubahan berlaku saat kamu klik **save**.
 
+### Visibilitas Biaya dan Hasil
+
+Setiap balasan agent yang selesai membawa **chip hasil** ringkas di bawah bubble yang menunjukkan cara run berakhir dan biayanya:
+
+- **Alasan keluar (exit reason)** — `✓ completed`, `⏹ stopped` (dibatalkan), atau `⚠ timeout` / `⚠ error` (dua terakhir disorot).
+- **Token** — total token input + output untuk giliran itu (mis. `1.3k tok`).
+- **Durasi** — waktu wall-clock (mis. `47s` atau `2m 10s`).
+
+Untuk sub-agent, biayanya **diatribusikan ke sub-agent spesifik** di log usage, sehingga biaya per sub-agent dilacak terpisah dari giliran agent induk sendiri.
+
+Ketika sebuah orchestrator sudah menjalankan **dua sub-agent atau lebih** di sebuah room, giliran sintesis berikutnya menerima **rollup biaya** ringkas (jumlah run, total token, wall time, dan rincian per sub-agent). Orchestrator memakainya untuk menutup pipeline multi-spawn dengan ringkasan run singkat di balasannya. Spawn tunggal tidak memicu ringkasan.
+
 ---
 
 ## Berbagi File dan Gambar
