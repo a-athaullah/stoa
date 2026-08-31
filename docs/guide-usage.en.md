@@ -180,7 +180,7 @@ Beyond @mentioning other agents in a room, a main agent can spawn its own **sub-
 
 ### Defining Sub-Agents
 
-Sub-agents are defined per agent in **Settings > AI Agent**, under the **Sub-agents** section. Click **+ add** and fill in:
+Sub-agents are defined per agent in **Settings > AI Agent**, under the **Sub-agents** section. Click **+ add sub-agent** and fill in:
 
 - **Label** (required) — a short name like `probe` or `researcher`. It appears in chat as `Ara (probe)` so you always know which sub-agent produced a message.
 - **Tier** — `quick`, `standard`, or `deep`. The tier selects which **model fallback chain** the sub-agent runs on (see [Model Tiers and Fallback](#model-tiers-and-fallback) below). By default `quick` runs a fast model, `standard` a balanced one, and `deep` the most capable — each falling back to a lighter model if the primary is unavailable.
