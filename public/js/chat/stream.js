@@ -55,7 +55,7 @@ function appendToken(msgId, token) {
 }
 
 // ── Finalize streaming message ─────────────────────────────────────────────
-function finalizeMessage(msgId, content, fileUrl, fileName, attachments, aiModel) {
+function finalizeMessage(msgId, content, fileUrl, fileName, attachments, aiModel, resultMeta) {
   const row = document.getElementById('msg-' + msgId);
   if (!row) return;
 
@@ -86,6 +86,8 @@ function finalizeMessage(msgId, content, fileUrl, fileName, attachments, aiModel
       modelTag.textContent = aiModel;
       bubble.appendChild(modelTag);
     }
+    const resultChip = buildResultChip(resultMeta);
+    if (resultChip) bubble.appendChild(resultChip);
     addCopyButtons(bubble);
   linkifyFilePaths(bubble);
   externalLinksNewTab(bubble);

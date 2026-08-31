@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.161';
+const CLIENT_VERSION = '0.4.162';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -1047,7 +1047,7 @@ async function processTrigger(msg) {
         throw retryErr;
       }
     }
-    let { content, sessionId, aborted, usage, modelUsage, totalCostUsd } = result;
+    let { content, sessionId, aborted, usage, modelUsage, totalCostUsd, durationMs, subtype } = result;
     // Defensive: a model with a poisoned history may still prefix its reply with a literal
     // "[thinking]" marker. Strip it from the visible output (the resumed history is cleaned
     // separately by sanitizeThinking, which eventually stops the model from producing it).
@@ -1069,7 +1069,7 @@ async function processTrigger(msg) {
       sessionRef = session;
       lastActivity = Date.now();
       result = await session.send(sendOpts);
-      ({ content, sessionId, aborted, usage, modelUsage, totalCostUsd } = result);
+      ({ content, sessionId, aborted, usage, modelUsage, totalCostUsd, durationMs, subtype } = result);
       content = stripLeadingThinkingMarker(content);
       console.log(`[stoa] OAuth retry completed for room=${room_id} msg=${message_id}, content=${content.length} chars`);
     }
@@ -1080,12 +1080,22 @@ async function processTrigger(msg) {
     if (aborted) {
       const partial = stripLeadingThinkingMarker(fullContent) || content || '';
       const fallback = abortReason === 'timeout' ? '(timed out — session not responding)' : '(stopped by user)';
-      send({ type: 'agent_complete', room_id, message_id, content: partial || fallback, ai_model: targetModel || undefined });
+      // Phase 4: the abort path resolves without usage/duration (the CLI never
+      // emitted a result event), so the chip carries only the exit reason.
+      const result_meta = { exit_reason: abortReason === 'timeout' ? 'timeout' : 'stopped', tokens: null, duration_ms: null };
+      send({ type: 'agent_complete', room_id, message_id, content: partial || fallback, ai_model: targetModel || undefined, result_meta });
       console.log(`[stoa] Aborted message ${message_id}, reason=${abortReason || 'user'}, partial=${partial.length} chars`);
     } else {
       const { text: cleanContent, attachments } = await extractAndUploadFiles(content, msg.workdir);
       const actualModel = targetModel || (modelUsage && Object.keys(modelUsage).find(k => k !== 'total')) || undefined;
-      const completeMsg = { type: 'agent_complete', room_id, message_id, content: cleanContent || (attachments.length ? '📎' : cleanContent), claude_session_id: sessionId, ai_model: actualModel };
+      // Phase 4: structured run result for the cost chip + orchestrator summary.
+      // A non-'success' subtype (e.g. error_max_turns) marks a non-clean finish.
+      const result_meta = {
+        exit_reason: (subtype && subtype !== 'success') ? 'error' : 'completed',
+        tokens: usage ? { input: usage.input_tokens || 0, output: usage.output_tokens || 0 } : null,
+        duration_ms: durationMs || null,
+      };
+      const completeMsg = { type: 'agent_complete', room_id, message_id, content: cleanContent || (attachments.length ? '📎' : cleanContent), claude_session_id: sessionId, ai_model: actualModel, result_meta };
       if (attachments.length === 1) {
         completeMsg.file_url = attachments[0].url;
         completeMsg.file_name = attachments[0].name;

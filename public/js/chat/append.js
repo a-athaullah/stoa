@@ -32,6 +32,42 @@ function maybeInsertDaySep(inner, ts) {
   inner.appendChild(makeDaySeparator(dayLabel(d)));
 }
 
+// ── Result chip (Phase 4) ────────────────────────────────────────────────────
+// Quiet metadata line under an agent bubble: how the run ended + token/duration
+// cost. `raw` is the JSON string stored in messages.result_meta (or null).
+// Returns a DOM node, or null when there is nothing to show.
+const _RESULT_EXIT = {
+  completed: { glyph: '✓', label: 'completed' },
+  stopped:   { glyph: '⏹', label: 'stopped' },
+  timeout:   { glyph: '⚠', label: 'timeout' },
+  error:     { glyph: '⚠', label: 'error' },
+};
+function _fmtTokens(n) {
+  if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k';
+  return String(n);
+}
+function _fmtDuration(ms) {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60), r = s % 60;
+  return r ? m + 'm ' + r + 's' : m + 'm';
+}
+function buildResultChip(raw) {
+  if (!raw) return null;
+  let meta = raw;
+  if (typeof meta === 'string') { try { meta = JSON.parse(meta); } catch { return null; } }
+  if (!meta || typeof meta !== 'object' || !meta.exit_reason) return null;
+  const e = _RESULT_EXIT[meta.exit_reason] || { glyph: '•', label: String(meta.exit_reason) };
+  const parts = [e.glyph + ' ' + e.label];
+  const tok = meta.tokens;
+  if (tok && (tok.input || tok.output)) parts.push(_fmtTokens((tok.input || 0) + (tok.output || 0)) + ' tok');
+  if (meta.duration_ms) parts.push(_fmtDuration(meta.duration_ms));
+  const chip = document.createElement('div');
+  chip.className = 'h-msg-result' + (meta.exit_reason === 'timeout' || meta.exit_reason === 'error' ? ' warn' : '');
+  chip.textContent = parts.join(' · ');
+  return chip;
+}
+
 // ── Append message ─────────────────────────────────────────────────────────
 function appendMessage(m, container) {
   const inner = container || document.getElementById('messages-inner');
@@ -136,6 +172,9 @@ function appendMessage(m, container) {
     modelTag.textContent = m.ai_model;
     bubble.appendChild(modelTag);
   }
+
+  const resultChip = buildResultChip(m.result_meta);
+  if (resultChip) bubble.appendChild(resultChip);
 
   const actions = document.createElement('div');
   actions.className = 'h-msg-actions';

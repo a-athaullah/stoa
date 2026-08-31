@@ -106,6 +106,27 @@ function resolveModelChain(subAgent, roomModel, roomModelTiersJson) {
   return roomModel ? [roomModel] : [];
 }
 
+// Phase 4: whitelist an agent-supplied result_meta into a fixed, storable shape.
+// Returns a compact JSON string, or null when nothing meaningful is present.
+// Never trusts arbitrary keys/values — only exit_reason (from a fixed set),
+// integer token counts, and an integer duration survive.
+const RESULT_EXIT_REASONS = new Set(['completed', 'stopped', 'timeout', 'error']);
+function sanitizeResultMeta(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const out = {};
+  if (RESULT_EXIT_REASONS.has(raw.exit_reason)) out.exit_reason = raw.exit_reason;
+  const t = raw.tokens;
+  if (t && typeof t === 'object') {
+    const input = Number.isFinite(t.input) ? Math.max(0, Math.trunc(t.input)) : 0;
+    const output = Number.isFinite(t.output) ? Math.max(0, Math.trunc(t.output)) : 0;
+    if (input || output) out.tokens = { input, output };
+  }
+  if (Number.isFinite(raw.duration_ms) && raw.duration_ms > 0) {
+    out.duration_ms = Math.trunc(raw.duration_ms);
+  }
+  return Object.keys(out).length ? JSON.stringify(out) : null;
+}
+
 // Main-agent session lookup: explicit sub_agent_id IS NULL to avoid matching sub-agent sessions.
 // See migration 20260831-sub-agent-definitions.sql for the partial unique index design.
 function getSession(participantId) {
@@ -3301,10 +3322,14 @@ wss.on('connection', (ws, req) => {
           console.error('[wa:reply] extraction error:', e.message));
       }
       const agentContent = stripWaReplyMarkers(rawContent) || rawContent;
+      // Phase 4: whitelist result_meta from the agent to a fixed shape before
+      // persisting — never store arbitrary agent-supplied JSON on the row.
+      const resultMetaJson = sanitizeResultMeta(msg.result_meta);
       db.prepare(
-        "UPDATE messages SET content=?, file_url=?, file_name=?, attachments=?, ai_model=?, state='complete', completed_at=datetime('now') WHERE id=?"
-      ).run(agentContent, msg.file_url || null, msg.file_name || null, attachJson, msg.ai_model || null, msg.message_id);
+        "UPDATE messages SET content=?, file_url=?, file_name=?, attachments=?, ai_model=?, result_meta=?, state='complete', completed_at=datetime('now') WHERE id=?"
+      ).run(agentContent, msg.file_url || null, msg.file_name || null, attachJson, msg.ai_model || null, resultMetaJson, msg.message_id);
       const completePayload = { type: 'message_complete', message_id: msg.message_id, content: agentContent, ai_model: msg.ai_model || null };
+      if (resultMetaJson) completePayload.result_meta = resultMetaJson;
       if (msg.attachments?.length) { completePayload.attachments = msg.attachments; }
       else if (msg.file_url) { completePayload.file_url = msg.file_url; completePayload.file_name = msg.file_name; }
       broadcast(msg.room_id, completePayload);
