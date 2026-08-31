@@ -3730,13 +3730,14 @@ function resolveAgentOrder(content, agents, roomId) {
     for (const sa of linkedSubs) {
       const idx = content.indexOf('@' + sa.label);
       if (idx === -1) continue;
+      const parent = agents.find(a => a.actor_id === sa.parent_actor_id);
+      if (!parent) continue;
+      // Sub-agent mention overrides parent mention (@Parent @label → sub-agent wins)
       const existingIdx = mentions.findIndex(m => m.agent.actor_id === sa.parent_actor_id);
       if (existingIdx !== -1) {
         mentions[existingIdx] = { agent: { ...parent, sub_agent: sa }, idx };
         continue;
       }
-      const parent = agents.find(a => a.actor_id === sa.parent_actor_id);
-      if (!parent) continue;
       mentions.push({ agent: { ...parent, sub_agent: sa }, idx });
     }
   }
