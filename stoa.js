@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.160';
+const CLIENT_VERSION = '0.4.161';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -972,6 +972,11 @@ async function processTrigger(msg) {
           modelIdx++;
           targetModel = modelChain[modelIdx];
           console.log(`[stoa] model "${failed}" unavailable (${lastErr.message}), falling back to "${targetModel}"`);
+          // Discard any partial tokens the just-failed attempt streamed before it
+          // errored, so the next model's stream replaces (not appends to) them —
+          // same reset-on-retry contract as the key-rotation/OAuth/crash paths.
+          send({ type: 'agent_stream_reset', room_id, message_id });
+          fullContent = '';
           session.shutdown();
           if (rid && !compactsInFlight.has(targetDir)) await sanitizeThinking(targetDir, rid);
           const flags = rid ? ['--resume', rid] : [];
