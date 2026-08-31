@@ -74,7 +74,34 @@ function renderChatHeader(room, participants) {
     const wrap = document.createElement('div');
     wrap.className = 'h-header-seal';
     wrap.appendChild(makeAvatar(p.name, p.avatar_color, p.avatar_url, 26));
+    if (p.type === 'ai') {
+      wrap.style.cursor = 'pointer';
+      wrap.title = `${p.name} — click to manage sub-agents`;
+      wrap.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openSubAgentDropdown(wrap, room.id, p);
+      });
+    }
     sealsWrap.appendChild(wrap);
+  }
+
+  // Sub-agent seals (fetched async, rendered after parent seals)
+  if (room.id) {
+    fjson(`/api/rooms/${room.id}/sub-agents`).then(data => {
+      if (!data?.linked?.length) return;
+      for (const sa of data.linked) {
+        const saWrap = document.createElement('div');
+        saWrap.className = 'h-header-seal h-header-seal-sub';
+        saWrap.title = `${sa.parent_name}/${sa.label} (${sa.tier})`;
+        const parentActor = participants.find(p => p.actor_id === sa.parent_actor_id);
+        const color = parentActor?.avatar_color || '#888';
+        const mini = document.createElement('span');
+        mini.style.cssText = `width:18px;height:18px;border-radius:50%;font-size:9px;display:inline-flex;align-items:center;justify-content:center;background:color-mix(in srgb,${color} 20%,var(--h-surface));color:${color};border:1px solid color-mix(in srgb,${color} 30%,transparent);font-family:var(--h-sans);font-weight:600;letter-spacing:-.02em`;
+        mini.textContent = sa.label.charAt(0).toUpperCase();
+        saWrap.appendChild(mini);
+        sealsWrap.insertBefore(saWrap, sealsWrap.querySelector('.h-add-participant'));
+      }
+    }).catch(() => {});
   }
 
   const addBtn = document.createElement('button');
@@ -82,7 +109,6 @@ function renderChatHeader(room, participants) {
   addBtn.textContent = '+';
   addBtn.title = 'Add agent';
 
-  // Opens the add-agent modal (mirrors new-room: pick an AI + its workspace directory).
   addBtn.onclick = (e) => {
     e.stopPropagation();
     openAddAgentModal(currentRoomId, participants);
@@ -154,5 +180,73 @@ function renderChatHeader(room, participants) {
   wsToggle.innerHTML = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M14 4v16"/></svg>`;
   wsToggle.onclick = toggleWorkspacePanel;
   header.appendChild(wsToggle);
+}
+
+function openSubAgentDropdown(anchorEl, roomId, participant) {
+  document.querySelectorAll('.h-sa-dropdown').forEach(d => d.remove());
+  const drop = document.createElement('div');
+  drop.className = 'h-sa-dropdown';
+  drop.style.cssText = 'position:absolute;top:100%;right:0;min-width:200px;background:var(--h-surface);border:1px solid var(--h-border);border-radius:8px;padding:8px 0;box-shadow:0 4px 16px rgba(0,0,0,.15);z-index:100;font-family:var(--h-sans);font-size:13px';
+
+  const title = document.createElement('div');
+  title.style.cssText = 'padding:4px 12px 8px;font-family:var(--h-serif);font-style:italic;font-size:12px;color:var(--h-ink-mute);border-bottom:1px solid var(--h-border);margin-bottom:4px';
+  title.textContent = `${participant.name}'s sub-agents`;
+  drop.appendChild(title);
+
+  const list = document.createElement('div');
+  list.style.cssText = 'max-height:200px;overflow-y:auto';
+  drop.appendChild(list);
+
+  async function loadItems() {
+    try {
+      const data = await fjson(`/api/rooms/${roomId}/sub-agents`);
+      const actorSubs = [...data.linked.filter(s => s.parent_actor_id === participant.actor_id), ...data.available.filter(s => s.parent_actor_id === participant.actor_id)];
+      const linkedIds = new Set(data.linked.map(s => s.id));
+      list.innerHTML = '';
+      if (!actorSubs.length) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'padding:8px 12px;color:var(--h-ink-faint);font-style:italic;font-size:12px';
+        empty.textContent = 'no sub-agents defined';
+        list.appendChild(empty);
+        return;
+      }
+      for (const sa of actorSubs) {
+        const row = document.createElement('label');
+        row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 12px;cursor:pointer';
+        row.addEventListener('mouseenter', () => row.style.background = 'var(--h-hover)');
+        row.addEventListener('mouseleave', () => row.style.background = 'transparent');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = linkedIds.has(sa.id);
+        cb.addEventListener('change', async () => {
+          cb.disabled = true;
+          try {
+            if (cb.checked) {
+              const r = await fetch(`/api/rooms/${roomId}/sub-agents`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sub_agent_id: sa.id }) });
+              if (!r.ok) { const e = await r.json().catch(() => ({})); showToast(e.error || 'Failed', { error: true }); cb.checked = false; }
+            } else {
+              await fetch(`/api/rooms/${roomId}/sub-agents/${sa.id}`, { method: 'DELETE' });
+            }
+          } catch { cb.checked = !cb.checked; showToast('Failed', { error: true }); }
+          cb.disabled = false;
+        });
+        const lbl = document.createElement('span');
+        lbl.style.color = 'var(--h-ink)';
+        lbl.textContent = sa.label;
+        const tier = document.createElement('span');
+        tier.style.cssText = 'font-size:11px;color:var(--h-ink-faint);margin-left:auto';
+        tier.textContent = sa.tier;
+        row.append(cb, lbl, tier);
+        list.appendChild(row);
+      }
+    } catch { list.innerHTML = '<div style="padding:8px 12px;color:var(--h-ink-faint)">failed to load</div>'; }
+  }
+  loadItems();
+
+  anchorEl.style.position = 'relative';
+  anchorEl.appendChild(drop);
+  setTimeout(() => document.addEventListener('click', function close(e) {
+    if (!drop.contains(e.target)) { drop.remove(); document.removeEventListener('click', close); }
+  }), 0);
 }
 

@@ -72,10 +72,15 @@ function resolveParticipantWorkdir(participantId, prefetchedRoomWd = null) {
   return def?.path || null;
 }
 
-// Keyed by participant alone: a participant maps to exactly one workdir (room_participants.workdir_id),
-// so its session is unique per participant. See migration 20260620-rekey-ai-sessions-participant.
+// Main-agent session lookup: explicit sub_agent_id IS NULL to avoid matching sub-agent sessions.
+// See migration 20260831-sub-agent-definitions.sql for the partial unique index design.
 function getSession(participantId) {
-  const row = db.prepare('SELECT claude_session_id FROM ai_sessions WHERE participant_id=?').get(participantId);
+  const row = db.prepare('SELECT claude_session_id FROM ai_sessions WHERE participant_id=? AND sub_agent_id IS NULL').get(participantId);
+  return row?.claude_session_id ?? null;
+}
+
+function getSubAgentSession(participantId, subAgentId) {
+  const row = db.prepare('SELECT claude_session_id FROM ai_sessions WHERE participant_id=? AND sub_agent_id=?').get(participantId, subAgentId);
   return row?.claude_session_id ?? null;
 }
 
@@ -83,8 +88,16 @@ function saveSession(participantId, claudeSessionId, workdir) {
   const rp = db.prepare('SELECT room_id FROM room_participants WHERE id=?').get(participantId);
   db.prepare(
     `INSERT INTO ai_sessions (participant_id, room_id, claude_session_id, workdir, status) VALUES (?,?,?,?,'idle')
-     ON CONFLICT(participant_id) DO UPDATE SET claude_session_id=excluded.claude_session_id, room_id=excluded.room_id, workdir=excluded.workdir, status='idle', last_active_at=datetime('now')`
+     ON CONFLICT(participant_id) WHERE sub_agent_id IS NULL DO UPDATE SET claude_session_id=excluded.claude_session_id, room_id=excluded.room_id, workdir=excluded.workdir, status='idle', last_active_at=datetime('now')`
   ).run(participantId, rp?.room_id ?? null, claudeSessionId, workdir || null);
+}
+
+function saveSubAgentSession(participantId, subAgentId, claudeSessionId, workdir) {
+  const rp = db.prepare('SELECT room_id FROM room_participants WHERE id=?').get(participantId);
+  db.prepare(
+    `INSERT INTO ai_sessions (participant_id, room_id, sub_agent_id, claude_session_id, workdir, status) VALUES (?,?,?,?,?,'idle')
+     ON CONFLICT(participant_id, sub_agent_id) WHERE sub_agent_id IS NOT NULL DO UPDATE SET claude_session_id=excluded.claude_session_id, room_id=excluded.room_id, workdir=excluded.workdir, status='idle', last_active_at=datetime('now')`
+  ).run(participantId, rp?.room_id ?? null, subAgentId, claudeSessionId, workdir || null);
 }
 
 // Load .env if present
@@ -916,6 +929,29 @@ const server = http.createServer(async (req, res) => {
       return json(res, rows);
     }
 
+    if (url.pathname.endsWith('/sub-agents')) {
+      const linked = db.prepare(`
+        SELECT sa.*, a.name AS parent_name, rsa.added_at AS linked_at
+        FROM room_sub_agents rsa
+        JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
+        JOIN actors a ON a.id=sa.parent_actor_id
+        WHERE rsa.room_id=?
+        ORDER BY a.name, sa.label
+      `).all(roomId);
+      const parentIds = db.prepare(
+        "SELECT a.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='ai'"
+      ).all(roomId).map(r => r.id);
+      let available = [];
+      if (parentIds.length) {
+        const ph = parentIds.map(() => '?').join(',');
+        const linkedIds = new Set(linked.map(l => l.id));
+        available = db.prepare(
+          `SELECT sa.*, a.name AS parent_name FROM sub_agents sa JOIN actors a ON a.id=sa.parent_actor_id WHERE sa.parent_actor_id IN (${ph}) AND sa.enabled=1`
+        ).all(...parentIds).filter(sa => !linkedIds.has(sa.id));
+      }
+      return json(res, { linked, available });
+    }
+
     const subPath = url.pathname.split('/').slice(4).join('/');
     if (!subPath) {
       const room = db.prepare('SELECT * FROM rooms WHERE id=?').get(roomId);
@@ -970,6 +1006,39 @@ const server = http.createServer(async (req, res) => {
       db.prepare('UPDATE room_participants SET workdir_id=? WHERE room_id=? AND actor_id=?').run(workdir_id, roomId, actor_id);
     }
     broadcast(roomId, { type: 'participant_joined', actor_id });
+    return json(res, { ok: true });
+  }
+
+  if (req.method === 'POST' && url.pathname.match(/^\/api\/rooms\/\d+\/sub-agents$/)) {
+    const roomId = parseInt(url.pathname.split('/')[3]);
+    const data = parseJsonBody(await readBody(req));
+    if (!data) return json(res, { error: 'Invalid JSON' }, 400);
+    const { sub_agent_id } = data;
+    if (!sub_agent_id) return json(res, { error: 'sub_agent_id required' }, 400);
+    const sa = db.prepare('SELECT id, parent_actor_id, label FROM sub_agents WHERE id=?').get(sub_agent_id);
+    if (!sa) return json(res, { error: 'sub-agent not found' }, 404);
+    const room = db.prepare('SELECT id FROM rooms WHERE id=?').get(roomId);
+    if (!room) return json(res, { error: 'room not found' }, 404);
+    const parentInRoom = db.prepare('SELECT 1 FROM room_participants WHERE room_id=? AND actor_id=?').get(roomId, sa.parent_actor_id);
+    if (!parentInRoom) return json(res, { error: 'parent agent is not a participant in this room' }, 403);
+    const labelCollision = db.prepare(`
+      SELECT sa2.label, a.name AS parent_name FROM room_sub_agents rsa
+      JOIN sub_agents sa2 ON sa2.id=rsa.sub_agent_id
+      JOIN actors a ON a.id=sa2.parent_actor_id
+      WHERE rsa.room_id=? AND sa2.label=? AND sa2.parent_actor_id!=?
+    `).get(roomId, sa.label, sa.parent_actor_id);
+    if (labelCollision) return json(res, { error: `label "${sa.label}" already in this room (from ${labelCollision.parent_name})` }, 409);
+    db.prepare('INSERT OR IGNORE INTO room_sub_agents (room_id, sub_agent_id) VALUES (?,?)').run(roomId, sub_agent_id);
+    broadcast(roomId, { type: 'sub_agent_linked', room_id: roomId, sub_agent_id });
+    return json(res, { ok: true });
+  }
+
+  if (req.method === 'DELETE' && url.pathname.match(/^\/api\/rooms\/\d+\/sub-agents\/\d+$/)) {
+    const parts = url.pathname.split('/');
+    const roomId = parseInt(parts[3]);
+    const subAgentId = parseInt(parts[5]);
+    db.prepare('DELETE FROM room_sub_agents WHERE room_id=? AND sub_agent_id=?').run(roomId, subAgentId);
+    broadcast(roomId, { type: 'sub_agent_unlinked', room_id: roomId, sub_agent_id: subAgentId });
     return json(res, { ok: true });
   }
 
@@ -1603,6 +1672,82 @@ const server = http.createServer(async (req, res) => {
     const ws = agentClients.get(id);
     if (ws) { ws.close(); agentClients.delete(id); }
     broadcastGlobal({ type: 'actor_removed', actor_id: id, affected_rooms: affectedRooms });
+    res.writeHead(204); return res.end();
+  }
+
+  // ── Sub-agent definitions CRUD ──
+
+  if (req.method === 'GET' && url.pathname.match(/^\/api\/actors\/\d+\/sub-agents$/)) {
+    const actorId = parseInt(url.pathname.split('/')[3]);
+    const rows = db.prepare('SELECT * FROM sub_agents WHERE parent_actor_id=? ORDER BY label').all(actorId);
+    return json(res, rows);
+  }
+
+  if (req.method === 'POST' && url.pathname.match(/^\/api\/actors\/\d+\/sub-agents$/)) {
+    const actorId = parseInt(url.pathname.split('/')[3]);
+    const actor = db.prepare("SELECT id FROM actors WHERE id=? AND type='ai'").get(actorId);
+    if (!actor) return json(res, { error: 'AI actor not found' }, 404);
+    const data = parseJsonBody(await readBody(req));
+    if (!data) return json(res, { error: 'Invalid JSON' }, 400);
+    const { label, tier, model, workdir, system_prompt } = data;
+    if (!label?.trim()) return json(res, { error: 'label required' }, 400);
+    if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,29}$/.test(label.trim())) return json(res, { error: 'label must start with a letter, 1-30 chars, alphanumeric/dash/underscore' }, 400);
+    if (tier && !['quick', 'standard', 'deep'].includes(tier)) return json(res, { error: 'tier must be quick, standard, or deep' }, 400);
+    const nameCollision = db.prepare('SELECT 1 FROM actors WHERE LOWER(name)=LOWER(?)').get(label.trim());
+    if (nameCollision) return json(res, { error: `label "${label.trim()}" conflicts with an existing actor name` }, 409);
+    try {
+      const result = db.prepare(
+        'INSERT INTO sub_agents (parent_actor_id, label, tier, model, workdir, system_prompt) VALUES (?,?,?,?,?,?)'
+      ).run(actorId, label.trim(), tier || 'quick', model || null, workdir || null, system_prompt || null);
+      const row = db.prepare('SELECT * FROM sub_agents WHERE id=?').get(result.lastInsertRowid);
+      return json(res, row, 201);
+    } catch (e) {
+      if (e.code === 'SQLITE_CONSTRAINT_UNIQUE') return json(res, { error: `label "${label.trim()}" already exists for this agent` }, 409);
+      throw e;
+    }
+  }
+
+  if (req.method === 'PATCH' && url.pathname.match(/^\/api\/sub-agents\/\d+$/)) {
+    const id = parseInt(url.pathname.split('/')[3]);
+    const sa = db.prepare('SELECT * FROM sub_agents WHERE id=?').get(id);
+    if (!sa) return json(res, { error: 'sub-agent not found' }, 404);
+    const data = parseJsonBody(await readBody(req));
+    if (!data) return json(res, { error: 'Invalid JSON' }, 400);
+    const updates = [];
+    const params = [];
+    for (const key of ['label', 'tier', 'model', 'workdir', 'system_prompt', 'enabled']) {
+      if (data[key] !== undefined) {
+        if (key === 'label') {
+          if (!data.label?.trim()) return json(res, { error: 'label required' }, 400);
+          if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,29}$/.test(data.label.trim())) return json(res, { error: 'invalid label format' }, 400);
+          const nameCollision = db.prepare('SELECT 1 FROM actors WHERE LOWER(name)=LOWER(?)').get(data.label.trim());
+          if (nameCollision) return json(res, { error: `label conflicts with actor name` }, 409);
+          updates.push('label=?'); params.push(data.label.trim());
+        } else if (key === 'tier') {
+          if (!['quick', 'standard', 'deep'].includes(data.tier)) return json(res, { error: 'invalid tier' }, 400);
+          updates.push('tier=?'); params.push(data.tier);
+        } else if (key === 'enabled') {
+          updates.push('enabled=?'); params.push(data.enabled ? 1 : 0);
+        } else {
+          updates.push(`${key}=?`); params.push(data[key] ?? null);
+        }
+      }
+    }
+    if (!updates.length) return json(res, { error: 'no fields to update' }, 400);
+    params.push(id);
+    try {
+      db.prepare(`UPDATE sub_agents SET ${updates.join(', ')} WHERE id=?`).run(...params);
+    } catch (e) {
+      if (e.code === 'SQLITE_CONSTRAINT_UNIQUE') return json(res, { error: 'label already exists for this agent' }, 409);
+      throw e;
+    }
+    const row = db.prepare('SELECT * FROM sub_agents WHERE id=?').get(id);
+    return json(res, row);
+  }
+
+  if (req.method === 'DELETE' && url.pathname.match(/^\/api\/sub-agents\/\d+$/)) {
+    const id = parseInt(url.pathname.split('/')[3]);
+    db.prepare('DELETE FROM sub_agents WHERE id=?').run(id);
     res.writeHead(204); return res.end();
   }
 
@@ -2530,7 +2675,7 @@ wss.on('connection', (ws, req) => {
       if (aiParts.length) {
         const ph = aiParts.map(() => '?').join(',');
         const allSessions = db.prepare(
-          `SELECT participant_id, claude_session_id FROM ai_sessions WHERE participant_id IN (${ph}) AND room_id=? ORDER BY last_active_at DESC`
+          `SELECT participant_id, claude_session_id FROM ai_sessions WHERE participant_id IN (${ph}) AND room_id=? AND sub_agent_id IS NULL ORDER BY last_active_at DESC`
         ).all(...aiParts.map(a => a.participant_id), roomId);
         for (const s of allSessions) {
           if (!sessionMap.has(s.participant_id)) sessionMap.set(s.participant_id, s);
@@ -2770,7 +2915,7 @@ wss.on('connection', (ws, req) => {
       if (msg.claude_session_id) {
         const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
         if (participant) {
-          db.prepare(`UPDATE ai_sessions SET claude_session_id=?, last_active_at=datetime('now') WHERE participant_id=? AND room_id=?`).run(msg.claude_session_id, participant.id, msg.room_id);
+          db.prepare(`UPDATE ai_sessions SET claude_session_id=?, last_active_at=datetime('now') WHERE participant_id=? AND room_id=? AND sub_agent_id IS NULL`).run(msg.claude_session_id, participant.id, msg.room_id);
         }
       }
       const state = pendingCompacts.get(msg.room_id);
@@ -2873,11 +3018,12 @@ wss.on('connection', (ws, req) => {
       broadcastGlobal({ type: 'room_activity', room_id: msg.room_id });
       if (msg.claude_session_id) {
         try {
-          const row = db.prepare('SELECT participant_id FROM messages WHERE id=?').get(msg.message_id);
-          // Resolve the participant's workdir the SAME way dispatch does (single source) so the
-          // saved key matches the lookup key. Re-deriving from the ROOM workdir here was the bug:
-          // for a participant whose workdir != room workdir the session never matched on resume.
-          if (row) saveSession(row.participant_id, msg.claude_session_id, resolveParticipantWorkdir(row.participant_id));
+          const row = db.prepare('SELECT participant_id, sub_agent_id FROM messages WHERE id=?').get(msg.message_id);
+          if (row && row.sub_agent_id) {
+            saveSubAgentSession(row.participant_id, row.sub_agent_id, msg.claude_session_id, resolveParticipantWorkdir(row.participant_id));
+          } else if (row) {
+            saveSession(row.participant_id, msg.claude_session_id, resolveParticipantWorkdir(row.participant_id));
+          }
         } catch (e) { console.error('[agent] saveSession error:', e.message); }
       }
       pendingAgents.get(msg.message_id)?.resolve(msg.content);
@@ -3566,18 +3712,42 @@ function parseGitDiff(raw) {
 
 // ─── Message handling ─────────────────────────────────────────────────────────
 
-function resolveAgentOrder(content, agents) {
+function resolveAgentOrder(content, agents, roomId) {
   const mentions = [];
   for (const agent of agents) {
     const idx = content.indexOf('@' + agent.name);
-    if (idx !== -1) mentions.push({ agent, idx });
+    if (idx !== -1) mentions.push({ agent: { ...agent, sub_agent: null }, idx });
   }
+
+  // Check sub-agent label mentions (@probe, @reviewer) — linked to this room
+  if (roomId) {
+    const linkedSubs = db.prepare(`
+      SELECT sa.*, a.name AS parent_name FROM room_sub_agents rsa
+      JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
+      JOIN actors a ON a.id=sa.parent_actor_id
+      WHERE rsa.room_id=? AND sa.enabled=1
+    `).all(roomId);
+    for (const sa of linkedSubs) {
+      const idx = content.indexOf('@' + sa.label);
+      if (idx === -1) continue;
+      const parent = agents.find(a => a.actor_id === sa.parent_actor_id);
+      if (!parent) continue;
+      // Sub-agent mention overrides parent mention (@Parent @label → sub-agent wins)
+      const existingIdx = mentions.findIndex(m => m.agent.actor_id === sa.parent_actor_id);
+      if (existingIdx !== -1) {
+        mentions[existingIdx] = { agent: { ...parent, sub_agent: sa }, idx };
+        continue;
+      }
+      mentions.push({ agent: { ...parent, sub_agent: sa }, idx });
+    }
+  }
+
   if (mentions.length > 0) {
     mentions.sort((a, b) => a.idx - b.idx);
     return mentions.map(m => m.agent);
   }
-  // No mentions → shuffle all agents
-  const shuffled = [...agents];
+  // No mentions → shuffle all agents (no sub-agent)
+  const shuffled = [...agents].map(a => ({ ...a, sub_agent: null }));
   for (let i = shuffled.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
@@ -3636,12 +3806,30 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
         for (const other of allAiInRoom) {
           if (other.actor_id !== currentAgent.actor_id && lastMsg.content.includes('@' + other.name)) {
             const alreadyQueued = agents.slice(i + 1).some(a => a.actor_id === other.actor_id);
-            if (!alreadyQueued) agents.push(other);
+            if (!alreadyQueued) agents.push({ ...other, sub_agent: null });
           }
         }
 
+        // Cascade sub-agent mentions in responses
+        const linkedSubs = db.prepare(`
+          SELECT sa.*, a.name AS parent_name FROM room_sub_agents rsa
+          JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
+          JOIN actors a ON a.id=sa.parent_actor_id
+          WHERE rsa.room_id=? AND sa.enabled=1
+        `).all(roomId);
+        for (const sa of linkedSubs) {
+          if (lastMsg.content.includes('@' + sa.label)) {
+            const alreadyQueued = agents.slice(i + 1).some(a => a.sub_agent?.id === sa.id);
+            if (!alreadyQueued) {
+              const parent = allAiInRoom.find(a => a.actor_id === sa.parent_actor_id);
+              if (parent) agents.push({ ...parent, sub_agent: sa });
+            }
+          }
+        }
+
+        const agentName = currentAgent.sub_agent ? `${currentAgent.name}/${currentAgent.sub_agent.label}` : currentAgent.name;
         if (i < agents.length - 1) {
-          content = content + '\n\n' + `[${agents[i].name} sudah merespons: ${lastMsg.content}]`;
+          content = content + '\n\n' + `[${agentName} sudah merespons: ${lastMsg.content}]`;
         }
       }
 
@@ -3694,7 +3882,7 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
   `).all(roomId);
 
   if (allAiParts.length > 0) {
-    const ordered = resolveAgentOrder(content, allAiParts);
+    const ordered = resolveAgentOrder(content, allAiParts, roomId);
     triggerAgentsSequential(roomId, ordered, content, messageId, attachments || []).catch(e => console.error('[trigger] sequence error:', e));
   }
 }
@@ -3928,11 +4116,17 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     return;
   }
 
-  const result = db.prepare(
-    `INSERT INTO messages (room_id, participant_id, content, state, reply_to) VALUES (?,?,'','streaming',?)`
-  ).run(roomId, ai.participant_id, replyTo);
+  const subAgent = ai.sub_agent || null;
+  const result = subAgent
+    ? db.prepare(
+        `INSERT INTO messages (room_id, participant_id, content, state, reply_to, sub_agent_id, sub_agent_label) VALUES (?,?,'','streaming',?,?,?)`
+      ).run(roomId, ai.participant_id, replyTo, subAgent.id, subAgent.label)
+    : db.prepare(
+        `INSERT INTO messages (room_id, participant_id, content, state, reply_to) VALUES (?,?,'','streaming',?)`
+      ).run(roomId, ai.participant_id, replyTo);
   const msgId = result.lastInsertRowid;
 
+  const displayName = subAgent ? `${ai.name}/${subAgent.label}` : ai.name;
   broadcast(roomId, {
     type: 'message_state',
     message_id: msgId,
@@ -3940,9 +4134,10 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     avatar_color: ai.avatar_color,
     avatar_symbol: ai.avatar_symbol,
     avatar_url: ai.avatar_url || null,
+    sub_agent_label: subAgent?.label || null,
     state: 'streaming',
   });
-  console.log(`[trigger] ${ai.name} actor_id=${ai.actor_id} agentConnected=${!!agentWs} readyState=${agentWs?.readyState}`);
+  console.log(`[trigger] ${displayName} actor_id=${ai.actor_id} agentConnected=${!!agentWs} readyState=${agentWs?.readyState}`);
 
   if (EXPECTED_CLIENT_VERSION && agentWs && agentWs.readyState === 1) {
     const agentVer = agentVersions.get(ai.actor_id);
@@ -4010,8 +4205,12 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     if (replied) replyCtx = '\n' + L.replyTo(replied.name, replied.content?.substring(0, 500)) + '\n';
   }
 
+  const identityLine = subAgent
+    ? `${L.identity(ai.name)}\nYou are operating as sub-agent "${subAgent.label}" (tier: ${subAgent.tier}).${subAgent.system_prompt ? '\n\nSub-agent instructions:\n' + subAgent.system_prompt : ''}`
+    : L.identity(ai.name);
+
   const fullPrompt = [
-    L.identity(ai.name),
+    identityLine,
     `Room ID: ${roomId}`,
     L.timeContext(nowUtc),
     othersLine,
@@ -4059,16 +4258,21 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     broadcast(roomId, { type: 'message_complete', message_id: msgId, content: errContent });
     return;
   }
-  // Single source for the participant's workdir (see resolveParticipantWorkdir). Pass the
-  // prefetched room-workdir row so a multi-agent sequence doesn't re-query it per turn.
-  const workdir = resolveParticipantWorkdir(ai.participant_id, prefetchedCtx?.wdRow);
+  // Sub-agent workdir overrides parent workdir when set
+  const baseWorkdir = resolveParticipantWorkdir(ai.participant_id, prefetchedCtx?.wdRow);
+  const workdir = subAgent?.workdir || baseWorkdir;
+
+  // Sub-agent model overrides room model when set
+  const effectiveModel = subAgent?.model || roomModel;
 
   if (agentWs && agentWs.readyState === 1) {
     // ── Route to connected agent client
-    const sessionId = getSession(ai.participant_id);
+    const sessionId = subAgent
+      ? getSubAgentSession(ai.participant_id, subAgent.id)
+      : getSession(ai.participant_id);
     await new Promise((resolve, reject) => {
       pendingAgents.set(msgId, { resolve, reject });
-      pendingActorMeta.set(msgId, { actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null });
+      pendingActorMeta.set(msgId, { actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null, sub_agent_label: subAgent?.label || null });
       const triggerBaseUrl = getPublicUrl(`localhost:${PORT}`);
       const fullAttachments = (attachments || []).map(a => ({
         ...a,
@@ -4081,19 +4285,20 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         reply_to: replyTo || undefined,
         participant_id: ai.participant_id,
         claude_session_id: sessionId,
+        sub_agent: subAgent ? { id: subAgent.id, label: subAgent.label, tier: subAgent.tier } : undefined,
         prompt: fullPrompt,
         attachments: fullAttachments.length ? fullAttachments : undefined,
         imageUrl: fullAttachments.find(a => a.type === 'image')?.url || undefined,
         fileUrl:  fullAttachments.find(a => a.type === 'file')?.url || undefined,
         fileName: fullAttachments.find(a => a.type === 'file')?.name || undefined,
         workdir: workdir    || undefined,
-        model: roomModel    || undefined,
+        model: effectiveModel || undefined,
         base_url: modelBaseUrl,
         api_keys: modelApiKeys,
         tools_supported: modelToolsSupported === false ? false : undefined,
         rawHistory: rawHistory.length ? rawHistory : undefined,
       }));
-      console.log(`[trigger] sent to ${ai.name} agent, msgId=${msgId}`);
+      console.log(`[trigger] sent to ${displayName} agent, msgId=${msgId}`);
     });
 
   }

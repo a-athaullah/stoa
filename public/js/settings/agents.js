@@ -466,6 +466,124 @@ function sMakeEditAccordion(actor) {
   };
   updateCmd();
 
+  // ── Sub-agents section ──
+  const saSection = document.createElement('div');
+  saSection.style.cssText = 'border-top:1px solid var(--h-border);padding-top:12px;margin-top:8px';
+  const saHeader = document.createElement('div');
+  saHeader.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px';
+  const saTitle = document.createElement('span');
+  saTitle.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:14px;color:var(--h-ink)';
+  saTitle.textContent = 'Sub-agents';
+  saHeader.appendChild(saTitle);
+  const saAddBtn = document.createElement('button');
+  saAddBtn.className = 's-icon-btn'; saAddBtn.style.cssText = 'font-size:12px;padding:3px 10px;border-radius:999px;border:1px solid var(--h-border);background:transparent;color:var(--h-ink-mute);cursor:pointer;font-family:var(--h-sans)';
+  saAddBtn.textContent = '+ add';
+  saHeader.appendChild(saAddBtn);
+  saSection.appendChild(saHeader);
+  const saList = document.createElement('div');
+  saList.id = `s-sub-agents-${actor.id}`;
+  saSection.appendChild(saList);
+  const saForm = document.createElement('div');
+  saForm.id = `s-sa-form-${actor.id}`;
+  saForm.style.display = 'none';
+  saSection.appendChild(saForm);
+
+  function saMakeFormFields(existing) {
+    saForm.style.display = 'block';
+    saForm.innerHTML = '';
+    const row1 = document.createElement('div');
+    row1.style.cssText = 'display:flex;gap:8px;margin-bottom:6px';
+    const labelInp = document.createElement('input');
+    labelInp.className = 's-name-input'; labelInp.placeholder = 'label (e.g. probe)';
+    labelInp.style.cssText = 'flex:2;font-size:13px'; labelInp.value = existing?.label || '';
+    const tierSel = document.createElement('select');
+    tierSel.className = 's-name-input'; tierSel.style.cssText = 'flex:1;font-size:13px';
+    for (const t of ['quick', 'standard', 'deep']) {
+      const o = document.createElement('option'); o.value = t; o.textContent = t;
+      if ((existing?.tier || 'quick') === t) o.selected = true;
+      tierSel.appendChild(o);
+    }
+    row1.append(labelInp, tierSel);
+    const wdInp = document.createElement('input');
+    wdInp.className = 's-name-input'; wdInp.placeholder = 'workdir (optional)';
+    wdInp.style.cssText = 'font-size:13px;margin-bottom:6px'; wdInp.value = existing?.workdir || '';
+    const spInp = document.createElement('textarea');
+    spInp.className = 's-name-input'; spInp.placeholder = 'system prompt (optional)';
+    spInp.style.cssText = 'font-size:13px;min-height:48px;resize:vertical;margin-bottom:6px;font-family:var(--h-sans)';
+    spInp.value = existing?.system_prompt || '';
+    const btns = document.createElement('div');
+    btns.style.cssText = 'display:flex;gap:6px;justify-content:flex-end';
+    const cancelF = document.createElement('button');
+    cancelF.style.cssText = 'background:transparent;border:none;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12px;padding:5px 10px;cursor:pointer';
+    cancelF.textContent = 'cancel';
+    cancelF.addEventListener('click', () => { saForm.style.display = 'none'; });
+    const saveF = document.createElement('button');
+    saveF.className = 'h-btn-primary'; saveF.style.cssText = 'padding:5px 14px;font-size:12px';
+    saveF.textContent = existing ? 'update' : 'create';
+    saveF.addEventListener('click', async () => {
+      const label = labelInp.value.trim();
+      if (!label) { showToast('Label required', { error: true }); return; }
+      try {
+        const body = { label, tier: tierSel.value, workdir: wdInp.value.trim() || null, system_prompt: spInp.value.trim() || null };
+        let r;
+        if (existing) {
+          r = await fetch(`/api/sub-agents/${existing.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        } else {
+          r = await fetch(`/api/actors/${actor.id}/sub-agents`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        }
+        if (!r.ok) { const e = await r.json().catch(() => ({})); showToast(e.error || 'Failed', { error: true }); return; }
+        saForm.style.display = 'none';
+        saLoadList();
+      } catch { showToast('Failed to save sub-agent', { error: true }); }
+    });
+    btns.append(cancelF, saveF);
+    saForm.append(row1, wdInp, spInp, btns);
+    setTimeout(() => labelInp.focus(), 0);
+  }
+
+  async function saLoadList() {
+    try {
+      const r = await fetch(`/api/actors/${actor.id}/sub-agents`);
+      if (!r.ok) return;
+      const subs = await r.json();
+      saList.innerHTML = '';
+      if (!subs.length) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'font-size:12.5px;color:var(--h-ink-faint);font-family:var(--h-sans);font-style:italic;padding:4px 0';
+        empty.textContent = 'no sub-agents defined';
+        saList.appendChild(empty);
+        return;
+      }
+      for (const sa of subs) {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0;font-family:var(--h-sans);font-size:13px';
+        const lbl = document.createElement('span');
+        lbl.style.cssText = 'font-weight:500;color:var(--h-ink);min-width:80px';
+        lbl.textContent = sa.label;
+        const meta = document.createElement('span');
+        meta.style.cssText = 'color:var(--h-ink-mute);font-size:12px;flex:1';
+        meta.textContent = sa.tier + (sa.workdir ? ' · ' + sa.workdir : '');
+        const editB = document.createElement('button');
+        editB.className = 's-icon-btn'; editB.innerHTML = svgPencil(12); editB.title = 'Edit';
+        editB.addEventListener('click', () => saMakeFormFields(sa));
+        const delB = document.createElement('button');
+        delB.className = 's-icon-btn'; delB.innerHTML = svgX(12); delB.title = 'Delete';
+        delB.addEventListener('click', async () => {
+          try {
+            const r = await fetch(`/api/sub-agents/${sa.id}`, { method: 'DELETE' });
+            if (r.ok) saLoadList();
+          } catch { showToast('Failed to delete', { error: true }); }
+        });
+        row.append(lbl, meta, editB, delB);
+        saList.appendChild(row);
+      }
+    } catch {}
+  }
+
+  saAddBtn.addEventListener('click', () => saMakeFormFields(null));
+  saLoadList();
+  acc.appendChild(saSection);
+
   // Save / Cancel
   const actionsRow = document.createElement('div');
   actionsRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;padding-top:4px';

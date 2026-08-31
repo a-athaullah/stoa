@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.153';
+const CLIENT_VERSION = '0.4.156';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -288,9 +288,11 @@ function sanitizeThinking(workdir, sessionId) {
     'sanitized thinking residue');
 }
 
-function getSession(workdir, roomId, env) {
+function getSession(workdir, roomId, env, subAgentId) {
   const workdirResolved = path.resolve(workdir);
-  const key = `${workdirResolved}::${roomId || 'default'}`;
+  const key = subAgentId
+    ? `${workdirResolved}::${roomId || 'default'}::sub:${subAgentId}`
+    : `${workdirResolved}::${roomId || 'default'}`;
   clearSessionIdleTimer(key);
   let session = sessionPool.get(key);
   if (!session) {
@@ -768,6 +770,7 @@ async function getMessage(messageId) {
 async function processTrigger(msg) {
   const { room_id, message_id } = msg;
   const workdir = msg.workdir || process.env.STOA_WORK_DIR || os.homedir();
+  const subAgent = msg.sub_agent || null;
   activeTriggers.set(message_id, { workdir, session: null });
   const baseUrl = STOA_URL.replace('ws://', 'http://').replace('wss://', 'https://');
   const TEXT_EXTS = new Set(['.md','.txt','.json','.csv','.html','.js','.ts','.py','.yaml','.yml','.sh','.css']);
@@ -851,6 +854,9 @@ async function processTrigger(msg) {
   let sessionRef = null;
   let statusHandler = null;
   const targetDir = path.resolve(workdir);
+  const sessionKey = subAgent
+    ? `${targetDir}::${room_id}::sub:${subAgent.id}`
+    : `${targetDir}::${room_id}`;
   try {
     const rid = msg.claude_session_id || null;
 
@@ -871,7 +877,7 @@ async function processTrigger(msg) {
     if (apiKeys[0]) platformEnv.ANTHROPIC_AUTH_TOKEN = apiKeys[0];
     const envToUse = platformEnv;
 
-    let session = getSession(targetDir, room_id, envToUse);
+    let session = getSession(targetDir, room_id, envToUse, subAgent?.id);
     const needsResume = rid && session.resumeId !== rid;
     const needsFreshSession = !rid && session.resumeId;
     const targetModel = msg.model || null;
@@ -890,7 +896,7 @@ async function processTrigger(msg) {
       if (targetModel) flags.push('--model', targetModel);
       if (msg.tools_supported === false) flags.push('--tools', '');
       session = new ClaudeSession({ workDir: targetDir, flags, resumeId: rid || null, env: envToUse });
-      sessionPool.set(`${targetDir}::${room_id}`, session);
+      sessionPool.set(sessionKey, session);
       console.log(`[stoa] Session restarted: workdir=${targetDir} room=${room_id}${rid ? ' resume=' + rid.slice(0, 8) + '...' : ' (fresh)'}${targetModel ? ' model=' + targetModel : ''}${msg.base_url ? ' base_url=' + msg.base_url : ''}${msg.tools_supported === false ? ' tools=disabled' : ''}`);
     }
     activeTriggers.set(message_id, { workdir: targetDir, session });
@@ -948,7 +954,7 @@ async function processTrigger(msg) {
           if (targetModel) flags.push('--model', targetModel);
           if (msg.tools_supported === false) flags.push('--tools', '');
           session = new ClaudeSession({ workDir: targetDir, flags, resumeId: rid || null, env: rotatedEnv });
-          sessionPool.set(`${targetDir}::${room_id}`, session);
+          sessionPool.set(sessionKey, session);
           activeTriggers.set(message_id, { workdir: targetDir, session });
           sessionRef = session;
           session.on('status', statusHandler);
@@ -966,10 +972,10 @@ async function processTrigger(msg) {
         console.log(`[stoa] OAuth/auth error (${retryErr.message}), killing session and retrying fresh...`);
         send({ type: 'agent_stream_reset', room_id, message_id });
         session.shutdown();
-        sessionPool.delete(`${targetDir}::${room_id}`);
+        sessionPool.delete(sessionKey);
         await new Promise(r => setTimeout(r, 2000));
         fullContent = '';
-        session = getSession(targetDir, room_id, envToUse);
+        session = getSession(targetDir, room_id, envToUse, subAgent?.id);
         activeTriggers.set(message_id, { workdir: targetDir, session });
         if (statusHandler) session.on('status', statusHandler);
         sessionRef = session;
@@ -978,7 +984,7 @@ async function processTrigger(msg) {
       } else if (retryErr.message.includes('exited unexpectedly') && !fullContent) {
         console.log(`[stoa] session crashed before output, retrying in 4s...`);
         await new Promise(r => setTimeout(r, 4000));
-        session = getSession(targetDir, room_id, envToUse);
+        session = getSession(targetDir, room_id, envToUse, subAgent?.id);
         activeTriggers.set(message_id, { workdir: targetDir, session });
         lastActivity = Date.now();
         result = await session.send(sendOpts);
@@ -999,10 +1005,10 @@ async function processTrigger(msg) {
       console.log(`[stoa] Killing session and retrying...`);
       send({ type: 'agent_stream_reset', room_id, message_id });
       session.shutdown();
-      sessionPool.delete(`${targetDir}::${room_id}`);
+      sessionPool.delete(sessionKey);
       await new Promise(r => setTimeout(r, 2000));
       fullContent = '';
-      session = getSession(targetDir, room_id, envToUse);
+      session = getSession(targetDir, room_id, envToUse, subAgent?.id);
       activeTriggers.set(message_id, { workdir: targetDir, session });
       if (statusHandler) session.on('status', statusHandler);
       sessionRef = session;
@@ -1055,7 +1061,7 @@ async function processTrigger(msg) {
           const fileSize = await getSessionFileSize(targetDir, sessionIdForCompact);
           if (fileSize <= AUTO_COMPACT_THRESHOLD) return;
           if (compactsInFlight.has(targetDir)) return;
-          const sess = sessionPool.get(`${targetDir}::${room_id}`);
+          const sess = sessionPool.get(sessionKey);
           if (!sess) return;
           console.log(`[stoa] session ${sessionIdForCompact.slice(0, 8)}... is ${(fileSize / 1024).toFixed(0)}KB > ${AUTO_COMPACT_THRESHOLD / 1024}KB threshold, auto-compacting`);
           compactsInFlight.add(targetDir);
