@@ -153,11 +153,10 @@ class ClaudeSession extends EventEmitter {
       // distinguishes a clean finish from an error stop (e.g. error_max_turns).
       // These were previously dropped; they feed the run's result_meta chip.
       const durationMs = event.duration_ms || null;
-      const numTurns = event.num_turns || null;
       const subtype = event.subtype || null;
       const resolve = this._currentResolve;
       this._clearCurrent();
-      resolve?.({ content, sessionId, usage, modelUsage, totalCostUsd, durationMs, numTurns, subtype });
+      resolve?.({ content, sessionId, usage, modelUsage, totalCostUsd, durationMs, subtype });
     }
   }
 

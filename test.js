@@ -317,6 +317,34 @@ function runUnitTests() {
     assert.strictEqual(_fmtTok(0), '0');
   });
 
+  // formatCostRollup (mirrors server.js Phase 4) — the orchestrator's run-summary
+  // block: header line (runs · tokens · wall time · optional cost) + per-agent lines.
+  const formatCostRollup = (r) => {
+    const mins = Math.round(r.wallMs / 60000);
+    const wall = r.wallMs >= 60000 ? `~${mins} menit` : `${Math.round(r.wallMs / 1000)} detik`;
+    const perLine = r.perAgent.map(a => `  • ${a.label || 'sub-agent'}: ${a.runs} run, ${_fmtTok(a.tokens)} tok`).join('\n');
+    const cost = r.totalCost > 0 ? ` · ~$${r.totalCost.toFixed(2)}` : '';
+    return `[cost so far] ${r.totalRuns} sub-agent run di room ini · ${_fmtTok(r.totalTokens)} tok · ${wall} wall time${cost}\n${perLine}`;
+  };
+  ut('formatCostRollup — header + per-agent lines, minutes wall time + cost', () => {
+    const s = formatCostRollup({
+      totalRuns: 4, totalTokens: 13400, totalCost: 0.42, wallMs: 180000,
+      perAgent: [{ label: 'probe', runs: 3, tokens: 12000 }, { label: 'writer', runs: 1, tokens: 1400 }],
+    });
+    assert.ok(s.includes('4 sub-agent run'), 'run count missing');
+    assert.ok(s.includes('13k tok') && s.includes('~3 menit wall time'), 'header totals wrong');
+    assert.ok(s.includes('~$0.42'), 'cost missing');
+    assert.ok(s.includes('• probe: 3 run, 12k tok') && s.includes('• writer: 1 run, 1.4k tok'), 'per-agent lines wrong');
+  });
+  ut('formatCostRollup — sub-minute wall in seconds, no cost when zero', () => {
+    const s = formatCostRollup({
+      totalRuns: 2, totalTokens: 900, totalCost: 0, wallMs: 45000,
+      perAgent: [{ label: 'probe', runs: 2, tokens: 900 }],
+    });
+    assert.ok(s.includes('45 detik wall time'), 'seconds wall time wrong');
+    assert.ok(!s.includes('$'), 'zero cost must not render a $ segment');
+  });
+
   return { p, f };
 }
 

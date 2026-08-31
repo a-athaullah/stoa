@@ -270,13 +270,18 @@ async function drainWake(wakeId) {
   const body = (sub.content || '').length > MAX_WAKE_CHARS
     ? (sub.content.slice(0, MAX_WAKE_CHARS) + `\n… (dipotong — teks lengkap ada di pesan "${parent.name} (${label})" di room)`)
     : (sub.content || '');
-  // Phase 4 (Loop Guard #7): once ≥2 sub-agents have run in this room, hand the
-  // orchestrator a cost rollup so it can close a multi-spawn pipeline with a
-  // brief run summary. Left to the orchestrator's judgement (soft nudge) — the
-  // server cannot tell which wake is the last of a pipeline.
-  const rollup = buildRoomCostRollup(row.room_id);
+  // Phase 4 (Loop Guard #7): attach the cost rollup only on the CLOSING wake of
+  // a pipeline, so a big multi-spawn run gets exactly one summary (not one per
+  // completion). When drainWake runs, the just-completed sub-agent is already
+  // state='complete', so zero still-streaming sub-agents in the room means this
+  // is the last wake. This also skips the two rollup queries on every earlier
+  // wake. (Kira review PR #53, finding c.)
+  const stillRunning = db.prepare(
+    "SELECT COUNT(*) AS c FROM messages WHERE room_id=? AND sub_agent_id IS NOT NULL AND state='streaming'"
+  ).get(row.room_id).c;
+  const rollup = stillRunning === 0 ? buildRoomCostRollup(row.room_id) : null;
   const costBlock = rollup
-    ? `\n\n${formatCostRollup(rollup)}\n(Kalau ini menutup rangkaian spawn, sertakan ringkasan biaya singkat di jawabanmu. Kalau masih ada sub-agent berjalan, abaikan dulu.)`
+    ? `\n\n${formatCostRollup(rollup)}\n(Ini menutup rangkaian spawn — sertakan ringkasan biaya singkat di jawabanmu kalau relevan.)`
     : '';
   const wakePrompt = `[sub-agent result] Sub-agent "${label}" yang kamu picu sudah selesai. Hasilnya:\n\n${body}\n\nSintesiskan dan lanjutkan menjawab. (Ini giliran sintesis kamu — jawabanmu tidak otomatis memicu agent lain, termasuk kalau kamu tulis @mention.)${costBlock}`;
 
