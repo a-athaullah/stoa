@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.158';
+const CLIENT_VERSION = '0.4.161';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -767,6 +767,18 @@ async function getMessage(messageId) {
   return res.message || null;
 }
 
+// Phase 3 (R7) — classify a failed model attempt to decide fallback scope:
+//   'provider' — auth/quota/billing: the whole provider is unusable right now,
+//                so trying its other models would fail the same way.
+//   'model'    — rate-limit/overload/timeout/capacity: just this model is busy;
+//                the next model in the chain is worth trying.
+//   'other'    — unrelated failure; not a fallback trigger.
+function classifyModelError(m = '') {
+  if (/401|403|unauthorized|invalid[ _-]?api[ _-]?key|authentication|quota|payment|billing|insufficient|credit/i.test(m)) return 'provider';
+  if (/429|rate[ _-]?limit|overloaded|too many requests|529|503|capacity|timeout|timed out/i.test(m)) return 'model';
+  return 'other';
+}
+
 async function processTrigger(msg) {
   const { room_id, message_id } = msg;
   const workdir = msg.workdir || process.env.STOA_WORK_DIR || os.homedir();
@@ -880,7 +892,12 @@ async function processTrigger(msg) {
     let session = getSession(targetDir, room_id, envToUse, subAgent?.id);
     const needsResume = rid && session.resumeId !== rid;
     const needsFreshSession = !rid && session.resumeId;
-    const targetModel = msg.model || null;
+    let targetModel = msg.model || null;
+    // Phase 3: ordered model fallback chain. The server sends `models` only when a
+    // tier resolved to more than one model; otherwise we run the single `model`.
+    // targetModel === modelChain[0] (server sets model = chain[0]).
+    const modelChain = Array.isArray(msg.models) && msg.models.length ? msg.models.slice() : (targetModel ? [targetModel] : []);
+    let modelIdx = 0;
     const currentModel = session.flags.find((f, i, arr) => arr[i - 1] === '--model') || null;
     const needsModelChange = targetModel && currentModel !== targetModel;
     const currentEnv = JSON.stringify(session.env || {});
@@ -943,7 +960,45 @@ async function processTrigger(msg) {
       result = await session.send(sendOpts);
     } catch (retryErr) {
       const isAuthOrQuota = /auth|unauthorized|quota|rate.limit|429|401|403/i.test(retryErr.message);
-      if (isAuthOrQuota && apiKeys.length > 1 && !fullContent) {
+      // Phase 3: model-scoped failure (rate-limit/overload/timeout) with fallback
+      // models left in the chain → advance to the next model and retry. Provider-
+      // scoped failures fall through to the existing key-rotation/OAuth handling
+      // below (in v1 every chain model shares the room's provider/base_url).
+      if (classifyModelError(retryErr.message) === 'model' && !fullContent && modelIdx < modelChain.length - 1) {
+        let advanced = false;
+        let lastErr = retryErr;
+        while (modelIdx < modelChain.length - 1) {
+          const failed = modelChain[modelIdx];
+          modelIdx++;
+          targetModel = modelChain[modelIdx];
+          console.log(`[stoa] model "${failed}" unavailable (${lastErr.message}), falling back to "${targetModel}"`);
+          // Discard any partial tokens the just-failed attempt streamed before it
+          // errored, so the next model's stream replaces (not appends to) them —
+          // same reset-on-retry contract as the key-rotation/OAuth/crash paths.
+          send({ type: 'agent_stream_reset', room_id, message_id });
+          fullContent = '';
+          session.shutdown();
+          if (rid && !compactsInFlight.has(targetDir)) await sanitizeThinking(targetDir, rid);
+          const flags = rid ? ['--resume', rid] : [];
+          if (targetModel) flags.push('--model', targetModel);
+          if (msg.tools_supported === false) flags.push('--tools', '');
+          session = new ClaudeSession({ workDir: targetDir, flags, resumeId: rid || null, env: envToUse });
+          sessionPool.set(sessionKey, session);
+          activeTriggers.set(message_id, { workdir: targetDir, session });
+          sessionRef = session;
+          session.on('status', statusHandler);
+          try {
+            lastActivity = Date.now();
+            result = await session.send(sendOpts);
+            advanced = true;
+            break;
+          } catch (e2) {
+            lastErr = e2;
+            if (classifyModelError(e2.message) !== 'model') break; // provider/other → stop chain
+          }
+        }
+        if (!advanced) throw lastErr;
+      } else if (isAuthOrQuota && apiKeys.length > 1 && !fullContent) {
         let rotated = false;
         for (let ki = 1; ki < apiKeys.length; ki++) {
           console.log(`[stoa] API key #1 failed (${retryErr.message}), rotating to key #${ki + 1}...`);

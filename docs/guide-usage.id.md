@@ -183,7 +183,8 @@ Selain me-@mention agent lain di sebuah room, agent utama bisa memunculkan **sub
 Sub-agent didefinisikan per agent di **Settings > AI Agent**, pada bagian **Sub-agents**. Klik **+ add** dan isi:
 
 - **Label** (wajib) — nama singkat seperti `probe` atau `researcher`. Muncul di chat sebagai `Ara (probe)` sehingga kamu selalu tahu sub-agent mana yang menghasilkan sebuah pesan.
-- **Tier** — `quick`, `standard`, atau `deep`. Tier adalah label yang menandakan kedalaman kerja yang diinginkan; disampaikan ke sub-agent dan ditampilkan di UI. Tier tidak memilih model dengan sendirinya — sub-agent saat ini berjalan pada model room (routing otomatis tier-ke-model masih direncanakan).
+- **Tier** — `quick`, `standard`, atau `deep`. Tier memilih **rantai fallback model** mana yang dipakai sub-agent (lihat [Tier Model dan Fallback](#tier-model-dan-fallback) di bawah). Secara default `quick` memakai model cepat, `standard` yang seimbang, dan `deep` yang paling mumpuni — masing-masing jatuh ke model yang lebih ringan jika model utama tidak tersedia.
+- **Model override** (opsional) — kunci sub-agent ke satu model spesifik alih-alih memakai rantai tier-nya. Biarkan pada **use tier** untuk mengikuti routing tier. Model yang dikunci tidak punya fallback — ia dicoba sendirian.
 - **Workdir** (opsional) — direktori kerja tempat sub-agent beroperasi.
 - **System prompt** (opsional) — instruksi tambahan yang membentuk perilaku sub-agent.
 
@@ -202,6 +203,20 @@ Saat agent utama merespons, ia bisa memicu sub-agent yang tertaut untuk menangan
 3. **Satu level dalam** — sebuah sub-agent tidak pernah bisa memunculkan sub-agent-nya sendiri. Orkestrasi tegas satu level, mencegah pohon yang meliar.
 4. **Satu hop** — giliran sintesis agent utama tidak otomatis memicu agent lain di room, bahkan jika ia menulis @mention. Ini menjaga orkestrasi tetap terkendali.
 
+### Tier Model dan Fallback
+
+Tiap tier (`quick`, `standard`, `deep`) menyelesaikan ke **daftar model berurutan** — yang pertama adalah primary, sisanya dicoba berurutan jika primary sedang tak tersedia (kena rate limit, overload, atau timeout). Ini menjaga sub-agent tetap bekerja saat model utama mengalami gangguan sementara alih-alih gagal total.
+
+Resolusi mengikuti urutan prioritas yang jelas:
+
+1. **Model override sub-agent** — jika sub-agent mengunci model tertentu, model itu yang dipakai (tanpa fallback).
+2. **Override tier room** — jika tidak, rantai room yang dikonfigurasi untuk tier itu yang dipakai.
+3. **Default server** — jika room tidak punya override, default bawaan berlaku: `quick → haiku`, `standard → sonnet → haiku`, `deep → opus → sonnet`.
+
+Untuk menyesuaikan rantai sebuah room, buka setelan room (ikon **gear** di header room) dan pakai kartu **Model tiers**. Awalnya memakai default server; klik **override for this room** untuk mengedit rantai tiap tier — urutkan ulang model (yang pertama primary), tambah fallback, atau hapus salah satu. **Reset to server defaults** menghapus override. Model yang dikunci di sub-agent selalu menang atas rantai room.
+
+> Fallback bergerak melewati rantai hanya pada kegagalan berskala model (rate limit, overload, timeout). Error autentikasi atau kuota ditangani oleh jalur rotasi key yang sudah ada.
+
 ### Kontrol Run
 
 Saat ada sub-agent berjalan, header room menampilkan pill **"N running"**. Klik untuk membuka popover yang mendaftar tiap run aktif beserta waktu berjalannya. Dari sana kamu bisa:
@@ -216,7 +231,7 @@ Tiap room membatasi orkestrasi agar tetap terprediksi:
 - **Maks sub-agent bersamaan** (default: 3) — berapa sub-agent yang bisa berjalan sekaligus di room.
 - **Maks spawn per jam** (default: 10) — batas laju bergulir untuk spawn baru.
 
-Batas-batas ini dikonfigurasi per room lewat API; panel setelan khusus untuknya masih direncanakan.
+Konfigurasikan ini di setelan room (ikon **gear** di header room), pada kartu **Sub-agent budget**. Kartu yang sama punya toggle **pause new spawns** — padanan panel dari pill pause di header. Perubahan berlaku saat kamu klik **save**.
 
 ---
 

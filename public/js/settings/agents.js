@@ -504,6 +504,23 @@ function sMakeEditAccordion(actor) {
       tierSel.appendChild(o);
     }
     row1.append(labelInp, tierSel);
+    // Model override — "Use tier" (default) leaves model NULL so the tier's
+    // fallback chain applies; picking one pins sub_agents.model to a single model.
+    const modelSel = document.createElement('select');
+    modelSel.className = 's-name-input'; modelSel.style.cssText = 'font-size:13px;margin-bottom:6px';
+    const useTierOpt = document.createElement('option');
+    useTierOpt.value = ''; useTierOpt.textContent = 'model override: use tier';
+    modelSel.appendChild(useTierOpt);
+    for (const m of ['claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-5']) {
+      const o = document.createElement('option'); o.value = m; o.textContent = m;
+      if ((existing?.model || '') === m) o.selected = true;
+      modelSel.appendChild(o);
+    }
+    // Preserve a pinned model not in the preset list (set via API) so editing keeps it.
+    if (existing?.model && !['claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-5'].includes(existing.model)) {
+      const o = document.createElement('option'); o.value = existing.model; o.textContent = existing.model; o.selected = true;
+      modelSel.appendChild(o);
+    }
     const wdInp = document.createElement('input');
     wdInp.className = 's-name-input'; wdInp.placeholder = 'workdir (optional)';
     wdInp.style.cssText = 'font-size:13px;margin-bottom:6px'; wdInp.value = existing?.workdir || '';
@@ -524,7 +541,7 @@ function sMakeEditAccordion(actor) {
       const label = labelInp.value.trim();
       if (!label) { showToast('Label required', { error: true }); return; }
       try {
-        const body = { label, tier: tierSel.value, workdir: wdInp.value.trim() || null, system_prompt: spInp.value.trim() || null };
+        const body = { label, tier: tierSel.value, model: modelSel.value || null, workdir: wdInp.value.trim() || null, system_prompt: spInp.value.trim() || null };
         let r;
         if (existing) {
           r = await fetch(`/api/sub-agents/${existing.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -537,7 +554,7 @@ function sMakeEditAccordion(actor) {
       } catch { showToast('Failed to save sub-agent', { error: true }); }
     });
     btns.append(cancelF, saveF);
-    saForm.append(row1, wdInp, spInp, btns);
+    saForm.append(row1, modelSel, wdInp, spInp, btns);
     setTimeout(() => labelInp.focus(), 0);
   }
 
@@ -562,7 +579,7 @@ function sMakeEditAccordion(actor) {
         lbl.textContent = sa.label;
         const meta = document.createElement('span');
         meta.style.cssText = 'color:var(--h-ink-mute);font-size:12px;flex:1';
-        meta.textContent = sa.tier + (sa.workdir ? ' · ' + sa.workdir : '');
+        meta.textContent = sa.tier + (sa.model ? ' · ' + sa.model : '') + (sa.workdir ? ' · ' + sa.workdir : '');
         const editB = document.createElement('button');
         editB.className = 's-icon-btn'; editB.innerHTML = svgPencil(12); editB.title = 'Edit';
         editB.addEventListener('click', () => saMakeFormFields(sa));

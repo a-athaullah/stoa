@@ -183,6 +183,17 @@ function renderChatHeader(room, participants) {
     header.appendChild(compactBtn);
   }
 
+  // Room settings (sub-agent model tiers + spawn budget) — Phase 3
+  if (room.id) {
+    const setBtn = document.createElement('button');
+    setBtn.className = 'h-header-action-btn';
+    setBtn.title = 'Room settings';
+    setBtn.style.marginLeft = '8px';
+    setBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`;
+    setBtn.onclick = () => openRoomSettings(room);
+    header.appendChild(setBtn);
+  }
+
   const wsToggle = document.createElement('button');
   wsToggle.className = 'h-ws-toggle' + (document.getElementById('workspace-panel').classList.contains('open') ? ' active' : '');
   wsToggle.title = 'Dev Workspace';
@@ -387,5 +398,219 @@ function startRunControls(container, room) {
     if (popoverOpen) return;       // don't wipe/rebuild an open popover (loses hover + in-flight stop state)
     refresh();
   }, 3000);
+}
+
+// ── Room settings panel (Phase 3) ───────────────────────────────────────────
+// Modal for per-room sub-agent config: model tier fallback chains + spawn budget.
+// Model tiers mirror the server's SERVER_DEFAULT_TIERS; leaving them unset means
+// "use server defaults". Saving PATCHes the room (model_tiers + budget) and, if
+// changed, toggles the spawn kill switch via its dedicated endpoint.
+function openRoomSettings(room) {
+  document.querySelectorAll('.h-room-settings-overlay').forEach(e => e.remove());
+  const SA_MODELS = ['claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-5'];
+  // Must match server.js SERVER_DEFAULT_TIERS — shown when a room has no override.
+  const DEFAULTS = {
+    quick:    ['claude-haiku-4-5'],
+    standard: ['claude-sonnet-5', 'claude-haiku-4-5'],
+    deep:     ['claude-opus-5', 'claude-sonnet-5'],
+  };
+  const TIERS = ['quick', 'standard', 'deep'];
+  const shortName = m => m.replace(/^claude-/, '').replace(/-\d.*$/, '');
+
+  // Local edit state (seeded from a fresh GET below)
+  let tiersState = null;   // null = use server defaults; object = per-room override
+  let paused = false, pausedOrig = false;
+  let maxConcurrent = 3, maxPerHour = 10;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'h-room-settings-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:200;display:flex;align-items:center;justify-content:center;font-family:var(--h-sans)';
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+  const panel = document.createElement('div');
+  panel.style.cssText = 'width:470px;max-width:92vw;max-height:86vh;overflow-y:auto;background:var(--h-surface);border:1px solid var(--h-border);border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.3);padding:20px 22px';
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+  function close() { overlay.remove(); document.removeEventListener('keydown', onKey); }
+  function onKey(e) { if (e.key === 'Escape') close(); }
+  document.addEventListener('keydown', onKey);
+
+  panel.innerHTML = '<div style="font-size:12.5px;color:var(--h-ink-faint)">loading…</div>';
+
+  fjson(`/api/rooms/${room.id}`).then(r => {
+    maxConcurrent = Math.max(1, Math.min(10, r.max_sub_agents || 3));
+    maxPerHour = Math.max(1, Math.min(100, r.max_spawns_per_hour || 10));
+    paused = pausedOrig = !!r.spawns_paused;
+    try { tiersState = r.model_tiers ? JSON.parse(r.model_tiers) : null; } catch { tiersState = null; }
+    renderBody();
+  }).catch(() => { panel.innerHTML = '<div style="font-size:12.5px;color:#b35a4b">failed to load room settings</div>'; });
+
+  function makeCard(title, subtitle) {
+    const card = document.createElement('div');
+    card.style.cssText = 'border:1px solid var(--h-border);border-radius:12px;padding:14px 16px;margin-bottom:14px';
+    const t = document.createElement('div');
+    t.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:15px;color:var(--h-ink)';
+    t.textContent = title;
+    card.appendChild(t);
+    if (subtitle) {
+      const s = document.createElement('div');
+      s.style.cssText = 'font-size:12px;color:var(--h-ink-faint);margin-top:3px;margin-bottom:10px';
+      s.textContent = subtitle;
+      card.appendChild(s);
+    }
+    return card;
+  }
+
+  function makeStepper(value, min, max, onChange) {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'display:inline-flex;align-items:center;gap:2px;border:1px solid var(--h-border);border-radius:999px;overflow:hidden';
+    const mk = (txt, delta) => {
+      const b = document.createElement('button');
+      b.textContent = txt;
+      b.style.cssText = 'width:28px;height:28px;background:transparent;border:none;color:var(--h-ink-mute);cursor:pointer;font-size:15px;line-height:1';
+      b.onclick = () => { const nv = Math.max(min, Math.min(max, value + delta)); if (nv !== value) { value = nv; val.textContent = value; onChange(value); } };
+      return b;
+    };
+    const val = document.createElement('span');
+    val.style.cssText = 'min-width:28px;text-align:center;font-size:13.5px;color:var(--h-ink);font-variant-numeric:tabular-nums';
+    val.textContent = value;
+    wrap.append(mk('−', -1), val, mk('+', +1));
+    return wrap;
+  }
+
+  // A tier's fallback chain: ordered monospace pills (primary first), ↑ to promote,
+  // × to remove, and a "+ fallback" dropdown to append an unused model.
+  function makeChainEditor(tier) {
+    const chain = tiersState[tier] || (tiersState[tier] = DEFAULTS[tier].slice());
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;flex-wrap:wrap;gap:6px';
+    chain.forEach((m, i) => {
+      if (i > 0) {
+        const arrow = document.createElement('span');
+        arrow.style.cssText = 'color:var(--h-ink-faint);font-size:12px'; arrow.textContent = '→';
+        row.appendChild(arrow);
+      }
+      const pill = document.createElement('span');
+      pill.style.cssText = 'display:inline-flex;align-items:center;gap:5px;padding:3px 4px 3px 9px;border-radius:999px;background:var(--h-surface);border:1px solid var(--h-border);font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--h-ink)';
+      const nm = document.createElement('span'); nm.textContent = shortName(m); nm.title = m;
+      pill.appendChild(nm);
+      if (i > 0) {
+        const up = document.createElement('button');
+        up.textContent = '↑'; up.title = 'promote';
+        up.style.cssText = 'background:transparent;border:none;color:var(--h-ink-faint);cursor:pointer;font-size:12px;padding:0 2px';
+        up.onclick = () => { chain.splice(i - 1, 0, chain.splice(i, 1)[0]); renderBody(); };
+        pill.appendChild(up);
+      }
+      const x = document.createElement('button');
+      x.textContent = '×'; x.title = 'remove';
+      x.style.cssText = 'background:transparent;border:none;color:var(--h-ink-faint);cursor:pointer;font-size:14px;padding:0 3px 0 1px';
+      x.onclick = () => { chain.splice(i, 1); if (!chain.length) delete tiersState[tier]; renderBody(); };
+      pill.appendChild(x);
+      row.appendChild(pill);
+    });
+    const unused = SA_MODELS.filter(m => !chain.includes(m));
+    if (unused.length) {
+      const add = document.createElement('select');
+      add.style.cssText = 'border:1px dashed var(--h-border);border-radius:999px;background:transparent;color:var(--h-ink-mute);font-size:12px;padding:3px 6px;cursor:pointer;font-family:var(--h-sans)';
+      const ph = document.createElement('option'); ph.value = ''; ph.textContent = '+ fallback'; add.appendChild(ph);
+      for (const m of unused) { const o = document.createElement('option'); o.value = m; o.textContent = shortName(m); add.appendChild(o); }
+      add.onchange = () => { if (add.value) { (tiersState[tier] = tiersState[tier] || []).push(add.value); renderBody(); } };
+      row.appendChild(add);
+    }
+    return row;
+  }
+
+  function renderBody() {
+    panel.innerHTML = '';
+    const head = document.createElement('div');
+    head.style.cssText = 'display:flex;align-items:baseline;justify-content:space-between;margin-bottom:16px';
+    head.innerHTML = `<span style="font-family:var(--h-serif);font-style:italic;font-size:19px;color:var(--h-ink)">Room settings</span><span style="font-size:12px;color:var(--h-ink-faint)">${(room.title || '').replace(/</g, '&lt;')}</span>`;
+    panel.appendChild(head);
+
+    // ── Model tiers card
+    const tc = makeCard('Model tiers', 'first model is primary — the rest are tried in order on failure');
+    if (!tiersState) {
+      const def = document.createElement('div');
+      def.style.cssText = 'font-size:12.5px;color:var(--h-ink-mute);line-height:1.7';
+      def.innerHTML = 'using server defaults · ' + TIERS.map(t => `<span style="color:var(--h-ink)">${t}</span> → ${DEFAULTS[t].map(shortName).join(' → ')}`).join('<br>');
+      tc.appendChild(def);
+      const ov = document.createElement('button');
+      ov.textContent = 'override for this room';
+      ov.style.cssText = 'margin-top:12px;background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12.5px;padding:6px 14px;cursor:pointer';
+      ov.onclick = () => { tiersState = { quick: DEFAULTS.quick.slice(), standard: DEFAULTS.standard.slice(), deep: DEFAULTS.deep.slice() }; renderBody(); };
+      tc.appendChild(ov);
+    } else {
+      for (const t of TIERS) {
+        const trow = document.createElement('div');
+        trow.style.cssText = 'display:flex;align-items:flex-start;gap:12px;padding:8px 0;border-top:1px solid var(--h-border)';
+        const chip = document.createElement('span');
+        chip.style.cssText = 'flex:0 0 66px;font-size:12px;color:var(--h-ink);padding-top:4px';
+        chip.textContent = t;
+        const ce = document.createElement('div'); ce.style.flex = '1'; ce.appendChild(makeChainEditor(t));
+        trow.append(chip, ce);
+        tc.appendChild(trow);
+      }
+      const reset = document.createElement('button');
+      reset.textContent = 'reset to server defaults';
+      reset.style.cssText = 'margin-top:12px;background:transparent;border:none;color:var(--h-ink-faint);font-family:var(--h-sans);font-size:12px;padding:4px 0;cursor:pointer;text-decoration:underline';
+      reset.onclick = () => { tiersState = null; renderBody(); };
+      tc.appendChild(reset);
+    }
+    panel.appendChild(tc);
+
+    // ── Spawn budget card
+    const bc = makeCard('Sub-agent budget', 'limits how many sub-agents this room may run');
+    const mkRow = (label, hint, control) => {
+      const r = document.createElement('div');
+      r.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:7px 0';
+      const left = document.createElement('div');
+      left.innerHTML = `<div style="font-size:13px;color:var(--h-ink)">${label}</div><div style="font-size:11.5px;color:var(--h-ink-faint)">${hint}</div>`;
+      r.append(left, control);
+      return r;
+    };
+    bc.appendChild(mkRow('max concurrent', 'sub-agents running at once', makeStepper(maxConcurrent, 1, 10, v => { maxConcurrent = v; })));
+    bc.appendChild(mkRow('max spawns / hour', 'AI-triggered spawns per hour', makeStepper(maxPerHour, 1, 100, v => { maxPerHour = v; })));
+    // pause toggle
+    const pr = document.createElement('div');
+    pr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:7px 0;border-top:1px solid var(--h-border);margin-top:4px';
+    const pleft = document.createElement('div');
+    pleft.innerHTML = '<div style="font-size:13px;color:var(--h-ink)">pause new spawns</div><div style="font-size:11.5px;color:var(--h-ink-faint)">running ones finish; blocks new ones</div>';
+    const ptog = document.createElement('button');
+    const paintTog = () => { ptog.textContent = paused ? 'paused' : 'active'; ptog.style.cssText = `background:transparent;border:1px solid var(--h-border);border-radius:999px;padding:5px 14px;cursor:pointer;font-family:var(--h-sans);font-size:12.5px;color:${paused ? '#b35a4b' : 'var(--h-ink-mute)'}`; };
+    paintTog();
+    ptog.onclick = () => { paused = !paused; paintTog(); };
+    pr.append(pleft, ptog);
+    bc.appendChild(pr);
+    panel.appendChild(bc);
+
+    // ── Footer
+    const foot = document.createElement('div');
+    foot.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:4px';
+    const cancel = document.createElement('button');
+    cancel.textContent = 'cancel';
+    cancel.style.cssText = 'background:transparent;border:none;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:13px;padding:8px 14px;cursor:pointer';
+    cancel.onclick = close;
+    const save = document.createElement('button');
+    save.className = 'h-btn-primary'; save.style.cssText = 'padding:8px 20px;font-size:13px';
+    save.textContent = 'save';
+    save.onclick = async () => {
+      save.disabled = true;
+      try {
+        const r = await fetch(`/api/rooms/${room.id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model_tiers: tiersState, max_sub_agents: maxConcurrent, max_spawns_per_hour: maxPerHour }),
+        });
+        if (!r.ok) { const e = await r.json().catch(() => ({})); showToast(e.error || 'Failed to save', { error: true }); save.disabled = false; return; }
+        if (paused !== pausedOrig) {
+          const pr2 = await fetch(`/api/rooms/${room.id}/spawns-pause`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paused }) });
+          if (pr2.ok) { room.spawns_paused = paused ? 1 : 0; }
+        }
+        room.max_sub_agents = maxConcurrent;
+        showToast('Room settings saved', {});
+        close();
+      } catch { showToast('Failed to save', { error: true }); save.disabled = false; }
+    };
+    foot.append(cancel, save);
+    panel.appendChild(foot);
+  }
 }
 

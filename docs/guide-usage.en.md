@@ -183,7 +183,8 @@ Beyond @mentioning other agents in a room, a main agent can spawn its own **sub-
 Sub-agents are defined per agent in **Settings > AI Agent**, under the **Sub-agents** section. Click **+ add** and fill in:
 
 - **Label** (required) — a short name like `probe` or `researcher`. It appears in chat as `Ara (probe)` so you always know which sub-agent produced a message.
-- **Tier** — `quick`, `standard`, or `deep`. The tier is a label that signals the intended depth of the work; it is passed to the sub-agent and shown in the UI. It does not pick a model on its own — sub-agents currently run on the room's model (automatic tier-to-model routing is planned).
+- **Tier** — `quick`, `standard`, or `deep`. The tier selects which **model fallback chain** the sub-agent runs on (see [Model Tiers and Fallback](#model-tiers-and-fallback) below). By default `quick` runs a fast model, `standard` a balanced one, and `deep` the most capable — each falling back to a lighter model if the primary is unavailable.
+- **Model override** (optional) — pin the sub-agent to a single specific model instead of using its tier's chain. Leave it on **use tier** to follow the tier routing. A pinned model has no fallback — it is tried alone.
 - **Workdir** (optional) — a working directory the sub-agent operates in.
 - **System prompt** (optional) — extra instructions that shape the sub-agent's behavior.
 
@@ -202,6 +203,20 @@ When the main agent responds, it can trigger its linked sub-agents to handle sub
 3. **One level deep** — a sub-agent can never spawn its own sub-agents. Orchestration is strictly one level, which prevents runaway trees.
 4. **Single hop** — the main agent's synthesis turn does not automatically trigger other agents in the room, even if it writes an @mention. This keeps orchestration contained.
 
+### Model Tiers and Fallback
+
+Each tier (`quick`, `standard`, `deep`) resolves to an **ordered list of models** — the first is the primary, and the rest are tried in order if the primary is temporarily unavailable (rate limited, overloaded, or timing out). This keeps a sub-agent working through a transient model outage instead of failing outright.
+
+Resolution follows a clear precedence:
+
+1. **Sub-agent model override** — if the sub-agent pins a specific model, that model is used (no fallback).
+2. **Room tier override** — otherwise the room's configured chain for that tier is used.
+3. **Server defaults** — if the room has no override, built-in defaults apply: `quick → haiku`, `standard → sonnet → haiku`, `deep → opus → sonnet`.
+
+To customize the chains for a room, open the room settings (the **gear** icon in the room header) and use the **Model tiers** card. It starts on server defaults; click **override for this room** to edit each tier's chain — reorder models (the first is primary), add a fallback, or remove one. **Reset to server defaults** clears the override. A pinned sub-agent model always wins over the room chain.
+
+> Fallback moves through the chain only on model-scoped failures (rate limit, overload, timeout). Authentication or quota errors are handled by the existing key-rotation path instead.
+
 ### Run Controls
 
 When sub-agents are running, the room header shows a **"N running"** pill. Click it to open a popover that lists each active run with its elapsed time. From there you can:
@@ -216,7 +231,7 @@ Each room caps orchestration to keep it predictable:
 - **Max concurrent sub-agents** (default: 3) — how many sub-agents can run at once in the room.
 - **Max spawns per hour** (default: 10) — a rolling rate limit on new spawns.
 
-These limits are configured per room through the API; a dedicated settings panel for them is planned.
+Configure these in the room settings (the **gear** icon in the room header), under the **Sub-agent budget** card. The same card has a **pause new spawns** toggle — the panel counterpart of the header's pause pill. Changes take effect when you click **save**.
 
 ---
 
