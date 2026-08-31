@@ -13,6 +13,15 @@
 -- Additive, nullable columns → transactional and zero data loss (the runner
 -- wraps each migration in BEGIN/COMMIT). foreign_keys is ON at DB open;
 -- ADD COLUMN with a REFERENCES clause is allowed because the default is NULL.
+--
+-- SOLE OWNER: this migration is the ONLY place these columns + index are
+-- defined. Do NOT also add them to db/schema.sqlite.sql. The baseline is
+-- exec'd before migrations run, so a standalone CREATE INDEX there would
+-- reference a column that does not yet exist on an existing DB (throws at
+-- boot), and duplicating the columns in the baseline CREATE TABLE makes a
+-- fresh clone hit "duplicate column name" here (migration never marked
+-- applied → retries every startup). Keeping ownership here is the only shape
+-- that stays clean on BOTH an existing DB and a fresh clone.
 ALTER TABLE messages ADD COLUMN sub_agent_label TEXT DEFAULT NULL;
 ALTER TABLE messages ADD COLUMN parent_message_id INTEGER DEFAULT NULL REFERENCES messages(id);
 

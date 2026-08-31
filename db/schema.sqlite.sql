@@ -56,15 +56,11 @@ CREATE TABLE IF NOT EXISTS messages (
   file_name TEXT DEFAULT NULL,
   attachments TEXT DEFAULT NULL,
   ai_model TEXT DEFAULT NULL,
-  sub_agent_label TEXT DEFAULT NULL,
-  parent_message_id INTEGER DEFAULT NULL,
   created_at TEXT DEFAULT (datetime('now')),
   completed_at TEXT DEFAULT NULL,
   FOREIGN KEY (room_id) REFERENCES rooms(id),
-  FOREIGN KEY (participant_id) REFERENCES room_participants(id),
-  FOREIGN KEY (parent_message_id) REFERENCES messages(id)
+  FOREIGN KEY (participant_id) REFERENCES room_participants(id)
 );
-CREATE INDEX IF NOT EXISTS idx_messages_parent_message_id ON messages(parent_message_id);
 
 CREATE TABLE IF NOT EXISTS ai_sessions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
