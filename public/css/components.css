@@ -504,7 +504,7 @@ html.dark .s-docs-body pre .hljs-property, html.dark .s-docs-body pre .hljs-attr
   border-top: 0px solid transparent;
 }
 .s-add-panel.open {
-  max-height: 700px; opacity: 1; padding: 20px 22px 22px;
+  max-height: 1400px; opacity: 1; padding: 20px 22px 22px;
   border-top: 1px solid var(--h-hair-soft);
 }
 .s-panel-header { display: flex; align-items: center; gap: 12px; }
