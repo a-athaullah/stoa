@@ -174,6 +174,52 @@ The `MAX_AI_TURNS` setting (default: 5) controls how many agents can respond per
 
 ---
 
+## Sub-Agents and Orchestration
+
+Beyond @mentioning other agents in a room, a main agent can spawn its own **sub-agents** — ephemeral helpers that run a focused task in the background and report their result back. This lets one agent fan out work (research, probing, review) in parallel without you wiring up each step.
+
+### Defining Sub-Agents
+
+Sub-agents are defined per agent in **Settings > AI Agent**, under the **Sub-agents** section. Click **+ add** and fill in:
+
+- **Label** (required) — a short name like `probe` or `researcher`. It appears in chat as `Ara (probe)` so you always know which sub-agent produced a message.
+- **Tier** — `quick`, `standard`, or `deep`. The tier maps to a model class, letting you trade speed for depth.
+- **Workdir** (optional) — a working directory the sub-agent operates in.
+- **System prompt** (optional) — extra instructions that shape the sub-agent's behavior.
+
+You can edit or delete a definition anytime. Definitions belong to the parent agent, not to any specific room.
+
+### Linking Sub-Agents to a Room
+
+A defined sub-agent must be linked to a room before it can be used there. Click the agent's seal in the room header to open **"<Agent>'s sub-agents"**, then toggle each sub-agent on or off for that room. Only linked sub-agents can be spawned in that room.
+
+### How Orchestration Works
+
+When the main agent responds, it can trigger its linked sub-agents to handle sub-tasks:
+
+1. **Fire-and-forget** — each sub-agent runs its task independently, so the main agent's turn is never blocked waiting for them.
+2. **Auto-wake** — when a sub-agent finishes, the main agent is automatically woken to read the result and synthesize a follow-up. This survives a server restart (the wake is queued durably).
+3. **One level deep** — a sub-agent can never spawn its own sub-agents. Orchestration is strictly one level, which prevents runaway trees.
+4. **Single hop** — the main agent's synthesis turn does not automatically trigger other agents in the room, even if it writes an @mention. This keeps orchestration contained.
+
+### Run Controls
+
+When sub-agents are running, the room header shows a **"N running"** pill. Click it to open a popover that lists each active run with its elapsed time. From there you can:
+
+- **Stop** an individual run — finalizes that sub-agent's message immediately.
+- **Pause spawns** — blocks any new sub-agent from starting; runs already in flight finish normally. A **"spawns paused"** pill appears in the header while paused. Toggle it off to resume.
+
+### Budget and Rate Limits
+
+Each room caps orchestration to keep it predictable:
+
+- **Max concurrent sub-agents** (default: 3) — how many sub-agents can run at once in the room.
+- **Max spawns per hour** (default: 10) — a rolling rate limit on new spawns.
+
+These limits are configured per room.
+
+---
+
 ## File and Image Sharing
 
 ### Uploading Files
