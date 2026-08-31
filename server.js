@@ -79,12 +79,25 @@ function getSession(participantId) {
   return row?.claude_session_id ?? null;
 }
 
+function getSubAgentSession(participantId, subAgentId) {
+  const row = db.prepare('SELECT claude_session_id FROM ai_sessions WHERE participant_id=? AND sub_agent_id=?').get(participantId, subAgentId);
+  return row?.claude_session_id ?? null;
+}
+
 function saveSession(participantId, claudeSessionId, workdir) {
   const rp = db.prepare('SELECT room_id FROM room_participants WHERE id=?').get(participantId);
   db.prepare(
     `INSERT INTO ai_sessions (participant_id, room_id, claude_session_id, workdir, status) VALUES (?,?,?,?,'idle')
      ON CONFLICT(participant_id) WHERE sub_agent_id IS NULL DO UPDATE SET claude_session_id=excluded.claude_session_id, room_id=excluded.room_id, workdir=excluded.workdir, status='idle', last_active_at=datetime('now')`
   ).run(participantId, rp?.room_id ?? null, claudeSessionId, workdir || null);
+}
+
+function saveSubAgentSession(participantId, subAgentId, claudeSessionId, workdir) {
+  const rp = db.prepare('SELECT room_id FROM room_participants WHERE id=?').get(participantId);
+  db.prepare(
+    `INSERT INTO ai_sessions (participant_id, room_id, sub_agent_id, claude_session_id, workdir, status) VALUES (?,?,?,?,?,'idle')
+     ON CONFLICT(participant_id, sub_agent_id) WHERE sub_agent_id IS NOT NULL DO UPDATE SET claude_session_id=excluded.claude_session_id, room_id=excluded.room_id, workdir=excluded.workdir, status='idle', last_active_at=datetime('now')`
+  ).run(participantId, rp?.room_id ?? null, subAgentId, claudeSessionId, workdir || null);
 }
 
 // Load .env if present
@@ -3005,11 +3018,12 @@ wss.on('connection', (ws, req) => {
       broadcastGlobal({ type: 'room_activity', room_id: msg.room_id });
       if (msg.claude_session_id) {
         try {
-          const row = db.prepare('SELECT participant_id FROM messages WHERE id=?').get(msg.message_id);
-          // Resolve the participant's workdir the SAME way dispatch does (single source) so the
-          // saved key matches the lookup key. Re-deriving from the ROOM workdir here was the bug:
-          // for a participant whose workdir != room workdir the session never matched on resume.
-          if (row) saveSession(row.participant_id, msg.claude_session_id, resolveParticipantWorkdir(row.participant_id));
+          const row = db.prepare('SELECT participant_id, sub_agent_id FROM messages WHERE id=?').get(msg.message_id);
+          if (row && row.sub_agent_id) {
+            saveSubAgentSession(row.participant_id, row.sub_agent_id, msg.claude_session_id, resolveParticipantWorkdir(row.participant_id));
+          } else if (row) {
+            saveSession(row.participant_id, msg.claude_session_id, resolveParticipantWorkdir(row.participant_id));
+          }
         } catch (e) { console.error('[agent] saveSession error:', e.message); }
       }
       pendingAgents.get(msg.message_id)?.resolve(msg.content);
@@ -3698,18 +3712,38 @@ function parseGitDiff(raw) {
 
 // ─── Message handling ─────────────────────────────────────────────────────────
 
-function resolveAgentOrder(content, agents) {
+function resolveAgentOrder(content, agents, roomId) {
   const mentions = [];
   for (const agent of agents) {
     const idx = content.indexOf('@' + agent.name);
-    if (idx !== -1) mentions.push({ agent, idx });
+    if (idx !== -1) mentions.push({ agent: { ...agent, sub_agent: null }, idx });
   }
+
+  // Check sub-agent label mentions (@probe, @reviewer) — linked to this room
+  if (roomId) {
+    const linkedSubs = db.prepare(`
+      SELECT sa.*, a.name AS parent_name FROM room_sub_agents rsa
+      JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
+      JOIN actors a ON a.id=sa.parent_actor_id
+      WHERE rsa.room_id=? AND sa.enabled=1
+    `).all(roomId);
+    for (const sa of linkedSubs) {
+      const idx = content.indexOf('@' + sa.label);
+      if (idx === -1) continue;
+      const alreadyByAgent = mentions.some(m => m.agent.actor_id === sa.parent_actor_id);
+      if (alreadyByAgent) continue;
+      const parent = agents.find(a => a.actor_id === sa.parent_actor_id);
+      if (!parent) continue;
+      mentions.push({ agent: { ...parent, sub_agent: sa }, idx });
+    }
+  }
+
   if (mentions.length > 0) {
     mentions.sort((a, b) => a.idx - b.idx);
     return mentions.map(m => m.agent);
   }
-  // No mentions → shuffle all agents
-  const shuffled = [...agents];
+  // No mentions → shuffle all agents (no sub-agent)
+  const shuffled = [...agents].map(a => ({ ...a, sub_agent: null }));
   for (let i = shuffled.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
@@ -3768,12 +3802,30 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
         for (const other of allAiInRoom) {
           if (other.actor_id !== currentAgent.actor_id && lastMsg.content.includes('@' + other.name)) {
             const alreadyQueued = agents.slice(i + 1).some(a => a.actor_id === other.actor_id);
-            if (!alreadyQueued) agents.push(other);
+            if (!alreadyQueued) agents.push({ ...other, sub_agent: null });
           }
         }
 
+        // Cascade sub-agent mentions in responses
+        const linkedSubs = db.prepare(`
+          SELECT sa.*, a.name AS parent_name FROM room_sub_agents rsa
+          JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
+          JOIN actors a ON a.id=sa.parent_actor_id
+          WHERE rsa.room_id=? AND sa.enabled=1
+        `).all(roomId);
+        for (const sa of linkedSubs) {
+          if (lastMsg.content.includes('@' + sa.label)) {
+            const alreadyQueued = agents.slice(i + 1).some(a => a.sub_agent?.id === sa.id);
+            if (!alreadyQueued) {
+              const parent = allAiInRoom.find(a => a.actor_id === sa.parent_actor_id);
+              if (parent) agents.push({ ...parent, sub_agent: sa });
+            }
+          }
+        }
+
+        const agentName = currentAgent.sub_agent ? `${currentAgent.name}/${currentAgent.sub_agent.label}` : currentAgent.name;
         if (i < agents.length - 1) {
-          content = content + '\n\n' + `[${agents[i].name} sudah merespons: ${lastMsg.content}]`;
+          content = content + '\n\n' + `[${agentName} sudah merespons: ${lastMsg.content}]`;
         }
       }
 
@@ -3826,7 +3878,7 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
   `).all(roomId);
 
   if (allAiParts.length > 0) {
-    const ordered = resolveAgentOrder(content, allAiParts);
+    const ordered = resolveAgentOrder(content, allAiParts, roomId);
     triggerAgentsSequential(roomId, ordered, content, messageId, attachments || []).catch(e => console.error('[trigger] sequence error:', e));
   }
 }
@@ -4060,11 +4112,17 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     return;
   }
 
-  const result = db.prepare(
-    `INSERT INTO messages (room_id, participant_id, content, state, reply_to) VALUES (?,?,'','streaming',?)`
-  ).run(roomId, ai.participant_id, replyTo);
+  const subAgent = ai.sub_agent || null;
+  const result = subAgent
+    ? db.prepare(
+        `INSERT INTO messages (room_id, participant_id, content, state, reply_to, sub_agent_id, sub_agent_label) VALUES (?,?,'','streaming',?,?,?)`
+      ).run(roomId, ai.participant_id, replyTo, subAgent.id, subAgent.label)
+    : db.prepare(
+        `INSERT INTO messages (room_id, participant_id, content, state, reply_to) VALUES (?,?,'','streaming',?)`
+      ).run(roomId, ai.participant_id, replyTo);
   const msgId = result.lastInsertRowid;
 
+  const displayName = subAgent ? `${ai.name}/${subAgent.label}` : ai.name;
   broadcast(roomId, {
     type: 'message_state',
     message_id: msgId,
@@ -4072,9 +4130,10 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     avatar_color: ai.avatar_color,
     avatar_symbol: ai.avatar_symbol,
     avatar_url: ai.avatar_url || null,
+    sub_agent_label: subAgent?.label || null,
     state: 'streaming',
   });
-  console.log(`[trigger] ${ai.name} actor_id=${ai.actor_id} agentConnected=${!!agentWs} readyState=${agentWs?.readyState}`);
+  console.log(`[trigger] ${displayName} actor_id=${ai.actor_id} agentConnected=${!!agentWs} readyState=${agentWs?.readyState}`);
 
   if (EXPECTED_CLIENT_VERSION && agentWs && agentWs.readyState === 1) {
     const agentVer = agentVersions.get(ai.actor_id);
@@ -4142,8 +4201,12 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     if (replied) replyCtx = '\n' + L.replyTo(replied.name, replied.content?.substring(0, 500)) + '\n';
   }
 
+  const identityLine = subAgent
+    ? `${L.identity(ai.name)}\nYou are operating as sub-agent "${subAgent.label}" (tier: ${subAgent.tier}).${subAgent.system_prompt ? '\n\nSub-agent instructions:\n' + subAgent.system_prompt : ''}`
+    : L.identity(ai.name);
+
   const fullPrompt = [
-    L.identity(ai.name),
+    identityLine,
     `Room ID: ${roomId}`,
     L.timeContext(nowUtc),
     othersLine,
@@ -4191,16 +4254,21 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     broadcast(roomId, { type: 'message_complete', message_id: msgId, content: errContent });
     return;
   }
-  // Single source for the participant's workdir (see resolveParticipantWorkdir). Pass the
-  // prefetched room-workdir row so a multi-agent sequence doesn't re-query it per turn.
-  const workdir = resolveParticipantWorkdir(ai.participant_id, prefetchedCtx?.wdRow);
+  // Sub-agent workdir overrides parent workdir when set
+  const baseWorkdir = resolveParticipantWorkdir(ai.participant_id, prefetchedCtx?.wdRow);
+  const workdir = subAgent?.workdir || baseWorkdir;
+
+  // Sub-agent model overrides room model when set
+  const effectiveModel = subAgent?.model || roomModel;
 
   if (agentWs && agentWs.readyState === 1) {
     // ── Route to connected agent client
-    const sessionId = getSession(ai.participant_id);
+    const sessionId = subAgent
+      ? getSubAgentSession(ai.participant_id, subAgent.id)
+      : getSession(ai.participant_id);
     await new Promise((resolve, reject) => {
       pendingAgents.set(msgId, { resolve, reject });
-      pendingActorMeta.set(msgId, { actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null });
+      pendingActorMeta.set(msgId, { actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null, sub_agent_label: subAgent?.label || null });
       const triggerBaseUrl = getPublicUrl(`localhost:${PORT}`);
       const fullAttachments = (attachments || []).map(a => ({
         ...a,
@@ -4213,19 +4281,20 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         reply_to: replyTo || undefined,
         participant_id: ai.participant_id,
         claude_session_id: sessionId,
+        sub_agent: subAgent ? { id: subAgent.id, label: subAgent.label, tier: subAgent.tier } : undefined,
         prompt: fullPrompt,
         attachments: fullAttachments.length ? fullAttachments : undefined,
         imageUrl: fullAttachments.find(a => a.type === 'image')?.url || undefined,
         fileUrl:  fullAttachments.find(a => a.type === 'file')?.url || undefined,
         fileName: fullAttachments.find(a => a.type === 'file')?.name || undefined,
         workdir: workdir    || undefined,
-        model: roomModel    || undefined,
+        model: effectiveModel || undefined,
         base_url: modelBaseUrl,
         api_keys: modelApiKeys,
         tools_supported: modelToolsSupported === false ? false : undefined,
         rawHistory: rawHistory.length ? rawHistory : undefined,
       }));
-      console.log(`[trigger] sent to ${ai.name} agent, msgId=${msgId}`);
+      console.log(`[trigger] sent to ${displayName} agent, msgId=${msgId}`);
     });
 
   }
