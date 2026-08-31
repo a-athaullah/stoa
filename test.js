@@ -911,6 +911,114 @@ async function run() {
     });
   }
 
+  // Sub-agent orchestration (Phase 2b) — trigger endpoint auth/validation, control
+  // actions, budget. The success trigger path needs a connected agent + a valid
+  // spawn token (only issued during a real main-agent trigger), so it is not
+  // auto-tested here — same rationale as the existing trigger-flow exclusions.
+  // Requires migration 20260831-sub-agent-orchestration.sql applied.
+  console.log('\n[Sub-agent orchestration]');
+  {
+    let soActorId = null, soSecret = null, soWorkdirId = null, soRoomId = null, soSub = null;
+
+    await test('Setup — agent + room + linked sub-agent', async () => {
+      const agent = await createOnlineTestAgent('__test-suborch', '/tmp/stoa-test-suborch');
+      if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+      soActorId = agent.actorId; soSecret = agent.secret; soWorkdirId = agent.workdirId;
+      if (agent.ws) agent.ws.close();
+      const r = await req('POST', '/api/rooms', { title: '__suborch-room__', workdir_id: soWorkdirId, participant_ids: [soActorId] });
+      assert.strictEqual(r.status, 200);
+      soRoomId = r.body.id;
+      const sa = await req('POST', `/api/actors/${soActorId}/sub-agents`, { label: 'probe', tier: 'quick' });
+      assert.strictEqual(sa.status, 201, `sub-agent create failed: ${JSON.stringify(sa.body)}`);
+      soSub = sa.body;
+      await req('POST', `/api/rooms/${soRoomId}/sub-agents`, { sub_agent_id: soSub.id });
+    });
+
+    await test('Check migration applied — pending_wakes table exists', async () => {
+      const db = require('./db');
+      const tbl = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_wakes'").get();
+      assert.ok(tbl, 'migration 20260831-sub-agent-orchestration not applied — restart the server');
+    });
+
+    await test('POST /sub-agent-trigger — no agent auth → 403', async () => {
+      if (!soRoomId) { console.log('    (skipped)'); return; }
+      const r = await req('POST', `/api/rooms/${soRoomId}/sub-agent-trigger`, { label: 'probe', task: 'cek resource usage server', spawn_token: 'x' });
+      assert.strictEqual(r.status, 403);
+    });
+
+    await test('POST /sub-agent-trigger — bad spawn token → 403 invalid_spawn_token', async () => {
+      if (!soRoomId) { console.log('    (skipped)'); return; }
+      const r = await req('POST', `/api/rooms/${soRoomId}/sub-agent-trigger`,
+        { label: 'probe', task: 'cek resource usage server', spawn_token: 'deadbeef' },
+        { 'x-agent-id': String(soActorId), 'x-agent-secret': soSecret });
+      assert.strictEqual(r.status, 403);
+      assert.strictEqual(r.body.error, 'invalid_spawn_token');
+    });
+
+    await test('GET /sub-agent-runs — unauthenticated → 401', async () => {
+      if (!soRoomId) { console.log('    (skipped)'); return; }
+      const saved = sessionCookie; sessionCookie = null;
+      const r = await req('GET', `/api/rooms/${soRoomId}/sub-agent-runs`);
+      sessionCookie = saved;
+      assert.strictEqual(r.status, 401);
+    });
+
+    await test('GET /sub-agent-runs — authed → array (none running)', async () => {
+      if (!soRoomId) { console.log('    (skipped)'); return; }
+      const r = await req('GET', `/api/rooms/${soRoomId}/sub-agent-runs`);
+      assert.strictEqual(r.status, 200);
+      assert.ok(Array.isArray(r.body));
+      assert.strictEqual(r.body.length, 0);
+    });
+
+    await test('POST /spawns-pause — invalid body → 400', async () => {
+      if (!soRoomId) { console.log('    (skipped)'); return; }
+      const r = await req('POST', `/api/rooms/${soRoomId}/spawns-pause`, {});
+      assert.strictEqual(r.status, 400);
+    });
+
+    await test('POST /spawns-pause — pause + resume reflected in GET room', async () => {
+      if (!soRoomId) { console.log('    (skipped)'); return; }
+      const r = await req('POST', `/api/rooms/${soRoomId}/spawns-pause`, { paused: true });
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.paused, true);
+      const room = await req('GET', `/api/rooms/${soRoomId}`);
+      assert.strictEqual(room.body.spawns_paused, 1);
+      await req('POST', `/api/rooms/${soRoomId}/spawns-pause`, { paused: false });
+      const room2 = await req('GET', `/api/rooms/${soRoomId}`);
+      assert.strictEqual(room2.body.spawns_paused, 0);
+    });
+
+    await test('PATCH room — budget clamped + persisted', async () => {
+      if (!soRoomId) { console.log('    (skipped)'); return; }
+      await req('PATCH', `/api/rooms/${soRoomId}`, { max_sub_agents: 99, max_spawns_per_hour: 5 });
+      const room = await req('GET', `/api/rooms/${soRoomId}`);
+      assert.strictEqual(room.body.max_sub_agents, 10); // clamped 1..10
+      assert.strictEqual(room.body.max_spawns_per_hour, 5);
+    });
+
+    await test('POST /sub-agent-runs/:id/stop — nonexistent run → 404', async () => {
+      if (!soRoomId) { console.log('    (skipped)'); return; }
+      const r = await req('POST', `/api/rooms/${soRoomId}/sub-agent-runs/9999999/stop`);
+      assert.strictEqual(r.status, 404);
+    });
+
+    await test('Cleanup — delete suborch room + sub-agent + actor', async () => {
+      if (soRoomId) {
+        await req('PATCH', `/api/rooms/${soRoomId}`, { archived: true });
+        await req('DELETE', `/api/rooms/${soRoomId}`);
+        soRoomId = null;
+      }
+      if (soSub) { await req('DELETE', `/api/sub-agents/${soSub.id}`); soSub = null; }
+      if (soActorId) {
+        const r = await req('DELETE', `/api/actors/${soActorId}`);
+        assert.ok([200, 204].includes(r.status));
+        orphanActorIds = orphanActorIds.filter(id => id !== soActorId);
+        soActorId = null;
+      }
+    });
+  }
+
   // Search
   console.log('\n[Search]');
   await test('GET /api/search?q= — empty query → []', async () => {

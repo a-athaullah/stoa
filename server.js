@@ -100,6 +100,108 @@ function saveSubAgentSession(participantId, subAgentId, claudeSessionId, workdir
   ).run(participantId, rp?.room_id ?? null, subAgentId, claudeSessionId, workdir || null);
 }
 
+// ─── Phase 2b: spawn token (hard depth guard) ──────────────────────────────
+// A spawn token is issued to a MAIN agent when it is triggered, and required by
+// POST /sub-agent-trigger. Sub-agent triggers are never given a token, so a
+// sub-agent is structurally unable to spawn another sub-agent (depth = 1),
+// regardless of what its prompt says. In-memory is sufficient (single-user LAN);
+// tokens are invalidated when the main agent's turn completes.
+const spawnTokens = new Map(); // token -> { roomId, actorId, participantId, expiry }
+const SPAWN_TOKEN_TTL_MS = 10 * 60 * 1000;
+
+function issueSpawnToken(roomId, actorId, participantId) {
+  const token = crypto.randomBytes(24).toString('hex');
+  spawnTokens.set(token, { roomId, actorId, participantId, expiry: Date.now() + SPAWN_TOKEN_TTL_MS });
+  return token;
+}
+
+function validateSpawnToken(token, roomId, actorId) {
+  const entry = token && spawnTokens.get(token);
+  if (!entry) return false;
+  if (Date.now() > entry.expiry) { spawnTokens.delete(token); return false; }
+  return entry.roomId === roomId && entry.actorId === actorId;
+}
+
+function invalidateSpawnTokensForParticipant(participantId) {
+  for (const [token, entry] of spawnTokens) {
+    if (entry.participantId === participantId) spawnTokens.delete(token);
+  }
+}
+
+// Verify x-agent-id / x-agent-secret headers (same HMAC scheme as proactive message).
+// Returns the agent actor row on success, or null.
+function verifyAgentRequest(req) {
+  const agentId = parseInt(req.headers['x-agent-id'] || '0');
+  const agentSecret = req.headers['x-agent-secret'] || '';
+  if (!agentId || !agentSecret) return null;
+  const actor = db.prepare("SELECT id, secret FROM actors WHERE id=? AND type='ai'").get(agentId);
+  if (!actor || !actor.secret) return null;
+  const h = s => crypto.createHmac('sha256', 'stoa').update(s).digest();
+  try {
+    if (!crypto.timingSafeEqual(h(agentSecret), h(actor.secret))) return null;
+  } catch { return null; }
+  return actor;
+}
+
+// ─── Phase 2b: durable auto-wake (R1) ──────────────────────────────────────
+// When an orchestrator-triggered sub-agent completes, wake its parent exactly
+// once with the result in context. The pending_wakes row makes this survive a
+// server restart (drained on startup). User @mention-triggered sub-agents do
+// NOT wake anyone (they have no parent_message_id) — Aan reads the result.
+const MAX_WAKE_ATTEMPTS = 3;
+
+function enqueueParentWake(roomId, parentParticipantId, subAgentMessageId) {
+  const { lastInsertRowid } = db.prepare(
+    'INSERT INTO pending_wakes (room_id, parent_participant_id, sub_agent_message_id) VALUES (?,?,?)'
+  ).run(roomId, parentParticipantId, subAgentMessageId);
+  drainWake(Number(lastInsertRowid)).catch(e => console.error('[wake] drain error:', e.message));
+}
+
+async function drainWake(wakeId) {
+  const row = db.prepare('SELECT * FROM pending_wakes WHERE id=?').get(wakeId);
+  if (!row) return;
+  const parent = db.prepare(`
+    SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.adapter_config, a.avatar_color, a.avatar_symbol, a.avatar_url
+    FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.id=?
+  `).get(row.parent_participant_id);
+  const sub = db.prepare(`
+    SELECT m.content, m.sub_agent_label FROM messages m WHERE m.id=?
+  `).get(row.sub_agent_message_id);
+  if (!parent || !sub) { db.prepare('DELETE FROM pending_wakes WHERE id=?').run(wakeId); return; }
+
+  const label = sub.sub_agent_label || 'sub-agent';
+  // R5: truncate very long results in the wake prompt; full text stays as the room message.
+  const MAX_WAKE_CHARS = 4000;
+  const body = (sub.content || '').length > MAX_WAKE_CHARS
+    ? (sub.content.slice(0, MAX_WAKE_CHARS) + `\n… (dipotong — teks lengkap ada di pesan "${parent.name} (${label})" di room)`)
+    : (sub.content || '');
+  const wakePrompt = `[sub-agent result] Sub-agent "${label}" yang kamu picu sudah selesai. Hasilnya:\n\n${body}\n\nSintesiskan dan lanjutkan menjawab. (Pesan ini tidak memicu agent lain tanpa @mention eksplisit.)`;
+
+  try {
+    await triggerAiResponse(row.room_id, { ...parent, sub_agent: null }, wakePrompt, null, []);
+    db.prepare('DELETE FROM pending_wakes WHERE id=?').run(wakeId);
+  } catch (e) {
+    const attempts = row.attempts + 1;
+    if (attempts >= MAX_WAKE_ATTEMPTS) {
+      db.prepare('DELETE FROM pending_wakes WHERE id=?').run(wakeId);
+      const sys = db.prepare(
+        `INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')`
+      ).run(row.room_id, row.parent_participant_id, `gagal membangunkan ${parent.name} untuk hasil ${label} setelah ${attempts}×`);
+      broadcast(row.room_id, { type: 'message_new', message: db.prepare('SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id WHERE m.id=?').get(Number(sys.lastInsertRowid)) });
+    } else {
+      db.prepare('UPDATE pending_wakes SET attempts=? WHERE id=?').run(attempts, wakeId);
+    }
+    console.error(`[wake] attempt ${attempts} failed for wake ${wakeId}:`, e.message);
+  }
+}
+
+// Drain any wakes left by a crash/restart (R1). Called after server boot.
+function drainPendingWakesOnStartup() {
+  const rows = db.prepare('SELECT id FROM pending_wakes ORDER BY id').all();
+  if (rows.length) console.log(`[wake] draining ${rows.length} pending wake(s) from prior run`);
+  for (const r of rows) drainWake(r.id).catch(e => console.error('[wake] startup drain error:', e.message));
+}
+
 // Load .env if present
 const envPath = path.join(__dirname, '.env');
 if (fs.existsSync(envPath)) {
@@ -768,6 +870,15 @@ const server = http.createServer(async (req, res) => {
       db.prepare('UPDATE rooms SET archived_at=NULL WHERE id=?').run(roomId);
       broadcastGlobal({ type: 'room_restored', room_id: roomId });
     }
+    // Phase 2b: sub-agent budget (clamped to sane ranges)
+    if (Number.isInteger(parsed.max_sub_agents)) {
+      const v = Math.max(1, Math.min(10, parsed.max_sub_agents));
+      db.prepare('UPDATE rooms SET max_sub_agents=? WHERE id=?').run(v, roomId);
+    }
+    if (Number.isInteger(parsed.max_spawns_per_hour)) {
+      const v = Math.max(1, Math.min(100, parsed.max_spawns_per_hour));
+      db.prepare('UPDATE rooms SET max_spawns_per_hour=? WHERE id=?').run(v, roomId);
+    }
     return json(res, { ok: true });
   }
 
@@ -1040,6 +1151,134 @@ const server = http.createServer(async (req, res) => {
     db.prepare('DELETE FROM room_sub_agents WHERE room_id=? AND sub_agent_id=?').run(roomId, subAgentId);
     broadcast(roomId, { type: 'sub_agent_unlinked', room_id: roomId, sub_agent_id: subAgentId });
     return json(res, { ok: true });
+  }
+
+  // ── Phase 2b: orchestrator triggers a sub-agent (agent auth + spawn token)
+  if (req.method === 'POST' && url.pathname.match(/^\/api\/rooms\/\d+\/sub-agent-trigger$/)) {
+    const roomId = parseInt(url.pathname.split('/')[3]);
+    const agent = verifyAgentRequest(req);
+    if (!agent) return json(res, { error: 'agent auth required' }, 403);
+
+    const data = parseJsonBody(await readBody(req));
+    if (!data) return json(res, { error: 'Invalid JSON' }, 400);
+
+    // Spawn token: sub-agents never receive one, so this is the hard depth guard.
+    if (!validateSpawnToken(data.spawn_token, roomId, agent.id)) {
+      return json(res, { error: 'invalid_spawn_token' }, 403);
+    }
+    // R4: reject empty/placeholder/too-short task.
+    const task = (data.task || '').trim();
+    if (task.length < 10 || /^(test|todo|tbd|placeholder|\.+)$/i.test(task)) {
+      return json(res, { error: 'invalid_task' }, 400);
+    }
+
+    const room = db.prepare('SELECT id, archived_at, spawns_paused, max_sub_agents, max_spawns_per_hour FROM rooms WHERE id=?').get(roomId);
+    if (!room) return json(res, { error: 'room not found' }, 404);
+    if (room.archived_at) return json(res, { error: 'room is archived' }, 400);
+    if (room.spawns_paused) return json(res, { error: 'spawns_paused' }, 409);
+
+    const parentPart = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(roomId, agent.id);
+    if (!parentPart) return json(res, { error: 'agent is not a participant in this room' }, 403);
+
+    // Resolve sub-agent by id or label; must be linked in this room AND owned by the requester (parent-only, Gap 2).
+    let sub;
+    if (data.sub_agent_id) {
+      sub = db.prepare(`
+        SELECT sa.* FROM room_sub_agents rsa JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
+        WHERE rsa.room_id=? AND sa.id=? AND sa.enabled=1
+      `).get(roomId, parseInt(data.sub_agent_id));
+    } else if (data.label) {
+      sub = db.prepare(`
+        SELECT sa.* FROM room_sub_agents rsa JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
+        WHERE rsa.room_id=? AND sa.label=? AND sa.enabled=1
+      `).get(roomId, String(data.label));
+    } else {
+      return json(res, { error: 'sub_agent_id or label required' }, 400);
+    }
+    if (!sub) return json(res, { error: 'sub-agent not found in this room' }, 404);
+    if (sub.parent_actor_id !== agent.id) return json(res, { error: 'not your sub-agent' }, 403);
+
+    // Budget: concurrent cap (running sub-agent messages) + hourly rate (orchestrator spawns).
+    const running = db.prepare(
+      "SELECT COUNT(*) AS c FROM messages WHERE room_id=? AND sub_agent_id IS NOT NULL AND state='streaming'"
+    ).get(roomId).c;
+    if (running >= room.max_sub_agents) return json(res, { error: 'max_concurrent' }, 429);
+    const lastHour = db.prepare(
+      "SELECT COUNT(*) AS c FROM messages WHERE room_id=? AND parent_message_id IS NOT NULL AND created_at >= datetime('now','-1 hour')"
+    ).get(roomId).c;
+    if (lastHour >= room.max_spawns_per_hour) return json(res, { error: 'budget_exceeded' }, 429);
+
+    // Marker message (non-null parent_message_id) → enables the one-shot auto-wake on completion.
+    const orchMsg = db.prepare(
+      "SELECT id FROM messages WHERE participant_id=? AND room_id=? ORDER BY id DESC LIMIT 1"
+    ).get(parentPart.id, roomId);
+    const parentMessageId = orchMsg?.id ?? null;
+
+    const ai = db.prepare(`
+      SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.adapter_config, a.avatar_color, a.avatar_symbol, a.avatar_url
+      FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.id=?
+    `).get(parentPart.id);
+    ai.sub_agent = { id: sub.id, label: sub.label, tier: sub.tier, model: sub.model, workdir: sub.workdir, system_prompt: sub.system_prompt };
+    ai.parent_message_id = parentMessageId;
+
+    // Fire-and-forget: return 200 (accepted) immediately. The orchestrator MUST NOT
+    // block waiting — with MAX_CONCURRENT=1 that would deadlock (Gap 4).
+    triggerAiResponse(roomId, ai, task, null, []).catch(e => console.error('[sub-agent-trigger] error:', e.message));
+    return json(res, { ok: true, label: sub.label });
+  }
+
+  // ── Phase 2b: list active sub-agent runs in a room (human-auth)
+  if (req.method === 'GET' && url.pathname.match(/^\/api\/rooms\/\d+\/sub-agent-runs$/)) {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    const roomId = parseInt(url.pathname.split('/')[3]);
+    const runs = db.prepare(`
+      SELECT m.id as message_id, m.sub_agent_label, m.created_at, a.name as parent_name, a.avatar_color, sa.tier
+      FROM messages m
+      JOIN room_participants rp ON rp.id=m.participant_id
+      JOIN actors a ON a.id=rp.actor_id
+      LEFT JOIN sub_agents sa ON sa.id=m.sub_agent_id
+      WHERE m.room_id=? AND m.sub_agent_id IS NOT NULL AND m.state='streaming'
+      ORDER BY m.id
+    `).all(roomId);
+    return json(res, runs);
+  }
+
+  // ── Phase 2b: stop one running sub-agent (human-auth)
+  if (req.method === 'POST' && url.pathname.match(/^\/api\/rooms\/\d+\/sub-agent-runs\/\d+\/stop$/)) {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    const parts = url.pathname.split('/');
+    const roomId = parseInt(parts[3]);
+    const messageId = parseInt(parts[5]);
+    const m = db.prepare("SELECT id, participant_id FROM messages WHERE id=? AND room_id=? AND sub_agent_id IS NOT NULL AND state='streaming'").get(messageId, roomId);
+    if (!m) return json(res, { error: 'run not found' }, 404);
+    const part = db.prepare('SELECT actor_id FROM room_participants WHERE id=?').get(m.participant_id);
+    const agentWs = part && agentClients.get(part.actor_id);
+    if (agentWs && agentWs.readyState === 1) {
+      // Reuse the proven abort path — the agent aborts and reports agent_complete
+      // ('(stopped by user)'), which finalizes the message normally.
+      agentWs.send(JSON.stringify({ type: 'cancel_generation', room_id: roomId, message_id: messageId }));
+    } else {
+      // Agent offline: no one to abort, so finalize the stuck message here.
+      db.prepare("UPDATE messages SET state='error', content=?, completed_at=datetime('now') WHERE id=?").run('(stopped by user)', messageId);
+      broadcast(roomId, { type: 'message_state', message_id: messageId, state: 'error' });
+      pendingAgents.get(messageId)?.resolve('');
+      pendingAgents.delete(messageId);
+      pendingActorMeta.delete(messageId);
+    }
+    return json(res, { ok: true });
+  }
+
+  // ── Phase 2b: pause / resume new spawns in a room (human-auth, R2 kill switch)
+  if (req.method === 'POST' && url.pathname.match(/^\/api\/rooms\/\d+\/spawns-pause$/)) {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    const roomId = parseInt(url.pathname.split('/')[3]);
+    const data = parseJsonBody(await readBody(req));
+    if (!data || typeof data.paused !== 'boolean') return json(res, { error: 'paused (boolean) required' }, 400);
+    const room = db.prepare('SELECT id FROM rooms WHERE id=?').get(roomId);
+    if (!room) return json(res, { error: 'room not found' }, 404);
+    db.prepare('UPDATE rooms SET spawns_paused=? WHERE id=?').run(data.paused ? 1 : 0, roomId);
+    broadcast(roomId, { type: 'spawns_pause_changed', room_id: roomId, paused: data.paused });
+    return json(res, { ok: true, paused: data.paused });
   }
 
   if (req.method === 'POST' && url.pathname.match(/^\/api\/rooms\/\d+\/message$/)) {
@@ -3016,16 +3255,27 @@ wss.on('connection', (ws, req) => {
       else if (msg.file_url) { completePayload.file_url = msg.file_url; completePayload.file_name = msg.file_name; }
       broadcast(msg.room_id, completePayload);
       broadcastGlobal({ type: 'room_activity', room_id: msg.room_id });
+      const doneRow = db.prepare('SELECT participant_id, sub_agent_id, parent_message_id FROM messages WHERE id=?').get(msg.message_id);
       if (msg.claude_session_id) {
         try {
-          const row = db.prepare('SELECT participant_id, sub_agent_id FROM messages WHERE id=?').get(msg.message_id);
-          if (row && row.sub_agent_id) {
-            saveSubAgentSession(row.participant_id, row.sub_agent_id, msg.claude_session_id, resolveParticipantWorkdir(row.participant_id));
-          } else if (row) {
-            saveSession(row.participant_id, msg.claude_session_id, resolveParticipantWorkdir(row.participant_id));
+          if (doneRow && doneRow.sub_agent_id) {
+            saveSubAgentSession(doneRow.participant_id, doneRow.sub_agent_id, msg.claude_session_id, resolveParticipantWorkdir(doneRow.participant_id));
+          } else if (doneRow) {
+            saveSession(doneRow.participant_id, msg.claude_session_id, resolveParticipantWorkdir(doneRow.participant_id));
           }
         } catch (e) { console.error('[agent] saveSession error:', e.message); }
       }
+      // Phase 2b: a completed MAIN-agent turn ends its spawn window; a completed
+      // orchestrator-triggered sub-agent wakes its parent exactly once (R1).
+      try {
+        if (doneRow && !doneRow.sub_agent_id) {
+          invalidateSpawnTokensForParticipant(doneRow.participant_id);
+        } else if (doneRow && doneRow.sub_agent_id && doneRow.parent_message_id) {
+          // A sub-agent runs under its parent's participant, so doneRow.participant_id
+          // IS the parent participant. parent_message_id only marks it as orchestrator-triggered.
+          enqueueParentWake(msg.room_id, doneRow.participant_id, msg.message_id);
+        }
+      } catch (e) { console.error('[wake] enqueue error:', e.message); }
       pendingAgents.get(msg.message_id)?.resolve(msg.content);
       pendingAgents.delete(msg.message_id);
       pendingActorMeta.delete(msg.message_id);
@@ -4117,10 +4367,13 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   }
 
   const subAgent = ai.sub_agent || null;
+  // parent_message_id marks an orchestrator-triggered sub-agent run — set only
+  // by POST /sub-agent-trigger. Its presence is what enables the auto-wake (R1).
+  const parentMessageId = (subAgent && ai.parent_message_id) ? ai.parent_message_id : null;
   const result = subAgent
     ? db.prepare(
-        `INSERT INTO messages (room_id, participant_id, content, state, reply_to, sub_agent_id, sub_agent_label) VALUES (?,?,'','streaming',?,?,?)`
-      ).run(roomId, ai.participant_id, replyTo, subAgent.id, subAgent.label)
+        `INSERT INTO messages (room_id, participant_id, content, state, reply_to, sub_agent_id, sub_agent_label, parent_message_id) VALUES (?,?,'','streaming',?,?,?,?)`
+      ).run(roomId, ai.participant_id, replyTo, subAgent.id, subAgent.label, parentMessageId)
     : db.prepare(
         `INSERT INTO messages (room_id, participant_id, content, state, reply_to) VALUES (?,?,'','streaming',?)`
       ).run(roomId, ai.participant_id, replyTo);
@@ -4209,6 +4462,27 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     ? `${L.identity(ai.name)}\nYou are operating as sub-agent "${subAgent.label}" (tier: ${subAgent.tier}).${subAgent.system_prompt ? '\n\nSub-agent instructions:\n' + subAgent.system_prompt : ''}`
     : L.identity(ai.name);
 
+  // ── Phase 2b: orchestration — issue a spawn token to the MAIN agent when it
+  // owns sub-agents linked in this room, and tell it how to trigger them.
+  // Sub-agents never get a token (depth = 1, hard-enforced server-side).
+  let orchestrationLine = '';
+  if (!subAgent) {
+    const ownSubs = db.prepare(`
+      SELECT sa.id, sa.label, sa.tier FROM room_sub_agents rsa
+      JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
+      WHERE rsa.room_id=? AND sa.parent_actor_id=? AND sa.enabled=1
+    `).all(roomId, ai.actor_id);
+    if (ownSubs.length) {
+      const token = issueSpawnToken(roomId, ai.actor_id, ai.participant_id);
+      const list = ownSubs.map(s => `"${s.label}" (${s.tier})`).join(', ');
+      orchestrationLine =
+        `\nYou can delegate to your sub-agents: ${list}. To trigger one, run:\n` +
+        '  BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\n' +
+        `  curl -s -X POST "$BASE_URL/api/rooms/${roomId}/sub-agent-trigger" -H "Content-Type: application/json" -H "x-agent-id: $STOA_ACTOR_ID" -H "x-agent-secret: $STOA_SECRET" -d '{"label":"<label>","task":"<what to do, min 10 chars>","spawn_token":"${token}"}'\n` +
+        `The call returns immediately (accepted, NOT the result) — finish your turn; the sub-agent's answer arrives as a room message and you'll be woken once to synthesize it. Do NOT poll or block waiting.`;
+    }
+  }
+
   const fullPrompt = [
     identityLine,
     `Room ID: ${roomId}`,
@@ -4218,6 +4492,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     replyCtx,
     '\n' + L.replyInstruction,
     otherAINames.length ? L.mentionInstruction(otherAINames) : '',
+    orchestrationLine,
     '\n' + L.sendFileInstruction,
   ].filter(Boolean).join('\n');
 
@@ -4492,6 +4767,8 @@ if (orphaned.changes) console.log(`[startup] Cleaned ${orphaned.changes} orphane
 
 server.listen(PORT, () => {
   console.log(`Stoa running → http://localhost:${PORT}`);
+  // Phase 2b (R1): resume any sub-agent wakes left pending by a prior crash/restart.
+  try { drainPendingWakesOnStartup(); } catch (e) { console.error('[wake] startup drain failed:', e.message); }
 });
 
 function waitForRoomIdle(roomId, timeoutMs = 300000) {
