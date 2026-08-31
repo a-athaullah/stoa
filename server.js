@@ -1349,6 +1349,12 @@ const server = http.createServer(async (req, res) => {
     ai.sub_agent = { id: sub.id, label: sub.label, tier: sub.tier, model: sub.model, workdir: sub.workdir, system_prompt: sub.system_prompt };
     ai.parent_message_id = parentMessageId;
 
+    // Pre-check: parent actor's stoa-agent must be online to run the sub-agent.
+    const parentWs = agentClients.get(agent.id);
+    if (!parentWs || parentWs.readyState !== 1) {
+      return json(res, { error: 'parent_offline', message: `${ai.name} sedang offline — sub-agent tidak bisa dijalankan` }, 503);
+    }
+
     // Fire-and-forget: return 200 (accepted) immediately. The orchestrator MUST NOT
     // block waiting — with MAX_CONCURRENT=1 that would deadlock (Gap 4).
     triggerAiResponse(roomId, ai, task, null, []).catch(e => console.error('[sub-agent-trigger] error:', e.message));
@@ -4485,10 +4491,14 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   const agentWs = agentClients.get(ai.actor_id);
 
   if (!agentWs || agentWs.readyState !== 1) {
-    console.log(`[trigger] ${ai.name} is offline, saving system_event`);
+    const subLabel = ai.sub_agent?.label;
+    const offlineMsg = subLabel
+      ? `${ai.name} sedang offline — sub-agent "${subLabel}" tidak bisa dijalankan`
+      : `${ai.name} sedang offline`;
+    console.log(`[trigger] ${ai.name} is offline${subLabel ? ` (sub-agent: ${subLabel})` : ''}, saving system_event`);
     const sysResult = db.prepare(
       `INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,?)`
-    ).run(roomId, ai.participant_id, `${ai.name} sedang offline`, 'system_event');
+    ).run(roomId, ai.participant_id, offlineMsg, 'system_event');
     broadcast(roomId, {
       type: 'message_new',
       message: {
@@ -4499,7 +4509,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         avatar_color: ai.avatar_color,
         avatar_symbol: ai.avatar_symbol,
         avatar_url: ai.avatar_url || null,
-        content: `${ai.name} sedang offline`,
+        content: offlineMsg,
         state: 'system_event',
         created_at: new Date().toISOString(),
       },

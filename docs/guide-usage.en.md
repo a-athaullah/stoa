@@ -245,6 +245,13 @@ For sub-agents, the spend is **attributed to the specific sub-agent** in the usa
 
 When an orchestrator has run **two or more sub-agents** in a room, its next synthesis turn receives a compact **cost rollup** (runs, total tokens, wall time, and per-sub-agent breakdown). The orchestrator uses this to close a multi-spawn pipeline with a brief run summary in its reply. A single spawn does not trigger a summary.
 
+### Cross-Machine Sub-Agents
+
+Sub-agents always run on the **same machine** as their parent agent. The server routes each trigger to the parent's WebSocket connection — it never transfers work to a different machine.
+
+- **Offline detection** — if the parent agent's machine is disconnected when a sub-agent trigger arrives, the server returns a `503 parent_offline` error immediately (instead of silently accepting). The chat also shows a highlighted error event so the user knows the agent is unreachable.
+- **Working directory validation** — the agent validates that the configured working directory exists on the local filesystem before spawning the sub-agent process. If the path is missing (stale config, wrong machine, deleted folder), it reports an error result back to the room instead of crashing.
+
 ---
 
 ## File and Image Sharing

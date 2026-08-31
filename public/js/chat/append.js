@@ -75,7 +75,8 @@ function appendMessage(m, container) {
 
   if (m.state === 'system_event') {
     const el = document.createElement('div');
-    el.className = 'h-system-event';
+    const isError = /offline|gagal|error|tidak bisa|tidak ditemukan/i.test(m.content || '');
+    el.className = 'h-system-event' + (isError ? ' error' : '');
     el.id = 'msg-' + m.id;
     el.textContent = m.content;
     inner.appendChild(el);
