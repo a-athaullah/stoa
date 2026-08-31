@@ -12,6 +12,10 @@
   --h-ink:         oklch(0.235 0.018 45);
   --h-ink-mute:    oklch(0.460 0.014 50);
   --h-ink-faint:   oklch(0.595 0.014 52);
+  /* Aliases — reference theme-aware tokens so they resolve correctly in dark too.
+     Used by JS-built UI (sub-agent dropdown/run controls, settings) + chat.css. */
+  --h-border:      var(--h-hairline);
+  --h-hover:       color-mix(in srgb, var(--h-ink) 6%, transparent);
   --h-serif:       "Plus Jakarta Sans", "DM Sans", system-ui, sans-serif;
   --h-sans:        "DM Sans", system-ui, sans-serif;
   --h-msg:         "Plus Jakarta Sans", "DM Sans", system-ui, sans-serif;
