@@ -90,10 +90,6 @@ function renderChatHeader(room, participants) {
     fjson(`/api/rooms/${room.id}/sub-agents`).then(data => {
       if (!data?.linked?.length) return;
       for (const sa of data.linked) {
-        const parentSeal = Array.from(sealsWrap.querySelectorAll('.h-header-seal')).find(el => {
-          const av = el.querySelector('.h-avatar, img');
-          return av && el.textContent?.trim() === '' || true;
-        });
         const saWrap = document.createElement('div');
         saWrap.className = 'h-header-seal h-header-seal-sub';
         saWrap.title = `${sa.parent_name}/${sa.label} (${sa.tier})`;
@@ -247,9 +243,8 @@ function openSubAgentDropdown(anchorEl, roomId, participant) {
   }
   loadItems();
 
-  const wrapper = anchorEl.closest('.h-header-seals') || anchorEl.parentElement;
-  wrapper.style.position = 'relative';
-  wrapper.appendChild(drop);
+  anchorEl.style.position = 'relative';
+  anchorEl.appendChild(drop);
   setTimeout(() => document.addEventListener('click', function close(e) {
     if (!drop.contains(e.target)) { drop.remove(); document.removeEventListener('click', close); }
   }), 0);
