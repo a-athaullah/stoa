@@ -342,6 +342,126 @@ function sEditGetCmd(backend, name, lang, os) {
   return { unix: `curl -fsSL "${url}" | bash`, ps: `irm "${url}" | iex`, cmd: `curl -fsSL "${url}" -o i.cmd && i.cmd && del i.cmd` }[os];
 }
 
+// ── Sub-agent design primitives (port of subagents.jsx) ──────────────────────
+// Ported from the claude.ai/design spec: SET tokens → --h-* CSS vars, JSX → DOM.
+const SA_TIERS_META = [
+  { id: 'quick',    bars: 1, note: 'short lookups — cheapest model' },
+  { id: 'standard', bars: 2, note: 'most work — balanced' },
+  { id: 'deep',     bars: 3, note: 'long reasoning — costliest' },
+];
+const SA_MODELS = ['claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-5'];
+const SA_DANGER = '#b35a4b';
+
+// One-time token injection: the sub-agent seal shade vars. Relative oklch keeps
+// the parent HUE and just lightens/desaturates, so Ara's teal stays teal.
+function saInjectTokens() {
+  if (document.getElementById('sa-tokens')) return;
+  const el = document.createElement('style');
+  el.id = 'sa-tokens';
+  el.textContent =
+    ':root{--sa-sub-dl:0.16;--sa-sub-cf:0.55;--sa-sub-ink:oklch(0.28 0.020 50)}' +
+    'html.dark{--sa-sub-dl:0.15;--sa-sub-cf:0.62;--sa-sub-ink:oklch(0.30 0.020 50)}';
+  document.head.appendChild(el);
+}
+function saSubShade(color) {
+  return `oklch(from ${color} calc(l + var(--sa-sub-dl)) calc(c * var(--sa-sub-cf)) h)`;
+}
+
+// Wax-seal mark. `badge` adds the corner notch that marks a sub-agent.
+function saMakeSeal({ letter, color, size = 26, badge = false, ink = '#fff' }) {
+  const wrap = document.createElement('span');
+  wrap.style.cssText = 'position:relative;display:inline-flex;flex:0 0 auto';
+  const disc = document.createElement('span');
+  disc.style.cssText = `width:${size}px;height:${size}px;border-radius:50%;background:${color};color:${ink};` +
+    `display:inline-flex;align-items:center;justify-content:center;font-family:var(--h-serif);` +
+    `font-size:${size * 0.5}px;font-style:italic;line-height:1;` +
+    'box-shadow:inset 0 -1px 0 rgba(0,0,0,.16), 0 1px 2px rgba(0,0,0,.06)';
+  disc.textContent = letter || '?';
+  wrap.appendChild(disc);
+  if (badge) {
+    const notch = document.createElement('span');
+    const b = Math.max(7, size * 0.28);
+    notch.style.cssText = `position:absolute;right:-1px;bottom:-1px;width:${b}px;height:${b}px;` +
+      `border-radius:50%;background:var(--h-surface);border:1.5px solid ${color};box-sizing:border-box`;
+    wrap.appendChild(notch);
+  }
+  return wrap;
+}
+
+// Tier chip — hairline pill with a 1/2/3-bar depth meter.
+function saMakeTierChip(tier, dim = false) {
+  const t = SA_TIERS_META.find(x => x.id === tier) || SA_TIERS_META[0];
+  const chip = document.createElement('span');
+  chip.title = t.note;
+  chip.style.cssText = 'display:inline-flex;align-items:center;gap:6px;flex:0 0 auto;' +
+    'padding:3px 9px 3px 7px;border-radius:999px;border:1px solid var(--h-hair-soft);' +
+    'background:color-mix(in srgb, var(--h-bg) 34%, var(--h-surface));' +
+    `font-family:var(--h-sans);font-size:11.5px;letter-spacing:.02em;color:var(--h-ink-${dim ? 'faint' : 'mute'})`;
+  const meter = document.createElement('span');
+  meter.style.cssText = 'display:inline-flex;align-items:flex-end;gap:1.5px;height:9px';
+  for (let i = 0; i < 3; i++) {
+    const bar = document.createElement('span');
+    const on = i < t.bars;
+    bar.style.cssText = `width:2px;height:${3 + i * 3}px;border-radius:1px;` +
+      `background:${on ? 'currentColor' : 'var(--h-hairline)'};opacity:${on ? .85 : .5}`;
+    meter.appendChild(bar);
+  }
+  chip.append(meter, document.createTextNode(t.id));
+  return chip;
+}
+
+// Tier picker — 3 clickable cards. onPick(id) fires; keeps its own selection.
+function saMakeTierPicker(current, onPick) {
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'display:flex;gap:8px';
+  let selected = current || 'quick';
+  const cards = {};
+  function paint() {
+    for (const t of SA_TIERS_META) {
+      const on = t.id === selected;
+      const c = cards[t.id];
+      c.card.style.border = `1px solid ${on ? 'var(--h-ink)' : 'var(--h-hair-soft)'}`;
+      c.card.style.background = on ? 'var(--h-surface-hi)' : 'transparent';
+      c.name.style.color = on ? 'var(--h-ink)' : 'var(--h-ink-mute)';
+    }
+  }
+  for (const t of SA_TIERS_META) {
+    const card = document.createElement('div');
+    card.style.cssText = 'flex:1;padding:9px 12px 10px;border-radius:10px;cursor:pointer;' +
+      'display:flex;flex-direction:column;gap:3px';
+    const name = document.createElement('span');
+    name.style.cssText = 'font-family:var(--h-sans);font-size:13.5px';
+    name.textContent = t.id;
+    const note = document.createElement('span');
+    note.style.cssText = 'font-family:var(--h-sans);font-size:11.5px;color:var(--h-ink-faint)';
+    note.textContent = t.note;
+    card.append(name, note);
+    card.addEventListener('click', () => { selected = t.id; paint(); onPick(t.id); });
+    cards[t.id] = { card, name };
+    wrap.appendChild(card);
+  }
+  paint();
+  return wrap;
+}
+
+// ConnField — lowercase label, control, optional hint underneath.
+function saMakeField(labelText, controlEl, hintText) {
+  const field = document.createElement('div');
+  field.style.cssText = 'display:flex;flex-direction:column;gap:6px;min-width:0';
+  const lbl = document.createElement('span');
+  lbl.style.cssText = 'font-family:var(--h-sans);font-size:11.5px;color:var(--h-ink-mute);letter-spacing:.04em';
+  lbl.textContent = labelText;
+  field.append(lbl, controlEl);
+  if (hintText) {
+    const hint = document.createElement('span');
+    hint.className = 's-sa-hint';
+    hint.style.cssText = 'font-family:var(--h-sans);font-size:11.5px;color:var(--h-ink-faint);line-height:1.4';
+    hint.textContent = hintText;
+    field.appendChild(hint);
+  }
+  return field;
+}
+
 function sMakeEditAccordion(actor) {
   const cfg = (() => { try { return JSON.parse(actor.adapter_config || '{}'); } catch { return {}; } })();
   const backend = actor.adapter || 'claude';
@@ -466,96 +586,174 @@ function sMakeEditAccordion(actor) {
   };
   updateCmd();
 
-  // ── Sub-agents section ──
-  const saSection = document.createElement('div');
-  saSection.style.cssText = 'border-top:1px solid var(--h-border);padding-top:12px;margin-top:8px';
-  const saHeader = document.createElement('div');
-  saHeader.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px';
+  // ── Sub-agents section (card — ported from subagents.jsx) ──
+  saInjectTokens();
+  const saParentColor = actor.avatar_color || '#4f8f9c';
+  const saShade = saSubShade(saParentColor);
+
+  const saSection = document.createElement('section');
+  saSection.style.cssText = 'border:1px solid var(--h-hairline);border-radius:12px;background:var(--h-surface);overflow:hidden';
+
+  const saHeader = document.createElement('header');
+  saHeader.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;' +
+    'padding:13px 16px;border-bottom:1px solid var(--h-hair-soft);' +
+    'background:color-mix(in srgb, var(--h-bg) 38%, var(--h-surface))';
+  const saHeadL = document.createElement('div');
+  saHeadL.style.cssText = 'display:flex;align-items:baseline;gap:10px;min-width:0';
   const saTitle = document.createElement('span');
-  saTitle.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:14px;color:var(--h-ink)';
-  saTitle.textContent = 'Sub-agents';
-  saHeader.appendChild(saTitle);
+  saTitle.style.cssText = 'font-family:var(--h-serif);font-size:16px;color:var(--h-ink)';
+  saTitle.textContent = 'sub-agents';
+  const saHint = document.createElement('span');
+  saHint.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)';
+  saHint.textContent = `specialized workers ${actor.name} can spawn`;
+  saHeadL.append(saTitle, saHint);
   const saAddBtn = document.createElement('button');
-  saAddBtn.style.cssText = 'display:inline-flex;align-items:center;gap:4px;white-space:nowrap;font-size:12px;line-height:1;padding:5px 12px;border-radius:999px;border:1px solid var(--h-border);background:transparent;color:var(--h-ink-mute);cursor:pointer;font-family:var(--h-sans)';
-  saAddBtn.textContent = '+ add';
-  saHeader.appendChild(saAddBtn);
+  saAddBtn.className = 's-sa-add-pill';
+  saAddBtn.style.cssText = 'display:inline-flex;align-items:center;gap:5px;white-space:nowrap;flex:0 0 auto;' +
+    'font-family:var(--h-sans);font-size:12.5px;line-height:1;padding:6px 13px;border-radius:999px;' +
+    'border:1px solid var(--h-hairline);background:transparent;color:var(--h-ink-mute);cursor:pointer';
+  saAddBtn.innerHTML = '<span style="font-size:14px;line-height:1">+</span> add sub-agent';
+  saHeader.append(saHeadL, saAddBtn);
   saSection.appendChild(saHeader);
-  const saList = document.createElement('div');
-  saList.id = `s-sub-agents-${actor.id}`;
-  saSection.appendChild(saList);
+
   const saForm = document.createElement('div');
   saForm.id = `s-sa-form-${actor.id}`;
   saForm.style.display = 'none';
   saSection.appendChild(saForm);
 
+  const saList = document.createElement('div');
+  saList.id = `s-sub-agents-${actor.id}`;
+  saSection.appendChild(saList);
+
+  function saShowForm(show) {
+    saForm.style.display = show ? 'flex' : 'none';
+    saAddBtn.style.display = show ? 'none' : 'inline-flex';
+  }
+
   function saMakeFormFields(existing) {
-    saForm.style.cssText = 'display:flex;flex-direction:column;gap:6px';
+    saForm.style.cssText = 'border-top:1px solid var(--h-hair-soft);' +
+      'background:color-mix(in srgb, var(--h-bg) 30%, var(--h-surface));' +
+      'padding:18px 20px 20px;display:flex;flex-direction:column;gap:16px';
     saForm.innerHTML = '';
-    const row1 = document.createElement('div');
-    row1.style.cssText = 'display:flex;gap:8px';
+    let selectedTier = existing?.tier || 'quick';
+
+    // Form header
+    const fh = document.createElement('div');
+    fh.style.cssText = 'display:flex;align-items:center;gap:12px';
+    const fhTitle = document.createElement('span');
+    fhTitle.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:17px;color:var(--h-ink)';
+    fhTitle.textContent = existing ? `edit ${existing.label}` : 'define a sub-agent';
+    const fhHint = document.createElement('span');
+    fhHint.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)';
+    fhHint.textContent = 'defined once — add it to any room afterwards';
+    const fhSpacer = document.createElement('span'); fhSpacer.style.flex = '1';
+    const fhClose = document.createElement('button');
+    fhClose.className = 's-icon-btn'; fhClose.title = 'Close'; fhClose.innerHTML = svgX(15);
+    fhClose.addEventListener('click', () => saShowForm(false));
+    fh.append(fhTitle, fhHint, fhSpacer, fhClose);
+
+    // label + model override (2-col grid)
+    const grid = document.createElement('div');
+    grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:16px';
     const labelInp = document.createElement('input');
-    labelInp.className = 's-name-input'; labelInp.placeholder = 'label (e.g. probe)';
-    labelInp.style.cssText = 'flex:2;font-size:13px'; labelInp.value = existing?.label || '';
-    const tierSel = document.createElement('select');
-    tierSel.className = 's-name-input'; tierSel.style.cssText = 'flex:1;font-size:13px';
-    for (const t of ['quick', 'standard', 'deep']) {
-      const o = document.createElement('option'); o.value = t; o.textContent = t;
-      if ((existing?.tier || 'quick') === t) o.selected = true;
-      tierSel.appendChild(o);
-    }
-    row1.append(labelInp, tierSel);
-    // Model override — "Use tier" (default) leaves model NULL so the tier's
-    // fallback chain applies; picking one pins sub_agents.model to a single model.
+    labelInp.placeholder = 'probe'; labelInp.value = existing?.label || '';
+    labelInp.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;' +
+      'background:color-mix(in srgb, var(--h-bg) 30%, var(--h-surface));border:1px solid var(--h-hair-soft);' +
+      'font-family:ui-monospace,Menlo,monospace;font-size:13px;color:var(--h-ink);outline:none;width:100%';
+    const labelField = saMakeField('label', labelInp, 'unique, used for @mention — cannot match an agent name');
+    const labelErr = document.createElement('span');
+    labelErr.style.cssText = 'display:none;align-items:center;gap:6px;font-family:var(--h-sans);font-size:12px;color:' + SA_DANGER;
+    labelField.appendChild(labelErr);
+
     const modelSel = document.createElement('select');
-    modelSel.className = 's-name-input'; modelSel.style.cssText = 'font-size:13px;width:100%;box-sizing:border-box';
-    const useTierOpt = document.createElement('option');
-    useTierOpt.value = ''; useTierOpt.textContent = 'model override: use tier';
+    modelSel.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;' +
+      'background:var(--h-surface);border:1px solid var(--h-hair-soft);' +
+      'font-family:var(--h-sans);font-size:13px;color:var(--h-ink);outline:none;width:100%;cursor:pointer';
+    const useTierOpt = document.createElement('option'); useTierOpt.value = ''; useTierOpt.textContent = 'use tier';
     modelSel.appendChild(useTierOpt);
-    for (const m of ['claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-5']) {
+    for (const m of SA_MODELS) {
       const o = document.createElement('option'); o.value = m; o.textContent = m;
       if ((existing?.model || '') === m) o.selected = true;
       modelSel.appendChild(o);
     }
-    // Preserve a pinned model not in the preset list (set via API) so editing keeps it.
-    if (existing?.model && !['claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-5'].includes(existing.model)) {
+    // Preserve a pinned model set via API that isn't in the preset list.
+    if (existing?.model && !SA_MODELS.includes(existing.model)) {
       const o = document.createElement('option'); o.value = existing.model; o.textContent = existing.model; o.selected = true;
       modelSel.appendChild(o);
     }
+    const modelField = saMakeField('model override', modelSel, 'leave on “use tier” unless this worker needs a specific model');
+    grid.append(labelField, modelField);
+
+    // tier picker
+    const tierField = saMakeField('tier', saMakeTierPicker(selectedTier, id => { selectedTier = id; }));
+
+    // working directory
     const wdInp = document.createElement('input');
-    wdInp.className = 's-name-input'; wdInp.placeholder = 'workdir (optional)';
-    wdInp.style.cssText = 'font-size:13px;width:100%;box-sizing:border-box'; wdInp.value = existing?.workdir || '';
+    wdInp.placeholder = '/home/ara/projects/omnichannel-desktop'; wdInp.value = existing?.workdir || '';
+    wdInp.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;' +
+      'background:var(--h-surface);border:1px solid var(--h-hair-soft);' +
+      'font-family:ui-monospace,Menlo,monospace;font-size:13px;color:var(--h-ink);outline:none;width:100%';
+    const wdField = saMakeField('working directory', wdInp, `path on ${actor.name}'s machine · empty = parent's workdir`);
+
+    // system prompt (slip)
     const spInp = document.createElement('textarea');
-    spInp.className = 's-name-input'; spInp.placeholder = 'system prompt (optional)';
-    spInp.style.cssText = 'font-size:13px;min-height:48px;height:auto;resize:vertical;width:100%;box-sizing:border-box;font-family:var(--h-sans)';
+    spInp.placeholder = 'You verify claims against the actual source before answering…';
     spInp.value = existing?.system_prompt || '';
+    spInp.style.cssText = 'padding:11px 13px;border-radius:8px;min-height:96px;box-sizing:border-box;resize:vertical;' +
+      'background:var(--h-slip);border:1px solid var(--h-hairline);' +
+      'font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;color:var(--h-ink);outline:none;width:100%';
+    const spField = saMakeField('system prompt', spInp, 'context injected on every trigger');
+
+    // buttons
     const btns = document.createElement('div');
-    btns.style.cssText = 'display:flex;gap:6px;justify-content:flex-end';
-    const cancelF = document.createElement('button');
-    cancelF.style.cssText = 'background:transparent;border:none;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12px;padding:5px 10px;cursor:pointer';
-    cancelF.textContent = 'cancel';
-    cancelF.addEventListener('click', () => { saForm.style.display = 'none'; });
+    btns.style.cssText = 'display:flex;align-items:center;gap:10px;padding-top:2px';
     const saveF = document.createElement('button');
-    saveF.className = 'h-btn-primary'; saveF.style.cssText = 'padding:5px 14px;font-size:12px';
-    saveF.textContent = existing ? 'update' : 'create';
+    saveF.style.cssText = 'background:var(--h-ink);color:var(--h-bg);border:none;padding:8px 20px;border-radius:999px;' +
+      'font-family:var(--h-sans);font-size:13px;cursor:pointer';
+    saveF.textContent = existing ? 'save' : 'create sub-agent';
+    const cancelF = document.createElement('button');
+    cancelF.style.cssText = 'background:transparent;border:1px solid var(--h-hairline);color:var(--h-ink-mute);' +
+      'font-family:var(--h-sans);font-size:13px;padding:7px 16px;border-radius:999px;cursor:pointer';
+    cancelF.textContent = 'cancel';
+    cancelF.addEventListener('click', () => saShowForm(false));
+    btns.append(saveF, cancelF);
+
+    function clearErr() {
+      labelErr.style.display = 'none';
+      labelInp.style.border = '1px solid var(--h-hair-soft)';
+      labelInp.style.boxShadow = 'none';
+    }
+    function showErr(msg) {
+      labelErr.textContent = msg; labelErr.style.display = 'inline-flex';
+      labelInp.style.border = '1px solid ' + SA_DANGER;
+      labelInp.style.boxShadow = `0 0 0 3px color-mix(in srgb, ${SA_DANGER} 14%, transparent)`;
+    }
+    labelInp.addEventListener('input', clearErr);
+
     saveF.addEventListener('click', async () => {
       const label = labelInp.value.trim();
-      if (!label) { showToast('Label required', { error: true }); return; }
+      if (!label) { showErr('label required'); labelInp.focus(); return; }
+      saveF.disabled = true;
       try {
-        const body = { label, tier: tierSel.value, model: modelSel.value || null, workdir: wdInp.value.trim() || null, system_prompt: spInp.value.trim() || null };
-        let r;
-        if (existing) {
-          r = await fetch(`/api/sub-agents/${existing.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        } else {
-          r = await fetch(`/api/actors/${actor.id}/sub-agents`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const body = { label, tier: selectedTier, model: modelSel.value || null, workdir: wdInp.value.trim() || null, system_prompt: spInp.value.trim() || null };
+        const r = existing
+          ? await fetch(`/api/sub-agents/${existing.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+          : await fetch(`/api/actors/${actor.id}/sub-agents`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          const msg = e.error || 'failed to save';
+          if (/already exists/i.test(msg)) showErr(`“${label}” already exists on ${actor.name}`);
+          else if (/actor name|conflicts/i.test(msg)) showErr(`“${label}” is an agent name — pick something else`);
+          else showToast(msg, { error: true });
+          saveF.disabled = false; return;
         }
-        if (!r.ok) { const e = await r.json().catch(() => ({})); showToast(e.error || 'Failed', { error: true }); return; }
-        saForm.style.display = 'none';
-        saLoadList();
-      } catch { showToast('Failed to save sub-agent', { error: true }); }
+        saShowForm(false); saLoadList();
+      } catch { showToast('Failed to save sub-agent', { error: true }); saveF.disabled = false; }
     });
-    btns.append(cancelF, saveF);
-    saForm.append(row1, modelSel, wdInp, spInp, btns);
+
+    saForm.append(fh, grid, tierField, wdField, spField, btns);
     setTimeout(() => labelInp.focus(), 0);
+    saShowForm(true);
   }
 
   async function saLoadList() {
@@ -564,36 +762,77 @@ function sMakeEditAccordion(actor) {
       if (!r.ok) return;
       const subs = await r.json();
       saList.innerHTML = '';
+      saHint.textContent = (subs.length ? `${subs.length} defined · ` : '') + `specialized workers ${actor.name} can spawn`;
       if (!subs.length) {
         const empty = document.createElement('div');
-        empty.style.cssText = 'font-size:12.5px;color:var(--h-ink-faint);font-family:var(--h-sans);font-style:italic;padding:4px 0';
-        empty.textContent = 'no sub-agents defined';
+        empty.style.cssText = 'padding:26px 22px;display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center';
+        const et = document.createElement('span');
+        et.style.cssText = 'font-family:var(--h-serif);font-size:17px;color:var(--h-ink)';
+        et.textContent = 'no sub-agents yet';
+        const ed = document.createElement('span');
+        ed.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:14px;color:var(--h-ink-mute);line-height:1.5;max-width:420px';
+        ed.textContent = `a sub-agent is a smaller worker ${actor.name} can hand a narrow job to — a quick file probe, a careful reviewer. define one here, then add it to any room.`;
+        empty.append(et, ed);
         saList.appendChild(empty);
         return;
       }
-      for (const sa of subs) {
+      subs.forEach((sa, i) => {
+        const last = i === subs.length - 1;
+        const dim = !sa.enabled;
         const row = document.createElement('div');
-        row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0;font-family:var(--h-sans);font-size:13px';
+        row.className = 's-sa-row';
+        row.style.cssText = 'display:flex;align-items:center;gap:12px;padding:13px 16px;' +
+          (last ? '' : 'border-bottom:1px solid var(--h-hair-soft);') + `opacity:${dim ? .62 : 1}`;
+        row.appendChild(saMakeSeal({ letter: sa.label[0], color: saShade, size: 26, badge: true, ink: 'var(--sa-sub-ink)' }));
+        const mid = document.createElement('div');
+        mid.style.cssText = 'flex:1;min-width:0;display:flex;flex-direction:column;gap:4px';
+        const line1 = document.createElement('div');
+        line1.style.cssText = 'display:flex;align-items:center;gap:9px;flex-wrap:wrap';
         const lbl = document.createElement('span');
-        lbl.style.cssText = 'font-weight:500;color:var(--h-ink);min-width:80px';
+        lbl.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:14px;color:var(--h-ink)';
         lbl.textContent = sa.label;
-        const meta = document.createElement('span');
-        meta.style.cssText = 'color:var(--h-ink-mute);font-size:12px;flex:1';
-        meta.textContent = sa.tier + (sa.model ? ' · ' + sa.model : '') + (sa.workdir ? ' · ' + sa.workdir : '');
+        line1.append(lbl, saMakeTierChip(sa.tier, dim));
+        if (sa.model) {
+          const mp = document.createElement('span');
+          mp.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--h-ink-faint);' +
+            'padding:2px 7px;border-radius:6px;background:color-mix(in srgb, var(--h-ink) 7%, var(--h-surface))';
+          mp.textContent = sa.model;
+          line1.appendChild(mp);
+        }
+        const line2 = document.createElement('span');
+        line2.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--h-ink-faint);' +
+          'overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+        line2.textContent = sa.workdir || `inherits ${actor.name}'s workdir`;
+        mid.append(line1, line2);
+        row.appendChild(mid);
+        // enabled toggle
+        const tog = document.createElement('button');
+        tog.className = 's-notif-toggle' + (sa.enabled ? ' on' : '');
+        tog.title = sa.enabled ? 'Enabled — click to disable' : 'Disabled — click to enable';
+        tog.style.flex = '0 0 auto';
+        tog.addEventListener('click', async () => {
+          try {
+            const rr = await fetch(`/api/sub-agents/${sa.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !sa.enabled }) });
+            if (rr.ok) saLoadList();
+          } catch { showToast('Failed to update', { error: true }); }
+        });
+        row.appendChild(tog);
+        const acts = document.createElement('div');
+        acts.style.cssText = 'display:flex;gap:2px;margin-left:4px';
         const editB = document.createElement('button');
-        editB.className = 's-icon-btn'; editB.innerHTML = svgPencil(12); editB.title = 'Edit';
+        editB.className = 's-icon-btn'; editB.innerHTML = svgPencil(13); editB.title = 'Edit sub-agent';
         editB.addEventListener('click', () => saMakeFormFields(sa));
         const delB = document.createElement('button');
-        delB.className = 's-icon-btn'; delB.innerHTML = svgX(12); delB.title = 'Delete';
+        delB.className = 's-icon-btn'; delB.innerHTML = svgX(13); delB.title = 'Delete sub-agent';
+        delB.style.color = SA_DANGER;
         delB.addEventListener('click', async () => {
-          try {
-            const r = await fetch(`/api/sub-agents/${sa.id}`, { method: 'DELETE' });
-            if (r.ok) saLoadList();
-          } catch { showToast('Failed to delete', { error: true }); }
+          try { const rr = await fetch(`/api/sub-agents/${sa.id}`, { method: 'DELETE' }); if (rr.ok) saLoadList(); }
+          catch { showToast('Failed to delete', { error: true }); }
         });
-        row.append(lbl, meta, editB, delB);
+        acts.append(editB, delB);
+        row.appendChild(acts);
         saList.appendChild(row);
-      }
+      });
     } catch {}
   }
 
