@@ -705,6 +705,81 @@ async function run() {
     });
   }
 
+  // Sub-agent identity (Phase 1) — self-contained: agent → room → 2 messages →
+  // seed sub_agent_label + parent_message_id on one via DB (no API sets them in
+  // Phase 1) → assert both fields round-trip through the messages serialization,
+  // and a normal message stays unlabeled (zero regression).
+  console.log('\n[Sub-agent identity]');
+  {
+    let saActorId = null, saSecret = null, saWorkdirId = null, saRoomId = null;
+    let saParentMsgId = null, saChildMsgId = null, saAgentWs = null;
+
+    await test('Setup — register sub-agent-identity test actor + room', async () => {
+      const agent = await createOnlineTestAgent('__test-subagent-id', '/tmp/stoa-test-subagent-id');
+      if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+      saActorId = agent.actorId; saSecret = agent.secret; saWorkdirId = agent.workdirId; saAgentWs = agent.ws;
+      const r = await req('POST', '/api/rooms', { title: '__subagent-id-room__', workdir_id: saWorkdirId, participant_ids: [saActorId] });
+      assert.strictEqual(r.status, 200, `create room failed: ${JSON.stringify(r.body)}`);
+      saRoomId = r.body.id;
+      if (saAgentWs) { saAgentWs.close(); saAgentWs = null; } // posts use HTTP secret, not ws
+    });
+
+    await test('Seed — post orchestrator + sub-agent messages, label the sub-agent one', async () => {
+      if (!saRoomId || !saSecret) { console.log('    (skipped)'); return; }
+      const headers = { 'X-Agent-Id': String(saActorId), 'X-Agent-Secret': saSecret };
+      const a = await rawReq('POST', `/api/rooms/${saRoomId}/message`, JSON.stringify({ content: 'orchestrator: minta probe cek CPU' }), 'application/json', headers);
+      assert.strictEqual(a.status, 200, `parent post failed: ${a.raw}`);
+      saParentMsgId = a.body.message_id;
+      const b = await rawReq('POST', `/api/rooms/${saRoomId}/message`, JSON.stringify({ content: 'top process: node 45% (normal)' }), 'application/json', headers);
+      assert.strictEqual(b.status, 200, `child post failed: ${b.raw}`);
+      saChildMsgId = b.body.message_id;
+
+      // No API sets sub_agent_label in Phase 1 — seed it directly (same DB file the server reads).
+      const db = require('./db');
+      const cols = db.prepare('PRAGMA table_info(messages)').all().map(c => c.name);
+      assert.ok(cols.includes('sub_agent_label') && cols.includes('parent_message_id'),
+        'migration 20260831-messages-sub-agent-identity not applied — restart the server so it runs, then re-run tests');
+      db.prepare('UPDATE messages SET sub_agent_label=?, parent_message_id=? WHERE id=?')
+        .run('__test-probe', saParentMsgId, saChildMsgId);
+    });
+
+    await test('GET /api/rooms/:id/messages — sub-agent label + parent_message_id round-trip', async () => {
+      if (!saChildMsgId) { console.log('    (skipped)'); return; }
+      const r = await req('GET', `/api/rooms/${saRoomId}/messages`);
+      assert.strictEqual(r.status, 200);
+      const child = r.body.find(m => m.id === saChildMsgId);
+      const parent = r.body.find(m => m.id === saParentMsgId);
+      assert.ok(child, 'sub-agent message not returned by history');
+      assert.strictEqual(child.sub_agent_label, '__test-probe', 'sub_agent_label not serialized');
+      assert.strictEqual(child.parent_message_id, saParentMsgId, 'parent_message_id not serialized');
+      // Zero regression: a normal message carries no label.
+      assert.ok(parent, 'orchestrator message not returned');
+      assert.ok(parent.sub_agent_label == null, 'normal message must have null sub_agent_label');
+    });
+
+    await test('GET /api/messages/:id — single-message fetch carries sub-agent fields', async () => {
+      if (!saChildMsgId) { console.log('    (skipped)'); return; }
+      const r = await req('GET', `/api/messages/${saChildMsgId}`);
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.sub_agent_label, '__test-probe', 'sub_agent_label missing on single fetch');
+      assert.strictEqual(r.body.parent_message_id, saParentMsgId, 'parent_message_id missing on single fetch');
+    });
+
+    await test('Cleanup — delete sub-agent-identity test room + actor', async () => {
+      if (saRoomId) {
+        await req('PATCH', `/api/rooms/${saRoomId}`, { archived: true });
+        await req('DELETE', `/api/rooms/${saRoomId}`); // cascades its messages
+        saRoomId = null;
+      }
+      if (saActorId) {
+        const r = await req('DELETE', `/api/actors/${saActorId}`);
+        assert.ok([200, 204].includes(r.status), `delete actor failed: ${r.status}`);
+        orphanActorIds = orphanActorIds.filter(id => id !== saActorId);
+        saActorId = null;
+      }
+    });
+  }
+
   // Search
   console.log('\n[Search]');
   await test('GET /api/search?q= — empty query → []', async () => {

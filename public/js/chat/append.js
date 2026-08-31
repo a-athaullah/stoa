@@ -78,6 +78,16 @@ function appendMessage(m, container) {
   nameEl.textContent = m.actor_name;
   meta.appendChild(nameEl);
 
+  // Sub-agent identity — flat: "Ara (probe)". Kept as a sibling span so the
+  // parent's .h-msg-name textContent stays clean (read back elsewhere to
+  // recover actor_name). Label is a snapshot from the message row.
+  if (m.sub_agent_label) {
+    const subEl = document.createElement('span');
+    subEl.className = 'h-msg-sub';
+    subEl.textContent = '(' + m.sub_agent_label + ')';
+    meta.appendChild(subEl);
+  }
+
   if (m.created_at) {
     const timeEl = document.createElement('span');
     timeEl.className = 'h-msg-time';

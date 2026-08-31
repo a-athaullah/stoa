@@ -196,6 +196,13 @@ html.dark .h-faded-mark { opacity: 0.12; }
   letter-spacing: 0.01em;
 }
 
+.h-msg-sub {
+  font-family: var(--h-msg);
+  font-size: 12.5px;
+  font-style: italic;
+  color: var(--h-ink-mute);
+}
+
 .h-msg-time {
   font-family: var(--h-serif);
   font-size: 12.5px;
