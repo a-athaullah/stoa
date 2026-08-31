@@ -1,0 +1,27 @@
+-- Phase 3 (agentic orchestration): model tiers + fallback chain.
+--
+-- Adds a per-room JSON map from tier name (quick/standard/deep) to an ORDERED
+-- list of models — a fallback chain (9Router pattern). When a sub-agent runs at
+-- a given tier, the server resolves the tier to its chain and the agent tries
+-- each model in order, advancing on model-scoped failures (rate-limit / timeout
+-- / overload) and skipping a whole provider on provider-scoped failures
+-- (auth 401 / quota). See "Model Routing (Phase 3 detail)" in the feature plan.
+--
+-- Shape (NULL = fall back to the server default chain):
+--   { "quick":    ["claude-haiku-4-5"],
+--     "standard": ["claude-sonnet-5", "claude-haiku-4-5"],
+--     "deep":     ["claude-opus-5", "claude-sonnet-5"] }
+--
+-- Model resolution order at trigger time:
+--   sub_agents.model (explicit override) -> rooms.model_tiers[tier] -> server default chain
+--
+-- Additive (single nullable ADD COLUMN), so this migration is transactional and
+-- zero data loss — existing rooms get NULL and keep today's behaviour (the room
+-- model, unchanged) until an operator configures tiers.
+--
+-- SOLE OWNER: this migration is the ONLY place this column is defined. Do NOT
+-- also add it to db/schema.sqlite.sql — see the note in
+-- 20260831-messages-sub-agent-identity.sql for why (fresh clone + existing DB
+-- double-definition breaks both paths).
+
+ALTER TABLE rooms ADD COLUMN model_tiers TEXT DEFAULT NULL;
