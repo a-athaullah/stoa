@@ -212,6 +212,46 @@ function enqueueParentWake(roomId, parentParticipantId, subAgentMessageId) {
   drainWake(Number(lastInsertRowid)).catch(e => console.error('[wake] drain error:', e.message));
 }
 
+// Phase 4 (Loop Guard #7): a compact per-sub-agent cost rollup for a room, used
+// to hand the orchestrator enough context to post a run summary. Reads the
+// canonical spend from usage_log (tokens attributed per sub-agent) and wall time
+// from the messages' result_meta. Returns null when <2 sub-agent runs exist —
+// a single spawn does not warrant a summary. `_fmtTok` mirrors the client chip.
+function _fmtTok(n) {
+  if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k';
+  return String(n || 0);
+}
+function buildRoomCostRollup(roomId) {
+  const perAgent = db.prepare(`
+    SELECT sub_agent_label AS label, COUNT(*) AS runs,
+           COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens,
+           COALESCE(SUM(cost_usd), 0) AS cost
+    FROM usage_log
+    WHERE room_id=? AND sub_agent_id IS NOT NULL
+    GROUP BY sub_agent_id, sub_agent_label
+    ORDER BY tokens DESC
+  `).all(roomId);
+  const totalRuns = perAgent.reduce((s, r) => s + r.runs, 0);
+  if (totalRuns < 2) return null;
+  const totalTokens = perAgent.reduce((s, r) => s + r.tokens, 0);
+  const totalCost = perAgent.reduce((s, r) => s + r.cost, 0);
+  const wall = db.prepare(`
+    SELECT COALESCE(SUM(json_extract(result_meta, '$.duration_ms')), 0) AS ms
+    FROM messages
+    WHERE room_id=? AND sub_agent_id IS NOT NULL AND result_meta IS NOT NULL
+  `).get(roomId);
+  return { perAgent, totalRuns, totalTokens, totalCost, wallMs: wall?.ms || 0 };
+}
+function formatCostRollup(r) {
+  const mins = Math.round(r.wallMs / 60000);
+  const wall = r.wallMs >= 60000 ? `~${mins} menit` : `${Math.round(r.wallMs / 1000)} detik`;
+  const perLine = r.perAgent
+    .map(a => `  • ${a.label || 'sub-agent'}: ${a.runs} run, ${_fmtTok(a.tokens)} tok`)
+    .join('\n');
+  const cost = r.totalCost > 0 ? ` · ~$${r.totalCost.toFixed(2)}` : '';
+  return `[cost so far] ${r.totalRuns} sub-agent run di room ini · ${_fmtTok(r.totalTokens)} tok · ${wall} wall time${cost}\n${perLine}`;
+}
+
 async function drainWake(wakeId) {
   const row = db.prepare('SELECT * FROM pending_wakes WHERE id=?').get(wakeId);
   if (!row) return;
@@ -230,7 +270,15 @@ async function drainWake(wakeId) {
   const body = (sub.content || '').length > MAX_WAKE_CHARS
     ? (sub.content.slice(0, MAX_WAKE_CHARS) + `\n… (dipotong — teks lengkap ada di pesan "${parent.name} (${label})" di room)`)
     : (sub.content || '');
-  const wakePrompt = `[sub-agent result] Sub-agent "${label}" yang kamu picu sudah selesai. Hasilnya:\n\n${body}\n\nSintesiskan dan lanjutkan menjawab. (Ini giliran sintesis kamu — jawabanmu tidak otomatis memicu agent lain, termasuk kalau kamu tulis @mention.)`;
+  // Phase 4 (Loop Guard #7): once ≥2 sub-agents have run in this room, hand the
+  // orchestrator a cost rollup so it can close a multi-spawn pipeline with a
+  // brief run summary. Left to the orchestrator's judgement (soft nudge) — the
+  // server cannot tell which wake is the last of a pipeline.
+  const rollup = buildRoomCostRollup(row.room_id);
+  const costBlock = rollup
+    ? `\n\n${formatCostRollup(rollup)}\n(Kalau ini menutup rangkaian spawn, sertakan ringkasan biaya singkat di jawabanmu. Kalau masih ada sub-agent berjalan, abaikan dulu.)`
+    : '';
+  const wakePrompt = `[sub-agent result] Sub-agent "${label}" yang kamu picu sudah selesai. Hasilnya:\n\n${body}\n\nSintesiskan dan lanjutkan menjawab. (Ini giliran sintesis kamu — jawabanmu tidak otomatis memicu agent lain, termasuk kalau kamu tulis @mention.)${costBlock}`;
 
   try {
     await triggerAiResponse(row.room_id, { ...parent, sub_agent: null }, wakePrompt, null, []);
@@ -3522,10 +3570,17 @@ wss.on('connection', (ws, req) => {
         if (top) model = top[0];
       }
       model = model || 'unknown'; // last-resort fallback if modelUsage is empty too
+      // Phase 4: attribute spend to the sub-agent that incurred it. The report
+      // carries its message_id; the message row snapshots which sub-agent ran.
+      let subAgentId = null, subAgentLabel = null;
+      if (msg.message_id) {
+        const mr = db.prepare('SELECT sub_agent_id, sub_agent_label FROM messages WHERE id=?').get(msg.message_id);
+        if (mr) { subAgentId = mr.sub_agent_id || null; subAgentLabel = mr.sub_agent_label || null; }
+      }
       try {
         db.prepare(`
-          INSERT INTO usage_log (actor_id, room_id, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO usage_log (actor_id, room_id, model, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, sub_agent_id, sub_agent_label)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           agentActorId,
           msg.room_id || null,
@@ -3534,7 +3589,9 @@ wss.on('connection', (ws, req) => {
           u.output_tokens || 0,
           u.cache_read_input_tokens || 0,
           u.cache_creation_input_tokens || 0,
-          msg.totalCostUsd || 0
+          msg.totalCostUsd || 0,
+          subAgentId,
+          subAgentLabel
         );
       } catch (e) {
         console.error('[usage_report] insert failed:', e.message);

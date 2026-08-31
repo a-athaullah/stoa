@@ -1106,7 +1106,7 @@ async function processTrigger(msg) {
 
       // Report token usage to server for tracking
       if (usage || modelUsage) {
-        send({ type: 'usage_report', room_id, actor_id: ACTOR_ID, model: targetModel || 'unknown', usage: usage || {}, modelUsage: modelUsage || {}, totalCostUsd: totalCostUsd || 0 });
+        send({ type: 'usage_report', room_id, message_id, actor_id: ACTOR_ID, model: targetModel || 'unknown', usage: usage || {}, modelUsage: modelUsage || {}, totalCostUsd: totalCostUsd || 0 });
       }
 
       // Strip base64 image data from the session file so a later resume by a model without image
