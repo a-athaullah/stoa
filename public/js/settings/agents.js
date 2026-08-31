@@ -476,7 +476,7 @@ function sMakeEditAccordion(actor) {
   saTitle.textContent = 'Sub-agents';
   saHeader.appendChild(saTitle);
   const saAddBtn = document.createElement('button');
-  saAddBtn.className = 's-icon-btn'; saAddBtn.style.cssText = 'font-size:12px;padding:3px 10px;border-radius:999px;border:1px solid var(--h-border);background:transparent;color:var(--h-ink-mute);cursor:pointer;font-family:var(--h-sans)';
+  saAddBtn.style.cssText = 'display:inline-flex;align-items:center;gap:4px;white-space:nowrap;font-size:12px;line-height:1;padding:5px 12px;border-radius:999px;border:1px solid var(--h-border);background:transparent;color:var(--h-ink-mute);cursor:pointer;font-family:var(--h-sans)';
   saAddBtn.textContent = '+ add';
   saHeader.appendChild(saAddBtn);
   saSection.appendChild(saHeader);
