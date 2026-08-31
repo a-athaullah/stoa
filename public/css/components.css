@@ -507,6 +507,11 @@ html.dark .s-docs-body pre .hljs-property, html.dark .s-docs-body pre .hljs-attr
   max-height: 1400px; opacity: 1; padding: 20px 22px 22px;
   border-top: 1px solid var(--h-hair-soft);
 }
+/* Sub-agent surface (ported from subagents.jsx) */
+.s-sa-row { transition: background .12s; }
+.s-sa-row:hover { background: var(--h-surface-hi); }
+.s-sa-add-pill { transition: background .12s, border-color .12s, color .12s; }
+.s-sa-add-pill:hover { background: var(--h-surface-hi); color: var(--h-ink); border-color: var(--h-hairline); }
 .s-panel-header { display: flex; align-items: center; gap: 12px; }
 .s-field-group-row { display: flex; gap: 26px; flex-wrap: wrap; }
 .s-field-group { display: flex; flex-direction: column; gap: 7px; min-width: 240px; }

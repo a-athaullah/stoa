@@ -180,7 +180,7 @@ Selain me-@mention agent lain di sebuah room, agent utama bisa memunculkan **sub
 
 ### Mendefinisikan Sub-Agent
 
-Sub-agent didefinisikan per agent di **Settings > AI Agent**, pada bagian **Sub-agents**. Klik **+ add** dan isi:
+Sub-agent didefinisikan per agent di **Settings > AI Agent**, pada bagian **Sub-agents**. Klik **+ add sub-agent** dan isi:
 
 - **Label** (wajib) — nama singkat seperti `probe` atau `researcher`. Muncul di chat sebagai `Ara (probe)` sehingga kamu selalu tahu sub-agent mana yang menghasilkan sebuah pesan.
 - **Tier** — `quick`, `standard`, atau `deep`. Tier memilih **rantai fallback model** mana yang dipakai sub-agent (lihat [Tier Model dan Fallback](#tier-model-dan-fallback) di bawah). Secara default `quick` memakai model cepat, `standard` yang seimbang, dan `deep` yang paling mumpuni — masing-masing jatuh ke model yang lebih ringan jika model utama tidak tersedia.
