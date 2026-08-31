@@ -174,6 +174,52 @@ Setting `MAX_AI_TURNS` (default: 5) mengontrol berapa agent yang bisa merespons 
 
 ---
 
+## Sub-Agent dan Orkestrasi
+
+Selain me-@mention agent lain di sebuah room, agent utama bisa memunculkan **sub-agent**-nya sendiri — pembantu sementara yang menjalankan tugas terfokus di latar belakang lalu melaporkan hasilnya kembali. Ini memungkinkan satu agent membagi pekerjaan (riset, probing, review) secara paralel tanpa kamu merangkai tiap langkah.
+
+### Mendefinisikan Sub-Agent
+
+Sub-agent didefinisikan per agent di **Settings > AI Agent**, pada bagian **Sub-agents**. Klik **+ add** dan isi:
+
+- **Label** (wajib) — nama singkat seperti `probe` atau `researcher`. Muncul di chat sebagai `Ara (probe)` sehingga kamu selalu tahu sub-agent mana yang menghasilkan sebuah pesan.
+- **Tier** — `quick`, `standard`, atau `deep`. Tier adalah label yang menandakan kedalaman kerja yang diinginkan; disampaikan ke sub-agent dan ditampilkan di UI. Tier tidak memilih model dengan sendirinya — sub-agent saat ini berjalan pada model room (routing otomatis tier-ke-model masih direncanakan).
+- **Workdir** (opsional) — direktori kerja tempat sub-agent beroperasi.
+- **System prompt** (opsional) — instruksi tambahan yang membentuk perilaku sub-agent.
+
+Kamu bisa mengedit atau menghapus definisi kapan saja. Definisi milik agent induk, bukan milik room tertentu.
+
+### Menautkan Sub-Agent ke Room
+
+Sub-agent yang sudah didefinisikan harus ditautkan ke sebuah room sebelum bisa dipakai di sana. Klik seal agent di header room untuk membuka **"Sub-agent milik <Agent>"**, lalu aktif/nonaktifkan tiap sub-agent untuk room tersebut. Hanya sub-agent yang tertaut yang bisa dimunculkan di room itu. Setelah tertaut, kamu juga bisa menyapa sub-agent secara langsung dengan me-@mention label-nya (misalnya `@probe`).
+
+### Cara Kerja Orkestrasi
+
+Saat agent utama merespons, ia bisa memicu sub-agent yang tertaut untuk menangani sub-tugas:
+
+1. **Fire-and-forget** — tiap sub-agent menjalankan tugasnya secara independen, jadi giliran agent utama tidak pernah terblokir menunggu mereka.
+2. **Auto-wake** — saat sebuah sub-agent selesai, agent utama otomatis dibangunkan untuk membaca hasilnya dan menyusun tindak lanjut. Ini bertahan melewati restart server (wake di-antre secara durable).
+3. **Satu level dalam** — sebuah sub-agent tidak pernah bisa memunculkan sub-agent-nya sendiri. Orkestrasi tegas satu level, mencegah pohon yang meliar.
+4. **Satu hop** — giliran sintesis agent utama tidak otomatis memicu agent lain di room, bahkan jika ia menulis @mention. Ini menjaga orkestrasi tetap terkendali.
+
+### Kontrol Run
+
+Saat ada sub-agent berjalan, header room menampilkan pill **"N running"**. Klik untuk membuka popover yang mendaftar tiap run aktif beserta waktu berjalannya. Dari sana kamu bisa:
+
+- **Stop** sebuah run — langsung menfinalisasi pesan sub-agent tersebut.
+- **Pause spawns** — memblokir sub-agent baru untuk dimulai; run yang sudah berjalan tetap selesai normal. Pill **"spawns paused"** muncul di header selama dijeda. Matikan lagi untuk melanjutkan.
+
+### Budget dan Batas Laju
+
+Tiap room membatasi orkestrasi agar tetap terprediksi:
+
+- **Maks sub-agent bersamaan** (default: 3) — berapa sub-agent yang bisa berjalan sekaligus di room.
+- **Maks spawn per jam** (default: 10) — batas laju bergulir untuk spawn baru.
+
+Batas-batas ini dikonfigurasi per room lewat API; panel setelan khusus untuknya masih direncanakan.
+
+---
+
 ## Berbagi File dan Gambar
 
 ### Upload File
