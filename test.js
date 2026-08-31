@@ -272,6 +272,79 @@ function runUnitTests() {
     assert.strictEqual(pickFavoriteModel([]), null);
   });
 
+  // sanitizeResultMeta (mirrors server.js Phase 4) — never trust arbitrary
+  // agent JSON: only a fixed exit_reason set, integer tokens, integer duration.
+  const RESULT_EXIT_REASONS = new Set(['completed', 'stopped', 'timeout', 'error']);
+  const sanitizeResultMeta = (raw) => {
+    if (!raw || typeof raw !== 'object') return null;
+    const out = {};
+    if (RESULT_EXIT_REASONS.has(raw.exit_reason)) out.exit_reason = raw.exit_reason;
+    const t = raw.tokens;
+    if (t && typeof t === 'object') {
+      const input = Number.isFinite(t.input) ? Math.max(0, Math.trunc(t.input)) : 0;
+      const output = Number.isFinite(t.output) ? Math.max(0, Math.trunc(t.output)) : 0;
+      if (input || output) out.tokens = { input, output };
+    }
+    if (Number.isFinite(raw.duration_ms) && raw.duration_ms > 0) out.duration_ms = Math.trunc(raw.duration_ms);
+    return Object.keys(out).length ? JSON.stringify(out) : null;
+  };
+  ut('sanitizeResultMeta — valid full shape round-trips', () => {
+    const s = sanitizeResultMeta({ exit_reason: 'completed', tokens: { input: 1200, output: 340 }, duration_ms: 4200 });
+    assert.deepStrictEqual(JSON.parse(s), { exit_reason: 'completed', tokens: { input: 1200, output: 340 }, duration_ms: 4200 });
+  });
+  ut('sanitizeResultMeta — unknown exit_reason dropped, extra keys stripped', () => {
+    const s = sanitizeResultMeta({ exit_reason: 'exploded', evil: 'DROP TABLE', tokens: { input: 5, output: 5 } });
+    const o = JSON.parse(s);
+    assert.ok(!('exit_reason' in o) && !('evil' in o), 'bad exit_reason + extra keys must not persist');
+    assert.deepStrictEqual(o.tokens, { input: 5, output: 5 });
+  });
+  ut('sanitizeResultMeta — non-numeric/negative tokens & duration rejected', () => {
+    const s = sanitizeResultMeta({ exit_reason: 'timeout', tokens: { input: 'x', output: -9 }, duration_ms: -1 });
+    assert.deepStrictEqual(JSON.parse(s), { exit_reason: 'timeout' }, 'only exit_reason survives');
+  });
+  ut('sanitizeResultMeta — empty/garbage → null (renders no chip)', () => {
+    assert.strictEqual(sanitizeResultMeta(null), null);
+    assert.strictEqual(sanitizeResultMeta('nope'), null);
+    assert.strictEqual(sanitizeResultMeta({}), null);
+  });
+
+  // formatCostRollup token formatter (mirrors _fmtTok / client _fmtTokens)
+  const _fmtTok = (n) => (n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k' : String(n || 0));
+  ut('_fmtTok — sub-1k raw, 1k–10k one decimal, ≥10k rounded', () => {
+    assert.strictEqual(_fmtTok(940), '940');
+    assert.strictEqual(_fmtTok(1340), '1.3k');
+    assert.strictEqual(_fmtTok(13400), '13k');
+    assert.strictEqual(_fmtTok(0), '0');
+  });
+
+  // formatCostRollup (mirrors server.js Phase 4) — the orchestrator's run-summary
+  // block: header line (runs · tokens · wall time · optional cost) + per-agent lines.
+  const formatCostRollup = (r) => {
+    const mins = Math.round(r.wallMs / 60000);
+    const wall = r.wallMs >= 60000 ? `~${mins} menit` : `${Math.round(r.wallMs / 1000)} detik`;
+    const perLine = r.perAgent.map(a => `  • ${a.label || 'sub-agent'}: ${a.runs} run, ${_fmtTok(a.tokens)} tok`).join('\n');
+    const cost = r.totalCost > 0 ? ` · ~$${r.totalCost.toFixed(2)}` : '';
+    return `[cost so far] ${r.totalRuns} sub-agent run di room ini · ${_fmtTok(r.totalTokens)} tok · ${wall} wall time${cost}\n${perLine}`;
+  };
+  ut('formatCostRollup — header + per-agent lines, minutes wall time + cost', () => {
+    const s = formatCostRollup({
+      totalRuns: 4, totalTokens: 13400, totalCost: 0.42, wallMs: 180000,
+      perAgent: [{ label: 'probe', runs: 3, tokens: 12000 }, { label: 'writer', runs: 1, tokens: 1400 }],
+    });
+    assert.ok(s.includes('4 sub-agent run'), 'run count missing');
+    assert.ok(s.includes('13k tok') && s.includes('~3 menit wall time'), 'header totals wrong');
+    assert.ok(s.includes('~$0.42'), 'cost missing');
+    assert.ok(s.includes('• probe: 3 run, 12k tok') && s.includes('• writer: 1 run, 1.4k tok'), 'per-agent lines wrong');
+  });
+  ut('formatCostRollup — sub-minute wall in seconds, no cost when zero', () => {
+    const s = formatCostRollup({
+      totalRuns: 2, totalTokens: 900, totalCost: 0, wallMs: 45000,
+      perAgent: [{ label: 'probe', runs: 2, tokens: 900 }],
+    });
+    assert.ok(s.includes('45 detik wall time'), 'seconds wall time wrong');
+    assert.ok(!s.includes('$'), 'zero cost must not render a $ segment');
+  });
+
   return { p, f };
 }
 
@@ -776,6 +849,106 @@ async function run() {
         assert.ok([200, 204].includes(r.status), `delete actor failed: ${r.status}`);
         orphanActorIds = orphanActorIds.filter(id => id !== saActorId);
         saActorId = null;
+      }
+    });
+  }
+
+  // Cost visibility (Phase 4) — self-contained: agent → room → message → seed
+  // result_meta (messages) + attributed usage_log rows via DB (no API writes
+  // them; the agent WS does) → assert result_meta round-trips through the
+  // messages serialization, and the per-sub-agent cost rollup query aggregates
+  // the seeded usage. Requires migrations 20260831-message-result-meta.sql +
+  // 20260831-usage-log-sub-agent.sql applied.
+  console.log('\n[Cost visibility]');
+  {
+    let cvActorId = null, cvSecret = null, cvWorkdirId = null, cvRoomId = null;
+    let cvMsgId = null, cvAgentWs = null;
+
+    await test('Setup — register cost-visibility test actor + room', async () => {
+      const agent = await createOnlineTestAgent('__test-cost-vis', '/tmp/stoa-test-cost-vis');
+      if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+      cvActorId = agent.actorId; cvSecret = agent.secret; cvWorkdirId = agent.workdirId; cvAgentWs = agent.ws;
+      const r = await req('POST', '/api/rooms', { title: '__cost-vis-room__', workdir_id: cvWorkdirId, participant_ids: [cvActorId] });
+      assert.strictEqual(r.status, 200, `create room failed: ${JSON.stringify(r.body)}`);
+      cvRoomId = r.body.id;
+      if (cvAgentWs) { cvAgentWs.close(); cvAgentWs = null; }
+    });
+
+    await test('Migrations applied — messages.result_meta + usage_log sub-agent columns exist', async () => {
+      if (!cvRoomId) { console.log('    (skipped)'); return; }
+      const db = require('./db');
+      const mCols = db.prepare('PRAGMA table_info(messages)').all().map(c => c.name);
+      assert.ok(mCols.includes('result_meta'),
+        'migration 20260831-message-result-meta not applied — restart the server so it runs, then re-run tests');
+      const uCols = db.prepare('PRAGMA table_info(usage_log)').all().map(c => c.name);
+      assert.ok(uCols.includes('sub_agent_id') && uCols.includes('sub_agent_label'),
+        'migration 20260831-usage-log-sub-agent not applied — restart the server so it runs, then re-run tests');
+    });
+
+    await test('Seed — post message + attach result_meta via DB', async () => {
+      if (!cvRoomId || !cvSecret) { console.log('    (skipped)'); return; }
+      const headers = { 'X-Agent-Id': String(cvActorId), 'X-Agent-Secret': cvSecret };
+      const a = await rawReq('POST', `/api/rooms/${cvRoomId}/message`, JSON.stringify({ content: 'sub-agent: done' }), 'application/json', headers);
+      assert.strictEqual(a.status, 200, `post failed: ${a.raw}`);
+      cvMsgId = a.body.message_id;
+      const db = require('./db');
+      db.prepare('UPDATE messages SET result_meta=? WHERE id=?')
+        .run(JSON.stringify({ exit_reason: 'completed', tokens: { input: 1000, output: 200 }, duration_ms: 42000 }), cvMsgId);
+    });
+
+    await test('GET messages — result_meta round-trips (history + single fetch)', async () => {
+      if (!cvMsgId) { console.log('    (skipped)'); return; }
+      const r = await req('GET', `/api/rooms/${cvRoomId}/messages`);
+      assert.strictEqual(r.status, 200);
+      const m = r.body.find(x => x.id === cvMsgId);
+      assert.ok(m, 'message not returned by history');
+      const meta = JSON.parse(m.result_meta);
+      assert.strictEqual(meta.exit_reason, 'completed', 'result_meta.exit_reason not serialized');
+      assert.strictEqual(meta.tokens.input + meta.tokens.output, 1200, 'result_meta.tokens not serialized');
+      assert.strictEqual(meta.duration_ms, 42000, 'result_meta.duration_ms not serialized');
+      const single = await req('GET', `/api/messages/${cvMsgId}`);
+      assert.strictEqual(single.status, 200);
+      assert.ok(single.body.result_meta && JSON.parse(single.body.result_meta).exit_reason === 'completed',
+        'result_meta missing on single fetch');
+    });
+
+    await test('Cost rollup — per-sub-agent usage_log aggregates attributed spend', async () => {
+      if (!cvRoomId) { console.log('    (skipped)'); return; }
+      const db = require('./db');
+      // Seed 2 attributed usage rows (rollup requires >=2 runs) for one label.
+      const ins = db.prepare(`INSERT INTO usage_log (actor_id, room_id, model, input_tokens, output_tokens, cost_usd, sub_agent_id, sub_agent_label) VALUES (?,?,?,?,?,?,?,?)`);
+      ins.run(cvActorId, cvRoomId, 'claude-haiku-4-5', 800, 200, 0.01, 9990001, '__probe');
+      ins.run(cvActorId, cvRoomId, 'claude-haiku-4-5', 300, 100, 0.005, 9990001, '__probe');
+      // Mirror buildRoomCostRollup's query.
+      const perAgent = db.prepare(`
+        SELECT sub_agent_label AS label, COUNT(*) AS runs,
+               COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens,
+               COALESCE(SUM(cost_usd), 0) AS cost
+        FROM usage_log WHERE room_id=? AND sub_agent_id IS NOT NULL
+        GROUP BY sub_agent_id, sub_agent_label ORDER BY tokens DESC
+      `).all(cvRoomId);
+      const total = perAgent.reduce((s, r) => s + r.runs, 0);
+      assert.strictEqual(total, 2, 'expected 2 attributed runs');
+      const probe = perAgent.find(r => r.label === '__probe');
+      assert.ok(probe && probe.tokens === 1400, `rollup tokens wrong: ${JSON.stringify(probe)}`);
+      // Wall-time from result_meta via json_extract (same as server rollup).
+      const wall = db.prepare(`SELECT COALESCE(SUM(json_extract(result_meta,'$.duration_ms')),0) AS ms FROM messages WHERE room_id=? AND result_meta IS NOT NULL`).get(cvRoomId);
+      assert.strictEqual(wall.ms, 42000, 'wall-time aggregation wrong');
+    });
+
+    await test('Cleanup — delete cost-visibility test room + actor', async () => {
+      if (cvRoomId) {
+        const db = require('./db');
+        db.prepare('DELETE FROM usage_log WHERE room_id=?').run(cvRoomId);
+        await req('PATCH', `/api/rooms/${cvRoomId}`, { archived: true });
+        await req('DELETE', `/api/rooms/${cvRoomId}`); // cascades its messages
+        cvRoomId = null;
+      }
+      if (cvActorId) {
+        const r = await req('DELETE', `/api/actors/${cvActorId}`);
+        assert.ok([200, 204].includes(r.status), `delete actor failed: ${r.status}`);
+        orphanActorIds = orphanActorIds.filter(id => id !== cvActorId);
+        cvActorId = null;
       }
     });
   }

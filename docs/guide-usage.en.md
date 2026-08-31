@@ -233,6 +233,18 @@ Each room caps orchestration to keep it predictable:
 
 Configure these in the room settings (the **gear** icon in the room header), under the **Sub-agent budget** card. The same card has a **pause new spawns** toggle — the panel counterpart of the header's pause pill. Changes take effect when you click **save**.
 
+### Cost and Result Visibility
+
+Every completed agent reply carries a quiet **result chip** under the bubble showing how the run ended and what it cost:
+
+- **Exit reason** — `✓ completed`, `⏹ stopped` (cancelled), or `⚠ timeout` / `⚠ error` (the last two are highlighted).
+- **Tokens** — total input + output tokens for the turn (e.g. `1.3k tok`).
+- **Duration** — wall-clock time (e.g. `47s` or `2m 10s`).
+
+For sub-agents, the spend is **attributed to the specific sub-agent** in the usage log, so per-sub-agent cost is tracked separately from the parent agent's own turns.
+
+When an orchestrator has run **two or more sub-agents** in a room, its next synthesis turn receives a compact **cost rollup** (runs, total tokens, wall time, and per-sub-agent breakdown). The orchestrator uses this to close a multi-spawn pipeline with a brief run summary in its reply. A single spawn does not trigger a summary.
+
 ---
 
 ## File and Image Sharing

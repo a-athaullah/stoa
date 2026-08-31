@@ -216,6 +216,19 @@ html.dark .h-faded-mark { opacity: 0.12; }
   opacity: 0.6;
   margin-top: 6px;
 }
+/* Phase 4: run result chip (exit reason · tokens · duration) under the bubble. */
+.h-msg-result {
+  text-align: right;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--h-ink-faint);
+  opacity: 0.7;
+  margin-top: 2px;
+}
+.h-msg-result.warn {
+  color: #b35a4b;
+  opacity: 0.85;
+}
 
 .h-bubble {
   color: var(--h-ink);

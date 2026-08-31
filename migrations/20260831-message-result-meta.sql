@@ -1,0 +1,20 @@
+-- Phase 4 (agentic orchestration): structured run result on messages.
+-- result_meta is a JSON snapshot of how a completed agent turn ended:
+--   { "exit_reason": "completed" | "stopped" | "timeout" | "error",
+--     "tokens": { "input": <int>, "output": <int> } | null,
+--     "duration_ms": <int> | null }
+-- It drives the quiet cost chip under the bubble (SAResultChip) and the
+-- orchestrator's run summary. Stored as TEXT (JSON) — SQLite has no native
+-- JSON type; the app parses on read. Kept as a plain snapshot (not normalized)
+-- so history stays correct regardless of later usage_log changes.
+--
+-- Additive, nullable column → transactional and zero data loss (the runner
+-- wraps each migration in BEGIN/COMMIT). Pre-Phase-4 rows keep result_meta
+-- NULL and simply render no chip.
+--
+-- SOLE OWNER: this migration is the ONLY place this column is defined. Do NOT
+-- also add it to db/schema.sqlite.sql — the baseline is exec'd before
+-- migrations run, so duplicating the column there makes a fresh clone hit
+-- "duplicate column name" here (migration never marked applied → retries every
+-- startup). Same convention as sub_agent_label / parent_message_id.
+ALTER TABLE messages ADD COLUMN result_meta TEXT DEFAULT NULL;

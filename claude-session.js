@@ -149,9 +149,14 @@ class ClaudeSession extends EventEmitter {
       const usage = event.usage || null;
       const modelUsage = event.modelUsage || null;
       const totalCostUsd = event.total_cost_usd || 0;
+      // Phase 4: the CLI result event also carries wall-clock + a subtype that
+      // distinguishes a clean finish from an error stop (e.g. error_max_turns).
+      // These were previously dropped; they feed the run's result_meta chip.
+      const durationMs = event.duration_ms || null;
+      const subtype = event.subtype || null;
       const resolve = this._currentResolve;
       this._clearCurrent();
-      resolve?.({ content, sessionId, usage, modelUsage, totalCostUsd });
+      resolve?.({ content, sessionId, usage, modelUsage, totalCostUsd, durationMs, subtype });
     }
   }
 
