@@ -1093,6 +1093,8 @@ async function run() {
   // actions, budget. The success trigger path needs a connected agent + a valid
   // spawn token (only issued during a real main-agent trigger), so it is not
   // auto-tested here — same rationale as the existing trigger-flow exclusions.
+  // Phase 5 parent_offline (503) also requires a connected-then-disconnected agent
+  // with a valid spawn token — same exclusion applies.
   // Requires migration 20260831-sub-agent-orchestration.sql applied.
   console.log('\n[Sub-agent orchestration]');
   {

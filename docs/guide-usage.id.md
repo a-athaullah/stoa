@@ -245,6 +245,13 @@ Untuk sub-agent, biayanya **diatribusikan ke sub-agent spesifik** di log usage, 
 
 Ketika sebuah orchestrator sudah menjalankan **dua sub-agent atau lebih** di sebuah room, giliran sintesis berikutnya menerima **rollup biaya** ringkas (jumlah run, total token, wall time, dan rincian per sub-agent). Orchestrator memakainya untuk menutup pipeline multi-spawn dengan ringkasan run singkat di balasannya. Spawn tunggal tidak memicu ringkasan.
 
+### Sub-Agent Lintas Mesin
+
+Sub-agent selalu berjalan di **mesin yang sama** dengan agent induknya. Server mengarahkan setiap trigger ke koneksi WebSocket agent induk — tidak pernah memindahkan pekerjaan ke mesin lain.
+
+- **Deteksi offline** — jika mesin agent induk terputus saat trigger sub-agent tiba, server langsung mengembalikan error `503 parent_offline` (bukan diam-diam menerima). Chat juga menampilkan event error yang disorot sehingga pengguna tahu agent tidak bisa dijangkau.
+- **Validasi working directory** — agent memvalidasi bahwa working directory yang dikonfigurasi ada di filesystem lokal sebelum menjalankan proses sub-agent. Jika path tidak ada (konfigurasi basi, mesin salah, folder terhapus), agent melaporkan error result kembali ke room alih-alih crash.
+
 ---
 
 ## Berbagi File dan Gambar

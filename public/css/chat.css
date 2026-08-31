@@ -1279,6 +1279,13 @@ html.dark .h-faded-mark { opacity: 0.12; }
   letter-spacing: 0.01em;
   text-align: center;
 }
+.h-system-event.error {
+  color: #b35a4b;
+  font-weight: 500;
+}
+html.dark .h-system-event.error {
+  color: #e07060;
+}
 
 .h-restart-banner {
   position: fixed;

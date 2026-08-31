@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.162';
+const CLIENT_VERSION = '0.4.163';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -783,6 +783,14 @@ async function processTrigger(msg) {
   const { room_id, message_id } = msg;
   const workdir = msg.workdir || process.env.STOA_WORK_DIR || os.homedir();
   const subAgent = msg.sub_agent || null;
+
+  if (!fs.existsSync(workdir)) {
+    const label = subAgent?.label || 'agent';
+    console.error(`[trigger] workdir does not exist on this machine: ${workdir}`);
+    send({ type: 'agent_complete', room_id, message_id, content: `Workdir tidak ditemukan di mesin ini: \`${workdir}\``, ai_model: undefined, result_meta: { exit_reason: 'error' } });
+    return;
+  }
+
   activeTriggers.set(message_id, { workdir, session: null });
   const baseUrl = STOA_URL.replace('ws://', 'http://').replace('wss://', 'https://');
   const TEXT_EXTS = new Set(['.md','.txt','.json','.csv','.html','.js','.ts','.py','.yaml','.yml','.sh','.css']);
