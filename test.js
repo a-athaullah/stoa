@@ -780,6 +780,137 @@ async function run() {
     });
   }
 
+  // Sub-agent definitions (Phase 2a) — CRUD + room linking + validation.
+  // Requires migration 20260831-sub-agent-definitions.sql applied.
+  console.log('\n[Sub-agent definitions]');
+  {
+    let sdActorId = null, sdSecret = null, sdWorkdirId = null, sdRoomId = null;
+    let sdSubAgent1 = null, sdSubAgent2 = null, sdAgentWs = null;
+
+    await test('Setup — register test actor + room for sub-agent defs', async () => {
+      const agent = await createOnlineTestAgent('__test-subagent-def', '/tmp/stoa-test-subagent-def');
+      if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+      sdActorId = agent.actorId; sdSecret = agent.secret; sdWorkdirId = agent.workdirId; sdAgentWs = agent.ws;
+      const r = await req('POST', '/api/rooms', { title: '__subagent-def-room__', workdir_id: sdWorkdirId, participant_ids: [sdActorId] });
+      assert.strictEqual(r.status, 200);
+      sdRoomId = r.body.id;
+      if (sdAgentWs) { sdAgentWs.close(); sdAgentWs = null; }
+    });
+
+    await test('Check migration applied — sub_agents table exists', async () => {
+      const db = require('./db');
+      const tbl = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sub_agents'").get();
+      assert.ok(tbl, 'migration 20260831-sub-agent-definitions not applied — restart the server');
+    });
+
+    await test('POST /api/actors/:id/sub-agents — create sub-agent "probe"', async () => {
+      if (!sdActorId) { console.log('    (skipped)'); return; }
+      const r = await req('POST', `/api/actors/${sdActorId}/sub-agents`, { label: 'probe', tier: 'quick', workdir: '/tmp/probe' });
+      assert.strictEqual(r.status, 201, `create failed: ${JSON.stringify(r.body)}`);
+      assert.strictEqual(r.body.label, 'probe');
+      assert.strictEqual(r.body.tier, 'quick');
+      sdSubAgent1 = r.body;
+    });
+
+    await test('POST /api/actors/:id/sub-agents — create sub-agent "reviewer"', async () => {
+      if (!sdActorId) { console.log('    (skipped)'); return; }
+      const r = await req('POST', `/api/actors/${sdActorId}/sub-agents`, { label: 'reviewer', tier: 'standard' });
+      assert.strictEqual(r.status, 201);
+      sdSubAgent2 = r.body;
+    });
+
+    await test('POST /api/actors/:id/sub-agents — duplicate label → 409', async () => {
+      if (!sdActorId) { console.log('    (skipped)'); return; }
+      const r = await req('POST', `/api/actors/${sdActorId}/sub-agents`, { label: 'probe' });
+      assert.strictEqual(r.status, 409);
+    });
+
+    await test('POST /api/actors/:id/sub-agents — empty label → 400', async () => {
+      if (!sdActorId) { console.log('    (skipped)'); return; }
+      const r = await req('POST', `/api/actors/${sdActorId}/sub-agents`, { label: '' });
+      assert.strictEqual(r.status, 400);
+    });
+
+    await test('POST /api/actors/:id/sub-agents — invalid label format → 400', async () => {
+      if (!sdActorId) { console.log('    (skipped)'); return; }
+      const r = await req('POST', `/api/actors/${sdActorId}/sub-agents`, { label: '123abc' });
+      assert.strictEqual(r.status, 400);
+    });
+
+    await test('GET /api/actors/:id/sub-agents — lists both', async () => {
+      if (!sdActorId) { console.log('    (skipped)'); return; }
+      const r = await req('GET', `/api/actors/${sdActorId}/sub-agents`);
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.length, 2);
+      assert.ok(r.body.some(sa => sa.label === 'probe'));
+      assert.ok(r.body.some(sa => sa.label === 'reviewer'));
+    });
+
+    await test('PATCH /api/sub-agents/:id — update tier', async () => {
+      if (!sdSubAgent1) { console.log('    (skipped)'); return; }
+      const r = await req('PATCH', `/api/sub-agents/${sdSubAgent1.id}`, { tier: 'deep' });
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.tier, 'deep');
+    });
+
+    await test('PATCH /api/sub-agents/:id — invalid tier → 400', async () => {
+      if (!sdSubAgent1) { console.log('    (skipped)'); return; }
+      const r = await req('PATCH', `/api/sub-agents/${sdSubAgent1.id}`, { tier: 'ultra' });
+      assert.strictEqual(r.status, 400);
+    });
+
+    await test('POST /api/rooms/:id/sub-agents — link probe to room', async () => {
+      if (!sdRoomId || !sdSubAgent1) { console.log('    (skipped)'); return; }
+      const r = await req('POST', `/api/rooms/${sdRoomId}/sub-agents`, { sub_agent_id: sdSubAgent1.id });
+      assert.strictEqual(r.status, 200);
+    });
+
+    await test('GET /api/rooms/:id/sub-agents — returns linked + available', async () => {
+      if (!sdRoomId) { console.log('    (skipped)'); return; }
+      const r = await req('GET', `/api/rooms/${sdRoomId}/sub-agents`);
+      assert.strictEqual(r.status, 200);
+      assert.ok(Array.isArray(r.body.linked), 'linked should be array');
+      assert.ok(Array.isArray(r.body.available), 'available should be array');
+      assert.strictEqual(r.body.linked.length, 1);
+      assert.strictEqual(r.body.linked[0].label, 'probe');
+      assert.strictEqual(r.body.available.length, 1);
+      assert.strictEqual(r.body.available[0].label, 'reviewer');
+    });
+
+    await test('DELETE /api/rooms/:id/sub-agents/:subId — unlink probe', async () => {
+      if (!sdRoomId || !sdSubAgent1) { console.log('    (skipped)'); return; }
+      const r = await req('DELETE', `/api/rooms/${sdRoomId}/sub-agents/${sdSubAgent1.id}`);
+      assert.strictEqual(r.status, 200);
+      const r2 = await req('GET', `/api/rooms/${sdRoomId}/sub-agents`);
+      assert.strictEqual(r2.body.linked.length, 0);
+    });
+
+    await test('DELETE /api/sub-agents/:id — delete probe', async () => {
+      if (!sdSubAgent1) { console.log('    (skipped)'); return; }
+      const r = await req('DELETE', `/api/sub-agents/${sdSubAgent1.id}`);
+      assert.strictEqual(r.status, 204);
+      sdSubAgent1 = null;
+    });
+
+    await test('Cleanup — delete sub-agent-def test room + actor', async () => {
+      if (sdRoomId) {
+        await req('PATCH', `/api/rooms/${sdRoomId}`, { archived: true });
+        await req('DELETE', `/api/rooms/${sdRoomId}`);
+        sdRoomId = null;
+      }
+      if (sdSubAgent2) {
+        await req('DELETE', `/api/sub-agents/${sdSubAgent2.id}`);
+        sdSubAgent2 = null;
+      }
+      if (sdActorId) {
+        const r = await req('DELETE', `/api/actors/${sdActorId}`);
+        assert.ok([200, 204].includes(r.status));
+        orphanActorIds = orphanActorIds.filter(id => id !== sdActorId);
+        sdActorId = null;
+      }
+    });
+  }
+
   // Search
   console.log('\n[Search]');
   await test('GET /api/search?q= — empty query → []', async () => {

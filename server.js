@@ -72,10 +72,10 @@ function resolveParticipantWorkdir(participantId, prefetchedRoomWd = null) {
   return def?.path || null;
 }
 
-// Keyed by participant alone: a participant maps to exactly one workdir (room_participants.workdir_id),
-// so its session is unique per participant. See migration 20260620-rekey-ai-sessions-participant.
+// Main-agent session lookup: explicit sub_agent_id IS NULL to avoid matching sub-agent sessions.
+// See migration 20260831-sub-agent-definitions.sql for the partial unique index design.
 function getSession(participantId) {
-  const row = db.prepare('SELECT claude_session_id FROM ai_sessions WHERE participant_id=?').get(participantId);
+  const row = db.prepare('SELECT claude_session_id FROM ai_sessions WHERE participant_id=? AND sub_agent_id IS NULL').get(participantId);
   return row?.claude_session_id ?? null;
 }
 
@@ -83,7 +83,7 @@ function saveSession(participantId, claudeSessionId, workdir) {
   const rp = db.prepare('SELECT room_id FROM room_participants WHERE id=?').get(participantId);
   db.prepare(
     `INSERT INTO ai_sessions (participant_id, room_id, claude_session_id, workdir, status) VALUES (?,?,?,?,'idle')
-     ON CONFLICT(participant_id) DO UPDATE SET claude_session_id=excluded.claude_session_id, room_id=excluded.room_id, workdir=excluded.workdir, status='idle', last_active_at=datetime('now')`
+     ON CONFLICT(participant_id) WHERE sub_agent_id IS NULL DO UPDATE SET claude_session_id=excluded.claude_session_id, room_id=excluded.room_id, workdir=excluded.workdir, status='idle', last_active_at=datetime('now')`
   ).run(participantId, rp?.room_id ?? null, claudeSessionId, workdir || null);
 }
 
@@ -916,6 +916,29 @@ const server = http.createServer(async (req, res) => {
       return json(res, rows);
     }
 
+    if (url.pathname.endsWith('/sub-agents')) {
+      const linked = db.prepare(`
+        SELECT sa.*, a.name AS parent_name, rsa.added_at AS linked_at
+        FROM room_sub_agents rsa
+        JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
+        JOIN actors a ON a.id=sa.parent_actor_id
+        WHERE rsa.room_id=?
+        ORDER BY a.name, sa.label
+      `).all(roomId);
+      const parentIds = db.prepare(
+        "SELECT a.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='ai'"
+      ).all(roomId).map(r => r.id);
+      let available = [];
+      if (parentIds.length) {
+        const ph = parentIds.map(() => '?').join(',');
+        const linkedIds = new Set(linked.map(l => l.id));
+        available = db.prepare(
+          `SELECT sa.*, a.name AS parent_name FROM sub_agents sa JOIN actors a ON a.id=sa.parent_actor_id WHERE sa.parent_actor_id IN (${ph}) AND sa.enabled=1`
+        ).all(...parentIds).filter(sa => !linkedIds.has(sa.id));
+      }
+      return json(res, { linked, available });
+    }
+
     const subPath = url.pathname.split('/').slice(4).join('/');
     if (!subPath) {
       const room = db.prepare('SELECT * FROM rooms WHERE id=?').get(roomId);
@@ -970,6 +993,39 @@ const server = http.createServer(async (req, res) => {
       db.prepare('UPDATE room_participants SET workdir_id=? WHERE room_id=? AND actor_id=?').run(workdir_id, roomId, actor_id);
     }
     broadcast(roomId, { type: 'participant_joined', actor_id });
+    return json(res, { ok: true });
+  }
+
+  if (req.method === 'POST' && url.pathname.match(/^\/api\/rooms\/\d+\/sub-agents$/)) {
+    const roomId = parseInt(url.pathname.split('/')[3]);
+    const data = parseJsonBody(await readBody(req));
+    if (!data) return json(res, { error: 'Invalid JSON' }, 400);
+    const { sub_agent_id } = data;
+    if (!sub_agent_id) return json(res, { error: 'sub_agent_id required' }, 400);
+    const sa = db.prepare('SELECT id, parent_actor_id, label FROM sub_agents WHERE id=?').get(sub_agent_id);
+    if (!sa) return json(res, { error: 'sub-agent not found' }, 404);
+    const room = db.prepare('SELECT id FROM rooms WHERE id=?').get(roomId);
+    if (!room) return json(res, { error: 'room not found' }, 404);
+    const parentInRoom = db.prepare('SELECT 1 FROM room_participants WHERE room_id=? AND actor_id=?').get(roomId, sa.parent_actor_id);
+    if (!parentInRoom) return json(res, { error: 'parent agent is not a participant in this room' }, 403);
+    const labelCollision = db.prepare(`
+      SELECT sa2.label, a.name AS parent_name FROM room_sub_agents rsa
+      JOIN sub_agents sa2 ON sa2.id=rsa.sub_agent_id
+      JOIN actors a ON a.id=sa2.parent_actor_id
+      WHERE rsa.room_id=? AND sa2.label=? AND sa2.parent_actor_id!=?
+    `).get(roomId, sa.label, sa.parent_actor_id);
+    if (labelCollision) return json(res, { error: `label "${sa.label}" already in this room (from ${labelCollision.parent_name})` }, 409);
+    db.prepare('INSERT OR IGNORE INTO room_sub_agents (room_id, sub_agent_id) VALUES (?,?)').run(roomId, sub_agent_id);
+    broadcast(roomId, { type: 'sub_agent_linked', room_id: roomId, sub_agent_id });
+    return json(res, { ok: true });
+  }
+
+  if (req.method === 'DELETE' && url.pathname.match(/^\/api\/rooms\/\d+\/sub-agents\/\d+$/)) {
+    const parts = url.pathname.split('/');
+    const roomId = parseInt(parts[3]);
+    const subAgentId = parseInt(parts[5]);
+    db.prepare('DELETE FROM room_sub_agents WHERE room_id=? AND sub_agent_id=?').run(roomId, subAgentId);
+    broadcast(roomId, { type: 'sub_agent_unlinked', room_id: roomId, sub_agent_id: subAgentId });
     return json(res, { ok: true });
   }
 
@@ -1603,6 +1659,82 @@ const server = http.createServer(async (req, res) => {
     const ws = agentClients.get(id);
     if (ws) { ws.close(); agentClients.delete(id); }
     broadcastGlobal({ type: 'actor_removed', actor_id: id, affected_rooms: affectedRooms });
+    res.writeHead(204); return res.end();
+  }
+
+  // ── Sub-agent definitions CRUD ──
+
+  if (req.method === 'GET' && url.pathname.match(/^\/api\/actors\/\d+\/sub-agents$/)) {
+    const actorId = parseInt(url.pathname.split('/')[3]);
+    const rows = db.prepare('SELECT * FROM sub_agents WHERE parent_actor_id=? ORDER BY label').all(actorId);
+    return json(res, rows);
+  }
+
+  if (req.method === 'POST' && url.pathname.match(/^\/api\/actors\/\d+\/sub-agents$/)) {
+    const actorId = parseInt(url.pathname.split('/')[3]);
+    const actor = db.prepare("SELECT id FROM actors WHERE id=? AND type='ai'").get(actorId);
+    if (!actor) return json(res, { error: 'AI actor not found' }, 404);
+    const data = parseJsonBody(await readBody(req));
+    if (!data) return json(res, { error: 'Invalid JSON' }, 400);
+    const { label, tier, model, workdir, system_prompt } = data;
+    if (!label?.trim()) return json(res, { error: 'label required' }, 400);
+    if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,29}$/.test(label.trim())) return json(res, { error: 'label must start with a letter, 1-30 chars, alphanumeric/dash/underscore' }, 400);
+    if (tier && !['quick', 'standard', 'deep'].includes(tier)) return json(res, { error: 'tier must be quick, standard, or deep' }, 400);
+    const nameCollision = db.prepare('SELECT 1 FROM actors WHERE LOWER(name)=LOWER(?)').get(label.trim());
+    if (nameCollision) return json(res, { error: `label "${label.trim()}" conflicts with an existing actor name` }, 409);
+    try {
+      const result = db.prepare(
+        'INSERT INTO sub_agents (parent_actor_id, label, tier, model, workdir, system_prompt) VALUES (?,?,?,?,?,?)'
+      ).run(actorId, label.trim(), tier || 'quick', model || null, workdir || null, system_prompt || null);
+      const row = db.prepare('SELECT * FROM sub_agents WHERE id=?').get(result.lastInsertRowid);
+      return json(res, row, 201);
+    } catch (e) {
+      if (e.code === 'SQLITE_CONSTRAINT_UNIQUE') return json(res, { error: `label "${label.trim()}" already exists for this agent` }, 409);
+      throw e;
+    }
+  }
+
+  if (req.method === 'PATCH' && url.pathname.match(/^\/api\/sub-agents\/\d+$/)) {
+    const id = parseInt(url.pathname.split('/')[3]);
+    const sa = db.prepare('SELECT * FROM sub_agents WHERE id=?').get(id);
+    if (!sa) return json(res, { error: 'sub-agent not found' }, 404);
+    const data = parseJsonBody(await readBody(req));
+    if (!data) return json(res, { error: 'Invalid JSON' }, 400);
+    const updates = [];
+    const params = [];
+    for (const key of ['label', 'tier', 'model', 'workdir', 'system_prompt', 'enabled']) {
+      if (data[key] !== undefined) {
+        if (key === 'label') {
+          if (!data.label?.trim()) return json(res, { error: 'label required' }, 400);
+          if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,29}$/.test(data.label.trim())) return json(res, { error: 'invalid label format' }, 400);
+          const nameCollision = db.prepare('SELECT 1 FROM actors WHERE LOWER(name)=LOWER(?)').get(data.label.trim());
+          if (nameCollision) return json(res, { error: `label conflicts with actor name` }, 409);
+          updates.push('label=?'); params.push(data.label.trim());
+        } else if (key === 'tier') {
+          if (!['quick', 'standard', 'deep'].includes(data.tier)) return json(res, { error: 'invalid tier' }, 400);
+          updates.push('tier=?'); params.push(data.tier);
+        } else if (key === 'enabled') {
+          updates.push('enabled=?'); params.push(data.enabled ? 1 : 0);
+        } else {
+          updates.push(`${key}=?`); params.push(data[key] ?? null);
+        }
+      }
+    }
+    if (!updates.length) return json(res, { error: 'no fields to update' }, 400);
+    params.push(id);
+    try {
+      db.prepare(`UPDATE sub_agents SET ${updates.join(', ')} WHERE id=?`).run(...params);
+    } catch (e) {
+      if (e.code === 'SQLITE_CONSTRAINT_UNIQUE') return json(res, { error: 'label already exists for this agent' }, 409);
+      throw e;
+    }
+    const row = db.prepare('SELECT * FROM sub_agents WHERE id=?').get(id);
+    return json(res, row);
+  }
+
+  if (req.method === 'DELETE' && url.pathname.match(/^\/api\/sub-agents\/\d+$/)) {
+    const id = parseInt(url.pathname.split('/')[3]);
+    db.prepare('DELETE FROM sub_agents WHERE id=?').run(id);
     res.writeHead(204); return res.end();
   }
 
@@ -2530,7 +2662,7 @@ wss.on('connection', (ws, req) => {
       if (aiParts.length) {
         const ph = aiParts.map(() => '?').join(',');
         const allSessions = db.prepare(
-          `SELECT participant_id, claude_session_id FROM ai_sessions WHERE participant_id IN (${ph}) AND room_id=? ORDER BY last_active_at DESC`
+          `SELECT participant_id, claude_session_id FROM ai_sessions WHERE participant_id IN (${ph}) AND room_id=? AND sub_agent_id IS NULL ORDER BY last_active_at DESC`
         ).all(...aiParts.map(a => a.participant_id), roomId);
         for (const s of allSessions) {
           if (!sessionMap.has(s.participant_id)) sessionMap.set(s.participant_id, s);
@@ -2770,7 +2902,7 @@ wss.on('connection', (ws, req) => {
       if (msg.claude_session_id) {
         const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
         if (participant) {
-          db.prepare(`UPDATE ai_sessions SET claude_session_id=?, last_active_at=datetime('now') WHERE participant_id=? AND room_id=?`).run(msg.claude_session_id, participant.id, msg.room_id);
+          db.prepare(`UPDATE ai_sessions SET claude_session_id=?, last_active_at=datetime('now') WHERE participant_id=? AND room_id=? AND sub_agent_id IS NULL`).run(msg.claude_session_id, participant.id, msg.room_id);
         }
       }
       const state = pendingCompacts.get(msg.room_id);
