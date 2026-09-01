@@ -6,7 +6,7 @@ _Urutan eksekusi ditetapkan 2026-09-01 (Ara, approved Aan). Logika: security & b
 
 ## Batch 1 — Kritis: bug produksi & security `[exec 1–3]`
 
-- [ ] **#1 R20 — Audit ReDoS regex** _(S)_ — audit regex redaction/parsing di server.js + stoa.js untuk pattern backtrackable; benchmark input adversarial 30k char. Node single-threaded → satu regex kuadratik memblok seluruh server.
+- [x] **#1 R20 — Audit ReDoS regex** _(S)_ — ✓ `3a54d68`: safeRegexTest() rejects nested quantifiers; fixes automation matches_regex + writeEnv escaping; benchmark 30k char = 0ms.
 - [ ] **#2 R19 — Thinking-signature management lengkap** _(S–M)_ — sempurnakan fix `42f0bbc`: (1) preventif per-endpoint — Anthropic: thinking block hanya di assistant message terakhir; proxy/third-party (AI Platforms): strip SEMUA thinking + strip `cache_control`; (2) klasifikasi 400 by frasa error, jangan gate by provider; (3) recovery one-shot hanya di wire copy — JANGAN mutasi canonical store/DB.
 - [ ] **#3 R21 — Transcript sanitizer + escalation** _(M)_ — heal pre-send di wire copy (orphan tool_result drop, tool_call tanpa result → stub, dedupe id, empty turn → placeholder); WARNING → ERROR di threshold → notice satu-kali per session via status channel (tidak masuk transcript).
 
