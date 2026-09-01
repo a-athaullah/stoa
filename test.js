@@ -2130,6 +2130,8 @@ async function run() {
     assert.strictEqual(r.status, 404);
   });
 
+  const _r20TestAutoNames = ['bad-conds', 'redos-conds', 'bad-elem'];
+
   await test('POST /api/automations — invalid trigger_conditions JSON → 400', async () => {
     if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
     const r = await req('POST', '/api/automations', {
@@ -2160,7 +2162,7 @@ async function run() {
 
   await test('POST /api/automations — non-object condition element → 400', async () => {
     if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
-    for (const bad of ['[null]', '[1]', '["x"]']) {
+    for (const bad of ['[null]', '[1]', '["x"]', '[[]]']) {
       const r = await req('POST', '/api/automations', {
         name: 'bad-elem',
         trigger_type: 'slack',
@@ -2171,6 +2173,16 @@ async function run() {
       });
       assert.strictEqual(r.status, 400, `${bad} should be rejected`);
       assert.ok(r.body.error.includes('object'), `${bad}: ${r.body.error}`);
+    }
+  });
+
+  await test('teardown — cleanup R20 validation test automations', async () => {
+    const list = (await req('GET', '/api/automations')).body;
+    if (!Array.isArray(list)) return;
+    for (const a of list) {
+      if (_r20TestAutoNames.includes(a.name)) {
+        await req('DELETE', `/api/automations/${a.id}`);
+      }
     }
   });
 
