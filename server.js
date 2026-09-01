@@ -128,15 +128,7 @@ function sanitizeResultMeta(raw) {
   return Object.keys(out).length ? JSON.stringify(out) : null;
 }
 
-// ─── Regex safety (R20) ──────────────────────────────────────────────────────
-function escapeRegExp(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
-
-const NESTED_QUANT_RE = /(\+|\*|\{\d+,?\d*\})\)?(\+|\*|\{\d+,?\d*\})/;
-function safeRegexTest(pattern, input) {
-  if (typeof pattern !== 'string' || pattern.length > 200) return false;
-  if (NESTED_QUANT_RE.test(pattern)) return false;
-  try { return new RegExp(pattern, 'i').test(input); } catch { return false; }
-}
+const { escapeRegExp, safeRegexTest, validateRegexPattern } = require('./lib/regex-safety');
 
 // Main-agent session lookup: explicit sub_agent_id IS NULL to avoid matching sub-agent sessions.
 // See migration 20260831-sub-agent-definitions.sql for the partial unique index design.
@@ -704,7 +696,7 @@ function writeEnv(key, value) {
   let content = fs.existsSync(envFile) ? fs.readFileSync(envFile, 'utf8') : '';
   const re = new RegExp(`^${escapeRegExp(key)}=.*$`, 'm');
   if (re.test(content)) {
-    content = content.replace(re, `${key}=${value}`);
+    content = content.replace(re, () => `${key}=${value}`);
   } else {
     content = content.trimEnd() + `\n${key}=${value}\n`;
   }
@@ -2998,6 +2990,18 @@ Write-Host "Logs   : pm2 logs $AgentName"
     if (!body?.name || !body?.trigger_event || !body?.target_room_id || !body?.prompt_template) {
       res.writeHead(400); return res.end(JSON.stringify({ error: 'Missing required fields' }));
     }
+    const rawConds = body.trigger_conditions || '[]';
+    try {
+      const parsed = JSON.parse(typeof rawConds === 'string' ? rawConds : JSON.stringify(rawConds));
+      if (Array.isArray(parsed)) {
+        for (const c of parsed) {
+          if (c.op === 'matches_regex') {
+            const err = validateRegexPattern(c.value);
+            if (err) { res.writeHead(400); return res.end(JSON.stringify({ error: `Condition regex: ${err}` })); }
+          }
+        }
+      }
+    } catch {}
     const result = db.prepare(`
       INSERT INTO automations (name, trigger_type, trigger_event, trigger_conditions, target_room_id, prompt_template, connection_id, reply_mode)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -3005,7 +3009,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
       body.name.trim(),
       body.trigger_type || 'slack',
       body.trigger_event,
-      body.trigger_conditions || '[]',
+      rawConds,
       parseInt(body.target_room_id),
       body.prompt_template.trim(),
       parseInt(body.connection_id) || null,
@@ -3025,7 +3029,20 @@ Write-Host "Logs   : pm2 logs $AgentName"
       if (!auto) { res.writeHead(404); return res.end(JSON.stringify({ error: 'Not found' })); }
       const name        = body.name !== undefined        ? body.name.trim()                          : auto.name;
       const event       = body.trigger_event !== undefined ? body.trigger_event                       : auto.trigger_event;
-      const conds       = body.trigger_conditions !== undefined ? body.trigger_conditions             : auto.trigger_conditions;
+      let   conds       = body.trigger_conditions !== undefined ? body.trigger_conditions             : auto.trigger_conditions;
+      if (body.trigger_conditions !== undefined) {
+        try {
+          const parsed = JSON.parse(typeof conds === 'string' ? conds : JSON.stringify(conds));
+          if (Array.isArray(parsed)) {
+            for (const c of parsed) {
+              if (c.op === 'matches_regex') {
+                const err = validateRegexPattern(c.value);
+                if (err) { res.writeHead(400); return res.end(JSON.stringify({ error: `Condition regex: ${err}` })); }
+              }
+            }
+          }
+        } catch {}
+      }
       const roomId      = body.target_room_id !== undefined ? parseInt(body.target_room_id)          : auto.target_room_id;
       const prompt      = body.prompt_template !== undefined ? body.prompt_template.trim()           : auto.prompt_template;
       const enabled     = body.enabled !== undefined     ? (body.enabled ? 1 : 0)                    : auto.enabled;

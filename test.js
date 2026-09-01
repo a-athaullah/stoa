@@ -422,14 +422,8 @@ function runUnitTests() {
     }
   });
 
-  // ── Regex safety (R20) ──────────────────────────────────────────────────────
-  const NESTED_QUANT_RE = /(\+|\*|\{\d+,?\d*\})\)?(\+|\*|\{\d+,?\d*\})/;
-  function safeRegexTest(pattern, input) {
-    if (typeof pattern !== 'string' || pattern.length > 200) return false;
-    if (NESTED_QUANT_RE.test(pattern)) return false;
-    try { return new RegExp(pattern, 'i').test(input); } catch { return false; }
-  }
-  function escapeRegExp(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+  // ── Regex safety (R20) — tests import production code from lib/regex-safety.js
+  const { safeRegexTest, escapeRegExp, validateRegexPattern } = require('./lib/regex-safety');
 
   ut('safeRegexTest — normal regex works', () => {
     assert.strictEqual(safeRegexTest('hello', 'hello world'), true);
@@ -441,6 +435,10 @@ function runUnitTests() {
     assert.strictEqual(safeRegexTest('(a*)*b', 'a'.repeat(30)), false);
     assert.strictEqual(safeRegexTest('(a+)*b', 'a'.repeat(30)), false);
     assert.strictEqual(safeRegexTest('([a-z]+)+$', 'test'), false);
+  });
+  ut('safeRegexTest — rejects lazy nested quantifiers', () => {
+    assert.strictEqual(safeRegexTest('(a+?)+b', 'a'.repeat(30)), false);
+    assert.strictEqual(safeRegexTest('(a*?)*b', 'a'.repeat(30)), false);
   });
   ut('safeRegexTest — rejects pattern > 200 chars', () => {
     assert.strictEqual(safeRegexTest('a'.repeat(201), 'a'), false);
@@ -462,11 +460,28 @@ function runUnitTests() {
     safeRegexTest('(a+)+b', 'a'.repeat(30000));
     assert.ok(Date.now() - start < 100, 'should reject instantly, not hang');
   });
+  ut('safeRegexTest — timing probe catches patterns that bypass heuristic', () => {
+    const start = Date.now();
+    const result = safeRegexTest('(a|a)+b', 'a'.repeat(25));
+    const elapsed = Date.now() - start;
+    assert.strictEqual(result, false, 'overlapping alternation should be rejected');
+    assert.ok(elapsed < 500, `should complete within 500ms, took ${elapsed}ms`);
+  });
   ut('escapeRegExp — escapes metacharacters', () => {
     assert.strictEqual(escapeRegExp('hello.world'), 'hello\\.world');
     assert.strictEqual(escapeRegExp('a+b*c?'), 'a\\+b\\*c\\?');
     assert.strictEqual(escapeRegExp('$100'), '\\$100');
     assert.strictEqual(escapeRegExp('foo[bar]'), 'foo\\[bar\\]');
+  });
+  ut('validateRegexPattern — returns null for valid patterns', () => {
+    assert.strictEqual(validateRegexPattern('hello'), null);
+    assert.strictEqual(validateRegexPattern('[0-9]+'), null);
+  });
+  ut('validateRegexPattern — returns error for dangerous patterns', () => {
+    assert.ok(validateRegexPattern('(a+)+b') !== null);
+    assert.ok(validateRegexPattern('[invalid') !== null);
+    assert.ok(validateRegexPattern('a'.repeat(201)) !== null);
+    assert.ok(validateRegexPattern(42) !== null);
   });
 
   return { p, f };
