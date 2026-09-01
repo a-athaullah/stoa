@@ -130,6 +130,21 @@ function sanitizeResultMeta(raw) {
 
 const { escapeRegExp, safeRegexTest, validateRegexPattern } = require('./lib/regex-safety');
 
+function validateConditions(raw) {
+  let parsed;
+  try {
+    parsed = JSON.parse(typeof raw === 'string' ? raw : JSON.stringify(raw));
+  } catch { return 'trigger_conditions must be valid JSON'; }
+  if (!Array.isArray(parsed)) return 'trigger_conditions must be a JSON array';
+  for (const c of parsed) {
+    if (c.op === 'matches_regex') {
+      const err = validateRegexPattern(c.value);
+      if (err) return `Condition regex: ${err}`;
+    }
+  }
+  return null;
+}
+
 // Main-agent session lookup: explicit sub_agent_id IS NULL to avoid matching sub-agent sessions.
 // See migration 20260831-sub-agent-definitions.sql for the partial unique index design.
 function getSession(participantId) {
@@ -2991,17 +3006,8 @@ Write-Host "Logs   : pm2 logs $AgentName"
       res.writeHead(400); return res.end(JSON.stringify({ error: 'Missing required fields' }));
     }
     const rawConds = body.trigger_conditions || '[]';
-    let parsedConds;
-    try {
-      parsedConds = JSON.parse(typeof rawConds === 'string' ? rawConds : JSON.stringify(rawConds));
-    } catch { res.writeHead(400); return res.end(JSON.stringify({ error: 'trigger_conditions must be valid JSON' })); }
-    if (!Array.isArray(parsedConds)) { res.writeHead(400); return res.end(JSON.stringify({ error: 'trigger_conditions must be a JSON array' })); }
-    for (const c of parsedConds) {
-      if (c.op === 'matches_regex') {
-        const err = validateRegexPattern(c.value);
-        if (err) { res.writeHead(400); return res.end(JSON.stringify({ error: `Condition regex: ${err}` })); }
-      }
-    }
+    const condsErr = validateConditions(rawConds);
+    if (condsErr) { res.writeHead(400); return res.end(JSON.stringify({ error: condsErr })); }
     const result = db.prepare(`
       INSERT INTO automations (name, trigger_type, trigger_event, trigger_conditions, target_room_id, prompt_template, connection_id, reply_mode)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -3031,17 +3037,8 @@ Write-Host "Logs   : pm2 logs $AgentName"
       const event       = body.trigger_event !== undefined ? body.trigger_event                       : auto.trigger_event;
       let   conds       = body.trigger_conditions !== undefined ? body.trigger_conditions             : auto.trigger_conditions;
       if (body.trigger_conditions !== undefined) {
-        let parsedConds;
-        try {
-          parsedConds = JSON.parse(typeof conds === 'string' ? conds : JSON.stringify(conds));
-        } catch { res.writeHead(400); return res.end(JSON.stringify({ error: 'trigger_conditions must be valid JSON' })); }
-        if (!Array.isArray(parsedConds)) { res.writeHead(400); return res.end(JSON.stringify({ error: 'trigger_conditions must be a JSON array' })); }
-        for (const c of parsedConds) {
-          if (c.op === 'matches_regex') {
-            const err = validateRegexPattern(c.value);
-            if (err) { res.writeHead(400); return res.end(JSON.stringify({ error: `Condition regex: ${err}` })); }
-          }
-        }
+        const condsErr = validateConditions(conds);
+        if (condsErr) { res.writeHead(400); return res.end(JSON.stringify({ error: condsErr })); }
       }
       const roomId      = body.target_room_id !== undefined ? parseInt(body.target_room_id)          : auto.target_room_id;
       const prompt      = body.prompt_template !== undefined ? body.prompt_template.trim()           : auto.prompt_template;

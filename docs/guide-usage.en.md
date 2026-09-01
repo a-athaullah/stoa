@@ -598,7 +598,7 @@ Once at least one connection is active, click **+ new rule** to create a rule:
 - **Trigger event** — the event that fires the rule (options depend on provider):
   - *Slack:* `message`, `message.groups`, `mention`, `reaction_added`
   - *WhatsApp:* `message` (direct message), `group_message` (group message), `group_mention` (bot tagged in group), `message_any` (DM + group)
-- **Conditions** — optional filters applied to the message text: `contains`, `not_contains`, `starts_with`, or `matches_regex`. Multiple conditions are AND-ed together
+- **Conditions** — optional filters applied to the message text: `contains`, `not_contains`, `starts_with`, or `matches_regex`. Multiple conditions are AND-ed together. `matches_regex` limitations: pattern max 200 characters, nested quantifiers rejected (ReDoS protection), input capped at 5,000 characters, patterns that cause excessive backtracking are rejected at save time with a 400 error
 - **Target room** — which Stoa room receives the triggered message
 - **Prompt template** — the message sent to the room. Use variables:
   - *Slack:* `{{slack_message_text}}`, `{{slack_message_link}}`, `{{slack_user}}`, `{{slack_channel}}`, `{{extracted_url}}`, `{{slack_thread_ts}}`
