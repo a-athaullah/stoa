@@ -261,7 +261,7 @@ A schedule takes one of two shapes:
 - **Interval** — run every N minutes (minimum 5).
 - **Daily** — run once a day at a fixed wall-clock time (`HH:MM`) in a chosen timezone.
 
-Each scheduled run reuses the same path as a manual trigger, so it honors every safeguard: the room must not be archived or have spawns paused, the concurrent sub-agent cap still applies, and the parent agent's machine must be online. If any check fails at fire time, that run is skipped and the next one is scheduled as usual. After downtime (for example, a restart), the server never fires a backlog of missed runs — each schedule runs at most once going forward, not once for every slot it missed. A scheduled sub-agent still cannot spawn its own sub-agents.
+Each scheduled run reuses the same path as a manual trigger, so it honors every safeguard: the room must not be archived or have spawns paused, the concurrent sub-agent cap still applies, and the parent agent's machine must be online. If a run can't fire because of a **transient** condition — the parent's machine is briefly offline, or the concurrency cap is momentarily full — it is retried shortly, up until its next scheduled occurrence. This means a **daily** schedule isn't lost for the whole day just because the machine happened to be offline at that exact minute; it fires as soon as the machine is back, then resumes its normal time the next day. After server downtime (for example, a restart), missed slots are **not** replayed in a burst — each schedule runs at most once going forward, not once for every slot it missed. A scheduled sub-agent still cannot spawn its own sub-agents.
 
 ---
 

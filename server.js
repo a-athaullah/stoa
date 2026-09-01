@@ -6,7 +6,7 @@ const { execSync } = require('child_process');
 const { WebSocketServer } = require('ws');
 const db = require('./db');
 const { ClaudeSession } = require('./claude-session');
-const { validateScheduleSpec, computeNextRun } = require('./lib/schedule');
+const { validateScheduleSpec, computeNextRun, nextRunAfterSkip } = require('./lib/schedule');
 const fallbackSessions = new Map();
 const FALLBACK_IDLE_MS = 30 * 60 * 1000;
 function getFallbackSession(participantId, workDir) {
@@ -521,13 +521,20 @@ if (!fs.existsSync(CONNECTOR_MEDIA_DIR)) fs.mkdirSync(CONNECTOR_MEDIA_DIR);
 //   • Re-resolve fresh each tick: sub-agent may have been deleted/disabled/
 //     unlinked since the schedule was created — never cache; run the SAME
 //     validation as the interactive trigger (archived / paused / concurrent cap
-//     / parent online). Offline/full → skip this slot, wait for the next.
+//     / parent online).
+//   • Grace retry (D2): a TRANSIENT skip (parent offline / concurrency full /
+//     self-overlap) provably did not dispatch, so next_run_at is pulled back to
+//     now+SCHED_RETRY_MS — but never past the natural next slot. This keeps a
+//     `daily` schedule from being lost for a whole day just because the machine
+//     was offline at that minute, without risking a double-fire (nothing ran).
+//     Non-transient skips (archived / paused / unlinked) keep the far next slot.
 //   • Rate limiting: the interval floor (≥5 min) + concurrent cap + self-overlap
 //     guard bound cadence. The interactive endpoint's hourly max_spawns_per_hour
 //     is an ORCHESTRATOR fan-out guard (counts parent_message_id spawns) and does
 //     not apply to server-initiated cadence runs, which are self-limiting.
 //   • Failure isolation: try/catch per schedule; one bad row never kills the loop.
 const SCHED_TICK_MS = parseInt(process.env.SCHED_TICK_MS) || 30000;
+const SCHED_RETRY_MS = parseInt(process.env.SCHED_RETRY_MS) || 120000; // grace retry after transient skip
 const fmtUtc = (d) => d.toISOString().replace('T', ' ').slice(0, 19);
 
 // Attempt one scheduled fire. Returns a short status string; never throws.
@@ -585,14 +592,23 @@ function schedulerTick() {
         console.error(`[scheduler] schedule ${sched.id} disabled — bad spec: ${specRes.error}`);
         continue;
       }
-      // Claim-before-fire: advance next_run_at FIRST.
-      const next = computeNextRun(specRes.spec, now);
-      db.prepare('UPDATE sub_agent_schedules SET next_run_at=? WHERE id=?').run(fmtUtc(next), sched.id);
+      // Claim-before-fire: advance next_run_at to the far next slot FIRST, so a
+      // crash mid-dispatch can never double-fire.
+      const nextSlot = computeNextRun(specRes.spec, now);
+      db.prepare('UPDATE sub_agent_schedules SET next_run_at=? WHERE id=?').run(fmtUtc(nextSlot), sched.id);
       const status = fireSchedule(sched);
       if (status === 'fired') {
         db.prepare("UPDATE sub_agent_schedules SET last_run_at=datetime('now') WHERE id=?").run(sched.id);
       } else {
-        console.log(`[scheduler] schedule ${sched.id} skipped: ${status}`);
+        // Transient skips (nothing dispatched) get pulled back for a grace retry,
+        // capped at nextSlot; other skips keep the far slot (see nextRunAfterSkip).
+        const retryAt = nextRunAfterSkip(status, nextSlot, now, SCHED_RETRY_MS);
+        if (retryAt.getTime() < nextSlot.getTime()) {
+          db.prepare('UPDATE sub_agent_schedules SET next_run_at=? WHERE id=?').run(fmtUtc(retryAt), sched.id);
+          console.log(`[scheduler] schedule ${sched.id} skipped: ${status} — retry ~${fmtUtc(retryAt)}`);
+        } else {
+          console.log(`[scheduler] schedule ${sched.id} skipped: ${status}`);
+        }
       }
     } catch (e) {
       console.error(`[scheduler] schedule ${sched.id} error:`, e.message);
@@ -600,12 +616,16 @@ function schedulerTick() {
   }
 }
 
-(function scheduleLoop() {
-  setTimeout(() => {
-    try { schedulerTick(); } catch (e) { console.error('[scheduler] tick error:', e.message); }
-    scheduleLoop();
-  }, SCHED_TICK_MS);
-})();
+// Gate the loop off under test (NODE_ENV=test) — integration tests drive the
+// CRUD API directly and must not have the loop firing real triggers underneath.
+if (process.env.NODE_ENV !== 'test') {
+  (function scheduleLoop() {
+    setTimeout(() => {
+      try { schedulerTick(); } catch (e) { console.error('[scheduler] tick error:', e.message); }
+      scheduleLoop();
+    }, SCHED_TICK_MS);
+  })();
+}
 
 const _settingCache = new Map();
 function getSetting(key, scopeId = null) {

@@ -261,7 +261,7 @@ Jadwal punya salah satu dari dua bentuk:
 - **Interval** — berjalan setiap N menit (minimum 5).
 - **Harian** — berjalan sekali sehari pada jam dinding tetap (`HH:MM`) di timezone yang dipilih.
 
-Setiap eksekusi terjadwal memakai jalur yang sama dengan trigger manual, jadi semua pengaman tetap berlaku: room tidak boleh diarsipkan atau sedang pause spawns, batas sub-agent konkuren tetap berlaku, dan mesin agent induk harus online. Jika ada pengecekan yang gagal saat waktunya jalan, eksekusi itu dilewati dan yang berikutnya dijadwalkan seperti biasa. Setelah downtime (misalnya restart), server tidak pernah menembakkan tumpukan run yang terlewat — tiap jadwal berjalan paling banyak sekali ke depan, bukan sekali untuk setiap slot yang terlewat. Sub-agent terjadwal tetap tidak bisa memunculkan sub-agent-nya sendiri.
+Setiap eksekusi terjadwal memakai jalur yang sama dengan trigger manual, jadi semua pengaman tetap berlaku: room tidak boleh diarsipkan atau sedang pause spawns, batas sub-agent konkuren tetap berlaku, dan mesin agent induk harus online. Jika sebuah run tidak bisa jalan karena kondisi **sementara** — mesin induk sedang offline sebentar, atau batas konkuren kebetulan penuh — run itu dicoba lagi tak lama kemudian, sampai batas jadwal berikutnya. Artinya jadwal **harian** tidak hilang seharian penuh hanya karena mesin kebetulan offline persis di menit itu; ia jalan begitu mesin kembali online, lalu lanjut ke waktu normalnya keesokan hari. Setelah downtime (misalnya restart), slot yang terlewat **tidak** ditembakkan sekaligus — tiap jadwal berjalan paling banyak sekali ke depan, bukan sekali untuk setiap slot yang terlewat. Sub-agent terjadwal tetap tidak bisa memunculkan sub-agent-nya sendiri.
 
 ---
 

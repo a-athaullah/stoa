@@ -398,6 +398,30 @@ function runUnitTests() {
     assert.strictEqual(computeNextRun(spec, new Date('2026-09-01T02:00:00Z')).toISOString(), '2026-09-02T01:00:00.000Z');
   });
 
+  const { nextRunAfterSkip } = schedule;
+  ut('nextRunAfterSkip — transient skip retries at now+retryMs (grace window)', () => {
+    const now = new Date('2026-09-01T08:00:00Z');
+    const nextSlot = new Date('2026-09-02T08:00:00Z'); // daily: far away
+    for (const s of ['parent_offline', 'max_concurrent', 'self_overlap']) {
+      const r = nextRunAfterSkip(s, nextSlot, now, 120000);
+      assert.strictEqual(r.toISOString(), '2026-09-01T08:02:00.000Z', `transient ${s} should retry in 2min`);
+    }
+  });
+  ut('nextRunAfterSkip — retry is capped at nextSlot (never overshoots)', () => {
+    const now = new Date('2026-09-01T08:00:00Z');
+    const nextSlot = new Date('2026-09-01T08:01:00Z'); // interval-ish: slot sooner than retryMs
+    const r = nextRunAfterSkip('parent_offline', nextSlot, now, 120000);
+    assert.strictEqual(r.toISOString(), '2026-09-01T08:01:00.000Z', 'retry must not exceed nextSlot');
+  });
+  ut('nextRunAfterSkip — non-transient skip keeps the far next slot', () => {
+    const now = new Date('2026-09-01T08:00:00Z');
+    const nextSlot = new Date('2026-09-02T08:00:00Z');
+    for (const s of ['archived', 'paused', 'unlinked_or_disabled', 'room_gone']) {
+      const r = nextRunAfterSkip(s, nextSlot, now, 120000);
+      assert.strictEqual(r.toISOString(), '2026-09-02T08:00:00.000Z', `non-transient ${s} must keep nextSlot`);
+    }
+  });
+
   return { p, f };
 }
 
