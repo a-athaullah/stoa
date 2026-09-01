@@ -5286,7 +5286,10 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
         console.error(`[automation] id=${auto.id} has invalid trigger_conditions JSON, skipping`);
         continue;
       }
-      if (!Array.isArray(conditions)) { conditions = []; }
+      if (!Array.isArray(conditions)) {
+        console.error(`[automation] id=${auto.id} trigger_conditions is not an array, skipping`);
+        continue;
+      }
 
       // Evaluate ALL conditions (AND)
       const allMatch = conditions.every(c => {
@@ -5425,7 +5428,10 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, senderName, t
         console.error(`[automation] id=${auto.id} has invalid trigger_conditions JSON, skipping`);
         continue;
       }
-      if (!Array.isArray(conditions)) { conditions = []; }
+      if (!Array.isArray(conditions)) {
+        console.error(`[automation] id=${auto.id} trigger_conditions is not an array, skipping`);
+        continue;
+      }
 
       const allMatch = conditions.every(c => {
         const val = (fieldValues[c.field] || '').toLowerCase();
