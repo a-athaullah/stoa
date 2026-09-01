@@ -5291,7 +5291,7 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
 
       // Evaluate ALL conditions (AND)
       const allMatch = conditions.every(c => {
-        if (!c || typeof c !== 'object') {
+        if (!c || typeof c !== 'object' || Array.isArray(c)) {
           console.warn(`[automation] id=${auto.id} skipping non-object condition element`);
           return false;
         }
@@ -5436,7 +5436,7 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, senderName, t
       }
 
       const allMatch = conditions.every(c => {
-        if (!c || typeof c !== 'object') {
+        if (!c || typeof c !== 'object' || Array.isArray(c)) {
           console.warn(`[automation] id=${auto.id} skipping non-object condition element`);
           return false;
         }

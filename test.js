@@ -2180,8 +2180,9 @@ async function run() {
     const list = (await req('GET', '/api/automations')).body;
     if (!Array.isArray(list)) return;
     for (const a of list) {
-      if (_r20TestAutoNames.includes(a.name)) {
-        await req('DELETE', `/api/automations/${a.id}`);
+      if (_r20TestAutoNames.includes(a.name) && a.target_room_id === firstRoomId) {
+        const dr = await req('DELETE', `/api/automations/${a.id}`);
+        assert.strictEqual(dr.status, 200, `cleanup automation ${a.id} failed`);
       }
     }
   });
