@@ -594,7 +594,7 @@ Slack 앱 토큰 생성 방법은 [Slack 설정 가이드](doc-slack-setup)를 �
 - **트리거 이벤트** — 규칙을 실행할 이벤트 (제공자에 따라 다름):
   - *Slack:* `message`, `message.groups`, `mention`, `reaction_added`
   - *WhatsApp:* `message` (다이렉트 메시지), `group_message` (그룹 메시지), `group_mention` (그룹에서 봇 태그됨), `message_any` (DM + 그룹)
-- **조건** — 메시지 텍스트에 대한 선택적 필터: `contains`, `not_contains`, `starts_with`, 또는 `matches_regex`. 여러 조건은 AND로 결합
+- **조건** — 메시지 텍스트에 대한 선택적 필터: `contains`, `not_contains`, `starts_with`, 또는 `matches_regex`. 여러 조건은 AND로 결합. `matches_regex` 제한: 패턴 최대 200자, 중첩 수량자 거부 (ReDoS 보호), 입력 5,000자에서 잘림, 과도한 백트래킹을 유발하는 패턴은 저장 시 400 오류로 거부
 - **대상 룸** — 프롬프트를 받을 Stoa 룸
 - **프롬프트 템플릿** — 룸으로 보낼 메시지. 사용 가능한 변수:
   - *Slack:* `{{slack_message_text}}`, `{{slack_message_link}}`, `{{slack_user}}`, `{{slack_channel}}`, `{{extracted_url}}`, `{{slack_thread_ts}}`

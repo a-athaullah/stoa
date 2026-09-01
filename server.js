@@ -128,6 +128,24 @@ function sanitizeResultMeta(raw) {
   return Object.keys(out).length ? JSON.stringify(out) : null;
 }
 
+const { escapeRegExp, safeRegexTest, validateRegexPattern } = require('./lib/regex-safety');
+
+function validateConditions(raw) {
+  let parsed;
+  try {
+    parsed = JSON.parse(typeof raw === 'string' ? raw : JSON.stringify(raw));
+  } catch { return 'trigger_conditions must be valid JSON'; }
+  if (!Array.isArray(parsed)) return 'trigger_conditions must be a JSON array';
+  for (const c of parsed) {
+    if (!c || typeof c !== 'object' || Array.isArray(c)) return 'each condition must be an object';
+    if (c.op === 'matches_regex') {
+      const err = validateRegexPattern(c.value);
+      if (err) return `Condition regex: ${err}`;
+    }
+  }
+  return null;
+}
+
 // Main-agent session lookup: explicit sub_agent_id IS NULL to avoid matching sub-agent sessions.
 // See migration 20260831-sub-agent-definitions.sql for the partial unique index design.
 function getSession(participantId) {
@@ -692,9 +710,9 @@ function getPublicUrl(fallbackHost) {
 function writeEnv(key, value) {
   const envFile = path.join(__dirname, '.env');
   let content = fs.existsSync(envFile) ? fs.readFileSync(envFile, 'utf8') : '';
-  const re = new RegExp(`^${key}=.*$`, 'm');
+  const re = new RegExp(`^${escapeRegExp(key)}=.*$`, 'm');
   if (re.test(content)) {
-    content = content.replace(re, `${key}=${value}`);
+    content = content.replace(re, () => `${key}=${value}`);
   } else {
     content = content.trimEnd() + `\n${key}=${value}\n`;
   }
@@ -2988,6 +3006,9 @@ Write-Host "Logs   : pm2 logs $AgentName"
     if (!body?.name || !body?.trigger_event || !body?.target_room_id || !body?.prompt_template) {
       res.writeHead(400); return res.end(JSON.stringify({ error: 'Missing required fields' }));
     }
+    const rawConds = body.trigger_conditions || '[]';
+    const condsErr = validateConditions(rawConds);
+    if (condsErr) { res.writeHead(400); return res.end(JSON.stringify({ error: condsErr })); }
     const result = db.prepare(`
       INSERT INTO automations (name, trigger_type, trigger_event, trigger_conditions, target_room_id, prompt_template, connection_id, reply_mode)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -2995,7 +3016,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
       body.name.trim(),
       body.trigger_type || 'slack',
       body.trigger_event,
-      body.trigger_conditions || '[]',
+      typeof rawConds === 'string' ? rawConds : JSON.stringify(rawConds),
       parseInt(body.target_room_id),
       body.prompt_template.trim(),
       parseInt(body.connection_id) || null,
@@ -3015,7 +3036,11 @@ Write-Host "Logs   : pm2 logs $AgentName"
       if (!auto) { res.writeHead(404); return res.end(JSON.stringify({ error: 'Not found' })); }
       const name        = body.name !== undefined        ? body.name.trim()                          : auto.name;
       const event       = body.trigger_event !== undefined ? body.trigger_event                       : auto.trigger_event;
-      const conds       = body.trigger_conditions !== undefined ? body.trigger_conditions             : auto.trigger_conditions;
+      let   conds       = body.trigger_conditions !== undefined ? body.trigger_conditions             : auto.trigger_conditions;
+      if (body.trigger_conditions !== undefined) {
+        const condsErr = validateConditions(conds);
+        if (condsErr) { res.writeHead(400); return res.end(JSON.stringify({ error: condsErr })); }
+      }
       const roomId      = body.target_room_id !== undefined ? parseInt(body.target_room_id)          : auto.target_room_id;
       const prompt      = body.prompt_template !== undefined ? body.prompt_template.trim()           : auto.prompt_template;
       const enabled     = body.enabled !== undefined     ? (body.enabled ? 1 : 0)                    : auto.enabled;
@@ -5254,18 +5279,29 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
     }
 
     for (const auto of automations) {
-      let conditions = [];
-      try { conditions = JSON.parse(auto.trigger_conditions || '[]'); } catch {}
+      let conditions;
+      try { conditions = JSON.parse(auto.trigger_conditions || '[]'); } catch {
+        console.error(`[automation] id=${auto.id} has invalid trigger_conditions JSON, skipping`);
+        continue;
+      }
+      if (!Array.isArray(conditions)) {
+        console.error(`[automation] id=${auto.id} trigger_conditions is not an array, skipping`);
+        continue;
+      }
 
       // Evaluate ALL conditions (AND)
       const allMatch = conditions.every(c => {
+        if (!c || typeof c !== 'object' || Array.isArray(c)) {
+          console.warn(`[automation] id=${auto.id} skipping non-object condition element`);
+          return false;
+        }
         const val = (fieldValues[c.field] || '').toLowerCase();
         const target = (c.value || '').toLowerCase();
         switch (c.op) {
           case 'contains':      return val.includes(target);
           case 'not_contains':  return !val.includes(target);
           case 'starts_with':   return val.startsWith(target);
-          case 'matches_regex': try { if (c.value.length > 200) return false; return new RegExp(c.value, 'i').test((fieldValues[c.field] || '').slice(0, 5000)); } catch { return false; }
+          case 'matches_regex': return safeRegexTest(c.value, (fieldValues[c.field] || '').slice(0, 5000));
           default: return true;
         }
       });
@@ -5389,17 +5425,28 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, senderName, t
     const fieldValues = { message_text: text, wa_sender: sender, wa_chat_id: chatId };
 
     for (const auto of automations) {
-      let conditions = [];
-      try { conditions = JSON.parse(auto.trigger_conditions || '[]'); } catch {}
+      let conditions;
+      try { conditions = JSON.parse(auto.trigger_conditions || '[]'); } catch {
+        console.error(`[automation] id=${auto.id} has invalid trigger_conditions JSON, skipping`);
+        continue;
+      }
+      if (!Array.isArray(conditions)) {
+        console.error(`[automation] id=${auto.id} trigger_conditions is not an array, skipping`);
+        continue;
+      }
 
       const allMatch = conditions.every(c => {
+        if (!c || typeof c !== 'object' || Array.isArray(c)) {
+          console.warn(`[automation] id=${auto.id} skipping non-object condition element`);
+          return false;
+        }
         const val = (fieldValues[c.field] || '').toLowerCase();
         const target = (c.value || '').toLowerCase();
         switch (c.op) {
           case 'contains':      return val.includes(target);
           case 'not_contains':  return !val.includes(target);
           case 'starts_with':   return val.startsWith(target);
-          case 'matches_regex': try { if (c.value.length > 200) return false; return new RegExp(c.value, 'i').test((fieldValues[c.field] || '').slice(0, 5000)); } catch { return false; }
+          case 'matches_regex': return safeRegexTest(c.value, (fieldValues[c.field] || '').slice(0, 5000));
           default: return true;
         }
       });

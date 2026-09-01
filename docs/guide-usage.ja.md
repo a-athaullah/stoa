@@ -594,7 +594,7 @@ Slackアプリトークンの作成手順は[Slackセットアップガイド](d
 - **トリガーイベント** — ルールを発火するイベント（プロバイダーにより異なる）：
   - *Slack:* `message`、`message.groups`、`mention`、`reaction_added`
   - *WhatsApp:* `message`（ダイレクトメッセージ）、`group_message`（グループメッセージ）、`group_mention`（グループでbotがタグ付け）、`message_any`（DM＋グループ）
-- **条件** — メッセージテキストへのオプションフィルター：`contains`、`not_contains`、`starts_with`、または `matches_regex`。複数の条件はAND結合
+- **条件** — メッセージテキストへのオプションフィルター：`contains`、`not_contains`、`starts_with`、または `matches_regex`。複数の条件はAND結合。`matches_regex` の制限：パターンは最大200文字、ネストされた量指定子は拒否（ReDoS保護）、入力は5,000文字で切り捨て、過度なバックトラッキングを引き起こすパターンは保存時に400エラーで拒否
 - **対象ルーム** — プロンプトを送信するStoaルーム
 - **プロンプトテンプレート** — ルームに送られるメッセージ。使用可能な変数：
   - *Slack:* `{{slack_message_text}}`、`{{slack_message_link}}`、`{{slack_user}}`、`{{slack_channel}}`、`{{extracted_url}}`、`{{slack_thread_ts}}`

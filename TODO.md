@@ -2,44 +2,43 @@
 
 _Audit terakhir: 2026-09-01 (Ara) — planning detail R12–R18 di `~/project/stoa-feature/hermes-adoption-plan.md`; detail R19–R30 di `~/project/stoa-feature/hermes-agent-research.md` section 7._
 
-## Priority 0 — Hermes Adoption ronde 3: kritis (R19–R21)
+_Urutan eksekusi ditetapkan 2026-09-01 (Ara, approved Aan). Logika: security & bug produksi → hardening bug-class terbukti → quick wins UX → fitur baru → carry-over._
 
-- [ ] **R19 — Thinking-signature management lengkap** — sempurnakan fix `42f0bbc`: (1) preventif per-endpoint — Anthropic: thinking block hanya di assistant message terakhir; proxy/third-party (AI Platforms): strip SEMUA thinking + strip `cache_control`; (2) klasifikasi 400 by frasa error, jangan gate by provider; (3) recovery one-shot hanya di wire copy — JANGAN mutasi canonical store/DB. _Effort S–M — fix bug produksi existing._
-- [ ] **R20 — Audit ReDoS regex** — audit regex redaction/parsing di server.js + stoa.js untuk pattern backtrackable; benchmark input adversarial 30k char. Node single-threaded → satu regex kuadratik memblok seluruh server. _Effort S._
-- [ ] **R21 — Transcript sanitizer + escalation** — heal pre-send di wire copy (orphan tool_result drop, tool_call tanpa result → stub, dedupe id, empty turn → placeholder); WARNING → ERROR di threshold → notice satu-kali per session via status channel (tidak masuk transcript). _Effort M._
+## Batch 1 — Kritis: bug produksi & security `[exec 1–3]`
 
-## Priority 1 — Hermes Adoption (R12–R18)
+- [x] **#1 R20 — Audit ReDoS regex** _(S)_ — ✓ `3a54d68`: safeRegexTest() rejects nested quantifiers; fixes automation matches_regex + writeEnv escaping; benchmark 30k char = 0ms.
+- [ ] **#2 R19 — Thinking-signature management lengkap** _(S–M)_ — sempurnakan fix `42f0bbc`: (1) preventif per-endpoint — Anthropic: thinking block hanya di assistant message terakhir; proxy/third-party (AI Platforms): strip SEMUA thinking + strip `cache_control`; (2) klasifikasi 400 by frasa error, jangan gate by provider; (3) recovery one-shot hanya di wire copy — JANGAN mutasi canonical store/DB.
+- [ ] **#3 R21 — Transcript sanitizer + escalation** _(M)_ — heal pre-send di wire copy (orphan tool_result drop, tool_call tanpa result → stub, dedupe id, empty turn → placeholder); WARNING → ERROR di threshold → notice satu-kali per session via status channel (tidak masuk transcript).
 
-- [ ] **R12 — Schedule doctor** — health check read-only untuk scheduled triggers: deteksi silent non-firing (`next_run_at` overdue > 15 menit), last_error, sub-agent unlinked. Endpoint `GET /api/rooms/:id/sub-agent-schedules/doctor` + badge di room settings. _Effort S — paling timely, schedule UI baru ship._
-- [ ] **R17 — Message dedup via event_id** — `client_event_id` UUID per pesan + `UNIQUE(room_id, client_event_id)`; duplikat saat WS reconnect → return existing, bukan row baru. _Effort S–M._
-- [ ] **R13 — Status sub-agent jujur** — flag failure eksplisit menang atas presence output; pisah `status` vs `exit_reason`; konstanta `FAILURE_STATUSES` dishare semua permukaan; failure tampil satu-baris di bubble. _Effort M._
-- [ ] **R15 — `indeterminate` + `process_generation`** — cap UUID per boot ke kerja in-flight; saat boot, running milik generation lama → indeterminate (bukan requeue, bukan stuck). _Effort M._
-- [ ] **R14 (preventif) — Compact hardening** — durable cooldown `MAX(existing,new)` di ai_sessions + progress-aware timeout untuk compaction. Playbook diagnosis lengkap ada di plan doc, dipakai saat compact-stuck muncul lagi. _Effort S–M._
-- [ ] **R16 — Audit teardown scope** — audit semua teardown path: `releaseOwnResources()` vs `closeSession()`; peserta yang "ikut pakai" resource session-scoped tidak boleh men-cleanup-nya. _Effort S + fix._
-- [ ] **R18 — GC nebeng scheduler tick** — maintenance throttled ~6 jam di ticker existing; fail-safe-to-preserve; split `auditX()` dry-run vs `reclaimX()`. _Effort M._
+## Batch 2 — Hardening bug-class terbukti `[exec 4–9]`
 
-## Priority 2 — Hermes Adoption ronde 3: murah & terasa (R22–R24)
+- [ ] **#4 R12 — Schedule doctor** _(S)_ — health check read-only untuk scheduled triggers: deteksi silent non-firing (`next_run_at` overdue > 15 menit), last_error, sub-agent unlinked. Endpoint `GET /api/rooms/:id/sub-agent-schedules/doctor` + badge di room settings.
+- [ ] **#5 R17 — Message dedup via event_id** _(S–M)_ — `client_event_id` UUID per pesan + `UNIQUE(room_id, client_event_id)`; duplikat saat WS reconnect → return existing, bukan row baru.
+- [ ] **#6 R14 — Compact hardening preventif** _(S–M)_ — durable cooldown `MAX(existing,new)` di ai_sessions + progress-aware timeout untuk compaction. Bug `compact_stuck` belum solved; cooldown mencegah loop gagal-berulang.
+- [ ] **#7 R13 — Status sub-agent jujur** _(M)_ — flag failure eksplisit menang atas presence output; pisah `status` vs `exit_reason`; konstanta `FAILURE_STATUSES` dishare semua permukaan; failure tampil satu-baris di bubble.
+- [ ] **#8 R15 — `indeterminate` + `process_generation`** _(M)_ — cap UUID per boot ke kerja in-flight; saat boot, running milik generation lama → indeterminate (bukan requeue, bukan stuck).
+- [ ] **#9 R16 — Audit teardown scope** _(S)_ — audit semua teardown path: `releaseOwnResources()` vs `closeSession()`; peserta yang "ikut pakai" resource session-scoped tidak boleh men-cleanup-nya.
 
-- [ ] **R22 — Status line verb tool + long-run charms** — "Agent bekerja…" → "membaca src/server.js…" (peta tool→verb, preview arg baris pertama, cap ~50 char, revert saat tool selesai); tool >8 detik → baris progres "(tool · elapsed)" tiap 10 detik, maks 2×. Mode `full/verb/off` untuk privasi. _Effort S._
-- [ ] **R23 — Audit mirror setting + silent catch** — setting UI yang dibaca server: push on-change DAN on-connect (hanya key yang pernah disentuh user); server whitelist key eksplisit dengan error terlihat; audit semua `.catch(() => {})` di `public/`. _Effort S._
-- [ ] **R24 — Higiene upload/attachment** — MIME per-attachment first; marker kegagalan netral untuk agent (diagnostik ke log, jangan racuni history); selalu sertakan path file di note; sukses-tapi-kosong = sentinel tersendiri; wording note "extract yourself", bukan "ask the user". _Effort S–M._
+## Batch 3 — Murah & langsung terasa `[exec 10–13]`
 
-## Priority 3 — Hermes Adoption ronde 3: fitur baru (R25–R30)
+- [ ] **#10 R23 — Audit mirror setting + silent catch** _(S)_ — setting UI yang dibaca server: push on-change DAN on-connect (hanya key yang pernah disentuh user); server whitelist key eksplisit dengan error terlihat; audit semua `.catch(() => {})` di `public/`.
+- [ ] **#11 R22 — Status line verb tool + long-run charms** _(S)_ — "Agent bekerja…" → "membaca src/server.js…" (peta tool→verb, preview arg baris pertama, cap ~50 char, revert saat tool selesai); tool >8 detik → baris progres "(tool · elapsed)" tiap 10 detik, maks 2×. Mode `full/verb/off` untuk privasi.
+- [ ] **#12 R24 — Higiene upload/attachment** _(S–M)_ — MIME per-attachment first; marker kegagalan netral untuk agent (diagnostik ke log, jangan racuni history); selalu sertakan path file di note; sukses-tapi-kosong = sentinel tersendiri; wording note "extract yourself", bukan "ask the user".
+- [ ] **#13 R18 — GC nebeng scheduler tick** _(M)_ — maintenance throttled ~6 jam di ticker existing; fail-safe-to-preserve; split `auditX()` dry-run vs `reclaimX()`.
 
-- [ ] **R25 — Memory per-room/agent** — file markdown editable di UI, frozen snapshot per session start (jaga prompt cache), budget char, drift detection + backup, staged approval untuk tulisan background. _Effort M–L._
-- [ ] **R26 — Stoa Doctor + session tooling** — `/api/health/db` (pure function: size via `page_count*page_size`, WAL, freelist, counts); tiap check gagal bawa instruksi fix; `pinned` di sessions (kebal auto-archive); **import sesi dari JSONL Claude Code**. _Effort M._
-- [ ] **R27 — Sidebar recency grouping** — head-run adaptif (potong di jeda ≥30 menit, fuzzy-merge bucket) + collapsible groups; pure function, portable 1:1. _Effort S–M._
-- [ ] **R28 — `busy_input_mode`: interrupt/queue/steer** — jawaban arsitektural untuk SIGTERM-restart yang membunuh kerja in-flight agent (insiden 2026-09-01); `queue` = antre dengan UI sliding window, `steer` = suntik ke run berjalan. _Effort M–L._
-- [ ] **R29 — Display verbosity berlapis** — resolusi per-room → global → default; `tool_progress all/new/off`; `cleanup_progress` (run gagal = simpan breadcrumb); `live_status full/verb/off`. _Effort M._
-- [ ] **R30 — Debug share bundle** — tombol "kirim diagnostik": snapshot log sekali baca, force-redact (abaikan preferensi user untuk artefak share), consent eksplisit, envelope berversi, auto-delete. _Effort M._
+## Batch 4 — Fitur baru `[exec 14–19]`
 
-## Priority 4 — High Impact (carry-over)
+- [ ] **#14 R28 — `busy_input_mode`: interrupt/queue/steer** _(M–L)_ — jawaban arsitektural untuk SIGTERM-restart yang membunuh kerja in-flight agent (insiden 2026-09-01); `queue` = antre dengan UI sliding window, `steer` = suntik ke run berjalan.
+- [ ] **#15 R26 — Stoa Doctor + session tooling** _(M)_ — `/api/health/db` (pure function: size via `page_count*page_size`, WAL, freelist, counts); tiap check gagal bawa instruksi fix; `pinned` di sessions (kebal auto-archive); **import sesi dari JSONL Claude Code**.
+- [ ] **#16 R27 — Sidebar recency grouping** _(S–M)_ — head-run adaptif (potong di jeda ≥30 menit, fuzzy-merge bucket) + collapsible groups; pure function, portable 1:1.
+- [ ] **#17 R25 — Memory per-room/agent** _(M–L)_ — file markdown editable di UI, frozen snapshot per session start (jaga prompt cache), budget char, drift detection + backup, staged approval untuk tulisan background.
+- [ ] **#18 R29 — Display verbosity berlapis** _(M)_ — resolusi per-room → global → default; `tool_progress all/new/off`; `cleanup_progress` (run gagal = simpan breadcrumb); `live_status full/verb/off`.
+- [ ] **#19 R30 — Debug share bundle** _(M)_ — tombol "kirim diagnostik": snapshot log sekali baca, force-redact (abaikan preferensi user untuk artefak share), consent eksplisit, envelope berversi, auto-delete.
 
-- [ ] **Webhook/API** — HTTP endpoint untuk trigger agent dari external (CI/CD, monitoring, script). Masih relevan; belum ada endpoint trigger generik (baru automation Slack + proactive message agent-auth).
+## Batch 5 — Carry-over `[exec 20–21]`
 
-## Priority 5 — Enhancement (carry-over)
-
-- [ ] **Context window indicator** — indikator visual saat conversation mendekati batas context. Sebagian tertutup oleh configurable auto-compact threshold (Settings); indikator per-room belum ada. Nice-to-have, nyambung dengan R14.
+- [ ] **#20 Webhook/API** — HTTP endpoint untuk trigger agent dari external (CI/CD, monitoring, script). Masih relevan; belum ada endpoint trigger generik (baru automation Slack + proactive message agent-auth). Naikkan kalau muncul use case CI/CD konkret.
+- [ ] **#21 Context window indicator** — indikator visual saat conversation mendekati batas context. Sebagian tertutup oleh configurable auto-compact threshold (Settings); R14+R29 mengecilkan kebutuhannya lagi.
 
 ## Done (audit 2026-09-01)
 

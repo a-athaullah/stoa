@@ -598,7 +598,7 @@ Setelah minimal satu koneksi aktif, klik **+ new rule** untuk membuat aturan:
 - **Trigger event** — event yang memicu aturan (opsi bergantung pada provider):
   - *Slack:* `message`, `message.groups`, `mention`, `reaction_added`
   - *WhatsApp:* `message` (pesan langsung), `group_message` (pesan grup), `group_mention` (bot di-tag di grup), `message_any` (DM + grup)
-- **Conditions** — filter opsional pada teks pesan: `contains`, `not_contains`, `starts_with`, atau `matches_regex`. Beberapa kondisi di-AND-kan
+- **Conditions** — filter opsional pada teks pesan: `contains`, `not_contains`, `starts_with`, atau `matches_regex`. Beberapa kondisi di-AND-kan. Batasan `matches_regex`: pola maksimal 200 karakter, nested quantifier ditolak (proteksi ReDoS), input dipotong di 5.000 karakter, pola yang menyebabkan backtracking berlebihan ditolak saat penyimpanan dengan error 400
 - **Target room** — room Stoa mana yang menerima pesan yang dipicu
 - **Prompt template** — pesan yang dikirim ke room. Gunakan variabel:
   - *Slack:* `{{slack_message_text}}`, `{{slack_message_link}}`, `{{slack_user}}`, `{{slack_channel}}`, `{{extracted_url}}`, `{{slack_thread_ts}}`

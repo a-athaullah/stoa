@@ -422,6 +422,68 @@ function runUnitTests() {
     }
   });
 
+  // ── Regex safety (R20) — tests import production code from lib/regex-safety.js
+  const { safeRegexTest, escapeRegExp, validateRegexPattern } = require('./lib/regex-safety');
+
+  ut('safeRegexTest — normal regex works', () => {
+    assert.strictEqual(safeRegexTest('hello', 'hello world'), true);
+    assert.strictEqual(safeRegexTest('^foo$', 'foo'), true);
+    assert.strictEqual(safeRegexTest('bar', 'no match'), false);
+  });
+  ut('safeRegexTest — rejects nested quantifiers (ReDoS)', () => {
+    assert.strictEqual(safeRegexTest('(a+)+b', 'a'.repeat(30)), false);
+    assert.strictEqual(safeRegexTest('(a*)*b', 'a'.repeat(30)), false);
+    assert.strictEqual(safeRegexTest('(a+)*b', 'a'.repeat(30)), false);
+    assert.strictEqual(safeRegexTest('([a-z]+)+$', 'test'), false);
+  });
+  ut('safeRegexTest — rejects lazy nested quantifiers', () => {
+    assert.strictEqual(safeRegexTest('(a+?)+b', 'a'.repeat(30)), false);
+    assert.strictEqual(safeRegexTest('(a*?)*b', 'a'.repeat(30)), false);
+  });
+  ut('safeRegexTest — rejects pattern > 200 chars', () => {
+    assert.strictEqual(safeRegexTest('a'.repeat(201), 'a'), false);
+  });
+  ut('safeRegexTest — invalid regex returns false', () => {
+    assert.strictEqual(safeRegexTest('[invalid', 'test'), false);
+  });
+  ut('safeRegexTest — non-string pattern returns false', () => {
+    assert.strictEqual(safeRegexTest(null, 'test'), false);
+    assert.strictEqual(safeRegexTest(42, 'test'), false);
+  });
+  ut('safeRegexTest — benign quantifiers allowed', () => {
+    assert.strictEqual(safeRegexTest('a{2,5}', 'aaa'), true);
+    assert.strictEqual(safeRegexTest('[0-9]+', '123'), true);
+    assert.strictEqual(safeRegexTest('(foo|bar)+', 'foobar'), true);
+  });
+  ut('safeRegexTest — completes fast on adversarial input', () => {
+    const start = Date.now();
+    safeRegexTest('(a+)+b', 'a'.repeat(30000));
+    assert.ok(Date.now() - start < 100, 'should reject instantly, not hang');
+  });
+  ut('safeRegexTest — vm sandbox terminates patterns that bypass heuristic', () => {
+    const start = Date.now();
+    const result = safeRegexTest('(a|a)+b', 'a'.repeat(25));
+    const elapsed = Date.now() - start;
+    assert.strictEqual(result, false, 'overlapping alternation should be rejected by vm timeout');
+    assert.ok(elapsed < 200, `vm timeout should cap execution, took ${elapsed}ms`);
+  });
+  ut('escapeRegExp — escapes metacharacters', () => {
+    assert.strictEqual(escapeRegExp('hello.world'), 'hello\\.world');
+    assert.strictEqual(escapeRegExp('a+b*c?'), 'a\\+b\\*c\\?');
+    assert.strictEqual(escapeRegExp('$100'), '\\$100');
+    assert.strictEqual(escapeRegExp('foo[bar]'), 'foo\\[bar\\]');
+  });
+  ut('validateRegexPattern — returns null for valid patterns', () => {
+    assert.strictEqual(validateRegexPattern('hello'), null);
+    assert.strictEqual(validateRegexPattern('[0-9]+'), null);
+  });
+  ut('validateRegexPattern — returns error for dangerous patterns', () => {
+    assert.ok(validateRegexPattern('(a+)+b') !== null);
+    assert.ok(validateRegexPattern('[invalid') !== null);
+    assert.ok(validateRegexPattern('a'.repeat(201)) !== null);
+    assert.ok(validateRegexPattern(42) !== null);
+  });
+
   return { p, f };
 }
 
@@ -2066,6 +2128,70 @@ async function run() {
   await test('PATCH /api/automations/999999 — nonexistent → 404', async () => {
     const r = await req('PATCH', '/api/automations/999999', { name: 'x' });
     assert.strictEqual(r.status, 404);
+  });
+
+  const _r20TestAutoNames = ['bad-conds', 'redos-conds', 'bad-elem'];
+
+  await test('POST /api/automations — invalid trigger_conditions JSON → 400', async () => {
+    if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
+    const r = await req('POST', '/api/automations', {
+      name: 'bad-conds',
+      trigger_type: 'slack',
+      trigger_event: 'message',
+      trigger_conditions: '{not valid json',
+      target_room_id: firstRoomId,
+      prompt_template: 'test',
+    });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.body.error.includes('valid JSON'), r.body.error);
+  });
+
+  await test('POST /api/automations — ReDoS pattern in conditions → 400', async () => {
+    if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
+    const r = await req('POST', '/api/automations', {
+      name: 'redos-conds',
+      trigger_type: 'slack',
+      trigger_event: 'message',
+      trigger_conditions: JSON.stringify([{ field: 'message_text', op: 'matches_regex', value: '(a+)+b' }]),
+      target_room_id: firstRoomId,
+      prompt_template: 'test',
+    });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.body.error.includes('regex'), r.body.error);
+  });
+
+  await test('POST /api/automations — non-object condition element → 400', async () => {
+    if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
+    for (const bad of ['[null]', '[1]', '["x"]', '[[]]']) {
+      const r = await req('POST', '/api/automations', {
+        name: 'bad-elem',
+        trigger_type: 'slack',
+        trigger_event: 'message',
+        trigger_conditions: bad,
+        target_room_id: firstRoomId,
+        prompt_template: 'test',
+      });
+      assert.strictEqual(r.status, 400, `${bad} should be rejected`);
+      assert.ok(r.body.error.includes('object'), `${bad}: ${r.body.error}`);
+    }
+  });
+
+  await test('teardown — cleanup R20 validation test automations', async () => {
+    const list = (await req('GET', '/api/automations')).body;
+    if (!Array.isArray(list)) return;
+    for (const a of list) {
+      if (_r20TestAutoNames.includes(a.name) && a.target_room_id === firstRoomId) {
+        const dr = await req('DELETE', `/api/automations/${a.id}`);
+        assert.strictEqual(dr.status, 200, `cleanup automation ${a.id} failed`);
+      }
+    }
+  });
+
+  await test('PATCH /api/automations/:id — invalid trigger_conditions → 400', async () => {
+    if (!testAutoId) { console.log('    (skipped)'); return; }
+    const r = await req('PATCH', `/api/automations/${testAutoId}`, { trigger_conditions: 'not json' });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.body.error.includes('valid JSON'), r.body.error);
   });
 
   await test('DELETE /api/automations/:id — deletes rule', async () => {
