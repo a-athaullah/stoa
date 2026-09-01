@@ -421,6 +421,9 @@ function openRoomSettings(room) {
   let tiersState = null;   // null = use server defaults; object = per-room override
   let paused = false, pausedOrig = false;
   let maxConcurrent = 3, maxPerHour = 10;
+  let schedules = [];      // loaded from /api/rooms/:id/sub-agent-schedules
+  let linkedSubs = [];     // sub-agents linked to this room (for schedule form dropdown)
+  let schedFormOpen = false, schedEditId = null;
 
   const overlay = document.createElement('div');
   overlay.className = 'h-room-settings-overlay';
@@ -436,11 +439,17 @@ function openRoomSettings(room) {
 
   panel.innerHTML = '<div style="font-size:12.5px;color:var(--h-ink-faint)">loading…</div>';
 
-  fjson(`/api/rooms/${room.id}`).then(r => {
+  Promise.all([
+    fjson(`/api/rooms/${room.id}`),
+    fjson(`/api/rooms/${room.id}/sub-agent-schedules`),
+    fjson(`/api/rooms/${room.id}/sub-agents`),
+  ]).then(([r, sc, sa]) => {
     maxConcurrent = Math.max(1, Math.min(10, r.max_sub_agents || 3));
     maxPerHour = Math.max(1, Math.min(100, r.max_spawns_per_hour || 10));
     paused = pausedOrig = !!r.spawns_paused;
     try { tiersState = r.model_tiers ? JSON.parse(r.model_tiers) : null; } catch { tiersState = null; }
+    schedules = sc.schedules || [];
+    linkedSubs = sa.linked || [];
     renderBody();
   }).catch(() => { panel.innerHTML = '<div style="font-size:12.5px;color:#b35a4b">failed to load room settings</div>'; });
 
@@ -519,6 +528,297 @@ function openRoomSettings(room) {
     return row;
   }
 
+  function fmtCadence(spec) {
+    if (!spec) return '?';
+    if (spec.type === 'daily') {
+      const tz = spec.tz || 'UTC';
+      const short = tz === 'Asia/Jakarta' ? 'WIB' : tz.split('/').pop();
+      return `daily at ${spec.at} ${short}`;
+    }
+    const m = spec.every_minutes;
+    return m >= 120 && m % 60 === 0 ? `every ${m / 60} h` : `every ${m} min`;
+  }
+
+  function fmtNextRun(iso) {
+    if (!iso) return 'paused';
+    const d = new Date(iso + (iso.endsWith('Z') ? '' : 'Z'));
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) + ' ' +
+           d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  }
+
+  function renderScheduleCard() {
+    const card = document.createElement('div');
+    card.style.cssText = 'border:1px solid var(--h-border);border-radius:12px;overflow:hidden;margin-bottom:14px';
+
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--h-border);background:color-mix(in srgb, var(--h-bg) 38%, var(--h-surface))';
+    const hleft = document.createElement('div');
+    const htitle = document.createElement('span');
+    htitle.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:15px;color:var(--h-ink)';
+    htitle.textContent = 'Scheduled triggers';
+    const hsub = document.createElement('span');
+    hsub.style.cssText = 'font-size:12px;color:var(--h-ink-faint);margin-left:10px';
+    const enabledCount = schedules.filter(s => s.enabled).length;
+    hsub.textContent = enabledCount ? `${enabledCount} active` : 'sub-agents that fire on a timer';
+    hleft.append(htitle, hsub);
+
+    const addBtn = document.createElement('button');
+    addBtn.style.cssText = 'background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12px;padding:4px 12px;cursor:pointer';
+    addBtn.textContent = '+ add schedule';
+    addBtn.onclick = () => { schedFormOpen = true; schedEditId = null; renderBody(); };
+    header.append(hleft, addBtn);
+    card.appendChild(header);
+
+    const body = document.createElement('div');
+
+    if (schedFormOpen) {
+      body.appendChild(renderScheduleForm());
+    }
+
+    if (!schedules.length && !schedFormOpen) {
+      const empty = document.createElement('div');
+      empty.style.cssText = 'padding:24px 20px;text-align:center';
+      const et = document.createElement('div');
+      et.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:16px;color:var(--h-ink);margin-bottom:6px';
+      et.textContent = 'no scheduled triggers yet';
+      const es = document.createElement('div');
+      es.style.cssText = 'font-size:13px;color:var(--h-ink-mute);line-height:1.55;max-width:380px;margin:0 auto 10px';
+      es.textContent = 'a schedule hands a sub-agent the same task on a timer — every few minutes, or once a day at a set hour.';
+      empty.append(et, es);
+      body.appendChild(empty);
+    } else {
+      schedules.forEach((sched, i) => {
+        const row = document.createElement('div');
+        row.style.cssText = `display:flex;align-items:center;gap:10px;padding:11px 16px;${i < schedules.length - 1 ? 'border-bottom:1px solid var(--h-border)' : ''}${!sched.enabled ? ';opacity:.55' : ''}`;
+
+        const seal = document.createElement('span');
+        seal.style.cssText = 'width:26px;height:26px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink);background:var(--h-surface);border:1px solid var(--h-border);flex:0 0 auto';
+        seal.textContent = (sched.sub_agent_label || '?')[0];
+        row.appendChild(seal);
+
+        const info = document.createElement('div');
+        info.style.cssText = 'flex:1;min-width:0;display:flex;flex-direction:column;gap:3px';
+        const top = document.createElement('div');
+        top.style.cssText = 'display:flex;align-items:center;gap:8px;flex-wrap:wrap';
+        const lbl = document.createElement('span');
+        lbl.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:13px;color:var(--h-ink)';
+        lbl.textContent = sched.sub_agent_label || '?';
+        const cadence = document.createElement('span');
+        cadence.style.cssText = 'font-size:11px;color:var(--h-ink-mute);padding:2px 8px;border-radius:999px;border:1px solid var(--h-border);background:var(--h-surface)';
+        cadence.textContent = fmtCadence(sched.schedule_spec);
+        top.append(lbl, cadence);
+        const task = document.createElement('div');
+        task.style.cssText = 'font-size:12px;color:var(--h-ink-faint);font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+        task.textContent = sched.task;
+        info.append(top, task);
+        row.appendChild(info);
+
+        const next = document.createElement('span');
+        next.style.cssText = 'flex:0 0 auto;font-size:11px;color:var(--h-ink-faint);min-width:80px;text-align:right';
+        next.textContent = sched.enabled ? `next: ${fmtNextRun(sched.next_run_at)}` : 'disabled';
+        row.appendChild(next);
+
+        const tog = document.createElement('button');
+        tog.style.cssText = `flex:0 0 auto;background:transparent;border:1px solid var(--h-border);border-radius:999px;padding:3px 10px;cursor:pointer;font-family:var(--h-sans);font-size:11px;color:${sched.enabled ? 'var(--h-ink-mute)' : '#b35a4b'}`;
+        tog.textContent = sched.enabled ? 'on' : 'off';
+        tog.onclick = async () => {
+          await fetch(`/api/rooms/${room.id}/sub-agent-schedules/${sched.id}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: !sched.enabled }),
+          });
+          reloadSchedules();
+        };
+        row.appendChild(tog);
+
+        const editBtn = document.createElement('button');
+        editBtn.style.cssText = 'flex:0 0 auto;background:transparent;border:none;color:var(--h-ink-faint);cursor:pointer;font-size:14px;padding:2px';
+        editBtn.textContent = '✎';
+        editBtn.title = 'edit';
+        editBtn.onclick = () => { schedFormOpen = true; schedEditId = sched.id; renderBody(); };
+        row.appendChild(editBtn);
+
+        const delBtn = document.createElement('button');
+        delBtn.style.cssText = 'flex:0 0 auto;background:transparent;border:none;color:var(--h-ink-faint);cursor:pointer;font-size:14px;padding:2px';
+        delBtn.textContent = '×';
+        delBtn.title = 'delete';
+        delBtn.onclick = async () => {
+          if (!confirm(`Delete schedule for "${sched.sub_agent_label}"?`)) return;
+          await fetch(`/api/rooms/${room.id}/sub-agent-schedules/${sched.id}`, { method: 'DELETE' });
+          reloadSchedules();
+        };
+        row.appendChild(delBtn);
+
+        body.appendChild(row);
+      });
+    }
+
+    card.appendChild(body);
+    return card;
+  }
+
+  async function reloadSchedules() {
+    try {
+      const sc = await fjson(`/api/rooms/${room.id}/sub-agent-schedules`);
+      schedules = sc.schedules || [];
+    } catch {}
+    renderBody();
+  }
+
+  function renderScheduleForm() {
+    const editing = schedEditId ? schedules.find(s => s.id === schedEditId) : null;
+    let formType = editing?.schedule_spec?.type || 'interval';
+    let formEvery = editing?.schedule_spec?.every_minutes || 30;
+    let formAt = editing?.schedule_spec?.at || '07:00';
+    let formTz = editing?.schedule_spec?.tz || Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Jakarta';
+    let formSubId = editing?.sub_agent_id || (linkedSubs[0]?.id ?? '');
+    let formTask = editing?.task || '';
+    let formEnabled = editing ? !!editing.enabled : true;
+
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'padding:14px 16px 16px;border-bottom:1px solid var(--h-border);background:color-mix(in srgb, var(--h-bg) 30%, var(--h-surface))';
+
+    const ftitle = document.createElement('div');
+    ftitle.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:14px';
+    const ft = document.createElement('span');
+    ft.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:14px;color:var(--h-ink)';
+    ft.textContent = editing ? 'edit schedule' : 'new schedule';
+    const fx = document.createElement('button');
+    fx.style.cssText = 'background:transparent;border:none;color:var(--h-ink-faint);cursor:pointer;font-size:16px';
+    fx.textContent = '×';
+    fx.onclick = () => { schedFormOpen = false; schedEditId = null; renderBody(); };
+    ftitle.append(ft, fx);
+    wrap.appendChild(ftitle);
+
+    const mkField = (label, hint) => {
+      const f = document.createElement('div');
+      f.style.cssText = 'margin-bottom:12px';
+      const l = document.createElement('div');
+      l.style.cssText = 'font-size:11.5px;color:var(--h-ink-mute);text-transform:uppercase;letter-spacing:.08em;margin-bottom:5px';
+      l.textContent = label;
+      f.appendChild(l);
+      if (hint) { const h = document.createElement('div'); h.style.cssText = 'font-size:11px;color:var(--h-ink-faint);margin-bottom:5px'; h.textContent = hint; f.appendChild(h); }
+      return f;
+    };
+
+    // Sub-agent picker
+    const subField = mkField('sub-agent', 'must be linked to this room');
+    const subSel = document.createElement('select');
+    subSel.style.cssText = 'width:100%;padding:7px 10px;border:1px solid var(--h-border);border-radius:8px;background:var(--h-surface);color:var(--h-ink);font-family:ui-monospace,Menlo,monospace;font-size:13px';
+    if (!linkedSubs.length) {
+      const o = document.createElement('option'); o.textContent = 'no sub-agents linked'; o.disabled = true; subSel.appendChild(o);
+    } else {
+      for (const sa of linkedSubs) {
+        const o = document.createElement('option');
+        o.value = sa.id;
+        o.textContent = `${sa.parent_name} (${sa.label})`;
+        if (sa.id === formSubId) o.selected = true;
+        subSel.appendChild(o);
+      }
+    }
+    subSel.onchange = () => { formSubId = parseInt(subSel.value); };
+    subField.appendChild(subSel);
+    wrap.appendChild(subField);
+
+    // Type picker
+    const typeField = mkField('schedule type');
+    const typeRow = document.createElement('div');
+    typeRow.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:6px';
+    ['interval', 'daily'].forEach(tid => {
+      const btn = document.createElement('button');
+      const on = tid === formType;
+      btn.style.cssText = `padding:8px 10px;border-radius:8px;cursor:pointer;text-align:left;border:1px solid ${on ? 'var(--h-ink)' : 'var(--h-border)'};background:${on ? 'var(--h-surface)' : 'transparent'};font-family:var(--h-sans);font-size:12.5px;color:${on ? 'var(--h-ink)' : 'var(--h-ink-mute)'}`;
+      btn.textContent = tid === 'interval' ? 'interval — fires on a cadence' : 'daily — once at a set time';
+      btn.onclick = () => { formType = tid; renderBody(); };
+      typeRow.appendChild(btn);
+    });
+    typeField.appendChild(typeRow);
+    wrap.appendChild(typeField);
+
+    // Cadence input
+    if (formType === 'interval') {
+      const cadField = mkField('interval', 'minutes between runs · 5 min to 1440 (24h)');
+      const cadRow = document.createElement('div');
+      cadRow.style.cssText = 'display:flex;align-items:center;gap:8px';
+      cadRow.appendChild(makeStepper(formEvery, 5, 1440, v => { formEvery = v; }));
+      const cadLabel = document.createElement('span');
+      cadLabel.style.cssText = 'font-size:13px;color:var(--h-ink-mute)';
+      cadLabel.textContent = 'minutes';
+      cadRow.appendChild(cadLabel);
+      cadField.appendChild(cadRow);
+      wrap.appendChild(cadField);
+    } else {
+      const tzShort = formTz === 'Asia/Jakarta' ? 'WIB' : formTz.split('/').pop();
+      const timeField = mkField('time of day', `24-hour clock in ${formTz} (${tzShort})`);
+      const timeInput = document.createElement('input');
+      timeInput.type = 'time';
+      timeInput.value = formAt;
+      timeInput.style.cssText = 'padding:7px 10px;border:1px solid var(--h-border);border-radius:8px;background:var(--h-surface);color:var(--h-ink);font-family:ui-monospace,Menlo,monospace;font-size:13px';
+      timeInput.onchange = () => { formAt = timeInput.value; };
+      timeField.appendChild(timeInput);
+      wrap.appendChild(timeField);
+    }
+
+    // Task
+    const taskField = mkField('task', 'sent to the sub-agent on every run');
+    const taskArea = document.createElement('textarea');
+    taskArea.style.cssText = 'width:100%;min-height:60px;padding:8px 10px;border:1px solid var(--h-border);border-radius:8px;background:var(--h-surface);color:var(--h-ink);font-family:var(--h-sans);font-size:13px;resize:vertical;box-sizing:border-box';
+    taskArea.value = formTask;
+    taskArea.placeholder = 'Check deployment health and report anomalies…';
+    taskArea.oninput = () => { formTask = taskArea.value; };
+    taskField.appendChild(taskArea);
+    wrap.appendChild(taskField);
+
+    // Enabled toggle
+    const enRow = document.createElement('div');
+    enRow.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:14px';
+    const enLabel = document.createElement('span');
+    enLabel.style.cssText = 'font-size:13px;color:var(--h-ink-mute)';
+    enLabel.textContent = 'enabled';
+    const enTog = document.createElement('button');
+    enTog.style.cssText = `background:transparent;border:1px solid var(--h-border);border-radius:999px;padding:3px 12px;cursor:pointer;font-family:var(--h-sans);font-size:12px;color:${formEnabled ? 'var(--h-ink-mute)' : '#b35a4b'}`;
+    enTog.textContent = formEnabled ? 'on' : 'off';
+    enTog.onclick = () => { formEnabled = !formEnabled; enTog.textContent = formEnabled ? 'on' : 'off'; enTog.style.color = formEnabled ? 'var(--h-ink-mute)' : '#b35a4b'; };
+    enRow.append(enLabel, enTog);
+    wrap.appendChild(enRow);
+
+    // Buttons
+    const btns = document.createElement('div');
+    btns.style.cssText = 'display:flex;gap:8px;align-items:center';
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'h-btn-primary';
+    saveBtn.style.cssText = 'padding:7px 18px;font-size:12.5px';
+    saveBtn.textContent = editing ? 'save' : 'create schedule';
+    saveBtn.onclick = async () => {
+      const spec = formType === 'interval'
+        ? { type: 'interval', every_minutes: formEvery }
+        : { type: 'daily', at: formAt, tz: formTz };
+      const payload = { task: formTask, schedule_spec: spec, enabled: formEnabled };
+      if (!editing) payload.sub_agent_id = formSubId;
+      saveBtn.disabled = true;
+      try {
+        const url = editing
+          ? `/api/rooms/${room.id}/sub-agent-schedules/${editing.id}`
+          : `/api/rooms/${room.id}/sub-agent-schedules`;
+        const r = await fetch(url, {
+          method: editing ? 'PATCH' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!r.ok) { const e = await r.json().catch(() => ({})); showToast(e.error || 'Failed', { error: true }); saveBtn.disabled = false; return; }
+        schedFormOpen = false; schedEditId = null;
+        reloadSchedules();
+      } catch { showToast('Failed to save schedule', { error: true }); saveBtn.disabled = false; }
+    };
+    const cancelBtn = document.createElement('button');
+    cancelBtn.style.cssText = 'background:transparent;border:none;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12.5px;padding:7px 12px;cursor:pointer';
+    cancelBtn.textContent = 'cancel';
+    cancelBtn.onclick = () => { schedFormOpen = false; schedEditId = null; renderBody(); };
+    btns.append(saveBtn, cancelBtn);
+    wrap.appendChild(btns);
+
+    return wrap;
+  }
+
   function renderBody() {
     panel.innerHTML = '';
     const head = document.createElement('div');
@@ -581,6 +881,9 @@ function openRoomSettings(room) {
     pr.append(pleft, ptog);
     bc.appendChild(pr);
     panel.appendChild(bc);
+
+    // ── Scheduled triggers card
+    panel.appendChild(renderScheduleCard());
 
     // ── Footer
     const foot = document.createElement('div');
