@@ -137,7 +137,7 @@ function validateConditions(raw) {
   } catch { return 'trigger_conditions must be valid JSON'; }
   if (!Array.isArray(parsed)) return 'trigger_conditions must be a JSON array';
   for (const c of parsed) {
-    if (c.op === 'matches_regex') {
+    if (c && c.op === 'matches_regex') {
       const err = validateRegexPattern(c.value);
       if (err) return `Condition regex: ${err}`;
     }
