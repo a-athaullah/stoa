@@ -2991,17 +2991,17 @@ Write-Host "Logs   : pm2 logs $AgentName"
       res.writeHead(400); return res.end(JSON.stringify({ error: 'Missing required fields' }));
     }
     const rawConds = body.trigger_conditions || '[]';
+    let parsedConds;
     try {
-      const parsed = JSON.parse(typeof rawConds === 'string' ? rawConds : JSON.stringify(rawConds));
-      if (Array.isArray(parsed)) {
-        for (const c of parsed) {
-          if (c.op === 'matches_regex') {
-            const err = validateRegexPattern(c.value);
-            if (err) { res.writeHead(400); return res.end(JSON.stringify({ error: `Condition regex: ${err}` })); }
-          }
-        }
+      parsedConds = JSON.parse(typeof rawConds === 'string' ? rawConds : JSON.stringify(rawConds));
+    } catch { res.writeHead(400); return res.end(JSON.stringify({ error: 'trigger_conditions must be valid JSON' })); }
+    if (!Array.isArray(parsedConds)) { res.writeHead(400); return res.end(JSON.stringify({ error: 'trigger_conditions must be a JSON array' })); }
+    for (const c of parsedConds) {
+      if (c.op === 'matches_regex') {
+        const err = validateRegexPattern(c.value);
+        if (err) { res.writeHead(400); return res.end(JSON.stringify({ error: `Condition regex: ${err}` })); }
       }
-    } catch {}
+    }
     const result = db.prepare(`
       INSERT INTO automations (name, trigger_type, trigger_event, trigger_conditions, target_room_id, prompt_template, connection_id, reply_mode)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -3009,7 +3009,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
       body.name.trim(),
       body.trigger_type || 'slack',
       body.trigger_event,
-      rawConds,
+      typeof rawConds === 'string' ? rawConds : JSON.stringify(rawConds),
       parseInt(body.target_room_id),
       body.prompt_template.trim(),
       parseInt(body.connection_id) || null,
@@ -3031,17 +3031,17 @@ Write-Host "Logs   : pm2 logs $AgentName"
       const event       = body.trigger_event !== undefined ? body.trigger_event                       : auto.trigger_event;
       let   conds       = body.trigger_conditions !== undefined ? body.trigger_conditions             : auto.trigger_conditions;
       if (body.trigger_conditions !== undefined) {
+        let parsedConds;
         try {
-          const parsed = JSON.parse(typeof conds === 'string' ? conds : JSON.stringify(conds));
-          if (Array.isArray(parsed)) {
-            for (const c of parsed) {
-              if (c.op === 'matches_regex') {
-                const err = validateRegexPattern(c.value);
-                if (err) { res.writeHead(400); return res.end(JSON.stringify({ error: `Condition regex: ${err}` })); }
-              }
-            }
+          parsedConds = JSON.parse(typeof conds === 'string' ? conds : JSON.stringify(conds));
+        } catch { res.writeHead(400); return res.end(JSON.stringify({ error: 'trigger_conditions must be valid JSON' })); }
+        if (!Array.isArray(parsedConds)) { res.writeHead(400); return res.end(JSON.stringify({ error: 'trigger_conditions must be a JSON array' })); }
+        for (const c of parsedConds) {
+          if (c.op === 'matches_regex') {
+            const err = validateRegexPattern(c.value);
+            if (err) { res.writeHead(400); return res.end(JSON.stringify({ error: `Condition regex: ${err}` })); }
           }
-        } catch {}
+        }
       }
       const roomId      = body.target_room_id !== undefined ? parseInt(body.target_room_id)          : auto.target_room_id;
       const prompt      = body.prompt_template !== undefined ? body.prompt_template.trim()           : auto.prompt_template;
@@ -5281,8 +5281,12 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
     }
 
     for (const auto of automations) {
-      let conditions = [];
-      try { conditions = JSON.parse(auto.trigger_conditions || '[]'); } catch {}
+      let conditions;
+      try { conditions = JSON.parse(auto.trigger_conditions || '[]'); } catch {
+        console.error(`[automation] id=${auto.id} has invalid trigger_conditions JSON, skipping`);
+        continue;
+      }
+      if (!Array.isArray(conditions)) { conditions = []; }
 
       // Evaluate ALL conditions (AND)
       const allMatch = conditions.every(c => {
@@ -5416,8 +5420,12 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, senderName, t
     const fieldValues = { message_text: text, wa_sender: sender, wa_chat_id: chatId };
 
     for (const auto of automations) {
-      let conditions = [];
-      try { conditions = JSON.parse(auto.trigger_conditions || '[]'); } catch {}
+      let conditions;
+      try { conditions = JSON.parse(auto.trigger_conditions || '[]'); } catch {
+        console.error(`[automation] id=${auto.id} has invalid trigger_conditions JSON, skipping`);
+        continue;
+      }
+      if (!Array.isArray(conditions)) { conditions = []; }
 
       const allMatch = conditions.every(c => {
         const val = (fieldValues[c.field] || '').toLowerCase();

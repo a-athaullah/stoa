@@ -460,12 +460,12 @@ function runUnitTests() {
     safeRegexTest('(a+)+b', 'a'.repeat(30000));
     assert.ok(Date.now() - start < 100, 'should reject instantly, not hang');
   });
-  ut('safeRegexTest — timing probe catches patterns that bypass heuristic', () => {
+  ut('safeRegexTest — vm sandbox terminates patterns that bypass heuristic', () => {
     const start = Date.now();
     const result = safeRegexTest('(a|a)+b', 'a'.repeat(25));
     const elapsed = Date.now() - start;
-    assert.strictEqual(result, false, 'overlapping alternation should be rejected');
-    assert.ok(elapsed < 500, `should complete within 500ms, took ${elapsed}ms`);
+    assert.strictEqual(result, false, 'overlapping alternation should be rejected by vm timeout');
+    assert.ok(elapsed < 200, `vm timeout should cap execution, took ${elapsed}ms`);
   });
   ut('escapeRegExp — escapes metacharacters', () => {
     assert.strictEqual(escapeRegExp('hello.world'), 'hello\\.world');
@@ -2128,6 +2128,41 @@ async function run() {
   await test('PATCH /api/automations/999999 — nonexistent → 404', async () => {
     const r = await req('PATCH', '/api/automations/999999', { name: 'x' });
     assert.strictEqual(r.status, 404);
+  });
+
+  await test('POST /api/automations — invalid trigger_conditions JSON → 400', async () => {
+    if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
+    const r = await req('POST', '/api/automations', {
+      name: 'bad-conds',
+      trigger_type: 'slack',
+      trigger_event: 'message',
+      trigger_conditions: '{not valid json',
+      target_room_id: firstRoomId,
+      prompt_template: 'test',
+    });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.body.error.includes('valid JSON'), r.body.error);
+  });
+
+  await test('POST /api/automations — ReDoS pattern in conditions → 400', async () => {
+    if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
+    const r = await req('POST', '/api/automations', {
+      name: 'redos-conds',
+      trigger_type: 'slack',
+      trigger_event: 'message',
+      trigger_conditions: JSON.stringify([{ field: 'message_text', op: 'matches_regex', value: '(a+)+b' }]),
+      target_room_id: firstRoomId,
+      prompt_template: 'test',
+    });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.body.error.includes('regex'), r.body.error);
+  });
+
+  await test('PATCH /api/automations/:id — invalid trigger_conditions → 400', async () => {
+    if (!testAutoId) { console.log('    (skipped)'); return; }
+    const r = await req('PATCH', `/api/automations/${testAutoId}`, { trigger_conditions: 'not json' });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.body.error.includes('valid JSON'), r.body.error);
   });
 
   await test('DELETE /api/automations/:id — deletes rule', async () => {
