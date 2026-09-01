@@ -256,6 +256,8 @@ Sub-agent selalu berjalan di **mesin yang sama** dengan agent induknya. Server m
 
 Sub-agent persisten yang sudah di-link ke room bisa berjalan otomatis sesuai jadwal — tanpa @mention dan tanpa orchestrator. Ini berguna untuk pengecekan berkala (misalnya `probe` yang memeriksa penggunaan disk setiap 30 menit) atau laporan harian pada jam tetap.
 
+Jadwal dikelola di **Room Settings > Scheduled Triggers**. Klik **+ add schedule** lalu pilih sub-agent yang sudah di-link, tipe jadwal (interval atau harian), cadence atau waktu, dan task. Setiap jadwal bisa di-toggle on/off, diedit, atau dihapus dari barisnya.
+
 Jadwal punya salah satu dari dua bentuk:
 
 - **Interval** — berjalan setiap N menit (minimum 5).

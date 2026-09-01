@@ -622,11 +622,13 @@ function openRoomSettings(room) {
         tog.style.cssText = `flex:0 0 auto;background:transparent;border:1px solid var(--h-border);border-radius:999px;padding:3px 10px;cursor:pointer;font-family:var(--h-sans);font-size:11px;color:${sched.enabled ? 'var(--h-ink-mute)' : '#b35a4b'}`;
         tog.textContent = sched.enabled ? 'on' : 'off';
         tog.onclick = async () => {
-          await fetch(`/api/rooms/${room.id}/sub-agent-schedules/${sched.id}`, {
-            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ enabled: !sched.enabled }),
-          });
-          reloadSchedules();
+          try {
+            await fetch(`/api/rooms/${room.id}/sub-agent-schedules/${sched.id}`, {
+              method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ enabled: !sched.enabled }),
+            });
+            reloadSchedules();
+          } catch { showToast('Failed to toggle schedule', { error: true }); }
         };
         row.appendChild(tog);
 
@@ -643,8 +645,10 @@ function openRoomSettings(room) {
         delBtn.title = 'delete';
         delBtn.onclick = async () => {
           if (!confirm(`Delete schedule for "${sched.sub_agent_label}"?`)) return;
-          await fetch(`/api/rooms/${room.id}/sub-agent-schedules/${sched.id}`, { method: 'DELETE' });
-          reloadSchedules();
+          try {
+            await fetch(`/api/rooms/${room.id}/sub-agent-schedules/${sched.id}`, { method: 'DELETE' });
+            reloadSchedules();
+          } catch { showToast('Failed to delete schedule', { error: true }); }
         };
         row.appendChild(delBtn);
 

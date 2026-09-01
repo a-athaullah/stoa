@@ -256,6 +256,8 @@ Sub-agents always run on the **same machine** as their parent agent. The server 
 
 A persistent sub-agent linked to a room can run automatically on a schedule — no @mention and no orchestrator needed. This is useful for recurring checks (for example, a `probe` that inspects disk usage every 30 minutes) or a fixed-time daily report.
 
+Schedules are managed in **Room Settings > Scheduled Triggers**. Click **+ add schedule** and choose a linked sub-agent, a schedule type (interval or daily), the cadence or time, and a task. Each schedule can be toggled on/off, edited, or deleted from its row.
+
 A schedule takes one of two shapes:
 
 - **Interval** — run every N minutes (minimum 5).
