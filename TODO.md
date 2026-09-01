@@ -12,11 +12,11 @@ _Audit terakhir: 2026-09-01 (Ara) — lihat `~/project/stoa-feature/hermes-adopt
 - [ ] **R16 — Audit teardown scope** — audit semua teardown path: `releaseOwnResources()` vs `closeSession()`; peserta yang "ikut pakai" resource session-scoped tidak boleh men-cleanup-nya. _Effort S + fix._
 - [ ] **R18 — GC nebeng scheduler tick** — maintenance throttled ~6 jam di ticker existing; fail-safe-to-preserve; split `auditX()` dry-run vs `reclaimX()`. _Effort M._
 
-## Priority 3 — High Impact (carry-over)
+## Priority 2 — High Impact (carry-over)
 
 - [ ] **Webhook/API** — HTTP endpoint untuk trigger agent dari external (CI/CD, monitoring, script). Masih relevan; belum ada endpoint trigger generik (baru automation Slack + proactive message agent-auth).
 
-## Priority 4 — Enhancement (carry-over)
+## Priority 3 — Enhancement (carry-over)
 
 - [ ] **Context window indicator** — indikator visual saat conversation mendekati batas context. Sebagian tertutup oleh configurable auto-compact threshold (Settings); indikator per-room belum ada. Nice-to-have, nyambung dengan R14.
 
@@ -26,11 +26,9 @@ _Audit terakhir: 2026-09-01 (Ara) — lihat `~/project/stoa-feature/hermes-adopt
 - [x] **Multi-model support** — arah berubah dari "adapter per vendor" ke **AI Platforms**: custom platform (base_url + API keys, vendor generic/ollama), Ollama Cloud proxy, model discovery, switch model per room. OpenAI-compatible & LiteLLM tertutup lewat custom platform base_url.
 - [x] **Scheduled triggers + schedule UI** — PR #58/#59 (v0.17.x).
 
-## Tidak Lagi Relevan (usul buang — keputusan Aan)
-
-- **Gemini model detection** — tidak ada kode Gemini sama sekali di codebase sekarang; arah multi-model sudah pivot ke AI Platforms (OpenAI-compatible proxy). Kalau mau Gemini, jalurnya nanti via platform endpoint OpenAI-compatible, bukan deteksi `.gemini/settings`.
-
 ## Trash
+
+- **Gemini model detection** (dibuang 2026-09-01, approved Aan) — tidak ada kode Gemini di codebase; arah multi-model sudah pivot ke AI Platforms. Kalau mau Gemini nanti, jalurnya via platform endpoint OpenAI-compatible.
 
 - **Semantic search** — FTS5 keyword search sudah cukup, AI embeddings overkill
 - **Role/permission system** — personal tool, premature tanpa multi-tenant use case
