@@ -422,6 +422,53 @@ function runUnitTests() {
     }
   });
 
+  // ── Regex safety (R20) ──────────────────────────────────────────────────────
+  const NESTED_QUANT_RE = /(\+|\*|\{\d+,?\d*\})\)?(\+|\*|\{\d+,?\d*\})/;
+  function safeRegexTest(pattern, input) {
+    if (typeof pattern !== 'string' || pattern.length > 200) return false;
+    if (NESTED_QUANT_RE.test(pattern)) return false;
+    try { return new RegExp(pattern, 'i').test(input); } catch { return false; }
+  }
+  function escapeRegExp(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+  ut('safeRegexTest — normal regex works', () => {
+    assert.strictEqual(safeRegexTest('hello', 'hello world'), true);
+    assert.strictEqual(safeRegexTest('^foo$', 'foo'), true);
+    assert.strictEqual(safeRegexTest('bar', 'no match'), false);
+  });
+  ut('safeRegexTest — rejects nested quantifiers (ReDoS)', () => {
+    assert.strictEqual(safeRegexTest('(a+)+b', 'a'.repeat(30)), false);
+    assert.strictEqual(safeRegexTest('(a*)*b', 'a'.repeat(30)), false);
+    assert.strictEqual(safeRegexTest('(a+)*b', 'a'.repeat(30)), false);
+    assert.strictEqual(safeRegexTest('([a-z]+)+$', 'test'), false);
+  });
+  ut('safeRegexTest — rejects pattern > 200 chars', () => {
+    assert.strictEqual(safeRegexTest('a'.repeat(201), 'a'), false);
+  });
+  ut('safeRegexTest — invalid regex returns false', () => {
+    assert.strictEqual(safeRegexTest('[invalid', 'test'), false);
+  });
+  ut('safeRegexTest — non-string pattern returns false', () => {
+    assert.strictEqual(safeRegexTest(null, 'test'), false);
+    assert.strictEqual(safeRegexTest(42, 'test'), false);
+  });
+  ut('safeRegexTest — benign quantifiers allowed', () => {
+    assert.strictEqual(safeRegexTest('a{2,5}', 'aaa'), true);
+    assert.strictEqual(safeRegexTest('[0-9]+', '123'), true);
+    assert.strictEqual(safeRegexTest('(foo|bar)+', 'foobar'), true);
+  });
+  ut('safeRegexTest — completes fast on adversarial input', () => {
+    const start = Date.now();
+    safeRegexTest('(a+)+b', 'a'.repeat(30000));
+    assert.ok(Date.now() - start < 100, 'should reject instantly, not hang');
+  });
+  ut('escapeRegExp — escapes metacharacters', () => {
+    assert.strictEqual(escapeRegExp('hello.world'), 'hello\\.world');
+    assert.strictEqual(escapeRegExp('a+b*c?'), 'a\\+b\\*c\\?');
+    assert.strictEqual(escapeRegExp('$100'), '\\$100');
+    assert.strictEqual(escapeRegExp('foo[bar]'), 'foo\\[bar\\]');
+  });
+
   return { p, f };
 }
 

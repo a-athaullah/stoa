@@ -128,6 +128,16 @@ function sanitizeResultMeta(raw) {
   return Object.keys(out).length ? JSON.stringify(out) : null;
 }
 
+// ─── Regex safety (R20) ──────────────────────────────────────────────────────
+function escapeRegExp(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+const NESTED_QUANT_RE = /(\+|\*|\{\d+,?\d*\})\)?(\+|\*|\{\d+,?\d*\})/;
+function safeRegexTest(pattern, input) {
+  if (typeof pattern !== 'string' || pattern.length > 200) return false;
+  if (NESTED_QUANT_RE.test(pattern)) return false;
+  try { return new RegExp(pattern, 'i').test(input); } catch { return false; }
+}
+
 // Main-agent session lookup: explicit sub_agent_id IS NULL to avoid matching sub-agent sessions.
 // See migration 20260831-sub-agent-definitions.sql for the partial unique index design.
 function getSession(participantId) {
@@ -692,7 +702,7 @@ function getPublicUrl(fallbackHost) {
 function writeEnv(key, value) {
   const envFile = path.join(__dirname, '.env');
   let content = fs.existsSync(envFile) ? fs.readFileSync(envFile, 'utf8') : '';
-  const re = new RegExp(`^${key}=.*$`, 'm');
+  const re = new RegExp(`^${escapeRegExp(key)}=.*$`, 'm');
   if (re.test(content)) {
     content = content.replace(re, `${key}=${value}`);
   } else {
@@ -5265,7 +5275,7 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
           case 'contains':      return val.includes(target);
           case 'not_contains':  return !val.includes(target);
           case 'starts_with':   return val.startsWith(target);
-          case 'matches_regex': try { if (c.value.length > 200) return false; return new RegExp(c.value, 'i').test((fieldValues[c.field] || '').slice(0, 5000)); } catch { return false; }
+          case 'matches_regex': return safeRegexTest(c.value, (fieldValues[c.field] || '').slice(0, 5000));
           default: return true;
         }
       });
@@ -5399,7 +5409,7 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, senderName, t
           case 'contains':      return val.includes(target);
           case 'not_contains':  return !val.includes(target);
           case 'starts_with':   return val.startsWith(target);
-          case 'matches_regex': try { if (c.value.length > 200) return false; return new RegExp(c.value, 'i').test((fieldValues[c.field] || '').slice(0, 5000)); } catch { return false; }
+          case 'matches_regex': return safeRegexTest(c.value, (fieldValues[c.field] || '').slice(0, 5000));
           default: return true;
         }
       });
