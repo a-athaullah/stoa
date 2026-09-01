@@ -6,6 +6,7 @@ const { execSync } = require('child_process');
 const { WebSocketServer } = require('ws');
 const db = require('./db');
 const { ClaudeSession } = require('./claude-session');
+const { validateScheduleSpec, computeNextRun } = require('./lib/schedule');
 const fallbackSessions = new Map();
 const FALLBACK_IDLE_MS = 30 * 60 * 1000;
 function getFallbackSession(participantId, workDir) {
@@ -503,6 +504,108 @@ if (!fs.existsSync(CONNECTOR_MEDIA_DIR)) fs.mkdirSync(CONNECTOR_MEDIA_DIR);
   };
   scheduleNext();
 }
+
+// ── Phase 6: proactive scheduler ───────────────────────────────────────────
+// Fires persistent sub-agents on a schedule (interval | daily) with no
+// @mention / orchestrator in the loop. A scheduled fire reuses the SAME
+// resolve→validate→triggerAiResponse path as POST /sub-agent-trigger, but is
+// server-initiated: no spawn_token is issued, so the sub-agent stays depth=1.
+//
+// Design decisions (documented to pre-empt audit findings):
+//   • Re-entrancy: recursive setTimeout, not setInterval — the next tick is
+//     scheduled only after the current one returns, so ticks never stack.
+//   • Claim-before-fire: next_run_at is advanced BEFORE firing, so a crash or
+//     slow fire can never double-fire the same slot.
+//   • Skip-missed: next_run_at is recomputed from `now`, never catch-up. A long
+//     downtime yields one future slot, not a backlog burst (thundering herd).
+//   • Re-resolve fresh each tick: sub-agent may have been deleted/disabled/
+//     unlinked since the schedule was created — never cache; run the SAME
+//     validation as the interactive trigger (archived / paused / concurrent cap
+//     / parent online). Offline/full → skip this slot, wait for the next.
+//   • Rate limiting: the interval floor (≥5 min) + concurrent cap + self-overlap
+//     guard bound cadence. The interactive endpoint's hourly max_spawns_per_hour
+//     is an ORCHESTRATOR fan-out guard (counts parent_message_id spawns) and does
+//     not apply to server-initiated cadence runs, which are self-limiting.
+//   • Failure isolation: try/catch per schedule; one bad row never kills the loop.
+const SCHED_TICK_MS = parseInt(process.env.SCHED_TICK_MS) || 30000;
+const fmtUtc = (d) => d.toISOString().replace('T', ' ').slice(0, 19);
+
+// Attempt one scheduled fire. Returns a short status string; never throws.
+function fireSchedule(sched) {
+  const room = db.prepare('SELECT id, archived_at, spawns_paused, max_sub_agents FROM rooms WHERE id=?').get(sched.room_id);
+  if (!room) return 'room_gone';
+  if (room.archived_at) return 'archived';
+  if (room.spawns_paused) return 'paused';
+  // Fresh resolve: still exists, enabled, and linked to THIS room.
+  const sub = db.prepare(`
+    SELECT sa.* FROM room_sub_agents rsa JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
+    WHERE rsa.room_id=? AND sa.id=? AND sa.enabled=1
+  `).get(sched.room_id, sched.sub_agent_id);
+  if (!sub) return 'unlinked_or_disabled';
+  const parentPart = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(sched.room_id, sub.parent_actor_id);
+  if (!parentPart) return 'parent_not_participant';
+  // Concurrent cap — identical to the interactive trigger.
+  const running = db.prepare(
+    "SELECT COUNT(*) AS c FROM messages WHERE room_id=? AND sub_agent_id IS NOT NULL AND state='streaming'"
+  ).get(sched.room_id).c;
+  if (running >= room.max_sub_agents) return 'max_concurrent';
+  // Self-overlap: don't stack a new run on top of this sub-agent's in-flight one.
+  const selfRunning = db.prepare(
+    "SELECT 1 FROM messages WHERE room_id=? AND sub_agent_id=? AND state='streaming'"
+  ).get(sched.room_id, sched.sub_agent_id);
+  if (selfRunning) return 'self_overlap';
+  // Parent machine must be online to run the sub-agent.
+  const parentWs = agentClients.get(sub.parent_actor_id);
+  if (!parentWs || parentWs.readyState !== 1) return 'parent_offline';
+
+  const ai = db.prepare(`
+    SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.adapter_config, a.avatar_color, a.avatar_symbol, a.avatar_url
+    FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.id=?
+  `).get(parentPart.id);
+  ai.sub_agent = { id: sub.id, label: sub.label, tier: sub.tier, model: sub.model, workdir: sub.workdir, system_prompt: sub.system_prompt };
+  ai.parent_message_id = null; // standalone run — no orchestrator turn to auto-wake
+  triggerAiResponse(sched.room_id, ai, sched.task, null, []).catch(e => console.error('[scheduler] trigger error:', e.message));
+  return 'fired';
+}
+
+function schedulerTick() {
+  let due;
+  try {
+    due = db.prepare(
+      "SELECT * FROM sub_agent_schedules WHERE enabled=1 AND next_run_at IS NOT NULL AND next_run_at <= datetime('now') ORDER BY next_run_at LIMIT 50"
+    ).all();
+  } catch (e) { console.error('[scheduler] query error:', e.message); return; }
+  const now = new Date();
+  for (const sched of due) {
+    try {
+      const specRes = validateScheduleSpec(JSON.parse(sched.schedule_spec));
+      if (!specRes.ok) {
+        // Corrupt/unknown spec: disable so it can't spin every tick.
+        db.prepare('UPDATE sub_agent_schedules SET enabled=0, next_run_at=NULL WHERE id=?').run(sched.id);
+        console.error(`[scheduler] schedule ${sched.id} disabled — bad spec: ${specRes.error}`);
+        continue;
+      }
+      // Claim-before-fire: advance next_run_at FIRST.
+      const next = computeNextRun(specRes.spec, now);
+      db.prepare('UPDATE sub_agent_schedules SET next_run_at=? WHERE id=?').run(fmtUtc(next), sched.id);
+      const status = fireSchedule(sched);
+      if (status === 'fired') {
+        db.prepare("UPDATE sub_agent_schedules SET last_run_at=datetime('now') WHERE id=?").run(sched.id);
+      } else {
+        console.log(`[scheduler] schedule ${sched.id} skipped: ${status}`);
+      }
+    } catch (e) {
+      console.error(`[scheduler] schedule ${sched.id} error:`, e.message);
+    }
+  }
+}
+
+(function scheduleLoop() {
+  setTimeout(() => {
+    try { schedulerTick(); } catch (e) { console.error('[scheduler] tick error:', e.message); }
+    scheduleLoop();
+  }, SCHED_TICK_MS);
+})();
 
 const _settingCache = new Map();
 function getSetting(key, scopeId = null) {
@@ -1279,6 +1382,118 @@ const server = http.createServer(async (req, res) => {
     db.prepare('DELETE FROM room_sub_agents WHERE room_id=? AND sub_agent_id=?').run(roomId, subAgentId);
     broadcast(roomId, { type: 'sub_agent_unlinked', room_id: roomId, sub_agent_id: subAgentId });
     return json(res, { ok: true });
+  }
+
+  // ── Phase 6: proactive schedules (human-only — Settings/room UI) ───────────
+  // These manage sub_agent_schedules rows; the scheduler loop fires them.
+  // Agent-header auth is rejected: only the logged-in human sets up schedules.
+  if (url.pathname.match(/^\/api\/rooms\/\d+\/sub-agent-schedules(\/\d+)?$/)) {
+    if (!req._authUser) return json(res, { error: 'human auth required' }, 403);
+    const parts = url.pathname.split('/');
+    const roomId = parseInt(parts[3]);
+    const schedId = parts[5] ? parseInt(parts[5]) : null;
+    const room = db.prepare('SELECT id FROM rooms WHERE id=?').get(roomId);
+    if (!room) return json(res, { error: 'room not found' }, 404);
+
+    // Task validation identical to the interactive trigger (R4).
+    const validTask = (t) => {
+      const task = (t || '').trim();
+      if (task.length < 10 || /^(test|todo|tbd|placeholder|\.+)$/i.test(task)) return null;
+      return task;
+    };
+
+    // GET — list schedules for this room (with label for display).
+    if (req.method === 'GET' && !schedId) {
+      const rows = db.prepare(`
+        SELECT s.*, sa.label AS sub_agent_label
+        FROM sub_agent_schedules s JOIN sub_agents sa ON sa.id=s.sub_agent_id
+        WHERE s.room_id=? ORDER BY s.id
+      `).all(roomId);
+      for (const r of rows) { try { r.schedule_spec = JSON.parse(r.schedule_spec); } catch { r.schedule_spec = null; } }
+      return json(res, { schedules: rows });
+    }
+
+    // POST — create a schedule.
+    if (req.method === 'POST' && !schedId) {
+      const data = parseJsonBody(await readBody(req));
+      if (!data) return json(res, { error: 'Invalid JSON' }, 400);
+      const subAgentId = parseInt(data.sub_agent_id);
+      if (!subAgentId) return json(res, { error: 'sub_agent_id required' }, 400);
+      const task = validTask(data.task);
+      if (!task) return json(res, { error: 'invalid_task' }, 400);
+      const specRes = validateScheduleSpec(data.schedule_spec);
+      if (!specRes.ok) return json(res, { error: `invalid_schedule: ${specRes.error}` }, 400);
+      // Sub-agent must be linked to this room (implies parent was a participant at link time).
+      const sub = db.prepare(`
+        SELECT sa.id, sa.parent_actor_id FROM room_sub_agents rsa JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
+        WHERE rsa.room_id=? AND sa.id=?
+      `).get(roomId, subAgentId);
+      if (!sub) return json(res, { error: 'sub-agent not in this room' }, 404);
+      const human = db.prepare("SELECT id FROM actors WHERE type='human' LIMIT 1").get();
+      const nextRun = fmtUtc(computeNextRun(specRes.spec, new Date()));
+      const result = db.prepare(`
+        INSERT INTO sub_agent_schedules (room_id, sub_agent_id, created_by_actor_id, task, schedule_spec, enabled, next_run_at)
+        VALUES (?,?,?,?,?,1,?)
+      `).run(roomId, subAgentId, human?.id ?? sub.parent_actor_id, task, JSON.stringify(specRes.spec), nextRun);
+      const row = db.prepare('SELECT * FROM sub_agent_schedules WHERE id=?').get(result.lastInsertRowid);
+      try { row.schedule_spec = JSON.parse(row.schedule_spec); } catch {}
+      broadcast(roomId, { type: 'sub_agent_schedule_changed', room_id: roomId });
+      return json(res, { ok: true, schedule: row });
+    }
+
+    // PATCH — update task / schedule_spec / enabled.
+    if (req.method === 'PATCH' && schedId) {
+      const existing = db.prepare('SELECT * FROM sub_agent_schedules WHERE id=? AND room_id=?').get(schedId, roomId);
+      if (!existing) return json(res, { error: 'schedule not found' }, 404);
+      const data = parseJsonBody(await readBody(req));
+      if (!data) return json(res, { error: 'Invalid JSON' }, 400);
+      const updates = [];
+      const params = [];
+      let spec = null;
+      try { spec = JSON.parse(existing.schedule_spec); } catch {}
+      if (data.task !== undefined) {
+        const task = validTask(data.task);
+        if (!task) return json(res, { error: 'invalid_task' }, 400);
+        updates.push('task=?'); params.push(task);
+      }
+      if (data.schedule_spec !== undefined) {
+        const specRes = validateScheduleSpec(data.schedule_spec);
+        if (!specRes.ok) return json(res, { error: `invalid_schedule: ${specRes.error}` }, 400);
+        spec = specRes.spec;
+        updates.push('schedule_spec=?'); params.push(JSON.stringify(spec));
+      }
+      let enabled = existing.enabled;
+      if (data.enabled !== undefined) {
+        enabled = data.enabled ? 1 : 0;
+        updates.push('enabled=?'); params.push(enabled);
+      }
+      // Recompute next_run_at when the spec changed or the schedule is (re)enabled;
+      // clear it when disabled so the loop skips it.
+      if (enabled && (data.schedule_spec !== undefined || (data.enabled && !existing.enabled))) {
+        if (!spec) return json(res, { error: 'invalid_schedule: missing spec' }, 400);
+        updates.push('next_run_at=?'); params.push(fmtUtc(computeNextRun(spec, new Date())));
+      } else if (!enabled) {
+        updates.push('next_run_at=NULL');
+      }
+      if (!updates.length) return json(res, { error: 'nothing to update' }, 400);
+      params.push(schedId);
+      db.prepare(`UPDATE sub_agent_schedules SET ${updates.join(', ')} WHERE id=?`).run(...params);
+      const row = db.prepare('SELECT * FROM sub_agent_schedules WHERE id=?').get(schedId);
+      try { row.schedule_spec = JSON.parse(row.schedule_spec); } catch {}
+      broadcast(roomId, { type: 'sub_agent_schedule_changed', room_id: roomId });
+      return json(res, { ok: true, schedule: row });
+    }
+
+    // DELETE — remove a schedule.
+    if (req.method === 'DELETE' && schedId) {
+      const existing = db.prepare('SELECT id FROM sub_agent_schedules WHERE id=? AND room_id=?').get(schedId, roomId);
+      if (!existing) return json(res, { error: 'schedule not found' }, 404);
+      db.prepare('DELETE FROM sub_agent_schedules WHERE id=?').run(schedId);
+      broadcast(roomId, { type: 'sub_agent_schedule_changed', room_id: roomId });
+      return json(res, { ok: true });
+    }
+
+    return json(res, { error: 'method not allowed' }, 405);
   }
 
   // ── Phase 2b: orchestrator triggers a sub-agent (agent auth + spawn token)

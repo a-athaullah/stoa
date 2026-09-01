@@ -252,6 +252,17 @@ Sub-agent selalu berjalan di **mesin yang sama** dengan agent induknya. Server m
 - **Deteksi offline** — jika mesin agent induk terputus saat trigger sub-agent tiba, server langsung mengembalikan error `503 parent_offline` (bukan diam-diam menerima). Chat juga menampilkan event error yang disorot sehingga pengguna tahu agent tidak bisa dijangkau.
 - **Validasi working directory** — agent memvalidasi bahwa working directory yang dikonfigurasi ada di filesystem lokal sebelum menjalankan proses sub-agent. Jika path tidak ada (konfigurasi basi, mesin salah, folder terhapus), agent melaporkan error result kembali ke room alih-alih crash.
 
+### Sub-Agent Terjadwal (Proactive Trigger)
+
+Sub-agent persisten yang sudah di-link ke room bisa berjalan otomatis sesuai jadwal — tanpa @mention dan tanpa orchestrator. Ini berguna untuk pengecekan berkala (misalnya `probe` yang memeriksa penggunaan disk setiap 30 menit) atau laporan harian pada jam tetap.
+
+Jadwal punya salah satu dari dua bentuk:
+
+- **Interval** — berjalan setiap N menit (minimum 5).
+- **Harian** — berjalan sekali sehari pada jam dinding tetap (`HH:MM`) di timezone yang dipilih.
+
+Setiap eksekusi terjadwal memakai jalur yang sama dengan trigger manual, jadi semua pengaman tetap berlaku: room tidak boleh diarsipkan atau sedang pause spawns, batas sub-agent konkuren tetap berlaku, dan mesin agent induk harus online. Jika ada pengecekan yang gagal saat waktunya jalan, eksekusi itu dilewati dan yang berikutnya dijadwalkan seperti biasa. Setelah downtime (misalnya restart), server tidak pernah menembakkan tumpukan run yang terlewat — tiap jadwal berjalan paling banyak sekali ke depan, bukan sekali untuk setiap slot yang terlewat. Sub-agent terjadwal tetap tidak bisa memunculkan sub-agent-nya sendiri.
+
 ---
 
 ## Berbagi File dan Gambar
