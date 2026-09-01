@@ -2158,6 +2158,22 @@ async function run() {
     assert.ok(r.body.error.includes('regex'), r.body.error);
   });
 
+  await test('POST /api/automations — non-object condition element → 400', async () => {
+    if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
+    for (const bad of ['[null]', '[1]', '["x"]']) {
+      const r = await req('POST', '/api/automations', {
+        name: 'bad-elem',
+        trigger_type: 'slack',
+        trigger_event: 'message',
+        trigger_conditions: bad,
+        target_room_id: firstRoomId,
+        prompt_template: 'test',
+      });
+      assert.strictEqual(r.status, 400, `${bad} should be rejected`);
+      assert.ok(r.body.error.includes('object'), `${bad}: ${r.body.error}`);
+    }
+  });
+
   await test('PATCH /api/automations/:id — invalid trigger_conditions → 400', async () => {
     if (!testAutoId) { console.log('    (skipped)'); return; }
     const r = await req('PATCH', `/api/automations/${testAutoId}`, { trigger_conditions: 'not json' });

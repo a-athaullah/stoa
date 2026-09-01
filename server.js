@@ -137,7 +137,8 @@ function validateConditions(raw) {
   } catch { return 'trigger_conditions must be valid JSON'; }
   if (!Array.isArray(parsed)) return 'trigger_conditions must be a JSON array';
   for (const c of parsed) {
-    if (c && c.op === 'matches_regex') {
+    if (!c || typeof c !== 'object') return 'each condition must be an object';
+    if (c.op === 'matches_regex') {
       const err = validateRegexPattern(c.value);
       if (err) return `Condition regex: ${err}`;
     }
@@ -5290,6 +5291,7 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
 
       // Evaluate ALL conditions (AND)
       const allMatch = conditions.every(c => {
+        if (!c || typeof c !== 'object') return true;
         const val = (fieldValues[c.field] || '').toLowerCase();
         const target = (c.value || '').toLowerCase();
         switch (c.op) {
@@ -5431,6 +5433,7 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, senderName, t
       }
 
       const allMatch = conditions.every(c => {
+        if (!c || typeof c !== 'object') return true;
         const val = (fieldValues[c.field] || '').toLowerCase();
         const target = (c.value || '').toLowerCase();
         switch (c.op) {
