@@ -252,6 +252,17 @@ Sub-agents always run on the **same machine** as their parent agent. The server 
 - **Offline detection** — if the parent agent's machine is disconnected when a sub-agent trigger arrives, the server returns a `503 parent_offline` error immediately (instead of silently accepting). The chat also shows a highlighted error event so the user knows the agent is unreachable.
 - **Working directory validation** — the agent validates that the configured working directory exists on the local filesystem before spawning the sub-agent process. If the path is missing (stale config, wrong machine, deleted folder), it reports an error result back to the room instead of crashing.
 
+### Scheduled Sub-Agents (Proactive Triggers)
+
+A persistent sub-agent linked to a room can run automatically on a schedule — no @mention and no orchestrator needed. This is useful for recurring checks (for example, a `probe` that inspects disk usage every 30 minutes) or a fixed-time daily report.
+
+A schedule takes one of two shapes:
+
+- **Interval** — run every N minutes (minimum 5).
+- **Daily** — run once a day at a fixed wall-clock time (`HH:MM`) in a chosen timezone.
+
+Each scheduled run reuses the same path as a manual trigger, so it honors every safeguard: the room must not be archived or have spawns paused, the concurrent sub-agent cap still applies, and the parent agent's machine must be online. If a run can't fire because of a **transient** condition — the parent's machine is briefly offline, or the concurrency cap is momentarily full — it is retried shortly, up until its next scheduled occurrence. This means a **daily** schedule isn't lost for the whole day just because the machine happened to be offline at that exact minute; it fires as soon as the machine is back, then resumes its normal time the next day. After server downtime (for example, a restart), missed slots are **not** replayed in a burst — each schedule runs at most once going forward, not once for every slot it missed. A scheduled sub-agent still cannot spawn its own sub-agents.
+
 ---
 
 ## File and Image Sharing
