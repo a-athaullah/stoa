@@ -263,6 +263,7 @@ function openSubAgentDropdown(anchorEl, roomId, participant) {
   }
   loadItems();
 
+  drop.addEventListener('click', e => e.stopPropagation());
   anchorEl.style.position = 'relative';
   anchorEl.appendChild(drop);
   setTimeout(() => document.addEventListener('click', function close(e) {
