@@ -243,10 +243,11 @@ function verifyAgentRequest(req) {
 }
 
 // ─── Phase 2b: durable auto-wake (R1) ──────────────────────────────────────
-// When an orchestrator-triggered sub-agent completes, wake its parent exactly
-// once with the result in context. The pending_wakes row makes this survive a
-// server restart (drained on startup). User @mention-triggered sub-agents do
-// NOT wake anyone (they have no parent_message_id) — Aan reads the result.
+// When a sub-agent completes, wake its parent exactly once with the result in
+// context. The pending_wakes row makes this survive a server restart (drained
+// on startup). ALL sub-agent completions wake their parent — both
+// /sub-agent-trigger spawns (parent_message_id set) and @mention-cascade
+// triggers (parent_message_id null).
 const MAX_WAKE_ATTEMPTS = 3;
 
 function enqueueParentWake(roomId, parentParticipantId, subAgentMessageId) {
@@ -3785,9 +3786,10 @@ wss.on('connection', (ws, req) => {
       try {
         if (doneRow && !doneRow.sub_agent_id) {
           invalidateSpawnTokensForParticipant(doneRow.participant_id);
-        } else if (doneRow && doneRow.sub_agent_id && doneRow.parent_message_id) {
-          // A sub-agent runs under its parent's participant, so doneRow.participant_id
-          // IS the parent participant. parent_message_id only marks it as orchestrator-triggered.
+        } else if (doneRow && doneRow.sub_agent_id) {
+          // Wake the parent regardless of how the sub-agent was triggered — both
+          // /sub-agent-trigger (parent_message_id set) and @mention cascade (parent_message_id
+          // null) must wake the orchestrator so it can read the result and continue.
           enqueueParentWake(msg.room_id, doneRow.participant_id, msg.message_id);
         }
       } catch (e) { console.error('[wake] enqueue error:', e.message); }
@@ -4914,8 +4916,8 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   }
 
   const subAgent = ai.sub_agent || null;
-  // parent_message_id marks an orchestrator-triggered sub-agent run — set only
-  // by POST /sub-agent-trigger. Its presence is what enables the auto-wake (R1).
+  // parent_message_id marks a /sub-agent-trigger run for traceability. Auto-wake
+  // fires for ALL sub-agent completions (including @mention-cascade), not just these.
   const parentMessageId = (subAgent && ai.parent_message_id) ? ai.parent_message_id : null;
   const result = subAgent
     ? db.prepare(
