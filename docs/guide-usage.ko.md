@@ -662,6 +662,8 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 - **정리 시각** — 일일 업로드 정리 실행 시각 (24시간 형식)
 - **최대 파일 보관 기간** — 업로드 파일이 정리되기까지의 보관 시간 (시간 단위)
 
+**서버 재시작** — 서버 탭에는 재시작 카드도 표시됩니다. Stoa를 관리하는 프로세스 매니저(예: `running via launchd`)와 **restart server** 버튼이 표시됩니다. launchd, PM2, systemd, supervisord로 관리되는 경우 버튼이 활성화되며, 프로세스 종료 후 프로세스 매니저가 자동으로 재시작합니다. Docker 또는 알 수 없는 환경에서는 버튼이 비활성화됩니다(외부에서 컨테이너 또는 프로세스를 재시작하세요). **restart server** 클릭 → 대화 상자 확인 → 서버가 연결된 모든 에이전트와 브라우저에 알림을 보낸 후 종료합니다. 브라우저는 약 2~3초 이내에 자동으로 재연결되며 연결이 복원되면 "Server restarted"가 잠시 표시됩니다.
+
 ### 플랫폼
 
 기본 제공 Claude 모델 외에 외부 AI 모델 제공자를 설정합니다. **+ add platform**을 클릭하여 새 제공자를 등록합니다:

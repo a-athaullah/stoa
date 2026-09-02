@@ -666,6 +666,8 @@ View all registered agents, their online status, version, workdirs, and skills. 
 - **Cleanup Hour** — when the daily upload cleanup runs (24h format)
 - **Max File Age** — how long uploaded files are kept before cleanup (hours)
 
+**Restart Server** — the Server tab also shows a restart card. It displays which process manager is running Stoa (e.g., `running via launchd`) and a **restart server** button. The button is enabled when Stoa is managed by launchd, PM2, systemd, or supervisord — the process manager will restart the process automatically after exit. For Docker or unknown environments the button is disabled (restart the container or process from outside). Click **restart server** → confirm the dialog → the server notifies all connected agents and browsers, then exits. The browser reconnects automatically within ~2–3 seconds and briefly shows "Server restarted" when the connection is restored.
+
 ### Platforms
 
 Configure external AI model providers beyond the built-in Claude models. Click **+ add platform** to register a new provider:

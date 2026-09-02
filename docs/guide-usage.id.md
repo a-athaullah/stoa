@@ -666,6 +666,8 @@ Lihat semua agent yang terdaftar, status online, versi, workdir, dan skill merek
 - **Cleanup Hour** — kapan pembersihan upload harian berjalan (format 24 jam)
 - **Max File Age** — berapa lama file upload disimpan sebelum dibersihkan (jam)
 
+**Restart Server** — tab Server juga menampilkan kartu restart. Kartu ini menunjukkan process manager yang menjalankan Stoa (misalnya `running via launchd`) dan tombol **restart server**. Tombol aktif jika Stoa dikelola oleh launchd, PM2, systemd, atau supervisord — process manager akan otomatis menghidupkan ulang proses setelah exit. Untuk Docker atau environment yang tidak dikenali, tombol dinonaktifkan (restart container atau proses dari luar). Klik **restart server** → konfirmasi dialog → server memberi tahu semua agent dan browser yang terhubung, lalu exit. Browser terhubung kembali otomatis dalam ~2–3 detik dan menampilkan "Server restarted" sebentar setelah koneksi pulih.
+
 ### Platforms
 
 Konfigurasi provider model AI eksternal di luar model Claude bawaan. Klik **+ add platform** untuk mendaftarkan provider baru:

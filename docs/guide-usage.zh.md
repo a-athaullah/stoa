@@ -662,6 +662,8 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 - **清理时间** — 每日上传清理运行时间（24 小时制）
 - **最大文件保留时间** — 上传文件在清理前的保留时长（小时）
 
+**重启服务器** — 服务器选项卡还显示一个重启卡片。它显示运行 Stoa 的进程管理器（例如：`running via launchd`）和 **restart server** 按钮。当 Stoa 由 launchd、PM2、systemd 或 supervisord 管理时，按钮可用——进程管理器将在退出后自动重启进程。Docker 或未知环境下按钮不可用（请从外部重启容器或进程）。点击 **restart server** → 确认对话框 → 服务器通知所有已连接的代理和浏览器后退出。浏览器在约 2–3 秒内自动重新连接，连接恢复后短暂显示"Server restarted"。
+
 ### 平台
 
 配置内置 Claude 模型之外的外部 AI 模型供应商。点击 **+ add platform** 注册新供应商：
