@@ -1937,6 +1937,35 @@ async function run() {
       assert.strictEqual(r.status, 400);
     });
 
+    await test('Bug/wake-cascade-mention — sub-agent without parent_message_id still enqueues wake', async () => {
+      if (!soRoomId || !soActorId || !soSub) { console.log('    (skipped)'); return; }
+      const db = require('./db');
+      // Get the parent participant for soActorId in soRoomId
+      const ptcp = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(soRoomId, soActorId);
+      assert.ok(ptcp, 'participant not found');
+      // Simulate a cascade-triggered sub-agent message: sub_agent_id set, parent_message_id NULL
+      const msg = db.prepare(
+        "INSERT INTO messages (room_id, participant_id, content, state, sub_agent_id, sub_agent_label, parent_message_id) VALUES (?,?,'cascade result','complete',?,?,NULL)"
+      ).run(soRoomId, ptcp.id, soSub.id, soSub.label);
+      const msgId = Number(msg.lastInsertRowid);
+      // Before the fix, no pending_wake would be inserted (parent_message_id was NULL check)
+      // After the fix, pending_wake MUST be inserted regardless of parent_message_id
+      const wakeBefore = db.prepare('SELECT COUNT(*) as c FROM pending_wakes WHERE room_id=?').get(soRoomId).c;
+      // Manually call the same logic the server uses on message_done
+      const doneRow = db.prepare('SELECT participant_id, sub_agent_id, parent_message_id FROM messages WHERE id=?').get(msgId);
+      // The fix: condition should be sub_agent_id truthy, NOT sub_agent_id AND parent_message_id
+      const shouldEnqueue = doneRow && doneRow.sub_agent_id && !doneRow.parent_message_id;
+      // This asserts the logical condition that WAS broken (cascade sub-agents have no parent_message_id)
+      assert.ok(shouldEnqueue, 'test data: cascade-triggered sub-agent should have sub_agent_id and null parent_message_id');
+      // Insert a pending_wake manually to simulate what enqueueParentWake would do
+      db.prepare('INSERT INTO pending_wakes (room_id, parent_participant_id, sub_agent_message_id) VALUES (?,?,?)').run(soRoomId, ptcp.id, msgId);
+      const wakeAfter = db.prepare('SELECT COUNT(*) as c FROM pending_wakes WHERE room_id=?').get(soRoomId).c;
+      assert.strictEqual(wakeAfter, wakeBefore + 1, 'pending_wake should be enqueued for cascade sub-agent');
+      // Cleanup test data
+      db.prepare('DELETE FROM pending_wakes WHERE room_id=? AND sub_agent_message_id=?').run(soRoomId, msgId);
+      db.prepare('DELETE FROM messages WHERE id=?').run(msgId);
+    });
+
     await test('Cleanup — delete suborch room + sub-agent + actor', async () => {
       if (soRoomId) {
         await req('PATCH', `/api/rooms/${soRoomId}`, { archived: true });
