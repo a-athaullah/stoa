@@ -2594,6 +2594,11 @@ async function run() {
     assert.ok(typeof r.body.restartable === 'boolean', 'restartable should be a boolean');
   });
 
+  await test('GET /api/server/process-manager — unauthenticated → 401', async () => {
+    const r = await rawReq('GET', '/api/server/process-manager', '', 'application/json', { Cookie: '' });
+    assert.strictEqual(r.status, 401);
+  });
+
   await test('POST /api/server/restart — unauthenticated → 401', async () => {
     const r = await rawReq('POST', '/api/server/restart', '', 'application/json', { Cookie: '' });
     assert.strictEqual(r.status, 401);

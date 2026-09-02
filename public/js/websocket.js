@@ -334,22 +334,20 @@ function handleWsMessage(msg) {
 }
 
 // ── Server restart (same-port) notification ──────────────────────────────
+let _serverRestartPending = false;
 function handleServerRestarting() {
+  _serverRestartPending = true;
   const status = document.getElementById('s-restart-status');
   if (status) status.textContent = 'Restarting…';
-  // WS will drop naturally; existing reconnect loop in ws.onclose handles reconnection.
-  // After reconnect, refresh the process-manager label.
-  const origOnOpen = globalWs?.onopen;
-  if (globalWs) {
-    globalWs.onopen = function(e) {
-      if (origOnOpen) origOnOpen.call(this, e);
-      const s2 = document.getElementById('s-restart-status');
-      const btn = document.getElementById('s-restart-btn');
-      if (s2) { s2.textContent = 'Server restarted'; setTimeout(() => { s2.textContent = ''; }, 3000); }
-      if (btn) btn.disabled = false;
-      sLoadProcessManager?.();
-    };
-  }
+}
+function _onGlobalWsReconnectAfterRestart() {
+  if (!_serverRestartPending) return;
+  _serverRestartPending = false;
+  const status = document.getElementById('s-restart-status');
+  const btn = document.getElementById('s-restart-btn');
+  if (status) { status.textContent = 'Server restarted'; setTimeout(() => { status.textContent = ''; }, 3000); }
+  if (btn) btn.disabled = false;
+  if (typeof sLoadProcessManager === 'function') sLoadProcessManager();
 }
 
 // ── Server restart notification ───────────────────────────────────────────
