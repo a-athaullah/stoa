@@ -209,6 +209,11 @@ function handleWsMessage(msg) {
     return;
   }
 
+  if (msg.type === 'server_restarting') {
+    handleServerRestarting();
+    return;
+  }
+
   if (msg.type === 'file_list') {
     if (msg.error) { console.warn('[ws] file_list error:', msg.error); return; }
     wsFileTreeData = msg.tree || [];
@@ -326,6 +331,23 @@ function handleWsMessage(msg) {
     console.warn('[send_error]', msg.error, msg.code);
     return;
   }
+}
+
+// ── Server restart (same-port) notification ──────────────────────────────
+let _serverRestartPending = false;
+function handleServerRestarting() {
+  _serverRestartPending = true;
+  const status = document.getElementById('s-restart-status');
+  if (status) status.textContent = 'Restarting…';
+}
+function _onGlobalWsReconnectAfterRestart() {
+  if (!_serverRestartPending) return;
+  _serverRestartPending = false;
+  const status = document.getElementById('s-restart-status');
+  const btn = document.getElementById('s-restart-btn');
+  if (status) { status.textContent = 'Server restarted'; setTimeout(() => { status.textContent = ''; }, 3000); }
+  if (btn) btn.disabled = false;
+  if (typeof sLoadProcessManager === 'function') sLoadProcessManager();
 }
 
 // ── Server restart notification ───────────────────────────────────────────

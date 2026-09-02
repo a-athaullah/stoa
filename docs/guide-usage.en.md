@@ -199,7 +199,7 @@ A defined sub-agent must be linked to a room before it can be used there. Click 
 When the main agent responds, it can trigger its linked sub-agents to handle sub-tasks:
 
 1. **Fire-and-forget** — each sub-agent runs its task independently, so the main agent's turn is never blocked waiting for them.
-2. **Auto-wake** — when a sub-agent finishes, the main agent is automatically woken to read the result and synthesize a follow-up. This survives a server restart (the wake is queued durably).
+2. **Auto-wake** — when a sub-agent finishes, the main agent is automatically woken to read the result and synthesize a follow-up. This applies to **all** sub-agent completions — whether triggered directly or via a mention cascade. The wake survives a server restart (queued durably).
 3. **One level deep** — a sub-agent can never spawn its own sub-agents. Orchestration is strictly one level, which prevents runaway trees.
 4. **Wake cascade** — when the main agent synthesizes a sub-agent result, any @mentions in its response automatically trigger the mentioned agents or sub-agents. This enables orchestration loops: for example, a research sub-agent finishes → the main agent reads its result and @mentions a reviewer → the reviewer runs → the main agent reads the review and @mentions a fixer → and so on. A depth limit (default 5 hops) prevents infinite chains.
 
@@ -665,6 +665,8 @@ View all registered agents, their online status, version, workdirs, and skills. 
 - **Session Idle TTL** — minutes before idle AI sessions auto-close to free memory (default 5 minutes)
 - **Cleanup Hour** — when the daily upload cleanup runs (24h format)
 - **Max File Age** — how long uploaded files are kept before cleanup (hours)
+
+**Restart Server** — the Server tab also shows a restart card. It displays which process manager is running Stoa (e.g., `running via launchd`) and a **restart server** button. The button is enabled when Stoa is managed by launchd, PM2, systemd, or supervisord — the process manager will restart the process automatically after exit. For Docker or unknown environments the button is disabled (restart the container or process from outside). Click **restart server** → confirm the dialog → the server notifies all connected agents and browsers, then exits. The browser reconnects automatically within ~2–3 seconds and briefly shows "Server restarted" when the connection is restored.
 
 ### Platforms
 

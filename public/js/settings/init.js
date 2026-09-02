@@ -6,6 +6,7 @@ function initGlobalWs() {
       reconnectDelay = 3000;
       globalWs.send(JSON.stringify({ type: 'subscribe_global' }));
       refreshRoomList();
+      _onGlobalWsReconnectAfterRestart();
       if (typeof autoState !== 'undefined' && autoState.loaded) {
         autoState.loaded = false;
         if (document.getElementById('s-tab-automation')?.style.display !== 'none') {
@@ -19,6 +20,7 @@ function initGlobalWs() {
       if (msg.type === 'agent_scan_complete') sFinishSetupSlip(msg.actor_id);
       if (msg.type === 'actor_removed') handleActorRemoved(msg.actor_id, msg.affected_rooms);
       if (msg.type === 'server_restart') handleServerRestart(msg);
+      if (msg.type === 'server_restarting') handleServerRestarting();
       if (msg.type === 'room_deleted' || msg.type === 'room_archived') {
         if (currentRoomId === msg.room_id) {
           currentRoomId = null;
@@ -336,6 +338,9 @@ function initSettings() {
     const hint = document.getElementById('s-notif-hint');
     hint.textContent = notifEnabled ? 'You will be notified when agents respond in other rooms.' : 'Notifications are off.';
   });
+
+  // Server restart
+  document.getElementById('s-restart-btn').addEventListener('click', sRestartServer);
 
   // Logout
   document.getElementById('s-logout-btn').addEventListener('click', doLogout);
