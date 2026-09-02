@@ -51,10 +51,11 @@ async function sLoadProcessManager() {
     const pm = await fjson('/api/server/process-manager');
     label.textContent = `running via ${pm.manager}`;
     btn.disabled = !pm.restartable;
-    if (!pm.restartable) btn.title = 'Restart not supported for this process manager';
+    btn.title = pm.restartable ? '' : `Restart not supported for ${pm.manager}`;
   } catch {
-    label.textContent = 'detection failed';
-    btn.disabled = true;
+    label.textContent = '';
+    btn.disabled = false;
+    btn.title = 'Restart (process manager unknown)';
   }
 }
 

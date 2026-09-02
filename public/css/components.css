@@ -332,6 +332,30 @@
 .s-server-hint a { color: var(--h-ink-mute); text-underline-offset: 3px; }
 .s-server-hint a:hover { color: var(--h-ink); }
 
+/* Restart server footer */
+.s-restart-footer {
+  position: sticky; bottom: 0;
+  display: flex; align-items: center; justify-content: flex-end; gap: 12px;
+  padding: 14px 0 4px;
+  background: linear-gradient(to bottom, transparent, var(--h-bg) 40%);
+  pointer-events: none;
+}
+.s-restart-footer > * { pointer-events: auto; }
+.s-restart-pm-label {
+  font-size: 12px; color: var(--h-ink-faint); font-family: var(--h-serif); font-style: italic;
+  margin-right: auto;
+}
+.s-restart-status-text {
+  font-size: 12px; color: var(--h-ink-faint); font-family: var(--h-serif); font-style: italic;
+}
+.s-restart-btn {
+  background: oklch(42% 0.15 25); color: #fff; border: none; border-radius: 8px;
+  padding: 8px 18px; font-size: 13px; cursor: pointer; font-family: var(--h-sans);
+  transition: opacity .15s; flex-shrink: 0;
+}
+.s-restart-btn:hover:not(:disabled) { opacity: .82; }
+.s-restart-btn:disabled { opacity: .35; cursor: default; }
+
 /* Avatar upload zone */
 .s-avatar-section {
   padding: 14px 18px 16px; border-bottom: 1px solid var(--h-hair-soft);
