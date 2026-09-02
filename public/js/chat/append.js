@@ -85,7 +85,7 @@ function appendMessage(m, container) {
 
   // Pesan yang masih streaming/requesting → tampilkan thinking bubble
   if (m.state === 'streaming' || m.state === 'requesting') {
-    showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url);
+    showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label);
     return;
   }
 
@@ -98,7 +98,19 @@ function appendMessage(m, container) {
   // Seal
   const sealWrap = document.createElement('div');
   sealWrap.className = 'h-msg-seal-wrap';
-  sealWrap.appendChild(makeAvatar(m.actor_name, m.avatar_color, m.avatar_url, 40));
+  if (m.sub_agent_label) {
+    const container = document.createElement('div');
+    container.className = 'h-sa-avatar-wrap';
+    container.appendChild(makeAvatar(m.actor_name, m.avatar_color, m.avatar_url, 40));
+    const badge = document.createElement('span');
+    badge.className = 'h-sa-badge';
+    badge.style.background = m.avatar_color || '#888';
+    badge.textContent = m.sub_agent_label[0].toUpperCase();
+    container.appendChild(badge);
+    sealWrap.appendChild(container);
+  } else {
+    sealWrap.appendChild(makeAvatar(m.actor_name, m.avatar_color, m.avatar_url, 40));
+  }
   row.appendChild(sealWrap);
 
   // Body

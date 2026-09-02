@@ -1,5 +1,5 @@
 // ── Thinking bubble (before tokens arrive) ─────────────────────────────────
-function showThinking(msgId, actorName, color, symbol, avatarUrl) {
+function showThinking(msgId, actorName, color, symbol, avatarUrl, subAgentLabel) {
   if (document.getElementById('msg-' + msgId)) return; // already exists
   const inner = document.getElementById('messages-inner');
   if (!inner) return;
@@ -11,7 +11,19 @@ function showThinking(msgId, actorName, color, symbol, avatarUrl) {
   // Seal
   const sealWrap = document.createElement('div');
   sealWrap.className = 'h-msg-seal-wrap';
-  sealWrap.appendChild(makeAvatar(actorName, color, avatarUrl, 40));
+  if (subAgentLabel) {
+    const container = document.createElement('div');
+    container.className = 'h-sa-avatar-wrap';
+    container.appendChild(makeAvatar(actorName, color, avatarUrl, 40));
+    const badge = document.createElement('span');
+    badge.className = 'h-sa-badge';
+    badge.style.background = color || '#888';
+    badge.textContent = subAgentLabel[0].toUpperCase();
+    container.appendChild(badge);
+    sealWrap.appendChild(container);
+  } else {
+    sealWrap.appendChild(makeAvatar(actorName, color, avatarUrl, 40));
+  }
   row.appendChild(sealWrap);
 
   // Body
