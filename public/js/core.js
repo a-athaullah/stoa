@@ -15,6 +15,7 @@ let allActors = [];
 let humanActor = null;
 let actorByName = {};
 let roomParticipantsCache = {}; // roomId -> [participant]
+let roomSubAgentsCache = {};   // roomId -> [{label, parent_name, avatar_color, avatar_url}]
 let pendingAttachments = [];
 const streaming = {}; // msgId -> accumulated text
 const processingMessages = new Set(); // message IDs currently being processed by AI

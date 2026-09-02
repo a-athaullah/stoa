@@ -181,18 +181,32 @@ function handleInlineMarkdown() {
 // ── Mention highlighting in bubbles ───────────────────────────────────────
 function highlightMentions(html) {
   const names = (roomParticipantsCache[currentRoomId] || []).map(p => p.name);
-  if (!names.length) return html;
-  const escaped = names.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const subLabels = (roomSubAgentsCache[currentRoomId] || []).map(s => s.label);
+  const all = [...names, ...subLabels];
+  if (!all.length) return html;
+  const escaped = all.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  escaped.sort((a, b) => b.length - a.length);
   const re = new RegExp(`@(${escaped.join('|')})(?=\\s|&nbsp;|[.,!?;:]|$)`, 'g');
-  return html.replace(re, (match, name) => '<span class="h-mention-inline">@' + wsEscHtml(name) + '</span>');
+  return html.replace(re, (match, name) => {
+    const isSub = subLabels.includes(name);
+    const cls = isSub ? 'h-mention-inline h-mention-sub' : 'h-mention-inline';
+    return '<span class="' + cls + '">@' + wsEscHtml(name) + '</span>';
+  });
 }
 
 // ── Mention autocomplete ──────────────────────────────────────────────────
 function showMentionPopup(query) {
   const popup = document.getElementById('mention-popup');
   const parts = roomParticipantsCache[currentRoomId] || [];
+  const subs = roomSubAgentsCache[currentRoomId] || [];
   const q = query.toLowerCase();
-  const matches = parts.filter(p => p.actor_id !== humanActor?.id && p.name.toLowerCase().startsWith(q)).slice(0, 7);
+  const partMatches = parts
+    .filter(p => p.actor_id !== humanActor?.id && p.name.toLowerCase().startsWith(q))
+    .map(p => ({ name: p.name, avatar_color: p.avatar_color, avatar_url: p.avatar_url, isSub: false }));
+  const subMatches = subs
+    .filter(s => s.label.toLowerCase().startsWith(q))
+    .map(s => ({ name: s.label, avatar_color: s.avatar_color || null, avatar_url: s.avatar_url || null, isSub: true }));
+  const matches = [...partMatches, ...subMatches].slice(0, 7);
   if (!matches.length) { hideMentionPopup(); return; }
 
   popup.innerHTML = '';
@@ -206,6 +220,12 @@ function showMentionPopup(query) {
     name.className = 'h-mention-name';
     name.textContent = p.name;
     item.appendChild(name);
+    if (p.isSub) {
+      const badge = document.createElement('span');
+      badge.className = 'h-mention-sub-badge';
+      badge.textContent = 'sub';
+      item.appendChild(badge);
+    }
     item.onmousedown = e => {
       e.preventDefault();
       applyMention(p.name);

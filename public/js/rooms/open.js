@@ -47,6 +47,7 @@ async function openRoom(room) {
   renderComposerSeal();
   if (typeof updateModelSelector === 'function') updateModelSelector(room, parts);
   fjson(`/api/rooms/${room.id}/skills`).then(s => { allSkills = s; }).catch(e => { allSkills = []; console.error('Failed to load skills for room', room.id, e); });
+  fjson(`/api/rooms/${room.id}/sub-agents`).then(sa => { roomSubAgentsCache[room.id] = sa.linked || []; }).catch(() => { roomSubAgentsCache[room.id] = []; });
 
   connectWS(room.id);
 }

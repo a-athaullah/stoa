@@ -1812,6 +1812,82 @@ async function run() {
     });
   }
 
+  // ── Mention cascade — word boundary & sub-agent avatar fields ──────────────
+  console.log('\n[Mention cascade]');
+  {
+    const mentionBoundary = (name) => new RegExp(`(?:^|\\s)@${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=\\s|[.,!?;:]|$)`);
+
+    await test('mentionBoundary — matches @name at start of string', async () => {
+      assert.ok(mentionBoundary('reviewer').test('@reviewer please check'));
+    });
+
+    await test('mentionBoundary — matches @name after space', async () => {
+      assert.ok(mentionBoundary('reviewer').test('hey @reviewer check this'));
+    });
+
+    await test('mentionBoundary — matches @name at end of string', async () => {
+      assert.ok(mentionBoundary('reviewer').test('delegate to @reviewer'));
+    });
+
+    await test('mentionBoundary — matches @name before punctuation', async () => {
+      assert.ok(mentionBoundary('reviewer').test('ask @reviewer, then proceed'));
+      assert.ok(mentionBoundary('reviewer').test('ask @reviewer.'));
+      assert.ok(mentionBoundary('reviewer').test('ask @reviewer!'));
+    });
+
+    await test('mentionBoundary — rejects @name as substring', async () => {
+      assert.ok(!mentionBoundary('a').test('user@admin'), 'email should not match');
+      assert.ok(!mentionBoundary('rev').test('@reviewer'), 'partial label should not match');
+    });
+
+    await test('mentionBoundary — regex-safe with special chars in name', async () => {
+      assert.ok(mentionBoundary('test.agent').test('@test.agent done'));
+      assert.ok(!mentionBoundary('test.agent').test('@testXagent done'));
+    });
+
+    let mcActorId = null, mcRoomId = null, mcSub = null, mcAgentWs = null;
+    await test('Setup — register actor + room + sub-agent for mention cascade', async () => {
+      const agent = await createOnlineTestAgent('__test-mention-cascade', '/tmp/stoa-test-mention-cascade');
+      if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+      mcActorId = agent.actorId; mcAgentWs = agent.ws;
+      const rr = await req('POST', '/api/rooms', { title: '__mention-cascade-room__', workdir_id: agent.workdirId, participant_ids: [mcActorId] });
+      assert.strictEqual(rr.status, 200);
+      mcRoomId = rr.body.id;
+      const sa = await req('POST', `/api/actors/${mcActorId}/sub-agents`, { label: 'mc-probe', tier: 'quick' });
+      assert.strictEqual(sa.status, 201);
+      mcSub = sa.body;
+      await req('POST', `/api/rooms/${mcRoomId}/sub-agents`, { sub_agent_id: mcSub.id });
+      if (mcAgentWs) { mcAgentWs.close(); mcAgentWs = null; }
+    });
+
+    await test('GET /api/rooms/:id/sub-agents — linked includes avatar fields', async () => {
+      if (!mcRoomId) { console.log('    (skipped)'); return; }
+      const r = await req('GET', `/api/rooms/${mcRoomId}/sub-agents`);
+      assert.strictEqual(r.status, 200);
+      assert.ok(r.body.linked.length >= 1, 'should have linked sub-agent');
+      const linked = r.body.linked[0];
+      assert.ok('parent_name' in linked, 'parent_name field missing from linked sub-agent');
+      assert.ok('label' in linked, 'label field missing from linked sub-agent');
+      assert.ok('avatar_color' in linked, 'avatar_color field missing from linked sub-agent');
+      assert.ok('avatar_url' in linked, 'avatar_url field missing from linked sub-agent');
+    });
+
+    await test('Cleanup — delete mention cascade test room + sub-agent + actor', async () => {
+      if (mcRoomId) {
+        await req('PATCH', `/api/rooms/${mcRoomId}`, { archived: true });
+        await req('DELETE', `/api/rooms/${mcRoomId}`);
+        mcRoomId = null;
+      }
+      if (mcSub) { await req('DELETE', `/api/sub-agents/${mcSub.id}`); mcSub = null; }
+      if (mcActorId) {
+        const r = await req('DELETE', `/api/actors/${mcActorId}`);
+        assert.ok([200, 204].includes(r.status));
+        orphanActorIds = orphanActorIds.filter(id => id !== mcActorId);
+        mcActorId = null;
+      }
+    });
+  }
+
   // Search
   console.log('\n[Search]');
   await test('GET /api/search?q= — empty query → []', async () => {
