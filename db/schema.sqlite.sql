@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS messages (
   ai_model TEXT DEFAULT NULL,
   created_at TEXT DEFAULT (datetime('now')),
   completed_at TEXT DEFAULT NULL,
+  client_event_id TEXT DEFAULT NULL,
   FOREIGN KEY (room_id) REFERENCES rooms(id),
   FOREIGN KEY (participant_id) REFERENCES room_participants(id)
 );
@@ -148,6 +149,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_participant_id ON messages(participant_i
 CREATE INDEX IF NOT EXISTS idx_ai_sessions_participant_id ON ai_sessions(participant_id);
 CREATE INDEX IF NOT EXISTS idx_ai_sessions_room_id ON ai_sessions(room_id);
 CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(reply_to);
+CREATE UNIQUE INDEX IF NOT EXISTS messages_room_client_event ON messages(room_id, client_event_id) WHERE client_event_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_rooms_workdir_id ON rooms(workdir_id);
 CREATE INDEX IF NOT EXISTS idx_rooms_created_by ON rooms(created_by);
 

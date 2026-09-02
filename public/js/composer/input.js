@@ -144,7 +144,7 @@ function sendMessage() {
   const replyTo = pendingReplyTo;
   clearAttachments();
   clearReply();
-  ws.send(JSON.stringify({ type: 'send_message', room_id: currentRoomId, content, attachments, reply_to: replyTo }));
+  ws.send(JSON.stringify({ type: 'send_message', room_id: currentRoomId, content, attachments, reply_to: replyTo, event_id: crypto.randomUUID() }));
   clearDraft(currentRoomId);
 }
 

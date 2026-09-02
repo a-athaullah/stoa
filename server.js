@@ -1785,6 +1785,7 @@ const server = http.createServer(async (req, res) => {
     if (!data) return json(res, { error: 'Invalid JSON' }, 400);
     const content = data.content?.trim();
     if (!content) return json(res, { error: 'content required' }, 400);
+    const eventId = typeof data.event_id === 'string' && data.event_id.trim() ? data.event_id.trim() : null;
 
     const room = db.prepare('SELECT id, archived_at FROM rooms WHERE id=?').get(roomId);
     if (!room) return json(res, { error: 'room not found' }, 404);
@@ -1795,9 +1796,19 @@ const server = http.createServer(async (req, res) => {
     ).get(roomId, agentId);
     if (!participant) return json(res, { error: 'agent is not a participant in this room' }, 403);
 
+    if (eventId) {
+      const existing = db.prepare(
+        'SELECT id, content FROM messages WHERE room_id=? AND client_event_id=?'
+      ).get(roomId, eventId);
+      if (existing) {
+        if (existing.content !== content) return json(res, { error: 'event_id conflict: content mismatch' }, 409);
+        return json(res, { message_id: existing.id, idempotent: true });
+      }
+    }
+
     const result = db.prepare(
-      "INSERT INTO messages (room_id, participant_id, content, state) VALUES (?, ?, ?, 'complete')"
-    ).run(roomId, participant.id, content);
+      "INSERT INTO messages (room_id, participant_id, content, client_event_id, state) VALUES (?, ?, ?, ?, 'complete')"
+    ).run(roomId, participant.id, content, eventId);
     const messageId = result.lastInsertRowid;
 
     const row = db.prepare(`
@@ -3379,7 +3390,7 @@ wss.on('connection', (ws, req) => {
         handled = await handleSkillCommand(msg.room_id, msg.content, ws);
       }
       if (!handled) {
-        await handleHumanMessage(msg.room_id, msg.content, msg.attachments || null, msg.reply_to || null, ws);
+        await handleHumanMessage(msg.room_id, msg.content, msg.attachments || null, msg.reply_to || null, ws, msg.event_id || null);
       }
     }
 
@@ -4602,13 +4613,32 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
   }
 }
 
-async function handleHumanMessage(roomId, content, attachments, replyTo, senderWs) {
+async function handleHumanMessage(roomId, content, attachments, replyTo, senderWs, eventId) {
   // Get Ahmad's participant ID
   const parts = db.prepare(
     "SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1"
   ).all(roomId);
   if (!parts.length) return;
   const humanParticipantId = parts[0].id;
+
+  // Idempotent insert: if client supplied event_id and it already exists, return the original message
+  if (eventId) {
+    const existing = db.prepare(
+      'SELECT id, content FROM messages WHERE room_id=? AND client_event_id=?'
+    ).get(roomId, eventId);
+    if (existing) {
+      if (existing.content !== content) {
+        if (senderWs?.readyState === 1) {
+          senderWs.send(JSON.stringify({ type: 'send_error', error: 'event_id conflict: content mismatch', code: 409 }));
+        }
+        return;
+      }
+      if (senderWs?.readyState === 1) {
+        senderWs.send(JSON.stringify({ type: 'message_ack', message_id: existing.id, idempotent: true }));
+      }
+      return;
+    }
+  }
 
   // Backward compat: extract first image/file for legacy columns
   const images = (attachments || []).filter(a => a.type === 'image');
@@ -4620,8 +4650,8 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
 
   // Save human message
   const result = db.prepare(
-    `INSERT INTO messages (room_id, participant_id, content, image_url, file_url, file_name, attachments, reply_to, state) VALUES (?,?,?,?,?,?,?,?,'complete')`
-  ).run(roomId, humanParticipantId, content, imageUrl, fileUrl, fileName, attachJson, replyTo || null);
+    `INSERT INTO messages (room_id, participant_id, content, image_url, file_url, file_name, attachments, reply_to, client_event_id, state) VALUES (?,?,?,?,?,?,?,?,?,'complete')`
+  ).run(roomId, humanParticipantId, content, imageUrl, fileUrl, fileName, attachJson, replyTo || null, eventId || null);
   const messageId = result.lastInsertRowid;
 
   // Get message with actor info for broadcast
