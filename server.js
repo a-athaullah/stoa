@@ -371,7 +371,7 @@ async function cascadeMentionsAfterWake(roomId, parent) {
     WHERE rp.actor_id=? AND m.room_id=? AND m.state='complete' AND m.sub_agent_id IS NULL
     ORDER BY m.id DESC LIMIT 1
   `).get(parent.actor_id, roomId);
-  if (!lastMsg?.content) return;
+  if (!lastMsg?.content || !lastMsg.content.includes('@')) return;
 
   const allAi = db.prepare(`
     SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.adapter_config, a.avatar_color, a.avatar_symbol, a.avatar_url
@@ -388,8 +388,10 @@ async function cascadeMentionsAfterWake(roomId, parent) {
 
   const cascadeAgents = [];
 
+  const mentionBoundary = (name) => new RegExp(`(?:^|\\s)@${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=\\s|[.,!?;:]|$)`);
+
   for (const sa of linkedSubs) {
-    if (lastMsg.content.includes('@' + sa.label)) {
+    if (mentionBoundary(sa.label).test(lastMsg.content)) {
       const parentAgent = allAi.find(a => a.actor_id === sa.parent_actor_id);
       if (parentAgent) {
         cascadeAgents.push({ ...parentAgent, sub_agent: sa });
@@ -398,7 +400,7 @@ async function cascadeMentionsAfterWake(roomId, parent) {
   }
 
   for (const other of allAi) {
-    if (other.actor_id !== parent.actor_id && lastMsg.content.includes('@' + other.name)) {
+    if (other.actor_id !== parent.actor_id && mentionBoundary(other.name).test(lastMsg.content)) {
       const alreadyQueued = cascadeAgents.some(a => a.actor_id === other.actor_id);
       if (!alreadyQueued) cascadeAgents.push({ ...other, sub_agent: null });
     }

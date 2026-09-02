@@ -201,7 +201,7 @@ Saat agent utama merespons, ia bisa memicu sub-agent yang tertaut untuk menangan
 1. **Fire-and-forget** — tiap sub-agent menjalankan tugasnya secara independen, jadi giliran agent utama tidak pernah terblokir menunggu mereka.
 2. **Auto-wake** — saat sebuah sub-agent selesai, agent utama otomatis dibangunkan untuk membaca hasilnya dan menyusun tindak lanjut. Ini bertahan melewati restart server (wake di-antre secara durable).
 3. **Satu level dalam** — sebuah sub-agent tidak pernah bisa memunculkan sub-agent-nya sendiri. Orkestrasi tegas satu level, mencegah pohon yang meliar.
-4. **Satu hop** — giliran sintesis agent utama tidak otomatis memicu agent lain di room, bahkan jika ia menulis @mention. Ini menjaga orkestrasi tetap terkendali.
+4. **Wake cascade** — saat agent utama menyintesis hasil sub-agent, @mention apapun di responsnya otomatis memicu agent atau sub-agent yang di-mention. Ini memungkinkan loop orkestrasi: misalnya, sub-agent riset selesai → agent utama baca hasilnya dan @mention reviewer → reviewer jalan → agent utama baca review dan @mention fixer → dst. Batas kedalaman (default 5 hop) mencegah rantai tak terbatas.
 
 ### Tier Model dan Fallback
 
