@@ -43,6 +43,7 @@ const EXPECTED_CLIENT_VERSION = (() => {
 // Build agent bundle: stoa.js + lib/* → dist/stoa.js (single file for agent auto-update).
 // esbuild is fast (~50ms); rebuild on every startup ensures bundle is always fresh.
 const AGENT_BUNDLE_PATH = path.join(__dirname, 'dist', 'stoa.js');
+let agentBundleReady = false;
 (() => {
   try {
     const distDir = path.join(__dirname, 'dist');
@@ -55,9 +56,10 @@ const AGENT_BUNDLE_PATH = path.join(__dirname, 'dist', 'stoa.js');
       external: ['ws', './claude-session'],
       outfile: AGENT_BUNDLE_PATH,
     });
+    agentBundleReady = true;
     console.log('[build] Agent bundle ready');
   } catch (e) {
-    console.error('[build] Agent bundle failed, serving source:', e.message);
+    console.error('[build] Agent bundle FAILED — agent updates will be blocked until resolved:', e.message);
   }
 })();
 
@@ -2405,6 +2407,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/client/manifest') {
     const files = {};
     for (const name of CLIENT_FILES) {
+      if (name === 'stoa.js' && !agentBundleReady) continue;
       let hash = clientFileHash(name);
       if (!hash) continue;
       // Monotonic downgrade guard: if stoa.js on disk has changed from startup and is now
@@ -2431,6 +2434,10 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname.startsWith('/api/client/file/')) {
     const name = path.basename(url.pathname.slice('/api/client/file/'.length));
     if (!CLIENT_FILES.has(name)) { res.writeHead(404); return res.end('Not found'); }
+    if (name === 'stoa.js' && !agentBundleReady) {
+      console.error('[update] Blocked serving unbundled stoa.js — esbuild build failed at startup');
+      res.writeHead(503); return res.end('Agent bundle not available');
+    }
     const fp = clientFilePath(name);
     if (!fs.existsSync(fp)) { res.writeHead(404); return res.end('Not found'); }
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
