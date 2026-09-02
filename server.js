@@ -357,6 +357,7 @@ async function drainWake(wakeId) {
 // next sub-agent → cascade triggers it → repeat.
 const MAX_WAKE_CASCADE_DEPTH = 5;
 const wakeCascadeDepth = new Map(); // roomId → current depth
+const mentionBoundary = (name) => new RegExp(`(?:^|\\s)@${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=\\s|[.,!?;:]|$)`);
 
 async function cascadeMentionsAfterWake(roomId, parent) {
   const depth = (wakeCascadeDepth.get(roomId) || 0) + 1;
@@ -389,8 +390,6 @@ async function cascadeMentionsAfterWake(roomId, parent) {
 
   const subAgentsCascade = [];
   const regularAgentsCascade = [];
-
-  const mentionBoundary = (name) => new RegExp(`(?:^|\\s)@${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=\\s|[.,!?;:]|$)`);
 
   for (const sa of linkedSubs) {
     if (mentionBoundary(sa.label).test(lastMsg.content)) {
@@ -4613,7 +4612,7 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
       if (lastMsg?.content) {
         const allAiInRoom = allAiStmt.all(roomId);
         for (const other of allAiInRoom) {
-          if (other.actor_id !== currentAgent.actor_id && lastMsg.content.includes('@' + other.name)) {
+          if (other.actor_id !== currentAgent.actor_id && mentionBoundary(other.name).test(lastMsg.content)) {
             const alreadyQueued = agents.slice(i + 1).some(a => a.actor_id === other.actor_id);
             if (!alreadyQueued) agents.push({ ...other, sub_agent: null });
           }
@@ -4627,7 +4626,7 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
           WHERE rsa.room_id=? AND sa.enabled=1
         `).all(roomId);
         for (const sa of linkedSubs) {
-          if (lastMsg.content.includes('@' + sa.label) && !firedSubAgentIds.has(sa.id)) {
+          if (mentionBoundary(sa.label).test(lastMsg.content) && !firedSubAgentIds.has(sa.id)) {
             const parent = allAiInRoom.find(a => a.actor_id === sa.parent_actor_id);
             if (parent) {
               firedSubAgentIds.add(sa.id);
