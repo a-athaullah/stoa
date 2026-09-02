@@ -600,6 +600,185 @@ function runUnitTests() {
     assert.strictEqual(matchThinkingBlock('string'), false);
   });
 
+  // ── Transcript sanitizer (R21) ───────────────────────────────────────────
+  console.log('\n  [Transcript sanitizer]');
+  const {
+    PLACEHOLDER_TEXT,
+    STUB_RESULT_TEXT,
+    findAnomalies,
+    hasAnomalies,
+    anomalyCount,
+    fixAnomalies,
+    escalationLevel,
+    formatNotice,
+  } = require('./lib/transcript-sanitizer');
+
+  ut('findAnomalies — clean transcript → no anomalies', () => {
+    const entries = [
+      { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'tu1', name: 'Read', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'ok' }] },
+    ];
+    const a = findAnomalies(entries);
+    assert.strictEqual(hasAnomalies(a), false);
+    assert.strictEqual(anomalyCount(a), 0);
+  });
+
+  ut('findAnomalies — orphan tool_result detected', () => {
+    const entries = [
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'orphan1', content: 'x' }] },
+    ];
+    const a = findAnomalies(entries);
+    assert.strictEqual(a.orphanResults.length, 1);
+    assert.strictEqual(a.orphanResults[0].id, 'orphan1');
+  });
+
+  ut('findAnomalies — missing tool_result detected', () => {
+    const entries = [
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'tu2', name: 'Bash', input: {} }] },
+      { role: 'user', content: [{ type: 'text', text: 'ok' }] },
+    ];
+    const a = findAnomalies(entries);
+    assert.strictEqual(a.missingResults.length, 1);
+    assert.strictEqual(a.missingResults[0].id, 'tu2');
+  });
+
+  ut('findAnomalies — duplicate ID detected', () => {
+    const entries = [
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'dup1', name: 'Read', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'dup1', content: 'a' }] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'dup1', name: 'Edit', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'dup1', content: 'b' }] },
+    ];
+    const a = findAnomalies(entries);
+    assert.strictEqual(a.duplicateIds.length, 1);
+  });
+
+  ut('findAnomalies — empty turn detected', () => {
+    const entries = [
+      { role: 'assistant', content: [] },
+      { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+    ];
+    const a = findAnomalies(entries);
+    assert.strictEqual(a.emptyTurns.length, 1);
+    assert.strictEqual(a.emptyTurns[0], 0);
+  });
+
+  ut('fixAnomalies — drop orphan tool_result', () => {
+    const entries = [
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'tu1', name: 'Read', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'ok' }, { type: 'tool_result', tool_use_id: 'orphan1', content: 'x' }] },
+    ];
+    const a = findAnomalies(entries);
+    const fixed = fixAnomalies(entries, a);
+    assert.strictEqual(fixed, 1);
+    assert.strictEqual(entries[1].content.length, 1);
+    assert.strictEqual(entries[1].content[0].tool_use_id, 'tu1');
+  });
+
+  ut('fixAnomalies — stub missing tool_result', () => {
+    const entries = [
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'tu3', name: 'Bash', input: {} }] },
+      { role: 'user', content: [{ type: 'text', text: 'ok' }] },
+    ];
+    const a = findAnomalies(entries);
+    const fixed = fixAnomalies(entries, a);
+    assert.strictEqual(fixed, 1);
+    const resultBlock = entries[1].content.find(b => b.type === 'tool_result' && b.tool_use_id === 'tu3');
+    assert.ok(resultBlock, 'stub tool_result injected');
+    assert.strictEqual(resultBlock.content, STUB_RESULT_TEXT);
+  });
+
+  ut('fixAnomalies — stub missing tool_result when no next turn exists', () => {
+    const entries = [
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'tu4', name: 'Read', input: {} }] },
+    ];
+    const a = findAnomalies(entries);
+    const fixed = fixAnomalies(entries, a);
+    assert.strictEqual(fixed, 1);
+    assert.strictEqual(entries.length, 2);
+    assert.strictEqual(entries[1].role, 'user');
+    assert.strictEqual(entries[1].content[0].tool_use_id, 'tu4');
+  });
+
+  ut('fixAnomalies — rename duplicate IDs', () => {
+    const entries = [
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'dup1', name: 'Read', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'dup1', content: 'a' }] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'dup1', name: 'Edit', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'dup1', content: 'b' }] },
+    ];
+    const a = findAnomalies(entries);
+    fixAnomalies(entries, a);
+    assert.notStrictEqual(entries[2].content[0].id, 'dup1');
+    assert.ok(entries[2].content[0].id.includes('dup'));
+  });
+
+  ut('fixAnomalies — fill empty turns with placeholder', () => {
+    const entries = [
+      { role: 'assistant', content: [] },
+    ];
+    const a = findAnomalies(entries);
+    fixAnomalies(entries, a);
+    assert.strictEqual(entries[0].content.length, 1);
+    assert.strictEqual(entries[0].content[0].text, PLACEHOLDER_TEXT);
+  });
+
+  ut('fixAnomalies — idempotent (run twice same result)', () => {
+    const entries = [
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'tu5', name: 'Read', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'orphan2', content: 'x' }] },
+    ];
+    const a1 = findAnomalies(entries);
+    fixAnomalies(entries, a1);
+    const snapshot = JSON.stringify(entries);
+    const a2 = findAnomalies(entries);
+    fixAnomalies(entries, a2);
+    assert.strictEqual(JSON.stringify(entries), snapshot);
+  });
+
+  ut('fixAnomalies — mixed anomalies all fixed', () => {
+    const entries = [
+      { role: 'assistant', content: [] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'orphan3', content: 'x' }] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'tu6', name: 'Read', input: {} }] },
+    ];
+    const a = findAnomalies(entries);
+    assert.ok(hasAnomalies(a));
+    const fixed = fixAnomalies(entries, a);
+    assert.ok(fixed >= 3);
+    const a2 = findAnomalies(entries);
+    assert.strictEqual(hasAnomalies(a2), false);
+  });
+
+  ut('escalationLevel — none for clean', () => {
+    assert.strictEqual(escalationLevel({ orphanResults: [], missingResults: [], duplicateIds: [], emptyTurns: [] }), 'none');
+  });
+
+  ut('escalationLevel — info for 1-2 anomalies', () => {
+    assert.strictEqual(escalationLevel({ orphanResults: [1], missingResults: [], duplicateIds: [], emptyTurns: [] }), 'info');
+    assert.strictEqual(escalationLevel({ orphanResults: [1], missingResults: [1], duplicateIds: [], emptyTurns: [] }), 'info');
+  });
+
+  ut('escalationLevel — warning for >2 or >1 missing', () => {
+    assert.strictEqual(escalationLevel({ orphanResults: [1], missingResults: [1, 2], duplicateIds: [], emptyTurns: [] }), 'warning');
+  });
+
+  ut('escalationLevel — error for >5 anomalies', () => {
+    assert.strictEqual(escalationLevel({ orphanResults: [1, 2, 3], missingResults: [1, 2, 3], duplicateIds: [], emptyTurns: [] }), 'error');
+  });
+
+  ut('escalationLevel — error for empty turns', () => {
+    assert.strictEqual(escalationLevel({ orphanResults: [], missingResults: [], duplicateIds: [], emptyTurns: [0] }), 'error');
+  });
+
+  ut('formatNotice — describes fixes', () => {
+    const notice = formatNotice({ orphanResults: [1], missingResults: [1], duplicateIds: [], emptyTurns: [] }, 2);
+    assert.ok(notice.includes('fixed 2'));
+    assert.ok(notice.includes('orphan'));
+    assert.ok(notice.includes('missing'));
+  });
+
   return { p, f };
 }
 
@@ -1721,6 +1900,7 @@ async function run() {
     assert.strictEqual(r.status, 200);
     assert.ok(r.raw.includes('CLIENT_VERSION'), 'CLIENT_VERSION not in served file');
     assert.ok(r.raw.includes('isThinkingSignatureError'), 'thinking-sanitizer functions missing');
+    assert.ok(r.raw.includes('findAnomalies'), 'transcript-sanitizer functions missing');
   });
 
   await test('GET /api/client/file/../../server.js — path traversal blocked → 404', async () => {

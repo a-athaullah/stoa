@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.177';
+const CLIENT_VERSION = '0.4.178';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -15,6 +15,7 @@ const { spawnSync } = require('child_process');
 
 const { ClaudeSession } = require('./claude-session');
 const { stripLeadingThinkingMarker, isThinkingSignatureError, matchThinkingBlock, replaceThinkingBlock, THINKING_MARKER_RE } = require('./lib/thinking-sanitizer');
+const { findAnomalies, hasAnomalies, fixAnomalies, escalationLevel, formatNotice } = require('./lib/transcript-sanitizer');
 
 let STOA_URL      = process.env.STOA_URL    || 'ws://localhost:3001';
 const ACTOR_ID    = parseInt(process.env.STOA_ACTOR_ID || '1');
@@ -270,6 +271,53 @@ function sanitizeThinking(workdir, sessionId, opts = {}) {
     stripAll ? 'stripped all thinking (third-party/recovery)' : 'sanitized thinking residue');
 }
 
+const transcriptNoticeEmitted = new Set();
+
+async function sanitizeTranscript(workdir, sessionId) {
+  const filePath = sessionFilePath(workdir, sessionId);
+  if (!filePath) return null;
+  try {
+    let raw;
+    try { raw = await fs.promises.readFile(filePath, 'utf8'); } catch { return null; }
+    if (!raw.includes('"tool_use"') && !raw.includes('"tool_result"') && !raw.includes('"content":[]')) return null;
+    const lines = raw.split('\n');
+    const entries = [];
+    const lineMap = [];
+    for (let i = 0; i < lines.length; i++) {
+      if (!lines[i].trim()) continue;
+      try {
+        entries.push(JSON.parse(lines[i]));
+        lineMap.push(i);
+      } catch {
+        entries.push(null);
+        lineMap.push(i);
+      }
+    }
+    const anomalies = findAnomalies(entries);
+    if (!hasAnomalies(anomalies)) return null;
+    const fixed = fixAnomalies(entries, anomalies);
+    if (fixed === 0) return null;
+    for (let j = 0; j < entries.length; j++) {
+      if (entries[j] && lineMap[j] !== undefined) {
+        lines[lineMap[j]] = JSON.stringify(entries[j]);
+      }
+    }
+    if (entries.length > lineMap.length) {
+      for (let j = lineMap.length; j < entries.length; j++) {
+        lines.push(JSON.stringify(entries[j]));
+      }
+    }
+    await fs.promises.writeFile(filePath, lines.join('\n'), 'utf8');
+    const level = escalationLevel(anomalies);
+    const notice = formatNotice(anomalies, fixed);
+    console.log(`[stoa] ${notice}`);
+    return { level, notice, anomalies, fixed };
+  } catch (err) {
+    console.error(`[stoa] transcript sanitizer error: ${err.message}`);
+    return null;
+  }
+}
+
 async function backupSessionFile(workdir, sessionId) {
   const filePath = sessionFilePath(workdir, sessionId);
   if (!filePath) return null;
@@ -287,6 +335,11 @@ async function backupSessionFile(workdir, sessionId) {
 async function prepareResume({ targetDir, rid, targetModel, toolsSupported, env, sessionKey, thirdParty = false, aggressive = false }) {
   if (rid && !compactsInFlight.has(targetDir)) {
     await sanitizeThinking(targetDir, rid, { thirdParty, aggressive });
+    const tsResult = await sanitizeTranscript(targetDir, rid);
+    if (tsResult && (tsResult.level === 'warning' || tsResult.level === 'error') && !transcriptNoticeEmitted.has(sessionKey)) {
+      transcriptNoticeEmitted.add(sessionKey);
+      try { send({ type: 'agent_system_event', status: `[${tsResult.level.toUpperCase()}] ${tsResult.notice}` }); } catch {}
+    }
   }
   const flags = rid ? ['--resume', rid] : [];
   if (targetModel) flags.push('--model', targetModel);
