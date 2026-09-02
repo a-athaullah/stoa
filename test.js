@@ -1713,10 +1713,11 @@ async function run() {
     assert.ok('stoa.js' in r.body.files, 'stoa.js not in manifest');
   });
 
-  await test('GET /api/client/file/stoa.js — returns JS content', async () => {
+  await test('GET /api/client/file/stoa.js — returns JS with CLIENT_VERSION and thinking-sanitizer', async () => {
     const r = await req('GET', '/api/client/file/stoa.js');
     assert.strictEqual(r.status, 200);
-    assert.ok(r.raw.includes('CLIENT_VERSION'), 'CLIENT_VERSION not in stoa.js');
+    assert.ok(r.raw.includes('CLIENT_VERSION'), 'CLIENT_VERSION not in served file');
+    assert.ok(r.raw.includes('isThinkingSignatureError'), 'thinking-sanitizer functions missing');
   });
 
   await test('GET /api/client/file/../../server.js — path traversal blocked → 404', async () => {

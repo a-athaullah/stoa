@@ -40,14 +40,37 @@ const EXPECTED_CLIENT_VERSION = (() => {
   } catch { return null; }
 })();
 
-// Hash of stoa.js at server startup — used as the "safe" baseline for the monotonic
-// downgrade guard in the manifest endpoint. If someone edits stoa.js to a lower version
-// while the server is running, clients must not auto-download it (they'd restart into a
-// version older than EXPECTED_CLIENT_VERSION and get stuck in a force_update loop).
+// Build agent bundle: stoa.js + lib/* → dist/stoa.js (single file for agent auto-update).
+// esbuild is fast (~50ms); rebuild on every startup ensures bundle is always fresh.
+const AGENT_BUNDLE_PATH = path.join(__dirname, 'dist', 'stoa.js');
+(() => {
+  try {
+    const distDir = path.join(__dirname, 'dist');
+    if (!fs.existsSync(distDir)) fs.mkdirSync(distDir);
+    require('esbuild').buildSync({
+      entryPoints: [path.join(__dirname, 'stoa.js')],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      external: ['ws', './claude-session'],
+      outfile: AGENT_BUNDLE_PATH,
+    });
+    console.log('[build] Agent bundle ready');
+  } catch (e) {
+    console.error('[build] Agent bundle failed, serving source:', e.message);
+  }
+})();
+
+// Hash of the agent bundle (or source stoa.js fallback) at startup — used as the "safe"
+// baseline for the monotonic downgrade guard in the manifest endpoint.
+function clientFilePath(name) {
+  if (name === 'stoa.js' && fs.existsSync(AGENT_BUNDLE_PATH)) return AGENT_BUNDLE_PATH;
+  return path.join(__dirname, name);
+}
+
 const SAFE_CLIENT_HASH = (() => {
   try {
-    const fp = path.join(__dirname, 'stoa.js');
-    return crypto.createHash('sha256').update(fs.readFileSync(fp)).digest('hex').slice(0, 12);
+    return crypto.createHash('sha256').update(fs.readFileSync(clientFilePath('stoa.js'))).digest('hex').slice(0, 12);
   } catch { return null; }
 })();
 
@@ -486,7 +509,7 @@ setInterval(() => {
 }, 60_000);
 
 function clientFileHash(name) {
-  const fp = path.join(__dirname, name);
+  const fp = clientFilePath(name);
   if (!fs.existsSync(fp)) return null;
   return crypto.createHash('sha256').update(fs.readFileSync(fp)).digest('hex').slice(0, 12);
 }
@@ -2391,7 +2414,7 @@ const server = http.createServer(async (req, res) => {
       // client to restart with client_version < expected indefinitely).
       if (name === 'stoa.js' && SAFE_CLIENT_HASH && EXPECTED_CLIENT_VERSION && hash !== SAFE_CLIENT_HASH) {
         try {
-          const diskSrc = fs.readFileSync(path.join(__dirname, name), 'utf8');
+          const diskSrc = fs.readFileSync(clientFilePath(name), 'utf8');
           const m = diskSrc.match(/^const CLIENT_VERSION\s*=\s*'([^']+)'/m);
           const diskVer = m ? m[1] : null;
           if (diskVer && diskVer.localeCompare(EXPECTED_CLIENT_VERSION, undefined, { numeric: true }) < 0) {
@@ -2408,7 +2431,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname.startsWith('/api/client/file/')) {
     const name = path.basename(url.pathname.slice('/api/client/file/'.length));
     if (!CLIENT_FILES.has(name)) { res.writeHead(404); return res.end('Not found'); }
-    const fp = path.join(__dirname, name);
+    const fp = clientFilePath(name);
     if (!fs.existsSync(fp)) { res.writeHead(404); return res.end('Not found'); }
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
     return res.end(fs.readFileSync(fp));
