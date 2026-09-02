@@ -279,7 +279,7 @@ async function sanitizeTranscript(workdir, sessionId) {
   try {
     let raw;
     try { raw = await fs.promises.readFile(filePath, 'utf8'); } catch { return null; }
-    if (!raw.includes('"tool_use"') && !raw.includes('"tool_result"') && !raw.includes('"content":[]')) return null;
+    if (!/"tool_use"|"tool_result"|"content":\[]/.test(raw)) return null;
     const lines = raw.split('\n');
     const entries = [];
     const lineMap = [];
