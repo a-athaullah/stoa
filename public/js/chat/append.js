@@ -72,6 +72,7 @@ function buildResultChip(raw) {
 function appendMessage(m, container) {
   const inner = container || document.getElementById('messages-inner');
   if (!inner) return;
+  if (m.id && document.getElementById('msg-' + m.id)) return;
 
   if (m.state === 'system_event') {
     const el = document.createElement('div');

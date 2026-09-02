@@ -1212,6 +1212,147 @@ async function run() {
     });
   }
 
+  // Message dedup (R17) — idempotent insert via client_event_id
+  console.log('\n[Message dedup — client_event_id]');
+  {
+    let dedupActorId = null, dedupActorSecret = null, dedupRoomId = null;
+
+    await test('Setup — register dedup test actor + room', async () => {
+      const agent = await createOnlineTestAgent('__test-dedup-agent', '/tmp/stoa-test-dedup');
+      if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+      dedupActorId = agent.actorId;
+      dedupActorSecret = agent.secret;
+      const r = await req('POST', '/api/rooms', { title: '__dedup-test-room__', workdir_id: agent.workdirId, participant_ids: [dedupActorId] });
+      if (r.status !== 200) { console.log('    (skipped — room creation failed)'); return; }
+      dedupRoomId = r.body.id;
+    });
+
+    await test('Migration applied — messages.client_event_id column exists', async () => {
+      const db = require('./db');
+      const row = db.prepare("SELECT * FROM pragma_table_info('messages') WHERE name='client_event_id'").get();
+      assert.ok(row, 'client_event_id column missing from messages table');
+    });
+
+    await test('POST proactive — first post with event_id → 200 with message_id', async () => {
+      if (!dedupRoomId || !dedupActorId || !dedupActorSecret) { console.log('    (skipped)'); return; }
+      const r = await rawReq('POST', `/api/rooms/${dedupRoomId}/message`,
+        JSON.stringify({ content: 'dedup test message', event_id: 'test-event-id-001' }),
+        'application/json',
+        { 'X-Agent-Id': String(dedupActorId), 'X-Agent-Secret': dedupActorSecret }
+      );
+      assert.strictEqual(r.status, 200, `expected 200, got ${r.status}: ${r.raw}`);
+      assert.ok(r.body.message_id, 'message_id missing');
+      assert.ok(!r.body.idempotent, 'should not be idempotent on first insert');
+    });
+
+    await test('POST proactive — same event_id + same content → 200 idempotent:true', async () => {
+      if (!dedupRoomId || !dedupActorId || !dedupActorSecret) { console.log('    (skipped)'); return; }
+      const r = await rawReq('POST', `/api/rooms/${dedupRoomId}/message`,
+        JSON.stringify({ content: 'dedup test message', event_id: 'test-event-id-001' }),
+        'application/json',
+        { 'X-Agent-Id': String(dedupActorId), 'X-Agent-Secret': dedupActorSecret }
+      );
+      assert.strictEqual(r.status, 200, `expected 200, got ${r.status}: ${r.raw}`);
+      assert.strictEqual(r.body.idempotent, true, 'expected idempotent:true');
+    });
+
+    await test('POST proactive — same event_id + different content → 409', async () => {
+      if (!dedupRoomId || !dedupActorId || !dedupActorSecret) { console.log('    (skipped)'); return; }
+      const r = await rawReq('POST', `/api/rooms/${dedupRoomId}/message`,
+        JSON.stringify({ content: 'DIFFERENT content', event_id: 'test-event-id-001' }),
+        'application/json',
+        { 'X-Agent-Id': String(dedupActorId), 'X-Agent-Secret': dedupActorSecret }
+      );
+      assert.strictEqual(r.status, 409, `expected 409 content mismatch, got ${r.status}: ${r.raw}`);
+    });
+
+    await test('POST proactive — no event_id → always inserts (no dedup)', async () => {
+      if (!dedupRoomId || !dedupActorId || !dedupActorSecret) { console.log('    (skipped)'); return; }
+      const r1 = await rawReq('POST', `/api/rooms/${dedupRoomId}/message`,
+        JSON.stringify({ content: 'no event id message' }),
+        'application/json',
+        { 'X-Agent-Id': String(dedupActorId), 'X-Agent-Secret': dedupActorSecret }
+      );
+      const r2 = await rawReq('POST', `/api/rooms/${dedupRoomId}/message`,
+        JSON.stringify({ content: 'no event id message' }),
+        'application/json',
+        { 'X-Agent-Id': String(dedupActorId), 'X-Agent-Secret': dedupActorSecret }
+      );
+      assert.strictEqual(r1.status, 200, `first insert failed: ${r1.status}`);
+      assert.strictEqual(r2.status, 200, `second insert failed: ${r2.status}`);
+      assert.notStrictEqual(r1.body.message_id, r2.body.message_id, 'expected two distinct messages without event_id');
+    });
+
+    await test('Migration — UNIQUE index enforced at DB level (same room+event_id)', async () => {
+      if (!dedupRoomId) { console.log('    (skipped)'); return; }
+      const db = require('./db');
+      const ptcp = db.prepare('SELECT id FROM room_participants WHERE room_id=? LIMIT 1').get(dedupRoomId);
+      assert.ok(ptcp, 'no participant found for dedup room');
+      const first = db.prepare("INSERT INTO messages (room_id, participant_id, content, client_event_id, state) VALUES (?,?,'x','db-level-test','complete')").run(dedupRoomId, ptcp.id);
+      assert.ok(first.lastInsertRowid, 'first DB insert should succeed');
+      assert.throws(() => {
+        db.prepare("INSERT INTO messages (room_id, participant_id, content, client_event_id, state) VALUES (?,?,'y','db-level-test','complete')").run(dedupRoomId, ptcp.id);
+      }, /UNIQUE/, 'duplicate event_id in same room should throw UNIQUE constraint error');
+      db.prepare('DELETE FROM messages WHERE id=?').run(first.lastInsertRowid);
+    });
+
+    await test('WS send_message — with event_id → message_new received', async () => {
+      if (!dedupRoomId) { console.log('    (skipped)'); return; }
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        ws.send(JSON.stringify({ type: 'join_room', room_id: dedupRoomId }));
+        await new Promise(r => setTimeout(r, 50));
+        const newMsgPromise = waitForWsMessage(ws, m => m.type === 'message_new' && m.message?.content === 'ws dedup first');
+        ws.send(JSON.stringify({ type: 'send_message', room_id: dedupRoomId, content: 'ws dedup first', event_id: 'ws-test-event-001' }));
+        const msg = await newMsgPromise;
+        assert.ok(msg.message.id, 'message_new should carry message id');
+      } finally {
+        ws.close();
+      }
+    });
+
+    await test('WS send_message — same event_id + same content → message_ack idempotent:true', async () => {
+      if (!dedupRoomId) { console.log('    (skipped)'); return; }
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        ws.send(JSON.stringify({ type: 'join_room', room_id: dedupRoomId }));
+        await new Promise(r => setTimeout(r, 50));
+        const ackPromise = waitForWsMessage(ws, m => m.type === 'message_ack' && m.idempotent === true);
+        ws.send(JSON.stringify({ type: 'send_message', room_id: dedupRoomId, content: 'ws dedup first', event_id: 'ws-test-event-001' }));
+        const ack = await ackPromise;
+        assert.strictEqual(ack.idempotent, true, 'expected idempotent:true on duplicate');
+      } finally {
+        ws.close();
+      }
+    });
+
+    await test('WS send_message — same event_id + different content → send_error code 409', async () => {
+      if (!dedupRoomId) { console.log('    (skipped)'); return; }
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        ws.send(JSON.stringify({ type: 'join_room', room_id: dedupRoomId }));
+        await new Promise(r => setTimeout(r, 50));
+        const errPromise = waitForWsMessage(ws, m => m.type === 'send_error' && m.code === 409);
+        ws.send(JSON.stringify({ type: 'send_message', room_id: dedupRoomId, content: 'DIFFERENT content', event_id: 'ws-test-event-001' }));
+        const err = await errPromise;
+        assert.strictEqual(err.code, 409, 'expected code 409 for content mismatch');
+      } finally {
+        ws.close();
+      }
+    });
+
+    await test('Cleanup — delete dedup test room + actor', async () => {
+      if (dedupRoomId) {
+        await req('PATCH', `/api/rooms/${dedupRoomId}`, { archived: true });
+        await req('DELETE', `/api/rooms/${dedupRoomId}`);
+      }
+      if (dedupActorId) {
+        await req('DELETE', `/api/actors/${dedupActorId}`);
+        orphanActorIds = orphanActorIds.filter(id => id !== dedupActorId);
+      }
+    });
+  }
+
   // Sub-agent identity (Phase 1) — self-contained: agent → room → 2 messages →
   // seed sub_agent_label + parent_message_id on one via DB (no API sets them in
   // Phase 1) → assert both fields round-trip through the messages serialization,

@@ -321,6 +321,11 @@ function handleWsMessage(msg) {
     }
     return;
   }
+
+  if (msg.type === 'send_error') {
+    console.warn('[send_error]', msg.error, msg.code);
+    return;
+  }
 }
 
 // ── Server restart notification ───────────────────────────────────────────
