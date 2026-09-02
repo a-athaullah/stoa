@@ -6,7 +6,7 @@ _Urutan eksekusi ditetapkan 2026-09-01 (Ara, approved Aan). Logika: security & b
 
 ## Batch 0 — Bug sub-agent orchestration `[top priority]`
 
-- [ ] **#0 Bug — Mention wakeup orchestrator tidak berfungsi** _(S)_ — ketika sub-agent (BE-Stoa, FE-Stoa, dll) tulis `@Ara` di room, Ara tidak ter-wake up otomatis. Akibatnya orchestration loop putus — Ara harus dikerjakan manual oleh Aan. Investigasi: bagaimana mention dari agent WS di-route ke orchestrator agent yang standby. Kemungkinan root cause: mention parsing tidak cek agent participant, atau event mention tidak di-emit ke WS subscriber yang tepat. Dicatat 2026-09-02.
+- [x] **#0 Bug — Mention wakeup orchestrator tidak berfungsi** _(S)_ — ✓ `3a6b928`: root cause: kondisi `enqueueParentWake` mensyaratkan `parent_message_id` non-null, yang hanya di-set oleh `/sub-agent-trigger`. Sub-agent via `@mention cascade` tidak punya `parent_message_id` → orchestrator tidak pernah di-wake. Fix: hapus syarat `&& doneRow.parent_message_id` — semua sub-agent completion wake parent. 329/329 tests pass. Dicatat 2026-09-02.
 
 ## Batch 1 — Kritis: bug produksi & security `[exec 1–3]`
 
