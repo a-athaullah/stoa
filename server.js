@@ -243,10 +243,11 @@ function verifyAgentRequest(req) {
 }
 
 // ─── Phase 2b: durable auto-wake (R1) ──────────────────────────────────────
-// When an orchestrator-triggered sub-agent completes, wake its parent exactly
-// once with the result in context. The pending_wakes row makes this survive a
-// server restart (drained on startup). User @mention-triggered sub-agents do
-// NOT wake anyone (they have no parent_message_id) — Aan reads the result.
+// When a sub-agent completes, wake its parent exactly once with the result in
+// context. The pending_wakes row makes this survive a server restart (drained
+// on startup). ALL sub-agent completions wake their parent — both
+// /sub-agent-trigger spawns (parent_message_id set) and @mention-cascade
+// triggers (parent_message_id null).
 const MAX_WAKE_ATTEMPTS = 3;
 
 function enqueueParentWake(roomId, parentParticipantId, subAgentMessageId) {
