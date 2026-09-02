@@ -2047,6 +2047,32 @@ const server = http.createServer(async (req, res) => {
     return json(res, { ok: true });
   }
 
+  // ── Server process manager info & restart ──
+  if (req.method === 'GET' && url.pathname === '/api/server/process-manager') {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    const restartable = ['launchd', 'pm2', 'systemd', 'supervisord'].includes(detectedProcessManager);
+    return json(res, { manager: detectedProcessManager, restartable });
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/server/restart') {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    const restartable = ['launchd', 'pm2', 'systemd', 'supervisord'].includes(detectedProcessManager);
+    if (!restartable) {
+      const reason = detectedProcessManager === 'docker'
+        ? 'Cannot restart from inside a Docker container — restart the container from the host'
+        : 'Process manager not detected — restart the server manually';
+      return json(res, { error: reason }, 400);
+    }
+    // Notify all connected clients before exiting
+    const payload = JSON.stringify({ type: 'server_restarting' });
+    for (const client of globalClients) { if (client.readyState === 1) client.send(payload); }
+    for (const [, agentWs] of agentClients) { if (agentWs.readyState === 1) agentWs.send(payload); }
+    console.log(`[server] Restart requested by user — exiting for process manager (${detectedProcessManager}) to restart`);
+    json(res, { ok: true });
+    setTimeout(() => process.exit(0), 500);
+    return;
+  }
+
   // ── AI Platform config ──
   if (req.method === 'GET' && url.pathname === '/api/ai/platforms') {
     const platforms = getParsedSetting('ai_platforms') ?? [];
@@ -5316,6 +5342,20 @@ setInterval(() => {
 // On startup: orphaned streaming/requesting messages are dead — mark them as error
 const orphaned = db.prepare("UPDATE messages SET state='error', content=CASE WHEN content='' THEN '(interrupted — server restart)' ELSE content END WHERE state IN ('streaming','requesting')").run();
 if (orphaned.changes) console.log(`[startup] Cleaned ${orphaned.changes} orphaned message(s)`);
+
+// Detect process manager once at startup — used by /api/server/process-manager and /api/server/restart
+const detectedProcessManager = (() => {
+  if (fs.existsSync('/.dockerenv')) return 'docker';
+  if (process.env.PM2_HOME || process.env.PM2_PROCESS_NAME) return 'pm2';
+  if (process.env.SUPERVISOR_ENABLED) return 'supervisord';
+  try {
+    const parent = execSync(`ps -p ${process.ppid} -o comm=`, { encoding: 'utf8', timeout: 2000 }).trim();
+    if (parent === 'launchd') return 'launchd';
+    if (parent === 'systemd') return 'systemd';
+  } catch {}
+  return 'unknown';
+})();
+console.log(`[startup] Process manager: ${detectedProcessManager}`);
 
 server.listen(PORT, () => {
   console.log(`Stoa running → http://localhost:${PORT}`);

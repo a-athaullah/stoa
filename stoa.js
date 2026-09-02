@@ -533,6 +533,13 @@ async function handleAgentMessage(msg) {
     return;
   }
 
+  if (msg.type === 'server_restarting') {
+    console.log('[stoa] Server restarting — will reconnect automatically');
+    clearTimeout(reconnectTimer);
+    ws?.close();
+    return;
+  }
+
   if (msg.type === 'server_restart') {
     console.log(`[stoa] Server restarting on new port → ${msg.new_ws_url}`);
     STOA_URL = msg.new_ws_url;
