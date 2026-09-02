@@ -1868,9 +1868,8 @@ async function run() {
       const linked = r.body.linked[0];
       assert.ok('parent_name' in linked, 'parent_name field missing from linked sub-agent');
       assert.ok('label' in linked, 'label field missing from linked sub-agent');
-      if (!('avatar_color' in linked)) {
-        console.log('    (avatar_color not yet in response — server restart needed to pick up query change)');
-      }
+      assert.ok('avatar_color' in linked, 'avatar_color field missing from linked sub-agent');
+      assert.ok('avatar_url' in linked, 'avatar_url field missing from linked sub-agent');
     });
 
     await test('Cleanup — delete mention cascade test room + sub-agent + actor', async () => {
