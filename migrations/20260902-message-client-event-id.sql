@@ -11,8 +11,6 @@
 -- Clients that DO supply an event ID use UUIDv4, scoped to room_id to prevent
 -- cross-room ID collisions from being treated as duplicates.
 
-BEGIN;
-
 ALTER TABLE messages ADD COLUMN client_event_id TEXT DEFAULT NULL;
 
 -- Partial index: only rows with a non-NULL client_event_id participate in
@@ -21,5 +19,3 @@ ALTER TABLE messages ADD COLUMN client_event_id TEXT DEFAULT NULL;
 CREATE UNIQUE INDEX messages_room_client_event
   ON messages(room_id, client_event_id)
   WHERE client_event_id IS NOT NULL;
-
-COMMIT;
