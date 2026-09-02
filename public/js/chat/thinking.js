@@ -11,19 +11,7 @@ function showThinking(msgId, actorName, color, symbol, avatarUrl, subAgentLabel)
   // Seal
   const sealWrap = document.createElement('div');
   sealWrap.className = 'h-msg-seal-wrap';
-  if (subAgentLabel) {
-    const container = document.createElement('div');
-    container.className = 'h-sa-avatar-wrap';
-    container.appendChild(makeAvatar(actorName, color, avatarUrl, 40));
-    const badge = document.createElement('span');
-    badge.className = 'h-sa-badge';
-    badge.style.background = color || '#888';
-    badge.textContent = subAgentLabel[0].toUpperCase();
-    container.appendChild(badge);
-    sealWrap.appendChild(container);
-  } else {
-    sealWrap.appendChild(makeAvatar(actorName, color, avatarUrl, 40));
-  }
+  sealWrap.appendChild(makeAvatarEl(actorName, color, avatarUrl, 40, subAgentLabel));
   row.appendChild(sealWrap);
 
   // Body
@@ -48,8 +36,7 @@ function showThinking(msgId, actorName, color, symbol, avatarUrl, subAgentLabel)
   // Thinking bubble
   const bubble = document.createElement('div');
   bubble.className = 'h-thinking-bubble';
-  bubble.style.background = subAgentLabel ? saBubbleBg(color) : bubbleBg(color);
-  bubble.style.borderColor  = subAgentLabel ? saBubbleBorder(color) : bubbleBorder(color);
+  applyBubbleColor(bubble, color, subAgentLabel);
   bubble.style.color = color;
   bubble.innerHTML =
     '<span class="h-dot"></span>' +

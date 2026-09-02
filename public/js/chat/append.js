@@ -98,19 +98,7 @@ function appendMessage(m, container) {
   // Seal
   const sealWrap = document.createElement('div');
   sealWrap.className = 'h-msg-seal-wrap';
-  if (m.sub_agent_label) {
-    const container = document.createElement('div');
-    container.className = 'h-sa-avatar-wrap';
-    container.appendChild(makeAvatar(m.actor_name, m.avatar_color, m.avatar_url, 40));
-    const badge = document.createElement('span');
-    badge.className = 'h-sa-badge';
-    badge.style.background = m.avatar_color || '#888';
-    badge.textContent = m.sub_agent_label[0].toUpperCase();
-    container.appendChild(badge);
-    sealWrap.appendChild(container);
-  } else {
-    sealWrap.appendChild(makeAvatar(m.actor_name, m.avatar_color, m.avatar_url, 40));
-  }
+  sealWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 40, m.sub_agent_label));
   row.appendChild(sealWrap);
 
   // Body
@@ -153,8 +141,7 @@ function appendMessage(m, container) {
   // Bubble
   const bubble = document.createElement('div');
   bubble.className = 'h-bubble';
-  bubble.style.background = m.sub_agent_label ? saBubbleBg(m.avatar_color) : bubbleBg(m.avatar_color);
-  bubble.style.borderColor  = m.sub_agent_label ? saBubbleBorder(m.avatar_color) : bubbleBorder(m.avatar_color);
+  applyBubbleColor(bubble, m.avatar_color, m.sub_agent_label);
 
   if (m.reply_msg) {
     const quote = document.createElement('div');
