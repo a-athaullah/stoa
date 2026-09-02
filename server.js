@@ -327,11 +327,13 @@ async function drainWake(wakeId) {
   const costBlock = rollup
     ? `\n\n${formatCostRollup(rollup)}\n(Ini menutup rangkaian spawn — sertakan ringkasan biaya singkat di jawabanmu kalau relevan.)`
     : '';
-  const wakePrompt = `[sub-agent result] Sub-agent "${label}" yang kamu picu sudah selesai. Hasilnya:\n\n${body}\n\nSintesiskan dan lanjutkan menjawab. (Ini giliran sintesis kamu — jawabanmu tidak otomatis memicu agent lain, termasuk kalau kamu tulis @mention.)${costBlock}`;
+  const wakePrompt = `[sub-agent result] Sub-agent "${label}" yang kamu picu sudah selesai. Hasilnya:\n\n${body}\n\nSintesiskan dan lanjutkan menjawab. Kamu boleh @mention sub-agent lain untuk delegate tugas berikutnya (misal @stoa-reviewer untuk review). Mention akan otomatis trigger sub-agent tersebut.${costBlock}`;
 
   try {
     await triggerAiResponse(row.room_id, { ...parent, sub_agent: null }, wakePrompt, null, []);
     db.prepare('DELETE FROM pending_wakes WHERE id=?').run(wakeId);
+    cascadeMentionsAfterWake(row.room_id, parent).catch(e =>
+      console.error('[wake-cascade] error:', e.message));
   } catch (e) {
     const attempts = row.attempts + 1;
     if (attempts >= MAX_WAKE_ATTEMPTS) {
@@ -344,6 +346,75 @@ async function drainWake(wakeId) {
       db.prepare('UPDATE pending_wakes SET attempts=? WHERE id=?').run(attempts, wakeId);
     }
     console.error(`[wake] attempt ${attempts} failed for wake ${wakeId}:`, e.message);
+  }
+}
+
+// ─── Wake-turn mention cascade ─────────────────────────────────────────────
+// After a wake-turn synthesis, check if the parent's response @mentions other
+// agents or sub-agents. If so, trigger them sequentially — enabling the
+// orchestration loop: sub-agent completes → parent synthesizes → @mentions
+// next sub-agent → cascade triggers it → repeat.
+const MAX_WAKE_CASCADE_DEPTH = 5;
+const wakeCascadeDepth = new Map(); // roomId → current depth
+
+async function cascadeMentionsAfterWake(roomId, parent) {
+  const depth = (wakeCascadeDepth.get(roomId) || 0) + 1;
+  if (depth > MAX_WAKE_CASCADE_DEPTH) {
+    console.log(`[wake-cascade] depth ${depth} exceeds max ${MAX_WAKE_CASCADE_DEPTH} for room ${roomId}, stopping`);
+    wakeCascadeDepth.delete(roomId);
+    return;
+  }
+
+  const lastMsg = db.prepare(`
+    SELECT m.content FROM messages m
+    JOIN room_participants rp ON rp.id=m.participant_id
+    WHERE rp.actor_id=? AND m.room_id=? AND m.state='complete' AND m.sub_agent_id IS NULL
+    ORDER BY m.id DESC LIMIT 1
+  `).get(parent.actor_id, roomId);
+  if (!lastMsg?.content) return;
+
+  const allAi = db.prepare(`
+    SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.adapter_config, a.avatar_color, a.avatar_symbol, a.avatar_url
+    FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
+    WHERE rp.room_id=? AND a.type='ai' AND rp.notify_on_message=1
+  `).all(roomId);
+
+  const linkedSubs = db.prepare(`
+    SELECT sa.*, a.name AS parent_name FROM room_sub_agents rsa
+    JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
+    JOIN actors a ON a.id=sa.parent_actor_id
+    WHERE rsa.room_id=? AND sa.enabled=1
+  `).all(roomId);
+
+  const cascadeAgents = [];
+
+  for (const sa of linkedSubs) {
+    if (lastMsg.content.includes('@' + sa.label)) {
+      const parentAgent = allAi.find(a => a.actor_id === sa.parent_actor_id);
+      if (parentAgent) {
+        cascadeAgents.push({ ...parentAgent, sub_agent: sa });
+      }
+    }
+  }
+
+  for (const other of allAi) {
+    if (other.actor_id !== parent.actor_id && lastMsg.content.includes('@' + other.name)) {
+      const alreadyQueued = cascadeAgents.some(a => a.actor_id === other.actor_id);
+      if (!alreadyQueued) cascadeAgents.push({ ...other, sub_agent: null });
+    }
+  }
+
+  if (!cascadeAgents.length) {
+    wakeCascadeDepth.delete(roomId);
+    return;
+  }
+
+  console.log(`[wake-cascade] depth ${depth}: ${cascadeAgents.map(a => a.sub_agent ? a.sub_agent.label : a.name).join(', ')} in room ${roomId}`);
+  wakeCascadeDepth.set(roomId, depth);
+  try {
+    await triggerAgentsSequential(roomId, cascadeAgents, lastMsg.content, null, []);
+  } finally {
+    if (wakeCascadeDepth.get(roomId) === depth) wakeCascadeDepth.delete(roomId);
   }
 }
 
@@ -1336,7 +1407,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname.endsWith('/sub-agents')) {
       const linked = db.prepare(`
-        SELECT sa.*, a.name AS parent_name, rsa.added_at AS linked_at
+        SELECT sa.*, a.name AS parent_name, a.avatar_color, a.avatar_url, rsa.added_at AS linked_at
         FROM room_sub_agents rsa
         JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
         JOIN actors a ON a.id=sa.parent_actor_id

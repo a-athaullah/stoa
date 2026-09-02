@@ -1224,6 +1224,18 @@ html.dark .h-faded-mark { opacity: 0.12; }
   color: oklch(0.65 0.15 250);
   font-weight: 600;
 }
+.h-bubble .h-mention-inline.h-mention-sub {
+  color: oklch(0.60 0.12 180);
+}
+.h-mention-sub-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: oklch(0.60 0.12 180);
+  background: oklch(0.60 0.12 180 / 0.12);
+  padding: 1px 5px;
+  border-radius: 4px;
+  margin-left: auto;
+}
 
 /* Skill invoked notice */
 .h-skill-notice {
