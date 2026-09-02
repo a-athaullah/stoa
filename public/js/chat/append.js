@@ -153,8 +153,8 @@ function appendMessage(m, container) {
   // Bubble
   const bubble = document.createElement('div');
   bubble.className = 'h-bubble';
-  bubble.style.background = bubbleBg(m.avatar_color);
-  bubble.style.borderColor  = bubbleBorder(m.avatar_color);
+  bubble.style.background = m.sub_agent_label ? saBubbleBg(m.avatar_color) : bubbleBg(m.avatar_color);
+  bubble.style.borderColor  = m.sub_agent_label ? saBubbleBorder(m.avatar_color) : bubbleBorder(m.avatar_color);
 
   if (m.reply_msg) {
     const quote = document.createElement('div');

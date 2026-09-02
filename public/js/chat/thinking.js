@@ -37,13 +37,19 @@ function showThinking(msgId, actorName, color, symbol, avatarUrl, subAgentLabel)
   nameEl.style.color = color;
   nameEl.textContent = actorName;
   meta.appendChild(nameEl);
+  if (subAgentLabel) {
+    const subEl = document.createElement('span');
+    subEl.className = 'h-msg-sub';
+    subEl.textContent = '(' + subAgentLabel + ')';
+    meta.appendChild(subEl);
+  }
   body.appendChild(meta);
 
   // Thinking bubble
   const bubble = document.createElement('div');
   bubble.className = 'h-thinking-bubble';
-  bubble.style.background = bubbleBg(color);
-  bubble.style.borderColor  = bubbleBorder(color);
+  bubble.style.background = subAgentLabel ? saBubbleBg(color) : bubbleBg(color);
+  bubble.style.borderColor  = subAgentLabel ? saBubbleBorder(color) : bubbleBorder(color);
   bubble.style.color = color;
   bubble.innerHTML =
     '<span class="h-dot"></span>' +
