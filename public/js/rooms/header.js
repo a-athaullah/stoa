@@ -263,6 +263,7 @@ function openSubAgentDropdown(anchorEl, roomId, participant) {
   }
   loadItems();
 
+  drop.addEventListener('click', e => e.stopPropagation());
   anchorEl.style.position = 'relative';
   anchorEl.appendChild(drop);
   setTimeout(() => document.addEventListener('click', function close(e) {
@@ -407,7 +408,11 @@ function startRunControls(container, room) {
 // changed, toggles the spawn kill switch via its dedicated endpoint.
 function openRoomSettings(room) {
   document.querySelectorAll('.h-room-settings-overlay').forEach(e => e.remove());
-  const SA_MODELS = ['claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-5'];
+  const SA_MODELS = [
+    'claude-opus-5', 'claude-sonnet-5', 'claude-fable-5-1',
+    'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6',
+    'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5',
+  ];
   // Must match server.js SERVER_DEFAULT_TIERS — shown when a room has no override.
   const DEFAULTS = {
     quick:    ['claude-haiku-4-5'],

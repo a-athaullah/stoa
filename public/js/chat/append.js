@@ -85,7 +85,7 @@ function appendMessage(m, container) {
 
   // Pesan yang masih streaming/requesting → tampilkan thinking bubble
   if (m.state === 'streaming' || m.state === 'requesting') {
-    showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url);
+    showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label);
     return;
   }
 
@@ -98,7 +98,7 @@ function appendMessage(m, container) {
   // Seal
   const sealWrap = document.createElement('div');
   sealWrap.className = 'h-msg-seal-wrap';
-  sealWrap.appendChild(makeAvatar(m.actor_name, m.avatar_color, m.avatar_url, 40));
+  sealWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 40, m.sub_agent_label));
   row.appendChild(sealWrap);
 
   // Body
@@ -141,8 +141,7 @@ function appendMessage(m, container) {
   // Bubble
   const bubble = document.createElement('div');
   bubble.className = 'h-bubble';
-  bubble.style.background = bubbleBg(m.avatar_color);
-  bubble.style.borderColor  = bubbleBorder(m.avatar_color);
+  applyBubbleColor(bubble, m.avatar_color, m.sub_agent_label);
 
   if (m.reply_msg) {
     const quote = document.createElement('div');

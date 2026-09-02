@@ -133,6 +133,27 @@ function setConnected(on) {
 // ── Bubble colors ──────────────────────────────────────────────────────────
 function bubbleBg(color)     { return `color-mix(in srgb, ${color} 22%, var(--h-surface))`; }
 function bubbleBorder(color) { return `color-mix(in srgb, ${color} 46%, var(--h-surface))`; }
+function saBubbleBg(color)     { return `color-mix(in srgb, ${color} 12%, var(--h-surface))`; }
+function saBubbleBorder(color) { return `color-mix(in srgb, ${color} 30%, var(--h-surface))`; }
+
+// ── Sub-agent avatar helper ───────────────────────────────────────────────
+function makeAvatarEl(name, color, url, size, subAgentLabel) {
+  if (!subAgentLabel) return makeAvatar(name, color, url, size);
+  const wrap = document.createElement('div');
+  wrap.className = 'h-sa-avatar-wrap';
+  wrap.appendChild(makeAvatar(name, color, url, size));
+  const badge = document.createElement('span');
+  badge.className = 'h-sa-badge';
+  badge.style.background = color || '#888';
+  badge.textContent = subAgentLabel[0].toUpperCase();
+  wrap.appendChild(badge);
+  return wrap;
+}
+
+function applyBubbleColor(el, color, subAgentLabel) {
+  el.style.background  = subAgentLabel ? saBubbleBg(color) : bubbleBg(color);
+  el.style.borderColor = subAgentLabel ? saBubbleBorder(color) : bubbleBorder(color);
+}
 
 // ── Theme ──────────────────────────────────────────────────────────────────
 const MOON_SVG = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 13.5A8.5 8.5 0 1 1 10.5 3.5a6.7 6.7 0 0 0 10 10z"/></svg>`;

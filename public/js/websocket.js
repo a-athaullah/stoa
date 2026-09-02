@@ -77,7 +77,7 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'message_state') {
     if ((msg.state === 'requesting' || msg.state === 'streaming') && msg.actor_name) {
-      showThinking(msg.message_id, msg.actor_name, msg.avatar_color, msg.avatar_symbol, msg.avatar_url);
+      showThinking(msg.message_id, msg.actor_name, msg.avatar_color, msg.avatar_symbol, msg.avatar_url, msg.sub_agent_label);
       setComposerProcessing(msg.message_id);
     }
     if (msg.state === 'error') {

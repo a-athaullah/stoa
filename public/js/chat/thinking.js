@@ -1,5 +1,5 @@
 // ── Thinking bubble (before tokens arrive) ─────────────────────────────────
-function showThinking(msgId, actorName, color, symbol, avatarUrl) {
+function showThinking(msgId, actorName, color, symbol, avatarUrl, subAgentLabel) {
   if (document.getElementById('msg-' + msgId)) return; // already exists
   const inner = document.getElementById('messages-inner');
   if (!inner) return;
@@ -11,7 +11,7 @@ function showThinking(msgId, actorName, color, symbol, avatarUrl) {
   // Seal
   const sealWrap = document.createElement('div');
   sealWrap.className = 'h-msg-seal-wrap';
-  sealWrap.appendChild(makeAvatar(actorName, color, avatarUrl, 40));
+  sealWrap.appendChild(makeAvatarEl(actorName, color, avatarUrl, 40, subAgentLabel));
   row.appendChild(sealWrap);
 
   // Body
@@ -25,13 +25,18 @@ function showThinking(msgId, actorName, color, symbol, avatarUrl) {
   nameEl.style.color = color;
   nameEl.textContent = actorName;
   meta.appendChild(nameEl);
+  if (subAgentLabel) {
+    const subEl = document.createElement('span');
+    subEl.className = 'h-msg-sub';
+    subEl.textContent = '(' + subAgentLabel + ')';
+    meta.appendChild(subEl);
+  }
   body.appendChild(meta);
 
   // Thinking bubble
   const bubble = document.createElement('div');
   bubble.className = 'h-thinking-bubble';
-  bubble.style.background = bubbleBg(color);
-  bubble.style.borderColor  = bubbleBorder(color);
+  applyBubbleColor(bubble, color, subAgentLabel);
   bubble.style.color = color;
   bubble.innerHTML =
     '<span class="h-dot"></span>' +
