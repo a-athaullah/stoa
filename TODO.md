@@ -4,6 +4,10 @@ _Audit terakhir: 2026-09-01 (Ara) — planning detail R12–R18 di `~/project/st
 
 _Urutan eksekusi ditetapkan 2026-09-01 (Ara, approved Aan). Logika: security & bug produksi → hardening bug-class terbukti → quick wins UX → fitur baru → carry-over._
 
+## Batch 0 — Bug sub-agent orchestration `[top priority]`
+
+- [ ] **#0 Bug — Mention wakeup orchestrator tidak berfungsi** _(S)_ — ketika sub-agent (BE-Stoa, FE-Stoa, dll) tulis `@Ara` di room, Ara tidak ter-wake up otomatis. Akibatnya orchestration loop putus — Ara harus dikerjakan manual oleh Aan. Investigasi: bagaimana mention dari agent WS di-route ke orchestrator agent yang standby. Kemungkinan root cause: mention parsing tidak cek agent participant, atau event mention tidak di-emit ke WS subscriber yang tepat. Dicatat 2026-09-02.
+
 ## Batch 1 — Kritis: bug produksi & security `[exec 1–3]`
 
 - [x] **#1 R20 — Audit ReDoS regex** _(S)_ — ✓ `3a54d68`: safeRegexTest() rejects nested quantifiers; fixes automation matches_regex + writeEnv escaping; benchmark 30k char = 0ms.
