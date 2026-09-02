@@ -1785,7 +1785,8 @@ const server = http.createServer(async (req, res) => {
     if (!data) return json(res, { error: 'Invalid JSON' }, 400);
     const content = data.content?.trim();
     if (!content) return json(res, { error: 'content required' }, 400);
-    const eventId = typeof data.event_id === 'string' && data.event_id.trim() ? data.event_id.trim() : null;
+    const rawEventId = typeof data.event_id === 'string' ? data.event_id.trim() : '';
+    const eventId = rawEventId && rawEventId.length <= 128 ? rawEventId : null;
 
     const room = db.prepare('SELECT id, archived_at FROM rooms WHERE id=?').get(roomId);
     if (!room) return json(res, { error: 'room not found' }, 404);
@@ -3390,7 +3391,8 @@ wss.on('connection', (ws, req) => {
         handled = await handleSkillCommand(msg.room_id, msg.content, ws);
       }
       if (!handled) {
-        await handleHumanMessage(msg.room_id, msg.content, msg.attachments || null, msg.reply_to || null, ws, msg.event_id || null);
+        const wsEventId = typeof msg.event_id === 'string' && msg.event_id.length <= 128 ? msg.event_id : null;
+        await handleHumanMessage(msg.room_id, msg.content, msg.attachments || null, msg.reply_to || null, ws, wsEventId);
       }
     }
 

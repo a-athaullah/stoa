@@ -1296,6 +1296,51 @@ async function run() {
       db.prepare('DELETE FROM messages WHERE id=?').run(first.lastInsertRowid);
     });
 
+    await test('WS send_message — with event_id → message_new received', async () => {
+      if (!dedupRoomId) { console.log('    (skipped)'); return; }
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        ws.send(JSON.stringify({ type: 'join_room', room_id: dedupRoomId }));
+        await new Promise(r => setTimeout(r, 50));
+        const newMsgPromise = waitForWsMessage(ws, m => m.type === 'message_new' && m.message?.content === 'ws dedup first');
+        ws.send(JSON.stringify({ type: 'send_message', room_id: dedupRoomId, content: 'ws dedup first', event_id: 'ws-test-event-001' }));
+        const msg = await newMsgPromise;
+        assert.ok(msg.message.id, 'message_new should carry message id');
+      } finally {
+        ws.close();
+      }
+    });
+
+    await test('WS send_message — same event_id + same content → message_ack idempotent:true', async () => {
+      if (!dedupRoomId) { console.log('    (skipped)'); return; }
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        ws.send(JSON.stringify({ type: 'join_room', room_id: dedupRoomId }));
+        await new Promise(r => setTimeout(r, 50));
+        const ackPromise = waitForWsMessage(ws, m => m.type === 'message_ack' && m.idempotent === true);
+        ws.send(JSON.stringify({ type: 'send_message', room_id: dedupRoomId, content: 'ws dedup first', event_id: 'ws-test-event-001' }));
+        const ack = await ackPromise;
+        assert.strictEqual(ack.idempotent, true, 'expected idempotent:true on duplicate');
+      } finally {
+        ws.close();
+      }
+    });
+
+    await test('WS send_message — same event_id + different content → send_error code 409', async () => {
+      if (!dedupRoomId) { console.log('    (skipped)'); return; }
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        ws.send(JSON.stringify({ type: 'join_room', room_id: dedupRoomId }));
+        await new Promise(r => setTimeout(r, 50));
+        const errPromise = waitForWsMessage(ws, m => m.type === 'send_error' && m.code === 409);
+        ws.send(JSON.stringify({ type: 'send_message', room_id: dedupRoomId, content: 'DIFFERENT content', event_id: 'ws-test-event-001' }));
+        const err = await errPromise;
+        assert.strictEqual(err.code, 409, 'expected code 409 for content mismatch');
+      } finally {
+        ws.close();
+      }
+    });
+
     await test('Cleanup — delete dedup test room + actor', async () => {
       if (dedupRoomId) {
         await req('PATCH', `/api/rooms/${dedupRoomId}`, { archived: true });
