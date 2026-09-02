@@ -564,6 +564,9 @@ function runUnitTests() {
     const result = replaceThinkingBlock({ type: 'thinking', thinking: 'x', signature: 'abc', cache_control: { type: 'ephemeral' } });
     assert.deepStrictEqual(result, { type: 'thinking', thinking: 'x', signature: 'abc' });
   });
+  ut('replaceThinkingBlock — unsigned with cache_control → drop entirely (not just strip cache_control)', () => {
+    assert.strictEqual(replaceThinkingBlock({ type: 'thinking', thinking: 'x', cache_control: { type: 'ephemeral' } }), null);
+  });
   ut('replaceThinkingBlock — [thinking] marker → strip marker', () => {
     const result = replaceThinkingBlock({ type: 'text', text: '[thinking] hello' });
     assert.deepStrictEqual(result, { type: 'text', text: 'hello' });

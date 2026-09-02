@@ -2415,7 +2415,7 @@ const server = http.createServer(async (req, res) => {
       if (name === 'stoa.js' && SAFE_CLIENT_HASH && EXPECTED_CLIENT_VERSION && hash !== SAFE_CLIENT_HASH) {
         try {
           const diskSrc = fs.readFileSync(clientFilePath(name), 'utf8');
-          const m = diskSrc.match(/^const CLIENT_VERSION\s*=\s*'([^']+)'/m);
+          const m = diskSrc.match(/^(?:const|var)\s+CLIENT_VERSION\s*=\s*['"]([^'"]+)['"]/m);
           const diskVer = m ? m[1] : null;
           if (diskVer && diskVer.localeCompare(EXPECTED_CLIENT_VERSION, undefined, { numeric: true }) < 0) {
             console.warn(`[update-guard] stoa.js on disk (v${diskVer}) < expected (v${EXPECTED_CLIENT_VERSION}) — suppressing manifest to prevent downgrade loop`);
