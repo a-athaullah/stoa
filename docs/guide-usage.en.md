@@ -199,7 +199,7 @@ A defined sub-agent must be linked to a room before it can be used there. Click 
 When the main agent responds, it can trigger its linked sub-agents to handle sub-tasks:
 
 1. **Fire-and-forget** — each sub-agent runs its task independently, so the main agent's turn is never blocked waiting for them.
-2. **Auto-wake** — when a sub-agent finishes, the main agent is automatically woken to read the result and synthesize a follow-up. This survives a server restart (the wake is queued durably).
+2. **Auto-wake** — when a sub-agent finishes, the main agent is automatically woken to read the result and synthesize a follow-up. This applies to **all** sub-agent completions — whether triggered directly or via a mention cascade. The wake survives a server restart (queued durably).
 3. **One level deep** — a sub-agent can never spawn its own sub-agents. Orchestration is strictly one level, which prevents runaway trees.
 4. **Wake cascade** — when the main agent synthesizes a sub-agent result, any @mentions in its response automatically trigger the mentioned agents or sub-agents. This enables orchestration loops: for example, a research sub-agent finishes → the main agent reads its result and @mentions a reviewer → the reviewer runs → the main agent reads the review and @mentions a fixer → and so on. A depth limit (default 5 hops) prevents infinite chains.
 
