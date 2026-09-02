@@ -209,6 +209,11 @@ function handleWsMessage(msg) {
     return;
   }
 
+  if (msg.type === 'server_restarting') {
+    handleServerRestarting();
+    return;
+  }
+
   if (msg.type === 'file_list') {
     if (msg.error) { console.warn('[ws] file_list error:', msg.error); return; }
     wsFileTreeData = msg.tree || [];
@@ -325,6 +330,25 @@ function handleWsMessage(msg) {
   if (msg.type === 'send_error') {
     console.warn('[send_error]', msg.error, msg.code);
     return;
+  }
+}
+
+// ── Server restart (same-port) notification ──────────────────────────────
+function handleServerRestarting() {
+  const status = document.getElementById('s-restart-status');
+  if (status) status.textContent = 'Restarting…';
+  // WS will drop naturally; existing reconnect loop in ws.onclose handles reconnection.
+  // After reconnect, refresh the process-manager label.
+  const origOnOpen = globalWs?.onopen;
+  if (globalWs) {
+    globalWs.onopen = function(e) {
+      if (origOnOpen) origOnOpen.call(this, e);
+      const s2 = document.getElementById('s-restart-status');
+      const btn = document.getElementById('s-restart-btn');
+      if (s2) { s2.textContent = 'Server restarted'; setTimeout(() => { s2.textContent = ''; }, 3000); }
+      if (btn) btn.disabled = false;
+      sLoadProcessManager?.();
+    };
   }
 }
 

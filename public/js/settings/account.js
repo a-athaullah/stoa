@@ -40,6 +40,43 @@ async function sLoadServerTab() {
   // Populate avatar preview from current humanActor
   const human = humanActor || allActors.find(a => a.type === 'human');
   sUpdateAvatarPreview(human?.avatar_url || null);
+  sLoadProcessManager();
+}
+
+async function sLoadProcessManager() {
+  const label = document.getElementById('s-process-manager-label');
+  const btn = document.getElementById('s-restart-btn');
+  if (!label || !btn) return;
+  try {
+    const pm = await fjson('/api/server/process-manager');
+    label.textContent = `running via ${pm.manager}`;
+    btn.disabled = !pm.restartable;
+    if (!pm.restartable) btn.title = 'Restart not supported for this process manager';
+  } catch {
+    label.textContent = 'detection failed';
+    btn.disabled = true;
+  }
+}
+
+async function sRestartServer() {
+  const btn = document.getElementById('s-restart-btn');
+  const status = document.getElementById('s-restart-status');
+  if (!confirm('Server akan restart. Semua koneksi agent akan putus sementara (~2–3 detik). Lanjutkan?')) return;
+  btn.disabled = true;
+  status.textContent = 'Restarting…';
+  try {
+    const r = await fetch('/api/server/restart', { method: 'POST' });
+    if (!r.ok) {
+      const msg = await r.text();
+      status.textContent = msg || 'Restart failed';
+      btn.disabled = false;
+      return;
+    }
+    // Server will disconnect — reconnect logic handles the rest
+  } catch {
+    // Connection drop on restart is expected; do not show error here
+    status.textContent = 'Restarting…';
+  }
 }
 
 async function sSaveSetting(key, value, savedId) {
