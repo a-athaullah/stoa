@@ -258,16 +258,11 @@
             <span class="s-server-value-hint">maximum rooms that can be pinned (1–20)</span>
           </div>
         </div>
-        <div class="s-server-card" id="s-restart-card">
-          <div class="s-server-card-header">
-            <span style="font-family:var(--h-serif);font-size:16px;color:var(--h-ink)">restart server</span>
-            <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)" id="s-process-manager-label">detecting…</span>
-          </div>
-          <div style="display:flex;align-items:center;gap:12px;padding:4px 0 2px">
-            <button class="s-server-save" id="s-restart-btn" style="background:oklch(42% 0.15 25);color:#fff;border:none;padding:6px 16px;border-radius:6px;cursor:pointer;font-size:13px" disabled>restart server</button>
-            <span id="s-restart-status" style="font-size:12px;color:var(--h-ink-faint)"></span>
-          </div>
-        </div>
+      </div>
+      <div class="s-restart-footer">
+        <span id="s-process-manager-label" class="s-restart-pm-label">detecting…</span>
+        <span id="s-restart-status" class="s-restart-status-text"></span>
+        <button id="s-restart-btn" class="s-restart-btn" disabled>restart server</button>
       </div>
     </div>
 

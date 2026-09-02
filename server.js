@@ -5350,8 +5350,8 @@ const detectedProcessManager = (() => {
   if (process.env.SUPERVISOR_ENABLED) return 'supervisord';
   try {
     const parent = execSync(`ps -p ${process.ppid} -o comm=`, { encoding: 'utf8', timeout: 2000 }).trim();
-    if (parent === 'launchd') return 'launchd';
-    if (parent === 'systemd') return 'systemd';
+    if (parent.includes('launchd')) return 'launchd';
+    if (parent.includes('systemd')) return 'systemd';
   } catch {}
   return 'unknown';
 })();

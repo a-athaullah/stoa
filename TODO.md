@@ -39,6 +39,10 @@ _Urutan eksekusi ditetapkan 2026-09-01 (Ara, approved Aan). Logika: security & b
 - [ ] **#18 R29 — Display verbosity berlapis** _(M)_ — resolusi per-room → global → default; `tool_progress all/new/off`; `cleanup_progress` (run gagal = simpan breadcrumb); `live_status full/verb/off`.
 - [ ] **#19 R30 — Debug share bundle** _(M)_ — tombol "kirim diagnostik": snapshot log sekali baca, force-redact (abaikan preferensi user untuk artefak share), consent eksplisit, envelope berversi, auto-delete.
 
+## Bug — Ara bubble stuck (tidak ada processing)
+
+- [ ] **Bug — Ara bubble muncul tapi tidak ada processing** — terjadi beberapa kali 2026-09-02. Pola: Ara di-wake via @mention dari sub-agent (bukan pesan user langsung), bubble muncul di UI tapi tidak ada response/processing sama sekali. Diduga: issue di wake mechanism saat Ara adalah orchestrator yang di-mention oleh sub-agent-nya sendiri. Perlu cek: (1) apakah `enqueueParentWake` untuk Ara sendiri berjalan; (2) apakah ada race condition antara sub-agent selesai dan Ara diinisiasi; (3) log `stoa.err` saat kejadian. Catat 2026-09-02.
+
 ## Batch 5 — Carry-over `[exec 20–21]`
 
 - [ ] **#20 Webhook/API** — HTTP endpoint untuk trigger agent dari external (CI/CD, monitoring, script). Masih relevan; belum ada endpoint trigger generik (baru automation Slack + proactive message agent-auth). Naikkan kalau muncul use case CI/CD konkret.
