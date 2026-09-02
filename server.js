@@ -387,35 +387,40 @@ async function cascadeMentionsAfterWake(roomId, parent) {
     WHERE rsa.room_id=? AND sa.enabled=1
   `).all(roomId);
 
-  const cascadeAgents = [];
+  const subAgentsCascade = [];
+  const regularAgentsCascade = [];
 
   const mentionBoundary = (name) => new RegExp(`(?:^|\\s)@${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=\\s|[.,!?;:]|$)`);
 
   for (const sa of linkedSubs) {
     if (mentionBoundary(sa.label).test(lastMsg.content)) {
       const parentAgent = allAi.find(a => a.actor_id === sa.parent_actor_id);
-      if (parentAgent) {
-        cascadeAgents.push({ ...parentAgent, sub_agent: sa });
-      }
+      if (parentAgent) subAgentsCascade.push({ ...parentAgent, sub_agent: sa });
     }
   }
 
   for (const other of allAi) {
     if (other.actor_id !== parent.actor_id && mentionBoundary(other.name).test(lastMsg.content)) {
-      const alreadyQueued = cascadeAgents.some(a => a.actor_id === other.actor_id);
-      if (!alreadyQueued) cascadeAgents.push({ ...other, sub_agent: null });
+      const alreadyQueued = regularAgentsCascade.some(a => a.actor_id === other.actor_id);
+      if (!alreadyQueued) regularAgentsCascade.push({ ...other, sub_agent: null });
     }
   }
 
-  if (!cascadeAgents.length) {
+  if (!subAgentsCascade.length && !regularAgentsCascade.length) {
     wakeCascadeDepth.delete(roomId);
     return;
   }
 
-  console.log(`[wake-cascade] depth ${depth}: ${cascadeAgents.map(a => a.sub_agent ? a.sub_agent.label : a.name).join(', ')} in room ${roomId}`);
+  const allCascadeLabels = [...subAgentsCascade.map(a => a.sub_agent.label), ...regularAgentsCascade.map(a => a.name)];
+  console.log(`[wake-cascade] depth ${depth}: ${allCascadeLabels.join(', ')} in room ${roomId}`);
   wakeCascadeDepth.set(roomId, depth);
   try {
-    await triggerAgentsSequential(roomId, cascadeAgents, lastMsg.content, null, []);
+    for (const sa of subAgentsCascade) {
+      triggerAiResponse(roomId, sa, lastMsg.content, null, []).catch(e => console.error('[wake-cascade sub-agent] parallel error:', e));
+    }
+    if (regularAgentsCascade.length > 0) {
+      await triggerAgentsSequential(roomId, regularAgentsCascade, lastMsg.content, null, []);
+    }
   } finally {
     if (wakeCascadeDepth.get(roomId) === depth) wakeCascadeDepth.delete(roomId);
   }
@@ -4588,6 +4593,8 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
       WHERE rp.room_id=? AND a.type='ai' AND rp.notify_on_message=1
     `);
 
+    const firedSubAgentIds = new Set();
+
     for (let i = 0; i < Math.min(agents.length, maxTurns); i++) {
       if (seq.cancelled) break;
       turnCount++;
@@ -4612,7 +4619,7 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
           }
         }
 
-        // Cascade sub-agent mentions in responses
+        // Sub-agent mentions in responses fire in parallel (task-based, independent of conversation flow)
         const linkedSubs = db.prepare(`
           SELECT sa.*, a.name AS parent_name FROM room_sub_agents rsa
           JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
@@ -4620,11 +4627,12 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
           WHERE rsa.room_id=? AND sa.enabled=1
         `).all(roomId);
         for (const sa of linkedSubs) {
-          if (lastMsg.content.includes('@' + sa.label)) {
-            const alreadyQueued = agents.slice(i + 1).some(a => a.sub_agent?.id === sa.id);
-            if (!alreadyQueued) {
-              const parent = allAiInRoom.find(a => a.actor_id === sa.parent_actor_id);
-              if (parent) agents.push({ ...parent, sub_agent: sa });
+          if (lastMsg.content.includes('@' + sa.label) && !firedSubAgentIds.has(sa.id)) {
+            const parent = allAiInRoom.find(a => a.actor_id === sa.parent_actor_id);
+            if (parent) {
+              firedSubAgentIds.add(sa.id);
+              triggerAiResponse(roomId, { ...parent, sub_agent: sa }, lastMsg.content, replyTo, attachments, prefetchedCtx)
+                .catch(e => console.error('[sub-agent parallel] dispatch error:', e));
             }
           }
         }
