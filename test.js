@@ -484,6 +484,122 @@ function runUnitTests() {
     assert.ok(validateRegexPattern(42) !== null);
   });
 
+  // ── Thinking-signature sanitizer ───────────────────────────────────────────
+  console.log('\n  [Thinking-signature sanitizer]');
+  const {
+    isThinkingSignatureError,
+    matchThinkingBlock,
+    replaceThinkingBlock,
+    stripLeadingThinkingMarker,
+  } = require('./lib/thinking-sanitizer');
+
+  // isThinkingSignatureError — positive cases
+  ut('isThinkingSignatureError — "Invalid signature in thinking block"', () => {
+    assert.strictEqual(isThinkingSignatureError('API Error: 400 messages.0.content.0: Invalid signature in thinking block'), true);
+  });
+  ut('isThinkingSignatureError — "cannot be modified"', () => {
+    assert.strictEqual(isThinkingSignatureError('API Error: 400 thinking or redacted_thinking blocks cannot be modified'), true);
+  });
+  ut('isThinkingSignatureError — "must remain as they were"', () => {
+    assert.strictEqual(isThinkingSignatureError('API Error: 400 thinking blocks must remain as they were in the original response'), true);
+  });
+
+  // isThinkingSignatureError — negative cases
+  ut('isThinkingSignatureError — empty string', () => {
+    assert.strictEqual(isThinkingSignatureError(''), false);
+  });
+  ut('isThinkingSignatureError — text > 600 chars (agent discussing the bug)', () => {
+    const longText = 'The thinking signature error happens when ' + 'x'.repeat(600);
+    assert.strictEqual(isThinkingSignatureError(longText), false);
+  });
+  ut('isThinkingSignatureError — "thinking" without detail keywords', () => {
+    assert.strictEqual(isThinkingSignatureError('thinking about the problem'), false);
+  });
+  ut('isThinkingSignatureError — auth error (no thinking)', () => {
+    assert.strictEqual(isThinkingSignatureError('API Error: 401 Unauthorized'), false);
+  });
+
+  // matchThinkingBlock — normal mode (strip unsigned/invalid only)
+  ut('matchThinkingBlock — unsigned thinking (no signature) → match', () => {
+    assert.strictEqual(matchThinkingBlock({ type: 'thinking', thinking: 'hello' }), true);
+  });
+  ut('matchThinkingBlock — signed thinking → no match', () => {
+    assert.strictEqual(matchThinkingBlock({ type: 'thinking', thinking: 'hello', signature: 'abc123' }), false);
+  });
+  ut('matchThinkingBlock — signed thinking with cache_control → match (strip cache_control)', () => {
+    assert.strictEqual(matchThinkingBlock({ type: 'thinking', thinking: 'x', signature: 'abc', cache_control: { type: 'ephemeral' } }), true);
+  });
+  ut('matchThinkingBlock — redacted_thinking without data → match', () => {
+    assert.strictEqual(matchThinkingBlock({ type: 'redacted_thinking' }), true);
+  });
+  ut('matchThinkingBlock — redacted_thinking with data → no match', () => {
+    assert.strictEqual(matchThinkingBlock({ type: 'redacted_thinking', data: 'base64...' }), false);
+  });
+  ut('matchThinkingBlock — text with [thinking] marker → match', () => {
+    assert.strictEqual(matchThinkingBlock({ type: 'text', text: '[thinking] hello world' }), true);
+  });
+  ut('matchThinkingBlock — normal text → no match', () => {
+    assert.strictEqual(matchThinkingBlock({ type: 'text', text: 'hello world' }), false);
+  });
+  ut('matchThinkingBlock — tool_use → no match', () => {
+    assert.strictEqual(matchThinkingBlock({ type: 'tool_use', id: '1', name: 'read' }), false);
+  });
+
+  // matchThinkingBlock — stripAll mode (third-party/recovery)
+  ut('matchThinkingBlock stripAll — signed thinking → match', () => {
+    assert.strictEqual(matchThinkingBlock({ type: 'thinking', thinking: 'x', signature: 'valid' }, { stripAll: true }), true);
+  });
+  ut('matchThinkingBlock stripAll — redacted_thinking with data → match', () => {
+    assert.strictEqual(matchThinkingBlock({ type: 'redacted_thinking', data: 'base64' }, { stripAll: true }), true);
+  });
+  ut('matchThinkingBlock stripAll — normal text → no match', () => {
+    assert.strictEqual(matchThinkingBlock({ type: 'text', text: 'hello' }, { stripAll: true }), false);
+  });
+
+  // replaceThinkingBlock
+  ut('replaceThinkingBlock — unsigned thinking → null (drop)', () => {
+    assert.strictEqual(replaceThinkingBlock({ type: 'thinking', thinking: 'x' }), null);
+  });
+  ut('replaceThinkingBlock — signed with cache_control → strip cache_control only', () => {
+    const result = replaceThinkingBlock({ type: 'thinking', thinking: 'x', signature: 'abc', cache_control: { type: 'ephemeral' } });
+    assert.deepStrictEqual(result, { type: 'thinking', thinking: 'x', signature: 'abc' });
+  });
+  ut('replaceThinkingBlock — unsigned with cache_control → drop entirely (not just strip cache_control)', () => {
+    assert.strictEqual(replaceThinkingBlock({ type: 'thinking', thinking: 'x', cache_control: { type: 'ephemeral' } }), null);
+  });
+  ut('replaceThinkingBlock — [thinking] marker → strip marker', () => {
+    const result = replaceThinkingBlock({ type: 'text', text: '[thinking] hello' });
+    assert.deepStrictEqual(result, { type: 'text', text: 'hello' });
+  });
+  ut('replaceThinkingBlock — [thinking] only → null (nothing left)', () => {
+    assert.strictEqual(replaceThinkingBlock({ type: 'text', text: '[thinking]' }), null);
+  });
+  ut('replaceThinkingBlock stripAll — signed thinking → null', () => {
+    assert.strictEqual(replaceThinkingBlock({ type: 'thinking', thinking: 'x', signature: 'valid' }, { stripAll: true }), null);
+  });
+
+  // stripLeadingThinkingMarker
+  ut('stripLeadingThinkingMarker — single marker', () => {
+    assert.strictEqual(stripLeadingThinkingMarker('[thinking] hello'), 'hello');
+  });
+  ut('stripLeadingThinkingMarker — multiple markers', () => {
+    assert.strictEqual(stripLeadingThinkingMarker('[thinking] [thinking] hello'), 'hello');
+  });
+  ut('stripLeadingThinkingMarker — no marker', () => {
+    assert.strictEqual(stripLeadingThinkingMarker('hello'), 'hello');
+  });
+  ut('stripLeadingThinkingMarker — non-string', () => {
+    assert.strictEqual(stripLeadingThinkingMarker(42), 42);
+  });
+
+  // Edge cases
+  ut('matchThinkingBlock — null input → false', () => {
+    assert.strictEqual(matchThinkingBlock(null), false);
+  });
+  ut('matchThinkingBlock — non-object → false', () => {
+    assert.strictEqual(matchThinkingBlock('string'), false);
+  });
+
   return { p, f };
 }
 
@@ -1600,10 +1716,11 @@ async function run() {
     assert.ok('stoa.js' in r.body.files, 'stoa.js not in manifest');
   });
 
-  await test('GET /api/client/file/stoa.js — returns JS content', async () => {
+  await test('GET /api/client/file/stoa.js — returns JS with CLIENT_VERSION and thinking-sanitizer', async () => {
     const r = await req('GET', '/api/client/file/stoa.js');
     assert.strictEqual(r.status, 200);
-    assert.ok(r.raw.includes('CLIENT_VERSION'), 'CLIENT_VERSION not in stoa.js');
+    assert.ok(r.raw.includes('CLIENT_VERSION'), 'CLIENT_VERSION not in served file');
+    assert.ok(r.raw.includes('isThinkingSignatureError'), 'thinking-sanitizer functions missing');
   });
 
   await test('GET /api/client/file/../../server.js — path traversal blocked → 404', async () => {

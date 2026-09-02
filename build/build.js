@@ -45,8 +45,14 @@ fs.writeFileSync(path.join(dist, '_app.js'), jsConcat);
 execSync(`npx esbuild public/dist/_app.js --bundle --minify --outfile=public/dist/stoa.min.js`, { cwd: root, stdio: 'inherit' });
 fs.unlinkSync(path.join(dist, '_app.js'));
 
+// ── Agent bundle: stoa.js + lib/* → dist/stoa.js ──
+const agentDist = path.join(root, 'dist');
+if (!fs.existsSync(agentDist)) fs.mkdirSync(agentDist, { recursive: true });
+execSync(`npx esbuild stoa.js --bundle --platform=node --target=node18 --external:ws --external:./claude-session --outfile=dist/stoa.js`, { cwd: root, stdio: 'inherit' });
+
 // ── Summary ──
 const size = (f) => (fs.statSync(f).size / 1024).toFixed(1) + 'KB';
 console.log(`\n✓ Build complete`);
 console.log(`  vendor/  — marked ${size(path.join(vendor, 'marked.min.js'))}, purify ${size(path.join(vendor, 'purify.min.js'))}, hljs ${size(path.join(vendor, 'highlight.min.js'))}, codemirror ${size(path.join(vendor, 'codemirror.bundle.js'))}`);
 console.log(`  dist/    — stoa.min.css ${size(path.join(dist, 'stoa.min.css'))}, stoa.min.js ${size(path.join(dist, 'stoa.min.js'))}`);
+console.log(`  agent/   — dist/stoa.js ${size(path.join(agentDist, 'stoa.js'))}`);

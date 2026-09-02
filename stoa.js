@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.175';
+const CLIENT_VERSION = '0.4.177';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -14,6 +14,7 @@ const os = require('os');
 const { spawnSync } = require('child_process');
 
 const { ClaudeSession } = require('./claude-session');
+const { stripLeadingThinkingMarker, isThinkingSignatureError, matchThinkingBlock, replaceThinkingBlock, THINKING_MARKER_RE } = require('./lib/thinking-sanitizer');
 
 let STOA_URL      = process.env.STOA_URL    || 'ws://localhost:3001';
 const ACTOR_ID    = parseInt(process.env.STOA_ACTOR_ID || '1');
@@ -218,15 +219,6 @@ function stripBlocksFromEntry(obj, matchFn, makeReplacement) {
   return stripped;
 }
 
-// Strip the literal "[thinking]" marker from the start of a string (one or more, with surrounding
-// whitespace). Older Stoa versions replaced unsigned thinking blocks with a {type:'text',
-// text:'[thinking]'} placeholder; weaker non-Anthropic models then few-shot-mimic that pattern and
-// prefix their own replies with "[thinking]". Used both on live output and on the stored history.
-const THINKING_MARKER_RE = /^\s*(?:\[thinking\]\s*)+/;
-function stripLeadingThinkingMarker(text) {
-  return typeof text === 'string' ? text.replace(THINKING_MARKER_RE, '') : text;
-}
-
 // Shared async scaffold: rewrite a session jsonl, replacing blocks that match. `needles` are raw
 // substrings used as a cheap early-exit (whole file, then per-line) before JSON.parse. Async fs
 // (not readFileSync) so it never blocks the event loop even when called inline before a resume.
@@ -267,25 +259,41 @@ function stripSessionImages(workdir, sessionId) {
     'stripped image data');
 }
 
-// Sanitize thinking residue from the session file before a resume, in one pass:
-//   1. Unsigned thinking blocks (ollama/qwen/nemotron via proxy emit `thinking` with empty/missing
-//      `signature`). On the next Claude resume the CLI replays history to api.anthropic.com, which
-//      rejects them with 400 "Invalid `signature` in `thinking` block". Remove the block entirely.
-//   2. Leaked "[thinking]" text markers — leftover {type:'text', text:'[thinking]'} placeholders
-//      written by older Stoa versions, plus replies where a model already mimicked the pattern and
-//      glued "[thinking]" onto the front of its text. Strip the leading marker (drop the block if
-//      nothing else remains) so the pattern stops being reinforced into the model's few-shot context.
-function sanitizeThinking(workdir, sessionId) {
+function sanitizeThinking(workdir, sessionId, opts = {}) {
+  const { thirdParty = false, aggressive = false } = opts;
+  const stripAll = thirdParty || aggressive;
+  const blockOpts = { stripAll };
   return sanitizeSession(workdir, sessionId,
-    ['"type":"thinking"', '"type": "thinking"', '[thinking]'],
-    b => (b.type === 'thinking' && !b.signature)
-      || (b.type === 'text' && typeof b.text === 'string' && THINKING_MARKER_RE.test(b.text)),
-    b => {
-      if (b.type === 'thinking') return null;
-      const cleaned = stripLeadingThinkingMarker(b.text);
-      return cleaned ? { ...b, text: cleaned } : null;
-    },
-    'sanitized thinking residue');
+    ['"type":"thinking"', '"type": "thinking"', '"type":"redacted_thinking"', '"type": "redacted_thinking"', '[thinking]'],
+    b => matchThinkingBlock(b, blockOpts),
+    b => replaceThinkingBlock(b, blockOpts),
+    stripAll ? 'stripped all thinking (third-party/recovery)' : 'sanitized thinking residue');
+}
+
+async function backupSessionFile(workdir, sessionId) {
+  const filePath = sessionFilePath(workdir, sessionId);
+  if (!filePath) return null;
+  const backupPath = filePath + '.sig-bak';
+  try {
+    await fs.promises.copyFile(filePath, backupPath);
+    console.log(`[stoa] backed up session ${sessionId.slice(0, 8)}... → .sig-bak`);
+    return backupPath;
+  } catch (err) {
+    console.error(`[stoa] backup error: ${err.message}`);
+    return null;
+  }
+}
+
+async function prepareResume({ targetDir, rid, targetModel, toolsSupported, env, sessionKey, thirdParty = false, aggressive = false }) {
+  if (rid && !compactsInFlight.has(targetDir)) {
+    await sanitizeThinking(targetDir, rid, { thirdParty, aggressive });
+  }
+  const flags = rid ? ['--resume', rid] : [];
+  if (targetModel) flags.push('--model', targetModel);
+  if (toolsSupported === false) flags.push('--tools', '');
+  const session = new ClaudeSession({ workDir: targetDir, flags, resumeId: rid || null, env });
+  sessionPool.set(sessionKey, session);
+  return session;
 }
 
 function getSession(workdir, roomId, env, subAgentId) {
@@ -914,20 +922,14 @@ async function processTrigger(msg) {
 
     if (needsResume || needsFreshSession || needsModelChange || needsEnvChange) {
       session.shutdown();
-      // Sanitize the session file before the new CLI process reads it on --resume, so unsigned
-      // thinking blocks left by non-Anthropic models don't break the next Claude run.
-      if (rid && !compactsInFlight.has(targetDir)) await sanitizeThinking(targetDir, rid);
-      const flags = rid ? ['--resume', rid] : [];
-      if (targetModel) flags.push('--model', targetModel);
-      if (msg.tools_supported === false) flags.push('--tools', '');
-      session = new ClaudeSession({ workDir: targetDir, flags, resumeId: rid || null, env: envToUse });
-      sessionPool.set(sessionKey, session);
+      session = await prepareResume({ targetDir, rid, targetModel, toolsSupported: msg.tools_supported, env: envToUse, sessionKey, thirdParty: !!msg.base_url });
       console.log(`[stoa] Session restarted: workdir=${targetDir} room=${room_id}${rid ? ' resume=' + rid.slice(0, 8) + '...' : ' (fresh)'}${targetModel ? ' model=' + targetModel : ''}${msg.base_url ? ' base_url=' + msg.base_url : ''}${msg.tools_supported === false ? ' tools=disabled' : ''}`);
     }
     activeTriggers.set(message_id, { workdir: targetDir, session });
     let fullContent = '';
     let lastActivity = Date.now();
     let abortReason = null;
+    let thinkingSigRetried = false;
     statusHandler = status => {
       lastActivity = Date.now();
       send({ type: 'agent_system_event', room_id, message_id, status });
@@ -986,12 +988,7 @@ async function processTrigger(msg) {
           send({ type: 'agent_stream_reset', room_id, message_id });
           fullContent = '';
           session.shutdown();
-          if (rid && !compactsInFlight.has(targetDir)) await sanitizeThinking(targetDir, rid);
-          const flags = rid ? ['--resume', rid] : [];
-          if (targetModel) flags.push('--model', targetModel);
-          if (msg.tools_supported === false) flags.push('--tools', '');
-          session = new ClaudeSession({ workDir: targetDir, flags, resumeId: rid || null, env: envToUse });
-          sessionPool.set(sessionKey, session);
+          session = await prepareResume({ targetDir, rid, targetModel, toolsSupported: msg.tools_supported, env: envToUse, sessionKey, thirdParty: !!msg.base_url });
           activeTriggers.set(message_id, { workdir: targetDir, session });
           sessionRef = session;
           session.on('status', statusHandler);
@@ -1012,12 +1009,7 @@ async function processTrigger(msg) {
           console.log(`[stoa] API key #1 failed (${retryErr.message}), rotating to key #${ki + 1}...`);
           const rotatedEnv = { ...platformEnv, ANTHROPIC_AUTH_TOKEN: apiKeys[ki] };
           session.shutdown();
-          if (rid && !compactsInFlight.has(targetDir)) await sanitizeThinking(targetDir, rid);
-          const flags = rid ? ['--resume', rid] : [];
-          if (targetModel) flags.push('--model', targetModel);
-          if (msg.tools_supported === false) flags.push('--tools', '');
-          session = new ClaudeSession({ workDir: targetDir, flags, resumeId: rid || null, env: rotatedEnv });
-          sessionPool.set(sessionKey, session);
+          session = await prepareResume({ targetDir, rid, targetModel, toolsSupported: msg.tools_supported, env: rotatedEnv, sessionKey, thirdParty: !!msg.base_url });
           activeTriggers.set(message_id, { workdir: targetDir, session });
           sessionRef = session;
           session.on('status', statusHandler);
@@ -1051,6 +1043,19 @@ async function processTrigger(msg) {
         activeTriggers.set(message_id, { workdir: targetDir, session });
         lastActivity = Date.now();
         result = await session.send(sendOpts);
+      } else if (isThinkingSignatureError(retryErr.message) && !fullContent && !thinkingSigRetried) {
+        thinkingSigRetried = true;
+        console.log(`[stoa] thinking-signature 400 detected (exception): ${retryErr.message.slice(0, 120)}`);
+        send({ type: 'agent_stream_reset', room_id, message_id });
+        fullContent = '';
+        session.shutdown();
+        await backupSessionFile(targetDir, rid);
+        session = await prepareResume({ targetDir, rid, targetModel, toolsSupported: msg.tools_supported, env: envToUse, sessionKey, aggressive: true });
+        activeTriggers.set(message_id, { workdir: targetDir, session });
+        sessionRef = session;
+        session.on('status', statusHandler);
+        lastActivity = Date.now();
+        result = await session.send(sendOpts);
       } else {
         throw retryErr;
       }
@@ -1080,6 +1085,24 @@ async function processTrigger(msg) {
       ({ content, sessionId, aborted, usage, modelUsage, totalCostUsd, durationMs, subtype } = result);
       content = stripLeadingThinkingMarker(content);
       console.log(`[stoa] OAuth retry completed for room=${room_id} msg=${message_id}, content=${content.length} chars`);
+    }
+
+    if (!aborted && !thinkingSigRetried && isThinkingSignatureError(content)) {
+      thinkingSigRetried = true;
+      console.log(`[stoa] thinking-signature 400 detected (content): ${content.slice(0, 120)}`);
+      send({ type: 'agent_stream_reset', room_id, message_id });
+      fullContent = '';
+      session.shutdown();
+      await backupSessionFile(targetDir, rid);
+      session = await prepareResume({ targetDir, rid, targetModel, toolsSupported: msg.tools_supported, env: envToUse, sessionKey, aggressive: true });
+      activeTriggers.set(message_id, { workdir: targetDir, session });
+      if (statusHandler) session.on('status', statusHandler);
+      sessionRef = session;
+      lastActivity = Date.now();
+      result = await session.send(sendOpts);
+      ({ content, sessionId, aborted, usage, modelUsage, totalCostUsd, durationMs, subtype } = result);
+      content = stripLeadingThinkingMarker(content);
+      console.log(`[stoa] thinking-signature recovery ${isThinkingSignatureError(content) ? 'FAILED' : 'ok'} for room=${room_id} msg=${message_id}`);
     }
 
     clearInterval(hangWatchdog);
