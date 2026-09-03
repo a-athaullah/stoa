@@ -4420,6 +4420,16 @@ wss.on('connection', (ws, req) => {
         "UPDATE messages SET state='error', content=CASE WHEN content='' THEN '(interrupted — agent disconnected)' ELSE content END WHERE state IN ('streaming','requesting') AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?)"
       ).run(agentActorId);
       if (cleaned.changes) console.log(`[agent] Cleaned ${cleaned.changes} orphaned message(s) from Actor #${agentActorId}`);
+      // Reject all pending promises for this actor so caller sequences can continue/unblock
+      for (const [mId, pending] of [...pendingAgents]) {
+        const meta = pendingActorMeta.get(mId);
+        if (meta?.actor_id === agentActorId) {
+          pendingAgents.delete(mId);
+          pendingActorMeta.delete(mId);
+          if (meta.room_id) broadcast(meta.room_id, { type: 'message_state', message_id: mId, state: 'error' });
+          pending.reject(new Error('agent_disconnected'));
+        }
+      }
       // Clean up pendingCompacts — remove only this agent; if no agents remain, unstick UI
       for (const [roomId, cs] of pendingCompacts) {
         const idx = cs.agents.indexOf(agentActorId);
@@ -4599,7 +4609,12 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
       turnCount++;
       const currentAgent = agents[i];
       const prefetchedCtx = { allParticipants: participantsStmt.all(roomId), wdRow, repliedMsg };
-      await triggerAiResponse(roomId, currentAgent, content, replyTo, attachments, prefetchedCtx);
+      try {
+        await triggerAiResponse(roomId, currentAgent, content, replyTo, attachments, prefetchedCtx);
+      } catch (e) {
+        // Disconnect or timeout — DB + UI already updated by the rejection path; continue to next agent
+        console.log(`[trigger] ${currentAgent.sub_agent ? currentAgent.sub_agent.label : currentAgent.name} failed (${e.message}), continuing sequence`);
+      }
       if (seq.cancelled) break;
 
       const lastMsg = db.prepare(`
@@ -4711,7 +4726,24 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
 
   if (allAiParts.length > 0) {
     const ordered = resolveAgentOrder(content, allAiParts, roomId);
-    triggerAgentsSequential(roomId, ordered, content, messageId, attachments || []).catch(e => console.error('[trigger] sequence error:', e));
+    const subAgentMentions = ordered.filter(a => a.sub_agent);
+    const parentMentions   = ordered.filter(a => !a.sub_agent);
+
+    // Sub-agents fire in parallel — independent of conversation flow
+    if (subAgentMentions.length > 0) {
+      const maxParallel = parseInt(process.env.MAX_PARALLEL_SUB_AGENTS || '4');
+      (async () => {
+        for (let i = 0; i < subAgentMentions.length; i += maxParallel) {
+          const batch = subAgentMentions.slice(i, i + maxParallel);
+          await Promise.allSettled(batch.map(a => triggerAiResponse(roomId, a, content, messageId, attachments || [])));
+        }
+      })().catch(e => console.error('[trigger] parallel sub-agent error:', e));
+    }
+
+    // Parent agents run sequentially
+    if (parentMentions.length > 0) {
+      triggerAgentsSequential(roomId, parentMentions, content, messageId, attachments || []).catch(e => console.error('[trigger] sequence error:', e));
+    }
   }
 }
 
@@ -4791,9 +4823,22 @@ async function triggerSkillResponse(roomId, ai, prompt) {
   const agentWs = agentClients.get(ai.actor_id);
 
   if (agentWs && agentWs.readyState === 1) {
+    const skillRunTimeoutMs = parseInt(process.env.AGENT_RUN_TIMEOUT_MS || String(15 * 60 * 1000));
     await new Promise((resolve, reject) => {
-      pendingAgents.set(msgId, { resolve, reject });
-      pendingActorMeta.set(msgId, { actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null });
+      const timeoutTimer = setTimeout(() => {
+        if (!pendingAgents.has(msgId)) return;
+        pendingAgents.delete(msgId);
+        pendingActorMeta.delete(msgId);
+        db.prepare("UPDATE messages SET state='error', content=? WHERE id=?")
+          .run(`(timeout — ${ai.name} did not respond in ${Math.round(skillRunTimeoutMs / 60000)} minutes)`, msgId);
+        broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
+        reject(new Error('agent_timeout'));
+      }, skillRunTimeoutMs);
+      pendingAgents.set(msgId, {
+        resolve: (v) => { clearTimeout(timeoutTimer); resolve(v); },
+        reject:  (e) => { clearTimeout(timeoutTimer); reject(e); },
+      });
+      pendingActorMeta.set(msgId, { actor_id: ai.actor_id, room_id: roomId, actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null });
       agentWs.send(JSON.stringify({
         type: 'agent_trigger',
         room_id: roomId,
@@ -5129,9 +5174,22 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     const sessionId = subAgent
       ? getSubAgentSession(ai.participant_id, subAgent.id)
       : getSession(ai.participant_id);
+    const agentRunTimeoutMs = parseInt(process.env.AGENT_RUN_TIMEOUT_MS || String(15 * 60 * 1000));
     await new Promise((resolve, reject) => {
-      pendingAgents.set(msgId, { resolve, reject });
-      pendingActorMeta.set(msgId, { actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null, sub_agent_label: subAgent?.label || null });
+      const timeoutTimer = setTimeout(() => {
+        if (!pendingAgents.has(msgId)) return;
+        pendingAgents.delete(msgId);
+        pendingActorMeta.delete(msgId);
+        db.prepare("UPDATE messages SET state='error', content=? WHERE id=?")
+          .run(`(timeout — ${displayName} did not respond in ${Math.round(agentRunTimeoutMs / 60000)} minutes)`, msgId);
+        broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
+        reject(new Error('agent_timeout'));
+      }, agentRunTimeoutMs);
+      pendingAgents.set(msgId, {
+        resolve: (v) => { clearTimeout(timeoutTimer); resolve(v); },
+        reject:  (e) => { clearTimeout(timeoutTimer); reject(e); },
+      });
+      pendingActorMeta.set(msgId, { actor_id: ai.actor_id, room_id: roomId, actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null, sub_agent_label: subAgent?.label || null });
       const triggerBaseUrl = getPublicUrl(`localhost:${PORT}`);
       const fullAttachments = (attachments || []).map(a => ({
         ...a,

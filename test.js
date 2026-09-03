@@ -188,6 +188,28 @@ function runUnitTests() {
     assert.strictEqual(ordered.length, 2);
   });
 
+  // Parallel sub-agent dispatch split (mirrors handleHumanMessage dispatch logic)
+  ut('dispatch split — sub_agent entries separated from parent entries', () => {
+    const agents = [
+      { name: 'Ara', sub_agent: null },
+      { name: 'Ara', sub_agent: { id: 1, label: 'probe' } },
+      { name: 'Ara', sub_agent: { id: 2, label: 'reviewer' } },
+    ];
+    const subAgentMentions = agents.filter(a => a.sub_agent);
+    const parentMentions   = agents.filter(a => !a.sub_agent);
+    assert.strictEqual(subAgentMentions.length, 2, 'should have 2 sub-agents');
+    assert.strictEqual(parentMentions.length, 1, 'should have 1 parent');
+    assert.ok(subAgentMentions.every(a => a.sub_agent !== null), 'all sub-agents should have sub_agent field');
+  });
+
+  ut('dispatch split — no sub_agent mentions → all go to sequential', () => {
+    const agents = [{ name: 'Ara', sub_agent: null }, { name: 'Idris', sub_agent: null }];
+    const subAgentMentions = agents.filter(a => a.sub_agent);
+    const parentMentions   = agents.filter(a => !a.sub_agent);
+    assert.strictEqual(subAgentMentions.length, 0);
+    assert.strictEqual(parentMentions.length, 2);
+  });
+
   // parseDocFilename (mirrors server logic)
   const parseDocFilename = name => {
     const m = name.match(/^(.+)\.([a-z]{2})\.md$/);
