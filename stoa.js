@@ -859,7 +859,6 @@ async function processTrigger(msg) {
     if (subAgent && workdir === subAgentDefaultWorkdir) {
       fs.mkdirSync(workdir, { recursive: true });
     } else {
-      const label = subAgent?.label || 'agent';
       console.error(`[trigger] workdir does not exist on this machine: ${workdir}`);
       send({ type: 'agent_complete', room_id, message_id, content: `Workdir tidak ditemukan di mesin ini: \`${workdir}\``, ai_model: undefined, result_meta: { exit_reason: 'error' } });
       return;
