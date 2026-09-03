@@ -1291,7 +1291,7 @@ async function processTrigger(msg) {
   } finally {
     if (sessionRef && statusHandler) sessionRef.removeListener('status', statusHandler);
     activeTriggers.delete(message_id);
-    if (targetDir) startSessionIdleTimer(`${targetDir}::${room_id}`);
+    if (targetDir) startSessionIdleTimer(sessionKey);
     drainQueue();
   }
 }

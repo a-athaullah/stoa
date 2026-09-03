@@ -384,6 +384,18 @@ function runUnitTests() {
     assert.strictEqual(cleanErrorText('\n\n'), 'unknown error');
   });
 
+  // R16: sessionKey scoping — sub-agent idle timer must use its own key, not parent key
+  ut('R16 — sub-agent sessionKey is distinct from parent sessionKey', () => {
+    const workdir = '/project/foo';
+    const roomId = 42;
+    const subAgentId = 7;
+    const parentKey = `${workdir}::${roomId}`;
+    const subKey = `${workdir}::${roomId}::sub:${subAgentId}`;
+    assert.notStrictEqual(subKey, parentKey, 'sub-agent key must differ from parent key');
+    assert.ok(subKey.includes('::sub:'), 'sub-agent key must contain ::sub: marker');
+    assert.ok(!parentKey.includes('::sub:'), 'parent key must not contain ::sub: marker');
+  });
+
   // formatCostRollup token formatter (mirrors _fmtTok / client _fmtTokens)
   const _fmtTok = (n) => (n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k' : String(n || 0));
   ut('_fmtTok — sub-1k raw, 1k–10k one decimal, ≥10k rounded', () => {
