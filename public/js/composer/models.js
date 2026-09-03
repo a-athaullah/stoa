@@ -186,7 +186,7 @@ function highlightMentions(html) {
   if (!all.length) return html;
   const escaped = all.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
   escaped.sort((a, b) => b.length - a.length);
-  const re = new RegExp(`@(${escaped.join('|')})(?=\\s|&nbsp;|[.,!?;:]|$)`, 'g');
+  const re = new RegExp(`@(${escaped.join('|')})(?=\\s|&nbsp;|[.,!?;:]|<|$)`, 'gm');
   return html.replace(re, (match, name) => {
     const isSub = subLabels.includes(name);
     const cls = isSub ? 'h-mention-inline h-mention-sub' : 'h-mention-inline';
