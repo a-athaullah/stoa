@@ -4575,7 +4575,7 @@ const activeSequences = new Map(); // roomId → { cancelled: bool }
 const roomIdleBus = new (require('events').EventEmitter)();
 roomIdleBus.setMaxListeners(0); // unbounded — one listener per queued room
 
-async function triggerAgentsSequential(roomId, agents, content, replyTo, attachments) {
+async function triggerAgentsSequential(roomId, agents, content, replyTo, attachments, initialFiredSubAgentIds = new Set()) {
   const maxTurns = parseInt(process.env.MAX_AI_TURNS || '5');
   const seq = { cancelled: false };
   activeSequences.set(roomId, seq);
@@ -4602,7 +4602,8 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
       WHERE rp.room_id=? AND a.type='ai' AND rp.notify_on_message=1
     `);
 
-    const firedSubAgentIds = new Set();
+    // Pre-populate with sub-agents already fired by initial parallel dispatch (prevents double-firing)
+    const firedSubAgentIds = new Set(initialFiredSubAgentIds);
 
     for (let i = 0; i < Math.min(agents.length, maxTurns); i++) {
       if (seq.cancelled) break;
@@ -4730,6 +4731,7 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
     const parentMentions   = ordered.filter(a => !a.sub_agent);
 
     // Sub-agents fire in parallel — independent of conversation flow
+    const initialFiredSubAgentIds = new Set(subAgentMentions.map(a => a.sub_agent.id));
     if (subAgentMentions.length > 0) {
       const maxParallel = parseInt(process.env.MAX_PARALLEL_SUB_AGENTS || '4');
       (async () => {
@@ -4740,9 +4742,9 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
       })().catch(e => console.error('[trigger] parallel sub-agent error:', e));
     }
 
-    // Parent agents run sequentially
+    // Parent agents run sequentially; pass fired sub-agent IDs to prevent double-firing from cascade
     if (parentMentions.length > 0) {
-      triggerAgentsSequential(roomId, parentMentions, content, messageId, attachments || []).catch(e => console.error('[trigger] sequence error:', e));
+      triggerAgentsSequential(roomId, parentMentions, content, messageId, attachments || [], initialFiredSubAgentIds).catch(e => console.error('[trigger] sequence error:', e));
     }
   }
 }

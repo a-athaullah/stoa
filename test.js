@@ -210,6 +210,24 @@ function runUnitTests() {
     assert.strictEqual(parentMentions.length, 2);
   });
 
+  ut('dispatch split — initialFiredSubAgentIds built from initial parallel batch', () => {
+    const agents = [
+      { name: 'Ara', sub_agent: null },
+      { name: 'Ara', sub_agent: { id: 5, label: 'probe' } },
+      { name: 'Ara', sub_agent: { id: 7, label: 'reviewer' } },
+    ];
+    const subAgentMentions = agents.filter(a => a.sub_agent);
+    const initialFiredSubAgentIds = new Set(subAgentMentions.map(a => a.sub_agent.id));
+    assert.ok(initialFiredSubAgentIds.has(5), 'probe id should be in fired set');
+    assert.ok(initialFiredSubAgentIds.has(7), 'reviewer id should be in fired set');
+    assert.strictEqual(initialFiredSubAgentIds.size, 2);
+    // Simulates firedSubAgentIds = new Set(initialFiredSubAgentIds) in triggerAgentsSequential
+    const firedSubAgentIds = new Set(initialFiredSubAgentIds);
+    // Now a cascade mention of probe (id=5) should be blocked
+    const wouldFireAgain = !firedSubAgentIds.has(5);
+    assert.strictEqual(wouldFireAgain, false, 'should not re-fire probe that was already dispatched');
+  });
+
   // parseDocFilename (mirrors server logic)
   const parseDocFilename = name => {
     const m = name.match(/^(.+)\.([a-z]{2})\.md$/);
