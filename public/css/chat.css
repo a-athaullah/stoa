@@ -238,6 +238,13 @@ html.dark .h-faded-mark { opacity: 0.12; }
   color: #b35a4b;
   opacity: 0.85;
 }
+.h-msg-fail {
+  font-size: 13px;
+  color: oklch(44% 0.13 25);
+  font-family: var(--h-sans);
+  font-style: italic;
+  opacity: 0.9;
+}
 
 .h-bubble {
   color: var(--h-ink);

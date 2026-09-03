@@ -37,11 +37,15 @@ function maybeInsertDaySep(inner, ts) {
 // cost. `raw` is the JSON string stored in messages.result_meta (or null).
 // Returns a DOM node, or null when there is nothing to show.
 const _RESULT_EXIT = {
-  completed: { glyph: '✓', label: 'completed' },
-  stopped:   { glyph: '⏹', label: 'stopped' },
-  timeout:   { glyph: '⚠', label: 'timeout' },
-  error:     { glyph: '⚠', label: 'error' },
+  completed:      { glyph: '✓', label: 'completed' },
+  stopped:        { glyph: '⏹', label: 'stopped' },
+  timeout:        { glyph: '⚠', label: 'timeout' },
+  error:          { glyph: '⚠', label: 'error' },
+  max_iterations: { glyph: '⏸', label: 'max iterations' },
+  interrupted:    { glyph: '⏹', label: 'interrupted' },
+  failed:         { glyph: '⚠', label: 'failed' },
 };
+const FAILURE_STATES = new Set(['timeout', 'error', 'max_iterations', 'failed', 'interrupted']);
 function _fmtTokens(n) {
   if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k';
   return String(n);
@@ -63,7 +67,7 @@ function buildResultChip(raw) {
   if (tok && (tok.input || tok.output)) parts.push(_fmtTokens((tok.input || 0) + (tok.output || 0)) + ' tok');
   if (meta.duration_ms) parts.push(_fmtDuration(meta.duration_ms));
   const chip = document.createElement('div');
-  chip.className = 'h-msg-result' + (meta.exit_reason === 'timeout' || meta.exit_reason === 'error' ? ' warn' : '');
+  chip.className = 'h-msg-result' + (FAILURE_STATES.has(meta.exit_reason) ? ' warn' : '');
   chip.textContent = parts.join(' · ');
   return chip;
 }
