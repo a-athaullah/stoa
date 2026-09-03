@@ -5064,9 +5064,11 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     if (replied) replyCtx = '\n' + L.replyTo(replied.name, replied.content?.substring(0, 500)) + '\n';
   }
 
+  const PROACTIVE_INSTRUCTIONS = `\n\n## Progress Reporting (MANDATORY for background tasks)\n\nFor any task that takes more than a few seconds, or involves file edits, commits, or multi-step work:\n1. After finishing your analysis, send a proactive message with what you found and your plan.\n2. After each significant step (commit, test run, major finding), send a brief update.\n3. At the end, always send a final summary of what was done.\n\nTo send a proactive message to the room:\n\`\`\`bash\nBASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\ncurl -s -X POST "$BASE_URL/api/rooms/$STOA_ROOM_ID/message" \\\n  -H "Content-Type: application/json" \\\n  -H "x-agent-id: $STOA_ACTOR_ID" \\\n  -H "x-agent-secret: $STOA_SECRET" \\\n  -d '{"content": "Your message here"}'\n\`\`\`\n\n$STOA_URL, $STOA_ACTOR_ID, $STOA_SECRET, and $STOA_ROOM_ID are available as environment variables.`;
+
   const identityLine = subAgent
-    ? `${L.identity(ai.name)}\nYou are operating as sub-agent "${subAgent.label}" (tier: ${subAgent.tier}).${subAgent.system_prompt ? '\n\nSub-agent instructions:\n' + subAgent.system_prompt : ''}`
-    : L.identity(ai.name);
+    ? `${L.identity(ai.name)}\nYou are operating as sub-agent "${subAgent.label}" (tier: ${subAgent.tier}).${subAgent.system_prompt ? '\n\nSub-agent instructions:\n' + subAgent.system_prompt : ''}${PROACTIVE_INSTRUCTIONS}`
+    : `${L.identity(ai.name)}${PROACTIVE_INSTRUCTIONS}`;
 
   // ── Phase 2b: orchestration — issue a spawn token to the MAIN agent when it
   // owns sub-agents linked in this room, and tell it how to trigger them.
