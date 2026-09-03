@@ -69,14 +69,15 @@ CREATE TABLE IF NOT EXISTS ai_sessions (
   room_id INTEGER DEFAULT NULL,
   claude_session_id TEXT NOT NULL,
   workdir TEXT DEFAULT NULL,
-  status TEXT DEFAULT 'idle' CHECK(status IN ('active','idle')),
+  status TEXT DEFAULT 'idle' CHECK(status IN ('active','idle','indeterminate')),
   last_active_at TEXT DEFAULT (datetime('now')),
   created_at TEXT DEFAULT (datetime('now')),
+  sub_agent_id INTEGER,
   compact_failure_cooldown_until TEXT DEFAULT NULL,
   compact_failure_error TEXT DEFAULT NULL,
+  process_generation TEXT DEFAULT NULL,
   FOREIGN KEY (participant_id) REFERENCES room_participants(id),
-  FOREIGN KEY (room_id) REFERENCES rooms(id),
-  UNIQUE (participant_id)
+  FOREIGN KEY (room_id) REFERENCES rooms(id)
 );
 
 CREATE TABLE IF NOT EXISTS invite_suggestions (

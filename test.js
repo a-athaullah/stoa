@@ -1984,6 +1984,55 @@ async function run() {
     });
   }
 
+  // ── R15: indeterminate session status + process_generation
+  console.log('\n[R15: indeterminate session status]');
+  {
+    await test('R15 — Migration applied: ai_sessions has process_generation column', () => {
+      const db = require('./db');
+      const info = db.prepare('PRAGMA table_info(ai_sessions)').all();
+      assert.ok(info.some(c => c.name === 'process_generation'), 'process_generation column missing');
+    });
+
+    await test('R15 — ai_sessions status constraint includes indeterminate', () => {
+      const db = require('./db');
+      const tbl = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='ai_sessions'").get();
+      assert.ok(tbl?.sql?.includes('indeterminate'), 'indeterminate not in CHECK constraint');
+    });
+
+    await test('R15 — GET /rooms/:id/participants includes session_status field', async () => {
+      // Use any room — first in list
+      const rooms = (await req('GET', '/api/rooms')).body;
+      if (!Array.isArray(rooms) || !rooms.length) { console.log('    (skip — no rooms)'); return; }
+      const roomId = rooms[0].id;
+      const r = await req('GET', `/api/rooms/${roomId}/participants`);
+      assert.strictEqual(r.status, 200);
+      assert.ok(Array.isArray(r.body));
+      // session_status key should be present (even if null for humans/no session)
+      assert.ok(r.body.every(p => Object.prototype.hasOwnProperty.call(p, 'session_status')), 'session_status key missing from participant response');
+    });
+
+    await test('R15 — session set indeterminate persists in participants response', async () => {
+      const db = require('./db');
+      // Insert a test ai_session with status='indeterminate' for a real participant
+      const rooms = (await req('GET', '/api/rooms')).body;
+      if (!Array.isArray(rooms) || !rooms.length) { console.log('    (skip — no rooms)'); return; }
+      const roomId = rooms[0].id;
+      const partsR = await req('GET', `/api/rooms/${roomId}/participants`);
+      const aiPart = partsR.body.find(p => p.type === 'ai');
+      if (!aiPart) { console.log('    (skip — no AI participant in first room)'); return; }
+
+      db.prepare("UPDATE ai_sessions SET status='indeterminate' WHERE participant_id=? AND sub_agent_id IS NULL").run(aiPart.id);
+      try {
+        const r2 = await req('GET', `/api/rooms/${roomId}/participants`);
+        const found = r2.body.find(p => p.id === aiPart.id);
+        assert.ok(found, 'participant not found in response');
+        assert.strictEqual(found.session_status, 'indeterminate');
+      } finally {
+        db.prepare("UPDATE ai_sessions SET status='idle' WHERE participant_id=? AND sub_agent_id IS NULL AND status='indeterminate'").run(aiPart.id);
+      }
+    });
+  }
+
   // Sub-agent orchestration (Phase 2b) — trigger endpoint auth/validation, control
   // actions, budget. The success trigger path needs a connected agent + a valid
   // spawn token (only issued during a real main-agent trigger), so it is not
