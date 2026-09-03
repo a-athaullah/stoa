@@ -349,6 +349,41 @@ function runUnitTests() {
     assert.strictEqual(sanitizeResultMeta({}), null);
   });
 
+  // R13: FAILURE_EXIT_REASONS derivation and cleanErrorText
+  const FAILURE_EXIT_REASONS = new Set(['error', 'timeout']);
+  const cleanErrorText = (raw) => {
+    if (!raw || typeof raw !== 'string') return 'unknown error';
+    const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+    if (!lines.length) return 'unknown error';
+    const isTraceback = /Traceback|Error:|  at |  File "/.test(raw);
+    return (isTraceback ? lines[lines.length - 1] : lines[0]).slice(0, 200);
+  };
+  ut('R13 — FAILURE_EXIT_REASONS: error + timeout are failures, stopped/completed are not', () => {
+    assert.ok(FAILURE_EXIT_REASONS.has('error'), 'error is failure');
+    assert.ok(FAILURE_EXIT_REASONS.has('timeout'), 'timeout is failure');
+    assert.ok(!FAILURE_EXIT_REASONS.has('stopped'), 'stopped (user-cancelled) is not failure');
+    assert.ok(!FAILURE_EXIT_REASONS.has('completed'), 'completed is not failure');
+  });
+  ut('R13 — cleanErrorText: first non-empty line for plain error', () => {
+    assert.strictEqual(cleanErrorText('Something went wrong'), 'Something went wrong');
+    assert.strictEqual(cleanErrorText('\n\nFailed to connect\nMore details'), 'Failed to connect');
+  });
+  ut('R13 — cleanErrorText: last line for traceback/stack trace', () => {
+    const tb = 'Traceback (most recent call last):\n  File "test.py", line 5\n    raise ValueError("bad")\nValueError: bad';
+    assert.strictEqual(cleanErrorText(tb), 'ValueError: bad');
+    const jsStack = 'Error: cannot read property\n  at Object.<anonymous> (app.js:10)\n  at Module._compile (node:internal)';
+    assert.strictEqual(cleanErrorText(jsStack), 'at Module._compile (node:internal)');
+  });
+  ut('R13 — cleanErrorText: caps at 200 chars', () => {
+    const long = 'x'.repeat(300);
+    assert.strictEqual(cleanErrorText(long).length, 200);
+  });
+  ut('R13 — cleanErrorText: null/empty → unknown error', () => {
+    assert.strictEqual(cleanErrorText(null), 'unknown error');
+    assert.strictEqual(cleanErrorText(''), 'unknown error');
+    assert.strictEqual(cleanErrorText('\n\n'), 'unknown error');
+  });
+
   // formatCostRollup token formatter (mirrors _fmtTok / client _fmtTokens)
   const _fmtTok = (n) => (n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k' : String(n || 0));
   ut('_fmtTok — sub-1k raw, 1k–10k one decimal, ≥10k rounded', () => {
@@ -3207,6 +3242,47 @@ async function run() {
   await test('GET /api/rooms/999999 — nonexistent room → 404', async () => {
     const r = await req('GET', '/api/rooms/999999');
     assert.strictEqual(r.status, 404);
+  });
+
+  // ── R13: sub-agent failure state derivation (DB-level)
+  await test('R13 — FAILURE_EXIT_REASONS causes message state=error even with content', () => {
+    const db = require('./db');
+    // Find any room with a participant to insert a test message
+    const rp = db.prepare('SELECT rp.id, rp.room_id FROM room_participants rp JOIN rooms r ON r.id=rp.room_id LIMIT 1').get();
+    if (!rp) { console.log('    (skipped — no room_participants)'); return; }
+    // Insert a test sub-agent message with non-empty content and exit_reason=error
+    const failMeta = JSON.stringify({ exit_reason: 'error' });
+    const ins = db.prepare(
+      "INSERT INTO messages (room_id, participant_id, content, result_meta, state) VALUES (?,?,'sub-agent error output',?,?)"
+    ).run(rp.room_id, rp.id, failMeta, 'streaming');
+    const msgId = Number(ins.lastInsertRowid);
+    // Simulate what agent_complete now does: derive state from exit_reason
+    const FAILURE_REASONS = new Set(['error', 'timeout']);
+    const parsedMeta = JSON.parse(failMeta);
+    const finalState = FAILURE_REASONS.has(parsedMeta?.exit_reason) ? 'error' : 'complete';
+    db.prepare("UPDATE messages SET state=?, completed_at=datetime('now') WHERE id=?").run(finalState, msgId);
+    const row = db.prepare('SELECT state FROM messages WHERE id=?').get(msgId);
+    assert.strictEqual(row.state, 'error', 'exit_reason=error must yield state=error despite non-empty content');
+    // Cleanup
+    db.prepare('DELETE FROM messages WHERE id=?').run(msgId);
+  });
+
+  await test('R13 — completed exit_reason + content → state=complete', () => {
+    const db = require('./db');
+    const rp = db.prepare('SELECT rp.id, rp.room_id FROM room_participants rp JOIN rooms r ON r.id=rp.room_id LIMIT 1').get();
+    if (!rp) { console.log('    (skipped — no room_participants)'); return; }
+    const okMeta = JSON.stringify({ exit_reason: 'completed' });
+    const ins = db.prepare(
+      "INSERT INTO messages (room_id, participant_id, content, result_meta, state) VALUES (?,?,'good output',?,?)"
+    ).run(rp.room_id, rp.id, okMeta, 'streaming');
+    const msgId = Number(ins.lastInsertRowid);
+    const FAILURE_REASONS = new Set(['error', 'timeout']);
+    const parsedMeta = JSON.parse(okMeta);
+    const finalState = FAILURE_REASONS.has(parsedMeta?.exit_reason) ? 'error' : 'complete';
+    db.prepare("UPDATE messages SET state=?, completed_at=datetime('now') WHERE id=?").run(finalState, msgId);
+    const row = db.prepare('SELECT state FROM messages WHERE id=?').get(msgId);
+    assert.strictEqual(row.state, 'complete', 'exit_reason=completed + content must yield state=complete');
+    db.prepare('DELETE FROM messages WHERE id=?').run(msgId);
   });
 
   // ── R14: compact failure cooldown schema

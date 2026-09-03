@@ -137,6 +137,20 @@ function resolveModelChain(subAgent, roomModel, roomModelTiersJson) {
 // Never trusts arbitrary keys/values — only exit_reason (from a fixed set),
 // integer token counts, and an integer duration survive.
 const RESULT_EXIT_REASONS = new Set(['completed', 'stopped', 'timeout', 'error']);
+// R13: explicit failure exit reasons — win over presence of output content.
+// 'stopped' (user-cancelled) is intentionally excluded: partial content is still useful.
+const FAILURE_EXIT_REASONS = new Set(['error', 'timeout']);
+
+// R13: extract a single clean line from raw error content (≤200 chars).
+// Traceback/stack trace → last non-empty line; otherwise → first non-empty line.
+function cleanErrorText(raw) {
+  if (!raw || typeof raw !== 'string') return 'unknown error';
+  const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+  if (!lines.length) return 'unknown error';
+  const isTraceback = /Traceback|Error:|  at |  File "/.test(raw);
+  return (isTraceback ? lines[lines.length - 1] : lines[0]).slice(0, 200);
+}
+
 function sanitizeResultMeta(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const out = {};
@@ -281,11 +295,18 @@ async function drainWake(wakeId) {
     FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.id=?
   `).get(row.parent_participant_id);
   const sub = db.prepare(`
-    SELECT m.content, m.sub_agent_label FROM messages m WHERE m.id=?
+    SELECT m.content, m.sub_agent_label, m.state, m.result_meta FROM messages m WHERE m.id=?
   `).get(row.sub_agent_message_id);
   if (!parent || !sub) { db.prepare('DELETE FROM pending_wakes WHERE id=?').run(wakeId); return; }
 
   const label = sub.sub_agent_label || 'sub-agent';
+  // R13: if sub-agent finished with a failure state, prefix the wake prompt so
+  // the parent synthesizer knows it failed rather than silently treating it as success.
+  const subFailed = sub.state === 'error';
+  const subExitReason = sub.result_meta ? (JSON.parse(sub.result_meta)?.exit_reason || null) : null;
+  const failurePrefix = subFailed
+    ? `[sub-agent GAGAL] Sub-agent "${label}" selesai dengan status ERROR (exit_reason: ${subExitReason || 'error'}). Output di bawah ini mungkin parsial atau pesan error:\n\n`
+    : '';
   // R5: truncate very long results in the wake prompt; full text stays as the room message.
   const MAX_WAKE_CHARS = 4000;
   const body = (sub.content || '').length > MAX_WAKE_CHARS
@@ -294,7 +315,7 @@ async function drainWake(wakeId) {
   // Phase 4 (Loop Guard #7): attach the cost rollup only on the CLOSING wake of
   // a pipeline, so a big multi-spawn run gets exactly one summary (not one per
   // completion). When drainWake runs, the just-completed sub-agent is already
-  // state='complete', so zero still-streaming sub-agents in the room means this
+  // state='complete'/'error', so zero still-streaming sub-agents in the room means this
   // is the last wake. This also skips the two rollup queries on every earlier
   // wake. (Kira review PR #53, finding c.)
   const stillRunning = db.prepare(
@@ -304,7 +325,7 @@ async function drainWake(wakeId) {
   const costBlock = rollup
     ? `\n\n${formatCostRollup(rollup)}\n(Ini menutup rangkaian spawn — sertakan ringkasan biaya singkat di jawabanmu kalau relevan.)`
     : '';
-  const wakePrompt = `[sub-agent result] Sub-agent "${label}" yang kamu picu sudah selesai. Hasilnya:\n\n${body}\n\nSintesiskan dan lanjutkan menjawab. Kamu boleh @mention sub-agent lain untuk delegate tugas berikutnya (misal @stoa-reviewer untuk review). Mention akan otomatis trigger sub-agent tersebut.${costBlock}`;
+  const wakePrompt = `[sub-agent result] Sub-agent "${label}" yang kamu picu sudah selesai. ${failurePrefix}Hasilnya:\n\n${body}\n\nSintesiskan dan lanjutkan menjawab. Kamu boleh @mention sub-agent lain untuk delegate tugas berikutnya (misal @stoa-reviewer untuk review). Mention akan otomatis trigger sub-agent tersebut.${costBlock}`;
 
   try {
     await triggerAiResponse(row.room_id, { ...parent, sub_agent: null }, wakePrompt, null, []);
@@ -3805,10 +3826,13 @@ wss.on('connection', (ws, req) => {
       // Phase 4: whitelist result_meta from the agent to a fixed shape before
       // persisting — never store arbitrary agent-supplied JSON on the row.
       const resultMetaJson = sanitizeResultMeta(msg.result_meta);
+      // R13: explicit failure exit_reason wins over presence of output content.
+      const parsedMeta = resultMetaJson ? JSON.parse(resultMetaJson) : null;
+      const finalState = FAILURE_EXIT_REASONS.has(parsedMeta?.exit_reason) ? 'error' : 'complete';
       db.prepare(
-        "UPDATE messages SET content=?, file_url=?, file_name=?, attachments=?, ai_model=?, result_meta=?, state='complete', completed_at=datetime('now') WHERE id=?"
-      ).run(agentContent, msg.file_url || null, msg.file_name || null, attachJson, msg.ai_model || null, resultMetaJson, msg.message_id);
-      const completePayload = { type: 'message_complete', message_id: msg.message_id, content: agentContent, ai_model: msg.ai_model || null };
+        'UPDATE messages SET content=?, file_url=?, file_name=?, attachments=?, ai_model=?, result_meta=?, state=?, completed_at=datetime(\'now\') WHERE id=?'
+      ).run(agentContent, msg.file_url || null, msg.file_name || null, attachJson, msg.ai_model || null, resultMetaJson, finalState, msg.message_id);
+      const completePayload = { type: 'message_complete', message_id: msg.message_id, content: agentContent, ai_model: msg.ai_model || null, state: finalState };
       if (resultMetaJson) completePayload.result_meta = resultMetaJson;
       if (msg.attachments?.length) { completePayload.attachments = msg.attachments; }
       else if (msg.file_url) { completePayload.file_url = msg.file_url; completePayload.file_name = msg.file_name; }
