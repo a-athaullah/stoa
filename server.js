@@ -3507,6 +3507,14 @@ wss.on('connection', (ws, req) => {
       ws.send(JSON.stringify({ type: 'set_config', max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1, session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5, auto_compact_threshold_kb: parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB) || 500 }));
       const connectedActor = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, created_at FROM actors WHERE id=?').get(agentActorId);
       if (connectedActor) broadcastGlobal({ type: 'actor_status', actor: { ...connectedActor, online: true, client_version: msg.client_version || null } });
+      // Drain any pending wakes left by a disconnect mid-trigger or prior crash.
+      const reconnectWakes = db.prepare(
+        "SELECT pw.id FROM pending_wakes pw JOIN room_participants rp ON rp.id=pw.parent_participant_id WHERE rp.actor_id=?"
+      ).all(agentActorId);
+      if (reconnectWakes.length) {
+        console.log(`[agent] draining ${reconnectWakes.length} pending wake(s) for Actor #${agentActorId} on reconnect`);
+        for (const r of reconnectWakes) drainWake(r.id).catch(e => console.error('[wake] reconnect drain error:', e.message));
+      }
     }
 
     // ── Agent reports scan results
@@ -5189,6 +5197,14 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
       console.log(`[trigger] sent to ${displayName} agent, msgId=${msgId}`);
     });
 
+  } else {
+    // Agent disconnected between the initial online check and here (race condition).
+    // Update bubble to error so UI shows feedback, then throw so drainWake can retry.
+    console.log(`[trigger] ${displayName} disconnected mid-trigger, msgId=${msgId} — marking error for retry`);
+    db.prepare("UPDATE messages SET state='error', content=? WHERE id=?")
+      .run(`(${displayName} terputus saat trigger — akan dicoba ulang otomatis)`, msgId);
+    broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
+    throw new Error('agent_disconnected_mid_trigger');
   }
 }
 
