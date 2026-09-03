@@ -195,7 +195,7 @@ function handleWsMessage(msg) {
         renderRoomDots(currentRoomId, parts);
         const room = { id: currentRoomId, title: document.querySelector('.h-room-name')?.textContent || '' };
         renderChatHeader(room, parts);
-      }).catch(() => {});
+      }).catch(e => { console.error('[ws] actor_invited: failed to refresh participants', e); });
     }
     return;
   }

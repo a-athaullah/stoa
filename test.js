@@ -3303,6 +3303,119 @@ async function run() {
     }
   });
 
+  // WS: set_room_setting (R23)
+  console.log('\n[WS: set_room_setting]');
+  await test('set_room_setting — valid key+value → room_setting_ack', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const roomId = testRoomIds[0];
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    try {
+      ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+      await new Promise(r => setTimeout(r, 50));
+      const ackPromise = waitForWsMessage(ws, m => m.type === 'room_setting_ack' && m.key === 'tool_status_mode');
+      ws.send(JSON.stringify({ type: 'set_room_setting', key: 'tool_status_mode', value: 'verb' }));
+      const ack = await ackPromise;
+      assert.strictEqual(ack.value, 'verb');
+      assert.strictEqual(ack.room_id, roomId);
+    } finally {
+      ws.close();
+    }
+  });
+
+  await test('set_room_setting — null value → ack (reset/delete)', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const roomId = testRoomIds[0];
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    try {
+      ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+      await new Promise(r => setTimeout(r, 50));
+      const ackPromise = waitForWsMessage(ws, m => m.type === 'room_setting_ack' && m.key === 'tool_status_mode');
+      ws.send(JSON.stringify({ type: 'set_room_setting', key: 'tool_status_mode', value: null }));
+      const ack = await ackPromise;
+      assert.strictEqual(ack.value, null);
+    } finally {
+      ws.close();
+    }
+  });
+
+  await test('set_room_setting — unknown key → room_setting_error', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const roomId = testRoomIds[0];
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    try {
+      ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+      await new Promise(r => setTimeout(r, 50));
+      const errPromise = waitForWsMessage(ws, m => m.type === 'room_setting_error');
+      ws.send(JSON.stringify({ type: 'set_room_setting', key: 'unknown_setting_xyz', value: 'foo' }));
+      const err = await errPromise;
+      assert.ok(err.error.includes('unknown key'), `unexpected error: ${err.error}`);
+    } finally {
+      ws.close();
+    }
+  });
+
+  await test('set_room_setting — invalid value → room_setting_error', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const roomId = testRoomIds[0];
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    try {
+      ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+      await new Promise(r => setTimeout(r, 50));
+      const errPromise = waitForWsMessage(ws, m => m.type === 'room_setting_error');
+      ws.send(JSON.stringify({ type: 'set_room_setting', key: 'tool_status_mode', value: 'not_valid' }));
+      const err = await errPromise;
+      assert.ok(err.error.includes('invalid value'), `unexpected error: ${err.error}`);
+    } finally {
+      ws.close();
+    }
+  });
+
+  await test('set_room_setting push-on-connect — agent receives room settings when it connects', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const roomId = testRoomIds[0];
+    // First set a known value
+    const browserWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    try {
+      browserWs.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+      await new Promise(r => setTimeout(r, 50));
+      const ackPromise = waitForWsMessage(browserWs, m => m.type === 'room_setting_ack' && m.key === 'tool_status_mode');
+      browserWs.send(JSON.stringify({ type: 'set_room_setting', key: 'tool_status_mode', value: 'off' }));
+      await ackPromise;
+    } finally {
+      browserWs.close();
+    }
+    // Create a fresh agent that is a participant in this room, then connect and verify push
+    const agent = await createOnlineTestAgent('__test-setting-push-agent', '/tmp/stoa-test-setting-push');
+    if (!agent) { console.log('    (skipped — could not create test agent)'); return; }
+    try {
+      // Add agent to the test room
+      const addR = await req('POST', `/api/rooms/${roomId}/participants`, { actor_id: agent.actorId });
+      if (addR.status !== 200) { console.log('    (skipped — could not add agent to room)'); return; }
+      // Reconnect fresh agent WS and check push
+      agent.ws.close();
+      const agentWs2 = await openWsConnection(`ws://${HOST}:${PORT}`);
+      try {
+        const readyPromise = waitForWsMessage(agentWs2, m => m.type === 'agent_ready');
+        // Collect room_setting messages that arrive after agent_ready
+        const settingMessages = [];
+        agentWs2.on('message', raw => {
+          try { const m = JSON.parse(raw); if (m.type === 'room_setting') settingMessages.push(m); } catch {}
+        });
+        agentWs2.send(JSON.stringify({ type: 'agent_connect', actor_id: agent.actorId, secret: agent.secret }));
+        await readyPromise;
+        await new Promise(r => setTimeout(r, 100));
+        const pushed = settingMessages.find(m => m.room_id === roomId && m.key === 'tool_status_mode');
+        assert.ok(pushed, `expected room_setting push for tool_status_mode, got: ${JSON.stringify(settingMessages)}`);
+        assert.strictEqual(pushed.value, 'off');
+      } finally {
+        agentWs2.close();
+      }
+    } finally {
+      agent.ws.close(); // ensure ws closed even if inner steps fail (may already be closed)
+    }
+    // actor cleanup handled by orphanActorIds in teardown
+  });
+
   // WS: connector API
   console.log('\n[WS: connector API]');
   await test('connector_list — returns connector_list_result with connectors array', async () => {

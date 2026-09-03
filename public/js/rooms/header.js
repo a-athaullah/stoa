@@ -108,7 +108,7 @@ function renderChatHeader(room, participants) {
         saWrap.appendChild(mini);
         sealsWrap.insertBefore(saWrap, sealsWrap.querySelector('.h-add-participant'));
       }
-    }).catch(() => {});
+    }).catch(e => { console.error('[header] failed to render sub-agent seals', room.id, e); });
   }
 
   const addBtn = document.createElement('button');

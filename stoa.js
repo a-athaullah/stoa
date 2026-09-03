@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.189';
+const CLIENT_VERSION = '0.4.190';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -48,6 +48,9 @@ const pendingRequests = new Map(); // request_id → { resolve }
 let requestIdCounter = 0;
 let pendingRestart = false;
 let consecutiveFailures = 0;
+
+// R22/R23: room settings pushed from server on connect and on change.
+const roomSettings = new Map(); // room_id → { key_name → value }
 let reauthProc = null;  // active claude auth login process for /reauth
 let consecutiveTriggerErrors = 0;
 const MAX_TRIGGER_ERRORS = 3;
@@ -550,6 +553,17 @@ async function handleAgentMessage(msg) {
     }
   }
 
+  // R23: server pushes room settings on connect and on change.
+  if (msg.type === 'room_setting') {
+    if (!roomSettings.has(msg.room_id)) roomSettings.set(msg.room_id, {});
+    const rs = roomSettings.get(msg.room_id);
+    if (msg.value === null || msg.value === undefined) {
+      delete rs[msg.key];
+    } else {
+      rs[msg.key] = msg.value;
+    }
+  }
+
   if (msg.type === 'force_update') {
     console.log('[stoa] Force update requested');
     checkForUpdates();
@@ -1047,6 +1061,44 @@ async function processTrigger(msg) {
       }
     }, 10_000);
 
+    // R22: tool verb status helpers
+    const toolMode = roomSettings.get(room_id)?.tool_status_mode ?? 'full';
+    let _toolStatusTimer = null;
+    let _toolStartMs = null;
+    let _toolVerb = null;
+    let _toolStatusUpdates = 0;
+    function _clearToolStatus() {
+      if (_toolStatusTimer) { clearInterval(_toolStatusTimer); _toolStatusTimer = null; }
+      _toolStartMs = null; _toolVerb = null; _toolStatusUpdates = 0;
+    }
+    function _startToolStatus(verb) {
+      _clearToolStatus();
+      if (toolMode === 'off') return;
+      _toolVerb = verb; _toolStartMs = Date.now(); _toolStatusUpdates = 0;
+      send({ type: 'agent_system_event', room_id, message_id, status: verb });
+      _toolStatusTimer = setInterval(() => {
+        if (_toolStatusUpdates >= 2) { clearInterval(_toolStatusTimer); return; }
+        const elapsed = Math.round((Date.now() - _toolStartMs) / 1000);
+        send({ type: 'agent_system_event', room_id, message_id, status: `${_toolVerb} · ${elapsed}s` });
+        _toolStatusUpdates++;
+      }, 10_000);
+    }
+    function _toolVerb_for(toolName, input) {
+      const firstArg = () => {
+        const v = Object.values(input || {})[0];
+        return typeof v === 'string' ? v : null;
+      };
+      const cap = s => s && s.length > 50 ? s.slice(0, 50) + '…' : (s || '');
+      const verbMap = {
+        Read:  () => toolMode === 'verb' ? 'membaca file…'  : `membaca ${cap(input.file_path || firstArg())}…`,
+        Edit:  () => toolMode === 'verb' ? 'menulis file…'  : `menulis ${cap(input.file_path || firstArg())}…`,
+        Write: () => toolMode === 'verb' ? 'menulis file…'  : `menulis ${cap(input.file_path || firstArg())}…`,
+        Bash:  () => 'menjalankan perintah…',
+        Agent: () => 'mendelegasikan ke sub-agent…',
+      };
+      return (verbMap[toolName] || (() => `menggunakan ${toolName}…`))();
+    }
+
     const sendOpts = {
       prompt: finalPrompt,
       history: msg.rawHistory || null,
@@ -1054,14 +1106,17 @@ async function processTrigger(msg) {
         lastActivity = Date.now();
         fullContent += token;
         send({ type: 'agent_token', room_id, message_id, token });
+        if (_toolStatusTimer) _clearToolStatus();
       },
       onState: state => {
         lastActivity = Date.now();
         send({ type: 'agent_state', room_id, message_id, state });
+        if (_toolStatusTimer) _clearToolStatus();
       },
       onTool: tool => {
         lastActivity = Date.now();
         send({ type: 'agent_tool', room_id, message_id, tool });
+        _startToolStatus(_toolVerb_for(tool.name, tool.input));
       },
     };
 
@@ -1290,6 +1345,7 @@ async function processTrigger(msg) {
     }
   } finally {
     if (sessionRef && statusHandler) sessionRef.removeListener('status', statusHandler);
+    _clearToolStatus();
     activeTriggers.delete(message_id);
     if (targetDir) startSessionIdleTimer(sessionKey);
     drainQueue();
