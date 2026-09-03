@@ -17,7 +17,7 @@ _Urutan eksekusi ditetapkan 2026-09-01 (Ara, approved Aan). Logika: security & b
 ## Batch 2 — Hardening bug-class terbukti `[exec 4–9]`
 
 - [ ] **#4 R12 — Schedule doctor** _(S)_ — health check read-only untuk scheduled triggers: deteksi silent non-firing (`next_run_at` overdue > 15 menit), last_error, sub-agent unlinked. Endpoint `GET /api/rooms/:id/sub-agent-schedules/doctor` + badge di room settings.
-- [ ] **#5 R17 — Message dedup via event_id** _(S–M)_ — `client_event_id` UUID per pesan + `UNIQUE(room_id, client_event_id)`; duplikat saat WS reconnect → return existing, bukan row baru.
+- [x] **#5 R17 — Message dedup via event_id** _(S–M)_ — ✓ PR #68: `client_event_id` UUID per pesan + `UNIQUE(room_id, client_event_id)`; duplikat saat WS reconnect → return existing, bukan row baru.
 - [ ] **#6 R14 — Compact hardening preventif** _(S–M)_ — durable cooldown `MAX(existing,new)` di ai_sessions + progress-aware timeout untuk compaction. Bug `compact_stuck` belum solved; cooldown mencegah loop gagal-berulang.
 - [ ] **#7 R13 — Status sub-agent jujur** _(M)_ — flag failure eksplisit menang atas presence output; pisah `status` vs `exit_reason`; konstanta `FAILURE_STATUSES` dishare semua permukaan; failure tampil satu-baris di bubble.
 - [ ] **#8 R15 — `indeterminate` + `process_generation`** _(M)_ — cap UUID per boot ke kerja in-flight; saat boot, running milik generation lama → indeterminate (bukan requeue, bukan stuck).
@@ -41,7 +41,7 @@ _Urutan eksekusi ditetapkan 2026-09-01 (Ara, approved Aan). Logika: security & b
 
 ## Bug — Ara bubble stuck (tidak ada processing)
 
-- [ ] **Bug — Ara bubble muncul tapi tidak ada processing** — terjadi beberapa kali 2026-09-02. Pola: Ara di-wake via @mention dari sub-agent (bukan pesan user langsung), bubble muncul di UI tapi tidak ada response/processing sama sekali. Diduga: issue di wake mechanism saat Ara adalah orchestrator yang di-mention oleh sub-agent-nya sendiri. Perlu cek: (1) apakah `enqueueParentWake` untuk Ara sendiri berjalan; (2) apakah ada race condition antara sub-agent selesai dan Ara diinisiasi; (3) log `stoa.err` saat kejadian. Catat 2026-09-02.
+- [x] **Bug — Ara bubble muncul tapi tidak ada processing** — ✓ PR #76 (v0.20.1): root cause race condition di `triggerAiResponse` — agent disconnect antara initial online check dan actual send → function return tanpa throw → `drainWake` hapus pending_wake, bubble stuck streaming. Fix: throw on mid-trigger disconnect + drain pending wakes on agent reconnect.
 
 ## Batch 5 — Carry-over `[exec 20–21]`
 
