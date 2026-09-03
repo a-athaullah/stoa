@@ -1883,13 +1883,15 @@ async function run() {
       assert.strictEqual(r.status, 403);
     });
 
-    await test('POST /sub-agent-trigger — bad spawn token → 403 invalid_spawn_token', async () => {
+    await test('POST /sub-agent-trigger — spawn_token ignored (P4: @mention replaces token-based auth)', async () => {
       if (!soRoomId) { console.log('    (skipped)'); return; }
+      // spawn_token field is accepted but ignored — endpoint now relies on agent auth only.
+      // With valid agent auth + valid label/task the request proceeds past token check.
       const r = await req('POST', `/api/rooms/${soRoomId}/sub-agent-trigger`,
-        { label: 'probe', task: 'cek resource usage server', spawn_token: 'deadbeef' },
+        { label: 'probe', task: 'cek resource usage server', spawn_token: 'any-value-ignored' },
         { 'x-agent-id': String(soActorId), 'x-agent-secret': soSecret });
-      assert.strictEqual(r.status, 403);
-      assert.strictEqual(r.body.error, 'invalid_spawn_token');
+      // Should NOT return 403 invalid_spawn_token — proceeds to actual sub-agent lookup
+      assert.notStrictEqual(r.body.error, 'invalid_spawn_token');
     });
 
     await test('GET /sub-agent-runs — unauthenticated → 401', async () => {

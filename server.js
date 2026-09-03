@@ -199,33 +199,9 @@ function saveSubAgentSession(participantId, subAgentId, claudeSessionId, workdir
   ).run(participantId, rp?.room_id ?? null, subAgentId, claudeSessionId, workdir || null);
 }
 
-// ─── Phase 2b: spawn token (hard depth guard) ──────────────────────────────
-// A spawn token is issued to a MAIN agent when it is triggered, and required by
-// POST /sub-agent-trigger. Sub-agent triggers are never given a token, so a
-// sub-agent is structurally unable to spawn another sub-agent (depth = 1),
-// regardless of what its prompt says. In-memory is sufficient (single-user LAN);
-// tokens are invalidated when the main agent's turn completes.
-const spawnTokens = new Map(); // token -> { roomId, actorId, participantId, expiry }
-const SPAWN_TOKEN_TTL_MS = 10 * 60 * 1000;
-
-function issueSpawnToken(roomId, actorId, participantId) {
-  const token = crypto.randomBytes(24).toString('hex');
-  spawnTokens.set(token, { roomId, actorId, participantId, expiry: Date.now() + SPAWN_TOKEN_TTL_MS });
-  return token;
-}
-
-function validateSpawnToken(token, roomId, actorId) {
-  const entry = token && spawnTokens.get(token);
-  if (!entry) return false;
-  if (Date.now() > entry.expiry) { spawnTokens.delete(token); return false; }
-  return entry.roomId === roomId && entry.actorId === actorId;
-}
-
-function invalidateSpawnTokensForParticipant(participantId) {
-  for (const [token, entry] of spawnTokens) {
-    if (entry.participantId === participantId) spawnTokens.delete(token);
-  }
-}
+// Spawn tokens removed (P4): sub-agent delegation is now @mention-based.
+// Depth guard is handled by MAX_WAKE_CASCADE_DEPTH + cascade only fires from
+// parent responses, not sub-agent responses.
 
 // Verify x-agent-id / x-agent-secret headers (same HMAC scheme as proactive message).
 // Returns the agent actor row on success, or null.
@@ -1637,7 +1613,7 @@ const server = http.createServer(async (req, res) => {
     return json(res, { error: 'method not allowed' }, 405);
   }
 
-  // ── Phase 2b: orchestrator triggers a sub-agent (agent auth + spawn token)
+  // ── Sub-agent trigger endpoint (agent auth; spawn_token field accepted but ignored — deprecated)
   if (req.method === 'POST' && url.pathname.match(/^\/api\/rooms\/\d+\/sub-agent-trigger$/)) {
     const roomId = parseInt(url.pathname.split('/')[3]);
     const agent = verifyAgentRequest(req);
@@ -1645,11 +1621,6 @@ const server = http.createServer(async (req, res) => {
 
     const data = parseJsonBody(await readBody(req));
     if (!data) return json(res, { error: 'Invalid JSON' }, 400);
-
-    // Spawn token: sub-agents never receive one, so this is the hard depth guard.
-    if (!validateSpawnToken(data.spawn_token, roomId, agent.id)) {
-      return json(res, { error: 'invalid_spawn_token' }, 403);
-    }
     // R4: reject empty/placeholder/too-short task.
     const task = (data.task || '').trim();
     if (task.length < 10 || /^(test|todo|tbd|placeholder|\.+)$/i.test(task)) {
@@ -3811,15 +3782,10 @@ wss.on('connection', (ws, req) => {
           }
         } catch (e) { console.error('[agent] saveSession error:', e.message); }
       }
-      // Phase 2b: a completed MAIN-agent turn ends its spawn window; a completed
-      // orchestrator-triggered sub-agent wakes its parent exactly once (R1).
+      // Completed sub-agent wakes its parent exactly once (R1). Applies to all
+      // sub-agent completions — both /sub-agent-trigger and @mention cascade.
       try {
-        if (doneRow && !doneRow.sub_agent_id) {
-          invalidateSpawnTokensForParticipant(doneRow.participant_id);
-        } else if (doneRow && doneRow.sub_agent_id) {
-          // Wake the parent regardless of how the sub-agent was triggered — both
-          // /sub-agent-trigger (parent_message_id set) and @mention cascade (parent_message_id
-          // null) must wake the orchestrator so it can read the result and continue.
+        if (doneRow && doneRow.sub_agent_id) {
           enqueueParentWake(msg.room_id, doneRow.participant_id, msg.message_id);
         }
       } catch (e) { console.error('[wake] enqueue error:', e.message); }
@@ -5105,13 +5071,12 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
       WHERE rsa.room_id=? AND sa.parent_actor_id=? AND sa.enabled=1
     `).all(roomId, ai.actor_id);
     if (ownSubs.length) {
-      const token = issueSpawnToken(roomId, ai.actor_id, ai.participant_id);
-      const list = ownSubs.map(s => `"${s.label}" (${s.tier})`).join(', ');
+      const list = ownSubs.map(s => `@${s.label} (${s.tier})`).join(', ');
       orchestrationLine =
-        `\nYou can delegate to your sub-agents: ${list}. To trigger one, run:\n` +
-        '  BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\n' +
-        `  curl -s -X POST "$BASE_URL/api/rooms/${roomId}/sub-agent-trigger" -H "Content-Type: application/json" -H "x-agent-id: $STOA_ACTOR_ID" -H "x-agent-secret: $STOA_SECRET" -d '{"label":"<label>","task":"<what to do, min 10 chars>","spawn_token":"${token}"}'\n` +
-        `The call returns immediately (accepted, NOT the result) — finish your turn; the sub-agent's answer arrives as a room message and you'll be woken once to synthesize it. Do NOT poll or block waiting.`;
+        `\nYou can delegate to your sub-agents: ${list}.\n` +
+        `To trigger one, mention @<label> in your response followed by the task — e.g. "@BE-Stoa implement the login endpoint".\n` +
+        `The sub-agent runs automatically; you will be woken once to read its result and continue. You may mention multiple sub-agents in one response to run them in parallel.\n` +
+        `Do NOT write @mention of a sub-agent unless you actually want to trigger it.`;
     }
   }
 
