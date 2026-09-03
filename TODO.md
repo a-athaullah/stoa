@@ -1,6 +1,6 @@
 # Stoa — Todo
 
-_Audit terakhir: 2026-09-01 (Ara) — planning detail R12–R18 di `~/project/stoa-feature/hermes-adoption-plan.md`; detail R19–R30 di `~/project/stoa-feature/hermes-agent-research.md` section 7._
+_Audit terakhir: 2026-09-02 (Ara) — planning detail R12–R18 di `~/project/stoa-feature/hermes-adoption-plan.md`; detail R19–R30 di `~/project/stoa-feature/hermes-agent-research.md` section 7._
 
 _Urutan eksekusi ditetapkan 2026-09-01 (Ara, approved Aan). Logika: security & bug produksi → hardening bug-class terbukti → quick wins UX → fitur baru → carry-over._
 
@@ -8,11 +8,11 @@ _Urutan eksekusi ditetapkan 2026-09-01 (Ara, approved Aan). Logika: security & b
 
 - [x] **#0 Bug — Mention wakeup orchestrator tidak berfungsi** _(S)_ — ✓ `3a6b928`: root cause: kondisi `enqueueParentWake` mensyaratkan `parent_message_id` non-null, yang hanya di-set oleh `/sub-agent-trigger`. Sub-agent via `@mention cascade` tidak punya `parent_message_id` → orchestrator tidak pernah di-wake. Fix: hapus syarat `&& doneRow.parent_message_id` — semua sub-agent completion wake parent. 329/329 tests pass. Dicatat 2026-09-02.
 
-## Batch 1 — Kritis: bug produksi & security `[exec 1–3]`
+## Batch 1 — Kritis: bug produksi & security `[exec 1–3]` ✓ SELESAI
 
 - [x] **#1 R20 — Audit ReDoS regex** _(S)_ — ✓ `3a54d68`: safeRegexTest() rejects nested quantifiers; fixes automation matches_regex + writeEnv escaping; benchmark 30k char = 0ms.
-- [ ] **#2 R19 — Thinking-signature management lengkap** _(S–M)_ — sempurnakan fix `42f0bbc`: (1) preventif per-endpoint — Anthropic: thinking block hanya di assistant message terakhir; proxy/third-party (AI Platforms): strip SEMUA thinking + strip `cache_control`; (2) klasifikasi 400 by frasa error, jangan gate by provider; (3) recovery one-shot hanya di wire copy — JANGAN mutasi canonical store/DB.
-- [ ] **#3 R21 — Transcript sanitizer + escalation** _(M)_ — heal pre-send di wire copy (orphan tool_result drop, tool_call tanpa result → stub, dedupe id, empty turn → placeholder); WARNING → ERROR di threshold → notice satu-kali per session via status channel (tidak masuk transcript).
+- [x] **#2 R19 — Thinking-signature management lengkap** _(S–M)_ — ✓ PR #64 (v0.17.x): 3-layer defense — strip unsigned thinking, per-endpoint preventif, one-shot recovery di wire copy.
+- [x] **#3 R21 — Transcript sanitizer + escalation** _(M)_ — ✓ PR #65 (v0.17.x): heal pre-send (orphan drop, stub, dedupe, placeholder), WARNING→ERROR threshold, notice via status channel.
 
 ## Batch 2 — Hardening bug-class terbukti `[exec 4–9]`
 
@@ -48,11 +48,13 @@ _Urutan eksekusi ditetapkan 2026-09-01 (Ara, approved Aan). Logika: security & b
 - [ ] **#20 Webhook/API** — HTTP endpoint untuk trigger agent dari external (CI/CD, monitoring, script). Masih relevan; belum ada endpoint trigger generik (baru automation Slack + proactive message agent-auth). Naikkan kalau muncul use case CI/CD konkret.
 - [ ] **#21 Context window indicator** — indikator visual saat conversation mendekati batas context. Sebagian tertutup oleh configurable auto-compact threshold (Settings); R14+R29 mengecilkan kebutuhannya lagi.
 
-## Done (audit 2026-09-01)
+## Done (audit 2026-09-02)
 
 - [x] **Agent config via UI** — sudah ada: `public/js/settings/agents-add.js` + install-script generation (bash/PowerShell) di server.
 - [x] **Multi-model support** — arah berubah dari "adapter per vendor" ke **AI Platforms**: custom platform (base_url + API keys, vendor generic/ollama), Ollama Cloud proxy, model discovery, switch model per room. OpenAI-compatible & LiteLLM tertutup lewat custom platform base_url.
 - [x] **Scheduled triggers + schedule UI** — PR #58/#59 (v0.17.x).
+- [x] **Mention-based sub-agent orchestration** — PR #66 (v0.17.8): @mention trigger, sub-agent system prompts, BE-Stoa/FE-Stoa/TechWriter-Stoa/TechLead-Stoa agents.
+- [x] **Parallel sub-agent dispatch** — PR #67 (pending merge): sub-agent @mentions fire concurrently, regular AI agents tetap sequential; `mentionBoundary` regex module-level.
 
 ## Trash
 
