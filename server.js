@@ -3433,12 +3433,19 @@ wss.on('connection', (ws, req) => {
           if (!sessionMap.has(s.participant_id)) sessionMap.set(s.participant_id, s);
         }
       }
+      const nowIso = new Date().toISOString();
       const targets = [];
       for (const ai of aiParts) {
         const agentWs = agentClients.get(ai.actor_id);
         if (!agentWs || agentWs.readyState !== 1) continue;
         const sessionRow = sessionMap.get(ai.participant_id);
         if (!sessionRow?.claude_session_id) continue;
+        // R14: skip agents still in compact failure cooldown
+        const sessRow = db.prepare('SELECT compact_failure_cooldown_until FROM ai_sessions WHERE participant_id=? AND room_id=? AND sub_agent_id IS NULL').get(ai.participant_id, roomId);
+        if (sessRow?.compact_failure_cooldown_until && sessRow.compact_failure_cooldown_until > nowIso) {
+          console.warn(`[server] compact_session: skipping agent=${ai.actor_id} (failure cooldown until ${sessRow.compact_failure_cooldown_until})`);
+          continue;
+        }
         // Resolve the workdir the same way dispatch does, so compact targets the dir where this
         // agent actually ran — not a stale stored value or the room workdir.
         const workdir = resolveParticipantWorkdir(ai.participant_id);
@@ -3642,6 +3649,14 @@ wss.on('connection', (ws, req) => {
         } else if (!pendingCompacts.has(roomId)) {
           const actor = db.prepare('SELECT id, name FROM actors WHERE id=?').get(agentActorId);
           const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(roomId, agentActorId);
+          // R14: check failure cooldown — skip if still within window
+          if (participant) {
+            const sess = db.prepare('SELECT compact_failure_cooldown_until FROM ai_sessions WHERE participant_id=? AND room_id=? AND sub_agent_id IS NULL').get(participant.id, roomId);
+            if (sess?.compact_failure_cooldown_until && sess.compact_failure_cooldown_until > new Date().toISOString()) {
+              console.warn(`[server] auto_compact_start suppressed for room=${roomId} agent=${agentActorId} (failure cooldown until ${sess.compact_failure_cooldown_until})`);
+              return;
+            }
+          }
           const participants = actor && participant ? [{ participant_id: participant.id, actor_id: actor.id, name: actor.name }] : [];
           pendingCompacts.set(roomId, { total: 1, completed: 0, agents: [agentActorId], completedAgentIds: [], completedParticipantIds: [], targets: participants });
           broadcast(roomId, { type: 'compact_start', room_id: roomId, total: 1, participants });
@@ -3677,6 +3692,11 @@ wss.on('connection', (ws, req) => {
         if (participant) {
           db.prepare(`UPDATE ai_sessions SET claude_session_id=?, last_active_at=datetime('now') WHERE participant_id=? AND room_id=? AND sub_agent_id IS NULL`).run(msg.claude_session_id, participant.id, msg.room_id);
         }
+      }
+      // R14: clear failure cooldown on success
+      const successParticipant = db.prepare('SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
+      if (successParticipant) {
+        db.prepare(`UPDATE ai_sessions SET compact_failure_cooldown_until=NULL, compact_failure_error=NULL WHERE participant_id=? AND room_id=? AND sub_agent_id IS NULL`).run(successParticipant.id, msg.room_id);
       }
       const state = pendingCompacts.get(msg.room_id);
       const actor = db.prepare('SELECT name FROM actors WHERE id=?').get(agentActorId);
@@ -3734,7 +3754,21 @@ wss.on('connection', (ws, req) => {
       if (!state) return;
       if (!state.completedParticipantIds) state.completedParticipantIds = [];
       const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
-      if (participant) state.completedParticipantIds.push(participant.id);
+      if (participant) {
+        state.completedParticipantIds.push(participant.id);
+        // R14: set failure cooldown (30 min, MAX semantics — never shorten an existing longer cooldown)
+        const cooldownUntil = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+        const errorText = (msg.error || 'compact failed').slice(0, 500);
+        db.prepare(`UPDATE ai_sessions SET
+          compact_failure_cooldown_until = CASE
+            WHEN compact_failure_cooldown_until IS NULL OR compact_failure_cooldown_until < ? THEN ?
+            ELSE compact_failure_cooldown_until
+          END,
+          compact_failure_error = ?
+          WHERE participant_id=? AND room_id=? AND sub_agent_id IS NULL`
+        ).run(cooldownUntil, cooldownUntil, errorText, participant.id, msg.room_id);
+        console.warn(`[server] compact failure cooldown set for participant=${participant.id} until ${cooldownUntil}: ${errorText}`);
+      }
       if (!state.errors) state.errors = 0;
       state.errors++;
       state.completed++;
