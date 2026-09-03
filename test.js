@@ -3209,6 +3209,38 @@ async function run() {
     assert.strictEqual(r.status, 404);
   });
 
+  // ── R14: compact failure cooldown schema
+  await test('R14 — ai_sessions has compact_failure_cooldown_until and compact_failure_error columns', () => {
+    const db = require('./db');
+    const cols = db.prepare("SELECT name FROM pragma_table_info('ai_sessions')").all().map(r => r.name);
+    assert.ok(cols.includes('compact_failure_cooldown_until'), 'compact_failure_cooldown_until column missing');
+    assert.ok(cols.includes('compact_failure_error'), 'compact_failure_error column missing');
+  });
+
+  await test('R14 — compact_failure_cooldown_until MAX semantics: longer cooldown survives shorter update', () => {
+    const db = require('./db');
+    // Find any ai_sessions row to test against, or skip if none
+    const row = db.prepare('SELECT id, participant_id, room_id FROM ai_sessions WHERE room_id IS NOT NULL LIMIT 1').get();
+    if (!row) { console.log('    (skipped — no ai_sessions row with room_id)'); return; }
+    const longCooldown = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour
+    const shortCooldown = new Date(Date.now() + 5 * 60 * 1000).toISOString(); // 5 min
+    // Set long cooldown first
+    db.prepare('UPDATE ai_sessions SET compact_failure_cooldown_until=?, compact_failure_error=? WHERE id=?').run(longCooldown, 'first error', row.id);
+    // Attempt to overwrite with shorter cooldown using MAX semantics (as server does)
+    db.prepare(`UPDATE ai_sessions SET
+      compact_failure_cooldown_until = CASE
+        WHEN compact_failure_cooldown_until IS NULL OR compact_failure_cooldown_until < ? THEN ?
+        ELSE compact_failure_cooldown_until
+      END,
+      compact_failure_error = ? WHERE id=?`
+    ).run(shortCooldown, shortCooldown, 'second error', row.id);
+    const after = db.prepare('SELECT compact_failure_cooldown_until, compact_failure_error FROM ai_sessions WHERE id=?').get(row.id);
+    assert.strictEqual(after.compact_failure_cooldown_until, longCooldown, 'longer cooldown must survive shorter update');
+    assert.strictEqual(after.compact_failure_error, 'second error', 'error text should update');
+    // Cleanup
+    db.prepare('UPDATE ai_sessions SET compact_failure_cooldown_until=NULL, compact_failure_error=NULL WHERE id=?').run(row.id);
+  });
+
   // Teardown — delete test platform if still set (e.g. DELETE test was skipped/failed)
   if (testPlatformId) {
     await req('DELETE', `/api/ai/platforms/${encodeURIComponent(testPlatformId)}`).catch(() => {});

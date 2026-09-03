@@ -152,6 +152,45 @@ let SESSION_IDLE_TTL = 5; // minutes, configurable via server
 let AUTO_COMPACT_THRESHOLD = parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB || '500') * 1024; // KB, configurable
 const compactsInFlight = new Set(); // workdir keys currently being compacted — prevents concurrent /compact on same session
 
+// R14: progress-aware compact timeout — resets on any token/state output.
+// Prevents stalled compactions from hanging indefinitely.
+const COMPACT_IDLE_MS = parseInt(process.env.COMPACT_IDLE_TIMEOUT_MS || String(2 * 60 * 1000));
+const COMPACT_HARD_MS = parseInt(process.env.COMPACT_HARD_TIMEOUT_MS || String(10 * 60 * 1000));
+function compactWithTimeout(session) {
+  return new Promise((resolve, reject) => {
+    let timedOut = false;
+    let idleTimer;
+    const hardTimer = setTimeout(() => {
+      timedOut = true;
+      clearTimeout(idleTimer);
+      session.abort();
+      reject(new Error(`compact hard ceiling exceeded (${COMPACT_HARD_MS / 60000} min)`));
+    }, COMPACT_HARD_MS);
+    const resetIdle = () => {
+      if (timedOut) return;
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        timedOut = true;
+        clearTimeout(hardTimer);
+        session.abort();
+        reject(new Error(`compact idle timeout (${COMPACT_IDLE_MS / 60000} min without output)`));
+      }, COMPACT_IDLE_MS);
+    };
+    resetIdle();
+    session.send({ prompt: '/compact', onState: resetIdle, onToken: resetIdle }).then(result => {
+      if (timedOut) return;
+      clearTimeout(idleTimer);
+      clearTimeout(hardTimer);
+      resolve(result);
+    }).catch(err => {
+      if (timedOut) return;
+      clearTimeout(idleTimer);
+      clearTimeout(hardTimer);
+      reject(err);
+    });
+  });
+}
+
 function sessionFilePath(workdir, sessionId) {
   if (!workdir || !sessionId) return null;
   const encoded = workdir.replace(/\//g, '-').replace(/\\/g, '-').replace(/:/g, '');
@@ -400,7 +439,7 @@ setInterval(async () => {
     compactsInFlight.add(workdir);
     console.log(`[stoa] worker: auto-compacting ${sessionId.slice(0, 8)}... (${(fileSize / 1024).toFixed(0)}KB)`);
     send({ type: 'auto_compact_start', claude_session_id: sessionId });
-    session.send({ prompt: '/compact', onState: () => {} }).then(result => {
+    compactWithTimeout(session).then(result => {
       compactsInFlight.delete(workdir);
       if (result?.sessionId) session.resumeId = result.sessionId;
       send({ type: 'compact_complete', claude_session_id: result?.sessionId || sessionId, orig_session_id: sessionId, result: result?.content || '' });
@@ -776,12 +815,7 @@ async function handleAgentMessage(msg) {
       }
     }
     console.log(`[stoa] compact: starting for ${key}`);
-    session.send({
-      prompt: '/compact',
-      onState: state => {
-        console.log(`[stoa] compact status: ${state}`);
-      },
-    }).then(result => {
+    compactWithTimeout(session).then(result => {
       console.log(`[stoa] compact: done for ${key}`);
       send({ type: 'compact_complete', room_id: msg.room_id, result: result?.content || '', claude_session_id: result?.sessionId || null });
       // Delay truncate: Claude writes compact_boundary asynchronously after returning result
@@ -1228,7 +1262,7 @@ async function processTrigger(msg) {
           console.log(`[stoa] session ${sessionIdForCompact.slice(0, 8)}... is ${(fileSize / 1024).toFixed(0)}KB > ${AUTO_COMPACT_THRESHOLD / 1024}KB threshold, auto-compacting`);
           compactsInFlight.add(targetDir);
           send({ type: 'auto_compact_start', room_id, claude_session_id: sessionIdForCompact });
-          sess.send({ prompt: '/compact', onState: () => {} }).then(result => {
+          compactWithTimeout(sess).then(result => {
             compactsInFlight.delete(targetDir);
             if (result?.sessionId) sess.resumeId = result.sessionId;
             send({ type: 'compact_complete', room_id, result: result?.content || '', claude_session_id: result?.sessionId || sessionIdForCompact, orig_session_id: sessionIdForCompact });
