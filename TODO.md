@@ -17,7 +17,7 @@ _Urutan eksekusi ditetapkan 2026-09-01 (Ara, approved Aan). Logika: security & b
 ## Batch 2 — Hardening bug-class terbukti `[exec 4–9]`
 
 - [ ] **#4 R12 — Schedule doctor** _(S)_ — health check read-only untuk scheduled triggers: deteksi silent non-firing (`next_run_at` overdue > 15 menit), last_error, sub-agent unlinked. Endpoint `GET /api/rooms/:id/sub-agent-schedules/doctor` + badge di room settings.
-- [ ] **#5 R17 — Message dedup via event_id** _(S–M)_ — `client_event_id` UUID per pesan + `UNIQUE(room_id, client_event_id)`; duplikat saat WS reconnect → return existing, bukan row baru.
+- [x] **#5 R17 — Message dedup via event_id** _(S–M)_ — ✓ PR #68 (`0ba67d9`): `client_event_id` UUID per pesan + `UNIQUE(room_id, client_event_id)`; duplikat saat WS reconnect → return existing, bukan row baru.
 - [ ] **#6 R14 — Compact hardening preventif** _(S–M)_ — durable cooldown `MAX(existing,new)` di ai_sessions + progress-aware timeout untuk compaction. Bug `compact_stuck` belum solved; cooldown mencegah loop gagal-berulang.
 - [ ] **#7 R13 — Status sub-agent jujur** _(M)_ — flag failure eksplisit menang atas presence output; pisah `status` vs `exit_reason`; konstanta `FAILURE_STATUSES` dishare semua permukaan; failure tampil satu-baris di bubble.
 - [ ] **#8 R15 — `indeterminate` + `process_generation`** _(M)_ — cap UUID per boot ke kerja in-flight; saat boot, running milik generation lama → indeterminate (bukan requeue, bukan stuck).
@@ -41,7 +41,7 @@ _Urutan eksekusi ditetapkan 2026-09-01 (Ara, approved Aan). Logika: security & b
 
 ## Bug — Ara bubble stuck (tidak ada processing)
 
-- [ ] **Bug — Ara bubble muncul tapi tidak ada processing** — terjadi beberapa kali 2026-09-02. Pola: Ara di-wake via @mention dari sub-agent (bukan pesan user langsung), bubble muncul di UI tapi tidak ada response/processing sama sekali. Diduga: issue di wake mechanism saat Ara adalah orchestrator yang di-mention oleh sub-agent-nya sendiri. Perlu cek: (1) apakah `enqueueParentWake` untuk Ara sendiri berjalan; (2) apakah ada race condition antara sub-agent selesai dan Ara diinisiasi; (3) log `stoa.err` saat kejadian. Catat 2026-09-02.
+- [ ] **Bug — Ara bubble muncul tapi tidak ada processing** — terjadi beberapa kali 2026-09-02. Pola: Ara di-wake via @mention dari sub-agent (bukan pesan user langsung), bubble muncul di UI tapi tidak ada response/processing sama sekali. Diduga: issue di wake mechanism saat Ara adalah orchestrator yang di-mention oleh sub-agent-nya sendiri. Perlu cek: (1) apakah `enqueueParentWake` untuk Ara sendiri berjalan; (2) apakah ada race condition antara sub-agent selesai dan Ara diinisiasi; (3) log `stoa.err` saat kejadian. Catat 2026-09-02. **Update 2026-09-03:** PR #67 (F1) merged — `triggerAiResponse`/`triggerSkillResponse` sekarang punya timeout `AGENT_RUN_TIMEOUT_MS` (default 15 menit) dan `ws.on('close')` me-reject pending promise milik actor yang disconnect, jadi bubble tidak lagi menggantung tanpa akhir. Server sudah restart di v0.19.1. Status: **menunggu observasi** — tutup kalau tidak muncul lagi dalam beberapa hari pemakaian.
 
 ## Batch 5 — Carry-over `[exec 20–21]`
 
@@ -53,8 +53,9 @@ _Urutan eksekusi ditetapkan 2026-09-01 (Ara, approved Aan). Logika: security & b
 - [x] **Agent config via UI** — sudah ada: `public/js/settings/agents-add.js` + install-script generation (bash/PowerShell) di server.
 - [x] **Multi-model support** — arah berubah dari "adapter per vendor" ke **AI Platforms**: custom platform (base_url + API keys, vendor generic/ollama), Ollama Cloud proxy, model discovery, switch model per room. OpenAI-compatible & LiteLLM tertutup lewat custom platform base_url.
 - [x] **Scheduled triggers + schedule UI** — PR #58/#59 (v0.17.x).
+- [x] **Mention highlight regex** — PR #72 (v0.19.1): mention di akhir paragraph/bold ikut ter-render (`mentionBoundary` word-boundary, bukan `includes`).
 - [x] **Mention-based sub-agent orchestration** — PR #66 (v0.17.8): @mention trigger, sub-agent system prompts, BE-Stoa/FE-Stoa/TechWriter-Stoa/TechLead-Stoa agents.
-- [x] **Parallel sub-agent dispatch** — PR #67 (pending merge): sub-agent @mentions fire concurrently, regular AI agents tetap sequential; `mentionBoundary` regex module-level.
+- [x] **Parallel sub-agent dispatch** — PR #67 (merged, v0.19.0): sub-agent @mentions fire concurrently, regular AI agents tetap sequential; `mentionBoundary` regex module-level.
 
 ## Trash
 
