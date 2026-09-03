@@ -1877,6 +1877,97 @@ async function run() {
       ssSchedId = null;
     });
 
+    // ── R12: schedule doctor endpoint
+    await test('R12 — Migration applied: sub_agent_schedules has last_error column', () => {
+      const db = require('./db');
+      const tbl = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='sub_agent_schedules'").get();
+      assert.ok(tbl?.sql?.includes('last_error'), 'last_error column not found — run migrations');
+    });
+
+    await test('R12 — GET /doctor — unauthenticated → 401', async () => {
+      if (!ssRoomId) { console.log('    (skipped)'); return; }
+      const r = await fetch(`http://${HOST}:${PORT}/api/rooms/${ssRoomId}/sub-agent-schedules/doctor`);
+      assert.strictEqual(r.status, 401);
+    });
+
+    await test('R12 — GET /doctor — nonexistent room → 404', async () => {
+      const r = await req('GET', '/api/rooms/999999/sub-agent-schedules/doctor');
+      assert.strictEqual(r.status, 404);
+    });
+
+    await test('R12 — GET /doctor — empty room → empty diagnoses array', async () => {
+      if (!ssRoomId) { console.log('    (skipped)'); return; }
+      const r = await req('GET', `/api/rooms/${ssRoomId}/sub-agent-schedules/doctor`);
+      assert.strictEqual(r.status, 200);
+      assert.ok(Array.isArray(r.body.diagnoses), 'diagnoses not array');
+      assert.strictEqual(r.body.diagnoses.length, 0);
+      assert.strictEqual(r.body.room_id, ssRoomId);
+    });
+
+    await test('R12 — GET /doctor — enabled schedule with overdue next_run_at → overdue', async () => {
+      if (!ssRoomId || !ssSubAgent) { console.log('    (skipped)'); return; }
+      const db = require('./db');
+      const past = new Date(Date.now() - 20 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+      const spec = JSON.stringify({ type: 'interval', every_minutes: 30 });
+      const insertResult = db.prepare(
+        `INSERT INTO sub_agent_schedules (room_id, sub_agent_id, created_by_actor_id, task, schedule_spec, enabled, next_run_at) VALUES (?,?,?,?,?,1,?)`
+      ).run(ssRoomId, ssSubAgent.id, 1, 'test overdue task r12', spec, past);
+      const overdueSched = insertResult.lastInsertRowid;
+      try {
+        const r = await req('GET', `/api/rooms/${ssRoomId}/sub-agent-schedules/doctor`);
+        assert.strictEqual(r.status, 200);
+        const diag = r.body.diagnoses.find(d => d.schedule_id === Number(overdueSched));
+        assert.ok(diag, 'overdue schedule not found in diagnoses');
+        assert.strictEqual(diag.status, 'overdue');
+        assert.ok(diag.details, 'overdue details missing');
+      } finally {
+        db.prepare('DELETE FROM sub_agent_schedules WHERE id=?').run(overdueSched);
+      }
+    });
+
+    await test('R12 — GET /doctor — schedule with last_error → error status', async () => {
+      if (!ssRoomId || !ssSubAgent) { console.log('    (skipped)'); return; }
+      const db = require('./db');
+      const future = new Date(Date.now() + 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+      const spec = JSON.stringify({ type: 'interval', every_minutes: 30 });
+      const insertResult = db.prepare(
+        `INSERT INTO sub_agent_schedules (room_id, sub_agent_id, created_by_actor_id, task, schedule_spec, enabled, next_run_at, last_error) VALUES (?,?,?,?,?,1,?,?)`
+      ).run(ssRoomId, ssSubAgent.id, 1, 'test error task r12', spec, future, 'something went wrong');
+      const errorSched = insertResult.lastInsertRowid;
+      try {
+        const r = await req('GET', `/api/rooms/${ssRoomId}/sub-agent-schedules/doctor`);
+        assert.strictEqual(r.status, 200);
+        const diag = r.body.diagnoses.find(d => d.schedule_id === Number(errorSched));
+        assert.ok(diag, 'error schedule not found in diagnoses');
+        assert.strictEqual(diag.status, 'error');
+        assert.strictEqual(diag.details, 'something went wrong');
+      } finally {
+        db.prepare('DELETE FROM sub_agent_schedules WHERE id=?').run(errorSched);
+      }
+    });
+
+    await test('R12 — GET /doctor — unlinked sub-agent → unlinked status', async () => {
+      if (!ssRoomId || !ssSubAgent) { console.log('    (skipped)'); return; }
+      const db = require('./db');
+      db.prepare('DELETE FROM room_sub_agents WHERE room_id=? AND sub_agent_id=?').run(ssRoomId, ssSubAgent.id);
+      const future = new Date(Date.now() + 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+      const spec = JSON.stringify({ type: 'interval', every_minutes: 30 });
+      const insertResult = db.prepare(
+        `INSERT INTO sub_agent_schedules (room_id, sub_agent_id, created_by_actor_id, task, schedule_spec, enabled, next_run_at) VALUES (?,?,?,?,?,1,?)`
+      ).run(ssRoomId, ssSubAgent.id, 1, 'test unlinked task r12', spec, future);
+      const unlinkSched = insertResult.lastInsertRowid;
+      try {
+        const r = await req('GET', `/api/rooms/${ssRoomId}/sub-agent-schedules/doctor`);
+        assert.strictEqual(r.status, 200);
+        const diag = r.body.diagnoses.find(d => d.schedule_id === Number(unlinkSched));
+        assert.ok(diag, 'unlinked schedule not found in diagnoses');
+        assert.strictEqual(diag.status, 'unlinked');
+      } finally {
+        db.prepare('DELETE FROM sub_agent_schedules WHERE id=?').run(unlinkSched);
+        db.prepare('INSERT OR IGNORE INTO room_sub_agents (room_id, sub_agent_id) VALUES (?,?)').run(ssRoomId, ssSubAgent.id);
+      }
+    });
+
     await test('Cleanup — delete schedule test room + sub-agent + actor', async () => {
       if (ssRoomId) {
         await req('PATCH', `/api/rooms/${ssRoomId}`, { archived: true });

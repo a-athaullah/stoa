@@ -427,6 +427,7 @@ function openRoomSettings(room) {
   let paused = false, pausedOrig = false;
   let maxConcurrent = 3, maxPerHour = 10;
   let schedules = [];      // loaded from /api/rooms/:id/sub-agent-schedules
+  let scheduleDiagnoses = {}; // schedule_id → { status, details } from /doctor
   let linkedSubs = [];     // sub-agents linked to this room (for schedule form dropdown)
   let schedFormOpen = false, schedEditId = null;
 
@@ -448,12 +449,14 @@ function openRoomSettings(room) {
     fjson(`/api/rooms/${room.id}`),
     fjson(`/api/rooms/${room.id}/sub-agent-schedules`),
     fjson(`/api/rooms/${room.id}/sub-agents`),
-  ]).then(([r, sc, sa]) => {
+    fjson(`/api/rooms/${room.id}/sub-agent-schedules/doctor`).catch(() => ({ diagnoses: [] })),
+  ]).then(([r, sc, sa, doc]) => {
     maxConcurrent = Math.max(1, Math.min(10, r.max_sub_agents || 3));
     maxPerHour = Math.max(1, Math.min(100, r.max_spawns_per_hour || 10));
     paused = pausedOrig = !!r.spawns_paused;
     try { tiersState = r.model_tiers ? JSON.parse(r.model_tiers) : null; } catch { tiersState = null; }
     schedules = sc.schedules || [];
+    scheduleDiagnoses = Object.fromEntries((doc.diagnoses || []).map(d => [d.schedule_id, d]));
     linkedSubs = sa.linked || [];
     renderBody();
   }).catch(() => { panel.innerHTML = '<div style="font-size:12.5px;color:#b35a4b">failed to load room settings</div>'; });
@@ -565,6 +568,14 @@ function openRoomSettings(room) {
     hsub.style.cssText = 'font-size:12px;color:var(--h-ink-faint);margin-left:10px';
     const enabledCount = schedules.filter(s => s.enabled).length;
     hsub.textContent = enabledCount ? `${enabledCount} active` : 'sub-agents that fire on a timer';
+    const issueCount = Object.values(scheduleDiagnoses).filter(d => d.status !== 'ok').length;
+    if (issueCount) {
+      const warn = document.createElement('span');
+      warn.style.cssText = 'font-size:10px;padding:2px 7px;border-radius:999px;background:#b35a4b;color:#fff;font-weight:600;margin-left:8px';
+      warn.textContent = `${issueCount} issue${issueCount > 1 ? 's' : ''}`;
+      warn.title = 'Some schedules have issues — see badges below';
+      hsub.after(warn);
+    }
     hleft.append(htitle, hsub);
 
     const addBtn = document.createElement('button');
@@ -611,6 +622,15 @@ function openRoomSettings(room) {
         const cadence = document.createElement('span');
         cadence.style.cssText = 'font-size:11px;color:var(--h-ink-mute);padding:2px 8px;border-radius:999px;border:1px solid var(--h-border);background:var(--h-surface)';
         cadence.textContent = fmtCadence(sched.schedule_spec);
+        const diag = scheduleDiagnoses[sched.id];
+        if (diag && diag.status !== 'ok') {
+          const badge = document.createElement('span');
+          const badgeColor = diag.status === 'overdue' ? '#d97706' : '#b35a4b';
+          badge.style.cssText = `font-size:10px;padding:2px 7px;border-radius:999px;background:${badgeColor};color:#fff;font-weight:600;letter-spacing:.02em`;
+          badge.textContent = diag.status;
+          badge.title = diag.details || diag.status;
+          top.append(badge);
+        }
         top.append(lbl, cadence);
         const task = document.createElement('div');
         task.style.cssText = 'font-size:12px;color:var(--h-ink-faint);font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
@@ -667,8 +687,12 @@ function openRoomSettings(room) {
 
   async function reloadSchedules() {
     try {
-      const sc = await fjson(`/api/rooms/${room.id}/sub-agent-schedules`);
+      const [sc, doc] = await Promise.all([
+        fjson(`/api/rooms/${room.id}/sub-agent-schedules`),
+        fjson(`/api/rooms/${room.id}/sub-agent-schedules/doctor`).catch(() => ({ diagnoses: [] })),
+      ]);
       schedules = sc.schedules || [];
+      scheduleDiagnoses = Object.fromEntries((doc.diagnoses || []).map(d => [d.schedule_id, d]));
     } catch {}
     renderBody();
   }

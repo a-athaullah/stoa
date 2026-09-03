@@ -716,7 +716,7 @@ function schedulerTick() {
       db.prepare('UPDATE sub_agent_schedules SET next_run_at=? WHERE id=?').run(fmtUtc(nextSlot), sched.id);
       const status = fireSchedule(sched);
       if (status === 'fired') {
-        db.prepare("UPDATE sub_agent_schedules SET last_run_at=datetime('now') WHERE id=?").run(sched.id);
+        db.prepare("UPDATE sub_agent_schedules SET last_run_at=datetime('now'), last_error=NULL WHERE id=?").run(sched.id);
       } else {
         // Transient skips (nothing dispatched) get pulled back for a grace retry,
         // capped at nextSlot; other skips keep the far slot (see nextRunAfterSkip).
@@ -730,6 +730,7 @@ function schedulerTick() {
       }
     } catch (e) {
       console.error(`[scheduler] schedule ${sched.id} error:`, e.message);
+      try { db.prepare('UPDATE sub_agent_schedules SET last_error=? WHERE id=?').run(e.message.slice(0, 500), sched.id); } catch {}
     }
   }
 }
@@ -1520,6 +1521,41 @@ const server = http.createServer(async (req, res) => {
     db.prepare('DELETE FROM room_sub_agents WHERE room_id=? AND sub_agent_id=?').run(roomId, subAgentId);
     broadcast(roomId, { type: 'sub_agent_unlinked', room_id: roomId, sub_agent_id: subAgentId });
     return json(res, { ok: true });
+  }
+
+  // ── R12: schedule doctor — read-only health check per room ──────────────────
+  if (req.method === 'GET' && url.pathname.match(/^\/api\/rooms\/\d+\/sub-agent-schedules\/doctor$/)) {
+    if (!req._authUser) return json(res, { error: 'human auth required' }, 403);
+    const roomId = parseInt(url.pathname.split('/')[3]);
+    const room = db.prepare('SELECT id FROM rooms WHERE id=?').get(roomId);
+    if (!room) return json(res, { error: 'room not found' }, 404);
+    const rows = db.prepare(`
+      SELECT s.id, s.sub_agent_id, s.enabled, s.next_run_at, s.last_run_at, s.last_error, s.task,
+             sa.label AS sub_agent_label
+      FROM sub_agent_schedules s JOIN sub_agents sa ON sa.id=s.sub_agent_id
+      WHERE s.room_id=? ORDER BY s.id
+    `).all(roomId);
+    const linkedIds = new Set(
+      db.prepare('SELECT sub_agent_id FROM room_sub_agents WHERE room_id=?').all(roomId).map(r => r.sub_agent_id)
+    );
+    const overdueMs = 15 * 60 * 1000;
+    const nowMs = Date.now();
+    const diagnoses = rows.map(s => {
+      let status = 'ok';
+      let details = null;
+      if (!linkedIds.has(s.sub_agent_id)) {
+        status = 'unlinked';
+        details = 'sub-agent is no longer linked to this room — schedule will not fire';
+      } else if (s.enabled && s.next_run_at && (nowMs - new Date(s.next_run_at + 'Z').getTime()) > overdueMs) {
+        status = 'overdue';
+        details = `next_run_at was ${s.next_run_at} UTC — overdue by more than 15 minutes`;
+      } else if (s.last_error) {
+        status = 'error';
+        details = s.last_error;
+      }
+      return { schedule_id: s.id, sub_agent_label: s.sub_agent_label, task: s.task, status, details };
+    });
+    return json(res, { room_id: roomId, diagnoses });
   }
 
   // ── Phase 6: proactive schedules (human-only — Settings/room UI) ───────────
