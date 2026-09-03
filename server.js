@@ -8,6 +8,10 @@ const db = require('./db');
 const { ClaudeSession } = require('./claude-session');
 const { validateScheduleSpec, computeNextRun, nextRunAfterSkip } = require('./lib/schedule');
 const fallbackSessions = new Map();
+
+// R15: unique identifier for this server boot. Sessions tagged with a different
+// generation are from a prior process and their in-flight state is unknown.
+const PROCESS_GEN = crypto.randomBytes(16).toString('hex');
 const FALLBACK_IDLE_MS = 30 * 60 * 1000;
 function getFallbackSession(participantId, workDir) {
   const key = `${participantId}:${workDir || ''}`;
@@ -1402,9 +1406,11 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname.endsWith('/participants')) {
       const rows = db.prepare(`
         SELECT rp.*, a.name, a.type, a.avatar_color, a.avatar_symbol, a.avatar_url, a.adapter,
-               w.path AS workdir_path, w.label AS workdir_label
+               w.path AS workdir_path, w.label AS workdir_label,
+               sess.status AS session_status
         FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
         LEFT JOIN agent_workdirs w ON w.id=rp.workdir_id
+        LEFT JOIN ai_sessions sess ON sess.participant_id=rp.id AND sess.sub_agent_id IS NULL
         WHERE rp.room_id=?
       `).all(roomId);
       return json(res, rows);
@@ -4039,6 +4045,18 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'agent_error' && agentActorId) {
       db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msg.message_id);
       broadcast(msg.room_id, { type: 'message_state', message_id: msg.message_id, state: 'error' });
+      // R15: agent reported error cleanly — reset session to idle so it isn't
+      // flagged as indeterminate on the next restart.
+      try {
+        const errRow = db.prepare('SELECT participant_id, sub_agent_id FROM messages WHERE id=?').get(msg.message_id);
+        if (errRow) {
+          if (errRow.sub_agent_id) {
+            db.prepare("UPDATE ai_sessions SET status='idle' WHERE participant_id=? AND sub_agent_id=? AND status='active'").run(errRow.participant_id, errRow.sub_agent_id);
+          } else {
+            db.prepare("UPDATE ai_sessions SET status='idle' WHERE participant_id=? AND sub_agent_id IS NULL AND status='active'").run(errRow.participant_id);
+          }
+        }
+      } catch {}
       pendingAgents.get(msg.message_id)?.reject(new Error(msg.error));
       pendingAgents.delete(msg.message_id);
       pendingActorMeta.delete(msg.message_id);
@@ -5100,6 +5118,14 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     }
   }
 
+  // R15: tag session as active so a crash leaves a detectable in-flight marker.
+  // No-op if the session row doesn't exist yet (first run — nothing to detect).
+  if (subAgent) {
+    db.prepare("UPDATE ai_sessions SET status='active', process_generation=? WHERE participant_id=? AND sub_agent_id=?").run(PROCESS_GEN, ai.participant_id, subAgent.id);
+  } else {
+    db.prepare("UPDATE ai_sessions SET status='active', process_generation=? WHERE participant_id=? AND sub_agent_id IS NULL").run(PROCESS_GEN, ai.participant_id);
+  }
+
   // Build context-aware prompt (language-aware)
   const agentLang = (() => { try { return JSON.parse(ai.adapter_config || '{}').lang || 'en'; } catch { return 'en'; } })();
   const L = promptStrings(agentLang);
@@ -5505,6 +5531,10 @@ const detectedProcessManager = (() => {
 console.log(`[startup] Process manager: ${detectedProcessManager}`);
 
 server.listen(PORT, () => {
+  // R15: any session left 'active' belongs to a prior process — mark indeterminate.
+  const orphaned = db.prepare("UPDATE ai_sessions SET status='indeterminate' WHERE status='active'").run();
+  if (orphaned.changes) console.log(`[startup] ${orphaned.changes} orphaned session(s) marked indeterminate`);
+
   console.log(`Stoa running → http://localhost:${PORT}`);
   // Phase 2b (R1): resume any sub-agent wakes left pending by a prior crash/restart.
   try { drainPendingWakesOnStartup(); } catch (e) { console.error('[wake] startup drain failed:', e.message); }

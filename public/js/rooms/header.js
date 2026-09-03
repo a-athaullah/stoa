@@ -73,6 +73,7 @@ function renderChatHeader(room, participants) {
   for (const p of participants) {
     const wrap = document.createElement('div');
     wrap.className = 'h-header-seal';
+    wrap.style.position = 'relative';
     wrap.appendChild(makeAvatar(p.name, p.avatar_color, p.avatar_url, 26));
     if (p.type === 'ai') {
       wrap.style.cursor = 'pointer';
@@ -81,6 +82,12 @@ function renderChatHeader(room, participants) {
         e.stopPropagation();
         openSubAgentDropdown(wrap, room.id, p);
       });
+      if (p.session_status === 'indeterminate') {
+        const dot = document.createElement('span');
+        dot.style.cssText = 'position:absolute;bottom:0;right:0;width:8px;height:8px;border-radius:50%;background:#d97706;border:2px solid var(--h-surface);pointer-events:none';
+        dot.title = `${p.name}: session was running when server restarted — check manually`;
+        wrap.appendChild(dot);
+      }
     }
     sealsWrap.appendChild(wrap);
   }
