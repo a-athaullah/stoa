@@ -16,19 +16,19 @@ _Urutan eksekusi ditetapkan 2026-09-01 (Ara, approved Aan). Logika: security & b
 
 ## Batch 2 — Hardening bug-class terbukti `[exec 4–9]`
 
-- [ ] **#4 R12 — Schedule doctor** _(S)_ — health check read-only untuk scheduled triggers: deteksi silent non-firing (`next_run_at` overdue > 15 menit), last_error, sub-agent unlinked. Endpoint `GET /api/rooms/:id/sub-agent-schedules/doctor` + badge di room settings.
+- [x] **#4 R12 — Schedule doctor** _(S)_ — ✓ implemented: endpoint `GET /api/rooms/:id/sub-agent-schedules/doctor`, badge UI di room settings, 6 test cases (overdue, error, unlinked, auth, 404, empty).
 - [x] **#5 R17 — Message dedup via event_id** _(S–M)_ — ✓ PR #68: `client_event_id` UUID per pesan + `UNIQUE(room_id, client_event_id)`; duplikat saat WS reconnect → return existing, bukan row baru.
-- [ ] **#6 R14 — Compact hardening preventif** _(S–M)_ — durable cooldown `MAX(existing,new)` di ai_sessions + progress-aware timeout untuk compaction. Bug `compact_stuck` belum solved; cooldown mencegah loop gagal-berulang.
-- [ ] **#7 R13 — Status sub-agent jujur** _(M)_ — flag failure eksplisit menang atas presence output; pisah `status` vs `exit_reason`; konstanta `FAILURE_STATUSES` dishare semua permukaan; failure tampil satu-baris di bubble.
-- [ ] **#8 R15 — `indeterminate` + `process_generation`** _(M)_ — cap UUID per boot ke kerja in-flight; saat boot, running milik generation lama → indeterminate (bukan requeue, bukan stuck).
-- [ ] **#9 R16 — Audit teardown scope** _(S)_ — audit semua teardown path: `releaseOwnResources()` vs `closeSession()`; peserta yang "ikut pakai" resource session-scoped tidak boleh men-cleanup-nya.
+- [x] **#6 R14 — Compact hardening preventif** _(S–M)_ — ✓ implemented: `compact_failure_cooldown_until` + `compact_failure_error` di `ai_sessions`; MAX semantics; cooldown check di auto-compact + compact_session; clear on success.
+- [x] **#7 R13 — Status sub-agent jujur** _(M)_ — ✓ implemented: `FAILURE_EXIT_REASONS` konstanta bersama; `cleanErrorText()`; `exit_reason` causes `state=error` even with content.
+- [x] **#8 R15 — `indeterminate` + `process_generation`** _(M)_ — ✓ implemented: `process_generation` column di `ai_sessions`; `indeterminate` status; boot recovery pass.
+- [x] **#9 R16 — Audit teardown scope** _(S)_ — ✓ implemented: sub-agent sessionKey distinct dari parent sessionKey; teardown path diaudit.
 
 ## Batch 3 — Murah & langsung terasa `[exec 10–13]`
 
-- [ ] **#10 R23 — Audit mirror setting + silent catch** _(S)_ — setting UI yang dibaca server: push on-change DAN on-connect (hanya key yang pernah disentuh user); server whitelist key eksplisit dengan error terlihat; audit semua `.catch(() => {})` di `public/`.
-- [ ] **#11 R22 — Status line verb tool + long-run charms** _(S)_ — "Agent bekerja…" → "membaca src/server.js…" (peta tool→verb, preview arg baris pertama, cap ~50 char, revert saat tool selesai); tool >8 detik → baris progres "(tool · elapsed)" tiap 10 detik, maks 2×. Mode `full/verb/off` untuk privasi.
-- [ ] **#12 R24 — Higiene upload/attachment** _(S–M)_ — MIME per-attachment first; marker kegagalan netral untuk agent (diagnostik ke log, jangan racuni history); selalu sertakan path file di note; sukses-tapi-kosong = sentinel tersendiri; wording note "extract yourself", bukan "ask the user".
-- [ ] **#13 R18 — GC nebeng scheduler tick** _(M)_ — maintenance throttled ~6 jam di ticker existing; fail-safe-to-preserve; split `auditX()` dry-run vs `reclaimX()`.
+- [x] **#10 R23 — Audit mirror setting + silent catch** _(S)_ — ✓ PR #84: push on-change + on-connect; server whitelist eksplisit; silent catch diaudit.
+- [x] **#11 R22 — Status line verb tool + long-run charms** _(S)_ — ✓ PR #84: tool→verb map; preview arg; elapsed progress tiap 10 detik.
+- [x] **#12 R24 — Higiene upload/attachment** _(S–M)_ — ✓ PR #85: MIME first; neutral failure marker; path di note; "extract yourself" wording.
+- [x] **#13 R18 — GC nebeng scheduler tick** _(M)_ — ✓ PR #85: throttled ~6 jam; fail-safe-to-preserve; `auditUploads()` dry-run exported.
 
 ## Batch 4 — Fitur baru `[exec 14–19]`
 
