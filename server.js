@@ -371,7 +371,7 @@ async function cascadeMentionsAfterWake(roomId, parent) {
   const lastMsg = db.prepare(`
     SELECT m.content FROM messages m
     JOIN room_participants rp ON rp.id=m.participant_id
-    WHERE rp.actor_id=? AND m.room_id=? AND m.state='complete' AND m.sub_agent_id IS NULL
+    WHERE rp.actor_id=? AND m.room_id=? AND m.state='complete' AND m.sub_agent_id IS NULL AND m.completed_at IS NOT NULL
     ORDER BY m.id DESC LIMIT 1
   `).get(parent.actor_id, roomId);
   if (!lastMsg?.content || !lastMsg.content.includes('@')) return;
@@ -2329,6 +2329,86 @@ const server = http.createServer(async (req, res) => {
     return json(res, { imported_count: imported, skipped_count: skipped });
   }
 
+  // GET /api/rooms/:id/memory — room memory
+  if (req.method === 'GET' && url.pathname.match(/^\/api\/rooms\/\d+\/memory$/)) {
+    if (!requireAuth(req, res, url)) return;
+    const roomId = parseInt(url.pathname.split('/')[3]);
+    const room = db.prepare('SELECT id FROM rooms WHERE id=?').get(roomId);
+    if (!room) return json(res, { error: 'room not found' }, 404);
+    const row = db.prepare('SELECT content, updated_at FROM room_memory WHERE room_id=?').get(roomId);
+    const content = row?.content ?? '';
+    const pending_count = db.prepare("SELECT COUNT(*) as c FROM memory_pending_writes WHERE room_id=? AND status='pending'").get(roomId).c;
+    return json(res, { content, char_count: content.length, budget: 1800, updated_at: row?.updated_at ?? null, pending_count });
+  }
+
+  // PUT /api/rooms/:id/memory — update room memory
+  if (req.method === 'PUT' && url.pathname.match(/^\/api\/rooms\/\d+\/memory$/)) {
+    if (!requireAuth(req, res, url)) return;
+    const roomId = parseInt(url.pathname.split('/')[3]);
+    const room = db.prepare('SELECT id FROM rooms WHERE id=?').get(roomId);
+    if (!room) return json(res, { error: 'room not found' }, 404);
+    const data = parseJsonBody(await readBody(req));
+    if (!data || typeof data.content !== 'string') return json(res, { error: 'content (string) required' }, 400);
+    if (data.content.length > 1800) return json(res, { error: 'content exceeds 1800 char budget' }, 400);
+    db.prepare(
+      "INSERT INTO room_memory (room_id, content, updated_at) VALUES (?,?,datetime('now')) ON CONFLICT(room_id) DO UPDATE SET content=excluded.content, updated_at=excluded.updated_at"
+    ).run(roomId, data.content);
+    const row = db.prepare('SELECT content, updated_at FROM room_memory WHERE room_id=?').get(roomId);
+    return json(res, { content: row.content, char_count: row.content.length, budget: 1800, updated_at: row.updated_at });
+  }
+
+  // GET /api/rooms/:id/memory/pending — list pending memory writes
+  if (req.method === 'GET' && url.pathname.match(/^\/api\/rooms\/\d+\/memory\/pending$/)) {
+    if (!requireAuth(req, res, url)) return;
+    const roomId = parseInt(url.pathname.split('/')[3]);
+    const room = db.prepare('SELECT id FROM rooms WHERE id=?').get(roomId);
+    if (!room) return json(res, { error: 'room not found' }, 404);
+    const writes = db.prepare(`
+      SELECT mpw.id, mpw.type, mpw.actor_id, mpw.file, mpw.proposed_content, mpw.proposed_at,
+             a.name as actor_name
+      FROM memory_pending_writes mpw
+      LEFT JOIN actors a ON a.id=mpw.actor_id
+      WHERE mpw.room_id=? AND mpw.status='pending'
+      ORDER BY mpw.proposed_at ASC
+    `).all(roomId);
+    return json(res, { writes });
+  }
+
+  // POST /api/rooms/:id/memory/pending/:writeId/approve
+  if (req.method === 'POST' && url.pathname.match(/^\/api\/rooms\/\d+\/memory\/pending\/\d+\/approve$/)) {
+    if (!requireAuth(req, res, url)) return;
+    const parts = url.pathname.split('/');
+    const roomId = parseInt(parts[3]);
+    const writeId = parseInt(parts[6]);
+    const pending = db.prepare("SELECT * FROM memory_pending_writes WHERE id=? AND room_id=? AND status='pending'").get(writeId, roomId);
+    if (!pending) return json(res, { error: 'pending write not found' }, 404);
+    db.transaction(() => {
+      if (pending.type === 'agent' && pending.actor_id && pending.file) {
+        db.prepare(
+          "INSERT INTO agent_memory (actor_id, file, content, updated_at) VALUES (?,?,?,datetime('now')) ON CONFLICT(actor_id, file) DO UPDATE SET content=excluded.content, updated_at=excluded.updated_at"
+        ).run(pending.actor_id, pending.file, pending.proposed_content);
+      } else if (pending.type === 'room') {
+        db.prepare(
+          "INSERT INTO room_memory (room_id, content, updated_at) VALUES (?,?,datetime('now')) ON CONFLICT(room_id) DO UPDATE SET content=excluded.content, updated_at=excluded.updated_at"
+        ).run(roomId, pending.proposed_content);
+      }
+      db.prepare("UPDATE memory_pending_writes SET status='approved' WHERE id=?").run(writeId);
+    })();
+    return json(res, { ok: true });
+  }
+
+  // POST /api/rooms/:id/memory/pending/:writeId/reject
+  if (req.method === 'POST' && url.pathname.match(/^\/api\/rooms\/\d+\/memory\/pending\/\d+\/reject$/)) {
+    if (!requireAuth(req, res, url)) return;
+    const parts = url.pathname.split('/');
+    const roomId = parseInt(parts[3]);
+    const writeId = parseInt(parts[6]);
+    const pending = db.prepare("SELECT id FROM memory_pending_writes WHERE id=? AND room_id=? AND status='pending'").get(writeId, roomId);
+    if (!pending) return json(res, { error: 'pending write not found' }, 404);
+    db.prepare("UPDATE memory_pending_writes SET status='rejected' WHERE id=?").run(writeId);
+    return json(res, { ok: true });
+  }
+
   // ── Server process manager info & restart ──
   if (req.method === 'GET' && url.pathname === '/api/server/process-manager') {
     if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
@@ -3190,6 +3270,37 @@ Write-Host "Logs   : pm2 logs $AgentName"
     if (!agentWs) { res.writeHead(503); return res.end('agent offline'); }
     agentWs.send(JSON.stringify({ type: 'request_scan' }));
     return json(res, { ok: true });
+  }
+
+  // GET /api/actors/:id/memory — list agent memory files
+  if (req.method === 'GET' && url.pathname.match(/^\/api\/actors\/\d+\/memory$/)) {
+    if (!requireAuth(req, res, url)) return;
+    const actorId = parseInt(url.pathname.split('/')[3]);
+    const BUDGETS = { 'MEMORY.md': 2200, 'USER.md': 1375 };
+    const files = ['MEMORY.md', 'USER.md'].map(file => {
+      const row = db.prepare('SELECT content, updated_at FROM agent_memory WHERE actor_id=? AND file=?').get(actorId, file);
+      const content = row?.content ?? '';
+      return { file, content, char_count: content.length, budget: BUDGETS[file], updated_at: row?.updated_at ?? null };
+    });
+    return json(res, { files });
+  }
+
+  // PUT /api/actors/:id/memory/:file — update one agent memory file
+  if (req.method === 'PUT' && url.pathname.match(/^\/api\/actors\/\d+\/memory\/(MEMORY\.md|USER\.md)$/)) {
+    if (!requireAuth(req, res, url)) return;
+    const parts = url.pathname.split('/');
+    const actorId = parseInt(parts[3]);
+    const file = parts[5];
+    const BUDGETS = { 'MEMORY.md': 2200, 'USER.md': 1375 };
+    const data = parseJsonBody(await readBody(req));
+    if (!data || typeof data.content !== 'string') return json(res, { error: 'content (string) required' }, 400);
+    const budget = BUDGETS[file];
+    if (data.content.length > budget) return json(res, { error: `content exceeds ${budget} char budget` }, 400);
+    db.prepare(
+      "INSERT INTO agent_memory (actor_id, file, content, updated_at) VALUES (?,?,?,datetime('now')) ON CONFLICT(actor_id, file) DO UPDATE SET content=excluded.content, updated_at=excluded.updated_at"
+    ).run(actorId, file, data.content);
+    const row = db.prepare('SELECT content, updated_at FROM agent_memory WHERE actor_id=? AND file=?').get(actorId, file);
+    return json(res, { file, content: row.content, char_count: row.content.length, budget, updated_at: row.updated_at });
   }
 
   // PUT /api/actors/:id/config — update name, lang, adapter_config fields
@@ -5001,7 +5112,7 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
       const lastMsg = db.prepare(`
         SELECT m.content FROM messages m
         JOIN room_participants rp ON rp.id=m.participant_id
-        WHERE rp.actor_id=? AND m.room_id=? AND m.state='complete'
+        WHERE rp.actor_id=? AND m.room_id=? AND m.state='complete' AND m.completed_at IS NOT NULL
         ORDER BY m.id DESC LIMIT 1
       `).get(currentAgent.actor_id, roomId);
 
@@ -5502,8 +5613,12 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
 
   const PROACTIVE_INSTRUCTIONS = `\n\n## Progress Reporting (MANDATORY for background tasks)\n\nFor any task that takes more than a few seconds, or involves file edits, commits, or multi-step work:\n1. After finishing your analysis, send a proactive message with what you found and your plan.\n2. After each significant step (commit, test run, major finding), send a brief update.\n3. At the end, always send a final summary of what was done.\n\nTo send a proactive message to the room:\n\`\`\`bash\nBASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\ncurl -s -X POST "$BASE_URL/api/rooms/$STOA_ROOM_ID/message" \\\n  -H "Content-Type: application/json" \\\n  -H "x-agent-id: $STOA_ACTOR_ID" \\\n  -H "x-agent-secret: $STOA_SECRET" \\\n  -d '{"content": "Your message here"}'\n\`\`\`\n\n$STOA_URL, $STOA_ACTOR_ID, $STOA_SECRET, and $STOA_ROOM_ID are available as environment variables.`;
 
+  // Sub-agents are triggered from a caller room that may differ from their own room.
+  // Use the literal caller roomId so reports go back to the right place.
+  const PROACTIVE_INSTRUCTIONS_SUB_AGENT = `\n\n## Output\n\nYour final text response is automatically posted to the room as your result. Do NOT also send it via curl — it would appear twice.\n\nOnly use curl in two cases:\n1. **Long task (>1 min):** send a brief mid-task status update so the user knows you're working. Do NOT send the result via curl — write it in your text response.\n2. **Cascade trigger:** if you need to @mention another agent, put the @mention in a curl message body (plain text @mention is not guaranteed to trigger).\n\nFor quick tasks (single command, short lookup): just write the answer in your text response. No curl needed.\n\nYou were triggered from room ${roomId}. If you do use curl, send to that room.\n\nCurl pattern:\n\`\`\`bash\nBASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\ncurl -s -X POST "$BASE_URL/api/rooms/${roomId}/message" \\\n  -H "Content-Type: application/json" \\\n  -H "x-agent-id: $STOA_ACTOR_ID" \\\n  -H "x-agent-secret: $STOA_SECRET" \\\n  -d '{"content": "Your update here"}'\n\`\`\`\n\n$STOA_URL, $STOA_ACTOR_ID, and $STOA_SECRET are available as environment variables.\nRoom ID: ${roomId}`;
+
   const identityLine = subAgent
-    ? `${L.identity(ai.name)}\nYou are operating as sub-agent "${subAgent.label}" (tier: ${subAgent.tier}).${subAgent.system_prompt ? '\n\nSub-agent instructions:\n' + subAgent.system_prompt : ''}${PROACTIVE_INSTRUCTIONS}`
+    ? `${L.identity(ai.name)}\nYou are operating as sub-agent "${subAgent.label}" (tier: ${subAgent.tier}).${subAgent.system_prompt ? '\n\nSub-agent instructions:\n' + subAgent.system_prompt : ''}${PROACTIVE_INSTRUCTIONS_SUB_AGENT}`
     : `${L.identity(ai.name)}${PROACTIVE_INSTRUCTIONS}`;
 
   // ── Phase 2b: orchestration — issue a spawn token to the MAIN agent when it
@@ -5522,8 +5637,20 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         `\nYou can delegate to your sub-agents: ${list}.\n` +
         `To trigger one, mention @<label> in your response followed by the task — e.g. "@BE-Stoa implement the login endpoint".\n` +
         `The sub-agent runs automatically; you will be woken once to read its result and continue. You may mention multiple sub-agents in one response to run them in parallel.\n` +
-        `Do NOT write @mention of a sub-agent unless you actually want to trigger it.`;
+        `Do NOT write @mention of a sub-agent unless you actually want to trigger it.\n\n` +
+        `**IMPORTANT — reliable sub-agent triggering:** When delegating via a proactive message (curl to the room API), the @mention MUST be in the curl message body — @mention in plain text response is not guaranteed to trigger the cascade. Use the same curl pattern as in the Progress Reporting section above, with @<label> at the start of the content.`;
     }
+  }
+
+  // Inject frozen memory snapshot at session start
+  let memorySection = '';
+  {
+    const memRows = db.prepare('SELECT file, content FROM agent_memory WHERE actor_id=? AND content != \'\'').all(ai.actor_id);
+    const roomMem = db.prepare('SELECT content FROM room_memory WHERE room_id=? AND content != \'\'').get(roomId);
+    const parts = [];
+    for (const { file, content } of memRows) parts.push(`### ${file}\n${content}`);
+    if (roomMem) parts.push(`### Room Memory\n${roomMem.content}`);
+    if (parts.length) memorySection = `\n## Memory\n${parts.join('\n\n')}`;
   }
 
   const fullPrompt = [
@@ -5531,6 +5658,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     `Room ID: ${roomId}`,
     L.timeContext(nowUtc),
     othersLine,
+    memorySection,
     `\n${L.historyLabel}:\n${ctx}`,
     replyCtx,
     '\n' + L.replyInstruction,
