@@ -433,6 +433,7 @@ function openRoomSettings(room) {
   let tiersState = null;   // null = use server defaults; object = per-room override
   let paused = false, pausedOrig = false;
   let maxConcurrent = 3, maxPerHour = 10;
+  let busyInputMode = 'interrupt';
   let schedules = [];      // loaded from /api/rooms/:id/sub-agent-schedules
   let scheduleDiagnoses = {}; // schedule_id → { status, details } from /doctor
   let linkedSubs = [];     // sub-agents linked to this room (for schedule form dropdown)
@@ -462,6 +463,7 @@ function openRoomSettings(room) {
     maxPerHour = Math.max(1, Math.min(100, r.max_spawns_per_hour || 10));
     paused = pausedOrig = !!r.spawns_paused;
     try { tiersState = r.model_tiers ? JSON.parse(r.model_tiers) : null; } catch { tiersState = null; }
+    busyInputMode = r.busy_input_mode || 'interrupt';
     schedules = sc.schedules || [];
     scheduleDiagnoses = Object.fromEntries((doc.diagnoses || []).map(d => [d.schedule_id, d]));
     linkedSubs = sa.linked || [];
@@ -921,6 +923,32 @@ function openRoomSettings(room) {
     pr.append(pleft, ptog);
     bc.appendChild(pr);
     panel.appendChild(bc);
+
+    // ── Busy input mode card
+    const bmc = makeCard('Busy mode', 'what happens when you send a message while the AI is running');
+    const BUSY_OPTIONS = [
+      { value: 'interrupt', label: 'interrupt', hint: 'restart immediately' },
+      { value: 'queue',     label: 'queue',     hint: 'wait for current run' },
+      { value: 'steer',     label: 'steer',     hint: 'inject into current run' },
+    ];
+    const bmRow = document.createElement('div');
+    bmRow.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;padding-top:4px';
+    for (const opt of BUSY_OPTIONS) {
+      const btn = document.createElement('button');
+      const active = busyInputMode === opt.value;
+      btn.style.cssText = `background:${active ? 'var(--h-accent-subtle,color-mix(in srgb,var(--h-accent) 12%,transparent))' : 'transparent'};border:1px solid ${active ? 'var(--h-accent,var(--h-border))' : 'var(--h-border)'};border-radius:999px;padding:5px 14px;cursor:pointer;font-family:var(--h-sans);font-size:12.5px;color:${active ? 'var(--h-accent,var(--h-ink))' : 'var(--h-ink-mute)'};display:flex;flex-direction:column;align-items:center;gap:1px`;
+      btn.innerHTML = `<span style="font-weight:${active ? '600' : '400'}">${opt.label}</span><span style="font-size:10.5px;opacity:.7">${opt.hint}</span>`;
+      btn.onclick = () => {
+        busyInputMode = opt.value;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'set_room_setting', key: 'busy_input_mode', value: opt.value }));
+        }
+        renderBody();
+      };
+      bmRow.appendChild(btn);
+    }
+    bmc.appendChild(bmRow);
+    panel.appendChild(bmc);
 
     // ── Scheduled triggers card
     panel.appendChild(renderScheduleCard());

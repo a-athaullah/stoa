@@ -356,6 +356,50 @@
 .s-restart-btn:hover:not(:disabled) { opacity: .82; }
 .s-restart-btn:disabled { opacity: .35; cursor: default; }
 
+/* Queue pill — shown above composer when messages are queued */
+.h-queue-pill {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--h-surface);
+  border: 1px solid var(--h-border);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--h-ink-mute);
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0,0,0,.08);
+  z-index: 10;
+  opacity: 0;
+  transition: opacity .2s;
+}
+.h-queue-pill.visible { display: block; opacity: 1; }
+
+/* Steer notice — temporary confirmation when injecting into running agent */
+.h-steer-notice {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--h-surface);
+  border: 1px solid var(--h-border);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--h-ink-mute);
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0,0,0,.08);
+  z-index: 10;
+  opacity: 0;
+  transition: opacity .2s;
+}
+.h-steer-notice.visible { display: block; opacity: 1; }
+
 /* Avatar upload zone */
 .s-avatar-section {
   padding: 14px 18px 16px; border-bottom: 1px solid var(--h-hair-soft);
