@@ -795,11 +795,7 @@ function sMakeEditAccordion(actor) {
           mp.textContent = sa.model;
           line1.appendChild(mp);
         }
-        const line2 = document.createElement('span');
-        line2.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--h-ink-faint);' +
-          'overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-        line2.textContent = sa.workdir || `inherits ${actor.name}'s workdir`;
-        mid.append(line1, line2);
+        mid.append(line1);
         row.appendChild(mid);
         // enabled toggle
         const tog = document.createElement('button');
