@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.191';
+const CLIENT_VERSION = '0.4.192';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -1067,20 +1067,21 @@ async function processTrigger(msg) {
     let _toolStartMs = null;
     let _toolVerb = null;
     let _toolStatusUpdates = 0;
+    const _saLabel = subAgent?.label || null;
     function _clearToolStatus() {
       if (_toolStatusTimer) { clearInterval(_toolStatusTimer); _toolStatusTimer = null; }
-      if (_toolVerb && toolMode !== 'off') send({ type: 'agent_system_event', room_id, message_id, status: null });
+      if (_toolVerb && toolMode !== 'off') send({ type: 'agent_system_event', room_id, message_id, status: null, sub_agent_label: _saLabel });
       _toolStartMs = null; _toolVerb = null; _toolStatusUpdates = 0;
     }
     function _startToolStatus(verb) {
       _clearToolStatus();
       if (toolMode === 'off') return;
       _toolVerb = verb; _toolStartMs = Date.now(); _toolStatusUpdates = 0;
-      send({ type: 'agent_system_event', room_id, message_id, status: verb });
+      send({ type: 'agent_system_event', room_id, message_id, status: verb, sub_agent_label: _saLabel });
       _toolStatusTimer = setInterval(() => {
         if (_toolStatusUpdates >= 2) { clearInterval(_toolStatusTimer); return; }
         const elapsed = Math.round((Date.now() - _toolStartMs) / 1000);
-        send({ type: 'agent_system_event', room_id, message_id, status: `${_toolVerb} · ${elapsed}s` });
+        send({ type: 'agent_system_event', room_id, message_id, status: `${_toolVerb} · ${elapsed}s`, sub_agent_label: _saLabel });
         _toolStatusUpdates++;
       }, 10_000);
     }

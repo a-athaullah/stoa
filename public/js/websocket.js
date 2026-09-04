@@ -61,7 +61,9 @@ function handleWsMessage(msg) {
     if (dominated.includes(msg.status)) return;
     const inner = document.getElementById('messages-inner');
     if (!inner) return;
-    const actorKey = msg.actor_name || 'Agent';
+    const baseName = msg.actor_name || 'Agent';
+    const displayName = msg.sub_agent_label ? `${baseName} (${msg.sub_agent_label})` : baseName;
+    const actorKey = msg.sub_agent_label ? `${baseName}:${msg.sub_agent_label}` : baseName;
     const last = inner.lastElementChild;
     const isOwnStatus = last?.classList.contains('h-system-event') && last.dataset.actor === actorKey;
     if (!msg.status) {
@@ -69,13 +71,13 @@ function handleWsMessage(msg) {
       return;
     }
     if (isOwnStatus) {
-      last.textContent = `${actorKey} · ${msg.status}`;
+      last.textContent = `${displayName} · ${msg.status}`;
       return;
     }
     const el = document.createElement('div');
     el.className = 'h-system-event';
     el.dataset.actor = actorKey;
-    el.textContent = `${actorKey} · ${msg.status}`;
+    el.textContent = `${displayName} · ${msg.status}`;
     inner.appendChild(el);
     scrollToBottom();
     return;
@@ -91,7 +93,7 @@ function handleWsMessage(msg) {
     if ((msg.state === 'requesting' || msg.state === 'streaming') && msg.actor_name) {
       const inner = document.getElementById('messages-inner');
       const last = inner?.lastElementChild;
-      if (last?.classList.contains('h-system-event') && last.dataset.actor === msg.actor_name) last.remove();
+      if (last?.classList.contains('h-system-event') && last.dataset.actor?.startsWith(msg.actor_name)) last.remove();
       showThinking(msg.message_id, msg.actor_name, msg.avatar_color, msg.avatar_symbol, msg.avatar_url, msg.sub_agent_label);
       setComposerProcessing(msg.message_id);
     }
