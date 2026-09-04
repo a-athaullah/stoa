@@ -1,9 +1,23 @@
 // ── WebSocket ──────────────────────────────────────────────────────────────
 let wsReconnectDelay = 3000;
+window.currentBusyInputMode = 'interrupt';
+
+function _updateQueuePill(n) {
+  const pill = document.getElementById('queue-pill');
+  if (!pill) return;
+  if (n > 0) {
+    pill.textContent = n + (n === 1 ? ' message queued' : ' messages queued');
+    pill.classList.add('visible');
+  } else {
+    pill.classList.remove('visible');
+  }
+}
 
 function connectWS(roomId) {
   if (ws) { ws.onclose = null; ws.close(); }
   setConnected(false);
+  window.currentBusyInputMode = 'interrupt';
+  _updateQueuePill(0);
 
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`);
 
@@ -362,6 +376,21 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'send_error') {
     console.warn('[send_error]', msg.error, msg.code);
+    return;
+  }
+
+  if (msg.type === 'room_setting') {
+    if (msg.key === 'busy_input_mode') window.currentBusyInputMode = msg.value || 'interrupt';
+    return;
+  }
+
+  if (msg.type === 'room_setting_ack') {
+    if (msg.key === 'busy_input_mode') window.currentBusyInputMode = msg.value || 'interrupt';
+    return;
+  }
+
+  if (msg.type === 'queue_updated') {
+    _updateQueuePill(msg.queued || 0);
     return;
   }
 }

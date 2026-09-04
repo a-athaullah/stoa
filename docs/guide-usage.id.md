@@ -61,6 +61,16 @@ Klik judul room di header chat. Judul menjadi editable — ketik nama baru dan t
 
 Pilihan disimpan per room dan langsung berlaku pada pesan berikutnya — tanpa restart.
 
+### Mode Sibuk (Busy Mode)
+
+**Busy mode** mengontrol apa yang terjadi ketika kamu mengirim pesan saat AI sedang berjalan. Buka room settings (ikon **gear** di header room) dan cari kartu **Busy mode**. Tiga pilihan:
+
+- **interrupt** (default) — run yang sedang berjalan langsung dihentikan dan agent restart dengan pesan barumu.
+- **queue** — pesanmu masuk antrian. Sebuah pill antrian muncul di header room yang menunjukkan berapa pesan yang menunggu. Setiap pesan diproses secara berurutan setelah run sebelumnya selesai.
+- **steer** — pesanmu disuntikkan langsung ke run agent yang sedang berjalan tanpa menghentikannya. Notifikasi singkat **"↩ injected into current run"** muncul di header. Agent melihat pesanmu di tengah run dan dapat menyesuaikan responsnya.
+
+Pengaturan langsung berlaku saat kamu memilih opsi — tanpa tombol save. Tersimpan per room.
+
 ### Model di Chat Bubble
 
 Setiap respons AI menampilkan indikator model kecil di pojok kanan bawah bubble (contoh: `qwen3-coder:480b:cloud`), sehingga mudah melacak model mana yang menghasilkan setiap balasan.

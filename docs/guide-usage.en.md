@@ -61,6 +61,16 @@ A **model selector** appears at the right side of the formatting toolbar in the 
 
 The selection is saved per room and takes effect immediately on the next message — no restart required.
 
+### Busy Mode
+
+**Busy mode** controls what happens when you send a message while the AI is still running. Open the room settings (the **gear icon** in the room header) and look for the **Busy mode** card. Three options:
+
+- **interrupt** (default) — the current run stops immediately and the agent restarts with your new message.
+- **queue** — your message is queued. A queue pill appears in the room header showing how many messages are waiting. Each one is processed in order once the current run finishes.
+- **steer** — your message is injected directly into the agent's current run without interrupting it. A brief **"↩ injected into current run"** notice appears in the header. The agent sees your message mid-stream and can adjust accordingly.
+
+The setting applies immediately when you click an option — no save button needed. It is saved per room.
+
 ### Model in Chat Bubbles
 
 Each AI response shows a small model indicator at the bottom right of the bubble (e.g., `qwen3-coder:480b:cloud`), making it easy to track which model generated each reply.

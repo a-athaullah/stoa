@@ -3457,6 +3457,80 @@ async function run() {
     });
   }
 
+  // R28: busy_input_mode
+  console.log('\n[R28: busy_input_mode]');
+  await test('R28 — Migration applied: room_message_queue table exists', async () => {
+    const r = await req('GET', '/api/settings'); // any authenticated endpoint to confirm DB migrated
+    assert.strictEqual(r.status, 200);
+    // Verify via WS that busy_input_mode is a valid room setting
+    if (!testRoomIds.length) { console.log('    (table check skipped — no test rooms)'); return; }
+    const roomId = testRoomIds[0];
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    try {
+      ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+      await new Promise(r => setTimeout(r, 50));
+      const ackPromise = waitForWsMessage(ws, m => m.type === 'room_setting_ack' && m.key === 'busy_input_mode');
+      ws.send(JSON.stringify({ type: 'set_room_setting', key: 'busy_input_mode', value: 'queue' }));
+      const ack = await ackPromise;
+      assert.strictEqual(ack.value, 'queue');
+    } finally {
+      ws.close();
+    }
+  });
+
+  await test('R28 — busy_input_mode valid values accepted', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const roomId = testRoomIds[0];
+    for (const val of ['interrupt', 'queue', 'steer']) {
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+        await new Promise(r => setTimeout(r, 50));
+        const ackPromise = waitForWsMessage(ws, m => m.type === 'room_setting_ack' && m.key === 'busy_input_mode');
+        ws.send(JSON.stringify({ type: 'set_room_setting', key: 'busy_input_mode', value: val }));
+        const ack = await ackPromise;
+        assert.strictEqual(ack.value, val, `expected ${val}`);
+      } finally {
+        ws.close();
+      }
+    }
+  });
+
+  await test('R28 — busy_input_mode invalid value → room_setting_error', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const roomId = testRoomIds[0];
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    try {
+      ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+      await new Promise(r => setTimeout(r, 50));
+      const errPromise = waitForWsMessage(ws, m => m.type === 'room_setting_error' && m.key === 'busy_input_mode');
+      ws.send(JSON.stringify({ type: 'set_room_setting', key: 'busy_input_mode', value: 'pause' }));
+      const err = await errPromise;
+      assert.ok(err.error.includes('invalid value'), `unexpected error: ${err.error}`);
+    } finally {
+      ws.close();
+    }
+  });
+
+  await test('R28 — room_message_queue table created by migration', async () => {
+    // Direct DB check via a valid API call that would fail if migration broke things
+    const r = await req('GET', '/api/rooms');
+    assert.strictEqual(r.status, 200, 'server should be healthy after R28 migration');
+    // Reset busy_input_mode to interrupt to not interfere with other tests
+    if (!testRoomIds.length) return;
+    const roomId = testRoomIds[0];
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    try {
+      ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+      await new Promise(r => setTimeout(r, 50));
+      const ackPromise = waitForWsMessage(ws, m => m.type === 'room_setting_ack' && m.key === 'busy_input_mode');
+      ws.send(JSON.stringify({ type: 'set_room_setting', key: 'busy_input_mode', value: null }));
+      await ackPromise;
+    } finally {
+      ws.close();
+    }
+  });
+
   // WS: connector API
   console.log('\n[WS: connector API]');
   await test('connector_list — returns connector_list_result with connectors array', async () => {

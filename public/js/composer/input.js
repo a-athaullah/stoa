@@ -145,7 +145,16 @@ function sendMessage() {
   clearAttachments();
   clearReply();
   ws.send(JSON.stringify({ type: 'send_message', room_id: currentRoomId, content, attachments, reply_to: replyTo, event_id: crypto.randomUUID() }));
+  if (window.currentBusyInputMode === 'steer') _showSteerNotice();
   clearDraft(currentRoomId);
+}
+
+function _showSteerNotice() {
+  const el = document.getElementById('steer-notice');
+  if (!el) return;
+  el.classList.add('visible');
+  clearTimeout(el._hideTimer);
+  el._hideTimer = setTimeout(() => el.classList.remove('visible'), 3000);
 }
 
 
