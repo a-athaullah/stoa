@@ -426,6 +426,53 @@ async function cascadeMentionsAfterWake(roomId, parent) {
   }
 }
 
+// Cascade @mentions from a proactive agent message (same logic as wake-cascade but content is known upfront).
+async function cascadeMentionsFromProactive(roomId, senderActorId, content) {
+  if (!content.includes('@')) return;
+
+  const allAi = db.prepare(`
+    SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.adapter_config, a.avatar_color, a.avatar_symbol, a.avatar_url
+    FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
+    WHERE rp.room_id=? AND a.type='ai' AND rp.notify_on_message=1
+  `).all(roomId);
+
+  const linkedSubs = db.prepare(`
+    SELECT sa.*, a.name AS parent_name FROM room_sub_agents rsa
+    JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
+    JOIN actors a ON a.id=sa.parent_actor_id
+    WHERE rsa.room_id=? AND sa.enabled=1
+  `).all(roomId);
+
+  const subAgentsCascade = [];
+  const regularAgentsCascade = [];
+
+  for (const sa of linkedSubs) {
+    if (mentionBoundary(sa.label).test(content)) {
+      const parentAgent = allAi.find(a => a.actor_id === sa.parent_actor_id);
+      if (parentAgent) subAgentsCascade.push({ ...parentAgent, sub_agent: sa });
+    }
+  }
+
+  for (const other of allAi) {
+    if (other.actor_id !== senderActorId && mentionBoundary(other.name).test(content)) {
+      const alreadyQueued = regularAgentsCascade.some(a => a.actor_id === other.actor_id);
+      if (!alreadyQueued) regularAgentsCascade.push({ ...other, sub_agent: null });
+    }
+  }
+
+  if (!subAgentsCascade.length && !regularAgentsCascade.length) return;
+
+  const labels = [...subAgentsCascade.map(a => a.sub_agent.label), ...regularAgentsCascade.map(a => a.name)];
+  console.log(`[proactive-cascade] room ${roomId}: triggering ${labels.join(', ')}`);
+
+  for (const sa of subAgentsCascade) {
+    triggerAiResponse(roomId, sa, content, null, []).catch(e => console.error('[proactive-cascade sub-agent]', e.message));
+  }
+  if (regularAgentsCascade.length > 0) {
+    await triggerAgentsSequential(roomId, regularAgentsCascade, content, null, []);
+  }
+}
+
 // Drain any wakes left by a crash/restart (R1). Called after server boot.
 function drainPendingWakesOnStartup() {
   const rows = db.prepare('SELECT id FROM pending_wakes ORDER BY id').all();
@@ -1930,6 +1977,8 @@ const server = http.createServer(async (req, res) => {
 
     broadcast(roomId, { type: 'message_new', message: row });
     broadcastGlobal({ type: 'room_activity', room_id: roomId });
+    // Cascade any @mentions in the proactive message (fire-and-forget)
+    cascadeMentionsFromProactive(roomId, agentId, content).catch(e => console.error('[proactive-cascade]', e.message));
     return json(res, { message_id: messageId });
   }
 
