@@ -691,14 +691,6 @@ function sMakeEditAccordion(actor) {
     // tier picker
     const tierField = saMakeField('tier', saMakeTierPicker(selectedTier, id => { selectedTier = id; }));
 
-    // working directory
-    const wdInp = document.createElement('input');
-    wdInp.placeholder = '/home/ara/projects/omnichannel-desktop'; wdInp.value = existing?.workdir || '';
-    wdInp.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;' +
-      'background:var(--h-surface);border:1px solid var(--h-hair-soft);' +
-      'font-family:ui-monospace,Menlo,monospace;font-size:13px;color:var(--h-ink);outline:none;width:100%';
-    const wdField = saMakeField('working directory', wdInp, `path on ${actor.name}'s machine · empty = parent's workdir`);
-
     // system prompt (slip)
     const spInp = document.createElement('textarea');
     spInp.placeholder = 'You verify claims against the actual source before answering…';
@@ -739,7 +731,7 @@ function sMakeEditAccordion(actor) {
       if (!label) { showErr('label required'); labelInp.focus(); return; }
       saveF.disabled = true;
       try {
-        const body = { label, tier: selectedTier, model: modelSel.value || null, workdir: wdInp.value.trim() || null, system_prompt: spInp.value.trim() || null };
+        const body = { label, tier: selectedTier, model: modelSel.value || null, system_prompt: spInp.value.trim() || null };
         const r = existing
           ? await fetch(`/api/sub-agents/${existing.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
           : await fetch(`/api/actors/${actor.id}/sub-agents`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -755,7 +747,7 @@ function sMakeEditAccordion(actor) {
       } catch { showToast('Failed to save sub-agent', { error: true }); saveF.disabled = false; }
     });
 
-    saForm.append(fh, grid, tierField, wdField, spField, btns);
+    saForm.append(fh, grid, tierField, spField, btns);
     setTimeout(() => labelInp.focus(), 0);
     saShowForm(true);
   }
@@ -803,11 +795,7 @@ function sMakeEditAccordion(actor) {
           mp.textContent = sa.model;
           line1.appendChild(mp);
         }
-        const line2 = document.createElement('span');
-        line2.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--h-ink-faint);' +
-          'overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-        line2.textContent = sa.workdir || `inherits ${actor.name}'s workdir`;
-        mid.append(line1, line2);
+        mid.append(line1);
         row.appendChild(mid);
         // enabled toggle
         const tog = document.createElement('button');
