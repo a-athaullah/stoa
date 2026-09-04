@@ -2205,6 +2205,130 @@ const server = http.createServer(async (req, res) => {
     return json(res, { ok: true });
   }
 
+  // ── R26: DB health ──
+  if (req.method === 'GET' && url.pathname === '/api/health/db') {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    try {
+      const pageCount    = db.pragma('page_count', { simple: true });
+      const pageSize     = db.pragma('page_size', { simple: true });
+      const freelistPages = db.pragma('freelist_count', { simple: true });
+      const journalMode  = db.pragma('journal_mode', { simple: true });
+      const walPath      = db.name + '-wal';
+      let walSizeBytes   = 0;
+      try { walSizeBytes = fs.statSync(walPath).size; } catch {}
+      const sizeBytes    = pageCount * pageSize;
+      const checks = [
+        {
+          name: 'wal_size',
+          ok: walSizeBytes < 100 * 1024 * 1024,
+          value: walSizeBytes,
+          fix: 'PRAGMA wal_checkpoint(TRUNCATE);',
+        },
+        {
+          name: 'freelist_ratio',
+          ok: pageCount === 0 || (freelistPages / pageCount) < 0.20,
+          value: pageCount > 0 ? Math.round(freelistPages / pageCount * 100) / 100 : 0,
+          fix: 'VACUUM;',
+        },
+        {
+          name: 'journal_mode',
+          ok: journalMode === 'wal',
+          value: journalMode,
+          fix: 'PRAGMA journal_mode=WAL;',
+        },
+      ];
+      const counts = {
+        rooms:       db.prepare('SELECT COUNT(*) as n FROM rooms WHERE archived_at IS NULL').get().n,
+        messages:    db.prepare('SELECT COUNT(*) as n FROM messages').get().n,
+        ai_sessions: db.prepare('SELECT COUNT(*) as n FROM ai_sessions').get().n,
+        agents:      db.prepare("SELECT COUNT(*) as n FROM actors WHERE type='ai'").get().n,
+      };
+      return json(res, { page_count: pageCount, page_size: pageSize, size_bytes: sizeBytes, freelist_pages: freelistPages, wal_size_bytes: walSizeBytes, journal_mode: journalMode, counts, checks });
+    } catch (e) {
+      return json(res, { error: e.message }, 500);
+    }
+  }
+
+  // ── R26: Session pin/unpin ──
+  const sessionPinMatch = (req.method === 'PUT' || req.method === 'DELETE') &&
+    url.pathname.match(/^\/api\/rooms\/(\d+)\/sessions\/(\d+)\/pin$/);
+  if (sessionPinMatch) {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    const roomId = parseInt(sessionPinMatch[1]);
+    const sessionId = parseInt(sessionPinMatch[2]);
+    const room = db.prepare('SELECT id FROM rooms WHERE id=?').get(roomId);
+    if (!room) return json(res, { error: 'room not found' }, 404);
+    const sess = db.prepare('SELECT id, pinned FROM ai_sessions WHERE id=? AND room_id=?').get(sessionId, roomId);
+    if (!sess) return json(res, { error: 'session not found' }, 404);
+    const pinned = req.method === 'PUT' ? 1 : 0;
+    db.prepare('UPDATE ai_sessions SET pinned=? WHERE id=?').run(pinned, sessionId);
+    return json(res, { pinned: pinned === 1 });
+  }
+
+  // ── R26: Import Claude Code JSONL transcript ──
+  const sessionImportMatch = req.method === 'POST' &&
+    url.pathname.match(/^\/api\/rooms\/(\d+)\/sessions\/import$/);
+  if (sessionImportMatch) {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    const roomId = parseInt(sessionImportMatch[1]);
+    const room = db.prepare('SELECT id, created_by FROM rooms WHERE id=?').get(roomId);
+    if (!room) return json(res, { error: 'room not found' }, 404);
+
+    const MAX_IMPORT = 50 * 1024 * 1024;
+    const chunks = [];
+    let size = 0;
+    let tooLarge = false;
+    await new Promise((resolve, reject) => {
+      req.on('data', c => {
+        size += c.length;
+        if (size > MAX_IMPORT) { tooLarge = true; req.destroy(); resolve(); }
+        else chunks.push(c);
+      });
+      req.on('end', resolve);
+      req.on('error', reject);
+    });
+    if (tooLarge) return json(res, { error: 'File too large (max 50MB)' }, 413);
+
+    const raw = Buffer.concat(chunks).toString('utf8');
+    const lines = raw.split('\n').filter(l => l.trim());
+    const VALID_ROLES = new Set(['human', 'assistant', 'user']);
+    const messages = [];
+    let skipped = 0;
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line);
+        if (!entry || typeof entry !== 'object') { skipped++; continue; }
+        const role = entry.role;
+        if (!VALID_ROLES.has(role)) { skipped++; continue; }
+        const content = typeof entry.content === 'string' ? entry.content
+          : Array.isArray(entry.content) ? entry.content.filter(b => b.type === 'text').map(b => b.text).join('') : null;
+        if (!content) { skipped++; continue; }
+        messages.push({ role, content });
+      } catch { skipped++; }
+    }
+
+    // Find the first human participant in the room for import attribution
+    const humanPart = db.prepare(
+      "SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1"
+    ).get(roomId);
+    if (!humanPart) return json(res, { error: 'no human participant in room' }, 400);
+
+    const insertMsg = db.transaction(() => {
+      let importedCount = 0;
+      for (const m of messages) {
+        const state = 'complete';
+        db.prepare(
+          "INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,?)"
+        ).run(roomId, humanPart.id, `[imported] ${m.content}`, state);
+        importedCount++;
+      }
+      return importedCount;
+    });
+
+    const imported = insertMsg();
+    return json(res, { imported_count: imported, skipped_count: skipped });
+  }
+
   // ── Server process manager info & restart ──
   if (req.method === 'GET' && url.pathname === '/api/server/process-manager') {
     if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
@@ -5700,7 +5824,7 @@ function parseJsonBody(raw) {
 setInterval(() => {
   const timeout = parseInt(getSetting('idle_timeout_seconds') ?? '300');
   db.prepare(
-    "UPDATE ai_sessions SET status='idle' WHERE status='active' AND last_active_at < datetime('now', '-' || ? || ' seconds')"
+    "UPDATE ai_sessions SET status='idle' WHERE status='active' AND pinned=0 AND last_active_at < datetime('now', '-' || ? || ' seconds')"
   ).run(timeout);
 }, 60_000);
 
