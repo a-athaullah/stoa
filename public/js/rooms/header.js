@@ -953,6 +953,125 @@ function openRoomSettings(room) {
     // ── Scheduled triggers card
     panel.appendChild(renderScheduleCard());
 
+    // ── Memory card
+    const memCard = makeCard('Memory', 'context injected into agent sessions in this room');
+    const memPlaceholder = document.createElement('div');
+    memPlaceholder.style.cssText = 'font-size:12.5px;color:var(--h-ink-mute)';
+    memPlaceholder.textContent = 'loading…';
+    memCard.appendChild(memPlaceholder);
+    panel.appendChild(memCard);
+    (async () => {
+      try {
+        const r = await fetch(`/api/rooms/${room.id}/memory`);
+        if (!r.ok) { memPlaceholder.textContent = 'failed to load'; return; }
+        const data = await r.json();
+        memCard.removeChild(memPlaceholder);
+        let memContent = data.content || '';
+        const BUDGET = data.budget || 1800;
+
+        if (data.pending_count > 0) {
+          const banner = document.createElement('div');
+          banner.style.cssText = 'background:color-mix(in srgb,oklch(80% .18 80) 18%,transparent);border:1px solid color-mix(in srgb,oklch(75% .18 80) 40%,transparent);border-radius:8px;padding:10px 12px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;gap:10px';
+          const bannerTxt = document.createElement('span');
+          bannerTxt.style.cssText = 'font-size:12.5px;color:var(--h-ink)';
+          bannerTxt.textContent = `${data.pending_count} pending write${data.pending_count > 1 ? 's' : ''} from agents`;
+          const reviewBtn = document.createElement('button');
+          reviewBtn.style.cssText = 'background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12px;padding:4px 12px;cursor:pointer;white-space:nowrap';
+          reviewBtn.textContent = 'review';
+          let pendingOpen = false;
+          const pendingList = document.createElement('div');
+          pendingList.style.cssText = 'display:none;margin-top:10px;display:none';
+          reviewBtn.onclick = async () => {
+            pendingOpen = !pendingOpen;
+            reviewBtn.textContent = pendingOpen ? 'hide' : 'review';
+            if (pendingOpen) {
+              pendingList.style.display = 'block';
+              pendingList.innerHTML = '<span style="font-size:12px;color:var(--h-ink-mute)">loading…</span>';
+              try {
+                const pr = await fetch(`/api/rooms/${room.id}/memory/pending`);
+                const pd = await pr.json();
+                pendingList.innerHTML = '';
+                (pd.writes || []).forEach(w => {
+                  const wRow = document.createElement('div');
+                  wRow.style.cssText = 'border:1px solid var(--h-border);border-radius:8px;padding:10px 12px;margin-bottom:8px';
+                  const wMeta = document.createElement('div');
+                  wMeta.style.cssText = 'font-size:11.5px;color:var(--h-ink-faint);margin-bottom:6px';
+                  const d = new Date(w.proposed_at + 'Z');
+                  wMeta.textContent = `${w.actor_name} · ${d.toLocaleString()}`;
+                  const wPre = document.createElement('pre');
+                  wPre.style.cssText = 'font-size:12px;color:var(--h-ink);white-space:pre-wrap;word-break:break-word;margin:0 0 8px';
+                  wPre.textContent = w.proposed_content;
+                  const wBtns = document.createElement('div');
+                  wBtns.style.cssText = 'display:flex;gap:6px';
+                  const appr = document.createElement('button');
+                  appr.style.cssText = 'background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12px;padding:3px 12px;cursor:pointer';
+                  appr.textContent = 'approve';
+                  appr.onclick = async () => {
+                    appr.disabled = true;
+                    const rr = await fetch(`/api/rooms/${room.id}/memory/pending/${w.id}/approve`, { method: 'POST' });
+                    if (rr.ok) { wRow.style.opacity = '.4'; memContent = w.proposed_content; memTa.value = memContent; updateMemCounter(); showToast('Write approved'); }
+                    else showToast('Failed to approve', { error: true });
+                  };
+                  const rej = document.createElement('button');
+                  rej.style.cssText = 'background:transparent;border:none;color:var(--h-ink-faint);font-family:var(--h-sans);font-size:12px;padding:3px 8px;cursor:pointer';
+                  rej.textContent = 'reject';
+                  rej.onclick = async () => {
+                    rej.disabled = true;
+                    const rr = await fetch(`/api/rooms/${room.id}/memory/pending/${w.id}/reject`, { method: 'POST' });
+                    if (rr.ok) { wRow.style.opacity = '.4'; showToast('Write rejected'); }
+                    else showToast('Failed to reject', { error: true });
+                  };
+                  wBtns.append(appr, rej);
+                  wRow.append(wMeta, wPre, wBtns);
+                  pendingList.appendChild(wRow);
+                });
+              } catch { pendingList.innerHTML = '<span style="font-size:12px;color:var(--h-ink-mute)">failed to load</span>'; }
+            } else {
+              pendingList.style.display = 'none';
+            }
+          };
+          banner.append(bannerTxt, reviewBtn);
+          memCard.appendChild(banner);
+          memCard.appendChild(pendingList);
+        }
+
+        const memTa = document.createElement('textarea');
+        memTa.value = memContent;
+        memTa.placeholder = 'Write context that should be injected into every session in this room…';
+        memTa.maxLength = BUDGET;
+        memTa.style.cssText = 'width:100%;box-sizing:border-box;min-height:90px;resize:vertical;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;padding:8px 10px;border:1px solid var(--h-border);border-radius:8px;background:var(--h-surface);color:var(--h-ink);outline:none;margin-top:2px';
+        const memFooter = document.createElement('div');
+        memFooter.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-top:6px';
+        const memCounter = document.createElement('span');
+        memCounter.style.cssText = 'font-size:11.5px;color:var(--h-ink-faint);font-variant-numeric:tabular-nums';
+        const updateMemCounter = () => {
+          const used = memTa.value.length;
+          const pct = used / BUDGET;
+          memCounter.textContent = `${used} / ${BUDGET}`;
+          memCounter.style.color = pct > .9 ? 'oklch(55% .18 27)' : pct > .75 ? 'oklch(60% .15 80)' : 'var(--h-ink-faint)';
+        };
+        updateMemCounter();
+        memTa.addEventListener('input', updateMemCounter);
+        const memSave = document.createElement('button');
+        memSave.style.cssText = 'background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12px;padding:4px 14px;cursor:pointer';
+        memSave.textContent = 'save';
+        memSave.onclick = async () => {
+          memSave.disabled = true;
+          try {
+            const rr = await fetch(`/api/rooms/${room.id}/memory`, {
+              method: 'PUT', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ content: memTa.value }),
+            });
+            if (rr.ok) showToast('Memory saved');
+            else { const e = await rr.json().catch(() => ({})); showToast(e.error || 'Failed to save', { error: true }); }
+          } catch { showToast('Failed to save', { error: true }); }
+          memSave.disabled = false;
+        };
+        memFooter.append(memCounter, memSave);
+        memCard.append(memTa, memFooter);
+      } catch { memPlaceholder.textContent = 'failed to load'; }
+    })();
+
     // ── Footer
     const foot = document.createElement('div');
     foot.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:4px';

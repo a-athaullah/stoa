@@ -5633,7 +5633,8 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         `\nYou can delegate to your sub-agents: ${list}.\n` +
         `To trigger one, mention @<label> in your response followed by the task — e.g. "@BE-Stoa implement the login endpoint".\n` +
         `The sub-agent runs automatically; you will be woken once to read its result and continue. You may mention multiple sub-agents in one response to run them in parallel.\n` +
-        `Do NOT write @mention of a sub-agent unless you actually want to trigger it.`;
+        `Do NOT write @mention of a sub-agent unless you actually want to trigger it.\n\n` +
+        `**IMPORTANT — reliable sub-agent triggering:** When delegating via a proactive message (curl to the room API), the @mention MUST be in the curl message body — @mention in plain text response is not guaranteed to trigger the cascade. Use the same curl pattern as in the Progress Reporting section above, with @<label> at the start of the content.`;
     }
   }
 

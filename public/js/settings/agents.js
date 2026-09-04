@@ -832,6 +832,112 @@ function sMakeEditAccordion(actor) {
   saLoadList();
   acc.appendChild(saSection);
 
+  // ── Memory section ──
+  const memSection = document.createElement('section');
+  memSection.style.cssText = 'border:1px solid var(--h-hair-soft);border-radius:12px;overflow:hidden;margin-top:18px';
+  const memHdr = document.createElement('div');
+  memHdr.style.cssText = 'padding:14px 18px 10px;border-bottom:1px solid var(--h-hair-soft)';
+  const memTitle = document.createElement('div');
+  memTitle.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:15px;color:var(--h-ink)';
+  memTitle.textContent = 'Memory';
+  const memSubtitle = document.createElement('div');
+  memSubtitle.style.cssText = 'font-size:12px;color:var(--h-ink-faint);margin-top:3px';
+  memSubtitle.textContent = 'injected into every session this agent starts';
+  memHdr.append(memTitle, memSubtitle);
+  memSection.appendChild(memHdr);
+
+  const MEM_FILES = [
+    { file: 'MEMORY.md', budget: 2200, hint: 'facts about this agent — roles, preferences, recurring instructions' },
+    { file: 'USER.md',   budget: 1375, hint: 'context about the user and how to work with them' },
+  ];
+
+  function makeMemFileCard(file, budget, hint, initial) {
+    const card = document.createElement('div');
+    card.style.cssText = 'padding:14px 18px;border-bottom:1px solid var(--h-hair-soft)';
+    const fileHdr = document.createElement('div');
+    fileHdr.style.cssText = 'display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px';
+    const fileLbl = document.createElement('span');
+    fileLbl.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:13px;color:var(--h-ink)';
+    fileLbl.textContent = file;
+    const fileHint = document.createElement('span');
+    fileHint.style.cssText = 'font-size:11.5px;color:var(--h-ink-faint)';
+    fileHint.textContent = hint;
+    fileHdr.append(fileLbl, fileHint);
+
+    const ta = document.createElement('textarea');
+    ta.value = initial;
+    ta.placeholder = `Write ${file} content here…`;
+    ta.maxLength = budget;
+    ta.style.cssText = 'width:100%;box-sizing:border-box;min-height:80px;resize:vertical;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;padding:8px 10px;border:1px solid var(--h-border);border-radius:8px;background:var(--h-surface);color:var(--h-ink);outline:none';
+
+    const footer = document.createElement('div');
+    footer.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-top:6px';
+    const counter = document.createElement('span');
+    counter.style.cssText = 'font-size:11.5px;color:var(--h-ink-faint);font-variant-numeric:tabular-nums';
+    const updateCounter = () => {
+      const used = ta.value.length;
+      const pct = used / budget;
+      counter.textContent = `${used} / ${budget}`;
+      counter.style.color = pct > .9 ? 'oklch(55% .18 27)' : pct > .75 ? 'oklch(60% .15 80)' : 'var(--h-ink-faint)';
+    };
+    updateCounter();
+    ta.addEventListener('input', updateCounter);
+
+    const saveBtn = document.createElement('button');
+    saveBtn.style.cssText = 'background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12px;padding:4px 14px;cursor:pointer';
+    saveBtn.textContent = 'save';
+    saveBtn.onclick = async () => {
+      saveBtn.disabled = true;
+      try {
+        const r = await fetch(`/api/actors/${actor.id}/memory/${encodeURIComponent(file)}`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: ta.value }),
+        });
+        if (r.ok) showToast(`${file} saved`);
+        else { const e = await r.json().catch(() => ({})); showToast(e.error || 'Failed to save', { error: true }); }
+      } catch { showToast('Failed to save', { error: true }); }
+      saveBtn.disabled = false;
+    };
+    footer.append(counter, saveBtn);
+    card.append(fileHdr, ta, footer);
+    return card;
+  }
+
+  const memLoading = document.createElement('div');
+  memLoading.style.cssText = 'padding:14px 18px;font-size:12.5px;color:var(--h-ink-mute)';
+  memLoading.textContent = 'loading…';
+  memSection.appendChild(memLoading);
+
+  (async () => {
+    try {
+      const r = await fetch(`/api/actors/${actor.id}/memory`);
+      memSection.removeChild(memLoading);
+      if (!r.ok) {
+        const err = document.createElement('div');
+        err.style.cssText = 'padding:14px 18px;font-size:12.5px;color:var(--h-ink-mute)';
+        err.textContent = 'failed to load memory';
+        memSection.appendChild(err);
+        return;
+      }
+      const data = await r.json();
+      const byFile = {};
+      (data.files || []).forEach(f => { byFile[f.file] = f.content || ''; });
+      MEM_FILES.forEach(({ file, budget, hint }) => {
+        memSection.appendChild(makeMemFileCard(file, budget, hint, byFile[file] || ''));
+      });
+      const lastCard = memSection.lastElementChild;
+      if (lastCard) lastCard.style.borderBottom = 'none';
+    } catch {
+      memSection.removeChild(memLoading);
+      const err = document.createElement('div');
+      err.style.cssText = 'padding:14px 18px;font-size:12.5px;color:var(--h-ink-mute)';
+      err.textContent = 'failed to load memory';
+      memSection.appendChild(err);
+    }
+  })();
+
+  acc.appendChild(memSection);
+
   // Save / Cancel
   const actionsRow = document.createElement('div');
   actionsRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;padding-top:4px';
