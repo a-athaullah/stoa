@@ -61,9 +61,21 @@ function handleWsMessage(msg) {
     if (dominated.includes(msg.status)) return;
     const inner = document.getElementById('messages-inner');
     if (!inner) return;
+    const actorKey = msg.actor_name || 'Agent';
+    const last = inner.lastElementChild;
+    const isOwnStatus = last?.classList.contains('h-system-event') && last.dataset.actor === actorKey;
+    if (!msg.status) {
+      if (isOwnStatus) last.remove();
+      return;
+    }
+    if (isOwnStatus) {
+      last.textContent = `${actorKey} · ${msg.status}`;
+      return;
+    }
     const el = document.createElement('div');
     el.className = 'h-system-event';
-    el.textContent = `${msg.actor_name || 'Agent'} · ${msg.status}`;
+    el.dataset.actor = actorKey;
+    el.textContent = `${actorKey} · ${msg.status}`;
     inner.appendChild(el);
     scrollToBottom();
     return;
@@ -77,6 +89,9 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'message_state') {
     if ((msg.state === 'requesting' || msg.state === 'streaming') && msg.actor_name) {
+      const inner = document.getElementById('messages-inner');
+      const last = inner?.lastElementChild;
+      if (last?.classList.contains('h-system-event') && last.dataset.actor === msg.actor_name) last.remove();
       showThinking(msg.message_id, msg.actor_name, msg.avatar_color, msg.avatar_symbol, msg.avatar_url, msg.sub_agent_label);
       setComposerProcessing(msg.message_id);
     }
