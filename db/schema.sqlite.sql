@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS ai_sessions (
   compact_failure_cooldown_until TEXT DEFAULT NULL,
   compact_failure_error TEXT DEFAULT NULL,
   process_generation TEXT DEFAULT NULL,
+  pinned INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY (participant_id) REFERENCES room_participants(id),
   FOREIGN KEY (room_id) REFERENCES rooms(id)
 );
