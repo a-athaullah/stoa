@@ -739,12 +739,65 @@ function schedulerTick() {
   }
 }
 
+// R18: GC nebeng scheduler tick — throttle 6 jam, async, errors swallowed to log.
+// Split audit (read-only verdict) from reclaim (mutasi) for dry-run-ability.
+const GC_INTERVAL_MS = 6 * 3600_000;
+let _gcLastRun = 0;
+
+function auditUploads() {
+  // Collect all URLs referenced by DB — messages, avatars.
+  const referenced = new Set();
+  for (const row of db.prepare("SELECT image_url FROM messages WHERE image_url IS NOT NULL").all())
+    referenced.add(row.image_url);
+  for (const row of db.prepare("SELECT file_url FROM messages WHERE file_url IS NOT NULL").all())
+    referenced.add(row.file_url);
+  for (const row of db.prepare("SELECT json_each.value FROM messages, json_each(messages.attachments) WHERE messages.attachments IS NOT NULL").all())
+    try { const a = JSON.parse(row.value); if (a?.url) referenced.add(a.url); } catch {}
+  for (const row of db.prepare("SELECT avatar_url FROM actors WHERE avatar_url IS NOT NULL").all())
+    referenced.add(row.avatar_url);
+
+  const orphans = [];
+  try {
+    for (const entry of fs.readdirSync(UPLOADS_DIR, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const rel = `/uploads/${entry.name}`;
+      if (!referenced.has(rel)) orphans.push({ path: path.join(UPLOADS_DIR, entry.name), url: rel });
+    }
+  } catch (e) { console.error('[gc] auditUploads scan error:', e.message); }
+  return orphans;
+}
+
+function reclaimUploads(orphans) {
+  let count = 0;
+  for (const { path: fp } of orphans) {
+    try { fs.unlinkSync(fp); count++; } catch (e) { console.error('[gc] delete error:', fp, e.message); }
+  }
+  return count;
+}
+
+function gcTick() {
+  const now = Date.now();
+  if (now - _gcLastRun < GC_INTERVAL_MS) return;
+  _gcLastRun = now;
+  // Run async — GC must never block scheduler tick
+  setImmediate(() => {
+    try {
+      const orphans = auditUploads();
+      if (orphans.length) {
+        const deleted = reclaimUploads(orphans);
+        console.log(`[gc] reclaimed ${deleted} orphaned upload(s)`);
+      }
+    } catch (e) { console.error('[gc] tick error:', e.message); }
+  });
+}
+
 // Gate the loop off under test (NODE_ENV=test) — integration tests drive the
 // CRUD API directly and must not have the loop firing real triggers underneath.
 if (process.env.NODE_ENV !== 'test') {
   (function scheduleLoop() {
     setTimeout(() => {
       try { schedulerTick(); } catch (e) { console.error('[scheduler] tick error:', e.message); }
+      try { gcTick(); } catch (e) { console.error('[gc] tick error:', e.message); }
       scheduleLoop();
     }, SCHED_TICK_MS);
   })();
