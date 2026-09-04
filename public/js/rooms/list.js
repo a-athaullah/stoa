@@ -1,6 +1,55 @@
 // ── Room list ──────────────────────────────────────────────────────────────
 let currentRoomTab = 'rooms';
 
+const GAP_MS = 30 * 60 * 1000; // 30 minutes
+
+function _roomTs(room) {
+  const s = room.last_activity || room.created_at;
+  if (!s) return 0;
+  const utc = typeof s === 'string' && !s.endsWith('Z') ? s.trim().replace(' ', 'T') + 'Z' : s;
+  return new Date(utc).getTime();
+}
+
+function groupRooms(rooms, nowMs) {
+  const sorted = [...rooms].sort((a, b) => _roomTs(b) - _roomTs(a));
+
+  const now = nowMs ?? Date.now();
+  const local = new Date(now);
+  const todayStart = new Date(local.getFullYear(), local.getMonth(), local.getDate()).getTime();
+  const yesterdayStart = todayStart - 86400000;
+  const weekStart = todayStart - 6 * 86400000;
+
+  const todayRooms = [], yesterdayRooms = [], weekRooms = [], olderRooms = [];
+  for (const r of sorted) {
+    const ts = _roomTs(r);
+    if (ts >= todayStart) todayRooms.push(r);
+    else if (ts >= yesterdayStart) yesterdayRooms.push(r);
+    else if (ts >= weekStart) weekRooms.push(r);
+    else olderRooms.push(r);
+  }
+
+  const groups = [];
+
+  if (todayRooms.length) {
+    let splitIdx = -1;
+    for (let i = 0; i < todayRooms.length - 1; i++) {
+      if (_roomTs(todayRooms[i]) - _roomTs(todayRooms[i + 1]) >= GAP_MS) { splitIdx = i; break; }
+    }
+    const headActive = splitIdx >= 0 && (now - _roomTs(todayRooms[0])) < GAP_MS;
+    if (splitIdx >= 0 && headActive) {
+      groups.push({ label: 'Today', key: 'today', rooms: todayRooms.slice(0, splitIdx + 1) });
+      groups.push({ label: 'Earlier today', key: 'earlier-today', rooms: todayRooms.slice(splitIdx + 1) });
+    } else {
+      groups.push({ label: 'Today', key: 'today', rooms: todayRooms });
+    }
+  }
+  if (yesterdayRooms.length) groups.push({ label: 'Yesterday', key: 'yesterday', rooms: yesterdayRooms });
+  if (weekRooms.length)      groups.push({ label: 'This week', key: 'this-week', rooms: weekRooms });
+  if (olderRooms.length)     groups.push({ label: 'Older', key: 'older', rooms: olderRooms });
+
+  return groups;
+}
+
 function switchRoomTab(tab) {
   currentRoomTab = tab;
   document.getElementById('tab-rooms').classList.toggle('active', tab === 'rooms');
@@ -9,154 +58,183 @@ function switchRoomTab(tab) {
   refreshRoomList();
 }
 
+function _makeRoomRow(room, isArchived) {
+  const row = document.createElement('div');
+  row.className = 'h-room-row' + (room.id === currentRoomId ? ' active' : '') + (room.is_pinned ? ' pinned' : '');
+  row.dataset.roomId = room.id;
+
+  if (isArchived) {
+    row.classList.add('h-room-row-archived');
+    const restoreBtn = document.createElement('div');
+    restoreBtn.className = 'h-room-restore-btn';
+    restoreBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>';
+    restoreBtn.onclick = e => { e.stopPropagation(); restoreRoom(room); };
+    row.appendChild(restoreBtn);
+    const destroyBtn = document.createElement('div');
+    destroyBtn.className = 'h-room-destroy-btn';
+    destroyBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+    destroyBtn.onclick = e => { e.stopPropagation(); deleteRoom(room); };
+    row.appendChild(destroyBtn);
+  } else {
+    const archiveBtn = document.createElement('div');
+    archiveBtn.className = 'h-room-delete-btn';
+    archiveBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>';
+    archiveBtn.onclick = e => { e.stopPropagation(); archiveRoom(room); };
+    row.appendChild(archiveBtn);
+    const pinMobileBtn = document.createElement('div');
+    pinMobileBtn.className = 'h-room-pin-mobile-btn';
+    pinMobileBtn.title = room.is_pinned ? 'Unpin' : 'Pin';
+    pinMobileBtn.innerHTML = pinSvg(18);
+    pinMobileBtn.onclick = e => { e.stopPropagation(); if (pinMobileBtn.disabled) return; pinMobileBtn.disabled = true; togglePinRoom(room, !room.is_pinned, pinMobileBtn); };
+    row.appendChild(pinMobileBtn);
+  }
+
+  const content = document.createElement('div');
+  content.className = 'h-room-content';
+  const top = document.createElement('div');
+  top.className = 'h-room-row-top';
+  const title = document.createElement('span');
+  title.className = 'h-room-title-text';
+  title.textContent = room.title;
+  top.appendChild(title);
+
+  const hasDraft = !!localStorage.getItem('stoa-draft-' + room.id);
+  const time = document.createElement('span');
+  time.className = 'h-room-time';
+  if (hasDraft) {
+    time.textContent = 'draft';
+    time.style.color = '#d39749';
+    time.style.fontWeight = '600';
+  } else {
+    time.textContent = (room.last_activity || room.created_at) ? relativeTime(room.last_activity || room.created_at) : (room.message_count + ' msg');
+  }
+  top.appendChild(time);
+
+  const actionBtn = document.createElement('button');
+  actionBtn.className = 'h-room-action';
+  if (isArchived) {
+    actionBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+    actionBtn.title = 'Delete';
+    actionBtn.style.color = '#c44';
+    actionBtn.onclick = e => { e.stopPropagation(); deleteRoom(room); };
+    const restoreActionBtn = document.createElement('button');
+    restoreActionBtn.className = 'h-room-action';
+    restoreActionBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>';
+    restoreActionBtn.title = 'Restore';
+    restoreActionBtn.onclick = e => { e.stopPropagation(); restoreRoom(room); };
+    top.appendChild(restoreActionBtn);
+  } else {
+    actionBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>';
+    actionBtn.title = 'Archive';
+    actionBtn.onclick = e => { e.stopPropagation(); archiveRoom(room); };
+    const pinBtn = document.createElement('button');
+    pinBtn.className = 'h-room-action h-room-pin-btn' + (room.is_pinned ? ' pinned' : '');
+    pinBtn.title = room.is_pinned ? 'Unpin' : 'Pin';
+    pinBtn.innerHTML = pinSvg(16);
+    pinBtn.onclick = e => { e.stopPropagation(); if (pinBtn.disabled) return; pinBtn.disabled = true; togglePinRoom(room, !room.is_pinned, pinBtn); };
+    top.appendChild(pinBtn);
+  }
+  top.appendChild(actionBtn);
+  content.appendChild(top);
+
+  if (room.last_message) {
+    const preview = document.createElement('div');
+    preview.className = 'h-room-preview';
+    const plain = room.last_message.replace(/[#*_~`>\[\]()!]/g, '').replace(/\n+/g, ' ').trim();
+    preview.textContent = room.last_message_actor ? `${room.last_message_actor}: ${plain}` : plain;
+    content.appendChild(preview);
+  }
+
+  const dots = document.createElement('div');
+  dots.className = 'h-room-dots';
+  dots.id = 'room-dots-' + room.id;
+  content.appendChild(dots);
+
+  row.appendChild(content);
+  content.onclick = () => { if (!row.classList.contains('swiped')) openRoom(room); };
+  initRoomSwipe(row);
+  return row;
+}
+
+function _makeGroupHeader(label, key) {
+  const collapsed = localStorage.getItem('stoa-group-collapsed-' + key) === '1';
+  const hdr = document.createElement('div');
+  hdr.className = 'h-room-group-header' + (collapsed ? ' collapsed' : '');
+  hdr.dataset.groupKey = key;
+  hdr.innerHTML = `<span class="h-room-group-chevron"><svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 3.5L5 6.5L8 3.5"/></svg></span><span class="h-room-group-label">${label}</span>`;
+  hdr.onclick = () => {
+    const isNowCollapsed = hdr.classList.toggle('collapsed');
+    localStorage.setItem('stoa-group-collapsed-' + key, isNowCollapsed ? '1' : '0');
+    const body = hdr.nextElementSibling;
+    if (body) body.style.display = isNowCollapsed ? 'none' : '';
+  };
+  return hdr;
+}
+
 function renderRoomList(rooms) {
   const list = document.getElementById('room-list');
   list.innerHTML = '';
   const isArchived = currentRoomTab === 'archived';
-  const hasPinned = !isArchived && rooms.some(r => r.is_pinned);
-  let addedDivider = false;
 
-  if (hasPinned) {
+  const pinned = !isArchived ? rooms.filter(r => r.is_pinned) : [];
+  const unpinned = !isArchived ? rooms.filter(r => !r.is_pinned) : rooms;
+
+  if (pinned.length) {
     const header = document.createElement('div');
     header.className = 'h-room-section-header';
     header.textContent = 'Pinned';
     list.appendChild(header);
-  }
-
-  for (const room of rooms) {
-    if (hasPinned && !room.is_pinned && !addedDivider) {
-      addedDivider = true;
+    for (const room of pinned) {
+      list.appendChild(_makeRoomRow(room, false));
+      const cached = roomParticipantsCache[room.id];
+      if (cached) renderRoomDots(room.id, cached);
+    }
+    if (unpinned.length) {
       const divider = document.createElement('div');
       divider.className = 'h-room-section-divider';
       list.appendChild(divider);
     }
-
-    const row = document.createElement('div');
-    row.className = 'h-room-row' + (room.id === currentRoomId ? ' active' : '') + (room.is_pinned ? ' pinned' : '');
-    row.dataset.roomId = room.id;
-
-    if (isArchived) {
-      row.classList.add('h-room-row-archived');
-      const restoreBtn = document.createElement('div');
-      restoreBtn.className = 'h-room-restore-btn';
-      restoreBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>';
-      restoreBtn.onclick = e => { e.stopPropagation(); restoreRoom(room); };
-      row.appendChild(restoreBtn);
-      const destroyBtn = document.createElement('div');
-      destroyBtn.className = 'h-room-destroy-btn';
-      destroyBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
-      destroyBtn.onclick = e => { e.stopPropagation(); deleteRoom(room); };
-      row.appendChild(destroyBtn);
-    } else {
-      const archiveBtn = document.createElement('div');
-      archiveBtn.className = 'h-room-delete-btn';
-      archiveBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>';
-      archiveBtn.onclick = e => { e.stopPropagation(); archiveRoom(room); };
-      row.appendChild(archiveBtn);
-      const pinMobileBtn = document.createElement('div');
-      pinMobileBtn.className = 'h-room-pin-mobile-btn';
-      pinMobileBtn.title = room.is_pinned ? 'Unpin' : 'Pin';
-      pinMobileBtn.innerHTML = pinSvg(18);
-      pinMobileBtn.onclick = e => { e.stopPropagation(); if (pinMobileBtn.disabled) return; pinMobileBtn.disabled = true; togglePinRoom(room, !room.is_pinned, pinMobileBtn); };
-      row.appendChild(pinMobileBtn);
-    }
-
-    const content = document.createElement('div');
-    content.className = 'h-room-content';
-
-    const top = document.createElement('div');
-    top.className = 'h-room-row-top';
-
-    const title = document.createElement('span');
-    title.className = 'h-room-title-text';
-    title.textContent = room.title;
-    top.appendChild(title);
-
-    const hasDraft = !!localStorage.getItem('stoa-draft-' + room.id);
-    const time = document.createElement('span');
-    time.className = 'h-room-time';
-    if (hasDraft) {
-      time.textContent = 'draft';
-      time.style.color = '#d39749';
-      time.style.fontWeight = '600';
-    } else {
-      time.textContent = (room.last_activity || room.created_at) ? relativeTime(room.last_activity || room.created_at) : (room.message_count + ' msg');
-    }
-    top.appendChild(time);
-
-    const actionBtn = document.createElement('button');
-    actionBtn.className = 'h-room-action';
-    if (isArchived) {
-      actionBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
-      actionBtn.title = 'Delete';
-      actionBtn.style.color = '#c44';
-      actionBtn.onclick = e => { e.stopPropagation(); deleteRoom(room); };
-
-      const restoreActionBtn = document.createElement('button');
-      restoreActionBtn.className = 'h-room-action';
-      restoreActionBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>';
-      restoreActionBtn.title = 'Restore';
-      restoreActionBtn.onclick = e => { e.stopPropagation(); restoreRoom(room); };
-      top.appendChild(restoreActionBtn);
-    } else {
-      actionBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>';
-      actionBtn.title = 'Archive';
-      actionBtn.onclick = e => { e.stopPropagation(); archiveRoom(room); };
-
-      const pinBtn = document.createElement('button');
-      pinBtn.className = 'h-room-action h-room-pin-btn' + (room.is_pinned ? ' pinned' : '');
-      pinBtn.title = room.is_pinned ? 'Unpin' : 'Pin';
-      pinBtn.innerHTML = pinSvg(16);
-      pinBtn.onclick = e => { e.stopPropagation(); if (pinBtn.disabled) return; pinBtn.disabled = true; togglePinRoom(room, !room.is_pinned, pinBtn); };
-      top.appendChild(pinBtn);
-    }
-    top.appendChild(actionBtn);
-
-    content.appendChild(top);
-
-    if (room.last_message) {
-      const preview = document.createElement('div');
-      preview.className = 'h-room-preview';
-      const plain = room.last_message.replace(/[#*_~`>\[\]()!]/g, '').replace(/\n+/g, ' ').trim();
-      preview.textContent = room.last_message_actor
-        ? `${room.last_message_actor}: ${plain}`
-        : plain;
-      content.appendChild(preview);
-    }
-
-    const dots = document.createElement('div');
-    dots.className = 'h-room-dots';
-    dots.id = 'room-dots-' + room.id;
-    content.appendChild(dots);
-
-    row.appendChild(content);
-
-    const cached = roomParticipantsCache[room.id];
-    if (cached) renderRoomDots(room.id, cached);
-
-    content.onclick = () => { if (!row.classList.contains('swiped')) openRoom(room); };
-    initRoomSwipe(row);
-    list.appendChild(row);
   }
 
-  if (isArchived && rooms.length) {
-    const delAll = document.createElement('div');
-    delAll.style.cssText = 'text-align:center;padding:12px 0 4px';
-    const delBtn = document.createElement('button');
-    delBtn.style.cssText = 'background:transparent;border:1px solid var(--h-hairline);border-radius:6px;padding:5px 14px;font-family:var(--h-sans);font-size:12px;color:#c44;cursor:pointer';
-    delBtn.textContent = 'delete all archived';
-    delBtn.onclick = async () => {
-      if (!confirm(`Delete all ${rooms.length} archived rooms? This cannot be undone.`)) return;
-      try {
-        for (const r of rooms) {
-          const res = await fetch(`/api/rooms/${r.id}`, { method: 'DELETE' });
-          if (!res.ok) throw new Error('delete failed');
-        }
-      } catch { showToast('Failed to delete all archived rooms', { error: true }); }
-      refreshRoomList();
-    };
-    delAll.appendChild(delBtn);
-    list.appendChild(delAll);
+  if (!isArchived) {
+    for (const group of groupRooms(unpinned)) {
+      list.appendChild(_makeGroupHeader(group.label, group.key));
+      const collapsed = localStorage.getItem('stoa-group-collapsed-' + group.key) === '1';
+      const groupBody = document.createElement('div');
+      groupBody.className = 'h-room-group-body';
+      if (collapsed) groupBody.style.display = 'none';
+      for (const room of group.rooms) {
+        groupBody.appendChild(_makeRoomRow(room, false));
+        const cached = roomParticipantsCache[room.id];
+        if (cached) renderRoomDots(room.id, cached);
+      }
+      list.appendChild(groupBody);
+    }
+  } else {
+    for (const room of unpinned) {
+      list.appendChild(_makeRoomRow(room, true));
+      const cached = roomParticipantsCache[room.id];
+      if (cached) renderRoomDots(room.id, cached);
+    }
+    if (rooms.length) {
+      const delAll = document.createElement('div');
+      delAll.style.cssText = 'text-align:center;padding:12px 0 4px';
+      const delBtn = document.createElement('button');
+      delBtn.style.cssText = 'background:transparent;border:1px solid var(--h-hairline);border-radius:6px;padding:5px 14px;font-family:var(--h-sans);font-size:12px;color:#c44;cursor:pointer';
+      delBtn.textContent = 'delete all archived';
+      delBtn.onclick = async () => {
+        if (!confirm(`Delete all ${rooms.length} archived rooms? This cannot be undone.`)) return;
+        try {
+          for (const r of rooms) {
+            const res = await fetch(`/api/rooms/${r.id}`, { method: 'DELETE' });
+            if (!res.ok) throw new Error('delete failed');
+          }
+        } catch { showToast('Failed to delete all archived rooms', { error: true }); }
+        refreshRoomList();
+      };
+      delAll.appendChild(delBtn);
+      list.appendChild(delAll);
+    }
   }
 }
 
