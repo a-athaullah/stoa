@@ -259,3 +259,17 @@ CREATE TABLE IF NOT EXISTS wa_incoming_messages (
 
 CREATE INDEX IF NOT EXISTS idx_wa_incoming_conn_chat
   ON wa_incoming_messages(connection_id, chat_id, created_at DESC);
+
+-- R28: busy_input_mode queue
+CREATE TABLE IF NOT EXISTS room_message_queue (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  room_id     INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  content     TEXT NOT NULL,
+  attachments TEXT,
+  reply_to    INTEGER,
+  event_id    TEXT,
+  queued_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  position    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_rmq_room ON room_message_queue(room_id, position);

@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.195';
+const CLIENT_VERSION = '0.4.197';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -51,6 +51,8 @@ let consecutiveFailures = 0;
 
 // R22/R23: room settings pushed from server on connect and on change.
 const roomSettings = new Map(); // room_id → { key_name → value }
+// R28: steer messages queued for injection after current run completes.
+const pendingSteerMessages = new Map(); // room_id → [{content, message_id}, ...]
 let reauthProc = null;  // active claude auth login process for /reauth
 let consecutiveTriggerErrors = 0;
 const MAX_TRIGGER_ERRORS = 3;
@@ -562,6 +564,14 @@ async function handleAgentMessage(msg) {
     } else {
       rs[msg.key] = msg.value;
     }
+  }
+
+  // R28: steer message — inject into ongoing run after it completes.
+  if (msg.type === 'steer_message') {
+    const key = msg.room_id;
+    if (!pendingSteerMessages.has(key)) pendingSteerMessages.set(key, []);
+    pendingSteerMessages.get(key).push({ content: msg.content, message_id: msg.message_id });
+    console.log(`[stoa] steer queued for room ${msg.room_id} msg=${msg.message_id}`);
   }
 
   if (msg.type === 'force_update') {
@@ -1360,6 +1370,15 @@ async function processTrigger(msg) {
     _clearToolStatus();
     activeTriggers.delete(message_id);
     if (targetDir) startSessionIdleTimer(sessionKey);
+    // R28: inject any steer messages that arrived during this run as high-priority triggers
+    const steers = pendingSteerMessages.get(room_id) || [];
+    if (steers.length) {
+      pendingSteerMessages.delete(room_id);
+      for (let i = steers.length - 1; i >= 0; i--) {
+        const s = steers[i];
+        triggerQueue.unshift({ ...msg, message_id: s.message_id, prompt: s.content, attachments: null, reply_to: null });
+      }
+    }
     drainQueue();
   }
 }

@@ -839,8 +839,11 @@ function setSetting(key, value) {
 }
 
 // R23: room-scoped settings. value=null deletes the entry.
-const ALLOWED_ROOM_SETTINGS = new Set(['tool_status_mode']);
-const ROOM_SETTING_VALUES = { tool_status_mode: new Set(['full', 'verb', 'off']) };
+const ALLOWED_ROOM_SETTINGS = new Set(['tool_status_mode', 'busy_input_mode']);
+const ROOM_SETTING_VALUES = {
+  tool_status_mode: new Set(['full', 'verb', 'off']),
+  busy_input_mode:  new Set(['interrupt', 'queue', 'steer']),
+};
 function setRoomSetting(roomId, key, value) {
   for (const k of _settingCache.keys()) { if (k.startsWith(`${key}:${roomId}`)) _settingCache.delete(k); }
   const existing = db.prepare("SELECT id FROM settings WHERE scope='room' AND scope_id=? AND key_name=?").get(roomId, key);
@@ -4760,6 +4763,19 @@ const activeSequences = new Map(); // roomId → { cancelled: bool }
 const roomIdleBus = new (require('events').EventEmitter)();
 roomIdleBus.setMaxListeners(0); // unbounded — one listener per queued room
 
+// R28: drain one queued message per idle event
+roomIdleBus.on('idle', (roomId) => {
+  const next = db.prepare('SELECT * FROM room_message_queue WHERE room_id=? ORDER BY position, id LIMIT 1').get(roomId);
+  if (!next) return;
+  db.prepare('DELETE FROM room_message_queue WHERE id=?').run(next.id);
+  const remaining = db.prepare('SELECT COUNT(*) as n FROM room_message_queue WHERE room_id=?').get(roomId).n;
+  broadcast(roomId, { type: 'queue_updated', room_id: roomId, queued: remaining });
+  const attachments = next.attachments ? JSON.parse(next.attachments) : [];
+  handleHumanMessage(roomId, next.content, attachments, next.reply_to ?? null, null, next.event_id ?? null).catch(e =>
+    console.error('[queue] drain error:', e.message)
+  );
+});
+
 async function triggerAgentsSequential(roomId, agents, content, replyTo, attachments, initialFiredSubAgentIds = new Set()) {
   const maxTurns = parseInt(process.env.MAX_AI_TURNS || '5');
   const seq = { cancelled: false };
@@ -4903,6 +4919,28 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
   }
   broadcast(roomId, { type: 'message_new', message: row });
   broadcastGlobal({ type: 'room_activity', room_id: roomId });
+
+  // R28: if a sequence is already running, apply busy_input_mode before triggering agents
+  const busyMode = getSetting('busy_input_mode', roomId) || 'interrupt';
+  if (busyMode !== 'interrupt' && activeSequences.has(roomId)) {
+    if (busyMode === 'queue') {
+      const pos = db.prepare('SELECT COALESCE(MAX(position), -1)+1 as p FROM room_message_queue WHERE room_id=?').get(roomId).p;
+      db.prepare('INSERT INTO room_message_queue (room_id, content, attachments, reply_to, event_id, position) VALUES (?,?,?,?,?,?)').run(
+        roomId, content, attachJson || null, replyTo || null, eventId || null, pos
+      );
+      const queued = db.prepare('SELECT COUNT(*) as n FROM room_message_queue WHERE room_id=?').get(roomId).n;
+      broadcast(roomId, { type: 'queue_updated', room_id: roomId, queued });
+      return;
+    }
+    if (busyMode === 'steer') {
+      const agentIds = db.prepare("SELECT a.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='ai'").all(roomId).map(r => r.id);
+      for (const aId of agentIds) {
+        const aw = agentClients.get(aId);
+        if (aw?.readyState === 1) aw.send(JSON.stringify({ type: 'steer_message', room_id: roomId, content, message_id: messageId }));
+      }
+      return;
+    }
+  }
 
   const allAiParts = db.prepare(`
     SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.adapter_config, a.avatar_color, a.avatar_symbol, a.avatar_url
