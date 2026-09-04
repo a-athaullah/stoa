@@ -32,7 +32,7 @@ _Urutan eksekusi ditetapkan 2026-09-01 (Ara, approved Aan). Logika: security & b
 
 ## Batch 4 — Fitur baru `[exec 14–19]`
 
-- [ ] **#14 R28 — `busy_input_mode`: interrupt/queue/steer** _(M–L)_ — jawaban arsitektural untuk SIGTERM-restart yang membunuh kerja in-flight agent (insiden 2026-09-01); `queue` = antre dengan UI sliding window, `steer` = suntik ke run berjalan.
+- [x] **#14 R28 — `busy_input_mode`: interrupt/queue/steer** _(M–L)_ — ✓ PR #87: `queue` = antre dengan UI sliding window, `steer` = suntik ke run berjalan; jawaban arsitektural untuk SIGTERM-restart yang membunuh kerja in-flight agent (insiden 2026-09-01).
 - [ ] **#15 R26 — Stoa Doctor + session tooling** _(M)_ — `/api/health/db` (pure function: size via `page_count*page_size`, WAL, freelist, counts); tiap check gagal bawa instruksi fix; `pinned` di sessions (kebal auto-archive); **import sesi dari JSONL Claude Code**.
 - [ ] **#16 R27 — Sidebar recency grouping** _(S–M)_ — head-run adaptif (potong di jeda ≥30 menit, fuzzy-merge bucket) + collapsible groups; pure function, portable 1:1.
 - [ ] **#17 R25 — Memory per-room/agent** _(M–L)_ — file markdown editable di UI, frozen snapshot per session start (jaga prompt cache), budget char, drift detection + backup, staged approval untuk tulisan background.
