@@ -131,10 +131,8 @@ async function _doctorHandleImport(input) {
   }
   result.textContent = 'Uploading…';
   result.style.color = 'var(--h-ink-mute)';
-  const form = new FormData();
-  form.append('file', file);
   try {
-    const r = await fetch(`/api/rooms/${currentRoomId}/sessions/import`, { method: 'POST', body: form });
+    const r = await fetch(`/api/rooms/${currentRoomId}/sessions/import`, { method: 'POST', body: file });
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     const data = await r.json();
     result.textContent = `Imported ${data.imported_count} message${data.imported_count !== 1 ? 's' : ''}${data.skipped_count ? `, skipped ${data.skipped_count}` : ''}.`;
