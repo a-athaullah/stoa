@@ -371,7 +371,7 @@ async function cascadeMentionsAfterWake(roomId, parent) {
   const lastMsg = db.prepare(`
     SELECT m.content FROM messages m
     JOIN room_participants rp ON rp.id=m.participant_id
-    WHERE rp.actor_id=? AND m.room_id=? AND m.state='complete' AND m.sub_agent_id IS NULL
+    WHERE rp.actor_id=? AND m.room_id=? AND m.state='complete' AND m.sub_agent_id IS NULL AND m.completed_at IS NOT NULL
     ORDER BY m.id DESC LIMIT 1
   `).get(parent.actor_id, roomId);
   if (!lastMsg?.content || !lastMsg.content.includes('@')) return;
@@ -5112,7 +5112,7 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
       const lastMsg = db.prepare(`
         SELECT m.content FROM messages m
         JOIN room_participants rp ON rp.id=m.participant_id
-        WHERE rp.actor_id=? AND m.room_id=? AND m.state='complete'
+        WHERE rp.actor_id=? AND m.room_id=? AND m.state='complete' AND m.completed_at IS NOT NULL
         ORDER BY m.id DESC LIMIT 1
       `).get(currentAgent.actor_id, roomId);
 
