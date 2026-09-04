@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.192';
+const CLIENT_VERSION = '0.4.193';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -953,43 +953,53 @@ async function processTrigger(msg) {
     try { fs.mkdirSync(tempDir, { recursive: true }); } catch {}
   }
 
+  const attachmentNotes = [];
   for (const att of allAttachments) {
     const url = att.url?.startsWith('http') ? att.url : baseUrl + att.url;
     const ext = path.extname(att.name || att.url || '').toLowerCase();
     const safeName = (att.name || path.basename(att.url || 'file')).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const displayName = att.name || safeName;
 
     if (att.type === 'image' || IMAGE_EXTS.has(ext)) {
       try {
         const localPath = path.join(tempDir, safeName);
         await fetchToFile(url, localPath);
-        localFiles.push({ name: att.name || safeName, path: localPath, type: 'image' });
+        localFiles.push({ name: displayName, path: localPath, type: 'image' });
       } catch (err) {
         console.error('[stoa] image download failed:', att.url, err.message);
+        attachmentNotes.push(`- ${displayName}: [gagal didownload — tidak tersedia]`);
       }
     } else if (TEXT_EXTS.has(ext)) {
       try {
         const text = await fetchText(url);
-        finalPrompt = `${finalPrompt}\n\n---\nIsi file \`${att.name}\`:\n\`\`\`\n${text}\n\`\`\``;
+        if (!text || !text.trim()) {
+          attachmentNotes.push(`- ${displayName}: [file kosong]`);
+        } else {
+          finalPrompt = `${finalPrompt}\n\n---\nIsi file \`${displayName}\`:\n\`\`\`\n${text}\n\`\`\``;
+        }
       } catch (err) {
         console.error('[stoa] file fetch failed:', att.url, err.message);
+        attachmentNotes.push(`- ${displayName}: [gagal difetch — tidak tersedia]`);
       }
     } else {
       try {
         const localPath = path.join(tempDir, safeName);
         await fetchToFile(url, localPath);
-        localFiles.push({ name: att.name || safeName, path: localPath, type: 'file' });
+        localFiles.push({ name: displayName, path: localPath, type: 'file' });
       } catch (err) {
         console.error('[stoa] file download failed:', att.url, err.message);
+        attachmentNotes.push(`- ${displayName}: [gagal didownload — tidak tersedia]`);
       }
     }
   }
 
-  if (localFiles.length) {
-    const fileList = localFiles.map(f => `- ${f.name}: ${f.path}`).join('\n');
+  if (localFiles.length || attachmentNotes.length) {
+    const successList = localFiles.map(f => `- ${f.name}: ${f.path}`);
+    const allNotes = [...successList, ...attachmentNotes].join('\n');
     if (msg.tools_supported === false) {
-      finalPrompt += `\n\n---\nFile yang dilampirkan:\n${fileList}`;
+      finalPrompt += `\n\n---\nFile yang dilampirkan:\n${allNotes}`;
     } else {
-      finalPrompt += `\n\n---\nFile yang dilampirkan (sudah didownload ke lokal, gunakan Read tool untuk membaca/melihat):\n${fileList}`;
+      finalPrompt += `\n\n---\nFile yang dilampirkan (sudah didownload ke lokal, gunakan Read tool untuk membaca/melihat):\n${allNotes}`;
     }
   }
 
