@@ -165,13 +165,8 @@ function _makeGroupHeader(label, key) {
   hdr.onclick = () => {
     const isNowCollapsed = hdr.classList.toggle('collapsed');
     localStorage.setItem('stoa-group-collapsed-' + key, isNowCollapsed ? '1' : '0');
-    const list = document.getElementById('room-list');
-    let found = false;
-    for (const el of list.children) {
-      if (!found) { if (el === hdr) found = true; continue; }
-      if (el.classList.contains('h-room-group-header') || el.classList.contains('h-room-section-header')) break;
-      el.style.display = isNowCollapsed ? 'none' : '';
-    }
+    const body = hdr.nextElementSibling;
+    if (body) body.style.display = isNowCollapsed ? 'none' : '';
   };
   return hdr;
 }
