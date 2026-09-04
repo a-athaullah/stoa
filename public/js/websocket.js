@@ -79,9 +79,13 @@ function handleWsMessage(msg) {
     const displayName = msg.sub_agent_label ? `${baseName} (${msg.sub_agent_label})` : baseName;
     const actorKey = msg.sub_agent_label ? `${baseName}:${msg.sub_agent_label}` : baseName;
     const last = inner.lastElementChild;
-    const isOwnStatus = last?.classList.contains('h-system-event') && last.dataset.actor === actorKey;
+    const isOwnStatus = last?.classList.contains('h-system-event') && last.dataset.actor === actorKey && !last.dataset.done;
     if (!msg.status) {
-      if (isOwnStatus) last.remove();
+      const isOwnDone = last?.classList.contains('h-system-event') && last.dataset.actor === actorKey;
+      if (isOwnDone) {
+        last.textContent = `${displayName} · selesai`;
+        last.dataset.done = '1';
+      }
       return;
     }
     if (isOwnStatus) {
