@@ -83,7 +83,7 @@ function wsRenderEditor(container) {
         const c = document.getElementById('ws-panel-content');
         if (c) { c.innerHTML = ''; c.className = ''; c.style.cssText = WS_EDITOR_CONTAINER_CSS; wsRenderTextareaEditor(c); }
       }
-    }).catch(() => {});
+    }).catch(() => {}); // CM load already handles failure inline: falls back to textarea editor
   }
 }
 

@@ -61,9 +61,23 @@ function handleWsMessage(msg) {
     if (dominated.includes(msg.status)) return;
     const inner = document.getElementById('messages-inner');
     if (!inner) return;
+    const baseName = msg.actor_name || 'Agent';
+    const displayName = msg.sub_agent_label ? `${baseName} (${msg.sub_agent_label})` : baseName;
+    const actorKey = msg.sub_agent_label ? `${baseName}:${msg.sub_agent_label}` : baseName;
+    const last = inner.lastElementChild;
+    const isOwnStatus = last?.classList.contains('h-system-event') && last.dataset.actor === actorKey;
+    if (!msg.status) {
+      if (isOwnStatus) last.remove();
+      return;
+    }
+    if (isOwnStatus) {
+      last.textContent = `${displayName} · ${msg.status}`;
+      return;
+    }
     const el = document.createElement('div');
     el.className = 'h-system-event';
-    el.textContent = `${msg.actor_name || 'Agent'} · ${msg.status}`;
+    el.dataset.actor = actorKey;
+    el.textContent = `${displayName} · ${msg.status}`;
     inner.appendChild(el);
     scrollToBottom();
     return;
@@ -77,6 +91,9 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'message_state') {
     if ((msg.state === 'requesting' || msg.state === 'streaming') && msg.actor_name) {
+      const inner = document.getElementById('messages-inner');
+      const last = inner?.lastElementChild;
+      if (last?.classList.contains('h-system-event') && last.dataset.actor?.startsWith(msg.actor_name)) last.remove();
       showThinking(msg.message_id, msg.actor_name, msg.avatar_color, msg.avatar_symbol, msg.avatar_url, msg.sub_agent_label);
       setComposerProcessing(msg.message_id);
     }
@@ -195,7 +212,7 @@ function handleWsMessage(msg) {
         renderRoomDots(currentRoomId, parts);
         const room = { id: currentRoomId, title: document.querySelector('.h-room-name')?.textContent || '' };
         renderChatHeader(room, parts);
-      }).catch(() => {});
+      }).catch(e => { console.error('[ws] actor_invited: failed to refresh participants', e); });
     }
     return;
   }

@@ -785,6 +785,21 @@ function setSetting(key, value) {
   }
 }
 
+// R23: room-scoped settings. value=null deletes the entry.
+const ALLOWED_ROOM_SETTINGS = new Set(['tool_status_mode']);
+const ROOM_SETTING_VALUES = { tool_status_mode: new Set(['full', 'verb', 'off']) };
+function setRoomSetting(roomId, key, value) {
+  for (const k of _settingCache.keys()) { if (k.startsWith(`${key}:${roomId}`)) _settingCache.delete(k); }
+  const existing = db.prepare("SELECT id FROM settings WHERE scope='room' AND scope_id=? AND key_name=?").get(roomId, key);
+  if (value === null) {
+    if (existing) db.prepare('DELETE FROM settings WHERE id=?').run(existing.id);
+  } else if (existing) {
+    db.prepare('UPDATE settings SET value=? WHERE id=?').run(value, existing.id);
+  } else {
+    db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('room', ?, ?, ?)").run(roomId, key, value);
+  }
+}
+
 function getPlatKeys(plat) {
   return plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : []);
 }
@@ -3577,6 +3592,14 @@ wss.on('connection', (ws, req) => {
       ws.send(JSON.stringify({ type: 'set_config', max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1, session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5, auto_compact_threshold_kb: parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB) || 500 }));
       const connectedActor = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, created_at FROM actors WHERE id=?').get(agentActorId);
       if (connectedActor) broadcastGlobal({ type: 'actor_status', actor: { ...connectedActor, online: true, client_version: msg.client_version || null } });
+      // R23: push all room settings so agent is always in sync regardless of connect order.
+      const agentRooms = db.prepare("SELECT DISTINCT room_id FROM room_participants WHERE actor_id=?").all(agentActorId).map(r => r.room_id);
+      for (const rid of agentRooms) {
+        const roomSettingRows = db.prepare("SELECT key_name, value FROM settings WHERE scope='room' AND scope_id=?").all(rid);
+        for (const s of roomSettingRows) {
+          ws.send(JSON.stringify({ type: 'room_setting', room_id: rid, key: s.key_name, value: s.value }));
+        }
+      }
       // Drain any pending wakes left by a disconnect mid-trigger or prior crash.
       const reconnectWakes = db.prepare(
         "SELECT pw.id FROM pending_wakes pw JOIN room_participants rp ON rp.id=pw.parent_participant_id WHERE rp.actor_id=?"
@@ -3696,7 +3719,7 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'agent_system_event' && agentActorId) {
       const actor = db.prepare('SELECT name FROM actors WHERE id=?').get(agentActorId);
-      broadcast(msg.room_id, { type: 'system_event', status: msg.status, actor_name: actor?.name });
+      broadcast(msg.room_id, { type: 'system_event', status: msg.status, actor_name: actor?.name, sub_agent_label: msg.sub_agent_label || null });
     }
 
     if (msg.type === 'auto_compact_start' && agentActorId) {
@@ -4378,6 +4401,29 @@ wss.on('connection', (ws, req) => {
         }
       }
       console.log(`[room] model set to ${model || '(default)'} for room ${subscribedRoom}`);
+    }
+
+    // ── Room settings (R23) ────────────────────────────────────────────────
+    if (msg.type === 'set_room_setting' && subscribedRoom) {
+      const { key, value } = msg;
+      if (!ALLOWED_ROOM_SETTINGS.has(key)) {
+        console.warn(`[settings] unknown room setting key "${key}" from client — ignored`);
+        ws.send(JSON.stringify({ type: 'room_setting_error', key, error: `unknown key: ${key}` }));
+        return;
+      }
+      const allowed = ROOM_SETTING_VALUES[key];
+      if (value !== null && allowed && !allowed.has(value)) {
+        ws.send(JSON.stringify({ type: 'room_setting_error', key, error: `invalid value "${value}" for ${key}` }));
+        return;
+      }
+      setRoomSetting(subscribedRoom, key, value ?? null);
+      // Push update to all agents in this room
+      const agentIds = db.prepare("SELECT a.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='ai'").all(subscribedRoom).map(r => r.id);
+      for (const aId of agentIds) {
+        const aw = agentClients.get(aId);
+        if (aw?.readyState === 1) aw.send(JSON.stringify({ type: 'room_setting', room_id: subscribedRoom, key, value: value ?? null }));
+      }
+      ws.send(JSON.stringify({ type: 'room_setting_ack', room_id: subscribedRoom, key, value: value ?? null }));
     }
 
     // ── Connector Action API ────────────────────────────────────────────────

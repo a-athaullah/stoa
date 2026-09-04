@@ -249,7 +249,7 @@ function sMakeRow(actor, flash) {
                 const base = `actor #${actor.id} · joined ${sFormatJoined(actor.created_at)}`;
                 sub.textContent = wds.length > 0 ? `${base} · ${wds.length} workdir${wds.length > 1 ? 's' : ''}` : base;
               }
-            }).catch(() => {});
+            }).catch(e => { console.error('[agents] failed to refresh workdir count for actor', actor.id, e); });
             refresh.disabled = !actor.online;
             refresh.style.opacity = '';
           }, 1200);
