@@ -4771,9 +4771,15 @@ roomIdleBus.on('idle', (roomId) => {
   const remaining = db.prepare('SELECT COUNT(*) as n FROM room_message_queue WHERE room_id=?').get(roomId).n;
   broadcast(roomId, { type: 'queue_updated', room_id: roomId, queued: remaining });
   const attachments = next.attachments ? JSON.parse(next.attachments) : [];
-  handleHumanMessage(roomId, next.content, attachments, next.reply_to ?? null, null, next.event_id ?? null).catch(e =>
-    console.error('[queue] drain error:', e.message)
-  );
+  handleHumanMessage(roomId, next.content, attachments, next.reply_to ?? null, null, next.event_id ?? null).catch(e => {
+    console.error('[queue] drain error, re-queuing:', e.message);
+    // Re-insert at front so the failed message retries on next idle, queue drain continues
+    db.prepare('INSERT INTO room_message_queue (room_id, content, attachments, reply_to, event_id, position) VALUES (?,?,?,?,?,?)').run(
+      next.room_id, next.content, next.attachments ?? null, next.reply_to ?? null, next.event_id ?? null, -1
+    );
+    const requeued = db.prepare('SELECT COUNT(*) as n FROM room_message_queue WHERE room_id=?').get(roomId).n;
+    broadcast(roomId, { type: 'queue_updated', room_id: roomId, queued: requeued });
+  });
 });
 
 async function triggerAgentsSequential(roomId, agents, content, replyTo, attachments, initialFiredSubAgentIds = new Set()) {
