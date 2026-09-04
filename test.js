@@ -3883,6 +3883,155 @@ async function run() {
     db.prepare('UPDATE ai_sessions SET compact_failure_cooldown_until=NULL, compact_failure_error=NULL WHERE id=?').run(row.id);
   });
 
+  // R25: Memory per-room/agent
+  console.log('\n[R25: Memory per-room/agent]');
+
+  await test('R25 — GET /api/actors/:id/memory — returns files with budgets', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    if (!Array.isArray(actors) || !actors.length) { console.log('    (skipped — no actors)'); return; }
+    const actorId = actors[0].id;
+    const r = await req('GET', `/api/actors/${actorId}/memory`);
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}`);
+    assert.ok(Array.isArray(r.body.files), 'files should be array');
+    assert.strictEqual(r.body.files.length, 2, 'should have 2 files');
+    const memFile = r.body.files.find(f => f.file === 'MEMORY.md');
+    const userFile = r.body.files.find(f => f.file === 'USER.md');
+    assert.ok(memFile, 'MEMORY.md missing');
+    assert.ok(userFile, 'USER.md missing');
+    assert.strictEqual(memFile.budget, 2200);
+    assert.strictEqual(userFile.budget, 1375);
+    assert.strictEqual(typeof memFile.char_count, 'number');
+  });
+
+  await test('R25 — PUT /api/actors/:id/memory/MEMORY.md — write and read back', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    if (!Array.isArray(actors) || !actors.length) { console.log('    (skipped — no actors)'); return; }
+    const actorId = actors[0].id;
+    const content = 'Test memory content for R25.';
+    const r = await req('PUT', `/api/actors/${actorId}/memory/MEMORY.md`, { content });
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+    assert.strictEqual(r.body.content, content);
+    assert.strictEqual(r.body.char_count, content.length);
+    assert.strictEqual(r.body.budget, 2200);
+    // Read back
+    const r2 = await req('GET', `/api/actors/${actorId}/memory`);
+    const memFile = r2.body.files.find(f => f.file === 'MEMORY.md');
+    assert.strictEqual(memFile.content, content);
+    // Cleanup
+    await req('PUT', `/api/actors/${actorId}/memory/MEMORY.md`, { content: '' });
+  });
+
+  await test('R25 — PUT /api/actors/:id/memory/MEMORY.md — over budget → 400', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    if (!Array.isArray(actors) || !actors.length) { console.log('    (skipped — no actors)'); return; }
+    const actorId = actors[0].id;
+    const r = await req('PUT', `/api/actors/${actorId}/memory/MEMORY.md`, { content: 'x'.repeat(2201) });
+    assert.strictEqual(r.status, 400, `expected 400, got ${r.status}`);
+  });
+
+  await test('R25 — PUT /api/actors/:id/memory/USER.md — budget 1375 enforced', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    if (!Array.isArray(actors) || !actors.length) { console.log('    (skipped — no actors)'); return; }
+    const actorId = actors[0].id;
+    const r = await req('PUT', `/api/actors/${actorId}/memory/USER.md`, { content: 'y'.repeat(1376) });
+    assert.strictEqual(r.status, 400, `expected 400, got ${r.status}`);
+  });
+
+  await test('R25 — GET /api/rooms/:id/memory — returns content + budget + pending_count', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const roomId = testRoomIds[0];
+    const r = await req('GET', `/api/rooms/${roomId}/memory`);
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}`);
+    assert.strictEqual(typeof r.body.content, 'string');
+    assert.strictEqual(r.body.budget, 1800);
+    assert.strictEqual(typeof r.body.char_count, 'number');
+    assert.strictEqual(typeof r.body.pending_count, 'number');
+  });
+
+  await test('R25 — PUT /api/rooms/:id/memory — write and read back', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const roomId = testRoomIds[0];
+    const content = 'Room context: test project discussion.';
+    const r = await req('PUT', `/api/rooms/${roomId}/memory`, { content });
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+    assert.strictEqual(r.body.content, content);
+    assert.strictEqual(r.body.char_count, content.length);
+    assert.strictEqual(r.body.budget, 1800);
+    // Read back
+    const r2 = await req('GET', `/api/rooms/${roomId}/memory`);
+    assert.strictEqual(r2.body.content, content);
+    // Cleanup
+    await req('PUT', `/api/rooms/${roomId}/memory`, { content: '' });
+  });
+
+  await test('R25 — PUT /api/rooms/:id/memory — over budget → 400', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const roomId = testRoomIds[0];
+    const r = await req('PUT', `/api/rooms/${roomId}/memory`, { content: 'z'.repeat(1801) });
+    assert.strictEqual(r.status, 400, `expected 400, got ${r.status}`);
+  });
+
+  await test('R25 — GET /api/rooms/:id/memory/pending — returns pending writes list', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const roomId = testRoomIds[0];
+    const r = await req('GET', `/api/rooms/${roomId}/memory/pending`);
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}`);
+    assert.ok(Array.isArray(r.body.writes), 'writes should be array');
+  });
+
+  await test('R25 — approve/reject pending write flow', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const db = require('./db');
+    const roomId = testRoomIds[0];
+    // Insert a pending write directly into DB
+    const ins = db.prepare(
+      "INSERT INTO memory_pending_writes (type, room_id, proposed_content) VALUES ('room',?,?)"
+    ).run(roomId, 'Proposed room context.');
+    const writeId = ins.lastInsertRowid;
+    // Fetch pending list — should include our write
+    const list = await req('GET', `/api/rooms/${roomId}/memory/pending`);
+    assert.ok(list.body.writes.some(w => w.id === writeId), 'pending write not in list');
+    // Approve
+    const approve = await req('POST', `/api/rooms/${roomId}/memory/pending/${writeId}/approve`);
+    assert.strictEqual(approve.status, 200, `approve failed: ${JSON.stringify(approve.body)}`);
+    assert.ok(approve.body.ok);
+    // room_memory should now have proposed content
+    const mem = await req('GET', `/api/rooms/${roomId}/memory`);
+    assert.strictEqual(mem.body.content, 'Proposed room context.');
+    // Cleanup
+    await req('PUT', `/api/rooms/${roomId}/memory`, { content: '' });
+    db.prepare('DELETE FROM memory_pending_writes WHERE id=?').run(writeId);
+  });
+
+  await test('R25 — reject pending write flow', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const db = require('./db');
+    const roomId = testRoomIds[0];
+    const ins = db.prepare(
+      "INSERT INTO memory_pending_writes (type, room_id, proposed_content) VALUES ('room',?,?)"
+    ).run(roomId, 'Should not be applied.');
+    const writeId = ins.lastInsertRowid;
+    const reject = await req('POST', `/api/rooms/${roomId}/memory/pending/${writeId}/reject`);
+    assert.strictEqual(reject.status, 200, `reject failed: ${JSON.stringify(reject.body)}`);
+    assert.ok(reject.body.ok);
+    // room_memory should NOT change
+    const mem = await req('GET', `/api/rooms/${roomId}/memory`);
+    assert.notStrictEqual(mem.body.content, 'Should not be applied.');
+    // Cleanup
+    db.prepare('DELETE FROM memory_pending_writes WHERE id=?').run(writeId);
+  });
+
+  await test('R25 — GET /api/rooms/9999/memory — nonexistent room → 404', async () => {
+    const r = await req('GET', '/api/rooms/9999/memory');
+    assert.strictEqual(r.status, 404);
+  });
+
+  await test('R25 — unauthenticated GET /api/rooms/:id/memory → 401', async () => {
+    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
+    const r = await rawReq('GET', `/api/rooms/${testRoomIds[0]}/memory`, null, 'application/json', { Cookie: '' });
+    assert.strictEqual(r.status, 401);
+  });
+
   // Teardown — delete test platform if still set (e.g. DELETE test was skipped/failed)
   if (testPlatformId) {
     await req('DELETE', `/api/ai/platforms/${encodeURIComponent(testPlatformId)}`).catch(() => {});

@@ -2329,6 +2329,86 @@ const server = http.createServer(async (req, res) => {
     return json(res, { imported_count: imported, skipped_count: skipped });
   }
 
+  // GET /api/rooms/:id/memory — room memory
+  if (req.method === 'GET' && url.pathname.match(/^\/api\/rooms\/\d+\/memory$/)) {
+    if (!requireAuth(req, res, url)) return;
+    const roomId = parseInt(url.pathname.split('/')[3]);
+    const room = db.prepare('SELECT id FROM rooms WHERE id=?').get(roomId);
+    if (!room) return json(res, { error: 'room not found' }, 404);
+    const row = db.prepare('SELECT content, updated_at FROM room_memory WHERE room_id=?').get(roomId);
+    const content = row?.content ?? '';
+    const pending_count = db.prepare("SELECT COUNT(*) as c FROM memory_pending_writes WHERE room_id=? AND status='pending'").get(roomId).c;
+    return json(res, { content, char_count: content.length, budget: 1800, updated_at: row?.updated_at ?? null, pending_count });
+  }
+
+  // PUT /api/rooms/:id/memory — update room memory
+  if (req.method === 'PUT' && url.pathname.match(/^\/api\/rooms\/\d+\/memory$/)) {
+    if (!requireAuth(req, res, url)) return;
+    const roomId = parseInt(url.pathname.split('/')[3]);
+    const room = db.prepare('SELECT id FROM rooms WHERE id=?').get(roomId);
+    if (!room) return json(res, { error: 'room not found' }, 404);
+    const data = parseJsonBody(await readBody(req));
+    if (!data || typeof data.content !== 'string') return json(res, { error: 'content (string) required' }, 400);
+    if (data.content.length > 1800) return json(res, { error: 'content exceeds 1800 char budget' }, 400);
+    db.prepare(
+      "INSERT INTO room_memory (room_id, content, updated_at) VALUES (?,?,datetime('now')) ON CONFLICT(room_id) DO UPDATE SET content=excluded.content, updated_at=excluded.updated_at"
+    ).run(roomId, data.content);
+    const row = db.prepare('SELECT content, updated_at FROM room_memory WHERE room_id=?').get(roomId);
+    return json(res, { content: row.content, char_count: row.content.length, budget: 1800, updated_at: row.updated_at });
+  }
+
+  // GET /api/rooms/:id/memory/pending — list pending memory writes
+  if (req.method === 'GET' && url.pathname.match(/^\/api\/rooms\/\d+\/memory\/pending$/)) {
+    if (!requireAuth(req, res, url)) return;
+    const roomId = parseInt(url.pathname.split('/')[3]);
+    const room = db.prepare('SELECT id FROM rooms WHERE id=?').get(roomId);
+    if (!room) return json(res, { error: 'room not found' }, 404);
+    const writes = db.prepare(`
+      SELECT mpw.id, mpw.type, mpw.actor_id, mpw.file, mpw.proposed_content, mpw.proposed_at,
+             a.name as actor_name
+      FROM memory_pending_writes mpw
+      LEFT JOIN actors a ON a.id=mpw.actor_id
+      WHERE mpw.room_id=? AND mpw.status='pending'
+      ORDER BY mpw.proposed_at ASC
+    `).all(roomId);
+    return json(res, { writes });
+  }
+
+  // POST /api/rooms/:id/memory/pending/:writeId/approve
+  if (req.method === 'POST' && url.pathname.match(/^\/api\/rooms\/\d+\/memory\/pending\/\d+\/approve$/)) {
+    if (!requireAuth(req, res, url)) return;
+    const parts = url.pathname.split('/');
+    const roomId = parseInt(parts[3]);
+    const writeId = parseInt(parts[6]);
+    const pending = db.prepare("SELECT * FROM memory_pending_writes WHERE id=? AND room_id=? AND status='pending'").get(writeId, roomId);
+    if (!pending) return json(res, { error: 'pending write not found' }, 404);
+    db.transaction(() => {
+      if (pending.type === 'agent' && pending.actor_id && pending.file) {
+        db.prepare(
+          "INSERT INTO agent_memory (actor_id, file, content, updated_at) VALUES (?,?,?,datetime('now')) ON CONFLICT(actor_id, file) DO UPDATE SET content=excluded.content, updated_at=excluded.updated_at"
+        ).run(pending.actor_id, pending.file, pending.proposed_content);
+      } else if (pending.type === 'room') {
+        db.prepare(
+          "INSERT INTO room_memory (room_id, content, updated_at) VALUES (?,?,datetime('now')) ON CONFLICT(room_id) DO UPDATE SET content=excluded.content, updated_at=excluded.updated_at"
+        ).run(roomId, pending.proposed_content);
+      }
+      db.prepare("UPDATE memory_pending_writes SET status='approved' WHERE id=?").run(writeId);
+    })();
+    return json(res, { ok: true });
+  }
+
+  // POST /api/rooms/:id/memory/pending/:writeId/reject
+  if (req.method === 'POST' && url.pathname.match(/^\/api\/rooms\/\d+\/memory\/pending\/\d+\/reject$/)) {
+    if (!requireAuth(req, res, url)) return;
+    const parts = url.pathname.split('/');
+    const roomId = parseInt(parts[3]);
+    const writeId = parseInt(parts[6]);
+    const pending = db.prepare("SELECT id FROM memory_pending_writes WHERE id=? AND room_id=? AND status='pending'").get(writeId, roomId);
+    if (!pending) return json(res, { error: 'pending write not found' }, 404);
+    db.prepare("UPDATE memory_pending_writes SET status='rejected' WHERE id=?").run(writeId);
+    return json(res, { ok: true });
+  }
+
   // ── Server process manager info & restart ──
   if (req.method === 'GET' && url.pathname === '/api/server/process-manager') {
     if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
@@ -3190,6 +3270,37 @@ Write-Host "Logs   : pm2 logs $AgentName"
     if (!agentWs) { res.writeHead(503); return res.end('agent offline'); }
     agentWs.send(JSON.stringify({ type: 'request_scan' }));
     return json(res, { ok: true });
+  }
+
+  // GET /api/actors/:id/memory — list agent memory files
+  if (req.method === 'GET' && url.pathname.match(/^\/api\/actors\/\d+\/memory$/)) {
+    if (!requireAuth(req, res, url)) return;
+    const actorId = parseInt(url.pathname.split('/')[3]);
+    const BUDGETS = { 'MEMORY.md': 2200, 'USER.md': 1375 };
+    const files = ['MEMORY.md', 'USER.md'].map(file => {
+      const row = db.prepare('SELECT content, updated_at FROM agent_memory WHERE actor_id=? AND file=?').get(actorId, file);
+      const content = row?.content ?? '';
+      return { file, content, char_count: content.length, budget: BUDGETS[file], updated_at: row?.updated_at ?? null };
+    });
+    return json(res, { files });
+  }
+
+  // PUT /api/actors/:id/memory/:file — update one agent memory file
+  if (req.method === 'PUT' && url.pathname.match(/^\/api\/actors\/\d+\/memory\/(MEMORY\.md|USER\.md)$/)) {
+    if (!requireAuth(req, res, url)) return;
+    const parts = url.pathname.split('/');
+    const actorId = parseInt(parts[3]);
+    const file = parts[5];
+    const BUDGETS = { 'MEMORY.md': 2200, 'USER.md': 1375 };
+    const data = parseJsonBody(await readBody(req));
+    if (!data || typeof data.content !== 'string') return json(res, { error: 'content (string) required' }, 400);
+    const budget = BUDGETS[file];
+    if (data.content.length > budget) return json(res, { error: `content exceeds ${budget} char budget` }, 400);
+    db.prepare(
+      "INSERT INTO agent_memory (actor_id, file, content, updated_at) VALUES (?,?,?,datetime('now')) ON CONFLICT(actor_id, file) DO UPDATE SET content=excluded.content, updated_at=excluded.updated_at"
+    ).run(actorId, file, data.content);
+    const row = db.prepare('SELECT content, updated_at FROM agent_memory WHERE actor_id=? AND file=?').get(actorId, file);
+    return json(res, { file, content: row.content, char_count: row.content.length, budget, updated_at: row.updated_at });
   }
 
   // PUT /api/actors/:id/config — update name, lang, adapter_config fields
@@ -5526,11 +5637,23 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     }
   }
 
+  // Inject frozen memory snapshot at session start
+  let memorySection = '';
+  {
+    const memRows = db.prepare('SELECT file, content FROM agent_memory WHERE actor_id=? AND content != \'\'').all(ai.actor_id);
+    const roomMem = db.prepare('SELECT content FROM room_memory WHERE room_id=? AND content != \'\'').get(roomId);
+    const parts = [];
+    for (const { file, content } of memRows) parts.push(`### ${file}\n${content}`);
+    if (roomMem) parts.push(`### Room Memory\n${roomMem.content}`);
+    if (parts.length) memorySection = `\n## Memory\n${parts.join('\n\n')}`;
+  }
+
   const fullPrompt = [
     identityLine,
     `Room ID: ${roomId}`,
     L.timeContext(nowUtc),
     othersLine,
+    memorySection,
     `\n${L.historyLabel}:\n${ctx}`,
     replyCtx,
     '\n' + L.replyInstruction,
