@@ -356,6 +356,24 @@ body.sidebar-collapsed #sidebar { display: none; }
   margin: 6px 10px;
 }
 
+.h-room-group-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--h-sans);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--h-ink-faint);
+  padding: 8px 10px 2px;
+  cursor: pointer;
+  user-select: none;
+}
+.h-room-group-header:hover { color: var(--h-ink-mute); }
+.h-room-group-chevron { display: flex; align-items: center; transition: transform 0.15s; }
+.h-room-group-header.collapsed .h-room-group-chevron { transform: rotate(-90deg); }
+
 @media (min-width: 681px) {
   .h-room-delete-btn, .h-room-restore-btn, .h-room-destroy-btn, .h-room-pin-mobile-btn { display: none !important; }
   .h-room-row.swiped .h-room-content { transform: none !important; }

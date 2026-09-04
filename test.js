@@ -866,6 +866,112 @@ function runUnitTests() {
     assert.ok(notice.includes('missing'));
   });
 
+  // groupRooms (replicated pure logic from public/js/rooms/list.js)
+  {
+    const GAP_MS = 30 * 60 * 1000;
+    function _roomTs(room) {
+      const s = room.last_activity || room.created_at;
+      if (!s) return 0;
+      const utc = typeof s === 'string' && !s.endsWith('Z') ? s.trim().replace(' ', 'T') + 'Z' : s;
+      return new Date(utc).getTime();
+    }
+    function groupRooms(rooms, nowMs) {
+      const sorted = [...rooms].sort((a, b) => _roomTs(b) - _roomTs(a));
+      const now = nowMs ?? Date.now();
+      const local = new Date(now);
+      const todayStart = new Date(local.getFullYear(), local.getMonth(), local.getDate()).getTime();
+      const yesterdayStart = todayStart - 86400000;
+      const weekStart = todayStart - 6 * 86400000;
+      const todayRooms = [], yesterdayRooms = [], weekRooms = [], olderRooms = [];
+      for (const r of sorted) {
+        const ts = _roomTs(r);
+        if (ts >= todayStart) todayRooms.push(r);
+        else if (ts >= yesterdayStart) yesterdayRooms.push(r);
+        else if (ts >= weekStart) weekRooms.push(r);
+        else olderRooms.push(r);
+      }
+      const groups = [];
+      if (todayRooms.length) {
+        let splitIdx = -1;
+        for (let i = 0; i < todayRooms.length - 1; i++) {
+          if (_roomTs(todayRooms[i]) - _roomTs(todayRooms[i + 1]) >= GAP_MS) { splitIdx = i; break; }
+        }
+        const headActive = splitIdx >= 0 && (now - _roomTs(todayRooms[0])) < GAP_MS;
+        if (splitIdx >= 0 && headActive) {
+          groups.push({ label: 'Today', key: 'today', rooms: todayRooms.slice(0, splitIdx + 1) });
+          groups.push({ label: 'Earlier today', key: 'earlier-today', rooms: todayRooms.slice(splitIdx + 1) });
+        } else {
+          groups.push({ label: 'Today', key: 'today', rooms: todayRooms });
+        }
+      }
+      if (yesterdayRooms.length) groups.push({ label: 'Yesterday', key: 'yesterday', rooms: yesterdayRooms });
+      if (weekRooms.length) groups.push({ label: 'This week', key: 'this-week', rooms: weekRooms });
+      if (olderRooms.length) groups.push({ label: 'Older', key: 'older', rooms: olderRooms });
+      return groups;
+    }
+
+    const mk = (id, iso) => ({ id, last_activity: iso, created_at: iso });
+    // base "now": 2024-01-10T12:00:00Z
+    const NOW = new Date('2024-01-10T12:00:00Z').getTime();
+    const todayStart = new Date('2024-01-10T00:00:00').getTime() - new Date().getTimezoneOffset() * 60000; // local midnight
+
+    ut('groupRooms — empty list returns []', () => {
+      assert.deepStrictEqual(groupRooms([], NOW), []);
+    });
+
+    ut('groupRooms — single room today goes to Today', () => {
+      const r = mk('a', '2024-01-10T10:00:00Z');
+      const groups = groupRooms([r], NOW);
+      assert.ok(groups.some(g => g.key === 'today' && g.rooms.includes(r)));
+    });
+
+    ut('groupRooms — room from yesterday goes to Yesterday', () => {
+      const r = mk('b', '2024-01-09T10:00:00Z');
+      const groups = groupRooms([r], NOW);
+      assert.ok(groups.some(g => g.key === 'yesterday' && g.rooms.includes(r)));
+    });
+
+    ut('groupRooms — room 5 days ago goes to This week', () => {
+      const r = mk('c', '2024-01-05T10:00:00Z');
+      const groups = groupRooms([r], NOW);
+      assert.ok(groups.some(g => g.key === 'this-week' && g.rooms.includes(r)));
+    });
+
+    ut('groupRooms — room 30 days ago goes to Older', () => {
+      const r = mk('d', '2023-12-10T10:00:00Z');
+      const groups = groupRooms([r], NOW);
+      assert.ok(groups.some(g => g.key === 'older' && g.rooms.includes(r)));
+    });
+
+    ut('groupRooms — rooms sorted newest-first within group', () => {
+      const r1 = mk('e1', '2024-01-10T11:00:00Z');
+      const r2 = mk('e2', '2024-01-10T09:00:00Z');
+      const groups = groupRooms([r2, r1], NOW);
+      const today = groups.find(g => g.key === 'today');
+      assert.strictEqual(today.rooms[0], r1);
+      assert.strictEqual(today.rooms[1], r2);
+    });
+
+    ut('groupRooms — gap ≥30min with recent head → splits Today/Earlier today', () => {
+      // head: 11:45 (15 min before NOW 12:00 → active), tail: 10:00 (gap = 105 min)
+      const head = mk('f1', '2024-01-10T11:45:00Z');
+      const tail = mk('f2', '2024-01-10T10:00:00Z');
+      const groups = groupRooms([head, tail], NOW);
+      assert.ok(groups.find(g => g.key === 'today')?.rooms.includes(head));
+      assert.ok(groups.find(g => g.key === 'earlier-today')?.rooms.includes(tail));
+    });
+
+    ut('groupRooms — gap ≥30min but head inactive → single Today group', () => {
+      // head: 09:00 (3 hours before NOW), so headActive = false
+      const head = mk('g1', '2024-01-10T09:00:00Z');
+      const tail = mk('g2', '2024-01-10T07:00:00Z');
+      const groups = groupRooms([head, tail], NOW);
+      const today = groups.find(g => g.key === 'today');
+      assert.ok(today && today.rooms.length === 2);
+      assert.ok(!groups.find(g => g.key === 'earlier-today'));
+    });
+  }
+
   return { p, f };
 }
 
