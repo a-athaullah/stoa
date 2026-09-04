@@ -1265,6 +1265,19 @@ async function run() {
       pmMessageId = r.body.message_id;
     });
 
+    await test('POST /api/rooms/:id/message — @mention in content does not break response', async () => {
+      if (!pmRoomId || !pmActorId || !pmActorSecret) { console.log('    (skipped)'); return; }
+      const r = await rawReq('POST', `/api/rooms/${pmRoomId}/message`,
+        JSON.stringify({ content: '@NonexistentAgent please review this' }),
+        'application/json',
+        { 'X-Agent-Id': String(pmActorId), 'X-Agent-Secret': pmActorSecret }
+      );
+      assert.strictEqual(r.status, 200, `@mention proactive should still return 200: ${r.status}`);
+      assert.ok(r.body.message_id, 'message_id missing in @mention response');
+      // cleanup extra message
+      await req('DELETE', `/api/messages/${r.body.message_id}`);
+    });
+
     await test('POST /api/rooms/:id/message — wrong secret → 403', async () => {
       if (!pmRoomId || !pmActorId) { console.log('    (skipped)'); return; }
       const r = await rawReq('POST', `/api/rooms/${pmRoomId}/message`,
