@@ -3431,8 +3431,8 @@ async function run() {
     try {
       ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
       await new Promise(r => setTimeout(r, 50));
-      const ackPromise = waitForWsMessage(ws, m => m.type === 'room_setting_ack' && m.key === 'tool_status_mode');
-      ws.send(JSON.stringify({ type: 'set_room_setting', key: 'tool_status_mode', value: 'verb' }));
+      const ackPromise = waitForWsMessage(ws, m => m.type === 'room_setting_ack' && m.key === 'live_status');
+      ws.send(JSON.stringify({ type: 'set_room_setting', key: 'live_status', value: 'verb' }));
       const ack = await ackPromise;
       assert.strictEqual(ack.value, 'verb');
       assert.strictEqual(ack.room_id, roomId);
@@ -3448,8 +3448,8 @@ async function run() {
     try {
       ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
       await new Promise(r => setTimeout(r, 50));
-      const ackPromise = waitForWsMessage(ws, m => m.type === 'room_setting_ack' && m.key === 'tool_status_mode');
-      ws.send(JSON.stringify({ type: 'set_room_setting', key: 'tool_status_mode', value: null }));
+      const ackPromise = waitForWsMessage(ws, m => m.type === 'room_setting_ack' && m.key === 'live_status');
+      ws.send(JSON.stringify({ type: 'set_room_setting', key: 'live_status', value: null }));
       const ack = await ackPromise;
       assert.strictEqual(ack.value, null);
     } finally {
@@ -3481,7 +3481,7 @@ async function run() {
       ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
       await new Promise(r => setTimeout(r, 50));
       const errPromise = waitForWsMessage(ws, m => m.type === 'room_setting_error');
-      ws.send(JSON.stringify({ type: 'set_room_setting', key: 'tool_status_mode', value: 'not_valid' }));
+      ws.send(JSON.stringify({ type: 'set_room_setting', key: 'live_status', value: 'not_valid' }));
       const err = await errPromise;
       assert.ok(err.error.includes('invalid value'), `unexpected error: ${err.error}`);
     } finally {
@@ -3489,16 +3489,16 @@ async function run() {
     }
   });
 
-  await test('set_room_setting push-on-connect — agent receives room settings when it connects', async () => {
+  await test('set_room_setting push-on-connect — agent receives display settings when it connects', async () => {
     if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
     const roomId = testRoomIds[0];
-    // First set a known value
+    // First set a known room-level value
     const browserWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
     try {
       browserWs.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
       await new Promise(r => setTimeout(r, 50));
-      const ackPromise = waitForWsMessage(browserWs, m => m.type === 'room_setting_ack' && m.key === 'tool_status_mode');
-      browserWs.send(JSON.stringify({ type: 'set_room_setting', key: 'tool_status_mode', value: 'off' }));
+      const ackPromise = waitForWsMessage(browserWs, m => m.type === 'room_setting_ack' && m.key === 'tool_progress');
+      browserWs.send(JSON.stringify({ type: 'set_room_setting', key: 'tool_progress', value: 'off' }));
       await ackPromise;
     } finally {
       browserWs.close();
@@ -3523,14 +3523,14 @@ async function run() {
         agentWs2.send(JSON.stringify({ type: 'agent_connect', actor_id: agent.actorId, secret: agent.secret }));
         await readyPromise;
         await new Promise(r => setTimeout(r, 100));
-        const pushed = settingMessages.find(m => m.room_id === roomId && m.key === 'tool_status_mode');
-        assert.ok(pushed, `expected room_setting push for tool_status_mode, got: ${JSON.stringify(settingMessages)}`);
+        const pushed = settingMessages.find(m => m.room_id === roomId && m.key === 'tool_progress');
+        assert.ok(pushed, `expected room_setting push for tool_progress, got: ${JSON.stringify(settingMessages)}`);
         assert.strictEqual(pushed.value, 'off');
       } finally {
         agentWs2.close();
       }
     } finally {
-      agent.ws.close(); // ensure ws closed even if inner steps fail (may already be closed)
+      agent.ws.close();
     }
     // actor cleanup handled by orphanActorIds in teardown
   });

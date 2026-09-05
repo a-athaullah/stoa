@@ -127,13 +127,19 @@ function finalizeMessage(msgId, content, fileUrl, fileName, attachments, aiModel
   const caption = document.getElementById('caption-' + msgId);
   if (caption) caption.remove();
 
-  // Add "done" indicator if there's a process trail
+  // Process trail cleanup (R29: cleanup_progress / tool_progress=new)
   const trail = row.querySelector('.h-process-trail');
   if (trail) {
-    const done = document.createElement('div');
-    done.className = 'h-process-done';
-    done.textContent = 'done';
-    trail.appendChild(done);
+    const isFailed = !!row.querySelector('.h-msg-fail');
+    const shouldClean = !isFailed && (getCleanupProgress() === 'on' || getToolProgress() === 'new');
+    if (shouldClean) {
+      trail.remove();
+    } else {
+      const done = document.createElement('div');
+      done.className = 'h-process-done';
+      done.textContent = 'done';
+      trail.appendChild(done);
+    }
   }
 
   delete streaming[msgId];

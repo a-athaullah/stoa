@@ -950,6 +950,41 @@ function openRoomSettings(room) {
     bmc.appendChild(bmRow);
     panel.appendChild(bmc);
 
+    // ── Display verbosity card (R29)
+    const dc = makeCard('Display', 'control how much progress detail is shown while agents run');
+    const DISPLAY_OPTIONS = [
+      { key: 'tool_progress',    label: 'Tool steps',  opts: [{ v:'all', h:'show all' }, { v:'new', h:'clear on done' }, { v:'off', h:'hide' }] },
+      { key: 'live_status',      label: 'Live status', opts: [{ v:'full', h:'full text' }, { v:'verb', h:'verb only' }, { v:'off', h:'hide' }] },
+      { key: 'cleanup_progress', label: 'Cleanup',     opts: [{ v:'on', h:'clean on done' }, { v:'off', h:'keep trail' }] },
+    ];
+    for (const setting of DISPLAY_OPTIONS) {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:10px;padding-top:8px;flex-wrap:wrap';
+      const lbl = document.createElement('span');
+      lbl.style.cssText = 'font-size:12px;color:var(--h-ink-mute);width:76px;flex-shrink:0';
+      lbl.textContent = setting.label;
+      row.appendChild(lbl);
+      const btnRow = document.createElement('div');
+      btnRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap';
+      const resolvedVal = (setting.key === 'tool_progress' ? getToolProgress() : setting.key === 'live_status' ? getLiveStatus() : getCleanupProgress());
+      for (const opt of setting.opts) {
+        const active = resolvedVal === opt.v;
+        const btn = document.createElement('button');
+        btn.style.cssText = `background:${active ? 'var(--h-accent-subtle,color-mix(in srgb,var(--h-accent) 12%,transparent))' : 'transparent'};border:1px solid ${active ? 'var(--h-accent,var(--h-border))' : 'var(--h-border)'};border-radius:999px;padding:4px 12px;cursor:pointer;font-family:var(--h-sans);font-size:12px;color:${active ? 'var(--h-accent,var(--h-ink))' : 'var(--h-ink-mute)'};display:flex;flex-direction:column;align-items:center;gap:1px`;
+        btn.innerHTML = `<span style="font-weight:${active ? '600' : '400'}">${opt.v}</span><span style="font-size:10px;opacity:.7">${opt.h}</span>`;
+        btn.onclick = () => {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'set_room_setting', key: setting.key, value: opt.v }));
+          }
+          renderBody();
+        };
+        btnRow.appendChild(btn);
+      }
+      row.appendChild(btnRow);
+      dc.appendChild(row);
+    }
+    panel.appendChild(dc);
+
     // ── Scheduled triggers card
     panel.appendChild(renderScheduleCard());
 

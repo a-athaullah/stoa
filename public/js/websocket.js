@@ -73,6 +73,9 @@ function handleWsMessage(msg) {
   if (msg.type === 'system_event') {
     const dominated = ['requesting', 'idle'];
     if (dominated.includes(msg.status)) return;
+    const liveStatus = getLiveStatus();
+    // 'off' — skip display entirely (but still allow done-event cleanup below)
+    if (liveStatus === 'off' && msg.status) return;
     const inner = document.getElementById('messages-inner');
     if (!inner) return;
     const baseName = msg.actor_name || 'Agent';
@@ -83,19 +86,20 @@ function handleWsMessage(msg) {
     if (!msg.status) {
       const isOwnDone = last?.classList.contains('h-system-event') && last.dataset.actor === actorKey;
       if (isOwnDone) {
-        last.textContent = `${displayName} · selesai`;
-        last.dataset.done = '1';
+        if (liveStatus === 'off') { last.remove(); } else { last.textContent = `${displayName} · selesai`; last.dataset.done = '1'; }
       }
       return;
     }
+    // 'verb' — show only the first word of status
+    const statusText = liveStatus === 'verb' ? msg.status.split(/\s+/)[0] : msg.status;
     if (isOwnStatus) {
-      last.textContent = `${displayName} · ${msg.status}`;
+      last.textContent = `${displayName} · ${statusText}`;
       return;
     }
     const el = document.createElement('div');
     el.className = 'h-system-event';
     el.dataset.actor = actorKey;
-    el.textContent = `${displayName} · ${msg.status}`;
+    el.textContent = `${displayName} · ${statusText}`;
     inner.appendChild(el);
     scrollToBottom();
     return;
@@ -173,8 +177,10 @@ function handleWsMessage(msg) {
   }
 
   if (msg.type === 'message_tool') {
-    appendToolStep(msg.message_id, msg.tool);
-    wsScheduleRefresh();
+    if (getToolProgress() !== 'off') {
+      appendToolStep(msg.message_id, msg.tool);
+      wsScheduleRefresh();
+    }
     return;
   }
 
@@ -388,13 +394,20 @@ function handleWsMessage(msg) {
     return;
   }
 
+  if (msg.type === 'display_settings') {
+    applyDisplaySettings(msg.room, msg.global);
+    return;
+  }
+
   if (msg.type === 'room_setting') {
     if (msg.key === 'busy_input_mode') window.currentBusyInputMode = msg.value || 'interrupt';
+    applyRoomDisplaySetting(msg.key, msg.value);
     return;
   }
 
   if (msg.type === 'room_setting_ack') {
     if (msg.key === 'busy_input_mode') window.currentBusyInputMode = msg.value || 'interrupt';
+    applyRoomDisplaySetting(msg.key, msg.value);
     return;
   }
 
