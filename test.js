@@ -4069,22 +4069,22 @@ async function run() {
 
   await test('R29 — GET /api/settings/display — returns defaults', async () => {
     const r = await req('GET', '/api/settings/display');
-    assert.strictEqual(r.tool_progress, 'all');
-    assert.strictEqual(r.live_status, 'full');
-    assert.strictEqual(r.cleanup_progress, 'off');
+    assert.strictEqual(r.body.tool_progress, 'all');
+    assert.strictEqual(r.body.live_status, 'full');
+    assert.strictEqual(r.body.cleanup_progress, 'off');
   });
 
   await test('R29 — PUT /api/settings/display — saves and returns updated', async () => {
     const r = await req('PUT', '/api/settings/display', { tool_progress: 'off', live_status: 'verb' });
-    assert.strictEqual(r.tool_progress, 'off');
-    assert.strictEqual(r.live_status, 'verb');
-    assert.strictEqual(r.cleanup_progress, 'off');
+    assert.strictEqual(r.body.tool_progress, 'off');
+    assert.strictEqual(r.body.live_status, 'verb');
+    assert.strictEqual(r.body.cleanup_progress, 'off');
     // Restore defaults
     await req('PUT', '/api/settings/display', { tool_progress: 'all', live_status: 'full' });
   });
 
   await test('R29 — unauthenticated GET /api/settings/display → 401', async () => {
-    const r = await fetch(`${BASE}/api/settings/display`);
+    const r = await fetch(`http://${HOST}:${PORT}/api/settings/display`);
     assert.strictEqual(r.status, 401);
   });
 
