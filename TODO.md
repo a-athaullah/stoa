@@ -37,7 +37,7 @@ _Urutan eksekusi ditetapkan 2026-09-01 (Ara, approved Aan). Logika: security & b
 - [x] **#16 R27 — Sidebar recency grouping** _(S–M)_ — ✓ PR #91 (v0.28.0): `groupRooms()` pure function, Today/Yesterday/This week/Older buckets, collapsible groups.
 - [x] **#17 R25 — Memory per-room/agent** _(M–L)_ — ✓ PR #92 (v0.28.1): file markdown editable di UI, frozen snapshot per session start, budget char, pending writes approval. Fix double sub-agent trigger (`completed_at IS NOT NULL` discriminator).
 - [x] **#18 R29 — Display verbosity berlapis** _(M)_ — resolusi per-room → global → default; `tool_progress all/new/off`; `cleanup_progress` (run gagal = simpan breadcrumb); `live_status full/verb/off`. ✅ PR #94, v0.28.3
-- [ ] **#19 R30 — Debug share bundle** _(M)_ — tombol "kirim diagnostik": snapshot log sekali baca, force-redact (abaikan preferensi user untuk artefak share), consent eksplisit, envelope berversi, auto-delete.
+- [x] **#19 R30 — Debug share bundle** _(M)_ — tombol "kirim diagnostik": snapshot log sekali baca, force-redact (abaikan preferensi user untuk artefak share), consent eksplisit, envelope berversi, auto-delete. ✅ PR #95, v0.28.4
 
 ## Bug — Ara bubble stuck (tidak ada processing)
 
