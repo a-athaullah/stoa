@@ -171,6 +171,14 @@ function sanitizeResultMeta(raw) {
   return Object.keys(out).length ? JSON.stringify(out) : null;
 }
 
+const DEFAULT_CONTEXT_WINDOW = 200000;
+const MODEL_CONTEXT_LIMITS = {
+  'claude-opus-5': 200000, 'claude-sonnet-5': 200000, 'claude-fable-5-1': 200000,
+  'claude-opus-4-8': 200000, 'claude-opus-4-7': 200000, 'claude-opus-4-6': 200000,
+  'claude-sonnet-4-6': 200000, 'claude-sonnet-4-5': 200000, 'claude-haiku-4-5': 200000,
+};
+function getContextLimit(model) { return MODEL_CONTEXT_LIMITS[model] || DEFAULT_CONTEXT_WINDOW; }
+
 const { escapeRegExp, safeRegexTest, validateRegexPattern } = require('./lib/regex-safety');
 
 function validateConditions(raw) {
@@ -2329,6 +2337,28 @@ const server = http.createServer(async (req, res) => {
     return json(res, { imported_count: imported, skipped_count: skipped });
   }
 
+  // GET /api/rooms/:id/context — context window usage per participant
+  if (req.method === 'GET' && url.pathname.match(/^\/api\/rooms\/\d+\/context$/)) {
+    if (!requireAuth(req, res, url)) return;
+    const roomId = parseInt(url.pathname.split('/')[3]);
+    const sessions = db.prepare(`
+      SELECT s.context_tokens_used, rp.actor_id, a.name AS actor_name
+      FROM ai_sessions s
+      JOIN room_participants rp ON rp.id = s.participant_id
+      JOIN actors a ON a.id = rp.actor_id
+      WHERE s.room_id=? AND s.sub_agent_id IS NULL AND s.context_tokens_used > 0
+      ORDER BY s.id DESC
+    `).all(roomId);
+    const seen = new Set();
+    const participants = [];
+    for (const s of sessions) {
+      if (seen.has(s.actor_id)) continue;
+      seen.add(s.actor_id);
+      participants.push({ actor_id: s.actor_id, actor_name: s.actor_name, context_tokens_used: s.context_tokens_used, context_limit: DEFAULT_CONTEXT_WINDOW });
+    }
+    return json(res, { participants });
+  }
+
   // GET /api/rooms/:id/memory — room memory
   if (req.method === 'GET' && url.pathname.match(/^\/api\/rooms\/\d+\/memory$/)) {
     if (!requireAuth(req, res, url)) return;
@@ -4158,6 +4188,10 @@ wss.on('connection', (ws, req) => {
           broadcast(msg.room_id, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: msg.room_id, content, state: 'system_event', created_at: new Date().toISOString() } });
         }
         broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id });
+        for (const aid of state.completedAgentIds) {
+          db.prepare('UPDATE ai_sessions SET context_tokens_used=0 WHERE room_id=? AND participant_id IN (SELECT id FROM room_participants WHERE actor_id=?)').run(msg.room_id, aid);
+          broadcast(msg.room_id, { type: 'context_update', room_id: msg.room_id, actor_id: aid, context_tokens_used: 0, context_limit: DEFAULT_CONTEXT_WINDOW, model: null });
+        }
       } else {
         broadcast(msg.room_id, { type: 'compact_progress', room_id: msg.room_id, completed: state.completed, total: state.total, completed_participant_ids: state.completedParticipantIds });
       }
@@ -4464,6 +4498,17 @@ wss.on('connection', (ws, req) => {
         );
       } catch (e) {
         console.error('[usage_report] insert failed:', e.message);
+      }
+      // Context window tracking: total input tokens ≈ current context fill
+      const contextTokens = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+      if (contextTokens > 0 && msg.room_id) {
+        const sess = db.prepare('SELECT id FROM ai_sessions WHERE room_id=? AND participant_id IN (SELECT id FROM room_participants WHERE actor_id=?) AND sub_agent_id IS NULL ORDER BY id DESC LIMIT 1').get(msg.room_id, agentActorId);
+        if (sess) {
+          db.prepare('UPDATE ai_sessions SET context_tokens_used=? WHERE id=?').run(contextTokens, sess.id);
+          const contextLimit = getContextLimit(model);
+          const actorRow = db.prepare('SELECT name FROM actors WHERE id=?').get(agentActorId);
+          broadcast(msg.room_id, { type: 'context_update', room_id: msg.room_id, actor_id: agentActorId, actor_name: actorRow?.name, context_tokens_used: contextTokens, context_limit: contextLimit, model });
+        }
       }
     }
 
