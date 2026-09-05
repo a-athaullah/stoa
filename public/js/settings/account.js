@@ -1,5 +1,52 @@
+async function sLoadDisplayDefaults() {
+  const container = document.getElementById('s-display-controls');
+  if (!container) return;
+  let current = { tool_progress: 'all', live_status: 'full', cleanup_progress: 'off' };
+  try { const d = await fjson('/api/settings/display'); Object.assign(current, d); } catch {}
+
+  const DISPLAY_OPTS = [
+    { key: 'tool_progress',    label: 'Tool steps',  opts: [{ v:'all', h:'show all' }, { v:'new', h:'clear on done' }, { v:'off', h:'hide' }] },
+    { key: 'live_status',      label: 'Live status', opts: [{ v:'full', h:'full text' }, { v:'verb', h:'verb only' }, { v:'off', h:'hide' }] },
+    { key: 'cleanup_progress', label: 'Cleanup',     opts: [{ v:'on', h:'clean on done' }, { v:'off', h:'keep trail' }] },
+  ];
+
+  function render() {
+    container.innerHTML = '';
+    for (const setting of DISPLAY_OPTS) {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--h-border)';
+      const lbl = document.createElement('span');
+      lbl.style.cssText = 'font-size:12.5px;color:var(--h-ink-mute);width:88px;flex-shrink:0';
+      lbl.textContent = setting.label;
+      row.appendChild(lbl);
+      const btnRow = document.createElement('div');
+      btnRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap';
+      for (const opt of setting.opts) {
+        const active = current[setting.key] === opt.v;
+        const btn = document.createElement('button');
+        btn.style.cssText = `background:${active ? 'var(--h-accent-subtle,color-mix(in srgb,var(--h-accent) 12%,transparent))' : 'transparent'};border:1px solid ${active ? 'var(--h-accent,var(--h-border))' : 'var(--h-border)'};border-radius:999px;padding:4px 12px;cursor:pointer;font-family:var(--h-sans);font-size:12px;color:${active ? 'var(--h-accent,var(--h-ink))' : 'var(--h-ink-mute)'};display:flex;flex-direction:column;align-items:center;gap:1px`;
+        btn.innerHTML = `<span style="font-weight:${active ? '600' : '400'}">${opt.v}</span><span style="font-size:10px;opacity:.7">${opt.h}</span>`;
+        btn.onclick = async () => {
+          current[setting.key] = opt.v;
+          render();
+          try {
+            await fetch('/api/settings/display', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ [setting.key]: opt.v }) });
+            // Update global defaults in active display module
+            if (typeof applyGlobalDefaults === 'function') applyGlobalDefaults(current);
+          } catch { showToast('Failed to save display setting', { error: true }); }
+        };
+        btnRow.appendChild(btn);
+      }
+      row.appendChild(btnRow);
+      container.appendChild(row);
+    }
+  }
+  render();
+}
+
 async function sLoadGeneralTab() {
   sRenderReadingControls();
+  sLoadDisplayDefaults();
   try {
     const user = await fjson('/api/auth/me');
     document.getElementById('s-auth-email-input').value = user.email || '';
