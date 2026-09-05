@@ -32,7 +32,7 @@ async function sLoadDisplayDefaults() {
           try {
             await fetch('/api/settings/display', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ [setting.key]: opt.v }) });
             // Update global defaults in active display module
-            if (typeof applyDisplaySettings === 'function') applyDisplaySettings(null, current);
+            if (typeof applyGlobalDefaults === 'function') applyGlobalDefaults(current);
           } catch { showToast('Failed to save display setting', { error: true }); }
         };
         btnRow.appendChild(btn);

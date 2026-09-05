@@ -30,6 +30,11 @@ function applyRoomDisplaySetting(key, value) {
   }
 }
 
+// Update only global defaults (e.g. from Account Settings save) without touching room overrides
+function applyGlobalDefaults(global) {
+  if (global) _displayGlobal = { ..._DISPLAY_BUILT_IN, ...global };
+}
+
 // Reset when leaving a room
 function clearRoomDisplay() {
   _displayRoom = {};

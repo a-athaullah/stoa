@@ -4064,6 +4064,30 @@ async function run() {
     testPlatformId = null;
   }
 
+  // ── R29: Display settings ──
+  console.log('\n[R29: Display Settings]');
+
+  await test('R29 — GET /api/settings/display — returns defaults', async () => {
+    const r = await req('GET', '/api/settings/display');
+    assert.strictEqual(r.tool_progress, 'all');
+    assert.strictEqual(r.live_status, 'full');
+    assert.strictEqual(r.cleanup_progress, 'off');
+  });
+
+  await test('R29 — PUT /api/settings/display — saves and returns updated', async () => {
+    const r = await req('PUT', '/api/settings/display', { tool_progress: 'off', live_status: 'verb' });
+    assert.strictEqual(r.tool_progress, 'off');
+    assert.strictEqual(r.live_status, 'verb');
+    assert.strictEqual(r.cleanup_progress, 'off');
+    // Restore defaults
+    await req('PUT', '/api/settings/display', { tool_progress: 'all', live_status: 'full' });
+  });
+
+  await test('R29 — unauthenticated GET /api/settings/display → 401', async () => {
+    const r = await fetch(`${BASE}/api/settings/display`);
+    assert.strictEqual(r.status, 401);
+  });
+
   // Teardown — delete all test rooms and actors created during the run
   console.log('\n[Test Teardown]');
   await test('Teardown — delete all test rooms', async () => {
