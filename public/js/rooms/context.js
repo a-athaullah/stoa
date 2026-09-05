@@ -58,7 +58,8 @@ function updateContextBar() {
       .sort((a, b) => b.context_tokens_used - a.context_tokens_used)
       .map(e => {
         const p = e.context_limit > 0 ? Math.round(e.context_tokens_used / e.context_limit * 100) : 0;
-        return `<div style="display:flex;justify-content:space-between;gap:16px;padding:2px 0"><span>${e.actor_name || 'agent'}</span><span style="color:var(--h-ink-mute)">${formatTokens(e.context_tokens_used)} / ${formatTokens(e.context_limit)} (${p}%)</span></div>`;
+        const name = (e.actor_name || 'agent').replace(/</g, '&lt;');
+        return `<div style="display:flex;justify-content:space-between;gap:16px;padding:2px 0"><span>${name}</span><span style="color:var(--h-ink-mute)">${formatTokens(e.context_tokens_used)} / ${formatTokens(e.context_limit)} (${p}%)</span></div>`;
       }).join('');
   }
   bar.appendChild(tooltip);
@@ -92,7 +93,3 @@ function loadContextState(roomId) {
   }).catch(() => {});
 }
 
-function clearContextState() {
-  Object.keys(contextState).forEach(k => delete contextState[k]);
-  updateContextBar();
-}
