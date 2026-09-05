@@ -46,7 +46,7 @@ _Urutan eksekusi ditetapkan 2026-09-01 (Ara, approved Aan). Logika: security & b
 ## Batch 5 — Carry-over `[exec 20–21]`
 
 - [ ] **#20 Webhook/API** — HTTP endpoint untuk trigger agent dari external (CI/CD, monitoring, script). Masih relevan; belum ada endpoint trigger generik (baru automation Slack + proactive message agent-auth). Naikkan kalau muncul use case CI/CD konkret.
-- [ ] **#21 Context window indicator** — indikator visual saat conversation mendekati batas context. Sebagian tertutup oleh configurable auto-compact threshold (Settings); R14+R29 mengecilkan kebutuhannya lagi.
+- [x] **#21 Context window indicator** — ✓ PR #93 (v0.28.2): thin bar di bawah compact bar, expand on hover, oklch color gradient (hijau→kuning→orange→merah), per-agent tooltip, reset on compact. Migration `context_tokens_used` di `ai_sessions`, `GET /api/rooms/:id/context` endpoint, WebSocket `context_update` broadcast.
 
 ## Done (audit 2026-09-02)
 
