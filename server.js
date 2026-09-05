@@ -894,11 +894,16 @@ function setSetting(key, value) {
 }
 
 // R23: room-scoped settings. value=null deletes the entry.
-const ALLOWED_ROOM_SETTINGS = new Set(['tool_status_mode', 'busy_input_mode']);
+// R29: display verbosity settings (tool_progress, live_status, cleanup_progress)
+const ALLOWED_ROOM_SETTINGS = new Set(['tool_progress', 'live_status', 'cleanup_progress', 'busy_input_mode']);
 const ROOM_SETTING_VALUES = {
-  tool_status_mode: new Set(['full', 'verb', 'off']),
-  busy_input_mode:  new Set(['interrupt', 'queue', 'steer']),
+  tool_progress:     new Set(['all', 'new', 'off']),
+  live_status:       new Set(['full', 'verb', 'off']),
+  cleanup_progress:  new Set(['on', 'off']),
+  busy_input_mode:   new Set(['interrupt', 'queue', 'steer']),
 };
+const DISPLAY_DEFAULTS = { tool_progress: 'all', live_status: 'full', cleanup_progress: 'off' };
+const ALLOWED_GLOBAL_DISPLAY = new Set(['tool_progress', 'live_status', 'cleanup_progress']);
 function setRoomSetting(roomId, key, value) {
   for (const k of _settingCache.keys()) { if (k.startsWith(`${key}:${roomId}`)) _settingCache.delete(k); }
   const existing = db.prepare("SELECT id FROM settings WHERE scope='room' AND scope_id=? AND key_name=?").get(roomId, key);
@@ -2211,6 +2216,33 @@ const server = http.createServer(async (req, res) => {
       }
     }
     return json(res, { ok: true });
+  }
+
+  // ── R29: Global display settings ──
+  if (req.method === 'GET' && url.pathname === '/api/settings/display') {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    const rows = db.prepare("SELECT key_name, value FROM settings WHERE scope='global' AND key_name IN ('tool_progress','live_status','cleanup_progress')").all();
+    const result = { ...DISPLAY_DEFAULTS };
+    for (const r of rows) result[r.key_name] = r.value;
+    return json(res, result);
+  }
+
+  if (req.method === 'PUT' && url.pathname === '/api/settings/display') {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    const body = parseJsonBody(await readBody(req));
+    if (!body) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
+    for (const key of Object.keys(body)) {
+      if (!ALLOWED_GLOBAL_DISPLAY.has(key)) continue;
+      const allowed = ROOM_SETTING_VALUES[key];
+      if (allowed && !allowed.has(body[key])) continue;
+      const existing = db.prepare("SELECT id FROM settings WHERE scope='global' AND key_name=?").get(key);
+      if (existing) db.prepare('UPDATE settings SET value=? WHERE id=?').run(body[key], existing.id);
+      else db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', 0, ?, ?)").run(key, body[key]);
+    }
+    const rows = db.prepare("SELECT key_name, value FROM settings WHERE scope='global' AND key_name IN ('tool_progress','live_status','cleanup_progress')").all();
+    const result = { ...DISPLAY_DEFAULTS };
+    for (const r of rows) result[r.key_name] = r.value;
+    return json(res, result);
   }
 
   // ── R26: DB health ──
@@ -3815,6 +3847,14 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ type: 'compact_start', room_id: subscribedRoom, total: cs.total, participants: cs.targets || [] }));
         if (cs.completed > 0) ws.send(JSON.stringify({ type: 'compact_progress', room_id: subscribedRoom, completed: cs.completed, total: cs.total, completed_participant_ids: cs.completedParticipantIds || [] }));
       }
+      // R29: push display settings (room-scoped + global defaults)
+      const roomDisplayRows = db.prepare("SELECT key_name, value FROM settings WHERE scope='room' AND scope_id=? AND key_name IN ('tool_progress','live_status','cleanup_progress')").all(subscribedRoom);
+      const globalDisplayRows = db.prepare("SELECT key_name, value FROM settings WHERE scope='global' AND key_name IN ('tool_progress','live_status','cleanup_progress')").all();
+      const globalDisplay = { ...DISPLAY_DEFAULTS };
+      for (const r of globalDisplayRows) globalDisplay[r.key_name] = r.value;
+      const roomDisplay = {};
+      for (const r of roomDisplayRows) roomDisplay[r.key_name] = r.value;
+      ws.send(JSON.stringify({ type: 'display_settings', room_id: subscribedRoom, room: roomDisplay, global: globalDisplay }));
     }
 
     if (msg.type === 'send_message') {
@@ -4809,6 +4849,10 @@ wss.on('connection', (ws, req) => {
         if (aw?.readyState === 1) aw.send(JSON.stringify({ type: 'room_setting', room_id: subscribedRoom, key, value: value ?? null }));
       }
       ws.send(JSON.stringify({ type: 'room_setting_ack', room_id: subscribedRoom, key, value: value ?? null }));
+      // R29: broadcast display setting changes to all room clients
+      if (ALLOWED_GLOBAL_DISPLAY.has(key)) {
+        broadcast(subscribedRoom, { type: 'room_setting', room_id: subscribedRoom, key, value: value ?? null });
+      }
     }
 
     // ── Connector Action API ────────────────────────────────────────────────
