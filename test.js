@@ -4088,6 +4088,72 @@ async function run() {
     assert.strictEqual(r.status, 401);
   });
 
+  // ── R30: Debug share bundle ──
+  console.log('\n[R30: Debug Share Bundle]');
+  let _debugBundleId = null;
+
+  await test('R30 — POST /api/debug/bundle without consent → 400', async () => {
+    const r = await req('POST', '/api/debug/bundle', {});
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('R30 — POST /api/debug/bundle with consent → creates bundle', async () => {
+    const r = await req('POST', '/api/debug/bundle', { consent: true });
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.id);
+    assert.ok(r.body.created_at);
+    assert.ok(r.body.expires_at);
+    assert.ok(r.body.size_bytes > 0);
+    _debugBundleId = r.body.id;
+  });
+
+  await test('R30 — GET /api/debug/bundles — lists active bundles', async () => {
+    const r = await req('GET', '/api/debug/bundles');
+    assert.strictEqual(r.status, 200);
+    assert.ok(Array.isArray(r.body));
+    const found = r.body.find(b => b.id === _debugBundleId);
+    assert.ok(found, 'created bundle should appear in list');
+  });
+
+  await test('R30 — GET /api/debug/bundle/:id — read-once download', async () => {
+    const r = await fetch(`http://${HOST}:${PORT}/api/debug/bundle/${_debugBundleId}`, { headers: { Cookie: sessionCookie } });
+    assert.strictEqual(r.status, 200);
+    const disposition = r.headers.get('content-disposition');
+    assert.ok(disposition && disposition.includes('attachment'));
+    const envelope = await r.json();
+    assert.strictEqual(envelope.format, 1);
+    assert.strictEqual(envelope.redacted, true);
+    assert.ok(envelope.stoa_version);
+    assert.ok(envelope.data);
+    assert.ok(envelope.data.health);
+    assert.ok(envelope.data.counts);
+  });
+
+  await test('R30 — GET /api/debug/bundle/:id again → 410 (already read)', async () => {
+    const r = await fetch(`http://${HOST}:${PORT}/api/debug/bundle/${_debugBundleId}`, { headers: { Cookie: sessionCookie } });
+    assert.strictEqual(r.status, 410);
+  });
+
+  await test('R30 — DELETE /api/debug/bundle/:id — create and delete', async () => {
+    const cr = await req('POST', '/api/debug/bundle', { consent: true });
+    assert.strictEqual(cr.status, 200);
+    const dr = await req('DELETE', `/api/debug/bundle/${cr.body.id}`);
+    assert.strictEqual(dr.status, 200);
+    assert.strictEqual(dr.body.deleted, true);
+    const lr = await req('GET', '/api/debug/bundles');
+    const found = lr.body.find(b => b.id === cr.body.id);
+    assert.ok(!found, 'deleted bundle should not appear in list');
+  });
+
+  await test('R30 — unauthenticated POST /api/debug/bundle → 401', async () => {
+    const r = await fetch(`http://${HOST}:${PORT}/api/debug/bundle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ consent: true }),
+    });
+    assert.strictEqual(r.status, 401);
+  });
+
   // Teardown — delete all test rooms and actors created during the run
   console.log('\n[Test Teardown]');
   await test('Teardown — delete all test rooms', async () => {
