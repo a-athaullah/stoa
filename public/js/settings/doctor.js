@@ -25,6 +25,7 @@ async function sLoadDoctorTab() {
   }
   _doctorLoading = false;
   _renderDoctor();
+  _debugBundleLoadList();
 }
 
 function _renderDoctor() {
@@ -97,6 +98,7 @@ function _renderDoctor() {
     ${section('Counts', countRows)}
     ${section('Health Checks', checksHtml || '<div style="font-size:12.5px;color:var(--h-ink-faint)">No checks available.</div>')}
     ${_renderImportSection()}
+    ${_renderDebugBundleSection()}
   `;
 }
 
@@ -112,6 +114,93 @@ function _renderImportSection() {
       </div>
       <div id="doctor-import-result" style="margin-top:8px;font-size:12.5px;color:var(--h-ink-mute)"></div>
     </div>`;
+}
+
+function _renderDebugBundleSection() {
+  return `
+    <div style="margin-bottom:20px">
+      <div style="font-size:11px;font-weight:600;color:var(--h-ink-mute);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Debug Bundle</div>
+      <div style="font-size:12.5px;color:var(--h-ink-mute);margin-bottom:10px">Create a diagnostic snapshot for troubleshooting. All secrets are force-redacted. No message content is included.</div>
+      <div id="debug-bundle-actions" style="margin-bottom:8px">
+        <button id="debug-bundle-create-btn" onclick="_debugBundleShowConsent()" style="background:none;border:1px solid var(--h-border);border-radius:6px;padding:6px 14px;font-size:12.5px;color:var(--h-ink);cursor:pointer">Create debug bundle</button>
+      </div>
+      <div id="debug-bundle-consent" style="display:none;border:1px solid var(--h-border);border-radius:8px;padding:14px;margin-bottom:10px;background:var(--h-code-bg,oklch(0.97 0 0))">
+        <div style="font-size:12.5px;color:var(--h-ink);margin-bottom:10px;line-height:1.5">
+          This bundle will contain:<br>
+          &bull; Database health stats &amp; table counts<br>
+          &bull; Room and agent metadata (no message content)<br>
+          &bull; Recent server log lines (force-redacted)<br><br>
+          The bundle will be <b>readable only once</b>, then auto-deleted.<br>
+          Expires in 24 hours. All API keys, emails, and secrets are redacted.
+        </div>
+        <div style="display:flex;gap:8px">
+          <button onclick="_debugBundleHideConsent()" style="background:none;border:1px solid var(--h-border);border-radius:6px;padding:5px 12px;font-size:12px;color:var(--h-ink-mute);cursor:pointer">Cancel</button>
+          <button onclick="_debugBundleCreate()" style="background:var(--h-accent,oklch(0.55 0.15 250));border:none;border-radius:6px;padding:5px 12px;font-size:12px;color:#fff;cursor:pointer">I understand, create bundle</button>
+        </div>
+      </div>
+      <div id="debug-bundle-list"></div>
+      <div id="debug-bundle-status" style="font-size:12.5px;color:var(--h-ink-mute);margin-top:4px"></div>
+    </div>`;
+}
+
+function _debugBundleShowConsent() {
+  const el = document.getElementById('debug-bundle-consent');
+  if (el) el.style.display = 'block';
+}
+function _debugBundleHideConsent() {
+  const el = document.getElementById('debug-bundle-consent');
+  if (el) el.style.display = 'none';
+}
+
+async function _debugBundleCreate() {
+  _debugBundleHideConsent();
+  const status = document.getElementById('debug-bundle-status');
+  if (status) { status.textContent = 'Creating bundle...'; status.style.color = 'var(--h-ink-mute)'; }
+  try {
+    const r = await fetch('/api/debug/bundle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ consent: true }) });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error || r.statusText); }
+    const data = await r.json();
+    if (status) { status.textContent = 'Bundle created.'; status.style.color = 'var(--h-green,oklch(0.65 0.16 145))'; }
+    _debugBundleLoadList();
+  } catch (e) {
+    if (status) { status.textContent = `Failed: ${e.message}`; status.style.color = 'var(--h-red,oklch(0.6 0.18 27))'; }
+  }
+}
+
+async function _debugBundleLoadList() {
+  const container = document.getElementById('debug-bundle-list');
+  if (!container) return;
+  try {
+    const bundles = await fjson('/api/debug/bundles');
+    if (!bundles.length) { container.innerHTML = ''; return; }
+    container.innerHTML = bundles.map(b => {
+      const expires = new Date(b.expires_at + 'Z');
+      const remaining = Math.max(0, Math.round((expires - Date.now()) / 60000));
+      return `<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-top:1px solid var(--h-hair-soft)">
+        <span style="font-size:11.5px;font-family:var(--h-mono);color:var(--h-ink-mute)">${b.id.slice(0, 8)}</span>
+        <span style="font-size:11px;color:var(--h-ink-faint)">${_fmtBytes(b.size_bytes)} &middot; expires ${remaining}m</span>
+        <button onclick="_debugBundleDownload('${b.id}')" style="margin-left:auto;background:none;border:1px solid var(--h-border);border-radius:4px;padding:2px 8px;font-size:11px;color:var(--h-ink);cursor:pointer">download</button>
+        <button onclick="_debugBundleDelete('${b.id}')" style="background:none;border:1px solid var(--h-border);border-radius:4px;padding:2px 8px;font-size:11px;color:var(--h-red,oklch(0.6 0.18 27));cursor:pointer">delete</button>
+      </div>`;
+    }).join('');
+  } catch {}
+}
+
+function _debugBundleDownload(id) {
+  const a = document.createElement('a');
+  a.href = `/api/debug/bundle/${id}`;
+  a.download = `stoa-debug-${id.slice(0, 8)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => _debugBundleLoadList(), 1000);
+}
+
+async function _debugBundleDelete(id) {
+  try {
+    await fetch(`/api/debug/bundle/${id}`, { method: 'DELETE' });
+    _debugBundleLoadList();
+  } catch {}
 }
 
 async function _doctorHandleImport(input) {

@@ -7,6 +7,7 @@ const { WebSocketServer } = require('ws');
 const db = require('./db');
 const { ClaudeSession } = require('./claude-session');
 const { validateScheduleSpec, computeNextRun, nextRunAfterSkip } = require('./lib/schedule');
+const { collectDiagnostics, buildEnvelope, gcDebugBundles } = require('./lib/debug-bundle');
 const fallbackSessions = new Map();
 
 // R15: unique identifier for this server boot. Sessions tagged with a different
@@ -842,6 +843,8 @@ function gcTick() {
         const deleted = reclaimUploads(orphans);
         console.log(`[gc] reclaimed ${deleted} orphaned upload(s)`);
       }
+      const bundlesCleaned = gcDebugBundles(db);
+      if (bundlesCleaned) console.log(`[gc] cleaned ${bundlesCleaned} debug bundle(s)`);
     } catch (e) { console.error('[gc] tick error:', e.message); }
   });
 }
@@ -2286,6 +2289,80 @@ const server = http.createServer(async (req, res) => {
       return json(res, { page_count: pageCount, page_size: pageSize, size_bytes: sizeBytes, freelist_pages: freelistPages, wal_size_bytes: walSizeBytes, journal_mode: journalMode, counts, checks });
     } catch (e) {
       return json(res, { error: e.message }, 500);
+    }
+  }
+
+  // ── R30: Debug share bundle ──
+  if (req.method === 'POST' && url.pathname === '/api/debug/bundle') {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    const body = parseJsonBody(await readBody(req));
+    if (!body || body.consent !== true) return json(res, { error: 'explicit consent required (consent: true)' }, 400);
+    try {
+      const id = crypto.randomUUID();
+      const diagnostics = collectDiagnostics(db);
+      const envelope = buildEnvelope(diagnostics);
+      const debugDir = path.join(UPLOADS_DIR, 'debug');
+      if (!fs.existsSync(debugDir)) fs.mkdirSync(debugDir, { recursive: true });
+      const filePath = path.join(debugDir, `${id}.json`);
+      const content = JSON.stringify(envelope, null, 2);
+      fs.writeFileSync(filePath, content);
+      const now = new Date().toISOString();
+      const expires = new Date(Date.now() + 24 * 3600_000).toISOString();
+      db.prepare(
+        `INSERT INTO debug_bundles (id, format, redacted, read_count, max_reads, created_at, expires_at, file_path, size_bytes, consent_at) VALUES (?, 1, 1, 0, 1, ?, ?, ?, ?, ?)`
+      ).run(id, now, expires, filePath, Buffer.byteLength(content), now);
+      return json(res, { id, created_at: now, expires_at: expires, size_bytes: Buffer.byteLength(content) });
+    } catch (e) {
+      return json(res, { error: e.message }, 500);
+    }
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/debug/bundles') {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    const bundles = db.prepare(
+      "SELECT id, format, read_count, max_reads, created_at, expires_at, size_bytes FROM debug_bundles WHERE expires_at > datetime('now') AND read_count < max_reads ORDER BY created_at DESC"
+    ).all();
+    return json(res, bundles);
+  }
+
+  const debugBundleMatch = url.pathname.match(/^\/api\/debug\/bundle\/([a-f0-9\-]{36})$/);
+  if (debugBundleMatch) {
+    const bundleId = debugBundleMatch[1];
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+
+    if (req.method === 'GET') {
+      const bundle = db.prepare('SELECT * FROM debug_bundles WHERE id=?').get(bundleId);
+      if (!bundle) return json(res, { error: 'not found' }, 404);
+      if (bundle.read_count >= bundle.max_reads) {
+        try { fs.unlinkSync(bundle.file_path); } catch {}
+        db.prepare('DELETE FROM debug_bundles WHERE id=?').run(bundleId);
+        return json(res, { error: 'bundle already read (one-time download)' }, 410);
+      }
+      db.prepare('UPDATE debug_bundles SET read_count = read_count + 1 WHERE id=?').run(bundleId);
+      try {
+        const content = fs.readFileSync(bundle.file_path, 'utf8');
+        res.writeHead(200, {
+          'Content-Type': 'application/json',
+          'Content-Disposition': `attachment; filename="stoa-debug-${bundleId.slice(0, 8)}.json"`,
+        });
+        res.end(content);
+        if (bundle.read_count + 1 >= bundle.max_reads) {
+          setImmediate(() => {
+            try { fs.unlinkSync(bundle.file_path); } catch {}
+          });
+        }
+      } catch (e) {
+        return json(res, { error: 'bundle file missing' }, 404);
+      }
+      return;
+    }
+
+    if (req.method === 'DELETE') {
+      const bundle = db.prepare('SELECT file_path FROM debug_bundles WHERE id=?').get(bundleId);
+      if (!bundle) return json(res, { error: 'not found' }, 404);
+      try { fs.unlinkSync(bundle.file_path); } catch {}
+      db.prepare('DELETE FROM debug_bundles WHERE id=?').run(bundleId);
+      return json(res, { deleted: true });
     }
   }
 
