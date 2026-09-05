@@ -4032,6 +4032,32 @@ async function run() {
     assert.strictEqual(r.status, 401);
   });
 
+  // ── Context window indicator ────────────────────────────────────────────
+  console.log('\n[Context Window Indicator]');
+
+  await test('Context — GET /api/rooms/:id/context — returns participants array', async () => {
+    const roomId = testRoomIds[0] || 1;
+    const r = await req('GET', `/api/rooms/${roomId}/context`);
+    assert.strictEqual(r.status, 200);
+    assert(Array.isArray(r.body.participants));
+    for (const p of r.body.participants) {
+      assert(typeof p.actor_id === 'number');
+      assert(typeof p.context_tokens_used === 'number');
+      assert(typeof p.context_limit === 'number');
+    }
+  });
+
+  await test('Context — GET /api/rooms/999999/context — empty participants for nonexistent room', async () => {
+    const r = await req('GET', '/api/rooms/999999/context');
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.participants.length, 0);
+  });
+
+  await test('Context — unauthenticated GET /api/rooms/:id/context → 401', async () => {
+    const r = await rawReq('GET', '/api/rooms/1/context', null, 'application/json', { Cookie: '' });
+    assert.strictEqual(r.status, 401);
+  });
+
   // Teardown — delete test platform if still set (e.g. DELETE test was skipped/failed)
   if (testPlatformId) {
     await req('DELETE', `/api/ai/platforms/${encodeURIComponent(testPlatformId)}`).catch(() => {});

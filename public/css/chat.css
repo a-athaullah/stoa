@@ -139,6 +139,63 @@ html.dark .h-faded-mark { opacity: 0.12; }
   100% { background-position: -200% 0; }
 }
 
+/* ── Context window bar ──────────────────────────────────────────────── */
+.h-context-bar {
+  height: 0;
+  width: 100%;
+  flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
+  transition: height .3s ease, opacity .3s ease;
+  cursor: pointer;
+}
+.h-context-bar.visible {
+  height: 3px;
+}
+.h-context-bar .h-context-fill {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  transition: width .6s ease, background .4s ease;
+  border-radius: 0 1.5px 1.5px 0;
+}
+.h-context-bar .h-context-label {
+  display: none;
+  position: absolute;
+  right: 8px; top: 50%;
+  transform: translateY(-50%);
+  font-family: var(--h-sans);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--h-ink-faint);
+  pointer-events: none;
+}
+.h-context-bar:hover {
+  height: 18px;
+}
+.h-context-bar:hover .h-context-label {
+  display: block;
+}
+.h-context-bar .h-context-tooltip {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 8px;
+  background: var(--h-surface);
+  border: 1px solid var(--h-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  box-shadow: 0 4px 12px rgba(0,0,0,.15);
+  font-family: var(--h-sans);
+  font-size: 12px;
+  color: var(--h-ink);
+  z-index: 50;
+  white-space: nowrap;
+  min-width: 180px;
+}
+.h-context-bar:hover .h-context-tooltip {
+  display: block;
+}
+
 .h-compact-btn.active {
   color: oklch(0.62 0.14 250);
 }

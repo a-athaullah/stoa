@@ -46,6 +46,7 @@ async function openRoom(room) {
   renderChatHeader(room, parts);
   renderComposerSeal();
   if (typeof updateModelSelector === 'function') updateModelSelector(room, parts);
+  loadContextState(room.id);
   fjson(`/api/rooms/${room.id}/skills`).then(s => { allSkills = s; }).catch(e => { allSkills = []; console.error('Failed to load skills for room', room.id, e); });
   fjson(`/api/rooms/${room.id}/sub-agents`).then(sa => { roomSubAgentsCache[room.id] = sa.linked || []; }).catch(e => { roomSubAgentsCache[room.id] = []; console.error('[room] failed to load sub-agents', room.id, e); });
 

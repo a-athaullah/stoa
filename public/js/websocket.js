@@ -250,6 +250,11 @@ function handleWsMessage(msg) {
     return;
   }
 
+  if (msg.type === 'context_update') {
+    handleContextUpdate(msg);
+    return;
+  }
+
   if (msg.type === 'compact_error') {
     if (msg.room_id === currentRoomId) { hideCompactBar(); showToast(msg.error || 'Compact failed', { error: true }); }
     return;
