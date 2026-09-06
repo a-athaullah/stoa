@@ -16,6 +16,7 @@ function initAppNav() {
       } else if (APP_NAV_SETTINGS_TABS.includes(nav)) {
         openSettingsTab(nav);
       }
+      el.blur();
     });
   });
 }
