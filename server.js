@@ -2149,7 +2149,7 @@ const server = http.createServer(async (req, res) => {
       max_ai_turns: parseInt(process.env.MAX_AI_TURNS) || 5,
       max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1,
       session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5,
-      auto_compact_threshold_kb: parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB) || 500,
+      auto_compact_threshold_kb: parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB) || 300,
       cleanup_cron_hour: parseInt(process.env.CLEANUP_CRON_HOUR) || 10,
       cleanup_max_age_hours: parseInt(process.env.CLEANUP_MAX_AGE_HOURS) || 24, max_pinned_rooms: parseInt(process.env.MAX_PINNED_ROOMS) || 3,
     });
@@ -4076,7 +4076,7 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ type: 'force_update' }));
       }
       ws.send(JSON.stringify({ type: 'agent_ready' }));
-      ws.send(JSON.stringify({ type: 'set_config', max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1, session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5, auto_compact_threshold_kb: parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB) || 500 }));
+      ws.send(JSON.stringify({ type: 'set_config', max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1, session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5, auto_compact_threshold_kb: parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB) || 300 }));
       const connectedActor = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, created_at FROM actors WHERE id=?').get(agentActorId);
       if (connectedActor) broadcastGlobal({ type: 'actor_status', actor: { ...connectedActor, online: true, client_version: msg.client_version || null } });
       // R23: push all room settings so agent is always in sync regardless of connect order.
