@@ -1,3 +1,72 @@
+/* ── App-level nav sidebar ───────────────────────────── */
+#app-nav {
+  width: 44px;
+  flex: 0 0 44px;
+  background: var(--h-sidebar-bg);
+  border-right: 1px solid var(--h-hairline);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px 0;
+  gap: 2px;
+  overflow: hidden;
+  z-index: 10;
+}
+
+.app-nav-item {
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--h-ink-faint);
+  position: relative;
+  transition: color .12s, background .12s;
+  flex: 0 0 auto;
+  padding: 0;
+}
+.app-nav-item:hover { color: var(--h-ink); background: var(--h-surface-hi); }
+.app-nav-item.active { color: var(--h-ink); background: color-mix(in srgb, var(--h-surface) 80%, transparent); }
+.app-nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: -4px;
+  top: 7px;
+  bottom: 7px;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: var(--h-accent, oklch(62% .17 250));
+}
+
+.app-nav-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  cursor: default;
+}
+.app-nav-avatar img { width: 100%; height: 100%; object-fit: cover; }
+
+.app-nav-sep {
+  width: 22px;
+  height: 1px;
+  background: var(--h-hair-soft);
+  margin: 4px 0;
+  flex: 0 0 auto;
+}
+.app-nav-spacer { flex: 1; }
+
+body.settings-mode #sidebar { display: none; }
+body.sidebar-collapsed #app-nav { display: none; }
+
 /* ── Sidebar ─────────────────────────────────────────── */
 #sidebar {
   width: 300px;

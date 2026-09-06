@@ -65,6 +65,7 @@ function renderComposerSeal() {
 function renderSidebarFooter() {
   const footer = document.getElementById('sidebar-footer');
   if (!humanActor) return;
+  if (typeof updateAppNavAvatar === 'function') updateAppNavAvatar();
   footer.innerHTML = '';
   footer.appendChild(makeAvatar(humanActor.name, humanActor.avatar_color, humanActor.avatar_url, 22));
   const nameEl = document.createElement('span');

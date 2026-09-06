@@ -239,13 +239,8 @@
 }
 
 .s-tabs-row {
-  display: flex; align-items: center; gap: 4px;
-  border-bottom: 1px solid var(--h-hair-soft);
-  padding: 0 4px; flex: 0 0 auto;
-  overflow-x: auto; overflow-y: hidden;
-  scrollbar-width: none;
+  display: none;
 }
-.s-tabs-row::-webkit-scrollbar { display: none; }
 .s-tab {
   position: relative; padding: 12px 16px;
   font-family: var(--h-serif); font-size: 15px;
@@ -662,17 +657,7 @@ select.s-name-input {
 @keyframes s-flash { from { background: color-mix(in srgb, #7fb98c 14%, var(--h-surface)); } to { background: transparent; } }
 .s-just-connected { animation: s-flash .4s linear forwards; }
 
-.h-settings-section {
-  border-top: 1px solid var(--h-hair-soft); padding-top: 10px; margin-top: 4px;
-  display: flex; flex-direction: column; gap: 2px; flex: 0 0 auto;
-}
-.h-settings-row {
-  padding: 10px 12px; border-radius: 8px; background: transparent;
-  display: flex; align-items: center; gap: 10px; cursor: pointer; transition: background .12s;
-}
-.h-settings-row:hover { background: color-mix(in srgb, var(--h-surface) 60%, transparent); }
-.h-settings-row.active { background: var(--h-surface); }
-.h-settings-section + .h-sidebar-footer { margin-top: 4px; }
+.h-settings-section { display: none; }
 
 @media (max-width: 680px) {
   #refresh-btn { display: flex; }

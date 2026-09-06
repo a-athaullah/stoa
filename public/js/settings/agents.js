@@ -30,22 +30,29 @@ function svgUpdate(sz=14) { return `<svg width="${sz}" height="${sz}" viewBox="0
 function svgRefresh(sz=14) { return `<svg width="${sz}" height="${sz}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.1-3.3"/><path d="M14 2.5v3h-3"/></svg>`; }
 function svgCopy(sz=14) { return `<svg width="${sz}" height="${sz}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="8.5" height="8.5" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2H4A1.5 1.5 0 0 0 2.5 3.5V9A1.5 1.5 0 0 0 4 10.5h1"/></svg>`; }
 
-function openSettings() {
-  settingsOpen = true;
-  currentRoomId = null;
-  if (ws) { ws.onclose = null; ws.close(); ws = null; }
-  setConnected(false);
-  document.querySelectorAll('.h-room-row').forEach(el => el.classList.remove('active'));
-  document.getElementById('settings-row').classList.add('active');
-  document.getElementById('empty-state').style.display = 'none';
-  document.getElementById('chat-inner').classList.remove('visible');
-  document.getElementById('settings-inner').classList.add('visible');
-  document.body.classList.add('in-chat');
-  sLoad();
+function openSettings(tab) {
+  if (typeof openSettingsTab === 'function') {
+    openSettingsTab(tab || 'agents');
+  } else {
+    settingsOpen = true;
+    currentRoomId = null;
+    if (ws) { ws.onclose = null; ws.close(); ws = null; }
+    setConnected(false);
+    document.querySelectorAll('.h-room-row').forEach(el => el.classList.remove('active'));
+    document.body.classList.add('settings-mode', 'in-chat');
+    document.getElementById('empty-state').style.display = 'none';
+    document.getElementById('chat-inner').classList.remove('visible');
+    document.getElementById('settings-inner').classList.add('visible');
+    sLoad();
+  }
 }
 
 function closeSettingsToSidebar() {
-  document.body.classList.remove('in-chat');
+  if (typeof closeSettingsToNav === 'function') {
+    closeSettingsToNav();
+  } else {
+    document.body.classList.remove('in-chat', 'settings-mode');
+  }
 }
 
 async function sLoad() {
