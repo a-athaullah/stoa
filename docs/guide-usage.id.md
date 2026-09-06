@@ -658,7 +658,9 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 
 ## Pengaturan
 
-Klik **ikon gear** di sidebar untuk membuka panel pengaturan. Pengaturan diorganisasi dalam tujuh tab:
+Stoa menggunakan **sidebar navigasi vertikal** di sisi paling kiri app. Sidebar hanya menampilkan ikon (lebar 44 px) dan melebar ke 200 px saat di-hover, memperlihatkan label teks. Klik ikon mana saja untuk berpindah seksi. Di mobile (layar sempit) sidebar disembunyikan — gunakan navigasi dalam app.
+
+Item navigasi, dari atas ke bawah: **Inbox** (daftar room), lalu separator, diikuti seksi pengaturan: **AI Agent**, **Server**, **General**, **Docs**, **Platforms**, **Automation**, **Usage**, **Doctor**.
 
 ### AI Agent
 

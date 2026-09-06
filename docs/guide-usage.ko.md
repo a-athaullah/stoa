@@ -654,7 +654,9 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 
 ## 설정
 
-사이드바의 **톱니바퀴 아이콘**을 클릭하여 설정 패널을 엽니다. 설정은 일곱 개의 탭으로 구성됩니다:
+Stoa는 앱 가장 왼쪽에 **세로형 사이드바 내비게이션**을 사용합니다. 사이드바는 아이콘만 표시(너비 44 px)되며, 호버하면 200 px로 확장되어 텍스트 레이블이 나타납니다. 아이콘을 클릭하여 섹션을 전환합니다. 모바일(좁은 화면)에서는 사이드바가 숨겨집니다.
+
+내비게이션 항목(위에서 아래): **Inbox**(룸 목록), 구분선, 그리고 설정 섹션: **AI Agent**, **Server**, **General**, **Docs**, **Platforms**, **Automation**, **Usage**, **Doctor**.
 
 ### AI Agent
 

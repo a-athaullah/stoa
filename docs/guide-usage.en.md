@@ -658,7 +658,9 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 
 ## Settings
 
-Click the **gear icon** in the sidebar to open the settings panel. Settings are organized into seven tabs:
+Stoa uses a **vertical sidebar nav** on the far left of the app. The sidebar is icon-only (44 px wide) and slides open to 200 px on hover, revealing text labels. Click any icon to switch sections. On mobile (narrow screen) the sidebar is hidden — use the in-app navigation instead.
+
+Nav items, top to bottom: **Inbox** (your rooms list), then a separator, followed by the settings sections: **AI Agent**, **Server**, **General**, **Docs**, **Platforms**, **Automation**, **Usage**, **Doctor**.
 
 ### AI Agent
 
