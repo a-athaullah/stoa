@@ -49,7 +49,9 @@ function openSettingsTab(tab) {
 
 function updateAppNavAvatar() {
   const el = document.getElementById('app-nav-avatar');
+  const nameEl = document.getElementById('app-nav-user-name');
   if (!el || !humanActor) return;
   el.innerHTML = '';
   el.appendChild(makeAvatar(humanActor.name, humanActor.avatar_color, humanActor.avatar_url, 28));
+  if (nameEl) nameEl.textContent = humanActor.name.toLowerCase();
 }
