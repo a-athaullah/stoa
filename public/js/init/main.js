@@ -610,6 +610,7 @@ async function init() {
     }
   });
 
+  initAppNav();
   initSettings();
   initGlobalWs();
 }

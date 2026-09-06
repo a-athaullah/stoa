@@ -3,8 +3,9 @@ async function openRoom(room) {
   if (settingsOpen) {
     settingsOpen = false;
     sStopPolling();
-    document.getElementById('settings-row').classList.remove('active');
+    document.body.classList.remove('settings-mode');
     document.getElementById('settings-inner').classList.remove('visible');
+    if (typeof setAppNavActive === 'function') setAppNavActive('inbox');
   }
   closeRoomSearch();
   // Save draft from previous room

@@ -654,7 +654,9 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 
 ## 设置
 
-点击侧边栏的**齿轮图标**打开设置面板。设置分为七个标签页：
+Stoa 在应用最左侧使用**垂直侧边栏导航**。侧边栏仅显示图标（宽 44 px），悬停时展开至 200 px 并显示文字标签。点击任意图标切换区域。移动端（窄屏）下侧边栏会隐藏。
+
+导航项目（从上到下）：**Inbox**（房间列表）、分隔符，以及设置区域：**AI Agent**、**Server**、**General**、**Docs**、**Platforms**、**Automation**、**Usage**、**Doctor**。
 
 ### AI Agent
 
