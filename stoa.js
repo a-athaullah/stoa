@@ -1074,17 +1074,20 @@ async function processTrigger(msg) {
     // How recently the debug log must have been written for us to consider CLI still active.
     // 60s grace: CLI writes to debug log during API retry backoff, so recent mtime = not hung.
     const DEBUG_ACTIVE_GRACE_MS = 60_000;
+    const MAX_DEBUG_DEFERS = 3;
+    let debugDeferCount = 0;
     const hangWatchdog = setInterval(() => {
       const timeout = fullContent ? TRIGGER_TIMEOUT : FIRST_TOKEN_TIMEOUT;
       if (Date.now() - lastActivity > timeout) {
         // Before aborting, check if CLI is still writing to its debug log — that means
-        // it's retrying the API (backoff), not hung. If so, grant more time.
-        if (session.debugLogPath) {
+        // it's retrying the API (backoff), not hung. If so, grant more time (up to MAX_DEBUG_DEFERS).
+        if (session.debugLogPath && debugDeferCount < MAX_DEBUG_DEFERS) {
           try {
             const { mtimeMs } = fs.statSync(session.debugLogPath);
             if (Date.now() - mtimeMs < DEBUG_ACTIVE_GRACE_MS) {
+              debugDeferCount++;
               lastActivity = Date.now();
-              console.log(`[stoa] watchdog: CLI debug log active ${Math.round((Date.now() - mtimeMs) / 1000)}s ago, resetting timer (API retry?)`);
+              console.log(`[stoa] watchdog: CLI debug log active ${Math.round((Date.now() - mtimeMs) / 1000)}s ago, deferring abort (${debugDeferCount}/${MAX_DEBUG_DEFERS})`);
               return;
             }
           } catch { /* debug log doesn't exist yet — proceed to abort */ }
