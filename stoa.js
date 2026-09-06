@@ -154,7 +154,7 @@ const sessionPool = new Map(); // `${workdir}::${room_id}` → ClaudeSession
 const sessionIdleTimers = new Map(); // `${workdir}::${room_id}` → timeout id
 let SESSION_IDLE_TTL = 5; // minutes, configurable via server
 
-let AUTO_COMPACT_THRESHOLD = parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB || '500') * 1024; // KB, configurable
+let AUTO_COMPACT_THRESHOLD = parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB || '300') * 1024; // KB, configurable
 const compactsInFlight = new Set(); // workdir keys currently being compacted — prevents concurrent /compact on same session
 
 // R14: progress-aware compact timeout — resets on any token/state output.
@@ -1071,9 +1071,24 @@ async function processTrigger(msg) {
     sessionRef = session;
     session.on('status', statusHandler);
     const FIRST_TOKEN_TIMEOUT = 10 * 60_000;
+    // How recently the debug log must have been written for us to consider CLI still active.
+    // 60s grace: CLI writes to debug log during API retry backoff, so recent mtime = not hung.
+    const DEBUG_ACTIVE_GRACE_MS = 60_000;
     const hangWatchdog = setInterval(() => {
       const timeout = fullContent ? TRIGGER_TIMEOUT : FIRST_TOKEN_TIMEOUT;
       if (Date.now() - lastActivity > timeout) {
+        // Before aborting, check if CLI is still writing to its debug log — that means
+        // it's retrying the API (backoff), not hung. If so, grant more time.
+        if (session.debugLogPath) {
+          try {
+            const { mtimeMs } = fs.statSync(session.debugLogPath);
+            if (Date.now() - mtimeMs < DEBUG_ACTIVE_GRACE_MS) {
+              lastActivity = Date.now();
+              console.log(`[stoa] watchdog: CLI debug log active ${Math.round((Date.now() - mtimeMs) / 1000)}s ago, resetting timer (API retry?)`);
+              return;
+            }
+          } catch { /* debug log doesn't exist yet — proceed to abort */ }
+        }
         clearInterval(hangWatchdog);
         abortReason = 'timeout';
         console.error(`[stoa] trigger timeout (${timeout/1000}s ${fullContent ? 'idle' : 'no first token'}), aborting`);

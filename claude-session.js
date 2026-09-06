@@ -3,6 +3,9 @@
 // No --print flag: process stays alive between turns.
 const { spawn } = require('child_process');
 const { EventEmitter } = require('events');
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
 
 class ClaudeSession extends EventEmitter {
   constructor({ workDir = process.cwd(), flags = [], resumeId = null, env = null } = {}) {
@@ -22,6 +25,9 @@ class ClaudeSession extends EventEmitter {
     this._currentOnTool = null;
     this._accContent = '';
     this._pendingTool = null;
+    // stable debug log path: one file per workdir in os.tmpdir()
+    const wdHash = require('crypto').createHash('sha1').update(workDir).digest('hex').slice(0, 8);
+    this.debugLogPath = path.join(os.tmpdir(), `stoa-claude-${wdHash}.log`);
     this._start();
   }
 
@@ -33,6 +39,7 @@ class ClaudeSession extends EventEmitter {
       '--include-partial-messages',
       '--verbose',
       '--dangerously-skip-permissions',
+      '--debug-file', this.debugLogPath,
       ...this.flags,
     ];
     const spawnOpts = { cwd: this.workDir, windowsHide: true };
