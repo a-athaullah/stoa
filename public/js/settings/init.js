@@ -339,9 +339,6 @@ function initSettings() {
     hint.textContent = notifEnabled ? 'You will be notified when agents respond in other rooms.' : 'Notifications are off.';
   });
 
-  // Server restart
-  document.getElementById('s-restart-btn').addEventListener('click', sRestartServer);
-
   // Logout
   document.getElementById('s-logout-btn').addEventListener('click', doLogout);
 }

@@ -119,6 +119,44 @@
 #app-nav:focus-within .app-nav-sep { width: calc(100% - 16px); }
 .app-nav-spacer { flex: 1; }
 
+.app-nav-restart { color: var(--h-ink-faint); }
+.app-nav-restart:hover { color: oklch(40% 0.12 22) !important; background: color-mix(in srgb, oklch(40% 0.12 22) 8%, transparent) !important; }
+
+#app-top-notice {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  font-family: var(--h-sans);
+  font-size: 13px;
+  border-bottom: 1px solid var(--h-hair-soft);
+  animation: appNoticeIn .14s ease;
+}
+#app-top-notice.notice-warn {
+  background: color-mix(in srgb, oklch(40% 0.12 22) 14%, var(--h-surface));
+  color: oklch(40% 0.12 22);
+}
+#app-top-notice.notice-running,
+#app-top-notice.notice-done {
+  background: color-mix(in srgb, var(--h-ink) 5%, var(--h-surface));
+  color: var(--h-ink);
+}
+@keyframes appNoticeIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+.app-notice-btn-confirm {
+  background: oklch(40% 0.12 22); color: #fff; border: none;
+  padding: 6px 14px; border-radius: 999px;
+  font-family: var(--h-sans); font-size: 12.5px; cursor: pointer;
+}
+.app-notice-btn-cancel {
+  background: transparent; color: var(--h-ink-mute);
+  border: 1px solid var(--h-hair-soft);
+  padding: 6px 14px; border-radius: 999px;
+  font-family: var(--h-sans); font-size: 12.5px; cursor: pointer;
+}
+
 body.settings-mode #sidebar { display: none; }
 body.sidebar-collapsed #app-nav-wrap { display: none; }
 

@@ -80,12 +80,18 @@
     <span class="app-nav-label">Doctor</span>
   </button>
   <div class="app-nav-spacer"></div>
+  <div class="app-nav-sep"></div>
+  <button class="app-nav-item app-nav-restart" id="nav-restart-btn" title="restart server" aria-label="restart server">
+    <span class="app-nav-icon"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3 3 3 7 7 7"/></svg></span>
+    <span class="app-nav-label">restart server</span>
+  </button>
   <div class="app-nav-avatar-row">
     <div class="app-nav-avatar" id="app-nav-avatar"></div>
     <span class="app-nav-label app-nav-user-name" id="app-nav-user-name"></span>
   </div>
 </nav>
 </div>
+<div id="app-top-notice" style="display:none"></div>
 
 <aside id="sidebar">
   <div class="h-sidebar-head">
@@ -147,7 +153,7 @@
   <div id="settings-inner">
     <div class="s-page-header">
       <button id="s-mobile-back" aria-label="back">&#8592;</button>
-      <span style="font-family:var(--h-serif);font-size:28px;line-height:1.05">settings</span>
+      <span id="s-page-title" style="font-family:var(--h-serif);font-size:28px;line-height:1.05">settings</span>
       <span style="font-family:var(--h-serif);font-style:italic;font-size:14px;color:var(--h-ink-faint)">how the room is kept</span>
     </div>
     <div class="s-tabs-row">
@@ -300,11 +306,6 @@
             <span class="s-server-value-hint">maximum rooms that can be pinned (1–20)</span>
           </div>
         </div>
-      </div>
-      <div class="s-restart-footer">
-        <span id="s-process-manager-label" class="s-restart-pm-label">detecting…</span>
-        <span id="s-restart-status" class="s-restart-status-text"></span>
-        <button id="s-restart-btn" class="s-restart-btn" disabled>restart server</button>
       </div>
     </div>
 

@@ -421,16 +421,12 @@ function handleWsMessage(msg) {
 let _serverRestartPending = false;
 function handleServerRestarting() {
   _serverRestartPending = true;
-  const status = document.getElementById('s-restart-status');
-  if (status) status.textContent = 'Restarting…';
+  if (typeof showAppNotice === 'function') showAppNotice('running');
 }
 function _onGlobalWsReconnectAfterRestart() {
   if (!_serverRestartPending) return;
   _serverRestartPending = false;
-  const status = document.getElementById('s-restart-status');
-  const btn = document.getElementById('s-restart-btn');
-  if (status) { status.textContent = 'Server restarted'; setTimeout(() => { status.textContent = ''; }, 3000); }
-  if (btn) btn.disabled = false;
+  if (typeof showAppNotice === 'function') showAppNotice('done');
   if (typeof sLoadProcessManager === 'function') sLoadProcessManager();
 }
 
