@@ -91,39 +91,29 @@ async function sLoadServerTab() {
 }
 
 async function sLoadProcessManager() {
-  const label = document.getElementById('s-process-manager-label');
-  const btn = document.getElementById('s-restart-btn');
-  if (!label || !btn) return;
+  const navBtn = document.getElementById('nav-restart-btn');
   try {
     const pm = await fjson('/api/server/process-manager');
-    label.textContent = `running via ${pm.manager}`;
-    btn.disabled = !pm.restartable;
-    btn.title = pm.restartable ? '' : `Restart not supported for ${pm.manager}`;
+    if (navBtn) {
+      navBtn.disabled = !pm.restartable;
+      navBtn.title = pm.restartable ? 'restart server' : `Restart not supported for ${pm.manager}`;
+    }
   } catch {
-    label.textContent = '';
-    btn.disabled = false;
-    btn.title = 'Restart (process manager unknown)';
+    if (navBtn) { navBtn.disabled = false; navBtn.title = 'restart server'; }
   }
 }
 
 async function sRestartServer() {
-  const btn = document.getElementById('s-restart-btn');
-  const status = document.getElementById('s-restart-status');
-  if (!confirm('Server akan restart. Semua koneksi agent akan putus sementara (~2–3 detik). Lanjutkan?')) return;
-  btn.disabled = true;
-  status.textContent = 'Restarting…';
   try {
     const r = await fetch('/api/server/restart', { method: 'POST' });
     if (!r.ok) {
       const msg = await r.text();
-      status.textContent = msg || 'Restart failed';
-      btn.disabled = false;
-      return;
+      if (typeof hideAppNotice === 'function') hideAppNotice();
+      showToast(msg || 'Restart failed', { error: true });
     }
     // Server will disconnect — reconnect logic handles the rest
   } catch {
-    // Connection drop on restart is expected; do not show error here
-    status.textContent = 'Restarting…';
+    // Connection drop on restart is expected
   }
 }
 
