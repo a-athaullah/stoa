@@ -135,13 +135,13 @@
   border-bottom: 1px solid var(--h-hair-soft);
   animation: appNoticeIn .14s ease;
 }
-#app-top-notice.notice-warn {
-  background: color-mix(in srgb, oklch(40% 0.12 22) 14%, var(--h-surface));
-  color: oklch(40% 0.12 22);
+#app-top-notice.notice-confirm {
+  background: color-mix(in srgb, oklch(40% 0.12 22) 22%, oklch(12% 0.01 0));
+  color: oklch(74% 0.1 22);
 }
 #app-top-notice.notice-running,
 #app-top-notice.notice-done {
-  background: color-mix(in srgb, var(--h-ink) 5%, var(--h-surface));
+  background: oklch(13% 0.005 0);
   color: var(--h-ink);
 }
 @keyframes appNoticeIn { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
