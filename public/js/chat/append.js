@@ -117,16 +117,14 @@ function appendMessage(m, container) {
   const nameEl = document.createElement('span');
   nameEl.className = 'h-msg-name';
   nameEl.style.color = m.avatar_color;
-  nameEl.textContent = m.actor_name;
+  // Sub-agent: show label as primary name, orchestrator in parens — "FE-Review (Ara)"
+  nameEl.textContent = m.sub_agent_label || m.actor_name;
   meta.appendChild(nameEl);
 
-  // Sub-agent identity — flat: "Ara (probe)". Kept as a sibling span so the
-  // parent's .h-msg-name textContent stays clean (read back elsewhere to
-  // recover actor_name). Label is a snapshot from the message row.
   if (m.sub_agent_label) {
     const subEl = document.createElement('span');
     subEl.className = 'h-msg-sub';
-    subEl.textContent = '(' + m.sub_agent_label + ')';
+    subEl.textContent = '(' + m.actor_name + ')';
     meta.appendChild(subEl);
   }
 

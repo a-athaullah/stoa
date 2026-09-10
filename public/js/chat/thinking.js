@@ -23,12 +23,13 @@ function showThinking(msgId, actorName, color, symbol, avatarUrl, subAgentLabel)
   const nameEl = document.createElement('span');
   nameEl.className = 'h-msg-name';
   nameEl.style.color = color;
-  nameEl.textContent = actorName;
+  // Sub-agent: show label as primary name, orchestrator in parens — "FE-Review (Ara)"
+  nameEl.textContent = subAgentLabel || actorName;
   meta.appendChild(nameEl);
   if (subAgentLabel) {
     const subEl = document.createElement('span');
     subEl.className = 'h-msg-sub';
-    subEl.textContent = '(' + subAgentLabel + ')';
+    subEl.textContent = '(' + actorName + ')';
     meta.appendChild(subEl);
   }
   body.appendChild(meta);
