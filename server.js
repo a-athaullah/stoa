@@ -1561,16 +1561,26 @@ const server = http.createServer(async (req, res) => {
     const roomId = url.pathname.split('/')[3];
 
     if (url.pathname.endsWith('/messages')) {
+      const scopeAll = url.searchParams.get('scope') === 'all';
       const before = url.searchParams.get('before');
       const limit  = Math.min(parseInt(url.searchParams.get('limit') ?? '50'), 100);
+      const threadFilter = scopeAll ? '' : 'AND m.thread_id IS NULL';
+      // Subquery summary per root (used only in roots-only mode)
+      const threadSummarySQL = scopeAll ? '' : `,
+        (SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id) AS thread_count,
+        (SELECT MAX(r.created_at) FROM messages r WHERE r.thread_id = m.id) AS thread_last_at,
+        (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state IN ('streaming','requesting'))) AS thread_active`;
+
       if (before) {
         const rows = db.prepare(`
           SELECT * FROM (
             SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
+              ${threadSummarySQL}
             FROM messages m
             JOIN room_participants rp ON rp.id=m.participant_id
             JOIN actors a ON a.id=rp.actor_id
             WHERE m.room_id=? AND m.id < ?
+              ${threadFilter}
               AND (
                 (m.state = 'complete' AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL))
                 OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
@@ -1579,15 +1589,19 @@ const server = http.createServer(async (req, res) => {
             ORDER BY m.created_at DESC LIMIT ?
           ) t ORDER BY created_at ASC
         `).all(roomId, before, limit);
-        return json(res, enrichReply(rows));
+        const enriched = enrichReply(rows);
+        if (!scopeAll) enriched.forEach(m => { m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active }; });
+        return json(res, enriched);
       }
       const since = url.searchParams.get('since') ?? '0';
       const rows = db.prepare(`
         SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
+          ${threadSummarySQL}
         FROM messages m
         JOIN room_participants rp ON rp.id=m.participant_id
         JOIN actors a ON a.id=rp.actor_id
         WHERE m.room_id=? AND m.id > ?
+          ${threadFilter}
           AND (
             (m.state = 'complete' AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL))
             OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
@@ -1596,7 +1610,9 @@ const server = http.createServer(async (req, res) => {
         ORDER BY m.created_at ASC
         LIMIT 500
       `).all(roomId, since);
-      return json(res, enrichReply(rows));
+      const enriched = enrichReply(rows);
+      if (!scopeAll) enriched.forEach(m => { m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active }; });
+      return json(res, enriched);
     }
 
     if (url.pathname.endsWith('/participants')) {

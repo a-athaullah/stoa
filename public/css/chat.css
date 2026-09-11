@@ -43,6 +43,23 @@ html.dark .h-faded-mark { opacity: 0.12; }
 }
 #chat-inner.visible { display: flex; }
 
+/* chat-body-row wraps messages + composer + thread panel */
+#chat-body-row {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+  overflow: hidden;
+}
+
+#chat-feed-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 /* Header */
 #chat-header {
   padding: 20px 36px 18px;
@@ -1762,3 +1779,175 @@ html.dark .h-bubble :not(pre) > code {
 }
 .wa-context > :not(summary) { font-size: 11px; color: var(--h-ink-faint, #888); }
 .wa-context p, .wa-context code { font-size: 11px; }
+
+/* ── Thread panel ─────────────────────────────────────────────────────────── */
+.h-thread-panel {
+  width: 380px;
+  min-width: 280px;
+  max-width: 480px;
+  flex: 0 0 380px;
+  display: none;
+  flex-direction: column;
+  border-left: 1px solid var(--h-hair-soft);
+  background: var(--h-bg);
+  overflow: hidden;
+}
+.h-thread-panel.open { display: flex; }
+
+.h-thread-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--h-hair-soft);
+  background: var(--h-header-bg);
+  flex: 0 0 auto;
+}
+
+.h-thread-header-title {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--h-sans);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--h-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.h-thread-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.h-thread-ctrl-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--h-ink-mute);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.h-thread-ctrl-btn:hover {
+  background: var(--h-hover);
+  color: var(--h-ink);
+}
+
+.h-thread-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+
+.h-thread-body {
+  padding: 12px 16px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.h-thread-footer {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--h-hair-soft);
+  padding: 10px 12px;
+}
+
+.h-thread-composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  background: var(--h-input-bg, var(--h-surface));
+  border: 1px solid var(--h-border);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+#thread-msg-input {
+  flex: 1;
+  min-height: 20px;
+  max-height: 140px;
+  overflow-y: auto;
+  font-family: var(--h-sans);
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--h-ink);
+  outline: none;
+  word-break: break-word;
+}
+
+#thread-msg-input:empty::before {
+  content: attr(data-placeholder);
+  color: var(--h-ink-faint);
+  pointer-events: none;
+}
+
+#thread-send-btn {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: var(--h-accent, #3a7bd5);
+  color: #fff;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+#thread-send-btn:hover { opacity: 0.85; }
+
+/* ── Feed root messages (clickable rows) ──────────────────────────────────── */
+.h-feed-root {
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.h-feed-root:hover { background: var(--h-hover); }
+.h-feed-root-active { background: var(--h-hover) !important; }
+
+/* ── Thread chips ─────────────────────────────────────────────────────────── */
+.h-thread-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--h-border);
+  border-radius: 20px;
+  background: var(--h-surface);
+  font-family: var(--h-sans);
+  font-size: 11.5px;
+  color: var(--h-accent, #3a7bd5);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.12s;
+}
+.h-thread-chip:hover { background: var(--h-hover); }
+.h-thread-chip.active { border-color: var(--h-accent, #3a7bd5); }
+
+.h-thread-chip-count { font-weight: 600; }
+.h-thread-chip-time { color: var(--h-ink-mute); font-weight: 400; }
+
+.h-thread-pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--h-accent, #3a7bd5);
+  animation: pulse-ring 1.4s ease infinite;
+  flex: 0 0 auto;
+}
+
+@keyframes pulse-ring {
+  0%   { opacity: 1; transform: scale(1); }
+  50%  { opacity: 0.4; transform: scale(1.4); }
+  100% { opacity: 1; transform: scale(1); }
+}

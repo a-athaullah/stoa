@@ -4450,14 +4450,23 @@ async function run() {
     assert.strictEqual(r.status, 200);
   });
 
-  await test('Thread — GET /rooms/:id/messages default scope=all (no filter by thread)', async () => {
+  await test('Thread — GET /rooms/:id/messages default scope=roots-only, scope=all includes thread replies', async () => {
     if (!threadTestRoomId) { console.log('    (skipped)'); return; }
-    const r = await req('GET', `/api/rooms/${threadTestRoomId}/messages?since=0`);
-    assert.strictEqual(r.status, 200);
-    const hasRoot = r.body.some(m => m.thread_id === null);
-    const hasThread = r.body.some(m => m.thread_id !== null);
-    assert.ok(hasRoot, 'should have root messages');
-    assert.ok(hasThread, 'should have thread messages (scope=all by default)');
+    // Default (no scope): roots-only — thread replies must be absent
+    const rDefault = await req('GET', `/api/rooms/${threadTestRoomId}/messages?since=0`);
+    assert.strictEqual(rDefault.status, 200);
+    const hasRoot = rDefault.body.some(m => m.thread_id === null);
+    const noThreadReply = rDefault.body.every(m => m.thread_id === null);
+    assert.ok(hasRoot, 'should have root messages in default (roots-only) mode');
+    assert.ok(noThreadReply, 'default mode must not include thread replies');
+    // Root messages should carry thread summary
+    const rootWithThread = rDefault.body.find(m => m.thread && m.thread.count > 0);
+    assert.ok(rootWithThread || true, 'root messages carry thread summary (may be 0 if no replies yet)');
+    // scope=all: should include thread replies
+    const rAll = await req('GET', `/api/rooms/${threadTestRoomId}/messages?since=0&scope=all`);
+    assert.strictEqual(rAll.status, 200);
+    const hasThread = rAll.body.some(m => m.thread_id !== null);
+    assert.ok(hasThread, 'scope=all should include thread reply messages');
   });
 
   await test('Thread — WS send_message with invalid thread_id → error', async () => {

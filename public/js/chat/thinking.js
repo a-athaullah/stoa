@@ -1,7 +1,7 @@
 // ── Thinking bubble (before tokens arrive) ─────────────────────────────────
-function showThinking(msgId, actorName, color, symbol, avatarUrl, subAgentLabel) {
+function showThinking(msgId, actorName, color, symbol, avatarUrl, subAgentLabel, container) {
   if (document.getElementById('msg-' + msgId)) return; // already exists
-  const inner = document.getElementById('messages-inner');
+  const inner = container || document.getElementById('messages-inner');
   if (!inner) return;
 
   const row = document.createElement('div');
