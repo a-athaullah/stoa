@@ -1039,6 +1039,15 @@ function runUnitTests() {
     assert.ok(dir2.endsWith('/200'), `expected /200 suffix, got ${dir2}`);
   });
 
+  ut('systemPromptHash declared before getSession — TDZ guard', () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'stoa.js'), 'utf8');
+    const hashDeclLine = src.split('\n').findIndex(l => l.includes('const systemPromptHash = msg.system_prompt_hash'));
+    const getSessionLine = src.split('\n').findIndex(l => l.includes('let session = getSession(targetDir, room_id, envToUse'));
+    assert.ok(hashDeclLine !== -1, 'systemPromptHash declaration not found');
+    assert.ok(getSessionLine !== -1, 'getSession call not found');
+    assert.ok(hashDeclLine < getSessionLine, `systemPromptHash (line ${hashDeclLine + 1}) must be declared before getSession (line ${getSessionLine + 1})`);
+  });
+
   return { p, f };
 }
 

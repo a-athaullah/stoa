@@ -1098,13 +1098,13 @@ async function processTrigger(msg) {
     if (apiKeys[0]) platformEnv.ANTHROPIC_AUTH_TOKEN = apiKeys[0];
     const envToUse = platformEnv;
 
+    const systemPromptHash = msg.system_prompt_hash || null;
     let session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash);
+    const currentSystemPromptHash = session._systemPromptHash || null;
+    const needsSystemPromptChange = systemPromptHash && currentSystemPromptHash !== systemPromptHash;
     const needsResume = rid && session.resumeId !== rid;
     const needsFreshSession = !rid && session.resumeId;
     let targetModel = msg.model || null;
-    const systemPromptHash = msg.system_prompt_hash || null;
-    const currentSystemPromptHash = session._systemPromptHash || null;
-    const needsSystemPromptChange = systemPromptHash && currentSystemPromptHash !== systemPromptHash;
     // Phase 3: ordered model fallback chain. The server sends `models` only when a
     // tier resolved to more than one model; otherwise we run the single `model`.
     // targetModel === modelChain[0] (server sets model = chain[0]).
