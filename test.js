@@ -4497,6 +4497,28 @@ async function run() {
     assert.strictEqual(r.status, 401);
   });
 
+  // Fase 3b: behavioral switch
+  console.log('\n[Fase 3b: Behavioral Switch]');
+
+  await test('Fase3b — max_concurrent fallback default is 3 (code check)', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    const settingsLine = src.split('\n').find(l => l.includes('max_concurrent:') && l.includes('MAX_CONCURRENT'));
+    assert.ok(settingsLine, 'max_concurrent settings line not found');
+    assert.ok(settingsLine.includes('|| 3'), 'max_concurrent default should be 3, not 1');
+  });
+
+  await test('Fase3b — waitForRoomIdle removed (dead code)', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    assert.ok(!src.includes('function waitForRoomIdle'), 'waitForRoomIdle should be removed');
+  });
+
+  await test('Fase3b — steer_message includes thread_id field', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    const steerLine = src.split('\n').find(l => l.includes("type: 'steer_message'"));
+    assert.ok(steerLine, 'steer_message line not found');
+    assert.ok(steerLine.includes('thread_id'), 'steer_message must include thread_id');
+  });
+
   await test('Thread — cleanup', async () => {
     // Cleaned up in teardown
   });
