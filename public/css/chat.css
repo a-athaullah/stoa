@@ -2047,3 +2047,86 @@ html.dark .h-room-thread-badge {
   }
   .h-thread-header { position: relative; padding-top: 20px; }
 }
+
+/* ── Slack-style root rows (feed) ─────────────────────────────────────────── */
+@keyframes threadPulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.35; }
+}
+@keyframes threadPanelIn {
+  from { transform: translateX(16px); opacity: 0; }
+  to   { transform: none; opacity: 1; }
+}
+
+.t-root-row {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 8px 20px;
+  cursor: pointer;
+  transition: background 0.12s;
+  border-radius: 4px;
+}
+.t-root-row:hover { background: var(--h-hover); }
+.t-root-row.h-feed-root-active { background: var(--h-hover) !important; }
+
+/* Separator line between root rows */
+.t-root-row + .t-root-row {
+  border-top: 1px solid var(--h-hair-soft);
+  margin-top: 2px;
+}
+
+.t-avatar {
+  flex: 0 0 36px;
+  padding-top: 2px;
+}
+
+.t-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.t-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.t-name {
+  font-family: var(--h-sans);
+  font-size: 14.5px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.t-time {
+  font-family: var(--h-sans);
+  font-size: 11.5px;
+  color: var(--h-ink-faint);
+  font-weight: 400;
+}
+
+.t-content {
+  font-family: var(--h-sans);
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--h-ink);
+  word-break: break-word;
+}
+
+.t-content p { margin: 0 0 4px 0; }
+.t-content p:last-child { margin-bottom: 0; }
+
+.t-content pre,
+.t-content code {
+  font-size: 13px;
+}
+
+/* Pulse animation for active thread dot */
+.t-pulse {
+  animation: threadPulse 1.4s ease infinite;
+}

@@ -52,12 +52,14 @@ function handleWsMessage(msg) {
     resetDaySeparator();
     if (typeof clearThreadSummaries === 'function') clearThreadSummaries();
     if (typeof clearThreadPanel === 'function') clearThreadPanel();
-    msg.messages.forEach(m => appendMessage(m));
+    // Only render root messages in feed; thread replies are shown in thread panel only
+    msg.messages.forEach(m => {
+      if (m.thread_id) return;
+      if (typeof appendFeedRootRow === 'function') appendFeedRootRow(m);
+      else appendMessage(m);
+    });
     // Attach thread chips and make roots clickable
     if (typeof attachThreadChips === 'function') attachThreadChips(msg.messages);
-    msg.messages.forEach(m => {
-      if (!m.thread_id && typeof makeFeedMessageClickable === 'function') makeFeedMessageClickable(m.id);
-    });
     initDayFloater();
     if (msg.messages.length > 0) oldestMessageId = msg.messages[0].id;
     noMoreOlder = msg.messages.length < 100;
@@ -86,9 +88,8 @@ function handleWsMessage(msg) {
         if (typeof _scrollThreadToBottom === 'function') _scrollThreadToBottom();
       }
     } else {
-      appendMessage(m);
-      // Make new root message clickable
-      if (typeof makeFeedMessageClickable === 'function') makeFeedMessageClickable(m.id);
+      if (typeof appendFeedRootRow === 'function') appendFeedRootRow(m);
+      else appendMessage(m);
       scrollToBottom(true);
     }
     return;
@@ -147,6 +148,10 @@ function handleWsMessage(msg) {
   if (msg.type === 'message_state') {
     if ((msg.state === 'requesting' || msg.state === 'streaming') && msg.actor_name) {
       const tId = msg.thread_id || null;
+      // Auto-open thread panel when AI starts responding in a thread — only if no thread is currently open
+      if (tId && typeof openThread === 'function' && typeof isThreadOpen === 'function' && !isThreadOpen()) {
+        openThread(tId);
+      }
       const targetContainer = (tId && typeof activeThreadId !== 'undefined' && activeThreadId === tId)
         ? document.getElementById('thread-body')
         : document.getElementById('messages-inner');

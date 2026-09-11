@@ -4554,6 +4554,41 @@ async function run() {
     assert.ok(schema.includes('claude_md_migrated_at'), 'schema docs should document migration tracking');
   });
 
+  // Auto-threading: AI responses go into threads
+  console.log('\n[Auto-threading]');
+
+  await test('Auto-thread — handleHumanMessage sets aiThreadId = messageId for root messages (code check)', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    assert.ok(src.includes('const aiThreadId = threadId ?? messageId'), 'handleHumanMessage must define aiThreadId = threadId ?? messageId');
+    const triggerLines = src.split('\n').filter(l => l.includes('triggerAiResponse') && l.includes('aiThreadId'));
+    assert.ok(triggerLines.length >= 1, 'triggerAiResponse must use aiThreadId');
+    const seqLines = src.split('\n').filter(l => l.includes('triggerAgentsSequential') && l.includes('aiThreadId'));
+    assert.ok(seqLines.length >= 1, 'triggerAgentsSequential must use aiThreadId');
+  });
+
+  await test('Auto-thread — thread limit check uses aiThreadId (not gated by threadId)', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    const handleFn = src.substring(src.indexOf('async function handleHumanMessage'), src.indexOf('\n}\n', src.indexOf('async function handleHumanMessage')) + 3);
+    assert.ok(!handleFn.includes('if (threadId) {\n    const roomCfg'), 'thread limit must not be gated by if (threadId)');
+    assert.ok(handleFn.includes('thread_limit_reached') && handleFn.includes('aiThreadId'), 'thread limit broadcast should use aiThreadId');
+  });
+
+  await test('Auto-thread — thread summary includes participant_ids and has_error', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    const r = await req('GET', `/api/rooms/${threadTestRoomId}/messages?since=0`);
+    assert.strictEqual(r.status, 200);
+    const rootWithThread = r.body.find(m => m.thread && m.thread.count > 0);
+    if (rootWithThread) {
+      assert.ok(Array.isArray(rootWithThread.thread.participant_ids), 'thread summary must include participant_ids array');
+      assert.ok(typeof rootWithThread.thread.has_error === 'boolean', 'thread summary must include has_error boolean');
+    }
+    const anyRoot = r.body.find(m => m.thread);
+    if (anyRoot) {
+      assert.ok('participant_ids' in anyRoot.thread, 'thread summary must have participant_ids field');
+      assert.ok('has_error' in anyRoot.thread, 'thread summary must have has_error field');
+    }
+  });
+
   await test('Thread — cleanup', async () => {
     // Cleaned up in teardown
   });
