@@ -1569,7 +1569,9 @@ const server = http.createServer(async (req, res) => {
       const threadSummarySQL = scopeAll ? '' : `,
         (SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id) AS thread_count,
         (SELECT MAX(r.created_at) FROM messages r WHERE r.thread_id = m.id) AS thread_last_at,
-        (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state IN ('streaming','requesting'))) AS thread_active`;
+        (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state IN ('streaming','requesting'))) AS thread_active,
+        (SELECT GROUP_CONCAT(DISTINCT rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id) AS thread_participant_ids,
+        (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state = 'error')) AS thread_has_error`;
 
       if (before) {
         const rows = db.prepare(`
@@ -1590,7 +1592,7 @@ const server = http.createServer(async (req, res) => {
           ) t ORDER BY created_at ASC
         `).all(roomId, before, limit);
         const enriched = enrichReply(rows);
-        if (!scopeAll) enriched.forEach(m => { m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active }; });
+        if (!scopeAll) enriched.forEach(m => { m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active, participant_ids: m.thread_participant_ids ? m.thread_participant_ids.split(',').map(Number) : [], has_error: !!m.thread_has_error }; });
         return json(res, enriched);
       }
       const since = url.searchParams.get('since') ?? '0';
@@ -1611,7 +1613,7 @@ const server = http.createServer(async (req, res) => {
         LIMIT 500
       `).all(roomId, since);
       const enriched = enrichReply(rows);
-      if (!scopeAll) enriched.forEach(m => { m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active }; });
+      if (!scopeAll) enriched.forEach(m => { m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active, participant_ids: m.thread_participant_ids ? m.thread_participant_ids.split(',').map(Number) : [], has_error: !!m.thread_has_error }; });
       return json(res, enriched);
     }
 
@@ -5593,6 +5595,7 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
     `INSERT INTO messages (room_id, participant_id, content, image_url, file_url, file_name, attachments, reply_to, client_event_id, thread_id, state) VALUES (?,?,?,?,?,?,?,?,?,?,'complete')`
   ).run(roomId, humanParticipantId, content, imageUrl, fileUrl, fileName, attachJson, replyTo || null, eventId || null, threadId || null);
   const messageId = result.lastInsertRowid;
+  const aiThreadId = threadId ?? messageId;
 
   // Get message with actor info for broadcast
   const row = db.prepare(`
@@ -5629,7 +5632,7 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
     }
   }
 
-  if (threadId) {
+  {
     const roomCfg = db.prepare('SELECT max_active_threads FROM rooms WHERE id=?').get(roomId);
     const maxThreads = roomCfg?.max_active_threads ?? 3;
     const activeThreadCount = db.prepare(`
@@ -5637,9 +5640,9 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
       WHERE m.room_id=? AND m.thread_id IS NOT NULL AND m.state IN ('streaming','requesting')
     `).get(roomId).cnt;
     if (activeThreadCount >= maxThreads) {
-      const alreadyActive = db.prepare(`SELECT 1 FROM messages WHERE room_id=? AND thread_id=? AND state IN ('streaming','requesting') LIMIT 1`).get(roomId, threadId);
+      const alreadyActive = db.prepare(`SELECT 1 FROM messages WHERE room_id=? AND thread_id=? AND state IN ('streaming','requesting') LIMIT 1`).get(roomId, aiThreadId);
       if (!alreadyActive) {
-        broadcast(roomId, { type: 'thread_limit_reached', room_id: roomId, thread_id: threadId, max_active_threads: maxThreads });
+        broadcast(roomId, { type: 'thread_limit_reached', room_id: roomId, thread_id: aiThreadId, max_active_threads: maxThreads });
         return;
       }
     }
@@ -5663,14 +5666,14 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
       (async () => {
         for (let i = 0; i < subAgentMentions.length; i += maxParallel) {
           const batch = subAgentMentions.slice(i, i + maxParallel);
-          await Promise.allSettled(batch.map(a => triggerAiResponse(roomId, a, content, messageId, attachments || [], null, threadId)));
+          await Promise.allSettled(batch.map(a => triggerAiResponse(roomId, a, content, messageId, attachments || [], null, aiThreadId)));
         }
       })().catch(e => console.error('[trigger] parallel sub-agent error:', e));
     }
 
     // Parent agents run sequentially; pass fired sub-agent IDs to prevent double-firing from cascade
     if (parentMentions.length > 0) {
-      triggerAgentsSequential(roomId, parentMentions, content, messageId, attachments || [], initialFiredSubAgentIds, threadId).catch(e => console.error('[trigger] sequence error:', e));
+      triggerAgentsSequential(roomId, parentMentions, content, messageId, attachments || [], initialFiredSubAgentIds, aiThreadId).catch(e => console.error('[trigger] sequence error:', e));
     }
   }
 }

@@ -2,6 +2,77 @@
 // threadSummaries: rootMsgId → {count, last_at, active, participants}
 const threadSummaries = {};
 
+// ── Slack-style root row renderer ──────────────────────────────────────────
+function appendFeedRootRow(m, inner) {
+  if (!inner) inner = document.getElementById('messages-inner');
+  if (!inner) return;
+  if (m.id && document.getElementById('msg-' + m.id)) return;
+
+  if (m.created_at) {
+    const ts = m.created_at.endsWith('Z') ? m.created_at : m.created_at.replace(' ', 'T') + 'Z';
+    maybeInsertDaySep(inner, ts);
+  }
+
+  const row = document.createElement('div');
+  row.className = 't-root-row h-feed-root';
+  row.id = 'msg-' + m.id;
+  row.dataset.rootId = m.id;
+
+  // Avatar (36px)
+  const avatarWrap = document.createElement('div');
+  avatarWrap.className = 't-avatar';
+  avatarWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 36, m.sub_agent_label));
+  row.appendChild(avatarWrap);
+
+  // Right column: name+time, content, reply summary
+  const col = document.createElement('div');
+  col.className = 't-col';
+
+  const meta = document.createElement('div');
+  meta.className = 't-meta';
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 't-name';
+  nameEl.style.color = m.avatar_color;
+  nameEl.textContent = m.sub_agent_label || m.actor_name;
+  meta.appendChild(nameEl);
+
+  if (m.created_at) {
+    const timeEl = document.createElement('span');
+    timeEl.className = 't-time';
+    const ts = m.created_at.endsWith('Z') ? m.created_at : m.created_at.replace(' ', 'T') + 'Z';
+    const dateObj = new Date(ts);
+    timeEl.textContent = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    timeEl.title = dateObj.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    meta.appendChild(timeEl);
+  }
+  col.appendChild(meta);
+
+  if (m.content) {
+    const content = document.createElement('div');
+    content.className = 't-content';
+    content.innerHTML = highlightMentions(renderMarkdown(m.content));
+    col.appendChild(content);
+  }
+
+  row.appendChild(col);
+  inner.appendChild(row);
+
+  row.addEventListener('click', e => {
+    if (e.target.closest('a, button, .h-thread-chip')) return;
+    openThread(m.id);
+  });
+
+  if (m.thread && m.thread.count > 0) {
+    const chip = _buildThreadChip(m.id);
+    if (chip) col.appendChild(chip);
+  }
+
+  if (typeof addCopyButtons === 'function') addCopyButtons(row);
+  if (typeof linkifyFilePaths === 'function') linkifyFilePaths(row);
+  if (typeof externalLinksNewTab === 'function') externalLinksNewTab(row);
+}
+
 function _relativeTime(isoStr) {
   if (!isoStr) return '';
   const ts = isoStr.endsWith('Z') ? isoStr : isoStr.replace(' ', 'T') + 'Z';
@@ -57,8 +128,8 @@ function updateThreadChip(rootId) {
   if (existing) existing.remove();
   const chip = _buildThreadChip(rootId);
   if (chip) {
-    const body = row.querySelector('.h-msg-body');
-    if (body) body.appendChild(chip);
+    const target = row.querySelector('.t-col') || row.querySelector('.h-msg-body');
+    if (target) target.appendChild(chip);
   }
 }
 
