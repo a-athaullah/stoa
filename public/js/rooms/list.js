@@ -268,6 +268,26 @@ function initRoomSwipe(row) {
 function closeAllSwipes() {
   document.querySelectorAll('.h-room-row.swiped').forEach(r => r.classList.remove('swiped'));
 }
+
+// ── Active thread badge per room ───────────────────────────────────────────
+function updateRoomThreadBadge(roomId, count) {
+  const row = document.querySelector(`.h-room-row[data-room-id="${roomId}"]`);
+  if (!row) return;
+  const dots = row.querySelector('.h-room-dots');
+  if (!dots) return;
+  let badge = dots.querySelector('.h-room-thread-badge');
+  if (count > 0) {
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'h-room-thread-badge';
+      dots.insertBefore(badge, dots.firstChild);
+    }
+    badge.textContent = count + (count === 1 ? ' thread' : ' threads');
+    badge.title = count + ' active thread' + (count === 1 ? '' : 's') + ' streaming';
+  } else if (badge) {
+    badge.remove();
+  }
+}
 document.addEventListener('click', e => {
   if (!e.target.closest('.h-room-row')) closeAllSwipes();
 });

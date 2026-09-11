@@ -71,6 +71,8 @@ The selection is saved per room and takes effect immediately on the next message
 
 The setting applies immediately when you click an option — no save button needed. It is saved per room.
 
+Busy mode is **thread-scoped**: each thread is treated as an independent context. An agent can handle a message in thread B while still running in thread A — the busy mode for thread A does not block thread B.
+
 ### Model in Chat Bubbles
 
 Each AI response shows a small model indicator at the bottom right of the bubble (e.g., `qwen3-coder:480b:cloud`), making it easy to track which model generated each reply.
@@ -122,6 +124,23 @@ The composer supports:
 Click the **reply arrow** on any message bubble to start a reply. A quote preview appears above the composer showing what you're replying to. Your reply will display the quoted message in the chat bubble.
 
 Agents understand reply context — when you reply to a specific message, the original message content is injected into the AI prompt so the agent knows exactly what you're referring to.
+
+### Threads
+
+The chat feed shows **root messages only** — messages that start a new conversation thread. When a root message has replies, a **thread chip** appears below it showing:
+
+- Reply count
+- Participant avatars
+- Time of last reply
+- A pulsing dot when an agent is actively streaming inside that thread
+
+Click any root message (or its thread chip) to open the **thread panel** on the right side of the screen. The thread panel shows all replies in that thread and has its own composer for sending replies directly into the thread. Close the panel with the × button or press **Escape**.
+
+**Deep-link:** append `?thread=<message-id>` to the room URL to open a specific thread directly on page load.
+
+**Mobile:** the thread panel opens as a fullscreen overlay. Swipe right to dismiss it.
+
+**Header breadcrumb:** when a thread is open, the room header shows a breadcrumb (`› first few words…`). Clicking it scrolls the thread panel into view.
 
 ### Message Actions
 
@@ -422,6 +441,8 @@ Each agent has one or more **working directories** — these are the folders whe
 - View an agent's workdirs in **Settings > AI Agent > [agent name]**
 - Add new workdirs via the UI or API
 - Assign a specific workdir to a room when creating it
+
+**CLAUDE.md auto-import:** when an agent connects to a room, Stoa checks if the workdir contains a `CLAUDE.md` file that is not git-tracked. If found, the file content is automatically imported as the room's **system prompt** — providing the agent with project context from the first message. If the CLAUDE.md is git-tracked (committed to the repo), it is left untouched and not imported. With multiple workdirs in a room, contents from each are combined under per-source headers. A system event is posted to the room when an import occurs.
 
 ### Client Versioning
 
