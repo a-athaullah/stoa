@@ -4519,6 +4519,41 @@ async function run() {
     assert.ok(steerLine.includes('thread_id'), 'steer_message must include thread_id');
   });
 
+  // Fase 5: migration & documentation
+  console.log('\n[Fase 5: Migration & Documentation]');
+
+  await test('Fase5 — backfill migration file exists and is idempotent SQL', async () => {
+    const migPath = require('path').join(__dirname, 'migrations', '20260911-backfill-thread-id.sql');
+    const sql = require('fs').readFileSync(migPath, 'utf8');
+    assert.ok(sql.includes('thread_id IS NULL'), 'backfill should only process unmigrated messages');
+    assert.ok(sql.includes('WITH RECURSIVE'), 'backfill should use recursive CTE for chain walking');
+    assert.ok(sql.includes('depth < 20'), 'backfill should cap chain depth at 20');
+    assert.ok(sql.includes('DROP TABLE'), 'backfill should clean up temp table');
+  });
+
+  await test('Fase5 — claude_md_import_result handler exists in server.js', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    assert.ok(src.includes("msg.type === 'claude_md_import_result'"), 'server must handle claude_md_import_result');
+    assert.ok(src.includes('claude_md_migrated_at'), 'handler must mark workdir as migrated');
+    assert.ok(src.includes('# Stoa Agent Context'), 'handler must detect old proactive template');
+  });
+
+  await test('Fase5 — claude_md_import sent on agent_connect for unmigrated workdirs', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    const connectBlock = src.substring(src.indexOf("msg.type === 'agent_connect'"), src.indexOf("msg.type === 'agent_scan_result'"));
+    assert.ok(connectBlock.includes('claude_md_import'), 'agent_connect should trigger claude_md_import for unmigrated workdirs');
+    assert.ok(connectBlock.includes('claude_md_migrated_at IS NULL'), 'should only import unmigrated workdirs');
+  });
+
+  await test('Fase5 — knowledge base updated with threading model', async () => {
+    const arch = require('fs').readFileSync(require('path').join(__dirname, '.claude', 'knowledge', 'architecture.md'), 'utf8');
+    assert.ok(arch.includes('Threading Model'), 'architecture.md should document threading model');
+    assert.ok(arch.includes('max_active_threads'), 'architecture.md should document thread limits');
+    const schema = require('fs').readFileSync(require('path').join(__dirname, '.claude', 'knowledge', 'database-schema.md'), 'utf8');
+    assert.ok(schema.includes('thread_id INTEGER NOT NULL DEFAULT 0'), 'schema docs should document ai_sessions.thread_id');
+    assert.ok(schema.includes('claude_md_migrated_at'), 'schema docs should document migration tracking');
+  });
+
   await test('Thread — cleanup', async () => {
     // Cleaned up in teardown
   });

@@ -4267,6 +4267,14 @@ wss.on('connection', (ws, req) => {
         console.log(`[agent] draining ${reconnectWakes.length} pending wake(s) for Actor #${agentActorId} on reconnect`);
         for (const r of reconnectWakes) drainWake(r.id).catch(e => console.error('[wake] reconnect drain error:', e.message));
       }
+      // CLAUDE.md import: request import for unmigrated workdirs
+      const unmigratedWds = db.prepare(
+        'SELECT id, path FROM agent_workdirs WHERE actor_id=? AND claude_md_migrated_at IS NULL'
+      ).all(agentActorId);
+      for (const wd of unmigratedWds) {
+        ws.send(JSON.stringify({ type: 'claude_md_import', workdir: wd.path }));
+      }
+      if (unmigratedWds.length) console.log(`[claude_md] requested import for ${unmigratedWds.length} workdir(s) of Actor #${agentActorId}`);
     }
 
     // ── Agent reports scan results
@@ -4328,6 +4336,56 @@ wss.on('connection', (ws, req) => {
       broadcastGlobal({ type: 'agent_scan_complete', actor_id: agentActorId });
     }
 
+
+    // ── CLAUDE.md import result from agent
+    if (msg.type === 'claude_md_import_result' && agentActorId) {
+      const { workdir, content, tracked, error } = msg;
+      const wd = db.prepare('SELECT id FROM agent_workdirs WHERE actor_id=? AND path=?').get(agentActorId, workdir);
+      if (!wd) { console.warn(`[claude_md] import result for unknown workdir: ${workdir}`); }
+      else if (error) {
+        console.warn(`[claude_md] import error for ${workdir}: ${error}`);
+        db.prepare("UPDATE agent_workdirs SET claude_md_migrated_at=datetime('now') WHERE id=?").run(wd.id);
+      } else {
+        const isTemplate = !content || content.trim() === '' || content.includes('# Stoa Agent Context');
+        if (isTemplate) {
+          db.prepare("UPDATE agent_workdirs SET claude_md_migrated_at=datetime('now') WHERE id=?").run(wd.id);
+          if (!tracked) ws.send(JSON.stringify({ type: 'claude_md_clear', workdir }));
+        } else {
+          const rooms = db.prepare(
+            `SELECT DISTINCT r.id FROM rooms r
+             LEFT JOIN room_participants rp ON rp.room_id=r.id AND rp.actor_id=?
+             WHERE (r.workdir_id=? OR rp.workdir_id=?) AND r.system_prompt IS NULL`
+          ).all(agentActorId, wd.id, wd.id);
+          const actor = db.prepare('SELECT name FROM actors WHERE id=?').get(agentActorId);
+          const agentLabel = actor?.name || `Agent #${agentActorId}`;
+          for (const room of rooms) {
+            const otherPrompts = db.prepare(
+              `SELECT aw.path, r.system_prompt FROM rooms r
+               JOIN agent_workdirs aw ON aw.id=r.workdir_id
+               WHERE r.id=? AND r.system_prompt IS NOT NULL`
+            ).get(room.id);
+            let finalPrompt = content;
+            if (otherPrompts) {
+              finalPrompt = `## From ${agentLabel}/${workdir}\n\n${content}`;
+            }
+            db.prepare('UPDATE rooms SET system_prompt=? WHERE id=? AND system_prompt IS NULL').run(finalPrompt, room.id);
+            const sysMsg = `System prompt imported from CLAUDE.md (${content.length} chars) — source: ${agentLabel}/${workdir}`;
+            const humanPart = db.prepare(
+              "SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1"
+            ).get(room.id);
+            if (humanPart) {
+              db.prepare(
+                "INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')"
+              ).run(room.id, humanPart.id, sysMsg);
+              broadcast(room.id, { type: 'system_event', room_id: room.id, content: sysMsg });
+            }
+          }
+          db.prepare("UPDATE agent_workdirs SET claude_md_migrated_at=datetime('now') WHERE id=?").run(wd.id);
+          if (!tracked) ws.send(JSON.stringify({ type: 'claude_md_clear', workdir }));
+          console.log(`[claude_md] imported ${content.length} chars from ${workdir} into ${rooms.length} room(s)`);
+        }
+      }
+    }
 
     // ── Agent streams a token
     if (msg.type === 'agent_token' && agentActorId) {
