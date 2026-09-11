@@ -36,6 +36,7 @@ async function openThread(rootId) {
   panel.classList.add('open');
   document.getElementById('chat-inner')?.classList.add('has-thread');
 
+  _updateRoomHeaderThread(rootId);
   await _loadThread(rootId);
   _updateThreadComposer();
 }
@@ -53,6 +54,8 @@ function closeThread() {
   const panel = _getThreadPanel();
   if (panel) panel.classList.remove('open');
   document.getElementById('chat-inner')?.classList.remove('has-thread');
+
+  _updateRoomHeaderThread(null);
 
   // Clear thread context state
   Object.keys(threadContextState).forEach(k => delete threadContextState[k]);
@@ -172,6 +175,14 @@ function _createThreadPanel() {
   panel.appendChild(footer);
 
   chatBodyRow.appendChild(panel);
+
+  // Mobile: swipe right to close
+  let _swipeStartX = 0;
+  panel.addEventListener('touchstart', e => { _swipeStartX = e.touches[0].clientX; }, { passive: true });
+  panel.addEventListener('touchend', e => {
+    const dx = e.changedTouches[0].clientX - _swipeStartX;
+    if (dx > 80) closeThread();
+  }, { passive: true });
 
   // Keyboard handling for thread input
   inputEl.addEventListener('keydown', e => {
@@ -414,6 +425,36 @@ function checkThreadDeepLink() {
   if (threadId) openThread(parseInt(threadId, 10));
 }
 
+// ── Room header breadcrumb ────────────────────────────────────────────────────
+function _updateRoomHeaderThread(rootId) {
+  const header = document.getElementById('chat-header');
+  if (!header) return;
+  const existing = document.getElementById('chat-thread-breadcrumb');
+  if (!rootId) {
+    if (existing) existing.remove();
+    return;
+  }
+  const crumb = existing || (() => {
+    const el = document.createElement('div');
+    el.id = 'chat-thread-breadcrumb';
+    el.className = 'h-thread-breadcrumb';
+    const info = header.querySelector('.h-header-info');
+    if (info) info.after(el);
+    else header.appendChild(el);
+    return el;
+  })();
+
+  const row = document.getElementById('msg-' + rootId);
+  const snippet = (row?.querySelector('.h-bubble')?.textContent?.slice(0, 40)
+    || row?.querySelector('.h-msg-name')?.textContent
+    || 'Thread').replace(/</g, '&lt;');
+  crumb.innerHTML = `<span class="h-thread-breadcrumb-sep">›</span><span class="h-thread-breadcrumb-label" title="Click to focus thread">${snippet}</span>`;
+  crumb.querySelector('.h-thread-breadcrumb-label').onclick = () => {
+    const panel = _getThreadPanel();
+    if (panel) panel.querySelector('#thread-msg-input')?.focus();
+  };
+}
+
 // ── Reset on room change ──────────────────────────────────────────────────────
 function clearThreadPanel() {
   if (activeThreadId) {
@@ -428,6 +469,7 @@ function clearThreadPanel() {
   }
   document.getElementById('chat-inner')?.classList.remove('has-thread');
   document.querySelectorAll('.h-feed-root').forEach(el => el.classList.remove('h-feed-root-active'));
+  _updateRoomHeaderThread(null);
   Object.keys(threadContextState).forEach(k => delete threadContextState[k]);
   threadLoadingOlder = false;
   threadNoMoreOlder = false;

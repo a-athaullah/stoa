@@ -1951,3 +1951,99 @@ html.dark .h-bubble :not(pre) > code {
   50%  { opacity: 0.4; transform: scale(1.4); }
   100% { opacity: 1; transform: scale(1); }
 }
+
+/* ── Sidebar: active thread badge per room ────────────────────────────────── */
+.h-room-thread-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 5px;
+  border-radius: 10px;
+  background: oklch(0.62 0.18 250 / 0.15);
+  color: oklch(0.62 0.18 250);
+  font-family: var(--h-sans);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  animation: badge-pulse 2s ease-in-out infinite;
+  flex: 0 0 auto;
+  margin-right: 2px;
+}
+html.dark .h-room-thread-badge {
+  background: oklch(0.62 0.18 250 / 0.2);
+  color: oklch(0.72 0.18 250);
+}
+.h-room-thread-badge::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse-ring 1.4s ease infinite;
+  flex: 0 0 auto;
+}
+
+@keyframes badge-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.7; }
+}
+
+/* ── Chat header: thread breadcrumb ──────────────────────────────────────── */
+.h-thread-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 220px;
+}
+
+.h-thread-breadcrumb-sep {
+  color: var(--h-ink-faint);
+  font-size: 14px;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+.h-thread-breadcrumb-label {
+  font-family: var(--h-sans);
+  font-size: 12px;
+  color: var(--h-ink-mute);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.h-thread-breadcrumb-label:hover { color: var(--h-ink); }
+
+/* ── Mobile overlay: thread panel full-screen on small viewports ─────────── */
+@media (max-width: 1023px) {
+  .h-thread-panel {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100% !important;
+    max-width: 100% !important;
+    flex: none !important;
+    z-index: 200;
+    display: none;
+  }
+  .h-thread-panel.open { display: flex; }
+
+  /* Overlay close hint bar at top of thread header */
+  .h-thread-header::before {
+    content: '';
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 36px;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--h-hair-soft);
+    pointer-events: none;
+  }
+  .h-thread-header { position: relative; padding-top: 20px; }
+}
