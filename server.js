@@ -2239,7 +2239,7 @@ const server = http.createServer(async (req, res) => {
       port:        PORT,
       human_name_from_env: !!process.env.HUMAN_NAME,
       max_ai_turns: parseInt(process.env.MAX_AI_TURNS) || 5,
-      max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1,
+      max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 3,
       session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5,
       auto_compact_threshold_kb: parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB) || 300,
       cleanup_cron_hour: parseInt(process.env.CLEANUP_CRON_HOUR) || 10,
@@ -4248,7 +4248,7 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ type: 'force_update' }));
       }
       ws.send(JSON.stringify({ type: 'agent_ready' }));
-      ws.send(JSON.stringify({ type: 'set_config', max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1, session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5, auto_compact_threshold_kb: parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB) || 300 }));
+      ws.send(JSON.stringify({ type: 'set_config', max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 3, session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5, auto_compact_threshold_kb: parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB) || 300 }));
       const connectedActor = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, created_at FROM actors WHERE id=?').get(agentActorId);
       if (connectedActor) broadcastGlobal({ type: 'actor_status', actor: { ...connectedActor, online: true, client_version: msg.client_version || null } });
       // R23: push all room settings so agent is always in sync regardless of connect order.
@@ -5570,7 +5570,7 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
       const agentIds = db.prepare("SELECT a.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='ai'").all(roomId).map(r => r.id);
       for (const aId of agentIds) {
         const aw = agentClients.get(aId);
-        if (aw?.readyState === 1) aw.send(JSON.stringify({ type: 'steer_message', room_id: roomId, content, message_id: messageId }));
+        if (aw?.readyState === 1) aw.send(JSON.stringify({ type: 'steer_message', room_id: roomId, thread_id: threadId || null, content, message_id: messageId }));
       }
       return;
     }
@@ -6361,23 +6361,6 @@ server.listen(PORT, () => {
   try { drainPendingWakesOnStartup(); } catch (e) { console.error('[wake] startup drain failed:', e.message); }
 });
 
-function waitForRoomIdle(roomId, timeoutMs = 300000) {
-  return new Promise(resolve => {
-    if (!activeSequences.has(roomId)) return resolve();
-    const onIdle = (id) => {
-      if (id !== roomId) return;
-      roomIdleBus.removeListener('idle', onIdle);
-      clearTimeout(timer);
-      resolve();
-    };
-    const timer = setTimeout(() => {
-      roomIdleBus.removeListener('idle', onIdle);
-      console.warn(`[queue] room ${roomId} idle timeout after ${timeoutMs}ms`);
-      resolve();
-    }, timeoutMs);
-    roomIdleBus.on('idle', onIdle);
-  });
-}
 
 function extractSlackFullText(event) {
   const parts = [];
