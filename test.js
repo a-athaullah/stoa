@@ -4374,6 +4374,29 @@ async function run() {
     assert.ok(hasThread, 'should have thread messages (scope=all by default)');
   });
 
+  await test('Thread — WS send_message with invalid thread_id → error', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    try {
+      ws.send(JSON.stringify({ type: 'join_room', room_id: threadTestRoomId }));
+      await new Promise(r => setTimeout(r, 50));
+      const errPromise = waitForWsMessage(ws, m => m.type === 'error');
+      ws.send(JSON.stringify({ type: 'send_message', room_id: threadTestRoomId, content: 'bad thread', thread_id: 999999 }));
+      const err = await errPromise;
+      assert.ok(err.error.includes('not found'), `expected thread root not found, got: ${err.error}`);
+    } finally {
+      ws.close();
+    }
+  });
+
+  await test('Thread — system-prompt 64KB cap → 400', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    const bigPrompt = 'x'.repeat(65537);
+    const r = await req('PUT', `/api/rooms/${threadTestRoomId}/system-prompt`, { system_prompt: bigPrompt });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.body.error.includes('64KB'));
+  });
+
   await test('Thread — system-prompt unauthenticated → 401', async () => {
     const r = await fetch(`http://${HOST}:${PORT}/api/rooms/${threadTestRoomId}/system-prompt`);
     assert.strictEqual(r.status, 401);

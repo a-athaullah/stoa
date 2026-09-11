@@ -3651,6 +3651,9 @@ Write-Host "Logs   : pm2 logs $AgentName"
     const body = await readBody(req);
     const data = JSON.parse(body);
     if (typeof data.system_prompt === 'string' || data.system_prompt === null) {
+      if (typeof data.system_prompt === 'string' && data.system_prompt.length > 65536) {
+        return json(res, { error: 'system_prompt exceeds 64KB limit' }, 400);
+      }
       db.prepare('UPDATE rooms SET system_prompt=? WHERE id=?').run(data.system_prompt, roomId);
     }
     if (typeof data.max_active_threads === 'number' && data.max_active_threads >= 1) {
@@ -5498,6 +5501,14 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
       }
       return;
     }
+  }
+
+  const threadErr = resolveThread(roomId, threadId);
+  if (threadErr) {
+    if (senderWs?.readyState === 1) {
+      senderWs.send(JSON.stringify({ type: 'error', error: threadErr }));
+    }
+    return;
   }
 
   // Backward compat: extract first image/file for legacy columns
