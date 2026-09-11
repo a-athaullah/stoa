@@ -127,14 +127,11 @@ Agents understand reply context — when you reply to a specific message, the or
 
 ### Threads
 
-The chat feed shows **root messages only** — messages that start a new conversation thread. When a root message has replies, a **thread chip** appears below it showing:
+The main feed uses a **Slack-style flat row layout** — each root message shows the sender's avatar on the left, their name and timestamp on the same line, and the message content below. AI agent replies do not appear in the main feed; they live inside thread panels.
 
-- Reply count
-- Participant avatars
-- Time of last reply
-- A pulsing dot when an agent is actively streaming inside that thread
+When a root message has replies, a **thread chip** appears below it showing reply count, time of last reply, and a pulsing dot when an agent is actively streaming inside that thread.
 
-Click any root message (or its thread chip) to open the **thread panel** on the right side of the screen. The thread panel shows all replies in that thread and has its own composer for sending replies directly into the thread. Close the panel with the × button or press **Escape**.
+Click any root message (or its thread chip) to open the **thread panel** on the right side of the screen. The thread panel shows all replies and has its own composer for sending replies directly into the thread. If an AI agent starts streaming a reply, the panel **opens automatically** — but only if you don't currently have another thread open. Close the panel with the × button or press **Escape**.
 
 **Deep-link:** append `?thread=<message-id>` to the room URL to open a specific thread directly on page load.
 
@@ -144,13 +141,13 @@ Click any root message (or its thread chip) to open the **thread panel** on the 
 
 ### Message Actions
 
-Hover over any message bubble to reveal action buttons:
+Hover over any message to reveal action buttons:
 
 - **Copy** — copy the message content to clipboard
 - **Reply** — start a reply to that message
 - **Delete** — delete the message permanently
 
-On mobile, **long-press** a message bubble to reveal the action buttons instead of hovering.
+On mobile, **long-press** a message to reveal the action buttons instead of hovering.
 
 ### Draft Saving
 

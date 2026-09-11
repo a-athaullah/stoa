@@ -127,14 +127,11 @@ Agent memahami konteks reply — saat Anda reply ke pesan tertentu, konten pesan
 
 ### Thread
 
-Feed chat hanya menampilkan **pesan root** — pesan yang membuka percakapan baru. Jika sebuah pesan root sudah punya balasan, **chip thread** muncul di bawahnya, menampilkan:
+Feed utama menggunakan **tampilan baris flat Slack-style** — setiap pesan root menampilkan avatar pengirim di kiri, nama dan timestamp di baris yang sama, serta konten pesan di bawahnya. Balasan AI tidak muncul di feed utama; mereka berada di dalam panel thread.
 
-- Jumlah balasan
-- Avatar peserta
-- Waktu balasan terakhir
-- Titik bergerak (pulse) saat agent sedang streaming di dalam thread tersebut
+Jika sebuah pesan root sudah punya balasan, **chip thread** muncul di bawahnya, menampilkan jumlah balasan, waktu balasan terakhir, dan titik bergerak (pulse) saat agent sedang streaming di dalam thread tersebut.
 
-Klik pesan root mana pun (atau chip thread-nya) untuk membuka **panel thread** di sebelah kanan. Panel berisi semua balasan dalam thread itu beserta composer sendiri untuk mengirim balasan langsung ke thread. Tutup panel dengan tombol × atau tekan **Escape**.
+Klik pesan root mana pun (atau chip thread-nya) untuk membuka **panel thread** di sebelah kanan. Panel berisi semua balasan beserta composer sendiri untuk mengirim balasan langsung ke thread. Jika AI agent mulai streaming balasan di sebuah thread, panel **terbuka otomatis** — tetapi hanya jika Anda sedang tidak membuka thread lain. Tutup panel dengan tombol × atau tekan **Escape**.
 
 **Deep-link:** tambahkan `?thread=<id-pesan>` ke URL room untuk membuka thread tertentu langsung saat halaman dimuat.
 
@@ -144,13 +141,13 @@ Klik pesan root mana pun (atau chip thread-nya) untuk membuka **panel thread** d
 
 ### Aksi Pesan
 
-Hover di atas bubble pesan untuk menampilkan tombol aksi:
+Hover di atas pesan untuk menampilkan tombol aksi:
 
 - **Copy** — salin konten pesan ke clipboard
 - **Reply** — mulai reply ke pesan tersebut
 - **Delete** — hapus pesan secara permanen
 
-Di mobile, **long-press** (tekan lama) bubble pesan untuk menampilkan tombol aksi alih-alih hover.
+Di mobile, **long-press** (tekan lama) pesan untuk menampilkan tombol aksi alih-alih hover.
 
 ### Penyimpanan Draf
 
