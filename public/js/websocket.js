@@ -50,7 +50,14 @@ function handleWsMessage(msg) {
     oldestMessageId = null;
     noMoreOlder = false;
     resetDaySeparator();
+    if (typeof clearThreadSummaries === 'function') clearThreadSummaries();
+    if (typeof clearThreadPanel === 'function') clearThreadPanel();
     msg.messages.forEach(m => appendMessage(m));
+    // Attach thread chips and make roots clickable
+    if (typeof attachThreadChips === 'function') attachThreadChips(msg.messages);
+    msg.messages.forEach(m => {
+      if (!m.thread_id && typeof makeFeedMessageClickable === 'function') makeFeedMessageClickable(m.id);
+    });
     initDayFloater();
     if (msg.messages.length > 0) oldestMessageId = msg.messages[0].id;
     noMoreOlder = msg.messages.length < 100;
@@ -61,12 +68,34 @@ function handleWsMessage(msg) {
       }
     }
     scrollToBottom(true);
+    // Check if there's a deep-link thread param
+    if (typeof checkThreadDeepLink === 'function') checkThreadDeepLink();
     return;
   }
 
   if (msg.type === 'message_new') {
-    appendMessage(msg.message);
-    scrollToBottom(true);
+    const m = msg.message;
+    const tId = m.thread_id || null;
+    if (tId) {
+      // Update chip in feed for this thread's root
+      if (msg.thread_summary && typeof handleThreadSummary === 'function') handleThreadSummary(msg.thread_summary);
+      // Route to open thread panel if it matches
+      if (typeof activeThreadId !== 'undefined' && activeThreadId === tId) {
+        const body = document.getElementById('thread-body');
+        appendMessage(m, body);
+        if (typeof _scrollThreadToBottom === 'function') _scrollThreadToBottom();
+      }
+    } else {
+      appendMessage(m);
+      // Make new root message clickable
+      if (typeof makeFeedMessageClickable === 'function') makeFeedMessageClickable(m.id);
+      scrollToBottom(true);
+    }
+    return;
+  }
+
+  if (msg.type === 'thread_summary') {
+    if (typeof handleThreadSummary === 'function') handleThreadSummary(msg);
     return;
   }
 
@@ -76,7 +105,11 @@ function handleWsMessage(msg) {
     const liveStatus = getLiveStatus();
     // 'off' — skip display entirely (but still allow done-event cleanup below)
     if (liveStatus === 'off' && msg.status) return;
-    const inner = document.getElementById('messages-inner');
+    // Route to thread panel or feed
+    const tId = msg.thread_id || null;
+    const inner = (tId && typeof activeThreadId !== 'undefined' && activeThreadId === tId)
+      ? document.getElementById('thread-body')
+      : document.getElementById('messages-inner');
     if (!inner) return;
     const baseName = msg.actor_name || 'Agent';
     const displayName = msg.sub_agent_label ? `${baseName} (${msg.sub_agent_label})` : baseName;
@@ -113,10 +146,13 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'message_state') {
     if ((msg.state === 'requesting' || msg.state === 'streaming') && msg.actor_name) {
-      const inner = document.getElementById('messages-inner');
-      const last = inner?.lastElementChild;
+      const tId = msg.thread_id || null;
+      const targetContainer = (tId && typeof activeThreadId !== 'undefined' && activeThreadId === tId)
+        ? document.getElementById('thread-body')
+        : document.getElementById('messages-inner');
+      const last = targetContainer?.lastElementChild;
       if (last?.classList.contains('h-system-event') && last.dataset.actor?.startsWith(msg.actor_name)) last.remove();
-      showThinking(msg.message_id, msg.actor_name, msg.avatar_color, msg.avatar_symbol, msg.avatar_url, msg.sub_agent_label);
+      showThinking(msg.message_id, msg.actor_name, msg.avatar_color, msg.avatar_symbol, msg.avatar_url, msg.sub_agent_label, targetContainer);
       setComposerProcessing(msg.message_id);
     }
     if (msg.state === 'error' || (typeof FAILURE_STATES !== 'undefined' && FAILURE_STATES.has(msg.state))) {
@@ -157,12 +193,18 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'message_token') {
     appendToken(msg.message_id, msg.token);
+    // Scroll the right container
+    if (msg.thread_id && typeof activeThreadId !== 'undefined' && activeThreadId === msg.thread_id) {
+      if (typeof _scrollThreadToBottom === 'function') _scrollThreadToBottom();
+    }
     return;
   }
 
   if (msg.type === 'message_complete') {
     finalizeMessage(msg.message_id, msg.content, msg.file_url, msg.file_name, msg.attachments, msg.ai_model, msg.result_meta);
     clearComposerProcessing(msg.message_id);
+    // Update thread chip if this was a thread reply
+    if (msg.thread_summary && typeof handleThreadSummary === 'function') handleThreadSummary(msg.thread_summary);
     refreshRoomList();
     if (ws && ws.readyState === 1) {
       ws.send(JSON.stringify({ type: 'file_list' }));
@@ -242,27 +284,52 @@ function handleWsMessage(msg) {
   }
 
   if (msg.type === 'compact_start') {
-    if (msg.room_id === currentRoomId) showCompactBar(msg.room_id, msg.participants);
+    if (msg.room_id !== currentRoomId) return;
+    const inThread = msg.thread_id && typeof activeThreadId !== 'undefined' && activeThreadId === msg.thread_id;
+    if (inThread && typeof showThreadCompactBar === 'function') showThreadCompactBar(msg.participants);
+    else showCompactBar(msg.room_id, msg.participants);
     return;
   }
 
   if (msg.type === 'compact_progress') {
-    if (msg.room_id === currentRoomId) updateCompactBar(msg.completed_participant_ids);
+    if (msg.room_id !== currentRoomId) return;
+    const inThread = msg.thread_id && typeof activeThreadId !== 'undefined' && activeThreadId === msg.thread_id;
+    if (inThread && typeof updateThreadCompactBar === 'function') updateThreadCompactBar(msg.completed_participant_ids);
+    else updateCompactBar(msg.completed_participant_ids);
     return;
   }
 
   if (msg.type === 'compact_done') {
-    if (msg.room_id === currentRoomId) hideCompactBar();
+    if (msg.room_id !== currentRoomId) return;
+    const inThread = msg.thread_id && typeof activeThreadId !== 'undefined' && activeThreadId === msg.thread_id;
+    if (inThread && typeof hideThreadCompactBar === 'function') hideThreadCompactBar();
+    else hideCompactBar();
     return;
   }
 
   if (msg.type === 'context_update') {
-    handleContextUpdate(msg);
+    // Route to thread context bar if update is for the open thread
+    const inThread = msg.thread_id && typeof activeThreadId !== 'undefined' && activeThreadId === msg.thread_id;
+    if (inThread && typeof threadContextState !== 'undefined' && typeof updateThreadContextBar === 'function') {
+      threadContextState[msg.actor_id] = {
+        context_tokens_used: msg.context_tokens_used,
+        context_limit: msg.context_limit,
+        actor_name: msg.actor_name,
+        model: msg.model,
+      };
+      updateThreadContextBar();
+    } else {
+      handleContextUpdate(msg);
+    }
     return;
   }
 
   if (msg.type === 'compact_error') {
-    if (msg.room_id === currentRoomId) { hideCompactBar(); showToast(msg.error || 'Compact failed', { error: true }); }
+    if (msg.room_id !== currentRoomId) return;
+    const inThread = msg.thread_id && typeof activeThreadId !== 'undefined' && activeThreadId === msg.thread_id;
+    if (inThread && typeof hideThreadCompactBar === 'function') hideThreadCompactBar();
+    else hideCompactBar();
+    showToast(msg.error || 'Compact failed', { error: true });
     return;
   }
 

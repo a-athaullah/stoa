@@ -65,6 +65,11 @@ function htmlToMarkdown(node) {
 // ── Drafts per room ─────────────────────────────────────────────────────────
 function saveDraft(roomId) {
   if (!roomId) return;
+  // If a thread is open, save thread draft instead
+  if (typeof activeThreadId !== 'undefined' && activeThreadId) {
+    if (typeof saveThreadDraft === 'function') saveThreadDraft(roomId, activeThreadId);
+    return;
+  }
   const input = document.getElementById('msg-input');
   const html = input.innerHTML.trim();
   if (html && html !== '<br>') {
@@ -144,7 +149,8 @@ function sendMessage() {
   const replyTo = pendingReplyTo;
   clearAttachments();
   clearReply();
-  ws.send(JSON.stringify({ type: 'send_message', room_id: currentRoomId, content, attachments, reply_to: replyTo, event_id: crypto.randomUUID() }));
+  const threadId = (typeof activeThreadId !== 'undefined' && activeThreadId) ? activeThreadId : undefined;
+  ws.send(JSON.stringify({ type: 'send_message', room_id: currentRoomId, content, attachments, reply_to: replyTo, thread_id: threadId, event_id: crypto.randomUUID() }));
   if (window.currentBusyInputMode === 'steer') _showSteerNotice();
   clearDraft(currentRoomId);
 }
