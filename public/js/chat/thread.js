@@ -27,8 +27,11 @@ async function openThread(rootId) {
     el.classList.toggle('h-feed-root-active', el.dataset.rootId == rootId);
   });
 
-  const panel = _getThreadPanel();
-  if (!panel) { _createThreadPanel(); }
+  let panel = _getThreadPanel();
+  if (!panel) {
+    _createThreadPanel();
+    panel = _getThreadPanel();
+  }
 
   panel.classList.add('open');
   document.getElementById('chat-inner')?.classList.add('has-thread');
