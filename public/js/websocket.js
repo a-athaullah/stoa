@@ -148,8 +148,8 @@ function handleWsMessage(msg) {
   if (msg.type === 'message_state') {
     if ((msg.state === 'requesting' || msg.state === 'streaming') && msg.actor_name) {
       const tId = msg.thread_id || null;
-      // Auto-open thread panel when AI starts responding in a thread
-      if (tId && typeof openThread === 'function' && typeof activeThreadId !== 'undefined' && activeThreadId !== tId) {
+      // Auto-open thread panel when AI starts responding in a thread — only if no thread is currently open
+      if (tId && typeof openThread === 'function' && typeof isThreadOpen === 'function' && !isThreadOpen()) {
         openThread(tId);
       }
       const targetContainer = (tId && typeof activeThreadId !== 'undefined' && activeThreadId === tId)

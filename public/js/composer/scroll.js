@@ -27,12 +27,13 @@ async function loadOlderMessages() {
 
     if (!msgs.length) { noMoreOlder = true; loadingOlder = false; return; }
 
-    // Build rows into a fragment using appendMessage's container param
+    // Build rows into a fragment — root-only, Slack-style
     const savedDay = _lastDayKey;
     _lastDayKey = null;
     const frag = document.createDocumentFragment();
     msgs.forEach(m => {
-      if (!document.getElementById('msg-' + m.id)) appendMessage(m, frag);
+      if (m.thread_id) return; // skip thread replies from main feed
+      if (!document.getElementById('msg-' + m.id)) appendFeedRootRow(m, frag);
     });
     _lastDayKey = savedDay;
 
