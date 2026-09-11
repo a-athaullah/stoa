@@ -369,7 +369,7 @@ function stopThreadGeneration() {
   // Find streaming messages in thread body
   const body = _getThreadBody();
   if (!body) return;
-  body.querySelectorAll('.h-msg-row').forEach(row => {
+  body.querySelectorAll('.h-msg-row, .h-thread-msg-row').forEach(row => {
     const msgId = row.id.replace('msg-', '');
     if (processingMessages.has(parseInt(msgId, 10)) || processingMessages.has(msgId)) {
       ws.send(JSON.stringify({ type: 'stop_generation', room_id: currentRoomId, message_id: parseInt(msgId, 10) }));
