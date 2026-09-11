@@ -4,14 +4,15 @@ function showThinking(msgId, actorName, color, symbol, avatarUrl, subAgentLabel,
   const inner = container || document.getElementById('messages-inner');
   if (!inner) return;
 
+  const isThreadPanel = inner.id === 'thread-body';
   const row = document.createElement('div');
-  row.className = 'h-msg-row ai';
+  row.className = isThreadPanel ? 'h-thread-msg-row' : 'h-msg-row ai';
   row.id = 'msg-' + msgId;
 
   // Seal
   const sealWrap = document.createElement('div');
   sealWrap.className = 'h-msg-seal-wrap';
-  sealWrap.appendChild(makeAvatarEl(actorName, color, avatarUrl, 40, subAgentLabel));
+  sealWrap.appendChild(makeAvatarEl(actorName, color, avatarUrl, isThreadPanel ? 28 : 40, subAgentLabel));
   row.appendChild(sealWrap);
 
   // Body

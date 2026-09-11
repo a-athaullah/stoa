@@ -84,7 +84,8 @@ function handleWsMessage(msg) {
       // Route to open thread panel if it matches
       if (typeof activeThreadId !== 'undefined' && activeThreadId === tId) {
         const body = document.getElementById('thread-body');
-        appendMessage(m, body);
+        if (typeof appendThreadMessage === 'function') appendThreadMessage(m, body);
+        else appendMessage(m, body);
         if (typeof _scrollThreadToBottom === 'function') _scrollThreadToBottom();
       }
     } else {

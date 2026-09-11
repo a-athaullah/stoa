@@ -2048,6 +2048,65 @@ html.dark .h-room-thread-badge {
   .h-thread-header { position: relative; padding-top: 20px; }
 }
 
+/* ── Thread panel — flat message rows (no bubble) ────────────────────────── */
+.h-thread-msg-row {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 5px 16px;
+}
+
+.h-thread-msg-row .h-msg-seal-wrap {
+  flex: 0 0 28px;
+  padding-top: 2px;
+}
+
+.h-thread-msg-row .h-msg-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: flex-start !important;
+}
+
+/* Strip all bubble appearance inside thread panel rows */
+.h-thread-msg-row .h-bubble,
+.h-thread-msg-row .h-thinking-bubble {
+  background: none !important;
+  border: none !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+  color: var(--h-ink);
+  font-size: 15px;
+  line-height: 1.55;
+  max-width: 100%;
+}
+
+.h-thread-msg-row .h-msg-meta {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.h-thread-msg-row .h-msg-name {
+  font-size: 13.5px;
+  font-weight: 700;
+}
+
+.h-thread-msg-row .h-msg-time {
+  font-size: 11px;
+  color: var(--h-ink-faint);
+}
+
+/* Separator between thread messages */
+.h-thread-msg-row + .h-thread-msg-row {
+  border-top: 1px solid var(--h-hair-soft);
+  margin-top: 2px;
+}
+
 /* ── Slack-style root rows (feed) ─────────────────────────────────────────── */
 @keyframes threadPulse {
   0%, 100% { opacity: 1; }

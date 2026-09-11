@@ -193,6 +193,84 @@ function _createThreadPanel() {
   });
 }
 
+// ── Flat thread message renderer ─────────────────────────────────────────────
+// Renders without bubble background — matches Slack-style thread panel design.
+// Keeps .h-bubble and .h-msg-body present for stream.js/finalizeMessage compat.
+function appendThreadMessage(m, container) {
+  if (!container) return;
+  if (m.id && document.getElementById('msg-' + m.id)) return;
+
+  if (m.state === 'streaming' || m.state === 'requesting') {
+    showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, container);
+    return;
+  }
+
+  const row = document.createElement('div');
+  row.className = 'h-thread-msg-row';
+  row.id = 'msg-' + m.id;
+
+  const seal = document.createElement('div');
+  seal.className = 'h-msg-seal-wrap';
+  seal.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 28, m.sub_agent_label));
+  row.appendChild(seal);
+
+  const body = document.createElement('div');
+  body.className = 'h-msg-body';
+  body.style.position = 'relative';
+
+  const meta = document.createElement('div');
+  meta.className = 'h-msg-meta';
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'h-msg-name';
+  nameEl.style.color = m.avatar_color;
+  nameEl.textContent = m.sub_agent_label || m.actor_name;
+  meta.appendChild(nameEl);
+
+  if (m.sub_agent_label) {
+    const subEl = document.createElement('span');
+    subEl.className = 'h-msg-sub';
+    subEl.textContent = '(' + m.actor_name + ')';
+    meta.appendChild(subEl);
+  }
+
+  if (m.created_at) {
+    const timeEl = document.createElement('span');
+    timeEl.className = 'h-msg-time';
+    const ts = m.created_at.endsWith('Z') ? m.created_at : m.created_at.replace(' ', 'T') + 'Z';
+    timeEl.textContent = new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    meta.appendChild(timeEl);
+  }
+  body.appendChild(meta);
+
+  const bubble = document.createElement('div');
+  bubble.className = 'h-bubble';
+
+  if (m.content) {
+    const textDiv = document.createElement('div');
+    textDiv.innerHTML = highlightMentions(renderMarkdown(m.content));
+    bubble.appendChild(textDiv);
+  }
+
+  if (m.ai_model) {
+    const modelTag = document.createElement('div');
+    modelTag.className = 'h-msg-model';
+    modelTag.textContent = m.ai_model;
+    bubble.appendChild(modelTag);
+  }
+
+  const resultChip = buildResultChip(m.result_meta);
+  if (resultChip) bubble.appendChild(resultChip);
+
+  body.appendChild(bubble);
+  row.appendChild(body);
+  container.appendChild(row);
+
+  if (typeof addCopyButtons === 'function') addCopyButtons(bubble);
+  if (typeof linkifyFilePaths === 'function') linkifyFilePaths(bubble);
+  if (typeof externalLinksNewTab === 'function') externalLinksNewTab(bubble);
+}
+
 // ── Load thread messages ─────────────────────────────────────────────────────
 async function _loadThread(rootId) {
   const body = _getThreadBody();
@@ -214,10 +292,7 @@ async function _loadThread(rootId) {
     const savedDay = _lastDayKey;
     _lastDayKey = null;
     for (const m of msgs) {
-      appendMessage(m, body);
-      if (m.state === 'streaming' || m.state === 'requesting') {
-        showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, body);
-      }
+      appendThreadMessage(m, body);
     }
     _lastDayKey = savedDay;
 
@@ -251,7 +326,7 @@ async function _loadOlderThreadMessages() {
     const savedDay = _lastDayKey;
     _lastDayKey = null;
     const frag = document.createDocumentFragment();
-    msgs.forEach(m => { if (!document.getElementById('msg-' + m.id)) appendMessage(m, frag); });
+    msgs.forEach(m => { if (!document.getElementById('msg-' + m.id)) appendThreadMessage(m, frag); });
     _lastDayKey = savedDay;
 
     const prevHeight = body.scrollHeight;
