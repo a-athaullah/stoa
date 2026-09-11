@@ -1048,6 +1048,16 @@ function runUnitTests() {
     assert.ok(hashDeclLine < getSessionLine, `systemPromptHash (line ${hashDeclLine + 1}) must be declared before getSession (line ${getSessionLine + 1})`);
   });
 
+  ut('sessionKey declared before activeTriggers.set — TDZ guard', () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'stoa.js'), 'utf8');
+    const lines = src.split('\n');
+    const keyDeclLine = lines.findIndex(l => /const sessionKey = buildSessionKey/.test(l));
+    const triggersSetLine = lines.findIndex(l => /activeTriggers\.set\(message_id/.test(l));
+    assert.ok(keyDeclLine !== -1, 'sessionKey declaration not found');
+    assert.ok(triggersSetLine !== -1, 'activeTriggers.set call not found');
+    assert.ok(keyDeclLine < triggersSetLine, `sessionKey (line ${keyDeclLine + 1}) must be declared before activeTriggers.set (line ${triggersSetLine + 1})`);
+  });
+
   return { p, f };
 }
 
