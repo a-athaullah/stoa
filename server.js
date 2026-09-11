@@ -4354,21 +4354,16 @@ wss.on('connection', (ws, req) => {
           const rooms = db.prepare(
             `SELECT DISTINCT r.id FROM rooms r
              LEFT JOIN room_participants rp ON rp.room_id=r.id AND rp.actor_id=?
-             WHERE (r.workdir_id=? OR rp.workdir_id=?) AND r.system_prompt IS NULL`
+             WHERE (r.workdir_id=? OR rp.workdir_id=?)`
           ).all(agentActorId, wd.id, wd.id);
           const actor = db.prepare('SELECT name FROM actors WHERE id=?').get(agentActorId);
           const agentLabel = actor?.name || `Agent #${agentActorId}`;
           for (const room of rooms) {
-            const otherPrompts = db.prepare(
-              `SELECT aw.path, r.system_prompt FROM rooms r
-               JOIN agent_workdirs aw ON aw.id=r.workdir_id
-               WHERE r.id=? AND r.system_prompt IS NOT NULL`
-            ).get(room.id);
-            let finalPrompt = content;
-            if (otherPrompts) {
-              finalPrompt = `## From ${agentLabel}/${workdir}\n\n${content}`;
-            }
-            db.prepare('UPDATE rooms SET system_prompt=? WHERE id=? AND system_prompt IS NULL').run(finalPrompt, room.id);
+            const existing = db.prepare('SELECT system_prompt FROM rooms WHERE id=?').get(room.id);
+            const finalPrompt = existing?.system_prompt
+              ? existing.system_prompt + `\n\n## From ${agentLabel}/${workdir}\n\n${content}`
+              : content;
+            db.prepare('UPDATE rooms SET system_prompt=? WHERE id=?').run(finalPrompt, room.id);
             const sysMsg = `System prompt imported from CLAUDE.md (${content.length} chars) — source: ${agentLabel}/${workdir}`;
             const humanPart = db.prepare(
               "SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1"
