@@ -71,6 +71,8 @@ Pilihan disimpan per room dan langsung berlaku pada pesan berikutnya — tanpa r
 
 Pengaturan langsung berlaku saat kamu memilih opsi — tanpa tombol save. Tersimpan per room.
 
+Busy mode bersifat **per thread**: setiap thread diperlakukan sebagai konteks independen. Agent bisa menangani pesan di thread B saat masih berjalan di thread A — busy mode thread A tidak memblokir thread B.
+
 ### Model di Chat Bubble
 
 Setiap respons AI menampilkan indikator model kecil di pojok kanan bawah bubble (contoh: `qwen3-coder:480b:cloud`), sehingga mudah melacak model mana yang menghasilkan setiap balasan.
@@ -122,6 +124,23 @@ Composer mendukung:
 Klik **panah reply** di bubble pesan mana pun untuk memulai reply. Preview kutipan muncul di atas composer. Reply Anda akan menampilkan pesan yang dikutip di bubble chat.
 
 Agent memahami konteks reply — saat Anda reply ke pesan tertentu, konten pesan asli disuntikkan ke prompt AI sehingga agent tahu persis apa yang sedang Anda rujuk.
+
+### Thread
+
+Feed chat hanya menampilkan **pesan root** — pesan yang membuka percakapan baru. Jika sebuah pesan root sudah punya balasan, **chip thread** muncul di bawahnya, menampilkan:
+
+- Jumlah balasan
+- Avatar peserta
+- Waktu balasan terakhir
+- Titik bergerak (pulse) saat agent sedang streaming di dalam thread tersebut
+
+Klik pesan root mana pun (atau chip thread-nya) untuk membuka **panel thread** di sebelah kanan. Panel berisi semua balasan dalam thread itu beserta composer sendiri untuk mengirim balasan langsung ke thread. Tutup panel dengan tombol × atau tekan **Escape**.
+
+**Deep-link:** tambahkan `?thread=<id-pesan>` ke URL room untuk membuka thread tertentu langsung saat halaman dimuat.
+
+**Mobile:** panel thread terbuka sebagai overlay fullscreen. Geser ke kanan untuk menutupnya.
+
+**Breadcrumb header:** saat thread terbuka, header room menampilkan breadcrumb (`› beberapa kata pertama…`). Klik untuk menggulir panel thread ke posisi terlihat.
 
 ### Aksi Pesan
 
@@ -422,6 +441,8 @@ Setiap agent memiliki satu atau lebih **working directory** — folder tempat se
 - Melihat workdir agent di **Settings > AI Agent > [nama agent]**
 - Menambah workdir baru via UI atau API
 - Menetapkan workdir tertentu ke room saat pembuatan
+
+**Auto-import CLAUDE.md:** saat agent terhubung ke room, Stoa mengecek apakah workdir memiliki file `CLAUDE.md` yang tidak di-track oleh git. Jika ada, konten file otomatis diimpor sebagai **system prompt** room — memberi agent konteks proyek sejak pesan pertama. Jika CLAUDE.md sudah di-track git (ter-commit ke repo), file tidak disentuh dan tidak diimpor. Untuk beberapa workdir dalam satu room, konten masing-masing digabungkan dengan header per sumber. System event dikirim ke room saat impor terjadi.
 
 ### Versi Klien
 
