@@ -6161,7 +6161,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         resolve: (v) => { clearTimeout(timeoutTimer); resolve(v); },
         reject:  (e) => { clearTimeout(timeoutTimer); reject(e); },
       });
-      pendingActorMeta.set(msgId, { actor_id: ai.actor_id, room_id: roomId, actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null, sub_agent_label: subAgent?.label || null });
+      pendingActorMeta.set(msgId, { actor_id: ai.actor_id, room_id: roomId, actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null, sub_agent_label: subAgent?.label || null, thread_id: threadId || null });
       const triggerBaseUrl = getPublicUrl(`localhost:${PORT}`);
       const fullAttachments = (attachments || []).map(a => ({
         ...a,

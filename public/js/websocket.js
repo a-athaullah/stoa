@@ -65,7 +65,17 @@ function handleWsMessage(msg) {
     noMoreOlder = msg.messages.length < 100;
     for (const m of msg.messages) {
       if (m.state === 'streaming' || m.state === 'requesting') {
-        showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url);
+        if (m.thread_id) {
+          if (typeof openThread === 'function' && typeof isThreadOpen === 'function' && !isThreadOpen()) {
+            openThread(m.thread_id);
+          }
+          if (typeof activeThreadId !== 'undefined' && activeThreadId === m.thread_id) {
+            const tbody = document.getElementById('thread-body');
+            showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, tbody);
+          }
+        } else {
+          showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url);
+        }
         setComposerProcessing(m.id);
       }
     }
