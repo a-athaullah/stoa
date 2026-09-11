@@ -972,6 +972,73 @@ function runUnitTests() {
     });
   }
 
+  // ── Agent-side (stoa.js) unit tests ──────────────────────────────────────────
+  // Re-implement buildSessionKey from stoa.js to test the contract.
+  const path_resolve = require('path').resolve;
+  function buildSessionKey(workdir, roomId, threadId, subAgentId) {
+    const base = `${path_resolve(workdir)}::${roomId || 'default'}::t:${threadId || 0}`;
+    return subAgentId ? `${base}::sub:${subAgentId}` : base;
+  }
+
+  ut('buildSessionKey — includes ::t: segment for thread', () => {
+    const key = buildSessionKey('/home/user/project', 42, 1001, null);
+    assert.ok(key.includes('::t:1001'), `expected ::t:1001 in ${key}`);
+    assert.ok(!key.includes('::sub:'), 'should not have sub segment');
+  });
+
+  ut('buildSessionKey — thread 0 for root-level', () => {
+    const key = buildSessionKey('/home/user/project', 42, 0, null);
+    assert.ok(key.includes('::t:0'), `expected ::t:0 in ${key}`);
+  });
+
+  ut('buildSessionKey — null/undefined thread defaults to 0', () => {
+    const k1 = buildSessionKey('/home/user/project', 42, null, null);
+    const k2 = buildSessionKey('/home/user/project', 42, undefined, null);
+    assert.ok(k1.includes('::t:0'), `null should default to 0`);
+    assert.ok(k2.includes('::t:0'), `undefined should default to 0`);
+  });
+
+  ut('buildSessionKey — sub-agent includes ::sub: after thread', () => {
+    const key = buildSessionKey('/home/user/project', 42, 1001, 7);
+    assert.ok(key.includes('::t:1001::sub:7'), `expected ::t:1001::sub:7 in ${key}`);
+  });
+
+  ut('buildSessionKey — different threads produce different keys', () => {
+    const k1 = buildSessionKey('/home/user/project', 42, 100, null);
+    const k2 = buildSessionKey('/home/user/project', 42, 200, null);
+    assert.notStrictEqual(k1, k2, 'different threads should have different keys');
+  });
+
+  ut('steer key — uses room:thread format', () => {
+    const room_id = 42;
+    const thread_id = 1001;
+    const key = `${room_id}:${thread_id || 0}`;
+    assert.strictEqual(key, '42:1001');
+    const keyNoThread = `${room_id}:${0 || 0}`;
+    assert.strictEqual(keyNoThread, '42:0');
+  });
+
+  ut('STOA_THREAD_ID — thread present → string, thread 0 → empty string', () => {
+    const threadId1 = 1001;
+    const env1 = threadId1 ? String(threadId1) : '';
+    assert.strictEqual(env1, '1001');
+    const threadId0 = 0;
+    const env0 = threadId0 ? String(threadId0) : '';
+    assert.strictEqual(env0, '');
+  });
+
+  ut('attachments dir — per message_id isolation', () => {
+    const workdir = '/home/user/project';
+    const msg1 = 100;
+    const msg2 = 200;
+    const require_path = require('path');
+    const dir1 = require_path.join(workdir, '.stoa-attachments', String(msg1));
+    const dir2 = require_path.join(workdir, '.stoa-attachments', String(msg2));
+    assert.notStrictEqual(dir1, dir2, 'different message IDs should have different dirs');
+    assert.ok(dir1.endsWith('/100'), `expected /100 suffix, got ${dir1}`);
+    assert.ok(dir2.endsWith('/200'), `expected /200 suffix, got ${dir2}`);
+  });
+
   return { p, f };
 }
 

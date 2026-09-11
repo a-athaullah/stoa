@@ -3,7 +3,7 @@
 // Human mode:  STOA_TYPE=human node stoa.js [room_id]
 // Agent mode:  STOA_TYPE=ai    STOA_ACTOR_ID=2 node stoa.js
 
-const CLIENT_VERSION = '0.4.216';
+const CLIENT_VERSION = '0.4.217';
 
 const WebSocket = require('ws');
 const readline = require('readline');
@@ -52,7 +52,8 @@ let consecutiveFailures = 0;
 // R22/R23: room settings pushed from server on connect and on change.
 const roomSettings = new Map(); // room_id → { key_name → value }
 // R28: steer messages queued for injection after current run completes.
-const pendingSteerMessages = new Map(); // room_id → [{content, message_id}, ...]
+const pendingSteerMessages = new Map(); // `${room_id}:${thread_id||0}` → [{content, message_id}, ...]
+const knownWorkdirs = new Set();
 let reauthProc = null;  // active claude auth login process for /reauth
 let consecutiveTriggerErrors = 0;
 const MAX_TRIGGER_ERRORS = 3;
@@ -150,12 +151,12 @@ function doRestart() {
 }
 
 // ─── Session pool (agent mode only) ──────────────────────────────────────────
-const sessionPool = new Map(); // `${workdir}::${room_id}` → ClaudeSession
-const sessionIdleTimers = new Map(); // `${workdir}::${room_id}` → timeout id
+const sessionPool = new Map(); // `${workdir}::${room_id}::t:${thread_id||0}[::sub:${id}]` → ClaudeSession
+const sessionIdleTimers = new Map(); // sessionKey → timeout id
 let SESSION_IDLE_TTL = 5; // minutes, configurable via server
 
 let AUTO_COMPACT_THRESHOLD = parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB || '300') * 1024; // KB, configurable
-const compactsInFlight = new Set(); // workdir keys currently being compacted — prevents concurrent /compact on same session
+const compactsInFlight = new Set(); // sessionKey currently being compacted — prevents concurrent /compact on same session
 
 // R14: progress-aware compact timeout — resets on any token/state output.
 // Prevents stalled compactions from hanging indefinitely.
@@ -376,8 +377,8 @@ async function backupSessionFile(workdir, sessionId) {
   }
 }
 
-async function prepareResume({ targetDir, rid, targetModel, toolsSupported, env, sessionKey, thirdParty = false, aggressive = false }) {
-  if (rid && !compactsInFlight.has(targetDir)) {
+async function prepareResume({ targetDir, rid, targetModel, toolsSupported, env, sessionKey, thirdParty = false, aggressive = false, systemPrompt = null, systemPromptHash = null }) {
+  if (rid && !compactsInFlight.has(sessionKey)) {
     await sanitizeThinking(targetDir, rid, { thirdParty, aggressive });
     const tsResult = await sanitizeTranscript(targetDir, rid);
     if (tsResult && (tsResult.level === 'warning' || tsResult.level === 'error') && !transcriptNoticeEmitted.has(sessionKey)) {
@@ -388,20 +389,27 @@ async function prepareResume({ targetDir, rid, targetModel, toolsSupported, env,
   const flags = rid ? ['--resume', rid] : [];
   if (targetModel) flags.push('--model', targetModel);
   if (toolsSupported === false) flags.push('--tools', '');
+  if (systemPrompt) flags.push('--append-system-prompt', systemPrompt);
   const session = new ClaudeSession({ workDir: targetDir, flags, resumeId: rid || null, env });
+  session._systemPromptHash = systemPromptHash || null;
   sessionPool.set(sessionKey, session);
   return session;
 }
 
-function getSession(workdir, roomId, env, subAgentId) {
-  const workdirResolved = path.resolve(workdir);
-  const key = subAgentId
-    ? `${workdirResolved}::${roomId || 'default'}::sub:${subAgentId}`
-    : `${workdirResolved}::${roomId || 'default'}`;
+function buildSessionKey(workdir, roomId, threadId, subAgentId) {
+  const base = `${path.resolve(workdir)}::${roomId || 'default'}::t:${threadId || 0}`;
+  return subAgentId ? `${base}::sub:${subAgentId}` : base;
+}
+
+function getSession(workdir, roomId, env, subAgentId, threadId, systemPrompt, systemPromptHash) {
+  const key = buildSessionKey(workdir, roomId, threadId, subAgentId);
   clearSessionIdleTimer(key);
   let session = sessionPool.get(key);
   if (!session) {
-    session = new ClaudeSession({ workDir: workdirResolved, env: env || null });
+    const flags = [];
+    if (systemPrompt) flags.push('--append-system-prompt', systemPrompt);
+    session = new ClaudeSession({ workDir: path.resolve(workdir), env: env || null, flags: flags.length ? flags : undefined });
+    session._systemPromptHash = systemPromptHash || null;
     sessionPool.set(key, session);
     console.log(`[stoa] claude session started for ${key}`);
     startSessionIdleTimer(key);
@@ -409,43 +417,42 @@ function getSession(workdir, roomId, env, subAgentId) {
   return session;
 }
 
-function startSessionIdleTimer(workdir) {
-  const key = path.resolve(workdir);
-  clearSessionIdleTimer(key);
+function startSessionIdleTimer(sessionKey) {
+  clearSessionIdleTimer(sessionKey);
   const timer = setTimeout(() => {
-    const session = sessionPool.get(key);
+    const session = sessionPool.get(sessionKey);
     if (session && !session.busy) {
       session.shutdown();
-      sessionPool.delete(key);
-      sessionIdleTimers.delete(key);
-      console.log(`[stoa] session closed (idle ${SESSION_IDLE_TTL}m): ${key}`);
+      sessionPool.delete(sessionKey);
+      sessionIdleTimers.delete(sessionKey);
+      console.log(`[stoa] session closed (idle ${SESSION_IDLE_TTL}m): ${sessionKey}`);
     }
   }, SESSION_IDLE_TTL * 60_000);
-  sessionIdleTimers.set(key, timer);
+  sessionIdleTimers.set(sessionKey, timer);
 }
 
-function clearSessionIdleTimer(workdir) {
-  const timer = sessionIdleTimers.get(workdir);
-  if (timer) { clearTimeout(timer); sessionIdleTimers.delete(workdir); }
+function clearSessionIdleTimer(sessionKey) {
+  const timer = sessionIdleTimers.get(sessionKey);
+  if (timer) { clearTimeout(timer); sessionIdleTimers.delete(sessionKey); }
 }
 
 // ─── Auto-compact background worker ──────────────────────────────────────────
 setInterval(async () => {
   if (ACTOR_TYPE !== 'ai') return;
-  const busyWorkdirs = new Set([...activeTriggers.values()].map(t => t.workdir));
+  const busySessionKeys = new Set([...activeTriggers.values()].filter(t => t.sessionKey).map(t => t.sessionKey));
   for (const [sessionKey, session] of sessionPool) {
-    const workdir = sessionKey.split('::')[0]; // extract bare workdir from compound key
-    if (busyWorkdirs.has(workdir)) continue; // skip workdirs with an active trigger
+    if (busySessionKeys.has(sessionKey)) continue;
+    const workdir = sessionKey.split('::')[0];
     const sessionId = session.resumeId;
     if (!sessionId) continue;
     const fileSize = await getSessionFileSize(workdir, sessionId);
     if (fileSize <= AUTO_COMPACT_THRESHOLD) continue;
-    if (compactsInFlight.has(workdir)) continue;
-    compactsInFlight.add(workdir);
+    if (compactsInFlight.has(sessionKey)) continue;
+    compactsInFlight.add(sessionKey);
     console.log(`[stoa] worker: auto-compacting ${sessionId.slice(0, 8)}... (${(fileSize / 1024).toFixed(0)}KB)`);
     send({ type: 'auto_compact_start', claude_session_id: sessionId });
     compactWithTimeout(session).then(result => {
-      compactsInFlight.delete(workdir);
+      compactsInFlight.delete(sessionKey);
       if (result?.sessionId) session.resumeId = result.sessionId;
       send({ type: 'compact_complete', claude_session_id: result?.sessionId || sessionId, orig_session_id: sessionId, result: result?.content || '' });
       setTimeout(() => {
@@ -453,7 +460,7 @@ setInterval(async () => {
         if (result?.sessionId && result.sessionId !== sessionId) truncateSessionFile(workdir, result.sessionId);
       }, 3000);
     }).catch(err => {
-      compactsInFlight.delete(workdir);
+      compactsInFlight.delete(sessionKey);
       console.error(`[stoa] worker auto-compact error: ${err.message}`);
       send({ type: 'compact_error', orig_session_id: sessionId, error: err.message });
     });
@@ -568,10 +575,10 @@ async function handleAgentMessage(msg) {
 
   // R28: steer message — inject into ongoing run after it completes.
   if (msg.type === 'steer_message') {
-    const key = msg.room_id;
+    const key = `${msg.room_id}:${msg.thread_id || 0}`;
     if (!pendingSteerMessages.has(key)) pendingSteerMessages.set(key, []);
     pendingSteerMessages.get(key).push({ content: msg.content, message_id: msg.message_id });
-    console.log(`[stoa] steer queued for room ${msg.room_id} msg=${msg.message_id}`);
+    console.log(`[stoa] steer queued for room ${msg.room_id} thread=${msg.thread_id || 0} msg=${msg.message_id}`);
   }
 
   if (msg.type === 'force_update') {
@@ -631,6 +638,7 @@ async function handleAgentMessage(msg) {
       // Write CLAUDE.md so Claude Code trusts this directory without interactive prompt
       const claudeMd = path.join(resolved, 'CLAUDE.md');
       if (!fs.existsSync(claudeMd)) fs.writeFileSync(claudeMd, '', 'utf8');
+      knownWorkdirs.add(resolved);
       console.log(`[stoa] Created workdir: ${resolved}`);
       // Report the resolved absolute path so the server stores the canonical path (not "~/...")
       send({ type: 'workdir_created', requested: msg.path, path: resolved });
@@ -821,10 +829,64 @@ async function handleAgentMessage(msg) {
     return;
   }
 
+  if (msg.type === 'claude_md_import') {
+    const workdir = msg.workdir;
+    const resolved = path.resolve(expandHome(workdir));
+    if (!knownWorkdirs.has(resolved)) {
+      send({ type: 'claude_md_import_result', workdir, error: 'workdir not registered' });
+      return;
+    }
+    const claudeMd = path.join(resolved, 'CLAUDE.md');
+    try {
+      if (!fs.existsSync(claudeMd)) {
+        send({ type: 'claude_md_import_result', workdir, content: '', tracked: false, size: 0 });
+        return;
+      }
+      const content = fs.readFileSync(claudeMd, 'utf8');
+      let tracked = false;
+      try {
+        const { spawnSync } = require('child_process');
+        const result = spawnSync('git', ['ls-files', '--error-unmatch', 'CLAUDE.md'], { cwd: resolved, encoding: 'utf8', timeout: 5000 });
+        tracked = result.status === 0;
+      } catch {}
+      send({ type: 'claude_md_import_result', workdir, content, tracked, size: Buffer.byteLength(content) });
+    } catch (err) {
+      send({ type: 'claude_md_import_result', workdir, error: err.message });
+    }
+    return;
+  }
+
+  if (msg.type === 'claude_md_clear') {
+    const workdir = msg.workdir;
+    const resolved = path.resolve(expandHome(workdir));
+    if (!knownWorkdirs.has(resolved)) {
+      send({ type: 'claude_md_clear_result', workdir, error: 'workdir not registered' });
+      return;
+    }
+    const claudeMd = path.join(resolved, 'CLAUDE.md');
+    try {
+      let tracked = false;
+      try {
+        const { spawnSync } = require('child_process');
+        const result = spawnSync('git', ['ls-files', '--error-unmatch', 'CLAUDE.md'], { cwd: resolved, encoding: 'utf8', timeout: 5000 });
+        tracked = result.status === 0;
+      } catch {}
+      if (tracked) {
+        send({ type: 'claude_md_clear_result', workdir, error: 'CLAUDE.md is git-tracked, refusing to clear' });
+        return;
+      }
+      fs.writeFileSync(claudeMd, '', 'utf8');
+      send({ type: 'claude_md_clear_result', workdir, ok: true });
+    } catch (err) {
+      send({ type: 'claude_md_clear_result', workdir, error: err.message });
+    }
+    return;
+  }
+
   if (msg.type === 'compact_trigger') {
     const workdir = msg.workdir || process.env.STOA_WORK_DIR || os.homedir();
     const workdirResolved = path.resolve(workdir);
-    const key = `${workdirResolved}::${msg.room_id || 'default'}`;
+    const key = buildSessionKey(workdirResolved, msg.room_id || 'default', msg.thread_id, msg.sub_agent_id);
     let session = sessionPool.get(key);
     if (!session) {
       if (msg.claude_session_id) {
@@ -923,7 +985,7 @@ async function processTrigger(msg) {
     }
   }
 
-  activeTriggers.set(message_id, { workdir, session: null });
+  activeTriggers.set(message_id, { workdir, session: null, sessionKey });
   const baseUrl = STOA_URL.replace('ws://', 'http://').replace('wss://', 'https://');
   const TEXT_EXTS = new Set(['.md','.txt','.json','.csv','.html','.js','.ts','.py','.yaml','.yml','.sh','.css']);
   const IMAGE_EXTS = new Set(['.png','.jpg','.jpeg','.gif','.webp','.svg']);
@@ -956,9 +1018,8 @@ async function processTrigger(msg) {
   }
 
   const localFiles = [];
-  const tempDir = path.join(workdir, '.stoa-attachments');
+  const tempDir = path.join(workdir, '.stoa-attachments', String(message_id));
 
-  try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
   if (allAttachments.length) {
     try { fs.mkdirSync(tempDir, { recursive: true }); } catch {}
   }
@@ -1016,9 +1077,8 @@ async function processTrigger(msg) {
   let sessionRef = null;
   let statusHandler = null;
   const targetDir = path.resolve(workdir);
-  const sessionKey = subAgent
-    ? `${targetDir}::${room_id}::sub:${subAgent.id}`
-    : `${targetDir}::${room_id}`;
+  const threadId = msg.thread_id || 0;
+  const sessionKey = buildSessionKey(targetDir, room_id, threadId, subAgent?.id);
   try {
     const rid = msg.claude_session_id || null;
 
@@ -1027,22 +1087,24 @@ async function processTrigger(msg) {
         fs.mkdirSync(msg.workdir, { recursive: true });
         const claudeMd = path.join(msg.workdir, 'CLAUDE.md');
         if (!fs.existsSync(claudeMd)) {
-          const proactiveInstructions = '# Stoa Agent Context\n\n## Proactive Message\n\nKamu bisa mengirim pesan ke room Stoa secara proaktif tanpa menunggu user bertanya.\nGunakan ini saat background task selesai atau ada info penting.\n\n```bash\nBASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\ncurl -s -X POST "$BASE_URL/api/rooms/$STOA_ROOM_ID/message" \\\\\n  -H "Content-Type: application/json" \\\\\n  -H "x-agent-id: $STOA_ACTOR_ID" \\\\\n  -H "x-agent-secret: $STOA_SECRET" \\\\\n  -d \\\'{"content": "Pesan kamu di sini"}\\\'\n```\n\n`$STOA_URL`, `$STOA_ACTOR_ID`, `$STOA_SECRET`, dan `$STOA_ROOM_ID` tersedia sebagai env var.';
-          fs.writeFileSync(claudeMd, proactiveInstructions, 'utf8');
+          fs.writeFileSync(claudeMd, '', 'utf8');
         }
       } catch {}
     }
 
     const apiKeys = msg.api_keys || (msg.api_key ? [msg.api_key] : []);
-    const platformEnv = { STOA_ROOM_ID: String(room_id) };
+    const platformEnv = { STOA_ROOM_ID: String(room_id), STOA_THREAD_ID: threadId ? String(threadId) : '' };
     if (msg.base_url) platformEnv.ANTHROPIC_BASE_URL = msg.base_url;
     if (apiKeys[0]) platformEnv.ANTHROPIC_AUTH_TOKEN = apiKeys[0];
     const envToUse = platformEnv;
 
-    let session = getSession(targetDir, room_id, envToUse, subAgent?.id);
+    let session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash);
     const needsResume = rid && session.resumeId !== rid;
     const needsFreshSession = !rid && session.resumeId;
     let targetModel = msg.model || null;
+    const systemPromptHash = msg.system_prompt_hash || null;
+    const currentSystemPromptHash = session._systemPromptHash || null;
+    const needsSystemPromptChange = systemPromptHash && currentSystemPromptHash !== systemPromptHash;
     // Phase 3: ordered model fallback chain. The server sends `models` only when a
     // tier resolved to more than one model; otherwise we run the single `model`.
     // targetModel === modelChain[0] (server sets model = chain[0]).
@@ -1054,12 +1116,12 @@ async function processTrigger(msg) {
     const newEnv = JSON.stringify(envToUse || {});
     const needsEnvChange = currentEnv !== newEnv;
 
-    if (needsResume || needsFreshSession || needsModelChange || needsEnvChange) {
+    if (needsResume || needsFreshSession || needsModelChange || needsEnvChange || needsSystemPromptChange) {
       session.shutdown();
-      session = await prepareResume({ targetDir, rid, targetModel, toolsSupported: msg.tools_supported, env: envToUse, sessionKey, thirdParty: !!msg.base_url });
-      console.log(`[stoa] Session restarted: workdir=${targetDir} room=${room_id}${rid ? ' resume=' + rid.slice(0, 8) + '...' : ' (fresh)'}${targetModel ? ' model=' + targetModel : ''}${msg.base_url ? ' base_url=' + msg.base_url : ''}${msg.tools_supported === false ? ' tools=disabled' : ''}`);
+      session = await prepareResume({ targetDir, rid, targetModel, toolsSupported: msg.tools_supported, env: envToUse, sessionKey, thirdParty: !!msg.base_url, systemPrompt: msg.system_prompt, systemPromptHash });
+      console.log(`[stoa] Session restarted: workdir=${targetDir} room=${room_id} thread=${threadId}${rid ? ' resume=' + rid.slice(0, 8) + '...' : ' (fresh)'}${targetModel ? ' model=' + targetModel : ''}${needsSystemPromptChange ? ' system_prompt_changed' : ''}${msg.base_url ? ' base_url=' + msg.base_url : ''}${msg.tools_supported === false ? ' tools=disabled' : ''}`);
     }
-    activeTriggers.set(message_id, { workdir: targetDir, session });
+    activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
     let fullContent = '';
     let lastActivity = Date.now();
     let abortReason = null;
@@ -1188,7 +1250,7 @@ async function processTrigger(msg) {
           fullContent = '';
           session.shutdown();
           session = await prepareResume({ targetDir, rid, targetModel, toolsSupported: msg.tools_supported, env: envToUse, sessionKey, thirdParty: !!msg.base_url });
-          activeTriggers.set(message_id, { workdir: targetDir, session });
+          activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
           sessionRef = session;
           session.on('status', statusHandler);
           try {
@@ -1209,7 +1271,7 @@ async function processTrigger(msg) {
           const rotatedEnv = { ...platformEnv, ANTHROPIC_AUTH_TOKEN: apiKeys[ki] };
           session.shutdown();
           session = await prepareResume({ targetDir, rid, targetModel, toolsSupported: msg.tools_supported, env: rotatedEnv, sessionKey, thirdParty: !!msg.base_url });
-          activeTriggers.set(message_id, { workdir: targetDir, session });
+          activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
           sessionRef = session;
           session.on('status', statusHandler);
           try {
@@ -1229,8 +1291,8 @@ async function processTrigger(msg) {
         sessionPool.delete(sessionKey);
         await new Promise(r => setTimeout(r, 2000));
         fullContent = '';
-        session = getSession(targetDir, room_id, envToUse, subAgent?.id);
-        activeTriggers.set(message_id, { workdir: targetDir, session });
+        session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash);
+        activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
         if (statusHandler) session.on('status', statusHandler);
         sessionRef = session;
         lastActivity = Date.now();
@@ -1238,8 +1300,8 @@ async function processTrigger(msg) {
       } else if (retryErr.message.includes('exited unexpectedly') && !fullContent) {
         console.log(`[stoa] session crashed before output, retrying in 4s...`);
         await new Promise(r => setTimeout(r, 4000));
-        session = getSession(targetDir, room_id, envToUse, subAgent?.id);
-        activeTriggers.set(message_id, { workdir: targetDir, session });
+        session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash);
+        activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
         lastActivity = Date.now();
         result = await session.send(sendOpts);
       } else if (isThinkingSignatureError(retryErr.message) && !fullContent && !thinkingSigRetried) {
@@ -1250,7 +1312,7 @@ async function processTrigger(msg) {
         session.shutdown();
         await backupSessionFile(targetDir, rid);
         session = await prepareResume({ targetDir, rid, targetModel, toolsSupported: msg.tools_supported, env: envToUse, sessionKey, aggressive: true });
-        activeTriggers.set(message_id, { workdir: targetDir, session });
+        activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
         sessionRef = session;
         session.on('status', statusHandler);
         lastActivity = Date.now();
@@ -1275,8 +1337,8 @@ async function processTrigger(msg) {
       sessionPool.delete(sessionKey);
       await new Promise(r => setTimeout(r, 2000));
       fullContent = '';
-      session = getSession(targetDir, room_id, envToUse, subAgent?.id);
-      activeTriggers.set(message_id, { workdir: targetDir, session });
+      session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash);
+      activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
       if (statusHandler) session.on('status', statusHandler);
       sessionRef = session;
       lastActivity = Date.now();
@@ -1294,7 +1356,7 @@ async function processTrigger(msg) {
       session.shutdown();
       await backupSessionFile(targetDir, rid);
       session = await prepareResume({ targetDir, rid, targetModel, toolsSupported: msg.tools_supported, env: envToUse, sessionKey, aggressive: true });
-      activeTriggers.set(message_id, { workdir: targetDir, session });
+      activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
       if (statusHandler) session.on('status', statusHandler);
       sessionRef = session;
       lastActivity = Date.now();
@@ -1344,7 +1406,7 @@ async function processTrigger(msg) {
       // runs drainQueue() — otherwise the next queued trigger could resume and read the file while
       // sanitizeSession is still mid-write. sanitizeSession uses async fs, so awaiting here keeps the
       // ordering guarantee without blocking the event loop.
-      if (sessionId && targetDir && !compactsInFlight.has(targetDir)) {
+      if (sessionId && targetDir && !compactsInFlight.has(sessionKey)) {
         await stripSessionImages(targetDir, sessionId);
       }
 
@@ -1355,14 +1417,14 @@ async function processTrigger(msg) {
         setImmediate(async () => {
           const fileSize = await getSessionFileSize(targetDir, sessionIdForCompact);
           if (fileSize <= AUTO_COMPACT_THRESHOLD) return;
-          if (compactsInFlight.has(targetDir)) return;
+          if (compactsInFlight.has(sessionKey)) return;
           const sess = sessionPool.get(sessionKey);
           if (!sess) return;
           console.log(`[stoa] session ${sessionIdForCompact.slice(0, 8)}... is ${(fileSize / 1024).toFixed(0)}KB > ${AUTO_COMPACT_THRESHOLD / 1024}KB threshold, auto-compacting`);
-          compactsInFlight.add(targetDir);
+          compactsInFlight.add(sessionKey);
           send({ type: 'auto_compact_start', room_id, claude_session_id: sessionIdForCompact });
           compactWithTimeout(sess).then(result => {
-            compactsInFlight.delete(targetDir);
+            compactsInFlight.delete(sessionKey);
             if (result?.sessionId) sess.resumeId = result.sessionId;
             send({ type: 'compact_complete', room_id, result: result?.content || '', claude_session_id: result?.sessionId || sessionIdForCompact, orig_session_id: sessionIdForCompact });
             setTimeout(() => {
@@ -1370,7 +1432,7 @@ async function processTrigger(msg) {
               if (result?.sessionId && result.sessionId !== sessionIdForCompact) truncateSessionFile(targetDir, result.sessionId);
             }, 3000);
           }).catch(err => {
-            compactsInFlight.delete(targetDir);
+            compactsInFlight.delete(sessionKey);
             console.error(`[stoa] auto-compact error: ${err.message}`);
             send({ type: 'compact_error', room_id, error: err.message });
           });
@@ -1390,12 +1452,14 @@ async function processTrigger(msg) {
   } finally {
     if (sessionRef && statusHandler) sessionRef.removeListener('status', statusHandler);
     _clearToolStatus();
+    try { fs.rmSync(path.join(workdir, '.stoa-attachments', String(message_id)), { recursive: true, force: true }); } catch {}
     activeTriggers.delete(message_id);
     if (targetDir) startSessionIdleTimer(sessionKey);
     // R28: inject any steer messages that arrived during this run as high-priority triggers
-    const steers = pendingSteerMessages.get(room_id) || [];
+    const steerKey = `${room_id}:${threadId || 0}`;
+    const steers = pendingSteerMessages.get(steerKey) || [];
     if (steers.length) {
-      pendingSteerMessages.delete(room_id);
+      pendingSteerMessages.delete(steerKey);
       for (let i = steers.length - 1; i >= 0; i--) {
         const s = steers[i];
         triggerQueue.unshift({ ...msg, message_id: s.message_id, prompt: s.content, attachments: null, reply_to: null });
@@ -1633,6 +1697,7 @@ function scanForWorkdirs() {
     }
   } catch {}
 
+  for (const r of results) knownWorkdirs.add(path.resolve(r.path));
   return { workdirs: results, globalSkills };
 }
 
