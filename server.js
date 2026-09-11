@@ -226,6 +226,44 @@ function saveSubAgentSession(participantId, subAgentId, claudeSessionId, workdir
   ).run(participantId, rp?.room_id ?? null, subAgentId, claudeSessionId, workdir || null);
 }
 
+// Thread-aware session helpers: thread_id 0 = room-level legacy session
+function getThreadSession(participantId, threadId) {
+  const row = db.prepare('SELECT claude_session_id FROM ai_sessions WHERE participant_id=? AND thread_id=? AND sub_agent_id IS NULL').get(participantId, threadId || 0);
+  return row?.claude_session_id ?? null;
+}
+
+function getSubAgentThreadSession(participantId, subAgentId, threadId) {
+  const row = db.prepare('SELECT claude_session_id FROM ai_sessions WHERE participant_id=? AND sub_agent_id=? AND thread_id=?').get(participantId, subAgentId, threadId || 0);
+  return row?.claude_session_id ?? null;
+}
+
+function saveThreadSession(participantId, claudeSessionId, workdir, threadId) {
+  const rp = db.prepare('SELECT room_id FROM room_participants WHERE id=?').get(participantId);
+  db.prepare(
+    `INSERT INTO ai_sessions (participant_id, room_id, claude_session_id, workdir, thread_id, status) VALUES (?,?,?,?,?,'idle')
+     ON CONFLICT(participant_id, thread_id) WHERE sub_agent_id IS NULL DO UPDATE SET claude_session_id=excluded.claude_session_id, room_id=excluded.room_id, workdir=excluded.workdir, status='idle', last_active_at=datetime('now')`
+  ).run(participantId, rp?.room_id ?? null, claudeSessionId, workdir || null, threadId || 0);
+}
+
+function saveSubAgentThreadSession(participantId, subAgentId, claudeSessionId, workdir, threadId) {
+  const rp = db.prepare('SELECT room_id FROM room_participants WHERE id=?').get(participantId);
+  db.prepare(
+    `INSERT INTO ai_sessions (participant_id, room_id, sub_agent_id, claude_session_id, workdir, thread_id, status) VALUES (?,?,?,?,?,?,'idle')
+     ON CONFLICT(participant_id, sub_agent_id, thread_id) WHERE sub_agent_id IS NOT NULL DO UPDATE SET claude_session_id=excluded.claude_session_id, room_id=excluded.room_id, workdir=excluded.workdir, status='idle', last_active_at=datetime('now')`
+  ).run(participantId, rp?.room_id ?? null, subAgentId, claudeSessionId, workdir || null, threadId || 0);
+}
+
+// Validate thread_id: root must exist in the same room and be a root itself (thread_id IS NULL).
+// reply_to (if given) must belong to the same thread. Returns error string or null.
+function resolveThread(roomId, threadId) {
+  if (!threadId) return null;
+  const root = db.prepare('SELECT id, room_id, thread_id FROM messages WHERE id=?').get(threadId);
+  if (!root) return 'thread root not found';
+  if (root.room_id !== roomId) return 'thread root belongs to a different room';
+  if (root.thread_id !== null) return 'thread_id must reference a root message (thread_id IS NULL)';
+  return null;
+}
+
 // Spawn tokens removed (P4): sub-agent delegation is now @mention-based.
 // Depth guard is handled by MAX_WAKE_CASCADE_DEPTH + cascade only fires from
 // parent responses, not sub-agent responses.
@@ -253,10 +291,10 @@ function verifyAgentRequest(req) {
 // triggers (parent_message_id null).
 const MAX_WAKE_ATTEMPTS = 3;
 
-function enqueueParentWake(roomId, parentParticipantId, subAgentMessageId) {
+function enqueueParentWake(roomId, parentParticipantId, subAgentMessageId, threadId) {
   const { lastInsertRowid } = db.prepare(
-    'INSERT INTO pending_wakes (room_id, parent_participant_id, sub_agent_message_id) VALUES (?,?,?)'
-  ).run(roomId, parentParticipantId, subAgentMessageId);
+    'INSERT INTO pending_wakes (room_id, parent_participant_id, sub_agent_message_id, thread_id) VALUES (?,?,?,?)'
+  ).run(roomId, parentParticipantId, subAgentMessageId, threadId ?? null);
   drainWake(Number(lastInsertRowid)).catch(e => console.error('[wake] drain error:', e.message));
 }
 
@@ -331,9 +369,12 @@ async function drainWake(wakeId) {
   // state='complete'/'error', so zero still-streaming sub-agents in the room means this
   // is the last wake. This also skips the two rollup queries on every earlier
   // wake. (Kira review PR #53, finding c.)
-  const stillRunning = db.prepare(
-    "SELECT COUNT(*) AS c FROM messages WHERE room_id=? AND sub_agent_id IS NOT NULL AND state='streaming'"
-  ).get(row.room_id).c;
+  const stillRunningQuery = row.thread_id
+    ? "SELECT COUNT(*) AS c FROM messages WHERE room_id=? AND thread_id=? AND sub_agent_id IS NOT NULL AND state='streaming'"
+    : "SELECT COUNT(*) AS c FROM messages WHERE room_id=? AND sub_agent_id IS NOT NULL AND state='streaming'";
+  const stillRunning = row.thread_id
+    ? db.prepare(stillRunningQuery).get(row.room_id, row.thread_id).c
+    : db.prepare(stillRunningQuery).get(row.room_id).c;
   const rollup = stillRunning === 0 ? buildRoomCostRollup(row.room_id) : null;
   const costBlock = rollup
     ? `\n\n${formatCostRollup(rollup)}\n(Ini menutup rangkaian spawn — sertakan ringkasan biaya singkat di jawabanmu kalau relevan.)`
@@ -341,9 +382,9 @@ async function drainWake(wakeId) {
   const wakePrompt = `[sub-agent result] Sub-agent "${label}" yang kamu picu sudah selesai. ${failurePrefix}Hasilnya:\n\n${body}\n\nSintesiskan dan lanjutkan menjawab. Kamu boleh @mention sub-agent lain untuk delegate tugas berikutnya (misal @stoa-reviewer untuk review). Mention akan otomatis trigger sub-agent tersebut.${costBlock}`;
 
   try {
-    await triggerAiResponse(row.room_id, { ...parent, sub_agent: null }, wakePrompt, null, []);
+    await triggerAiResponse(row.room_id, { ...parent, sub_agent: null }, wakePrompt, null, [], null, row.thread_id ?? null);
     db.prepare('DELETE FROM pending_wakes WHERE id=?').run(wakeId);
-    cascadeMentionsAfterWake(row.room_id, parent).catch(e =>
+    cascadeMentionsAfterWake(row.room_id, parent, row.thread_id ?? null).catch(e =>
       console.error('[wake-cascade] error:', e.message));
   } catch (e) {
     const attempts = row.attempts + 1;
@@ -369,20 +410,29 @@ const MAX_WAKE_CASCADE_DEPTH = 5;
 const wakeCascadeDepth = new Map(); // roomId → current depth
 const mentionBoundary = (name) => new RegExp(`(?:^|\\s)@${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=\\s|[.,!?;:]|$)`);
 
-async function cascadeMentionsAfterWake(roomId, parent) {
-  const depth = (wakeCascadeDepth.get(roomId) || 0) + 1;
+async function cascadeMentionsAfterWake(roomId, parent, threadId) {
+  const cascadeKey = threadId ? `${roomId}:${threadId}` : String(roomId);
+  const depth = (wakeCascadeDepth.get(cascadeKey) || 0) + 1;
   if (depth > MAX_WAKE_CASCADE_DEPTH) {
-    console.log(`[wake-cascade] depth ${depth} exceeds max ${MAX_WAKE_CASCADE_DEPTH} for room ${roomId}, stopping`);
-    wakeCascadeDepth.delete(roomId);
+    console.log(`[wake-cascade] depth ${depth} exceeds max ${MAX_WAKE_CASCADE_DEPTH} for room ${roomId} thread ${threadId || 'root'}, stopping`);
+    wakeCascadeDepth.delete(cascadeKey);
     return;
   }
 
-  const lastMsg = db.prepare(`
-    SELECT m.content FROM messages m
-    JOIN room_participants rp ON rp.id=m.participant_id
-    WHERE rp.actor_id=? AND m.room_id=? AND m.state='complete' AND m.sub_agent_id IS NULL AND m.completed_at IS NOT NULL
-    ORDER BY m.id DESC LIMIT 1
-  `).get(parent.actor_id, roomId);
+  const lastMsg = threadId
+    ? db.prepare(`
+        SELECT m.content FROM messages m
+        JOIN room_participants rp ON rp.id=m.participant_id
+        WHERE rp.actor_id=? AND m.room_id=? AND m.state='complete' AND m.sub_agent_id IS NULL AND m.completed_at IS NOT NULL
+          AND (m.thread_id=? OR m.id=?)
+        ORDER BY m.id DESC LIMIT 1
+      `).get(parent.actor_id, roomId, threadId, threadId)
+    : db.prepare(`
+        SELECT m.content FROM messages m
+        JOIN room_participants rp ON rp.id=m.participant_id
+        WHERE rp.actor_id=? AND m.room_id=? AND m.state='complete' AND m.sub_agent_id IS NULL AND m.completed_at IS NOT NULL
+        ORDER BY m.id DESC LIMIT 1
+      `).get(parent.actor_id, roomId);
   if (!lastMsg?.content || !lastMsg.content.includes('@')) return;
 
   const allAi = db.prepare(`
@@ -416,27 +466,27 @@ async function cascadeMentionsAfterWake(roomId, parent) {
   }
 
   if (!subAgentsCascade.length && !regularAgentsCascade.length) {
-    wakeCascadeDepth.delete(roomId);
+    wakeCascadeDepth.delete(cascadeKey);
     return;
   }
 
   const allCascadeLabels = [...subAgentsCascade.map(a => a.sub_agent.label), ...regularAgentsCascade.map(a => a.name)];
-  console.log(`[wake-cascade] depth ${depth}: ${allCascadeLabels.join(', ')} in room ${roomId}`);
-  wakeCascadeDepth.set(roomId, depth);
+  console.log(`[wake-cascade] depth ${depth}: ${allCascadeLabels.join(', ')} in room ${roomId} thread ${threadId || 'root'}`);
+  wakeCascadeDepth.set(cascadeKey, depth);
   try {
     for (const sa of subAgentsCascade) {
-      triggerAiResponse(roomId, sa, lastMsg.content, null, []).catch(e => console.error('[wake-cascade sub-agent] parallel error:', e));
+      triggerAiResponse(roomId, sa, lastMsg.content, null, [], null, threadId).catch(e => console.error('[wake-cascade sub-agent] parallel error:', e));
     }
     if (regularAgentsCascade.length > 0) {
-      await triggerAgentsSequential(roomId, regularAgentsCascade, lastMsg.content, null, []);
+      await triggerAgentsSequential(roomId, regularAgentsCascade, lastMsg.content, null, [], new Set(), threadId);
     }
   } finally {
-    if (wakeCascadeDepth.get(roomId) === depth) wakeCascadeDepth.delete(roomId);
+    if (wakeCascadeDepth.get(cascadeKey) === depth) wakeCascadeDepth.delete(cascadeKey);
   }
 }
 
 // Cascade @mentions from a proactive agent message (same logic as wake-cascade but content is known upfront).
-async function cascadeMentionsFromProactive(roomId, senderActorId, content) {
+async function cascadeMentionsFromProactive(roomId, senderActorId, content, threadId) {
   if (!content.includes('@')) return;
 
   const allAi = db.prepare(`
@@ -475,10 +525,10 @@ async function cascadeMentionsFromProactive(roomId, senderActorId, content) {
   console.log(`[proactive-cascade] room ${roomId}: triggering ${labels.join(', ')}`);
 
   for (const sa of subAgentsCascade) {
-    triggerAiResponse(roomId, sa, content, null, []).catch(e => console.error('[proactive-cascade sub-agent]', e.message));
+    triggerAiResponse(roomId, sa, content, null, [], null, threadId ?? null).catch(e => console.error('[proactive-cascade sub-agent]', e.message));
   }
   if (regularAgentsCascade.length > 0) {
-    await triggerAgentsSequential(roomId, regularAgentsCascade, content, null, []);
+    await triggerAgentsSequential(roomId, regularAgentsCascade, content, null, [], new Set(), threadId ?? null);
   }
 }
 
@@ -1450,11 +1500,23 @@ const server = http.createServer(async (req, res) => {
   const msgDeleteMatch = req.method === 'DELETE' && url.pathname.match(/^\/api\/messages\/(\d+)$/);
   if (msgDeleteMatch) {
     const msgId = parseInt(msgDeleteMatch[1]);
-    const msg = db.prepare('SELECT room_id FROM messages WHERE id=?').get(msgId);
+    const msg = db.prepare('SELECT room_id, thread_id FROM messages WHERE id=?').get(msgId);
     if (!msg) { res.writeHead(404); return res.end(); }
+    const hasReplies = db.prepare('SELECT 1 FROM messages WHERE thread_id=? LIMIT 1').get(msgId);
+    if (hasReplies && msg.thread_id === null) {
+      const cascade = url.searchParams.get('cascade') === '1';
+      if (!cascade) {
+        return json(res, { error: 'Cannot delete thread root with replies. Use ?cascade=1 to delete thread and all replies.' }, 409);
+      }
+      const threadMsgs = db.prepare('SELECT id FROM messages WHERE thread_id=?').all(msgId);
+      for (const tm of threadMsgs) {
+        db.prepare("INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', ?, (SELECT content FROM messages WHERE id=?))").run(tm.id, tm.id);
+      }
+      db.prepare('DELETE FROM messages WHERE thread_id=?').run(msgId);
+    }
     db.prepare("INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', ?, (SELECT content FROM messages WHERE id=?))").run(msgId, msgId);
     db.prepare('DELETE FROM messages WHERE id=?').run(msgId);
-    broadcast(msg.room_id, { type: 'message_deleted', message_id: msgId });
+    broadcast(msg.room_id, { type: 'message_deleted', message_id: msgId, cascade: !!hasReplies });
     res.writeHead(204); return res.end();
   }
 
@@ -1478,7 +1540,7 @@ const server = http.createServer(async (req, res) => {
     const limit = Math.min(parseInt(url.searchParams.get('limit') ?? '30'), 100);
     if (!q) return json(res, []);
     const rows = db.prepare(`
-      SELECT m.id, m.room_id, m.content, m.created_at,
+      SELECT m.id, m.room_id, m.content, m.created_at, m.thread_id,
              a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
              r.title as room_title, r.archived_at,
              snippet(messages_fts, 0, '<mark>', '</mark>', '…', 40) as snippet
@@ -1832,6 +1894,13 @@ const server = http.createServer(async (req, res) => {
     const parentPart = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(roomId, agent.id);
     if (!parentPart) return json(res, { error: 'agent is not a participant in this room' }, 403);
 
+    // Thread support
+    const triggerThreadId = data.thread_id ? parseInt(data.thread_id) : null;
+    if (triggerThreadId) {
+      const threadErr = resolveThread(roomId, triggerThreadId);
+      if (threadErr) return json(res, { error: threadErr }, 400);
+    }
+
     // Resolve sub-agent by id or label; must be linked in this room AND owned by the requester (parent-only, Gap 2).
     let sub;
     if (data.sub_agent_id) {
@@ -1881,7 +1950,7 @@ const server = http.createServer(async (req, res) => {
 
     // Fire-and-forget: return 200 (accepted) immediately. The orchestrator MUST NOT
     // block waiting — with MAX_CONCURRENT=1 that would deadlock (Gap 4).
-    triggerAiResponse(roomId, ai, task, null, []).catch(e => console.error('[sub-agent-trigger] error:', e.message));
+    triggerAiResponse(roomId, ai, task, null, [], null, triggerThreadId).catch(e => console.error('[sub-agent-trigger] error:', e.message));
     return json(res, { ok: true, label: sub.label });
   }
 
@@ -1970,6 +2039,13 @@ const server = http.createServer(async (req, res) => {
     ).get(roomId, agentId);
     if (!participant) return json(res, { error: 'agent is not a participant in this room' }, 403);
 
+    // Thread support: agent can post into a specific thread
+    const threadId = data.thread_id ? parseInt(data.thread_id) : null;
+    if (threadId) {
+      const threadErr = resolveThread(roomId, threadId);
+      if (threadErr) return json(res, { error: threadErr }, 400);
+    }
+
     if (eventId) {
       const existing = db.prepare(
         'SELECT id, content FROM messages WHERE room_id=? AND client_event_id=?'
@@ -1981,8 +2057,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     const result = db.prepare(
-      "INSERT INTO messages (room_id, participant_id, content, client_event_id, state) VALUES (?, ?, ?, ?, 'complete')"
-    ).run(roomId, participant.id, content, eventId);
+      "INSERT INTO messages (room_id, participant_id, content, client_event_id, thread_id, state) VALUES (?, ?, ?, ?, ?, 'complete')"
+    ).run(roomId, participant.id, content, eventId, threadId);
     const messageId = result.lastInsertRowid;
 
     const row = db.prepare(`
@@ -1994,7 +2070,7 @@ const server = http.createServer(async (req, res) => {
     broadcast(roomId, { type: 'message_new', message: row });
     broadcastGlobal({ type: 'room_activity', room_id: roomId });
     // Cascade any @mentions in the proactive message (fire-and-forget)
-    cascadeMentionsFromProactive(roomId, agentId, content).catch(e => console.error('[proactive-cascade]', e.message));
+    cascadeMentionsFromProactive(roomId, agentId, content, threadId).catch(e => console.error('[proactive-cascade]', e.message));
     return json(res, { message_id: messageId });
   }
 
@@ -3470,7 +3546,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
     const room = db.prepare('SELECT title FROM rooms WHERE id=?').get(roomId);
     if (!room) { res.writeHead(404); return res.end('room not found'); }
     const rows = db.prepare(`
-      SELECT m.id, m.content, m.created_at, m.completed_at, m.image_url, m.file_url, m.file_name, m.attachments, m.reply_to,
+      SELECT m.id, m.content, m.created_at, m.completed_at, m.image_url, m.file_url, m.file_name, m.attachments, m.reply_to, m.thread_id,
              a.name as actor_name, a.type as actor_type
       FROM messages m
       JOIN room_participants rp ON rp.id=m.participant_id
@@ -3483,11 +3559,11 @@ Write-Host "Logs   : pm2 logs $AgentName"
 
     if (format === 'csv') {
       const escape = (s) => `"${(s || '').replace(/"/g, '""')}"`;
-      const header = 'id,timestamp,actor,type,content,attachments,reply_to';
+      const header = 'id,timestamp,actor,type,content,attachments,reply_to,thread_id';
       const lines = rows.map(r => {
         let parsedAtt; try { parsedAtt = r.attachments ? JSON.parse(r.attachments) : null; } catch { parsedAtt = null; }
         const attachments = parsedAtt ? parsedAtt.map(a => a.name || a.url).join('; ') : (r.file_name || '');
-        return [r.id, r.created_at, escape(r.actor_name), r.actor_type, escape(r.content), escape(attachments), r.reply_to || ''].join(',');
+        return [r.id, r.created_at, escape(r.actor_name), r.actor_type, escape(r.content), escape(attachments), r.reply_to || '', r.thread_id || ''].join(',');
       });
       const csv = [header, ...lines].join('\n');
       res.writeHead(200, {
@@ -3504,6 +3580,84 @@ Write-Host "Logs   : pm2 logs $AgentName"
       'Content-Disposition': `attachment; filename="${safeTitle}.json"`,
     });
     return res.end(JSON.stringify(data, null, 2));
+  }
+
+  // ── Threads endpoints ────────────────────────────────────────────────────
+  const threadListMatch = req.method === 'GET' && url.pathname.match(/^\/api\/rooms\/(\d+)\/threads$/);
+  if (threadListMatch) {
+    if (!requireAuth(req, res, url)) return;
+    const roomId = parseInt(threadListMatch[1]);
+    const state = url.searchParams.get('state');
+    let rows;
+    if (state === 'active') {
+      rows = db.prepare(`
+        SELECT m.id, m.content, m.created_at, a.name as actor_name,
+          (SELECT COUNT(*) FROM messages r WHERE r.thread_id=m.id) as reply_count,
+          (SELECT MAX(r2.created_at) FROM messages r2 WHERE r2.thread_id=m.id) as last_reply_at
+        FROM messages m
+        JOIN room_participants rp ON rp.id=m.participant_id
+        JOIN actors a ON a.id=rp.actor_id
+        WHERE m.room_id=? AND m.thread_id IS NULL
+          AND EXISTS (SELECT 1 FROM messages r3 WHERE r3.thread_id=m.id
+            AND r3.state IN ('streaming','requesting'))
+        ORDER BY m.created_at DESC
+      `).all(roomId);
+    } else {
+      rows = db.prepare(`
+        SELECT m.id, m.content, m.created_at, a.name as actor_name,
+          (SELECT COUNT(*) FROM messages r WHERE r.thread_id=m.id) as reply_count,
+          (SELECT MAX(r2.created_at) FROM messages r2 WHERE r2.thread_id=m.id) as last_reply_at
+        FROM messages m
+        JOIN room_participants rp ON rp.id=m.participant_id
+        JOIN actors a ON a.id=rp.actor_id
+        WHERE m.room_id=? AND m.thread_id IS NULL
+          AND EXISTS (SELECT 1 FROM messages r3 WHERE r3.thread_id=m.id)
+        ORDER BY last_reply_at DESC NULLS LAST
+      `).all(roomId);
+    }
+    return json(res, rows);
+  }
+
+  const threadDetailMatch = req.method === 'GET' && url.pathname.match(/^\/api\/rooms\/(\d+)\/threads\/(\d+)$/);
+  if (threadDetailMatch) {
+    if (!requireAuth(req, res, url)) return;
+    const roomId = parseInt(threadDetailMatch[1]);
+    const rootId = parseInt(threadDetailMatch[2]);
+    const root = db.prepare('SELECT id, room_id, thread_id FROM messages WHERE id=?').get(rootId);
+    if (!root || root.room_id !== roomId || root.thread_id !== null) {
+      return json(res, { error: 'thread root not found' }, 404);
+    }
+    const messages = db.prepare(`
+      SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
+      FROM messages m
+      JOIN room_participants rp ON rp.id=m.participant_id
+      JOIN actors a ON a.id=rp.actor_id
+      WHERE (m.id=? OR m.thread_id=?) AND m.room_id=?
+      ORDER BY m.created_at ASC
+    `).all(rootId, rootId, roomId);
+    return json(res, { thread_id: rootId, messages });
+  }
+
+  // ── System prompt endpoints ─────────────────────────────────────────────
+  const sysPromptMatch = url.pathname.match(/^\/api\/rooms\/(\d+)\/system-prompt$/);
+  if (sysPromptMatch && (req.method === 'GET' || req.method === 'PUT')) {
+    if (!requireAuth(req, res, url)) return;
+    const roomId = parseInt(sysPromptMatch[1]);
+    const room = db.prepare('SELECT system_prompt, max_active_threads FROM rooms WHERE id=?').get(roomId);
+    if (!room) { res.writeHead(404); return res.end(); }
+    if (req.method === 'GET') {
+      return json(res, { system_prompt: room.system_prompt, max_active_threads: room.max_active_threads });
+    }
+    const body = await readBody(req);
+    const data = JSON.parse(body);
+    if (typeof data.system_prompt === 'string' || data.system_prompt === null) {
+      db.prepare('UPDATE rooms SET system_prompt=? WHERE id=?').run(data.system_prompt, roomId);
+    }
+    if (typeof data.max_active_threads === 'number' && data.max_active_threads >= 1) {
+      db.prepare('UPDATE rooms SET max_active_threads=? WHERE id=?').run(data.max_active_threads, roomId);
+    }
+    const updated = db.prepare('SELECT system_prompt, max_active_threads FROM rooms WHERE id=?').get(roomId);
+    return json(res, updated);
   }
 
   // ── Automation: Connections CRUD ──────────────────────────────────────────
@@ -3959,13 +4113,14 @@ wss.on('connection', (ws, req) => {
       }
       if (!handled) {
         const wsEventId = typeof msg.event_id === 'string' && msg.event_id.length <= 128 ? msg.event_id : null;
-        await handleHumanMessage(msg.room_id, msg.content, msg.attachments || null, msg.reply_to || null, ws, wsEventId);
+        const wsThreadId = typeof msg.thread_id === 'number' ? msg.thread_id : null;
+        await handleHumanMessage(msg.room_id, msg.content, msg.attachments || null, msg.reply_to || null, ws, wsEventId, wsThreadId);
       }
     }
 
     if (msg.type === 'stop_generation') {
-      // Cancel the active sequence for this room
-      const seq = activeSequences.get(msg.room_id);
+      const stopKey = msg.thread_id ? `${msg.room_id}:${msg.thread_id}` : String(msg.room_id);
+      const seq = activeSequences.get(stopKey);
       if (seq) seq.cancelled = true;
 
       const msgRow = db.prepare(
@@ -3981,19 +4136,20 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'compact_session' && !agentActorId) {
       const roomId = msg.room_id;
-      if (pendingCompacts.has(roomId)) return;
+      const compactThreadId = typeof msg.thread_id === 'number' ? msg.thread_id : null;
+      const compactKey = compactThreadId ? `${roomId}:${compactThreadId}` : String(roomId);
+      if (pendingCompacts.has(compactKey)) return;
       const aiParts = db.prepare(`
         SELECT rp.id as participant_id, a.id as actor_id, a.name
         FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
         WHERE rp.room_id=? AND a.type='ai'
       `).all(roomId);
-      // Batch-fetch sessions for all participants (avoids N+1)
       const sessionMap = new Map();
       if (aiParts.length) {
         const ph = aiParts.map(() => '?').join(',');
         const allSessions = db.prepare(
-          `SELECT participant_id, claude_session_id FROM ai_sessions WHERE participant_id IN (${ph}) AND room_id=? AND sub_agent_id IS NULL ORDER BY last_active_at DESC`
-        ).all(...aiParts.map(a => a.participant_id), roomId);
+          `SELECT participant_id, claude_session_id FROM ai_sessions WHERE participant_id IN (${ph}) AND room_id=? AND thread_id=? AND sub_agent_id IS NULL ORDER BY last_active_at DESC`
+        ).all(...aiParts.map(a => a.participant_id), roomId, compactThreadId || 0);
         for (const s of allSessions) {
           if (!sessionMap.has(s.participant_id)) sessionMap.set(s.participant_id, s);
         }
@@ -4005,14 +4161,11 @@ wss.on('connection', (ws, req) => {
         if (!agentWs || agentWs.readyState !== 1) continue;
         const sessionRow = sessionMap.get(ai.participant_id);
         if (!sessionRow?.claude_session_id) continue;
-        // R14: skip agents still in compact failure cooldown
-        const sessRow = db.prepare('SELECT compact_failure_cooldown_until FROM ai_sessions WHERE participant_id=? AND room_id=? AND sub_agent_id IS NULL').get(ai.participant_id, roomId);
+        const sessRow = db.prepare('SELECT compact_failure_cooldown_until FROM ai_sessions WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS NULL').get(ai.participant_id, roomId, compactThreadId || 0);
         if (sessRow?.compact_failure_cooldown_until && sessRow.compact_failure_cooldown_until > nowIso) {
           console.warn(`[server] compact_session: skipping agent=${ai.actor_id} (failure cooldown until ${sessRow.compact_failure_cooldown_until})`);
           continue;
         }
-        // Resolve the workdir the same way dispatch does, so compact targets the dir where this
-        // agent actually ran — not a stale stored value or the room workdir.
         const workdir = resolveParticipantWorkdir(ai.participant_id);
         targets.push({ actor_id: ai.actor_id, participant_id: ai.participant_id, name: ai.name, workdir, claude_session_id: sessionRow.claude_session_id });
       }
@@ -4020,22 +4173,22 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ type: 'compact_error', room_id: roomId, error: 'No active AI sessions to compact' }));
         return;
       }
-      pendingCompacts.set(roomId, { total: targets.length, completed: 0, agents: targets.map(t => t.actor_id), targets, completedParticipantIds: [] });
+      pendingCompacts.set(compactKey, { total: targets.length, completed: 0, agents: targets.map(t => t.actor_id), targets, completedParticipantIds: [] });
       const participants = targets.map(t => ({ participant_id: t.participant_id, actor_id: t.actor_id, name: t.name }));
-      broadcast(roomId, { type: 'compact_start', room_id: roomId, total: targets.length, participants });
+      broadcast(roomId, { type: 'compact_start', room_id: roomId, thread_id: compactThreadId, total: targets.length, participants });
       const names = targets.map(t => t.name).join(', ');
       broadcast(roomId, { type: 'system_event', actor_name: names, status: 'session compacting' });
       setTimeout(() => {
-        if (pendingCompacts.has(roomId)) {
-          pendingCompacts.delete(roomId);
-          setRecentCompact(roomId); // suppress immediate re-register from auto_compact_start while original compact still finishing
-          broadcast(roomId, { type: 'compact_error', room_id: roomId, error: 'Compact timed out' });
+        if (pendingCompacts.has(compactKey)) {
+          pendingCompacts.delete(compactKey);
+          setRecentCompact(roomId);
+          broadcast(roomId, { type: 'compact_error', room_id: roomId, thread_id: compactThreadId, error: 'Compact timed out' });
         }
       }, 600_000);
       for (const t of targets) {
         const agentWs = agentClients.get(t.actor_id);
         if (!agentWs || agentWs.readyState !== 1) continue;
-        agentWs.send(JSON.stringify({ type: 'compact_trigger', room_id: roomId, workdir: t.workdir, claude_session_id: t.claude_session_id }));
+        agentWs.send(JSON.stringify({ type: 'compact_trigger', room_id: roomId, thread_id: compactThreadId, workdir: t.workdir, claude_session_id: t.claude_session_id }));
       }
     }
 
@@ -4248,7 +4401,6 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'compact_complete' && agentActorId) {
-      // Resolve room_id: use msg.room_id, or look up via orig_session_id (pre-compact) then new session_id
       if (!msg.room_id) {
         const lookup = msg.orig_session_id || msg.claude_session_id;
         if (lookup) {
@@ -4260,18 +4412,19 @@ wss.on('connection', (ws, req) => {
         console.warn(`[server] compact_complete: unresolvable room_id for session ${msg.claude_session_id}`);
         return;
       }
+      const cThreadId = msg.thread_id ?? null;
+      const cKey = cThreadId ? `${msg.room_id}:${cThreadId}` : String(msg.room_id);
       if (msg.claude_session_id) {
         const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
         if (participant) {
-          db.prepare(`UPDATE ai_sessions SET claude_session_id=?, last_active_at=datetime('now') WHERE participant_id=? AND room_id=? AND sub_agent_id IS NULL`).run(msg.claude_session_id, participant.id, msg.room_id);
+          db.prepare(`UPDATE ai_sessions SET claude_session_id=?, last_active_at=datetime('now') WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS NULL`).run(msg.claude_session_id, participant.id, msg.room_id, cThreadId || 0);
         }
       }
-      // R14: clear failure cooldown on success
       const successParticipant = db.prepare('SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
       if (successParticipant) {
-        db.prepare(`UPDATE ai_sessions SET compact_failure_cooldown_until=NULL, compact_failure_error=NULL WHERE participant_id=? AND room_id=? AND sub_agent_id IS NULL`).run(successParticipant.id, msg.room_id);
+        db.prepare(`UPDATE ai_sessions SET compact_failure_cooldown_until=NULL, compact_failure_error=NULL WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS NULL`).run(successParticipant.id, msg.room_id, cThreadId || 0);
       }
-      const state = pendingCompacts.get(msg.room_id);
+      const state = pendingCompacts.get(cKey);
       const actor = db.prepare('SELECT name FROM actors WHERE id=?').get(agentActorId);
       const participant = db.prepare('SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
       if (!state) {
@@ -4296,7 +4449,7 @@ wss.on('connection', (ws, req) => {
       if (participant) state.completedParticipantIds.push(participant.id);
       state.completed++;
       if (state.completed >= state.total) {
-        pendingCompacts.delete(msg.room_id);
+        pendingCompacts.delete(cKey);
         setRecentCompact(msg.room_id);
         const label = state.names.length ? state.names.join(', ') : 'session';
         const content = `${label} · session compacted`;
@@ -4304,18 +4457,17 @@ wss.on('connection', (ws, req) => {
           const sysResult = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')").run(msg.room_id, participant.id, content);
           broadcast(msg.room_id, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: msg.room_id, content, state: 'system_event', created_at: new Date().toISOString() } });
         }
-        broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id });
+        broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id, thread_id: cThreadId });
         for (const aid of state.completedAgentIds) {
-          db.prepare('UPDATE ai_sessions SET context_tokens_used=0 WHERE room_id=? AND participant_id IN (SELECT id FROM room_participants WHERE actor_id=?)').run(msg.room_id, aid);
-          broadcast(msg.room_id, { type: 'context_update', room_id: msg.room_id, actor_id: aid, context_tokens_used: 0, context_limit: DEFAULT_CONTEXT_WINDOW, model: null });
+          db.prepare('UPDATE ai_sessions SET context_tokens_used=0 WHERE room_id=? AND thread_id=? AND participant_id IN (SELECT id FROM room_participants WHERE actor_id=?)').run(msg.room_id, cThreadId || 0, aid);
+          broadcast(msg.room_id, { type: 'context_update', room_id: msg.room_id, actor_id: aid, thread_id: cThreadId, context_tokens_used: 0, context_limit: DEFAULT_CONTEXT_WINDOW, model: null });
         }
       } else {
-        broadcast(msg.room_id, { type: 'compact_progress', room_id: msg.room_id, completed: state.completed, total: state.total, completed_participant_ids: state.completedParticipantIds });
+        broadcast(msg.room_id, { type: 'compact_progress', room_id: msg.room_id, thread_id: cThreadId, completed: state.completed, total: state.total, completed_participant_ids: state.completedParticipantIds });
       }
     }
 
     if (msg.type === 'compact_error' && agentActorId) {
-      // Resolve room_id — background worker sends orig_session_id without room_id
       if (!msg.room_id) {
         const lookup = msg.orig_session_id || msg.claude_session_id;
         if (lookup) {
@@ -4327,13 +4479,14 @@ wss.on('connection', (ws, req) => {
         console.warn(`[server] compact_error: unresolvable room_id for session ${msg.orig_session_id}`);
         return;
       }
-      const state = pendingCompacts.get(msg.room_id);
+      const ceThreadId = msg.thread_id ?? null;
+      const ceKey = ceThreadId ? `${msg.room_id}:${ceThreadId}` : String(msg.room_id);
+      const state = pendingCompacts.get(ceKey);
       if (!state) return;
       if (!state.completedParticipantIds) state.completedParticipantIds = [];
       const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
       if (participant) {
         state.completedParticipantIds.push(participant.id);
-        // R14: set failure cooldown (30 min, MAX semantics — never shorten an existing longer cooldown)
         const cooldownUntil = new Date(Date.now() + 30 * 60 * 1000).toISOString();
         const errorText = (msg.error || 'compact failed').slice(0, 500);
         db.prepare(`UPDATE ai_sessions SET
@@ -4342,23 +4495,23 @@ wss.on('connection', (ws, req) => {
             ELSE compact_failure_cooldown_until
           END,
           compact_failure_error = ?
-          WHERE participant_id=? AND room_id=? AND sub_agent_id IS NULL`
-        ).run(cooldownUntil, cooldownUntil, errorText, participant.id, msg.room_id);
+          WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS NULL`
+        ).run(cooldownUntil, cooldownUntil, errorText, participant.id, msg.room_id, ceThreadId || 0);
         console.warn(`[server] compact failure cooldown set for participant=${participant.id} until ${cooldownUntil}: ${errorText}`);
       }
       if (!state.errors) state.errors = 0;
       state.errors++;
       state.completed++;
       if (state.completed >= state.total) {
-        pendingCompacts.delete(msg.room_id);
+        pendingCompacts.delete(ceKey);
         setRecentCompact(msg.room_id);
         if (state.errors >= state.total) {
-          broadcast(msg.room_id, { type: 'compact_error', room_id: msg.room_id, error: msg.error || 'Compact failed' });
+          broadcast(msg.room_id, { type: 'compact_error', room_id: msg.room_id, thread_id: ceThreadId, error: msg.error || 'Compact failed' });
         } else {
-          broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id });
+          broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id, thread_id: ceThreadId });
         }
       } else {
-        broadcast(msg.room_id, { type: 'compact_progress', room_id: msg.room_id, completed: state.completed, total: state.total, completed_participant_ids: state.completedParticipantIds });
+        broadcast(msg.room_id, { type: 'compact_progress', room_id: msg.room_id, thread_id: ceThreadId, completed: state.completed, total: state.total, completed_participant_ids: state.completedParticipantIds });
       }
     }
 
@@ -4388,27 +4541,25 @@ wss.on('connection', (ws, req) => {
       db.prepare(
         'UPDATE messages SET content=?, file_url=?, file_name=?, attachments=?, ai_model=?, result_meta=?, state=?, completed_at=datetime(\'now\') WHERE id=?'
       ).run(agentContent, msg.file_url || null, msg.file_name || null, attachJson, msg.ai_model || null, resultMetaJson, finalState, msg.message_id);
-      const completePayload = { type: 'message_complete', message_id: msg.message_id, content: agentContent, ai_model: msg.ai_model || null, state: finalState };
+      const doneRow = db.prepare('SELECT participant_id, sub_agent_id, parent_message_id, thread_id FROM messages WHERE id=?').get(msg.message_id);
+      const completePayload = { type: 'message_complete', message_id: msg.message_id, content: agentContent, ai_model: msg.ai_model || null, state: finalState, thread_id: doneRow?.thread_id ?? null };
       if (resultMetaJson) completePayload.result_meta = resultMetaJson;
       if (msg.attachments?.length) { completePayload.attachments = msg.attachments; }
       else if (msg.file_url) { completePayload.file_url = msg.file_url; completePayload.file_name = msg.file_name; }
       broadcast(msg.room_id, completePayload);
       broadcastGlobal({ type: 'room_activity', room_id: msg.room_id });
-      const doneRow = db.prepare('SELECT participant_id, sub_agent_id, parent_message_id FROM messages WHERE id=?').get(msg.message_id);
       if (msg.claude_session_id) {
         try {
           if (doneRow && doneRow.sub_agent_id) {
-            saveSubAgentSession(doneRow.participant_id, doneRow.sub_agent_id, msg.claude_session_id, resolveParticipantWorkdir(doneRow.participant_id));
+            saveSubAgentThreadSession(doneRow.participant_id, doneRow.sub_agent_id, msg.claude_session_id, resolveParticipantWorkdir(doneRow.participant_id), doneRow.thread_id);
           } else if (doneRow) {
-            saveSession(doneRow.participant_id, msg.claude_session_id, resolveParticipantWorkdir(doneRow.participant_id));
+            saveThreadSession(doneRow.participant_id, msg.claude_session_id, resolveParticipantWorkdir(doneRow.participant_id), doneRow.thread_id);
           }
         } catch (e) { console.error('[agent] saveSession error:', e.message); }
       }
-      // Completed sub-agent wakes its parent exactly once (R1). Applies to all
-      // sub-agent completions — both /sub-agent-trigger and @mention cascade.
       try {
         if (doneRow && doneRow.sub_agent_id) {
-          enqueueParentWake(msg.room_id, doneRow.participant_id, msg.message_id);
+          enqueueParentWake(msg.room_id, doneRow.participant_id, msg.message_id, doneRow.thread_id ?? null);
         }
       } catch (e) { console.error('[wake] enqueue error:', e.message); }
       pendingAgents.get(msg.message_id)?.resolve(msg.content);
@@ -4619,12 +4770,12 @@ wss.on('connection', (ws, req) => {
       // Context window tracking: total input tokens ≈ current context fill
       const contextTokens = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
       if (contextTokens > 0 && msg.room_id) {
-        const sess = db.prepare('SELECT id FROM ai_sessions WHERE room_id=? AND participant_id IN (SELECT id FROM room_participants WHERE actor_id=?) AND sub_agent_id IS NULL ORDER BY id DESC LIMIT 1').get(msg.room_id, agentActorId);
+        const sess = db.prepare('SELECT id, thread_id FROM ai_sessions WHERE room_id=? AND participant_id IN (SELECT id FROM room_participants WHERE actor_id=?) AND sub_agent_id IS NULL ORDER BY id DESC LIMIT 1').get(msg.room_id, agentActorId);
         if (sess) {
           db.prepare('UPDATE ai_sessions SET context_tokens_used=? WHERE id=?').run(contextTokens, sess.id);
           const contextLimit = getContextLimit(model);
           const actorRow = db.prepare('SELECT name FROM actors WHERE id=?').get(agentActorId);
-          broadcast(msg.room_id, { type: 'context_update', room_id: msg.room_id, actor_id: agentActorId, actor_name: actorRow?.name, context_tokens_used: contextTokens, context_limit: contextLimit, model });
+          broadcast(msg.room_id, { type: 'context_update', room_id: msg.room_id, actor_id: agentActorId, actor_name: actorRow?.name, thread_id: sess.thread_id || null, context_tokens_used: contextTokens, context_limit: contextLimit, model });
         }
       }
     }
@@ -5221,21 +5372,21 @@ roomIdleBus.on('idle', (roomId) => {
   const remaining = db.prepare('SELECT COUNT(*) as n FROM room_message_queue WHERE room_id=?').get(roomId).n;
   broadcast(roomId, { type: 'queue_updated', room_id: roomId, queued: remaining });
   const attachments = next.attachments ? JSON.parse(next.attachments) : [];
-  handleHumanMessage(roomId, next.content, attachments, next.reply_to ?? null, null, next.event_id ?? null).catch(e => {
+  handleHumanMessage(roomId, next.content, attachments, next.reply_to ?? null, null, next.event_id ?? null, next.thread_id ?? null).catch(e => {
     console.error('[queue] drain error, re-queuing:', e.message);
-    // Re-insert at front so the failed message retries on next idle, queue drain continues
-    db.prepare('INSERT INTO room_message_queue (room_id, content, attachments, reply_to, event_id, position) VALUES (?,?,?,?,?,?)').run(
-      next.room_id, next.content, next.attachments ?? null, next.reply_to ?? null, next.event_id ?? null, -1
+    db.prepare('INSERT INTO room_message_queue (room_id, content, attachments, reply_to, event_id, thread_id, position) VALUES (?,?,?,?,?,?,?)').run(
+      next.room_id, next.content, next.attachments ?? null, next.reply_to ?? null, next.event_id ?? null, next.thread_id ?? null, -1
     );
     const requeued = db.prepare('SELECT COUNT(*) as n FROM room_message_queue WHERE room_id=?').get(roomId).n;
     broadcast(roomId, { type: 'queue_updated', room_id: roomId, queued: requeued });
   });
 });
 
-async function triggerAgentsSequential(roomId, agents, content, replyTo, attachments, initialFiredSubAgentIds = new Set()) {
+async function triggerAgentsSequential(roomId, agents, content, replyTo, attachments, initialFiredSubAgentIds = new Set(), threadId = null) {
   const maxTurns = parseInt(process.env.MAX_AI_TURNS || '5');
   const seq = { cancelled: false };
-  activeSequences.set(roomId, seq);
+  const seqKey = threadId ? `${roomId}:${threadId}` : String(roomId);
+  activeSequences.set(seqKey, seq);
   let turnCount = 0;
 
   try {
@@ -5268,19 +5419,18 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
       const currentAgent = agents[i];
       const prefetchedCtx = { allParticipants: participantsStmt.all(roomId), wdRow, repliedMsg };
       try {
-        await triggerAiResponse(roomId, currentAgent, content, replyTo, attachments, prefetchedCtx);
+        await triggerAiResponse(roomId, currentAgent, content, replyTo, attachments, prefetchedCtx, threadId);
       } catch (e) {
-        // Disconnect or timeout — DB + UI already updated by the rejection path; continue to next agent
         console.log(`[trigger] ${currentAgent.sub_agent ? currentAgent.sub_agent.label : currentAgent.name} failed (${e.message}), continuing sequence`);
       }
       if (seq.cancelled) break;
 
-      const lastMsg = db.prepare(`
-        SELECT m.content FROM messages m
-        JOIN room_participants rp ON rp.id=m.participant_id
-        WHERE rp.actor_id=? AND m.room_id=? AND m.state='complete' AND m.completed_at IS NOT NULL
-        ORDER BY m.id DESC LIMIT 1
-      `).get(currentAgent.actor_id, roomId);
+      const lastMsgQuery = threadId
+        ? `SELECT m.content FROM messages m JOIN room_participants rp ON rp.id=m.participant_id WHERE rp.actor_id=? AND m.room_id=? AND (m.thread_id=? OR m.id=?) AND m.state='complete' AND m.completed_at IS NOT NULL ORDER BY m.id DESC LIMIT 1`
+        : `SELECT m.content FROM messages m JOIN room_participants rp ON rp.id=m.participant_id WHERE rp.actor_id=? AND m.room_id=? AND m.state='complete' AND m.completed_at IS NOT NULL ORDER BY m.id DESC LIMIT 1`;
+      const lastMsg = threadId
+        ? db.prepare(lastMsgQuery).get(currentAgent.actor_id, roomId, threadId, threadId)
+        : db.prepare(lastMsgQuery).get(currentAgent.actor_id, roomId);
 
       if (lastMsg?.content) {
         const allAiInRoom = allAiStmt.all(roomId);
@@ -5303,7 +5453,7 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
             const parent = allAiInRoom.find(a => a.actor_id === sa.parent_actor_id);
             if (parent) {
               firedSubAgentIds.add(sa.id);
-              triggerAiResponse(roomId, { ...parent, sub_agent: sa }, lastMsg.content, replyTo, attachments, prefetchedCtx)
+              triggerAiResponse(roomId, { ...parent, sub_agent: sa }, lastMsg.content, replyTo, attachments, prefetchedCtx, threadId)
                 .catch(e => console.error('[sub-agent parallel] dispatch error:', e));
             }
           }
@@ -5318,12 +5468,12 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
       if (turnCount >= maxTurns) break;
     }
   } finally {
-    activeSequences.delete(roomId);
+    activeSequences.delete(seqKey);
     roomIdleBus.emit('idle', roomId);
   }
 }
 
-async function handleHumanMessage(roomId, content, attachments, replyTo, senderWs, eventId) {
+async function handleHumanMessage(roomId, content, attachments, replyTo, senderWs, eventId, threadId) {
   // Get Ahmad's participant ID
   const parts = db.prepare(
     "SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1"
@@ -5360,8 +5510,8 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
 
   // Save human message
   const result = db.prepare(
-    `INSERT INTO messages (room_id, participant_id, content, image_url, file_url, file_name, attachments, reply_to, client_event_id, state) VALUES (?,?,?,?,?,?,?,?,?,'complete')`
-  ).run(roomId, humanParticipantId, content, imageUrl, fileUrl, fileName, attachJson, replyTo || null, eventId || null);
+    `INSERT INTO messages (room_id, participant_id, content, image_url, file_url, file_name, attachments, reply_to, client_event_id, thread_id, state) VALUES (?,?,?,?,?,?,?,?,?,?,'complete')`
+  ).run(roomId, humanParticipantId, content, imageUrl, fileUrl, fileName, attachJson, replyTo || null, eventId || null, threadId || null);
   const messageId = result.lastInsertRowid;
 
   // Get message with actor info for broadcast
@@ -5378,11 +5528,12 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
 
   // R28: if a sequence is already running, apply busy_input_mode before triggering agents
   const busyMode = getSetting('busy_input_mode', roomId) || 'interrupt';
-  if (busyMode !== 'interrupt' && activeSequences.has(roomId)) {
+  const seqKey = threadId ? `${roomId}:${threadId}` : String(roomId);
+  if (busyMode !== 'interrupt' && activeSequences.has(seqKey)) {
     if (busyMode === 'queue') {
       const pos = db.prepare('SELECT COALESCE(MAX(position), -1)+1 as p FROM room_message_queue WHERE room_id=?').get(roomId).p;
-      db.prepare('INSERT INTO room_message_queue (room_id, content, attachments, reply_to, event_id, position) VALUES (?,?,?,?,?,?)').run(
-        roomId, content, attachJson || null, replyTo || null, eventId || null, pos
+      db.prepare('INSERT INTO room_message_queue (room_id, content, attachments, reply_to, event_id, thread_id, position) VALUES (?,?,?,?,?,?,?)').run(
+        roomId, content, attachJson || null, replyTo || null, eventId || null, threadId || null, pos
       );
       const queued = db.prepare('SELECT COUNT(*) as n FROM room_message_queue WHERE room_id=?').get(roomId).n;
       broadcast(roomId, { type: 'queue_updated', room_id: roomId, queued });
@@ -5395,6 +5546,22 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
         if (aw?.readyState === 1) aw.send(JSON.stringify({ type: 'steer_message', room_id: roomId, content, message_id: messageId }));
       }
       return;
+    }
+  }
+
+  if (threadId) {
+    const roomCfg = db.prepare('SELECT max_active_threads FROM rooms WHERE id=?').get(roomId);
+    const maxThreads = roomCfg?.max_active_threads ?? 3;
+    const activeThreadCount = db.prepare(`
+      SELECT COUNT(DISTINCT m.thread_id) as cnt FROM messages m
+      WHERE m.room_id=? AND m.thread_id IS NOT NULL AND m.state IN ('streaming','requesting')
+    `).get(roomId).cnt;
+    if (activeThreadCount >= maxThreads) {
+      const alreadyActive = db.prepare(`SELECT 1 FROM messages WHERE room_id=? AND thread_id=? AND state IN ('streaming','requesting') LIMIT 1`).get(roomId, threadId);
+      if (!alreadyActive) {
+        broadcast(roomId, { type: 'thread_limit_reached', room_id: roomId, thread_id: threadId, max_active_threads: maxThreads });
+        return;
+      }
     }
   }
 
@@ -5416,14 +5583,14 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
       (async () => {
         for (let i = 0; i < subAgentMentions.length; i += maxParallel) {
           const batch = subAgentMentions.slice(i, i + maxParallel);
-          await Promise.allSettled(batch.map(a => triggerAiResponse(roomId, a, content, messageId, attachments || [])));
+          await Promise.allSettled(batch.map(a => triggerAiResponse(roomId, a, content, messageId, attachments || [], null, threadId)));
         }
       })().catch(e => console.error('[trigger] parallel sub-agent error:', e));
     }
 
     // Parent agents run sequentially; pass fired sub-agent IDs to prevent double-firing from cascade
     if (parentMentions.length > 0) {
-      triggerAgentsSequential(roomId, parentMentions, content, messageId, attachments || [], initialFiredSubAgentIds).catch(e => console.error('[trigger] sequence error:', e));
+      triggerAgentsSequential(roomId, parentMentions, content, messageId, attachments || [], initialFiredSubAgentIds, threadId).catch(e => console.error('[trigger] sequence error:', e));
     }
   }
 }
@@ -5643,7 +5810,7 @@ function promptStrings(lang) {
   return t[lang] || t.en;
 }
 
-async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], prefetchedCtx = null) {
+async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], prefetchedCtx = null, threadId = null) {
 
   const agentWs = agentClients.get(ai.actor_id);
 
@@ -5654,8 +5821,8 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
       : `${ai.name} sedang offline`;
     console.log(`[trigger] ${ai.name} is offline${subLabel ? ` (sub-agent: ${subLabel})` : ''}, saving system_event`);
     const sysResult = db.prepare(
-      `INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,?)`
-    ).run(roomId, ai.participant_id, offlineMsg, 'system_event');
+      `INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?,?,?,?,?)`
+    ).run(roomId, ai.participant_id, offlineMsg, 'system_event', threadId);
     broadcast(roomId, {
       type: 'message_new',
       message: {
@@ -5668,6 +5835,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         avatar_url: ai.avatar_url || null,
         content: offlineMsg,
         state: 'system_event',
+        thread_id: threadId || null,
         created_at: new Date().toISOString(),
       },
     });
@@ -5680,11 +5848,11 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   const parentMessageId = (subAgent && ai.parent_message_id) ? ai.parent_message_id : null;
   const result = subAgent
     ? db.prepare(
-        `INSERT INTO messages (room_id, participant_id, content, state, reply_to, sub_agent_id, sub_agent_label, parent_message_id) VALUES (?,?,'','streaming',?,?,?,?)`
-      ).run(roomId, ai.participant_id, replyTo, subAgent.id, subAgent.label, parentMessageId)
+        `INSERT INTO messages (room_id, participant_id, content, state, reply_to, sub_agent_id, sub_agent_label, parent_message_id, thread_id) VALUES (?,?,'','streaming',?,?,?,?,?)`
+      ).run(roomId, ai.participant_id, replyTo, subAgent.id, subAgent.label, parentMessageId, threadId)
     : db.prepare(
-        `INSERT INTO messages (room_id, participant_id, content, state, reply_to) VALUES (?,?,'','streaming',?)`
-      ).run(roomId, ai.participant_id, replyTo);
+        `INSERT INTO messages (room_id, participant_id, content, state, reply_to, thread_id) VALUES (?,?,'','streaming',?,?)`
+      ).run(roomId, ai.participant_id, replyTo, threadId);
   const msgId = result.lastInsertRowid;
 
   const displayName = subAgent ? `${ai.name}/${subAgent.label}` : ai.name;
@@ -5696,6 +5864,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     avatar_symbol: ai.avatar_symbol,
     avatar_url: ai.avatar_url || null,
     sub_agent_label: subAgent?.label || null,
+    thread_id: threadId || null,
     state: 'streaming',
   });
   console.log(`[trigger] ${displayName} actor_id=${ai.actor_id} agentConnected=${!!agentWs} readyState=${agentWs?.readyState}`);
@@ -5714,9 +5883,9 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   // R15: tag session as active so a crash leaves a detectable in-flight marker.
   // No-op if the session row doesn't exist yet (first run — nothing to detect).
   if (subAgent) {
-    db.prepare("UPDATE ai_sessions SET status='active', process_generation=? WHERE participant_id=? AND sub_agent_id=?").run(PROCESS_GEN, ai.participant_id, subAgent.id);
+    db.prepare("UPDATE ai_sessions SET status='active', process_generation=? WHERE participant_id=? AND sub_agent_id=? AND thread_id=?").run(PROCESS_GEN, ai.participant_id, subAgent.id, threadId || 0);
   } else {
-    db.prepare("UPDATE ai_sessions SET status='active', process_generation=? WHERE participant_id=? AND sub_agent_id IS NULL").run(PROCESS_GEN, ai.participant_id);
+    db.prepare("UPDATE ai_sessions SET status='active', process_generation=? WHERE participant_id=? AND sub_agent_id IS NULL AND thread_id=?").run(PROCESS_GEN, ai.participant_id, threadId || 0);
   }
 
   // Build context-aware prompt (language-aware)
@@ -5728,12 +5897,22 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   const historyLimit = subAgent
     ? ({ quick: 3, standard: 5, deep: 10 }[subAgent.tier] ?? 5)
     : 10;
-  const history = db.prepare(`
-    SELECT a.name, m.content, m.image_url, m.file_url, m.file_name, m.attachments, m.created_at, rp.actor_id FROM messages m
-    JOIN room_participants rp ON rp.id=m.participant_id
-    JOIN actors a ON a.id=rp.actor_id
-    WHERE m.room_id=? AND m.state='complete' ORDER BY m.created_at DESC LIMIT ${historyLimit}
-  `).all(roomId);
+  let history;
+  if (threadId) {
+    history = db.prepare(`
+      SELECT a.name, m.content, m.image_url, m.file_url, m.file_name, m.attachments, m.created_at, rp.actor_id FROM messages m
+      JOIN room_participants rp ON rp.id=m.participant_id
+      JOIN actors a ON a.id=rp.actor_id
+      WHERE m.room_id=? AND (m.thread_id=? OR m.id=?) AND m.state='complete' ORDER BY m.created_at DESC LIMIT ${historyLimit}
+    `).all(roomId, threadId, threadId);
+  } else {
+    history = db.prepare(`
+      SELECT a.name, m.content, m.image_url, m.file_url, m.file_name, m.attachments, m.created_at, rp.actor_id FROM messages m
+      JOIN room_participants rp ON rp.id=m.participant_id
+      JOIN actors a ON a.id=rp.actor_id
+      WHERE m.room_id=? AND m.state='complete' ORDER BY m.created_at DESC LIMIT ${historyLimit}
+    `).all(roomId);
+  }
   const rawHistory = history.slice().reverse().map(r => ({
     role: r.actor_id === ai.actor_id ? 'assistant' : 'user',
     content: r.content || '',
@@ -5882,8 +6061,8 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   if (agentWs && agentWs.readyState === 1) {
     // ── Route to connected agent client
     const sessionId = subAgent
-      ? getSubAgentSession(ai.participant_id, subAgent.id)
-      : getSession(ai.participant_id);
+      ? getSubAgentThreadSession(ai.participant_id, subAgent.id, threadId)
+      : getThreadSession(ai.participant_id, threadId);
     const agentRunTimeoutMs = parseInt(process.env.AGENT_RUN_TIMEOUT_MS || String(15 * 60 * 1000));
     await new Promise((resolve, reject) => {
       const timeoutTimer = setTimeout(() => {
@@ -5905,6 +6084,8 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         ...a,
         url: a.url?.startsWith('/') ? triggerBaseUrl + a.url : a.url,
       }));
+      const roomSysPrompt = db.prepare('SELECT system_prompt FROM rooms WHERE id=?').get(roomId)?.system_prompt || null;
+      const sysPromptHash = roomSysPrompt ? require('crypto').createHash('sha256').update(roomSysPrompt).digest('hex').slice(0, 16) : null;
       agentWs.send(JSON.stringify({
         type: 'agent_trigger',
         room_id: roomId,
@@ -5925,6 +6106,9 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         api_keys: modelApiKeys,
         tools_supported: modelToolsSupported === false ? false : undefined,
         rawHistory: rawHistory.length ? rawHistory : undefined,
+        thread_id: threadId || undefined,
+        system_prompt: roomSysPrompt || undefined,
+        system_prompt_hash: sysPromptHash || undefined,
       }));
       console.log(`[trigger] sent to ${displayName} agent, msgId=${msgId}`);
     });
@@ -6300,19 +6484,9 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
       automationQueue.enqueue(_roomId, async () => {
         {
           const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
-          console.log(`[${ts}] [automation:${_autoName}] dequeued - room=${_roomId} waiting_idle`);
-        }
-        await waitForRoomIdle(_roomId);
-        {
-          const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
           console.log(`[${ts}] [automation:${_autoName}] sending_message - room=${_roomId}`);
         }
         await handleHumanMessage(_roomId, _prompt, null, null, null);
-        {
-          const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
-          console.log(`[${ts}] [automation:${_autoName}] message_sent - room=${_roomId}`);
-        }
-        await waitForRoomIdle(_roomId);
         db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(_autoId);
       }, { automation: _autoName }).catch(e =>
         console.error(`[automation] room ${_roomId} trigger error:`, e.message)
@@ -6441,9 +6615,7 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, senderName, t
       const _connId = connId;
       const _chatId = chatId;
       automationQueue.enqueue(_roomId, async () => {
-        await waitForRoomIdle(_roomId);
         await handleHumanMessage(_roomId, _prompt, null, null, null);
-        await waitForRoomIdle(_roomId);
         db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(_autoId);
         if (_replyMode === 'reply_wa') {
           // Context injection active → agent has [wa:reply] markers instruction.

@@ -4154,6 +4154,235 @@ async function run() {
     assert.strictEqual(r.status, 401);
   });
 
+  // ── Phase 1: Threading Core ──────────────────────────────────────────────
+  console.log('\n[Phase 1: Threading Core]');
+  let threadTestRoomId, threadTestActorId, threadTestSecret, threadTestAgentWs;
+
+  await test('Thread — setup: register test actor + room', async () => {
+    const agent = await createOnlineTestAgent('__test-thread-agent', '/tmp/stoa-test-thread');
+    if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+    threadTestActorId = agent.actorId;
+    threadTestSecret = agent.secret;
+    threadTestAgentWs = agent.ws;
+
+    const r = await req('POST', '/api/rooms', { title: '__test-thread-room__', workdir_id: agent.workdirId, participant_ids: [threadTestActorId] });
+    assert.strictEqual(r.status, 200, `create room failed: ${JSON.stringify(r.body)}`);
+    threadTestRoomId = r.body.id;
+    testRoomIds.push(threadTestRoomId);
+    if (threadTestAgentWs) { threadTestAgentWs.close(); threadTestAgentWs = null; }
+  });
+
+  await test('Thread — migration: messages.thread_id column exists', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    const r = await req('POST', `/api/rooms/${threadTestRoomId}/message`, { content: 'root message for thread test' }, {
+      'x-agent-id': String(threadTestActorId), 'x-agent-secret': threadTestSecret,
+    });
+    assert.strictEqual(r.status, 200);
+    const msg = await req('GET', `/api/messages/${r.body.message_id}`);
+    assert.strictEqual(msg.status, 200);
+    assert.strictEqual(msg.body.thread_id, null, 'root message should have thread_id=null');
+  });
+
+  await test('Thread — proactive message with thread_id', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    const rootMsg = await req('POST', `/api/rooms/${threadTestRoomId}/message`, { content: 'thread root' }, {
+      'x-agent-id': String(threadTestActorId), 'x-agent-secret': threadTestSecret,
+    });
+    assert.strictEqual(rootMsg.status, 200);
+    const rootId = rootMsg.body.message_id;
+
+    const reply = await req('POST', `/api/rooms/${threadTestRoomId}/message`, {
+      content: 'reply in thread', thread_id: rootId,
+    }, {
+      'x-agent-id': String(threadTestActorId), 'x-agent-secret': threadTestSecret,
+    });
+    assert.strictEqual(reply.status, 200);
+
+    const replyMsg = await req('GET', `/api/messages/${reply.body.message_id}`);
+    assert.strictEqual(replyMsg.body.thread_id, rootId, 'reply should carry thread_id');
+  });
+
+  await test('Thread — proactive message with invalid thread_id → 400', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    const r = await req('POST', `/api/rooms/${threadTestRoomId}/message`, {
+      content: 'bad thread ref', thread_id: 999999,
+    }, {
+      'x-agent-id': String(threadTestActorId), 'x-agent-secret': threadTestSecret,
+    });
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('Thread — proactive message thread_id pointing to non-root → 400', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    const root = await req('POST', `/api/rooms/${threadTestRoomId}/message`, { content: 'root for non-root test' }, {
+      'x-agent-id': String(threadTestActorId), 'x-agent-secret': threadTestSecret,
+    });
+    const rootId = root.body.message_id;
+
+    const child = await req('POST', `/api/rooms/${threadTestRoomId}/message`, {
+      content: 'child message', thread_id: rootId,
+    }, {
+      'x-agent-id': String(threadTestActorId), 'x-agent-secret': threadTestSecret,
+    });
+    const childId = child.body.message_id;
+
+    const badRef = await req('POST', `/api/rooms/${threadTestRoomId}/message`, {
+      content: 'ref to child as thread_id', thread_id: childId,
+    }, {
+      'x-agent-id': String(threadTestActorId), 'x-agent-secret': threadTestSecret,
+    });
+    assert.strictEqual(badRef.status, 400);
+  });
+
+  await test('Thread — GET /rooms/:id/threads — lists threads with reply_count', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    const r = await req('GET', `/api/rooms/${threadTestRoomId}/threads`);
+    assert.strictEqual(r.status, 200);
+    assert.ok(Array.isArray(r.body));
+    const withReplies = r.body.filter(t => t.reply_count > 0);
+    assert.ok(withReplies.length > 0, 'should have at least one thread with replies');
+  });
+
+  await test('Thread — GET /rooms/:id/threads/:rootId — returns thread messages', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    const root = await req('POST', `/api/rooms/${threadTestRoomId}/message`, { content: 'detail root' }, {
+      'x-agent-id': String(threadTestActorId), 'x-agent-secret': threadTestSecret,
+    });
+    const rootId = root.body.message_id;
+    await req('POST', `/api/rooms/${threadTestRoomId}/message`, {
+      content: 'detail reply 1', thread_id: rootId,
+    }, { 'x-agent-id': String(threadTestActorId), 'x-agent-secret': threadTestSecret });
+    await req('POST', `/api/rooms/${threadTestRoomId}/message`, {
+      content: 'detail reply 2', thread_id: rootId,
+    }, { 'x-agent-id': String(threadTestActorId), 'x-agent-secret': threadTestSecret });
+
+    const r = await req('GET', `/api/rooms/${threadTestRoomId}/threads/${rootId}`);
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.thread_id, rootId);
+    assert.strictEqual(r.body.messages.length, 3, 'root + 2 replies');
+  });
+
+  await test('Thread — GET /rooms/:id/threads/:badId — 404 for non-root', async () => {
+    const r = await req('GET', `/api/rooms/${threadTestRoomId}/threads/999999`);
+    assert.strictEqual(r.status, 404);
+  });
+
+  await test('Thread — GET/PUT /rooms/:id/system-prompt', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    const get1 = await req('GET', `/api/rooms/${threadTestRoomId}/system-prompt`);
+    assert.strictEqual(get1.status, 200);
+    assert.strictEqual(get1.body.system_prompt, null);
+    assert.strictEqual(get1.body.max_active_threads, 3);
+
+    const put = await req('PUT', `/api/rooms/${threadTestRoomId}/system-prompt`, {
+      system_prompt: 'You are helpful.', max_active_threads: 5,
+    });
+    assert.strictEqual(put.status, 200);
+    assert.strictEqual(put.body.system_prompt, 'You are helpful.');
+    assert.strictEqual(put.body.max_active_threads, 5);
+
+    const get2 = await req('GET', `/api/rooms/${threadTestRoomId}/system-prompt`);
+    assert.strictEqual(get2.body.system_prompt, 'You are helpful.');
+    assert.strictEqual(get2.body.max_active_threads, 5);
+
+    await req('PUT', `/api/rooms/${threadTestRoomId}/system-prompt`, { system_prompt: null, max_active_threads: 3 });
+  });
+
+  await test('Thread — DELETE /messages/:id — root with replies → 409', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    const root = await req('POST', `/api/rooms/${threadTestRoomId}/message`, { content: 'delete-root' }, {
+      'x-agent-id': String(threadTestActorId), 'x-agent-secret': threadTestSecret,
+    });
+    const rootId = root.body.message_id;
+    await req('POST', `/api/rooms/${threadTestRoomId}/message`, {
+      content: 'reply to delete-root', thread_id: rootId,
+    }, { 'x-agent-id': String(threadTestActorId), 'x-agent-secret': threadTestSecret });
+
+    const del = await req('DELETE', `/api/messages/${rootId}`);
+    assert.strictEqual(del.status, 409);
+  });
+
+  await test('Thread — DELETE /messages/:id?cascade=1 — deletes root + replies', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    const root = await req('POST', `/api/rooms/${threadTestRoomId}/message`, { content: 'cascade-root' }, {
+      'x-agent-id': String(threadTestActorId), 'x-agent-secret': threadTestSecret,
+    });
+    const rootId = root.body.message_id;
+    const reply = await req('POST', `/api/rooms/${threadTestRoomId}/message`, {
+      content: 'cascade-reply', thread_id: rootId,
+    }, { 'x-agent-id': String(threadTestActorId), 'x-agent-secret': threadTestSecret });
+    const replyId = reply.body.message_id;
+
+    const del = await req('DELETE', `/api/messages/${rootId}?cascade=1`);
+    assert.strictEqual(del.status, 204);
+
+    const check1 = await req('GET', `/api/messages/${rootId}`);
+    assert.strictEqual(check1.status, 404);
+    const check2 = await req('GET', `/api/messages/${replyId}`);
+    assert.strictEqual(check2.status, 404);
+  });
+
+  await test('Thread — search results carry thread_id', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    const root = await req('POST', `/api/rooms/${threadTestRoomId}/message`, { content: 'xyzthreadsearch' }, {
+      'x-agent-id': String(threadTestActorId), 'x-agent-secret': threadTestSecret,
+    });
+    const rootId = root.body.message_id;
+    await req('POST', `/api/rooms/${threadTestRoomId}/message`, {
+      content: 'xyzthreadsearch reply', thread_id: rootId,
+    }, { 'x-agent-id': String(threadTestActorId), 'x-agent-secret': threadTestSecret });
+
+    const r = await req('GET', `/api/search?q=xyzthreadsearch`);
+    assert.strictEqual(r.status, 200);
+    const rootResult = r.body.find(m => m.id === rootId);
+    assert.ok(rootResult, 'root found in search');
+    assert.strictEqual(rootResult.thread_id, null);
+    const replyResult = r.body.find(m => m.thread_id === rootId);
+    assert.ok(replyResult, 'reply found in search with thread_id');
+  });
+
+  await test('Thread — export includes thread_id column', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    const r = await req('GET', `/api/rooms/${threadTestRoomId}/export?format=json`);
+    assert.strictEqual(r.status, 200);
+    const data = typeof r.body === 'string' ? JSON.parse(r.body) : r.body;
+    assert.ok(data.messages.length > 0);
+    assert.ok('thread_id' in data.messages[0], 'export messages should have thread_id field');
+  });
+
+  await test('Thread — export CSV includes thread_id header', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    const r = await req('GET', `/api/rooms/${threadTestRoomId}/export?format=csv`);
+    assert.strictEqual(r.status, 200);
+    const firstLine = (typeof r.body === 'string' ? r.body : r.raw).split('\n')[0];
+    assert.ok(firstLine.includes('thread_id'), 'CSV header should include thread_id');
+  });
+
+  await test('Thread — session helpers: saveThreadSession + getThreadSession', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    const r = await req('GET', `/api/rooms/${threadTestRoomId}/context`);
+    assert.strictEqual(r.status, 200);
+  });
+
+  await test('Thread — GET /rooms/:id/messages default scope=all (no filter by thread)', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    const r = await req('GET', `/api/rooms/${threadTestRoomId}/messages?since=0`);
+    assert.strictEqual(r.status, 200);
+    const hasRoot = r.body.some(m => m.thread_id === null);
+    const hasThread = r.body.some(m => m.thread_id !== null);
+    assert.ok(hasRoot, 'should have root messages');
+    assert.ok(hasThread, 'should have thread messages (scope=all by default)');
+  });
+
+  await test('Thread — system-prompt unauthenticated → 401', async () => {
+    const r = await fetch(`http://${HOST}:${PORT}/api/rooms/${threadTestRoomId}/system-prompt`);
+    assert.strictEqual(r.status, 401);
+  });
+
+  await test('Thread — cleanup', async () => {
+    // Cleaned up in teardown
+  });
+
   // Teardown — delete all test rooms and actors created during the run
   console.log('\n[Test Teardown]');
   await test('Teardown — delete all test rooms', async () => {

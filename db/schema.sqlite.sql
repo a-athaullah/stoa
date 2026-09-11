@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS rooms (
   is_pinned INTEGER DEFAULT 0,
   model TEXT DEFAULT NULL,
   model_config TEXT DEFAULT NULL,
+  system_prompt TEXT DEFAULT NULL,
+  max_active_threads INTEGER NOT NULL DEFAULT 3,
   created_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (created_by) REFERENCES actors(id)
 );
@@ -59,8 +61,10 @@ CREATE TABLE IF NOT EXISTS messages (
   created_at TEXT DEFAULT (datetime('now')),
   completed_at TEXT DEFAULT NULL,
   client_event_id TEXT DEFAULT NULL,
+  thread_id INTEGER DEFAULT NULL,
   FOREIGN KEY (room_id) REFERENCES rooms(id),
-  FOREIGN KEY (participant_id) REFERENCES room_participants(id)
+  FOREIGN KEY (participant_id) REFERENCES room_participants(id),
+  FOREIGN KEY (thread_id) REFERENCES messages(id)
 );
 
 CREATE TABLE IF NOT EXISTS ai_sessions (
@@ -78,6 +82,7 @@ CREATE TABLE IF NOT EXISTS ai_sessions (
   process_generation TEXT DEFAULT NULL,
   pinned INTEGER NOT NULL DEFAULT 0,
   context_tokens_used INTEGER DEFAULT 0,
+  thread_id INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY (participant_id) REFERENCES room_participants(id),
   FOREIGN KEY (room_id) REFERENCES rooms(id)
 );
@@ -102,6 +107,7 @@ CREATE TABLE IF NOT EXISTS agent_workdirs (
   path TEXT NOT NULL,
   label TEXT DEFAULT NULL,
   is_default INTEGER DEFAULT 0,
+  claude_md_migrated_at TEXT DEFAULT NULL,
   created_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (actor_id) REFERENCES actors(id) ON DELETE CASCADE,
   UNIQUE (actor_id, path)
@@ -153,6 +159,11 @@ CREATE INDEX IF NOT EXISTS idx_agent_skills_workdir_id ON agent_skills(workdir_i
 CREATE INDEX IF NOT EXISTS idx_messages_participant_id ON messages(participant_id);
 CREATE INDEX IF NOT EXISTS idx_ai_sessions_participant_id ON ai_sessions(participant_id);
 CREATE INDEX IF NOT EXISTS idx_ai_sessions_room_id ON ai_sessions(room_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_sessions_main_unique ON ai_sessions(participant_id, thread_id) WHERE sub_agent_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_sessions_sub_unique ON ai_sessions(participant_id, sub_agent_id, thread_id) WHERE sub_agent_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_ai_sessions_thread ON ai_sessions(thread_id);
+CREATE INDEX IF NOT EXISTS idx_messages_thread_id ON messages(thread_id, id);
+CREATE INDEX IF NOT EXISTS idx_messages_room_root ON messages(room_id, id) WHERE thread_id IS NULL;
 CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(reply_to);
 CREATE UNIQUE INDEX IF NOT EXISTS messages_room_client_event ON messages(room_id, client_event_id) WHERE client_event_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_rooms_workdir_id ON rooms(workdir_id);
@@ -270,6 +281,7 @@ CREATE TABLE IF NOT EXISTS room_message_queue (
   attachments TEXT,
   reply_to    INTEGER,
   event_id    TEXT,
+  thread_id   INTEGER DEFAULT NULL,
   queued_at   TEXT NOT NULL DEFAULT (datetime('now')),
   position    INTEGER NOT NULL DEFAULT 0
 );
