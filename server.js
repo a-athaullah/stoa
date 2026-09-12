@@ -1324,8 +1324,7 @@ const server = http.createServer(async (req, res) => {
       SELECT r.*, a.name as creator_name,
         (SELECT COUNT(*) FROM room_participants WHERE room_id=r.id) as participant_count,
         (SELECT COUNT(*) FROM messages WHERE room_id=r.id) as message_count,
-        (SELECT m.content FROM messages m WHERE m.room_id=r.id AND m.state='complete' AND m.content != '' ORDER BY m.id DESC LIMIT 1) as last_message,
-        (SELECT a2.name FROM messages m2 JOIN room_participants rp ON rp.id=m2.participant_id JOIN actors a2 ON a2.id=rp.actor_id WHERE m2.room_id=r.id AND m2.state='complete' AND m2.content != '' ORDER BY m2.id DESC LIMIT 1) as last_message_actor,
+        (SELECT COUNT(DISTINCT m.thread_id) FROM messages m WHERE m.room_id=r.id AND m.thread_id IS NOT NULL AND m.state IN ('streaming','requesting')) as active_threads,
         COALESCE((SELECT m3.created_at FROM messages m3 WHERE m3.room_id=r.id ORDER BY m3.id DESC LIMIT 1), r.created_at) as last_activity
       FROM rooms r JOIN actors a ON a.id=r.created_by LEFT JOIN agent_workdirs w ON w.id=r.workdir_id
       WHERE ${archived ? 'r.archived_at IS NOT NULL' : 'r.archived_at IS NULL'}
@@ -3641,19 +3640,50 @@ Write-Host "Logs   : pm2 logs $AgentName"
     if (!requireAuth(req, res, url)) return;
     const roomId = parseInt(threadDetailMatch[1]);
     const rootId = parseInt(threadDetailMatch[2]);
-    const root = db.prepare('SELECT id, room_id, thread_id FROM messages WHERE id=?').get(rootId);
-    if (!root || root.room_id !== roomId || root.thread_id !== null) {
-      return json(res, { error: 'thread root not found' }, 404);
-    }
-    const messages = db.prepare(`
+    const rootMsg = db.prepare(`
       SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
       FROM messages m
       JOIN room_participants rp ON rp.id=m.participant_id
       JOIN actors a ON a.id=rp.actor_id
-      WHERE (m.id=? OR m.thread_id=?) AND m.room_id=?
-      ORDER BY m.created_at ASC
-    `).all(rootId, rootId, roomId);
-    return json(res, { thread_id: rootId, messages });
+      WHERE m.id=? AND m.room_id=? AND m.thread_id IS NULL
+    `).get(rootId, roomId);
+    if (!rootMsg) {
+      return json(res, { error: 'thread root not found' }, 404);
+    }
+    const before = url.searchParams.get('before') ? parseInt(url.searchParams.get('before')) : null;
+    const limit = Math.min(parseInt(url.searchParams.get('limit')) || 100, 500);
+    let messages;
+    if (before) {
+      messages = db.prepare(`
+        SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
+        FROM messages m
+        JOIN room_participants rp ON rp.id=m.participant_id
+        JOIN actors a ON a.id=rp.actor_id
+        WHERE m.thread_id=? AND m.room_id=? AND m.id < ?
+        ORDER BY m.id ASC LIMIT ?
+      `).all(rootId, roomId, before, limit);
+    } else {
+      messages = db.prepare(`
+        SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
+        FROM messages m
+        JOIN room_participants rp ON rp.id=m.participant_id
+        JOIN actors a ON a.id=rp.actor_id
+        WHERE m.thread_id=? AND m.room_id=?
+        ORDER BY m.id ASC LIMIT ?
+      `).all(rootId, roomId, limit);
+    }
+    // Enrich reply_to for reply quotes
+    for (const m of messages) {
+      if (m.reply_to) {
+        const replied = db.prepare(`
+          SELECT m2.content, a2.name as actor_name FROM messages m2
+          JOIN room_participants rp2 ON rp2.id=m2.participant_id JOIN actors a2 ON a2.id=rp2.actor_id
+          WHERE m2.id=?
+        `).get(m.reply_to);
+        if (replied) m.reply_msg = { content: replied.content?.substring(0, 300), actor_name: replied.actor_name };
+      }
+    }
+    return json(res, { thread_id: rootId, root: rootMsg, messages });
   }
 
   // ── System prompt endpoints ─────────────────────────────────────────────
@@ -4158,7 +4188,11 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'compact_session' && !agentActorId) {
       const roomId = msg.room_id;
       const compactThreadId = typeof msg.thread_id === 'number' ? msg.thread_id : null;
-      const compactKey = compactThreadId ? `${roomId}:${compactThreadId}` : String(roomId);
+      if (!compactThreadId) {
+        ws.send(JSON.stringify({ type: 'compact_error', room_id: roomId, error: 'thread_id is required — compact is per-thread' }));
+        return;
+      }
+      const compactKey = `${roomId}:${compactThreadId}`;
       if (pendingCompacts.has(compactKey)) return;
       const aiParts = db.prepare(`
         SELECT rp.id as participant_id, a.id as actor_id, a.name

@@ -4345,12 +4345,44 @@ async function run() {
     const r = await req('GET', `/api/rooms/${threadTestRoomId}/threads/${rootId}`);
     assert.strictEqual(r.status, 200);
     assert.strictEqual(r.body.thread_id, rootId);
-    assert.strictEqual(r.body.messages.length, 3, 'root + 2 replies');
+    assert.ok(r.body.root, 'root message present');
+    assert.strictEqual(r.body.root.id, rootId);
+    assert.strictEqual(r.body.messages.length, 2, '2 replies (root separate)');
   });
 
   await test('Thread — GET /rooms/:id/threads/:badId — 404 for non-root', async () => {
     const r = await req('GET', `/api/rooms/${threadTestRoomId}/threads/999999`);
     assert.strictEqual(r.status, 404);
+  });
+
+  await test('Thread — threads endpoint supports ?before and ?limit pagination', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    const root = await req('POST', `/api/rooms/${threadTestRoomId}/message`, { content: 'paginate root' }, {
+      'x-agent-id': String(threadTestActorId), 'x-agent-secret': threadTestSecret,
+    });
+    const rootId = root.body.message_id;
+    const replyIds = [];
+    for (let i = 0; i < 3; i++) {
+      const r = await req('POST', `/api/rooms/${threadTestRoomId}/message`, {
+        content: `paginate reply ${i}`, thread_id: rootId,
+      }, { 'x-agent-id': String(threadTestActorId), 'x-agent-secret': threadTestSecret });
+      replyIds.push(r.body.message_id);
+    }
+    const limited = await req('GET', `/api/rooms/${threadTestRoomId}/threads/${rootId}?limit=2`);
+    assert.strictEqual(limited.body.messages.length, 2);
+    const beforeRes = await req('GET', `/api/rooms/${threadTestRoomId}/threads/${rootId}?before=${replyIds[2]}&limit=10`);
+    assert.strictEqual(beforeRes.body.messages.length, 2, 'replies before last');
+    assert.ok(beforeRes.body.root, 'root always present');
+  });
+
+  await test('Thread — rooms list has active_threads, no last_message', async () => {
+    const r = await req('GET', '/api/rooms');
+    assert.strictEqual(r.status, 200);
+    const room = r.body.find(rm => rm.id === threadTestRoomId);
+    assert.ok(room, 'test room in list');
+    assert.strictEqual(room.last_message, undefined, 'no last_message field');
+    assert.strictEqual(room.last_message_actor, undefined, 'no last_message_actor field');
+    assert.strictEqual(typeof room.active_threads, 'number');
   });
 
   await test('Thread — GET/PUT /rooms/:id/system-prompt', async () => {
