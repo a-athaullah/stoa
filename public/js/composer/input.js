@@ -87,19 +87,11 @@ function clearDraft(roomId) {
 // ── Composer processing state ───────────────────────────────────────────────
 function setComposerProcessing(messageId) {
   processingMessages.add(messageId);
-  document.querySelector('.h-composer-box')?.classList.add('ai-processing');
-  document.getElementById('stop-btn')?.classList.add('visible');
-  document.getElementById('msg-input')?.blur();
 }
 
 function clearComposerProcessing(messageId) {
   if (messageId) processingMessages.delete(messageId);
   else processingMessages.clear();
-  if (processingMessages.size === 0) {
-    document.querySelector('.h-composer-box')?.classList.remove('ai-processing');
-    document.getElementById('stop-btn')?.classList.remove('visible');
-    document.getElementById('msg-input')?.focus();
-  }
 }
 
 function stopGeneration() {

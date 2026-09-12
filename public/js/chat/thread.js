@@ -5,6 +5,24 @@ let threadNoMoreOlder = false;
 let threadOldestMsgId = null;
 
 const threadContextState = {};      // actor_id → context data (thread-scoped)
+const threadProcessingMessages = new Set();
+
+function setThreadProcessing(messageId) {
+  threadProcessingMessages.add(messageId);
+  document.querySelector('.h-thread-composer-box')?.classList.add('ai-processing');
+  const stopAction = document.getElementById('thread-stop-action');
+  if (stopAction) stopAction.classList.add('visible');
+}
+
+function clearThreadProcessing(messageId) {
+  if (messageId) threadProcessingMessages.delete(messageId);
+  else threadProcessingMessages.clear();
+  if (threadProcessingMessages.size === 0) {
+    document.querySelector('.h-thread-composer-box')?.classList.remove('ai-processing');
+    const stopAction = document.getElementById('thread-stop-action');
+    if (stopAction) stopAction.classList.remove('visible');
+  }
+}
 
 function _getThreadPanel() { return document.getElementById('thread-panel'); }
 function _getThreadBody()  { return document.getElementById('thread-body'); }
@@ -59,6 +77,8 @@ function closeThread() {
   document.getElementById('chat-inner')?.classList.remove('has-thread');
 
   _updateRoomHeaderThread(null);
+
+  threadProcessingMessages.clear();
 
   // Clear thread context state
   Object.keys(threadContextState).forEach(k => delete threadContextState[k]);
@@ -528,7 +548,10 @@ function _createThreadPanel() {
       const enterSend = document.getElementById('thread-enter-send-toggle')?.classList.contains('active') ?? true;
       if (!e.shiftKey && enterSend) { e.preventDefault(); sendThreadMessage(); }
     }
-    if (e.key === 'Escape') closeThread();
+    if (e.key === 'Escape') {
+      if (threadProcessingMessages.size > 0) stopThreadGeneration();
+      else closeThread();
+    }
   });
 
   // Paste image in thread
@@ -1088,6 +1111,7 @@ function restoreThreadDraft(roomId, threadId) {
 // ── Thread send ───────────────────────────────────────────────────────────────
 function sendThreadMessage() {
   if (!activeThreadId || !ws || ws.readyState !== WebSocket.OPEN) return;
+  if (threadProcessingMessages.size > 0) return;
   const inputEl = document.getElementById('thread-msg-input');
   if (!inputEl) return;
   const content = (typeof htmlToMarkdown === 'function' ? htmlToMarkdown(inputEl) : inputEl.textContent)

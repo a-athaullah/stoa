@@ -77,6 +77,7 @@ function handleWsMessage(msg) {
           showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url);
         }
         setComposerProcessing(m.id);
+        if (m.thread_id && typeof setThreadProcessing === 'function') setThreadProcessing(m.id);
       }
     }
     scrollToBottom(true);
@@ -96,7 +97,7 @@ function handleWsMessage(msg) {
         const body = document.getElementById('thread-body');
         if (typeof appendThreadMessage === 'function') appendThreadMessage(m, body);
         else appendMessage(m, body);
-        if (typeof _scrollThreadToBottom === 'function') _scrollThreadToBottom();
+        if (typeof _scrollThreadToBottom === 'function') _scrollThreadToBottom(true);
       }
     } else {
       if (typeof appendFeedRootRow === 'function') appendFeedRootRow(m);
@@ -173,7 +174,8 @@ function handleWsMessage(msg) {
       const last = targetContainer?.lastElementChild;
       if (last?.classList.contains('h-system-event') && last.dataset.actor?.startsWith(msg.actor_name)) last.remove();
       showThinking(msg.message_id, msg.actor_name, msg.avatar_color, msg.avatar_symbol, msg.avatar_url, msg.sub_agent_label, targetContainer);
-      if (!tId) setComposerProcessing(msg.message_id);
+      setComposerProcessing(msg.message_id);
+      if (tId && typeof setThreadProcessing === 'function') setThreadProcessing(msg.message_id);
     }
     if (msg.state === 'error' || (typeof FAILURE_STATES !== 'undefined' && FAILURE_STATES.has(msg.state))) {
       const el = document.getElementById('msg-' + msg.message_id);
@@ -198,6 +200,7 @@ function handleWsMessage(msg) {
         }
       }
       clearComposerProcessing(msg.message_id);
+      if (typeof clearThreadProcessing === 'function') clearThreadProcessing(msg.message_id);
     }
     return;
   }
@@ -223,6 +226,8 @@ function handleWsMessage(msg) {
   if (msg.type === 'message_complete') {
     finalizeMessage(msg.message_id, msg.content, msg.file_url, msg.file_name, msg.attachments, msg.ai_model, msg.result_meta);
     clearComposerProcessing(msg.message_id);
+    if (typeof clearThreadProcessing === 'function') clearThreadProcessing(msg.message_id);
+    if (msg.thread_id && typeof _scrollThreadToBottom === 'function') _scrollThreadToBottom(true);
     // Update thread chip if this was a thread reply
     if (msg.thread_summary && typeof handleThreadSummary === 'function') handleThreadSummary(msg.thread_summary);
     refreshRoomList();
