@@ -28,18 +28,8 @@ function formatModelName(model) {
 function handleModelUpdate(msg) {
   if (msg.room_id && msg.room_id !== currentRoomId) return;
   const badge = document.querySelector('.h-model-badge');
+  if (badge) badge.remove();
   const label = formatModelName(msg.model);
-  if (badge && label) badge.textContent = label;
-  else if (badge && !label) badge.remove();
-  else if (!badge && label) {
-    const tagline = document.querySelector('.h-room-tagline');
-    if (tagline) {
-      const b = document.createElement('span');
-      b.className = 'h-model-badge';
-      b.textContent = label;
-      tagline.appendChild(b);
-    }
-  }
   // Sync thread composer model label
   const threadModelWrap = document.getElementById('thread-model-selector-wrap');
   const threadModelLabel = document.getElementById('thread-model-label');

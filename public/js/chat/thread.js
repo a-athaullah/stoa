@@ -1183,31 +1183,8 @@ function checkThreadDeepLink() {
 
 // ── Room header breadcrumb ────────────────────────────────────────────────────
 function _updateRoomHeaderThread(rootId) {
-  const header = document.getElementById('chat-header');
-  if (!header) return;
   const existing = document.getElementById('chat-thread-breadcrumb');
-  if (!rootId) {
-    if (existing) existing.remove();
-    return;
-  }
-  const crumb = existing || (() => {
-    const el = document.createElement('div');
-    el.id = 'chat-thread-breadcrumb';
-    el.className = 'h-thread-breadcrumb';
-    const info = header.querySelector('.h-header-info');
-    if (info) info.after(el);
-    else header.appendChild(el);
-    return el;
-  })();
-
-  const row = document.getElementById('msg-' + rootId);
-  const snippet = (row?.querySelector('.h-bubble')?.textContent?.slice(0, 40)
-    || row?.querySelector('.h-msg-name')?.textContent
-    || 'Thread').replace(/</g, '&lt;');
-  crumb.innerHTML = `<span class="h-thread-breadcrumb-sep">›</span><span class="h-thread-breadcrumb-label" title="Click to focus thread">${snippet}</span>`;
-  crumb.querySelector('.h-thread-breadcrumb-label').onclick = () => {
-    document.getElementById('thread-msg-input')?.focus();
-  };
+  if (existing) existing.remove();
 }
 
 // ── Reset on room change ──────────────────────────────────────────────────────

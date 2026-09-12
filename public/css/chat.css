@@ -62,11 +62,11 @@ html.dark .h-faded-mark { opacity: 0.12; }
 
 /* Header */
 #chat-header {
-  padding: 20px 36px 18px;
+  padding: 10px 20px;
   border-bottom: 1px solid var(--h-hair-soft);
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
   background: var(--h-header-bg);
   flex: 0 0 auto;
 }
@@ -75,8 +75,8 @@ html.dark .h-faded-mark { opacity: 0.12; }
 
 .h-room-name {
   font-family: var(--h-serif);
-  font-size: 23px;
-  line-height: 1.1;
+  font-size: 17px;
+  line-height: 1.2;
   cursor: pointer;
   border-radius: 4px;
   padding: 0 4px;
@@ -1919,7 +1919,7 @@ html.dark .h-bubble :not(pre) > code {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 14px 16px 12px;
+  padding: 10px 16px;
   border-bottom: 1px solid var(--h-hair-soft);
   background: var(--h-header-bg);
   flex: 0 0 auto;
