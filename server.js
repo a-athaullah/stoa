@@ -1337,7 +1337,7 @@ const server = http.createServer(async (req, res) => {
       const filePath = path.join(PUBLIC_DIR, url.pathname);
       const resolved = path.resolve(filePath);
       if (resolved.startsWith(PUBLIC_DIR) && fs.existsSync(resolved)) {
-        const cachePolicy = (ext === '.svg' || ext === '.json') ? 'public, max-age=86400' : 'no-cache';
+        const cachePolicy = (ext === '.svg' || ext === '.json') ? 'public, max-age=86400' : 'no-store';
         res.writeHead(200, { 'Content-Type': STATIC_TYPES[ext], 'Cache-Control': cachePolicy });
         return res.end(fs.readFileSync(resolved));
       }
