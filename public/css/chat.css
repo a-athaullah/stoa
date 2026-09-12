@@ -71,17 +71,20 @@ html.dark .h-faded-mark { opacity: 0.12; }
   flex: 0 0 auto;
 }
 
-.h-header-info { flex: 1; min-width: 0; }
+.h-header-info { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; }
 
 .h-room-name {
   font-family: var(--h-serif);
-  font-size: 17px;
+  font-size: 15px;
   line-height: 1.2;
   cursor: pointer;
   border-radius: 4px;
   padding: 0 4px;
   margin: 0 -4px;
   transition: background 0.12s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .h-room-name:hover { background: var(--h-surface-hi); }
 .h-room-name.editing {
@@ -91,9 +94,9 @@ html.dark .h-faded-mark { opacity: 0.12; }
 
 .h-room-tagline {
   font-family: var(--h-serif);
-  font-size: 13px;
+  font-size: 12px;
   color: var(--h-ink-faint);
-  margin-top: 4px;
+  white-space: nowrap;
 }
 .h-model-badge {
   display: inline-block;
@@ -1746,9 +1749,12 @@ html.dark .h-bubble :not(pre) > code {
   letter-spacing: 0.02em;
   line-height: 1.7;
   cursor: pointer;
-  transition: background 0.12s, color 0.12s;
+  transition: background 0.12s, color 0.12s, opacity 0.15s;
   white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
 }
+pre:hover .h-copy-btn { opacity: 1; pointer-events: auto; }
 .h-copy-btn:hover {
   background: oklch(0.345 0.012 48);
   color: oklch(0.900 0.008 55);

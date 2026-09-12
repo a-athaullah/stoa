@@ -62,7 +62,7 @@ function renderChatHeader(room, participants) {
   });
   info.appendChild(name);
 
-  const tagline = document.createElement('div');
+  const tagline = document.createElement('span');
   tagline.className = 'h-room-tagline';
   const modelShort = (room.model || '').replace(/^claude-/, '') || '';
   const agentCount = participants.filter(p => p.type === 'ai').length;
