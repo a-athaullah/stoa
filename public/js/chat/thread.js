@@ -140,12 +140,6 @@ function _createThreadPanel() {
   compactBtn.onclick = () => compactThread();
   controls.appendChild(compactBtn);
 
-  const closeBtn = document.createElement('button');
-  closeBtn.className = 'h-thread-ctrl-btn';
-  closeBtn.title = 'Close thread';
-  closeBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
-  closeBtn.onclick = closeThread;
-  controls.appendChild(closeBtn);
 
   header.appendChild(controls);
   panel.appendChild(header);
@@ -309,10 +303,20 @@ function _createThreadPanel() {
     if (item.model) {
       const modelWrap = document.createElement('span');
       modelWrap.id = 'thread-model-selector-wrap';
-      modelWrap.style.cssText = 'display:none;align-items:center;gap:4px;font-size:11px;opacity:0.7;margin-left:auto';
+      modelWrap.title = 'Switch AI model';
+      modelWrap.style.cssText = 'display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;margin-left:auto;opacity:0.6;padding:1px 4px;border-radius:4px;transition:opacity 0.15s,background 0.15s';
       const modelLabel = document.createElement('span');
       modelLabel.id = 'thread-model-label';
-      modelLabel.textContent = '';
+      const syncLabel = () => {
+        const t = document.getElementById('model-dropdown-text')?.textContent?.trim();
+        if (t && t !== 'Select model') modelLabel.textContent = t;
+      };
+      syncLabel();
+      const dropdownText = document.getElementById('model-dropdown-text');
+      if (dropdownText) new MutationObserver(syncLabel).observe(dropdownText, { childList: true, subtree: true, characterData: true });
+      modelWrap.addEventListener('mouseenter', () => { modelWrap.style.opacity = '1'; modelWrap.style.background = 'var(--h-hover)'; });
+      modelWrap.addEventListener('mouseleave', () => { modelWrap.style.opacity = '0.6'; modelWrap.style.background = ''; });
+      modelWrap.addEventListener('click', e => { e.stopPropagation(); document.getElementById('model-dropdown-trigger')?.click(); });
       modelWrap.appendChild(modelLabel);
       fmtBar.appendChild(modelWrap);
       return;
@@ -435,6 +439,31 @@ function _createThreadPanel() {
   threadStopAction.onclick = () => stopThreadGeneration();
   actionsRow.appendChild(threadStopAction);
 
+  // Enter-to-send toggle (syncs with room toggle)
+  const threadEnterToggle = document.createElement('label');
+  threadEnterToggle.id = 'thread-enter-send-toggle';
+  threadEnterToggle.title = 'Toggle Enter to send';
+  const etLabel = document.createElement('span');
+  etLabel.className = 'enter-send-label';
+  etLabel.textContent = 'enter to send';
+  const etSwitch = document.createElement('span');
+  etSwitch.className = 'enter-send-switch';
+  const etKnob = document.createElement('span');
+  etKnob.className = 'enter-send-knob';
+  etSwitch.appendChild(etKnob);
+  threadEnterToggle.append(etLabel, etSwitch);
+  const _enterSendInit = localStorage.getItem('stoa-enter-send');
+  const _enterSendOn = _enterSendInit !== null ? _enterSendInit === 'true' : true;
+  if (_enterSendOn) threadEnterToggle.classList.add('active');
+  threadEnterToggle.addEventListener('click', e => {
+    e.preventDefault();
+    const isNowActive = !threadEnterToggle.classList.contains('active');
+    threadEnterToggle.classList.toggle('active', isNowActive);
+    document.getElementById('enter-send-toggle')?.classList.toggle('active', isNowActive);
+    localStorage.setItem('stoa-enter-send', isNowActive);
+  });
+  actionsRow.appendChild(threadEnterToggle);
+
   // Send button
   const sendBtn = document.createElement('button');
   sendBtn.id = 'thread-send-btn';
@@ -453,7 +482,10 @@ function _createThreadPanel() {
 
   // Keyboard handling for thread input
   inputEl.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendThreadMessage(); }
+    if (e.key === 'Enter') {
+      const enterSend = document.getElementById('thread-enter-send-toggle')?.classList.contains('active') ?? true;
+      if (!e.shiftKey && enterSend) { e.preventDefault(); sendThreadMessage(); }
+    }
     if (e.key === 'Escape') closeThread();
   });
 

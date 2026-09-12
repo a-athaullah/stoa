@@ -1920,19 +1920,17 @@ html.dark .h-bubble :not(pre) > code {
 
 .h-thread-footer {
   flex: 0 0 auto;
-  border-top: 1px solid var(--h-hair-soft);
-  padding: 0;
+  padding: 8px 12px 12px;
 }
 .h-thread-footer #thread-reply-bar {
-  padding: 6px 12px;
+  padding: 6px 10px;
   background: var(--h-surface-hi, var(--h-surface));
-  border-bottom: 1px solid var(--h-hair-soft);
+  border: 1px solid var(--h-hair-soft);
+  border-bottom: none;
+  border-radius: 12px 12px 0 0;
 }
 .h-thread-footer .h-thread-composer-box {
   margin: 0;
-  border-radius: 0;
-  border: none;
-  border-top: none;
 }
 #thread-msg-input {
   min-height: 20px;
@@ -1966,19 +1964,28 @@ html.dark .h-bubble :not(pre) > code {
 #thread-stop-action.visible { display: flex; }
 #thread-send-btn {
   flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
+  width: 26px;
+  height: 26px;
   display: flex;
   align-items: center;
   justify-content: center;
   border: none;
   border-radius: 6px;
-  background: var(--h-accent, #3a7bd5);
-  color: #fff;
+  background: var(--h-ink);
+  color: var(--h-bg);
   cursor: pointer;
-  transition: opacity 0.15s;
+  transition: opacity 0.12s;
+  flex-shrink: 0;
 }
-#thread-send-btn:hover { opacity: 0.85; }
+#thread-send-btn:hover { opacity: 0.82; }
+#thread-enter-send-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  margin-right: 6px;
+  user-select: none;
+}
 #thread-attach-preview {
   display: none;
   flex-wrap: wrap;
