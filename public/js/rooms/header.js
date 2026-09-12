@@ -1,5 +1,5 @@
 // ── Chat header ────────────────────────────────────────────────────────────
-function renderChatHeader(room, participants) {
+function renderChatHeader(room, participants, subAgentCount) {
   const header = document.getElementById('chat-header');
   header.innerHTML = '';
 
@@ -66,11 +66,19 @@ function renderChatHeader(room, participants) {
   tagline.className = 'h-room-tagline';
   const modelShort = (room.model || '').replace(/^claude-/, '') || '';
   const agentCount = participants.filter(p => p.type === 'ai').length;
-  const parts = [];
-  if (modelShort) parts.push(modelShort);
-  parts.push(`${agentCount} agent${agentCount !== 1 ? 's' : ''}`);
-  if (room.max_sub_agents) parts.push(`${room.max_sub_agents} sub-agent${room.max_sub_agents !== 1 ? 's' : ''}`);
-  tagline.textContent = parts.join(' · ');
+
+  if (modelShort) {
+    const pill = document.createElement('span');
+    pill.className = 'h-model-pill';
+    pill.textContent = modelShort;
+    tagline.appendChild(pill);
+    tagline.appendChild(document.createTextNode(' · '));
+  }
+
+  const saCount = typeof subAgentCount === 'number' ? subAgentCount : 0;
+  const countParts = [`${agentCount} agent${agentCount !== 1 ? 's' : ''}`];
+  if (saCount) countParts.push(`${saCount} sub-agent${saCount !== 1 ? 's' : ''}`);
+  tagline.appendChild(document.createTextNode(countParts.join(' · ')));
   info.appendChild(tagline);
 
   header.appendChild(info);
