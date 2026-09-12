@@ -4345,12 +4345,44 @@ async function run() {
     const r = await req('GET', `/api/rooms/${threadTestRoomId}/threads/${rootId}`);
     assert.strictEqual(r.status, 200);
     assert.strictEqual(r.body.thread_id, rootId);
-    assert.strictEqual(r.body.messages.length, 3, 'root + 2 replies');
+    assert.ok(r.body.root, 'root message present');
+    assert.strictEqual(r.body.root.id, rootId);
+    assert.strictEqual(r.body.messages.length, 2, '2 replies (root separate)');
   });
 
   await test('Thread — GET /rooms/:id/threads/:badId — 404 for non-root', async () => {
     const r = await req('GET', `/api/rooms/${threadTestRoomId}/threads/999999`);
     assert.strictEqual(r.status, 404);
+  });
+
+  await test('Thread — threads endpoint supports ?before and ?limit pagination', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    const root = await req('POST', `/api/rooms/${threadTestRoomId}/message`, { content: 'paginate root' }, {
+      'x-agent-id': String(threadTestActorId), 'x-agent-secret': threadTestSecret,
+    });
+    const rootId = root.body.message_id;
+    const replyIds = [];
+    for (let i = 0; i < 3; i++) {
+      const r = await req('POST', `/api/rooms/${threadTestRoomId}/message`, {
+        content: `paginate reply ${i}`, thread_id: rootId,
+      }, { 'x-agent-id': String(threadTestActorId), 'x-agent-secret': threadTestSecret });
+      replyIds.push(r.body.message_id);
+    }
+    const limited = await req('GET', `/api/rooms/${threadTestRoomId}/threads/${rootId}?limit=2`);
+    assert.strictEqual(limited.body.messages.length, 2);
+    const beforeRes = await req('GET', `/api/rooms/${threadTestRoomId}/threads/${rootId}?before=${replyIds[2]}&limit=10`);
+    assert.strictEqual(beforeRes.body.messages.length, 2, 'replies before last');
+    assert.ok(beforeRes.body.root, 'root always present');
+  });
+
+  await test('Thread — rooms list has active_threads, no last_message', async () => {
+    const r = await req('GET', '/api/rooms');
+    assert.strictEqual(r.status, 200);
+    const room = r.body.find(rm => rm.id === threadTestRoomId);
+    assert.ok(room, 'test room in list');
+    assert.strictEqual(room.last_message, undefined, 'no last_message field');
+    assert.strictEqual(room.last_message_actor, undefined, 'no last_message_actor field');
+    assert.strictEqual(typeof room.active_threads, 'number');
   });
 
   await test('Thread — GET/PUT /rooms/:id/system-prompt', async () => {
@@ -4587,6 +4619,61 @@ async function run() {
       assert.ok('participant_ids' in anyRoot.thread, 'thread summary must have participant_ids field');
       assert.ok('has_error' in anyRoot.thread, 'thread summary must have has_error field');
     }
+  });
+
+  await test('Auto-thread — compact_complete with unresolvable thread_id does NOT overwrite thread 0 session', async () => {
+    if (!threadTestRoomId || !threadTestActorId || !threadTestSecret) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(threadTestRoomId, threadTestActorId);
+    if (!participant) { console.log('    (skipped — no participant)'); return; }
+    const originalSessionId = 'test-original-session-' + Date.now();
+    db.prepare(`INSERT OR REPLACE INTO ai_sessions (participant_id, room_id, thread_id, claude_session_id, status) VALUES (?,?,0,?,'idle')`).run(participant.id, threadTestRoomId, originalSessionId);
+    const unknownSessionId = 'test-unknown-session-' + Date.now();
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`);
+    try {
+      const ready = waitForWsMessage(ws, m => m.type === 'agent_ready');
+      ws.send(JSON.stringify({ type: 'agent_connect', actor_id: threadTestActorId, secret: threadTestSecret }));
+      await ready;
+      ws.send(JSON.stringify({ type: 'compact_complete', room_id: threadTestRoomId, claude_session_id: unknownSessionId, new_context_tokens: 1000 }));
+      await new Promise(r => setTimeout(r, 200));
+      const row = db.prepare('SELECT claude_session_id FROM ai_sessions WHERE participant_id=? AND room_id=? AND thread_id=0 AND sub_agent_id IS NULL').get(participant.id, threadTestRoomId);
+      assert.ok(row, 'thread 0 session row must still exist');
+      assert.strictEqual(row.claude_session_id, originalSessionId, `thread 0 session must NOT be overwritten (expected ${originalSessionId}, got ${row.claude_session_id})`);
+    } finally {
+      ws.close();
+      db.prepare('DELETE FROM ai_sessions WHERE participant_id=? AND room_id=? AND thread_id=0').run(participant.id, threadTestRoomId);
+    }
+  });
+
+  await test('Auto-thread — compact_complete guard: code uses if (cThreadId !== null) before UPDATE', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    const ccHandler = src.substring(src.indexOf("msg.type === 'compact_complete'"), src.indexOf("msg.type === 'compact_complete'") + 3000);
+    assert.ok(!ccHandler.includes('cThreadId || 0'), 'compact_complete must NOT use cThreadId || 0 fallback — use guard instead');
+    assert.ok(ccHandler.includes('if (cThreadId !== null'), 'compact_complete must guard UPDATEs with cThreadId !== null');
+  });
+
+  await test('Auto-thread — session scoped per thread (code check)', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    assert.ok(src.includes("WHERE participant_id=? AND thread_id=? AND sub_agent_id IS NULL').get(participantId, threadId || 0)"), 'getThreadSession must query by exact thread_id');
+    assert.ok(src.includes("'thread_id is required — compact is per-thread'"), 'compact_session must reject without thread_id');
+    const triggerFn = src.substring(src.indexOf('async function triggerAiResponse'), src.indexOf('\n}\n', src.indexOf('async function triggerAiResponse')) + 3);
+    assert.ok(triggerFn.includes('getThreadSession(ai.participant_id, threadId)'), 'triggerAiResponse must use getThreadSession (not getSession)');
+  });
+
+  await test('Auto-thread — compact_complete resolves thread_id from session row (code check)', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    const ccHandler = src.substring(src.indexOf("msg.type === 'compact_complete'"), src.indexOf("msg.type === 'compact_complete'") + 2000);
+    assert.ok(ccHandler.includes('SELECT thread_id, sub_agent_id FROM ai_sessions WHERE claude_session_id'), 'compact_complete must resolve thread_id from session row');
+    assert.ok(ccHandler.includes('cannot resolve thread_id'), 'compact_complete must warn when thread_id unresolvable');
+  });
+
+  await test('Auto-thread — stoa.js sends thread_id in compact messages (code check)', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'stoa.js'), 'utf8');
+    assert.ok(src.includes('function parseSessionKey(key)'), 'stoa.js must have parseSessionKey helper');
+    const workerSection = src.substring(src.indexOf('auto-compacting'), src.indexOf('auto-compacting') + 500);
+    assert.ok(workerSection.includes('thread_id: skMeta.threadId'), 'worker auto_compact_start must include thread_id');
+    const triggerSection = src.substring(src.indexOf('compact: done for'), src.indexOf('compact: done for') + 300);
+    assert.ok(triggerSection.includes('thread_id: msg.thread_id'), 'compact_trigger complete must include thread_id');
   });
 
   await test('Thread — cleanup', async () => {

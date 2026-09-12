@@ -121,9 +121,9 @@ The composer supports:
 
 ### Reply-to
 
-Click the **reply arrow** on any message bubble to start a reply. A quote preview appears above the composer showing what you're replying to. Your reply will display the quoted message in the chat bubble.
+Inside the **thread panel**, hover over any message and click the **reply arrow** to quote it. A quote preview appears above the composer; the reply displays the quoted message inline in the thread. Quote-reply is only available inside thread panels — not in the main feed.
 
-Agents understand reply context — when you reply to a specific message, the original message content is injected into the AI prompt so the agent knows exactly what you're referring to.
+Agents understand reply context — when you quote a specific message, its content is injected into the AI prompt so the agent knows exactly what you're referring to.
 
 ### Threads
 
@@ -131,7 +131,11 @@ The main feed uses a **Slack-style flat row layout** — each root message shows
 
 When a root message has replies, a **thread chip** appears below it showing reply count, time of last reply, and a pulsing dot when an agent is actively streaming inside that thread.
 
-Click any root message (or its thread chip) to open the **thread panel** on the right side of the screen. The thread panel shows all replies and has its own composer for sending replies directly into the thread. If an AI agent starts streaming a reply, the panel **opens automatically** — but only if you don't currently have another thread open. Close the panel with the × button or press **Escape**.
+Click any root message (or its thread chip) to open the **thread panel** on the right side of the screen. The root message is pinned at the top of the panel; all replies appear below it. If an AI agent starts streaming a reply, the panel **opens automatically** — but only if you don't currently have another thread open. Close the panel with the × button or press **Escape**.
+
+The thread panel has its **own dedicated composer**, independent from the room composer — model selector, emoji picker, mention autocomplete, image attach, and slash commands are all available. Each composer has its own independent state: attachments, reply-to, and draft are not shared between the room and the thread. Drafts are saved per thread and restored when you reopen the panel.
+
+**Thread sessions:** each thread maintains a separate Claude session. Opening an existing thread resumes its context; sending the first message in a new thread starts a fresh session for that agent.
 
 **Deep-link:** append `?thread=<message-id>` to the room URL to open a specific thread directly on page load.
 
@@ -451,7 +455,7 @@ In **Settings > AI Agent**, each agent has two action buttons:
 
 - **Rescan** — re-scan the agent's working directories and skills
 - **Force Update** — force the agent to check for client updates immediately (normally checks every 2 minutes)
-- **Compact Session** — compress the agent's conversation history to reduce context size. Click the compact button (↕ icon) in the room header. Per-agent progress indicators appear below the room header while compacting — the agent summarizes prior context and continues seamlessly. Useful when a conversation has grown very long and response quality starts to degrade
+- **Compact Session** — compress the agent's conversation history to reduce context size. Open the thread panel and click the compact button (↕ icon) in the panel header. A progress bar appears inside the thread panel while compacting — the agent summarizes prior context and continues seamlessly. Useful when a conversation has grown very long and response quality starts to degrade
 
 ### Auto-Compact
 
@@ -460,7 +464,7 @@ Stoa automatically compacts agent sessions without manual intervention. Two mech
 - **Per-trigger check** — after every agent response, Stoa checks the session file size. If it exceeds the configured compact threshold (default 500 KB, adjustable in Settings → Server), the agent runs `/compact` immediately after sending its reply, then notifies the server. The user receives the response first; compaction happens in the background.
 - **Background worker** — every 60 minutes, the agent scans all open sessions on its machine and compacts any that exceed the configured compact threshold. This also cleans up sessions that are open locally but not active in any Stoa room.
 
-When auto-compact runs, per-agent progress indicators appear below the room header (same as manual compact) and a compact marker is saved in the room's message history. The marker persists across page refreshes.
+When auto-compact runs, a compact progress bar appears in the thread panel (same as manual compact) and a compact marker is saved in the thread's message history. The marker persists across page refreshes.
 
 ### Proactive Messages
 

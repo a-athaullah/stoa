@@ -28,17 +28,29 @@ function formatModelName(model) {
 function handleModelUpdate(msg) {
   if (msg.room_id && msg.room_id !== currentRoomId) return;
   const badge = document.querySelector('.h-model-badge');
+  if (badge) badge.remove();
   const label = formatModelName(msg.model);
-  if (badge && label) badge.textContent = label;
-  else if (badge && !label) badge.remove();
-  else if (!badge && label) {
-    const tagline = document.querySelector('.h-room-tagline');
-    if (tagline) {
-      const b = document.createElement('span');
-      b.className = 'h-model-badge';
-      b.textContent = label;
-      tagline.appendChild(b);
+  // Sync thread composer model label
+  const threadModelWrap = document.getElementById('thread-model-selector-wrap');
+  const threadModelLabel = document.getElementById('thread-model-label');
+  if (threadModelWrap && threadModelLabel) {
+    if (label) {
+      threadModelLabel.textContent = label;
+      threadModelWrap.style.display = 'inline-flex';
+    } else {
+      threadModelWrap.style.display = 'none';
     }
+  }
+  // Sync room header tagline (format: "model · N agents")
+  const tagline = document.querySelector('.h-room-tagline');
+  if (tagline) {
+    const current = tagline.textContent;
+    const agentsPart = current.includes(' · ') ? current.split(' · ').slice(-1)[0] : current;
+    const modelShort = msg.model ? msg.model.replace(/^claude-/, '') : '';
+    const parts = [];
+    if (modelShort) parts.push(modelShort);
+    if (agentsPart) parts.push(agentsPart);
+    tagline.textContent = parts.join(' · ');
   }
 }
 

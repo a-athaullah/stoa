@@ -448,7 +448,9 @@ async function init() {
   if (enterSendOn) enterToggle.classList.add('active');
   enterToggle.addEventListener('click', () => {
     enterToggle.classList.toggle('active');
-    localStorage.setItem('stoa-enter-send', enterToggle.classList.contains('active'));
+    const isActive = enterToggle.classList.contains('active');
+    localStorage.setItem('stoa-enter-send', isActive);
+    document.getElementById('thread-enter-send-toggle')?.classList.toggle('active', isActive);
   });
 
   document.getElementById('send-btn').addEventListener('click', sendMessage);

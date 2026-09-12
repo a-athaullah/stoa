@@ -65,8 +65,19 @@ function handleWsMessage(msg) {
     noMoreOlder = msg.messages.length < 100;
     for (const m of msg.messages) {
       if (m.state === 'streaming' || m.state === 'requesting') {
-        showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url);
+        if (m.thread_id) {
+          if (typeof openThread === 'function' && typeof isThreadOpen === 'function' && !isThreadOpen()) {
+            openThread(m.thread_id);
+          }
+          if (typeof activeThreadId !== 'undefined' && activeThreadId === m.thread_id) {
+            const tbody = document.getElementById('thread-body');
+            showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, tbody);
+          }
+        } else {
+          showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url);
+        }
         setComposerProcessing(m.id);
+        if (m.thread_id && typeof setThreadProcessing === 'function') setThreadProcessing(m.id);
       }
     }
     scrollToBottom(true);
@@ -84,8 +95,9 @@ function handleWsMessage(msg) {
       // Route to open thread panel if it matches
       if (typeof activeThreadId !== 'undefined' && activeThreadId === tId) {
         const body = document.getElementById('thread-body');
-        appendMessage(m, body);
-        if (typeof _scrollThreadToBottom === 'function') _scrollThreadToBottom();
+        if (typeof appendThreadMessage === 'function') appendThreadMessage(m, body);
+        else appendMessage(m, body);
+        if (typeof _scrollThreadToBottom === 'function') _scrollThreadToBottom(true);
       }
     } else {
       if (typeof appendFeedRootRow === 'function') appendFeedRootRow(m);
@@ -106,9 +118,10 @@ function handleWsMessage(msg) {
     const liveStatus = getLiveStatus();
     // 'off' — skip display entirely (but still allow done-event cleanup below)
     if (liveStatus === 'off' && msg.status) return;
-    // Route to thread panel or feed
+    // Route to thread panel or feed — thread events never leak to room
     const tId = msg.thread_id || null;
-    const inner = (tId && typeof activeThreadId !== 'undefined' && activeThreadId === tId)
+    if (tId && (typeof activeThreadId === 'undefined' || activeThreadId !== tId)) return;
+    const inner = tId
       ? document.getElementById('thread-body')
       : document.getElementById('messages-inner');
     if (!inner) return;
@@ -146,19 +159,23 @@ function handleWsMessage(msg) {
   }
 
   if (msg.type === 'message_state') {
+    if (msg.thread_summary && typeof handleThreadSummary === 'function') handleThreadSummary(msg.thread_summary);
     if ((msg.state === 'requesting' || msg.state === 'streaming') && msg.actor_name) {
       const tId = msg.thread_id || null;
       // Auto-open thread panel when AI starts responding in a thread — only if no thread is currently open
       if (tId && typeof openThread === 'function' && typeof isThreadOpen === 'function' && !isThreadOpen()) {
         openThread(tId);
       }
-      const targetContainer = (tId && typeof activeThreadId !== 'undefined' && activeThreadId === tId)
+      // Thread messages never render in room feed
+      if (tId && (typeof activeThreadId === 'undefined' || activeThreadId !== tId)) return;
+      const targetContainer = tId
         ? document.getElementById('thread-body')
         : document.getElementById('messages-inner');
       const last = targetContainer?.lastElementChild;
       if (last?.classList.contains('h-system-event') && last.dataset.actor?.startsWith(msg.actor_name)) last.remove();
       showThinking(msg.message_id, msg.actor_name, msg.avatar_color, msg.avatar_symbol, msg.avatar_url, msg.sub_agent_label, targetContainer);
       setComposerProcessing(msg.message_id);
+      if (tId && typeof setThreadProcessing === 'function') setThreadProcessing(msg.message_id);
     }
     if (msg.state === 'error' || (typeof FAILURE_STATES !== 'undefined' && FAILURE_STATES.has(msg.state))) {
       const el = document.getElementById('msg-' + msg.message_id);
@@ -183,6 +200,7 @@ function handleWsMessage(msg) {
         }
       }
       clearComposerProcessing(msg.message_id);
+      if (typeof clearThreadProcessing === 'function') clearThreadProcessing(msg.message_id);
     }
     return;
   }
@@ -208,6 +226,8 @@ function handleWsMessage(msg) {
   if (msg.type === 'message_complete') {
     finalizeMessage(msg.message_id, msg.content, msg.file_url, msg.file_name, msg.attachments, msg.ai_model, msg.result_meta);
     clearComposerProcessing(msg.message_id);
+    if (typeof clearThreadProcessing === 'function') clearThreadProcessing(msg.message_id);
+    if (msg.thread_id && typeof _scrollThreadToBottom === 'function') _scrollThreadToBottom(true);
     // Update thread chip if this was a thread reply
     if (msg.thread_summary && typeof handleThreadSummary === 'function') handleThreadSummary(msg.thread_summary);
     refreshRoomList();
@@ -290,25 +310,19 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'compact_start') {
     if (msg.room_id !== currentRoomId) return;
-    const inThread = msg.thread_id && typeof activeThreadId !== 'undefined' && activeThreadId === msg.thread_id;
-    if (inThread && typeof showThreadCompactBar === 'function') showThreadCompactBar(msg.participants);
-    else showCompactBar(msg.room_id, msg.participants);
+    if (typeof showThreadCompactBar === 'function') showThreadCompactBar(msg.participants);
     return;
   }
 
   if (msg.type === 'compact_progress') {
     if (msg.room_id !== currentRoomId) return;
-    const inThread = msg.thread_id && typeof activeThreadId !== 'undefined' && activeThreadId === msg.thread_id;
-    if (inThread && typeof updateThreadCompactBar === 'function') updateThreadCompactBar(msg.completed_participant_ids);
-    else updateCompactBar(msg.completed_participant_ids);
+    if (typeof updateThreadCompactBar === 'function') updateThreadCompactBar(msg.completed_participant_ids);
     return;
   }
 
   if (msg.type === 'compact_done') {
     if (msg.room_id !== currentRoomId) return;
-    const inThread = msg.thread_id && typeof activeThreadId !== 'undefined' && activeThreadId === msg.thread_id;
-    if (inThread && typeof hideThreadCompactBar === 'function') hideThreadCompactBar();
-    else hideCompactBar();
+    if (typeof hideThreadCompactBar === 'function') hideThreadCompactBar();
     return;
   }
 
@@ -323,7 +337,7 @@ function handleWsMessage(msg) {
         model: msg.model,
       };
       updateThreadContextBar();
-    } else {
+    } else if (!msg.thread_id) {
       handleContextUpdate(msg);
     }
     return;
@@ -331,9 +345,7 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'compact_error') {
     if (msg.room_id !== currentRoomId) return;
-    const inThread = msg.thread_id && typeof activeThreadId !== 'undefined' && activeThreadId === msg.thread_id;
-    if (inThread && typeof hideThreadCompactBar === 'function') hideThreadCompactBar();
-    else hideCompactBar();
+    if (typeof hideThreadCompactBar === 'function') hideThreadCompactBar();
     showToast(msg.error || 'Compact failed', { error: true });
     return;
   }

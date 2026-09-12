@@ -253,6 +253,30 @@ function saveSubAgentThreadSession(participantId, subAgentId, claudeSessionId, w
   ).run(participantId, rp?.room_id ?? null, subAgentId, claudeSessionId, workdir || null, threadId || 0);
 }
 
+function buildThreadSummary(roomId, rootId) {
+  if (!rootId) return null;
+  const row = db.prepare(`
+    SELECT COUNT(*) as count,
+           MAX(m.created_at) as last_at,
+           (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = ? AND r.state IN ('streaming','requesting'))) as active
+    FROM messages m WHERE m.room_id = ? AND m.thread_id = ?
+  `).get(rootId, roomId, rootId);
+  if (!row || row.count === 0) return null;
+  const pRow = db.prepare(`
+    SELECT GROUP_CONCAT(DISTINCT rp.actor_id) as pids
+    FROM messages r JOIN room_participants rp ON rp.id = r.participant_id
+    WHERE r.thread_id = ?
+  `).get(rootId);
+  const participant_ids = pRow?.pids ? pRow.pids.split(',').map(Number) : [];
+  const saRows = db.prepare(`
+    SELECT DISTINCT m.sub_agent_label, rp.actor_id
+    FROM messages m JOIN room_participants rp ON rp.id = m.participant_id
+    WHERE m.thread_id = ? AND m.sub_agent_label IS NOT NULL
+  `).all(rootId);
+  const sub_agent_participants = saRows.map(r => ({ label: r.sub_agent_label, actor_id: r.actor_id }));
+  return { type: 'thread_summary', root_id: rootId, count: row.count, last_at: row.last_at, active: !!row.active, participant_ids, sub_agent_participants };
+}
+
 // Validate thread_id: root must exist in the same room and be a root itself (thread_id IS NULL).
 // reply_to (if given) must belong to the same thread. Returns error string or null.
 function resolveThread(roomId, threadId) {
@@ -421,19 +445,21 @@ async function cascadeMentionsAfterWake(roomId, parent, threadId) {
 
   const lastMsg = threadId
     ? db.prepare(`
-        SELECT m.content FROM messages m
+        SELECT m.id, m.content FROM messages m
         JOIN room_participants rp ON rp.id=m.participant_id
         WHERE rp.actor_id=? AND m.room_id=? AND m.state='complete' AND m.sub_agent_id IS NULL AND m.completed_at IS NOT NULL
           AND (m.thread_id=? OR m.id=?)
         ORDER BY m.id DESC LIMIT 1
       `).get(parent.actor_id, roomId, threadId, threadId)
     : db.prepare(`
-        SELECT m.content FROM messages m
+        SELECT m.id, m.content FROM messages m
         JOIN room_participants rp ON rp.id=m.participant_id
         WHERE rp.actor_id=? AND m.room_id=? AND m.state='complete' AND m.sub_agent_id IS NULL AND m.completed_at IS NOT NULL
         ORDER BY m.id DESC LIMIT 1
       `).get(parent.actor_id, roomId);
   if (!lastMsg?.content || !lastMsg.content.includes('@')) return;
+  // Auto-thread: if at room level, sub-agent responses go under the parent's message
+  const effectiveThreadId = threadId || lastMsg.id;
 
   const allAi = db.prepare(`
     SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.adapter_config, a.avatar_color, a.avatar_symbol, a.avatar_url
@@ -475,10 +501,10 @@ async function cascadeMentionsAfterWake(roomId, parent, threadId) {
   wakeCascadeDepth.set(cascadeKey, depth);
   try {
     for (const sa of subAgentsCascade) {
-      triggerAiResponse(roomId, sa, lastMsg.content, null, [], null, threadId).catch(e => console.error('[wake-cascade sub-agent] parallel error:', e));
+      triggerAiResponse(roomId, sa, lastMsg.content, null, [], null, effectiveThreadId).catch(e => console.error('[wake-cascade sub-agent] parallel error:', e));
     }
     if (regularAgentsCascade.length > 0) {
-      await triggerAgentsSequential(roomId, regularAgentsCascade, lastMsg.content, null, [], new Set(), threadId);
+      await triggerAgentsSequential(roomId, regularAgentsCascade, lastMsg.content, null, [], new Set(), effectiveThreadId);
     }
   } finally {
     if (wakeCascadeDepth.get(cascadeKey) === depth) wakeCascadeDepth.delete(cascadeKey);
@@ -1324,8 +1350,7 @@ const server = http.createServer(async (req, res) => {
       SELECT r.*, a.name as creator_name,
         (SELECT COUNT(*) FROM room_participants WHERE room_id=r.id) as participant_count,
         (SELECT COUNT(*) FROM messages WHERE room_id=r.id) as message_count,
-        (SELECT m.content FROM messages m WHERE m.room_id=r.id AND m.state='complete' AND m.content != '' ORDER BY m.id DESC LIMIT 1) as last_message,
-        (SELECT a2.name FROM messages m2 JOIN room_participants rp ON rp.id=m2.participant_id JOIN actors a2 ON a2.id=rp.actor_id WHERE m2.room_id=r.id AND m2.state='complete' AND m2.content != '' ORDER BY m2.id DESC LIMIT 1) as last_message_actor,
+        (SELECT COUNT(DISTINCT m.thread_id) FROM messages m WHERE m.room_id=r.id AND m.thread_id IS NOT NULL AND m.state IN ('streaming','requesting')) as active_threads,
         COALESCE((SELECT m3.created_at FROM messages m3 WHERE m3.room_id=r.id ORDER BY m3.id DESC LIMIT 1), r.created_at) as last_activity
       FROM rooms r JOIN actors a ON a.id=r.created_by LEFT JOIN agent_workdirs w ON w.id=r.workdir_id
       WHERE ${archived ? 'r.archived_at IS NOT NULL' : 'r.archived_at IS NULL'}
@@ -1571,7 +1596,13 @@ const server = http.createServer(async (req, res) => {
         (SELECT MAX(r.created_at) FROM messages r WHERE r.thread_id = m.id) AS thread_last_at,
         (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state IN ('streaming','requesting'))) AS thread_active,
         (SELECT GROUP_CONCAT(DISTINCT rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id) AS thread_participant_ids,
-        (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state = 'error')) AS thread_has_error`;
+        (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state = 'error')) AS thread_has_error,
+        (SELECT GROUP_CONCAT(DISTINCT r.sub_agent_label || ':' || rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id AND r.sub_agent_label IS NOT NULL) AS thread_sub_agent_participants`;
+
+      function enrichThreadData(m) {
+        const sap = m.thread_sub_agent_participants ? m.thread_sub_agent_participants.split(',').map(s => { const [label, aid] = s.split(':'); return { label, actor_id: Number(aid) }; }) : [];
+        m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active, participant_ids: m.thread_participant_ids ? m.thread_participant_ids.split(',').map(Number) : [], has_error: !!m.thread_has_error, sub_agent_participants: sap };
+      }
 
       if (before) {
         const rows = db.prepare(`
@@ -1592,7 +1623,7 @@ const server = http.createServer(async (req, res) => {
           ) t ORDER BY created_at ASC
         `).all(roomId, before, limit);
         const enriched = enrichReply(rows);
-        if (!scopeAll) enriched.forEach(m => { m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active, participant_ids: m.thread_participant_ids ? m.thread_participant_ids.split(',').map(Number) : [], has_error: !!m.thread_has_error }; });
+        if (!scopeAll) enriched.forEach(enrichThreadData);
         return json(res, enriched);
       }
       const since = url.searchParams.get('since') ?? '0';
@@ -1613,7 +1644,7 @@ const server = http.createServer(async (req, res) => {
         LIMIT 500
       `).all(roomId, since);
       const enriched = enrichReply(rows);
-      if (!scopeAll) enriched.forEach(m => { m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active, participant_ids: m.thread_participant_ids ? m.thread_participant_ids.split(',').map(Number) : [], has_error: !!m.thread_has_error }; });
+      if (!scopeAll) enriched.forEach(enrichThreadData);
       return json(res, enriched);
     }
 
@@ -1624,7 +1655,7 @@ const server = http.createServer(async (req, res) => {
                sess.status AS session_status
         FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
         LEFT JOIN agent_workdirs w ON w.id=rp.workdir_id
-        LEFT JOIN ai_sessions sess ON sess.participant_id=rp.id AND sess.sub_agent_id IS NULL
+        LEFT JOIN ai_sessions sess ON sess.participant_id=rp.id AND sess.sub_agent_id IS NULL AND sess.thread_id = 0
         WHERE rp.room_id=?
       `).all(roomId);
       return json(res, rows);
@@ -2088,7 +2119,9 @@ const server = http.createServer(async (req, res) => {
     broadcast(roomId, { type: 'message_new', message: row });
     broadcastGlobal({ type: 'room_activity', room_id: roomId });
     // Cascade any @mentions in the proactive message (fire-and-forget)
-    cascadeMentionsFromProactive(roomId, agentId, content, threadId).catch(e => console.error('[proactive-cascade]', e.message));
+    // Auto-thread: if at room level, sub-agent responses go under this message
+    const cascadeThreadId = threadId || Number(messageId);
+    cascadeMentionsFromProactive(roomId, agentId, content, cascadeThreadId).catch(e => console.error('[proactive-cascade]', e.message));
     return json(res, { message_id: messageId });
   }
 
@@ -2549,7 +2582,7 @@ const server = http.createServer(async (req, res) => {
       FROM ai_sessions s
       JOIN room_participants rp ON rp.id = s.participant_id
       JOIN actors a ON a.id = rp.actor_id
-      WHERE s.room_id=? AND s.sub_agent_id IS NULL AND s.context_tokens_used > 0
+      WHERE s.room_id=? AND s.sub_agent_id IS NULL AND (s.thread_id IS NULL OR s.thread_id = 0) AND s.context_tokens_used > 0
       ORDER BY s.id DESC
     `).all(roomId);
     const seen = new Set();
@@ -3641,19 +3674,50 @@ Write-Host "Logs   : pm2 logs $AgentName"
     if (!requireAuth(req, res, url)) return;
     const roomId = parseInt(threadDetailMatch[1]);
     const rootId = parseInt(threadDetailMatch[2]);
-    const root = db.prepare('SELECT id, room_id, thread_id FROM messages WHERE id=?').get(rootId);
-    if (!root || root.room_id !== roomId || root.thread_id !== null) {
-      return json(res, { error: 'thread root not found' }, 404);
-    }
-    const messages = db.prepare(`
+    const rootMsg = db.prepare(`
       SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
       FROM messages m
       JOIN room_participants rp ON rp.id=m.participant_id
       JOIN actors a ON a.id=rp.actor_id
-      WHERE (m.id=? OR m.thread_id=?) AND m.room_id=?
-      ORDER BY m.created_at ASC
-    `).all(rootId, rootId, roomId);
-    return json(res, { thread_id: rootId, messages });
+      WHERE m.id=? AND m.room_id=? AND m.thread_id IS NULL
+    `).get(rootId, roomId);
+    if (!rootMsg) {
+      return json(res, { error: 'thread root not found' }, 404);
+    }
+    const before = url.searchParams.get('before') ? parseInt(url.searchParams.get('before')) : null;
+    const limit = Math.min(parseInt(url.searchParams.get('limit')) || 100, 500);
+    let messages;
+    if (before) {
+      messages = db.prepare(`
+        SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
+        FROM messages m
+        JOIN room_participants rp ON rp.id=m.participant_id
+        JOIN actors a ON a.id=rp.actor_id
+        WHERE m.thread_id=? AND m.room_id=? AND m.id < ?
+        ORDER BY m.id ASC LIMIT ?
+      `).all(rootId, roomId, before, limit);
+    } else {
+      messages = db.prepare(`
+        SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
+        FROM messages m
+        JOIN room_participants rp ON rp.id=m.participant_id
+        JOIN actors a ON a.id=rp.actor_id
+        WHERE m.thread_id=? AND m.room_id=?
+        ORDER BY m.id ASC LIMIT ?
+      `).all(rootId, roomId, limit);
+    }
+    // Enrich reply_to for reply quotes
+    for (const m of messages) {
+      if (m.reply_to) {
+        const replied = db.prepare(`
+          SELECT m2.content, a2.name as actor_name FROM messages m2
+          JOIN room_participants rp2 ON rp2.id=m2.participant_id JOIN actors a2 ON a2.id=rp2.actor_id
+          WHERE m2.id=?
+        `).get(m.reply_to);
+        if (replied) m.reply_msg = { content: replied.content?.substring(0, 300), actor_name: replied.actor_name };
+      }
+    }
+    return json(res, { thread_id: rootId, root: rootMsg, messages });
   }
 
   // ── System prompt endpoints ─────────────────────────────────────────────
@@ -4006,10 +4070,10 @@ let reauthProcess = null;  // true when remote reauth is in progress
 let reauthRoomId = null;   // room that triggered /reauth
 let reauthAgentActorId = null; // actor_id of the agent handling reauth
 let reauthTimer = null;    // timeout handle for reauth
-function setRecentCompact(roomId) {
-  clearTimeout(recentCompactTimers.get(roomId));
-  recentCompacts.set(roomId, Date.now());
-  recentCompactTimers.set(roomId, setTimeout(() => { recentCompacts.delete(roomId); recentCompactTimers.delete(roomId); }, 30_000));
+function setRecentCompact(compactKey) {
+  clearTimeout(recentCompactTimers.get(compactKey));
+  recentCompacts.set(compactKey, Date.now());
+  recentCompactTimers.set(compactKey, setTimeout(() => { recentCompacts.delete(compactKey); recentCompactTimers.delete(compactKey); }, 30_000));
 }
 const pendingFileOps = new Map();   // request_id → { type, clientWs }
 function addPendingFileOp(rid, op) {
@@ -4080,11 +4144,17 @@ wss.on('connection', (ws, req) => {
       roomClients.get(subscribedRoom).add(ws);
       const messages = db.prepare(`
         SELECT * FROM (
-          SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
+          SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
+            (SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id) AS thread_count,
+            (SELECT MAX(r.created_at) FROM messages r WHERE r.thread_id = m.id) AS thread_last_at,
+            (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state IN ('streaming','requesting'))) AS thread_active,
+            (SELECT GROUP_CONCAT(DISTINCT rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id) AS thread_participant_ids,
+            (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state = 'error')) AS thread_has_error,
+            (SELECT GROUP_CONCAT(DISTINCT r.sub_agent_label || ':' || rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id AND r.sub_agent_label IS NOT NULL) AS thread_sub_agent_participants
           FROM messages m
           JOIN room_participants rp ON rp.id=m.participant_id
           JOIN actors a ON a.id=rp.actor_id
-          WHERE m.room_id=? AND (
+          WHERE m.room_id=? AND m.thread_id IS NULL AND (
             (m.state IN ('complete','streaming','requesting') AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL OR m.state IN ('streaming','requesting')))
             OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
             OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
@@ -4092,7 +4162,12 @@ wss.on('connection', (ws, req) => {
           ORDER BY m.created_at DESC LIMIT 100
         ) AS recent ORDER BY created_at ASC
       `).all(subscribedRoom);
-      ws.send(JSON.stringify({ type: 'history', messages: enrichReply(messages) }));
+      const enriched = enrichReply(messages);
+      enriched.forEach(m => {
+        const sap = m.thread_sub_agent_participants ? m.thread_sub_agent_participants.split(',').map(s => { const [label, aid] = s.split(':'); return { label, actor_id: Number(aid) }; }) : [];
+        m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active, participant_ids: m.thread_participant_ids ? m.thread_participant_ids.split(',').map(Number) : [], has_error: !!m.thread_has_error, sub_agent_participants: sap };
+      });
+      ws.send(JSON.stringify({ type: 'history', messages: enriched }));
       // Restore compact state if room is currently compacting
       if (pendingCompacts.has(subscribedRoom)) {
         const cs = pendingCompacts.get(subscribedRoom);
@@ -4158,7 +4233,11 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'compact_session' && !agentActorId) {
       const roomId = msg.room_id;
       const compactThreadId = typeof msg.thread_id === 'number' ? msg.thread_id : null;
-      const compactKey = compactThreadId ? `${roomId}:${compactThreadId}` : String(roomId);
+      if (!compactThreadId) {
+        ws.send(JSON.stringify({ type: 'compact_error', room_id: roomId, error: 'thread_id is required — compact is per-thread' }));
+        return;
+      }
+      const compactKey = `${roomId}:${compactThreadId}`;
       if (pendingCompacts.has(compactKey)) return;
       const aiParts = db.prepare(`
         SELECT rp.id as participant_id, a.id as actor_id, a.name
@@ -4198,11 +4277,11 @@ wss.on('connection', (ws, req) => {
       const participants = targets.map(t => ({ participant_id: t.participant_id, actor_id: t.actor_id, name: t.name }));
       broadcast(roomId, { type: 'compact_start', room_id: roomId, thread_id: compactThreadId, total: targets.length, participants });
       const names = targets.map(t => t.name).join(', ');
-      broadcast(roomId, { type: 'system_event', actor_name: names, status: 'session compacting' });
+      broadcast(roomId, { type: 'system_event', actor_name: names, status: 'session compacting', thread_id: compactThreadId });
       setTimeout(() => {
         if (pendingCompacts.has(compactKey)) {
           pendingCompacts.delete(compactKey);
-          setRecentCompact(roomId);
+          setRecentCompact(compactKey);
           broadcast(roomId, { type: 'compact_error', room_id: roomId, thread_id: compactThreadId, error: 'Compact timed out' });
         }
       }, 600_000);
@@ -4397,7 +4476,9 @@ wss.on('connection', (ws, req) => {
     // ── Agent reports state change (requesting / streaming)
     if (msg.type === 'agent_state' && agentActorId) {
       const actorMeta = pendingActorMeta.get(msg.message_id) || {};
-      broadcast(msg.room_id, { type: 'message_state', message_id: msg.message_id, state: msg.state, ...actorMeta });
+      const statePayload = { type: 'message_state', message_id: msg.message_id, state: msg.state, ...actorMeta };
+      if (actorMeta.thread_id) statePayload.thread_summary = buildThreadSummary(msg.room_id, actorMeta.thread_id);
+      broadcast(msg.room_id, statePayload);
     }
 
     if (msg.type === 'agent_search' && agentActorId) {
@@ -4433,38 +4514,42 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'agent_system_event' && agentActorId) {
       const actor = db.prepare('SELECT name FROM actors WHERE id=?').get(agentActorId);
-      broadcast(msg.room_id, { type: 'system_event', status: msg.status, actor_name: actor?.name, sub_agent_label: msg.sub_agent_label || null });
+      const seMeta = pendingActorMeta.get(msg.message_id) || {};
+      broadcast(msg.room_id, { type: 'system_event', status: msg.status, actor_name: actor?.name, sub_agent_label: msg.sub_agent_label || null, thread_id: seMeta.thread_id || null });
     }
 
     if (msg.type === 'auto_compact_start' && agentActorId) {
       // Look up room_id from session if not provided
       let roomId = msg.room_id;
+      let acThreadId = typeof msg.thread_id === 'number' ? msg.thread_id : null;
       if (!roomId && msg.claude_session_id) {
-        const s = db.prepare('SELECT room_id FROM ai_sessions WHERE claude_session_id=?').get(msg.claude_session_id);
-        roomId = s?.room_id;
+        const s = db.prepare('SELECT room_id, thread_id FROM ai_sessions WHERE claude_session_id=?').get(msg.claude_session_id);
+        if (s) {
+          roomId = s.room_id;
+          if (acThreadId === null) acThreadId = s.thread_id || null;
+        }
       }
       if (roomId) {
-        if (recentCompacts.has(roomId)) {
-          console.log(`[server] auto_compact_start suppressed for room=${roomId} (compact recently completed)`);
-        } else if (!pendingCompacts.has(roomId)) {
+        const acKey = acThreadId ? `${roomId}:${acThreadId}` : String(roomId);
+        if (recentCompacts.has(acKey)) {
+          console.log(`[server] auto_compact_start suppressed for room=${roomId} thread=${acThreadId || 0} (compact recently completed)`);
+        } else if (!pendingCompacts.has(acKey)) {
           const actor = db.prepare('SELECT id, name FROM actors WHERE id=?').get(agentActorId);
           const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(roomId, agentActorId);
-          // R14: check failure cooldown — skip if still within window
           if (participant) {
-            const sess = db.prepare('SELECT compact_failure_cooldown_until FROM ai_sessions WHERE participant_id=? AND room_id=? AND sub_agent_id IS NULL').get(participant.id, roomId);
+            const sess = db.prepare('SELECT compact_failure_cooldown_until FROM ai_sessions WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS NULL').get(participant.id, roomId, acThreadId || 0);
             if (sess?.compact_failure_cooldown_until && sess.compact_failure_cooldown_until > new Date().toISOString()) {
               console.warn(`[server] auto_compact_start suppressed for room=${roomId} agent=${agentActorId} (failure cooldown until ${sess.compact_failure_cooldown_until})`);
               return;
             }
           }
           const participants = actor && participant ? [{ participant_id: participant.id, actor_id: actor.id, name: actor.name }] : [];
-          pendingCompacts.set(roomId, { total: 1, completed: 0, agents: [agentActorId], completedAgentIds: [], completedParticipantIds: [], targets: participants });
-          broadcast(roomId, { type: 'compact_start', room_id: roomId, total: 1, participants });
-          if (actor) broadcast(roomId, { type: 'system_event', actor_name: actor.name, status: 'session compacting' });
-          console.log(`[server] auto-compact started room=${roomId} by agent=${agentActorId}`);
+          pendingCompacts.set(acKey, { total: 1, completed: 0, agents: [agentActorId], completedAgentIds: [], completedParticipantIds: [], targets: participants });
+          broadcast(roomId, { type: 'compact_start', room_id: roomId, thread_id: acThreadId, total: 1, participants });
+          if (actor) broadcast(roomId, { type: 'system_event', actor_name: actor.name, status: 'session compacting', thread_id: acThreadId });
+          console.log(`[server] auto-compact started room=${roomId} thread=${acThreadId || 0} by agent=${agentActorId}`);
         } else {
-          // Another compact already registered — add this agent to the total if not already counted
-          const cs = pendingCompacts.get(roomId);
+          const cs = pendingCompacts.get(acKey);
           if (!cs.agents.includes(agentActorId)) {
             cs.total++;
             cs.agents.push(agentActorId);
@@ -4486,17 +4571,39 @@ wss.on('connection', (ws, req) => {
         console.warn(`[server] compact_complete: unresolvable room_id for session ${msg.claude_session_id}`);
         return;
       }
-      const cThreadId = msg.thread_id ?? null;
-      const cKey = cThreadId ? `${msg.room_id}:${cThreadId}` : String(msg.room_id);
-      if (msg.claude_session_id) {
-        const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
-        if (participant) {
-          db.prepare(`UPDATE ai_sessions SET claude_session_id=?, last_active_at=datetime('now') WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS NULL`).run(msg.claude_session_id, participant.id, msg.room_id, cThreadId || 0);
+      // Resolve thread_id: prefer explicit, else look up from session row.
+      // null = unresolved (skip UPDATE to avoid writing to wrong thread), number = resolved (0 = legacy room-level).
+      let cThreadId = typeof msg.thread_id === 'number' ? msg.thread_id : null;
+      if (cThreadId === null && (msg.orig_session_id || msg.claude_session_id)) {
+        const lookup = msg.orig_session_id || msg.claude_session_id;
+        const sessRow = db.prepare('SELECT thread_id, sub_agent_id FROM ai_sessions WHERE claude_session_id=?').get(lookup);
+        if (sessRow) {
+          cThreadId = typeof sessRow.thread_id === 'number' ? sessRow.thread_id : 0;
+        } else {
+          console.warn(`[server] compact_complete: no session row for ${lookup}, cannot resolve thread_id — skipping session UPDATE`);
         }
       }
-      const successParticipant = db.prepare('SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
-      if (successParticipant) {
-        db.prepare(`UPDATE ai_sessions SET compact_failure_cooldown_until=NULL, compact_failure_error=NULL WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS NULL`).run(successParticipant.id, msg.room_id, cThreadId || 0);
+      const cSubAgentId = typeof msg.sub_agent_id === 'number' ? msg.sub_agent_id : null;
+      const cKey = cThreadId !== null && cThreadId > 0 ? `${msg.room_id}:${cThreadId}` : String(msg.room_id);
+      if (cThreadId !== null && msg.claude_session_id) {
+        const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
+        if (participant) {
+          if (cSubAgentId) {
+            db.prepare(`UPDATE ai_sessions SET claude_session_id=?, last_active_at=datetime('now') WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id=?`).run(msg.claude_session_id, participant.id, msg.room_id, cThreadId, cSubAgentId);
+          } else {
+            db.prepare(`UPDATE ai_sessions SET claude_session_id=?, last_active_at=datetime('now') WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS NULL`).run(msg.claude_session_id, participant.id, msg.room_id, cThreadId);
+          }
+        }
+      }
+      if (cThreadId !== null) {
+        const successParticipant = db.prepare('SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
+        if (successParticipant) {
+          if (cSubAgentId) {
+            db.prepare(`UPDATE ai_sessions SET compact_failure_cooldown_until=NULL, compact_failure_error=NULL WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id=?`).run(successParticipant.id, msg.room_id, cThreadId, cSubAgentId);
+          } else {
+            db.prepare(`UPDATE ai_sessions SET compact_failure_cooldown_until=NULL, compact_failure_error=NULL WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS NULL`).run(successParticipant.id, msg.room_id, cThreadId);
+          }
+        }
       }
       const state = pendingCompacts.get(cKey);
       const actor = db.prepare('SELECT name FROM actors WHERE id=?').get(agentActorId);
@@ -4506,13 +4613,13 @@ wss.on('connection', (ws, req) => {
         // Still write marker and unstick any UI that may be in compacting state.
         if (participant && actor) {
           const content = `${actor.name} · session compacted`;
-          const sysResult = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')").run(msg.room_id, participant.id, content);
-          broadcast(msg.room_id, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: msg.room_id, content, state: 'system_event', created_at: new Date().toISOString() } });
+          const sysResult = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?,?,?,'system_event',?)").run(msg.room_id, participant.id, content, cThreadId);
+          broadcast(msg.room_id, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: msg.room_id, content, state: 'system_event', thread_id: cThreadId, created_at: new Date().toISOString() } });
         }
-        if (!recentCompacts.has(msg.room_id)) {
-          broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id });
+        if (!recentCompacts.has(cKey)) {
+          broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id, thread_id: cThreadId });
         }
-        setRecentCompact(msg.room_id);
+        setRecentCompact(cKey);
         return;
       }
       if (!state.names) state.names = [];
@@ -4524,16 +4631,18 @@ wss.on('connection', (ws, req) => {
       state.completed++;
       if (state.completed >= state.total) {
         pendingCompacts.delete(cKey);
-        setRecentCompact(msg.room_id);
+        setRecentCompact(cKey);
         const label = state.names.length ? state.names.join(', ') : 'session';
         const content = `${label} · session compacted`;
         if (participant) {
-          const sysResult = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')").run(msg.room_id, participant.id, content);
-          broadcast(msg.room_id, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: msg.room_id, content, state: 'system_event', created_at: new Date().toISOString() } });
+          const sysResult = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?,?,?,'system_event',?)").run(msg.room_id, participant.id, content, cThreadId);
+          broadcast(msg.room_id, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: msg.room_id, content, state: 'system_event', thread_id: cThreadId, created_at: new Date().toISOString() } });
         }
         broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id, thread_id: cThreadId });
         for (const aid of state.completedAgentIds) {
-          db.prepare('UPDATE ai_sessions SET context_tokens_used=0 WHERE room_id=? AND thread_id=? AND participant_id IN (SELECT id FROM room_participants WHERE actor_id=?)').run(msg.room_id, cThreadId || 0, aid);
+          if (cThreadId !== null) {
+            db.prepare('UPDATE ai_sessions SET context_tokens_used=0 WHERE room_id=? AND thread_id=? AND participant_id IN (SELECT id FROM room_participants WHERE actor_id=?)').run(msg.room_id, cThreadId, aid);
+          }
           broadcast(msg.room_id, { type: 'context_update', room_id: msg.room_id, actor_id: aid, thread_id: cThreadId, context_tokens_used: 0, context_limit: DEFAULT_CONTEXT_WINDOW, model: null });
         }
       } else {
@@ -4542,11 +4651,15 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'compact_error' && agentActorId) {
-      if (!msg.room_id) {
+      // Resolve room_id / thread_id from the session row when the agent did not send them
+      // (older agent builds). pendingCompacts is keyed `room:thread`, so a missing thread_id
+      // would otherwise leave the compact stuck in "compacting" state.
+      if (!msg.room_id || msg.thread_id == null) {
         const lookup = msg.orig_session_id || msg.claude_session_id;
         if (lookup) {
-          const s = db.prepare('SELECT room_id FROM ai_sessions WHERE claude_session_id=?').get(lookup);
-          if (s?.room_id) msg.room_id = s.room_id;
+          const s = db.prepare('SELECT room_id, thread_id FROM ai_sessions WHERE claude_session_id=?').get(lookup);
+          if (s?.room_id && !msg.room_id) msg.room_id = s.room_id;
+          if (s && msg.thread_id == null && s.thread_id) msg.thread_id = s.thread_id;
         }
       }
       if (!msg.room_id) {
@@ -4578,7 +4691,7 @@ wss.on('connection', (ws, req) => {
       state.completed++;
       if (state.completed >= state.total) {
         pendingCompacts.delete(ceKey);
-        setRecentCompact(msg.room_id);
+        setRecentCompact(ceKey);
         if (state.errors >= state.total) {
           broadcast(msg.room_id, { type: 'compact_error', room_id: msg.room_id, thread_id: ceThreadId, error: msg.error || 'Compact failed' });
         } else {
@@ -4592,8 +4705,11 @@ wss.on('connection', (ws, req) => {
     // ── Agent finished responding
     if (msg.type === 'agent_complete' && agentActorId) {
       if (!msg.content?.trim()) {
+        const errMeta = pendingActorMeta.get(msg.message_id) || {};
         db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msg.message_id);
-        broadcast(msg.room_id, { type: 'message_state', message_id: msg.message_id, state: 'error' });
+        const errPayload = { type: 'message_state', message_id: msg.message_id, state: 'error' };
+        if (errMeta.thread_id) errPayload.thread_summary = buildThreadSummary(msg.room_id, errMeta.thread_id);
+        broadcast(msg.room_id, errPayload);
         pendingAgents.get(msg.message_id)?.resolve('');
         pendingAgents.delete(msg.message_id);
         pendingActorMeta.delete(msg.message_id);
@@ -4620,6 +4736,7 @@ wss.on('connection', (ws, req) => {
       if (resultMetaJson) completePayload.result_meta = resultMetaJson;
       if (msg.attachments?.length) { completePayload.attachments = msg.attachments; }
       else if (msg.file_url) { completePayload.file_url = msg.file_url; completePayload.file_name = msg.file_name; }
+      if (doneRow?.thread_id) completePayload.thread_summary = buildThreadSummary(msg.room_id, doneRow.thread_id);
       broadcast(msg.room_id, completePayload);
       broadcastGlobal({ type: 'room_activity', room_id: msg.room_id });
       if (msg.claude_session_id) {
@@ -5294,28 +5411,32 @@ wss.on('connection', (ws, req) => {
         }
       }
       // Clean up pendingCompacts — remove only this agent; if no agents remain, unstick UI
-      for (const [roomId, cs] of pendingCompacts) {
+      // pendingCompacts is keyed `room:thread` (or `room` for legacy room-level) — split before using as ids.
+      for (const [compactKey, cs] of pendingCompacts) {
         const idx = cs.agents.indexOf(agentActorId);
         if (idx !== -1) {
+          const [roomPart, threadPart] = String(compactKey).split(':');
+          const roomId = parseInt(roomPart);
+          const dcThreadId = threadPart ? parseInt(threadPart) : null;
           cs.agents.splice(idx, 1);
           cs.total = Math.max(cs.total - 1, cs.completed); // won't complete — clamp to already-done count
           if (cs.agents.length === 0 || cs.completed >= cs.total) {
-            pendingCompacts.delete(roomId);
-            setRecentCompact(roomId); // prevent compact_complete (if agent reconnects) from sending a redundant compact_done
+            pendingCompacts.delete(compactKey);
+            setRecentCompact(compactKey); // prevent compact_complete (if agent reconnects) from sending a redundant compact_done
             // Write compact marker for agents that successfully completed before disconnect
             if (cs.completed > 0 && cs.names?.length > 0) {
               const completedActorId = cs.completedAgentIds?.[0] ?? agentActorId;
               const participant = db.prepare('SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=? LIMIT 1').get(roomId, completedActorId);
               if (participant) {
                 const content = `${cs.names.join(', ')} · session compacted`;
-                const sysResult = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')").run(roomId, participant.id, content);
-                broadcast(roomId, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: roomId, content, state: 'system_event', created_at: new Date().toISOString() } });
+                const sysResult = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?,?,?,'system_event',?)").run(roomId, participant.id, content, dcThreadId);
+                broadcast(roomId, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: roomId, content, state: 'system_event', thread_id: dcThreadId, created_at: new Date().toISOString() } });
               }
             }
-            broadcast(roomId, { type: 'compact_done', room_id: roomId });
-            console.log(`[agent] Cleared pendingCompact room=${roomId} (agent #${agentActorId} disconnected mid-compact)`);
+            broadcast(roomId, { type: 'compact_done', room_id: roomId, thread_id: dcThreadId });
+            console.log(`[agent] Cleared pendingCompact key=${compactKey} (agent #${agentActorId} disconnected mid-compact)`);
           } else {
-            console.log(`[agent] Agent #${agentActorId} disconnected mid-compact room=${roomId}, ${cs.agents.length} agent(s) still pending`);
+            console.log(`[agent] Agent #${agentActorId} disconnected mid-compact key=${compactKey}, ${cs.agents.length} agent(s) still pending`);
           }
         }
       }
@@ -5606,7 +5727,9 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
     const replied = db.prepare(`SELECT m.id, m.content, m.image_url, m.file_url, m.file_name, m.attachments, a.name as actor_name, a.avatar_color FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id WHERE m.id=?`).get(row.reply_to);
     if (replied) row.reply_msg = replied;
   }
-  broadcast(roomId, { type: 'message_new', message: row });
+  const newMsgPayload = { type: 'message_new', message: row };
+  if (threadId) newMsgPayload.thread_summary = buildThreadSummary(roomId, threadId);
+  broadcast(roomId, newMsgPayload);
   broadcastGlobal({ type: 'room_activity', room_id: roomId });
 
   // R28: if a sequence is already running, apply busy_input_mode before triggering agents
@@ -6039,11 +6162,17 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     if (replied) replyCtx = '\n' + L.replyTo(replied.name, replied.content?.substring(0, 500)) + '\n';
   }
 
-  const PROACTIVE_INSTRUCTIONS = `\n\n## Progress Reporting (MANDATORY for background tasks)\n\nFor any task that takes more than a few seconds, or involves file edits, commits, or multi-step work:\n1. After finishing your analysis, send a proactive message with what you found and your plan.\n2. After each significant step (commit, test run, major finding), send a brief update.\n3. At the end, always send a final summary of what was done.\n\nTo send a proactive message to the room:\n\`\`\`bash\nBASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\ncurl -s -X POST "$BASE_URL/api/rooms/$STOA_ROOM_ID/message" \\\n  -H "Content-Type: application/json" \\\n  -H "x-agent-id: $STOA_ACTOR_ID" \\\n  -H "x-agent-secret: $STOA_SECRET" \\\n  -d '{"content": "Your message here"}'\n\`\`\`\n\n$STOA_URL, $STOA_ACTOR_ID, $STOA_SECRET, and $STOA_ROOM_ID are available as environment variables.`;
+  const proactiveCurlBody = threadId
+    ? `'{"content": "Your message here", "thread_id": ${threadId}}'`
+    : `'{"content": "Your message here"}'`;
+  const PROACTIVE_INSTRUCTIONS = `\n\n## Progress Reporting (MANDATORY for background tasks)\n\nFor any task that takes more than a few seconds, or involves file edits, commits, or multi-step work:\n1. After finishing your analysis, send a proactive message with what you found and your plan.\n2. After each significant step (commit, test run, major finding), send a brief update.\n3. At the end, always send a final summary of what was done.\n\nTo send a proactive message to the room:\n\`\`\`bash\nBASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\ncurl -s -X POST "$BASE_URL/api/rooms/$STOA_ROOM_ID/message" \\\n  -H "Content-Type: application/json" \\\n  -H "x-agent-id: $STOA_ACTOR_ID" \\\n  -H "x-agent-secret: $STOA_SECRET" \\\n  -d ${proactiveCurlBody}\n\`\`\`\n\n$STOA_URL, $STOA_ACTOR_ID, $STOA_SECRET, and $STOA_ROOM_ID are available as environment variables.`;
 
   // Sub-agents are triggered from a caller room that may differ from their own room.
   // Use the literal caller roomId so reports go back to the right place.
-  const PROACTIVE_INSTRUCTIONS_SUB_AGENT = `\n\n## Output\n\nYour final text response is automatically posted to the room as your result. Do NOT also send it via curl — it would appear twice.\n\nOnly use curl in two cases:\n1. **Long task (>1 min):** send a brief mid-task status update so the user knows you're working. Do NOT send the result via curl — write it in your text response.\n2. **Cascade trigger:** if you need to @mention another agent, put the @mention in a curl message body (plain text @mention is not guaranteed to trigger).\n\nFor quick tasks (single command, short lookup): just write the answer in your text response. No curl needed.\n\nYou were triggered from room ${roomId}. If you do use curl, send to that room.\n\nCurl pattern:\n\`\`\`bash\nBASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\ncurl -s -X POST "$BASE_URL/api/rooms/${roomId}/message" \\\n  -H "Content-Type: application/json" \\\n  -H "x-agent-id: $STOA_ACTOR_ID" \\\n  -H "x-agent-secret: $STOA_SECRET" \\\n  -d '{"content": "Your update here"}'\n\`\`\`\n\n$STOA_URL, $STOA_ACTOR_ID, and $STOA_SECRET are available as environment variables.\nRoom ID: ${roomId}`;
+  const subAgentCurlBody = threadId
+    ? `'{"content": "Your update here", "thread_id": ${threadId}}'`
+    : `'{"content": "Your update here"}'`;
+  const PROACTIVE_INSTRUCTIONS_SUB_AGENT = `\n\n## Output\n\nYour final text response is automatically posted to the room as your result. Do NOT also send it via curl — it would appear twice.\n\nOnly use curl in two cases:\n1. **Long task (>1 min):** send a brief mid-task status update so the user knows you're working. Do NOT send the result via curl — write it in your text response.\n2. **Cascade trigger:** if you need to @mention another agent, put the @mention in a curl message body (plain text @mention is not guaranteed to trigger).\n\nFor quick tasks (single command, short lookup): just write the answer in your text response. No curl needed.\n\nYou were triggered from room ${roomId}. If you do use curl, send to that room.\n\nCurl pattern:\n\`\`\`bash\nBASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\ncurl -s -X POST "$BASE_URL/api/rooms/${roomId}/message" \\\n  -H "Content-Type: application/json" \\\n  -H "x-agent-id: $STOA_ACTOR_ID" \\\n  -H "x-agent-secret: $STOA_SECRET" \\\n  -d ${subAgentCurlBody}\n\`\`\`\n\n$STOA_URL, $STOA_ACTOR_ID, and $STOA_SECRET are available as environment variables.\nRoom ID: ${roomId}`;
 
   const identityLine = subAgent
     ? `${L.identity(ai.name)}\nYou are operating as sub-agent "${subAgent.label}" (tier: ${subAgent.tier}).${subAgent.system_prompt ? '\n\nSub-agent instructions:\n' + subAgent.system_prompt : ''}${PROACTIVE_INSTRUCTIONS_SUB_AGENT}`
@@ -6161,7 +6290,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         resolve: (v) => { clearTimeout(timeoutTimer); resolve(v); },
         reject:  (e) => { clearTimeout(timeoutTimer); reject(e); },
       });
-      pendingActorMeta.set(msgId, { actor_id: ai.actor_id, room_id: roomId, actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null, sub_agent_label: subAgent?.label || null });
+      pendingActorMeta.set(msgId, { actor_id: ai.actor_id, room_id: roomId, actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null, sub_agent_label: subAgent?.label || null, thread_id: threadId || null });
       const triggerBaseUrl = getPublicUrl(`localhost:${PORT}`);
       const fullAttachments = (attachments || []).map(a => ({
         ...a,

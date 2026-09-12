@@ -433,10 +433,9 @@
   </div>
 
   <div id="chat-inner">
+    <div id="chat-body-row">
+    <div id="chat-feed-col">
     <div id="chat-header"></div>
-    <div id="compact-bar" class="h-compact-bar">
-      <!-- Populated dynamically with per-participant progress bars -->
-    </div>
     <div id="context-bar" class="h-context-bar"></div>
     <div id="room-search-bar" class="h-room-search-bar">
       <input type="search" id="room-search-input" placeholder="Search in room…" autocomplete="off" spellcheck="false">
@@ -446,8 +445,6 @@
       </div>
     </div>
     <div id="room-search-results" class="h-room-search-results"></div>
-    <div id="chat-body-row">
-    <div id="chat-feed-col">
     <div id="messages">
       <div id="messages-inner"></div>
     </div>
@@ -551,6 +548,7 @@
       </div>
     </div><!-- /composer -->
     </div><!-- /chat-feed-col -->
+    <div id="room-sidebar" class="h-room-sidebar"></div>
     </div><!-- /chat-body-row -->
   </div><!-- /chat-inner -->
 </div><!-- /chat-area -->
@@ -643,6 +641,7 @@
 <script src="/js/core.js"></script>
 <script src="/js/rooms/header.js"></script>
 <script src="/js/rooms/sidebar.js"></script>
+<script src="/js/rooms/room-sidebar.js"></script>
 <script src="/js/rooms/context.js"></script>
 <script src="/js/rooms/list.js"></script>
 <script src="/js/rooms/open.js"></script>
@@ -655,6 +654,8 @@
 <script src="/js/workspace/files.js"></script>
 <script src="/js/markdown.js"></script>
 <script src="/js/chat/append.js"></script>
+<script src="/js/chat/feed.js"></script>
+<script src="/js/chat/thread.js"></script>
 <script src="/js/chat/thinking.js"></script>
 <script src="/js/chat/stream.js"></script>
 <script src="/js/chat/trail.js"></script>

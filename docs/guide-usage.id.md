@@ -121,9 +121,9 @@ Composer mendukung:
 
 ### Reply-to
 
-Klik **panah reply** di bubble pesan mana pun untuk memulai reply. Preview kutipan muncul di atas composer. Reply Anda akan menampilkan pesan yang dikutip di bubble chat.
+Di dalam **panel thread**, hover di atas pesan dan klik **panah reply** untuk mengutipnya. Preview kutipan muncul di atas composer; balasan menampilkan pesan yang dikutip secara inline di thread. Quote-reply hanya tersedia di dalam panel thread — tidak di feed utama.
 
-Agent memahami konteks reply — saat Anda reply ke pesan tertentu, konten pesan asli disuntikkan ke prompt AI sehingga agent tahu persis apa yang sedang Anda rujuk.
+Agent memahami konteks reply — saat Anda mengutip pesan tertentu, kontennya disuntikkan ke prompt AI sehingga agent tahu persis apa yang sedang Anda rujuk.
 
 ### Thread
 
@@ -131,7 +131,11 @@ Feed utama menggunakan **tampilan baris flat Slack-style** — setiap pesan root
 
 Jika sebuah pesan root sudah punya balasan, **chip thread** muncul di bawahnya, menampilkan jumlah balasan, waktu balasan terakhir, dan titik bergerak (pulse) saat agent sedang streaming di dalam thread tersebut.
 
-Klik pesan root mana pun (atau chip thread-nya) untuk membuka **panel thread** di sebelah kanan. Panel berisi semua balasan beserta composer sendiri untuk mengirim balasan langsung ke thread. Jika AI agent mulai streaming balasan di sebuah thread, panel **terbuka otomatis** — tetapi hanya jika Anda sedang tidak membuka thread lain. Tutup panel dengan tombol × atau tekan **Escape**.
+Klik pesan root mana pun (atau chip thread-nya) untuk membuka **panel thread** di sebelah kanan. Pesan root ditampilkan di bagian atas panel; semua balasan muncul di bawahnya. Jika AI agent mulai streaming balasan, panel **terbuka otomatis** — tetapi hanya jika Anda sedang tidak membuka thread lain. Tutup panel dengan tombol × atau tekan **Escape**.
+
+Panel thread memiliki **composer tersendiri yang terpisah** dari composer room — model selector, emoji picker, mention autocomplete, lampiran gambar, dan slash command semuanya tersedia. Masing-masing composer punya state independen: attachments, reply-to, dan draft tidak dibagi antara room dan thread. Draft disimpan per thread dan dipulihkan saat panel dibuka kembali.
+
+**Sesi thread:** setiap thread mempertahankan sesi Claude terpisah. Membuka thread lama melanjutkan konteksnya; pesan pertama di thread baru memulai sesi baru untuk agent tersebut.
 
 **Deep-link:** tambahkan `?thread=<id-pesan>` ke URL room untuk membuka thread tertentu langsung saat halaman dimuat.
 
@@ -451,7 +455,7 @@ Di **Settings > AI Agent**, setiap agent punya dua tombol aksi:
 
 - **Rescan** — scan ulang working directory dan skill agent
 - **Force Update** — paksa agent mengecek update klien segera (normalnya cek tiap 2 menit)
-- **Compact Session** — kompres riwayat percakapan agent untuk mengurangi ukuran konteks. Klik tombol compact (ikon ↕) di header room. Indikator progres per-agent muncul di bawah header room selama proses berlangsung — agent merangkum konteks sebelumnya dan melanjutkan tanpa gangguan. Berguna saat percakapan sudah sangat panjang dan kualitas respons mulai menurun
+- **Compact Session** — kompres riwayat percakapan agent untuk mengurangi ukuran konteks. Buka panel thread dan klik tombol compact (ikon ↕) di header panel. Progress bar muncul di dalam panel thread selama proses berlangsung — agent merangkum konteks sebelumnya dan melanjutkan tanpa gangguan. Berguna saat percakapan sudah sangat panjang dan kualitas respons mulai menurun
 
 ### Auto-Compact
 
@@ -460,7 +464,7 @@ Stoa secara otomatis mengompres sesi agent tanpa intervensi manual. Dua mekanism
 - **Pengecekan per-trigger** — setelah setiap respons agent, Stoa mengecek ukuran file sesi. Jika ukurannya melebihi ambang batas compact yang dikonfigurasi (default 500 KB, dapat diubah di Settings → Server), agent menjalankan `/compact` segera setelah mengirim balasannya, lalu memberi tahu server. User menerima respons lebih dulu; kompaksi terjadi di latar belakang.
 - **Worker latar belakang** — setiap 60 menit, agent memindai semua sesi terbuka di mesinnya dan mengompres yang melebihi ambang batas compact yang dikonfigurasi. Ini juga membersihkan sesi yang terbuka secara lokal tetapi tidak aktif di room Stoa mana pun.
 
-Saat auto-compact berjalan, indikator progres per-agent muncul di bawah header room (sama seperti compact manual) dan compact marker tersimpan di riwayat pesan room. Marker ini persisten dan tetap terlihat setelah refresh halaman.
+Saat auto-compact berjalan, progress bar compact muncul di panel thread (sama seperti compact manual) dan compact marker tersimpan di riwayat pesan thread. Marker ini persisten dan tetap terlihat setelah refresh halaman.
 
 ### Pesan Proaktif
 

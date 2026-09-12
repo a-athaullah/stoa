@@ -15,10 +15,6 @@ async function openRoom(room) {
   currentRoomId = room.id;
   currentRoomWorkdirId = room.workdir_id || null;
   clearRoomDisplay();
-  // Apply compact state: hide bar if switching away from compacting room
-  if (compactingRoomId && compactingRoomId !== room.id) {
-    hideCompactBar();
-  }
   clearComposerProcessing();
 
   document.querySelectorAll('.h-room-row').forEach(el => {
@@ -46,6 +42,7 @@ async function openRoom(room) {
   roomParticipantsCache[room.id] = parts;
   renderRoomDots(room.id, parts);
   renderChatHeader(room, parts);
+  renderRoomSidebar(room, parts);
   renderComposerSeal();
   if (typeof updateModelSelector === 'function') updateModelSelector(room, parts);
   loadContextState(room.id);

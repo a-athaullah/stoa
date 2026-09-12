@@ -62,26 +62,29 @@ html.dark .h-faded-mark { opacity: 0.12; }
 
 /* Header */
 #chat-header {
-  padding: 20px 36px 18px;
+  padding: 10px 20px;
   border-bottom: 1px solid var(--h-hair-soft);
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
   background: var(--h-header-bg);
   flex: 0 0 auto;
 }
 
-.h-header-info { flex: 1; min-width: 0; }
+.h-header-info { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; }
 
 .h-room-name {
   font-family: var(--h-serif);
-  font-size: 23px;
-  line-height: 1.1;
+  font-size: 15px;
+  line-height: 1.2;
   cursor: pointer;
   border-radius: 4px;
   padding: 0 4px;
   margin: 0 -4px;
   transition: background 0.12s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .h-room-name:hover { background: var(--h-surface-hi); }
 .h-room-name.editing {
@@ -91,9 +94,9 @@ html.dark .h-faded-mark { opacity: 0.12; }
 
 .h-room-tagline {
   font-family: var(--h-serif);
-  font-size: 13px;
+  font-size: 12px;
   color: var(--h-ink-faint);
-  margin-top: 4px;
+  white-space: nowrap;
 }
 .h-model-badge {
   display: inline-block;
@@ -1113,7 +1116,8 @@ html.dark .h-faded-mark { opacity: 0.12; }
 #enter-send-toggle.active .enter-send-label { color: var(--h-ink-mute); }
 
 /* ── Voice recording state ─────────────────────────── */
-#voice-btn.recording {
+#voice-btn.recording,
+#thread-voice-btn.recording {
   color: #d32f2f;
   background: rgba(211, 47, 47, 0.1);
   animation: voice-pulse 1.2s ease-in-out infinite;
@@ -1212,6 +1216,49 @@ html.dark .h-faded-mark { opacity: 0.12; }
   line-height: 1;
 }
 .h-emoji-btn:hover { background: var(--h-hair-soft); }
+
+/* ── Thread emoji picker ─────────────────────────────── */
+.h-emoji-picker {
+  display: none;
+  position: relative;
+  width: 100%;
+  background: var(--h-surface);
+  border-bottom: 1px solid var(--h-hairline);
+  z-index: 60;
+  overflow: hidden;
+}
+.h-emoji-picker.open { display: block; }
+.h-emoji-picker input {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--h-hairline);
+  padding: 8px 10px;
+  font-size: 13px;
+  background: var(--h-surface);
+  color: var(--h-ink);
+  outline: none;
+  box-sizing: border-box;
+}
+.h-emoji-picker input::placeholder { color: var(--h-ink); opacity: 0.4; }
+.h-emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 2px;
+  padding: 8px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+/* ── Thread composer input styling (match room) ──────── */
+#thread-msg-input strong, #thread-msg-input b { font-weight: 600; }
+#thread-msg-input em, #thread-msg-input i { font-style: italic; }
+#thread-msg-input s, #thread-msg-input del { text-decoration: line-through; }
+#thread-msg-input code { font-family: monospace; font-size: 13px; background: var(--h-hair-soft); border-radius: 3px; padding: 0 3px; }
+#thread-msg-input pre { background: var(--h-hair-soft); border-radius: 6px; padding: 6px 10px; margin: 2px 0; white-space: pre-wrap; }
+#thread-msg-input blockquote { border-left: 3px solid var(--h-ink-mute); margin: 2px 0; padding: 2px 0 2px 10px; color: var(--h-ink-mute); }
+#thread-msg-input ol, #thread-msg-input ul { margin: 2px 0 2px 18px; padding: 0; }
+#thread-msg-input li { margin: 1px 0; }
+#thread-msg-input a { color: #5b8fd4; text-decoration: underline; text-underline-offset: 2px; }
 
 /* ── Skill autocomplete ──────────────────────────────── */
 #skill-popup {
@@ -1702,9 +1749,12 @@ html.dark .h-bubble :not(pre) > code {
   letter-spacing: 0.02em;
   line-height: 1.7;
   cursor: pointer;
-  transition: background 0.12s, color 0.12s;
+  transition: background 0.12s, color 0.12s, opacity 0.15s;
   white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
 }
+pre:hover .h-copy-btn { opacity: 1; pointer-events: auto; }
 .h-copy-btn:hover {
   background: oklch(0.345 0.012 48);
   color: oklch(0.900 0.008 55);
@@ -1780,11 +1830,70 @@ html.dark .h-bubble :not(pre) > code {
 .wa-context > :not(summary) { font-size: 11px; color: var(--h-ink-faint, #888); }
 .wa-context p, .wa-context code { font-size: 11px; }
 
+/* ── Room sidebar ─────────────────────────────────────────────────────────── */
+.h-room-sidebar {
+  flex: 0 0 44px;
+  order: 99;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px 0;
+  gap: 4px;
+  border-left: 1px solid var(--h-hair-soft);
+  background: var(--h-bg);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.h-room-sidebar:empty { display: none; }
+
+.h-rsb-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: transparent;
+  border: none;
+  color: var(--h-ink-faint);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  flex-shrink: 0;
+}
+.h-rsb-btn:hover { background: var(--h-surface-hi, var(--h-surface)); color: var(--h-ink-mute); }
+.h-rsb-btn.active {
+  color: var(--h-accent);
+  background: color-mix(in srgb, var(--h-accent) 10%, transparent);
+}
+
+.h-rsb-divider {
+  width: 20px;
+  height: 1px;
+  background: var(--h-hair-soft);
+  margin: 4px 0;
+  flex-shrink: 0;
+}
+
+.h-rsb-popover {
+  position: fixed;
+  width: 420px;
+  max-height: 80vh;
+  overflow-y: auto;
+  background: var(--h-surface);
+  border: 1px solid var(--h-border);
+  border-radius: 12px;
+  box-shadow: 0 10px 40px rgba(0,0,0,.2);
+  padding: 16px 18px;
+  z-index: 150;
+  font-family: var(--h-sans);
+}
+
 /* ── Thread panel ─────────────────────────────────────────────────────────── */
 .h-thread-panel {
+  position: relative;
   width: 380px;
-  min-width: 280px;
-  max-width: 480px;
+  min-width: 320px;
+  max-width: 70vw;
   flex: 0 0 380px;
   display: none;
   flex-direction: column;
@@ -1794,11 +1903,29 @@ html.dark .h-bubble :not(pre) > code {
 }
 .h-thread-panel.open { display: flex; }
 
+/* Resize handle on left edge */
+.h-thread-resize-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: col-resize;
+  z-index: 10;
+  background: transparent;
+  transition: background 0.15s;
+}
+.h-thread-resize-handle:hover,
+.h-thread-resize-handle:active {
+  background: var(--h-accent, #3a7bd5);
+  opacity: 0.5;
+}
+
 .h-thread-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 14px 16px 12px;
+  padding: 10px 16px;
   border-bottom: 1px solid var(--h-hair-soft);
   background: var(--h-header-bg);
   flex: 0 0 auto;
@@ -1857,22 +1984,25 @@ html.dark .h-bubble :not(pre) > code {
 
 .h-thread-footer {
   flex: 0 0 auto;
-  border-top: 1px solid var(--h-hair-soft);
-  padding: 10px 12px;
+  padding: 8px 12px 22px;
 }
-
-.h-thread-composer {
-  display: flex;
-  align-items: flex-end;
+.h-thread-footer #thread-reply-bar {
+  display: none;
+  align-items: center;
   gap: 8px;
-  background: var(--h-input-bg, var(--h-surface));
-  border: 1px solid var(--h-border);
-  border-radius: 10px;
-  padding: 8px 10px;
+  padding: 6px 10px;
+  background: var(--h-surface-hi, var(--h-surface));
+  border: 1px solid var(--h-hair-soft);
+  border-bottom: none;
+  border-radius: 12px 12px 0 0;
+  font-family: var(--h-sans);
+  font-size: 13px;
 }
-
+.h-thread-footer #thread-reply-bar.visible { display: flex; }
+.h-thread-footer .h-thread-composer-box {
+  margin: 0;
+}
 #thread-msg-input {
-  flex: 1;
   min-height: 20px;
   max-height: 140px;
   overflow-y: auto;
@@ -1882,29 +2012,98 @@ html.dark .h-bubble :not(pre) > code {
   color: var(--h-ink);
   outline: none;
   word-break: break-word;
+  flex: 1;
 }
-
 #thread-msg-input:empty::before {
   content: attr(data-placeholder);
   color: var(--h-ink-faint);
   pointer-events: none;
 }
-
+#thread-stop-action {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--h-ink-mute);
+  background: none;
+  border: 1px solid var(--h-hairline);
+  border-radius: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+#thread-stop-action.visible {
+  display: flex;
+  background: #d32f2f;
+  color: #fff;
+  border-color: #d32f2f;
+  animation: stop-blink 1.2s ease-in-out infinite;
+}
+.h-thread-composer-box.ai-processing #thread-msg-input {
+  pointer-events: none;
+  opacity: 0.45;
+}
+.h-thread-composer-box.ai-processing #thread-send-btn { display: none; }
+.h-thread-composer-box.ai-processing #thread-enter-send-toggle { pointer-events: none; opacity: 0.35; }
+.h-thread-composer-box.ai-processing .h-icon-btn { pointer-events: none; opacity: 0.35; }
+.h-thread-composer-box.ai-processing .h-fmt-btn { pointer-events: none; opacity: 0.35; }
 #thread-send-btn {
   flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
+  width: 26px;
+  height: 26px;
   display: flex;
   align-items: center;
   justify-content: center;
   border: none;
   border-radius: 6px;
-  background: var(--h-accent, #3a7bd5);
-  color: #fff;
+  background: var(--h-ink);
+  color: var(--h-bg);
   cursor: pointer;
-  transition: opacity 0.15s;
+  transition: opacity 0.12s;
+  flex-shrink: 0;
 }
-#thread-send-btn:hover { opacity: 0.85; }
+#thread-send-btn:hover { opacity: 0.82; }
+#thread-enter-send-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  margin-right: 6px;
+  user-select: none;
+}
+#thread-attach-preview {
+  display: none;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 0 0;
+}
+#thread-attach-preview.visible { display: flex; }
+
+.h-thread-root-row {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 16px 10px;
+  background: var(--h-surface-hi, var(--h-surface));
+  border-bottom: 1px solid var(--h-hair-soft);
+}
+.h-thread-root-row .h-bubble {
+  background: none !important;
+  border: none !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+}
+
+.h-thread-divider {
+  padding: 6px 16px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--h-ink-faint);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--h-hair-soft);
+}
 
 /* ── Feed root messages (clickable rows) ──────────────────────────────────── */
 .h-feed-root {
@@ -1934,6 +2133,20 @@ html.dark .h-bubble :not(pre) > code {
 .h-thread-chip:hover { background: var(--h-hover); }
 .h-thread-chip.active { border-color: var(--h-accent, #3a7bd5); }
 
+.h-thread-chip-avatars {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.h-thread-chip-av {
+  width: 20px !important;
+  height: 20px !important;
+  border-radius: 50% !important;
+  border: 1.5px solid var(--h-surface) !important;
+  font-size: 10px !important;
+  box-sizing: content-box;
+  flex-shrink: 0;
+}
 .h-thread-chip-count { font-weight: 600; }
 .h-thread-chip-time { color: var(--h-ink-mute); font-weight: 400; }
 
@@ -2018,6 +2231,8 @@ html.dark .h-room-thread-badge {
 
 /* ── Mobile overlay: thread panel full-screen on small viewports ─────────── */
 @media (max-width: 1023px) {
+  .h-room-sidebar { display: none; }
+  .h-rsb-popover { width: calc(100vw - 24px); right: 12px !important; }
   .h-thread-panel {
     position: fixed;
     top: 0;
@@ -2046,6 +2261,66 @@ html.dark .h-room-thread-badge {
     pointer-events: none;
   }
   .h-thread-header { position: relative; padding-top: 20px; }
+  .h-thread-resize-handle { display: none; }
+}
+
+/* ── Thread panel — flat message rows (no bubble) ────────────────────────── */
+.h-thread-msg-row {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 5px 16px;
+}
+
+.h-thread-msg-row .h-msg-seal-wrap {
+  flex: 0 0 28px;
+  padding-top: 2px;
+}
+
+.h-thread-msg-row .h-msg-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: flex-start !important;
+}
+
+/* Strip all bubble appearance inside thread panel rows */
+.h-thread-msg-row .h-bubble,
+.h-thread-msg-row .h-thinking-bubble {
+  background: none !important;
+  border: none !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+  color: var(--h-ink);
+  font-size: 15px;
+  line-height: 1.55;
+  max-width: 100%;
+}
+
+.h-thread-msg-row .h-msg-meta {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.h-thread-msg-row .h-msg-name {
+  font-size: 13.5px;
+  font-weight: 700;
+}
+
+.h-thread-msg-row .h-msg-time {
+  font-size: 11px;
+  color: var(--h-ink-faint);
+}
+
+/* Separator between thread messages */
+.h-thread-msg-row + .h-thread-msg-row {
+  border-top: 1px solid var(--h-hair-soft);
+  margin-top: 2px;
 }
 
 /* ── Slack-style root rows (feed) ─────────────────────────────────────────── */
