@@ -4629,6 +4629,22 @@ async function run() {
     assert.ok(triggerFn.includes('getThreadSession(ai.participant_id, threadId)'), 'triggerAiResponse must use getThreadSession (not getSession)');
   });
 
+  await test('Auto-thread — compact_complete resolves thread_id from session row (code check)', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    const ccHandler = src.substring(src.indexOf("msg.type === 'compact_complete'"), src.indexOf("msg.type === 'compact_complete'") + 2000);
+    assert.ok(ccHandler.includes('SELECT thread_id, sub_agent_id FROM ai_sessions WHERE claude_session_id'), 'compact_complete must resolve thread_id from session row');
+    assert.ok(ccHandler.includes('cannot resolve thread_id'), 'compact_complete must warn when thread_id unresolvable');
+  });
+
+  await test('Auto-thread — stoa.js sends thread_id in compact messages (code check)', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'stoa.js'), 'utf8');
+    assert.ok(src.includes('function parseSessionKey(key)'), 'stoa.js must have parseSessionKey helper');
+    const workerSection = src.substring(src.indexOf('auto-compacting'), src.indexOf('auto-compacting') + 500);
+    assert.ok(workerSection.includes('thread_id: skMeta.threadId'), 'worker auto_compact_start must include thread_id');
+    const triggerSection = src.substring(src.indexOf('compact: done for'), src.indexOf('compact: done for') + 300);
+    assert.ok(triggerSection.includes('thread_id: msg.thread_id'), 'compact_trigger complete must include thread_id');
+  });
+
   await test('Thread — cleanup', async () => {
     // Cleaned up in teardown
   });
