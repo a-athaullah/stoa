@@ -4456,7 +4456,9 @@ wss.on('connection', (ws, req) => {
     // ── Agent reports state change (requesting / streaming)
     if (msg.type === 'agent_state' && agentActorId) {
       const actorMeta = pendingActorMeta.get(msg.message_id) || {};
-      broadcast(msg.room_id, { type: 'message_state', message_id: msg.message_id, state: msg.state, ...actorMeta });
+      const statePayload = { type: 'message_state', message_id: msg.message_id, state: msg.state, ...actorMeta };
+      if (actorMeta.thread_id) statePayload.thread_summary = buildThreadSummary(msg.room_id, actorMeta.thread_id);
+      broadcast(msg.room_id, statePayload);
     }
 
     if (msg.type === 'agent_search' && agentActorId) {
@@ -4682,8 +4684,11 @@ wss.on('connection', (ws, req) => {
     // ── Agent finished responding
     if (msg.type === 'agent_complete' && agentActorId) {
       if (!msg.content?.trim()) {
+        const errMeta = pendingActorMeta.get(msg.message_id) || {};
         db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msg.message_id);
-        broadcast(msg.room_id, { type: 'message_state', message_id: msg.message_id, state: 'error' });
+        const errPayload = { type: 'message_state', message_id: msg.message_id, state: 'error' };
+        if (errMeta.thread_id) errPayload.thread_summary = buildThreadSummary(msg.room_id, errMeta.thread_id);
+        broadcast(msg.room_id, errPayload);
         pendingAgents.get(msg.message_id)?.resolve('');
         pendingAgents.delete(msg.message_id);
         pendingActorMeta.delete(msg.message_id);

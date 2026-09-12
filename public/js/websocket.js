@@ -158,6 +158,7 @@ function handleWsMessage(msg) {
   }
 
   if (msg.type === 'message_state') {
+    if (msg.thread_summary && typeof handleThreadSummary === 'function') handleThreadSummary(msg.thread_summary);
     if ((msg.state === 'requesting' || msg.state === 'streaming') && msg.actor_name) {
       const tId = msg.thread_id || null;
       // Auto-open thread panel when AI starts responding in a thread — only if no thread is currently open
