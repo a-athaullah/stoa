@@ -38,8 +38,8 @@ async function openThread(rootId) {
 
   _updateRoomHeaderThread(rootId);
   await _loadThread(rootId);
-  _reparentComposerToThread();
   restoreThreadDraft(currentRoomId, rootId);
+  document.getElementById('thread-msg-input')?.focus();
 }
 
 function closeThread() {
@@ -63,8 +63,7 @@ function closeThread() {
   Object.keys(threadContextState).forEach(k => delete threadContextState[k]);
   updateThreadContextBar();
 
-  _returnComposerToFeed();
-  if (typeof restoreDraft === 'function') restoreDraft(currentRoomId);
+  clearThreadAttachments();
 }
 
 // ── Create panel DOM ─────────────────────────────────────────────────────────
@@ -143,11 +142,175 @@ function _createThreadPanel() {
     if (scroll.scrollTop < 120) _loadOlderThreadMessages();
   });
 
-  // Footer — main composer will be reparented here when thread opens
+  // Footer: dedicated thread composer
   const footer = document.createElement('div');
   footer.id = 'thread-footer';
   footer.className = 'h-thread-footer';
+
+  // Reply bar (quote-reply)
+  const replyBar = document.createElement('div');
+  replyBar.id = 'thread-reply-bar';
+  replyBar.className = 'h-reply-bar';
+  const replyBarContent = document.createElement('div');
+  replyBarContent.className = 'reply-bar-content';
+  const replyBarName = document.createElement('div');
+  replyBarName.className = 'reply-bar-name';
+  replyBarName.id = 'thread-reply-bar-name';
+  const replyBarText = document.createElement('div');
+  replyBarText.className = 'reply-bar-text';
+  replyBarText.id = 'thread-reply-bar-text';
+  replyBarContent.append(replyBarName, replyBarText);
+  const replyBarClose = document.createElement('button');
+  replyBarClose.id = 'thread-reply-bar-close';
+  replyBarClose.title = 'Cancel reply';
+  replyBarClose.textContent = '×';
+  replyBarClose.onclick = clearThreadReply;
+  replyBar.append(replyBarContent, replyBarClose);
+  footer.appendChild(replyBar);
+
+  // Composer box
+  const composerBox = document.createElement('div');
+  composerBox.className = 'h-composer-box h-thread-composer-box';
+  composerBox.style.position = 'relative';
+
+  // Attach preview
+  const attachPreview = document.createElement('div');
+  attachPreview.id = 'thread-attach-preview';
+  composerBox.appendChild(attachPreview);
+
+  // Format bar
+  const fmtBar = document.createElement('div');
+  fmtBar.className = 'h-fmt-bar';
+  const fmtBtns = [
+    { fmt: 'bold',       title: 'Bold (Ctrl+B)',       icon: '<path d="M6 4h7a5 5 0 0 1 3.5 8.6A5.5 5.5 0 0 1 14 22H6V4zm3 3v4h4a2 2 0 1 0 0-4H9zm0 7v5h5a2.5 2.5 0 1 0 0-5H9z"/>', fill: true },
+    { fmt: 'italic',     title: 'Italic (Ctrl+I)',     icon: '<path d="M10 4h8v3h-2.8l-4.4 10H14v3H6v-3h2.8l4.4-10H10V4z"/>', fill: true },
+    { fmt: 'code',       title: 'Code',                icon: '<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>', fill: false },
+    { fmt: 'codeblock',  title: 'Code block',          icon: '<rect x="3" y="3" width="18" height="18" rx="2"/><polyline points="8 10 4 14 8 18" transform="scale(.7) translate(5,3)"/><polyline points="16 10 20 14 16 18" transform="scale(.7) translate(5,3)"/>', fill: false },
+  ];
+  fmtBtns.forEach(({ fmt, title, icon, fill }) => {
+    const btn = document.createElement('button');
+    btn.className = 'h-fmt-btn';
+    btn.dataset.fmt = fmt;
+    btn.title = title;
+    btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" ${fill ? 'fill="currentColor"' : 'fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"'}>${icon}</svg>`;
+    btn.addEventListener('mousedown', e => {
+      e.preventDefault();
+      if (typeof applyFormat === 'function') applyFormat(fmt);
+    });
+    fmtBar.appendChild(btn);
+  });
+  composerBox.appendChild(fmtBar);
+
+  // Input area
+  const composerTop = document.createElement('div');
+  composerTop.className = 'h-composer-top';
+  const inputEl = document.createElement('div');
+  inputEl.id = 'thread-msg-input';
+  inputEl.contentEditable = 'true';
+  inputEl.setAttribute('role', 'textbox');
+  inputEl.setAttribute('aria-multiline', 'true');
+  inputEl.dataset.placeholder = 'Reply in thread…';
+  composerTop.appendChild(inputEl);
+  composerBox.appendChild(composerTop);
+
+  // Actions row
+  const actionsRow = document.createElement('div');
+  actionsRow.className = 'h-composer-actions';
+
+  // Attach button
+  const attachWrap = document.createElement('span');
+  attachWrap.style.position = 'relative';
+  const threadAttachBtn = document.createElement('button');
+  threadAttachBtn.className = 'h-icon-btn';
+  threadAttachBtn.title = 'Attach file';
+  threadAttachBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20.5 11.5l-8.5 8.5a5 5 0 0 1-7-7l9-9a3.5 3.5 0 0 1 5 5l-9 9a2 2 0 0 1-3-3l8-8"/></svg>';
+  const threadAttachMenu = document.createElement('div');
+  threadAttachMenu.className = 'attach-menu';
+  const threadAttachPhoto = document.createElement('button');
+  threadAttachPhoto.className = 'attach-menu-item';
+  threadAttachPhoto.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg> Photo / Image';
+  const threadAttachFile = document.createElement('button');
+  threadAttachFile.className = 'attach-menu-item';
+  threadAttachFile.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg> File';
+  threadAttachMenu.append(threadAttachPhoto, threadAttachFile);
+  attachWrap.append(threadAttachBtn, threadAttachMenu);
+
+  threadAttachBtn.addEventListener('click', e => { e.stopPropagation(); threadAttachMenu.classList.toggle('visible'); });
+  document.addEventListener('click', () => threadAttachMenu.classList.remove('visible'));
+
+  function _threadHandleFileUpload(file, isImage) {
+    if (typeof uploadWithProgress !== 'function') return;
+    uploadWithProgress(file).then(({ url, name }) => {
+      addThreadAttachment(url, name || file.name, isImage ? 'image' : 'file');
+    }).catch(err => {
+      if (typeof showUploadError === 'function') showUploadError(err.message || 'Upload failed');
+    });
+  }
+
+  threadAttachPhoto.addEventListener('click', () => {
+    threadAttachMenu.classList.remove('visible');
+    const fi = document.createElement('input');
+    fi.type = 'file'; fi.accept = 'image/*'; fi.multiple = true;
+    fi.onchange = () => { for (const f of fi.files) _threadHandleFileUpload(f, true); };
+    fi.click();
+  });
+  threadAttachFile.addEventListener('click', () => {
+    threadAttachMenu.classList.remove('visible');
+    const fi = document.createElement('input');
+    fi.type = 'file'; fi.multiple = true;
+    fi.onchange = () => { for (const f of fi.files) _threadHandleFileUpload(f, false); };
+    fi.click();
+  });
+
+  actionsRow.appendChild(attachWrap);
+  actionsRow.appendChild(document.createElement('span')).style.flex = '1';
+
+  // Stop button (thread-level)
+  const threadStopAction = document.createElement('button');
+  threadStopAction.id = 'thread-stop-action';
+  threadStopAction.title = 'Stop generation (Esc)';
+  threadStopAction.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg> stop';
+  threadStopAction.onclick = () => stopThreadGeneration();
+  actionsRow.appendChild(threadStopAction);
+
+  // Send button
+  const sendBtn = document.createElement('button');
+  sendBtn.id = 'thread-send-btn';
+  sendBtn.className = 'h-send-btn';
+  sendBtn.title = 'Send (Enter)';
+  sendBtn.setAttribute('aria-label', 'Send');
+  sendBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path d="M1.5 2.1c0-.46.5-.75.9-.53l15.7 7.7a.6.6 0 0 1 0 1.06l-15.7 7.7c-.4.23-.9-.06-.9-.53V11.5L11 10 1.5 8.5V2.1z"/></svg>';
+  sendBtn.onclick = sendThreadMessage;
+  actionsRow.appendChild(sendBtn);
+  composerBox.appendChild(actionsRow);
+  footer.appendChild(composerBox);
   panel.appendChild(footer);
+
+  // Keyboard handling for thread input
+  inputEl.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendThreadMessage(); }
+    if (e.key === 'Escape') closeThread();
+  });
+
+  // Paste image in thread
+  inputEl.addEventListener('paste', async e => {
+    const items = [...(e.clipboardData?.items || [])];
+    const img = items.find(i => i.type.startsWith('image/'));
+    if (!img) return;
+    e.preventDefault();
+    const file = img.getAsFile();
+    if (typeof uploadWithProgress === 'function') {
+      try { const { url, name } = await uploadWithProgress(file); addThreadAttachment(url, name || file.name, 'image'); } catch (err) { if (typeof showUploadError === 'function') showUploadError(err.message || 'Upload failed'); }
+    }
+  });
+
+  // Drag-drop file in thread panel
+  panel.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
+  panel.addEventListener('drop', e => {
+    e.preventDefault();
+    const files = [...(e.dataTransfer.files || [])];
+    files.forEach(f => _threadHandleFileUpload(f, f.type.startsWith('image/')));
+  });
 
   chatBodyRow.appendChild(panel);
 
@@ -431,47 +594,61 @@ function compactThread() {
   ws.send(JSON.stringify({ type: 'compact_session', room_id: currentRoomId, thread_id: activeThreadId }));
 }
 
-// ── Composer reparent — moves main #composer into thread panel ───────────────
-// sendMessage() in composer/input.js already reads activeThreadId → thread_id
+// ── Thread attachment state ───────────────────────────────────────────────────
+let threadPendingAttachments = [];
 
-function _reparentComposerToThread() {
-  const composer = document.getElementById('composer');
-  const footer = document.getElementById('thread-footer');
-  if (!composer || !footer) return;
-  if (footer.contains(composer)) return; // already there
-
-  // Insert invisible slot so we can return composer to its original position
-  if (!document.getElementById('composer-slot')) {
-    const slot = document.createElement('div');
-    slot.id = 'composer-slot';
-    slot.style.display = 'none';
-    composer.parentNode.insertBefore(slot, composer);
-  }
-
-  footer.appendChild(composer);
-
-  const input = document.getElementById('msg-input');
-  if (input) {
-    input.dataset.placeholder = 'Reply in thread…';
-    input.focus();
-  }
+function addThreadAttachment(url, name, type) {
+  threadPendingAttachments.push({ url, name, type });
+  _renderThreadAttachPreview();
 }
 
-function _returnComposerToFeed() {
-  const composer = document.getElementById('composer');
-  const slot = document.getElementById('composer-slot');
-  if (!composer || !slot) return;
-  slot.parentNode.insertBefore(composer, slot);
-  slot.remove();
+function removeThreadAttachment(idx) {
+  threadPendingAttachments.splice(idx, 1);
+  _renderThreadAttachPreview();
+}
 
-  const input = document.getElementById('msg-input');
-  if (input) input.dataset.placeholder = 'say something…';
+function clearThreadAttachments() {
+  threadPendingAttachments = [];
+  _renderThreadAttachPreview();
+}
+
+function _renderThreadAttachPreview() {
+  const el = document.getElementById('thread-attach-preview');
+  if (!el) return;
+  if (!threadPendingAttachments.length) { el.classList.remove('visible'); el.innerHTML = ''; return; }
+  el.classList.add('visible');
+  el.innerHTML = threadPendingAttachments.map((a, i) => {
+    if (a.type === 'image') return `<div class="attach-thumb"><img src="${a.url}" alt="${escHtml(a.name)}"><button class="attach-thumb-x" data-idx="${i}">&times;</button></div>`;
+    return `<div class="attach-thumb-file"><span>${escHtml(a.name)}</span><button class="attach-thumb-x" data-idx="${i}">&times;</button></div>`;
+  }).join('');
+  el.querySelectorAll('.attach-thumb-x').forEach(btn => {
+    btn.onclick = () => removeThreadAttachment(parseInt(btn.dataset.idx));
+  });
+}
+
+// ── Thread reply ──────────────────────────────────────────────────────────────
+let threadPendingReplyTo = null;
+
+function startThreadReply(msgId, actorName, avatarColor, content) {
+  threadPendingReplyTo = msgId;
+  const nameEl = document.getElementById('thread-reply-bar-name');
+  const textEl = document.getElementById('thread-reply-bar-text');
+  const bar = document.getElementById('thread-reply-bar');
+  if (nameEl) { nameEl.textContent = actorName; nameEl.style.color = avatarColor || 'var(--h-ink)'; }
+  if (textEl) textEl.textContent = (content || '').substring(0, 150);
+  if (bar) bar.classList.add('visible');
+  document.getElementById('thread-msg-input')?.focus();
+}
+
+function clearThreadReply() {
+  threadPendingReplyTo = null;
+  document.getElementById('thread-reply-bar')?.classList.remove('visible');
 }
 
 // ── Draft per (room, thread) ─────────────────────────────────────────────────
 function saveThreadDraft(roomId, threadId) {
   if (!roomId || !threadId) return;
-  const inputEl = document.getElementById('msg-input');
+  const inputEl = document.getElementById('thread-msg-input');
   if (!inputEl) return;
   const html = inputEl.innerHTML.trim();
   const key = 'stoa-thread-draft-' + roomId + '-' + threadId;
@@ -483,12 +660,11 @@ function saveThreadDraft(roomId, threadId) {
 }
 
 function restoreThreadDraft(roomId, threadId) {
-  const inputEl = document.getElementById('msg-input');
+  const inputEl = document.getElementById('thread-msg-input');
   if (!inputEl) return;
   const key = 'stoa-thread-draft-' + roomId + '-' + threadId;
   const draft = localStorage.getItem(key);
   inputEl.innerHTML = draft || '';
-  // Move cursor to end
   if (draft) {
     const sel = window.getSelection();
     const range = document.createRange();
@@ -497,6 +673,33 @@ function restoreThreadDraft(roomId, threadId) {
     sel.removeAllRanges();
     sel.addRange(range);
   }
+}
+
+// ── Thread send ───────────────────────────────────────────────────────────────
+function sendThreadMessage() {
+  if (!activeThreadId || !ws || ws.readyState !== WebSocket.OPEN) return;
+  const inputEl = document.getElementById('thread-msg-input');
+  if (!inputEl) return;
+  const content = (typeof htmlToMarkdown === 'function' ? htmlToMarkdown(inputEl) : inputEl.textContent)
+    .replace(/​/g, '').replace(/\n{3,}/g, '\n\n').trim();
+  if (!content && !threadPendingAttachments.length) return;
+
+  inputEl.innerHTML = '';
+  const attachments = threadPendingAttachments.length ? [...threadPendingAttachments] : undefined;
+  const replyTo = threadPendingReplyTo;
+  clearThreadAttachments();
+  clearThreadReply();
+  try { localStorage.removeItem('stoa-thread-draft-' + currentRoomId + '-' + activeThreadId); } catch {}
+
+  ws.send(JSON.stringify({
+    type: 'send_message',
+    room_id: currentRoomId,
+    content,
+    attachments,
+    reply_to: replyTo,
+    thread_id: activeThreadId,
+    event_id: crypto.randomUUID(),
+  }));
 }
 
 // ── Context bar (thread-scoped) ───────────────────────────────────────────────
@@ -593,8 +796,7 @@ function _updateRoomHeaderThread(rootId) {
     || 'Thread').replace(/</g, '&lt;');
   crumb.innerHTML = `<span class="h-thread-breadcrumb-sep">›</span><span class="h-thread-breadcrumb-label" title="Click to focus thread">${snippet}</span>`;
   crumb.querySelector('.h-thread-breadcrumb-label').onclick = () => {
-    const panel = _getThreadPanel();
-    document.getElementById('msg-input')?.focus();
+    document.getElementById('thread-msg-input')?.focus();
   };
 }
 
@@ -604,7 +806,8 @@ function clearThreadPanel() {
     saveThreadDraft(currentRoomId, activeThreadId);
     activeThreadId = null;
   }
-  _returnComposerToFeed();
+  clearThreadAttachments();
+  clearThreadReply();
   const panel = _getThreadPanel();
   if (panel) {
     panel.classList.remove('open');
