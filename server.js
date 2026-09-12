@@ -4494,7 +4494,8 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'agent_system_event' && agentActorId) {
       const actor = db.prepare('SELECT name FROM actors WHERE id=?').get(agentActorId);
-      broadcast(msg.room_id, { type: 'system_event', status: msg.status, actor_name: actor?.name, sub_agent_label: msg.sub_agent_label || null });
+      const seMeta = pendingActorMeta.get(msg.message_id) || {};
+      broadcast(msg.room_id, { type: 'system_event', status: msg.status, actor_name: actor?.name, sub_agent_label: msg.sub_agent_label || null, thread_id: seMeta.thread_id || null });
     }
 
     if (msg.type === 'auto_compact_start' && agentActorId) {
