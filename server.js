@@ -4277,7 +4277,7 @@ wss.on('connection', (ws, req) => {
       const participants = targets.map(t => ({ participant_id: t.participant_id, actor_id: t.actor_id, name: t.name }));
       broadcast(roomId, { type: 'compact_start', room_id: roomId, thread_id: compactThreadId, total: targets.length, participants });
       const names = targets.map(t => t.name).join(', ');
-      broadcast(roomId, { type: 'system_event', actor_name: names, status: 'session compacting' });
+      broadcast(roomId, { type: 'system_event', actor_name: names, status: 'session compacting', thread_id: compactThreadId });
       setTimeout(() => {
         if (pendingCompacts.has(compactKey)) {
           pendingCompacts.delete(compactKey);
@@ -4546,7 +4546,7 @@ wss.on('connection', (ws, req) => {
           const participants = actor && participant ? [{ participant_id: participant.id, actor_id: actor.id, name: actor.name }] : [];
           pendingCompacts.set(acKey, { total: 1, completed: 0, agents: [agentActorId], completedAgentIds: [], completedParticipantIds: [], targets: participants });
           broadcast(roomId, { type: 'compact_start', room_id: roomId, thread_id: acThreadId, total: 1, participants });
-          if (actor) broadcast(roomId, { type: 'system_event', actor_name: actor.name, status: 'session compacting' });
+          if (actor) broadcast(roomId, { type: 'system_event', actor_name: actor.name, status: 'session compacting', thread_id: acThreadId });
           console.log(`[server] auto-compact started room=${roomId} thread=${acThreadId || 0} by agent=${agentActorId}`);
         } else {
           const cs = pendingCompacts.get(acKey);
