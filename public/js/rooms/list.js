@@ -137,14 +137,6 @@ function _makeRoomRow(room, isArchived) {
   top.appendChild(actionBtn);
   content.appendChild(top);
 
-  if (room.last_message) {
-    const preview = document.createElement('div');
-    preview.className = 'h-room-preview';
-    const plain = room.last_message.replace(/[#*_~`>\[\]()!]/g, '').replace(/\n+/g, ' ').trim();
-    preview.textContent = room.last_message_actor ? `${room.last_message_actor}: ${plain}` : plain;
-    content.appendChild(preview);
-  }
-
   const dots = document.createElement('div');
   dots.className = 'h-room-dots';
   dots.id = 'room-dots-' + room.id;

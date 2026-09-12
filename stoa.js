@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.222";
+var CLIENT_VERSION = "0.4.229";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -611,6 +611,15 @@ function buildSessionKey(workdir, roomId, threadId, subAgentId) {
   const base = `${path.resolve(workdir)}::${roomId || "default"}::t:${threadId || 0}`;
   return subAgentId ? `${base}::sub:${subAgentId}` : base;
 }
+function parseSessionKey(key) {
+  const parts = key.split("::");
+  const roomId = parts[1] !== "default" ? parseInt(parts[1]) : null;
+  const threadMatch = parts[2]?.match(/^t:(\d+)$/);
+  const threadId = threadMatch ? parseInt(threadMatch[1]) : 0;
+  const subMatch = parts[3]?.match(/^sub:(\d+)$/);
+  const subAgentId = subMatch ? parseInt(subMatch[1]) : null;
+  return { roomId, threadId: threadId || null, subAgentId };
+}
 function getSession(workdir, roomId, env, subAgentId, threadId, systemPrompt, systemPromptHash) {
   const key = buildSessionKey(workdir, roomId, threadId, subAgentId);
   clearSessionIdleTimer(key);
@@ -658,12 +667,13 @@ setInterval(async () => {
     if (fileSize <= AUTO_COMPACT_THRESHOLD) continue;
     if (compactsInFlight.has(sessionKey)) continue;
     compactsInFlight.add(sessionKey);
-    console.log(`[stoa] worker: auto-compacting ${sessionId.slice(0, 8)}... (${(fileSize / 1024).toFixed(0)}KB)`);
-    send({ type: "auto_compact_start", claude_session_id: sessionId });
+    const skMeta = parseSessionKey(sessionKey);
+    console.log(`[stoa] worker: auto-compacting ${sessionId.slice(0, 8)}... (${(fileSize / 1024).toFixed(0)}KB) thread=${skMeta.threadId || 0}`);
+    send({ type: "auto_compact_start", claude_session_id: sessionId, thread_id: skMeta.threadId, sub_agent_id: skMeta.subAgentId });
     compactWithTimeout(session).then((result) => {
       compactsInFlight.delete(sessionKey);
       if (result?.sessionId) session.resumeId = result.sessionId;
-      send({ type: "compact_complete", claude_session_id: result?.sessionId || sessionId, orig_session_id: sessionId, result: result?.content || "" });
+      send({ type: "compact_complete", claude_session_id: result?.sessionId || sessionId, orig_session_id: sessionId, thread_id: skMeta.threadId, sub_agent_id: skMeta.subAgentId, result: result?.content || "" });
       setTimeout(() => {
         truncateSessionFile(workdir, sessionId);
         if (result?.sessionId && result.sessionId !== sessionId) truncateSessionFile(workdir, result.sessionId);
@@ -1115,7 +1125,7 @@ async function handleAgentMessage(msg) {
     console.log(`[stoa] compact: starting for ${key}`);
     compactWithTimeout(session).then((result) => {
       console.log(`[stoa] compact: done for ${key}`);
-      send({ type: "compact_complete", room_id: msg.room_id, result: result?.content || "", claude_session_id: result?.sessionId || null });
+      send({ type: "compact_complete", room_id: msg.room_id, thread_id: msg.thread_id || null, sub_agent_id: msg.sub_agent_id || null, result: result?.content || "", claude_session_id: result?.sessionId || null });
       setTimeout(() => {
         truncateSessionFile(key, msg.claude_session_id);
         if (result?.sessionId && result.sessionId !== msg.claude_session_id) {
@@ -1592,11 +1602,12 @@ ${allNotes}`;
           if (!sess) return;
           console.log(`[stoa] session ${sessionIdForCompact.slice(0, 8)}... is ${(fileSize / 1024).toFixed(0)}KB > ${AUTO_COMPACT_THRESHOLD / 1024}KB threshold, auto-compacting`);
           compactsInFlight.add(sessionKey);
-          send({ type: "auto_compact_start", room_id, claude_session_id: sessionIdForCompact });
+          const postRunMeta = parseSessionKey(sessionKey);
+          send({ type: "auto_compact_start", room_id, claude_session_id: sessionIdForCompact, thread_id: postRunMeta.threadId, sub_agent_id: postRunMeta.subAgentId });
           compactWithTimeout(sess).then((result2) => {
             compactsInFlight.delete(sessionKey);
             if (result2?.sessionId) sess.resumeId = result2.sessionId;
-            send({ type: "compact_complete", room_id, result: result2?.content || "", claude_session_id: result2?.sessionId || sessionIdForCompact, orig_session_id: sessionIdForCompact });
+            send({ type: "compact_complete", room_id, result: result2?.content || "", claude_session_id: result2?.sessionId || sessionIdForCompact, orig_session_id: sessionIdForCompact, thread_id: postRunMeta.threadId, sub_agent_id: postRunMeta.subAgentId });
             setTimeout(() => {
               truncateSessionFile(targetDir, sessionIdForCompact);
               if (result2?.sessionId && result2.sessionId !== sessionIdForCompact) truncateSessionFile(targetDir, result2.sessionId);

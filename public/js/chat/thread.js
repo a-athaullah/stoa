@@ -38,7 +38,8 @@ async function openThread(rootId) {
 
   _updateRoomHeaderThread(rootId);
   await _loadThread(rootId);
-  _updateThreadComposer();
+  _reparentComposerToThread();
+  restoreThreadDraft(currentRoomId, rootId);
 }
 
 function closeThread() {
@@ -61,7 +62,7 @@ function closeThread() {
   Object.keys(threadContextState).forEach(k => delete threadContextState[k]);
   updateThreadContextBar();
 
-  _updateThreadComposer();
+  _returnComposerToFeed();
 }
 
 // ── Create panel DOM ─────────────────────────────────────────────────────────
@@ -140,38 +141,10 @@ function _createThreadPanel() {
     if (scroll.scrollTop < 120) _loadOlderThreadMessages();
   });
 
-  // Footer composer (thread-scoped reply bar + input)
+  // Footer — main composer will be reparented here when thread opens
   const footer = document.createElement('div');
   footer.id = 'thread-footer';
   footer.className = 'h-thread-footer';
-
-  const replyBar = document.createElement('div');
-  replyBar.id = 'thread-reply-bar';
-  replyBar.className = 'h-reply-bar';
-  replyBar.style.display = 'none';
-  footer.appendChild(replyBar);
-
-  const composerBox = document.createElement('div');
-  composerBox.className = 'h-thread-composer';
-
-  const inputEl = document.createElement('div');
-  inputEl.id = 'thread-msg-input';
-  inputEl.className = 'h-msg-input';
-  inputEl.contentEditable = 'true';
-  inputEl.setAttribute('role', 'textbox');
-  inputEl.setAttribute('aria-multiline', 'true');
-  inputEl.setAttribute('data-placeholder', 'Reply in thread…');
-  composerBox.appendChild(inputEl);
-
-  const sendBtn = document.createElement('button');
-  sendBtn.id = 'thread-send-btn';
-  sendBtn.className = 'h-send-btn';
-  sendBtn.title = 'Send (Enter)';
-  sendBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>';
-  sendBtn.onclick = sendThreadMessage;
-  composerBox.appendChild(sendBtn);
-
-  footer.appendChild(composerBox);
   panel.appendChild(footer);
 
   chatBodyRow.appendChild(panel);
@@ -183,14 +156,104 @@ function _createThreadPanel() {
     const dx = e.changedTouches[0].clientX - _swipeStartX;
     if (dx > 80) closeThread();
   }, { passive: true });
+}
 
-  // Keyboard handling for thread input
-  inputEl.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendThreadMessage();
+// ── Flat thread message renderer ─────────────────────────────────────────────
+// Renders without bubble background — matches Slack-style thread panel design.
+// Keeps .h-bubble and .h-msg-body present for stream.js/finalizeMessage compat.
+function appendThreadMessage(m, container) {
+  if (!container) return;
+  if (m.id && document.getElementById('msg-' + m.id)) return;
+
+  if (m.state === 'streaming' || m.state === 'requesting') {
+    showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, container);
+    return;
+  }
+
+  const row = document.createElement('div');
+  row.className = 'h-thread-msg-row';
+  row.id = 'msg-' + m.id;
+
+  const seal = document.createElement('div');
+  seal.className = 'h-msg-seal-wrap';
+  seal.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 28, m.sub_agent_label));
+  row.appendChild(seal);
+
+  const body = document.createElement('div');
+  body.className = 'h-msg-body';
+  body.style.position = 'relative';
+
+  const meta = document.createElement('div');
+  meta.className = 'h-msg-meta';
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'h-msg-name';
+  nameEl.style.color = m.avatar_color;
+  nameEl.textContent = m.sub_agent_label || m.actor_name;
+  meta.appendChild(nameEl);
+
+  if (m.sub_agent_label) {
+    const subEl = document.createElement('span');
+    subEl.className = 'h-msg-sub';
+    subEl.textContent = '(' + m.actor_name + ')';
+    meta.appendChild(subEl);
+  }
+
+  if (m.created_at) {
+    const timeEl = document.createElement('span');
+    timeEl.className = 'h-msg-time';
+    const ts = m.created_at.endsWith('Z') ? m.created_at : m.created_at.replace(' ', 'T') + 'Z';
+    timeEl.textContent = new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    meta.appendChild(timeEl);
+  }
+  body.appendChild(meta);
+
+  const bubble = document.createElement('div');
+  bubble.className = 'h-bubble';
+
+  if (m.reply_msg) {
+    const quote = document.createElement('div');
+    quote.className = 'h-reply-quote';
+    const replyAttachments = typeof getAttachments === 'function' ? getAttachments(m.reply_msg) : [];
+    let quoteText = escHtml((m.reply_msg.content || '').substring(0, 150));
+    if (replyAttachments.length) {
+      const urls = replyAttachments.map(a => `<div class="h-reply-quote-file">${escHtml(a.url)}</div>`).join('');
+      quoteText = urls + quoteText;
     }
-  });
+    const replyColor = (m.reply_msg.avatar_color || 'var(--h-ink)').replace(/[^a-zA-Z0-9().,%# \-]/g, '');
+    quote.innerHTML = `<div class="h-reply-quote-name" style="color:${replyColor}">${escHtml(m.reply_msg.actor_name)}</div><div class="h-reply-quote-text">${quoteText}</div>`;
+    quote.onclick = () => {
+      const el = document.getElementById('msg-' + m.reply_to);
+      if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.style.transition = 'background 0.3s'; el.style.background = 'color-mix(in srgb, #d39749 15%, transparent)'; setTimeout(() => { el.style.background = ''; }, 2000); }
+    };
+    bubble.appendChild(quote);
+  }
+
+  if (typeof renderAttachments === 'function') renderAttachments(bubble, m);
+
+  if (m.content) {
+    const textDiv = document.createElement('div');
+    textDiv.innerHTML = highlightMentions(renderMarkdown(m.content));
+    bubble.appendChild(textDiv);
+  }
+
+  if (m.ai_model) {
+    const modelTag = document.createElement('div');
+    modelTag.className = 'h-msg-model';
+    modelTag.textContent = m.ai_model;
+    bubble.appendChild(modelTag);
+  }
+
+  const resultChip = buildResultChip(m.result_meta);
+  if (resultChip) bubble.appendChild(resultChip);
+
+  body.appendChild(bubble);
+  row.appendChild(body);
+  container.appendChild(row);
+
+  if (typeof addCopyButtons === 'function') addCopyButtons(bubble);
+  if (typeof linkifyFilePaths === 'function') linkifyFilePaths(bubble);
+  if (typeof externalLinksNewTab === 'function') externalLinksNewTab(bubble);
 }
 
 // ── Load thread messages ─────────────────────────────────────────────────────
@@ -207,18 +270,30 @@ async function _loadThread(rootId) {
   _updateThreadHeader(rootId);
 
   try {
-    const msgs = await fjson(`/api/rooms/${currentRoomId}/threads/${rootId}`);
+    const resp = await fjson(`/api/rooms/${currentRoomId}/threads/${rootId}`);
     if (activeThreadId !== rootId) return; // navigated away
 
+    // New contract: {root, messages} — root = root msg, messages = replies only
+    // Legacy fallback: array of all messages
+    const root = resp && !Array.isArray(resp) ? resp.root : null;
+    const msgs = resp && !Array.isArray(resp) ? (resp.messages || []) : (Array.isArray(resp) ? resp.filter(m => m.id !== rootId) : []);
+
     body.innerHTML = '';
+
+    // Render root message pinned at top
+    if (root) {
+      _renderThreadRoot(root, body);
+    }
+
+    // Divider + reply count
+    const divider = document.createElement('div');
+    divider.className = 'h-thread-divider';
+    divider.textContent = msgs.length === 0 ? 'No replies yet' : msgs.length + (msgs.length === 1 ? ' reply' : ' replies');
+    body.appendChild(divider);
+
     const savedDay = _lastDayKey;
     _lastDayKey = null;
-    for (const m of msgs) {
-      appendMessage(m, body);
-      if (m.state === 'streaming' || m.state === 'requesting') {
-        showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, body);
-      }
-    }
+    msgs.forEach(m => appendThreadMessage(m, body));
     _lastDayKey = savedDay;
 
     if (msgs.length > 0) threadOldestMsgId = msgs[0].id;
@@ -228,6 +303,52 @@ async function _loadThread(rootId) {
   } catch (e) {
     console.error('[thread] load failed', e);
   }
+}
+
+function _renderThreadRoot(m, container) {
+  const row = document.createElement('div');
+  row.className = 'h-thread-root-row';
+  row.id = 'thread-root-msg-' + m.id;
+
+  const seal = document.createElement('div');
+  seal.className = 'h-msg-seal-wrap';
+  seal.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 28, m.sub_agent_label));
+  row.appendChild(seal);
+
+  const body = document.createElement('div');
+  body.className = 'h-msg-body';
+
+  const meta = document.createElement('div');
+  meta.className = 'h-msg-meta';
+  const nameEl = document.createElement('span');
+  nameEl.className = 'h-msg-name';
+  nameEl.style.color = m.avatar_color;
+  nameEl.textContent = m.sub_agent_label || m.actor_name;
+  meta.appendChild(nameEl);
+  if (m.created_at) {
+    const timeEl = document.createElement('span');
+    timeEl.className = 'h-msg-time';
+    const ts = m.created_at.endsWith('Z') ? m.created_at : m.created_at.replace(' ', 'T') + 'Z';
+    timeEl.textContent = new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    meta.appendChild(timeEl);
+  }
+  body.appendChild(meta);
+
+  const bubble = document.createElement('div');
+  bubble.className = 'h-bubble';
+  if (typeof renderAttachments === 'function') renderAttachments(bubble, m);
+  if (m.content) {
+    const textDiv = document.createElement('div');
+    textDiv.innerHTML = highlightMentions(renderMarkdown(m.content));
+    bubble.appendChild(textDiv);
+  }
+  body.appendChild(bubble);
+  row.appendChild(body);
+  container.appendChild(row);
+
+  if (typeof addCopyButtons === 'function') addCopyButtons(bubble);
+  if (typeof linkifyFilePaths === 'function') linkifyFilePaths(bubble);
+  if (typeof externalLinksNewTab === 'function') externalLinksNewTab(bubble);
 }
 
 async function _loadOlderThreadMessages() {
@@ -244,14 +365,15 @@ async function _loadOlderThreadMessages() {
   body.prepend(spinner);
 
   try {
-    const msgs = await fjson(`/api/rooms/${currentRoomId}/threads/${activeThreadId}?before=${threadOldestMsgId}&limit=50`);
+    const resp = await fjson(`/api/rooms/${currentRoomId}/threads/${activeThreadId}?before=${threadOldestMsgId}&limit=50`);
+    const msgs = resp && !Array.isArray(resp) ? (resp.messages || []) : (Array.isArray(resp) ? resp : []);
     spinner.remove();
     if (!msgs.length) { threadNoMoreOlder = true; threadLoadingOlder = false; return; }
 
     const savedDay = _lastDayKey;
     _lastDayKey = null;
     const frag = document.createDocumentFragment();
-    msgs.forEach(m => { if (!document.getElementById('msg-' + m.id)) appendMessage(m, frag); });
+    msgs.forEach(m => { if (!document.getElementById('msg-' + m.id)) appendThreadMessage(m, frag); });
     _lastDayKey = savedDay;
 
     const prevHeight = body.scrollHeight;
@@ -294,7 +416,7 @@ function stopThreadGeneration() {
   // Find streaming messages in thread body
   const body = _getThreadBody();
   if (!body) return;
-  body.querySelectorAll('.h-msg-row').forEach(row => {
+  body.querySelectorAll('.h-msg-row, .h-thread-msg-row').forEach(row => {
     const msgId = row.id.replace('msg-', '');
     if (processingMessages.has(parseInt(msgId, 10)) || processingMessages.has(msgId)) {
       ws.send(JSON.stringify({ type: 'stop_generation', room_id: currentRoomId, message_id: parseInt(msgId, 10) }));
@@ -307,37 +429,47 @@ function compactThread() {
   ws.send(JSON.stringify({ type: 'compact_session', room_id: currentRoomId, thread_id: activeThreadId }));
 }
 
-// ── Thread composer ───────────────────────────────────────────────────────────
-function _updateThreadComposer() {
+// ── Composer reparent — moves main #composer into thread panel ───────────────
+// sendMessage() in composer/input.js already reads activeThreadId → thread_id
+
+function _reparentComposerToThread() {
+  const composer = document.getElementById('composer');
   const footer = document.getElementById('thread-footer');
-  if (!footer) return;
-  footer.style.display = activeThreadId ? '' : 'none';
+  if (!composer || !footer) return;
+  if (footer.contains(composer)) return; // already there
+
+  // Insert invisible slot so we can return composer to its original position
+  if (!document.getElementById('composer-slot')) {
+    const slot = document.createElement('div');
+    slot.id = 'composer-slot';
+    slot.style.display = 'none';
+    composer.parentNode.insertBefore(slot, composer);
+  }
+
+  footer.appendChild(composer);
+
+  const input = document.getElementById('msg-input');
+  if (input) {
+    input.dataset.placeholder = 'Reply in thread…';
+    input.focus();
+  }
 }
 
-function sendThreadMessage() {
-  if (!activeThreadId || !ws || ws.readyState !== WebSocket.OPEN) return;
-  const inputEl = document.getElementById('thread-msg-input');
-  if (!inputEl) return;
-  const content = htmlToMarkdown(inputEl).replace(/​/g, '').replace(/\n{3,}/g, '\n\n').trim();
-  if (!content) return;
-  inputEl.innerHTML = '';
+function _returnComposerToFeed() {
+  const composer = document.getElementById('composer');
+  const slot = document.getElementById('composer-slot');
+  if (!composer || !slot) return;
+  slot.parentNode.insertBefore(composer, slot);
+  slot.remove();
 
-  // Save draft clear
-  try { localStorage.removeItem('stoa-thread-draft-' + currentRoomId + '-' + activeThreadId); } catch {}
-
-  ws.send(JSON.stringify({
-    type: 'send_message',
-    room_id: currentRoomId,
-    content,
-    thread_id: activeThreadId,
-    event_id: crypto.randomUUID(),
-  }));
+  const input = document.getElementById('msg-input');
+  if (input) input.dataset.placeholder = 'say something…';
 }
 
 // ── Draft per (room, thread) ─────────────────────────────────────────────────
 function saveThreadDraft(roomId, threadId) {
   if (!roomId || !threadId) return;
-  const inputEl = document.getElementById('thread-msg-input');
+  const inputEl = document.getElementById('msg-input');
   if (!inputEl) return;
   const html = inputEl.innerHTML.trim();
   const key = 'stoa-thread-draft-' + roomId + '-' + threadId;
@@ -349,11 +481,20 @@ function saveThreadDraft(roomId, threadId) {
 }
 
 function restoreThreadDraft(roomId, threadId) {
-  const inputEl = document.getElementById('thread-msg-input');
+  const inputEl = document.getElementById('msg-input');
   if (!inputEl) return;
   const key = 'stoa-thread-draft-' + roomId + '-' + threadId;
   const draft = localStorage.getItem(key);
   inputEl.innerHTML = draft || '';
+  // Move cursor to end
+  if (draft) {
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(inputEl);
+    range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
 }
 
 // ── Context bar (thread-scoped) ───────────────────────────────────────────────
@@ -461,6 +602,7 @@ function clearThreadPanel() {
     saveThreadDraft(currentRoomId, activeThreadId);
     activeThreadId = null;
   }
+  _returnComposerToFeed();
   const panel = _getThreadPanel();
   if (panel) {
     panel.classList.remove('open');

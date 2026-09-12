@@ -65,7 +65,17 @@ function handleWsMessage(msg) {
     noMoreOlder = msg.messages.length < 100;
     for (const m of msg.messages) {
       if (m.state === 'streaming' || m.state === 'requesting') {
-        showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url);
+        if (m.thread_id) {
+          if (typeof openThread === 'function' && typeof isThreadOpen === 'function' && !isThreadOpen()) {
+            openThread(m.thread_id);
+          }
+          if (typeof activeThreadId !== 'undefined' && activeThreadId === m.thread_id) {
+            const tbody = document.getElementById('thread-body');
+            showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, tbody);
+          }
+        } else {
+          showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url);
+        }
         setComposerProcessing(m.id);
       }
     }
@@ -84,7 +94,8 @@ function handleWsMessage(msg) {
       // Route to open thread panel if it matches
       if (typeof activeThreadId !== 'undefined' && activeThreadId === tId) {
         const body = document.getElementById('thread-body');
-        appendMessage(m, body);
+        if (typeof appendThreadMessage === 'function') appendThreadMessage(m, body);
+        else appendMessage(m, body);
         if (typeof _scrollThreadToBottom === 'function') _scrollThreadToBottom();
       }
     } else {
@@ -290,25 +301,19 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'compact_start') {
     if (msg.room_id !== currentRoomId) return;
-    const inThread = msg.thread_id && typeof activeThreadId !== 'undefined' && activeThreadId === msg.thread_id;
-    if (inThread && typeof showThreadCompactBar === 'function') showThreadCompactBar(msg.participants);
-    else showCompactBar(msg.room_id, msg.participants);
+    if (typeof showThreadCompactBar === 'function') showThreadCompactBar(msg.participants);
     return;
   }
 
   if (msg.type === 'compact_progress') {
     if (msg.room_id !== currentRoomId) return;
-    const inThread = msg.thread_id && typeof activeThreadId !== 'undefined' && activeThreadId === msg.thread_id;
-    if (inThread && typeof updateThreadCompactBar === 'function') updateThreadCompactBar(msg.completed_participant_ids);
-    else updateCompactBar(msg.completed_participant_ids);
+    if (typeof updateThreadCompactBar === 'function') updateThreadCompactBar(msg.completed_participant_ids);
     return;
   }
 
   if (msg.type === 'compact_done') {
     if (msg.room_id !== currentRoomId) return;
-    const inThread = msg.thread_id && typeof activeThreadId !== 'undefined' && activeThreadId === msg.thread_id;
-    if (inThread && typeof hideThreadCompactBar === 'function') hideThreadCompactBar();
-    else hideCompactBar();
+    if (typeof hideThreadCompactBar === 'function') hideThreadCompactBar();
     return;
   }
 
@@ -331,9 +336,7 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'compact_error') {
     if (msg.room_id !== currentRoomId) return;
-    const inThread = msg.thread_id && typeof activeThreadId !== 'undefined' && activeThreadId === msg.thread_id;
-    if (inThread && typeof hideThreadCompactBar === 'function') hideThreadCompactBar();
-    else hideCompactBar();
+    if (typeof hideThreadCompactBar === 'function') hideThreadCompactBar();
     showToast(msg.error || 'Compact failed', { error: true });
     return;
   }
