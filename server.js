@@ -1655,7 +1655,7 @@ const server = http.createServer(async (req, res) => {
                sess.status AS session_status
         FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
         LEFT JOIN agent_workdirs w ON w.id=rp.workdir_id
-        LEFT JOIN ai_sessions sess ON sess.participant_id=rp.id AND sess.sub_agent_id IS NULL
+        LEFT JOIN ai_sessions sess ON sess.participant_id=rp.id AND sess.sub_agent_id IS NULL AND sess.thread_id = 0
         WHERE rp.room_id=?
       `).all(roomId);
       return json(res, rows);
