@@ -246,6 +246,26 @@ function appendThreadMessage(m, container) {
   const bubble = document.createElement('div');
   bubble.className = 'h-bubble';
 
+  if (m.reply_msg) {
+    const quote = document.createElement('div');
+    quote.className = 'h-reply-quote';
+    const replyAttachments = typeof getAttachments === 'function' ? getAttachments(m.reply_msg) : [];
+    let quoteText = escHtml((m.reply_msg.content || '').substring(0, 150));
+    if (replyAttachments.length) {
+      const urls = replyAttachments.map(a => `<div class="h-reply-quote-file">${escHtml(a.url)}</div>`).join('');
+      quoteText = urls + quoteText;
+    }
+    const replyColor = (m.reply_msg.avatar_color || 'var(--h-ink)').replace(/[^a-zA-Z0-9().,%# \-]/g, '');
+    quote.innerHTML = `<div class="h-reply-quote-name" style="color:${replyColor}">${escHtml(m.reply_msg.actor_name)}</div><div class="h-reply-quote-text">${quoteText}</div>`;
+    quote.onclick = () => {
+      const el = document.getElementById('msg-' + m.reply_to);
+      if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.style.transition = 'background 0.3s'; el.style.background = 'color-mix(in srgb, #d39749 15%, transparent)'; setTimeout(() => { el.style.background = ''; }, 2000); }
+    };
+    bubble.appendChild(quote);
+  }
+
+  if (typeof renderAttachments === 'function') renderAttachments(bubble, m);
+
   if (m.content) {
     const textDiv = document.createElement('div');
     textDiv.innerHTML = highlightMentions(renderMarkdown(m.content));
@@ -285,15 +305,30 @@ async function _loadThread(rootId) {
   _updateThreadHeader(rootId);
 
   try {
-    const msgs = await fjson(`/api/rooms/${currentRoomId}/threads/${rootId}`);
+    const resp = await fjson(`/api/rooms/${currentRoomId}/threads/${rootId}`);
     if (activeThreadId !== rootId) return; // navigated away
 
+    // New contract: {root, messages} — root = root msg, messages = replies only
+    // Legacy fallback: array of all messages
+    const root = resp && !Array.isArray(resp) ? resp.root : null;
+    const msgs = resp && !Array.isArray(resp) ? (resp.messages || []) : (Array.isArray(resp) ? resp.filter(m => m.id !== rootId) : []);
+
     body.innerHTML = '';
+
+    // Render root message pinned at top
+    if (root) {
+      _renderThreadRoot(root, body);
+    }
+
+    // Divider + reply count
+    const divider = document.createElement('div');
+    divider.className = 'h-thread-divider';
+    divider.textContent = msgs.length === 0 ? 'No replies yet' : msgs.length + (msgs.length === 1 ? ' reply' : ' replies');
+    body.appendChild(divider);
+
     const savedDay = _lastDayKey;
     _lastDayKey = null;
-    for (const m of msgs) {
-      appendThreadMessage(m, body);
-    }
+    msgs.forEach(m => appendThreadMessage(m, body));
     _lastDayKey = savedDay;
 
     if (msgs.length > 0) threadOldestMsgId = msgs[0].id;
@@ -303,6 +338,52 @@ async function _loadThread(rootId) {
   } catch (e) {
     console.error('[thread] load failed', e);
   }
+}
+
+function _renderThreadRoot(m, container) {
+  const row = document.createElement('div');
+  row.className = 'h-thread-root-row';
+  row.id = 'thread-root-msg-' + m.id;
+
+  const seal = document.createElement('div');
+  seal.className = 'h-msg-seal-wrap';
+  seal.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 28, m.sub_agent_label));
+  row.appendChild(seal);
+
+  const body = document.createElement('div');
+  body.className = 'h-msg-body';
+
+  const meta = document.createElement('div');
+  meta.className = 'h-msg-meta';
+  const nameEl = document.createElement('span');
+  nameEl.className = 'h-msg-name';
+  nameEl.style.color = m.avatar_color;
+  nameEl.textContent = m.sub_agent_label || m.actor_name;
+  meta.appendChild(nameEl);
+  if (m.created_at) {
+    const timeEl = document.createElement('span');
+    timeEl.className = 'h-msg-time';
+    const ts = m.created_at.endsWith('Z') ? m.created_at : m.created_at.replace(' ', 'T') + 'Z';
+    timeEl.textContent = new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    meta.appendChild(timeEl);
+  }
+  body.appendChild(meta);
+
+  const bubble = document.createElement('div');
+  bubble.className = 'h-bubble';
+  if (typeof renderAttachments === 'function') renderAttachments(bubble, m);
+  if (m.content) {
+    const textDiv = document.createElement('div');
+    textDiv.innerHTML = highlightMentions(renderMarkdown(m.content));
+    bubble.appendChild(textDiv);
+  }
+  body.appendChild(bubble);
+  row.appendChild(body);
+  container.appendChild(row);
+
+  if (typeof addCopyButtons === 'function') addCopyButtons(bubble);
+  if (typeof linkifyFilePaths === 'function') linkifyFilePaths(bubble);
+  if (typeof externalLinksNewTab === 'function') externalLinksNewTab(bubble);
 }
 
 async function _loadOlderThreadMessages() {
@@ -319,7 +400,8 @@ async function _loadOlderThreadMessages() {
   body.prepend(spinner);
 
   try {
-    const msgs = await fjson(`/api/rooms/${currentRoomId}/threads/${activeThreadId}?before=${threadOldestMsgId}&limit=50`);
+    const resp = await fjson(`/api/rooms/${currentRoomId}/threads/${activeThreadId}?before=${threadOldestMsgId}&limit=50`);
+    const msgs = resp && !Array.isArray(resp) ? (resp.messages || []) : (Array.isArray(resp) ? resp : []);
     spinner.remove();
     if (!msgs.length) { threadNoMoreOlder = true; threadLoadingOlder = false; return; }
 
