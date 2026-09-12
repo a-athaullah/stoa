@@ -97,7 +97,9 @@ function handleWsMessage(msg) {
         const body = document.getElementById('thread-body');
         if (typeof appendThreadMessage === 'function') appendThreadMessage(m, body);
         else appendMessage(m, body);
-        if (typeof _scrollThreadToBottom === 'function') _scrollThreadToBottom(true);
+        requestAnimationFrame(() => {
+          if (typeof _scrollThreadToBottom === 'function') _scrollThreadToBottom(true);
+        });
       }
     } else {
       if (typeof appendFeedRootRow === 'function') appendFeedRootRow(m);
@@ -148,7 +150,11 @@ function handleWsMessage(msg) {
     el.dataset.actor = actorKey;
     el.textContent = `${displayName} · ${statusText}`;
     inner.appendChild(el);
-    scrollToBottom();
+    if (tId) {
+      if (typeof _scrollThreadToBottom === 'function') _scrollThreadToBottom();
+    } else {
+      scrollToBottom();
+    }
     return;
   }
 
