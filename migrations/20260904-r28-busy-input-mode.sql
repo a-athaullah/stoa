@@ -1,5 +1,3 @@
-BEGIN;
-
 CREATE TABLE IF NOT EXISTS room_message_queue (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   room_id     INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
@@ -12,5 +10,3 @@ CREATE TABLE IF NOT EXISTS room_message_queue (
 );
 
 CREATE INDEX IF NOT EXISTS idx_rmq_room ON room_message_queue(room_id, position);
-
-COMMIT;
