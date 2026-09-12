@@ -332,7 +332,7 @@ function handleWsMessage(msg) {
         model: msg.model,
       };
       updateThreadContextBar();
-    } else {
+    } else if (!msg.thread_id) {
       handleContextUpdate(msg);
     }
     return;

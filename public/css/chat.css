@@ -1920,7 +1920,7 @@ html.dark .h-bubble :not(pre) > code {
 
 .h-thread-footer {
   flex: 0 0 auto;
-  padding: 8px 12px 12px;
+  padding: 8px 12px 22px;
 }
 .h-thread-footer #thread-reply-bar {
   display: none;
