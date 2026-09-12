@@ -91,6 +91,23 @@ function _buildThreadChip(rootId) {
   chip.className = 'h-thread-chip' + (s.active ? ' active' : '');
   chip.dataset.rootId = rootId;
 
+  if (s.participant_ids?.length) {
+    const avatars = document.createElement('span');
+    avatars.className = 'h-thread-chip-avatars';
+    const show = s.participant_ids.slice(0, 3);
+    show.forEach((aid, i) => {
+      const actor = allActors.find(a => a.id === aid);
+      if (!actor) return;
+      const av = makeAvatar(actor.name, actor.avatar_color, actor.avatar_url, 20);
+      av.classList?.add('h-thread-chip-av');
+      if (!av.classList) av.className = (av.className || '') + ' h-thread-chip-av';
+      av.style.zIndex = show.length - i;
+      if (i > 0) av.style.marginLeft = '-6px';
+      avatars.appendChild(av);
+    });
+    chip.appendChild(avatars);
+  }
+
   if (s.active) {
     const pulse = document.createElement('span');
     pulse.className = 'h-thread-pulse';
@@ -105,7 +122,7 @@ function _buildThreadChip(rootId) {
   if (s.last_at) {
     const when = document.createElement('span');
     when.className = 'h-thread-chip-time';
-    when.textContent = '· ' + _relativeTime(s.last_at);
+    when.textContent = _relativeTime(s.last_at);
     chip.appendChild(when);
   }
 
@@ -139,6 +156,7 @@ function handleThreadSummary(msg) {
     count: msg.count,
     last_at: msg.last_at,
     active: msg.active,
+    participant_ids: msg.participant_ids || [],
   };
   updateThreadChip(msg.root_id);
   _syncRoomThreadBadge();
@@ -152,6 +170,7 @@ function attachThreadChips(messages) {
         count: m.thread.count || 0,
         last_at: m.thread.last_at,
         active: m.thread.active || false,
+        participant_ids: m.thread.participant_ids || [],
       };
       if (m.thread.count > 0) updateThreadChip(m.id);
     }

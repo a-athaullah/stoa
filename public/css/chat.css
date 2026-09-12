@@ -2042,6 +2042,20 @@ html.dark .h-bubble :not(pre) > code {
 .h-thread-chip:hover { background: var(--h-hover); }
 .h-thread-chip.active { border-color: var(--h-accent, #3a7bd5); }
 
+.h-thread-chip-avatars {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.h-thread-chip-av {
+  width: 20px !important;
+  height: 20px !important;
+  border-radius: 50% !important;
+  border: 1.5px solid var(--h-surface) !important;
+  font-size: 10px !important;
+  box-sizing: content-box;
+  flex-shrink: 0;
+}
 .h-thread-chip-count { font-weight: 600; }
 .h-thread-chip-time { color: var(--h-ink-mute); font-weight: 400; }
 

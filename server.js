@@ -262,7 +262,13 @@ function buildThreadSummary(roomId, rootId) {
     FROM messages m WHERE m.room_id = ? AND m.thread_id = ?
   `).get(rootId, roomId, rootId);
   if (!row || row.count === 0) return null;
-  return { type: 'thread_summary', root_id: rootId, count: row.count, last_at: row.last_at, active: !!row.active };
+  const pRow = db.prepare(`
+    SELECT GROUP_CONCAT(DISTINCT rp.actor_id) as pids
+    FROM messages r JOIN room_participants rp ON rp.id = r.participant_id
+    WHERE r.thread_id = ?
+  `).get(rootId);
+  const participant_ids = pRow?.pids ? pRow.pids.split(',').map(Number) : [];
+  return { type: 'thread_summary', root_id: rootId, count: row.count, last_at: row.last_at, active: !!row.active, participant_ids };
 }
 
 // Validate thread_id: root must exist in the same room and be a root itself (thread_id IS NULL).
