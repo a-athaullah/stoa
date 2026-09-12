@@ -253,6 +253,18 @@ function saveSubAgentThreadSession(participantId, subAgentId, claudeSessionId, w
   ).run(participantId, rp?.room_id ?? null, subAgentId, claudeSessionId, workdir || null, threadId || 0);
 }
 
+function buildThreadSummary(roomId, rootId) {
+  if (!rootId) return null;
+  const row = db.prepare(`
+    SELECT COUNT(*) as count,
+           MAX(m.created_at) as last_at,
+           (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = ? AND r.state IN ('streaming','requesting'))) as active
+    FROM messages m WHERE m.room_id = ? AND m.thread_id = ?
+  `).get(rootId, roomId, rootId);
+  if (!row || row.count === 0) return null;
+  return { type: 'thread_summary', root_id: rootId, count: row.count, last_at: row.last_at, active: !!row.active };
+}
+
 // Validate thread_id: root must exist in the same room and be a root itself (thread_id IS NULL).
 // reply_to (if given) must belong to the same thread. Returns error string or null.
 function resolveThread(roomId, threadId) {
@@ -4685,6 +4697,7 @@ wss.on('connection', (ws, req) => {
       if (resultMetaJson) completePayload.result_meta = resultMetaJson;
       if (msg.attachments?.length) { completePayload.attachments = msg.attachments; }
       else if (msg.file_url) { completePayload.file_url = msg.file_url; completePayload.file_name = msg.file_name; }
+      if (doneRow?.thread_id) completePayload.thread_summary = buildThreadSummary(msg.room_id, doneRow.thread_id);
       broadcast(msg.room_id, completePayload);
       broadcastGlobal({ type: 'room_activity', room_id: msg.room_id });
       if (msg.claude_session_id) {
@@ -5675,7 +5688,9 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
     const replied = db.prepare(`SELECT m.id, m.content, m.image_url, m.file_url, m.file_name, m.attachments, a.name as actor_name, a.avatar_color FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id WHERE m.id=?`).get(row.reply_to);
     if (replied) row.reply_msg = replied;
   }
-  broadcast(roomId, { type: 'message_new', message: row });
+  const newMsgPayload = { type: 'message_new', message: row };
+  if (threadId) newMsgPayload.thread_summary = buildThreadSummary(roomId, threadId);
+  broadcast(roomId, newMsgPayload);
   broadcastGlobal({ type: 'room_activity', room_id: roomId });
 
   // R28: if a sequence is already running, apply busy_input_mode before triggering agents

@@ -117,9 +117,10 @@ function handleWsMessage(msg) {
     const liveStatus = getLiveStatus();
     // 'off' — skip display entirely (but still allow done-event cleanup below)
     if (liveStatus === 'off' && msg.status) return;
-    // Route to thread panel or feed
+    // Route to thread panel or feed — thread events never leak to room
     const tId = msg.thread_id || null;
-    const inner = (tId && typeof activeThreadId !== 'undefined' && activeThreadId === tId)
+    if (tId && (typeof activeThreadId === 'undefined' || activeThreadId !== tId)) return;
+    const inner = tId
       ? document.getElementById('thread-body')
       : document.getElementById('messages-inner');
     if (!inner) return;
@@ -163,13 +164,15 @@ function handleWsMessage(msg) {
       if (tId && typeof openThread === 'function' && typeof isThreadOpen === 'function' && !isThreadOpen()) {
         openThread(tId);
       }
-      const targetContainer = (tId && typeof activeThreadId !== 'undefined' && activeThreadId === tId)
+      // Thread messages never render in room feed
+      if (tId && (typeof activeThreadId === 'undefined' || activeThreadId !== tId)) return;
+      const targetContainer = tId
         ? document.getElementById('thread-body')
         : document.getElementById('messages-inner');
       const last = targetContainer?.lastElementChild;
       if (last?.classList.contains('h-system-event') && last.dataset.actor?.startsWith(msg.actor_name)) last.remove();
       showThinking(msg.message_id, msg.actor_name, msg.avatar_color, msg.avatar_symbol, msg.avatar_url, msg.sub_agent_label, targetContainer);
-      setComposerProcessing(msg.message_id);
+      if (!tId) setComposerProcessing(msg.message_id);
     }
     if (msg.state === 'error' || (typeof FAILURE_STATES !== 'undefined' && FAILURE_STATES.has(msg.state))) {
       const el = document.getElementById('msg-' + msg.message_id);

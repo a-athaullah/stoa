@@ -73,9 +73,43 @@ function _createThreadPanel() {
   const chatBodyRow = document.getElementById('chat-body-row');
   if (!chatBodyRow) return;
 
+  // Resize handle (left edge drag)
+  const resizeHandle = document.createElement('div');
+  resizeHandle.className = 'h-thread-resize-handle';
+
   const panel = document.createElement('div');
   panel.id = 'thread-panel';
   panel.className = 'h-thread-panel';
+  panel.prepend(resizeHandle);
+
+  // Resize logic
+  let _resizing = false;
+  resizeHandle.addEventListener('mousedown', e => {
+    e.preventDefault();
+    _resizing = true;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    const onMove = ev => {
+      if (!_resizing) return;
+      const rect = chatBodyRow.getBoundingClientRect();
+      const w = rect.right - ev.clientX;
+      const clamped = Math.max(320, Math.min(w, rect.width * 0.7));
+      panel.style.width = clamped + 'px';
+      panel.style.flex = '0 0 ' + clamped + 'px';
+    };
+    const onUp = () => {
+      _resizing = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      try { localStorage.setItem('stoa-thread-width', panel.style.width); } catch {}
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+  const savedWidth = localStorage.getItem('stoa-thread-width');
+  if (savedWidth) { panel.style.width = savedWidth; panel.style.flex = '0 0 ' + savedWidth; }
 
   // Header
   const header = document.createElement('div');
@@ -144,7 +178,7 @@ function _createThreadPanel() {
     if (scroll.scrollTop < 120) _loadOlderThreadMessages();
   });
 
-  // Footer: dedicated thread composer
+  // Footer: dedicated thread composer (same features as room composer)
   const footer = document.createElement('div');
   footer.id = 'thread-footer';
   footer.className = 'h-thread-footer';
@@ -170,6 +204,73 @@ function _createThreadPanel() {
   replyBar.append(replyBarContent, replyBarClose);
   footer.appendChild(replyBar);
 
+  // Emoji picker (thread-scoped, reuses EMOJIS/EMOJI_KW from emoji.js)
+  const threadEmojiPicker = document.createElement('div');
+  threadEmojiPicker.id = 'thread-emoji-picker';
+  threadEmojiPicker.className = 'h-emoji-picker';
+  const threadEmojiSearch = document.createElement('input');
+  threadEmojiSearch.type = 'text';
+  threadEmojiSearch.placeholder = 'Search emoji...';
+  threadEmojiSearch.autocomplete = 'off';
+  const threadEmojiGrid = document.createElement('div');
+  threadEmojiGrid.className = 'h-emoji-grid';
+  threadEmojiPicker.append(threadEmojiSearch, threadEmojiGrid);
+  footer.appendChild(threadEmojiPicker);
+
+  let threadEmojiOpen = false;
+  let threadSavedRange = null;
+  function _threadRenderEmojis(list) {
+    threadEmojiGrid.innerHTML = '';
+    const target = document.getElementById('thread-msg-input');
+    (list || EMOJIS).forEach(em => {
+      const b = document.createElement('button');
+      b.className = 'h-emoji-btn';
+      b.textContent = em;
+      b.type = 'button';
+      b.onclick = () => {
+        target.focus();
+        if (threadSavedRange) {
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(threadSavedRange);
+        }
+        document.execCommand('insertText', false, em);
+        threadSavedRange = null;
+        _closeThreadEmoji();
+      };
+      threadEmojiGrid.appendChild(b);
+    });
+  }
+  function _openThreadEmoji() {
+    const target = document.getElementById('thread-msg-input');
+    const sel = window.getSelection();
+    if (sel.rangeCount > 0 && target.contains(sel.anchorNode)) {
+      threadSavedRange = sel.getRangeAt(0).cloneRange();
+    } else {
+      threadSavedRange = null;
+    }
+    threadEmojiPicker.classList.add('open');
+    threadEmojiSearch.value = '';
+    _threadRenderEmojis(EMOJIS);
+    threadEmojiOpen = true;
+    setTimeout(() => threadEmojiSearch.focus(), 50);
+  }
+  function _closeThreadEmoji() {
+    threadEmojiPicker.classList.remove('open');
+    threadEmojiOpen = false;
+  }
+  threadEmojiSearch.addEventListener('input', () => {
+    const q = threadEmojiSearch.value.trim().toLowerCase();
+    const filtered = q ? EMOJIS.filter(em => (EMOJI_KW[em] || '').includes(q)) : EMOJIS;
+    _threadRenderEmojis(filtered);
+  });
+  threadEmojiSearch.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); threadEmojiGrid.querySelector('.h-emoji-btn')?.click(); }
+  });
+  document.addEventListener('click', e => {
+    if (threadEmojiOpen && !threadEmojiPicker.contains(e.target) && e.target.id !== 'thread-emoji-btn') _closeThreadEmoji();
+  });
+
   // Composer box
   const composerBox = document.createElement('div');
   composerBox.className = 'h-composer-box h-thread-composer-box';
@@ -180,24 +281,51 @@ function _createThreadPanel() {
   attachPreview.id = 'thread-attach-preview';
   composerBox.appendChild(attachPreview);
 
-  // Format bar
+  // Format bar — identical to room composer
   const fmtBar = document.createElement('div');
   fmtBar.className = 'h-fmt-bar';
   const fmtBtns = [
     { fmt: 'bold',       title: 'Bold (Ctrl+B)',       icon: '<path d="M6 4h7a5 5 0 0 1 3.5 8.6A5.5 5.5 0 0 1 14 22H6V4zm3 3v4h4a2 2 0 1 0 0-4H9zm0 7v5h5a2.5 2.5 0 1 0 0-5H9z"/>', fill: true },
     { fmt: 'italic',     title: 'Italic (Ctrl+I)',     icon: '<path d="M10 4h8v3h-2.8l-4.4 10H14v3H6v-3h2.8l4.4-10H10V4z"/>', fill: true },
+    { fmt: 'strike',     title: 'Strikethrough',       icon: '<path d="M3 12h18v2H3v-2zm5-6h8v3h-3V7h-2v2H8V6zm0 9h8v3H8v-3z"/>', fill: true },
+    { sep: true },
     { fmt: 'code',       title: 'Code',                icon: '<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>', fill: false },
     { fmt: 'codeblock',  title: 'Code block',          icon: '<rect x="3" y="3" width="18" height="18" rx="2"/><polyline points="8 10 4 14 8 18" transform="scale(.7) translate(5,3)"/><polyline points="16 10 20 14 16 18" transform="scale(.7) translate(5,3)"/>', fill: false },
+    { sep: true },
+    { fmt: 'ol',         title: 'Ordered list',        icon: '<line x1="10" y1="6" x2="21" y2="6"/><line x1="10" y1="12" x2="21" y2="12"/><line x1="10" y1="18" x2="21" y2="18"/><text x="3" y="8" fill="currentColor" stroke="none" font-size="7" font-weight="600" font-family="system-ui">1</text><text x="3" y="14" fill="currentColor" stroke="none" font-size="7" font-weight="600" font-family="system-ui">2</text><text x="3" y="20" fill="currentColor" stroke="none" font-size="7" font-weight="600" font-family="system-ui">3</text>', fill: false },
+    { fmt: 'ul',         title: 'Bulleted list',       icon: '<line x1="10" y1="6" x2="21" y2="6"/><line x1="10" y1="12" x2="21" y2="12"/><line x1="10" y1="18" x2="21" y2="18"/><circle cx="4" cy="6" r="1.5" fill="currentColor" stroke="none"/><circle cx="4" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="4" cy="18" r="1.5" fill="currentColor" stroke="none"/>', fill: false },
+    { fmt: 'blockquote', title: 'Blockquote',          icon: '<line x1="3" y1="4" x2="3" y2="20"/><line x1="8" y1="7" x2="20" y2="7"/><line x1="8" y1="12" x2="20" y2="12"/><line x1="8" y1="17" x2="16" y2="17"/>', fill: false, strokeWidth: '2.5' },
+    { sep: true },
+    { fmt: 'link',       title: 'Link (Ctrl+K)',       icon: '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.5-1.5"/>', fill: false },
+    { model: true },
   ];
-  fmtBtns.forEach(({ fmt, title, icon, fill }) => {
+  fmtBtns.forEach(item => {
+    if (item.sep) {
+      const sep = document.createElement('div');
+      sep.className = 'h-fmt-sep';
+      fmtBar.appendChild(sep);
+      return;
+    }
+    if (item.model) {
+      const modelWrap = document.createElement('span');
+      modelWrap.id = 'thread-model-selector-wrap';
+      modelWrap.style.cssText = 'display:none;align-items:center;gap:4px;font-size:11px;opacity:0.7;margin-left:auto';
+      const modelLabel = document.createElement('span');
+      modelLabel.id = 'thread-model-label';
+      modelLabel.textContent = '';
+      modelWrap.appendChild(modelLabel);
+      fmtBar.appendChild(modelWrap);
+      return;
+    }
     const btn = document.createElement('button');
     btn.className = 'h-fmt-btn';
-    btn.dataset.fmt = fmt;
-    btn.title = title;
-    btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" ${fill ? 'fill="currentColor"' : 'fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"'}>${icon}</svg>`;
+    btn.dataset.fmt = item.fmt;
+    btn.title = item.title;
+    const sw = item.strokeWidth || '2.2';
+    btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" ${item.fill ? 'fill="currentColor"' : `fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round"`}>${item.icon}</svg>`;
     btn.addEventListener('mousedown', e => {
       e.preventDefault();
-      applyThreadFormat(fmt);
+      applyThreadFormat(item.fmt);
     });
     fmtBar.appendChild(btn);
   });
@@ -215,9 +343,22 @@ function _createThreadPanel() {
   composerTop.appendChild(inputEl);
   composerBox.appendChild(composerTop);
 
-  // Actions row
+  // Actions row — same as room composer
   const actionsRow = document.createElement('div');
   actionsRow.className = 'h-composer-actions';
+
+  // Emoji button
+  const threadEmojiBtn = document.createElement('button');
+  threadEmojiBtn.className = 'h-icon-btn';
+  threadEmojiBtn.id = 'thread-emoji-btn';
+  threadEmojiBtn.title = 'Emoji';
+  threadEmojiBtn.setAttribute('aria-label', 'Emoji');
+  threadEmojiBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9.5" x2="9.01" y2="9.5"/><line x1="15" y1="9.5" x2="15.01" y2="9.5"/></svg>';
+  threadEmojiBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    threadEmojiOpen ? _closeThreadEmoji() : _openThreadEmoji();
+  });
+  actionsRow.appendChild(threadEmojiBtn);
 
   // Attach button
   const attachWrap = document.createElement('span');
@@ -265,6 +406,25 @@ function _createThreadPanel() {
   });
 
   actionsRow.appendChild(attachWrap);
+
+  // Voice language button
+  const threadVoiceLangBtn = document.createElement('button');
+  threadVoiceLangBtn.className = 'h-icon-btn';
+  threadVoiceLangBtn.id = 'thread-voice-lang-btn';
+  threadVoiceLangBtn.title = 'Voice language';
+  threadVoiceLangBtn.style.cssText = 'font-family:var(--h-serif);font-size:11px;font-weight:700;padding:0 3px;min-width:22px;letter-spacing:0.5px';
+  threadVoiceLangBtn.textContent = 'ID';
+  actionsRow.appendChild(threadVoiceLangBtn);
+
+  // Voice button
+  const threadVoiceBtn = document.createElement('button');
+  threadVoiceBtn.className = 'h-icon-btn';
+  threadVoiceBtn.id = 'thread-voice-btn';
+  threadVoiceBtn.title = 'Speech to text';
+  threadVoiceBtn.setAttribute('aria-label', 'Speech to text');
+  threadVoiceBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>';
+  actionsRow.appendChild(threadVoiceBtn);
+
   actionsRow.appendChild(document.createElement('span')).style.flex = '1';
 
   // Stop button (thread-level)
@@ -287,6 +447,9 @@ function _createThreadPanel() {
   composerBox.appendChild(actionsRow);
   footer.appendChild(composerBox);
   panel.appendChild(footer);
+
+  // Init thread speech-to-text
+  _initThreadSpeech(threadVoiceBtn, threadVoiceLangBtn);
 
   // Keyboard handling for thread input
   inputEl.addEventListener('keydown', e => {
@@ -702,6 +865,120 @@ function applyThreadFormat(fmt) {
     sel.removeAllRanges(); sel.addRange(range);
     return;
   }
+  if (fmt === 'ol' || fmt === 'ul') {
+    document.execCommand(fmt === 'ol' ? 'insertOrderedList' : 'insertUnorderedList', false, null);
+    return;
+  }
+  if (fmt === 'blockquote') {
+    let node = sel.anchorNode;
+    while (node && node !== inputEl) {
+      if (node.nodeName === 'BLOCKQUOTE') {
+        const div = document.createElement('div');
+        while (node.firstChild) div.appendChild(node.firstChild);
+        node.parentElement.replaceChild(div, node);
+        return;
+      }
+      node = node.parentElement;
+    }
+    const el = document.createElement('blockquote');
+    el.textContent = text || '​';
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    range.insertNode(el);
+    range.setStartAfter(el);
+    range.collapse(true);
+    sel.removeAllRanges(); sel.addRange(range);
+    return;
+  }
+  if (fmt === 'link') {
+    const url = text?.match(/^https?:\/\//) ? text : prompt('Enter URL:');
+    if (!url) return;
+    const label = text || url;
+    const a = Object.assign(document.createElement('a'), { href: url, textContent: label });
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    range.insertNode(a);
+    range.setStartAfter(a);
+    range.collapse(true);
+    sel.removeAllRanges(); sel.addRange(range);
+    return;
+  }
+}
+
+// ── Thread speech-to-text ────────────────────────────────────────────────────
+function _initThreadSpeech(voiceBtn, langBtn) {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    voiceBtn.title = 'Speech not supported';
+    langBtn.style.display = 'none';
+    return;
+  }
+
+  const langs = [
+    { code: 'en-US', label: 'EN', send: /send\s*(it\s*)?now/i, stop: /stop\s*listening/i },
+    { code: 'id-ID', label: 'ID', send: /kirim(kan)?\s*(sekarang|dulu)/i, stop: /matikan\s*mic/i },
+    { code: 'ja-JP', label: 'JA', send: /送信(して)?/i, stop: /マイク(を)?止め/i },
+    { code: 'ko-KR', label: 'KO', send: /지금\s*보내/i, stop: /마이크\s*끄/i },
+    { code: 'zh-CN', label: 'ZH', send: /现在发送/i, stop: /关闭麦克风/i },
+  ];
+  let langIdx = parseInt(localStorage.getItem('stoa-voice-lang') || '0', 10);
+  if (langIdx >= langs.length) langIdx = 0;
+  langBtn.textContent = langs[langIdx].label;
+
+  langBtn.addEventListener('click', () => {
+    langIdx = (langIdx + 1) % langs.length;
+    localStorage.setItem('stoa-voice-lang', langIdx);
+    langBtn.textContent = langs[langIdx].label;
+    if (recognition) { _stopThreadRec(); _startThreadRec(); }
+  });
+
+  let recognition = null;
+  let recording = false;
+
+  function _startThreadRec() {
+    const lang = langs[langIdx];
+    recognition = new SpeechRecognition();
+    recognition.lang = lang.code;
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    const input = document.getElementById('thread-msg-input');
+    let baseText = (input.textContent || '').replace(/​/g, '').trim();
+    if (baseText) baseText += ' ';
+    let finalResults = [];
+
+    recognition.onresult = event => {
+      let interim = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const t = event.results[i][0].transcript;
+        if (event.results[i].isFinal) finalResults[i] = t;
+        else interim += t;
+      }
+      const full = (baseText + finalResults.filter(Boolean).join('') + interim).trim();
+      if (lang.stop.test(full)) { input.textContent = ''; _stopThreadRec(); return; }
+      if (lang.send.test(full)) {
+        const clean = full.replace(lang.send, '').trim();
+        input.textContent = clean;
+        _stopThreadRec();
+        if (clean) sendThreadMessage();
+        return;
+      }
+      input.textContent = full;
+    };
+    recognition.onend = () => { if (recording) { try { recognition.start(); } catch {} } };
+    recognition.onerror = () => { _stopThreadRec(); };
+    try { recognition.start(); recording = true; voiceBtn.classList.add('recording'); } catch { recording = false; }
+  }
+
+  function _stopThreadRec() {
+    recording = false;
+    voiceBtn.classList.remove('recording');
+    try { recognition?.stop(); } catch {}
+    recognition = null;
+  }
+
+  voiceBtn.addEventListener('click', () => {
+    recording ? _stopThreadRec() : _startThreadRec();
+  });
 }
 
 // ── Draft per (room, thread) ─────────────────────────────────────────────────

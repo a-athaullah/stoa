@@ -1113,7 +1113,8 @@ html.dark .h-faded-mark { opacity: 0.12; }
 #enter-send-toggle.active .enter-send-label { color: var(--h-ink-mute); }
 
 /* ── Voice recording state ─────────────────────────── */
-#voice-btn.recording {
+#voice-btn.recording,
+#thread-voice-btn.recording {
   color: #d32f2f;
   background: rgba(211, 47, 47, 0.1);
   animation: voice-pulse 1.2s ease-in-out infinite;
@@ -1212,6 +1213,49 @@ html.dark .h-faded-mark { opacity: 0.12; }
   line-height: 1;
 }
 .h-emoji-btn:hover { background: var(--h-hair-soft); }
+
+/* ── Thread emoji picker ─────────────────────────────── */
+.h-emoji-picker {
+  display: none;
+  position: relative;
+  width: 100%;
+  background: var(--h-surface);
+  border-bottom: 1px solid var(--h-hairline);
+  z-index: 60;
+  overflow: hidden;
+}
+.h-emoji-picker.open { display: block; }
+.h-emoji-picker input {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--h-hairline);
+  padding: 8px 10px;
+  font-size: 13px;
+  background: var(--h-surface);
+  color: var(--h-ink);
+  outline: none;
+  box-sizing: border-box;
+}
+.h-emoji-picker input::placeholder { color: var(--h-ink); opacity: 0.4; }
+.h-emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 2px;
+  padding: 8px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+/* ── Thread composer input styling (match room) ──────── */
+#thread-msg-input strong, #thread-msg-input b { font-weight: 600; }
+#thread-msg-input em, #thread-msg-input i { font-style: italic; }
+#thread-msg-input s, #thread-msg-input del { text-decoration: line-through; }
+#thread-msg-input code { font-family: monospace; font-size: 13px; background: var(--h-hair-soft); border-radius: 3px; padding: 0 3px; }
+#thread-msg-input pre { background: var(--h-hair-soft); border-radius: 6px; padding: 6px 10px; margin: 2px 0; white-space: pre-wrap; }
+#thread-msg-input blockquote { border-left: 3px solid var(--h-ink-mute); margin: 2px 0; padding: 2px 0 2px 10px; color: var(--h-ink-mute); }
+#thread-msg-input ol, #thread-msg-input ul { margin: 2px 0 2px 18px; padding: 0; }
+#thread-msg-input li { margin: 1px 0; }
+#thread-msg-input a { color: #5b8fd4; text-decoration: underline; text-underline-offset: 2px; }
 
 /* ── Skill autocomplete ──────────────────────────────── */
 #skill-popup {
@@ -1782,9 +1826,10 @@ html.dark .h-bubble :not(pre) > code {
 
 /* ── Thread panel ─────────────────────────────────────────────────────────── */
 .h-thread-panel {
+  position: relative;
   width: 380px;
-  min-width: 280px;
-  max-width: 480px;
+  min-width: 320px;
+  max-width: 70vw;
   flex: 0 0 380px;
   display: none;
   flex-direction: column;
@@ -1793,6 +1838,24 @@ html.dark .h-bubble :not(pre) > code {
   overflow: hidden;
 }
 .h-thread-panel.open { display: flex; }
+
+/* Resize handle on left edge */
+.h-thread-resize-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  cursor: col-resize;
+  z-index: 10;
+  background: transparent;
+  transition: background 0.15s;
+}
+.h-thread-resize-handle:hover,
+.h-thread-resize-handle:active {
+  background: var(--h-accent, #3a7bd5);
+  opacity: 0.5;
+}
 
 .h-thread-header {
   display: flex;
@@ -2091,6 +2154,7 @@ html.dark .h-room-thread-badge {
     pointer-events: none;
   }
   .h-thread-header { position: relative; padding-top: 20px; }
+  .h-thread-resize-handle { display: none; }
 }
 
 /* ── Thread panel — flat message rows (no bubble) ────────────────────────── */

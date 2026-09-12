@@ -40,5 +40,16 @@ function handleModelUpdate(msg) {
       tagline.appendChild(b);
     }
   }
+  // Sync thread composer model label
+  const threadModelWrap = document.getElementById('thread-model-selector-wrap');
+  const threadModelLabel = document.getElementById('thread-model-label');
+  if (threadModelWrap && threadModelLabel) {
+    if (label) {
+      threadModelLabel.textContent = label;
+      threadModelWrap.style.display = 'inline-flex';
+    } else {
+      threadModelWrap.style.display = 'none';
+    }
+  }
 }
 
