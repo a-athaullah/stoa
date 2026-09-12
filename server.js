@@ -4036,10 +4036,10 @@ let reauthProcess = null;  // true when remote reauth is in progress
 let reauthRoomId = null;   // room that triggered /reauth
 let reauthAgentActorId = null; // actor_id of the agent handling reauth
 let reauthTimer = null;    // timeout handle for reauth
-function setRecentCompact(roomId) {
-  clearTimeout(recentCompactTimers.get(roomId));
-  recentCompacts.set(roomId, Date.now());
-  recentCompactTimers.set(roomId, setTimeout(() => { recentCompacts.delete(roomId); recentCompactTimers.delete(roomId); }, 30_000));
+function setRecentCompact(compactKey) {
+  clearTimeout(recentCompactTimers.get(compactKey));
+  recentCompacts.set(compactKey, Date.now());
+  recentCompactTimers.set(compactKey, setTimeout(() => { recentCompacts.delete(compactKey); recentCompactTimers.delete(compactKey); }, 30_000));
 }
 const pendingFileOps = new Map();   // request_id → { type, clientWs }
 function addPendingFileOp(rid, op) {
@@ -4236,7 +4236,7 @@ wss.on('connection', (ws, req) => {
       setTimeout(() => {
         if (pendingCompacts.has(compactKey)) {
           pendingCompacts.delete(compactKey);
-          setRecentCompact(roomId);
+          setRecentCompact(compactKey);
           broadcast(roomId, { type: 'compact_error', room_id: roomId, thread_id: compactThreadId, error: 'Compact timed out' });
         }
       }, 600_000);
@@ -4483,8 +4483,8 @@ wss.on('connection', (ws, req) => {
       }
       if (roomId) {
         const acKey = acThreadId ? `${roomId}:${acThreadId}` : String(roomId);
-        if (recentCompacts.has(roomId)) {
-          console.log(`[server] auto_compact_start suppressed for room=${roomId} (compact recently completed)`);
+        if (recentCompacts.has(acKey)) {
+          console.log(`[server] auto_compact_start suppressed for room=${roomId} thread=${acThreadId || 0} (compact recently completed)`);
         } else if (!pendingCompacts.has(acKey)) {
           const actor = db.prepare('SELECT id, name FROM actors WHERE id=?').get(agentActorId);
           const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(roomId, agentActorId);
@@ -4565,10 +4565,10 @@ wss.on('connection', (ws, req) => {
           const sysResult = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')").run(msg.room_id, participant.id, content);
           broadcast(msg.room_id, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: msg.room_id, content, state: 'system_event', created_at: new Date().toISOString() } });
         }
-        if (!recentCompacts.has(msg.room_id)) {
-          broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id });
+        if (!recentCompacts.has(cKey)) {
+          broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id, thread_id: cThreadId });
         }
-        setRecentCompact(msg.room_id);
+        setRecentCompact(cKey);
         return;
       }
       if (!state.names) state.names = [];
@@ -4580,7 +4580,7 @@ wss.on('connection', (ws, req) => {
       state.completed++;
       if (state.completed >= state.total) {
         pendingCompacts.delete(cKey);
-        setRecentCompact(msg.room_id);
+        setRecentCompact(cKey);
         const label = state.names.length ? state.names.join(', ') : 'session';
         const content = `${label} · session compacted`;
         if (participant) {
@@ -4598,11 +4598,15 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'compact_error' && agentActorId) {
-      if (!msg.room_id) {
+      // Resolve room_id / thread_id from the session row when the agent did not send them
+      // (older agent builds). pendingCompacts is keyed `room:thread`, so a missing thread_id
+      // would otherwise leave the compact stuck in "compacting" state.
+      if (!msg.room_id || msg.thread_id == null) {
         const lookup = msg.orig_session_id || msg.claude_session_id;
         if (lookup) {
-          const s = db.prepare('SELECT room_id FROM ai_sessions WHERE claude_session_id=?').get(lookup);
-          if (s?.room_id) msg.room_id = s.room_id;
+          const s = db.prepare('SELECT room_id, thread_id FROM ai_sessions WHERE claude_session_id=?').get(lookup);
+          if (s?.room_id && !msg.room_id) msg.room_id = s.room_id;
+          if (s && msg.thread_id == null && s.thread_id) msg.thread_id = s.thread_id;
         }
       }
       if (!msg.room_id) {
@@ -4634,7 +4638,7 @@ wss.on('connection', (ws, req) => {
       state.completed++;
       if (state.completed >= state.total) {
         pendingCompacts.delete(ceKey);
-        setRecentCompact(msg.room_id);
+        setRecentCompact(ceKey);
         if (state.errors >= state.total) {
           broadcast(msg.room_id, { type: 'compact_error', room_id: msg.room_id, thread_id: ceThreadId, error: msg.error || 'Compact failed' });
         } else {
@@ -5350,14 +5354,18 @@ wss.on('connection', (ws, req) => {
         }
       }
       // Clean up pendingCompacts — remove only this agent; if no agents remain, unstick UI
-      for (const [roomId, cs] of pendingCompacts) {
+      // pendingCompacts is keyed `room:thread` (or `room` for legacy room-level) — split before using as ids.
+      for (const [compactKey, cs] of pendingCompacts) {
         const idx = cs.agents.indexOf(agentActorId);
         if (idx !== -1) {
+          const [roomPart, threadPart] = String(compactKey).split(':');
+          const roomId = parseInt(roomPart);
+          const dcThreadId = threadPart ? parseInt(threadPart) : null;
           cs.agents.splice(idx, 1);
           cs.total = Math.max(cs.total - 1, cs.completed); // won't complete — clamp to already-done count
           if (cs.agents.length === 0 || cs.completed >= cs.total) {
-            pendingCompacts.delete(roomId);
-            setRecentCompact(roomId); // prevent compact_complete (if agent reconnects) from sending a redundant compact_done
+            pendingCompacts.delete(compactKey);
+            setRecentCompact(compactKey); // prevent compact_complete (if agent reconnects) from sending a redundant compact_done
             // Write compact marker for agents that successfully completed before disconnect
             if (cs.completed > 0 && cs.names?.length > 0) {
               const completedActorId = cs.completedAgentIds?.[0] ?? agentActorId;
@@ -5368,10 +5376,10 @@ wss.on('connection', (ws, req) => {
                 broadcast(roomId, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: roomId, content, state: 'system_event', created_at: new Date().toISOString() } });
               }
             }
-            broadcast(roomId, { type: 'compact_done', room_id: roomId });
-            console.log(`[agent] Cleared pendingCompact room=${roomId} (agent #${agentActorId} disconnected mid-compact)`);
+            broadcast(roomId, { type: 'compact_done', room_id: roomId, thread_id: dcThreadId });
+            console.log(`[agent] Cleared pendingCompact key=${compactKey} (agent #${agentActorId} disconnected mid-compact)`);
           } else {
-            console.log(`[agent] Agent #${agentActorId} disconnected mid-compact room=${roomId}, ${cs.agents.length} agent(s) still pending`);
+            console.log(`[agent] Agent #${agentActorId} disconnected mid-compact key=${compactKey}, ${cs.agents.length} agent(s) still pending`);
           }
         }
       }
