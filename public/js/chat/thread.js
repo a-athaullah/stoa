@@ -36,6 +36,7 @@ async function openThread(rootId) {
   panel.classList.add('open');
   document.getElementById('chat-inner')?.classList.add('has-thread');
 
+  clearThreadReply();
   _updateRoomHeaderThread(rootId);
   await _loadThread(rootId);
   restoreThreadDraft(currentRoomId, rootId);
@@ -64,6 +65,7 @@ function closeThread() {
   updateThreadContextBar();
 
   clearThreadAttachments();
+  clearThreadReply();
 }
 
 // ── Create panel DOM ─────────────────────────────────────────────────────────
@@ -195,7 +197,7 @@ function _createThreadPanel() {
     btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" ${fill ? 'fill="currentColor"' : 'fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"'}>${icon}</svg>`;
     btn.addEventListener('mousedown', e => {
       e.preventDefault();
-      if (typeof applyFormat === 'function') applyFormat(fmt);
+      applyThreadFormat(fmt);
     });
     fmtBar.appendChild(btn);
   });
@@ -643,6 +645,63 @@ function startThreadReply(msgId, actorName, avatarColor, content) {
 function clearThreadReply() {
   threadPendingReplyTo = null;
   document.getElementById('thread-reply-bar')?.classList.remove('visible');
+}
+
+// ── Thread-specific format apply ─────────────────────────────────────────────
+function applyThreadFormat(fmt) {
+  const inputEl = document.getElementById('thread-msg-input');
+  if (!inputEl) return;
+  inputEl.focus();
+  if (fmt === 'bold')   { document.execCommand('bold',          false, null); return; }
+  if (fmt === 'italic') { document.execCommand('italic',        false, null); return; }
+  if (fmt === 'strike') { document.execCommand('strikeThrough', false, null); return; }
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return;
+  const text = sel.toString();
+  if (fmt === 'code') {
+    let node = sel.anchorNode;
+    while (node && node !== inputEl) {
+      if (node.nodeName === 'CODE' && !node.closest('pre')) {
+        const parent = node.parentElement;
+        while (node.firstChild) parent.insertBefore(node.firstChild, node);
+        parent.removeChild(node);
+        return;
+      }
+      node = node.parentElement;
+    }
+    const el = Object.assign(document.createElement('code'), { textContent: text || '​' });
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    range.insertNode(el);
+    range.setStartAfter(el);
+    range.collapse(true);
+    sel.removeAllRanges(); sel.addRange(range);
+    return;
+  }
+  if (fmt === 'codeblock') {
+    let node = sel.anchorNode;
+    while (node && node !== inputEl) {
+      if (node.nodeName === 'PRE') {
+        const div = document.createElement('div');
+        div.innerHTML = node.textContent || '<br>';
+        node.parentElement.replaceChild(div, node);
+        const r = document.createRange();
+        r.selectNodeContents(div);
+        r.collapse(false);
+        sel.removeAllRanges(); sel.addRange(r);
+        return;
+      }
+      node = node.parentElement;
+    }
+    const el = Object.assign(document.createElement('pre'), { textContent: text || '​' });
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    range.insertNode(el);
+    range.setStartAfter(el);
+    range.collapse(true);
+    sel.removeAllRanges(); sel.addRange(range);
+    return;
+  }
 }
 
 // ── Draft per (room, thread) ─────────────────────────────────────────────────
