@@ -1827,6 +1827,7 @@ html.dark .h-bubble :not(pre) > code {
 /* ── Room sidebar ─────────────────────────────────────────────────────────── */
 .h-room-sidebar {
   flex: 0 0 44px;
+  order: 99;
   display: flex;
   flex-direction: column;
   align-items: center;
