@@ -41,5 +41,16 @@ function handleModelUpdate(msg) {
       threadModelWrap.style.display = 'none';
     }
   }
+  // Sync room header tagline (format: "model · N agents")
+  const tagline = document.querySelector('.h-room-tagline');
+  if (tagline) {
+    const current = tagline.textContent;
+    const agentsPart = current.includes(' · ') ? current.split(' · ').slice(-1)[0] : current;
+    const modelShort = msg.model ? msg.model.replace(/^claude-/, '') : '';
+    const parts = [];
+    if (modelShort) parts.push(modelShort);
+    if (agentsPart) parts.push(agentsPart);
+    tagline.textContent = parts.join(' · ');
+  }
 }
 

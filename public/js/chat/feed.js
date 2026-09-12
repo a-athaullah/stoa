@@ -99,11 +99,8 @@ function _buildThreadChip(rootId) {
     (s.participant_ids || []).forEach(aid => {
       const actor = allActors.find(a => a.id === aid);
       if (!actor) return;
-      if (saParentIds.has(aid) && (s.sub_agent_participants || []).length) {
-        items.push({ actor, subLabel: null });
-      } else {
-        items.push({ actor, subLabel: null });
-      }
+      if (saParentIds.has(aid)) return; // sub-agent actors added below with label
+      items.push({ actor, subLabel: null });
     });
     (s.sub_agent_participants || []).forEach(sa => {
       const actor = allActors.find(a => a.id === sa.actor_id);
