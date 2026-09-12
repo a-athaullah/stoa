@@ -63,7 +63,7 @@ html.dark .h-faded-mark { opacity: 0.12; }
 /* Header */
 #chat-header {
   padding: 10px 20px;
-  min-height: 48px;
+  min-height: 49px;
   border-bottom: 1px solid var(--h-hair-soft);
   display: flex;
   align-items: center;
