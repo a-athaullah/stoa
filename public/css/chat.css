@@ -1888,51 +1888,6 @@ html.dark .h-bubble :not(pre) > code {
   border-bottom: 1px solid var(--h-hair-soft);
 }
 
-.h-thread-composer {
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
-  background: var(--h-input-bg, var(--h-surface));
-  border: 1px solid var(--h-border);
-  border-radius: 10px;
-  padding: 8px 10px;
-}
-
-#thread-msg-input {
-  flex: 1;
-  min-height: 20px;
-  max-height: 140px;
-  overflow-y: auto;
-  font-family: var(--h-sans);
-  font-size: 13.5px;
-  line-height: 1.5;
-  color: var(--h-ink);
-  outline: none;
-  word-break: break-word;
-}
-
-#thread-msg-input:empty::before {
-  content: attr(data-placeholder);
-  color: var(--h-ink-faint);
-  pointer-events: none;
-}
-
-#thread-send-btn {
-  flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: 6px;
-  background: var(--h-accent, #3a7bd5);
-  color: #fff;
-  cursor: pointer;
-  transition: opacity 0.15s;
-}
-#thread-send-btn:hover { opacity: 0.85; }
-
 /* ── Feed root messages (clickable rows) ──────────────────────────────────── */
 .h-feed-root {
   cursor: pointer;

@@ -38,7 +38,8 @@ async function openThread(rootId) {
 
   _updateRoomHeaderThread(rootId);
   await _loadThread(rootId);
-  _updateThreadComposer();
+  _reparentComposerToThread();
+  restoreThreadDraft(currentRoomId, rootId);
 }
 
 function closeThread() {
@@ -61,7 +62,7 @@ function closeThread() {
   Object.keys(threadContextState).forEach(k => delete threadContextState[k]);
   updateThreadContextBar();
 
-  _updateThreadComposer();
+  _returnComposerToFeed();
 }
 
 // ── Create panel DOM ─────────────────────────────────────────────────────────
@@ -140,38 +141,10 @@ function _createThreadPanel() {
     if (scroll.scrollTop < 120) _loadOlderThreadMessages();
   });
 
-  // Footer composer (thread-scoped reply bar + input)
+  // Footer — main composer will be reparented here when thread opens
   const footer = document.createElement('div');
   footer.id = 'thread-footer';
   footer.className = 'h-thread-footer';
-
-  const replyBar = document.createElement('div');
-  replyBar.id = 'thread-reply-bar';
-  replyBar.className = 'h-reply-bar';
-  replyBar.style.display = 'none';
-  footer.appendChild(replyBar);
-
-  const composerBox = document.createElement('div');
-  composerBox.className = 'h-thread-composer';
-
-  const inputEl = document.createElement('div');
-  inputEl.id = 'thread-msg-input';
-  inputEl.className = 'h-msg-input';
-  inputEl.contentEditable = 'true';
-  inputEl.setAttribute('role', 'textbox');
-  inputEl.setAttribute('aria-multiline', 'true');
-  inputEl.setAttribute('data-placeholder', 'Reply in thread…');
-  composerBox.appendChild(inputEl);
-
-  const sendBtn = document.createElement('button');
-  sendBtn.id = 'thread-send-btn';
-  sendBtn.className = 'h-send-btn';
-  sendBtn.title = 'Send (Enter)';
-  sendBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>';
-  sendBtn.onclick = sendThreadMessage;
-  composerBox.appendChild(sendBtn);
-
-  footer.appendChild(composerBox);
   panel.appendChild(footer);
 
   chatBodyRow.appendChild(panel);
@@ -183,14 +156,6 @@ function _createThreadPanel() {
     const dx = e.changedTouches[0].clientX - _swipeStartX;
     if (dx > 80) closeThread();
   }, { passive: true });
-
-  // Keyboard handling for thread input
-  inputEl.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendThreadMessage();
-    }
-  });
 }
 
 // ── Flat thread message renderer ─────────────────────────────────────────────
@@ -464,37 +429,47 @@ function compactThread() {
   ws.send(JSON.stringify({ type: 'compact_session', room_id: currentRoomId, thread_id: activeThreadId }));
 }
 
-// ── Thread composer ───────────────────────────────────────────────────────────
-function _updateThreadComposer() {
+// ── Composer reparent — moves main #composer into thread panel ───────────────
+// sendMessage() in composer/input.js already reads activeThreadId → thread_id
+
+function _reparentComposerToThread() {
+  const composer = document.getElementById('composer');
   const footer = document.getElementById('thread-footer');
-  if (!footer) return;
-  footer.style.display = activeThreadId ? '' : 'none';
+  if (!composer || !footer) return;
+  if (footer.contains(composer)) return; // already there
+
+  // Insert invisible slot so we can return composer to its original position
+  if (!document.getElementById('composer-slot')) {
+    const slot = document.createElement('div');
+    slot.id = 'composer-slot';
+    slot.style.display = 'none';
+    composer.parentNode.insertBefore(slot, composer);
+  }
+
+  footer.appendChild(composer);
+
+  const input = document.getElementById('msg-input');
+  if (input) {
+    input.dataset.placeholder = 'Reply in thread…';
+    input.focus();
+  }
 }
 
-function sendThreadMessage() {
-  if (!activeThreadId || !ws || ws.readyState !== WebSocket.OPEN) return;
-  const inputEl = document.getElementById('thread-msg-input');
-  if (!inputEl) return;
-  const content = htmlToMarkdown(inputEl).replace(/​/g, '').replace(/\n{3,}/g, '\n\n').trim();
-  if (!content) return;
-  inputEl.innerHTML = '';
+function _returnComposerToFeed() {
+  const composer = document.getElementById('composer');
+  const slot = document.getElementById('composer-slot');
+  if (!composer || !slot) return;
+  slot.parentNode.insertBefore(composer, slot);
+  slot.remove();
 
-  // Save draft clear
-  try { localStorage.removeItem('stoa-thread-draft-' + currentRoomId + '-' + activeThreadId); } catch {}
-
-  ws.send(JSON.stringify({
-    type: 'send_message',
-    room_id: currentRoomId,
-    content,
-    thread_id: activeThreadId,
-    event_id: crypto.randomUUID(),
-  }));
+  const input = document.getElementById('msg-input');
+  if (input) input.dataset.placeholder = 'say something…';
 }
 
 // ── Draft per (room, thread) ─────────────────────────────────────────────────
 function saveThreadDraft(roomId, threadId) {
   if (!roomId || !threadId) return;
-  const inputEl = document.getElementById('thread-msg-input');
+  const inputEl = document.getElementById('msg-input');
   if (!inputEl) return;
   const html = inputEl.innerHTML.trim();
   const key = 'stoa-thread-draft-' + roomId + '-' + threadId;
@@ -506,11 +481,20 @@ function saveThreadDraft(roomId, threadId) {
 }
 
 function restoreThreadDraft(roomId, threadId) {
-  const inputEl = document.getElementById('thread-msg-input');
+  const inputEl = document.getElementById('msg-input');
   if (!inputEl) return;
   const key = 'stoa-thread-draft-' + roomId + '-' + threadId;
   const draft = localStorage.getItem(key);
   inputEl.innerHTML = draft || '';
+  // Move cursor to end
+  if (draft) {
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(inputEl);
+    range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
 }
 
 // ── Context bar (thread-scoped) ───────────────────────────────────────────────
@@ -618,6 +602,7 @@ function clearThreadPanel() {
     saveThreadDraft(currentRoomId, activeThreadId);
     activeThreadId = null;
   }
+  _returnComposerToFeed();
   const panel = _getThreadPanel();
   if (panel) {
     panel.classList.remove('open');
