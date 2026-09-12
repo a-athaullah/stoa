@@ -582,16 +582,6 @@ body.sidebar-collapsed #sidebar { display: none; }
   flex: 0 0 auto;
 }
 
-.h-room-preview {
-  font-family: var(--h-sans);
-  font-size: 12px;
-  color: var(--h-ink-faint);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  margin-top: 2px;
-}
-
 .h-room-dots {
   display: flex;
   align-items: center;
