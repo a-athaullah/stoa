@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.229";
+var CLIENT_VERSION = "0.4.230";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -681,7 +681,7 @@ setInterval(async () => {
     }).catch((err) => {
       compactsInFlight.delete(sessionKey);
       console.error(`[stoa] worker auto-compact error: ${err.message}`);
-      send({ type: "compact_error", orig_session_id: sessionId, error: err.message });
+      send({ type: "compact_error", orig_session_id: sessionId, thread_id: skMeta.threadId, sub_agent_id: skMeta.subAgentId, error: err.message });
     });
   }
 }, 60 * 6e4);
@@ -1118,7 +1118,7 @@ async function handleAgentMessage(msg) {
         console.log(`[stoa] compact: resuming session ${msg.claude_session_id.slice(0, 8)}... for ${key}`);
       } else {
         console.log(`[stoa] compact: no session for ${key}`);
-        send({ type: "compact_error", room_id: msg.room_id, error: "no active session" });
+        send({ type: "compact_error", room_id: msg.room_id, thread_id: msg.thread_id || null, sub_agent_id: msg.sub_agent_id || null, error: "no active session" });
         return;
       }
     }
@@ -1134,7 +1134,7 @@ async function handleAgentMessage(msg) {
       }, 3e3);
     }).catch((err) => {
       console.error(`[stoa] compact error: ${err.message}`);
-      send({ type: "compact_error", room_id: msg.room_id, error: err.message });
+      send({ type: "compact_error", room_id: msg.room_id, thread_id: msg.thread_id || null, sub_agent_id: msg.sub_agent_id || null, error: err.message });
     });
     return;
   }
@@ -1615,7 +1615,7 @@ ${allNotes}`;
           }).catch((err) => {
             compactsInFlight.delete(sessionKey);
             console.error(`[stoa] auto-compact error: ${err.message}`);
-            send({ type: "compact_error", room_id, error: err.message });
+            send({ type: "compact_error", room_id, thread_id: postRunMeta.threadId, sub_agent_id: postRunMeta.subAgentId, error: err.message });
           });
         });
       }

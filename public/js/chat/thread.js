@@ -44,6 +44,7 @@ async function openThread(rootId) {
 
 function closeThread() {
   if (!activeThreadId) return;
+  saveThreadDraft(currentRoomId, activeThreadId);
   activeThreadId = null;
 
   const url = new URL(location.href);
@@ -63,6 +64,7 @@ function closeThread() {
   updateThreadContextBar();
 
   _returnComposerToFeed();
+  if (typeof restoreDraft === 'function') restoreDraft(currentRoomId);
 }
 
 // ── Create panel DOM ─────────────────────────────────────────────────────────
@@ -592,7 +594,7 @@ function _updateRoomHeaderThread(rootId) {
   crumb.innerHTML = `<span class="h-thread-breadcrumb-sep">›</span><span class="h-thread-breadcrumb-label" title="Click to focus thread">${snippet}</span>`;
   crumb.querySelector('.h-thread-breadcrumb-label').onclick = () => {
     const panel = _getThreadPanel();
-    if (panel) panel.querySelector('#thread-msg-input')?.focus();
+    document.getElementById('msg-input')?.focus();
   };
 }
 

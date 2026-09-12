@@ -15,10 +15,6 @@ async function openRoom(room) {
   currentRoomId = room.id;
   currentRoomWorkdirId = room.workdir_id || null;
   clearRoomDisplay();
-  // Apply compact state: hide bar if switching away from compacting room
-  if (compactingRoomId && compactingRoomId !== room.id) {
-    hideCompactBar();
-  }
   clearComposerProcessing();
 
   document.querySelectorAll('.h-room-row').forEach(el => {
