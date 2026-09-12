@@ -301,25 +301,19 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'compact_start') {
     if (msg.room_id !== currentRoomId) return;
-    const inThread = msg.thread_id && typeof activeThreadId !== 'undefined' && activeThreadId === msg.thread_id;
-    if (inThread && typeof showThreadCompactBar === 'function') showThreadCompactBar(msg.participants);
-    else showCompactBar(msg.room_id, msg.participants);
+    if (typeof showThreadCompactBar === 'function') showThreadCompactBar(msg.participants);
     return;
   }
 
   if (msg.type === 'compact_progress') {
     if (msg.room_id !== currentRoomId) return;
-    const inThread = msg.thread_id && typeof activeThreadId !== 'undefined' && activeThreadId === msg.thread_id;
-    if (inThread && typeof updateThreadCompactBar === 'function') updateThreadCompactBar(msg.completed_participant_ids);
-    else updateCompactBar(msg.completed_participant_ids);
+    if (typeof updateThreadCompactBar === 'function') updateThreadCompactBar(msg.completed_participant_ids);
     return;
   }
 
   if (msg.type === 'compact_done') {
     if (msg.room_id !== currentRoomId) return;
-    const inThread = msg.thread_id && typeof activeThreadId !== 'undefined' && activeThreadId === msg.thread_id;
-    if (inThread && typeof hideThreadCompactBar === 'function') hideThreadCompactBar();
-    else hideCompactBar();
+    if (typeof hideThreadCompactBar === 'function') hideThreadCompactBar();
     return;
   }
 
@@ -342,9 +336,7 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'compact_error') {
     if (msg.room_id !== currentRoomId) return;
-    const inThread = msg.thread_id && typeof activeThreadId !== 'undefined' && activeThreadId === msg.thread_id;
-    if (inThread && typeof hideThreadCompactBar === 'function') hideThreadCompactBar();
-    else hideCompactBar();
+    if (typeof hideThreadCompactBar === 'function') hideThreadCompactBar();
     showToast(msg.error || 'Compact failed', { error: true });
     return;
   }
