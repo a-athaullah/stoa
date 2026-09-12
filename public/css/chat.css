@@ -1824,6 +1824,63 @@ html.dark .h-bubble :not(pre) > code {
 .wa-context > :not(summary) { font-size: 11px; color: var(--h-ink-faint, #888); }
 .wa-context p, .wa-context code { font-size: 11px; }
 
+/* ── Room sidebar ─────────────────────────────────────────────────────────── */
+.h-room-sidebar {
+  flex: 0 0 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px 0;
+  gap: 4px;
+  border-left: 1px solid var(--h-hair-soft);
+  background: var(--h-bg);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.h-room-sidebar:empty { display: none; }
+
+.h-rsb-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: transparent;
+  border: none;
+  color: var(--h-ink-faint);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  flex-shrink: 0;
+}
+.h-rsb-btn:hover { background: var(--h-surface-hi, var(--h-surface)); color: var(--h-ink-mute); }
+.h-rsb-btn.active {
+  color: var(--h-accent);
+  background: color-mix(in srgb, var(--h-accent) 10%, transparent);
+}
+
+.h-rsb-divider {
+  width: 20px;
+  height: 1px;
+  background: var(--h-hair-soft);
+  margin: 4px 0;
+  flex-shrink: 0;
+}
+
+.h-rsb-popover {
+  position: fixed;
+  width: 420px;
+  max-height: 80vh;
+  overflow-y: auto;
+  background: var(--h-surface);
+  border: 1px solid var(--h-border);
+  border-radius: 12px;
+  box-shadow: 0 10px 40px rgba(0,0,0,.2);
+  padding: 16px 18px;
+  z-index: 150;
+  font-family: var(--h-sans);
+}
+
 /* ── Thread panel ─────────────────────────────────────────────────────────── */
 .h-thread-panel {
   position: relative;
@@ -2153,6 +2210,8 @@ html.dark .h-room-thread-badge {
 
 /* ── Mobile overlay: thread panel full-screen on small viewports ─────────── */
 @media (max-width: 1023px) {
+  .h-room-sidebar { display: none; }
+  .h-rsb-popover { width: calc(100vw - 24px); right: 12px !important; }
   .h-thread-panel {
     position: fixed;
     top: 0;

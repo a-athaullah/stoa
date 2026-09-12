@@ -42,6 +42,7 @@ async function openRoom(room) {
   roomParticipantsCache[room.id] = parts;
   renderRoomDots(room.id, parts);
   renderChatHeader(room, parts);
+  renderRoomSidebar(room, parts);
   renderComposerSeal();
   if (typeof updateModelSelector === 'function') updateModelSelector(room, parts);
   loadContextState(room.id);
