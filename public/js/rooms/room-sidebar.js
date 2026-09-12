@@ -69,6 +69,7 @@ function renderRoomSidebar(room, participants) {
     eye:       `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`,
     clock:     `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`,
     brain:     `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96-.46 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 1.44-2.14z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96-.46 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-1.44-2.14z"/></svg>`,
+    users:     `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>`,
   };
 
   const SA_MODELS = [
@@ -143,6 +144,10 @@ function renderRoomSidebar(room, participants) {
   if (wsPanel && wsPanel.classList.contains('open')) wsBtn.classList.add('active');
   sidebar.appendChild(wsBtn);
 
+  // ── Agents
+  const agentsBtn = mkBtn('Agents', ICONS.users, () => openPopover(agentsBtn, buildAgentsPanel));
+  sidebar.appendChild(agentsBtn);
+
   sidebar.appendChild(mkDivider());
 
   // ── Model Tier
@@ -166,6 +171,253 @@ function renderRoomSidebar(room, participants) {
   sidebar.appendChild(memBtn);
 
   // ────────────────────────────────────────────────────────── Panel builders
+
+  function buildAgentsPanel(pop) {
+    pop.appendChild(popTitle('Agents'));
+    const body = document.createElement('div');
+    body.innerHTML = '<div style="font-size:12.5px;color:var(--h-ink-faint)">loading…</div>';
+    pop.appendChild(body);
+
+    function avatarEl(actor) {
+      const av = document.createElement('div');
+      av.style.cssText = 'width:28px;height:28px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-family:var(--h-serif);font-style:italic;flex:0 0 auto;overflow:hidden;border:1px solid var(--h-border)';
+      if (actor.avatar_url) {
+        const img = document.createElement('img');
+        img.src = actor.avatar_url;
+        img.style.cssText = 'width:100%;height:100%;object-fit:cover';
+        av.appendChild(img);
+      } else {
+        av.style.background = actor.avatar_color || 'var(--h-surface)';
+        av.style.color = 'var(--h-ink)';
+        av.textContent = actor.avatar_symbol || actor.name?.[0] || '?';
+      }
+      return av;
+    }
+
+    function sectionLabel(text) {
+      const l = document.createElement('div');
+      l.style.cssText = 'font-size:11px;color:var(--h-ink-mute);text-transform:uppercase;letter-spacing:.08em;margin:14px 0 6px';
+      l.textContent = text;
+      return l;
+    }
+
+    async function load() {
+      try {
+        const [parts, subAgents, allActors] = await Promise.all([
+          fjson(`/api/rooms/${room.id}/participants`),
+          fjson(`/api/rooms/${room.id}/sub-agents`),
+          fjson(`/api/actors`),
+        ]);
+        body.innerHTML = '';
+        renderParticipants(parts, allActors);
+        renderSubAgents(subAgents);
+      } catch (err) {
+        body.innerHTML = `<div style="font-size:12.5px;color:#b35a4b">failed to load</div>`;
+      }
+    }
+
+    function renderParticipants(parts, allActors) {
+      body.appendChild(sectionLabel('Participants'));
+
+      const list = Array.isArray(parts) ? parts : (parts.participants || []);
+      if (!list.length) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'font-size:12.5px;color:var(--h-ink-mute);font-style:italic;padding:4px 0';
+        empty.textContent = 'no participants';
+        body.appendChild(empty);
+      } else {
+        list.forEach(p => {
+          const row = document.createElement('div');
+          row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:5px 0';
+          const av = avatarEl(p);
+          const info = document.createElement('div');
+          info.style.cssText = 'flex:1;min-width:0';
+          const name = document.createElement('div');
+          name.style.cssText = 'font-size:13px;color:var(--h-ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+          name.textContent = p.name || p.actor_name || '?';
+          const meta = document.createElement('div');
+          meta.style.cssText = 'font-size:11px;color:var(--h-ink-faint);display:flex;align-items:center;gap:6px;margin-top:1px';
+          const typeChip = document.createElement('span');
+          typeChip.textContent = p.type || p.actor_type || 'ai';
+          typeChip.style.cssText = 'padding:1px 6px;border-radius:999px;border:1px solid var(--h-border);font-size:10.5px';
+          const status = p.session_status || (p.is_online ? 'online' : 'offline');
+          const statusDot = document.createElement('span');
+          statusDot.style.cssText = `width:6px;height:6px;border-radius:50%;background:${status === 'online' ? 'oklch(65% .18 145)' : 'var(--h-border)'}`;
+          statusDot.title = status;
+          meta.append(typeChip, statusDot, document.createTextNode(status));
+          info.append(name, meta);
+          row.append(av, info);
+          body.appendChild(row);
+        });
+      }
+
+      // Add agent section
+      const actors = Array.isArray(allActors) ? allActors : (allActors.actors || []);
+      const participantIds = new Set(list.map(p => p.actor_id || p.id));
+      const addable = actors.filter(a => (a.type === 'ai' || a.actor_type === 'ai') && !participantIds.has(a.id));
+
+      if (addable.length) {
+        body.appendChild(sectionLabel('Add agent'));
+        const addWrap = document.createElement('div');
+        addWrap.style.cssText = 'display:flex;flex-direction:column;gap:6px';
+
+        let selectedActorId = addable[0].id;
+        let selectedWorkdir = '';
+        let workdirOptions = [];
+
+        const actorSel = document.createElement('select');
+        actorSel.style.cssText = 'width:100%;padding:5px 8px;border:1px solid var(--h-border);border-radius:8px;background:var(--h-surface);color:var(--h-ink);font-family:var(--h-sans);font-size:12px';
+        for (const a of addable) {
+          const o = document.createElement('option');
+          o.value = a.id;
+          o.textContent = a.name;
+          actorSel.appendChild(o);
+        }
+
+        const workdirSel = document.createElement('select');
+        workdirSel.style.cssText = 'width:100%;padding:5px 8px;border:1px solid var(--h-border);border-radius:8px;background:var(--h-surface);color:var(--h-ink);font-family:var(--h-sans);font-size:12px';
+
+        async function loadWorkdirs(actorId) {
+          workdirSel.innerHTML = '<option value="">loading…</option>';
+          try {
+            const wd = await fjson(`/api/actors/${actorId}/workdirs`);
+            workdirOptions = Array.isArray(wd) ? wd : (wd.workdirs || []);
+            workdirSel.innerHTML = '';
+            const noneOpt = document.createElement('option');
+            noneOpt.value = '';
+            noneOpt.textContent = '(no workdir)';
+            workdirSel.appendChild(noneOpt);
+            for (const w of workdirOptions) {
+              const o = document.createElement('option');
+              o.value = w.path || w;
+              o.textContent = w.label || w.path || w;
+              workdirSel.appendChild(o);
+            }
+            selectedWorkdir = '';
+          } catch {
+            workdirSel.innerHTML = '<option value="">(none)</option>';
+          }
+        }
+
+        actorSel.onchange = () => {
+          selectedActorId = parseInt(actorSel.value);
+          loadWorkdirs(selectedActorId);
+        };
+        workdirSel.onchange = () => { selectedWorkdir = workdirSel.value; };
+
+        const addBtn = document.createElement('button');
+        addBtn.style.cssText = 'background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12px;padding:5px 14px;cursor:pointer;align-self:flex-start';
+        addBtn.textContent = 'add agent';
+        addBtn.onclick = async () => {
+          addBtn.disabled = true;
+          try {
+            const payload = { actor_id: selectedActorId };
+            if (selectedWorkdir) payload.workdir = selectedWorkdir;
+            const r = await fetch(`/api/rooms/${room.id}/participants`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+            });
+            if (r.ok) { showToast('Agent added'); closeRsbPopover(); }
+            else { const e = await r.json().catch(() => ({})); showToast(e.error || 'Failed', { error: true }); addBtn.disabled = false; }
+          } catch { showToast('Failed', { error: true }); addBtn.disabled = false; }
+        };
+
+        addWrap.append(actorSel, workdirSel, addBtn);
+        body.appendChild(addWrap);
+        loadWorkdirs(selectedActorId);
+      }
+    }
+
+    function renderSubAgents(subAgents) {
+      const linked = subAgents.linked || [];
+      const available = subAgents.available || [];
+
+      body.appendChild(sectionLabel('Sub-agents'));
+
+      if (!linked.length && !available.length) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'font-size:12.5px;color:var(--h-ink-mute);font-style:italic;padding:4px 0';
+        empty.textContent = 'no sub-agents';
+        body.appendChild(empty);
+        return;
+      }
+
+      linked.forEach(sa => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:5px 0';
+        const seal = document.createElement('span');
+        seal.style.cssText = 'width:24px;height:24px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-family:var(--h-serif);font-style:italic;font-size:12px;color:var(--h-ink);background:var(--h-surface);border:1px solid var(--h-border);flex:0 0 auto';
+        seal.textContent = (sa.label || sa.parent_name || '?')[0];
+        const info = document.createElement('div');
+        info.style.cssText = 'flex:1;min-width:0';
+        const name = document.createElement('div');
+        name.style.cssText = 'font-size:12.5px;color:var(--h-ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+        name.textContent = sa.label || '?';
+        const parent = document.createElement('div');
+        parent.style.cssText = 'font-size:11px;color:var(--h-ink-faint)';
+        parent.textContent = sa.parent_name || '';
+        info.append(name, parent);
+        const unlinkBtn = document.createElement('button');
+        unlinkBtn.style.cssText = 'background:transparent;border:none;color:var(--h-ink-faint);cursor:pointer;font-size:13px;padding:2px 4px';
+        unlinkBtn.textContent = '×';
+        unlinkBtn.title = 'unlink';
+        unlinkBtn.onclick = async () => {
+          unlinkBtn.disabled = true;
+          try {
+            const r = await fetch(`/api/rooms/${room.id}/sub-agents/${sa.id}`, { method: 'DELETE' });
+            if (r.ok) { row.style.opacity = '.4'; showToast('Sub-agent unlinked'); }
+            else { const e = await r.json().catch(() => ({})); showToast(e.error || 'Failed', { error: true }); unlinkBtn.disabled = false; }
+          } catch { showToast('Failed', { error: true }); unlinkBtn.disabled = false; }
+        };
+        row.append(seal, info, unlinkBtn);
+        body.appendChild(row);
+      });
+
+      if (available.length) {
+        const avLabel = document.createElement('div');
+        avLabel.style.cssText = 'font-size:11px;color:var(--h-ink-faint);margin:10px 0 5px;font-style:italic';
+        avLabel.textContent = 'available to link';
+        body.appendChild(avLabel);
+
+        available.forEach(sa => {
+          const row = document.createElement('div');
+          row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0';
+          const seal = document.createElement('span');
+          seal.style.cssText = 'width:24px;height:24px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-family:var(--h-serif);font-style:italic;font-size:12px;color:var(--h-ink-mute);background:transparent;border:1px dashed var(--h-border);flex:0 0 auto';
+          seal.textContent = (sa.label || sa.parent_name || '?')[0];
+          const info = document.createElement('div');
+          info.style.cssText = 'flex:1;min-width:0';
+          const name = document.createElement('div');
+          name.style.cssText = 'font-size:12.5px;color:var(--h-ink-mute);overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+          name.textContent = sa.label || '?';
+          const parent = document.createElement('div');
+          parent.style.cssText = 'font-size:11px;color:var(--h-ink-faint)';
+          parent.textContent = sa.parent_name || '';
+          info.append(name, parent);
+          const linkBtn = document.createElement('button');
+          linkBtn.style.cssText = 'background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:11px;padding:2px 10px;cursor:pointer';
+          linkBtn.textContent = 'link';
+          linkBtn.onclick = async () => {
+            linkBtn.disabled = true;
+            try {
+              const r = await fetch(`/api/rooms/${room.id}/sub-agents`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sub_agent_id: sa.id }),
+              });
+              if (r.ok) { showToast('Sub-agent linked'); closeRsbPopover(); }
+              else { const e = await r.json().catch(() => ({})); showToast(e.error || 'Failed', { error: true }); linkBtn.disabled = false; }
+            } catch { showToast('Failed', { error: true }); linkBtn.disabled = false; }
+          };
+          row.append(seal, info, linkBtn);
+          body.appendChild(row);
+        });
+      }
+    }
+
+    load();
+  }
 
   function buildModelTierPanel(pop) {
     pop.appendChild(popTitle('Model tiers'));
