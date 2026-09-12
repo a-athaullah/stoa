@@ -76,8 +76,8 @@ function handleWsMessage(msg) {
         } else {
           showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url);
         }
-        setComposerProcessing(m.id);
         if (m.thread_id && typeof setThreadProcessing === 'function') setThreadProcessing(m.id);
+        else setComposerProcessing(m.id);
       }
     }
     scrollToBottom(true);
@@ -174,8 +174,8 @@ function handleWsMessage(msg) {
       const last = targetContainer?.lastElementChild;
       if (last?.classList.contains('h-system-event') && last.dataset.actor?.startsWith(msg.actor_name)) last.remove();
       showThinking(msg.message_id, msg.actor_name, msg.avatar_color, msg.avatar_symbol, msg.avatar_url, msg.sub_agent_label, targetContainer);
-      setComposerProcessing(msg.message_id);
       if (tId && typeof setThreadProcessing === 'function') setThreadProcessing(msg.message_id);
+      else setComposerProcessing(msg.message_id);
     }
     if (msg.state === 'error' || (typeof FAILURE_STATES !== 'undefined' && FAILURE_STATES.has(msg.state))) {
       const el = document.getElementById('msg-' + msg.message_id);
