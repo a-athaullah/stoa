@@ -4473,32 +4473,35 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'auto_compact_start' && agentActorId) {
       // Look up room_id from session if not provided
       let roomId = msg.room_id;
+      let acThreadId = typeof msg.thread_id === 'number' ? msg.thread_id : null;
       if (!roomId && msg.claude_session_id) {
-        const s = db.prepare('SELECT room_id FROM ai_sessions WHERE claude_session_id=?').get(msg.claude_session_id);
-        roomId = s?.room_id;
+        const s = db.prepare('SELECT room_id, thread_id FROM ai_sessions WHERE claude_session_id=?').get(msg.claude_session_id);
+        if (s) {
+          roomId = s.room_id;
+          if (acThreadId === null) acThreadId = s.thread_id || null;
+        }
       }
       if (roomId) {
+        const acKey = acThreadId ? `${roomId}:${acThreadId}` : String(roomId);
         if (recentCompacts.has(roomId)) {
           console.log(`[server] auto_compact_start suppressed for room=${roomId} (compact recently completed)`);
-        } else if (!pendingCompacts.has(roomId)) {
+        } else if (!pendingCompacts.has(acKey)) {
           const actor = db.prepare('SELECT id, name FROM actors WHERE id=?').get(agentActorId);
           const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(roomId, agentActorId);
-          // R14: check failure cooldown — skip if still within window
           if (participant) {
-            const sess = db.prepare('SELECT compact_failure_cooldown_until FROM ai_sessions WHERE participant_id=? AND room_id=? AND sub_agent_id IS NULL').get(participant.id, roomId);
+            const sess = db.prepare('SELECT compact_failure_cooldown_until FROM ai_sessions WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS NULL').get(participant.id, roomId, acThreadId || 0);
             if (sess?.compact_failure_cooldown_until && sess.compact_failure_cooldown_until > new Date().toISOString()) {
               console.warn(`[server] auto_compact_start suppressed for room=${roomId} agent=${agentActorId} (failure cooldown until ${sess.compact_failure_cooldown_until})`);
               return;
             }
           }
           const participants = actor && participant ? [{ participant_id: participant.id, actor_id: actor.id, name: actor.name }] : [];
-          pendingCompacts.set(roomId, { total: 1, completed: 0, agents: [agentActorId], completedAgentIds: [], completedParticipantIds: [], targets: participants });
-          broadcast(roomId, { type: 'compact_start', room_id: roomId, total: 1, participants });
+          pendingCompacts.set(acKey, { total: 1, completed: 0, agents: [agentActorId], completedAgentIds: [], completedParticipantIds: [], targets: participants });
+          broadcast(roomId, { type: 'compact_start', room_id: roomId, thread_id: acThreadId, total: 1, participants });
           if (actor) broadcast(roomId, { type: 'system_event', actor_name: actor.name, status: 'session compacting' });
-          console.log(`[server] auto-compact started room=${roomId} by agent=${agentActorId}`);
+          console.log(`[server] auto-compact started room=${roomId} thread=${acThreadId || 0} by agent=${agentActorId}`);
         } else {
-          // Another compact already registered — add this agent to the total if not already counted
-          const cs = pendingCompacts.get(roomId);
+          const cs = pendingCompacts.get(acKey);
           if (!cs.agents.includes(agentActorId)) {
             cs.total++;
             cs.agents.push(agentActorId);
@@ -4520,17 +4523,36 @@ wss.on('connection', (ws, req) => {
         console.warn(`[server] compact_complete: unresolvable room_id for session ${msg.claude_session_id}`);
         return;
       }
-      const cThreadId = msg.thread_id ?? null;
+      // Resolve thread_id: prefer explicit, else look up from session row
+      let cThreadId = typeof msg.thread_id === 'number' ? msg.thread_id : null;
+      if (cThreadId === null && (msg.orig_session_id || msg.claude_session_id)) {
+        const lookup = msg.orig_session_id || msg.claude_session_id;
+        const sessRow = db.prepare('SELECT thread_id, sub_agent_id FROM ai_sessions WHERE claude_session_id=?').get(lookup);
+        if (sessRow) {
+          cThreadId = sessRow.thread_id || null;
+        } else {
+          console.warn(`[server] compact_complete: no session row for ${lookup}, cannot resolve thread_id`);
+        }
+      }
+      const cSubAgentId = typeof msg.sub_agent_id === 'number' ? msg.sub_agent_id : null;
       const cKey = cThreadId ? `${msg.room_id}:${cThreadId}` : String(msg.room_id);
       if (msg.claude_session_id) {
         const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
         if (participant) {
-          db.prepare(`UPDATE ai_sessions SET claude_session_id=?, last_active_at=datetime('now') WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS NULL`).run(msg.claude_session_id, participant.id, msg.room_id, cThreadId || 0);
+          if (cSubAgentId) {
+            db.prepare(`UPDATE ai_sessions SET claude_session_id=?, last_active_at=datetime('now') WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id=?`).run(msg.claude_session_id, participant.id, msg.room_id, cThreadId || 0, cSubAgentId);
+          } else {
+            db.prepare(`UPDATE ai_sessions SET claude_session_id=?, last_active_at=datetime('now') WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS NULL`).run(msg.claude_session_id, participant.id, msg.room_id, cThreadId || 0);
+          }
         }
       }
       const successParticipant = db.prepare('SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
       if (successParticipant) {
-        db.prepare(`UPDATE ai_sessions SET compact_failure_cooldown_until=NULL, compact_failure_error=NULL WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS NULL`).run(successParticipant.id, msg.room_id, cThreadId || 0);
+        if (cSubAgentId) {
+          db.prepare(`UPDATE ai_sessions SET compact_failure_cooldown_until=NULL, compact_failure_error=NULL WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id=?`).run(successParticipant.id, msg.room_id, cThreadId || 0, cSubAgentId);
+        } else {
+          db.prepare(`UPDATE ai_sessions SET compact_failure_cooldown_until=NULL, compact_failure_error=NULL WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS NULL`).run(successParticipant.id, msg.room_id, cThreadId || 0);
+        }
       }
       const state = pendingCompacts.get(cKey);
       const actor = db.prepare('SELECT name FROM actors WHERE id=?').get(agentActorId);
