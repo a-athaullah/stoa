@@ -590,8 +590,7 @@ body.sidebar-collapsed #sidebar { display: none; }
   }
   .app-nav-sep,
   .app-nav-spacer,
-  .app-nav-avatar-row,
-  .app-nav-restart { display: none; }
+  .app-nav-avatar-row { display: none; }
   #sidebar { padding-bottom: 60px; }
   .h-room-action { display: none !important; }
 }
