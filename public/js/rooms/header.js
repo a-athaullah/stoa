@@ -1,5 +1,5 @@
 // ── Chat header ────────────────────────────────────────────────────────────
-function renderChatHeader(room, participants, subAgentCount) {
+function renderChatHeader(room, participants) {
   const header = document.getElementById('chat-header');
   header.innerHTML = '';
 
@@ -75,7 +75,7 @@ function renderChatHeader(room, participants, subAgentCount) {
     tagline.appendChild(document.createTextNode(' · '));
   }
 
-  const saCount = typeof subAgentCount === 'number' ? subAgentCount : 0;
+  const saCount = (roomSubAgentsCache[room.id] || []).length;
   const countParts = [`${agentCount} agent${agentCount !== 1 ? 's' : ''}`];
   if (saCount) countParts.push(`${saCount} sub-agent${saCount !== 1 ? 's' : ''}`);
   tagline.appendChild(document.createTextNode(countParts.join(' · ')));
