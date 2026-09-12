@@ -439,19 +439,21 @@ async function cascadeMentionsAfterWake(roomId, parent, threadId) {
 
   const lastMsg = threadId
     ? db.prepare(`
-        SELECT m.content FROM messages m
+        SELECT m.id, m.content FROM messages m
         JOIN room_participants rp ON rp.id=m.participant_id
         WHERE rp.actor_id=? AND m.room_id=? AND m.state='complete' AND m.sub_agent_id IS NULL AND m.completed_at IS NOT NULL
           AND (m.thread_id=? OR m.id=?)
         ORDER BY m.id DESC LIMIT 1
       `).get(parent.actor_id, roomId, threadId, threadId)
     : db.prepare(`
-        SELECT m.content FROM messages m
+        SELECT m.id, m.content FROM messages m
         JOIN room_participants rp ON rp.id=m.participant_id
         WHERE rp.actor_id=? AND m.room_id=? AND m.state='complete' AND m.sub_agent_id IS NULL AND m.completed_at IS NOT NULL
         ORDER BY m.id DESC LIMIT 1
       `).get(parent.actor_id, roomId);
   if (!lastMsg?.content || !lastMsg.content.includes('@')) return;
+  // Auto-thread: if at room level, sub-agent responses go under the parent's message
+  const effectiveThreadId = threadId || lastMsg.id;
 
   const allAi = db.prepare(`
     SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.adapter_config, a.avatar_color, a.avatar_symbol, a.avatar_url
@@ -493,10 +495,10 @@ async function cascadeMentionsAfterWake(roomId, parent, threadId) {
   wakeCascadeDepth.set(cascadeKey, depth);
   try {
     for (const sa of subAgentsCascade) {
-      triggerAiResponse(roomId, sa, lastMsg.content, null, [], null, threadId).catch(e => console.error('[wake-cascade sub-agent] parallel error:', e));
+      triggerAiResponse(roomId, sa, lastMsg.content, null, [], null, effectiveThreadId).catch(e => console.error('[wake-cascade sub-agent] parallel error:', e));
     }
     if (regularAgentsCascade.length > 0) {
-      await triggerAgentsSequential(roomId, regularAgentsCascade, lastMsg.content, null, [], new Set(), threadId);
+      await triggerAgentsSequential(roomId, regularAgentsCascade, lastMsg.content, null, [], new Set(), effectiveThreadId);
     }
   } finally {
     if (wakeCascadeDepth.get(cascadeKey) === depth) wakeCascadeDepth.delete(cascadeKey);
@@ -2105,7 +2107,9 @@ const server = http.createServer(async (req, res) => {
     broadcast(roomId, { type: 'message_new', message: row });
     broadcastGlobal({ type: 'room_activity', room_id: roomId });
     // Cascade any @mentions in the proactive message (fire-and-forget)
-    cascadeMentionsFromProactive(roomId, agentId, content, threadId).catch(e => console.error('[proactive-cascade]', e.message));
+    // Auto-thread: if at room level, sub-agent responses go under this message
+    const cascadeThreadId = threadId || Number(messageId);
+    cascadeMentionsFromProactive(roomId, agentId, content, cascadeThreadId).catch(e => console.error('[proactive-cascade]', e.message));
     return json(res, { message_id: messageId });
   }
 
