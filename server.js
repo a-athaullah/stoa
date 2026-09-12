@@ -2582,7 +2582,7 @@ const server = http.createServer(async (req, res) => {
       FROM ai_sessions s
       JOIN room_participants rp ON rp.id = s.participant_id
       JOIN actors a ON a.id = rp.actor_id
-      WHERE s.room_id=? AND s.sub_agent_id IS NULL AND s.context_tokens_used > 0
+      WHERE s.room_id=? AND s.sub_agent_id IS NULL AND (s.thread_id IS NULL OR s.thread_id = 0) AND s.context_tokens_used > 0
       ORDER BY s.id DESC
     `).all(roomId);
     const seen = new Set();
@@ -4613,8 +4613,8 @@ wss.on('connection', (ws, req) => {
         // Still write marker and unstick any UI that may be in compacting state.
         if (participant && actor) {
           const content = `${actor.name} · session compacted`;
-          const sysResult = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')").run(msg.room_id, participant.id, content);
-          broadcast(msg.room_id, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: msg.room_id, content, state: 'system_event', created_at: new Date().toISOString() } });
+          const sysResult = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?,?,?,'system_event',?)").run(msg.room_id, participant.id, content, cThreadId);
+          broadcast(msg.room_id, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: msg.room_id, content, state: 'system_event', thread_id: cThreadId, created_at: new Date().toISOString() } });
         }
         if (!recentCompacts.has(cKey)) {
           broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id, thread_id: cThreadId });
@@ -4635,8 +4635,8 @@ wss.on('connection', (ws, req) => {
         const label = state.names.length ? state.names.join(', ') : 'session';
         const content = `${label} · session compacted`;
         if (participant) {
-          const sysResult = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')").run(msg.room_id, participant.id, content);
-          broadcast(msg.room_id, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: msg.room_id, content, state: 'system_event', created_at: new Date().toISOString() } });
+          const sysResult = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?,?,?,'system_event',?)").run(msg.room_id, participant.id, content, cThreadId);
+          broadcast(msg.room_id, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: msg.room_id, content, state: 'system_event', thread_id: cThreadId, created_at: new Date().toISOString() } });
         }
         broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id, thread_id: cThreadId });
         for (const aid of state.completedAgentIds) {
@@ -5429,8 +5429,8 @@ wss.on('connection', (ws, req) => {
               const participant = db.prepare('SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=? LIMIT 1').get(roomId, completedActorId);
               if (participant) {
                 const content = `${cs.names.join(', ')} · session compacted`;
-                const sysResult = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')").run(roomId, participant.id, content);
-                broadcast(roomId, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: roomId, content, state: 'system_event', created_at: new Date().toISOString() } });
+                const sysResult = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?,?,?,'system_event',?)").run(roomId, participant.id, content, dcThreadId);
+                broadcast(roomId, { type: 'message_new', message: { id: Number(sysResult.lastInsertRowid), room_id: roomId, content, state: 'system_event', thread_id: dcThreadId, created_at: new Date().toISOString() } });
               }
             }
             broadcast(roomId, { type: 'compact_done', room_id: roomId, thread_id: dcThreadId });
