@@ -72,7 +72,7 @@ html.dark .h-faded-mark { opacity: 0.12; }
   flex: 0 0 auto;
 }
 
-.h-header-info { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; }
+.h-header-info { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 1px; }
 
 .h-room-name {
   font-family: var(--h-serif);

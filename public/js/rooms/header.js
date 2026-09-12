@@ -69,6 +69,7 @@ function renderChatHeader(room, participants) {
   const parts = [];
   if (modelShort) parts.push(modelShort);
   parts.push(`${agentCount} agent${agentCount !== 1 ? 's' : ''}`);
+  if (room.max_sub_agents) parts.push(`${room.max_sub_agents} sub-agent${room.max_sub_agents !== 1 ? 's' : ''}`);
   tagline.textContent = parts.join(' · ');
   info.appendChild(tagline);
 
