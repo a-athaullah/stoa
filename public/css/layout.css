@@ -150,11 +150,20 @@
   padding: 6px 14px; border-radius: 999px;
   font-family: var(--h-sans); font-size: 12.5px; cursor: pointer;
 }
+.app-notice-btn-danger {
+  background: oklch(42% 0.18 15); color: #fff; border: none;
+  padding: 6px 14px; border-radius: 999px;
+  font-family: var(--h-sans); font-size: 12.5px; cursor: pointer;
+}
 .app-notice-btn-cancel {
   background: transparent; color: var(--h-ink-mute);
   border: 1px solid var(--h-hair-soft);
   padding: 6px 14px; border-radius: 999px;
   font-family: var(--h-sans); font-size: 12.5px; cursor: pointer;
+}
+#app-top-notice.notice-confirm-delete {
+  background: color-mix(in srgb, oklch(30% 0.18 15) 25%, oklch(12% 0.01 0));
+  color: oklch(78% 0.08 15);
 }
 
 body.settings-mode #sidebar { display: none; }

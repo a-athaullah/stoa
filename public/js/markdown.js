@@ -75,8 +75,51 @@ function showCopyFeedback(btn) {
   }, 1500);
 }
 
-async function deleteMessage(msgId) {
-  try { const res = await fetch(`/api/messages/${msgId}`, { method: 'DELETE' }); if (!res.ok) throw new Error(); } catch { showToast('Failed to delete message', { error: true }); }
+function deleteMessage(msgId) {
+  showDeleteConfirm(msgId, false);
+}
+
+function showDeleteConfirm(msgId, cascade) {
+  const el = document.getElementById('app-top-notice');
+  if (!el) return;
+  el.className = 'notice-confirm-delete';
+  el.style.display = 'flex';
+  el.innerHTML = '';
+
+  const msg = document.createElement('span');
+  msg.style.flex = '1';
+  msg.textContent = cascade ? 'delete this message and all replies?' : 'delete this message?';
+  el.appendChild(msg);
+
+  const btns = document.createElement('div');
+  btns.style.cssText = 'display:flex;gap:8px';
+
+  const ok = document.createElement('button');
+  ok.className = 'app-notice-btn-danger';
+  ok.textContent = cascade ? 'delete all' : 'delete';
+  ok.onclick = async () => {
+    hideAppNotice();
+    const url = cascade ? `/api/messages/${msgId}?cascade=1` : `/api/messages/${msgId}`;
+    try {
+      const res = await fetch(url, { method: 'DELETE' });
+      if (res.status === 409) {
+        showDeleteConfirm(msgId, true);
+      } else if (!res.ok) {
+        showToast('Failed to delete message', { error: true });
+      }
+    } catch {
+      showToast('Failed to delete message', { error: true });
+    }
+  };
+
+  const cancel = document.createElement('button');
+  cancel.className = 'app-notice-btn-cancel';
+  cancel.textContent = 'cancel';
+  cancel.onclick = hideAppNotice;
+
+  btns.appendChild(ok);
+  btns.appendChild(cancel);
+  el.appendChild(btns);
 }
 
 function getAttachments(m) {
