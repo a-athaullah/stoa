@@ -64,8 +64,9 @@ function renderChatHeader(room, participants) {
 
   const tagline = document.createElement('span');
   tagline.className = 'h-room-tagline';
-  const modelShort = (room.model || '').replace(/^claude-/, '') || '';
-  const agentCount = participants.filter(p => p.type === 'ai').length;
+  const modelShort = (room.model || currentRoomData?.model || '').replace(/^claude-/, '') || '';
+  const effectiveParticipants = participants?.length ? participants : (roomParticipantsCache[room.id] || []);
+  const agentCount = effectiveParticipants.filter(p => p.type === 'ai').length;
 
   if (modelShort) {
     const pill = document.createElement('span');

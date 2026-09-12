@@ -1941,6 +1941,7 @@ pre:hover .h-copy-btn { opacity: 1; pointer-events: auto; }
   align-items: center;
   gap: 8px;
   padding: 10px 16px;
+  min-height: 49px;
   border-bottom: 1px solid var(--h-hair-soft);
   background: var(--h-header-bg);
   flex: 0 0 auto;

@@ -10,6 +10,7 @@ function showToast(msg, { error = false, duration = 3000 } = {}) {
 // ── State ──────────────────────────────────────────────────────────────────
 let ws = null;
 let currentRoomId = null;
+let currentRoomData = null;
 let currentRoomWorkdirId = null;
 let allActors = [];
 let humanActor = null;

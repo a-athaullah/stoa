@@ -13,6 +13,7 @@ async function openRoom(room) {
   if (window.stopVoiceRecognition) window.stopVoiceRecognition();
 
   currentRoomId = room.id;
+  currentRoomData = room;
   currentRoomWorkdirId = room.workdir_id || null;
   clearRoomDisplay();
   clearComposerProcessing();
