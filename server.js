@@ -268,7 +268,13 @@ function buildThreadSummary(roomId, rootId) {
     WHERE r.thread_id = ?
   `).get(rootId);
   const participant_ids = pRow?.pids ? pRow.pids.split(',').map(Number) : [];
-  return { type: 'thread_summary', root_id: rootId, count: row.count, last_at: row.last_at, active: !!row.active, participant_ids };
+  const saRows = db.prepare(`
+    SELECT DISTINCT m.sub_agent_label, rp.actor_id
+    FROM messages m JOIN room_participants rp ON rp.id = m.participant_id
+    WHERE m.thread_id = ? AND m.sub_agent_label IS NOT NULL
+  `).all(rootId);
+  const sub_agent_participants = saRows.map(r => ({ label: r.sub_agent_label, actor_id: r.actor_id }));
+  return { type: 'thread_summary', root_id: rootId, count: row.count, last_at: row.last_at, active: !!row.active, participant_ids, sub_agent_participants };
 }
 
 // Validate thread_id: root must exist in the same room and be a root itself (thread_id IS NULL).
@@ -1590,7 +1596,13 @@ const server = http.createServer(async (req, res) => {
         (SELECT MAX(r.created_at) FROM messages r WHERE r.thread_id = m.id) AS thread_last_at,
         (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state IN ('streaming','requesting'))) AS thread_active,
         (SELECT GROUP_CONCAT(DISTINCT rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id) AS thread_participant_ids,
-        (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state = 'error')) AS thread_has_error`;
+        (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state = 'error')) AS thread_has_error,
+        (SELECT GROUP_CONCAT(DISTINCT r.sub_agent_label || ':' || rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id AND r.sub_agent_label IS NOT NULL) AS thread_sub_agent_participants`;
+
+      function enrichThreadData(m) {
+        const sap = m.thread_sub_agent_participants ? m.thread_sub_agent_participants.split(',').map(s => { const [label, aid] = s.split(':'); return { label, actor_id: Number(aid) }; }) : [];
+        m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active, participant_ids: m.thread_participant_ids ? m.thread_participant_ids.split(',').map(Number) : [], has_error: !!m.thread_has_error, sub_agent_participants: sap };
+      }
 
       if (before) {
         const rows = db.prepare(`
@@ -1611,7 +1623,7 @@ const server = http.createServer(async (req, res) => {
           ) t ORDER BY created_at ASC
         `).all(roomId, before, limit);
         const enriched = enrichReply(rows);
-        if (!scopeAll) enriched.forEach(m => { m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active, participant_ids: m.thread_participant_ids ? m.thread_participant_ids.split(',').map(Number) : [], has_error: !!m.thread_has_error }; });
+        if (!scopeAll) enriched.forEach(enrichThreadData);
         return json(res, enriched);
       }
       const since = url.searchParams.get('since') ?? '0';
@@ -1632,7 +1644,7 @@ const server = http.createServer(async (req, res) => {
         LIMIT 500
       `).all(roomId, since);
       const enriched = enrichReply(rows);
-      if (!scopeAll) enriched.forEach(m => { m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active, participant_ids: m.thread_participant_ids ? m.thread_participant_ids.split(',').map(Number) : [], has_error: !!m.thread_has_error }; });
+      if (!scopeAll) enriched.forEach(enrichThreadData);
       return json(res, enriched);
     }
 
@@ -4137,7 +4149,8 @@ wss.on('connection', (ws, req) => {
             (SELECT MAX(r.created_at) FROM messages r WHERE r.thread_id = m.id) AS thread_last_at,
             (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state IN ('streaming','requesting'))) AS thread_active,
             (SELECT GROUP_CONCAT(DISTINCT rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id) AS thread_participant_ids,
-            (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state = 'error')) AS thread_has_error
+            (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state = 'error')) AS thread_has_error,
+            (SELECT GROUP_CONCAT(DISTINCT r.sub_agent_label || ':' || rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id AND r.sub_agent_label IS NOT NULL) AS thread_sub_agent_participants
           FROM messages m
           JOIN room_participants rp ON rp.id=m.participant_id
           JOIN actors a ON a.id=rp.actor_id
@@ -4150,7 +4163,10 @@ wss.on('connection', (ws, req) => {
         ) AS recent ORDER BY created_at ASC
       `).all(subscribedRoom);
       const enriched = enrichReply(messages);
-      enriched.forEach(m => { m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active, participant_ids: m.thread_participant_ids ? m.thread_participant_ids.split(',').map(Number) : [], has_error: !!m.thread_has_error }; });
+      enriched.forEach(m => {
+        const sap = m.thread_sub_agent_participants ? m.thread_sub_agent_participants.split(',').map(s => { const [label, aid] = s.split(':'); return { label, actor_id: Number(aid) }; }) : [];
+        m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active, participant_ids: m.thread_participant_ids ? m.thread_participant_ids.split(',').map(Number) : [], has_error: !!m.thread_has_error, sub_agent_participants: sap };
+      });
       ws.send(JSON.stringify({ type: 'history', messages: enriched }));
       // Restore compact state if room is currently compacting
       if (pendingCompacts.has(subscribedRoom)) {
