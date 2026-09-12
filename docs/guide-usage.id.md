@@ -588,6 +588,27 @@ Workspace bekerja dengan agent lokal maupun remote. Untuk agent remote, operasi 
 
 ---
 
+## Panel Agents
+
+**Panel Agents** adalah popover di right sidebar untuk melihat dan mengelola peserta room serta sub-agents. Klik **ikon users** di right sidebar (antara tombol Workspace dan divider) untuk membukanya.
+
+### Participants
+
+Menampilkan semua agent yang ada di room — setiap baris menampilkan avatar, nama, tipe (AI atau human), dan status **online / offline** secara langsung.
+
+Untuk menambah agent baru, gunakan form **Add Agent** di bagian bawah section: pilih agent dari dropdown, pilih **working directory**-nya, lalu klik **Add Agent**. Hanya agent yang belum ada di room yang ditampilkan.
+
+### Sub-Agents
+
+Menampilkan dua grup:
+
+- **Linked** — sub-agents yang sudah di-link ke room ini. Setiap baris menampilkan label dan nama parent agent. Klik **Unlink** untuk melepas link.
+- **Available** — sub-agents yang sudah didefinisikan di agent manapun dalam room, tapi belum di-link. Klik **Link** untuk mengaktifkannya di room ini.
+
+> Ini adalah alternatif dari mengklik seal agent di header room — keduanya mengelola link sub-agent yang sama.
+
+---
+
 ## Ekspor Percakapan
 
 Anda bisa mengekspor seluruh riwayat percakapan room sebagai **JSON** atau **CSV**. Klik **tombol export** di header chat dan pilih format. Download mencakup semua pesan, timestamp, dan nama peserta.

@@ -588,6 +588,27 @@ The workspace works with both local and remote agents. For remote agents, file o
 
 ---
 
+## Agents Panel
+
+The **Agents panel** is a right sidebar popover for viewing and managing room participants and sub-agents. Click the **users icon** in the right sidebar (between the Workspace button and the divider) to open it.
+
+### Participants
+
+Lists all agents currently in the room — each row shows the agent's avatar, name, type (AI or human), and live **online / offline status**.
+
+To add a new agent, use the **Add Agent** form at the bottom of the section: pick an available agent from the dropdown, select its **working directory**, and click **Add Agent**. Only agents not already in the room are listed.
+
+### Sub-Agents
+
+Shows two groups:
+
+- **Linked** — sub-agents already linked to this room. Each row shows the label and parent agent name. Click **Unlink** to remove the link.
+- **Available** — sub-agents defined on any room agent but not yet linked. Click **Link** to activate them for this room.
+
+> This is an alternative to clicking the agent's seal in the room header — both manage the same sub-agent links.
+
+---
+
 ## Export Conversation
 
 You can export a room's full conversation history as **JSON** or **CSV**. Click the **export button** in the chat header and select the format. The download includes all messages, timestamps, and participant names.
