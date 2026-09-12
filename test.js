@@ -4621,6 +4621,37 @@ async function run() {
     }
   });
 
+  await test('Auto-thread — compact_complete with unresolvable thread_id does NOT overwrite thread 0 session', async () => {
+    if (!threadTestRoomId || !threadTestActorId || !threadTestSecret) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(threadTestRoomId, threadTestActorId);
+    if (!participant) { console.log('    (skipped — no participant)'); return; }
+    const originalSessionId = 'test-original-session-' + Date.now();
+    db.prepare(`INSERT OR REPLACE INTO ai_sessions (participant_id, room_id, thread_id, claude_session_id, status) VALUES (?,?,0,?,'idle')`).run(participant.id, threadTestRoomId, originalSessionId);
+    const unknownSessionId = 'test-unknown-session-' + Date.now();
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`);
+    try {
+      const ready = waitForWsMessage(ws, m => m.type === 'agent_ready');
+      ws.send(JSON.stringify({ type: 'agent_connect', actor_id: threadTestActorId, secret: threadTestSecret }));
+      await ready;
+      ws.send(JSON.stringify({ type: 'compact_complete', room_id: threadTestRoomId, claude_session_id: unknownSessionId, new_context_tokens: 1000 }));
+      await new Promise(r => setTimeout(r, 200));
+      const row = db.prepare('SELECT claude_session_id FROM ai_sessions WHERE participant_id=? AND room_id=? AND thread_id=0 AND sub_agent_id IS NULL').get(participant.id, threadTestRoomId);
+      assert.ok(row, 'thread 0 session row must still exist');
+      assert.strictEqual(row.claude_session_id, originalSessionId, `thread 0 session must NOT be overwritten (expected ${originalSessionId}, got ${row.claude_session_id})`);
+    } finally {
+      ws.close();
+      db.prepare('DELETE FROM ai_sessions WHERE participant_id=? AND room_id=? AND thread_id=0').run(participant.id, threadTestRoomId);
+    }
+  });
+
+  await test('Auto-thread — compact_complete guard: code uses if (cThreadId !== null) before UPDATE', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    const ccHandler = src.substring(src.indexOf("msg.type === 'compact_complete'"), src.indexOf("msg.type === 'compact_complete'") + 3000);
+    assert.ok(!ccHandler.includes('cThreadId || 0'), 'compact_complete must NOT use cThreadId || 0 fallback — use guard instead');
+    assert.ok(ccHandler.includes('if (cThreadId !== null'), 'compact_complete must guard UPDATEs with cThreadId !== null');
+  });
+
   await test('Auto-thread — session scoped per thread (code check)', async () => {
     const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
     assert.ok(src.includes("WHERE participant_id=? AND thread_id=? AND sub_agent_id IS NULL').get(participantId, threadId || 0)"), 'getThreadSession must query by exact thread_id');

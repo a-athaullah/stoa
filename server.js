@@ -4523,35 +4523,38 @@ wss.on('connection', (ws, req) => {
         console.warn(`[server] compact_complete: unresolvable room_id for session ${msg.claude_session_id}`);
         return;
       }
-      // Resolve thread_id: prefer explicit, else look up from session row
+      // Resolve thread_id: prefer explicit, else look up from session row.
+      // null = unresolved (skip UPDATE to avoid writing to wrong thread), number = resolved (0 = legacy room-level).
       let cThreadId = typeof msg.thread_id === 'number' ? msg.thread_id : null;
       if (cThreadId === null && (msg.orig_session_id || msg.claude_session_id)) {
         const lookup = msg.orig_session_id || msg.claude_session_id;
         const sessRow = db.prepare('SELECT thread_id, sub_agent_id FROM ai_sessions WHERE claude_session_id=?').get(lookup);
         if (sessRow) {
-          cThreadId = sessRow.thread_id || null;
+          cThreadId = typeof sessRow.thread_id === 'number' ? sessRow.thread_id : 0;
         } else {
-          console.warn(`[server] compact_complete: no session row for ${lookup}, cannot resolve thread_id`);
+          console.warn(`[server] compact_complete: no session row for ${lookup}, cannot resolve thread_id — skipping session UPDATE`);
         }
       }
       const cSubAgentId = typeof msg.sub_agent_id === 'number' ? msg.sub_agent_id : null;
-      const cKey = cThreadId ? `${msg.room_id}:${cThreadId}` : String(msg.room_id);
-      if (msg.claude_session_id) {
+      const cKey = cThreadId !== null && cThreadId > 0 ? `${msg.room_id}:${cThreadId}` : String(msg.room_id);
+      if (cThreadId !== null && msg.claude_session_id) {
         const participant = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
         if (participant) {
           if (cSubAgentId) {
-            db.prepare(`UPDATE ai_sessions SET claude_session_id=?, last_active_at=datetime('now') WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id=?`).run(msg.claude_session_id, participant.id, msg.room_id, cThreadId || 0, cSubAgentId);
+            db.prepare(`UPDATE ai_sessions SET claude_session_id=?, last_active_at=datetime('now') WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id=?`).run(msg.claude_session_id, participant.id, msg.room_id, cThreadId, cSubAgentId);
           } else {
-            db.prepare(`UPDATE ai_sessions SET claude_session_id=?, last_active_at=datetime('now') WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS NULL`).run(msg.claude_session_id, participant.id, msg.room_id, cThreadId || 0);
+            db.prepare(`UPDATE ai_sessions SET claude_session_id=?, last_active_at=datetime('now') WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS NULL`).run(msg.claude_session_id, participant.id, msg.room_id, cThreadId);
           }
         }
       }
-      const successParticipant = db.prepare('SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
-      if (successParticipant) {
-        if (cSubAgentId) {
-          db.prepare(`UPDATE ai_sessions SET compact_failure_cooldown_until=NULL, compact_failure_error=NULL WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id=?`).run(successParticipant.id, msg.room_id, cThreadId || 0, cSubAgentId);
-        } else {
-          db.prepare(`UPDATE ai_sessions SET compact_failure_cooldown_until=NULL, compact_failure_error=NULL WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS NULL`).run(successParticipant.id, msg.room_id, cThreadId || 0);
+      if (cThreadId !== null) {
+        const successParticipant = db.prepare('SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=? LIMIT 1').get(msg.room_id, agentActorId);
+        if (successParticipant) {
+          if (cSubAgentId) {
+            db.prepare(`UPDATE ai_sessions SET compact_failure_cooldown_until=NULL, compact_failure_error=NULL WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id=?`).run(successParticipant.id, msg.room_id, cThreadId, cSubAgentId);
+          } else {
+            db.prepare(`UPDATE ai_sessions SET compact_failure_cooldown_until=NULL, compact_failure_error=NULL WHERE participant_id=? AND room_id=? AND thread_id=? AND sub_agent_id IS NULL`).run(successParticipant.id, msg.room_id, cThreadId);
+          }
         }
       }
       const state = pendingCompacts.get(cKey);
@@ -4589,7 +4592,9 @@ wss.on('connection', (ws, req) => {
         }
         broadcast(msg.room_id, { type: 'compact_done', room_id: msg.room_id, thread_id: cThreadId });
         for (const aid of state.completedAgentIds) {
-          db.prepare('UPDATE ai_sessions SET context_tokens_used=0 WHERE room_id=? AND thread_id=? AND participant_id IN (SELECT id FROM room_participants WHERE actor_id=?)').run(msg.room_id, cThreadId || 0, aid);
+          if (cThreadId !== null) {
+            db.prepare('UPDATE ai_sessions SET context_tokens_used=0 WHERE room_id=? AND thread_id=? AND participant_id IN (SELECT id FROM room_participants WHERE actor_id=?)').run(msg.room_id, cThreadId, aid);
+          }
           broadcast(msg.room_id, { type: 'context_update', room_id: msg.room_id, actor_id: aid, thread_id: cThreadId, context_tokens_used: 0, context_limit: DEFAULT_CONTEXT_WINDOW, model: null });
         }
       } else {
