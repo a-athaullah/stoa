@@ -41,18 +41,16 @@ async function openRoom(room) {
   }
   roomParticipantsCache[room.id] = parts;
 
-  let subAgentCount = 0;
   try {
     const saData = await fjson(`/api/rooms/${room.id}/sub-agents`);
     roomSubAgentsCache[room.id] = saData.linked || [];
-    subAgentCount = saData.linked?.length || 0;
   } catch(e) {
     roomSubAgentsCache[room.id] = [];
     console.error('[room] failed to load sub-agents', room.id, e);
   }
 
   renderRoomDots(room.id, parts);
-  renderChatHeader(room, parts, subAgentCount);
+  renderChatHeader(room, parts);
   renderRoomSidebar(room, parts);
   renderComposerSeal();
   if (typeof updateModelSelector === 'function') updateModelSelector(room, parts);
