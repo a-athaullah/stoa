@@ -4621,6 +4621,14 @@ async function run() {
     }
   });
 
+  await test('Auto-thread — session scoped per thread (code check)', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    assert.ok(src.includes("WHERE participant_id=? AND thread_id=? AND sub_agent_id IS NULL').get(participantId, threadId || 0)"), 'getThreadSession must query by exact thread_id');
+    assert.ok(src.includes("'thread_id is required — compact is per-thread'"), 'compact_session must reject without thread_id');
+    const triggerFn = src.substring(src.indexOf('async function triggerAiResponse'), src.indexOf('\n}\n', src.indexOf('async function triggerAiResponse')) + 3);
+    assert.ok(triggerFn.includes('getThreadSession(ai.participant_id, threadId)'), 'triggerAiResponse must use getThreadSession (not getSession)');
+  });
+
   await test('Thread — cleanup', async () => {
     // Cleaned up in teardown
   });
