@@ -98,7 +98,22 @@ html.dark .h-faded-mark { opacity: 0.12; }
   font-size: 12px;
   color: var(--h-ink-faint);
   white-space: nowrap;
+  margin-top: 2px;
 }
+.h-model-pill {
+  display: inline-block;
+  font-family: var(--h-sans);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+  color: var(--h-ink-faint);
+  background: color-mix(in srgb, var(--h-ink-faint) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--h-ink-faint) 15%, transparent);
+  border-radius: 5px;
+  padding: 1px 5px;
+  vertical-align: middle;
+}
+
 .h-model-badge {
   display: inline-block;
   font-family: var(--h-sans);
@@ -1927,6 +1942,7 @@ pre:hover .h-copy-btn { opacity: 1; pointer-events: auto; }
   align-items: center;
   gap: 8px;
   padding: 10px 16px;
+  min-height: 49px;
   border-bottom: 1px solid var(--h-hair-soft);
   background: var(--h-header-bg);
   flex: 0 0 auto;

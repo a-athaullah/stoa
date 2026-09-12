@@ -41,16 +41,17 @@ function handleModelUpdate(msg) {
       threadModelWrap.style.display = 'none';
     }
   }
-  // Sync room header tagline (format: "model · N agents")
+  // Sync room header tagline — update pill in-place to preserve DOM structure
+  if (currentRoomData && msg.model) currentRoomData.model = msg.model;
   const tagline = document.querySelector('.h-room-tagline');
   if (tagline) {
-    const current = tagline.textContent;
-    const agentsPart = current.includes(' · ') ? current.split(' · ').slice(-1)[0] : current;
+    const pill = tagline.querySelector('.h-model-pill');
     const modelShort = msg.model ? msg.model.replace(/^claude-/, '') : '';
-    const parts = [];
-    if (modelShort) parts.push(modelShort);
-    if (agentsPart) parts.push(agentsPart);
-    tagline.textContent = parts.join(' · ');
+    if (pill) {
+      pill.textContent = modelShort;
+    } else if (currentRoomData) {
+      renderChatHeader(currentRoomData, roomParticipantsCache[currentRoomData.id] || []);
+    }
   }
 }
 

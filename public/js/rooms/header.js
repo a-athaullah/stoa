@@ -64,13 +64,22 @@ function renderChatHeader(room, participants) {
 
   const tagline = document.createElement('span');
   tagline.className = 'h-room-tagline';
-  const modelShort = (room.model || '').replace(/^claude-/, '') || '';
-  const agentCount = participants.filter(p => p.type === 'ai').length;
-  const parts = [];
-  if (modelShort) parts.push(modelShort);
-  parts.push(`${agentCount} agent${agentCount !== 1 ? 's' : ''}`);
-  if (room.max_sub_agents) parts.push(`${room.max_sub_agents} sub-agent${room.max_sub_agents !== 1 ? 's' : ''}`);
-  tagline.textContent = parts.join(' · ');
+  const modelShort = (room.model || currentRoomData?.model || '').replace(/^claude-/, '') || '';
+  const effectiveParticipants = participants?.length ? participants : (roomParticipantsCache[room.id] || []);
+  const agentCount = effectiveParticipants.filter(p => p.type === 'ai').length;
+
+  if (modelShort) {
+    const pill = document.createElement('span');
+    pill.className = 'h-model-pill';
+    pill.textContent = modelShort;
+    tagline.appendChild(pill);
+    tagline.appendChild(document.createTextNode(' · '));
+  }
+
+  const saCount = (roomSubAgentsCache[room.id] || []).length;
+  const countParts = [`${agentCount} agent${agentCount !== 1 ? 's' : ''}`];
+  if (saCount) countParts.push(`${saCount} sub-agent${saCount !== 1 ? 's' : ''}`);
+  tagline.appendChild(document.createTextNode(countParts.join(' · ')));
   info.appendChild(tagline);
 
   header.appendChild(info);

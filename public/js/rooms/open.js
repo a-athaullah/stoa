@@ -13,6 +13,7 @@ async function openRoom(room) {
   if (window.stopVoiceRecognition) window.stopVoiceRecognition();
 
   currentRoomId = room.id;
+  currentRoomData = room;
   currentRoomWorkdirId = room.workdir_id || null;
   clearRoomDisplay();
   clearComposerProcessing();
@@ -40,6 +41,15 @@ async function openRoom(room) {
     return;
   }
   roomParticipantsCache[room.id] = parts;
+
+  try {
+    const saData = await fjson(`/api/rooms/${room.id}/sub-agents`);
+    roomSubAgentsCache[room.id] = saData.linked || [];
+  } catch(e) {
+    roomSubAgentsCache[room.id] = [];
+    console.error('[room] failed to load sub-agents', room.id, e);
+  }
+
   renderRoomDots(room.id, parts);
   renderChatHeader(room, parts);
   renderRoomSidebar(room, parts);
@@ -47,7 +57,6 @@ async function openRoom(room) {
   if (typeof updateModelSelector === 'function') updateModelSelector(room, parts);
   loadContextState(room.id);
   fjson(`/api/rooms/${room.id}/skills`).then(s => { allSkills = s; }).catch(e => { allSkills = []; console.error('Failed to load skills for room', room.id, e); });
-  fjson(`/api/rooms/${room.id}/sub-agents`).then(sa => { roomSubAgentsCache[room.id] = sa.linked || []; }).catch(e => { roomSubAgentsCache[room.id] = []; console.error('[room] failed to load sub-agents', room.id, e); });
 
   connectWS(room.id);
 }
