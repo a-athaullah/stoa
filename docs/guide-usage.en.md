@@ -133,7 +133,7 @@ When a root message has replies, a **thread chip** appears below it showing repl
 
 Click any root message (or its thread chip) to open the **thread panel** on the right side of the screen. The root message is pinned at the top of the panel; all replies appear below it. If an AI agent starts streaming a reply, the panel **opens automatically** — but only if you don't currently have another thread open. Close the panel with the × button or press **Escape**.
 
-The thread panel uses the **same composer** as the main feed — model selector, emoji picker, mention autocomplete, image attach, and slash commands are all available. Drafts are saved per thread and restored when you reopen the panel.
+The thread panel has its **own dedicated composer**, independent from the room composer — model selector, emoji picker, mention autocomplete, image attach, and slash commands are all available. Each composer has its own independent state: attachments, reply-to, and draft are not shared between the room and the thread. Drafts are saved per thread and restored when you reopen the panel.
 
 **Thread sessions:** each thread maintains a separate Claude session. Opening an existing thread resumes its context; sending the first message in a new thread starts a fresh session for that agent.
 

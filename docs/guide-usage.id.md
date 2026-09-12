@@ -133,7 +133,7 @@ Jika sebuah pesan root sudah punya balasan, **chip thread** muncul di bawahnya, 
 
 Klik pesan root mana pun (atau chip thread-nya) untuk membuka **panel thread** di sebelah kanan. Pesan root ditampilkan di bagian atas panel; semua balasan muncul di bawahnya. Jika AI agent mulai streaming balasan, panel **terbuka otomatis** — tetapi hanya jika Anda sedang tidak membuka thread lain. Tutup panel dengan tombol × atau tekan **Escape**.
 
-Panel thread menggunakan **composer yang sama** dengan feed utama — model selector, emoji picker, mention autocomplete, lampiran gambar, dan slash command semuanya tersedia. Draft disimpan per thread dan dipulihkan saat panel dibuka kembali.
+Panel thread memiliki **composer tersendiri yang terpisah** dari composer room — model selector, emoji picker, mention autocomplete, lampiran gambar, dan slash command semuanya tersedia. Masing-masing composer punya state independen: attachments, reply-to, dan draft tidak dibagi antara room dan thread. Draft disimpan per thread dan dipulihkan saat panel dibuka kembali.
 
 **Sesi thread:** setiap thread mempertahankan sesi Claude terpisah. Membuka thread lama melanjutkan konteksnya; pesan pertama di thread baru memulai sesi baru untuk agent tersebut.
 
