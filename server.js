@@ -4128,11 +4128,16 @@ wss.on('connection', (ws, req) => {
       roomClients.get(subscribedRoom).add(ws);
       const messages = db.prepare(`
         SELECT * FROM (
-          SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
+          SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
+            (SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id) AS thread_count,
+            (SELECT MAX(r.created_at) FROM messages r WHERE r.thread_id = m.id) AS thread_last_at,
+            (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state IN ('streaming','requesting'))) AS thread_active,
+            (SELECT GROUP_CONCAT(DISTINCT rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id) AS thread_participant_ids,
+            (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state = 'error')) AS thread_has_error
           FROM messages m
           JOIN room_participants rp ON rp.id=m.participant_id
           JOIN actors a ON a.id=rp.actor_id
-          WHERE m.room_id=? AND (
+          WHERE m.room_id=? AND m.thread_id IS NULL AND (
             (m.state IN ('complete','streaming','requesting') AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL OR m.state IN ('streaming','requesting')))
             OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
             OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
@@ -4140,7 +4145,9 @@ wss.on('connection', (ws, req) => {
           ORDER BY m.created_at DESC LIMIT 100
         ) AS recent ORDER BY created_at ASC
       `).all(subscribedRoom);
-      ws.send(JSON.stringify({ type: 'history', messages: enrichReply(messages) }));
+      const enriched = enrichReply(messages);
+      enriched.forEach(m => { m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active, participant_ids: m.thread_participant_ids ? m.thread_participant_ids.split(',').map(Number) : [], has_error: !!m.thread_has_error }; });
+      ws.send(JSON.stringify({ type: 'history', messages: enriched }));
       // Restore compact state if room is currently compacting
       if (pendingCompacts.has(subscribedRoom)) {
         const cs = pendingCompacts.get(subscribedRoom);
