@@ -1923,12 +1923,18 @@ html.dark .h-bubble :not(pre) > code {
   padding: 8px 12px 12px;
 }
 .h-thread-footer #thread-reply-bar {
+  display: none;
+  align-items: center;
+  gap: 8px;
   padding: 6px 10px;
   background: var(--h-surface-hi, var(--h-surface));
   border: 1px solid var(--h-hair-soft);
   border-bottom: none;
   border-radius: 12px 12px 0 0;
+  font-family: var(--h-sans);
+  font-size: 13px;
 }
+.h-thread-footer #thread-reply-bar.visible { display: flex; }
 .h-thread-footer .h-thread-composer-box {
   margin: 0;
 }

@@ -314,9 +314,51 @@ function _createThreadPanel() {
       syncLabel();
       const dropdownText = document.getElementById('model-dropdown-text');
       if (dropdownText) new MutationObserver(syncLabel).observe(dropdownText, { childList: true, subtree: true, characterData: true });
+      modelWrap.style.position = 'relative';
       modelWrap.addEventListener('mouseenter', () => { modelWrap.style.opacity = '1'; modelWrap.style.background = 'var(--h-hover)'; });
       modelWrap.addEventListener('mouseleave', () => { modelWrap.style.opacity = '0.6'; modelWrap.style.background = ''; });
-      modelWrap.addEventListener('click', e => { e.stopPropagation(); document.getElementById('model-dropdown-trigger')?.click(); });
+      modelWrap.addEventListener('click', e => {
+        e.stopPropagation();
+        const existing = document.getElementById('thread-model-popup');
+        if (existing) { existing.remove(); return; }
+        if (typeof getAvailableModels !== 'function') return;
+        const popup = document.createElement('div');
+        popup.id = 'thread-model-popup';
+        popup.className = 'h-model-dropdown-list open';
+        popup.style.cssText = 'position:absolute;z-index:300;bottom:calc(100% + 4px);right:0;min-width:180px;max-height:260px;overflow-y:auto';
+        const models = getAvailableModels();
+        const hasMulti = models.some(m => m.platform !== 'anthropic');
+        const makeOpt = m => {
+          const div = document.createElement('div');
+          div.className = 'h-model-option';
+          div.dataset.value = m.value;
+          div.textContent = m.label;
+          const cur = document.getElementById('model-dropdown-text')?.textContent?.trim();
+          if (m.label === cur) div.classList.add('selected');
+          div.addEventListener('click', () => {
+            if (typeof selectModelOption === 'function') selectModelOption(m.value, m.platform_id);
+            popup.remove();
+          });
+          return div;
+        };
+        if (hasMulti) {
+          const seen = new Set();
+          for (const m of models) {
+            if (seen.has(m.platform)) continue;
+            seen.add(m.platform);
+            const hdr = document.createElement('div');
+            hdr.className = 'h-model-optgroup';
+            hdr.textContent = m.platform === 'anthropic' ? 'Anthropic' : m.platform;
+            popup.appendChild(hdr);
+            models.filter(x => x.platform === m.platform).sort((a, b) => a.label.localeCompare(b.label)).forEach(pm => popup.appendChild(makeOpt(pm)));
+          }
+        } else {
+          models.forEach(m => popup.appendChild(makeOpt(m)));
+        }
+        modelWrap.appendChild(popup);
+        const close = ev => { if (!modelWrap.contains(ev.target)) { popup.remove(); document.removeEventListener('click', close); } };
+        setTimeout(() => document.addEventListener('click', close), 0);
+      });
       modelWrap.appendChild(modelLabel);
       fmtBar.appendChild(modelWrap);
       return;
