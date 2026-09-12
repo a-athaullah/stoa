@@ -683,7 +683,7 @@ function appendThreadMessage(m, container) {
   actions.querySelector('[data-action="copy"]').onclick = async function() {
     if (await copyToClipboard(m.content || '')) showCopyFeedback(this);
   };
-  actions.querySelector('[data-action="reply"]').onclick = () => setThreadReply(m.id);
+  actions.querySelector('[data-action="reply"]').onclick = () => startThreadReply(m.id, m.actor_name, m.avatar_color, m.content);
   actions.querySelector('[data-action="delete"]').onclick = () => deleteMessage(m.id);
 
   body.appendChild(bubble);

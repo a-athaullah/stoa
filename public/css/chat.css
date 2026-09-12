@@ -861,11 +861,9 @@ html.dark .h-faded-mark { opacity: 0.12; }
   margin-bottom: 2px;
 }
 
-/* Message actions (copy + reply) — Gemini-style, beside bubble */
+/* Message actions (copy / reply / delete) */
 .h-msg-actions {
   display: none;
-  position: absolute;
-  top: -15px;
   gap: 1px;
   padding: 3px;
   border-radius: 9px;
@@ -875,10 +873,7 @@ html.dark .h-faded-mark { opacity: 0.12; }
   z-index: 5;
 }
 .h-msg-row:hover .h-msg-actions, .h-msg-row.show-actions .h-msg-actions { display: flex; }
-.h-msg-row.ai .h-msg-actions { right: 8px; }
-.h-msg-row.human .h-msg-actions { left: 8px; }
 .h-thread-msg-row:hover .h-msg-actions, .h-thread-root-row:hover .h-msg-actions { display: flex; }
-.h-thread-msg-row .h-msg-actions, .h-thread-root-row .h-msg-actions { right: 8px; }
 .h-msg-action-btn {
   border: none;
   background: none;
