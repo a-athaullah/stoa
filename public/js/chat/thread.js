@@ -674,7 +674,20 @@ function appendThreadMessage(m, container) {
   const resultChip = buildResultChip(m.result_meta);
   if (resultChip) bubble.appendChild(resultChip);
 
+  const actions = document.createElement('div');
+  actions.className = 'h-msg-actions';
+  actions.innerHTML =
+    `<button class="h-msg-action-btn" data-action="copy" title="Copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>` +
+    `<button class="h-msg-action-btn" data-action="reply" title="Reply"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg></button>` +
+    `<button class="h-msg-action-btn" data-action="delete" title="Delete"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>`;
+  actions.querySelector('[data-action="copy"]').onclick = async function() {
+    if (await copyToClipboard(m.content || '')) showCopyFeedback(this);
+  };
+  actions.querySelector('[data-action="reply"]').onclick = () => setThreadReply(m.id);
+  actions.querySelector('[data-action="delete"]').onclick = () => deleteMessage(m.id);
+
   body.appendChild(bubble);
+  body.appendChild(actions);
   row.appendChild(body);
   container.appendChild(row);
 
@@ -769,7 +782,19 @@ function _renderThreadRoot(m, container) {
     textDiv.innerHTML = highlightMentions(renderMarkdown(m.content));
     bubble.appendChild(textDiv);
   }
+  const actions = document.createElement('div');
+  actions.className = 'h-msg-actions';
+  actions.innerHTML =
+    `<button class="h-msg-action-btn" data-action="copy" title="Copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>` +
+    `<button class="h-msg-action-btn" data-action="delete" title="Delete"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>`;
+  actions.querySelector('[data-action="copy"]').onclick = async function() {
+    if (await copyToClipboard(m.content || '')) showCopyFeedback(this);
+  };
+  actions.querySelector('[data-action="delete"]').onclick = () => deleteMessage(m.id);
+
   body.appendChild(bubble);
+  body.style.position = 'relative';
+  body.appendChild(actions);
   row.appendChild(body);
   container.appendChild(row);
 
