@@ -2331,40 +2331,35 @@ html.dark .h-room-thread-badge {
 }
 .h-thread-breadcrumb-label:hover { color: var(--h-ink); }
 
-/* ── Mobile overlay: thread panel full-screen on small viewports ─────────── */
+/* ── Mobile slide: thread panel slides in from right on small viewports ───── */
 @media (max-width: 1023px) {
   .h-room-sidebar { display: none; }
   .h-rsb-popover { width: calc(100vw - 24px); right: 12px !important; }
+  #chat-body-row { position: relative; overflow: hidden; }
+  #chat-feed-col {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    width: 100%;
+    transition: transform 0.25s ease;
+    transform: translateX(0);
+  }
+  body.thread-open #chat-feed-col { transform: translateX(-100%); }
   .h-thread-panel {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
     width: 100% !important;
     max-width: 100% !important;
     flex: none !important;
-    z-index: 200;
-    display: none;
+    z-index: 10;
+    display: flex !important;
+    transform: translateX(100%);
+    transition: transform 0.25s ease;
   }
-  .h-thread-panel.open { display: flex; }
-
-  /* Overlay close hint bar at top of thread header */
-  .h-thread-header::before {
-    content: '';
-    position: absolute;
-    top: 8px;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 36px;
-    height: 4px;
-    border-radius: 2px;
-    background: var(--h-hair-soft);
-    pointer-events: none;
-  }
-  .h-thread-header { position: relative; padding-top: 20px; }
-  .h-thread-resize-handle { display: none; }
+  .h-thread-panel.open { transform: translateX(0); }
   .h-thread-back-btn { display: flex; }
+  .h-thread-header::before { display: none; }
+  .h-thread-header { padding-top: 10px; }
+  .h-thread-resize-handle { display: none; }
 }
 
 /* ── Thread panel — flat message rows (no bubble) ────────────────────────── */
