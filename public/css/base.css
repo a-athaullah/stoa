@@ -3,14 +3,14 @@
 :root {
   --h-bg:               #F4EFE6;
   --h-header-bg:        #705640;
-  --h-sidebar-bg:       #F5EEE3;
+  --h-sidebar-bg:       #D8CFC0;
   --h-surface:          #F7F2E9;
   --h-surface-hi:       #FBF7F0;
   --h-hairline:         #D6C8B7;
   --h-hair-soft:        #D6C8B7;
   --h-ink:              #382D24;
-  --h-ink-mute:         #625549;
-  --h-ink-faint:        #87786A;
+  --h-ink-mute:         #4A453D;
+  --h-ink-faint:        #5D574E;
   --h-slip:             #EDE5D9;
   --h-accent:           #5A3925;
   --h-link:             #805036;
