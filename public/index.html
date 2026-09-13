@@ -178,7 +178,17 @@
     <!-- tab: agents -->
     <div class="s-content" id="s-tab-agents">
       <div id="s-agent-empty-state" class="s-agent-empty-state">
-        <span style="font-family:var(--h-serif);font-style:italic;font-size:15px;color:var(--h-ink-faint)">pick an agent from the list, or invite a new one.</span>
+        <div class="h-faded-mark" aria-hidden="true">
+          <svg width="165" height="140" viewBox="0 0 120 100">
+            <g transform="translate(25,4) scale(2.1) translate(-39.762822,-37.952206)">
+              <path d="m 66.449565,37.952205 -26.686743,8.046538 0.06666,1.944067 28.028263,-5.833236 1.877405,-3.352767 z m 0.134359,6.772197 -6.169132,1.207161 0.06718,15.623336 7.711157,-0.134359 -0.201021,-1.474845 -1.274341,-0.33538 z m -9.655741,2.011763 -6.101953,1.072803 0.06718,16.964339 4.02301,-3.285587 h 2.816366 v -1.474846 l -0.804602,-0.536918 z m -9.387541,1.810226 -5.833752,1.207161 0.134358,9.789584 -1.810225,0.469738 v 1.341004 l 7.44244,0.133842 z" fill="#D4A35A"/>
+            </g>
+            <text x="60" y="88" fill="currentColor" text-anchor="middle"
+                  style="font-family:'DM Sans',system-ui,sans-serif;font-size:17px;font-weight:400;letter-spacing:.04em">STOA</text>
+          </svg>
+        </div>
+        <div class="h-empty-logo">no agent selected.</div>
+        <div class="h-empty-sub">pick an agent from the list, or invite a new one.</div>
       </div>
       <div id="s-add-panel" class="s-add-panel"></div>
       <div id="s-agent-detail" style="display:none">
