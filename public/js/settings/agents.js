@@ -3,6 +3,7 @@ let settingsOpen = false;
 let settingsActors = [];
 const sRowStates = new Map(); // id -> {state:'default'|'renaming'|'confirm-delete', draft:string}
 let sAddPanel = { open: false, name: '', os: 'unix', phase: 'idle', baselineIds: new Set(), newActor: null, timer: null };
+const agentSubCountCache = new Map(); // actorId -> count
 
 function sDetectOS() {
   return /Windows/.test(navigator.userAgent) ? 'ps' : 'unix';
@@ -1080,11 +1081,15 @@ function renderAgentSidebar() {
     list.appendChild(em);
   }
 
-  // Wire search
+  // Wire search (debounced to avoid N+1 per keystroke)
   const searchInp = document.getElementById('agent-search-input');
   if (searchInp && !searchInp._agentSearchWired) {
     searchInp._agentSearchWired = true;
-    searchInp.addEventListener('input', () => renderAgentSidebar());
+    let _searchTimer = null;
+    searchInp.addEventListener('input', () => {
+      clearTimeout(_searchTimer);
+      _searchTimer = setTimeout(() => renderAgentSidebar(), 200);
+    });
     const clearBtn = document.getElementById('agent-search-clear');
     if (clearBtn) clearBtn.addEventListener('click', () => { searchInp.value = ''; renderAgentSidebar(); searchInp.focus(); });
   }
@@ -1133,11 +1138,16 @@ function makeAgentSidebarRow(actor) {
 
   const sub = document.createElement('div');
   sub.className = 'h-room-preview';
-  sub.textContent = actor.adapter || 'agent';
-  fjson(`/api/actors/${actor.id}/sub-agents`).then(subs => {
-    const cnt = subs.length;
-    sub.textContent = `${actor.adapter || 'agent'}${cnt > 0 ? ` · ${cnt} sub-agent${cnt > 1 ? 's' : ''}` : ''}`;
-  }).catch(() => {});
+  const cachedCount = agentSubCountCache.get(actor.id);
+  const base = actor.adapter || 'agent';
+  sub.textContent = cachedCount > 0 ? `${base} · ${cachedCount} sub-agent${cachedCount > 1 ? 's' : ''}` : base;
+  if (cachedCount === undefined) {
+    fjson(`/api/actors/${actor.id}/sub-agents`).then(subs => {
+      const cnt = subs.length;
+      agentSubCountCache.set(actor.id, cnt);
+      sub.textContent = cnt > 0 ? `${base} · ${cnt} sub-agent${cnt > 1 ? 's' : ''}` : base;
+    }).catch(() => { agentSubCountCache.set(actor.id, 0); });
+  }
 
   mid.append(nameRow, sub);
 
@@ -1541,46 +1551,46 @@ function buildSubAgentsSection(actor) {
     saShowForm(true);
   }
 
-  async function saLoadList() {
-    try {
-      const r = await fetch(`/api/actors/${actor.id}/sub-agents`);
-      if (!r.ok) return;
-      const subs = await r.json();
-      saList.innerHTML = '';
-      saHint.textContent = (subs.length ? `${subs.length} defined · ` : '') + `specialized workers ${actor.name} can spawn`;
-      if (!subs.length) {
-        const empty = document.createElement('div'); empty.style.cssText = 'padding:26px 22px;display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center';
-        const et = document.createElement('span'); et.style.cssText = 'font-family:var(--h-serif);font-size:17px;color:var(--h-ink)'; et.textContent = 'no sub-agents yet';
-        const ed = document.createElement('span'); ed.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:14px;color:var(--h-ink-mute);line-height:1.5;max-width:420px'; ed.textContent = `a sub-agent is a smaller worker ${actor.name} can hand a narrow job to — a quick file probe, a careful reviewer. define one here, then add it to any room.`;
-        empty.append(et, ed); saList.appendChild(empty); return;
-      }
-      subs.forEach((sa, i) => {
-        const last = i === subs.length - 1;
-        const dim = !sa.enabled;
-        const row = document.createElement('div');
-        row.className = 's-sa-row';
-        row.style.cssText = 'display:flex;align-items:center;gap:12px;padding:13px 16px;' + (last ? '' : 'border-bottom:1px solid var(--h-hair-soft);') + `opacity:${dim ? .62 : 1}`;
-        row.appendChild(saMakeSeal({ letter: sa.label[0], color: saShade, size: 26, badge: true, ink: 'var(--sa-sub-ink)' }));
-        const mid = document.createElement('div'); mid.style.cssText = 'flex:1;min-width:0;display:flex;flex-direction:column;gap:4px';
-        const line1 = document.createElement('div'); line1.style.cssText = 'display:flex;align-items:center;gap:9px;flex-wrap:wrap';
-        const lbl = document.createElement('span'); lbl.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:14px;color:var(--h-ink)'; lbl.textContent = sa.label;
-        line1.append(lbl, saMakeTierChip(sa.tier, dim));
-        if (sa.model) { const mp = document.createElement('span'); mp.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--h-ink-faint);padding:2px 7px;border-radius:6px;background:color-mix(in srgb, var(--h-ink) 7%, var(--h-surface))'; mp.textContent = sa.model; line1.appendChild(mp); }
-        mid.append(line1); row.appendChild(mid);
-        const tog = document.createElement('button'); tog.className = 's-notif-toggle' + (sa.enabled ? ' on' : ''); tog.title = sa.enabled ? 'Enabled — click to disable' : 'Disabled — click to enable'; tog.style.flex = '0 0 auto';
-        tog.addEventListener('click', async () => { try { const rr = await fetch(`/api/sub-agents/${sa.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !sa.enabled }) }); if (rr.ok) saLoadList(); } catch { showToast('Failed to update', { error: true }); } });
-        row.appendChild(tog);
-        const acts = document.createElement('div'); acts.style.cssText = 'display:flex;gap:2px;margin-left:4px';
-        const editB = document.createElement('button'); editB.className = 's-icon-btn'; editB.innerHTML = svgPencil(13); editB.title = 'Edit sub-agent'; editB.addEventListener('click', () => saMakeFormFields(sa));
-        const delB = document.createElement('button'); delB.className = 's-icon-btn'; delB.innerHTML = svgX(13); delB.title = 'Delete sub-agent'; delB.style.color = SA_DANGER;
-        delB.addEventListener('click', async () => { try { const rr = await fetch(`/api/sub-agents/${sa.id}`, { method: 'DELETE' }); if (rr.ok) saLoadList(); } catch { showToast('Failed to delete', { error: true }); } });
-        acts.append(editB, delB); row.appendChild(acts); saList.appendChild(row);
-      });
-    } catch {}
+  saAddBtn.addEventListener('click', () => saMakeFormFields(null));
+
+  async function saLoadListWithCache() {
+    const r = await fetch(`/api/actors/${actor.id}/sub-agents`).catch(() => null);
+    if (!r || !r.ok) return;
+    const subs = await r.json();
+    agentSubCountCache.set(actor.id, subs.length);
+    saList.innerHTML = '';
+    saHint.textContent = (subs.length ? `${subs.length} defined · ` : '') + `specialized workers ${actor.name} can spawn`;
+    if (!subs.length) {
+      const empty = document.createElement('div'); empty.style.cssText = 'padding:26px 22px;display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center';
+      const et = document.createElement('span'); et.style.cssText = 'font-family:var(--h-serif);font-size:17px;color:var(--h-ink)'; et.textContent = 'no sub-agents yet';
+      const ed = document.createElement('span'); ed.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:14px;color:var(--h-ink-mute);line-height:1.5;max-width:420px'; ed.textContent = `a sub-agent is a smaller worker ${actor.name} can hand a narrow job to — a quick file probe, a careful reviewer. define one here, then add it to any room.`;
+      empty.append(et, ed); saList.appendChild(empty); return;
+    }
+    subs.forEach((sa, i) => {
+      const last = i === subs.length - 1;
+      const dim = !sa.enabled;
+      const row = document.createElement('div');
+      row.className = 's-sa-row';
+      row.style.cssText = 'display:flex;align-items:center;gap:12px;padding:13px 16px;' + (last ? '' : 'border-bottom:1px solid var(--h-hair-soft);') + `opacity:${dim ? .62 : 1}`;
+      row.appendChild(saMakeSeal({ letter: sa.label[0], color: saShade, size: 26, badge: true, ink: 'var(--sa-sub-ink)' }));
+      const mid = document.createElement('div'); mid.style.cssText = 'flex:1;min-width:0;display:flex;flex-direction:column;gap:4px';
+      const line1 = document.createElement('div'); line1.style.cssText = 'display:flex;align-items:center;gap:9px;flex-wrap:wrap';
+      const lbl = document.createElement('span'); lbl.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:14px;color:var(--h-ink)'; lbl.textContent = sa.label;
+      line1.append(lbl, saMakeTierChip(sa.tier, dim));
+      if (sa.model) { const mp = document.createElement('span'); mp.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--h-ink-faint);padding:2px 7px;border-radius:6px;background:color-mix(in srgb, var(--h-ink) 7%, var(--h-surface))'; mp.textContent = sa.model; line1.appendChild(mp); }
+      mid.append(line1); row.appendChild(mid);
+      const tog = document.createElement('button'); tog.className = 's-notif-toggle' + (sa.enabled ? ' on' : ''); tog.title = sa.enabled ? 'Enabled — click to disable' : 'Disabled — click to enable'; tog.style.flex = '0 0 auto';
+      tog.addEventListener('click', async () => { try { const rr = await fetch(`/api/sub-agents/${sa.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !sa.enabled }) }); if (rr.ok) saLoadListWithCache(); } catch { showToast('Failed to update', { error: true }); } });
+      row.appendChild(tog);
+      const acts = document.createElement('div'); acts.style.cssText = 'display:flex;gap:2px;margin-left:4px';
+      const editB = document.createElement('button'); editB.className = 's-icon-btn'; editB.innerHTML = svgPencil(13); editB.title = 'Edit sub-agent'; editB.addEventListener('click', () => saMakeFormFields(sa));
+      const delB = document.createElement('button'); delB.className = 's-icon-btn'; delB.innerHTML = svgX(13); delB.title = 'Delete sub-agent'; delB.style.color = SA_DANGER;
+      delB.addEventListener('click', async () => { try { const rr = await fetch(`/api/sub-agents/${sa.id}`, { method: 'DELETE' }); if (rr.ok) saLoadListWithCache(); } catch { showToast('Failed to delete', { error: true }); } });
+      acts.append(editB, delB); row.appendChild(acts); saList.appendChild(row);
+    });
   }
 
-  saAddBtn.addEventListener('click', () => saMakeFormFields(null));
-  saLoadList();
+  saLoadListWithCache();
   return saSection;
 }
 

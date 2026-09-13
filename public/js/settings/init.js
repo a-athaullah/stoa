@@ -115,14 +115,14 @@ function handleActorStatus(actor) {
   if (sdot) sdot.className = actor.online ? 's-dot-on' : 's-dot-off';
   const sword = document.getElementById('s-sidebar-word-' + actor.id);
   if (sword) sword.textContent = actor.online ? 'online' : 'offline';
-  // Update version in sub text when agent reconnects with new version
+  // Update version badge in sidebar row when agent reconnects with new version
   if (actor.client_version && actor.online) {
-    const sub = document.querySelector(`#s-row-${actor.id} .s-agent-sub`);
+    const row = document.querySelector(`#agent-list .h-agent-row[data-actor-id="${actor.id}"]`);
+    const sub = row?.querySelector('.h-room-preview');
     if (sub) {
       const text = sub.textContent;
-      const vMatch = text.match(/· v[\d.]+/);
-      if (vMatch) sub.textContent = text.replace(/· v[\d.]+/, `· v${actor.client_version}`);
-      else sub.textContent = text.replace(/· joined/, `· v${actor.client_version} · joined`);
+      const vMatch = text.match(/v[\d.]+/);
+      if (!vMatch) sub.textContent = text + ` · v${actor.client_version}`;
     }
   }
   // Update detail header action buttons if this agent is selected
@@ -255,8 +255,8 @@ function initSettings() {
     if (!settingsOpen) return;
     for (const [id, rs] of sRowStates) {
       if (rs.state === 'confirm-delete') {
-        const row = document.getElementById('s-row-' + id);
-        if (row && !row.contains(e.target)) sCancelDelete(id);
+        const header = document.getElementById('s-agent-detail-header');
+        if (header && !header.contains(e.target)) sCancelDelete(id);
       }
     }
   });
