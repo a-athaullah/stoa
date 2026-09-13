@@ -1,18 +1,22 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --h-bg:          #EDE9E0;
-  --h-header-bg:   #DED5C5;
-  --h-sidebar-bg:  #D8CFC0;
-  --h-surface:     #F2EDE4;
-  --h-surface-hi:  #F5F0E8;
-  --h-hairline:    #CBB99F;
-  --h-hair-soft:   #DED2C0;
-  --h-ink:         #2B2620;
-  --h-ink-mute:    #4A453D;
-  --h-ink-faint:   #5D574E;
-  --h-slip:        #EFE7DA;
-  --h-accent:      #8A5F22;
+  --h-bg:               #F2EADC;
+  --h-header-bg:        #695640;
+  --h-sidebar-bg:       #ECE1CE;
+  --h-surface:          #F7F2E9;
+  --h-surface-hi:       #FBF7F0;
+  --h-hairline:         #D6C8B7;
+  --h-hair-soft:        #D6C8B7;
+  --h-ink:              #382D24;
+  --h-ink-mute:         #625549;
+  --h-ink-faint:        #87786A;
+  --h-slip:             #EDE5D9;
+  --h-accent:           #5A3925;
+  --h-link:             #805036;
+  --h-olive:            #60705A;
+  --h-header-ink:       #F7F2E9;
+  --h-header-ink-faint: rgba(247,242,233,0.6);
   /* Aliases — reference theme-aware tokens so they resolve correctly in dark too.
      Used by JS-built UI (sub-agent dropdown/run controls, settings) + chat.css. */
   --h-border:      var(--h-hairline);
@@ -23,18 +27,20 @@
 }
 
 html.dark {
-  --h-bg:          oklch(0.218 0.016 52);
-  --h-header-bg:   oklch(0.265 0.018 50);
-  --h-sidebar-bg:  oklch(0.178 0.014 50);
-  --h-surface:     oklch(0.295 0.018 50);
-  --h-surface-hi:  oklch(0.335 0.018 52);
-  --h-hairline:    oklch(0.420 0.016 48);
-  --h-hair-soft:   oklch(0.345 0.014 48);
-  --h-ink:         oklch(0.925 0.014 70);
-  --h-ink-mute:    oklch(0.740 0.014 60);
-  --h-ink-faint:   oklch(0.585 0.012 55);
-  --h-slip:        oklch(0.255 0.020 60);
-  --h-accent:      oklch(0.620 0.100 245);
+  --h-bg:               oklch(0.218 0.016 52);
+  --h-header-bg:        oklch(0.265 0.018 50);
+  --h-sidebar-bg:       oklch(0.178 0.014 50);
+  --h-surface:          oklch(0.295 0.018 50);
+  --h-surface-hi:       oklch(0.335 0.018 52);
+  --h-hairline:         oklch(0.420 0.016 48);
+  --h-hair-soft:        oklch(0.345 0.014 48);
+  --h-ink:              oklch(0.925 0.014 70);
+  --h-ink-mute:         oklch(0.740 0.014 60);
+  --h-ink-faint:        oklch(0.585 0.012 55);
+  --h-slip:             oklch(0.255 0.020 60);
+  --h-accent:           oklch(0.620 0.100 245);
+  --h-header-ink:       var(--h-ink);
+  --h-header-ink-faint: var(--h-ink-faint);
 }
 
 html, body { height: 100%; overflow: hidden; }

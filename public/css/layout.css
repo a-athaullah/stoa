@@ -9,7 +9,7 @@
   position: absolute;
   top: 0; left: 0; bottom: 0;
   width: 44px;
-  background: var(--h-sidebar-bg);
+  background: var(--h-header-bg);
   border-right: 1px solid var(--h-hairline);
   display: flex;
   flex-direction: column;
@@ -38,15 +38,15 @@
   align-items: center;
   gap: 10px;
   padding: 0;
-  color: var(--h-ink-faint);
+  color: var(--h-header-ink-faint);
   position: relative;
   transition: color .12s, background .12s;
   flex: 0 0 auto;
   overflow: hidden;
   white-space: nowrap;
 }
-.app-nav-item:hover { color: var(--h-ink); background: var(--h-surface-hi); }
-.app-nav-item.active { color: var(--h-ink); background: color-mix(in srgb, var(--h-surface) 80%, transparent); }
+.app-nav-item:hover { color: var(--h-header-ink); background: rgba(255,255,255,.12); }
+.app-nav-item.active { color: var(--h-header-ink); background: rgba(255,255,255,.15); }
 .app-nav-item.active::before {
   content: '';
   position: absolute;
@@ -55,7 +55,7 @@
   bottom: 7px;
   width: 3px;
   border-radius: 0 2px 2px 0;
-  background: var(--h-accent, oklch(62% .17 250));
+  background: var(--h-header-ink);
 }
 
 .app-nav-icon {
@@ -80,7 +80,7 @@
 
 .app-nav-user-name {
   font-size: 12.5px;
-  color: var(--h-ink-mute);
+  color: var(--h-header-ink-faint);
 }
 
 .app-nav-avatar-row {
@@ -110,7 +110,7 @@
 .app-nav-sep {
   width: 22px;
   height: 1px;
-  background: var(--h-hair-soft);
+  background: rgba(255,255,255,.15);
   margin: 4px 8px;
   flex: 0 0 auto;
   transition: width .16s ease;
@@ -119,7 +119,7 @@
 #app-nav:focus-within .app-nav-sep { width: calc(100% - 16px); }
 .app-nav-spacer { flex: 1; }
 
-.app-nav-restart { color: var(--h-ink-faint); }
+.app-nav-restart { color: var(--h-header-ink-faint); }
 .app-nav-restart:hover { color: oklch(40% 0.12 22) !important; background: color-mix(in srgb, oklch(40% 0.12 22) 8%, transparent) !important; }
 
 #app-top-notice {
@@ -364,18 +364,18 @@ body.sidebar-collapsed #sidebar { display: none; }
 }
 
 .h-new-room-btn {
-  background: transparent;
-  color: var(--h-ink-mute);
-  border: 1px solid var(--h-hairline);
+  background: var(--h-header-bg);
+  color: var(--h-header-ink);
+  border: none;
   border-radius: 999px;
   padding: 4px 11px;
   font-size: 12px;
   cursor: pointer;
   font-family: var(--h-sans);
-  transition: background 0.12s, color 0.12s;
+  transition: background 0.12s, color 0.12s, opacity 0.12s;
   position: relative;
 }
-.h-new-room-btn:hover { background: var(--h-surface); color: var(--h-ink); }
+.h-new-room-btn:hover { opacity: .85; }
 .h-new-room-btn.no-agents::after {
   content: attr(data-tip);
   position: absolute;

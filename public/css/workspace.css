@@ -60,22 +60,25 @@
   height: 42px;
   flex: 0 0 auto;
   background: var(--h-header-bg);
-  border-bottom: 1px solid var(--h-hairline);
+  border-bottom: 1px solid rgba(247,242,233,0.15);
 }
+html.dark .ws-tab-bar { border-bottom-color: var(--h-hairline); }
 .ws-pin-tab {
   position: relative;
   width: 40px;
   border: none;
   cursor: pointer;
   background: transparent;
-  color: var(--h-ink-mute);
+  color: var(--h-header-ink-faint);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   transition: background .12s, color .12s;
 }
-.ws-pin-tab:hover { color: var(--h-ink); }
+.ws-pin-tab:hover { color: var(--h-header-ink); }
 .ws-pin-tab.active { background: var(--h-bg); color: var(--h-ink); }
+html.dark .ws-pin-tab { color: var(--h-ink-mute); }
+html.dark .ws-pin-tab:hover { color: var(--h-ink); }
 .ws-pin-tab .ws-tab-indicator {
   position: absolute;
   left: 8px; right: 8px; bottom: 0;

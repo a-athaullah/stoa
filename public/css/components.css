@@ -69,8 +69,8 @@
 /* ── Export dropdown ── */
 .h-header-action-btn {
   background: transparent;
-  border: 1px solid var(--h-hairline);
-  color: var(--h-ink-mute);
+  border: 1px solid rgba(247,242,233,0.25);
+  color: var(--h-header-ink-faint);
   border-radius: 8px;
   padding: 5px 8px;
   cursor: pointer;
@@ -78,13 +78,16 @@
   align-items: center;
   transition: background .12s, color .12s;
 }
-.h-header-action-btn:hover { background: var(--h-surface); color: var(--h-ink); }
-.h-header-action-btn.active { background: var(--h-surface); color: var(--h-accent); }
+.h-header-action-btn:hover { background: rgba(247,242,233,0.12); color: var(--h-header-ink); }
+.h-header-action-btn.active { background: rgba(247,242,233,0.15); color: var(--h-header-ink); }
+html.dark .h-header-action-btn { border-color: var(--h-hairline); color: var(--h-ink-mute); }
+html.dark .h-header-action-btn:hover { background: var(--h-surface); color: var(--h-ink); }
+html.dark .h-header-action-btn.active { background: var(--h-surface); color: var(--h-accent); }
 
 .h-room-search-bar {
   display: none;
   padding: 8px 16px;
-  border-bottom: 1px solid var(--h-hair-soft);
+  border-bottom: 1px solid rgba(247,242,233,0.15);
   background: var(--h-header-bg);
   gap: 8px;
   align-items: center;
@@ -104,13 +107,17 @@
 .h-room-search-bar input:focus { border-color: var(--h-accent); }
 .h-room-search-bar .h-room-search-nav {
   display: flex; gap: 4px; align-items: center;
-  font-size: 12px; color: var(--h-ink-faint); white-space: nowrap;
+  font-size: 12px; color: var(--h-header-ink-faint); white-space: nowrap;
 }
 .h-room-search-bar .h-room-search-nav button {
   background: none; border: none; cursor: pointer;
-  color: var(--h-ink-faint); padding: 2px 4px; border-radius: 4px;
+  color: var(--h-header-ink-faint); padding: 2px 4px; border-radius: 4px;
 }
-.h-room-search-bar .h-room-search-nav button:hover { color: var(--h-ink); background: var(--h-surface); }
+.h-room-search-bar .h-room-search-nav button:hover { color: var(--h-header-ink); background: rgba(247,242,233,0.12); }
+html.dark .h-room-search-bar { border-bottom-color: var(--h-hair-soft); }
+html.dark .h-room-search-bar .h-room-search-nav { color: var(--h-ink-faint); }
+html.dark .h-room-search-bar .h-room-search-nav button { color: var(--h-ink-faint); }
+html.dark .h-room-search-bar .h-room-search-nav button:hover { color: var(--h-ink); background: var(--h-surface); }
 .h-room-search-results {
   display: none;
   max-height: 50vh;
