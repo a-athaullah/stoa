@@ -364,18 +364,18 @@ body.sidebar-collapsed #sidebar { display: none; }
 }
 
 .h-new-room-btn {
-  background: transparent;
-  color: var(--h-ink-mute);
-  border: 1px solid var(--h-hairline);
+  background: var(--h-header-bg);
+  color: var(--h-header-ink);
+  border: none;
   border-radius: 999px;
   padding: 4px 11px;
   font-size: 12px;
   cursor: pointer;
   font-family: var(--h-sans);
-  transition: background 0.12s, color 0.12s;
+  transition: background 0.12s, color 0.12s, opacity 0.12s;
   position: relative;
 }
-.h-new-room-btn:hover { background: var(--h-surface); color: var(--h-ink); }
+.h-new-room-btn:hover { opacity: .85; }
 .h-new-room-btn.no-agents::after {
   content: attr(data-tip);
   position: absolute;
