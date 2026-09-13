@@ -1297,10 +1297,21 @@ html.dark .h-msg-row:hover { background: var(--h-hover); }
 #thread-msg-input s, #thread-msg-input del { text-decoration: line-through; }
 #thread-msg-input code { font-family: monospace; font-size: 13px; background: var(--h-hair-soft); border-radius: 3px; padding: 0 3px; }
 #thread-msg-input pre { background: var(--h-hair-soft); border-radius: 6px; padding: 6px 10px; margin: 2px 0; white-space: pre-wrap; }
+#thread-msg-input pre + pre { margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0; padding-top: 0; }
+#thread-msg-input pre:has(+ pre) { margin-bottom: 0; border-bottom-left-radius: 0; border-bottom-right-radius: 0; padding-bottom: 0; }
+#thread-msg-input pre code { background: none; padding: 0; }
 #thread-msg-input blockquote { border-left: 3px solid var(--h-ink-mute); margin: 2px 0; padding: 2px 0 2px 10px; color: var(--h-ink-mute); }
 #thread-msg-input ol, #thread-msg-input ul { margin: 2px 0 2px 18px; padding: 0; }
 #thread-msg-input li { margin: 1px 0; }
 #thread-msg-input a { color: #5b8fd4; text-decoration: underline; text-underline-offset: 2px; }
+#thread-msg-input .h-skill-tag {
+  font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 4px;
+  padding: 1px 5px;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
 
 /* ── Skill autocomplete ──────────────────────────────── */
 #skill-popup {

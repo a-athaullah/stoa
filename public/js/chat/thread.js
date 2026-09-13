@@ -549,6 +549,19 @@ function _createThreadPanel() {
 
   // Keyboard handling for thread input
   inputEl.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      const sel = window.getSelection();
+      const li = sel?.anchorNode?.closest?.('li') || sel?.anchorNode?.parentElement?.closest?.('li');
+      if (li && li.textContent.trim() === '') {
+        e.preventDefault();
+        const list = li.closest('ul, ol');
+        li.remove();
+        if (list && list.children.length === 0) list.remove();
+        document.execCommand('insertParagraph', false, null);
+        document.execCommand('outdent', false, null);
+        return;
+      }
+    }
     if (e.key === 'Enter') {
       const enterSend = document.getElementById('thread-enter-send-toggle')?.classList.contains('active') ?? true;
       if (!e.shiftKey && enterSend) { e.preventDefault(); sendThreadMessage(); }
@@ -559,15 +572,130 @@ function _createThreadPanel() {
     }
   });
 
-  // Paste image in thread
+  // Markdown shortcuts in thread input (matches room composer behavior)
+  let threadMdProcessing = false;
+  inputEl.addEventListener('input', () => {
+    if (threadMdProcessing) return;
+    const sel = window.getSelection();
+    if (!sel.rangeCount || !sel.isCollapsed) return;
+    const node = sel.anchorNode;
+    if (!node) return;
+    const tNode = node.nodeType === 3 ? node : null;
+    if (!tNode) return;
+    if (tNode.parentElement && tNode.parentElement.closest('pre')) return;
+    const text = tNode.textContent;
+    const cursor = sel.anchorOffset;
+    const before = text.substring(0, cursor);
+
+    if (before.endsWith('```')) {
+      threadMdProcessing = true;
+      const start = cursor - 3;
+      const range = document.createRange();
+      range.setStart(tNode, start);
+      range.setEnd(tNode, cursor);
+      range.deleteContents();
+      const pre = document.createElement('pre');
+      pre.innerHTML = '<br>';
+      if (tNode.textContent === '') {
+        tNode.parentElement.replaceChild(pre, tNode);
+      } else {
+        range.insertNode(pre);
+      }
+      const r2 = document.createRange();
+      r2.setStart(pre, 0);
+      r2.collapse(true);
+      sel.removeAllRanges(); sel.addRange(r2);
+      threadMdProcessing = false;
+      return;
+    }
+
+    const codeMatch = before.match(/(?<!`)`([^`]+?)`$/);
+    if (codeMatch) {
+      threadMdProcessing = true;
+      const start = cursor - codeMatch[0].length;
+      const content = codeMatch[1];
+      const range = document.createRange();
+      range.setStart(tNode, start);
+      range.setEnd(tNode, cursor);
+      range.deleteContents();
+      const code = document.createElement('code');
+      code.textContent = content;
+      range.insertNode(code);
+      const r2 = document.createRange();
+      r2.setStartAfter(code);
+      r2.collapse(true);
+      sel.removeAllRanges(); sel.addRange(r2);
+      document.execCommand('insertText', false, '​');
+      threadMdProcessing = false;
+      return;
+    }
+
+    const patterns = [
+      { re: /\*([^\*]+?)\*$/, tag: 'strong' },
+      { re: /(?:^|(?<=\s))_([^_]+?)_$/, tag: 'em' },
+      { re: /~(?!\/)([^~]+?)~$/, tag: 's' },
+    ];
+    for (const p of patterns) {
+      const m = before.match(p.re);
+      if (m) {
+        threadMdProcessing = true;
+        const start = cursor - m[0].length;
+        const content = m[1];
+        const range = document.createRange();
+        range.setStart(tNode, start);
+        range.setEnd(tNode, cursor);
+        range.deleteContents();
+        const el = document.createElement(p.tag);
+        el.textContent = content;
+        range.insertNode(el);
+        const r2 = document.createRange();
+        r2.setStartAfter(el);
+        r2.collapse(true);
+        sel.removeAllRanges(); sel.addRange(r2);
+        document.execCommand('insertText', false, '​');
+        threadMdProcessing = false;
+        return;
+      }
+    }
+  });
+
+  // Paste: image upload + URL linkification
   inputEl.addEventListener('paste', async e => {
     const items = [...(e.clipboardData?.items || [])];
     const img = items.find(i => i.type.startsWith('image/'));
-    if (!img) return;
+    if (img) {
+      e.preventDefault();
+      const file = img.getAsFile();
+      if (typeof uploadWithProgress === 'function') {
+        try { const { url, name } = await uploadWithProgress(file); addThreadAttachment(url, name || file.name, 'image'); } catch (err) { if (typeof showUploadError === 'function') showUploadError(err.message || 'Upload failed'); }
+      }
+      return;
+    }
     e.preventDefault();
-    const file = img.getAsFile();
-    if (typeof uploadWithProgress === 'function') {
-      try { const { url, name } = await uploadWithProgress(file); addThreadAttachment(url, name || file.name, 'image'); } catch (err) { if (typeof showUploadError === 'function') showUploadError(err.message || 'Upload failed'); }
+    const text = e.clipboardData.getData('text/plain');
+    const urlRe = /^https?:\/\/\S+$/;
+    const sel = window.getSelection();
+    if (urlRe.test(text.trim()) && sel.rangeCount) {
+      const range = sel.getRangeAt(0);
+      const selectedText = sel.toString();
+      const a = document.createElement('a');
+      a.href = text.trim();
+      if (selectedText) {
+        a.textContent = selectedText;
+        range.deleteContents();
+      } else {
+        a.textContent = text.trim();
+      }
+      range.insertNode(a);
+      range.setStartAfter(a);
+      range.collapse(true);
+      sel.removeAllRanges(); sel.addRange(range);
+    } else {
+      const r = sel.getRangeAt(0);
+      r.deleteContents();
+      r.insertNode(document.createTextNode(text));
+      r.collapse(false);
+      sel.removeAllRanges(); sel.addRange(r);
     }
   });
 
