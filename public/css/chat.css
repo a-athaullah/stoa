@@ -874,6 +874,7 @@ html.dark .h-faded-mark { opacity: 0.12; }
 }
 .h-msg-row:hover .h-msg-actions, .h-msg-row.show-actions .h-msg-actions { display: flex; }
 .h-thread-msg-row:hover .h-msg-actions, .h-thread-root-row:hover .h-msg-actions { display: flex; }
+.h-thread-msg-row.show-actions .h-msg-actions, .h-thread-root-row.show-actions .h-msg-actions { display: flex; }
 .h-msg-action-btn {
   border: none;
   background: none;

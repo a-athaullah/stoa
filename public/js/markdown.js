@@ -371,3 +371,38 @@ function externalLinksNewTab(el) {
     } catch {}
   });
 }
+
+function initMessageActionTouch() {
+  const ROW_SEL = '.h-msg-row, .h-thread-msg-row, .h-thread-root-row';
+  let pressTimer = null;
+  let pressTarget = null;
+
+  function clearActive() {
+    document.querySelectorAll('.show-actions').forEach(el => el.classList.remove('show-actions'));
+  }
+
+  document.addEventListener('touchstart', e => {
+    const row = e.target.closest(ROW_SEL);
+    if (!row) { clearActive(); return; }
+    if (e.target.closest('.h-msg-actions')) return;
+    pressTarget = row;
+    pressTimer = setTimeout(() => {
+      clearActive();
+      row.classList.add('show-actions');
+      pressTimer = null;
+    }, 500);
+  }, { passive: true });
+
+  document.addEventListener('touchmove', () => {
+    if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+  }, { passive: true });
+
+  document.addEventListener('touchend', e => {
+    if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+    if (e.target.closest('.h-msg-actions')) {
+      setTimeout(clearActive, 100);
+    } else if (!e.target.closest('.show-actions')) {
+      clearActive();
+    }
+  }, { passive: true });
+}
