@@ -1010,7 +1010,7 @@ function sStartDelete(id) {
 
 function sCancelDelete(id) {
   sRowStates.set(id, { state: 'default', draft: '' });
-  sRefreshRow(id);
+  if (agentsSelectedId === id) renderAgentDetail(id);
 }
 
 async function sCommitDelete(id) {
