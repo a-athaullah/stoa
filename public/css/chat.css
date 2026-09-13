@@ -1936,6 +1936,28 @@ pre:hover .h-copy-btn { opacity: 1; pointer-events: auto; }
   flex-shrink: 0;
 }
 .h-rsb-btn:hover { background: var(--h-surface-hi, var(--h-surface)); color: var(--h-ink-mute); }
+.h-rsb-btn[data-tooltip] { position: relative; }
+.h-rsb-btn[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  right: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+  background: var(--h-surface);
+  border: 1px solid var(--h-border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-family: var(--h-sans);
+  color: var(--h-ink);
+  white-space: nowrap;
+  box-shadow: 0 2px 8px oklch(0% 0 0 / .08);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 9999;
+}
+.h-rsb-btn[data-tooltip]:hover::after { opacity: 1; }
 .h-rsb-btn.active {
   color: var(--h-accent);
   background: color-mix(in srgb, var(--h-accent) 10%, transparent);
