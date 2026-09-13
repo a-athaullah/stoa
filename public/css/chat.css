@@ -275,7 +275,13 @@ html.dark .h-add-participant:hover { border-color: var(--h-accent); color: var(-
   align-items: flex-end;
   gap: 12px;
   width: 100%;
+  padding: 4px 8px;
+  margin: -4px -8px;
+  border-radius: 10px;
+  transition: background .12s;
 }
+.h-msg-row:hover { background: #EBE1D2; }
+html.dark .h-msg-row:hover { background: var(--h-hover); }
 .h-msg-row.human { flex-direction: row-reverse; }
 
 .h-msg-seal-wrap { flex: 0 0 auto; margin-bottom: 2px; }
@@ -1098,8 +1104,8 @@ html.dark .h-add-participant:hover { border-color: var(--h-accent); color: var(-
 .h-icon-btn:hover { color: var(--h-ink); background: var(--h-surface-hi); }
 
 #send-btn {
-  background: var(--h-ink);
-  color: var(--h-bg);
+  background: var(--h-header-bg);
+  color: var(--h-header-ink);
   border: none;
   width: 26px; height: 26px;
   border-radius: 6px;
@@ -1934,7 +1940,7 @@ pre:hover .h-copy-btn { opacity: 1; pointer-events: auto; }
   display: none;
   flex-direction: column;
   border-left: 1px solid var(--h-hair-soft);
-  background: var(--h-bg);
+  background: #F0E7D7;
   overflow: hidden;
 }
 .h-thread-panel.open { display: flex; }
@@ -1956,6 +1962,7 @@ pre:hover .h-copy-btn { opacity: 1; pointer-events: auto; }
   background: var(--h-accent, #3a7bd5);
   opacity: 0.5;
 }
+html.dark .h-thread-panel { background: var(--h-bg); }
 
 .h-thread-header {
   display: flex;
@@ -2094,8 +2101,8 @@ html.dark .h-thread-ctrl-btn:hover { background: var(--h-hover); color: var(--h-
   justify-content: center;
   border: none;
   border-radius: 6px;
-  background: var(--h-ink);
-  color: var(--h-bg);
+  background: var(--h-header-bg);
+  color: var(--h-header-ink);
   cursor: pointer;
   transition: opacity 0.12s;
   flex-shrink: 0;
