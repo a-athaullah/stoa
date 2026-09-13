@@ -687,6 +687,7 @@ function appendThreadMessage(m, container) {
   actions.querySelector('[data-action="delete"]').onclick = () => deleteMessage(m.id);
 
   body.appendChild(bubble);
+  body.style.position = 'relative';
   body.appendChild(actions);
   row.appendChild(body);
   container.appendChild(row);

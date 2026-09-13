@@ -63,7 +63,7 @@ async function copyToClipboard(text) {
 }
 
 function showCopyFeedback(btn) {
-  const row = btn.closest('.h-msg-row');
+  const row = btn.closest('.h-msg-row, .t-root-row, .h-thread-msg-row, .h-thread-root-row');
   if (row) row.classList.add('show-actions');
   const orig = btn.innerHTML;
   btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5cb85c" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
@@ -373,7 +373,7 @@ function externalLinksNewTab(el) {
 }
 
 function initMessageActionTouch() {
-  const ROW_SEL = '.h-msg-row, .h-thread-msg-row, .h-thread-root-row';
+  const ROW_SEL = '.h-msg-row, .t-root-row, .h-thread-msg-row, .h-thread-root-row';
   let pressTimer = null;
   let pressTarget = null;
 
