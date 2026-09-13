@@ -29,13 +29,6 @@ function getFallbackSession(participantId, workDir) {
 }
 
 const connectionManager = require('./connection-manager');
-const automationQueue = require('./queue-manager');
-automationQueue.on('processing', ({ key, pending, meta }) => {
-  if (pending > 0) console.log(`[queue] room ${key}: processing "${meta?.automation || 'unknown'}" (${pending} waiting)`);
-});
-automationQueue.on('drained', ({ key }) => {
-  console.log(`[queue] room ${key}: queue drained`);
-});
 
 const EXPECTED_CLIENT_VERSION = (() => {
   try {
@@ -6667,26 +6660,20 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
         .replace(/\{\{slack_full_text\}\}/g, fullText)
         .replace(/\{\{slack_bot_id\}\}/g, botId);
 
-      // Queue automation — one at a time per room
       const _roomId = auto.target_room_id;
       const _prompt = prompt;
       const _autoName = auto.name;
       const _autoId = auto.id;
-      {
-        const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
-        console.log(`[${ts}] [automation:${_autoName}] enqueued - room=${_roomId} pending=${automationQueue.pending(_roomId)}`);
-      }
-      automationQueue.enqueue(_roomId, async () => {
-        {
-          const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
-          console.log(`[${ts}] [automation:${_autoName}] sending_message - room=${_roomId}`);
+      const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
+      console.log(`[${ts}] [automation:${_autoName}] triggered - room=${_roomId}`);
+      (async () => {
+        try {
+          await handleHumanMessage(_roomId, _prompt, null, null, null);
+          db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(_autoId);
+        } catch (e) {
+          console.error(`[automation] room ${_roomId} trigger error:`, e.message);
         }
-        await handleHumanMessage(_roomId, _prompt, null, null, null);
-        db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(_autoId);
-      }, { automation: _autoName }).catch(e =>
-        console.error(`[automation] room ${_roomId} trigger error:`, e.message)
-      );
-      console.log(`[automation] "${_autoName}" queued → room ${_roomId} (pending: ${automationQueue.pending(_roomId)})`);
+      })();
     }
   } catch (e) {
     console.error('[automation] slack_event handler error:', e.message);
@@ -6806,21 +6793,15 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, senderName, t
       const _prompt = prompt;
       const _autoName = auto.name;
       const _autoId = auto.id;
-      const _replyMode = auto.reply_mode || 'none';
-      const _connId = connId;
-      const _chatId = chatId;
-      automationQueue.enqueue(_roomId, async () => {
-        await handleHumanMessage(_roomId, _prompt, null, null, null);
-        db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(_autoId);
-        if (_replyMode === 'reply_wa') {
-          // Context injection active → agent has [wa:reply] markers instruction.
-          // Marker replies already sent in agent_complete handler (extractAndSendWaReplies).
-          // No fallback needed — agent decides whether to reply via markers.
+      console.log(`[automation] "${_autoName}" triggered → room ${_roomId} (wa:${connId}, sender: ${sender})`);
+      (async () => {
+        try {
+          await handleHumanMessage(_roomId, _prompt, null, null, null);
+          db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(_autoId);
+        } catch (e) {
+          console.error(`[automation] room ${_roomId} trigger error:`, e.message);
         }
-      }, { automation: _autoName }).catch(e =>
-        console.error(`[automation] room ${_roomId} trigger error:`, e.message)
-      );
-      console.log(`[automation] "${_autoName}" queued → room ${_roomId} (wa:${connId}, sender: ${sender})`);
+      })();
     }
   } catch (e) {
     console.error('[automation] wa_event handler error:', e.message);
