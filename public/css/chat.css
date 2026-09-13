@@ -1629,31 +1629,35 @@ html.dark .h-system-event.error {
 }
 
 /* ── Markdown in bubbles ─────────────────────────────── */
-.h-bubble { white-space: normal; }
+.h-bubble, .t-content { white-space: normal; }
 
-.h-bubble p { margin: 0 0 0.7em; }
-.h-bubble p:last-child { margin-bottom: 0; }
+.h-bubble p, .t-content p { margin: 0 0 0.7em; }
+.h-bubble p:last-child, .t-content p:last-child { margin-bottom: 0; }
 
 .h-bubble h1, .h-bubble h2, .h-bubble h3,
-.h-bubble h4, .h-bubble h5, .h-bubble h6 {
+.h-bubble h4, .h-bubble h5, .h-bubble h6,
+.t-content h1, .t-content h2, .t-content h3,
+.t-content h4, .t-content h5, .t-content h6 {
   font-family: var(--h-serif);
   font-weight: 500;
   line-height: 1.25;
   margin: 0.6em 0 0.3em;
 }
-.h-bubble h1 { font-size: 1.3em; }
-.h-bubble h2 { font-size: 1.15em; }
-.h-bubble h3 { font-size: 1.05em; }
-.h-bubble h1:first-child, .h-bubble h2:first-child, .h-bubble h3:first-child { margin-top: 0; }
+.h-bubble h1, .t-content h1 { font-size: 1.3em; }
+.h-bubble h2, .t-content h2 { font-size: 1.15em; }
+.h-bubble h3, .t-content h3 { font-size: 1.05em; }
+.h-bubble h1:first-child, .h-bubble h2:first-child, .h-bubble h3:first-child,
+.t-content h1:first-child, .t-content h2:first-child, .t-content h3:first-child { margin-top: 0; }
 
-.h-bubble ul, .h-bubble ol {
+.h-bubble ul, .h-bubble ol,
+.t-content ul, .t-content ol {
   margin: 0.35em 0 0.7em 1.5em;
   padding: 0;
 }
-.h-bubble li { margin: 0.2em 0; }
-.h-bubble li:last-child { margin-bottom: 0; }
+.h-bubble li, .t-content li { margin: 0.2em 0; }
+.h-bubble li:last-child, .t-content li:last-child { margin-bottom: 0; }
 
-.h-bubble blockquote {
+.h-bubble blockquote, .t-content blockquote {
   margin: 0.5em 0;
   padding: 2px 0 2px 12px;
   border-left: 2px solid var(--h-hair-soft);
@@ -1661,10 +1665,10 @@ html.dark .h-system-event.error {
   font-style: italic;
 }
 
-.h-bubble a { color: inherit; text-decoration: underline; opacity: 0.75; }
-.h-bubble a:hover { opacity: 1; }
+.h-bubble a, .t-content a { color: inherit; text-decoration: underline; opacity: 0.75; }
+.h-bubble a:hover, .t-content a:hover { opacity: 1; }
 
-.h-bubble hr { border: none; border-top: 1px solid var(--h-hair-soft); margin: 0.7em 0; }
+.h-bubble hr, .t-content hr { border: none; border-top: 1px solid var(--h-hair-soft); margin: 0.7em 0; }
 
 /* File path links */
 .h-file-link {
@@ -1696,7 +1700,8 @@ html.dark code.h-file-link:hover {
 .h-file-link-block:hover { outline: 1.5px dashed var(--h-accent); outline-offset: -1.5px; }
 
 /* Inline code */
-.h-bubble :not(pre) > code {
+.h-bubble :not(pre) > code,
+.t-content :not(pre) > code {
   font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
   font-size: 0.82em;
   font-style: normal;
@@ -1706,7 +1711,8 @@ html.dark code.h-file-link:hover {
   color: oklch(0.180 0.014 45);
   word-break: break-all;
 }
-html.dark .h-bubble :not(pre) > code {
+html.dark .h-bubble :not(pre) > code,
+html.dark .t-content :not(pre) > code {
   background: oklch(0.550 0.020 55);
   color: oklch(0.150 0.010 45);
 }
@@ -1731,7 +1737,8 @@ html.dark .h-bubble :not(pre) > code {
 .hljs-punctuation { color: #9a8f7e; }
 
 /* Code block */
-.h-bubble pre {
+.h-bubble pre,
+.t-content pre {
   position: relative;
   margin: 10px 0;
   border-radius: 10px;
@@ -1739,10 +1746,11 @@ html.dark .h-bubble :not(pre) > code {
   overflow-x: auto;
   max-width: 100%;
 }
-.h-bubble pre:first-child { margin-top: 0; }
-.h-bubble pre:last-child  { margin-bottom: 0; }
+.h-bubble pre:first-child, .t-content pre:first-child { margin-top: 0; }
+.h-bubble pre:last-child, .t-content pre:last-child  { margin-bottom: 0; }
 
-.h-bubble pre code {
+.h-bubble pre code,
+.t-content pre code {
   display: block;
   font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
   font-size: calc(var(--stoa-msg-scale, 1) * 13px);
@@ -1772,7 +1780,8 @@ html.dark .h-bubble :not(pre) > code {
   pointer-events: none;
   line-height: 1;
 }
-.h-bubble pre:has(.h-code-lang) code {
+.h-bubble pre:has(.h-code-lang) code,
+.t-content pre:has(.h-code-lang) code {
   padding-top: 28px;
 }
 
@@ -1804,14 +1813,27 @@ pre:hover .h-copy-btn { opacity: 1; pointer-events: auto; }
 .h-copy-btn.copied { color: #7fb98c; }
 
 /* table */
-.h-bubble table { border-collapse: collapse; margin: 0.5em 0; font-size: 0.82em; width: auto; max-width: 100%; overflow-x: auto; display: block; }
-.h-bubble th, .h-bubble td {
+.h-bubble table,
+.t-content table { border-collapse: collapse; margin: 0.5em 0; font-size: 0.82em; width: auto; max-width: 100%; overflow-x: auto; display: block; }
+.h-bubble th, .h-bubble td,
+.t-content th, .t-content td {
   border: 1px solid var(--h-hair-soft);
   padding: 3px 7px;
   text-align: left;
   white-space: nowrap;
 }
-.h-bubble th { background: color-mix(in srgb, var(--h-hairline) 30%, transparent); font-weight: 600; }
+.h-bubble th, .t-content th { background: color-mix(in srgb, var(--h-hairline) 30%, transparent); font-weight: 600; }
+
+/* Images in feed attachments */
+.t-attachments .h-msg-img {
+  max-width: 320px;
+  max-height: 240px;
+  border-radius: 8px;
+  margin-top: 6px;
+}
+.t-attachments .h-msg-gallery {
+  margin-top: 6px;
+}
 
 /* model dropdown */
 .h-model-dropdown { position: relative; }
@@ -2443,10 +2465,6 @@ html.dark .h-room-thread-badge {
 .t-content p { margin: 0 0 4px 0; }
 .t-content p:last-child { margin-bottom: 0; }
 
-.t-content pre,
-.t-content code {
-  font-size: 13px;
-}
 
 /* Pulse animation for active thread dot */
 .t-pulse {

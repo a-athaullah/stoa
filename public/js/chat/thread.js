@@ -35,6 +35,11 @@ async function openThread(rootId) {
 
   activeThreadId = rootId;
 
+  threadProcessingMessages.clear();
+  document.querySelector('.h-thread-composer-box')?.classList.remove('ai-processing');
+  const stopAction = document.getElementById('thread-stop-action');
+  if (stopAction) stopAction.classList.remove('visible');
+
   // Update URL param
   const url = new URL(location.href);
   url.searchParams.set('thread', rootId);

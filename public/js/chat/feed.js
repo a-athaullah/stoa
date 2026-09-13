@@ -55,6 +55,13 @@ function appendFeedRootRow(m, inner) {
     col.appendChild(content);
   }
 
+  if (typeof renderAttachments === 'function') {
+    const attachWrap = document.createElement('div');
+    attachWrap.className = 't-attachments';
+    renderAttachments(attachWrap, m);
+    if (attachWrap.children.length > 0) col.appendChild(attachWrap);
+  }
+
   const actions = document.createElement('div');
   actions.className = 'h-msg-actions';
   actions.innerHTML =
