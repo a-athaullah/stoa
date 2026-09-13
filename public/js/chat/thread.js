@@ -552,13 +552,15 @@ function _createThreadPanel() {
     if (e.key === 'Enter' && !e.shiftKey) {
       const sel = window.getSelection();
       const li = sel?.anchorNode?.closest?.('li') || sel?.anchorNode?.parentElement?.closest?.('li');
-      if (li && li.textContent.trim() === '') {
-        e.preventDefault();
-        const list = li.closest('ul, ol');
-        li.remove();
-        if (list && list.children.length === 0) list.remove();
-        document.execCommand('insertParagraph', false, null);
-        document.execCommand('outdent', false, null);
+      if (li) {
+        if (li.textContent === '' || li.textContent === '​') {
+          e.preventDefault();
+          const list = li.closest('ul, ol');
+          li.remove();
+          if (list && list.children.length === 0) list.remove();
+          document.execCommand('insertParagraph', false, null);
+          document.execCommand('outdent', false, null);
+        }
         return;
       }
     }
