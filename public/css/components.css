@@ -985,3 +985,4 @@ html.dark .h-toast.h-toast-error { background: oklch(0.42 0.12 25); }
   display: flex; flex-direction: column; gap: 20px;
   min-height: 0; height: 0;
 }
+.s-agent-detail-body > * { flex-shrink: 0; }
