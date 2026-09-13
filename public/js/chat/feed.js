@@ -55,11 +55,24 @@ function appendFeedRootRow(m, inner) {
     col.appendChild(content);
   }
 
+  const actions = document.createElement('div');
+  actions.className = 'h-msg-actions';
+  actions.innerHTML =
+    `<button class="h-msg-action-btn" data-action="copy" title="Copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>` +
+    `<button class="h-msg-action-btn" data-action="delete" title="Delete"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>`;
+  actions.querySelector('[data-action="copy"]').onclick = async function(e) {
+    e.stopPropagation();
+    if (await copyToClipboard(m.content || '')) showCopyFeedback(this);
+  };
+  actions.querySelector('[data-action="delete"]').onclick = (e) => { e.stopPropagation(); deleteMessage(m.id); };
+  col.style.position = 'relative';
+  col.appendChild(actions);
+
   row.appendChild(col);
   inner.appendChild(row);
 
   row.addEventListener('click', e => {
-    if (e.target.closest('a, button, .h-thread-chip')) return;
+    if (e.target.closest('a, button, .h-thread-chip, .h-msg-action-btn')) return;
     openThread(m.id);
   });
 

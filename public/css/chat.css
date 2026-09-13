@@ -240,6 +240,7 @@ html.dark .h-faded-mark { opacity: 0.12; }
 /* Messages */
 #messages {
   flex: 1;
+  overflow-x: hidden;
   overflow-y: auto;
   padding: 32px 0 16px;
 }
@@ -861,7 +862,7 @@ html.dark .h-faded-mark { opacity: 0.12; }
   margin-bottom: 2px;
 }
 
-/* Message actions (copy + reply) — Gemini-style, beside bubble */
+/* Message actions (copy / reply / delete) */
 .h-msg-actions {
   display: none;
   position: absolute;
@@ -877,6 +878,10 @@ html.dark .h-faded-mark { opacity: 0.12; }
 .h-msg-row:hover .h-msg-actions, .h-msg-row.show-actions .h-msg-actions { display: flex; }
 .h-msg-row.ai .h-msg-actions { right: 8px; }
 .h-msg-row.human .h-msg-actions { left: 8px; }
+.t-root-row .h-msg-actions { display: flex; right: 8px; }
+.h-thread-msg-row:hover .h-msg-actions, .h-thread-root-row:hover .h-msg-actions { display: flex; }
+.h-thread-msg-row.show-actions .h-msg-actions, .h-thread-root-row.show-actions .h-msg-actions { display: flex; }
+.h-thread-msg-row .h-msg-actions, .h-thread-root-row .h-msg-actions { right: 8px; }
 .h-msg-action-btn {
   border: none;
   background: none;
@@ -2366,7 +2371,7 @@ html.dark .h-room-thread-badge {
 /* Separator line between root rows */
 .t-root-row + .t-root-row {
   border-top: 1px solid var(--h-hair-soft);
-  margin-top: 2px;
+  margin-top: -28px;
 }
 
 .t-avatar {
@@ -2408,6 +2413,7 @@ html.dark .h-room-thread-badge {
   line-height: 1.55;
   color: var(--h-ink);
   word-break: break-word;
+  overflow-x: hidden;
 }
 
 .t-content p { margin: 0 0 4px 0; }

@@ -63,7 +63,7 @@ async function copyToClipboard(text) {
 }
 
 function showCopyFeedback(btn) {
-  const row = btn.closest('.h-msg-row');
+  const row = btn.closest('.h-msg-row, .t-root-row, .h-thread-msg-row, .h-thread-root-row');
   if (row) row.classList.add('show-actions');
   const orig = btn.innerHTML;
   btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5cb85c" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
@@ -75,8 +75,51 @@ function showCopyFeedback(btn) {
   }, 1500);
 }
 
-async function deleteMessage(msgId) {
-  try { const res = await fetch(`/api/messages/${msgId}`, { method: 'DELETE' }); if (!res.ok) throw new Error(); } catch { showToast('Failed to delete message', { error: true }); }
+function deleteMessage(msgId) {
+  showDeleteConfirm(msgId, false);
+}
+
+function showDeleteConfirm(msgId, cascade) {
+  const el = document.getElementById('app-top-notice');
+  if (!el) return;
+  el.className = 'notice-confirm-delete';
+  el.style.display = 'flex';
+  el.innerHTML = '';
+
+  const msg = document.createElement('span');
+  msg.style.flex = '1';
+  msg.textContent = cascade ? 'delete this message and all replies?' : 'delete this message?';
+  el.appendChild(msg);
+
+  const btns = document.createElement('div');
+  btns.style.cssText = 'display:flex;gap:8px';
+
+  const ok = document.createElement('button');
+  ok.className = 'app-notice-btn-danger';
+  ok.textContent = cascade ? 'delete all' : 'delete';
+  ok.onclick = async () => {
+    hideAppNotice();
+    const url = cascade ? `/api/messages/${msgId}?cascade=1` : `/api/messages/${msgId}`;
+    try {
+      const res = await fetch(url, { method: 'DELETE' });
+      if (res.status === 409) {
+        showDeleteConfirm(msgId, true);
+      } else if (!res.ok) {
+        showToast('Failed to delete message', { error: true });
+      }
+    } catch {
+      showToast('Failed to delete message', { error: true });
+    }
+  };
+
+  const cancel = document.createElement('button');
+  cancel.className = 'app-notice-btn-cancel';
+  cancel.textContent = 'cancel';
+  cancel.onclick = hideAppNotice;
+
+  btns.appendChild(ok);
+  btns.appendChild(cancel);
+  el.appendChild(btns);
 }
 
 function getAttachments(m) {
@@ -327,4 +370,39 @@ function externalLinksNewTab(el) {
       }
     } catch {}
   });
+}
+
+function initMessageActionTouch() {
+  const ROW_SEL = '.h-msg-row, .t-root-row, .h-thread-msg-row, .h-thread-root-row';
+  let pressTimer = null;
+  let pressTarget = null;
+
+  function clearActive() {
+    document.querySelectorAll('.show-actions').forEach(el => el.classList.remove('show-actions'));
+  }
+
+  document.addEventListener('touchstart', e => {
+    const row = e.target.closest(ROW_SEL);
+    if (!row) { clearActive(); return; }
+    if (e.target.closest('.h-msg-actions')) return;
+    pressTarget = row;
+    pressTimer = setTimeout(() => {
+      clearActive();
+      row.classList.add('show-actions');
+      pressTimer = null;
+    }, 500);
+  }, { passive: true });
+
+  document.addEventListener('touchmove', () => {
+    if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+  }, { passive: true });
+
+  document.addEventListener('touchend', e => {
+    if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+    if (e.target.closest('.h-msg-actions')) {
+      setTimeout(clearActive, 100);
+    } else if (!e.target.closest('.show-actions')) {
+      clearActive();
+    }
+  }, { passive: true });
 }
