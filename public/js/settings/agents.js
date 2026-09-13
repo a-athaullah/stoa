@@ -67,20 +67,11 @@ async function sLoad() {
 }
 
 function sRenderList() {
-  const humanList = document.getElementById('s-human-list');
-  const aiList = document.getElementById('s-agents-list');
-  if (humanList) humanList.innerHTML = '';
-  if (aiList) aiList.innerHTML = '';
-  const humans = settingsActors.filter(a => a.type === 'human');
   const agents = [...settingsActors.filter(a => a.type !== 'human')].sort((a, b) => b.id - a.id);
-  for (const a of humans) {
-    if (!sRowStates.has(a.id)) sRowStates.set(a.id, { state: 'default', draft: a.name });
-    humanList?.appendChild(sMakeRow(a));
-  }
   for (const a of agents) {
     if (!sRowStates.has(a.id)) sRowStates.set(a.id, { state: 'default', draft: a.name });
-    aiList?.appendChild(sMakeRow(a));
   }
+  if (document.getElementById('agent-list')) renderAgentSidebar();
 }
 
 function sMakeRow(actor, flash) {
@@ -1022,23 +1013,669 @@ function sCancelDelete(id) {
 }
 
 async function sCommitDelete(id) {
-  const row = document.getElementById('s-row-' + id);
-  if (row) {
-    row.style.transition = 'opacity .2s, max-height .2s ease-out, padding .2s';
-    row.style.overflow = 'hidden';
-    row.style.maxHeight = row.offsetHeight + 'px';
-    row.style.opacity = '0';
-    setTimeout(() => { row.style.maxHeight = '0'; row.style.padding = '0'; }, 10);
-    setTimeout(() => row.remove(), 220);
-  }
   settingsActors = settingsActors.filter(a => a.id !== id);
   sRowStates.delete(id);
+  if (agentsSelectedId === id) {
+    agentsSelectedId = null;
+    localStorage.removeItem('stoa-agents-selected');
+    showAgentEmptyState();
+  }
+  renderAgentSidebar();
   try {
     const r = await fetch(`/api/actors/${id}`, { method: 'DELETE' });
     if (!r.ok) throw new Error('delete failed');
     const idx = allActors.findIndex(a => a.id === id);
     if (idx >= 0) allActors.splice(idx, 1);
     syncNewRoomBtn();
-  } catch { sRefreshRow(id); showToast('Failed to delete agent', { error: true }); }
+  } catch {
+    showToast('Failed to delete agent', { error: true });
+    settingsActors = allActors.filter(a => a.type !== 'human' || a.id === humanActor?.id);
+    renderAgentSidebar();
+  }
 }
 
+
+// ── 2-panel agents page ──────────────────────────────────────────────────────
+let agentsSelectedId = (() => {
+  const v = localStorage.getItem('stoa-agents-selected');
+  return v ? parseInt(v) : null;
+})();
+
+function renderAgentSidebar() {
+  const list = document.getElementById('agent-list');
+  const countLabel = document.getElementById('agents-count-label');
+  if (!list) return;
+
+  const agents = [...settingsActors.filter(a => a.type !== 'human')].sort((a, b) => {
+    if (a.online !== b.online) return a.online ? -1 : 1;
+    return b.id - a.id;
+  });
+  const query = (document.getElementById('agent-search-input')?.value || '').toLowerCase().trim();
+  const filtered = query ? agents.filter(a => a.name.toLowerCase().includes(query)) : agents;
+
+  if (countLabel) countLabel.textContent = `${agents.length} agent${agents.length !== 1 ? 's' : ''}`;
+
+  list.innerHTML = '';
+
+  const online = filtered.filter(a => a.online);
+  const offline = filtered.filter(a => !a.online);
+
+  function addGroup(label, items) {
+    if (!items.length) return;
+    const ghdr = document.createElement('div');
+    ghdr.className = 'h-room-group-header';
+    const gl = document.createElement('span'); gl.className = 'h-room-group-label'; gl.textContent = label;
+    ghdr.appendChild(gl);
+    list.appendChild(ghdr);
+    for (const a of items) list.appendChild(makeAgentSidebarRow(a));
+  }
+
+  addGroup('online', online);
+  addGroup('offline', offline);
+
+  if (!filtered.length) {
+    const em = document.createElement('div');
+    em.style.cssText = 'padding:40px 20px;text-align:center;font-family:var(--h-serif);font-style:italic;font-size:14px;color:var(--h-ink-faint)';
+    em.textContent = agents.length ? 'no agents match your search' : 'no agents connected';
+    list.appendChild(em);
+  }
+
+  // Wire search
+  const searchInp = document.getElementById('agent-search-input');
+  if (searchInp && !searchInp._agentSearchWired) {
+    searchInp._agentSearchWired = true;
+    searchInp.addEventListener('input', () => renderAgentSidebar());
+    const clearBtn = document.getElementById('agent-search-clear');
+    if (clearBtn) clearBtn.addEventListener('click', () => { searchInp.value = ''; renderAgentSidebar(); searchInp.focus(); });
+  }
+
+  if (sAddPanel?.open) return;
+  if (agentsSelectedId && settingsActors.find(a => a.id === agentsSelectedId)) {
+    renderAgentDetail(agentsSelectedId);
+  } else {
+    agentsSelectedId = null;
+    showAgentEmptyState();
+  }
+}
+
+function makeAgentSidebarRow(actor) {
+  const color = actor.avatar_color || '#888';
+  const row = document.createElement('div');
+  row.className = 'h-room-row h-agent-row' + (actor.id === agentsSelectedId ? ' active' : '');
+  row.dataset.actorId = actor.id;
+  row.setAttribute('tabindex', '0');
+  row.setAttribute('role', 'button');
+
+  const avWrap = document.createElement('div');
+  avWrap.style.flexShrink = '0';
+  if (sIsAutoName(actor.name)) {
+    const badge = document.createElement('span');
+    badge.style.cssText = `width:28px;height:28px;border-radius:50%;border:1.5px dashed ${color};background:color-mix(in srgb,${color} 10%,var(--h-surface));color:${color};font-size:14px;display:inline-flex;align-items:center;justify-content:center;font-family:var(--h-serif);flex-shrink:0`;
+    badge.textContent = actor.avatar_symbol || '◇';
+    avWrap.appendChild(badge);
+  } else {
+    avWrap.appendChild(makeAvatar(actor.name, color, actor.avatar_url, 28));
+  }
+
+  const mid = document.createElement('div');
+  mid.style.cssText = 'flex:1;min-width:0;display:flex;flex-direction:column;gap:2px';
+
+  const nameRow = document.createElement('div');
+  nameRow.style.cssText = 'display:flex;align-items:center;gap:6px';
+  const dot = document.createElement('span');
+  dot.id = `s-sidebar-dot-${actor.id}`;
+  dot.className = actor.online ? 's-dot-on' : 's-dot-off';
+  dot.style.flexShrink = '0';
+  const nameSpan = document.createElement('span');
+  nameSpan.className = 'h-room-title-text';
+  nameSpan.textContent = actor.name;
+  nameRow.append(dot, nameSpan);
+
+  const sub = document.createElement('div');
+  sub.className = 'h-room-preview';
+  sub.textContent = actor.adapter || 'agent';
+  fjson(`/api/actors/${actor.id}/sub-agents`).then(subs => {
+    const cnt = subs.length;
+    sub.textContent = `${actor.adapter || 'agent'}${cnt > 0 ? ` · ${cnt} sub-agent${cnt > 1 ? 's' : ''}` : ''}`;
+  }).catch(() => {});
+
+  mid.append(nameRow, sub);
+
+  const statusWord = document.createElement('div');
+  statusWord.id = `s-sidebar-word-${actor.id}`;
+  statusWord.className = 'h-room-time';
+  statusWord.textContent = actor.online ? 'online' : '';
+
+  row.append(avWrap, mid, statusWord);
+  row.addEventListener('click', () => selectAgent(actor.id));
+  row.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectAgent(actor.id); } });
+
+  return row;
+}
+
+function selectAgent(id) {
+  agentsSelectedId = id;
+  localStorage.setItem('stoa-agents-selected', String(id));
+  document.querySelectorAll('#agent-list .h-agent-row').forEach(el => {
+    el.classList.toggle('active', parseInt(el.dataset.actorId) === id);
+  });
+  renderAgentDetail(id);
+}
+
+function showAgentEmptyState() {
+  const empty = document.getElementById('s-agent-empty-state');
+  const detail = document.getElementById('s-agent-detail');
+  const addPanel = document.getElementById('s-add-panel');
+  if (empty) empty.style.display = '';
+  if (detail) detail.style.display = 'none';
+  if (addPanel && !sAddPanel?.open) addPanel.classList.remove('open');
+}
+
+function renderAgentDetail(id) {
+  const actor = settingsActors.find(a => a.id === id);
+  if (!actor) { showAgentEmptyState(); return; }
+
+  const empty = document.getElementById('s-agent-empty-state');
+  const detail = document.getElementById('s-agent-detail');
+  const addPanel = document.getElementById('s-add-panel');
+  if (empty) empty.style.display = 'none';
+  if (addPanel && !sAddPanel?.open) addPanel.classList.remove('open');
+  if (detail) detail.style.display = '';
+
+  const headerEl = document.getElementById('s-agent-detail-header');
+  if (headerEl) {
+    headerEl.innerHTML = '';
+    renderAgentDetailHeader(headerEl, actor);
+  }
+
+  const bodyEl = document.getElementById('s-agent-detail-body');
+  if (!bodyEl) return;
+  bodyEl.innerHTML = '';
+  bodyEl.appendChild(buildAgentSettingsCard(actor));
+  bodyEl.appendChild(buildSubAgentsSection(actor));
+  bodyEl.appendChild(buildAgentWorkdirsCard(actor));
+  bodyEl.appendChild(buildAgentMemorySection(actor));
+}
+
+function renderAgentDetailHeader(container, actor) {
+  const color = actor.avatar_color || '#888';
+
+  const avWrap = document.createElement('div');
+  avWrap.style.cssText = 'flex-shrink:0;position:relative;cursor:pointer';
+  avWrap.title = 'Change avatar';
+  if (sIsAutoName(actor.name)) {
+    const badge = document.createElement('span');
+    badge.style.cssText = `width:36px;height:36px;border-radius:50%;border:1.5px dashed ${color};background:color-mix(in srgb,${color} 10%,var(--h-surface));color:${color};font-size:18px;display:inline-flex;align-items:center;justify-content:center;font-family:var(--h-serif);flex-shrink:0`;
+    badge.textContent = actor.avatar_symbol || '◇';
+    avWrap.appendChild(badge);
+  } else {
+    avWrap.appendChild(makeAvatar(actor.name, color, actor.avatar_url, 36));
+  }
+  const camOverlay = document.createElement('div');
+  camOverlay.style.cssText = 'position:absolute;inset:0;border-radius:50%;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity .15s;pointer-events:none';
+  camOverlay.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="white" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="4" width="14" height="10" rx="2"/><circle cx="8" cy="9" r="2.5"/><path d="M5 4l1.5-2h3L11 4"/></svg>`;
+  avWrap.appendChild(camOverlay);
+  avWrap.addEventListener('mouseenter', () => camOverlay.style.opacity = '1');
+  avWrap.addEventListener('mouseleave', () => camOverlay.style.opacity = '0');
+  const avInput = document.createElement('input');
+  avInput.type = 'file'; avInput.accept = 'image/*'; avInput.style.display = 'none';
+  avInput.addEventListener('change', () => { if (avInput.files[0]) sResizeAndUploadActorAvatar(actor.id, avInput.files[0], avWrap); });
+  avWrap.appendChild(avInput);
+  avWrap.addEventListener('click', () => avInput.click());
+
+  const nameStat = document.createElement('div');
+  nameStat.style.cssText = 'flex:1;min-width:0;display:flex;flex-direction:column;gap:4px';
+
+  const nameSpan = document.createElement('span');
+  nameSpan.id = `s-detail-name-${actor.id}`;
+  nameSpan.style.cssText = 'font-family:var(--h-serif);font-size:18px;color:var(--h-ink);cursor:pointer;display:inline-block';
+  nameSpan.textContent = actor.name;
+  nameSpan.title = 'Click to rename';
+  nameSpan.addEventListener('click', () => {
+    const inp = document.createElement('input');
+    inp.className = 's-rename-input';
+    inp.style.fontSize = '18px';
+    inp.value = actor.name;
+    nameSpan.replaceWith(inp);
+    inp.focus(); inp.select();
+    const commit = async () => {
+      const newName = inp.value.trim() || actor.name;
+      inp.replaceWith(nameSpan);
+      nameSpan.textContent = newName;
+      if (newName === actor.name) return;
+      const prevName = actor.name;
+      actor.name = newName;
+      try {
+        const r = await fetch(`/api/actors/${actor.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: newName }) });
+        if (!r.ok) throw new Error();
+        const ga = allActors.find(a => a.id === actor.id);
+        if (ga) { if (actorByName[ga.name]) delete actorByName[ga.name]; ga.name = newName; actorByName[newName] = ga; }
+        const sidebarName = document.querySelector(`#agent-list .h-agent-row[data-actor-id="${actor.id}"] .h-room-title-text`);
+        if (sidebarName) sidebarName.textContent = newName;
+      } catch {
+        actor.name = prevName; nameSpan.textContent = prevName;
+        showToast('Failed to rename', { error: true });
+      }
+    };
+    inp.addEventListener('blur', () => setTimeout(commit, 150));
+    inp.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); commit(); }
+      if (e.key === 'Escape') { inp.replaceWith(nameSpan); }
+    });
+  });
+
+  const statWrap = document.createElement('div');
+  statWrap.style.cssText = 'display:flex;align-items:center;gap:8px';
+  const dot = document.createElement('span');
+  dot.id = `s-dot-${actor.id}`;
+  dot.className = actor.online ? 's-dot-on' : 's-dot-off';
+  const word = document.createElement('span');
+  word.id = `s-word-${actor.id}`;
+  word.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)';
+  word.textContent = actor.online ? 'online' : 'offline';
+  statWrap.append(dot, word);
+
+  const subInfo = document.createElement('div');
+  subInfo.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-faint)';
+  const parts = [`actor #${actor.id}`, actor.adapter || 'agent'];
+  if (actor.client_version) parts.push(`v${actor.client_version}`);
+  parts.push('joined ' + sFormatJoined(actor.created_at));
+  subInfo.textContent = parts.join(' · ');
+  fjson(`/api/actors/${actor.id}/workdirs`).then(wds => {
+    if (wds.length) subInfo.textContent += ` · ${wds.length} workdir${wds.length > 1 ? 's' : ''}`;
+  }).catch(() => {});
+
+  nameStat.append(nameSpan, statWrap, subInfo);
+
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex;align-items:center;gap:4px;flex-shrink:0';
+
+  const refreshBtn = document.createElement('button');
+  refreshBtn.className = 's-icon-btn'; refreshBtn.title = actor.online ? 'Rescan workdirs & skills' : 'Offline';
+  refreshBtn.disabled = !actor.online; refreshBtn.innerHTML = svgRefresh(16);
+  refreshBtn.addEventListener('click', async () => {
+    refreshBtn.disabled = true; refreshBtn.style.opacity = '0.4';
+    try {
+      const rr = await fetch(`/api/actors/${actor.id}/rescan`, { method: 'POST' });
+      if (!rr.ok) throw new Error();
+    } catch { showToast('Failed to rescan', { error: true }); }
+    setTimeout(() => { refreshBtn.disabled = !actor.online; refreshBtn.style.opacity = ''; }, 1200);
+  });
+
+  const updBtn = document.createElement('button');
+  updBtn.className = 's-icon-btn'; updBtn.title = actor.online ? 'Force update agent code' : 'Offline';
+  updBtn.disabled = !actor.online; updBtn.innerHTML = svgUpdate(16);
+  updBtn.addEventListener('click', async () => {
+    updBtn.disabled = true; updBtn.style.opacity = '0.4';
+    try { await fetch(`/api/actors/${actor.id}/force-update`, { method: 'POST' }); } catch {}
+    setTimeout(() => { updBtn.disabled = !actor.online; updBtn.style.opacity = ''; }, 3000);
+  });
+
+  const delBtn = document.createElement('button');
+  delBtn.className = 's-icon-btn'; delBtn.title = 'Remove agent'; delBtn.innerHTML = svgX(16);
+  delBtn.style.color = '#b35a4b';
+  delBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    sRowStates.set(actor.id, { state: 'confirm-delete', draft: '' });
+    const pill = sMakeConfirmPill(actor);
+    delBtn.replaceWith(pill);
+  });
+
+  actions.append(refreshBtn, updBtn, delBtn);
+  container.append(avWrap, nameStat, actions);
+}
+
+function buildAgentSettingsCard(actor) {
+  const cfg = (() => { try { return JSON.parse(actor.adapter_config || '{}'); } catch { return {}; } })();
+  let editOs = sDetectOS();
+  let updateCmd = () => {};
+
+  const card = document.createElement('div');
+  card.className = 's-agents-card';
+
+  const hdr = document.createElement('div');
+  hdr.className = 's-agents-header';
+  const hdrL = document.createElement('div'); hdrL.className = 's-agents-header-left';
+  const hdrTitle = document.createElement('span');
+  hdrTitle.style.cssText = 'font-family:var(--h-serif);font-size:16px;color:var(--h-ink);letter-spacing:.01em';
+  hdrTitle.textContent = 'agent';
+  hdrL.appendChild(hdrTitle);
+  hdr.appendChild(hdrL);
+  card.appendChild(hdr);
+
+  const body = document.createElement('div');
+  body.style.cssText = 'padding:18px 20px;display:flex;flex-direction:column;gap:18px';
+
+  const hostRow = document.createElement('div');
+  hostRow.className = 's-host-row';
+  const hostLbl = document.createElement('span'); hostLbl.className = 's-host-label'; hostLbl.textContent = 'server';
+  const hostVal = document.createElement('span'); hostVal.className = 's-host-value'; hostVal.textContent = sPublicUrl || location.origin;
+  hostRow.append(hostLbl, hostVal);
+  body.appendChild(hostRow);
+
+  const mkFieldLbl = t => { const l = document.createElement('span'); l.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);letter-spacing:.04em'; l.textContent = t; return l; };
+  const fieldRow = document.createElement('div'); fieldRow.className = 's-field-group-row';
+
+  const beGrp = document.createElement('div'); beGrp.className = 's-field-group'; beGrp.style.minWidth = 'auto';
+  const beSel = document.createElement('select');
+  beSel.className = 's-name-input'; beSel.style.cssText = 'width:auto;min-width:130px;opacity:0.6;cursor:not-allowed'; beSel.disabled = true;
+  const beOpt = document.createElement('option'); beOpt.value = 'claude'; beOpt.textContent = 'Claude Code CLI'; beOpt.selected = true;
+  beSel.appendChild(beOpt);
+  beGrp.append(mkFieldLbl('AI agent'), beSel);
+
+  const langGrp = document.createElement('div'); langGrp.className = 's-field-group'; langGrp.style.minWidth = 'auto';
+  const langSel = document.createElement('select');
+  langSel.className = 's-name-input'; langSel.style.cssText = 'width:auto;min-width:130px;cursor:pointer';
+  Object.entries(STOA_LANGS).forEach(([code, lbl]) => {
+    const o = document.createElement('option'); o.value = code; o.textContent = lbl;
+    if (code === (cfg.lang || 'en')) o.selected = true;
+    langSel.appendChild(o);
+  });
+  langSel.addEventListener('change', () => updateCmd());
+  langGrp.append(mkFieldLbl('language'), langSel);
+
+  const nameGrp = document.createElement('div'); nameGrp.className = 's-field-group';
+  const nameInp = document.createElement('input');
+  nameInp.className = 's-name-input'; nameInp.type = 'text'; nameInp.value = actor.name;
+  nameInp.addEventListener('input', () => updateCmd());
+  const nameHint = document.createElement('span'); nameHint.className = 's-field-hint'; nameHint.textContent = 'name shown in all rooms';
+  nameGrp.append(mkFieldLbl('name'), nameInp, nameHint);
+
+  fieldRow.append(beGrp, langGrp, nameGrp);
+  body.appendChild(fieldRow);
+
+  const platGrp = document.createElement('div'); platGrp.className = 's-field-group'; platGrp.style.minWidth = 'auto';
+  const osPills = document.createElement('div'); osPills.className = 's-os-pills'; osPills.id = `s-detail-pills-${actor.id}`;
+  [['unix','Linux / macOS'],['ps','Windows · PS'],['cmd','Windows · CMD']].forEach(([id,lbl]) => {
+    const p = document.createElement('button');
+    p.type = 'button'; p.className = 's-os-pill' + (editOs === id ? ' active' : '');
+    p.textContent = lbl; p.dataset.os = id;
+    p.addEventListener('click', () => {
+      editOs = id;
+      document.querySelectorAll(`#s-detail-pills-${actor.id} .s-os-pill`).forEach(x => x.classList.toggle('active', x.dataset.os === id));
+      updateCmd();
+    });
+    osPills.appendChild(p);
+  });
+  platGrp.append(mkFieldLbl('platform'), osPills);
+  body.appendChild(platGrp);
+
+  const slipWrap = document.createElement('div');
+  const slipCaption = document.createElement('div');
+  slipCaption.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-faint);margin-bottom:8px;letter-spacing:.02em';
+  slipCaption.textContent = 'reinstall on the target machine';
+  const slip = document.createElement('div'); slip.className = 's-cmd-slip';
+  const dollar = document.createElement('span'); dollar.className = 's-cmd-dollar'; dollar.textContent = '$';
+  const cmdText = document.createElement('span'); cmdText.id = `s-detail-cmd-${actor.id}`;
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 's-cmd-copy'; copyBtn.title = 'Copy'; copyBtn.innerHTML = svgCopy();
+  copyBtn.addEventListener('click', async () => {
+    const text = document.getElementById(`s-detail-cmd-${actor.id}`)?.textContent || '';
+    if (await copyToClipboard(text)) {
+      copyBtn.classList.add('copied'); copyBtn.innerHTML = svgCheck(14);
+      setTimeout(() => { copyBtn.classList.remove('copied'); copyBtn.innerHTML = svgCopy(); }, 1000);
+    }
+  });
+  slip.append(dollar, cmdText, copyBtn);
+  slipWrap.append(slipCaption, slip);
+  body.appendChild(slipWrap);
+
+  updateCmd = () => {
+    const el = document.getElementById(`s-detail-cmd-${actor.id}`);
+    if (el) el.textContent = sEditGetCmd(actor.adapter || 'claude', nameInp.value || actor.name, langSel.value, editOs);
+  };
+  updateCmd();
+
+  const actionsRow = document.createElement('div');
+  actionsRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;padding-top:4px';
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'h-btn-primary'; saveBtn.style.cssText = 'padding:7px 18px;font-size:13px';
+  saveBtn.textContent = 'save';
+  saveBtn.addEventListener('click', async () => {
+    const newName = nameInp.value.trim();
+    if (!newName) { showToast('Name cannot be empty', { error: true }); return; }
+    try {
+      const r = await fetch(`/api/actors/${actor.id}/config`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName, lang: langSel.value }),
+      });
+      if (!r.ok) throw new Error();
+      const updated = await r.json();
+      const idx = settingsActors.findIndex(a => a.id === actor.id);
+      if (idx >= 0) settingsActors[idx] = { ...settingsActors[idx], ...updated };
+      const allIdx = allActors.findIndex(a => a.id === actor.id);
+      if (allIdx >= 0) allActors[allIdx] = { ...allActors[allIdx], ...updated };
+      showToast('Saved');
+      const sidebarName = document.querySelector(`#agent-list .h-agent-row[data-actor-id="${actor.id}"] .h-room-title-text`);
+      if (sidebarName) sidebarName.textContent = newName;
+      const detailName = document.getElementById(`s-detail-name-${actor.id}`);
+      if (detailName) detailName.textContent = newName;
+    } catch { showToast('Failed to save agent settings', { error: true }); }
+  });
+  actionsRow.appendChild(saveBtn);
+  body.appendChild(actionsRow);
+  card.appendChild(body);
+  return card;
+}
+
+function buildSubAgentsSection(actor) {
+  saInjectTokens();
+  const saParentColor = actor.avatar_color || '#4f8f9c';
+  const saShade = saSubShade(saParentColor);
+
+  const saSection = document.createElement('section');
+  saSection.style.cssText = 'border:1px solid var(--h-hairline);border-radius:12px;background:var(--h-surface);overflow:hidden';
+
+  const saHeader = document.createElement('header');
+  saHeader.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 16px;border-bottom:1px solid var(--h-hair-soft);background:color-mix(in srgb, var(--h-bg) 38%, var(--h-surface))';
+  const saHeadL = document.createElement('div'); saHeadL.style.cssText = 'display:flex;align-items:baseline;gap:10px;min-width:0';
+  const saTitle = document.createElement('span'); saTitle.style.cssText = 'font-family:var(--h-serif);font-size:16px;color:var(--h-ink)'; saTitle.textContent = 'sub-agents';
+  const saHint = document.createElement('span'); saHint.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)'; saHint.textContent = `specialized workers ${actor.name} can spawn`;
+  saHeadL.append(saTitle, saHint);
+  const saAddBtn = document.createElement('button');
+  saAddBtn.className = 's-sa-add-pill';
+  saAddBtn.style.cssText = 'display:inline-flex;align-items:center;gap:5px;white-space:nowrap;flex:0 0 auto;font-family:var(--h-sans);font-size:12.5px;line-height:1;padding:6px 13px;border-radius:999px;border:1px solid var(--h-hairline);background:transparent;color:var(--h-ink-mute);cursor:pointer';
+  saAddBtn.innerHTML = '<span style="font-size:14px;line-height:1">+</span> add sub-agent';
+  saHeader.append(saHeadL, saAddBtn);
+  saSection.appendChild(saHeader);
+
+  const saForm = document.createElement('div'); saForm.id = `s-sa-form-${actor.id}`; saForm.style.display = 'none';
+  saSection.appendChild(saForm);
+  const saList = document.createElement('div'); saList.id = `s-sub-agents-${actor.id}`;
+  saSection.appendChild(saList);
+
+  function saShowForm(show) { saForm.style.display = show ? 'flex' : 'none'; saAddBtn.style.display = show ? 'none' : 'inline-flex'; }
+
+  function saMakeFormFields(existing) {
+    saForm.style.cssText = 'border-top:1px solid var(--h-hair-soft);background:color-mix(in srgb, var(--h-bg) 30%, var(--h-surface));padding:18px 20px 20px;display:flex;flex-direction:column;gap:16px';
+    saForm.innerHTML = '';
+    let selectedTier = existing?.tier || 'quick';
+    const fh = document.createElement('div'); fh.style.cssText = 'display:flex;align-items:center;gap:12px';
+    const fhTitle = document.createElement('span'); fhTitle.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:17px;color:var(--h-ink)'; fhTitle.textContent = existing ? `edit ${existing.label}` : 'define a sub-agent';
+    const fhHint = document.createElement('span'); fhHint.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)'; fhHint.textContent = 'defined once — add it to any room afterwards';
+    const fhSpacer = document.createElement('span'); fhSpacer.style.flex = '1';
+    const fhClose = document.createElement('button'); fhClose.className = 's-icon-btn'; fhClose.title = 'Close'; fhClose.innerHTML = svgX(15); fhClose.addEventListener('click', () => saShowForm(false));
+    fh.append(fhTitle, fhHint, fhSpacer, fhClose);
+    const grid = document.createElement('div'); grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:16px';
+    const labelInp = document.createElement('input'); labelInp.placeholder = 'probe'; labelInp.value = existing?.label || ''; labelInp.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;background:color-mix(in srgb, var(--h-bg) 30%, var(--h-surface));border:1px solid var(--h-hair-soft);font-family:ui-monospace,Menlo,monospace;font-size:13px;color:var(--h-ink);outline:none;width:100%';
+    const labelField = saMakeField('label', labelInp, 'unique, used for @mention — cannot match an agent name');
+    const labelErr = document.createElement('span'); labelErr.style.cssText = 'display:none;align-items:center;gap:6px;font-family:var(--h-sans);font-size:12px;color:' + SA_DANGER; labelField.appendChild(labelErr);
+    const modelSel = document.createElement('select'); modelSel.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;background:var(--h-surface);border:1px solid var(--h-hair-soft);font-family:var(--h-sans);font-size:13px;color:var(--h-ink);outline:none;width:100%;cursor:pointer';
+    const useTierOpt = document.createElement('option'); useTierOpt.value = ''; useTierOpt.textContent = 'use tier'; modelSel.appendChild(useTierOpt);
+    for (const m of SA_MODELS) { const o = document.createElement('option'); o.value = m; o.textContent = m; if ((existing?.model || '') === m) o.selected = true; modelSel.appendChild(o); }
+    if (existing?.model && !SA_MODELS.includes(existing.model)) { const o = document.createElement('option'); o.value = existing.model; o.textContent = existing.model; o.selected = true; modelSel.appendChild(o); }
+    const modelField = saMakeField('model override', modelSel, 'leave on "use tier" unless this worker needs a specific model');
+    grid.append(labelField, modelField);
+    const tierField = saMakeField('tier', saMakeTierPicker(selectedTier, id => { selectedTier = id; }));
+    const spInp = document.createElement('textarea'); spInp.placeholder = 'You verify claims against the actual source before answering…'; spInp.value = existing?.system_prompt || ''; spInp.style.cssText = 'padding:11px 13px;border-radius:8px;min-height:96px;box-sizing:border-box;resize:vertical;background:var(--h-slip);border:1px solid var(--h-hairline);font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;color:var(--h-ink);outline:none;width:100%';
+    const spField = saMakeField('system prompt', spInp, 'context injected on every trigger');
+    const btns = document.createElement('div'); btns.style.cssText = 'display:flex;align-items:center;gap:10px;padding-top:2px';
+    const saveF = document.createElement('button'); saveF.style.cssText = 'background:var(--h-ink);color:var(--h-bg);border:none;padding:8px 20px;border-radius:999px;font-family:var(--h-sans);font-size:13px;cursor:pointer'; saveF.textContent = existing ? 'save' : 'create sub-agent';
+    const cancelF = document.createElement('button'); cancelF.style.cssText = 'background:transparent;border:1px solid var(--h-hairline);color:var(--h-ink-mute);font-family:var(--h-sans);font-size:13px;padding:7px 16px;border-radius:999px;cursor:pointer'; cancelF.textContent = 'cancel'; cancelF.addEventListener('click', () => saShowForm(false));
+    btns.append(saveF, cancelF);
+    function clearErr() { labelErr.style.display = 'none'; labelInp.style.border = '1px solid var(--h-hair-soft)'; labelInp.style.boxShadow = 'none'; }
+    function showErr(msg) { labelErr.textContent = msg; labelErr.style.display = 'inline-flex'; labelInp.style.border = '1px solid ' + SA_DANGER; labelInp.style.boxShadow = `0 0 0 3px color-mix(in srgb, ${SA_DANGER} 14%, transparent)`; }
+    labelInp.addEventListener('input', clearErr);
+    saveF.addEventListener('click', async () => {
+      const label = labelInp.value.trim();
+      if (!label) { showErr('label required'); labelInp.focus(); return; }
+      saveF.disabled = true;
+      try {
+        const body = { label, tier: selectedTier, model: modelSel.value || null, system_prompt: spInp.value.trim() || null };
+        const r = existing
+          ? await fetch(`/api/sub-agents/${existing.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+          : await fetch(`/api/actors/${actor.id}/sub-agents`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          const msg = e.error || 'failed to save';
+          if (/already exists/i.test(msg)) showErr(`"${label}" already exists on ${actor.name}`);
+          else if (/actor name|conflicts/i.test(msg)) showErr(`"${label}" is an agent name — pick something else`);
+          else showToast(msg, { error: true });
+          saveF.disabled = false; return;
+        }
+        saShowForm(false); saLoadList();
+      } catch { showToast('Failed to save sub-agent', { error: true }); saveF.disabled = false; }
+    });
+    saForm.append(fh, grid, tierField, spField, btns);
+    setTimeout(() => labelInp.focus(), 0);
+    saShowForm(true);
+  }
+
+  async function saLoadList() {
+    try {
+      const r = await fetch(`/api/actors/${actor.id}/sub-agents`);
+      if (!r.ok) return;
+      const subs = await r.json();
+      saList.innerHTML = '';
+      saHint.textContent = (subs.length ? `${subs.length} defined · ` : '') + `specialized workers ${actor.name} can spawn`;
+      if (!subs.length) {
+        const empty = document.createElement('div'); empty.style.cssText = 'padding:26px 22px;display:flex;flex-direction:column;align-items:center;gap:10px;text-align:center';
+        const et = document.createElement('span'); et.style.cssText = 'font-family:var(--h-serif);font-size:17px;color:var(--h-ink)'; et.textContent = 'no sub-agents yet';
+        const ed = document.createElement('span'); ed.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:14px;color:var(--h-ink-mute);line-height:1.5;max-width:420px'; ed.textContent = `a sub-agent is a smaller worker ${actor.name} can hand a narrow job to — a quick file probe, a careful reviewer. define one here, then add it to any room.`;
+        empty.append(et, ed); saList.appendChild(empty); return;
+      }
+      subs.forEach((sa, i) => {
+        const last = i === subs.length - 1;
+        const dim = !sa.enabled;
+        const row = document.createElement('div');
+        row.className = 's-sa-row';
+        row.style.cssText = 'display:flex;align-items:center;gap:12px;padding:13px 16px;' + (last ? '' : 'border-bottom:1px solid var(--h-hair-soft);') + `opacity:${dim ? .62 : 1}`;
+        row.appendChild(saMakeSeal({ letter: sa.label[0], color: saShade, size: 26, badge: true, ink: 'var(--sa-sub-ink)' }));
+        const mid = document.createElement('div'); mid.style.cssText = 'flex:1;min-width:0;display:flex;flex-direction:column;gap:4px';
+        const line1 = document.createElement('div'); line1.style.cssText = 'display:flex;align-items:center;gap:9px;flex-wrap:wrap';
+        const lbl = document.createElement('span'); lbl.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:14px;color:var(--h-ink)'; lbl.textContent = sa.label;
+        line1.append(lbl, saMakeTierChip(sa.tier, dim));
+        if (sa.model) { const mp = document.createElement('span'); mp.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--h-ink-faint);padding:2px 7px;border-radius:6px;background:color-mix(in srgb, var(--h-ink) 7%, var(--h-surface))'; mp.textContent = sa.model; line1.appendChild(mp); }
+        mid.append(line1); row.appendChild(mid);
+        const tog = document.createElement('button'); tog.className = 's-notif-toggle' + (sa.enabled ? ' on' : ''); tog.title = sa.enabled ? 'Enabled — click to disable' : 'Disabled — click to enable'; tog.style.flex = '0 0 auto';
+        tog.addEventListener('click', async () => { try { const rr = await fetch(`/api/sub-agents/${sa.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !sa.enabled }) }); if (rr.ok) saLoadList(); } catch { showToast('Failed to update', { error: true }); } });
+        row.appendChild(tog);
+        const acts = document.createElement('div'); acts.style.cssText = 'display:flex;gap:2px;margin-left:4px';
+        const editB = document.createElement('button'); editB.className = 's-icon-btn'; editB.innerHTML = svgPencil(13); editB.title = 'Edit sub-agent'; editB.addEventListener('click', () => saMakeFormFields(sa));
+        const delB = document.createElement('button'); delB.className = 's-icon-btn'; delB.innerHTML = svgX(13); delB.title = 'Delete sub-agent'; delB.style.color = SA_DANGER;
+        delB.addEventListener('click', async () => { try { const rr = await fetch(`/api/sub-agents/${sa.id}`, { method: 'DELETE' }); if (rr.ok) saLoadList(); } catch { showToast('Failed to delete', { error: true }); } });
+        acts.append(editB, delB); row.appendChild(acts); saList.appendChild(row);
+      });
+    } catch {}
+  }
+
+  saAddBtn.addEventListener('click', () => saMakeFormFields(null));
+  saLoadList();
+  return saSection;
+}
+
+function buildAgentWorkdirsCard(actor) {
+  const card = document.createElement('section');
+  card.style.cssText = 'border:1px solid var(--h-hairline);border-radius:12px;background:var(--h-surface);overflow:hidden';
+
+  const hdr = document.createElement('header');
+  hdr.style.cssText = 'padding:13px 16px;border-bottom:1px solid var(--h-hair-soft);background:color-mix(in srgb, var(--h-bg) 38%, var(--h-surface));display:flex;align-items:baseline;gap:10px';
+  const title = document.createElement('span'); title.style.cssText = 'font-family:var(--h-serif);font-size:16px;color:var(--h-ink)'; title.textContent = 'workdirs';
+  const hint = document.createElement('span'); hint.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)'; hint.textContent = 'registered working directories';
+  hdr.append(title, hint);
+  card.appendChild(hdr);
+
+  const body = document.createElement('div');
+  body.style.cssText = 'padding:14px 18px;min-height:48px';
+  const loading = document.createElement('span'); loading.style.cssText = 'font-size:12.5px;color:var(--h-ink-faint)'; loading.textContent = 'loading…';
+  body.appendChild(loading);
+
+  fjson(`/api/actors/${actor.id}/workdirs`).then(wds => {
+    body.innerHTML = '';
+    if (!wds.length) {
+      const em = document.createElement('span'); em.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)'; em.textContent = 'no workdirs registered yet';
+      body.appendChild(em); return;
+    }
+    const chips = document.createElement('div'); chips.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px';
+    wds.forEach(wd => {
+      const chip = document.createElement('span');
+      chip.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:12.5px;color:var(--h-ink-mute);padding:4px 10px;border-radius:8px;background:var(--h-slip);border:1px solid var(--h-hairline)';
+      chip.textContent = wd.path || wd;
+      chips.appendChild(chip);
+    });
+    body.appendChild(chips);
+  }).catch(() => { body.innerHTML = ''; const em = document.createElement('span'); em.style.cssText = 'font-size:12.5px;color:var(--h-ink-faint)'; em.textContent = 'failed to load'; body.appendChild(em); });
+
+  card.appendChild(body);
+  return card;
+}
+
+function buildAgentMemorySection(actor) {
+  const memSection = document.createElement('section');
+  memSection.style.cssText = 'border:1px solid var(--h-hair-soft);border-radius:12px;overflow:hidden';
+
+  const memHdr = document.createElement('div'); memHdr.style.cssText = 'padding:14px 18px 10px;border-bottom:1px solid var(--h-hair-soft)';
+  const memTitle = document.createElement('div'); memTitle.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:15px;color:var(--h-ink)'; memTitle.textContent = 'Memory';
+  const memSubtitle = document.createElement('div'); memSubtitle.style.cssText = 'font-size:12px;color:var(--h-ink-faint);margin-top:3px'; memSubtitle.textContent = 'injected into every session this agent starts';
+  memHdr.append(memTitle, memSubtitle);
+  memSection.appendChild(memHdr);
+
+  const MEM_FILES = [
+    { file: 'MEMORY.md', budget: 2200, hint: 'facts about this agent — roles, preferences, recurring instructions' },
+    { file: 'USER.md',   budget: 1375, hint: 'context about the user and how to work with them' },
+  ];
+
+  function makeMemFileCard(file, budget, hint, initial) {
+    const card = document.createElement('div'); card.style.cssText = 'padding:14px 18px;border-bottom:1px solid var(--h-hair-soft)';
+    const fileHdr = document.createElement('div'); fileHdr.style.cssText = 'display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px';
+    const fileLbl = document.createElement('span'); fileLbl.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:13px;color:var(--h-ink)'; fileLbl.textContent = file;
+    const fileHint = document.createElement('span'); fileHint.style.cssText = 'font-size:11.5px;color:var(--h-ink-faint)'; fileHint.textContent = hint;
+    fileHdr.append(fileLbl, fileHint);
+    const ta = document.createElement('textarea'); ta.value = initial; ta.placeholder = `Write ${file} content here…`; ta.maxLength = budget; ta.style.cssText = 'width:100%;box-sizing:border-box;min-height:80px;resize:vertical;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;padding:8px 10px;border:1px solid var(--h-border);border-radius:8px;background:var(--h-surface);color:var(--h-ink);outline:none';
+    const footer = document.createElement('div'); footer.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-top:6px';
+    const counter = document.createElement('span'); counter.style.cssText = 'font-size:11.5px;color:var(--h-ink-faint);font-variant-numeric:tabular-nums';
+    const updateCounter = () => { const used = ta.value.length; const pct = used / budget; counter.textContent = `${used} / ${budget}`; counter.style.color = pct > .9 ? 'oklch(55% .18 27)' : pct > .75 ? 'oklch(60% .15 80)' : 'var(--h-ink-faint)'; };
+    updateCounter(); ta.addEventListener('input', updateCounter);
+    const saveBtn = document.createElement('button'); saveBtn.style.cssText = 'background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12px;padding:4px 14px;cursor:pointer'; saveBtn.textContent = 'save';
+    saveBtn.onclick = async () => {
+      saveBtn.disabled = true;
+      try {
+        const r = await fetch(`/api/actors/${actor.id}/memory/${encodeURIComponent(file)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: ta.value }) });
+        if (r.ok) showToast(`${file} saved`);
+        else { const e = await r.json().catch(() => ({})); showToast(e.error || 'Failed to save', { error: true }); }
+      } catch { showToast('Failed to save', { error: true }); }
+      saveBtn.disabled = false;
+    };
+    footer.append(counter, saveBtn);
+    card.append(fileHdr, ta, footer);
+    return card;
+  }
+
+  const memLoading = document.createElement('div'); memLoading.style.cssText = 'padding:14px 18px;font-size:12.5px;color:var(--h-ink-mute)'; memLoading.textContent = 'loading…';
+  memSection.appendChild(memLoading);
+
+  (async () => {
+    try {
+      const r = await fetch(`/api/actors/${actor.id}/memory`);
+      memSection.removeChild(memLoading);
+      if (!r.ok) { const err = document.createElement('div'); err.style.cssText = 'padding:14px 18px;font-size:12.5px;color:var(--h-ink-mute)'; err.textContent = 'failed to load memory'; memSection.appendChild(err); return; }
+      const data = await r.json();
+      const byFile = {}; (data.files || []).forEach(f => { byFile[f.file] = f.content || ''; });
+      MEM_FILES.forEach(({ file, budget, hint }) => { memSection.appendChild(makeMemFileCard(file, budget, hint, byFile[file] || '')); });
+      const lastCard = memSection.lastElementChild;
+      if (lastCard) lastCard.style.borderBottom = 'none';
+    } catch { memSection.removeChild(memLoading); const err = document.createElement('div'); err.style.cssText = 'padding:14px 18px;font-size:12.5px;color:var(--h-ink-mute)'; err.textContent = 'failed to load memory'; memSection.appendChild(err); }
+  })();
+
+  return memSection;
+}

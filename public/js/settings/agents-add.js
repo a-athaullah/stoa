@@ -5,7 +5,11 @@ function sOpenAddPanel() {
   sAddPanel = { open: true, name: '', os: sDetectOS(), lang: 'en', phase: 'waiting',
     baselineIds: new Set(settingsActors.map(a => String(a.id))), newActor: null, timer: null };
   sFinishedSlips.clear();
-  document.getElementById('s-add-agent-btn').style.display = 'none';
+  // Hide empty state and detail, show add panel
+  const empty = document.getElementById('s-agent-empty-state');
+  const detail = document.getElementById('s-agent-detail');
+  if (empty) empty.style.display = 'none';
+  if (detail) detail.style.display = 'none';
   sRenderAddPanel();
   const panel = document.getElementById('s-add-panel');
   requestAnimationFrame(() => panel.classList.add('open'));
@@ -15,10 +19,18 @@ function sOpenAddPanel() {
 function sCloseAddPanel() {
   sStopPolling();
   sAddPanel.open = false;
-  document.getElementById('s-add-panel').classList.remove('open');
-  document.getElementById('s-add-agent-btn').style.display = '';
+  const panel = document.getElementById('s-add-panel');
+  if (panel) panel.classList.remove('open');
   setTimeout(() => {
-    if (!sAddPanel.open) document.getElementById('s-add-panel').innerHTML = '';
+    if (!sAddPanel.open) {
+      const p = document.getElementById('s-add-panel');
+      if (p) p.innerHTML = '';
+    }
+    if (typeof agentsSelectedId !== 'undefined' && agentsSelectedId && settingsActors.find(a => a.id === agentsSelectedId)) {
+      if (typeof renderAgentDetail === 'function') renderAgentDetail(agentsSelectedId);
+    } else if (typeof showAgentEmptyState === 'function') {
+      showAgentEmptyState();
+    }
   }, 250);
 }
 
@@ -251,8 +263,8 @@ function sStartPolling() {
         allActors.push(newAI); syncNewRoomBtn();
         sStopPolling();
         if (!sRowStates.has(newAI.id)) sRowStates.set(newAI.id, { state: 'default', draft: newAI.name });
-        const list = document.getElementById('s-agents-list');
-        if (list) list.prepend(sMakeRow(newAI, true));
+        settingsActors = allActors.filter(a => a.type !== 'human' || a.id === humanActor?.id);
+        if (typeof renderAgentSidebar === 'function' && document.getElementById('agent-list')) renderAgentSidebar();
         const waiting = document.getElementById('s-waiting-pill');
         const panel = document.getElementById('s-add-panel');
         if (waiting) waiting.replaceWith(sMakeConnectedSlip(newAI));

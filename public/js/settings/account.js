@@ -51,6 +51,12 @@ async function sLoadGeneralTab() {
     const user = await fjson('/api/auth/me');
     document.getElementById('s-auth-email-input').value = user.email || '';
   } catch {}
+  try {
+    const settings = await fjson('/api/settings');
+    document.getElementById('s-human-name-input').value = settings.human_name || '';
+    const human = humanActor || allActors.find(a => a.type === 'human');
+    sUpdateAvatarPreview(human?.avatar_url || null);
+  } catch {}
   // Notification toggle
   const toggle = document.getElementById('s-notif-toggle');
   const hint = document.getElementById('s-notif-hint');
@@ -69,7 +75,6 @@ async function sLoadServerTab() {
   try { data = await fjson('/api/settings'); }
   catch { showToast('Failed to load server settings', { error: true }); return; }
   const port = data.port || 3000;
-  document.getElementById('s-human-name-input').value = data.human_name || '';
   const storedUrl = data.public_url || '';
   try { const u = new URL(storedUrl); document.getElementById('s-public-url-input').value = u.protocol + '//' + u.hostname; }
   catch { document.getElementById('s-public-url-input').value = storedUrl; }
@@ -84,9 +89,6 @@ async function sLoadServerTab() {
   document.getElementById("s-max-pinned-input").value = data.max_pinned_rooms || 3;
   sPublicUrl = data.public_url || '';
   sPort = port;
-  // Populate avatar preview from current humanActor
-  const human = humanActor || allActors.find(a => a.type === 'human');
-  sUpdateAvatarPreview(human?.avatar_url || null);
   sLoadProcessManager();
 }
 

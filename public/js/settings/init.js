@@ -91,15 +91,10 @@ function handleActorStatus(actor) {
       actorByName[actor.name] = actor;
       syncNewRoomBtn();
     }
-    // Update settings list row
-    const existingRow = document.getElementById('s-row-' + actor.id);
-    if (!existingRow) {
-      // New actor — add to settings list
-      if (!sRowStates.has(actor.id)) sRowStates.set(actor.id, { state: 'default', draft: actor.name });
-      const list = document.getElementById('s-agents-list');
-      if (list) list.prepend(sMakeRow({ ...actor }, true));
-      settingsActors = allActors.filter(a => a.type !== 'human' || a.id === humanActor?.id);
-    }
+    // New actor — refresh sidebar list
+    if (!sRowStates.has(actor.id)) sRowStates.set(actor.id, { state: 'default', draft: actor.name });
+    settingsActors = allActors.filter(a => a.type !== 'human' || a.id === humanActor?.id);
+    if (typeof renderAgentSidebar === 'function' && document.getElementById('agent-list')) renderAgentSidebar();
     // Update add panel if open and waiting
     if (sAddPanel?.phase === 'waiting' && actor.type === 'ai' && !sAddPanel.baselineIds?.has(String(actor.id))) {
       sAddPanel.phase = 'connected'; sAddPanel.newActor = actor;
@@ -111,11 +106,15 @@ function handleActorStatus(actor) {
       fjson(`/api/actors/${actor.id}/workdirs`).then(wds => { if (wds.length) sFinishSetupSlip(actor.id); }).catch(e => { console.error('Failed to load workdirs in handleActorStatus', e); });
     }
   }
-  // Always update status dot and word
+  // Always update status dots (detail header + sidebar row)
   const dot = document.getElementById('s-dot-' + actor.id);
   const word = document.getElementById('s-word-' + actor.id);
   if (dot) dot.className = actor.online ? 's-dot-on' : 's-dot-off';
   if (word) word.textContent = actor.online ? 'online' : 'offline';
+  const sdot = document.getElementById('s-sidebar-dot-' + actor.id);
+  if (sdot) sdot.className = actor.online ? 's-dot-on' : 's-dot-off';
+  const sword = document.getElementById('s-sidebar-word-' + actor.id);
+  if (sword) sword.textContent = actor.online ? 'online' : 'offline';
   // Update version in sub text when agent reconnects with new version
   if (actor.client_version && actor.online) {
     const sub = document.querySelector(`#s-row-${actor.id} .s-agent-sub`);
@@ -126,18 +125,17 @@ function handleActorStatus(actor) {
       else sub.textContent = text.replace(/· joined/, `· v${actor.client_version} · joined`);
     }
   }
-  // Update refresh/update button disabled state
-  const row = document.getElementById('s-row-' + actor.id);
-  if (row) {
-    row.querySelectorAll('.s-icon-btn').forEach(btn => {
-      if (btn.title === 'Rescan workdirs & skills' || btn.title === 'Force update agent code' ||
-          btn.title === 'Offline') {
-        btn.disabled = !actor.online;
-        btn.title = actor.online
-          ? (btn.title === 'Offline' ? 'Rescan workdirs & skills' : btn.title)
-          : 'Offline';
-      }
-    });
+  // Update detail header action buttons if this agent is selected
+  if (typeof agentsSelectedId !== 'undefined' && agentsSelectedId === actor.id) {
+    const header = document.getElementById('s-agent-detail-header');
+    if (header) {
+      header.querySelectorAll('.s-icon-btn').forEach(btn => {
+        if (btn.title === 'Rescan workdirs & skills' || btn.title === 'Force update agent code' || btn.title === 'Offline') {
+          btn.disabled = !actor.online;
+          btn.title = actor.online ? (btn.title === 'Offline' ? 'Rescan workdirs & skills' : btn.title) : 'Offline';
+        }
+      });
+    }
   }
 }
 
@@ -147,9 +145,13 @@ function handleActorRemoved(actorId, affectedRooms) {
   const idx = allActors.findIndex(a => a.id === actorId);
   if (idx >= 0) allActors.splice(idx, 1);
   settingsActors = settingsActors?.filter(a => a.id !== actorId);
-  const sRow = document.getElementById('s-row-' + actorId);
-  if (sRow) { sRow.style.maxHeight = '0'; sRow.style.padding = '0'; setTimeout(() => sRow.remove(), 220); }
   sRowStates.delete(actorId);
+  if (typeof agentsSelectedId !== 'undefined' && agentsSelectedId === actorId) {
+    agentsSelectedId = null;
+    localStorage.removeItem('stoa-agents-selected');
+    if (typeof showAgentEmptyState === 'function') showAgentEmptyState();
+  }
+  if (typeof renderAgentSidebar === 'function' && document.getElementById('agent-list')) renderAgentSidebar();
   syncNewRoomBtn();
   if (affectedRooms?.includes(currentRoomId)) {
     const cached = roomParticipantsCache[currentRoomId];
@@ -163,7 +165,7 @@ function handleActorRemoved(actorId, affectedRooms) {
 }
 
 function initSettings() {
-  document.getElementById('s-add-agent-btn').addEventListener('click', sOpenAddPanel);
+  document.getElementById('s-new-agent-btn').addEventListener('click', sOpenAddPanel);
   document.getElementById('s-mobile-back').addEventListener('click', closeSettingsToSidebar);
 
   // Tab clicks

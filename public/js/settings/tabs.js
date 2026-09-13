@@ -15,6 +15,12 @@ function sActivateTab(name) {
   });
   const titleEl = document.getElementById('s-page-title');
   if (titleEl) titleEl.textContent = SETTINGS_TAB_LABELS[name] || name;
+  if (name === 'agents') {
+    document.body.classList.add('agents-mode');
+    if (typeof renderAgentSidebar === 'function') renderAgentSidebar();
+  } else {
+    document.body.classList.remove('agents-mode');
+  }
   if (name === 'server')     sLoadServerTab();
   if (name === 'general')    sLoadGeneralTab();
   if (name === 'docs')       sLoadDocsTab();

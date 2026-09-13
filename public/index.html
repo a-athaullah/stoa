@@ -124,6 +124,18 @@
     <button class="h-new-room-btn" id="new-room-btn" data-tip="add a Claude first">+ new room</button>
   </div>
   <div id="room-list"></div>
+  <div id="agent-list-wrap">
+    <div class="h-search-wrap">
+      <svg class="h-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input id="agent-search-input" type="search" placeholder="Search agents…" autocomplete="off" spellcheck="false">
+      <button id="agent-search-clear" style="display:none" aria-label="Clear search">&times;</button>
+    </div>
+    <div id="agents-header-row" class="h-rooms-row">
+      <div class="h-rooms-label" id="agents-count-label"></div>
+      <button class="h-new-room-btn" id="s-new-agent-btn">+ new agent</button>
+    </div>
+    <div id="agent-list"></div>
+  </div>
   <div class="h-sidebar-footer" id="sidebar-footer"></div>
 </aside>
 
@@ -165,63 +177,19 @@
 
     <!-- tab: agents -->
     <div class="s-content" id="s-tab-agents">
-      <div class="s-content-inner">
-        <div class="s-no-agent-banner" id="s-no-agent-banner">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6.5"/><path d="M8 5v3.5M8 11h.01"/></svg>
-          No AI agent instances connected — add one below before creating rooms.
-        </div>
-        <div class="s-agents-card" style="margin-bottom:10px">
-          <div class="s-agents-header">
-            <div class="s-agents-header-left">
-              <span style="font-family:var(--h-serif);font-size:16px;color:var(--h-ink);letter-spacing:.01em">you</span>
-              <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)">how you appear in rooms</span>
-            </div>
-          </div>
-          <div id="s-human-list"></div>
-        </div>
-        <div class="s-agents-card">
-          <div class="s-agents-header">
-            <div class="s-agents-header-left">
-              <span style="font-family:var(--h-serif);font-size:16px;color:var(--h-ink);letter-spacing:.01em">AI agents</span>
-              <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)">agent instances on this server</span>
-            </div>
-          </div>
-          <div style="padding:12px 18px;border-bottom:1px solid var(--h-hair-soft)">
-            <button class="h-btn-primary" id="s-add-agent-btn" style="padding:6px 12px 6px 10px;display:inline-flex;align-items:center;gap:6px;font-size:13px;letter-spacing:.005em">
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
-              add agent
-            </button>
-          </div>
-          <div id="s-add-panel" class="s-add-panel"></div>
-          <div id="s-agents-list"></div>
-        </div>
+      <div id="s-agent-empty-state" class="s-agent-empty-state">
+        <span style="font-family:var(--h-serif);font-style:italic;font-size:15px;color:var(--h-ink-faint)">pick an agent from the list, or invite a new one.</span>
+      </div>
+      <div id="s-add-panel" class="s-add-panel"></div>
+      <div id="s-agent-detail" style="display:none">
+        <div class="s-agent-detail-header" id="s-agent-detail-header"></div>
+        <div class="s-agent-detail-body" id="s-agent-detail-body"></div>
       </div>
     </div>
 
     <!-- tab: server -->
     <div class="s-content" id="s-tab-server" style="display:none">
       <div class="s-content-inner">
-        <div class="s-server-card">
-          <div class="s-server-card-header">
-            <span style="font-family:var(--h-serif);font-size:16px;color:var(--h-ink)">your name</span>
-            <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)">how you appear in rooms</span>
-          </div>
-          <div class="s-server-field">
-            <span class="s-server-field-label">display name</span>
-            <input class="s-server-input" id="s-human-name-input" type="text" placeholder="Human" autocomplete="off">
-            <span class="s-server-saved" id="s-human-name-saved">saved</span>
-            <button class="s-server-save" id="s-human-name-save">save</button>
-          </div>
-          <div class="s-avatar-section">
-            <span class="s-avatar-section-label">avatar</span>
-            <div class="s-avatar-row">
-              <div class="s-avatar-preview" id="s-avatar-preview"></div>
-              <div class="s-avatar-drop" id="s-avatar-drop">drop image or click to upload</div>
-            </div>
-            <button class="s-avatar-remove" id="s-avatar-remove">remove avatar</button>
-            <input type="file" id="s-avatar-file" accept="image/*" style="display:none">
-          </div>
-        </div>
         <div class="s-server-card">
           <div class="s-server-card-header">
             <span style="font-family:var(--h-serif);font-size:16px;color:var(--h-ink)">server</span>
@@ -308,6 +276,27 @@
     <!-- tab: general -->
     <div class="s-content" id="s-tab-general" style="display:none">
       <div class="s-content-inner">
+        <div class="s-server-card">
+          <div class="s-server-card-header">
+            <span style="font-family:var(--h-serif);font-size:16px;color:var(--h-ink)">profile</span>
+            <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)">how you appear in rooms</span>
+          </div>
+          <div class="s-server-field">
+            <span class="s-server-field-label">display name</span>
+            <input class="s-server-input" id="s-human-name-input" type="text" placeholder="Human" autocomplete="off">
+            <span class="s-server-saved" id="s-human-name-saved">saved</span>
+            <button class="s-server-save" id="s-human-name-save">save</button>
+          </div>
+          <div class="s-avatar-section">
+            <span class="s-avatar-section-label">avatar</span>
+            <div class="s-avatar-row">
+              <div class="s-avatar-preview" id="s-avatar-preview"></div>
+              <div class="s-avatar-drop" id="s-avatar-drop">drop image or click to upload</div>
+            </div>
+            <button class="s-avatar-remove" id="s-avatar-remove">remove avatar</button>
+            <input type="file" id="s-avatar-file" accept="image/*" style="display:none">
+          </div>
+        </div>
         <div class="s-server-card">
           <div class="s-server-card-header">
             <span style="font-family:var(--h-serif);font-size:16px;color:var(--h-ink)">messages</span>

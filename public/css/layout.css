@@ -167,6 +167,14 @@
 }
 
 body.settings-mode #sidebar { display: none; }
+body.agents-mode.settings-mode #sidebar { display: flex; }
+body.agents-mode .h-search-wrap,
+body.agents-mode #search-results,
+body.agents-mode .h-room-tabs,
+body.agents-mode #rooms-active-header,
+body.agents-mode #room-list,
+body.agents-mode #sidebar-footer { display: none; }
+body.agents-mode #agent-list-wrap { display: flex; flex-direction: column; flex: 1; overflow: hidden; min-height: 0; }
 body.sidebar-collapsed #app-nav-wrap { display: none; }
 
 /* ── Sidebar ─────────────────────────────────────────── */
