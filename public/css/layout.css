@@ -1,3 +1,15 @@
+/* ── Sidebar palette — match reference warmth ────────── */
+#app-nav,
+#sidebar {
+  --h-surface:    #F2EDE4;
+  --h-surface-hi: #F5F0E8;
+  --h-hairline:   #CBB99F;
+  --h-hair-soft:  #DED2C0;
+  --h-ink:        #2B2620;
+  --h-ink-mute:   #4A453D;
+  --h-ink-faint:  #5D574E;
+}
+
 /* ── App-level nav sidebar ───────────────────────────── */
 #app-nav-wrap {
   position: relative;
