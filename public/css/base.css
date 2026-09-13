@@ -1,11 +1,11 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --h-bg:          #F8F6F1;
-  --h-header-bg:   #EFE9DF;
+  --h-bg:          #EDE9E0;
+  --h-header-bg:   #E8E0D2;
   --h-sidebar-bg:  #E5DCCE;
-  --h-surface:     #FBFAF7;
-  --h-surface-hi:  #FFFFFF;
+  --h-surface:     #F2EDE4;
+  --h-surface-hi:  #F5F0E8;
   --h-hairline:    #CBB99F;
   --h-hair-soft:   #DED2C0;
   --h-ink:         #2B2620;
