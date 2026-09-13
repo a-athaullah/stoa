@@ -1,17 +1,18 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --h-slip:        oklch(0.945 0.020 70);
-  --h-bg:          oklch(0.925 0.022 58);
-  --h-header-bg:   oklch(0.870 0.028 52);
-  --h-sidebar-bg:  oklch(0.820 0.030 50);
-  --h-surface:     oklch(0.985 0.012 55);
-  --h-surface-hi:  oklch(0.995 0.010 60);
-  --h-hairline:    oklch(0.770 0.026 50);
-  --h-hair-soft:   oklch(0.835 0.022 50);
-  --h-ink:         oklch(0.235 0.018 45);
-  --h-ink-mute:    oklch(0.460 0.014 50);
-  --h-ink-faint:   oklch(0.595 0.014 52);
+  --h-bg:          #EDE9E0;
+  --h-header-bg:   #DED5C5;
+  --h-sidebar-bg:  #D8CFC0;
+  --h-surface:     #F2EDE4;
+  --h-surface-hi:  #F5F0E8;
+  --h-hairline:    #CBB99F;
+  --h-hair-soft:   #DED2C0;
+  --h-ink:         #2B2620;
+  --h-ink-mute:    #4A453D;
+  --h-ink-faint:   #5D574E;
+  --h-slip:        #EFE7DA;
+  --h-accent:      #8A5F22;
   /* Aliases — reference theme-aware tokens so they resolve correctly in dark too.
      Used by JS-built UI (sub-agent dropdown/run controls, settings) + chat.css. */
   --h-border:      var(--h-hairline);
@@ -19,7 +20,6 @@
   --h-serif:       "Plus Jakarta Sans", "DM Sans", system-ui, sans-serif;
   --h-sans:        "DM Sans", system-ui, sans-serif;
   --h-msg:         "Plus Jakarta Sans", "DM Sans", system-ui, sans-serif;
-  --h-accent:      oklch(0.545 0.120 245);
 }
 
 html.dark {
