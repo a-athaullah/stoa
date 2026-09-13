@@ -2068,6 +2068,7 @@ html.dark .h-thread-panel { background: var(--h-bg); }
 }
 html.dark .h-thread-ctrl-btn { color: var(--h-ink-mute); }
 html.dark .h-thread-ctrl-btn:hover { background: var(--h-hover); color: var(--h-ink); }
+.h-thread-back-btn { display: none; }
 
 .h-thread-scroll {
   flex: 1;
@@ -2363,6 +2364,7 @@ html.dark .h-room-thread-badge {
   }
   .h-thread-header { position: relative; padding-top: 20px; }
   .h-thread-resize-handle { display: none; }
+  .h-thread-back-btn { display: flex; }
 }
 
 /* ── Thread panel — flat message rows (no bubble) ────────────────────────── */

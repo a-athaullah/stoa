@@ -141,6 +141,14 @@ function _createThreadPanel() {
   header.id = 'thread-header';
   header.className = 'h-thread-header';
 
+  const backBtn = document.createElement('button');
+  backBtn.id = 'thread-back-btn';
+  backBtn.className = 'h-thread-back-btn h-thread-ctrl-btn';
+  backBtn.title = 'Back to room';
+  backBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>';
+  backBtn.onclick = () => closeThread();
+  header.appendChild(backBtn);
+
   const title = document.createElement('div');
   title.id = 'thread-header-title';
   title.className = 'h-thread-header-title';
