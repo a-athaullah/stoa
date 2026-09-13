@@ -4,6 +4,7 @@
 
 let _rsbActiveBtn = null;
 let _rsbPopover = null;
+let _rsbOutsideListener = null;
 
 function renderRoomSidebar(room, participants) {
   const sidebar = document.getElementById('room-sidebar');
@@ -13,7 +14,7 @@ function renderRoomSidebar(room, participants) {
   function mkBtn(title, svg, onClick) {
     const b = document.createElement('button');
     b.className = 'h-rsb-btn';
-    b.title = title;
+    b.dataset.tooltip = title;
     b.innerHTML = svg;
     b.onclick = onClick;
     return b;
@@ -51,12 +52,12 @@ function renderRoomSidebar(room, participants) {
     });
 
     setTimeout(() => {
-      document.addEventListener('click', function outside(e) {
+      _rsbOutsideListener = (e) => {
         if (_rsbPopover && !_rsbPopover.contains(e.target) && e.target !== anchorBtn) {
           closeRsbPopover();
-          document.removeEventListener('click', outside);
         }
-      });
+      };
+      document.addEventListener('click', _rsbOutsideListener);
     }, 0);
   }
 
@@ -871,6 +872,7 @@ function renderRoomSidebar(room, participants) {
 }
 
 function closeRsbPopover() {
+  if (_rsbOutsideListener) { document.removeEventListener('click', _rsbOutsideListener); _rsbOutsideListener = null; }
   if (_rsbPopover) { _rsbPopover.remove(); _rsbPopover = null; }
   if (_rsbActiveBtn) { _rsbActiveBtn.classList.remove('active'); _rsbActiveBtn = null; }
 }
