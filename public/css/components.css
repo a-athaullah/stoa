@@ -955,8 +955,14 @@ html.dark .h-toast.h-toast-error { background: oklch(0.42 0.12 25); }
 /* agent-list-wrap: shows in sidebar when body.agents-mode */
 #agent-list-wrap { display: none; }
 
-/* sidebar agent row — extends h-room-row */
-.h-agent-row { cursor: pointer; }
+/* sidebar agent row — extends h-room-row, horizontal layout like inbox */
+.h-agent-row {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+}
 
 /* agent detail panel — right column */
 #s-tab-agents {
