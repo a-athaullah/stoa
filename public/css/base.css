@@ -9,8 +9,8 @@
   --h-hairline:    #CBB99F;
   --h-hair-soft:   #DED2C0;
   --h-ink:         #2B2620;
-  --h-ink-mute:    #5B5852;
-  --h-ink-faint:   #6F6A60;
+  --h-ink-mute:    #4A453D;
+  --h-ink-faint:   #5D574E;
   --h-slip:        #EFE7DA;
   --h-accent:      #8A5F22;
   /* Aliases — reference theme-aware tokens so they resolve correctly in dark too.
