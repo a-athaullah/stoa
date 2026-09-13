@@ -76,7 +76,7 @@ function hideAppNotice() {
 function closeSettingsToNav() {
   settingsOpen = false;
   sStopPolling();
-  document.body.classList.remove('settings-mode');
+  document.body.classList.remove('settings-mode', 'agents-mode');
   document.getElementById('settings-inner').classList.remove('visible');
   setAppNavActive('inbox');
   if (!currentRoomId) {
@@ -91,7 +91,9 @@ function openSettingsTab(tab) {
   if (ws) { ws.onclose = null; ws.close(); ws = null; }
   setConnected(false);
   document.querySelectorAll('.h-room-row').forEach(el => el.classList.remove('active'));
-  document.body.classList.add('settings-mode', 'in-chat');
+  const isMobile = window.innerWidth <= 680;
+  document.body.classList.add('settings-mode');
+  if (!(tab === 'agents' && isMobile)) document.body.classList.add('in-chat');
   document.getElementById('empty-state').style.display = 'none';
   document.getElementById('chat-inner').classList.remove('visible');
   document.getElementById('settings-inner').classList.add('visible');

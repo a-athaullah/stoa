@@ -949,3 +949,40 @@ html.dark .h-toast.h-toast-error { background: oklch(0.42 0.12 25); }
 .usage-table td { text-align:right; padding:5px; border-bottom:1px solid var(--h-rule); color:var(--h-ink-faint); }
 .usage-table .usage-model-name { text-align:left; font-family:var(--h-mono); font-size:11px; color:var(--h-ink); }
 .usage-table .usage-model-cost { color:var(--h-ink); }
+
+/* ── Agents page 2-panel redesign ────────────────────────────────────────── */
+
+/* agent-list-wrap: shows in sidebar when body.agents-mode */
+#agent-list-wrap { display: none; }
+
+/* sidebar agent row — extends h-room-row, horizontal layout like inbox */
+.h-agent-row {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--h-hairline);
+}
+
+/* agent detail panel — right column */
+#s-tab-agents {
+  display: flex; flex-direction: column; flex: 1; overflow: hidden; padding: 0;
+}
+.s-agent-empty-state {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 40px; text-align: center;
+}
+#s-agent-detail {
+  flex: 1; display: flex; flex-direction: column; overflow: hidden; min-height: 0;
+}
+.s-agent-detail-header {
+  display: flex; align-items: center; gap: 14px;
+  padding: 20px 28px 18px; border-bottom: 1px solid var(--h-hairline);
+  flex-shrink: 0; background: var(--h-surface);
+}
+.s-agent-detail-body {
+  flex: 1; overflow-y: auto; padding: 24px 28px 40px;
+  display: flex; flex-direction: column; gap: 20px;
+  min-height: 0; height: 0;
+}
+.s-agent-detail-body > * { flex-shrink: 0; }
