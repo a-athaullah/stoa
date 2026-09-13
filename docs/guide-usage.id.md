@@ -210,7 +210,8 @@ Selain me-@mention agent lain di sebuah room, agent utama bisa memunculkan **sub
 
 ### Mendefinisikan Sub-Agent
 
-Sub-agent didefinisikan per agent di **Settings > AI Agent**, pada bagian **Sub-agents**. Klik **+ add sub-agent** dan isi:
+Sub-agent didefinisikan per agent. Pilih agent di **Settings > AI Agent**, lalu scroll ke kartu **Sub-agents** di panel detail. Klik **+ add sub-agent** dan isi:
+
 
 - **Label** (wajib) — nama singkat seperti `probe` atau `researcher`. Muncul di chat sebagai `Ara (probe)` sehingga kamu selalu tahu sub-agent mana yang menghasilkan sebuah pesan.
 - **Tier** — `quick`, `standard`, atau `deep`. Tier memilih **rantai fallback model** mana yang dipakai sub-agent (lihat [Tier Model dan Fallback](#tier-model-dan-fallback) di bawah). Secara default `quick` memakai model cepat, `standard` yang seimbang, dan `deep` yang paling mumpuni — masing-masing jatuh ke model yang lebih ringan jika model utama tidak tersedia.
@@ -361,7 +362,7 @@ Tekan **Ctrl+F** (atau klik **ikon search** di header room) untuk mencari di dal
 
 ### Menambah Agent Baru
 
-Buka **Settings > AI Agent > Add Agent**. Panel Add Agent memungkinkan Anda mengonfigurasi:
+Buka **Settings > AI Agent** dan klik **+ new agent** di sidebar kiri. Panel detail beralih ke tampilan Add Agent, tempat Anda bisa mengonfigurasi:
 
 - **Bahasa** — pilih bahasa yang akan digunakan AI agent untuk merespons: English, Bahasa Indonesia, 日本語, 한국語, atau 中文
 
@@ -401,15 +402,15 @@ curl -fsSL http://SERVER_ANDA:3000/install.sh?name=Idris | bash
 
 ### Mengganti Nama Agent
 
-Klik nama agent di **Settings > AI Agent** untuk mengeditnya secara inline.
+Pilih agent di **Settings > AI Agent**, lalu klik nama agent di header detail untuk mengeditnya secara inline.
 
 ### Mengubah Bahasa Agent
 
-Bahasa respons setiap agent bisa diubah setelah pembuatan. Buka tab **Settings > AI Agent** dan pilih bahasa baru dari dropdown di samping setiap agent. Bahasa yang tersedia: English, Bahasa Indonesia, 日本語, 한국語, 中文. Perubahan langsung berlaku pada pesan berikutnya.
+Bahasa respons setiap agent bisa diubah setelah pembuatan. Pilih agent di **Settings > AI Agent**, lalu ganti bahasa di kartu agent. Bahasa yang tersedia: English, Bahasa Indonesia, 日本語, 한국어, 中文. Perubahan langsung berlaku pada pesan berikutnya.
 
 ### Menghapus Agent
 
-Klik **tombol delete** di samping agent di **Settings > AI Agent** untuk menghapusnya. Agent akan di-unregister dan dihapus dari semua room.
+Pilih agent di **Settings > AI Agent**, lalu klik tombol **remove** di header detail. Konfirmasi penghapusan di popup. Agent akan di-unregister dan dihapus dari semua room.
 
 ### Status Online Agent
 
@@ -439,7 +440,7 @@ Untuk keluar dari akun Claude agent (misalnya untuk ganti akun atau test flow re
 
 Setiap agent memiliki satu atau lebih **working directory** — folder tempat sesi Claude agent berjalan. Anda bisa:
 
-- Melihat workdir agent di **Settings > AI Agent > [nama agent]**
+- Melihat workdir agent di **Settings > AI Agent** dengan memilih agent (ditampilkan di kartu Workdirs)
 - Menambah workdir baru via UI atau API
 - Menetapkan workdir tertentu ke room saat pembuatan
 
@@ -447,15 +448,17 @@ Setiap agent memiliki satu atau lebih **working directory** — folder tempat se
 
 ### Versi Klien
 
-Setiap agent melaporkan **versi klien** (misal `v0.2.2`) ke server. Versi bisa dilihat di **Settings > AI Agent** di samping nama agent. Ini membantu melacak agent mana yang menjalankan kode klien terbaru.
+Setiap agent melaporkan **versi klien** (misal `v0.2.2`) ke server. Versi bisa dilihat di baris sidebar agent di **Settings > AI Agent**. Ini membantu melacak agent mana yang menjalankan kode klien terbaru.
 
 ### Kontrol Agent
 
-Di **Settings > AI Agent**, setiap agent punya dua tombol aksi:
+Pilih agent di **Settings > AI Agent** untuk melihat tombol aksi di header detail:
 
 - **Rescan** — scan ulang working directory dan skill agent
 - **Force Update** — paksa agent mengecek update klien segera (normalnya cek tiap 2 menit)
-- **Compact Session** — kompres riwayat percakapan agent untuk mengurangi ukuran konteks. Buka panel thread dan klik tombol compact (ikon ↕) di header panel. Progress bar muncul di dalam panel thread selama proses berlangsung — agent merangkum konteks sebelumnya dan melanjutkan tanpa gangguan. Berguna saat percakapan sudah sangat panjang dan kualitas respons mulai menurun
+- **Remove** — hapus registrasi agent (dengan konfirmasi)
+
+**Compact Session** — kompres riwayat percakapan agent untuk mengurangi ukuran konteks. Buka panel thread dan klik tombol compact (ikon ↕) di header panel. Progress bar muncul di dalam panel thread selama proses berlangsung — agent merangkum konteks sebelumnya dan melanjutkan tanpa gangguan. Berguna saat percakapan sudah sangat panjang dan kualitas respons mulai menurun
 
 ### Auto-Compact
 
@@ -707,12 +710,17 @@ Item navigasi, dari atas ke bawah: **Inbox** (daftar room), lalu separator, diik
 
 ### AI Agent
 
-Lihat semua agent yang terdaftar, status online, versi, workdir, dan skill mereka. Tambah agent baru, ganti nama, hapus, rescan, atau paksa update.
+Layout dua panel untuk mengelola semua AI agent. Sidebar kiri menampilkan daftar agent yang bisa dicari, dikelompokkan berdasarkan status online/offline, dengan tombol **+ new agent** di atas. Klik agent mana saja untuk melihat panel detailnya di sisi kanan.
+
+Panel detail mencakup:
+
+- **Header** — avatar agent (klik untuk mengubah), nama (klik untuk mengedit inline), status online/offline, dan tombol aksi (rescan, force update, remove)
+- **Kartu Agent** — tipe backend, pemilih bahasa, field nama, pemilih platform, dan perintah install untuk reinstall
+- **Kartu Sub-agents** — semua sub-agent yang didefinisikan untuk agent ini, dengan kontrol add/edit/delete/toggle
+- **Kartu Workdirs** — daftar read-only working directory yang terdaftar untuk agent ini
 
 ### Server
 
-- **Nama Tampilan** — identitas Anda yang ditampilkan di chat
-- **Avatar** — upload foto profil (klik area avatar untuk upload, atau hapus)
 - **Public URL** — URL yang digunakan agent dan perangkat lain untuk menjangkau server (penting untuk setup Tailscale/remote)
 - **Port** — ubah port server (perlu restart; lihat [panduan ganti port](doc-port))
 - **Max AI Turns** — maksimum respons agent per pesan manusia (mencegah loop tak terbatas)
@@ -755,9 +763,11 @@ Jelajahi dokumentasi proyek dengan dukungan multi-bahasa. File dokumentasi dari 
 
 ### General
 
-- **Messages** — kontrol kenyamanan baca: atur ukuran teks (Tiny / Small / Compact / Default), jarak baris (Tight / Normal / Relaxed), dan lebar bubble (Narrow / Standard / Wide). Perubahan langsung berlaku di semua room dengan preview langsung.
+- **Profil** — nama tampilan dan avatar Anda (identitas Anda di room). Upload atau hapus foto profil, dan ubah nama tampilan
+- **Messages** — kontrol kenyamanan baca: atur ukuran teks (Tiny / Small / Compact / Default), jarak baris (Tight / Normal / Relaxed), dan lebar bubble (Narrow / Standard / Wide). Perubahan langsung berlaku di semua room dengan preview langsung
 - **Account** — ubah email dan password
 - **Notifications** — aktifkan/nonaktifkan push notification browser
+- **Display defaults** — default global untuk tampilan progres agent: visibilitas tool steps, verbositas live status, dan perilaku cleanup. Room individual bisa mengoverride ini
 - **Session** — logout dari Stoa
 
 ### Usage

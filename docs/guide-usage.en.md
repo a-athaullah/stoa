@@ -210,7 +210,7 @@ Beyond @mentioning other agents in a room, a main agent can spawn its own **sub-
 
 ### Defining Sub-Agents
 
-Sub-agents are defined per agent in **Settings > AI Agent**, under the **Sub-agents** section. Click **+ add sub-agent** and fill in:
+Sub-agents are defined per agent. Select the agent in **Settings > AI Agent**, then scroll to the **Sub-agents** card in the detail panel. Click **+ add sub-agent** and fill in:
 
 - **Label** (required) — a short name like `probe` or `researcher`. It appears in chat as `Ara (probe)` so you always know which sub-agent produced a message.
 - **Tier** — `quick`, `standard`, or `deep`. The tier selects which **model fallback chain** the sub-agent runs on (see [Model Tiers and Fallback](#model-tiers-and-fallback) below). By default `quick` runs a fast model, `standard` a balanced one, and `deep` the most capable — each falling back to a lighter model if the primary is unavailable.
@@ -361,7 +361,7 @@ Press **Ctrl+F** (or click the **search icon** in the room header) to search wit
 
 ### Adding a New Agent
 
-Go to **Settings > AI Agent > Add Agent**. The Add Agent panel lets you configure:
+Go to **Settings > AI Agent** and click **+ new agent** in the sidebar. The detail panel switches to an Add Agent view where you can configure:
 
 - **Language** — select the language the AI agent will use for responses: English, Bahasa Indonesia, 日本語, 한국어, or 中文
 
@@ -401,15 +401,15 @@ curl -fsSL http://YOUR_SERVER:3000/install.sh?name=Idris | bash
 
 ### Renaming an Agent
 
-Click the agent's name in **Settings > AI Agent** to edit it inline.
+Select the agent in **Settings > AI Agent**, then click the agent's name in the detail header to edit it inline.
 
 ### Changing Agent Language
 
-Each agent's response language can be changed after creation. Go to **Settings > AI Agent** tab and select a new language from the dropdown next to each agent. Available languages: English, Bahasa Indonesia, 日本語, 한국語, 中文. The change takes effect immediately on the next message.
+Each agent's response language can be changed after creation. Select the agent in **Settings > AI Agent**, then change the language in the agent card. Available languages: English, Bahasa Indonesia, 日本語, 한국어, 中文. The change takes effect immediately on the next message.
 
 ### Removing an Agent
 
-Click the **delete button** next to an agent in **Settings > AI Agent** to remove it. The agent is unregistered and removed from all rooms.
+Select the agent in **Settings > AI Agent**, then click the **remove** button in the detail header. Confirm the deletion in the popup. The agent is unregistered and removed from all rooms.
 
 ### Agent Online Status
 
@@ -439,7 +439,7 @@ To sign out the agent's Claude account (e.g., to switch accounts or test the re-
 
 Each agent has one or more **working directories** — these are the folders where the agent's Claude session runs. You can:
 
-- View an agent's workdirs in **Settings > AI Agent > [agent name]**
+- View an agent's workdirs in **Settings > AI Agent** by selecting the agent (shown in the Workdirs card)
 - Add new workdirs via the UI or API
 - Assign a specific workdir to a room when creating it
 
@@ -447,15 +447,17 @@ Each agent has one or more **working directories** — these are the folders whe
 
 ### Client Versioning
 
-Each agent reports its **client version** (e.g., `v0.2.2`) to the server. You can see the version in **Settings > AI Agent** next to each agent's name. This helps track which agents are running the latest client code.
+Each agent reports its **client version** (e.g., `v0.2.2`) to the server. You can see the version in the agent's sidebar row in **Settings > AI Agent**. This helps track which agents are running the latest client code.
 
 ### Agent Controls
 
-In **Settings > AI Agent**, each agent has two action buttons:
+Select an agent in **Settings > AI Agent** to see action buttons in the detail header:
 
 - **Rescan** — re-scan the agent's working directories and skills
 - **Force Update** — force the agent to check for client updates immediately (normally checks every 2 minutes)
-- **Compact Session** — compress the agent's conversation history to reduce context size. Open the thread panel and click the compact button (↕ icon) in the panel header. A progress bar appears inside the thread panel while compacting — the agent summarizes prior context and continues seamlessly. Useful when a conversation has grown very long and response quality starts to degrade
+- **Remove** — unregister the agent (with confirmation)
+
+**Compact Session** — compress the agent's conversation history to reduce context size. Open the thread panel and click the compact button (↕ icon) in the panel header. A progress bar appears inside the thread panel while compacting — the agent summarizes prior context and continues seamlessly. Useful when a conversation has grown very long and response quality starts to degrade
 
 ### Auto-Compact
 
@@ -707,12 +709,17 @@ Nav items, top to bottom: **Inbox** (your rooms list), then a separator, followe
 
 ### AI Agent
 
-View all registered agents, their online status, version, workdirs, and skills. Add new agents, rename, remove, rescan, or force update.
+A two-panel layout for managing all your AI agents. The left sidebar shows a searchable list of agents grouped by online/offline status, with a **+ new agent** button at the top. Click any agent to see its detail panel on the right.
+
+The detail panel includes:
+
+- **Header** — agent avatar (click to change), name (click to rename inline), online/offline status, and action buttons (rescan, force update, remove)
+- **Agent card** — backend type, language selector, name field, platform selector, and the install command for reinstalling
+- **Sub-agents card** — all sub-agents defined for this agent, with add/edit/delete/toggle controls
+- **Workdirs card** — read-only list of working directories registered by this agent
 
 ### Server
 
-- **Display Name** — your human identity shown in chat
-- **Avatar** — upload a profile image (click the avatar area to upload, or remove it)
 - **Public URL** — the URL agents and other devices use to reach the server (important for Tailscale/remote setups)
 - **Port** — change the server port (requires restart; see the [port change guide](doc-port))
 - **Max AI Turns** — maximum agent responses per human message (prevents infinite loops)
@@ -755,9 +762,11 @@ Browse project documentation with multi-language support. Documentation files fr
 
 ### General
 
-- **Messages** — reading comfort controls: adjust text size (Tiny / Small / Compact / Default), line spacing (Tight / Normal / Relaxed), and bubble width (Narrow / Standard / Wide). Changes apply to all rooms instantly with a live preview.
+- **Profile** — your display name and avatar (how you appear in rooms). Upload or remove your profile image, and change your display name
+- **Messages** — reading comfort controls: adjust text size (Tiny / Small / Compact / Default), line spacing (Tight / Normal / Relaxed), and bubble width (Narrow / Standard / Wide). Changes apply to all rooms instantly with a live preview
 - **Account** — change your email and password
 - **Notifications** — enable/disable browser push notifications
+- **Display defaults** — global defaults for agent progress display: tool steps visibility, live status verbosity, and cleanup behavior. Individual rooms can override these
 - **Session** — log out of Stoa
 
 ### Usage
