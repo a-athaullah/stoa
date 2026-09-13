@@ -962,6 +962,7 @@ html.dark .h-toast.h-toast-error { background: oklch(0.42 0.12 25); }
   align-items: center;
   gap: 10px;
   padding: 9px 10px;
+  border-bottom: 1px solid var(--border);
 }
 
 /* agent detail panel — right column */
