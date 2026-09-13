@@ -979,9 +979,9 @@ html.dark .h-toast.h-toast-error { background: oklch(0.42 0.12 25); }
   display: flex; align-items: center; gap: 14px;
   padding: 20px 28px 18px; border-bottom: 1px solid var(--h-hairline);
   flex-shrink: 0; background: var(--h-surface);
-  position: sticky; top: 0; z-index: 2;
 }
 .s-agent-detail-body {
   flex: 1; overflow-y: auto; padding: 24px 28px 40px;
   display: flex; flex-direction: column; gap: 20px;
+  min-height: 0; height: 0;
 }
