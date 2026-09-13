@@ -49,6 +49,10 @@ function openSettings(tab) {
 }
 
 function closeSettingsToSidebar() {
+  if (document.body.classList.contains('agents-mode') && window.innerWidth <= 680) {
+    document.body.classList.remove('in-chat');
+    return;
+  }
   if (typeof closeSettingsToNav === 'function') {
     closeSettingsToNav();
   } else {
@@ -1169,6 +1173,7 @@ function selectAgent(id) {
   document.querySelectorAll('#agent-list .h-agent-row').forEach(el => {
     el.classList.toggle('active', parseInt(el.dataset.actorId) === id);
   });
+  if (window.innerWidth <= 680) document.body.classList.add('in-chat');
   renderAgentDetail(id);
 }
 
