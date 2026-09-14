@@ -13,7 +13,7 @@ async function sLoadDocsTab() {
 
 function sRenderDocsLangRow() {
   const allLangs = [...new Set(docsCatalog.flatMap(d => d.langs))].sort();
-  const sel = document.getElementById('s-docs-lang-select');
+  const sel = document.getElementById('docs-lang-select');
   sel.innerHTML = '';
   for (const lang of allLangs) {
     const opt = document.createElement('option');
@@ -31,7 +31,7 @@ function sRenderDocsLangRow() {
 }
 
 function sRenderDocsSidebar() {
-  const sidebar = document.getElementById('s-docs-sidebar');
+  const sidebar = document.getElementById('docs-file-list');
   sidebar.innerHTML = '';
   for (const doc of docsCatalog) {
     const a = document.createElement('a');

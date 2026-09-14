@@ -76,7 +76,7 @@ function hideAppNotice() {
 function closeSettingsToNav() {
   settingsOpen = false;
   sStopPolling();
-  document.body.classList.remove('settings-mode', 'agents-mode');
+  document.body.classList.remove('settings-mode', 'agents-mode', 'docs-mode');
   document.getElementById('settings-inner').classList.remove('visible');
   setAppNavActive('inbox');
   if (!currentRoomId) {

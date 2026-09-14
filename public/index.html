@@ -124,6 +124,12 @@
     <button class="h-new-room-btn" id="new-room-btn" data-tip="add a Claude first">+ new room</button>
   </div>
   <div id="room-list"></div>
+  <div id="docs-list-wrap">
+    <div class="s-docs-lang-row">
+      <select class="s-docs-lang-select" id="docs-lang-select"></select>
+    </div>
+    <div class="s-docs-file-list" id="docs-file-list"></div>
+  </div>
   <div id="agent-list-wrap">
     <div class="h-search-wrap">
       <svg class="h-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -413,16 +419,8 @@
 
     <!-- tab: docs -->
     <div class="s-content" id="s-tab-docs" style="display:none">
-      <div class="s-docs-layout">
-        <div class="s-docs-sidebar">
-          <div class="s-docs-lang-row">
-            <select class="s-docs-lang-select" id="s-docs-lang-select"></select>
-          </div>
-          <div class="s-docs-file-list" id="s-docs-sidebar"></div>
-        </div>
-        <div class="s-docs-body" id="s-docs-body">
-          <p class="s-docs-empty">select a document from the list.</p>
-        </div>
+      <div class="s-docs-body" id="s-docs-body">
+        <p class="s-docs-empty">select a document from the list.</p>
       </div>
     </div>
   </div>

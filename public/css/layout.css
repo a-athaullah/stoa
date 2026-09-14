@@ -175,6 +175,14 @@ body.agents-mode #rooms-active-header,
 body.agents-mode #room-list,
 body.agents-mode #sidebar-footer { display: none; }
 body.agents-mode #agent-list-wrap { display: flex; flex-direction: column; flex: 1; overflow: hidden; min-height: 0; }
+body.docs-mode.settings-mode #sidebar { display: flex; }
+body.docs-mode .h-search-wrap,
+body.docs-mode #search-results,
+body.docs-mode .h-room-tabs,
+body.docs-mode #rooms-active-header,
+body.docs-mode #room-list,
+body.docs-mode #sidebar-footer { display: none; }
+body.docs-mode #docs-list-wrap { display: flex; flex-direction: column; flex: 1; overflow: hidden; min-height: 0; }
 body.sidebar-collapsed #app-nav-wrap { display: none; }
 
 /* ── Sidebar ─────────────────────────────────────────── */
