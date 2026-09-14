@@ -92,8 +92,13 @@ async function sOpenDoc(slug) {
   try {
     const doc = docsCatalog.find(d => d.slug === slug);
     const lang = doc?.langs.includes(docsLang) ? docsLang : 'en';
-    const filename = `${slug}.${lang}.md`;
-    const res = await fetch(`/api/docs/${encodeURIComponent(filename)}`);
+    let filename = `${slug}.${lang}.md`;
+    let res = await fetch(`/api/docs/${encodeURIComponent(filename)}`);
+    if (!res.ok) {
+      // fallback for files without lang suffix (e.g. stoa-api.md)
+      filename = `${slug}.md`;
+      res = await fetch(`/api/docs/${encodeURIComponent(filename)}`);
+    }
     if (!res.ok) { body.innerHTML = '<p class="s-docs-empty">document not found.</p>'; return; }
     const md = await res.text();
     body.innerHTML = DOMPurify.sanitize(marked.parse(md), { ADD_ATTR: ['class'] });
