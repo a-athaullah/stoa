@@ -165,6 +165,9 @@ CREATE INDEX IF NOT EXISTS idx_ai_sessions_thread ON ai_sessions(thread_id);
 CREATE INDEX IF NOT EXISTS idx_messages_thread_id ON messages(thread_id, id);
 CREATE INDEX IF NOT EXISTS idx_messages_room_root ON messages(room_id, id) WHERE thread_id IS NULL;
 CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(reply_to);
+CREATE INDEX IF NOT EXISTS idx_messages_room_thread_state ON messages(room_id, thread_id, state) WHERE sub_agent_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_messages_room_parent ON messages(room_id, created_at) WHERE parent_message_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_messages_participant_room ON messages(participant_id, room_id, id);
 CREATE UNIQUE INDEX IF NOT EXISTS messages_room_client_event ON messages(room_id, client_event_id) WHERE client_event_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_rooms_workdir_id ON rooms(workdir_id);
 CREATE INDEX IF NOT EXISTS idx_rooms_created_by ON rooms(created_by);
@@ -251,9 +254,7 @@ CREATE TABLE IF NOT EXISTS usage_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_usage_log_created_at ON usage_log(created_at);
-CREATE INDEX IF NOT EXISTS idx_usage_log_actor_id ON usage_log(actor_id);
 CREATE INDEX IF NOT EXISTS idx_usage_log_actor_created ON usage_log(actor_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_usage_log_model ON usage_log(model);
 CREATE INDEX IF NOT EXISTS idx_usage_log_model_created ON usage_log(model, created_at);
 
 CREATE TABLE IF NOT EXISTS wa_incoming_messages (
@@ -313,6 +314,8 @@ CREATE TABLE IF NOT EXISTS memory_pending_writes (
   proposed_at TEXT NOT NULL DEFAULT (datetime('now')),
   status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected'))
 );
+
+CREATE INDEX IF NOT EXISTS idx_pending_writes_room_status ON memory_pending_writes(room_id, status);
 
 CREATE TABLE IF NOT EXISTS debug_bundles (
   id          TEXT PRIMARY KEY,
