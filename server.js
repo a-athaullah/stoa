@@ -6225,10 +6225,10 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   }
 
   // Inject frozen memory snapshot at session start
+  const roomMem = db.prepare('SELECT content FROM room_memory WHERE room_id=? AND content != \'\'').get(roomId);
   let memorySection = '';
   {
     const memRows = db.prepare('SELECT file, content FROM agent_memory WHERE actor_id=? AND content != \'\'').all(ai.actor_id);
-    const roomMem = db.prepare('SELECT content FROM room_memory WHERE room_id=? AND content != \'\'').get(roomId);
     const parts = [];
     for (const { file, content } of memRows) parts.push(`### ${file}\n${content}`);
     if (roomMem) parts.push(`### Room Memory\n${roomMem.content}`);
@@ -6238,7 +6238,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   // Platform-level memory management instructions (always injected)
   let platformMemoryLine = '';
   {
-    const roomMemContent = db.prepare('SELECT content FROM room_memory WHERE room_id=?').get(roomId)?.content || '';
+    const roomMemContent = roomMem?.content || '';
     const charCount = roomMemContent.length;
     const budget = 1800;
     const warnThreshold = 1400;
