@@ -190,20 +190,9 @@ function handleWsMessage(msg) {
         const bubble = el.querySelector('.h-bubble, .h-thinking-bubble');
         if (bubble) {
           bubble.classList.remove('streaming');
-          if (bubble.classList.contains('h-thinking-bubble')) {
-            bubble.classList.remove('h-thinking-bubble');
-            bubble.classList.add('h-bubble');
-          }
-          bubble.innerHTML = '';
-          const failDiv = document.createElement('div');
-          failDiv.className = 'h-msg-fail';
-          const exitLabel = msg.exit_reason || msg.state;
-          const exitEntry = (typeof _RESULT_EXIT !== 'undefined' && _RESULT_EXIT[exitLabel]) || { glyph: '⚠', label: exitLabel };
-          let text = exitEntry.glyph + ' ' + (msg.sub_agent_label ? msg.sub_agent_label + ' — ' : '') + exitEntry.label;
-          if (msg.error_text) text += ': ' + msg.error_text;
-          if (msg.duration_ms) text += ' (after ' + _fmtDuration(msg.duration_ms) + ')';
-          failDiv.textContent = text;
-          bubble.appendChild(failDiv);
+          const isThinking = bubble.classList.contains('h-thinking-bubble');
+          const isEmpty = bubble.textContent.trim() === '';
+          if (isThinking || isEmpty) el.remove();
         }
       }
       clearComposerProcessing(msg.message_id);
