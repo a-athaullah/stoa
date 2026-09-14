@@ -7,7 +7,6 @@ let _rsbPopover = null;
 let _rsbOutsideListener = null;
 
 let _rsbTooltipEl = null;
-let _rsbTooltipTimer = null;
 
 function _showRsbTooltip(btn) {
   if (!btn.dataset.tooltip) return;
