@@ -186,12 +186,6 @@ function _createThreadPanel() {
   contextBar.className = 'h-context-bar';
   panel.appendChild(contextBar);
 
-  // Root message section (sticky, outside scroll)
-  const rootSection = document.createElement('div');
-  rootSection.id = 'thread-root-section';
-  rootSection.className = 'h-thread-root-section';
-  panel.appendChild(rootSection);
-
   // Scroll container + inner
   const scroll = document.createElement('div');
   scroll.id = 'thread-scroll';
@@ -200,6 +194,13 @@ function _createThreadPanel() {
   const body = document.createElement('div');
   body.id = 'thread-body';
   body.className = 'h-thread-body';
+
+  // Root message section (inside scroll — scrolls with replies)
+  const rootSection = document.createElement('div');
+  rootSection.id = 'thread-root-section';
+  rootSection.className = 'h-thread-root-section';
+  body.appendChild(rootSection);
+
   scroll.appendChild(body);
   panel.appendChild(scroll);
 
