@@ -316,18 +316,21 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'compact_start') {
     if (msg.room_id !== currentRoomId) return;
+    if (msg.thread_id && (typeof activeThreadId === 'undefined' || activeThreadId !== msg.thread_id)) return;
     if (typeof showThreadCompactBar === 'function') showThreadCompactBar(msg.participants);
     return;
   }
 
   if (msg.type === 'compact_progress') {
     if (msg.room_id !== currentRoomId) return;
+    if (msg.thread_id && (typeof activeThreadId === 'undefined' || activeThreadId !== msg.thread_id)) return;
     if (typeof updateThreadCompactBar === 'function') updateThreadCompactBar(msg.completed_participant_ids);
     return;
   }
 
   if (msg.type === 'compact_done') {
     if (msg.room_id !== currentRoomId) return;
+    if (msg.thread_id && (typeof activeThreadId === 'undefined' || activeThreadId !== msg.thread_id)) return;
     if (typeof hideThreadCompactBar === 'function') hideThreadCompactBar();
     return;
   }

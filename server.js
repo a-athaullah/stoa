@@ -3710,7 +3710,17 @@ Write-Host "Logs   : pm2 logs $AgentName"
         if (replied) m.reply_msg = { content: replied.content?.substring(0, 300), actor_name: replied.actor_name };
       }
     }
-    return json(res, { thread_id: rootId, root: rootMsg, messages });
+    const compactKey = `${roomId}:${rootId}`;
+    const compactState = pendingCompacts.get(compactKey);
+    const result = { thread_id: rootId, root: rootMsg, messages };
+    if (compactState) {
+      result.is_compacting = true;
+      result.compacting_participants = compactState.targets || [];
+      result.compact_total = compactState.total;
+      result.compact_completed = compactState.completed;
+      result.compact_completed_participant_ids = compactState.completedParticipantIds || [];
+    }
+    return json(res, result);
   }
 
   // ── System prompt endpoints ─────────────────────────────────────────────
@@ -4161,11 +4171,14 @@ wss.on('connection', (ws, req) => {
         m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active, participant_ids: m.thread_participant_ids ? m.thread_participant_ids.split(',').map(Number) : [], has_error: !!m.thread_has_error, sub_agent_participants: sap };
       });
       ws.send(JSON.stringify({ type: 'history', messages: enriched }));
-      // Restore compact state if room is currently compacting
-      if (pendingCompacts.has(subscribedRoom)) {
-        const cs = pendingCompacts.get(subscribedRoom);
-        ws.send(JSON.stringify({ type: 'compact_start', room_id: subscribedRoom, total: cs.total, participants: cs.targets || [] }));
-        if (cs.completed > 0) ws.send(JSON.stringify({ type: 'compact_progress', room_id: subscribedRoom, completed: cs.completed, total: cs.total, completed_participant_ids: cs.completedParticipantIds || [] }));
+      // Restore compact state if room is currently compacting (room-level and thread-level)
+      const roomPrefix = `${subscribedRoom}:`;
+      for (const [compactKey, cs] of pendingCompacts) {
+        if (compactKey === String(subscribedRoom) || compactKey.startsWith(roomPrefix)) {
+          const threadId = compactKey.includes(':') ? parseInt(compactKey.split(':')[1]) : null;
+          ws.send(JSON.stringify({ type: 'compact_start', room_id: subscribedRoom, thread_id: threadId, total: cs.total, participants: cs.targets || [] }));
+          if (cs.completed > 0) ws.send(JSON.stringify({ type: 'compact_progress', room_id: subscribedRoom, thread_id: threadId, completed: cs.completed, total: cs.total, completed_participant_ids: cs.completedParticipantIds || [] }));
+        }
       }
       // R29: push display settings (room-scoped + global defaults)
       const roomDisplayRows = db.prepare("SELECT key_name, value FROM settings WHERE scope='room' AND scope_id=? AND key_name IN ('tool_progress','live_status','cleanup_progress')").all(subscribedRoom);
