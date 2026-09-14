@@ -2070,6 +2070,20 @@ html.dark .h-thread-ctrl-btn { color: var(--h-ink-mute); }
 html.dark .h-thread-ctrl-btn:hover { background: var(--h-hover); color: var(--h-ink); }
 .h-thread-back-btn { display: none; }
 
+.h-thread-root-section {
+  flex: 0 0 auto;
+  background: var(--h-surface-hi, var(--h-surface));
+  border-bottom: 1px solid var(--h-hair-soft);
+  box-shadow: 0 3px 12px rgba(0,0,0,0.06);
+  position: relative;
+  z-index: 1;
+}
+
+.h-thread-root-section .h-thread-divider {
+  padding: 8px 16px 10px;
+  border-bottom: none;
+}
+
 .h-thread-scroll {
   flex: 1;
   overflow-y: auto;
@@ -2187,7 +2201,6 @@ html.dark .h-thread-ctrl-btn:hover { background: var(--h-hover); color: var(--h-
   gap: 10px;
   padding: 12px 16px 10px;
   background: var(--h-surface-hi, var(--h-surface));
-  border-bottom: 1px solid var(--h-hair-soft);
 }
 .h-thread-root-row .h-bubble {
   background: none !important;
