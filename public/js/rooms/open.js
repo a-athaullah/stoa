@@ -8,6 +8,7 @@ async function openRoom(room) {
     if (typeof setAppNavActive === 'function') setAppNavActive('inbox');
   }
   closeRoomSearch();
+  if (typeof closeThread === 'function') closeThread();
   // Save draft from previous room
   saveDraft(currentRoomId);
   if (window.stopVoiceRecognition) window.stopVoiceRecognition();

@@ -58,6 +58,7 @@ async function openThread(rootId) {
 
   panel.classList.add('open');
   document.getElementById('chat-inner')?.classList.add('has-thread');
+  document.body.classList.add('thread-open');
 
   clearThreadReply();
   _updateRoomHeaderThread(rootId);
@@ -80,6 +81,7 @@ function closeThread() {
   const panel = _getThreadPanel();
   if (panel) panel.classList.remove('open');
   document.getElementById('chat-inner')?.classList.remove('has-thread');
+  document.body.classList.remove('thread-open');
 
   _updateRoomHeaderThread(null);
 
