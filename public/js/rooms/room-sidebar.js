@@ -75,6 +75,7 @@ function renderRoomSidebar(room, participants) {
       const topOffset = header ? header.getBoundingClientRect().bottom + 8 : 56;
       pop.style.top = topOffset + 'px';
       pop.style.maxHeight = (window.innerHeight - topOffset - 12) + 'px';
+      pop.style.overflow = 'hidden';
     });
 
     setTimeout(() => {
@@ -841,15 +842,20 @@ function renderRoomSidebar(room, participants) {
     tabBar.append(tabSysBtn, tabMemBtn);
     pop.appendChild(tabBar);
 
-    const sysPane = document.createElement('div');
-    const memPane = document.createElement('div'); memPane.style.display = 'none';
+    // flex layout so panes stretch to fill available height
+    pop.style.display = 'flex';
+    pop.style.flexDirection = 'column';
+
+    const PANE_CSS = 'flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden';
+    const sysPane = document.createElement('div'); sysPane.style.cssText = PANE_CSS;
+    const memPane = document.createElement('div'); memPane.style.cssText = PANE_CSS; memPane.style.display = 'none';
     pop.appendChild(sysPane);
     pop.appendChild(memPane);
 
     const switchTab = (tab) => {
       const onSys = tab === 'system';
-      sysPane.style.display = onSys ? '' : 'none';
-      memPane.style.display = onSys ? 'none' : '';
+      sysPane.style.display = onSys ? 'flex' : 'none';
+      memPane.style.display = onSys ? 'none' : 'flex';
       tabSysBtn.style.cssText = TAB_BASE + ';' + (onSys ? TAB_ON : TAB_OFF);
       tabMemBtn.style.cssText = TAB_BASE + ';' + (onSys ? TAB_OFF : TAB_ON);
     };
@@ -857,8 +863,8 @@ function renderRoomSidebar(room, participants) {
     tabMemBtn.onclick = () => switchTab('memory');
 
     // ── Shared: build a render/edit field inside a pane
-    const RENDER_WRAP_CSS = 'border:1px solid var(--h-border);border-radius:8px;padding:10px 14px;background:var(--h-surface);min-height:200px;font-size:13px;line-height:1.6;color:var(--h-ink);word-break:break-word';
-    const TA_CSS = 'width:100%;box-sizing:border-box;min-height:200px;resize:vertical;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;padding:8px 10px;border:1px solid var(--h-border);border-radius:8px;background:var(--h-surface);color:var(--h-ink);outline:none';
+    const RENDER_WRAP_CSS = 'border:1px solid var(--h-border);border-radius:8px;padding:10px 14px;background:var(--h-surface);flex:1;overflow-y:auto;font-size:13px;line-height:1.6;color:var(--h-ink);word-break:break-word';
+    const TA_CSS = 'width:100%;box-sizing:border-box;flex:1;resize:none;min-height:0;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;padding:8px 10px;border:1px solid var(--h-border);border-radius:8px;background:var(--h-surface);color:var(--h-ink);outline:none';
     const BTN_CSS = 'background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12px;padding:4px 14px;cursor:pointer';
     const CANCEL_CSS = 'background:transparent;border:none;color:var(--h-ink-faint);font-family:var(--h-sans);font-size:12px;padding:4px 8px;cursor:pointer';
     const COUNTER_CSS = 'font-size:11.5px;color:var(--h-ink-faint);font-variant-numeric:tabular-nums';
@@ -867,7 +873,7 @@ function renderRoomSidebar(room, participants) {
       let content = initialContent;
 
       const outer = document.createElement('div');
-      outer.style.cssText = 'position:relative';
+      outer.style.cssText = 'position:relative;flex:1;display:flex;flex-direction:column;min-height:0';
 
       // render view
       const renderWrap = document.createElement('div');
@@ -880,11 +886,12 @@ function renderRoomSidebar(room, participants) {
 
       // edit view
       const editWrap = document.createElement('div');
+      editWrap.style.cssText = 'flex:1;display:flex;flex-direction:column;min-height:0';
       const ta = document.createElement('textarea');
       ta.placeholder = placeholder; ta.maxLength = limit;
       ta.style.cssText = TA_CSS;
 
-      const footer = document.createElement('div'); footer.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-top:6px';
+      const footer = document.createElement('div'); footer.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-top:6px;flex:0 0 auto';
       const counter = document.createElement('span'); counter.style.cssText = COUNTER_CSS;
       const updateCounter = () => { const used = ta.value.length; const pct = used / limit; counter.textContent = `${used} / ${limit}`; counter.style.color = pct > .9 ? 'oklch(55% .18 27)' : pct > .75 ? 'oklch(60% .15 80)' : 'var(--h-ink-faint)'; };
       ta.addEventListener('input', updateCounter);
@@ -901,14 +908,14 @@ function renderRoomSidebar(room, participants) {
           ? renderMarkdown(content)
           : '<span style="color:var(--h-ink-faint);font-style:italic;font-size:13px">empty — click Edit to add content</span>';
         addCopyButtons(renderWrap);
-        renderWrap.style.display = ''; editBtn.style.display = '';
+        renderWrap.style.display = 'block'; editBtn.style.display = '';
         editWrap.style.display = 'none';
       };
 
       const toEdit = () => {
         ta.value = content; updateCounter();
         renderWrap.style.display = 'none'; editBtn.style.display = 'none';
-        editWrap.style.display = '';
+        editWrap.style.display = 'flex';
         requestAnimationFrame(() => ta.focus());
       };
 
