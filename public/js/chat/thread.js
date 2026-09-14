@@ -186,11 +186,9 @@ function _createThreadPanel() {
   contextBar.className = 'h-context-bar';
   panel.appendChild(contextBar);
 
-  // Root message section (sticky, outside scroll)
-  const rootSection = document.createElement('div');
-  rootSection.id = 'thread-root-section';
-  rootSection.className = 'h-thread-root-section';
-  panel.appendChild(rootSection);
+  // Scroll wrapper (position: relative so float buttons can anchor inside)
+  const scrollWrapper = document.createElement('div');
+  scrollWrapper.className = 'h-thread-scroll-wrapper';
 
   // Scroll container + inner
   const scroll = document.createElement('div');
@@ -200,12 +198,44 @@ function _createThreadPanel() {
   const body = document.createElement('div');
   body.id = 'thread-body';
   body.className = 'h-thread-body';
+
+  // Root message section (inside scroll — scrolls with replies)
+  const rootSection = document.createElement('div');
+  rootSection.id = 'thread-root-section';
+  rootSection.className = 'h-thread-root-section';
+  body.appendChild(rootSection);
+
   scroll.appendChild(body);
-  panel.appendChild(scroll);
+  scrollWrapper.appendChild(scroll);
+
+  // Floating scroll buttons
+  const scrollBtns = document.createElement('div');
+  scrollBtns.className = 'h-thread-scroll-btns';
+
+  const goTopBtn = document.createElement('button');
+  goTopBtn.className = 'h-thread-scroll-btn';
+  goTopBtn.id = 'thread-go-top';
+  goTopBtn.title = 'Go to top';
+  goTopBtn.setAttribute('aria-label', 'Scroll to top');
+  goTopBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>';
+  goTopBtn.onclick = () => scroll.scrollTo({ top: 0, behavior: 'smooth' });
+
+  const goBottomBtn = document.createElement('button');
+  goBottomBtn.className = 'h-thread-scroll-btn';
+  goBottomBtn.id = 'thread-go-bottom';
+  goBottomBtn.title = 'Go to bottom';
+  goBottomBtn.setAttribute('aria-label', 'Scroll to bottom');
+  goBottomBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>';
+  goBottomBtn.onclick = () => scroll.scrollTo({ top: scroll.scrollHeight, behavior: 'smooth' });
+
+  scrollBtns.append(goTopBtn, goBottomBtn);
+  scrollWrapper.appendChild(scrollBtns);
+  panel.appendChild(scrollWrapper);
 
   // Load older on scroll to top
   scroll.addEventListener('scroll', () => {
     if (scroll.scrollTop < 120) _loadOlderThreadMessages();
+    _syncThreadScrollBtns(scroll);
   });
 
   // Footer: dedicated thread composer (same features as room composer)
@@ -1002,6 +1032,17 @@ function _scrollThreadToBottom(force) {
   if (force || scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 120) {
     scroll.scrollTop = scroll.scrollHeight;
   }
+  _syncThreadScrollBtns(scroll);
+}
+
+function _syncThreadScrollBtns(scroll) {
+  const topBtn = document.getElementById('thread-go-top');
+  const botBtn = document.getElementById('thread-go-bottom');
+  if (!topBtn || !botBtn) return;
+  const atTop = scroll.scrollTop <= 50;
+  const atBottom = scroll.scrollTop >= scroll.scrollHeight - scroll.clientHeight - 50;
+  topBtn.classList.toggle('visible', !atTop);
+  botBtn.classList.toggle('visible', !atBottom);
 }
 
 // ── Thread header ─────────────────────────────────────────────────────────────

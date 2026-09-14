@@ -2093,9 +2093,6 @@ html.dark .h-thread-ctrl-btn:hover { background: var(--h-hover); color: var(--h-
   flex: 0 0 auto;
   background: var(--h-surface-hi, var(--h-surface));
   border-bottom: 1px solid var(--h-hair-soft);
-  box-shadow: 0 3px 12px rgba(0,0,0,0.06);
-  position: relative;
-  z-index: 1;
 }
 
 .h-thread-root-section .h-thread-divider {
@@ -2103,11 +2100,55 @@ html.dark .h-thread-ctrl-btn:hover { background: var(--h-hover); color: var(--h-
   border-bottom: none;
 }
 
+.h-thread-scroll-wrapper {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
 .h-thread-scroll {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
+}
+
+.h-thread-scroll-btns {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.h-thread-scroll-btn {
+  pointer-events: auto;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--h-hair-soft);
+  border-radius: 8px;
+  background: var(--h-surface);
+  color: var(--h-ink-mute);
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.10);
+  transition: background 0.12s, color 0.12s, opacity 0.15s;
+  opacity: 0;
+}
+.h-thread-scroll-btn.visible {
+  display: flex;
+  opacity: 1;
+}
+.h-thread-scroll-btn:hover {
+  background: var(--h-surface-hi);
+  color: var(--h-ink);
 }
 
 .h-thread-body {
