@@ -865,6 +865,10 @@ async function _loadThread(rootId) {
     const root = resp && !Array.isArray(resp) ? resp.root : null;
     const msgs = resp && !Array.isArray(resp) ? (resp.messages || []) : (Array.isArray(resp) ? resp.filter(m => m.id !== rootId) : []);
 
+    if (resp && resp.is_compacting && Array.isArray(resp.compacting_participants)) {
+      showThreadCompactBar(resp.compacting_participants);
+    }
+
     const rootSection = document.getElementById('thread-root-section');
     if (rootSection) rootSection.innerHTML = '';
     body.innerHTML = '';
