@@ -830,13 +830,35 @@ function renderRoomSidebar(room, participants) {
 
   function buildMemoryPanel(pop) {
     pop.appendChild(popTitle('Memory'));
-    pop.appendChild(Object.assign(document.createElement('div'), {
-      style: 'font-size:12px;color:var(--h-ink-faint);margin-bottom:10px',
-      textContent: 'context injected into agent sessions in this room',
-    }));
-    const body = document.createElement('div');
+
+    // tab bar: Memory | System Prompt
+    const TAB_BASE = 'background:transparent;border:none;font-family:var(--h-sans);font-size:12.5px;padding:4px 12px;cursor:pointer;border-radius:999px;transition:background .15s,color .15s';
+    const TAB_ON = 'color:var(--h-ink);background:var(--h-surface-raised,var(--h-surface))';
+    const TAB_OFF = 'color:var(--h-ink-faint)';
+    const tabBar = document.createElement('div');
+    tabBar.style.cssText = 'display:flex;gap:2px;margin-bottom:12px;border:1px solid var(--h-border);border-radius:999px;padding:3px;background:var(--h-bg)';
+    const tabMemBtn = document.createElement('button'); tabMemBtn.textContent = 'Memory'; tabMemBtn.style.cssText = TAB_BASE + ';' + TAB_ON;
+    const tabSysBtn = document.createElement('button'); tabSysBtn.textContent = 'System Prompt'; tabSysBtn.style.cssText = TAB_BASE + ';' + TAB_OFF;
+    tabBar.append(tabMemBtn, tabSysBtn);
+    pop.appendChild(tabBar);
+
+    const memPane = document.createElement('div');
+    const sysPane = document.createElement('div'); sysPane.style.display = 'none';
+    pop.appendChild(memPane);
+    pop.appendChild(sysPane);
+
+    const switchTab = (tab) => {
+      const onMem = tab === 'memory';
+      memPane.style.display = onMem ? '' : 'none';
+      sysPane.style.display = onMem ? 'none' : '';
+      tabMemBtn.style.cssText = TAB_BASE + ';' + (onMem ? TAB_ON : TAB_OFF);
+      tabSysBtn.style.cssText = TAB_BASE + ';' + (onMem ? TAB_OFF : TAB_ON);
+    };
+    tabMemBtn.onclick = () => switchTab('memory');
+    tabSysBtn.onclick = () => switchTab('system');
+
+    const body = memPane;
     body.innerHTML = '<div style="font-size:12.5px;color:var(--h-ink-faint)">loading…</div>';
-    pop.appendChild(body);
 
     (async () => {
       try {
@@ -894,6 +916,41 @@ function renderRoomSidebar(room, participants) {
         };
         memFooter.append(memCounter, memSave); body.append(memTa, memFooter);
       } catch { body.innerHTML = '<div style="font-size:12.5px;color:#b35a4b">failed to load</div>'; }
+    })();
+
+    // System Prompt pane
+    const SP_LIMIT = 65536;
+    sysPane.innerHTML = '<div style="font-size:12.5px;color:var(--h-ink-faint)">loading…</div>';
+    (async () => {
+      try {
+        const r = await fetch(`/api/rooms/${room.id}/system-prompt`);
+        if (!r.ok) { sysPane.innerHTML = '<div style="font-size:12.5px;color:#b35a4b">failed to load</div>'; return; }
+        const data = await r.json();
+        sysPane.innerHTML = '';
+
+        const spDesc = document.createElement('div');
+        spDesc.style.cssText = 'font-size:12px;color:var(--h-ink-faint);margin-bottom:10px';
+        spDesc.textContent = 'custom instructions prepended to agent sessions in this room';
+        sysPane.appendChild(spDesc);
+
+        const spTa = document.createElement('textarea');
+        spTa.value = data.system_prompt || ''; spTa.placeholder = 'e.g. You are a code reviewer. Focus on security issues…'; spTa.maxLength = SP_LIMIT;
+        spTa.style.cssText = 'width:100%;box-sizing:border-box;min-height:120px;resize:vertical;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;padding:8px 10px;border:1px solid var(--h-border);border-radius:8px;background:var(--h-surface);color:var(--h-ink);outline:none;margin-top:2px';
+
+        const spFooter = document.createElement('div'); spFooter.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-top:6px';
+        const spCounter = document.createElement('span'); spCounter.style.cssText = 'font-size:11.5px;color:var(--h-ink-faint);font-variant-numeric:tabular-nums';
+        const updateSpCounter = () => { const used = spTa.value.length; const pct = used / SP_LIMIT; spCounter.textContent = `${used} / ${SP_LIMIT}`; spCounter.style.color = pct > .9 ? 'oklch(55% .18 27)' : pct > .75 ? 'oklch(60% .15 80)' : 'var(--h-ink-faint)'; };
+        updateSpCounter(); spTa.addEventListener('input', updateSpCounter);
+
+        const spSave = document.createElement('button'); spSave.style.cssText = 'background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12px;padding:4px 14px;cursor:pointer'; spSave.textContent = 'save';
+        spSave.onclick = async () => {
+          spSave.disabled = true;
+          try { const rr = await fetch(`/api/rooms/${room.id}/system-prompt`, { method:'PUT', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ system_prompt: spTa.value }) }); if (rr.ok) showToast('System prompt saved'); else { const e = await rr.json().catch(() => ({})); showToast(e.error || 'Failed to save', { error:true }); } }
+          catch { showToast('Failed to save', { error:true }); }
+          spSave.disabled = false;
+        };
+        spFooter.append(spCounter, spSave); sysPane.append(spTa, spFooter);
+      } catch { sysPane.innerHTML = '<div style="font-size:12.5px;color:#b35a4b">failed to load</div>'; }
     })();
   }
 }
