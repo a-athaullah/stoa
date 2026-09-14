@@ -33,6 +33,9 @@ function isThreadOpen() { return activeThreadId !== null; }
 async function openThread(rootId) {
   if (activeThreadId === rootId) return;
 
+  Object.keys(threadContextState).forEach(k => delete threadContextState[k]);
+  updateThreadContextBar();
+
   activeThreadId = rootId;
 
   threadProcessingMessages.clear();
