@@ -831,14 +831,14 @@ function renderRoomSidebar(room, participants) {
   function buildMemoryPanel(pop) {
     pop.appendChild(popTitle('Memory'));
 
-    // tab bar: Memory | System Prompt
-    const TAB_BASE = 'background:transparent;border:none;font-family:var(--h-sans);font-size:12.5px;padding:4px 12px;cursor:pointer;border-radius:999px;transition:background .15s,color .15s';
-    const TAB_ON = 'color:var(--h-ink);background:var(--h-surface-raised,var(--h-surface))';
-    const TAB_OFF = 'color:var(--h-ink-faint)';
+    // ── Tab bar
+    const TAB_BTN_BASE = 'background:transparent;border:none;font-family:var(--h-sans);font-size:12.5px;padding:4px 12px;cursor:pointer;border-radius:999px;transition:background .15s,color .15s';
+    const TAB_ACTIVE = 'color:var(--h-ink);background:var(--h-surface-raised,var(--h-surface))';
+    const TAB_IDLE = 'color:var(--h-ink-faint)';
     const tabBar = document.createElement('div');
     tabBar.style.cssText = 'display:flex;gap:2px;margin-bottom:12px;border:1px solid var(--h-border);border-radius:999px;padding:3px;background:var(--h-bg)';
-    const tabMemBtn = document.createElement('button'); tabMemBtn.textContent = 'Memory'; tabMemBtn.style.cssText = TAB_BASE + ';' + TAB_ON;
-    const tabSysBtn = document.createElement('button'); tabSysBtn.textContent = 'System Prompt'; tabSysBtn.style.cssText = TAB_BASE + ';' + TAB_OFF;
+    const tabMemBtn = document.createElement('button'); tabMemBtn.textContent = 'Memory'; tabMemBtn.style.cssText = TAB_BTN_BASE + ';' + TAB_ACTIVE;
+    const tabSysBtn = document.createElement('button'); tabSysBtn.textContent = 'System Prompt'; tabSysBtn.style.cssText = TAB_BTN_BASE + ';' + TAB_IDLE;
     tabBar.append(tabMemBtn, tabSysBtn);
     pop.appendChild(tabBar);
 
@@ -847,16 +847,21 @@ function renderRoomSidebar(room, participants) {
     pop.appendChild(memPane);
     pop.appendChild(sysPane);
 
-    const switchTab = (tab) => {
-      const onMem = tab === 'memory';
-      memPane.style.display = onMem ? '' : 'none';
-      sysPane.style.display = onMem ? 'none' : '';
-      tabMemBtn.style.cssText = TAB_BASE + ';' + (onMem ? TAB_ON : TAB_OFF);
-      tabSysBtn.style.cssText = TAB_BASE + ';' + (onMem ? TAB_OFF : TAB_ON);
-    };
+    function switchTab(tab) {
+      if (tab === 'memory') {
+        memPane.style.display = ''; sysPane.style.display = 'none';
+        tabMemBtn.style.cssText = TAB_BTN_BASE + ';' + TAB_ACTIVE;
+        tabSysBtn.style.cssText = TAB_BTN_BASE + ';' + TAB_IDLE;
+      } else {
+        memPane.style.display = 'none'; sysPane.style.display = '';
+        tabMemBtn.style.cssText = TAB_BTN_BASE + ';' + TAB_IDLE;
+        tabSysBtn.style.cssText = TAB_BTN_BASE + ';' + TAB_ACTIVE;
+      }
+    }
     tabMemBtn.onclick = () => switchTab('memory');
     tabSysBtn.onclick = () => switchTab('system');
 
+    // ── Memory pane
     const body = memPane;
     body.innerHTML = '<div style="font-size:12.5px;color:var(--h-ink-faint)">loading…</div>';
 
@@ -918,7 +923,7 @@ function renderRoomSidebar(room, participants) {
       } catch { body.innerHTML = '<div style="font-size:12.5px;color:#b35a4b">failed to load</div>'; }
     })();
 
-    // System Prompt pane
+    // ── System Prompt pane
     const SP_LIMIT = 65536;
     sysPane.innerHTML = '<div style="font-size:12.5px;color:var(--h-ink-faint)">loading…</div>';
     (async () => {

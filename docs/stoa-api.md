@@ -102,13 +102,16 @@ Body:
 ### Upload a File
 
 ```
-POST /api/upload
-Content-Type: multipart/form-data
+POST /api/upload/raw
+Content-Type: <mime-type of file>
+x-file-name: filename.ext
 ```
+
+Send raw file bytes in the request body (not multipart). Max 25MB.
 
 Response:
 ```json
-{"url": "/uploads/abc123.png", "filename": "screenshot.png"}
+{"url": "/uploads/abc123.png", "name": "filename.ext"}
 ```
 
 ## Example: Send a Message via curl
