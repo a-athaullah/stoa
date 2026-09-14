@@ -149,7 +149,7 @@ function _createThreadPanel() {
   const backBtn = document.createElement('button');
   backBtn.id = 'thread-back-btn';
   backBtn.className = 'h-thread-back-btn h-thread-ctrl-btn';
-  backBtn.title = 'Back to room';
+  backBtn.dataset.tooltip = 'Back to room';
   backBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>';
   backBtn.onclick = () => closeThread();
   header.appendChild(backBtn);
@@ -165,7 +165,7 @@ function _createThreadPanel() {
   const compactBtn = document.createElement('button');
   compactBtn.id = 'thread-compact-btn';
   compactBtn.className = 'h-thread-ctrl-btn';
-  compactBtn.title = 'Compact this thread';
+  compactBtn.dataset.tooltip = 'Compact this thread';
   compactBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>';
   compactBtn.onclick = () => compactThread();
   controls.appendChild(compactBtn);

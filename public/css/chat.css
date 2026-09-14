@@ -2068,6 +2068,28 @@ html.dark .h-thread-panel { background: var(--h-bg); }
 }
 html.dark .h-thread-ctrl-btn { color: var(--h-ink-mute); }
 html.dark .h-thread-ctrl-btn:hover { background: var(--h-hover); color: var(--h-ink); }
+.h-thread-ctrl-btn[data-tooltip] { position: relative; }
+.h-thread-ctrl-btn[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--h-surface);
+  border: 1px solid var(--h-border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-family: var(--h-sans);
+  color: var(--h-ink);
+  white-space: nowrap;
+  box-shadow: 0 2px 8px oklch(0% 0 0 / .08);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 9999;
+}
+.h-thread-ctrl-btn[data-tooltip]:hover::after { opacity: 1; }
 .h-thread-back-btn { display: none; }
 
 .h-thread-root-section {
