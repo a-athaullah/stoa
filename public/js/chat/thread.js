@@ -740,6 +740,7 @@ function appendThreadMessage(m, container) {
 
   if (m.state === 'streaming' || m.state === 'requesting') {
     showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, container);
+    setThreadProcessing(m.id);
     return;
   }
 

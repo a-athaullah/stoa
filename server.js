@@ -704,6 +704,8 @@ const CONNECTOR_MEDIA_DIR = path.join(__dirname, 'connector-media');
   if (human) db.prepare('UPDATE actors SET name=? WHERE id=?').run(humanName, human.id);
 }
 
+const DEFAULT_BASE_SYSTEM_PROMPT = `You are an AI agent operating on the Stoa platform. You have access to the following environment variables: STOA_URL, STOA_ROOM_ID, STOA_ACTOR_ID, STOA_SECRET, STOA_THREAD_ID. To derive the HTTP base URL from the WebSocket URL: BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|"). Full API documentation (endpoints for sending messages, updating memory, updating system prompt, uploading files) is available by fetching: curl -s "$BASE_URL/api/docs/stoa-api.md"`;
+
 // Files yang boleh di-serve sebagai client update
 const CLIENT_FILES = new Set(['stoa.js', 'claude-session.js']);
 
@@ -1045,7 +1047,7 @@ function parseDocFilename(name) {
 
 // ─── Auth helpers ────────────────────────────────────────────────────────────
 
-const AUTH_EXEMPT = new Set(['/api/auth/login', '/favicon.ico']);
+const AUTH_EXEMPT = new Set(['/api/auth/login', '/favicon.ico', '/api/docs/stoa-api.md']);
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const IS_PROD = process.env.NODE_ENV === 'production';
 
@@ -2366,6 +2368,23 @@ const server = http.createServer(async (req, res) => {
     const result = { ...DISPLAY_DEFAULTS };
     for (const r of rows) result[r.key_name] = r.value;
     return json(res, result);
+  }
+
+  // ── Base system prompt (global, prepended to every room prompt) ──
+  if (req.method === 'GET' && url.pathname === '/api/settings/base-system-prompt') {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    const content = getSetting('base_system_prompt') || DEFAULT_BASE_SYSTEM_PROMPT;
+    return json(res, { content });
+  }
+
+  if (req.method === 'PUT' && url.pathname === '/api/settings/base-system-prompt') {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    const body = parseJsonBody(await readBody(req));
+    if (!body) return json(res, { error: 'Invalid JSON' }, 400);
+    if (typeof body.content !== 'string') return json(res, { error: 'content must be a string' }, 400);
+    if (body.content.length > 65536) return json(res, { error: 'content exceeds 64KB limit' }, 400);
+    setSetting('base_system_prompt', body.content);
+    return json(res, { content: body.content });
   }
 
   // ── R26: DB health ──
@@ -6302,8 +6321,12 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         ...a,
         url: a.url?.startsWith('/') ? triggerBaseUrl + a.url : a.url,
       }));
-      const roomSysPrompt = db.prepare('SELECT system_prompt FROM rooms WHERE id=?').get(roomId)?.system_prompt || null;
-      const sysPromptHash = roomSysPrompt ? require('crypto').createHash('sha256').update(roomSysPrompt).digest('hex').slice(0, 16) : null;
+      const roomSysPromptRaw = db.prepare('SELECT system_prompt FROM rooms WHERE id=?').get(roomId)?.system_prompt || null;
+      const baseSysPrompt = getSetting('base_system_prompt') || DEFAULT_BASE_SYSTEM_PROMPT;
+      const roomSysPrompt = roomSysPromptRaw
+        ? baseSysPrompt + '\n\n---\n\n' + roomSysPromptRaw
+        : baseSysPrompt;
+      const sysPromptHash = require('crypto').createHash('sha256').update(roomSysPrompt).digest('hex').slice(0, 16);
       agentWs.send(JSON.stringify({
         type: 'agent_trigger',
         room_id: roomId,

@@ -69,13 +69,12 @@ function renderRoomSidebar(room, participants) {
     const sidebarRect = sidebar.getBoundingClientRect();
     pop.style.right = (window.innerWidth - sidebarRect.left + 4) + 'px';
 
-    // Clamp vertically
+    // Anchor below chat header, stretch to bottom of viewport
     requestAnimationFrame(() => {
-      const popH = pop.offsetHeight;
-      let top = btnRect.top;
-      if (top + popH > window.innerHeight - 12) top = window.innerHeight - popH - 12;
-      if (top < 8) top = 8;
-      pop.style.top = top + 'px';
+      const header = document.getElementById('chat-header');
+      const topOffset = header ? header.getBoundingClientRect().bottom + 8 : 56;
+      pop.style.top = topOffset + 'px';
+      pop.style.maxHeight = (window.innerHeight - topOffset - 12) + 'px';
     });
 
     setTimeout(() => {
@@ -829,14 +828,118 @@ function renderRoomSidebar(room, participants) {
   }
 
   function buildMemoryPanel(pop) {
-    pop.appendChild(popTitle('Memory'));
-    pop.appendChild(Object.assign(document.createElement('div'), {
-      style: 'font-size:12px;color:var(--h-ink-faint);margin-bottom:10px',
-      textContent: 'context injected into agent sessions in this room',
-    }));
-    const body = document.createElement('div');
+    pop.appendChild(popTitle('System Prompt & Memory'));
+
+    // ── Tab bar — System Prompt first
+    const TAB_BASE = 'background:transparent;border:none;font-family:var(--h-sans);font-size:12.5px;padding:4px 12px;cursor:pointer;border-radius:999px;transition:background .15s,color .15s';
+    const TAB_ON = 'color:var(--h-ink);background:var(--h-surface-raised,var(--h-surface))';
+    const TAB_OFF = 'color:var(--h-ink-faint)';
+    const tabBar = document.createElement('div');
+    tabBar.style.cssText = 'display:flex;gap:2px;margin-bottom:12px;border:1px solid var(--h-border);border-radius:999px;padding:3px;background:var(--h-bg)';
+    const tabSysBtn = document.createElement('button'); tabSysBtn.textContent = 'System Prompt'; tabSysBtn.style.cssText = TAB_BASE + ';' + TAB_ON;
+    const tabMemBtn = document.createElement('button'); tabMemBtn.textContent = 'Memory'; tabMemBtn.style.cssText = TAB_BASE + ';' + TAB_OFF;
+    tabBar.append(tabSysBtn, tabMemBtn);
+    pop.appendChild(tabBar);
+
+    // flex layout so panes stretch to fill available height
+    pop.style.display = 'flex';
+    pop.style.flexDirection = 'column';
+    pop.style.overflow = 'hidden';
+
+    const PANE_CSS = 'flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden';
+    const sysPane = document.createElement('div'); sysPane.style.cssText = PANE_CSS;
+    const memPane = document.createElement('div'); memPane.style.cssText = PANE_CSS; memPane.style.display = 'none';
+    pop.appendChild(sysPane);
+    pop.appendChild(memPane);
+
+    const switchTab = (tab) => {
+      const onSys = tab === 'system';
+      sysPane.style.display = onSys ? 'flex' : 'none';
+      memPane.style.display = onSys ? 'none' : 'flex';
+      tabSysBtn.style.cssText = TAB_BASE + ';' + (onSys ? TAB_ON : TAB_OFF);
+      tabMemBtn.style.cssText = TAB_BASE + ';' + (onSys ? TAB_OFF : TAB_ON);
+    };
+    tabSysBtn.onclick = () => switchTab('system');
+    tabMemBtn.onclick = () => switchTab('memory');
+
+    // ── Shared: build a render/edit field inside a pane
+    const RENDER_WRAP_CSS = 'border:1px solid var(--h-border);border-radius:8px;padding:10px 14px;background:var(--h-surface);flex:1;overflow-y:auto;font-size:13px;line-height:1.6;color:var(--h-ink);word-break:break-word';
+    const TA_CSS = 'width:100%;box-sizing:border-box;flex:1;resize:none;min-height:0;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;padding:8px 10px;border:1px solid var(--h-border);border-radius:8px;background:var(--h-surface);color:var(--h-ink);outline:none';
+    const BTN_CSS = 'background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12px;padding:4px 14px;cursor:pointer';
+    const CANCEL_CSS = 'background:transparent;border:none;color:var(--h-ink-faint);font-family:var(--h-sans);font-size:12px;padding:4px 8px;cursor:pointer';
+    const COUNTER_CSS = 'font-size:11.5px;color:var(--h-ink-faint);font-variant-numeric:tabular-nums';
+
+    function buildEditField(pane, { initialContent, limit, placeholder, onSave }) {
+      let content = initialContent;
+
+      const outer = document.createElement('div');
+      outer.style.cssText = 'position:relative;flex:1;display:flex;flex-direction:column;min-height:0';
+
+      // render view
+      const renderWrap = document.createElement('div');
+      renderWrap.className = 'h-bubble';
+      renderWrap.style.cssText = RENDER_WRAP_CSS;
+
+      const editBtn = document.createElement('button');
+      editBtn.textContent = 'Edit';
+      editBtn.style.cssText = 'position:absolute;top:8px;right:8px;background:var(--h-surface);border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:11.5px;padding:3px 10px;cursor:pointer;z-index:1';
+
+      // edit view
+      const editWrap = document.createElement('div');
+      editWrap.style.cssText = 'flex:1;display:flex;flex-direction:column;min-height:0';
+      const ta = document.createElement('textarea');
+      ta.placeholder = placeholder; ta.maxLength = limit;
+      ta.style.cssText = TA_CSS;
+
+      const footer = document.createElement('div'); footer.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-top:6px;flex:0 0 auto';
+      const counter = document.createElement('span'); counter.style.cssText = COUNTER_CSS;
+      const updateCounter = () => { const used = ta.value.length; const pct = used / limit; counter.textContent = `${used} / ${limit}`; counter.style.color = pct > .9 ? 'oklch(55% .18 27)' : pct > .75 ? 'oklch(60% .15 80)' : 'var(--h-ink-faint)'; };
+      ta.addEventListener('input', updateCounter);
+
+      const btnRow = document.createElement('div'); btnRow.style.cssText = 'display:flex;gap:6px';
+      const saveBtn = document.createElement('button'); saveBtn.textContent = 'save'; saveBtn.style.cssText = BTN_CSS;
+      const cancelBtn = document.createElement('button'); cancelBtn.textContent = 'cancel'; cancelBtn.style.cssText = CANCEL_CSS;
+      btnRow.append(saveBtn, cancelBtn);
+      footer.append(counter, btnRow);
+      editWrap.append(ta, footer);
+
+      const toRender = () => {
+        renderWrap.innerHTML = content.trim()
+          ? renderMarkdown(content)
+          : '<span style="color:var(--h-ink-faint);font-style:italic;font-size:13px">empty — click Edit to add content</span>';
+        addCopyButtons(renderWrap);
+        renderWrap.style.display = 'block'; editBtn.style.display = '';
+        editWrap.style.display = 'none';
+      };
+
+      const toEdit = () => {
+        ta.value = content; updateCounter();
+        renderWrap.style.display = 'none'; editBtn.style.display = 'none';
+        editWrap.style.display = 'flex';
+        requestAnimationFrame(() => ta.focus());
+      };
+
+      editBtn.onclick = toEdit;
+      cancelBtn.onclick = () => toRender();
+      saveBtn.onclick = async () => {
+        saveBtn.disabled = true;
+        const saved = await onSave(ta.value);
+        if (saved) { content = ta.value; toRender(); }
+        saveBtn.disabled = false;
+      };
+
+      outer.append(renderWrap, editBtn, editWrap);
+      pane.appendChild(outer);
+
+      // start in render mode if there's content, else edit mode
+      if (content.trim()) toRender(); else toEdit();
+
+      return { updateContent: (c) => { content = c; if (editWrap.style.display === 'none' || !editWrap.style.display) toRender(); } };
+    }
+
+    // ── Memory pane
+    const body = memPane;
     body.innerHTML = '<div style="font-size:12.5px;color:var(--h-ink-faint)">loading…</div>';
-    pop.appendChild(body);
 
     (async () => {
       try {
@@ -844,7 +947,6 @@ function renderRoomSidebar(room, participants) {
         if (!r.ok) { body.innerHTML = '<div style="font-size:12.5px;color:#b35a4b">failed to load</div>'; return; }
         const data = await r.json();
         body.innerHTML = '';
-        let memContent = data.content || '';
         const BUDGET = data.budget || 1800;
 
         if (data.pending_count > 0) {
@@ -867,7 +969,7 @@ function renderRoomSidebar(room, participants) {
                   const wPre = document.createElement('pre'); wPre.style.cssText = 'font-size:12px;color:var(--h-ink);white-space:pre-wrap;word-break:break-word;margin:0 0 8px'; wPre.textContent = w.proposed_content;
                   const wBtns = document.createElement('div'); wBtns.style.cssText = 'display:flex;gap:6px';
                   const appr = document.createElement('button'); appr.style.cssText = 'background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12px;padding:3px 12px;cursor:pointer'; appr.textContent = 'approve';
-                  appr.onclick = async () => { appr.disabled = true; const rr = await fetch(`/api/rooms/${room.id}/memory/pending/${w.id}/approve`, { method:'POST' }); if (rr.ok) { wRow.style.opacity = '.4'; memContent = w.proposed_content; memTa.value = memContent; updateMemCounter(); showToast('Write approved'); } else showToast('Failed to approve', { error:true }); };
+                  appr.onclick = async () => { appr.disabled = true; const rr = await fetch(`/api/rooms/${room.id}/memory/pending/${w.id}/approve`, { method:'POST' }); if (rr.ok) { wRow.style.opacity = '.4'; memField.updateContent(w.proposed_content); showToast('Write approved'); } else showToast('Failed to approve', { error:true }); };
                   const rej = document.createElement('button'); rej.style.cssText = 'background:transparent;border:none;color:var(--h-ink-faint);font-family:var(--h-sans);font-size:12px;padding:3px 8px;cursor:pointer'; rej.textContent = 'reject';
                   rej.onclick = async () => { rej.disabled = true; const rr = await fetch(`/api/rooms/${room.id}/memory/pending/${w.id}/reject`, { method:'POST' }); if (rr.ok) { wRow.style.opacity = '.4'; showToast('Write rejected'); } else showToast('Failed to reject', { error:true }); };
                   wBtns.append(appr, rej); wRow.append(wMeta, wPre, wBtns); pendingList.appendChild(wRow);
@@ -878,22 +980,48 @@ function renderRoomSidebar(room, participants) {
           banner.append(bannerTxt, reviewBtn); body.appendChild(banner); body.appendChild(pendingList);
         }
 
-        const memTa = document.createElement('textarea');
-        memTa.value = memContent; memTa.placeholder = 'Write context injected into every session in this room…'; memTa.maxLength = BUDGET;
-        memTa.style.cssText = 'width:100%;box-sizing:border-box;min-height:90px;resize:vertical;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;padding:8px 10px;border:1px solid var(--h-border);border-radius:8px;background:var(--h-surface);color:var(--h-ink);outline:none;margin-top:2px';
-        const memFooter = document.createElement('div'); memFooter.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-top:6px';
-        const memCounter = document.createElement('span'); memCounter.style.cssText = 'font-size:11.5px;color:var(--h-ink-faint);font-variant-numeric:tabular-nums';
-        const updateMemCounter = () => { const used = memTa.value.length; const pct = used / BUDGET; memCounter.textContent = `${used} / ${BUDGET}`; memCounter.style.color = pct > .9 ? 'oklch(55% .18 27)' : pct > .75 ? 'oklch(60% .15 80)' : 'var(--h-ink-faint)'; };
-        updateMemCounter(); memTa.addEventListener('input', updateMemCounter);
-        const memSave = document.createElement('button'); memSave.style.cssText = 'background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12px;padding:4px 14px;cursor:pointer'; memSave.textContent = 'save';
-        memSave.onclick = async () => {
-          memSave.disabled = true;
-          try { const rr = await fetch(`/api/rooms/${room.id}/memory`, { method:'PUT', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ content: memTa.value }) }); if (rr.ok) showToast('Memory saved'); else { const e = await rr.json().catch(() => ({})); showToast(e.error || 'Failed to save', { error:true }); } }
-          catch { showToast('Failed to save', { error:true }); }
-          memSave.disabled = false;
-        };
-        memFooter.append(memCounter, memSave); body.append(memTa, memFooter);
+        const memField = buildEditField(body, {
+          initialContent: data.content || '',
+          limit: BUDGET,
+          placeholder: 'Write context injected into every session in this room…',
+          onSave: async (val) => {
+            try {
+              const rr = await fetch(`/api/rooms/${room.id}/memory`, { method:'PUT', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ content: val }) });
+              if (rr.ok) { showToast('Memory saved'); return true; }
+              const e = await rr.json().catch(() => ({})); showToast(e.error || 'Failed to save', { error:true }); return false;
+            } catch { showToast('Failed to save', { error:true }); return false; }
+          },
+        });
       } catch { body.innerHTML = '<div style="font-size:12.5px;color:#b35a4b">failed to load</div>'; }
+    })();
+
+    // ── System Prompt pane
+    sysPane.innerHTML = '<div style="font-size:12.5px;color:var(--h-ink-faint)">loading…</div>';
+    (async () => {
+      try {
+        const r = await fetch(`/api/rooms/${room.id}/system-prompt`);
+        if (!r.ok) { sysPane.innerHTML = '<div style="font-size:12.5px;color:#b35a4b">failed to load</div>'; return; }
+        const data = await r.json();
+        sysPane.innerHTML = '';
+
+        const spDesc = document.createElement('div');
+        spDesc.style.cssText = 'font-size:12px;color:var(--h-ink-faint);margin-bottom:10px';
+        spDesc.textContent = 'custom instructions prepended to agent sessions in this room';
+        sysPane.appendChild(spDesc);
+
+        buildEditField(sysPane, {
+          initialContent: data.system_prompt || '',
+          limit: 65536,
+          placeholder: 'e.g. You are a code reviewer. Focus on security issues…',
+          onSave: async (val) => {
+            try {
+              const rr = await fetch(`/api/rooms/${room.id}/system-prompt`, { method:'PUT', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ system_prompt: val }) });
+              if (rr.ok) { showToast('System prompt saved'); return true; }
+              const e = await rr.json().catch(() => ({})); showToast(e.error || 'Failed to save', { error:true }); return false;
+            } catch { showToast('Failed to save', { error:true }); return false; }
+          },
+        });
+      } catch { sysPane.innerHTML = '<div style="font-size:12.5px;color:#b35a4b">failed to load</div>'; }
     })();
   }
 }

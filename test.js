@@ -4529,6 +4529,51 @@ async function run() {
     assert.strictEqual(r.status, 401);
   });
 
+  // ── Base system prompt + API docs ──
+  console.log('\n[Base System Prompt & API Docs]');
+
+  await test('GET /api/docs/stoa-api.md — public, no auth required', async () => {
+    const r = await fetch(`http://${HOST}:${PORT}/api/docs/stoa-api.md`);
+    assert.strictEqual(r.status, 200);
+    const text = await r.text();
+    assert.ok(text.includes('Stoa Platform API'));
+    assert.ok(text.includes('STOA_URL'));
+    assert.ok(text.includes('STOA_ACTOR_ID'));
+  });
+
+  await test('GET /api/settings/base-system-prompt — returns default', async () => {
+    const r = await req('GET', '/api/settings/base-system-prompt');
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.content.includes('Stoa platform'));
+    assert.ok(r.body.content.includes('api/docs/stoa-api.md'));
+  });
+
+  await test('PUT /api/settings/base-system-prompt — updates', async () => {
+    const r = await req('PUT', '/api/settings/base-system-prompt', { content: 'Custom base prompt' });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.content, 'Custom base prompt');
+    const r2 = await req('GET', '/api/settings/base-system-prompt');
+    assert.strictEqual(r2.body.content, 'Custom base prompt');
+  });
+
+  await test('PUT /api/settings/base-system-prompt — 64KB cap', async () => {
+    const r = await req('PUT', '/api/settings/base-system-prompt', { content: 'x'.repeat(65537) });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.body.error.includes('64KB'));
+  });
+
+  await test('GET /api/settings/base-system-prompt — unauthenticated → 401', async () => {
+    const r = await fetch(`http://${HOST}:${PORT}/api/settings/base-system-prompt`);
+    assert.strictEqual(r.status, 401);
+  });
+
+  await test('Base system prompt prepended to room system prompt in trigger payload (code check)', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    assert.ok(src.includes('DEFAULT_BASE_SYSTEM_PROMPT'), 'DEFAULT_BASE_SYSTEM_PROMPT constant must exist');
+    assert.ok(src.includes("getSetting('base_system_prompt') || DEFAULT_BASE_SYSTEM_PROMPT"), 'trigger must use getSetting with fallback');
+    assert.ok(src.includes('baseSysPrompt'), 'baseSysPrompt variable must exist in trigger');
+  });
+
   // Fase 3b: behavioral switch
   console.log('\n[Fase 3b: Behavioral Switch]');
 
