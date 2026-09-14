@@ -57,9 +57,10 @@ function buildDocsToc() {
   divider.className = 'docs-toc-divider';
   toc.appendChild(divider);
 
-  headings.forEach(h => {
+  headings.forEach((h, i) => {
     if (!h.id) {
-      h.id = h.textContent.trim().toLowerCase().replace(/[^\w]+/g, '-').replace(/^-|-$/g, '');
+      const slug = h.textContent.trim().toLowerCase().replace(/[^\w]+/g, '-').replace(/^-|-$/g, '');
+      h.id = slug || ('section-' + i);
     }
     const a = document.createElement('a');
     a.className = 'docs-toc-item' + (h.tagName === 'H3' ? ' docs-toc-h3' : '');
