@@ -13,7 +13,7 @@ async function sLoadDocsTab() {
 
 function sRenderDocsLangRow() {
   const allLangs = [...new Set(docsCatalog.flatMap(d => d.langs))].sort();
-  const sel = document.getElementById('s-docs-lang-select');
+  const sel = document.getElementById('docs-lang-select');
   sel.innerHTML = '';
   for (const lang of allLangs) {
     const opt = document.createElement('option');
@@ -31,7 +31,7 @@ function sRenderDocsLangRow() {
 }
 
 function sRenderDocsSidebar() {
-  const sidebar = document.getElementById('s-docs-sidebar');
+  const sidebar = document.getElementById('docs-file-list');
   sidebar.innerHTML = '';
   for (const doc of docsCatalog) {
     const a = document.createElement('a');
@@ -44,8 +44,46 @@ function sRenderDocsSidebar() {
   }
 }
 
+function clearDocsToc() {
+  document.querySelectorAll('#docs-file-list .docs-toc-wrap').forEach(el => el.remove());
+}
+
+function buildDocsToc() {
+  clearDocsToc();
+  const activeFile = document.querySelector('#docs-file-list .s-docs-file.active');
+  if (!activeFile) return;
+  const headings = document.querySelectorAll('#s-docs-body h2, #s-docs-body h3');
+  if (headings.length === 0) return;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'docs-toc-wrap';
+
+  const divider = document.createElement('div');
+  divider.className = 'docs-toc-divider';
+  wrap.appendChild(divider);
+
+  headings.forEach((h, i) => {
+    if (!h.id) {
+      const slug = h.textContent.trim().toLowerCase().replace(/[^\w]+/g, '-').replace(/^-|-$/g, '');
+      h.id = slug || ('section-' + i);
+    }
+    const a = document.createElement('a');
+    a.className = 'docs-toc-item' + (h.tagName === 'H3' ? ' docs-toc-h3' : '');
+    a.textContent = h.textContent;
+    a.href = '#';
+    a.addEventListener('click', e => {
+      e.preventDefault();
+      h.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    wrap.appendChild(a);
+  });
+
+  activeFile.insertAdjacentElement('afterend', wrap);
+}
+
 async function sOpenDoc(slug) {
   docsActiveSlug = slug;
+  clearDocsToc();
   document.querySelectorAll('.s-docs-file').forEach(el =>
     el.classList.toggle('active', el.dataset.slug === slug));
   const body = document.getElementById('s-docs-body');
@@ -54,8 +92,13 @@ async function sOpenDoc(slug) {
   try {
     const doc = docsCatalog.find(d => d.slug === slug);
     const lang = doc?.langs.includes(docsLang) ? docsLang : 'en';
-    const filename = `${slug}.${lang}.md`;
-    const res = await fetch(`/api/docs/${encodeURIComponent(filename)}`);
+    let filename = `${slug}.${lang}.md`;
+    let res = await fetch(`/api/docs/${encodeURIComponent(filename)}`);
+    if (!res.ok) {
+      // fallback for files without lang suffix (e.g. stoa-api.md)
+      filename = `${slug}.md`;
+      res = await fetch(`/api/docs/${encodeURIComponent(filename)}`);
+    }
     if (!res.ok) { body.innerHTML = '<p class="s-docs-empty">document not found.</p>'; return; }
     const md = await res.text();
     body.innerHTML = DOMPurify.sanitize(marked.parse(md), { ADD_ATTR: ['class'] });
@@ -66,6 +109,7 @@ async function sOpenDoc(slug) {
       note.textContent = `Translation not available — showing English version.`;
       body.insertBefore(note, body.firstChild);
     }
+    buildDocsToc();
   } catch { body.innerHTML = '<p class="s-docs-empty">failed to load document.</p>'; }
 }
 
