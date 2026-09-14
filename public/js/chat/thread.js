@@ -162,14 +162,6 @@ function _createThreadPanel() {
   const controls = document.createElement('div');
   controls.className = 'h-thread-controls';
 
-  const stopBtn = document.createElement('button');
-  stopBtn.id = 'thread-stop-btn';
-  stopBtn.className = 'h-thread-ctrl-btn';
-  stopBtn.title = 'Stop generation';
-  stopBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>';
-  stopBtn.onclick = () => stopThreadGeneration();
-  controls.appendChild(stopBtn);
-
   const compactBtn = document.createElement('button');
   compactBtn.id = 'thread-compact-btn';
   compactBtn.className = 'h-thread-ctrl-btn';
