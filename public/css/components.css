@@ -438,7 +438,6 @@ html.dark .h-room-search-bar .h-room-search-nav button:hover { color: var(--h-in
 }
 .s-docs-file:hover { background: color-mix(in srgb, var(--h-surface) 60%, transparent); color: var(--h-ink); }
 .s-docs-file.active { color: var(--h-ink); border-left-color: var(--h-ink-mute); background: color-mix(in srgb, var(--h-surface) 60%, transparent); }
-#docs-toc { overflow-y: auto; }
 .docs-toc-divider { margin: 4px 14px; border-top: 1px solid var(--h-hair-soft); }
 .docs-toc-item {
   display: block; padding: 5px 18px; font-size: 12px; font-family: var(--h-sans);

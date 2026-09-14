@@ -33,8 +33,6 @@ function sRenderDocsLangRow() {
 function sRenderDocsSidebar() {
   const sidebar = document.getElementById('docs-file-list');
   sidebar.innerHTML = '';
-  const toc = document.getElementById('docs-toc');
-  if (toc) toc.innerHTML = '';
   for (const doc of docsCatalog) {
     const a = document.createElement('a');
     a.className = 's-docs-file' + (doc.slug === docsActiveSlug ? ' active' : '');
@@ -46,16 +44,23 @@ function sRenderDocsSidebar() {
   }
 }
 
+function clearDocsToc() {
+  document.querySelectorAll('#docs-file-list .docs-toc-wrap').forEach(el => el.remove());
+}
+
 function buildDocsToc() {
-  const toc = document.getElementById('docs-toc');
-  if (!toc) return;
-  toc.innerHTML = '';
+  clearDocsToc();
+  const activeFile = document.querySelector('#docs-file-list .s-docs-file.active');
+  if (!activeFile) return;
   const headings = document.querySelectorAll('#s-docs-body h2, #s-docs-body h3');
   if (headings.length === 0) return;
 
+  const wrap = document.createElement('div');
+  wrap.className = 'docs-toc-wrap';
+
   const divider = document.createElement('div');
   divider.className = 'docs-toc-divider';
-  toc.appendChild(divider);
+  wrap.appendChild(divider);
 
   headings.forEach((h, i) => {
     if (!h.id) {
@@ -70,18 +75,19 @@ function buildDocsToc() {
       e.preventDefault();
       h.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
-    toc.appendChild(a);
+    wrap.appendChild(a);
   });
+
+  activeFile.insertAdjacentElement('afterend', wrap);
 }
 
 async function sOpenDoc(slug) {
   docsActiveSlug = slug;
+  clearDocsToc();
   document.querySelectorAll('.s-docs-file').forEach(el =>
     el.classList.toggle('active', el.dataset.slug === slug));
   const body = document.getElementById('s-docs-body');
   body.innerHTML = '<p class="s-docs-empty">loading…</p>';
-  const toc = document.getElementById('docs-toc');
-  if (toc) toc.innerHTML = '';
 
   try {
     const doc = docsCatalog.find(d => d.slug === slug);
