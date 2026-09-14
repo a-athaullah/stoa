@@ -33,6 +33,8 @@ function sRenderDocsLangRow() {
 function sRenderDocsSidebar() {
   const sidebar = document.getElementById('docs-file-list');
   sidebar.innerHTML = '';
+  const toc = document.getElementById('docs-toc');
+  if (toc) toc.innerHTML = '';
   for (const doc of docsCatalog) {
     const a = document.createElement('a');
     a.className = 's-docs-file' + (doc.slug === docsActiveSlug ? ' active' : '');
@@ -44,12 +46,41 @@ function sRenderDocsSidebar() {
   }
 }
 
+function buildDocsToc() {
+  const toc = document.getElementById('docs-toc');
+  if (!toc) return;
+  toc.innerHTML = '';
+  const headings = document.querySelectorAll('#s-docs-body h2, #s-docs-body h3');
+  if (headings.length === 0) return;
+
+  const divider = document.createElement('div');
+  divider.className = 'docs-toc-divider';
+  toc.appendChild(divider);
+
+  headings.forEach(h => {
+    if (!h.id) {
+      h.id = h.textContent.trim().toLowerCase().replace(/[^\w]+/g, '-').replace(/^-|-$/g, '');
+    }
+    const a = document.createElement('a');
+    a.className = 'docs-toc-item' + (h.tagName === 'H3' ? ' docs-toc-h3' : '');
+    a.textContent = h.textContent;
+    a.href = '#';
+    a.addEventListener('click', e => {
+      e.preventDefault();
+      h.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    toc.appendChild(a);
+  });
+}
+
 async function sOpenDoc(slug) {
   docsActiveSlug = slug;
   document.querySelectorAll('.s-docs-file').forEach(el =>
     el.classList.toggle('active', el.dataset.slug === slug));
   const body = document.getElementById('s-docs-body');
   body.innerHTML = '<p class="s-docs-empty">loading…</p>';
+  const toc = document.getElementById('docs-toc');
+  if (toc) toc.innerHTML = '';
 
   try {
     const doc = docsCatalog.find(d => d.slug === slug);
@@ -66,6 +97,7 @@ async function sOpenDoc(slug) {
       note.textContent = `Translation not available — showing English version.`;
       body.insertBefore(note, body.firstChild);
     }
+    buildDocsToc();
   } catch { body.innerHTML = '<p class="s-docs-empty">failed to load document.</p>'; }
 }
 

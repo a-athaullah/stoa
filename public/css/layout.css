@@ -182,7 +182,7 @@ body.docs-mode .h-room-tabs,
 body.docs-mode #rooms-active-header,
 body.docs-mode #room-list,
 body.docs-mode #sidebar-footer { display: none; }
-body.docs-mode #docs-list-wrap { display: flex; flex-direction: column; flex: 1; overflow: hidden; min-height: 0; }
+body.docs-mode #docs-list-wrap { display: flex; flex-direction: column; flex: 1; overflow-y: auto; min-height: 0; }
 body.sidebar-collapsed #app-nav-wrap { display: none; }
 
 /* ── Sidebar ─────────────────────────────────────────── */
