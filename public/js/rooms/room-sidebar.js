@@ -69,13 +69,12 @@ function renderRoomSidebar(room, participants) {
     const sidebarRect = sidebar.getBoundingClientRect();
     pop.style.right = (window.innerWidth - sidebarRect.left + 4) + 'px';
 
-    // Clamp vertically
+    // Anchor below chat header, stretch to bottom of viewport
     requestAnimationFrame(() => {
-      const popH = pop.offsetHeight;
-      let top = btnRect.top;
-      if (top + popH > window.innerHeight - 12) top = window.innerHeight - popH - 12;
-      if (top < 8) top = 8;
-      pop.style.top = top + 'px';
+      const header = document.getElementById('chat-header');
+      const topOffset = header ? header.getBoundingClientRect().bottom + 8 : 56;
+      pop.style.top = topOffset + 'px';
+      pop.style.maxHeight = (window.innerHeight - topOffset - 12) + 'px';
     });
 
     setTimeout(() => {
@@ -829,36 +828,36 @@ function renderRoomSidebar(room, participants) {
   }
 
   function buildMemoryPanel(pop) {
-    pop.appendChild(popTitle('Memory'));
+    pop.appendChild(popTitle('System Prompt & Memory'));
 
-    // ── Tab bar
+    // ── Tab bar — System Prompt first
     const TAB_BASE = 'background:transparent;border:none;font-family:var(--h-sans);font-size:12.5px;padding:4px 12px;cursor:pointer;border-radius:999px;transition:background .15s,color .15s';
     const TAB_ON = 'color:var(--h-ink);background:var(--h-surface-raised,var(--h-surface))';
     const TAB_OFF = 'color:var(--h-ink-faint)';
     const tabBar = document.createElement('div');
     tabBar.style.cssText = 'display:flex;gap:2px;margin-bottom:12px;border:1px solid var(--h-border);border-radius:999px;padding:3px;background:var(--h-bg)';
-    const tabMemBtn = document.createElement('button'); tabMemBtn.textContent = 'Memory'; tabMemBtn.style.cssText = TAB_BASE + ';' + TAB_ON;
-    const tabSysBtn = document.createElement('button'); tabSysBtn.textContent = 'System Prompt'; tabSysBtn.style.cssText = TAB_BASE + ';' + TAB_OFF;
-    tabBar.append(tabMemBtn, tabSysBtn);
+    const tabSysBtn = document.createElement('button'); tabSysBtn.textContent = 'System Prompt'; tabSysBtn.style.cssText = TAB_BASE + ';' + TAB_ON;
+    const tabMemBtn = document.createElement('button'); tabMemBtn.textContent = 'Memory'; tabMemBtn.style.cssText = TAB_BASE + ';' + TAB_OFF;
+    tabBar.append(tabSysBtn, tabMemBtn);
     pop.appendChild(tabBar);
 
-    const memPane = document.createElement('div');
-    const sysPane = document.createElement('div'); sysPane.style.display = 'none';
-    pop.appendChild(memPane);
+    const sysPane = document.createElement('div');
+    const memPane = document.createElement('div'); memPane.style.display = 'none';
     pop.appendChild(sysPane);
+    pop.appendChild(memPane);
 
     const switchTab = (tab) => {
-      const onMem = tab === 'memory';
-      memPane.style.display = onMem ? '' : 'none';
-      sysPane.style.display = onMem ? 'none' : '';
-      tabMemBtn.style.cssText = TAB_BASE + ';' + (onMem ? TAB_ON : TAB_OFF);
-      tabSysBtn.style.cssText = TAB_BASE + ';' + (onMem ? TAB_OFF : TAB_ON);
+      const onSys = tab === 'system';
+      sysPane.style.display = onSys ? '' : 'none';
+      memPane.style.display = onSys ? 'none' : '';
+      tabSysBtn.style.cssText = TAB_BASE + ';' + (onSys ? TAB_ON : TAB_OFF);
+      tabMemBtn.style.cssText = TAB_BASE + ';' + (onSys ? TAB_OFF : TAB_ON);
     };
-    tabMemBtn.onclick = () => switchTab('memory');
     tabSysBtn.onclick = () => switchTab('system');
+    tabMemBtn.onclick = () => switchTab('memory');
 
     // ── Shared: build a render/edit field inside a pane
-    const RENDER_WRAP_CSS = 'border:1px solid var(--h-border);border-radius:8px;padding:10px 14px;background:var(--h-surface);min-height:200px;max-height:50vh;overflow-y:auto;font-size:13px;line-height:1.6;color:var(--h-ink);word-break:break-word';
+    const RENDER_WRAP_CSS = 'border:1px solid var(--h-border);border-radius:8px;padding:10px 14px;background:var(--h-surface);min-height:200px;font-size:13px;line-height:1.6;color:var(--h-ink);word-break:break-word';
     const TA_CSS = 'width:100%;box-sizing:border-box;min-height:200px;resize:vertical;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;padding:8px 10px;border:1px solid var(--h-border);border-radius:8px;background:var(--h-surface);color:var(--h-ink);outline:none';
     const BTN_CSS = 'background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12px;padding:4px 14px;cursor:pointer';
     const CANCEL_CSS = 'background:transparent;border:none;color:var(--h-ink-faint);font-family:var(--h-sans);font-size:12px;padding:4px 8px;cursor:pointer';
