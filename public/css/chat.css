@@ -2070,8 +2070,8 @@ html.dark .h-thread-ctrl-btn:hover { background: var(--h-hover); color: var(--h-
   content: attr(data-tooltip);
   position: absolute;
   top: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
+  right: 0;
+  transform: none;
   background: var(--h-surface);
   border: 1px solid var(--h-border);
   border-radius: 6px;

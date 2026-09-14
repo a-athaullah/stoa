@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.292";
+var CLIENT_VERSION = "0.4.293";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
