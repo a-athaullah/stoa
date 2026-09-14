@@ -2091,11 +2091,16 @@ html.dark .h-thread-ctrl-btn:hover { background: var(--h-hover); color: var(--h-
 
 .h-thread-root-section {
   flex: 0 0 auto;
-  background: var(--h-surface-hi, var(--h-surface));
+  max-height: 30vh;
+  overflow-y: auto;
+  background: #F0E7D7;
   border-bottom: 1px solid var(--h-hair-soft);
-  box-shadow: 0 3px 12px rgba(0,0,0,0.06);
+  box-shadow: 0 3px 12px rgba(0,0,0,0.10);
   position: relative;
   z-index: 1;
+}
+html.dark .h-thread-root-section {
+  background: var(--h-bg);
 }
 
 .h-thread-root-section .h-thread-divider {
