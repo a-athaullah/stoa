@@ -75,7 +75,6 @@ function renderRoomSidebar(room, participants) {
       const topOffset = header ? header.getBoundingClientRect().bottom + 8 : 56;
       pop.style.top = topOffset + 'px';
       pop.style.maxHeight = (window.innerHeight - topOffset - 12) + 'px';
-      pop.style.overflow = 'hidden';
     });
 
     setTimeout(() => {
@@ -845,6 +844,7 @@ function renderRoomSidebar(room, participants) {
     // flex layout so panes stretch to fill available height
     pop.style.display = 'flex';
     pop.style.flexDirection = 'column';
+    pop.style.overflow = 'hidden';
 
     const PANE_CSS = 'flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden';
     const sysPane = document.createElement('div'); sysPane.style.cssText = PANE_CSS;
