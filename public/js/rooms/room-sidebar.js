@@ -6,6 +6,31 @@ let _rsbActiveBtn = null;
 let _rsbPopover = null;
 let _rsbOutsideListener = null;
 
+let _rsbTooltipEl = null;
+
+function _showRsbTooltip(btn) {
+  if (!btn.dataset.tooltip) return;
+  if (!_rsbTooltipEl) {
+    _rsbTooltipEl = document.createElement('div');
+    _rsbTooltipEl.className = 'h-fixed-tooltip';
+    document.body.appendChild(_rsbTooltipEl);
+  }
+  _rsbTooltipEl.textContent = btn.dataset.tooltip;
+  _rsbTooltipEl.classList.remove('visible');
+
+  const r = btn.getBoundingClientRect();
+  requestAnimationFrame(() => {
+    const tw = _rsbTooltipEl.offsetWidth;
+    _rsbTooltipEl.style.top = (r.top + r.height / 2 - _rsbTooltipEl.offsetHeight / 2) + 'px';
+    _rsbTooltipEl.style.left = (r.left - tw - 8) + 'px';
+    _rsbTooltipEl.classList.add('visible');
+  });
+}
+
+function _hideRsbTooltip() {
+  if (_rsbTooltipEl) _rsbTooltipEl.classList.remove('visible');
+}
+
 function renderRoomSidebar(room, participants) {
   const sidebar = document.getElementById('room-sidebar');
   if (!sidebar) return;
@@ -17,6 +42,8 @@ function renderRoomSidebar(room, participants) {
     b.dataset.tooltip = title;
     b.innerHTML = svg;
     b.onclick = onClick;
+    b.addEventListener('mouseenter', () => _showRsbTooltip(b));
+    b.addEventListener('mouseleave', _hideRsbTooltip);
     return b;
   }
 
