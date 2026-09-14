@@ -2268,6 +2268,10 @@ html.dark .h-thread-ctrl-btn:hover { background: var(--h-hover); color: var(--h-
   border-radius: 0 !important;
   padding: 0 !important;
   box-shadow: none !important;
+  color: var(--h-ink);
+  font-family: var(--h-msg);
+  font-size: calc(var(--stoa-msg-scale, 1) * 16px);
+  line-height: calc(1.6 * var(--stoa-msg-leading, 1));
 }
 
 .h-thread-divider {
@@ -2558,9 +2562,9 @@ html.dark .h-room-thread-badge {
 }
 
 .t-content {
-  font-family: var(--h-sans);
-  font-size: 15px;
-  line-height: 1.55;
+  font-family: var(--h-msg);
+  font-size: calc(var(--stoa-msg-scale, 1) * 16px);
+  line-height: calc(1.6 * var(--stoa-msg-leading, 1));
   color: var(--h-ink);
   word-break: break-word;
   overflow-x: hidden;
