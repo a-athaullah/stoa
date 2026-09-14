@@ -191,6 +191,12 @@ function _createThreadPanel() {
   contextBar.className = 'h-context-bar';
   panel.appendChild(contextBar);
 
+  // Root message section (sticky, outside scroll)
+  const rootSection = document.createElement('div');
+  rootSection.id = 'thread-root-section';
+  rootSection.className = 'h-thread-root-section';
+  panel.appendChild(rootSection);
+
   // Scroll container + inner
   const scroll = document.createElement('div');
   scroll.id = 'thread-scroll';
@@ -864,18 +870,20 @@ async function _loadThread(rootId) {
     const root = resp && !Array.isArray(resp) ? resp.root : null;
     const msgs = resp && !Array.isArray(resp) ? (resp.messages || []) : (Array.isArray(resp) ? resp.filter(m => m.id !== rootId) : []);
 
+    const rootSection = document.getElementById('thread-root-section');
+    if (rootSection) rootSection.innerHTML = '';
     body.innerHTML = '';
 
-    // Render root message pinned at top
-    if (root) {
+    if (root && rootSection) {
+      _renderThreadRoot(root, rootSection);
+    } else if (root) {
       _renderThreadRoot(root, body);
     }
 
-    // Divider + reply count
     const divider = document.createElement('div');
     divider.className = 'h-thread-divider';
     divider.textContent = msgs.length === 0 ? 'No replies yet' : msgs.length + (msgs.length === 1 ? ' reply' : ' replies');
-    body.appendChild(divider);
+    if (rootSection) rootSection.appendChild(divider); else body.appendChild(divider);
 
     const savedDay = _lastDayKey;
     _lastDayKey = null;
