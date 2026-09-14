@@ -2467,7 +2467,7 @@ html.dark .h-room-thread-badge {
   padding: 0 !important;
   box-shadow: none !important;
   color: var(--h-ink);
-  font-size: 15px;
+  font-size: calc(var(--stoa-msg-scale, 1) * 15px);
   line-height: 1.55;
   max-width: 100%;
 }

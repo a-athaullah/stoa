@@ -180,6 +180,7 @@ function handleWsMessage(msg) {
       const last = targetContainer?.lastElementChild;
       if (last?.classList.contains('h-system-event') && last.dataset.actor?.startsWith(msg.actor_name)) last.remove();
       showThinking(msg.message_id, msg.actor_name, msg.avatar_color, msg.avatar_symbol, msg.avatar_url, msg.sub_agent_label, targetContainer);
+      if (tId && typeof _scrollThreadToBottom === 'function') _scrollThreadToBottom();
       if (tId && typeof setThreadProcessing === 'function') setThreadProcessing(msg.message_id);
       else setComposerProcessing(msg.message_id);
     }
