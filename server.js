@@ -6225,14 +6225,44 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   }
 
   // Inject frozen memory snapshot at session start
+  const roomMem = db.prepare('SELECT content FROM room_memory WHERE room_id=? AND content != \'\'').get(roomId);
   let memorySection = '';
   {
     const memRows = db.prepare('SELECT file, content FROM agent_memory WHERE actor_id=? AND content != \'\'').all(ai.actor_id);
-    const roomMem = db.prepare('SELECT content FROM room_memory WHERE room_id=? AND content != \'\'').get(roomId);
     const parts = [];
     for (const { file, content } of memRows) parts.push(`### ${file}\n${content}`);
     if (roomMem) parts.push(`### Room Memory\n${roomMem.content}`);
     if (parts.length) memorySection = `\n## Memory\n${parts.join('\n\n')}`;
+  }
+
+  // Platform-level memory management instructions (always injected)
+  let platformMemoryLine = '';
+  {
+    const roomMemContent = roomMem?.content || '';
+    const charCount = roomMemContent.length;
+    const budget = 1800;
+    const warnThreshold = 1400;
+    let thresholdWarning = '';
+    if (charCount > warnThreshold) {
+      thresholdWarning = `\n⚠ Memory is at ${charCount}/${budget} chars — compress or summarize existing entries before your next update to stay within budget.`;
+    }
+    platformMemoryLine = `\n## Memory Management\n` +
+      `You have persistent memory for this room. Memory content (if any) is shown in the Memory section above.\n` +
+      `After each exchange, ask yourself: "Is there something worth noting?" Update memory when:\n` +
+      `- The user states a preference or working style\n` +
+      `- An important decision is made\n` +
+      `- Key project context is revealed\n` +
+      `Do NOT save trivial exchanges, greetings, or information already in memory.\n\n` +
+      `To update memory, use:\n` +
+      '```\n' +
+      `BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\n` +
+      `curl -s -X PUT "$BASE_URL/api/rooms/$STOA_ROOM_ID/memory" \\\n` +
+      `  -H "Content-Type: application/json" \\\n` +
+      `  -H "x-agent-id: $STOA_ACTOR_ID" \\\n` +
+      `  -H "x-agent-secret: $STOA_SECRET" \\\n` +
+      `  -d '{"content": "your updated memory content here"}'\n` +
+      '```\n' +
+      `Memory budget: ${charCount}/${budget} chars used.${thresholdWarning}`;
   }
 
   const fullPrompt = [
@@ -6241,6 +6271,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     L.timeContext(nowUtc),
     othersLine,
     memorySection,
+    platformMemoryLine,
     `\n${L.historyLabel}:\n${ctx}`,
     replyCtx,
     '\n' + L.replyInstruction,
