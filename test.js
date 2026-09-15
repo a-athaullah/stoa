@@ -2538,8 +2538,8 @@ async function run() {
     const aiActor = actors.find(a => a.type === 'ai');
     if (!aiActor) { console.log('    (no AI actor — skipped)'); return; }
     const r = await req('GET', `/api/actors/${aiActor.id}/browse-dirs?path=/tmp`);
-    // agent without matching machine_id → 403
-    assert.ok(r.status === 403 || r.status === 200);
+    // agent without matching machine_id → always 403 (no AI actor has server's machine_id in test env)
+    assert.strictEqual(r.status, 403, `expected 403 for non-local agent, got ${r.status}`);
   });
 
   await test('GET /api/actors/:id/browse-dirs — 404 for nonexistent actor', async () => {

@@ -70,6 +70,10 @@ function _showNewFolderUI(prefix, actorId, isLocal) {
   }
 }
 
+function _escHtml(s) {
+  return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+}
+
 async function _openDirBrowser(actorId, prefix, path) {
   const dirBrowser = document.getElementById(`${prefix}-dir-browser`);
   const newWdInput = document.getElementById(`${prefix}-new-workdir-input`);
@@ -79,7 +83,7 @@ async function _openDirBrowser(actorId, prefix, path) {
 
   let data;
   try {
-    const url = `/api/actors/${actorId}/browse-dirs` + (path ? `?path=${encodeURIComponent(path)}` : '');
+    const url = `/api/actors/${actorId}/browse-dirs` + (path != null ? `?path=${encodeURIComponent(path)}` : '');
     data = await fjson(url);
   } catch {
     dirBrowser.innerHTML = '<div class="h-dir-error">failed to load directories</div>';
@@ -89,31 +93,33 @@ async function _openDirBrowser(actorId, prefix, path) {
   const currentPath = data.path || '/';
   const parts = currentPath.replace(/\/$/, '').split('/').filter(Boolean);
   let cumPath = '';
-  const crumbsHtml = ['<span class="h-dir-crumb h-dir-crumb-link" data-path="/">~</span>']
+  // home crumb uses empty string so server falls back to os.homedir()
+  const crumbsHtml = ['<span class="h-dir-crumb h-dir-crumb-link" data-path="">~</span>']
     .concat(parts.map((p, i) => {
       cumPath += '/' + p;
       const isLast = i === parts.length - 1;
+      const escapedP = _escHtml(p);
+      const escapedCum = _escHtml(cumPath);
       return isLast
-        ? `<span class="h-dir-sep">/</span><span class="h-dir-crumb">${p}</span>`
-        : `<span class="h-dir-sep">/</span><span class="h-dir-crumb h-dir-crumb-link" data-path="${cumPath}">${p}</span>`;
+        ? `<span class="h-dir-sep">/</span><span class="h-dir-crumb">${escapedP}</span>`
+        : `<span class="h-dir-sep">/</span><span class="h-dir-crumb h-dir-crumb-link" data-path="${escapedCum}">${escapedP}</span>`;
     }))
     .join('');
 
   const dirsHtml = (data.dirs || []).length
     ? data.dirs.map(d => {
         const fullPath = currentPath === '/' ? '/' + d : currentPath.replace(/\/$/, '') + '/' + d;
-        return `<div class="h-dir-item" data-path="${fullPath}">${d}</div>`;
+        return `<div class="h-dir-item" data-path="${_escHtml(fullPath)}">${_escHtml(d)}</div>`;
       }).join('')
     : '<div class="h-dir-empty">no subdirectories</div>';
 
-  const selectedPath = newWdInput.value || currentPath;
   const isAlreadySelected = newWdInput.value === currentPath;
 
   dirBrowser.innerHTML = `
     <div class="h-dir-breadcrumb">${crumbsHtml}</div>
     <div class="h-dir-list">${dirsHtml}</div>
     <div class="h-dir-footer">
-      <span class="h-dir-current-path" title="${currentPath}">${currentPath}</span>
+      <span class="h-dir-current-path" title="${_escHtml(currentPath)}">${_escHtml(currentPath)}</span>
       <button class="h-dir-select-btn${isAlreadySelected ? ' is-selected' : ''}" type="button">${isAlreadySelected ? 'selected ✓' : 'select'}</button>
     </div>
   `;
