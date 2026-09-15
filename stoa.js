@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.316";
+var CLIENT_VERSION = "0.4.318";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -235,6 +235,25 @@ var STOA_URL = process.env.STOA_URL || "ws://localhost:3001";
 var ACTOR_ID = parseInt(process.env.STOA_ACTOR_ID || "1");
 var ACTOR_TYPE = process.env.STOA_TYPE || "human";
 var STOA_SECRET = process.env.STOA_SECRET || "";
+var MACHINE_ID = (() => {
+  try {
+    const p = process.platform;
+    if (p === "darwin") {
+      const out = spawnSync("ioreg", ["-rd1", "-c", "IOPlatformExpertDevice"], { encoding: "utf8", timeout: 5000 }).stdout || "";
+      const m = out.match(/"IOPlatformUUID"\s*=\s*"([^"]+)"/);
+      return m ? m[1] : null;
+    }
+    if (p === "linux") {
+      return fs.readFileSync("/etc/machine-id", "utf8").trim() || null;
+    }
+    if (p === "win32") {
+      const out = spawnSync("wmic", ["csproduct", "get", "uuid"], { encoding: "utf8", timeout: 5000 }).stdout || "";
+      const lines = out.trim().split(/\r?\n/).filter(l => l.trim() && l.trim() !== "UUID");
+      return lines[0]?.trim() || null;
+    }
+    return null;
+  } catch { return null; }
+})();
 var ROOM_ID = parseInt(process.argv[2] || process.env.STOA_ROOM_ID || "1");
 var C = {
   reset: "\x1B[0m",
@@ -690,7 +709,7 @@ function connect() {
   ws.on("open", () => {
     if (ACTOR_TYPE === "ai") {
       getSession(process.env.STOA_WORK_DIR || os.homedir(), "default");
-      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION }));
+      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, machine_id: MACHINE_ID }));
       console.log(`[stoa] Agent #${ACTOR_ID} v${CLIENT_VERSION} connected to ${STOA_URL} (max_concurrent=${MAX_CONCURRENT})`);
     } else {
       ws.send(JSON.stringify({ type: "join_room", room_id: ROOM_ID }));
