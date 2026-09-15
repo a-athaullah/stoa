@@ -13,6 +13,27 @@ const fallbackSessions = new Map();
 // R15: unique identifier for this server boot. Sessions tagged with a different
 // generation are from a prior process and their in-flight state is unknown.
 const PROCESS_GEN = crypto.randomBytes(16).toString('hex');
+
+const SERVER_MACHINE_ID = (() => {
+  try {
+    const platform = process.platform;
+    if (platform === 'darwin') {
+      const out = execSync('ioreg -rd1 -c IOPlatformExpertDevice', { encoding: 'utf8', timeout: 5000 });
+      const m = out.match(/"IOPlatformUUID"\s*=\s*"([^"]+)"/);
+      return m ? m[1] : null;
+    }
+    if (platform === 'linux') {
+      return fs.readFileSync('/etc/machine-id', 'utf8').trim() || null;
+    }
+    if (platform === 'win32') {
+      const out = execSync('wmic csproduct get uuid', { encoding: 'utf8', timeout: 5000 });
+      const lines = out.trim().split(/\r?\n/).filter(l => l.trim() && l.trim() !== 'UUID');
+      return lines[0]?.trim() || null;
+    }
+    return null;
+  } catch { return null; }
+})();
+
 const FALLBACK_IDLE_MS = 30 * 60 * 1000;
 function getFallbackSession(participantId, workDir) {
   const key = `${participantId}:${workDir || ''}`;
@@ -3026,9 +3047,22 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/actors') {
-    const rows = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, created_at FROM actors ORDER BY id').all();
-    const result = rows.map(r => ({ ...r, online: agentClients.has(r.id), client_version: agentVersions.get(r.id) || null }));
+    const rows = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, machine_id, created_at FROM actors ORDER BY id').all();
+    const result = rows.map(r => {
+      const is_local = !!(SERVER_MACHINE_ID && r.machine_id && r.machine_id === SERVER_MACHINE_ID);
+      const { machine_id, ...rest } = r;
+      return { ...rest, online: agentClients.has(r.id), client_version: agentVersions.get(r.id) || null, is_local };
+    });
     return json(res, result);
+  }
+
+  if (req.method === 'GET' && url.pathname.match(/^\/api\/actors\/\d+$/)) {
+    const id = parseInt(url.pathname.split('/')[3]);
+    const r = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, machine_id, created_at FROM actors WHERE id=?').get(id);
+    if (!r) { res.writeHead(404); return res.end(JSON.stringify({ error: 'not found' })); }
+    const is_local = !!(SERVER_MACHINE_ID && r.machine_id && r.machine_id === SERVER_MACHINE_ID);
+    const { machine_id, ...rest } = r;
+    return json(res, { ...rest, online: agentClients.has(r.id), client_version: agentVersions.get(r.id) || null, is_local });
   }
 
   if (req.method === 'PATCH' && url.pathname.startsWith('/api/actors/')) {
@@ -3530,6 +3564,31 @@ Write-Host "Logs   : pm2 logs $AgentName"
     }
     const wd = db.prepare('SELECT id, path, label, is_default FROM agent_workdirs WHERE actor_id=? AND path=?').get(actorId, dirPath.trim());
     return json(res, wd);
+  }
+
+  // GET /api/actors/:id/browse-dirs — list subdirectories (local agents only)
+  if (req.method === 'GET' && url.pathname.match(/^\/api\/actors\/\d+\/browse-dirs$/)) {
+    if (!requireAuth(req, res, url)) return;
+    const actorId = parseInt(url.pathname.split('/')[3]);
+    const actor = db.prepare('SELECT machine_id FROM actors WHERE id=?').get(actorId);
+    if (!actor) { res.writeHead(404); return res.end(JSON.stringify({ error: 'actor not found' })); }
+    if (!SERVER_MACHINE_ID || !actor.machine_id || actor.machine_id !== SERVER_MACHINE_ID) {
+      res.writeHead(403); return res.end(JSON.stringify({ error: 'agent is not local' }));
+    }
+    const reqPath = url.searchParams.get('path') || require('os').homedir();
+    const resolved = path.resolve(reqPath);
+    try {
+      const entries = fs.readdirSync(resolved, { withFileTypes: true });
+      const dirs = entries
+        .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+        .map(e => e.name)
+        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+      return json(res, { path: resolved, dirs });
+    } catch (e) {
+      if (e.code === 'ENOENT') { res.writeHead(404); return res.end(JSON.stringify({ error: 'path not found' })); }
+      if (e.code === 'EACCES') { res.writeHead(403); return res.end(JSON.stringify({ error: 'permission denied' })); }
+      res.writeHead(500); return res.end(JSON.stringify({ error: 'failed to read directory' }));
+    }
   }
 
   // POST /api/actors/:id/force-update — ask agent to check for updates immediately
@@ -4348,6 +4407,7 @@ wss.on('connection', (ws, req) => {
       ).run(agentActorId);
       if (reconnectCleaned.changes) console.log(`[agent] Cleaned ${reconnectCleaned.changes} orphaned message(s) on reconnect for Actor #${agentActorId}`);
       if (msg.client_version) agentVersions.set(agentActorId, msg.client_version);
+      if (msg.machine_id) db.prepare('UPDATE actors SET machine_id=? WHERE id=?').run(msg.machine_id, agentActorId);
       console.log(`[agent] Actor #${agentActorId} connected (v${msg.client_version || '?'})`);
       if (EXPECTED_CLIENT_VERSION && msg.client_version && msg.client_version.localeCompare(EXPECTED_CLIENT_VERSION, undefined, { numeric: true }) < 0) {
         console.log(`[agent] Actor #${agentActorId} outdated (v${msg.client_version} < v${EXPECTED_CLIENT_VERSION}), sending force_update`);

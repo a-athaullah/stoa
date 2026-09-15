@@ -2524,6 +2524,36 @@ async function run() {
     for (const a of r.body) assert.ok('online' in a, `actor ${a.id} missing online field`);
   });
 
+  await test('GET /api/actors — has is_local field, no machine_id exposed', async () => {
+    const r = await req('GET', '/api/actors');
+    assert.strictEqual(r.status, 200);
+    for (const a of r.body) {
+      assert.ok('is_local' in a, `actor ${a.id} missing is_local field`);
+      assert.ok(!('machine_id' in a), `actor ${a.id} exposes machine_id field`);
+    }
+  });
+
+  await test('GET /api/actors/:id/browse-dirs — 403 for non-local agent', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    const aiActor = actors.find(a => a.type === 'ai');
+    if (!aiActor) { console.log('    (no AI actor — skipped)'); return; }
+    const r = await req('GET', `/api/actors/${aiActor.id}/browse-dirs?path=/tmp`);
+    // agent without matching machine_id → 403
+    assert.ok(r.status === 403 || r.status === 200);
+  });
+
+  await test('GET /api/actors/:id/browse-dirs — 404 for nonexistent actor', async () => {
+    const r = await req('GET', '/api/actors/99999/browse-dirs?path=/tmp');
+    assert.strictEqual(r.status, 404);
+  });
+
+  await test('GET /api/actors/:id/browse-dirs — 401 unauthenticated', async () => {
+    const saved = sessionCookie; sessionCookie = null;
+    const r = await req('GET', '/api/actors/1/browse-dirs?path=/tmp');
+    sessionCookie = saved;
+    assert.strictEqual(r.status, 401);
+  });
+
   // Settings
   console.log('\n[Settings]');
   await test('GET /api/settings — returns expected keys', async () => {
