@@ -4573,6 +4573,8 @@ async function run() {
   });
 
   await test('GET /api/settings/base-system-prompt — returns default', async () => {
+    // Reset to default in case a prior run left a custom value (empty string → server fallback)
+    await req('PUT', '/api/settings/base-system-prompt', { content: '' });
     const r = await req('GET', '/api/settings/base-system-prompt');
     assert.strictEqual(r.status, 200);
     assert.ok(r.body.content.includes('Stoa platform'));
@@ -4585,6 +4587,8 @@ async function run() {
     assert.strictEqual(r.body.content, 'Custom base prompt');
     const r2 = await req('GET', '/api/settings/base-system-prompt');
     assert.strictEqual(r2.body.content, 'Custom base prompt');
+    // Restore to default so subsequent runs start clean
+    await req('PUT', '/api/settings/base-system-prompt', { content: '' });
   });
 
   await test('PUT /api/settings/base-system-prompt — 64KB cap', async () => {
