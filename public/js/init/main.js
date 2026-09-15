@@ -299,6 +299,10 @@ async function init() {
     }
   });
 
+  input.addEventListener('beforeinput', e => {
+    if (e.inputType === 'insertFromPaste' || e.inputType === 'insertFromPasteAsQuotation') e.preventDefault();
+  });
+
   input.addEventListener('paste', e => {
     const items = [...(e.clipboardData?.items || [])];
     if (items.find(i => i.type.startsWith('image/'))) { hideMentionPopup(); hideSkillPopup(); handleImagePaste(e); return; }
