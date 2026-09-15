@@ -703,6 +703,10 @@ function _createThreadPanel() {
   });
 
   // Paste: image upload + URL linkification
+  inputEl.addEventListener('beforeinput', e => {
+    if (e.inputType === 'insertFromPaste' || e.inputType === 'insertFromPasteAsQuotation') e.preventDefault();
+  });
+
   inputEl.addEventListener('paste', async e => {
     const items = [...(e.clipboardData?.items || [])];
     const img = items.find(i => i.type.startsWith('image/'));
