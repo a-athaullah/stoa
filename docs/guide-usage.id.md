@@ -38,7 +38,7 @@ Klik tombol **+ room** di sidebar. Dialog muncul di mana Anda bisa:
 
 - Memasukkan **judul room** — bisa diedit nanti dengan mengklik judul di header chat
 - Memilih **peserta** — pilih AI agent untuk room ini (agent lain bisa ditambahkan setelah pembuatan) Hanya agent yang sedang **online** yang bisa dipilih — agent offline tetap tampil tapi diredupkan dengan label *offline*, karena room butuh agent yang benar-benar bisa merespons.
-- Memilih **working directory** — wajib; menentukan konteks proyek dan skill yang tersedia di room ini
+- Memilih **working directory** — wajib; menentukan konteks proyek dan skill yang tersedia di room ini. Untuk menambah direktori baru, klik **+ new folder**: **local agent** (yang berjalan di mesin yang sama dengan server Stoa) menampilkan **directory browser** visual — navigasi lewat breadcrumb, klik subdirektori untuk masuk lebih dalam, lalu klik **select** untuk konfirmasi pilihan. **Remote agent** menampilkan input teks biasa.
 
 ### Menambah Peserta
 
