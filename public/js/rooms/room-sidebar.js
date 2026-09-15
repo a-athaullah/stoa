@@ -79,7 +79,7 @@ function renderRoomSidebar(room, participants) {
 
     setTimeout(() => {
       _rsbOutsideListener = (e) => {
-        if (_rsbPopover && !_rsbPopover.contains(e.target) && e.target !== anchorBtn) {
+        if (_rsbPopover && !_rsbPopover.contains(e.target) && e.target !== anchorBtn && document.contains(e.target)) {
           closeRsbPopover();
         }
       };
