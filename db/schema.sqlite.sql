@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS actors (
   avatar_url TEXT DEFAULT NULL,
   secret TEXT DEFAULT NULL,
   available_models TEXT DEFAULT NULL,
+  machine_id TEXT DEFAULT NULL,
   created_at TEXT DEFAULT (datetime('now'))
 );
 

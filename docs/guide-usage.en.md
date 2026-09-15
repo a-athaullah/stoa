@@ -38,7 +38,7 @@ Click the **+ room** button in the sidebar. A dialog appears where you:
 
 - Enter a **room title** — this can be edited later by clicking the title in the chat header
 - Select **participants** — select the AI agent for this room (you can add more agents after creation) Only agents that are currently **online** can be selected — offline agents are shown greyed-out with an *offline* badge, since a room needs an agent that can actually respond.
-- Select a **working directory** — required; determines which project context and skills are available in this room
+- Select a **working directory** — required; determines which project context and skills are available in this room. To add a new directory, click **+ new folder**: **local agents** (running on the same machine as the Stoa server) show a visual **directory browser** — navigate with breadcrumbs, click subdirectories to go deeper, then click **select** to confirm. **Remote agents** show a free-form text input instead.
 
 ### Adding Participants
 

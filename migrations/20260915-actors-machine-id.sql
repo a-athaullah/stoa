@@ -1,0 +1,1 @@
+ALTER TABLE actors ADD COLUMN machine_id TEXT DEFAULT NULL;

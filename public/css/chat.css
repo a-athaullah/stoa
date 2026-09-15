@@ -2578,3 +2578,75 @@ html.dark .h-room-thread-badge {
 .t-pulse {
   animation: threadPulse 1.4s ease infinite;
 }
+
+/* ── Directory browser (local agent folder picker) ─────────────────────── */
+.h-dir-browser {
+  border: 1px solid var(--h-hairline);
+  border-radius: 10px;
+  overflow: hidden;
+  font-size: 12px;
+}
+.h-dir-breadcrumb {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 7px 10px;
+  background: color-mix(in srgb, var(--h-ink) 4%, transparent);
+  border-bottom: 1px solid var(--h-hairline);
+  color: var(--h-ink-mute);
+  font-family: var(--h-mono, monospace);
+}
+.h-dir-crumb { color: var(--h-ink-mute); }
+.h-dir-crumb-link { color: var(--h-ink); cursor: pointer; }
+.h-dir-crumb-link:hover { text-decoration: underline; }
+.h-dir-sep { color: var(--h-ink-faint); margin: 0 1px; }
+.h-dir-list {
+  max-height: 140px;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+.h-dir-item {
+  padding: 5px 12px;
+  cursor: pointer;
+  color: var(--h-ink);
+  transition: background 0.1s;
+  font-family: var(--h-mono, monospace);
+}
+.h-dir-item:hover { background: color-mix(in srgb, var(--h-ink) 6%, transparent); }
+.h-dir-empty { padding: 8px 12px; color: var(--h-ink-faint); font-style: italic; }
+.h-dir-loading, .h-dir-error { padding: 10px 12px; color: var(--h-ink-faint); }
+.h-dir-error { color: oklch(55% 0.18 25); }
+.h-dir-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  border-top: 1px solid var(--h-hairline);
+  background: color-mix(in srgb, var(--h-ink) 2%, transparent);
+}
+.h-dir-current-path {
+  font-family: var(--h-mono, monospace);
+  font-size: 11px;
+  color: var(--h-ink-mute);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.h-dir-select-btn {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  font-size: 11px;
+  background: var(--h-ink);
+  color: var(--h-bg);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: opacity 0.12s;
+}
+.h-dir-select-btn:hover { opacity: 0.82; }
+.h-dir-select-btn.is-selected { background: oklch(52% 0.14 145); }
+.h-dir-select-btn:disabled { opacity: 0.5; cursor: default; }

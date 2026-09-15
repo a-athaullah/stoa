@@ -7,8 +7,11 @@ async function loadWorkdirsForActor(actorId, prefix = 'new-room') {
   const newWdRow = document.getElementById(`${prefix}-new-workdir-row`);
   if (!actorId) { section.style.display = 'none'; return; }
 
-  let workdirs;
+  let workdirs, actorInfo;
   try { workdirs = await fjson(`/api/actors/${actorId}/workdirs`); } catch { workdirs = []; }
+  try { actorInfo = await fjson(`/api/actors/${actorId}`); } catch { actorInfo = {}; }
+  const isLocal = actorInfo.is_local === true;
+
   sel.innerHTML = '';
   section.style.display = 'block';
   newWdRow.style.display = 'none';
@@ -35,17 +38,103 @@ async function loadWorkdirsForActor(actorId, prefix = 'new-room') {
   const newWdInput = document.getElementById(`${prefix}-new-workdir-input`);
   if (workdirs.length === 0) {
     newOpt.selected = true;
-    newWdRow.style.display = 'flex';
-    if (newWdInput && !newWdInput.value) newWdInput.value = '~/';
+    _showNewFolderUI(prefix, actorId, isLocal);
+    if (!isLocal && newWdInput && !newWdInput.value) newWdInput.value = '~/';
   }
 
   // Remove old listener by cloning
   const newSel = sel.cloneNode(true);
   sel.parentNode.replaceChild(newSel, sel);
   newSel.addEventListener('change', () => {
-    const showing = newSel.value === '__new__';
-    newWdRow.style.display = showing ? 'flex' : 'none';
-    if (showing && newWdInput && !newWdInput.value) newWdInput.value = '~/';
+    if (newSel.value === '__new__') {
+      _showNewFolderUI(prefix, actorId, isLocal);
+      if (!isLocal && newWdInput && !newWdInput.value) newWdInput.value = '~/';
+    } else {
+      newWdRow.style.display = 'none';
+    }
+  });
+}
+
+function _showNewFolderUI(prefix, actorId, isLocal) {
+  const newWdRow = document.getElementById(`${prefix}-new-workdir-row`);
+  const newWdInput = document.getElementById(`${prefix}-new-workdir-input`);
+  const dirBrowser = document.getElementById(`${prefix}-dir-browser`);
+  newWdRow.style.display = 'flex';
+  if (isLocal && dirBrowser) {
+    newWdInput.style.display = 'none';
+    dirBrowser.style.display = 'block';
+    _openDirBrowser(actorId, prefix, null);
+  } else {
+    newWdInput.style.display = '';
+    if (dirBrowser) dirBrowser.style.display = 'none';
+  }
+}
+
+function _escHtml(s) {
+  return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+}
+
+async function _openDirBrowser(actorId, prefix, path) {
+  const dirBrowser = document.getElementById(`${prefix}-dir-browser`);
+  const newWdInput = document.getElementById(`${prefix}-new-workdir-input`);
+  if (!dirBrowser) return;
+
+  dirBrowser.innerHTML = '<div class="h-dir-loading">loading…</div>';
+
+  let data;
+  try {
+    const url = `/api/actors/${actorId}/browse-dirs` + (path != null ? `?path=${encodeURIComponent(path)}` : '');
+    data = await fjson(url);
+  } catch {
+    dirBrowser.innerHTML = '<div class="h-dir-error">failed to load directories</div>';
+    return;
+  }
+
+  const currentPath = data.path || '/';
+  const parts = currentPath.replace(/\/$/, '').split('/').filter(Boolean);
+  let cumPath = '';
+  // home crumb uses empty string so server falls back to os.homedir()
+  const crumbsHtml = ['<span class="h-dir-crumb h-dir-crumb-link" data-path="">~</span>']
+    .concat(parts.map((p, i) => {
+      cumPath += '/' + p;
+      const isLast = i === parts.length - 1;
+      const escapedP = _escHtml(p);
+      const escapedCum = _escHtml(cumPath);
+      return isLast
+        ? `<span class="h-dir-sep">/</span><span class="h-dir-crumb">${escapedP}</span>`
+        : `<span class="h-dir-sep">/</span><span class="h-dir-crumb h-dir-crumb-link" data-path="${escapedCum}">${escapedP}</span>`;
+    }))
+    .join('');
+
+  const dirsHtml = (data.dirs || []).length
+    ? data.dirs.map(d => {
+        const fullPath = currentPath === '/' ? '/' + d : currentPath.replace(/\/$/, '') + '/' + d;
+        return `<div class="h-dir-item" data-path="${_escHtml(fullPath)}">${_escHtml(d)}</div>`;
+      }).join('')
+    : '<div class="h-dir-empty">no subdirectories</div>';
+
+  const isAlreadySelected = newWdInput.value === currentPath;
+
+  dirBrowser.innerHTML = `
+    <div class="h-dir-breadcrumb">${crumbsHtml}</div>
+    <div class="h-dir-list">${dirsHtml}</div>
+    <div class="h-dir-footer">
+      <span class="h-dir-current-path" title="${_escHtml(currentPath)}">${_escHtml(currentPath)}</span>
+      <button class="h-dir-select-btn${isAlreadySelected ? ' is-selected' : ''}" type="button">${isAlreadySelected ? 'selected ✓' : 'select'}</button>
+    </div>
+  `;
+
+  dirBrowser.querySelectorAll('.h-dir-crumb-link').forEach(el => {
+    el.addEventListener('click', () => _openDirBrowser(actorId, prefix, el.dataset.path));
+  });
+  dirBrowser.querySelectorAll('.h-dir-item').forEach(el => {
+    el.addEventListener('click', () => _openDirBrowser(actorId, prefix, el.dataset.path));
+  });
+  dirBrowser.querySelector('.h-dir-select-btn').addEventListener('click', () => {
+    newWdInput.value = currentPath;
+    const btn = dirBrowser.querySelector('.h-dir-select-btn');
+    btn.textContent = 'selected ✓';
+    btn.classList.add('is-selected');
   });
 }
 
