@@ -82,6 +82,7 @@ let autoState = {
     targetRoomId: '',
     promptTemplate: '',
     replyMode: 'none',
+    watchReply: false,
   },
 };
 
