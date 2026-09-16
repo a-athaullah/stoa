@@ -4154,7 +4154,10 @@ wss.on('connection', (ws, req) => {
     try { msg = JSON.parse(raw); } catch { return; }
 
     // Block unauthenticated browser messages (agents auth via agent_connect)
-    if (!wsAuthenticated && msg.type !== 'agent_connect') return;
+    if (!wsAuthenticated && msg.type !== 'agent_connect') {
+      ws.send(JSON.stringify({ type: 'auth_error', message: 'Session invalid or expired. Please log in again.' }));
+      return;
+    }
 
     // ── Human client subscribes to global events (sent on WS open)
     if (msg.type === 'subscribe_global') {

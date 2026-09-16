@@ -1589,6 +1589,16 @@ async function run() {
       db.prepare('DELETE FROM messages WHERE id=?').run(first.lastInsertRowid);
     });
 
+    await test('WS — unauthenticated message → auth_error response', async () => {
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`);
+      try {
+        const authErrPromise = waitForWsMessage(ws, m => m.type === 'auth_error');
+        ws.send(JSON.stringify({ type: 'join_room', room_id: 1 }));
+        const msg = await authErrPromise;
+        assert.ok(msg.message, 'auth_error should include a message');
+      } finally { ws.close(); }
+    });
+
     await test('WS send_message — with event_id → message_new received', async () => {
       if (!dedupRoomId) { console.log('    (skipped)'); return; }
       const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);

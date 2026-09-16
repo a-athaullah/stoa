@@ -44,6 +44,11 @@ function connectWS(roomId) {
 }
 
 function handleWsMessage(msg) {
+  if (msg.type === 'auth_error') {
+    showToast(msg.message || 'Session expired. Redirecting to login…', { error: true, duration: 4000 });
+    setTimeout(() => { window.location.href = '/login'; }, 2000);
+    return;
+  }
   if (msg.type === 'history') {
     const inner = document.getElementById('messages-inner');
     inner.innerHTML = '';
