@@ -674,6 +674,14 @@ Once at least one connection is active, click **+ new rule** to create a rule:
 
   Use the room's CLAUDE.md to instruct the agent when to read history and how to respond.
 
+- **Watch Replies** *(Slack connections only)* — when enabled, thread replies posted in the Slack thread that triggered this automation are forwarded to the same Stoa thread. Each reply arrives with the format:
+
+  ```
+  [New Reply on Thread]: sender_name (sender_id) - message text
+  ```
+
+  The agent does not automatically respond to these replies unless its system prompt instructs it to. If another automation rule fires on the same Slack thread, its message is added to the existing Stoa thread rather than opening a new one. Default: off.
+
 ### Enable / Disable
 
 Each rule has an enable/disable toggle. Disabled rules never fire, even if the event matches.

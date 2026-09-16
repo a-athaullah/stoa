@@ -675,6 +675,14 @@ Setelah minimal satu koneksi aktif, klik **+ new rule** untuk membuat aturan:
 
   Gunakan CLAUDE.md room untuk menginstruksikan agent kapan harus membaca riwayat dan bagaimana merespons.
 
+- **Watch Replies** *(hanya koneksi Slack)* — saat diaktifkan, balasan thread di Slack yang memicu automation ini akan diteruskan ke thread Stoa yang sama. Setiap balasan masuk dengan format:
+
+  ```
+  [New Reply on Thread]: nama_pengirim (id_pengirim) - isi pesan
+  ```
+
+  Agent tidak otomatis membalas reply ini kecuali system prompt menginstruksikannya. Jika ada automation lain yang terpicu di Slack thread yang sama, pesannya akan masuk ke thread Stoa yang sudah ada (bukan membuat thread baru). Default: nonaktif.
+
 ### Aktifkan / Nonaktifkan
 
 Setiap aturan memiliki toggle aktif/nonaktif. Aturan yang dinonaktifkan tidak pernah aktif, meski event cocok.
