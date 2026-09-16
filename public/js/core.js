@@ -1,3 +1,14 @@
+function generateUUID() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  const bytes = new Uint8Array(16);
+  (crypto || window.crypto).getRandomValues(bytes);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  return [...bytes].map((b, i) => ([4,6,8,10].includes(i) ? '-' : '') + b.toString(16).padStart(2,'0')).join('');
+}
+
 function showToast(msg, { error = false, duration = 3000 } = {}) {
   const el = document.createElement('div');
   el.className = 'h-toast' + (error ? ' h-toast-error' : '');

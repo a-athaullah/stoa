@@ -1356,7 +1356,7 @@ function sendThreadMessage() {
     attachments,
     reply_to: replyTo,
     thread_id: activeThreadId,
-    event_id: crypto.randomUUID(),
+    event_id: generateUUID(),
   }));
 }
 
