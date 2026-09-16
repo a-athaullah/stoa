@@ -103,6 +103,7 @@ function autoBindEvents(container) {
       autoState.form.triggerEvent = newProvider === 'whatsapp' ? 'message' : 'mention';
       autoState.form.conditions = [];
       autoState.form.replyMode = 'none';
+      autoState.form.watchReply = false;
     }
     autoRender();
   });
@@ -148,6 +149,7 @@ function autoBindEvents(container) {
       targetRoomId: auto.target_room_id,
       promptTemplate: auto.prompt_template,
       replyMode: auto.reply_mode || 'none',
+      watchReply: !!auto.watch_reply,
     };
     try { autoState.rooms = await fjson('/api/rooms'); } catch {}
     autoRender();
@@ -183,6 +185,7 @@ function autoBindEvents(container) {
       targetRoomId: '',
       promptTemplate: '',
       replyMode: 'none',
+      watchReply: false,
     };
     try { autoState.rooms = await fjson('/api/rooms'); } catch {}
     autoRender();
@@ -232,6 +235,21 @@ function autoBindEvents(container) {
     ta.focus();
     autoState.form.promptTemplate = ta.value;
   }));
+
+  // ── Watch reply toggle ──
+  container.querySelector('#auto-watch-reply-toggle')?.addEventListener('click', () => {
+    autoSyncForm();
+    autoState.form.watchReply = !autoState.form.watchReply;
+    autoRender();
+  });
+  container.querySelector('#auto-watch-reply-toggle')?.addEventListener('keydown', (e) => {
+    if (e.key === ' ' || e.key === 'Enter') {
+      e.preventDefault();
+      autoSyncForm();
+      autoState.form.watchReply = !autoState.form.watchReply;
+      autoRender();
+    }
+  });
 
   // ── Save automation ──
   container.querySelector('#auto-form-save-btn')?.addEventListener('click', autoDoFormSave);

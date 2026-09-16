@@ -15,6 +15,7 @@ class SlackConnection extends EventEmitter {
     this.workspaceName = null;
     this.workspaceDomain = null;
     this.botName = null;
+    this.botUserId = null;
   }
 
   async start({ appToken, token, tokenType }) {
@@ -33,6 +34,7 @@ class SlackConnection extends EventEmitter {
       // unusable in URLs. info.url carries the real subdomain (https://qiscustech.slack.com/).
       try { this.workspaceDomain = new URL(info.url).hostname.split('.')[0]; } catch { this.workspaceDomain = null; }
       this.botName = tokenType === 'bot' ? ('@' + info.user) : info.user;
+      this.botUserId = info.user_id || null;
     } catch (e) {
       console.error(`[conn:${this.connId}] auth.test failed:`, e.message);
       throw e;
@@ -91,6 +93,7 @@ class SlackConnection extends EventEmitter {
     this.workspaceName = null;
     this.workspaceDomain = null;
     this.botName = null;
+    this.botUserId = null;
     console.log(`[conn:${this.connId}] stopped`);
   }
 

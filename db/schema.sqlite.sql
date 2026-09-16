@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS messages (
   completed_at TEXT DEFAULT NULL,
   client_event_id TEXT DEFAULT NULL,
   thread_id INTEGER DEFAULT NULL,
+  slack_thread_ts TEXT DEFAULT NULL,
   FOREIGN KEY (room_id) REFERENCES rooms(id),
   FOREIGN KEY (participant_id) REFERENCES room_participants(id),
   FOREIGN KEY (thread_id) REFERENCES messages(id)
@@ -198,6 +199,7 @@ CREATE TABLE IF NOT EXISTS automations (
   last_run_at      TEXT,
   run_count        INTEGER DEFAULT 0,
   reply_mode       TEXT NOT NULL DEFAULT 'none',
+  watch_reply      INTEGER NOT NULL DEFAULT 0,
   created_at       TEXT DEFAULT (datetime('now')),
   connection_id    INTEGER DEFAULT NULL REFERENCES automation_connections(id) ON DELETE SET NULL
 );
@@ -220,6 +222,7 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_automations_trigger ON automations(trigger_type, trigger_event, enabled);
 CREATE INDEX IF NOT EXISTS idx_automations_connection_id ON automations(connection_id);
+CREATE INDEX IF NOT EXISTS idx_messages_slack_thread_ts ON messages(slack_thread_ts) WHERE slack_thread_ts IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_actors_type ON actors(type);
 CREATE INDEX IF NOT EXISTS idx_messages_state ON messages(state);

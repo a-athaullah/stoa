@@ -191,6 +191,7 @@ async function autoDoFormSave() {
     prompt_template:    f.promptTemplate.trim(),
     connection_id:      parseInt(f.connectionId) || null,
     reply_mode:         f.replyMode || 'none',
+    watch_reply:        f.watchReply ? 1 : 0,
   };
 
   try {
