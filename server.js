@@ -5771,7 +5771,7 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
       );
       const queued = db.prepare('SELECT COUNT(*) as n FROM room_message_queue WHERE room_id=?').get(roomId).n;
       broadcast(roomId, { type: 'queue_updated', room_id: roomId, queued });
-      return;
+      return Number(messageId);
     }
     if (busyMode === 'steer') {
       const agentIds = db.prepare("SELECT a.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='ai'").all(roomId).map(r => r.id);
@@ -5779,7 +5779,7 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
         const aw = agentClients.get(aId);
         if (aw?.readyState === 1) aw.send(JSON.stringify({ type: 'steer_message', room_id: roomId, thread_id: threadId || null, content, message_id: messageId }));
       }
-      return;
+      return Number(messageId);
     }
   }
 
@@ -6662,8 +6662,8 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
       ).get(event.thread_ts);
       if (watchedMsg) {
         const slackConn = connectionManager.getSlackConnection(connId);
-        const botInfo = slackConn?.botName || '';
-        const isSelfMessage = event.bot_id || (botInfo && event.user && botInfo === ('@' + event.user));
+        const stoaBotUserId = slackConn?.botUserId || null;
+        const isSelfMessage = (stoaBotUserId && event.user === stoaBotUserId);
         if (!isSelfMessage) {
           let senderName = event.user || 'unknown';
           try {
