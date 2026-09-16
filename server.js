@@ -3945,9 +3945,10 @@ Write-Host "Logs   : pm2 logs $AgentName"
     const rawConds = body.trigger_conditions || '[]';
     const condsErr = validateConditions(rawConds);
     if (condsErr) { res.writeHead(400); return res.end(JSON.stringify({ error: condsErr })); }
+    const watchReply = (body.trigger_type || 'slack') === 'slack' ? (body.watch_reply ? 1 : 0) : 0;
     const result = db.prepare(`
-      INSERT INTO automations (name, trigger_type, trigger_event, trigger_conditions, target_room_id, prompt_template, connection_id, reply_mode)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO automations (name, trigger_type, trigger_event, trigger_conditions, target_room_id, prompt_template, connection_id, reply_mode, watch_reply)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       body.name.trim(),
       body.trigger_type || 'slack',
@@ -3957,6 +3958,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
       body.prompt_template.trim(),
       parseInt(body.connection_id) || null,
       body.reply_mode || 'none',
+      watchReply,
     );
     const row = db.prepare('SELECT * FROM automations WHERE id=?').get(result.lastInsertRowid);
     return json(res, row);
@@ -3982,9 +3984,10 @@ Write-Host "Logs   : pm2 logs $AgentName"
       const enabled     = body.enabled !== undefined     ? (body.enabled ? 1 : 0)                    : auto.enabled;
       const connId      = body.connection_id !== undefined ? (parseInt(body.connection_id) || null)  : auto.connection_id;
       const replyMode   = body.reply_mode !== undefined    ? (body.reply_mode || 'none')              : (auto.reply_mode || 'none');
+      const watchReply  = body.watch_reply !== undefined  ? ((auto.trigger_type || 'slack') === 'slack' ? (body.watch_reply ? 1 : 0) : 0) : (auto.watch_reply || 0);
       db.prepare(`
-        UPDATE automations SET name=?, trigger_event=?, trigger_conditions=?, target_room_id=?, prompt_template=?, enabled=?, connection_id=?, reply_mode=? WHERE id=?
-      `).run(name, event, conds, roomId, prompt, enabled, connId, replyMode, autoId);
+        UPDATE automations SET name=?, trigger_event=?, trigger_conditions=?, target_room_id=?, prompt_template=?, enabled=?, connection_id=?, reply_mode=?, watch_reply=? WHERE id=?
+      `).run(name, event, conds, roomId, prompt, enabled, connId, replyMode, watchReply, autoId);
       const updated = db.prepare('SELECT * FROM automations WHERE id=?').get(autoId);
       return json(res, updated);
     }
@@ -5824,6 +5827,7 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
       triggerAgentsSequential(roomId, parentMentions, content, messageId, attachments || [], initialFiredSubAgentIds, aiThreadId).catch(e => console.error('[trigger] sequence error:', e));
     }
   }
+  return Number(messageId);
 }
 
 async function handleSkillCommand(roomId, rawCommand, senderWs) {
@@ -6651,6 +6655,31 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
   }
 
   try {
+    // ── Watch reply: route Slack thread replies to existing Stoa threads ──
+    if (!isReaction && event.thread_ts && event.thread_ts !== event.ts) {
+      const watchedMsg = db.prepare(
+        'SELECT m.id, m.room_id, m.thread_id FROM messages m WHERE m.slack_thread_ts = ?'
+      ).get(event.thread_ts);
+      if (watchedMsg) {
+        const slackConn = connectionManager.getSlackConnection(connId);
+        const botInfo = slackConn?.botName || '';
+        const isSelfMessage = event.bot_id || (botInfo && event.user && botInfo === ('@' + event.user));
+        if (!isSelfMessage) {
+          let senderName = event.user || 'unknown';
+          try {
+            const info = await webClient.users.info({ user: event.user });
+            senderName = info.user?.display_name || info.user?.real_name || event.user;
+          } catch {}
+          const replyText = `[New Reply on Thread]:\n${senderName} (${event.user}) - ${event.text || ''}`;
+          const stoaThreadId = watchedMsg.thread_id || watchedMsg.id;
+          await handleHumanMessage(watchedMsg.room_id, replyText, null, null, null, null, stoaThreadId);
+          const ts2 = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
+          console.log(`[${ts2}] [watch_reply] routed slack thread reply to stoa thread ${stoaThreadId} in room ${watchedMsg.room_id}`);
+        }
+        return;
+      }
+    }
+
     const automations = db.prepare(
       "SELECT * FROM automations WHERE enabled=1 AND trigger_type='slack' AND trigger_event=? AND (connection_id IS NULL OR connection_id=?)"
     ).all(eventType, connId || null);
@@ -6733,10 +6762,26 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
       const _autoId = auto.id;
       const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
       console.log(`[${ts}] [automation:${_autoName}] triggered - room=${_roomId}`);
+      const _watchReply = auto.watch_reply;
+      const _slackTs = event.ts || '';
+      const _slackThreadTs = event.thread_ts || null;
       (async () => {
         try {
-          await handleHumanMessage(_roomId, _prompt, null, null, null);
+          // If event has thread_ts matching an existing watched message, route to that thread
+          let _threadId = null;
+          if (_slackThreadTs) {
+            const existingRoot = db.prepare(
+              'SELECT id, thread_id FROM messages WHERE slack_thread_ts = ?'
+            ).get(_slackThreadTs);
+            if (existingRoot) {
+              _threadId = existingRoot.thread_id || existingRoot.id;
+            }
+          }
+          const msgId = await handleHumanMessage(_roomId, _prompt, null, null, null, null, _threadId);
           db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(_autoId);
+          if (_watchReply && msgId && !_threadId && _slackTs) {
+            db.prepare('UPDATE messages SET slack_thread_ts = ? WHERE id = ?').run(_slackTs, msgId);
+          }
         } catch (e) {
           console.error(`[automation] room ${_roomId} trigger error:`, e.message);
         }

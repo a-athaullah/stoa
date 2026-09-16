@@ -3191,6 +3191,58 @@ async function run() {
     assert.ok(r.body.error.includes('valid JSON'), r.body.error);
   });
 
+  await test('POST /api/automations — watch_reply stored for slack trigger', async () => {
+    if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
+    const r = await req('POST', '/api/automations', {
+      name: 'test-watch-reply',
+      trigger_type: 'slack',
+      trigger_event: 'message',
+      trigger_conditions: JSON.stringify([]),
+      target_room_id: firstRoomId,
+      prompt_template: 'test {{slack_message_text}}',
+      watch_reply: true,
+    });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.watch_reply, 1, 'watch_reply should be 1');
+    // Cleanup
+    await req('DELETE', `/api/automations/${r.body.id}`);
+  });
+
+  await test('PATCH /api/automations/:id — watch_reply toggle', async () => {
+    if (!testAutoId) { console.log('    (skipped)'); return; }
+    const r1 = await req('PATCH', `/api/automations/${testAutoId}`, { watch_reply: true });
+    assert.strictEqual(r1.status, 200);
+    assert.strictEqual(r1.body.watch_reply, 1, 'watch_reply should be 1 after enable');
+    const r2 = await req('PATCH', `/api/automations/${testAutoId}`, { watch_reply: false });
+    assert.strictEqual(r2.status, 200);
+    assert.strictEqual(r2.body.watch_reply, 0, 'watch_reply should be 0 after disable');
+  });
+
+  await test('POST /api/automations — watch_reply ignored for non-slack trigger', async () => {
+    if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
+    const r = await req('POST', '/api/automations', {
+      name: 'test-watch-nonslack',
+      trigger_type: 'whatsapp',
+      trigger_event: 'message',
+      trigger_conditions: JSON.stringify([]),
+      target_room_id: firstRoomId,
+      prompt_template: 'test',
+      watch_reply: true,
+    });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.watch_reply, 0, 'watch_reply should be 0 for non-slack');
+    await req('DELETE', `/api/automations/${r.body.id}`);
+  });
+
+  await test('slack_thread_ts column exists on messages table', async () => {
+    if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
+    const list = await req('GET', `/api/rooms/${firstRoomId}/messages?limit=1&scope=all`);
+    assert.strictEqual(list.status, 200);
+    if (list.body.length > 0) {
+      assert.ok('slack_thread_ts' in list.body[0], 'slack_thread_ts column should exist on messages');
+    }
+  });
+
   await test('DELETE /api/automations/:id — deletes rule', async () => {
     if (!testAutoId) { console.log('    (skipped)'); return; }
     const r = await req('DELETE', `/api/automations/${testAutoId}`);
