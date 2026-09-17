@@ -3706,8 +3706,9 @@ Write-Host "Logs   : pm2 logs $AgentName"
         JOIN room_participants rp ON rp.id=m.participant_id
         JOIN actors a ON a.id=rp.actor_id
         WHERE m.thread_id=? AND m.room_id=? AND m.id < ?
-        ORDER BY m.id ASC LIMIT ?
+        ORDER BY m.id DESC LIMIT ?
       `).all(rootId, roomId, before, limit);
+      messages.reverse();
     } else {
       messages = db.prepare(`
         SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
@@ -3715,8 +3716,9 @@ Write-Host "Logs   : pm2 logs $AgentName"
         JOIN room_participants rp ON rp.id=m.participant_id
         JOIN actors a ON a.id=rp.actor_id
         WHERE m.thread_id=? AND m.room_id=?
-        ORDER BY m.id ASC LIMIT ?
+        ORDER BY m.id DESC LIMIT ?
       `).all(rootId, roomId, limit);
+      messages.reverse();
     }
     // Enrich reply_to for reply quotes
     for (const m of messages) {
