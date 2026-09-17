@@ -105,7 +105,10 @@ function finalizeMessage(msgId, content, fileUrl, fileName, attachments, aiModel
     const actorName = row.querySelector('.h-msg-name')?.textContent || '';
     const avatarColor = row.querySelector('.h-msg-name')?.style.color || '';
     const msgAttachments = attachments || (fileUrl ? [{ url: fileUrl, name: fileName || '', type: /\.(png|jpe?g|gif|webp|svg)$/i.test(fileName || '') ? 'image' : 'file' }] : []);
-    actions.querySelector('[data-action="reply"]').onclick = () => startReply(msgId, actorName, avatarColor, content, msgAttachments);
+    const inThread = !!row.closest('#thread-body');
+    actions.querySelector('[data-action="reply"]').onclick = inThread
+      ? () => startThreadReply(msgId, actorName, avatarColor, content)
+      : () => startReply(msgId, actorName, avatarColor, content, msgAttachments);
     actions.querySelector('[data-action="copy"]').onclick = async function() {
       if (await copyToClipboard(content || '')) showCopyFeedback(this);
     };
