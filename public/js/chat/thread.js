@@ -552,6 +552,10 @@ function _createThreadPanel() {
   const threadEnterToggle = document.createElement('label');
   threadEnterToggle.id = 'thread-enter-send-toggle';
   threadEnterToggle.title = 'Toggle Enter to send';
+  const _etHiddenCb = document.createElement('input');
+  _etHiddenCb.type = 'checkbox'; _etHiddenCb.setAttribute('aria-hidden', 'true'); _etHiddenCb.tabIndex = -1;
+  _etHiddenCb.style.cssText = 'position:absolute;width:1px;height:1px;opacity:0;pointer-events:none';
+  threadEnterToggle.appendChild(_etHiddenCb);
   const etLabel = document.createElement('span');
   etLabel.className = 'enter-send-label';
   etLabel.textContent = 'enter to send';
