@@ -270,6 +270,7 @@ function _createThreadPanel() {
   threadEmojiPicker.className = 'h-emoji-picker';
   const threadEmojiSearch = document.createElement('input');
   threadEmojiSearch.type = 'text';
+  threadEmojiSearch.name = 'thread-emoji-search';
   threadEmojiSearch.placeholder = 'Search emoji...';
   threadEmojiSearch.autocomplete = 'off';
   const threadEmojiGrid = document.createElement('div');

@@ -109,7 +109,7 @@ function sMakeRow(actor, flash) {
   av.addEventListener('mouseleave', () => camOverlay.style.opacity = '0');
   // File input for upload
   const avInput = document.createElement('input');
-  avInput.type = 'file'; avInput.accept = 'image/*'; avInput.style.display = 'none';
+  avInput.type = 'file'; avInput.accept = 'image/*'; avInput.style.display = 'none'; avInput.name = 'actor-avatar-upload';
   avInput.addEventListener('change', () => {
     if (avInput.files[0]) sResizeAndUploadActorAvatar(actor.id, avInput.files[0], av);
   });
@@ -127,6 +127,7 @@ function sMakeRow(actor, flash) {
     inp.style.borderColor = color;
     inp.value = rs.draft;
     inp.type = 'text';
+    inp.name = 'agent-rename';
     inp.spellcheck = false;
     inp.addEventListener('input', () => { const s = sRowStates.get(actor.id); if (s) s.draft = inp.value; });
     inp.addEventListener('keydown', e => {
@@ -174,6 +175,7 @@ function sMakeRow(actor, flash) {
     langLabel.style.cssText = 'font-size:11px;color:var(--h-ink-faint);font-family:var(--h-serif);font-style:italic';
     langLabel.textContent = 'lang';
     const langSel = document.createElement('select');
+    langSel.name = 'agent-lang';
     langSel.style.cssText = 'font-size:11px;padding:1px 4px;border:1px solid var(--h-hair-soft);border-radius:4px;background:var(--h-surface);color:var(--h-ink-mute);cursor:pointer;font-family:var(--h-sans)';
     Object.entries(STOA_LANGS).forEach(([code, label]) => {
       const opt = document.createElement('option');
@@ -516,7 +518,7 @@ function sMakeEditAccordion(actor) {
   const beGrp = document.createElement('div');
   beGrp.className = 's-field-group'; beGrp.style.minWidth = 'auto';
   const beSel = document.createElement('select');
-  beSel.className = 's-name-input'; beSel.style.cssText = 'width:auto;min-width:130px;opacity:0.6;cursor:not-allowed'; beSel.disabled = true;
+  beSel.className = 's-name-input'; beSel.name = 'agent-backend'; beSel.style.cssText = 'width:auto;min-width:130px;opacity:0.6;cursor:not-allowed'; beSel.disabled = true;
   const o = document.createElement('option'); o.value = 'claude'; o.textContent = 'Claude Code CLI'; o.selected = true;
   beSel.appendChild(o);
   beGrp.append(mkFieldLbl('AI agent'), beSel);
@@ -524,7 +526,7 @@ function sMakeEditAccordion(actor) {
   const langGrp = document.createElement('div');
   langGrp.className = 's-field-group'; langGrp.style.minWidth = 'auto';
   const langSel = document.createElement('select');
-  langSel.className = 's-name-input'; langSel.style.cssText = 'width:auto;min-width:130px;cursor:pointer';
+  langSel.className = 's-name-input'; langSel.name = 'agent-lang'; langSel.style.cssText = 'width:auto;min-width:130px;cursor:pointer';
   Object.entries(STOA_LANGS).forEach(([code, lbl]) => {
     const o = document.createElement('option'); o.value = code; o.textContent = lbl;
     if (code === (cfg.lang || 'en')) o.selected = true;
@@ -536,7 +538,7 @@ function sMakeEditAccordion(actor) {
   const nameGrp = document.createElement('div');
   nameGrp.className = 's-field-group';
   const nameInp = document.createElement('input');
-  nameInp.className = 's-name-input'; nameInp.type = 'text'; nameInp.value = actor.name;
+  nameInp.className = 's-name-input'; nameInp.type = 'text'; nameInp.name = 'agent-name'; nameInp.value = actor.name;
   nameInp.addEventListener('input', () => { updateCmd(); });
   nameInp.addEventListener('keydown', e => { if (e.key === 'Escape') sCloseEditAccordion(); });
   const nameHint = document.createElement('span');
@@ -663,7 +665,7 @@ function sMakeEditAccordion(actor) {
     const grid = document.createElement('div');
     grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:16px';
     const labelInp = document.createElement('input');
-    labelInp.placeholder = 'probe'; labelInp.value = existing?.label || '';
+    labelInp.name = 'subagent-label'; labelInp.placeholder = 'probe'; labelInp.value = existing?.label || '';
     labelInp.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;' +
       'background:color-mix(in srgb, var(--h-bg) 30%, var(--h-surface));border:1px solid var(--h-hair-soft);' +
       'font-family:ui-monospace,Menlo,monospace;font-size:13px;color:var(--h-ink);outline:none;width:100%';
@@ -673,6 +675,7 @@ function sMakeEditAccordion(actor) {
     labelField.appendChild(labelErr);
 
     const modelSel = document.createElement('select');
+    modelSel.name = 'subagent-model';
     modelSel.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;' +
       'background:var(--h-surface);border:1px solid var(--h-hair-soft);' +
       'font-family:var(--h-sans);font-size:13px;color:var(--h-ink);outline:none;width:100%;cursor:pointer';
@@ -696,6 +699,7 @@ function sMakeEditAccordion(actor) {
 
     // system prompt (slip)
     const spInp = document.createElement('textarea');
+    spInp.name = 'subagent-system-prompt';
     spInp.placeholder = 'You verify claims against the actual source before answering…';
     spInp.value = existing?.system_prompt || '';
     spInp.style.cssText = 'padding:11px 13px;border-radius:8px;min-height:96px;box-sizing:border-box;resize:vertical;' +
@@ -868,6 +872,7 @@ function sMakeEditAccordion(actor) {
     fileHdr.append(fileLbl, fileHint);
 
     const ta = document.createElement('textarea');
+    ta.name = 'agent-memory-' + file.replace('.', '-').toLowerCase();
     ta.value = initial;
     ta.placeholder = `Write ${file} content here…`;
     ta.maxLength = budget;
@@ -1233,7 +1238,7 @@ function renderAgentDetailHeader(container, actor) {
   avWrap.addEventListener('mouseenter', () => camOverlay.style.opacity = '1');
   avWrap.addEventListener('mouseleave', () => camOverlay.style.opacity = '0');
   const avInput = document.createElement('input');
-  avInput.type = 'file'; avInput.accept = 'image/*'; avInput.style.display = 'none';
+  avInput.type = 'file'; avInput.accept = 'image/*'; avInput.style.display = 'none'; avInput.name = 'actor-avatar-upload';
   avInput.addEventListener('change', () => { if (avInput.files[0]) sResizeAndUploadActorAvatar(actor.id, avInput.files[0], avWrap); });
   avWrap.appendChild(avInput);
   avWrap.addEventListener('click', () => avInput.click());
@@ -1249,6 +1254,7 @@ function renderAgentDetailHeader(container, actor) {
   nameSpan.addEventListener('click', () => {
     const inp = document.createElement('input');
     inp.className = 's-rename-input';
+    inp.name = 'agent-rename';
     inp.style.fontSize = '18px';
     inp.value = actor.name;
     nameSpan.replaceWith(inp);
@@ -1373,14 +1379,14 @@ function buildAgentSettingsCard(actor) {
 
   const beGrp = document.createElement('div'); beGrp.className = 's-field-group'; beGrp.style.minWidth = 'auto';
   const beSel = document.createElement('select');
-  beSel.className = 's-name-input'; beSel.style.cssText = 'width:auto;min-width:130px;opacity:0.6;cursor:not-allowed'; beSel.disabled = true;
+  beSel.className = 's-name-input'; beSel.name = 'agent-backend'; beSel.style.cssText = 'width:auto;min-width:130px;opacity:0.6;cursor:not-allowed'; beSel.disabled = true;
   const beOpt = document.createElement('option'); beOpt.value = 'claude'; beOpt.textContent = 'Claude Code CLI'; beOpt.selected = true;
   beSel.appendChild(beOpt);
   beGrp.append(mkFieldLbl('AI agent'), beSel);
 
   const langGrp = document.createElement('div'); langGrp.className = 's-field-group'; langGrp.style.minWidth = 'auto';
   const langSel = document.createElement('select');
-  langSel.className = 's-name-input'; langSel.style.cssText = 'width:auto;min-width:130px;cursor:pointer';
+  langSel.className = 's-name-input'; langSel.name = 'agent-lang'; langSel.style.cssText = 'width:auto;min-width:130px;cursor:pointer';
   Object.entries(STOA_LANGS).forEach(([code, lbl]) => {
     const o = document.createElement('option'); o.value = code; o.textContent = lbl;
     if (code === (cfg.lang || 'en')) o.selected = true;
@@ -1391,7 +1397,7 @@ function buildAgentSettingsCard(actor) {
 
   const nameGrp = document.createElement('div'); nameGrp.className = 's-field-group';
   const nameInp = document.createElement('input');
-  nameInp.className = 's-name-input'; nameInp.type = 'text'; nameInp.value = actor.name;
+  nameInp.className = 's-name-input'; nameInp.type = 'text'; nameInp.name = 'agent-name'; nameInp.value = actor.name;
   nameInp.addEventListener('input', () => updateCmd());
   const nameHint = document.createElement('span'); nameHint.className = 's-field-hint'; nameHint.textContent = 'name shown in all rooms';
   nameGrp.append(mkFieldLbl('name'), nameInp, nameHint);
@@ -1512,17 +1518,17 @@ function buildSubAgentsSection(actor) {
     const fhClose = document.createElement('button'); fhClose.className = 's-icon-btn'; fhClose.title = 'Close'; fhClose.innerHTML = svgX(15); fhClose.addEventListener('click', () => saShowForm(false));
     fh.append(fhTitle, fhHint, fhSpacer, fhClose);
     const grid = document.createElement('div'); grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:16px';
-    const labelInp = document.createElement('input'); labelInp.placeholder = 'probe'; labelInp.value = existing?.label || ''; labelInp.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;background:color-mix(in srgb, var(--h-bg) 30%, var(--h-surface));border:1px solid var(--h-hair-soft);font-family:ui-monospace,Menlo,monospace;font-size:13px;color:var(--h-ink);outline:none;width:100%';
+    const labelInp = document.createElement('input'); labelInp.name = 'subagent-label'; labelInp.placeholder = 'probe'; labelInp.value = existing?.label || ''; labelInp.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;background:color-mix(in srgb, var(--h-bg) 30%, var(--h-surface));border:1px solid var(--h-hair-soft);font-family:ui-monospace,Menlo,monospace;font-size:13px;color:var(--h-ink);outline:none;width:100%';
     const labelField = saMakeField('label', labelInp, 'unique, used for @mention — cannot match an agent name');
     const labelErr = document.createElement('span'); labelErr.style.cssText = 'display:none;align-items:center;gap:6px;font-family:var(--h-sans);font-size:12px;color:' + SA_DANGER; labelField.appendChild(labelErr);
-    const modelSel = document.createElement('select'); modelSel.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;background:var(--h-surface);border:1px solid var(--h-hair-soft);font-family:var(--h-sans);font-size:13px;color:var(--h-ink);outline:none;width:100%;cursor:pointer';
+    const modelSel = document.createElement('select'); modelSel.name = 'subagent-model'; modelSel.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;background:var(--h-surface);border:1px solid var(--h-hair-soft);font-family:var(--h-sans);font-size:13px;color:var(--h-ink);outline:none;width:100%;cursor:pointer';
     const useTierOpt = document.createElement('option'); useTierOpt.value = ''; useTierOpt.textContent = 'use tier'; modelSel.appendChild(useTierOpt);
     for (const m of SA_MODELS) { const o = document.createElement('option'); o.value = m; o.textContent = m; if ((existing?.model || '') === m) o.selected = true; modelSel.appendChild(o); }
     if (existing?.model && !SA_MODELS.includes(existing.model)) { const o = document.createElement('option'); o.value = existing.model; o.textContent = existing.model; o.selected = true; modelSel.appendChild(o); }
     const modelField = saMakeField('model override', modelSel, 'leave on "use tier" unless this worker needs a specific model');
     grid.append(labelField, modelField);
     const tierField = saMakeField('tier', saMakeTierPicker(selectedTier, id => { selectedTier = id; }));
-    const spInp = document.createElement('textarea'); spInp.placeholder = 'You verify claims against the actual source before answering…'; spInp.value = existing?.system_prompt || ''; spInp.style.cssText = 'padding:11px 13px;border-radius:8px;min-height:96px;box-sizing:border-box;resize:vertical;background:var(--h-slip);border:1px solid var(--h-hairline);font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;color:var(--h-ink);outline:none;width:100%';
+    const spInp = document.createElement('textarea'); spInp.name = 'subagent-system-prompt'; spInp.placeholder = 'You verify claims against the actual source before answering…'; spInp.value = existing?.system_prompt || ''; spInp.style.cssText = 'padding:11px 13px;border-radius:8px;min-height:96px;box-sizing:border-box;resize:vertical;background:var(--h-slip);border:1px solid var(--h-hairline);font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;color:var(--h-ink);outline:none;width:100%';
     const spField = saMakeField('system prompt', spInp, 'context injected on every trigger');
     const btns = document.createElement('div'); btns.style.cssText = 'display:flex;align-items:center;gap:10px;padding-top:2px';
     const saveF = document.createElement('button'); saveF.style.cssText = 'background:var(--h-ink);color:var(--h-bg);border:none;padding:8px 20px;border-radius:999px;font-family:var(--h-sans);font-size:13px;cursor:pointer'; saveF.textContent = existing ? 'save' : 'create sub-agent';
@@ -1656,7 +1662,7 @@ function buildAgentMemorySection(actor) {
     const fileLbl = document.createElement('span'); fileLbl.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:13px;color:var(--h-ink)'; fileLbl.textContent = file;
     const fileHint = document.createElement('span'); fileHint.style.cssText = 'font-size:11.5px;color:var(--h-ink-faint)'; fileHint.textContent = hint;
     fileHdr.append(fileLbl, fileHint);
-    const ta = document.createElement('textarea'); ta.value = initial; ta.placeholder = `Write ${file} content here…`; ta.maxLength = budget; ta.style.cssText = 'width:100%;box-sizing:border-box;min-height:80px;resize:vertical;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;padding:8px 10px;border:1px solid var(--h-border);border-radius:8px;background:var(--h-surface);color:var(--h-ink);outline:none';
+    const ta = document.createElement('textarea'); ta.name = 'agent-memory-' + file.replace('.', '-').toLowerCase(); ta.value = initial; ta.placeholder = `Write ${file} content here…`; ta.maxLength = budget; ta.style.cssText = 'width:100%;box-sizing:border-box;min-height:80px;resize:vertical;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;padding:8px 10px;border:1px solid var(--h-border);border-radius:8px;background:var(--h-surface);color:var(--h-ink);outline:none';
     const footer = document.createElement('div'); footer.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-top:6px';
     const counter = document.createElement('span'); counter.style.cssText = 'font-size:11.5px;color:var(--h-ink-faint);font-variant-numeric:tabular-nums';
     const updateCounter = () => { const used = ta.value.length; const pct = used / budget; counter.textContent = `${used} / ${budget}`; counter.style.color = pct > .9 ? 'oklch(55% .18 27)' : pct > .75 ? 'oklch(60% .15 80)' : 'var(--h-ink-faint)'; };
