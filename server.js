@@ -167,7 +167,8 @@ function sanitizeResultMeta(raw) {
 
 const DEFAULT_CONTEXT_WINDOW = 200000;
 const MODEL_CONTEXT_LIMITS = {
-  'claude-opus-5': 200000, 'claude-sonnet-5': 200000, 'claude-fable-5-1': 200000,
+  'claude-opus-5-5': 200000, 'claude-opus-5': 200000, 'claude-sonnet-5': 200000,
+  'claude-fable-5-1': 200000, 'claude-fable-5': 200000,
   'claude-opus-4-8': 200000, 'claude-opus-4-7': 200000, 'claude-opus-4-6': 200000,
   'claude-sonnet-4-6': 200000, 'claude-sonnet-4-5': 200000, 'claude-haiku-4-5': 200000,
 };
@@ -2995,9 +2996,11 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/ai/models') {
     const platforms = getParsedSetting('ai_platforms') ?? [];
     const ANTHROPIC_MODELS = [
+      { value: 'claude-opus-5-5', label: 'Opus 5.5', vision: true, tools: true },
       { value: 'claude-opus-5', label: 'Opus 5', vision: true, tools: true },
       { value: 'claude-sonnet-5', label: 'Sonnet 5', vision: true, tools: true },
       { value: 'claude-fable-5-1', label: 'Fable 5.1', vision: true, tools: true },
+      { value: 'claude-fable-5', label: 'Fable 5', vision: true, tools: true },
       { value: 'claude-opus-4-8', label: 'Opus 4.8', vision: true, tools: true },
       { value: 'claude-opus-4-7', label: 'Opus 4.7', vision: true, tools: true },
       { value: 'claude-opus-4-6', label: 'Opus 4.6', vision: true, tools: true },
