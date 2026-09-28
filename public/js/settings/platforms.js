@@ -68,7 +68,7 @@ function sShowPlatformForm(existing) {
     lbl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);width:80px;flex-shrink:0;white-space:nowrap';
     lbl.textContent = label;
     const inp = document.createElement('input');
-    inp.className = 's-server-input'; inp.type = type; inp.value = value || ''; inp.placeholder = placeholder || '';
+    inp.className = 's-server-input'; inp.type = type; inp.name = 'platform-' + label.toLowerCase().replace(/\s+/g, '-'); inp.value = value || ''; inp.placeholder = placeholder || '';
     inp.autocomplete = 'off'; inp.setAttribute('data-1p-ignore', ''); inp.setAttribute('data-lpignore', 'true');
     inp.style.cssText = 'flex:1;min-width:0';
     row.append(lbl, inp);
@@ -83,6 +83,7 @@ function sShowPlatformForm(existing) {
   typeLbl.textContent = 'type';
   const typeSel = document.createElement('select');
   typeSel.className = 's-server-input';
+  typeSel.name = 'platform-type';
   typeSel.style.cssText = 'flex:1;cursor:pointer';
   [['custom', 'Custom Platform'], ['ollama', 'Ollama Cloud']].forEach(([val, label]) => {
     const opt = document.createElement('option');
@@ -141,7 +142,7 @@ function sShowPlatformForm(existing) {
   const addRow = document.createElement('div');
   addRow.style.cssText = 'display:flex;gap:6px';
   const keyInp = document.createElement('input');
-  keyInp.className = 's-server-input'; keyInp.type = 'text'; keyInp.placeholder = 'sk-...';
+  keyInp.className = 's-server-input'; keyInp.type = 'text'; keyInp.name = 'platform-api-key'; keyInp.placeholder = 'sk-...';
   keyInp.autocomplete = 'off'; keyInp.setAttribute('data-1p-ignore', ''); keyInp.setAttribute('data-lpignore', 'true');
   keyInp.style.cssText = 'flex:1;font-family:ui-monospace,monospace;font-size:12px';
   const addKeyBtn = document.createElement('button');
@@ -404,6 +405,7 @@ function sRenderModelChecklist(container, cachedModels, enabledModels) {
     row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 2px;cursor:pointer;border-radius:3px';
     const cb = document.createElement('input');
     cb.type = 'checkbox';
+    cb.name = 'platform-model';
     cb.value = modelName;
     cb.checked = enabledSet ? enabledSet.has(modelName) : true;
     cb.className = 's-model-cb';

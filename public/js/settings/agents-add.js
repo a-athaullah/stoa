@@ -92,7 +92,7 @@ function sRenderAddPanel() {
   nameLbl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);letter-spacing:.04em';
   nameLbl.textContent = 'name';
   const nameInp = document.createElement('input');
-  nameInp.className = 's-name-input'; nameInp.type = 'text'; nameInp.placeholder = 'e.g. Aria'; nameInp.value = sAddPanel.name;
+  nameInp.className = 's-name-input'; nameInp.type = 'text'; nameInp.name = 'agent-name'; nameInp.placeholder = 'e.g. Aria'; nameInp.value = sAddPanel.name;
   nameInp.addEventListener('input', () => { sAddPanel.name = nameInp.value; sUpdateCmd(); });
   const nameHint = document.createElement('span');
   nameHint.className = 's-field-hint'; nameHint.textContent = 'leave blank → auto-assigned (stoa-XXXXXX)';
@@ -126,7 +126,7 @@ function sRenderAddPanel() {
   langLbl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute);letter-spacing:.04em';
   langLbl.textContent = 'language';
   const langSelect = document.createElement('select');
-  langSelect.className = 's-name-input'; langSelect.style.cssText = 'width:auto;min-width:120px;cursor:pointer';
+  langSelect.className = 's-name-input'; langSelect.name = 'agent-lang'; langSelect.style.cssText = 'width:auto;min-width:120px;cursor:pointer';
   Object.entries(STOA_LANGS).forEach(([id,lbl]) => {
     const opt = document.createElement('option');
     opt.value = id; opt.textContent = lbl;

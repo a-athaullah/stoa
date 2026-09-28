@@ -270,6 +270,7 @@ function _createThreadPanel() {
   threadEmojiPicker.className = 'h-emoji-picker';
   const threadEmojiSearch = document.createElement('input');
   threadEmojiSearch.type = 'text';
+  threadEmojiSearch.name = 'thread-emoji-search';
   threadEmojiSearch.placeholder = 'Search emoji...';
   threadEmojiSearch.autocomplete = 'off';
   const threadEmojiGrid = document.createElement('div');
@@ -551,6 +552,10 @@ function _createThreadPanel() {
   const threadEnterToggle = document.createElement('label');
   threadEnterToggle.id = 'thread-enter-send-toggle';
   threadEnterToggle.title = 'Toggle Enter to send';
+  const _etHiddenCb = document.createElement('input');
+  _etHiddenCb.type = 'checkbox'; _etHiddenCb.setAttribute('aria-hidden', 'true'); _etHiddenCb.tabIndex = -1;
+  _etHiddenCb.style.cssText = 'position:absolute;width:1px;height:1px;opacity:0;pointer-events:none';
+  threadEnterToggle.appendChild(_etHiddenCb);
   const etLabel = document.createElement('span');
   etLabel.className = 'enter-send-label';
   etLabel.textContent = 'enter to send';
@@ -703,8 +708,41 @@ function _createThreadPanel() {
   });
 
   // Paste: image upload + URL linkification
+  let _tPasteInFlight = false;
+  function _tInsertPasteText(text) {
+    const urlRe = /^https?:\/\/\S+$/;
+    const sel = window.getSelection();
+    if (!sel?.rangeCount) return;
+    if (urlRe.test(text.trim())) {
+      const range = sel.getRangeAt(0);
+      const selectedText = sel.toString();
+      const a = document.createElement('a');
+      a.href = text.trim();
+      if (selectedText) { a.textContent = selectedText; range.deleteContents(); }
+      else { a.textContent = text.trim(); }
+      range.insertNode(a);
+      range.setStartAfter(a);
+      range.collapse(true);
+      sel.removeAllRanges(); sel.addRange(range);
+    } else {
+      const r = sel.getRangeAt(0);
+      r.deleteContents();
+      r.insertNode(document.createTextNode(text));
+      r.collapse(false);
+      sel.removeAllRanges(); sel.addRange(r);
+    }
+  }
+
   inputEl.addEventListener('beforeinput', e => {
-    if (e.inputType === 'insertFromPaste' || e.inputType === 'insertFromPasteAsQuotation') e.preventDefault();
+    if (e.inputType === 'insertFromPaste' || e.inputType === 'insertFromPasteAsQuotation') {
+      e.preventDefault();
+      if (!_tPasteInFlight) {
+        _tPasteInFlight = true;
+        const text = e.dataTransfer?.getData('text/plain') ?? '';
+        _tInsertPasteText(text);
+        requestAnimationFrame(() => { _tPasteInFlight = false; });
+      }
+    }
   });
 
   inputEl.addEventListener('paste', async e => {
@@ -719,30 +757,11 @@ function _createThreadPanel() {
       return;
     }
     e.preventDefault();
-    const text = e.clipboardData.getData('text/plain');
-    const urlRe = /^https?:\/\/\S+$/;
-    const sel = window.getSelection();
-    if (urlRe.test(text.trim()) && sel.rangeCount) {
-      const range = sel.getRangeAt(0);
-      const selectedText = sel.toString();
-      const a = document.createElement('a');
-      a.href = text.trim();
-      if (selectedText) {
-        a.textContent = selectedText;
-        range.deleteContents();
-      } else {
-        a.textContent = text.trim();
-      }
-      range.insertNode(a);
-      range.setStartAfter(a);
-      range.collapse(true);
-      sel.removeAllRanges(); sel.addRange(range);
-    } else {
-      const r = sel.getRangeAt(0);
-      r.deleteContents();
-      r.insertNode(document.createTextNode(text));
-      r.collapse(false);
-      sel.removeAllRanges(); sel.addRange(r);
+    if (!_tPasteInFlight) {
+      _tPasteInFlight = true;
+      const text = e.clipboardData.getData('text/plain');
+      _tInsertPasteText(text);
+      requestAnimationFrame(() => { _tPasteInFlight = false; });
     }
   });
 
