@@ -299,28 +299,18 @@ async function init() {
     }
   });
 
-  input.addEventListener('beforeinput', e => {
-    if (e.inputType === 'insertFromPaste' || e.inputType === 'insertFromPasteAsQuotation') e.preventDefault();
-  });
-
-  input.addEventListener('paste', e => {
-    const items = [...(e.clipboardData?.items || [])];
-    if (items.find(i => i.type.startsWith('image/'))) { hideMentionPopup(); hideSkillPopup(); handleImagePaste(e); return; }
-    e.preventDefault();
-    const text = e.clipboardData.getData('text/plain');
+  let _pasteInFlight = false;
+  function _insertPasteText(text) {
     const urlRe = /^https?:\/\/\S+$/;
     const sel = window.getSelection();
-    if (urlRe.test(text.trim()) && sel.rangeCount) {
+    if (!sel?.rangeCount) return;
+    if (urlRe.test(text.trim())) {
       const range = sel.getRangeAt(0);
       const selectedText = sel.toString();
       const a = document.createElement('a');
       a.href = text.trim();
-      if (selectedText) {
-        a.textContent = selectedText;
-        range.deleteContents();
-      } else {
-        a.textContent = text.trim();
-      }
+      if (selectedText) { a.textContent = selectedText; range.deleteContents(); }
+      else { a.textContent = text.trim(); }
       range.insertNode(a);
       range.setStartAfter(a);
       range.collapse(true);
@@ -331,6 +321,31 @@ async function init() {
       r.insertNode(document.createTextNode(text));
       r.collapse(false);
       sel.removeAllRanges(); sel.addRange(r);
+    }
+  }
+
+  // beforeinput fires before paste in newer Chrome — whichever fires first owns the insertion
+  input.addEventListener('beforeinput', e => {
+    if (e.inputType === 'insertFromPaste' || e.inputType === 'insertFromPasteAsQuotation') {
+      e.preventDefault();
+      if (!_pasteInFlight) {
+        _pasteInFlight = true;
+        const text = e.dataTransfer?.getData('text/plain') ?? '';
+        _insertPasteText(text);
+        requestAnimationFrame(() => { _pasteInFlight = false; });
+      }
+    }
+  });
+
+  input.addEventListener('paste', e => {
+    const items = [...(e.clipboardData?.items || [])];
+    if (items.find(i => i.type.startsWith('image/'))) { hideMentionPopup(); hideSkillPopup(); handleImagePaste(e); return; }
+    e.preventDefault();
+    if (!_pasteInFlight) {
+      _pasteInFlight = true;
+      const text = e.clipboardData.getData('text/plain');
+      _insertPasteText(text);
+      requestAnimationFrame(() => { _pasteInFlight = false; });
     }
   });
 
