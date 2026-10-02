@@ -3253,6 +3253,39 @@ async function run() {
     }
   });
 
+  await test('slack_event handler — message_changed normalization (code check)', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    const handler = src.substring(src.indexOf("connectionManager.on('slack_event'"), src.indexOf("// ─── WhatsApp automation listener"));
+    assert.ok(handler.includes("event.subtype === 'message_changed'"), 'must detect message_changed subtype');
+    assert.ok(handler.includes('previousMessage'), 'must capture previous_message for anti-double-trigger');
+    assert.ok(handler.includes('isEdit'), 'must track isEdit flag');
+    assert.ok(handler.includes('event = { ...event.message, channel:'), 'must promote event.message fields to top level');
+    assert.ok(handler.includes('unsupported_subtype'), 'must log and skip unsupported subtypes');
+  });
+
+  await test('slack_event handler — anti-double-trigger for edits (code check)', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    const handler = src.substring(src.indexOf("connectionManager.on('slack_event'"), src.indexOf("// ─── WhatsApp automation listener"));
+    assert.ok(handler.includes('edit_already_matched'), 'must skip edits where previous_message already matched conditions');
+    assert.ok(handler.includes('extractSlackFullText(previousMessage)'), 'must evaluate previous_message with extractSlackFullText');
+    assert.ok(handler.includes("edited:${event.edited?.ts"), 'dedup key for edits must include edited timestamp');
+  });
+
+  await test('slack_event handler — regular message still works after normalization (code check)', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    const handler = src.substring(src.indexOf("connectionManager.on('slack_event'"), src.indexOf("// ─── WhatsApp automation listener"));
+    assert.ok(handler.includes("if (eventType === 'message' && event.subtype)"), 'normalization only runs for events with subtype');
+    const normalMsgDedup = handler.includes(": `${event.ts}:${event.channel}:${eventType}`");
+    assert.ok(normalMsgDedup, 'regular messages must use original dedup key format');
+  });
+
+  await test('slack_event handler — watch_reply works for edited thread replies (code check)', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    const handler = src.substring(src.indexOf("connectionManager.on('slack_event'"), src.indexOf("// ─── WhatsApp automation listener"));
+    const normBeforeWatch = handler.indexOf('event = { ...event.message') < handler.indexOf('event.thread_ts && event.thread_ts !== event.ts');
+    assert.ok(normBeforeWatch, 'normalization must happen before watch_reply check so edited replies route correctly');
+  });
+
   await test('DELETE /api/automations/:id — deletes rule', async () => {
     if (!testAutoId) { console.log('    (skipped)'); return; }
     const r = await req('DELETE', `/api/automations/${testAutoId}`);

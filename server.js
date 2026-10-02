@@ -6649,11 +6649,31 @@ function extractSlackFullText(event) {
 
 const _slackProcessed = new Map(); // key → expiresAt, for dedup
 connectionManager.on('slack_event', async ({ eventType, event, webClient, connId }) => {
+  // ── Normalize message_changed: promote event.message fields to top level ──
+  let previousMessage = null;
+  let isEdit = false;
+  if (eventType === 'message' && event.subtype) {
+    const _supportedSubtypes = new Set(['message_changed']);
+    if (!_supportedSubtypes.has(event.subtype)) {
+      const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
+      console.log(`[${ts}] [automation] skipped - reason=unsupported_subtype:${event.subtype} channel=${event.channel || '-'}`);
+      return;
+    }
+    if (event.subtype === 'message_changed' && event.message) {
+      isEdit = true;
+      previousMessage = event.previous_message || null;
+      const ch = event.channel;
+      event = { ...event.message, channel: ch };
+    }
+  }
+
   // Deduplicate: Slack may deliver the same event multiple times
   const isReaction = eventType === 'reaction_added';
   const dedupKey = isReaction
     ? `${event.event_ts}:${event.item?.channel}:${eventType}`
-    : `${event.ts}:${event.channel}:${eventType}`;
+    : isEdit
+      ? `${event.ts}:${event.channel}:edited:${event.edited?.ts || ''}`
+      : `${event.ts}:${event.channel}:${eventType}`;
   const now = Date.now();
   if (_slackProcessed.has(dedupKey)) return;
   _slackProcessed.set(dedupKey, now + 120_000);
@@ -6747,11 +6767,44 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
         }
       });
 
-      if (!allMatch) continue;
+      if (!allMatch) {
+        if (isEdit) {
+          const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
+          console.log(`[${ts}] [automation:${auto.name}] skipped - reason=condition_failed slack_ts=${event.ts || '-'} is_edit=true`);
+        }
+        continue;
+      }
+
+      // Anti-double-trigger: if this is an edit, check previous_message.
+      // Only trigger if the OLD version did NOT match (transition false→true).
+      if (isEdit && previousMessage) {
+        const prevText = previousMessage.text || '';
+        const prevFullText = extractSlackFullText(previousMessage);
+        const prevBotId = previousMessage.bot_id || '';
+        const prevUser = previousMessage.user || '';
+        const prevFieldValues = { message_text: prevText, slack_full_text: prevFullText, slack_bot_id: prevBotId, slack_user: prevUser, slack_channel: channelId, reaction: prevText };
+        const prevMatched = conditions.every(c => {
+          if (!c || typeof c !== 'object' || Array.isArray(c)) return false;
+          const val = (prevFieldValues[c.field] || '').toLowerCase();
+          const target = (c.value || '').toLowerCase();
+          switch (c.op) {
+            case 'contains':      return val.includes(target);
+            case 'not_contains':  return !val.includes(target);
+            case 'starts_with':   return val.startsWith(target);
+            case 'matches_regex': return safeRegexTest(c.value, (prevFieldValues[c.field] || '').slice(0, 5000));
+            default: return true;
+          }
+        });
+        if (prevMatched) {
+          const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
+          console.log(`[${ts}] [automation:${auto.name}] skipped - reason=edit_already_matched slack_ts=${event.ts || '-'}`);
+          continue;
+        }
+      }
 
       {
         const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
-        console.log(`[${ts}] [automation:${auto.name}] condition_matched - event=${eventType} channel=${channelId} slack_ts=${event.ts || event.event_ts || '-'}`);
+        console.log(`[${ts}] [automation:${auto.name}] condition_matched - event=${eventType} channel=${channelId} slack_ts=${event.ts || event.event_ts || '-'}${isEdit ? ' (from edit)' : ''}`);
       }
 
       const prompt = auto.prompt_template
