@@ -6669,6 +6669,11 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
         'SELECT m.id, m.room_id, m.thread_id FROM messages m WHERE m.slack_thread_ts = ?'
       ).get(event.thread_ts);
       if (watchedMsg) {
+        // Slack sends both message + app_mention for bot-mentioning replies (same ts)
+        const watchDedupKey = `watch:${event.ts}:${event.channel}`;
+        if (_slackProcessed.has(watchDedupKey)) return;
+        _slackProcessed.set(watchDedupKey, now + 120_000);
+
         const slackConn = connectionManager.getSlackConnection(connId);
         const stoaBotUserId = slackConn?.botUserId || null;
         const isSelfMessage = (stoaBotUserId && event.user === stoaBotUserId);
