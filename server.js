@@ -101,8 +101,8 @@ function resolveParticipantWorkdir(participantId, prefetchedRoomWd = null) {
 // A room may override this via rooms.model_tiers; a sub-agent may pin one model.
 const SERVER_DEFAULT_TIERS = {
   quick:    ['claude-haiku-4-5'],
-  standard: ['claude-sonnet-5', 'claude-haiku-4-5'],
-  deep:     ['claude-opus-5', 'claude-sonnet-5'],
+  standard: ['claude-sonnet-5-5', 'claude-sonnet-5', 'claude-haiku-4-5'],
+  deep:     ['claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5-5'],
 };
 
 // Resolve the ordered model fallback chain for a trigger. Precedence:
@@ -167,7 +167,7 @@ function sanitizeResultMeta(raw) {
 
 const DEFAULT_CONTEXT_WINDOW = 200000;
 const MODEL_CONTEXT_LIMITS = {
-  'claude-opus-5-5': 200000, 'claude-opus-5': 200000, 'claude-sonnet-5': 200000,
+  'claude-opus-5-5': 200000, 'claude-opus-5': 200000, 'claude-sonnet-5-5': 200000, 'claude-sonnet-5': 200000,
   'claude-fable-5-1': 200000, 'claude-fable-5': 200000,
   'claude-opus-4-8': 200000, 'claude-opus-4-7': 200000, 'claude-opus-4-6': 200000,
   'claude-sonnet-4-6': 200000, 'claude-sonnet-4-5': 200000, 'claude-haiku-4-5': 200000,
@@ -2998,6 +2998,7 @@ const server = http.createServer(async (req, res) => {
     const ANTHROPIC_MODELS = [
       { value: 'claude-opus-5-5', label: 'Opus 5.5', vision: true, tools: true },
       { value: 'claude-opus-5', label: 'Opus 5', vision: true, tools: true },
+      { value: 'claude-sonnet-5-5', label: 'Sonnet 5.5', vision: true, tools: true },
       { value: 'claude-sonnet-5', label: 'Sonnet 5', vision: true, tools: true },
       { value: 'claude-fable-5-1', label: 'Fable 5.1', vision: true, tools: true },
       { value: 'claude-fable-5', label: 'Fable 5', vision: true, tools: true },
