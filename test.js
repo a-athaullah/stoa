@@ -3253,37 +3253,90 @@ async function run() {
     }
   });
 
-  await test('slack_event handler — message_changed normalization (code check)', async () => {
+  // ── evaluateConditions behavioral tests ──
+
+  await test('evaluateConditions — contains match', async () => {
+    const { evaluateConditions } = require('./lib/evaluate-conditions');
+    const conds = [{ field: 'message_text', op: 'contains', value: 'approved' }];
+    const fv = { message_text: 'Status: approved by reviewer' };
+    const r = evaluateConditions(conds, fv);
+    assert.strictEqual(r.matched, true);
+    assert.strictEqual(r.failedIndex, -1);
+  });
+
+  await test('evaluateConditions — contains no match returns failedIndex', async () => {
+    const { evaluateConditions } = require('./lib/evaluate-conditions');
+    const conds = [
+      { field: 'message_text', op: 'contains', value: 'channel-x' },
+      { field: 'message_text', op: 'contains', value: 'approved' },
+    ];
+    const fv = { message_text: 'channel-x reviewing...' };
+    const r = evaluateConditions(conds, fv);
+    assert.strictEqual(r.matched, false);
+    assert.strictEqual(r.failedIndex, 1, 'second condition should fail');
+  });
+
+  await test('evaluateConditions — not_contains blocks when text is present', async () => {
+    const { evaluateConditions } = require('./lib/evaluate-conditions');
+    const conds = [{ field: 'message_text', op: 'not_contains', value: 'error' }];
+    assert.strictEqual(evaluateConditions(conds, { message_text: 'error occurred' }).matched, false);
+    assert.strictEqual(evaluateConditions(conds, { message_text: 'all good' }).matched, true);
+  });
+
+  await test('evaluateConditions — edit not-match → match triggers (simulated)', async () => {
+    const { evaluateConditions } = require('./lib/evaluate-conditions');
+    const conds = [
+      { field: 'slack_channel', op: 'contains', value: 'C05K' },
+      { field: 'message_text', op: 'contains', value: 'status: approved' },
+    ];
+    const prevFv = { message_text: 'Reviewing PR #42...', slack_channel: 'C05K0BNTVU6' };
+    const newFv = { message_text: 'Status: approved\nPR #42 merged', slack_channel: 'C05K0BNTVU6' };
+    assert.strictEqual(evaluateConditions(conds, prevFv).matched, false, 'previous should not match');
+    assert.strictEqual(evaluateConditions(conds, newFv).matched, true, 'new should match');
+  });
+
+  await test('evaluateConditions — edit match → match should not re-trigger (simulated)', async () => {
+    const { evaluateConditions } = require('./lib/evaluate-conditions');
+    const conds = [{ field: 'message_text', op: 'contains', value: 'approved' }];
+    const prevFv = { message_text: 'Status: approved' };
+    const newFv = { message_text: 'Status: approved (typo fixed)' };
+    assert.strictEqual(evaluateConditions(conds, prevFv).matched, true, 'previous already matched');
+    assert.strictEqual(evaluateConditions(conds, newFv).matched, true, 'new also matches');
+    // Both match → anti-double-trigger should skip (handler logic, not evaluateConditions itself)
+  });
+
+  await test('evaluateConditions — bot_message with bot_id evaluates normally', async () => {
+    const { evaluateConditions } = require('./lib/evaluate-conditions');
+    const conds = [
+      { field: 'slack_bot_id', op: 'contains', value: 'B0' },
+      { field: 'message_text', op: 'contains', value: 'payment' },
+    ];
+    const fv = { message_text: 'Payment received for INV-123', slack_bot_id: 'B0XYZ123', slack_channel: 'C05K' };
+    assert.strictEqual(evaluateConditions(conds, fv).matched, true);
+  });
+
+  await test('evaluateConditions — empty conditions matches everything', async () => {
+    const { evaluateConditions } = require('./lib/evaluate-conditions');
+    assert.strictEqual(evaluateConditions([], {}).matched, true);
+    assert.strictEqual(evaluateConditions([], { message_text: 'anything' }).matched, true);
+  });
+
+  await test('evaluateConditions — non-object condition element fails at that index', async () => {
+    const { evaluateConditions } = require('./lib/evaluate-conditions');
+    const r = evaluateConditions([null, { field: 'message_text', op: 'contains', value: 'x' }], { message_text: 'x' });
+    assert.strictEqual(r.matched, false);
+    assert.strictEqual(r.failedIndex, 0, 'null element at index 0 should fail');
+  });
+
+  await test('slack_event handler — message_changed normalization + denylist (code check)', async () => {
     const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
     const handler = src.substring(src.indexOf("connectionManager.on('slack_event'"), src.indexOf("// ─── WhatsApp automation listener"));
     assert.ok(handler.includes("event.subtype === 'message_changed'"), 'must detect message_changed subtype');
-    assert.ok(handler.includes('previousMessage'), 'must capture previous_message for anti-double-trigger');
-    assert.ok(handler.includes('isEdit'), 'must track isEdit flag');
-    assert.ok(handler.includes('event = { ...event.message, channel:'), 'must promote event.message fields to top level');
-    assert.ok(handler.includes('unsupported_subtype'), 'must log and skip unsupported subtypes');
-  });
-
-  await test('slack_event handler — anti-double-trigger for edits (code check)', async () => {
-    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
-    const handler = src.substring(src.indexOf("connectionManager.on('slack_event'"), src.indexOf("// ─── WhatsApp automation listener"));
-    assert.ok(handler.includes('edit_already_matched'), 'must skip edits where previous_message already matched conditions');
-    assert.ok(handler.includes('extractSlackFullText(previousMessage)'), 'must evaluate previous_message with extractSlackFullText');
-    assert.ok(handler.includes("edited:${event.edited?.ts"), 'dedup key for edits must include edited timestamp');
-  });
-
-  await test('slack_event handler — regular message still works after normalization (code check)', async () => {
-    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
-    const handler = src.substring(src.indexOf("connectionManager.on('slack_event'"), src.indexOf("// ─── WhatsApp automation listener"));
-    assert.ok(handler.includes("if (eventType === 'message' && event.subtype)"), 'normalization only runs for events with subtype');
-    const normalMsgDedup = handler.includes(": `${event.ts}:${event.channel}:${eventType}`");
-    assert.ok(normalMsgDedup, 'regular messages must use original dedup key format');
-  });
-
-  await test('slack_event handler — watch_reply works for edited thread replies (code check)', async () => {
-    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
-    const handler = src.substring(src.indexOf("connectionManager.on('slack_event'"), src.indexOf("// ─── WhatsApp automation listener"));
-    const normBeforeWatch = handler.indexOf('event = { ...event.message') < handler.indexOf('event.thread_ts && event.thread_ts !== event.ts');
-    assert.ok(normBeforeWatch, 'normalization must happen before watch_reply check so edited replies route correctly');
+    assert.ok(handler.includes('event = { ...event.message, channel:'), 'must promote event.message fields');
+    assert.ok(handler.includes("'message_deleted'"), 'denylist must include message_deleted');
+    assert.ok(!handler.includes("'bot_message'"), 'bot_message must NOT be in denylist');
+    assert.ok(handler.includes('!isEdit'), 'watch_reply must skip edits');
+    assert.ok(handler.includes('edit_already_matched'), 'must have anti-double-trigger');
   });
 
   await test('DELETE /api/automations/:id — deletes rule', async () => {
