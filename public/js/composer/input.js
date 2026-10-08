@@ -136,7 +136,7 @@ function sendMessage() {
   const replyTo = pendingReplyTo;
   clearAttachments();
   clearReply();
-  ws.send(JSON.stringify({ type: 'send_message', room_id: currentRoomId, content, attachments, reply_to: replyTo, event_id: crypto.randomUUID() }));
+  ws.send(JSON.stringify({ type: 'send_message', room_id: currentRoomId, content, attachments, reply_to: replyTo, event_id: generateUUID() }));
   if (window.currentBusyInputMode === 'steer') _showSteerNotice();
   clearDraft(currentRoomId);
 }
