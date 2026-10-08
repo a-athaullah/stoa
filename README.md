@@ -192,7 +192,7 @@ MAX_AI_TURNS=5
 | `MAX_AI_TURNS` | `5` | Max AI agents triggered per human message |
 | `MAX_CONCURRENT` | `3` | Max parallel agent sessions across all rooms |
 | `SESSION_IDLE_TTL` | `5` | Minutes before idle sessions auto-close |
-| `AUTO_COMPACT_THRESHOLD_KB` | `500` | Session file size (KB) that triggers auto-compact |
+| `AUTO_COMPACT_THRESHOLD_KB` | `300` | Session file size (KB) that triggers auto-compact |
 | `CLEANUP_CRON_HOUR` | `10` | Hour (24h) for daily upload cleanup |
 | `CLEANUP_MAX_AGE_HOURS` | `24` | How long uploaded files are kept |
 | `MAX_PINNED_ROOMS` | `3` | Maximum rooms that can be pinned (up to 20) |
