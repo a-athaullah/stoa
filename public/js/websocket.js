@@ -479,6 +479,7 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'send_error') {
     console.warn('[send_error]', msg.error, msg.code);
+    showToast(msg.error || 'Message failed to send', { error: true, duration: 5000 });
     return;
   }
 

@@ -1361,12 +1361,8 @@ function sendThreadMessage() {
     .replace(/​/g, '').replace(/\n{3,}/g, '\n\n').trim();
   if (!content && !threadPendingAttachments.length) return;
 
-  inputEl.innerHTML = '';
   const attachments = threadPendingAttachments.length ? [...threadPendingAttachments] : undefined;
   const replyTo = threadPendingReplyTo;
-  clearThreadAttachments();
-  clearThreadReply();
-  try { localStorage.removeItem('stoa-thread-draft-' + currentRoomId + '-' + activeThreadId); } catch {}
 
   ws.send(JSON.stringify({
     type: 'send_message',
@@ -1377,6 +1373,10 @@ function sendThreadMessage() {
     thread_id: activeThreadId,
     event_id: generateUUID(),
   }));
+  inputEl.innerHTML = '';
+  clearThreadAttachments();
+  clearThreadReply();
+  try { localStorage.removeItem('stoa-thread-draft-' + currentRoomId + '-' + activeThreadId); } catch {}
 }
 
 // ── Context bar (thread-scoped) ───────────────────────────────────────────────
