@@ -1656,6 +1656,53 @@ async function run() {
     });
   }
 
+  // send_error when room has no human participant
+  console.log('\n[send_error — no human participant]');
+  {
+    let nhRoomId = null;
+    let nhAgent = null;
+
+    await test('Setup — create room, then remove human participant', async () => {
+      nhAgent = await createOnlineTestAgent('__no-human-test__', '/tmp/no-human-test');
+      assert.ok(nhAgent, 'agent registration failed');
+      const r = await req('POST', '/api/rooms', { title: '__no-human-test__', workdir_id: nhAgent.workdirId, participant_ids: [nhAgent.actorId] });
+      nhRoomId = r.body?.id;
+      assert.ok(nhRoomId, 'room creation failed');
+      nhAgent.ws.close();
+      const db = require('./db');
+      const human = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human'").get(nhRoomId);
+      assert.ok(human, 'expected human participant before removal');
+      db.prepare('DELETE FROM room_participants WHERE id=?').run(human.id);
+    });
+
+    await test('WS send_message to room without human → send_error', async () => {
+      if (!nhRoomId) { console.log('    (skipped)'); return; }
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        ws.send(JSON.stringify({ type: 'join_room', room_id: nhRoomId }));
+        await new Promise(r => setTimeout(r, 50));
+        const errPromise = waitForWsMessage(ws, m => m.type === 'send_error' && m.room_id === nhRoomId);
+        ws.send(JSON.stringify({ type: 'send_message', room_id: nhRoomId, content: 'should fail' }));
+        const err = await errPromise;
+        assert.strictEqual(err.type, 'send_error');
+        assert.ok(err.error.includes('no human participant'), `expected no-human error, got: ${err.error}`);
+      } finally {
+        ws.close();
+      }
+    });
+
+    await test('Cleanup — delete no-human test room + actor', async () => {
+      if (nhRoomId) {
+        await req('PATCH', `/api/rooms/${nhRoomId}`, { archived: true });
+        await req('DELETE', `/api/rooms/${nhRoomId}`);
+      }
+      if (nhAgent) {
+        await req('DELETE', `/api/actors/${nhAgent.actorId}`);
+        orphanActorIds = orphanActorIds.filter(id => id !== nhAgent.actorId);
+      }
+    });
+  }
+
   // Sub-agent identity (Phase 1) — self-contained: agent → room → 2 messages →
   // seed sub_agent_label + parent_message_id on one via DB (no API sets them in
   // Phase 1) → assert both fields round-trip through the messages serialization,

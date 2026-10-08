@@ -131,12 +131,12 @@ function sendMessage() {
   const input = document.getElementById('msg-input');
   const content = htmlToMarkdown(input).replace(/​/g, '').replace(/\n{3,}/g, '\n\n').trim();
   if ((!content && !pendingAttachments.length) || !ws || ws.readyState !== WebSocket.OPEN) return;
-  input.innerHTML = '';
   const attachments = pendingAttachments.length ? [...pendingAttachments] : undefined;
   const replyTo = pendingReplyTo;
+  ws.send(JSON.stringify({ type: 'send_message', room_id: currentRoomId, content, attachments, reply_to: replyTo, event_id: generateUUID() }));
+  input.innerHTML = '';
   clearAttachments();
   clearReply();
-  ws.send(JSON.stringify({ type: 'send_message', room_id: currentRoomId, content, attachments, reply_to: replyTo, event_id: generateUUID() }));
   if (window.currentBusyInputMode === 'steer') _showSteerNotice();
   clearDraft(currentRoomId);
 }

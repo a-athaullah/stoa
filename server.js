@@ -5424,7 +5424,15 @@ wss.on('connection', (ws, req) => {
       }
     }
 
-   } catch (err) { console.error('[ws] unhandled message error:', err); }
+   } catch (err) {
+      console.error('[ws] unhandled message error:', err);
+      try {
+        const failed = JSON.parse(raw);
+        if (failed.type === 'send_message' && ws.readyState === 1) {
+          ws.send(JSON.stringify({ type: 'send_error', room_id: failed.room_id, error: 'Message failed to send' }));
+        }
+      } catch (_) {}
+    }
   });
 
   ws.on('close', () => {
@@ -5710,7 +5718,13 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
   const parts = db.prepare(
     "SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1"
   ).all(roomId);
-  if (!parts.length) return;
+  if (!parts.length) {
+    console.warn(`[send] room ${roomId} has no human participant, message dropped`);
+    if (senderWs?.readyState === 1) {
+      senderWs.send(JSON.stringify({ type: 'send_error', room_id: roomId, error: 'This room has no human participant' }));
+    }
+    return;
+  }
   const humanParticipantId = parts[0].id;
 
   // Idempotent insert: if client supplied event_id and it already exists, return the original message
