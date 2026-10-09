@@ -16,9 +16,22 @@ async function autoDoConnSave() {
   try {
     let res;
     const isWa = f.provider === 'whatsapp';
+    const isEmail = f.provider === 'email';
     if (isEdit) {
       const payload = { name: f.name.trim() };
-      if (!isWa) {
+      if (isEmail) {
+        payload.preset = f.emailPreset;
+        if (f.emailPreset === 'custom') {
+          payload.host = f.emailHost.trim();
+          payload.port = parseInt(f.emailPort) || 993;
+          payload.secure = true;
+        }
+        payload.user = f.emailUser.trim();
+        if (f.emailPassword) payload.password = f.emailPassword;
+        payload.folder = (f.emailFolder || 'INBOX').trim();
+        payload.allowedSenders = f.emailAllowedSenders.split('\n').map(s => s.trim()).filter(Boolean);
+        payload.requireAuthPass = f.emailRequireAuthPass;
+      } else if (!isWa) {
         payload.tokenType = f.tokenType;
         if (f.appToken) payload.appToken = f.appToken;
         if (f.token)    payload.token    = f.token;
@@ -48,16 +61,33 @@ async function autoDoConnSave() {
       }
       showToast('Connection updated');
     } else {
-      if (!isWa) {
+      if (isEmail) {
+        if (!f.emailUser.trim()) { throw new Error('Email address is required'); }
+        if (!f.emailPassword)    { throw new Error('App password is required'); }
+        const senders = f.emailAllowedSenders.split('\n').map(s => s.trim()).filter(Boolean);
+        if (senders.length === 0) { throw new Error('At least one allowed sender is required'); }
+      } else if (!isWa) {
         if (!f.appToken) { throw new Error('App Token is required'); }
         if (!f.token)    { throw new Error('Bot/User Token is required'); }
       }
       const payload = {
         name: f.name.trim(),
         provider: f.provider,
-        tokenType: f.tokenType,
+        tokenType: isEmail ? 'password' : f.tokenType,
       };
-      if (!isWa) {
+      if (isEmail) {
+        payload.preset = f.emailPreset;
+        if (f.emailPreset === 'custom') {
+          payload.host = f.emailHost.trim();
+          payload.port = parseInt(f.emailPort) || 993;
+          payload.secure = true;
+        }
+        payload.user = f.emailUser.trim();
+        payload.password = f.emailPassword;
+        payload.folder = (f.emailFolder || 'INBOX').trim();
+        payload.allowedSenders = f.emailAllowedSenders.split('\n').map(s => s.trim()).filter(Boolean);
+        payload.requireAuthPass = f.emailRequireAuthPass;
+      } else if (!isWa) {
         payload.appToken = f.appToken;
         payload.token    = f.token;
       } else {
@@ -169,7 +199,9 @@ async function autoDoFormSave() {
   const activeConns = autoState.connections.filter(c => c.status === 'connected' || c.status === 'connecting');
   const needsConn = activeConns.length > 0;
   const selectedConn = f.connectionId ? autoState.connections.find(c => String(c.id) === String(f.connectionId)) : null;
-  const triggerType = selectedConn?.provider === 'whatsapp' ? 'whatsapp' : 'slack';
+  const triggerType = selectedConn?.provider === 'whatsapp' ? 'whatsapp'
+    : selectedConn?.provider === 'email' ? 'email'
+    : 'slack';
 
   autoShowErr('auto-err-name',   f.name.trim()           ? '' : 'Name is required');
   autoShowErr('auto-err-conn',   (!needsConn || f.connectionId) ? '' : 'Select a connection');
@@ -218,5 +250,46 @@ async function autoDoFormSave() {
     showToast('Failed to save automation', { error: true });
     if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = 'Save Automation'; }
   }
+}
+
+async function autoDoTestEmailConn() {
+  autoConnSyncForm();
+  const f = autoState.connForm;
+
+  const host = f.emailPreset === 'gmail' ? 'imap.gmail.com' : f.emailHost.trim();
+  const port = f.emailPreset === 'gmail' ? 993 : (parseInt(f.emailPort) || 993);
+  if (!f.emailUser.trim()) { showToast('Email address is required', { error: true }); return; }
+
+  const editingConn = autoState.connFormMode === 'edit'
+    ? autoState.connections.find(c => c.id === autoState.editingConnId) : null;
+  if (!f.emailPassword && !editingConn?.metadata?.hasPassword) {
+    showToast('App password is required', { error: true }); return;
+  }
+
+  autoState.connTestLoading = true;
+  autoState.connTestResult = null;
+  autoRender();
+
+  try {
+    const body = {
+      host, port, secure: true,
+      user: f.emailUser.trim(),
+    };
+    if (f.emailPassword) body.password = f.emailPassword;
+    if (!f.emailPassword && autoState.connFormMode === 'edit') {
+      body.connectionId = autoState.editingConnId;
+    }
+    const res = await fjson('/api/automations/connections/test-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    autoState.connTestResult = res;
+  } catch (err) {
+    autoState.connTestResult = { ok: false, error: err?.message || 'Test failed' };
+  }
+
+  autoState.connTestLoading = false;
+  autoRender();
 }
 

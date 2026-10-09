@@ -615,7 +615,7 @@ AI 代理在消息中提到文件路径（如 `/home/user/project/file.py`）时
 
 ## 自动化
 
-Stoa 支持 **由 Slack 和 WhatsApp 触发的自动化** — 当传入事件符合条件时，自动向目标房间发送提示词的规则。
+Stoa 支持 **由 Slack、WhatsApp 和 Email 触发的自动化** — 当传入事件符合条件时，自动向目标房间发送提示词的规则。
 
 ### 管理连接
 
@@ -638,6 +638,26 @@ Stoa 支持 **由 Slack 和 WhatsApp 触发的自动化** — 当传入事件符
 
 点击 **Connect & Show QR** 启动 WhatsApp 会话并打开二维码弹窗。用 WhatsApp 应用扫描二维码进行认证。连接成功后，卡片显示已连接手机的 JID 和绿色圆点。会话过期时，使用 **Show QR** 显示新的二维码。
 
+**邮件（IMAP）连接：**
+- **Name** — 标识此连接的标签（例如："Gmail 个人"）
+- **Preset** — **Gmail**（自动配置 `imap.gmail.com:993`）或 **Custom IMAP**（任意 IMAP 服务器）
+- **IMAP Host / Port** — 仅 Custom IMAP 时显示，输入服务器地址和端口
+- **Email address** — 账户用户名（例如：`you@gmail.com`）
+- **App Password** — Gmail 必须使用应用专用密码，不能使用普通密码。前往 Google 账户 → 安全性 → 两步验证 → 应用专用密码创建。需要先开启两步验证。其他邮件服务商使用账户密码或 IMAP 专用密码。
+- **Folder** — 要监听的邮箱文件夹（默认：`INBOX`）
+- **Allowed senders** — 每行一个邮件地址或域名通配符（例如：`boss@example.com`、`*@company.com`）。**至少填写一条** — 未配置允许发件人的连接不会触发自动化（默认拒绝）。任何人都可以向您的收件箱发邮件，邮件内容可能试图操控代理（提示词注入）。
+- **Require sender verification** — 启用时（默认：开启），未通过 DMARC 或 DKIM 验证的邮件将被静默丢弃。防止伪造的 `From` 地址绕过允许名单。
+
+邮件连接使用 **IMAP IDLE** 实现实时接收 — 完全是从您的服务器到邮件提供商的出站连接，无需公开端点或防火墙规则。在 Tailscale 环境下同样可以无缝工作。
+
+此版本仅支持**接收邮件**（只读触发器）。发送或回复邮件暂不支持。
+
+> **Outlook / Microsoft 365：** 此版本不支持 — 微软已禁用基本 IMAP 认证。OAuth2 支持计划在未来版本中提供。
+
+**测试连接：** 保存前点击 **Test connection** 验证凭据和连通性。在编辑模式下，密码字段留空将使用已保存的（加密的）密码 — 初次设置后，已保存的密码不会再次显示。
+
+**密码存储：** 密码在服务器上加密存储，不会通过 API 返回。
+
 每个连接卡片显示当前状态：**connecting**、**connected**、**disconnected** 或 **error**。使用 **reconnect** 按钮重试失败的连接，或使用 **edit** 和 **delete** 按钮管理连接。
 
 ### 创建自动化规则
@@ -649,11 +669,18 @@ Stoa 支持 **由 Slack 和 WhatsApp 触发的自动化** — 当传入事件符
 - **触发事件** — 触发规则的事件（取决于提供商）：
   - *Slack:* `message`（公开频道）、`message.groups`（私有频道）、`mention`、`reaction_added`
   - *WhatsApp:* `message`（私信）、`group_message`（群消息）、`group_mention`（群中被@机器人）、`message_any`（私信＋群）
-- **条件** — 针对消息文本的可选过滤器：`contains`、`not_contains`、`starts_with` 或 `matches_regex`。多个条件之间为 AND 关系。`matches_regex` 限制：模式最多200个字符，嵌套量词被拒绝（ReDoS防护），输入截断至5,000个字符，导致过度回溯的模式在保存时返回400错误
+  - *Email:* `message`（收到新邮件）
+- **条件** — 针对事件的可选过滤器：`contains`、`not_contains`、`starts_with` 或 `matches_regex`。多个条件之间为 AND 关系。`matches_regex` 限制：模式最多200个字符，嵌套量词被拒绝（ReDoS防护），输入截断至5,000个字符，导致过度回溯的模式在保存时返回400错误。条件字段因提供商而异：
+  - *Slack:* `message text`、`full text`、`slack_user`、`slack_channel`、`slack_bot_id`
+  - *WhatsApp:* `message text`、`sender JID`、`chat ID`
+  - *Email:* `from address`、`subject`、`has attachments`
 - **目标房间** — 接收提示词的 Stoa 房间
 - **提示词模板** — 发送到房间的消息。可用变量：
   - *Slack:* `{{slack_message_text}}`、`{{slack_message_link}}`、`{{slack_user}}`、`{{slack_channel}}`、`{{extracted_url}}`、`{{slack_thread_ts}}`
   - *WhatsApp:* `{{wa_message_text}}`、`{{wa_sender}}`、`{{wa_sender_name}}`、`{{wa_chat_id}}`、`{{extracted_url}}`
+  - *Email:* `{{email.from}}`、`{{email.from_name}}`、`{{email.subject}}`、`{{email.body}}`、`{{email.date}}`、`{{email.has_attachments}}`
+
+  > **安全提示（Email）：** `{{email.body}}` 是不可信数据。精心构造的邮件可能试图操控代理。建议在提示词中用分隔符将其包裹，明确标识这是数据而非指令。
 - **回复 WhatsApp** *（仅 WhatsApp 连接）* — 启用后，服务器会在提示词中插入包含发送者信息、聊天 ID 和代理指令的 WhatsApp 上下文块。代理可以在输出中使用 `[wa:reply]` 标记回复 WhatsApp：
 
   ```
@@ -768,7 +795,7 @@ API 密钥存储在服务器上，仅在 Settings 编辑表单中返回到浏览
 
 ### 自动化
 
-管理 Slack 和 WhatsApp 连接及自动化规则。请参阅上方的[自动化](#自动化)部分。
+管理 Slack、WhatsApp 和 Email 连接及自动化规则。请参阅上方的[自动化](#自动化)部分。
 
 ### 文档
 

@@ -13,4 +13,5 @@ connector-media/
 *.sqlite-shm
 *.sqlite-wal
 .stoa-attachments/
+.credentials-key
 dist/

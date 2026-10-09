@@ -619,7 +619,7 @@ You can export a room's full conversation history as **JSON** or **CSV**. Click 
 
 ## Automation
 
-Stoa supports **automations triggered by Slack and WhatsApp** — rules that fire when an incoming event matches your conditions and automatically send a prompt to a target room.
+Stoa supports **automations triggered by Slack, WhatsApp, and Email** — rules that fire when an incoming event matches your conditions and automatically send a prompt to a target room.
 
 ### Managing Connections
 
@@ -642,6 +642,26 @@ See the [Slack setup guide](doc-slack-setup) for step-by-step instructions on cr
 
 Clicking **Connect & Show QR** starts the WhatsApp session and opens a QR code modal. Scan the QR with your WhatsApp app to authenticate. Once connected, the card shows the connected phone JID and a green dot. Use **Show QR** to display a new QR code if the session expires.
 
+**Email (IMAP) connection:**
+- **Name** — a label for this connection (e.g., "Gmail Personal")
+- **Preset** — **Gmail** (preconfigures `imap.gmail.com:993`) or **Custom IMAP** (any IMAP server)
+- **IMAP Host / Port** — shown only for Custom IMAP; enter your server address and port
+- **Email address** — the account username (e.g., `you@gmail.com`)
+- **App Password** — for Gmail, you must use an App Password (not your regular password). Go to your Google Account → Security → 2-Step Verification → App passwords. Google requires 2-Step Verification to be enabled. For other providers, use the account password or an IMAP-specific password.
+- **Folder** — mailbox folder to monitor (default: `INBOX`)
+- **Allowed senders** — one email address or domain wildcard per line (e.g., `boss@example.com`, `*@company.com`). **At least one entry is required** — connections with no allowed senders will not trigger automations (default deny). Anyone can send an email to your inbox, and email content could attempt to manipulate the agent (prompt injection).
+- **Require sender verification** — when enabled (default on), emails that fail DMARC or DKIM verification are silently dropped. This prevents spoofed `From` addresses from bypassing the allowlist.
+
+Email connections use **IMAP IDLE** for real-time delivery — entirely outbound from your server to the mail provider, so no public endpoint or firewall rule is needed. Works seamlessly behind Tailscale.
+
+This version supports **incoming email only** (read-only trigger). Sending or replying to email is not yet supported.
+
+> **Outlook / Microsoft 365:** Not supported in this version — Microsoft has disabled basic IMAP authentication. OAuth2 support is planned for a future release.
+
+**Test connection:** Click **Test connection** before saving to verify credentials and connectivity. In edit mode, leave the password field empty to use the stored (encrypted) password — the stored password is never shown after initial setup.
+
+**Password storage:** The password is stored encrypted on the server and is never returned via the API.
+
 Each connection card shows its status: **connecting**, **connected**, **disconnected**, or **error**. Use the **reconnect** button to retry, or the **edit** and **delete** buttons to manage it.
 
 ### Creating an Automation Rule
@@ -653,11 +673,18 @@ Once at least one connection is active, click **+ new rule** to create a rule:
 - **Trigger event** — the event that fires the rule (options depend on provider):
   - *Slack:* `message`, `message.groups`, `mention`, `reaction_added`
   - *WhatsApp:* `message` (direct message), `group_message` (group message), `group_mention` (bot tagged in group), `message_any` (DM + group)
-- **Conditions** — optional filters applied to the message text: `contains`, `not_contains`, `starts_with`, or `matches_regex`. Multiple conditions are AND-ed together. `matches_regex` limitations: pattern max 200 characters, nested quantifiers rejected (ReDoS protection), input capped at 5,000 characters, patterns that cause excessive backtracking are rejected at save time with a 400 error
+  - *Email:* `message` (New email received)
+- **Conditions** — optional filters applied to the event: `contains`, `not_contains`, `starts_with`, or `matches_regex`. Multiple conditions are AND-ed together. `matches_regex` limitations: pattern max 200 characters, nested quantifiers rejected (ReDoS protection), input capped at 5,000 characters, patterns that cause excessive backtracking are rejected at save time with a 400 error. Condition fields vary by provider:
+  - *Slack:* `message text`, `full text`, `slack_user`, `slack_channel`, `slack_bot_id`
+  - *WhatsApp:* `message text`, `sender JID`, `chat ID`
+  - *Email:* `from address`, `subject`, `has attachments`
 - **Target room** — which Stoa room receives the triggered message
 - **Prompt template** — the message sent to the room. Use variables:
   - *Slack:* `{{slack_message_text}}`, `{{slack_message_link}}`, `{{slack_user}}`, `{{slack_channel}}`, `{{extracted_url}}`, `{{slack_thread_ts}}`
   - *WhatsApp:* `{{wa_message_text}}`, `{{wa_sender}}`, `{{wa_sender_name}}`, `{{wa_chat_id}}`, `{{extracted_url}}`
+  - *Email:* `{{email.from}}`, `{{email.from_name}}`, `{{email.subject}}`, `{{email.body}}`, `{{email.date}}`, `{{email.has_attachments}}`
+
+  > **Security note (Email):** `{{email.body}}` is untrusted data. A crafted email could attempt to manipulate the agent. Consider wrapping it in a delimiter in your prompt to make clear it is data, not instructions.
 - **Reply to WhatsApp** *(WhatsApp connections only)* — when enabled, the server injects a WhatsApp context block into the prompt with sender info, chat ID, and instructions for the agent. The agent can reply to WhatsApp using the `[wa:reply]` marker in its output:
 
   ```
@@ -772,7 +799,7 @@ The API key is stored on the server and returned to the browser only in the Sett
 
 ### Automation
 
-Manage Slack and WhatsApp connections and automation rules. See the [Automation](#automation) section above.
+Manage Slack, WhatsApp, and Email connections and automation rules. See the [Automation](#automation) section above.
 
 ### Docs
 

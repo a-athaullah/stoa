@@ -238,16 +238,309 @@ class WhatsAppConnection extends EventEmitter {
   }
 }
 
+class EmailConnection extends EventEmitter {
+  constructor(connId) {
+    super();
+    this.connId = connId;
+    this.client = null;
+    this.running = false;
+    this._stopRequested = false;
+    this._idleTimer = null;
+    this._reconnectTimer = null;
+    this._reconnectAttempt = 0;
+    this._rateBucket = { count: 0, resetAt: 0 };
+  }
+
+  async start({ host, port, secure, user, password, folder, allowedSenders, requireAuthPass, lastUid, uidValidity }) {
+    if (this.running) await this.stop();
+    this._stopRequested = false;
+
+    const { ImapFlow } = require('imapflow');
+    const { simpleParser } = require('mailparser');
+
+    this._folder = folder || 'INBOX';
+    this._allowedSenders = (allowedSenders || []).map(s => s.toLowerCase().trim()).filter(Boolean);
+    this._requireAuthPass = requireAuthPass !== false;
+    this._lastUid = lastUid || 0;
+    this._uidValidity = uidValidity || 0;
+    this._simpleParser = simpleParser;
+
+    if (!this._allowedSenders.length) throw new Error('allowedSenders is required (at least one address)');
+
+    this.client = new ImapFlow({
+      host, port: port || 993, secure: secure !== false,
+      auth: { user, pass: password },
+      logger: false,
+      emitLogs: false,
+      tls: { rejectUnauthorized: true },
+    });
+
+    this.client.on('error', (err) => {
+      console.error(`[email:${this.connId}] error:`, err.message);
+      if (/AUTHENTICATIONFAILED|auth|login/i.test(err.message)) {
+        this.emit('auth_error', err);
+      } else {
+        this.emit('error', err);
+      }
+    });
+
+    this.client.on('close', () => {
+      this.running = false;
+      if (!this._stopRequested) {
+        this._scheduleReconnect({ host, port, secure, user, password, folder, allowedSenders, requireAuthPass, lastUid: this._lastUid, uidValidity: this._uidValidity });
+      }
+    });
+
+    try {
+      await this.client.connect();
+    } catch (e) {
+      this.running = false;
+      if (/AUTHENTICATIONFAILED|auth|login/i.test(e.message)) {
+        this.emit('auth_error', e);
+        throw e;
+      }
+      throw e;
+    }
+
+    this.running = true;
+    this._reconnectAttempt = 0;
+
+    const lock = await this.client.getMailboxLock(this._folder);
+    try {
+      const mbStatus = this.client.mailbox;
+      if (this._uidValidity && mbStatus.uidValidity !== this._uidValidity) {
+        console.log(`[email:${this.connId}] uidValidity changed (${this._uidValidity} → ${mbStatus.uidValidity}), resetting to now`);
+        this._lastUid = mbStatus.uidNext ? mbStatus.uidNext - 1 : 0;
+        this._uidValidity = mbStatus.uidValidity;
+      } else if (!this._lastUid) {
+        this._lastUid = mbStatus.uidNext ? mbStatus.uidNext - 1 : 0;
+        this._uidValidity = mbStatus.uidValidity;
+        console.log(`[email:${this.connId}] first connect — starting from UID ${this._lastUid}`);
+      }
+    } finally {
+      lock.release();
+    }
+
+    this.emit('metadata_update', { lastUid: this._lastUid, uidValidity: this._uidValidity });
+
+    this._startIdleLoop();
+  }
+
+  _startIdleLoop() {
+    if (this._stopRequested || !this.client) return;
+
+    const RE_IDLE_MS = 24 * 60 * 1000; // 24 min, before Gmail's ~29 min cutoff
+
+    const doIdle = async () => {
+      if (this._stopRequested || !this.client) return;
+      try {
+        const lock = await this.client.getMailboxLock(this._folder);
+        try {
+          await this._fetchNew();
+        } finally {
+          lock.release();
+        }
+
+        if (this._stopRequested) return;
+
+        // IDLE with timeout for re-IDLE
+        await this.client.idle({ timeout: RE_IDLE_MS });
+
+        // After IDLE breaks (new mail or timeout), fetch new messages
+        if (this._stopRequested) return;
+        const lock2 = await this.client.getMailboxLock(this._folder);
+        try {
+          await this._fetchNew();
+        } finally {
+          lock2.release();
+        }
+      } catch (e) {
+        if (this._stopRequested) return;
+        console.error(`[email:${this.connId}] idle loop error:`, e.message);
+      }
+      // Re-enter idle loop
+      if (!this._stopRequested && this.running) {
+        this._idleTimer = setTimeout(() => doIdle(), 1000);
+      }
+    };
+
+    doIdle();
+  }
+
+  async _fetchNew() {
+    const range = `${this._lastUid + 1}:*`;
+    let messages;
+    try {
+      messages = [];
+      for await (const msg of this.client.fetch(range, {
+        uid: true,
+        envelope: true,
+        source: true,
+        headers: ['authentication-results'],
+      })) {
+        messages.push(msg);
+      }
+    } catch (e) {
+      if (/Nothing to fetch/i.test(e.message) || /No matching messages/i.test(e.message)) return;
+      throw e;
+    }
+
+    for (const msg of messages) {
+      if (msg.uid <= this._lastUid) continue;
+
+      // Rate limit: max 30 emails per minute
+      const now = Date.now();
+      if (now > this._rateBucket.resetAt) {
+        this._rateBucket = { count: 0, resetAt: now + 60_000 };
+      }
+      if (this._rateBucket.count >= 30) {
+        console.warn(`[email:${this.connId}] rate limit hit, skipping UID ${msg.uid}`);
+        continue;
+      }
+      this._rateBucket.count++;
+
+      try {
+        await this._processMessage(msg);
+      } catch (e) {
+        console.error(`[email:${this.connId}] process UID ${msg.uid} failed:`, e.message);
+      }
+      this._lastUid = msg.uid;
+      this.emit('metadata_update', { lastUid: this._lastUid, uidValidity: this._uidValidity });
+    }
+  }
+
+  async _processMessage(msg) {
+    const parsed = await this._simpleParser(msg.source);
+
+    const from = (parsed.from?.value?.[0]?.address || '').toLowerCase();
+    const fromName = parsed.from?.value?.[0]?.name || '';
+    if (!from) return;
+
+    // Allowlist check (exact match or wildcard domain)
+    const allowed = this._allowedSenders.some(pattern => {
+      if (pattern.startsWith('*@')) {
+        const domain = pattern.slice(2);
+        return from.endsWith('@' + domain);
+      }
+      return from === pattern;
+    });
+    if (!allowed) return;
+
+    // Authentication-Results check
+    if (this._requireAuthPass) {
+      const authHeader = (parsed.headers?.get('authentication-results') || '').toString();
+      if (!this._checkAuthResults(authHeader, from)) {
+        console.warn(`[email:${this.connId}] rejected UID ${msg.uid} from ${from}: auth check failed`);
+        return;
+      }
+    }
+
+    // Sanitize body: prefer text, fallback to stripped HTML
+    let text = parsed.text || '';
+    if (!text && parsed.html) {
+      text = parsed.html
+        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+        .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+    // Strip control characters
+    text = text.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
+    // Truncate to 8KB
+    const MAX_BODY = 8192;
+    if (text.length > MAX_BODY) text = text.slice(0, MAX_BODY) + ' [truncated]';
+
+    const hasAttachments = (parsed.attachments?.length || 0) > 0;
+
+    this.emit('email_event', {
+      eventType: 'message',
+      connId: this.connId,
+      uid: msg.uid,
+      messageId: parsed.messageId || '',
+      from,
+      fromName,
+      to: (parsed.to?.value || []).map(v => v.address).join(', '),
+      subject: (parsed.subject || '').slice(0, 500),
+      date: (parsed.date || new Date()).toISOString(),
+      text,
+      hasAttachments,
+      attachmentCount: parsed.attachments?.length || 0,
+    });
+  }
+
+  _checkAuthResults(header, fromAddress) {
+    if (!header) return false;
+    if (/dmarc\s*=\s*pass/i.test(header)) return true;
+    // Fallback: dkim=pass only if signing domain aligns with From domain
+    const dkimMatch = header.match(/dkim\s*=\s*pass\b[^;]*?header\.d\s*=\s*([^\s;]+)/i);
+    if (dkimMatch && fromAddress) {
+      const sigDomain = dkimMatch[1].toLowerCase();
+      const fromDomain = fromAddress.split('@')[1] || '';
+      // Relaxed alignment: exact match or organizational domain match
+      if (fromDomain === sigDomain || fromDomain.endsWith('.' + sigDomain) || sigDomain.endsWith('.' + fromDomain)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  _scheduleReconnect(opts) {
+    if (this._stopRequested) return;
+    this._reconnectAttempt++;
+    const base = Math.min(5000 * Math.pow(2, this._reconnectAttempt - 1), 300_000);
+    const jitter = Math.random() * base * 0.3;
+    const delay = base + jitter;
+    console.log(`[email:${this.connId}] reconnecting in ${Math.round(delay / 1000)}s (attempt ${this._reconnectAttempt})`);
+    this._reconnectTimer = setTimeout(async () => {
+      if (this._stopRequested) return;
+      try {
+        await this.start(opts);
+        this.emit('reconnected');
+      } catch (e) {
+        if (/AUTHENTICATIONFAILED|auth|login/i.test(e.message)) {
+          console.error(`[email:${this.connId}] auth failed, stopping retry`);
+          return;
+        }
+        // Will trigger 'close' → _scheduleReconnect again
+      }
+    }, delay);
+  }
+
+  async stop() {
+    this._stopRequested = true;
+    if (this._idleTimer) { clearTimeout(this._idleTimer); this._idleTimer = null; }
+    if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
+    if (this.client) {
+      try { await this.client.logout(); } catch {}
+      this.client = null;
+    }
+    this.running = false;
+    console.log(`[email:${this.connId}] stopped`);
+  }
+
+  getStatus() {
+    return { running: this.running };
+  }
+}
+
 class ConnectionManager extends EventEmitter {
   constructor() {
     super();
-    this._conns = new Map(); // connId -> SlackConnection | WhatsAppConnection
+    this._conns = new Map(); // connId -> SlackConnection | WhatsAppConnection | EmailConnection
   }
 
   // Start a connection from a DB row. Updates DB status via callback.
   async startConnection(conn, updateStatus) {
     if (conn.provider === 'whatsapp') {
       return this._startWhatsAppConnection(conn, updateStatus);
+    }
+    if (conn.provider === 'email') {
+      return this._startEmailConnection(conn, updateStatus);
     }
     return this._startSlackConnection(conn, updateStatus);
   }
@@ -316,6 +609,93 @@ class ConnectionManager extends EventEmitter {
     });
   }
 
+  async _startEmailConnection(conn, updateStatus) {
+    let creds = {};
+    try { creds = JSON.parse(conn.credentials || '{}'); } catch {}
+    let meta = {};
+    try { meta = JSON.parse(conn.metadata || '{}'); } catch {}
+
+    // Decrypt password if encrypted
+    let password = creds.password || '';
+    try {
+      const { isEncrypted, decrypt } = require('./lib/credentials');
+      if (isEncrypted(password)) password = decrypt(password);
+    } catch {}
+
+    if (!creds.user || !password) {
+      updateStatus(conn.id, 'error', 'user and password required', meta);
+      throw new Error('user and password required');
+    }
+
+    // Validate host to prevent SSRF (string pattern + DNS resolve)
+    const host = (meta.host || '').trim();
+    if (!host || /^(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|0\.|::1|\[::1\]|0\.0\.0\.0)/i.test(host)) {
+      updateStatus(conn.id, 'error', 'Invalid or private host', meta);
+      throw new Error('Invalid or private host');
+    }
+    // Resolve DNS and reject private IPs (residual TOCTOU between resolve and connect, but imapflow does not support pinning resolved IP)
+    const dns = require('dns');
+    const { promisify } = require('util');
+    const dnsLookup = promisify(dns.lookup);
+    try {
+      const resolved = await dnsLookup(host, { all: true });
+      const hasPrivate = resolved.some(r => /^(127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|0\.|::1|fe80:)/i.test(r.address));
+      if (hasPrivate) {
+        updateStatus(conn.id, 'error', 'Host resolves to private/loopback IP', meta);
+        throw new Error('Host resolves to private/loopback IP');
+      }
+    } catch (e) {
+      if (e.message.includes('private') || e.message.includes('loopback')) throw e;
+      updateStatus(conn.id, 'error', 'Cannot resolve host: ' + e.message, meta);
+      throw new Error('Cannot resolve host: ' + e.message);
+    }
+
+    const existing = this._conns.get(conn.id);
+    if (existing) await existing.stop();
+
+    const ec = new EmailConnection(conn.id);
+    ec.on('email_event', (payload) => this.emit('email_event', payload));
+    ec.on('metadata_update', (update) => {
+      const freshMeta = { ...meta, ...update };
+      updateStatus(conn.id, 'connected', null, freshMeta);
+      meta = freshMeta;
+    });
+    ec.on('auth_error', (err) => {
+      this._conns.delete(conn.id);
+      updateStatus(conn.id, 'error', 'Authentication failed: ' + err.message, meta);
+      this.emit('conn_status', { connId: conn.id, status: 'error', error: 'Authentication failed' });
+    });
+    ec.on('error', (err) => {
+      this.emit('conn_status', { connId: conn.id, status: 'error', error: err.message });
+    });
+    ec.on('reconnected', () => {
+      this.emit('conn_status', { connId: conn.id, status: 'connected' });
+    });
+
+    this._conns.set(conn.id, ec);
+    try {
+      await ec.start({
+        host,
+        port: meta.port || 993,
+        secure: meta.secure !== false,
+        user: creds.user,
+        password,
+        folder: meta.folder || 'INBOX',
+        allowedSenders: meta.allowedSenders || [],
+        requireAuthPass: meta.requireAuthPass !== false,
+        lastUid: meta.lastUid || 0,
+        uidValidity: meta.uidValidity || 0,
+      });
+      updateStatus(conn.id, 'connected', null, meta);
+      this.emit('conn_status', { connId: conn.id, status: 'connected' });
+    } catch (e) {
+      this._conns.delete(conn.id);
+      updateStatus(conn.id, 'error', e.message, meta);
+      this.emit('conn_status', { connId: conn.id, status: 'error', error: e.message });
+      throw e;
+    }
+  }
+
   async stopConnection(connId) {
     const sc = this._conns.get(connId);
     if (sc) {
@@ -339,7 +719,7 @@ class ConnectionManager extends EventEmitter {
     const result = [];
     for (const [connId, conn] of this._conns) {
       if (conn.running) {
-        const provider = conn instanceof WhatsAppConnection ? 'whatsapp' : 'slack';
+        const provider = conn instanceof EmailConnection ? 'email' : conn instanceof WhatsAppConnection ? 'whatsapp' : 'slack';
         result.push({ connId, provider });
       }
     }
@@ -369,4 +749,6 @@ class ConnectionManager extends EventEmitter {
   }
 }
 
-module.exports = new ConnectionManager();
+const connectionManager = new ConnectionManager();
+connectionManager.EmailConnection = EmailConnection;
+module.exports = connectionManager;

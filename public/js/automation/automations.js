@@ -30,7 +30,7 @@ function autoRenderAutomationRow(auto) {
     : 'background:transparent;border:1.5px solid var(--h-ink-faint)';
   const nameColor = isEnabled ? 'var(--h-ink)' : 'var(--h-ink-mute)';
 
-  const triggerProvider = auto.trigger_type === 'whatsapp' ? 'WhatsApp' : 'Slack';
+  const triggerProvider = auto.trigger_type === 'whatsapp' ? 'WhatsApp' : auto.trigger_type === 'email' ? 'Email' : 'Slack';
   const triggerParts = [`${triggerProvider} ${auto.trigger_event}`];
   try {
     JSON.parse(auto.trigger_conditions || '[]').forEach(c => {
@@ -93,10 +93,13 @@ function autoGetFormProvider() {
   return conn?.provider || 'slack';
 }
 
+function autoIsEmail(provider) { return provider === 'email'; }
+
 function autoRenderForm() {
   const f = autoState.form;
   const provider = autoGetFormProvider();
   const isWa = provider === 'whatsapp';
+  const isEmailProv = autoIsEmail(provider);
 
   const slackEvents = [
     { value: 'mention',  label: 'Mention' },
@@ -109,7 +112,10 @@ function autoRenderForm() {
     { value: 'group_mention', label: 'Group mention (bot tagged)' },
     { value: 'message_any',   label: 'Any message (DM + group)' },
   ];
-  const events = isWa ? waEvents : slackEvents;
+  const emailEvents = [
+    { value: 'message', label: 'New email received' },
+  ];
+  const events = isWa ? waEvents : isEmailProv ? emailEvents : slackEvents;
 
   const slackCondFields = f.triggerEvent === 'reaction_added'
     ? [
@@ -129,7 +135,12 @@ function autoRenderForm() {
     { value: 'wa_sender',    label: 'sender JID' },
     { value: 'wa_chat_id',   label: 'chat ID' },
   ];
-  const condFields = isWa ? waCondFields : slackCondFields;
+  const emailCondFields = [
+    { value: 'from',    label: 'from address' },
+    { value: 'subject', label: 'subject' },
+    { value: 'has_attachments', label: 'has attachments' },
+  ];
+  const condFields = isWa ? waCondFields : isEmailProv ? emailCondFields : slackCondFields;
   const condOps = [
     { value: 'contains',      label: 'contains' },
     { value: 'not_contains',  label: 'not contains' },
@@ -155,8 +166,9 @@ function autoRenderForm() {
     `;
   }).join('');
 
+  const condProvLabel = isWa ? 'WhatsApp' : isEmailProv ? 'Email' : 'Slack';
   const condEmpty = f.conditions.length === 0
-    ? `<div style="padding:12px;font-family:var(--h-sans);font-size:13px;color:var(--h-ink-faint);text-align:center">No conditions — any ${isWa ? 'WhatsApp' : 'Slack'} event will match</div>`
+    ? `<div style="padding:12px;font-family:var(--h-sans);font-size:13px;color:var(--h-ink-faint);text-align:center">No conditions — any ${condProvLabel} event will match</div>`
     : '';
 
   const roomOptions = autoState.rooms
@@ -179,7 +191,7 @@ function autoRenderForm() {
   } else {
     const selectedId = f.connectionId || (allConns.length === 1 ? String(allConns[0].id) : '');
     const connOptions = allConns.map(c => {
-      const provLabel = c.provider === 'whatsapp' ? 'WhatsApp' : `Slack/${c.token_type}`;
+      const provLabel = c.provider === 'whatsapp' ? 'WhatsApp' : c.provider === 'email' ? 'Email' : `Slack/${c.token_type}`;
       return `<option value="${c.id}" ${String(selectedId) === String(c.id) ? 'selected' : ''}>${escHtml(c.name)} (${provLabel})</option>`;
     }).join('');
     connField = `
@@ -194,7 +206,7 @@ function autoRenderForm() {
     `;
   }
 
-  const autoVars = isWa ? AUTO_VARS_WA : AUTO_VARS_SLACK;
+  const autoVars = isWa ? AUTO_VARS_WA : isEmailProv ? AUTO_VARS_EMAIL : AUTO_VARS_SLACK;
 
   const replyModeField = isWa ? `
     <!-- Reply Mode -->
@@ -239,7 +251,7 @@ function autoRenderForm() {
         <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
           <div style="display:flex;flex-direction:column;gap:5px">
             <span style="font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute)">Integration</span>
-            <div class="auto-fake-select" style="pointer-events:none;min-width:120px">${isWa ? 'WhatsApp' : 'Slack'} <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 6l4 4 4-4"/></svg></div>
+            <div class="auto-fake-select" style="pointer-events:none;min-width:120px">${isWa ? 'WhatsApp' : isEmailProv ? 'Email' : 'Slack'} <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 6l4 4 4-4"/></svg></div>
           </div>
           <div style="display:flex;flex-direction:column;gap:5px">
             <span style="font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute)">Event</span>
@@ -289,6 +301,13 @@ function autoRenderForm() {
               ${autoVars.map(v => `<span class="auto-var-chip" data-var="${v}">${v}</span>`).join('')}
             </div>
           </div>
+          ${isEmailProv ? `
+            <div style="padding:9px 12px;background:color-mix(in srgb,#c8a84b 8%,var(--h-surface));border:1px solid color-mix(in srgb,#c8a84b 25%,transparent);border-radius:7px;margin-top:2px">
+              <span style="font-family:var(--h-sans);font-size:12.5px;color:color-mix(in srgb,#c8a84b 80%,var(--h-ink));line-height:1.5">
+                <strong>Security note:</strong> email content ({{email.body}}) is untrusted data. A crafted email could attempt to manipulate the agent. Consider adding a trusted-data delimiter in your prompt.
+              </span>
+            </div>
+          ` : ''}
         </div>
 
         ${replyModeField}

@@ -180,8 +180,8 @@ CREATE INDEX IF NOT EXISTS idx_rooms_created_by ON rooms(created_by);
 CREATE TABLE IF NOT EXISTS automation_connections (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   name         TEXT NOT NULL,
-  provider     TEXT NOT NULL DEFAULT 'slack' CHECK(provider IN ('slack','whatsapp')),
-  token_type   TEXT NOT NULL DEFAULT 'bot' CHECK(token_type IN ('bot','user','qr')),
+  provider     TEXT NOT NULL DEFAULT 'slack' CHECK(provider IN ('slack','whatsapp','email')),
+  token_type   TEXT NOT NULL DEFAULT 'bot' CHECK(token_type IN ('bot','user','qr','password','oauth')),
   credentials  TEXT NOT NULL DEFAULT '{}',
   metadata     TEXT NOT NULL DEFAULT '{}',
   status       TEXT NOT NULL DEFAULT 'disconnected' CHECK(status IN ('connected','disconnected','error','connecting')),
