@@ -2115,6 +2115,7 @@ const server = http.createServer(async (req, res) => {
       WHERE m.id=?
     `).get(messageId);
 
+    enrichAutomation(row);
     broadcast(roomId, { type: 'message_new', message: row });
     broadcastGlobal({ type: 'room_activity', room_id: roomId });
     // Cascade any @mentions in the proactive message (fire-and-forget)
@@ -3617,6 +3618,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
     if (!room) { res.writeHead(404); return res.end('room not found'); }
     const rows = db.prepare(`
       SELECT m.id, m.content, m.created_at, m.completed_at, m.image_url, m.file_url, m.file_name, m.attachments, m.reply_to, m.thread_id,
+             m.automation_id, m.automation_name, m.automation_provider,
              a.name as actor_name, a.type as actor_type
       FROM messages m
       JOIN room_participants rp ON rp.id=m.participant_id
@@ -3624,6 +3626,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
       WHERE m.room_id=? AND m.state='complete'
       ORDER BY m.created_at ASC
     `).all(roomId);
+    enrichAutomationList(rows);
 
     const safeTitle = room.title.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 50);
 
