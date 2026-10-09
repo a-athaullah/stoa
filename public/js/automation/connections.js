@@ -287,7 +287,7 @@ function autoRenderConnectionForm() {
     </div>
   `;
 
-  const waFields = !isWa || isEmail ? '' : `
+  const waFields = !isWa ? '' : `
     <!-- Phone Number (optional, informational) -->
     <div style="display:flex;flex-direction:column;gap:5px">
       <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-mute)">Phone Number <span style="font-size:12px;color:var(--h-ink-faint)">(optional, for reference)</span></span>
