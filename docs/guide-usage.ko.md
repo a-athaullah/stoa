@@ -615,7 +615,7 @@ AI 에이전트가 메시지에서 파일 경로(예: `/home/user/project/file.p
 
 ## 자동화
 
-Stoa는 **Slack과 WhatsApp으로 트리거되는 자동화**를 지원합니다 — 이벤트가 조건과 일치할 때 자동으로 대상 룸에 프롬프트를 전송하는 규칙입니다.
+Stoa는 **Slack, WhatsApp, Email로 트리거되는 자동화**를 지원합니다 — 이벤트가 조건과 일치할 때 자동으로 대상 룸에 프롬프트를 전송하는 규칙입니다.
 
 ### 연결 관리
 
@@ -638,6 +638,26 @@ Slack 앱 토큰 생성 방법은 [Slack 설정 가이드](doc-slack-setup)를 �
 
 **Connect & Show QR**을 클릭하면 WhatsApp 세션이 시작되고 QR 코드 모달이 열립니다. WhatsApp 앱으로 QR을 스캔하여 인증합니다. 연결되면 카드에 연결된 전화의 JID와 초록색 점이 표시됩니다. 세션이 만료되면 **Show QR**로 새 QR 코드를 표시합니다.
 
+**이메일(IMAP) 연결:**
+- **Name** — 연결을 식별하는 레이블 (예: "Gmail 개인")
+- **Preset** — **Gmail** (`imap.gmail.com:993` 자동 설정) 또는 **Custom IMAP** (모든 IMAP 서버)
+- **IMAP Host / Port** — Custom IMAP에서만 표시. 서버 주소와 포트 입력
+- **Email address** — 계정 사용자 이름 (예: `you@gmail.com`)
+- **App Password** — Gmail의 경우 일반 비밀번호가 아닌 앱 비밀번호를 사용해야 합니다. Google 계정 → 보안 → 2단계 인증 → 앱 비밀번호에서 생성하세요. 2단계 인증이 활성화되어 있어야 합니다. 다른 제공업체는 계정 비밀번호 또는 IMAP 전용 비밀번호를 사용합니다.
+- **Folder** — 모니터링할 메일함 폴더 (기본값: `INBOX`)
+- **Allowed senders** — 줄당 하나의 이메일 주소 또는 도메인 와일드카드 (예: `boss@example.com`, `*@company.com`). **최소 1개 입력 필수** — 허용 발신자가 없는 연결은 자동화를 트리거하지 않습니다 (기본값: 차단). 누구나 받은 편지함으로 이메일을 보낼 수 있으며, 이메일 내용이 에이전트를 조작하려 시도할 수 있습니다 (프롬프트 인젝션).
+- **Require sender verification** — 활성화 시 (기본값: 켜짐), DMARC 또는 DKIM 검증에 실패한 이메일은 자동으로 삭제됩니다. 스푸핑된 `From` 주소가 허용 목록을 우회하는 것을 방지합니다.
+
+이메일 연결은 **IMAP IDLE**을 사용하여 실시간 배달합니다 — 서버에서 메일 제공업체로의 완전한 아웃바운드 연결이므로 공개 엔드포인트나 방화벽 규칙이 필요하지 않습니다. Tailscale 환경에서도 원활하게 작동합니다.
+
+이 버전은 **수신 이메일만** 지원합니다 (읽기 전용 트리거). 이메일 전송이나 답장은 아직 지원되지 않습니다.
+
+> **Outlook / Microsoft 365:** 이 버전에서는 지원되지 않습니다 — Microsoft가 기본 IMAP 인증을 비활성화했습니다. OAuth2 지원은 향후 릴리스에서 계획되어 있습니다.
+
+**연결 테스트:** 저장 전에 **Test connection**을 클릭하여 자격 증명과 연결을 확인하세요. 편집 모드에서는 비밀번호 필드를 비워두면 저장된 (암호화된) 비밀번호가 사용됩니다 — 초기 설정 후에는 저장된 비밀번호가 다시 표시되지 않습니다.
+
+**비밀번호 저장:** 비밀번호는 서버에 암호화되어 저장되며 API를 통해 반환되지 않습니다.
+
 각 연결 카드에는 현재 상태가 표시됩니다: **connecting**, **connected**, **disconnected**, 또는 **error**. 실패한 연결을 재시도하려면 **reconnect** 버튼을, 관리하려면 **edit**과 **delete** 버튼을 사용하세요.
 
 ### 자동화 규칙 만들기
@@ -649,11 +669,18 @@ Slack 앱 토큰 생성 방법은 [Slack 설정 가이드](doc-slack-setup)를 �
 - **트리거 이벤트** — 규칙을 실행할 이벤트 (제공자에 따라 다름):
   - *Slack:* `message`, `message.groups`, `mention`, `reaction_added`
   - *WhatsApp:* `message` (다이렉트 메시지), `group_message` (그룹 메시지), `group_mention` (그룹에서 봇 태그됨), `message_any` (DM + 그룹)
-- **조건** — 메시지 텍스트에 대한 선택적 필터: `contains`, `not_contains`, `starts_with`, 또는 `matches_regex`. 여러 조건은 AND로 결합. `matches_regex` 제한: 패턴 최대 200자, 중첩 수량자 거부 (ReDoS 보호), 입력 5,000자에서 잘림, 과도한 백트래킹을 유발하는 패턴은 저장 시 400 오류로 거부
+  - *Email:* `message` (새 이메일 수신)
+- **조건** — 이벤트에 대한 선택적 필터: `contains`, `not_contains`, `starts_with`, 또는 `matches_regex`. 여러 조건은 AND로 결합. `matches_regex` 제한: 패턴 최대 200자, 중첩 수량자 거부 (ReDoS 보호), 입력 5,000자에서 잘림, 과도한 백트래킹을 유발하는 패턴은 저장 시 400 오류로 거부. 조건 필드는 제공자마다 다릅니다:
+  - *Slack:* `message text`, `full text`, `slack_user`, `slack_channel`, `slack_bot_id`
+  - *WhatsApp:* `message text`, `sender JID`, `chat ID`
+  - *Email:* `from address`, `subject`, `has attachments`
 - **대상 룸** — 프롬프트를 받을 Stoa 룸
 - **프롬프트 템플릿** — 룸으로 보낼 메시지. 사용 가능한 변수:
   - *Slack:* `{{slack_message_text}}`, `{{slack_message_link}}`, `{{slack_user}}`, `{{slack_channel}}`, `{{extracted_url}}`, `{{slack_thread_ts}}`
   - *WhatsApp:* `{{wa_message_text}}`, `{{wa_sender}}`, `{{wa_sender_name}}`, `{{wa_chat_id}}`, `{{extracted_url}}`
+  - *Email:* `{{email.from}}`, `{{email.from_name}}`, `{{email.subject}}`, `{{email.body}}`, `{{email.date}}`, `{{email.has_attachments}}`
+
+  > **보안 주의 사항 (Email):** `{{email.body}}`는 신뢰할 수 없는 데이터입니다. 특별히 작성된 이메일이 에이전트를 조작하려 시도할 수 있습니다. 프롬프트에서 구분자로 감싸서 데이터임을 명확히 하는 것을 권장합니다.
 - **WhatsApp에 답장** *(WhatsApp 연결만 해당)* — 활성화되면 서버가 발신자 정보, 채팅 ID, 에이전트 지침이 포함된 WhatsApp 컨텍스트 블록을 프롬프트에 삽입합니다. 에이전트는 출력에서 `[wa:reply]` 마커를 사용하여 WhatsApp에 답장할 수 있습니다:
 
   ```
@@ -768,7 +795,7 @@ API 키는 서버에 저장되며 Settings 편집 폼에서만 브라우저로 �
 
 ### 자동화
 
-Slack 및 WhatsApp 연결과 자동화 규칙을 관리합니다. 위의 [자동화](#자동화) 섹션을 참조하세요.
+Slack, WhatsApp, Email 연결과 자동화 규칙을 관리합니다. 위의 [자동화](#자동화) 섹션을 참조하세요.
 
 ### 문서
 

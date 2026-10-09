@@ -620,7 +620,7 @@ Anda bisa mengekspor seluruh riwayat percakapan room sebagai **JSON** atau **CSV
 
 ## Automation
 
-Stoa mendukung **automation berbasis Slack dan WhatsApp** — aturan yang aktif saat event masuk cocok dengan kondisi yang ditentukan dan otomatis mengirim prompt ke room target.
+Stoa mendukung **automation berbasis Slack, WhatsApp, dan Email** — aturan yang aktif saat event masuk cocok dengan kondisi yang ditentukan dan otomatis mengirim prompt ke room target.
 
 ### Mengelola Koneksi
 
@@ -643,6 +643,26 @@ Lihat [panduan setup Slack](doc-slack-setup) untuk instruksi langkah demi langka
 
 Klik **Connect & Show QR** untuk memulai sesi WhatsApp dan membuka modal QR code. Scan QR dengan aplikasi WhatsApp Anda untuk autentikasi. Setelah terhubung, kartu menampilkan JID ponsel yang terhubung dan titik hijau. Gunakan **Show QR** untuk menampilkan QR code baru jika sesi kedaluwarsa.
 
+**Koneksi Email (IMAP):**
+- **Name** — label untuk koneksi ini (contoh: "Gmail Pribadi")
+- **Preset** — **Gmail** (otomatis pakai `imap.gmail.com:993`) atau **Custom IMAP** (server IMAP apapun)
+- **IMAP Host / Port** — hanya tampil untuk Custom IMAP; isi alamat server dan port
+- **Email address** — username akun (contoh: `kamu@gmail.com`)
+- **App Password** — untuk Gmail, wajib pakai App Password, bukan password biasa. Buka Google Account → Security → 2-Step Verification → App passwords. Google mewajibkan 2-Step Verification aktif di akun. Untuk provider lain, gunakan password akun atau password IMAP khusus.
+- **Folder** — folder mailbox yang dipantau (default: `INBOX`)
+- **Allowed senders** — satu alamat email atau wildcard domain per baris (contoh: `bos@perusahaan.com`, `*@kantor.com`). **Minimal satu entri wajib diisi** — koneksi tanpa allowed senders tidak akan memicu automation (default deny). Siapapun bisa mengirim email ke inbox, dan isi email bisa mencoba memanipulasi agent (prompt injection).
+- **Require sender verification** — saat aktif (default: aktif), email yang gagal verifikasi DMARC atau DKIM dibuang secara diam-diam. Ini mencegah alamat `From` palsu melewati allowlist.
+
+Koneksi email menggunakan **IMAP IDLE** untuk pengiriman realtime — sepenuhnya outbound dari server ke provider email, jadi tidak butuh endpoint publik atau aturan firewall. Bekerja lancar di belakang Tailscale.
+
+Versi ini hanya mendukung **email masuk** (trigger read-only). Mengirim atau membalas email belum didukung.
+
+> **Outlook / Microsoft 365:** Belum didukung di versi ini — Microsoft sudah menonaktifkan autentikasi IMAP dasar. Dukungan OAuth2 direncanakan untuk rilis berikutnya.
+
+**Test connection:** Klik **Test connection** sebelum menyimpan untuk memverifikasi kredensial dan konektivitas. Di mode edit, kosongkan field password untuk memakai password tersimpan (terenkripsi) — password tersimpan tidak pernah ditampilkan lagi setelah setup awal.
+
+**Penyimpanan password:** Password disimpan terenkripsi di server dan tidak pernah dikembalikan melalui API.
+
 Setiap kartu koneksi menampilkan status terkini: **connecting**, **connected**, **disconnected**, atau **error**. Gunakan tombol **reconnect** untuk mencoba ulang, atau tombol **edit** dan **delete** untuk mengelolanya.
 
 ### Membuat Aturan Automation
@@ -654,11 +674,18 @@ Setelah minimal satu koneksi aktif, klik **+ new rule** untuk membuat aturan:
 - **Trigger event** — event yang memicu aturan (opsi bergantung pada provider):
   - *Slack:* `message`, `message.groups`, `mention`, `reaction_added`
   - *WhatsApp:* `message` (pesan langsung), `group_message` (pesan grup), `group_mention` (bot di-tag di grup), `message_any` (DM + grup)
-- **Conditions** — filter opsional pada teks pesan: `contains`, `not_contains`, `starts_with`, atau `matches_regex`. Beberapa kondisi di-AND-kan. Batasan `matches_regex`: pola maksimal 200 karakter, nested quantifier ditolak (proteksi ReDoS), input dipotong di 5.000 karakter, pola yang menyebabkan backtracking berlebihan ditolak saat penyimpanan dengan error 400
+  - *Email:* `message` (Email baru diterima)
+- **Conditions** — filter opsional pada event: `contains`, `not_contains`, `starts_with`, atau `matches_regex`. Beberapa kondisi di-AND-kan. Batasan `matches_regex`: pola maksimal 200 karakter, nested quantifier ditolak (proteksi ReDoS), input dipotong di 5.000 karakter, pola yang menyebabkan backtracking berlebihan ditolak saat penyimpanan dengan error 400. Field kondisi berbeda per provider:
+  - *Slack:* `message text`, `full text`, `slack_user`, `slack_channel`, `slack_bot_id`
+  - *WhatsApp:* `message text`, `sender JID`, `chat ID`
+  - *Email:* `from address`, `subject`, `has attachments`
 - **Target room** — room Stoa mana yang menerima pesan yang dipicu
 - **Prompt template** — pesan yang dikirim ke room. Gunakan variabel:
   - *Slack:* `{{slack_message_text}}`, `{{slack_message_link}}`, `{{slack_user}}`, `{{slack_channel}}`, `{{extracted_url}}`, `{{slack_thread_ts}}`
   - *WhatsApp:* `{{wa_message_text}}`, `{{wa_sender}}`, `{{wa_sender_name}}`, `{{wa_chat_id}}`, `{{extracted_url}}`
+  - *Email:* `{{email.from}}`, `{{email.from_name}}`, `{{email.subject}}`, `{{email.body}}`, `{{email.date}}`, `{{email.has_attachments}}`
+
+  > **Catatan keamanan (Email):** `{{email.body}}` adalah data tidak tepercaya. Email yang dikirim secara khusus bisa mencoba memanipulasi agent. Pertimbangkan untuk membungkusnya dengan delimiter di prompt agar jelas bahwa ini adalah data, bukan instruksi.
 - **Reply to WhatsApp** *(hanya koneksi WhatsApp)* — jika diaktifkan, server menyisipkan blok konteks WhatsApp ke dalam prompt yang berisi info pengirim, chat ID, dan instruksi untuk agent. Agent dapat membalas ke WhatsApp menggunakan marker `[wa:reply]` di output-nya:
 
   ```
@@ -773,7 +800,7 @@ API key disimpan di server dan dikembalikan ke browser hanya di form edit Settin
 
 ### Automation
 
-Kelola koneksi Slack dan WhatsApp serta aturan automation. Lihat bagian [Automation](#automation) di atas.
+Kelola koneksi Slack, WhatsApp, dan Email serta aturan automation. Lihat bagian [Automation](#automation) di atas.
 
 ### Docs
 

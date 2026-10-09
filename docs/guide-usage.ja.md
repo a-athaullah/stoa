@@ -615,7 +615,7 @@ AIエージェントがメッセージ内でファイルパス（例：`/home/us
 
 ## オートメーション
 
-StoaはSlackとWhatsAppによる**トリガーオートメーション**をサポートします — イベントが条件に一致したときに自動でプロンプトを対象ルームに送信するルールです。
+StoaはSlack、WhatsApp、Emailによる**トリガーオートメーション**をサポートします — イベントが条件に一致したときに自動でプロンプトを対象ルームに送信するルールです。
 
 ### 接続の管理
 
@@ -638,6 +638,26 @@ Slackアプリトークンの作成手順は[Slackセットアップガイド](d
 
 **Connect & Show QR**をクリックしてWhatsAppセッションを開始し、QRコードモーダルを表示します。WhatsAppアプリでQRをスキャンして認証します。接続後、カードには接続された電話のJIDと緑のドットが表示されます。セッションが期限切れになった場合は**Show QR**を使って新しいQRコードを表示します。
 
+**メール（IMAP）接続：**
+- **Name** — 接続を識別するラベル（例：「Gmail個人」）
+- **Preset** — **Gmail**（`imap.gmail.com:993` を自動設定）または **Custom IMAP**（任意のIMAPサーバー）
+- **IMAP Host / Port** — Custom IMAPのみ表示。サーバーアドレスとポートを入力
+- **Email address** — アカウントのユーザー名（例：`you@gmail.com`）
+- **App Password** — Gmailの場合、通常のパスワードではなくアプリパスワードが必須です。Googleアカウント → セキュリティ → 2段階認証プロセス → アプリパスワード。2段階認証が有効になっている必要があります。他のプロバイダーはアカウントパスワードまたはIMAP専用パスワードを使用します。
+- **Folder** — 監視するメールボックスフォルダー（デフォルト：`INBOX`）
+- **Allowed senders** — 1行1アドレスまたはドメインワイルドカード（例：`boss@example.com`、`*@company.com`）。**最低1件の入力が必須** — 未設定の接続はautomationを発火しません（デフォルト拒否）。誰でもinboxにメールを送ることができ、メール本文がagentを操作しようとする可能性があります（プロンプトインジェクション）。
+- **Require sender verification** — 有効時（デフォルト：オン）、DMARCまたはDKIM検証に失敗したメールは黙って破棄されます。偽装された`From`アドレスによるallowlistの迂回を防ぎます。
+
+メール接続は**IMAP IDLE**によるリアルタイム配信を使用します — サーバーからメールプロバイダーへの完全なアウトバウンド接続なので、公開エンドポイントやファイアウォール設定は不要です。Tailscale環境でも問題なく動作します。
+
+このバージョンは**受信メールのみ**をサポートします（読み取り専用トリガー）。メールの送信や返信はまだサポートされていません。
+
+> **Outlook / Microsoft 365：** このバージョンでは未対応です — Microsoftは基本的なIMAP認証を無効にしています。OAuth2のサポートは将来のリリースで予定されています。
+
+**接続テスト：** 保存前に**Test connection**をクリックして認証情報と接続性を確認してください。編集モードでは、パスワードフィールドを空白のままにすると保存済みの（暗号化された）パスワードが使用されます — 初期設定後、保存済みパスワードは二度と表示されません。
+
+**パスワード保存：** パスワードはサーバー上で暗号化されて保存され、APIから返されることはありません。
+
 各接続カードには現在のステータスが表示されます：**connecting**、**connected**、**disconnected**、または **error**。失敗した接続の再試行には**reconnect**ボタン、管理には**edit**と**delete**ボタンを使用します。
 
 ### オートメーションルールの作成
@@ -649,11 +669,18 @@ Slackアプリトークンの作成手順は[Slackセットアップガイド](d
 - **トリガーイベント** — ルールを発火するイベント（プロバイダーにより異なる）：
   - *Slack:* `message`、`message.groups`、`mention`、`reaction_added`
   - *WhatsApp:* `message`（ダイレクトメッセージ）、`group_message`（グループメッセージ）、`group_mention`（グループでbotがタグ付け）、`message_any`（DM＋グループ）
-- **条件** — メッセージテキストへのオプションフィルター：`contains`、`not_contains`、`starts_with`、または `matches_regex`。複数の条件はAND結合。`matches_regex` の制限：パターンは最大200文字、ネストされた量指定子は拒否（ReDoS保護）、入力は5,000文字で切り捨て、過度なバックトラッキングを引き起こすパターンは保存時に400エラーで拒否
+  - *Email:* `message`（新しいメールを受信）
+- **条件** — イベントへのオプションフィルター：`contains`、`not_contains`、`starts_with`、または `matches_regex`。複数の条件はAND結合。`matches_regex` の制限：パターンは最大200文字、ネストされた量指定子は拒否（ReDoS保護）、入力は5,000文字で切り捨て、過度なバックトラッキングを引き起こすパターンは保存時に400エラーで拒否。条件フィールドはプロバイダーにより異なります：
+  - *Slack:* `message text`、`full text`、`slack_user`、`slack_channel`、`slack_bot_id`
+  - *WhatsApp:* `message text`、`sender JID`、`chat ID`
+  - *Email:* `from address`、`subject`、`has attachments`
 - **対象ルーム** — プロンプトを送信するStoaルーム
 - **プロンプトテンプレート** — ルームに送られるメッセージ。使用可能な変数：
   - *Slack:* `{{slack_message_text}}`、`{{slack_message_link}}`、`{{slack_user}}`、`{{slack_channel}}`、`{{extracted_url}}`、`{{slack_thread_ts}}`
   - *WhatsApp:* `{{wa_message_text}}`、`{{wa_sender}}`、`{{wa_sender_name}}`、`{{wa_chat_id}}`、`{{extracted_url}}`
+  - *Email:* `{{email.from}}`、`{{email.from_name}}`、`{{email.subject}}`、`{{email.body}}`、`{{email.date}}`、`{{email.has_attachments}}`
+
+  > **セキュリティ注意（Email）：** `{{email.body}}` は信頼できないデータです。巧妙に作られたメールがagentを操作しようとする可能性があります。プロンプト内でデリミタで囲み、これがデータであり指示ではないことを明確にすることを検討してください。
 - **WhatsAppへ返信** *（WhatsApp接続のみ）* — 有効にすると、サーバーは送信者情報、チャットID、エージェントへの指示を含むWhatsAppコンテキストブロックをプロンプトに挿入します。エージェントは出力で`[wa:reply]`マーカーを使用してWhatsAppに返信できます：
 
   ```
@@ -768,7 +795,7 @@ API キーはサーバーに保存され、Settings 編集フォームでのみ�
 
 ### オートメーション
 
-SlackとWhatsAppの接続およびオートメーションルールを管理。上の[オートメーション](#オートメーション)セクションを参照。
+Slack、WhatsApp、Emailの接続およびオートメーションルールを管理。上の[オートメーション](#オートメーション)セクションを参照。
 
 ### ドキュメント
 
