@@ -3926,7 +3926,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
         }
         db.prepare("UPDATE automation_connections SET name=?,credentials=?,metadata=?,updated_at=datetime('now') WHERE id=?")
           .run(name, JSON.stringify(creds), JSON.stringify(meta3), connId);
-        if (needReconnect && conn.status === 'connected') {
+        if (needReconnect && (conn.status === 'connected' || conn.status === 'error')) {
           await connectionManager.stopConnection(connId);
           db.prepare("UPDATE automation_connections SET status='disconnected',updated_at=datetime('now') WHERE id=?").run(connId);
         }
@@ -4008,22 +4008,64 @@ Write-Host "Logs   : pm2 logs $AgentName"
   // ── Email: test credentials without saving ──────────────────────────────────
   if (req.method === 'POST' && url.pathname === '/api/automations/connections/test-email') {
     const body = parseJsonBody(await readBody(req));
-    if (!body?.host || !body?.user || !body?.password) {
+
+    let host, port, secure, user, password, folder;
+
+    if (body?.connectionId) {
+      const stored = db.prepare('SELECT * FROM automation_connections WHERE id=?').get(body.connectionId);
+      if (!stored) { res.writeHead(404); return res.end(JSON.stringify({ error: 'Connection not found' })); }
+      if (stored.provider !== 'email') { res.writeHead(400); return res.end(JSON.stringify({ error: 'Connection is not an email provider' })); }
+      let storedCreds = {}; try { storedCreds = JSON.parse(stored.credentials || '{}'); } catch {}
+      let storedMeta = {}; try { storedMeta = JSON.parse(stored.metadata || '{}'); } catch {}
+      host = (body.host || storedMeta.host || '').trim();
+      port = parseInt(body.port || storedMeta.port) || 993;
+      secure = (body.secure !== undefined ? body.secure : storedMeta.secure) !== false;
+      user = (body.user || storedCreds.user || '').trim();
+      folder = (body.folder || storedMeta.folder || 'INBOX').trim();
+      if (body.password) {
+        password = body.password;
+      } else if (storedCreds.password) {
+        const { isEncrypted, decrypt } = require('./lib/credentials');
+        password = isEncrypted(storedCreds.password) ? decrypt(storedCreds.password) : storedCreds.password;
+      }
+    } else {
+      host = (body?.host || '').trim();
+      port = parseInt(body?.port) || 993;
+      secure = body?.secure !== false;
+      user = (body?.user || '').trim();
+      password = body?.password;
+      folder = (body?.folder || 'INBOX').trim();
+    }
+
+    if (!host || !user || !password) {
       res.writeHead(400); return res.end(JSON.stringify({ error: 'host, user, password required' }));
     }
-    const host = (body.host || '').trim();
     if (/^(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|0\.|::1|\[::1\]|0\.0\.0\.0)/i.test(host)) {
       res.writeHead(400); return res.end(JSON.stringify({ error: 'Private/loopback hosts not allowed' }));
     }
+
+    // DNS resolve to check for private IPs
+    try {
+      const dns = require('dns');
+      const { promisify } = require('util');
+      const lookup = promisify(dns.lookup);
+      const result = await lookup(host, { all: true });
+      const privateIp = result.some(r => /^(127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|0\.|::1|fe80:)/i.test(r.address));
+      if (privateIp) {
+        res.writeHead(400); return res.end(JSON.stringify({ error: 'Host resolves to private/loopback IP' }));
+      }
+    } catch (e) {
+      res.writeHead(400); return res.end(JSON.stringify({ error: 'Cannot resolve host: ' + e.message }));
+    }
+
     try {
       const { ImapFlow } = require('imapflow');
       const client = new ImapFlow({
-        host, port: parseInt(body.port) || 993, secure: body.secure !== false,
-        auth: { user: body.user.trim(), pass: body.password },
+        host, port, secure,
+        auth: { user, pass: password },
         logger: false, tls: { rejectUnauthorized: true },
       });
       await client.connect();
-      const folder = (body.folder || 'INBOX').trim();
       const lock = await client.getMailboxLock(folder);
       lock.release();
       await client.logout();
@@ -7111,7 +7153,7 @@ connectionManager.on('email_event', async ({ eventType, connId, uid, messageId, 
     const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
     console.log(`[${ts}] [email:recv] from=${from} subject="${(subject || '').slice(0, 60)}" conn=${connId}`);
 
-    const fieldValues = { email_from: from, email_subject: subject, email_body: text };
+    const fieldValues = { from, subject, body: text, has_attachments: String(hasAttachments) };
 
     for (const auto of automations) {
       let conditions;

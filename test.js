@@ -3596,6 +3596,92 @@ async function run() {
     assert.strictEqual(isEncrypted('not:a:valid:format'), false);
   });
 
+  // ── Email: condition field matching (fix #1) ────────────────────────────────
+  await test('email_event handler — fieldValues use FE-compatible keys', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    const fieldLine = src.split('\n').find(l => l.includes('fieldValues') && l.includes('from') && l.includes('subject') && l.includes('has_attachments'));
+    assert.ok(fieldLine, 'fieldValues should contain from, subject, has_attachments keys');
+    assert.ok(!fieldLine.includes('email_from'), 'should NOT use email_from prefix');
+    assert.ok(!fieldLine.includes('email_subject'), 'should NOT use email_subject prefix');
+  });
+
+  // ── Email: test-email with connectionId (fix #2) ───────────────────────────
+  await test('POST /test-email — connectionId not found → 404', async () => {
+    const r = await req('POST', '/api/automations/connections/test-email', { connectionId: 999999 });
+    assert.strictEqual(r.status, 404);
+  });
+
+  await test('POST /test-email — connectionId for non-email provider → 400', async () => {
+    const conns = await req('GET', '/api/automations/connections');
+    const slackConn = conns.body.find(c => c.provider === 'slack');
+    if (!slackConn) { console.log('    (skipped — no slack conn)'); return; }
+    const r = await req('POST', '/api/automations/connections/test-email', { connectionId: slackConn.id });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.body.error.includes('not an email'));
+  });
+
+  await test('POST /test-email — connectionId with stored credentials → ok:false (fake creds)', async () => {
+    // Create temp email connection, test using connectionId
+    const cr = await req('POST', '/api/automations/connections', {
+      provider: 'email', name: '__test_connid__', user: 'test@gmail.com', password: 'fake-pass',
+      preset: 'gmail', allowedSenders: ['s@x.com'],
+    });
+    const cid = cr.body?.id;
+    if (!cid) { console.log('    (skipped — create failed)'); return; }
+    const r = await req('POST', '/api/automations/connections/test-email', { connectionId: cid });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.ok, false, 'should fail with fake creds');
+    assert.ok(r.body.error, 'should have error');
+    await req('POST', `/api/automations/connections/${cid}/disconnect`);
+    await req('DELETE', `/api/automations/connections/${cid}`);
+  });
+
+  // ── Email: DKIM alignment check (fix #3) ───────────────────────────────────
+  await test('EmailConnection._checkAuthResults — dmarc=pass → true', () => {
+    const { EmailConnection } = require('./connection-manager');
+    const ec = new EmailConnection(0);
+    assert.strictEqual(ec._checkAuthResults('mx.google.com; dmarc=pass (p=REJECT)', 'a@b.com'), true);
+  });
+
+  await test('EmailConnection._checkAuthResults — dkim=pass aligned domain → true', () => {
+    const { EmailConnection } = require('./connection-manager');
+    const ec = new EmailConnection(0);
+    assert.strictEqual(ec._checkAuthResults('dkim=pass header.d=example.com', 'user@example.com'), true);
+  });
+
+  await test('EmailConnection._checkAuthResults — dkim=pass subdomain aligned → true', () => {
+    const { EmailConnection } = require('./connection-manager');
+    const ec = new EmailConnection(0);
+    assert.strictEqual(ec._checkAuthResults('dkim=pass header.d=example.com', 'user@sub.example.com'), true);
+  });
+
+  await test('EmailConnection._checkAuthResults — dkim=pass unaligned domain → false', () => {
+    const { EmailConnection } = require('./connection-manager');
+    const ec = new EmailConnection(0);
+    assert.strictEqual(ec._checkAuthResults('dkim=pass header.d=other.com', 'user@example.com'), false);
+  });
+
+  await test('EmailConnection._checkAuthResults — no dmarc no dkim → false', () => {
+    const { EmailConnection } = require('./connection-manager');
+    const ec = new EmailConnection(0);
+    assert.strictEqual(ec._checkAuthResults('spf=pass', 'user@example.com'), false);
+  });
+
+  await test('EmailConnection._checkAuthResults — empty header → false', () => {
+    const { EmailConnection } = require('./connection-manager');
+    const ec = new EmailConnection(0);
+    assert.strictEqual(ec._checkAuthResults('', 'user@example.com'), false);
+  });
+
+  // ── Email: DNS resolve SSRF (fix #4) ───────────────────────────────────────
+  await test('POST /test-email — host resolving to private IP → 400', async () => {
+    // localhost typically resolves to 127.0.0.1, caught by string check
+    const r = await req('POST', '/api/automations/connections/test-email', {
+      host: 'localhost', user: 'a@b.com', password: 'x',
+    });
+    assert.strictEqual(r.status, 400);
+  });
+
   // ── Automation sender identity ──────────────────────────────────────────────
   let _autoSenderTestMsgId = null;
   let _autoSenderTestThreadRoot = null;

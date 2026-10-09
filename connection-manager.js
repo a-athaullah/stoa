@@ -429,7 +429,7 @@ class EmailConnection extends EventEmitter {
     // Authentication-Results check
     if (this._requireAuthPass) {
       const authHeader = (parsed.headers?.get('authentication-results') || '').toString();
-      if (!this._checkAuthResults(authHeader)) {
+      if (!this._checkAuthResults(authHeader, from)) {
         console.warn(`[email:${this.connId}] rejected UID ${msg.uid} from ${from}: auth check failed`);
         return;
       }
@@ -473,12 +473,19 @@ class EmailConnection extends EventEmitter {
     });
   }
 
-  _checkAuthResults(header) {
+  _checkAuthResults(header, fromAddress) {
     if (!header) return false;
-    // dmarc=pass is ideal
     if (/dmarc\s*=\s*pass/i.test(header)) return true;
-    // fallback: dkim=pass with aligned domain
-    if (/dkim\s*=\s*pass/i.test(header)) return true;
+    // Fallback: dkim=pass only if signing domain aligns with From domain
+    const dkimMatch = header.match(/dkim\s*=\s*pass\b[^;]*?header\.d\s*=\s*([^\s;]+)/i);
+    if (dkimMatch && fromAddress) {
+      const sigDomain = dkimMatch[1].toLowerCase();
+      const fromDomain = fromAddress.split('@')[1] || '';
+      // Relaxed alignment: exact match or organizational domain match
+      if (fromDomain === sigDomain || fromDomain.endsWith('.' + sigDomain) || sigDomain.endsWith('.' + fromDomain)) {
+        return true;
+      }
+    }
     return false;
   }
 
@@ -620,11 +627,27 @@ class ConnectionManager extends EventEmitter {
       throw new Error('user and password required');
     }
 
-    // Validate host to prevent SSRF
+    // Validate host to prevent SSRF (string pattern + DNS resolve)
     const host = (meta.host || '').trim();
     if (!host || /^(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|0\.|::1|\[::1\]|0\.0\.0\.0)/i.test(host)) {
       updateStatus(conn.id, 'error', 'Invalid or private host', meta);
       throw new Error('Invalid or private host');
+    }
+    // Resolve DNS and reject private IPs (residual TOCTOU between resolve and connect, but imapflow does not support pinning resolved IP)
+    const dns = require('dns');
+    const { promisify } = require('util');
+    const dnsLookup = promisify(dns.lookup);
+    try {
+      const resolved = await dnsLookup(host, { all: true });
+      const hasPrivate = resolved.some(r => /^(127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|0\.|::1|fe80:)/i.test(r.address));
+      if (hasPrivate) {
+        updateStatus(conn.id, 'error', 'Host resolves to private/loopback IP', meta);
+        throw new Error('Host resolves to private/loopback IP');
+      }
+    } catch (e) {
+      if (e.message.includes('private') || e.message.includes('loopback')) throw e;
+      updateStatus(conn.id, 'error', 'Cannot resolve host: ' + e.message, meta);
+      throw new Error('Cannot resolve host: ' + e.message);
     }
 
     const existing = this._conns.get(conn.id);
@@ -726,4 +749,6 @@ class ConnectionManager extends EventEmitter {
   }
 }
 
-module.exports = new ConnectionManager();
+const connectionManager = new ConnectionManager();
+connectionManager.EmailConnection = EmailConnection;
+module.exports = connectionManager;
