@@ -21,8 +21,14 @@ function appendFeedRootRow(m, inner) {
   // Avatar (36px)
   const avatarWrap = document.createElement('div');
   avatarWrap.className = 't-avatar';
-  avatarWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 36, m.sub_agent_label));
+  if (m.automation?.provider) {
+    avatarWrap.appendChild(makeAutomationAvatarEl(m.automation.provider, 36));
+  } else {
+    avatarWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 36, m.sub_agent_label));
+  }
   row.appendChild(avatarWrap);
+
+  if (m.automation) row.classList.add('t-automation-row');
 
   // Right column: name+time, content, reply summary
   const col = document.createElement('div');
@@ -33,9 +39,20 @@ function appendFeedRootRow(m, inner) {
 
   const nameEl = document.createElement('span');
   nameEl.className = 't-name';
-  nameEl.style.color = m.avatar_color;
-  nameEl.textContent = m.sub_agent_label || m.actor_name;
+  if (m.automation) {
+    nameEl.textContent = m.automation.name || m.actor_name;
+  } else {
+    nameEl.style.color = m.avatar_color;
+    nameEl.textContent = m.sub_agent_label || m.actor_name;
+  }
   meta.appendChild(nameEl);
+
+  if (m.automation) {
+    const autoTag = document.createElement('span');
+    autoTag.className = 't-automation-tag';
+    autoTag.textContent = 'Automation';
+    meta.appendChild(autoTag);
+  }
 
   if (m.created_at) {
     const timeEl = document.createElement('span');

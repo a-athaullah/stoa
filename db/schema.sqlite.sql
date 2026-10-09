@@ -63,9 +63,13 @@ CREATE TABLE IF NOT EXISTS messages (
   client_event_id TEXT DEFAULT NULL,
   thread_id INTEGER DEFAULT NULL,
   slack_thread_ts TEXT DEFAULT NULL,
+  automation_id INTEGER DEFAULT NULL,
+  automation_name TEXT DEFAULT NULL,
+  automation_provider TEXT DEFAULT NULL,
   FOREIGN KEY (room_id) REFERENCES rooms(id),
   FOREIGN KEY (participant_id) REFERENCES room_participants(id),
-  FOREIGN KEY (thread_id) REFERENCES messages(id)
+  FOREIGN KEY (thread_id) REFERENCES messages(id),
+  FOREIGN KEY (automation_id) REFERENCES automations(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS ai_sessions (

@@ -327,6 +327,38 @@ html.dark .h-msg-row:hover { background: var(--h-hover); }
   color: var(--h-ink-mute);
 }
 
+.t-automation-tag {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10.5px;
+  font-family: var(--h-sans);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: oklch(55% 0.08 250);
+  background: oklch(55% 0.08 250 / 0.12);
+  border: 1px solid oklch(55% 0.08 250 / 0.25);
+  border-radius: 4px;
+  padding: 1px 5px;
+  line-height: 1.5;
+  vertical-align: middle;
+}
+.dark .t-automation-tag {
+  color: oklch(72% 0.1 250);
+  background: oklch(72% 0.1 250 / 0.14);
+  border-color: oklch(72% 0.1 250 / 0.3);
+}
+
+.h-automation-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--h-surface-2, var(--h-surface));
+  flex: 0 0 auto;
+}
+
 .h-msg-time {
   font-family: var(--h-serif);
   font-size: 12.5px;
@@ -2552,6 +2584,14 @@ html.dark .h-room-thread-badge {
   font-size: 14.5px;
   font-weight: 700;
   line-height: 1.3;
+}
+
+.t-automation-row {
+  border-left: 3px solid oklch(55% 0.08 250 / 0.4);
+  padding-left: 8px;
+}
+.dark .t-automation-row {
+  border-left-color: oklch(72% 0.1 250 / 0.4);
 }
 
 .t-time {

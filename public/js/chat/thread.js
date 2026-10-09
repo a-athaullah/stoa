@@ -803,8 +803,14 @@ function appendThreadMessage(m, container) {
 
   const seal = document.createElement('div');
   seal.className = 'h-msg-seal-wrap';
-  seal.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 28, m.sub_agent_label));
+  if (m.automation?.provider) {
+    seal.appendChild(makeAutomationAvatarEl(m.automation.provider, 28));
+  } else {
+    seal.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 28, m.sub_agent_label));
+  }
   row.appendChild(seal);
+
+  if (m.automation) row.classList.add('h-automation-row');
 
   const body = document.createElement('div');
   body.className = 'h-msg-body';
@@ -815,11 +821,20 @@ function appendThreadMessage(m, container) {
 
   const nameEl = document.createElement('span');
   nameEl.className = 'h-msg-name';
-  nameEl.style.color = m.avatar_color;
-  nameEl.textContent = m.sub_agent_label || m.actor_name;
+  if (m.automation) {
+    nameEl.textContent = m.automation.name || m.actor_name;
+  } else {
+    nameEl.style.color = m.avatar_color;
+    nameEl.textContent = m.sub_agent_label || m.actor_name;
+  }
   meta.appendChild(nameEl);
 
-  if (m.sub_agent_label) {
+  if (m.automation) {
+    const autoTag = document.createElement('span');
+    autoTag.className = 't-automation-tag';
+    autoTag.textContent = 'Automation';
+    meta.appendChild(autoTag);
+  } else if (m.sub_agent_label) {
     const subEl = document.createElement('span');
     subEl.className = 'h-msg-sub';
     subEl.textContent = '(' + m.actor_name + ')';
@@ -959,8 +974,14 @@ function _renderThreadRoot(m, container) {
 
   const seal = document.createElement('div');
   seal.className = 'h-msg-seal-wrap';
-  seal.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 28, m.sub_agent_label));
+  if (m.automation?.provider) {
+    seal.appendChild(makeAutomationAvatarEl(m.automation.provider, 28));
+  } else {
+    seal.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 28, m.sub_agent_label));
+  }
   row.appendChild(seal);
+
+  if (m.automation) row.classList.add('h-automation-row');
 
   const body = document.createElement('div');
   body.className = 'h-msg-body';
@@ -969,9 +990,20 @@ function _renderThreadRoot(m, container) {
   meta.className = 'h-msg-meta';
   const nameEl = document.createElement('span');
   nameEl.className = 'h-msg-name';
-  nameEl.style.color = m.avatar_color;
-  nameEl.textContent = m.sub_agent_label || m.actor_name;
+  if (m.automation) {
+    nameEl.textContent = m.automation.name || m.actor_name;
+  } else {
+    nameEl.style.color = m.avatar_color;
+    nameEl.textContent = m.sub_agent_label || m.actor_name;
+  }
   meta.appendChild(nameEl);
+
+  if (m.automation) {
+    const autoTag = document.createElement('span');
+    autoTag.className = 't-automation-tag';
+    autoTag.textContent = 'Automation';
+    meta.appendChild(autoTag);
+  }
   if (m.created_at) {
     const timeEl = document.createElement('span');
     timeEl.className = 'h-msg-time';
