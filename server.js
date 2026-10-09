@@ -3788,6 +3788,9 @@ Write-Host "Logs   : pm2 logs $AgentName"
       let meta = {}; try { meta = JSON.parse(r.metadata || '{}'); } catch {}
       let creds = {}; try { creds = JSON.parse(r.credentials || '{}'); } catch {}
       const { credentials: _c, ...rest } = r;
+      if (r.provider === 'email') {
+        return { ...rest, metadata: meta, user: creds.user || '', hasPassword: !!creds.password };
+      }
       return { ...rest, metadata: meta, appToken: creds.appToken || '', token: creds.token || '' };
     }));
   }
@@ -3795,7 +3798,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
   if (req.method === 'POST' && url.pathname === '/api/automations/connections') {
     const body = parseJsonBody(await readBody(req));
     const provider = body?.provider || 'slack';
-    if (!['slack', 'whatsapp'].includes(provider)) {
+    if (!['slack', 'whatsapp', 'email'].includes(provider)) {
       res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid provider' }));
     }
 
@@ -3810,6 +3813,35 @@ Write-Host "Logs   : pm2 logs $AgentName"
       }
       creds = JSON.stringify({ appToken: body.appToken, token: body.token });
       initialMeta = '{}';
+    } else if (provider === 'email') {
+      if (!body?.name || !body?.user || !body?.password) {
+        res.writeHead(400); return res.end(JSON.stringify({ error: 'name, user, password required' }));
+      }
+      const allowedSenders = Array.isArray(body.allowedSenders) ? body.allowedSenders.filter(s => typeof s === 'string' && s.trim()) : [];
+      if (!allowedSenders.length) {
+        res.writeHead(400); return res.end(JSON.stringify({ error: 'allowedSenders must contain at least one address' }));
+      }
+      const host = (body.host || '').trim();
+      const preset = (body.preset || 'custom').toLowerCase();
+      const emailHost = preset === 'gmail' ? 'imap.gmail.com' : host;
+      const emailPort = preset === 'gmail' ? 993 : (parseInt(body.port) || 993);
+      if (!emailHost) {
+        res.writeHead(400); return res.end(JSON.stringify({ error: 'host is required for custom preset' }));
+      }
+      // SSRF: block private/loopback hosts
+      if (/^(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|0\.|::1|\[::1\]|0\.0\.0\.0)/i.test(emailHost)) {
+        res.writeHead(400); return res.end(JSON.stringify({ error: 'Private/loopback hosts not allowed' }));
+      }
+      tokenType = 'password';
+      const { encrypt } = require('./lib/credentials');
+      creds = JSON.stringify({ user: body.user.trim(), password: encrypt(body.password) });
+      initialMeta = JSON.stringify({
+        preset, host: emailHost, port: emailPort,
+        secure: body.secure !== false,
+        folder: (body.folder || 'INBOX').trim(),
+        allowedSenders: allowedSenders.map(s => s.trim()),
+        requireAuthPass: body.requireAuthPass !== false,
+      });
     } else { // whatsapp
       if (!body?.name) {
         res.writeHead(400); return res.end(JSON.stringify({ error: 'name required' }));
@@ -3856,10 +3888,13 @@ Write-Host "Logs   : pm2 logs $AgentName"
     if (req.method === 'GET' && sub === '') {
       let meta = {}; try { meta = JSON.parse(conn.metadata || '{}'); } catch {}
       let creds2 = {}; try { creds2 = JSON.parse(conn.credentials || '{}'); } catch {}
-      return json(res, { id: conn.id, name: conn.name, provider: conn.provider,
+      const base = { id: conn.id, name: conn.name, provider: conn.provider,
         token_type: conn.token_type, metadata: meta, status: conn.status,
-        error_msg: conn.error_msg, created_at: conn.created_at,
-        appToken: creds2.appToken || '', token: creds2.token || '' });
+        error_msg: conn.error_msg, created_at: conn.created_at };
+      if (conn.provider === 'email') {
+        return json(res, { ...base, user: creds2.user || '', hasPassword: !!creds2.password });
+      }
+      return json(res, { ...base, appToken: creds2.appToken || '', token: creds2.token || '' });
     }
 
     if (req.method === 'PATCH' && sub === '') {
@@ -3870,7 +3905,32 @@ Write-Host "Logs   : pm2 logs $AgentName"
       let meta3 = {}; try { meta3 = JSON.parse(conn.metadata || '{}'); } catch {}
       let tokenType = conn.token_type;
       let tokenChanged = false;
-      if (conn.provider === 'whatsapp') {
+      if (conn.provider === 'email') {
+        let needReconnect = false;
+        if (body.host !== undefined)           { meta3.host = (body.host || '').trim(); needReconnect = true; }
+        if (body.port !== undefined)           { meta3.port = parseInt(body.port) || 993; needReconnect = true; }
+        if (body.secure !== undefined)         { meta3.secure = body.secure !== false; needReconnect = true; }
+        if (body.folder !== undefined)           meta3.folder = (body.folder || 'INBOX').trim();
+        if (body.preset !== undefined)           meta3.preset = body.preset;
+        if (body.requireAuthPass !== undefined)  meta3.requireAuthPass = body.requireAuthPass !== false;
+        if (body.allowedSenders !== undefined) {
+          const senders = Array.isArray(body.allowedSenders) ? body.allowedSenders.filter(s => typeof s === 'string' && s.trim()) : [];
+          if (!senders.length) { res.writeHead(400); return res.end(JSON.stringify({ error: 'allowedSenders must contain at least one address' })); }
+          meta3.allowedSenders = senders.map(s => s.trim());
+        }
+        if (body.user !== undefined) { creds.user = body.user.trim(); needReconnect = true; }
+        if (body.password !== undefined) {
+          const { encrypt } = require('./lib/credentials');
+          creds.password = encrypt(body.password);
+          needReconnect = true;
+        }
+        db.prepare("UPDATE automation_connections SET name=?,credentials=?,metadata=?,updated_at=datetime('now') WHERE id=?")
+          .run(name, JSON.stringify(creds), JSON.stringify(meta3), connId);
+        if (needReconnect && conn.status === 'connected') {
+          await connectionManager.stopConnection(connId);
+          db.prepare("UPDATE automation_connections SET status='disconnected',updated_at=datetime('now') WHERE id=?").run(connId);
+        }
+      } else if (conn.provider === 'whatsapp') {
         if (body.phoneNumber !== undefined)   meta3.phoneNumber   = (body.phoneNumber || '').trim();
         if (body.maxMediaSizeMb !== undefined) meta3.maxMediaSizeMb = Number(body.maxMediaSizeMb) || 100;
         db.prepare("UPDATE automation_connections SET name=?,metadata=?,updated_at=datetime('now') WHERE id=?")
@@ -3943,6 +4003,34 @@ Write-Host "Logs   : pm2 logs $AgentName"
       return json(res, { ok: true });
     }
     res.writeHead(405); return res.end(JSON.stringify({ error: 'Method not allowed' }));
+  }
+
+  // ── Email: test credentials without saving ──────────────────────────────────
+  if (req.method === 'POST' && url.pathname === '/api/automations/connections/test-email') {
+    const body = parseJsonBody(await readBody(req));
+    if (!body?.host || !body?.user || !body?.password) {
+      res.writeHead(400); return res.end(JSON.stringify({ error: 'host, user, password required' }));
+    }
+    const host = (body.host || '').trim();
+    if (/^(localhost|127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|0\.|::1|\[::1\]|0\.0\.0\.0)/i.test(host)) {
+      res.writeHead(400); return res.end(JSON.stringify({ error: 'Private/loopback hosts not allowed' }));
+    }
+    try {
+      const { ImapFlow } = require('imapflow');
+      const client = new ImapFlow({
+        host, port: parseInt(body.port) || 993, secure: body.secure !== false,
+        auth: { user: body.user.trim(), pass: body.password },
+        logger: false, tls: { rejectUnauthorized: true },
+      });
+      await client.connect();
+      const folder = (body.folder || 'INBOX').trim();
+      const lock = await client.getMailboxLock(folder);
+      lock.release();
+      await client.logout();
+      return json(res, { ok: true });
+    } catch (e) {
+      return json(res, { ok: false, error: e.message });
+    }
   }
 
   // ── Automation: CRUD ─────────────────────────────────────────────────────────
@@ -7007,6 +7095,71 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, senderName, t
     }
   } catch (e) {
     console.error('[automation] wa_event handler error:', e.message);
+  }
+});
+
+// ─── Email automation listener ─────────────────────────────────────────────────
+
+connectionManager.on('email_event', async ({ eventType, connId, uid, messageId, from, fromName, to, subject, date, text, hasAttachments, attachmentCount }) => {
+  try {
+    const automations = db.prepare(
+      "SELECT * FROM automations WHERE enabled=1 AND trigger_type='email' AND trigger_event='message' AND (connection_id IS NULL OR connection_id=?)"
+    ).all(connId || null);
+
+    if (!automations.length) return;
+
+    const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
+    console.log(`[${ts}] [email:recv] from=${from} subject="${(subject || '').slice(0, 60)}" conn=${connId}`);
+
+    const fieldValues = { email_from: from, email_subject: subject, email_body: text };
+
+    for (const auto of automations) {
+      let conditions;
+      try { conditions = JSON.parse(auto.trigger_conditions || '[]'); } catch {
+        console.error(`[automation] id=${auto.id} has invalid trigger_conditions JSON, skipping`);
+        continue;
+      }
+      if (!Array.isArray(conditions)) continue;
+
+      const allMatch = conditions.every(c => {
+        if (!c || typeof c !== 'object' || Array.isArray(c)) return false;
+        const val = (fieldValues[c.field] || '').toLowerCase();
+        const target = (c.value || '').toLowerCase();
+        switch (c.op) {
+          case 'contains':      return val.includes(target);
+          case 'not_contains':  return !val.includes(target);
+          case 'starts_with':   return val.startsWith(target);
+          case 'matches_regex': return safeRegexTest(c.value, (fieldValues[c.field] || '').slice(0, 5000));
+          default: return true;
+        }
+      });
+
+      if (!allMatch) continue;
+
+      let prompt = auto.prompt_template
+        .replace(/\{\{email\.from\}\}/g, from)
+        .replace(/\{\{email\.from_name\}\}/g, fromName || from)
+        .replace(/\{\{email\.subject\}\}/g, (subject || '').slice(0, 500))
+        .replace(/\{\{email\.body\}\}/g, text)
+        .replace(/\{\{email\.date\}\}/g, date)
+        .replace(/\{\{email\.has_attachments\}\}/g, String(hasAttachments));
+
+      const _roomId = auto.target_room_id;
+      const _prompt = prompt;
+      const _autoName = auto.name;
+      const _autoId = auto.id;
+      console.log(`[automation] "${_autoName}" triggered → room ${_roomId} (email:${connId}, from: ${from})`);
+      (async () => {
+        try {
+          await handleHumanMessage(_roomId, _prompt, null, null, null, null, null, { id: _autoId, name: _autoName, provider: 'email' });
+          db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(_autoId);
+        } catch (e) {
+          console.error(`[automation] room ${_roomId} trigger error:`, e.message);
+        }
+      })();
+    }
+  } catch (e) {
+    console.error('[automation] email_event handler error:', e.message);
   }
 });
 

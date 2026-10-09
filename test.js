@@ -3439,6 +3439,163 @@ async function run() {
     assert.strictEqual(r.status, 404);
   });
 
+  // ── Email connector ──────────────────────────────────────────────────────────
+  console.log('\n[Email Connector]');
+  let _emailConnId = null;
+
+  await test('POST /api/automations/connections — email: missing fields → 400', async () => {
+    const r = await req('POST', '/api/automations/connections', { provider: 'email', name: 'test' });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.body.error.includes('user'));
+  });
+
+  await test('POST /api/automations/connections — email: empty allowedSenders → 400', async () => {
+    const r = await req('POST', '/api/automations/connections', {
+      provider: 'email', name: 'test', user: 'a@b.com', password: 'pass',
+      host: 'imap.example.com', allowedSenders: [],
+    });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.body.error.includes('allowedSenders'));
+  });
+
+  await test('POST /api/automations/connections — email: private host → 400', async () => {
+    const r = await req('POST', '/api/automations/connections', {
+      provider: 'email', name: 'test', user: 'a@b.com', password: 'pass',
+      host: '127.0.0.1', allowedSenders: ['x@y.com'],
+    });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.body.error.includes('Private'));
+  });
+
+  await test('POST /api/automations/connections — email: localhost → 400', async () => {
+    const r = await req('POST', '/api/automations/connections', {
+      provider: 'email', name: 'test', user: 'a@b.com', password: 'pass',
+      host: 'localhost', allowedSenders: ['x@y.com'],
+    });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.body.error.includes('Private'));
+  });
+
+  await test('POST /api/automations/connections — email: gmail preset auto-fills host', async () => {
+    const r = await req('POST', '/api/automations/connections', {
+      provider: 'email', name: 'Gmail Test', user: 'test@gmail.com', password: 'fake-app-pass',
+      preset: 'gmail', allowedSenders: ['sender@example.com'],
+    });
+    // Connection will fail (no real IMAP), but the row should be created with correct metadata
+    // Accept either 500 (connection error) or 200 (if somehow connects)
+    if (r.status === 500) {
+      assert.ok(r.body.metadata, 'should have metadata');
+      assert.strictEqual(r.body.metadata.host, 'imap.gmail.com');
+      assert.strictEqual(r.body.metadata.port, 993);
+      assert.strictEqual(r.body.metadata.preset, 'gmail');
+      _emailConnId = r.body.id;
+    } else {
+      assert.strictEqual(r.status, 200);
+      _emailConnId = r.body.id;
+    }
+  });
+
+  await test('GET /api/automations/connections — email conn never leaks password', async () => {
+    const r = await req('GET', '/api/automations/connections');
+    assert.strictEqual(r.status, 200);
+    const emailConn = r.body.find(c => c.provider === 'email');
+    if (emailConn) {
+      assert.ok(!JSON.stringify(emailConn).includes('fake-app-pass'), 'password leaked in list response');
+      assert.ok(emailConn.hasPassword === true, 'hasPassword should be true');
+      assert.ok(emailConn.user, 'user should be present');
+    }
+  });
+
+  await test('GET /api/automations/connections/:id — email conn masks password', async () => {
+    if (!_emailConnId) { console.log('    (skipped)'); return; }
+    const r = await req('GET', `/api/automations/connections/${_emailConnId}`);
+    assert.strictEqual(r.status, 200);
+    assert.ok(!JSON.stringify(r.body).includes('fake-app-pass'), 'password leaked in detail response');
+    assert.strictEqual(r.body.hasPassword, true);
+    assert.strictEqual(r.body.user, 'test@gmail.com');
+  });
+
+  await test('PATCH /api/automations/connections/:id — email: update allowedSenders', async () => {
+    if (!_emailConnId) { console.log('    (skipped)'); return; }
+    const r = await req('PATCH', `/api/automations/connections/${_emailConnId}`, {
+      allowedSenders: ['new@example.com', '*@corp.com'],
+    });
+    assert.strictEqual(r.status, 200);
+    assert.deepStrictEqual(r.body.metadata.allowedSenders, ['new@example.com', '*@corp.com']);
+  });
+
+  await test('PATCH /api/automations/connections/:id — email: empty allowedSenders → 400', async () => {
+    if (!_emailConnId) { console.log('    (skipped)'); return; }
+    const r = await req('PATCH', `/api/automations/connections/${_emailConnId}`, {
+      allowedSenders: [],
+    });
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('POST /api/automations/connections/test-email — missing fields → 400', async () => {
+    const r = await req('POST', '/api/automations/connections/test-email', { host: 'imap.gmail.com' });
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('POST /api/automations/connections/test-email — private host → 400', async () => {
+    const r = await req('POST', '/api/automations/connections/test-email', {
+      host: '192.168.1.1', user: 'a@b.com', password: 'x',
+    });
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('POST /api/automations/connections/test-email — invalid creds → ok:false', async () => {
+    const r = await req('POST', '/api/automations/connections/test-email', {
+      host: 'imap.gmail.com', user: 'fake@gmail.com', password: 'wrong',
+    });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.ok, false);
+    assert.ok(r.body.error, 'should have error message');
+  });
+
+  await test('POST /api/automations — email trigger_type accepted', async () => {
+    if (!firstRoomId) { console.log('    (skipped)'); return; }
+    const r = await req('POST', '/api/automations', {
+      name: '__test_email_auto__',
+      trigger_type: 'email',
+      trigger_event: 'message',
+      target_room_id: firstRoomId,
+      prompt_template: 'Email from {{email.from}}: {{email.subject}}\n\n{{email.body}}',
+      connection_id: _emailConnId || null,
+    });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.trigger_type, 'email');
+    // cleanup
+    await req('DELETE', `/api/automations/${r.body.id}`);
+  });
+
+  await test('teardown — cleanup email test connection', async () => {
+    if (!_emailConnId) return;
+    // Disconnect first if running
+    await req('POST', `/api/automations/connections/${_emailConnId}/disconnect`);
+    const dr = await req('DELETE', `/api/automations/connections/${_emailConnId}`);
+    assert.strictEqual(dr.status, 200);
+    _emailConnId = null;
+  });
+
+  // Unit tests for email utilities
+  await test('lib/credentials — encrypt/decrypt roundtrip', async () => {
+    const { encrypt, decrypt, isEncrypted } = require('./lib/credentials');
+    const plain = 'my-secret-app-password-123!';
+    const encrypted = encrypt(plain);
+    assert.ok(isEncrypted(encrypted), 'should be recognized as encrypted');
+    assert.notStrictEqual(encrypted, plain, 'should not be plaintext');
+    const decrypted = decrypt(encrypted);
+    assert.strictEqual(decrypted, plain, 'roundtrip should match');
+  });
+
+  await test('lib/credentials — isEncrypted rejects plaintext', async () => {
+    const { isEncrypted } = require('./lib/credentials');
+    assert.strictEqual(isEncrypted('plaintext'), false);
+    assert.strictEqual(isEncrypted(''), false);
+    assert.strictEqual(isEncrypted('not:a:valid:format'), false);
+  });
+
   // ── Automation sender identity ──────────────────────────────────────────────
   let _autoSenderTestMsgId = null;
   let _autoSenderTestThreadRoot = null;
