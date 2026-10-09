@@ -3439,6 +3439,36 @@ async function run() {
     assert.strictEqual(r.status, 404);
   });
 
+  // ── Automation sender identity ──────────────────────────────────────────────
+  await test('GET /api/rooms/:id/messages — messages carry automation field (null for regular)', async () => {
+    const r = await req('GET', `/api/rooms/${firstRoomId}/messages`);
+    assert.strictEqual(r.status, 200);
+    if (r.body.length > 0) {
+      const msg = r.body[0];
+      assert.ok('automation' in msg, 'automation field missing from message');
+      if (msg.automation === null) {
+        assert.strictEqual(msg.automation, null);
+      } else {
+        assert.ok(msg.automation.id, 'automation.id missing');
+        assert.ok(msg.automation.name, 'automation.name missing');
+        assert.ok(msg.automation.provider, 'automation.provider missing');
+      }
+      assert.ok(!('automation_id' in msg), 'raw automation_id should not be exposed');
+      assert.ok(!('automation_name' in msg), 'raw automation_name should not be exposed');
+      assert.ok(!('automation_provider' in msg), 'raw automation_provider should not be exposed');
+    }
+  });
+
+  await test('GET /api/messages/:id — single message carries automation field', async () => {
+    const list = await req('GET', `/api/rooms/${firstRoomId}/messages`);
+    if (!list.body.length) { console.log('    (skipped — no messages)'); return; }
+    const msgId = list.body[0].id;
+    const r = await req('GET', `/api/messages/${msgId}`);
+    assert.strictEqual(r.status, 200);
+    assert.ok('automation' in r.body, 'automation field missing');
+    assert.ok(!('automation_id' in r.body), 'raw automation_id should not be exposed');
+  });
+
   await test('GET /api/setup/status — returns needsSetup bool', async () => {
     const r = await req('GET', '/api/setup/status');
     assert.strictEqual(r.status, 200);
