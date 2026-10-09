@@ -6,7 +6,14 @@ function autoBindEvents(container) {
     autoState.connFormMode = 'new';
     autoState.editingConnId = null;
     autoState.connFormError = null;
-    autoState.connForm = { name: '', provider: 'slack', tokenType: 'bot', appToken: '', token: '' };
+    autoState.connTestResult = null;
+    autoState.connForm = {
+      name: '', provider: 'slack', tokenType: 'bot', appToken: '', token: '',
+      phoneNumber: '', maxMediaSizeMb: 100,
+      emailPreset: 'gmail', emailHost: 'imap.gmail.com', emailPort: 993,
+      emailSecure: true, emailUser: '', emailPassword: '',
+      emailFolder: 'INBOX', emailAllowedSenders: '', emailRequireAuthPass: true,
+    };
     autoRender();
   }));
 
@@ -14,16 +21,28 @@ function autoBindEvents(container) {
     const id = parseInt(btn.dataset.id);
     const conn = autoState.connections.find(c => c.id === id);
     if (!conn) return;
+    const meta = conn.metadata || {};
     autoState.connFormOpen = true;
     autoState.connFormMode = 'edit';
     autoState.editingConnId = id;
     autoState.connFormError = null;
+    autoState.connTestResult = null;
     autoState.connForm = {
       name: conn.name,
       provider: conn.provider || 'slack',
       tokenType: conn.token_type || 'bot',
       appToken: conn.appToken || '',
       token: conn.token || '',
+      // email edit fields (password never pre-filled from server)
+      emailPreset: meta.preset || 'gmail',
+      emailHost: meta.host || 'imap.gmail.com',
+      emailPort: meta.port || 993,
+      emailSecure: meta.secure !== false,
+      emailUser: meta.user || '',
+      emailPassword: '',
+      emailFolder: meta.folder || 'INBOX',
+      emailAllowedSenders: (meta.allowedSenders || []).join('\n'),
+      emailRequireAuthPass: meta.requireAuthPass !== false,
     };
     autoRender();
   }));
@@ -84,9 +103,49 @@ function autoBindEvents(container) {
   container.querySelector('#auto-conn-provider')?.addEventListener('change', e => {
     autoConnSyncForm();
     autoState.connForm.provider = e.target.value;
-    autoState.connForm.tokenType = e.target.value === 'whatsapp' ? 'qr' : 'bot';
+    if (e.target.value === 'whatsapp') {
+      autoState.connForm.tokenType = 'qr';
+    } else if (e.target.value === 'email') {
+      autoState.connForm.tokenType = 'password';
+    } else {
+      autoState.connForm.tokenType = 'bot';
+    }
+    autoState.connTestResult = null;
     autoRender();
   });
+
+  // Email preset radio
+  container.querySelectorAll('#auto-conn-email-preset input[type=radio]').forEach(radio => {
+    radio.addEventListener('change', () => {
+      autoConnSyncForm();
+      autoState.connForm.emailPreset = radio.value;
+      if (radio.value === 'gmail') {
+        autoState.connForm.emailHost = 'imap.gmail.com';
+        autoState.connForm.emailPort = 993;
+        autoState.connForm.emailSecure = true;
+      }
+      autoState.connTestResult = null;
+      autoRender();
+    });
+  });
+
+  // Email auth pass toggle
+  container.querySelector('#auto-conn-email-auth-toggle')?.addEventListener('click', () => {
+    autoConnSyncForm();
+    autoState.connForm.emailRequireAuthPass = !autoState.connForm.emailRequireAuthPass;
+    autoRender();
+  });
+  container.querySelector('#auto-conn-email-auth-toggle')?.addEventListener('keydown', e => {
+    if (e.key === ' ' || e.key === 'Enter') {
+      e.preventDefault();
+      autoConnSyncForm();
+      autoState.connForm.emailRequireAuthPass = !autoState.connForm.emailRequireAuthPass;
+      autoRender();
+    }
+  });
+
+  // Email test connection button
+  container.querySelector('#auto-conn-test-btn')?.addEventListener('click', autoDoTestEmailConn);
 
   // QR modal close handled by autoBindQrModalEvents (modal lives in body, not container)
 
@@ -100,7 +159,7 @@ function autoBindEvents(container) {
     autoSyncForm();
     const newProvider = autoGetFormProvider();
     if (newProvider !== prevProvider) {
-      autoState.form.triggerEvent = newProvider === 'whatsapp' ? 'message' : 'mention';
+      autoState.form.triggerEvent = (newProvider === 'whatsapp' || newProvider === 'email') ? 'message' : 'mention';
       autoState.form.conditions = [];
       autoState.form.replyMode = 'none';
       autoState.form.watchReply = false;
@@ -174,12 +233,13 @@ function autoBindEvents(container) {
     const defaultConnId = activeConns.length === 1 ? String(activeConns[0].id) : '';
     const defaultConn = activeConns.find(c => String(c.id) === defaultConnId);
     const isWa = defaultConn?.provider === 'whatsapp';
+    const isEmailConn = defaultConn?.provider === 'email';
     autoState.formOpen = true;
     autoState.formMode = 'new';
     autoState.editingId = null;
     autoState.form = {
       name: '',
-      triggerEvent: isWa ? 'message' : 'mention',
+      triggerEvent: (isWa || isEmailConn) ? 'message' : 'mention',
       connectionId: defaultConnId,
       conditions: [],
       targetRoomId: '',
@@ -299,6 +359,22 @@ function autoConnSyncForm() {
   if (ttRadio)   autoState.connForm.tokenType     = ttRadio.value;
   if (phone)     autoState.connForm.phoneNumber   = phone.value;
   if (mediaSize) autoState.connForm.maxMediaSizeMb = parseInt(mediaSize.value) || 100;
+
+  // email fields
+  const eHost    = document.getElementById('auto-conn-email-host');
+  const ePort    = document.getElementById('auto-conn-email-port');
+  const eUser    = document.getElementById('auto-conn-email-user');
+  const ePass    = document.getElementById('auto-conn-email-password');
+  const eFolder  = document.getElementById('auto-conn-email-folder');
+  const eSenders = document.getElementById('auto-conn-email-senders');
+  const ePreset  = document.querySelector('#auto-conn-email-preset input[type=radio]:checked');
+  if (eHost)    autoState.connForm.emailHost           = eHost.value;
+  if (ePort)    autoState.connForm.emailPort           = parseInt(ePort.value) || 993;
+  if (eUser)    autoState.connForm.emailUser           = eUser.value;
+  if (ePass)    autoState.connForm.emailPassword       = ePass.value;
+  if (eFolder)  autoState.connForm.emailFolder         = eFolder.value;
+  if (eSenders) autoState.connForm.emailAllowedSenders = eSenders.value;
+  if (ePreset)  autoState.connForm.emailPreset         = ePreset.value;
 }
 
 function autoConnFormClose() {

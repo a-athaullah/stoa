@@ -38,6 +38,7 @@ function autoRenderConnectionCard(conn) {
   const isConnecting = conn.status === 'connecting';
   const meta = conn.metadata || {};
   const isWa = conn.provider === 'whatsapp';
+  const isEmail = conn.provider === 'email';
 
   const dotStyle = isConnected
     ? 'background:#7fb98c;box-shadow:0 0 0 3px color-mix(in srgb,#7fb98c 22%,transparent)'
@@ -55,7 +56,7 @@ function autoRenderConnectionCard(conn) {
   let actions = '';
   if (isConfirm) {
     const action = autoState.connConfirmAction;
-    const label = isWa ? (meta.botJid || conn.name) : (meta.botName || conn.name);
+    const label = isWa ? (meta.botJid || conn.name) : isEmail ? conn.name : (meta.botName || conn.name);
     const confirmLabel = action === 'disconnect' ? `Disconnect @${escHtml(label)}?` : `Delete @${escHtml(label)}?`;
     const okLabel = action === 'disconnect' ? 'Disconnect' : 'Delete';
     actions = `
@@ -92,6 +93,13 @@ function autoRenderConnectionCard(conn) {
       meta.maxMediaSizeMb ? `media ≤${meta.maxMediaSizeMb}MB` : null,
     ].filter(Boolean);
     subline = parts.join(' · ');
+  } else if (isEmail) {
+    const parts = [
+      meta.user ? escHtml(meta.user) : null,
+      meta.host ? escHtml(meta.host) : null,
+      meta.folder && meta.folder !== 'INBOX' ? escHtml(meta.folder) : null,
+    ].filter(Boolean);
+    subline = parts.join(' · ');
   } else {
     const botName = meta.botName || '';
     const workspaceName = meta.workspaceName || '';
@@ -105,6 +113,8 @@ function autoRenderConnectionCard(conn) {
 
   const providerBadge = isWa
     ? `<span style="font-family:var(--h-sans);font-size:11px;color:var(--h-ink-faint);background:var(--h-hairline);padding:1px 6px;border-radius:4px;margin-left:4px">WhatsApp</span>`
+    : isEmail
+    ? `<span style="font-family:var(--h-sans);font-size:11px;color:var(--h-ink-faint);background:var(--h-hairline);padding:1px 6px;border-radius:4px;margin-left:4px">Email</span>`
     : '';
 
   return `
@@ -139,6 +149,7 @@ function autoRenderConnectionForm() {
   const f = autoState.connForm;
   const isEdit = autoState.connFormMode === 'edit';
   const isWa = f.provider === 'whatsapp';
+  const isEmail = f.provider === 'email';
   const isBotToken = f.tokenType !== 'user';
 
   const editingConn = isEdit ? autoState.connections.find(c => c.id === autoState.editingConnId) : null;
@@ -148,7 +159,106 @@ function autoRenderConnectionForm() {
     ? `<button class="auto-save-btn" id="auto-conn-save-btn" disabled style="display:inline-flex;align-items:center;gap:7px">${svgSpinnerTiny()} ${isWa ? 'Connecting…' : editNeedsConnect ? 'Connecting…' : isEdit ? 'Saving…' : 'Connecting…'}</button>`
     : `<button class="auto-save-btn" id="auto-conn-save-btn">${saveBtnLabel}</button>`;
 
-  const slackFields = isWa ? '' : `
+  const testBtnHtml = isEmail ? (() => {
+    const r = autoState.connTestResult;
+    if (autoState.connTestLoading) {
+      return `<button class="auto-small-btn" id="auto-conn-test-btn" disabled style="display:inline-flex;align-items:center;gap:5px">${svgSpinnerTiny()} Testing…</button>`;
+    }
+    let badge = '';
+    if (r) {
+      badge = r.ok
+        ? `<span style="font-family:var(--h-sans);font-size:12px;color:#7fb98c">✓ Connection OK</span>`
+        : `<span style="font-family:var(--h-sans);font-size:12px;color:#b35a4b">✗ ${escHtml(r.error || 'Failed')}</span>`;
+    }
+    return `<button class="auto-small-btn" id="auto-conn-test-btn" style="display:inline-flex;align-items:center;gap:5px">Test connection</button>${badge ? ' ' + badge : ''}`;
+  })() : '';
+
+  const emailFields = !isEmail ? '' : (() => {
+    const isGmail = f.emailPreset === 'gmail';
+    const customHostFields = isGmail ? '' : `
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <div style="display:flex;flex-direction:column;gap:5px;flex:1;min-width:160px">
+          <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-mute)">IMAP Host</span>
+          <input class="auto-field-input" id="auto-conn-email-host" type="text" placeholder="imap.example.com" autocomplete="off" value="${escHtml(f.emailHost)}">
+        </div>
+        <div style="display:flex;flex-direction:column;gap:5px;width:90px">
+          <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-mute)">Port</span>
+          <input class="auto-field-input" id="auto-conn-email-port" type="number" min="1" max="65535" value="${f.emailPort}" style="max-width:90px">
+        </div>
+      </div>
+    `;
+
+    return `
+      <!-- Preset -->
+      <div style="display:flex;flex-direction:column;gap:7px">
+        <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-mute)">Preset</span>
+        <div style="display:flex;gap:18px" id="auto-conn-email-preset">
+          <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-family:var(--h-sans);font-size:13px;color:var(--h-ink-mute)">
+            <input type="radio" name="auto-email-preset" value="gmail" ${isGmail ? 'checked' : ''} style="accent-color:var(--h-accent)">
+            Gmail (imap.gmail.com:993)
+          </label>
+          <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-family:var(--h-sans);font-size:13px;color:var(--h-ink-mute)">
+            <input type="radio" name="auto-email-preset" value="custom" ${!isGmail ? 'checked' : ''} style="accent-color:var(--h-accent)">
+            Custom IMAP
+          </label>
+        </div>
+      </div>
+
+      ${customHostFields}
+
+      <!-- Email address -->
+      <div style="display:flex;flex-direction:column;gap:5px">
+        <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-mute)">Email address</span>
+        <input class="auto-field-input" id="auto-conn-email-user" type="email" placeholder="you@gmail.com" autocomplete="off" value="${escHtml(f.emailUser)}">
+      </div>
+
+      <!-- App password -->
+      <div style="display:flex;flex-direction:column;gap:5px">
+        <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-mute)">App password ${isEdit ? '<span style="font-size:12px;color:var(--h-ink-faint)">(leave blank to keep existing)</span>' : ''}</span>
+        <input class="auto-token-input" id="auto-conn-email-password" type="password" placeholder="${isEdit && editingConn?.metadata?.hasPassword ? '••••••••••••••••' : 'xxxx xxxx xxxx xxxx'}" autocomplete="new-password" value="">
+        ${isGmail ? `
+          <div style="padding:9px 12px;background:color-mix(in srgb,var(--h-accent) 7%,var(--h-surface));border:1px solid color-mix(in srgb,var(--h-accent) 20%,transparent);border-radius:7px;margin-top:2px">
+            <span style="font-family:var(--h-sans);font-size:12.5px;color:var(--h-ink-mute);line-height:1.5">
+              Gmail requires an <strong>app password</strong>, not your account password.
+              Go to <strong>Google Account → Security → 2-Step Verification → App passwords</strong> and create one for "Mail".
+            </span>
+          </div>
+        ` : ''}
+      </div>
+
+      <!-- Folder -->
+      <div style="display:flex;flex-direction:column;gap:5px">
+        <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-mute)">Folder <span style="font-size:12px;color:var(--h-ink-faint)">(default: INBOX)</span></span>
+        <input class="auto-field-input" id="auto-conn-email-folder" type="text" placeholder="INBOX" autocomplete="off" value="${escHtml(f.emailFolder || 'INBOX')}" style="max-width:200px">
+      </div>
+
+      <!-- Allowed senders (required) -->
+      <div style="display:flex;flex-direction:column;gap:5px">
+        <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-mute)">Allowed senders <span style="font-size:12px;color:#b35a4b">required</span></span>
+        <textarea class="auto-prompt-ta" id="auto-conn-email-senders" rows="3" placeholder="boss@example.com&#10;*@kantor.com&#10;alerts@service.io">${escHtml(f.emailAllowedSenders)}</textarea>
+        <span style="font-family:var(--h-sans);font-size:12px;color:var(--h-ink-faint)">One per line. Wildcards: <code>*@domain.com</code>. Emails from unlisted senders are silently ignored.</span>
+      </div>
+
+      <!-- Require auth pass -->
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--h-surface-tinted,color-mix(in srgb,var(--h-accent) 4%,var(--h-surface)));border:1px solid var(--h-hairline);border-radius:8px">
+        <div style="display:flex;flex-direction:column;gap:2px">
+          <span style="font-family:var(--h-sans);font-size:13px;color:var(--h-ink)">Require DMARC/DKIM pass</span>
+          <span style="font-family:var(--h-sans);font-size:12px;color:var(--h-ink-faint)">Drop emails without dmarc=pass or dkim=pass (prevents spoofing)</span>
+        </div>
+        <span id="auto-conn-email-auth-toggle" role="switch" aria-checked="${f.emailRequireAuthPass ? 'true' : 'false'}" tabindex="0"
+          style="width:36px;height:20px;border-radius:999px;position:relative;display:inline-block;cursor:pointer;flex-shrink:0;background:${f.emailRequireAuthPass ? '#7fb98c' : 'var(--h-hairline)'};transition:background .15s">
+          <span style="position:absolute;top:2px;left:${f.emailRequireAuthPass ? '18px' : '2px'};width:16px;height:16px;border-radius:50%;background:#fff;transition:left .15s;box-shadow:0 1px 2px rgba(0,0,0,.2)"></span>
+        </span>
+      </div>
+
+      <!-- Test connection -->
+      <div style="display:flex;align-items:center;gap:10px">
+        ${testBtnHtml}
+      </div>
+    `;
+  })();
+
+  const slackFields = isWa || isEmail ? '' : `
     <!-- Token Type -->
     <div style="display:flex;flex-direction:column;gap:7px">
       <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-mute)">Token Type</span>
@@ -177,7 +287,7 @@ function autoRenderConnectionForm() {
     </div>
   `;
 
-  const waFields = !isWa ? '' : `
+  const waFields = !isWa || isEmail ? '' : `
     <!-- Phone Number (optional, informational) -->
     <div style="display:flex;flex-direction:column;gap:5px">
       <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-mute)">Phone Number <span style="font-size:12px;color:var(--h-ink-faint)">(optional, for reference)</span></span>
@@ -215,14 +325,16 @@ function autoRenderConnectionForm() {
         <div style="display:flex;flex-direction:column;gap:5px">
           <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-mute)">Provider</span>
           ${isEdit
-            ? `<div class="auto-fake-select" style="pointer-events:none;opacity:.7;min-width:140px">${isWa ? 'WhatsApp' : 'Slack'} <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 6l4 4 4-4"/></svg></div>`
+            ? `<div class="auto-fake-select" style="pointer-events:none;opacity:.7;min-width:140px">${isWa ? 'WhatsApp' : isEmail ? 'Email (IMAP)' : 'Slack'} <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 6l4 4 4-4"/></svg></div>`
             : `<select class="auto-sel" id="auto-conn-provider" style="min-width:160px">
                 <option value="slack" ${f.provider === 'slack' ? 'selected' : ''}>Slack</option>
                 <option value="whatsapp" ${f.provider === 'whatsapp' ? 'selected' : ''}>WhatsApp</option>
+                <option value="email" ${f.provider === 'email' ? 'selected' : ''}>Email (IMAP)</option>
                </select>`
           }
         </div>
 
+        ${emailFields}
         ${slackFields}
         ${waFields}
 
