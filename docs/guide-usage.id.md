@@ -708,6 +708,16 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 - Mengembalikan array `{ sender, text, direction, media_type, timestamp }`
 - Hanya tersedia untuk koneksi WhatsApp
 
+### Pesan Otomasi di Chat
+
+Saat sebuah aturan otomasi mengirim pesan ke room, feed dan thread menampilkan pesan tersebut dengan identitas otomasinya:
+
+- **Nama pengirim** — nama aturan otomasi, menggantikan nama tampilan agent generik
+- **Tag "Automation"** — label kecil di sebelah nama pengirim, sehingga pesan yang dipicu otomasi mudah dibedakan dari pesan manusia
+- **Avatar provider** — logo provider koneksi (misalnya logo Slack untuk koneksi Slack) ditampilkan sebagai avatar. Untuk provider yang tidak dikenal, ikon bot generik digunakan sebagai fallback.
+
+Hanya pesan yang dikirim *setelah* fitur ini diperkenalkan yang membawa identitas otomasi. Pesan otomasi yang lebih lama tetap ditampilkan seperti sebelumnya.
+
 ---
 
 ## Pengaturan

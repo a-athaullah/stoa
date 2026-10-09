@@ -3439,6 +3439,105 @@ async function run() {
     assert.strictEqual(r.status, 404);
   });
 
+  // ── Automation sender identity ──────────────────────────────────────────────
+  let _autoSenderTestMsgId = null;
+  let _autoSenderTestThreadRoot = null;
+  let _autoSenderTestReplyId = null;
+  let _autoSenderTestAutoId = null;
+  let _autoSenderTestAutoId2 = null;
+
+  await test('automation sender — regular message carries automation: null', async () => {
+    const r = await req('GET', `/api/rooms/${firstRoomId}/messages`);
+    assert.strictEqual(r.status, 200);
+    if (r.body.length > 0) {
+      const msg = r.body[0];
+      assert.ok('automation' in msg, 'automation field missing');
+      assert.strictEqual(msg.automation, null, 'regular message should have automation: null');
+      assert.ok(!('automation_id' in msg), 'raw automation_id leaked');
+      assert.ok(!('automation_name' in msg), 'raw automation_name leaked');
+      assert.ok(!('automation_provider' in msg), 'raw automation_provider leaked');
+    }
+  });
+
+  await test('automation sender — message with automation columns returns structured object', async () => {
+    if (!firstRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const ptcp = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1").get(firstRoomId);
+    if (!ptcp) { console.log('    (skipped — no human participant)'); return; }
+    const autoIns = db.prepare("INSERT INTO automations (name, trigger_type, trigger_event, target_room_id, prompt_template) VALUES (?,?,?,?,?)")
+      .run('__test_auto_sender__', 'slack', 'message', firstRoomId, 'test');
+    _autoSenderTestAutoId = Number(autoIns.lastInsertRowid);
+    const ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, automation_id, automation_name, automation_provider, state) VALUES (?,?,?,?,?,?,'complete')")
+      .run(firstRoomId, ptcp.id, '__test_auto_sender__', _autoSenderTestAutoId, 'Test Slack Bot', 'slack');
+    _autoSenderTestMsgId = Number(ins.lastInsertRowid);
+    const r = await req('GET', `/api/messages/${_autoSenderTestMsgId}`);
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.automation !== null, 'automation should not be null');
+    assert.strictEqual(r.body.automation.id, _autoSenderTestAutoId);
+    assert.strictEqual(r.body.automation.name, 'Test Slack Bot');
+    assert.strictEqual(r.body.automation.provider, 'slack');
+    assert.ok(!('automation_id' in r.body), 'raw automation_id leaked');
+  });
+
+  await test('automation sender — history (scope=all) enriches automation field', async () => {
+    if (!_autoSenderTestMsgId) { console.log('    (skipped)'); return; }
+    const r = await req('GET', `/api/rooms/${firstRoomId}/messages?scope=all&before=${_autoSenderTestMsgId + 1}&limit=5`);
+    assert.strictEqual(r.status, 200);
+    const autoMsg = r.body.find(m => m.id === _autoSenderTestMsgId);
+    assert.ok(autoMsg, 'test message not in scope=all history');
+    assert.deepStrictEqual(autoMsg.automation, { id: _autoSenderTestAutoId, name: 'Test Slack Bot', provider: 'slack' });
+  });
+
+  await test('automation sender — before pagination (roots) enriches automation field', async () => {
+    if (!_autoSenderTestMsgId) { console.log('    (skipped)'); return; }
+    const r = await req('GET', `/api/rooms/${firstRoomId}/messages?before=${_autoSenderTestMsgId + 1}&limit=5`);
+    assert.strictEqual(r.status, 200);
+    const autoMsg = r.body.find(m => m.id === _autoSenderTestMsgId);
+    assert.ok(autoMsg, 'test message not in before-paginated results');
+    assert.deepStrictEqual(autoMsg.automation, { id: _autoSenderTestAutoId, name: 'Test Slack Bot', provider: 'slack' });
+  });
+
+  await test('automation sender — thread: root and reply carry automation field', async () => {
+    if (!firstRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const ptcp = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1").get(firstRoomId);
+    if (!ptcp) { console.log('    (skipped — no human participant)'); return; }
+    const autoIns2 = db.prepare("INSERT INTO automations (name, trigger_type, trigger_event, target_room_id, prompt_template) VALUES (?,?,?,?,?)")
+      .run('__test_auto_thread__', 'slack', 'message', firstRoomId, 'test');
+    _autoSenderTestAutoId2 = Number(autoIns2.lastInsertRowid);
+    const rootIns = db.prepare("INSERT INTO messages (room_id, participant_id, content, automation_id, automation_name, automation_provider, state) VALUES (?,?,?,?,?,?,'complete')")
+      .run(firstRoomId, ptcp.id, '__test_auto_thread_root__', _autoSenderTestAutoId2, 'Thread Bot', 'whatsapp');
+    _autoSenderTestThreadRoot = Number(rootIns.lastInsertRowid);
+    const replyIns = db.prepare("INSERT INTO messages (room_id, participant_id, content, thread_id, state) VALUES (?,?,?,?,'complete')")
+      .run(firstRoomId, ptcp.id, '__test_auto_thread_reply__', _autoSenderTestThreadRoot);
+    _autoSenderTestReplyId = Number(replyIns.lastInsertRowid);
+    const r = await req('GET', `/api/rooms/${firstRoomId}/threads/${_autoSenderTestThreadRoot}`);
+    assert.strictEqual(r.status, 200);
+    assert.deepStrictEqual(r.body.root.automation, { id: _autoSenderTestAutoId2, name: 'Thread Bot', provider: 'whatsapp' }, 'thread root automation mismatch');
+    const reply = r.body.messages.find(m => m.id === _autoSenderTestReplyId);
+    assert.ok(reply, 'reply not in thread');
+    assert.strictEqual(reply.automation, null, 'reply without automation should be null');
+  });
+
+  await test('automation sender — export includes automation field', async () => {
+    if (!_autoSenderTestMsgId) { console.log('    (skipped)'); return; }
+    const r = await req('GET', `/api/rooms/${firstRoomId}/export?format=json`);
+    assert.strictEqual(r.status, 200);
+    const data = typeof r.body === 'string' ? JSON.parse(r.body) : r.body;
+    const autoMsg = data.messages.find(m => m.id === _autoSenderTestMsgId);
+    assert.ok(autoMsg, 'test message not in export');
+    assert.deepStrictEqual(autoMsg.automation, { id: _autoSenderTestAutoId, name: 'Test Slack Bot', provider: 'slack' });
+  });
+
+  await test('automation sender — teardown', async () => {
+    const db = require('./db');
+    if (_autoSenderTestReplyId) db.prepare('DELETE FROM messages WHERE id=?').run(_autoSenderTestReplyId);
+    if (_autoSenderTestThreadRoot) db.prepare('DELETE FROM messages WHERE id=?').run(_autoSenderTestThreadRoot);
+    if (_autoSenderTestMsgId) db.prepare('DELETE FROM messages WHERE id=?').run(_autoSenderTestMsgId);
+    if (_autoSenderTestAutoId) db.prepare('DELETE FROM automations WHERE id=?').run(_autoSenderTestAutoId);
+    if (_autoSenderTestAutoId2) db.prepare('DELETE FROM automations WHERE id=?').run(_autoSenderTestAutoId2);
+  });
+
   await test('GET /api/setup/status — returns needsSetup bool', async () => {
     const r = await req('GET', '/api/setup/status');
     assert.strictEqual(r.status, 200);

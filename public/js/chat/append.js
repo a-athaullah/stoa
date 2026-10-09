@@ -103,8 +103,14 @@ function appendMessage(m, container) {
   // Seal
   const sealWrap = document.createElement('div');
   sealWrap.className = 'h-msg-seal-wrap';
-  sealWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 40, m.sub_agent_label));
+  if (m.automation?.provider) {
+    sealWrap.appendChild(makeAutomationAvatarEl(m.automation.provider, 40));
+  } else {
+    sealWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 40, m.sub_agent_label));
+  }
   row.appendChild(sealWrap);
+
+  if (m.automation) row.classList.add('h-automation-row');
 
   // Body
   const body = document.createElement('div');
@@ -116,12 +122,21 @@ function appendMessage(m, container) {
 
   const nameEl = document.createElement('span');
   nameEl.className = 'h-msg-name';
-  nameEl.style.color = m.avatar_color;
-  // Sub-agent: show label as primary name, orchestrator in parens — "FE-Review (Ara)"
-  nameEl.textContent = m.sub_agent_label || m.actor_name;
+  if (m.automation) {
+    nameEl.textContent = m.automation.name || m.actor_name;
+  } else {
+    nameEl.style.color = m.avatar_color;
+    // Sub-agent: show label as primary name, orchestrator in parens — "FE-Review (Ara)"
+    nameEl.textContent = m.sub_agent_label || m.actor_name;
+  }
   meta.appendChild(nameEl);
 
-  if (m.sub_agent_label) {
+  if (m.automation) {
+    const autoTag = document.createElement('span');
+    autoTag.className = 't-automation-tag';
+    autoTag.textContent = 'Automation';
+    meta.appendChild(autoTag);
+  } else if (m.sub_agent_label) {
     const subEl = document.createElement('span');
     subEl.className = 'h-msg-sub';
     subEl.textContent = '(' + m.actor_name + ')';

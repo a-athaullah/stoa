@@ -1552,6 +1552,7 @@ const server = http.createServer(async (req, res) => {
       WHERE m.id=?
     `).get(msgId);
     if (!row) { res.writeHead(404); return res.end(); }
+    enrichAutomation(row);
     return json(res, row);
   }
 
@@ -1619,6 +1620,7 @@ const server = http.createServer(async (req, res) => {
           ) t ORDER BY created_at ASC
         `).all(roomId, before, limit);
         const enriched = enrichReply(rows);
+        enrichAutomationList(enriched);
         if (!scopeAll) enriched.forEach(enrichThreadData);
         return json(res, enriched);
       }
@@ -1640,6 +1642,7 @@ const server = http.createServer(async (req, res) => {
         LIMIT 500
       `).all(roomId, since);
       const enriched = enrichReply(rows);
+      enrichAutomationList(enriched);
       if (!scopeAll) enriched.forEach(enrichThreadData);
       return json(res, enriched);
     }
@@ -2112,6 +2115,7 @@ const server = http.createServer(async (req, res) => {
       WHERE m.id=?
     `).get(messageId);
 
+    enrichAutomation(row);
     broadcast(roomId, { type: 'message_new', message: row });
     broadcastGlobal({ type: 'room_activity', room_id: roomId });
     // Cascade any @mentions in the proactive message (fire-and-forget)
@@ -3614,6 +3618,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
     if (!room) { res.writeHead(404); return res.end('room not found'); }
     const rows = db.prepare(`
       SELECT m.id, m.content, m.created_at, m.completed_at, m.image_url, m.file_url, m.file_name, m.attachments, m.reply_to, m.thread_id,
+             m.automation_id, m.automation_name, m.automation_provider,
              a.name as actor_name, a.type as actor_type
       FROM messages m
       JOIN room_participants rp ON rp.id=m.participant_id
@@ -3621,6 +3626,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
       WHERE m.room_id=? AND m.state='complete'
       ORDER BY m.created_at ASC
     `).all(roomId);
+    enrichAutomationList(rows);
 
     const safeTitle = room.title.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 50);
 
@@ -3735,6 +3741,8 @@ Write-Host "Logs   : pm2 logs $AgentName"
         if (replied) m.reply_msg = { content: replied.content?.substring(0, 300), actor_name: replied.actor_name };
       }
     }
+    enrichAutomation(rootMsg);
+    enrichAutomationList(messages);
     const compactKey = `${roomId}:${rootId}`;
     const compactState = pendingCompacts.get(compactKey);
     const result = { thread_id: rootId, root: rootMsg, messages };
@@ -4197,6 +4205,7 @@ wss.on('connection', (ws, req) => {
         ) AS recent ORDER BY created_at ASC
       `).all(subscribedRoom);
       const enriched = enrichReply(messages);
+      enrichAutomationList(enriched);
       enriched.forEach(m => {
         const sap = m.thread_sub_agent_participants ? m.thread_sub_agent_participants.split(',').map(s => { const [label, aid] = s.split(':'); return { label, actor_id: Number(aid) }; }) : [];
         m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active, participant_ids: m.thread_participant_ids ? m.thread_participant_ids.split(',').map(Number) : [], has_error: !!m.thread_has_error, sub_agent_participants: sap };
@@ -5713,7 +5722,7 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
   }
 }
 
-async function handleHumanMessage(roomId, content, attachments, replyTo, senderWs, eventId, threadId) {
+async function handleHumanMessage(roomId, content, attachments, replyTo, senderWs, eventId, threadId, automation) {
   // Get Ahmad's participant ID
   const parts = db.prepare(
     "SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1"
@@ -5763,9 +5772,12 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
   const attachJson = attachments?.length ? JSON.stringify(attachments) : null;
 
   // Save human message
+  const autoId = automation?.id || null;
+  const autoName = automation?.name || null;
+  const autoProvider = automation?.provider || null;
   const result = db.prepare(
-    `INSERT INTO messages (room_id, participant_id, content, image_url, file_url, file_name, attachments, reply_to, client_event_id, thread_id, state) VALUES (?,?,?,?,?,?,?,?,?,?,'complete')`
-  ).run(roomId, humanParticipantId, content, imageUrl, fileUrl, fileName, attachJson, replyTo || null, eventId || null, threadId || null);
+    `INSERT INTO messages (room_id, participant_id, content, image_url, file_url, file_name, attachments, reply_to, client_event_id, thread_id, automation_id, automation_name, automation_provider, state) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'complete')`
+  ).run(roomId, humanParticipantId, content, imageUrl, fileUrl, fileName, attachJson, replyTo || null, eventId || null, threadId || null, autoId, autoName, autoProvider);
   const messageId = result.lastInsertRowid;
   const aiThreadId = threadId ?? messageId;
 
@@ -5778,6 +5790,7 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
     const replied = db.prepare(`SELECT m.id, m.content, m.image_url, m.file_url, m.file_name, m.attachments, a.name as actor_name, a.avatar_color FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id WHERE m.id=?`).get(row.reply_to);
     if (replied) row.reply_msg = replied;
   }
+  enrichAutomation(row);
   const newMsgPayload = { type: 'message_new', message: row };
   if (threadId) newMsgPayload.thread_summary = buildThreadSummary(roomId, threadId);
   broadcast(roomId, newMsgPayload);
@@ -6439,6 +6452,23 @@ async function handleInviteSuggest(roomId, byParticipantId, suggestedActorId, re
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
+function enrichAutomation(msg) {
+  if (msg.automation_id) {
+    msg.automation = { id: msg.automation_id, name: msg.automation_name, provider: msg.automation_provider };
+  } else {
+    msg.automation = null;
+  }
+  delete msg.automation_id;
+  delete msg.automation_name;
+  delete msg.automation_provider;
+  return msg;
+}
+
+function enrichAutomationList(rows) {
+  for (const r of rows) enrichAutomation(r);
+  return rows;
+}
+
 function enrichReply(rows) {
   const replyIds = [...new Set(rows.filter(r => r.reply_to).map(r => r.reply_to))];
   if (!replyIds.length) return rows;
@@ -6837,7 +6867,7 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
               _threadId = existingRoot.thread_id || existingRoot.id;
             }
           }
-          const msgId = await handleHumanMessage(_roomId, _prompt, null, null, null, null, _threadId);
+          const msgId = await handleHumanMessage(_roomId, _prompt, null, null, null, null, _threadId, { id: _autoId, name: _autoName, provider: 'slack' });
           db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(_autoId);
           if (_watchReply && msgId && !_threadId && _slackTs) {
             db.prepare('UPDATE messages SET slack_thread_ts = ? WHERE id = ?').run(_slackTs, msgId);
@@ -6968,7 +6998,7 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, senderName, t
       console.log(`[automation] "${_autoName}" triggered → room ${_roomId} (wa:${connId}, sender: ${sender})`);
       (async () => {
         try {
-          await handleHumanMessage(_roomId, _prompt, null, null, null);
+          await handleHumanMessage(_roomId, _prompt, null, null, null, null, null, { id: _autoId, name: _autoName, provider: 'whatsapp' });
           db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(_autoId);
         } catch (e) {
           console.error(`[automation] room ${_roomId} trigger error:`, e.message);

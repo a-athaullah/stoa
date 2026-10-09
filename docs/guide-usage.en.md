@@ -707,6 +707,16 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 - Returns an array of `{ sender, text, direction, media_type, timestamp }`
 - Only available for WhatsApp connections
 
+### Automation Messages in Chat
+
+When an automation rule sends a message to a room, the chat feed and thread display it with the automation's identity:
+
+- **Sender name** — the automation rule's name, replacing the generic agent display name
+- **"Automation" tag** — a small label shown next to the sender name, making automation-triggered messages visually distinct from human messages
+- **Provider avatar** — the connection's provider logo (e.g. the Slack logo for Slack connections) is shown as the avatar. For unknown providers, a generic bot icon is used as fallback.
+
+Only messages sent *after* this feature was introduced carry automation identity. Earlier automation messages continue to display as they did before.
+
 ---
 
 ## Settings
