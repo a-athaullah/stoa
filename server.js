@@ -6869,8 +6869,8 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
           }
           const msgId = await handleHumanMessage(_roomId, _prompt, null, null, null, null, _threadId, { id: _autoId, name: _autoName, provider: 'slack' });
           db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(_autoId);
-          if (_watchReply && msgId && !_threadId && _slackTs) {
-            db.prepare('UPDATE messages SET slack_thread_ts = ? WHERE id = ?').run(_slackTs, msgId);
+          if (_watchReply && msgId && !_threadId && (_slackThreadTs || _slackTs)) {
+            db.prepare('UPDATE messages SET slack_thread_ts = ? WHERE id = ?').run(_slackThreadTs || _slackTs, msgId);
           }
         } catch (e) {
           console.error(`[automation] room ${_roomId} trigger error:`, e.message);
