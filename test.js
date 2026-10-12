@@ -3386,6 +3386,14 @@ async function run() {
     assert.ok(handler.includes('edit_already_matched'), 'must have anti-double-trigger');
   });
 
+  await test('slack_event handler — watch_reply stores thread_ts over ts (code check)', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    const handler = src.substring(src.indexOf("connectionManager.on('slack_event'"), src.indexOf("// ─── WhatsApp automation listener"));
+    const updateLine = handler.match(/UPDATE messages SET slack_thread_ts = \? WHERE id = \?.*\.run\(([^,]+),/);
+    assert.ok(updateLine, 'must have UPDATE slack_thread_ts statement');
+    assert.ok(updateLine[1].includes('_slackThreadTs'), 'must store _slackThreadTs (thread_ts) as primary value, not just _slackTs');
+  });
+
   await test('DELETE /api/automations/:id — deletes rule', async () => {
     if (!testAutoId) { console.log('    (skipped)'); return; }
     const r = await req('DELETE', `/api/automations/${testAutoId}`);
