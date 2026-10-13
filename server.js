@@ -7153,6 +7153,17 @@ connectionManager.on('email_event', async ({ eventType, connId, uid, messageId, 
 
     if (!automations.length) return;
 
+    let emailProvider = 'email';
+    if (connId) {
+      try {
+        const emailConn = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(connId);
+        const emailMeta = JSON.parse(emailConn?.metadata || '{}');
+        if (emailMeta.preset === 'gmail') emailProvider = 'gmail';
+      } catch (e) {
+        console.warn('[automation] failed to resolve email provider preset:', e.message);
+      }
+    }
+
     const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
     console.log(`[${ts}] [email:recv] from=${from} subject="${(subject || '').slice(0, 60)}" conn=${connId}`);
 
@@ -7196,7 +7207,7 @@ connectionManager.on('email_event', async ({ eventType, connId, uid, messageId, 
       console.log(`[automation] "${_autoName}" triggered → room ${_roomId} (email:${connId}, from: ${from})`);
       (async () => {
         try {
-          await handleHumanMessage(_roomId, _prompt, null, null, null, null, null, { id: _autoId, name: _autoName, provider: 'email' });
+          await handleHumanMessage(_roomId, _prompt, null, null, null, null, null, { id: _autoId, name: _autoName, provider: emailProvider });
           db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(_autoId);
         } catch (e) {
           console.error(`[automation] room ${_roomId} trigger error:`, e.message);
