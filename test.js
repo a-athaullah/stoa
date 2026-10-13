@@ -3715,6 +3715,43 @@ async function run() {
     assert.strictEqual(ec._lastUid, 49);
   });
 
+  // ── Email: new mail detection via 'exists' event ───────────────────────────
+  await test('EmailConnection — exists event triggers fetch (idle() does not resolve on new mail)', async () => {
+    const { EventEmitter } = require('events');
+    const { EmailConnection } = require('./connection-manager');
+    const ec = new EmailConnection(0);
+    let fetches = 0;
+    const client = new EventEmitter();
+    client.getMailboxLock = async () => ({ release() {} });
+    ec.client = client; ec._folder = 'INBOX'; ec.running = true;
+    ec._fetchNew = async () => { fetches++; };
+    ec._startIdleLoop();
+    await ec._fetchChain;
+    assert.strictEqual(fetches, 1, 'initial catch-up fetch');
+    client.emit('exists', { path: 'INBOX', count: 2, prevCount: 1 });
+    client.emit('exists', { path: 'INBOX', count: 3, prevCount: 2 });
+    await ec._fetchChain;
+    assert.strictEqual(fetches, 3, 'one fetch per exists event, serialized');
+    clearInterval(ec._idleTimer); ec._idleTimer = null;
+  });
+
+  await test('EmailConnection — fetch error does not break the fetch chain', async () => {
+    const { EventEmitter } = require('events');
+    const { EmailConnection } = require('./connection-manager');
+    const ec = new EmailConnection(0);
+    let calls = 0;
+    const client = new EventEmitter();
+    client.getMailboxLock = async () => ({ release() {} });
+    ec.client = client; ec._folder = 'INBOX';
+    ec._fetchNew = async () => { calls++; if (calls === 1) throw new Error('boom'); };
+    const origErr = console.error; console.error = () => {};
+    try {
+      await ec._queueFetch();
+      await ec._queueFetch();
+    } finally { console.error = origErr; }
+    assert.strictEqual(calls, 2);
+  });
+
   // ── Email: DKIM alignment check (fix #3) ───────────────────────────────────
   await test('EmailConnection._checkAuthResults — dmarc=pass → true', () => {
     const { EmailConnection } = require('./connection-manager');

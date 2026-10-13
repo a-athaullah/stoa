@@ -290,6 +290,7 @@ class EmailConnection extends EventEmitter {
       logger: false,
       emitLogs: false,
       tls: { rejectUnauthorized: true },
+      maxIdleTime: 24 * 60 * 1000, // re-IDLE before Gmail's ~29 min cutoff
     });
 
     this.client.on('error', (err) => {
@@ -303,6 +304,7 @@ class EmailConnection extends EventEmitter {
 
     this.client.on('close', () => {
       this.running = false;
+      if (this._idleTimer) { clearInterval(this._idleTimer); this._idleTimer = null; }
       if (!this._stopRequested) {
         this._scheduleReconnect({ host, port, secure, user, password, folder, allowedSenders, requireAuthPass, lastUid: this._lastUid, uidValidity: this._uidValidity });
       }
@@ -336,43 +338,30 @@ class EmailConnection extends EventEmitter {
 
   _startIdleLoop() {
     if (this._stopRequested || !this.client) return;
+    // imapflow enters IDLE on its own whenever the connection is free (auto-idle) and
+    // re-issues it every maxIdleTime. client.idle() does NOT resolve when mail arrives —
+    // new mail is only surfaced through the 'exists' event — so fetch on that event.
+    this.client.on('exists', () => this._queueFetch());
+    if (this._idleTimer) clearInterval(this._idleTimer);
+    // Safety net in case an EXISTS notification is missed (e.g. dropped mid-reconnect).
+    this._idleTimer = setInterval(() => this._queueFetch(), 5 * 60 * 1000);
+    this._queueFetch(); // catch up on anything that arrived while connecting
+  }
 
-    const RE_IDLE_MS = 24 * 60 * 1000; // 24 min, before Gmail's ~29 min cutoff
-
-    const doIdle = async () => {
+  // Serialize fetches so overlapping EXISTS events never process the same UID twice.
+  _queueFetch() {
+    this._fetchChain = (this._fetchChain || Promise.resolve()).then(async () => {
       if (this._stopRequested || !this.client) return;
+      const lock = await this.client.getMailboxLock(this._folder);
       try {
-        const lock = await this.client.getMailboxLock(this._folder);
-        try {
-          await this._fetchNew();
-        } finally {
-          lock.release();
-        }
-
-        if (this._stopRequested) return;
-
-        // IDLE with timeout for re-IDLE
-        await this.client.idle({ timeout: RE_IDLE_MS });
-
-        // After IDLE breaks (new mail or timeout), fetch new messages
-        if (this._stopRequested) return;
-        const lock2 = await this.client.getMailboxLock(this._folder);
-        try {
-          await this._fetchNew();
-        } finally {
-          lock2.release();
-        }
-      } catch (e) {
-        if (this._stopRequested) return;
-        console.error(`[email:${this.connId}] idle loop error:`, e.message);
+        await this._fetchNew();
+      } finally {
+        lock.release();
       }
-      // Re-enter idle loop
-      if (!this._stopRequested && this.running) {
-        this._idleTimer = setTimeout(() => doIdle(), 1000);
-      }
-    };
-
-    doIdle();
+    }).catch((e) => {
+      if (!this._stopRequested) console.error(`[email:${this.connId}] fetch error:`, e.message);
+    });
+    return this._fetchChain;
   }
 
   async _fetchNew() {
@@ -521,7 +510,7 @@ class EmailConnection extends EventEmitter {
 
   async stop() {
     this._stopRequested = true;
-    if (this._idleTimer) { clearTimeout(this._idleTimer); this._idleTimer = null; }
+    if (this._idleTimer) { clearInterval(this._idleTimer); this._idleTimer = null; }
     if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
     if (this.client) {
       try { await this.client.logout(); } catch {}
