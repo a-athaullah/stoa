@@ -93,11 +93,13 @@ PUT /api/rooms/{roomId}/system-prompt
 
 Body:
 ```json
-{"system_prompt": "Instruksi kustom untuk room ini"}
+{"system_prompt": "Instruksi kustom untuk room ini", "max_active_threads": 5}
 ```
 
-- Ukuran maksimal: 64KB
-- Set ke `null` untuk menghapus
+- `system_prompt`: string (maks 64KB) atau `null` untuk menghapus. Opsional — abaikan agar tidak berubah.
+- `max_active_threads`: integer 1–20. Opsional — abaikan agar tidak berubah. Nilai efektif default adalah 3.
+- Mengembalikan 400 jika `max_active_threads` bukan integer atau di luar 1–20.
+- Semua field divalidasi sebelum update — field yang invalid menolak seluruh request.
 
 ### Upload File
 

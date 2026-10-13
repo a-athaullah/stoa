@@ -93,11 +93,13 @@ PUT /api/rooms/{roomId}/system-prompt
 
 요청 본문:
 ```json
-{"system_prompt": "이 룸에 대한 커스텀 지시사항"}
+{"system_prompt": "이 룸에 대한 커스텀 지시사항", "max_active_threads": 5}
 ```
 
-- 최대 크기: 64KB
-- `null`로 설정하면 초기화
+- `system_prompt`: 문자열(최대 64KB) 또는 `null`로 삭제. 선택 사항 — 생략 시 변경 없음.
+- `max_active_threads`: 1–20 사이의 정수. 선택 사항 — 생략 시 변경 없음. 기본 유효 값은 3.
+- `max_active_threads`가 정수가 아니거나 1–20 범위를 벗어나면 400을 반환합니다.
+- 모든 필드는 업데이트 전에 검증됩니다 — 잘못된 필드가 있으면 전체 요청이 거부됩니다.
 
 ### 파일 업로드
 
