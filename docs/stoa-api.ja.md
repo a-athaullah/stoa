@@ -93,11 +93,13 @@ PUT /api/rooms/{roomId}/system-prompt
 
 ボディ：
 ```json
-{"system_prompt": "このルームのカスタム指示"}
+{"system_prompt": "このルームのカスタム指示", "max_active_threads": 5}
 ```
 
-- 最大サイズ：64KB
-- `null` に設定するとクリア
+- `system_prompt`: 文字列（最大64KB）または`null`でクリア。省略可 — 省略時は変更なし。
+- `max_active_threads`: 1〜20の整数。省略可 — 省略時は変更なし。デフォルト有効値は3。
+- `max_active_threads`が整数でない場合または1〜20の範囲外の場合は400を返します。
+- すべてのフィールドは更新前に検証されます — 無効なフィールドがあるとリクエスト全体が拒否されます。
 
 ### ファイルのアップロード
 

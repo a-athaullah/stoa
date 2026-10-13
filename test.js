@@ -4709,6 +4709,39 @@ async function run() {
     await req('PUT', `/api/rooms/${threadTestRoomId}/system-prompt`, { system_prompt: null, max_active_threads: 3 });
   });
 
+  await test('Thread — PUT max_active_threads only, system_prompt unchanged', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    await req('PUT', `/api/rooms/${threadTestRoomId}/system-prompt`, { system_prompt: 'keep me' });
+    const put = await req('PUT', `/api/rooms/${threadTestRoomId}/system-prompt`, { max_active_threads: 7 });
+    assert.strictEqual(put.status, 200);
+    assert.strictEqual(put.body.max_active_threads, 7);
+    assert.strictEqual(put.body.system_prompt, 'keep me');
+    await req('PUT', `/api/rooms/${threadTestRoomId}/system-prompt`, { system_prompt: null, max_active_threads: 3 });
+  });
+
+  await test('Thread — PUT max_active_threads invalid values → 400', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    for (const bad of [0, 21, 2.5, '5', true, null]) {
+      const r = await req('PUT', `/api/rooms/${threadTestRoomId}/system-prompt`, { max_active_threads: bad });
+      assert.strictEqual(r.status, 400, `expected 400 for max_active_threads=${JSON.stringify(bad)}`);
+      assert.ok(r.body.error.includes('max_active_threads'), `error message for ${JSON.stringify(bad)}`);
+    }
+    const check = await req('GET', `/api/rooms/${threadTestRoomId}/system-prompt`);
+    assert.strictEqual(check.body.max_active_threads, 3);
+  });
+
+  await test('Thread — PUT valid system_prompt + invalid max_active_threads → 400, prompt unchanged', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    await req('PUT', `/api/rooms/${threadTestRoomId}/system-prompt`, { system_prompt: 'original' });
+    const r = await req('PUT', `/api/rooms/${threadTestRoomId}/system-prompt`, {
+      system_prompt: 'changed', max_active_threads: 0,
+    });
+    assert.strictEqual(r.status, 400);
+    const check = await req('GET', `/api/rooms/${threadTestRoomId}/system-prompt`);
+    assert.strictEqual(check.body.system_prompt, 'original');
+    await req('PUT', `/api/rooms/${threadTestRoomId}/system-prompt`, { system_prompt: null, max_active_threads: 3 });
+  });
+
   await test('Thread — DELETE /messages/:id — root with replies → 409', async () => {
     if (!threadTestRoomId) { console.log('    (skipped)'); return; }
     const root = await req('POST', `/api/rooms/${threadTestRoomId}/message`, { content: 'delete-root' }, {
