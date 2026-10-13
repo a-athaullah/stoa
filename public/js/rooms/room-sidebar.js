@@ -1021,6 +1021,53 @@ function renderRoomSidebar(room, participants) {
             } catch { showToast('Failed to save', { error:true }); return false; }
           },
         });
+
+        // ── Max active threads ──
+        const matSection = document.createElement('div');
+        matSection.style.cssText = 'margin-top:18px;padding-top:14px;border-top:1px solid var(--h-border)';
+
+        const matLabel = document.createElement('div');
+        matLabel.style.cssText = 'font-size:12.5px;font-weight:500;margin-bottom:6px';
+        matLabel.textContent = 'Max active threads';
+        matSection.appendChild(matLabel);
+
+        const matRow = document.createElement('div');
+        matRow.style.cssText = 'display:flex;gap:8px;align-items:center';
+
+        const matInput = document.createElement('input');
+        matInput.type = 'number';
+        matInput.min = '1';
+        matInput.max = '20';
+        matInput.step = '1';
+        matInput.value = data.max_active_threads != null ? data.max_active_threads : 3;
+        matInput.style.cssText = 'width:64px;padding:4px 8px;border:1px solid var(--h-border);border-radius:6px;background:var(--h-bg);color:var(--h-ink);font-size:13px';
+        matRow.appendChild(matInput);
+
+        const matSaveBtn = document.createElement('button');
+        matSaveBtn.textContent = 'Save';
+        matSaveBtn.style.cssText = 'padding:4px 12px;font-size:12.5px;border-radius:6px;border:1px solid var(--h-border);background:var(--h-bg);color:var(--h-ink);cursor:pointer';
+        matRow.appendChild(matSaveBtn);
+        matSection.appendChild(matRow);
+
+        const matDesc = document.createElement('div');
+        matDesc.style.cssText = 'font-size:11.5px;color:var(--h-ink-faint);margin-top:7px;line-height:1.5';
+        matDesc.textContent = 'Jumlah thread yang boleh diproses agent bersamaan. Pesan yang membuka thread baru saat batas penuh tidak akan diproses.';
+        matSection.appendChild(matDesc);
+
+        matSaveBtn.addEventListener('click', async () => {
+          const raw = matInput.value.trim();
+          const n = Number(raw);
+          if (!Number.isInteger(n) || n < 1 || n > 20 || raw === '') {
+            showToast('Max active threads harus bilangan bulat 1–20', { error: true }); return;
+          }
+          try {
+            const rr = await fetch(`/api/rooms/${room.id}/system-prompt`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ max_active_threads: n }) });
+            if (rr.ok) { showToast('Max active threads saved'); return; }
+            const e = await rr.json().catch(() => ({})); showToast(e.error || 'Failed to save', { error: true });
+          } catch { showToast('Failed to save', { error: true }); }
+        });
+
+        sysPane.appendChild(matSection);
       } catch { sysPane.innerHTML = '<div style="font-size:12.5px;color:#b35a4b">failed to load</div>'; }
     })();
   }

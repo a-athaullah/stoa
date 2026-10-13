@@ -500,6 +500,25 @@ function handleWsMessage(msg) {
     return;
   }
 
+  if (msg.type === 'thread_limit_reached') {
+    if (msg.room_id === currentRoomId) {
+      showToast(`Thread limit (${msg.max_active_threads}) tercapai — pesan ini tidak diproses agent`, { error: true, duration: 5000 });
+      const threadId = msg.thread_id;
+      if (threadId) {
+        const rootRow = document.getElementById('msg-' + threadId);
+        if (rootRow && !rootRow.querySelector('.h-thread-limit-notice')) {
+          const notice = document.createElement('div');
+          notice.className = 'h-thread-limit-notice';
+          notice.style.cssText = 'font-size:11.5px;color:var(--h-error,#b35a4b);margin-top:4px;padding:2px 6px;background:oklch(0.97 0.01 25);border-radius:4px;display:inline-block';
+          notice.textContent = `Thread limit (${msg.max_active_threads}) tercapai`;
+          const col = rootRow.querySelector('.t-col') || rootRow;
+          col.appendChild(notice);
+        }
+      }
+    }
+    return;
+  }
+
   if (msg.type === 'queue_updated') {
     _updateQueuePill(msg.queued || 0);
     return;

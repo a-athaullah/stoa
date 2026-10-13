@@ -93,11 +93,13 @@ PUT /api/rooms/{roomId}/system-prompt
 
 Body:
 ```json
-{"system_prompt": "Custom instructions for this room"}
+{"system_prompt": "Custom instructions for this room", "max_active_threads": 5}
 ```
 
-- Maximum size: 64KB
-- Set to `null` to clear
+- `system_prompt`: string (max 64KB) or `null` to clear. Optional — omit to leave unchanged.
+- `max_active_threads`: integer 1–20. Optional — omit to leave unchanged. Default effective value is 3.
+- Returns 400 if `max_active_threads` is not an integer or outside 1–20.
+- All fields are validated before any update — an invalid field rejects the entire request.
 
 ### Upload a File
 

@@ -93,11 +93,13 @@ PUT /api/rooms/{roomId}/system-prompt
 
 请求体：
 ```json
-{"system_prompt": "此房间的自定义指令"}
+{"system_prompt": "此房间的自定义指令", "max_active_threads": 5}
 ```
 
-- 最大大小：64KB
-- 设置为 `null` 可清除
+- `system_prompt`：字符串（最大64KB）或 `null` 清除。可选 — 省略则不变。
+- `max_active_threads`：1–20的整数。可选 — 省略则不变。默认有效值为3。
+- 如果 `max_active_threads` 不是整数或超出1–20范围，返回400。
+- 所有字段在更新前验证 — 无效字段将拒绝整个请求。
 
 ### 上传文件
 

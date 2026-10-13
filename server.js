@@ -3768,13 +3768,16 @@ Write-Host "Logs   : pm2 logs $AgentName"
     }
     const body = await readBody(req);
     const data = JSON.parse(body);
+    if (typeof data.system_prompt === 'string' && data.system_prompt.length > 65536) {
+      return json(res, { error: 'system_prompt exceeds 64KB limit' }, 400);
+    }
+    if (data.max_active_threads !== undefined && (!Number.isInteger(data.max_active_threads) || data.max_active_threads < 1 || data.max_active_threads > 20)) {
+      return json(res, { error: 'max_active_threads must be an integer between 1 and 20' }, 400);
+    }
     if (typeof data.system_prompt === 'string' || data.system_prompt === null) {
-      if (typeof data.system_prompt === 'string' && data.system_prompt.length > 65536) {
-        return json(res, { error: 'system_prompt exceeds 64KB limit' }, 400);
-      }
       db.prepare('UPDATE rooms SET system_prompt=? WHERE id=?').run(data.system_prompt, roomId);
     }
-    if (typeof data.max_active_threads === 'number' && data.max_active_threads >= 1) {
+    if (Number.isInteger(data.max_active_threads)) {
       db.prepare('UPDATE rooms SET max_active_threads=? WHERE id=?').run(data.max_active_threads, roomId);
     }
     const updated = db.prepare('SELECT system_prompt, max_active_threads FROM rooms WHERE id=?').get(roomId);

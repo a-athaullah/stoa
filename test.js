@@ -1058,6 +1058,49 @@ function runUnitTests() {
     assert.ok(keyDeclLine < triggersSetLine, `sessionKey (line ${keyDeclLine + 1}) must be declared before activeTriggers.set (line ${triggersSetLine + 1})`);
   });
 
+  ut('build: APP_JS files in index.html all exist on disk, no vendor files inside block (code check)', () => {
+    const fs2 = require('fs'), path2 = require('path');
+    const html = fs2.readFileSync(path2.join(__dirname, 'public/index.html'), 'utf8');
+    const open = '<!-- {{APP_JS}} -->', close = '<!-- {{/APP_JS}} -->';
+    const start = html.indexOf(open), end = html.indexOf(close);
+    assert.ok(start !== -1 && end !== -1, 'APP_JS markers must exist in index.html');
+    const block = html.slice(start + open.length, end);
+    const srcs = [...block.matchAll(/src="\/js\/([^"]+\.js)"/g)].map(m => m[1]);
+    assert.ok(srcs.length > 0, 'APP_JS block must list at least one file');
+    for (const src of srcs) {
+      assert.ok(!src.startsWith('vendor/'), `vendor file must not be inside APP_JS block: ${src}`);
+      const abs = path2.join(__dirname, 'public/js', src);
+      assert.ok(fs2.existsSync(abs), `file listed in APP_JS block not found on disk: ${src}`);
+    }
+    // qrcode must still be referenced outside the APP_JS block
+    const outside = html.slice(0, start) + html.slice(end);
+    assert.ok(outside.includes('qrcode.min.js'), 'qrcode.min.js must be referenced outside APP_JS block');
+  });
+
+  ut('build: APP_CSS files in index.html all exist on disk (code check)', () => {
+    const fs2 = require('fs'), path2 = require('path');
+    const html = fs2.readFileSync(path2.join(__dirname, 'public/index.html'), 'utf8');
+    const open = '<!-- {{APP_CSS}} -->', close = '<!-- {{/APP_CSS}} -->';
+    const start = html.indexOf(open), end = html.indexOf(close);
+    assert.ok(start !== -1 && end !== -1, 'APP_CSS markers must exist in index.html');
+    const block = html.slice(start + open.length, end);
+    const hrefs = [...block.matchAll(/href="\/css\/([^"]+\.css)"/g)].map(m => m[1]);
+    assert.ok(hrefs.length > 0, 'APP_CSS block must list at least one file');
+    for (const href of hrefs) {
+      const abs = path2.join(__dirname, 'public/css', href);
+      assert.ok(fs2.existsSync(abs), `file listed in APP_CSS block not found on disk: ${href}`);
+    }
+  });
+
+  ut('build: stoa.min.js contains room-sidebar feature code (bundle sync check)', () => {
+    const fs2 = require('fs'), path2 = require('path');
+    const bundlePath = path2.join(__dirname, 'public/dist/stoa.min.js');
+    assert.ok(fs2.existsSync(bundlePath), 'public/dist/stoa.min.js must exist');
+    const bundle = fs2.readFileSync(bundlePath, 'utf8');
+    assert.ok(bundle.includes('Max active threads'), 'bundle must include room-sidebar.js content (Max active threads)');
+    assert.ok(bundle.includes('thread_limit_reached'), 'bundle must include websocket.js thread_limit_reached handler');
+  });
+
   return { p, f };
 }
 
@@ -4706,6 +4749,39 @@ async function run() {
     assert.strictEqual(get2.body.system_prompt, 'You are helpful.');
     assert.strictEqual(get2.body.max_active_threads, 5);
 
+    await req('PUT', `/api/rooms/${threadTestRoomId}/system-prompt`, { system_prompt: null, max_active_threads: 3 });
+  });
+
+  await test('Thread — PUT max_active_threads only, system_prompt unchanged', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    await req('PUT', `/api/rooms/${threadTestRoomId}/system-prompt`, { system_prompt: 'keep me' });
+    const put = await req('PUT', `/api/rooms/${threadTestRoomId}/system-prompt`, { max_active_threads: 7 });
+    assert.strictEqual(put.status, 200);
+    assert.strictEqual(put.body.max_active_threads, 7);
+    assert.strictEqual(put.body.system_prompt, 'keep me');
+    await req('PUT', `/api/rooms/${threadTestRoomId}/system-prompt`, { system_prompt: null, max_active_threads: 3 });
+  });
+
+  await test('Thread — PUT max_active_threads invalid values → 400', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    for (const bad of [0, 21, 2.5, '5', true, null]) {
+      const r = await req('PUT', `/api/rooms/${threadTestRoomId}/system-prompt`, { max_active_threads: bad });
+      assert.strictEqual(r.status, 400, `expected 400 for max_active_threads=${JSON.stringify(bad)}`);
+      assert.ok(r.body.error.includes('max_active_threads'), `error message for ${JSON.stringify(bad)}`);
+    }
+    const check = await req('GET', `/api/rooms/${threadTestRoomId}/system-prompt`);
+    assert.strictEqual(check.body.max_active_threads, 3);
+  });
+
+  await test('Thread — PUT valid system_prompt + invalid max_active_threads → 400, prompt unchanged', async () => {
+    if (!threadTestRoomId) { console.log('    (skipped)'); return; }
+    await req('PUT', `/api/rooms/${threadTestRoomId}/system-prompt`, { system_prompt: 'original' });
+    const r = await req('PUT', `/api/rooms/${threadTestRoomId}/system-prompt`, {
+      system_prompt: 'changed', max_active_threads: 0,
+    });
+    assert.strictEqual(r.status, 400);
+    const check = await req('GET', `/api/rooms/${threadTestRoomId}/system-prompt`);
+    assert.strictEqual(check.body.system_prompt, 'original');
     await req('PUT', `/api/rooms/${threadTestRoomId}/system-prompt`, { system_prompt: null, max_active_threads: 3 });
   });
 
