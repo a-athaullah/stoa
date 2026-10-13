@@ -251,6 +251,23 @@ class EmailConnection extends EventEmitter {
     this._rateBucket = { count: 0, resetAt: 0 };
   }
 
+  _applyMailboxStatus(mbStatus) {
+    // imapflow returns uidValidity as BigInt; JSON.stringify (metadata persist) cannot
+    // serialize BigInt, and BigInt !== Number would trigger a false "changed" on every
+    // reconnect. UIDVALIDITY/UIDNEXT are 32-bit per RFC 3501, so Number() is lossless.
+    const uidValidity = mbStatus.uidValidity != null ? Number(mbStatus.uidValidity) : 0;
+    const uidNext = mbStatus.uidNext != null ? Number(mbStatus.uidNext) : 0;
+    if (this._uidValidity && uidValidity !== this._uidValidity) {
+      console.log(`[email:${this.connId}] uidValidity changed (${this._uidValidity} → ${uidValidity}), resetting to now`);
+      this._lastUid = uidNext ? uidNext - 1 : 0;
+      this._uidValidity = uidValidity;
+    } else if (!this._lastUid) {
+      this._lastUid = uidNext ? uidNext - 1 : 0;
+      this._uidValidity = uidValidity;
+      console.log(`[email:${this.connId}] first connect — starting from UID ${this._lastUid}`);
+    }
+  }
+
   async start({ host, port, secure, user, password, folder, allowedSenders, requireAuthPass, lastUid, uidValidity }) {
     if (this.running) await this.stop();
     this._stopRequested = false;
@@ -307,16 +324,7 @@ class EmailConnection extends EventEmitter {
 
     const lock = await this.client.getMailboxLock(this._folder);
     try {
-      const mbStatus = this.client.mailbox;
-      if (this._uidValidity && mbStatus.uidValidity !== this._uidValidity) {
-        console.log(`[email:${this.connId}] uidValidity changed (${this._uidValidity} → ${mbStatus.uidValidity}), resetting to now`);
-        this._lastUid = mbStatus.uidNext ? mbStatus.uidNext - 1 : 0;
-        this._uidValidity = mbStatus.uidValidity;
-      } else if (!this._lastUid) {
-        this._lastUid = mbStatus.uidNext ? mbStatus.uidNext - 1 : 0;
-        this._uidValidity = mbStatus.uidValidity;
-        console.log(`[email:${this.connId}] first connect — starting from UID ${this._lastUid}`);
-      }
+      this._applyMailboxStatus(this.client.mailbox);
     } finally {
       lock.release();
     }

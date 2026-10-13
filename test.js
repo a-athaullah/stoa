@@ -3687,6 +3687,34 @@ async function run() {
     await req('DELETE', `/api/automations/connections/${cid}`);
   });
 
+  // ── Email: imapflow BigInt uidValidity ─────────────────────────────────────
+  await test('EmailConnection._applyMailboxStatus — BigInt uidValidity → JSON-serializable number', () => {
+    const { EmailConnection } = require('./connection-manager');
+    const ec = new EmailConnection(0);
+    ec._lastUid = 0; ec._uidValidity = 0;
+    ec._applyMailboxStatus({ uidValidity: 1234567890n, uidNext: 41216 });
+    assert.strictEqual(ec._uidValidity, 1234567890);
+    assert.strictEqual(ec._lastUid, 41215);
+    assert.doesNotThrow(() => JSON.stringify({ lastUid: ec._lastUid, uidValidity: ec._uidValidity }));
+  });
+
+  await test('EmailConnection._applyMailboxStatus — same uidValidity (BigInt vs stored number) keeps lastUid', () => {
+    const { EmailConnection } = require('./connection-manager');
+    const ec = new EmailConnection(0);
+    ec._lastUid = 500; ec._uidValidity = 1234567890;
+    ec._applyMailboxStatus({ uidValidity: 1234567890n, uidNext: 600 });
+    assert.strictEqual(ec._lastUid, 500);
+  });
+
+  await test('EmailConnection._applyMailboxStatus — changed uidValidity resets to now', () => {
+    const { EmailConnection } = require('./connection-manager');
+    const ec = new EmailConnection(0);
+    ec._lastUid = 500; ec._uidValidity = 111;
+    ec._applyMailboxStatus({ uidValidity: 222n, uidNext: 50 });
+    assert.strictEqual(ec._uidValidity, 222);
+    assert.strictEqual(ec._lastUid, 49);
+  });
+
   // ── Email: DKIM alignment check (fix #3) ───────────────────────────────────
   await test('EmailConnection._checkAuthResults — dmarc=pass → true', () => {
     const { EmailConnection } = require('./connection-manager');
