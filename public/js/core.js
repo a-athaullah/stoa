@@ -170,6 +170,23 @@ function makeAutomationAvatarEl(provider, size) {
   return wrap;
 }
 
+function makeAgentViaConnAvatarEl(m, size) {
+  const wrap = document.createElement('div');
+  wrap.className = 'h-sa-avatar-wrap';
+  wrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, size, m.sub_agent_label));
+  const badge = document.createElement('span');
+  badge.className = 'h-conn-badge';
+  const _providerLabels = { gmail: 'Gmail', email: 'Email', slack: 'Slack', whatsapp: 'WhatsApp' };
+  badge.title = 'via ' + (_providerLabels[m.automation.provider] || m.automation.provider);
+  badge.setAttribute('aria-label', badge.title);
+  const svg = _AUTOMATION_LOGOS[m.automation.provider] || '';
+  badge.innerHTML = svg;
+  const svgEl = badge.querySelector('svg');
+  if (svgEl) { svgEl.style.width = '11px'; svgEl.style.height = '11px'; }
+  wrap.appendChild(badge);
+  return wrap;
+}
+
 // ── Sub-agent avatar helper ───────────────────────────────────────────────
 function makeAvatarEl(name, color, url, size, subAgentLabel) {
   if (!subAgentLabel) return makeAvatar(name, color, url, size);

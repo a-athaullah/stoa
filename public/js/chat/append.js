@@ -103,7 +103,9 @@ function appendMessage(m, container) {
   // Seal
   const sealWrap = document.createElement('div');
   sealWrap.className = 'h-msg-seal-wrap';
-  if (m.automation?.provider) {
+  if (m.actor_type === 'ai' && m.automation?.provider) {
+    sealWrap.appendChild(makeAgentViaConnAvatarEl(m, 40));
+  } else if (m.automation?.provider) {
     sealWrap.appendChild(makeAutomationAvatarEl(m.automation.provider, 40));
   } else {
     sealWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 40, m.sub_agent_label));
@@ -122,16 +124,30 @@ function appendMessage(m, container) {
 
   const nameEl = document.createElement('span');
   nameEl.className = 'h-msg-name';
-  if (m.automation) {
+  if (m.actor_type === 'ai' && m.automation) {
+    nameEl.style.color = m.avatar_color;
+    nameEl.textContent = m.sub_agent_label || m.actor_name;
+  } else if (m.automation) {
     nameEl.textContent = m.automation.name || m.actor_name;
   } else {
     nameEl.style.color = m.avatar_color;
-    // Sub-agent: show label as primary name, orchestrator in parens — "FE-Review (Ara)"
     nameEl.textContent = m.sub_agent_label || m.actor_name;
   }
   meta.appendChild(nameEl);
 
-  if (m.automation) {
+  if (m.actor_type === 'ai' && m.automation) {
+    const providerTag = document.createElement('span');
+    providerTag.className = 't-automation-tag';
+    const _pl = { gmail: 'Gmail', email: 'Email', slack: 'Slack', whatsapp: 'WhatsApp' };
+    providerTag.textContent = 'via ' + (_pl[m.automation.provider] || m.automation.provider || 'connection');
+    meta.appendChild(providerTag);
+    if (m.sub_agent_label) {
+      const subEl = document.createElement('span');
+      subEl.className = 'h-msg-sub';
+      subEl.textContent = '(' + m.actor_name + ')';
+      meta.appendChild(subEl);
+    }
+  } else if (m.automation) {
     const autoTag = document.createElement('span');
     autoTag.className = 't-automation-tag';
     autoTag.textContent = 'Automation';

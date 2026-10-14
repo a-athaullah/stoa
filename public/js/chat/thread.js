@@ -803,7 +803,9 @@ function appendThreadMessage(m, container) {
 
   const seal = document.createElement('div');
   seal.className = 'h-msg-seal-wrap';
-  if (m.automation?.provider) {
+  if (m.actor_type === 'ai' && m.automation?.provider) {
+    seal.appendChild(makeAgentViaConnAvatarEl(m, 28));
+  } else if (m.automation?.provider) {
     seal.appendChild(makeAutomationAvatarEl(m.automation.provider, 28));
   } else {
     seal.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 28, m.sub_agent_label));
@@ -821,7 +823,10 @@ function appendThreadMessage(m, container) {
 
   const nameEl = document.createElement('span');
   nameEl.className = 'h-msg-name';
-  if (m.automation) {
+  if (m.actor_type === 'ai' && m.automation) {
+    nameEl.style.color = m.avatar_color;
+    nameEl.textContent = m.sub_agent_label || m.actor_name;
+  } else if (m.automation) {
     nameEl.textContent = m.automation.name || m.actor_name;
   } else {
     nameEl.style.color = m.avatar_color;
@@ -829,7 +834,19 @@ function appendThreadMessage(m, container) {
   }
   meta.appendChild(nameEl);
 
-  if (m.automation) {
+  if (m.actor_type === 'ai' && m.automation) {
+    const providerTag = document.createElement('span');
+    providerTag.className = 't-automation-tag';
+    const _pl = { gmail: 'Gmail', email: 'Email', slack: 'Slack', whatsapp: 'WhatsApp' };
+    providerTag.textContent = 'via ' + (_pl[m.automation.provider] || m.automation.provider || 'connection');
+    meta.appendChild(providerTag);
+    if (m.sub_agent_label) {
+      const subEl = document.createElement('span');
+      subEl.className = 'h-msg-sub';
+      subEl.textContent = '(' + m.actor_name + ')';
+      meta.appendChild(subEl);
+    }
+  } else if (m.automation) {
     const autoTag = document.createElement('span');
     autoTag.className = 't-automation-tag';
     autoTag.textContent = 'Automation';
@@ -974,7 +991,9 @@ function _renderThreadRoot(m, container) {
 
   const seal = document.createElement('div');
   seal.className = 'h-msg-seal-wrap';
-  if (m.automation?.provider) {
+  if (m.actor_type === 'ai' && m.automation?.provider) {
+    seal.appendChild(makeAgentViaConnAvatarEl(m, 28));
+  } else if (m.automation?.provider) {
     seal.appendChild(makeAutomationAvatarEl(m.automation.provider, 28));
   } else {
     seal.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 28, m.sub_agent_label));
@@ -990,7 +1009,10 @@ function _renderThreadRoot(m, container) {
   meta.className = 'h-msg-meta';
   const nameEl = document.createElement('span');
   nameEl.className = 'h-msg-name';
-  if (m.automation) {
+  if (m.actor_type === 'ai' && m.automation) {
+    nameEl.style.color = m.avatar_color;
+    nameEl.textContent = m.sub_agent_label || m.actor_name;
+  } else if (m.automation) {
     nameEl.textContent = m.automation.name || m.actor_name;
   } else {
     nameEl.style.color = m.avatar_color;
@@ -998,7 +1020,13 @@ function _renderThreadRoot(m, container) {
   }
   meta.appendChild(nameEl);
 
-  if (m.automation) {
+  if (m.actor_type === 'ai' && m.automation) {
+    const providerTag = document.createElement('span');
+    providerTag.className = 't-automation-tag';
+    const _pl = { gmail: 'Gmail', email: 'Email', slack: 'Slack', whatsapp: 'WhatsApp' };
+    providerTag.textContent = 'via ' + (_pl[m.automation.provider] || m.automation.provider || 'connection');
+    meta.appendChild(providerTag);
+  } else if (m.automation) {
     const autoTag = document.createElement('span');
     autoTag.className = 't-automation-tag';
     autoTag.textContent = 'Automation';
