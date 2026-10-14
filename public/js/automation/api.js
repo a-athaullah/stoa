@@ -31,6 +31,7 @@ async function autoDoConnSave() {
         payload.folder = (f.emailFolder || 'INBOX').trim();
         payload.allowedSenders = f.emailAllowedSenders.split('\n').map(s => s.trim()).filter(Boolean);
         payload.requireAuthPass = f.emailRequireAuthPass;
+        payload.senderName = f.emailSenderName.trim();
       } else if (!isWa) {
         payload.tokenType = f.tokenType;
         if (f.appToken) payload.appToken = f.appToken;
@@ -87,6 +88,7 @@ async function autoDoConnSave() {
         payload.folder = (f.emailFolder || 'INBOX').trim();
         payload.allowedSenders = f.emailAllowedSenders.split('\n').map(s => s.trim()).filter(Boolean);
         payload.requireAuthPass = f.emailRequireAuthPass;
+        payload.senderName = f.emailSenderName.trim();
       } else if (!isWa) {
         payload.appToken = f.appToken;
         payload.token    = f.token;

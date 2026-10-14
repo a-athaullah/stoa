@@ -82,6 +82,7 @@ let autoState = {
     emailFolder: 'INBOX',
     emailAllowedSenders: '',
     emailRequireAuthPass: true,
+    emailSenderName: '',
   },
   connTestLoading: false,
   connTestResult: null,     // null | { ok: true } | { ok: false, error: string }
