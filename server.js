@@ -6769,8 +6769,9 @@ async function handleInviteSuggest(roomId, byParticipantId, suggestedActorId, re
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
 function enrichAutomation(msg) {
-  if (msg.automation_id) {
-    msg.automation = { id: msg.automation_id, name: msg.automation_name, provider: msg.automation_provider };
+  // Key on provider/name, not id — id can be NULL after automation deletion (FK ON DELETE SET NULL)
+  if (msg.automation_provider || msg.automation_name) {
+    msg.automation = { id: msg.automation_id || null, name: msg.automation_name, provider: msg.automation_provider };
   } else {
     msg.automation = null;
   }
@@ -7055,7 +7056,7 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
     // Edits of existing replies should not re-route as new replies
     if (!isReaction && !isEdit && event.thread_ts && event.thread_ts !== event.ts) {
       const watchedMsg = db.prepare(
-        'SELECT m.id, m.room_id, m.thread_id FROM messages m WHERE m.slack_thread_ts = ?'
+        'SELECT m.id, m.room_id, m.thread_id, m.automation_id, m.automation_name, m.automation_provider FROM messages m WHERE m.slack_thread_ts = ?'
       ).get(event.thread_ts);
       if (watchedMsg) {
         // Slack sends both message + app_mention for bot-mentioning replies (same ts)
@@ -7074,7 +7075,10 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
           } catch {}
           const replyText = `[New Reply on Thread]:\n${senderName} (${event.user}) - ${event.text || ''}`;
           const stoaThreadId = watchedMsg.thread_id || watchedMsg.id;
-          await handleHumanMessage(watchedMsg.room_id, replyText, null, null, null, null, stoaThreadId);
+          const watchAuto = watchedMsg.automation_provider
+            ? { id: watchedMsg.automation_id || null, name: watchedMsg.automation_name, provider: watchedMsg.automation_provider }
+            : { id: null, name: 'Slack', provider: 'slack' };
+          await handleHumanMessage(watchedMsg.room_id, replyText, null, null, null, null, stoaThreadId, watchAuto);
           const ts2 = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
           console.log(`[${ts2}] [watch_reply] routed slack thread reply to stoa thread ${stoaThreadId} in room ${watchedMsg.room_id}`);
         }

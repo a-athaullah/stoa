@@ -4228,8 +4228,61 @@ async function run() {
     assert.deepStrictEqual(autoMsg.automation, { id: _autoSenderTestAutoId, name: 'Test Slack Bot', provider: 'slack' });
   });
 
+  let _autoSenderDeletedMsgId = null;
+  let _autoSenderFallbackMsgId = null;
+
+  await test('automation sender — deleted automation (id NULL, name/provider set) still enriches', async () => {
+    if (!firstRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const ptcp = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1").get(firstRoomId);
+    if (!ptcp) { console.log('    (skipped — no human participant)'); return; }
+    const ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, automation_id, automation_name, automation_provider, state) VALUES (?,?,?,?,?,?,'complete')")
+      .run(firstRoomId, ptcp.id, '__test_auto_deleted__', null, 'Deleted Bot', 'slack');
+    _autoSenderDeletedMsgId = Number(ins.lastInsertRowid);
+    const r = await req('GET', `/api/messages/${_autoSenderDeletedMsgId}`);
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.automation !== null, 'automation should not be null when provider is set');
+    assert.strictEqual(r.body.automation.id, null, 'id should be null for deleted automation');
+    assert.strictEqual(r.body.automation.name, 'Deleted Bot');
+    assert.strictEqual(r.body.automation.provider, 'slack');
+  });
+
+  await test('automation sender — fallback (name only, no id) still enriches', async () => {
+    if (!firstRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const ptcp = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1").get(firstRoomId);
+    if (!ptcp) { console.log('    (skipped — no human participant)'); return; }
+    const ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, automation_id, automation_name, automation_provider, state) VALUES (?,?,?,?,?,?,'complete')")
+      .run(firstRoomId, ptcp.id, '__test_auto_fallback__', null, 'Slack', 'slack');
+    _autoSenderFallbackMsgId = Number(ins.lastInsertRowid);
+    const r = await req('GET', `/api/messages/${_autoSenderFallbackMsgId}`);
+    assert.strictEqual(r.status, 200);
+    assert.deepStrictEqual(r.body.automation, { id: null, name: 'Slack', provider: 'slack' });
+  });
+
+  await test('automation sender — enrichAutomation keys on provider not id (code check)', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    const fnMatch = src.match(/function enrichAutomation\(msg\)\s*\{([^}]+)\}/);
+    assert.ok(fnMatch, 'enrichAutomation not found');
+    const body = fnMatch[1];
+    assert.ok(body.includes('automation_provider') || body.includes('automation_name'), 'enrichAutomation should key on provider or name');
+    assert.ok(!body.match(/if\s*\(\s*msg\.automation_id\s*\)/), 'enrichAutomation should NOT key solely on automation_id');
+  });
+
+  await test('automation sender — watch_reply passes automation to handleHumanMessage (code check)', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    const watchSection = src.substring(
+      src.indexOf("// ── Watch reply: route Slack thread replies"),
+      src.indexOf("const automations = db.prepare")
+    );
+    assert.ok(watchSection.includes('automation_provider'), 'watch_reply should SELECT automation columns from root');
+    assert.ok(watchSection.includes('handleHumanMessage') && watchSection.includes('watchAuto'), 'watch_reply should pass automation to handleHumanMessage');
+  });
+
   await test('automation sender — teardown', async () => {
     const db = require('./db');
+    if (_autoSenderFallbackMsgId) db.prepare('DELETE FROM messages WHERE id=?').run(_autoSenderFallbackMsgId);
+    if (_autoSenderDeletedMsgId) db.prepare('DELETE FROM messages WHERE id=?').run(_autoSenderDeletedMsgId);
     if (_autoSenderTestReplyId) db.prepare('DELETE FROM messages WHERE id=?').run(_autoSenderTestReplyId);
     if (_autoSenderTestThreadRoot) db.prepare('DELETE FROM messages WHERE id=?').run(_autoSenderTestThreadRoot);
     if (_autoSenderTestMsgId) db.prepare('DELETE FROM messages WHERE id=?').run(_autoSenderTestMsgId);
