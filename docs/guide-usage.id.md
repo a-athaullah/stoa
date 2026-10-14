@@ -702,13 +702,19 @@ Setelah minimal satu koneksi aktif, klik **+ new rule** untuk membuat aturan:
 
   Gunakan CLAUDE.md room untuk menginstruksikan agent kapan harus membaca riwayat dan bagaimana merespons.
 
-- **Watch Replies** *(hanya koneksi Slack)* — saat diaktifkan, balasan thread di Slack yang memicu automation ini akan diteruskan ke thread Stoa yang sama. Setiap balasan masuk dengan format:
+- **Watch Replies** *(koneksi Slack dan Email)* — saat diaktifkan, pesan lanjutan dalam percakapan yang sama akan diarahkan ke thread Stoa yang sudah ada, bukan membuka thread baru.
+
+  *Slack:* Balasan thread di Slack yang memicu automation ini diteruskan ke thread Stoa yang sama. Setiap balasan masuk dengan format:
 
   ```
   [New Reply on Thread]: nama_pengirim (id_pengirim) - isi pesan
   ```
 
-  Agent tidak otomatis membalas reply ini kecuali system prompt menginstruksikannya. Jika ada automation lain yang terpicu di Slack thread yang sama, pesannya akan masuk ke thread Stoa yang sudah ada (bukan membuat thread baru). Default: nonaktif.
+  Jika ada automation lain yang terpicu di Slack thread yang sama, pesannya juga masuk ke thread Stoa yang sudah ada.
+
+  *Email:* Email masuk yang header `In-Reply-To` atau `References`-nya cocok dengan pesan sebelumnya di koneksi yang sama akan diarahkan ke thread Stoa yang sudah ada. Hanya balasan dari pengirim yang sama dengan email awal yang diterima; email dari pengirim berbeda akan membuat thread baru. Ini memastikan agent punya konteks percakapan lengkap untuk pertukaran email multi-giliran.
+
+  Agent tidak otomatis membalas pesan lanjutan kecuali system prompt menginstruksikannya. Default: nonaktif.
 
 ### Aktifkan / Nonaktifkan
 
@@ -775,7 +781,7 @@ Saat sebuah aturan otomasi mengirim pesan ke room, feed dan thread menampilkan p
 - **Tag "Automation"** — label kecil di sebelah nama pengirim, sehingga pesan yang dipicu otomasi mudah dibedakan dari pesan manusia
 - **Avatar provider** — logo provider koneksi (misalnya logo Slack untuk koneksi Slack) ditampilkan sebagai avatar. Untuk provider yang tidak dikenal, ikon bot generik digunakan sebagai fallback.
 
-**Relay Watch Reply (Slack):** Saat opsi *Watch Replies* diaktifkan pada aturan otomasi Slack, balasan thread yang diteruskan ke Stoa (ditampilkan sebagai `[New Reply on Thread]: ...`) mewarisi identitas otomasi yang memicu thread asal. Jika pesan root dibuat sebelum fitur ini ada dan tidak memiliki metadata otomasi, relay akan tampil sebagai "Slack" dengan logo Slack — bukan sebagai pesan manusia.
+**Relay Watch Reply (Slack dan Email):** Saat *Watch Replies* diaktifkan, pesan lanjutan yang diarahkan ke thread Stoa yang sudah ada mewarisi identitas otomasi yang memicu thread asal. Untuk Slack, ditampilkan sebagai `[New Reply on Thread]: ...`. Jika pesan root dibuat sebelum fitur ini ada dan tidak memiliki metadata otomasi, relay akan tampil sebagai "Slack" (atau "Email") dengan logo provider — bukan sebagai pesan manusia.
 
 **Otomasi yang dihapus:** Jika aturan otomasi dihapus setelah mengirim pesan, pesan-pesan tersebut tetap menampilkan nama pengirim dan logo provider sebagai snapshot. Nama rule dan provider disimpan di setiap pesan, sehingga menghapus rule tidak mempengaruhi tampilan history.
 

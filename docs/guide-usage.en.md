@@ -701,13 +701,19 @@ Once at least one connection is active, click **+ new rule** to create a rule:
 
   Use the room's CLAUDE.md to instruct the agent when to read history and how to respond.
 
-- **Watch Replies** *(Slack connections only)* — when enabled, thread replies posted in the Slack thread that triggered this automation are forwarded to the same Stoa thread. Each reply arrives with the format:
+- **Watch Replies** *(Slack and Email connections)* — when enabled, follow-up messages in the same conversation thread are routed into the existing Stoa thread instead of opening a new one.
+
+  *Slack:* Thread replies posted in the Slack thread that triggered this automation are forwarded to the same Stoa thread. Each reply arrives with the format:
 
   ```
   [New Reply on Thread]: sender_name (sender_id) - message text
   ```
 
-  The agent does not automatically respond to these replies unless its system prompt instructs it to. If another automation rule fires on the same Slack thread, its message is added to the existing Stoa thread rather than opening a new one. Default: off.
+  If another automation rule fires on the same Slack thread, its message is also added to the existing Stoa thread.
+
+  *Email:* Incoming emails whose `In-Reply-To` or `References` headers match a previously seen message in the same connection are routed to the existing Stoa thread. Only replies from the same sender as the original email are accepted; emails from a different sender create a new thread. This ensures the agent has full conversation context for multi-turn email exchanges.
+
+  The agent does not automatically respond to follow-up messages unless its system prompt instructs it to. Default: off.
 
 ### Enable / Disable
 
@@ -774,7 +780,7 @@ When an automation rule sends a message to a room, the chat feed and thread disp
 - **"Automation" tag** — a small label shown next to the sender name, making automation-triggered messages visually distinct from human messages
 - **Provider avatar** — the connection's provider logo (e.g. the Slack logo for Slack connections) is shown as the avatar. For unknown providers, a generic bot icon is used as fallback.
 
-**Watch Reply forwarding (Slack):** When the *Watch Replies* option is enabled on a Slack automation rule, thread replies forwarded to Stoa (shown as `[New Reply on Thread]: ...`) inherit the identity of the automation that triggered the original thread. If the root message predates this feature and has no automation metadata, the reply falls back to displaying as "Slack" with the Slack logo — not as a human message.
+**Watch Reply forwarding (Slack and Email):** When *Watch Replies* is enabled, follow-up messages routed to an existing Stoa thread inherit the identity of the automation that triggered the original thread. For Slack, these are shown as `[New Reply on Thread]: ...`. If the root message predates this feature and has no automation metadata, the reply falls back to displaying as "Slack" (or "Email") with the provider logo — not as a human message.
 
 **Deleted automations:** If an automation rule is deleted after it has sent messages, those messages retain their sender name and provider logo as a snapshot. The rule's name and provider are stored on each message, so deleting the rule does not affect historical display.
 
