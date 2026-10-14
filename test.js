@@ -4611,6 +4611,39 @@ async function run() {
     }
   });
 
+  // ── Email thread prompt injection ──────────────────────────────────────────
+
+  await test('Email thread prompt — email_threads row exists for test thread', async () => {
+    if (!_erTestThreadId || !_erTestConnId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const row = db.prepare('SELECT 1 FROM email_threads WHERE thread_id=?').get(_erTestThreadId);
+    assert.ok(row, 'email_threads should have a row for the test thread');
+  });
+
+  await test('Email thread prompt — section not built for non-email thread', async () => {
+    const db = require('./db');
+    const fakeThreadId = 999999999;
+    const row = db.prepare('SELECT 1 FROM email_threads WHERE thread_id=?').get(fakeThreadId);
+    assert.strictEqual(row, undefined, 'non-email thread should have no email_threads row');
+  });
+
+  await test('Email thread prompt — section contains roomId and threadId', async () => {
+    if (!_erTestRoomId || !_erTestThreadId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const etRow = db.prepare('SELECT 1 FROM email_threads WHERE thread_id=?').get(_erTestThreadId);
+    assert.ok(etRow, 'precondition: email_threads row exists');
+    const section = `POST "$BASE_URL/api/rooms/${_erTestRoomId}/email-reply"`;
+    const bodyPart = `"thread_id": ${_erTestThreadId}`;
+    assert.ok(section.includes(String(_erTestRoomId)), 'section should contain roomId');
+    assert.ok(bodyPart.includes(String(_erTestThreadId)), 'section should contain threadId');
+  });
+
+  await test('Email thread prompt — section does not contain credentials', async () => {
+    const section = `## Email Thread\nThis thread originates from an incoming email.`;
+    assert.ok(!section.includes('password'), 'section must not contain password');
+    assert.ok(!section.includes('app_password'), 'section must not contain app_password');
+  });
+
   await test('Email reply — cleanup', async () => {
     if (_erTestConnId) {
       const db = require('./db');
