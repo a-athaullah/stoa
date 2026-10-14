@@ -1101,6 +1101,48 @@ function runUnitTests() {
     assert.ok(bundle.includes('thread_limit_reached'), 'bundle must include websocket.js thread_limit_reached handler');
   });
 
+  // ── Phase 8: normalizeRefIds (lib/email-threading.js) ──────────────────────
+  const { normalizeRefIds } = require('./lib/email-threading');
+
+  ut('normalizeRefIds — inReplyTo included in result', () => {
+    const result = normalizeRefIds({ inReplyTo: '<a@x.com>', references: ['<b@x.com>'] });
+    assert.deepStrictEqual(result, ['<a@x.com>', '<b@x.com>']);
+  });
+
+  ut('normalizeRefIds — deduplicates ids', () => {
+    const result = normalizeRefIds({ inReplyTo: '<a@x.com>', references: ['<a@x.com>', '<b@x.com>'] });
+    assert.deepStrictEqual(result, ['<a@x.com>', '<b@x.com>']);
+  });
+
+  ut('normalizeRefIds — caps at 50', () => {
+    const refs = Array.from({ length: 60 }, (_, i) => `<id${i}@x.com>`);
+    const result = normalizeRefIds({ inReplyTo: '<root@x.com>', references: refs });
+    assert.strictEqual(result.length, 50);
+  });
+
+  ut('normalizeRefIds — takes last 49 from references', () => {
+    const refs = Array.from({ length: 60 }, (_, i) => `<id${i}@x.com>`);
+    const result = normalizeRefIds({ inReplyTo: null, references: refs });
+    assert.ok(result.includes('<id59@x.com>'), 'last ref should be included');
+    assert.ok(!result.includes('<id0@x.com>'), 'oldest refs should be dropped');
+  });
+
+  ut('normalizeRefIds — drops empty and too-long ids', () => {
+    const longId = '<' + 'x'.repeat(500) + '@x.com>';
+    const result = normalizeRefIds({ inReplyTo: '', references: ['', null, longId, '<ok@x.com>'] });
+    assert.deepStrictEqual(result, ['<ok@x.com>']);
+  });
+
+  ut('normalizeRefIds — handles missing references', () => {
+    const result = normalizeRefIds({ inReplyTo: '<a@x.com>', references: undefined });
+    assert.deepStrictEqual(result, ['<a@x.com>']);
+  });
+
+  ut('normalizeRefIds — returns empty for no valid ids', () => {
+    const result = normalizeRefIds({ inReplyTo: '', references: [] });
+    assert.deepStrictEqual(result, []);
+  });
+
   return { p, f };
 }
 
@@ -4164,21 +4206,7 @@ async function run() {
     assert.strictEqual(row.direction, 'in');
   });
 
-  // Helper: replicates findEmailReplyThread from server.js
-  function findEmailReplyThread(db, { connId, from, refIds, targetRoomId }) {
-    if (!refIds || refIds.length === 0 || !connId) return null;
-    const placeholders = refIds.map(() => '?').join(',');
-    const matchRow = db.prepare(
-      `SELECT emi.thread_id, et.from_address FROM email_message_ids emi
-       JOIN email_threads et ON et.thread_id = emi.thread_id
-       WHERE emi.message_id IN (${placeholders}) AND emi.connection_id = ?`
-    ).get(...refIds, connId);
-    if (!matchRow) return null;
-    if (from.toLowerCase() !== matchRow.from_address.toLowerCase()) return null;
-    const threadRoot = db.prepare('SELECT id, room_id FROM messages WHERE id=?').get(matchRow.thread_id);
-    if (!threadRoot || threadRoot.room_id !== targetRoomId) return null;
-    return { threadId: matchRow.thread_id, roomId: threadRoot.room_id };
-  }
+  const { findEmailReplyThread } = require('./lib/email-threading');
 
   await test('Email watch_reply — same sender routes to existing thread', async () => {
     if (!_erTestRoomId || !_erTestConnId) { console.log('    (skipped)'); return; }

@@ -9,6 +9,7 @@ const { ClaudeSession } = require('./claude-session');
 const { validateScheduleSpec, computeNextRun, nextRunAfterSkip } = require('./lib/schedule');
 const { collectDiagnostics, buildEnvelope, gcDebugBundles } = require('./lib/debug-bundle');
 const { enrichAutomation, enrichAutomationList, watchReplyAutomation } = require('./lib/automation-identity');
+const { normalizeRefIds, findEmailReplyThread } = require('./lib/email-threading');
 const fallbackSessions = new Map();
 
 // R15: unique identifier for this server boot. Sessions tagged with a different
@@ -6914,21 +6915,6 @@ function stripWaReplyMarkers(content) {
   return replaced;
 }
 
-function findEmailReplyThread(db, { connId, from, refIds, targetRoomId }) {
-  if (!refIds || refIds.length === 0 || !connId) return null;
-  const placeholders = refIds.map(() => '?').join(',');
-  const matchRow = db.prepare(
-    `SELECT emi.thread_id, et.from_address FROM email_message_ids emi
-     JOIN email_threads et ON et.thread_id = emi.thread_id
-     WHERE emi.message_id IN (${placeholders}) AND emi.connection_id = ?`
-  ).get(...refIds, connId);
-  if (!matchRow) return null;
-  if (from.toLowerCase() !== matchRow.from_address.toLowerCase()) return null;
-  const threadRoot = db.prepare('SELECT id, room_id FROM messages WHERE id=?').get(matchRow.thread_id);
-  if (!threadRoot || threadRoot.room_id !== targetRoomId) return null;
-  return { threadId: matchRow.thread_id, roomId: threadRoot.room_id };
-}
-
 function broadcast(roomId, data) {
   const clients = roomClients.get(roomId);
   if (!clients) return;
@@ -7370,8 +7356,7 @@ connectionManager.on('email_event', async ({ eventType, connId, uid, messageId, 
     console.log(`[${ts}] [email:recv] from=${from} subject="${(subject || '').slice(0, 60)}" conn=${connId}`);
 
     // Watch reply: route email replies to existing Stoa threads
-    const refIds = [inReplyTo, ...(references || []).slice(-49)].filter(Boolean).map(id => id.slice(0, 500));
-    const dedupedRefIds = [...new Set(refIds)].slice(0, 50);
+    const dedupedRefIds = normalizeRefIds({ inReplyTo, references });
     if (dedupedRefIds.length > 0 && connId) {
       for (const auto of automations) {
         if (!auto.watch_reply) continue;
