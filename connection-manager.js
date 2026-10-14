@@ -459,6 +459,8 @@ class EmailConnection extends EventEmitter {
       connId: this.connId,
       uid: msg.uid,
       messageId: parsed.messageId || '',
+      inReplyTo: parsed.inReplyTo || '',
+      references: Array.isArray(parsed.references) ? parsed.references : (parsed.references ? [parsed.references] : []),
       from,
       fromName,
       to: (parsed.to?.value || []).map(v => v.address).join(', '),

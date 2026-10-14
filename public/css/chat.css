@@ -295,6 +295,14 @@ html.dark .h-msg-row:hover { background: var(--h-hover); }
   filter: brightness(0.8);
 }
 
+.h-conn-badge {
+  position: absolute; bottom: -2px; right: -2px;
+  width: 16px; height: 16px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--h-surface); border: 1.5px solid var(--h-hairline);
+  overflow: hidden;
+}
+
 .h-msg-body {
   max-width: var(--stoa-msg-width, 560px);
   display: flex;

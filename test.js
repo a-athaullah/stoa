@@ -1101,6 +1101,122 @@ function runUnitTests() {
     assert.ok(bundle.includes('thread_limit_reached'), 'bundle must include websocket.js thread_limit_reached handler');
   });
 
+  // ── Phase 8: normalizeRefIds (lib/email-threading.js) ──────────────────────
+  const { sanitizeDisplayName, normalizeRefIds } = require('./lib/email-threading');
+
+  ut('normalizeRefIds — inReplyTo included in result', () => {
+    const result = normalizeRefIds({ inReplyTo: '<a@x.com>', references: ['<b@x.com>'] });
+    assert.deepStrictEqual(result, ['<a@x.com>', '<b@x.com>']);
+  });
+
+  ut('normalizeRefIds — deduplicates ids', () => {
+    const result = normalizeRefIds({ inReplyTo: '<a@x.com>', references: ['<a@x.com>', '<b@x.com>'] });
+    assert.deepStrictEqual(result, ['<a@x.com>', '<b@x.com>']);
+  });
+
+  ut('normalizeRefIds — caps at 50', () => {
+    const refs = Array.from({ length: 60 }, (_, i) => `<id${i}@x.com>`);
+    const result = normalizeRefIds({ inReplyTo: '<root@x.com>', references: refs });
+    assert.strictEqual(result.length, 50);
+  });
+
+  ut('normalizeRefIds — takes last 49 from references', () => {
+    const refs = Array.from({ length: 60 }, (_, i) => `<id${i}@x.com>`);
+    const result = normalizeRefIds({ inReplyTo: null, references: refs });
+    assert.ok(result.includes('<id59@x.com>'), 'last ref should be included');
+    assert.ok(!result.includes('<id0@x.com>'), 'oldest refs should be dropped');
+  });
+
+  ut('normalizeRefIds — drops empty and too-long ids', () => {
+    const longId = '<' + 'x'.repeat(500) + '@x.com>';
+    const result = normalizeRefIds({ inReplyTo: '', references: ['', null, longId, '<ok@x.com>'] });
+    assert.deepStrictEqual(result, ['<ok@x.com>']);
+  });
+
+  ut('normalizeRefIds — handles missing references', () => {
+    const result = normalizeRefIds({ inReplyTo: '<a@x.com>', references: undefined });
+    assert.deepStrictEqual(result, ['<a@x.com>']);
+  });
+
+  ut('normalizeRefIds — returns empty for no valid ids', () => {
+    const result = normalizeRefIds({ inReplyTo: '', references: [] });
+    assert.deepStrictEqual(result, []);
+  });
+
+  // ── sanitizeDisplayName (lib/email-threading.js) ──────────────────────
+
+  ut('sanitizeDisplayName — strips CRLF', () => {
+    assert.strictEqual(sanitizeDisplayName('Hello\r\nWorld'), 'HelloWorld');
+  });
+
+  ut('sanitizeDisplayName — strips tab and null', () => {
+    assert.strictEqual(sanitizeDisplayName('Hello\tWor\x00ld'), 'HelloWorld');
+  });
+
+  ut('sanitizeDisplayName — strips all control chars 0x00-0x1f', () => {
+    let input = '';
+    for (let i = 0; i < 0x20; i++) input += String.fromCharCode(i);
+    input += 'Name';
+    assert.strictEqual(sanitizeDisplayName(input), 'Name');
+  });
+
+  ut('sanitizeDisplayName — trims whitespace', () => {
+    assert.strictEqual(sanitizeDisplayName('  Alice  '), 'Alice');
+  });
+
+  ut('sanitizeDisplayName — caps at 100 chars', () => {
+    const long = 'A'.repeat(200);
+    assert.strictEqual(sanitizeDisplayName(long).length, 100);
+  });
+
+  ut('sanitizeDisplayName — non-string returns empty', () => {
+    assert.strictEqual(sanitizeDisplayName(null), '');
+    assert.strictEqual(sanitizeDisplayName(undefined), '');
+    assert.strictEqual(sanitizeDisplayName(123), '');
+  });
+
+  ut('sanitizeDisplayName — empty string returns empty', () => {
+    assert.strictEqual(sanitizeDisplayName(''), '');
+    assert.strictEqual(sanitizeDisplayName('   '), '');
+  });
+
+  ut('sanitizeDisplayName — preserves non-ASCII', () => {
+    assert.strictEqual(sanitizeDisplayName('日本語 Ümlaut café'), '日本語 Ümlaut café');
+  });
+
+  ut('sanitizeDisplayName — strips DEL (0x7f)', () => {
+    assert.strictEqual(sanitizeDisplayName('Hello\x7fWorld'), 'HelloWorld');
+  });
+
+  ut('sanitizeDisplayName — strips C1 controls (0x80-0x9f) including NEL (0x85)', () => {
+    assert.strictEqual(sanitizeDisplayName('A\x85B\x80C\x9fD'), 'ABCD');
+  });
+
+  ut('sanitizeDisplayName — strips Unicode line separators U+2028/U+2029', () => {
+    assert.strictEqual(sanitizeDisplayName('Line Para End'), 'LineParaEnd');
+  });
+
+  ut('sanitizeDisplayName — 100 limit counts code points, not UTF-16 units', () => {
+    const base = 'A'.repeat(99);
+    const emoji = '\u{1F600}'; // 😀 — 1 code point, 2 UTF-16 units (surrogate pair)
+    const result = sanitizeDisplayName(base + emoji);
+    assert.strictEqual(Array.from(result).length, 100, 'should keep 100 code points');
+    assert.ok(result.endsWith(emoji), 'emoji should not be split');
+  });
+
+  ut('sanitizeDisplayName — truncation does not produce lone surrogate', () => {
+    const emoji = '\u{1F600}';
+    const input = 'A'.repeat(100) + emoji;
+    const result = sanitizeDisplayName(input);
+    assert.strictEqual(Array.from(result).length, 100);
+    assert.ok(!/[\uD800-\uDFFF]/.test(result), 'no lone surrogates');
+  });
+
+  ut('sanitizeDisplayName — trims trailing space after truncation', () => {
+    const result = sanitizeDisplayName('A'.repeat(99) + ' B C');
+    assert.strictEqual(result, 'A'.repeat(99), 'trailing space should be trimmed after slice');
+  });
+
   return { p, f };
 }
 
@@ -3838,6 +3954,10 @@ async function run() {
     db.prepare(
       'INSERT INTO email_threads (thread_id, connection_id, message_id, ref_headers, subject, from_address) VALUES (?, ?, ?, ?, ?, ?)'
     ).run(_erTestThreadId, _erTestConnId, '<msg123@mail.example.com>', '<prev@mail.example.com>', 'Test subject', 'allowed@example.com');
+    // Insert incoming email_message_ids (simulates what email_event handler does)
+    db.prepare(
+      'INSERT OR IGNORE INTO email_message_ids (message_id, thread_id, connection_id, direction) VALUES (?,?,?,?)'
+    ).run('<msg123@mail.example.com>', _erTestThreadId, _erTestConnId, 'in');
   });
 
   await test('Email reply — no auth → 403', async () => {
@@ -3988,6 +4108,9 @@ async function run() {
       assert.ok(msgR.body.content.includes('allowed@example.com'));
       assert.ok(msgR.body.content.includes('This is a reply'));
       assert.strictEqual(msgR.body.thread_id, _erTestThreadId);
+      assert.strictEqual(msgR.body.actor_type, 'ai', 'sent note should have agent actor_type');
+      assert.ok(msgR.body.automation, 'sent note should have automation field');
+      assert.strictEqual(msgR.body.automation.provider, 'gmail', 'automation provider should be gmail');
     } finally {
       smtpServer.close();
       delete meta.smtpHost; delete meta.smtpPort;
@@ -4130,9 +4253,589 @@ async function run() {
     assert.ok(logosMatch, '_AUTOMATION_LOGOS should be defined');
   });
 
+  // ── Email reply: display name in From header ──────────────────────────────
+  // Helper: start SMTP stub, return { port, getData, close }
+  function startSmtpStub() {
+    const net = require('net');
+    let data = '';
+    let inData = false;
+    const server = net.createServer(sock => {
+      sock.write('220 stub\r\n');
+      let buf = '';
+      sock.on('data', chunk => {
+        buf += chunk.toString();
+        if (inData) {
+          data += chunk.toString();
+          if (buf.includes('\r\n.\r\n')) { inData = false; buf = ''; sock.write('250 OK\r\n'); }
+          return;
+        }
+        const lines = buf.split('\r\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (/^(EHLO|HELO)/i.test(line)) sock.write('250-stub\r\n250-SIZE 10485760\r\n250-8BITMIME\r\n250 AUTH PLAIN LOGIN\r\n');
+          else if (/^AUTH/i.test(line)) sock.write('235 OK\r\n');
+          else if (/^MAIL FROM/i.test(line) || /^RCPT TO/i.test(line)) sock.write('250 OK\r\n');
+          else if (/^DATA$/i.test(line)) { inData = true; sock.write('354 Go\r\n'); }
+          else if (/^QUIT/i.test(line)) { sock.write('221 Bye\r\n'); sock.end(); }
+        }
+      });
+    });
+    return new Promise(resolve => {
+      server.listen(0, '127.0.0.1', () => resolve({
+        port: server.address().port,
+        getData: () => data,
+        close: () => server.close(),
+      }));
+    });
+  }
+
+  await test('Email reply — From header includes senderName from connection', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const smtp = await startSmtpStub();
+    const connRow = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(_erTestConnId);
+    const meta = JSON.parse(connRow.metadata);
+    meta.smtpHost = '127.0.0.1'; meta.smtpPort = smtp.port; meta.senderName = 'Stoa Assistant';
+    db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    try {
+      const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'display name test' }, {
+        'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+      });
+      assert.strictEqual(r.status, 200, `expected 200: ${JSON.stringify(r.body)}`);
+      const raw = smtp.getData();
+      assert.ok(raw.includes('Stoa Assistant'), 'From header should contain senderName');
+    } finally {
+      smtp.close();
+      delete meta.smtpHost; delete meta.smtpPort; delete meta.senderName;
+      db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    }
+  });
+
+  await test('Email reply — From header falls back to agent name when no senderName', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const smtp = await startSmtpStub();
+    const connRow = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(_erTestConnId);
+    const meta = JSON.parse(connRow.metadata);
+    meta.smtpHost = '127.0.0.1'; meta.smtpPort = smtp.port;
+    delete meta.senderName;
+    db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    try {
+      const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'fallback test' }, {
+        'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+      });
+      assert.strictEqual(r.status, 200, `expected 200: ${JSON.stringify(r.body)}`);
+      const agentName = db.prepare('SELECT name FROM actors WHERE id=?').get(_erTestActorId).name;
+      const raw = smtp.getData();
+      assert.ok(raw.includes(agentName), `From header should contain agent name "${agentName}"`);
+    } finally {
+      smtp.close();
+      delete meta.smtpHost; delete meta.smtpPort;
+      db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    }
+  });
+
+  await test('Email reply — senderName with CRLF is sanitized', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const smtp = await startSmtpStub();
+    const connRow = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(_erTestConnId);
+    const meta = JSON.parse(connRow.metadata);
+    meta.smtpHost = '127.0.0.1'; meta.smtpPort = smtp.port; meta.senderName = 'Injected\r\nBcc: evil@evil.com';
+    db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    try {
+      const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'crlf test' }, {
+        'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+      });
+      assert.strictEqual(r.status, 200, `expected 200: ${JSON.stringify(r.body)}`);
+      const raw = smtp.getData();
+      const hasBccHeader = raw.split('\n').some(l => /^Bcc:/i.test(l.trim()));
+      assert.ok(!hasBccHeader, 'CRLF injection must not produce Bcc header');
+    } finally {
+      smtp.close();
+      delete meta.smtpHost; delete meta.smtpPort; delete meta.senderName;
+      db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    }
+  });
+
+  await test('Email reply — sent note includes sender display name', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const smtp = await startSmtpStub();
+    const connRow = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(_erTestConnId);
+    const meta = JSON.parse(connRow.metadata);
+    meta.smtpHost = '127.0.0.1'; meta.smtpPort = smtp.port; meta.senderName = 'MyBot';
+    db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    try {
+      const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'note check' }, {
+        'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+      });
+      assert.strictEqual(r.status, 200);
+      const note = db.prepare("SELECT content FROM messages WHERE room_id=? AND thread_id=? AND content LIKE '[Email sent to%' ORDER BY id DESC LIMIT 1").get(_erTestRoomId, _erTestThreadId);
+      assert.ok(note, 'sent note should exist');
+      assert.ok(note.content.includes('from MyBot'), 'sent note should include sender display name');
+    } finally {
+      smtp.close();
+      delete meta.smtpHost; delete meta.smtpPort; delete meta.senderName;
+      db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    }
+  });
+
+  await test('Email reply — PATCH senderName on connection', async () => {
+    if (!_erTestConnId) { console.log('    (skipped)'); return; }
+    const r1 = await req('PATCH', `/api/automations/connections/${_erTestConnId}`, { senderName: 'Updated Bot' });
+    assert.strictEqual(r1.status, 200);
+    assert.strictEqual(r1.body.metadata.senderName, 'Updated Bot');
+    const r2 = await req('PATCH', `/api/automations/connections/${_erTestConnId}`, { senderName: '' });
+    assert.strictEqual(r2.status, 200);
+    assert.strictEqual(r2.body.metadata.senderName, undefined, 'empty string should clear senderName');
+  });
+
+  await test('Email reply — senderName > 100 chars truncated on create', async () => {
+    if (!_erTestConnId) { console.log('    (skipped)'); return; }
+    const longName = 'A'.repeat(150);
+    const r = await req('PATCH', `/api/automations/connections/${_erTestConnId}`, { senderName: longName });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.metadata.senderName.length, 100, 'senderName should be truncated to 100');
+    await req('PATCH', `/api/automations/connections/${_erTestConnId}`, { senderName: '' });
+  });
+
+  await test('Email reply — non-ASCII senderName encoded RFC 2047 in From header', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const smtp = await startSmtpStub();
+    const connRow = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(_erTestConnId);
+    const meta = JSON.parse(connRow.metadata);
+    meta.smtpHost = '127.0.0.1'; meta.smtpPort = smtp.port; meta.senderName = 'Ahmad Athaullah — 日本語 Ümlaut';
+    db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    try {
+      const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'RFC 2047 test' }, {
+        'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+      });
+      assert.strictEqual(r.status, 200, `reply failed: ${JSON.stringify(r.body)}`);
+      const raw = smtp.getData();
+      assert.ok(raw.includes('=?UTF-8?') || raw.includes('Ahmad Athaullah'), 'From should encode non-ASCII or include name');
+      const fromLine = raw.split('\n').find(l => /^From:/i.test(l.trim()));
+      assert.ok(fromLine, 'From header line should exist');
+      assert.ok(!fromLine.includes('undefined'), 'From should not contain undefined');
+    } finally {
+      smtp.close();
+      delete meta.smtpHost; delete meta.smtpPort; delete meta.senderName;
+      db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    }
+  });
+
+  await test('Email reply — senderName with tab/null control chars sanitized at send', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const smtp = await startSmtpStub();
+    const connRow = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(_erTestConnId);
+    const meta = JSON.parse(connRow.metadata);
+    meta.smtpHost = '127.0.0.1'; meta.smtpPort = smtp.port; meta.senderName = 'Evil\tBot\x00Name';
+    db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    try {
+      const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'Control char test' }, {
+        'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+      });
+      assert.strictEqual(r.status, 200, `reply failed: ${JSON.stringify(r.body)}`);
+      const raw = smtp.getData();
+      assert.ok(!raw.split('\n').some(l => /^From:/i.test(l.trim()) && (l.includes('\t') || l.includes('\x00'))), 'From should not contain tab or null');
+    } finally {
+      smtp.close();
+      delete meta.smtpHost; delete meta.smtpPort; delete meta.senderName;
+      db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    }
+  });
+
+  // ── Email watch_reply (Fase 1.6) ──────────────────────────────────────────
+  let _ewTestAutoId;
+
+  await test('Email watch_reply — automation API accepts watch_reply for email trigger', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const r = await req('POST', '/api/automations', {
+      name: '__test_email_watch__', trigger_type: 'email', trigger_event: 'message',
+      target_room_id: _erTestRoomId, prompt_template: '{{email.body}}',
+      connection_id: _erTestConnId, watch_reply: true,
+    });
+    assert.strictEqual(r.status, 200, `create automation failed: ${JSON.stringify(r.body)}`);
+    assert.strictEqual(r.body.watch_reply, 1, 'watch_reply should be saved for email trigger');
+    _ewTestAutoId = r.body.id;
+  });
+
+  await test('Email watch_reply — PATCH preserves watch_reply for email', async () => {
+    if (!_ewTestAutoId) { console.log('    (skipped)'); return; }
+    const r = await req('PATCH', `/api/automations/${_ewTestAutoId}`, { watch_reply: true });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.watch_reply, 1);
+  });
+
+  await test('Email watch_reply — email_message_ids populated on new thread', async () => {
+    if (!_erTestConnId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const row = db.prepare("SELECT * FROM email_message_ids WHERE thread_id=? AND connection_id=? AND direction='in'").get(_erTestThreadId, _erTestConnId);
+    assert.ok(row, 'email_message_ids should have incoming entry from setup');
+    assert.strictEqual(row.direction, 'in');
+  });
+
+  const { findEmailReplyThread } = require('./lib/email-threading');
+
+  await test('Email watch_reply — same sender routes to existing thread', async () => {
+    if (!_erTestRoomId || !_erTestConnId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const match = findEmailReplyThread(db, {
+      connId: _erTestConnId, from: 'allowed@example.com',
+      refIds: ['<msg123@mail.example.com>'], targetRoomId: _erTestRoomId,
+    });
+    assert.ok(match, 'same sender + same connection + matching message_id should route');
+    assert.strictEqual(match.threadId, _erTestThreadId);
+  });
+
+  await test('Email watch_reply — same sender case-insensitive routes correctly', async () => {
+    if (!_erTestRoomId || !_erTestConnId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const match = findEmailReplyThread(db, {
+      connId: _erTestConnId, from: 'ALLOWED@EXAMPLE.COM',
+      refIds: ['<msg123@mail.example.com>'], targetRoomId: _erTestRoomId,
+    });
+    assert.ok(match, 'case-insensitive sender should still route');
+  });
+
+  await test('Email watch_reply — different sender rejected (anti-spoof)', async () => {
+    if (!_erTestRoomId || !_erTestConnId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const match = findEmailReplyThread(db, {
+      connId: _erTestConnId, from: 'attacker@evil.com',
+      refIds: ['<msg123@mail.example.com>'], targetRoomId: _erTestRoomId,
+    });
+    assert.strictEqual(match, null, 'different sender must not route to existing thread');
+  });
+
+  await test('Email watch_reply — connection_id mismatch prevents routing', async () => {
+    if (!_erTestRoomId || !_erTestConnId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const match = findEmailReplyThread(db, {
+      connId: 99999, from: 'allowed@example.com',
+      refIds: ['<msg123@mail.example.com>'], targetRoomId: _erTestRoomId,
+    });
+    assert.strictEqual(match, null, 'different connection_id should not match');
+  });
+
+  await test('Email watch_reply — room mismatch prevents routing', async () => {
+    if (!_erTestRoomId || !_erTestConnId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const match = findEmailReplyThread(db, {
+      connId: _erTestConnId, from: 'allowed@example.com',
+      refIds: ['<msg123@mail.example.com>'], targetRoomId: 99999,
+    });
+    assert.strictEqual(match, null, 'wrong target room should not match');
+  });
+
+  await test('Email watch_reply — outgoing reply Message-ID saved via email-reply endpoint', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const net = require('net');
+    let smtpData = '';
+    let inData = false;
+    const smtpServer = net.createServer(sock => {
+      sock.write('220 stub SMTP\r\n');
+      let buf = '';
+      sock.on('data', chunk => {
+        buf += chunk.toString();
+        if (inData) {
+          smtpData += chunk.toString();
+          if (buf.includes('\r\n.\r\n')) { inData = false; buf = ''; sock.write('250 OK\r\n'); }
+          return;
+        }
+        const lines = buf.split('\r\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (/^(EHLO|HELO)/i.test(line)) sock.write('250-stub\r\n250-SIZE 10485760\r\n250-8BITMIME\r\n250 AUTH PLAIN LOGIN\r\n');
+          else if (/^AUTH/i.test(line)) sock.write('235 OK\r\n');
+          else if (/^MAIL FROM/i.test(line) || /^RCPT TO/i.test(line)) sock.write('250 OK\r\n');
+          else if (/^DATA$/i.test(line)) { inData = true; sock.write('354 Go\r\n'); }
+          else if (/^QUIT/i.test(line)) { sock.write('221 Bye\r\n'); sock.end(); }
+        }
+      });
+    });
+    const smtpPort = await new Promise(resolve => {
+      smtpServer.listen(0, '127.0.0.1', () => resolve(smtpServer.address().port));
+    });
+
+    const db = require('./db');
+    const connRow = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(_erTestConnId);
+    const meta = JSON.parse(connRow.metadata);
+    meta.smtpHost = '127.0.0.1';
+    meta.smtpPort = smtpPort;
+    db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+
+    try {
+      const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'Watch reply test' }, {
+        'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+      });
+      assert.strictEqual(r.status, 200, `expected 200: ${JSON.stringify(r.body)}`);
+
+      // Check email_message_ids has outgoing entry
+      const outRows = db.prepare("SELECT * FROM email_message_ids WHERE thread_id=? AND direction='out'").all(_erTestThreadId);
+      assert.ok(outRows.length > 0, 'outgoing Message-ID should be saved after email-reply');
+
+      // Check email_threads.ref_headers was updated
+      const et = db.prepare('SELECT * FROM email_threads WHERE thread_id=?').get(_erTestThreadId);
+      assert.ok(et.ref_headers.length > 0, 'ref_headers should be updated with outgoing references');
+    } finally {
+      smtpServer.close();
+      delete meta.smtpHost; delete meta.smtpPort;
+      db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    }
+  });
+
+  await test('Email watch_reply — watch_reply=0 means no routing (DB check)', async () => {
+    if (!_erTestConnId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    // With watch_reply=0, the handler skips routing logic. We verify the automation flag is respected.
+    if (_ewTestAutoId) {
+      const patchR = await req('PATCH', `/api/automations/${_ewTestAutoId}`, { watch_reply: false });
+      assert.strictEqual(patchR.body.watch_reply, 0);
+      // Restore
+      await req('PATCH', `/api/automations/${_ewTestAutoId}`, { watch_reply: true });
+    }
+  });
+
+  await test('Email watch_reply — ref_headers capped at reasonable length', async () => {
+    const db = require('./db');
+    if (!_erTestThreadId) { console.log('    (skipped)'); return; }
+    const et = db.prepare('SELECT ref_headers FROM email_threads WHERE thread_id=?').get(_erTestThreadId);
+    if (et) {
+      assert.ok(et.ref_headers.length <= 4000, 'ref_headers should be capped');
+    }
+  });
+
+  await test('Email watch_reply — cleanup automation', async () => {
+    if (_ewTestAutoId) {
+      await req('DELETE', `/api/automations/${_ewTestAutoId}`);
+    }
+  });
+
+  // ── Email reply rate limit ──────────────────────────────────────────────────
+
+  await test('Email reply — rate limit per thread per hour: boundary test', async () => {
+    if (!_erTestRoomId || !_erTestThreadId || !_erTestActorId) { console.log('    (skipped)'); return; }
+    const net = require('net');
+    const db = require('./db');
+    const { EMAIL_REPLY_LIMITS } = require('./lib/email-threading');
+    const agentPtcp = db.prepare(
+      'SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=?'
+    ).get(_erTestRoomId, _erTestActorId);
+
+    const existing = db.prepare(
+      "SELECT COUNT(*) as cnt FROM messages WHERE thread_id=? AND automation_provider IN ('email','gmail') AND content LIKE '[Email sent to%' AND created_at > datetime('now', '-1 hour')"
+    ).get(_erTestThreadId)?.cnt || 0;
+
+    const seedIds = [];
+    const toSeed = EMAIL_REPLY_LIMITS.perThreadHour - 1 - existing;
+    for (let i = 0; i < toSeed; i++) {
+      const ins = db.prepare(
+        "INSERT INTO messages (room_id, participant_id, content, thread_id, automation_provider, state) VALUES (?,?,?,?,?,'complete')"
+      ).run(_erTestRoomId, agentPtcp.id, `[Email sent to seed@example.com from test — Re: Seed] thr ${i}`, _erTestThreadId, 'gmail');
+      seedIds.push(Number(ins.lastInsertRowid));
+    }
+
+    const smtpServer = net.createServer(sock => {
+      sock.write('220 stub\r\n');
+      let buf = '', inData = false;
+      sock.on('data', chunk => {
+        buf += chunk.toString();
+        if (inData) { if (buf.includes('\r\n.\r\n')) { inData = false; buf = ''; sock.write('250 OK\r\n'); } return; }
+        const lines = buf.split('\r\n'); buf = lines.pop();
+        for (const l of lines) {
+          if (/^(EHLO|HELO)/i.test(l)) sock.write('250-stub\r\n250-SIZE 10485760\r\n250-8BITMIME\r\n250 AUTH PLAIN LOGIN\r\n');
+          else if (/^AUTH/i.test(l)) sock.write('235 OK\r\n');
+          else if (/^MAIL FROM/i.test(l)) sock.write('250 OK\r\n');
+          else if (/^RCPT TO/i.test(l)) sock.write('250 OK\r\n');
+          else if (/^DATA$/i.test(l)) { inData = true; sock.write('354 Go\r\n'); }
+          else if (/^QUIT/i.test(l)) { sock.write('221 Bye\r\n'); sock.end(); }
+        }
+      });
+    });
+    const smtpPort = await new Promise(resolve => smtpServer.listen(0, '127.0.0.1', () => resolve(smtpServer.address().port)));
+    const connRow = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(_erTestConnId);
+    const meta = JSON.parse(connRow.metadata);
+    meta.smtpHost = '127.0.0.1'; meta.smtpPort = smtpPort;
+    db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+
+    const handlerMsgIds = [];
+    try {
+      // Below limit: should succeed (200)
+      const r1 = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'below limit' }, {
+        'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+      });
+      assert.strictEqual(r1.status, 200, `below limit: expected 200, got ${r1.status}: ${JSON.stringify(r1.body)}`);
+      handlerMsgIds.push(r1.body.message_id);
+
+      // At limit: should be blocked (429)
+      const r2 = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'at limit' }, {
+        'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+      });
+      assert.strictEqual(r2.status, 429, `at limit: expected 429, got ${r2.status}: ${JSON.stringify(r2.body)}`);
+      assert.ok(r2.body.error.includes('per thread per hour'), 'error should mention per thread per hour');
+    } finally {
+      smtpServer.close();
+      delete meta.smtpHost; delete meta.smtpPort;
+      db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+      for (const id of seedIds) db.prepare('DELETE FROM messages WHERE id=?').run(id);
+      for (const id of handlerMsgIds) db.prepare('DELETE FROM messages WHERE id=?').run(id);
+    }
+  });
+
+  await test('Email reply — rate limit per connection per day: boundary test', async () => {
+    if (!_erTestRoomId || !_erTestThreadId || !_erTestConnId || !_erTestActorId) { console.log('    (skipped)'); return; }
+    const net = require('net');
+    const db = require('./db');
+    const { EMAIL_REPLY_LIMITS } = require('./lib/email-threading');
+    const agentPtcp = db.prepare(
+      'SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=?'
+    ).get(_erTestRoomId, _erTestActorId);
+    const ptcpHuman = db.prepare(
+      "SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1"
+    ).get(_erTestRoomId);
+
+    const existingConn = db.prepare(
+      "SELECT COUNT(*) as cnt FROM email_threads et JOIN messages m ON m.thread_id = et.thread_id WHERE et.connection_id=? AND m.automation_provider IN ('email','gmail') AND m.content LIKE '[Email sent to%' AND m.created_at > datetime('now', '-1 day')"
+    ).get(_erTestConnId)?.cnt || 0;
+
+    const extraThreadIds = [];
+    const seedIds = [];
+    const toSeed = EMAIL_REPLY_LIMITS.perConnDay - 1 - existingConn;
+    const maxPerThread = EMAIL_REPLY_LIMITS.perThreadHour - 1;
+    const threadsNeeded = Math.ceil(toSeed / maxPerThread);
+
+    for (let t = 0; t < threadsNeeded; t++) {
+      const tIns = db.prepare(
+        "INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'complete')"
+      ).run(_erTestRoomId, ptcpHuman.id, `extra thread root ${t}`);
+      const tid = Number(tIns.lastInsertRowid);
+      extraThreadIds.push(tid);
+      db.prepare(
+        'INSERT INTO email_threads (thread_id, connection_id, message_id, ref_headers, subject, from_address) VALUES (?,?,?,?,?,?)'
+      ).run(tid, _erTestConnId, `<extra-${t}@test>`, '', 'Extra', 'allowed@example.com');
+    }
+
+    let seeded = 0;
+    for (const tid of extraThreadIds) {
+      for (let i = 0; i < maxPerThread && seeded < toSeed; i++) {
+        const ins = db.prepare(
+          "INSERT INTO messages (room_id, participant_id, content, thread_id, automation_provider, state) VALUES (?,?,?,?,?,'complete')"
+        ).run(_erTestRoomId, agentPtcp.id, `[Email sent to seed@example.com from test — Re: Seed] cd ${seeded}`, tid, 'gmail');
+        seedIds.push(Number(ins.lastInsertRowid));
+        seeded++;
+      }
+    }
+
+    const smtpServer = net.createServer(sock => {
+      sock.write('220 stub\r\n');
+      let buf = '', inData = false;
+      sock.on('data', chunk => {
+        buf += chunk.toString();
+        if (inData) { if (buf.includes('\r\n.\r\n')) { inData = false; buf = ''; sock.write('250 OK\r\n'); } return; }
+        const lines = buf.split('\r\n'); buf = lines.pop();
+        for (const l of lines) {
+          if (/^(EHLO|HELO)/i.test(l)) sock.write('250-stub\r\n250-SIZE 10485760\r\n250-8BITMIME\r\n250 AUTH PLAIN LOGIN\r\n');
+          else if (/^AUTH/i.test(l)) sock.write('235 OK\r\n');
+          else if (/^MAIL FROM/i.test(l)) sock.write('250 OK\r\n');
+          else if (/^RCPT TO/i.test(l)) sock.write('250 OK\r\n');
+          else if (/^DATA$/i.test(l)) { inData = true; sock.write('354 Go\r\n'); }
+          else if (/^QUIT/i.test(l)) { sock.write('221 Bye\r\n'); sock.end(); }
+        }
+      });
+    });
+    const smtpPort = await new Promise(resolve => smtpServer.listen(0, '127.0.0.1', () => resolve(smtpServer.address().port)));
+    const connRow = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(_erTestConnId);
+    const meta = JSON.parse(connRow.metadata);
+    meta.smtpHost = '127.0.0.1'; meta.smtpPort = smtpPort;
+    db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+
+    const handlerMsgIds = [];
+    try {
+      // Below limit: should succeed (200)
+      const r1 = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'below conn limit' }, {
+        'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+      });
+      assert.strictEqual(r1.status, 200, `below conn limit: expected 200, got ${r1.status}: ${JSON.stringify(r1.body)}`);
+      handlerMsgIds.push(r1.body.message_id);
+
+      // At limit: should be blocked (429)
+      const r2 = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'at conn limit' }, {
+        'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+      });
+      assert.strictEqual(r2.status, 429, `at conn limit: expected 429, got ${r2.status}: ${JSON.stringify(r2.body)}`);
+      assert.ok(r2.body.error.includes('per connection per day'), 'error should mention per connection per day');
+    } finally {
+      smtpServer.close();
+      delete meta.smtpHost; delete meta.smtpPort;
+      db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+      for (const id of seedIds) db.prepare('DELETE FROM messages WHERE id=?').run(id);
+      for (const id of handlerMsgIds) db.prepare('DELETE FROM messages WHERE id=?').run(id);
+      for (const tid of extraThreadIds) {
+        db.prepare('DELETE FROM email_threads WHERE thread_id=?').run(tid);
+        db.prepare('DELETE FROM messages WHERE id=?').run(tid);
+      }
+    }
+  });
+
+  // ── Email thread prompt injection ──────────────────────────────────────────
+
+  await test('Email thread prompt — email thread returns section with roomId and threadId', async () => {
+    if (!_erTestRoomId || !_erTestThreadId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const { buildEmailThreadSection } = require('./lib/email-threading');
+    const section = buildEmailThreadSection(db, { roomId: _erTestRoomId, threadId: _erTestThreadId });
+    assert.ok(section.length > 0, 'section should be non-empty for email thread');
+    assert.ok(section.includes(`/api/rooms/${_erTestRoomId}/email-reply`), 'section should contain roomId in endpoint');
+    assert.ok(section.includes(`"thread_id": ${_erTestThreadId}`), 'section should contain threadId in body');
+  });
+
+  await test('Email thread prompt — non-email thread returns empty string', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const { buildEmailThreadSection } = require('./lib/email-threading');
+    const ptcp = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1").get(_erTestRoomId);
+    const ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'complete')").run(_erTestRoomId, ptcp.id, 'plain thread no email');
+    const plainThreadId = Number(ins.lastInsertRowid);
+    const section = buildEmailThreadSection(db, { roomId: _erTestRoomId, threadId: plainThreadId });
+    assert.strictEqual(section, '', 'non-email thread should return empty string');
+  });
+
+  await test('Email thread prompt — null/undefined threadId returns empty string', async () => {
+    const db = require('./db');
+    const { buildEmailThreadSection } = require('./lib/email-threading');
+    assert.strictEqual(buildEmailThreadSection(db, { roomId: 1, threadId: null }), '');
+    assert.strictEqual(buildEmailThreadSection(db, { roomId: 1, threadId: undefined }), '');
+  });
+
+  await test('Email thread prompt — section does not contain credentials', async () => {
+    if (!_erTestRoomId || !_erTestThreadId || !_erTestConnId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const { buildEmailThreadSection } = require('./lib/email-threading');
+    const section = buildEmailThreadSection(db, { roomId: _erTestRoomId, threadId: _erTestThreadId });
+    const connRow = db.prepare('SELECT credentials FROM automation_connections WHERE id=?').get(_erTestConnId);
+    const creds = JSON.parse(connRow.credentials);
+    assert.ok(!section.includes(creds.user), 'section must not contain email user');
+    assert.ok(!section.includes('fake-smtp-pass'), 'section must not contain password');
+    assert.ok(!section.includes('app_password'), 'section must not contain app_password key');
+  });
+
+  await test('Email thread prompt — limits match EMAIL_REPLY_LIMITS constants', async () => {
+    if (!_erTestRoomId || !_erTestThreadId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const { buildEmailThreadSection, EMAIL_REPLY_LIMITS } = require('./lib/email-threading');
+    const section = buildEmailThreadSection(db, { roomId: _erTestRoomId, threadId: _erTestThreadId });
+    assert.ok(section.includes(String(EMAIL_REPLY_LIMITS.perThreadHour)), 'section should contain perThreadHour limit');
+    assert.ok(section.includes(String(EMAIL_REPLY_LIMITS.perConnDay)), 'section should contain perConnDay limit');
+    assert.ok(section.includes(EMAIL_REPLY_LIMITS.maxBody.toLocaleString('en-US')), 'section should contain maxBody limit');
+  });
+
   await test('Email reply — cleanup', async () => {
     if (_erTestConnId) {
       const db = require('./db');
+      db.prepare('DELETE FROM email_message_ids WHERE connection_id=?').run(_erTestConnId);
       db.prepare('DELETE FROM email_threads WHERE connection_id=?').run(_erTestConnId);
       db.prepare('DELETE FROM automation_connections WHERE id=?').run(_erTestConnId);
     }

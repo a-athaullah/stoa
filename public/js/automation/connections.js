@@ -239,6 +239,13 @@ function autoRenderConnectionForm() {
         <span style="font-family:var(--h-sans);font-size:12px;color:var(--h-ink-faint)">One per line. Wildcards: <code>*@domain.com</code>. Emails from unlisted senders are silently ignored.</span>
       </div>
 
+      <!-- Sender name -->
+      <div style="display:flex;flex-direction:column;gap:5px">
+        <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-mute)">Sender name <span style="font-size:12px;color:var(--h-ink-faint)">(optional)</span></span>
+        <input class="auto-field-input" id="auto-conn-email-sender-name" type="text" placeholder="e.g. Ahmad Athaullah" autocomplete="off" maxlength="100" value="${escHtml(f.emailSenderName || '')}">
+        <span style="font-family:var(--h-sans);font-size:12px;color:var(--h-ink-faint)">Shown as the From name in reply emails. If blank, the replying agent's name is used.</span>
+      </div>
+
       <!-- Require auth pass -->
       <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--h-surface-tinted,color-mix(in srgb,var(--h-accent) 4%,var(--h-surface)));border:1px solid var(--h-hairline);border-radius:8px">
         <div style="display:flex;flex-direction:column;gap:2px">

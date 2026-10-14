@@ -9,6 +9,7 @@ const { ClaudeSession } = require('./claude-session');
 const { validateScheduleSpec, computeNextRun, nextRunAfterSkip } = require('./lib/schedule');
 const { collectDiagnostics, buildEnvelope, gcDebugBundles } = require('./lib/debug-bundle');
 const { enrichAutomation, enrichAutomationList, watchReplyAutomation } = require('./lib/automation-identity');
+const { sanitizeDisplayName, EMAIL_REPLY_LIMITS, buildEmailThreadSection, normalizeRefIds, findEmailReplyThread } = require('./lib/email-threading');
 const fallbackSessions = new Map();
 
 // R15: unique identifier for this server boot. Sessions tagged with a different
@@ -2135,7 +2136,7 @@ const server = http.createServer(async (req, res) => {
     const agentSecret = req.headers['x-agent-secret'] || '';
     if (!agentId || !agentSecret) return json(res, { error: 'agent auth required' }, 403);
 
-    const agentActor = db.prepare("SELECT id, secret FROM actors WHERE id=? AND type='ai'").get(agentId);
+    const agentActor = db.prepare("SELECT id, name, secret FROM actors WHERE id=? AND type='ai'").get(agentId);
     if (!agentActor) return json(res, { error: 'actor not found' }, 403);
     const hh = s => crypto.createHmac('sha256', 'stoa').update(s).digest();
     if (!agentActor.secret || !crypto.timingSafeEqual(hh(agentSecret), hh(agentActor.secret))) {
@@ -2150,7 +2151,7 @@ const server = http.createServer(async (req, res) => {
 
     const body = typeof data.body === 'string' ? data.body.trim() : '';
     if (!body) return json(res, { error: 'body required (non-empty string)' }, 400);
-    if (body.length > 20000) return json(res, { error: 'body too long (max 20000 chars)' }, 400);
+    if (body.length > EMAIL_REPLY_LIMITS.maxBody) return json(res, { error: `body too long (max ${EMAIL_REPLY_LIMITS.maxBody} chars)` }, 400);
 
     // Validate room exists
     const room = db.prepare('SELECT id, archived_at FROM rooms WHERE id=?').get(roomId);
@@ -2202,15 +2203,15 @@ const server = http.createServer(async (req, res) => {
     const threadHourCount = db.prepare(
       "SELECT COUNT(*) as cnt FROM messages WHERE thread_id=? AND automation_provider IN ('email','gmail') AND content LIKE '[Email sent to%' AND created_at > datetime('now', '-1 hour')"
     ).get(threadId)?.cnt || 0;
-    if (threadHourCount >= 10) {
-      return json(res, { error: 'rate limit: max 10 replies per thread per hour' }, 429);
+    if (threadHourCount >= EMAIL_REPLY_LIMITS.perThreadHour) {
+      return json(res, { error: `rate limit: max ${EMAIL_REPLY_LIMITS.perThreadHour} replies per thread per hour` }, 429);
     }
 
     const connDayCount = db.prepare(
       "SELECT COUNT(*) as cnt FROM email_threads et JOIN messages m ON m.thread_id = et.thread_id WHERE et.connection_id=? AND m.automation_provider IN ('email','gmail') AND m.content LIKE '[Email sent to%' AND m.created_at > datetime('now', '-1 day')"
     ).get(emailThread.connection_id)?.cnt || 0;
-    if (connDayCount >= 50) {
-      return json(res, { error: 'rate limit: max 50 emails per connection per day' }, 429);
+    if (connDayCount >= EMAIL_REPLY_LIMITS.perConnDay) {
+      return json(res, { error: `rate limit: max ${EMAIL_REPLY_LIMITS.perConnDay} emails per connection per day` }, 429);
     }
 
     // Resolve SMTP settings — only Gmail preset supported in this phase
@@ -2265,9 +2266,13 @@ const server = http.createServer(async (req, res) => {
     if (!smtpSecure) smtpOpts.ignoreTLS = true;
     const transport = nodemailer.createTransport(smtpOpts);
 
+    // Resolve display name: connection senderName → agent name → address only
+    const resolvedName = sanitizeDisplayName(meta.senderName || '') || sanitizeDisplayName(agentActor.name || '');
+
+    let sentEmailInfo;
     try {
-      await transport.sendMail({
-        from: emailUser,
+      sentEmailInfo = await transport.sendMail({
+        from: resolvedName ? { name: resolvedName, address: emailUser } : emailUser,
         to: sanitize(emailThread.from_address),
         subject: reSubject,
         text: body,
@@ -2281,13 +2286,25 @@ const server = http.createServer(async (req, res) => {
       transport.close();
     }
 
-    // Record "email sent" message in thread
-    const humanParts = db.prepare(
-      "SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1"
-    ).all(roomId);
-    const senderParticipantId = humanParts.length ? humanParts[0].id : participant.id;
+    // Save outgoing Message-ID for watch_reply threading
+    if (sentEmailInfo?.messageId) {
+      const outMsgId = sentEmailInfo.messageId.replace(/^<|>$/g, '');
+      try {
+        db.prepare('INSERT OR IGNORE INTO email_message_ids (message_id, thread_id, connection_id, direction) VALUES (?,?,?,?)')
+          .run(outMsgId.slice(0, 500), threadId, emailThread.connection_id, 'out');
+        const newRefs = (references ? references + ' ' : '') + '<' + outMsgId + '>';
+        db.prepare('UPDATE email_threads SET message_id=?, ref_headers=? WHERE thread_id=?')
+          .run(outMsgId.slice(0, 500), newRefs.slice(0, 4000), threadId);
+      } catch (e) {
+        console.error('[email-reply] email_message_ids insert error:', e.message);
+      }
+    }
+
+    // Record "email sent" message in thread — use agent's participant so FE renders agent avatar
+    const senderParticipantId = participant.id;
     const emailProvider = preset === 'gmail' ? 'gmail' : 'email';
-    const sentNote = `[Email sent to ${sanitize(emailThread.from_address)} — ${reSubject}]\n\n${body}`;
+    const fromLabel = resolvedName ? `${resolvedName} <${emailUser}>` : emailUser;
+    const sentNote = `[Email sent to ${sanitize(emailThread.from_address)} from ${fromLabel} — ${reSubject}]\n\n${body}`;
     const sentResult = db.prepare(
       "INSERT INTO messages (room_id, participant_id, content, thread_id, automation_provider, state) VALUES (?, ?, ?, ?, ?, 'complete')"
     ).run(roomId, senderParticipantId, sentNote, threadId, emailProvider);
@@ -4022,13 +4039,16 @@ Write-Host "Logs   : pm2 logs $AgentName"
       tokenType = 'password';
       const { encrypt } = require('./lib/credentials');
       creds = JSON.stringify({ user: body.user.trim(), password: encrypt(body.password) });
-      initialMeta = JSON.stringify({
+      const rawSenderName = sanitizeDisplayName(body.senderName);
+      const metaObj = {
         preset, host: emailHost, port: emailPort,
         secure: body.secure !== false,
         folder: (body.folder || 'INBOX').trim(),
         allowedSenders: allowedSenders.map(s => s.trim()),
         requireAuthPass: body.requireAuthPass !== false,
-      });
+      };
+      if (rawSenderName) metaObj.senderName = rawSenderName;
+      initialMeta = JSON.stringify(metaObj);
     } else { // whatsapp
       if (!body?.name) {
         res.writeHead(400); return res.end(JSON.stringify({ error: 'name required' }));
@@ -4100,6 +4120,10 @@ Write-Host "Logs   : pm2 logs $AgentName"
         if (body.folder !== undefined)           meta3.folder = (body.folder || 'INBOX').trim();
         if (body.preset !== undefined)           meta3.preset = body.preset;
         if (body.requireAuthPass !== undefined)  meta3.requireAuthPass = body.requireAuthPass !== false;
+        if (body.senderName !== undefined) {
+          const sn = sanitizeDisplayName(body.senderName);
+          if (sn) meta3.senderName = sn; else delete meta3.senderName;
+        }
         if (body.allowedSenders !== undefined) {
           const senders = Array.isArray(body.allowedSenders) ? body.allowedSenders.filter(s => typeof s === 'string' && s.trim()) : [];
           if (!senders.length) { res.writeHead(400); return res.end(JSON.stringify({ error: 'allowedSenders must contain at least one address' })); }
@@ -4186,6 +4210,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
       if (connectionManager.isRunning(connId)) {
         res.writeHead(409); return res.end(JSON.stringify({ error: 'Disconnect first' }));
       }
+      db.prepare('DELETE FROM email_message_ids WHERE connection_id=?').run(connId);
       db.prepare('DELETE FROM automation_connections WHERE id=?').run(connId);
       return json(res, { ok: true });
     }
@@ -4276,7 +4301,8 @@ Write-Host "Logs   : pm2 logs $AgentName"
     const rawConds = body.trigger_conditions || '[]';
     const condsErr = validateConditions(rawConds);
     if (condsErr) { res.writeHead(400); return res.end(JSON.stringify({ error: condsErr })); }
-    const watchReply = (body.trigger_type || 'slack') === 'slack' ? (body.watch_reply ? 1 : 0) : 0;
+    const trigType = body.trigger_type || 'slack';
+    const watchReply = (trigType === 'slack' || trigType === 'email') ? (body.watch_reply ? 1 : 0) : 0;
     const result = db.prepare(`
       INSERT INTO automations (name, trigger_type, trigger_event, trigger_conditions, target_room_id, prompt_template, connection_id, reply_mode, watch_reply)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -4315,7 +4341,8 @@ Write-Host "Logs   : pm2 logs $AgentName"
       const enabled     = body.enabled !== undefined     ? (body.enabled ? 1 : 0)                    : auto.enabled;
       const connId      = body.connection_id !== undefined ? (parseInt(body.connection_id) || null)  : auto.connection_id;
       const replyMode   = body.reply_mode !== undefined    ? (body.reply_mode || 'none')              : (auto.reply_mode || 'none');
-      const watchReply  = body.watch_reply !== undefined  ? ((auto.trigger_type || 'slack') === 'slack' ? (body.watch_reply ? 1 : 0) : 0) : (auto.watch_reply || 0);
+      const patchTrigType = auto.trigger_type || 'slack';
+      const watchReply  = body.watch_reply !== undefined  ? ((patchTrigType === 'slack' || patchTrigType === 'email') ? (body.watch_reply ? 1 : 0) : 0) : (auto.watch_reply || 0);
       db.prepare(`
         UPDATE automations SET name=?, trigger_event=?, trigger_conditions=?, target_room_id=?, prompt_template=?, enabled=?, connection_id=?, reply_mode=?, watch_reply=? WHERE id=?
       `).run(name, event, conds, roomId, prompt, enabled, connId, replyMode, watchReply, autoId);
@@ -6622,6 +6649,8 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
       `Memory budget: ${charCount}/${budget} chars used.${thresholdWarning}`;
   }
 
+  const emailThreadSection = buildEmailThreadSection(db, { roomId, threadId });
+
   const fullPrompt = [
     identityLine,
     `Room ID: ${roomId}`,
@@ -6635,6 +6664,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     otherAINames.length ? L.mentionInstruction(otherAINames) : '',
     orchestrationLine,
     '\n' + L.sendFileInstruction,
+    emailThreadSection,
   ].filter(Boolean).join('\n');
 
   const roomRow2 = db.prepare('SELECT model, model_config, model_tiers FROM rooms WHERE id=?').get(roomId);
@@ -7314,7 +7344,7 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, senderName, t
 
 // ─── Email automation listener ─────────────────────────────────────────────────
 
-connectionManager.on('email_event', async ({ eventType, connId, uid, messageId, from, fromName, to, subject, date, text, hasAttachments, attachmentCount }) => {
+connectionManager.on('email_event', async ({ eventType, connId, uid, messageId, inReplyTo, references, from, fromName, to, subject, date, text, hasAttachments, attachmentCount }) => {
   try {
     const automations = db.prepare(
       "SELECT * FROM automations WHERE enabled=1 AND trigger_type='email' AND trigger_event='message' AND (connection_id IS NULL OR connection_id=?)"
@@ -7335,6 +7365,43 @@ connectionManager.on('email_event', async ({ eventType, connId, uid, messageId, 
 
     const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
     console.log(`[${ts}] [email:recv] from=${from} subject="${(subject || '').slice(0, 60)}" conn=${connId}`);
+
+    // Watch reply: route email replies to existing Stoa threads
+    const dedupedRefIds = normalizeRefIds({ inReplyTo, references });
+    if (dedupedRefIds.length > 0 && connId) {
+      for (const auto of automations) {
+        if (!auto.watch_reply) continue;
+        const match = findEmailReplyThread(db, { connId, from, refIds: dedupedRefIds, targetRoomId: auto.target_room_id });
+        if (!match) continue;
+
+        let prompt = auto.prompt_template
+          .replace(/\{\{email\.from\}\}/g, from)
+          .replace(/\{\{email\.from_name\}\}/g, fromName || from)
+          .replace(/\{\{email\.subject\}\}/g, (subject || '').slice(0, 500))
+          .replace(/\{\{email\.body\}\}/g, text)
+          .replace(/\{\{email\.date\}\}/g, date)
+          .replace(/\{\{email\.has_attachments\}\}/g, String(hasAttachments));
+
+        const _threadId = match.threadId;
+        console.log(`[automation] "${auto.name}" watch_reply routed email to thread ${_threadId} (from=${from})`);
+        (async () => {
+          try {
+            await handleHumanMessage(match.roomId, prompt, null, null, null, null, _threadId, { id: auto.id, name: auto.name, provider: emailProvider });
+            db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(auto.id);
+            if (messageId) {
+              db.prepare('INSERT OR IGNORE INTO email_message_ids (message_id, thread_id, connection_id, direction) VALUES (?,?,?,?)')
+                .run(messageId.slice(0, 500), _threadId, connId, 'in');
+              const refChain = dedupedRefIds.slice(0, 20).join(' ');
+              db.prepare('UPDATE email_threads SET message_id=?, ref_headers=? WHERE thread_id=?')
+                .run(messageId.slice(0, 500), refChain.slice(0, 4000), _threadId);
+            }
+          } catch (e) {
+            console.error(`[automation] watch_reply room ${match.roomId} error:`, e.message);
+          }
+        })();
+        return;
+      }
+    }
 
     const fieldValues = { from, subject, body: text, has_attachments: String(hasAttachments) };
 
@@ -7386,6 +7453,8 @@ connectionManager.on('email_event', async ({ eventType, connId, uid, messageId, 
               db.prepare(
                 'INSERT OR IGNORE INTO email_threads (thread_id, connection_id, message_id, ref_headers, subject, from_address) VALUES (?, ?, ?, ?, ?, ?)'
               ).run(threadRootId, connId, _messageId, '', _subject, _from);
+              db.prepare('INSERT OR IGNORE INTO email_message_ids (message_id, thread_id, connection_id, direction) VALUES (?,?,?,?)')
+                .run(_messageId.slice(0, 500), threadRootId, connId, 'in');
             } catch (etErr) {
               console.error('[automation] email_threads insert error:', etErr.message);
             }

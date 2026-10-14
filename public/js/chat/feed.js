@@ -21,7 +21,9 @@ function appendFeedRootRow(m, inner) {
   // Avatar (36px)
   const avatarWrap = document.createElement('div');
   avatarWrap.className = 't-avatar';
-  if (m.automation?.provider) {
+  if (m.actor_type === 'ai' && m.automation?.provider) {
+    avatarWrap.appendChild(makeAgentViaConnAvatarEl(m, 36));
+  } else if (m.automation?.provider) {
     avatarWrap.appendChild(makeAutomationAvatarEl(m.automation.provider, 36));
   } else {
     avatarWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 36, m.sub_agent_label));
@@ -39,7 +41,10 @@ function appendFeedRootRow(m, inner) {
 
   const nameEl = document.createElement('span');
   nameEl.className = 't-name';
-  if (m.automation) {
+  if (m.actor_type === 'ai' && m.automation) {
+    nameEl.style.color = m.avatar_color;
+    nameEl.textContent = m.sub_agent_label || m.actor_name;
+  } else if (m.automation) {
     nameEl.textContent = m.automation.name || m.actor_name;
   } else {
     nameEl.style.color = m.avatar_color;
@@ -47,7 +52,13 @@ function appendFeedRootRow(m, inner) {
   }
   meta.appendChild(nameEl);
 
-  if (m.automation) {
+  if (m.actor_type === 'ai' && m.automation) {
+    const providerTag = document.createElement('span');
+    providerTag.className = 't-automation-tag';
+    const _pl = { gmail: 'Gmail', email: 'Email', slack: 'Slack', whatsapp: 'WhatsApp' };
+    providerTag.textContent = 'via ' + (_pl[m.automation.provider] || m.automation.provider || 'connection');
+    meta.appendChild(providerTag);
+  } else if (m.automation) {
     const autoTag = document.createElement('span');
     autoTag.className = 't-automation-tag';
     autoTag.textContent = 'Automation';

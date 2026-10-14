@@ -652,6 +652,9 @@ Klik **Connect & Show QR** untuk memulai sesi WhatsApp dan membuka modal QR code
 - **Folder** — folder mailbox yang dipantau (default: `INBOX`)
 - **Allowed senders** — satu alamat email atau wildcard domain per baris (contoh: `bos@perusahaan.com`, `*@kantor.com`). **Minimal satu entri wajib diisi** — koneksi tanpa allowed senders tidak akan memicu automation (default deny). Siapapun bisa mengirim email ke inbox, dan isi email bisa mencoba memanipulasi agent (prompt injection).
 - **Require sender verification** — saat aktif (default: aktif), email yang gagal verifikasi DMARC atau DKIM dibuang secara diam-diam. Ini mencegah alamat `From` palsu melewati allowlist.
+- **Sender name** *(opsional)* — nama tampilan yang muncul di header `From` email balasan (contoh: `Tim Dukungan`). Kalau dikosongkan, nama agent yang membalas digunakan sebagai fallback. Alamat pengirim tetap akun Gmail — hanya nama tampilan yang berubah.
+
+  > **Tips:** Isi dengan nama yang mudah dikenali (misalnya nama pemilik akun) agar penerima tidak bingung dan dapat sedikit membantu deliverability email.
 
 Koneksi email menggunakan **IMAP IDLE** untuk pengiriman realtime — sepenuhnya outbound dari server ke provider email, jadi tidak butuh endpoint publik atau aturan firewall. Bekerja lancar di belakang Tailscale.
 
@@ -702,13 +705,19 @@ Setelah minimal satu koneksi aktif, klik **+ new rule** untuk membuat aturan:
 
   Gunakan CLAUDE.md room untuk menginstruksikan agent kapan harus membaca riwayat dan bagaimana merespons.
 
-- **Watch Replies** *(hanya koneksi Slack)* — saat diaktifkan, balasan thread di Slack yang memicu automation ini akan diteruskan ke thread Stoa yang sama. Setiap balasan masuk dengan format:
+- **Watch Replies** *(koneksi Slack dan Email)* — saat diaktifkan, pesan lanjutan dalam percakapan yang sama akan diarahkan ke thread Stoa yang sudah ada, bukan membuka thread baru.
+
+  *Slack:* Balasan thread di Slack yang memicu automation ini diteruskan ke thread Stoa yang sama. Setiap balasan masuk dengan format:
 
   ```
   [New Reply on Thread]: nama_pengirim (id_pengirim) - isi pesan
   ```
 
-  Agent tidak otomatis membalas reply ini kecuali system prompt menginstruksikannya. Jika ada automation lain yang terpicu di Slack thread yang sama, pesannya akan masuk ke thread Stoa yang sudah ada (bukan membuat thread baru). Default: nonaktif.
+  Jika ada automation lain yang terpicu di Slack thread yang sama, pesannya juga masuk ke thread Stoa yang sudah ada.
+
+  *Email:* Email masuk yang header `In-Reply-To` atau `References`-nya cocok dengan pesan sebelumnya di koneksi yang sama akan diarahkan ke thread Stoa yang sudah ada. Hanya balasan dari pengirim yang sama dengan email awal yang diterima; email dari pengirim berbeda akan membuat thread baru. Ini memastikan agent punya konteks percakapan lengkap untuk pertukaran email multi-giliran.
+
+  Agent tidak otomatis membalas pesan lanjutan kecuali system prompt menginstruksikannya. Default: nonaktif.
 
 ### Aktifkan / Nonaktifkan
 
@@ -723,7 +732,7 @@ POST /api/rooms/{roomId}/email-reply
 {"thread_id": <id>, "body": "Isi balasan teks biasa"}
 ```
 
-Server menentukan semuanya secara otomatis: penerima selalu pengirim asli (dicek ulang terhadap allowlist), subjek mendapat prefix `Re:` (tidak didobel pada balasan berikutnya), dan header `In-Reply-To` / `References` memastikan threading yang benar di inbox penerima. Agent tidak pernah menangani kredensial.
+Server menentukan semuanya secara otomatis: penerima selalu pengirim asli (dicek ulang terhadap allowlist), subjek mendapat prefix `Re:` (tidak didobel pada balasan berikutnya), header `In-Reply-To` / `References` memastikan threading yang benar di inbox penerima, dan nama tampilan `From` diambil dari field **Sender name** koneksi (dengan fallback ke nama agent). Agent tidak pernah menangani kredensial.
 
 **Kapan membalas ditentukan sepenuhnya oleh system prompt room.** Dua pola umum:
 
@@ -775,7 +784,7 @@ Saat sebuah aturan otomasi mengirim pesan ke room, feed dan thread menampilkan p
 - **Tag "Automation"** — label kecil di sebelah nama pengirim, sehingga pesan yang dipicu otomasi mudah dibedakan dari pesan manusia
 - **Avatar provider** — logo provider koneksi (misalnya logo Slack untuk koneksi Slack) ditampilkan sebagai avatar. Untuk provider yang tidak dikenal, ikon bot generik digunakan sebagai fallback.
 
-**Relay Watch Reply (Slack):** Saat opsi *Watch Replies* diaktifkan pada aturan otomasi Slack, balasan thread yang diteruskan ke Stoa (ditampilkan sebagai `[New Reply on Thread]: ...`) mewarisi identitas otomasi yang memicu thread asal. Jika pesan root dibuat sebelum fitur ini ada dan tidak memiliki metadata otomasi, relay akan tampil sebagai "Slack" dengan logo Slack — bukan sebagai pesan manusia.
+**Relay Watch Reply (Slack dan Email):** Saat *Watch Replies* diaktifkan, pesan lanjutan yang diarahkan ke thread Stoa yang sudah ada mewarisi identitas otomasi yang memicu thread asal. Untuk Slack, ditampilkan sebagai `[New Reply on Thread]: ...`. Jika pesan root dibuat sebelum fitur ini ada dan tidak memiliki metadata otomasi, relay akan tampil sebagai "Slack" (atau "Email") dengan logo provider — bukan sebagai pesan manusia.
 
 **Otomasi yang dihapus:** Jika aturan otomasi dihapus setelah mengirim pesan, pesan-pesan tersebut tetap menampilkan nama pengirim dan logo provider sebagai snapshot. Nama rule dan provider disimpan di setiap pesan, sehingga menghapus rule tidak mempengaruhi tampilan history.
 

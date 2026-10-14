@@ -12,7 +12,7 @@ function autoBindEvents(container) {
       phoneNumber: '', maxMediaSizeMb: 100,
       emailPreset: 'gmail', emailHost: 'imap.gmail.com', emailPort: 993,
       emailSecure: true, emailUser: '', emailPassword: '',
-      emailFolder: 'INBOX', emailAllowedSenders: '', emailRequireAuthPass: true,
+      emailFolder: 'INBOX', emailAllowedSenders: '', emailRequireAuthPass: true, emailSenderName: '',
     };
     autoRender();
   }));
@@ -43,6 +43,7 @@ function autoBindEvents(container) {
       emailFolder: meta.folder || 'INBOX',
       emailAllowedSenders: (meta.allowedSenders || []).join('\n'),
       emailRequireAuthPass: meta.requireAuthPass !== false,
+      emailSenderName: meta.senderName || '',
     };
     autoRender();
   }));
@@ -375,6 +376,8 @@ function autoConnSyncForm() {
   if (eFolder)  autoState.connForm.emailFolder         = eFolder.value;
   if (eSenders) autoState.connForm.emailAllowedSenders = eSenders.value;
   if (ePreset)  autoState.connForm.emailPreset         = ePreset.value;
+  const eSenderName = document.getElementById('auto-conn-email-sender-name');
+  if (eSenderName) autoState.connForm.emailSenderName  = eSenderName.value;
 }
 
 function autoConnFormClose() {

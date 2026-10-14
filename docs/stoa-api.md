@@ -130,14 +130,14 @@ Body:
 - `thread_id` (integer, required): the thread that originated from an email automation
 - `body` (string, required): plain text reply content (max 20,000 characters)
 
-The server determines the recipient, subject, and threading headers automatically from the original email metadata. The agent never sees or handles email credentials.
+The server determines the recipient, subject, and threading headers automatically from the original email metadata. The agent never sees or handles email credentials. The display name in the From header is resolved from the connection's `senderName` metadata field, falling back to the agent's actor name, then the bare email address.
 
 Response (success):
 ```json
 {"ok": true, "message_id": 67890}
 ```
 
-After sending, a record message is posted in the thread showing what was sent.
+After sending, a record message is posted in the thread showing what was sent. The outgoing Message-ID is tracked so that subsequent replies from the recipient are routed back to the same thread (when the automation has Watch Replies enabled).
 
 **Error codes:**
 - `400` — missing/invalid fields, thread not from email, body too long
