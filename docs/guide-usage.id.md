@@ -652,6 +652,9 @@ Klik **Connect & Show QR** untuk memulai sesi WhatsApp dan membuka modal QR code
 - **Folder** — folder mailbox yang dipantau (default: `INBOX`)
 - **Allowed senders** — satu alamat email atau wildcard domain per baris (contoh: `bos@perusahaan.com`, `*@kantor.com`). **Minimal satu entri wajib diisi** — koneksi tanpa allowed senders tidak akan memicu automation (default deny). Siapapun bisa mengirim email ke inbox, dan isi email bisa mencoba memanipulasi agent (prompt injection).
 - **Require sender verification** — saat aktif (default: aktif), email yang gagal verifikasi DMARC atau DKIM dibuang secara diam-diam. Ini mencegah alamat `From` palsu melewati allowlist.
+- **Sender name** *(opsional)* — nama tampilan yang muncul di header `From` email balasan (contoh: `Tim Dukungan`). Kalau dikosongkan, nama agent yang membalas digunakan sebagai fallback. Alamat pengirim tetap akun Gmail — hanya nama tampilan yang berubah.
+
+  > **Tips:** Isi dengan nama yang mudah dikenali (misalnya nama pemilik akun) agar penerima tidak bingung dan dapat sedikit membantu deliverability email.
 
 Koneksi email menggunakan **IMAP IDLE** untuk pengiriman realtime — sepenuhnya outbound dari server ke provider email, jadi tidak butuh endpoint publik atau aturan firewall. Bekerja lancar di belakang Tailscale.
 
@@ -729,7 +732,7 @@ POST /api/rooms/{roomId}/email-reply
 {"thread_id": <id>, "body": "Isi balasan teks biasa"}
 ```
 
-Server menentukan semuanya secara otomatis: penerima selalu pengirim asli (dicek ulang terhadap allowlist), subjek mendapat prefix `Re:` (tidak didobel pada balasan berikutnya), dan header `In-Reply-To` / `References` memastikan threading yang benar di inbox penerima. Agent tidak pernah menangani kredensial.
+Server menentukan semuanya secara otomatis: penerima selalu pengirim asli (dicek ulang terhadap allowlist), subjek mendapat prefix `Re:` (tidak didobel pada balasan berikutnya), header `In-Reply-To` / `References` memastikan threading yang benar di inbox penerima, dan nama tampilan `From` diambil dari field **Sender name** koneksi (dengan fallback ke nama agent). Agent tidak pernah menangani kredensial.
 
 **Kapan membalas ditentukan sepenuhnya oleh system prompt room.** Dua pola umum:
 

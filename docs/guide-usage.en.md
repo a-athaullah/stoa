@@ -651,6 +651,9 @@ Clicking **Connect & Show QR** starts the WhatsApp session and opens a QR code m
 - **Folder** — mailbox folder to monitor (default: `INBOX`)
 - **Allowed senders** — one email address or domain wildcard per line (e.g., `boss@example.com`, `*@company.com`). **At least one entry is required** — connections with no allowed senders will not trigger automations (default deny). Anyone can send an email to your inbox, and email content could attempt to manipulate the agent (prompt injection).
 - **Require sender verification** — when enabled (default on), emails that fail DMARC or DKIM verification are silently dropped. This prevents spoofed `From` addresses from bypassing the allowlist.
+- **Sender name** *(optional)* — the display name shown in the `From` header of outgoing replies (e.g., `Support Team`). If left empty, the replying agent's name is used as fallback. The sending address is always the Gmail account — only the display name changes.
+
+  > **Tip:** Setting a recognizable name (e.g., the account owner's name) helps recipients identify the sender and can improve email deliverability.
 
 Email connections use **IMAP IDLE** for real-time delivery — entirely outbound from your server to the mail provider, so no public endpoint or firewall rule is needed. Works seamlessly behind Tailscale.
 
@@ -728,7 +731,7 @@ POST /api/rooms/{roomId}/email-reply
 {"thread_id": <id>, "body": "Plain-text reply"}
 ```
 
-The server resolves everything automatically: the recipient is always the original sender (re-verified against the allowlist), the subject gets a `Re:` prefix (not doubled on subsequent replies), and `In-Reply-To` / `References` headers ensure correct threading in the recipient's inbox. The agent never handles credentials.
+The server resolves everything automatically: the recipient is always the original sender (re-verified against the allowlist), the subject gets a `Re:` prefix (not doubled on subsequent replies), `In-Reply-To` / `References` headers ensure correct threading in the recipient's inbox, and the `From` display name is taken from the connection's **Sender name** field (falling back to the agent's name). The agent never handles credentials.
 
 **When to reply is controlled by the room's system prompt.** Two common patterns:
 
