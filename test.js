@@ -4164,45 +4164,71 @@ async function run() {
     assert.strictEqual(row.direction, 'in');
   });
 
-  await test('Email watch_reply — reply routed to existing thread via In-Reply-To match', async () => {
+  // Helper: replicates findEmailReplyThread from server.js
+  function findEmailReplyThread(db, { connId, from, refIds, targetRoomId }) {
+    if (!refIds || refIds.length === 0 || !connId) return null;
+    const placeholders = refIds.map(() => '?').join(',');
+    const matchRow = db.prepare(
+      `SELECT emi.thread_id, et.from_address FROM email_message_ids emi
+       JOIN email_threads et ON et.thread_id = emi.thread_id
+       WHERE emi.message_id IN (${placeholders}) AND emi.connection_id = ?`
+    ).get(...refIds, connId);
+    if (!matchRow) return null;
+    if (from.toLowerCase() !== matchRow.from_address.toLowerCase()) return null;
+    const threadRoot = db.prepare('SELECT id, room_id FROM messages WHERE id=?').get(matchRow.thread_id);
+    if (!threadRoot || threadRoot.room_id !== targetRoomId) return null;
+    return { threadId: matchRow.thread_id, roomId: threadRoot.room_id };
+  }
+
+  await test('Email watch_reply — same sender routes to existing thread', async () => {
     if (!_erTestRoomId || !_erTestConnId) { console.log('    (skipped)'); return; }
     const db = require('./db');
+    const match = findEmailReplyThread(db, {
+      connId: _erTestConnId, from: 'allowed@example.com',
+      refIds: ['<msg123@mail.example.com>'], targetRoomId: _erTestRoomId,
+    });
+    assert.ok(match, 'same sender + same connection + matching message_id should route');
+    assert.strictEqual(match.threadId, _erTestThreadId);
+  });
 
-    // Create automation with watch_reply
-    let autoId = _ewTestAutoId;
-    if (!autoId) {
-      const r = await req('POST', '/api/automations', {
-        name: '__test_email_watch2__', trigger_type: 'email', trigger_event: 'message',
-        target_room_id: _erTestRoomId, prompt_template: '{{email.body}}',
-        connection_id: _erTestConnId, watch_reply: true,
-      });
-      autoId = r.body.id;
-    }
+  await test('Email watch_reply — same sender case-insensitive routes correctly', async () => {
+    if (!_erTestRoomId || !_erTestConnId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const match = findEmailReplyThread(db, {
+      connId: _erTestConnId, from: 'ALLOWED@EXAMPLE.COM',
+      refIds: ['<msg123@mail.example.com>'], targetRoomId: _erTestRoomId,
+    });
+    assert.ok(match, 'case-insensitive sender should still route');
+  });
 
-    // Simulate email_event with In-Reply-To matching existing message_id
-    const msgsBefore = db.prepare('SELECT COUNT(*) as cnt FROM messages WHERE room_id=? AND thread_id=?').get(_erTestRoomId, _erTestThreadId);
-
-    // Emit email_event via connectionManager (need to test the handler)
-    // Instead, we test the DB state directly: insert email_message_ids for outgoing, then check routing
-    // The routing logic is in server.js event handler; for unit-level we verify DB operations
-    const outMsgId = '<test-out-reply@mail.example.com>';
-    db.prepare('INSERT OR IGNORE INTO email_message_ids (message_id, thread_id, connection_id, direction) VALUES (?,?,?,?)')
-      .run(outMsgId, _erTestThreadId, _erTestConnId, 'out');
-
-    const outRow = db.prepare('SELECT * FROM email_message_ids WHERE message_id=?').get(outMsgId);
-    assert.ok(outRow, 'outgoing message_id should be stored');
-    assert.strictEqual(outRow.direction, 'out');
-    assert.strictEqual(outRow.thread_id, _erTestThreadId);
+  await test('Email watch_reply — different sender rejected (anti-spoof)', async () => {
+    if (!_erTestRoomId || !_erTestConnId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const match = findEmailReplyThread(db, {
+      connId: _erTestConnId, from: 'attacker@evil.com',
+      refIds: ['<msg123@mail.example.com>'], targetRoomId: _erTestRoomId,
+    });
+    assert.strictEqual(match, null, 'different sender must not route to existing thread');
   });
 
   await test('Email watch_reply — connection_id mismatch prevents routing', async () => {
-    if (!_erTestConnId) { console.log('    (skipped)'); return; }
+    if (!_erTestRoomId || !_erTestConnId) { console.log('    (skipped)'); return; }
     const db = require('./db');
-    // Query with wrong connection_id should return nothing
-    const row = db.prepare(
-      'SELECT * FROM email_message_ids WHERE message_id=? AND connection_id=?'
-    ).get('<msg123@mail.example.com>', 99999);
-    assert.strictEqual(row, undefined, 'different connection_id should not match');
+    const match = findEmailReplyThread(db, {
+      connId: 99999, from: 'allowed@example.com',
+      refIds: ['<msg123@mail.example.com>'], targetRoomId: _erTestRoomId,
+    });
+    assert.strictEqual(match, null, 'different connection_id should not match');
+  });
+
+  await test('Email watch_reply — room mismatch prevents routing', async () => {
+    if (!_erTestRoomId || !_erTestConnId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const match = findEmailReplyThread(db, {
+      connId: _erTestConnId, from: 'allowed@example.com',
+      refIds: ['<msg123@mail.example.com>'], targetRoomId: 99999,
+    });
+    assert.strictEqual(match, null, 'wrong target room should not match');
   });
 
   await test('Email watch_reply — outgoing reply Message-ID saved via email-reply endpoint', async () => {

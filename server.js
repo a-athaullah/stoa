@@ -4201,6 +4201,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
       if (connectionManager.isRunning(connId)) {
         res.writeHead(409); return res.end(JSON.stringify({ error: 'Disconnect first' }));
       }
+      db.prepare('DELETE FROM email_message_ids WHERE connection_id=?').run(connId);
       db.prepare('DELETE FROM automation_connections WHERE id=?').run(connId);
       return json(res, { ok: true });
     }
@@ -6913,6 +6914,21 @@ function stripWaReplyMarkers(content) {
   return replaced;
 }
 
+function findEmailReplyThread(db, { connId, from, refIds, targetRoomId }) {
+  if (!refIds || refIds.length === 0 || !connId) return null;
+  const placeholders = refIds.map(() => '?').join(',');
+  const matchRow = db.prepare(
+    `SELECT emi.thread_id, et.from_address FROM email_message_ids emi
+     JOIN email_threads et ON et.thread_id = emi.thread_id
+     WHERE emi.message_id IN (${placeholders}) AND emi.connection_id = ?`
+  ).get(...refIds, connId);
+  if (!matchRow) return null;
+  if (from.toLowerCase() !== matchRow.from_address.toLowerCase()) return null;
+  const threadRoot = db.prepare('SELECT id, room_id FROM messages WHERE id=?').get(matchRow.thread_id);
+  if (!threadRoot || threadRoot.room_id !== targetRoomId) return null;
+  return { threadId: matchRow.thread_id, roomId: threadRoot.room_id };
+}
+
 function broadcast(roomId, data) {
   const clients = roomClients.get(roomId);
   if (!clients) return;
@@ -7354,20 +7370,13 @@ connectionManager.on('email_event', async ({ eventType, connId, uid, messageId, 
     console.log(`[${ts}] [email:recv] from=${from} subject="${(subject || '').slice(0, 60)}" conn=${connId}`);
 
     // Watch reply: route email replies to existing Stoa threads
-    const refIds = [inReplyTo, ...(references || [])].filter(Boolean).map(id => id.slice(0, 500));
-    if (refIds.length > 0 && connId) {
+    const refIds = [inReplyTo, ...(references || []).slice(-49)].filter(Boolean).map(id => id.slice(0, 500));
+    const dedupedRefIds = [...new Set(refIds)].slice(0, 50);
+    if (dedupedRefIds.length > 0 && connId) {
       for (const auto of automations) {
         if (!auto.watch_reply) continue;
-        const placeholders = refIds.map(() => '?').join(',');
-        const matchRow = db.prepare(
-          `SELECT emi.thread_id, et.from_address FROM email_message_ids emi
-           JOIN email_threads et ON et.thread_id = emi.thread_id
-           WHERE emi.message_id IN (${placeholders}) AND emi.connection_id = ?`
-        ).get(...refIds, connId);
-        if (!matchRow) continue;
-        if (from.toLowerCase() !== matchRow.from_address.toLowerCase()) continue;
-        const threadRoot = db.prepare('SELECT id, room_id FROM messages WHERE id=?').get(matchRow.thread_id);
-        if (!threadRoot || threadRoot.room_id !== auto.target_room_id) continue;
+        const match = findEmailReplyThread(db, { connId, from, refIds: dedupedRefIds, targetRoomId: auto.target_room_id });
+        if (!match) continue;
 
         let prompt = auto.prompt_template
           .replace(/\{\{email\.from\}\}/g, from)
@@ -7377,21 +7386,21 @@ connectionManager.on('email_event', async ({ eventType, connId, uid, messageId, 
           .replace(/\{\{email\.date\}\}/g, date)
           .replace(/\{\{email\.has_attachments\}\}/g, String(hasAttachments));
 
-        const _threadId = matchRow.thread_id;
+        const _threadId = match.threadId;
         console.log(`[automation] "${auto.name}" watch_reply routed email to thread ${_threadId} (from=${from})`);
         (async () => {
           try {
-            await handleHumanMessage(threadRoot.room_id, prompt, null, null, null, null, _threadId, { id: auto.id, name: auto.name, provider: emailProvider });
+            await handleHumanMessage(match.roomId, prompt, null, null, null, null, _threadId, { id: auto.id, name: auto.name, provider: emailProvider });
             db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(auto.id);
             if (messageId) {
               db.prepare('INSERT OR IGNORE INTO email_message_ids (message_id, thread_id, connection_id, direction) VALUES (?,?,?,?)')
                 .run(messageId.slice(0, 500), _threadId, connId, 'in');
-              const refChain = refIds.slice(0, 20).join(' ');
+              const refChain = dedupedRefIds.slice(0, 20).join(' ');
               db.prepare('UPDATE email_threads SET message_id=?, ref_headers=? WHERE thread_id=?')
                 .run(messageId.slice(0, 500), refChain.slice(0, 4000), _threadId);
             }
           } catch (e) {
-            console.error(`[automation] watch_reply room ${threadRoot.room_id} error:`, e.message);
+            console.error(`[automation] watch_reply room ${match.roomId} error:`, e.message);
           }
         })();
         return;

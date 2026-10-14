@@ -352,7 +352,7 @@ CREATE INDEX IF NOT EXISTS idx_email_threads_connection ON email_threads(connect
 CREATE TABLE IF NOT EXISTS email_message_ids (
   message_id   TEXT PRIMARY KEY,
   thread_id    INTEGER NOT NULL,
-  connection_id INTEGER NOT NULL,
+  connection_id INTEGER NOT NULL REFERENCES automation_connections(id) ON DELETE CASCADE,
   direction    TEXT NOT NULL CHECK(direction IN ('in','out')),
   created_at   TEXT DEFAULT (datetime('now'))
 );
