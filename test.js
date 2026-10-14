@@ -3798,6 +3798,325 @@ async function run() {
     assert.strictEqual(r.status, 400);
   });
 
+  // ── Email reply via agent tool (Fase 1.5) ──────────────────────────────────
+  let _erTestRoomId, _erTestActorId, _erTestSecret, _erTestAgentWs;
+  let _erTestConnId, _erTestThreadId;
+
+  await test('Email reply — setup: agent + room + email connection + thread', async () => {
+    const agent = await createOnlineTestAgent('__test-email-reply-agent', '/tmp/stoa-test-email-reply');
+    if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+    _erTestActorId = agent.actorId;
+    _erTestSecret = agent.secret;
+    _erTestAgentWs = agent.ws;
+
+    const roomR = await req('POST', '/api/rooms', { title: '__test-email-reply-room__', workdir_id: agent.workdirId, participant_ids: [_erTestActorId] });
+    assert.strictEqual(roomR.status, 200, `create room failed: ${JSON.stringify(roomR.body)}`);
+    _erTestRoomId = roomR.body.id;
+    testRoomIds.push(_erTestRoomId);
+    if (_erTestAgentWs) { _erTestAgentWs.close(); _erTestAgentWs = null; }
+
+    // Create email connection with gmail preset
+    const connR = await req('POST', '/api/automations/connections', {
+      provider: 'email', name: '__test_email_reply_conn__', user: 'test-reply@gmail.com', password: 'fake-smtp-pass',
+      preset: 'gmail', allowedSenders: ['allowed@example.com', '*@corp.com'],
+    });
+    _erTestConnId = connR.body.id;
+    assert.ok(_erTestConnId, 'email connection should be created');
+
+    // Create a root message (simulating an email automation trigger)
+    const db = require('./db');
+    const ptcp = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1").get(_erTestRoomId);
+    assert.ok(ptcp, 'room should have human participant');
+    const ins = db.prepare(
+      "INSERT INTO messages (room_id, participant_id, content, automation_provider, state) VALUES (?,?,?,?,'complete')"
+    ).run(_erTestRoomId, ptcp.id, 'Email from allowed@example.com: Test subject', 'gmail');
+    _erTestThreadId = Number(ins.lastInsertRowid);
+
+    // Insert email_threads metadata
+    db.prepare(
+      'INSERT INTO email_threads (thread_id, connection_id, message_id, ref_headers, subject, from_address) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(_erTestThreadId, _erTestConnId, '<msg123@mail.example.com>', '<prev@mail.example.com>', 'Test subject', 'allowed@example.com');
+  });
+
+  await test('Email reply — no auth → 403', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'hello' });
+    assert.strictEqual(r.status, 403);
+  });
+
+  await test('Email reply — missing thread_id → 400', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { body: 'hello' }, {
+      'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+    });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.body.error.includes('thread_id'));
+  });
+
+  await test('Email reply — empty body → 400', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: '' }, {
+      'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+    });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.body.error.includes('body'));
+  });
+
+  await test('Email reply — body too long → 400', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'x'.repeat(20001) }, {
+      'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+    });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.body.error.includes('too long'));
+  });
+
+  await test('Email reply — thread not from email → 400', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    // Create a normal thread (no email_threads entry)
+    const db = require('./db');
+    const ptcp = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1").get(_erTestRoomId);
+    const ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'complete')").run(_erTestRoomId, ptcp.id, 'not an email thread');
+    const nonEmailThreadId = Number(ins.lastInsertRowid);
+    const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: nonEmailThreadId, body: 'hello' }, {
+      'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+    });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.body.error.includes('not from an email'));
+  });
+
+  await test('Email reply — agent not member of room → 403', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    // Create a different agent that is NOT a member of the room
+    const agent2 = await createOnlineTestAgent('__test-email-reply-agent2', '/tmp/stoa-test-email-reply2');
+    if (!agent2) { console.log('    (skipped — could not create second agent)'); return; }
+    if (agent2.ws) agent2.ws.close();
+    const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'hello' }, {
+      'x-agent-id': String(agent2.actorId), 'x-agent-secret': agent2.secret,
+    });
+    assert.strictEqual(r.status, 403);
+    assert.ok(r.body.error.includes('not a participant'));
+  });
+
+  await test('Email reply — recipient not in allowlist → 403', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    // Create thread from a sender NOT in allowlist
+    const ptcp = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1").get(_erTestRoomId);
+    const ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'complete')").run(_erTestRoomId, ptcp.id, 'email from blocked sender');
+    const blockedThreadId = Number(ins.lastInsertRowid);
+    db.prepare('INSERT INTO email_threads (thread_id, connection_id, message_id, ref_headers, subject, from_address) VALUES (?,?,?,?,?,?)')
+      .run(blockedThreadId, _erTestConnId, '<blocked@mail.com>', '', 'Blocked', 'notinlist@random.com');
+    const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: blockedThreadId, body: 'hello' }, {
+      'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+    });
+    assert.strictEqual(r.status, 403);
+    assert.ok(r.body.error.includes('allowlist'));
+  });
+
+  await test('Email reply — success with stub SMTP: message recorded in thread', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const net = require('net');
+    let smtpData = '';
+    let inData = false;
+    const smtpServer = net.createServer(sock => {
+      sock.write('220 stub SMTP\r\n');
+      let buf = '';
+      sock.on('data', chunk => {
+        buf += chunk.toString();
+        if (inData) {
+          smtpData += chunk.toString();
+          if (buf.includes('\r\n.\r\n')) {
+            inData = false;
+            buf = '';
+            sock.write('250 OK\r\n');
+          }
+          return;
+        }
+        const lines = buf.split('\r\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (/^(EHLO|HELO)/i.test(line)) {
+            sock.write('250-stub\r\n250-SIZE 10485760\r\n250-8BITMIME\r\n250 AUTH PLAIN LOGIN\r\n');
+          } else if (/^AUTH/i.test(line)) {
+            sock.write('235 OK\r\n');
+          } else if (/^MAIL FROM/i.test(line)) {
+            sock.write('250 OK\r\n');
+          } else if (/^RCPT TO/i.test(line)) {
+            sock.write('250 OK\r\n');
+          } else if (/^DATA$/i.test(line)) {
+            inData = true;
+            sock.write('354 Go\r\n');
+          } else if (/^QUIT/i.test(line)) {
+            sock.write('221 Bye\r\n');
+            sock.end();
+          }
+        }
+      });
+    });
+    const smtpPort = await new Promise(resolve => {
+      smtpServer.listen(0, '127.0.0.1', () => resolve(smtpServer.address().port));
+    });
+
+    const db = require('./db');
+    const connRow = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(_erTestConnId);
+    const meta = JSON.parse(connRow.metadata);
+    meta.preset = 'custom';
+    meta.smtpHost = '127.0.0.1';
+    meta.smtpPort = smtpPort;
+    meta.smtpSecure = false;
+    db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+
+    try {
+      const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'This is a reply' }, {
+        'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+      });
+      assert.strictEqual(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+      assert.ok(r.body.ok);
+      assert.ok(r.body.message_id);
+
+      assert.ok(smtpData.includes('allowed@example.com'), 'SMTP data should contain recipient');
+      assert.ok(smtpData.includes('Re: Test subject'), 'SMTP data should contain subject');
+      assert.ok(smtpData.includes('In-Reply-To:'), 'SMTP data should contain In-Reply-To');
+      assert.ok(smtpData.includes('<msg123@mail.example.com>'), 'SMTP data should contain message-id');
+      assert.ok(smtpData.includes('This is a reply'), 'SMTP data should contain body text');
+
+      const msgR = await req('GET', `/api/messages/${r.body.message_id}`);
+      assert.strictEqual(msgR.status, 200);
+      assert.ok(msgR.body.content.includes('[Email sent to'));
+      assert.ok(msgR.body.content.includes('allowed@example.com'));
+      assert.ok(msgR.body.content.includes('This is a reply'));
+      assert.strictEqual(msgR.body.thread_id, _erTestThreadId);
+    } finally {
+      smtpServer.close();
+      meta.preset = 'gmail';
+      delete meta.smtpHost; delete meta.smtpPort; delete meta.smtpSecure;
+      db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    }
+  });
+
+  await test('Email reply — Re: not doubled when subject already has Re:', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const net = require('net');
+    let smtpData = '';
+    let inData = false;
+    const smtpServer = net.createServer(sock => {
+      sock.write('220 stub SMTP\r\n');
+      let buf = '';
+      sock.on('data', chunk => {
+        buf += chunk.toString();
+        if (inData) {
+          smtpData += chunk.toString();
+          if (buf.includes('\r\n.\r\n')) { inData = false; buf = ''; sock.write('250 OK\r\n'); }
+          return;
+        }
+        const lines = buf.split('\r\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (/^(EHLO|HELO)/i.test(line)) sock.write('250-stub\r\n250-SIZE 10485760\r\n250-8BITMIME\r\n250 AUTH PLAIN LOGIN\r\n');
+          else if (/^AUTH/i.test(line)) sock.write('235 OK\r\n');
+          else if (/^MAIL FROM/i.test(line) || /^RCPT TO/i.test(line)) sock.write('250 OK\r\n');
+          else if (/^DATA$/i.test(line)) { inData = true; sock.write('354 Go\r\n'); }
+          else if (/^QUIT/i.test(line)) { sock.write('221 Bye\r\n'); sock.end(); }
+        }
+      });
+    });
+    const smtpPort = await new Promise(resolve => {
+      smtpServer.listen(0, '127.0.0.1', () => resolve(smtpServer.address().port));
+    });
+
+    const ptcp = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1").get(_erTestRoomId);
+    const ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'complete')").run(_erTestRoomId, ptcp.id, 'email re test');
+    const reThreadId = Number(ins.lastInsertRowid);
+    db.prepare('INSERT INTO email_threads (thread_id, connection_id, message_id, ref_headers, subject, from_address) VALUES (?,?,?,?,?,?)')
+      .run(reThreadId, _erTestConnId, '<re@mail.com>', '', 'Re: Already has prefix', 'allowed@example.com');
+
+    const connRow = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(_erTestConnId);
+    const meta = JSON.parse(connRow.metadata);
+    meta.preset = 'custom'; meta.smtpHost = '127.0.0.1'; meta.smtpPort = smtpPort; meta.smtpSecure = false;
+    db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+
+    try {
+      const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: reThreadId, body: 'reply' }, {
+        'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+      });
+      assert.strictEqual(r.status, 200, `expected 200: ${JSON.stringify(r.body)}`);
+      assert.ok(!smtpData.includes('Re: Re:'), 'should not double Re: prefix');
+      assert.ok(smtpData.includes('Re: Already has prefix'), 'subject should preserve existing Re:');
+    } finally {
+      smtpServer.close();
+      meta.preset = 'gmail'; delete meta.smtpHost; delete meta.smtpPort; delete meta.smtpSecure;
+      db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    }
+  });
+
+  await test('Email reply — wildcard domain allowlist match works', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const net = require('net');
+    let inData = false;
+    const smtpServer = net.createServer(sock => {
+      sock.write('220 stub SMTP\r\n');
+      let buf = '';
+      sock.on('data', chunk => {
+        buf += chunk.toString();
+        if (inData) {
+          if (buf.includes('\r\n.\r\n')) { inData = false; buf = ''; sock.write('250 OK\r\n'); }
+          return;
+        }
+        const lines = buf.split('\r\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (/^(EHLO|HELO)/i.test(line)) sock.write('250-stub\r\n250-SIZE 10485760\r\n250-8BITMIME\r\n250 AUTH PLAIN LOGIN\r\n');
+          else if (/^AUTH/i.test(line)) sock.write('235 OK\r\n');
+          else if (/^MAIL FROM/i.test(line) || /^RCPT TO/i.test(line)) sock.write('250 OK\r\n');
+          else if (/^DATA$/i.test(line)) { inData = true; sock.write('354 Go\r\n'); }
+          else if (/^QUIT/i.test(line)) { sock.write('221 Bye\r\n'); sock.end(); }
+        }
+      });
+    });
+    const smtpPort = await new Promise(resolve => {
+      smtpServer.listen(0, '127.0.0.1', () => resolve(smtpServer.address().port));
+    });
+
+    const ptcp = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1").get(_erTestRoomId);
+    const ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'complete')").run(_erTestRoomId, ptcp.id, 'wildcard test');
+    const wcThreadId = Number(ins.lastInsertRowid);
+    db.prepare('INSERT INTO email_threads (thread_id, connection_id, message_id, ref_headers, subject, from_address) VALUES (?,?,?,?,?,?)')
+      .run(wcThreadId, _erTestConnId, '<wc@mail.com>', '', 'Wildcard', 'someone@corp.com');
+
+    const connRow = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(_erTestConnId);
+    const meta = JSON.parse(connRow.metadata);
+    meta.preset = 'custom'; meta.smtpHost = '127.0.0.1'; meta.smtpPort = smtpPort; meta.smtpSecure = false;
+    db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+
+    try {
+      const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: wcThreadId, body: 'reply to wildcard' }, {
+        'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+      });
+      assert.strictEqual(r.status, 200, `wildcard domain should be allowed: ${JSON.stringify(r.body)}`);
+    } finally {
+      smtpServer.close();
+      meta.preset = 'gmail'; delete meta.smtpHost; delete meta.smtpPort; delete meta.smtpSecure;
+      db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    }
+  });
+
+  await test('Email reply — provider avatar: gmail and email keys exist in _AUTOMATION_LOGOS', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'public/js/core.js'), 'utf8');
+    assert.ok(src.includes("gmail:"), '_AUTOMATION_LOGOS should have gmail key');
+    assert.ok(src.includes("email:"), '_AUTOMATION_LOGOS should have email key');
+    const logosMatch = src.match(/const _AUTOMATION_LOGOS\s*=\s*\{([^}]+(?:\{[^}]*\}[^}]*)*)?\}/s);
+    assert.ok(logosMatch, '_AUTOMATION_LOGOS should be defined');
+  });
+
+  await test('Email reply — cleanup', async () => {
+    if (_erTestConnId) {
+      await req('DELETE', `/api/automations/connections/${_erTestConnId}`);
+    }
+  });
+
   // ── Automation sender identity ──────────────────────────────────────────────
   let _autoSenderTestMsgId = null;
   let _autoSenderTestThreadRoot = null;
