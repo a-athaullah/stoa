@@ -775,6 +775,10 @@ Saat sebuah aturan otomasi mengirim pesan ke room, feed dan thread menampilkan p
 - **Tag "Automation"** — label kecil di sebelah nama pengirim, sehingga pesan yang dipicu otomasi mudah dibedakan dari pesan manusia
 - **Avatar provider** — logo provider koneksi (misalnya logo Slack untuk koneksi Slack) ditampilkan sebagai avatar. Untuk provider yang tidak dikenal, ikon bot generik digunakan sebagai fallback.
 
+**Relay Watch Reply (Slack):** Saat opsi *Watch Replies* diaktifkan pada aturan otomasi Slack, balasan thread yang diteruskan ke Stoa (ditampilkan sebagai `[New Reply on Thread]: ...`) mewarisi identitas otomasi yang memicu thread asal. Jika pesan root dibuat sebelum fitur ini ada dan tidak memiliki metadata otomasi, relay akan tampil sebagai "Slack" dengan logo Slack — bukan sebagai pesan manusia.
+
+**Otomasi yang dihapus:** Jika aturan otomasi dihapus setelah mengirim pesan, pesan-pesan tersebut tetap menampilkan nama pengirim dan logo provider sebagai snapshot. Nama rule dan provider disimpan di setiap pesan, sehingga menghapus rule tidak mempengaruhi tampilan history.
+
 Hanya pesan yang dikirim *setelah* fitur ini diperkenalkan yang membawa identitas otomasi. Pesan otomasi yang lebih lama tetap ditampilkan seperti sebelumnya.
 
 ---

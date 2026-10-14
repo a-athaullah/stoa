@@ -4228,8 +4228,72 @@ async function run() {
     assert.deepStrictEqual(autoMsg.automation, { id: _autoSenderTestAutoId, name: 'Test Slack Bot', provider: 'slack' });
   });
 
+  let _autoSenderDeletedMsgId = null;
+  let _autoSenderFallbackMsgId = null;
+
+  await test('automation sender — deleted automation (id NULL, name/provider set) still enriches', async () => {
+    if (!firstRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const ptcp = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1").get(firstRoomId);
+    if (!ptcp) { console.log('    (skipped — no human participant)'); return; }
+    const ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, automation_id, automation_name, automation_provider, state) VALUES (?,?,?,?,?,?,'complete')")
+      .run(firstRoomId, ptcp.id, '__test_auto_deleted__', null, 'Deleted Bot', 'slack');
+    _autoSenderDeletedMsgId = Number(ins.lastInsertRowid);
+    const r = await req('GET', `/api/messages/${_autoSenderDeletedMsgId}`);
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.automation !== null, 'automation should not be null when provider is set');
+    assert.strictEqual(r.body.automation.id, null, 'id should be null for deleted automation');
+    assert.strictEqual(r.body.automation.name, 'Deleted Bot');
+    assert.strictEqual(r.body.automation.provider, 'slack');
+  });
+
+  await test('automation sender — fallback (name only, no id) still enriches', async () => {
+    if (!firstRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const ptcp = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1").get(firstRoomId);
+    if (!ptcp) { console.log('    (skipped — no human participant)'); return; }
+    const ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, automation_id, automation_name, automation_provider, state) VALUES (?,?,?,?,?,?,'complete')")
+      .run(firstRoomId, ptcp.id, '__test_auto_fallback__', null, 'Slack', 'slack');
+    _autoSenderFallbackMsgId = Number(ins.lastInsertRowid);
+    const r = await req('GET', `/api/messages/${_autoSenderFallbackMsgId}`);
+    assert.strictEqual(r.status, 200);
+    assert.deepStrictEqual(r.body.automation, { id: null, name: 'Slack', provider: 'slack' });
+  });
+
+  await test('automation sender — enrichAutomation behavioral: keys on provider/name, not id', async () => {
+    const { enrichAutomation } = require('./lib/automation-identity');
+    const full = enrichAutomation({ automation_id: 5, automation_name: 'Bot', automation_provider: 'slack', content: 'x' });
+    assert.deepStrictEqual(full.automation, { id: 5, name: 'Bot', provider: 'slack' });
+    assert.strictEqual(full.automation_id, undefined);
+    assert.strictEqual(full.automation_name, undefined);
+    assert.strictEqual(full.automation_provider, undefined);
+
+    const nullId = enrichAutomation({ automation_id: null, automation_name: 'Gone', automation_provider: 'slack', content: 'y' });
+    assert.deepStrictEqual(nullId.automation, { id: null, name: 'Gone', provider: 'slack' });
+
+    const providerOnly = enrichAutomation({ automation_id: null, automation_name: null, automation_provider: 'whatsapp', content: 'z' });
+    assert.deepStrictEqual(providerOnly.automation, { id: null, name: null, provider: 'whatsapp' });
+
+    const none = enrichAutomation({ automation_id: null, automation_name: null, automation_provider: null, content: 'w' });
+    assert.strictEqual(none.automation, null);
+  });
+
+  await test('automation sender — watchReplyAutomation: root with metadata, without, and deleted', async () => {
+    const { watchReplyAutomation } = require('./lib/automation-identity');
+    const withMeta = watchReplyAutomation({ automation_id: 3, automation_name: 'PR Bot', automation_provider: 'slack' });
+    assert.deepStrictEqual(withMeta, { id: 3, name: 'PR Bot', provider: 'slack' });
+
+    const noMeta = watchReplyAutomation({ automation_id: null, automation_name: null, automation_provider: null });
+    assert.deepStrictEqual(noMeta, { id: null, name: 'Slack', provider: 'slack' });
+
+    const deleted = watchReplyAutomation({ automation_id: null, automation_name: 'Old Bot', automation_provider: 'slack' });
+    assert.deepStrictEqual(deleted, { id: null, name: 'Old Bot', provider: 'slack' });
+  });
+
   await test('automation sender — teardown', async () => {
     const db = require('./db');
+    if (_autoSenderFallbackMsgId) db.prepare('DELETE FROM messages WHERE id=?').run(_autoSenderFallbackMsgId);
+    if (_autoSenderDeletedMsgId) db.prepare('DELETE FROM messages WHERE id=?').run(_autoSenderDeletedMsgId);
     if (_autoSenderTestReplyId) db.prepare('DELETE FROM messages WHERE id=?').run(_autoSenderTestReplyId);
     if (_autoSenderTestThreadRoot) db.prepare('DELETE FROM messages WHERE id=?').run(_autoSenderTestThreadRoot);
     if (_autoSenderTestMsgId) db.prepare('DELETE FROM messages WHERE id=?').run(_autoSenderTestMsgId);

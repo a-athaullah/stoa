@@ -774,6 +774,10 @@ When an automation rule sends a message to a room, the chat feed and thread disp
 - **"Automation" tag** — a small label shown next to the sender name, making automation-triggered messages visually distinct from human messages
 - **Provider avatar** — the connection's provider logo (e.g. the Slack logo for Slack connections) is shown as the avatar. For unknown providers, a generic bot icon is used as fallback.
 
+**Watch Reply forwarding (Slack):** When the *Watch Replies* option is enabled on a Slack automation rule, thread replies forwarded to Stoa (shown as `[New Reply on Thread]: ...`) inherit the identity of the automation that triggered the original thread. If the root message predates this feature and has no automation metadata, the reply falls back to displaying as "Slack" with the Slack logo — not as a human message.
+
+**Deleted automations:** If an automation rule is deleted after it has sent messages, those messages retain their sender name and provider logo as a snapshot. The rule's name and provider are stored on each message, so deleting the rule does not affect historical display.
+
 Only messages sent *after* this feature was introduced carry automation identity. Earlier automation messages continue to display as they did before.
 
 ---
