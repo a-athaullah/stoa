@@ -2212,20 +2212,22 @@ const server = http.createServer(async (req, res) => {
       return json(res, { error: 'rate limit: max 50 emails per connection per day' }, 429);
     }
 
-    // Resolve SMTP settings from preset
-    const preset = (meta.preset || 'custom').toLowerCase();
-    let smtpHost, smtpPort, smtpSecure;
-    if (preset === 'gmail') {
-      smtpHost = 'smtp.gmail.com';
-      smtpPort = 465;
-      smtpSecure = true;
-    } else {
-      smtpHost = meta.smtpHost;
-      smtpPort = meta.smtpPort || 465;
-      smtpSecure = meta.smtpSecure !== false;
+    // Resolve SMTP settings — only Gmail preset supported in this phase
+    const preset = (meta.preset || '').toLowerCase();
+    if (preset !== 'gmail') {
+      return json(res, { error: 'email reply currently only supported for Gmail preset' }, 400);
     }
-    if (!smtpHost) {
-      return json(res, { error: 'SMTP not configured for this connection (custom preset requires smtpHost in metadata)' }, 400);
+    let smtpHost = 'smtp.gmail.com';
+    let smtpPort = 465;
+    let smtpSecure = true;
+    // Test override: run-tests.js sets STOA_TEST=1; metadata smtpHost must be loopback
+    if (process.env.STOA_TEST === '1' && meta.smtpHost) {
+      const h = meta.smtpHost;
+      if (h === '127.0.0.1' || h === '::1') {
+        smtpHost = h;
+        smtpPort = meta.smtpPort || 465;
+        smtpSecure = false;
+      }
     }
 
     // Decrypt credentials
@@ -2258,6 +2260,7 @@ const server = http.createServer(async (req, res) => {
       greetingTimeout: 10000,
       socketTimeout: 15000,
     };
+    // ignoreTLS only for test loopback override — production always uses secure:true
     if (!smtpSecure) smtpOpts.ignoreTLS = true;
     const transport = nodemailer.createTransport(smtpOpts);
 

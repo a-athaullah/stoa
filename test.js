@@ -3815,16 +3815,18 @@ async function run() {
     testRoomIds.push(_erTestRoomId);
     if (_erTestAgentWs) { _erTestAgentWs.close(); _erTestAgentWs = null; }
 
-    // Create email connection with gmail preset
-    const connR = await req('POST', '/api/automations/connections', {
-      provider: 'email', name: '__test_email_reply_conn__', user: 'test-reply@gmail.com', password: 'fake-smtp-pass',
-      preset: 'gmail', allowedSenders: ['allowed@example.com', '*@corp.com'],
-    });
-    _erTestConnId = connR.body.id;
+    // Create email connection directly in DB to avoid IMAP connection overhead
+    const db = require('./db');
+    const { encrypt } = require('./lib/credentials');
+    const connMeta = JSON.stringify({ preset: 'gmail', allowedSenders: ['allowed@example.com', '*@corp.com'] });
+    const connCreds = JSON.stringify({ user: 'test-reply@gmail.com', password: encrypt('fake-smtp-pass') });
+    const connIns = db.prepare(
+      "INSERT INTO automation_connections (name, provider, credentials, metadata, status) VALUES (?, 'email', ?, ?, 'disconnected')"
+    ).run('__test_email_reply_conn__', connCreds, connMeta);
+    _erTestConnId = Number(connIns.lastInsertRowid);
     assert.ok(_erTestConnId, 'email connection should be created');
 
     // Create a root message (simulating an email automation trigger)
-    const db = require('./db');
     const ptcp = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1").get(_erTestRoomId);
     assert.ok(ptcp, 'room should have human participant');
     const ins = db.prepare(
@@ -3958,13 +3960,12 @@ async function run() {
       smtpServer.listen(0, '127.0.0.1', () => resolve(smtpServer.address().port));
     });
 
+    // Set loopback SMTP override in metadata (server honors this only when STOA_TEST=1)
     const db = require('./db');
     const connRow = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(_erTestConnId);
     const meta = JSON.parse(connRow.metadata);
-    meta.preset = 'custom';
     meta.smtpHost = '127.0.0.1';
     meta.smtpPort = smtpPort;
-    meta.smtpSecure = false;
     db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
 
     try {
@@ -3989,8 +3990,7 @@ async function run() {
       assert.strictEqual(msgR.body.thread_id, _erTestThreadId);
     } finally {
       smtpServer.close();
-      meta.preset = 'gmail';
-      delete meta.smtpHost; delete meta.smtpPort; delete meta.smtpSecure;
+      delete meta.smtpHost; delete meta.smtpPort;
       db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
     }
   });
@@ -4034,7 +4034,7 @@ async function run() {
 
     const connRow = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(_erTestConnId);
     const meta = JSON.parse(connRow.metadata);
-    meta.preset = 'custom'; meta.smtpHost = '127.0.0.1'; meta.smtpPort = smtpPort; meta.smtpSecure = false;
+    meta.smtpHost = '127.0.0.1'; meta.smtpPort = smtpPort;
     db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
 
     try {
@@ -4046,7 +4046,7 @@ async function run() {
       assert.ok(smtpData.includes('Re: Already has prefix'), 'subject should preserve existing Re:');
     } finally {
       smtpServer.close();
-      meta.preset = 'gmail'; delete meta.smtpHost; delete meta.smtpPort; delete meta.smtpSecure;
+      delete meta.smtpHost; delete meta.smtpPort;
       db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
     }
   });
@@ -4088,7 +4088,7 @@ async function run() {
 
     const connRow = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(_erTestConnId);
     const meta = JSON.parse(connRow.metadata);
-    meta.preset = 'custom'; meta.smtpHost = '127.0.0.1'; meta.smtpPort = smtpPort; meta.smtpSecure = false;
+    meta.smtpHost = '127.0.0.1'; meta.smtpPort = smtpPort;
     db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
 
     try {
@@ -4098,7 +4098,26 @@ async function run() {
       assert.strictEqual(r.status, 200, `wildcard domain should be allowed: ${JSON.stringify(r.body)}`);
     } finally {
       smtpServer.close();
-      meta.preset = 'gmail'; delete meta.smtpHost; delete meta.smtpPort; delete meta.smtpSecure;
+      delete meta.smtpHost; delete meta.smtpPort;
+      db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    }
+  });
+
+  await test('Email reply — non-gmail preset → 400', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const connRow = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(_erTestConnId);
+    const meta = JSON.parse(connRow.metadata);
+    meta.preset = 'outlook';
+    db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    try {
+      const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'hello' }, {
+        'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+      });
+      assert.strictEqual(r.status, 400);
+      assert.ok(r.body.error.includes('Gmail'), 'error should mention Gmail preset');
+    } finally {
+      meta.preset = 'gmail';
       db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
     }
   });
@@ -4113,7 +4132,9 @@ async function run() {
 
   await test('Email reply — cleanup', async () => {
     if (_erTestConnId) {
-      await req('DELETE', `/api/automations/connections/${_erTestConnId}`);
+      const db = require('./db');
+      db.prepare('DELETE FROM email_threads WHERE connection_id=?').run(_erTestConnId);
+      db.prepare('DELETE FROM automation_connections WHERE id=?').run(_erTestConnId);
     }
   });
 
