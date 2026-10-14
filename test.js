@@ -1212,6 +1212,11 @@ function runUnitTests() {
     assert.ok(!/[\uD800-\uDFFF]/.test(result), 'no lone surrogates');
   });
 
+  ut('sanitizeDisplayName — trims trailing space after truncation', () => {
+    const result = sanitizeDisplayName('A'.repeat(99) + ' B C');
+    assert.strictEqual(result, 'A'.repeat(99), 'trailing space should be trimmed after slice');
+  });
+
   return { p, f };
 }
 
