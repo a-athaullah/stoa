@@ -4613,35 +4613,54 @@ async function run() {
 
   // ── Email thread prompt injection ──────────────────────────────────────────
 
-  await test('Email thread prompt — email_threads row exists for test thread', async () => {
-    if (!_erTestThreadId || !_erTestConnId) { console.log('    (skipped)'); return; }
-    const db = require('./db');
-    const row = db.prepare('SELECT 1 FROM email_threads WHERE thread_id=?').get(_erTestThreadId);
-    assert.ok(row, 'email_threads should have a row for the test thread');
-  });
-
-  await test('Email thread prompt — section not built for non-email thread', async () => {
-    const db = require('./db');
-    const fakeThreadId = 999999999;
-    const row = db.prepare('SELECT 1 FROM email_threads WHERE thread_id=?').get(fakeThreadId);
-    assert.strictEqual(row, undefined, 'non-email thread should have no email_threads row');
-  });
-
-  await test('Email thread prompt — section contains roomId and threadId', async () => {
+  await test('Email thread prompt — email thread returns section with roomId and threadId', async () => {
     if (!_erTestRoomId || !_erTestThreadId) { console.log('    (skipped)'); return; }
     const db = require('./db');
-    const etRow = db.prepare('SELECT 1 FROM email_threads WHERE thread_id=?').get(_erTestThreadId);
-    assert.ok(etRow, 'precondition: email_threads row exists');
-    const section = `POST "$BASE_URL/api/rooms/${_erTestRoomId}/email-reply"`;
-    const bodyPart = `"thread_id": ${_erTestThreadId}`;
-    assert.ok(section.includes(String(_erTestRoomId)), 'section should contain roomId');
-    assert.ok(bodyPart.includes(String(_erTestThreadId)), 'section should contain threadId');
+    const { buildEmailThreadSection } = require('./lib/email-threading');
+    const section = buildEmailThreadSection(db, { roomId: _erTestRoomId, threadId: _erTestThreadId });
+    assert.ok(section.length > 0, 'section should be non-empty for email thread');
+    assert.ok(section.includes(`/api/rooms/${_erTestRoomId}/email-reply`), 'section should contain roomId in endpoint');
+    assert.ok(section.includes(`"thread_id": ${_erTestThreadId}`), 'section should contain threadId in body');
+  });
+
+  await test('Email thread prompt — non-email thread returns empty string', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const { buildEmailThreadSection } = require('./lib/email-threading');
+    const ptcp = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1").get(_erTestRoomId);
+    const ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'complete')").run(_erTestRoomId, ptcp.id, 'plain thread no email');
+    const plainThreadId = Number(ins.lastInsertRowid);
+    const section = buildEmailThreadSection(db, { roomId: _erTestRoomId, threadId: plainThreadId });
+    assert.strictEqual(section, '', 'non-email thread should return empty string');
+  });
+
+  await test('Email thread prompt — null/undefined threadId returns empty string', async () => {
+    const db = require('./db');
+    const { buildEmailThreadSection } = require('./lib/email-threading');
+    assert.strictEqual(buildEmailThreadSection(db, { roomId: 1, threadId: null }), '');
+    assert.strictEqual(buildEmailThreadSection(db, { roomId: 1, threadId: undefined }), '');
   });
 
   await test('Email thread prompt — section does not contain credentials', async () => {
-    const section = `## Email Thread\nThis thread originates from an incoming email.`;
-    assert.ok(!section.includes('password'), 'section must not contain password');
-    assert.ok(!section.includes('app_password'), 'section must not contain app_password');
+    if (!_erTestRoomId || !_erTestThreadId || !_erTestConnId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const { buildEmailThreadSection } = require('./lib/email-threading');
+    const section = buildEmailThreadSection(db, { roomId: _erTestRoomId, threadId: _erTestThreadId });
+    const connRow = db.prepare('SELECT credentials FROM automation_connections WHERE id=?').get(_erTestConnId);
+    const creds = JSON.parse(connRow.credentials);
+    assert.ok(!section.includes(creds.user), 'section must not contain email user');
+    assert.ok(!section.includes('fake-smtp-pass'), 'section must not contain password');
+    assert.ok(!section.includes('app_password'), 'section must not contain app_password key');
+  });
+
+  await test('Email thread prompt — limits match EMAIL_REPLY_LIMITS constants', async () => {
+    if (!_erTestRoomId || !_erTestThreadId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const { buildEmailThreadSection, EMAIL_REPLY_LIMITS } = require('./lib/email-threading');
+    const section = buildEmailThreadSection(db, { roomId: _erTestRoomId, threadId: _erTestThreadId });
+    assert.ok(section.includes(String(EMAIL_REPLY_LIMITS.perThreadHour)), 'section should contain perThreadHour limit');
+    assert.ok(section.includes(String(EMAIL_REPLY_LIMITS.perConnDay)), 'section should contain perConnDay limit');
+    assert.ok(section.includes(EMAIL_REPLY_LIMITS.maxBody.toLocaleString('en-US')), 'section should contain maxBody limit');
   });
 
   await test('Email reply — cleanup', async () => {
