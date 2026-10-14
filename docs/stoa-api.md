@@ -137,7 +137,7 @@ Response (success):
 {"ok": true, "message_id": 67890}
 ```
 
-After sending, a record message is posted in the thread showing what was sent.
+After sending, a record message is posted in the thread showing what was sent. The outgoing Message-ID is tracked so that subsequent replies from the recipient are routed back to the same thread (when the automation has Watch Replies enabled).
 
 **Error codes:**
 - `400` — missing/invalid fields, thread not from email, body too long
