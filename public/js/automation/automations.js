@@ -70,7 +70,7 @@ function autoRenderAutomationRow(auto) {
         <span style="font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Trigger: ${triggerParts.join(' + ')}">Trigger: ${triggerParts.join(' + ')}</span>
         <span style="font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-faint)">Action: Send to room "${roomName}"</span>
         <span style="font-family:var(--h-sans);font-size:12px;color:var(--h-ink-faint);margin-top:1px">${lastRun}</span>
-        ${auto.watch_reply && auto.trigger_type === 'slack' ? `<span style="display:inline-block;font-family:var(--h-sans);font-size:11px;color:#4a8fcc;background:color-mix(in srgb,#4a8fcc 12%,transparent);border:1px solid color-mix(in srgb,#4a8fcc 25%,transparent);border-radius:4px;padding:1px 6px;margin-top:2px">watching replies</span>` : ''}
+        ${auto.watch_reply && (auto.trigger_type === 'slack' || auto.trigger_type === 'email') ? `<span style="display:inline-block;font-family:var(--h-sans);font-size:11px;color:#4a8fcc;background:color-mix(in srgb,#4a8fcc 12%,transparent);border:1px solid color-mix(in srgb,#4a8fcc 25%,transparent);border-radius:4px;padding:1px 6px;margin-top:2px">watching replies</span>` : ''}
       </div>
       <div class="auto-row-controls" style="display:flex;align-items:center;gap:8px;margin-top:3px;flex-shrink:0">
         <span class="auto-toggle-btn" data-id="${auto.id}" data-enabled="${isEnabled ? '1' : '0'}" title="${isEnabled ? 'Disable' : 'Enable'}" style="width:36px;height:20px;border-radius:999px;position:relative;display:inline-block;cursor:pointer;background:${toggleBg};transition:background .15s;flex-shrink:0">
@@ -312,12 +312,12 @@ function autoRenderForm() {
 
         ${replyModeField}
 
-        ${!isWa && !isEmailProv ? `
-        <!-- Watch Slack Replies -->
+        ${!isWa ? `
+        <!-- Watch Replies -->
         <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--h-surface-tinted,color-mix(in srgb,var(--h-accent) 4%,var(--h-surface)));border:1px solid var(--h-hairline);border-radius:8px">
           <div style="display:flex;flex-direction:column;gap:2px">
             <span style="font-family:var(--h-sans);font-size:13px;color:var(--h-ink)">Watch replies</span>
-            <span style="font-family:var(--h-sans);font-size:12px;color:var(--h-ink-faint)">Forward Slack thread replies into this Stoa thread</span>
+            <span style="font-family:var(--h-sans);font-size:12px;color:var(--h-ink-faint)">${isEmailProv ? 'Route email thread replies into this Stoa thread' : 'Forward Slack thread replies into this Stoa thread'}</span>
           </div>
           <span id="auto-watch-reply-toggle" role="switch" aria-checked="${f.watchReply ? 'true' : 'false'}" tabindex="0"
             style="width:36px;height:20px;border-radius:999px;position:relative;display:inline-block;cursor:pointer;flex-shrink:0;background:${f.watchReply ? '#7fb98c' : 'var(--h-hairline)'};transition:background .15s">
