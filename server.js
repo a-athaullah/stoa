@@ -9,7 +9,7 @@ const { ClaudeSession } = require('./claude-session');
 const { validateScheduleSpec, computeNextRun, nextRunAfterSkip } = require('./lib/schedule');
 const { collectDiagnostics, buildEnvelope, gcDebugBundles } = require('./lib/debug-bundle');
 const { enrichAutomation, enrichAutomationList, watchReplyAutomation } = require('./lib/automation-identity');
-const { normalizeRefIds, findEmailReplyThread } = require('./lib/email-threading');
+const { sanitizeDisplayName, normalizeRefIds, findEmailReplyThread } = require('./lib/email-threading');
 const fallbackSessions = new Map();
 
 // R15: unique identifier for this server boot. Sessions tagged with a different
@@ -2267,8 +2267,7 @@ const server = http.createServer(async (req, res) => {
     const transport = nodemailer.createTransport(smtpOpts);
 
     // Resolve display name: connection senderName → agent name → address only
-    const connSenderName = meta.senderName || '';
-    const resolvedName = sanitize(connSenderName || agentActor.name || '').trim().slice(0, 100);
+    const resolvedName = sanitizeDisplayName(meta.senderName || '') || sanitizeDisplayName(agentActor.name || '');
 
     let sentEmailInfo;
     try {
@@ -4043,7 +4042,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
       tokenType = 'password';
       const { encrypt } = require('./lib/credentials');
       creds = JSON.stringify({ user: body.user.trim(), password: encrypt(body.password) });
-      const rawSenderName = typeof body.senderName === 'string' ? body.senderName.replace(/[\r\n\x00-\x1f]/g, '').trim().slice(0, 100) : '';
+      const rawSenderName = sanitizeDisplayName(body.senderName);
       const metaObj = {
         preset, host: emailHost, port: emailPort,
         secure: body.secure !== false,
@@ -4125,7 +4124,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
         if (body.preset !== undefined)           meta3.preset = body.preset;
         if (body.requireAuthPass !== undefined)  meta3.requireAuthPass = body.requireAuthPass !== false;
         if (body.senderName !== undefined) {
-          const sn = typeof body.senderName === 'string' ? body.senderName.replace(/[\r\n\x00-\x1f]/g, '').trim().slice(0, 100) : '';
+          const sn = sanitizeDisplayName(body.senderName);
           if (sn) meta3.senderName = sn; else delete meta3.senderName;
         }
         if (body.allowedSenders !== undefined) {

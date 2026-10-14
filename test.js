@@ -1102,7 +1102,7 @@ function runUnitTests() {
   });
 
   // ── Phase 8: normalizeRefIds (lib/email-threading.js) ──────────────────────
-  const { normalizeRefIds } = require('./lib/email-threading');
+  const { sanitizeDisplayName, normalizeRefIds } = require('./lib/email-threading');
 
   ut('normalizeRefIds — inReplyTo included in result', () => {
     const result = normalizeRefIds({ inReplyTo: '<a@x.com>', references: ['<b@x.com>'] });
@@ -1141,6 +1141,47 @@ function runUnitTests() {
   ut('normalizeRefIds — returns empty for no valid ids', () => {
     const result = normalizeRefIds({ inReplyTo: '', references: [] });
     assert.deepStrictEqual(result, []);
+  });
+
+  // ── sanitizeDisplayName (lib/email-threading.js) ──────────────────────
+
+  ut('sanitizeDisplayName — strips CRLF', () => {
+    assert.strictEqual(sanitizeDisplayName('Hello\r\nWorld'), 'HelloWorld');
+  });
+
+  ut('sanitizeDisplayName — strips tab and null', () => {
+    assert.strictEqual(sanitizeDisplayName('Hello\tWor\x00ld'), 'HelloWorld');
+  });
+
+  ut('sanitizeDisplayName — strips all control chars 0x00-0x1f', () => {
+    let input = '';
+    for (let i = 0; i < 0x20; i++) input += String.fromCharCode(i);
+    input += 'Name';
+    assert.strictEqual(sanitizeDisplayName(input), 'Name');
+  });
+
+  ut('sanitizeDisplayName — trims whitespace', () => {
+    assert.strictEqual(sanitizeDisplayName('  Alice  '), 'Alice');
+  });
+
+  ut('sanitizeDisplayName — caps at 100 chars', () => {
+    const long = 'A'.repeat(200);
+    assert.strictEqual(sanitizeDisplayName(long).length, 100);
+  });
+
+  ut('sanitizeDisplayName — non-string returns empty', () => {
+    assert.strictEqual(sanitizeDisplayName(null), '');
+    assert.strictEqual(sanitizeDisplayName(undefined), '');
+    assert.strictEqual(sanitizeDisplayName(123), '');
+  });
+
+  ut('sanitizeDisplayName — empty string returns empty', () => {
+    assert.strictEqual(sanitizeDisplayName(''), '');
+    assert.strictEqual(sanitizeDisplayName('   '), '');
+  });
+
+  ut('sanitizeDisplayName — preserves non-ASCII', () => {
+    assert.strictEqual(sanitizeDisplayName('日本語 Ümlaut café'), '日本語 Ümlaut café');
   });
 
   return { p, f };
@@ -4321,6 +4362,53 @@ async function run() {
     assert.strictEqual(r.status, 200);
     assert.strictEqual(r.body.metadata.senderName.length, 100, 'senderName should be truncated to 100');
     await req('PATCH', `/api/automations/connections/${_erTestConnId}`, { senderName: '' });
+  });
+
+  await test('Email reply — non-ASCII senderName encoded RFC 2047 in From header', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const smtp = await startSmtpStub();
+    const connRow = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(_erTestConnId);
+    const meta = JSON.parse(connRow.metadata);
+    meta.smtpHost = '127.0.0.1'; meta.smtpPort = smtp.port; meta.senderName = 'Ahmad Athaullah — 日本語 Ümlaut';
+    db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    try {
+      const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'RFC 2047 test' }, {
+        'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+      });
+      assert.strictEqual(r.status, 200, `reply failed: ${JSON.stringify(r.body)}`);
+      const raw = smtp.getData();
+      assert.ok(raw.includes('=?UTF-8?') || raw.includes('Ahmad Athaullah'), 'From should encode non-ASCII or include name');
+      const fromLine = raw.split('\n').find(l => /^From:/i.test(l.trim()));
+      assert.ok(fromLine, 'From header line should exist');
+      assert.ok(!fromLine.includes('undefined'), 'From should not contain undefined');
+    } finally {
+      smtp.close();
+      delete meta.smtpHost; delete meta.smtpPort; delete meta.senderName;
+      db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    }
+  });
+
+  await test('Email reply — senderName with tab/null control chars sanitized at send', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const smtp = await startSmtpStub();
+    const connRow = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(_erTestConnId);
+    const meta = JSON.parse(connRow.metadata);
+    meta.smtpHost = '127.0.0.1'; meta.smtpPort = smtp.port; meta.senderName = 'Evil\tBot\x00Name';
+    db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    try {
+      const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'Control char test' }, {
+        'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+      });
+      assert.strictEqual(r.status, 200, `reply failed: ${JSON.stringify(r.body)}`);
+      const raw = smtp.getData();
+      assert.ok(!raw.split('\n').some(l => /^From:/i.test(l.trim()) && (l.includes('\t') || l.includes('\x00'))), 'From should not contain tab or null');
+    } finally {
+      smtp.close();
+      delete meta.smtpHost; delete meta.smtpPort; delete meta.senderName;
+      db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    }
   });
 
   // ── Email watch_reply (Fase 1.6) ──────────────────────────────────────────
