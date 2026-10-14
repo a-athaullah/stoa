@@ -1184,6 +1184,34 @@ function runUnitTests() {
     assert.strictEqual(sanitizeDisplayName('日本語 Ümlaut café'), '日本語 Ümlaut café');
   });
 
+  ut('sanitizeDisplayName — strips DEL (0x7f)', () => {
+    assert.strictEqual(sanitizeDisplayName('Hello\x7fWorld'), 'HelloWorld');
+  });
+
+  ut('sanitizeDisplayName — strips C1 controls (0x80-0x9f) including NEL (0x85)', () => {
+    assert.strictEqual(sanitizeDisplayName('A\x85B\x80C\x9fD'), 'ABCD');
+  });
+
+  ut('sanitizeDisplayName — strips Unicode line separators U+2028/U+2029', () => {
+    assert.strictEqual(sanitizeDisplayName('Line Para End'), 'LineParaEnd');
+  });
+
+  ut('sanitizeDisplayName — 100 limit counts code points, not UTF-16 units', () => {
+    const base = 'A'.repeat(99);
+    const emoji = '\u{1F600}'; // 😀 — 1 code point, 2 UTF-16 units (surrogate pair)
+    const result = sanitizeDisplayName(base + emoji);
+    assert.strictEqual(Array.from(result).length, 100, 'should keep 100 code points');
+    assert.ok(result.endsWith(emoji), 'emoji should not be split');
+  });
+
+  ut('sanitizeDisplayName — truncation does not produce lone surrogate', () => {
+    const emoji = '\u{1F600}';
+    const input = 'A'.repeat(100) + emoji;
+    const result = sanitizeDisplayName(input);
+    assert.strictEqual(Array.from(result).length, 100);
+    assert.ok(!/[\uD800-\uDFFF]/.test(result), 'no lone surrogates');
+  });
+
   return { p, f };
 }
 
