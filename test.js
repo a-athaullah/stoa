@@ -4260,23 +4260,34 @@ async function run() {
     assert.deepStrictEqual(r.body.automation, { id: null, name: 'Slack', provider: 'slack' });
   });
 
-  await test('automation sender — enrichAutomation keys on provider not id (code check)', async () => {
-    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
-    const fnMatch = src.match(/function enrichAutomation\(msg\)\s*\{([^}]+)\}/);
-    assert.ok(fnMatch, 'enrichAutomation not found');
-    const body = fnMatch[1];
-    assert.ok(body.includes('automation_provider') || body.includes('automation_name'), 'enrichAutomation should key on provider or name');
-    assert.ok(!body.match(/if\s*\(\s*msg\.automation_id\s*\)/), 'enrichAutomation should NOT key solely on automation_id');
+  await test('automation sender — enrichAutomation behavioral: keys on provider/name, not id', async () => {
+    const { enrichAutomation } = require('./lib/automation-identity');
+    const full = enrichAutomation({ automation_id: 5, automation_name: 'Bot', automation_provider: 'slack', content: 'x' });
+    assert.deepStrictEqual(full.automation, { id: 5, name: 'Bot', provider: 'slack' });
+    assert.strictEqual(full.automation_id, undefined);
+    assert.strictEqual(full.automation_name, undefined);
+    assert.strictEqual(full.automation_provider, undefined);
+
+    const nullId = enrichAutomation({ automation_id: null, automation_name: 'Gone', automation_provider: 'slack', content: 'y' });
+    assert.deepStrictEqual(nullId.automation, { id: null, name: 'Gone', provider: 'slack' });
+
+    const providerOnly = enrichAutomation({ automation_id: null, automation_name: null, automation_provider: 'whatsapp', content: 'z' });
+    assert.deepStrictEqual(providerOnly.automation, { id: null, name: null, provider: 'whatsapp' });
+
+    const none = enrichAutomation({ automation_id: null, automation_name: null, automation_provider: null, content: 'w' });
+    assert.strictEqual(none.automation, null);
   });
 
-  await test('automation sender — watch_reply passes automation to handleHumanMessage (code check)', async () => {
-    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
-    const watchSection = src.substring(
-      src.indexOf("// ── Watch reply: route Slack thread replies"),
-      src.indexOf("const automations = db.prepare")
-    );
-    assert.ok(watchSection.includes('automation_provider'), 'watch_reply should SELECT automation columns from root');
-    assert.ok(watchSection.includes('handleHumanMessage') && watchSection.includes('watchAuto'), 'watch_reply should pass automation to handleHumanMessage');
+  await test('automation sender — watchReplyAutomation: root with metadata, without, and deleted', async () => {
+    const { watchReplyAutomation } = require('./lib/automation-identity');
+    const withMeta = watchReplyAutomation({ automation_id: 3, automation_name: 'PR Bot', automation_provider: 'slack' });
+    assert.deepStrictEqual(withMeta, { id: 3, name: 'PR Bot', provider: 'slack' });
+
+    const noMeta = watchReplyAutomation({ automation_id: null, automation_name: null, automation_provider: null });
+    assert.deepStrictEqual(noMeta, { id: null, name: 'Slack', provider: 'slack' });
+
+    const deleted = watchReplyAutomation({ automation_id: null, automation_name: 'Old Bot', automation_provider: 'slack' });
+    assert.deepStrictEqual(deleted, { id: null, name: 'Old Bot', provider: 'slack' });
   });
 
   await test('automation sender — teardown', async () => {

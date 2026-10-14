@@ -8,6 +8,7 @@ const db = require('./db');
 const { ClaudeSession } = require('./claude-session');
 const { validateScheduleSpec, computeNextRun, nextRunAfterSkip } = require('./lib/schedule');
 const { collectDiagnostics, buildEnvelope, gcDebugBundles } = require('./lib/debug-bundle');
+const { enrichAutomation, enrichAutomationList, watchReplyAutomation } = require('./lib/automation-identity');
 const fallbackSessions = new Map();
 
 // R15: unique identifier for this server boot. Sessions tagged with a different
@@ -6768,23 +6769,7 @@ async function handleInviteSuggest(roomId, byParticipantId, suggestedActorId, re
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
-function enrichAutomation(msg) {
-  // Key on provider/name, not id — id can be NULL after automation deletion (FK ON DELETE SET NULL)
-  if (msg.automation_provider || msg.automation_name) {
-    msg.automation = { id: msg.automation_id || null, name: msg.automation_name, provider: msg.automation_provider };
-  } else {
-    msg.automation = null;
-  }
-  delete msg.automation_id;
-  delete msg.automation_name;
-  delete msg.automation_provider;
-  return msg;
-}
-
-function enrichAutomationList(rows) {
-  for (const r of rows) enrichAutomation(r);
-  return rows;
-}
+// enrichAutomation, enrichAutomationList → lib/automation-identity.js
 
 function enrichReply(rows) {
   const replyIds = [...new Set(rows.filter(r => r.reply_to).map(r => r.reply_to))];
@@ -7075,10 +7060,7 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
           } catch {}
           const replyText = `[New Reply on Thread]:\n${senderName} (${event.user}) - ${event.text || ''}`;
           const stoaThreadId = watchedMsg.thread_id || watchedMsg.id;
-          const watchAuto = watchedMsg.automation_provider
-            ? { id: watchedMsg.automation_id || null, name: watchedMsg.automation_name, provider: watchedMsg.automation_provider }
-            : { id: null, name: 'Slack', provider: 'slack' };
-          await handleHumanMessage(watchedMsg.room_id, replyText, null, null, null, null, stoaThreadId, watchAuto);
+          await handleHumanMessage(watchedMsg.room_id, replyText, null, null, null, null, stoaThreadId, watchReplyAutomation(watchedMsg));
           const ts2 = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
           console.log(`[${ts2}] [watch_reply] routed slack thread reply to stoa thread ${stoaThreadId} in room ${watchedMsg.room_id}`);
         }
