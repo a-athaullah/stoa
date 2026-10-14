@@ -2300,11 +2300,8 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    // Record "email sent" message in thread
-    const humanParts = db.prepare(
-      "SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1"
-    ).all(roomId);
-    const senderParticipantId = humanParts.length ? humanParts[0].id : participant.id;
+    // Record "email sent" message in thread — use agent's participant so FE renders agent avatar
+    const senderParticipantId = participant.id;
     const emailProvider = preset === 'gmail' ? 'gmail' : 'email';
     const fromLabel = resolvedName ? `${resolvedName} <${emailUser}>` : emailUser;
     const sentNote = `[Email sent to ${sanitize(emailThread.from_address)} from ${fromLabel} — ${reSubject}]\n\n${body}`;

@@ -4108,6 +4108,9 @@ async function run() {
       assert.ok(msgR.body.content.includes('allowed@example.com'));
       assert.ok(msgR.body.content.includes('This is a reply'));
       assert.strictEqual(msgR.body.thread_id, _erTestThreadId);
+      assert.strictEqual(msgR.body.actor_type, 'ai', 'sent note should have agent actor_type');
+      assert.ok(msgR.body.automation, 'sent note should have automation field');
+      assert.strictEqual(msgR.body.automation.provider, 'gmail', 'automation provider should be gmail');
     } finally {
       smtpServer.close();
       delete meta.smtpHost; delete meta.smtpPort;
