@@ -4614,6 +4614,84 @@ async function run() {
     }
   });
 
+  // ── Email reply rate limit ──────────────────────────────────────────────────
+
+  await test('Email reply — rate limit per thread per hour → 429', async () => {
+    if (!_erTestRoomId || !_erTestThreadId || !_erTestActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const { EMAIL_REPLY_LIMITS } = require('./lib/email-threading');
+    const agentPtcp = db.prepare(
+      'SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=?'
+    ).get(_erTestRoomId, _erTestActorId);
+    const seedIds = [];
+    for (let i = 0; i < EMAIL_REPLY_LIMITS.perThreadHour; i++) {
+      const ins = db.prepare(
+        "INSERT INTO messages (room_id, participant_id, content, thread_id, automation_provider, state) VALUES (?,?,?,?,?,'complete')"
+      ).run(_erTestRoomId, agentPtcp.id, `[Email sent to seed@example.com from test — Re: Seed] body ${i}`, _erTestThreadId, 'gmail');
+      seedIds.push(Number(ins.lastInsertRowid));
+    }
+    try {
+      const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'should be blocked' }, {
+        'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+      });
+      assert.strictEqual(r.status, 429, `expected 429, got ${r.status}: ${JSON.stringify(r.body)}`);
+      assert.ok(r.body.error.includes('per thread per hour'), 'error should mention per thread per hour');
+    } finally {
+      for (const id of seedIds) db.prepare('DELETE FROM messages WHERE id=?').run(id);
+    }
+  });
+
+  await test('Email reply — rate limit per connection per day → 429', async () => {
+    if (!_erTestRoomId || !_erTestThreadId || !_erTestConnId || !_erTestActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const { EMAIL_REPLY_LIMITS } = require('./lib/email-threading');
+    const agentPtcp = db.prepare(
+      'SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=?'
+    ).get(_erTestRoomId, _erTestActorId);
+    const ptcpHuman = db.prepare(
+      "SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1"
+    ).get(_erTestRoomId);
+
+    const extraThreadIds = [];
+    const seedIds = [];
+    const threadsNeeded = Math.ceil(EMAIL_REPLY_LIMITS.perConnDay / (EMAIL_REPLY_LIMITS.perThreadHour - 1));
+    for (let t = 0; t < threadsNeeded; t++) {
+      const tIns = db.prepare(
+        "INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'complete')"
+      ).run(_erTestRoomId, ptcpHuman.id, `extra thread root ${t}`);
+      const tid = Number(tIns.lastInsertRowid);
+      extraThreadIds.push(tid);
+      db.prepare(
+        'INSERT INTO email_threads (thread_id, connection_id, message_id, ref_headers, subject, from_address) VALUES (?,?,?,?,?,?)'
+      ).run(tid, _erTestConnId, `<extra-${t}@test>`, '', 'Extra', 'allowed@example.com');
+    }
+
+    let seeded = 0;
+    for (const tid of extraThreadIds) {
+      const perThread = Math.min(EMAIL_REPLY_LIMITS.perThreadHour - 1, EMAIL_REPLY_LIMITS.perConnDay - seeded);
+      for (let i = 0; i < perThread && seeded < EMAIL_REPLY_LIMITS.perConnDay; i++) {
+        const ins = db.prepare(
+          "INSERT INTO messages (room_id, participant_id, content, thread_id, automation_provider, state) VALUES (?,?,?,?,?,'complete')"
+        ).run(_erTestRoomId, agentPtcp.id, `[Email sent to seed@example.com from test — Re: Seed] conn-day ${seeded}`, tid, 'gmail');
+        seedIds.push(Number(ins.lastInsertRowid));
+        seeded++;
+      }
+    }
+    try {
+      const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'should be blocked by conn limit' }, {
+        'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+      });
+      assert.strictEqual(r.status, 429, `expected 429, got ${r.status}: ${JSON.stringify(r.body)}`);
+      assert.ok(r.body.error.includes('per connection per day'), 'error should mention per connection per day');
+    } finally {
+      for (const id of seedIds) db.prepare('DELETE FROM messages WHERE id=?').run(id);
+      for (const tid of extraThreadIds) {
+        db.prepare('DELETE FROM email_threads WHERE thread_id=?').run(tid);
+        db.prepare('DELETE FROM messages WHERE id=?').run(tid);
+      }
+    }
+  });
+
   // ── Email thread prompt injection ──────────────────────────────────────────
 
   await test('Email thread prompt — email thread returns section with roomId and threadId', async () => {
