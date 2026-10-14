@@ -34,6 +34,7 @@
     "imapflow": "^2.3.0",
     "mailparser": "^3.9.37",
     "marked": "^18.0.4",
+    "nodemailer": "^10.1.0",
     "ws": "^8.20.1"
   },
   "devDependencies": {
