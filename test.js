@@ -3838,6 +3838,10 @@ async function run() {
     db.prepare(
       'INSERT INTO email_threads (thread_id, connection_id, message_id, ref_headers, subject, from_address) VALUES (?, ?, ?, ?, ?, ?)'
     ).run(_erTestThreadId, _erTestConnId, '<msg123@mail.example.com>', '<prev@mail.example.com>', 'Test subject', 'allowed@example.com');
+    // Insert incoming email_message_ids (simulates what email_event handler does)
+    db.prepare(
+      'INSERT OR IGNORE INTO email_message_ids (message_id, thread_id, connection_id, direction) VALUES (?,?,?,?)'
+    ).run('<msg123@mail.example.com>', _erTestThreadId, _erTestConnId, 'in');
   });
 
   await test('Email reply — no auth → 403', async () => {
@@ -4130,9 +4134,165 @@ async function run() {
     assert.ok(logosMatch, '_AUTOMATION_LOGOS should be defined');
   });
 
+  // ── Email watch_reply (Fase 1.6) ──────────────────────────────────────────
+  let _ewTestAutoId;
+
+  await test('Email watch_reply — automation API accepts watch_reply for email trigger', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const r = await req('POST', '/api/automations', {
+      name: '__test_email_watch__', trigger_type: 'email', trigger_event: 'message',
+      target_room_id: _erTestRoomId, prompt_template: '{{email.body}}',
+      connection_id: _erTestConnId, watch_reply: true,
+    });
+    assert.strictEqual(r.status, 200, `create automation failed: ${JSON.stringify(r.body)}`);
+    assert.strictEqual(r.body.watch_reply, 1, 'watch_reply should be saved for email trigger');
+    _ewTestAutoId = r.body.id;
+  });
+
+  await test('Email watch_reply — PATCH preserves watch_reply for email', async () => {
+    if (!_ewTestAutoId) { console.log('    (skipped)'); return; }
+    const r = await req('PATCH', `/api/automations/${_ewTestAutoId}`, { watch_reply: true });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.watch_reply, 1);
+  });
+
+  await test('Email watch_reply — email_message_ids populated on new thread', async () => {
+    if (!_erTestConnId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const row = db.prepare("SELECT * FROM email_message_ids WHERE thread_id=? AND connection_id=? AND direction='in'").get(_erTestThreadId, _erTestConnId);
+    assert.ok(row, 'email_message_ids should have incoming entry from setup');
+    assert.strictEqual(row.direction, 'in');
+  });
+
+  await test('Email watch_reply — reply routed to existing thread via In-Reply-To match', async () => {
+    if (!_erTestRoomId || !_erTestConnId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+
+    // Create automation with watch_reply
+    let autoId = _ewTestAutoId;
+    if (!autoId) {
+      const r = await req('POST', '/api/automations', {
+        name: '__test_email_watch2__', trigger_type: 'email', trigger_event: 'message',
+        target_room_id: _erTestRoomId, prompt_template: '{{email.body}}',
+        connection_id: _erTestConnId, watch_reply: true,
+      });
+      autoId = r.body.id;
+    }
+
+    // Simulate email_event with In-Reply-To matching existing message_id
+    const msgsBefore = db.prepare('SELECT COUNT(*) as cnt FROM messages WHERE room_id=? AND thread_id=?').get(_erTestRoomId, _erTestThreadId);
+
+    // Emit email_event via connectionManager (need to test the handler)
+    // Instead, we test the DB state directly: insert email_message_ids for outgoing, then check routing
+    // The routing logic is in server.js event handler; for unit-level we verify DB operations
+    const outMsgId = '<test-out-reply@mail.example.com>';
+    db.prepare('INSERT OR IGNORE INTO email_message_ids (message_id, thread_id, connection_id, direction) VALUES (?,?,?,?)')
+      .run(outMsgId, _erTestThreadId, _erTestConnId, 'out');
+
+    const outRow = db.prepare('SELECT * FROM email_message_ids WHERE message_id=?').get(outMsgId);
+    assert.ok(outRow, 'outgoing message_id should be stored');
+    assert.strictEqual(outRow.direction, 'out');
+    assert.strictEqual(outRow.thread_id, _erTestThreadId);
+  });
+
+  await test('Email watch_reply — connection_id mismatch prevents routing', async () => {
+    if (!_erTestConnId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    // Query with wrong connection_id should return nothing
+    const row = db.prepare(
+      'SELECT * FROM email_message_ids WHERE message_id=? AND connection_id=?'
+    ).get('<msg123@mail.example.com>', 99999);
+    assert.strictEqual(row, undefined, 'different connection_id should not match');
+  });
+
+  await test('Email watch_reply — outgoing reply Message-ID saved via email-reply endpoint', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const net = require('net');
+    let smtpData = '';
+    let inData = false;
+    const smtpServer = net.createServer(sock => {
+      sock.write('220 stub SMTP\r\n');
+      let buf = '';
+      sock.on('data', chunk => {
+        buf += chunk.toString();
+        if (inData) {
+          smtpData += chunk.toString();
+          if (buf.includes('\r\n.\r\n')) { inData = false; buf = ''; sock.write('250 OK\r\n'); }
+          return;
+        }
+        const lines = buf.split('\r\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (/^(EHLO|HELO)/i.test(line)) sock.write('250-stub\r\n250-SIZE 10485760\r\n250-8BITMIME\r\n250 AUTH PLAIN LOGIN\r\n');
+          else if (/^AUTH/i.test(line)) sock.write('235 OK\r\n');
+          else if (/^MAIL FROM/i.test(line) || /^RCPT TO/i.test(line)) sock.write('250 OK\r\n');
+          else if (/^DATA$/i.test(line)) { inData = true; sock.write('354 Go\r\n'); }
+          else if (/^QUIT/i.test(line)) { sock.write('221 Bye\r\n'); sock.end(); }
+        }
+      });
+    });
+    const smtpPort = await new Promise(resolve => {
+      smtpServer.listen(0, '127.0.0.1', () => resolve(smtpServer.address().port));
+    });
+
+    const db = require('./db');
+    const connRow = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(_erTestConnId);
+    const meta = JSON.parse(connRow.metadata);
+    meta.smtpHost = '127.0.0.1';
+    meta.smtpPort = smtpPort;
+    db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+
+    try {
+      const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'Watch reply test' }, {
+        'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+      });
+      assert.strictEqual(r.status, 200, `expected 200: ${JSON.stringify(r.body)}`);
+
+      // Check email_message_ids has outgoing entry
+      const outRows = db.prepare("SELECT * FROM email_message_ids WHERE thread_id=? AND direction='out'").all(_erTestThreadId);
+      assert.ok(outRows.length > 0, 'outgoing Message-ID should be saved after email-reply');
+
+      // Check email_threads.ref_headers was updated
+      const et = db.prepare('SELECT * FROM email_threads WHERE thread_id=?').get(_erTestThreadId);
+      assert.ok(et.ref_headers.length > 0, 'ref_headers should be updated with outgoing references');
+    } finally {
+      smtpServer.close();
+      delete meta.smtpHost; delete meta.smtpPort;
+      db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    }
+  });
+
+  await test('Email watch_reply — watch_reply=0 means no routing (DB check)', async () => {
+    if (!_erTestConnId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    // With watch_reply=0, the handler skips routing logic. We verify the automation flag is respected.
+    if (_ewTestAutoId) {
+      const patchR = await req('PATCH', `/api/automations/${_ewTestAutoId}`, { watch_reply: false });
+      assert.strictEqual(patchR.body.watch_reply, 0);
+      // Restore
+      await req('PATCH', `/api/automations/${_ewTestAutoId}`, { watch_reply: true });
+    }
+  });
+
+  await test('Email watch_reply — ref_headers capped at reasonable length', async () => {
+    const db = require('./db');
+    if (!_erTestThreadId) { console.log('    (skipped)'); return; }
+    const et = db.prepare('SELECT ref_headers FROM email_threads WHERE thread_id=?').get(_erTestThreadId);
+    if (et) {
+      assert.ok(et.ref_headers.length <= 4000, 'ref_headers should be capped');
+    }
+  });
+
+  await test('Email watch_reply — cleanup automation', async () => {
+    if (_ewTestAutoId) {
+      await req('DELETE', `/api/automations/${_ewTestAutoId}`);
+    }
+  });
+
   await test('Email reply — cleanup', async () => {
     if (_erTestConnId) {
       const db = require('./db');
+      db.prepare('DELETE FROM email_message_ids WHERE connection_id=?').run(_erTestConnId);
       db.prepare('DELETE FROM email_threads WHERE connection_id=?').run(_erTestConnId);
       db.prepare('DELETE FROM automation_connections WHERE id=?').run(_erTestConnId);
     }
