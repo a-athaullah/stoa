@@ -2125,6 +2125,186 @@ const server = http.createServer(async (req, res) => {
     return json(res, { message_id: messageId });
   }
 
+  // ── Email reply via agent tool ──────────────────────────────────────────────
+  if (req.method === 'POST' && url.pathname.match(/^\/api\/rooms\/\d+\/email-reply$/)) {
+    const roomId = parseInt(url.pathname.split('/')[3]);
+
+    // Agent auth
+    const agentId = parseInt(req.headers['x-agent-id'] || '0');
+    const agentSecret = req.headers['x-agent-secret'] || '';
+    if (!agentId || !agentSecret) return json(res, { error: 'agent auth required' }, 403);
+
+    const agentActor = db.prepare("SELECT id, secret FROM actors WHERE id=? AND type='ai'").get(agentId);
+    if (!agentActor) return json(res, { error: 'actor not found' }, 403);
+    const hh = s => crypto.createHmac('sha256', 'stoa').update(s).digest();
+    if (!agentActor.secret || !crypto.timingSafeEqual(hh(agentSecret), hh(agentActor.secret))) {
+      return json(res, { error: 'invalid credentials' }, 403);
+    }
+
+    const data = parseJsonBody(await readBody(req));
+    if (!data) return json(res, { error: 'Invalid JSON' }, 400);
+
+    const threadId = parseInt(data.thread_id);
+    if (!threadId || isNaN(threadId)) return json(res, { error: 'thread_id required (integer)' }, 400);
+
+    const body = typeof data.body === 'string' ? data.body.trim() : '';
+    if (!body) return json(res, { error: 'body required (non-empty string)' }, 400);
+    if (body.length > 20000) return json(res, { error: 'body too long (max 20000 chars)' }, 400);
+
+    // Validate room exists
+    const room = db.prepare('SELECT id, archived_at FROM rooms WHERE id=?').get(roomId);
+    if (!room) return json(res, { error: 'room not found' }, 404);
+    if (room.archived_at) return json(res, { error: 'room is archived' }, 400);
+
+    // Validate agent is room member
+    const participant = db.prepare(
+      'SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=?'
+    ).get(roomId, agentId);
+    if (!participant) return json(res, { error: 'agent is not a participant in this room' }, 403);
+
+    // Validate thread belongs to room
+    const threadRoot = db.prepare('SELECT id, room_id FROM messages WHERE id=?').get(threadId);
+    if (!threadRoot || threadRoot.room_id !== roomId) {
+      return json(res, { error: 'thread not found in this room' }, 400);
+    }
+
+    // Validate thread originates from email automation
+    const emailThread = db.prepare('SELECT * FROM email_threads WHERE thread_id=?').get(threadId);
+    if (!emailThread) {
+      return json(res, { error: 'thread is not from an email automation' }, 400);
+    }
+
+    // Lookup connection + credentials
+    const conn = db.prepare('SELECT id, provider, credentials, metadata, status FROM automation_connections WHERE id=?').get(emailThread.connection_id);
+    if (!conn || conn.provider !== 'email') {
+      return json(res, { error: 'email connection not found' }, 400);
+    }
+
+    const meta = JSON.parse(conn.metadata || '{}');
+    const allowedSenders = meta.allowedSenders || [];
+
+    // Re-check: recipient (original sender) must be in allowlist
+    const recipientAddr = emailThread.from_address.toLowerCase().trim();
+    const recipientInAllowlist = allowedSenders.some(pattern => {
+      const p = pattern.toLowerCase().trim();
+      if (p.startsWith('*@')) {
+        const domain = p.slice(2);
+        return recipientAddr.endsWith('@' + domain);
+      }
+      return recipientAddr === p;
+    });
+    if (!recipientInAllowlist) {
+      return json(res, { error: 'recipient not in connection allowlist' }, 403);
+    }
+
+    // Rate limit: max 10 per thread per hour, max 50 per connection per day
+    const threadHourCount = db.prepare(
+      "SELECT COUNT(*) as cnt FROM messages WHERE thread_id=? AND automation_provider IN ('email','gmail') AND content LIKE '[Email sent to%' AND created_at > datetime('now', '-1 hour')"
+    ).get(threadId)?.cnt || 0;
+    if (threadHourCount >= 10) {
+      return json(res, { error: 'rate limit: max 10 replies per thread per hour' }, 429);
+    }
+
+    const connDayCount = db.prepare(
+      "SELECT COUNT(*) as cnt FROM email_threads et JOIN messages m ON m.thread_id = et.thread_id WHERE et.connection_id=? AND m.automation_provider IN ('email','gmail') AND m.content LIKE '[Email sent to%' AND m.created_at > datetime('now', '-1 day')"
+    ).get(emailThread.connection_id)?.cnt || 0;
+    if (connDayCount >= 50) {
+      return json(res, { error: 'rate limit: max 50 emails per connection per day' }, 429);
+    }
+
+    // Resolve SMTP settings from preset
+    const preset = (meta.preset || 'custom').toLowerCase();
+    let smtpHost, smtpPort, smtpSecure;
+    if (preset === 'gmail') {
+      smtpHost = 'smtp.gmail.com';
+      smtpPort = 465;
+      smtpSecure = true;
+    } else {
+      smtpHost = meta.smtpHost;
+      smtpPort = meta.smtpPort || 465;
+      smtpSecure = meta.smtpSecure !== false;
+    }
+    if (!smtpHost) {
+      return json(res, { error: 'SMTP not configured for this connection (custom preset requires smtpHost in metadata)' }, 400);
+    }
+
+    // Decrypt credentials
+    const { decrypt } = require('./lib/credentials');
+    let emailUser, emailPass;
+    try {
+      const creds = JSON.parse(conn.credentials);
+      emailUser = creds.user;
+      emailPass = decrypt(creds.password);
+    } catch (e) {
+      return json(res, { error: 'failed to decrypt email credentials' }, 500);
+    }
+
+    // Build email headers — sanitize CRLF
+    const sanitize = s => (s || '').replace(/[\r\n]/g, '');
+    const reSubject = emailThread.subject.startsWith('Re:') ? sanitize(emailThread.subject) : sanitize('Re: ' + emailThread.subject);
+    const inReplyTo = sanitize(emailThread.message_id);
+    const references = sanitize(
+      emailThread.ref_headers ? emailThread.ref_headers + ' ' + emailThread.message_id : emailThread.message_id
+    );
+
+    // Send via nodemailer
+    const nodemailer = require('nodemailer');
+    const smtpOpts = {
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpSecure,
+      auth: { user: emailUser, pass: emailPass },
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 15000,
+    };
+    if (!smtpSecure) smtpOpts.ignoreTLS = true;
+    const transport = nodemailer.createTransport(smtpOpts);
+
+    try {
+      await transport.sendMail({
+        from: emailUser,
+        to: sanitize(emailThread.from_address),
+        subject: reSubject,
+        text: body,
+        inReplyTo,
+        references,
+      });
+    } catch (e) {
+      console.error('[email-reply] SMTP send error:', e.message);
+      return json(res, { error: 'failed to send email: ' + e.message }, 502);
+    } finally {
+      transport.close();
+    }
+
+    // Record "email sent" message in thread
+    const humanParts = db.prepare(
+      "SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human' LIMIT 1"
+    ).all(roomId);
+    const senderParticipantId = humanParts.length ? humanParts[0].id : participant.id;
+    const emailProvider = preset === 'gmail' ? 'gmail' : 'email';
+    const sentNote = `[Email sent to ${sanitize(emailThread.from_address)} — ${reSubject}]\n\n${body}`;
+    const sentResult = db.prepare(
+      "INSERT INTO messages (room_id, participant_id, content, thread_id, automation_provider, state) VALUES (?, ?, ?, ?, ?, 'complete')"
+    ).run(roomId, senderParticipantId, sentNote, threadId, emailProvider);
+    const sentMsgId = sentResult.lastInsertRowid;
+
+    const sentRow = db.prepare(`
+      SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
+      FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id
+      WHERE m.id=?
+    `).get(sentMsgId);
+    enrichAutomation(sentRow);
+    const sentPayload = { type: 'message_new', message: sentRow };
+    sentPayload.thread_summary = buildThreadSummary(roomId, threadId);
+    broadcast(roomId, sentPayload);
+
+    const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
+    console.log(`[${ts}] [email:sent] to=${emailThread.from_address} subject="${reSubject.slice(0, 60)}" conn=${emailThread.connection_id}`);
+
+    return json(res, { ok: true, message_id: Number(sentMsgId) });
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/setup/status') {
     const row = db.prepare(`SELECT COUNT(*) AS cnt FROM actors WHERE type='human'`).get();
     return json(res, { needsSetup: row.cnt === 0 });
@@ -7205,10 +7385,22 @@ connectionManager.on('email_event', async ({ eventType, connId, uid, messageId, 
       const _autoName = auto.name;
       const _autoId = auto.id;
       console.log(`[automation] "${_autoName}" triggered → room ${_roomId} (email:${connId}, from: ${from})`);
+      const _messageId = messageId;
+      const _subject = subject || '';
+      const _from = from;
       (async () => {
         try {
-          await handleHumanMessage(_roomId, _prompt, null, null, null, null, null, { id: _autoId, name: _autoName, provider: emailProvider });
+          const threadRootId = await handleHumanMessage(_roomId, _prompt, null, null, null, null, null, { id: _autoId, name: _autoName, provider: emailProvider });
           db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(_autoId);
+          if (threadRootId && connId && _messageId) {
+            try {
+              db.prepare(
+                'INSERT OR IGNORE INTO email_threads (thread_id, connection_id, message_id, ref_headers, subject, from_address) VALUES (?, ?, ?, ?, ?, ?)'
+              ).run(threadRootId, connId, _messageId, '', _subject, _from);
+            } catch (etErr) {
+              console.error('[automation] email_threads insert error:', etErr.message);
+            }
+          }
         } catch (e) {
           console.error(`[automation] room ${_roomId} trigger error:`, e.message);
         }
