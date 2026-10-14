@@ -180,8 +180,8 @@ CREATE INDEX IF NOT EXISTS idx_rooms_created_by ON rooms(created_by);
 CREATE TABLE IF NOT EXISTS automation_connections (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   name         TEXT NOT NULL,
-  provider     TEXT NOT NULL DEFAULT 'slack' CHECK(provider IN ('slack','whatsapp')),
-  token_type   TEXT NOT NULL DEFAULT 'bot' CHECK(token_type IN ('bot','user','qr')),
+  provider     TEXT NOT NULL DEFAULT 'slack' CHECK(provider IN ('slack','whatsapp','email')),
+  token_type   TEXT NOT NULL DEFAULT 'bot' CHECK(token_type IN ('bot','user','qr','password','oauth')),
   credentials  TEXT NOT NULL DEFAULT '{}',
   metadata     TEXT NOT NULL DEFAULT '{}',
   status       TEXT NOT NULL DEFAULT 'disconnected' CHECK(status IN ('connected','disconnected','error','connecting')),
@@ -336,3 +336,15 @@ CREATE TABLE IF NOT EXISTS debug_bundles (
   size_bytes  INTEGER NOT NULL DEFAULT 0,
   consent_at  TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS email_threads (
+  thread_id     INTEGER PRIMARY KEY REFERENCES messages(id),
+  connection_id INTEGER NOT NULL REFERENCES automation_connections(id) ON DELETE CASCADE,
+  message_id    TEXT NOT NULL,
+  ref_headers   TEXT NOT NULL DEFAULT '',
+  subject       TEXT NOT NULL DEFAULT '',
+  from_address  TEXT NOT NULL,
+  created_at    TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_threads_connection ON email_threads(connection_id);

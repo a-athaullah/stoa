@@ -1,6 +1,6 @@
 {
   "name": "stoa",
-  "version": "0.45.0",
+  "version": "0.46.0",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -31,7 +31,10 @@
     "codemirror": "^6.0.2",
     "dompurify": "^3.4.7",
     "highlight.js": "^11.11.1",
+    "imapflow": "^2.3.0",
+    "mailparser": "^3.9.37",
     "marked": "^18.0.4",
+    "nodemailer": "^10.1.0",
     "ws": "^8.20.1"
   },
   "devDependencies": {

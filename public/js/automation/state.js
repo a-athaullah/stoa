@@ -42,6 +42,15 @@ const AUTO_VARS_WA = [
   '{{extracted_url}}',
 ];
 
+const AUTO_VARS_EMAIL = [
+  '{{email.from}}',
+  '{{email.from_name}}',
+  '{{email.subject}}',
+  '{{email.body}}',
+  '{{email.date}}',
+  '{{email.has_attachments}}',
+];
+
 const AUTO_VARS = AUTO_VARS_SLACK;
 
 let autoState = {
@@ -58,12 +67,24 @@ let autoState = {
   connForm: {
     name: '',
     provider: 'slack',
-    tokenType: 'bot',       // 'bot' | 'user' | 'qr'
+    tokenType: 'bot',       // 'bot' | 'user' | 'qr' | 'password'
     appToken: '',
     token: '',
     phoneNumber: '',
     maxMediaSizeMb: 100,
+    // email fields
+    emailPreset: 'gmail',   // 'gmail' | 'custom'
+    emailHost: 'imap.gmail.com',
+    emailPort: 993,
+    emailSecure: true,
+    emailUser: '',
+    emailPassword: '',
+    emailFolder: 'INBOX',
+    emailAllowedSenders: '',
+    emailRequireAuthPass: true,
   },
+  connTestLoading: false,
+  connTestResult: null,     // null | { ok: true } | { ok: false, error: string }
   // Connection confirm
   connConfirmId: null,
   connConfirmAction: null,  // 'disconnect' | 'delete'
