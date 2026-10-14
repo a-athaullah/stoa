@@ -4176,6 +4176,153 @@ async function run() {
     assert.ok(logosMatch, '_AUTOMATION_LOGOS should be defined');
   });
 
+  // ── Email reply: display name in From header ──────────────────────────────
+  // Helper: start SMTP stub, return { port, getData, close }
+  function startSmtpStub() {
+    const net = require('net');
+    let data = '';
+    let inData = false;
+    const server = net.createServer(sock => {
+      sock.write('220 stub\r\n');
+      let buf = '';
+      sock.on('data', chunk => {
+        buf += chunk.toString();
+        if (inData) {
+          data += chunk.toString();
+          if (buf.includes('\r\n.\r\n')) { inData = false; buf = ''; sock.write('250 OK\r\n'); }
+          return;
+        }
+        const lines = buf.split('\r\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (/^(EHLO|HELO)/i.test(line)) sock.write('250-stub\r\n250-SIZE 10485760\r\n250-8BITMIME\r\n250 AUTH PLAIN LOGIN\r\n');
+          else if (/^AUTH/i.test(line)) sock.write('235 OK\r\n');
+          else if (/^MAIL FROM/i.test(line) || /^RCPT TO/i.test(line)) sock.write('250 OK\r\n');
+          else if (/^DATA$/i.test(line)) { inData = true; sock.write('354 Go\r\n'); }
+          else if (/^QUIT/i.test(line)) { sock.write('221 Bye\r\n'); sock.end(); }
+        }
+      });
+    });
+    return new Promise(resolve => {
+      server.listen(0, '127.0.0.1', () => resolve({
+        port: server.address().port,
+        getData: () => data,
+        close: () => server.close(),
+      }));
+    });
+  }
+
+  await test('Email reply — From header includes senderName from connection', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const smtp = await startSmtpStub();
+    const connRow = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(_erTestConnId);
+    const meta = JSON.parse(connRow.metadata);
+    meta.smtpHost = '127.0.0.1'; meta.smtpPort = smtp.port; meta.senderName = 'Stoa Assistant';
+    db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    try {
+      const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'display name test' }, {
+        'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+      });
+      assert.strictEqual(r.status, 200, `expected 200: ${JSON.stringify(r.body)}`);
+      const raw = smtp.getData();
+      assert.ok(raw.includes('Stoa Assistant'), 'From header should contain senderName');
+    } finally {
+      smtp.close();
+      delete meta.smtpHost; delete meta.smtpPort; delete meta.senderName;
+      db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    }
+  });
+
+  await test('Email reply — From header falls back to agent name when no senderName', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const smtp = await startSmtpStub();
+    const connRow = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(_erTestConnId);
+    const meta = JSON.parse(connRow.metadata);
+    meta.smtpHost = '127.0.0.1'; meta.smtpPort = smtp.port;
+    delete meta.senderName;
+    db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    try {
+      const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'fallback test' }, {
+        'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+      });
+      assert.strictEqual(r.status, 200, `expected 200: ${JSON.stringify(r.body)}`);
+      const agentName = db.prepare('SELECT name FROM actors WHERE id=?').get(_erTestActorId).name;
+      const raw = smtp.getData();
+      assert.ok(raw.includes(agentName), `From header should contain agent name "${agentName}"`);
+    } finally {
+      smtp.close();
+      delete meta.smtpHost; delete meta.smtpPort;
+      db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    }
+  });
+
+  await test('Email reply — senderName with CRLF is sanitized', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const smtp = await startSmtpStub();
+    const connRow = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(_erTestConnId);
+    const meta = JSON.parse(connRow.metadata);
+    meta.smtpHost = '127.0.0.1'; meta.smtpPort = smtp.port; meta.senderName = 'Injected\r\nBcc: evil@evil.com';
+    db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    try {
+      const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'crlf test' }, {
+        'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+      });
+      assert.strictEqual(r.status, 200, `expected 200: ${JSON.stringify(r.body)}`);
+      const raw = smtp.getData();
+      const hasBccHeader = raw.split('\n').some(l => /^Bcc:/i.test(l.trim()));
+      assert.ok(!hasBccHeader, 'CRLF injection must not produce Bcc header');
+    } finally {
+      smtp.close();
+      delete meta.smtpHost; delete meta.smtpPort; delete meta.senderName;
+      db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    }
+  });
+
+  await test('Email reply — sent note includes sender display name', async () => {
+    if (!_erTestRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const smtp = await startSmtpStub();
+    const connRow = db.prepare('SELECT metadata FROM automation_connections WHERE id=?').get(_erTestConnId);
+    const meta = JSON.parse(connRow.metadata);
+    meta.smtpHost = '127.0.0.1'; meta.smtpPort = smtp.port; meta.senderName = 'MyBot';
+    db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    try {
+      const r = await req('POST', `/api/rooms/${_erTestRoomId}/email-reply`, { thread_id: _erTestThreadId, body: 'note check' }, {
+        'x-agent-id': String(_erTestActorId), 'x-agent-secret': _erTestSecret,
+      });
+      assert.strictEqual(r.status, 200);
+      const note = db.prepare("SELECT content FROM messages WHERE room_id=? AND thread_id=? AND content LIKE '[Email sent to%' ORDER BY id DESC LIMIT 1").get(_erTestRoomId, _erTestThreadId);
+      assert.ok(note, 'sent note should exist');
+      assert.ok(note.content.includes('from MyBot'), 'sent note should include sender display name');
+    } finally {
+      smtp.close();
+      delete meta.smtpHost; delete meta.smtpPort; delete meta.senderName;
+      db.prepare('UPDATE automation_connections SET metadata=? WHERE id=?').run(JSON.stringify(meta), _erTestConnId);
+    }
+  });
+
+  await test('Email reply — PATCH senderName on connection', async () => {
+    if (!_erTestConnId) { console.log('    (skipped)'); return; }
+    const r1 = await req('PATCH', `/api/automations/connections/${_erTestConnId}`, { senderName: 'Updated Bot' });
+    assert.strictEqual(r1.status, 200);
+    assert.strictEqual(r1.body.metadata.senderName, 'Updated Bot');
+    const r2 = await req('PATCH', `/api/automations/connections/${_erTestConnId}`, { senderName: '' });
+    assert.strictEqual(r2.status, 200);
+    assert.strictEqual(r2.body.metadata.senderName, undefined, 'empty string should clear senderName');
+  });
+
+  await test('Email reply — senderName > 100 chars truncated on create', async () => {
+    if (!_erTestConnId) { console.log('    (skipped)'); return; }
+    const longName = 'A'.repeat(150);
+    const r = await req('PATCH', `/api/automations/connections/${_erTestConnId}`, { senderName: longName });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.metadata.senderName.length, 100, 'senderName should be truncated to 100');
+    await req('PATCH', `/api/automations/connections/${_erTestConnId}`, { senderName: '' });
+  });
+
   // ── Email watch_reply (Fase 1.6) ──────────────────────────────────────────
   let _ewTestAutoId;
 

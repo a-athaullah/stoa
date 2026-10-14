@@ -130,7 +130,7 @@ Body:
 - `thread_id` (integer, required): the thread that originated from an email automation
 - `body` (string, required): plain text reply content (max 20,000 characters)
 
-The server determines the recipient, subject, and threading headers automatically from the original email metadata. The agent never sees or handles email credentials.
+The server determines the recipient, subject, and threading headers automatically from the original email metadata. The agent never sees or handles email credentials. The display name in the From header is resolved from the connection's `senderName` metadata field, falling back to the agent's actor name, then the bare email address.
 
 Response (success):
 ```json

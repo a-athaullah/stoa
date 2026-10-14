@@ -2136,7 +2136,7 @@ const server = http.createServer(async (req, res) => {
     const agentSecret = req.headers['x-agent-secret'] || '';
     if (!agentId || !agentSecret) return json(res, { error: 'agent auth required' }, 403);
 
-    const agentActor = db.prepare("SELECT id, secret FROM actors WHERE id=? AND type='ai'").get(agentId);
+    const agentActor = db.prepare("SELECT id, name, secret FROM actors WHERE id=? AND type='ai'").get(agentId);
     if (!agentActor) return json(res, { error: 'actor not found' }, 403);
     const hh = s => crypto.createHmac('sha256', 'stoa').update(s).digest();
     if (!agentActor.secret || !crypto.timingSafeEqual(hh(agentSecret), hh(agentActor.secret))) {
@@ -2266,10 +2266,14 @@ const server = http.createServer(async (req, res) => {
     if (!smtpSecure) smtpOpts.ignoreTLS = true;
     const transport = nodemailer.createTransport(smtpOpts);
 
+    // Resolve display name: connection senderName → agent name → address only
+    const connSenderName = meta.senderName || '';
+    const resolvedName = sanitize(connSenderName || agentActor.name || '').trim().slice(0, 100);
+
     let sentEmailInfo;
     try {
       sentEmailInfo = await transport.sendMail({
-        from: emailUser,
+        from: resolvedName ? { name: resolvedName, address: emailUser } : emailUser,
         to: sanitize(emailThread.from_address),
         subject: reSubject,
         text: body,
@@ -2303,7 +2307,8 @@ const server = http.createServer(async (req, res) => {
     ).all(roomId);
     const senderParticipantId = humanParts.length ? humanParts[0].id : participant.id;
     const emailProvider = preset === 'gmail' ? 'gmail' : 'email';
-    const sentNote = `[Email sent to ${sanitize(emailThread.from_address)} — ${reSubject}]\n\n${body}`;
+    const fromLabel = resolvedName ? `${resolvedName} <${emailUser}>` : emailUser;
+    const sentNote = `[Email sent to ${sanitize(emailThread.from_address)} from ${fromLabel} — ${reSubject}]\n\n${body}`;
     const sentResult = db.prepare(
       "INSERT INTO messages (room_id, participant_id, content, thread_id, automation_provider, state) VALUES (?, ?, ?, ?, ?, 'complete')"
     ).run(roomId, senderParticipantId, sentNote, threadId, emailProvider);
@@ -4038,13 +4043,16 @@ Write-Host "Logs   : pm2 logs $AgentName"
       tokenType = 'password';
       const { encrypt } = require('./lib/credentials');
       creds = JSON.stringify({ user: body.user.trim(), password: encrypt(body.password) });
-      initialMeta = JSON.stringify({
+      const rawSenderName = typeof body.senderName === 'string' ? body.senderName.replace(/[\r\n\x00-\x1f]/g, '').trim().slice(0, 100) : '';
+      const metaObj = {
         preset, host: emailHost, port: emailPort,
         secure: body.secure !== false,
         folder: (body.folder || 'INBOX').trim(),
         allowedSenders: allowedSenders.map(s => s.trim()),
         requireAuthPass: body.requireAuthPass !== false,
-      });
+      };
+      if (rawSenderName) metaObj.senderName = rawSenderName;
+      initialMeta = JSON.stringify(metaObj);
     } else { // whatsapp
       if (!body?.name) {
         res.writeHead(400); return res.end(JSON.stringify({ error: 'name required' }));
@@ -4116,6 +4124,10 @@ Write-Host "Logs   : pm2 logs $AgentName"
         if (body.folder !== undefined)           meta3.folder = (body.folder || 'INBOX').trim();
         if (body.preset !== undefined)           meta3.preset = body.preset;
         if (body.requireAuthPass !== undefined)  meta3.requireAuthPass = body.requireAuthPass !== false;
+        if (body.senderName !== undefined) {
+          const sn = typeof body.senderName === 'string' ? body.senderName.replace(/[\r\n\x00-\x1f]/g, '').trim().slice(0, 100) : '';
+          if (sn) meta3.senderName = sn; else delete meta3.senderName;
+        }
         if (body.allowedSenders !== undefined) {
           const senders = Array.isArray(body.allowedSenders) ? body.allowedSenders.filter(s => typeof s === 'string' && s.trim()) : [];
           if (!senders.length) { res.writeHead(400); return res.end(JSON.stringify({ error: 'allowedSenders must contain at least one address' })); }
