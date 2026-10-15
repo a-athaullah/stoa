@@ -78,12 +78,7 @@ function _applyHarnessCheckResult(actor, data, sel, hintEl) {
     showToast(parts.length ? `Harnesses: ${parts.map(p => escHtml(p)).join(', ')}` : 'No harnesses detected');
   }
   renderAgentSidebar();
-  // Refresh model dropdown if this actor is the AI agent for the current room
-  if (typeof updateModelSelector === 'function' && currentRoomId && currentRoomData) {
-    const parts2 = roomParticipantsCache[currentRoomId] || [];
-    const aiPart = parts2.find(p => p.type === 'ai');
-    if (aiPart?.actor_id === actor.id) updateModelSelector(currentRoomData, parts2);
-  }
+  if (typeof refreshModelDropdownForActor === 'function') refreshModelDropdownForActor(actor.id);
 }
 
 function _makeCheckHarnessBtn(actor, sel, hintEl) {

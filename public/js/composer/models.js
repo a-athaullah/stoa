@@ -482,6 +482,13 @@ function updateModelSelector(room, parts) {
   }
 }
 
+function refreshModelDropdownForActor(actorId) {
+  if (!currentRoomId || !currentRoomData) return;
+  const parts = roomParticipantsCache[currentRoomId] || [];
+  const aiPart = parts.find(p => p.type === 'ai');
+  if (aiPart?.actor_id === actorId) updateModelSelector(currentRoomData, parts);
+}
+
 document.getElementById('model-dropdown-trigger')?.addEventListener('click', function(e) {
   e.stopPropagation();
   const list = document.getElementById('model-dropdown-list');
