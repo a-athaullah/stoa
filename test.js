@@ -7860,8 +7860,9 @@ async function run() {
     const msg = await errPromise;
     assert.ok(msg.message.includes('enabled list'), `expected rejection, got: ${msg.message}`);
     humanWs.close();
-    await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
     ws16.close();
+    const db16 = require('./db');
+    db16.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
     delete process.env.HARNESS_CHECK_TIMEOUT_MS;
   });
 
@@ -7876,6 +7877,83 @@ async function run() {
     const msg = await errPromise;
     assert.ok(msg.message.includes('enabled list'), `unexpected error: ${msg.message}`);
     humanWs.close();
+  });
+
+  // set_room_model — platform model rejected in codex-only room
+  await test('set_room_model — platform model rejected in codex-only room', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    process.env.HARNESS_CHECK_TIMEOUT_MS = '3000';
+    const origPlat = db.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get();
+    const testPlat = [{ id: 'test-plat-02', vendor: 'openrouter', enabled: true, base_url: 'https://test-openrouter.invalid/v1', api_keys: ['test-key-02'], cached_models: [{ model: 'llama-4-scout', tools: true }], enabled_models: ['llama-4-scout'] }];
+    const upsert = origPlat
+      ? db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'")
+      : db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'ai_platforms', ?)");
+    upsert.run(JSON.stringify(testPlat));
+    const ws17 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready17 = waitForWsMessage(ws17, m => m.type === 'agent_ready');
+    ws17.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready17;
+    ws17.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === 'check_harnesses') {
+        ws17.send(JSON.stringify({
+          type: 'harnesses_update',
+          harnesses_available: ['codex'],
+          harness_status: [
+            { id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [
+              { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true },
+            ]},
+          ],
+          request_id: msg.request_id,
+        }));
+      }
+    });
+    await req('POST', `/api/actors/${hsActorId}/harnesses/check`);
+    await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'codex' });
+    const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    humanWs.send(JSON.stringify({ type: 'join_room', room_id: hsRoomId }));
+    await new Promise(r => setTimeout(r, 100));
+    const errPromise = waitForWsMessage(humanWs, m => m.type === 'error', 3000);
+    humanWs.send(JSON.stringify({ type: 'set_room_model', model: 'llama-4-scout' }));
+    const msg = await errPromise;
+    assert.ok(msg.message.includes('enabled list'), `expected rejection, got: ${msg.message}`);
+    humanWs.close();
+    ws17.close();
+    db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
+    if (origPlat) {
+      db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(origPlat.value);
+    } else {
+      db.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run();
+    }
+    delete process.env.HARNESS_CHECK_TIMEOUT_MS;
+  });
+
+  // set_room_model — platform model accepted in room with claude participant
+  await test('set_room_model — platform model accepted in room with claude participant', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const origPlat = db.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get();
+    const testPlat = [{ id: 'test-plat-02', vendor: 'openrouter', enabled: true, base_url: 'https://test-openrouter.invalid/v1', api_keys: ['test-key-02'], cached_models: [{ model: 'llama-4-scout', tools: true }], enabled_models: ['llama-4-scout'] }];
+    const upsert = origPlat
+      ? db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'")
+      : db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'ai_platforms', ?)");
+    upsert.run(JSON.stringify(testPlat));
+    db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
+    const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    humanWs.send(JSON.stringify({ type: 'join_room', room_id: hsRoomId }));
+    await new Promise(r => setTimeout(r, 1100));
+    const changed = waitForWsMessage(humanWs, m => m.type === 'room_model_changed' && m.room_id === hsRoomId, 3000);
+    humanWs.send(JSON.stringify({ type: 'set_room_model', model: 'llama-4-scout' }));
+    const msg = await changed;
+    assert.strictEqual(msg.model, 'llama-4-scout');
+    humanWs.close();
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+    if (origPlat) {
+      db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(origPlat.value);
+    } else {
+      db.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run();
+    }
   });
 
   // Teardown — delete all test rooms and actors created during the run

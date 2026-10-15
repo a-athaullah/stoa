@@ -5781,7 +5781,9 @@ wss.on('connection', (ws, req) => {
       }
       if (msg.model) {
         let known = false;
-        if (!msg.model.startsWith('claude-')) {
+        const aiParticipants = db.prepare("SELECT a.id, a.adapter FROM room_participants p JOIN actors a ON a.id=p.actor_id WHERE p.room_id=? AND a.type='ai'").all(subscribedRoom);
+        const hasClaude = aiParticipants.some(ap => (ap.adapter || 'claude') === 'claude');
+        if (!msg.model.startsWith('claude-') && hasClaude) {
           try {
             const platforms = getParsedSetting('ai_platforms');
             if (platforms) {
@@ -5796,7 +5798,6 @@ wss.on('connection', (ws, req) => {
           } catch {}
         }
         if (!known) {
-          const aiParticipants = db.prepare("SELECT a.id, a.adapter FROM room_participants p JOIN actors a ON a.id=p.actor_id WHERE p.room_id=? AND a.type='ai'").all(subscribedRoom);
           if (aiParticipants.length) {
             for (const ap of aiParticipants) {
               const adapter = ap.adapter || 'claude';
