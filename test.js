@@ -6839,40 +6839,46 @@ async function run() {
     cs._handleEvent({ type: 'turn.started' });
   });
 
-  // Fase 3a: createHarnessSession — behavioral: codex → CodexSession, claude → ClaudeSession
-  await test('createHarnessSession — codex dispatch returns CodexSession', () => {
+  // createHarnessSession — call real function, two sides
+  await test('createHarnessSession — codex → CodexSession instance', () => {
+    const { createHarnessSession } = require('./harness-session');
     const { CodexSession } = require('./codex-session');
-    const cs = new CodexSession({ workDir: '/tmp' });
-    assert.ok(cs instanceof CodexSession, 'should be CodexSession instance');
-    assert.strictEqual(typeof cs.send, 'function');
-    assert.strictEqual(typeof cs.abort, 'function');
-    assert.strictEqual(typeof cs.shutdown, 'function');
+    const session = createHarnessSession('codex', { workDir: '/tmp' });
+    assert.ok(session instanceof CodexSession, 'codex harness must return CodexSession');
+    assert.strictEqual(typeof session.send, 'function');
+    assert.strictEqual(typeof session.abort, 'function');
   });
 
-  await test('createHarnessSession — claude dispatch returns object with send/abort/shutdown', () => {
-    // ClaudeSession is not directly exportable without spawning claude CLI,
-    // so we verify the contract: stoa.js createHarnessSession('claude') returns
-    // an EventEmitter with send/abort/shutdown. We test via CodexSession as control
-    // (codex path) and verify claude path exists in source. Not a finding —
-    // ClaudeSession requires CLI binary to instantiate meaningfully.
-    const { CodexSession } = require('./codex-session');
-    const codex = new CodexSession({ workDir: '/tmp' });
-    assert.ok(typeof codex.send === 'function', 'codex has send');
-    assert.ok(typeof codex.abort === 'function', 'codex has abort');
-    // Verify both paths exist in source
-    const src = require('fs').readFileSync(require('path').join(__dirname, 'stoa.js'), 'utf8');
-    assert.ok(src.includes('function createHarnessSession(harness'), 'factory exists');
-    assert.ok(src.includes('new CodexSession(opts)') || src.includes('CodexSession(opts)'), 'codex dispatch path exists');
-    assert.ok(src.includes('new ClaudeSession(opts)') || src.includes('ClaudeSession(opts)'), 'claude dispatch path exists');
+  await test('createHarnessSession — claude → injected ClaudeSession instance', () => {
+    const { createHarnessSession } = require('./harness-session');
+    const { EventEmitter } = require('events');
+    class StubClaudeSession extends EventEmitter {
+      constructor(opts) { super(); this.opts = opts; }
+      send() {}
+      abort() {}
+      shutdown() {}
+    }
+    const session = createHarnessSession('claude', { workDir: '/tmp' }, { ClaudeSession: StubClaudeSession });
+    assert.ok(session instanceof StubClaudeSession, 'claude harness must return ClaudeSession');
+    assert.strictEqual(session.opts.workDir, '/tmp');
   });
 
-  // Fase 4: compact guard — test via CodexSession._harness property
-  await test('compact guard — codex session has _harness property', () => {
-    const { CodexSession } = require('./codex-session');
-    const cs = new CodexSession({ workDir: '/tmp' });
-    cs._harness = 'codex';
-    assert.strictEqual(cs._harness, 'codex');
-    assert.notStrictEqual(cs._harness, 'claude', 'codex session should not be claude');
+  await test('createHarnessSession — undefined defaults to ClaudeSession', () => {
+    const { createHarnessSession } = require('./harness-session');
+    const { EventEmitter } = require('events');
+    class StubCS extends EventEmitter { constructor() { super(); } send() {} abort() {} shutdown() {} }
+    const session = createHarnessSession(undefined, { workDir: '/tmp' }, { ClaudeSession: StubCS });
+    assert.ok(session instanceof StubCS, 'undefined harness defaults to claude');
+  });
+
+  // supportsCompact — two sides
+  await test('supportsCompact — claude/undefined → true, codex → false', () => {
+    const { supportsCompact } = require('./harness-session');
+    assert.strictEqual(supportsCompact('claude'), true);
+    assert.strictEqual(supportsCompact(undefined), true);
+    assert.strictEqual(supportsCompact(null), true);
+    assert.strictEqual(supportsCompact('codex'), false);
+    assert.strictEqual(supportsCompact('some-other'), false);
   });
 
   // Integration: PATCH adapter to unavailable harness → 400

@@ -586,12 +586,9 @@ async function backupSessionFile(workdir, sessionId) {
     return null;
   }
 }
+const { createHarnessSession: _createHS, supportsCompact } = require("./harness-session");
 function createHarnessSession(harness, opts) {
-  if (harness === "codex") {
-    const { CodexSession } = require("./codex-session");
-    return new CodexSession(opts);
-  }
-  return new ClaudeSession(opts);
+  return _createHS(harness, opts, { ClaudeSession });
 }
 async function prepareResume({ targetDir, rid, targetModel, toolsSupported, env, sessionKey, thirdParty = false, aggressive = false, systemPrompt = null, systemPromptHash = null, harness = "claude" }) {
   if (harness === "claude" && rid && !compactsInFlight.has(sessionKey)) {
@@ -671,7 +668,7 @@ setInterval(async () => {
   const busySessionKeys = new Set([...activeTriggers.values()].filter((t) => t.sessionKey).map((t) => t.sessionKey));
   for (const [sessionKey, session] of sessionPool) {
     if (busySessionKeys.has(sessionKey)) continue;
-    if (session._harness && session._harness !== "claude") continue;
+    if (!supportsCompact(session._harness)) continue;
     const workdir = sessionKey.split("::")[0];
     const sessionId = session.resumeId;
     if (!sessionId) continue;
@@ -1141,7 +1138,7 @@ async function handleAgentMessage(msg) {
         return;
       }
     }
-    if (session._harness && session._harness !== "claude") {
+    if (!supportsCompact(session._harness)) {
       console.log(`[stoa] compact: skipping non-claude session (${session._harness}) for ${key}`);
       send({ type: "compact_error", room_id: msg.room_id, thread_id: msg.thread_id || null, sub_agent_id: msg.sub_agent_id || null, error: `compact not supported for ${session._harness} harness` });
       return;

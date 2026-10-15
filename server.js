@@ -712,7 +712,7 @@ const DEFAULT_BASE_SYSTEM_PROMPT = `You are an AI agent operating on the Stoa pl
 const { composeSystemPrompt } = require('./lib/compose-system-prompt');
 
 // Files yang boleh di-serve sebagai client update
-const CLIENT_FILES = new Set(['stoa.js', 'claude-session.js', 'codex-session.js']);
+const CLIENT_FILES = new Set(['stoa.js', 'claude-session.js', 'codex-session.js', 'harness-session.js']);
 
 // One-time install tokens (expires in 10 min)
 const installTokens = new Map();
