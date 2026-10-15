@@ -315,6 +315,17 @@ function getModelsForHarness(harnessName) {
   }));
 }
 
+function _agentHarnessModels(harnessStatus, harnessName) {
+  if (!Array.isArray(harnessStatus) || !harnessName) return null;
+  const st = harnessStatus.find(s => s.id === harnessName);
+  if (!st?.models?.length) return null;
+  return st.models.map(m => ({
+    value: m.id, label: m.label || m.id,
+    vision: false, tools: false, local: false,
+    platform: harnessName, platform_id: harnessName, is_default: !!m.is_default,
+  }));
+}
+
 async function fetchPlatformModels() {
   try {
     const groups = await fjson('/api/ai/models');
@@ -463,7 +474,9 @@ function updateModelSelector(room, parts) {
     const aiPart = (parts || []).find(p => p.type === 'ai');
     const aiActor = aiPart ? allActors.find(a => a.id === aiPart.actor_id) : null;
     const harness = aiActor?.adapter || 'claude';
-    const harnessModels = harness !== 'claude' ? getModelsForHarness(harness) : null;
+    const harnessModels = harness !== 'claude'
+      ? (_agentHarnessModels(aiActor?.harness_status, harness) || getModelsForHarness(harness))
+      : null;
     populateModelDropdown(null, room.model, parsePlatformId(room.model_config), harnessModels);
     handleModelUpdate({ model: room.model || 'claude-sonnet-4-6' });
   }

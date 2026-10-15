@@ -50,24 +50,40 @@ function _harnessHint(actor) {
 
 function _applyHarnessCheckResult(actor, data, sel, hintEl) {
   const prevAvailable = (actor.harnesses_available || []).slice();
+  const prevStatus = actor.harness_status || [];
   actor.harnesses_available = data.harnesses_available || prevAvailable;
-  actor.harness_status = data.harness_status || actor.harness_status;
-  const idx = settingsActors.findIndex(a => a.id === actor.id);
-  if (idx >= 0) settingsActors[idx] = { ...settingsActors[idx], harnesses_available: actor.harnesses_available, harness_status: actor.harness_status };
+  actor.harness_status = data.harness_status || prevStatus;
+  const patch = { harnesses_available: actor.harnesses_available, harness_status: actor.harness_status };
+  const sIdx = settingsActors.findIndex(a => a.id === actor.id);
+  if (sIdx >= 0) settingsActors[sIdx] = { ...settingsActors[sIdx], ...patch };
+  const aIdx = allActors.findIndex(a => a.id === actor.id);
+  if (aIdx >= 0) Object.assign(allActors[aIdx], patch);
   _buildHarnessOptions(sel, actor);
   const hint = _harnessHint(actor);
   if (hintEl) { hintEl.textContent = hint || ''; hintEl.style.display = hint ? '' : 'none'; }
   const newOnes = actor.harnesses_available.filter(h => !prevAvailable.includes(h));
+  const curHarness = actor.adapter || 'claude';
+  const curSt = actor.harness_status.find(s => s.id === curHarness);
+  const prevSt = prevStatus.find(s => s.id === curHarness);
+  const newModels = (curSt?.models || []).filter(m => !(prevSt?.models || []).some(p => p.id === m.id));
   const parts = (data.harness_status || []).filter(s => s.installed).map(s => {
     const lbl = HARNESS_LABELS[s.id] || s.id;
     return s.version ? `${lbl} ${s.version}` : lbl;
   });
   if (newOnes.length) {
     showToast(`New harness detected: ${newOnes.map(h => escHtml(HARNESS_LABELS[h] || h)).join(', ')}`);
+  } else if (newModels.length && curHarness !== 'claude') {
+    showToast(`${escHtml(HARNESS_LABELS[curHarness] || curHarness)}: ${newModels.length} new model${newModels.length > 1 ? 's' : ''}`);
   } else {
     showToast(parts.length ? `Harnesses: ${parts.map(p => escHtml(p)).join(', ')}` : 'No harnesses detected');
   }
   renderAgentSidebar();
+  // Refresh model dropdown if this actor is the AI agent for the current room
+  if (typeof updateModelSelector === 'function' && currentRoomId && currentRoomData) {
+    const parts2 = roomParticipantsCache[currentRoomId] || [];
+    const aiPart = parts2.find(p => p.type === 'ai');
+    if (aiPart?.actor_id === actor.id) updateModelSelector(currentRoomData, parts2);
+  }
 }
 
 function _makeCheckHarnessBtn(actor, sel, hintEl) {
