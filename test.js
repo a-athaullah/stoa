@@ -7444,6 +7444,160 @@ async function run() {
     delete process.env.HARNESS_CHECK_TIMEOUT_MS;
   });
 
+  // resolveModelChain harness-aware: codex sub-agent + tier deep → codex model, not claude-*
+  await test('resolveModelChain — codex sub-agent tier deep gets codex default model, not claude', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    // Set up: report codex models via harness check so agentHarnessStatus is populated
+    process.env.HARNESS_CHECK_TIMEOUT_MS = '3000';
+    const ws11 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready11 = waitForWsMessage(ws11, m => m.type === 'agent_ready');
+    ws11.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready11;
+    // Report codex models via check
+    const checkDone = new Promise((resolve) => {
+      ws11.on('message', (raw) => {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type === 'check_harnesses') {
+          ws11.send(JSON.stringify({
+            type: 'harnesses_update',
+            harnesses_available: ['claude', 'codex'],
+            harness_status: [
+              { id: 'claude', installed: true, logged_in: true, version: '2.0.0', models: null },
+              { id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [
+                { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true },
+                { id: 'gpt-6-sol', label: 'GPT-6-Sol', is_default: false },
+              ]},
+            ],
+            request_id: msg.request_id,
+          }));
+        }
+      });
+    });
+    await req('POST', `/api/actors/${hsActorId}/harnesses/check`);
+    // Create codex sub-agent with tier deep
+    const saR = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'codex-deep-test', tier: 'deep', harness: 'codex' });
+    assert.strictEqual(saR.status, 201);
+    const saId = saR.body.id;
+    // Link to room
+    await req('POST', `/api/rooms/${hsRoomId}/sub-agents`, { sub_agent_id: saId });
+    // Listen for agent_trigger to verify model
+    const triggerPromise = waitForWsMessage(ws11, m => m.type === 'agent_trigger' && m.sub_agent?.label === 'codex-deep-test', 5000);
+    // Trigger sub-agent
+    const trigR = await req('POST', `/api/rooms/${hsRoomId}/sub-agent-trigger`, {
+      sub_agent_id: saId,
+      task: 'test harness model chain — should get codex model',
+    }, { 'x-agent-id': String(hsActorId), 'x-agent-secret': hsSecret });
+    if (trigR.status === 503) {
+      console.log('    (skipped — parent offline)');
+      await req('DELETE', `/api/sub-agents/${saId}`);
+      ws11.close();
+      delete process.env.HARNESS_CHECK_TIMEOUT_MS;
+      return;
+    }
+    assert.strictEqual(trigR.status, 200);
+    const trigMsg = await triggerPromise;
+    assert.ok(trigMsg.model, 'trigger should have model');
+    assert.ok(!trigMsg.model.startsWith('claude-'), `model should not be claude, got: ${trigMsg.model}`);
+    assert.strictEqual(trigMsg.model, 'gpt-6.1-sol', 'should use codex default model');
+    assert.strictEqual(trigMsg.harness, 'codex');
+    // Complete the agent message so it doesn't hang
+    const msgId = trigMsg.message_id;
+    if (msgId) {
+      ws11.send(JSON.stringify({ type: 'agent_message', message_id: msgId, content: 'test done', state: 'complete' }));
+    }
+    // Cleanup
+    await req('DELETE', `/api/sub-agents/${saId}`);
+    ws11.close();
+    delete process.env.HARNESS_CHECK_TIMEOUT_MS;
+  });
+
+  // resolveModelChain — claude sub-agent under codex parent still gets claude models
+  await test('resolveModelChain — claude sub-agent under codex parent gets claude model', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    // Set parent adapter to codex
+    db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('codex', hsActorId);
+    // Create sub-agent with explicit claude harness + tier deep
+    const saR = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'claude-under-codex', tier: 'deep', harness: 'claude' });
+    assert.strictEqual(saR.status, 201);
+    const saId = saR.body.id;
+    await req('POST', `/api/rooms/${hsRoomId}/sub-agents`, { sub_agent_id: saId });
+    // Connect agent
+    const ws12 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready12 = waitForWsMessage(ws12, m => m.type === 'agent_ready');
+    ws12.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready12;
+    const triggerPromise = waitForWsMessage(ws12, m => m.type === 'agent_trigger' && m.sub_agent?.label === 'claude-under-codex', 5000);
+    const trigR = await req('POST', `/api/rooms/${hsRoomId}/sub-agent-trigger`, {
+      sub_agent_id: saId,
+      task: 'test claude sub-agent under codex parent — should get claude model',
+    }, { 'x-agent-id': String(hsActorId), 'x-agent-secret': hsSecret });
+    if (trigR.status === 503) {
+      console.log('    (skipped — parent offline)');
+      db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
+      await req('DELETE', `/api/sub-agents/${saId}`);
+      ws12.close();
+      return;
+    }
+    assert.strictEqual(trigR.status, 200);
+    const trigMsg = await triggerPromise;
+    assert.ok(trigMsg.model, 'trigger should have model');
+    assert.ok(trigMsg.model.startsWith('claude-'), `model should be claude, got: ${trigMsg.model}`);
+    assert.strictEqual(trigMsg.harness, 'claude');
+    // Complete message
+    if (trigMsg.message_id) {
+      ws12.send(JSON.stringify({ type: 'agent_message', message_id: trigMsg.message_id, content: 'test done', state: 'complete' }));
+    }
+    // Cleanup
+    db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
+    await req('DELETE', `/api/sub-agents/${saId}`);
+    ws12.close();
+  });
+
+  // POST sub-agent — model validated against effective harness
+  await test('POST sub-agent — reject model not in effective harness', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    // Parent is claude, sub-agent inherits → claude harness
+    const r = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'bad-model-test', tier: 'quick', model: 'gpt-6.1-sol' });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.body.error.includes('not available for harness'), r.body.error);
+  });
+
+  // POST sub-agent — accept valid model for harness
+  await test('POST sub-agent — accept valid claude model', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'good-model-test', tier: 'quick', model: 'claude-opus-5-5' });
+    assert.strictEqual(r.status, 201);
+    assert.strictEqual(r.body.model, 'claude-opus-5-5');
+    await req('DELETE', `/api/sub-agents/${r.body.id}`);
+  });
+
+  // PATCH sub-agent — reject model not valid for effective harness
+  await test('PATCH sub-agent — reject model not in effective harness', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const cr = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'patch-model-test', tier: 'quick' });
+    assert.strictEqual(cr.status, 201);
+    const saId = cr.body.id;
+    const r = await req('PATCH', `/api/sub-agents/${saId}`, { model: 'gpt-6.1-sol' });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.body.error.includes('not available for harness'), r.body.error);
+    await req('DELETE', `/api/sub-agents/${saId}`);
+  });
+
+  // PATCH sub-agent — changing harness invalidates current model
+  await test('PATCH sub-agent — changing harness rejects if current model invalid for new harness', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const cr = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'harness-swap-test', tier: 'quick', model: 'claude-sonnet-5-5' });
+    assert.strictEqual(cr.status, 201);
+    const saId = cr.body.id;
+    // Change harness to codex — claude-sonnet-5-5 is not valid for codex
+    const r = await req('PATCH', `/api/sub-agents/${saId}`, { harness: 'codex' });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.body.error.includes('not available for harness'), r.body.error);
+    await req('DELETE', `/api/sub-agents/${saId}`);
+  });
+
   // Teardown — delete all test rooms and actors created during the run
   console.log('\n[Test Teardown]');
   await test('Teardown — delete all test rooms', async () => {

@@ -114,10 +114,20 @@ const SERVER_DEFAULT_TIERS = {
 //   4. last resort                        → [roomModel] (unchanged single-model)
 // A main-agent trigger (no sub-agent / no tier) always returns [roomModel] so
 // existing behaviour is untouched — tier routing applies to sub-agents only.
-function resolveModelChain(subAgent, roomModel, roomModelTiersJson) {
+function resolveModelChain(subAgent, roomModel, roomModelTiersJson, effectiveHarness, actorId) {
   if (!subAgent || !subAgent.tier) return roomModel ? [roomModel] : [];
   if (subAgent.model) return [subAgent.model];
   const tier = subAgent.tier;
+
+  if (effectiveHarness && effectiveHarness !== 'claude') {
+    const hModels = getHarnessModels(actorId, effectiveHarness);
+    if (hModels.length) {
+      const def = hModels.find(m => m.is_default)?.model_id || hModels[0].model_id;
+      return [def];
+    }
+    return [];
+  }
+
   if (roomModelTiersJson) {
     try {
       const chain = JSON.parse(roomModelTiersJson)?.[tier];
@@ -3372,6 +3382,15 @@ const server = http.createServer(async (req, res) => {
     }
     const nameCollision = db.prepare('SELECT 1 FROM actors WHERE LOWER(name)=LOWER(?)').get(label.trim());
     if (nameCollision) return json(res, { error: `label "${label.trim()}" conflicts with an existing actor name` }, 409);
+    if (model) {
+      const parentAdapter = db.prepare('SELECT adapter FROM actors WHERE id=?').get(actorId)?.adapter || 'claude';
+      const effH = harness || parentAdapter;
+      const hModels = getHarnessModels(actorId, effH);
+      if (hModels.length) {
+        const validIds = new Set(hModels.map(m => m.model_id));
+        if (!validIds.has(model)) return json(res, { error: `model "${model}" not available for harness ${effH}` }, 400);
+      }
+    }
     try {
       const result = db.prepare(
         'INSERT INTO sub_agents (parent_actor_id, label, tier, model, workdir, system_prompt, harness) VALUES (?,?,?,?,?,?,?)'
@@ -3417,6 +3436,17 @@ const server = http.createServer(async (req, res) => {
       }
     }
     if (!updates.length) return json(res, { error: 'no fields to update' }, 400);
+    const newModel = data.model !== undefined ? (data.model ?? null) : sa.model;
+    if (newModel) {
+      const newHarness = data.harness !== undefined ? (data.harness ?? null) : sa.harness;
+      const parentAdapter = db.prepare('SELECT adapter FROM actors WHERE id=?').get(sa.parent_actor_id)?.adapter || 'claude';
+      const effH = newHarness || parentAdapter;
+      const hModels = getHarnessModels(sa.parent_actor_id, effH);
+      if (hModels.length) {
+        const validIds = new Set(hModels.map(m => m.model_id));
+        if (!validIds.has(newModel)) return json(res, { error: `model "${newModel}" not available for harness ${effH}` }, 400);
+      }
+    }
     params.push(id);
     try {
       db.prepare(`UPDATE sub_agents SET ${updates.join(', ')} WHERE id=?`).run(...params);
@@ -6874,7 +6904,8 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
 
   // Sub-agent model overrides room model when set. Phase 3: sub-agents also
   // resolve a tier → ordered fallback chain; the agent tries each in order.
-  const modelChain = resolveModelChain(subAgent, roomModel, roomRow2?.model_tiers);
+  const effectiveHarness = subAgent?.harness || ai.adapter || 'claude';
+  const modelChain = resolveModelChain(subAgent, roomModel, roomRow2?.model_tiers, effectiveHarness, ai.actor_id);
   const effectiveModel = modelChain[0] || null;
 
   if (agentWs && agentWs.readyState === 1) {
@@ -6908,7 +6939,6 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
       const agentSysPrompt = db.prepare('SELECT system_prompt FROM actors WHERE id=?').get(ai.actor_id)?.system_prompt || null;
       const roomSysPrompt = composeSystemPrompt(baseSysPrompt, agentSysPrompt, roomSysPromptRaw);
       const sysPromptHash = require('crypto').createHash('sha256').update(roomSysPrompt).digest('hex').slice(0, 16);
-      const effectiveHarness = subAgent?.harness || ai.adapter || 'claude';
       agentWs.send(JSON.stringify({
         type: 'agent_trigger',
         room_id: roomId,
