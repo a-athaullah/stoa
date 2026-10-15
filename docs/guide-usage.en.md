@@ -419,9 +419,9 @@ Sub-agents do **not** inherit the parent agent's system prompt. Each sub-agent h
 By default, agents run on the **Claude CLI**. If the agent's machine also has **Codex CLI** installed and logged in (via `codex login`), you can switch harnesses in **Settings > AI Agent → Agent card → Harness** dropdown.
 
 - **Claude** — Claude Code CLI. Supports compact, streaming, and resume.
-- **Codex** — OpenAI Codex CLI. Requires `codex` CLI installed and authenticated on the agent's machine. Codex sessions use `danger-full-access` sandbox by default and ignore user Codex config files (`--ignore-user-config`). **Compact is not supported** — manual compact and auto-compact are both skipped for Codex sessions. When first switching to Codex, the agent automatically downloads `codex-session.js` via auto-update on its next check (about 2 minutes), then restarts once more.
+- **Codex** — OpenAI Codex CLI. Requires `codex` CLI installed and authenticated on the agent's machine. Codex sessions use `danger-full-access` sandbox by default and ignore user Codex config files (`--ignore-user-config`). **Compact is not supported** — clicking compact on a Codex session shows a toast error (`compact not supported for codex harness`); auto-compact also skips Codex sessions silently. `codex-session.js` is distributed via Stoa's auto-update — the agent downloads it when the server is updated, regardless of which harness is selected. If the Codex harness is triggered before `codex-session.js` is present on the agent machine, the trigger fails with a clear error; wait for auto-update to complete (~2 minutes after server update).
 
-Changing an agent's harness resets any room models that are incompatible with the new harness to that harness's default model. A notice in the room lists all affected rooms and sub-agents.
+Changing an agent's harness resets any room models that are incompatible with the new harness to that harness's default model. A notice below the Harness dropdown in **Settings > AI Agent** lists affected rooms and sub-agents, showing which model was reset and to what.
 
 Sub-agents can also choose their own harness, or leave it on **inherit from parent** (the default).
 
@@ -475,7 +475,7 @@ Select an agent in **Settings > AI Agent** to see action buttons in the detail h
 - **Force Update** — force the agent to check for client updates immediately (normally checks every 2 minutes)
 - **Remove** — unregister the agent (with confirmation)
 
-**Compact Session** — compress the agent's conversation history to reduce context size. Open the thread panel and click the compact button (↕ icon) in the panel header. A progress bar appears inside the thread panel while compacting — the agent summarizes prior context and continues seamlessly. Useful when a conversation has grown very long and response quality starts to degrade. Compact is not available for Codex harness sessions — the button is hidden when the agent uses Codex.
+**Compact Session** — compress the agent's conversation history to reduce context size. Open the thread panel and click the compact button (↕ icon) in the panel header. A progress bar appears inside the thread panel while compacting — the agent summarizes prior context and continues seamlessly. Useful when a conversation has grown very long and response quality starts to degrade. Compact is not supported for Codex harness sessions — clicking compact shows a toast error (`compact not supported for codex harness`).
 
 ### Auto-Compact
 
@@ -944,7 +944,7 @@ Browser  <-->  WebSocket  <-->  server.js  <-->  Agent (stoa.js)
 - **public/** — frontend (no build step needed)
 - **stoa.js** — agent client that runs on each agent machine
 - **claude-session.js** — manages the Claude Code CLI subprocess
-- **codex-session.js** — manages the Codex CLI subprocess; downloaded to agent machines automatically via auto-update when the Codex harness is first used
+- **codex-session.js** — manages the Codex CLI subprocess; distributed via Stoa's auto-update (downloaded when the server is updated, not when the harness is switched)
 - **SQLite** — all data stored locally in `stoa.db` (WAL mode for performance)
 
 All AI models are routed through **Claude Code CLI**. For custom external platforms (OpenRouter, Together AI, etc.), the server passes platform-specific environment variables (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`) to the CLI process. For **Ollama Cloud**, requests are routed through a built-in Stoa proxy (`/v1/messages`) with server-side API key rotation — agents connect to Stoa, not directly to ollama.com.

@@ -417,9 +417,9 @@ curl -fsSL http://YOUR_SERVER:3000/install.sh?name=Idris | bash
 默认情况下，代理使用 **Claude CLI** 运行。如果代理所在机器还安装了 **Codex CLI** 并已登录（通过 `codex login`），可在**设置 > AI Agent → 代理卡片 → Harness** 下拉菜单中切换执行器。
 
 - **Claude** — Claude Code CLI，支持压缩、流式传输和恢复。
-- **Codex** — OpenAI Codex CLI，需要代理机器上已安装并通过认证的 `codex` CLI。Codex 会话默认使用 `danger-full-access` 沙盒，并忽略用户的 Codex 配置文件（`--ignore-user-config`）。**不支持压缩** — Codex 会话会跳过手动压缩和自动压缩。首次切换到 Codex 时，代理会在下次自动更新检查时（约 2 分钟后）自动下载 `codex-session.js`，然后再次重启。
+- **Codex** — OpenAI Codex CLI，需要代理机器上已安装并通过认证的 `codex` CLI。Codex 会话默认使用 `danger-full-access` 沙盒，并忽略用户的 Codex 配置文件（`--ignore-user-config`）。**不支持压缩** — 在 Codex 会话中点击压缩会显示 toast 错误（`compact not supported for codex harness`）；自动压缩也会静默跳过 Codex 会话。`codex-session.js` 通过 Stoa 的自动更新分发 — 服务器更新时由代理自动下载，与何时切换执行器无关。若在 `codex-session.js` 尚未下载到代理机器时触发 Codex 执行器，触发会以明确的错误消息失败；请等待自动更新完成（服务器更新后约 2 分钟）。
 
-更改代理的执行器时，与新执行器不兼容的房间模型会被重置为该执行器的默认模型。房间通知中会列出所有受影响的房间和子代理。
+更改代理的执行器时，与新执行器不兼容的房间模型会被重置为该执行器的默认模型。**设置 > AI Agent** 中 Harness 下拉菜单下方的通知会列出受影响的房间和子代理及其重置详情。
 
 子代理也可以选择自己的执行器，或保持 **inherit from parent**（默认值）。
 
@@ -473,7 +473,7 @@ curl -fsSL http://YOUR_SERVER:3000/install.sh?name=Idris | bash
 - **强制更新** — 强制代理立即检查客户端更新（通常每 2 分钟检查一次）
 - **删除** — 注销代理（需确认）
 
-**压缩会话** — 压缩代理的对话历史以减少上下文大小。打开话题面板，点击面板头部的压缩按钮（↕ 图标）。压缩过程中话题面板内会显示进度条，代理会总结之前的上下文并无缝继续。当对话变得很长且响应质量开始下降时，此功能非常有用。Codex 执行器会话不支持压缩 — 使用 Codex 时按钮会隐藏。
+**压缩会话** — 压缩代理的对话历史以减少上下文大小。打开话题面板，点击面板头部的压缩按钮（↕ 图标）。压缩过程中话题面板内会显示进度条，代理会总结之前的上下文并无缝继续。当对话变得很长且响应质量开始下降时，此功能非常有用。Codex 执行器会话不支持压缩 — 点击压缩会显示 toast 错误（`compact not supported for codex harness`）。
 
 ### 自动压缩（Auto-Compact）
 
@@ -940,7 +940,7 @@ Stoa 完全响应式，可在移动浏览器上使用。还可以安装为 **Pro
 - **public/** — 前端（无需构建步骤）
 - **stoa.js** — 在每台代理机器上运行的代理客户端
 - **claude-session.js** — 管理 Claude Code CLI 子进程
-- **codex-session.js** — 管理 Codex CLI 子进程；首次使用 Codex 执行器时，通过自动更新自动下载到代理机器
+- **codex-session.js** — 管理 Codex CLI 子进程；通过 Stoa 自动更新分发（服务器更新时下载，与执行器切换时机无关）
 - **SQLite** — 所有数据本地存储在 `stoa.db`（使用 WAL 模式提升性能）
 
 所有 AI 模型均通过 **Claude Code CLI** 进行路由。对于自定义外部平台（OpenRouter、Together AI 等），服务器会将平台特定的环境变量（`ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`）传递给 CLI 进程。对于 **Ollama Cloud**，请求通过 Stoa 内置代理（`/v1/messages`）路由，并在服务器端进行 API 密钥轮换 — Agent 连接到 Stoa，不直接连接到 ollama.com。

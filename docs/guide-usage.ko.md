@@ -417,9 +417,9 @@ curl -fsSL http://YOUR_SERVER:3000/install.sh?name=Idris | bash
 기본적으로 에이전트는 **Claude CLI**로 실행됩니다. 에이전트 머신에 **Codex CLI**가 설치되어 로그인(`codex login` 경유)되어 있으면 **설정 > AI Agent → 에이전트 카드 → Harness** 드롭다운에서 하네스를 전환할 수 있습니다.
 
 - **Claude** — Claude Code CLI. 압축, 스트리밍, 재개를 지원합니다.
-- **Codex** — OpenAI Codex CLI. 에이전트 머신에 `codex` CLI가 설치되어 인증된 상태여야 합니다. Codex 세션은 기본적으로 `danger-full-access` 샌드박스를 사용하며 사용자 Codex 설정 파일을 무시합니다(`--ignore-user-config`). **압축은 지원되지 않습니다** — Codex 세션에서는 수동 압축과 자동 압축 모두 건너뜁니다. Codex로 처음 전환하면 에이전트는 다음 자동 업데이트 확인 시(약 2분 후) `codex-session.js`를 자동으로 다운로드하고 한 번 더 재시작합니다.
+- **Codex** — OpenAI Codex CLI. 에이전트 머신에 `codex` CLI가 설치되어 인증된 상태여야 합니다. Codex 세션은 기본적으로 `danger-full-access` 샌드박스를 사용하며 사용자 Codex 설정 파일을 무시합니다(`--ignore-user-config`). **압축은 지원되지 않습니다** — Codex 세션에서 압축을 클릭하면 토스트 오류(`compact not supported for codex harness`)가 표시되며, 자동 압축도 Codex 세션을 자동으로 건너뜁니다. `codex-session.js`는 Stoa 자동 업데이트를 통해 배포됩니다 — 서버가 업데이트될 때 에이전트가 다운로드하며, 하네스 전환 시점에 의존하지 않습니다. `codex-session.js`가 에이전트 머신에 없는 상태에서 Codex 하네스가 트리거되면 명확한 오류 메시지와 함께 트리거가 실패합니다; 자동 업데이트 완료(서버 업데이트 후 약 2분)를 기다리세요.
 
-에이전트의 하네스를 변경하면 새 하네스와 호환되지 않는 룸 모델이 해당 하네스의 기본 모델로 재설정됩니다. 룸의 알림에 영향 받는 모든 룸과 서브 에이전트 목록이 표시됩니다.
+에이전트의 하네스를 변경하면 새 하네스와 호환되지 않는 룸 모델이 해당 하네스의 기본 모델로 재설정됩니다. **설정 > AI Agent** 의 Harness 드롭다운 아래 알림에 재설정된 내용과 함께 영향 받는 룸과 서브 에이전트 목록이 표시됩니다.
 
 서브 에이전트도 자체 하네스를 선택하거나 **inherit from parent**(기본값)로 유지할 수 있습니다.
 
@@ -473,7 +473,7 @@ curl -fsSL http://YOUR_SERVER:3000/install.sh?name=Idris | bash
 - **강제 업데이트** — 에이전트가 즉시 클라이언트 업데이트를 확인하도록 강제 (일반적으로 2분마다 확인)
 - **삭제** — 에이전트 등록 해제 (확인 필요)
 
-**세션 압축** — 에이전트의 대화 기록을 압축하여 컨텍스트 크기를 줄입니다. 스레드 패널을 열고 패널 헤더의 압축 버튼 (↕ 아이콘)을 클릭하세요. 압축 중 스레드 패널 안에 진행 표시줄이 나타나며 에이전트는 이전 컨텍스트를 요약하고 원활하게 계속합니다. 대화가 매우 길어지고 응답 품질이 저하되기 시작할 때 유용합니다. Codex 하네스 세션에서는 압축을 사용할 수 없습니다 — 에이전트가 Codex를 사용할 때 버튼이 숨겨집니다.
+**세션 압축** — 에이전트의 대화 기록을 압축하여 컨텍스트 크기를 줄입니다. 스레드 패널을 열고 패널 헤더의 압축 버튼 (↕ 아이콘)을 클릭하세요. 압축 중 스레드 패널 안에 진행 표시줄이 나타나며 에이전트는 이전 컨텍스트를 요약하고 원활하게 계속합니다. 대화가 매우 길어지고 응답 품질이 저하되기 시작할 때 유용합니다. Codex 하네스 세션에서는 압축이 지원되지 않습니다 — 압축을 클릭하면 토스트 오류(`compact not supported for codex harness`)가 표시됩니다.
 
 ### 자동 압축 (Auto-Compact)
 
@@ -940,7 +940,7 @@ Stoa는 완전 반응형으로 모바일 브라우저에서도 작동합니다. 
 - **public/** — 프런트엔드 (빌드 단계 불필요)
 - **stoa.js** — 각 에이전트 머신에서 실행되는 에이전트 클라이언트
 - **claude-session.js** — Claude Code CLI 서브프로세스 관리
-- **codex-session.js** — Codex CLI 서브프로세스 관리. Codex 하네스가 처음 사용될 때 자동 업데이트를 통해 에이전트 머신에 자동으로 다운로드됩니다
+- **codex-session.js** — Codex CLI 서브프로세스 관리. Stoa 자동 업데이트를 통해 배포됩니다(서버 업데이트 시 다운로드, 하네스 전환 시점과 무관)
 - **SQLite** — 모든 데이터를 `stoa.db`에 로컬 저장 (성능을 위한 WAL 모드)
 
 모든 AI 모델은 **Claude Code CLI**를 통해 라우팅됩니다. 커스텀 외부 플랫폼(OpenRouter, Together AI 등)의 경우, 서버가 플랫폼별 환경 변수(`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`)를 CLI 프로세스에 전달합니다. **Ollama Cloud**의 경우, 요청은 Stoa 내장 프록시(`/v1/messages`)를 통해 라우팅되며 서버 측에서 API 키 로테이션을 처리합니다 — 에이전트는 Stoa에 연결하고 ollama.com에는 직접 연결하지 않습니다.
