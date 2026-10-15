@@ -5783,7 +5783,7 @@ wss.on('connection', (ws, req) => {
         let known = false;
         const aiParticipants = db.prepare("SELECT a.id, a.adapter FROM room_participants p JOIN actors a ON a.id=p.actor_id WHERE p.room_id=? AND a.type='ai'").all(subscribedRoom);
         const hasClaude = aiParticipants.some(ap => (ap.adapter || 'claude') === 'claude');
-        if (!msg.model.startsWith('claude-') && hasClaude) {
+        if (!msg.model.startsWith('claude-') && (hasClaude || !aiParticipants.length)) {
           try {
             const platforms = getParsedSetting('ai_platforms');
             if (platforms) {

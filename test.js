@@ -7942,6 +7942,7 @@ async function run() {
     db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
     const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
     humanWs.send(JSON.stringify({ type: 'join_room', room_id: hsRoomId }));
+    // getParsedSetting has 1s in-memory cache; direct DB writes don't invalidate it
     await new Promise(r => setTimeout(r, 1100));
     const changed = waitForWsMessage(humanWs, m => m.type === 'room_model_changed' && m.room_id === hsRoomId, 3000);
     humanWs.send(JSON.stringify({ type: 'set_room_model', model: 'llama-4-scout' }));
@@ -7954,6 +7955,48 @@ async function run() {
     } else {
       db.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run();
     }
+  });
+
+  // set_room_model — platform model accepted in room without AI participant (backward compat)
+  await test('set_room_model — platform model accepted in room without AI participant', async () => {
+    const db = require('./db');
+    const noAiRoomId = db.prepare("INSERT INTO rooms (title, created_by) VALUES ('__test-no-ai-room', 1)").run().lastInsertRowid;
+    const origPlat = db.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get();
+    const testPlat = [{ id: 'test-plat-03', vendor: 'openrouter', enabled: true, base_url: 'https://test-openrouter.invalid/v1', api_keys: ['test-key-03'], cached_models: [{ model: 'llama-4-scout', tools: true }], enabled_models: ['llama-4-scout'] }];
+    const upsert = origPlat
+      ? db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'")
+      : db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'ai_platforms', ?)");
+    upsert.run(JSON.stringify(testPlat));
+    const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    humanWs.send(JSON.stringify({ type: 'join_room', room_id: noAiRoomId }));
+    // getParsedSetting has 1s in-memory cache; direct DB writes don't invalidate it
+    await new Promise(r => setTimeout(r, 1100));
+    const changed = waitForWsMessage(humanWs, m => m.type === 'room_model_changed' && m.room_id === noAiRoomId, 3000);
+    humanWs.send(JSON.stringify({ type: 'set_room_model', model: 'llama-4-scout' }));
+    const msg = await changed;
+    assert.strictEqual(msg.model, 'llama-4-scout');
+    humanWs.close();
+    db.prepare('DELETE FROM rooms WHERE id=?').run(noAiRoomId);
+    if (origPlat) {
+      db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(origPlat.value);
+    } else {
+      db.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run();
+    }
+  });
+
+  // set_room_model — unknown model rejected in room without AI participant
+  await test('set_room_model — unknown model rejected in room without AI participant', async () => {
+    const db = require('./db');
+    const noAiRoomId = db.prepare("INSERT INTO rooms (title, created_by) VALUES ('__test-no-ai-room-2', 1)").run().lastInsertRowid;
+    const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    humanWs.send(JSON.stringify({ type: 'join_room', room_id: noAiRoomId }));
+    await new Promise(r => setTimeout(r, 100));
+    const err = waitForWsMessage(humanWs, m => m.type === 'error' && m.code === 'invalid_model', 3000);
+    humanWs.send(JSON.stringify({ type: 'set_room_model', model: 'totally-fake-model-xyz' }));
+    const msg = await err;
+    assert.strictEqual(msg.code, 'invalid_model');
+    humanWs.close();
+    db.prepare('DELETE FROM rooms WHERE id=?').run(noAiRoomId);
   });
 
   // Teardown — delete all test rooms and actors created during the run
