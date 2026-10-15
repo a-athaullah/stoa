@@ -270,7 +270,7 @@ var MAX_TRIGGER_ERRORS = 3;
 var TRIGGER_TIMEOUT = 5 * 6e4;
 var MAX_CONCURRENT = parseInt(process.env.STOA_MAX_CONCURRENT || "1");
 var UPDATE_INTERVAL = 12e4;
-var UPDATE_FILES = ["stoa.js", "claude-session.js"];
+var UPDATE_FILES = ["stoa.js", "claude-session.js", "codex-session.js"];
 var TREE_IGNORE = /* @__PURE__ */ new Set([".git", "node_modules", ".next", "__pycache__", ".venv", "dist", "build", ".claude"]);
 function isPathSafe(filePath, workdir) {
   const resolved = path.resolve(filePath);
@@ -697,12 +697,19 @@ setInterval(async () => {
     });
   }
 }, 60 * 6e4);
+function detectHarnesses() {
+  const available = [];
+  try { if (spawnSync("claude", ["--version"], { encoding: "utf8", timeout: 5e3, windowsHide: true }).status === 0) available.push("claude"); } catch {}
+  try { if (spawnSync("codex", ["--version"], { encoding: "utf8", timeout: 5e3, windowsHide: true }).status === 0) available.push("codex"); } catch {}
+  return available;
+}
 function connect() {
   ws = new WebSocket(STOA_URL);
   ws.on("open", () => {
     if (ACTOR_TYPE === "ai") {
       getSession(process.env.STOA_WORK_DIR || os.homedir(), "default");
-      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION }));
+      const harnesses_available = detectHarnesses();
+      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, harnesses_available }));
       console.log(`[stoa] Agent #${ACTOR_ID} v${CLIENT_VERSION} connected to ${STOA_URL} (max_concurrent=${MAX_CONCURRENT})`);
     } else {
       ws.send(JSON.stringify({ type: "join_room", room_id: ROOM_ID }));

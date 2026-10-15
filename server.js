@@ -53,7 +53,7 @@ let agentBundleReady = false;
       bundle: true,
       platform: 'node',
       target: 'node18',
-      external: ['ws', './claude-session'],
+      external: ['ws', './claude-session', './codex-session'],
       outfile: AGENT_BUNDLE_PATH,
     });
     agentBundleReady = true;
@@ -717,7 +717,7 @@ function composeSystemPrompt(base, agentPrompt, roomPrompt) {
 }
 
 // Files yang boleh di-serve sebagai client update
-const CLIENT_FILES = new Set(['stoa.js', 'claude-session.js']);
+const CLIENT_FILES = new Set(['stoa.js', 'claude-session.js', 'codex-session.js']);
 
 // One-time install tokens (expires in 10 min)
 const installTokens = new Map();
@@ -3243,7 +3243,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/api/actors') {
     const rows = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, system_prompt, created_at FROM actors ORDER BY id').all();
-    const result = rows.map(r => ({ ...r, online: agentClients.has(r.id), client_version: agentVersions.get(r.id) || null }));
+    const result = rows.map(r => ({ ...r, online: agentClients.has(r.id), client_version: agentVersions.get(r.id) || null, harnesses_available: agentHarnesses.get(r.id) || [] }));
     return json(res, result);
   }
 
@@ -4475,6 +4475,7 @@ const roomClients = new Map();    // roomId → Set<ws>
 const globalClients = new Set();  // all browser ws connections
 const agentClients = new Map();   // actor_id → ws
 const agentVersions = new Map();  // actor_id → client_version string
+const agentHarnesses = new Map(); // actor_id → string[] (available harnesses)
 const pendingAgents = new Map();    // message_id → { resolve, reject }
 const pendingActorMeta = new Map(); // message_id → { name, avatar_color, avatar_symbol }
 const pendingCompacts = new Map();  // room_id → { total, completed, agents[] }
@@ -4744,6 +4745,7 @@ wss.on('connection', (ws, req) => {
       ).run(agentActorId);
       if (reconnectCleaned.changes) console.log(`[agent] Cleaned ${reconnectCleaned.changes} orphaned message(s) on reconnect for Actor #${agentActorId}`);
       if (msg.client_version) agentVersions.set(agentActorId, msg.client_version);
+      if (Array.isArray(msg.harnesses_available)) agentHarnesses.set(agentActorId, msg.harnesses_available);
       console.log(`[agent] Actor #${agentActorId} connected (v${msg.client_version || '?'})`);
       if (EXPECTED_CLIENT_VERSION && msg.client_version && msg.client_version.localeCompare(EXPECTED_CLIENT_VERSION, undefined, { numeric: true }) < 0) {
         console.log(`[agent] Actor #${agentActorId} outdated (v${msg.client_version} < v${EXPECTED_CLIENT_VERSION}), sending force_update`);
@@ -5825,6 +5827,7 @@ wss.on('connection', (ws, req) => {
     if (agentActorId) {
       agentClients.delete(agentActorId);
       agentVersions.delete(agentActorId);
+      agentHarnesses.delete(agentActorId);
       const cleaned = db.prepare(
         "UPDATE messages SET state='error', content=CASE WHEN content='' THEN '(interrupted — agent disconnected)' ELSE content END WHERE state IN ('streaming','requesting') AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?)"
       ).run(agentActorId);
