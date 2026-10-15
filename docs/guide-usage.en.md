@@ -61,7 +61,7 @@ A **model selector** appears at the right side of the formatting toolbar in the 
 
 The selection is saved per room and takes effect immediately on the next message — no restart required.
 
-In rooms with multiple agents of different harnesses, the model selector includes a **"model per agent"** preview section below the model list. Each row shows `Name · harness → model`, with a label (`↪ agent default`, `↪ harness default`, or `↪ CLI default`) when an agent will not use the room model — because its harness can't run it. The preview refreshes each time the dropdown is opened and updates automatically when agent settings change.
+When a room has more than one AI agent, or when any agent is not using the room model, the model selector includes a **"model per agent"** preview section below the model list. Each row shows `Name · harness → model`, with a label (`↪ agent default`, `↪ harness default`, or `↪ CLI default`) when an agent will not use the room model. The preview updates automatically when you switch rooms, when agent settings change, or when the room model changes.
 
 ### Busy Mode
 
@@ -77,7 +77,7 @@ Busy mode is **thread-scoped**: each thread is treated as an independent context
 
 ### Model in Chat Bubbles
 
-Each AI response shows a small model indicator at the bottom right of the bubble (e.g., `qwen3-coder:480b:cloud`), making it easy to track which model generated each reply. When an agent used a different model than the room's selected model — because its harness can't run it — a **↪** icon appears on the model tag. Hover to see why (e.g., `not using the room model — using agent default`). Sub-agent responses running on a tier do not show this icon.
+Each AI response shows a small model indicator at the bottom right of the bubble (e.g., `qwen3-coder:480b:cloud`), making it easy to track which model generated each reply. When an agent used a different model than the room's selected model — for example, because the room has no model set, or the harness can't run the room model — a **↪** icon appears on the model tag. Hover to see why (e.g., `not using the room model — using agent default`). Sub-agent responses running on a tier do not show this icon.
 
 ### Pinning a Room
 
@@ -425,7 +425,7 @@ By default, agents run on the **Claude CLI**. If the agent's machine also has **
 - **Claude** — Claude Code CLI. Supports compact, streaming, and resume.
 - **Codex** — OpenAI Codex CLI. Requires `codex` CLI installed and authenticated on the agent's machine. Codex sessions use `danger-full-access` sandbox by default and ignore user Codex config files (`--ignore-user-config`). **Compact is not supported** — clicking compact on a Codex session shows a toast error (`compact not supported for codex harness`); auto-compact also skips Codex sessions silently. `codex-session.js` is distributed via Stoa's auto-update — the agent downloads it when the server is updated, regardless of which harness is selected. If the Codex harness is triggered before `codex-session.js` is present on the agent machine, the trigger fails with a clear error; wait for auto-update to complete (~2 minutes after server update).
 
-Changing an agent's harness in a **mixed room** (where other AI agents can still run the current room model) leaves the room model untouched — this agent falls back to its own default instead. A toast confirms: e.g., `room model kept in 2 mixed rooms (Kira uses codex-default)`. In a single-agent room, the room model is still rewritten when it is incompatible with the new harness. If the agent's **Default model** is incompatible with the new harness, it is automatically reset — the toast shows `default model reset (old-model)`.
+Changing an agent's harness in a **mixed room** (where other AI agents can still run the current room model) leaves the room model untouched — this agent falls back to its own default instead. A toast confirms: e.g., `room model kept in 2 mixed rooms (Kira uses codex-default)`. If no other AI in the room can run the current room model, the room model is rewritten to the new harness's default. If the agent's **Default model** is incompatible with the new harness, it is automatically reset — the toast shows `default model reset (old-model)`.
 
 Sub-agents can also choose their own harness, or leave it on **inherit from parent** (the default).
 

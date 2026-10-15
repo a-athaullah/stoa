@@ -61,7 +61,7 @@ API 端点和 WebSocket 连接需要认证。`/uploads/` 下的上传文件为�
 
 选择按房间保存，下一条消息立即生效 — 无需重启。
 
-在有多个不同执行器代理的房间中，模型选择器列表下方会显示 **"model per agent"** 预览区域。每行显示 `名称 · 执行器 → 模型`，当代理因执行器不支持而无法使用房间模型时，会附带标签（`↪ agent default`、`↪ harness default` 或 `↪ CLI default`）。每次打开下拉菜单时预览都会刷新，代理设置变更时也会自动同步。
+当房间有多个 AI 代理，或任意代理未使用房间模型时，模型选择器列表下方会显示 **"model per agent"** 预览区域。每行显示 `名称 · 执行器 → 模型`，当代理未使用房间模型时会附带标签（`↪ agent default`、`↪ harness default` 或 `↪ CLI default`）。预览在切换房间、代理设置变更或房间模型更改时自动更新。
 
 ### 忙碌模式（Busy Mode）
 
@@ -77,7 +77,7 @@ Busy mode 是**话题级别**的：每个话题被视为独立上下文。代理
 
 ### 聊天气泡中的模型显示
 
-每个 AI 响应的气泡右下角会显示一个小型模型标识（例如：`qwen3-coder:480b:cloud`），方便追踪每条回复由哪个模型生成。当代理因执行器不支持房间所选模型而使用了不同的模型时，模型标签上会显示 **↪** 图标。悬停可查看原因（例如：`not using the room model — using agent default`）。以层级（tier）运行的子代理响应不显示此图标。
+每个 AI 响应的气泡右下角会显示一个小型模型标识（例如：`qwen3-coder:480b:cloud`），方便追踪每条回复由哪个模型生成。当代理使用了与房间所选模型不同的模型时——例如房间未设置模型，或执行器无法运行房间模型——模型标签上会显示 **↪** 图标。悬停可查看原因（例如：`not using the room model — using agent default`）。以层级（tier）运行的子代理响应不显示此图标。
 
 ### 置顶房间 (Pin)
 
@@ -423,7 +423,7 @@ curl -fsSL http://YOUR_SERVER:3000/install.sh?name=Idris | bash
 - **Claude** — Claude Code CLI，支持压缩、流式传输和恢复。
 - **Codex** — OpenAI Codex CLI，需要代理机器上已安装并通过认证的 `codex` CLI。Codex 会话默认使用 `danger-full-access` 沙盒，并忽略用户的 Codex 配置文件（`--ignore-user-config`）。**不支持压缩** — 在 Codex 会话中点击压缩会显示 toast 错误（`compact not supported for codex harness`）；自动压缩也会静默跳过 Codex 会话。`codex-session.js` 通过 Stoa 的自动更新分发 — 服务器更新时由代理自动下载，与何时切换执行器无关。若在 `codex-session.js` 尚未下载到代理机器时触发 Codex 执行器，触发会以明确的错误消息失败；请等待自动更新完成（服务器更新后约 2 分钟）。
 
-在**混合房间**（其他 AI 代理仍可运行当前房间模型的房间）中更改执行器时，房间模型保持不变——只有这个代理会回退到自己的默认值。Toast 会予以确认：例如 `room model kept in 2 mixed rooms (Kira uses codex-default)`。在单代理房间中，若房间模型与新执行器不兼容，仍会被重写。如果代理的 **Default model** 设置与新执行器不兼容，则会自动重置——Toast 显示 `default model reset (old-model)`。
+在**混合房间**（其他 AI 代理仍可运行当前房间模型的房间）中更改执行器时，房间模型保持不变——只有这个代理会回退到自己的默认值。Toast 会予以确认：例如 `room model kept in 2 mixed rooms (Kira uses codex-default)`。若房间内没有其他 AI 能运行当前房间模型，房间模型将被重写为新执行器的默认值。如果代理的 **Default model** 设置与新执行器不兼容，则会自动重置——Toast 显示 `default model reset (old-model)`。
 
 子代理也可以选择自己的执行器，或保持 **inherit from parent**（默认值）。
 

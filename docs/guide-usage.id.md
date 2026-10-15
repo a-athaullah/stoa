@@ -61,7 +61,7 @@ Klik judul room di header chat. Judul menjadi editable — ketik nama baru dan t
 
 Pilihan disimpan per room dan langsung berlaku pada pesan berikutnya — tanpa restart.
 
-Di room dengan beberapa agent berbeda harness, selector model menyertakan bagian **"model per agent"** di bawah daftar model. Setiap baris menampilkan `Nama · harness → model`, disertai label (`↪ agent default`, `↪ harness default`, atau `↪ CLI default`) saat agent tidak dapat menggunakan model room — karena harness-nya tidak mendukungnya. Preview diperbarui setiap kali dropdown dibuka dan otomatis sinkron saat setelan agent berubah.
+Ketika room memiliki lebih dari satu agent AI, atau ketika ada agent yang tidak menggunakan model room, selector model menyertakan bagian **"model per agent"** di bawah daftar model. Setiap baris menampilkan `Nama · harness → model`, disertai label (`↪ agent default`, `↪ harness default`, atau `↪ CLI default`) saat agent tidak menggunakan model room. Preview diperbarui otomatis saat kamu berpindah room, saat setelan agent berubah, atau saat model room diganti.
 
 ### Mode Sibuk (Busy Mode)
 
@@ -77,7 +77,7 @@ Busy mode bersifat **per thread**: setiap thread diperlakukan sebagai konteks in
 
 ### Model di Chat Bubble
 
-Setiap respons AI menampilkan indikator model kecil di pojok kanan bawah bubble (contoh: `qwen3-coder:480b:cloud`), sehingga mudah melacak model mana yang menghasilkan setiap balasan. Jika agent menggunakan model berbeda dari model yang dipilih di room — karena harness-nya tidak mendukungnya — ikon **↪** muncul pada tag model. Arahkan kursor untuk melihat alasannya (contoh: `not using the room model — using agent default`). Respons sub-agent yang berjalan dengan tier tidak menampilkan ikon ini.
+Setiap respons AI menampilkan indikator model kecil di pojok kanan bawah bubble (contoh: `qwen3-coder:480b:cloud`), sehingga mudah melacak model mana yang menghasilkan setiap balasan. Jika agent menggunakan model berbeda dari model yang dipilih di room — misalnya karena room belum memiliki model, atau harness-nya tidak mendukung model room — ikon **↪** muncul pada tag model. Arahkan kursor untuk melihat alasannya (contoh: `not using the room model — using agent default`). Respons sub-agent yang berjalan dengan tier tidak menampilkan ikon ini.
 
 ### Menyematkan Room (Pin)
 
@@ -426,7 +426,7 @@ Secara default, agent berjalan di **Claude CLI**. Jika mesin agent juga memiliki
 - **Claude** — Claude Code CLI. Mendukung compact, streaming, dan resume.
 - **Codex** — OpenAI Codex CLI. Memerlukan `codex` CLI terpasang dan terautentikasi di mesin agent. Sesi Codex menggunakan sandbox `danger-full-access` secara default dan mengabaikan file konfigurasi Codex user (`--ignore-user-config`). **Compact tidak didukung** — mengklik compact di sesi Codex menampilkan toast error (`compact not supported for codex harness`); auto-compact juga melewati sesi Codex secara diam-diam. `codex-session.js` didistribusikan via auto-update Stoa — agent mengunduhnya saat server diperbarui, tidak bergantung pada kapan harness diganti. Jika harness Codex dipicu sebelum `codex-session.js` ada di mesin agent, trigger gagal dengan error yang jelas; tunggu auto-update selesai (~2 menit setelah server update).
 
-Mengganti harness agent di **room campuran** (di mana AI agent lain masih bisa menjalankan model room) membiarkan model room tetap seperti apa adanya — agent ini yang akan fallback ke default-nya sendiri. Toast mengonfirmasi: misalnya `room model kept in 2 mixed rooms (Kira uses codex-default)`. Di room dengan satu agent, model room tetap di-rewrite jika tidak kompatibel dengan harness baru. Jika setelan **Default model** agent tidak kompatibel dengan harness baru, setelan itu otomatis di-reset — toast menampilkan `default model reset (old-model)`.
+Mengganti harness agent di **room campuran** (di mana AI agent lain masih bisa menjalankan model room) membiarkan model room tetap seperti apa adanya — agent ini yang akan fallback ke default-nya sendiri. Toast mengonfirmasi: misalnya `room model kept in 2 mixed rooms (Kira uses codex-default)`. Jika tidak ada AI lain di room yang bisa menjalankan model room saat ini, model room di-rewrite ke default harness baru. Jika setelan **Default model** agent tidak kompatibel dengan harness baru, setelan itu otomatis di-reset — toast menampilkan `default model reset (old-model)`.
 
 Sub-agent juga bisa memilih harness sendiri, atau membiarkannya pada **inherit from parent** (default).
 
