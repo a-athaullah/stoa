@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.344";
+var CLIENT_VERSION = "0.4.345";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -697,7 +697,7 @@ function execWithTimeout(cmd, args, timeout) {
   return new Promise((resolve) => {
     try {
       const child = execFile(cmd, args, { encoding: "utf8", timeout, windowsHide: true }, (err, stdout) => {
-        resolve({ exitCode: err ? (err.code === "ENOENT" ? -1 : (err.killed ? -2 : 1)) : 0, stdout: stdout || "" });
+        resolve({ exitCode: err ? (err.code === "ENOENT" ? -1 : (err.killed ? -2 : (typeof err.code === 'number' ? err.code : 1))) : 0, stdout: stdout || "" });
       });
       child.on("error", () => resolve({ exitCode: -1, stdout: "" }));
     } catch {
@@ -714,7 +714,7 @@ async function detectHarnessesAsync() {
   if (claudeVer.exitCode >= 0) {
     const version = claudeVer.stdout.trim().split("\n")[0] || null;
     const authResult = await execWithTimeout("claude", ["auth", "status"], 5e3);
-    const loggedIn = authResult.exitCode === 0 ? parseClaudeAuthStatus(authResult.stdout) : null;
+    const loggedIn = parseClaudeAuthStatus(authResult.stdout);
     status.push({ id: "claude", installed: claudeVer.exitCode === 0, logged_in: loggedIn, version });
   }
   if (codexVer.exitCode >= 0) {

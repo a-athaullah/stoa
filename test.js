@@ -7018,11 +7018,13 @@ async function run() {
     assert.strictEqual(parseClaudeAuthStatus('{"loggedIn":"yes"}'), null);
   });
 
-  // parseCodexLoginStatus — two sides
-  await test('parseCodexLoginStatus — exit 0 → true, exit 1 → false', () => {
+  // parseCodexLoginStatus — three sides
+  await test('parseCodexLoginStatus — exit 0 → true, exit 1 → false, other → null', () => {
     const { parseCodexLoginStatus } = require('./harness-session');
     assert.strictEqual(parseCodexLoginStatus(0), true);
     assert.strictEqual(parseCodexLoginStatus(1), false);
+    assert.strictEqual(parseCodexLoginStatus(2), null);
+    assert.strictEqual(parseCodexLoginStatus(-2), null);
   });
 
   // validateHarnessStatus — two sides
@@ -7045,6 +7047,20 @@ async function run() {
     const { validateHarnessStatus } = require('./harness-session');
     assert.deepStrictEqual(validateHarnessStatus('bad'), []);
     assert.deepStrictEqual(validateHarnessStatus(null), []);
+  });
+
+  await test('validateHarnessStatus — dedupes per id and trims version', () => {
+    const { validateHarnessStatus } = require('./harness-session');
+    const input = [
+      { id: 'claude', installed: true, logged_in: true, version: '2.0.0' },
+      { id: 'claude', installed: false, logged_in: null, version: '1.0.0' },
+    ];
+    const result = validateHarnessStatus(input);
+    assert.strictEqual(result.length, 1, 'duplicate id should be deduped');
+    assert.strictEqual(result[0].version, '2.0.0', 'first entry wins');
+    const longVersion = 'x'.repeat(200);
+    const r2 = validateHarnessStatus([{ id: 'codex', installed: true, logged_in: null, version: longVersion }]);
+    assert.strictEqual(r2[0].version.length, 100, 'version trimmed to 100 chars');
   });
 
   // POST /api/actors/:id/harnesses/check — auth required
@@ -7083,6 +7099,169 @@ async function run() {
     if (!ai) { console.log('    (skipped — no AI actors)'); return; }
     assert.ok('harness_status' in ai, 'AI actor should have harness_status field');
     assert.ok(Array.isArray(ai.harness_status), 'harness_status should be array');
+  });
+
+  // PATCH — logged_in false → 400
+  await test('PATCH /api/actors/:id — adapter rejected when logged_in === false', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const { agentHarnessStatus } = (() => {
+      const srvSrc = require('fs').readFileSync('./server.js', 'utf8');
+      return { agentHarnessStatus: null };
+    })();
+    // Connect agent to populate harness data with logged_in: false
+    const ws2 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready2 = waitForWsMessage(ws2, m => m.type === 'agent_ready');
+    ws2.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready2;
+    ws2.send(JSON.stringify({
+      type: 'harnesses_update',
+      harnesses_available: ['claude', 'codex'],
+      harness_status: [
+        { id: 'claude', installed: true, logged_in: true, version: '2.0.0' },
+        { id: 'codex', installed: true, logged_in: false, version: '0.1.0' },
+      ],
+    }));
+    await new Promise(r => setTimeout(r, 200));
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'codex' });
+    assert.strictEqual(r.status, 400, `expected 400, got ${r.status}`);
+    assert.ok(r.body.error.includes('not logged in'), 'error should mention not logged in');
+    // Positive: adapter with logged_in true should succeed
+    const r2 = await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+    assert.strictEqual(r2.status, 200, 'adapter with logged_in true should be accepted');
+    ws2.close();
+  });
+
+  // PATCH — logged_in null (old agent, no status) → accepted
+  await test('PATCH /api/actors/:id — adapter accepted when logged_in is null', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const ws3 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready3 = waitForWsMessage(ws3, m => m.type === 'agent_ready');
+    ws3.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready3;
+    ws3.send(JSON.stringify({
+      type: 'harnesses_update',
+      harnesses_available: ['claude', 'codex'],
+      harness_status: [
+        { id: 'claude', installed: true, logged_in: true, version: '2.0.0' },
+        { id: 'codex', installed: true, logged_in: null, version: '0.1.0' },
+      ],
+    }));
+    await new Promise(r => setTimeout(r, 200));
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'codex' });
+    assert.strictEqual(r.status, 200, 'adapter with logged_in null should be accepted');
+    // Reset to claude
+    await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+    ws3.close();
+  });
+
+  // End-to-end: check_harnesses via POST with fake agent responding
+  await test('POST /api/actors/:id/harnesses/check — end-to-end with agent response', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    process.env.HARNESS_CHECK_TIMEOUT_MS = '3000';
+    const ws4 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready4 = waitForWsMessage(ws4, m => m.type === 'agent_ready');
+    ws4.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready4;
+    // Listen for check_harnesses and respond with harnesses_update
+    ws4.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === 'check_harnesses') {
+        ws4.send(JSON.stringify({
+          type: 'harnesses_update',
+          harnesses_available: ['claude', 'codex'],
+          harness_status: [
+            { id: 'claude', installed: true, logged_in: true, version: '2.1.0' },
+            { id: 'codex', installed: true, logged_in: false, version: '0.2.0' },
+          ],
+          request_id: msg.request_id,
+        }));
+      }
+    });
+    const r = await req('POST', `/api/actors/${hsActorId}/harnesses/check`);
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}`);
+    assert.deepStrictEqual(r.body.harnesses_available, ['claude', 'codex']);
+    assert.strictEqual(r.body.harness_status.length, 2);
+    assert.strictEqual(r.body.harness_status[0].version, '2.1.0');
+    ws4.close();
+    delete process.env.HARNESS_CHECK_TIMEOUT_MS;
+  });
+
+  // End-to-end: response from wrong actor does NOT resolve
+  await test('POST /api/actors/:id/harnesses/check — response from wrong actor ignored', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    process.env.HARNESS_CHECK_TIMEOUT_MS = '1500';
+    // Register a second agent
+    const scriptR = await req('GET', '/install.sh?name=__test-harness-wrong');
+    const tokenMatch = scriptR.raw.match(/REG_TOKEN="([a-f0-9]+)"/);
+    if (!tokenMatch) { console.log('    (skipped — no token)'); delete process.env.HARNESS_CHECK_TIMEOUT_MS; return; }
+    const reg = await req('POST', '/api/agent/register', { token: tokenMatch[1] });
+    if (reg.status !== 200) { console.log('    (skipped — reg failed)'); delete process.env.HARNESS_CHECK_TIMEOUT_MS; return; }
+    const wrongActorId = reg.body.actor_id;
+    const wrongSecret = reg.body.secret;
+    orphanActorIds.push(wrongActorId);
+    // Connect primary agent (no auto-response to check_harnesses)
+    const ws5 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready5 = waitForWsMessage(ws5, m => m.type === 'agent_ready');
+    ws5.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready5;
+    // Connect wrong agent — it will try to respond with the request_id
+    const ws6 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready6 = waitForWsMessage(ws6, m => m.type === 'agent_ready');
+    ws6.send(JSON.stringify({ type: 'agent_connect', actor_id: wrongActorId, secret: wrongSecret }));
+    await ready6;
+    // Intercept check_harnesses on primary ws, forward request_id to wrong agent
+    let capturedRequestId = null;
+    ws5.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === 'check_harnesses') {
+        capturedRequestId = msg.request_id;
+        // Wrong agent sends harnesses_update with the captured request_id
+        ws6.send(JSON.stringify({
+          type: 'harnesses_update',
+          harnesses_available: ['claude'],
+          harness_status: [{ id: 'claude', installed: true, logged_in: true, version: '9.9.9' }],
+          request_id: capturedRequestId,
+        }));
+      }
+    });
+    const r = await req('POST', `/api/actors/${hsActorId}/harnesses/check`);
+    assert.strictEqual(r.status, 504, `expected 504 timeout (wrong actor response ignored), got ${r.status}`);
+    ws5.close();
+    ws6.close();
+    delete process.env.HARNESS_CHECK_TIMEOUT_MS;
+  });
+
+  // End-to-end: invalid payload fields filtered by validateHarnessStatus
+  await test('POST /api/actors/:id/harnesses/check — invalid payload filtered', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    process.env.HARNESS_CHECK_TIMEOUT_MS = '3000';
+    const ws7 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready7 = waitForWsMessage(ws7, m => m.type === 'agent_ready');
+    ws7.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready7;
+    ws7.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === 'check_harnesses') {
+        ws7.send(JSON.stringify({
+          type: 'harnesses_update',
+          harnesses_available: ['claude', 'bogus', 123],
+          harness_status: [
+            { id: 'claude', installed: true, logged_in: true, version: '2.0.0' },
+            { id: 'bogus', installed: true, logged_in: true, version: '1.0' },
+            { id: 'codex', installed: 'yes' },
+            null,
+          ],
+          request_id: msg.request_id,
+        }));
+      }
+    });
+    const r = await req('POST', `/api/actors/${hsActorId}/harnesses/check`);
+    assert.strictEqual(r.status, 200);
+    assert.deepStrictEqual(r.body.harnesses_available, ['claude'], 'bogus and non-string filtered from available');
+    assert.strictEqual(r.body.harness_status.length, 1, 'only valid claude entry passes validation');
+    ws7.close();
+    delete process.env.HARNESS_CHECK_TIMEOUT_MS;
   });
 
   // GET /api/actors includes system_prompt and harnesses_available

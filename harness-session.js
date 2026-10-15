@@ -41,17 +41,21 @@ function parseClaudeAuthStatus(stdout) {
 }
 
 function parseCodexLoginStatus(exitCode) {
-  return exitCode === 0;
+  if (exitCode === 0) return true;
+  if (exitCode === 1) return false;
+  return null;
 }
 
 function validateHarnessStatus(arr) {
   if (!Array.isArray(arr)) return [];
+  const seen = new Set();
   return arr.filter(s =>
     s && KNOWN_HARNESSES.includes(s.id) &&
+    !seen.has(s.id) && (seen.add(s.id), true) &&
     typeof s.installed === 'boolean' &&
     (s.logged_in === null || typeof s.logged_in === 'boolean') &&
     (s.version === null || typeof s.version === 'string')
-  ).map(s => ({ id: s.id, installed: s.installed, logged_in: s.logged_in ?? null, version: s.version ?? null }));
+  ).map(s => ({ id: s.id, installed: s.installed, logged_in: s.logged_in ?? null, version: s.version ? s.version.slice(0, 100) : null }));
 }
 
 function filesToUpdate(remote, local, allowed) {
