@@ -6519,6 +6519,260 @@ async function run() {
     // Cleaned up in teardown
   });
 
+  // ─── Harness Selection (Fase 1–4) ───────────────────────────────────────
+  console.log('\n[Harness Selection]');
+  let hsActorId, hsSecret, hsWorkdirId, hsAgentWs, hsRoomId, hsSubAgentId;
+
+  await test('Harness Setup — register actor + room', async () => {
+    const agent = await createOnlineTestAgent('__test-harness-sel', '/tmp/stoa-test-harness');
+    if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+    hsActorId = agent.actorId; hsSecret = agent.secret; hsWorkdirId = agent.workdirId; hsAgentWs = agent.ws;
+    const r = await req('POST', '/api/rooms', { title: '__harness-test-room__', workdir_id: hsWorkdirId, participant_ids: [hsActorId] });
+    assert.strictEqual(r.status, 200);
+    hsRoomId = r.body.id;
+    testRoomIds.push(hsRoomId);
+    if (hsAgentWs) { hsAgentWs.close(); hsAgentWs = null; }
+  });
+
+  // Fase 1: system_prompt CRUD
+  await test('GET /api/actors/:id/system-prompt — empty default', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('GET', `/api/actors/${hsActorId}/system-prompt`);
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.system_prompt, null);
+  });
+
+  await test('PUT /api/actors/:id/system-prompt — set prompt', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('PUT', `/api/actors/${hsActorId}/system-prompt`, { system_prompt: 'You are a test agent.' });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.system_prompt, 'You are a test agent.');
+  });
+
+  await test('GET /api/actors/:id/system-prompt — returns saved prompt', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('GET', `/api/actors/${hsActorId}/system-prompt`);
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.system_prompt, 'You are a test agent.');
+  });
+
+  await test('PUT /api/actors/:id/system-prompt — clear with null', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('PUT', `/api/actors/${hsActorId}/system-prompt`, { system_prompt: null });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.system_prompt, null);
+  });
+
+  await test('PUT /api/actors/:id/system-prompt — too large → 400', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('PUT', `/api/actors/${hsActorId}/system-prompt`, { system_prompt: 'x'.repeat(65537) });
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('PUT /api/actors/:id/system-prompt — human actor → 404', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    const human = actors.find(a => a.type === 'human');
+    if (!human) { console.log('    (skipped — no human actor)'); return; }
+    const r = await req('PUT', `/api/actors/${human.id}/system-prompt`, { system_prompt: 'test' });
+    assert.strictEqual(r.status, 404, `expected 404, got ${r.status}: ${JSON.stringify(r.body)}`);
+  });
+
+  // Fase 3b: GET /api/harnesses
+  await test('GET /api/harnesses — returns harness list with models', async () => {
+    const r = await req('GET', '/api/harnesses');
+    assert.strictEqual(r.status, 200);
+    assert.ok(Array.isArray(r.body), 'should return array');
+    const claude = r.body.find(h => h.name === 'claude');
+    assert.ok(claude, 'claude harness not found');
+    assert.ok(Array.isArray(claude.models), 'claude should have models array');
+    assert.ok(claude.models.length > 0, 'claude should have at least one model');
+    const defaultModel = claude.models.find(m => m.is_default);
+    assert.ok(defaultModel, 'claude should have a default model');
+  });
+
+  await test('GET /api/harnesses — codex harness present with models', async () => {
+    const r = await req('GET', '/api/harnesses');
+    const codex = r.body.find(h => h.name === 'codex');
+    assert.ok(codex, 'codex harness not found');
+    assert.ok(Array.isArray(codex.models), 'codex should have models array');
+    assert.ok(codex.models.length > 0, 'codex should have at least one model');
+  });
+
+  // Fase 3b: PATCH /api/actors/:id — adapter field
+  await test('PATCH /api/actors/:id — change adapter to claude', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { name: '__test-harness-sel', adapter: 'claude' });
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+  });
+
+  await test('PATCH /api/actors/:id — invalid adapter → 400', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { name: '__test-harness-sel', adapter: 'invalid-harness' });
+    assert.strictEqual(r.status, 400);
+  });
+
+  // Fase 3b: sub-agent harness field
+  await test('POST /api/actors/:id/sub-agents — create with harness', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'hs-probe', tier: 'quick', harness: 'codex' });
+    assert.strictEqual(r.status, 201, `create failed: ${JSON.stringify(r.body)}`);
+    assert.strictEqual(r.body.label, 'hs-probe');
+    assert.strictEqual(r.body.harness, 'codex');
+    hsSubAgentId = r.body.id;
+  });
+
+  await test('GET /api/actors/:id/sub-agents — includes effective_harness', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('GET', `/api/actors/${hsActorId}/sub-agents`);
+    assert.strictEqual(r.status, 200);
+    const probe = r.body.find(sa => sa.label === 'hs-probe');
+    assert.ok(probe, 'hs-probe not found');
+    assert.strictEqual(probe.harness, 'codex');
+    assert.strictEqual(probe.effective_harness, 'codex');
+  });
+
+  await test('POST /api/actors/:id/sub-agents — create without harness (inherits parent)', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'hs-reviewer', tier: 'standard' });
+    assert.strictEqual(r.status, 201);
+    assert.strictEqual(r.body.harness, null);
+  });
+
+  await test('GET /api/actors/:id/sub-agents — null harness inherits parent adapter', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('GET', `/api/actors/${hsActorId}/sub-agents`);
+    const reviewer = r.body.find(sa => sa.label === 'hs-reviewer');
+    assert.ok(reviewer, 'hs-reviewer not found');
+    assert.strictEqual(reviewer.harness, null);
+    assert.strictEqual(reviewer.effective_harness, 'claude');
+  });
+
+  await test('PATCH /api/sub-agents/:id — update harness', async () => {
+    if (!hsSubAgentId) { console.log('    (skipped)'); return; }
+    const r = await req('PATCH', `/api/sub-agents/${hsSubAgentId}`, { harness: null });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.harness, null);
+  });
+
+  await test('PATCH /api/sub-agents/:id — invalid harness → 400', async () => {
+    if (!hsSubAgentId) { console.log('    (skipped)'); return; }
+    const r = await req('PATCH', `/api/sub-agents/${hsSubAgentId}`, { harness: 'nonexistent' });
+    assert.strictEqual(r.status, 400);
+  });
+
+  // Fase 2: ai_sessions.harness column
+  await test('ai_sessions schema — harness column exists', async () => {
+    const db = require('./db');
+    const cols = db.prepare("PRAGMA table_info(ai_sessions)").all();
+    const harCol = cols.find(c => c.name === 'harness');
+    assert.ok(harCol, 'harness column missing from ai_sessions');
+    assert.strictEqual(harCol.dflt_value, "'claude'", 'default should be claude');
+  });
+
+  // Fase 3b: harnesses + harness_models tables
+  await test('harnesses table — has claude and codex', async () => {
+    const db = require('./db');
+    const rows = db.prepare("SELECT name FROM harnesses ORDER BY name").all();
+    assert.ok(rows.some(r => r.name === 'claude'), 'claude harness missing');
+    assert.ok(rows.some(r => r.name === 'codex'), 'codex harness missing');
+  });
+
+  await test('harness_models table — claude has default model', async () => {
+    const db = require('./db');
+    const row = db.prepare(`
+      SELECT hm.model_id FROM harness_models hm
+      JOIN harnesses h ON h.id = hm.harness_id
+      WHERE h.name = 'claude' AND hm.is_default = 1
+    `).get();
+    assert.ok(row, 'claude should have a default model');
+  });
+
+  // Fase 1: composeSystemPrompt unit test
+  await test('composeSystemPrompt — layers base + agent + room', () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    const fnMatch = src.match(/function composeSystemPrompt\(base,\s*agentPrompt,\s*roomPrompt\)\s*\{([^}]+)\}/);
+    assert.ok(fnMatch, 'composeSystemPrompt function not found in server.js');
+    const fn = new Function('base', 'agentPrompt', 'roomPrompt', fnMatch[1]);
+    const result = fn('base prompt', 'agent prompt', 'room prompt');
+    assert.ok(result.includes('base prompt'), 'should include base');
+    assert.ok(result.includes('agent prompt'), 'should include agent');
+    assert.ok(result.includes('room prompt'), 'should include room');
+    const noAgent = fn('base only', null, 'room only');
+    assert.ok(noAgent.includes('base only'), 'should include base');
+    assert.ok(noAgent.includes('room only'), 'should include room');
+    assert.ok(!noAgent.includes('null'), 'should not include null text');
+  });
+
+  // Fase 3a: CodexSession mapper
+  await test('CodexSession — exists and has send/abort/shutdown', () => {
+    const { CodexSession } = require('./codex-session');
+    assert.ok(CodexSession, 'CodexSession not exported');
+    const cs = new CodexSession({ workDir: '/tmp' });
+    assert.strictEqual(typeof cs.send, 'function', 'must have send()');
+    assert.strictEqual(typeof cs.abort, 'function', 'must have abort()');
+    assert.strictEqual(typeof cs.shutdown, 'function', 'must have shutdown()');
+  });
+
+  await test('CodexSession — _buildArgs for fresh exec', () => {
+    const { CodexSession } = require('./codex-session');
+    const cs = new CodexSession({ workDir: '/tmp', model: 'o3' });
+    const args = cs._buildArgs(false);
+    assert.ok(args.includes('exec'), 'should have exec');
+    assert.ok(args.includes('--json'), 'should have --json');
+    assert.ok(args.includes('--ignore-user-config'), 'should have --ignore-user-config');
+    assert.ok(args.includes('-m'), 'should have -m for model');
+    assert.ok(args.includes('o3'), 'should have model value');
+    assert.ok(args.includes('-'), 'should end with stdin marker');
+    assert.ok(!args.includes('resume'), 'fresh exec should not have resume');
+  });
+
+  await test('CodexSession — _buildArgs for resume', () => {
+    const { CodexSession } = require('./codex-session');
+    const cs = new CodexSession({ workDir: '/tmp', model: 'o3', resumeId: 'thread-abc123' });
+    cs._threadId = 'thread-abc123';
+    const args = cs._buildArgs(true);
+    assert.ok(args.includes('resume'), 'should have resume subcommand');
+    assert.ok(args.includes('thread-abc123'), 'should have thread_id');
+    assert.ok(args.includes('--json'), 'should have --json');
+  });
+
+  await test('CodexSession — _buildArgs includes developer_instructions for systemPrompt', () => {
+    const { CodexSession } = require('./codex-session');
+    const cs = new CodexSession({ workDir: '/tmp', systemPrompt: 'Be helpful' });
+    const args = cs._buildArgs(false);
+    const devInstrIdx = args.findIndex(a => typeof a === 'string' && a.startsWith('developer_instructions='));
+    assert.ok(devInstrIdx > 0, 'should have developer_instructions config');
+  });
+
+  // Fase 3a: createHarnessSession factory in stoa.js
+  await test('stoa.js — createHarnessSession dispatches correctly', () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'stoa.js'), 'utf8');
+    assert.ok(src.includes('function createHarnessSession(harness'), 'createHarnessSession function must exist');
+    assert.ok(src.includes('CodexSession'), 'must reference CodexSession for codex dispatch');
+  });
+
+  // Fase 4: compact guard for non-claude
+  await test('stoa.js — compact_trigger rejects non-claude harness', () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'stoa.js'), 'utf8');
+    const compactSection = src.substring(src.indexOf('compact: starting for'), src.indexOf('compact: starting for') - 300);
+    assert.ok(compactSection.includes('compact not supported for'), 'compact_trigger should reject non-claude');
+  });
+
+  await test('stoa.js — auto-compact worker skips non-claude sessions', () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'stoa.js'), 'utf8');
+    const workerSection = src.substring(src.indexOf('auto-compacting'), src.indexOf('auto-compacting') + 500);
+    assert.ok(workerSection.includes("session._harness") || src.includes("session._harness !== \"claude\""), 'auto-compact should check _harness');
+  });
+
+  // GET /api/actors includes system_prompt and harnesses_available
+  await test('GET /api/actors — includes system_prompt field', async () => {
+    const r = await req('GET', '/api/actors');
+    assert.strictEqual(r.status, 200);
+    const ai = r.body.find(a => a.type === 'ai');
+    if (!ai) { console.log('    (skipped — no AI actors)'); return; }
+    assert.ok('system_prompt' in ai, 'AI actor should have system_prompt field');
+  });
+
   // Teardown — delete all test rooms and actors created during the run
   console.log('\n[Test Teardown]');
   await test('Teardown — delete all test rooms', async () => {

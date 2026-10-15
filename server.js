@@ -3862,7 +3862,6 @@ Write-Host "Logs   : pm2 logs $AgentName"
 
   // GET /api/actors/:id/system-prompt
   if (req.method === 'GET' && url.pathname.match(/^\/api\/actors\/\d+\/system-prompt$/)) {
-    requireAuth(req, res);
     const actorId = parseInt(url.pathname.split('/')[3]);
     const actor = db.prepare("SELECT system_prompt, type FROM actors WHERE id=?").get(actorId);
     if (!actor) return json(res, { error: 'actor not found' }, 404);
@@ -3872,7 +3871,6 @@ Write-Host "Logs   : pm2 logs $AgentName"
 
   // PUT /api/actors/:id/system-prompt
   if (req.method === 'PUT' && url.pathname.match(/^\/api\/actors\/\d+\/system-prompt$/)) {
-    requireAuth(req, res);
     const actorId = parseInt(url.pathname.split('/')[3]);
     const actor = db.prepare("SELECT id, type FROM actors WHERE id=?").get(actorId);
     if (!actor) return json(res, { error: 'actor not found' }, 404);
