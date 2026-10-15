@@ -419,11 +419,13 @@ curl -fsSL http://YOUR_SERVER:3000/install.sh?name=Idris | bash
 - **Claude** — Claude Code CLI，支持压缩、流式传输和恢复。
 - **Codex** — OpenAI Codex CLI，需要代理机器上已安装并通过认证的 `codex` CLI。Codex 会话默认使用 `danger-full-access` 沙盒，并忽略用户的 Codex 配置文件（`--ignore-user-config`）。**不支持压缩** — 在 Codex 会话中点击压缩会显示 toast 错误（`compact not supported for codex harness`）；自动压缩也会静默跳过 Codex 会话。`codex-session.js` 通过 Stoa 的自动更新分发 — 服务器更新时由代理自动下载，与何时切换执行器无关。若在 `codex-session.js` 尚未下载到代理机器时触发 Codex 执行器，触发会以明确的错误消息失败；请等待自动更新完成（服务器更新后约 2 分钟）。
 
-更改代理的执行器时，与新执行器不兼容的房间模型会被重置为该执行器的默认模型。**设置 > AI Agent** 中 Harness 下拉菜单下方的通知会列出受影响的房间和子代理及其重置详情。
+更改代理的执行器时，与新执行器不兼容的房间模型会被重置为该执行器的默认模型。Codex 的默认值为代理报告的第一个模型（来自 `codex debug models`）。**设置 > AI Agent** 中 Harness 下拉菜单下方的通知会列出受影响的房间和子代理及其重置详情。
 
 子代理也可以选择自己的执行器，或保持 **inherit from parent**（默认值）。
 
 **检查执行器可用性：** 在代理所在机器上安装或登录 CLI 工具后，点击执行器下拉菜单旁的 **Check** 按钮（位于**设置 > AI Agent** 的代理详情面板或折叠卡中），无需重启代理即可重新检测。代理离线时按钮禁用，检测最多需要约 15 秒。结果返回后下拉菜单立即更新——检测到新执行器时会显示 toast 提示。重新扫描时也会连同工作目录和技能一起重新检查执行器可用性。
+
+**Codex** 的 Check 还会通过 `codex debug models` 从代理获取可用模型列表——CLI 中隐藏的模型会被过滤，结果按 CLI 优先级排序，第一个模型成为默认值。房间模型下拉菜单也会立即更新。发现新模型时会显示如 `Codex CLI: 2 new models` 的 toast 提示。若代理无法报告模型列表（旧版 CLI 或命令失败），Stoa 将使用内置模型列表作为备选。**Claude** 没有对应命令，因此 Claude 的模型列表始终来自 Stoa，不会通过 Check 更新。
 
 已安装但未登录的执行器在下拉菜单中显示为 **"(not logged in)"** 且无法选择——服务器也会拒绝。若无法确认登录状态，执行器保持可选状态。若当前活跃执行器变为不可用或已注销，下拉菜单下方会显示红色提示——执行器不会自动切换。
 
