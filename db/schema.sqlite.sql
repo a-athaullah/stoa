@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS ai_sessions (
   pinned INTEGER NOT NULL DEFAULT 0,
   context_tokens_used INTEGER DEFAULT 0,
   thread_id INTEGER NOT NULL DEFAULT 0,
+  harness TEXT NOT NULL DEFAULT 'claude',
   FOREIGN KEY (participant_id) REFERENCES room_participants(id),
   FOREIGN KEY (room_id) REFERENCES rooms(id)
 );
