@@ -3277,6 +3277,7 @@ const server = http.createServer(async (req, res) => {
       db.prepare('UPDATE actors SET adapter_config=? WHERE id=?').run(JSON.stringify(existing), id);
     }
     let fallbackRooms = [];
+    let fallbackSubAgents = [];
     if (adapter !== undefined) {
       const validHarnesses = db.prepare('SELECT name FROM harnesses').all().map(h => h.name);
       if (!validHarnesses.includes(adapter)) return json(res, { error: `adapter must be one of: ${validHarnesses.join(', ')}` }, 400);
@@ -3296,14 +3297,13 @@ const server = http.createServer(async (req, res) => {
         }
       }
       // Sub-agents with harness=NULL inherit parent adapter — fallback their model too
-      const inheritSubs = db.prepare('SELECT id, model FROM sub_agents WHERE parent_actor_id=? AND harness IS NULL AND model IS NOT NULL').all(id);
-      var fallbackSubAgents = [];
+      const inheritSubs = db.prepare('SELECT id, label, model FROM sub_agents WHERE parent_actor_id=? AND harness IS NULL AND model IS NOT NULL').all(id);
       for (const sub of inheritSubs) {
         const validSub = db.prepare('SELECT 1 FROM harness_models WHERE harness_id=? AND model_id=? AND is_active=1').get(harnessRow.id, sub.model);
         if (!validSub) {
           const defaultModel = db.prepare('SELECT model_id FROM harness_models WHERE harness_id=? AND is_default=1 AND is_active=1').get(harnessRow.id);
           db.prepare('UPDATE sub_agents SET model=? WHERE id=?').run(defaultModel?.model_id || null, sub.id);
-          fallbackSubAgents.push({ sub_agent_id: sub.id, old_model: sub.model, new_model: defaultModel?.model_id || null });
+          fallbackSubAgents.push({ sub_agent_id: sub.id, label: sub.label, old_model: sub.model, new_model: defaultModel?.model_id || null });
         }
       }
     }
@@ -3315,7 +3315,7 @@ const server = http.createServer(async (req, res) => {
     }
     const result = { id, name: finalName };
     if (fallbackRooms.length) result.fallback_rooms = fallbackRooms;
-    if (typeof fallbackSubAgents !== 'undefined' && fallbackSubAgents.length) result.fallback_sub_agents = fallbackSubAgents;
+    if (fallbackSubAgents.length) result.fallback_sub_agents = fallbackSubAgents;
     if (adapter !== undefined) result.adapter = adapter;
     return json(res, result);
   }
