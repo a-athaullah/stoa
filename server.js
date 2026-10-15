@@ -709,6 +709,13 @@ const CONNECTOR_MEDIA_DIR = path.join(__dirname, 'connector-media');
 
 const DEFAULT_BASE_SYSTEM_PROMPT = `You are an AI agent operating on the Stoa platform. You have access to the following environment variables: STOA_URL, STOA_ROOM_ID, STOA_ACTOR_ID, STOA_SECRET, STOA_THREAD_ID. To derive the HTTP base URL from the WebSocket URL: BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|"). Full API documentation (endpoints for sending messages, updating memory, updating system prompt, uploading files) is available by fetching: curl -s "$BASE_URL/api/docs/stoa-api.md"`;
 
+function composeSystemPrompt(base, agentPrompt, roomPrompt) {
+  const parts = [base];
+  if (agentPrompt) parts.push(agentPrompt);
+  if (roomPrompt) parts.push(roomPrompt);
+  return parts.join('\n\n---\n\n');
+}
+
 // Files yang boleh di-serve sebagai client update
 const CLIENT_FILES = new Set(['stoa.js', 'claude-session.js']);
 
@@ -3235,7 +3242,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/actors') {
-    const rows = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, created_at FROM actors ORDER BY id').all();
+    const rows = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, system_prompt, created_at FROM actors ORDER BY id').all();
     const result = rows.map(r => ({ ...r, online: agentClients.has(r.id), client_version: agentVersions.get(r.id) || null }));
     return json(res, result);
   }
@@ -3808,7 +3815,31 @@ Write-Host "Logs   : pm2 logs $AgentName"
     return json(res, actor);
   }
 
+  // GET /api/actors/:id/system-prompt
+  if (req.method === 'GET' && url.pathname.match(/^\/api\/actors\/\d+\/system-prompt$/)) {
+    requireAuth(req, res);
+    const actorId = parseInt(url.pathname.split('/')[3]);
+    const actor = db.prepare("SELECT system_prompt, type FROM actors WHERE id=?").get(actorId);
+    if (!actor) return json(res, { error: 'actor not found' }, 404);
+    if (actor.type !== 'ai') return json(res, { error: 'system-prompt only for AI actors' }, 404);
+    return json(res, { system_prompt: actor.system_prompt || null });
+  }
 
+  // PUT /api/actors/:id/system-prompt
+  if (req.method === 'PUT' && url.pathname.match(/^\/api\/actors\/\d+\/system-prompt$/)) {
+    requireAuth(req, res);
+    const actorId = parseInt(url.pathname.split('/')[3]);
+    const actor = db.prepare("SELECT id, type FROM actors WHERE id=?").get(actorId);
+    if (!actor) return json(res, { error: 'actor not found' }, 404);
+    if (actor.type !== 'ai') return json(res, { error: 'system-prompt only for AI actors' }, 404);
+    const body = parseJsonBody(await readBody(req));
+    if (!body) return json(res, { error: 'Invalid JSON' }, 400);
+    const prompt = body.system_prompt;
+    if (prompt !== null && prompt !== undefined && typeof prompt !== 'string') return json(res, { error: 'system_prompt must be string or null' }, 400);
+    if (typeof prompt === 'string' && Buffer.byteLength(prompt) > 65536) return json(res, { error: 'system_prompt exceeds 64KB limit' }, 400);
+    db.prepare('UPDATE actors SET system_prompt=? WHERE id=?').run(prompt ?? null, actorId);
+    return json(res, { system_prompt: prompt ?? null });
+  }
 
   // ── Export room messages ──
   const exportMatch = req.method === 'GET' && url.pathname.match(/^\/api\/rooms\/(\d+)\/export$/);
@@ -6741,9 +6772,8 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
       }));
       const roomSysPromptRaw = db.prepare('SELECT system_prompt FROM rooms WHERE id=?').get(roomId)?.system_prompt || null;
       const baseSysPrompt = getSetting('base_system_prompt') || DEFAULT_BASE_SYSTEM_PROMPT;
-      const roomSysPrompt = roomSysPromptRaw
-        ? baseSysPrompt + '\n\n---\n\n' + roomSysPromptRaw
-        : baseSysPrompt;
+      const agentSysPrompt = db.prepare('SELECT system_prompt FROM actors WHERE id=?').get(ai.actor_id)?.system_prompt || null;
+      const roomSysPrompt = composeSystemPrompt(baseSysPrompt, agentSysPrompt, roomSysPromptRaw);
       const sysPromptHash = require('crypto').createHash('sha256').update(roomSysPrompt).digest('hex').slice(0, 16);
       agentWs.send(JSON.stringify({
         type: 'agent_trigger',
