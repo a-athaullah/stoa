@@ -1181,7 +1181,10 @@ function makeAgentSidebarRow(actor) {
   const nameSpan = document.createElement('span');
   nameSpan.className = 'h-room-title-text';
   nameSpan.textContent = actor.name;
-  nameRow.append(dot, nameSpan);
+  const harnessChip = document.createElement('span');
+  harnessChip.style.cssText = 'font-family:var(--h-sans);font-size:11px;color:var(--h-ink-faint);padding:2px 6px;border-radius:6px;border:1px solid var(--h-hair-soft);flex-shrink:0';
+  harnessChip.textContent = HARNESS_LABELS[actor.adapter] || actor.adapter || 'Claude CLI';
+  nameRow.append(dot, nameSpan, harnessChip);
 
   const sub = document.createElement('div');
   sub.className = 'h-room-preview';
@@ -1448,8 +1451,15 @@ function buildAgentSettingsCard(actor) {
         const idx = settingsActors.findIndex(a => a.id === actor.id);
         if (idx >= 0) settingsActors[idx] = { ...settingsActors[idx], adapter: beSel.value };
         if (notice) {
-          if (data.fallback_rooms?.length) {
-            notice.textContent = `Model di-reset ke default di: ${data.fallback_rooms.map(r => escHtml(r)).join(', ')}`;
+          const fallbackLines = [];
+          (data.fallback_rooms || []).forEach(r => {
+            fallbackLines.push(`#${r.room_id}: ${r.old_model} → ${r.new_model}`);
+          });
+          (data.fallback_sub_agents || []).forEach(s => {
+            fallbackLines.push(`sub-agent ${s.label || s.sub_agent_id}: ${s.old_model} → ${s.new_model}`);
+          });
+          if (fallbackLines.length) {
+            notice.textContent = 'Model di-reset ke default: ' + fallbackLines.join('; ');
             notice.style.display = '';
           } else {
             notice.style.display = 'none';
