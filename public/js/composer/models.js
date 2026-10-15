@@ -510,6 +510,12 @@ async function _refreshModelResolution() {
   }
 }
 
+const _RESOLUTION_SOURCE_LABELS = {
+  agent_default: '↪ agent default',
+  harness_default: '↪ harness default',
+  cli_default: '↪ CLI default',
+};
+
 function _updateResolutionPreview() {
   const list = document.getElementById('model-dropdown-list');
   if (!list) return;
@@ -525,34 +531,37 @@ function _updateResolutionPreview() {
 
   const sep = document.createElement('div');
   sep.className = 'h-model-optgroup';
-  sep.style.cssText = 'font-size:10px;letter-spacing:.06em;border-top:1px solid var(--h-hair-soft);margin-top:4px;padding-top:6px;opacity:0.6';
-  sep.textContent = 'per-agent fallback';
+  sep.textContent = 'model per agent';
   section.appendChild(sep);
 
   for (const res of rows) {
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:3px 14px;font-family:ui-monospace,monospace;font-size:10.5px;color:var(--h-ink-mute);pointer-events:none;user-select:none';
+    row.className = 'h-model-resolution-row';
 
     const nameEl = document.createElement('span');
-    nameEl.style.cssText = 'color:var(--h-ink-faint);flex-shrink:0;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    nameEl.className = 'h-model-resolution-name';
     nameEl.textContent = res.name || `#${res.actor_id}`;
 
+    const harnessEl = document.createElement('span');
+    harnessEl.className = 'h-model-resolution-harness';
+    harnessEl.textContent = `· ${res.harness || 'claude'}`;
+
     const arrow = document.createElement('span');
-    arrow.style.cssText = 'color:var(--h-ink-faint);opacity:0.45;flex-shrink:0';
+    arrow.className = 'h-model-resolution-arrow';
     arrow.textContent = '→';
 
     const modelEl = document.createElement('span');
-    modelEl.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-    modelEl.textContent = res.model || 'harness default';
+    modelEl.className = 'h-model-resolution-model';
+    modelEl.textContent = res.model || 'CLI default';
 
-    row.append(nameEl, arrow, modelEl);
+    row.append(nameEl, harnessEl, arrow, modelEl);
 
-    if (res.source && res.source !== 'room') {
-      const icon = document.createElement('span');
-      icon.style.cssText = 'flex-shrink:0;opacity:0.55;cursor:help;font-size:9px;pointer-events:auto';
-      icon.textContent = '↪';
-      icon.title = `source: ${res.source}`;
-      row.appendChild(icon);
+    const sourceLabel = res.source && _RESOLUTION_SOURCE_LABELS[res.source];
+    if (sourceLabel) {
+      const sourceEl = document.createElement('span');
+      sourceEl.className = 'h-model-resolution-source';
+      sourceEl.textContent = sourceLabel;
+      row.appendChild(sourceEl);
     }
 
     section.appendChild(row);

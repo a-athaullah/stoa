@@ -1,3 +1,25 @@
+// ── Model tag helper ─────────────────────────────────────────────────────────
+const _FALLBACK_SOURCE_LABELS = {
+  agent_default: 'room model not available on this agent\'s harness — using agent default',
+  harness_default: 'room model not available on this agent\'s harness — using harness default',
+  cli_default: 'room model not available on this agent\'s harness — using CLI default',
+};
+
+function buildModelTag(aiModel, modelSource) {
+  const tag = document.createElement('div');
+  tag.className = 'h-msg-model';
+  tag.appendChild(document.createTextNode(aiModel));
+  const tooltip = modelSource && _FALLBACK_SOURCE_LABELS[modelSource];
+  if (tooltip) {
+    const icon = document.createElement('span');
+    icon.className = 'h-msg-model-fallback';
+    icon.textContent = '↪';
+    icon.title = tooltip;
+    tag.appendChild(icon);
+  }
+  return tag;
+}
+
 // ── Day separator ───────────────────────────────────────────────────────────
 let _lastDayKey = null;
 
@@ -201,20 +223,7 @@ function appendMessage(m, container) {
   }
 
   if (m.ai_model) {
-    const modelTag = document.createElement('div');
-    modelTag.className = 'h-msg-model';
-    modelTag.appendChild(document.createTextNode(m.ai_model));
-    if (m.model_source && m.model_source !== 'room') {
-      const icon = document.createElement('span');
-      icon.style.cssText = 'cursor:help;opacity:0.75;margin-left:3px;font-size:9px';
-      icon.textContent = '↪';
-      const roomModel = typeof currentRoomData !== 'undefined' && currentRoomData?.model;
-      icon.title = roomModel
-        ? `Model room "${roomModel}" tidak tersedia — memakai default agent/harness`
-        : 'Memakai default model agent/harness';
-      modelTag.appendChild(icon);
-    }
-    bubble.appendChild(modelTag);
+    bubble.appendChild(buildModelTag(m.ai_model, m.model_source));
   }
 
   const resultChip = buildResultChip(m.result_meta);

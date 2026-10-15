@@ -1555,6 +1555,7 @@ function buildAgentSettingsCard(actor) {
         const aIdx2 = allActors.findIndex(a => a.id === actor.id);
         if (aIdx2 >= 0) allActors[aIdx2] = { ...allActors[aIdx2], default_model: null };
       }
+      if (data.harness_default_model !== undefined) actor.harness_default_model = data.harness_default_model;
       if (typeof rebuildDefaultModelSel === 'function') rebuildDefaultModelSel();
       if (notice) {
         const fmt = m => m || 'default';
@@ -1571,12 +1572,14 @@ function buildAgentSettingsCard(actor) {
           notice.style.display = '';
         } else { notice.style.display = 'none'; }
       }
-      const toastParts = [`${actor.name} pindah ke ${HARNESS_LABELS[beSel.value] || beSel.value}`];
+      if (data.harness_default_model !== undefined) actor.harness_default_model = data.harness_default_model;
+      const toastParts = [`${actor.name} switched to ${HARNESS_LABELS[beSel.value] || beSel.value}`];
       if (data.fallback_agent_rooms?.length) {
-        toastParts.push(`Di ${data.fallback_agent_rooms.length} room campuran, model room tetap`);
+        const firstRoom = data.fallback_agent_rooms[0];
+        toastParts.push(`room model kept in ${data.fallback_agent_rooms.length} mixed room${data.fallback_agent_rooms.length > 1 ? 's' : ''} (${actor.name} uses ${firstRoom.agent_model || 'harness default'})`);
       }
       if (data.default_model_reset) {
-        toastParts.push(`Default model direset (${data.default_model_reset.old_model})`);
+        toastParts.push(`default model reset (${data.default_model_reset.old_model})`);
       }
       if (!data.fallback_agent_rooms?.length && !data.default_model_reset && !(data.fallback_rooms?.length)) {
         showToast('Harness updated');
@@ -1627,11 +1630,11 @@ function buildAgentSettingsCard(actor) {
 
   rebuildDefaultModelSel = () => {
     const harness = actor.adapter || 'claude';
-    const effDef = actor.effective_default_model;
+    const harnessDefault = actor.harness_default_model;
     dmSel.innerHTML = '';
     const noneOpt = document.createElement('option');
     noneOpt.value = '';
-    noneOpt.textContent = effDef ? `harness default — ${effDef}` : 'harness default';
+    noneOpt.textContent = harnessDefault ? `follow harness default — ${harnessDefault}` : 'follow harness default';
     dmSel.appendChild(noneOpt);
     if (!harness || harness === 'claude') {
       for (const m of SA_MODELS) {
@@ -1664,17 +1667,21 @@ function buildAgentSettingsCard(actor) {
         rebuildDefaultModelSel();
         return;
       }
-      actor.default_model = val;
+      const saved = data.default_model !== undefined ? data.default_model : val;
+      if (data.harness_default_model !== undefined) actor.harness_default_model = data.harness_default_model;
+      if (data.effective_default_model !== undefined) actor.effective_default_model = data.effective_default_model;
+      actor.default_model = saved;
       const sIdx = settingsActors.findIndex(a => a.id === actor.id);
-      if (sIdx >= 0) settingsActors[sIdx] = { ...settingsActors[sIdx], default_model: val };
+      if (sIdx >= 0) settingsActors[sIdx] = { ...settingsActors[sIdx], default_model: saved };
       const aIdx = allActors.findIndex(a => a.id === actor.id);
-      if (aIdx >= 0) allActors[aIdx] = { ...allActors[aIdx], default_model: val };
+      if (aIdx >= 0) allActors[aIdx] = { ...allActors[aIdx], default_model: saved };
+      rebuildDefaultModelSel();
       if (typeof _refreshModelResolution === 'function') _refreshModelResolution();
     } catch { showToast('Failed to save default model', { error: true }); rebuildDefaultModelSel(); }
   });
 
   const dmHint = document.createElement('span'); dmHint.className = 's-field-hint';
-  dmHint.textContent = 'Dipakai saat model room tidak tersedia di harness agent ini.';
+  dmHint.textContent = "used when this agent's harness can't run the room model";
   dmGrp.append(mkFieldLbl('default model'), dmSel, dmHint);
   body.appendChild(dmGrp);
 

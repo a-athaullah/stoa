@@ -380,6 +380,62 @@ html.dark .h-msg-row:hover { background: var(--h-hover); }
   opacity: 0.6;
   margin-top: 6px;
 }
+.h-msg-model-fallback {
+  cursor: help;
+  opacity: 0.75;
+  margin-left: 3px;
+  font-size: 9px;
+}
+.h-model-resolution-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 14px;
+  font-family: ui-monospace, monospace;
+  font-size: 10.5px;
+  color: var(--h-ink-mute);
+  pointer-events: none;
+  user-select: none;
+}
+.h-model-resolution-name {
+  color: var(--h-ink-faint);
+  flex-shrink: 0;
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.h-model-resolution-harness {
+  color: var(--h-ink-faint);
+  opacity: 0.55;
+  flex-shrink: 0;
+}
+.h-model-resolution-arrow {
+  color: var(--h-ink-faint);
+  opacity: 0.45;
+  flex-shrink: 0;
+}
+.h-model-resolution-model {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.h-model-resolution-source {
+  flex-shrink: 0;
+  opacity: 0.55;
+  font-size: 9px;
+  pointer-events: auto;
+  cursor: help;
+}
+.h-model-resolution-section .h-model-optgroup {
+  font-size: 10px;
+  letter-spacing: .06em;
+  border-top: 1px solid var(--h-hair-soft);
+  margin-top: 4px;
+  padding-top: 6px;
+  opacity: 0.6;
+}
 /* Phase 4: run result chip (exit reason · tokens · duration) under the bubble. */
 .h-msg-result {
   text-align: right;
