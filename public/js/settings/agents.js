@@ -1531,6 +1531,7 @@ function buildAgentSettingsCard(actor) {
   const beSel = document.createElement('select');
   beSel.className = 's-name-input'; beSel.name = 'agent-harness'; beSel.style.cssText = 'width:auto;min-width:130px';
   _buildHarnessOptions(beSel, actor);
+  let rebuildDefaultModelSel = null;
   beSel.addEventListener('change', async () => {
     const notice = document.getElementById(`s-harness-notice-${actor.id}`);
     try {
@@ -1547,6 +1548,14 @@ function buildAgentSettingsCard(actor) {
       actor.adapter = beSel.value;
       const idx = settingsActors.findIndex(a => a.id === actor.id);
       if (idx >= 0) settingsActors[idx] = { ...settingsActors[idx], adapter: beSel.value };
+      if (data.default_model_reset) {
+        actor.default_model = null;
+        const sIdx2 = settingsActors.findIndex(a => a.id === actor.id);
+        if (sIdx2 >= 0) settingsActors[sIdx2] = { ...settingsActors[sIdx2], default_model: null };
+        const aIdx2 = allActors.findIndex(a => a.id === actor.id);
+        if (aIdx2 >= 0) allActors[aIdx2] = { ...allActors[aIdx2], default_model: null };
+      }
+      if (typeof rebuildDefaultModelSel === 'function') rebuildDefaultModelSel();
       if (notice) {
         const fmt = m => m || 'default';
         const fallbackLines = [];
@@ -1562,7 +1571,18 @@ function buildAgentSettingsCard(actor) {
           notice.style.display = '';
         } else { notice.style.display = 'none'; }
       }
-      showToast('Harness updated');
+      const toastParts = [`${actor.name} pindah ke ${HARNESS_LABELS[beSel.value] || beSel.value}`];
+      if (data.fallback_agent_rooms?.length) {
+        toastParts.push(`Di ${data.fallback_agent_rooms.length} room campuran, model room tetap`);
+      }
+      if (data.default_model_reset) {
+        toastParts.push(`Default model direset (${data.default_model_reset.old_model})`);
+      }
+      if (!data.fallback_agent_rooms?.length && !data.default_model_reset && !(data.fallback_rooms?.length)) {
+        showToast('Harness updated');
+      } else {
+        showToast(toastParts.join('. '));
+      }
     } catch { showToast('Failed to change harness', { error: true }); beSel.value = actor.adapter || 'claude'; }
   });
   const beHint = document.createElement('span');
@@ -1598,6 +1618,65 @@ function buildAgentSettingsCard(actor) {
 
   fieldRow.append(beGrp, langGrp, nameGrp);
   body.appendChild(fieldRow);
+
+  // ── Default model field ──────────────────────────────────────────────────
+  const dmGrp = document.createElement('div'); dmGrp.className = 's-field-group'; dmGrp.style.minWidth = 'auto';
+  const dmSel = document.createElement('select');
+  dmSel.className = 's-name-input'; dmSel.name = 'agent-default-model';
+  dmSel.style.cssText = 'width:auto;min-width:190px;cursor:pointer';
+
+  rebuildDefaultModelSel = () => {
+    const harness = actor.adapter || 'claude';
+    const effDef = actor.effective_default_model;
+    dmSel.innerHTML = '';
+    const noneOpt = document.createElement('option');
+    noneOpt.value = '';
+    noneOpt.textContent = effDef ? `harness default — ${effDef}` : 'harness default';
+    dmSel.appendChild(noneOpt);
+    if (!harness || harness === 'claude') {
+      for (const m of SA_MODELS) {
+        const o = document.createElement('option'); o.value = m; o.textContent = m; dmSel.appendChild(o);
+      }
+      if (actor.default_model && !SA_MODELS.includes(actor.default_model)) {
+        const o = document.createElement('option'); o.value = actor.default_model; o.textContent = actor.default_model; dmSel.appendChild(o);
+      }
+    } else {
+      const models = (_agentHarnessModels(actor.harness_status, harness) || getModelsForHarness(harness) || []);
+      for (const m of models) {
+        const o = document.createElement('option'); o.value = m.value; o.textContent = m.label || m.value; dmSel.appendChild(o);
+      }
+    }
+    const valid = Array.from(dmSel.options).map(o => o.value);
+    dmSel.value = valid.includes(actor.default_model) ? (actor.default_model || '') : '';
+  };
+  rebuildDefaultModelSel();
+
+  dmSel.addEventListener('change', async () => {
+    const val = dmSel.value || null;
+    try {
+      const r = await fetch(`/api/actors/${actor.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ default_model: val }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        showToast(data.error || 'Failed to save default model', { error: true });
+        rebuildDefaultModelSel();
+        return;
+      }
+      actor.default_model = val;
+      const sIdx = settingsActors.findIndex(a => a.id === actor.id);
+      if (sIdx >= 0) settingsActors[sIdx] = { ...settingsActors[sIdx], default_model: val };
+      const aIdx = allActors.findIndex(a => a.id === actor.id);
+      if (aIdx >= 0) allActors[aIdx] = { ...allActors[aIdx], default_model: val };
+      if (typeof _refreshModelResolution === 'function') _refreshModelResolution();
+    } catch { showToast('Failed to save default model', { error: true }); rebuildDefaultModelSel(); }
+  });
+
+  const dmHint = document.createElement('span'); dmHint.className = 's-field-hint';
+  dmHint.textContent = 'Dipakai saat model room tidak tersedia di harness agent ini.';
+  dmGrp.append(mkFieldLbl('default model'), dmSel, dmHint);
+  body.appendChild(dmGrp);
 
   const platGrp = document.createElement('div'); platGrp.className = 's-field-group'; platGrp.style.minWidth = 'auto';
   const osPills = document.createElement('div'); osPills.className = 's-os-pills'; osPills.id = `s-detail-pills-${actor.id}`;

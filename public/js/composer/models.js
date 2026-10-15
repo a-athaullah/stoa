@@ -479,6 +479,7 @@ function updateModelSelector(room, parts) {
       : null;
     populateModelDropdown(null, room.model, parsePlatformId(room.model_config), harnessModels);
     handleModelUpdate({ model: room.model || 'claude-sonnet-4-6' });
+    _refreshModelResolution();
   }
 }
 
@@ -487,6 +488,77 @@ function refreshModelDropdownForActor(actorId) {
   const parts = roomParticipantsCache[currentRoomId] || [];
   const aiPart = parts.find(p => p.type === 'ai');
   if (aiPart?.actor_id === actorId) updateModelSelector(currentRoomData, parts);
+  _refreshModelResolution();
+}
+
+// ── Per-agent model resolution preview ──────────────────────────────────────
+let _roomModelResolutionCache = null;
+
+async function _refreshModelResolution() {
+  if (!currentRoomId) return;
+  const roomId = currentRoomId;
+  _roomModelResolutionCache = null;
+  _updateResolutionPreview();
+  try {
+    const data = await fjson(`/api/rooms/${roomId}/model-resolution`);
+    if (currentRoomId === roomId) {
+      _roomModelResolutionCache = data;
+      _updateResolutionPreview();
+    }
+  } catch {
+    // endpoint not yet available — preview stays hidden
+  }
+}
+
+function _updateResolutionPreview() {
+  const list = document.getElementById('model-dropdown-list');
+  if (!list) return;
+  const old = list.querySelector('.h-model-resolution-section');
+  if (old) old.remove();
+  const rows = _roomModelResolutionCache;
+  if (!Array.isArray(rows) || !rows.length) return;
+  const hasFallback = rows.some(r => r.source && r.source !== 'room');
+  if (rows.length === 1 && !hasFallback) return;
+
+  const section = document.createElement('div');
+  section.className = 'h-model-resolution-section';
+
+  const sep = document.createElement('div');
+  sep.className = 'h-model-optgroup';
+  sep.style.cssText = 'font-size:10px;letter-spacing:.06em;border-top:1px solid var(--h-hair-soft);margin-top:4px;padding-top:6px;opacity:0.6';
+  sep.textContent = 'per-agent fallback';
+  section.appendChild(sep);
+
+  for (const res of rows) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:3px 14px;font-family:ui-monospace,monospace;font-size:10.5px;color:var(--h-ink-mute);pointer-events:none;user-select:none';
+
+    const nameEl = document.createElement('span');
+    nameEl.style.cssText = 'color:var(--h-ink-faint);flex-shrink:0;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    nameEl.textContent = res.name || `#${res.actor_id}`;
+
+    const arrow = document.createElement('span');
+    arrow.style.cssText = 'color:var(--h-ink-faint);opacity:0.45;flex-shrink:0';
+    arrow.textContent = '→';
+
+    const modelEl = document.createElement('span');
+    modelEl.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    modelEl.textContent = res.model || 'harness default';
+
+    row.append(nameEl, arrow, modelEl);
+
+    if (res.source && res.source !== 'room') {
+      const icon = document.createElement('span');
+      icon.style.cssText = 'flex-shrink:0;opacity:0.55;cursor:help;font-size:9px;pointer-events:auto';
+      icon.textContent = '↪';
+      icon.title = `source: ${res.source}`;
+      row.appendChild(icon);
+    }
+
+    section.appendChild(row);
+  }
+
+  list.appendChild(section);
 }
 
 document.getElementById('model-dropdown-trigger')?.addEventListener('click', function(e) {

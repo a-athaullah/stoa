@@ -203,7 +203,17 @@ function appendMessage(m, container) {
   if (m.ai_model) {
     const modelTag = document.createElement('div');
     modelTag.className = 'h-msg-model';
-    modelTag.textContent = m.ai_model;
+    modelTag.appendChild(document.createTextNode(m.ai_model));
+    if (m.model_source && m.model_source !== 'room') {
+      const icon = document.createElement('span');
+      icon.style.cssText = 'cursor:help;opacity:0.75;margin-left:3px;font-size:9px';
+      icon.textContent = '↪';
+      const roomModel = typeof currentRoomData !== 'undefined' && currentRoomData?.model;
+      icon.title = roomModel
+        ? `Model room "${roomModel}" tidak tersedia — memakai default agent/harness`
+        : 'Memakai default model agent/harness';
+      modelTag.appendChild(icon);
+    }
     bubble.appendChild(modelTag);
   }
 

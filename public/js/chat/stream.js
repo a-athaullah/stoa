@@ -55,7 +55,7 @@ function appendToken(msgId, token) {
 }
 
 // ── Finalize streaming message ─────────────────────────────────────────────
-function finalizeMessage(msgId, content, fileUrl, fileName, attachments, aiModel, resultMeta) {
+function finalizeMessage(msgId, content, fileUrl, fileName, attachments, aiModel, resultMeta, modelSource) {
   const row = document.getElementById('msg-' + msgId);
   if (!row) return;
 
@@ -83,7 +83,17 @@ function finalizeMessage(msgId, content, fileUrl, fileName, attachments, aiModel
     if (aiModel) {
       const modelTag = document.createElement('div');
       modelTag.className = 'h-msg-model';
-      modelTag.textContent = aiModel;
+      modelTag.appendChild(document.createTextNode(aiModel));
+      if (modelSource && modelSource !== 'room') {
+        const icon = document.createElement('span');
+        icon.style.cssText = 'cursor:help;opacity:0.75;margin-left:3px;font-size:9px';
+        icon.textContent = '↪';
+        const roomModel = typeof currentRoomData !== 'undefined' && currentRoomData?.model;
+        icon.title = roomModel
+          ? `Model room "${roomModel}" tidak tersedia — memakai default agent/harness`
+          : 'Memakai default model agent/harness';
+        modelTag.appendChild(icon);
+      }
       bubble.appendChild(modelTag);
     }
     const resultChip = buildResultChip(resultMeta);
