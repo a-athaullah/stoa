@@ -4,6 +4,16 @@ let settingsActors = [];
 const sRowStates = new Map(); // id -> {state:'default'|'renaming'|'confirm-delete', draft:string}
 let sAddPanel = { open: false, name: '', os: 'unix', phase: 'idle', baselineIds: new Set(), newActor: null, timer: null };
 const agentSubCountCache = new Map(); // actorId -> count
+let _settingsRoomsMap = null; // id -> name, populated on first harness change
+async function _getRoomName(id) {
+  if (!_settingsRoomsMap) {
+    try {
+      const rs = await fjson('/api/rooms');
+      _settingsRoomsMap = new Map(rs.map(r => [r.id, r.name || `#${r.id}`]));
+    } catch { _settingsRoomsMap = new Map(); }
+  }
+  return _settingsRoomsMap.get(id) || `#${id}`;
+}
 
 function sDetectOS() {
   return /Windows/.test(navigator.userAgent) ? 'ps' : 'unix';
@@ -1451,12 +1461,14 @@ function buildAgentSettingsCard(actor) {
         const idx = settingsActors.findIndex(a => a.id === actor.id);
         if (idx >= 0) settingsActors[idx] = { ...settingsActors[idx], adapter: beSel.value };
         if (notice) {
+          const fmt = m => m || 'default';
           const fallbackLines = [];
-          (data.fallback_rooms || []).forEach(r => {
-            fallbackLines.push(`#${r.room_id}: ${r.old_model} → ${r.new_model}`);
+          const roomNames = await Promise.all((data.fallback_rooms || []).map(r => _getRoomName(r.room_id)));
+          (data.fallback_rooms || []).forEach((r, i) => {
+            fallbackLines.push(`${roomNames[i]}: ${fmt(r.old_model)} → ${fmt(r.new_model)}`);
           });
           (data.fallback_sub_agents || []).forEach(s => {
-            fallbackLines.push(`sub-agent ${s.label || s.sub_agent_id}: ${s.old_model} → ${s.new_model}`);
+            fallbackLines.push(`sub-agent ${s.label || s.sub_agent_id}: ${fmt(s.old_model)} → ${fmt(s.new_model)}`);
           });
           if (fallbackLines.length) {
             notice.textContent = 'Model di-reset ke default: ' + fallbackLines.join('; ');

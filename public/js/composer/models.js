@@ -309,7 +309,7 @@ function getModelsForHarness(harnessName) {
   const h = allHarnessData.find(x => x.name === harnessName);
   if (!h || !h.models?.length) return null;
   return h.models.map(m => ({
-    value: m.model_id, label: m.label || m.model_id,
+    value: m.model_id, label: m.display_name || m.model_id,
     vision: false, tools: false, local: false,
     platform: harnessName, platform_id: harnessName, is_default: !!m.is_default,
   }));
@@ -391,7 +391,7 @@ function populateModelDropdown(ignored, currentModel, currentPlatformId, overrid
     if (m.base_url) div.dataset.baseUrl = m.base_url;
     if (m.platform_id) div.dataset.platformId = m.platform_id;
     const icons = _capIconsHtml(m);
-    div.innerHTML = `<span>${m.label}</span>${icons ? `<span class="h-model-cap-icons">${icons}</span>` : ''}`;
+    div.innerHTML = `<span>${escHtml(m.label)}</span>${icons ? `<span class="h-model-cap-icons">${icons}</span>` : ''}`;
     div.addEventListener('click', () => selectModelOption(m.value, m.platform_id));
     return div;
   };
