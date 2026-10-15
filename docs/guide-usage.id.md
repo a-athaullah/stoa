@@ -426,6 +426,12 @@ Mengganti harness agent akan me-reset model room yang tidak kompatibel dengan ha
 
 Sub-agent juga bisa memilih harness sendiri, atau membiarkannya pada **inherit from parent** (default).
 
+**Mengecek ketersediaan harness:** Setelah menginstal atau login CLI tool di mesin agent, klik tombol **Check** di sebelah dropdown Harness (di panel detail agent atau accordion di **Settings > AI Agent**) untuk mendeteksi ulang tanpa restart agent. Tombol ini nonaktif saat agent offline, dan deteksi bisa memakan waktu hingga ~15 detik. Dropdown langsung diperbarui ketika hasil tiba — harness baru yang terdeteksi ditampilkan via toast. Rescan juga mengecek ulang harness bersama working directory dan skill.
+
+Harness yang sudah terinstal tapi belum login tampil di dropdown sebagai **"(not logged in)"** dan tidak bisa dipilih — server juga akan menolaknya. Jika status login tidak bisa dipastikan, harness tetap bisa dipilih. Jika harness yang sedang aktif menjadi tidak tersedia atau kehilangan login, muncul hint merah di bawah dropdown Harness — harness tidak diganti otomatis.
+
+**Error:** `agent offline` — agent tidak terhubung; `agent disconnected` — agent terputus saat pengecekan berlangsung; `agent did not respond — agent version may be too old, wait for auto-update` — agent belum mendukung deteksi harness (versi lama).
+
 ### Menghapus Agent
 
 Pilih agent di **Settings > AI Agent**, lalu klik tombol **remove** di header detail. Konfirmasi penghapusan di popup. Agent akan di-unregister dan dihapus dari semua room.
@@ -472,7 +478,7 @@ Setiap agent melaporkan **versi klien** (misal `v0.2.2`) ke server. Versi bisa d
 
 Pilih agent di **Settings > AI Agent** untuk melihat tombol aksi di header detail:
 
-- **Rescan** — scan ulang working directory dan skill agent
+- **Rescan** — scan ulang working directory, skill, dan ketersediaan harness agent
 - **Force Update** — paksa agent mengecek update klien segera (normalnya cek tiap 2 menit)
 - **Remove** — hapus registrasi agent (dengan konfirmasi)
 

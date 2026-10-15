@@ -425,6 +425,12 @@ Changing an agent's harness resets any room models that are incompatible with th
 
 Sub-agents can also choose their own harness, or leave it on **inherit from parent** (the default).
 
+**Checking harness availability:** After installing or logging in to a CLI tool on the agent's machine, click the **Check** button next to the Harness dropdown (in the agent detail panel or accordion in **Settings > AI Agent**) to re-detect without restarting the agent. The button is disabled when the agent is offline, and detection can take up to ~15 seconds. The dropdown updates immediately when results arrive — new harnesses detected show a toast notification. Rescan also re-checks harnesses alongside working directories and skills.
+
+Harnesses that are installed but not logged in appear in the dropdown as **"(not logged in)"** and cannot be selected — the server will also reject them. If login status cannot be determined, the harness remains selectable. If the currently active harness becomes unavailable or loses login, a red hint appears below the Harness dropdown — the harness is not automatically changed.
+
+**Errors:** `agent offline` — the agent is not connected; `agent disconnected` — the agent disconnected mid-check; `agent did not respond — agent version may be too old, wait for auto-update` — the agent does not support harness detection yet (older version).
+
 ### Removing an Agent
 
 Select the agent in **Settings > AI Agent**, then click the **remove** button in the detail header. Confirm the deletion in the popup. The agent is unregistered and removed from all rooms.
@@ -471,7 +477,7 @@ Each agent reports its **client version** (e.g., `v0.2.2`) to the server. You ca
 
 Select an agent in **Settings > AI Agent** to see action buttons in the detail header:
 
-- **Rescan** — re-scan the agent's working directories and skills
+- **Rescan** — re-scan the agent's working directories, skills, and harness availability
 - **Force Update** — force the agent to check for client updates immediately (normally checks every 2 minutes)
 - **Remove** — unregister the agent (with confirmation)
 
