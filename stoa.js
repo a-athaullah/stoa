@@ -1141,6 +1141,11 @@ async function handleAgentMessage(msg) {
         return;
       }
     }
+    if (session._harness && session._harness !== "claude") {
+      console.log(`[stoa] compact: skipping non-claude session (${session._harness}) for ${key}`);
+      send({ type: "compact_error", room_id: msg.room_id, thread_id: msg.thread_id || null, sub_agent_id: msg.sub_agent_id || null, error: `compact not supported for ${session._harness} harness` });
+      return;
+    }
     console.log(`[stoa] compact: starting for ${key}`);
     compactWithTimeout(session).then((result) => {
       console.log(`[stoa] compact: done for ${key}`);
