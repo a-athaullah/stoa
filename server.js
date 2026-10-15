@@ -143,11 +143,8 @@ function resolveAgentModel(actorId, harness, roomModel) {
   if (agentDefault && isModelCompatible(actorId, h, agentDefault)) {
     return { model: agentDefault, source: 'agent_default' };
   }
-  const hModels = getHarnessModels(actorId, h);
-  if (hModels.length) {
-    const def = hModels.find(m => m.is_default)?.model_id || hModels[0].model_id;
-    return { model: def, source: 'harness_default' };
-  }
+  const hDefault = getHarnessDefaultModel(actorId, h);
+  if (hDefault) return { model: hDefault, source: 'harness_default' };
   return { model: null, source: 'cli_default' };
 }
 
@@ -3349,6 +3346,7 @@ const server = http.createServer(async (req, res) => {
     if (avatar_url !== undefined && avatar_url !== null && (!avatar_url.startsWith('/uploads/') || avatar_url.includes('..'))) { res.writeHead(400); return res.end('invalid avatar_url'); }
     // --- VALIDATION PHASE (no DB writes) ---
     const actor = db.prepare('SELECT id, name, type, adapter, default_model FROM actors WHERE id=?').get(id);
+    if (!actor) return json(res, { error: 'actor not found' }, 404);
     if (adapter !== undefined) {
       const validHarnesses = db.prepare('SELECT name FROM harnesses').all().map(h => h.name);
       if (!validHarnesses.includes(adapter)) return json(res, { error: `adapter must be one of: ${validHarnesses.join(', ')}` }, 400);
@@ -3400,9 +3398,8 @@ const server = http.createServer(async (req, res) => {
             defaultModelReset = { old_model: actor.default_model };
           }
         }
-        const hModels = getHarnessModels(id, adapter);
-        if (hModels.length) {
-          const defaultModelId = hModels.find(m => m.is_default)?.model_id || hModels[0]?.model_id || null;
+        const defaultModelId = getHarnessDefaultModel(id, adapter);
+        if (defaultModelId) {
           const agentRooms = db.prepare('SELECT r.id, r.model FROM rooms r JOIN room_participants rp ON rp.room_id=r.id WHERE rp.actor_id=? AND r.model IS NOT NULL').all(id);
           for (const room of agentRooms) {
             if (!isModelCompatible(id, adapter, room.model, { allowPlatform: true })) {
@@ -4061,6 +4058,8 @@ Write-Host "Logs   : pm2 logs $AgentName"
   // GET /api/actors/:id/system-prompt
   if (req.method === 'GET' && url.pathname.match(/^\/api\/actors\/\d+\/system-prompt$/)) {
     const actorId = parseInt(url.pathname.split('/')[3]);
+    const reqAgentId = parseInt(req.headers['x-agent-id'] || '0');
+    if (!req._authUser && reqAgentId !== actorId) return json(res, { error: 'forbidden' }, 403);
     const actor = db.prepare("SELECT system_prompt, type FROM actors WHERE id=?").get(actorId);
     if (!actor) return json(res, { error: 'actor not found' }, 404);
     if (actor.type !== 'ai') return json(res, { error: 'system-prompt only for AI actors' }, 404);
@@ -4070,6 +4069,8 @@ Write-Host "Logs   : pm2 logs $AgentName"
   // PUT /api/actors/:id/system-prompt
   if (req.method === 'PUT' && url.pathname.match(/^\/api\/actors\/\d+\/system-prompt$/)) {
     const actorId = parseInt(url.pathname.split('/')[3]);
+    const reqAgentId = parseInt(req.headers['x-agent-id'] || '0');
+    if (!req._authUser && reqAgentId !== actorId) return json(res, { error: 'forbidden' }, 403);
     const actor = db.prepare("SELECT id, type FROM actors WHERE id=?").get(actorId);
     if (!actor) return json(res, { error: 'actor not found' }, 404);
     if (actor.type !== 'ai') return json(res, { error: 'system-prompt only for AI actors' }, 404);

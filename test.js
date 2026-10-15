@@ -6578,6 +6578,51 @@ async function run() {
     assert.strictEqual(r.status, 404, `expected 404, got ${r.status}: ${JSON.stringify(r.body)}`);
   });
 
+  // system-prompt ownership: other agent → 403, own agent → 200
+  await test('GET /api/actors/:id/system-prompt — other agent → 403', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const agent2 = await createOnlineTestAgent('__test-sp-other', '/tmp/stoa-test-sp-other');
+    if (!agent2) { console.log('    (skipped — no second agent)'); return; }
+    try {
+      const r = await req('GET', `/api/actors/${hsActorId}/system-prompt`, null, { 'x-agent-id': String(agent2.actorId), 'x-agent-secret': agent2.secret, Cookie: '' });
+      assert.strictEqual(r.status, 403, `expected 403, got ${r.status}`);
+    } finally {
+      if (agent2.ws) agent2.ws.close();
+      await req('DELETE', `/api/actors/${agent2.actorId}`);
+      orphanActorIds = orphanActorIds.filter(id => id !== agent2.actorId);
+    }
+  });
+
+  await test('PUT /api/actors/:id/system-prompt — other agent → 403', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const agent2 = await createOnlineTestAgent('__test-sp-put-other', '/tmp/stoa-test-sp-put-other');
+    if (!agent2) { console.log('    (skipped — no second agent)'); return; }
+    try {
+      const r = await req('PUT', `/api/actors/${hsActorId}/system-prompt`, { system_prompt: 'hacked' }, { 'x-agent-id': String(agent2.actorId), 'x-agent-secret': agent2.secret, Cookie: '' });
+      assert.strictEqual(r.status, 403, `expected 403, got ${r.status}`);
+      const check = await req('GET', `/api/actors/${hsActorId}/system-prompt`);
+      assert.notStrictEqual(check.body.system_prompt, 'hacked', 'system prompt should NOT have been changed');
+    } finally {
+      if (agent2.ws) agent2.ws.close();
+      await req('DELETE', `/api/actors/${agent2.actorId}`);
+      orphanActorIds = orphanActorIds.filter(id => id !== agent2.actorId);
+    }
+  });
+
+  await test('GET /api/actors/:id/system-prompt — own agent → 200', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('GET', `/api/actors/${hsActorId}/system-prompt`, null, { 'x-agent-id': String(hsActorId), 'x-agent-secret': hsSecret, Cookie: '' });
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}`);
+  });
+
+  await test('PUT /api/actors/:id/system-prompt — own agent → 200', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('PUT', `/api/actors/${hsActorId}/system-prompt`, { system_prompt: 'self-set' }, { 'x-agent-id': String(hsActorId), 'x-agent-secret': hsSecret, Cookie: '' });
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}`);
+    assert.strictEqual(r.body.system_prompt, 'self-set');
+    await req('PUT', `/api/actors/${hsActorId}/system-prompt`, { system_prompt: null });
+  });
+
   // Fase 3b: GET /api/harnesses
   await test('GET /api/harnesses — returns harness list with models', async () => {
     const r = await req('GET', '/api/harnesses');
@@ -6597,6 +6642,11 @@ async function run() {
     assert.ok(codex, 'codex harness not found');
     assert.ok(Array.isArray(codex.models), 'codex should have models array');
     assert.ok(codex.models.length > 0, 'codex should have at least one model');
+  });
+
+  await test('PATCH /api/actors/:id — nonexistent actor → 404', async () => {
+    const r = await req('PATCH', '/api/actors/999999', { name: 'ghost' });
+    assert.strictEqual(r.status, 404, `expected 404, got ${r.status}`);
   });
 
   // Fase 3b: PATCH /api/actors/:id — adapter field
