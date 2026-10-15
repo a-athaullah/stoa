@@ -458,6 +458,29 @@ const SA_MODELS = [
 const SA_DANGER = '#b35a4b';
 const HARNESS_LABELS = { claude: 'Claude CLI', codex: 'Codex CLI' };
 
+function _saPopulateModelSel(modelSel, harness, actor, currentVal) {
+  modelSel.innerHTML = '';
+  const useTierOpt = document.createElement('option');
+  useTierOpt.value = ''; useTierOpt.textContent = 'use tier';
+  modelSel.appendChild(useTierOpt);
+  if (!harness || harness === 'claude') {
+    for (const m of SA_MODELS) {
+      const o = document.createElement('option'); o.value = m; o.textContent = m; modelSel.appendChild(o);
+    }
+    if (currentVal && !SA_MODELS.includes(currentVal)) {
+      const o = document.createElement('option'); o.value = currentVal; o.textContent = currentVal; modelSel.appendChild(o);
+    }
+  } else {
+    const models = (_agentHarnessModels(actor?.harness_status, harness) || getModelsForHarness(harness) || []);
+    for (const m of models) {
+      const o = document.createElement('option'); o.value = m.value;
+      o.textContent = m.label || m.value; modelSel.appendChild(o);
+    }
+  }
+  const valid = Array.from(modelSel.options).map(o => o.value);
+  modelSel.value = valid.includes(currentVal) ? currentVal : '';
+}
+
 // One-time token injection: the sub-agent seal shade vars. Relative oklch keeps
 // the parent HUE and just lightens/desaturates, so Ara's teal stays teal.
 function saInjectTokens() {
@@ -794,18 +817,8 @@ function sMakeEditAccordion(actor) {
     modelSel.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;' +
       'background:var(--h-surface);border:1px solid var(--h-hair-soft);' +
       'font-family:var(--h-sans);font-size:13px;color:var(--h-ink);outline:none;width:100%;cursor:pointer';
-    const useTierOpt = document.createElement('option'); useTierOpt.value = ''; useTierOpt.textContent = 'use tier';
-    modelSel.appendChild(useTierOpt);
-    for (const m of SA_MODELS) {
-      const o = document.createElement('option'); o.value = m; o.textContent = m;
-      if ((existing?.model || '') === m) o.selected = true;
-      modelSel.appendChild(o);
-    }
-    // Preserve a pinned model set via API that isn't in the preset list.
-    if (existing?.model && !SA_MODELS.includes(existing.model)) {
-      const o = document.createElement('option'); o.value = existing.model; o.textContent = existing.model; o.selected = true;
-      modelSel.appendChild(o);
-    }
+    const parentHarness = actor.adapter || 'claude';
+    _saPopulateModelSel(modelSel, existing?.harness || parentHarness, actor, existing?.model || '');
     const modelField = saMakeField('model override', modelSel, 'leave on “use tier” unless this worker needs a specific model');
     grid.append(labelField, modelField);
 
@@ -825,11 +838,13 @@ function sMakeEditAccordion(actor) {
     // harness override
     let selectedHarness = existing?.harness || null;
     const harnSel = document.createElement('select'); harnSel.name = 'subagent-harness'; harnSel.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;background:var(--h-surface);border:1px solid var(--h-hair-soft);font-family:var(--h-sans);font-size:13px;color:var(--h-ink);outline:none;width:100%;cursor:pointer';
-    const parentHarness = actor.adapter || 'claude';
     const inheritOptA = document.createElement('option'); inheritOptA.value = ''; inheritOptA.textContent = `inherit from parent (${HARNESS_LABELS[parentHarness] || parentHarness})`; harnSel.appendChild(inheritOptA);
     (actor.harnesses_available || [parentHarness]).forEach(h => { const o = document.createElement('option'); o.value = h; o.textContent = HARNESS_LABELS[h] || h; if (h === selectedHarness) o.selected = true; harnSel.appendChild(o); });
     if (!selectedHarness) inheritOptA.selected = true;
-    harnSel.addEventListener('change', () => { selectedHarness = harnSel.value || null; });
+    harnSel.addEventListener('change', () => {
+      selectedHarness = harnSel.value || null;
+      _saPopulateModelSel(modelSel, selectedHarness || parentHarness, actor, modelSel.value);
+    });
     const harnField = saMakeField('harness', harnSel, 'override parent harness for this worker');
 
     // buttons
@@ -1701,9 +1716,8 @@ function buildSubAgentsSection(actor) {
     const labelField = saMakeField('label', labelInp, 'unique, used for @mention — cannot match an agent name');
     const labelErr = document.createElement('span'); labelErr.style.cssText = 'display:none;align-items:center;gap:6px;font-family:var(--h-sans);font-size:12px;color:' + SA_DANGER; labelField.appendChild(labelErr);
     const modelSel = document.createElement('select'); modelSel.name = 'subagent-model'; modelSel.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;background:var(--h-surface);border:1px solid var(--h-hair-soft);font-family:var(--h-sans);font-size:13px;color:var(--h-ink);outline:none;width:100%;cursor:pointer';
-    const useTierOpt = document.createElement('option'); useTierOpt.value = ''; useTierOpt.textContent = 'use tier'; modelSel.appendChild(useTierOpt);
-    for (const m of SA_MODELS) { const o = document.createElement('option'); o.value = m; o.textContent = m; if ((existing?.model || '') === m) o.selected = true; modelSel.appendChild(o); }
-    if (existing?.model && !SA_MODELS.includes(existing.model)) { const o = document.createElement('option'); o.value = existing.model; o.textContent = existing.model; o.selected = true; modelSel.appendChild(o); }
+    const parentHarness = actor.adapter || 'claude';
+    _saPopulateModelSel(modelSel, existing?.harness || parentHarness, actor, existing?.model || '');
     const modelField = saMakeField('model override', modelSel, 'leave on "use tier" unless this worker needs a specific model');
     grid.append(labelField, modelField);
     const tierField = saMakeField('tier', saMakeTierPicker(selectedTier, id => { selectedTier = id; }));
@@ -1712,12 +1726,14 @@ function buildSubAgentsSection(actor) {
     // Harness field
     let selectedHarness = existing?.harness || null;
     const harnSel = document.createElement('select'); harnSel.name = 'subagent-harness'; harnSel.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;background:var(--h-surface);border:1px solid var(--h-hair-soft);font-family:var(--h-sans);font-size:13px;color:var(--h-ink);outline:none;width:100%;cursor:pointer';
-    const parentHarness = actor.adapter || 'claude';
     const inheritOpt = document.createElement('option'); inheritOpt.value = ''; inheritOpt.textContent = `inherit from parent (${HARNESS_LABELS[parentHarness] || parentHarness})`; harnSel.appendChild(inheritOpt);
     const availH = actor.harnesses_available || [parentHarness];
     availH.forEach(h => { const o = document.createElement('option'); o.value = h; o.textContent = HARNESS_LABELS[h] || h; if (h === selectedHarness) o.selected = true; harnSel.appendChild(o); });
     if (!selectedHarness) inheritOpt.selected = true;
-    harnSel.addEventListener('change', () => { selectedHarness = harnSel.value || null; });
+    harnSel.addEventListener('change', () => {
+      selectedHarness = harnSel.value || null;
+      _saPopulateModelSel(modelSel, selectedHarness || parentHarness, actor, modelSel.value);
+    });
     const harnField = saMakeField('harness', harnSel, 'override parent harness for this worker');
     const btns = document.createElement('div'); btns.style.cssText = 'display:flex;align-items:center;gap:10px;padding-top:2px';
     const saveF = document.createElement('button'); saveF.style.cssText = 'background:var(--h-ink);color:var(--h-bg);border:none;padding:8px 20px;border-radius:999px;font-family:var(--h-sans);font-size:13px;cursor:pointer'; saveF.textContent = existing ? 'save' : 'create sub-agent';
