@@ -6920,6 +6920,28 @@ async function run() {
     assert.strictEqual(require.cache[cacheKey], undefined, 'codex-session must not be in cache until codex branch runs');
   });
 
+  // buildResumeArgs — carries systemPrompt/systemPromptHash, two sides
+  await test('buildResumeArgs — includes systemPrompt and systemPromptHash from msg', () => {
+    const { buildResumeArgs } = require('./harness-session');
+    const msg = { system_prompt: 'You are helpful', system_prompt_hash: 'abc123', tools_supported: true, base_url: 'https://api.example.com' };
+    const result = buildResumeArgs(msg, { targetDir: '/tmp', sessionKey: 'k1', harness: 'codex' });
+    assert.strictEqual(result.systemPrompt, 'You are helpful');
+    assert.strictEqual(result.systemPromptHash, 'abc123');
+    assert.strictEqual(result.harness, 'codex');
+    assert.strictEqual(result.thirdParty, true);
+    assert.strictEqual(result.targetDir, '/tmp');
+  });
+
+  await test('buildResumeArgs — null system_prompt when msg has none', () => {
+    const { buildResumeArgs } = require('./harness-session');
+    const msg = { tools_supported: false };
+    const result = buildResumeArgs(msg, { targetDir: '/tmp', sessionKey: 'k2' });
+    assert.strictEqual(result.systemPrompt, null);
+    assert.strictEqual(result.systemPromptHash, null);
+    assert.strictEqual(result.harness, 'claude');
+    assert.strictEqual(result.thirdParty, false);
+  });
+
   // Integration: PATCH adapter to unavailable harness → 400
   await test('PATCH /api/actors/:id — adapter unavailable on machine → 400', async () => {
     if (!hsActorId) { console.log('    (skipped)'); return; }

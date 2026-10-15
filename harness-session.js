@@ -17,6 +17,18 @@ function supportsCompact(harness) {
   return !harness || harness === 'claude';
 }
 
+function buildResumeArgs(msg, { targetDir, sessionKey, harness }) {
+  return {
+    targetDir,
+    toolsSupported: msg.tools_supported,
+    sessionKey,
+    thirdParty: !!msg.base_url,
+    systemPrompt: msg.system_prompt || null,
+    systemPromptHash: msg.system_prompt_hash || null,
+    harness: harness || 'claude',
+  };
+}
+
 function filesToUpdate(remote, local, allowed) {
   const names = [];
   for (const [name, hash] of Object.entries(remote)) {
@@ -28,4 +40,4 @@ function filesToUpdate(remote, local, allowed) {
   return names;
 }
 
-module.exports = { createHarnessSession, supportsCompact, filesToUpdate };
+module.exports = { createHarnessSession, supportsCompact, buildResumeArgs, filesToUpdate };

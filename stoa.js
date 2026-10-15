@@ -584,7 +584,7 @@ async function backupSessionFile(workdir, sessionId) {
     return null;
   }
 }
-const { createHarnessSession: _createHS, supportsCompact, filesToUpdate } = require("./harness-session");
+const { createHarnessSession: _createHS, supportsCompact, buildResumeArgs, filesToUpdate } = require("./harness-session");
 function createHarnessSession(harness, opts) {
   return _createHS(harness, opts, { ClaudeSession });
 }
@@ -1378,6 +1378,7 @@ ${allNotes}`;
     }
     const envToUse = platformEnv;
     const systemPromptHash = msg.system_prompt_hash || null;
+    const resumeBase = buildResumeArgs(msg, { targetDir, sessionKey, harness: triggerHarness });
     let session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
     const currentSystemPromptHash = session._systemPromptHash || null;
     const needsSystemPromptChange = systemPromptHash && currentSystemPromptHash !== systemPromptHash;
@@ -1394,7 +1395,7 @@ ${allNotes}`;
     const needsEnvChange = currentEnv !== newEnv;
     if (needsResume || needsFreshSession || needsModelChange || needsEnvChange || needsSystemPromptChange || needsHarnessChange) {
       session.shutdown();
-      session = await prepareResume({ targetDir, rid: needsHarnessChange ? null : rid, targetModel, toolsSupported: msg.tools_supported, env: envToUse, sessionKey, thirdParty: !!msg.base_url, systemPrompt: msg.system_prompt, systemPromptHash, harness: triggerHarness });
+      session = await prepareResume({ ...resumeBase, rid: needsHarnessChange ? null : rid, targetModel, env: envToUse });
       console.log(`[stoa] Session restarted: harness=${triggerHarness} workdir=${targetDir} room=${room_id} thread=${threadId}${rid ? " resume=" + rid.slice(0, 8) + "..." : " (fresh)"}${targetModel ? " model=" + targetModel : ""}${needsSystemPromptChange ? " system_prompt_changed" : ""}${needsHarnessChange ? " harness_changed" : ""}${msg.base_url ? " base_url=" + msg.base_url : ""}${msg.tools_supported === false ? " tools=disabled" : ""}`);
     }
     activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
@@ -1475,7 +1476,7 @@ ${allNotes}`;
           send({ type: "agent_stream_reset", room_id, message_id });
           fullContent = "";
           session.shutdown();
-          session = await prepareResume({ targetDir, rid, targetModel, toolsSupported: msg.tools_supported, env: envToUse, sessionKey, thirdParty: !!msg.base_url, harness: triggerHarness });
+          session = await prepareResume({ ...resumeBase, rid, targetModel, env: envToUse });
           activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
           sessionRef = session;
           session.on("status", statusHandler);
@@ -1496,7 +1497,7 @@ ${allNotes}`;
           console.log(`[stoa] API key #1 failed (${retryErr.message}), rotating to key #${ki + 1}...`);
           const rotatedEnv = { ...platformEnv, ANTHROPIC_AUTH_TOKEN: apiKeys[ki] };
           session.shutdown();
-          session = await prepareResume({ targetDir, rid, targetModel, toolsSupported: msg.tools_supported, env: rotatedEnv, sessionKey, thirdParty: !!msg.base_url, harness: triggerHarness });
+          session = await prepareResume({ ...resumeBase, rid, targetModel, env: rotatedEnv });
           activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
           sessionRef = session;
           session.on("status", statusHandler);
@@ -1537,7 +1538,7 @@ ${allNotes}`;
         fullContent = "";
         session.shutdown();
         await backupSessionFile(targetDir, rid);
-        session = await prepareResume({ targetDir, rid, targetModel, toolsSupported: msg.tools_supported, env: envToUse, sessionKey, aggressive: true, harness: triggerHarness });
+        session = await prepareResume({ ...resumeBase, rid, targetModel, env: envToUse, aggressive: true });
         activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
         sessionRef = session;
         session.on("status", statusHandler);
@@ -1575,7 +1576,7 @@ ${allNotes}`;
       fullContent = "";
       session.shutdown();
       await backupSessionFile(targetDir, rid);
-      session = await prepareResume({ targetDir, rid, targetModel, toolsSupported: msg.tools_supported, env: envToUse, sessionKey, aggressive: true, harness: triggerHarness });
+      session = await prepareResume({ ...resumeBase, rid, targetModel, env: envToUse, aggressive: true });
       activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
       if (statusHandler) session.on("status", statusHandler);
       sessionRef = session;
