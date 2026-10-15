@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.343";
+var CLIENT_VERSION = "0.4.344";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -584,7 +584,7 @@ async function backupSessionFile(workdir, sessionId) {
     return null;
   }
 }
-const { createHarnessSession: _createHS, supportsCompact, buildResumeArgs, filesToUpdate } = require("./harness-session");
+const { createHarnessSession: _createHS, supportsCompact, buildResumeArgs, parseClaudeAuthStatus, parseCodexLoginStatus, filesToUpdate } = require("./harness-session");
 function createHarnessSession(harness, opts) {
   return _createHS(harness, opts, { ClaudeSession });
 }
@@ -692,20 +692,51 @@ setInterval(async () => {
     });
   }
 }, 60 * 6e4);
-function detectHarnesses() {
-  const available = [];
-  try { if (spawnSync("claude", ["--version"], { encoding: "utf8", timeout: 5e3, windowsHide: true }).status === 0) available.push("claude"); } catch {}
-  try { if (spawnSync("codex", ["--version"], { encoding: "utf8", timeout: 5e3, windowsHide: true }).status === 0) available.push("codex"); } catch {}
-  return available;
+function execWithTimeout(cmd, args, timeout) {
+  const { execFile } = require("child_process");
+  return new Promise((resolve) => {
+    try {
+      const child = execFile(cmd, args, { encoding: "utf8", timeout, windowsHide: true }, (err, stdout) => {
+        resolve({ exitCode: err ? (err.code === "ENOENT" ? -1 : (err.killed ? -2 : 1)) : 0, stdout: stdout || "" });
+      });
+      child.on("error", () => resolve({ exitCode: -1, stdout: "" }));
+    } catch {
+      resolve({ exitCode: -1, stdout: "" });
+    }
+  });
+}
+async function detectHarnessesAsync() {
+  const [claudeVer, codexVer] = await Promise.all([
+    execWithTimeout("claude", ["--version"], 5e3),
+    execWithTimeout("codex", ["--version"], 5e3),
+  ]);
+  const status = [];
+  if (claudeVer.exitCode >= 0) {
+    const version = claudeVer.stdout.trim().split("\n")[0] || null;
+    const authResult = await execWithTimeout("claude", ["auth", "status"], 5e3);
+    const loggedIn = authResult.exitCode === 0 ? parseClaudeAuthStatus(authResult.stdout) : null;
+    status.push({ id: "claude", installed: claudeVer.exitCode === 0, logged_in: loggedIn, version });
+  }
+  if (codexVer.exitCode >= 0) {
+    const version = codexVer.stdout.trim().split("\n")[0] || null;
+    const loginResult = await execWithTimeout("codex", ["login", "status"], 5e3);
+    const loggedIn = codexVer.exitCode === 0 ? parseCodexLoginStatus(loginResult.exitCode) : null;
+    status.push({ id: "codex", installed: codexVer.exitCode === 0, logged_in: loggedIn, version });
+  }
+  const harnesses_available = status.filter((s) => s.installed).map((s) => s.id);
+  return { harnesses_available, harness_status: status };
 }
 function connect() {
   ws = new WebSocket(STOA_URL);
   ws.on("open", () => {
     if (ACTOR_TYPE === "ai") {
       getSession(process.env.STOA_WORK_DIR || os.homedir(), "default");
-      const harnesses_available = detectHarnesses();
-      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, harnesses_available }));
+      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, harnesses_available: [] }));
       console.log(`[stoa] Agent #${ACTOR_ID} v${CLIENT_VERSION} connected to ${STOA_URL} (max_concurrent=${MAX_CONCURRENT})`);
+      detectHarnessesAsync().then((result) => {
+        send({ type: "harnesses_update", ...result });
+        console.log(`[stoa] Harnesses: ${result.harness_status.map((s) => `${s.id}${s.installed ? " v" + s.version : " (not found)"}${s.logged_in === false ? " (not logged in)" : ""}`).join(", ") || "none"}`);
+      }).catch(() => {});
     } else {
       ws.send(JSON.stringify({ type: "join_room", room_id: ROOM_ID }));
       printHeader();
@@ -812,6 +843,15 @@ async function handleAgentMessage(msg) {
     } catch (err) {
       console.error("[stoa] Rescan failed:", err.message);
     }
+    detectHarnessesAsync().then((result) => {
+      send({ type: "harnesses_update", ...result, request_id: msg.request_id });
+    }).catch(() => {});
+  }
+  if (msg.type === "check_harnesses") {
+    detectHarnessesAsync().then((result) => {
+      send({ type: "harnesses_update", ...result, request_id: msg.request_id });
+      console.log(`[stoa] Harness check: ${result.harness_status.map((s) => `${s.id}${s.installed ? " v" + s.version : " (not found)"}${s.logged_in === false ? " (not logged in)" : ""}`).join(", ") || "none"}`);
+    }).catch(() => {});
   }
   if (msg.type === "restart") {
     console.log("[stoa] Server requested restart (version outdated)");

@@ -15,6 +15,81 @@ async function _getRoomName(id) {
   return _settingsRoomsMap.get(id) || `#${id}`;
 }
 
+function _buildHarnessOptions(sel, actor) {
+  const cur = actor.adapter || 'claude';
+  const available = actor.harnesses_available || [];
+  const statusMap = new Map((actor.harness_status || []).map(s => [s.id, s]));
+  const toShow = available.length ? available : [cur];
+  const multi = toShow.length > 1;
+  sel.innerHTML = '';
+  toShow.forEach(h => {
+    const st = statusMap.get(h);
+    const notLoggedIn = st?.installed && st.logged_in === false;
+    const ver = st?.version ? ` ${st.version}` : '';
+    const o = document.createElement('option');
+    o.value = h;
+    o.textContent = `${HARNESS_LABELS[h] || h}${ver}${notLoggedIn ? ' (not logged in)' : ''}`;
+    o.disabled = notLoggedIn;
+    if (h === cur) o.selected = true;
+    sel.appendChild(o);
+  });
+  sel.disabled = !multi;
+  sel.style.opacity = multi ? '' : '0.6';
+  sel.style.cursor = multi ? 'pointer' : 'not-allowed';
+}
+
+function _harnessHint(actor) {
+  if (!actor.online) return null;
+  const cur = actor.adapter || 'claude';
+  const available = actor.harnesses_available || [];
+  const st = (actor.harness_status || []).find(s => s.id === cur);
+  if (available.length && !available.includes(cur)) return `${HARNESS_LABELS[cur] || cur} not available on this agent`;
+  if (st?.installed && st.logged_in === false) return `${HARNESS_LABELS[cur] || cur} is not logged in`;
+  return null;
+}
+
+function _applyHarnessCheckResult(actor, data, sel, hintEl) {
+  const prevAvailable = (actor.harnesses_available || []).slice();
+  actor.harnesses_available = data.harnesses_available || prevAvailable;
+  actor.harness_status = data.harness_status || actor.harness_status;
+  const idx = settingsActors.findIndex(a => a.id === actor.id);
+  if (idx >= 0) settingsActors[idx] = { ...settingsActors[idx], harnesses_available: actor.harnesses_available, harness_status: actor.harness_status };
+  _buildHarnessOptions(sel, actor);
+  const hint = _harnessHint(actor);
+  if (hintEl) { hintEl.textContent = hint || ''; hintEl.style.display = hint ? '' : 'none'; }
+  const newOnes = actor.harnesses_available.filter(h => !prevAvailable.includes(h));
+  const parts = (data.harness_status || []).filter(s => s.installed).map(s => {
+    const lbl = HARNESS_LABELS[s.id] || s.id;
+    return s.version ? `${lbl} ${s.version}` : lbl;
+  });
+  if (newOnes.length) {
+    showToast(`New harness detected: ${newOnes.map(h => escHtml(HARNESS_LABELS[h] || h)).join(', ')}`);
+  } else {
+    showToast(parts.length ? `Harnesses: ${parts.map(p => escHtml(p)).join(', ')}` : 'No harnesses detected');
+  }
+  renderAgentSidebar();
+}
+
+function _makeCheckHarnessBtn(actor, sel, hintEl) {
+  const btn = document.createElement('button');
+  btn.className = 's-icon-btn';
+  btn.title = actor.online ? 'Check installed harnesses' : 'Offline';
+  btn.disabled = !actor.online;
+  btn.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:3px 7px;font-family:var(--h-sans);font-size:11.5px;height:auto';
+  btn.innerHTML = svgRefresh(13) + '<span>Check</span>';
+  btn.addEventListener('click', async () => {
+    btn.disabled = true; btn.style.opacity = '0.4';
+    try {
+      const r = await fetch(`/api/actors/${actor.id}/harnesses/check`, { method: 'POST' });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) { showToast(data.error || 'Failed to check harnesses', { error: true }); return; }
+      _applyHarnessCheckResult(actor, data, sel, hintEl);
+    } catch { showToast('Failed to check harnesses', { error: true }); }
+    finally { btn.disabled = !actor.online; btn.style.opacity = ''; }
+  });
+  return btn;
+}
+
 function sDetectOS() {
   return /Windows/.test(navigator.userAgent) ? 'ps' : 'unix';
 }
@@ -247,7 +322,7 @@ function sMakeRow(actor, flash) {
 
     if (!isHuman) {
       const refresh = document.createElement('button');
-      refresh.className = 's-icon-btn'; refresh.title = actor.online ? 'Rescan workdirs & skills' : 'Offline';
+      refresh.className = 's-icon-btn'; refresh.title = actor.online ? 'Rescan workdirs, skills & harnesses' : 'Offline';
       refresh.disabled = !actor.online;
       refresh.innerHTML = svgRefresh();
       refresh.addEventListener('click', async e => {
@@ -529,31 +604,28 @@ function sMakeEditAccordion(actor) {
   const beGrp = document.createElement('div');
   beGrp.className = 's-field-group'; beGrp.style.minWidth = 'auto';
   const beSel = document.createElement('select');
-  beSel.className = 's-name-input'; beSel.name = 'agent-harness'; beSel.style.cssText = 'width:auto;min-width:130px;cursor:pointer';
-  const _avail = actor.harnesses_available || [];
-  const _multi = _avail.length > 1;
-  if (!_multi) beSel.style.cssText += ';opacity:0.6;cursor:not-allowed';
-  beSel.disabled = !_multi;
-  (_multi ? _avail : [actor.adapter || 'claude']).forEach(h => {
-    const o = document.createElement('option'); o.value = h;
-    o.textContent = HARNESS_LABELS[h] || h;
-    if (h === (actor.adapter || 'claude')) o.selected = true;
-    beSel.appendChild(o);
+  beSel.className = 's-name-input'; beSel.name = 'agent-harness'; beSel.style.cssText = 'width:auto;min-width:130px';
+  _buildHarnessOptions(beSel, actor);
+  beSel.addEventListener('change', async () => {
+    try {
+      const r = await fetch(`/api/actors/${actor.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adapter: beSel.value }),
+      });
+      if (!r.ok) { const e = await r.json().catch(() => ({})); showToast(e.error || 'Failed to change harness', { error: true }); beSel.value = actor.adapter || 'claude'; return; }
+      actor.adapter = beSel.value;
+      showToast('Harness updated');
+    } catch { showToast('Failed to change harness', { error: true }); beSel.value = actor.adapter || 'claude'; }
   });
-  if (_multi) {
-    beSel.addEventListener('change', async () => {
-      try {
-        const r = await fetch(`/api/actors/${actor.id}`, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ adapter: beSel.value }),
-        });
-        if (!r.ok) { const e = await r.json().catch(() => ({})); showToast(e.error || 'Failed to change harness', { error: true }); beSel.value = actor.adapter || 'claude'; return; }
-        actor.adapter = beSel.value;
-        showToast('Harness updated');
-      } catch { showToast('Failed to change harness', { error: true }); beSel.value = actor.adapter || 'claude'; }
-    });
-  }
-  beGrp.append(mkFieldLbl('harness'), beSel);
+  const _accHint = document.createElement('span');
+  _accHint.style.cssText = 'font-size:11px;color:oklch(52% .22 25);display:none';
+  const _accInitHint = _harnessHint(actor);
+  if (_accInitHint) { _accHint.textContent = _accInitHint; _accHint.style.display = ''; }
+  const _accCheckBtn = _makeCheckHarnessBtn(actor, beSel, _accHint);
+  const _accSelRow = document.createElement('div');
+  _accSelRow.style.cssText = 'display:flex;align-items:center;gap:6px';
+  _accSelRow.append(beSel, _accCheckBtn);
+  beGrp.append(mkFieldLbl('harness'), _accSelRow, _accHint);
 
   const langGrp = document.createElement('div');
   langGrp.className = 's-field-group'; langGrp.style.minWidth = 'auto';
@@ -1364,7 +1436,7 @@ function renderAgentDetailHeader(container, actor) {
   actions.style.cssText = 'display:flex;align-items:center;gap:4px;flex-shrink:0';
 
   const refreshBtn = document.createElement('button');
-  refreshBtn.className = 's-icon-btn'; refreshBtn.title = actor.online ? 'Rescan workdirs & skills' : 'Offline';
+  refreshBtn.className = 's-icon-btn'; refreshBtn.title = actor.online ? 'Rescan workdirs, skills & harnesses' : 'Offline';
   refreshBtn.disabled = !actor.online; refreshBtn.innerHTML = svgRefresh(16);
   refreshBtn.addEventListener('click', async () => {
     refreshBtn.disabled = true; refreshBtn.style.opacity = '0.4';
@@ -1431,60 +1503,54 @@ function buildAgentSettingsCard(actor) {
 
   const beGrp = document.createElement('div'); beGrp.className = 's-field-group'; beGrp.style.minWidth = 'auto';
   const beSel = document.createElement('select');
-  beSel.className = 's-name-input'; beSel.name = 'agent-harness'; beSel.style.cssText = 'width:auto;min-width:130px;cursor:pointer';
-  const available = actor.harnesses_available || [];
-  const multiHarness = available.length > 1;
-  if (!multiHarness) beSel.style.cssText += ';opacity:0.6;cursor:not-allowed';
-  beSel.disabled = !multiHarness;
-  const harnessesToShow = multiHarness ? available : [actor.adapter || 'claude'];
-  harnessesToShow.forEach(h => {
-    const o = document.createElement('option'); o.value = h;
-    o.textContent = HARNESS_LABELS[h] || h;
-    if (h === (actor.adapter || 'claude')) o.selected = true;
-    beSel.appendChild(o);
-  });
-  if (multiHarness) {
-    beSel.addEventListener('change', async () => {
-      const notice = document.getElementById(`s-harness-notice-${actor.id}`);
-      try {
-        const r = await fetch(`/api/actors/${actor.id}`, {
-          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ adapter: beSel.value }),
+  beSel.className = 's-name-input'; beSel.name = 'agent-harness'; beSel.style.cssText = 'width:auto;min-width:130px';
+  _buildHarnessOptions(beSel, actor);
+  beSel.addEventListener('change', async () => {
+    const notice = document.getElementById(`s-harness-notice-${actor.id}`);
+    try {
+      const r = await fetch(`/api/actors/${actor.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adapter: beSel.value }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        showToast(data.error || 'Failed to change harness', { error: true });
+        beSel.value = actor.adapter || 'claude';
+        return;
+      }
+      actor.adapter = beSel.value;
+      const idx = settingsActors.findIndex(a => a.id === actor.id);
+      if (idx >= 0) settingsActors[idx] = { ...settingsActors[idx], adapter: beSel.value };
+      if (notice) {
+        const fmt = m => m || 'default';
+        const fallbackLines = [];
+        const roomNames = await Promise.all((data.fallback_rooms || []).map(r => _getRoomName(r.room_id)));
+        (data.fallback_rooms || []).forEach((r, i) => {
+          fallbackLines.push(`${roomNames[i]}: ${fmt(r.old_model)} → ${fmt(r.new_model)}`);
         });
-        const data = await r.json().catch(() => ({}));
-        if (!r.ok) {
-          showToast(data.error || 'Failed to change harness', { error: true });
-          beSel.value = actor.adapter || 'claude';
-          return;
-        }
-        actor.adapter = beSel.value;
-        const idx = settingsActors.findIndex(a => a.id === actor.id);
-        if (idx >= 0) settingsActors[idx] = { ...settingsActors[idx], adapter: beSel.value };
-        if (notice) {
-          const fmt = m => m || 'default';
-          const fallbackLines = [];
-          const roomNames = await Promise.all((data.fallback_rooms || []).map(r => _getRoomName(r.room_id)));
-          (data.fallback_rooms || []).forEach((r, i) => {
-            fallbackLines.push(`${roomNames[i]}: ${fmt(r.old_model)} → ${fmt(r.new_model)}`);
-          });
-          (data.fallback_sub_agents || []).forEach(s => {
-            fallbackLines.push(`sub-agent ${s.label || s.sub_agent_id}: ${fmt(s.old_model)} → ${fmt(s.new_model)}`);
-          });
-          if (fallbackLines.length) {
-            notice.textContent = 'Model reset to default: ' + fallbackLines.join('; ');
-            notice.style.display = '';
-          } else {
-            notice.style.display = 'none';
-          }
-        }
-        showToast('Harness updated');
-      } catch { showToast('Failed to change harness', { error: true }); beSel.value = actor.adapter || 'claude'; }
-    });
-  }
+        (data.fallback_sub_agents || []).forEach(s => {
+          fallbackLines.push(`sub-agent ${s.label || s.sub_agent_id}: ${fmt(s.old_model)} → ${fmt(s.new_model)}`);
+        });
+        if (fallbackLines.length) {
+          notice.textContent = 'Model reset to default: ' + fallbackLines.join('; ');
+          notice.style.display = '';
+        } else { notice.style.display = 'none'; }
+      }
+      showToast('Harness updated');
+    } catch { showToast('Failed to change harness', { error: true }); beSel.value = actor.adapter || 'claude'; }
+  });
+  const beHint = document.createElement('span');
+  beHint.style.cssText = 'font-size:11px;color:oklch(52% .22 25);display:none';
+  const _initHint = _harnessHint(actor);
+  if (_initHint) { beHint.textContent = _initHint; beHint.style.display = ''; }
+  const beCheckBtn = _makeCheckHarnessBtn(actor, beSel, beHint);
+  const beSelRow = document.createElement('div');
+  beSelRow.style.cssText = 'display:flex;align-items:center;gap:6px';
+  beSelRow.append(beSel, beCheckBtn);
   const beNotice = document.createElement('span');
   beNotice.id = `s-harness-notice-${actor.id}`;
   beNotice.style.cssText = 'font-size:11.5px;color:oklch(60% .15 80);margin-top:2px;display:none';
-  beGrp.append(mkFieldLbl('harness'), beSel, beNotice);
+  beGrp.append(mkFieldLbl('harness'), beSelRow, beHint, beNotice);
 
   const langGrp = document.createElement('div'); langGrp.className = 's-field-group'; langGrp.style.minWidth = 'auto';
   const langSel = document.createElement('select');
