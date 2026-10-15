@@ -8191,6 +8191,141 @@ async function run() {
     db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
   });
 
+  // PATCH adapter + default_model together: validated against NEW adapter
+  await test('PATCH adapter + default_model together — validated against new harness', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    db.prepare('UPDATE actors SET adapter=?, default_model=NULL WHERE id=?').run('claude', hsActorId);
+    const ws21 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready21 = waitForWsMessage(ws21, m => m.type === 'agent_ready');
+    ws21.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready21;
+    ws21.send(JSON.stringify({
+      type: 'harnesses_update',
+      harnesses_available: ['codex'],
+      harness_status: [{ id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [{ id: 'gpt-6-sol', label: 'GPT-6', is_default: true }] }],
+    }));
+    await new Promise(r => setTimeout(r, 100));
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'codex', default_model: 'gpt-6-sol' });
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+    assert.strictEqual(r.body.default_model, 'gpt-6-sol');
+    assert.ok(!r.body.default_model_reset, 'should NOT report reset when body carries explicit default_model');
+    const row = db.prepare('SELECT adapter, default_model FROM actors WHERE id=?').get(hsActorId);
+    assert.strictEqual(row.adapter, 'codex');
+    assert.strictEqual(row.default_model, 'gpt-6-sol');
+    ws21.close();
+    db.prepare('UPDATE actors SET adapter=?, default_model=NULL WHERE id=?').run('claude', hsActorId);
+  });
+
+  // default_model with leading/trailing spaces: stored trimmed
+  await test('PATCH default_model with spaces — stored trimmed', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { default_model: '  claude-opus-5-5  ' });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.default_model, 'claude-opus-5-5');
+    const row = db.prepare('SELECT default_model FROM actors WHERE id=?').get(hsActorId);
+    assert.strictEqual(row.default_model, 'claude-opus-5-5');
+    db.prepare('UPDATE actors SET default_model=NULL WHERE id=?').run(hsActorId);
+  });
+
+  // Mixed platform room: claude agent + codex agent, room model is platform model → room NOT rewritten
+  await test('PATCH adapter — mixed platform room model not rewritten', async () => {
+    if (!hsActorId || !hsRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    // Backup platform BEFORE try so finally can access it
+    const origPlat = db.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get();
+    const agent2 = await createOnlineTestAgent('__test-platform-mix', '/tmp/stoa-test-pmix');
+    if (!agent2) { console.log('    (skipped — no second agent)'); return; }
+    try {
+      await req('POST', `/api/rooms/${hsRoomId}/participants`, { actor_id: agent2.actorId });
+      db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', agent2.actorId);
+      db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
+      const testPlat = [{ id: 'mix-plat-01', name: 'Ollama', enabled: true, cached_models: ['llama-3-70b'], enabled_models: ['llama-3-70b'] }];
+      const upsertPlat = origPlat
+        ? db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'")
+        : db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'ai_platforms', ?)");
+      upsertPlat.run(JSON.stringify(testPlat));
+      await new Promise(r => setTimeout(r, 1100));
+      db.prepare('UPDATE rooms SET model=? WHERE id=?').run('llama-3-70b', hsRoomId);
+      // Send harnesses_update on agent2's existing WS (avoid opening a new one — the old
+      // WS close handler races with the new one and can wipe agentHarnessStatus)
+      agent2.ws.send(JSON.stringify({
+        type: 'harnesses_update',
+        harnesses_available: ['codex'],
+        harness_status: [{ id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [{ id: 'gpt-6-sol', label: 'GPT-6', is_default: true }] }],
+      }));
+      await new Promise(r => setTimeout(r, 200));
+      const r = await req('PATCH', `/api/actors/${agent2.actorId}`, { adapter: 'codex' });
+      assert.strictEqual(r.status, 200);
+      const roomRow = db.prepare('SELECT model FROM rooms WHERE id=?').get(hsRoomId);
+      assert.strictEqual(roomRow.model, 'llama-3-70b', 'platform room model should NOT be rewritten when claude participant can handle it');
+    } finally {
+      db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
+      db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+      if (origPlat) {
+        db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(origPlat.value);
+      } else {
+        db.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run();
+      }
+      db.prepare('DELETE FROM room_participants WHERE room_id=? AND actor_id=?').run(hsRoomId, agent2.actorId);
+      if (agent2.ws) agent2.ws.close();
+      await req('DELETE', `/api/actors/${agent2.actorId}`);
+      orphanActorIds = orphanActorIds.filter(id => id !== agent2.actorId);
+    }
+  });
+
+  // effective_default falls back to harness_default when agent default_model no longer in harness model list
+  await test('GET actors — stale default_model falls back to harness_default', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    // Set a codex default_model that doesn't exist in any harness model list
+    db.prepare('UPDATE actors SET adapter=?, default_model=? WHERE id=?').run('codex', 'nonexistent-model-xyz', hsActorId);
+    const ws23 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready23 = waitForWsMessage(ws23, m => m.type === 'agent_ready');
+    ws23.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready23;
+    ws23.send(JSON.stringify({
+      type: 'harnesses_update',
+      harnesses_available: ['codex'],
+      harness_status: [{ id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [{ id: 'gpt-6-sol', label: 'GPT-6', is_default: true }] }],
+    }));
+    await new Promise(r => setTimeout(r, 100));
+    const r = await req('GET', '/api/actors');
+    const agent = r.body.find(a => a.id === hsActorId);
+    assert.strictEqual(agent.effective_default_source, 'harness_default', 'stale default_model should be ignored');
+    assert.strictEqual(agent.effective_default_model, 'gpt-6-sol');
+    ws23.close();
+    db.prepare('UPDATE actors SET adapter=?, default_model=NULL WHERE id=?').run('claude', hsActorId);
+  });
+
+  // Single agent in platform room switches to claude — room NOT rewritten (claude can handle platform model)
+  await test('PATCH adapter — single agent platform room to claude not rewritten', async () => {
+    if (!hsActorId || !hsRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const origPlat = db.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get();
+    const testPlat = [{ id: 'single-plat-01', name: 'Ollama', enabled: true, cached_models: ['llama-3-70b'], enabled_models: ['llama-3-70b'] }];
+    const upsertPlat = origPlat
+      ? db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'")
+      : db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'ai_platforms', ?)");
+    upsertPlat.run(JSON.stringify(testPlat));
+    await new Promise(r => setTimeout(r, 1100));
+    db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('codex', hsActorId);
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('llama-3-70b', hsRoomId);
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+    assert.strictEqual(r.status, 200);
+    const roomRow = db.prepare('SELECT model FROM rooms WHERE id=?').get(hsRoomId);
+    assert.strictEqual(roomRow.model, 'llama-3-70b', 'claude can handle platform model — no rewrite needed');
+    db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+    if (origPlat) {
+      db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(origPlat.value);
+    } else {
+      db.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run();
+    }
+  });
+
   // model_source stored in messages table
   await test('model_source column exists in messages', async () => {
     const db = require('./db');

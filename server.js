@@ -107,18 +107,13 @@ const SERVER_DEFAULT_TIERS = {
   deep:     ['claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5-5'],
 };
 
-// Resolve the ordered model fallback chain for a trigger. Precedence:
-//   1. sub_agent explicit model override  → [that model]   (user pinned it)
-//   2. room.model_tiers[tier] chain       → configured per-room override
-//   3. server default chain for the tier  → SERVER_DEFAULT_TIERS
-//   4. last resort                        → [roomModel] (unchanged single-model)
-// Resolve model for a specific agent, considering room model compatibility with harness.
-// Returns { model, source } where source is 'room'|'agent_default'|'harness_default'|'cli_default'.
-function resolveAgentModel(actorId, harness, roomModel) {
-  const h = harness || 'claude';
-  if (roomModel) {
-    if (h === 'claude') {
-      if (roomModel.startsWith('claude-')) return { model: roomModel, source: 'room' };
+// Single source of truth for "can this harness run this model?"
+// allowPlatform=true for room models (model_config belongs to room); false for agent defaults.
+function isModelCompatible(actorId, harness, model, { allowPlatform = false } = {}) {
+  if (!model) return false;
+  if (harness === 'claude') {
+    if (model.startsWith('claude-')) return true;
+    if (allowPlatform) {
       try {
         const platforms = getParsedSetting('ai_platforms');
         if (platforms) {
@@ -126,22 +121,27 @@ function resolveAgentModel(actorId, harness, roomModel) {
             if (!p.enabled) continue;
             const cachedNames = Array.isArray(p.cached_models) ? p.cached_models.map(m => typeof m === 'string' ? m : m.model) : [];
             const enabledSet = Array.isArray(p.enabled_models) ? new Set(p.enabled_models) : null;
-            if (cachedNames.includes(roomModel) && (!enabledSet || enabledSet.has(roomModel))) return { model: roomModel, source: 'room' };
+            if (cachedNames.includes(model) && (!enabledSet || enabledSet.has(model))) return true;
           }
         }
       } catch {}
-    } else {
-      const hModels = getHarnessModels(actorId, h);
-      if (hModels.some(m => m.model_id === roomModel)) return { model: roomModel, source: 'room' };
     }
+    return false;
+  }
+  const hModels = getHarnessModels(actorId, harness);
+  return hModels.some(m => m.model_id === model);
+}
+
+// Resolve model for a specific agent, considering room model compatibility with harness.
+// Returns { model, source } where source is 'room'|'agent_default'|'harness_default'|'cli_default'.
+function resolveAgentModel(actorId, harness, roomModel) {
+  const h = harness || 'claude';
+  if (roomModel && isModelCompatible(actorId, h, roomModel, { allowPlatform: true })) {
+    return { model: roomModel, source: 'room' };
   }
   const agentDefault = db.prepare('SELECT default_model FROM actors WHERE id=?').get(actorId)?.default_model;
-  if (agentDefault) {
-    if (h === 'claude' && agentDefault.startsWith('claude-')) return { model: agentDefault, source: 'agent_default' };
-    if (h !== 'claude') {
-      const hModels = getHarnessModels(actorId, h);
-      if (hModels.some(m => m.model_id === agentDefault)) return { model: agentDefault, source: 'agent_default' };
-    }
+  if (agentDefault && isModelCompatible(actorId, h, agentDefault)) {
+    return { model: agentDefault, source: 'agent_default' };
   }
   const hModels = getHarnessModels(actorId, h);
   if (hModels.length) {
@@ -151,8 +151,11 @@ function resolveAgentModel(actorId, harness, roomModel) {
   return { model: null, source: 'cli_default' };
 }
 
-// A main-agent trigger (no sub-agent / no tier) always returns [roomModel] so
-// existing behaviour is untouched — tier routing applies to sub-agents only.
+// Resolve the ordered model fallback chain for a tiered sub-agent trigger. Precedence:
+//   1. sub_agent explicit model override  → [that model]   (user pinned it)
+//   2. room.model_tiers[tier] chain       → configured per-room override
+//   3. server default chain for the tier  → SERVER_DEFAULT_TIERS
+//   4. last resort                        → [roomModel] (unchanged single-model)
 function resolveModelChain(subAgent, roomModel, roomModelTiersJson, effectiveHarness, actorId) {
   if (!subAgent || !subAgent.tier) return roomModel ? [roomModel] : [];
   if (subAgent.model) return [subAgent.model];
@@ -3320,17 +3323,9 @@ const server = http.createServer(async (req, res) => {
       const out = { ...r, online: agentClients.has(r.id), client_version: agentVersions.get(r.id) || null, harnesses_available: agentHarnesses.get(r.id) || [], harness_status: agentHarnessStatus.get(r.id) || [] };
       if (r.type === 'ai') {
         const h = r.adapter || 'claude';
-        const hModels = getHarnessModels(r.id, h);
-        if (r.default_model) {
-          out.effective_default_model = r.default_model;
-          out.effective_default_source = 'agent_default';
-        } else if (hModels.length) {
-          out.effective_default_model = hModels.find(m => m.is_default)?.model_id || hModels[0].model_id;
-          out.effective_default_source = 'harness_default';
-        } else {
-          out.effective_default_model = null;
-          out.effective_default_source = 'cli_default';
-        }
+        const resolved = resolveAgentModel(r.id, h, null);
+        out.effective_default_model = resolved.model;
+        out.effective_default_source = resolved.source;
       }
       return out;
     });
@@ -3360,24 +3355,7 @@ const server = http.createServer(async (req, res) => {
       existing.lang = lang;
       db.prepare('UPDATE actors SET adapter_config=? WHERE id=?').run(JSON.stringify(existing), id);
     }
-    if (default_model !== undefined) {
-      if (default_model === null) {
-        db.prepare('UPDATE actors SET default_model=NULL WHERE id=?').run(id);
-      } else {
-        if (typeof default_model !== 'string' || !default_model.trim()) return json(res, { error: 'default_model must be a non-empty string or null' }, 400);
-        const actorRow = db.prepare('SELECT adapter FROM actors WHERE id=?').get(id);
-        const h = actorRow?.adapter || 'claude';
-        let valid = false;
-        if (h === 'claude') {
-          valid = default_model.startsWith('claude-');
-        } else {
-          const hModels = getHarnessModels(id, h);
-          valid = hModels.some(m => m.model_id === default_model);
-        }
-        if (!valid) return json(res, { error: `default_model "${default_model}" is not compatible with harness "${h}"` }, 400);
-        db.prepare('UPDATE actors SET default_model=? WHERE id=?').run(default_model.trim(), id);
-      }
-    }
+    // Process adapter FIRST so default_model validates against the final harness
     let fallbackRooms = [];
     let fallbackAgentRooms = [];
     let fallbackSubAgents = [];
@@ -3392,28 +3370,23 @@ const server = http.createServer(async (req, res) => {
       if (hStatus && hStatus.logged_in === false) return json(res, { error: `harness "${adapter}" is installed but not logged in — run "${adapter} login" on the agent machine` }, 400);
       const oldDefaultModel = db.prepare('SELECT default_model FROM actors WHERE id=?').get(id)?.default_model;
       db.prepare('UPDATE actors SET adapter=? WHERE id=?').run(adapter, id);
-      if (oldDefaultModel) {
-        let compatible = false;
-        if (adapter === 'claude') compatible = oldDefaultModel.startsWith('claude-');
-        else { const hm = getHarnessModels(id, adapter); compatible = hm.some(m => m.model_id === oldDefaultModel); }
-        if (!compatible) {
+      // Only auto-reset if body doesn't carry an explicit default_model (user is setting it themselves)
+      if (oldDefaultModel && default_model === undefined) {
+        if (!isModelCompatible(id, adapter, oldDefaultModel)) {
           db.prepare('UPDATE actors SET default_model=NULL WHERE id=?').run(id);
           defaultModelReset = { old_model: oldDefaultModel };
         }
       }
       const hModels = getHarnessModels(id, adapter);
       if (hModels.length) {
-        const modelIds = new Set(hModels.map(m => m.model_id));
         const defaultModelId = hModels.find(m => m.is_default)?.model_id || hModels[0]?.model_id || null;
         const agentRooms = db.prepare('SELECT r.id, r.model FROM rooms r JOIN room_participants rp ON rp.room_id=r.id WHERE rp.actor_id=? AND r.model IS NOT NULL').all(id);
         for (const room of agentRooms) {
-          if (!modelIds.has(room.model) && !(adapter === 'claude' && room.model?.startsWith('claude-'))) {
+          if (!isModelCompatible(id, adapter, room.model, { allowPlatform: true })) {
             const otherAi = db.prepare("SELECT a.id, a.adapter FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='ai' AND a.id!=?").all(room.id, id);
             const othersCanHandle = otherAi.some(oa => {
               const oAdapter = oa.adapter || 'claude';
-              if (oAdapter === 'claude' && room.model.startsWith('claude-')) return true;
-              const om = getHarnessModels(oa.id, oAdapter);
-              return om.some(m => m.model_id === room.model);
+              return isModelCompatible(oa.id, oAdapter, room.model, { allowPlatform: true });
             });
             if (othersCanHandle) {
               const resolved = resolveAgentModel(id, adapter, room.model);
@@ -3426,11 +3399,27 @@ const server = http.createServer(async (req, res) => {
         }
         const inheritSubs = db.prepare('SELECT id, label, model FROM sub_agents WHERE parent_actor_id=? AND harness IS NULL AND model IS NOT NULL').all(id);
         for (const sub of inheritSubs) {
-          if (!modelIds.has(sub.model)) {
+          if (!isModelCompatible(id, adapter, sub.model)) {
             db.prepare('UPDATE sub_agents SET model=? WHERE id=?').run(defaultModelId, sub.id);
             fallbackSubAgents.push({ sub_agent_id: sub.id, label: sub.label, old_model: sub.model, new_model: defaultModelId });
           }
         }
+      }
+    }
+    // default_model validated against the final adapter (after adapter change if any)
+    let savedDefaultModel;
+    if (default_model !== undefined) {
+      if (default_model === null) {
+        db.prepare('UPDATE actors SET default_model=NULL WHERE id=?').run(id);
+        savedDefaultModel = null;
+      } else {
+        if (typeof default_model !== 'string' || !default_model.trim()) return json(res, { error: 'default_model must be a non-empty string or null' }, 400);
+        const trimmed = default_model.trim();
+        const actorRow = db.prepare('SELECT adapter FROM actors WHERE id=?').get(id);
+        const h = actorRow?.adapter || 'claude';
+        if (!isModelCompatible(id, h, trimmed)) return json(res, { error: `default_model "${trimmed}" is not compatible with harness "${h}"` }, 400);
+        db.prepare('UPDATE actors SET default_model=? WHERE id=?').run(trimmed, id);
+        savedDefaultModel = trimmed;
       }
     }
     const actor = db.prepare('SELECT id, name, type FROM actors WHERE id=?').get(id);
@@ -3445,7 +3434,7 @@ const server = http.createServer(async (req, res) => {
     if (fallbackSubAgents.length) result.fallback_sub_agents = fallbackSubAgents;
     if (defaultModelReset) result.default_model_reset = defaultModelReset;
     if (adapter !== undefined) result.adapter = adapter;
-    if (default_model !== undefined) result.default_model = default_model;
+    if (default_model !== undefined) result.default_model = savedDefaultModel;
     return json(res, result);
   }
 
