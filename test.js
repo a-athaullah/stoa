@@ -7273,6 +7273,177 @@ async function run() {
     assert.ok('system_prompt' in ai, 'AI actor should have system_prompt field');
   });
 
+  // parseCodexModels — valid, visibility filter, priority sort, garbage
+  await test('parseCodexModels — valid JSON with visibility filter and priority sort', () => {
+    const { parseCodexModels } = require('./harness-session');
+    const input = JSON.stringify({
+      models: [
+        { slug: 'gpt-6-sol', display_name: 'GPT-6-Sol', visibility: 'list', priority: 3 },
+        { slug: 'gpt-reserve', display_name: 'GPT Reserve', visibility: 'hide', priority: 4 },
+        { slug: 'gpt-6.1-sol', display_name: 'GPT-6.1-Sol', visibility: 'list', priority: 1 },
+        { slug: 'gpt-5.6-sol', display_name: 'GPT-5.6-Sol', visibility: 'list', priority: 5 },
+      ],
+    });
+    const result = parseCodexModels(input);
+    assert.ok(result, 'should return array');
+    assert.strictEqual(result.length, 3, 'hide visibility filtered out');
+    assert.strictEqual(result[0].id, 'gpt-6.1-sol', 'sorted by priority');
+    assert.strictEqual(result[0].is_default, true, 'first by priority is default');
+    assert.strictEqual(result[1].id, 'gpt-6-sol');
+    assert.strictEqual(result[1].is_default, false);
+    assert.strictEqual(result[2].id, 'gpt-5.6-sol');
+  });
+
+  await test('parseCodexModels — garbage/empty → null', () => {
+    const { parseCodexModels } = require('./harness-session');
+    assert.strictEqual(parseCodexModels('not json'), null);
+    assert.strictEqual(parseCodexModels('{}'), null);
+    assert.strictEqual(parseCodexModels(JSON.stringify({ models: [] })), null);
+    assert.strictEqual(parseCodexModels(JSON.stringify({ models: [{ slug: 'x', visibility: 'hide' }] })), null);
+  });
+
+  // validateModels — id regex, >50 cap, label trim, default assignment
+  await test('validateModels — valid entries, invalid ids rejected, label trimmed', () => {
+    const { validateModels } = require('./harness-session');
+    const result = validateModels([
+      { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true },
+      { id: 'invalid id!', label: 'Bad' },
+      { id: 'gpt-5.6-sol', label: 'A'.repeat(200), is_default: false },
+      { id: 'gpt-6.1-sol', label: 'Dupe', is_default: false },
+    ]);
+    assert.strictEqual(result.length, 2, 'invalid id and dupe filtered');
+    assert.strictEqual(result[0].id, 'gpt-6.1-sol');
+    assert.strictEqual(result[0].is_default, true);
+    assert.strictEqual(result[1].label.length, 100, 'label trimmed to 100');
+  });
+
+  await test('validateModels — >50 entries capped', () => {
+    const { validateModels } = require('./harness-session');
+    const big = Array.from({ length: 60 }, (_, i) => ({ id: `model-${i}`, label: `M${i}` }));
+    const result = validateModels(big);
+    assert.strictEqual(result.length, 50, 'capped at 50');
+    assert.strictEqual(result[0].is_default, true, 'first entry gets default when none specified');
+  });
+
+  await test('validateModels — non-array/empty → null', () => {
+    const { validateModels } = require('./harness-session');
+    assert.strictEqual(validateModels(null), null);
+    assert.strictEqual(validateModels([]), null);
+    assert.strictEqual(validateModels([{ id: '!!!', label: 'bad' }]), null);
+  });
+
+  // validateHarnessStatus — models field propagated
+  await test('validateHarnessStatus — models field validated and propagated', () => {
+    const { validateHarnessStatus } = require('./harness-session');
+    const result = validateHarnessStatus([
+      { id: 'codex', installed: true, logged_in: true, version: '1.0', models: [
+        { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true },
+      ]},
+      { id: 'claude', installed: true, logged_in: true, version: '2.0', models: null },
+    ]);
+    assert.strictEqual(result.length, 2);
+    assert.ok(Array.isArray(result[0].models), 'codex models propagated');
+    assert.strictEqual(result[0].models[0].id, 'gpt-6.1-sol');
+    assert.strictEqual(result[1].models, null, 'claude models null');
+  });
+
+  // getHarnessModels — claude uses ANTHROPIC_MODELS, codex uses agent-reported then DB fallback
+  await test('PATCH /api/actors/:id — claude-opus-5-5 NOT reset when switching to claude', async () => {
+    if (!hsActorId || !hsRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const ws8 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready8 = waitForWsMessage(ws8, m => m.type === 'agent_ready');
+    ws8.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready8;
+    ws8.send(JSON.stringify({
+      type: 'harnesses_update',
+      harnesses_available: ['claude', 'codex'],
+      harness_status: [
+        { id: 'claude', installed: true, logged_in: true, version: '2.0.0', models: null },
+        { id: 'codex', installed: true, logged_in: true, version: '0.1.0', models: [
+          { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true },
+        ]},
+      ],
+    }));
+    await new Promise(r => setTimeout(r, 200));
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-opus-5-5', hsRoomId);
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+    assert.strictEqual(r.status, 200);
+    const noFallback = !r.body.fallback_rooms || !r.body.fallback_rooms.find(f => f.room_id === hsRoomId);
+    assert.ok(noFallback, 'claude-opus-5-5 should NOT be reset — it is valid for claude harness');
+    db.prepare('UPDATE rooms SET model=NULL WHERE id=?').run(hsRoomId);
+    ws8.close();
+  });
+
+  await test('PATCH /api/actors/:id — room reset to agent-reported codex default when switching to codex', async () => {
+    if (!hsActorId || !hsRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const ws9 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready9 = waitForWsMessage(ws9, m => m.type === 'agent_ready');
+    ws9.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready9;
+    ws9.send(JSON.stringify({
+      type: 'harnesses_update',
+      harnesses_available: ['claude', 'codex'],
+      harness_status: [
+        { id: 'claude', installed: true, logged_in: true, version: '2.0.0', models: null },
+        { id: 'codex', installed: true, logged_in: true, version: '0.1.0', models: [
+          { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true },
+          { id: 'gpt-6-sol', label: 'GPT-6-Sol', is_default: false },
+        ]},
+      ],
+    }));
+    await new Promise(r => setTimeout(r, 200));
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-opus-5-5', hsRoomId);
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'codex' });
+    assert.strictEqual(r.status, 200);
+    const fb = r.body.fallback_rooms?.find(f => f.room_id === hsRoomId);
+    assert.ok(fb, 'room should be in fallback_rooms');
+    assert.strictEqual(fb.new_model, 'gpt-6.1-sol', 'reset to agent-reported codex default');
+    await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+    db.prepare('UPDATE rooms SET model=NULL WHERE id=?').run(hsRoomId);
+    ws9.close();
+  });
+
+  // harnesses/check — models field included in response
+  await test('POST /api/actors/:id/harnesses/check — models field in response', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    process.env.HARNESS_CHECK_TIMEOUT_MS = '3000';
+    const ws10 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready10 = waitForWsMessage(ws10, m => m.type === 'agent_ready');
+    ws10.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready10;
+    ws10.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === 'check_harnesses') {
+        ws10.send(JSON.stringify({
+          type: 'harnesses_update',
+          harnesses_available: ['claude', 'codex'],
+          harness_status: [
+            { id: 'claude', installed: true, logged_in: true, version: '2.0.0', models: null },
+            { id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [
+              { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true },
+              { id: 'gpt-6-sol', label: 'GPT-6-Sol', is_default: false },
+            ]},
+          ],
+          request_id: msg.request_id,
+        }));
+      }
+    });
+    const r = await req('POST', `/api/actors/${hsActorId}/harnesses/check`);
+    assert.strictEqual(r.status, 200);
+    const codexStatus = r.body.harness_status.find(s => s.id === 'codex');
+    assert.ok(codexStatus, 'codex status should be in response');
+    assert.ok(Array.isArray(codexStatus.models), 'codex should have models array');
+    assert.strictEqual(codexStatus.models.length, 2);
+    assert.strictEqual(codexStatus.models[0].id, 'gpt-6.1-sol');
+    assert.strictEqual(codexStatus.models[0].is_default, true);
+    const claudeStatus = r.body.harness_status.find(s => s.id === 'claude');
+    assert.strictEqual(claudeStatus.models, null, 'claude models should be null');
+    ws10.close();
+    delete process.env.HARNESS_CHECK_TIMEOUT_MS;
+  });
+
   // Teardown — delete all test rooms and actors created during the run
   console.log('\n[Test Teardown]');
   await test('Teardown — delete all test rooms', async () => {

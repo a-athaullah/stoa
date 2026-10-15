@@ -46,6 +46,44 @@ function parseCodexLoginStatus(exitCode) {
   return null;
 }
 
+const MODEL_ID_RE = /^[A-Za-z0-9._:-]{1,64}$/;
+const MAX_MODELS = 50;
+
+function parseCodexModels(stdout) {
+  try {
+    const data = JSON.parse(stdout);
+    if (!Array.isArray(data.models)) return null;
+    const listed = data.models
+      .filter(m => m && m.visibility === 'list' && typeof m.slug === 'string')
+      .sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999));
+    if (!listed.length) return null;
+    return listed.map((m, i) => ({
+      id: m.slug,
+      label: typeof m.display_name === 'string' ? m.display_name : m.slug,
+      is_default: i === 0,
+    }));
+  } catch {
+    return null;
+  }
+}
+
+function validateModels(models) {
+  if (!Array.isArray(models)) return null;
+  const seen = new Set();
+  const valid = [];
+  for (const m of models) {
+    if (!m || typeof m.id !== 'string' || !MODEL_ID_RE.test(m.id)) continue;
+    if (seen.has(m.id)) continue;
+    seen.add(m.id);
+    const label = typeof m.label === 'string' ? m.label.slice(0, 100) : m.id;
+    valid.push({ id: m.id, label, is_default: m.is_default === true });
+    if (valid.length >= MAX_MODELS) break;
+  }
+  if (!valid.length) return null;
+  if (!valid.some(m => m.is_default)) valid[0].is_default = true;
+  return valid;
+}
+
 function validateHarnessStatus(arr) {
   if (!Array.isArray(arr)) return [];
   const seen = new Set();
@@ -55,7 +93,7 @@ function validateHarnessStatus(arr) {
     typeof s.installed === 'boolean' &&
     (s.logged_in === null || typeof s.logged_in === 'boolean') &&
     (s.version === null || typeof s.version === 'string')
-  ).map(s => ({ id: s.id, installed: s.installed, logged_in: s.logged_in ?? null, version: s.version ? s.version.slice(0, 100) : null }));
+  ).map(s => ({ id: s.id, installed: s.installed, logged_in: s.logged_in ?? null, version: s.version ? s.version.slice(0, 100) : null, models: validateModels(s.models) }));
 }
 
 function filesToUpdate(remote, local, allowed) {
@@ -69,4 +107,4 @@ function filesToUpdate(remote, local, allowed) {
   return names;
 }
 
-module.exports = { createHarnessSession, supportsCompact, buildResumeArgs, KNOWN_HARNESSES, parseClaudeAuthStatus, parseCodexLoginStatus, validateHarnessStatus, filesToUpdate };
+module.exports = { createHarnessSession, supportsCompact, buildResumeArgs, KNOWN_HARNESSES, parseClaudeAuthStatus, parseCodexLoginStatus, parseCodexModels, validateHarnessStatus, validateModels, filesToUpdate };

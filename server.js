@@ -638,6 +638,22 @@ try {
   if (e.code !== 'ENOENT') console.error('[migration] runner error:', e.message);
 }
 
+// ─── Harness model sources ──────────────────────────────────────────────────
+
+const ANTHROPIC_MODELS = [
+  { value: 'claude-opus-5-5', label: 'Opus 5.5', vision: true, tools: true },
+  { value: 'claude-opus-5', label: 'Opus 5', vision: true, tools: true },
+  { value: 'claude-sonnet-5-5', label: 'Sonnet 5.5', vision: true, tools: true },
+  { value: 'claude-sonnet-5', label: 'Sonnet 5', vision: true, tools: true },
+  { value: 'claude-fable-5-1', label: 'Fable 5.1', vision: true, tools: true },
+  { value: 'claude-fable-5', label: 'Fable 5', vision: true, tools: true },
+  { value: 'claude-opus-4-8', label: 'Opus 4.8', vision: true, tools: true },
+  { value: 'claude-opus-4-7', label: 'Opus 4.7', vision: true, tools: true },
+  { value: 'claude-opus-4-6', label: 'Opus 4.6', vision: true, tools: true },
+  { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6', vision: true, tools: true },
+  { value: 'claude-sonnet-4-5', label: 'Sonnet 4.5', vision: true, tools: true },
+  { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', vision: true, tools: true },
+];
 
 // ─── Auth: password hashing & session management ─────────────────────────────
 
@@ -3205,20 +3221,6 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/api/ai/models') {
     const platforms = getParsedSetting('ai_platforms') ?? [];
-    const ANTHROPIC_MODELS = [
-      { value: 'claude-opus-5-5', label: 'Opus 5.5', vision: true, tools: true },
-      { value: 'claude-opus-5', label: 'Opus 5', vision: true, tools: true },
-      { value: 'claude-sonnet-5-5', label: 'Sonnet 5.5', vision: true, tools: true },
-      { value: 'claude-sonnet-5', label: 'Sonnet 5', vision: true, tools: true },
-      { value: 'claude-fable-5-1', label: 'Fable 5.1', vision: true, tools: true },
-      { value: 'claude-fable-5', label: 'Fable 5', vision: true, tools: true },
-      { value: 'claude-opus-4-8', label: 'Opus 4.8', vision: true, tools: true },
-      { value: 'claude-opus-4-7', label: 'Opus 4.7', vision: true, tools: true },
-      { value: 'claude-opus-4-6', label: 'Opus 4.6', vision: true, tools: true },
-      { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6', vision: true, tools: true },
-      { value: 'claude-sonnet-4-5', label: 'Sonnet 4.5', vision: true, tools: true },
-      { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', vision: true, tools: true },
-    ];
     const result = [{ platform_id: 'anthropic', platform_name: 'Claude (built-in)', models: ANTHROPIC_MODELS }];
     for (const p of platforms) {
       if (!p.enabled) continue;
@@ -3288,26 +3290,23 @@ const server = http.createServer(async (req, res) => {
       const hStatus = statusList.find(s => s.id === adapter);
       if (hStatus && hStatus.logged_in === false) return json(res, { error: `harness "${adapter}" is installed but not logged in — run "${adapter} login" on the agent machine` }, 400);
       db.prepare('UPDATE actors SET adapter=? WHERE id=?').run(adapter, id);
-      const harnessRow = db.prepare('SELECT id FROM harnesses WHERE name=?').get(adapter);
-      if (harnessRow) {
+      const hModels = getHarnessModels(id, adapter);
+      if (hModels.length) {
+        const modelIds = new Set(hModels.map(m => m.model_id));
+        const defaultModelId = hModels.find(m => m.is_default)?.model_id || hModels[0]?.model_id || null;
         const agentRooms = db.prepare('SELECT r.id, r.model FROM rooms r JOIN room_participants rp ON rp.room_id=r.id WHERE rp.actor_id=? AND r.model IS NOT NULL').all(id);
         for (const room of agentRooms) {
-          const valid = db.prepare('SELECT 1 FROM harness_models WHERE harness_id=? AND model_id=? AND is_active=1').get(harnessRow.id, room.model);
-          if (!valid) {
-            const defaultModel = db.prepare('SELECT model_id FROM harness_models WHERE harness_id=? AND is_default=1 AND is_active=1').get(harnessRow.id);
-            db.prepare('UPDATE rooms SET model=? WHERE id=?').run(defaultModel?.model_id || null, room.id);
-            fallbackRooms.push({ room_id: room.id, old_model: room.model, new_model: defaultModel?.model_id || null });
+          if (!modelIds.has(room.model)) {
+            db.prepare('UPDATE rooms SET model=? WHERE id=?').run(defaultModelId, room.id);
+            fallbackRooms.push({ room_id: room.id, old_model: room.model, new_model: defaultModelId });
           }
         }
-      }
-      // Sub-agents with harness=NULL inherit parent adapter — fallback their model too
-      const inheritSubs = db.prepare('SELECT id, label, model FROM sub_agents WHERE parent_actor_id=? AND harness IS NULL AND model IS NOT NULL').all(id);
-      for (const sub of inheritSubs) {
-        const validSub = db.prepare('SELECT 1 FROM harness_models WHERE harness_id=? AND model_id=? AND is_active=1').get(harnessRow.id, sub.model);
-        if (!validSub) {
-          const defaultModel = db.prepare('SELECT model_id FROM harness_models WHERE harness_id=? AND is_default=1 AND is_active=1').get(harnessRow.id);
-          db.prepare('UPDATE sub_agents SET model=? WHERE id=?').run(defaultModel?.model_id || null, sub.id);
-          fallbackSubAgents.push({ sub_agent_id: sub.id, label: sub.label, old_model: sub.model, new_model: defaultModel?.model_id || null });
+        const inheritSubs = db.prepare('SELECT id, label, model FROM sub_agents WHERE parent_actor_id=? AND harness IS NULL AND model IS NOT NULL').all(id);
+        for (const sub of inheritSubs) {
+          if (!modelIds.has(sub.model)) {
+            db.prepare('UPDATE sub_agents SET model=? WHERE id=?').run(defaultModelId, sub.id);
+            fallbackSubAgents.push({ sub_agent_id: sub.id, label: sub.label, old_model: sub.model, new_model: defaultModelId });
+          }
         }
       }
     }
@@ -4563,8 +4562,22 @@ const globalClients = new Set();  // all browser ws connections
 const agentClients = new Map();   // actor_id → ws
 const agentVersions = new Map();  // actor_id → client_version string
 const agentHarnesses = new Map(); // actor_id → string[] (available harnesses)
-const agentHarnessStatus = new Map(); // actor_id → [{ id, installed, logged_in, version }]
+const agentHarnessStatus = new Map(); // actor_id → [{ id, installed, logged_in, version, models }]
 const pendingHarnessChecks = new Map(); // request_id → { resolve, timer, actorId }
+
+function getHarnessModels(actorId, harnessName) {
+  if (harnessName === 'claude') {
+    return ANTHROPIC_MODELS.map(m => ({ model_id: m.value, display_name: m.label, is_default: m.value === 'claude-sonnet-5-5' ? 1 : 0 }));
+  }
+  const statusList = agentHarnessStatus.get(actorId) || [];
+  const hs = statusList.find(s => s.id === harnessName);
+  if (hs?.models?.length) {
+    return hs.models.map(m => ({ model_id: m.id, display_name: m.label, is_default: m.is_default ? 1 : 0 }));
+  }
+  const harnessRow = db.prepare('SELECT id FROM harnesses WHERE name=?').get(harnessName);
+  if (!harnessRow) return [];
+  return db.prepare('SELECT model_id, display_name, is_default FROM harness_models WHERE harness_id=? AND is_active=1 ORDER BY is_default DESC, model_id').all(harnessRow.id);
+}
 const pendingAgents = new Map();    // message_id → { resolve, reject }
 const pendingActorMeta = new Map(); // message_id → { name, avatar_color, avatar_symbol }
 const pendingCompacts = new Map();  // room_id → { total, completed, agents[] }
