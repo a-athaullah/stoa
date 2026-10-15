@@ -709,12 +709,7 @@ const CONNECTOR_MEDIA_DIR = path.join(__dirname, 'connector-media');
 
 const DEFAULT_BASE_SYSTEM_PROMPT = `You are an AI agent operating on the Stoa platform. You have access to the following environment variables: STOA_URL, STOA_ROOM_ID, STOA_ACTOR_ID, STOA_SECRET, STOA_THREAD_ID. To derive the HTTP base URL from the WebSocket URL: BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|"). Full API documentation (endpoints for sending messages, updating memory, updating system prompt, uploading files) is available by fetching: curl -s "$BASE_URL/api/docs/stoa-api.md"`;
 
-function composeSystemPrompt(base, agentPrompt, roomPrompt) {
-  const parts = [base];
-  if (agentPrompt) parts.push(agentPrompt);
-  if (roomPrompt) parts.push(roomPrompt);
-  return parts.join('\n\n---\n\n');
-}
+const { composeSystemPrompt } = require('./lib/compose-system-prompt');
 
 // Files yang boleh di-serve sebagai client update
 const CLIENT_FILES = new Set(['stoa.js', 'claude-session.js', 'codex-session.js']);
@@ -3263,12 +3258,18 @@ const server = http.createServer(async (req, res) => {
     const body = parseJsonBody(await readBody(req));
     if (!body) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
     const { name, avatar_url, lang, adapter } = body;
-    if (!name?.trim()) { res.writeHead(400); return res.end('name required'); }
-    if (avatar_url !== undefined) {
-      if (avatar_url !== null && (!avatar_url.startsWith('/uploads/') || avatar_url.includes('..'))) { res.writeHead(400); return res.end('invalid avatar_url'); }
-      db.prepare('UPDATE actors SET name=?, avatar_url=? WHERE id=?').run(name.trim(), avatar_url, id);
-    } else {
-      db.prepare('UPDATE actors SET name=? WHERE id=?').run(name.trim(), id);
+    if (name !== undefined && !name?.trim()) { res.writeHead(400); return res.end('name required'); }
+    if (name !== undefined || avatar_url !== undefined) {
+      if (avatar_url !== undefined) {
+        if (avatar_url !== null && (!avatar_url.startsWith('/uploads/') || avatar_url.includes('..'))) { res.writeHead(400); return res.end('invalid avatar_url'); }
+        if (name !== undefined) {
+          db.prepare('UPDATE actors SET name=?, avatar_url=? WHERE id=?').run(name.trim(), avatar_url, id);
+        } else {
+          db.prepare('UPDATE actors SET avatar_url=? WHERE id=?').run(avatar_url, id);
+        }
+      } else {
+        db.prepare('UPDATE actors SET name=? WHERE id=?').run(name.trim(), id);
+      }
     }
     if (lang !== undefined) {
       const existing = (() => { try { return JSON.parse(db.prepare('SELECT adapter_config FROM actors WHERE id=?').get(id)?.adapter_config || '{}'); } catch { return {}; } })();
@@ -3294,14 +3295,28 @@ const server = http.createServer(async (req, res) => {
           }
         }
       }
+      // Sub-agents with harness=NULL inherit parent adapter — fallback their model too
+      const inheritSubs = db.prepare('SELECT id, model FROM sub_agents WHERE parent_actor_id=? AND harness IS NULL AND model IS NOT NULL').all(id);
+      var fallbackSubAgents = [];
+      for (const sub of inheritSubs) {
+        const validSub = db.prepare('SELECT 1 FROM harness_models WHERE harness_id=? AND model_id=? AND is_active=1').get(harnessRow.id, sub.model);
+        if (!validSub) {
+          const defaultModel = db.prepare('SELECT model_id FROM harness_models WHERE harness_id=? AND is_default=1 AND is_active=1').get(harnessRow.id);
+          db.prepare('UPDATE sub_agents SET model=? WHERE id=?').run(defaultModel?.model_id || null, sub.id);
+          fallbackSubAgents.push({ sub_agent_id: sub.id, old_model: sub.model, new_model: defaultModel?.model_id || null });
+        }
+      }
     }
-    const actor = db.prepare('SELECT type FROM actors WHERE id=?').get(id);
-    if (actor?.type === 'human') {
+    const actor = db.prepare('SELECT id, name, type FROM actors WHERE id=?').get(id);
+    const finalName = name !== undefined ? name.trim() : actor?.name;
+    if (name !== undefined && actor?.type === 'human') {
       writeEnv('HUMAN_NAME', name.trim());
       process.env.HUMAN_NAME = name.trim();
     }
-    const result = { id, name: name.trim() };
+    const result = { id, name: finalName };
     if (fallbackRooms.length) result.fallback_rooms = fallbackRooms;
+    if (typeof fallbackSubAgents !== 'undefined' && fallbackSubAgents.length) result.fallback_sub_agents = fallbackSubAgents;
+    if (adapter !== undefined) result.adapter = adapter;
     return json(res, result);
   }
 

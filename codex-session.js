@@ -6,6 +6,10 @@ const { EventEmitter } = require('events');
 
 const SANDBOX_MODE = 'danger-full-access';
 
+function escapeTomlValue(str) {
+  return JSON.stringify(String(str));
+}
+
 class CodexSession extends EventEmitter {
   constructor({ workDir = process.cwd(), flags = [], resumeId = null, env = null, systemPrompt = null, model = null } = {}) {
     super();
@@ -34,13 +38,13 @@ class CodexSession extends EventEmitter {
       args.push('resume', '--json', '--skip-git-repo-check', '--ignore-user-config');
       args.push('-c', `sandbox_mode="${SANDBOX_MODE}"`);
       if (this.model) args.push('-m', this.model);
-      if (this.systemPrompt) args.push('-c', `developer_instructions=${this.systemPrompt}`);
+      if (this.systemPrompt) args.push('-c', `developer_instructions=${escapeTomlValue(this.systemPrompt)}`);
       args.push(this._threadId, '-');
     } else {
       args.push('--json', '--skip-git-repo-check', '--ignore-user-config');
       args.push('-c', `sandbox_mode="${SANDBOX_MODE}"`);
       if (this.model) args.push('-m', this.model);
-      if (this.systemPrompt) args.push('-c', `developer_instructions=${this.systemPrompt}`);
+      if (this.systemPrompt) args.push('-c', `developer_instructions=${escapeTomlValue(this.systemPrompt)}`);
       args.push('-');
     }
     return args;
@@ -180,4 +184,4 @@ class CodexSession extends EventEmitter {
   }
 }
 
-module.exports = { CodexSession };
+module.exports = { CodexSession, escapeTomlValue };
