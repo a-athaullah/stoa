@@ -3250,7 +3250,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/api/actors') {
     const rows = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, system_prompt, created_at FROM actors ORDER BY id').all();
-    const result = rows.map(r => ({ ...r, online: agentClients.has(r.id), client_version: agentVersions.get(r.id) || null, harnesses_available: agentHarnesses.get(r.id) || [] }));
+    const result = rows.map(r => ({ ...r, online: agentClients.has(r.id), client_version: agentVersions.get(r.id) || null, harnesses_available: agentHarnesses.get(r.id) || [], harness_status: agentHarnessStatus.get(r.id) || [] }));
     return json(res, result);
   }
 
@@ -3284,6 +3284,9 @@ const server = http.createServer(async (req, res) => {
       if (!validHarnesses.includes(adapter)) return json(res, { error: `adapter must be one of: ${validHarnesses.join(', ')}` }, 400);
       const available = agentHarnesses.get(id) || [];
       if (available.length && !available.includes(adapter)) return json(res, { error: `harness "${adapter}" not available on this agent's machine (available: ${available.join(', ')})` }, 400);
+      const statusList = agentHarnessStatus.get(id) || [];
+      const hStatus = statusList.find(s => s.id === adapter);
+      if (hStatus && hStatus.logged_in === false) return json(res, { error: `harness "${adapter}" is installed but not logged in — run "${adapter} login" on the agent machine` }, 400);
       db.prepare('UPDATE actors SET adapter=? WHERE id=?').run(adapter, id);
       const harnessRow = db.prepare('SELECT id FROM harnesses WHERE name=?').get(adapter);
       if (harnessRow) {
@@ -3811,6 +3814,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
 
   // POST /api/actors/:id/force-update — ask agent to check for updates immediately
   if (req.method === 'POST' && url.pathname.match(/^\/api\/actors\/\d+\/force-update$/)) {
+    if (!requireAuth(req, res, url)) return;
     const actorId = parseInt(url.pathname.split('/')[3]);
     const agentWs = agentClients.get(actorId);
     if (!agentWs) { res.writeHead(503); return res.end('agent offline'); }
@@ -3818,13 +3822,35 @@ Write-Host "Logs   : pm2 logs $AgentName"
     return json(res, { ok: true });
   }
 
-  // POST /api/actors/:id/rescan — ask agent to re-scan workdirs & skills
+  // POST /api/actors/:id/rescan — ask agent to re-scan workdirs, skills & harnesses
   if (req.method === 'POST' && url.pathname.match(/^\/api\/actors\/\d+\/rescan$/)) {
+    if (!requireAuth(req, res, url)) return;
     const actorId = parseInt(url.pathname.split('/')[3]);
     const agentWs = agentClients.get(actorId);
     if (!agentWs) { res.writeHead(503); return res.end('agent offline'); }
     agentWs.send(JSON.stringify({ type: 'request_scan' }));
     return json(res, { ok: true });
+  }
+
+  // POST /api/actors/:id/harnesses/check — ask agent to re-detect harnesses
+  if (req.method === 'POST' && url.pathname.match(/^\/api\/actors\/\d+\/harnesses\/check$/)) {
+    if (!requireAuth(req, res, url)) return;
+    const actorId = parseInt(url.pathname.split('/')[3]);
+    const actor = db.prepare('SELECT type FROM actors WHERE id=?').get(actorId);
+    if (!actor || actor.type !== 'ai') return json(res, { error: 'not an agent' }, 400);
+    const agentWs = agentClients.get(actorId);
+    if (!agentWs) { res.writeHead(503); return res.end(JSON.stringify({ error: 'agent offline' })); }
+    const requestId = crypto.randomBytes(8).toString('hex');
+    const result = await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        pendingHarnessChecks.delete(requestId);
+        resolve(null);
+      }, 15_000);
+      pendingHarnessChecks.set(requestId, { resolve, timer, actorId });
+      agentWs.send(JSON.stringify({ type: 'check_harnesses', request_id: requestId }));
+    });
+    if (!result) { res.writeHead(504); return res.end(JSON.stringify({ error: 'agent did not respond — agent version may be too old, wait for auto-update' })); }
+    return json(res, result);
   }
 
   // GET /api/actors/:id/memory — list agent memory files
@@ -4535,6 +4561,8 @@ const globalClients = new Set();  // all browser ws connections
 const agentClients = new Map();   // actor_id → ws
 const agentVersions = new Map();  // actor_id → client_version string
 const agentHarnesses = new Map(); // actor_id → string[] (available harnesses)
+const agentHarnessStatus = new Map(); // actor_id → [{ id, installed, logged_in, version }]
+const pendingHarnessChecks = new Map(); // request_id → { resolve, timer, actorId }
 const pendingAgents = new Map();    // message_id → { resolve, reject }
 const pendingActorMeta = new Map(); // message_id → { name, avatar_color, avatar_symbol }
 const pendingCompacts = new Map();  // room_id → { total, completed, agents[] }
@@ -4838,6 +4866,23 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ type: 'claude_md_import', workdir: wd.path }));
       }
       if (unmigratedWds.length) console.log(`[claude_md] requested import for ${unmigratedWds.length} workdir(s) of Actor #${agentActorId}`);
+    }
+
+    // ── Agent reports harness availability
+    if (msg.type === 'harnesses_update' && agentActorId) {
+      const { validateHarnessStatus } = require('./harness-session');
+      const status = validateHarnessStatus(msg.harness_status);
+      const available = Array.isArray(msg.harnesses_available) ? msg.harnesses_available.filter(h => typeof h === 'string') : status.filter(s => s.installed).map(s => s.id);
+      agentHarnesses.set(agentActorId, available);
+      agentHarnessStatus.set(agentActorId, status);
+      const actor = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, created_at FROM actors WHERE id=?').get(agentActorId);
+      if (actor) broadcastGlobal({ type: 'actor_status', actor: { ...actor, online: true, client_version: agentVersions.get(agentActorId) || null, harnesses_available: available, harness_status: status } });
+      if (msg.request_id && pendingHarnessChecks.has(msg.request_id)) {
+        const pending = pendingHarnessChecks.get(msg.request_id);
+        clearTimeout(pending.timer);
+        pendingHarnessChecks.delete(msg.request_id);
+        pending.resolve({ harnesses_available: available, harness_status: status });
+      }
     }
 
     // ── Agent reports scan results
@@ -5887,6 +5932,14 @@ wss.on('connection', (ws, req) => {
       agentClients.delete(agentActorId);
       agentVersions.delete(agentActorId);
       agentHarnesses.delete(agentActorId);
+      agentHarnessStatus.delete(agentActorId);
+      for (const [rid, pending] of pendingHarnessChecks) {
+        if (pending.actorId === agentActorId) {
+          clearTimeout(pending.timer);
+          pendingHarnessChecks.delete(rid);
+          pending.resolve(null);
+        }
+      }
       const cleaned = db.prepare(
         "UPDATE messages SET state='error', content=CASE WHEN content='' THEN '(interrupted — agent disconnected)' ELSE content END WHERE state IN ('streaming','requesting') AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?)"
       ).run(agentActorId);

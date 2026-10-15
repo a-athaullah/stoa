@@ -7004,6 +7004,87 @@ async function run() {
     await req('DELETE', `/api/sub-agents/${subId}`);
   });
 
+  // parseClaudeAuthStatus — two sides
+  await test('parseClaudeAuthStatus — valid JSON loggedIn true/false', () => {
+    const { parseClaudeAuthStatus } = require('./harness-session');
+    assert.strictEqual(parseClaudeAuthStatus('{"loggedIn":true,"authMethod":"claude.ai"}'), true);
+    assert.strictEqual(parseClaudeAuthStatus('{"loggedIn":false}'), false);
+  });
+
+  await test('parseClaudeAuthStatus — garbage/invalid → null', () => {
+    const { parseClaudeAuthStatus } = require('./harness-session');
+    assert.strictEqual(parseClaudeAuthStatus('not json'), null);
+    assert.strictEqual(parseClaudeAuthStatus('{}'), null);
+    assert.strictEqual(parseClaudeAuthStatus('{"loggedIn":"yes"}'), null);
+  });
+
+  // parseCodexLoginStatus — two sides
+  await test('parseCodexLoginStatus — exit 0 → true, exit 1 → false', () => {
+    const { parseCodexLoginStatus } = require('./harness-session');
+    assert.strictEqual(parseCodexLoginStatus(0), true);
+    assert.strictEqual(parseCodexLoginStatus(1), false);
+  });
+
+  // validateHarnessStatus — two sides
+  await test('validateHarnessStatus — valid entries pass, invalid rejected', () => {
+    const { validateHarnessStatus } = require('./harness-session');
+    const input = [
+      { id: 'claude', installed: true, logged_in: true, version: '2.0.0' },
+      { id: 'codex', installed: false, logged_in: null, version: null },
+      { id: 'unknown', installed: true, logged_in: true, version: '1.0' },
+      { id: 'claude', installed: 'yes' },
+      null,
+    ];
+    const result = validateHarnessStatus(input);
+    assert.strictEqual(result.length, 2, 'only valid claude and codex entries pass');
+    assert.strictEqual(result[0].id, 'claude');
+    assert.strictEqual(result[1].id, 'codex');
+  });
+
+  await test('validateHarnessStatus — non-array → empty', () => {
+    const { validateHarnessStatus } = require('./harness-session');
+    assert.deepStrictEqual(validateHarnessStatus('bad'), []);
+    assert.deepStrictEqual(validateHarnessStatus(null), []);
+  });
+
+  // POST /api/actors/:id/harnesses/check — auth required
+  await test('POST /api/actors/:id/harnesses/check — 401 without auth', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await fetch(`http://${HOST}:${PORT}/api/actors/${hsActorId}/harnesses/check`, { method: 'POST' });
+    assert.strictEqual(r.status, 401);
+  });
+
+  // POST /api/actors/:id/harnesses/check — agent offline → 503
+  await test('POST /api/actors/:id/harnesses/check — agent offline → 503', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('POST', `/api/actors/${hsActorId}/harnesses/check`);
+    assert.strictEqual(r.status, 503);
+  });
+
+  // POST /api/actors/:id/force-update — auth required
+  await test('POST /api/actors/:id/force-update — 401 without auth', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await fetch(`http://${HOST}:${PORT}/api/actors/${hsActorId}/force-update`, { method: 'POST' });
+    assert.strictEqual(r.status, 401);
+  });
+
+  // POST /api/actors/:id/rescan — auth required
+  await test('POST /api/actors/:id/rescan — 401 without auth', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await fetch(`http://${HOST}:${PORT}/api/actors/${hsActorId}/rescan`, { method: 'POST' });
+    assert.strictEqual(r.status, 401);
+  });
+
+  // GET /api/actors includes harness_status
+  await test('GET /api/actors — includes harness_status field', async () => {
+    const r = await req('GET', '/api/actors');
+    assert.strictEqual(r.status, 200);
+    const ai = r.body.find(a => a.type === 'ai');
+    if (!ai) { console.log('    (skipped — no AI actors)'); return; }
+    assert.ok('harness_status' in ai, 'AI actor should have harness_status field');
+    assert.ok(Array.isArray(ai.harness_status), 'harness_status should be array');
+  });
+
   // GET /api/actors includes system_prompt and harnesses_available
   await test('GET /api/actors — includes system_prompt field', async () => {
     const r = await req('GET', '/api/actors');

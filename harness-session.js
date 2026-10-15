@@ -29,6 +29,31 @@ function buildResumeArgs(msg, { targetDir, sessionKey, harness }) {
   };
 }
 
+const KNOWN_HARNESSES = ['claude', 'codex'];
+
+function parseClaudeAuthStatus(stdout) {
+  try {
+    const data = JSON.parse(stdout);
+    return typeof data.loggedIn === 'boolean' ? data.loggedIn : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseCodexLoginStatus(exitCode) {
+  return exitCode === 0;
+}
+
+function validateHarnessStatus(arr) {
+  if (!Array.isArray(arr)) return [];
+  return arr.filter(s =>
+    s && KNOWN_HARNESSES.includes(s.id) &&
+    typeof s.installed === 'boolean' &&
+    (s.logged_in === null || typeof s.logged_in === 'boolean') &&
+    (s.version === null || typeof s.version === 'string')
+  ).map(s => ({ id: s.id, installed: s.installed, logged_in: s.logged_in ?? null, version: s.version ?? null }));
+}
+
 function filesToUpdate(remote, local, allowed) {
   const names = [];
   for (const [name, hash] of Object.entries(remote)) {
@@ -40,4 +65,4 @@ function filesToUpdate(remote, local, allowed) {
   return names;
 }
 
-module.exports = { createHarnessSession, supportsCompact, buildResumeArgs, filesToUpdate };
+module.exports = { createHarnessSession, supportsCompact, buildResumeArgs, KNOWN_HARNESSES, parseClaudeAuthStatus, parseCodexLoginStatus, validateHarnessStatus, filesToUpdate };
