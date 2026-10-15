@@ -1,8 +1,8 @@
 // ── Model tag helper ─────────────────────────────────────────────────────────
 const _FALLBACK_SOURCE_LABELS = {
-  agent_default: 'room model not available on this agent\'s harness — using agent default',
-  harness_default: 'room model not available on this agent\'s harness — using harness default',
-  cli_default: 'room model not available on this agent\'s harness — using CLI default',
+  agent_default: 'not using the room model — using agent default',
+  harness_default: 'not using the room model — using harness default',
+  cli_default: 'not using the room model — using CLI default',
 };
 
 function buildModelTag(aiModel, modelSource) {

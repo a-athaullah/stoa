@@ -1556,6 +1556,8 @@ function buildAgentSettingsCard(actor) {
         if (aIdx2 >= 0) allActors[aIdx2] = { ...allActors[aIdx2], default_model: null };
       }
       if (data.harness_default_model !== undefined) actor.harness_default_model = data.harness_default_model;
+      if (data.effective_default_model !== undefined) actor.effective_default_model = data.effective_default_model;
+      if (data.effective_default_source !== undefined) actor.effective_default_source = data.effective_default_source;
       if (typeof rebuildDefaultModelSel === 'function') rebuildDefaultModelSel();
       if (notice) {
         const fmt = m => m || 'default';
@@ -1572,7 +1574,6 @@ function buildAgentSettingsCard(actor) {
           notice.style.display = '';
         } else { notice.style.display = 'none'; }
       }
-      if (data.harness_default_model !== undefined) actor.harness_default_model = data.harness_default_model;
       const toastParts = [`${actor.name} switched to ${HARNESS_LABELS[beSel.value] || beSel.value}`];
       if (data.fallback_agent_rooms?.length) {
         const firstRoom = data.fallback_agent_rooms[0];
