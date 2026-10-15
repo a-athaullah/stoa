@@ -61,6 +61,8 @@ API 端点和 WebSocket 连接需要认证。`/uploads/` 下的上传文件为�
 
 选择按房间保存，下一条消息立即生效 — 无需重启。
 
+在有多个不同执行器代理的房间中，模型选择器列表下方会显示 **"model per agent"** 预览区域。每行显示 `名称 · 执行器 → 模型`，当代理因执行器不支持而无法使用房间模型时，会附带标签（`↪ agent default`、`↪ harness default` 或 `↪ CLI default`）。每次打开下拉菜单时预览都会刷新，代理设置变更时也会自动同步。
+
 ### 忙碌模式（Busy Mode）
 
 **Busy mode** 控制在 AI 正在运行时发送消息会发生什么。点击房间标题栏的**齿轮图标**打开房间设置，找到 **Busy mode** 卡片。三个选项：
@@ -75,7 +77,7 @@ Busy mode 是**话题级别**的：每个话题被视为独立上下文。代理
 
 ### 聊天气泡中的模型显示
 
-每个 AI 响应的气泡右下角会显示一个小型模型标识（例如：`qwen3-coder:480b:cloud`），方便追踪每条回复由哪个模型生成。
+每个 AI 响应的气泡右下角会显示一个小型模型标识（例如：`qwen3-coder:480b:cloud`），方便追踪每条回复由哪个模型生成。当代理因执行器不支持房间所选模型而使用了不同的模型时，模型标签上会显示 **↪** 图标。悬停可查看原因（例如：`not using the room model — using agent default`）。以层级（tier）运行的子代理响应不显示此图标。
 
 ### 置顶房间 (Pin)
 
@@ -421,7 +423,7 @@ curl -fsSL http://YOUR_SERVER:3000/install.sh?name=Idris | bash
 - **Claude** — Claude Code CLI，支持压缩、流式传输和恢复。
 - **Codex** — OpenAI Codex CLI，需要代理机器上已安装并通过认证的 `codex` CLI。Codex 会话默认使用 `danger-full-access` 沙盒，并忽略用户的 Codex 配置文件（`--ignore-user-config`）。**不支持压缩** — 在 Codex 会话中点击压缩会显示 toast 错误（`compact not supported for codex harness`）；自动压缩也会静默跳过 Codex 会话。`codex-session.js` 通过 Stoa 的自动更新分发 — 服务器更新时由代理自动下载，与何时切换执行器无关。若在 `codex-session.js` 尚未下载到代理机器时触发 Codex 执行器，触发会以明确的错误消息失败；请等待自动更新完成（服务器更新后约 2 分钟）。
 
-更改代理的执行器时，与新执行器不兼容的房间模型会被重置为该执行器的默认模型。Codex 的默认值为代理报告的第一个模型（来自 `codex debug models`）。**设置 > AI Agent** 中 Harness 下拉菜单下方的通知会列出受影响的房间和子代理及其重置详情。
+在**混合房间**（其他 AI 代理仍可运行当前房间模型的房间）中更改执行器时，房间模型保持不变——只有这个代理会回退到自己的默认值。Toast 会予以确认：例如 `room model kept in 2 mixed rooms (Kira uses codex-default)`。在单代理房间中，若房间模型与新执行器不兼容，仍会被重写。如果代理的 **Default model** 设置与新执行器不兼容，则会自动重置——Toast 显示 `default model reset (old-model)`。
 
 子代理也可以选择自己的执行器，或保持 **inherit from parent**（默认值）。
 
@@ -432,6 +434,23 @@ curl -fsSL http://YOUR_SERVER:3000/install.sh?name=Idris | bash
 已安装但未登录的执行器在下拉菜单中显示为 **"(not logged in)"** 且无法选择——服务器也会拒绝。若无法确认登录状态，执行器保持可选状态。若当前活跃执行器变为不可用或已注销，下拉菜单下方会显示红色提示——执行器不会自动切换。
 
 **错误：** `agent offline` — 代理未连接；`agent disconnected` — 检查过程中代理断开连接；`agent did not respond — agent version may be too old, wait for auto-update` — 代理不支持执行器检测（旧版本）。
+
+### 代理默认模型
+
+每个代理都可以在**设置 > AI Agent → 代理卡片 → Default model** 下拉菜单中设置 **Default model**，即房间模型与其执行器不兼容时的备用模型。
+
+下拉菜单仅显示与代理当前执行器兼容的模型。第一个选项 — **"follow harness default — \<模型\>"**（值：无）— 表示使用执行器的内置默认值，而非固定某个模型。
+
+**模型解析顺序**（服务器为代理选择模型时的优先级）：
+
+1. **房间模型** — 若代理的执行器能运行则使用。
+2. **代理默认模型** — 若已设置且与执行器兼容。
+3. **执行器默认值** — 执行器的内置默认值（例如 `codex debug models` 的第一个模型）。
+4. **CLI 默认值** — 不带 `-m` 标志运行代理，由 CLI 自行决定。
+
+平台配置（基础 URL、API 密钥）仅在直接使用房间模型时传递。若回退到其他来源，则不传递平台配置。
+
+有层级（tier）的子代理使用独立的解析路径——请参阅[模型层级与回退](#模型层级与回退)。
 
 ### 删除代理
 

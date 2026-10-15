@@ -61,6 +61,8 @@ A **model selector** appears at the right side of the formatting toolbar in the 
 
 The selection is saved per room and takes effect immediately on the next message — no restart required.
 
+In rooms with multiple agents of different harnesses, the model selector includes a **"model per agent"** preview section below the model list. Each row shows `Name · harness → model`, with a label (`↪ agent default`, `↪ harness default`, or `↪ CLI default`) when an agent will not use the room model — because its harness can't run it. The preview refreshes each time the dropdown is opened and updates automatically when agent settings change.
+
 ### Busy Mode
 
 **Busy mode** controls what happens when you send a message while the AI is still running. Open the room settings (the **gear icon** in the room header) and look for the **Busy mode** card. Three options:
@@ -75,7 +77,7 @@ Busy mode is **thread-scoped**: each thread is treated as an independent context
 
 ### Model in Chat Bubbles
 
-Each AI response shows a small model indicator at the bottom right of the bubble (e.g., `qwen3-coder:480b:cloud`), making it easy to track which model generated each reply.
+Each AI response shows a small model indicator at the bottom right of the bubble (e.g., `qwen3-coder:480b:cloud`), making it easy to track which model generated each reply. When an agent used a different model than the room's selected model — because its harness can't run it — a **↪** icon appears on the model tag. Hover to see why (e.g., `not using the room model — using agent default`). Sub-agent responses running on a tier do not show this icon.
 
 ### Pinning a Room
 
@@ -423,7 +425,7 @@ By default, agents run on the **Claude CLI**. If the agent's machine also has **
 - **Claude** — Claude Code CLI. Supports compact, streaming, and resume.
 - **Codex** — OpenAI Codex CLI. Requires `codex` CLI installed and authenticated on the agent's machine. Codex sessions use `danger-full-access` sandbox by default and ignore user Codex config files (`--ignore-user-config`). **Compact is not supported** — clicking compact on a Codex session shows a toast error (`compact not supported for codex harness`); auto-compact also skips Codex sessions silently. `codex-session.js` is distributed via Stoa's auto-update — the agent downloads it when the server is updated, regardless of which harness is selected. If the Codex harness is triggered before `codex-session.js` is present on the agent machine, the trigger fails with a clear error; wait for auto-update to complete (~2 minutes after server update).
 
-Changing an agent's harness resets any room models that are incompatible with the new harness to that harness's default model. For Codex, the default is the first model reported by the agent (from `codex debug models`). A notice below the Harness dropdown in **Settings > AI Agent** lists affected rooms and sub-agents, showing which model was reset and to what.
+Changing an agent's harness in a **mixed room** (where other AI agents can still run the current room model) leaves the room model untouched — this agent falls back to its own default instead. A toast confirms: e.g., `room model kept in 2 mixed rooms (Kira uses codex-default)`. In a single-agent room, the room model is still rewritten when it is incompatible with the new harness. If the agent's **Default model** is incompatible with the new harness, it is automatically reset — the toast shows `default model reset (old-model)`.
 
 Sub-agents can also choose their own harness, or leave it on **inherit from parent** (the default).
 
@@ -434,6 +436,23 @@ For **Codex**, Check also fetches the available model list from the agent via `c
 Harnesses that are installed but not logged in appear in the dropdown as **"(not logged in)"** and cannot be selected — the server will also reject them. If login status cannot be determined, the harness remains selectable. If the currently active harness becomes unavailable or loses login, a red hint appears below the Harness dropdown — the harness is not automatically changed.
 
 **Errors:** `agent offline` — the agent is not connected; `agent disconnected` — the agent disconnected mid-check; `agent did not respond — agent version may be too old, wait for auto-update` — the agent does not support harness detection yet (older version).
+
+### Agent Default Model
+
+Each agent has a **Default model** setting in **Settings > AI Agent → Agent card → Default model** dropdown. This is the model the agent falls back to when the room's selected model is not compatible with its harness.
+
+The dropdown lists only models compatible with the agent's current harness. The first option — **"follow harness default — \<model\>"** (value: none) — tells the agent to use its harness's built-in default rather than a pinned model.
+
+**Resolution order** when the server picks a model for an agent:
+
+1. **Room model** — if the agent's harness can run it, this is used.
+2. **Agent default model** — if one is set and compatible with the harness.
+3. **Harness default** — the harness's built-in default (e.g., first model from `codex debug models`).
+4. **CLI default** — the agent runs without a `-m` flag, letting the CLI decide.
+
+Platform model config (base URL, API keys) is only passed when the room model is used directly. If the agent falls back to any other source, platform config is not sent.
+
+Sub-agents with a tier use a separate resolution path — see [Model Tiers and Fallback](#model-tiers-and-fallback).
 
 ### Removing an Agent
 

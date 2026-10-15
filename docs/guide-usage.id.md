@@ -61,6 +61,8 @@ Klik judul room di header chat. Judul menjadi editable — ketik nama baru dan t
 
 Pilihan disimpan per room dan langsung berlaku pada pesan berikutnya — tanpa restart.
 
+Di room dengan beberapa agent berbeda harness, selector model menyertakan bagian **"model per agent"** di bawah daftar model. Setiap baris menampilkan `Nama · harness → model`, disertai label (`↪ agent default`, `↪ harness default`, atau `↪ CLI default`) saat agent tidak dapat menggunakan model room — karena harness-nya tidak mendukungnya. Preview diperbarui setiap kali dropdown dibuka dan otomatis sinkron saat setelan agent berubah.
+
 ### Mode Sibuk (Busy Mode)
 
 **Busy mode** mengontrol apa yang terjadi ketika kamu mengirim pesan saat AI sedang berjalan. Buka room settings (ikon **gear** di header room) dan cari kartu **Busy mode**. Tiga pilihan:
@@ -75,7 +77,7 @@ Busy mode bersifat **per thread**: setiap thread diperlakukan sebagai konteks in
 
 ### Model di Chat Bubble
 
-Setiap respons AI menampilkan indikator model kecil di pojok kanan bawah bubble (contoh: `qwen3-coder:480b:cloud`), sehingga mudah melacak model mana yang menghasilkan setiap balasan.
+Setiap respons AI menampilkan indikator model kecil di pojok kanan bawah bubble (contoh: `qwen3-coder:480b:cloud`), sehingga mudah melacak model mana yang menghasilkan setiap balasan. Jika agent menggunakan model berbeda dari model yang dipilih di room — karena harness-nya tidak mendukungnya — ikon **↪** muncul pada tag model. Arahkan kursor untuk melihat alasannya (contoh: `not using the room model — using agent default`). Respons sub-agent yang berjalan dengan tier tidak menampilkan ikon ini.
 
 ### Menyematkan Room (Pin)
 
@@ -424,7 +426,7 @@ Secara default, agent berjalan di **Claude CLI**. Jika mesin agent juga memiliki
 - **Claude** — Claude Code CLI. Mendukung compact, streaming, dan resume.
 - **Codex** — OpenAI Codex CLI. Memerlukan `codex` CLI terpasang dan terautentikasi di mesin agent. Sesi Codex menggunakan sandbox `danger-full-access` secara default dan mengabaikan file konfigurasi Codex user (`--ignore-user-config`). **Compact tidak didukung** — mengklik compact di sesi Codex menampilkan toast error (`compact not supported for codex harness`); auto-compact juga melewati sesi Codex secara diam-diam. `codex-session.js` didistribusikan via auto-update Stoa — agent mengunduhnya saat server diperbarui, tidak bergantung pada kapan harness diganti. Jika harness Codex dipicu sebelum `codex-session.js` ada di mesin agent, trigger gagal dengan error yang jelas; tunggu auto-update selesai (~2 menit setelah server update).
 
-Mengganti harness agent akan me-reset model room yang tidak kompatibel dengan harness baru ke model default harness tersebut. Untuk Codex, default-nya adalah model pertama yang dilaporkan agent (dari `codex debug models`). Notifikasi di bawah dropdown Harness di **Settings > AI Agent** mencantumkan room dan sub-agent yang terdampak beserta model yang di-reset.
+Mengganti harness agent di **room campuran** (di mana AI agent lain masih bisa menjalankan model room) membiarkan model room tetap seperti apa adanya — agent ini yang akan fallback ke default-nya sendiri. Toast mengonfirmasi: misalnya `room model kept in 2 mixed rooms (Kira uses codex-default)`. Di room dengan satu agent, model room tetap di-rewrite jika tidak kompatibel dengan harness baru. Jika setelan **Default model** agent tidak kompatibel dengan harness baru, setelan itu otomatis di-reset — toast menampilkan `default model reset (old-model)`.
 
 Sub-agent juga bisa memilih harness sendiri, atau membiarkannya pada **inherit from parent** (default).
 
@@ -435,6 +437,23 @@ Untuk **Codex**, Check juga mengambil daftar model yang tersedia dari agent via 
 Harness yang sudah terinstal tapi belum login tampil di dropdown sebagai **"(not logged in)"** dan tidak bisa dipilih — server juga akan menolaknya. Jika status login tidak bisa dipastikan, harness tetap bisa dipilih. Jika harness yang sedang aktif menjadi tidak tersedia atau kehilangan login, muncul hint merah di bawah dropdown Harness — harness tidak diganti otomatis.
 
 **Error:** `agent offline` — agent tidak terhubung; `agent disconnected` — agent terputus saat pengecekan berlangsung; `agent did not respond — agent version may be too old, wait for auto-update` — agent belum mendukung deteksi harness (versi lama).
+
+### Default Model Agent
+
+Setiap agent punya setelan **Default model** di dropdown **Settings > AI Agent → Agent card → Default model**. Ini adalah model yang digunakan agent sebagai fallback saat model room tidak kompatibel dengan harness-nya.
+
+Dropdown hanya menampilkan model yang kompatibel dengan harness agent saat ini. Opsi pertama — **"follow harness default — \<model\>"** (nilai: tidak ada) — memberi tahu agent untuk memakai default bawaan harness, bukan model yang dipilih manual.
+
+**Urutan resolusi model** saat server memilihkan model untuk agent:
+
+1. **Model room** — kalau harness agent bisa menjalankannya, model room dipakai.
+2. **Default model agent** — kalau ada yang diset dan kompatibel dengan harness.
+3. **Default harness** — model bawaan harness (misalnya model pertama dari `codex debug models`).
+4. **Default CLI** — agent berjalan tanpa flag `-m`, membiarkan CLI yang memilih.
+
+Konfigurasi platform (base URL, API key) hanya dikirim saat model room yang digunakan langsung. Kalau agent fallback ke sumber lain, konfigurasi platform tidak dikirimkan.
+
+Sub-agent yang memiliki tier menggunakan jalur resolusi tersendiri — lihat [Tier Model dan Fallback](#tier-model-dan-fallback).
 
 ### Menghapus Agent
 
