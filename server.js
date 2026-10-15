@@ -5779,27 +5779,33 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ type: 'error', code: 'invalid_model', message: 'invalid model value' }));
         return;
       }
-      if (msg.model && !msg.model.startsWith('claude-')) {
+      if (msg.model) {
         let known = false;
-        try {
-          const platforms = getParsedSetting('ai_platforms');
-          if (platforms) {
-            for (const p of platforms) {
-              if (!p.enabled) continue;
-              const cachedNames = Array.isArray(p.cached_models) ? p.cached_models.map(m => typeof m === 'string' ? m : m.model) : [];
-              const enabledSet = Array.isArray(p.enabled_models) ? new Set(p.enabled_models) : null;
-              const inCached = cachedNames.includes(msg.model);
-              if (inCached && (!enabledSet || enabledSet.has(msg.model))) { known = true; break; }
+        if (!msg.model.startsWith('claude-')) {
+          try {
+            const platforms = getParsedSetting('ai_platforms');
+            if (platforms) {
+              for (const p of platforms) {
+                if (!p.enabled) continue;
+                const cachedNames = Array.isArray(p.cached_models) ? p.cached_models.map(m => typeof m === 'string' ? m : m.model) : [];
+                const enabledSet = Array.isArray(p.enabled_models) ? new Set(p.enabled_models) : null;
+                const inCached = cachedNames.includes(msg.model);
+                if (inCached && (!enabledSet || enabledSet.has(msg.model))) { known = true; break; }
+              }
             }
-          }
-        } catch {}
+          } catch {}
+        }
         if (!known) {
           const aiParticipants = db.prepare("SELECT a.id, a.adapter FROM room_participants p JOIN actors a ON a.id=p.actor_id WHERE p.room_id=? AND a.type='ai'").all(subscribedRoom);
-          for (const ap of aiParticipants) {
-            const adapter = ap.adapter || 'claude';
-            if (adapter === 'claude') continue;
-            const hModels = getHarnessModels(ap.id, adapter);
-            if (hModels.some(m => m.model_id === msg.model)) { known = true; break; }
+          if (aiParticipants.length) {
+            for (const ap of aiParticipants) {
+              const adapter = ap.adapter || 'claude';
+              if (adapter === 'claude' && msg.model.startsWith('claude-')) { known = true; break; }
+              const hModels = getHarnessModels(ap.id, adapter);
+              if (hModels.some(m => m.model_id === msg.model)) { known = true; break; }
+            }
+          } else if (msg.model.startsWith('claude-')) {
+            known = true;
           }
         }
         if (!known) {
@@ -6883,6 +6889,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
           const plat = platforms.find(p => p.id === cfg.platform_id && p.enabled);
           if (plat) {
             if (plat.vendor === 'ollama') {
+              // getPublicUrl: remote agents resolve 127.0.0.1 to themselves → ECONNREFUSED
               modelBaseUrl = getPublicUrl(`localhost:${PORT}`);
               modelApiKeys = [`stoa-proxy:${cfg.platform_id}`];
             } else {
@@ -6901,6 +6908,13 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
 
   const modelChain = resolveModelChain(subAgent, roomModel, roomRow2?.model_tiers, effectiveHarness, ai.actor_id);
   const effectiveModel = modelChain[0] || null;
+
+  // Sub-agent with claude model uses Anthropic API directly, not room's platform proxy
+  if (subAgent && effectiveModel?.startsWith('claude-') && modelBaseUrl) {
+    modelBaseUrl = undefined;
+    modelApiKeys = undefined;
+    modelToolsSupported = undefined;
+  }
 
   if (effectiveModel && !effectiveModel.startsWith('claude-') && !modelBaseUrl && effectiveHarness === 'claude') {
     const errContent = `⚠ Model "${effectiveModel}" tidak bisa digunakan — platform-nya sudah di-disable atau dihapus. Ubah model room di Settings.`;

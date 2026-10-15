@@ -7670,37 +7670,56 @@ async function run() {
     ws13.close();
   });
 
-  // triggerAiResponse — codex sub-agent under claude parent with platform model gets no baseUrl
+  // triggerAiResponse — codex sub-agent under claude parent with real platform gets no baseUrl
   await test('triggerAiResponse — codex sub-agent under platform-claude parent gets no baseUrl', async () => {
     if (!hsActorId) { console.log('    (skipped)'); return; }
     const db = require('./db');
     process.env.HARNESS_CHECK_TIMEOUT_MS = '3000';
+    // Seed a real ai_platforms entry so platform lookup succeeds for the parent
+    const origPlatforms = db.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get();
+    const testPlatforms = [{ id: 'test-plat-01', vendor: 'openrouter', enabled: true, base_url: 'https://test-openrouter.invalid/v1', api_keys: ['test-key-01'], cached_models: [{ model: 'claude-sonnet-5-5', tools: true }], enabled_models: ['claude-sonnet-5-5'] }];
+    const upsertPlat = origPlatforms
+      ? db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'")
+      : db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'ai_platforms', ?)");
+    upsertPlat.run(JSON.stringify(testPlatforms));
     const ws14 = await openWsConnection(`ws://${HOST}:${PORT}`);
     const ready14 = waitForWsMessage(ws14, m => m.type === 'agent_ready');
     ws14.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
     await ready14;
-    const checkDone14 = new Promise((resolve) => {
-      ws14.on('message', (raw) => {
-        const msg = JSON.parse(raw.toString());
-        if (msg.type === 'check_harnesses') {
-          ws14.send(JSON.stringify({
-            type: 'harnesses_update',
-            harnesses_available: ['claude', 'codex'],
-            harness_status: [
-              { id: 'claude', installed: true, logged_in: true, version: '2.0.0', models: null },
-              { id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [
-                { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true },
-              ]},
-            ],
-            request_id: msg.request_id,
-          }));
-        }
-      });
+    ws14.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === 'check_harnesses') {
+        ws14.send(JSON.stringify({
+          type: 'harnesses_update',
+          harnesses_available: ['claude', 'codex'],
+          harness_status: [
+            { id: 'claude', installed: true, logged_in: true, version: '2.0.0', models: null },
+            { id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [
+              { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true },
+            ]},
+          ],
+          request_id: msg.request_id,
+        }));
+      }
     });
     await req('POST', `/api/actors/${hsActorId}/harnesses/check`);
     await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
     db.prepare("UPDATE rooms SET model='claude-sonnet-5-5', model_config=? WHERE id=?")
-      .run(JSON.stringify({ platform_id: 'fake-plat-999' }), hsRoomId);
+      .run(JSON.stringify({ platform_id: 'test-plat-01' }), hsRoomId);
+    // Side A: parent claude trigger GETS base_url from platform
+    const parentTrigPromise = waitForWsMessage(ws14, m => m.type === 'agent_trigger' && !m.sub_agent, 5000);
+    const humanWsP = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    humanWsP.send(JSON.stringify({ type: 'join_room', room_id: hsRoomId }));
+    await new Promise(r => setTimeout(r, 100));
+    humanWsP.send(JSON.stringify({ type: 'send_message', room_id: hsRoomId, content: 'test parent platform' }));
+    const parentTrig = await parentTrigPromise;
+    assert.ok(parentTrig.base_url, 'parent claude trigger should get platform base_url');
+    assert.ok(parentTrig.base_url.includes('test-openrouter'), `expected openrouter url, got: ${parentTrig.base_url}`);
+    if (parentTrig.message_id) {
+      ws14.send(JSON.stringify({ type: 'agent_message', message_id: parentTrig.message_id, content: 'done', state: 'complete' }));
+    }
+    humanWsP.close();
+    // Side B: codex sub-agent does NOT get base_url
     const saR = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'codex-under-plat', tier: 'deep', harness: 'codex' });
     assert.strictEqual(saR.status, 201);
     const saId = saR.body.id;
@@ -7718,8 +7737,33 @@ async function run() {
     if (trigMsg.message_id) {
       ws14.send(JSON.stringify({ type: 'agent_message', message_id: trigMsg.message_id, content: 'done', state: 'complete' }));
     }
+    // Side C: claude sub-agent under platform parent also gets NO base_url (uses Anthropic directly)
+    const saR2 = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'claude-under-plat', tier: 'deep', harness: 'claude' });
+    assert.strictEqual(saR2.status, 201);
+    const saId2 = saR2.body.id;
+    await req('POST', `/api/rooms/${hsRoomId}/sub-agents`, { sub_agent_id: saId2 });
+    const triggerPromise2 = waitForWsMessage(ws14, m => m.type === 'agent_trigger' && m.sub_agent?.label === 'claude-under-plat', 5000);
+    const trigR2 = await req('POST', `/api/rooms/${hsRoomId}/sub-agent-trigger`, {
+      sub_agent_id: saId2, task: 'test claude under platform parent',
+    }, { 'x-agent-id': String(hsActorId), 'x-agent-secret': hsSecret });
+    assert.strictEqual(trigR2.status, 200);
+    const trigMsg2 = await triggerPromise2;
+    assert.ok(trigMsg2.model.startsWith('claude-'), `expected claude model, got: ${trigMsg2.model}`);
+    assert.strictEqual(trigMsg2.harness, 'claude');
+    assert.strictEqual(trigMsg2.base_url, undefined, 'claude sub-agent should not get parent platform baseUrl');
+    assert.strictEqual(trigMsg2.api_keys, undefined, 'claude sub-agent should not get parent platform apiKeys');
+    if (trigMsg2.message_id) {
+      ws14.send(JSON.stringify({ type: 'agent_message', message_id: trigMsg2.message_id, content: 'done', state: 'complete' }));
+    }
+    // Cleanup
     await req('DELETE', `/api/sub-agents/${saId}`);
+    await req('DELETE', `/api/sub-agents/${saId2}`);
     db.prepare('UPDATE rooms SET model=?, model_config=NULL WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+    if (origPlatforms) {
+      db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(origPlatforms.value);
+    } else {
+      db.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run();
+    }
     ws14.close();
     delete process.env.HARNESS_CHECK_TIMEOUT_MS;
   });
@@ -7764,6 +7808,60 @@ async function run() {
     const db = require('./db');
     db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
     ws15.close();
+    delete process.env.HARNESS_CHECK_TIMEOUT_MS;
+  });
+
+  // set_room_model — claude model accepted in room with claude participant (no regression)
+  await test('set_room_model — claude model accepted in room with claude participant', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+    const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    humanWs.send(JSON.stringify({ type: 'join_room', room_id: hsRoomId }));
+    await new Promise(r => setTimeout(r, 100));
+    const changed = waitForWsMessage(humanWs, m => m.type === 'room_model_changed' && m.room_id === hsRoomId, 3000);
+    humanWs.send(JSON.stringify({ type: 'set_room_model', model: 'claude-opus-5-5' }));
+    const msg = await changed;
+    assert.strictEqual(msg.model, 'claude-opus-5-5');
+    humanWs.close();
+    const db = require('./db');
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+  });
+
+  // set_room_model — claude model rejected in room with only codex participant
+  await test('set_room_model — claude model rejected in codex-only room', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    process.env.HARNESS_CHECK_TIMEOUT_MS = '3000';
+    const ws16 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready16 = waitForWsMessage(ws16, m => m.type === 'agent_ready');
+    ws16.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready16;
+    ws16.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === 'check_harnesses') {
+        ws16.send(JSON.stringify({
+          type: 'harnesses_update',
+          harnesses_available: ['codex'],
+          harness_status: [
+            { id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [
+              { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true },
+            ]},
+          ],
+          request_id: msg.request_id,
+        }));
+      }
+    });
+    await req('POST', `/api/actors/${hsActorId}/harnesses/check`);
+    await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'codex' });
+    const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    humanWs.send(JSON.stringify({ type: 'join_room', room_id: hsRoomId }));
+    await new Promise(r => setTimeout(r, 100));
+    const errPromise = waitForWsMessage(humanWs, m => m.type === 'error', 3000);
+    humanWs.send(JSON.stringify({ type: 'set_room_model', model: 'claude-opus-5-5' }));
+    const msg = await errPromise;
+    assert.ok(msg.message.includes('enabled list'), `expected rejection, got: ${msg.message}`);
+    humanWs.close();
+    await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+    ws16.close();
     delete process.env.HARNESS_CHECK_TIMEOUT_MS;
   });
 
