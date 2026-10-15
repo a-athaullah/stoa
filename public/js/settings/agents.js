@@ -360,6 +360,7 @@ const SA_MODELS = [
   'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5',
 ];
 const SA_DANGER = '#b35a4b';
+const HARNESS_LABELS = { claude: 'Claude CLI', codex: 'Codex CLI' };
 
 // One-time token injection: the sub-agent seal shade vars. Relative oklch keeps
 // the parent HUE and just lightens/desaturates, so Ara's teal stays teal.
@@ -518,10 +519,31 @@ function sMakeEditAccordion(actor) {
   const beGrp = document.createElement('div');
   beGrp.className = 's-field-group'; beGrp.style.minWidth = 'auto';
   const beSel = document.createElement('select');
-  beSel.className = 's-name-input'; beSel.name = 'agent-backend'; beSel.style.cssText = 'width:auto;min-width:130px;opacity:0.6;cursor:not-allowed'; beSel.disabled = true;
-  const o = document.createElement('option'); o.value = 'claude'; o.textContent = 'Claude Code CLI'; o.selected = true;
-  beSel.appendChild(o);
-  beGrp.append(mkFieldLbl('AI agent'), beSel);
+  beSel.className = 's-name-input'; beSel.name = 'agent-harness'; beSel.style.cssText = 'width:auto;min-width:130px;cursor:pointer';
+  const _avail = actor.harnesses_available || [];
+  const _multi = _avail.length > 1;
+  if (!_multi) beSel.style.cssText += ';opacity:0.6;cursor:not-allowed';
+  beSel.disabled = !_multi;
+  (_multi ? _avail : [actor.adapter || 'claude']).forEach(h => {
+    const o = document.createElement('option'); o.value = h;
+    o.textContent = HARNESS_LABELS[h] || h;
+    if (h === (actor.adapter || 'claude')) o.selected = true;
+    beSel.appendChild(o);
+  });
+  if (_multi) {
+    beSel.addEventListener('change', async () => {
+      try {
+        const r = await fetch(`/api/actors/${actor.id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ adapter: beSel.value }),
+        });
+        if (!r.ok) { const e = await r.json().catch(() => ({})); showToast(e.error || 'Failed to change harness', { error: true }); beSel.value = actor.adapter || 'claude'; return; }
+        actor.adapter = beSel.value;
+        showToast('Harness updated');
+      } catch { showToast('Failed to change harness', { error: true }); beSel.value = actor.adapter || 'claude'; }
+    });
+  }
+  beGrp.append(mkFieldLbl('harness'), beSel);
 
   const langGrp = document.createElement('div');
   langGrp.className = 's-field-group'; langGrp.style.minWidth = 'auto';
@@ -707,6 +729,16 @@ function sMakeEditAccordion(actor) {
       'font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;color:var(--h-ink);outline:none;width:100%';
     const spField = saMakeField('system prompt', spInp, 'context injected on every trigger');
 
+    // harness override
+    let selectedHarness = existing?.harness || null;
+    const harnSel = document.createElement('select'); harnSel.name = 'subagent-harness'; harnSel.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;background:var(--h-surface);border:1px solid var(--h-hair-soft);font-family:var(--h-sans);font-size:13px;color:var(--h-ink);outline:none;width:100%;cursor:pointer';
+    const parentHarness = actor.adapter || 'claude';
+    const inheritOptA = document.createElement('option'); inheritOptA.value = ''; inheritOptA.textContent = `inherit from parent (${HARNESS_LABELS[parentHarness] || parentHarness})`; harnSel.appendChild(inheritOptA);
+    (actor.harnesses_available || [parentHarness]).forEach(h => { const o = document.createElement('option'); o.value = h; o.textContent = HARNESS_LABELS[h] || h; if (h === selectedHarness) o.selected = true; harnSel.appendChild(o); });
+    if (!selectedHarness) inheritOptA.selected = true;
+    harnSel.addEventListener('change', () => { selectedHarness = harnSel.value || null; });
+    const harnField = saMakeField('harness', harnSel, 'override parent harness for this worker');
+
     // buttons
     const btns = document.createElement('div');
     btns.style.cssText = 'display:flex;align-items:center;gap:10px;padding-top:2px';
@@ -738,15 +770,15 @@ function sMakeEditAccordion(actor) {
       if (!label) { showErr('label required'); labelInp.focus(); return; }
       saveF.disabled = true;
       try {
-        const body = { label, tier: selectedTier, model: modelSel.value || null, system_prompt: spInp.value.trim() || null };
+        const body = { label, tier: selectedTier, model: modelSel.value || null, system_prompt: spInp.value.trim() || null, harness: selectedHarness };
         const r = existing
           ? await fetch(`/api/sub-agents/${existing.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
           : await fetch(`/api/actors/${actor.id}/sub-agents`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         if (!r.ok) {
           const e = await r.json().catch(() => ({}));
           const msg = e.error || 'failed to save';
-          if (/already exists/i.test(msg)) showErr(`“${label}” already exists on ${actor.name}`);
-          else if (/actor name|conflicts/i.test(msg)) showErr(`“${label}” is an agent name — pick something else`);
+          if (/already exists/i.test(msg)) showErr(`”${label}” already exists on ${actor.name}`);
+          else if (/actor name|conflicts/i.test(msg)) showErr(`”${label}” is an agent name — pick something else`);
           else showToast(msg, { error: true });
           saveF.disabled = false; return;
         }
@@ -754,7 +786,7 @@ function sMakeEditAccordion(actor) {
       } catch { showToast('Failed to save sub-agent', { error: true }); saveF.disabled = false; }
     });
 
-    saForm.append(fh, grid, tierField, spField, btns);
+    saForm.append(fh, grid, tierField, spField, harnField, btns);
     setTimeout(() => labelInp.focus(), 0);
     saShowForm(true);
   }
@@ -801,6 +833,12 @@ function sMakeEditAccordion(actor) {
             'padding:2px 7px;border-radius:6px;background:color-mix(in srgb, var(--h-ink) 7%, var(--h-surface))';
           mp.textContent = sa.model;
           line1.appendChild(mp);
+        }
+        if (sa.harness) {
+          const hp = document.createElement('span');
+          hp.style.cssText = 'font-family:var(--h-sans);font-size:11px;color:var(--h-ink-faint);padding:2px 6px;border-radius:6px;border:1px solid var(--h-hair-soft)';
+          hp.textContent = HARNESS_LABELS[sa.harness] || sa.harness;
+          line1.appendChild(hp);
         }
         mid.append(line1);
         row.appendChild(mid);
@@ -1212,6 +1250,7 @@ function renderAgentDetail(id) {
   if (!bodyEl) return;
   bodyEl.innerHTML = '';
   bodyEl.appendChild(buildAgentSettingsCard(actor));
+  bodyEl.appendChild(buildAgentSystemPromptSection(actor));
   bodyEl.appendChild(buildSubAgentsSection(actor));
   bodyEl.appendChild(buildAgentWorkdirsCard(actor));
   bodyEl.appendChild(buildAgentMemorySection(actor));
@@ -1379,10 +1418,51 @@ function buildAgentSettingsCard(actor) {
 
   const beGrp = document.createElement('div'); beGrp.className = 's-field-group'; beGrp.style.minWidth = 'auto';
   const beSel = document.createElement('select');
-  beSel.className = 's-name-input'; beSel.name = 'agent-backend'; beSel.style.cssText = 'width:auto;min-width:130px;opacity:0.6;cursor:not-allowed'; beSel.disabled = true;
-  const beOpt = document.createElement('option'); beOpt.value = 'claude'; beOpt.textContent = 'Claude Code CLI'; beOpt.selected = true;
-  beSel.appendChild(beOpt);
-  beGrp.append(mkFieldLbl('AI agent'), beSel);
+  beSel.className = 's-name-input'; beSel.name = 'agent-harness'; beSel.style.cssText = 'width:auto;min-width:130px;cursor:pointer';
+  const available = actor.harnesses_available || [];
+  const multiHarness = available.length > 1;
+  if (!multiHarness) beSel.style.cssText += ';opacity:0.6;cursor:not-allowed';
+  beSel.disabled = !multiHarness;
+  const harnessesToShow = multiHarness ? available : [actor.adapter || 'claude'];
+  harnessesToShow.forEach(h => {
+    const o = document.createElement('option'); o.value = h;
+    o.textContent = HARNESS_LABELS[h] || h;
+    if (h === (actor.adapter || 'claude')) o.selected = true;
+    beSel.appendChild(o);
+  });
+  if (multiHarness) {
+    beSel.addEventListener('change', async () => {
+      const notice = document.getElementById(`s-harness-notice-${actor.id}`);
+      try {
+        const r = await fetch(`/api/actors/${actor.id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ adapter: beSel.value }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          showToast(data.error || 'Failed to change harness', { error: true });
+          beSel.value = actor.adapter || 'claude';
+          return;
+        }
+        actor.adapter = beSel.value;
+        const idx = settingsActors.findIndex(a => a.id === actor.id);
+        if (idx >= 0) settingsActors[idx] = { ...settingsActors[idx], adapter: beSel.value };
+        if (notice) {
+          if (data.fallback_rooms?.length) {
+            notice.textContent = `Model di-reset ke default di: ${data.fallback_rooms.map(r => escHtml(r)).join(', ')}`;
+            notice.style.display = '';
+          } else {
+            notice.style.display = 'none';
+          }
+        }
+        showToast('Harness updated');
+      } catch { showToast('Failed to change harness', { error: true }); beSel.value = actor.adapter || 'claude'; }
+    });
+  }
+  const beNotice = document.createElement('span');
+  beNotice.id = `s-harness-notice-${actor.id}`;
+  beNotice.style.cssText = 'font-size:11.5px;color:oklch(60% .15 80);margin-top:2px;display:none';
+  beGrp.append(mkFieldLbl('harness'), beSel, beNotice);
 
   const langGrp = document.createElement('div'); langGrp.className = 's-field-group'; langGrp.style.minWidth = 'auto';
   const langSel = document.createElement('select');
@@ -1530,6 +1610,16 @@ function buildSubAgentsSection(actor) {
     const tierField = saMakeField('tier', saMakeTierPicker(selectedTier, id => { selectedTier = id; }));
     const spInp = document.createElement('textarea'); spInp.name = 'subagent-system-prompt'; spInp.placeholder = 'You verify claims against the actual source before answering…'; spInp.value = existing?.system_prompt || ''; spInp.style.cssText = 'padding:11px 13px;border-radius:8px;min-height:96px;box-sizing:border-box;resize:vertical;background:var(--h-slip);border:1px solid var(--h-hairline);font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;color:var(--h-ink);outline:none;width:100%';
     const spField = saMakeField('system prompt', spInp, 'context injected on every trigger');
+    // Harness field
+    let selectedHarness = existing?.harness || null;
+    const harnSel = document.createElement('select'); harnSel.name = 'subagent-harness'; harnSel.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;background:var(--h-surface);border:1px solid var(--h-hair-soft);font-family:var(--h-sans);font-size:13px;color:var(--h-ink);outline:none;width:100%;cursor:pointer';
+    const parentHarness = actor.adapter || 'claude';
+    const inheritOpt = document.createElement('option'); inheritOpt.value = ''; inheritOpt.textContent = `inherit from parent (${HARNESS_LABELS[parentHarness] || parentHarness})`; harnSel.appendChild(inheritOpt);
+    const availH = actor.harnesses_available || [parentHarness];
+    availH.forEach(h => { const o = document.createElement('option'); o.value = h; o.textContent = HARNESS_LABELS[h] || h; if (h === selectedHarness) o.selected = true; harnSel.appendChild(o); });
+    if (!selectedHarness) inheritOpt.selected = true;
+    harnSel.addEventListener('change', () => { selectedHarness = harnSel.value || null; });
+    const harnField = saMakeField('harness', harnSel, 'override parent harness for this worker');
     const btns = document.createElement('div'); btns.style.cssText = 'display:flex;align-items:center;gap:10px;padding-top:2px';
     const saveF = document.createElement('button'); saveF.style.cssText = 'background:var(--h-ink);color:var(--h-bg);border:none;padding:8px 20px;border-radius:999px;font-family:var(--h-sans);font-size:13px;cursor:pointer'; saveF.textContent = existing ? 'save' : 'create sub-agent';
     const cancelF = document.createElement('button'); cancelF.style.cssText = 'background:transparent;border:1px solid var(--h-hairline);color:var(--h-ink-mute);font-family:var(--h-sans);font-size:13px;padding:7px 16px;border-radius:999px;cursor:pointer'; cancelF.textContent = 'cancel'; cancelF.addEventListener('click', () => saShowForm(false));
@@ -1542,7 +1632,7 @@ function buildSubAgentsSection(actor) {
       if (!label) { showErr('label required'); labelInp.focus(); return; }
       saveF.disabled = true;
       try {
-        const body = { label, tier: selectedTier, model: modelSel.value || null, system_prompt: spInp.value.trim() || null };
+        const body = { label, tier: selectedTier, model: modelSel.value || null, system_prompt: spInp.value.trim() || null, harness: selectedHarness };
         const r = existing
           ? await fetch(`/api/sub-agents/${existing.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
           : await fetch(`/api/actors/${actor.id}/sub-agents`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -1554,10 +1644,10 @@ function buildSubAgentsSection(actor) {
           else showToast(msg, { error: true });
           saveF.disabled = false; return;
         }
-        saShowForm(false); saLoadList();
+        saShowForm(false); saLoadListWithCache();
       } catch { showToast('Failed to save sub-agent', { error: true }); saveF.disabled = false; }
     });
-    saForm.append(fh, grid, tierField, spField, btns);
+    saForm.append(fh, grid, tierField, spField, harnField, btns);
     setTimeout(() => labelInp.focus(), 0);
     saShowForm(true);
   }
@@ -1589,6 +1679,7 @@ function buildSubAgentsSection(actor) {
       const lbl = document.createElement('span'); lbl.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:14px;color:var(--h-ink)'; lbl.textContent = sa.label;
       line1.append(lbl, saMakeTierChip(sa.tier, dim));
       if (sa.model) { const mp = document.createElement('span'); mp.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--h-ink-faint);padding:2px 7px;border-radius:6px;background:color-mix(in srgb, var(--h-ink) 7%, var(--h-surface))'; mp.textContent = sa.model; line1.appendChild(mp); }
+      if (sa.harness) { const hp = document.createElement('span'); hp.style.cssText = 'font-family:var(--h-sans);font-size:11px;color:var(--h-ink-faint);padding:2px 6px;border-radius:6px;border:1px solid var(--h-hair-soft)'; hp.textContent = HARNESS_LABELS[sa.harness] || sa.harness; line1.appendChild(hp); }
       mid.append(line1); row.appendChild(mid);
       const tog = document.createElement('button'); tog.className = 's-notif-toggle' + (sa.enabled ? ' on' : ''); tog.title = sa.enabled ? 'Enabled — click to disable' : 'Disabled — click to enable'; tog.style.flex = '0 0 auto';
       tog.addEventListener('click', async () => { try { const rr = await fetch(`/api/sub-agents/${sa.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !sa.enabled }) }); if (rr.ok) saLoadListWithCache(); } catch { showToast('Failed to update', { error: true }); } });
@@ -1699,4 +1790,80 @@ function buildAgentMemorySection(actor) {
   })();
 
   return memSection;
+}
+
+function buildAgentSystemPromptSection(actor) {
+  const section = document.createElement('section');
+  section.style.cssText = 'border:1px solid var(--h-hair-soft);border-radius:12px;overflow:hidden';
+
+  const hdr = document.createElement('div');
+  hdr.style.cssText = 'padding:13px 16px;border-bottom:1px solid var(--h-hair-soft);background:color-mix(in srgb, var(--h-bg) 38%, var(--h-surface));display:flex;align-items:baseline;gap:10px';
+  const title = document.createElement('span');
+  title.style.cssText = 'font-family:var(--h-serif);font-size:16px;color:var(--h-ink)';
+  title.textContent = 'System Prompt';
+  const hint = document.createElement('span');
+  hint.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)';
+  hint.textContent = 'identity and instructions injected into every session';
+  hdr.append(title, hint);
+  section.appendChild(hdr);
+
+  const body = document.createElement('div');
+  body.style.cssText = 'padding:14px 18px';
+  const loading = document.createElement('div');
+  loading.style.cssText = 'font-size:12.5px;color:var(--h-ink-faint)';
+  loading.textContent = 'loading…';
+  body.appendChild(loading);
+  section.appendChild(body);
+
+  (async () => {
+    try {
+      const r = await fetch(`/api/actors/${actor.id}/system-prompt`);
+      body.removeChild(loading);
+      let currentValue = '';
+      if (r.ok) { const d = await r.json(); currentValue = d.system_prompt || ''; }
+
+      const ta = document.createElement('textarea');
+      ta.name = 'agent-system-prompt';
+      ta.value = currentValue;
+      ta.placeholder = 'You are a senior backend developer…';
+      ta.maxLength = 65536;
+      ta.style.cssText = 'width:100%;box-sizing:border-box;min-height:140px;resize:vertical;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;padding:10px 12px;border:1px solid var(--h-border);border-radius:8px;background:var(--h-surface);color:var(--h-ink);outline:none';
+
+      const footer = document.createElement('div');
+      footer.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-top:8px';
+      const counter = document.createElement('span');
+      counter.style.cssText = 'font-size:11.5px;color:var(--h-ink-faint);font-variant-numeric:tabular-nums';
+      const updateCounter = () => {
+        const used = ta.value.length; const pct = used / 65536;
+        counter.textContent = `${used} / 65536`;
+        counter.style.color = pct > .9 ? 'oklch(55% .18 27)' : pct > .75 ? 'oklch(60% .15 80)' : 'var(--h-ink-faint)';
+      };
+      updateCounter(); ta.addEventListener('input', updateCounter);
+
+      const saveBtn = document.createElement('button');
+      saveBtn.style.cssText = 'background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12px;padding:4px 14px;cursor:pointer';
+      saveBtn.textContent = 'save';
+      saveBtn.onclick = async () => {
+        saveBtn.disabled = true;
+        try {
+          const res = await fetch(`/api/actors/${actor.id}/system-prompt`, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ system_prompt: ta.value.trim() || null }),
+          });
+          if (res.ok) showToast('System prompt saved');
+          else { const e = await res.json().catch(() => ({})); showToast(e.error || 'Failed to save', { error: true }); }
+        } catch { showToast('Failed to save', { error: true }); }
+        saveBtn.disabled = false;
+      };
+
+      footer.append(counter, saveBtn);
+      body.append(ta, footer);
+    } catch {
+      body.innerHTML = '';
+      const err = document.createElement('div'); err.style.cssText = 'font-size:12.5px;color:var(--h-ink-faint)'; err.textContent = 'failed to load system prompt';
+      body.appendChild(err);
+    }
+  })();
+
+  return section;
 }

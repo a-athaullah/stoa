@@ -296,6 +296,24 @@ const ANTHROPIC_MODELS_FALLBACK = [
 ];
 
 let allServerModels = null;
+let allHarnessData = null;
+
+async function fetchHarnesses() {
+  if (allHarnessData !== null) return allHarnessData;
+  try { allHarnessData = await fjson('/api/harnesses'); } catch { allHarnessData = []; }
+  return allHarnessData;
+}
+
+function getModelsForHarness(harnessName) {
+  if (!Array.isArray(allHarnessData) || !harnessName) return null;
+  const h = allHarnessData.find(x => x.name === harnessName);
+  if (!h || !h.models?.length) return null;
+  return h.models.map(m => ({
+    value: m.model_id, label: m.label || m.model_id,
+    vision: false, tools: false, local: false,
+    platform: harnessName, platform_id: harnessName, is_default: !!m.is_default,
+  }));
+}
 
 async function fetchPlatformModels() {
   try {
@@ -309,6 +327,7 @@ async function fetchPlatformModels() {
     }
     populateModelDropdown();
   } catch {}
+  fetchHarnesses(); // prime harness cache in background
 }
 
 function getAvailableModels() {
@@ -355,13 +374,13 @@ function parsePlatformId(modelConfig) {
   } catch { return null; }
 }
 
-function populateModelDropdown(ignored, currentModel, currentPlatformId) {
+function populateModelDropdown(ignored, currentModel, currentPlatformId, overrideModels) {
   const list = document.getElementById('model-dropdown-list');
   const textEl = document.getElementById('model-dropdown-text');
   const badgesEl = document.getElementById('model-capability-badges');
   if (!list || !textEl) return;
 
-  const models = getAvailableModels();
+  const models = overrideModels || getAvailableModels();
   list.innerHTML = '';
   const hasMultiplePlatforms = models.some(m => m.platform !== 'anthropic');
 
@@ -441,7 +460,11 @@ function updateModelSelector(room, parts) {
   const hasAIAgent = (parts || []).some(p => p.type === 'ai');
   wrap.style.display = hasAIAgent ? 'flex' : 'none';
   if (hasAIAgent) {
-    populateModelDropdown(null, room.model, parsePlatformId(room.model_config));
+    const aiPart = (parts || []).find(p => p.type === 'ai');
+    const aiActor = aiPart ? allActors.find(a => a.id === aiPart.actor_id) : null;
+    const harness = aiActor?.adapter || 'claude';
+    const harnessModels = harness !== 'claude' ? getModelsForHarness(harness) : null;
+    populateModelDropdown(null, room.model, parsePlatformId(room.model_config), harnessModels);
     handleModelUpdate({ model: room.model || 'claude-sonnet-4-6' });
   }
 }
