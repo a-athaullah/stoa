@@ -218,6 +218,7 @@ Sub-agent didefinisikan per agent. Pilih agent di **Settings > AI Agent**, lalu 
 - **Model override** (opsional) — kunci sub-agent ke satu model spesifik alih-alih memakai rantai tier-nya. Biarkan pada **use tier** untuk mengikuti routing tier. Model yang dikunci tidak punya fallback — ia dicoba sendirian.
 - **Workdir** (opsional) — direktori kerja tempat sub-agent beroperasi.
 - **System prompt** (opsional) — instruksi tambahan yang membentuk perilaku sub-agent.
+- **Harness** (opsional) — `claude` atau `codex`. Biarkan pada **inherit from parent** (default) untuk memakai harness yang sama dengan agent induk.
 
 Kamu bisa mengedit atau menghapus definisi kapan saja. Definisi milik agent induk, bukan milik room tertentu.
 
@@ -408,6 +409,23 @@ Pilih agent di **Settings > AI Agent**, lalu klik nama agent di header detail un
 
 Bahasa respons setiap agent bisa diubah setelah pembuatan. Pilih agent di **Settings > AI Agent**, lalu ganti bahasa di kartu agent. Bahasa yang tersedia: English, Bahasa Indonesia, 日本語, 한국어, 中文. Perubahan langsung berlaku pada pesan berikutnya.
 
+### System Prompt Agent
+
+Setiap agent memiliki **System Prompt** sendiri yang dikonfigurasi di tab **Settings > AI Agent → System Prompt**. Prompt ini disisipkan di antara base system prompt dan room system prompt — dikirim ke agent di setiap room tempat agent berpartisipasi. Gunakan untuk mendefinisikan identitas, persona, bahasa kerja, dan aturan tetap agent.
+
+Sub-agent **tidak** mewarisi system prompt agent induk. Setiap sub-agent memiliki field system prompt sendiri sehingga identitas mereka tetap independen.
+
+### Harness Agent
+
+Secara default, agent berjalan di **Claude CLI**. Jika mesin agent juga memiliki **Codex CLI** yang terpasang dan sudah login (via `codex login`), kamu bisa mengganti harness di dropdown **Settings > AI Agent → Agent card → Harness**.
+
+- **Claude** — Claude Code CLI. Mendukung compact, streaming, dan resume.
+- **Codex** — OpenAI Codex CLI. Memerlukan `codex` CLI terpasang dan terautentikasi di mesin agent. Sesi Codex menggunakan sandbox `danger-full-access` secara default dan mengabaikan file konfigurasi Codex user (`--ignore-user-config`). **Compact tidak didukung** — compact manual maupun auto-compact keduanya dilewati untuk sesi Codex. Saat pertama kali beralih ke Codex, agent secara otomatis mengunduh `codex-session.js` via auto-update pada pengecekan berikutnya (sekitar 2 menit), lalu restart sekali lagi.
+
+Mengganti harness agent akan me-reset model room yang tidak kompatibel dengan harness baru ke model default harness tersebut. Notifikasi di room mencantumkan semua room dan sub-agent yang terdampak.
+
+Sub-agent juga bisa memilih harness sendiri, atau membiarkannya pada **inherit from parent** (default).
+
 ### Menghapus Agent
 
 Pilih agent di **Settings > AI Agent**, lalu klik tombol **remove** di header detail. Konfirmasi penghapusan di popup. Agent akan di-unregister dan dihapus dari semua room.
@@ -458,7 +476,7 @@ Pilih agent di **Settings > AI Agent** untuk melihat tombol aksi di header detai
 - **Force Update** — paksa agent mengecek update klien segera (normalnya cek tiap 2 menit)
 - **Remove** — hapus registrasi agent (dengan konfirmasi)
 
-**Compact Session** — kompres riwayat percakapan agent untuk mengurangi ukuran konteks. Buka panel thread dan klik tombol compact (ikon ↕) di header panel. Progress bar muncul di dalam panel thread selama proses berlangsung — agent merangkum konteks sebelumnya dan melanjutkan tanpa gangguan. Berguna saat percakapan sudah sangat panjang dan kualitas respons mulai menurun
+**Compact Session** — kompres riwayat percakapan agent untuk mengurangi ukuran konteks. Buka panel thread dan klik tombol compact (ikon ↕) di header panel. Progress bar muncul di dalam panel thread selama proses berlangsung — agent merangkum konteks sebelumnya dan melanjutkan tanpa gangguan. Berguna saat percakapan sudah sangat panjang dan kualitas respons mulai menurun. Compact tidak tersedia untuk sesi harness Codex — tombol disembunyikan saat agent menggunakan Codex.
 
 ### Auto-Compact
 
@@ -468,6 +486,8 @@ Stoa secara otomatis mengompres sesi agent tanpa intervensi manual. Dua mekanism
 - **Worker latar belakang** — setiap 60 menit, agent memindai semua sesi terbuka di mesinnya dan mengompres yang melebihi ambang batas compact yang dikonfigurasi. Ini juga membersihkan sesi yang terbuka secara lokal tetapi tidak aktif di room Stoa mana pun.
 
 Saat auto-compact berjalan, progress bar compact muncul di panel thread (sama seperti compact manual) dan compact marker tersimpan di riwayat pesan thread. Marker ini persisten dan tetap terlihat setelah refresh halaman.
+
+Kedua mekanisme melewati sesi yang berjalan di harness Codex — Codex tidak mendukung compact.
 
 ### Pesan Proaktif
 
@@ -805,7 +825,8 @@ Layout dua panel untuk mengelola semua AI agent. Sidebar kiri menampilkan daftar
 Panel detail mencakup:
 
 - **Header** — avatar agent (klik untuk mengubah), nama (klik untuk mengedit inline), status online/offline, dan tombol aksi (rescan, force update, remove)
-- **Kartu Agent** — tipe backend, pemilih bahasa, field nama, pemilih platform, dan perintah install untuk reinstall
+- **Kartu Agent** — tipe backend, pemilih bahasa, field nama, pemilih platform, pemilih harness, dan perintah install untuk reinstall
+- **System Prompt** — system prompt per-agent yang diterapkan di setiap room tempat agent berpartisipasi; sub-agent memiliki system prompt sendiri dan tidak mewarisi ini
 - **Kartu Sub-agents** — semua sub-agent yang didefinisikan untuk agent ini, dengan kontrol add/edit/delete/toggle
 - **Kartu Workdirs** — daftar read-only working directory yang terdaftar untuk agent ini
 
@@ -923,7 +944,8 @@ Browser  <-->  WebSocket  <-->  server.js  <-->  Agent (stoa.js)
 - **server.js** — server HTTP + WebSocket, mengatur room, pesan, dan orkestrasi agent
 - **public/** — frontend (tidak perlu build step)
 - **stoa.js** — klien agent yang berjalan di setiap mesin agent
-- **claude-session.js** — mengatur subprocess CLI Claude Code yang persisten
+- **claude-session.js** — mengatur subprocess Claude Code CLI
+- **codex-session.js** — mengatur subprocess Codex CLI; diunduh ke mesin agent secara otomatis via auto-update saat harness Codex pertama kali digunakan
 - **SQLite** — semua data disimpan lokal di `stoa.db` (mode WAL untuk performa)
 
 Semua model AI dirutekan melalui **Claude Code CLI**. Untuk platform eksternal kustom (OpenRouter, Together AI, dll.), server meneruskan environment variable khusus platform (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`) ke proses CLI. Untuk **Ollama Cloud**, request dirutekan melalui proxy bawaan Stoa (`/v1/messages`) dengan rotasi API key di sisi server — agent terhubung ke Stoa, bukan langsung ke ollama.com.

@@ -217,6 +217,7 @@ Sub-agents are defined per agent. Select the agent in **Settings > AI Agent**, t
 - **Model override** (optional) — pin the sub-agent to a single specific model instead of using its tier's chain. Leave it on **use tier** to follow the tier routing. A pinned model has no fallback — it is tried alone.
 - **Workdir** (optional) — a working directory the sub-agent operates in.
 - **System prompt** (optional) — extra instructions that shape the sub-agent's behavior.
+- **Harness** (optional) — `claude` or `codex`. Leave on **inherit from parent** (default) to use the same harness as the parent agent.
 
 You can edit or delete a definition anytime. Definitions belong to the parent agent, not to any specific room.
 
@@ -407,6 +408,23 @@ Select the agent in **Settings > AI Agent**, then click the agent's name in the 
 
 Each agent's response language can be changed after creation. Select the agent in **Settings > AI Agent**, then change the language in the agent card. Available languages: English, Bahasa Indonesia, 日本語, 한국어, 中文. The change takes effect immediately on the next message.
 
+### Agent System Prompt
+
+Each agent has its own **System Prompt** configured in **Settings > AI Agent → System Prompt** tab. This prompt is layered between the base system prompt and the room system prompt — it is sent to the agent in every room it participates in. Use it to define the agent's identity, persona, working language, and any standing rules.
+
+Sub-agents do **not** inherit the parent agent's system prompt. Each sub-agent has its own system prompt field, so their identities stay independent.
+
+### Agent Harness
+
+By default, agents run on the **Claude CLI**. If the agent's machine also has **Codex CLI** installed and logged in (via `codex login`), you can switch harnesses in **Settings > AI Agent → Agent card → Harness** dropdown.
+
+- **Claude** — Claude Code CLI. Supports compact, streaming, and resume.
+- **Codex** — OpenAI Codex CLI. Requires `codex` CLI installed and authenticated on the agent's machine. Codex sessions use `danger-full-access` sandbox by default and ignore user Codex config files (`--ignore-user-config`). **Compact is not supported** — manual compact and auto-compact are both skipped for Codex sessions. When first switching to Codex, the agent automatically downloads `codex-session.js` via auto-update on its next check (about 2 minutes), then restarts once more.
+
+Changing an agent's harness resets any room models that are incompatible with the new harness to that harness's default model. A notice in the room lists all affected rooms and sub-agents.
+
+Sub-agents can also choose their own harness, or leave it on **inherit from parent** (the default).
+
 ### Removing an Agent
 
 Select the agent in **Settings > AI Agent**, then click the **remove** button in the detail header. Confirm the deletion in the popup. The agent is unregistered and removed from all rooms.
@@ -457,7 +475,7 @@ Select an agent in **Settings > AI Agent** to see action buttons in the detail h
 - **Force Update** — force the agent to check for client updates immediately (normally checks every 2 minutes)
 - **Remove** — unregister the agent (with confirmation)
 
-**Compact Session** — compress the agent's conversation history to reduce context size. Open the thread panel and click the compact button (↕ icon) in the panel header. A progress bar appears inside the thread panel while compacting — the agent summarizes prior context and continues seamlessly. Useful when a conversation has grown very long and response quality starts to degrade
+**Compact Session** — compress the agent's conversation history to reduce context size. Open the thread panel and click the compact button (↕ icon) in the panel header. A progress bar appears inside the thread panel while compacting — the agent summarizes prior context and continues seamlessly. Useful when a conversation has grown very long and response quality starts to degrade. Compact is not available for Codex harness sessions — the button is hidden when the agent uses Codex.
 
 ### Auto-Compact
 
@@ -467,6 +485,8 @@ Stoa automatically compacts agent sessions without manual intervention. Two mech
 - **Background worker** — every 60 minutes, the agent scans all open sessions on its machine and compacts any that exceed the configured compact threshold. This also cleans up sessions that are open locally but not active in any Stoa room.
 
 When auto-compact runs, a compact progress bar appears in the thread panel (same as manual compact) and a compact marker is saved in the thread's message history. The marker persists across page refreshes.
+
+Both mechanisms skip sessions running on the Codex harness — Codex does not support compact.
 
 ### Proactive Messages
 
@@ -804,7 +824,8 @@ A two-panel layout for managing all your AI agents. The left sidebar shows a sea
 The detail panel includes:
 
 - **Header** — agent avatar (click to change), name (click to rename inline), online/offline status, and action buttons (rescan, force update, remove)
-- **Agent card** — backend type, language selector, name field, platform selector, and the install command for reinstalling
+- **Agent card** — backend type, language selector, name field, platform selector, harness selector, and the install command for reinstalling
+- **System Prompt** — per-agent system prompt applied in every room this agent participates in; sub-agents have their own system prompt and do not inherit this one
 - **Sub-agents card** — all sub-agents defined for this agent, with add/edit/delete/toggle controls
 - **Workdirs card** — read-only list of working directories registered by this agent
 
@@ -922,7 +943,8 @@ Browser  <-->  WebSocket  <-->  server.js  <-->  Agent (stoa.js)
 - **server.js** — HTTP + WebSocket server, manages rooms, messages, and agent orchestration
 - **public/** — frontend (no build step needed)
 - **stoa.js** — agent client that runs on each agent machine
-- **claude-session.js** — manages the persistent Claude Code CLI subprocess
+- **claude-session.js** — manages the Claude Code CLI subprocess
+- **codex-session.js** — manages the Codex CLI subprocess; downloaded to agent machines automatically via auto-update when the Codex harness is first used
 - **SQLite** — all data stored locally in `stoa.db` (WAL mode for performance)
 
 All AI models are routed through **Claude Code CLI**. For custom external platforms (OpenRouter, Together AI, etc.), the server passes platform-specific environment variables (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`) to the CLI process. For **Ollama Cloud**, requests are routed through a built-in Stoa proxy (`/v1/messages`) with server-side API key rotation — agents connect to Stoa, not directly to ollama.com.
