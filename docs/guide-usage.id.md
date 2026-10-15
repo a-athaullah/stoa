@@ -215,7 +215,7 @@ Sub-agent didefinisikan per agent. Pilih agent di **Settings > AI Agent**, lalu 
 
 - **Label** (wajib) — nama singkat seperti `probe` atau `researcher`. Muncul di chat sebagai `Ara (probe)` sehingga kamu selalu tahu sub-agent mana yang menghasilkan sebuah pesan.
 - **Tier** — `quick`, `standard`, atau `deep`. Tier memilih **rantai fallback model** mana yang dipakai sub-agent (lihat [Tier Model dan Fallback](#tier-model-dan-fallback) di bawah). Secara default `quick` memakai model cepat, `standard` yang seimbang, dan `deep` yang paling mumpuni — masing-masing jatuh ke model yang lebih ringan jika model utama tidak tersedia.
-- **Model override** (opsional) — kunci sub-agent ke satu model spesifik alih-alih memakai rantai tier-nya. Biarkan pada **use tier** untuk mengikuti routing tier. Model yang dikunci tidak punya fallback — ia dicoba sendirian.
+- **Model override** (opsional) — kunci sub-agent ke satu model spesifik alih-alih memakai rantai tier-nya. Biarkan pada **use tier** untuk mengikuti routing tier. Model yang dikunci tidak punya fallback — ia dicoba sendirian. Dropdown hanya menampilkan model yang kompatibel dengan harness efektif sub-agent — model Claude untuk Claude, atau model Codex hasil Check terakhir agent untuk Codex; jika agent belum pernah di-Check, Stoa memakai daftar bawaan Codex. Mengubah field **Harness** saat model tertentu sudah dipilih akan mereset pilihan ke **use tier** jika model itu tidak tersedia di harness baru. Server juga menolak model yang tidak cocok dengan harness efektif sub-agent saat disimpan.
 - **Workdir** (opsional) — direktori kerja tempat sub-agent beroperasi.
 - **System prompt** (opsional) — instruksi tambahan yang membentuk perilaku sub-agent.
 - **Harness** (opsional) — `claude` atau `codex`. Biarkan pada **inherit from parent** (default) untuk memakai harness yang sama dengan agent induk.
@@ -244,6 +244,8 @@ Resolusi mengikuti urutan prioritas yang jelas:
 1. **Model override sub-agent** — jika sub-agent mengunci model tertentu, model itu yang dipakai (tanpa fallback).
 2. **Override tier room** — jika tidak, rantai room yang dikonfigurasi untuk tier itu yang dipakai.
 3. **Default server** — jika room tidak punya override, default bawaan berlaku: `quick → haiku`, `standard → sonnet → haiku`, `deep → opus → sonnet`.
+
+Untuk **Codex**, ketiga tier menyelesaikan ke model default yang sama yang dilaporkan agent — routing tier per model hanya berlaku untuk Claude.
 
 Untuk menyesuaikan rantai sebuah room, buka setelan room (ikon **gear** di header room) dan pakai kartu **Model tiers**. Awalnya memakai default server; klik **override for this room** untuk mengedit rantai tiap tier — urutkan ulang model (yang pertama primary), tambah fallback, atau hapus salah satu. **Reset to server defaults** menghapus override. Model yang dikunci di sub-agent selalu menang atas rantai room.
 

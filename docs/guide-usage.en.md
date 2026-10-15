@@ -214,7 +214,7 @@ Sub-agents are defined per agent. Select the agent in **Settings > AI Agent**, t
 
 - **Label** (required) — a short name like `probe` or `researcher`. It appears in chat as `Ara (probe)` so you always know which sub-agent produced a message.
 - **Tier** — `quick`, `standard`, or `deep`. The tier selects which **model fallback chain** the sub-agent runs on (see [Model Tiers and Fallback](#model-tiers-and-fallback) below). By default `quick` runs a fast model, `standard` a balanced one, and `deep` the most capable — each falling back to a lighter model if the primary is unavailable.
-- **Model override** (optional) — pin the sub-agent to a single specific model instead of using its tier's chain. Leave it on **use tier** to follow the tier routing. A pinned model has no fallback — it is tried alone.
+- **Model override** (optional) — pin the sub-agent to a single specific model instead of using its tier's chain. Leave it on **use tier** to follow the tier routing. A pinned model has no fallback — it is tried alone. The dropdown lists only models compatible with the sub-agent's effective harness — Claude models for Claude, or the agent's detected Codex models (from the last Check) for Codex; if the agent has never been checked, Stoa falls back to its built-in Codex list. Changing the **Harness** field while a specific model is selected resets the selection to **use tier** if that model is unavailable under the new harness. The server also rejects a model that does not match the sub-agent's effective harness at save time.
 - **Workdir** (optional) — a working directory the sub-agent operates in.
 - **System prompt** (optional) — extra instructions that shape the sub-agent's behavior.
 - **Harness** (optional) — `claude` or `codex`. Leave on **inherit from parent** (default) to use the same harness as the parent agent.
@@ -243,6 +243,8 @@ Resolution follows a clear precedence:
 1. **Sub-agent model override** — if the sub-agent pins a specific model, that model is used (no fallback).
 2. **Room tier override** — otherwise the room's configured chain for that tier is used.
 3. **Server defaults** — if the room has no override, built-in defaults apply: `quick → haiku`, `standard → sonnet → haiku`, `deep → opus → sonnet`.
+
+For **Codex**, all three tiers resolve to the same default model reported by the agent — per-tier model routing only applies to Claude.
 
 To customize the chains for a room, open the room settings (the **gear** icon in the room header) and use the **Model tiers** card. It starts on server defaults; click **override for this room** to edit each tier's chain — reorder models (the first is primary), add a fallback, or remove one. **Reset to server defaults** clears the override. A pinned sub-agent model always wins over the room chain.
 
