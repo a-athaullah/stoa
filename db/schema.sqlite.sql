@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS actors (
   secret TEXT DEFAULT NULL,
   available_models TEXT DEFAULT NULL,
   system_prompt TEXT DEFAULT NULL,
+  default_model TEXT DEFAULT NULL,
   created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -67,6 +68,7 @@ CREATE TABLE IF NOT EXISTS messages (
   automation_id INTEGER DEFAULT NULL,
   automation_name TEXT DEFAULT NULL,
   automation_provider TEXT DEFAULT NULL,
+  model_source TEXT DEFAULT NULL,
   FOREIGN KEY (room_id) REFERENCES rooms(id),
   FOREIGN KEY (participant_id) REFERENCES room_participants(id),
   FOREIGN KEY (thread_id) REFERENCES messages(id),
