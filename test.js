@@ -8217,6 +8217,33 @@ async function run() {
     db.prepare('UPDATE actors SET adapter=?, default_model=NULL WHERE id=?').run('claude', hsActorId);
   });
 
+  // PATCH adapter + invalid default_model: rejected 400, nothing changed (atomicity)
+  await test('PATCH adapter + invalid default_model — rejected 400, no side effects', async () => {
+    if (!hsActorId || !hsRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    db.prepare('UPDATE actors SET adapter=?, default_model=? WHERE id=?').run('claude', 'claude-opus-5-5', hsActorId);
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+    const ws24 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready24 = waitForWsMessage(ws24, m => m.type === 'agent_ready');
+    ws24.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready24;
+    ws24.send(JSON.stringify({
+      type: 'harnesses_update',
+      harnesses_available: ['codex'],
+      harness_status: [{ id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [{ id: 'gpt-6-sol', label: 'GPT-6', is_default: true }] }],
+    }));
+    await new Promise(r => setTimeout(r, 100));
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'codex', default_model: 'nonexistent-model' });
+    assert.strictEqual(r.status, 400, 'should reject invalid default_model');
+    const row = db.prepare('SELECT adapter, default_model FROM actors WHERE id=?').get(hsActorId);
+    assert.strictEqual(row.adapter, 'claude', 'adapter should NOT have changed on rejected request');
+    assert.strictEqual(row.default_model, 'claude-opus-5-5', 'default_model should NOT have changed on rejected request');
+    const roomRow = db.prepare('SELECT model FROM rooms WHERE id=?').get(hsRoomId);
+    assert.strictEqual(roomRow.model, 'claude-sonnet-5-5', 'room model should NOT have changed on rejected request');
+    ws24.close();
+    db.prepare('UPDATE actors SET adapter=?, default_model=NULL WHERE id=?').run('claude', hsActorId);
+  });
+
   // default_model with leading/trailing spaces: stored trimmed
   await test('PATCH default_model with spaces — stored trimmed', async () => {
     if (!hsActorId) { console.log('    (skipped)'); return; }
@@ -8334,8 +8361,8 @@ async function run() {
     assert.ok(col, 'model_source column not found');
   });
 
-  // GET /api/actors includes default_model and effective fields
-  await test('GET /api/actors — includes default_model and effective fields', async () => {
+  // GET /api/actors includes default_model, harness_default_model, and effective fields
+  await test('GET /api/actors — includes default_model, harness_default_model, and effective fields', async () => {
     if (!hsActorId) { console.log('    (skipped)'); return; }
     const db = require('./db');
     db.prepare('UPDATE actors SET adapter=?, default_model=NULL WHERE id=?').run('claude', hsActorId);
@@ -8344,9 +8371,25 @@ async function run() {
     const agent = r.body.find(a => a.id === hsActorId);
     assert.ok(agent, 'agent not found');
     assert.ok('default_model' in agent, 'default_model field missing');
+    assert.ok('harness_default_model' in agent, 'harness_default_model field missing');
     assert.ok('effective_default_model' in agent, 'effective_default_model field missing');
     assert.ok('effective_default_source' in agent, 'effective_default_source field missing');
+    assert.strictEqual(agent.harness_default_model, 'claude-sonnet-5-5', 'claude harness default should be claude-sonnet-5-5');
     assert.ok(['agent_default', 'harness_default', 'cli_default'].includes(agent.effective_default_source));
+  });
+
+  // PATCH response includes harness_default_model, effective_default_model, effective_default_source
+  await test('PATCH /api/actors — response includes harness_default_model and effective fields', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    db.prepare('UPDATE actors SET adapter=?, default_model=NULL WHERE id=?').run('claude', hsActorId);
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { default_model: 'claude-opus-5-5' });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.default_model, 'claude-opus-5-5');
+    assert.strictEqual(r.body.harness_default_model, 'claude-sonnet-5-5', 'harness_default_model should be pure harness default');
+    assert.strictEqual(r.body.effective_default_model, 'claude-opus-5-5', 'effective should reflect agent default');
+    assert.strictEqual(r.body.effective_default_source, 'agent_default');
+    db.prepare('UPDATE actors SET default_model=NULL WHERE id=?').run(hsActorId);
   });
 
   // Teardown — delete all test rooms and actors created during the run

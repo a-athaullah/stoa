@@ -151,6 +151,13 @@ function resolveAgentModel(actorId, harness, roomModel) {
   return { model: null, source: 'cli_default' };
 }
 
+function getHarnessDefaultModel(actorId, harness) {
+  const h = harness || 'claude';
+  const hModels = getHarnessModels(actorId, h);
+  if (!hModels.length) return null;
+  return hModels.find(m => m.is_default)?.model_id || hModels[0].model_id;
+}
+
 // Resolve the ordered model fallback chain for a tiered sub-agent trigger. Precedence:
 //   1. sub_agent explicit model override  → [that model]   (user pinned it)
 //   2. room.model_tiers[tier] chain       → configured per-room override
@@ -3323,6 +3330,7 @@ const server = http.createServer(async (req, res) => {
       const out = { ...r, online: agentClients.has(r.id), client_version: agentVersions.get(r.id) || null, harnesses_available: agentHarnesses.get(r.id) || [], harness_status: agentHarnessStatus.get(r.id) || [] };
       if (r.type === 'ai') {
         const h = r.adapter || 'claude';
+        out.harness_default_model = getHarnessDefaultModel(r.id, h);
         const resolved = resolveAgentModel(r.id, h, null);
         out.effective_default_model = resolved.model;
         out.effective_default_source = resolved.source;
@@ -3338,28 +3346,9 @@ const server = http.createServer(async (req, res) => {
     if (!body) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
     const { name, avatar_url, lang, adapter, default_model } = body;
     if (name !== undefined && !name?.trim()) { res.writeHead(400); return res.end('name required'); }
-    if (name !== undefined || avatar_url !== undefined) {
-      if (avatar_url !== undefined) {
-        if (avatar_url !== null && (!avatar_url.startsWith('/uploads/') || avatar_url.includes('..'))) { res.writeHead(400); return res.end('invalid avatar_url'); }
-        if (name !== undefined) {
-          db.prepare('UPDATE actors SET name=?, avatar_url=? WHERE id=?').run(name.trim(), avatar_url, id);
-        } else {
-          db.prepare('UPDATE actors SET avatar_url=? WHERE id=?').run(avatar_url, id);
-        }
-      } else {
-        db.prepare('UPDATE actors SET name=? WHERE id=?').run(name.trim(), id);
-      }
-    }
-    if (lang !== undefined) {
-      const existing = (() => { try { return JSON.parse(db.prepare('SELECT adapter_config FROM actors WHERE id=?').get(id)?.adapter_config || '{}'); } catch { return {}; } })();
-      existing.lang = lang;
-      db.prepare('UPDATE actors SET adapter_config=? WHERE id=?').run(JSON.stringify(existing), id);
-    }
-    // Process adapter FIRST so default_model validates against the final harness
-    let fallbackRooms = [];
-    let fallbackAgentRooms = [];
-    let fallbackSubAgents = [];
-    let defaultModelReset = null;
+    if (avatar_url !== undefined && avatar_url !== null && (!avatar_url.startsWith('/uploads/') || avatar_url.includes('..'))) { res.writeHead(400); return res.end('invalid avatar_url'); }
+    // --- VALIDATION PHASE (no DB writes) ---
+    const actor = db.prepare('SELECT id, name, type, adapter, default_model FROM actors WHERE id=?').get(id);
     if (adapter !== undefined) {
       const validHarnesses = db.prepare('SELECT name FROM harnesses').all().map(h => h.name);
       if (!validHarnesses.includes(adapter)) return json(res, { error: `adapter must be one of: ${validHarnesses.join(', ')}` }, 400);
@@ -3368,61 +3357,87 @@ const server = http.createServer(async (req, res) => {
       const statusList = agentHarnessStatus.get(id) || [];
       const hStatus = statusList.find(s => s.id === adapter);
       if (hStatus && hStatus.logged_in === false) return json(res, { error: `harness "${adapter}" is installed but not logged in — run "${adapter} login" on the agent machine` }, 400);
-      const oldDefaultModel = db.prepare('SELECT default_model FROM actors WHERE id=?').get(id)?.default_model;
-      db.prepare('UPDATE actors SET adapter=? WHERE id=?').run(adapter, id);
-      // Only auto-reset if body doesn't carry an explicit default_model (user is setting it themselves)
-      if (oldDefaultModel && default_model === undefined) {
-        if (!isModelCompatible(id, adapter, oldDefaultModel)) {
-          db.prepare('UPDATE actors SET default_model=NULL WHERE id=?').run(id);
-          defaultModelReset = { old_model: oldDefaultModel };
-        }
-      }
-      const hModels = getHarnessModels(id, adapter);
-      if (hModels.length) {
-        const defaultModelId = hModels.find(m => m.is_default)?.model_id || hModels[0]?.model_id || null;
-        const agentRooms = db.prepare('SELECT r.id, r.model FROM rooms r JOIN room_participants rp ON rp.room_id=r.id WHERE rp.actor_id=? AND r.model IS NOT NULL').all(id);
-        for (const room of agentRooms) {
-          if (!isModelCompatible(id, adapter, room.model, { allowPlatform: true })) {
-            const otherAi = db.prepare("SELECT a.id, a.adapter FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='ai' AND a.id!=?").all(room.id, id);
-            const othersCanHandle = otherAi.some(oa => {
-              const oAdapter = oa.adapter || 'claude';
-              return isModelCompatible(oa.id, oAdapter, room.model, { allowPlatform: true });
-            });
-            if (othersCanHandle) {
-              const resolved = resolveAgentModel(id, adapter, room.model);
-              fallbackAgentRooms.push({ room_id: room.id, room_model: room.model, agent_model: resolved.model, agent_source: resolved.source });
-            } else {
-              db.prepare('UPDATE rooms SET model=? WHERE id=?').run(defaultModelId, room.id);
-              fallbackRooms.push({ room_id: room.id, old_model: room.model, new_model: defaultModelId });
-            }
-          }
-        }
-        const inheritSubs = db.prepare('SELECT id, label, model FROM sub_agents WHERE parent_actor_id=? AND harness IS NULL AND model IS NOT NULL').all(id);
-        for (const sub of inheritSubs) {
-          if (!isModelCompatible(id, adapter, sub.model)) {
-            db.prepare('UPDATE sub_agents SET model=? WHERE id=?').run(defaultModelId, sub.id);
-            fallbackSubAgents.push({ sub_agent_id: sub.id, label: sub.label, old_model: sub.model, new_model: defaultModelId });
-          }
-        }
-      }
     }
-    // default_model validated against the final adapter (after adapter change if any)
+    const finalHarness = adapter ?? actor?.adapter ?? 'claude';
     let savedDefaultModel;
     if (default_model !== undefined) {
       if (default_model === null) {
-        db.prepare('UPDATE actors SET default_model=NULL WHERE id=?').run(id);
         savedDefaultModel = null;
       } else {
         if (typeof default_model !== 'string' || !default_model.trim()) return json(res, { error: 'default_model must be a non-empty string or null' }, 400);
         const trimmed = default_model.trim();
-        const actorRow = db.prepare('SELECT adapter FROM actors WHERE id=?').get(id);
-        const h = actorRow?.adapter || 'claude';
-        if (!isModelCompatible(id, h, trimmed)) return json(res, { error: `default_model "${trimmed}" is not compatible with harness "${h}"` }, 400);
-        db.prepare('UPDATE actors SET default_model=? WHERE id=?').run(trimmed, id);
+        if (!isModelCompatible(id, finalHarness, trimmed)) return json(res, { error: `default_model "${trimmed}" is not compatible with harness "${finalHarness}"` }, 400);
         savedDefaultModel = trimmed;
       }
     }
-    const actor = db.prepare('SELECT id, name, type FROM actors WHERE id=?').get(id);
+    // --- WRITE PHASE (all mutations in one transaction) ---
+    let fallbackRooms = [];
+    let fallbackAgentRooms = [];
+    let fallbackSubAgents = [];
+    let defaultModelReset = null;
+    const runPatch = db.transaction(() => {
+      if (name !== undefined || avatar_url !== undefined) {
+        if (avatar_url !== undefined) {
+          if (name !== undefined) {
+            db.prepare('UPDATE actors SET name=?, avatar_url=? WHERE id=?').run(name.trim(), avatar_url, id);
+          } else {
+            db.prepare('UPDATE actors SET avatar_url=? WHERE id=?').run(avatar_url, id);
+          }
+        } else {
+          db.prepare('UPDATE actors SET name=? WHERE id=?').run(name.trim(), id);
+        }
+      }
+      if (lang !== undefined) {
+        const existing = (() => { try { return JSON.parse(db.prepare('SELECT adapter_config FROM actors WHERE id=?').get(id)?.adapter_config || '{}'); } catch { return {}; } })();
+        existing.lang = lang;
+        db.prepare('UPDATE actors SET adapter_config=? WHERE id=?').run(JSON.stringify(existing), id);
+      }
+      if (adapter !== undefined) {
+        db.prepare('UPDATE actors SET adapter=? WHERE id=?').run(adapter, id);
+        if (actor?.default_model && default_model === undefined) {
+          if (!isModelCompatible(id, adapter, actor.default_model)) {
+            db.prepare('UPDATE actors SET default_model=NULL WHERE id=?').run(id);
+            defaultModelReset = { old_model: actor.default_model };
+          }
+        }
+        const hModels = getHarnessModels(id, adapter);
+        if (hModels.length) {
+          const defaultModelId = hModels.find(m => m.is_default)?.model_id || hModels[0]?.model_id || null;
+          const agentRooms = db.prepare('SELECT r.id, r.model FROM rooms r JOIN room_participants rp ON rp.room_id=r.id WHERE rp.actor_id=? AND r.model IS NOT NULL').all(id);
+          for (const room of agentRooms) {
+            if (!isModelCompatible(id, adapter, room.model, { allowPlatform: true })) {
+              const otherAi = db.prepare("SELECT a.id, a.adapter FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='ai' AND a.id!=?").all(room.id, id);
+              const othersCanHandle = otherAi.some(oa => {
+                const oAdapter = oa.adapter || 'claude';
+                return isModelCompatible(oa.id, oAdapter, room.model, { allowPlatform: true });
+              });
+              if (othersCanHandle) {
+                const resolved = resolveAgentModel(id, adapter, room.model);
+                fallbackAgentRooms.push({ room_id: room.id, room_model: room.model, agent_model: resolved.model, agent_source: resolved.source });
+              } else {
+                db.prepare('UPDATE rooms SET model=? WHERE id=?').run(defaultModelId, room.id);
+                fallbackRooms.push({ room_id: room.id, old_model: room.model, new_model: defaultModelId });
+              }
+            }
+          }
+          const inheritSubs = db.prepare('SELECT id, label, model FROM sub_agents WHERE parent_actor_id=? AND harness IS NULL AND model IS NOT NULL').all(id);
+          for (const sub of inheritSubs) {
+            if (!isModelCompatible(id, adapter, sub.model)) {
+              db.prepare('UPDATE sub_agents SET model=? WHERE id=?').run(defaultModelId, sub.id);
+              fallbackSubAgents.push({ sub_agent_id: sub.id, label: sub.label, old_model: sub.model, new_model: defaultModelId });
+            }
+          }
+        }
+      }
+      if (default_model !== undefined) {
+        if (savedDefaultModel === null) {
+          db.prepare('UPDATE actors SET default_model=NULL WHERE id=?').run(id);
+        } else {
+          db.prepare('UPDATE actors SET default_model=? WHERE id=?').run(savedDefaultModel, id);
+        }
+      }
+    });
+    runPatch();
     const finalName = name !== undefined ? name.trim() : actor?.name;
     if (name !== undefined && actor?.type === 'human') {
       writeEnv('HUMAN_NAME', name.trim());
@@ -3435,6 +3450,11 @@ const server = http.createServer(async (req, res) => {
     if (defaultModelReset) result.default_model_reset = defaultModelReset;
     if (adapter !== undefined) result.adapter = adapter;
     if (default_model !== undefined) result.default_model = savedDefaultModel;
+    const h = adapter ?? actor?.adapter ?? 'claude';
+    result.harness_default_model = getHarnessDefaultModel(id, h);
+    const resolved = resolveAgentModel(id, h, null);
+    result.effective_default_model = resolved.model;
+    result.effective_default_source = resolved.source;
     return json(res, result);
   }
 
