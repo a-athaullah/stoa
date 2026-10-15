@@ -7598,6 +7598,188 @@ async function run() {
     await req('DELETE', `/api/sub-agents/${saId}`);
   });
 
+  // triggerAiResponse — codex room model triggers without platform error
+  await test('triggerAiResponse — codex adapter room model triggers without platform error', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    process.env.HARNESS_CHECK_TIMEOUT_MS = '3000';
+    const ws12 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready12 = waitForWsMessage(ws12, m => m.type === 'agent_ready');
+    ws12.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready12;
+    const checkDone12 = new Promise((resolve) => {
+      ws12.on('message', (raw) => {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type === 'check_harnesses') {
+          ws12.send(JSON.stringify({
+            type: 'harnesses_update',
+            harnesses_available: ['claude', 'codex'],
+            harness_status: [
+              { id: 'claude', installed: true, logged_in: true, version: '2.0.0', models: null },
+              { id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [
+                { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true },
+                { id: 'gpt-6-sol', label: 'GPT-6-Sol', is_default: false },
+              ]},
+            ],
+            request_id: msg.request_id,
+          }));
+        }
+      });
+    });
+    await req('POST', `/api/actors/${hsActorId}/harnesses/check`);
+    await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'codex' });
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('gpt-6.1-sol', hsRoomId);
+    const triggerPromise = waitForWsMessage(ws12, m => m.type === 'agent_trigger', 5000);
+    const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    humanWs.send(JSON.stringify({ type: 'join_room', room_id: hsRoomId }));
+    await new Promise(r => setTimeout(r, 100));
+    humanWs.send(JSON.stringify({ type: 'send_message', room_id: hsRoomId, content: 'reply: ok' }));
+    const trigMsg = await triggerPromise;
+    assert.strictEqual(trigMsg.model, 'gpt-6.1-sol', `expected codex model, got: ${trigMsg.model}`);
+    assert.strictEqual(trigMsg.harness, 'codex');
+    assert.strictEqual(trigMsg.base_url, undefined, 'codex trigger should not have base_url');
+    assert.strictEqual(trigMsg.api_keys, undefined, 'codex trigger should not have api_keys');
+    if (trigMsg.message_id) {
+      ws12.send(JSON.stringify({ type: 'agent_message', message_id: trigMsg.message_id, content: 'done', state: 'complete' }));
+    }
+    humanWs.close();
+    await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+    ws12.close();
+    delete process.env.HARNESS_CHECK_TIMEOUT_MS;
+  });
+
+  // triggerAiResponse — claude adapter with non-claude model without platform still errors
+  await test('triggerAiResponse — claude room non-claude model without platform still errors', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const ws13 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready13 = waitForWsMessage(ws13, m => m.type === 'agent_ready');
+    ws13.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready13;
+    db.prepare('UPDATE rooms SET model=?, model_config=NULL WHERE id=?').run('some-platform-model', hsRoomId);
+    const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    humanWs.send(JSON.stringify({ type: 'join_room', room_id: hsRoomId }));
+    await new Promise(r => setTimeout(r, 100));
+    const errPromise = waitForWsMessage(humanWs, m => m.type === 'message_complete' && m.content?.includes('tidak bisa digunakan'), 5000);
+    humanWs.send(JSON.stringify({ type: 'send_message', room_id: hsRoomId, content: 'reply: ok' }));
+    const errMsg = await errPromise;
+    assert.ok(errMsg.content.includes('some-platform-model'), `error should mention model: ${errMsg.content}`);
+    humanWs.close();
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+    ws13.close();
+  });
+
+  // triggerAiResponse — codex sub-agent under claude parent with platform model gets no baseUrl
+  await test('triggerAiResponse — codex sub-agent under platform-claude parent gets no baseUrl', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    process.env.HARNESS_CHECK_TIMEOUT_MS = '3000';
+    const ws14 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready14 = waitForWsMessage(ws14, m => m.type === 'agent_ready');
+    ws14.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready14;
+    const checkDone14 = new Promise((resolve) => {
+      ws14.on('message', (raw) => {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type === 'check_harnesses') {
+          ws14.send(JSON.stringify({
+            type: 'harnesses_update',
+            harnesses_available: ['claude', 'codex'],
+            harness_status: [
+              { id: 'claude', installed: true, logged_in: true, version: '2.0.0', models: null },
+              { id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [
+                { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true },
+              ]},
+            ],
+            request_id: msg.request_id,
+          }));
+        }
+      });
+    });
+    await req('POST', `/api/actors/${hsActorId}/harnesses/check`);
+    await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+    db.prepare("UPDATE rooms SET model='claude-sonnet-5-5', model_config=? WHERE id=?")
+      .run(JSON.stringify({ platform_id: 'fake-plat-999' }), hsRoomId);
+    const saR = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'codex-under-plat', tier: 'deep', harness: 'codex' });
+    assert.strictEqual(saR.status, 201);
+    const saId = saR.body.id;
+    await req('POST', `/api/rooms/${hsRoomId}/sub-agents`, { sub_agent_id: saId });
+    const triggerPromise = waitForWsMessage(ws14, m => m.type === 'agent_trigger' && m.sub_agent?.label === 'codex-under-plat', 5000);
+    const trigR = await req('POST', `/api/rooms/${hsRoomId}/sub-agent-trigger`, {
+      sub_agent_id: saId, task: 'test codex under platform parent',
+    }, { 'x-agent-id': String(hsActorId), 'x-agent-secret': hsSecret });
+    assert.strictEqual(trigR.status, 200);
+    const trigMsg = await triggerPromise;
+    assert.strictEqual(trigMsg.model, 'gpt-6.1-sol', `expected codex model, got: ${trigMsg.model}`);
+    assert.strictEqual(trigMsg.harness, 'codex');
+    assert.strictEqual(trigMsg.base_url, undefined, 'codex sub-agent should not get parent platform baseUrl');
+    assert.strictEqual(trigMsg.api_keys, undefined, 'codex sub-agent should not get parent platform apiKeys');
+    if (trigMsg.message_id) {
+      ws14.send(JSON.stringify({ type: 'agent_message', message_id: trigMsg.message_id, content: 'done', state: 'complete' }));
+    }
+    await req('DELETE', `/api/sub-agents/${saId}`);
+    db.prepare('UPDATE rooms SET model=?, model_config=NULL WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+    ws14.close();
+    delete process.env.HARNESS_CHECK_TIMEOUT_MS;
+  });
+
+  // set_room_model — codex model accepted in room with codex participant
+  await test('set_room_model — codex model accepted in room with codex participant', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    process.env.HARNESS_CHECK_TIMEOUT_MS = '3000';
+    const ws15 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready15 = waitForWsMessage(ws15, m => m.type === 'agent_ready');
+    ws15.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready15;
+    const checkDone15 = new Promise((resolve) => {
+      ws15.on('message', (raw) => {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type === 'check_harnesses') {
+          ws15.send(JSON.stringify({
+            type: 'harnesses_update',
+            harnesses_available: ['claude', 'codex'],
+            harness_status: [
+              { id: 'claude', installed: true, logged_in: true, version: '2.0.0', models: null },
+              { id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [
+                { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true },
+              ]},
+            ],
+            request_id: msg.request_id,
+          }));
+        }
+      });
+    });
+    await req('POST', `/api/actors/${hsActorId}/harnesses/check`);
+    await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'codex' });
+    const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    humanWs.send(JSON.stringify({ type: 'join_room', room_id: hsRoomId }));
+    await new Promise(r => setTimeout(r, 100));
+    const changed = waitForWsMessage(humanWs, m => m.type === 'room_model_changed' && m.room_id === hsRoomId, 3000);
+    humanWs.send(JSON.stringify({ type: 'set_room_model', model: 'gpt-6.1-sol' }));
+    const msg = await changed;
+    assert.strictEqual(msg.model, 'gpt-6.1-sol');
+    humanWs.close();
+    await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+    const db = require('./db');
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+    ws15.close();
+    delete process.env.HARNESS_CHECK_TIMEOUT_MS;
+  });
+
+  // set_room_model — foreign model still rejected
+  await test('set_room_model — foreign model still rejected even with codex participant', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    humanWs.send(JSON.stringify({ type: 'join_room', room_id: hsRoomId }));
+    await new Promise(r => setTimeout(r, 100));
+    const errPromise = waitForWsMessage(humanWs, m => m.type === 'error', 3000);
+    humanWs.send(JSON.stringify({ type: 'set_room_model', model: 'totally-unknown-model-xyz' }));
+    const msg = await errPromise;
+    assert.ok(msg.message.includes('enabled list'), `unexpected error: ${msg.message}`);
+    humanWs.close();
+  });
+
   // Teardown — delete all test rooms and actors created during the run
   console.log('\n[Test Teardown]');
   await test('Teardown — delete all test rooms', async () => {

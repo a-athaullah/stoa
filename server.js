@@ -5780,7 +5780,6 @@ wss.on('connection', (ws, req) => {
         return;
       }
       if (msg.model && !msg.model.startsWith('claude-')) {
-        // Non-Anthropic model must exist in a platform's enabled_models list
         let known = false;
         try {
           const platforms = getParsedSetting('ai_platforms');
@@ -5794,6 +5793,15 @@ wss.on('connection', (ws, req) => {
             }
           }
         } catch {}
+        if (!known) {
+          const aiParticipants = db.prepare("SELECT a.id, a.adapter FROM room_participants p JOIN actors a ON a.id=p.actor_id WHERE p.room_id=? AND a.type='ai'").all(subscribedRoom);
+          for (const ap of aiParticipants) {
+            const adapter = ap.adapter || 'claude';
+            if (adapter === 'claude') continue;
+            const hModels = getHarnessModels(ap.id, adapter);
+            if (hModels.some(m => m.model_id === msg.model)) { known = true; break; }
+          }
+        }
         if (!known) {
           ws.send(JSON.stringify({ type: 'error', code: 'invalid_model', message: 'model not in enabled list' }));
           return;
@@ -6863,8 +6871,10 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
 
   const roomRow2 = db.prepare('SELECT model, model_config, model_tiers FROM rooms WHERE id=?').get(roomId);
   const roomModel = roomRow2?.model || null;
+  const effectiveHarness = subAgent?.harness || ai.adapter || 'claude';
+
   let modelBaseUrl, modelApiKeys, modelToolsSupported;
-  if (roomRow2?.model_config) {
+  if (effectiveHarness === 'claude' && roomRow2?.model_config) {
     try {
       const cfg = JSON.parse(roomRow2.model_config);
       if (cfg.platform_id) {
@@ -6873,10 +6883,6 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
           const plat = platforms.find(p => p.id === cfg.platform_id && p.enabled);
           if (plat) {
             if (plat.vendor === 'ollama') {
-              // Route through Stoa's own /v1/messages proxy — keys + rotation handled server-side.
-              // Use getPublicUrl (not hardcoded 127.0.0.1): remote agents (e.g. Kira on another host)
-              // resolve 127.0.0.1 to themselves, where nothing listens → ECONNREFUSED. The public/tailscale
-              // URL is reachable by both local and remote agents (loopback cost is negligible for local).
               modelBaseUrl = getPublicUrl(`localhost:${PORT}`);
               modelApiKeys = [`stoa-proxy:${cfg.platform_id}`];
             } else {
@@ -6892,8 +6898,12 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
       }
     } catch {}
   }
-  if (roomModel && !roomModel.startsWith('claude-') && !modelBaseUrl) {
-    const errContent = `⚠ Model "${roomModel}" tidak bisa digunakan — platform-nya sudah di-disable atau dihapus. Ubah model room di Settings.`;
+
+  const modelChain = resolveModelChain(subAgent, roomModel, roomRow2?.model_tiers, effectiveHarness, ai.actor_id);
+  const effectiveModel = modelChain[0] || null;
+
+  if (effectiveModel && !effectiveModel.startsWith('claude-') && !modelBaseUrl && effectiveHarness === 'claude') {
+    const errContent = `⚠ Model "${effectiveModel}" tidak bisa digunakan — platform-nya sudah di-disable atau dihapus. Ubah model room di Settings.`;
     db.prepare("UPDATE messages SET content=?, state='complete', completed_at=datetime('now') WHERE id=?").run(errContent, msgId);
     broadcast(roomId, { type: 'message_complete', message_id: msgId, content: errContent });
     return;
@@ -6901,12 +6911,6 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   // Sub-agent workdir overrides parent workdir when set
   const baseWorkdir = resolveParticipantWorkdir(ai.participant_id, prefetchedCtx?.wdRow);
   const workdir = subAgent?.workdir || baseWorkdir;
-
-  // Sub-agent model overrides room model when set. Phase 3: sub-agents also
-  // resolve a tier → ordered fallback chain; the agent tries each in order.
-  const effectiveHarness = subAgent?.harness || ai.adapter || 'claude';
-  const modelChain = resolveModelChain(subAgent, roomModel, roomRow2?.model_tiers, effectiveHarness, ai.actor_id);
-  const effectiveModel = modelChain[0] || null;
 
   if (agentWs && agentWs.readyState === 1) {
     // ── Route to connected agent client
