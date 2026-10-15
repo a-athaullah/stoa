@@ -325,15 +325,13 @@ async function checkForUpdates() {
   try {
     const body = await fetchText(`${baseUrl}/api/client/manifest`);
     const remote = JSON.parse(body).files || {};
-    const changed = Object.entries(remote).filter(
-      ([name, hash]) => localManifest[name] !== void 0 && localManifest[name] !== hash
-    );
+    const changed = filesToUpdate(remote, localManifest, UPDATE_FILES);
     if (!changed.length) return;
-    console.log(`[stoa:update] update detected: ${changed.map(([n]) => n).join(", ")}`);
-    for (const [name, remoteHash] of changed) {
+    console.log(`[stoa:update] update detected: ${changed.join(", ")}`);
+    for (const name of changed) {
       const content = await fetchText(`${baseUrl}/api/client/file/${encodeURIComponent(name)}`);
       fs.writeFileSync(path.join(__dirname, name), content, "utf8");
-      localManifest[name] = remoteHash;
+      localManifest[name] = remote[name];
       console.log(`[stoa:update] ${name} updated`);
     }
     if (activeTriggers.size > 0 || triggerQueue.length > 0) {
@@ -586,7 +584,7 @@ async function backupSessionFile(workdir, sessionId) {
     return null;
   }
 }
-const { createHarnessSession: _createHS, supportsCompact } = require("./harness-session");
+const { createHarnessSession: _createHS, supportsCompact, filesToUpdate } = require("./harness-session");
 function createHarnessSession(harness, opts) {
   return _createHS(harness, opts, { ClaudeSession });
 }

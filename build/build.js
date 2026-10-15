@@ -68,7 +68,7 @@ fs.unlinkSync(path.join(dist, '_app.js'));
 // ── Agent bundle: stoa.js + lib/* → dist/stoa.js ──
 const agentDist = path.join(root, 'dist');
 if (!fs.existsSync(agentDist)) fs.mkdirSync(agentDist, { recursive: true });
-execSync(`npx esbuild stoa.js --bundle --platform=node --target=node18 --external:ws --external:./claude-session --outfile=dist/stoa.js`, { cwd: root, stdio: 'inherit' });
+execSync(`npx esbuild stoa.js --bundle --platform=node --target=node18 --external:ws --external:./claude-session --external:./codex-session --outfile=dist/stoa.js`, { cwd: root, stdio: 'inherit' });
 
 // ── Summary ──
 const size = (f) => (fs.statSync(f).size / 1024).toFixed(1) + 'KB';

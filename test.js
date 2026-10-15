@@ -2838,6 +2838,7 @@ async function run() {
     // The name preset is stored server-side in installTokens (not in script body directly)
     assert.ok(r.raw.includes('stoa.js'), 'stoa.js not in script');
     assert.ok(r.raw.includes('claude-session.js'), 'claude-session.js not in script');
+    assert.ok(r.raw.includes('codex-session.js'), 'codex-session.js not in script');
   });
 
   // Agent register
@@ -6879,6 +6880,44 @@ async function run() {
     assert.strictEqual(supportsCompact(null), true);
     assert.strictEqual(supportsCompact('codex'), false);
     assert.strictEqual(supportsCompact('some-other'), false);
+  });
+
+  // filesToUpdate — pure function, two sides
+  await test('filesToUpdate — new file in allowlist → included, same hash → excluded', () => {
+    const { filesToUpdate } = require('./harness-session');
+    const remote = { 'stoa.js': 'abc123', 'codex-session.js': 'def456', 'claude-session.js': 'ghi789' };
+    const local = { 'stoa.js': 'abc123' }; // stoa same hash, others missing
+    const allowed = ['stoa.js', 'claude-session.js', 'codex-session.js'];
+    const result = filesToUpdate(remote, local, allowed);
+    assert.ok(!result.includes('stoa.js'), 'same hash → not included');
+    assert.ok(result.includes('codex-session.js'), 'new file in allowlist → included');
+    assert.ok(result.includes('claude-session.js'), 'new file in allowlist → included');
+  });
+
+  await test('filesToUpdate — outside allowlist and path traversal → excluded', () => {
+    const { filesToUpdate } = require('./harness-session');
+    const remote = { 'malicious.js': 'aaa', '../etc/passwd': 'bbb', 'sub/dir.js': 'ccc', 'codex-session.js': 'ddd' };
+    const local = {};
+    const allowed = ['stoa.js', 'codex-session.js'];
+    const result = filesToUpdate(remote, local, allowed);
+    assert.deepStrictEqual(result, ['codex-session.js'], 'only allowed, safe names pass');
+  });
+
+  await test('filesToUpdate — changed hash → included', () => {
+    const { filesToUpdate } = require('./harness-session');
+    const remote = { 'stoa.js': 'new-hash' };
+    const local = { 'stoa.js': 'old-hash' };
+    const result = filesToUpdate(remote, local, ['stoa.js']);
+    assert.deepStrictEqual(result, ['stoa.js']);
+  });
+
+  // lazy require: requiring harness-session does NOT eagerly load codex-session
+  await test('require harness-session does not eagerly load codex-session', () => {
+    const cacheKey = require.resolve('./codex-session');
+    delete require.cache[require.resolve('./harness-session')];
+    delete require.cache[cacheKey];
+    require('./harness-session');
+    assert.strictEqual(require.cache[cacheKey], undefined, 'codex-session must not be in cache until codex branch runs');
   });
 
   // Integration: PATCH adapter to unavailable harness → 400

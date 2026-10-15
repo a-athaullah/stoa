@@ -712,7 +712,8 @@ const DEFAULT_BASE_SYSTEM_PROMPT = `You are an AI agent operating on the Stoa pl
 const { composeSystemPrompt } = require('./lib/compose-system-prompt');
 
 // Files yang boleh di-serve sebagai client update
-const CLIENT_FILES = new Set(['stoa.js', 'claude-session.js', 'codex-session.js', 'harness-session.js']);
+// harness-session.js is inlined by esbuild into dist/stoa.js — not distributed separately
+const CLIENT_FILES = new Set(['stoa.js', 'claude-session.js', 'codex-session.js']);
 
 // One-time install tokens (expires in 10 min)
 const installTokens = new Map();
@@ -3537,7 +3538,7 @@ const server = http.createServer(async (req, res) => {
     const lang = url.searchParams.get('lang') || 'en';
     installTokens.set(token, { expires: Date.now() + 600_000, name: presetName, lang });
 
-    const clientFiles = 'stoa.js claude-session.js';
+    const clientFiles = 'stoa.js claude-session.js codex-session.js';
     const trustCmd = 'claude --version > /dev/null 2>&1 || true';
 
     const script = `#!/bin/bash
@@ -3638,7 +3639,7 @@ echo "Logs   : pm2 logs \${AGENT_NAME}"
     const ps1Lang = url.searchParams.get('lang') || 'en';
     installTokens.set(token, { expires: Date.now() + 600_000, name: presetName, lang: ps1Lang });
 
-    const ps1Files = '"stoa.js","claude-session.js"';
+    const ps1Files = '"stoa.js","claude-session.js","codex-session.js"';
     const ps1TrustCmd = 'try { & claude --version 2>$null } catch {}';
 
     const script = `$ErrorActionPreference = "Stop"
