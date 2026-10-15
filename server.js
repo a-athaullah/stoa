@@ -828,7 +828,8 @@ function fireSchedule(sched) {
     SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.adapter_config, a.avatar_color, a.avatar_symbol, a.avatar_url
     FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.id=?
   `).get(parentPart.id);
-  ai.sub_agent = { id: sub.id, label: sub.label, tier: sub.tier, model: sub.model, workdir: sub.workdir, system_prompt: sub.system_prompt };
+  const effectiveHarness = sub.harness || ai.adapter || 'claude';
+  ai.sub_agent = { id: sub.id, label: sub.label, tier: sub.tier, model: sub.model, workdir: sub.workdir, system_prompt: sub.system_prompt, harness: effectiveHarness };
   ai.parent_message_id = null; // standalone run — no orchestrator turn to auto-wake
   triggerAiResponse(sched.room_id, ai, sched.task, null, []).catch(e => console.error('[scheduler] trigger error:', e.message));
   return 'fired';
@@ -1996,7 +1997,8 @@ const server = http.createServer(async (req, res) => {
       SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.adapter_config, a.avatar_color, a.avatar_symbol, a.avatar_url
       FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.id=?
     `).get(parentPart.id);
-    ai.sub_agent = { id: sub.id, label: sub.label, tier: sub.tier, model: sub.model, workdir: sub.workdir, system_prompt: sub.system_prompt };
+    const effectiveHarness = sub.harness || ai.adapter || 'claude';
+    ai.sub_agent = { id: sub.id, label: sub.label, tier: sub.tier, model: sub.model, workdir: sub.workdir, system_prompt: sub.system_prompt, harness: effectiveHarness };
     ai.parent_message_id = parentMessageId;
 
     // Pre-check: parent actor's stoa-agent must be online to run the sub-agent.
@@ -3241,6 +3243,15 @@ const server = http.createServer(async (req, res) => {
     return json(res, result);
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/harnesses') {
+    const rows = db.prepare('SELECT * FROM harnesses ORDER BY id').all();
+    const result = rows.map(h => {
+      const models = db.prepare('SELECT model_id, display_name, is_default, is_active FROM harness_models WHERE harness_id=? AND is_active=1 ORDER BY is_default DESC, model_id').all(h.id);
+      return { name: h.name, label: h.description || h.name, models };
+    });
+    return json(res, result);
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/actors') {
     const rows = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, system_prompt, created_at FROM actors ORDER BY id').all();
     const result = rows.map(r => ({ ...r, online: agentClients.has(r.id), client_version: agentVersions.get(r.id) || null, harnesses_available: agentHarnesses.get(r.id) || [] }));
@@ -3251,7 +3262,7 @@ const server = http.createServer(async (req, res) => {
     const id = parseInt(url.pathname.split('/')[3]);
     const body = parseJsonBody(await readBody(req));
     if (!body) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
-    const { name, avatar_url, lang } = body;
+    const { name, avatar_url, lang, adapter } = body;
     if (!name?.trim()) { res.writeHead(400); return res.end('name required'); }
     if (avatar_url !== undefined) {
       if (avatar_url !== null && (!avatar_url.startsWith('/uploads/') || avatar_url.includes('..'))) { res.writeHead(400); return res.end('invalid avatar_url'); }
@@ -3264,12 +3275,34 @@ const server = http.createServer(async (req, res) => {
       existing.lang = lang;
       db.prepare('UPDATE actors SET adapter_config=? WHERE id=?').run(JSON.stringify(existing), id);
     }
+    let fallbackRooms = [];
+    if (adapter !== undefined) {
+      const validHarnesses = db.prepare('SELECT name FROM harnesses').all().map(h => h.name);
+      if (!validHarnesses.includes(adapter)) return json(res, { error: `adapter must be one of: ${validHarnesses.join(', ')}` }, 400);
+      const available = agentHarnesses.get(id) || [];
+      if (available.length && !available.includes(adapter)) return json(res, { error: `harness "${adapter}" not available on this agent's machine (available: ${available.join(', ')})` }, 400);
+      db.prepare('UPDATE actors SET adapter=? WHERE id=?').run(adapter, id);
+      const harnessRow = db.prepare('SELECT id FROM harnesses WHERE name=?').get(adapter);
+      if (harnessRow) {
+        const agentRooms = db.prepare('SELECT r.id, r.model FROM rooms r JOIN room_participants rp ON rp.room_id=r.id WHERE rp.actor_id=? AND r.model IS NOT NULL').all(id);
+        for (const room of agentRooms) {
+          const valid = db.prepare('SELECT 1 FROM harness_models WHERE harness_id=? AND model_id=? AND is_active=1').get(harnessRow.id, room.model);
+          if (!valid) {
+            const defaultModel = db.prepare('SELECT model_id FROM harness_models WHERE harness_id=? AND is_default=1 AND is_active=1').get(harnessRow.id);
+            db.prepare('UPDATE rooms SET model=? WHERE id=?').run(defaultModel?.model_id || null, room.id);
+            fallbackRooms.push({ room_id: room.id, old_model: room.model, new_model: defaultModel?.model_id || null });
+          }
+        }
+      }
+    }
     const actor = db.prepare('SELECT type FROM actors WHERE id=?').get(id);
     if (actor?.type === 'human') {
       writeEnv('HUMAN_NAME', name.trim());
       process.env.HUMAN_NAME = name.trim();
     }
-    return json(res, { id, name: name.trim() });
+    const result = { id, name: name.trim() };
+    if (fallbackRooms.length) result.fallback_rooms = fallbackRooms;
+    return json(res, result);
   }
 
   if (req.method === 'DELETE' && url.pathname.startsWith('/api/actors/')) {
@@ -3299,8 +3332,10 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname.match(/^\/api\/actors\/\d+\/sub-agents$/)) {
     const actorId = parseInt(url.pathname.split('/')[3]);
+    const parentAdapter = db.prepare('SELECT adapter FROM actors WHERE id=?').get(actorId)?.adapter || 'claude';
     const rows = db.prepare('SELECT * FROM sub_agents WHERE parent_actor_id=? ORDER BY label').all(actorId);
-    return json(res, rows);
+    const result = rows.map(r => ({ ...r, effective_harness: r.harness || parentAdapter }));
+    return json(res, result);
   }
 
   if (req.method === 'POST' && url.pathname.match(/^\/api\/actors\/\d+\/sub-agents$/)) {
@@ -3309,16 +3344,20 @@ const server = http.createServer(async (req, res) => {
     if (!actor) return json(res, { error: 'AI actor not found' }, 404);
     const data = parseJsonBody(await readBody(req));
     if (!data) return json(res, { error: 'Invalid JSON' }, 400);
-    const { label, tier, model, workdir, system_prompt } = data;
+    const { label, tier, model, workdir, system_prompt, harness } = data;
     if (!label?.trim()) return json(res, { error: 'label required' }, 400);
     if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,29}$/.test(label.trim())) return json(res, { error: 'label must start with a letter, 1-30 chars, alphanumeric/dash/underscore' }, 400);
     if (tier && !['quick', 'standard', 'deep'].includes(tier)) return json(res, { error: 'tier must be quick, standard, or deep' }, 400);
+    if (harness !== undefined && harness !== null) {
+      const validHarnesses = db.prepare('SELECT name FROM harnesses').all().map(h => h.name);
+      if (!validHarnesses.includes(harness)) return json(res, { error: `harness must be one of: ${validHarnesses.join(', ')} (or null to inherit)` }, 400);
+    }
     const nameCollision = db.prepare('SELECT 1 FROM actors WHERE LOWER(name)=LOWER(?)').get(label.trim());
     if (nameCollision) return json(res, { error: `label "${label.trim()}" conflicts with an existing actor name` }, 409);
     try {
       const result = db.prepare(
-        'INSERT INTO sub_agents (parent_actor_id, label, tier, model, workdir, system_prompt) VALUES (?,?,?,?,?,?)'
-      ).run(actorId, label.trim(), tier || 'quick', model || null, workdir || null, system_prompt || null);
+        'INSERT INTO sub_agents (parent_actor_id, label, tier, model, workdir, system_prompt, harness) VALUES (?,?,?,?,?,?,?)'
+      ).run(actorId, label.trim(), tier || 'quick', model || null, workdir || null, system_prompt || null, harness || null);
       const row = db.prepare('SELECT * FROM sub_agents WHERE id=?').get(result.lastInsertRowid);
       return json(res, row, 201);
     } catch (e) {
@@ -3335,7 +3374,7 @@ const server = http.createServer(async (req, res) => {
     if (!data) return json(res, { error: 'Invalid JSON' }, 400);
     const updates = [];
     const params = [];
-    for (const key of ['label', 'tier', 'model', 'workdir', 'system_prompt', 'enabled']) {
+    for (const key of ['label', 'tier', 'model', 'workdir', 'system_prompt', 'enabled', 'harness']) {
       if (data[key] !== undefined) {
         if (key === 'label') {
           if (!data.label?.trim()) return json(res, { error: 'label required' }, 400);
@@ -3348,6 +3387,12 @@ const server = http.createServer(async (req, res) => {
           updates.push('tier=?'); params.push(data.tier);
         } else if (key === 'enabled') {
           updates.push('enabled=?'); params.push(data.enabled ? 1 : 0);
+        } else if (key === 'harness') {
+          if (data.harness !== null) {
+            const validHarnesses = db.prepare('SELECT name FROM harnesses').all().map(h => h.name);
+            if (!validHarnesses.includes(data.harness)) return json(res, { error: `harness must be one of: ${validHarnesses.join(', ')} (or null to inherit)` }, 400);
+          }
+          updates.push('harness=?'); params.push(data.harness ?? null);
         } else {
           updates.push(`${key}=?`); params.push(data[key] ?? null);
         }
@@ -6778,6 +6823,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
       const agentSysPrompt = db.prepare('SELECT system_prompt FROM actors WHERE id=?').get(ai.actor_id)?.system_prompt || null;
       const roomSysPrompt = composeSystemPrompt(baseSysPrompt, agentSysPrompt, roomSysPromptRaw);
       const sysPromptHash = require('crypto').createHash('sha256').update(roomSysPrompt).digest('hex').slice(0, 16);
+      const effectiveHarness = subAgent?.harness || ai.adapter || 'claude';
       agentWs.send(JSON.stringify({
         type: 'agent_trigger',
         room_id: roomId,
@@ -6785,6 +6831,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         reply_to: replyTo || undefined,
         participant_id: ai.participant_id,
         claude_session_id: sessionId,
+        harness: effectiveHarness,
         sub_agent: subAgent ? { id: subAgent.id, label: subAgent.label, tier: subAgent.tier } : undefined,
         prompt: fullPrompt,
         attachments: fullAttachments.length ? fullAttachments : undefined,

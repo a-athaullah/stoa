@@ -361,3 +361,19 @@ CREATE TABLE IF NOT EXISTS email_message_ids (
 
 CREATE INDEX IF NOT EXISTS idx_email_message_ids_thread ON email_message_ids(thread_id);
 CREATE INDEX IF NOT EXISTS idx_email_message_ids_conn ON email_message_ids(connection_id);
+
+CREATE TABLE IF NOT EXISTS harnesses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  description TEXT
+);
+
+CREATE TABLE IF NOT EXISTS harness_models (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  harness_id INTEGER NOT NULL REFERENCES harnesses(id),
+  model_id TEXT NOT NULL,
+  display_name TEXT,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  UNIQUE(harness_id, model_id)
+);
