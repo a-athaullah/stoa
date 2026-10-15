@@ -1471,7 +1471,7 @@ function buildAgentSettingsCard(actor) {
             fallbackLines.push(`sub-agent ${s.label || s.sub_agent_id}: ${fmt(s.old_model)} → ${fmt(s.new_model)}`);
           });
           if (fallbackLines.length) {
-            notice.textContent = 'Model di-reset ke default: ' + fallbackLines.join('; ');
+            notice.textContent = 'Model reset to default: ' + fallbackLines.join('; ');
             notice.style.display = '';
           } else {
             notice.style.display = 'none';
