@@ -897,10 +897,7 @@ function appendThreadMessage(m, container) {
   }
 
   if (m.ai_model) {
-    const modelTag = document.createElement('div');
-    modelTag.className = 'h-msg-model';
-    modelTag.textContent = m.ai_model;
-    bubble.appendChild(modelTag);
+    bubble.appendChild(buildModelTag(m.ai_model, m.model_source));
   }
 
   const resultChip = buildResultChip(m.result_meta);

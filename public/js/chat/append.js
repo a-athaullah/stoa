@@ -1,3 +1,25 @@
+// ── Model tag helper ─────────────────────────────────────────────────────────
+const _FALLBACK_SOURCE_LABELS = {
+  agent_default: 'not using the room model — using agent default',
+  harness_default: 'not using the room model — using harness default',
+  cli_default: 'not using the room model — using CLI default',
+};
+
+function buildModelTag(aiModel, modelSource) {
+  const tag = document.createElement('div');
+  tag.className = 'h-msg-model';
+  tag.appendChild(document.createTextNode(aiModel));
+  const tooltip = modelSource && _FALLBACK_SOURCE_LABELS[modelSource];
+  if (tooltip) {
+    const icon = document.createElement('span');
+    icon.className = 'h-msg-model-fallback';
+    icon.textContent = '↪';
+    icon.title = tooltip;
+    tag.appendChild(icon);
+  }
+  return tag;
+}
+
 // ── Day separator ───────────────────────────────────────────────────────────
 let _lastDayKey = null;
 
@@ -201,10 +223,7 @@ function appendMessage(m, container) {
   }
 
   if (m.ai_model) {
-    const modelTag = document.createElement('div');
-    modelTag.className = 'h-msg-model';
-    modelTag.textContent = m.ai_model;
-    bubble.appendChild(modelTag);
+    bubble.appendChild(buildModelTag(m.ai_model, m.model_source));
   }
 
   const resultChip = buildResultChip(m.result_meta);

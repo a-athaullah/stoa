@@ -61,6 +61,8 @@ Klik judul room di header chat. Judul menjadi editable — ketik nama baru dan t
 
 Pilihan disimpan per room dan langsung berlaku pada pesan berikutnya — tanpa restart.
 
+Ketika room memiliki lebih dari satu agent AI, atau ketika ada agent yang tidak menggunakan model room, selector model menyertakan bagian **"model per agent"** di bawah daftar model. Setiap baris menampilkan `Nama · harness → model`, disertai label (`↪ agent default`, `↪ harness default`, atau `↪ CLI default`) saat agent tidak menggunakan model room. Preview diperbarui otomatis saat kamu berpindah room, saat setelan agent berubah, atau saat model room diganti.
+
 ### Mode Sibuk (Busy Mode)
 
 **Busy mode** mengontrol apa yang terjadi ketika kamu mengirim pesan saat AI sedang berjalan. Buka room settings (ikon **gear** di header room) dan cari kartu **Busy mode**. Tiga pilihan:
@@ -75,7 +77,7 @@ Busy mode bersifat **per thread**: setiap thread diperlakukan sebagai konteks in
 
 ### Model di Chat Bubble
 
-Setiap respons AI menampilkan indikator model kecil di pojok kanan bawah bubble (contoh: `qwen3-coder:480b:cloud`), sehingga mudah melacak model mana yang menghasilkan setiap balasan.
+Setiap respons AI menampilkan indikator model kecil di pojok kanan bawah bubble (contoh: `qwen3-coder:480b:cloud`), sehingga mudah melacak model mana yang menghasilkan setiap balasan. Jika agent menggunakan model berbeda dari model yang dipilih di room — misalnya karena room belum memiliki model, atau harness-nya tidak mendukung model room — ikon **↪** muncul pada tag model. Arahkan kursor untuk melihat alasannya (contoh: `not using the room model — using agent default`). Respons sub-agent yang berjalan dengan tier tidak menampilkan ikon ini.
 
 ### Menyematkan Room (Pin)
 
@@ -215,9 +217,10 @@ Sub-agent didefinisikan per agent. Pilih agent di **Settings > AI Agent**, lalu 
 
 - **Label** (wajib) — nama singkat seperti `probe` atau `researcher`. Muncul di chat sebagai `Ara (probe)` sehingga kamu selalu tahu sub-agent mana yang menghasilkan sebuah pesan.
 - **Tier** — `quick`, `standard`, atau `deep`. Tier memilih **rantai fallback model** mana yang dipakai sub-agent (lihat [Tier Model dan Fallback](#tier-model-dan-fallback) di bawah). Secara default `quick` memakai model cepat, `standard` yang seimbang, dan `deep` yang paling mumpuni — masing-masing jatuh ke model yang lebih ringan jika model utama tidak tersedia.
-- **Model override** (opsional) — kunci sub-agent ke satu model spesifik alih-alih memakai rantai tier-nya. Biarkan pada **use tier** untuk mengikuti routing tier. Model yang dikunci tidak punya fallback — ia dicoba sendirian.
+- **Model override** (opsional) — kunci sub-agent ke satu model spesifik alih-alih memakai rantai tier-nya. Biarkan pada **use tier** untuk mengikuti routing tier. Model yang dikunci tidak punya fallback — ia dicoba sendirian. Dropdown hanya menampilkan model yang kompatibel dengan harness efektif sub-agent — model Claude untuk Claude, atau model Codex hasil Check terakhir agent untuk Codex; jika agent belum pernah di-Check, Stoa memakai daftar bawaan Codex. Mengubah field **Harness** saat model tertentu sudah dipilih akan mereset pilihan ke **use tier** jika model itu tidak tersedia di harness baru. Server juga menolak model yang tidak cocok dengan harness efektif sub-agent saat disimpan.
 - **Workdir** (opsional) — direktori kerja tempat sub-agent beroperasi.
 - **System prompt** (opsional) — instruksi tambahan yang membentuk perilaku sub-agent.
+- **Harness** (opsional) — `claude` atau `codex`. Biarkan pada **inherit from parent** (default) untuk memakai harness yang sama dengan agent induk.
 
 Kamu bisa mengedit atau menghapus definisi kapan saja. Definisi milik agent induk, bukan milik room tertentu.
 
@@ -243,6 +246,8 @@ Resolusi mengikuti urutan prioritas yang jelas:
 1. **Model override sub-agent** — jika sub-agent mengunci model tertentu, model itu yang dipakai (tanpa fallback).
 2. **Override tier room** — jika tidak, rantai room yang dikonfigurasi untuk tier itu yang dipakai.
 3. **Default server** — jika room tidak punya override, default bawaan berlaku: `quick → haiku`, `standard → sonnet → haiku`, `deep → opus → sonnet`.
+
+Untuk **Codex**, ketiga tier menyelesaikan ke model default yang sama yang dilaporkan agent — routing tier per model hanya berlaku untuk Claude.
 
 Untuk menyesuaikan rantai sebuah room, buka setelan room (ikon **gear** di header room) dan pakai kartu **Model tiers**. Awalnya memakai default server; klik **override for this room** untuk mengedit rantai tiap tier — urutkan ulang model (yang pertama primary), tambah fallback, atau hapus salah satu. **Reset to server defaults** menghapus override. Model yang dikunci di sub-agent selalu menang atas rantai room.
 
@@ -408,6 +413,48 @@ Pilih agent di **Settings > AI Agent**, lalu klik nama agent di header detail un
 
 Bahasa respons setiap agent bisa diubah setelah pembuatan. Pilih agent di **Settings > AI Agent**, lalu ganti bahasa di kartu agent. Bahasa yang tersedia: English, Bahasa Indonesia, 日本語, 한국어, 中文. Perubahan langsung berlaku pada pesan berikutnya.
 
+### System Prompt Agent
+
+Setiap agent memiliki **System Prompt** sendiri yang dikonfigurasi di tab **Settings > AI Agent → System Prompt**. Prompt ini disisipkan di antara base system prompt dan room system prompt — dikirim ke agent di setiap room tempat agent berpartisipasi. Gunakan untuk mendefinisikan identitas, persona, bahasa kerja, dan aturan tetap agent.
+
+Sub-agent **tidak** mewarisi system prompt agent induk. Setiap sub-agent memiliki field system prompt sendiri sehingga identitas mereka tetap independen.
+
+### Harness Agent
+
+Secara default, agent berjalan di **Claude CLI**. Jika mesin agent juga memiliki **Codex CLI** yang terpasang dan sudah login (via `codex login`), kamu bisa mengganti harness di dropdown **Settings > AI Agent → Agent card → Harness**.
+
+- **Claude** — Claude Code CLI. Mendukung compact, streaming, dan resume.
+- **Codex** — OpenAI Codex CLI. Memerlukan `codex` CLI terpasang dan terautentikasi di mesin agent. Sesi Codex menggunakan sandbox `danger-full-access` secara default dan mengabaikan file konfigurasi Codex user (`--ignore-user-config`). **Compact tidak didukung** — mengklik compact di sesi Codex menampilkan toast error (`compact not supported for codex harness`); auto-compact juga melewati sesi Codex secara diam-diam. `codex-session.js` didistribusikan via auto-update Stoa — agent mengunduhnya saat server diperbarui, tidak bergantung pada kapan harness diganti. Jika harness Codex dipicu sebelum `codex-session.js` ada di mesin agent, trigger gagal dengan error yang jelas; tunggu auto-update selesai (~2 menit setelah server update).
+
+Mengganti harness agent di **room campuran** (di mana AI agent lain masih bisa menjalankan model room) membiarkan model room tetap seperti apa adanya — agent ini yang akan fallback ke default-nya sendiri. Toast mengonfirmasi: misalnya `room model kept in 2 mixed rooms (Kira uses codex-default)`. Jika tidak ada AI lain di room yang bisa menjalankan model room saat ini, model room di-rewrite ke default harness baru. Jika setelan **Default model** agent tidak kompatibel dengan harness baru, setelan itu otomatis di-reset — toast menampilkan `default model reset (old-model)`.
+
+Sub-agent juga bisa memilih harness sendiri, atau membiarkannya pada **inherit from parent** (default).
+
+**Mengecek ketersediaan harness:** Setelah menginstal atau login CLI tool di mesin agent, klik tombol **Check** di sebelah dropdown Harness (di panel detail agent atau accordion di **Settings > AI Agent**) untuk mendeteksi ulang tanpa restart agent. Tombol ini nonaktif saat agent offline, dan deteksi bisa memakan waktu hingga ~15 detik. Dropdown langsung diperbarui ketika hasil tiba — harness baru yang terdeteksi ditampilkan via toast. Rescan juga mengecek ulang harness bersama working directory dan skill.
+
+Untuk **Codex**, Check juga mengambil daftar model yang tersedia dari agent via `codex debug models` — model yang disembunyikan CLI dibuang, hasilnya diurutkan sesuai prioritas CLI, dan model pertama jadi default. Dropdown model room langsung diperbarui. Kalau ada model baru, muncul toast seperti `Codex CLI: 2 new models`. Jika agent tidak bisa melaporkan daftar model (CLI versi lama atau perintah gagal), Stoa memakai daftar model bawaannya. **Claude** tidak punya perintah serupa, sehingga daftar model Claude selalu dari Stoa dan tidak ter-update via Check.
+
+Harness yang sudah terinstal tapi belum login tampil di dropdown sebagai **"(not logged in)"** dan tidak bisa dipilih — server juga akan menolaknya. Jika status login tidak bisa dipastikan, harness tetap bisa dipilih. Jika harness yang sedang aktif menjadi tidak tersedia atau kehilangan login, muncul hint merah di bawah dropdown Harness — harness tidak diganti otomatis.
+
+**Error:** `agent offline` — agent tidak terhubung; `agent disconnected` — agent terputus saat pengecekan berlangsung; `agent did not respond — agent version may be too old, wait for auto-update` — agent belum mendukung deteksi harness (versi lama).
+
+### Default Model Agent
+
+Setiap agent punya setelan **Default model** di dropdown **Settings > AI Agent → Agent card → Default model**. Ini adalah model yang digunakan agent sebagai fallback saat model room tidak kompatibel dengan harness-nya.
+
+Dropdown hanya menampilkan model yang kompatibel dengan harness agent saat ini. Opsi pertama — **"follow harness default — \<model\>"** (nilai: tidak ada) — memberi tahu agent untuk memakai default bawaan harness, bukan model yang dipilih manual.
+
+**Urutan resolusi model** saat server memilihkan model untuk agent:
+
+1. **Model room** — kalau harness agent bisa menjalankannya, model room dipakai.
+2. **Default model agent** — kalau ada yang diset dan kompatibel dengan harness.
+3. **Default harness** — model bawaan harness (misalnya model pertama dari `codex debug models`).
+4. **Default CLI** — agent berjalan tanpa flag `-m`, membiarkan CLI yang memilih.
+
+Konfigurasi platform (base URL, API key) hanya dikirim saat model room yang digunakan langsung. Kalau agent fallback ke sumber lain, konfigurasi platform tidak dikirimkan.
+
+Sub-agent yang memiliki tier menggunakan jalur resolusi tersendiri — lihat [Tier Model dan Fallback](#tier-model-dan-fallback).
+
 ### Menghapus Agent
 
 Pilih agent di **Settings > AI Agent**, lalu klik tombol **remove** di header detail. Konfirmasi penghapusan di popup. Agent akan di-unregister dan dihapus dari semua room.
@@ -454,11 +501,11 @@ Setiap agent melaporkan **versi klien** (misal `v0.2.2`) ke server. Versi bisa d
 
 Pilih agent di **Settings > AI Agent** untuk melihat tombol aksi di header detail:
 
-- **Rescan** — scan ulang working directory dan skill agent
+- **Rescan** — scan ulang working directory, skill, dan ketersediaan harness agent
 - **Force Update** — paksa agent mengecek update klien segera (normalnya cek tiap 2 menit)
 - **Remove** — hapus registrasi agent (dengan konfirmasi)
 
-**Compact Session** — kompres riwayat percakapan agent untuk mengurangi ukuran konteks. Buka panel thread dan klik tombol compact (ikon ↕) di header panel. Progress bar muncul di dalam panel thread selama proses berlangsung — agent merangkum konteks sebelumnya dan melanjutkan tanpa gangguan. Berguna saat percakapan sudah sangat panjang dan kualitas respons mulai menurun
+**Compact Session** — kompres riwayat percakapan agent untuk mengurangi ukuran konteks. Buka panel thread dan klik tombol compact (ikon ↕) di header panel. Progress bar muncul di dalam panel thread selama proses berlangsung — agent merangkum konteks sebelumnya dan melanjutkan tanpa gangguan. Berguna saat percakapan sudah sangat panjang dan kualitas respons mulai menurun. Compact tidak didukung untuk sesi harness Codex — mengklik compact menampilkan toast error (`compact not supported for codex harness`).
 
 ### Auto-Compact
 
@@ -468,6 +515,8 @@ Stoa secara otomatis mengompres sesi agent tanpa intervensi manual. Dua mekanism
 - **Worker latar belakang** — setiap 60 menit, agent memindai semua sesi terbuka di mesinnya dan mengompres yang melebihi ambang batas compact yang dikonfigurasi. Ini juga membersihkan sesi yang terbuka secara lokal tetapi tidak aktif di room Stoa mana pun.
 
 Saat auto-compact berjalan, progress bar compact muncul di panel thread (sama seperti compact manual) dan compact marker tersimpan di riwayat pesan thread. Marker ini persisten dan tetap terlihat setelah refresh halaman.
+
+Kedua mekanisme melewati sesi yang berjalan di harness Codex — Codex tidak mendukung compact.
 
 ### Pesan Proaktif
 
@@ -805,7 +854,8 @@ Layout dua panel untuk mengelola semua AI agent. Sidebar kiri menampilkan daftar
 Panel detail mencakup:
 
 - **Header** — avatar agent (klik untuk mengubah), nama (klik untuk mengedit inline), status online/offline, dan tombol aksi (rescan, force update, remove)
-- **Kartu Agent** — tipe backend, pemilih bahasa, field nama, pemilih platform, dan perintah install untuk reinstall
+- **Kartu Agent** — tipe backend, pemilih bahasa, field nama, pemilih platform, pemilih harness, dan perintah install untuk reinstall
+- **System Prompt** — system prompt per-agent yang diterapkan di setiap room tempat agent berpartisipasi; sub-agent memiliki system prompt sendiri dan tidak mewarisi ini
 - **Kartu Sub-agents** — semua sub-agent yang didefinisikan untuk agent ini, dengan kontrol add/edit/delete/toggle
 - **Kartu Workdirs** — daftar read-only working directory yang terdaftar untuk agent ini
 
@@ -923,7 +973,8 @@ Browser  <-->  WebSocket  <-->  server.js  <-->  Agent (stoa.js)
 - **server.js** — server HTTP + WebSocket, mengatur room, pesan, dan orkestrasi agent
 - **public/** — frontend (tidak perlu build step)
 - **stoa.js** — klien agent yang berjalan di setiap mesin agent
-- **claude-session.js** — mengatur subprocess CLI Claude Code yang persisten
+- **claude-session.js** — mengatur subprocess Claude Code CLI
+- **codex-session.js** — mengatur subprocess Codex CLI; didistribusikan via auto-update Stoa (diunduh saat server diperbarui, bukan saat harness diganti)
 - **SQLite** — semua data disimpan lokal di `stoa.db` (mode WAL untuk performa)
 
 Semua model AI dirutekan melalui **Claude Code CLI**. Untuk platform eksternal kustom (OpenRouter, Together AI, dll.), server meneruskan environment variable khusus platform (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`) ke proses CLI. Untuk **Ollama Cloud**, request dirutekan melalui proxy bawaan Stoa (`/v1/messages`) dengan rotasi API key di sisi server — agent terhubung ke Stoa, bukan langsung ke ollama.com.

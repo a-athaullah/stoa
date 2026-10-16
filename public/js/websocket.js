@@ -225,7 +225,7 @@ function handleWsMessage(msg) {
   }
 
   if (msg.type === 'message_complete') {
-    finalizeMessage(msg.message_id, msg.content, msg.file_url, msg.file_name, msg.attachments, msg.ai_model, msg.result_meta);
+    finalizeMessage(msg.message_id, msg.content, msg.file_url, msg.file_name, msg.attachments, msg.ai_model, msg.result_meta, msg.model_source);
     clearComposerProcessing(msg.message_id);
     if (typeof clearThreadProcessing === 'function') clearThreadProcessing(msg.message_id);
     if (msg.thread_id && typeof _scrollThreadToBottom === 'function') _scrollThreadToBottom(true);
@@ -474,6 +474,7 @@ function handleWsMessage(msg) {
       const platformId = typeof parsePlatformId === 'function' ? parsePlatformId(msg.model_config) : null;
       _setDropdownValue(msg.model, null, platformId);
     }
+    if (typeof _refreshModelResolution === 'function') _refreshModelResolution();
     return;
   }
 

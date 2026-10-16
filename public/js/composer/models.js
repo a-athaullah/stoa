@@ -296,6 +296,35 @@ const ANTHROPIC_MODELS_FALLBACK = [
 ];
 
 let allServerModels = null;
+let allHarnessData = null;
+
+async function fetchHarnesses() {
+  if (allHarnessData !== null) return allHarnessData;
+  try { allHarnessData = await fjson('/api/harnesses'); } catch { allHarnessData = []; }
+  return allHarnessData;
+}
+
+function getModelsForHarness(harnessName) {
+  if (!Array.isArray(allHarnessData) || !harnessName) return null;
+  const h = allHarnessData.find(x => x.name === harnessName);
+  if (!h || !h.models?.length) return null;
+  return h.models.map(m => ({
+    value: m.model_id, label: m.display_name || m.model_id,
+    vision: false, tools: false, local: false,
+    platform: harnessName, platform_id: harnessName, is_default: !!m.is_default,
+  }));
+}
+
+function _agentHarnessModels(harnessStatus, harnessName) {
+  if (!Array.isArray(harnessStatus) || !harnessName) return null;
+  const st = harnessStatus.find(s => s.id === harnessName);
+  if (!st?.models?.length) return null;
+  return st.models.map(m => ({
+    value: m.id, label: m.label || m.id,
+    vision: false, tools: false, local: false,
+    platform: harnessName, platform_id: harnessName, is_default: !!m.is_default,
+  }));
+}
 
 async function fetchPlatformModels() {
   try {
@@ -309,6 +338,7 @@ async function fetchPlatformModels() {
     }
     populateModelDropdown();
   } catch {}
+  fetchHarnesses(); // prime harness cache in background
 }
 
 function getAvailableModels() {
@@ -355,13 +385,13 @@ function parsePlatformId(modelConfig) {
   } catch { return null; }
 }
 
-function populateModelDropdown(ignored, currentModel, currentPlatformId) {
+function populateModelDropdown(ignored, currentModel, currentPlatformId, overrideModels) {
   const list = document.getElementById('model-dropdown-list');
   const textEl = document.getElementById('model-dropdown-text');
   const badgesEl = document.getElementById('model-capability-badges');
   if (!list || !textEl) return;
 
-  const models = getAvailableModels();
+  const models = overrideModels || getAvailableModels();
   list.innerHTML = '';
   const hasMultiplePlatforms = models.some(m => m.platform !== 'anthropic');
 
@@ -372,7 +402,7 @@ function populateModelDropdown(ignored, currentModel, currentPlatformId) {
     if (m.base_url) div.dataset.baseUrl = m.base_url;
     if (m.platform_id) div.dataset.platformId = m.platform_id;
     const icons = _capIconsHtml(m);
-    div.innerHTML = `<span>${m.label}</span>${icons ? `<span class="h-model-cap-icons">${icons}</span>` : ''}`;
+    div.innerHTML = `<span>${escHtml(m.label)}</span>${icons ? `<span class="h-model-cap-icons">${icons}</span>` : ''}`;
     div.addEventListener('click', () => selectModelOption(m.value, m.platform_id));
     return div;
   };
@@ -441,9 +471,103 @@ function updateModelSelector(room, parts) {
   const hasAIAgent = (parts || []).some(p => p.type === 'ai');
   wrap.style.display = hasAIAgent ? 'flex' : 'none';
   if (hasAIAgent) {
-    populateModelDropdown(null, room.model, parsePlatformId(room.model_config));
+    const aiPart = (parts || []).find(p => p.type === 'ai');
+    const aiActor = aiPart ? allActors.find(a => a.id === aiPart.actor_id) : null;
+    const harness = aiActor?.adapter || 'claude';
+    const harnessModels = harness !== 'claude'
+      ? (_agentHarnessModels(aiActor?.harness_status, harness) || getModelsForHarness(harness))
+      : null;
+    populateModelDropdown(null, room.model, parsePlatformId(room.model_config), harnessModels);
     handleModelUpdate({ model: room.model || 'claude-sonnet-4-6' });
+    _refreshModelResolution();
   }
+}
+
+function refreshModelDropdownForActor(actorId) {
+  if (!currentRoomId || !currentRoomData) return;
+  const parts = roomParticipantsCache[currentRoomId] || [];
+  const aiPart = parts.find(p => p.type === 'ai');
+  if (aiPart?.actor_id === actorId) updateModelSelector(currentRoomData, parts);
+  _refreshModelResolution();
+}
+
+// ── Per-agent model resolution preview ──────────────────────────────────────
+let _roomModelResolutionCache = null;
+
+async function _refreshModelResolution() {
+  if (!currentRoomId) return;
+  const roomId = currentRoomId;
+  _roomModelResolutionCache = null;
+  _updateResolutionPreview();
+  try {
+    const data = await fjson(`/api/rooms/${roomId}/model-resolution`);
+    if (currentRoomId === roomId) {
+      _roomModelResolutionCache = data;
+      _updateResolutionPreview();
+    }
+  } catch {
+    // endpoint not yet available — preview stays hidden
+  }
+}
+
+const _RESOLUTION_SOURCE_LABELS = {
+  agent_default: '↪ agent default',
+  harness_default: '↪ harness default',
+  cli_default: '↪ CLI default',
+};
+
+function _updateResolutionPreview() {
+  const list = document.getElementById('model-dropdown-list');
+  if (!list) return;
+  const old = list.querySelector('.h-model-resolution-section');
+  if (old) old.remove();
+  const rows = _roomModelResolutionCache;
+  if (!Array.isArray(rows) || !rows.length) return;
+  const hasFallback = rows.some(r => r.source && r.source !== 'room');
+  if (rows.length === 1 && !hasFallback) return;
+
+  const section = document.createElement('div');
+  section.className = 'h-model-resolution-section';
+
+  const sep = document.createElement('div');
+  sep.className = 'h-model-optgroup';
+  sep.textContent = 'model per agent';
+  section.appendChild(sep);
+
+  for (const res of rows) {
+    const row = document.createElement('div');
+    row.className = 'h-model-resolution-row';
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'h-model-resolution-name';
+    nameEl.textContent = res.name || `#${res.actor_id}`;
+
+    const harnessEl = document.createElement('span');
+    harnessEl.className = 'h-model-resolution-harness';
+    harnessEl.textContent = `· ${res.harness || 'claude'}`;
+
+    const arrow = document.createElement('span');
+    arrow.className = 'h-model-resolution-arrow';
+    arrow.textContent = '→';
+
+    const modelEl = document.createElement('span');
+    modelEl.className = 'h-model-resolution-model';
+    modelEl.textContent = res.model || 'CLI default';
+
+    row.append(nameEl, harnessEl, arrow, modelEl);
+
+    const sourceLabel = res.source && _RESOLUTION_SOURCE_LABELS[res.source];
+    if (sourceLabel) {
+      const sourceEl = document.createElement('span');
+      sourceEl.className = 'h-model-resolution-source';
+      sourceEl.textContent = sourceLabel;
+      row.appendChild(sourceEl);
+    }
+
+    section.appendChild(row);
+  }
+
+  list.appendChild(section);
 }
 
 document.getElementById('model-dropdown-trigger')?.addEventListener('click', function(e) {

@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.338";
+var CLIENT_VERSION = "0.4.352";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -270,7 +270,7 @@ var MAX_TRIGGER_ERRORS = 3;
 var TRIGGER_TIMEOUT = 5 * 6e4;
 var MAX_CONCURRENT = parseInt(process.env.STOA_MAX_CONCURRENT || "1");
 var UPDATE_INTERVAL = 12e4;
-var UPDATE_FILES = ["stoa.js", "claude-session.js"];
+var UPDATE_FILES = ["stoa.js", "claude-session.js", "codex-session.js"];
 var TREE_IGNORE = /* @__PURE__ */ new Set([".git", "node_modules", ".next", "__pycache__", ".venv", "dist", "build", ".claude"]);
 function isPathSafe(filePath, workdir) {
   const resolved = path.resolve(filePath);
@@ -325,15 +325,13 @@ async function checkForUpdates() {
   try {
     const body = await fetchText(`${baseUrl}/api/client/manifest`);
     const remote = JSON.parse(body).files || {};
-    const changed = Object.entries(remote).filter(
-      ([name, hash]) => localManifest[name] !== void 0 && localManifest[name] !== hash
-    );
+    const changed = filesToUpdate(remote, localManifest, UPDATE_FILES);
     if (!changed.length) return;
-    console.log(`[stoa:update] update detected: ${changed.map(([n]) => n).join(", ")}`);
-    for (const [name, remoteHash] of changed) {
+    console.log(`[stoa:update] update detected: ${changed.join(", ")}`);
+    for (const name of changed) {
       const content = await fetchText(`${baseUrl}/api/client/file/${encodeURIComponent(name)}`);
       fs.writeFileSync(path.join(__dirname, name), content, "utf8");
-      localManifest[name] = remoteHash;
+      localManifest[name] = remote[name];
       console.log(`[stoa:update] ${name} updated`);
     }
     if (activeTriggers.size > 0 || triggerQueue.length > 0) {
@@ -586,8 +584,12 @@ async function backupSessionFile(workdir, sessionId) {
     return null;
   }
 }
-async function prepareResume({ targetDir, rid, targetModel, toolsSupported, env, sessionKey, thirdParty = false, aggressive = false, systemPrompt = null, systemPromptHash = null }) {
-  if (rid && !compactsInFlight.has(sessionKey)) {
+const { createHarnessSession: _createHS, supportsCompact, buildResumeArgs, parseClaudeAuthStatus, parseCodexLoginStatus, parseCodexModels, filesToUpdate } = require("./harness-session");
+function createHarnessSession(harness, opts) {
+  return _createHS(harness, opts, { ClaudeSession });
+}
+async function prepareResume({ targetDir, rid, targetModel, toolsSupported, env, sessionKey, thirdParty = false, aggressive = false, systemPrompt = null, systemPromptHash = null, harness = "claude" }) {
+  if (harness === "claude" && rid && !compactsInFlight.has(sessionKey)) {
     await sanitizeThinking(targetDir, rid, { thirdParty, aggressive });
     const tsResult = await sanitizeTranscript(targetDir, rid);
     if (tsResult && (tsResult.level === "warning" || tsResult.level === "error") && !transcriptNoticeEmitted.has(sessionKey)) {
@@ -600,10 +602,13 @@ async function prepareResume({ targetDir, rid, targetModel, toolsSupported, env,
   }
   const flags = rid ? ["--resume", rid] : [];
   if (targetModel) flags.push("--model", targetModel);
-  if (toolsSupported === false) flags.push("--tools", "");
-  if (systemPrompt) flags.push("--append-system-prompt", systemPrompt);
-  const session = new ClaudeSession({ workDir: targetDir, flags, resumeId: rid || null, env });
+  if (harness === "claude") {
+    if (toolsSupported === false) flags.push("--tools", "");
+    if (systemPrompt) flags.push("--append-system-prompt", systemPrompt);
+  }
+  const session = createHarnessSession(harness, { workDir: targetDir, flags, resumeId: rid || null, env, systemPrompt: harness === "codex" ? systemPrompt : null, model: targetModel });
   session._systemPromptHash = systemPromptHash || null;
+  session._harness = harness;
   sessionPool.set(sessionKey, session);
   return session;
 }
@@ -620,17 +625,18 @@ function parseSessionKey(key) {
   const subAgentId = subMatch ? parseInt(subMatch[1]) : null;
   return { roomId, threadId: threadId || null, subAgentId };
 }
-function getSession(workdir, roomId, env, subAgentId, threadId, systemPrompt, systemPromptHash) {
+function getSession(workdir, roomId, env, subAgentId, threadId, systemPrompt, systemPromptHash, harness = "claude") {
   const key = buildSessionKey(workdir, roomId, threadId, subAgentId);
   clearSessionIdleTimer(key);
   let session = sessionPool.get(key);
   if (!session) {
     const flags = [];
-    if (systemPrompt) flags.push("--append-system-prompt", systemPrompt);
-    session = new ClaudeSession({ workDir: path.resolve(workdir), env: env || null, flags: flags.length ? flags : void 0 });
+    if (harness === "claude" && systemPrompt) flags.push("--append-system-prompt", systemPrompt);
+    session = createHarnessSession(harness, { workDir: path.resolve(workdir), env: env || null, flags: flags.length ? flags : void 0, systemPrompt: harness === "codex" ? systemPrompt : null });
     session._systemPromptHash = systemPromptHash || null;
+    session._harness = harness;
     sessionPool.set(key, session);
-    console.log(`[stoa] claude session started for ${key}`);
+    console.log(`[stoa] ${harness} session started for ${key}`);
     startSessionIdleTimer(key);
   }
   return session;
@@ -660,6 +666,7 @@ setInterval(async () => {
   const busySessionKeys = new Set([...activeTriggers.values()].filter((t) => t.sessionKey).map((t) => t.sessionKey));
   for (const [sessionKey, session] of sessionPool) {
     if (busySessionKeys.has(sessionKey)) continue;
+    if (!supportsCompact(session._harness)) continue;
     const workdir = sessionKey.split("::")[0];
     const sessionId = session.resumeId;
     if (!sessionId) continue;
@@ -685,13 +692,56 @@ setInterval(async () => {
     });
   }
 }, 60 * 6e4);
+function execWithTimeout(cmd, args, timeout) {
+  const { execFile } = require("child_process");
+  return new Promise((resolve) => {
+    try {
+      const child = execFile(cmd, args, { encoding: "utf8", timeout, windowsHide: true }, (err, stdout) => {
+        resolve({ exitCode: err ? (err.code === "ENOENT" ? -1 : (err.killed ? -2 : (typeof err.code === 'number' ? err.code : 1))) : 0, stdout: stdout || "" });
+      });
+      child.on("error", () => resolve({ exitCode: -1, stdout: "" }));
+    } catch {
+      resolve({ exitCode: -1, stdout: "" });
+    }
+  });
+}
+async function detectHarnessesAsync() {
+  const [claudeVer, codexVer] = await Promise.all([
+    execWithTimeout("claude", ["--version"], 5e3),
+    execWithTimeout("codex", ["--version"], 5e3),
+  ]);
+  const status = [];
+  if (claudeVer.exitCode >= 0) {
+    const version = claudeVer.stdout.trim().split("\n")[0] || null;
+    const authResult = await execWithTimeout("claude", ["auth", "status"], 5e3);
+    const loggedIn = parseClaudeAuthStatus(authResult.stdout);
+    status.push({ id: "claude", installed: claudeVer.exitCode === 0, logged_in: loggedIn, version, models: null });
+  }
+  if (codexVer.exitCode >= 0) {
+    const version = codexVer.stdout.trim().split("\n")[0] || null;
+    const loginResult = await execWithTimeout("codex", ["login", "status"], 5e3);
+    const loggedIn = codexVer.exitCode === 0 ? parseCodexLoginStatus(loginResult.exitCode) : null;
+    let models = null;
+    if (codexVer.exitCode === 0) {
+      const modelsResult = await execWithTimeout("codex", ["debug", "models"], 5e3);
+      if (modelsResult.exitCode === 0) models = parseCodexModels(modelsResult.stdout);
+    }
+    status.push({ id: "codex", installed: codexVer.exitCode === 0, logged_in: loggedIn, version, models });
+  }
+  const harnesses_available = status.filter((s) => s.installed).map((s) => s.id);
+  return { harnesses_available, harness_status: status };
+}
 function connect() {
   ws = new WebSocket(STOA_URL);
   ws.on("open", () => {
     if (ACTOR_TYPE === "ai") {
       getSession(process.env.STOA_WORK_DIR || os.homedir(), "default");
-      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION }));
+      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, harnesses_available: [] }));
       console.log(`[stoa] Agent #${ACTOR_ID} v${CLIENT_VERSION} connected to ${STOA_URL} (max_concurrent=${MAX_CONCURRENT})`);
+      detectHarnessesAsync().then((result) => {
+        send({ type: "harnesses_update", ...result });
+        console.log(`[stoa] Harnesses: ${result.harness_status.map((s) => `${s.id}${s.installed ? " v" + s.version : " (not found)"}${s.logged_in === false ? " (not logged in)" : ""}`).join(", ") || "none"}`);
+      }).catch(() => {});
     } else {
       ws.send(JSON.stringify({ type: "join_room", room_id: ROOM_ID }));
       printHeader();
@@ -798,6 +848,15 @@ async function handleAgentMessage(msg) {
     } catch (err) {
       console.error("[stoa] Rescan failed:", err.message);
     }
+    detectHarnessesAsync().then((result) => {
+      send({ type: "harnesses_update", ...result, request_id: msg.request_id });
+    }).catch(() => {});
+  }
+  if (msg.type === "check_harnesses") {
+    detectHarnessesAsync().then((result) => {
+      send({ type: "harnesses_update", ...result, request_id: msg.request_id });
+      console.log(`[stoa] Harness check: ${result.harness_status.map((s) => `${s.id}${s.installed ? " v" + s.version : " (not found)"}${s.logged_in === false ? " (not logged in)" : ""}`).join(", ") || "none"}`);
+    }).catch(() => {});
   }
   if (msg.type === "restart") {
     console.log("[stoa] Server requested restart (version outdated)");
@@ -1122,6 +1181,11 @@ async function handleAgentMessage(msg) {
         return;
       }
     }
+    if (!supportsCompact(session._harness)) {
+      console.log(`[stoa] compact: skipping non-claude session (${session._harness}) for ${key}`);
+      send({ type: "compact_error", room_id: msg.room_id, thread_id: msg.thread_id || null, sub_agent_id: msg.sub_agent_id || null, error: `compact not supported for ${session._harness} harness` });
+      return;
+    }
     console.log(`[stoa] compact: starting for ${key}`);
     compactWithTimeout(session).then((result) => {
       console.log(`[stoa] compact: done for ${key}`);
@@ -1350,29 +1414,34 @@ ${allNotes}`;
       } catch {
       }
     }
+    const triggerHarness = msg.harness || "claude";
     const apiKeys = msg.api_keys || (msg.api_key ? [msg.api_key] : []);
     const platformEnv = { STOA_ROOM_ID: String(room_id), STOA_THREAD_ID: threadId ? String(threadId) : "" };
-    if (msg.base_url) platformEnv.ANTHROPIC_BASE_URL = msg.base_url;
-    if (apiKeys[0]) platformEnv.ANTHROPIC_AUTH_TOKEN = apiKeys[0];
+    if (triggerHarness === "claude") {
+      if (msg.base_url) platformEnv.ANTHROPIC_BASE_URL = msg.base_url;
+      if (apiKeys[0]) platformEnv.ANTHROPIC_AUTH_TOKEN = apiKeys[0];
+    }
     const envToUse = platformEnv;
     const systemPromptHash = msg.system_prompt_hash || null;
-    let session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash);
+    const resumeBase = buildResumeArgs(msg, { targetDir, sessionKey, harness: triggerHarness });
+    let session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
     const currentSystemPromptHash = session._systemPromptHash || null;
     const needsSystemPromptChange = systemPromptHash && currentSystemPromptHash !== systemPromptHash;
     const needsResume = rid && session.resumeId !== rid;
     const needsFreshSession = !rid && session.resumeId;
+    const needsHarnessChange = (session._harness || "claude") !== triggerHarness;
     let targetModel = msg.model || null;
     const modelChain = Array.isArray(msg.models) && msg.models.length ? msg.models.slice() : targetModel ? [targetModel] : [];
     let modelIdx = 0;
-    const currentModel = session.flags.find((f, i, arr) => arr[i - 1] === "--model") || null;
+    const currentModel = session.flags?.find((f, i, arr) => arr[i - 1] === "--model") || null;
     const needsModelChange = targetModel && currentModel !== targetModel;
     const currentEnv = JSON.stringify(session.env || {});
     const newEnv = JSON.stringify(envToUse || {});
     const needsEnvChange = currentEnv !== newEnv;
-    if (needsResume || needsFreshSession || needsModelChange || needsEnvChange || needsSystemPromptChange) {
+    if (needsResume || needsFreshSession || needsModelChange || needsEnvChange || needsSystemPromptChange || needsHarnessChange) {
       session.shutdown();
-      session = await prepareResume({ targetDir, rid, targetModel, toolsSupported: msg.tools_supported, env: envToUse, sessionKey, thirdParty: !!msg.base_url, systemPrompt: msg.system_prompt, systemPromptHash });
-      console.log(`[stoa] Session restarted: workdir=${targetDir} room=${room_id} thread=${threadId}${rid ? " resume=" + rid.slice(0, 8) + "..." : " (fresh)"}${targetModel ? " model=" + targetModel : ""}${needsSystemPromptChange ? " system_prompt_changed" : ""}${msg.base_url ? " base_url=" + msg.base_url : ""}${msg.tools_supported === false ? " tools=disabled" : ""}`);
+      session = await prepareResume({ ...resumeBase, rid: needsHarnessChange ? null : rid, targetModel, env: envToUse });
+      console.log(`[stoa] Session restarted: harness=${triggerHarness} workdir=${targetDir} room=${room_id} thread=${threadId}${rid ? " resume=" + rid.slice(0, 8) + "..." : " (fresh)"}${targetModel ? " model=" + targetModel : ""}${needsSystemPromptChange ? " system_prompt_changed" : ""}${needsHarnessChange ? " harness_changed" : ""}${msg.base_url ? " base_url=" + msg.base_url : ""}${msg.tools_supported === false ? " tools=disabled" : ""}`);
     }
     activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
     let fullContent = "";
@@ -1452,7 +1521,7 @@ ${allNotes}`;
           send({ type: "agent_stream_reset", room_id, message_id });
           fullContent = "";
           session.shutdown();
-          session = await prepareResume({ targetDir, rid, targetModel, toolsSupported: msg.tools_supported, env: envToUse, sessionKey, thirdParty: !!msg.base_url });
+          session = await prepareResume({ ...resumeBase, rid, targetModel, env: envToUse });
           activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
           sessionRef = session;
           session.on("status", statusHandler);
@@ -1473,7 +1542,7 @@ ${allNotes}`;
           console.log(`[stoa] API key #1 failed (${retryErr.message}), rotating to key #${ki + 1}...`);
           const rotatedEnv = { ...platformEnv, ANTHROPIC_AUTH_TOKEN: apiKeys[ki] };
           session.shutdown();
-          session = await prepareResume({ targetDir, rid, targetModel, toolsSupported: msg.tools_supported, env: rotatedEnv, sessionKey, thirdParty: !!msg.base_url });
+          session = await prepareResume({ ...resumeBase, rid, targetModel, env: rotatedEnv });
           activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
           sessionRef = session;
           session.on("status", statusHandler);
@@ -1494,7 +1563,7 @@ ${allNotes}`;
         sessionPool.delete(sessionKey);
         await new Promise((r) => setTimeout(r, 2e3));
         fullContent = "";
-        session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash);
+        session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
         activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
         if (statusHandler) session.on("status", statusHandler);
         sessionRef = session;
@@ -1503,18 +1572,18 @@ ${allNotes}`;
       } else if (retryErr.message.includes("exited unexpectedly") && !fullContent) {
         console.log(`[stoa] session crashed before output, retrying in 4s...`);
         await new Promise((r) => setTimeout(r, 4e3));
-        session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash);
+        session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
         activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
         lastActivity = Date.now();
         result = await session.send(sendOpts);
-      } else if (isThinkingSignatureError(retryErr.message) && !fullContent && !thinkingSigRetried) {
+      } else if (triggerHarness === "claude" && isThinkingSignatureError(retryErr.message) && !fullContent && !thinkingSigRetried) {
         thinkingSigRetried = true;
         console.log(`[stoa] thinking-signature 400 detected (exception): ${retryErr.message.slice(0, 120)}`);
         send({ type: "agent_stream_reset", room_id, message_id });
         fullContent = "";
         session.shutdown();
         await backupSessionFile(targetDir, rid);
-        session = await prepareResume({ targetDir, rid, targetModel, toolsSupported: msg.tools_supported, env: envToUse, sessionKey, aggressive: true });
+        session = await prepareResume({ ...resumeBase, rid, targetModel, env: envToUse, aggressive: true });
         activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
         sessionRef = session;
         session.on("status", statusHandler);
@@ -1527,7 +1596,7 @@ ${allNotes}`;
     let { content, sessionId, aborted, usage, modelUsage, totalCostUsd, durationMs, subtype } = result;
     content = stripLeadingThinkingMarker(content);
     const AUTH_EXPIRED_RE = /not logged in|please run \/(reauth|login)/i;
-    if (!aborted && AUTH_EXPIRED_RE.test(content) && content.length < 200) {
+    if (triggerHarness === "claude" && !aborted && AUTH_EXPIRED_RE.test(content) && content.length < 200) {
       console.log(`[stoa] OAuth expired detected in room=${room_id} msg=${message_id}, content="${content.slice(0, 100)}"`);
       console.log(`[stoa] Killing session and retrying...`);
       send({ type: "agent_stream_reset", room_id, message_id });
@@ -1535,7 +1604,7 @@ ${allNotes}`;
       sessionPool.delete(sessionKey);
       await new Promise((r) => setTimeout(r, 2e3));
       fullContent = "";
-      session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash);
+      session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
       activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
       if (statusHandler) session.on("status", statusHandler);
       sessionRef = session;
@@ -1545,14 +1614,14 @@ ${allNotes}`;
       content = stripLeadingThinkingMarker(content);
       console.log(`[stoa] OAuth retry completed for room=${room_id} msg=${message_id}, content=${content.length} chars`);
     }
-    if (!aborted && !thinkingSigRetried && isThinkingSignatureError(content)) {
+    if (triggerHarness === "claude" && !aborted && !thinkingSigRetried && isThinkingSignatureError(content)) {
       thinkingSigRetried = true;
       console.log(`[stoa] thinking-signature 400 detected (content): ${content.slice(0, 120)}`);
       send({ type: "agent_stream_reset", room_id, message_id });
       fullContent = "";
       session.shutdown();
       await backupSessionFile(targetDir, rid);
-      session = await prepareResume({ targetDir, rid, targetModel, toolsSupported: msg.tools_supported, env: envToUse, sessionKey, aggressive: true });
+      session = await prepareResume({ ...resumeBase, rid, targetModel, env: envToUse, aggressive: true });
       activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
       if (statusHandler) session.on("status", statusHandler);
       sessionRef = session;
@@ -1589,11 +1658,11 @@ ${allNotes}`;
       if (usage || modelUsage) {
         send({ type: "usage_report", room_id, message_id, actor_id: ACTOR_ID, model: targetModel || "unknown", usage: usage || {}, modelUsage: modelUsage || {}, totalCostUsd: totalCostUsd || 0 });
       }
-      if (sessionId && targetDir && !compactsInFlight.has(sessionKey)) {
+      if (triggerHarness === "claude" && sessionId && targetDir && !compactsInFlight.has(sessionKey)) {
         await stripSessionImages(targetDir, sessionId);
       }
       const sessionIdForCompact = sessionId;
-      if (sessionIdForCompact && targetDir) {
+      if (triggerHarness === "claude" && sessionIdForCompact && targetDir) {
         setImmediate(async () => {
           const fileSize = await getSessionFileSize(targetDir, sessionIdForCompact);
           if (fileSize <= AUTO_COMPACT_THRESHOLD) return;

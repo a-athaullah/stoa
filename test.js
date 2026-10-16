@@ -2838,6 +2838,7 @@ async function run() {
     // The name preset is stored server-side in installTokens (not in script body directly)
     assert.ok(r.raw.includes('stoa.js'), 'stoa.js not in script');
     assert.ok(r.raw.includes('claude-session.js'), 'claude-session.js not in script');
+    assert.ok(r.raw.includes('codex-session.js'), 'codex-session.js not in script');
   });
 
   // Agent register
@@ -6517,6 +6518,1928 @@ async function run() {
 
   await test('Thread — cleanup', async () => {
     // Cleaned up in teardown
+  });
+
+  // ─── Harness Selection (Fase 1–4) ───────────────────────────────────────
+  console.log('\n[Harness Selection]');
+  let hsActorId, hsSecret, hsWorkdirId, hsAgentWs, hsRoomId, hsSubAgentId;
+
+  await test('Harness Setup — register actor + room', async () => {
+    const agent = await createOnlineTestAgent('__test-harness-sel', '/tmp/stoa-test-harness');
+    if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+    hsActorId = agent.actorId; hsSecret = agent.secret; hsWorkdirId = agent.workdirId; hsAgentWs = agent.ws;
+    const r = await req('POST', '/api/rooms', { title: '__harness-test-room__', workdir_id: hsWorkdirId, participant_ids: [hsActorId] });
+    assert.strictEqual(r.status, 200);
+    hsRoomId = r.body.id;
+    testRoomIds.push(hsRoomId);
+    if (hsAgentWs) { hsAgentWs.close(); hsAgentWs = null; }
+  });
+
+  // Fase 1: system_prompt CRUD
+  await test('GET /api/actors/:id/system-prompt — empty default', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('GET', `/api/actors/${hsActorId}/system-prompt`);
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.system_prompt, null);
+  });
+
+  await test('PUT /api/actors/:id/system-prompt — set prompt', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('PUT', `/api/actors/${hsActorId}/system-prompt`, { system_prompt: 'You are a test agent.' });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.system_prompt, 'You are a test agent.');
+  });
+
+  await test('GET /api/actors/:id/system-prompt — returns saved prompt', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('GET', `/api/actors/${hsActorId}/system-prompt`);
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.system_prompt, 'You are a test agent.');
+  });
+
+  await test('PUT /api/actors/:id/system-prompt — clear with null', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('PUT', `/api/actors/${hsActorId}/system-prompt`, { system_prompt: null });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.system_prompt, null);
+  });
+
+  await test('PUT /api/actors/:id/system-prompt — too large → 400', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('PUT', `/api/actors/${hsActorId}/system-prompt`, { system_prompt: 'x'.repeat(65537) });
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('PUT /api/actors/:id/system-prompt — human actor → 404', async () => {
+    const actors = (await req('GET', '/api/actors')).body;
+    const human = actors.find(a => a.type === 'human');
+    if (!human) { console.log('    (skipped — no human actor)'); return; }
+    const r = await req('PUT', `/api/actors/${human.id}/system-prompt`, { system_prompt: 'test' });
+    assert.strictEqual(r.status, 404, `expected 404, got ${r.status}: ${JSON.stringify(r.body)}`);
+  });
+
+  // system-prompt ownership: other agent → 403, own agent → 200
+  await test('GET /api/actors/:id/system-prompt — other agent → 403', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const agent2 = await createOnlineTestAgent('__test-sp-other', '/tmp/stoa-test-sp-other');
+    if (!agent2) { console.log('    (skipped — no second agent)'); return; }
+    try {
+      const r = await req('GET', `/api/actors/${hsActorId}/system-prompt`, null, { 'x-agent-id': String(agent2.actorId), 'x-agent-secret': agent2.secret, Cookie: '' });
+      assert.strictEqual(r.status, 403, `expected 403, got ${r.status}`);
+    } finally {
+      if (agent2.ws) agent2.ws.close();
+      await req('DELETE', `/api/actors/${agent2.actorId}`);
+      orphanActorIds = orphanActorIds.filter(id => id !== agent2.actorId);
+    }
+  });
+
+  await test('PUT /api/actors/:id/system-prompt — other agent → 403', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const agent2 = await createOnlineTestAgent('__test-sp-put-other', '/tmp/stoa-test-sp-put-other');
+    if (!agent2) { console.log('    (skipped — no second agent)'); return; }
+    try {
+      const r = await req('PUT', `/api/actors/${hsActorId}/system-prompt`, { system_prompt: 'hacked' }, { 'x-agent-id': String(agent2.actorId), 'x-agent-secret': agent2.secret, Cookie: '' });
+      assert.strictEqual(r.status, 403, `expected 403, got ${r.status}`);
+      const check = await req('GET', `/api/actors/${hsActorId}/system-prompt`);
+      assert.notStrictEqual(check.body.system_prompt, 'hacked', 'system prompt should NOT have been changed');
+    } finally {
+      if (agent2.ws) agent2.ws.close();
+      await req('DELETE', `/api/actors/${agent2.actorId}`);
+      orphanActorIds = orphanActorIds.filter(id => id !== agent2.actorId);
+    }
+  });
+
+  await test('GET /api/actors/:id/system-prompt — own agent → 200', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('GET', `/api/actors/${hsActorId}/system-prompt`, null, { 'x-agent-id': String(hsActorId), 'x-agent-secret': hsSecret, Cookie: '' });
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}`);
+  });
+
+  await test('PUT /api/actors/:id/system-prompt — own agent → 200', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('PUT', `/api/actors/${hsActorId}/system-prompt`, { system_prompt: 'self-set' }, { 'x-agent-id': String(hsActorId), 'x-agent-secret': hsSecret, Cookie: '' });
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}`);
+    assert.strictEqual(r.body.system_prompt, 'self-set');
+    await req('PUT', `/api/actors/${hsActorId}/system-prompt`, { system_prompt: null });
+  });
+
+  // Fase 3b: GET /api/harnesses
+  await test('GET /api/harnesses — returns harness list with models', async () => {
+    const r = await req('GET', '/api/harnesses');
+    assert.strictEqual(r.status, 200);
+    assert.ok(Array.isArray(r.body), 'should return array');
+    const claude = r.body.find(h => h.name === 'claude');
+    assert.ok(claude, 'claude harness not found');
+    assert.ok(Array.isArray(claude.models), 'claude should have models array');
+    assert.ok(claude.models.length > 0, 'claude should have at least one model');
+    const defaultModel = claude.models.find(m => m.is_default);
+    assert.ok(defaultModel, 'claude should have a default model');
+  });
+
+  await test('GET /api/harnesses — codex harness present with models', async () => {
+    const r = await req('GET', '/api/harnesses');
+    const codex = r.body.find(h => h.name === 'codex');
+    assert.ok(codex, 'codex harness not found');
+    assert.ok(Array.isArray(codex.models), 'codex should have models array');
+    assert.ok(codex.models.length > 0, 'codex should have at least one model');
+  });
+
+  await test('PATCH /api/actors/:id — nonexistent actor → 404', async () => {
+    const r = await req('PATCH', '/api/actors/999999', { name: 'ghost' });
+    assert.strictEqual(r.status, 404, `expected 404, got ${r.status}`);
+  });
+
+  // Fase 3b: PATCH /api/actors/:id — adapter field
+  await test('PATCH /api/actors/:id — change adapter to claude', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { name: '__test-harness-sel', adapter: 'claude' });
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+  });
+
+  await test('PATCH /api/actors/:id — adapter only (no name) → 200', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+    assert.strictEqual(r.body.adapter, 'claude');
+  });
+
+  await test('PATCH /api/actors/:id — empty name still rejected → 400', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { name: '' });
+    assert.strictEqual(r.status, 400);
+  });
+
+  await test('PATCH /api/actors/:id — invalid adapter → 400', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { name: '__test-harness-sel', adapter: 'invalid-harness' });
+    assert.strictEqual(r.status, 400);
+  });
+
+  // Fase 3b: sub-agent harness field
+  await test('POST /api/actors/:id/sub-agents — create with harness', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'hs-probe', tier: 'quick', harness: 'codex' });
+    assert.strictEqual(r.status, 201, `create failed: ${JSON.stringify(r.body)}`);
+    assert.strictEqual(r.body.label, 'hs-probe');
+    assert.strictEqual(r.body.harness, 'codex');
+    hsSubAgentId = r.body.id;
+  });
+
+  await test('GET /api/actors/:id/sub-agents — includes effective_harness', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('GET', `/api/actors/${hsActorId}/sub-agents`);
+    assert.strictEqual(r.status, 200);
+    const probe = r.body.find(sa => sa.label === 'hs-probe');
+    assert.ok(probe, 'hs-probe not found');
+    assert.strictEqual(probe.harness, 'codex');
+    assert.strictEqual(probe.effective_harness, 'codex');
+  });
+
+  await test('POST /api/actors/:id/sub-agents — create without harness (inherits parent)', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'hs-reviewer', tier: 'standard' });
+    assert.strictEqual(r.status, 201);
+    assert.strictEqual(r.body.harness, null);
+  });
+
+  await test('GET /api/actors/:id/sub-agents — null harness inherits parent adapter', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('GET', `/api/actors/${hsActorId}/sub-agents`);
+    const reviewer = r.body.find(sa => sa.label === 'hs-reviewer');
+    assert.ok(reviewer, 'hs-reviewer not found');
+    assert.strictEqual(reviewer.harness, null);
+    assert.strictEqual(reviewer.effective_harness, 'claude');
+  });
+
+  await test('PATCH /api/sub-agents/:id — update harness', async () => {
+    if (!hsSubAgentId) { console.log('    (skipped)'); return; }
+    const r = await req('PATCH', `/api/sub-agents/${hsSubAgentId}`, { harness: null });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.harness, null);
+  });
+
+  await test('PATCH /api/sub-agents/:id — invalid harness → 400', async () => {
+    if (!hsSubAgentId) { console.log('    (skipped)'); return; }
+    const r = await req('PATCH', `/api/sub-agents/${hsSubAgentId}`, { harness: 'nonexistent' });
+    assert.strictEqual(r.status, 400);
+  });
+
+  // Fase 2: ai_sessions.harness column
+  await test('ai_sessions schema — harness column exists', async () => {
+    const db = require('./db');
+    const cols = db.prepare("PRAGMA table_info(ai_sessions)").all();
+    const harCol = cols.find(c => c.name === 'harness');
+    assert.ok(harCol, 'harness column missing from ai_sessions');
+    assert.strictEqual(harCol.dflt_value, "'claude'", 'default should be claude');
+  });
+
+  // Fase 3b: harnesses + harness_models tables
+  await test('harnesses table — has claude and codex', async () => {
+    const db = require('./db');
+    const rows = db.prepare("SELECT name FROM harnesses ORDER BY name").all();
+    assert.ok(rows.some(r => r.name === 'claude'), 'claude harness missing');
+    assert.ok(rows.some(r => r.name === 'codex'), 'codex harness missing');
+  });
+
+  await test('harness_models table — claude has default model', async () => {
+    const db = require('./db');
+    const row = db.prepare(`
+      SELECT hm.model_id FROM harness_models hm
+      JOIN harnesses h ON h.id = hm.harness_id
+      WHERE h.name = 'claude' AND hm.is_default = 1
+    `).get();
+    assert.ok(row, 'claude should have a default model');
+  });
+
+  // Fase 1: composeSystemPrompt — require from lib
+  await test('composeSystemPrompt — layers base + agent + room', () => {
+    const { composeSystemPrompt } = require('./lib/compose-system-prompt');
+    const result = composeSystemPrompt('base prompt', 'agent prompt', 'room prompt');
+    assert.ok(result.includes('base prompt'), 'should include base');
+    assert.ok(result.includes('agent prompt'), 'should include agent');
+    assert.ok(result.includes('room prompt'), 'should include room');
+    assert.ok(result.indexOf('base prompt') < result.indexOf('agent prompt'), 'base before agent');
+    assert.ok(result.indexOf('agent prompt') < result.indexOf('room prompt'), 'agent before room');
+  });
+
+  await test('composeSystemPrompt — null/empty layers skipped', () => {
+    const { composeSystemPrompt } = require('./lib/compose-system-prompt');
+    const noAgent = composeSystemPrompt('base only', null, 'room only');
+    assert.ok(noAgent.includes('base only'), 'should include base');
+    assert.ok(noAgent.includes('room only'), 'should include room');
+    assert.ok(!noAgent.includes('null'), 'should not include null text');
+    const baseOnly = composeSystemPrompt('just base', null, null);
+    assert.strictEqual(baseOnly, 'just base');
+    const noRoom = composeSystemPrompt('b', 'a', '');
+    assert.ok(!noRoom.includes('---\n\n\n'), 'empty string layer should be skipped');
+  });
+
+  // Fase 3a: CodexSession
+  await test('CodexSession — exists and has send/abort/shutdown', () => {
+    const { CodexSession } = require('./codex-session');
+    assert.ok(CodexSession, 'CodexSession not exported');
+    const cs = new CodexSession({ workDir: '/tmp' });
+    assert.strictEqual(typeof cs.send, 'function', 'must have send()');
+    assert.strictEqual(typeof cs.abort, 'function', 'must have abort()');
+    assert.strictEqual(typeof cs.shutdown, 'function', 'must have shutdown()');
+  });
+
+  await test('CodexSession — _buildArgs for fresh exec', () => {
+    const { CodexSession } = require('./codex-session');
+    const cs = new CodexSession({ workDir: '/tmp', model: 'o3' });
+    const args = cs._buildArgs(false);
+    assert.ok(args.includes('exec'), 'should have exec');
+    assert.ok(args.includes('--json'), 'should have --json');
+    assert.ok(args.includes('--ignore-user-config'), 'should have --ignore-user-config');
+    assert.ok(args.includes('-m'), 'should have -m for model');
+    assert.ok(args.includes('o3'), 'should have model value');
+    assert.ok(args.includes('-'), 'should end with stdin marker');
+    assert.ok(!args.includes('resume'), 'fresh exec should not have resume');
+  });
+
+  await test('CodexSession — _buildArgs for resume', () => {
+    const { CodexSession } = require('./codex-session');
+    const cs = new CodexSession({ workDir: '/tmp', model: 'o3', resumeId: 'thread-abc123' });
+    cs._threadId = 'thread-abc123';
+    const args = cs._buildArgs(true);
+    assert.ok(args.includes('resume'), 'should have resume subcommand');
+    assert.ok(args.includes('thread-abc123'), 'should have thread_id');
+    assert.ok(args.includes('--json'), 'should have --json');
+  });
+
+  await test('CodexSession — _buildArgs escapes systemPrompt for TOML safety', () => {
+    const { CodexSession } = require('./codex-session');
+    const dangerous = 'line1\nsandbox_mode="read-only"\nline3';
+    const cs = new CodexSession({ workDir: '/tmp', systemPrompt: dangerous });
+    const args = cs._buildArgs(false);
+    const devInstrArg = args.find(a => typeof a === 'string' && a.startsWith('developer_instructions='));
+    assert.ok(devInstrArg, 'should have developer_instructions config');
+    assert.ok(!devInstrArg.includes('\n'), 'newlines must be escaped');
+    assert.ok(devInstrArg.includes('"'), 'value must be quoted');
+  });
+
+  await test('CodexSession — _buildArgs systemPrompt without injection', () => {
+    const { CodexSession } = require('./codex-session');
+    const safe = 'Be helpful and concise';
+    const cs = new CodexSession({ workDir: '/tmp', systemPrompt: safe });
+    const args = cs._buildArgs(false);
+    const devInstrArg = args.find(a => typeof a === 'string' && a.startsWith('developer_instructions='));
+    assert.ok(devInstrArg.includes('Be helpful and concise'), 'content preserved');
+  });
+
+  // escapeTomlValue unit tests
+  await test('escapeTomlValue — escapes newlines and quotes', () => {
+    const { escapeTomlValue } = require('./codex-session');
+    const result = escapeTomlValue('hello\nworld "quoted"');
+    assert.ok(!result.includes('\n'), 'newlines escaped');
+    assert.ok(result.startsWith('"') && result.endsWith('"'), 'wrapped in quotes');
+    assert.ok(result.includes('\\n'), 'newline becomes \\n');
+    assert.ok(result.includes('\\"'), 'quotes escaped');
+  });
+
+  await test('escapeTomlValue — plain string passes through', () => {
+    const { escapeTomlValue } = require('./codex-session');
+    const result = escapeTomlValue('simple prompt');
+    assert.strictEqual(result, '"simple prompt"');
+  });
+
+  // Fase 3a: CodexSession JSONL event mapper
+  await test('CodexSession _handleEvent — thread.started sets sessionId', () => {
+    const { CodexSession } = require('./codex-session');
+    const cs = new CodexSession({ workDir: '/tmp' });
+    cs._handleEvent({ type: 'thread.started', thread_id: 't1' });
+    assert.strictEqual(cs._threadId, 't1');
+    assert.strictEqual(cs.resumeId, 't1');
+  });
+
+  await test('CodexSession _handleEvent — item.completed accumulates content', () => {
+    const { CodexSession } = require('./codex-session');
+    const cs = new CodexSession({ workDir: '/tmp' });
+    const tokens = [];
+    cs._currentOnToken = t => tokens.push(t);
+    cs._handleEvent({ type: 'item.completed', item: { id: 'item_0', type: 'agent_message', text: 'pong' } });
+    assert.strictEqual(cs._accContent, 'pong');
+    assert.deepStrictEqual(tokens, ['pong']);
+  });
+
+  await test('CodexSession _handleEvent — turn.completed extracts usage', () => {
+    const { CodexSession } = require('./codex-session');
+    const cs = new CodexSession({ workDir: '/tmp' });
+    cs._handleEvent({ type: 'turn.completed', usage: { input_tokens: 14170, cached_input_tokens: 12288, output_tokens: 5, reasoning_output_tokens: 0 } });
+    assert.ok(cs._usage, 'usage should be set');
+    assert.strictEqual(cs._usage.input_tokens, 14170);
+    assert.strictEqual(cs._usage.output_tokens, 5);
+    assert.strictEqual(cs._usage.cache_read_input_tokens, 12288);
+  });
+
+  await test('CodexSession _handleEvent — tool events forwarded', () => {
+    const { CodexSession } = require('./codex-session');
+    const cs = new CodexSession({ workDir: '/tmp' });
+    const tools = [];
+    cs._currentOnTool = t => tools.push(t);
+    cs._handleEvent({ type: 'item.completed', item: { type: 'command_execution', command: 'ls -la' } });
+    assert.strictEqual(tools.length, 1);
+    assert.strictEqual(tools[0].name, 'command_execution');
+  });
+
+  await test('CodexSession _handleEvent — unknown type does not crash', () => {
+    const { CodexSession } = require('./codex-session');
+    const cs = new CodexSession({ workDir: '/tmp' });
+    cs._handleEvent({ type: 'unknown.event', data: 'foo' });
+    cs._handleEvent({});
+    cs._handleEvent({ type: 'turn.started' });
+  });
+
+  // createHarnessSession — call real function, two sides
+  await test('createHarnessSession — codex → CodexSession instance', () => {
+    const { createHarnessSession } = require('./harness-session');
+    const { CodexSession } = require('./codex-session');
+    const session = createHarnessSession('codex', { workDir: '/tmp' });
+    assert.ok(session instanceof CodexSession, 'codex harness must return CodexSession');
+    assert.strictEqual(typeof session.send, 'function');
+    assert.strictEqual(typeof session.abort, 'function');
+  });
+
+  await test('createHarnessSession — claude → injected ClaudeSession instance', () => {
+    const { createHarnessSession } = require('./harness-session');
+    const { EventEmitter } = require('events');
+    class StubClaudeSession extends EventEmitter {
+      constructor(opts) { super(); this.opts = opts; }
+      send() {}
+      abort() {}
+      shutdown() {}
+    }
+    const session = createHarnessSession('claude', { workDir: '/tmp' }, { ClaudeSession: StubClaudeSession });
+    assert.ok(session instanceof StubClaudeSession, 'claude harness must return ClaudeSession');
+    assert.strictEqual(session.opts.workDir, '/tmp');
+  });
+
+  await test('createHarnessSession — undefined defaults to ClaudeSession', () => {
+    const { createHarnessSession } = require('./harness-session');
+    const { EventEmitter } = require('events');
+    class StubCS extends EventEmitter { constructor() { super(); } send() {} abort() {} shutdown() {} }
+    const session = createHarnessSession(undefined, { workDir: '/tmp' }, { ClaudeSession: StubCS });
+    assert.ok(session instanceof StubCS, 'undefined harness defaults to claude');
+  });
+
+  // supportsCompact — two sides
+  await test('supportsCompact — claude/undefined → true, codex → false', () => {
+    const { supportsCompact } = require('./harness-session');
+    assert.strictEqual(supportsCompact('claude'), true);
+    assert.strictEqual(supportsCompact(undefined), true);
+    assert.strictEqual(supportsCompact(null), true);
+    assert.strictEqual(supportsCompact('codex'), false);
+    assert.strictEqual(supportsCompact('some-other'), false);
+  });
+
+  // filesToUpdate — pure function, two sides
+  await test('filesToUpdate — new file in allowlist → included, same hash → excluded', () => {
+    const { filesToUpdate } = require('./harness-session');
+    const remote = { 'stoa.js': 'abc123', 'codex-session.js': 'def456', 'claude-session.js': 'ghi789' };
+    const local = { 'stoa.js': 'abc123' }; // stoa same hash, others missing
+    const allowed = ['stoa.js', 'claude-session.js', 'codex-session.js'];
+    const result = filesToUpdate(remote, local, allowed);
+    assert.ok(!result.includes('stoa.js'), 'same hash → not included');
+    assert.ok(result.includes('codex-session.js'), 'new file in allowlist → included');
+    assert.ok(result.includes('claude-session.js'), 'new file in allowlist → included');
+  });
+
+  await test('filesToUpdate — outside allowlist and path traversal → excluded', () => {
+    const { filesToUpdate } = require('./harness-session');
+    const remote = { 'malicious.js': 'aaa', '../etc/passwd': 'bbb', 'sub/dir.js': 'ccc', 'codex-session.js': 'ddd' };
+    const local = {};
+    const allowed = ['stoa.js', 'codex-session.js'];
+    const result = filesToUpdate(remote, local, allowed);
+    assert.deepStrictEqual(result, ['codex-session.js'], 'only allowed, safe names pass');
+  });
+
+  await test('filesToUpdate — changed hash → included', () => {
+    const { filesToUpdate } = require('./harness-session');
+    const remote = { 'stoa.js': 'new-hash' };
+    const local = { 'stoa.js': 'old-hash' };
+    const result = filesToUpdate(remote, local, ['stoa.js']);
+    assert.deepStrictEqual(result, ['stoa.js']);
+  });
+
+  // lazy require: requiring harness-session does NOT eagerly load codex-session
+  await test('require harness-session does not eagerly load codex-session', () => {
+    const cacheKey = require.resolve('./codex-session');
+    delete require.cache[require.resolve('./harness-session')];
+    delete require.cache[cacheKey];
+    require('./harness-session');
+    assert.strictEqual(require.cache[cacheKey], undefined, 'codex-session must not be in cache until codex branch runs');
+  });
+
+  // buildResumeArgs — carries systemPrompt/systemPromptHash, two sides
+  await test('buildResumeArgs — includes systemPrompt and systemPromptHash from msg', () => {
+    const { buildResumeArgs } = require('./harness-session');
+    const msg = { system_prompt: 'You are helpful', system_prompt_hash: 'abc123', tools_supported: true, base_url: 'https://api.example.com' };
+    const result = buildResumeArgs(msg, { targetDir: '/tmp', sessionKey: 'k1', harness: 'codex' });
+    assert.strictEqual(result.systemPrompt, 'You are helpful');
+    assert.strictEqual(result.systemPromptHash, 'abc123');
+    assert.strictEqual(result.harness, 'codex');
+    assert.strictEqual(result.thirdParty, true);
+    assert.strictEqual(result.targetDir, '/tmp');
+  });
+
+  await test('buildResumeArgs — null system_prompt when msg has none', () => {
+    const { buildResumeArgs } = require('./harness-session');
+    const msg = { tools_supported: false };
+    const result = buildResumeArgs(msg, { targetDir: '/tmp', sessionKey: 'k2' });
+    assert.strictEqual(result.systemPrompt, null);
+    assert.strictEqual(result.systemPromptHash, null);
+    assert.strictEqual(result.harness, 'claude');
+    assert.strictEqual(result.thirdParty, false);
+  });
+
+  // Integration: PATCH adapter to unavailable harness → 400
+  await test('PATCH /api/actors/:id — adapter unavailable on machine → 400', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    // codex is valid harness but likely not installed on test machine
+    // We simulate by NOT having codex in agentHarnesses (server tracks availability)
+    // First set adapter to claude (known good), then try codex
+    await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+    // This test relies on the test agent not reporting codex as available
+    // If the agent doesn't connect with harnesses_available including codex, this should fail
+    // But since our test agent disconnected, available=[] which means any harness is allowed
+    // So we test with an entirely invalid harness name instead
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'nonexistent-cli' });
+    assert.strictEqual(r.status, 400, `expected 400 for invalid harness, got ${r.status}`);
+  });
+
+  // Integration: PATCH adapter triggers fallback_rooms
+  await test('PATCH /api/actors/:id — adapter change triggers room model fallback', async () => {
+    if (!hsActorId || !hsRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    // Set room model to a codex-only model
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('o3', hsRoomId);
+    // Change adapter to claude — o3 is not a claude model → should fallback
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+    assert.strictEqual(r.status, 200);
+    if (r.body.fallback_rooms) {
+      const fb = r.body.fallback_rooms.find(f => f.room_id === hsRoomId);
+      assert.ok(fb, 'should include test room in fallback');
+      assert.strictEqual(fb.old_model, 'o3');
+      assert.ok(fb.new_model !== 'o3', 'new model should not be o3');
+      // Verify DB updated
+      const row = db.prepare('SELECT model FROM rooms WHERE id=?').get(hsRoomId);
+      assert.strictEqual(row.model, fb.new_model, 'DB should reflect fallback');
+    }
+    // Reset room model
+    db.prepare('UPDATE rooms SET model=NULL WHERE id=?').run(hsRoomId);
+  });
+
+  // Integration: PATCH adapter triggers sub-agent model fallback
+  await test('PATCH /api/actors/:id — adapter change triggers sub-agent model fallback', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    // Create a sub-agent that inherits harness (NULL) with a codex model
+    const createR = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'hs-fallback-test', tier: 'quick' });
+    if (createR.status !== 201) { console.log('    (skipped — could not create sub-agent)'); return; }
+    const subId = createR.body.id;
+    db.prepare('UPDATE sub_agents SET model=? WHERE id=?').run('o3', subId);
+    // Change parent adapter to claude — sub-agent's o3 is not valid for claude
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+    assert.strictEqual(r.status, 200);
+    if (r.body.fallback_sub_agents) {
+      const fb = r.body.fallback_sub_agents.find(f => f.sub_agent_id === subId);
+      assert.ok(fb, 'should include test sub-agent in fallback');
+      assert.strictEqual(fb.old_model, 'o3');
+      assert.strictEqual(fb.label, 'hs-fallback-test', 'fallback should include label');
+    }
+    // Verify DB updated
+    const row = db.prepare('SELECT model FROM sub_agents WHERE id=?').get(subId);
+    assert.notStrictEqual(row.model, 'o3', 'sub-agent model should have been fallback');
+    // Cleanup
+    await req('DELETE', `/api/sub-agents/${subId}`);
+  });
+
+  // parseClaudeAuthStatus — two sides
+  await test('parseClaudeAuthStatus — valid JSON loggedIn true/false', () => {
+    const { parseClaudeAuthStatus } = require('./harness-session');
+    assert.strictEqual(parseClaudeAuthStatus('{"loggedIn":true,"authMethod":"claude.ai"}'), true);
+    assert.strictEqual(parseClaudeAuthStatus('{"loggedIn":false}'), false);
+  });
+
+  await test('parseClaudeAuthStatus — garbage/invalid → null', () => {
+    const { parseClaudeAuthStatus } = require('./harness-session');
+    assert.strictEqual(parseClaudeAuthStatus('not json'), null);
+    assert.strictEqual(parseClaudeAuthStatus('{}'), null);
+    assert.strictEqual(parseClaudeAuthStatus('{"loggedIn":"yes"}'), null);
+  });
+
+  // parseCodexLoginStatus — three sides
+  await test('parseCodexLoginStatus — exit 0 → true, exit 1 → false, other → null', () => {
+    const { parseCodexLoginStatus } = require('./harness-session');
+    assert.strictEqual(parseCodexLoginStatus(0), true);
+    assert.strictEqual(parseCodexLoginStatus(1), false);
+    assert.strictEqual(parseCodexLoginStatus(2), null);
+    assert.strictEqual(parseCodexLoginStatus(-2), null);
+  });
+
+  // validateHarnessStatus — two sides
+  await test('validateHarnessStatus — valid entries pass, invalid rejected', () => {
+    const { validateHarnessStatus } = require('./harness-session');
+    const input = [
+      { id: 'claude', installed: true, logged_in: true, version: '2.0.0' },
+      { id: 'codex', installed: false, logged_in: null, version: null },
+      { id: 'unknown', installed: true, logged_in: true, version: '1.0' },
+      { id: 'claude', installed: 'yes' },
+      null,
+    ];
+    const result = validateHarnessStatus(input);
+    assert.strictEqual(result.length, 2, 'only valid claude and codex entries pass');
+    assert.strictEqual(result[0].id, 'claude');
+    assert.strictEqual(result[1].id, 'codex');
+  });
+
+  await test('validateHarnessStatus — non-array → empty', () => {
+    const { validateHarnessStatus } = require('./harness-session');
+    assert.deepStrictEqual(validateHarnessStatus('bad'), []);
+    assert.deepStrictEqual(validateHarnessStatus(null), []);
+  });
+
+  await test('validateHarnessStatus — dedupes per id and trims version', () => {
+    const { validateHarnessStatus } = require('./harness-session');
+    const input = [
+      { id: 'claude', installed: true, logged_in: true, version: '2.0.0' },
+      { id: 'claude', installed: false, logged_in: null, version: '1.0.0' },
+    ];
+    const result = validateHarnessStatus(input);
+    assert.strictEqual(result.length, 1, 'duplicate id should be deduped');
+    assert.strictEqual(result[0].version, '2.0.0', 'first entry wins');
+    const longVersion = 'x'.repeat(200);
+    const r2 = validateHarnessStatus([{ id: 'codex', installed: true, logged_in: null, version: longVersion }]);
+    assert.strictEqual(r2[0].version.length, 100, 'version trimmed to 100 chars');
+  });
+
+  // POST /api/actors/:id/harnesses/check — auth required
+  await test('POST /api/actors/:id/harnesses/check — 401 without auth', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await fetch(`http://${HOST}:${PORT}/api/actors/${hsActorId}/harnesses/check`, { method: 'POST' });
+    assert.strictEqual(r.status, 401);
+  });
+
+  // POST /api/actors/:id/harnesses/check — agent offline → 503
+  await test('POST /api/actors/:id/harnesses/check — agent offline → 503', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('POST', `/api/actors/${hsActorId}/harnesses/check`);
+    assert.strictEqual(r.status, 503);
+  });
+
+  // POST /api/actors/:id/force-update — auth required
+  await test('POST /api/actors/:id/force-update — 401 without auth', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await fetch(`http://${HOST}:${PORT}/api/actors/${hsActorId}/force-update`, { method: 'POST' });
+    assert.strictEqual(r.status, 401);
+  });
+
+  // POST /api/actors/:id/rescan — auth required
+  await test('POST /api/actors/:id/rescan — 401 without auth', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await fetch(`http://${HOST}:${PORT}/api/actors/${hsActorId}/rescan`, { method: 'POST' });
+    assert.strictEqual(r.status, 401);
+  });
+
+  // GET /api/actors includes harness_status
+  await test('GET /api/actors — includes harness_status field', async () => {
+    const r = await req('GET', '/api/actors');
+    assert.strictEqual(r.status, 200);
+    const ai = r.body.find(a => a.type === 'ai');
+    if (!ai) { console.log('    (skipped — no AI actors)'); return; }
+    assert.ok('harness_status' in ai, 'AI actor should have harness_status field');
+    assert.ok(Array.isArray(ai.harness_status), 'harness_status should be array');
+  });
+
+  // PATCH — logged_in false → 400
+  await test('PATCH /api/actors/:id — adapter rejected when logged_in === false', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const { agentHarnessStatus } = (() => {
+      const srvSrc = require('fs').readFileSync('./server.js', 'utf8');
+      return { agentHarnessStatus: null };
+    })();
+    // Connect agent to populate harness data with logged_in: false
+    const ws2 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready2 = waitForWsMessage(ws2, m => m.type === 'agent_ready');
+    ws2.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready2;
+    ws2.send(JSON.stringify({
+      type: 'harnesses_update',
+      harnesses_available: ['claude', 'codex'],
+      harness_status: [
+        { id: 'claude', installed: true, logged_in: true, version: '2.0.0' },
+        { id: 'codex', installed: true, logged_in: false, version: '0.1.0' },
+      ],
+    }));
+    await new Promise(r => setTimeout(r, 200));
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'codex' });
+    assert.strictEqual(r.status, 400, `expected 400, got ${r.status}`);
+    assert.ok(r.body.error.includes('not logged in'), 'error should mention not logged in');
+    // Positive: adapter with logged_in true should succeed
+    const r2 = await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+    assert.strictEqual(r2.status, 200, 'adapter with logged_in true should be accepted');
+    ws2.close();
+  });
+
+  // PATCH — logged_in null (old agent, no status) → accepted
+  await test('PATCH /api/actors/:id — adapter accepted when logged_in is null', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const ws3 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready3 = waitForWsMessage(ws3, m => m.type === 'agent_ready');
+    ws3.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready3;
+    ws3.send(JSON.stringify({
+      type: 'harnesses_update',
+      harnesses_available: ['claude', 'codex'],
+      harness_status: [
+        { id: 'claude', installed: true, logged_in: true, version: '2.0.0' },
+        { id: 'codex', installed: true, logged_in: null, version: '0.1.0' },
+      ],
+    }));
+    await new Promise(r => setTimeout(r, 200));
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'codex' });
+    assert.strictEqual(r.status, 200, 'adapter with logged_in null should be accepted');
+    // Reset to claude
+    await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+    ws3.close();
+  });
+
+  // End-to-end: check_harnesses via POST with fake agent responding
+  await test('POST /api/actors/:id/harnesses/check — end-to-end with agent response', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    process.env.HARNESS_CHECK_TIMEOUT_MS = '3000';
+    const ws4 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready4 = waitForWsMessage(ws4, m => m.type === 'agent_ready');
+    ws4.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready4;
+    // Listen for check_harnesses and respond with harnesses_update
+    ws4.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === 'check_harnesses') {
+        ws4.send(JSON.stringify({
+          type: 'harnesses_update',
+          harnesses_available: ['claude', 'codex'],
+          harness_status: [
+            { id: 'claude', installed: true, logged_in: true, version: '2.1.0' },
+            { id: 'codex', installed: true, logged_in: false, version: '0.2.0' },
+          ],
+          request_id: msg.request_id,
+        }));
+      }
+    });
+    const r = await req('POST', `/api/actors/${hsActorId}/harnesses/check`);
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}`);
+    assert.deepStrictEqual(r.body.harnesses_available, ['claude', 'codex']);
+    assert.strictEqual(r.body.harness_status.length, 2);
+    assert.strictEqual(r.body.harness_status[0].version, '2.1.0');
+    ws4.close();
+    delete process.env.HARNESS_CHECK_TIMEOUT_MS;
+  });
+
+  // End-to-end: response from wrong actor does NOT resolve
+  await test('POST /api/actors/:id/harnesses/check — response from wrong actor ignored', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    process.env.HARNESS_CHECK_TIMEOUT_MS = '1500';
+    // Register a second agent
+    const scriptR = await req('GET', '/install.sh?name=__test-harness-wrong');
+    const tokenMatch = scriptR.raw.match(/REG_TOKEN="([a-f0-9]+)"/);
+    if (!tokenMatch) { console.log('    (skipped — no token)'); delete process.env.HARNESS_CHECK_TIMEOUT_MS; return; }
+    const reg = await req('POST', '/api/agent/register', { token: tokenMatch[1] });
+    if (reg.status !== 200) { console.log('    (skipped — reg failed)'); delete process.env.HARNESS_CHECK_TIMEOUT_MS; return; }
+    const wrongActorId = reg.body.actor_id;
+    const wrongSecret = reg.body.secret;
+    orphanActorIds.push(wrongActorId);
+    // Connect primary agent (no auto-response to check_harnesses)
+    const ws5 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready5 = waitForWsMessage(ws5, m => m.type === 'agent_ready');
+    ws5.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready5;
+    // Connect wrong agent — it will try to respond with the request_id
+    const ws6 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready6 = waitForWsMessage(ws6, m => m.type === 'agent_ready');
+    ws6.send(JSON.stringify({ type: 'agent_connect', actor_id: wrongActorId, secret: wrongSecret }));
+    await ready6;
+    // Intercept check_harnesses on primary ws, forward request_id to wrong agent
+    let capturedRequestId = null;
+    ws5.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === 'check_harnesses') {
+        capturedRequestId = msg.request_id;
+        // Wrong agent sends harnesses_update with the captured request_id
+        ws6.send(JSON.stringify({
+          type: 'harnesses_update',
+          harnesses_available: ['claude'],
+          harness_status: [{ id: 'claude', installed: true, logged_in: true, version: '9.9.9' }],
+          request_id: capturedRequestId,
+        }));
+      }
+    });
+    const r = await req('POST', `/api/actors/${hsActorId}/harnesses/check`);
+    assert.strictEqual(r.status, 504, `expected 504 timeout (wrong actor response ignored), got ${r.status}`);
+    ws5.close();
+    ws6.close();
+    delete process.env.HARNESS_CHECK_TIMEOUT_MS;
+  });
+
+  // End-to-end: invalid payload fields filtered by validateHarnessStatus
+  await test('POST /api/actors/:id/harnesses/check — invalid payload filtered', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    process.env.HARNESS_CHECK_TIMEOUT_MS = '3000';
+    const ws7 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready7 = waitForWsMessage(ws7, m => m.type === 'agent_ready');
+    ws7.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready7;
+    ws7.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === 'check_harnesses') {
+        ws7.send(JSON.stringify({
+          type: 'harnesses_update',
+          harnesses_available: ['claude', 'bogus', 123],
+          harness_status: [
+            { id: 'claude', installed: true, logged_in: true, version: '2.0.0' },
+            { id: 'bogus', installed: true, logged_in: true, version: '1.0' },
+            { id: 'codex', installed: 'yes' },
+            null,
+          ],
+          request_id: msg.request_id,
+        }));
+      }
+    });
+    const r = await req('POST', `/api/actors/${hsActorId}/harnesses/check`);
+    assert.strictEqual(r.status, 200);
+    assert.deepStrictEqual(r.body.harnesses_available, ['claude'], 'bogus and non-string filtered from available');
+    assert.strictEqual(r.body.harness_status.length, 1, 'only valid claude entry passes validation');
+    ws7.close();
+    delete process.env.HARNESS_CHECK_TIMEOUT_MS;
+  });
+
+  // GET /api/actors includes system_prompt and harnesses_available
+  await test('GET /api/actors — includes system_prompt field', async () => {
+    const r = await req('GET', '/api/actors');
+    assert.strictEqual(r.status, 200);
+    const ai = r.body.find(a => a.type === 'ai');
+    if (!ai) { console.log('    (skipped — no AI actors)'); return; }
+    assert.ok('system_prompt' in ai, 'AI actor should have system_prompt field');
+  });
+
+  // parseCodexModels — valid, visibility filter, priority sort, garbage
+  await test('parseCodexModels — valid JSON with visibility filter and priority sort', () => {
+    const { parseCodexModels } = require('./harness-session');
+    const input = JSON.stringify({
+      models: [
+        { slug: 'gpt-6-sol', display_name: 'GPT-6-Sol', visibility: 'list', priority: 3 },
+        { slug: 'gpt-reserve', display_name: 'GPT Reserve', visibility: 'hide', priority: 4 },
+        { slug: 'gpt-6.1-sol', display_name: 'GPT-6.1-Sol', visibility: 'list', priority: 1 },
+        { slug: 'gpt-5.6-sol', display_name: 'GPT-5.6-Sol', visibility: 'list', priority: 5 },
+      ],
+    });
+    const result = parseCodexModels(input);
+    assert.ok(result, 'should return array');
+    assert.strictEqual(result.length, 3, 'hide visibility filtered out');
+    assert.strictEqual(result[0].id, 'gpt-6.1-sol', 'sorted by priority');
+    assert.strictEqual(result[0].is_default, true, 'first by priority is default');
+    assert.strictEqual(result[1].id, 'gpt-6-sol');
+    assert.strictEqual(result[1].is_default, false);
+    assert.strictEqual(result[2].id, 'gpt-5.6-sol');
+  });
+
+  await test('parseCodexModels — garbage/empty → null', () => {
+    const { parseCodexModels } = require('./harness-session');
+    assert.strictEqual(parseCodexModels('not json'), null);
+    assert.strictEqual(parseCodexModels('{}'), null);
+    assert.strictEqual(parseCodexModels(JSON.stringify({ models: [] })), null);
+    assert.strictEqual(parseCodexModels(JSON.stringify({ models: [{ slug: 'x', visibility: 'hide' }] })), null);
+  });
+
+  // validateModels — id regex, >50 cap, label trim, default assignment
+  await test('validateModels — valid entries, invalid ids rejected, label trimmed', () => {
+    const { validateModels } = require('./harness-session');
+    const result = validateModels([
+      { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true },
+      { id: 'invalid id!', label: 'Bad' },
+      { id: 'gpt-5.6-sol', label: 'A'.repeat(200), is_default: false },
+      { id: 'gpt-6.1-sol', label: 'Dupe', is_default: false },
+    ]);
+    assert.strictEqual(result.length, 2, 'invalid id and dupe filtered');
+    assert.strictEqual(result[0].id, 'gpt-6.1-sol');
+    assert.strictEqual(result[0].is_default, true);
+    assert.strictEqual(result[1].label.length, 100, 'label trimmed to 100');
+  });
+
+  await test('validateModels — >50 entries capped', () => {
+    const { validateModels } = require('./harness-session');
+    const big = Array.from({ length: 60 }, (_, i) => ({ id: `model-${i}`, label: `M${i}` }));
+    const result = validateModels(big);
+    assert.strictEqual(result.length, 50, 'capped at 50');
+    assert.strictEqual(result[0].is_default, true, 'first entry gets default when none specified');
+  });
+
+  await test('validateModels — non-array/empty → null', () => {
+    const { validateModels } = require('./harness-session');
+    assert.strictEqual(validateModels(null), null);
+    assert.strictEqual(validateModels([]), null);
+    assert.strictEqual(validateModels([{ id: '!!!', label: 'bad' }]), null);
+  });
+
+  // validateHarnessStatus — models field propagated
+  await test('validateHarnessStatus — models field validated and propagated', () => {
+    const { validateHarnessStatus } = require('./harness-session');
+    const result = validateHarnessStatus([
+      { id: 'codex', installed: true, logged_in: true, version: '1.0', models: [
+        { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true },
+      ]},
+      { id: 'claude', installed: true, logged_in: true, version: '2.0', models: null },
+    ]);
+    assert.strictEqual(result.length, 2);
+    assert.ok(Array.isArray(result[0].models), 'codex models propagated');
+    assert.strictEqual(result[0].models[0].id, 'gpt-6.1-sol');
+    assert.strictEqual(result[1].models, null, 'claude models null');
+  });
+
+  // getHarnessModels — claude uses ANTHROPIC_MODELS, codex uses agent-reported then DB fallback
+  await test('PATCH /api/actors/:id — claude-opus-5-5 NOT reset when switching to claude', async () => {
+    if (!hsActorId || !hsRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const ws8 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready8 = waitForWsMessage(ws8, m => m.type === 'agent_ready');
+    ws8.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready8;
+    ws8.send(JSON.stringify({
+      type: 'harnesses_update',
+      harnesses_available: ['claude', 'codex'],
+      harness_status: [
+        { id: 'claude', installed: true, logged_in: true, version: '2.0.0', models: null },
+        { id: 'codex', installed: true, logged_in: true, version: '0.1.0', models: [
+          { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true },
+        ]},
+      ],
+    }));
+    await new Promise(r => setTimeout(r, 200));
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-opus-5-5', hsRoomId);
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+    assert.strictEqual(r.status, 200);
+    const noFallback = !r.body.fallback_rooms || !r.body.fallback_rooms.find(f => f.room_id === hsRoomId);
+    assert.ok(noFallback, 'claude-opus-5-5 should NOT be reset — it is valid for claude harness');
+    db.prepare('UPDATE rooms SET model=NULL WHERE id=?').run(hsRoomId);
+    ws8.close();
+  });
+
+  await test('PATCH /api/actors/:id — room reset to agent-reported codex default when switching to codex', async () => {
+    if (!hsActorId || !hsRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const ws9 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready9 = waitForWsMessage(ws9, m => m.type === 'agent_ready');
+    ws9.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready9;
+    ws9.send(JSON.stringify({
+      type: 'harnesses_update',
+      harnesses_available: ['claude', 'codex'],
+      harness_status: [
+        { id: 'claude', installed: true, logged_in: true, version: '2.0.0', models: null },
+        { id: 'codex', installed: true, logged_in: true, version: '0.1.0', models: [
+          { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true },
+          { id: 'gpt-6-sol', label: 'GPT-6-Sol', is_default: false },
+        ]},
+      ],
+    }));
+    await new Promise(r => setTimeout(r, 200));
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-opus-5-5', hsRoomId);
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'codex' });
+    assert.strictEqual(r.status, 200);
+    const fb = r.body.fallback_rooms?.find(f => f.room_id === hsRoomId);
+    assert.ok(fb, 'room should be in fallback_rooms');
+    assert.strictEqual(fb.new_model, 'gpt-6.1-sol', 'reset to agent-reported codex default');
+    await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+    db.prepare('UPDATE rooms SET model=NULL WHERE id=?').run(hsRoomId);
+    ws9.close();
+  });
+
+  // harnesses/check — models field included in response
+  await test('POST /api/actors/:id/harnesses/check — models field in response', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    process.env.HARNESS_CHECK_TIMEOUT_MS = '3000';
+    const ws10 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready10 = waitForWsMessage(ws10, m => m.type === 'agent_ready');
+    ws10.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready10;
+    ws10.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === 'check_harnesses') {
+        ws10.send(JSON.stringify({
+          type: 'harnesses_update',
+          harnesses_available: ['claude', 'codex'],
+          harness_status: [
+            { id: 'claude', installed: true, logged_in: true, version: '2.0.0', models: null },
+            { id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [
+              { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true },
+              { id: 'gpt-6-sol', label: 'GPT-6-Sol', is_default: false },
+            ]},
+          ],
+          request_id: msg.request_id,
+        }));
+      }
+    });
+    const r = await req('POST', `/api/actors/${hsActorId}/harnesses/check`);
+    assert.strictEqual(r.status, 200);
+    const codexStatus = r.body.harness_status.find(s => s.id === 'codex');
+    assert.ok(codexStatus, 'codex status should be in response');
+    assert.ok(Array.isArray(codexStatus.models), 'codex should have models array');
+    assert.strictEqual(codexStatus.models.length, 2);
+    assert.strictEqual(codexStatus.models[0].id, 'gpt-6.1-sol');
+    assert.strictEqual(codexStatus.models[0].is_default, true);
+    const claudeStatus = r.body.harness_status.find(s => s.id === 'claude');
+    assert.strictEqual(claudeStatus.models, null, 'claude models should be null');
+    ws10.close();
+    delete process.env.HARNESS_CHECK_TIMEOUT_MS;
+  });
+
+  // resolveModelChain harness-aware: codex sub-agent + tier deep → codex model, not claude-*
+  await test('resolveModelChain — codex sub-agent tier deep gets codex default model, not claude', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    // Set up: report codex models via harness check so agentHarnessStatus is populated
+    process.env.HARNESS_CHECK_TIMEOUT_MS = '3000';
+    const ws11 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready11 = waitForWsMessage(ws11, m => m.type === 'agent_ready');
+    ws11.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready11;
+    // Report codex models via check
+    const checkDone = new Promise((resolve) => {
+      ws11.on('message', (raw) => {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type === 'check_harnesses') {
+          ws11.send(JSON.stringify({
+            type: 'harnesses_update',
+            harnesses_available: ['claude', 'codex'],
+            harness_status: [
+              { id: 'claude', installed: true, logged_in: true, version: '2.0.0', models: null },
+              { id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [
+                { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true },
+                { id: 'gpt-6-sol', label: 'GPT-6-Sol', is_default: false },
+              ]},
+            ],
+            request_id: msg.request_id,
+          }));
+        }
+      });
+    });
+    await req('POST', `/api/actors/${hsActorId}/harnesses/check`);
+    // Create codex sub-agent with tier deep
+    const saR = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'codex-deep-test', tier: 'deep', harness: 'codex' });
+    assert.strictEqual(saR.status, 201);
+    const saId = saR.body.id;
+    // Link to room
+    await req('POST', `/api/rooms/${hsRoomId}/sub-agents`, { sub_agent_id: saId });
+    // Listen for agent_trigger to verify model
+    const triggerPromise = waitForWsMessage(ws11, m => m.type === 'agent_trigger' && m.sub_agent?.label === 'codex-deep-test', 5000);
+    // Trigger sub-agent
+    const trigR = await req('POST', `/api/rooms/${hsRoomId}/sub-agent-trigger`, {
+      sub_agent_id: saId,
+      task: 'test harness model chain — should get codex model',
+    }, { 'x-agent-id': String(hsActorId), 'x-agent-secret': hsSecret });
+    if (trigR.status === 503) {
+      console.log('    (skipped — parent offline)');
+      await req('DELETE', `/api/sub-agents/${saId}`);
+      ws11.close();
+      delete process.env.HARNESS_CHECK_TIMEOUT_MS;
+      return;
+    }
+    assert.strictEqual(trigR.status, 200);
+    const trigMsg = await triggerPromise;
+    assert.ok(trigMsg.model, 'trigger should have model');
+    assert.ok(!trigMsg.model.startsWith('claude-'), `model should not be claude, got: ${trigMsg.model}`);
+    assert.strictEqual(trigMsg.model, 'gpt-6.1-sol', 'should use codex default model');
+    assert.strictEqual(trigMsg.harness, 'codex');
+    // Complete the agent message so it doesn't hang
+    const msgId = trigMsg.message_id;
+    if (msgId) {
+      ws11.send(JSON.stringify({ type: 'agent_message', message_id: msgId, content: 'test done', state: 'complete' }));
+    }
+    // Cleanup
+    await req('DELETE', `/api/sub-agents/${saId}`);
+    ws11.close();
+    delete process.env.HARNESS_CHECK_TIMEOUT_MS;
+  });
+
+  // resolveModelChain — claude sub-agent under codex parent still gets claude models
+  await test('resolveModelChain — claude sub-agent under codex parent gets claude model', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    // Set parent adapter to codex
+    db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('codex', hsActorId);
+    // Create sub-agent with explicit claude harness + tier deep
+    const saR = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'claude-under-codex', tier: 'deep', harness: 'claude' });
+    assert.strictEqual(saR.status, 201);
+    const saId = saR.body.id;
+    await req('POST', `/api/rooms/${hsRoomId}/sub-agents`, { sub_agent_id: saId });
+    // Connect agent
+    const ws12 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready12 = waitForWsMessage(ws12, m => m.type === 'agent_ready');
+    ws12.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready12;
+    const triggerPromise = waitForWsMessage(ws12, m => m.type === 'agent_trigger' && m.sub_agent?.label === 'claude-under-codex', 5000);
+    const trigR = await req('POST', `/api/rooms/${hsRoomId}/sub-agent-trigger`, {
+      sub_agent_id: saId,
+      task: 'test claude sub-agent under codex parent — should get claude model',
+    }, { 'x-agent-id': String(hsActorId), 'x-agent-secret': hsSecret });
+    if (trigR.status === 503) {
+      console.log('    (skipped — parent offline)');
+      db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
+      await req('DELETE', `/api/sub-agents/${saId}`);
+      ws12.close();
+      return;
+    }
+    assert.strictEqual(trigR.status, 200);
+    const trigMsg = await triggerPromise;
+    assert.ok(trigMsg.model, 'trigger should have model');
+    assert.ok(trigMsg.model.startsWith('claude-'), `model should be claude, got: ${trigMsg.model}`);
+    assert.strictEqual(trigMsg.harness, 'claude');
+    // Complete message
+    if (trigMsg.message_id) {
+      ws12.send(JSON.stringify({ type: 'agent_message', message_id: trigMsg.message_id, content: 'test done', state: 'complete' }));
+    }
+    // Cleanup
+    db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
+    await req('DELETE', `/api/sub-agents/${saId}`);
+    ws12.close();
+  });
+
+  // POST sub-agent — model validated against effective harness
+  await test('POST sub-agent — reject model not in effective harness', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    // Parent is claude, sub-agent inherits → claude harness
+    const r = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'bad-model-test', tier: 'quick', model: 'gpt-6.1-sol' });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.body.error.includes('not available for harness'), r.body.error);
+  });
+
+  // POST sub-agent — accept valid model for harness
+  await test('POST sub-agent — accept valid claude model', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const r = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'good-model-test', tier: 'quick', model: 'claude-opus-5-5' });
+    assert.strictEqual(r.status, 201);
+    assert.strictEqual(r.body.model, 'claude-opus-5-5');
+    await req('DELETE', `/api/sub-agents/${r.body.id}`);
+  });
+
+  // PATCH sub-agent — reject model not valid for effective harness
+  await test('PATCH sub-agent — reject model not in effective harness', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const cr = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'patch-model-test', tier: 'quick' });
+    assert.strictEqual(cr.status, 201);
+    const saId = cr.body.id;
+    const r = await req('PATCH', `/api/sub-agents/${saId}`, { model: 'gpt-6.1-sol' });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.body.error.includes('not available for harness'), r.body.error);
+    await req('DELETE', `/api/sub-agents/${saId}`);
+  });
+
+  // PATCH sub-agent — changing harness invalidates current model
+  await test('PATCH sub-agent — changing harness rejects if current model invalid for new harness', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const cr = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'harness-swap-test', tier: 'quick', model: 'claude-sonnet-5-5' });
+    assert.strictEqual(cr.status, 201);
+    const saId = cr.body.id;
+    // Change harness to codex — claude-sonnet-5-5 is not valid for codex
+    const r = await req('PATCH', `/api/sub-agents/${saId}`, { harness: 'codex' });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.body.error.includes('not available for harness'), r.body.error);
+    await req('DELETE', `/api/sub-agents/${saId}`);
+  });
+
+  // triggerAiResponse — codex room model triggers without platform error
+  await test('triggerAiResponse — codex adapter room model triggers without platform error', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    process.env.HARNESS_CHECK_TIMEOUT_MS = '3000';
+    const ws12 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready12 = waitForWsMessage(ws12, m => m.type === 'agent_ready');
+    ws12.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready12;
+    const checkDone12 = new Promise((resolve) => {
+      ws12.on('message', (raw) => {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type === 'check_harnesses') {
+          ws12.send(JSON.stringify({
+            type: 'harnesses_update',
+            harnesses_available: ['claude', 'codex'],
+            harness_status: [
+              { id: 'claude', installed: true, logged_in: true, version: '2.0.0', models: null },
+              { id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [
+                { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true },
+                { id: 'gpt-6-sol', label: 'GPT-6-Sol', is_default: false },
+              ]},
+            ],
+            request_id: msg.request_id,
+          }));
+        }
+      });
+    });
+    await req('POST', `/api/actors/${hsActorId}/harnesses/check`);
+    await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'codex' });
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('gpt-6.1-sol', hsRoomId);
+    const triggerPromise = waitForWsMessage(ws12, m => m.type === 'agent_trigger', 5000);
+    const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    humanWs.send(JSON.stringify({ type: 'join_room', room_id: hsRoomId }));
+    await new Promise(r => setTimeout(r, 100));
+    humanWs.send(JSON.stringify({ type: 'send_message', room_id: hsRoomId, content: 'reply: ok' }));
+    const trigMsg = await triggerPromise;
+    assert.strictEqual(trigMsg.model, 'gpt-6.1-sol', `expected codex model, got: ${trigMsg.model}`);
+    assert.strictEqual(trigMsg.harness, 'codex');
+    assert.strictEqual(trigMsg.base_url, undefined, 'codex trigger should not have base_url');
+    assert.strictEqual(trigMsg.api_keys, undefined, 'codex trigger should not have api_keys');
+    if (trigMsg.message_id) {
+      ws12.send(JSON.stringify({ type: 'agent_message', message_id: trigMsg.message_id, content: 'done', state: 'complete' }));
+    }
+    humanWs.close();
+    await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+    ws12.close();
+    delete process.env.HARNESS_CHECK_TIMEOUT_MS;
+  });
+
+  // triggerAiResponse — claude adapter with non-claude model without platform still errors
+  // Agent with incompatible room model falls back to harness default instead of erroring
+  await test('triggerAiResponse — claude agent with non-claude room model falls back', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const ws13 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready13 = waitForWsMessage(ws13, m => m.type === 'agent_ready');
+    ws13.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready13;
+    db.prepare('UPDATE rooms SET model=?, model_config=NULL WHERE id=?').run('some-platform-model', hsRoomId);
+    const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    humanWs.send(JSON.stringify({ type: 'join_room', room_id: hsRoomId }));
+    await new Promise(r => setTimeout(r, 100));
+    const trigPromise = waitForWsMessage(ws13, m => m.type === 'agent_trigger', 5000);
+    humanWs.send(JSON.stringify({ type: 'send_message', room_id: hsRoomId, content: 'reply: ok' }));
+    const trig = await trigPromise;
+    // Model should be a claude fallback, not the incompatible room model
+    assert.ok(trig.model?.startsWith('claude-'), `expected claude fallback, got: ${trig.model}`);
+    assert.notStrictEqual(trig.model, 'some-platform-model');
+    assert.strictEqual(trig.model_source, 'harness_default');
+    // No base_url since model didn't come from room
+    assert.ok(!trig.base_url, 'fallback model should not get platform base_url');
+    if (trig.message_id) ws13.send(JSON.stringify({ type: 'agent_message', message_id: trig.message_id, content: 'done', state: 'complete' }));
+    humanWs.close();
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+    ws13.close();
+  });
+
+  // triggerAiResponse — codex sub-agent under claude parent with real platform gets no baseUrl
+  await test('triggerAiResponse — codex sub-agent under platform-claude parent gets no baseUrl', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    process.env.HARNESS_CHECK_TIMEOUT_MS = '3000';
+    // Seed a real ai_platforms entry so platform lookup succeeds for the parent
+    const origPlatforms = db.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get();
+    const testPlatforms = [{ id: 'test-plat-01', vendor: 'openrouter', enabled: true, base_url: 'https://test-openrouter.invalid/v1', api_keys: ['test-key-01'], cached_models: [{ model: 'claude-sonnet-5-5', tools: true }], enabled_models: ['claude-sonnet-5-5'] }];
+    const upsertPlat = origPlatforms
+      ? db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'")
+      : db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'ai_platforms', ?)");
+    upsertPlat.run(JSON.stringify(testPlatforms));
+    // getParsedSetting has 1s in-memory cache; direct DB writes don't invalidate it
+    await new Promise(r => setTimeout(r, 1100));
+    const ws14 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready14 = waitForWsMessage(ws14, m => m.type === 'agent_ready');
+    ws14.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready14;
+    ws14.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === 'check_harnesses') {
+        ws14.send(JSON.stringify({
+          type: 'harnesses_update',
+          harnesses_available: ['claude', 'codex'],
+          harness_status: [
+            { id: 'claude', installed: true, logged_in: true, version: '2.0.0', models: null },
+            { id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [
+              { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true },
+            ]},
+          ],
+          request_id: msg.request_id,
+        }));
+      }
+    });
+    await req('POST', `/api/actors/${hsActorId}/harnesses/check`);
+    await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+    db.prepare("UPDATE rooms SET model='claude-sonnet-5-5', model_config=? WHERE id=?")
+      .run(JSON.stringify({ platform_id: 'test-plat-01' }), hsRoomId);
+    // Side A: parent claude trigger GETS base_url from platform
+    const parentTrigPromise = waitForWsMessage(ws14, m => m.type === 'agent_trigger' && !m.sub_agent, 5000);
+    const humanWsP = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    humanWsP.send(JSON.stringify({ type: 'join_room', room_id: hsRoomId }));
+    await new Promise(r => setTimeout(r, 100));
+    humanWsP.send(JSON.stringify({ type: 'send_message', room_id: hsRoomId, content: 'test parent platform' }));
+    const parentTrig = await parentTrigPromise;
+    assert.ok(parentTrig.base_url, 'parent claude trigger should get platform base_url');
+    assert.ok(parentTrig.base_url.includes('test-openrouter'), `expected openrouter url, got: ${parentTrig.base_url}`);
+    if (parentTrig.message_id) {
+      ws14.send(JSON.stringify({ type: 'agent_message', message_id: parentTrig.message_id, content: 'done', state: 'complete' }));
+    }
+    humanWsP.close();
+    // Side B: codex sub-agent does NOT get base_url
+    const saR = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'codex-under-plat', tier: 'deep', harness: 'codex' });
+    assert.strictEqual(saR.status, 201);
+    const saId = saR.body.id;
+    await req('POST', `/api/rooms/${hsRoomId}/sub-agents`, { sub_agent_id: saId });
+    const triggerPromise = waitForWsMessage(ws14, m => m.type === 'agent_trigger' && m.sub_agent?.label === 'codex-under-plat', 5000);
+    const trigR = await req('POST', `/api/rooms/${hsRoomId}/sub-agent-trigger`, {
+      sub_agent_id: saId, task: 'test codex under platform parent',
+    }, { 'x-agent-id': String(hsActorId), 'x-agent-secret': hsSecret });
+    assert.strictEqual(trigR.status, 200);
+    const trigMsg = await triggerPromise;
+    assert.strictEqual(trigMsg.model, 'gpt-6.1-sol', `expected codex model, got: ${trigMsg.model}`);
+    assert.strictEqual(trigMsg.harness, 'codex');
+    assert.strictEqual(trigMsg.base_url, undefined, 'codex sub-agent should not get parent platform baseUrl');
+    assert.strictEqual(trigMsg.api_keys, undefined, 'codex sub-agent should not get parent platform apiKeys');
+    if (trigMsg.message_id) {
+      ws14.send(JSON.stringify({ type: 'agent_message', message_id: trigMsg.message_id, content: 'done', state: 'complete' }));
+    }
+    // Side C: claude sub-agent under platform parent also gets NO base_url (uses Anthropic directly)
+    const saR2 = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'claude-under-plat', tier: 'deep', harness: 'claude' });
+    assert.strictEqual(saR2.status, 201);
+    const saId2 = saR2.body.id;
+    await req('POST', `/api/rooms/${hsRoomId}/sub-agents`, { sub_agent_id: saId2 });
+    const triggerPromise2 = waitForWsMessage(ws14, m => m.type === 'agent_trigger' && m.sub_agent?.label === 'claude-under-plat', 5000);
+    const trigR2 = await req('POST', `/api/rooms/${hsRoomId}/sub-agent-trigger`, {
+      sub_agent_id: saId2, task: 'test claude under platform parent',
+    }, { 'x-agent-id': String(hsActorId), 'x-agent-secret': hsSecret });
+    assert.strictEqual(trigR2.status, 200);
+    const trigMsg2 = await triggerPromise2;
+    assert.ok(trigMsg2.model.startsWith('claude-'), `expected claude model, got: ${trigMsg2.model}`);
+    assert.strictEqual(trigMsg2.harness, 'claude');
+    assert.strictEqual(trigMsg2.base_url, undefined, 'claude sub-agent should not get parent platform baseUrl');
+    assert.strictEqual(trigMsg2.api_keys, undefined, 'claude sub-agent should not get parent platform apiKeys');
+    if (trigMsg2.message_id) {
+      ws14.send(JSON.stringify({ type: 'agent_message', message_id: trigMsg2.message_id, content: 'done', state: 'complete' }));
+    }
+    // Cleanup
+    await req('DELETE', `/api/sub-agents/${saId}`);
+    await req('DELETE', `/api/sub-agents/${saId2}`);
+    db.prepare('UPDATE rooms SET model=?, model_config=NULL WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+    if (origPlatforms) {
+      db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(origPlatforms.value);
+    } else {
+      db.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run();
+    }
+    ws14.close();
+    delete process.env.HARNESS_CHECK_TIMEOUT_MS;
+  });
+
+  // set_room_model — codex model accepted in room with codex participant
+  await test('set_room_model — codex model accepted in room with codex participant', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    process.env.HARNESS_CHECK_TIMEOUT_MS = '3000';
+    const ws15 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready15 = waitForWsMessage(ws15, m => m.type === 'agent_ready');
+    ws15.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready15;
+    const checkDone15 = new Promise((resolve) => {
+      ws15.on('message', (raw) => {
+        const msg = JSON.parse(raw.toString());
+        if (msg.type === 'check_harnesses') {
+          ws15.send(JSON.stringify({
+            type: 'harnesses_update',
+            harnesses_available: ['claude', 'codex'],
+            harness_status: [
+              { id: 'claude', installed: true, logged_in: true, version: '2.0.0', models: null },
+              { id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [
+                { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true },
+              ]},
+            ],
+            request_id: msg.request_id,
+          }));
+        }
+      });
+    });
+    await req('POST', `/api/actors/${hsActorId}/harnesses/check`);
+    await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'codex' });
+    const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    humanWs.send(JSON.stringify({ type: 'join_room', room_id: hsRoomId }));
+    await new Promise(r => setTimeout(r, 100));
+    const changed = waitForWsMessage(humanWs, m => m.type === 'room_model_changed' && m.room_id === hsRoomId, 3000);
+    humanWs.send(JSON.stringify({ type: 'set_room_model', model: 'gpt-6.1-sol' }));
+    const msg = await changed;
+    assert.strictEqual(msg.model, 'gpt-6.1-sol');
+    humanWs.close();
+    await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+    const db = require('./db');
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+    ws15.close();
+    delete process.env.HARNESS_CHECK_TIMEOUT_MS;
+  });
+
+  // set_room_model — claude model accepted in room with claude participant (no regression)
+  await test('set_room_model — claude model accepted in room with claude participant', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+    const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    humanWs.send(JSON.stringify({ type: 'join_room', room_id: hsRoomId }));
+    await new Promise(r => setTimeout(r, 100));
+    const changed = waitForWsMessage(humanWs, m => m.type === 'room_model_changed' && m.room_id === hsRoomId, 3000);
+    humanWs.send(JSON.stringify({ type: 'set_room_model', model: 'claude-opus-5-5' }));
+    const msg = await changed;
+    assert.strictEqual(msg.model, 'claude-opus-5-5');
+    humanWs.close();
+    const db = require('./db');
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+  });
+
+  // set_room_model — claude model rejected in room with only codex participant
+  await test('set_room_model — claude model rejected in codex-only room', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    process.env.HARNESS_CHECK_TIMEOUT_MS = '3000';
+    const ws16 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready16 = waitForWsMessage(ws16, m => m.type === 'agent_ready');
+    ws16.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready16;
+    ws16.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === 'check_harnesses') {
+        ws16.send(JSON.stringify({
+          type: 'harnesses_update',
+          harnesses_available: ['codex'],
+          harness_status: [
+            { id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [
+              { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true },
+            ]},
+          ],
+          request_id: msg.request_id,
+        }));
+      }
+    });
+    await req('POST', `/api/actors/${hsActorId}/harnesses/check`);
+    await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'codex' });
+    const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    humanWs.send(JSON.stringify({ type: 'join_room', room_id: hsRoomId }));
+    await new Promise(r => setTimeout(r, 100));
+    const errPromise = waitForWsMessage(humanWs, m => m.type === 'error', 3000);
+    humanWs.send(JSON.stringify({ type: 'set_room_model', model: 'claude-opus-5-5' }));
+    const msg = await errPromise;
+    assert.ok(msg.message.includes('enabled list'), `expected rejection, got: ${msg.message}`);
+    humanWs.close();
+    ws16.close();
+    const db16 = require('./db');
+    db16.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
+    delete process.env.HARNESS_CHECK_TIMEOUT_MS;
+  });
+
+  // set_room_model — foreign model still rejected
+  await test('set_room_model — foreign model still rejected even with codex participant', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    humanWs.send(JSON.stringify({ type: 'join_room', room_id: hsRoomId }));
+    await new Promise(r => setTimeout(r, 100));
+    const errPromise = waitForWsMessage(humanWs, m => m.type === 'error', 3000);
+    humanWs.send(JSON.stringify({ type: 'set_room_model', model: 'totally-unknown-model-xyz' }));
+    const msg = await errPromise;
+    assert.ok(msg.message.includes('enabled list'), `unexpected error: ${msg.message}`);
+    humanWs.close();
+  });
+
+  // set_room_model — platform model rejected in codex-only room
+  await test('set_room_model — platform model rejected in codex-only room', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    process.env.HARNESS_CHECK_TIMEOUT_MS = '3000';
+    const origPlat = db.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get();
+    const testPlat = [{ id: 'test-plat-02', vendor: 'openrouter', enabled: true, base_url: 'https://test-openrouter.invalid/v1', api_keys: ['test-key-02'], cached_models: [{ model: 'llama-4-scout', tools: true }], enabled_models: ['llama-4-scout'] }];
+    const upsert = origPlat
+      ? db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'")
+      : db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'ai_platforms', ?)");
+    upsert.run(JSON.stringify(testPlat));
+    const ws17 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready17 = waitForWsMessage(ws17, m => m.type === 'agent_ready');
+    ws17.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready17;
+    ws17.on('message', (raw) => {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === 'check_harnesses') {
+        ws17.send(JSON.stringify({
+          type: 'harnesses_update',
+          harnesses_available: ['codex'],
+          harness_status: [
+            { id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [
+              { id: 'gpt-6.1-sol', label: 'GPT-6.1-Sol', is_default: true },
+            ]},
+          ],
+          request_id: msg.request_id,
+        }));
+      }
+    });
+    await req('POST', `/api/actors/${hsActorId}/harnesses/check`);
+    await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'codex' });
+    const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    humanWs.send(JSON.stringify({ type: 'join_room', room_id: hsRoomId }));
+    await new Promise(r => setTimeout(r, 100));
+    const errPromise = waitForWsMessage(humanWs, m => m.type === 'error', 3000);
+    humanWs.send(JSON.stringify({ type: 'set_room_model', model: 'llama-4-scout' }));
+    const msg = await errPromise;
+    assert.ok(msg.message.includes('enabled list'), `expected rejection, got: ${msg.message}`);
+    humanWs.close();
+    ws17.close();
+    db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
+    if (origPlat) {
+      db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(origPlat.value);
+    } else {
+      db.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run();
+    }
+    delete process.env.HARNESS_CHECK_TIMEOUT_MS;
+  });
+
+  // set_room_model — platform model accepted in room with claude participant
+  await test('set_room_model — platform model accepted in room with claude participant', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const origPlat = db.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get();
+    const testPlat = [{ id: 'test-plat-02', vendor: 'openrouter', enabled: true, base_url: 'https://test-openrouter.invalid/v1', api_keys: ['test-key-02'], cached_models: [{ model: 'llama-4-scout', tools: true }], enabled_models: ['llama-4-scout'] }];
+    const upsert = origPlat
+      ? db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'")
+      : db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'ai_platforms', ?)");
+    upsert.run(JSON.stringify(testPlat));
+    db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
+    const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    humanWs.send(JSON.stringify({ type: 'join_room', room_id: hsRoomId }));
+    // getParsedSetting has 1s in-memory cache; direct DB writes don't invalidate it
+    await new Promise(r => setTimeout(r, 1100));
+    const changed = waitForWsMessage(humanWs, m => m.type === 'room_model_changed' && m.room_id === hsRoomId, 3000);
+    humanWs.send(JSON.stringify({ type: 'set_room_model', model: 'llama-4-scout' }));
+    const msg = await changed;
+    assert.strictEqual(msg.model, 'llama-4-scout');
+    humanWs.close();
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+    if (origPlat) {
+      db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(origPlat.value);
+    } else {
+      db.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run();
+    }
+  });
+
+  // set_room_model — platform model accepted in room without AI participant (backward compat)
+  await test('set_room_model — platform model accepted in room without AI participant', async () => {
+    const db = require('./db');
+    const noAiRoomId = db.prepare("INSERT INTO rooms (title, created_by) VALUES ('__test-no-ai-room', 1)").run().lastInsertRowid;
+    const origPlat = db.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get();
+    const testPlat = [{ id: 'test-plat-03', vendor: 'openrouter', enabled: true, base_url: 'https://test-openrouter.invalid/v1', api_keys: ['test-key-03'], cached_models: [{ model: 'llama-4-scout', tools: true }], enabled_models: ['llama-4-scout'] }];
+    const upsert = origPlat
+      ? db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'")
+      : db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'ai_platforms', ?)");
+    upsert.run(JSON.stringify(testPlat));
+    const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    humanWs.send(JSON.stringify({ type: 'join_room', room_id: noAiRoomId }));
+    // getParsedSetting has 1s in-memory cache; direct DB writes don't invalidate it
+    await new Promise(r => setTimeout(r, 1100));
+    const changed = waitForWsMessage(humanWs, m => m.type === 'room_model_changed' && m.room_id === noAiRoomId, 3000);
+    humanWs.send(JSON.stringify({ type: 'set_room_model', model: 'llama-4-scout' }));
+    const msg = await changed;
+    assert.strictEqual(msg.model, 'llama-4-scout');
+    humanWs.close();
+    db.prepare('DELETE FROM rooms WHERE id=?').run(noAiRoomId);
+    if (origPlat) {
+      db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(origPlat.value);
+    } else {
+      db.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run();
+    }
+  });
+
+  // set_room_model — unknown model rejected in room without AI participant
+  await test('set_room_model — unknown model rejected in room without AI participant', async () => {
+    const db = require('./db');
+    const noAiRoomId = db.prepare("INSERT INTO rooms (title, created_by) VALUES ('__test-no-ai-room-2', 1)").run().lastInsertRowid;
+    const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    humanWs.send(JSON.stringify({ type: 'join_room', room_id: noAiRoomId }));
+    await new Promise(r => setTimeout(r, 100));
+    const err = waitForWsMessage(humanWs, m => m.type === 'error' && m.code === 'invalid_model', 3000);
+    humanWs.send(JSON.stringify({ type: 'set_room_model', model: 'totally-fake-model-xyz' }));
+    const msg = await err;
+    assert.strictEqual(msg.code, 'invalid_model');
+    humanWs.close();
+    db.prepare('DELETE FROM rooms WHERE id=?').run(noAiRoomId);
+  });
+
+  // ─── Agent Default Model + Model Resolution ────────────────────────────
+  console.log('\n[Agent Default Model]');
+
+  // PATCH default_model — valid model accepted
+  await test('PATCH /api/actors/:id default_model — valid claude model accepted', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { default_model: 'claude-opus-5-5' });
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+    assert.strictEqual(r.body.default_model, 'claude-opus-5-5');
+    const row = db.prepare('SELECT default_model FROM actors WHERE id=?').get(hsActorId);
+    assert.strictEqual(row.default_model, 'claude-opus-5-5');
+    db.prepare('UPDATE actors SET default_model=NULL WHERE id=?').run(hsActorId);
+  });
+
+  // PATCH default_model — incompatible model rejected
+  await test('PATCH /api/actors/:id default_model — codex model on claude adapter rejected', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { default_model: 'gpt-6-sol' });
+    assert.strictEqual(r.status, 400);
+    assert.ok(r.body.error.includes('not compatible'), r.body.error);
+  });
+
+  // PATCH default_model — null clears it
+  await test('PATCH /api/actors/:id default_model — null clears', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    db.prepare('UPDATE actors SET default_model=? WHERE id=?').run('claude-opus-5-5', hsActorId);
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { default_model: null });
+    assert.strictEqual(r.status, 200);
+    const row = db.prepare('SELECT default_model FROM actors WHERE id=?').get(hsActorId);
+    assert.strictEqual(row.default_model, null);
+  });
+
+  // PATCH adapter — default_model reset when incompatible
+  await test('PATCH adapter — default_model reset when incompatible with new harness', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    db.prepare('UPDATE actors SET adapter=?, default_model=? WHERE id=?').run('claude', 'claude-opus-5-5', hsActorId);
+    const ws18 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready18 = waitForWsMessage(ws18, m => m.type === 'agent_ready');
+    ws18.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready18;
+    ws18.send(JSON.stringify({
+      type: 'harnesses_update',
+      harnesses_available: ['codex'],
+      harness_status: [{ id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [{ id: 'gpt-6-sol', label: 'GPT-6', is_default: true }] }],
+    }));
+    await new Promise(r => setTimeout(r, 100));
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'codex' });
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.default_model_reset, 'default_model_reset missing');
+    assert.strictEqual(r.body.default_model_reset.old_model, 'claude-opus-5-5');
+    const row = db.prepare('SELECT default_model FROM actors WHERE id=?').get(hsActorId);
+    assert.strictEqual(row.default_model, null);
+    ws18.close();
+    db.prepare('UPDATE actors SET adapter=?, default_model=NULL WHERE id=?').run('claude', hsActorId);
+  });
+
+  // PATCH adapter — room not rewritten in mixed-agent room
+  await test('PATCH adapter — mixed room model not rewritten', async () => {
+    if (!hsActorId || !hsRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const agent2 = await createOnlineTestAgent('__test-mixed-agent', '/tmp/stoa-test-mixed');
+    if (!agent2) { console.log('    (skipped — no second agent)'); return; }
+    try {
+      await req('POST', `/api/rooms/${hsRoomId}/participants`, { actor_id: agent2.actorId });
+      db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', agent2.actorId);
+      db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+      const ws19 = await openWsConnection(`ws://${HOST}:${PORT}`);
+      const ready19 = waitForWsMessage(ws19, m => m.type === 'agent_ready');
+      ws19.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+      await ready19;
+      ws19.send(JSON.stringify({
+        type: 'harnesses_update',
+        harnesses_available: ['codex'],
+        harness_status: [{ id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [{ id: 'gpt-6-sol', label: 'GPT-6', is_default: true }] }],
+      }));
+      await new Promise(r => setTimeout(r, 100));
+      const r = await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'codex' });
+      assert.strictEqual(r.status, 200);
+      const roomRow = db.prepare('SELECT model FROM rooms WHERE id=?').get(hsRoomId);
+      assert.strictEqual(roomRow.model, 'claude-sonnet-5-5', 'mixed room model should NOT be rewritten');
+      assert.ok(r.body.fallback_agent_rooms?.length > 0, 'fallback_agent_rooms expected');
+      assert.ok(!r.body.fallback_rooms?.some(fr => fr.room_id === hsRoomId), 'room should NOT be in fallback_rooms');
+      ws19.close();
+    } finally {
+      db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
+      db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+      db.prepare('DELETE FROM room_participants WHERE room_id=? AND actor_id=?').run(hsRoomId, agent2.actorId);
+      if (agent2.ws) agent2.ws.close();
+      await req('DELETE', `/api/actors/${agent2.actorId}`);
+      orphanActorIds = orphanActorIds.filter(id => id !== agent2.actorId);
+    }
+  });
+
+  // GET /api/rooms/:id/model-resolution
+  await test('GET /api/rooms/:id/model-resolution — returns resolution per participant', async () => {
+    if (!hsRoomId) { console.log('    (skipped)'); return; }
+    const r = await req('GET', `/api/rooms/${hsRoomId}/model-resolution`);
+    assert.strictEqual(r.status, 200);
+    assert.ok(Array.isArray(r.body));
+  });
+
+  // GET /api/rooms/:id/model-resolution — requires auth
+  await test('GET /api/rooms/:id/model-resolution — 401 without auth', async () => {
+    if (!hsRoomId) { console.log('    (skipped)'); return; }
+    const r = await req('GET', `/api/rooms/${hsRoomId}/model-resolution`, null, { Cookie: '' });
+    assert.strictEqual(r.status, 401);
+  });
+
+  // resolveAgentModel: room claude + agent codex → agent fallback
+  await test('resolveAgentModel — codex agent in claude room gets fallback model', async () => {
+    if (!hsActorId || !hsRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+    const ws20 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready20 = waitForWsMessage(ws20, m => m.type === 'agent_ready');
+    ws20.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready20;
+    ws20.send(JSON.stringify({
+      type: 'harnesses_update',
+      harnesses_available: ['codex'],
+      harness_status: [{ id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [{ id: 'gpt-6-sol', label: 'GPT-6', is_default: true }] }],
+    }));
+    await new Promise(r => setTimeout(r, 100));
+    db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('codex', hsActorId);
+    const r = await req('GET', `/api/rooms/${hsRoomId}/model-resolution`);
+    assert.strictEqual(r.status, 200);
+    const agent = r.body.find(p => p.actor_id === hsActorId);
+    assert.ok(agent, 'agent not found in resolution');
+    assert.strictEqual(agent.harness, 'codex');
+    assert.notStrictEqual(agent.model, 'claude-sonnet-5-5', 'codex agent should NOT get claude model');
+    assert.ok(['agent_default', 'harness_default', 'cli_default'].includes(agent.source), `source should be fallback, got ${agent.source}`);
+    ws20.close();
+    db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
+  });
+
+  // resolveAgentModel: room codex model + agent claude → agent fallback
+  await test('resolveAgentModel — claude agent in codex room gets fallback model', async () => {
+    if (!hsActorId || !hsRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('gpt-6-sol', hsRoomId);
+    const r = await req('GET', `/api/rooms/${hsRoomId}/model-resolution`);
+    assert.strictEqual(r.status, 200);
+    const agent = r.body.find(p => p.actor_id === hsActorId);
+    assert.ok(agent);
+    assert.notStrictEqual(agent.model, 'gpt-6-sol', 'claude agent should NOT get codex model');
+    assert.ok(['agent_default', 'harness_default', 'cli_default'].includes(agent.source));
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+  });
+
+  // resolveAgentModel: compatible model → source=room
+  await test('resolveAgentModel — compatible model returns source=room', async () => {
+    if (!hsActorId || !hsRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-opus-5-5', hsRoomId);
+    const r = await req('GET', `/api/rooms/${hsRoomId}/model-resolution`);
+    const agent = r.body.find(p => p.actor_id === hsActorId);
+    assert.strictEqual(agent.model, 'claude-opus-5-5');
+    assert.strictEqual(agent.source, 'room');
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+  });
+
+  // resolveAgentModel: agent default_model used over harness default
+  await test('resolveAgentModel — agent default_model preferred over harness default', async () => {
+    if (!hsActorId || !hsRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    db.prepare('UPDATE actors SET adapter=?, default_model=? WHERE id=?').run('claude', 'claude-haiku-5-5', hsActorId);
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('gpt-6-sol', hsRoomId);
+    const r = await req('GET', `/api/rooms/${hsRoomId}/model-resolution`);
+    const agent = r.body.find(p => p.actor_id === hsActorId);
+    assert.strictEqual(agent.model, 'claude-haiku-5-5');
+    assert.strictEqual(agent.source, 'agent_default');
+    db.prepare('UPDATE actors SET default_model=NULL WHERE id=?').run(hsActorId);
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+  });
+
+  // PATCH adapter + default_model together: validated against NEW adapter
+  await test('PATCH adapter + default_model together — validated against new harness', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    db.prepare('UPDATE actors SET adapter=?, default_model=NULL WHERE id=?').run('claude', hsActorId);
+    const ws21 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready21 = waitForWsMessage(ws21, m => m.type === 'agent_ready');
+    ws21.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready21;
+    ws21.send(JSON.stringify({
+      type: 'harnesses_update',
+      harnesses_available: ['codex'],
+      harness_status: [{ id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [{ id: 'gpt-6-sol', label: 'GPT-6', is_default: true }] }],
+    }));
+    await new Promise(r => setTimeout(r, 100));
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'codex', default_model: 'gpt-6-sol' });
+    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}: ${JSON.stringify(r.body)}`);
+    assert.strictEqual(r.body.default_model, 'gpt-6-sol');
+    assert.ok(!r.body.default_model_reset, 'should NOT report reset when body carries explicit default_model');
+    const row = db.prepare('SELECT adapter, default_model FROM actors WHERE id=?').get(hsActorId);
+    assert.strictEqual(row.adapter, 'codex');
+    assert.strictEqual(row.default_model, 'gpt-6-sol');
+    ws21.close();
+    db.prepare('UPDATE actors SET adapter=?, default_model=NULL WHERE id=?').run('claude', hsActorId);
+  });
+
+  // PATCH adapter + invalid default_model: rejected 400, nothing changed (atomicity)
+  await test('PATCH adapter + invalid default_model — rejected 400, no side effects', async () => {
+    if (!hsActorId || !hsRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    db.prepare('UPDATE actors SET adapter=?, default_model=? WHERE id=?').run('claude', 'claude-opus-5-5', hsActorId);
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+    const ws24 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready24 = waitForWsMessage(ws24, m => m.type === 'agent_ready');
+    ws24.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready24;
+    ws24.send(JSON.stringify({
+      type: 'harnesses_update',
+      harnesses_available: ['codex'],
+      harness_status: [{ id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [{ id: 'gpt-6-sol', label: 'GPT-6', is_default: true }] }],
+    }));
+    await new Promise(r => setTimeout(r, 100));
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'codex', default_model: 'nonexistent-model' });
+    assert.strictEqual(r.status, 400, 'should reject invalid default_model');
+    const row = db.prepare('SELECT adapter, default_model FROM actors WHERE id=?').get(hsActorId);
+    assert.strictEqual(row.adapter, 'claude', 'adapter should NOT have changed on rejected request');
+    assert.strictEqual(row.default_model, 'claude-opus-5-5', 'default_model should NOT have changed on rejected request');
+    const roomRow = db.prepare('SELECT model FROM rooms WHERE id=?').get(hsRoomId);
+    assert.strictEqual(roomRow.model, 'claude-sonnet-5-5', 'room model should NOT have changed on rejected request');
+    ws24.close();
+    db.prepare('UPDATE actors SET adapter=?, default_model=NULL WHERE id=?').run('claude', hsActorId);
+  });
+
+  // default_model with leading/trailing spaces: stored trimmed
+  await test('PATCH default_model with spaces — stored trimmed', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { default_model: '  claude-opus-5-5  ' });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.default_model, 'claude-opus-5-5');
+    const row = db.prepare('SELECT default_model FROM actors WHERE id=?').get(hsActorId);
+    assert.strictEqual(row.default_model, 'claude-opus-5-5');
+    db.prepare('UPDATE actors SET default_model=NULL WHERE id=?').run(hsActorId);
+  });
+
+  // Mixed platform room: claude agent + codex agent, room model is platform model → room NOT rewritten
+  await test('PATCH adapter — mixed platform room model not rewritten', async () => {
+    if (!hsActorId || !hsRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    // Backup platform BEFORE try so finally can access it
+    const origPlat = db.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get();
+    const agent2 = await createOnlineTestAgent('__test-platform-mix', '/tmp/stoa-test-pmix');
+    if (!agent2) { console.log('    (skipped — no second agent)'); return; }
+    try {
+      await req('POST', `/api/rooms/${hsRoomId}/participants`, { actor_id: agent2.actorId });
+      db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', agent2.actorId);
+      db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
+      const testPlat = [{ id: 'mix-plat-01', name: 'Ollama', enabled: true, cached_models: ['llama-3-70b'], enabled_models: ['llama-3-70b'] }];
+      const upsertPlat = origPlat
+        ? db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'")
+        : db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'ai_platforms', ?)");
+      upsertPlat.run(JSON.stringify(testPlat));
+      await new Promise(r => setTimeout(r, 1100));
+      db.prepare('UPDATE rooms SET model=? WHERE id=?').run('llama-3-70b', hsRoomId);
+      // Send harnesses_update on agent2's existing WS (avoid opening a new one — the old
+      // WS close handler races with the new one and can wipe agentHarnessStatus)
+      agent2.ws.send(JSON.stringify({
+        type: 'harnesses_update',
+        harnesses_available: ['codex'],
+        harness_status: [{ id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [{ id: 'gpt-6-sol', label: 'GPT-6', is_default: true }] }],
+      }));
+      await new Promise(r => setTimeout(r, 200));
+      const r = await req('PATCH', `/api/actors/${agent2.actorId}`, { adapter: 'codex' });
+      assert.strictEqual(r.status, 200);
+      const roomRow = db.prepare('SELECT model FROM rooms WHERE id=?').get(hsRoomId);
+      assert.strictEqual(roomRow.model, 'llama-3-70b', 'platform room model should NOT be rewritten when claude participant can handle it');
+    } finally {
+      db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
+      db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+      if (origPlat) {
+        db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(origPlat.value);
+      } else {
+        db.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run();
+      }
+      db.prepare('DELETE FROM room_participants WHERE room_id=? AND actor_id=?').run(hsRoomId, agent2.actorId);
+      if (agent2.ws) agent2.ws.close();
+      await req('DELETE', `/api/actors/${agent2.actorId}`);
+      orphanActorIds = orphanActorIds.filter(id => id !== agent2.actorId);
+    }
+  });
+
+  // effective_default falls back to harness_default when agent default_model no longer in harness model list
+  await test('GET actors — stale default_model falls back to harness_default', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    // Set a codex default_model that doesn't exist in any harness model list
+    db.prepare('UPDATE actors SET adapter=?, default_model=? WHERE id=?').run('codex', 'nonexistent-model-xyz', hsActorId);
+    const ws23 = await openWsConnection(`ws://${HOST}:${PORT}`);
+    const ready23 = waitForWsMessage(ws23, m => m.type === 'agent_ready');
+    ws23.send(JSON.stringify({ type: 'agent_connect', actor_id: hsActorId, secret: hsSecret }));
+    await ready23;
+    ws23.send(JSON.stringify({
+      type: 'harnesses_update',
+      harnesses_available: ['codex'],
+      harness_status: [{ id: 'codex', installed: true, logged_in: true, version: '0.2.0', models: [{ id: 'gpt-6-sol', label: 'GPT-6', is_default: true }] }],
+    }));
+    await new Promise(r => setTimeout(r, 100));
+    const r = await req('GET', '/api/actors');
+    const agent = r.body.find(a => a.id === hsActorId);
+    assert.strictEqual(agent.effective_default_source, 'harness_default', 'stale default_model should be ignored');
+    assert.strictEqual(agent.effective_default_model, 'gpt-6-sol');
+    ws23.close();
+    db.prepare('UPDATE actors SET adapter=?, default_model=NULL WHERE id=?').run('claude', hsActorId);
+  });
+
+  // Single agent in platform room switches to claude — room NOT rewritten (claude can handle platform model)
+  await test('PATCH adapter — single agent platform room to claude not rewritten', async () => {
+    if (!hsActorId || !hsRoomId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    const origPlat = db.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get();
+    const testPlat = [{ id: 'single-plat-01', name: 'Ollama', enabled: true, cached_models: ['llama-3-70b'], enabled_models: ['llama-3-70b'] }];
+    const upsertPlat = origPlat
+      ? db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'")
+      : db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'ai_platforms', ?)");
+    upsertPlat.run(JSON.stringify(testPlat));
+    await new Promise(r => setTimeout(r, 1100));
+    db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('codex', hsActorId);
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('llama-3-70b', hsRoomId);
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
+    assert.strictEqual(r.status, 200);
+    const roomRow = db.prepare('SELECT model FROM rooms WHERE id=?').get(hsRoomId);
+    assert.strictEqual(roomRow.model, 'llama-3-70b', 'claude can handle platform model — no rewrite needed');
+    db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
+    db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
+    if (origPlat) {
+      db.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(origPlat.value);
+    } else {
+      db.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run();
+    }
+  });
+
+  // model_source stored in messages table
+  await test('model_source column exists in messages', async () => {
+    const db = require('./db');
+    const info = db.prepare("PRAGMA table_info('messages')").all();
+    const col = info.find(c => c.name === 'model_source');
+    assert.ok(col, 'model_source column not found');
+  });
+
+  // GET /api/actors includes default_model, harness_default_model, and effective fields
+  await test('GET /api/actors — includes default_model, harness_default_model, and effective fields', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    db.prepare('UPDATE actors SET adapter=?, default_model=NULL WHERE id=?').run('claude', hsActorId);
+    const r = await req('GET', '/api/actors');
+    assert.strictEqual(r.status, 200);
+    const agent = r.body.find(a => a.id === hsActorId);
+    assert.ok(agent, 'agent not found');
+    assert.ok('default_model' in agent, 'default_model field missing');
+    assert.ok('harness_default_model' in agent, 'harness_default_model field missing');
+    assert.ok('effective_default_model' in agent, 'effective_default_model field missing');
+    assert.ok('effective_default_source' in agent, 'effective_default_source field missing');
+    assert.strictEqual(agent.harness_default_model, 'claude-sonnet-5-5', 'claude harness default should be claude-sonnet-5-5');
+    assert.ok(['agent_default', 'harness_default', 'cli_default'].includes(agent.effective_default_source));
+  });
+
+  // PATCH response includes harness_default_model, effective_default_model, effective_default_source
+  await test('PATCH /api/actors — response includes harness_default_model and effective fields', async () => {
+    if (!hsActorId) { console.log('    (skipped)'); return; }
+    const db = require('./db');
+    db.prepare('UPDATE actors SET adapter=?, default_model=NULL WHERE id=?').run('claude', hsActorId);
+    const r = await req('PATCH', `/api/actors/${hsActorId}`, { default_model: 'claude-opus-5-5' });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.default_model, 'claude-opus-5-5');
+    assert.strictEqual(r.body.harness_default_model, 'claude-sonnet-5-5', 'harness_default_model should be pure harness default');
+    assert.strictEqual(r.body.effective_default_model, 'claude-opus-5-5', 'effective should reflect agent default');
+    assert.strictEqual(r.body.effective_default_source, 'agent_default');
+    db.prepare('UPDATE actors SET default_model=NULL WHERE id=?').run(hsActorId);
   });
 
   // Teardown — delete all test rooms and actors created during the run

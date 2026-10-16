@@ -61,6 +61,8 @@ A **model selector** appears at the right side of the formatting toolbar in the 
 
 The selection is saved per room and takes effect immediately on the next message — no restart required.
 
+When a room has more than one AI agent, or when any agent is not using the room model, the model selector includes a **"model per agent"** preview section below the model list. Each row shows `Name · harness → model`, with a label (`↪ agent default`, `↪ harness default`, or `↪ CLI default`) when an agent will not use the room model. The preview updates automatically when you switch rooms, when agent settings change, or when the room model changes.
+
 ### Busy Mode
 
 **Busy mode** controls what happens when you send a message while the AI is still running. Open the room settings (the **gear icon** in the room header) and look for the **Busy mode** card. Three options:
@@ -75,7 +77,7 @@ Busy mode is **thread-scoped**: each thread is treated as an independent context
 
 ### Model in Chat Bubbles
 
-Each AI response shows a small model indicator at the bottom right of the bubble (e.g., `qwen3-coder:480b:cloud`), making it easy to track which model generated each reply.
+Each AI response shows a small model indicator at the bottom right of the bubble (e.g., `qwen3-coder:480b:cloud`), making it easy to track which model generated each reply. When an agent used a different model than the room's selected model — for example, because the room has no model set, or the harness can't run the room model — a **↪** icon appears on the model tag. Hover to see why (e.g., `not using the room model — using agent default`). Sub-agent responses running on a tier do not show this icon.
 
 ### Pinning a Room
 
@@ -214,9 +216,10 @@ Sub-agents are defined per agent. Select the agent in **Settings > AI Agent**, t
 
 - **Label** (required) — a short name like `probe` or `researcher`. It appears in chat as `Ara (probe)` so you always know which sub-agent produced a message.
 - **Tier** — `quick`, `standard`, or `deep`. The tier selects which **model fallback chain** the sub-agent runs on (see [Model Tiers and Fallback](#model-tiers-and-fallback) below). By default `quick` runs a fast model, `standard` a balanced one, and `deep` the most capable — each falling back to a lighter model if the primary is unavailable.
-- **Model override** (optional) — pin the sub-agent to a single specific model instead of using its tier's chain. Leave it on **use tier** to follow the tier routing. A pinned model has no fallback — it is tried alone.
+- **Model override** (optional) — pin the sub-agent to a single specific model instead of using its tier's chain. Leave it on **use tier** to follow the tier routing. A pinned model has no fallback — it is tried alone. The dropdown lists only models compatible with the sub-agent's effective harness — Claude models for Claude, or the agent's detected Codex models (from the last Check) for Codex; if the agent has never been checked, Stoa falls back to its built-in Codex list. Changing the **Harness** field while a specific model is selected resets the selection to **use tier** if that model is unavailable under the new harness. The server also rejects a model that does not match the sub-agent's effective harness at save time.
 - **Workdir** (optional) — a working directory the sub-agent operates in.
 - **System prompt** (optional) — extra instructions that shape the sub-agent's behavior.
+- **Harness** (optional) — `claude` or `codex`. Leave on **inherit from parent** (default) to use the same harness as the parent agent.
 
 You can edit or delete a definition anytime. Definitions belong to the parent agent, not to any specific room.
 
@@ -242,6 +245,8 @@ Resolution follows a clear precedence:
 1. **Sub-agent model override** — if the sub-agent pins a specific model, that model is used (no fallback).
 2. **Room tier override** — otherwise the room's configured chain for that tier is used.
 3. **Server defaults** — if the room has no override, built-in defaults apply: `quick → haiku`, `standard → sonnet → haiku`, `deep → opus → sonnet`.
+
+For **Codex**, all three tiers resolve to the same default model reported by the agent — per-tier model routing only applies to Claude.
 
 To customize the chains for a room, open the room settings (the **gear** icon in the room header) and use the **Model tiers** card. It starts on server defaults; click **override for this room** to edit each tier's chain — reorder models (the first is primary), add a fallback, or remove one. **Reset to server defaults** clears the override. A pinned sub-agent model always wins over the room chain.
 
@@ -407,6 +412,48 @@ Select the agent in **Settings > AI Agent**, then click the agent's name in the 
 
 Each agent's response language can be changed after creation. Select the agent in **Settings > AI Agent**, then change the language in the agent card. Available languages: English, Bahasa Indonesia, 日本語, 한국어, 中文. The change takes effect immediately on the next message.
 
+### Agent System Prompt
+
+Each agent has its own **System Prompt** configured in **Settings > AI Agent → System Prompt** tab. This prompt is layered between the base system prompt and the room system prompt — it is sent to the agent in every room it participates in. Use it to define the agent's identity, persona, working language, and any standing rules.
+
+Sub-agents do **not** inherit the parent agent's system prompt. Each sub-agent has its own system prompt field, so their identities stay independent.
+
+### Agent Harness
+
+By default, agents run on the **Claude CLI**. If the agent's machine also has **Codex CLI** installed and logged in (via `codex login`), you can switch harnesses in **Settings > AI Agent → Agent card → Harness** dropdown.
+
+- **Claude** — Claude Code CLI. Supports compact, streaming, and resume.
+- **Codex** — OpenAI Codex CLI. Requires `codex` CLI installed and authenticated on the agent's machine. Codex sessions use `danger-full-access` sandbox by default and ignore user Codex config files (`--ignore-user-config`). **Compact is not supported** — clicking compact on a Codex session shows a toast error (`compact not supported for codex harness`); auto-compact also skips Codex sessions silently. `codex-session.js` is distributed via Stoa's auto-update — the agent downloads it when the server is updated, regardless of which harness is selected. If the Codex harness is triggered before `codex-session.js` is present on the agent machine, the trigger fails with a clear error; wait for auto-update to complete (~2 minutes after server update).
+
+Changing an agent's harness in a **mixed room** (where other AI agents can still run the current room model) leaves the room model untouched — this agent falls back to its own default instead. A toast confirms: e.g., `room model kept in 2 mixed rooms (Kira uses codex-default)`. If no other AI in the room can run the current room model, the room model is rewritten to the new harness's default. If the agent's **Default model** is incompatible with the new harness, it is automatically reset — the toast shows `default model reset (old-model)`.
+
+Sub-agents can also choose their own harness, or leave it on **inherit from parent** (the default).
+
+**Checking harness availability:** After installing or logging in to a CLI tool on the agent's machine, click the **Check** button next to the Harness dropdown (in the agent detail panel or accordion in **Settings > AI Agent**) to re-detect without restarting the agent. The button is disabled when the agent is offline, and detection can take up to ~15 seconds. The dropdown updates immediately when results arrive — new harnesses detected show a toast notification. Rescan also re-checks harnesses alongside working directories and skills.
+
+For **Codex**, Check also fetches the available model list from the agent via `codex debug models` — hidden models are filtered out, results are sorted by CLI priority, and the first model becomes the default. The room model dropdown updates immediately. If new models are found, a toast shows e.g. `Codex CLI: 2 new models`. If the agent cannot report models (older CLI version or command failure), Stoa falls back to its built-in model list. **Claude** has no equivalent command, so the Claude model list always comes from Stoa and does not update via Check.
+
+Harnesses that are installed but not logged in appear in the dropdown as **"(not logged in)"** and cannot be selected — the server will also reject them. If login status cannot be determined, the harness remains selectable. If the currently active harness becomes unavailable or loses login, a red hint appears below the Harness dropdown — the harness is not automatically changed.
+
+**Errors:** `agent offline` — the agent is not connected; `agent disconnected` — the agent disconnected mid-check; `agent did not respond — agent version may be too old, wait for auto-update` — the agent does not support harness detection yet (older version).
+
+### Agent Default Model
+
+Each agent has a **Default model** setting in **Settings > AI Agent → Agent card → Default model** dropdown. This is the model the agent falls back to when the room's selected model is not compatible with its harness.
+
+The dropdown lists only models compatible with the agent's current harness. The first option — **"follow harness default — \<model\>"** (value: none) — tells the agent to use its harness's built-in default rather than a pinned model.
+
+**Resolution order** when the server picks a model for an agent:
+
+1. **Room model** — if the agent's harness can run it, this is used.
+2. **Agent default model** — if one is set and compatible with the harness.
+3. **Harness default** — the harness's built-in default (e.g., first model from `codex debug models`).
+4. **CLI default** — the agent runs without a `-m` flag, letting the CLI decide.
+
+Platform model config (base URL, API keys) is only passed when the room model is used directly. If the agent falls back to any other source, platform config is not sent.
+
+Sub-agents with a tier use a separate resolution path — see [Model Tiers and Fallback](#model-tiers-and-fallback).
+
 ### Removing an Agent
 
 Select the agent in **Settings > AI Agent**, then click the **remove** button in the detail header. Confirm the deletion in the popup. The agent is unregistered and removed from all rooms.
@@ -453,11 +500,11 @@ Each agent reports its **client version** (e.g., `v0.2.2`) to the server. You ca
 
 Select an agent in **Settings > AI Agent** to see action buttons in the detail header:
 
-- **Rescan** — re-scan the agent's working directories and skills
+- **Rescan** — re-scan the agent's working directories, skills, and harness availability
 - **Force Update** — force the agent to check for client updates immediately (normally checks every 2 minutes)
 - **Remove** — unregister the agent (with confirmation)
 
-**Compact Session** — compress the agent's conversation history to reduce context size. Open the thread panel and click the compact button (↕ icon) in the panel header. A progress bar appears inside the thread panel while compacting — the agent summarizes prior context and continues seamlessly. Useful when a conversation has grown very long and response quality starts to degrade
+**Compact Session** — compress the agent's conversation history to reduce context size. Open the thread panel and click the compact button (↕ icon) in the panel header. A progress bar appears inside the thread panel while compacting — the agent summarizes prior context and continues seamlessly. Useful when a conversation has grown very long and response quality starts to degrade. Compact is not supported for Codex harness sessions — clicking compact shows a toast error (`compact not supported for codex harness`).
 
 ### Auto-Compact
 
@@ -467,6 +514,8 @@ Stoa automatically compacts agent sessions without manual intervention. Two mech
 - **Background worker** — every 60 minutes, the agent scans all open sessions on its machine and compacts any that exceed the configured compact threshold. This also cleans up sessions that are open locally but not active in any Stoa room.
 
 When auto-compact runs, a compact progress bar appears in the thread panel (same as manual compact) and a compact marker is saved in the thread's message history. The marker persists across page refreshes.
+
+Both mechanisms skip sessions running on the Codex harness — Codex does not support compact.
 
 ### Proactive Messages
 
@@ -804,7 +853,8 @@ A two-panel layout for managing all your AI agents. The left sidebar shows a sea
 The detail panel includes:
 
 - **Header** — agent avatar (click to change), name (click to rename inline), online/offline status, and action buttons (rescan, force update, remove)
-- **Agent card** — backend type, language selector, name field, platform selector, and the install command for reinstalling
+- **Agent card** — backend type, language selector, name field, platform selector, harness selector, and the install command for reinstalling
+- **System Prompt** — per-agent system prompt applied in every room this agent participates in; sub-agents have their own system prompt and do not inherit this one
 - **Sub-agents card** — all sub-agents defined for this agent, with add/edit/delete/toggle controls
 - **Workdirs card** — read-only list of working directories registered by this agent
 
@@ -922,7 +972,8 @@ Browser  <-->  WebSocket  <-->  server.js  <-->  Agent (stoa.js)
 - **server.js** — HTTP + WebSocket server, manages rooms, messages, and agent orchestration
 - **public/** — frontend (no build step needed)
 - **stoa.js** — agent client that runs on each agent machine
-- **claude-session.js** — manages the persistent Claude Code CLI subprocess
+- **claude-session.js** — manages the Claude Code CLI subprocess
+- **codex-session.js** — manages the Codex CLI subprocess; distributed via Stoa's auto-update (downloaded when the server is updated, not when the harness is switched)
 - **SQLite** — all data stored locally in `stoa.db` (WAL mode for performance)
 
 All AI models are routed through **Claude Code CLI**. For custom external platforms (OpenRouter, Together AI, etc.), the server passes platform-specific environment variables (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`) to the CLI process. For **Ollama Cloud**, requests are routed through a built-in Stoa proxy (`/v1/messages`) with server-side API key rotation — agents connect to Stoa, not directly to ollama.com.

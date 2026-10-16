@@ -4,6 +4,102 @@ let settingsActors = [];
 const sRowStates = new Map(); // id -> {state:'default'|'renaming'|'confirm-delete', draft:string}
 let sAddPanel = { open: false, name: '', os: 'unix', phase: 'idle', baselineIds: new Set(), newActor: null, timer: null };
 const agentSubCountCache = new Map(); // actorId -> count
+let _settingsRoomsMap = null; // id -> name, populated on first harness change
+async function _getRoomName(id) {
+  if (!_settingsRoomsMap) {
+    try {
+      const rs = await fjson('/api/rooms');
+      _settingsRoomsMap = new Map(rs.map(r => [r.id, r.name || `#${r.id}`]));
+    } catch { _settingsRoomsMap = new Map(); }
+  }
+  return _settingsRoomsMap.get(id) || `#${id}`;
+}
+
+function _buildHarnessOptions(sel, actor) {
+  const cur = actor.adapter || 'claude';
+  const available = actor.harnesses_available || [];
+  const statusMap = new Map((actor.harness_status || []).map(s => [s.id, s]));
+  const toShow = available.length ? available : [cur];
+  const multi = toShow.length > 1;
+  sel.innerHTML = '';
+  toShow.forEach(h => {
+    const st = statusMap.get(h);
+    const notLoggedIn = st?.installed && st.logged_in === false;
+    const ver = st?.version ? ` ${st.version}` : '';
+    const o = document.createElement('option');
+    o.value = h;
+    o.textContent = `${HARNESS_LABELS[h] || h}${ver}${notLoggedIn ? ' (not logged in)' : ''}`;
+    o.disabled = notLoggedIn;
+    if (h === cur) o.selected = true;
+    sel.appendChild(o);
+  });
+  sel.disabled = !multi;
+  sel.style.opacity = multi ? '' : '0.6';
+  sel.style.cursor = multi ? 'pointer' : 'not-allowed';
+}
+
+function _harnessHint(actor) {
+  if (!actor.online) return null;
+  const cur = actor.adapter || 'claude';
+  const available = actor.harnesses_available || [];
+  const st = (actor.harness_status || []).find(s => s.id === cur);
+  if (available.length && !available.includes(cur)) return `${HARNESS_LABELS[cur] || cur} not available on this agent`;
+  if (st?.installed && st.logged_in === false) return `${HARNESS_LABELS[cur] || cur} is not logged in`;
+  return null;
+}
+
+function _applyHarnessCheckResult(actor, data, sel, hintEl) {
+  const prevAvailable = (actor.harnesses_available || []).slice();
+  const prevStatus = actor.harness_status || [];
+  actor.harnesses_available = data.harnesses_available || prevAvailable;
+  actor.harness_status = data.harness_status || prevStatus;
+  const patch = { harnesses_available: actor.harnesses_available, harness_status: actor.harness_status };
+  const sIdx = settingsActors.findIndex(a => a.id === actor.id);
+  if (sIdx >= 0) settingsActors[sIdx] = { ...settingsActors[sIdx], ...patch };
+  const aIdx = allActors.findIndex(a => a.id === actor.id);
+  if (aIdx >= 0) Object.assign(allActors[aIdx], patch);
+  _buildHarnessOptions(sel, actor);
+  const hint = _harnessHint(actor);
+  if (hintEl) { hintEl.textContent = hint || ''; hintEl.style.display = hint ? '' : 'none'; }
+  const newOnes = actor.harnesses_available.filter(h => !prevAvailable.includes(h));
+  const curHarness = actor.adapter || 'claude';
+  const curSt = actor.harness_status.find(s => s.id === curHarness);
+  const prevSt = prevStatus.find(s => s.id === curHarness);
+  const newModels = (curSt?.models || []).filter(m => !(prevSt?.models || []).some(p => p.id === m.id));
+  const parts = (data.harness_status || []).filter(s => s.installed).map(s => {
+    const lbl = HARNESS_LABELS[s.id] || s.id;
+    return s.version ? `${lbl} ${s.version}` : lbl;
+  });
+  if (newOnes.length) {
+    showToast(`New harness detected: ${newOnes.map(h => escHtml(HARNESS_LABELS[h] || h)).join(', ')}`);
+  } else if (newModels.length && curHarness !== 'claude') {
+    showToast(`${escHtml(HARNESS_LABELS[curHarness] || curHarness)}: ${newModels.length} new model${newModels.length > 1 ? 's' : ''}`);
+  } else {
+    showToast(parts.length ? `Harnesses: ${parts.map(p => escHtml(p)).join(', ')}` : 'No harnesses detected');
+  }
+  renderAgentSidebar();
+  if (typeof refreshModelDropdownForActor === 'function') refreshModelDropdownForActor(actor.id);
+}
+
+function _makeCheckHarnessBtn(actor, sel, hintEl) {
+  const btn = document.createElement('button');
+  btn.className = 's-icon-btn';
+  btn.title = actor.online ? 'Check installed harnesses' : 'Offline';
+  btn.disabled = !actor.online;
+  btn.style.cssText = 'display:inline-flex;align-items:center;gap:4px;padding:3px 7px;font-family:var(--h-sans);font-size:11.5px;height:auto';
+  btn.innerHTML = svgRefresh(13) + '<span>Check</span>';
+  btn.addEventListener('click', async () => {
+    btn.disabled = true; btn.style.opacity = '0.4';
+    try {
+      const r = await fetch(`/api/actors/${actor.id}/harnesses/check`, { method: 'POST' });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) { showToast(data.error || 'Failed to check harnesses', { error: true }); return; }
+      _applyHarnessCheckResult(actor, data, sel, hintEl);
+    } catch { showToast('Failed to check harnesses', { error: true }); }
+    finally { btn.disabled = !actor.online; btn.style.opacity = ''; }
+  });
+  return btn;
+}
 
 function sDetectOS() {
   return /Windows/.test(navigator.userAgent) ? 'ps' : 'unix';
@@ -237,7 +333,7 @@ function sMakeRow(actor, flash) {
 
     if (!isHuman) {
       const refresh = document.createElement('button');
-      refresh.className = 's-icon-btn'; refresh.title = actor.online ? 'Rescan workdirs & skills' : 'Offline';
+      refresh.className = 's-icon-btn'; refresh.title = actor.online ? 'Rescan workdirs, skills & harnesses' : 'Offline';
       refresh.disabled = !actor.online;
       refresh.innerHTML = svgRefresh();
       refresh.addEventListener('click', async e => {
@@ -360,6 +456,30 @@ const SA_MODELS = [
   'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5',
 ];
 const SA_DANGER = '#b35a4b';
+const HARNESS_LABELS = { claude: 'Claude CLI', codex: 'Codex CLI' };
+
+function _saPopulateModelSel(modelSel, harness, actor, currentVal) {
+  modelSel.innerHTML = '';
+  const useTierOpt = document.createElement('option');
+  useTierOpt.value = ''; useTierOpt.textContent = 'use tier';
+  modelSel.appendChild(useTierOpt);
+  if (!harness || harness === 'claude') {
+    for (const m of SA_MODELS) {
+      const o = document.createElement('option'); o.value = m; o.textContent = m; modelSel.appendChild(o);
+    }
+    if (currentVal && !SA_MODELS.includes(currentVal)) {
+      const o = document.createElement('option'); o.value = currentVal; o.textContent = currentVal; modelSel.appendChild(o);
+    }
+  } else {
+    const models = (_agentHarnessModels(actor?.harness_status, harness) || getModelsForHarness(harness) || []);
+    for (const m of models) {
+      const o = document.createElement('option'); o.value = m.value;
+      o.textContent = m.label || m.value; modelSel.appendChild(o);
+    }
+  }
+  const valid = Array.from(modelSel.options).map(o => o.value);
+  modelSel.value = valid.includes(currentVal) ? currentVal : '';
+}
 
 // One-time token injection: the sub-agent seal shade vars. Relative oklch keeps
 // the parent HUE and just lightens/desaturates, so Ara's teal stays teal.
@@ -518,10 +638,28 @@ function sMakeEditAccordion(actor) {
   const beGrp = document.createElement('div');
   beGrp.className = 's-field-group'; beGrp.style.minWidth = 'auto';
   const beSel = document.createElement('select');
-  beSel.className = 's-name-input'; beSel.name = 'agent-backend'; beSel.style.cssText = 'width:auto;min-width:130px;opacity:0.6;cursor:not-allowed'; beSel.disabled = true;
-  const o = document.createElement('option'); o.value = 'claude'; o.textContent = 'Claude Code CLI'; o.selected = true;
-  beSel.appendChild(o);
-  beGrp.append(mkFieldLbl('AI agent'), beSel);
+  beSel.className = 's-name-input'; beSel.name = 'agent-harness'; beSel.style.cssText = 'width:auto;min-width:130px';
+  _buildHarnessOptions(beSel, actor);
+  beSel.addEventListener('change', async () => {
+    try {
+      const r = await fetch(`/api/actors/${actor.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adapter: beSel.value }),
+      });
+      if (!r.ok) { const e = await r.json().catch(() => ({})); showToast(e.error || 'Failed to change harness', { error: true }); beSel.value = actor.adapter || 'claude'; return; }
+      actor.adapter = beSel.value;
+      showToast('Harness updated');
+    } catch { showToast('Failed to change harness', { error: true }); beSel.value = actor.adapter || 'claude'; }
+  });
+  const _accHint = document.createElement('span');
+  _accHint.style.cssText = 'font-size:11px;color:oklch(52% .22 25);display:none';
+  const _accInitHint = _harnessHint(actor);
+  if (_accInitHint) { _accHint.textContent = _accInitHint; _accHint.style.display = ''; }
+  const _accCheckBtn = _makeCheckHarnessBtn(actor, beSel, _accHint);
+  const _accSelRow = document.createElement('div');
+  _accSelRow.style.cssText = 'display:flex;align-items:center;gap:6px';
+  _accSelRow.append(beSel, _accCheckBtn);
+  beGrp.append(mkFieldLbl('harness'), _accSelRow, _accHint);
 
   const langGrp = document.createElement('div');
   langGrp.className = 's-field-group'; langGrp.style.minWidth = 'auto';
@@ -679,18 +817,8 @@ function sMakeEditAccordion(actor) {
     modelSel.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;' +
       'background:var(--h-surface);border:1px solid var(--h-hair-soft);' +
       'font-family:var(--h-sans);font-size:13px;color:var(--h-ink);outline:none;width:100%;cursor:pointer';
-    const useTierOpt = document.createElement('option'); useTierOpt.value = ''; useTierOpt.textContent = 'use tier';
-    modelSel.appendChild(useTierOpt);
-    for (const m of SA_MODELS) {
-      const o = document.createElement('option'); o.value = m; o.textContent = m;
-      if ((existing?.model || '') === m) o.selected = true;
-      modelSel.appendChild(o);
-    }
-    // Preserve a pinned model set via API that isn't in the preset list.
-    if (existing?.model && !SA_MODELS.includes(existing.model)) {
-      const o = document.createElement('option'); o.value = existing.model; o.textContent = existing.model; o.selected = true;
-      modelSel.appendChild(o);
-    }
+    const parentHarness = actor.adapter || 'claude';
+    _saPopulateModelSel(modelSel, existing?.harness || parentHarness, actor, existing?.model || '');
     const modelField = saMakeField('model override', modelSel, 'leave on “use tier” unless this worker needs a specific model');
     grid.append(labelField, modelField);
 
@@ -706,6 +834,18 @@ function sMakeEditAccordion(actor) {
       'background:var(--h-slip);border:1px solid var(--h-hairline);' +
       'font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;color:var(--h-ink);outline:none;width:100%';
     const spField = saMakeField('system prompt', spInp, 'context injected on every trigger');
+
+    // harness override
+    let selectedHarness = existing?.harness || null;
+    const harnSel = document.createElement('select'); harnSel.name = 'subagent-harness'; harnSel.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;background:var(--h-surface);border:1px solid var(--h-hair-soft);font-family:var(--h-sans);font-size:13px;color:var(--h-ink);outline:none;width:100%;cursor:pointer';
+    const inheritOptA = document.createElement('option'); inheritOptA.value = ''; inheritOptA.textContent = `inherit from parent (${HARNESS_LABELS[parentHarness] || parentHarness})`; harnSel.appendChild(inheritOptA);
+    (actor.harnesses_available || [parentHarness]).forEach(h => { const o = document.createElement('option'); o.value = h; o.textContent = HARNESS_LABELS[h] || h; if (h === selectedHarness) o.selected = true; harnSel.appendChild(o); });
+    if (!selectedHarness) inheritOptA.selected = true;
+    harnSel.addEventListener('change', () => {
+      selectedHarness = harnSel.value || null;
+      _saPopulateModelSel(modelSel, selectedHarness || parentHarness, actor, modelSel.value);
+    });
+    const harnField = saMakeField('harness', harnSel, 'override parent harness for this worker');
 
     // buttons
     const btns = document.createElement('div');
@@ -738,15 +878,15 @@ function sMakeEditAccordion(actor) {
       if (!label) { showErr('label required'); labelInp.focus(); return; }
       saveF.disabled = true;
       try {
-        const body = { label, tier: selectedTier, model: modelSel.value || null, system_prompt: spInp.value.trim() || null };
+        const body = { label, tier: selectedTier, model: modelSel.value || null, system_prompt: spInp.value.trim() || null, harness: selectedHarness };
         const r = existing
           ? await fetch(`/api/sub-agents/${existing.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
           : await fetch(`/api/actors/${actor.id}/sub-agents`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         if (!r.ok) {
           const e = await r.json().catch(() => ({}));
           const msg = e.error || 'failed to save';
-          if (/already exists/i.test(msg)) showErr(`“${label}” already exists on ${actor.name}`);
-          else if (/actor name|conflicts/i.test(msg)) showErr(`“${label}” is an agent name — pick something else`);
+          if (/already exists/i.test(msg)) showErr(`”${label}” already exists on ${actor.name}`);
+          else if (/actor name|conflicts/i.test(msg)) showErr(`”${label}” is an agent name — pick something else`);
           else showToast(msg, { error: true });
           saveF.disabled = false; return;
         }
@@ -754,7 +894,7 @@ function sMakeEditAccordion(actor) {
       } catch { showToast('Failed to save sub-agent', { error: true }); saveF.disabled = false; }
     });
 
-    saForm.append(fh, grid, tierField, spField, btns);
+    saForm.append(fh, grid, tierField, spField, harnField, btns);
     setTimeout(() => labelInp.focus(), 0);
     saShowForm(true);
   }
@@ -801,6 +941,12 @@ function sMakeEditAccordion(actor) {
             'padding:2px 7px;border-radius:6px;background:color-mix(in srgb, var(--h-ink) 7%, var(--h-surface))';
           mp.textContent = sa.model;
           line1.appendChild(mp);
+        }
+        if (sa.harness) {
+          const hp = document.createElement('span');
+          hp.style.cssText = 'font-family:var(--h-sans);font-size:11px;color:var(--h-ink-faint);padding:2px 6px;border-radius:6px;border:1px solid var(--h-hair-soft)';
+          hp.textContent = HARNESS_LABELS[sa.harness] || sa.harness;
+          line1.appendChild(hp);
         }
         mid.append(line1);
         row.appendChild(mid);
@@ -1143,7 +1289,10 @@ function makeAgentSidebarRow(actor) {
   const nameSpan = document.createElement('span');
   nameSpan.className = 'h-room-title-text';
   nameSpan.textContent = actor.name;
-  nameRow.append(dot, nameSpan);
+  const harnessChip = document.createElement('span');
+  harnessChip.style.cssText = 'font-family:var(--h-sans);font-size:11px;color:var(--h-ink-faint);padding:2px 6px;border-radius:6px;border:1px solid var(--h-hair-soft);flex-shrink:0';
+  harnessChip.textContent = HARNESS_LABELS[actor.adapter] || actor.adapter || 'Claude CLI';
+  nameRow.append(dot, nameSpan, harnessChip);
 
   const sub = document.createElement('div');
   sub.className = 'h-room-preview';
@@ -1212,6 +1361,7 @@ function renderAgentDetail(id) {
   if (!bodyEl) return;
   bodyEl.innerHTML = '';
   bodyEl.appendChild(buildAgentSettingsCard(actor));
+  bodyEl.appendChild(buildAgentSystemPromptSection(actor));
   bodyEl.appendChild(buildSubAgentsSection(actor));
   bodyEl.appendChild(buildAgentWorkdirsCard(actor));
   bodyEl.appendChild(buildAgentMemorySection(actor));
@@ -1312,7 +1462,7 @@ function renderAgentDetailHeader(container, actor) {
   actions.style.cssText = 'display:flex;align-items:center;gap:4px;flex-shrink:0';
 
   const refreshBtn = document.createElement('button');
-  refreshBtn.className = 's-icon-btn'; refreshBtn.title = actor.online ? 'Rescan workdirs & skills' : 'Offline';
+  refreshBtn.className = 's-icon-btn'; refreshBtn.title = actor.online ? 'Rescan workdirs, skills & harnesses' : 'Offline';
   refreshBtn.disabled = !actor.online; refreshBtn.innerHTML = svgRefresh(16);
   refreshBtn.addEventListener('click', async () => {
     refreshBtn.disabled = true; refreshBtn.style.opacity = '0.4';
@@ -1379,10 +1529,78 @@ function buildAgentSettingsCard(actor) {
 
   const beGrp = document.createElement('div'); beGrp.className = 's-field-group'; beGrp.style.minWidth = 'auto';
   const beSel = document.createElement('select');
-  beSel.className = 's-name-input'; beSel.name = 'agent-backend'; beSel.style.cssText = 'width:auto;min-width:130px;opacity:0.6;cursor:not-allowed'; beSel.disabled = true;
-  const beOpt = document.createElement('option'); beOpt.value = 'claude'; beOpt.textContent = 'Claude Code CLI'; beOpt.selected = true;
-  beSel.appendChild(beOpt);
-  beGrp.append(mkFieldLbl('AI agent'), beSel);
+  beSel.className = 's-name-input'; beSel.name = 'agent-harness'; beSel.style.cssText = 'width:auto;min-width:130px';
+  _buildHarnessOptions(beSel, actor);
+  let rebuildDefaultModelSel = null;
+  beSel.addEventListener('change', async () => {
+    const notice = document.getElementById(`s-harness-notice-${actor.id}`);
+    try {
+      const r = await fetch(`/api/actors/${actor.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adapter: beSel.value }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        showToast(data.error || 'Failed to change harness', { error: true });
+        beSel.value = actor.adapter || 'claude';
+        return;
+      }
+      actor.adapter = beSel.value;
+      const idx = settingsActors.findIndex(a => a.id === actor.id);
+      if (idx >= 0) settingsActors[idx] = { ...settingsActors[idx], adapter: beSel.value };
+      if (data.default_model_reset) {
+        actor.default_model = null;
+        const sIdx2 = settingsActors.findIndex(a => a.id === actor.id);
+        if (sIdx2 >= 0) settingsActors[sIdx2] = { ...settingsActors[sIdx2], default_model: null };
+        const aIdx2 = allActors.findIndex(a => a.id === actor.id);
+        if (aIdx2 >= 0) allActors[aIdx2] = { ...allActors[aIdx2], default_model: null };
+      }
+      if (data.harness_default_model !== undefined) actor.harness_default_model = data.harness_default_model;
+      if (data.effective_default_model !== undefined) actor.effective_default_model = data.effective_default_model;
+      if (data.effective_default_source !== undefined) actor.effective_default_source = data.effective_default_source;
+      if (typeof rebuildDefaultModelSel === 'function') rebuildDefaultModelSel();
+      if (notice) {
+        const fmt = m => m || 'default';
+        const fallbackLines = [];
+        const roomNames = await Promise.all((data.fallback_rooms || []).map(r => _getRoomName(r.room_id)));
+        (data.fallback_rooms || []).forEach((r, i) => {
+          fallbackLines.push(`${roomNames[i]}: ${fmt(r.old_model)} → ${fmt(r.new_model)}`);
+        });
+        (data.fallback_sub_agents || []).forEach(s => {
+          fallbackLines.push(`sub-agent ${s.label || s.sub_agent_id}: ${fmt(s.old_model)} → ${fmt(s.new_model)}`);
+        });
+        if (fallbackLines.length) {
+          notice.textContent = 'Model reset to default: ' + fallbackLines.join('; ');
+          notice.style.display = '';
+        } else { notice.style.display = 'none'; }
+      }
+      const toastParts = [`${actor.name} switched to ${HARNESS_LABELS[beSel.value] || beSel.value}`];
+      if (data.fallback_agent_rooms?.length) {
+        const firstRoom = data.fallback_agent_rooms[0];
+        toastParts.push(`room model kept in ${data.fallback_agent_rooms.length} mixed room${data.fallback_agent_rooms.length > 1 ? 's' : ''} (${actor.name} uses ${firstRoom.agent_model || 'harness default'})`);
+      }
+      if (data.default_model_reset) {
+        toastParts.push(`default model reset (${data.default_model_reset.old_model})`);
+      }
+      if (!data.fallback_agent_rooms?.length && !data.default_model_reset && !(data.fallback_rooms?.length)) {
+        showToast('Harness updated');
+      } else {
+        showToast(toastParts.join('. '));
+      }
+    } catch { showToast('Failed to change harness', { error: true }); beSel.value = actor.adapter || 'claude'; }
+  });
+  const beHint = document.createElement('span');
+  beHint.style.cssText = 'font-size:11px;color:oklch(52% .22 25);display:none';
+  const _initHint = _harnessHint(actor);
+  if (_initHint) { beHint.textContent = _initHint; beHint.style.display = ''; }
+  const beCheckBtn = _makeCheckHarnessBtn(actor, beSel, beHint);
+  const beSelRow = document.createElement('div');
+  beSelRow.style.cssText = 'display:flex;align-items:center;gap:6px';
+  beSelRow.append(beSel, beCheckBtn);
+  const beNotice = document.createElement('span');
+  beNotice.id = `s-harness-notice-${actor.id}`;
+  beNotice.style.cssText = 'font-size:11.5px;color:oklch(60% .15 80);margin-top:2px;display:none';
+  beGrp.append(mkFieldLbl('harness'), beSelRow, beHint, beNotice);
 
   const langGrp = document.createElement('div'); langGrp.className = 's-field-group'; langGrp.style.minWidth = 'auto';
   const langSel = document.createElement('select');
@@ -1404,6 +1622,69 @@ function buildAgentSettingsCard(actor) {
 
   fieldRow.append(beGrp, langGrp, nameGrp);
   body.appendChild(fieldRow);
+
+  // ── Default model field ──────────────────────────────────────────────────
+  const dmGrp = document.createElement('div'); dmGrp.className = 's-field-group'; dmGrp.style.minWidth = 'auto';
+  const dmSel = document.createElement('select');
+  dmSel.className = 's-name-input'; dmSel.name = 'agent-default-model';
+  dmSel.style.cssText = 'width:auto;min-width:190px;cursor:pointer';
+
+  rebuildDefaultModelSel = () => {
+    const harness = actor.adapter || 'claude';
+    const harnessDefault = actor.harness_default_model;
+    dmSel.innerHTML = '';
+    const noneOpt = document.createElement('option');
+    noneOpt.value = '';
+    noneOpt.textContent = harnessDefault ? `follow harness default — ${harnessDefault}` : 'follow harness default';
+    dmSel.appendChild(noneOpt);
+    if (!harness || harness === 'claude') {
+      for (const m of SA_MODELS) {
+        const o = document.createElement('option'); o.value = m; o.textContent = m; dmSel.appendChild(o);
+      }
+      if (actor.default_model && !SA_MODELS.includes(actor.default_model)) {
+        const o = document.createElement('option'); o.value = actor.default_model; o.textContent = actor.default_model; dmSel.appendChild(o);
+      }
+    } else {
+      const models = (_agentHarnessModels(actor.harness_status, harness) || getModelsForHarness(harness) || []);
+      for (const m of models) {
+        const o = document.createElement('option'); o.value = m.value; o.textContent = m.label || m.value; dmSel.appendChild(o);
+      }
+    }
+    const valid = Array.from(dmSel.options).map(o => o.value);
+    dmSel.value = valid.includes(actor.default_model) ? (actor.default_model || '') : '';
+  };
+  rebuildDefaultModelSel();
+
+  dmSel.addEventListener('change', async () => {
+    const val = dmSel.value || null;
+    try {
+      const r = await fetch(`/api/actors/${actor.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ default_model: val }),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        showToast(data.error || 'Failed to save default model', { error: true });
+        rebuildDefaultModelSel();
+        return;
+      }
+      const saved = data.default_model !== undefined ? data.default_model : val;
+      if (data.harness_default_model !== undefined) actor.harness_default_model = data.harness_default_model;
+      if (data.effective_default_model !== undefined) actor.effective_default_model = data.effective_default_model;
+      actor.default_model = saved;
+      const sIdx = settingsActors.findIndex(a => a.id === actor.id);
+      if (sIdx >= 0) settingsActors[sIdx] = { ...settingsActors[sIdx], default_model: saved };
+      const aIdx = allActors.findIndex(a => a.id === actor.id);
+      if (aIdx >= 0) allActors[aIdx] = { ...allActors[aIdx], default_model: saved };
+      rebuildDefaultModelSel();
+      if (typeof _refreshModelResolution === 'function') _refreshModelResolution();
+    } catch { showToast('Failed to save default model', { error: true }); rebuildDefaultModelSel(); }
+  });
+
+  const dmHint = document.createElement('span'); dmHint.className = 's-field-hint';
+  dmHint.textContent = "used when this agent's harness can't run the room model";
+  dmGrp.append(mkFieldLbl('default model'), dmSel, dmHint);
+  body.appendChild(dmGrp);
 
   const platGrp = document.createElement('div'); platGrp.className = 's-field-group'; platGrp.style.minWidth = 'auto';
   const osPills = document.createElement('div'); osPills.className = 's-os-pills'; osPills.id = `s-detail-pills-${actor.id}`;
@@ -1522,14 +1803,25 @@ function buildSubAgentsSection(actor) {
     const labelField = saMakeField('label', labelInp, 'unique, used for @mention — cannot match an agent name');
     const labelErr = document.createElement('span'); labelErr.style.cssText = 'display:none;align-items:center;gap:6px;font-family:var(--h-sans);font-size:12px;color:' + SA_DANGER; labelField.appendChild(labelErr);
     const modelSel = document.createElement('select'); modelSel.name = 'subagent-model'; modelSel.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;background:var(--h-surface);border:1px solid var(--h-hair-soft);font-family:var(--h-sans);font-size:13px;color:var(--h-ink);outline:none;width:100%;cursor:pointer';
-    const useTierOpt = document.createElement('option'); useTierOpt.value = ''; useTierOpt.textContent = 'use tier'; modelSel.appendChild(useTierOpt);
-    for (const m of SA_MODELS) { const o = document.createElement('option'); o.value = m; o.textContent = m; if ((existing?.model || '') === m) o.selected = true; modelSel.appendChild(o); }
-    if (existing?.model && !SA_MODELS.includes(existing.model)) { const o = document.createElement('option'); o.value = existing.model; o.textContent = existing.model; o.selected = true; modelSel.appendChild(o); }
+    const parentHarness = actor.adapter || 'claude';
+    _saPopulateModelSel(modelSel, existing?.harness || parentHarness, actor, existing?.model || '');
     const modelField = saMakeField('model override', modelSel, 'leave on "use tier" unless this worker needs a specific model');
     grid.append(labelField, modelField);
     const tierField = saMakeField('tier', saMakeTierPicker(selectedTier, id => { selectedTier = id; }));
     const spInp = document.createElement('textarea'); spInp.name = 'subagent-system-prompt'; spInp.placeholder = 'You verify claims against the actual source before answering…'; spInp.value = existing?.system_prompt || ''; spInp.style.cssText = 'padding:11px 13px;border-radius:8px;min-height:96px;box-sizing:border-box;resize:vertical;background:var(--h-slip);border:1px solid var(--h-hairline);font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;color:var(--h-ink);outline:none;width:100%';
     const spField = saMakeField('system prompt', spInp, 'context injected on every trigger');
+    // Harness field
+    let selectedHarness = existing?.harness || null;
+    const harnSel = document.createElement('select'); harnSel.name = 'subagent-harness'; harnSel.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;background:var(--h-surface);border:1px solid var(--h-hair-soft);font-family:var(--h-sans);font-size:13px;color:var(--h-ink);outline:none;width:100%;cursor:pointer';
+    const inheritOpt = document.createElement('option'); inheritOpt.value = ''; inheritOpt.textContent = `inherit from parent (${HARNESS_LABELS[parentHarness] || parentHarness})`; harnSel.appendChild(inheritOpt);
+    const availH = actor.harnesses_available || [parentHarness];
+    availH.forEach(h => { const o = document.createElement('option'); o.value = h; o.textContent = HARNESS_LABELS[h] || h; if (h === selectedHarness) o.selected = true; harnSel.appendChild(o); });
+    if (!selectedHarness) inheritOpt.selected = true;
+    harnSel.addEventListener('change', () => {
+      selectedHarness = harnSel.value || null;
+      _saPopulateModelSel(modelSel, selectedHarness || parentHarness, actor, modelSel.value);
+    });
+    const harnField = saMakeField('harness', harnSel, 'override parent harness for this worker');
     const btns = document.createElement('div'); btns.style.cssText = 'display:flex;align-items:center;gap:10px;padding-top:2px';
     const saveF = document.createElement('button'); saveF.style.cssText = 'background:var(--h-ink);color:var(--h-bg);border:none;padding:8px 20px;border-radius:999px;font-family:var(--h-sans);font-size:13px;cursor:pointer'; saveF.textContent = existing ? 'save' : 'create sub-agent';
     const cancelF = document.createElement('button'); cancelF.style.cssText = 'background:transparent;border:1px solid var(--h-hairline);color:var(--h-ink-mute);font-family:var(--h-sans);font-size:13px;padding:7px 16px;border-radius:999px;cursor:pointer'; cancelF.textContent = 'cancel'; cancelF.addEventListener('click', () => saShowForm(false));
@@ -1542,7 +1834,7 @@ function buildSubAgentsSection(actor) {
       if (!label) { showErr('label required'); labelInp.focus(); return; }
       saveF.disabled = true;
       try {
-        const body = { label, tier: selectedTier, model: modelSel.value || null, system_prompt: spInp.value.trim() || null };
+        const body = { label, tier: selectedTier, model: modelSel.value || null, system_prompt: spInp.value.trim() || null, harness: selectedHarness };
         const r = existing
           ? await fetch(`/api/sub-agents/${existing.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
           : await fetch(`/api/actors/${actor.id}/sub-agents`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -1554,10 +1846,10 @@ function buildSubAgentsSection(actor) {
           else showToast(msg, { error: true });
           saveF.disabled = false; return;
         }
-        saShowForm(false); saLoadList();
+        saShowForm(false); saLoadListWithCache();
       } catch { showToast('Failed to save sub-agent', { error: true }); saveF.disabled = false; }
     });
-    saForm.append(fh, grid, tierField, spField, btns);
+    saForm.append(fh, grid, tierField, spField, harnField, btns);
     setTimeout(() => labelInp.focus(), 0);
     saShowForm(true);
   }
@@ -1589,6 +1881,7 @@ function buildSubAgentsSection(actor) {
       const lbl = document.createElement('span'); lbl.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:14px;color:var(--h-ink)'; lbl.textContent = sa.label;
       line1.append(lbl, saMakeTierChip(sa.tier, dim));
       if (sa.model) { const mp = document.createElement('span'); mp.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--h-ink-faint);padding:2px 7px;border-radius:6px;background:color-mix(in srgb, var(--h-ink) 7%, var(--h-surface))'; mp.textContent = sa.model; line1.appendChild(mp); }
+      if (sa.harness) { const hp = document.createElement('span'); hp.style.cssText = 'font-family:var(--h-sans);font-size:11px;color:var(--h-ink-faint);padding:2px 6px;border-radius:6px;border:1px solid var(--h-hair-soft)'; hp.textContent = HARNESS_LABELS[sa.harness] || sa.harness; line1.appendChild(hp); }
       mid.append(line1); row.appendChild(mid);
       const tog = document.createElement('button'); tog.className = 's-notif-toggle' + (sa.enabled ? ' on' : ''); tog.title = sa.enabled ? 'Enabled — click to disable' : 'Disabled — click to enable'; tog.style.flex = '0 0 auto';
       tog.addEventListener('click', async () => { try { const rr = await fetch(`/api/sub-agents/${sa.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !sa.enabled }) }); if (rr.ok) saLoadListWithCache(); } catch { showToast('Failed to update', { error: true }); } });
@@ -1699,4 +1992,80 @@ function buildAgentMemorySection(actor) {
   })();
 
   return memSection;
+}
+
+function buildAgentSystemPromptSection(actor) {
+  const section = document.createElement('section');
+  section.style.cssText = 'border:1px solid var(--h-hair-soft);border-radius:12px;overflow:hidden';
+
+  const hdr = document.createElement('div');
+  hdr.style.cssText = 'padding:13px 16px;border-bottom:1px solid var(--h-hair-soft);background:color-mix(in srgb, var(--h-bg) 38%, var(--h-surface));display:flex;align-items:baseline;gap:10px';
+  const title = document.createElement('span');
+  title.style.cssText = 'font-family:var(--h-serif);font-size:16px;color:var(--h-ink)';
+  title.textContent = 'System Prompt';
+  const hint = document.createElement('span');
+  hint.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)';
+  hint.textContent = 'identity and instructions injected into every session';
+  hdr.append(title, hint);
+  section.appendChild(hdr);
+
+  const body = document.createElement('div');
+  body.style.cssText = 'padding:14px 18px';
+  const loading = document.createElement('div');
+  loading.style.cssText = 'font-size:12.5px;color:var(--h-ink-faint)';
+  loading.textContent = 'loading…';
+  body.appendChild(loading);
+  section.appendChild(body);
+
+  (async () => {
+    try {
+      const r = await fetch(`/api/actors/${actor.id}/system-prompt`);
+      body.removeChild(loading);
+      let currentValue = '';
+      if (r.ok) { const d = await r.json(); currentValue = d.system_prompt || ''; }
+
+      const ta = document.createElement('textarea');
+      ta.name = 'agent-system-prompt';
+      ta.value = currentValue;
+      ta.placeholder = 'You are a senior backend developer…';
+      ta.maxLength = 65536;
+      ta.style.cssText = 'width:100%;box-sizing:border-box;min-height:140px;resize:vertical;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;padding:10px 12px;border:1px solid var(--h-border);border-radius:8px;background:var(--h-surface);color:var(--h-ink);outline:none';
+
+      const footer = document.createElement('div');
+      footer.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-top:8px';
+      const counter = document.createElement('span');
+      counter.style.cssText = 'font-size:11.5px;color:var(--h-ink-faint);font-variant-numeric:tabular-nums';
+      const updateCounter = () => {
+        const used = ta.value.length; const pct = used / 65536;
+        counter.textContent = `${used} / 65536`;
+        counter.style.color = pct > .9 ? 'oklch(55% .18 27)' : pct > .75 ? 'oklch(60% .15 80)' : 'var(--h-ink-faint)';
+      };
+      updateCounter(); ta.addEventListener('input', updateCounter);
+
+      const saveBtn = document.createElement('button');
+      saveBtn.style.cssText = 'background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12px;padding:4px 14px;cursor:pointer';
+      saveBtn.textContent = 'save';
+      saveBtn.onclick = async () => {
+        saveBtn.disabled = true;
+        try {
+          const res = await fetch(`/api/actors/${actor.id}/system-prompt`, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ system_prompt: ta.value.trim() || null }),
+          });
+          if (res.ok) showToast('System prompt saved');
+          else { const e = await res.json().catch(() => ({})); showToast(e.error || 'Failed to save', { error: true }); }
+        } catch { showToast('Failed to save', { error: true }); }
+        saveBtn.disabled = false;
+      };
+
+      footer.append(counter, saveBtn);
+      body.append(ta, footer);
+    } catch {
+      body.innerHTML = '';
+      const err = document.createElement('div'); err.style.cssText = 'font-size:12.5px;color:var(--h-ink-faint)'; err.textContent = 'failed to load system prompt';
+      body.appendChild(err);
+    }
+  })();
+
+  return section;
 }

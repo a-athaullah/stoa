@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS actors (
   avatar_url TEXT DEFAULT NULL,
   secret TEXT DEFAULT NULL,
   available_models TEXT DEFAULT NULL,
+  system_prompt TEXT DEFAULT NULL,
+  default_model TEXT DEFAULT NULL,
   created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -66,6 +68,7 @@ CREATE TABLE IF NOT EXISTS messages (
   automation_id INTEGER DEFAULT NULL,
   automation_name TEXT DEFAULT NULL,
   automation_provider TEXT DEFAULT NULL,
+  model_source TEXT DEFAULT NULL,
   FOREIGN KEY (room_id) REFERENCES rooms(id),
   FOREIGN KEY (participant_id) REFERENCES room_participants(id),
   FOREIGN KEY (thread_id) REFERENCES messages(id),
@@ -88,6 +91,7 @@ CREATE TABLE IF NOT EXISTS ai_sessions (
   pinned INTEGER NOT NULL DEFAULT 0,
   context_tokens_used INTEGER DEFAULT 0,
   thread_id INTEGER NOT NULL DEFAULT 0,
+  harness TEXT NOT NULL DEFAULT 'claude',
   FOREIGN KEY (participant_id) REFERENCES room_participants(id),
   FOREIGN KEY (room_id) REFERENCES rooms(id)
 );
@@ -359,3 +363,19 @@ CREATE TABLE IF NOT EXISTS email_message_ids (
 
 CREATE INDEX IF NOT EXISTS idx_email_message_ids_thread ON email_message_ids(thread_id);
 CREATE INDEX IF NOT EXISTS idx_email_message_ids_conn ON email_message_ids(connection_id);
+
+CREATE TABLE IF NOT EXISTS harnesses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  description TEXT
+);
+
+CREATE TABLE IF NOT EXISTS harness_models (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  harness_id INTEGER NOT NULL REFERENCES harnesses(id),
+  model_id TEXT NOT NULL,
+  display_name TEXT,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  UNIQUE(harness_id, model_id)
+);

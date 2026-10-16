@@ -55,7 +55,7 @@ function appendToken(msgId, token) {
 }
 
 // ── Finalize streaming message ─────────────────────────────────────────────
-function finalizeMessage(msgId, content, fileUrl, fileName, attachments, aiModel, resultMeta) {
+function finalizeMessage(msgId, content, fileUrl, fileName, attachments, aiModel, resultMeta, modelSource) {
   const row = document.getElementById('msg-' + msgId);
   if (!row) return;
 
@@ -81,10 +81,7 @@ function finalizeMessage(msgId, content, fileUrl, fileName, attachments, aiModel
     textDiv.innerHTML = highlightMentions(renderMarkdown(content || ''));
     bubble.appendChild(textDiv);
     if (aiModel) {
-      const modelTag = document.createElement('div');
-      modelTag.className = 'h-msg-model';
-      modelTag.textContent = aiModel;
-      bubble.appendChild(modelTag);
+      bubble.appendChild(buildModelTag(aiModel, modelSource));
     }
     const resultChip = buildResultChip(resultMeta);
     if (resultChip) bubble.appendChild(resultChip);
