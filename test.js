@@ -7021,11 +7021,20 @@ async function run() {
     assert.ok(text.includes('STOA_ACTOR_ID'));
   });
 
+  // Snapshot the current value so the PUT tests below can restore it — the
+  // test DB is a copy of a real DB and may already hold a custom prompt.
+  const baseSysPromptBefore = (await req('GET', '/api/settings/base-system-prompt')).body?.content;
+  let baseSysPromptDefault = null;
+
   await test('GET /api/settings/base-system-prompt — returns default', async () => {
+    // Empty value is falsy → server falls back to DEFAULT_BASE_SYSTEM_PROMPT.
+    const reset = await req('PUT', '/api/settings/base-system-prompt', { content: '' });
+    assert.strictEqual(reset.status, 200);
     const r = await req('GET', '/api/settings/base-system-prompt');
     assert.strictEqual(r.status, 200);
     assert.ok(r.body.content.includes('Stoa platform'));
     assert.ok(r.body.content.includes('api/docs/stoa-api.md'));
+    baseSysPromptDefault = r.body.content;
   });
 
   await test('PUT /api/settings/base-system-prompt — updates', async () => {
@@ -7040,6 +7049,16 @@ async function run() {
     const r = await req('PUT', '/api/settings/base-system-prompt', { content: 'x'.repeat(65537) });
     assert.strictEqual(r.status, 400);
     assert.ok(r.body.error.includes('64KB'));
+  });
+
+  await test('PUT /api/settings/base-system-prompt — restore original value', async () => {
+    const r = await req('PUT', '/api/settings/base-system-prompt', {
+      // Unset (served the default) → restore as '' so it stays unset, not a frozen copy of the default.
+      content: (baseSysPromptBefore == null || baseSysPromptBefore === baseSysPromptDefault) ? '' : baseSysPromptBefore,
+    });
+    assert.strictEqual(r.status, 200);
+    const r2 = await req('GET', '/api/settings/base-system-prompt');
+    assert.strictEqual(r2.body.content, baseSysPromptBefore, 'GET returns the pre-test value');
   });
 
   await test('GET /api/settings/base-system-prompt — unauthenticated → 401', async () => {
