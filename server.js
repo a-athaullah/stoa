@@ -1595,6 +1595,9 @@ const server = http.createServer(async (req, res) => {
     db.prepare('DELETE FROM invite_suggestions WHERE room_id=?').run(roomId);
     db.prepare('DELETE FROM messages WHERE room_id=?').run(roomId);
     db.prepare('DELETE FROM room_participants WHERE room_id=?').run(roomId);
+    db.prepare("DELETE FROM settings WHERE scope='room' AND scope_id=?").run(roomId);
+    db.prepare('DELETE FROM room_memory WHERE room_id=?').run(roomId);
+    db.prepare('DELETE FROM memory_pending_writes WHERE room_id=?').run(roomId);
     db.prepare('DELETE FROM rooms WHERE id=?').run(roomId);
     broadcastGlobal({ type: 'room_deleted', room_id: roomId });
     res.writeHead(204); return res.end();
