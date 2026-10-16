@@ -205,6 +205,7 @@ class ClaudeSession extends EventEmitter {
     this._accContent = '';
     this._pendingTool = null;
     this.busy = false;
+    this._restarting = true;
     resolve?.({ content, sessionId: null, aborted: true });
     this.proc?.kill('SIGTERM');
   }

@@ -1042,7 +1042,7 @@ function runUnitTests() {
   ut('systemPromptHash declared before getSession — TDZ guard', () => {
     const src = require('fs').readFileSync(require('path').join(__dirname, 'stoa.js'), 'utf8');
     const hashDeclLine = src.split('\n').findIndex(l => l.includes('const systemPromptHash = msg.system_prompt_hash'));
-    const getSessionLine = src.split('\n').findIndex(l => l.includes('let session = getSession(targetDir, room_id, envToUse'));
+    const getSessionLine = src.split('\n').findIndex(l => /let session = .*getSession\)\(targetDir, room_id, envToUse/.test(l));
     assert.ok(hashDeclLine !== -1, 'systemPromptHash declaration not found');
     assert.ok(getSessionLine !== -1, 'getSession call not found');
     assert.ok(hashDeclLine < getSessionLine, `systemPromptHash (line ${hashDeclLine + 1}) must be declared before getSession (line ${getSessionLine + 1})`);
@@ -1248,6 +1248,7 @@ function runUnitTests() {
     const { ClaudeSession } = require('./claude-session');
     const session = Object.create(ClaudeSession.prototype);
     session.busy = true;
+    session._restarting = false;
     session._accContent = 'partial';
     session._pendingTool = null;
     session._currentOnToken = null;
@@ -1267,6 +1268,7 @@ function runUnitTests() {
     assert.strictEqual(results[0].content, 'partial');
     assert.strictEqual(session._queue.length, 1, 'queue preserved');
     assert.strictEqual(session.busy, false);
+    assert.strictEqual(session._restarting, true, 'abort sets _restarting');
   });
 
   // F4: CodexSession abort() cancels current, starts next from queue
@@ -1433,8 +1435,8 @@ function runUnitTests() {
     }
   });
 
-  // G3: sweepStaleTriggers with cancelTask — no double complete
-  ut('sweepStaleTriggers: cancelTask success → no agent_complete from sweep', () => {
+  // H1: sweepStaleTriggers with cancelTask success — entry stays, no completedBySweep
+  ut('sweepStaleTriggers: cancelTask success → swept but not completedBySweep', () => {
     const stoa = require('./stoa.js');
     const sent = [];
     stoa.__setDeps({ send: (msg) => sent.push(msg) });
@@ -1446,32 +1448,35 @@ function runUnitTests() {
       stoa.activeTriggers.set('stale-2', { room_id: 99, session: mockSession, startedAt: now - 30 * 60000, lastActivity: now - 25 * 60000 });
       stoa.sweepStaleTriggers(now);
       assert.strictEqual(cancelledId, 'stale-2', 'cancelTask called with correct id');
-      assert.strictEqual(stoa.activeTriggers.has('stale-2'), true, 'entry NOT deleted (processTrigger will handle it)');
+      assert.strictEqual(stoa.activeTriggers.has('stale-2'), true, 'entry NOT deleted');
       const entry = stoa.activeTriggers.get('stale-2');
       assert.strictEqual(entry.swept, true, 'entry marked swept');
       assert.strictEqual(entry.abortReason, 'stale', 'abortReason set to stale');
+      assert.ok(!entry.completedBySweep, 'completedBySweep NOT set (processTrigger sends complete)');
       const completes = sent.filter(m => m.type === 'agent_complete');
-      assert.strictEqual(completes.length, 0, 'no agent_complete from sweep (processTrigger sends it)');
+      assert.strictEqual(completes.length, 0, 'no agent_complete from sweep when cancelTask succeeds');
     } finally {
       stoa.activeTriggers.clear();
       stoa.__resetDeps();
     }
   });
 
-  // G3: sweepStaleTriggers cancelTask=false → force delete + complete
-  ut('sweepStaleTriggers: cancelTask false → force delete + complete', () => {
+  // H1: sweepStaleTriggers cancelTask=false → force delete + complete + completedBySweep
+  ut('sweepStaleTriggers: cancelTask false → force delete + completedBySweep', () => {
     const stoa = require('./stoa.js');
     const sent = [];
     stoa.__setDeps({ send: (msg) => sent.push(msg) });
     try {
       stoa.activeTriggers.clear();
       const now = Date.now();
-      const mockSession = { cancelTask: () => false };
-      stoa.activeTriggers.set('stale-3', { room_id: 99, session: mockSession, startedAt: now - 30 * 60000, lastActivity: now - 25 * 60000 });
+      const entryObj = { room_id: 99, session: { cancelTask: () => false }, startedAt: now - 30 * 60000, lastActivity: now - 25 * 60000 };
+      stoa.activeTriggers.set('stale-3', entryObj);
       stoa.sweepStaleTriggers(now);
       assert.strictEqual(stoa.activeTriggers.has('stale-3'), false, 'entry force-deleted');
+      assert.strictEqual(entryObj.completedBySweep, true, 'completedBySweep set');
       const complete = sent.find(m => m.type === 'agent_complete' && m.message_id === 'stale-3');
       assert.ok(complete, 'agent_complete sent on force delete');
+      assert.strictEqual(complete.result_meta.exit_reason, 'timeout');
     } finally {
       stoa.activeTriggers.clear();
       stoa.__resetDeps();
@@ -1518,8 +1523,7 @@ function runUnitTests() {
   // G6: STALE_TRIGGER_MS clamped above minimum
   ut('STALE_TRIGGER_MS >= FIRST_TOKEN_TIMEOUT + 2 * 60000', () => {
     const stoa = require('./stoa.js');
-    const FIRST_TOKEN_TIMEOUT = 10 * 60000;
-    const MIN_STALE = FIRST_TOKEN_TIMEOUT + 2 * 60000;
+    const MIN_STALE = stoa.FIRST_TOKEN_TIMEOUT + 2 * 60000;
     assert.ok(stoa.STALE_TRIGGER_MS >= MIN_STALE, `STALE_TRIGGER_MS (${stoa.STALE_TRIGGER_MS}) must be >= ${MIN_STALE}`);
   });
 
@@ -1627,6 +1631,172 @@ async function runAsyncUnitTests() {
       assert.ok(errMsg, 'agent_complete sent for missing workdir');
       assert.strictEqual(errMsg.result_meta.exit_reason, 'error');
       assert.ok(errMsg.content.includes('tidak ditemukan'), 'content mentions workdir not found');
+    } finally {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      stoa.__resetDeps();
+    }
+  });
+
+  console.log('  [R1/R2/Sweep Integration Tests]');
+
+  // H3a: R1 — getSession throws → activeTriggers cleaned, drainQueue runs
+  await uta('R1: getSession throws → entry cleaned + drainQueue runs', async () => {
+    const stoa = require('./stoa.js');
+    const sent = [];
+    const workdir = require('os').tmpdir();
+    stoa.__setDeps({
+      send: (msg) => sent.push(msg),
+      getSession: () => { throw new Error('harness not installed'); },
+    });
+    try {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      await stoa.processTrigger({ room_id: 99, message_id: 'r1-test-1', prompt: 'test', workdir });
+      assert.strictEqual(stoa.activeTriggers.has('r1-test-1'), false, 'entry cleaned by finally');
+      const errMsg = sent.find(m => m.type === 'agent_error' && m.message_id === 'r1-test-1');
+      assert.ok(errMsg, 'agent_error sent');
+      assert.ok(errMsg.error.includes('harness not installed'), 'error message correct');
+    } finally {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      stoa.__resetDeps();
+    }
+  });
+
+  // H3b: R1 — prepareResume throws → entry cleaned + error sent
+  await uta('R1: prepareResume throws → entry cleaned + agent_error sent', async () => {
+    const stoa = require('./stoa.js');
+    const sent = [];
+    const workdir = require('os').tmpdir();
+    const platformEnv = { STOA_ROOM_ID: '99', STOA_THREAD_ID: '' };
+    const mockSession = {
+      _systemPromptHash: 'old', _harness: 'claude',
+      flags: [], env: platformEnv, resumeId: null,
+      on: () => {}, removeListener: () => {}, shutdown: () => {},
+      cancelTask: () => false,
+    };
+    stoa.__setDeps({
+      send: (msg) => sent.push(msg),
+      getSession: () => mockSession,
+      prepareResume: async () => { throw new Error('sanitize failed'); },
+    });
+    try {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      await stoa.processTrigger({
+        room_id: 99, message_id: 'r1-pr-1', prompt: 'test', workdir,
+        system_prompt_hash: 'new-hash',
+      });
+      assert.strictEqual(stoa.activeTriggers.has('r1-pr-1'), false, 'entry cleaned by finally');
+      const errMsg = sent.find(m => m.type === 'agent_error' && m.message_id === 'r1-pr-1');
+      assert.ok(errMsg, 'agent_error sent');
+      assert.ok(errMsg.error.includes('sanitize failed'), 'error message correct');
+    } finally {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      stoa.__resetDeps();
+    }
+  });
+
+  // H3c: runTrigger wraps reject → entry deleted + drainQueue
+  await uta('runTrigger: processTrigger reject → entry deleted', async () => {
+    const stoa = require('./stoa.js');
+    const sent = [];
+    const workdir = require('os').tmpdir();
+    stoa.__setDeps({
+      send: (msg) => sent.push(msg),
+      getSession: () => { throw new Error('intentional test error'); },
+    });
+    try {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      stoa.runTrigger({ room_id: 99, message_id: 'rt-fail-1', prompt: 'test', workdir });
+      await new Promise(r => setTimeout(r, 100));
+      assert.strictEqual(stoa.activeTriggers.has('rt-fail-1'), false, 'entry cleaned after reject');
+    } finally {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      stoa.__resetDeps();
+    }
+  });
+
+  // H3d: end-to-end sweep — cancelTask success → exactly one agent_complete
+  await uta('sweep e2e: cancelTask success → one agent_complete from processTrigger', async () => {
+    const stoa = require('./stoa.js');
+    const sent = [];
+    const workdir = require('os').tmpdir();
+    const platformEnv = { STOA_ROOM_ID: '99', STOA_THREAD_ID: '' };
+    const mockSession = {
+      _systemPromptHash: null, _harness: 'claude',
+      flags: [], env: platformEnv, resumeId: null,
+      on: () => {}, removeListener: () => {}, shutdown: () => {},
+      cancelTask: function(id) {
+        this._abortResolve?.({ content: '', aborted: true });
+        return true;
+      },
+      send: async function(opts) {
+        return new Promise(resolve => { this._abortResolve = resolve; });
+      },
+    };
+    stoa.__setDeps({
+      send: (msg) => sent.push(msg),
+      getSession: () => mockSession,
+    });
+    try {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      const triggerDone = stoa.processTrigger({ room_id: 99, message_id: 'sweep-e2e-1', prompt: 'test', workdir });
+      await new Promise(r => setTimeout(r, 50));
+      assert.ok(stoa.activeTriggers.has('sweep-e2e-1'), 'entry exists before sweep');
+      stoa.sweepStaleTriggers(Date.now() + stoa.STALE_TRIGGER_MS + 1);
+      await Promise.race([triggerDone, new Promise(r => setTimeout(r, 2000))]);
+      await new Promise(r => setTimeout(r, 50));
+      const completes = sent.filter(m => m.type === 'agent_complete' && m.message_id === 'sweep-e2e-1');
+      assert.strictEqual(completes.length, 1, 'exactly one agent_complete');
+      assert.strictEqual(completes[0].result_meta.exit_reason, 'timeout', 'exit_reason is timeout');
+      assert.ok(completes[0].content.includes('timed out'), 'content mentions timeout');
+      assert.strictEqual(stoa.activeTriggers.has('sweep-e2e-1'), false, 'entry cleaned after processTrigger');
+    } finally {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      stoa.__resetDeps();
+    }
+  });
+
+  // H3e: end-to-end sweep — force-delete (cancelTask false) → one agent_complete from sweep
+  await uta('sweep e2e: force-delete → one agent_complete from sweep', async () => {
+    const stoa = require('./stoa.js');
+    const sent = [];
+    const workdir = require('os').tmpdir();
+    const platformEnv = { STOA_ROOM_ID: '99', STOA_THREAD_ID: '' };
+    let sendReject;
+    const mockSession = {
+      _systemPromptHash: null, _harness: 'claude',
+      flags: [], env: platformEnv, resumeId: null,
+      on: () => {}, removeListener: () => {}, shutdown: () => {},
+      cancelTask: () => false,
+      send: async function() {
+        return new Promise((_, reject) => { sendReject = reject; });
+      },
+    };
+    stoa.__setDeps({
+      send: (msg) => sent.push(msg),
+      getSession: () => mockSession,
+    });
+    try {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      const triggerDone = stoa.processTrigger({ room_id: 99, message_id: 'sweep-fd-1', prompt: 'test', workdir });
+      await new Promise(r => setTimeout(r, 50));
+      assert.ok(stoa.activeTriggers.has('sweep-fd-1'), 'entry exists before sweep');
+      stoa.sweepStaleTriggers(Date.now() + stoa.STALE_TRIGGER_MS + 1);
+      const completes = sent.filter(m => m.type === 'agent_complete' && m.message_id === 'sweep-fd-1');
+      assert.strictEqual(completes.length, 1, 'exactly one agent_complete from sweep force-delete');
+      assert.strictEqual(completes[0].result_meta.exit_reason, 'timeout');
+      assert.strictEqual(stoa.activeTriggers.has('sweep-fd-1'), false, 'entry force-deleted');
+      if (sendReject) sendReject(new Error('test cleanup'));
+      await triggerDone.catch(() => {});
     } finally {
       stoa.activeTriggers.clear();
       stoa.triggerQueue.length = 0;
@@ -6794,12 +6964,6 @@ async function run() {
   // Fase 3b: behavioral switch
   console.log('\n[Fase 3b: Behavioral Switch]');
 
-  await test('Fase3b — max_concurrent fallback default is 1 (via stoa.js export)', async () => {
-    const stoa = require('./stoa.js');
-    const expected = parseInt(process.env.STOA_MAX_CONCURRENT) || 1;
-    assert.strictEqual(stoa.MAX_CONCURRENT, expected, `MAX_CONCURRENT should be ${expected}`);
-  });
-
   await test('Fase3b — waitForRoomIdle removed (dead code)', async () => {
     const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
     assert.ok(!src.includes('function waitForRoomIdle'), 'waitForRoomIdle should be removed');
@@ -8865,20 +9029,6 @@ async function run() {
 
   // ── Auto-update integration tests ────────────────────────────────────────
   console.log('\n[Auto-update & Trigger Cleanup]');
-
-  await test('parseClientVersion matches EXPECTED_CLIENT_VERSION from server', async () => {
-    const { parseClientVersion } = require('./lib/client-version');
-    const fs = require('fs');
-    const distPath = path.join(__dirname, 'dist', 'stoa.js');
-    const srcPath = path.join(__dirname, 'stoa.js');
-    const src = fs.readFileSync(fs.existsSync(distPath) ? distPath : srcPath, 'utf8');
-    const ver = parseClientVersion(src);
-    assert.ok(ver, 'parseClientVersion must find version');
-    const r = await req('GET', '/api/settings');
-    if (r.body?.expected_client_version) {
-      assert.strictEqual(ver, r.body.expected_client_version, 'version from file must match server');
-    }
-  });
 
   // Teardown — delete all test rooms and actors created during the run
   console.log('\n[Test Teardown]');

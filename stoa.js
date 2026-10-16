@@ -268,6 +268,7 @@ var reauthProc = null;
 var consecutiveTriggerErrors = 0;
 var MAX_TRIGGER_ERRORS = 3;
 var TRIGGER_TIMEOUT = 5 * 6e4;
+var FIRST_TOKEN_TIMEOUT = 10 * 6e4;
 var MAX_CONCURRENT = parseInt(process.env.STOA_MAX_CONCURRENT || "1");
 var UPDATE_INTERVAL = 12e4;
 var UPDATE_FILES = ["stoa.js", "claude-session.js", "codex-session.js"];
@@ -1259,7 +1260,8 @@ async function processTrigger(msg) {
   const targetDir = path.resolve(workdir);
   const threadId = msg.thread_id || 0;
   const sessionKey = buildSessionKey(targetDir, room_id, threadId, subAgent?.id);
-  activeTriggers.set(message_id, { workdir, session: null, sessionKey, room_id, startedAt: Date.now(), lastActivity: Date.now() });
+  const entry = { workdir, session: null, sessionKey, room_id, startedAt: Date.now(), lastActivity: Date.now() };
+  activeTriggers.set(message_id, entry);
   let sessionRef = null;
   let statusHandler = null;
   let hangWatchdog = null;
@@ -1272,8 +1274,7 @@ async function processTrigger(msg) {
   let lastActivity = Date.now();
   const updateActivity = () => {
     lastActivity = Date.now();
-    const entry = activeTriggers.get(message_id);
-    if (entry) entry.lastActivity = Date.now();
+    entry.lastActivity = Date.now();
   };
   try {
   const baseUrl = STOA_URL.replace("ws://", "http://").replace("wss://", "https://");
@@ -1429,6 +1430,7 @@ ${allNotes}`;
       } catch {
       }
     }
+    if (entry.swept) throw new Error('trigger swept by stale cleanup');
     const triggerHarness = msg.harness || "claude";
     const apiKeys = msg.api_keys || (msg.api_key ? [msg.api_key] : []);
     const platformEnv = { STOA_ROOM_ID: String(room_id), STOA_THREAD_ID: threadId ? String(threadId) : "" };
@@ -1439,7 +1441,7 @@ ${allNotes}`;
     const envToUse = platformEnv;
     const systemPromptHash = msg.system_prompt_hash || null;
     const resumeBase = buildResumeArgs(msg, { targetDir, sessionKey, harness: triggerHarness });
-    let session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
+    let session = (_getSessionOverride || getSession)(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
     const currentSystemPromptHash = session._systemPromptHash || null;
     const needsSystemPromptChange = systemPromptHash && currentSystemPromptHash !== systemPromptHash;
     const needsResume = rid && session.resumeId !== rid;
@@ -1455,10 +1457,11 @@ ${allNotes}`;
     const needsEnvChange = currentEnv !== newEnv;
     if (needsResume || needsFreshSession || needsModelChange || needsEnvChange || needsSystemPromptChange || needsHarnessChange) {
       session.shutdown();
-      session = await prepareResume({ ...resumeBase, rid: needsHarnessChange ? null : rid, targetModel, env: envToUse });
+      session = await (_prepareResumeOverride || prepareResume)({ ...resumeBase, rid: needsHarnessChange ? null : rid, targetModel, env: envToUse });
       console.log(`[stoa] Session restarted: harness=${triggerHarness} workdir=${targetDir} room=${room_id} thread=${threadId}${rid ? " resume=" + rid.slice(0, 8) + "..." : " (fresh)"}${targetModel ? " model=" + targetModel : ""}${needsSystemPromptChange ? " system_prompt_changed" : ""}${needsHarnessChange ? " harness_changed" : ""}${msg.base_url ? " base_url=" + msg.base_url : ""}${msg.tools_supported === false ? " tools=disabled" : ""}`);
     }
-    activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey, room_id, startedAt: Date.now(), lastActivity: Date.now() });
+    if (entry.swept) throw new Error('trigger swept by stale cleanup');
+    Object.assign(entry, { workdir: targetDir, session, lastActivity: Date.now() });
     let fullContent = "";
     let abortReason = null;
     let thinkingSigRetried = false;
@@ -1468,7 +1471,6 @@ ${allNotes}`;
     };
     sessionRef = session;
     session.on("status", statusHandler);
-    const FIRST_TOKEN_TIMEOUT = 10 * 6e4;
     const DEBUG_ACTIVE_GRACE_MS = 6e4;
     const MAX_DEBUG_DEFERS = 3;
     let debugDeferCount = 0;
@@ -1517,12 +1519,10 @@ ${allNotes}`;
       }
     };
     const _checkSwept = () => {
-      const e = activeTriggers.get(message_id);
-      if (e?.swept) throw new Error('trigger swept by stale cleanup');
+      if (entry.swept) throw new Error('trigger swept by stale cleanup');
     };
     const _updateEntry = (fields) => {
-      const e = activeTriggers.get(message_id);
-      if (e) Object.assign(e, fields);
+      Object.assign(entry, fields);
     };
     let result;
     try {
@@ -1541,7 +1541,7 @@ ${allNotes}`;
           send({ type: "agent_stream_reset", room_id, message_id });
           fullContent = "";
           session.shutdown();
-          session = await prepareResume({ ...resumeBase, rid, targetModel, env: envToUse });
+          session = await (_prepareResumeOverride || prepareResume)({ ...resumeBase, rid, targetModel, env: envToUse });
           _updateEntry({ session, lastActivity: Date.now() });
           sessionRef = session;
           session.on("status", statusHandler);
@@ -1563,7 +1563,7 @@ ${allNotes}`;
           console.log(`[stoa] API key #1 failed (${retryErr.message}), rotating to key #${ki + 1}...`);
           const rotatedEnv = { ...platformEnv, ANTHROPIC_AUTH_TOKEN: apiKeys[ki] };
           session.shutdown();
-          session = await prepareResume({ ...resumeBase, rid, targetModel, env: rotatedEnv });
+          session = await (_prepareResumeOverride || prepareResume)({ ...resumeBase, rid, targetModel, env: rotatedEnv });
           _updateEntry({ session, lastActivity: Date.now() });
           sessionRef = session;
           session.on("status", statusHandler);
@@ -1585,7 +1585,7 @@ ${allNotes}`;
         sessionPool.delete(sessionKey);
         await new Promise((r) => setTimeout(r, 2e3));
         fullContent = "";
-        session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
+        session = (_getSessionOverride || getSession)(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
         _updateEntry({ session, lastActivity: Date.now() });
         if (statusHandler) session.on("status", statusHandler);
         sessionRef = session;
@@ -1596,7 +1596,7 @@ ${allNotes}`;
         console.log(`[stoa] session crashed before output, retrying in 4s...`);
         await new Promise((r) => setTimeout(r, 4e3));
         _checkSwept();
-        session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
+        session = (_getSessionOverride || getSession)(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
         _updateEntry({ session, lastActivity: Date.now() });
         updateActivity();
         result = await session.send(sendOpts);
@@ -1607,7 +1607,7 @@ ${allNotes}`;
         fullContent = "";
         session.shutdown();
         await backupSessionFile(targetDir, rid);
-        session = await prepareResume({ ...resumeBase, rid, targetModel, env: envToUse, aggressive: true });
+        session = await (_prepareResumeOverride || prepareResume)({ ...resumeBase, rid, targetModel, env: envToUse, aggressive: true });
         _updateEntry({ session, lastActivity: Date.now() });
         sessionRef = session;
         session.on("status", statusHandler);
@@ -1629,7 +1629,7 @@ ${allNotes}`;
       sessionPool.delete(sessionKey);
       await new Promise((r) => setTimeout(r, 2e3));
       fullContent = "";
-      session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
+      session = (_getSessionOverride || getSession)(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
       _updateEntry({ session, lastActivity: Date.now() });
       if (statusHandler) session.on("status", statusHandler);
       sessionRef = session;
@@ -1647,7 +1647,7 @@ ${allNotes}`;
       fullContent = "";
       session.shutdown();
       await backupSessionFile(targetDir, rid);
-      session = await prepareResume({ ...resumeBase, rid, targetModel, env: envToUse, aggressive: true });
+      session = await (_prepareResumeOverride || prepareResume)({ ...resumeBase, rid, targetModel, env: envToUse, aggressive: true });
       _updateEntry({ session, lastActivity: Date.now() });
       if (statusHandler) session.on("status", statusHandler);
       sessionRef = session;
@@ -1661,9 +1661,8 @@ ${allNotes}`;
     clearInterval(hangWatchdog);
     consecutiveTriggerErrors = 0;
     if (aborted) {
-      const entry = activeTriggers.get(message_id);
-      const effectiveReason = abortReason || entry?.abortReason || null;
-      if (entry?.swept) {
+      const effectiveReason = abortReason || entry.abortReason || null;
+      if (entry.completedBySweep) {
         console.log(`[stoa] Swept message ${message_id}, skipping agent_complete (sweep already sent it)`);
       } else {
         const partial = stripLeadingThinkingMarker(fullContent) || content || "";
@@ -1724,9 +1723,14 @@ ${allNotes}`;
       }
     }
   } catch (err) {
-    const entry = activeTriggers.get(message_id);
-    if (entry?.swept) {
+    if (entry.completedBySweep) {
       console.log(`[stoa] trigger ${message_id} swept during processing, suppressing error`);
+    } else if (entry.swept) {
+      const isTimeout = entry.abortReason === "timeout" || entry.abortReason === "stale";
+      const fallback = isTimeout ? "(timed out — no activity)" : "(stopped by user)";
+      const result_meta = { exit_reason: isTimeout ? "timeout" : "stopped" };
+      send({ type: "agent_complete", room_id, message_id, content: fallback, result_meta });
+      console.log(`[stoa] trigger ${message_id} swept, sending complete from catch`);
     } else {
       consecutiveTriggerErrors++;
       console.error(`[stoa] trigger error (${consecutiveTriggerErrors}/${MAX_TRIGGER_ERRORS}): ${err.message}`);
@@ -1836,11 +1840,11 @@ function drainQueue() {
   }
   if (activeTriggers.size === 0 && triggerQueue.length === 0 && pendingRestart) doRestart();
 }
-// STALE_TRIGGER_MS must exceed maximum watchdog tolerance:
-// FIRST_TOKEN_TIMEOUT (10m) + MAX_DEBUG_DEFERS(3) × interval(10s) + grace(60s) ≈ 11m.
-// Default 20m gives ~9m buffer. Clamped to ≥ FIRST_TOKEN_TIMEOUT + 2×sweep_interval.
+// STALE_TRIGGER_MS must exceed maximum idle the watchdog can tolerate:
+// worst case ≈ FIRST_TOKEN_TIMEOUT (10m) + one watchdog interval (10s) ≈ 10m10s
+// (defer resets lastActivity, so defers do NOT extend idle from sweep's perspective).
+// Default 20m gives ~10m buffer. Clamped to ≥ FIRST_TOKEN_TIMEOUT + 2×sweep_interval.
 var STALE_TRIGGER_MS = (() => {
-  const FIRST_TOKEN_TIMEOUT = 10 * 60000;
   const MIN_STALE = FIRST_TOKEN_TIMEOUT + 2 * 60000;
   const raw = parseInt(process.env.STALE_TRIGGER_MS || String(20 * 60 * 1000));
   return Math.max(raw, MIN_STALE);
@@ -1855,11 +1859,13 @@ function sweepStaleTriggers(now) {
       if (entry.session?.cancelTask) {
         const cancelled = entry.session.cancelTask(msgId);
         if (!cancelled) {
+          entry.completedBySweep = true;
           activeTriggers.delete(msgId);
           send({ type: "agent_complete", room_id: entry.room_id, message_id: msgId, content: "(timed out — no activity)", result_meta: { exit_reason: "timeout" } });
           forceCleaned = true;
         }
       } else {
+        entry.completedBySweep = true;
         activeTriggers.delete(msgId);
         send({ type: "agent_complete", room_id: entry.room_id, message_id: msgId, content: "(timed out — no activity)", result_meta: { exit_reason: "timeout" } });
         forceCleaned = true;
@@ -2158,6 +2164,8 @@ function printHeader() {
   out(C.gray + "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n  STOA  \u2014  Room #" + ROOM_ID + "\n  /exit untuk keluar\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501" + C.reset);
 }
 var _sendOverride = null;
+var _getSessionOverride = null;
+var _prepareResumeOverride = null;
 function send(data) {
   if (_sendOverride) return _sendOverride(data);
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data));
@@ -2197,9 +2205,14 @@ if (ACTOR_TYPE === "ai") {
 function __setDeps(overrides) {
   if (overrides.send) _sendOverride = overrides.send;
   if (overrides.FETCH_TIMEOUT_MS != null) FETCH_TIMEOUT_MS = overrides.FETCH_TIMEOUT_MS;
+  if (overrides.getSession) _getSessionOverride = overrides.getSession;
+  if (overrides.prepareResume) _prepareResumeOverride = overrides.prepareResume;
 }
 function __resetDeps() {
   _sendOverride = null;
+  _getSessionOverride = null;
+  _prepareResumeOverride = null;
   FETCH_TIMEOUT_MS = 60000;
+  consecutiveTriggerErrors = 0;
 }
-module.exports = { fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, __setDeps, __resetDeps };
+module.exports = { fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, FIRST_TOKEN_TIMEOUT, __setDeps, __resetDeps };
