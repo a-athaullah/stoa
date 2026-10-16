@@ -2327,6 +2327,67 @@ async function run() {
     for (let i = 0; i < toPinCount; i++) { await req('DELETE', `/api/rooms/${testRoomIds[i]}/pin`); }
   });
 
+  // Room delete cascades to settings, room_memory, memory_pending_writes
+  console.log('\n[Room Delete Cascade]');
+  {
+    await test('DELETE /api/rooms/:id — cascades to settings + room_memory + memory_pending_writes', async () => {
+      const db = require('./db');
+      // Create a room via DB (no online agent needed for delete test)
+      const humanId = db.prepare("SELECT id FROM actors WHERE type='human' LIMIT 1").get()?.id || 1;
+      const ins = db.prepare("INSERT INTO rooms (title, created_by) VALUES ('__cascade-test__', ?)").run(humanId);
+      const cascadeRoomId = ins.lastInsertRowid;
+      // Insert room-scoped settings
+      db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('room', ?, 'tool_progress', 'verbose')").run(cascadeRoomId);
+      db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('room', ?, 'live_status', 'full')").run(cascadeRoomId);
+      assert.strictEqual(db.prepare("SELECT COUNT(*) as c FROM settings WHERE scope='room' AND scope_id=?").get(cascadeRoomId).c, 2, 'settings inserted');
+      // Insert room_memory
+      db.prepare("INSERT INTO room_memory (room_id, content) VALUES (?, 'test memory')").run(cascadeRoomId);
+      assert.ok(db.prepare('SELECT 1 FROM room_memory WHERE room_id=?').get(cascadeRoomId), 'room_memory inserted');
+      // Insert memory_pending_writes
+      db.prepare("INSERT INTO memory_pending_writes (type, room_id, proposed_content) VALUES ('room', ?, 'pending content')").run(cascadeRoomId);
+      assert.ok(db.prepare('SELECT 1 FROM memory_pending_writes WHERE room_id=?').get(cascadeRoomId), 'pending write inserted');
+      // Delete the room via API
+      const dr = await req('DELETE', `/api/rooms/${cascadeRoomId}`);
+      assert.strictEqual(dr.status, 204);
+      // Verify all cascade-deleted
+      assert.strictEqual(db.prepare("SELECT COUNT(*) as c FROM settings WHERE scope='room' AND scope_id=?").get(cascadeRoomId).c, 0, 'room settings deleted');
+      assert.strictEqual(db.prepare('SELECT 1 FROM room_memory WHERE room_id=?').get(cascadeRoomId), undefined, 'room_memory deleted');
+      assert.strictEqual(db.prepare('SELECT 1 FROM memory_pending_writes WHERE room_id=?').get(cascadeRoomId), undefined, 'pending writes deleted');
+    });
+    await test('Room delete does not affect other rooms\' settings or global settings', async () => {
+      const db = require('./db');
+      const humanId = db.prepare("SELECT id FROM actors WHERE type='human' LIMIT 1").get()?.id || 1;
+      // Insert settings on an existing test room
+      db.prepare("INSERT OR REPLACE INTO settings (scope, scope_id, key_name, value) VALUES ('room', ?, 'tool_progress', 'normal')").run(testRoomIds[0]);
+      db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, '__cascade_test_global__', 'default')").run();
+      // Create + populate + delete a DIFFERENT room
+      const ins = db.prepare("INSERT INTO rooms (title, created_by) VALUES ('__cascade-control__', ?)").run(humanId);
+      const controlId = ins.lastInsertRowid;
+      db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('room', ?, 'tool_progress', 'verbose')").run(controlId);
+      await req('DELETE', `/api/rooms/${controlId}`);
+      // Other room's setting untouched
+      const otherSetting = db.prepare("SELECT value FROM settings WHERE scope='room' AND scope_id=? AND key_name='tool_progress'").get(testRoomIds[0]);
+      assert.ok(otherSetting, 'other room setting still exists');
+      assert.strictEqual(otherSetting.value, 'normal');
+      // Global setting untouched
+      assert.ok(db.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='__cascade_test_global__'").get(), 'global setting still exists');
+      // Cleanup
+      db.prepare("DELETE FROM settings WHERE scope='room' AND scope_id=? AND key_name='tool_progress'").run(testRoomIds[0]);
+      db.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='__cascade_test_global__'").run();
+    });
+    await test('Migration 20261016-cleanup-orphan-room-settings applied successfully', async () => {
+      const db = require('./db');
+      const applied = db.prepare("SELECT 1 FROM migrations WHERE filename='20261016-cleanup-orphan-room-settings.sql'").get();
+      assert.ok(applied, 'migration must be recorded in migrations table');
+      const orphanSettings = db.prepare("SELECT COUNT(*) as c FROM settings WHERE scope='room' AND scope_id NOT IN (SELECT id FROM rooms)").get().c;
+      assert.strictEqual(orphanSettings, 0, 'no orphan room settings should remain after migration');
+      const orphanMemory = db.prepare("SELECT COUNT(*) as c FROM room_memory WHERE room_id NOT IN (SELECT id FROM rooms)").get().c;
+      assert.strictEqual(orphanMemory, 0, 'no orphan room_memory should remain after migration');
+      const orphanPending = db.prepare("SELECT COUNT(*) as c FROM memory_pending_writes WHERE room_id IS NOT NULL AND room_id NOT IN (SELECT id FROM rooms)").get().c;
+      assert.strictEqual(orphanPending, 0, 'no orphan memory_pending_writes should remain after migration');
+    });
+  }
+
   // Proactive message — self-contained flow: create actor → room → send → delete → archive → cleanup
   console.log('\n[Proactive Message]');
   {

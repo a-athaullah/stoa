@@ -1578,7 +1578,6 @@ const server = http.createServer(async (req, res) => {
     const roomId = parseInt(roomDeleteMatch[1]);
     const participantIds = db.prepare('SELECT id FROM room_participants WHERE room_id=?').all(roomId).map(r => r.id);
     if (participantIds.length) {
-      const ph = participantIds.map(() => '?').join(',');
       // Notify agents to delete session files before removing from DB
       const sessions = db.prepare(`
         SELECT s.claude_session_id, s.workdir, rp.actor_id
@@ -1591,12 +1590,21 @@ const server = http.createServer(async (req, res) => {
           agentWs.send(JSON.stringify({ type: 'cleanup_session', claude_session_id: sess.claude_session_id, workdir: sess.workdir }));
         }
       }
-      db.prepare(`DELETE FROM ai_sessions WHERE participant_id IN (${ph})`).run(...participantIds);
     }
-    db.prepare('DELETE FROM invite_suggestions WHERE room_id=?').run(roomId);
-    db.prepare('DELETE FROM messages WHERE room_id=?').run(roomId);
-    db.prepare('DELETE FROM room_participants WHERE room_id=?').run(roomId);
-    db.prepare('DELETE FROM rooms WHERE id=?').run(roomId);
+    const deleteRoom = db.transaction(() => {
+      if (participantIds.length) {
+        const ph = participantIds.map(() => '?').join(',');
+        db.prepare(`DELETE FROM ai_sessions WHERE participant_id IN (${ph})`).run(...participantIds);
+      }
+      db.prepare('DELETE FROM invite_suggestions WHERE room_id=?').run(roomId);
+      db.prepare('DELETE FROM messages WHERE room_id=?').run(roomId);
+      db.prepare('DELETE FROM room_participants WHERE room_id=?').run(roomId);
+      db.prepare("DELETE FROM settings WHERE scope='room' AND scope_id=?").run(roomId);
+      db.prepare('DELETE FROM room_memory WHERE room_id=?').run(roomId);
+      db.prepare('DELETE FROM memory_pending_writes WHERE room_id=?').run(roomId);
+      db.prepare('DELETE FROM rooms WHERE id=?').run(roomId);
+    });
+    deleteRoom();
     broadcastGlobal({ type: 'room_deleted', room_id: roomId });
     res.writeHead(204); return res.end();
   }
