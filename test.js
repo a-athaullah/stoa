@@ -1405,14 +1405,141 @@ function runUnitTests() {
     assert.ok(stoa.fetchText, 'fetchText exported');
     assert.ok(stoa.drainQueue, 'drainQueue exported');
     assert.ok(stoa.runTrigger, 'runTrigger exported');
+    assert.ok(stoa.sweepStaleTriggers, 'sweepStaleTriggers exported');
     assert.ok(stoa.activeTriggers instanceof Map, 'activeTriggers is a Map');
+    assert.ok(typeof stoa.__setDeps === 'function', '__setDeps exported');
   });
 
-  // F8: fetchText from stoa.js rejects on HTTP error
-  ut('stoa.js fetchText rejects on HTTP 500', async () => {
+  // G2: sweepStaleTriggers — stale entry swept, active entry preserved
+  ut('sweepStaleTriggers: stale entry swept, active preserved', () => {
+    const stoa = require('./stoa.js');
+    const sent = [];
+    stoa.__setDeps({ send: (msg) => sent.push(msg) });
+    try {
+      stoa.activeTriggers.clear();
+      const now = Date.now();
+      stoa.activeTriggers.set('stale-1', { room_id: 99, startedAt: now - 30 * 60000, lastActivity: now - 25 * 60000 });
+      stoa.activeTriggers.set('active-1', { room_id: 99, startedAt: now - 5 * 60000, lastActivity: now - 1000 });
+      stoa.sweepStaleTriggers(now);
+      assert.strictEqual(stoa.activeTriggers.has('stale-1'), false, 'stale entry deleted');
+      assert.strictEqual(stoa.activeTriggers.has('active-1'), true, 'active entry preserved');
+      const complete = sent.find(m => m.type === 'agent_complete' && m.message_id === 'stale-1');
+      assert.ok(complete, 'agent_complete sent for stale entry');
+      assert.strictEqual(complete.result_meta.exit_reason, 'timeout', 'exit_reason is timeout');
+      assert.ok(complete.content.includes('timed out'), 'content mentions timeout');
+    } finally {
+      stoa.activeTriggers.clear();
+      stoa.__resetDeps();
+    }
+  });
+
+  // G3: sweepStaleTriggers with cancelTask — no double complete
+  ut('sweepStaleTriggers: cancelTask success → no agent_complete from sweep', () => {
+    const stoa = require('./stoa.js');
+    const sent = [];
+    stoa.__setDeps({ send: (msg) => sent.push(msg) });
+    try {
+      stoa.activeTriggers.clear();
+      const now = Date.now();
+      let cancelledId = null;
+      const mockSession = { cancelTask: (id) => { cancelledId = id; return true; } };
+      stoa.activeTriggers.set('stale-2', { room_id: 99, session: mockSession, startedAt: now - 30 * 60000, lastActivity: now - 25 * 60000 });
+      stoa.sweepStaleTriggers(now);
+      assert.strictEqual(cancelledId, 'stale-2', 'cancelTask called with correct id');
+      assert.strictEqual(stoa.activeTriggers.has('stale-2'), true, 'entry NOT deleted (processTrigger will handle it)');
+      const entry = stoa.activeTriggers.get('stale-2');
+      assert.strictEqual(entry.swept, true, 'entry marked swept');
+      assert.strictEqual(entry.abortReason, 'stale', 'abortReason set to stale');
+      const completes = sent.filter(m => m.type === 'agent_complete');
+      assert.strictEqual(completes.length, 0, 'no agent_complete from sweep (processTrigger sends it)');
+    } finally {
+      stoa.activeTriggers.clear();
+      stoa.__resetDeps();
+    }
+  });
+
+  // G3: sweepStaleTriggers cancelTask=false → force delete + complete
+  ut('sweepStaleTriggers: cancelTask false → force delete + complete', () => {
+    const stoa = require('./stoa.js');
+    const sent = [];
+    stoa.__setDeps({ send: (msg) => sent.push(msg) });
+    try {
+      stoa.activeTriggers.clear();
+      const now = Date.now();
+      const mockSession = { cancelTask: () => false };
+      stoa.activeTriggers.set('stale-3', { room_id: 99, session: mockSession, startedAt: now - 30 * 60000, lastActivity: now - 25 * 60000 });
+      stoa.sweepStaleTriggers(now);
+      assert.strictEqual(stoa.activeTriggers.has('stale-3'), false, 'entry force-deleted');
+      const complete = sent.find(m => m.type === 'agent_complete' && m.message_id === 'stale-3');
+      assert.ok(complete, 'agent_complete sent on force delete');
+    } finally {
+      stoa.activeTriggers.clear();
+      stoa.__resetDeps();
+    }
+  });
+
+  // G5: ClaudeSession._restarting — send() queues during restart window
+  ut('ClaudeSession: send() queues while _restarting', () => {
+    const { ClaudeSession } = require('./claude-session');
+    const session = Object.create(ClaudeSession.prototype);
+    session.busy = false;
+    session._restarting = true;
+    session._dead = false;
+    session._queue = [];
+    session._currentResolve = null;
+    session._currentReject = null;
+    let started = false;
+    session._startTask = () => { started = true; };
+    session.send({ prompt: 'test', taskId: 'q1' });
+    assert.strictEqual(session._queue.length, 1, 'task queued during restart');
+    assert.strictEqual(started, false, '_startTask NOT called');
+    assert.strictEqual(session._queue[0].taskId, 'q1');
+  });
+
+  // G7: codex shutdown resets _currentTaskId
+  ut('CodexSession.shutdown() resets _currentTaskId', () => {
+    const { CodexSession } = require('./codex-session');
+    const session = Object.create(CodexSession.prototype);
+    session.busy = true;
+    session._currentTaskId = 'task-x';
+    session._currentResolve = null;
+    session._currentOnToken = null;
+    session._currentOnState = null;
+    session._currentOnTool = null;
+    session._accContent = '';
+    session._queue = [];
+    const errors = [];
+    session._currentReject = (e) => errors.push(e);
+    session.proc = { kill: () => {} };
+    session.shutdown();
+    assert.strictEqual(session._currentTaskId, null, '_currentTaskId reset');
+  });
+
+  // G6: STALE_TRIGGER_MS clamped above minimum
+  ut('STALE_TRIGGER_MS >= FIRST_TOKEN_TIMEOUT + 2 * 60000', () => {
+    const stoa = require('./stoa.js');
+    const FIRST_TOKEN_TIMEOUT = 10 * 60000;
+    const MIN_STALE = FIRST_TOKEN_TIMEOUT + 2 * 60000;
+    assert.ok(stoa.STALE_TRIGGER_MS >= MIN_STALE, `STALE_TRIGGER_MS (${stoa.STALE_TRIGGER_MS}) must be >= ${MIN_STALE}`);
+  });
+
+  return { p, f };
+}
+
+// ── Async Unit Tests (no server required, properly awaited) ──────────────
+async function runAsyncUnitTests() {
+  let p = 0, f = 0;
+  async function uta(name, fn) {
+    try { await fn(); console.log(`  ✓ ${name}`); p++; }
+    catch (e) { console.error(`  ✗ ${name}: ${e.message}`); f++; }
+  }
+
+  console.log('  [Async Fetch Tests]');
+
+  await uta('fetchText rejects on HTTP 500', async () => {
     const { fetchText } = require('./stoa.js');
-    const http = require('http');
-    const srv = http.createServer((req, res) => { res.writeHead(500); res.end('error'); });
+    const httpMod = require('http');
+    const srv = httpMod.createServer((req, res) => { res.writeHead(500); res.end('error'); });
     await new Promise(r => srv.listen(0, '127.0.0.1', r));
     const port = srv.address().port;
     try {
@@ -1425,11 +1552,11 @@ function runUnitTests() {
     }
   });
 
-  // F8: fetchToFile from stoa.js rejects on HTTP 404
-  ut('stoa.js fetchToFile rejects on HTTP 404', async () => {
+  await uta('fetchToFile rejects on HTTP 404', async () => {
     const { fetchToFile } = require('./stoa.js');
-    const http = require('http');
-    const srv = http.createServer((req, res) => { res.writeHead(404); res.end('not found'); });
+    const httpMod = require('http');
+    const fs = require('fs');
+    const srv = httpMod.createServer((req, res) => { res.writeHead(404); res.end('not found'); });
     await new Promise(r => srv.listen(0, '127.0.0.1', r));
     const port = srv.address().port;
     const dest = path.join(require('os').tmpdir(), `stoa-test-fetch-${Date.now()}.tmp`);
@@ -1438,9 +1565,72 @@ function runUnitTests() {
       assert.fail('should have rejected');
     } catch (e) {
       assert.ok(e.message.includes('404'), `error should mention 404, got: ${e.message}`);
-      assert.ok(!require('fs').existsSync(dest), 'partial file should be cleaned up');
+      assert.ok(!fs.existsSync(dest), 'partial file should not exist');
     } finally {
       srv.close();
+    }
+  });
+
+  await uta('fetchText timeout on hanging server', async () => {
+    const stoa = require('./stoa.js');
+    stoa.__setDeps({ FETCH_TIMEOUT_MS: 200 });
+    const httpMod = require('http');
+    const srv = httpMod.createServer(() => {});
+    await new Promise(r => srv.listen(0, '127.0.0.1', r));
+    const port = srv.address().port;
+    try {
+      await stoa.fetchText(`http://127.0.0.1:${port}/hang`);
+      assert.fail('should have rejected');
+    } catch (e) {
+      assert.ok(e.message.includes('timeout') || e.message.includes('destroyed') || e.message.includes('socket hang up'),
+        `should be timeout error, got: ${e.message}`);
+    } finally {
+      srv.close();
+      stoa.__resetDeps();
+    }
+  });
+
+  await uta('fetchToFile: stream break mid-transfer cleans up partial file', async () => {
+    const stoa = require('./stoa.js');
+    const httpMod = require('http');
+    const fs = require('fs');
+    const srv = httpMod.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+      res.write('partial data');
+      setTimeout(() => res.destroy(), 50);
+    });
+    await new Promise(r => srv.listen(0, '127.0.0.1', r));
+    const port = srv.address().port;
+    const dest = path.join(require('os').tmpdir(), `stoa-test-stream-break-${Date.now()}.tmp`);
+    try {
+      await stoa.fetchToFile(`http://127.0.0.1:${port}/break`, dest);
+      assert.fail('should have rejected');
+    } catch (e) {
+      assert.ok(!fs.existsSync(dest), 'partial file should be cleaned up after stream break');
+    } finally {
+      srv.close();
+      try { fs.unlinkSync(dest); } catch {}
+    }
+  });
+
+  // R2: workdir not found → agent_complete error + entry never set
+  await uta('processTrigger: workdir not found → agent_complete with error', async () => {
+    const stoa = require('./stoa.js');
+    const sent = [];
+    stoa.__setDeps({ send: (msg) => sent.push(msg) });
+    try {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      const badDir = '/tmp/__nonexistent_stoa_test_dir_' + Date.now();
+      await stoa.processTrigger({ room_id: 99, message_id: 'pt-fail-1', prompt: 'test', workdir: badDir });
+      const errMsg = sent.find(m => m.type === 'agent_complete' && m.message_id === 'pt-fail-1');
+      assert.ok(errMsg, 'agent_complete sent for missing workdir');
+      assert.strictEqual(errMsg.result_meta.exit_reason, 'error');
+      assert.ok(errMsg.content.includes('tidak ditemukan'), 'content mentions workdir not found');
+    } finally {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      stoa.__resetDeps();
     }
   });
 
@@ -1578,6 +1768,11 @@ async function run() {
   const unitResult = runUnitTests();
   passed += unitResult.p;
   failed += unitResult.f;
+
+  console.log('\n[Async Unit Tests — no server required]');
+  const asyncUnitResult = await runAsyncUnitTests();
+  passed += asyncUnitResult.p;
+  failed += asyncUnitResult.f;
 
   console.log(`\n[Integration Tests — http://${HOST}:${PORT}]`);
 
@@ -6599,11 +6794,10 @@ async function run() {
   // Fase 3b: behavioral switch
   console.log('\n[Fase 3b: Behavioral Switch]');
 
-  await test('Fase3b — max_concurrent fallback default is 1 (code check)', async () => {
-    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
-    const settingsLine = src.split('\n').find(l => l.includes('max_concurrent:') && l.includes('MAX_CONCURRENT'));
-    assert.ok(settingsLine, 'max_concurrent settings line not found');
-    assert.ok(settingsLine.includes('|| 1'), 'max_concurrent default should be 1');
+  await test('Fase3b — max_concurrent fallback default is 1 (via stoa.js export)', async () => {
+    const stoa = require('./stoa.js');
+    const expected = parseInt(process.env.STOA_MAX_CONCURRENT) || 1;
+    assert.strictEqual(stoa.MAX_CONCURRENT, expected, `MAX_CONCURRENT should be ${expected}`);
   });
 
   await test('Fase3b — waitForRoomIdle removed (dead code)', async () => {
@@ -8672,59 +8866,18 @@ async function run() {
   // ── Auto-update integration tests ────────────────────────────────────────
   console.log('\n[Auto-update & Trigger Cleanup]');
 
-  await test('R5: fetchText (actual stoa.js) rejects on HTTP 500', async () => {
-    const { fetchText } = require('./stoa.js');
-    const httpMod = require('http');
-    const mockServer = httpMod.createServer((req, res) => {
-      res.writeHead(500, { 'Content-Type': 'text/plain' });
-      res.end('server error body');
-    });
-    await new Promise(resolve => mockServer.listen(0, '127.0.0.1', resolve));
-    const mockPort = mockServer.address().port;
-    try {
-      await fetchText(`http://127.0.0.1:${mockPort}/test`);
-      assert.fail('should have rejected');
-    } catch (e) {
-      assert.ok(e.message.includes('500'), `should mention 500, got: ${e.message}`);
-    } finally {
-      mockServer.close();
-    }
-  });
-
-  await test('R5: fetchToFile (actual stoa.js) rejects on HTTP 404', async () => {
-    const { fetchToFile } = require('./stoa.js');
+  await test('parseClientVersion matches EXPECTED_CLIENT_VERSION from server', async () => {
+    const { parseClientVersion } = require('./lib/client-version');
     const fs = require('fs');
-    const os = require('os');
-    const destPath = path.join(os.tmpdir(), `stoa-test-fetch-${Date.now()}.tmp`);
-    const httpMod = require('http');
-    const mockServer = httpMod.createServer((req, res) => {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('not found');
-    });
-    await new Promise(resolve => mockServer.listen(0, '127.0.0.1', resolve));
-    const mockPort = mockServer.address().port;
-    try {
-      await fetchToFile(`http://127.0.0.1:${mockPort}/file.js`, destPath);
-      assert.fail('should have rejected');
-    } catch (e) {
-      assert.ok(e.message.includes('404'), `should mention 404, got: ${e.message}`);
-      assert.ok(!fs.existsSync(destPath), 'partial file should not exist');
-    } finally {
-      mockServer.close();
-      try { fs.unlinkSync(destPath); } catch {}
-    }
-  });
-
-  await test('R9: EXPECTED_CLIENT_VERSION extracted correctly by server regex', async () => {
+    const distPath = path.join(__dirname, 'dist', 'stoa.js');
+    const srcPath = path.join(__dirname, 'stoa.js');
+    const src = fs.readFileSync(fs.existsSync(distPath) ? distPath : srcPath, 'utf8');
+    const ver = parseClientVersion(src);
+    assert.ok(ver, 'parseClientVersion must find version');
     const r = await req('GET', '/api/settings');
-    assert.strictEqual(r.status, 200);
-  });
-
-  await test('max_concurrent default is 1 in set_config (code check)', async () => {
-    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
-    const configLine = src.split('\n').find(l => l.includes('set_config') && l.includes('MAX_CONCURRENT'));
-    assert.ok(configLine, 'set_config line with MAX_CONCURRENT not found');
-    assert.ok(configLine.includes('|| 1'), 'set_config max_concurrent default should be 1');
+    if (r.body?.expected_client_version) {
+      assert.strictEqual(ver, r.body.expected_client_version, 'version from file must match server');
+    }
   });
 
   // Teardown — delete all test rooms and actors created during the run

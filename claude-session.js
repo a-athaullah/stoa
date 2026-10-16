@@ -17,6 +17,7 @@ class ClaudeSession extends EventEmitter {
     this.proc = null;
     this.buffer = '';
     this.busy = false;
+    this._restarting = false;
     this._queue = [];
     this._currentResolve = null;
     this._currentReject = null;
@@ -34,6 +35,7 @@ class ClaudeSession extends EventEmitter {
 
   _start() {
     this._dead = false;
+    this._restarting = false;
     const args = [
       '--output-format', 'stream-json',
       '--input-format', 'stream-json',
@@ -67,7 +69,6 @@ class ClaudeSession extends EventEmitter {
 
     this.proc.on('close', (code, signal) => {
       if (this._dead) return;
-      // If resume ID is invalid, drop it and restart fresh
       if (this._stderrBuf.includes('No conversation found')) {
         console.error('[session] Resume ID invalid, restarting without resume...');
         this.flags = this.flags.filter((f, i, arr) => f !== '--resume' && arr[i - 1] !== '--resume');
@@ -78,17 +79,10 @@ class ClaudeSession extends EventEmitter {
       this._stderrBuf = '';
       if (this._currentReject) {
         const reject = this._currentReject;
-        this._currentResolve = null;
-        this._currentReject = null;
-        this._currentOnToken = null;
-        this._currentOnState = null;
-        this._currentOnTool = null;
-        this._currentTaskId = null;
-        this._accContent = '';
-        this._pendingTool = null;
-        this.busy = false;
+        this._clearCurrent({ drain: false });
         reject(new Error('claude process exited unexpectedly'));
       }
+      this._restarting = true;
       setTimeout(() => {
         if (this._dead) return;
         this._start();
@@ -100,7 +94,7 @@ class ClaudeSession extends EventEmitter {
     });
   }
 
-  _clearCurrent() {
+  _clearCurrent({ drain = true } = {}) {
     this._currentResolve = null;
     this._currentReject = null;
     this._currentOnToken = null;
@@ -110,7 +104,7 @@ class ClaudeSession extends EventEmitter {
     this._accContent = '';
     this._pendingTool = null;
     this.busy = false;
-    if (this._queue.length > 0 && !this._dead) {
+    if (drain && this._queue.length > 0 && !this._dead && !this._restarting) {
       const next = this._queue.shift();
       this._startTask(next);
     }
@@ -190,7 +184,7 @@ class ClaudeSession extends EventEmitter {
   send({ prompt, imageData = null, onToken, onState, onTool, taskId } = {}) {
     return new Promise((resolve, reject) => {
       const task = { prompt, imageData, onToken, onState, onTool, resolve, reject, taskId };
-      if (this.busy) {
+      if (this.busy || this._restarting) {
         this._queue.push(task);
       } else {
         this._startTask(task);

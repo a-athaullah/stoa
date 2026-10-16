@@ -212,6 +212,7 @@ class CodexSession extends EventEmitter {
       this._currentOnToken = null;
       this._currentOnState = null;
       this._currentOnTool = null;
+      this._currentTaskId = null;
       this._accContent = '';
       this.busy = false;
       reject(new Error('session shutdown'));

@@ -1516,8 +1516,17 @@ ${allNotes}`;
         _startToolStatus2(_toolVerb_for2(tool.name, tool.input));
       }
     };
+    const _checkSwept = () => {
+      const e = activeTriggers.get(message_id);
+      if (e?.swept) throw new Error('trigger swept by stale cleanup');
+    };
+    const _updateEntry = (fields) => {
+      const e = activeTriggers.get(message_id);
+      if (e) Object.assign(e, fields);
+    };
     let result;
     try {
+      _checkSwept();
       result = await session.send(sendOpts);
     } catch (retryErr) {
       const isAuthOrQuota = /auth|unauthorized|quota|rate.limit|429|401|403/i.test(retryErr.message);
@@ -1533,11 +1542,12 @@ ${allNotes}`;
           fullContent = "";
           session.shutdown();
           session = await prepareResume({ ...resumeBase, rid, targetModel, env: envToUse });
-          activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey, room_id, startedAt: Date.now(), lastActivity: Date.now() });
+          _updateEntry({ session, lastActivity: Date.now() });
           sessionRef = session;
           session.on("status", statusHandler);
           try {
             updateActivity();
+            _checkSwept();
             result = await session.send(sendOpts);
             advanced = true;
             break;
@@ -1554,11 +1564,12 @@ ${allNotes}`;
           const rotatedEnv = { ...platformEnv, ANTHROPIC_AUTH_TOKEN: apiKeys[ki] };
           session.shutdown();
           session = await prepareResume({ ...resumeBase, rid, targetModel, env: rotatedEnv });
-          activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey, room_id, startedAt: Date.now(), lastActivity: Date.now() });
+          _updateEntry({ session, lastActivity: Date.now() });
           sessionRef = session;
           session.on("status", statusHandler);
           try {
             updateActivity();
+            _checkSwept();
             result = await session.send(sendOpts);
             rotated = true;
             break;
@@ -1575,16 +1586,18 @@ ${allNotes}`;
         await new Promise((r) => setTimeout(r, 2e3));
         fullContent = "";
         session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
-        activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey, room_id, startedAt: Date.now(), lastActivity: Date.now() });
+        _updateEntry({ session, lastActivity: Date.now() });
         if (statusHandler) session.on("status", statusHandler);
         sessionRef = session;
         updateActivity();
+        _checkSwept();
         result = await session.send(sendOpts);
       } else if (retryErr.message.includes("exited unexpectedly") && !fullContent) {
         console.log(`[stoa] session crashed before output, retrying in 4s...`);
         await new Promise((r) => setTimeout(r, 4e3));
+        _checkSwept();
         session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
-        activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey, room_id, startedAt: Date.now(), lastActivity: Date.now() });
+        _updateEntry({ session, lastActivity: Date.now() });
         updateActivity();
         result = await session.send(sendOpts);
       } else if (triggerHarness === "claude" && isThinkingSignatureError(retryErr.message) && !fullContent && !thinkingSigRetried) {
@@ -1595,10 +1608,11 @@ ${allNotes}`;
         session.shutdown();
         await backupSessionFile(targetDir, rid);
         session = await prepareResume({ ...resumeBase, rid, targetModel, env: envToUse, aggressive: true });
-        activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey, room_id, startedAt: Date.now(), lastActivity: Date.now() });
+        _updateEntry({ session, lastActivity: Date.now() });
         sessionRef = session;
         session.on("status", statusHandler);
         updateActivity();
+        _checkSwept();
         result = await session.send(sendOpts);
       } else {
         throw retryErr;
@@ -1616,10 +1630,11 @@ ${allNotes}`;
       await new Promise((r) => setTimeout(r, 2e3));
       fullContent = "";
       session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
-      activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey, room_id, startedAt: Date.now(), lastActivity: Date.now() });
+      _updateEntry({ session, lastActivity: Date.now() });
       if (statusHandler) session.on("status", statusHandler);
       sessionRef = session;
       updateActivity();
+      _checkSwept();
       result = await session.send(sendOpts);
       ({ content, sessionId, aborted, usage, modelUsage, totalCostUsd, durationMs, subtype } = result);
       content = stripLeadingThinkingMarker(content);
@@ -1633,10 +1648,11 @@ ${allNotes}`;
       session.shutdown();
       await backupSessionFile(targetDir, rid);
       session = await prepareResume({ ...resumeBase, rid, targetModel, env: envToUse, aggressive: true });
-      activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey, room_id, startedAt: Date.now(), lastActivity: Date.now() });
+      _updateEntry({ session, lastActivity: Date.now() });
       if (statusHandler) session.on("status", statusHandler);
       sessionRef = session;
       updateActivity();
+      _checkSwept();
       result = await session.send(sendOpts);
       ({ content, sessionId, aborted, usage, modelUsage, totalCostUsd, durationMs, subtype } = result);
       content = stripLeadingThinkingMarker(content);
@@ -1645,11 +1661,18 @@ ${allNotes}`;
     clearInterval(hangWatchdog);
     consecutiveTriggerErrors = 0;
     if (aborted) {
-      const partial = stripLeadingThinkingMarker(fullContent) || content || "";
-      const fallback = abortReason === "timeout" ? "(timed out \u2014 session not responding)" : "(stopped by user)";
-      const result_meta = { exit_reason: abortReason === "timeout" ? "timeout" : "stopped", tokens: null, duration_ms: null };
-      send({ type: "agent_complete", room_id, message_id, content: partial || fallback, ai_model: targetModel || void 0, result_meta });
-      console.log(`[stoa] Aborted message ${message_id}, reason=${abortReason || "user"}, partial=${partial.length} chars`);
+      const entry = activeTriggers.get(message_id);
+      const effectiveReason = abortReason || entry?.abortReason || null;
+      if (entry?.swept) {
+        console.log(`[stoa] Swept message ${message_id}, skipping agent_complete (sweep already sent it)`);
+      } else {
+        const partial = stripLeadingThinkingMarker(fullContent) || content || "";
+        const isTimeout = effectiveReason === "timeout" || effectiveReason === "stale";
+        const fallback = isTimeout ? "(timed out \u2014 no activity)" : "(stopped by user)";
+        const result_meta = { exit_reason: isTimeout ? "timeout" : "stopped", tokens: null, duration_ms: null };
+        send({ type: "agent_complete", room_id, message_id, content: partial || fallback, ai_model: targetModel || void 0, result_meta });
+        console.log(`[stoa] Aborted message ${message_id}, reason=${effectiveReason || "user"}, partial=${partial.length} chars`);
+      }
     } else {
       const { text: cleanContent, attachments } = await extractAndUploadFiles(content, msg.workdir);
       const actualModel = targetModel || modelUsage && Object.keys(modelUsage).find((k) => k !== "total") || void 0;
@@ -1701,9 +1724,14 @@ ${allNotes}`;
       }
     }
   } catch (err) {
-    consecutiveTriggerErrors++;
-    console.error(`[stoa] trigger error (${consecutiveTriggerErrors}/${MAX_TRIGGER_ERRORS}): ${err.message}`);
-    send({ type: "agent_error", room_id, message_id, error: err.message });
+    const entry = activeTriggers.get(message_id);
+    if (entry?.swept) {
+      console.log(`[stoa] trigger ${message_id} swept during processing, suppressing error`);
+    } else {
+      consecutiveTriggerErrors++;
+      console.error(`[stoa] trigger error (${consecutiveTriggerErrors}/${MAX_TRIGGER_ERRORS}): ${err.message}`);
+      send({ type: "agent_error", room_id, message_id, error: err.message });
+    }
     if (consecutiveTriggerErrors >= MAX_TRIGGER_ERRORS) {
       console.log("[stoa] too many trigger errors, restarting clean...");
       for (const s of sessionPool.values()) s.shutdown();
@@ -1807,6 +1835,39 @@ function drainQueue() {
     runTrigger(next);
   }
   if (activeTriggers.size === 0 && triggerQueue.length === 0 && pendingRestart) doRestart();
+}
+// STALE_TRIGGER_MS must exceed maximum watchdog tolerance:
+// FIRST_TOKEN_TIMEOUT (10m) + MAX_DEBUG_DEFERS(3) × interval(10s) + grace(60s) ≈ 11m.
+// Default 20m gives ~9m buffer. Clamped to ≥ FIRST_TOKEN_TIMEOUT + 2×sweep_interval.
+var STALE_TRIGGER_MS = (() => {
+  const FIRST_TOKEN_TIMEOUT = 10 * 60000;
+  const MIN_STALE = FIRST_TOKEN_TIMEOUT + 2 * 60000;
+  const raw = parseInt(process.env.STALE_TRIGGER_MS || String(20 * 60 * 1000));
+  return Math.max(raw, MIN_STALE);
+})();
+function sweepStaleTriggers(now) {
+  let forceCleaned = false;
+  for (const [msgId, entry] of activeTriggers) {
+    if (now - (entry.lastActivity || entry.startedAt || now) > STALE_TRIGGER_MS) {
+      console.warn(`[stoa] stale trigger swept: msg=${msgId} idle=${Math.round((now - (entry.lastActivity || entry.startedAt)) / 1000)}s`);
+      entry.swept = true;
+      entry.abortReason = 'stale';
+      if (entry.session?.cancelTask) {
+        const cancelled = entry.session.cancelTask(msgId);
+        if (!cancelled) {
+          activeTriggers.delete(msgId);
+          send({ type: "agent_complete", room_id: entry.room_id, message_id: msgId, content: "(timed out — no activity)", result_meta: { exit_reason: "timeout" } });
+          forceCleaned = true;
+        }
+      } else {
+        activeTriggers.delete(msgId);
+        send({ type: "agent_complete", room_id: entry.room_id, message_id: msgId, content: "(timed out — no activity)", result_meta: { exit_reason: "timeout" } });
+        forceCleaned = true;
+      }
+    }
+  }
+  if (forceCleaned) drainQueue();
+  else if (activeTriggers.size === 0 && triggerQueue.length === 0 && pendingRestart) doRestart();
 }
 var FETCH_TIMEOUT_MS = 60000;
 function fetchToFile(url, destPath) {
@@ -2096,7 +2157,9 @@ function reprompt() {
 function printHeader() {
   out(C.gray + "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n  STOA  \u2014  Room #" + ROOM_ID + "\n  /exit untuk keluar\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501" + C.reset);
 }
+var _sendOverride = null;
 function send(data) {
+  if (_sendOverride) return _sendOverride(data);
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data));
 }
 function out(line) {
@@ -2128,30 +2191,15 @@ connect();
 if (ACTOR_TYPE === "ai") {
   updateChecker = setInterval(checkForUpdates, UPDATE_INTERVAL);
   setTimeout(checkForUpdates, 15e3);
-  var STALE_TRIGGER_MS = parseInt(process.env.STALE_TRIGGER_MS || String(20 * 60 * 1000));
-  setInterval(() => {
-    const now = Date.now();
-    let forceCleaned = false;
-    for (const [msgId, entry] of activeTriggers) {
-      if (now - (entry.lastActivity || entry.startedAt || now) > STALE_TRIGGER_MS) {
-        console.warn(`[stoa] stale trigger swept: msg=${msgId} idle=${Math.round((now - (entry.lastActivity || entry.startedAt)) / 1000)}s`);
-        if (entry.session?.cancelTask) {
-          const cancelled = entry.session.cancelTask(msgId);
-          if (!cancelled) {
-            activeTriggers.delete(msgId);
-            send({ type: "agent_complete", room_id: entry.room_id, message_id: msgId, content: "(trigger stale — no activity, cleaned up)", result_meta: { exit_reason: "error" } });
-            forceCleaned = true;
-          }
-        } else {
-          activeTriggers.delete(msgId);
-          send({ type: "agent_complete", room_id: entry.room_id, message_id: msgId, content: "(trigger stale — no activity, cleaned up)", result_meta: { exit_reason: "error" } });
-          forceCleaned = true;
-        }
-      }
-    }
-    if (forceCleaned) drainQueue();
-    else if (activeTriggers.size === 0 && triggerQueue.length === 0 && pendingRestart) doRestart();
-  }, 60000);
+  setInterval(() => sweepStaleTriggers(Date.now()), 60000);
 }
 }
-module.exports = { fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, MAX_CONCURRENT, processTrigger };
+function __setDeps(overrides) {
+  if (overrides.send) _sendOverride = overrides.send;
+  if (overrides.FETCH_TIMEOUT_MS != null) FETCH_TIMEOUT_MS = overrides.FETCH_TIMEOUT_MS;
+}
+function __resetDeps() {
+  _sendOverride = null;
+  FETCH_TIMEOUT_MS = 60000;
+}
+module.exports = { fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, __setDeps, __resetDeps };
