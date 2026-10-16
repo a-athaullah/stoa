@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.354";
+var CLIENT_VERSION = "0.4.355";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -1318,10 +1318,19 @@ ${chain.join("\n")}
     }
   }
   const attachmentNotes = [];
+  const usedNames = new Set();
   for (const att of allAttachments) {
     const url = att.url?.startsWith("http") ? att.url : baseUrl + att.url;
     const ext = path.extname(att.name || att.url || "").toLowerCase();
-    const safeName = (att.name || path.basename(att.url || "file")).replace(/[^a-zA-Z0-9._-]/g, "_");
+    let safeName = (att.name || path.basename(att.url || "file")).replace(/[^a-zA-Z0-9._-]/g, "_");
+    if (usedNames.has(safeName)) {
+      const base = safeName.replace(/(\.[^.]+)$/, "");
+      const sfx = safeName.match(/(\.[^.]+)$/)?.[1] || "";
+      let n = 1;
+      while (usedNames.has(`${base}-${n}${sfx}`)) n++;
+      safeName = `${base}-${n}${sfx}`;
+    }
+    usedNames.add(safeName);
     const displayName = att.name || safeName;
     if (att.type === "image" || IMAGE_EXTS.has(ext)) {
       try {

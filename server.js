@@ -74,11 +74,12 @@ function clientFilePath(name) {
   return path.join(__dirname, name);
 }
 
-const SAFE_CLIENT_HASH = (() => {
-  try {
-    return crypto.createHash('sha256').update(fs.readFileSync(clientFilePath('stoa.js'))).digest('hex').slice(0, 12);
-  } catch { return null; }
+const SAFE_CLIENT_BUNDLE = (() => {
+  try { return fs.readFileSync(clientFilePath('stoa.js')); } catch { return null; }
 })();
+const SAFE_CLIENT_HASH = SAFE_CLIENT_BUNDLE
+  ? crypto.createHash('sha256').update(SAFE_CLIENT_BUNDLE).digest('hex').slice(0, 12)
+  : null;
 
 // Resolve a participant's workspace directory: their own workdir_id, else the room workdir
 // (only if it belongs to this agent), else the agent's default workdir, else null (the agent
@@ -3634,8 +3635,16 @@ const server = http.createServer(async (req, res) => {
     }
     const fp = clientFilePath(name);
     if (!fs.existsSync(fp)) { res.writeHead(404); return res.end('Not found'); }
+    let content = fs.readFileSync(fp);
+    if (name === 'stoa.js' && SAFE_CLIENT_BUNDLE && EXPECTED_CLIENT_VERSION) {
+      const diskVer = parseClientVersion(content.toString('utf8'));
+      if (diskVer && diskVer.localeCompare(EXPECTED_CLIENT_VERSION, undefined, { numeric: true }) < 0) {
+        console.warn(`[update-guard] file endpoint: stoa.js on disk (v${diskVer}) < expected (v${EXPECTED_CLIENT_VERSION}) — serving startup bundle`);
+        content = SAFE_CLIENT_BUNDLE;
+      }
+    }
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-    return res.end(fs.readFileSync(fp));
+    return res.end(content);
   }
 
   // ── Docs ──

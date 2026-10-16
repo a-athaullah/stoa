@@ -1644,6 +1644,61 @@ async function runAsyncUnitTests() {
     }
   });
 
+  // Attachment same-name dedup: two attachments named image.png → two distinct files
+  await uta('attachment same-name dedup: two image.png → two distinct local files', async () => {
+    const stoa = require('./stoa.js');
+    const http = require('http');
+    const fs = require('fs');
+    const workdir = require('os').tmpdir();
+    const server = http.createServer((req, res) => {
+      const u = new URL(req.url, 'http://localhost');
+      const content = u.searchParams.get('v') || 'default';
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': content.length });
+      res.end(content);
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+    let capturedFiles = null;
+    stoa.__setDeps({
+      send: (msg) => {
+        // capture file state inside send (before finally cleans up)
+        if (msg.type === 'agent_error' && msg.message_id === 'att-dedup-1' && !capturedFiles) {
+          const attDir = path.join(workdir, '.stoa-attachments', 'att-dedup-1');
+          if (fs.existsSync(attDir)) {
+            const files = fs.readdirSync(attDir);
+            capturedFiles = files.map(f => ({
+              name: f,
+              content: fs.readFileSync(path.join(attDir, f), 'utf8'),
+            }));
+          }
+        }
+      },
+      getSession: () => { throw new Error('skip session'); },
+    });
+    try {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      await stoa.processTrigger({
+        room_id: 99, message_id: 'att-dedup-1', prompt: 'test', workdir,
+        attachments: [
+          { url: `http://127.0.0.1:${port}/image.png?v=AAAA`, name: 'image.png', type: 'image' },
+          { url: `http://127.0.0.1:${port}/image.png?v=BBBB`, name: 'image.png', type: 'image' },
+        ],
+      });
+      assert.ok(capturedFiles, 'files captured before cleanup');
+      assert.strictEqual(capturedFiles.length, 2, `expected 2 files, got ${capturedFiles.length}: ${capturedFiles.map(f => f.name).join(', ')}`);
+      const contents = capturedFiles.map(f => f.content).sort();
+      assert.deepStrictEqual(contents, ['AAAA', 'BBBB'], 'each file has distinct content');
+      const names = capturedFiles.map(f => f.name).sort();
+      assert.notStrictEqual(names[0], names[1], 'filenames are different');
+    } finally {
+      server.close();
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      stoa.__resetDeps();
+    }
+  });
+
   console.log('  [R1/R2/Sweep Integration Tests]');
 
   // I1: R1 — getSession throws → entry cleaned, steer re-queued, drainQueue dequeues steer
@@ -3560,6 +3615,41 @@ async function run() {
   await test('GET /api/client/file/notallowed.sh — not in whitelist → 404', async () => {
     const r = await req('GET', '/api/client/file/notallowed.sh');
     assert.strictEqual(r.status, 404);
+  });
+
+  await test('GET /api/client/file/stoa.js — downgrade on disk still serves startup bundle', async () => {
+    const fs = require('fs');
+    const bundleDir = process.env.STOA_AGENT_BUNDLE_DIR;
+    assert.ok(bundleDir, 'STOA_AGENT_BUNDLE_DIR must be set by test runner');
+    const bundlePath = path.join(bundleDir, 'stoa.js');
+    // Get original manifest hash
+    const manifest = await req('GET', '/api/client/manifest');
+    assert.strictEqual(manifest.status, 200);
+    const origHash = manifest.body.files['stoa.js'];
+    assert.ok(origHash, 'manifest should have stoa.js hash');
+    // Get original file content + compute hash
+    const origFile = await req('GET', '/api/client/file/stoa.js');
+    assert.strictEqual(origFile.status, 200);
+    const origFileHash = crypto.createHash('sha256').update(origFile.raw).digest('hex').slice(0, 12);
+    assert.strictEqual(origFileHash, origHash, 'file hash should match manifest hash');
+    // Save original, write a downgrade (lower CLIENT_VERSION)
+    const origContent = fs.readFileSync(bundlePath);
+    const downgrade = origContent.toString('utf8').replace(
+      /CLIENT_VERSION\s*=\s*"[^"]+"/,
+      'CLIENT_VERSION = "0.0.1"'
+    );
+    fs.writeFileSync(bundlePath, downgrade);
+    // File endpoint should still serve startup bundle (not downgrade)
+    const afterFile = await req('GET', '/api/client/file/stoa.js');
+    assert.strictEqual(afterFile.status, 200);
+    const afterHash = crypto.createHash('sha256').update(afterFile.raw).digest('hex').slice(0, 12);
+    assert.strictEqual(afterHash, origHash, 'file endpoint must serve startup bundle, not downgrade');
+    assert.ok(!afterFile.raw.includes('CLIENT_VERSION = "0.0.1"'), 'response must not contain downgraded version');
+    // Manifest should also still report original hash
+    const afterManifest = await req('GET', '/api/client/manifest');
+    assert.strictEqual(afterManifest.body.files['stoa.js'], origHash, 'manifest hash unchanged after downgrade');
+    // Restore original
+    fs.writeFileSync(bundlePath, origContent);
   });
 
   // Install scripts
