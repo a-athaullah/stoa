@@ -27,6 +27,7 @@ class CodexSession extends EventEmitter {
     this._currentOnToken = null;
     this._currentOnState = null;
     this._currentOnTool = null;
+    this._currentTaskId = null;
     this._accContent = '';
     this._usage = null;
     this._threadId = resumeId || null;
@@ -50,13 +51,14 @@ class CodexSession extends EventEmitter {
     return args;
   }
 
-  _startTask({ prompt, imageData, onToken, onState, onTool, resolve, reject }) {
+  _startTask({ prompt, imageData, onToken, onState, onTool, resolve, reject, taskId }) {
     this.busy = true;
     this._currentResolve = resolve;
     this._currentReject = reject;
     this._currentOnToken = onToken || null;
     this._currentOnState = onState || null;
     this._currentOnTool = onTool || null;
+    this._currentTaskId = taskId || null;
     this._accContent = '';
     this._usage = null;
 
@@ -143,6 +145,7 @@ class CodexSession extends EventEmitter {
     this._currentOnToken = null;
     this._currentOnState = null;
     this._currentOnTool = null;
+    this._currentTaskId = null;
     this._accContent = '';
     this._usage = null;
     this.busy = false;
@@ -152,9 +155,9 @@ class CodexSession extends EventEmitter {
     }
   }
 
-  send({ prompt, imageData = null, onToken, onState, onTool } = {}) {
+  send({ prompt, imageData = null, onToken, onState, onTool, taskId } = {}) {
     return new Promise((resolve, reject) => {
-      const task = { prompt, imageData, onToken, onState, onTool, resolve, reject };
+      const task = { prompt, imageData, onToken, onState, onTool, resolve, reject, taskId };
       if (this.busy) {
         this._queue.push(task);
       } else {
@@ -175,10 +178,39 @@ class CodexSession extends EventEmitter {
     this._accContent = '';
     this.busy = false;
     resolve?.({ content, sessionId: this._threadId, aborted: true });
+    const queued = this._queue.splice(0);
+    for (const t of queued) t.resolve?.({ content: '', sessionId: this._threadId, aborted: true });
     this.proc?.kill('SIGTERM');
   }
 
+  cancelTask(taskId) {
+    if (this._currentTaskId === taskId && this.busy) {
+      this.abort();
+      return true;
+    }
+    const idx = this._queue.findIndex(t => t.taskId === taskId);
+    if (idx !== -1) {
+      const [removed] = this._queue.splice(idx, 1);
+      removed.resolve?.({ content: '', sessionId: this._threadId, aborted: true });
+      return true;
+    }
+    return false;
+  }
+
   shutdown() {
+    if (this._currentReject) {
+      const reject = this._currentReject;
+      this._currentResolve = null;
+      this._currentReject = null;
+      this._currentOnToken = null;
+      this._currentOnState = null;
+      this._currentOnTool = null;
+      this._accContent = '';
+      this.busy = false;
+      reject(new Error('session shutdown'));
+    }
+    const queued = this._queue.splice(0);
+    for (const t of queued) t.reject?.(new Error('session shutdown'));
     this.proc?.kill('SIGTERM');
     this.proc = null;
   }

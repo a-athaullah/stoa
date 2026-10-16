@@ -23,6 +23,7 @@ class ClaudeSession extends EventEmitter {
     this._currentOnToken = null;
     this._currentOnState = null;
     this._currentOnTool = null;
+    this._currentTaskId = null;
     this._accContent = '';
     this._pendingTool = null;
     // stable debug log path: one file per workdir in os.tmpdir()
@@ -90,22 +91,24 @@ class ClaudeSession extends EventEmitter {
     this._currentOnToken = null;
     this._currentOnState = null;
     this._currentOnTool = null;
+    this._currentTaskId = null;
     this._accContent = '';
     this._pendingTool = null;
     this.busy = false;
-    if (this._queue.length > 0) {
+    if (this._queue.length > 0 && !this._dead) {
       const next = this._queue.shift();
       this._startTask(next);
     }
   }
 
-  _startTask({ prompt, imageData, onToken, onState, onTool, resolve, reject }) {
+  _startTask({ prompt, imageData, onToken, onState, onTool, resolve, reject, taskId }) {
     this.busy = true;
     this._currentResolve = resolve;
     this._currentReject = reject;
     this._currentOnToken = onToken || null;
     this._currentOnState = onState || null;
     this._currentOnTool = onTool || null;
+    this._currentTaskId = taskId || null;
     this._accContent = '';
     this._pendingTool = null;
 
@@ -169,9 +172,9 @@ class ClaudeSession extends EventEmitter {
 
   // Send a message and await the complete response.
   // Returns Promise<{ content, sessionId }>.
-  send({ prompt, imageData = null, onToken, onState, onTool } = {}) {
+  send({ prompt, imageData = null, onToken, onState, onTool, taskId } = {}) {
     return new Promise((resolve, reject) => {
-      const task = { prompt, imageData, onToken, onState, onTool, resolve, reject };
+      const task = { prompt, imageData, onToken, onState, onTool, resolve, reject, taskId };
       if (this.busy) {
         this._queue.push(task);
       } else {
@@ -193,11 +196,34 @@ class ClaudeSession extends EventEmitter {
     this._pendingTool = null;
     this.busy = false;
     resolve?.({ content, sessionId: null, aborted: true });
+    const queued = this._queue.splice(0);
+    for (const t of queued) t.resolve?.({ content: '', sessionId: null, aborted: true });
     this.proc?.kill('SIGTERM');
+  }
+
+  cancelTask(taskId) {
+    if (this._currentTaskId === taskId && this.busy) {
+      this.abort();
+      return true;
+    }
+    const idx = this._queue.findIndex(t => t.taskId === taskId);
+    if (idx !== -1) {
+      const [removed] = this._queue.splice(idx, 1);
+      removed.resolve?.({ content: '', sessionId: null, aborted: true });
+      return true;
+    }
+    return false;
   }
 
   shutdown() {
     this._dead = true;
+    if (this._currentReject) {
+      const reject = this._currentReject;
+      this._clearCurrent();
+      reject(new Error('session shutdown'));
+    }
+    const queued = this._queue.splice(0);
+    for (const t of queued) t.reject?.(new Error('session shutdown'));
     this.proc?.kill('SIGTERM');
   }
 }

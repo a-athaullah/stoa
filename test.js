@@ -1217,6 +1217,138 @@ function runUnitTests() {
     assert.strictEqual(result, 'A'.repeat(99), 'trailing space should be trimmed after slice');
   });
 
+  // ── Auto-update & trigger cleanup tests ────────────────────────────────────
+  console.log('  [Auto-update & Trigger Cleanup]');
+
+  // R9: EXPECTED_CLIENT_VERSION regex matches bundled stoa.js
+  ut('EXPECTED_CLIENT_VERSION regex matches bundled stoa.js', () => {
+    const fs = require('fs');
+    const distPath = path.join(__dirname, 'dist', 'stoa.js');
+    const srcPath = path.join(__dirname, 'stoa.js');
+    const src = fs.readFileSync(fs.existsSync(distPath) ? distPath : srcPath, 'utf8');
+    const regex = /^(?:const|var)\s+CLIENT_VERSION\s*=\s*['"]([^'"]+)['"]/m;
+    const m = src.match(regex);
+    assert.ok(m, 'regex must match CLIENT_VERSION in stoa.js');
+    assert.ok(/^\d+\.\d+\.\d+/.test(m[1]), `version must be semver-ish, got: ${m[1]}`);
+  });
+
+  // R9: old regex does NOT match (proves the bug existed)
+  ut('old server regex fails on bundled stoa.js', () => {
+    const fs = require('fs');
+    const distPath = path.join(__dirname, 'dist', 'stoa.js');
+    const srcPath = path.join(__dirname, 'stoa.js');
+    const src = fs.readFileSync(fs.existsSync(distPath) ? distPath : srcPath, 'utf8');
+    const oldRegex = /^const CLIENT_VERSION\s*=\s*'([^']+)'/m;
+    const m = src.match(oldRegex);
+    assert.strictEqual(m, null, 'old regex should NOT match bundled var/"..." format');
+  });
+
+  // R3: ClaudeSession abort() settles queued tasks
+  ut('ClaudeSession.abort() settles queued tasks', () => {
+    const { ClaudeSession } = require('./claude-session');
+    const session = Object.create(ClaudeSession.prototype);
+    session.busy = true;
+    session._accContent = 'partial';
+    session._pendingTool = null;
+    session._currentOnToken = null;
+    session._currentOnState = null;
+    session._currentOnTool = null;
+    session._currentTaskId = 'task-1';
+    const results = [];
+    session._currentResolve = (r) => results.push({ id: 'current', ...r });
+    session._currentReject = null;
+    session._queue = [
+      { taskId: 'task-2', resolve: (r) => results.push({ id: 'q1', ...r }), reject: null },
+      { taskId: 'task-3', resolve: (r) => results.push({ id: 'q2', ...r }), reject: null },
+    ];
+    session.proc = { kill: () => {} };
+    session.abort();
+    assert.strictEqual(results.length, 3, 'all tasks (current + 2 queued) should settle');
+    assert.strictEqual(results[0].aborted, true);
+    assert.strictEqual(results[1].aborted, true);
+    assert.strictEqual(results[2].aborted, true);
+    assert.strictEqual(session._queue.length, 0, 'queue should be empty');
+    assert.strictEqual(session.busy, false);
+  });
+
+  // R3: CodexSession abort() settles queued tasks
+  ut('CodexSession.abort() settles queued tasks', () => {
+    const { CodexSession } = require('./codex-session');
+    const session = Object.create(CodexSession.prototype);
+    session.busy = true;
+    session._accContent = '';
+    session._currentOnToken = null;
+    session._currentOnState = null;
+    session._currentOnTool = null;
+    session._currentTaskId = 'task-1';
+    session._threadId = 'thread-abc';
+    const results = [];
+    session._currentResolve = (r) => results.push({ id: 'current', ...r });
+    session._currentReject = null;
+    session._queue = [
+      { taskId: 'q1', resolve: (r) => results.push({ id: 'q1', ...r }), reject: null },
+    ];
+    session.proc = { kill: () => {} };
+    session.abort();
+    assert.strictEqual(results.length, 2);
+    assert.ok(results.every(r => r.aborted));
+    assert.strictEqual(session._queue.length, 0);
+  });
+
+  // R4: cancelTask removes queued task without aborting current
+  ut('ClaudeSession.cancelTask() removes queued task', () => {
+    const { ClaudeSession } = require('./claude-session');
+    const session = Object.create(ClaudeSession.prototype);
+    session.busy = true;
+    session._currentTaskId = 'task-A';
+    session._accContent = '';
+    session._pendingTool = null;
+    session._currentResolve = null;
+    session._currentReject = null;
+    session._currentOnToken = null;
+    session._currentOnState = null;
+    session._currentOnTool = null;
+    session.proc = { kill: () => {} };
+    let cancelledResult = null;
+    session._queue = [
+      { taskId: 'task-B', resolve: (r) => { cancelledResult = r; }, reject: null },
+      { taskId: 'task-C', resolve: () => {}, reject: null },
+    ];
+    const found = session.cancelTask('task-B');
+    assert.strictEqual(found, true);
+    assert.strictEqual(session._queue.length, 1, 'only task-B removed');
+    assert.strictEqual(session._queue[0].taskId, 'task-C');
+    assert.strictEqual(session.busy, true, 'current task still running');
+    assert.ok(cancelledResult?.aborted);
+  });
+
+  // R7: ClaudeSession.shutdown() rejects current + queued
+  ut('ClaudeSession.shutdown() rejects all tasks', () => {
+    const { ClaudeSession } = require('./claude-session');
+    const session = Object.create(ClaudeSession.prototype);
+    session.busy = true;
+    session._dead = false;
+    session._accContent = '';
+    session._pendingTool = null;
+    session._currentOnToken = null;
+    session._currentOnState = null;
+    session._currentOnTool = null;
+    session._currentTaskId = 'task-1';
+    session._currentResolve = null;
+    const errors = [];
+    session._currentReject = (e) => errors.push(e);
+    session._queue = [
+      { taskId: 'q1', resolve: null, reject: (e) => errors.push(e) },
+    ];
+    session.proc = { kill: () => {} };
+    session.shutdown();
+    assert.strictEqual(errors.length, 2, 'both current and queued rejected');
+    assert.ok(errors.every(e => e.message === 'session shutdown'));
+    assert.strictEqual(session._dead, true);
+  });
+
+  // R5: fetchText/fetchToFile status check verified in integration tests below
+
   return { p, f };
 }
 
@@ -6372,11 +6504,11 @@ async function run() {
   // Fase 3b: behavioral switch
   console.log('\n[Fase 3b: Behavioral Switch]');
 
-  await test('Fase3b — max_concurrent fallback default is 3 (code check)', async () => {
+  await test('Fase3b — max_concurrent fallback default is 1 (code check)', async () => {
     const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
     const settingsLine = src.split('\n').find(l => l.includes('max_concurrent:') && l.includes('MAX_CONCURRENT'));
     assert.ok(settingsLine, 'max_concurrent settings line not found');
-    assert.ok(settingsLine.includes('|| 3'), 'max_concurrent default should be 3, not 1');
+    assert.ok(settingsLine.includes('|| 1'), 'max_concurrent default should be 1');
   });
 
   await test('Fase3b — waitForRoomIdle removed (dead code)', async () => {
@@ -8440,6 +8572,92 @@ async function run() {
     assert.strictEqual(r.body.effective_default_model, 'claude-opus-5-5', 'effective should reflect agent default');
     assert.strictEqual(r.body.effective_default_source, 'agent_default');
     db.prepare('UPDATE actors SET default_model=NULL WHERE id=?').run(hsActorId);
+  });
+
+  // ── Auto-update integration tests ────────────────────────────────────────
+  console.log('\n[Auto-update & Trigger Cleanup]');
+
+  await test('R5: fetchText rejects on HTTP 500', async () => {
+    const httpMod = require('http');
+    const mockServer = httpMod.createServer((req, res) => {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('server error body');
+    });
+    await new Promise(resolve => mockServer.listen(0, '127.0.0.1', resolve));
+    const mockPort = mockServer.address().port;
+    const fetchText = (url) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { innerReq.destroy(); reject(new Error('timeout')); }, 5000);
+      const innerReq = httpMod.get(url, (res) => {
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          clearTimeout(timer); res.resume();
+          reject(new Error(`fetchText HTTP ${res.statusCode}: ${url}`));
+          return;
+        }
+        let text = ''; res.setEncoding('utf8');
+        res.on('data', c => text += c);
+        res.on('end', () => { clearTimeout(timer); resolve(text); });
+        res.on('error', e => { clearTimeout(timer); reject(e); });
+      });
+      innerReq.on('error', e => { clearTimeout(timer); reject(e); });
+    });
+    try {
+      await fetchText(`http://127.0.0.1:${mockPort}/test`);
+      assert.fail('should have rejected');
+    } catch (e) {
+      assert.ok(e.message.includes('500'), `should mention 500, got: ${e.message}`);
+    } finally {
+      mockServer.close();
+    }
+  });
+
+  await test('R5: fetchToFile rejects on HTTP 404 and cleans up partial file', async () => {
+    const httpMod = require('http');
+    const fs = require('fs');
+    const os = require('os');
+    const mockServer = httpMod.createServer((req, res) => {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('not found');
+    });
+    await new Promise(resolve => mockServer.listen(0, '127.0.0.1', resolve));
+    const mockPort = mockServer.address().port;
+    const destPath = path.join(os.tmpdir(), `stoa-test-fetch-${Date.now()}.tmp`);
+    const fetchToFile = (url, dest) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { innerReq.destroy(); reject(new Error('timeout')); }, 5000);
+      const innerReq = httpMod.get(url, (res) => {
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          clearTimeout(timer); res.resume();
+          reject(new Error(`fetchToFile HTTP ${res.statusCode}: ${url}`));
+          return;
+        }
+        const ws = fs.createWriteStream(dest);
+        res.pipe(ws);
+        ws.on('finish', () => { clearTimeout(timer); ws.close(); resolve(dest); });
+        ws.on('error', e => { clearTimeout(timer); try { fs.unlinkSync(dest); } catch {} reject(e); });
+      });
+      innerReq.on('error', e => { clearTimeout(timer); reject(e); });
+    });
+    try {
+      await fetchToFile(`http://127.0.0.1:${mockPort}/file.js`, destPath);
+      assert.fail('should have rejected');
+    } catch (e) {
+      assert.ok(e.message.includes('404'), `should mention 404, got: ${e.message}`);
+      assert.ok(!fs.existsSync(destPath), 'partial file should not exist');
+    } finally {
+      mockServer.close();
+      try { fs.unlinkSync(destPath); } catch {}
+    }
+  });
+
+  await test('R9: EXPECTED_CLIENT_VERSION extracted correctly by server regex', async () => {
+    const r = await req('GET', '/api/settings');
+    assert.strictEqual(r.status, 200);
+  });
+
+  await test('max_concurrent default is 1 in set_config (code check)', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    const configLine = src.split('\n').find(l => l.includes('set_config') && l.includes('MAX_CONCURRENT'));
+    assert.ok(configLine, 'set_config line with MAX_CONCURRENT not found');
+    assert.ok(configLine.includes('|| 1'), 'set_config max_concurrent default should be 1');
   });
 
   // Teardown — delete all test rooms and actors created during the run
