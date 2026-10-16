@@ -1640,8 +1640,8 @@ async function runAsyncUnitTests() {
 
   console.log('  [R1/R2/Sweep Integration Tests]');
 
-  // H3a: R1 — getSession throws → activeTriggers cleaned, drainQueue runs
-  await uta('R1: getSession throws → entry cleaned + drainQueue runs', async () => {
+  // I1: R1 — getSession throws → entry cleaned, steer re-queued, drainQueue dequeues steer
+  await uta('R1: getSession throws → steer re-queue + drainQueue', async () => {
     const stoa = require('./stoa.js');
     const sent = [];
     const workdir = require('os').tmpdir();
@@ -1652,14 +1652,26 @@ async function runAsyncUnitTests() {
     try {
       stoa.activeTriggers.clear();
       stoa.triggerQueue.length = 0;
-      await stoa.processTrigger({ room_id: 99, message_id: 'r1-test-1', prompt: 'test', workdir });
-      assert.strictEqual(stoa.activeTriggers.has('r1-test-1'), false, 'entry cleaned by finally');
-      const errMsg = sent.find(m => m.type === 'agent_error' && m.message_id === 'r1-test-1');
-      assert.ok(errMsg, 'agent_error sent');
-      assert.ok(errMsg.error.includes('harness not installed'), 'error message correct');
+      stoa.pendingSteerMessages.clear();
+      // add a pending steer for room 99:thread 0
+      stoa.pendingSteerMessages.set('99:0', [{ content: 'steer msg', message_id: 'steer-1' }]);
+      await stoa.processTrigger({ room_id: 99, message_id: 'r1-drain-1', prompt: 'test', workdir });
+      // entry cleaned
+      assert.strictEqual(stoa.activeTriggers.has('r1-drain-1'), false, 'entry cleaned by finally');
+      // agent_error sent for original trigger
+      const errMsg = sent.find(m => m.type === 'agent_error' && m.message_id === 'r1-drain-1');
+      assert.ok(errMsg, 'agent_error sent for r1-drain-1');
+      // steer re-queued: pendingSteerMessages cleared, steer moved to triggerQueue by finally
+      assert.strictEqual(stoa.pendingSteerMessages.has('99:0'), false, 'pendingSteerMessages cleared');
+      // drainQueue ran in finally → steer dequeued and processed (also errors via getSession)
+      await new Promise(r => setTimeout(r, 150));
+      assert.ok(!stoa.triggerQueue.find(t => t.message_id === 'steer-1'), 'steer dequeued by drainQueue');
+      const steerErr = sent.find(m => m.type === 'agent_error' && m.message_id === 'steer-1');
+      assert.ok(steerErr, 'agent_error sent for steer item (proves drainQueue ran)');
     } finally {
       stoa.activeTriggers.clear();
       stoa.triggerQueue.length = 0;
+      stoa.pendingSteerMessages.clear();
       stoa.__resetDeps();
     }
   });
@@ -1699,22 +1711,44 @@ async function runAsyncUnitTests() {
     }
   });
 
-  // H3c: runTrigger wraps reject → entry deleted + drainQueue
-  await uta('runTrigger: processTrigger reject → entry deleted', async () => {
+  // I2: runTrigger — processTrigger actually rejects (send throws on agent_error)
+  await uta('runTrigger: real reject → entry deleted + drainQueue via .catch', async () => {
     const stoa = require('./stoa.js');
     const sent = [];
     const workdir = require('os').tmpdir();
+    let unhandledSeen = false;
+    const onUnhandled = () => { unhandledSeen = true; };
+    process.on('unhandledRejection', onUnhandled);
     stoa.__setDeps({
-      send: (msg) => sent.push(msg),
-      getSession: () => { throw new Error('intentional test error'); },
+      send: (msg) => {
+        sent.push(msg);
+        if (msg.type === 'agent_error') throw new Error('send exploded');
+      },
+      getSession: () => { throw new Error('harness not installed'); },
     });
     try {
       stoa.activeTriggers.clear();
       stoa.triggerQueue.length = 0;
-      stoa.runTrigger({ room_id: 99, message_id: 'rt-fail-1', prompt: 'test', workdir });
-      await new Promise(r => setTimeout(r, 100));
-      assert.strictEqual(stoa.activeTriggers.has('rt-fail-1'), false, 'entry cleaned after reject');
+      // queue an item so drainQueue (called by runTrigger's .catch) has work
+      // precondition: processTrigger really rejects (error escapes catch via throwing send)
+      await assert.rejects(
+        stoa.processTrigger({ room_id: 99, message_id: 'rt-direct-1', prompt: 'test', workdir }),
+        /send exploded/, 'processTrigger rejects when catch-path send throws');
+      sent.length = 0;
+      stoa.triggerQueue.push({ room_id: 99, message_id: 'rt-queued-1', prompt: 'q', workdir });
+      stoa.runTrigger({ room_id: 99, message_id: 'rt-reject-1', prompt: 'test', workdir });
+      await new Promise(r => setTimeout(r, 200));
+      // runTrigger's .catch should have fired: entry deleted
+      assert.strictEqual(stoa.activeTriggers.has('rt-reject-1'), false, 'entry deleted by runTrigger .catch');
+      // drainQueue ran from .catch: queued item dequeued (also errored)
+      await new Promise(r => setTimeout(r, 200));
+      const queuedErr = sent.find(m => m.type === 'agent_error' && m.message_id === 'rt-queued-1');
+      assert.ok(queuedErr, 'queued item dequeued and processed (agent_error attempted)');
+      assert.strictEqual(stoa.triggerQueue.length, 0, 'triggerQueue empty');
+      assert.strictEqual(stoa.activeTriggers.size, 0, 'no leaked slots');
+      assert.strictEqual(unhandledSeen, false, 'no unhandledRejection');
     } finally {
+      process.removeListener('unhandledRejection', onUnhandled);
       stoa.activeTriggers.clear();
       stoa.triggerQueue.length = 0;
       stoa.__resetDeps();
@@ -1764,8 +1798,8 @@ async function runAsyncUnitTests() {
     }
   });
 
-  // H3e: end-to-end sweep — force-delete (cancelTask false) → one agent_complete from sweep
-  await uta('sweep e2e: force-delete → one agent_complete from sweep', async () => {
+  // I3: force-delete proves H2 — post-zombie: exactly 1 complete, 0 error
+  await uta('sweep e2e: force-delete → post-zombie: 1 complete, 0 error', async () => {
     const stoa = require('./stoa.js');
     const sent = [];
     const workdir = require('os').tmpdir();
@@ -1791,13 +1825,72 @@ async function runAsyncUnitTests() {
       await new Promise(r => setTimeout(r, 50));
       assert.ok(stoa.activeTriggers.has('sweep-fd-1'), 'entry exists before sweep');
       stoa.sweepStaleTriggers(Date.now() + stoa.STALE_TRIGGER_MS + 1);
-      const completes = sent.filter(m => m.type === 'agent_complete' && m.message_id === 'sweep-fd-1');
-      assert.strictEqual(completes.length, 1, 'exactly one agent_complete from sweep force-delete');
-      assert.strictEqual(completes[0].result_meta.exit_reason, 'timeout');
+      const completesPreZombie = sent.filter(m => m.type === 'agent_complete' && m.message_id === 'sweep-fd-1');
+      assert.strictEqual(completesPreZombie.length, 1, 'one agent_complete from sweep force-delete');
+      assert.strictEqual(completesPreZombie[0].result_meta.exit_reason, 'timeout');
       assert.strictEqual(stoa.activeTriggers.has('sweep-fd-1'), false, 'entry force-deleted');
-      if (sendReject) sendReject(new Error('test cleanup'));
+      // zombie continues: reject the hanging session.send → processTrigger catch runs
+      sendReject(new Error('session destroyed'));
       await triggerDone.catch(() => {});
+      await new Promise(r => setTimeout(r, 50));
+      // H2 proof: post-zombie, still exactly 1 complete, 0 error
+      const completesPost = sent.filter(m => m.type === 'agent_complete' && m.message_id === 'sweep-fd-1');
+      assert.strictEqual(completesPost.length, 1, 'still exactly 1 agent_complete after zombie settles');
+      const errors = sent.filter(m => m.type === 'agent_error' && m.message_id === 'sweep-fd-1');
+      assert.strictEqual(errors.length, 0, '0 agent_error after zombie settles');
+      assert.strictEqual(stoa.activeTriggers.has('sweep-fd-1'), false, 'entry not resurrected');
     } finally {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      stoa.__resetDeps();
+    }
+  });
+
+  // I3 pra-send variant: sweep force-delete while session still null (attachment fetch hanging)
+  await uta('sweep e2e: pra-send force-delete → session null, no getSession after sweep', async () => {
+    const stoa = require('./stoa.js');
+    const sent = [];
+    const workdir = require('os').tmpdir();
+    const http = require('http');
+    let getSessionCalled = false;
+    // hanging HTTP server for attachment fetch
+    const hangServer = http.createServer((req, res) => { /* never respond */ });
+    await new Promise(r => hangServer.listen(0, '127.0.0.1', r));
+    const hangPort = hangServer.address().port;
+    stoa.__setDeps({
+      send: (msg) => sent.push(msg),
+      getSession: () => { getSessionCalled = true; throw new Error('should not be called'); },
+      FETCH_TIMEOUT_MS: 200,
+    });
+    try {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      // trigger with attachment URL pointing to hanging server
+      const triggerDone = stoa.processTrigger({
+        room_id: 99, message_id: 'sweep-pra-1', prompt: 'test', workdir,
+        attachments: [{ url: `http://127.0.0.1:${hangPort}/hang.bin`, name: 'hang.bin', type: 'file' }],
+      });
+      await new Promise(r => setTimeout(r, 50));
+      assert.ok(stoa.activeTriggers.has('sweep-pra-1'), 'entry exists during fetch');
+      // sweep while still fetching (session is null)
+      getSessionCalled = false;
+      stoa.sweepStaleTriggers(Date.now() + stoa.STALE_TRIGGER_MS + 1);
+      const sweepCompletes = sent.filter(m => m.type === 'agent_complete' && m.message_id === 'sweep-pra-1');
+      assert.strictEqual(sweepCompletes.length, 1, 'sweep sent agent_complete (force-delete)');
+      assert.strictEqual(stoa.activeTriggers.has('sweep-pra-1'), false, 'entry force-deleted');
+      // wait for fetch timeout + zombie to settle
+      await triggerDone.catch(() => {});
+      await new Promise(r => setTimeout(r, 300));
+      // post-zombie assertions
+      const allCompletes = sent.filter(m => m.type === 'agent_complete' && m.message_id === 'sweep-pra-1');
+      assert.strictEqual(allCompletes.length, 1, 'still exactly 1 complete after fetch timeout');
+      const allErrors = sent.filter(m => m.type === 'agent_error' && m.message_id === 'sweep-pra-1');
+      assert.strictEqual(allErrors.length, 0, '0 agent_error after fetch timeout');
+      assert.strictEqual(stoa.activeTriggers.has('sweep-pra-1'), false, 'entry not resurrected');
+      assert.strictEqual(getSessionCalled, false, 'getSession NOT called after sweep force-delete');
+    } finally {
+      if (hangServer.closeAllConnections) hangServer.closeAllConnections();
+      hangServer.close();
       stoa.activeTriggers.clear();
       stoa.triggerQueue.length = 0;
       stoa.__resetDeps();

@@ -2215,4 +2215,4 @@ function __resetDeps() {
   FETCH_TIMEOUT_MS = 60000;
   consecutiveTriggerErrors = 0;
 }
-module.exports = { fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, FIRST_TOKEN_TIMEOUT, __setDeps, __resetDeps };
+module.exports = { fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, FIRST_TOKEN_TIMEOUT, __setDeps, __resetDeps };
