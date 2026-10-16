@@ -2304,7 +2304,7 @@ async function run() {
       const humanId = db.prepare("SELECT id FROM actors WHERE type='human' LIMIT 1").get()?.id || 1;
       // Insert settings on an existing test room
       db.prepare("INSERT OR REPLACE INTO settings (scope, scope_id, key_name, value) VALUES ('room', ?, 'tool_progress', 'normal')").run(testRoomIds[0]);
-      db.prepare("INSERT OR REPLACE INTO settings (scope, scope_id, key_name, value) VALUES ('global', 0, 'tool_progress', 'default')").run();
+      db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, '__cascade_test_global__', 'default')").run();
       // Create + populate + delete a DIFFERENT room
       const ins = db.prepare("INSERT INTO rooms (title, created_by) VALUES ('__cascade-control__', ?)").run(humanId);
       const controlId = ins.lastInsertRowid;
@@ -2315,10 +2315,10 @@ async function run() {
       assert.ok(otherSetting, 'other room setting still exists');
       assert.strictEqual(otherSetting.value, 'normal');
       // Global setting untouched
-      assert.ok(db.prepare("SELECT value FROM settings WHERE scope='global' AND key_name='tool_progress'").get(), 'global setting still exists');
+      assert.ok(db.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='__cascade_test_global__'").get(), 'global setting still exists');
       // Cleanup
       db.prepare("DELETE FROM settings WHERE scope='room' AND scope_id=? AND key_name='tool_progress'").run(testRoomIds[0]);
-      db.prepare("DELETE FROM settings WHERE scope='global' AND scope_id=0 AND key_name='tool_progress'").run();
+      db.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='__cascade_test_global__'").run();
     });
     await test('Migration 20261016-cleanup-orphan-room-settings applied successfully', async () => {
       const db = require('./db');
