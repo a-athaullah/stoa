@@ -3501,6 +3501,41 @@ async function run() {
     assert.strictEqual(r.status, 404);
   });
 
+  await test('GET /api/client/file/stoa.js — downgrade on disk still serves startup bundle', async () => {
+    const fs = require('fs');
+    const bundleDir = process.env.STOA_AGENT_BUNDLE_DIR;
+    assert.ok(bundleDir, 'STOA_AGENT_BUNDLE_DIR must be set by test runner');
+    const bundlePath = path.join(bundleDir, 'stoa.js');
+    // Get original manifest hash
+    const manifest = await req('GET', '/api/client/manifest');
+    assert.strictEqual(manifest.status, 200);
+    const origHash = manifest.body.files['stoa.js'];
+    assert.ok(origHash, 'manifest should have stoa.js hash');
+    // Get original file content + compute hash
+    const origFile = await req('GET', '/api/client/file/stoa.js');
+    assert.strictEqual(origFile.status, 200);
+    const origFileHash = crypto.createHash('sha256').update(origFile.raw).digest('hex').slice(0, 12);
+    assert.strictEqual(origFileHash, origHash, 'file hash should match manifest hash');
+    // Save original, write a downgrade (lower CLIENT_VERSION)
+    const origContent = fs.readFileSync(bundlePath);
+    const downgrade = origContent.toString('utf8').replace(
+      /CLIENT_VERSION\s*=\s*"[^"]+"/,
+      'CLIENT_VERSION = "0.0.1"'
+    );
+    fs.writeFileSync(bundlePath, downgrade);
+    // File endpoint should still serve startup bundle (not downgrade)
+    const afterFile = await req('GET', '/api/client/file/stoa.js');
+    assert.strictEqual(afterFile.status, 200);
+    const afterHash = crypto.createHash('sha256').update(afterFile.raw).digest('hex').slice(0, 12);
+    assert.strictEqual(afterHash, origHash, 'file endpoint must serve startup bundle, not downgrade');
+    assert.ok(!afterFile.raw.includes('CLIENT_VERSION = "0.0.1"'), 'response must not contain downgraded version');
+    // Manifest should also still report original hash
+    const afterManifest = await req('GET', '/api/client/manifest');
+    assert.strictEqual(afterManifest.body.files['stoa.js'], origHash, 'manifest hash unchanged after downgrade');
+    // Restore original
+    fs.writeFileSync(bundlePath, origContent);
+  });
+
   // Install scripts
   console.log('\n[Install Scripts]');
   await test('GET /install.sh — returns bash script with one-time token', async () => {
