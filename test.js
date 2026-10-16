@@ -1644,6 +1644,61 @@ async function runAsyncUnitTests() {
     }
   });
 
+  // Attachment same-name dedup: two attachments named image.png → two distinct files
+  await uta('attachment same-name dedup: two image.png → two distinct local files', async () => {
+    const stoa = require('./stoa.js');
+    const http = require('http');
+    const fs = require('fs');
+    const workdir = require('os').tmpdir();
+    const server = http.createServer((req, res) => {
+      const u = new URL(req.url, 'http://localhost');
+      const content = u.searchParams.get('v') || 'default';
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': content.length });
+      res.end(content);
+    });
+    await new Promise(r => server.listen(0, '127.0.0.1', r));
+    const port = server.address().port;
+    let capturedFiles = null;
+    stoa.__setDeps({
+      send: (msg) => {
+        // capture file state inside send (before finally cleans up)
+        if (msg.type === 'agent_error' && msg.message_id === 'att-dedup-1' && !capturedFiles) {
+          const attDir = path.join(workdir, '.stoa-attachments', 'att-dedup-1');
+          if (fs.existsSync(attDir)) {
+            const files = fs.readdirSync(attDir);
+            capturedFiles = files.map(f => ({
+              name: f,
+              content: fs.readFileSync(path.join(attDir, f), 'utf8'),
+            }));
+          }
+        }
+      },
+      getSession: () => { throw new Error('skip session'); },
+    });
+    try {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      await stoa.processTrigger({
+        room_id: 99, message_id: 'att-dedup-1', prompt: 'test', workdir,
+        attachments: [
+          { url: `http://127.0.0.1:${port}/image.png?v=AAAA`, name: 'image.png', type: 'image' },
+          { url: `http://127.0.0.1:${port}/image.png?v=BBBB`, name: 'image.png', type: 'image' },
+        ],
+      });
+      assert.ok(capturedFiles, 'files captured before cleanup');
+      assert.strictEqual(capturedFiles.length, 2, `expected 2 files, got ${capturedFiles.length}: ${capturedFiles.map(f => f.name).join(', ')}`);
+      const contents = capturedFiles.map(f => f.content).sort();
+      assert.deepStrictEqual(contents, ['AAAA', 'BBBB'], 'each file has distinct content');
+      const names = capturedFiles.map(f => f.name).sort();
+      assert.notStrictEqual(names[0], names[1], 'filenames are different');
+    } finally {
+      server.close();
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      stoa.__resetDeps();
+    }
+  });
+
   console.log('  [R1/R2/Sweep Integration Tests]');
 
   // I1: R1 — getSession throws → entry cleaned, steer re-queued, drainQueue dequeues steer
