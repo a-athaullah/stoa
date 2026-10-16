@@ -2320,6 +2320,17 @@ async function run() {
       db.prepare("DELETE FROM settings WHERE scope='room' AND scope_id=? AND key_name='tool_progress'").run(testRoomIds[0]);
       db.prepare("DELETE FROM settings WHERE scope='global' AND scope_id=0 AND key_name='tool_progress'").run();
     });
+    await test('Migration 20261016-cleanup-orphan-room-settings applied successfully', async () => {
+      const db = require('./db');
+      const applied = db.prepare("SELECT 1 FROM migrations WHERE filename='20261016-cleanup-orphan-room-settings.sql'").get();
+      assert.ok(applied, 'migration must be recorded in migrations table');
+      const orphanSettings = db.prepare("SELECT COUNT(*) as c FROM settings WHERE scope='room' AND scope_id NOT IN (SELECT id FROM rooms)").get().c;
+      assert.strictEqual(orphanSettings, 0, 'no orphan room settings should remain after migration');
+      const orphanMemory = db.prepare("SELECT COUNT(*) as c FROM room_memory WHERE room_id NOT IN (SELECT id FROM rooms)").get().c;
+      assert.strictEqual(orphanMemory, 0, 'no orphan room_memory should remain after migration');
+      const orphanPending = db.prepare("SELECT COUNT(*) as c FROM memory_pending_writes WHERE room_id IS NOT NULL AND room_id NOT IN (SELECT id FROM rooms)").get().c;
+      assert.strictEqual(orphanPending, 0, 'no orphan memory_pending_writes should remain after migration');
+    });
   }
 
   // Proactive message — self-contained flow: create actor → room → send → delete → archive → cleanup
