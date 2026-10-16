@@ -17,12 +17,14 @@ class ClaudeSession extends EventEmitter {
     this.proc = null;
     this.buffer = '';
     this.busy = false;
+    this._restarting = false;
     this._queue = [];
     this._currentResolve = null;
     this._currentReject = null;
     this._currentOnToken = null;
     this._currentOnState = null;
     this._currentOnTool = null;
+    this._currentTaskId = null;
     this._accContent = '';
     this._pendingTool = null;
     // stable debug log path: one file per workdir in os.tmpdir()
@@ -33,6 +35,7 @@ class ClaudeSession extends EventEmitter {
 
   _start() {
     this._dead = false;
+    this._restarting = false;
     const args = [
       '--output-format', 'stream-json',
       '--input-format', 'stream-json',
@@ -66,7 +69,6 @@ class ClaudeSession extends EventEmitter {
 
     this.proc.on('close', (code, signal) => {
       if (this._dead) return;
-      // If resume ID is invalid, drop it and restart fresh
       if (this._stderrBuf.includes('No conversation found')) {
         console.error('[session] Resume ID invalid, restarting without resume...');
         this.flags = this.flags.filter((f, i, arr) => f !== '--resume' && arr[i - 1] !== '--resume');
@@ -77,35 +79,45 @@ class ClaudeSession extends EventEmitter {
       this._stderrBuf = '';
       if (this._currentReject) {
         const reject = this._currentReject;
-        this._clearCurrent();
+        this._clearCurrent({ drain: false });
         reject(new Error('claude process exited unexpectedly'));
       }
-      setTimeout(() => { if (!this._dead) this._start(); }, 3000);
+      this._restarting = true;
+      setTimeout(() => {
+        if (this._dead) return;
+        this._start();
+        if (!this.busy && this._queue.length > 0) {
+          const next = this._queue.shift();
+          this._startTask(next);
+        }
+      }, 3000);
     });
   }
 
-  _clearCurrent() {
+  _clearCurrent({ drain = true } = {}) {
     this._currentResolve = null;
     this._currentReject = null;
     this._currentOnToken = null;
     this._currentOnState = null;
     this._currentOnTool = null;
+    this._currentTaskId = null;
     this._accContent = '';
     this._pendingTool = null;
     this.busy = false;
-    if (this._queue.length > 0) {
+    if (drain && this._queue.length > 0 && !this._dead && !this._restarting) {
       const next = this._queue.shift();
       this._startTask(next);
     }
   }
 
-  _startTask({ prompt, imageData, onToken, onState, onTool, resolve, reject }) {
+  _startTask({ prompt, imageData, onToken, onState, onTool, resolve, reject, taskId }) {
     this.busy = true;
     this._currentResolve = resolve;
     this._currentReject = reject;
     this._currentOnToken = onToken || null;
     this._currentOnState = onState || null;
     this._currentOnTool = onTool || null;
+    this._currentTaskId = taskId || null;
     this._accContent = '';
     this._pendingTool = null;
 
@@ -169,10 +181,10 @@ class ClaudeSession extends EventEmitter {
 
   // Send a message and await the complete response.
   // Returns Promise<{ content, sessionId }>.
-  send({ prompt, imageData = null, onToken, onState, onTool } = {}) {
+  send({ prompt, imageData = null, onToken, onState, onTool, taskId } = {}) {
     return new Promise((resolve, reject) => {
-      const task = { prompt, imageData, onToken, onState, onTool, resolve, reject };
-      if (this.busy) {
+      const task = { prompt, imageData, onToken, onState, onTool, resolve, reject, taskId };
+      if (this.busy || this._restarting) {
         this._queue.push(task);
       } else {
         this._startTask(task);
@@ -189,15 +201,38 @@ class ClaudeSession extends EventEmitter {
     this._currentOnToken = null;
     this._currentOnState = null;
     this._currentOnTool = null;
+    this._currentTaskId = null;
     this._accContent = '';
     this._pendingTool = null;
     this.busy = false;
+    this._restarting = true;
     resolve?.({ content, sessionId: null, aborted: true });
     this.proc?.kill('SIGTERM');
   }
 
+  cancelTask(taskId) {
+    if (this._currentTaskId === taskId && this.busy) {
+      this.abort();
+      return true;
+    }
+    const idx = this._queue.findIndex(t => t.taskId === taskId);
+    if (idx !== -1) {
+      const [removed] = this._queue.splice(idx, 1);
+      removed.resolve?.({ content: '', sessionId: null, aborted: true });
+      return true;
+    }
+    return false;
+  }
+
   shutdown() {
     this._dead = true;
+    if (this._currentReject) {
+      const reject = this._currentReject;
+      this._clearCurrent();
+      reject(new Error('session shutdown'));
+    }
+    const queued = this._queue.splice(0);
+    for (const t of queued) t.reject?.(new Error('session shutdown'));
     this.proc?.kill('SIGTERM');
   }
 }

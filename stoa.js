@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.352";
+var CLIENT_VERSION = "0.4.354";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -268,6 +268,7 @@ var reauthProc = null;
 var consecutiveTriggerErrors = 0;
 var MAX_TRIGGER_ERRORS = 3;
 var TRIGGER_TIMEOUT = 5 * 6e4;
+var FIRST_TOKEN_TIMEOUT = 10 * 6e4;
 var MAX_CONCURRENT = parseInt(process.env.STOA_MAX_CONCURRENT || "1");
 var UPDATE_INTERVAL = 12e4;
 var UPDATE_FILES = ["stoa.js", "claude-session.js", "codex-session.js"];
@@ -652,6 +653,9 @@ function startSessionIdleTimer(sessionKey) {
       console.log(`[stoa] session closed (idle ${SESSION_IDLE_TTL}m): ${sessionKey}`);
     }
   }, SESSION_IDLE_TTL * 6e4);
+  // unref: housekeeping only — the agent stays alive via its WS/keepAlive; a ref'd timer
+  // here kept in-process importers (test.js) from exiting.
+  timer.unref?.();
   sessionIdleTimers.set(sessionKey, timer);
 }
 function clearSessionIdleTimer(sessionKey) {
@@ -691,7 +695,7 @@ setInterval(async () => {
       send({ type: "compact_error", orig_session_id: sessionId, thread_id: skMeta.threadId, sub_agent_id: skMeta.subAgentId, error: err.message });
     });
   }
-}, 60 * 6e4);
+}, 60 * 6e4).unref();
 function execWithTimeout(cmd, args, timeout) {
   const { execFile } = require("child_process");
   return new Promise((resolve) => {
@@ -886,7 +890,13 @@ async function handleAgentMessage(msg) {
       console.log(`[stoa] Cancelled queued msg=${msg.message_id}`);
     } else {
       const active = activeTriggers.get(msg.message_id);
-      if (active?.session) active.session.abort();
+      if (active?.session) {
+        if (active.session.cancelTask) {
+          active.session.cancelTask(msg.message_id);
+        } else {
+          active.session.abort();
+        }
+      }
     }
   }
   if (msg.type === "create_workdir") {
@@ -1210,11 +1220,7 @@ async function handleAgentMessage(msg) {
       console.log(`[stoa] queued msg=${message_id} (${triggerQueue.length} in queue)`);
       return;
     }
-    processTrigger(msg).catch((err) => {
-      console.error(`[stoa] unhandled processTrigger error: ${err.message}`);
-      activeTriggers.delete(message_id);
-      drainQueue();
-    });
+    runTrigger(msg);
   }
 }
 function wsRequest(type, payload, timeout = 1e4) {
@@ -1257,7 +1263,23 @@ async function processTrigger(msg) {
   const targetDir = path.resolve(workdir);
   const threadId = msg.thread_id || 0;
   const sessionKey = buildSessionKey(targetDir, room_id, threadId, subAgent?.id);
-  activeTriggers.set(message_id, { workdir, session: null, sessionKey });
+  const entry = { workdir, session: null, sessionKey, room_id, startedAt: Date.now(), lastActivity: Date.now() };
+  activeTriggers.set(message_id, entry);
+  let sessionRef = null;
+  let statusHandler = null;
+  let hangWatchdog = null;
+  let _toolStatusTimer = null;
+  let _toolStartMs = null;
+  let _toolVerb = null;
+  let _toolStatusUpdates = 0;
+  let _saLabel = null;
+  let toolMode = "full";
+  let lastActivity = Date.now();
+  const updateActivity = () => {
+    lastActivity = Date.now();
+    entry.lastActivity = Date.now();
+  };
+  try {
   const baseUrl = STOA_URL.replace("ws://", "http://").replace("wss://", "https://");
   const TEXT_EXTS = /* @__PURE__ */ new Set([".md", ".txt", ".json", ".csv", ".html", ".js", ".ts", ".py", ".yaml", ".yml", ".sh", ".css"]);
   const IMAGE_EXTS = /* @__PURE__ */ new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"]);
@@ -1356,9 +1378,6 @@ File yang dilampirkan (sudah didownload ke lokal, gunakan Read tool untuk membac
 ${allNotes}`;
     }
   }
-  let sessionRef = null;
-  let statusHandler = null;
-  try {
     let _stopToolTimer2 = function() {
       if (_toolStatusTimer) {
         clearInterval(_toolStatusTimer);
@@ -1414,6 +1433,7 @@ ${allNotes}`;
       } catch {
       }
     }
+    if (entry.swept) throw new Error('trigger swept by stale cleanup');
     const triggerHarness = msg.harness || "claude";
     const apiKeys = msg.api_keys || (msg.api_key ? [msg.api_key] : []);
     const platformEnv = { STOA_ROOM_ID: String(room_id), STOA_THREAD_ID: threadId ? String(threadId) : "" };
@@ -1424,7 +1444,7 @@ ${allNotes}`;
     const envToUse = platformEnv;
     const systemPromptHash = msg.system_prompt_hash || null;
     const resumeBase = buildResumeArgs(msg, { targetDir, sessionKey, harness: triggerHarness });
-    let session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
+    let session = (_getSessionOverride || getSession)(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
     const currentSystemPromptHash = session._systemPromptHash || null;
     const needsSystemPromptChange = systemPromptHash && currentSystemPromptHash !== systemPromptHash;
     const needsResume = rid && session.resumeId !== rid;
@@ -1440,25 +1460,24 @@ ${allNotes}`;
     const needsEnvChange = currentEnv !== newEnv;
     if (needsResume || needsFreshSession || needsModelChange || needsEnvChange || needsSystemPromptChange || needsHarnessChange) {
       session.shutdown();
-      session = await prepareResume({ ...resumeBase, rid: needsHarnessChange ? null : rid, targetModel, env: envToUse });
+      session = await (_prepareResumeOverride || prepareResume)({ ...resumeBase, rid: needsHarnessChange ? null : rid, targetModel, env: envToUse });
       console.log(`[stoa] Session restarted: harness=${triggerHarness} workdir=${targetDir} room=${room_id} thread=${threadId}${rid ? " resume=" + rid.slice(0, 8) + "..." : " (fresh)"}${targetModel ? " model=" + targetModel : ""}${needsSystemPromptChange ? " system_prompt_changed" : ""}${needsHarnessChange ? " harness_changed" : ""}${msg.base_url ? " base_url=" + msg.base_url : ""}${msg.tools_supported === false ? " tools=disabled" : ""}`);
     }
-    activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
+    if (entry.swept) throw new Error('trigger swept by stale cleanup');
+    Object.assign(entry, { workdir: targetDir, session, lastActivity: Date.now() });
     let fullContent = "";
-    let lastActivity = Date.now();
     let abortReason = null;
     let thinkingSigRetried = false;
     statusHandler = (status) => {
-      lastActivity = Date.now();
+      updateActivity();
       send({ type: "agent_system_event", room_id, message_id, status });
     };
     sessionRef = session;
     session.on("status", statusHandler);
-    const FIRST_TOKEN_TIMEOUT = 10 * 6e4;
     const DEBUG_ACTIVE_GRACE_MS = 6e4;
     const MAX_DEBUG_DEFERS = 3;
     let debugDeferCount = 0;
-    const hangWatchdog = setInterval(() => {
+    hangWatchdog = setInterval(() => {
       const timeout = fullContent ? TRIGGER_TIMEOUT : FIRST_TOKEN_TIMEOUT;
       if (Date.now() - lastActivity > timeout) {
         if (session.debugLogPath && debugDeferCount < MAX_DEBUG_DEFERS) {
@@ -1466,7 +1485,7 @@ ${allNotes}`;
             const { mtimeMs } = fs.statSync(session.debugLogPath);
             if (Date.now() - mtimeMs < DEBUG_ACTIVE_GRACE_MS) {
               debugDeferCount++;
-              lastActivity = Date.now();
+              updateActivity();
               console.log(`[stoa] watchdog: CLI debug log active ${Math.round((Date.now() - mtimeMs) / 1e3)}s ago, deferring abort (${debugDeferCount}/${MAX_DEBUG_DEFERS})`);
               return;
             }
@@ -1476,37 +1495,41 @@ ${allNotes}`;
         clearInterval(hangWatchdog);
         abortReason = "timeout";
         console.error(`[stoa] trigger timeout (${timeout / 1e3}s ${fullContent ? "idle" : "no first token"}), aborting`);
-        session.abort();
+        session.cancelTask(message_id);
       }
     }, 1e4);
-    const toolMode = roomSettings.get(room_id)?.tool_status_mode ?? "full";
-    let _toolStatusTimer = null;
-    let _toolStartMs = null;
-    let _toolVerb = null;
-    let _toolStatusUpdates = 0;
-    const _saLabel = subAgent?.label || null;
+    toolMode = roomSettings.get(room_id)?.tool_status_mode ?? "full";
+    _saLabel = subAgent?.label || null;
     const sendOpts = {
       prompt: finalPrompt,
       history: msg.rawHistory || null,
+      taskId: message_id,
       onToken: (token) => {
-        lastActivity = Date.now();
+        updateActivity();
         fullContent += token;
         send({ type: "agent_token", room_id, message_id, token });
         if (_toolStatusTimer) _stopToolTimer2();
       },
       onState: (state) => {
-        lastActivity = Date.now();
+        updateActivity();
         send({ type: "agent_state", room_id, message_id, state });
         if (_toolStatusTimer) _stopToolTimer2();
       },
       onTool: (tool) => {
-        lastActivity = Date.now();
+        updateActivity();
         send({ type: "agent_tool", room_id, message_id, tool });
         _startToolStatus2(_toolVerb_for2(tool.name, tool.input));
       }
     };
+    const _checkSwept = () => {
+      if (entry.swept) throw new Error('trigger swept by stale cleanup');
+    };
+    const _updateEntry = (fields) => {
+      Object.assign(entry, fields);
+    };
     let result;
     try {
+      _checkSwept();
       result = await session.send(sendOpts);
     } catch (retryErr) {
       const isAuthOrQuota = /auth|unauthorized|quota|rate.limit|429|401|403/i.test(retryErr.message);
@@ -1521,12 +1544,13 @@ ${allNotes}`;
           send({ type: "agent_stream_reset", room_id, message_id });
           fullContent = "";
           session.shutdown();
-          session = await prepareResume({ ...resumeBase, rid, targetModel, env: envToUse });
-          activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
+          session = await (_prepareResumeOverride || prepareResume)({ ...resumeBase, rid, targetModel, env: envToUse });
+          _updateEntry({ session, lastActivity: Date.now() });
           sessionRef = session;
           session.on("status", statusHandler);
           try {
-            lastActivity = Date.now();
+            updateActivity();
+            _checkSwept();
             result = await session.send(sendOpts);
             advanced = true;
             break;
@@ -1542,12 +1566,13 @@ ${allNotes}`;
           console.log(`[stoa] API key #1 failed (${retryErr.message}), rotating to key #${ki + 1}...`);
           const rotatedEnv = { ...platformEnv, ANTHROPIC_AUTH_TOKEN: apiKeys[ki] };
           session.shutdown();
-          session = await prepareResume({ ...resumeBase, rid, targetModel, env: rotatedEnv });
-          activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
+          session = await (_prepareResumeOverride || prepareResume)({ ...resumeBase, rid, targetModel, env: rotatedEnv });
+          _updateEntry({ session, lastActivity: Date.now() });
           sessionRef = session;
           session.on("status", statusHandler);
           try {
-            lastActivity = Date.now();
+            updateActivity();
+            _checkSwept();
             result = await session.send(sendOpts);
             rotated = true;
             break;
@@ -1563,18 +1588,20 @@ ${allNotes}`;
         sessionPool.delete(sessionKey);
         await new Promise((r) => setTimeout(r, 2e3));
         fullContent = "";
-        session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
-        activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
+        session = (_getSessionOverride || getSession)(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
+        _updateEntry({ session, lastActivity: Date.now() });
         if (statusHandler) session.on("status", statusHandler);
         sessionRef = session;
-        lastActivity = Date.now();
+        updateActivity();
+        _checkSwept();
         result = await session.send(sendOpts);
       } else if (retryErr.message.includes("exited unexpectedly") && !fullContent) {
         console.log(`[stoa] session crashed before output, retrying in 4s...`);
         await new Promise((r) => setTimeout(r, 4e3));
-        session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
-        activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
-        lastActivity = Date.now();
+        _checkSwept();
+        session = (_getSessionOverride || getSession)(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
+        _updateEntry({ session, lastActivity: Date.now() });
+        updateActivity();
         result = await session.send(sendOpts);
       } else if (triggerHarness === "claude" && isThinkingSignatureError(retryErr.message) && !fullContent && !thinkingSigRetried) {
         thinkingSigRetried = true;
@@ -1583,11 +1610,12 @@ ${allNotes}`;
         fullContent = "";
         session.shutdown();
         await backupSessionFile(targetDir, rid);
-        session = await prepareResume({ ...resumeBase, rid, targetModel, env: envToUse, aggressive: true });
-        activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
+        session = await (_prepareResumeOverride || prepareResume)({ ...resumeBase, rid, targetModel, env: envToUse, aggressive: true });
+        _updateEntry({ session, lastActivity: Date.now() });
         sessionRef = session;
         session.on("status", statusHandler);
-        lastActivity = Date.now();
+        updateActivity();
+        _checkSwept();
         result = await session.send(sendOpts);
       } else {
         throw retryErr;
@@ -1604,11 +1632,12 @@ ${allNotes}`;
       sessionPool.delete(sessionKey);
       await new Promise((r) => setTimeout(r, 2e3));
       fullContent = "";
-      session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
-      activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
+      session = (_getSessionOverride || getSession)(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
+      _updateEntry({ session, lastActivity: Date.now() });
       if (statusHandler) session.on("status", statusHandler);
       sessionRef = session;
-      lastActivity = Date.now();
+      updateActivity();
+      _checkSwept();
       result = await session.send(sendOpts);
       ({ content, sessionId, aborted, usage, modelUsage, totalCostUsd, durationMs, subtype } = result);
       content = stripLeadingThinkingMarker(content);
@@ -1621,11 +1650,12 @@ ${allNotes}`;
       fullContent = "";
       session.shutdown();
       await backupSessionFile(targetDir, rid);
-      session = await prepareResume({ ...resumeBase, rid, targetModel, env: envToUse, aggressive: true });
-      activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey });
+      session = await (_prepareResumeOverride || prepareResume)({ ...resumeBase, rid, targetModel, env: envToUse, aggressive: true });
+      _updateEntry({ session, lastActivity: Date.now() });
       if (statusHandler) session.on("status", statusHandler);
       sessionRef = session;
-      lastActivity = Date.now();
+      updateActivity();
+      _checkSwept();
       result = await session.send(sendOpts);
       ({ content, sessionId, aborted, usage, modelUsage, totalCostUsd, durationMs, subtype } = result);
       content = stripLeadingThinkingMarker(content);
@@ -1634,11 +1664,17 @@ ${allNotes}`;
     clearInterval(hangWatchdog);
     consecutiveTriggerErrors = 0;
     if (aborted) {
-      const partial = stripLeadingThinkingMarker(fullContent) || content || "";
-      const fallback = abortReason === "timeout" ? "(timed out \u2014 session not responding)" : "(stopped by user)";
-      const result_meta = { exit_reason: abortReason === "timeout" ? "timeout" : "stopped", tokens: null, duration_ms: null };
-      send({ type: "agent_complete", room_id, message_id, content: partial || fallback, ai_model: targetModel || void 0, result_meta });
-      console.log(`[stoa] Aborted message ${message_id}, reason=${abortReason || "user"}, partial=${partial.length} chars`);
+      const effectiveReason = abortReason || entry.abortReason || null;
+      if (entry.completedBySweep) {
+        console.log(`[stoa] Swept message ${message_id}, skipping agent_complete (sweep already sent it)`);
+      } else {
+        const partial = stripLeadingThinkingMarker(fullContent) || content || "";
+        const isTimeout = effectiveReason === "timeout" || effectiveReason === "stale";
+        const fallback = isTimeout ? "(timed out \u2014 no activity)" : "(stopped by user)";
+        const result_meta = { exit_reason: isTimeout ? "timeout" : "stopped", tokens: null, duration_ms: null };
+        send({ type: "agent_complete", room_id, message_id, content: partial || fallback, ai_model: targetModel || void 0, result_meta });
+        console.log(`[stoa] Aborted message ${message_id}, reason=${effectiveReason || "user"}, partial=${partial.length} chars`);
+      }
     } else {
       const { text: cleanContent, attachments } = await extractAndUploadFiles(content, msg.workdir);
       const actualModel = targetModel || modelUsage && Object.keys(modelUsage).find((k) => k !== "total") || void 0;
@@ -1690,23 +1726,33 @@ ${allNotes}`;
       }
     }
   } catch (err) {
-    consecutiveTriggerErrors++;
-    console.error(`[stoa] trigger error (${consecutiveTriggerErrors}/${MAX_TRIGGER_ERRORS}): ${err.message}`);
-    send({ type: "agent_error", room_id, message_id, error: err.message });
+    if (entry.completedBySweep) {
+      console.log(`[stoa] trigger ${message_id} swept during processing, suppressing error`);
+    } else if (entry.swept) {
+      const isTimeout = entry.abortReason === "timeout" || entry.abortReason === "stale";
+      const fallback = isTimeout ? "(timed out — no activity)" : "(stopped by user)";
+      const result_meta = { exit_reason: isTimeout ? "timeout" : "stopped" };
+      send({ type: "agent_complete", room_id, message_id, content: fallback, result_meta });
+      console.log(`[stoa] trigger ${message_id} swept, sending complete from catch`);
+    } else {
+      consecutiveTriggerErrors++;
+      console.error(`[stoa] trigger error (${consecutiveTriggerErrors}/${MAX_TRIGGER_ERRORS}): ${err.message}`);
+      send({ type: "agent_error", room_id, message_id, error: err.message });
+    }
     if (consecutiveTriggerErrors >= MAX_TRIGGER_ERRORS) {
       console.log("[stoa] too many trigger errors, restarting clean...");
       for (const s of sessionPool.values()) s.shutdown();
       process.exit(0);
     }
   } finally {
-    if (sessionRef && statusHandler) sessionRef.removeListener("status", statusHandler);
-    _clearToolStatus();
+    if (hangWatchdog) clearInterval(hangWatchdog);
+    try { if (sessionRef && statusHandler) sessionRef.removeListener("status", statusHandler); } catch {}
+    try { _clearToolStatus(); } catch {}
     try {
       fs.rmSync(path.join(workdir, ".stoa-attachments", String(message_id)), { recursive: true, force: true });
-    } catch {
-    }
+    } catch {}
     activeTriggers.delete(message_id);
-    if (targetDir) startSessionIdleTimer(sessionKey);
+    try { if (targetDir) startSessionIdleTimer(sessionKey); } catch {}
     const steerKey = `${room_id}:${threadId || 0}`;
     const steers = pendingSteerMessages.get(steerKey) || [];
     if (steers.length) {
@@ -1782,38 +1828,107 @@ async function extractAndUploadFiles(content, workdir) {
   }
   return { text, attachments };
 }
+function runTrigger(msg) {
+  processTrigger(msg).catch((err) => {
+    console.error(`[stoa] unhandled processTrigger error: ${err.message}`);
+    activeTriggers.delete(msg.message_id);
+    drainQueue();
+  });
+}
 function drainQueue() {
   while (activeTriggers.size < MAX_CONCURRENT && triggerQueue.length > 0) {
     const next = triggerQueue.shift();
     console.log(`[stoa] dequeued msg=${next.message_id} (${triggerQueue.length} remaining, active=${activeTriggers.size}/${MAX_CONCURRENT})`);
-    processTrigger(next);
+    runTrigger(next);
   }
   if (activeTriggers.size === 0 && triggerQueue.length === 0 && pendingRestart) doRestart();
 }
+// STALE_TRIGGER_MS must exceed maximum idle the watchdog can tolerate:
+// worst case ≈ FIRST_TOKEN_TIMEOUT (10m) + one watchdog interval (10s) ≈ 10m10s
+// (defer resets lastActivity, so defers do NOT extend idle from sweep's perspective).
+// Default 20m gives ~10m buffer. Clamped to ≥ FIRST_TOKEN_TIMEOUT + 2×sweep_interval.
+var STALE_TRIGGER_MS = (() => {
+  const MIN_STALE = FIRST_TOKEN_TIMEOUT + 2 * 60000;
+  const raw = parseInt(process.env.STALE_TRIGGER_MS || String(20 * 60 * 1000));
+  return Math.max(raw, MIN_STALE);
+})();
+function sweepStaleTriggers(now) {
+  let forceCleaned = false;
+  for (const [msgId, entry] of activeTriggers) {
+    if (now - (entry.lastActivity || entry.startedAt || now) > STALE_TRIGGER_MS) {
+      console.warn(`[stoa] stale trigger swept: msg=${msgId} idle=${Math.round((now - (entry.lastActivity || entry.startedAt)) / 1000)}s`);
+      entry.swept = true;
+      entry.abortReason = 'stale';
+      if (entry.session?.cancelTask) {
+        const cancelled = entry.session.cancelTask(msgId);
+        if (!cancelled) {
+          entry.completedBySweep = true;
+          activeTriggers.delete(msgId);
+          send({ type: "agent_complete", room_id: entry.room_id, message_id: msgId, content: "(timed out — no activity)", result_meta: { exit_reason: "timeout" } });
+          forceCleaned = true;
+        }
+      } else {
+        entry.completedBySweep = true;
+        activeTriggers.delete(msgId);
+        send({ type: "agent_complete", room_id: entry.room_id, message_id: msgId, content: "(timed out — no activity)", result_meta: { exit_reason: "timeout" } });
+        forceCleaned = true;
+      }
+    }
+  }
+  if (forceCleaned) drainQueue();
+  else if (activeTriggers.size === 0 && triggerQueue.length === 0 && pendingRestart) doRestart();
+}
+var FETCH_TIMEOUT_MS = 60000;
 function fetchToFile(url, destPath) {
   const http = url.startsWith("https") ? require("https") : require("http");
   return new Promise((resolve, reject) => {
-    http.get(url, (res) => {
+    const timer = setTimeout(() => { req.destroy(); reject(new Error(`fetchToFile timeout: ${url}`)); }, FETCH_TIMEOUT_MS);
+    const req = http.get(url, (res) => {
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        clearTimeout(timer);
+        res.resume();
+        reject(new Error(`fetchToFile HTTP ${res.statusCode}: ${url}`));
+        return;
+      }
       const ws2 = fs.createWriteStream(destPath);
       res.pipe(ws2);
       ws2.on("finish", () => {
+        clearTimeout(timer);
         ws2.close();
         resolve(destPath);
       });
-      ws2.on("error", reject);
-    }).on("error", reject);
+      ws2.on("error", (err) => {
+        clearTimeout(timer);
+        try { fs.unlinkSync(destPath); } catch {}
+        reject(err);
+      });
+      res.on("error", (err) => {
+        clearTimeout(timer);
+        try { fs.unlinkSync(destPath); } catch {}
+        reject(err);
+      });
+    });
+    req.on("error", (err) => { clearTimeout(timer); reject(err); });
   });
 }
 function fetchText(url) {
   const http = url.startsWith("https") ? require("https") : require("http");
   return new Promise((resolve, reject) => {
-    http.get(url, (res) => {
+    const timer = setTimeout(() => { req.destroy(); reject(new Error(`fetchText timeout: ${url}`)); }, FETCH_TIMEOUT_MS);
+    const req = http.get(url, (res) => {
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        clearTimeout(timer);
+        res.resume();
+        reject(new Error(`fetchText HTTP ${res.statusCode}: ${url}`));
+        return;
+      }
       let text = "";
       res.setEncoding("utf8");
       res.on("data", (c) => text += c);
-      res.on("end", () => resolve(text));
-      res.on("error", reject);
-    }).on("error", reject);
+      res.on("end", () => { clearTimeout(timer); resolve(text); });
+      res.on("error", (err) => { clearTimeout(timer); reject(err); });
+    });
+    req.on("error", (err) => { clearTimeout(timer); reject(err); });
   });
 }
 var SCAN_EXCLUDE_SYSTEM = /* @__PURE__ */ new Set([
@@ -2051,12 +2166,17 @@ function reprompt() {
 function printHeader() {
   out(C.gray + "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n  STOA  \u2014  Room #" + ROOM_ID + "\n  /exit untuk keluar\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501" + C.reset);
 }
+var _sendOverride = null;
+var _getSessionOverride = null;
+var _prepareResumeOverride = null;
 function send(data) {
+  if (_sendOverride) return _sendOverride(data);
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data));
 }
 function out(line) {
   process.stdout.write("\n" + line + "\n");
 }
+if (require.main === module) {
 process.on("SIGINT", () => {
   clearTimeout(reconnectTimer);
   for (const s of sessionPool.values()) s.shutdown();
@@ -2082,4 +2202,20 @@ connect();
 if (ACTOR_TYPE === "ai") {
   updateChecker = setInterval(checkForUpdates, UPDATE_INTERVAL);
   setTimeout(checkForUpdates, 15e3);
+  setInterval(() => sweepStaleTriggers(Date.now()), 60000);
 }
+}
+function __setDeps(overrides) {
+  if (overrides.send) _sendOverride = overrides.send;
+  if (overrides.FETCH_TIMEOUT_MS != null) FETCH_TIMEOUT_MS = overrides.FETCH_TIMEOUT_MS;
+  if (overrides.getSession) _getSessionOverride = overrides.getSession;
+  if (overrides.prepareResume) _prepareResumeOverride = overrides.prepareResume;
+}
+function __resetDeps() {
+  _sendOverride = null;
+  _getSessionOverride = null;
+  _prepareResumeOverride = null;
+  FETCH_TIMEOUT_MS = 60000;
+  consecutiveTriggerErrors = 0;
+}
+module.exports = { fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, FIRST_TOKEN_TIMEOUT, __setDeps, __resetDeps };

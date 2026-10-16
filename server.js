@@ -10,6 +10,7 @@ const { validateScheduleSpec, computeNextRun, nextRunAfterSkip } = require('./li
 const { collectDiagnostics, buildEnvelope, gcDebugBundles } = require('./lib/debug-bundle');
 const { enrichAutomation, enrichAutomationList, watchReplyAutomation } = require('./lib/automation-identity');
 const { sanitizeDisplayName, EMAIL_REPLY_LIMITS, buildEmailThreadSection, normalizeRefIds, findEmailReplyThread } = require('./lib/email-threading');
+const { parseClientVersion } = require('./lib/client-version');
 const fallbackSessions = new Map();
 
 // R15: unique identifier for this server boot. Sessions tagged with a different
@@ -35,18 +36,21 @@ const connectionManager = require('./connection-manager');
 const EXPECTED_CLIENT_VERSION = (() => {
   try {
     const src = fs.readFileSync(path.join(__dirname, 'stoa.js'), 'utf8');
-    const m = src.match(/^const CLIENT_VERSION\s*=\s*'([^']+)'/m);
-    return m ? m[1] : null;
+    return parseClientVersion(src);
   } catch { return null; }
 })();
 
 // Build agent bundle: stoa.js + lib/* → dist/stoa.js (single file for agent auto-update).
 // esbuild is fast (~50ms); rebuild on every startup ensures bundle is always fresh.
-const AGENT_BUNDLE_PATH = path.join(__dirname, 'dist', 'stoa.js');
+// STOA_AGENT_BUNDLE_DIR lets throwaway servers (run-tests.js) build elsewhere: dist/stoa.js
+// is read per request by the LIVE server, so rebuilding it from a test server would push
+// unmerged branch code to every live agent via auto-update.
+const AGENT_BUNDLE_DIR = process.env.STOA_AGENT_BUNDLE_DIR || path.join(__dirname, 'dist');
+const AGENT_BUNDLE_PATH = path.join(AGENT_BUNDLE_DIR, 'stoa.js');
 let agentBundleReady = false;
 (() => {
   try {
-    const distDir = path.join(__dirname, 'dist');
+    const distDir = AGENT_BUNDLE_DIR;
     if (!fs.existsSync(distDir)) fs.mkdirSync(distDir);
     require('esbuild').buildSync({
       entryPoints: [path.join(__dirname, 'stoa.js')],
@@ -2552,7 +2556,7 @@ const server = http.createServer(async (req, res) => {
       port:        PORT,
       human_name_from_env: !!process.env.HUMAN_NAME,
       max_ai_turns: parseInt(process.env.MAX_AI_TURNS) || 5,
-      max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 3,
+      max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1,
       session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5,
       auto_compact_threshold_kb: parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB) || 300,
       cleanup_cron_hour: parseInt(process.env.CLEANUP_CRON_HOUR) || 10,
@@ -3601,8 +3605,7 @@ const server = http.createServer(async (req, res) => {
       if (name === 'stoa.js' && SAFE_CLIENT_HASH && EXPECTED_CLIENT_VERSION && hash !== SAFE_CLIENT_HASH) {
         try {
           const diskSrc = fs.readFileSync(clientFilePath(name), 'utf8');
-          const m = diskSrc.match(/^(?:const|var)\s+CLIENT_VERSION\s*=\s*['"]([^'"]+)['"]/m);
-          const diskVer = m ? m[1] : null;
+          const diskVer = parseClientVersion(diskSrc);
           if (diskVer && diskVer.localeCompare(EXPECTED_CLIENT_VERSION, undefined, { numeric: true }) < 0) {
             console.warn(`[update-guard] stoa.js on disk (v${diskVer}) < expected (v${EXPECTED_CLIENT_VERSION}) — suppressing manifest to prevent downgrade loop`);
             hash = SAFE_CLIENT_HASH;
@@ -5010,7 +5013,7 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ type: 'force_update' }));
       }
       ws.send(JSON.stringify({ type: 'agent_ready' }));
-      ws.send(JSON.stringify({ type: 'set_config', max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 3, session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5, auto_compact_threshold_kb: parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB) || 300 }));
+      ws.send(JSON.stringify({ type: 'set_config', max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1, session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5, auto_compact_threshold_kb: parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB) || 300 }));
       const connectedActor = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, created_at FROM actors WHERE id=?').get(agentActorId);
       if (connectedActor) broadcastGlobal({ type: 'actor_status', actor: { ...connectedActor, online: true, client_version: msg.client_version || null } });
       // R23: push all room settings so agent is always in sync regardless of connect order.
