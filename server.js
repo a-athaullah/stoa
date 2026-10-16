@@ -42,11 +42,15 @@ const EXPECTED_CLIENT_VERSION = (() => {
 
 // Build agent bundle: stoa.js + lib/* → dist/stoa.js (single file for agent auto-update).
 // esbuild is fast (~50ms); rebuild on every startup ensures bundle is always fresh.
-const AGENT_BUNDLE_PATH = path.join(__dirname, 'dist', 'stoa.js');
+// STOA_AGENT_BUNDLE_DIR lets throwaway servers (run-tests.js) build elsewhere: dist/stoa.js
+// is read per request by the LIVE server, so rebuilding it from a test server would push
+// unmerged branch code to every live agent via auto-update.
+const AGENT_BUNDLE_DIR = process.env.STOA_AGENT_BUNDLE_DIR || path.join(__dirname, 'dist');
+const AGENT_BUNDLE_PATH = path.join(AGENT_BUNDLE_DIR, 'stoa.js');
 let agentBundleReady = false;
 (() => {
   try {
-    const distDir = path.join(__dirname, 'dist');
+    const distDir = AGENT_BUNDLE_DIR;
     if (!fs.existsSync(distDir)) fs.mkdirSync(distDir);
     require('esbuild').buildSync({
       entryPoints: [path.join(__dirname, 'stoa.js')],
