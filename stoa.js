@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.353";
+var CLIENT_VERSION = "0.4.354";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -653,6 +653,9 @@ function startSessionIdleTimer(sessionKey) {
       console.log(`[stoa] session closed (idle ${SESSION_IDLE_TTL}m): ${sessionKey}`);
     }
   }, SESSION_IDLE_TTL * 6e4);
+  // unref: housekeeping only — the agent stays alive via its WS/keepAlive; a ref'd timer
+  // here kept in-process importers (test.js) from exiting.
+  timer.unref?.();
   sessionIdleTimers.set(sessionKey, timer);
 }
 function clearSessionIdleTimer(sessionKey) {
@@ -692,7 +695,7 @@ setInterval(async () => {
       send({ type: "compact_error", orig_session_id: sessionId, thread_id: skMeta.threadId, sub_agent_id: skMeta.subAgentId, error: err.message });
     });
   }
-}, 60 * 6e4);
+}, 60 * 6e4).unref();
 function execWithTimeout(cmd, args, timeout) {
   const { execFile } = require("child_process");
   return new Promise((resolve) => {
