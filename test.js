@@ -1,6 +1,12 @@
 // Stoa Tests — Unit + Integration
-// Integration tests require a running server: node server.js
-// Usage: node test.js [PORT]
+// Run ONLY via the isolated runner: node .claude/tools/run-tests.js
+// (boots a throwaway server on a copy of the DB and sets STOA_TEST=1).
+// Integration tests create/delete rooms, actors and settings, so running this
+// file directly against the live server pollutes the real DB.
+if (process.env.STOA_TEST !== '1') {
+  console.error('[test.js] refusing to run without STOA_TEST=1 — use: node .claude/tools/run-tests.js');
+  process.exit(1);
+}
 const http = require('http');
 const assert = require('assert');
 const path = require('path');
