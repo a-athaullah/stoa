@@ -1220,19 +1220,19 @@ function runUnitTests() {
   // ── Auto-update & trigger cleanup tests ────────────────────────────────────
   console.log('  [Auto-update & Trigger Cleanup]');
 
-  // R9: EXPECTED_CLIENT_VERSION regex matches bundled stoa.js
-  ut('EXPECTED_CLIENT_VERSION regex matches bundled stoa.js', () => {
+  // F7: parseClientVersion shared helper matches bundled stoa.js
+  ut('parseClientVersion matches bundled stoa.js', () => {
     const fs = require('fs');
+    const { parseClientVersion } = require('./lib/client-version');
     const distPath = path.join(__dirname, 'dist', 'stoa.js');
     const srcPath = path.join(__dirname, 'stoa.js');
     const src = fs.readFileSync(fs.existsSync(distPath) ? distPath : srcPath, 'utf8');
-    const regex = /^(?:const|var)\s+CLIENT_VERSION\s*=\s*['"]([^'"]+)['"]/m;
-    const m = src.match(regex);
-    assert.ok(m, 'regex must match CLIENT_VERSION in stoa.js');
-    assert.ok(/^\d+\.\d+\.\d+/.test(m[1]), `version must be semver-ish, got: ${m[1]}`);
+    const ver = parseClientVersion(src);
+    assert.ok(ver, 'parseClientVersion must find CLIENT_VERSION in stoa.js');
+    assert.ok(/^\d+\.\d+\.\d+/.test(ver), `version must be semver-ish, got: ${ver}`);
   });
 
-  // R9: old regex does NOT match (proves the bug existed)
+  // F7: old regex does NOT match (proves the bug existed)
   ut('old server regex fails on bundled stoa.js', () => {
     const fs = require('fs');
     const distPath = path.join(__dirname, 'dist', 'stoa.js');
@@ -1243,8 +1243,8 @@ function runUnitTests() {
     assert.strictEqual(m, null, 'old regex should NOT match bundled var/"..." format');
   });
 
-  // R3: ClaudeSession abort() settles queued tasks
-  ut('ClaudeSession.abort() settles queued tasks', () => {
+  // F4: ClaudeSession abort() cancels current only, queue preserved
+  ut('ClaudeSession.abort() cancels current only, queue preserved', () => {
     const { ClaudeSession } = require('./claude-session');
     const session = Object.create(ClaudeSession.prototype);
     session.busy = true;
@@ -1259,20 +1259,18 @@ function runUnitTests() {
     session._currentReject = null;
     session._queue = [
       { taskId: 'task-2', resolve: (r) => results.push({ id: 'q1', ...r }), reject: null },
-      { taskId: 'task-3', resolve: (r) => results.push({ id: 'q2', ...r }), reject: null },
     ];
     session.proc = { kill: () => {} };
     session.abort();
-    assert.strictEqual(results.length, 3, 'all tasks (current + 2 queued) should settle');
+    assert.strictEqual(results.length, 1, 'only current task settled');
     assert.strictEqual(results[0].aborted, true);
-    assert.strictEqual(results[1].aborted, true);
-    assert.strictEqual(results[2].aborted, true);
-    assert.strictEqual(session._queue.length, 0, 'queue should be empty');
+    assert.strictEqual(results[0].content, 'partial');
+    assert.strictEqual(session._queue.length, 1, 'queue preserved');
     assert.strictEqual(session.busy, false);
   });
 
-  // R3: CodexSession abort() settles queued tasks
-  ut('CodexSession.abort() settles queued tasks', () => {
+  // F4: CodexSession abort() cancels current, starts next from queue
+  ut('CodexSession.abort() cancels current, drains queue', () => {
     const { CodexSession } = require('./codex-session');
     const session = Object.create(CodexSession.prototype);
     session.busy = true;
@@ -1282,17 +1280,70 @@ function runUnitTests() {
     session._currentOnTool = null;
     session._currentTaskId = 'task-1';
     session._threadId = 'thread-abc';
+    session._usage = null;
     const results = [];
     session._currentResolve = (r) => results.push({ id: 'current', ...r });
     session._currentReject = null;
+    let startedTask = null;
+    session._startTask = (t) => { startedTask = t; };
     session._queue = [
       { taskId: 'q1', resolve: (r) => results.push({ id: 'q1', ...r }), reject: null },
     ];
     session.proc = { kill: () => {} };
     session.abort();
-    assert.strictEqual(results.length, 2);
-    assert.ok(results.every(r => r.aborted));
-    assert.strictEqual(session._queue.length, 0);
+    assert.strictEqual(results.length, 1, 'only current task settled');
+    assert.ok(results[0].aborted);
+    assert.ok(startedTask, 'next queue item started via _startTask');
+    assert.strictEqual(startedTask.taskId, 'q1');
+  });
+
+  // F1: CodexSession per-proc guard — stale close handler ignored
+  ut('CodexSession per-proc guard: stale close ignored', () => {
+    const { EventEmitter } = require('events');
+    const cp = require('child_process');
+    const origSpawn = cp.spawn;
+
+    const fakeProcs = [];
+    const mockSpawn = (...a) => {
+      const p = new EventEmitter();
+      p.stdin = { write: () => {}, end: () => {}, on: () => {} };
+      p.stdout = new EventEmitter();
+      p.stderr = new EventEmitter();
+      p.kill = () => {};
+      p.pid = fakeProcs.length + 1;
+      fakeProcs.push(p);
+      return p;
+    };
+    cp.spawn = mockSpawn;
+    delete require.cache[require.resolve('./codex-session')];
+    try {
+      const { CodexSession } = require('./codex-session');
+      const session = new CodexSession({ workDir: '/tmp' });
+
+      let task1Result = null;
+      let task2Result = null;
+      session._startTask({
+        prompt: 'test1', resolve: (r) => { task1Result = r; },
+        reject: () => {}, taskId: 't1'
+      });
+      const proc1 = session.proc;
+      assert.strictEqual(fakeProcs.length, 1);
+      session.abort();
+      assert.ok(task1Result?.aborted);
+
+      session._startTask({
+        prompt: 'test2', resolve: (r) => { task2Result = r; },
+        reject: () => {}, taskId: 't2'
+      });
+      assert.strictEqual(fakeProcs.length, 2);
+      assert.notStrictEqual(session.proc, proc1);
+
+      proc1.emit('close', 0, null);
+      assert.strictEqual(task2Result, null, 'stale proc close must NOT resolve task2');
+    } finally {
+      cp.spawn = origSpawn;
+      delete require.cache[require.resolve('./codex-session')];
+    }
   });
 
   // R4: cancelTask removes queued task without aborting current
@@ -1347,7 +1398,51 @@ function runUnitTests() {
     assert.strictEqual(session._dead, true);
   });
 
-  // R5: fetchText/fetchToFile status check verified in integration tests below
+  // F8: stoa.js can be required without side effects
+  ut('stoa.js require() does not start connections or timers', () => {
+    const stoa = require('./stoa.js');
+    assert.ok(stoa.fetchToFile, 'fetchToFile exported');
+    assert.ok(stoa.fetchText, 'fetchText exported');
+    assert.ok(stoa.drainQueue, 'drainQueue exported');
+    assert.ok(stoa.runTrigger, 'runTrigger exported');
+    assert.ok(stoa.activeTriggers instanceof Map, 'activeTriggers is a Map');
+  });
+
+  // F8: fetchText from stoa.js rejects on HTTP error
+  ut('stoa.js fetchText rejects on HTTP 500', async () => {
+    const { fetchText } = require('./stoa.js');
+    const http = require('http');
+    const srv = http.createServer((req, res) => { res.writeHead(500); res.end('error'); });
+    await new Promise(r => srv.listen(0, '127.0.0.1', r));
+    const port = srv.address().port;
+    try {
+      await fetchText(`http://127.0.0.1:${port}/test`);
+      assert.fail('should have rejected');
+    } catch (e) {
+      assert.ok(e.message.includes('500'), `error should mention 500, got: ${e.message}`);
+    } finally {
+      srv.close();
+    }
+  });
+
+  // F8: fetchToFile from stoa.js rejects on HTTP 404
+  ut('stoa.js fetchToFile rejects on HTTP 404', async () => {
+    const { fetchToFile } = require('./stoa.js');
+    const http = require('http');
+    const srv = http.createServer((req, res) => { res.writeHead(404); res.end('not found'); });
+    await new Promise(r => srv.listen(0, '127.0.0.1', r));
+    const port = srv.address().port;
+    const dest = path.join(require('os').tmpdir(), `stoa-test-fetch-${Date.now()}.tmp`);
+    try {
+      await fetchToFile(`http://127.0.0.1:${port}/file.js`, dest);
+      assert.fail('should have rejected');
+    } catch (e) {
+      assert.ok(e.message.includes('404'), `error should mention 404, got: ${e.message}`);
+      assert.ok(!require('fs').existsSync(dest), 'partial file should be cleaned up');
+    } finally {
+      srv.close();
+    }
+  });
 
   return { p, f };
 }
@@ -8577,7 +8672,8 @@ async function run() {
   // ── Auto-update integration tests ────────────────────────────────────────
   console.log('\n[Auto-update & Trigger Cleanup]');
 
-  await test('R5: fetchText rejects on HTTP 500', async () => {
+  await test('R5: fetchText (actual stoa.js) rejects on HTTP 500', async () => {
+    const { fetchText } = require('./stoa.js');
     const httpMod = require('http');
     const mockServer = httpMod.createServer((req, res) => {
       res.writeHead(500, { 'Content-Type': 'text/plain' });
@@ -8585,21 +8681,6 @@ async function run() {
     });
     await new Promise(resolve => mockServer.listen(0, '127.0.0.1', resolve));
     const mockPort = mockServer.address().port;
-    const fetchText = (url) => new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { innerReq.destroy(); reject(new Error('timeout')); }, 5000);
-      const innerReq = httpMod.get(url, (res) => {
-        if (res.statusCode < 200 || res.statusCode >= 300) {
-          clearTimeout(timer); res.resume();
-          reject(new Error(`fetchText HTTP ${res.statusCode}: ${url}`));
-          return;
-        }
-        let text = ''; res.setEncoding('utf8');
-        res.on('data', c => text += c);
-        res.on('end', () => { clearTimeout(timer); resolve(text); });
-        res.on('error', e => { clearTimeout(timer); reject(e); });
-      });
-      innerReq.on('error', e => { clearTimeout(timer); reject(e); });
-    });
     try {
       await fetchText(`http://127.0.0.1:${mockPort}/test`);
       assert.fail('should have rejected');
@@ -8610,32 +8691,18 @@ async function run() {
     }
   });
 
-  await test('R5: fetchToFile rejects on HTTP 404 and cleans up partial file', async () => {
-    const httpMod = require('http');
+  await test('R5: fetchToFile (actual stoa.js) rejects on HTTP 404', async () => {
+    const { fetchToFile } = require('./stoa.js');
     const fs = require('fs');
     const os = require('os');
+    const destPath = path.join(os.tmpdir(), `stoa-test-fetch-${Date.now()}.tmp`);
+    const httpMod = require('http');
     const mockServer = httpMod.createServer((req, res) => {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('not found');
     });
     await new Promise(resolve => mockServer.listen(0, '127.0.0.1', resolve));
     const mockPort = mockServer.address().port;
-    const destPath = path.join(os.tmpdir(), `stoa-test-fetch-${Date.now()}.tmp`);
-    const fetchToFile = (url, dest) => new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { innerReq.destroy(); reject(new Error('timeout')); }, 5000);
-      const innerReq = httpMod.get(url, (res) => {
-        if (res.statusCode < 200 || res.statusCode >= 300) {
-          clearTimeout(timer); res.resume();
-          reject(new Error(`fetchToFile HTTP ${res.statusCode}: ${url}`));
-          return;
-        }
-        const ws = fs.createWriteStream(dest);
-        res.pipe(ws);
-        ws.on('finish', () => { clearTimeout(timer); ws.close(); resolve(dest); });
-        ws.on('error', e => { clearTimeout(timer); try { fs.unlinkSync(dest); } catch {} reject(e); });
-      });
-      innerReq.on('error', e => { clearTimeout(timer); reject(e); });
-    });
     try {
       await fetchToFile(`http://127.0.0.1:${mockPort}/file.js`, destPath);
       assert.fail('should have rejected');

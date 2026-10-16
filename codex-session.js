@@ -68,6 +68,7 @@ class CodexSession extends EventEmitter {
     if (this.env) spawnOpts.env = { ...process.env, ...this.env };
 
     this.proc = spawn('codex', args, spawnOpts);
+    const myProc = this.proc;
     this.proc.stdin.on('error', () => {});
 
     let buffer = '';
@@ -89,6 +90,7 @@ class CodexSession extends EventEmitter {
     });
 
     this.proc.on('close', (code, signal) => {
+      if (myProc !== this.proc) return;
       if (this._currentResolve) {
         const content = this._accContent || '';
         const res = this._currentResolve;
@@ -98,6 +100,7 @@ class CodexSession extends EventEmitter {
     });
 
     this.proc.on('error', (err) => {
+      if (myProc !== this.proc) return;
       if (this._currentReject) {
         const rej = this._currentReject;
         this._clearCurrent();
@@ -175,12 +178,16 @@ class CodexSession extends EventEmitter {
     this._currentOnToken = null;
     this._currentOnState = null;
     this._currentOnTool = null;
+    this._currentTaskId = null;
     this._accContent = '';
+    this._usage = null;
     this.busy = false;
     resolve?.({ content, sessionId: this._threadId, aborted: true });
-    const queued = this._queue.splice(0);
-    for (const t of queued) t.resolve?.({ content: '', sessionId: this._threadId, aborted: true });
     this.proc?.kill('SIGTERM');
+    if (this._queue.length > 0) {
+      const next = this._queue.shift();
+      this._startTask(next);
+    }
   }
 
   cancelTask(taskId) {

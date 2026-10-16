@@ -10,6 +10,7 @@ const { validateScheduleSpec, computeNextRun, nextRunAfterSkip } = require('./li
 const { collectDiagnostics, buildEnvelope, gcDebugBundles } = require('./lib/debug-bundle');
 const { enrichAutomation, enrichAutomationList, watchReplyAutomation } = require('./lib/automation-identity');
 const { sanitizeDisplayName, EMAIL_REPLY_LIMITS, buildEmailThreadSection, normalizeRefIds, findEmailReplyThread } = require('./lib/email-threading');
+const { parseClientVersion } = require('./lib/client-version');
 const fallbackSessions = new Map();
 
 // R15: unique identifier for this server boot. Sessions tagged with a different
@@ -35,8 +36,7 @@ const connectionManager = require('./connection-manager');
 const EXPECTED_CLIENT_VERSION = (() => {
   try {
     const src = fs.readFileSync(path.join(__dirname, 'stoa.js'), 'utf8');
-    const m = src.match(/^(?:const|var)\s+CLIENT_VERSION\s*=\s*['"]([^'"]+)['"]/m);
-    return m ? m[1] : null;
+    return parseClientVersion(src);
   } catch { return null; }
 })();
 
@@ -3601,8 +3601,7 @@ const server = http.createServer(async (req, res) => {
       if (name === 'stoa.js' && SAFE_CLIENT_HASH && EXPECTED_CLIENT_VERSION && hash !== SAFE_CLIENT_HASH) {
         try {
           const diskSrc = fs.readFileSync(clientFilePath(name), 'utf8');
-          const m = diskSrc.match(/^(?:const|var)\s+CLIENT_VERSION\s*=\s*['"]([^'"]+)['"]/m);
-          const diskVer = m ? m[1] : null;
+          const diskVer = parseClientVersion(diskSrc);
           if (diskVer && diskVer.localeCompare(EXPECTED_CLIENT_VERSION, undefined, { numeric: true }) < 0) {
             console.warn(`[update-guard] stoa.js on disk (v${diskVer}) < expected (v${EXPECTED_CLIENT_VERSION}) — suppressing manifest to prevent downgrade loop`);
             hash = SAFE_CLIENT_HASH;

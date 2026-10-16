@@ -78,10 +78,25 @@ class ClaudeSession extends EventEmitter {
       this._stderrBuf = '';
       if (this._currentReject) {
         const reject = this._currentReject;
-        this._clearCurrent();
+        this._currentResolve = null;
+        this._currentReject = null;
+        this._currentOnToken = null;
+        this._currentOnState = null;
+        this._currentOnTool = null;
+        this._currentTaskId = null;
+        this._accContent = '';
+        this._pendingTool = null;
+        this.busy = false;
         reject(new Error('claude process exited unexpectedly'));
       }
-      setTimeout(() => { if (!this._dead) this._start(); }, 3000);
+      setTimeout(() => {
+        if (this._dead) return;
+        this._start();
+        if (!this.busy && this._queue.length > 0) {
+          const next = this._queue.shift();
+          this._startTask(next);
+        }
+      }, 3000);
     });
   }
 
@@ -192,12 +207,11 @@ class ClaudeSession extends EventEmitter {
     this._currentOnToken = null;
     this._currentOnState = null;
     this._currentOnTool = null;
+    this._currentTaskId = null;
     this._accContent = '';
     this._pendingTool = null;
     this.busy = false;
     resolve?.({ content, sessionId: null, aborted: true });
-    const queued = this._queue.splice(0);
-    for (const t of queued) t.resolve?.({ content: '', sessionId: null, aborted: true });
     this.proc?.kill('SIGTERM');
   }
 

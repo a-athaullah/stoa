@@ -1216,11 +1216,7 @@ async function handleAgentMessage(msg) {
       console.log(`[stoa] queued msg=${message_id} (${triggerQueue.length} in queue)`);
       return;
     }
-    processTrigger(msg).catch((err) => {
-      console.error(`[stoa] unhandled processTrigger error: ${err.message}`);
-      activeTriggers.delete(message_id);
-      drainQueue();
-    });
+    runTrigger(msg);
   }
 }
 function wsRequest(type, payload, timeout = 1e4) {
@@ -1264,6 +1260,22 @@ async function processTrigger(msg) {
   const threadId = msg.thread_id || 0;
   const sessionKey = buildSessionKey(targetDir, room_id, threadId, subAgent?.id);
   activeTriggers.set(message_id, { workdir, session: null, sessionKey, room_id, startedAt: Date.now(), lastActivity: Date.now() });
+  let sessionRef = null;
+  let statusHandler = null;
+  let hangWatchdog = null;
+  let _toolStatusTimer = null;
+  let _toolStartMs = null;
+  let _toolVerb = null;
+  let _toolStatusUpdates = 0;
+  let _saLabel = null;
+  let toolMode = "full";
+  let lastActivity = Date.now();
+  const updateActivity = () => {
+    lastActivity = Date.now();
+    const entry = activeTriggers.get(message_id);
+    if (entry) entry.lastActivity = Date.now();
+  };
+  try {
   const baseUrl = STOA_URL.replace("ws://", "http://").replace("wss://", "https://");
   const TEXT_EXTS = /* @__PURE__ */ new Set([".md", ".txt", ".json", ".csv", ".html", ".js", ".ts", ".py", ".yaml", ".yml", ".sh", ".css"]);
   const IMAGE_EXTS = /* @__PURE__ */ new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"]);
@@ -1362,16 +1374,6 @@ File yang dilampirkan (sudah didownload ke lokal, gunakan Read tool untuk membac
 ${allNotes}`;
     }
   }
-  let sessionRef = null;
-  let statusHandler = null;
-  let hangWatchdog = null;
-  let _toolStatusTimer = null;
-  let _toolStartMs = null;
-  let _toolVerb = null;
-  let _toolStatusUpdates = 0;
-  let _saLabel = null;
-  let toolMode = "full";
-  try {
     let _stopToolTimer2 = function() {
       if (_toolStatusTimer) {
         clearInterval(_toolStatusTimer);
@@ -1458,13 +1460,10 @@ ${allNotes}`;
     }
     activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey, room_id, startedAt: Date.now(), lastActivity: Date.now() });
     let fullContent = "";
-    let lastActivity = Date.now();
     let abortReason = null;
     let thinkingSigRetried = false;
     statusHandler = (status) => {
-      lastActivity = Date.now();
-      const entry = activeTriggers.get(message_id);
-      if (entry) entry.lastActivity = Date.now();
+      updateActivity();
       send({ type: "agent_system_event", room_id, message_id, status });
     };
     sessionRef = session;
@@ -1481,7 +1480,7 @@ ${allNotes}`;
             const { mtimeMs } = fs.statSync(session.debugLogPath);
             if (Date.now() - mtimeMs < DEBUG_ACTIVE_GRACE_MS) {
               debugDeferCount++;
-              lastActivity = Date.now();
+              updateActivity();
               console.log(`[stoa] watchdog: CLI debug log active ${Math.round((Date.now() - mtimeMs) / 1e3)}s ago, deferring abort (${debugDeferCount}/${MAX_DEBUG_DEFERS})`);
               return;
             }
@@ -1491,16 +1490,11 @@ ${allNotes}`;
         clearInterval(hangWatchdog);
         abortReason = "timeout";
         console.error(`[stoa] trigger timeout (${timeout / 1e3}s ${fullContent ? "idle" : "no first token"}), aborting`);
-        session.abort();
+        session.cancelTask(message_id);
       }
     }, 1e4);
     toolMode = roomSettings.get(room_id)?.tool_status_mode ?? "full";
     _saLabel = subAgent?.label || null;
-    const updateActivity = () => {
-      lastActivity = Date.now();
-      const entry = activeTriggers.get(message_id);
-      if (entry) entry.lastActivity = Date.now();
-    };
     const sendOpts = {
       prompt: finalPrompt,
       history: msg.rawHistory || null,
@@ -1543,7 +1537,7 @@ ${allNotes}`;
           sessionRef = session;
           session.on("status", statusHandler);
           try {
-            lastActivity = Date.now();
+            updateActivity();
             result = await session.send(sendOpts);
             advanced = true;
             break;
@@ -1564,7 +1558,7 @@ ${allNotes}`;
           sessionRef = session;
           session.on("status", statusHandler);
           try {
-            lastActivity = Date.now();
+            updateActivity();
             result = await session.send(sendOpts);
             rotated = true;
             break;
@@ -1584,14 +1578,14 @@ ${allNotes}`;
         activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey, room_id, startedAt: Date.now(), lastActivity: Date.now() });
         if (statusHandler) session.on("status", statusHandler);
         sessionRef = session;
-        lastActivity = Date.now();
+        updateActivity();
         result = await session.send(sendOpts);
       } else if (retryErr.message.includes("exited unexpectedly") && !fullContent) {
         console.log(`[stoa] session crashed before output, retrying in 4s...`);
         await new Promise((r) => setTimeout(r, 4e3));
         session = getSession(targetDir, room_id, envToUse, subAgent?.id, threadId, msg.system_prompt, systemPromptHash, triggerHarness);
         activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey, room_id, startedAt: Date.now(), lastActivity: Date.now() });
-        lastActivity = Date.now();
+        updateActivity();
         result = await session.send(sendOpts);
       } else if (triggerHarness === "claude" && isThinkingSignatureError(retryErr.message) && !fullContent && !thinkingSigRetried) {
         thinkingSigRetried = true;
@@ -1604,7 +1598,7 @@ ${allNotes}`;
         activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey, room_id, startedAt: Date.now(), lastActivity: Date.now() });
         sessionRef = session;
         session.on("status", statusHandler);
-        lastActivity = Date.now();
+        updateActivity();
         result = await session.send(sendOpts);
       } else {
         throw retryErr;
@@ -1625,7 +1619,7 @@ ${allNotes}`;
       activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey, room_id, startedAt: Date.now(), lastActivity: Date.now() });
       if (statusHandler) session.on("status", statusHandler);
       sessionRef = session;
-      lastActivity = Date.now();
+      updateActivity();
       result = await session.send(sendOpts);
       ({ content, sessionId, aborted, usage, modelUsage, totalCostUsd, durationMs, subtype } = result);
       content = stripLeadingThinkingMarker(content);
@@ -1642,7 +1636,7 @@ ${allNotes}`;
       activeTriggers.set(message_id, { workdir: targetDir, session, sessionKey, room_id, startedAt: Date.now(), lastActivity: Date.now() });
       if (statusHandler) session.on("status", statusHandler);
       sessionRef = session;
-      lastActivity = Date.now();
+      updateActivity();
       result = await session.send(sendOpts);
       ({ content, sessionId, aborted, usage, modelUsage, totalCostUsd, durationMs, subtype } = result);
       content = stripLeadingThinkingMarker(content);
@@ -1799,15 +1793,18 @@ async function extractAndUploadFiles(content, workdir) {
   }
   return { text, attachments };
 }
+function runTrigger(msg) {
+  processTrigger(msg).catch((err) => {
+    console.error(`[stoa] unhandled processTrigger error: ${err.message}`);
+    activeTriggers.delete(msg.message_id);
+    drainQueue();
+  });
+}
 function drainQueue() {
   while (activeTriggers.size < MAX_CONCURRENT && triggerQueue.length > 0) {
     const next = triggerQueue.shift();
     console.log(`[stoa] dequeued msg=${next.message_id} (${triggerQueue.length} remaining, active=${activeTriggers.size}/${MAX_CONCURRENT})`);
-    processTrigger(next).catch((err) => {
-      console.error(`[stoa] unhandled processTrigger error (from queue): ${err.message}`);
-      activeTriggers.delete(next.message_id);
-      drainQueue();
-    });
+    runTrigger(next);
   }
   if (activeTriggers.size === 0 && triggerQueue.length === 0 && pendingRestart) doRestart();
 }
@@ -2105,6 +2102,7 @@ function send(data) {
 function out(line) {
   process.stdout.write("\n" + line + "\n");
 }
+if (require.main === module) {
 process.on("SIGINT", () => {
   clearTimeout(reconnectTimer);
   for (const s of sessionPool.values()) s.shutdown();
@@ -2133,14 +2131,27 @@ if (ACTOR_TYPE === "ai") {
   var STALE_TRIGGER_MS = parseInt(process.env.STALE_TRIGGER_MS || String(20 * 60 * 1000));
   setInterval(() => {
     const now = Date.now();
+    let forceCleaned = false;
     for (const [msgId, entry] of activeTriggers) {
       if (now - (entry.lastActivity || entry.startedAt || now) > STALE_TRIGGER_MS) {
         console.warn(`[stoa] stale trigger swept: msg=${msgId} idle=${Math.round((now - (entry.lastActivity || entry.startedAt)) / 1000)}s`);
-        try { if (entry.session) entry.session.abort(); } catch {}
-        activeTriggers.delete(msgId);
-        send({ type: "agent_complete", room_id: entry.room_id, message_id: msgId, content: "(trigger stale — no activity, cleaned up)", result_meta: { exit_reason: "error" } });
+        if (entry.session?.cancelTask) {
+          const cancelled = entry.session.cancelTask(msgId);
+          if (!cancelled) {
+            activeTriggers.delete(msgId);
+            send({ type: "agent_complete", room_id: entry.room_id, message_id: msgId, content: "(trigger stale — no activity, cleaned up)", result_meta: { exit_reason: "error" } });
+            forceCleaned = true;
+          }
+        } else {
+          activeTriggers.delete(msgId);
+          send({ type: "agent_complete", room_id: entry.room_id, message_id: msgId, content: "(trigger stale — no activity, cleaned up)", result_meta: { exit_reason: "error" } });
+          forceCleaned = true;
+        }
       }
     }
-    if (activeTriggers.size === 0 && triggerQueue.length === 0 && pendingRestart) doRestart();
+    if (forceCleaned) drainQueue();
+    else if (activeTriggers.size === 0 && triggerQueue.length === 0 && pendingRestart) doRestart();
   }, 60000);
 }
+}
+module.exports = { fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, MAX_CONCURRENT, processTrigger };
