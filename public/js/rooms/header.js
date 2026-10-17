@@ -152,9 +152,18 @@ function startRunControls(container, room) {
       const row = document.createElement('div');
       row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 9px;border-radius:9px';
       const color = r.avatar_color || '#888';
-      const mini = document.createElement('span');
-      mini.style.cssText = `width:26px;height:26px;border-radius:50%;flex:0 0 auto;font-size:11px;display:inline-flex;align-items:center;justify-content:center;background:color-mix(in srgb,${color} 20%,var(--h-surface));color:${color};border:1px solid color-mix(in srgb,${color} 30%,transparent);font-weight:600`;
-      mini.textContent = (r.sub_agent_label || '?').charAt(0).toUpperCase();
+      let mini;
+      if (r.sub_agent_avatar_url) {
+        mini = document.createElement('img');
+        mini.src = r.sub_agent_avatar_url;
+        mini.style.cssText = 'width:26px;height:26px;border-radius:50%;object-fit:cover;flex:0 0 auto';
+      } else {
+        const saColor = r.sub_agent_avatar_color || color;
+        const saSymbol = r.sub_agent_avatar_symbol || (r.sub_agent_label || '?').charAt(0).toUpperCase();
+        mini = document.createElement('span');
+        mini.style.cssText = `width:26px;height:26px;border-radius:50%;flex:0 0 auto;font-size:11px;display:inline-flex;align-items:center;justify-content:center;background:color-mix(in srgb,${saColor} 20%,var(--h-surface));color:${saColor};border:1px solid color-mix(in srgb,${saColor} 30%,transparent);font-weight:600`;
+        mini.textContent = saSymbol;
+      }
       const mid = document.createElement('div');
       mid.style.cssText = 'flex:1;min-width:0;display:flex;flex-direction:column;gap:3px';
       const midLabel = document.createElement('span');

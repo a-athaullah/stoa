@@ -801,7 +801,7 @@ function appendThreadMessage(m, container) {
   if (m.id && document.getElementById('msg-' + m.id)) return;
 
   if (m.state === 'streaming' || m.state === 'requesting') {
-    showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, container);
+    showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, container, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url);
     setThreadProcessing(m.id);
     return;
   }
@@ -817,7 +817,7 @@ function appendThreadMessage(m, container) {
   } else if (m.automation?.provider) {
     seal.appendChild(makeAutomationAvatarEl(m.automation.provider, 28));
   } else {
-    seal.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 28, m.sub_agent_label));
+    seal.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 28, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url));
   }
   row.appendChild(seal);
 
@@ -1002,7 +1002,7 @@ function _renderThreadRoot(m, container) {
   } else if (m.automation?.provider) {
     seal.appendChild(makeAutomationAvatarEl(m.automation.provider, 28));
   } else {
-    seal.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 28, m.sub_agent_label));
+    seal.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 28, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url));
   }
   row.appendChild(seal);
 
