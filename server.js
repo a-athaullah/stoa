@@ -516,12 +516,85 @@ const mentionBoundary = (name) => new RegExp(`(?:^|\\s)@${name.replace(/[.*+?^${
 // trigger. Used for trigger detection only — stored and forwarded content is untouched.
 // Code is replaced by a space so the text around it can't fuse into a new mention.
 // Unclosed fences/backticks match nothing, so the rest of the message still triggers.
+// Both passes are linear scanners on purpose: this runs on the event loop for every
+// human, agent and proactive message, and the regex version backtracked quadratically
+// on unclosed fences/backtick runs (100k unclosed fence lines froze the server ~50 s).
+// Kept self-contained (no outer helpers) so test.js can load it from source.
 function stripCodeSpans(content) {
   if (!content) return '';
   if (!content.includes('`') && !content.includes('~~~')) return content;
-  return content
-    .replace(/(^|\n)[ \t]*(`{3,}|~{3,})[^\n]*\n(?:[\s\S]*?\n)?[ \t]*\2[`~]*[ \t]*(?=\n|$)/g, '$1 ')
-    .replace(/(`+)(?!`)[^\n]*?[^`\n]\1(?!`)/g, ' ');
+
+  // Fences: an opener line (run of ≥3 ` or ~, any info string) closes at the next line
+  // that is only a run of the same char with length ≥ the opener's. sufMax[c][i] = the
+  // longest closer of char c at or after line i, so an opener without a closer is
+  // rejected in O(1) and scanning resumes on the next line; a successful scan consumes
+  // the lines it walked, keeping the whole pass O(n).
+  const lines = content.split('\n');
+  const n = lines.length;
+  const closer = new Array(n);
+  const sufMax = { '`': new Int32Array(n + 1), '~': new Int32Array(n + 1) };
+  for (let i = n - 1; i >= 0; i--) {
+    const m = /^[ \t]*(`{3,}|~{3,})[ \t]*$/.exec(lines[i]);
+    closer[i] = m ? { c: m[1][0], len: m[1].length } : null;
+    sufMax['`'][i] = sufMax['`'][i + 1];
+    sufMax['~'][i] = sufMax['~'][i + 1];
+    if (m) sufMax[m[1][0]][i] = Math.max(sufMax[m[1][0]][i], m[1].length);
+  }
+  const kept = [];
+  for (let i = 0; i < n; i++) {
+    const open = /^[ \t]*(`{3,}|~{3,})/.exec(lines[i]);
+    if (open) {
+      const c = open[1][0], len = open[1].length;
+      if (sufMax[c][i + 1] >= len) {
+        let j = i + 1;
+        while (!(closer[j] && closer[j].c === c && closer[j].len >= len)) j++;
+        kept.push(' ');
+        i = j;
+        continue;
+      }
+    }
+    kept.push(lines[i]);
+  }
+
+  // Inline spans, per line: an opener is any suffix of a backtick run (leftmost start
+  // wins, so the longest suffix first) and closes at the nearest later run of exactly
+  // that length on the same line. Per-length pointers only move forward and each run
+  // tries at most its own length, so the pass stays O(line length).
+  return kept.map(line => {
+    if (!line.includes('`')) return line;
+    const runs = [];
+    for (let k = 0; k < line.length;) {
+      if (line[k] !== '`') { k++; continue; }
+      let e = k;
+      while (line[e] === '`') e++;
+      runs.push([k, e - k]);
+      k = e;
+    }
+    const byLen = new Map();
+    runs.forEach(([, len], idx) => {
+      if (!byLen.has(len)) byLen.set(len, { list: [], ptr: 0 });
+      byLen.get(len).list.push(idx);
+    });
+    const nextRunOfLen = (len, after) => {
+      const e = byLen.get(len);
+      if (!e) return -1;
+      while (e.ptr < e.list.length && e.list[e.ptr] <= after) e.ptr++;
+      return e.ptr < e.list.length ? e.list[e.ptr] : -1;
+    };
+    let out = '', pos = 0;
+    for (let r = 0; r < runs.length; r++) {
+      const [start, len] = runs[r];
+      for (let m = len; m >= 1; m--) {
+        const close = nextRunOfLen(m, r);
+        if (close === -1) continue;
+        out += line.slice(pos, start + len - m) + ' ';
+        pos = runs[close][0] + m;
+        r = close;
+        break;
+      }
+    }
+    return out + line.slice(pos);
+  }).join('\n');
 }
 
 async function cascadeMentionsAfterWake(roomId, parent, threadId) {

@@ -577,6 +577,50 @@ function runUnitTests() {
     assert.ok(validateRegexPattern(42) !== null);
   });
 
+  // ── stripCodeSpans (loaded from server.js source, so the real code is tested) ──
+  const stripCodeSpans = (() => {
+    const src = require('fs').readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+    const start = src.indexOf('function stripCodeSpans(content) {');
+    return new Function(`${src.slice(start, src.indexOf('\n}\n', start) + 2)}\nreturn stripCodeSpans;`)();
+  })();
+  const msSince = t0 => Number(process.hrtime.bigint() - t0) / 1e6;
+  ut('stripCodeSpans — inline, fence, ~~~ and multi-backtick spans become one space', () => {
+    assert.strictEqual(stripCodeSpans('use `@kenji` here'), 'use   here');
+    assert.strictEqual(stripCodeSpans('```js\n@kenji go\n```\nafter'), ' \nafter');
+    assert.strictEqual(stripCodeSpans('~~~\n@k\n~~~'), ' ');
+    assert.strictEqual(stripCodeSpans('``x ` @k``'), ' ');
+    assert.strictEqual(stripCodeSpans('```@kenji```'), ' ');
+    assert.strictEqual(stripCodeSpans('`@a` and @kenji'), '  and @kenji');
+    assert.strictEqual(stripCodeSpans('a\n```\n```\n@k'), 'a\n \n@k');
+  });
+  ut('stripCodeSpans — unclosed fence/backtick removes nothing, text outside kept', () => {
+    assert.strictEqual(stripCodeSpans('```\nunclosed @kenji'), '```\nunclosed @kenji');
+    assert.strictEqual(stripCodeSpans('it`s @kenji'), 'it`s @kenji');
+    assert.strictEqual(stripCodeSpans('````\n@k\n```'), '````\n@k\n```', 'closer shorter than opener does not close');
+    assert.strictEqual(stripCodeSpans('```\n@k\n~~~'), '```\n@k\n~~~', 'closer must use the same char');
+    assert.strictEqual(stripCodeSpans('```\n```\n```\n@k'), ' \n```\n@k', 'nearest closer wins');
+    assert.strictEqual(stripCodeSpans('``a`'), '` ', 'leftmost suffix of a run can open');
+    assert.strictEqual(stripCodeSpans('plain @k'), 'plain @k');
+    assert.strictEqual(stripCodeSpans(null), '');
+  });
+  ut('stripCodeSpans — 100k unclosed fence openers finish < 500ms (linear)', () => {
+    const input = '```js\n'.repeat(100000) + '@kenji';
+    const t0 = process.hrtime.bigint();
+    const out = stripCodeSpans(input);
+    const ms = msSince(t0);
+    assert.strictEqual(out, input, 'nothing closes, so nothing is removed');
+    assert.ok(ms < 500, `took ${ms.toFixed(0)}ms`);
+  });
+  ut('stripCodeSpans — 100k-char line of unmatched backtick runs finishes < 500ms (linear)', () => {
+    let input = '';
+    for (let k = 1; input.length < 100000; k++) input += '`'.repeat(k) + 'x';
+    const t0 = process.hrtime.bigint();
+    const out = stripCodeSpans(input + ' @kenji');
+    const ms = msSince(t0);
+    assert.strictEqual(out, input + ' @kenji', 'no run has a same-length closer, so nothing is removed');
+    assert.ok(ms < 500, `took ${ms.toFixed(0)}ms`);
+  });
+
   // ── Thinking-signature sanitizer ───────────────────────────────────────────
   console.log('\n  [Thinking-signature sanitizer]');
   const {
