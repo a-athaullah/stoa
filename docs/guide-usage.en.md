@@ -135,7 +135,7 @@ When a root message has replies, a **thread chip** appears below it showing repl
 
 Click any root message (or its thread chip) to open the **thread panel** on the right side of the screen. The root message is pinned at the top of the panel; all replies appear below it. If an AI agent starts streaming a reply, the panel **opens automatically** — but only if you don't currently have another thread open. Close the panel with the × button or press **Escape**.
 
-The thread panel has its **own dedicated composer**, independent from the room composer — model selector, emoji picker, mention autocomplete, image attach, and slash commands are all available. Each composer has its own independent state: attachments, reply-to, and draft are not shared between the room and the thread. Drafts are saved per thread and restored when you reopen the panel.
+The thread panel has its **own dedicated composer**, independent from the room composer — model selector, emoji picker, mention autocomplete (type `@` for the same popup as the room composer: navigate with arrow keys, confirm with Enter or Tab, dismiss with Escape), image attach, and slash commands are all available. Each composer has its own independent state: attachments, reply-to, and draft are not shared between the room and the thread. Drafts are saved per thread and restored when you reopen the panel.
 
 **Thread sessions:** each thread maintains a separate Claude session. Opening an existing thread resumes its context; sending the first message in a new thread starts a fresh session for that agent.
 
@@ -234,7 +234,7 @@ Sub-agents are defined per agent. Select the agent in **Settings > AI Agent**, t
 - **Workdir** (optional) — a working directory the sub-agent operates in.
 - **System prompt** (optional) — extra instructions that shape the sub-agent's behavior.
 - **Harness** (optional) — `claude` or `codex`. Leave on **inherit from parent** (default) to use the same harness as the parent agent.
-- **Avatar** (optional) — each sub-agent has its own avatar: a hex color (`#RRGGBB`), a symbol (1–4 characters), or a custom image (upload or remove). Sub-agent messages in the feed and thread panels display the sub-agent's own avatar; if none is set, they fall back to the parent agent's avatar. Messages already on screen reflect the new avatar after a page reload.
+- **Avatar** (optional) — each sub-agent has its own avatar: a hex color (`#RRGGBB`), a symbol (1–4 characters), or a custom image (upload or remove). Sub-agent messages in the feed and thread panels display the sub-agent's own avatar; if none is set, they fall back to the parent agent's avatar. The mention popup also shows each sub-agent's own avatar (with a small parent badge) and role. Messages already on screen reflect the new avatar after a page reload.
 - **Memory** (optional) — each sub-agent has its own persistent memory (2,200-character budget), independent from the room memory. View or edit it directly in the sub-agent card.
 
 You can edit or delete a definition anytime. Definitions belong to the parent agent, not to any specific room.
@@ -249,14 +249,14 @@ Main agents can also update their own memory files (`MEMORY.md`, `USER.md`) auto
 
 ### Linking Sub-Agents to a Room
 
-A defined sub-agent must be linked to a room before it can be used there. Click the agent's seal in the room header to open **"<Agent>'s sub-agents"**, then toggle each sub-agent on or off for that room. Only linked sub-agents can be spawned in that room. Once linked, you can also address a sub-agent directly by @mentioning its label (e.g. `@probe`).
+A defined sub-agent must be linked to a room before it can be used there. Click the agent's seal in the room header to open **"<Agent>'s sub-agents"**, then toggle each sub-agent on or off for that room. Only linked sub-agents can be spawned in that room. Once linked, you can also address a sub-agent directly by @mentioning its label (e.g. `@probe`). Sub-agent @mentions appear highlighted in blue in the message feed (matching the style of agent mentions). The mention popup shows each sub-agent's own avatar alongside a small parent badge, plus the sub-agent's role when one is set.
 
 ### How Orchestration Works
 
 When the main agent responds, it can trigger its linked sub-agents to handle sub-tasks:
 
 1. **Fire-and-forget** — each sub-agent runs its task independently, so the main agent's turn is never blocked waiting for them.
-2. **Auto-wake** — when a sub-agent finishes, the main agent is automatically woken to read the result and synthesize a follow-up. This applies to **all** sub-agent completions — whether triggered directly or via a mention cascade. The wake survives a server restart (queued durably).
+2. **Auto-wake** — when a sub-agent finishes, the main agent is automatically woken to read the result and synthesize a follow-up. This applies when the sub-agent was triggered by the parent — via a mention in the parent's response, a wake cascade, or an API spawn. The wake survives a server restart (queued durably). If a human or automation @mentions a sub-agent directly (without also mentioning the parent in the same message), the parent is **not** woken when that sub-agent finishes — unless the sub-agent finishes with an error.
 3. **One level deep** — a sub-agent can never spawn its own sub-agents. Orchestration is strictly one level, which prevents runaway trees.
 4. **Wake cascade** — when the main agent synthesizes a sub-agent result, any @mentions in its response automatically trigger the mentioned agents or sub-agents. This enables orchestration loops: for example, a research sub-agent finishes → the main agent reads its result and @mentions a reviewer → the reviewer runs → the main agent reads the review and @mentions a fixer → and so on. A depth limit (default 5 hops) prevents infinite chains.
 

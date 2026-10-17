@@ -135,7 +135,7 @@ Jika sebuah pesan root sudah punya balasan, **chip thread** muncul di bawahnya, 
 
 Klik pesan root mana pun (atau chip thread-nya) untuk membuka **panel thread** di sebelah kanan. Pesan root ditampilkan di bagian atas panel; semua balasan muncul di bawahnya. Jika AI agent mulai streaming balasan, panel **terbuka otomatis** — tetapi hanya jika Anda sedang tidak membuka thread lain. Tutup panel dengan tombol × atau tekan **Escape**.
 
-Panel thread memiliki **composer tersendiri yang terpisah** dari composer room — model selector, emoji picker, mention autocomplete, lampiran gambar, dan slash command semuanya tersedia. Masing-masing composer punya state independen: attachments, reply-to, dan draft tidak dibagi antara room dan thread. Draft disimpan per thread dan dipulihkan saat panel dibuka kembali.
+Panel thread memiliki **composer tersendiri yang terpisah** dari composer room — model selector, emoji picker, mention autocomplete (ketik `@` untuk popup yang sama seperti di composer room: navigasi dengan tombol panah, konfirmasi dengan Enter atau Tab, tutup dengan Escape), lampiran gambar, dan slash command semuanya tersedia. Masing-masing composer punya state independen: attachments, reply-to, dan draft tidak dibagi antara room dan thread. Draft disimpan per thread dan dipulihkan saat panel dibuka kembali.
 
 **Sesi thread:** setiap thread mempertahankan sesi Claude terpisah. Membuka thread lama melanjutkan konteksnya; pesan pertama di thread baru memulai sesi baru untuk agent tersebut.
 
@@ -235,7 +235,7 @@ Sub-agent didefinisikan per agent. Pilih agent di **Settings > AI Agent**, lalu 
 - **Workdir** (opsional) — direktori kerja tempat sub-agent beroperasi.
 - **System prompt** (opsional) — instruksi tambahan yang membentuk perilaku sub-agent.
 - **Harness** (opsional) — `claude` atau `codex`. Biarkan pada **inherit from parent** (default) untuk memakai harness yang sama dengan agent induk.
-- **Avatar** (opsional) — tiap sub-agent punya avatar sendiri: warna hex (`#RRGGBB`), simbol (1–4 karakter), atau gambar kustom (bisa diupload atau dihapus). Pesan sub-agent di feed dan panel thread ditampilkan dengan avatar sub-agent itu sendiri; jika tidak di-set, fallback ke avatar agent induk. Pesan yang sudah tampil di layar baru mencerminkan avatar baru setelah reload halaman.
+- **Avatar** (opsional) — tiap sub-agent punya avatar sendiri: warna hex (`#RRGGBB`), simbol (1–4 karakter), atau gambar kustom (bisa diupload atau dihapus). Pesan sub-agent di feed dan panel thread ditampilkan dengan avatar sub-agent itu sendiri; jika tidak di-set, fallback ke avatar agent induk. Popup mention juga menampilkan avatar sub-agent sendiri (dengan badge parent kecil) dan role. Pesan yang sudah tampil di layar baru mencerminkan avatar baru setelah reload halaman.
 - **Memory** (opsional) — tiap sub-agent punya memory persisten sendiri (budget 2.200 karakter), terpisah dari room memory. Bisa dilihat dan diedit langsung di kartu sub-agent.
 
 Kamu bisa mengedit atau menghapus definisi kapan saja. Definisi milik agent induk, bukan milik room tertentu.
@@ -250,14 +250,14 @@ Agent utama juga bisa memperbarui file memory miliknya sendiri (`MEMORY.md`, `US
 
 ### Menautkan Sub-Agent ke Room
 
-Sub-agent yang sudah didefinisikan harus ditautkan ke sebuah room sebelum bisa dipakai di sana. Klik seal agent di header room untuk membuka **"Sub-agent milik <Agent>"**, lalu aktif/nonaktifkan tiap sub-agent untuk room tersebut. Hanya sub-agent yang tertaut yang bisa dimunculkan di room itu. Setelah tertaut, kamu juga bisa menyapa sub-agent secara langsung dengan me-@mention label-nya (misalnya `@probe`).
+Sub-agent yang sudah didefinisikan harus ditautkan ke sebuah room sebelum bisa dipakai di sana. Klik seal agent di header room untuk membuka **"Sub-agent milik <Agent>"**, lalu aktif/nonaktifkan tiap sub-agent untuk room tersebut. Hanya sub-agent yang tertaut yang bisa dimunculkan di room itu. Setelah tertaut, kamu juga bisa menyapa sub-agent secara langsung dengan me-@mention label-nya (misalnya `@probe`). @mention sub-agent tampil disorot biru di feed pesan (sama seperti mention agent). Popup mention menampilkan avatar sub-agent sendiri dengan badge parent kecil di sampingnya, beserta role sub-agent jika sudah diatur.
 
 ### Cara Kerja Orkestrasi
 
 Saat agent utama merespons, ia bisa memicu sub-agent yang tertaut untuk menangani sub-tugas:
 
 1. **Fire-and-forget** — tiap sub-agent menjalankan tugasnya secara independen, jadi giliran agent utama tidak pernah terblokir menunggu mereka.
-2. **Auto-wake** — saat sebuah sub-agent selesai, agent utama otomatis dibangunkan untuk membaca hasilnya dan menyusun tindak lanjut. Ini berlaku untuk **semua** penyelesaian sub-agent — baik yang dipicu langsung maupun melalui mention cascade. Wake bertahan melewati restart server (di-antre secara durable).
+2. **Auto-wake** — saat sebuah sub-agent selesai, agent utama otomatis dibangunkan untuk membaca hasilnya dan menyusun tindak lanjut. Ini berlaku ketika sub-agent dipicu oleh parent — melalui mention di respons parent, wake cascade, atau spawn via API. Wake bertahan melewati restart server (di-antre secara durable). Jika manusia atau automation me-@mention sub-agent secara langsung (tanpa juga me-mention parent di pesan yang sama), parent **tidak** dibangunkan saat sub-agent tersebut selesai — kecuali sub-agent selesai dengan error.
 3. **Satu level dalam** — sebuah sub-agent tidak pernah bisa memunculkan sub-agent-nya sendiri. Orkestrasi tegas satu level, mencegah pohon yang meliar.
 4. **Wake cascade** — saat agent utama menyintesis hasil sub-agent, @mention apapun di responsnya otomatis memicu agent atau sub-agent yang di-mention. Ini memungkinkan loop orkestrasi: misalnya, sub-agent riset selesai → agent utama baca hasilnya dan @mention reviewer → reviewer jalan → agent utama baca review dan @mention fixer → dst. Batas kedalaman (default 5 hop) mencegah rantai tak terbatas.
 
