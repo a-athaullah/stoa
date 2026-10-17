@@ -312,7 +312,7 @@ function applyMention(name) {
       span.contentEditable = 'false';
       span.textContent = '@' + name;
       frag.appendChild(span);
-      const after = document.createTextNode(' ' + afterText);
+      const after = document.createTextNode(' ' + afterText);
       frag.appendChild(after);
       parent.replaceChild(frag, node);
       const range = document.createRange();
