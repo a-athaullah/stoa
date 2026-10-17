@@ -1722,7 +1722,7 @@ const server = http.createServer(async (req, res) => {
       const scopeAll = url.searchParams.get('scope') === 'all';
       const before = url.searchParams.get('before');
       const limit  = Math.min(parseInt(url.searchParams.get('limit') ?? '50'), 100);
-      const threadFilter = scopeAll ? '' : 'AND m.thread_id IS NULL';
+      const threadFilter = scopeAll ? '' : 'AND (m.thread_id IS NULL OR m.broadcast_reason IS NOT NULL)';
       // Subquery summary per root (used only in roots-only mode)
       const threadSummarySQL = scopeAll ? '' : `,
         (SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id) AS thread_count,
@@ -1733,6 +1733,10 @@ const server = http.createServer(async (req, res) => {
         (SELECT GROUP_CONCAT(DISTINCT r.sub_agent_label || ':' || rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id AND r.sub_agent_label IS NOT NULL) AS thread_sub_agent_participants`;
 
       function enrichThreadData(m) {
+        if (m.broadcast_reason && m.thread_id) {
+          m.thread_root_preview = getThreadRootPreview(m.thread_id);
+          return;
+        }
         const sap = m.thread_sub_agent_participants ? m.thread_sub_agent_participants.split(',').map(s => { const [label, aid] = s.split(':'); return { label, actor_id: Number(aid) }; }) : [];
         m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active, participant_ids: m.thread_participant_ids ? m.thread_participant_ids.split(',').map(Number) : [], has_error: !!m.thread_has_error, sub_agent_participants: sap };
       }
@@ -1751,6 +1755,7 @@ const server = http.createServer(async (req, res) => {
                 (m.state = 'complete' AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL))
                 OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
                 OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
+                OR (m.state = 'error' AND m.broadcast_reason IS NOT NULL)
               )
             ORDER BY m.created_at DESC LIMIT ?
           ) t ORDER BY created_at ASC
@@ -1773,6 +1778,7 @@ const server = http.createServer(async (req, res) => {
             (m.state = 'complete' AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL))
             OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
             OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
+            OR (m.state = 'error' AND m.broadcast_reason IS NOT NULL)
           )
         ORDER BY m.created_at ASC
         LIMIT 500
@@ -4895,10 +4901,11 @@ wss.on('connection', (ws, req) => {
           FROM messages m
           JOIN room_participants rp ON rp.id=m.participant_id
           JOIN actors a ON a.id=rp.actor_id
-          WHERE m.room_id=? AND m.thread_id IS NULL AND (
+          WHERE m.room_id=? AND (m.thread_id IS NULL OR m.broadcast_reason IS NOT NULL) AND (
             (m.state IN ('complete','streaming','requesting') AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL OR m.state IN ('streaming','requesting')))
             OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
             OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
+            OR (m.state = 'error' AND m.broadcast_reason IS NOT NULL)
           )
           ORDER BY m.created_at DESC LIMIT 100
         ) AS recent ORDER BY created_at ASC
@@ -4906,8 +4913,12 @@ wss.on('connection', (ws, req) => {
       const enriched = enrichReply(messages);
       enrichAutomationList(enriched);
       enriched.forEach(m => {
-        const sap = m.thread_sub_agent_participants ? m.thread_sub_agent_participants.split(',').map(s => { const [label, aid] = s.split(':'); return { label, actor_id: Number(aid) }; }) : [];
-        m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active, participant_ids: m.thread_participant_ids ? m.thread_participant_ids.split(',').map(Number) : [], has_error: !!m.thread_has_error, sub_agent_participants: sap };
+        if (m.broadcast_reason && m.thread_id) {
+          m.thread_root_preview = getThreadRootPreview(m.thread_id);
+        } else {
+          const sap = m.thread_sub_agent_participants ? m.thread_sub_agent_participants.split(',').map(s => { const [label, aid] = s.split(':'); return { label, actor_id: Number(aid) }; }) : [];
+          m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active, participant_ids: m.thread_participant_ids ? m.thread_participant_ids.split(',').map(Number) : [], has_error: !!m.thread_has_error, sub_agent_participants: sap };
+        }
       });
       ws.send(JSON.stringify({ type: 'history', messages: enriched }));
       // Restore compact state if room is currently compacting (room-level and thread-level)
