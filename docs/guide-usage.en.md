@@ -153,6 +153,8 @@ Thread messages can also appear in the room feed — without leaving their threa
 
 **Agent error or limit** — when the main agent (not a sub-agent) inside a thread encounters an error, timeout, disconnect, server restart, or hits a rate / usage limit, the error message is also shown in the room feed with an **error** or **limit** badge. At most one broadcast per thread is shown every 10 minutes to avoid flooding the feed. Sub-agent errors are not broadcast.
 
+Each broadcast row header always starts with a **From thread** badge, followed by a short preview of the root message and the reason badge (**automation match**, **error**, or **limit**). The **From thread** badge makes it immediately clear that the row originated in a thread, not from the room feed directly.
+
 The broadcast row is not a duplicate record — it is the same thread message rendered in two places. Deleting the original message removes both.
 
 ### Message Actions
