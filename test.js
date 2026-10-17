@@ -3628,6 +3628,42 @@ async function run() {
       complete(w, 'done');
     });
 
+    await test('GET room sub-agents → own avatar + role, parent avatar under parent_avatar_*', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const p = await req('PATCH', `/api/sub-agents/${wkSa.id}`, { avatar_color: '#123456', avatar_symbol: 'WK', role: 'Wake Tester' });
+      assert.strictEqual(p.status, 200, JSON.stringify(p.body));
+      const parent = (await req('GET', '/api/actors')).body.find(a => a.id === wkActorId);
+      assert.notStrictEqual(parent.avatar_color, '#123456', 'parent color must differ for the test to mean anything');
+      const r = await req('GET', `/api/rooms/${wkRoomId}/sub-agents`);
+      assert.strictEqual(r.status, 200);
+      const sa = r.body.linked.find(s => s.id === wkSa.id);
+      assert.strictEqual(sa.avatar_color, '#123456');
+      assert.strictEqual(sa.avatar_symbol, 'WK');
+      assert.strictEqual(sa.role, 'Wake Tester');
+      assert.strictEqual(sa.parent_avatar_color, parent.avatar_color);
+      assert.strictEqual(sa.parent_avatar_url, parent.avatar_url ?? null);
+    });
+
+    await test('Realtime message_state for a sub-agent run carries sub-agent avatar + role', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        const histP = waitForWsMessage(humanWs, m => m.type === 'history');
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: wkRoomId }));
+        await histP;
+        const stateP = waitForWsMessage(humanWs, m => m.type === 'message_state' && m.state === 'streaming' && m.sub_agent_label === 'wakesub', 5000);
+        const t = nextSubTrigger();
+        humanWs.send(JSON.stringify({ type: 'send_message', room_id: wkRoomId, content: '@wakesub show your face' }));
+        const st = await stateP;
+        complete(await t, 'here');
+        const parent = (await req('GET', '/api/actors')).body.find(a => a.id === wkActorId);
+        assert.strictEqual(st.sub_agent_avatar_color, '#123456');
+        assert.strictEqual(st.sub_agent_avatar_symbol, 'WK');
+        assert.strictEqual(st.sub_agent_role, 'Wake Tester');
+        assert.strictEqual(st.avatar_color, parent.avatar_color, 'parent avatar stays on avatar_color as fallback');
+      } finally { humanWs.close(); }
+    });
+
     await test('Cleanup — wake test data', async () => {
       await new Promise(r => setTimeout(r, 300));
       if (wkWs) { wkWs.close(); wkWs = null; }

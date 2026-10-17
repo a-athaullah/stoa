@@ -1789,7 +1789,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname.endsWith('/sub-agents')) {
       const linked = db.prepare(`
-        SELECT sa.*, a.name AS parent_name, a.avatar_color, a.avatar_url, rsa.added_at AS linked_at
+        SELECT sa.*, a.name AS parent_name, a.avatar_color AS parent_avatar_color, a.avatar_symbol AS parent_avatar_symbol, a.avatar_url AS parent_avatar_url, rsa.added_at AS linked_at
         FROM room_sub_agents rsa
         JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
         JOIN actors a ON a.id=sa.parent_actor_id
@@ -1804,7 +1804,7 @@ const server = http.createServer(async (req, res) => {
         const ph = parentIds.map(() => '?').join(',');
         const linkedIds = new Set(linked.map(l => l.id));
         available = db.prepare(
-          `SELECT sa.*, a.name AS parent_name FROM sub_agents sa JOIN actors a ON a.id=sa.parent_actor_id WHERE sa.parent_actor_id IN (${ph}) AND sa.enabled=1`
+          `SELECT sa.*, a.name AS parent_name, a.avatar_color AS parent_avatar_color, a.avatar_symbol AS parent_avatar_symbol, a.avatar_url AS parent_avatar_url FROM sub_agents sa JOIN actors a ON a.id=sa.parent_actor_id WHERE sa.parent_actor_id IN (${ph}) AND sa.enabled=1`
         ).all(...parentIds).filter(sa => !linkedIds.has(sa.id));
       }
       return json(res, { linked, available });
@@ -7008,6 +7008,10 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     avatar_symbol: ai.avatar_symbol,
     avatar_url: ai.avatar_url || null,
     sub_agent_label: subAgent?.label || null,
+    sub_agent_avatar_color: subAgent?.avatar_color || null,
+    sub_agent_avatar_symbol: subAgent?.avatar_symbol || null,
+    sub_agent_avatar_url: subAgent?.avatar_url || null,
+    sub_agent_role: subAgent?.role || null,
     thread_id: threadId || null,
     state: 'streaming',
   });
