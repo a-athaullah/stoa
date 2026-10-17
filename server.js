@@ -386,9 +386,11 @@ function verifyAgentRequest(req) {
 // ─── Phase 2b: durable auto-wake (R1) ──────────────────────────────────────
 // When a sub-agent completes, wake its parent exactly once with the result in
 // context. The pending_wakes row makes this survive a server restart (drained
-// on startup). ALL sub-agent completions wake their parent — both
-// /sub-agent-trigger spawns (parent_message_id set) and @mention-cascade
-// triggers (parent_message_id null).
+// on startup). Sub-agent completions wake their parent when messages.wake_parent=1
+// (default: /sub-agent-trigger spawns, parent @mention-cascade, wake-cascade,
+// proactive-cascade) or when the run ended in state='error'. handleHumanMessage
+// sets wake_parent=0 for sub-agents the human mentioned directly, unless the
+// parent was @mentioned too — the human is talking to the sub-agent, not the parent.
 const MAX_WAKE_ATTEMPTS = 3;
 
 function enqueueParentWake(roomId, parentParticipantId, subAgentMessageId, threadId) {
@@ -482,7 +484,7 @@ async function drainWake(wakeId) {
   const wakePrompt = `[sub-agent result] Sub-agent "${label}" yang kamu picu sudah selesai. ${failurePrefix}Hasilnya:\n\n${body}\n\nSintesiskan dan lanjutkan menjawab. Kamu boleh @mention sub-agent lain untuk delegate tugas berikutnya (misal @stoa-reviewer untuk review). Mention akan otomatis trigger sub-agent tersebut.${costBlock}`;
 
   try {
-    await triggerAiResponse(row.room_id, { ...parent, sub_agent: null }, wakePrompt, null, [], null, row.thread_id ?? null);
+    await triggerAiResponse(row.room_id, { ...parent, sub_agent: null, prompt_outside_history: true }, wakePrompt, null, [], null, row.thread_id ?? null);
     db.prepare('DELETE FROM pending_wakes WHERE id=?').run(wakeId);
     cascadeMentionsAfterWake(row.room_id, parent, row.thread_id ?? null).catch(e =>
       console.error('[wake-cascade] error:', e.message));
@@ -510,6 +512,91 @@ const MAX_WAKE_CASCADE_DEPTH = 5;
 const wakeCascadeDepth = new Map(); // roomId → current depth
 const mentionBoundary = (name) => new RegExp(`(?:^|\\s)@${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=\\s|[.,!?;:]|$)`);
 
+// A mention inside markdown code (fenced block or inline span) is an example, not a
+// trigger. Used for trigger detection only — stored and forwarded content is untouched.
+// Code is replaced by a space so the text around it can't fuse into a new mention.
+// Unclosed fences/backticks match nothing, so the rest of the message still triggers.
+// Both passes are linear scanners on purpose: this runs on the event loop for every
+// human, agent and proactive message, and the regex version backtracked quadratically
+// on unclosed fences/backtick runs (100k unclosed fence lines froze the server ~50 s).
+// Kept self-contained (no outer helpers) so test.js can load it from source.
+function stripCodeSpans(content) {
+  if (!content) return '';
+  if (!content.includes('`') && !content.includes('~~~')) return content;
+
+  // Fences: an opener line (run of ≥3 ` or ~, any info string) closes at the next line
+  // that is only a run of the same char with length ≥ the opener's. sufMax[c][i] = the
+  // longest closer of char c at or after line i, so an opener without a closer is
+  // rejected in O(1) and scanning resumes on the next line; a successful scan consumes
+  // the lines it walked, keeping the whole pass O(n).
+  const lines = content.split('\n');
+  const n = lines.length;
+  const closer = new Array(n);
+  const sufMax = { '`': new Int32Array(n + 1), '~': new Int32Array(n + 1) };
+  for (let i = n - 1; i >= 0; i--) {
+    const m = /^[ \t]*(`{3,}|~{3,})[ \t]*$/.exec(lines[i]);
+    closer[i] = m ? { c: m[1][0], len: m[1].length } : null;
+    sufMax['`'][i] = sufMax['`'][i + 1];
+    sufMax['~'][i] = sufMax['~'][i + 1];
+    if (m) sufMax[m[1][0]][i] = Math.max(sufMax[m[1][0]][i], m[1].length);
+  }
+  const kept = [];
+  for (let i = 0; i < n; i++) {
+    const open = /^[ \t]*(`{3,}|~{3,})/.exec(lines[i]);
+    if (open) {
+      const c = open[1][0], len = open[1].length;
+      if (sufMax[c][i + 1] >= len) {
+        let j = i + 1;
+        while (!(closer[j] && closer[j].c === c && closer[j].len >= len)) j++;
+        kept.push(' ');
+        i = j;
+        continue;
+      }
+    }
+    kept.push(lines[i]);
+  }
+
+  // Inline spans, per line: an opener is any suffix of a backtick run (leftmost start
+  // wins, so the longest suffix first) and closes at the nearest later run of exactly
+  // that length on the same line. Per-length pointers only move forward and each run
+  // tries at most its own length, so the pass stays O(line length).
+  return kept.map(line => {
+    if (!line.includes('`')) return line;
+    const runs = [];
+    for (let k = 0; k < line.length;) {
+      if (line[k] !== '`') { k++; continue; }
+      let e = k;
+      while (line[e] === '`') e++;
+      runs.push([k, e - k]);
+      k = e;
+    }
+    const byLen = new Map();
+    runs.forEach(([, len], idx) => {
+      if (!byLen.has(len)) byLen.set(len, { list: [], ptr: 0 });
+      byLen.get(len).list.push(idx);
+    });
+    const nextRunOfLen = (len, after) => {
+      const e = byLen.get(len);
+      if (!e) return -1;
+      while (e.ptr < e.list.length && e.list[e.ptr] <= after) e.ptr++;
+      return e.ptr < e.list.length ? e.list[e.ptr] : -1;
+    };
+    let out = '', pos = 0;
+    for (let r = 0; r < runs.length; r++) {
+      const [start, len] = runs[r];
+      for (let m = len; m >= 1; m--) {
+        const close = nextRunOfLen(m, r);
+        if (close === -1) continue;
+        out += line.slice(pos, start + len - m) + ' ';
+        pos = runs[close][0] + m;
+        r = close;
+        break;
+      }
+    }
+    return out + line.slice(pos);
+  }).join('\n');
+}
+
 async function cascadeMentionsAfterWake(roomId, parent, threadId) {
   const cascadeKey = threadId ? `${roomId}:${threadId}` : String(roomId);
   const depth = (wakeCascadeDepth.get(cascadeKey) || 0) + 1;
@@ -533,7 +620,8 @@ async function cascadeMentionsAfterWake(roomId, parent, threadId) {
         WHERE rp.actor_id=? AND m.room_id=? AND m.state='complete' AND m.sub_agent_id IS NULL AND m.completed_at IS NOT NULL
         ORDER BY m.id DESC LIMIT 1
       `).get(parent.actor_id, roomId);
-  if (!lastMsg?.content || !lastMsg.content.includes('@')) return;
+  const mentionText = stripCodeSpans(lastMsg?.content);
+  if (!mentionText.includes('@')) return;
   // Auto-thread: if at room level, sub-agent responses go under the parent's message
   const effectiveThreadId = threadId || lastMsg.id;
 
@@ -554,14 +642,14 @@ async function cascadeMentionsAfterWake(roomId, parent, threadId) {
   const regularAgentsCascade = [];
 
   for (const sa of linkedSubs) {
-    if (mentionBoundary(sa.label).test(lastMsg.content)) {
+    if (mentionBoundary(sa.label).test(mentionText)) {
       const parentAgent = allAi.find(a => a.actor_id === sa.parent_actor_id);
       if (parentAgent) subAgentsCascade.push({ ...parentAgent, sub_agent: sa });
     }
   }
 
   for (const other of allAi) {
-    if (other.actor_id !== parent.actor_id && mentionBoundary(other.name).test(lastMsg.content)) {
+    if (other.actor_id !== parent.actor_id && mentionBoundary(other.name).test(mentionText)) {
       const alreadyQueued = regularAgentsCascade.some(a => a.actor_id === other.actor_id);
       if (!alreadyQueued) regularAgentsCascade.push({ ...other, sub_agent: null });
     }
@@ -589,7 +677,8 @@ async function cascadeMentionsAfterWake(roomId, parent, threadId) {
 
 // Cascade @mentions from a proactive agent message (same logic as wake-cascade but content is known upfront).
 async function cascadeMentionsFromProactive(roomId, senderActorId, content, threadId) {
-  if (!content.includes('@')) return;
+  const mentionText = stripCodeSpans(content);
+  if (!mentionText.includes('@')) return;
 
   const allAi = db.prepare(`
     SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.adapter_config, a.avatar_color, a.avatar_symbol, a.avatar_url
@@ -608,14 +697,14 @@ async function cascadeMentionsFromProactive(roomId, senderActorId, content, thre
   const regularAgentsCascade = [];
 
   for (const sa of linkedSubs) {
-    if (mentionBoundary(sa.label).test(content)) {
+    if (mentionBoundary(sa.label).test(mentionText)) {
       const parentAgent = allAi.find(a => a.actor_id === sa.parent_actor_id);
       if (parentAgent) subAgentsCascade.push({ ...parentAgent, sub_agent: sa });
     }
   }
 
   for (const other of allAi) {
-    if (other.actor_id !== senderActorId && mentionBoundary(other.name).test(content)) {
+    if (other.actor_id !== senderActorId && mentionBoundary(other.name).test(mentionText)) {
       const alreadyQueued = regularAgentsCascade.some(a => a.actor_id === other.actor_id);
       if (!alreadyQueued) regularAgentsCascade.push({ ...other, sub_agent: null });
     }
@@ -923,6 +1012,7 @@ function fireSchedule(sched) {
   const effectiveHarness = sub.harness || ai.adapter || 'claude';
   ai.sub_agent = { id: sub.id, label: sub.label, tier: sub.tier, model: sub.model, workdir: sub.workdir, system_prompt: sub.system_prompt, harness: effectiveHarness, avatar_color: sub.avatar_color, avatar_symbol: sub.avatar_symbol, avatar_url: sub.avatar_url, description: sub.description, role: sub.role };
   ai.parent_message_id = null; // standalone run — no orchestrator turn to auto-wake
+  ai.prompt_outside_history = true;
   triggerAiResponse(sched.room_id, ai, sched.task, null, []).catch(e => console.error('[scheduler] trigger error:', e.message));
   return 'fired';
 }
@@ -1787,7 +1877,7 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname.endsWith('/sub-agents')) {
       const linked = db.prepare(`
-        SELECT sa.*, a.name AS parent_name, a.avatar_color, a.avatar_url, rsa.added_at AS linked_at
+        SELECT sa.*, a.name AS parent_name, a.avatar_color AS parent_avatar_color, a.avatar_symbol AS parent_avatar_symbol, a.avatar_url AS parent_avatar_url, rsa.added_at AS linked_at
         FROM room_sub_agents rsa
         JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
         JOIN actors a ON a.id=sa.parent_actor_id
@@ -1802,7 +1892,7 @@ const server = http.createServer(async (req, res) => {
         const ph = parentIds.map(() => '?').join(',');
         const linkedIds = new Set(linked.map(l => l.id));
         available = db.prepare(
-          `SELECT sa.*, a.name AS parent_name FROM sub_agents sa JOIN actors a ON a.id=sa.parent_actor_id WHERE sa.parent_actor_id IN (${ph}) AND sa.enabled=1`
+          `SELECT sa.*, a.name AS parent_name, a.avatar_color AS parent_avatar_color, a.avatar_symbol AS parent_avatar_symbol, a.avatar_url AS parent_avatar_url FROM sub_agents sa JOIN actors a ON a.id=sa.parent_actor_id WHERE sa.parent_actor_id IN (${ph}) AND sa.enabled=1`
         ).all(...parentIds).filter(sa => !linkedIds.has(sa.id));
       }
       return json(res, { linked, available });
@@ -2115,6 +2205,7 @@ const server = http.createServer(async (req, res) => {
     const effectiveHarness = sub.harness || ai.adapter || 'claude';
     ai.sub_agent = { id: sub.id, label: sub.label, tier: sub.tier, model: sub.model, workdir: sub.workdir, system_prompt: sub.system_prompt, harness: effectiveHarness, avatar_color: sub.avatar_color, avatar_symbol: sub.avatar_symbol, avatar_url: sub.avatar_url, description: sub.description, role: sub.role };
     ai.parent_message_id = parentMessageId;
+    ai.prompt_outside_history = true;
 
     // Pre-check: parent actor's stoa-agent must be online to run the sub-agent.
     const parentWs = agentClients.get(agent.id);
@@ -5610,7 +5701,7 @@ wss.on('connection', (ws, req) => {
       db.prepare(
         'UPDATE messages SET content=?, file_url=?, file_name=?, attachments=?, ai_model=?, result_meta=?, state=?, completed_at=datetime(\'now\') WHERE id=?'
       ).run(agentContent, msg.file_url || null, msg.file_name || null, attachJson, msg.ai_model || null, resultMetaJson, finalState, msg.message_id);
-      const doneRow = db.prepare('SELECT participant_id, sub_agent_id, parent_message_id, thread_id, model_source FROM messages WHERE id=?').get(msg.message_id);
+      const doneRow = db.prepare('SELECT participant_id, sub_agent_id, parent_message_id, thread_id, model_source, wake_parent FROM messages WHERE id=?').get(msg.message_id);
       const completePayload = { type: 'message_complete', message_id: msg.message_id, content: agentContent, ai_model: msg.ai_model || null, model_source: doneRow?.model_source || null, state: finalState, thread_id: doneRow?.thread_id ?? null };
       if (resultMetaJson) completePayload.result_meta = resultMetaJson;
       if (msg.attachments?.length) { completePayload.attachments = msg.attachments; }
@@ -5631,7 +5722,7 @@ wss.on('connection', (ws, req) => {
         } catch (e) { console.error('[agent] saveSession error:', e.message); }
       }
       try {
-        if (doneRow && doneRow.sub_agent_id) {
+        if (doneRow && doneRow.sub_agent_id && (doneRow.wake_parent || finalState === 'error')) {
           enqueueParentWake(msg.room_id, doneRow.participant_id, msg.message_id, doneRow.thread_id ?? null);
         }
       } catch (e) { console.error('[wake] enqueue error:', e.message); }
@@ -6433,9 +6524,10 @@ function parseGitDiff(raw) {
 // ─── Message handling ─────────────────────────────────────────────────────────
 
 function resolveAgentOrder(content, agents, roomId) {
+  const mentionText = stripCodeSpans(content);
   const mentions = [];
   for (const agent of agents) {
-    const idx = content.indexOf('@' + agent.name);
+    const idx = mentionText.indexOf('@' + agent.name);
     if (idx !== -1) mentions.push({ agent: { ...agent, sub_agent: null }, idx });
   }
 
@@ -6448,7 +6540,7 @@ function resolveAgentOrder(content, agents, roomId) {
       WHERE rsa.room_id=? AND sa.enabled=1
     `).all(roomId);
     for (const sa of linkedSubs) {
-      const idx = content.indexOf('@' + sa.label);
+      const idx = mentionText.indexOf('@' + sa.label);
       if (idx === -1) continue;
       const parent = agents.find(a => a.actor_id === sa.parent_actor_id);
       if (!parent) continue;
@@ -6548,9 +6640,10 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
         : db.prepare(lastMsgQuery).get(currentAgent.actor_id, roomId);
 
       if (lastMsg?.content) {
+        const mentionText = stripCodeSpans(lastMsg.content);
         const allAiInRoom = allAiStmt.all(roomId);
         for (const other of allAiInRoom) {
-          if (other.actor_id !== currentAgent.actor_id && mentionBoundary(other.name).test(lastMsg.content)) {
+          if (other.actor_id !== currentAgent.actor_id && mentionBoundary(other.name).test(mentionText)) {
             const alreadyQueued = agents.slice(i + 1).some(a => a.actor_id === other.actor_id);
             if (!alreadyQueued) agents.push({ ...other, sub_agent: null });
           }
@@ -6564,7 +6657,7 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
           WHERE rsa.room_id=? AND sa.enabled=1
         `).all(roomId);
         for (const sa of linkedSubs) {
-          if (mentionBoundary(sa.label).test(lastMsg.content) && !firedSubAgentIds.has(sa.id)) {
+          if (mentionBoundary(sa.label).test(mentionText) && !firedSubAgentIds.has(sa.id)) {
             const parent = allAiInRoom.find(a => a.actor_id === sa.parent_actor_id);
             if (parent) {
               firedSubAgentIds.add(sa.id);
@@ -6709,7 +6802,12 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
 
   if (allAiParts.length > 0) {
     const ordered = resolveAgentOrder(content, allAiParts, roomId);
-    const subAgentMentions = ordered.filter(a => a.sub_agent);
+    const mentionText = stripCodeSpans(content);
+    // resolveAgentOrder folds "@Parent @label" into the sub-agent, so an explicit parent
+    // mention is detected separately: only then does the parent get woken afterwards.
+    // Automation messages also land here and are treated the same as human messages.
+    const subAgentMentions = ordered.filter(a => a.sub_agent)
+      .map(a => ({ ...a, wake_parent: mentionBoundary(a.name).test(mentionText) }));
     const parentMentions   = ordered.filter(a => !a.sub_agent);
 
     // Sub-agents fire in parallel — independent of conversation flow
@@ -6878,6 +6976,7 @@ function promptStrings(lang) {
       participants: names => `Other participants in this room: ${names}.`,
       timeContext: now => `Current time: ${now}. All message timestamps in the conversation history are in UTC.`,
       historyLabel: 'Conversation history',
+      taskLabel: 'Task for this turn (not part of the conversation history above)',
       attachments: 'Attachments',
       attachmentsNote: 'files downloaded to .stoa-attachments/ in workdir if this is the latest message',
       sentImage: 'sent an image',
@@ -6892,6 +6991,7 @@ function promptStrings(lang) {
       participants: names => `Peserta lain di room ini: ${names}.`,
       timeContext: now => `Waktu sekarang: ${now}. Semua timestamp di riwayat percakapan adalah UTC.`,
       historyLabel: 'Riwayat percakapan',
+      taskLabel: 'Tugas untuk giliran ini (bukan bagian dari riwayat percakapan di atas)',
       attachments: 'Lampiran',
       attachmentsNote: 'file sudah didownload ke .stoa-attachments/ di workdir jika ini pesan terbaru',
       sentImage: 'mengirim gambar',
@@ -6906,6 +7006,7 @@ function promptStrings(lang) {
       participants: names => `このルームの他の参加者: ${names}。`,
       timeContext: now => `現在時刻: ${now}。会話履歴のタイムスタンプはすべてUTCです。`,
       historyLabel: '会話履歴',
+      taskLabel: 'このターンのタスク（上の会話履歴には含まれていません）',
       attachments: '添付ファイル',
       attachmentsNote: '最新メッセージの場合、ファイルはworkdirの.stoa-attachments/にダウンロード済み',
       sentImage: '画像を送信',
@@ -6920,6 +7021,7 @@ function promptStrings(lang) {
       participants: names => `이 방의 다른 참가자: ${names}.`,
       timeContext: now => `현재 시각: ${now}. 대화 기록의 모든 타임스탬프는 UTC입니다.`,
       historyLabel: '대화 기록',
+      taskLabel: '이번 차례의 작업 (위 대화 기록에 포함되지 않음)',
       attachments: '첨부파일',
       attachmentsNote: '최신 메시지인 경우 파일이 workdir의 .stoa-attachments/에 다운로드됨',
       sentImage: '이미지 전송',
@@ -6934,6 +7036,7 @@ function promptStrings(lang) {
       participants: names => `此房间的其他参与者：${names}。`,
       timeContext: now => `当前时间：${now}。对话历史中的所有时间戳均为UTC。`,
       historyLabel: '对话历史',
+      taskLabel: '本轮任务（不在上面的对话历史中）',
       attachments: '附件',
       attachmentsNote: '如果这是最新消息，文件已下载到workdir的.stoa-attachments/',
       sentImage: '发送了图片',
@@ -6980,13 +7083,14 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   }
 
   const subAgent = ai.sub_agent || null;
-  // parent_message_id marks a /sub-agent-trigger run for traceability. Auto-wake
-  // fires for ALL sub-agent completions (including @mention-cascade), not just these.
+  // parent_message_id marks a /sub-agent-trigger run for traceability. Auto-wake is
+  // governed by wake_parent instead (see enqueueParentWake): only a direct human
+  // mention passes ai.wake_parent=false; every other caller keeps the wake.
   const parentMessageId = (subAgent && ai.parent_message_id) ? ai.parent_message_id : null;
   const result = subAgent
     ? db.prepare(
-        `INSERT INTO messages (room_id, participant_id, content, state, reply_to, sub_agent_id, sub_agent_label, parent_message_id, thread_id) VALUES (?,?,'','streaming',?,?,?,?,?)`
-      ).run(roomId, ai.participant_id, replyTo, subAgent.id, subAgent.label, parentMessageId, threadId)
+        `INSERT INTO messages (room_id, participant_id, content, state, reply_to, sub_agent_id, sub_agent_label, parent_message_id, thread_id, wake_parent) VALUES (?,?,'','streaming',?,?,?,?,?,?)`
+      ).run(roomId, ai.participant_id, replyTo, subAgent.id, subAgent.label, parentMessageId, threadId, ai.wake_parent === false ? 0 : 1)
     : db.prepare(
         `INSERT INTO messages (room_id, participant_id, content, state, reply_to, thread_id) VALUES (?,?,'','streaming',?,?)`
       ).run(roomId, ai.participant_id, replyTo, threadId);
@@ -7001,6 +7105,10 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     avatar_symbol: ai.avatar_symbol,
     avatar_url: ai.avatar_url || null,
     sub_agent_label: subAgent?.label || null,
+    sub_agent_avatar_color: subAgent?.avatar_color || null,
+    sub_agent_avatar_symbol: subAgent?.avatar_symbol || null,
+    sub_agent_avatar_url: subAgent?.avatar_url || null,
+    sub_agent_role: subAgent?.role || null,
     thread_id: threadId || null,
     state: 'streaming',
   });
@@ -7217,6 +7325,12 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
 
   const emailThreadSection = buildEmailThreadSection(db, { roomId, threadId });
 
+  // Most callers pass a prompt that is (or is built from) a stored message already in
+  // the history above, so injecting it would duplicate it. Only callers whose prompt
+  // is never stored as a message (wake prompt, /sub-agent-trigger task, scheduled task)
+  // opt in with ai.prompt_outside_history; without it the agent would never see it.
+  const taskSection = ai.prompt_outside_history && prompt ? `\n${L.taskLabel}:\n${prompt}` : '';
+
   const fullPrompt = [
     identityLine,
     `Room ID: ${roomId}`,
@@ -7226,6 +7340,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     platformMemoryLine,
     `\n${L.historyLabel}:\n${ctx}`,
     replyCtx,
+    taskSection,
     '\n' + L.replyInstruction,
     otherAINames.length ? L.mentionInstruction(otherAINames) : '',
     orchestrationLine,

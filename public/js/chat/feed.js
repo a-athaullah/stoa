@@ -152,14 +152,16 @@ function _buildThreadChip(rootId) {
       if (saParentIds.has(aid)) return; // sub-agent actors added below with label
       items.push({ actor, subLabel: null });
     });
+    const roomSubs = roomSubAgentsCache[currentRoomId] || [];
     (s.sub_agent_participants || []).forEach(sa => {
       const actor = allActors.find(a => a.id === sa.actor_id);
       if (!actor) return;
-      items.push({ actor, subLabel: sa.label });
+      const sub = roomSubs.find(r => r.label === sa.label && r.parent_actor_id === sa.actor_id);
+      items.push({ actor, subLabel: sa.label, sub });
     });
     const show = items.slice(0, 4);
     show.forEach((item, i) => {
-      const av = makeAvatarEl(item.actor.name, item.actor.avatar_color, item.actor.avatar_url, 20, item.subLabel);
+      const av = makeAvatarEl(item.actor.name, item.actor.avatar_color, item.actor.avatar_url, 20, item.subLabel, item.sub?.avatar_color, item.sub?.avatar_symbol, item.sub?.avatar_url);
       const el = av.nodeType === 1 ? av : av;
       if (el.classList) el.classList.add('h-thread-chip-av');
       else el.className = (el.className || '') + ' h-thread-chip-av';

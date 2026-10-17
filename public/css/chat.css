@@ -1477,7 +1477,7 @@ html.dark .h-msg-row:hover { background: var(--h-hover); }
 }
 
 /* ── Mention autocomplete ──────────────────────────── */
-#mention-popup {
+.h-mention-popup {
   position: absolute;
   bottom: 100%;
   left: -1px; right: -1px;
@@ -1503,21 +1503,38 @@ html.dark .h-msg-row:hover { background: var(--h-hover); }
 .h-mention-item:hover, .h-mention-item.active {
   background: color-mix(in srgb, var(--h-ink) 6%, transparent);
 }
+.h-mention-item .h-sa-badge {
+  width: 11px; height: 11px;
+  font-size: 7px;
+  border-width: 1.5px;
+}
+.h-mention-text {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
 .h-mention-name {
   font-family: var(--h-msg);
   font-size: 13px;
   font-weight: 600;
+  flex-shrink: 0;
+}
+.h-mention-role {
+  font-family: var(--h-msg);
+  font-size: 11px;
+  color: var(--h-ink-mute);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .h-mention-tag {
   color: oklch(0.65 0.15 250);
   font-weight: 600;
 }
-.h-bubble .h-mention-inline {
+.h-bubble .h-mention-inline, .t-content .h-mention-inline {
   color: oklch(0.65 0.15 250);
   font-weight: 600;
-}
-.h-bubble .h-mention-inline.h-mention-sub {
-  color: oklch(0.60 0.12 180);
 }
 .h-mention-sub-badge {
   font-size: 10px;

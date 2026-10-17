@@ -65,6 +65,14 @@ Agent ready to receive commands
 - Session persists in `ai_sessions` table
 - Workdir-specific sessions supported (same AI, different projects)
 
+### Sub-Agent Auto-Wake Rules
+- Parent is woken after sub-agent completes **only if** the sub-agent was triggered by the parent (mention in parent response, wake cascade, or API spawn)
+- Parent is **not** woken when a human or automation directly @mentions a sub-agent — unless the same message also mentions the parent explicitly, or the sub-agent finishes with an error
+- Wake is queued durably (survives server restart) via `pending_wakes` table
+- When parent wakes, the sub-agent's result (failure notes, cost summary) is delivered as a task in the parent's input (outside chat history)
+- Tasks from API spawn (`/sub-agent-trigger`) and scheduler are delivered to the sub-agent as a task input (outside chat history)
+- Mentions inside inline code (backticks) or code fences (``` or ~~~) are never treated as triggers; unclosed fences/backticks have no suppressing effect
+
 ### Sub-Agent Team (Room 2638)
 
 Stoa dioperasikan oleh tim sub-agent terspesialisasi yang di-trigger via @mention:

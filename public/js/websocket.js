@@ -82,7 +82,7 @@ function handleWsMessage(msg) {
             showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, tbody, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role);
           }
         } else {
-          showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, undefined, undefined, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role);
+          showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, undefined, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role);
         }
         if (m.thread_id && typeof setThreadProcessing === 'function') setThreadProcessing(m.id);
         else setComposerProcessing(m.id);

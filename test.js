@@ -577,6 +577,50 @@ function runUnitTests() {
     assert.ok(validateRegexPattern(42) !== null);
   });
 
+  // ── stripCodeSpans (loaded from server.js source, so the real code is tested) ──
+  const stripCodeSpans = (() => {
+    const src = require('fs').readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+    const start = src.indexOf('function stripCodeSpans(content) {');
+    return new Function(`${src.slice(start, src.indexOf('\n}\n', start) + 2)}\nreturn stripCodeSpans;`)();
+  })();
+  const msSince = t0 => Number(process.hrtime.bigint() - t0) / 1e6;
+  ut('stripCodeSpans — inline, fence, ~~~ and multi-backtick spans become one space', () => {
+    assert.strictEqual(stripCodeSpans('use `@kenji` here'), 'use   here');
+    assert.strictEqual(stripCodeSpans('```js\n@kenji go\n```\nafter'), ' \nafter');
+    assert.strictEqual(stripCodeSpans('~~~\n@k\n~~~'), ' ');
+    assert.strictEqual(stripCodeSpans('``x ` @k``'), ' ');
+    assert.strictEqual(stripCodeSpans('```@kenji```'), ' ');
+    assert.strictEqual(stripCodeSpans('`@a` and @kenji'), '  and @kenji');
+    assert.strictEqual(stripCodeSpans('a\n```\n```\n@k'), 'a\n \n@k');
+  });
+  ut('stripCodeSpans — unclosed fence/backtick removes nothing, text outside kept', () => {
+    assert.strictEqual(stripCodeSpans('```\nunclosed @kenji'), '```\nunclosed @kenji');
+    assert.strictEqual(stripCodeSpans('it`s @kenji'), 'it`s @kenji');
+    assert.strictEqual(stripCodeSpans('````\n@k\n```'), '````\n@k\n```', 'closer shorter than opener does not close');
+    assert.strictEqual(stripCodeSpans('```\n@k\n~~~'), '```\n@k\n~~~', 'closer must use the same char');
+    assert.strictEqual(stripCodeSpans('```\n```\n```\n@k'), ' \n```\n@k', 'nearest closer wins');
+    assert.strictEqual(stripCodeSpans('``a`'), '` ', 'leftmost suffix of a run can open');
+    assert.strictEqual(stripCodeSpans('plain @k'), 'plain @k');
+    assert.strictEqual(stripCodeSpans(null), '');
+  });
+  ut('stripCodeSpans — 100k unclosed fence openers finish < 500ms (linear)', () => {
+    const input = '```js\n'.repeat(100000) + '@kenji';
+    const t0 = process.hrtime.bigint();
+    const out = stripCodeSpans(input);
+    const ms = msSince(t0);
+    assert.strictEqual(out, input, 'nothing closes, so nothing is removed');
+    assert.ok(ms < 500, `took ${ms.toFixed(0)}ms`);
+  });
+  ut('stripCodeSpans — 100k-char line of unmatched backtick runs finishes < 500ms (linear)', () => {
+    let input = '';
+    for (let k = 1; input.length < 100000; k++) input += '`'.repeat(k) + 'x';
+    const t0 = process.hrtime.bigint();
+    const out = stripCodeSpans(input + ' @kenji');
+    const ms = msSince(t0);
+    assert.strictEqual(out, input + ' @kenji', 'no run has a same-length closer, so nothing is removed');
+    assert.ok(ms < 500, `took ${ms.toFixed(0)}ms`);
+  });
+
   // ── Thinking-signature sanitizer ───────────────────────────────────────────
   console.log('\n  [Thinking-signature sanitizer]');
   const {
@@ -3514,6 +3558,290 @@ async function run() {
       if (rlActorId) {
         await req('DELETE', `/api/actors/${rlActorId}`);
         orphanActorIds = orphanActorIds.filter(id => id !== rlActorId);
+      }
+    });
+  }
+
+  // ── Parent wake gating (messages.wake_parent) ──────────────────────────────
+  // A sub-agent the human mentions directly must not wake its parent, unless the
+  // parent is @mentioned too or the run errors. Parent-driven runs keep waking.
+  console.log('\n[Sub-agent parent wake gating]');
+  {
+    const WK_NAME = '__test-wake-agent';
+    const db = require('./db');
+    let wkActorId = null, wkSecret = null, wkRoomId = null, wkWs = null, wkSa = null;
+    const complete = (m, content, resultMeta) => wkWs.send(JSON.stringify({
+      type: 'agent_complete', room_id: wkRoomId, message_id: m.message_id, content, ...(resultMeta ? { result_meta: resultMeta } : {}),
+    }));
+    const nextSubTrigger = () => waitForWsMessage(wkWs, m => m.type === 'agent_trigger' && m.sub_agent?.id === wkSa.id, 5000)
+      .catch(() => { throw new Error('sub-agent trigger never arrived'); });
+    const nextParentTrigger = (ms) => waitForWsMessage(wkWs, m => m.type === 'agent_trigger' && !m.sub_agent, ms)
+      .catch(() => { throw new Error('parent trigger never arrived'); });
+    const sendAsHuman = async (content) => {
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        const histP = waitForWsMessage(humanWs, m => m.type === 'history');
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: wkRoomId }));
+        await histP;
+        humanWs.send(JSON.stringify({ type: 'send_message', room_id: wkRoomId, content }));
+      } finally { setTimeout(() => humanWs.close(), 200); }
+    };
+
+    await test('Setup — online agent + room + linked sub-agent for wake tests', async () => {
+      const agent = await createOnlineTestAgent(WK_NAME, '/tmp/stoa-test-wake');
+      if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+      wkActorId = agent.actorId; wkSecret = agent.secret; wkWs = agent.ws;
+      const r = await req('POST', '/api/rooms', { title: '__wake-room__', workdir_id: agent.workdirId, participant_ids: [wkActorId] });
+      assert.strictEqual(r.status, 200);
+      wkRoomId = r.body.id;
+      testRoomIds.push(wkRoomId);
+      const s = await req('POST', `/api/actors/${wkActorId}/sub-agents`, { label: 'wakesub', tier: 'quick' });
+      assert.strictEqual(s.status, 201, JSON.stringify(s.body));
+      wkSa = s.body;
+      const l = await req('POST', `/api/rooms/${wkRoomId}/sub-agents`, { sub_agent_id: wkSa.id });
+      assert.ok(l.status === 200 || l.status === 201, JSON.stringify(l.body));
+    });
+
+    await test('Human mentions sub-agent only → completes, parent NOT woken', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const t = nextSubTrigger();
+      await sendAsHuman('@wakesub draw something');
+      const m = await t;
+      const parentWake = nextParentTrigger(1500).then(() => true, () => false);
+      complete(m, 'here is the drawing');
+      assert.strictEqual(await parentWake, false, 'parent must not be triggered after a direct human mention');
+      const row = db.prepare('SELECT state, wake_parent FROM messages WHERE id=?').get(m.message_id);
+      assert.strictEqual(row.state, 'complete');
+      assert.strictEqual(row.wake_parent, 0);
+      assert.strictEqual(db.prepare('SELECT COUNT(*) AS c FROM pending_wakes WHERE sub_agent_message_id=?').get(m.message_id).c, 0);
+    });
+
+    await test('Human mentions parent + sub-agent → parent woken with the result', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const t = nextSubTrigger();
+      await sendAsHuman(`@${WK_NAME} @wakesub review this`);
+      const m = await t;
+      const wake = nextParentTrigger(5000);
+      complete(m, 'review result XYZ');
+      const w = await wake;
+      assert.ok(w.prompt.includes('review result XYZ'), 'woken parent must see the sub-agent result');
+      complete(w, 'synthesized');
+    });
+
+    await test('Human mentions sub-agent only, run errors → parent woken with failure', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const t = nextSubTrigger();
+      await sendAsHuman('@wakesub do a risky thing');
+      const m = await t;
+      const wake = nextParentTrigger(5000);
+      complete(m, 'crashed halfway', { exit_reason: 'error' });
+      const w = await wake;
+      const row = db.prepare('SELECT state, wake_parent FROM messages WHERE id=?').get(m.message_id);
+      assert.strictEqual(row.state, 'error');
+      assert.strictEqual(row.wake_parent, 0, 'woken despite wake_parent=0 because the run errored');
+      complete(w, 'handled');
+    });
+
+    await test('POST /sub-agent-trigger → parent still woken', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const t = nextSubTrigger();
+      const r = await req('POST', `/api/rooms/${wkRoomId}/sub-agent-trigger`, { sub_agent_id: wkSa.id, task: 'spawned task' },
+        { 'x-agent-id': String(wkActorId), 'x-agent-secret': wkSecret });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      const m = await t;
+      const wake = nextParentTrigger(5000);
+      complete(m, 'spawn result');
+      const w = await wake;
+      assert.ok(w.prompt.includes('spawn result'));
+      assert.strictEqual(db.prepare('SELECT wake_parent FROM messages WHERE id=?').get(m.message_id).wake_parent, 1);
+      complete(w, 'ok');
+    });
+
+    await test('Parent response @mentions sub-agent (cascade) → parent still woken', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const pt = nextParentTrigger(5000);
+      await sendAsHuman(`@${WK_NAME} please delegate`);
+      const p = await pt;
+      const st = nextSubTrigger();
+      complete(p, '@wakesub take this task');
+      const m = await st;
+      const wake = nextParentTrigger(5000);
+      complete(m, 'cascade result');
+      const w = await wake;
+      assert.ok(w.prompt.includes('cascade result'));
+      complete(w, 'done');
+    });
+
+    await test('GET room sub-agents → own avatar + role, parent avatar under parent_avatar_*', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const p = await req('PATCH', `/api/sub-agents/${wkSa.id}`, { avatar_color: '#123456', avatar_symbol: 'WK', role: 'Wake Tester' });
+      assert.strictEqual(p.status, 200, JSON.stringify(p.body));
+      const parent = (await req('GET', '/api/actors')).body.find(a => a.id === wkActorId);
+      assert.notStrictEqual(parent.avatar_color, '#123456', 'parent color must differ for the test to mean anything');
+      const r = await req('GET', `/api/rooms/${wkRoomId}/sub-agents`);
+      assert.strictEqual(r.status, 200);
+      const sa = r.body.linked.find(s => s.id === wkSa.id);
+      assert.strictEqual(sa.avatar_color, '#123456');
+      assert.strictEqual(sa.avatar_symbol, 'WK');
+      assert.strictEqual(sa.role, 'Wake Tester');
+      assert.strictEqual(sa.parent_avatar_color, parent.avatar_color);
+      assert.strictEqual(sa.parent_avatar_url, parent.avatar_url ?? null);
+    });
+
+    await test('Realtime message_state for a sub-agent run carries sub-agent avatar + role', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        const histP = waitForWsMessage(humanWs, m => m.type === 'history');
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: wkRoomId }));
+        await histP;
+        const stateP = waitForWsMessage(humanWs, m => m.type === 'message_state' && m.state === 'streaming' && m.sub_agent_label === 'wakesub', 5000);
+        const t = nextSubTrigger();
+        humanWs.send(JSON.stringify({ type: 'send_message', room_id: wkRoomId, content: '@wakesub show your face' }));
+        const st = await stateP;
+        complete(await t, 'here');
+        const parent = (await req('GET', '/api/actors')).body.find(a => a.id === wkActorId);
+        assert.strictEqual(st.sub_agent_avatar_color, '#123456');
+        assert.strictEqual(st.sub_agent_avatar_symbol, 'WK');
+        assert.strictEqual(st.sub_agent_role, 'Wake Tester');
+        assert.strictEqual(st.avatar_color, parent.avatar_color, 'parent avatar stays on avatar_color as fallback');
+      } finally { humanWs.close(); }
+    });
+
+    // ── Mentions inside code spans/fences must not trigger (detection only) ──
+    const noSubTrigger = (ms = 1500) => waitForWsMessage(wkWs, m => m.type === 'agent_trigger' && m.sub_agent?.id === wkSa.id, ms)
+      .then(m => { complete(m, 'unexpected'); return true; }, () => false);
+
+    await test('Human mention inside inline code → sub-agent NOT triggered', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const fired = noSubTrigger();
+      const pt = nextParentTrigger(5000);
+      await sendAsHuman('how do I call `@wakesub` from here?');
+      const p = await pt; // no real mention left → normal no-mention fallback wakes the room agent
+      assert.ok(p.prompt.includes('`@wakesub`'), 'content forwarded to the agent must stay untouched');
+      complete(p, 'like that');
+      assert.strictEqual(await fired, false, 'mention in backticks must not trigger the sub-agent');
+    });
+
+    await test('Human mention inside a code fence → sub-agent NOT triggered', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const fired = noSubTrigger();
+      const pt = nextParentTrigger(5000);
+      await sendAsHuman('example:\n```\n@wakesub do the thing\n```\nthanks');
+      complete(await pt, 'noted');
+      assert.strictEqual(await fired, false, 'mention in a code fence must not trigger the sub-agent');
+      const stored = db.prepare("SELECT content FROM messages WHERE room_id=? AND content LIKE 'example:%' ORDER BY id DESC LIMIT 1").get(wkRoomId);
+      assert.strictEqual(stored.content, 'example:\n```\n@wakesub do the thing\n```\nthanks', 'stored content is not stripped');
+    });
+
+    await test('Mention outside code + same mention inside code → sub-agent triggered', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const t = nextSubTrigger();
+      await sendAsHuman('@wakesub explain what `@wakesub --help` prints');
+      complete(await t, 'help text');
+    });
+
+    await test('Unclosed fence does not swallow the rest → mention still triggers', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const t = nextSubTrigger();
+      await sendAsHuman('```\n@wakesub this fence never closes');
+      complete(await t, 'still here');
+    });
+
+    await test('Parent mentioned only inside code → wake_parent stays 0', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const t = nextSubTrigger();
+      await sendAsHuman(`@wakesub compare with \`\` @${WK_NAME} \`\``);
+      const m = await t;
+      const parentWake = nextParentTrigger(1500).then(w => { complete(w, 'x'); return true; }, () => false);
+      complete(m, 'compared');
+      assert.strictEqual(await parentWake, false);
+      assert.strictEqual(db.prepare('SELECT wake_parent FROM messages WHERE id=?').get(m.message_id).wake_parent, 0);
+    });
+
+    await test('Parent response with sub-agent mention in code → no cascade', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const pt = nextParentTrigger(5000);
+      await sendAsHuman(`@${WK_NAME} how do I reach your helper?`);
+      const p = await pt;
+      const fired = noSubTrigger();
+      complete(p, 'Write it like this:\n```\n@wakesub <task>\n```');
+      assert.strictEqual(await fired, false, 'code mention in an agent response must not cascade');
+    });
+
+    await test('Proactive agent message with sub-agent mention in fence → no cascade', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const fired = noSubTrigger();
+      const r = await req('POST', `/api/rooms/${wkRoomId}/message`, { content: 'Usage:\n```bash\n@wakesub run tests\n```' },
+        { 'x-agent-id': String(wkActorId), 'x-agent-secret': wkSecret });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      assert.strictEqual(await fired, false, 'fenced mention in a proactive message must not cascade');
+    });
+
+    // ── Prompts that are not stored messages must reach the agent's input ──
+    await test('Spawn task + wake prompt reach the agent input and are not in history', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const TASK = 'TASKMARK-7f3a spawn task body that is only sent via the API';
+      const RESULT = 'RESULTMARK-91c sub-agent output';
+      const t = nextSubTrigger();
+      const r = await req('POST', `/api/rooms/${wkRoomId}/sub-agent-trigger`, { sub_agent_id: wkSa.id, task: TASK },
+        { 'x-agent-id': String(wkActorId), 'x-agent-secret': wkSecret });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      const m = await t;
+      assert.strictEqual(db.prepare("SELECT COUNT(*) AS c FROM messages WHERE room_id=? AND content LIKE '%TASKMARK-7f3a%'").get(wkRoomId).c, 0,
+        'task must not be stored as a message, otherwise this test proves nothing');
+      assert.ok(m.prompt.includes('Task for this turn'), 'task section present');
+      assert.ok(m.prompt.includes(TASK), 'sub-agent must receive its spawn task');
+      const wake = nextParentTrigger(5000);
+      complete(m, RESULT);
+      const w = await wake;
+      assert.strictEqual(db.prepare("SELECT COUNT(*) AS c FROM messages WHERE room_id=? AND content LIKE '%[sub-agent result]%'").get(wkRoomId).c, 0,
+        'wake prompt must not be in history');
+      const taskPart = w.prompt.slice(w.prompt.indexOf('Task for this turn'));
+      assert.ok(w.prompt.includes('Task for this turn'), 'wake prompt section present');
+      assert.ok(taskPart.includes('[sub-agent result] Sub-agent "wakesub"'), 'parent must receive the wake prompt');
+      assert.ok(taskPart.includes(RESULT), 'wake prompt carries the result');
+      complete(w, 'synthesized');
+    });
+
+    await test('Failed run → parent input carries the [sub-agent GAGAL] note', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const t = nextSubTrigger();
+      await sendAsHuman('@wakesub try the flaky step');
+      const m = await t;
+      const wake = nextParentTrigger(5000);
+      complete(m, 'boom', { exit_reason: 'error' });
+      const w = await wake;
+      assert.ok(w.prompt.includes('[sub-agent GAGAL] Sub-agent "wakesub" selesai dengan status ERROR'));
+      complete(w, 'handled');
+    });
+
+    await test('Plain chat → message appears once, no task section (no duplication)', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const pt = nextParentTrigger(5000);
+      await sendAsHuman(`@${WK_NAME} CHATMARK-55e just a normal question`);
+      const p = await pt;
+      // The human message is passed as reply_to too, so it legitimately shows up twice:
+      // once in the history and once in the reply context. A third copy = duplication.
+      assert.strictEqual(p.prompt.split('CHATMARK-55e').length - 1, 2, 'history + reply context only, no injected copy');
+      assert.strictEqual(p.prompt.split(`]: @${WK_NAME} CHATMARK-55e`).length - 1, 1, 'exactly one history line');
+      assert.ok(p.prompt.includes(`reply to`) && p.prompt.includes(`"@${WK_NAME} CHATMARK-55e`), 'second copy is the reply context');
+      assert.ok(!p.prompt.includes('Task for this turn'), 'chat turns get no task section');
+      complete(p, 'answer');
+    });
+
+    await test('Cleanup — wake test data', async () => {
+      await new Promise(r => setTimeout(r, 300));
+      if (wkWs) { wkWs.close(); wkWs = null; }
+      if (wkSa) await req('DELETE', `/api/sub-agents/${wkSa.id}`);
+      if (wkRoomId) {
+        await req('PATCH', `/api/rooms/${wkRoomId}`, { archived: true });
+        await req('DELETE', `/api/rooms/${wkRoomId}`);
+        testRoomIds = testRoomIds.filter(id => id !== wkRoomId);
+      }
+      if (wkActorId) {
+        await req('DELETE', `/api/actors/${wkActorId}`);
+        orphanActorIds = orphanActorIds.filter(id => id !== wkActorId);
       }
     });
   }
