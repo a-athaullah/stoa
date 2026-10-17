@@ -187,6 +187,15 @@ function makeAgentViaConnAvatarEl(m, size) {
   return wrap;
 }
 
+function makeSubAgentRoleEl(subAgentLabel, role) {
+  if (!subAgentLabel || !role) return null;
+  const el = document.createElement('div');
+  el.className = 'sa-role';
+  el.textContent = role;
+  el.title = role;
+  return el;
+}
+
 // ── Sub-agent avatar helper ───────────────────────────────────────────────
 function makeAvatarEl(name, color, url, size, subAgentLabel, saAvatarColor, saAvatarSymbol, saAvatarUrl) {
   if (!subAgentLabel) return makeAvatar(name, color, url, size);

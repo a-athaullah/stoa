@@ -112,7 +112,7 @@ function appendMessage(m, container) {
 
   // Pesan yang masih streaming/requesting → tampilkan thinking bubble
   if (m.state === 'streaming' || m.state === 'requesting') {
-    showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, undefined, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url);
+    showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, undefined, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role);
     return;
   }
 
@@ -193,6 +193,8 @@ function appendMessage(m, container) {
   }
 
   body.appendChild(meta);
+  const roleEl = makeSubAgentRoleEl(m.sub_agent_label, m.sub_agent_role);
+  if (roleEl) body.appendChild(roleEl);
 
   // Bubble
   const bubble = document.createElement('div');

@@ -75,6 +75,8 @@ function appendFeedRootRow(m, inner) {
     meta.appendChild(timeEl);
   }
   col.appendChild(meta);
+  const roleEl = makeSubAgentRoleEl(m.sub_agent_label, m.sub_agent_role);
+  if (roleEl) col.appendChild(roleEl);
 
   if (m.content) {
     const content = document.createElement('div');
@@ -339,6 +341,8 @@ function appendFeedBroadcastRow(m, inner) {
     meta.appendChild(timeEl);
   }
   col.appendChild(meta);
+  const roleEl = makeSubAgentRoleEl(m.sub_agent_label, m.sub_agent_role);
+  if (roleEl) col.appendChild(roleEl);
 
   if (m.content) {
     const content = document.createElement('div');

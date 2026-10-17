@@ -801,7 +801,7 @@ function appendThreadMessage(m, container) {
   if (m.id && document.getElementById('msg-' + m.id)) return;
 
   if (m.state === 'streaming' || m.state === 'requesting') {
-    showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, container, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url);
+    showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, container, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role);
     setThreadProcessing(m.id);
     return;
   }
@@ -875,6 +875,8 @@ function appendThreadMessage(m, container) {
     meta.appendChild(timeEl);
   }
   body.appendChild(meta);
+  const roleEl = makeSubAgentRoleEl(m.sub_agent_label, m.sub_agent_role);
+  if (roleEl) body.appendChild(roleEl);
 
   const bubble = document.createElement('div');
   bubble.className = 'h-bubble';
@@ -1046,6 +1048,8 @@ function _renderThreadRoot(m, container) {
     meta.appendChild(timeEl);
   }
   body.appendChild(meta);
+  const roleEl = makeSubAgentRoleEl(m.sub_agent_label, m.sub_agent_role);
+  if (roleEl) body.appendChild(roleEl);
 
   const bubble = document.createElement('div');
   bubble.className = 'h-bubble';

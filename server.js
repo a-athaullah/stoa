@@ -355,14 +355,18 @@ function resolveThread(roomId, threadId) {
 // parent responses, not sub-agent responses.
 
 const SUB_AGENT_DESCRIPTION_MAX = 500;
-// Returns { value } (trimmed string or null) or { error } for an invalid sub-agent description.
-function normalizeSubAgentDescription(v) {
+const SUB_AGENT_ROLE_MAX = 40;
+// Returns { value } (trimmed string or null) or { error } for an optional sub-agent text field.
+function normalizeSubAgentText(v, field, max, { singleLine = false } = {}) {
   if (v === null) return { value: null };
-  if (typeof v !== 'string') return { error: 'description must be a string or null' };
+  if (typeof v !== 'string') return { error: `${field} must be a string or null` };
   const t = v.trim();
-  if (t.length > SUB_AGENT_DESCRIPTION_MAX) return { error: `description must be at most ${SUB_AGENT_DESCRIPTION_MAX} characters` };
+  if (t.length > max) return { error: `${field} must be at most ${max} characters` };
+  if (singleLine && /[\u0000-\u001f\u007f]/.test(t)) return { error: `${field} must be a single line without control characters` };
   return { value: t || null };
 }
+const normalizeSubAgentDescription = v => normalizeSubAgentText(v, 'description', SUB_AGENT_DESCRIPTION_MAX);
+const normalizeSubAgentRole = v => normalizeSubAgentText(v, 'role', SUB_AGENT_ROLE_MAX, { singleLine: true });
 
 // Verify x-agent-id / x-agent-secret headers (same HMAC scheme as proactive message).
 // Returns the agent actor row on success, or null.
@@ -917,7 +921,7 @@ function fireSchedule(sched) {
     FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.id=?
   `).get(parentPart.id);
   const effectiveHarness = sub.harness || ai.adapter || 'claude';
-  ai.sub_agent = { id: sub.id, label: sub.label, tier: sub.tier, model: sub.model, workdir: sub.workdir, system_prompt: sub.system_prompt, harness: effectiveHarness, avatar_color: sub.avatar_color, avatar_symbol: sub.avatar_symbol, avatar_url: sub.avatar_url, description: sub.description };
+  ai.sub_agent = { id: sub.id, label: sub.label, tier: sub.tier, model: sub.model, workdir: sub.workdir, system_prompt: sub.system_prompt, harness: effectiveHarness, avatar_color: sub.avatar_color, avatar_symbol: sub.avatar_symbol, avatar_url: sub.avatar_url, description: sub.description, role: sub.role };
   ai.parent_message_id = null; // standalone run — no orchestrator turn to auto-wake
   triggerAiResponse(sched.room_id, ai, sched.task, null, []).catch(e => console.error('[scheduler] trigger error:', e.message));
   return 'fired';
@@ -1655,7 +1659,7 @@ const server = http.createServer(async (req, res) => {
     const msgId = parseInt(msgGetMatch[1]);
     const row = db.prepare(`
       SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
-             sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url
+             sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url, sa.role AS sub_agent_role
       FROM messages m
       JOIN room_participants rp ON rp.id=m.participant_id
       JOIN actors a ON a.id=rp.actor_id
@@ -1720,7 +1724,7 @@ const server = http.createServer(async (req, res) => {
         const rows = db.prepare(`
           SELECT * FROM (
             SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
-                   sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url
+                   sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url, sa.role AS sub_agent_role
               ${threadSummarySQL}
             FROM messages m
             JOIN room_participants rp ON rp.id=m.participant_id
@@ -1745,7 +1749,7 @@ const server = http.createServer(async (req, res) => {
       const since = url.searchParams.get('since') ?? '0';
       const rows = db.prepare(`
         SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
-               sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url
+               sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url, sa.role AS sub_agent_role
           ${threadSummarySQL}
         FROM messages m
         JOIN room_participants rp ON rp.id=m.participant_id
@@ -2109,7 +2113,7 @@ const server = http.createServer(async (req, res) => {
       FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.id=?
     `).get(parentPart.id);
     const effectiveHarness = sub.harness || ai.adapter || 'claude';
-    ai.sub_agent = { id: sub.id, label: sub.label, tier: sub.tier, model: sub.model, workdir: sub.workdir, system_prompt: sub.system_prompt, harness: effectiveHarness, avatar_color: sub.avatar_color, avatar_symbol: sub.avatar_symbol, avatar_url: sub.avatar_url, description: sub.description };
+    ai.sub_agent = { id: sub.id, label: sub.label, tier: sub.tier, model: sub.model, workdir: sub.workdir, system_prompt: sub.system_prompt, harness: effectiveHarness, avatar_color: sub.avatar_color, avatar_symbol: sub.avatar_symbol, avatar_url: sub.avatar_url, description: sub.description, role: sub.role };
     ai.parent_message_id = parentMessageId;
 
     // Pre-check: parent actor's stoa-agent must be online to run the sub-agent.
@@ -2130,7 +2134,7 @@ const server = http.createServer(async (req, res) => {
     const roomId = parseInt(url.pathname.split('/')[3]);
     const runs = db.prepare(`
       SELECT m.id as message_id, m.sub_agent_label, m.created_at, a.name as parent_name, a.avatar_color, sa.tier,
-             sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url
+             sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url, sa.role AS sub_agent_role
       FROM messages m
       JOIN room_participants rp ON rp.id=m.participant_id
       JOIN actors a ON a.id=rp.actor_id
@@ -3545,6 +3549,12 @@ const server = http.createServer(async (req, res) => {
       if (d.error) return json(res, { error: d.error }, 400);
       description = d.value;
     }
+    let role = null;
+    if (data.role !== undefined) {
+      const r = normalizeSubAgentRole(data.role);
+      if (r.error) return json(res, { error: r.error }, 400);
+      role = r.value;
+    }
     if (!label?.trim()) return json(res, { error: 'label required' }, 400);
     if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,29}$/.test(label.trim())) return json(res, { error: 'label must start with a letter, 1-30 chars, alphanumeric/dash/underscore' }, 400);
     if (tier && !['quick', 'standard', 'deep'].includes(tier)) return json(res, { error: 'tier must be quick, standard, or deep' }, 400);
@@ -3565,8 +3575,8 @@ const server = http.createServer(async (req, res) => {
     }
     try {
       const result = db.prepare(
-        'INSERT INTO sub_agents (parent_actor_id, label, tier, model, workdir, system_prompt, harness, description) VALUES (?,?,?,?,?,?,?,?)'
-      ).run(actorId, label.trim(), tier || 'quick', model || null, workdir || null, system_prompt || null, harness || null, description);
+        'INSERT INTO sub_agents (parent_actor_id, label, tier, model, workdir, system_prompt, harness, description, role) VALUES (?,?,?,?,?,?,?,?,?)'
+      ).run(actorId, label.trim(), tier || 'quick', model || null, workdir || null, system_prompt || null, harness || null, description, role);
       const row = db.prepare('SELECT * FROM sub_agents WHERE id=?').get(result.lastInsertRowid);
       return json(res, row, 201);
     } catch (e) {
@@ -3583,7 +3593,7 @@ const server = http.createServer(async (req, res) => {
     if (!data) return json(res, { error: 'Invalid JSON' }, 400);
     const updates = [];
     const params = [];
-    for (const key of ['label', 'tier', 'model', 'workdir', 'system_prompt', 'enabled', 'harness', 'avatar_color', 'avatar_symbol', 'description']) {
+    for (const key of ['label', 'tier', 'model', 'workdir', 'system_prompt', 'enabled', 'harness', 'avatar_color', 'avatar_symbol', 'description', 'role']) {
       if (data[key] !== undefined) {
         if (key === 'label') {
           if (!data.label?.trim()) return json(res, { error: 'label required' }, 400);
@@ -3606,6 +3616,10 @@ const server = http.createServer(async (req, res) => {
           const d = normalizeSubAgentDescription(data.description);
           if (d.error) return json(res, { error: d.error }, 400);
           updates.push('description=?'); params.push(d.value);
+        } else if (key === 'role') {
+          const r = normalizeSubAgentRole(data.role);
+          if (r.error) return json(res, { error: r.error }, 400);
+          updates.push('role=?'); params.push(r.value);
         } else if (key === 'avatar_color') {
           if (data.avatar_color !== null && !/^#[0-9a-fA-F]{6}$/.test(data.avatar_color)) return json(res, { error: 'avatar_color must be null or #RRGGBB' }, 400);
           updates.push('avatar_color=?'); params.push(data.avatar_color ?? null);
@@ -4317,7 +4331,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
     const rootId = parseInt(threadDetailMatch[2]);
     const rootMsg = db.prepare(`
       SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
-             sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url
+             sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url, sa.role AS sub_agent_role
       FROM messages m
       JOIN room_participants rp ON rp.id=m.participant_id
       JOIN actors a ON a.id=rp.actor_id
@@ -4333,7 +4347,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
     if (before) {
       messages = db.prepare(`
         SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
-               sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url
+               sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url, sa.role AS sub_agent_role
         FROM messages m
         JOIN room_participants rp ON rp.id=m.participant_id
         JOIN actors a ON a.id=rp.actor_id
@@ -4345,7 +4359,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
     } else {
       messages = db.prepare(`
         SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
-               sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url
+               sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url, sa.role AS sub_agent_role
         FROM messages m
         JOIN room_participants rp ON rp.id=m.participant_id
         JOIN actors a ON a.id=rp.actor_id
@@ -4972,7 +4986,7 @@ wss.on('connection', (ws, req) => {
       const messages = db.prepare(`
         SELECT * FROM (
           SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
-            sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url,
+            sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url, sa.role AS sub_agent_role,
             CASE WHEN m.thread_id IS NULL THEN (SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id) END AS thread_count,
             CASE WHEN m.thread_id IS NULL THEN (SELECT MAX(r.created_at) FROM messages r WHERE r.thread_id = m.id) END AS thread_last_at,
             CASE WHEN m.thread_id IS NULL THEN (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state IN ('streaming','requesting'))) END AS thread_active,
@@ -7092,7 +7106,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   const PROACTIVE_INSTRUCTIONS_SUB_AGENT = `\n\n## Output\n\nYour final text response is automatically posted to the room as your result. Do NOT also send it via curl — it would appear twice.\n\nOnly use curl in two cases:\n1. **Long task (>1 min):** send a brief mid-task status update so the user knows you're working. Do NOT send the result via curl — write it in your text response.\n2. **Cascade trigger:** if you need to @mention another agent, put the @mention in a curl message body (plain text @mention is not guaranteed to trigger).\n\nFor quick tasks (single command, short lookup): just write the answer in your text response. No curl needed.\n\nYou were triggered from room ${roomId}. If you do use curl, send to that room.\n\nCurl pattern:\n\`\`\`bash\nBASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\ncurl -s -X POST "$BASE_URL/api/rooms/${roomId}/message" \\\n  -H "Content-Type: application/json" \\\n  -H "x-agent-id: $STOA_ACTOR_ID" \\\n  -H "x-agent-secret: $STOA_SECRET" \\\n  -d ${subAgentCurlBody}\n\`\`\`\n\n$STOA_URL, $STOA_ACTOR_ID, and $STOA_SECRET are available as environment variables.\nRoom ID: ${roomId}`;
 
   const identityLine = subAgent
-    ? `${L.identity(ai.name)}\nYou are operating as sub-agent "${subAgent.label}" (tier: ${subAgent.tier}).${subAgent.description ? '\n\n## Your Purpose\n' + subAgent.description : ''}${subAgent.system_prompt ? '\n\nSub-agent instructions:\n' + subAgent.system_prompt : ''}${PROACTIVE_INSTRUCTIONS_SUB_AGENT}`
+    ? `${L.identity(ai.name)}\nYou are operating as sub-agent "${subAgent.label}" (tier: ${subAgent.tier}).${subAgent.role ? '\nYour role: ' + subAgent.role : ''}${subAgent.description ? '\n\n## Your Purpose\n' + subAgent.description : ''}${subAgent.system_prompt ? '\n\nSub-agent instructions:\n' + subAgent.system_prompt : ''}${PROACTIVE_INSTRUCTIONS_SUB_AGENT}`
     : `${L.identity(ai.name)}${PROACTIVE_INSTRUCTIONS}`;
 
   // ── Phase 2b: orchestration — issue a spawn token to the MAIN agent when it
@@ -7101,12 +7115,12 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   let orchestrationLine = '';
   if (!subAgent) {
     const ownSubs = db.prepare(`
-      SELECT sa.id, sa.label, sa.tier, sa.description FROM room_sub_agents rsa
+      SELECT sa.id, sa.label, sa.tier, sa.description, sa.role FROM room_sub_agents rsa
       JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
       WHERE rsa.room_id=? AND sa.parent_actor_id=? AND sa.enabled=1
     `).all(roomId, ai.actor_id);
     if (ownSubs.length) {
-      const list = ownSubs.map(s => `@${s.label} (${s.tier})${s.description ? ' — ' + s.description.replace(/\s+/g, ' ') : ''}`).join(', ');
+      const list = ownSubs.map(s => `@${s.label} (${s.tier}${s.role ? ', ' + s.role : ''})${s.description ? ' — ' + s.description.replace(/\s+/g, ' ') : ''}`).join(', ');
       orchestrationLine =
         `\nYou can delegate to your sub-agents: ${list}.\n` +
         `To trigger one, mention @<label> in your response followed by the task — e.g. "@BE-Stoa implement the login endpoint".\n` +
@@ -7307,7 +7321,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         resolve: (v) => { clearTimeout(timeoutTimer); resolve(v); },
         reject:  (e) => { clearTimeout(timeoutTimer); reject(e); },
       });
-      pendingActorMeta.set(msgId, { actor_id: ai.actor_id, room_id: roomId, actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null, sub_agent_label: subAgent?.label || null, sub_agent_avatar_color: subAgent?.avatar_color || null, sub_agent_avatar_symbol: subAgent?.avatar_symbol || null, sub_agent_avatar_url: subAgent?.avatar_url || null, thread_id: threadId || null });
+      pendingActorMeta.set(msgId, { actor_id: ai.actor_id, room_id: roomId, actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null, sub_agent_label: subAgent?.label || null, sub_agent_avatar_color: subAgent?.avatar_color || null, sub_agent_avatar_symbol: subAgent?.avatar_symbol || null, sub_agent_avatar_url: subAgent?.avatar_url || null, sub_agent_role: subAgent?.role || null, thread_id: threadId || null });
       const triggerBaseUrl = getPublicUrl(`localhost:${PORT}`);
       const fullAttachments = (attachments || []).map(a => ({
         ...a,
