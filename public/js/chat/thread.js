@@ -351,6 +351,12 @@ function _createThreadPanel() {
   attachPreview.id = 'thread-attach-preview';
   composerBox.appendChild(attachPreview);
 
+  const threadMentionPopup = document.createElement('div');
+  threadMentionPopup.id = 'thread-mention-popup';
+  threadMentionPopup.className = 'h-mention-popup';
+  threadMentionPopup.style.display = 'none';
+  composerBox.appendChild(threadMentionPopup);
+
   // Format bar — identical to room composer
   const fmtBar = document.createElement('div');
   fmtBar.className = 'h-fmt-bar';
@@ -604,6 +610,23 @@ function _createThreadPanel() {
 
   // Keyboard handling for thread input
   inputEl.addEventListener('keydown', e => {
+    if (mentionInputId === 'thread-msg-input' && isMentionPopupOpen()) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        mentionPopupNavigate(e.key === 'ArrowDown' ? 1 : -1);
+        return;
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && mentionPopupIdx >= 0)) {
+        e.preventDefault();
+        applyActiveMention();
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        hideMentionPopup();
+        return;
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       const sel = window.getSelection();
       const li = sel?.anchorNode?.closest?.('li') || sel?.anchorNode?.parentElement?.closest?.('li');
@@ -627,6 +650,12 @@ function _createThreadPanel() {
       if (threadProcessingMessages.size > 0) stopThreadGeneration();
       else closeThread();
     }
+  });
+
+  inputEl.addEventListener('input', () => {
+    const query = mentionQueryAtCaret(inputEl);
+    if (query !== null) showMentionPopup(query, 'thread-msg-input');
+    else if (mentionInputId === 'thread-msg-input') hideMentionPopup();
   });
 
   // Markdown shortcuts in thread input (matches room composer behavior)

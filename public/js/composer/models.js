@@ -114,12 +114,12 @@ function onComposerInput() {
     const node = sel.anchorNode;
     const text = node.nodeType === 3 ? node.textContent.slice(0, sel.anchorOffset) : '';
     const skillMatch = text.match(/(^|\s)\/([a-z0-9-]*)$/);
-    const mentionMatch = text.match(/(^|\s)@([^\s]*)$/);
+    const mentionQuery = mentionQueryAtCaret(input);
     if (skillMatch) {
       showSkillPopup(skillMatch[2]);
       hideMentionPopup();
-    } else if (mentionMatch) {
-      showMentionPopup(mentionMatch[2]);
+    } else if (mentionQuery !== null) {
+      showMentionPopup(mentionQuery, 'msg-input');
       hideSkillPopup();
     } else {
       hideSkillPopup();
@@ -187,16 +187,43 @@ function highlightMentions(html) {
   const escaped = all.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
   escaped.sort((a, b) => b.length - a.length);
   const re = new RegExp(`@(${escaped.join('|')})(?=\\s|&nbsp;|[.,!?;:]|<|$)`, 'gm');
-  return html.replace(re, (match, name) => {
-    const isSub = subLabels.includes(name);
-    const cls = isSub ? 'h-mention-inline h-mention-sub' : 'h-mention-inline';
-    return '<span class="' + cls + '">@' + wsEscHtml(name) + '</span>';
-  });
+  return html.replace(re, (match, name) => '<span class="h-mention-inline">@' + wsEscHtml(name) + '</span>');
 }
 
 // ── Mention autocomplete ──────────────────────────────────────────────────
-function showMentionPopup(query) {
-  const popup = document.getElementById('mention-popup');
+// Shared by the room composer (#msg-input) and the thread composer
+// (#thread-msg-input); each has its own popup element.
+const MENTION_POPUP_FOR_INPUT = { 'msg-input': 'mention-popup', 'thread-msg-input': 'thread-mention-popup' };
+let mentionInputId = 'msg-input';
+
+function mentionPopupEl() {
+  return document.getElementById(MENTION_POPUP_FOR_INPUT[mentionInputId]);
+}
+
+function isMentionPopupOpen() {
+  const popup = mentionPopupEl();
+  return !!popup && popup.style.display !== 'none';
+}
+
+function mentionQueryAtCaret(input) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !input.contains(sel.anchorNode)) return null;
+  const node = sel.anchorNode;
+  const text = node.nodeType === 3 ? node.textContent.slice(0, sel.anchorOffset) : '';
+  const match = text.match(/(^|\s)@([^\s]*)$/);
+  return match ? match[2] : null;
+}
+
+function makeMentionAvatarEl(p) {
+  if (!p.isSub) return makeAvatar(p.name, p.avatar_color, p.avatar_url, 22);
+  return makeAvatarEl(p.parent_name, p.parent_avatar_color, p.parent_avatar_url, 22, p.name, p.avatar_color, p.avatar_symbol, p.avatar_url);
+}
+
+function showMentionPopup(query, inputId = 'msg-input') {
+  if (inputId !== mentionInputId) hideMentionPopup();
+  mentionInputId = inputId;
+  const popup = mentionPopupEl();
+  if (!popup) return;
   const parts = roomParticipantsCache[currentRoomId] || [];
   const subs = roomSubAgentsCache[currentRoomId] || [];
   const q = query.toLowerCase();
@@ -205,7 +232,11 @@ function showMentionPopup(query) {
     .map(p => ({ name: p.name, avatar_color: p.avatar_color, avatar_url: p.avatar_url, isSub: false }));
   const subMatches = subs
     .filter(s => s.label.toLowerCase().startsWith(q))
-    .map(s => ({ name: s.label, avatar_color: s.avatar_color || null, avatar_url: s.avatar_url || null, isSub: true }));
+    .map(s => ({
+      name: s.label, role: s.role || null, isSub: true,
+      avatar_color: s.avatar_color || null, avatar_symbol: s.avatar_symbol || null, avatar_url: s.avatar_url || null,
+      parent_name: s.parent_name, parent_avatar_color: s.parent_avatar_color, parent_avatar_url: s.parent_avatar_url,
+    }));
   const matches = [...partMatches, ...subMatches].slice(0, 7);
   if (!matches.length) { hideMentionPopup(); return; }
 
@@ -215,11 +246,21 @@ function showMentionPopup(query) {
     const item = document.createElement('div');
     item.className = 'h-mention-item';
     item.dataset.idx = i;
-    item.appendChild(makeAvatar(p.name, p.avatar_color, p.avatar_url, 22));
+    item.appendChild(makeMentionAvatarEl(p));
+    const text = document.createElement('span');
+    text.className = 'h-mention-text';
     const name = document.createElement('span');
     name.className = 'h-mention-name';
     name.textContent = p.name;
-    item.appendChild(name);
+    text.appendChild(name);
+    if (p.role) {
+      const role = document.createElement('span');
+      role.className = 'h-mention-role';
+      role.textContent = p.role;
+      role.title = p.role;
+      text.appendChild(role);
+    }
+    item.appendChild(text);
     if (p.isSub) {
       const badge = document.createElement('span');
       badge.className = 'h-mention-sub-badge';
@@ -237,14 +278,21 @@ function showMentionPopup(query) {
 }
 
 function hideMentionPopup() {
-  document.getElementById('mention-popup').style.display = 'none';
+  const popup = mentionPopupEl();
+  if (popup) popup.style.display = 'none';
   mentionPopupIdx = -1;
 }
 
+function applyActiveMention() {
+  const popup = mentionPopupEl();
+  const active = popup?.querySelector('.h-mention-item.active') || popup?.querySelector('.h-mention-item');
+  if (active) applyMention(active.querySelector('.h-mention-name').textContent);
+}
+
 function applyMention(name) {
-  const input = document.getElementById('msg-input');
+  const input = document.getElementById(mentionInputId);
   const sel = window.getSelection();
-  if (!sel.rangeCount) { hideMentionPopup(); return; }
+  if (!input || !sel.rangeCount) { hideMentionPopup(); return; }
   const node = sel.anchorNode;
 
   if (node.nodeType === 3 && input.contains(node)) {
@@ -264,7 +312,7 @@ function applyMention(name) {
       span.contentEditable = 'false';
       span.textContent = '@' + name;
       frag.appendChild(span);
-      const after = document.createTextNode(' ' + afterText);
+      const after = document.createTextNode(' ' + afterText);
       frag.appendChild(after);
       parent.replaceChild(frag, node);
       const range = document.createRange();
@@ -586,8 +634,8 @@ document.addEventListener('click', () => {
 });
 
 function mentionPopupNavigate(dir) {
-  const popup = document.getElementById('mention-popup');
-  if (popup.style.display === 'none') return false;
+  if (!isMentionPopupOpen()) return false;
+  const popup = mentionPopupEl();
   const items = popup.querySelectorAll('.h-mention-item');
   if (!items.length) return false;
   items[mentionPopupIdx]?.classList.remove('active');
