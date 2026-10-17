@@ -7784,21 +7784,7 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, senderName, t
         continue;
       }
 
-      const allMatch = conditions.every(c => {
-        if (!c || typeof c !== 'object' || Array.isArray(c)) {
-          console.warn(`[automation] id=${auto.id} skipping non-object condition element`);
-          return false;
-        }
-        const val = (fieldValues[c.field] || '').toLowerCase();
-        const target = (c.value || '').toLowerCase();
-        switch (c.op) {
-          case 'contains':      return val.includes(target);
-          case 'not_contains':  return !val.includes(target);
-          case 'starts_with':   return val.startsWith(target);
-          case 'matches_regex': return safeRegexTest(c.value, (fieldValues[c.field] || '').slice(0, 5000));
-          default: return true;
-        }
-      });
+      const { matched: allMatch } = evaluateConditions(conditions, fieldValues);
 
       if (!allMatch) continue;
 
@@ -7885,18 +7871,7 @@ connectionManager.on('email_event', async ({ eventType, connId, uid, messageId, 
           const conds = JSON.parse(auto.trigger_conditions || '[]');
           if (Array.isArray(conds) && conds.length > 0) {
             const emailFieldValues = { from, subject, body: text, has_attachments: String(hasAttachments) };
-            emailCondMatch = conds.every(c => {
-              if (!c || typeof c !== 'object' || Array.isArray(c)) return false;
-              const val = (emailFieldValues[c.field] || '').toLowerCase();
-              const target = (c.value || '').toLowerCase();
-              switch (c.op) {
-                case 'contains':      return val.includes(target);
-                case 'not_contains':  return !val.includes(target);
-                case 'starts_with':   return val.startsWith(target);
-                case 'matches_regex': return safeRegexTest(c.value, (emailFieldValues[c.field] || '').slice(0, 5000));
-                default: return true;
-              }
-            });
+            emailCondMatch = evaluateConditions(conds, emailFieldValues).matched;
           }
         } catch {}
 
@@ -7934,18 +7909,7 @@ connectionManager.on('email_event', async ({ eventType, connId, uid, messageId, 
       }
       if (!Array.isArray(conditions)) continue;
 
-      const allMatch = conditions.every(c => {
-        if (!c || typeof c !== 'object' || Array.isArray(c)) return false;
-        const val = (fieldValues[c.field] || '').toLowerCase();
-        const target = (c.value || '').toLowerCase();
-        switch (c.op) {
-          case 'contains':      return val.includes(target);
-          case 'not_contains':  return !val.includes(target);
-          case 'starts_with':   return val.startsWith(target);
-          case 'matches_regex': return safeRegexTest(c.value, (fieldValues[c.field] || '').slice(0, 5000));
-          default: return true;
-        }
-      });
+      const { matched: allMatch } = evaluateConditions(conditions, fieldValues);
 
       if (!allMatch) continue;
 
