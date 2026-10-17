@@ -450,6 +450,26 @@ const SA_TIERS_META = [
   { id: 'standard', bars: 2, note: 'most work — balanced' },
   { id: 'deep',     bars: 3, note: 'long reasoning — costliest' },
 ];
+function _saMakeDescInput(existing) {
+  const inp = document.createElement('textarea');
+  inp.name = 'subagent-description';
+  inp.maxLength = 500;
+  inp.rows = 2;
+  inp.placeholder = 'Purpose of this sub-agent — e.g. backend implementation for Stoa';
+  inp.value = existing?.description || '';
+  inp.style.cssText = 'padding:9px 12px;border-radius:8px;box-sizing:border-box;resize:vertical;background:var(--h-surface);border:1px solid var(--h-hair-soft);font-family:var(--h-sans);font-size:13px;line-height:1.5;color:var(--h-ink);outline:none;width:100%';
+  return inp;
+}
+
+function _saMakeDescLine(sa) {
+  if (!sa.description) return null;
+  const d = document.createElement('span');
+  d.style.cssText = 'font-family:var(--h-sans);font-size:12px;color:var(--h-ink-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+  d.textContent = sa.description;
+  d.title = sa.description;
+  return d;
+}
+
 function _saAnthropicModels() {
   return getAvailableModels().filter(m => m.platform === 'anthropic');
 }
@@ -975,6 +995,8 @@ function sMakeEditAccordion(actor) {
       'background:var(--h-slip);border:1px solid var(--h-hairline);' +
       'font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;color:var(--h-ink);outline:none;width:100%';
     const spField = saMakeField('system prompt', spInp, 'context injected on every trigger');
+    const descInp = _saMakeDescInput(existing);
+    const descField = saMakeField('description', descInp, 'why this sub-agent exists — shown in lists and to the parent agent');
 
     // harness override
     let selectedHarness = existing?.harness || null;
@@ -1019,7 +1041,7 @@ function sMakeEditAccordion(actor) {
       if (!label) { showErr('label required'); labelInp.focus(); return; }
       saveF.disabled = true;
       try {
-        const body = { label, tier: selectedTier, model: modelSel.value || null, system_prompt: spInp.value.trim() || null, harness: selectedHarness };
+        const body = { label, tier: selectedTier, model: modelSel.value || null, system_prompt: spInp.value.trim() || null, description: descInp.value.trim() || null, harness: selectedHarness };
         const r = existing
           ? await fetch(`/api/sub-agents/${existing.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
           : await fetch(`/api/actors/${actor.id}/sub-agents`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -1035,7 +1057,7 @@ function sMakeEditAccordion(actor) {
       } catch { showToast('Failed to save sub-agent', { error: true }); saveF.disabled = false; }
     });
 
-    const appendItems = [fh, grid, tierField, spField, harnField];
+    const appendItems = [fh, grid, tierField, descField, spField, harnField];
     if (existing) {
       appendItems.push(saMakeField('avatar', _saBuildAvatarEditor(existing, saShade, upd => { existing.avatar_color = upd.avatar_color; existing.avatar_symbol = upd.avatar_symbol; existing.avatar_url = upd.avatar_url; }), 'color, symbol, or image'));
       appendItems.push(saMakeField('memory', _saBuildMemoryEditor(existing), 'notes this sub-agent updates after tasks'));
@@ -1096,6 +1118,8 @@ function sMakeEditAccordion(actor) {
           line1.appendChild(hp);
         }
         mid.append(line1);
+        const descLine = _saMakeDescLine(sa);
+        if (descLine) mid.appendChild(descLine);
         row.appendChild(mid);
         // enabled toggle
         const tog = document.createElement('button');
@@ -1958,6 +1982,8 @@ function buildSubAgentsSection(actor) {
     const tierField = saMakeField('tier', saMakeTierPicker(selectedTier, id => { selectedTier = id; }));
     const spInp = document.createElement('textarea'); spInp.name = 'subagent-system-prompt'; spInp.placeholder = 'You verify claims against the actual source before answering…'; spInp.value = existing?.system_prompt || ''; spInp.style.cssText = 'padding:11px 13px;border-radius:8px;min-height:96px;box-sizing:border-box;resize:vertical;background:var(--h-slip);border:1px solid var(--h-hairline);font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;color:var(--h-ink);outline:none;width:100%';
     const spField = saMakeField('system prompt', spInp, 'context injected on every trigger');
+    const descInp = _saMakeDescInput(existing);
+    const descField = saMakeField('description', descInp, 'why this sub-agent exists — shown in lists and to the parent agent');
     // Harness field
     let selectedHarness = existing?.harness || null;
     const harnSel = document.createElement('select'); harnSel.name = 'subagent-harness'; harnSel.style.cssText = 'padding:8px 12px;border-radius:8px;height:36px;box-sizing:border-box;background:var(--h-surface);border:1px solid var(--h-hair-soft);font-family:var(--h-sans);font-size:13px;color:var(--h-ink);outline:none;width:100%;cursor:pointer';
@@ -1982,7 +2008,7 @@ function buildSubAgentsSection(actor) {
       if (!label) { showErr('label required'); labelInp.focus(); return; }
       saveF.disabled = true;
       try {
-        const body = { label, tier: selectedTier, model: modelSel.value || null, system_prompt: spInp.value.trim() || null, harness: selectedHarness };
+        const body = { label, tier: selectedTier, model: modelSel.value || null, system_prompt: spInp.value.trim() || null, description: descInp.value.trim() || null, harness: selectedHarness };
         const r = existing
           ? await fetch(`/api/sub-agents/${existing.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
           : await fetch(`/api/actors/${actor.id}/sub-agents`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -1997,7 +2023,7 @@ function buildSubAgentsSection(actor) {
         saShowForm(false); saLoadListWithCache();
       } catch { showToast('Failed to save sub-agent', { error: true }); saveF.disabled = false; }
     });
-    const appendItems2 = [fh, grid, tierField, spField, harnField];
+    const appendItems2 = [fh, grid, tierField, descField, spField, harnField];
     if (existing) {
       appendItems2.push(saMakeField('avatar', _saBuildAvatarEditor(existing, saShade, upd => { existing.avatar_color = upd.avatar_color; existing.avatar_symbol = upd.avatar_symbol; existing.avatar_url = upd.avatar_url; }), 'color, symbol, or image'));
       appendItems2.push(saMakeField('memory', _saBuildMemoryEditor(existing), 'notes this sub-agent updates after tasks'));
@@ -2036,7 +2062,7 @@ function buildSubAgentsSection(actor) {
       line1.append(lbl, saMakeTierChip(sa.tier, dim));
       if (sa.model) { const mp = document.createElement('span'); mp.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--h-ink-faint);padding:2px 7px;border-radius:6px;background:color-mix(in srgb, var(--h-ink) 7%, var(--h-surface))'; mp.textContent = sa.model; line1.appendChild(mp); }
       if (sa.harness) { const hp = document.createElement('span'); hp.style.cssText = 'font-family:var(--h-sans);font-size:11px;color:var(--h-ink-faint);padding:2px 6px;border-radius:6px;border:1px solid var(--h-hair-soft)'; hp.textContent = HARNESS_LABELS[sa.harness] || sa.harness; line1.appendChild(hp); }
-      mid.append(line1); row.appendChild(mid);
+      mid.append(line1); const descLine = _saMakeDescLine(sa); if (descLine) mid.appendChild(descLine); row.appendChild(mid);
       const tog = document.createElement('button'); tog.className = 's-notif-toggle' + (sa.enabled ? ' on' : ''); tog.title = sa.enabled ? 'Enabled — click to disable' : 'Disabled — click to enable'; tog.style.flex = '0 0 auto';
       tog.addEventListener('click', async () => { try { const rr = await fetch(`/api/sub-agents/${sa.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !sa.enabled }) }); if (rr.ok) saLoadListWithCache(); } catch { showToast('Failed to update', { error: true }); } });
       row.appendChild(tog);

@@ -352,6 +352,14 @@ function renderRoomSidebar(room, participants) {
       }
     }
 
+    function subAgentDescLine(text) {
+      const d = document.createElement('div');
+      d.style.cssText = 'font-size:11px;color:var(--h-ink-faint);font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+      d.textContent = text;
+      d.title = text;
+      return d;
+    }
+
     function renderSubAgents(subAgents) {
       const linked = subAgents.linked || [];
       const available = subAgents.available || [];
@@ -381,6 +389,7 @@ function renderRoomSidebar(room, participants) {
         parent.style.cssText = 'font-size:11px;color:var(--h-ink-faint)';
         parent.textContent = sa.parent_name || '';
         info.append(name, parent);
+        if (sa.description) info.appendChild(subAgentDescLine(sa.description));
         const unlinkBtn = document.createElement('button');
         unlinkBtn.style.cssText = 'background:transparent;border:none;color:var(--h-ink-faint);cursor:pointer;font-size:13px;padding:2px 4px';
         unlinkBtn.textContent = '×';
@@ -418,6 +427,7 @@ function renderRoomSidebar(room, participants) {
           parent.style.cssText = 'font-size:11px;color:var(--h-ink-faint)';
           parent.textContent = sa.parent_name || '';
           info.append(name, parent);
+          if (sa.description) info.appendChild(subAgentDescLine(sa.description));
           const linkBtn = document.createElement('button');
           linkBtn.style.cssText = 'background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:11px;padding:2px 10px;cursor:pointer';
           linkBtn.textContent = 'link';
