@@ -3386,6 +3386,138 @@ async function run() {
     });
   }
 
+  // ── Sub-agent role ─────────────────────────────────────────────────────────
+  console.log('\n[Sub-agent role]');
+  {
+    let rlActorId = null, rlSecret = null, rlRoomId = null, rlWs = null;
+    let rlWith = null, rlNone = null;
+    const getSa = async id => (await req('GET', `/api/actors/${rlActorId}/sub-agents`)).body.find(s => s.id === id);
+    const completeTrigger = (m) => { if (m?.message_id) rlWs.send(JSON.stringify({ type: 'agent_message', message_id: m.message_id, content: 'done', state: 'complete' })); };
+
+    await test('Setup — online agent + room for role tests', async () => {
+      const agent = await createOnlineTestAgent('__test-role-agent', '/tmp/stoa-test-role');
+      if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+      rlActorId = agent.actorId; rlSecret = agent.secret; rlWs = agent.ws;
+      const r = await req('POST', '/api/rooms', { title: '__role-room__', workdir_id: agent.workdirId, participant_ids: [rlActorId] });
+      assert.strictEqual(r.status, 200);
+      rlRoomId = r.body.id;
+      testRoomIds.push(rlRoomId);
+    });
+
+    await test('POST sub-agent with role → stored trimmed; without role → null', async () => {
+      if (!rlActorId) { console.log('    (skipped)'); return; }
+      const r = await req('POST', `/api/actors/${rlActorId}/sub-agents`, { label: 'rolelead', tier: 'deep', role: '  Tech Lead  ', description: 'Reviews code' });
+      assert.strictEqual(r.status, 201, JSON.stringify(r.body));
+      rlWith = r.body;
+      assert.strictEqual((await getSa(rlWith.id)).role, 'Tech Lead');
+      const r2 = await req('POST', `/api/actors/${rlActorId}/sub-agents`, { label: 'rolenone', tier: 'quick' });
+      assert.strictEqual(r2.status, 201);
+      rlNone = r2.body;
+      assert.strictEqual((await getSa(rlNone.id)).role, null);
+    });
+
+    await test('POST role invalid (41 chars / newline / number) → 400, nothing created', async () => {
+      if (!rlActorId) { console.log('    (skipped)'); return; }
+      const bad = [['rolelong', 'x'.repeat(41), /at most 40/], ['rolenl', 'Tech\nLead', /single line/], ['rolenum', 7, /string or null/]];
+      for (const [label, role, re] of bad) {
+        const r = await req('POST', `/api/actors/${rlActorId}/sub-agents`, { label, role });
+        assert.strictEqual(r.status, 400, `${label} should be rejected`);
+        assert.match(r.body.error, re);
+      }
+      const list = (await req('GET', `/api/actors/${rlActorId}/sub-agents`)).body;
+      assert.ok(!list.some(s => ['rolelong', 'rolenl', 'rolenum'].includes(s.label)));
+    });
+
+    await test("PATCH role — change, 40 chars ok, tab → 400 unchanged, '' → null, null → null", async () => {
+      if (!rlWith) { console.log('    (skipped)'); return; }
+      let r = await req('PATCH', `/api/sub-agents/${rlWith.id}`, { role: 'y'.repeat(40) });
+      assert.strictEqual(r.status, 200);
+      r = await req('PATCH', `/api/sub-agents/${rlWith.id}`, { role: 'Tech\tLead' });
+      assert.strictEqual(r.status, 400);
+      assert.strictEqual((await getSa(rlWith.id)).role, 'y'.repeat(40), 'rejected PATCH must not change role');
+      r = await req('PATCH', `/api/sub-agents/${rlWith.id}`, { role: '  ' });
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual((await getSa(rlWith.id)).role, null);
+      await req('PATCH', `/api/sub-agents/${rlWith.id}`, { role: 'temp' });
+      r = await req('PATCH', `/api/sub-agents/${rlWith.id}`, { role: null });
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual((await getSa(rlWith.id)).role, null);
+      r = await req('PATCH', `/api/sub-agents/${rlWith.id}`, { role: 'Tech Lead' });
+      assert.strictEqual(r.status, 200);
+    });
+
+    await test('History, single message, thread + WS join_room carry live sub_agent_role', async () => {
+      if (!rlWith || !rlRoomId) { console.log('    (skipped)'); return; }
+      const db = require('./db');
+      const part = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(rlRoomId, rlActorId);
+      const rootId = Number(db.prepare("INSERT INTO messages (room_id, participant_id, content, state, sub_agent_id, sub_agent_label) VALUES (?,?,'role root','complete',?,'rolelead')").run(rlRoomId, part.id, rlWith.id).lastInsertRowid);
+      db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id, sub_agent_id, sub_agent_label) VALUES (?,?,'role reply','complete',?,?,'rolelead')").run(rlRoomId, part.id, rootId, rlWith.id);
+      const hist = await req('GET', `/api/rooms/${rlRoomId}/messages`);
+      assert.strictEqual(hist.body.find(m => m.id === rootId)?.sub_agent_role, 'Tech Lead', 'history');
+      const one = await req('GET', `/api/messages/${rootId}`);
+      assert.strictEqual(one.body.sub_agent_role, 'Tech Lead', 'single message');
+      await req('PATCH', `/api/sub-agents/${rlWith.id}`, { role: 'Staff Reviewer' });
+      const thr = await req('GET', `/api/rooms/${rlRoomId}/threads/${rootId}`);
+      assert.strictEqual(thr.status, 200);
+      assert.strictEqual(thr.body.messages.find(m => m.content === 'role reply')?.sub_agent_role, 'Staff Reviewer', 'thread reply reflects live role');
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        const histP = waitForWsMessage(humanWs, m => m.type === 'history');
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: rlRoomId }));
+        const h = await histP;
+        assert.strictEqual(h.messages.find(m => m.id === rootId)?.sub_agent_role, 'Staff Reviewer', 'join_room history');
+      } finally { humanWs.close(); }
+      db.prepare('DELETE FROM messages WHERE thread_id=? OR id=?').run(rootId, rootId);
+      await req('PATCH', `/api/sub-agents/${rlWith.id}`, { role: 'Tech Lead' });
+    });
+
+    await test('Prompt — delegation list "@label (tier, role)" and sub-agent "Your role:"', async () => {
+      if (!rlWs || !rlRoomId) { console.log('    (skipped)'); return; }
+      await req('POST', `/api/rooms/${rlRoomId}/sub-agents`, { sub_agent_id: rlWith.id });
+      await req('POST', `/api/rooms/${rlRoomId}/sub-agents`, { sub_agent_id: rlNone.id });
+      const trig = waitForWsMessage(rlWs, m => m.type === 'agent_trigger' && !m.sub_agent, 5000);
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        const histP = waitForWsMessage(humanWs, m => m.type === 'history');
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: rlRoomId }));
+        await histP;
+        humanWs.send(JSON.stringify({ type: 'send_message', room_id: rlRoomId, content: 'hello main agent' }));
+        const m = await trig;
+        completeTrigger(m);
+        assert.ok(m.prompt.includes('@rolelead (deep, Tech Lead) — Reviews code'), 'role in delegation list');
+        assert.ok(m.prompt.includes('@rolenone (quick)'), 'no role keeps old format');
+      } finally { humanWs.close(); }
+
+      const headers = { 'x-agent-id': String(rlActorId), 'x-agent-secret': rlSecret };
+      const runSub = async (sa) => {
+        const t = waitForWsMessage(rlWs, m => m.type === 'agent_trigger' && m.sub_agent?.id === sa.id, 5000);
+        const r = await req('POST', `/api/rooms/${rlRoomId}/sub-agent-trigger`, { sub_agent_id: sa.id, task: 'who are you' }, headers);
+        assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+        const m = await t;
+        const wake = waitForWsMessage(rlWs, w => w.type === 'agent_trigger' && !w.sub_agent, 3000).catch(() => null);
+        completeTrigger(m);
+        completeTrigger(await wake);
+        return m.prompt;
+      };
+      assert.ok((await runSub(rlWith)).includes('(tier: deep).\nYour role: Tech Lead'), 'sub-agent prompt has role');
+      assert.ok(!(await runSub(rlNone)).includes('Your role:'), 'no role line without role');
+    });
+
+    await test('Cleanup — role test data', async () => {
+      if (rlWs) { rlWs.close(); rlWs = null; }
+      for (const sa of [rlWith, rlNone]) if (sa) await req('DELETE', `/api/sub-agents/${sa.id}`);
+      if (rlRoomId) {
+        await req('PATCH', `/api/rooms/${rlRoomId}`, { archived: true });
+        await req('DELETE', `/api/rooms/${rlRoomId}`);
+        testRoomIds = testRoomIds.filter(id => id !== rlRoomId);
+      }
+      if (rlActorId) {
+        await req('DELETE', `/api/actors/${rlActorId}`);
+        orphanActorIds = orphanActorIds.filter(id => id !== rlActorId);
+      }
+    });
+  }
+
   // ── Phase 6: proactive schedules (sub_agent_schedules CRUD) ────────────────
   // Requires migration 20260901-sub-agent-schedules.sql applied.
   console.log('\n[Sub-agent schedules]');
