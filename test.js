@@ -3518,6 +3518,132 @@ async function run() {
     });
   }
 
+  // ── Parent wake gating (messages.wake_parent) ──────────────────────────────
+  // A sub-agent the human mentions directly must not wake its parent, unless the
+  // parent is @mentioned too or the run errors. Parent-driven runs keep waking.
+  console.log('\n[Sub-agent parent wake gating]');
+  {
+    const WK_NAME = '__test-wake-agent';
+    const db = require('./db');
+    let wkActorId = null, wkSecret = null, wkRoomId = null, wkWs = null, wkSa = null;
+    const complete = (m, content, resultMeta) => wkWs.send(JSON.stringify({
+      type: 'agent_complete', room_id: wkRoomId, message_id: m.message_id, content, ...(resultMeta ? { result_meta: resultMeta } : {}),
+    }));
+    const nextSubTrigger = () => waitForWsMessage(wkWs, m => m.type === 'agent_trigger' && m.sub_agent?.id === wkSa.id, 5000)
+      .catch(() => { throw new Error('sub-agent trigger never arrived'); });
+    const nextParentTrigger = (ms) => waitForWsMessage(wkWs, m => m.type === 'agent_trigger' && !m.sub_agent, ms)
+      .catch(() => { throw new Error('parent trigger never arrived'); });
+    const sendAsHuman = async (content) => {
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        const histP = waitForWsMessage(humanWs, m => m.type === 'history');
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: wkRoomId }));
+        await histP;
+        humanWs.send(JSON.stringify({ type: 'send_message', room_id: wkRoomId, content }));
+      } finally { setTimeout(() => humanWs.close(), 200); }
+    };
+
+    await test('Setup — online agent + room + linked sub-agent for wake tests', async () => {
+      const agent = await createOnlineTestAgent(WK_NAME, '/tmp/stoa-test-wake');
+      if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+      wkActorId = agent.actorId; wkSecret = agent.secret; wkWs = agent.ws;
+      const r = await req('POST', '/api/rooms', { title: '__wake-room__', workdir_id: agent.workdirId, participant_ids: [wkActorId] });
+      assert.strictEqual(r.status, 200);
+      wkRoomId = r.body.id;
+      testRoomIds.push(wkRoomId);
+      const s = await req('POST', `/api/actors/${wkActorId}/sub-agents`, { label: 'wakesub', tier: 'quick' });
+      assert.strictEqual(s.status, 201, JSON.stringify(s.body));
+      wkSa = s.body;
+      const l = await req('POST', `/api/rooms/${wkRoomId}/sub-agents`, { sub_agent_id: wkSa.id });
+      assert.ok(l.status === 200 || l.status === 201, JSON.stringify(l.body));
+    });
+
+    await test('Human mentions sub-agent only → completes, parent NOT woken', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const t = nextSubTrigger();
+      await sendAsHuman('@wakesub draw something');
+      const m = await t;
+      const parentWake = nextParentTrigger(1500).then(() => true, () => false);
+      complete(m, 'here is the drawing');
+      assert.strictEqual(await parentWake, false, 'parent must not be triggered after a direct human mention');
+      const row = db.prepare('SELECT state, wake_parent FROM messages WHERE id=?').get(m.message_id);
+      assert.strictEqual(row.state, 'complete');
+      assert.strictEqual(row.wake_parent, 0);
+      assert.strictEqual(db.prepare('SELECT COUNT(*) AS c FROM pending_wakes WHERE sub_agent_message_id=?').get(m.message_id).c, 0);
+    });
+
+    await test('Human mentions parent + sub-agent → parent woken with the result', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const t = nextSubTrigger();
+      await sendAsHuman(`@${WK_NAME} @wakesub review this`);
+      const m = await t;
+      const wake = nextParentTrigger(5000);
+      complete(m, 'review result XYZ');
+      const w = await wake;
+      assert.ok(w.prompt.includes('review result XYZ'), 'woken parent must see the sub-agent result');
+      complete(w, 'synthesized');
+    });
+
+    await test('Human mentions sub-agent only, run errors → parent woken with failure', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const t = nextSubTrigger();
+      await sendAsHuman('@wakesub do a risky thing');
+      const m = await t;
+      const wake = nextParentTrigger(5000);
+      complete(m, 'crashed halfway', { exit_reason: 'error' });
+      const w = await wake;
+      const row = db.prepare('SELECT state, wake_parent FROM messages WHERE id=?').get(m.message_id);
+      assert.strictEqual(row.state, 'error');
+      assert.strictEqual(row.wake_parent, 0, 'woken despite wake_parent=0 because the run errored');
+      complete(w, 'handled');
+    });
+
+    await test('POST /sub-agent-trigger → parent still woken', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const t = nextSubTrigger();
+      const r = await req('POST', `/api/rooms/${wkRoomId}/sub-agent-trigger`, { sub_agent_id: wkSa.id, task: 'spawned task' },
+        { 'x-agent-id': String(wkActorId), 'x-agent-secret': wkSecret });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      const m = await t;
+      const wake = nextParentTrigger(5000);
+      complete(m, 'spawn result');
+      const w = await wake;
+      assert.ok(w.prompt.includes('spawn result'));
+      assert.strictEqual(db.prepare('SELECT wake_parent FROM messages WHERE id=?').get(m.message_id).wake_parent, 1);
+      complete(w, 'ok');
+    });
+
+    await test('Parent response @mentions sub-agent (cascade) → parent still woken', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const pt = nextParentTrigger(5000);
+      await sendAsHuman(`@${WK_NAME} please delegate`);
+      const p = await pt;
+      const st = nextSubTrigger();
+      complete(p, '@wakesub take this task');
+      const m = await st;
+      const wake = nextParentTrigger(5000);
+      complete(m, 'cascade result');
+      const w = await wake;
+      assert.ok(w.prompt.includes('cascade result'));
+      complete(w, 'done');
+    });
+
+    await test('Cleanup — wake test data', async () => {
+      await new Promise(r => setTimeout(r, 300));
+      if (wkWs) { wkWs.close(); wkWs = null; }
+      if (wkSa) await req('DELETE', `/api/sub-agents/${wkSa.id}`);
+      if (wkRoomId) {
+        await req('PATCH', `/api/rooms/${wkRoomId}`, { archived: true });
+        await req('DELETE', `/api/rooms/${wkRoomId}`);
+        testRoomIds = testRoomIds.filter(id => id !== wkRoomId);
+      }
+      if (wkActorId) {
+        await req('DELETE', `/api/actors/${wkActorId}`);
+        orphanActorIds = orphanActorIds.filter(id => id !== wkActorId);
+      }
+    });
+  }
+
   // ── Phase 6: proactive schedules (sub_agent_schedules CRUD) ────────────────
   // Requires migration 20260901-sub-agent-schedules.sql applied.
   console.log('\n[Sub-agent schedules]');

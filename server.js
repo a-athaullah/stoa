@@ -386,9 +386,11 @@ function verifyAgentRequest(req) {
 // ─── Phase 2b: durable auto-wake (R1) ──────────────────────────────────────
 // When a sub-agent completes, wake its parent exactly once with the result in
 // context. The pending_wakes row makes this survive a server restart (drained
-// on startup). ALL sub-agent completions wake their parent — both
-// /sub-agent-trigger spawns (parent_message_id set) and @mention-cascade
-// triggers (parent_message_id null).
+// on startup). Sub-agent completions wake their parent when messages.wake_parent=1
+// (default: /sub-agent-trigger spawns, parent @mention-cascade, wake-cascade,
+// proactive-cascade) or when the run ended in state='error'. handleHumanMessage
+// sets wake_parent=0 for sub-agents the human mentioned directly, unless the
+// parent was @mentioned too — the human is talking to the sub-agent, not the parent.
 const MAX_WAKE_ATTEMPTS = 3;
 
 function enqueueParentWake(roomId, parentParticipantId, subAgentMessageId, threadId) {
@@ -5610,7 +5612,7 @@ wss.on('connection', (ws, req) => {
       db.prepare(
         'UPDATE messages SET content=?, file_url=?, file_name=?, attachments=?, ai_model=?, result_meta=?, state=?, completed_at=datetime(\'now\') WHERE id=?'
       ).run(agentContent, msg.file_url || null, msg.file_name || null, attachJson, msg.ai_model || null, resultMetaJson, finalState, msg.message_id);
-      const doneRow = db.prepare('SELECT participant_id, sub_agent_id, parent_message_id, thread_id, model_source FROM messages WHERE id=?').get(msg.message_id);
+      const doneRow = db.prepare('SELECT participant_id, sub_agent_id, parent_message_id, thread_id, model_source, wake_parent FROM messages WHERE id=?').get(msg.message_id);
       const completePayload = { type: 'message_complete', message_id: msg.message_id, content: agentContent, ai_model: msg.ai_model || null, model_source: doneRow?.model_source || null, state: finalState, thread_id: doneRow?.thread_id ?? null };
       if (resultMetaJson) completePayload.result_meta = resultMetaJson;
       if (msg.attachments?.length) { completePayload.attachments = msg.attachments; }
@@ -5631,7 +5633,7 @@ wss.on('connection', (ws, req) => {
         } catch (e) { console.error('[agent] saveSession error:', e.message); }
       }
       try {
-        if (doneRow && doneRow.sub_agent_id) {
+        if (doneRow && doneRow.sub_agent_id && (doneRow.wake_parent || finalState === 'error')) {
           enqueueParentWake(msg.room_id, doneRow.participant_id, msg.message_id, doneRow.thread_id ?? null);
         }
       } catch (e) { console.error('[wake] enqueue error:', e.message); }
@@ -6709,7 +6711,11 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
 
   if (allAiParts.length > 0) {
     const ordered = resolveAgentOrder(content, allAiParts, roomId);
-    const subAgentMentions = ordered.filter(a => a.sub_agent);
+    // resolveAgentOrder folds "@Parent @label" into the sub-agent, so an explicit parent
+    // mention is detected separately: only then does the parent get woken afterwards.
+    // Automation messages also land here and are treated the same as human messages.
+    const subAgentMentions = ordered.filter(a => a.sub_agent)
+      .map(a => ({ ...a, wake_parent: mentionBoundary(a.name).test(content) }));
     const parentMentions   = ordered.filter(a => !a.sub_agent);
 
     // Sub-agents fire in parallel — independent of conversation flow
@@ -6980,13 +6986,14 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   }
 
   const subAgent = ai.sub_agent || null;
-  // parent_message_id marks a /sub-agent-trigger run for traceability. Auto-wake
-  // fires for ALL sub-agent completions (including @mention-cascade), not just these.
+  // parent_message_id marks a /sub-agent-trigger run for traceability. Auto-wake is
+  // governed by wake_parent instead (see enqueueParentWake): only a direct human
+  // mention passes ai.wake_parent=false; every other caller keeps the wake.
   const parentMessageId = (subAgent && ai.parent_message_id) ? ai.parent_message_id : null;
   const result = subAgent
     ? db.prepare(
-        `INSERT INTO messages (room_id, participant_id, content, state, reply_to, sub_agent_id, sub_agent_label, parent_message_id, thread_id) VALUES (?,?,'','streaming',?,?,?,?,?)`
-      ).run(roomId, ai.participant_id, replyTo, subAgent.id, subAgent.label, parentMessageId, threadId)
+        `INSERT INTO messages (room_id, participant_id, content, state, reply_to, sub_agent_id, sub_agent_label, parent_message_id, thread_id, wake_parent) VALUES (?,?,'','streaming',?,?,?,?,?,?)`
+      ).run(roomId, ai.participant_id, replyTo, subAgent.id, subAgent.label, parentMessageId, threadId, ai.wake_parent === false ? 0 : 1)
     : db.prepare(
         `INSERT INTO messages (room_id, participant_id, content, state, reply_to, thread_id) VALUES (?,?,'','streaming',?,?)`
       ).run(roomId, ai.participant_id, replyTo, threadId);
