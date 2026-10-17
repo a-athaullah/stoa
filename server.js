@@ -354,6 +354,16 @@ function resolveThread(roomId, threadId) {
 // Depth guard is handled by MAX_WAKE_CASCADE_DEPTH + cascade only fires from
 // parent responses, not sub-agent responses.
 
+const SUB_AGENT_DESCRIPTION_MAX = 500;
+// Returns { value } (trimmed string or null) or { error } for an invalid sub-agent description.
+function normalizeSubAgentDescription(v) {
+  if (v === null) return { value: null };
+  if (typeof v !== 'string') return { error: 'description must be a string or null' };
+  const t = v.trim();
+  if (t.length > SUB_AGENT_DESCRIPTION_MAX) return { error: `description must be at most ${SUB_AGENT_DESCRIPTION_MAX} characters` };
+  return { value: t || null };
+}
+
 // Verify x-agent-id / x-agent-secret headers (same HMAC scheme as proactive message).
 // Returns the agent actor row on success, or null.
 function verifyAgentRequest(req) {
@@ -907,7 +917,7 @@ function fireSchedule(sched) {
     FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.id=?
   `).get(parentPart.id);
   const effectiveHarness = sub.harness || ai.adapter || 'claude';
-  ai.sub_agent = { id: sub.id, label: sub.label, tier: sub.tier, model: sub.model, workdir: sub.workdir, system_prompt: sub.system_prompt, harness: effectiveHarness, avatar_color: sub.avatar_color, avatar_symbol: sub.avatar_symbol, avatar_url: sub.avatar_url };
+  ai.sub_agent = { id: sub.id, label: sub.label, tier: sub.tier, model: sub.model, workdir: sub.workdir, system_prompt: sub.system_prompt, harness: effectiveHarness, avatar_color: sub.avatar_color, avatar_symbol: sub.avatar_symbol, avatar_url: sub.avatar_url, description: sub.description };
   ai.parent_message_id = null; // standalone run — no orchestrator turn to auto-wake
   triggerAiResponse(sched.room_id, ai, sched.task, null, []).catch(e => console.error('[scheduler] trigger error:', e.message));
   return 'fired';
@@ -2099,7 +2109,7 @@ const server = http.createServer(async (req, res) => {
       FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.id=?
     `).get(parentPart.id);
     const effectiveHarness = sub.harness || ai.adapter || 'claude';
-    ai.sub_agent = { id: sub.id, label: sub.label, tier: sub.tier, model: sub.model, workdir: sub.workdir, system_prompt: sub.system_prompt, harness: effectiveHarness, avatar_color: sub.avatar_color, avatar_symbol: sub.avatar_symbol, avatar_url: sub.avatar_url };
+    ai.sub_agent = { id: sub.id, label: sub.label, tier: sub.tier, model: sub.model, workdir: sub.workdir, system_prompt: sub.system_prompt, harness: effectiveHarness, avatar_color: sub.avatar_color, avatar_symbol: sub.avatar_symbol, avatar_url: sub.avatar_url, description: sub.description };
     ai.parent_message_id = parentMessageId;
 
     // Pre-check: parent actor's stoa-agent must be online to run the sub-agent.
@@ -3529,6 +3539,12 @@ const server = http.createServer(async (req, res) => {
     const data = parseJsonBody(await readBody(req));
     if (!data) return json(res, { error: 'Invalid JSON' }, 400);
     const { label, tier, model, workdir, system_prompt, harness } = data;
+    let description = null;
+    if (data.description !== undefined) {
+      const d = normalizeSubAgentDescription(data.description);
+      if (d.error) return json(res, { error: d.error }, 400);
+      description = d.value;
+    }
     if (!label?.trim()) return json(res, { error: 'label required' }, 400);
     if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,29}$/.test(label.trim())) return json(res, { error: 'label must start with a letter, 1-30 chars, alphanumeric/dash/underscore' }, 400);
     if (tier && !['quick', 'standard', 'deep'].includes(tier)) return json(res, { error: 'tier must be quick, standard, or deep' }, 400);
@@ -3549,8 +3565,8 @@ const server = http.createServer(async (req, res) => {
     }
     try {
       const result = db.prepare(
-        'INSERT INTO sub_agents (parent_actor_id, label, tier, model, workdir, system_prompt, harness) VALUES (?,?,?,?,?,?,?)'
-      ).run(actorId, label.trim(), tier || 'quick', model || null, workdir || null, system_prompt || null, harness || null);
+        'INSERT INTO sub_agents (parent_actor_id, label, tier, model, workdir, system_prompt, harness, description) VALUES (?,?,?,?,?,?,?,?)'
+      ).run(actorId, label.trim(), tier || 'quick', model || null, workdir || null, system_prompt || null, harness || null, description);
       const row = db.prepare('SELECT * FROM sub_agents WHERE id=?').get(result.lastInsertRowid);
       return json(res, row, 201);
     } catch (e) {
@@ -3567,7 +3583,7 @@ const server = http.createServer(async (req, res) => {
     if (!data) return json(res, { error: 'Invalid JSON' }, 400);
     const updates = [];
     const params = [];
-    for (const key of ['label', 'tier', 'model', 'workdir', 'system_prompt', 'enabled', 'harness', 'avatar_color', 'avatar_symbol']) {
+    for (const key of ['label', 'tier', 'model', 'workdir', 'system_prompt', 'enabled', 'harness', 'avatar_color', 'avatar_symbol', 'description']) {
       if (data[key] !== undefined) {
         if (key === 'label') {
           if (!data.label?.trim()) return json(res, { error: 'label required' }, 400);
@@ -3586,6 +3602,10 @@ const server = http.createServer(async (req, res) => {
             if (!validHarnesses.includes(data.harness)) return json(res, { error: `harness must be one of: ${validHarnesses.join(', ')} (or null to inherit)` }, 400);
           }
           updates.push('harness=?'); params.push(data.harness ?? null);
+        } else if (key === 'description') {
+          const d = normalizeSubAgentDescription(data.description);
+          if (d.error) return json(res, { error: d.error }, 400);
+          updates.push('description=?'); params.push(d.value);
         } else if (key === 'avatar_color') {
           if (data.avatar_color !== null && !/^#[0-9a-fA-F]{6}$/.test(data.avatar_color)) return json(res, { error: 'avatar_color must be null or #RRGGBB' }, 400);
           updates.push('avatar_color=?'); params.push(data.avatar_color ?? null);
@@ -7072,7 +7092,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   const PROACTIVE_INSTRUCTIONS_SUB_AGENT = `\n\n## Output\n\nYour final text response is automatically posted to the room as your result. Do NOT also send it via curl — it would appear twice.\n\nOnly use curl in two cases:\n1. **Long task (>1 min):** send a brief mid-task status update so the user knows you're working. Do NOT send the result via curl — write it in your text response.\n2. **Cascade trigger:** if you need to @mention another agent, put the @mention in a curl message body (plain text @mention is not guaranteed to trigger).\n\nFor quick tasks (single command, short lookup): just write the answer in your text response. No curl needed.\n\nYou were triggered from room ${roomId}. If you do use curl, send to that room.\n\nCurl pattern:\n\`\`\`bash\nBASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\ncurl -s -X POST "$BASE_URL/api/rooms/${roomId}/message" \\\n  -H "Content-Type: application/json" \\\n  -H "x-agent-id: $STOA_ACTOR_ID" \\\n  -H "x-agent-secret: $STOA_SECRET" \\\n  -d ${subAgentCurlBody}\n\`\`\`\n\n$STOA_URL, $STOA_ACTOR_ID, and $STOA_SECRET are available as environment variables.\nRoom ID: ${roomId}`;
 
   const identityLine = subAgent
-    ? `${L.identity(ai.name)}\nYou are operating as sub-agent "${subAgent.label}" (tier: ${subAgent.tier}).${subAgent.system_prompt ? '\n\nSub-agent instructions:\n' + subAgent.system_prompt : ''}${PROACTIVE_INSTRUCTIONS_SUB_AGENT}`
+    ? `${L.identity(ai.name)}\nYou are operating as sub-agent "${subAgent.label}" (tier: ${subAgent.tier}).${subAgent.description ? '\n\n## Your Purpose\n' + subAgent.description : ''}${subAgent.system_prompt ? '\n\nSub-agent instructions:\n' + subAgent.system_prompt : ''}${PROACTIVE_INSTRUCTIONS_SUB_AGENT}`
     : `${L.identity(ai.name)}${PROACTIVE_INSTRUCTIONS}`;
 
   // ── Phase 2b: orchestration — issue a spawn token to the MAIN agent when it
@@ -7081,12 +7101,12 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   let orchestrationLine = '';
   if (!subAgent) {
     const ownSubs = db.prepare(`
-      SELECT sa.id, sa.label, sa.tier FROM room_sub_agents rsa
+      SELECT sa.id, sa.label, sa.tier, sa.description FROM room_sub_agents rsa
       JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
       WHERE rsa.room_id=? AND sa.parent_actor_id=? AND sa.enabled=1
     `).all(roomId, ai.actor_id);
     if (ownSubs.length) {
-      const list = ownSubs.map(s => `@${s.label} (${s.tier})`).join(', ');
+      const list = ownSubs.map(s => `@${s.label} (${s.tier})${s.description ? ' — ' + s.description.replace(/\s+/g, ' ') : ''}`).join(', ');
       orchestrationLine =
         `\nYou can delegate to your sub-agents: ${list}.\n` +
         `To trigger one, mention @<label> in your response followed by the task — e.g. "@BE-Stoa implement the login endpoint".\n` +

@@ -3248,6 +3248,144 @@ async function run() {
     });
   }
 
+  // ── Sub-agent description ──────────────────────────────────────────────────
+  console.log('\n[Sub-agent description]');
+  {
+    let dsActorId = null, dsSecret = null, dsRoomId = null, dsWs = null, dsName = null;
+    let dsWith = null, dsNone = null;
+    const getSa = async id => (await req('GET', `/api/actors/${dsActorId}/sub-agents`)).body.find(s => s.id === id);
+    const completeTrigger = (m) => { if (m?.message_id) dsWs.send(JSON.stringify({ type: 'agent_message', message_id: m.message_id, content: 'done', state: 'complete' })); };
+
+    await test('Setup — online agent + room for description tests', async () => {
+      dsName = '__test-desc-agent';
+      const agent = await createOnlineTestAgent(dsName, '/tmp/stoa-test-desc');
+      if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+      dsActorId = agent.actorId; dsSecret = agent.secret; dsWs = agent.ws;
+      const r = await req('POST', '/api/rooms', { title: '__desc-room__', workdir_id: agent.workdirId, participant_ids: [dsActorId] });
+      assert.strictEqual(r.status, 200);
+      dsRoomId = r.body.id;
+      testRoomIds.push(dsRoomId);
+    });
+
+    await test('POST sub-agent with description → stored trimmed', async () => {
+      if (!dsActorId) { console.log('    (skipped)'); return; }
+      const r = await req('POST', `/api/actors/${dsActorId}/sub-agents`, { label: 'descbe', tier: 'standard', description: '  Backend implementation for Stoa  ' });
+      assert.strictEqual(r.status, 201, JSON.stringify(r.body));
+      dsWith = r.body;
+      assert.strictEqual((await getSa(dsWith.id)).description, 'Backend implementation for Stoa');
+    });
+
+    await test('POST sub-agent without description → null', async () => {
+      if (!dsActorId) { console.log('    (skipped)'); return; }
+      const r = await req('POST', `/api/actors/${dsActorId}/sub-agents`, { label: 'descnone', tier: 'quick' });
+      assert.strictEqual(r.status, 201);
+      dsNone = r.body;
+      assert.strictEqual((await getSa(dsNone.id)).description, null);
+    });
+
+    await test('POST sub-agent description 501 chars → 400, number → 400', async () => {
+      if (!dsActorId) { console.log('    (skipped)'); return; }
+      const r1 = await req('POST', `/api/actors/${dsActorId}/sub-agents`, { label: 'desclong', description: 'x'.repeat(501) });
+      assert.strictEqual(r1.status, 400);
+      assert.match(r1.body.error, /at most 500/);
+      const r2 = await req('POST', `/api/actors/${dsActorId}/sub-agents`, { label: 'descnum', description: 42 });
+      assert.strictEqual(r2.status, 400);
+      const list = (await req('GET', `/api/actors/${dsActorId}/sub-agents`)).body;
+      assert.ok(!list.some(s => s.label === 'desclong' || s.label === 'descnum'), 'rejected sub-agents must not be created');
+    });
+
+    await test('PATCH description — change, 500 chars ok, 501 → 400 (unchanged)', async () => {
+      if (!dsWith) { console.log('    (skipped)'); return; }
+      let r = await req('PATCH', `/api/sub-agents/${dsWith.id}`, { description: 'Reviews backend PRs' });
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual((await getSa(dsWith.id)).description, 'Reviews backend PRs');
+      r = await req('PATCH', `/api/sub-agents/${dsWith.id}`, { description: 'y'.repeat(500) });
+      assert.strictEqual(r.status, 200);
+      r = await req('PATCH', `/api/sub-agents/${dsWith.id}`, { description: 'z'.repeat(501) });
+      assert.strictEqual(r.status, 400);
+      assert.strictEqual((await getSa(dsWith.id)).description, 'y'.repeat(500), 'rejected PATCH must not change description');
+    });
+
+    await test('PATCH description non-string (object) → 400', async () => {
+      if (!dsWith) { console.log('    (skipped)'); return; }
+      const r = await req('PATCH', `/api/sub-agents/${dsWith.id}`, { description: { a: 1 } });
+      assert.strictEqual(r.status, 400);
+    });
+
+    await test("PATCH description '' → null, null → null", async () => {
+      if (!dsWith) { console.log('    (skipped)'); return; }
+      let r = await req('PATCH', `/api/sub-agents/${dsWith.id}`, { description: '   ' });
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual((await getSa(dsWith.id)).description, null);
+      await req('PATCH', `/api/sub-agents/${dsWith.id}`, { description: 'temp' });
+      r = await req('PATCH', `/api/sub-agents/${dsWith.id}`, { description: null });
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual((await getSa(dsWith.id)).description, null);
+    });
+
+    await test('WS sub_agent_updated carries description', async () => {
+      if (!dsWith || !dsRoomId) { console.log('    (skipped)'); return; }
+      await req('POST', `/api/rooms/${dsRoomId}/sub-agents`, { sub_agent_id: dsWith.id });
+      await req('POST', `/api/rooms/${dsRoomId}/sub-agents`, { sub_agent_id: dsNone.id });
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: dsRoomId }));
+        await waitForWsMessage(humanWs, m => m.type === 'history');
+        const evt = waitForWsMessage(humanWs, m => m.type === 'sub_agent_updated' && m.sub_agent?.id === dsWith.id);
+        await req('PATCH', `/api/sub-agents/${dsWith.id}`, { description: 'Backend\n  implementation\tfor Stoa' });
+        assert.strictEqual((await evt).sub_agent.description, 'Backend\n  implementation\tfor Stoa');
+      } finally { humanWs.close(); }
+    });
+
+    await test('Prompt — main agent delegation list shows description (collapsed) only when set', async () => {
+      if (!dsWs || !dsRoomId) { console.log('    (skipped)'); return; }
+      const trig = waitForWsMessage(dsWs, m => m.type === 'agent_trigger' && !m.sub_agent, 5000);
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: dsRoomId }));
+        await waitForWsMessage(humanWs, m => m.type === 'history');
+        humanWs.send(JSON.stringify({ type: 'send_message', room_id: dsRoomId, content: 'hello main agent' }));
+        const m = await trig;
+        completeTrigger(m);
+        assert.ok(m.prompt.includes('@descbe (standard) — Backend implementation for Stoa'), 'described sub-agent must list collapsed description');
+        assert.ok(/@descnone \(quick\)(?! —)/.test(m.prompt), 'undescribed sub-agent keeps old format');
+      } finally { humanWs.close(); }
+    });
+
+    await test('Prompt — sub-agent run gets ## Your Purpose; none when description empty', async () => {
+      if (!dsWs || !dsRoomId) { console.log('    (skipped)'); return; }
+      const headers = { 'x-agent-id': String(dsActorId), 'x-agent-secret': dsSecret };
+      const runSub = async (sa) => {
+        const trig = waitForWsMessage(dsWs, m => m.type === 'agent_trigger' && m.sub_agent?.id === sa.id, 5000);
+        const r = await req('POST', `/api/rooms/${dsRoomId}/sub-agent-trigger`, { sub_agent_id: sa.id, task: 'describe yourself' }, headers);
+        assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+        const m = await trig;
+        const wake = waitForWsMessage(dsWs, w => w.type === 'agent_trigger' && !w.sub_agent, 3000).catch(() => null);
+        completeTrigger(m);
+        completeTrigger(await wake);
+        return m.prompt;
+      };
+      const p1 = await runSub(dsWith);
+      assert.ok(p1.includes('## Your Purpose\nBackend\n  implementation\tfor Stoa'), 'sub-agent prompt must include its purpose');
+      const p2 = await runSub(dsNone);
+      assert.ok(!p2.includes('## Your Purpose'), 'no purpose section without description');
+    });
+
+    await test('Cleanup — description test data', async () => {
+      if (dsWs) { dsWs.close(); dsWs = null; }
+      for (const sa of [dsWith, dsNone]) if (sa) await req('DELETE', `/api/sub-agents/${sa.id}`);
+      if (dsRoomId) {
+        await req('PATCH', `/api/rooms/${dsRoomId}`, { archived: true });
+        await req('DELETE', `/api/rooms/${dsRoomId}`);
+        testRoomIds = testRoomIds.filter(id => id !== dsRoomId);
+      }
+      if (dsActorId) {
+        await req('DELETE', `/api/actors/${dsActorId}`);
+        orphanActorIds = orphanActorIds.filter(id => id !== dsActorId);
+      }
+    });
+  }
+
   // ── Phase 6: proactive schedules (sub_agent_schedules CRUD) ────────────────
   // Requires migration 20260901-sub-agent-schedules.sql applied.
   console.log('\n[Sub-agent schedules]');
