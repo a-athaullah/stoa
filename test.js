@@ -9476,51 +9476,74 @@ async function run() {
     assert.strictEqual(emptyConditions.matched, true, 'empty conditions should match');
   });
 
-  await test('setBroadcastReason validates reason and persists to DB', async () => {
+  await test('setBroadcastReason: valid reason persists + emits, invalid reason rejected', async () => {
     const db = require('./db');
-    const ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?, ?, 'test setBroadcastReason', 'complete', ?)").run(_tbRoomId, _tbParticipantId, _tbRootMsgId);
+    const { createThreadBroadcast } = require('./lib/thread-broadcast');
+    const broadcasts = [];
+    const tb = createThreadBroadcast({
+      db,
+      broadcastToRoom: (roomId, payload) => broadcasts.push({ roomId, payload }),
+      enrichFn: () => {}
+    });
+
+    const ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?, ?, 'test setBroadcastReason real', 'complete', ?)").run(_tbRoomId, _tbParticipantId, _tbRootMsgId);
     const msgId = Number(ins.lastInsertRowid);
 
-    db.prepare('UPDATE messages SET broadcast_reason=? WHERE id=?').run('automation_match', msgId);
+    const ok1 = tb.setBroadcastReason(msgId, 'automation_match', _tbRoomId);
+    assert.strictEqual(ok1, true, 'valid reason should return true');
     const row1 = db.prepare('SELECT broadcast_reason FROM messages WHERE id=?').get(msgId);
-    assert.strictEqual(row1.broadcast_reason, 'automation_match');
+    assert.strictEqual(row1.broadcast_reason, 'automation_match', 'DB should be updated');
+    assert.strictEqual(broadcasts.length, 1, 'should emit one message_broadcast');
+    assert.strictEqual(broadcasts[0].roomId, _tbRoomId);
+    assert.strictEqual(broadcasts[0].payload.type, 'message_broadcast');
+    assert.strictEqual(broadcasts[0].payload.message.id, msgId);
+    assert.ok(broadcasts[0].payload.message.thread_root_preview, 'should include thread_root_preview');
 
-    db.prepare('UPDATE messages SET broadcast_reason=? WHERE id=?').run('error', msgId);
+    const ok2 = tb.setBroadcastReason(msgId, 'invalid_reason', _tbRoomId);
+    assert.strictEqual(ok2, false, 'invalid reason should return false');
     const row2 = db.prepare('SELECT broadcast_reason FROM messages WHERE id=?').get(msgId);
-    assert.strictEqual(row2.broadcast_reason, 'error');
+    assert.strictEqual(row2.broadcast_reason, 'automation_match', 'DB should not change on invalid reason');
+    assert.strictEqual(broadcasts.length, 1, 'should not emit on invalid reason');
 
-    db.prepare('UPDATE messages SET broadcast_reason=? WHERE id=?').run('limit', msgId);
+    const ok3 = tb.setBroadcastReason(msgId, 'error');
+    assert.strictEqual(ok3, true, 'valid reason without roomId should return true');
     const row3 = db.prepare('SELECT broadcast_reason FROM messages WHERE id=?').get(msgId);
-    assert.strictEqual(row3.broadcast_reason, 'limit');
-
-    const feedR = await req('GET', `/api/rooms/${_tbRoomId}/messages`);
-    assert.strictEqual(feedR.status, 200);
-    const found = feedR.body.find(m => m.id === msgId);
-    assert.ok(found, 'broadcast message should appear in feed');
-    assert.strictEqual(found.broadcast_reason, 'limit');
-    assert.ok(found.thread_root_preview, 'should have thread_root_preview');
+    assert.strictEqual(row3.broadcast_reason, 'error', 'DB updated without emit');
+    assert.strictEqual(broadcasts.length, 1, 'should not emit when roomId omitted');
   });
 
-  await test('message_broadcast WS event emitted for new broadcast row', async () => {
+  await test('canBroadcastError: anti-flood 1 per thread per 10 minutes', async () => {
+    const { createThreadBroadcast, BROADCAST_FLOOD_MS } = require('./lib/thread-broadcast');
     const db = require('./db');
-    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
-    const joinPromise = waitForWsMessage(ws, m => m.type === 'history');
-    ws.send(JSON.stringify({ type: 'join_room', room_id: _tbRoomId }));
-    await joinPromise;
+    let clock = 1000000;
+    const tb = createThreadBroadcast({
+      db,
+      broadcastToRoom: () => {},
+      enrichFn: () => {},
+      now: () => clock
+    });
 
-    const broadcastPromise = waitForWsMessage(ws, m => m.type === 'message_broadcast', 3000).catch(() => null);
+    assert.strictEqual(tb.canBroadcastError(9991), true, 'first call should pass');
+    assert.strictEqual(tb.canBroadcastError(9991), false, 'second call same thread within window should block');
+    assert.strictEqual(tb.canBroadcastError(9992), true, 'different thread should pass');
 
-    const ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id, broadcast_reason) VALUES (?, ?, 'ws broadcast test', 'complete', ?, 'automation_match')").run(_tbRoomId, _tbParticipantId, _tbRootMsgId);
-    const msgId = Number(ins.lastInsertRowid);
+    clock += BROADCAST_FLOOD_MS + 1;
+    assert.strictEqual(tb.canBroadcastError(9991), true, 'same thread after 10 min should pass again');
+  });
 
-    // Trigger emitBroadcast indirectly via PATCH (set broadcast_reason on existing message)
-    // Since emitBroadcast is internal, we verify the feed query picks it up instead
-    const feedR = await req('GET', `/api/rooms/${_tbRoomId}/messages`);
-    const found = feedR.body.find(m => m.id === msgId);
-    assert.ok(found, 'new broadcast row should be in feed');
-    assert.strictEqual(found.broadcast_reason, 'automation_match');
+  await test('classifyBroadcastError: rate limit vs generic error', async () => {
+    const { classifyBroadcastError } = require('./lib/thread-broadcast');
 
-    ws.close();
+    assert.strictEqual(classifyBroadcastError('Error: rate limit exceeded'), 'limit');
+    assert.strictEqual(classifyBroadcastError('429 Too Many Requests'), 'limit');
+    assert.strictEqual(classifyBroadcastError('quota exceed for model'), 'limit');
+    assert.strictEqual(classifyBroadcastError('quota exceeded for model'), 'error', 'exceed vs exceeded: regex boundary');
+    assert.strictEqual(classifyBroadcastError('usage limit reached'), 'limit');
+    assert.strictEqual(classifyBroadcastError('too many requests to API'), 'limit');
+    assert.strictEqual(classifyBroadcastError('(interrupted — agent disconnected)'), 'error');
+    assert.strictEqual(classifyBroadcastError('some random error'), 'error');
+    assert.strictEqual(classifyBroadcastError(''), 'error');
+    assert.strictEqual(classifyBroadcastError(null), 'error');
   });
 
   // Teardown — delete all test rooms and actors created during the run

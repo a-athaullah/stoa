@@ -212,50 +212,10 @@ function cleanErrorText(raw) {
   return (isTraceback ? lines[lines.length - 1] : lines[0]).slice(0, 200);
 }
 
-// Thread broadcast: rate-limit pattern and anti-flood map
-const BROADCAST_VALID_REASONS = new Set(['automation_match', 'error', 'limit']);
-const LIMIT_PATTERN = /\b(rate.?limit|429|quota.?exceed|usage.?limit|too.?many.?requests)\b/i;
-const _broadcastFlood = new Map(); // key: threadId → last broadcast timestamp
-const BROADCAST_FLOOD_MS = 10 * 60 * 1000; // 10 minutes per thread
-
-function classifyBroadcastError(content) {
-  if (!content || typeof content !== 'string') return 'error';
-  return LIMIT_PATTERN.test(content) ? 'limit' : 'error';
-}
-
-function canBroadcastError(threadId) {
-  const last = _broadcastFlood.get(threadId);
-  if (last && Date.now() - last < BROADCAST_FLOOD_MS) return false;
-  _broadcastFlood.set(threadId, Date.now());
-  if (_broadcastFlood.size > 500) {
-    const cutoff = Date.now() - BROADCAST_FLOOD_MS;
-    for (const [k, v] of _broadcastFlood) { if (v < cutoff) _broadcastFlood.delete(k); }
-  }
-  return true;
-}
-
-function getThreadRootPreview(threadId) {
-  if (!threadId) return null;
-  const root = db.prepare('SELECT content FROM messages WHERE id=?').get(threadId);
-  if (!root?.content) return null;
-  return root.content.slice(0, 80);
-}
-
-function emitBroadcast(roomId, messageId) {
-  const row = db.prepare(`
-    SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
-    FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id
-    WHERE m.id=?`).get(messageId);
-  if (!row) return;
-  enrichAutomation(row);
-  row.thread_root_preview = getThreadRootPreview(row.thread_id);
-  broadcast(roomId, { type: 'message_broadcast', message: row });
-}
-
-function setBroadcastReason(messageId, reason) {
-  if (!BROADCAST_VALID_REASONS.has(reason)) return;
-  db.prepare('UPDATE messages SET broadcast_reason=? WHERE id=?').run(reason, messageId);
-}
+const { createThreadBroadcast, classifyBroadcastError } = require('./lib/thread-broadcast');
+const { setBroadcastReason, canBroadcastError, getThreadRootPreview } = createThreadBroadcast({
+  db, broadcastToRoom: (...a) => broadcast(...a), enrichFn: enrichAutomation
+});
 
 function sanitizeResultMeta(raw) {
   if (!raw || typeof raw !== 'object') return null;
@@ -5082,8 +5042,7 @@ wss.on('connection', (ws, req) => {
         for (const r of reconnectCleaned) {
           if (r.thread_id && !r.sub_agent_id && canBroadcastError(r.thread_id)) {
             const reason = classifyBroadcastError(r.content);
-            setBroadcastReason(r.id, reason);
-            emitBroadcast(r.room_id, r.id);
+            setBroadcastReason(r.id, reason, r.room_id);
           }
         }
       }
@@ -5497,8 +5456,7 @@ wss.on('connection', (ws, req) => {
         if (errMeta.thread_id) errPayload.thread_summary = buildThreadSummary(msg.room_id, errMeta.thread_id);
         broadcast(msg.room_id, errPayload);
         if (errMeta.thread_id && !errMeta.sub_agent_label && canBroadcastError(errMeta.thread_id)) {
-          setBroadcastReason(msg.message_id, 'error');
-          emitBroadcast(msg.room_id, msg.message_id);
+          setBroadcastReason(msg.message_id, 'error', msg.room_id);
         }
         pendingAgents.get(msg.message_id)?.resolve('');
         pendingAgents.delete(msg.message_id);
@@ -5531,8 +5489,7 @@ wss.on('connection', (ws, req) => {
       broadcastGlobal({ type: 'room_activity', room_id: msg.room_id });
       if (finalState === 'error' && doneRow?.thread_id && !doneRow.sub_agent_id && canBroadcastError(doneRow.thread_id)) {
         const reason = classifyBroadcastError(agentContent);
-        setBroadcastReason(msg.message_id, reason);
-        emitBroadcast(msg.room_id, msg.message_id);
+        setBroadcastReason(msg.message_id, reason, msg.room_id);
       }
       if (msg.claude_session_id) {
         try {
@@ -5707,8 +5664,7 @@ wss.on('connection', (ws, req) => {
             db.prepare("UPDATE ai_sessions SET status='idle' WHERE participant_id=? AND sub_agent_id IS NULL AND status='active'").run(errRow.participant_id);
             if (errRow.thread_id && canBroadcastError(errRow.thread_id)) {
               const reason = classifyBroadcastError(errRow.content);
-              setBroadcastReason(msg.message_id, reason);
-              emitBroadcast(msg.room_id, msg.message_id);
+              setBroadcastReason(msg.message_id, reason, msg.room_id);
             }
           }
         }
@@ -6236,8 +6192,7 @@ wss.on('connection', (ws, req) => {
         for (const r of cleaned) {
           if (r.thread_id && !r.sub_agent_id && canBroadcastError(r.thread_id)) {
             const reason = classifyBroadcastError(r.content);
-            setBroadcastReason(r.id, reason);
-            emitBroadcast(r.room_id, r.id);
+            setBroadcastReason(r.id, reason, r.room_id);
           }
         }
       }
@@ -7582,8 +7537,7 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
               } catch { return false; }
             });
             if (anyMatch) {
-              setBroadcastReason(insertedId, 'automation_match');
-              emitBroadcast(watchedMsg.room_id, insertedId);
+              setBroadcastReason(insertedId, 'automation_match', watchedMsg.room_id);
               console.log(`[${ts2}] [watch_reply] broadcast: automation_match for msg ${insertedId} in room ${watchedMsg.room_id}`);
             }
           }
@@ -7784,9 +7738,16 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, senderName, t
         continue;
       }
 
-      const { matched: allMatch } = evaluateConditions(conditions, fieldValues);
+      const { matched: allMatch, failedIndex: waFailedIdx } = evaluateConditions(conditions, fieldValues);
 
-      if (!allMatch) continue;
+      if (!allMatch) {
+        if (waFailedIdx >= 0 && waFailedIdx < conditions.length) {
+          const fc = conditions[waFailedIdx];
+          if (!fc || typeof fc !== 'object' || Array.isArray(fc))
+            console.warn(`[automation] id=${auto.id} skipping non-object condition element`);
+        }
+        continue;
+      }
 
       let prompt = auto.prompt_template
         .replace(/\{\{wa_message_text\}\}/g, truncText)
@@ -7887,8 +7848,7 @@ connectionManager.on('email_event', async ({ eventType, connId, uid, messageId, 
                 .run(messageId.slice(0, 500), refChain.slice(0, 4000), _threadId);
             }
             if (emailCondMatch && insertedId) {
-              setBroadcastReason(insertedId, 'automation_match');
-              emitBroadcast(match.roomId, insertedId);
+              setBroadcastReason(insertedId, 'automation_match', match.roomId);
               console.log(`[automation] "${auto.name}" watch_reply broadcast: automation_match for msg ${insertedId}`);
             }
           } catch (e) {
