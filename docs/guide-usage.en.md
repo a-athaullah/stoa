@@ -145,6 +145,16 @@ The thread panel has its **own dedicated composer**, independent from the room c
 
 **Header breadcrumb:** when a thread is open, the room header shows a breadcrumb (`› first few words…`). Clicking it scrolls the thread panel into view.
 
+### Thread Broadcast
+
+Thread messages can also appear in the room feed — without leaving their thread — in two cases:
+
+**Automation match** — when a watch-reply (Slack or email) arrives in an existing Stoa thread and matches the trigger conditions of the automation watching that connection, the reply is rendered as a secondary row in the room feed. This works like Slack's "also send to channel": the message stays in its thread and is simultaneously visible in the feed. Automations with no conditions match every reply. For Slack automations, only rules with trigger event `message` are evaluated (not `reaction_added`). The row shows an **automation match** badge and a short preview of the root message. Clicking it opens the thread and highlights the reply.
+
+**Agent error or limit** — when the main agent (not a sub-agent) inside a thread encounters an error, timeout, disconnect, server restart, or hits a rate / usage limit, the error message is also shown in the room feed with an **error** or **limit** badge. At most one broadcast per thread is shown every 10 minutes to avoid flooding the feed. Sub-agent errors are not broadcast.
+
+The broadcast row is not a duplicate record — it is the same thread message rendered in two places. Deleting the original message removes both.
+
 ### Message Actions
 
 Hover over any message to reveal action buttons:
@@ -766,6 +776,8 @@ Once at least one connection is active, click **+ new rule** to create a rule:
   *Email:* Incoming emails whose `In-Reply-To` or `References` headers match a previously seen message in the same connection are routed to the existing Stoa thread. Only replies from the same sender as the original email are accepted; emails from a different sender create a new thread. This ensures the agent has full conversation context for multi-turn email exchanges.
 
   The agent does not automatically respond to follow-up messages unless its system prompt instructs it to. Default: off.
+
+  Incoming replies that match the automation's trigger conditions are also shown in the room feed — see [Thread Broadcast](#thread-broadcast).
 
 ### Enable / Disable
 

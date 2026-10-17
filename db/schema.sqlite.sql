@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS messages (
   automation_name TEXT DEFAULT NULL,
   automation_provider TEXT DEFAULT NULL,
   model_source TEXT DEFAULT NULL,
+  broadcast_reason TEXT DEFAULT NULL CHECK(broadcast_reason IN ('automation_match','error','limit')),
   FOREIGN KEY (room_id) REFERENCES rooms(id),
   FOREIGN KEY (participant_id) REFERENCES room_participants(id),
   FOREIGN KEY (thread_id) REFERENCES messages(id),
@@ -173,6 +174,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_sessions_sub_unique ON ai_sessions(part
 CREATE INDEX IF NOT EXISTS idx_ai_sessions_thread ON ai_sessions(thread_id);
 CREATE INDEX IF NOT EXISTS idx_messages_thread_id ON messages(thread_id, id);
 CREATE INDEX IF NOT EXISTS idx_messages_room_root ON messages(room_id, id) WHERE thread_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_messages_broadcast ON messages(room_id, created_at) WHERE broadcast_reason IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(reply_to);
 CREATE INDEX IF NOT EXISTS idx_messages_room_thread_state ON messages(room_id, thread_id, state) WHERE sub_agent_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_messages_room_parent ON messages(room_id, created_at) WHERE parent_message_id IS NOT NULL;

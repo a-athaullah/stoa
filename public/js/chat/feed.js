@@ -252,6 +252,126 @@ function makeFeedMessageClickable(msgId) {
   });
 }
 
+// ── Broadcast row renderer ──────────────────────────────────────────────────
+const _broadcastReasonMap = { automation_match: 'automation match', error: 'error', limit: 'limit' };
+
+// Renders a thread message as a secondary row in the room feed (like Slack's
+// "also send to channel"). Same message row, different DOM container.
+function appendFeedBroadcastRow(m, inner) {
+  if (!inner) inner = document.getElementById('messages-inner');
+  if (!inner) return;
+  if (document.getElementById('broadcast-' + m.id)) return;
+
+  if (m.created_at) {
+    const ts = m.created_at.endsWith('Z') ? m.created_at : m.created_at.replace(' ', 'T') + 'Z';
+    maybeInsertDaySep(inner, ts);
+  }
+
+  const row = document.createElement('div');
+  row.className = 't-root-row t-broadcast-row h-feed-root';
+  row.id = 'broadcast-' + m.id;
+  row.dataset.broadcastId = m.id;
+  row.dataset.rootId = m.thread_id;
+
+  // Broadcast header label
+  const header = document.createElement('div');
+  header.className = 't-broadcast-header';
+
+  const preview = document.createElement('span');
+  preview.className = 't-broadcast-preview';
+  const snippet = (m.thread_root_preview || '').slice(0, 80);
+  preview.textContent = '↳ replied in thread' + (snippet ? ': ' + snippet : '');
+  header.appendChild(preview);
+
+  const badge = document.createElement('span');
+  badge.className = 't-broadcast-badge t-broadcast-badge--' + (m.broadcast_reason || 'error');
+  badge.textContent = _broadcastReasonMap[m.broadcast_reason] || m.broadcast_reason;
+  header.appendChild(badge);
+
+  row.appendChild(header);
+
+  // Message body (same layout as appendFeedRootRow)
+  const body = document.createElement('div');
+  body.className = 't-broadcast-body';
+
+  const avatarWrap = document.createElement('div');
+  avatarWrap.className = 't-avatar';
+  if (m.actor_type === 'ai' && m.automation?.provider) {
+    avatarWrap.appendChild(makeAgentViaConnAvatarEl(m, 36));
+  } else if (m.automation?.provider) {
+    avatarWrap.appendChild(makeAutomationAvatarEl(m.automation.provider, 36));
+  } else {
+    avatarWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 36, m.sub_agent_label));
+  }
+  body.appendChild(avatarWrap);
+
+  const col = document.createElement('div');
+  col.className = 't-col';
+
+  const meta = document.createElement('div');
+  meta.className = 't-meta';
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 't-name';
+  if (m.actor_type === 'ai' && m.automation) {
+    nameEl.style.color = m.avatar_color;
+    nameEl.textContent = m.sub_agent_label || m.actor_name;
+  } else if (m.automation) {
+    nameEl.textContent = m.automation.name || m.actor_name;
+  } else {
+    nameEl.style.color = m.avatar_color;
+    nameEl.textContent = m.sub_agent_label || m.actor_name;
+  }
+  meta.appendChild(nameEl);
+
+  if (m.created_at) {
+    const timeEl = document.createElement('span');
+    timeEl.className = 't-time';
+    const ts = m.created_at.endsWith('Z') ? m.created_at : m.created_at.replace(' ', 'T') + 'Z';
+    const dateObj = new Date(ts);
+    timeEl.textContent = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    timeEl.title = dateObj.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    meta.appendChild(timeEl);
+  }
+  col.appendChild(meta);
+
+  if (m.content) {
+    const content = document.createElement('div');
+    content.className = 't-content';
+    content.innerHTML = highlightMentions(renderMarkdown(m.content));
+    col.appendChild(content);
+  }
+
+  body.appendChild(col);
+  row.appendChild(body);
+
+  inner.appendChild(row);
+
+  row.addEventListener('click', e => {
+    if (e.target.closest('a, button')) return;
+    openThread(m.thread_id, m.id);
+  });
+
+  if (typeof addCopyButtons === 'function') addCopyButtons(row);
+  if (typeof linkifyFilePaths === 'function') linkifyFilePaths(row);
+  if (typeof externalLinksNewTab === 'function') externalLinksNewTab(row);
+}
+
+function upsertFeedBroadcastRow(m) {
+  const existing = document.getElementById('broadcast-' + m.id);
+  if (!existing) {
+    appendFeedBroadcastRow(m);
+    scrollToBottom(true);
+    return;
+  }
+  // Update badge if reason changed
+  const badge = existing.querySelector('.t-broadcast-badge');
+  if (badge && m.broadcast_reason) {
+    badge.className = 't-broadcast-badge t-broadcast-badge--' + m.broadcast_reason;
+    badge.textContent = _broadcastReasonMap[m.broadcast_reason] || m.broadcast_reason;
+  }
+}
+
 function clearThreadSummaries() {
   Object.keys(threadSummaries).forEach(k => delete threadSummaries[k]);
 }

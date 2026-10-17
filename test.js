@@ -9299,6 +9299,328 @@ async function run() {
   // ── Auto-update integration tests ────────────────────────────────────────
   console.log('\n[Auto-update & Trigger Cleanup]');
 
+  // ── Thread Broadcast tests ─────────────────────────────────────────────
+  console.log('\n[Thread Broadcast]');
+
+  let _tbRoomId, _tbRootMsgId, _tbParticipantId;
+  await test('Setup — create room + thread for broadcast tests', async () => {
+    const db = require('./db');
+    const humanId = db.prepare("SELECT id FROM actors WHERE type='human' LIMIT 1").get()?.id;
+    assert.ok(humanId, 'need human actor');
+    const ins = db.prepare("INSERT INTO rooms (title, created_by) VALUES ('__broadcast-test__', ?)").run(humanId);
+    _tbRoomId = Number(ins.lastInsertRowid);
+    testRoomIds.push(_tbRoomId);
+    const pIns = db.prepare("INSERT INTO room_participants (room_id, actor_id) VALUES (?, ?)").run(_tbRoomId, humanId);
+    _tbParticipantId = Number(pIns.lastInsertRowid);
+    const rootIns = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?, ?, 'Root message for broadcast test', 'complete')").run(_tbRoomId, _tbParticipantId);
+    _tbRootMsgId = Number(rootIns.lastInsertRowid);
+  });
+
+  await test('broadcast_reason column exists in messages table', async () => {
+    const db = require('./db');
+    const cols = db.prepare("PRAGMA table_info(messages)").all().map(c => c.name);
+    assert.ok(cols.includes('broadcast_reason'), 'broadcast_reason column missing');
+  });
+
+  await test('broadcast row (automation_match) appears in feed history via join_room', async () => {
+    const db = require('./db');
+    const ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id, broadcast_reason) VALUES (?, ?, '[New Reply on Thread]:\\nUser - test reply', 'complete', ?, 'automation_match')").run(_tbRoomId, _tbParticipantId, _tbRootMsgId);
+    const broadcastMsgId = Number(ins.lastInsertRowid);
+
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    const historyPromise = waitForWsMessage(ws, m => m.type === 'history');
+    ws.send(JSON.stringify({ type: 'join_room', room_id: _tbRoomId }));
+    const hist = await historyPromise;
+    ws.close();
+
+    const ids = hist.messages.map(m => m.id);
+    assert.ok(ids.includes(_tbRootMsgId), 'root should be in feed');
+    assert.ok(ids.includes(broadcastMsgId), 'broadcast row should be in feed');
+    const broadcastRow = hist.messages.find(m => m.id === broadcastMsgId);
+    assert.strictEqual(broadcastRow.broadcast_reason, 'automation_match');
+    assert.strictEqual(broadcastRow.thread_id, _tbRootMsgId);
+    assert.ok(broadcastRow.thread_root_preview, 'broadcast row should have thread_root_preview');
+    assert.ok(!broadcastRow.thread, 'broadcast row should NOT have thread summary');
+  });
+
+  await test('non-broadcast thread reply does NOT appear in feed', async () => {
+    const db = require('./db');
+    const ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?, ?, 'normal thread reply', 'complete', ?)").run(_tbRoomId, _tbParticipantId, _tbRootMsgId);
+    const replyId = Number(ins.lastInsertRowid);
+
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    const historyPromise = waitForWsMessage(ws, m => m.type === 'history');
+    ws.send(JSON.stringify({ type: 'join_room', room_id: _tbRoomId }));
+    const hist = await historyPromise;
+    ws.close();
+
+    const ids = hist.messages.map(m => m.id);
+    assert.ok(!ids.includes(replyId), 'non-broadcast reply should NOT be in feed');
+  });
+
+  await test('error broadcast in thread appears in feed', async () => {
+    const db = require('./db');
+    const ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id, broadcast_reason) VALUES (?, ?, '(interrupted — agent disconnected)', 'error', ?, 'error')").run(_tbRoomId, _tbParticipantId, _tbRootMsgId);
+    const errMsgId = Number(ins.lastInsertRowid);
+
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    const historyPromise = waitForWsMessage(ws, m => m.type === 'history');
+    ws.send(JSON.stringify({ type: 'join_room', room_id: _tbRoomId }));
+    const hist = await historyPromise;
+    ws.close();
+
+    const ids = hist.messages.map(m => m.id);
+    assert.ok(ids.includes(errMsgId), 'error broadcast row should be in feed');
+    const errRow = hist.messages.find(m => m.id === errMsgId);
+    assert.strictEqual(errRow.broadcast_reason, 'error');
+    assert.strictEqual(errRow.state, 'error');
+  });
+
+  await test('error in thread WITHOUT broadcast_reason does NOT appear in feed', async () => {
+    const db = require('./db');
+    const ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?, ?, 'agent error in thread', 'error', ?)").run(_tbRoomId, _tbParticipantId, _tbRootMsgId);
+    const errNoFlag = Number(ins.lastInsertRowid);
+
+    const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    const historyPromise = waitForWsMessage(ws, m => m.type === 'history');
+    ws.send(JSON.stringify({ type: 'join_room', room_id: _tbRoomId }));
+    const hist = await historyPromise;
+    ws.close();
+
+    const ids = hist.messages.map(m => m.id);
+    assert.ok(!ids.includes(errNoFlag), 'error without broadcast_reason should NOT be in feed');
+  });
+
+  await test('GET /messages (roots) includes broadcast rows and respects pagination', async () => {
+    const r1 = await req('GET', `/api/rooms/${_tbRoomId}/messages`);
+    assert.strictEqual(r1.status, 200);
+    const broadcastRows = r1.body.filter(m => m.broadcast_reason);
+    assert.ok(broadcastRows.length >= 2, `should have at least 2 broadcast rows, got ${broadcastRows.length}`);
+    for (const br of broadcastRows) {
+      assert.ok(br.thread_id, 'broadcast row should have thread_id');
+      assert.ok(br.thread_root_preview, 'broadcast row should have thread_root_preview');
+    }
+
+    // Pagination: get messages before the last broadcast row
+    const lastBr = broadcastRows[broadcastRows.length - 1];
+    const r2 = await req('GET', `/api/rooms/${_tbRoomId}/messages?before=${lastBr.id}&limit=10`);
+    assert.strictEqual(r2.status, 200);
+    assert.ok(!r2.body.find(m => m.id === lastBr.id), 'before= should exclude the pivot');
+  });
+
+  await test('delete root cascades broadcast replies', async () => {
+    const db = require('./db');
+    const tmpRoot = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?, ?, 'tmp root', 'complete')").run(_tbRoomId, _tbParticipantId);
+    const tmpRootId = Number(tmpRoot.lastInsertRowid);
+    db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id, broadcast_reason) VALUES (?, ?, 'broadcast child', 'complete', ?, 'automation_match')").run(_tbRoomId, _tbParticipantId, tmpRootId);
+
+    const delR = await req('DELETE', `/api/messages/${tmpRootId}?cascade=1`);
+    assert.strictEqual(delR.status, 204);
+    const remaining = db.prepare('SELECT COUNT(*) as c FROM messages WHERE thread_id=?').get(tmpRootId);
+    assert.strictEqual(remaining.c, 0, 'cascade should delete broadcast children');
+  });
+
+  await test('evaluateConditions matches email-like fields correctly', async () => {
+    const { evaluateConditions } = require('./lib/evaluate-conditions');
+    const emailFields = { from: 'alice@example.com', subject: 'PR Review: fix auth bug', body: 'Please review this change', has_attachments: 'false' };
+
+    const matchContains = evaluateConditions([{ field: 'subject', op: 'contains', value: 'PR Review' }], emailFields);
+    assert.strictEqual(matchContains.matched, true, 'contains should match substring');
+
+    const noMatchContains = evaluateConditions([{ field: 'subject', op: 'contains', value: 'deploy' }], emailFields);
+    assert.strictEqual(noMatchContains.matched, false, 'contains should fail on absent substring');
+
+    const matchNotContains = evaluateConditions([{ field: 'body', op: 'not_contains', value: 'urgent' }], emailFields);
+    assert.strictEqual(matchNotContains.matched, true, 'not_contains should match when absent');
+
+    const noMatchNotContains = evaluateConditions([{ field: 'body', op: 'not_contains', value: 'review' }], emailFields);
+    assert.strictEqual(noMatchNotContains.matched, false, 'not_contains should fail when present');
+
+    const matchStartsWith = evaluateConditions([{ field: 'from', op: 'starts_with', value: 'alice' }], emailFields);
+    assert.strictEqual(matchStartsWith.matched, true, 'starts_with should match prefix');
+
+    const noMatchStartsWith = evaluateConditions([{ field: 'from', op: 'starts_with', value: 'bob' }], emailFields);
+    assert.strictEqual(noMatchStartsWith.matched, false, 'starts_with should fail on wrong prefix');
+
+    const matchRegex = evaluateConditions([{ field: 'subject', op: 'matches_regex', value: 'PR Review:.*bug' }], emailFields);
+    assert.strictEqual(matchRegex.matched, true, 'matches_regex should match pattern');
+
+    const noMatchRegex = evaluateConditions([{ field: 'subject', op: 'matches_regex', value: '^deploy' }], emailFields);
+    assert.strictEqual(noMatchRegex.matched, false, 'matches_regex should fail on non-matching pattern');
+  });
+
+  await test('evaluateConditions: case insensitive, multi-condition, missing field', async () => {
+    const { evaluateConditions } = require('./lib/evaluate-conditions');
+    const fields = { from: 'Bob@Example.COM', subject: 'URGENT: server down' };
+
+    const caseInsensitive = evaluateConditions([{ field: 'from', op: 'contains', value: 'bob@example.com' }], fields);
+    assert.strictEqual(caseInsensitive.matched, true, 'should be case insensitive');
+
+    const multi = evaluateConditions([
+      { field: 'from', op: 'contains', value: 'bob' },
+      { field: 'subject', op: 'contains', value: 'urgent' }
+    ], fields);
+    assert.strictEqual(multi.matched, true, 'all conditions should match');
+
+    const multiPartialFail = evaluateConditions([
+      { field: 'from', op: 'contains', value: 'bob' },
+      { field: 'subject', op: 'contains', value: 'deploy' }
+    ], fields);
+    assert.strictEqual(multiPartialFail.matched, false, 'should fail if any condition fails');
+    assert.strictEqual(multiPartialFail.failedIndex, 1, 'failedIndex should point to failing condition');
+
+    const missingField = evaluateConditions([{ field: 'body', op: 'contains', value: 'test' }], fields);
+    assert.strictEqual(missingField.matched, false, 'missing field treated as empty string');
+
+    const emptyConditions = evaluateConditions([], fields);
+    assert.strictEqual(emptyConditions.matched, true, 'empty conditions should match');
+  });
+
+  await test('replyMatchesAnyAutomation: empty conds match, invalid JSON skip, partial match', async () => {
+    const { replyMatchesAnyAutomation } = require('./lib/evaluate-conditions');
+    const fields = { from: 'alice@example.com', subject: 'PR Review: fix auth bug', body: 'Please review' };
+
+    assert.strictEqual(replyMatchesAnyAutomation([{ trigger_conditions: '[]' }], fields), true, 'empty conditions should match');
+    assert.strictEqual(replyMatchesAnyAutomation([{ trigger_conditions: null }], fields), true, 'null conditions (defaults to []) should match');
+
+    assert.strictEqual(replyMatchesAnyAutomation([{ trigger_conditions: '[{"field":"subject","op":"contains","value":"PR Review"}]' }], fields), true, 'matching condition should match');
+    assert.strictEqual(replyMatchesAnyAutomation([{ trigger_conditions: '[{"field":"subject","op":"contains","value":"deploy"}]' }], fields), false, 'non-matching condition should not match');
+
+    assert.strictEqual(replyMatchesAnyAutomation([{ trigger_conditions: 'not valid json{' }], fields), false, 'invalid JSON should not match');
+    assert.strictEqual(replyMatchesAnyAutomation([{ trigger_conditions: '"not an array"' }], fields), false, 'non-array JSON should not match');
+
+    const multiAutos = [
+      { trigger_conditions: '[{"field":"subject","op":"contains","value":"deploy"}]' },
+      { trigger_conditions: '[{"field":"from","op":"contains","value":"alice"}]' }
+    ];
+    assert.strictEqual(replyMatchesAnyAutomation(multiAutos, fields), true, 'should match if any automation matches');
+
+    assert.strictEqual(replyMatchesAnyAutomation([], fields), false, 'no automations should not match');
+  });
+
+  await test('setBroadcastReason: valid reason persists + emits, invalid reason rejected', async () => {
+    const db = require('./db');
+    const { createThreadBroadcast } = require('./lib/thread-broadcast');
+    const broadcasts = [];
+    const tb = createThreadBroadcast({
+      db,
+      broadcastToRoom: (roomId, payload) => broadcasts.push({ roomId, payload }),
+      enrichFn: () => {}
+    });
+
+    const ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?, ?, 'test setBroadcastReason real', 'complete', ?)").run(_tbRoomId, _tbParticipantId, _tbRootMsgId);
+    const msgId = Number(ins.lastInsertRowid);
+
+    const ok1 = tb.setBroadcastReason(msgId, 'automation_match', _tbRoomId);
+    assert.strictEqual(ok1, true, 'valid reason should return true');
+    const row1 = db.prepare('SELECT broadcast_reason FROM messages WHERE id=?').get(msgId);
+    assert.strictEqual(row1.broadcast_reason, 'automation_match', 'DB should be updated');
+    assert.strictEqual(broadcasts.length, 1, 'should emit one message_broadcast');
+    assert.strictEqual(broadcasts[0].roomId, _tbRoomId);
+    assert.strictEqual(broadcasts[0].payload.type, 'message_broadcast');
+    assert.strictEqual(broadcasts[0].payload.message.id, msgId);
+    assert.ok(broadcasts[0].payload.message.thread_root_preview, 'should include thread_root_preview');
+
+    const ok2 = tb.setBroadcastReason(msgId, 'invalid_reason', _tbRoomId);
+    assert.strictEqual(ok2, false, 'invalid reason should return false');
+    const row2 = db.prepare('SELECT broadcast_reason FROM messages WHERE id=?').get(msgId);
+    assert.strictEqual(row2.broadcast_reason, 'automation_match', 'DB should not change on invalid reason');
+    assert.strictEqual(broadcasts.length, 1, 'should not emit on invalid reason');
+
+    const ok3 = tb.setBroadcastReason(msgId, 'error');
+    assert.strictEqual(ok3, true, 'valid reason without roomId should return true');
+    const row3 = db.prepare('SELECT broadcast_reason FROM messages WHERE id=?').get(msgId);
+    assert.strictEqual(row3.broadcast_reason, 'error', 'DB updated without emit');
+    assert.strictEqual(broadcasts.length, 1, 'should not emit when roomId omitted');
+  });
+
+  await test('canBroadcastError: anti-flood 1 per thread per 10 minutes', async () => {
+    const { createThreadBroadcast, BROADCAST_FLOOD_MS } = require('./lib/thread-broadcast');
+    const db = require('./db');
+    let clock = 1000000;
+    const tb = createThreadBroadcast({
+      db,
+      broadcastToRoom: () => {},
+      enrichFn: () => {},
+      now: () => clock
+    });
+
+    assert.strictEqual(tb.canBroadcastError(9991), true, 'first call should pass');
+    assert.strictEqual(tb.canBroadcastError(9991), false, 'second call same thread within window should block');
+    assert.strictEqual(tb.canBroadcastError(9992), true, 'different thread should pass');
+
+    clock += BROADCAST_FLOOD_MS + 1;
+    assert.strictEqual(tb.canBroadcastError(9991), true, 'same thread after 10 min should pass again');
+  });
+
+  await test('classifyBroadcastError: rate limit vs generic error', async () => {
+    const { classifyBroadcastError } = require('./lib/thread-broadcast');
+
+    assert.strictEqual(classifyBroadcastError('Error: rate limit exceeded'), 'limit');
+    assert.strictEqual(classifyBroadcastError('rate limited by provider'), 'limit');
+    assert.strictEqual(classifyBroadcastError('429 Too Many Requests'), 'limit');
+    assert.strictEqual(classifyBroadcastError('quota exceed for model'), 'limit');
+    assert.strictEqual(classifyBroadcastError('quota exceeded for model'), 'limit');
+    assert.strictEqual(classifyBroadcastError('usage limit reached'), 'limit');
+    assert.strictEqual(classifyBroadcastError('usage limits exceeded'), 'limit');
+    assert.strictEqual(classifyBroadcastError('too many requests to API'), 'limit');
+    assert.strictEqual(classifyBroadcastError('(interrupted — agent disconnected)'), 'error');
+    assert.strictEqual(classifyBroadcastError('some random error'), 'error');
+    assert.strictEqual(classifyBroadcastError('limitless loop detected'), 'error');
+    assert.strictEqual(classifyBroadcastError(''), 'error');
+    assert.strictEqual(classifyBroadcastError(null), 'error');
+  });
+
+  await test('maybeBroadcastError: guards eligibility + classifies + sets reason', async () => {
+    const db = require('./db');
+    const { createThreadBroadcast } = require('./lib/thread-broadcast');
+    const broadcasts = [];
+    let clock = 1000000;
+    const tb = createThreadBroadcast({
+      db,
+      broadcastToRoom: (roomId, payload) => broadcasts.push({ roomId, payload }),
+      enrichFn: () => {},
+      now: () => clock
+    });
+
+    const rootIns = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?, ?, 'maybe root', 'complete')").run(_tbRoomId, _tbParticipantId);
+    const rootId = Number(rootIns.lastInsertRowid);
+    const replyIns = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?, ?, 'rate limit hit', 'error', ?)").run(_tbRoomId, _tbParticipantId, rootId);
+    const replyId = Number(replyIns.lastInsertRowid);
+
+    const r1 = tb.maybeBroadcastError({ threadId: null, messageId: replyId, content: 'rate limit hit', roomId: _tbRoomId });
+    assert.strictEqual(r1, false, 'root message (no threadId) should be rejected');
+    assert.strictEqual(broadcasts.length, 0, 'no emit for root');
+
+    const eligible = tb.maybeBroadcastError({ threadId: rootId, messageId: replyId, content: 'rate limit hit', roomId: _tbRoomId });
+    assert.strictEqual(eligible, true, 'eligible thread reply should pass');
+    assert.strictEqual(broadcasts.length, 1, 'should emit once');
+    assert.strictEqual(broadcasts[0].payload.type, 'message_broadcast');
+    const row = db.prepare('SELECT broadcast_reason FROM messages WHERE id=?').get(replyId);
+    assert.strictEqual(row.broadcast_reason, 'limit', 'rate limit content should classify as limit');
+
+    const reply2Ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?, ?, 'another error', 'error', ?)").run(_tbRoomId, _tbParticipantId, rootId);
+    const reply2Id = Number(reply2Ins.lastInsertRowid);
+    const r2 = tb.maybeBroadcastError({ threadId: rootId, messageId: reply2Id, content: 'another error', roomId: _tbRoomId });
+    assert.strictEqual(r2, false, 'second call same thread within window should be blocked by anti-flood');
+    assert.strictEqual(broadcasts.length, 1, 'no additional emit');
+
+    const r3 = tb.maybeBroadcastError({ threadId: rootId, subAgentId: 99, messageId: reply2Id, content: 'error', roomId: _tbRoomId });
+    assert.strictEqual(r3, false, 'sub-agent message should be rejected');
+
+    clock += 10 * 60 * 1000 + 1;
+    const reply3Ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?, ?, 'generic error', 'error', ?)").run(_tbRoomId, _tbParticipantId, rootId);
+    const reply3Id = Number(reply3Ins.lastInsertRowid);
+    const r4 = tb.maybeBroadcastError({ threadId: rootId, messageId: reply3Id, content: 'generic error', roomId: _tbRoomId });
+    assert.strictEqual(r4, true, 'after 10 min should pass again');
+    const row3 = db.prepare('SELECT broadcast_reason FROM messages WHERE id=?').get(reply3Id);
+    assert.strictEqual(row3.broadcast_reason, 'error', 'generic error content should classify as error');
+    assert.strictEqual(broadcasts.length, 2, 'should have emitted again');
+
+    const r5 = tb.maybeBroadcastError({ threadId: rootId, messageId: reply3Id, reason: 'error' });
+    assert.strictEqual(r5, false, 'anti-flood should block even with explicit reason');
+  });
+
   // Teardown — delete all test rooms and actors created during the run
   console.log('\n[Test Teardown]');
   await test('Teardown — delete all test rooms', async () => {

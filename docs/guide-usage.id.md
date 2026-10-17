@@ -145,6 +145,16 @@ Panel thread memiliki **composer tersendiri yang terpisah** dari composer room �
 
 **Breadcrumb header:** saat thread terbuka, header room menampilkan breadcrumb (`› beberapa kata pertama…`). Klik untuk menggulir panel thread ke posisi terlihat.
 
+### Thread Broadcast
+
+Pesan thread juga bisa muncul di room feed — tanpa keluar dari threadnya — dalam dua kondisi:
+
+**Automation match** — ketika watch-reply (Slack atau email) masuk ke thread Stoa yang sudah ada dan cocok dengan kondisi trigger automation yang memantau koneksi tersebut, balasan itu dirender sebagai baris sekunder di room feed. Cara kerjanya mirip fitur "also send to channel" di Slack: pesan tetap ada di threadnya dan juga terlihat di feed. Automation tanpa kondisi cocok dengan semua balasan. Untuk Slack, hanya aturan dengan trigger event `message` yang dievaluasi (bukan `reaction_added`). Baris menampilkan badge **automation match** dan pratinjau singkat pesan root. Klik baris tersebut untuk membuka thread dan menyorot balasan yang cocok.
+
+**Error atau limit agent** — ketika agent utama (bukan sub-agent) di dalam thread mengalami error, timeout, disconnect, restart server, atau mencapai rate / usage limit, pesan error-nya juga ditampilkan di room feed dengan badge **error** atau **limit**. Maksimal satu broadcast per thread setiap 10 menit untuk menghindari flood di feed. Error dari sub-agent tidak di-broadcast.
+
+Baris broadcast bukan rekaman duplikat — itu adalah pesan thread yang sama dirender di dua tempat. Menghapus pesan asli akan menghapus keduanya.
+
 ### Aksi Pesan
 
 Hover di atas pesan untuk menampilkan tombol aksi:
@@ -767,6 +777,8 @@ Setelah minimal satu koneksi aktif, klik **+ new rule** untuk membuat aturan:
   *Email:* Email masuk yang header `In-Reply-To` atau `References`-nya cocok dengan pesan sebelumnya di koneksi yang sama akan diarahkan ke thread Stoa yang sudah ada. Hanya balasan dari pengirim yang sama dengan email awal yang diterima; email dari pengirim berbeda akan membuat thread baru. Ini memastikan agent punya konteks percakapan lengkap untuk pertukaran email multi-giliran.
 
   Agent tidak otomatis membalas pesan lanjutan kecuali system prompt menginstruksikannya. Default: nonaktif.
+
+  Balasan yang cocok dengan kondisi trigger automation juga ditampilkan di room feed — lihat [Thread Broadcast](#thread-broadcast).
 
 ### Aktifkan / Nonaktifkan
 

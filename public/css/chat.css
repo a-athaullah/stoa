@@ -2682,3 +2682,87 @@ html.dark .h-room-thread-badge {
 .t-pulse {
   animation: threadPulse 1.4s ease infinite;
 }
+
+/* ── Broadcast row (thread message shown in room feed) ─────────────────────── */
+.t-broadcast-row {
+  flex-direction: column;
+  gap: 6px;
+  border-left: 3px solid oklch(62% 0.12 250 / 0.45);
+  padding-left: calc(20px - 3px);
+}
+.dark .t-broadcast-row {
+  border-left-color: oklch(72% 0.12 250 / 0.4);
+}
+
+.t-broadcast-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-family: var(--h-sans);
+  font-size: 11.5px;
+  color: var(--h-ink-mute);
+  line-height: 1.4;
+}
+
+.t-broadcast-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.t-broadcast-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1.6;
+  letter-spacing: 0.02em;
+}
+.t-broadcast-badge--automation_match {
+  background: oklch(88% 0.08 255);
+  color: oklch(40% 0.12 255);
+}
+.dark .t-broadcast-badge--automation_match {
+  background: oklch(30% 0.08 255);
+  color: oklch(80% 0.12 255);
+}
+.t-broadcast-badge--error {
+  background: oklch(90% 0.06 25);
+  color: oklch(42% 0.12 25);
+}
+.dark .t-broadcast-badge--error {
+  background: oklch(28% 0.08 25);
+  color: oklch(78% 0.12 25);
+}
+.t-broadcast-badge--limit {
+  background: oklch(90% 0.08 65);
+  color: oklch(42% 0.14 65);
+}
+.dark .t-broadcast-badge--limit {
+  background: oklch(28% 0.08 65);
+  color: oklch(80% 0.14 65);
+}
+
+.t-broadcast-body {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+/* Flash highlight when jumping to message in thread panel */
+@keyframes threadMsgHighlight {
+  0%   { background: oklch(90% 0.12 250 / 0.5); }
+  70%  { background: oklch(90% 0.12 250 / 0.5); }
+  100% { background: transparent; }
+}
+.h-thread-msg-highlight {
+  animation: threadMsgHighlight 2s ease forwards;
+  border-radius: 4px;
+}

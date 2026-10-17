@@ -212,6 +212,11 @@ function cleanErrorText(raw) {
   return (isTraceback ? lines[lines.length - 1] : lines[0]).slice(0, 200);
 }
 
+const { createThreadBroadcast } = require('./lib/thread-broadcast');
+const { setBroadcastReason, getThreadRootPreview, maybeBroadcastError } = createThreadBroadcast({
+  db, broadcastToRoom: (...a) => broadcast(...a), enrichFn: enrichAutomation
+});
+
 function sanitizeResultMeta(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const out = {};
@@ -1677,17 +1682,21 @@ const server = http.createServer(async (req, res) => {
       const scopeAll = url.searchParams.get('scope') === 'all';
       const before = url.searchParams.get('before');
       const limit  = Math.min(parseInt(url.searchParams.get('limit') ?? '50'), 100);
-      const threadFilter = scopeAll ? '' : 'AND m.thread_id IS NULL';
+      const threadFilter = scopeAll ? '' : 'AND (m.thread_id IS NULL OR m.broadcast_reason IS NOT NULL)';
       // Subquery summary per root (used only in roots-only mode)
       const threadSummarySQL = scopeAll ? '' : `,
-        (SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id) AS thread_count,
-        (SELECT MAX(r.created_at) FROM messages r WHERE r.thread_id = m.id) AS thread_last_at,
-        (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state IN ('streaming','requesting'))) AS thread_active,
-        (SELECT GROUP_CONCAT(DISTINCT rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id) AS thread_participant_ids,
-        (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state = 'error')) AS thread_has_error,
-        (SELECT GROUP_CONCAT(DISTINCT r.sub_agent_label || ':' || rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id AND r.sub_agent_label IS NOT NULL) AS thread_sub_agent_participants`;
+        CASE WHEN m.thread_id IS NULL THEN (SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id) END AS thread_count,
+        CASE WHEN m.thread_id IS NULL THEN (SELECT MAX(r.created_at) FROM messages r WHERE r.thread_id = m.id) END AS thread_last_at,
+        CASE WHEN m.thread_id IS NULL THEN (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state IN ('streaming','requesting'))) END AS thread_active,
+        CASE WHEN m.thread_id IS NULL THEN (SELECT GROUP_CONCAT(DISTINCT rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id) END AS thread_participant_ids,
+        CASE WHEN m.thread_id IS NULL THEN (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state = 'error')) END AS thread_has_error,
+        CASE WHEN m.thread_id IS NULL THEN (SELECT GROUP_CONCAT(DISTINCT r.sub_agent_label || ':' || rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id AND r.sub_agent_label IS NOT NULL) END AS thread_sub_agent_participants`;
 
       function enrichThreadData(m) {
+        if (m.broadcast_reason && m.thread_id) {
+          m.thread_root_preview = getThreadRootPreview(m.thread_id);
+          return;
+        }
         const sap = m.thread_sub_agent_participants ? m.thread_sub_agent_participants.split(',').map(s => { const [label, aid] = s.split(':'); return { label, actor_id: Number(aid) }; }) : [];
         m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active, participant_ids: m.thread_participant_ids ? m.thread_participant_ids.split(',').map(Number) : [], has_error: !!m.thread_has_error, sub_agent_participants: sap };
       }
@@ -1706,6 +1715,7 @@ const server = http.createServer(async (req, res) => {
                 (m.state = 'complete' AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL))
                 OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
                 OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
+                OR (m.state = 'error' AND m.broadcast_reason IS NOT NULL)
               )
             ORDER BY m.created_at DESC LIMIT ?
           ) t ORDER BY created_at ASC
@@ -1728,6 +1738,7 @@ const server = http.createServer(async (req, res) => {
             (m.state = 'complete' AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL))
             OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
             OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
+            OR (m.state = 'error' AND m.broadcast_reason IS NOT NULL)
           )
         ORDER BY m.created_at ASC
         LIMIT 500
@@ -4841,19 +4852,20 @@ wss.on('connection', (ws, req) => {
       const messages = db.prepare(`
         SELECT * FROM (
           SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
-            (SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id) AS thread_count,
-            (SELECT MAX(r.created_at) FROM messages r WHERE r.thread_id = m.id) AS thread_last_at,
-            (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state IN ('streaming','requesting'))) AS thread_active,
-            (SELECT GROUP_CONCAT(DISTINCT rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id) AS thread_participant_ids,
-            (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state = 'error')) AS thread_has_error,
-            (SELECT GROUP_CONCAT(DISTINCT r.sub_agent_label || ':' || rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id AND r.sub_agent_label IS NOT NULL) AS thread_sub_agent_participants
+            CASE WHEN m.thread_id IS NULL THEN (SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id) END AS thread_count,
+            CASE WHEN m.thread_id IS NULL THEN (SELECT MAX(r.created_at) FROM messages r WHERE r.thread_id = m.id) END AS thread_last_at,
+            CASE WHEN m.thread_id IS NULL THEN (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state IN ('streaming','requesting'))) END AS thread_active,
+            CASE WHEN m.thread_id IS NULL THEN (SELECT GROUP_CONCAT(DISTINCT rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id) END AS thread_participant_ids,
+            CASE WHEN m.thread_id IS NULL THEN (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state = 'error')) END AS thread_has_error,
+            CASE WHEN m.thread_id IS NULL THEN (SELECT GROUP_CONCAT(DISTINCT r.sub_agent_label || ':' || rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id AND r.sub_agent_label IS NOT NULL) END AS thread_sub_agent_participants
           FROM messages m
           JOIN room_participants rp ON rp.id=m.participant_id
           JOIN actors a ON a.id=rp.actor_id
-          WHERE m.room_id=? AND m.thread_id IS NULL AND (
+          WHERE m.room_id=? AND (m.thread_id IS NULL OR m.broadcast_reason IS NOT NULL) AND (
             (m.state IN ('complete','streaming','requesting') AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL OR m.state IN ('streaming','requesting')))
             OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
             OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
+            OR (m.state = 'error' AND m.broadcast_reason IS NOT NULL)
           )
           ORDER BY m.created_at DESC LIMIT 100
         ) AS recent ORDER BY created_at ASC
@@ -4861,8 +4873,12 @@ wss.on('connection', (ws, req) => {
       const enriched = enrichReply(messages);
       enrichAutomationList(enriched);
       enriched.forEach(m => {
-        const sap = m.thread_sub_agent_participants ? m.thread_sub_agent_participants.split(',').map(s => { const [label, aid] = s.split(':'); return { label, actor_id: Number(aid) }; }) : [];
-        m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active, participant_ids: m.thread_participant_ids ? m.thread_participant_ids.split(',').map(Number) : [], has_error: !!m.thread_has_error, sub_agent_participants: sap };
+        if (m.broadcast_reason && m.thread_id) {
+          m.thread_root_preview = getThreadRootPreview(m.thread_id);
+        } else {
+          const sap = m.thread_sub_agent_participants ? m.thread_sub_agent_participants.split(',').map(s => { const [label, aid] = s.split(':'); return { label, actor_id: Number(aid) }; }) : [];
+          m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active, participant_ids: m.thread_participant_ids ? m.thread_participant_ids.split(',').map(Number) : [], has_error: !!m.thread_has_error, sub_agent_participants: sap };
+        }
       });
       ws.send(JSON.stringify({ type: 'history', messages: enriched }));
       // Restore compact state if room is currently compacting (room-level and thread-level)
@@ -5019,9 +5035,14 @@ wss.on('connection', (ws, req) => {
       if (oldWs && oldWs !== ws) oldWs.close();
       agentClients.set(agentActorId, ws);
       const reconnectCleaned = db.prepare(
-        "UPDATE messages SET state='error', content=CASE WHEN content='' THEN '(interrupted — agent reconnected)' ELSE content END WHERE state IN ('streaming','requesting') AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?)"
-      ).run(agentActorId);
-      if (reconnectCleaned.changes) console.log(`[agent] Cleaned ${reconnectCleaned.changes} orphaned message(s) on reconnect for Actor #${agentActorId}`);
+        "UPDATE messages SET state='error', content=CASE WHEN content='' THEN '(interrupted — agent reconnected)' ELSE content END WHERE state IN ('streaming','requesting') AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?) RETURNING id, room_id, thread_id, sub_agent_id, content"
+      ).all(agentActorId);
+      if (reconnectCleaned.length) {
+        console.log(`[agent] Cleaned ${reconnectCleaned.length} orphaned message(s) on reconnect for Actor #${agentActorId}`);
+        for (const r of reconnectCleaned) {
+          maybeBroadcastError({ threadId: r.thread_id, subAgentId: r.sub_agent_id, messageId: r.id, content: r.content, roomId: r.room_id });
+        }
+      }
       if (msg.client_version) agentVersions.set(agentActorId, msg.client_version);
       if (Array.isArray(msg.harnesses_available)) agentHarnesses.set(agentActorId, msg.harnesses_available);
       console.log(`[agent] Actor #${agentActorId} connected (v${msg.client_version || '?'})`);
@@ -5431,6 +5452,7 @@ wss.on('connection', (ws, req) => {
         const errPayload = { type: 'message_state', message_id: msg.message_id, state: 'error' };
         if (errMeta.thread_id) errPayload.thread_summary = buildThreadSummary(msg.room_id, errMeta.thread_id);
         broadcast(msg.room_id, errPayload);
+        maybeBroadcastError({ threadId: errMeta.thread_id, subAgentId: errMeta.sub_agent_label, messageId: msg.message_id, reason: 'error', roomId: msg.room_id });
         pendingAgents.get(msg.message_id)?.resolve('');
         pendingAgents.delete(msg.message_id);
         pendingActorMeta.delete(msg.message_id);
@@ -5460,6 +5482,9 @@ wss.on('connection', (ws, req) => {
       if (doneRow?.thread_id) completePayload.thread_summary = buildThreadSummary(msg.room_id, doneRow.thread_id);
       broadcast(msg.room_id, completePayload);
       broadcastGlobal({ type: 'room_activity', room_id: msg.room_id });
+      if (finalState === 'error') {
+        maybeBroadcastError({ threadId: doneRow?.thread_id, subAgentId: doneRow?.sub_agent_id, messageId: msg.message_id, content: agentContent, roomId: msg.room_id });
+      }
       if (msg.claude_session_id) {
         try {
           if (doneRow && doneRow.sub_agent_id) {
@@ -5625,12 +5650,13 @@ wss.on('connection', (ws, req) => {
       // R15: agent reported error cleanly — reset session to idle so it isn't
       // flagged as indeterminate on the next restart.
       try {
-        const errRow = db.prepare('SELECT participant_id, sub_agent_id FROM messages WHERE id=?').get(msg.message_id);
+        const errRow = db.prepare('SELECT participant_id, sub_agent_id, thread_id, content FROM messages WHERE id=?').get(msg.message_id);
         if (errRow) {
           if (errRow.sub_agent_id) {
             db.prepare("UPDATE ai_sessions SET status='idle' WHERE participant_id=? AND sub_agent_id=? AND status='active'").run(errRow.participant_id, errRow.sub_agent_id);
           } else {
             db.prepare("UPDATE ai_sessions SET status='idle' WHERE participant_id=? AND sub_agent_id IS NULL AND status='active'").run(errRow.participant_id);
+            maybeBroadcastError({ threadId: errRow.thread_id, messageId: msg.message_id, content: errRow.content, roomId: msg.room_id });
           }
         }
       } catch {}
@@ -6150,9 +6176,14 @@ wss.on('connection', (ws, req) => {
         }
       }
       const cleaned = db.prepare(
-        "UPDATE messages SET state='error', content=CASE WHEN content='' THEN '(interrupted — agent disconnected)' ELSE content END WHERE state IN ('streaming','requesting') AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?)"
-      ).run(agentActorId);
-      if (cleaned.changes) console.log(`[agent] Cleaned ${cleaned.changes} orphaned message(s) from Actor #${agentActorId}`);
+        "UPDATE messages SET state='error', content=CASE WHEN content='' THEN '(interrupted — agent disconnected)' ELSE content END WHERE state IN ('streaming','requesting') AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?) RETURNING id, room_id, thread_id, sub_agent_id, content"
+      ).all(agentActorId);
+      if (cleaned.length) {
+        console.log(`[agent] Cleaned ${cleaned.length} orphaned message(s) from Actor #${agentActorId}`);
+        for (const r of cleaned) {
+          maybeBroadcastError({ threadId: r.thread_id, subAgentId: r.sub_agent_id, messageId: r.id, content: r.content, roomId: r.room_id });
+        }
+      }
       // Reject all pending promises for this actor so caller sequences can continue/unblock
       for (const [mId, pending] of [...pendingAgents]) {
         const meta = pendingActorMeta.get(mId);
@@ -7346,8 +7377,13 @@ setInterval(() => {
 }, 60_000);
 
 // On startup: orphaned streaming/requesting messages are dead — mark them as error
-const orphaned = db.prepare("UPDATE messages SET state='error', content=CASE WHEN content='' THEN '(interrupted — server restart)' ELSE content END WHERE state IN ('streaming','requesting')").run();
-if (orphaned.changes) console.log(`[startup] Cleaned ${orphaned.changes} orphaned message(s)`);
+const orphaned = db.prepare("UPDATE messages SET state='error', content=CASE WHEN content='' THEN '(interrupted — server restart)' ELSE content END WHERE state IN ('streaming','requesting') RETURNING id, room_id, thread_id, sub_agent_id, content").all();
+if (orphaned.length) {
+  console.log(`[startup] Cleaned ${orphaned.length} orphaned message(s)`);
+  for (const r of orphaned) {
+    maybeBroadcastError({ threadId: r.thread_id, subAgentId: r.sub_agent_id, messageId: r.id, content: r.content });
+  }
+}
 
 // Detect process manager once at startup — used by /api/server/process-manager and /api/server/restart
 const detectedProcessManager = (() => {
@@ -7400,7 +7436,7 @@ function extractSlackFullText(event) {
   return parts.join('\n');
 }
 
-const { evaluateConditions } = require('./lib/evaluate-conditions');
+const { evaluateConditions, replyMatchesAnyAutomation } = require('./lib/evaluate-conditions');
 
 // ─── Slack automation listener ────────────────────────────────────────────────
 
@@ -7468,9 +7504,21 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
           } catch {}
           const replyText = `[New Reply on Thread]:\n${senderName} (${event.user}) - ${event.text || ''}`;
           const stoaThreadId = watchedMsg.thread_id || watchedMsg.id;
-          await handleHumanMessage(watchedMsg.room_id, replyText, null, null, null, null, stoaThreadId, watchReplyAutomation(watchedMsg));
+          const insertedId = await handleHumanMessage(watchedMsg.room_id, replyText, null, null, null, null, stoaThreadId, watchReplyAutomation(watchedMsg));
           const ts2 = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
           console.log(`[${ts2}] [watch_reply] routed slack thread reply to stoa thread ${stoaThreadId} in room ${watchedMsg.room_id}`);
+
+          // Thread broadcast: check if reply matches any slack automation conditions
+          if (insertedId) {
+            const slackAutos = db.prepare(
+              "SELECT trigger_conditions FROM automations WHERE enabled=1 AND trigger_type='slack' AND trigger_event='message' AND (connection_id IS NULL OR connection_id=?)"
+            ).all(connId || null);
+            const replyFieldValues = { message_text: event.text || '', slack_full_text: extractSlackFullText(event), slack_bot_id: event.bot_id || '', slack_user: event.user || '', slack_channel: event.channel || '', reaction: '' };
+            if (replyMatchesAnyAutomation(slackAutos, replyFieldValues)) {
+              setBroadcastReason(insertedId, 'automation_match', watchedMsg.room_id);
+              console.log(`[${ts2}] [watch_reply] broadcast: automation_match for msg ${insertedId} in room ${watchedMsg.room_id}`);
+            }
+          }
         }
         return;
       }
@@ -7668,23 +7716,16 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, senderName, t
         continue;
       }
 
-      const allMatch = conditions.every(c => {
-        if (!c || typeof c !== 'object' || Array.isArray(c)) {
-          console.warn(`[automation] id=${auto.id} skipping non-object condition element`);
-          return false;
-        }
-        const val = (fieldValues[c.field] || '').toLowerCase();
-        const target = (c.value || '').toLowerCase();
-        switch (c.op) {
-          case 'contains':      return val.includes(target);
-          case 'not_contains':  return !val.includes(target);
-          case 'starts_with':   return val.startsWith(target);
-          case 'matches_regex': return safeRegexTest(c.value, (fieldValues[c.field] || '').slice(0, 5000));
-          default: return true;
-        }
-      });
+      const { matched: allMatch, failedIndex: waFailedIdx } = evaluateConditions(conditions, fieldValues);
 
-      if (!allMatch) continue;
+      if (!allMatch) {
+        if (waFailedIdx >= 0 && waFailedIdx < conditions.length) {
+          const fc = conditions[waFailedIdx];
+          if (!fc || typeof fc !== 'object' || Array.isArray(fc))
+            console.warn(`[automation] id=${auto.id} skipping non-object condition element`);
+        }
+        continue;
+      }
 
       let prompt = auto.prompt_template
         .replace(/\{\{wa_message_text\}\}/g, truncText)
@@ -7762,9 +7803,14 @@ connectionManager.on('email_event', async ({ eventType, connId, uid, messageId, 
 
         const _threadId = match.threadId;
         console.log(`[automation] "${auto.name}" watch_reply routed email to thread ${_threadId} (from=${from})`);
+
+        // Evaluate automation conditions for broadcast
+        const emailFieldValues = { from, subject, body: text, has_attachments: String(hasAttachments) };
+        const emailCondMatch = replyMatchesAnyAutomation([auto], emailFieldValues);
+
         (async () => {
           try {
-            await handleHumanMessage(match.roomId, prompt, null, null, null, null, _threadId, { id: auto.id, name: auto.name, provider: emailProvider });
+            const insertedId = await handleHumanMessage(match.roomId, prompt, null, null, null, null, _threadId, { id: auto.id, name: auto.name, provider: emailProvider });
             db.prepare("UPDATE automations SET run_count=run_count+1, last_run_at=datetime('now') WHERE id=?").run(auto.id);
             if (messageId) {
               db.prepare('INSERT OR IGNORE INTO email_message_ids (message_id, thread_id, connection_id, direction) VALUES (?,?,?,?)')
@@ -7772,6 +7818,10 @@ connectionManager.on('email_event', async ({ eventType, connId, uid, messageId, 
               const refChain = dedupedRefIds.slice(0, 20).join(' ');
               db.prepare('UPDATE email_threads SET message_id=?, ref_headers=? WHERE thread_id=?')
                 .run(messageId.slice(0, 500), refChain.slice(0, 4000), _threadId);
+            }
+            if (emailCondMatch && insertedId) {
+              setBroadcastReason(insertedId, 'automation_match', match.roomId);
+              console.log(`[automation] "${auto.name}" watch_reply broadcast: automation_match for msg ${insertedId}`);
             }
           } catch (e) {
             console.error(`[automation] watch_reply room ${match.roomId} error:`, e.message);
@@ -7791,18 +7841,7 @@ connectionManager.on('email_event', async ({ eventType, connId, uid, messageId, 
       }
       if (!Array.isArray(conditions)) continue;
 
-      const allMatch = conditions.every(c => {
-        if (!c || typeof c !== 'object' || Array.isArray(c)) return false;
-        const val = (fieldValues[c.field] || '').toLowerCase();
-        const target = (c.value || '').toLowerCase();
-        switch (c.op) {
-          case 'contains':      return val.includes(target);
-          case 'not_contains':  return !val.includes(target);
-          case 'starts_with':   return val.startsWith(target);
-          case 'matches_regex': return safeRegexTest(c.value, (fieldValues[c.field] || '').slice(0, 5000));
-          default: return true;
-        }
-      });
+      const { matched: allMatch } = evaluateConditions(conditions, fieldValues);
 
       if (!allMatch) continue;
 
