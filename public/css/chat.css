@@ -335,6 +335,21 @@ html.dark .h-msg-row:hover { background: var(--h-hover); }
   color: var(--h-ink-mute);
 }
 
+.sa-role {
+  font-family: var(--h-msg);
+  font-size: 11px;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+  color: var(--h-ink-mute);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.h-msg-body > .sa-role { margin-top: -4px; padding: 0 4px; }
+.h-thread-msg-row .h-msg-body > .sa-role { margin-top: -2px; }
+.t-col > .sa-role { margin-top: -3px; }
+
 .t-automation-tag {
   display: inline-flex;
   align-items: center;

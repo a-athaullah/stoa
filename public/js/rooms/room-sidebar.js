@@ -386,8 +386,8 @@ function renderRoomSidebar(room, participants) {
         name.style.cssText = 'font-size:12.5px;color:var(--h-ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
         name.textContent = sa.label || '?';
         const parent = document.createElement('div');
-        parent.style.cssText = 'font-size:11px;color:var(--h-ink-faint)';
-        parent.textContent = sa.parent_name || '';
+        parent.style.cssText = 'font-size:11px;color:var(--h-ink-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+        parent.textContent = [sa.role, sa.parent_name].filter(Boolean).join(' · ');
         info.append(name, parent);
         if (sa.description) info.appendChild(subAgentDescLine(sa.description));
         const unlinkBtn = document.createElement('button');
@@ -424,8 +424,8 @@ function renderRoomSidebar(room, participants) {
           name.style.cssText = 'font-size:12.5px;color:var(--h-ink-mute);overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
           name.textContent = sa.label || '?';
           const parent = document.createElement('div');
-          parent.style.cssText = 'font-size:11px;color:var(--h-ink-faint)';
-          parent.textContent = sa.parent_name || '';
+          parent.style.cssText = 'font-size:11px;color:var(--h-ink-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+          parent.textContent = [sa.role, sa.parent_name].filter(Boolean).join(' · ');
           info.append(name, parent);
           if (sa.description) info.appendChild(subAgentDescLine(sa.description));
           const linkBtn = document.createElement('button');

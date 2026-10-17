@@ -1,5 +1,5 @@
 // ── Thinking bubble (before tokens arrive) ─────────────────────────────────
-function showThinking(msgId, actorName, color, symbol, avatarUrl, subAgentLabel, container, saAvatarColor, saAvatarSymbol, saAvatarUrl) {
+function showThinking(msgId, actorName, color, symbol, avatarUrl, subAgentLabel, container, saAvatarColor, saAvatarSymbol, saAvatarUrl, saRole) {
   if (document.getElementById('msg-' + msgId)) return; // already exists
   const inner = container || document.getElementById('messages-inner');
   if (!inner) return;
@@ -34,6 +34,8 @@ function showThinking(msgId, actorName, color, symbol, avatarUrl, subAgentLabel,
     meta.appendChild(subEl);
   }
   body.appendChild(meta);
+  const roleEl = makeSubAgentRoleEl(subAgentLabel, saRole);
+  if (roleEl) body.appendChild(roleEl);
 
   // Thinking bubble
   const bubble = document.createElement('div');
