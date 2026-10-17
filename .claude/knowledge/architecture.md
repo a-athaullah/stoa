@@ -72,10 +72,10 @@ Stoa dioperasikan oleh tim sub-agent terspesialisasi yang di-trigger via @mentio
 | Agent | Model | Tier | Tugas |
 |-------|-------|------|-------|
 | **Ara** | Sonnet 4.6 | — | Koordinator utama, analisis, lapor ke Aan |
-| **TechLead-Stoa** | Opus 4.6 | — | Code review, audit, security check |
-| **BE-Stoa** | Sonnet 4.6 | standard | Backend implementation |
-| **FE-Stoa** | Sonnet 4.6 | standard | Frontend implementation |
-| **TechWriter-Stoa** | Sonnet 4.6 | standard | Docs update (5 bahasa + knowledge base) |
+| **Marcus** | Opus 4.6 | — | Code review, audit, security check |
+| **Kenji** | Sonnet 4.6 | standard | Backend implementation |
+| **Sofia** | Sonnet 4.6 | standard | Frontend implementation |
+| **Clara** | Sonnet 4.6 | standard | Docs update (5 bahasa + knowledge base) |
 
 **Coordination Flow:**
 
@@ -84,11 +84,11 @@ Aan kasih task
   ↓
 Ara analisis & breakdown
   ↓
-@BE-Stoa / @FE-Stoa → implementasi → selesai → @Ara
+@Kenji / @Sofia → implementasi → selesai → @Ara
   ↓
-@TechLead-Stoa → code review → selesai → @Ara
+@Marcus → code review → selesai → @Ara
   ↓
-@TechWriter-Stoa → update docs + knowledge base → selesai → @Ara
+@Clara → update docs + knowledge base → selesai → @Ara
   ↓
 Ara lapor ke Aan → Aan decide merge/hold/reject
 ```
