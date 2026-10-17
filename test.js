@@ -3194,6 +3194,45 @@ async function run() {
       await req('DELETE', `/api/sub-agents/${sa2.body.id}`);
     });
 
+    // ── History queries carry sub-agent avatar ──
+    await test('GET messages history includes sub-agent avatar fields', async () => {
+      const db = require('./db');
+      if (!slActorId || !slRoomId) { console.log('    (skipped)'); return; }
+      const sa3 = await req('POST', `/api/actors/${slActorId}/sub-agents`, { label: 'testavatar', tier: 'quick' });
+      if (sa3.status !== 201) { console.log('    (skipped — could not create sub-agent)'); return; }
+      await req('PATCH', `/api/sub-agents/${sa3.body.id}`, { avatar_color: '#00ff00', avatar_symbol: 'T' });
+      const part = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(slRoomId, slActorId);
+      db.prepare("INSERT INTO messages (room_id, participant_id, content, state, sub_agent_id, sub_agent_label) VALUES (?,?,'test sa msg','complete',?,?)").run(slRoomId, part.id, sa3.body.id, 'testavatar');
+      const r = await req('GET', `/api/rooms/${slRoomId}/messages`);
+      assert.strictEqual(r.status, 200);
+      const saMsg = r.body.find(m => m.sub_agent_label === 'testavatar');
+      assert.ok(saMsg, 'sub-agent message should appear in history');
+      assert.strictEqual(saMsg.sub_agent_avatar_color, '#00ff00', 'avatar_color missing from history');
+      assert.strictEqual(saMsg.sub_agent_avatar_symbol, 'T', 'avatar_symbol missing from history');
+      db.prepare('DELETE FROM messages WHERE sub_agent_id=?').run(sa3.body.id);
+      await req('DELETE', `/api/sub-agents/${sa3.body.id}`);
+    });
+
+    await test('GET thread detail includes sub-agent avatar fields', async () => {
+      const db = require('./db');
+      if (!slActorId || !slRoomId) { console.log('    (skipped)'); return; }
+      const sa4 = await req('POST', `/api/actors/${slActorId}/sub-agents`, { label: 'testthreadav', tier: 'quick' });
+      if (sa4.status !== 201) { console.log('    (skipped — could not create sub-agent)'); return; }
+      await req('PATCH', `/api/sub-agents/${sa4.body.id}`, { avatar_color: '#0000ff' });
+      const part = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(slRoomId, slActorId);
+      const rootIns = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,'thread root','complete')").run(slRoomId, part.id);
+      const rootId = Number(rootIns.lastInsertRowid);
+      db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id, sub_agent_id, sub_agent_label) VALUES (?,?,'sa reply','complete',?,?,?)").run(slRoomId, part.id, rootId, sa4.body.id, 'testthreadav');
+      const r = await req('GET', `/api/rooms/${slRoomId}/threads/${rootId}`);
+      assert.strictEqual(r.status, 200);
+      const saReply = r.body.messages.find(m => m.sub_agent_label === 'testthreadav');
+      assert.ok(saReply, 'sub-agent reply should appear in thread');
+      assert.strictEqual(saReply.sub_agent_avatar_color, '#0000ff', 'avatar_color missing from thread');
+      db.prepare('DELETE FROM messages WHERE thread_id=?').run(rootId);
+      db.prepare('DELETE FROM messages WHERE id=?').run(rootId);
+      await req('DELETE', `/api/sub-agents/${sa4.body.id}`);
+    });
+
     await test('Cleanup — delete self-learning test data', async () => {
       if (slRoomId) {
         await req('PATCH', `/api/rooms/${slRoomId}`, { archived: true });
