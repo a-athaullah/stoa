@@ -255,6 +255,8 @@ function makeFeedMessageClickable(msgId) {
 // ── Broadcast row renderer ──────────────────────────────────────────────────
 const _broadcastReasonMap = { automation_match: 'automation match', error: 'error', limit: 'limit' };
 
+// Renders a thread message as a secondary row in the room feed (like Slack's
+// "also send to channel"). Same message row, different DOM container.
 function appendFeedBroadcastRow(m, inner) {
   if (!inner) inner = document.getElementById('messages-inner');
   if (!inner) return;
