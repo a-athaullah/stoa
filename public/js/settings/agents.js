@@ -450,11 +450,9 @@ const SA_TIERS_META = [
   { id: 'standard', bars: 2, note: 'most work — balanced' },
   { id: 'deep',     bars: 3, note: 'long reasoning — costliest' },
 ];
-const SA_MODELS = [
-  'claude-opus-5', 'claude-sonnet-5', 'claude-fable-5-1',
-  'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6',
-  'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5',
-];
+function _saAnthropicModels() {
+  return getAvailableModels().filter(m => m.platform === 'anthropic');
+}
 const SA_DANGER = '#b35a4b';
 const HARNESS_LABELS = { claude: 'Claude CLI', codex: 'Codex CLI' };
 
@@ -464,10 +462,11 @@ function _saPopulateModelSel(modelSel, harness, actor, currentVal) {
   useTierOpt.value = ''; useTierOpt.textContent = 'use tier';
   modelSel.appendChild(useTierOpt);
   if (!harness || harness === 'claude') {
-    for (const m of SA_MODELS) {
-      const o = document.createElement('option'); o.value = m; o.textContent = m; modelSel.appendChild(o);
+    const anthropicModels = _saAnthropicModels();
+    for (const m of anthropicModels) {
+      const o = document.createElement('option'); o.value = m.value; o.textContent = m.label || m.value; modelSel.appendChild(o);
     }
-    if (currentVal && !SA_MODELS.includes(currentVal)) {
+    if (currentVal && !anthropicModels.some(m => m.value === currentVal)) {
       const o = document.createElement('option'); o.value = currentVal; o.textContent = currentVal; modelSel.appendChild(o);
     }
   } else {
@@ -496,16 +495,158 @@ function saSubShade(color) {
   return `oklch(from ${color} calc(l + var(--sa-sub-dl)) calc(c * var(--sa-sub-cf)) h)`;
 }
 
+// Build avatar editor for an existing sub-agent (color, symbol, image upload/remove).
+function _saBuildAvatarEditor(sa, saShade, onUpdate) {
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'display:flex;align-items:center;gap:10px;flex-wrap:wrap';
+
+  const previewColor = sa.avatar_color || saShade;
+  const previewSymbol = sa.avatar_symbol || sa.label[0];
+
+  const previewDisc = document.createElement('span');
+  const updatePreview = () => {
+    const c = colorInp.value || saShade;
+    const s = symInp.value.trim() || sa.label[0];
+    previewDisc.innerHTML = '';
+    if (sa.avatar_url) {
+      previewDisc.style.cssText = 'width:28px;height:28px;border-radius:50%;overflow:hidden;display:inline-flex;flex:0 0 auto';
+      const img = document.createElement('img');
+      img.src = sa.avatar_url;
+      img.style.cssText = 'width:28px;height:28px;border-radius:50%;object-fit:cover';
+      previewDisc.appendChild(img);
+    } else {
+      previewDisc.style.cssText = `width:28px;height:28px;border-radius:50%;background:${c};display:inline-flex;align-items:center;justify-content:center;font-family:var(--h-serif);font-size:14px;color:#fff;flex:0 0 auto`;
+      previewDisc.textContent = s;
+    }
+  };
+
+  const colorInp = document.createElement('input');
+  colorInp.type = 'color'; colorInp.value = sa.avatar_color || '#888888';
+  colorInp.style.cssText = 'width:32px;height:32px;border-radius:6px;border:1px solid var(--h-border);cursor:pointer;padding:2px;flex:0 0 auto';
+  colorInp.title = 'avatar color';
+  colorInp.oninput = updatePreview;
+
+  const symInp = document.createElement('input');
+  symInp.value = sa.avatar_symbol || ''; symInp.placeholder = 'symbol'; symInp.maxLength = 4;
+  symInp.style.cssText = 'padding:6px 8px;width:72px;border-radius:6px;border:1px solid var(--h-border);background:var(--h-surface);color:var(--h-ink);font-family:var(--h-sans);font-size:13px;outline:none';
+  symInp.oninput = updatePreview;
+
+  const applyBtn = document.createElement('button');
+  applyBtn.textContent = 'apply'; applyBtn.style.cssText = 'background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12px;padding:4px 12px;cursor:pointer';
+  applyBtn.onclick = async () => {
+    const color = colorInp.value || null;
+    const symbol = symInp.value.trim().slice(0, 4) || null;
+    applyBtn.disabled = true;
+    try {
+      const r = await fetch(`/api/sub-agents/${sa.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ avatar_color: color, avatar_symbol: symbol }) });
+      if (r.ok) { sa.avatar_color = color; sa.avatar_symbol = symbol; showToast('avatar saved'); onUpdate(sa); }
+      else { const e = await r.json().catch(() => ({})); showToast(e.error || 'failed to save', { error: true }); }
+    } catch { showToast('failed to save', { error: true }); }
+    applyBtn.disabled = false;
+  };
+
+  const imgInp = document.createElement('input');
+  imgInp.type = 'file'; imgInp.accept = 'image/*'; imgInp.style.display = 'none';
+  imgInp.onchange = () => {
+    const file = imgInp.files[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) { alert('Image must be under 2 MB.'); return; }
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const img = new Image();
+      img.onload = async () => {
+        const maxSize = 256; let w = img.width, h = img.height;
+        if (w > maxSize || h > maxSize) { if (w > h) { h = Math.round(h * maxSize / w); w = maxSize; } else { w = Math.round(w * maxSize / h); h = maxSize; } }
+        const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        const dataUrl = canvas.toDataURL(file.type === 'image/gif' ? 'image/png' : file.type);
+        try {
+          const res = await fetch(`/api/sub-agents/${sa.id}/avatar`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data_url: dataUrl }) });
+          if (!res.ok) throw new Error();
+          const data = await res.json(); if (data.avatar_url) { sa.avatar_url = data.avatar_url; updatePreview(); onUpdate(sa); removeBtn.style.display = ''; showToast('image uploaded'); }
+        } catch { showToast('upload failed', { error: true }); }
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const uploadBtn = document.createElement('button');
+  uploadBtn.textContent = 'upload image'; uploadBtn.style.cssText = 'background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12px;padding:4px 12px;cursor:pointer';
+  uploadBtn.onclick = () => imgInp.click();
+
+  const removeBtn = document.createElement('button');
+  removeBtn.textContent = 'remove image'; removeBtn.style.cssText = 'display:' + (sa.avatar_url ? 'inline-block' : 'none') + ';background:transparent;border:1px solid var(--h-border);border-radius:999px;color:#b35a4b;font-family:var(--h-sans);font-size:12px;padding:4px 12px;cursor:pointer';
+  removeBtn.onclick = async () => {
+    removeBtn.disabled = true;
+    try {
+      const r = await fetch(`/api/sub-agents/${sa.id}/avatar`, { method: 'DELETE' });
+      if (r.ok) { sa.avatar_url = null; updatePreview(); onUpdate(sa); removeBtn.style.display = 'none'; showToast('image removed'); }
+      else showToast('failed to remove', { error: true });
+    } catch { showToast('failed to remove', { error: true }); }
+    removeBtn.disabled = false;
+  };
+
+  updatePreview();
+  wrap.append(previewDisc, colorInp, symInp, applyBtn, uploadBtn, removeBtn, imgInp);
+  return wrap;
+}
+
+// Build memory editor for an existing sub-agent.
+function _saBuildMemoryEditor(sa) {
+  const SA_MEM_BUDGET = 2200;
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'display:flex;flex-direction:column;gap:6px';
+
+  const loading = document.createElement('span');
+  loading.style.cssText = 'font-size:12.5px;color:var(--h-ink-faint)'; loading.textContent = 'loading…';
+  wrap.appendChild(loading);
+
+  (async () => {
+    try {
+      const r = await fetch(`/api/sub-agents/${sa.id}/memory`);
+      wrap.removeChild(loading);
+      if (!r.ok) { const err = document.createElement('span'); err.style.cssText = 'font-size:12.5px;color:var(--h-ink-faint)'; err.textContent = 'failed to load'; wrap.appendChild(err); return; }
+      const data = await r.json();
+      const ta = document.createElement('textarea');
+      ta.value = data.content || ''; ta.placeholder = 'Notes this sub-agent can update after tasks…'; ta.maxLength = SA_MEM_BUDGET;
+      ta.style.cssText = 'width:100%;box-sizing:border-box;min-height:80px;resize:vertical;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;padding:8px 10px;border:1px solid var(--h-border);border-radius:8px;background:var(--h-surface);color:var(--h-ink);outline:none';
+      const footer = document.createElement('div'); footer.style.cssText = 'display:flex;align-items:center;justify-content:space-between';
+      const counter = document.createElement('span'); counter.style.cssText = 'font-size:11.5px;color:var(--h-ink-faint);font-variant-numeric:tabular-nums';
+      const updateCounter = () => { const used = ta.value.length; const pct = used / SA_MEM_BUDGET; counter.textContent = `${used} / ${SA_MEM_BUDGET}`; counter.style.color = pct > .9 ? 'oklch(55% .18 27)' : pct > .75 ? 'oklch(60% .15 80)' : 'var(--h-ink-faint)'; };
+      updateCounter(); ta.addEventListener('input', updateCounter);
+      const saveBtn = document.createElement('button'); saveBtn.textContent = 'save'; saveBtn.style.cssText = 'background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12px;padding:4px 14px;cursor:pointer';
+      saveBtn.onclick = async () => {
+        saveBtn.disabled = true;
+        try {
+          const r2 = await fetch(`/api/sub-agents/${sa.id}/memory`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content: ta.value }) });
+          if (r2.ok) showToast('memory saved'); else { const e = await r2.json().catch(() => ({})); showToast(e.error || 'failed to save', { error: true }); }
+        } catch { showToast('failed to save', { error: true }); }
+        saveBtn.disabled = false;
+      };
+      footer.append(counter, saveBtn); wrap.append(ta, footer);
+    } catch { wrap.removeChild(loading); const err = document.createElement('span'); err.style.cssText = 'font-size:12.5px;color:var(--h-ink-faint)'; err.textContent = 'failed to load'; wrap.appendChild(err); }
+  })();
+  return wrap;
+}
+
 // Wax-seal mark. `badge` adds the corner notch that marks a sub-agent.
-function saMakeSeal({ letter, color, size = 26, badge = false, ink = '#fff' }) {
+function saMakeSeal({ letter, color, avatarUrl, avatarSymbol, size = 26, badge = false, ink = '#fff' }) {
   const wrap = document.createElement('span');
   wrap.style.cssText = 'position:relative;display:inline-flex;flex:0 0 auto';
-  const disc = document.createElement('span');
-  disc.style.cssText = `width:${size}px;height:${size}px;border-radius:50%;background:${color};color:${ink};` +
-    `display:inline-flex;align-items:center;justify-content:center;font-family:var(--h-serif);` +
-    `font-size:${size * 0.5}px;font-style:italic;line-height:1;` +
-    'box-shadow:inset 0 -1px 0 rgba(0,0,0,.16), 0 1px 2px rgba(0,0,0,.06)';
-  disc.textContent = letter || '?';
+  let disc;
+  if (avatarUrl) {
+    disc = document.createElement('img');
+    disc.src = avatarUrl;
+    disc.style.cssText = `width:${size}px;height:${size}px;border-radius:50%;object-fit:cover;flex-shrink:0;display:block;box-shadow:0 1px 2px rgba(0,0,0,.06)`;
+  } else {
+    disc = document.createElement('span');
+    disc.style.cssText = `width:${size}px;height:${size}px;border-radius:50%;background:${color};color:${ink};` +
+      `display:inline-flex;align-items:center;justify-content:center;font-family:var(--h-serif);` +
+      `font-size:${size * 0.5}px;font-style:italic;line-height:1;` +
+      'box-shadow:inset 0 -1px 0 rgba(0,0,0,.16), 0 1px 2px rgba(0,0,0,.06)';
+    disc.textContent = avatarSymbol || letter || '?';
+  }
   wrap.appendChild(disc);
   if (badge) {
     const notch = document.createElement('span');
@@ -894,7 +1035,13 @@ function sMakeEditAccordion(actor) {
       } catch { showToast('Failed to save sub-agent', { error: true }); saveF.disabled = false; }
     });
 
-    saForm.append(fh, grid, tierField, spField, harnField, btns);
+    const appendItems = [fh, grid, tierField, spField, harnField];
+    if (existing) {
+      appendItems.push(saMakeField('avatar', _saBuildAvatarEditor(existing, saShade, upd => { existing.avatar_color = upd.avatar_color; existing.avatar_symbol = upd.avatar_symbol; existing.avatar_url = upd.avatar_url; }), 'color, symbol, or image'));
+      appendItems.push(saMakeField('memory', _saBuildMemoryEditor(existing), 'notes this sub-agent updates after tasks'));
+    }
+    appendItems.push(btns);
+    saForm.append(...appendItems);
     setTimeout(() => labelInp.focus(), 0);
     saShowForm(true);
   }
@@ -926,7 +1073,7 @@ function sMakeEditAccordion(actor) {
         row.className = 's-sa-row';
         row.style.cssText = 'display:flex;align-items:center;gap:12px;padding:13px 16px;' +
           (last ? '' : 'border-bottom:1px solid var(--h-hair-soft);') + `opacity:${dim ? .62 : 1}`;
-        row.appendChild(saMakeSeal({ letter: sa.label[0], color: saShade, size: 26, badge: true, ink: 'var(--sa-sub-ink)' }));
+        row.appendChild(saMakeSeal({ letter: sa.label[0], color: sa.avatar_color || saShade, avatarUrl: sa.avatar_url || null, avatarSymbol: sa.avatar_symbol || null, size: 26, badge: true, ink: 'var(--sa-sub-ink)' }));
         const mid = document.createElement('div');
         mid.style.cssText = 'flex:1;min-width:0;display:flex;flex-direction:column;gap:4px';
         const line1 = document.createElement('div');
@@ -1638,10 +1785,11 @@ function buildAgentSettingsCard(actor) {
     noneOpt.textContent = harnessDefault ? `follow harness default — ${harnessDefault}` : 'follow harness default';
     dmSel.appendChild(noneOpt);
     if (!harness || harness === 'claude') {
-      for (const m of SA_MODELS) {
-        const o = document.createElement('option'); o.value = m; o.textContent = m; dmSel.appendChild(o);
+      const anthropicModels = _saAnthropicModels();
+      for (const m of anthropicModels) {
+        const o = document.createElement('option'); o.value = m.value; o.textContent = m.label || m.value; dmSel.appendChild(o);
       }
-      if (actor.default_model && !SA_MODELS.includes(actor.default_model)) {
+      if (actor.default_model && !anthropicModels.some(m => m.value === actor.default_model)) {
         const o = document.createElement('option'); o.value = actor.default_model; o.textContent = actor.default_model; dmSel.appendChild(o);
       }
     } else {
@@ -1849,7 +1997,13 @@ function buildSubAgentsSection(actor) {
         saShowForm(false); saLoadListWithCache();
       } catch { showToast('Failed to save sub-agent', { error: true }); saveF.disabled = false; }
     });
-    saForm.append(fh, grid, tierField, spField, harnField, btns);
+    const appendItems2 = [fh, grid, tierField, spField, harnField];
+    if (existing) {
+      appendItems2.push(saMakeField('avatar', _saBuildAvatarEditor(existing, saShade, upd => { existing.avatar_color = upd.avatar_color; existing.avatar_symbol = upd.avatar_symbol; existing.avatar_url = upd.avatar_url; }), 'color, symbol, or image'));
+      appendItems2.push(saMakeField('memory', _saBuildMemoryEditor(existing), 'notes this sub-agent updates after tasks'));
+    }
+    appendItems2.push(btns);
+    saForm.append(...appendItems2);
     setTimeout(() => labelInp.focus(), 0);
     saShowForm(true);
   }
@@ -1875,7 +2029,7 @@ function buildSubAgentsSection(actor) {
       const row = document.createElement('div');
       row.className = 's-sa-row';
       row.style.cssText = 'display:flex;align-items:center;gap:12px;padding:13px 16px;' + (last ? '' : 'border-bottom:1px solid var(--h-hair-soft);') + `opacity:${dim ? .62 : 1}`;
-      row.appendChild(saMakeSeal({ letter: sa.label[0], color: saShade, size: 26, badge: true, ink: 'var(--sa-sub-ink)' }));
+      row.appendChild(saMakeSeal({ letter: sa.label[0], color: sa.avatar_color || saShade, avatarUrl: sa.avatar_url || null, avatarSymbol: sa.avatar_symbol || null, size: 26, badge: true, ink: 'var(--sa-sub-ink)' }));
       const mid = document.createElement('div'); mid.style.cssText = 'flex:1;min-width:0;display:flex;flex-direction:column;gap:4px';
       const line1 = document.createElement('div'); line1.style.cssText = 'display:flex;align-items:center;gap:9px;flex-wrap:wrap';
       const lbl = document.createElement('span'); lbl.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:14px;color:var(--h-ink)'; lbl.textContent = sa.label;

@@ -228,12 +228,22 @@ Sub-agents are defined per agent. Select the agent in **Settings > AI Agent**, t
 
 - **Label** (required) — a short name like `probe` or `researcher`. It appears in chat as `Ara (probe)` so you always know which sub-agent produced a message.
 - **Tier** — `quick`, `standard`, or `deep`. The tier selects which **model fallback chain** the sub-agent runs on (see [Model Tiers and Fallback](#model-tiers-and-fallback) below). By default `quick` runs a fast model, `standard` a balanced one, and `deep` the most capable — each falling back to a lighter model if the primary is unavailable.
-- **Model override** (optional) — pin the sub-agent to a single specific model instead of using its tier's chain. Leave it on **use tier** to follow the tier routing. A pinned model has no fallback — it is tried alone. The dropdown lists only models compatible with the sub-agent's effective harness — Claude models for Claude, or the agent's detected Codex models (from the last Check) for Codex; if the agent has never been checked, Stoa falls back to its built-in Codex list. Changing the **Harness** field while a specific model is selected resets the selection to **use tier** if that model is unavailable under the new harness. The server also rejects a model that does not match the sub-agent's effective harness at save time.
+- **Model override** (optional) — pin the sub-agent to a single specific model instead of using its tier's chain. Leave it on **use tier** to follow the tier routing. A pinned model has no fallback — it is tried alone. The dropdown fetches the model list from the server and stays in sync with the main agent dropdown — models such as Opus 5.5 appear automatically. Only models compatible with the sub-agent's effective harness are shown. Changing the **Harness** field while a specific model is selected resets the selection to **use tier** if that model is unavailable under the new harness. The server also rejects a model that does not match the sub-agent's effective harness at save time.
 - **Workdir** (optional) — a working directory the sub-agent operates in.
 - **System prompt** (optional) — extra instructions that shape the sub-agent's behavior.
 - **Harness** (optional) — `claude` or `codex`. Leave on **inherit from parent** (default) to use the same harness as the parent agent.
+- **Avatar** (optional) — each sub-agent has its own avatar: a hex color (`#RRGGBB`), a symbol (1–4 characters), or a custom image (upload or remove). Sub-agent messages in the feed and thread panels display the sub-agent's own avatar; if none is set, they fall back to the parent agent's avatar. Messages already on screen reflect the new avatar after a page reload.
+- **Memory** (optional) — each sub-agent has its own persistent memory (2,200-character budget), independent from the room memory. View or edit it directly in the sub-agent card.
 
 You can edit or delete a definition anytime. Definitions belong to the parent agent, not to any specific room.
+
+### Sub-Agent Memory and Self-Learning
+
+Each sub-agent keeps its own **persistent memory** separate from the room memory. The budget is 2,200 characters and the content is visible and editable in the sub-agent card.
+
+**Self-learning** is built in: after completing a task, a sub-agent automatically saves useful lessons to its own memory without being told to. Room memory is read-only for sub-agents — they can only write to their own memory.
+
+Main agents can also update their own memory files (`MEMORY.md`, `USER.md`) automatically during a turn. An agent can only write to its own memory — never to another agent's.
 
 ### Linking Sub-Agents to a Room
 

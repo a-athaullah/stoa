@@ -99,15 +99,11 @@ function renderRoomSidebar(room, participants) {
     users:     `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>`,
   };
 
-  const SA_MODELS = [
-    'claude-opus-5', 'claude-sonnet-5', 'claude-fable-5-1',
-    'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6',
-    'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5',
-  ];
+  const SA_MODELS = getAvailableModels().filter(m => m.platform === 'anthropic').map(m => m.value);
   const DEFAULTS = {
-    quick:    ['claude-haiku-4-5'],
-    standard: ['claude-sonnet-5', 'claude-haiku-4-5'],
-    deep:     ['claude-opus-5', 'claude-sonnet-5'],
+    quick:    ['claude-haiku-4-5-20251001'],
+    standard: ['claude-sonnet-5-5', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
+    deep:     ['claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5-5'],
   };
   const TIERS = ['quick', 'standard', 'deep'];
   const shortName = m => m.replace(/^claude-/, '').replace(/-\d.*$/, '');

@@ -229,12 +229,22 @@ Sub-agent didefinisikan per agent. Pilih agent di **Settings > AI Agent**, lalu 
 
 - **Label** (wajib) — nama singkat seperti `probe` atau `researcher`. Muncul di chat sebagai `Ara (probe)` sehingga kamu selalu tahu sub-agent mana yang menghasilkan sebuah pesan.
 - **Tier** — `quick`, `standard`, atau `deep`. Tier memilih **rantai fallback model** mana yang dipakai sub-agent (lihat [Tier Model dan Fallback](#tier-model-dan-fallback) di bawah). Secara default `quick` memakai model cepat, `standard` yang seimbang, dan `deep` yang paling mumpuni — masing-masing jatuh ke model yang lebih ringan jika model utama tidak tersedia.
-- **Model override** (opsional) — kunci sub-agent ke satu model spesifik alih-alih memakai rantai tier-nya. Biarkan pada **use tier** untuk mengikuti routing tier. Model yang dikunci tidak punya fallback — ia dicoba sendirian. Dropdown hanya menampilkan model yang kompatibel dengan harness efektif sub-agent — model Claude untuk Claude, atau model Codex hasil Check terakhir agent untuk Codex; jika agent belum pernah di-Check, Stoa memakai daftar bawaan Codex. Mengubah field **Harness** saat model tertentu sudah dipilih akan mereset pilihan ke **use tier** jika model itu tidak tersedia di harness baru. Server juga menolak model yang tidak cocok dengan harness efektif sub-agent saat disimpan.
+- **Model override** (opsional) — kunci sub-agent ke satu model spesifik alih-alih memakai rantai tier-nya. Biarkan pada **use tier** untuk mengikuti routing tier. Model yang dikunci tidak punya fallback — ia dicoba sendirian. Dropdown mengambil daftar model dari server dan selalu sinkron dengan dropdown agent utama — model seperti Opus 5.5 muncul otomatis. Hanya model yang kompatibel dengan harness efektif sub-agent yang ditampilkan. Mengubah field **Harness** saat model tertentu sudah dipilih akan mereset pilihan ke **use tier** jika model itu tidak tersedia di harness baru. Server juga menolak model yang tidak cocok dengan harness efektif sub-agent saat disimpan.
 - **Workdir** (opsional) — direktori kerja tempat sub-agent beroperasi.
 - **System prompt** (opsional) — instruksi tambahan yang membentuk perilaku sub-agent.
 - **Harness** (opsional) — `claude` atau `codex`. Biarkan pada **inherit from parent** (default) untuk memakai harness yang sama dengan agent induk.
+- **Avatar** (opsional) — tiap sub-agent punya avatar sendiri: warna hex (`#RRGGBB`), simbol (1–4 karakter), atau gambar kustom (bisa diupload atau dihapus). Pesan sub-agent di feed dan panel thread ditampilkan dengan avatar sub-agent itu sendiri; jika tidak di-set, fallback ke avatar agent induk. Pesan yang sudah tampil di layar baru mencerminkan avatar baru setelah reload halaman.
+- **Memory** (opsional) — tiap sub-agent punya memory persisten sendiri (budget 2.200 karakter), terpisah dari room memory. Bisa dilihat dan diedit langsung di kartu sub-agent.
 
 Kamu bisa mengedit atau menghapus definisi kapan saja. Definisi milik agent induk, bukan milik room tertentu.
+
+### Memory dan Self-Learning Sub-Agent
+
+Setiap sub-agent menyimpan **memory persisten** sendiri, terpisah dari room memory. Budgetnya 2.200 karakter dan isinya bisa dilihat serta diedit di kartu sub-agent.
+
+**Self-learning** sudah built-in: setelah menyelesaikan tugas, sub-agent otomatis menyimpan pelajaran penting ke memory-nya sendiri tanpa perlu diperintah. Room memory bersifat read-only bagi sub-agent — mereka hanya bisa menulis ke memory milik mereka sendiri.
+
+Agent utama juga bisa memperbarui file memory miliknya sendiri (`MEMORY.md`, `USER.md`) secara otomatis saat sedang berjalan. Agent hanya bisa menulis ke memory miliknya sendiri — tidak bisa ke milik agent lain.
 
 ### Menautkan Sub-Agent ke Room
 

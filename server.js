@@ -907,7 +907,7 @@ function fireSchedule(sched) {
     FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.id=?
   `).get(parentPart.id);
   const effectiveHarness = sub.harness || ai.adapter || 'claude';
-  ai.sub_agent = { id: sub.id, label: sub.label, tier: sub.tier, model: sub.model, workdir: sub.workdir, system_prompt: sub.system_prompt, harness: effectiveHarness };
+  ai.sub_agent = { id: sub.id, label: sub.label, tier: sub.tier, model: sub.model, workdir: sub.workdir, system_prompt: sub.system_prompt, harness: effectiveHarness, avatar_color: sub.avatar_color, avatar_symbol: sub.avatar_symbol, avatar_url: sub.avatar_url };
   ai.parent_message_id = null; // standalone run — no orchestrator turn to auto-wake
   triggerAiResponse(sched.room_id, ai, sched.task, null, []).catch(e => console.error('[scheduler] trigger error:', e.message));
   return 'fired';
@@ -970,6 +970,8 @@ function auditUploads() {
   for (const row of db.prepare("SELECT json_each.value FROM messages, json_each(messages.attachments) WHERE messages.attachments IS NOT NULL").all())
     try { const a = JSON.parse(row.value); if (a?.url) referenced.add(a.url); } catch {}
   for (const row of db.prepare("SELECT avatar_url FROM actors WHERE avatar_url IS NOT NULL").all())
+    referenced.add(row.avatar_url);
+  for (const row of db.prepare("SELECT avatar_url FROM sub_agents WHERE avatar_url IS NOT NULL").all())
     referenced.add(row.avatar_url);
 
   const orphans = [];
@@ -1360,44 +1362,45 @@ const server = http.createServer(async (req, res) => {
     return json(res, { url: `/uploads/${saved}`, name: fileName || saved });
   }
 
+  // ── Avatar helpers (shared by actor + sub-agent avatar endpoints)
+  function deleteAvatarFile(avatarUrl) {
+    if (!avatarUrl) return;
+    const oldPath = path.join(__dirname, avatarUrl.replace(/^\//, ''));
+    if (oldPath.startsWith(path.join(__dirname, 'uploads')) && fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+  }
+  function saveAvatarFile(prefix, id, dataUrl) {
+    const mimeMatch = dataUrl.match(/^data:(image\/[a-z+]+);base64,/);
+    if (!mimeMatch) return { error: 'invalid data_url format' };
+    const mimeToExt = { 'image/jpeg':'jpg','image/png':'png','image/gif':'gif','image/webp':'webp' };
+    const ext = mimeToExt[mimeMatch[1]] || 'png';
+    const base64Data = dataUrl.slice(dataUrl.indexOf(',') + 1);
+    const saved = `${prefix}-${id}-${Date.now()}.${ext}`;
+    const avatarDir = path.join(UPLOADS_DIR, 'avatar');
+    if (!fs.existsSync(avatarDir)) fs.mkdirSync(avatarDir);
+    fs.writeFileSync(path.join(avatarDir, saved), Buffer.from(base64Data, 'base64'));
+    return { avatar_url: `/uploads/avatar/${saved}` };
+  }
+
   // ── Actor avatar upload
   const avatarUploadMatch = req.method === 'POST' && url.pathname.match(/^\/api\/actors\/(\d+)\/avatar$/);
   if (avatarUploadMatch) {
     const id = parseInt(avatarUploadMatch[1]);
-    const body = await readBody(req);
-    const data = parseJsonBody(body);
+    const data = parseJsonBody(await readBody(req));
     if (!data) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
     const { data_url } = data;
     if (!data_url || !data_url.startsWith('data:image/')) { res.writeHead(400); return res.end('invalid data_url'); }
-    const mimeMatch = data_url.match(/^data:(image\/[a-z+]+);base64,/);
-    if (!mimeMatch) { res.writeHead(400); return res.end('invalid data_url format'); }
-    const mimeType = mimeMatch[1];
-    const mimeToExt = { 'image/jpeg':'jpg','image/png':'png','image/gif':'gif','image/webp':'webp' };
-    const ext = mimeToExt[mimeType] || 'png';
-    const base64Data = data_url.slice(data_url.indexOf(',') + 1);
-    const oldAvatar = db.prepare('SELECT avatar_url FROM actors WHERE id=?').get(id);
-    if (oldAvatar?.avatar_url) {
-      const oldPath = path.join(__dirname, oldAvatar.avatar_url.replace(/^\//, ''));
-      if (oldPath.startsWith(path.join(__dirname, 'uploads')) && fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
-    }
-    const saved = `avatar-${id}-${Date.now()}.${ext}`;
-    const avatarDir = path.join(UPLOADS_DIR, 'avatar');
-    if (!fs.existsSync(avatarDir)) fs.mkdirSync(avatarDir);
-    fs.writeFileSync(path.join(avatarDir, saved), Buffer.from(base64Data, 'base64'));
-    const avatarUrl = `/uploads/avatar/${saved}`;
-    db.prepare('UPDATE actors SET avatar_url=? WHERE id=?').run(avatarUrl, id);
-    return json(res, { avatar_url: avatarUrl });
+    deleteAvatarFile(db.prepare('SELECT avatar_url FROM actors WHERE id=?').get(id)?.avatar_url);
+    const result = saveAvatarFile('avatar', id, data_url);
+    if (result.error) { res.writeHead(400); return res.end(result.error); }
+    db.prepare('UPDATE actors SET avatar_url=? WHERE id=?').run(result.avatar_url, id);
+    return json(res, { avatar_url: result.avatar_url });
   }
 
   // ── Actor avatar delete
   const avatarDeleteMatch = req.method === 'DELETE' && url.pathname.match(/^\/api\/actors\/(\d+)\/avatar$/);
   if (avatarDeleteMatch) {
     const id = parseInt(avatarDeleteMatch[1]);
-    const actor = db.prepare('SELECT avatar_url FROM actors WHERE id=?').get(id);
-    if (actor?.avatar_url) {
-      const oldPath = path.join(__dirname, actor.avatar_url.replace(/^\//, ''));
-      if (oldPath.startsWith(path.join(__dirname, 'uploads')) && fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
-    }
+    deleteAvatarFile(db.prepare('SELECT avatar_url FROM actors WHERE id=?').get(id)?.avatar_url);
     db.prepare('UPDATE actors SET avatar_url=NULL WHERE id=?').run(id);
     return json(res, { ok: true });
   }
@@ -1641,10 +1644,12 @@ const server = http.createServer(async (req, res) => {
   if (msgGetMatch) {
     const msgId = parseInt(msgGetMatch[1]);
     const row = db.prepare(`
-      SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
+      SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
+             sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url
       FROM messages m
       JOIN room_participants rp ON rp.id=m.participant_id
       JOIN actors a ON a.id=rp.actor_id
+      LEFT JOIN sub_agents sa ON sa.id=m.sub_agent_id
       WHERE m.id=?
     `).get(msgId);
     if (!row) { res.writeHead(404); return res.end(); }
@@ -1704,11 +1709,13 @@ const server = http.createServer(async (req, res) => {
       if (before) {
         const rows = db.prepare(`
           SELECT * FROM (
-            SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
+            SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
+                   sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url
               ${threadSummarySQL}
             FROM messages m
             JOIN room_participants rp ON rp.id=m.participant_id
             JOIN actors a ON a.id=rp.actor_id
+            LEFT JOIN sub_agents sa ON sa.id=m.sub_agent_id
             WHERE m.room_id=? AND m.id < ?
               ${threadFilter}
               AND (
@@ -1727,11 +1734,13 @@ const server = http.createServer(async (req, res) => {
       }
       const since = url.searchParams.get('since') ?? '0';
       const rows = db.prepare(`
-        SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
+        SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
+               sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url
           ${threadSummarySQL}
         FROM messages m
         JOIN room_participants rp ON rp.id=m.participant_id
         JOIN actors a ON a.id=rp.actor_id
+        LEFT JOIN sub_agents sa ON sa.id=m.sub_agent_id
         WHERE m.room_id=? AND m.id > ?
           ${threadFilter}
           AND (
@@ -2090,7 +2099,7 @@ const server = http.createServer(async (req, res) => {
       FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.id=?
     `).get(parentPart.id);
     const effectiveHarness = sub.harness || ai.adapter || 'claude';
-    ai.sub_agent = { id: sub.id, label: sub.label, tier: sub.tier, model: sub.model, workdir: sub.workdir, system_prompt: sub.system_prompt, harness: effectiveHarness };
+    ai.sub_agent = { id: sub.id, label: sub.label, tier: sub.tier, model: sub.model, workdir: sub.workdir, system_prompt: sub.system_prompt, harness: effectiveHarness, avatar_color: sub.avatar_color, avatar_symbol: sub.avatar_symbol, avatar_url: sub.avatar_url };
     ai.parent_message_id = parentMessageId;
 
     // Pre-check: parent actor's stoa-agent must be online to run the sub-agent.
@@ -2110,7 +2119,8 @@ const server = http.createServer(async (req, res) => {
     if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
     const roomId = parseInt(url.pathname.split('/')[3]);
     const runs = db.prepare(`
-      SELECT m.id as message_id, m.sub_agent_label, m.created_at, a.name as parent_name, a.avatar_color, sa.tier
+      SELECT m.id as message_id, m.sub_agent_label, m.created_at, a.name as parent_name, a.avatar_color, sa.tier,
+             sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url
       FROM messages m
       JOIN room_participants rp ON rp.id=m.participant_id
       JOIN actors a ON a.id=rp.actor_id
@@ -3557,7 +3567,7 @@ const server = http.createServer(async (req, res) => {
     if (!data) return json(res, { error: 'Invalid JSON' }, 400);
     const updates = [];
     const params = [];
-    for (const key of ['label', 'tier', 'model', 'workdir', 'system_prompt', 'enabled', 'harness']) {
+    for (const key of ['label', 'tier', 'model', 'workdir', 'system_prompt', 'enabled', 'harness', 'avatar_color', 'avatar_symbol']) {
       if (data[key] !== undefined) {
         if (key === 'label') {
           if (!data.label?.trim()) return json(res, { error: 'label required' }, 400);
@@ -3576,6 +3586,17 @@ const server = http.createServer(async (req, res) => {
             if (!validHarnesses.includes(data.harness)) return json(res, { error: `harness must be one of: ${validHarnesses.join(', ')} (or null to inherit)` }, 400);
           }
           updates.push('harness=?'); params.push(data.harness ?? null);
+        } else if (key === 'avatar_color') {
+          if (data.avatar_color !== null && !/^#[0-9a-fA-F]{6}$/.test(data.avatar_color)) return json(res, { error: 'avatar_color must be null or #RRGGBB' }, 400);
+          updates.push('avatar_color=?'); params.push(data.avatar_color ?? null);
+        } else if (key === 'avatar_symbol') {
+          if (data.avatar_symbol !== null) {
+            const sym = String(data.avatar_symbol).trim();
+            if (sym.length < 1 || sym.length > 4 || /[<>]/.test(sym)) return json(res, { error: 'avatar_symbol must be 1-4 chars, no <>' }, 400);
+            updates.push('avatar_symbol=?'); params.push(sym);
+          } else {
+            updates.push('avatar_symbol=?'); params.push(null);
+          }
         } else {
           updates.push(`${key}=?`); params.push(data[key] ?? null);
         }
@@ -3601,13 +3622,81 @@ const server = http.createServer(async (req, res) => {
       throw e;
     }
     const row = db.prepare('SELECT * FROM sub_agents WHERE id=?').get(id);
+    for (const r of db.prepare('SELECT room_id FROM room_sub_agents WHERE sub_agent_id=?').all(id))
+      broadcast(r.room_id, { type: 'sub_agent_updated', sub_agent: row });
     return json(res, row);
   }
 
   if (req.method === 'DELETE' && url.pathname.match(/^\/api\/sub-agents\/\d+$/)) {
     const id = parseInt(url.pathname.split('/')[3]);
+    const sa = db.prepare('SELECT avatar_url FROM sub_agents WHERE id=?').get(id);
+    if (sa?.avatar_url) deleteAvatarFile(sa.avatar_url);
+    db.prepare('DELETE FROM sub_agent_memory WHERE sub_agent_id=?').run(id);
     db.prepare('DELETE FROM sub_agents WHERE id=?').run(id);
     res.writeHead(204); return res.end();
+  }
+
+  // ── Sub-agent memory CRUD ──
+  if (req.method === 'GET' && url.pathname.match(/^\/api\/sub-agents\/\d+\/memory$/)) {
+    const id = parseInt(url.pathname.split('/')[3]);
+    const sa = db.prepare('SELECT id, parent_actor_id FROM sub_agents WHERE id=?').get(id);
+    if (!sa) return json(res, { error: 'sub-agent not found' }, 404);
+    const agent = verifyAgentRequest(req);
+    if (!agent && !req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    if (agent && agent.id !== sa.parent_actor_id) return json(res, { error: 'forbidden' }, 403);
+    const row = db.prepare('SELECT content, updated_at FROM sub_agent_memory WHERE sub_agent_id=?').get(id);
+    const content = row?.content ?? '';
+    return json(res, { content, char_count: content.length, budget: 2200, updated_at: row?.updated_at ?? null });
+  }
+
+  if (req.method === 'PUT' && url.pathname.match(/^\/api\/sub-agents\/\d+\/memory$/)) {
+    const id = parseInt(url.pathname.split('/')[3]);
+    const sa = db.prepare('SELECT id, parent_actor_id FROM sub_agents WHERE id=?').get(id);
+    if (!sa) return json(res, { error: 'sub-agent not found' }, 404);
+    const agent = verifyAgentRequest(req);
+    if (!agent && !req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    if (agent && agent.id !== sa.parent_actor_id) return json(res, { error: 'forbidden' }, 403);
+    const data = parseJsonBody(await readBody(req));
+    if (!data || typeof data.content !== 'string') return json(res, { error: 'content (string) required' }, 400);
+    if (data.content.length > 2200) return json(res, { error: 'content exceeds 2200 char budget' }, 400);
+    db.prepare(
+      "INSERT INTO sub_agent_memory (sub_agent_id, content, updated_at) VALUES (?,?,datetime('now')) ON CONFLICT(sub_agent_id) DO UPDATE SET content=excluded.content, updated_at=excluded.updated_at"
+    ).run(id, data.content);
+    const row = db.prepare('SELECT content, updated_at FROM sub_agent_memory WHERE sub_agent_id=?').get(id);
+    return json(res, { content: row.content, char_count: row.content.length, budget: 2200, updated_at: row.updated_at });
+  }
+
+  // ── Sub-agent avatar upload/delete ──
+  if (req.method === 'POST' && url.pathname.match(/^\/api\/sub-agents\/\d+\/avatar$/)) {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    const id = parseInt(url.pathname.split('/')[3]);
+    const sa = db.prepare('SELECT id, avatar_url FROM sub_agents WHERE id=?').get(id);
+    if (!sa) return json(res, { error: 'sub-agent not found' }, 404);
+    const data = parseJsonBody(await readBody(req));
+    if (!data) return json(res, { error: 'Invalid JSON' }, 400);
+    const { data_url } = data;
+    if (!data_url || !data_url.startsWith('data:image/')) return json(res, { error: 'invalid data_url' }, 400);
+    deleteAvatarFile(sa.avatar_url);
+    const result = saveAvatarFile('avatar-sa', id, data_url);
+    if (result.error) return json(res, { error: result.error }, 400);
+    db.prepare('UPDATE sub_agents SET avatar_url=? WHERE id=?').run(result.avatar_url, id);
+    const updated = db.prepare('SELECT * FROM sub_agents WHERE id=?').get(id);
+    for (const r of db.prepare('SELECT room_id FROM room_sub_agents WHERE sub_agent_id=?').all(id))
+      broadcast(r.room_id, { type: 'sub_agent_updated', sub_agent: updated });
+    return json(res, { avatar_url: result.avatar_url });
+  }
+
+  if (req.method === 'DELETE' && url.pathname.match(/^\/api\/sub-agents\/\d+\/avatar$/)) {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    const id = parseInt(url.pathname.split('/')[3]);
+    const sa = db.prepare('SELECT id, avatar_url FROM sub_agents WHERE id=?').get(id);
+    if (!sa) return json(res, { error: 'sub-agent not found' }, 404);
+    deleteAvatarFile(sa.avatar_url);
+    db.prepare('UPDATE sub_agents SET avatar_url=NULL WHERE id=?').run(id);
+    const updated = db.prepare('SELECT * FROM sub_agents WHERE id=?').get(id);
+    for (const r of db.prepare('SELECT room_id FROM room_sub_agents WHERE sub_agent_id=?').all(id))
+      broadcast(r.room_id, { type: 'sub_agent_updated', sub_agent: updated });
+    return json(res, { ok: true });
   }
 
   // ── Client auto-update API ──
@@ -4052,10 +4141,15 @@ Write-Host "Logs   : pm2 logs $AgentName"
 
   // PUT /api/actors/:id/memory/:file — update one agent memory file
   if (req.method === 'PUT' && url.pathname.match(/^\/api\/actors\/\d+\/memory\/(MEMORY\.md|USER\.md)$/)) {
-    if (!requireAuth(req, res, url)) return;
     const parts = url.pathname.split('/');
     const actorId = parseInt(parts[3]);
     const file = parts[5];
+    const agent = verifyAgentRequest(req);
+    if (agent) {
+      if (agent.id !== actorId) return json(res, { error: 'forbidden — agents can only write their own memory' }, 403);
+    } else {
+      if (!requireAuth(req, res, url)) return;
+    }
     const BUDGETS = { 'MEMORY.md': 2200, 'USER.md': 1375 };
     const data = parseJsonBody(await readBody(req));
     if (!data || typeof data.content !== 'string') return json(res, { error: 'content (string) required' }, 400);
@@ -4202,10 +4296,12 @@ Write-Host "Logs   : pm2 logs $AgentName"
     const roomId = parseInt(threadDetailMatch[1]);
     const rootId = parseInt(threadDetailMatch[2]);
     const rootMsg = db.prepare(`
-      SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
+      SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
+             sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url
       FROM messages m
       JOIN room_participants rp ON rp.id=m.participant_id
       JOIN actors a ON a.id=rp.actor_id
+      LEFT JOIN sub_agents sa ON sa.id=m.sub_agent_id
       WHERE m.id=? AND m.room_id=? AND m.thread_id IS NULL
     `).get(rootId, roomId);
     if (!rootMsg) {
@@ -4216,20 +4312,24 @@ Write-Host "Logs   : pm2 logs $AgentName"
     let messages;
     if (before) {
       messages = db.prepare(`
-        SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
+        SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
+               sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url
         FROM messages m
         JOIN room_participants rp ON rp.id=m.participant_id
         JOIN actors a ON a.id=rp.actor_id
+        LEFT JOIN sub_agents sa ON sa.id=m.sub_agent_id
         WHERE m.thread_id=? AND m.room_id=? AND m.id < ?
         ORDER BY m.id DESC LIMIT ?
       `).all(rootId, roomId, before, limit);
       messages.reverse();
     } else {
       messages = db.prepare(`
-        SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
+        SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
+               sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url
         FROM messages m
         JOIN room_participants rp ON rp.id=m.participant_id
         JOIN actors a ON a.id=rp.actor_id
+        LEFT JOIN sub_agents sa ON sa.id=m.sub_agent_id
         WHERE m.thread_id=? AND m.room_id=?
         ORDER BY m.id DESC LIMIT ?
       `).all(rootId, roomId, limit);
@@ -4852,6 +4952,7 @@ wss.on('connection', (ws, req) => {
       const messages = db.prepare(`
         SELECT * FROM (
           SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
+            sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url,
             CASE WHEN m.thread_id IS NULL THEN (SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id) END AS thread_count,
             CASE WHEN m.thread_id IS NULL THEN (SELECT MAX(r.created_at) FROM messages r WHERE r.thread_id = m.id) END AS thread_last_at,
             CASE WHEN m.thread_id IS NULL THEN (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state IN ('streaming','requesting'))) END AS thread_active,
@@ -4861,6 +4962,7 @@ wss.on('connection', (ws, req) => {
           FROM messages m
           JOIN room_participants rp ON rp.id=m.participant_id
           JOIN actors a ON a.id=rp.actor_id
+          LEFT JOIN sub_agents sa ON sa.id=m.sub_agent_id
           WHERE m.room_id=? AND (m.thread_id IS NULL OR m.broadcast_reason IS NOT NULL) AND (
             (m.state IN ('complete','streaming','requesting') AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL OR m.state IN ('streaming','requesting')))
             OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
@@ -6997,24 +7099,57 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   // Inject frozen memory snapshot at session start
   const roomMem = db.prepare('SELECT content FROM room_memory WHERE room_id=? AND content != \'\'').get(roomId);
   let memorySection = '';
-  {
-    const memRows = db.prepare('SELECT file, content FROM agent_memory WHERE actor_id=? AND content != \'\'').all(ai.actor_id);
-    const parts = [];
-    for (const { file, content } of memRows) parts.push(`### ${file}\n${content}`);
-    if (roomMem) parts.push(`### Room Memory\n${roomMem.content}`);
-    if (parts.length) memorySection = `\n## Memory\n${parts.join('\n\n')}`;
-  }
-
-  // Platform-level memory management instructions (always injected)
   let platformMemoryLine = '';
-  {
+
+  if (subAgent) {
+    // Sub-agent: own memory + room memory (read-only) + self-learning instructions
+    const saMem = db.prepare('SELECT content, updated_at FROM sub_agent_memory WHERE sub_agent_id=?').get(subAgent.id);
+    const saMemContent = saMem?.content || '';
+    const memParts = [];
+    if (saMemContent) memParts.push(`### Your Memory (sub-agent ${subAgent.label})\n${saMemContent}`);
+    if (roomMem) memParts.push(`### Room Memory (READ-ONLY — belongs to parent agent)\n${roomMem.content}`);
+    if (memParts.length) memorySection = `\n## Memory\n${memParts.join('\n\n')}`;
+
+    const saCharCount = saMemContent.length;
+    const saBudget = 2200;
+    const saWarn = saCharCount > 1760 ? `\n⚠ Memory at ${saCharCount}/${saBudget} chars — compress before next update.` : '';
+    platformMemoryLine = `\n## Self-Learning\n` +
+      `You have your own persistent memory (${saCharCount}/${saBudget} chars used).${saWarn}\n` +
+      `At the end of each task, reflect briefly: is there a durable lesson (codebase gotcha, user preference, recurring mistake, proven approach, correct tool/command)?\n` +
+      `If yes, update your memory with the **full curated content** (consolidate/replace old entries, don't append blindly):\n` +
+      '```\n' +
+      `BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\n` +
+      `curl -s -X PUT "$BASE_URL/api/sub-agents/${subAgent.id}/memory" \\\n` +
+      `  -H "Content-Type: application/json" \\\n` +
+      `  -H "x-agent-id: $STOA_ACTOR_ID" \\\n` +
+      `  -H "x-agent-secret: $STOA_SECRET" \\\n` +
+      `  -d '{"content": "your full curated memory here"}'\n` +
+      '```\n' +
+      `Do NOT save: trivial/one-time info, secrets/tokens, things already in room memory.\n` +
+      `Do NOT update room memory — it belongs to the parent agent.`;
+  } else {
+    // Main agent: MEMORY.md + USER.md + room memory + self-write instructions
+    const memRows = db.prepare('SELECT file, content FROM agent_memory WHERE actor_id=? AND content != \'\'').all(ai.actor_id);
+    const memParts = [];
+    for (const { file, content } of memRows) memParts.push(`### ${file}\n${content}`);
+    if (roomMem) memParts.push(`### Room Memory\n${roomMem.content}`);
+    if (memParts.length) memorySection = `\n## Memory\n${memParts.join('\n\n')}`;
+
+    const BUDGETS = { 'MEMORY.md': 2200, 'USER.md': 1375 };
+    const memFiles = db.prepare('SELECT file, content FROM agent_memory WHERE actor_id=?').all(ai.actor_id);
+    const memUsage = {};
+    for (const f of ['MEMORY.md', 'USER.md']) {
+      const row = memFiles.find(r => r.file === f);
+      memUsage[f] = (row?.content || '').length;
+    }
+
     const roomMemContent = roomMem?.content || '';
     const charCount = roomMemContent.length;
     const budget = 1800;
     const warnThreshold = 1400;
     let thresholdWarning = '';
     if (charCount > warnThreshold) {
-      thresholdWarning = `\n⚠ Memory is at ${charCount}/${budget} chars — compress or summarize existing entries before your next update to stay within budget.`;
+      thresholdWarning = `\n⚠ Room memory is at ${charCount}/${budget} chars — compress or summarize existing entries before your next update to stay within budget.`;
     }
     platformMemoryLine = `\n## Memory Management\n` +
       `You have persistent memory for this room. Memory content (if any) is shown in the Memory section above.\n` +
@@ -7023,7 +7158,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
       `- An important decision is made\n` +
       `- Key project context is revealed\n` +
       `Do NOT save trivial exchanges, greetings, or information already in memory.\n\n` +
-      `To update memory, use:\n` +
+      `**Room memory** (context specific to this room):\n` +
       '```\n' +
       `BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\n` +
       `curl -s -X PUT "$BASE_URL/api/rooms/$STOA_ROOM_ID/memory" \\\n` +
@@ -7032,7 +7167,18 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
       `  -H "x-agent-secret: $STOA_SECRET" \\\n` +
       `  -d '{"content": "your updated memory content here"}'\n` +
       '```\n' +
-      `Memory budget: ${charCount}/${budget} chars used.${thresholdWarning}`;
+      `Room memory budget: ${charCount}/${budget} chars used.${thresholdWarning}\n\n` +
+      `**Agent memory** (persists across all rooms — lessons, pitfalls, environment facts):\n` +
+      `- MEMORY.md (${memUsage['MEMORY.md']}/${BUDGETS['MEMORY.md']} chars): cross-room lessons, codebase gotchas, proven approaches\n` +
+      `- USER.md (${memUsage['USER.md']}/${BUDGETS['USER.md']} chars): user profile, preferences, working style\n` +
+      '```\n' +
+      `curl -s -X PUT "$BASE_URL/api/actors/$STOA_ACTOR_ID/memory/MEMORY.md" \\\n` +
+      `  -H "Content-Type: application/json" \\\n` +
+      `  -H "x-agent-id: $STOA_ACTOR_ID" \\\n` +
+      `  -H "x-agent-secret: $STOA_SECRET" \\\n` +
+      `  -d '{"content": "full curated content"}'\n` +
+      '```\n' +
+      `Replace MEMORY.md with USER.md for user profile updates. Send full curated content (consolidate, don't append blindly). Never store secrets/tokens.`;
   }
 
   const emailThreadSection = buildEmailThreadSection(db, { roomId, threadId });
@@ -7141,7 +7287,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         resolve: (v) => { clearTimeout(timeoutTimer); resolve(v); },
         reject:  (e) => { clearTimeout(timeoutTimer); reject(e); },
       });
-      pendingActorMeta.set(msgId, { actor_id: ai.actor_id, room_id: roomId, actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null, sub_agent_label: subAgent?.label || null, thread_id: threadId || null });
+      pendingActorMeta.set(msgId, { actor_id: ai.actor_id, room_id: roomId, actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null, sub_agent_label: subAgent?.label || null, sub_agent_avatar_color: subAgent?.avatar_color || null, sub_agent_avatar_symbol: subAgent?.avatar_symbol || null, sub_agent_avatar_url: subAgent?.avatar_url || null, thread_id: threadId || null });
       const triggerBaseUrl = getPublicUrl(`localhost:${PORT}`);
       const fullAttachments = (attachments || []).map(a => ({
         ...a,
