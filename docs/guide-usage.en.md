@@ -233,13 +233,13 @@ Sub-agents are defined per agent. Select the agent in **Settings > AI Agent**, t
 - **System prompt** (optional) — extra instructions that shape the sub-agent's behavior.
 - **Harness** (optional) — `claude` or `codex`. Leave on **inherit from parent** (default) to use the same harness as the parent agent.
 - **Avatar** (optional) — each sub-agent has its own avatar: a hex color (`#RRGGBB`), a symbol (1–4 characters), or a custom image (upload or remove). Sub-agent messages in the feed and thread panels display the sub-agent's own avatar; if none is set, they fall back to the parent agent's avatar. Messages already on screen reflect the new avatar after a page reload.
-- **Memory** (optional) — each sub-agent has its own persistent memory (2 200-character budget), independent from the room memory. View or edit it directly in the sub-agent card.
+- **Memory** (optional) — each sub-agent has its own persistent memory (2,200-character budget), independent from the room memory. View or edit it directly in the sub-agent card.
 
 You can edit or delete a definition anytime. Definitions belong to the parent agent, not to any specific room.
 
 ### Sub-Agent Memory and Self-Learning
 
-Each sub-agent keeps its own **persistent memory** separate from the room memory. The budget is 2 200 characters and the content is visible and editable in the sub-agent card.
+Each sub-agent keeps its own **persistent memory** separate from the room memory. The budget is 2,200 characters and the content is visible and editable in the sub-agent card.
 
 **Self-learning** is built in: after completing a task, a sub-agent automatically saves useful lessons to its own memory without being told to. Room memory is read-only for sub-agents — they can only write to their own memory.
 
