@@ -2980,6 +2980,235 @@ async function run() {
     });
   }
 
+  // ── Sub-agent self-learning memory + avatar ────────────────────────────────
+  console.log('\n[Sub-agent memory + avatar]');
+  {
+    let slActorId = null, slSecret = null, slWorkdirId = null, slRoomId = null;
+    let slSubAgent = null, slAgentWs = null;
+
+    await test('Setup — register test actor + room for self-learning tests', async () => {
+      const agent = await createOnlineTestAgent('__test-self-learn', '/tmp/stoa-test-self-learn');
+      if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+      slActorId = agent.actorId; slSecret = agent.secret; slWorkdirId = agent.workdirId; slAgentWs = agent.ws;
+      const r = await req('POST', '/api/rooms', { title: '__self-learn-room__', workdir_id: slWorkdirId, participant_ids: [slActorId] });
+      assert.strictEqual(r.status, 200);
+      slRoomId = r.body.id;
+      testRoomIds.push(slRoomId);
+      if (slAgentWs) { slAgentWs.close(); slAgentWs = null; }
+      const sa = await req('POST', `/api/actors/${slActorId}/sub-agents`, { label: 'testlearner', tier: 'standard' });
+      assert.strictEqual(sa.status, 201);
+      slSubAgent = sa.body;
+    });
+
+    await test('Check migration — sub_agent_memory table exists', async () => {
+      const db = require('./db');
+      const tbl = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sub_agent_memory'").get();
+      assert.ok(tbl, 'migration 20261017-sub-agent-memory-avatar not applied');
+    });
+
+    await test('Check migration — sub_agents.avatar_color column exists', async () => {
+      const db = require('./db');
+      const cols = db.prepare("PRAGMA table_info(sub_agents)").all().map(c => c.name);
+      assert.ok(cols.includes('avatar_color'), 'avatar_color column missing');
+      assert.ok(cols.includes('avatar_symbol'), 'avatar_symbol column missing');
+      assert.ok(cols.includes('avatar_url'), 'avatar_url column missing');
+    });
+
+    // ── Sub-agent memory GET/PUT ──
+    await test('GET /api/sub-agents/:id/memory — user auth → 200 empty', async () => {
+      if (!slSubAgent) { console.log('    (skipped)'); return; }
+      const r = await req('GET', `/api/sub-agents/${slSubAgent.id}/memory`);
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.content, '');
+      assert.strictEqual(r.body.budget, 2200);
+      assert.strictEqual(r.body.char_count, 0);
+    });
+
+    await test('PUT /api/sub-agents/:id/memory — user auth → 200', async () => {
+      if (!slSubAgent) { console.log('    (skipped)'); return; }
+      const r = await req('PUT', `/api/sub-agents/${slSubAgent.id}/memory`, { content: 'lesson: always run tests' });
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.content, 'lesson: always run tests');
+      assert.strictEqual(r.body.char_count, 24);
+      assert.strictEqual(r.body.budget, 2200);
+    });
+
+    await test('GET /api/sub-agents/:id/memory — content persisted', async () => {
+      if (!slSubAgent) { console.log('    (skipped)'); return; }
+      const r = await req('GET', `/api/sub-agents/${slSubAgent.id}/memory`);
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.content, 'lesson: always run tests');
+    });
+
+    await test('PUT /api/sub-agents/:id/memory — parent agent auth → 200', async () => {
+      if (!slSubAgent || !slSecret) { console.log('    (skipped)'); return; }
+      const headers = { 'x-agent-id': String(slActorId), 'x-agent-secret': slSecret };
+      const r = await req('PUT', `/api/sub-agents/${slSubAgent.id}/memory`, { content: 'agent wrote this' }, headers);
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.content, 'agent wrote this');
+    });
+
+    await test('PUT /api/sub-agents/:id/memory — non-parent agent → 403', async () => {
+      if (!slSubAgent) { console.log('    (skipped)'); return; }
+      const fakeAgent = await createOnlineTestAgent('__test-sl-fake', '/tmp/stoa-test-sl-fake');
+      if (!fakeAgent) { console.log('    (skipped — fake agent setup failed)'); return; }
+      const headers = { 'x-agent-id': String(fakeAgent.actorId), 'x-agent-secret': fakeAgent.secret };
+      const r = await req('PUT', `/api/sub-agents/${slSubAgent.id}/memory`, { content: 'intruder' }, headers);
+      fakeAgent.ws.close();
+      assert.strictEqual(r.status, 403);
+    });
+
+    await test('PUT /api/sub-agents/:id/memory — non-string content → 400', async () => {
+      if (!slSubAgent) { console.log('    (skipped)'); return; }
+      const r = await req('PUT', `/api/sub-agents/${slSubAgent.id}/memory`, { content: 12345 });
+      assert.strictEqual(r.status, 400);
+    });
+
+    await test('PUT /api/sub-agents/:id/memory — exceeds budget → 400', async () => {
+      if (!slSubAgent) { console.log('    (skipped)'); return; }
+      const r = await req('PUT', `/api/sub-agents/${slSubAgent.id}/memory`, { content: 'x'.repeat(2201) });
+      assert.strictEqual(r.status, 400);
+    });
+
+    await test('GET /api/sub-agents/999999/memory — not found → 404', async () => {
+      const r = await req('GET', '/api/sub-agents/999999/memory');
+      assert.strictEqual(r.status, 404);
+    });
+
+    await test('PUT /api/sub-agents/:id/memory — no auth → 401', async () => {
+      if (!slSubAgent) { console.log('    (skipped)'); return; }
+      const saved = sessionCookie; sessionCookie = null;
+      const r = await req('PUT', `/api/sub-agents/${slSubAgent.id}/memory`, { content: 'nope' });
+      sessionCookie = saved;
+      assert.strictEqual(r.status, 401);
+    });
+
+    // ── Actor memory self-write ──
+    await test('PUT /api/actors/:id/memory/MEMORY.md — agent self-write → 200', async () => {
+      if (!slActorId || !slSecret) { console.log('    (skipped)'); return; }
+      const headers = { 'x-agent-id': String(slActorId), 'x-agent-secret': slSecret };
+      const r = await req('PUT', `/api/actors/${slActorId}/memory/MEMORY.md`, { content: 'self-written' }, headers);
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.content, 'self-written');
+    });
+
+    await test('PUT /api/actors/:id/memory/MEMORY.md — other agent → 403', async () => {
+      if (!slActorId) { console.log('    (skipped)'); return; }
+      const fakeAgent = await createOnlineTestAgent('__test-sl-fake2', '/tmp/stoa-test-sl-fake2');
+      if (!fakeAgent) { console.log('    (skipped — fake agent setup failed)'); return; }
+      const headers = { 'x-agent-id': String(fakeAgent.actorId), 'x-agent-secret': fakeAgent.secret };
+      const r = await req('PUT', `/api/actors/${slActorId}/memory/MEMORY.md`, { content: 'intruder' }, headers);
+      fakeAgent.ws.close();
+      assert.strictEqual(r.status, 403);
+    });
+
+    // ── PATCH avatar fields ──
+    await test('PATCH /api/sub-agents/:id — avatar_color valid → 200', async () => {
+      if (!slSubAgent) { console.log('    (skipped)'); return; }
+      const r = await req('PATCH', `/api/sub-agents/${slSubAgent.id}`, { avatar_color: '#ff5500' });
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.avatar_color, '#ff5500');
+    });
+
+    await test('PATCH /api/sub-agents/:id — avatar_color invalid → 400', async () => {
+      if (!slSubAgent) { console.log('    (skipped)'); return; }
+      const r = await req('PATCH', `/api/sub-agents/${slSubAgent.id}`, { avatar_color: 'red' });
+      assert.strictEqual(r.status, 400);
+    });
+
+    await test('PATCH /api/sub-agents/:id — avatar_color null → 200 (clear)', async () => {
+      if (!slSubAgent) { console.log('    (skipped)'); return; }
+      const r = await req('PATCH', `/api/sub-agents/${slSubAgent.id}`, { avatar_color: null });
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.avatar_color, null);
+    });
+
+    await test('PATCH /api/sub-agents/:id — avatar_symbol valid → 200', async () => {
+      if (!slSubAgent) { console.log('    (skipped)'); return; }
+      const r = await req('PATCH', `/api/sub-agents/${slSubAgent.id}`, { avatar_symbol: '🤖' });
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.avatar_symbol, '🤖');
+    });
+
+    await test('PATCH /api/sub-agents/:id — avatar_symbol with <> → 400', async () => {
+      if (!slSubAgent) { console.log('    (skipped)'); return; }
+      const r = await req('PATCH', `/api/sub-agents/${slSubAgent.id}`, { avatar_symbol: '<b>' });
+      assert.strictEqual(r.status, 400);
+    });
+
+    await test('PATCH /api/sub-agents/:id — avatar_symbol too long → 400', async () => {
+      if (!slSubAgent) { console.log('    (skipped)'); return; }
+      const r = await req('PATCH', `/api/sub-agents/${slSubAgent.id}`, { avatar_symbol: 'ABCDE' });
+      assert.strictEqual(r.status, 400);
+    });
+
+    // ── Sub-agent avatar upload/delete ──
+    await test('POST /api/sub-agents/:id/avatar — upload → 200', async () => {
+      if (!slSubAgent) { console.log('    (skipped)'); return; }
+      const pixel1x1 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+      const r = await req('POST', `/api/sub-agents/${slSubAgent.id}/avatar`, { data_url: pixel1x1 });
+      assert.strictEqual(r.status, 200);
+      assert.ok(r.body.avatar_url?.startsWith('/uploads/avatar/avatar-sa-'), 'avatar_url wrong prefix');
+    });
+
+    await test('DELETE /api/sub-agents/:id/avatar — remove → 200', async () => {
+      if (!slSubAgent) { console.log('    (skipped)'); return; }
+      const r = await req('DELETE', `/api/sub-agents/${slSubAgent.id}/avatar`);
+      assert.strictEqual(r.status, 200);
+      const sa = await req('GET', `/api/actors/${slActorId}/sub-agents`);
+      const found = sa.body.find(s => s.id === slSubAgent.id);
+      assert.strictEqual(found.avatar_url, null, 'avatar_url should be null after delete');
+    });
+
+    await test('POST /api/sub-agents/:id/avatar — no auth → 401', async () => {
+      if (!slSubAgent) { console.log('    (skipped)'); return; }
+      const saved = sessionCookie; sessionCookie = null;
+      const pixel = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+      const r = await req('POST', `/api/sub-agents/${slSubAgent.id}/avatar`, { data_url: pixel });
+      sessionCookie = saved;
+      assert.strictEqual(r.status, 401);
+    });
+
+    // ── Delete cascade ──
+    await test('DELETE sub-agent cascades memory', async () => {
+      if (!slSubAgent) { console.log('    (skipped)'); return; }
+      const db = require('./db');
+      const memBefore = db.prepare('SELECT 1 FROM sub_agent_memory WHERE sub_agent_id=?').get(slSubAgent.id);
+      assert.ok(memBefore, 'memory should exist before delete');
+      await req('DELETE', `/api/sub-agents/${slSubAgent.id}`);
+      const memAfter = db.prepare('SELECT 1 FROM sub_agent_memory WHERE sub_agent_id=?').get(slSubAgent.id);
+      assert.ok(!memAfter, 'memory should be deleted after cascade');
+      slSubAgent = null;
+    });
+
+    // ── Prompt self-learning ──
+    await test('Sub-agent memory DB round-trip — content persists for prompt injection', async () => {
+      const db = require('./db');
+      if (!slActorId) { console.log('    (skipped)'); return; }
+      const sa2 = await req('POST', `/api/actors/${slActorId}/sub-agents`, { label: 'testpromptsa', tier: 'quick' });
+      if (sa2.status !== 201) { console.log('    (skipped — could not create sub-agent)'); return; }
+      db.prepare("INSERT INTO sub_agent_memory (sub_agent_id, content) VALUES (?, 'test memory content')").run(sa2.body.id);
+      const mem = db.prepare('SELECT content FROM sub_agent_memory WHERE sub_agent_id=?').get(sa2.body.id);
+      assert.strictEqual(mem.content, 'test memory content');
+      db.prepare('DELETE FROM sub_agent_memory WHERE sub_agent_id=?').run(sa2.body.id);
+      await req('DELETE', `/api/sub-agents/${sa2.body.id}`);
+    });
+
+    await test('Cleanup — delete self-learning test data', async () => {
+      if (slRoomId) {
+        await req('PATCH', `/api/rooms/${slRoomId}`, { archived: true });
+        await req('DELETE', `/api/rooms/${slRoomId}`);
+        testRoomIds = testRoomIds.filter(id => id !== slRoomId);
+        slRoomId = null;
+      }
+      if (slActorId) {
+        await req('DELETE', `/api/actors/${slActorId}`);
+        orphanActorIds = orphanActorIds.filter(id => id !== slActorId);
+        slActorId = null;
+      }
+    });
+  }
+
   // ── Phase 6: proactive schedules (sub_agent_schedules CRUD) ────────────────
   // Requires migration 20260901-sub-agent-schedules.sql applied.
   console.log('\n[Sub-agent schedules]');
