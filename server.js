@@ -212,8 +212,8 @@ function cleanErrorText(raw) {
   return (isTraceback ? lines[lines.length - 1] : lines[0]).slice(0, 200);
 }
 
-const { createThreadBroadcast, classifyBroadcastError } = require('./lib/thread-broadcast');
-const { setBroadcastReason, canBroadcastError, getThreadRootPreview } = createThreadBroadcast({
+const { createThreadBroadcast } = require('./lib/thread-broadcast');
+const { setBroadcastReason, getThreadRootPreview, maybeBroadcastError } = createThreadBroadcast({
   db, broadcastToRoom: (...a) => broadcast(...a), enrichFn: enrichAutomation
 });
 
@@ -5040,10 +5040,7 @@ wss.on('connection', (ws, req) => {
       if (reconnectCleaned.length) {
         console.log(`[agent] Cleaned ${reconnectCleaned.length} orphaned message(s) on reconnect for Actor #${agentActorId}`);
         for (const r of reconnectCleaned) {
-          if (r.thread_id && !r.sub_agent_id && canBroadcastError(r.thread_id)) {
-            const reason = classifyBroadcastError(r.content);
-            setBroadcastReason(r.id, reason, r.room_id);
-          }
+          maybeBroadcastError({ threadId: r.thread_id, subAgentId: r.sub_agent_id, messageId: r.id, content: r.content, roomId: r.room_id });
         }
       }
       if (msg.client_version) agentVersions.set(agentActorId, msg.client_version);
@@ -5455,9 +5452,7 @@ wss.on('connection', (ws, req) => {
         const errPayload = { type: 'message_state', message_id: msg.message_id, state: 'error' };
         if (errMeta.thread_id) errPayload.thread_summary = buildThreadSummary(msg.room_id, errMeta.thread_id);
         broadcast(msg.room_id, errPayload);
-        if (errMeta.thread_id && !errMeta.sub_agent_label && canBroadcastError(errMeta.thread_id)) {
-          setBroadcastReason(msg.message_id, 'error', msg.room_id);
-        }
+        maybeBroadcastError({ threadId: errMeta.thread_id, subAgentId: errMeta.sub_agent_label, messageId: msg.message_id, reason: 'error', roomId: msg.room_id });
         pendingAgents.get(msg.message_id)?.resolve('');
         pendingAgents.delete(msg.message_id);
         pendingActorMeta.delete(msg.message_id);
@@ -5487,9 +5482,8 @@ wss.on('connection', (ws, req) => {
       if (doneRow?.thread_id) completePayload.thread_summary = buildThreadSummary(msg.room_id, doneRow.thread_id);
       broadcast(msg.room_id, completePayload);
       broadcastGlobal({ type: 'room_activity', room_id: msg.room_id });
-      if (finalState === 'error' && doneRow?.thread_id && !doneRow.sub_agent_id && canBroadcastError(doneRow.thread_id)) {
-        const reason = classifyBroadcastError(agentContent);
-        setBroadcastReason(msg.message_id, reason, msg.room_id);
+      if (finalState === 'error') {
+        maybeBroadcastError({ threadId: doneRow?.thread_id, subAgentId: doneRow?.sub_agent_id, messageId: msg.message_id, content: agentContent, roomId: msg.room_id });
       }
       if (msg.claude_session_id) {
         try {
@@ -5662,10 +5656,7 @@ wss.on('connection', (ws, req) => {
             db.prepare("UPDATE ai_sessions SET status='idle' WHERE participant_id=? AND sub_agent_id=? AND status='active'").run(errRow.participant_id, errRow.sub_agent_id);
           } else {
             db.prepare("UPDATE ai_sessions SET status='idle' WHERE participant_id=? AND sub_agent_id IS NULL AND status='active'").run(errRow.participant_id);
-            if (errRow.thread_id && canBroadcastError(errRow.thread_id)) {
-              const reason = classifyBroadcastError(errRow.content);
-              setBroadcastReason(msg.message_id, reason, msg.room_id);
-            }
+            maybeBroadcastError({ threadId: errRow.thread_id, messageId: msg.message_id, content: errRow.content, roomId: msg.room_id });
           }
         }
       } catch {}
@@ -6190,10 +6181,7 @@ wss.on('connection', (ws, req) => {
       if (cleaned.length) {
         console.log(`[agent] Cleaned ${cleaned.length} orphaned message(s) from Actor #${agentActorId}`);
         for (const r of cleaned) {
-          if (r.thread_id && !r.sub_agent_id && canBroadcastError(r.thread_id)) {
-            const reason = classifyBroadcastError(r.content);
-            setBroadcastReason(r.id, reason, r.room_id);
-          }
+          maybeBroadcastError({ threadId: r.thread_id, subAgentId: r.sub_agent_id, messageId: r.id, content: r.content, roomId: r.room_id });
         }
       }
       // Reject all pending promises for this actor so caller sequences can continue/unblock
@@ -7393,10 +7381,7 @@ const orphaned = db.prepare("UPDATE messages SET state='error', content=CASE WHE
 if (orphaned.length) {
   console.log(`[startup] Cleaned ${orphaned.length} orphaned message(s)`);
   for (const r of orphaned) {
-    if (r.thread_id && !r.sub_agent_id && canBroadcastError(r.thread_id)) {
-      const reason = classifyBroadcastError(r.content);
-      setBroadcastReason(r.id, reason);
-    }
+    maybeBroadcastError({ threadId: r.thread_id, subAgentId: r.sub_agent_id, messageId: r.id, content: r.content });
   }
 }
 

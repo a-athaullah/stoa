@@ -9535,15 +9535,68 @@ async function run() {
     const { classifyBroadcastError } = require('./lib/thread-broadcast');
 
     assert.strictEqual(classifyBroadcastError('Error: rate limit exceeded'), 'limit');
+    assert.strictEqual(classifyBroadcastError('rate limited by provider'), 'limit');
     assert.strictEqual(classifyBroadcastError('429 Too Many Requests'), 'limit');
     assert.strictEqual(classifyBroadcastError('quota exceed for model'), 'limit');
-    assert.strictEqual(classifyBroadcastError('quota exceeded for model'), 'error', 'exceed vs exceeded: regex boundary');
+    assert.strictEqual(classifyBroadcastError('quota exceeded for model'), 'limit');
     assert.strictEqual(classifyBroadcastError('usage limit reached'), 'limit');
+    assert.strictEqual(classifyBroadcastError('usage limits exceeded'), 'limit');
     assert.strictEqual(classifyBroadcastError('too many requests to API'), 'limit');
     assert.strictEqual(classifyBroadcastError('(interrupted — agent disconnected)'), 'error');
     assert.strictEqual(classifyBroadcastError('some random error'), 'error');
+    assert.strictEqual(classifyBroadcastError('limitless loop detected'), 'error');
     assert.strictEqual(classifyBroadcastError(''), 'error');
     assert.strictEqual(classifyBroadcastError(null), 'error');
+  });
+
+  await test('maybeBroadcastError: guards eligibility + classifies + sets reason', async () => {
+    const db = require('./db');
+    const { createThreadBroadcast } = require('./lib/thread-broadcast');
+    const broadcasts = [];
+    let clock = 1000000;
+    const tb = createThreadBroadcast({
+      db,
+      broadcastToRoom: (roomId, payload) => broadcasts.push({ roomId, payload }),
+      enrichFn: () => {},
+      now: () => clock
+    });
+
+    const rootIns = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?, ?, 'maybe root', 'complete')").run(_tbRoomId, _tbParticipantId);
+    const rootId = Number(rootIns.lastInsertRowid);
+    const replyIns = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?, ?, 'rate limit hit', 'error', ?)").run(_tbRoomId, _tbParticipantId, rootId);
+    const replyId = Number(replyIns.lastInsertRowid);
+
+    const r1 = tb.maybeBroadcastError({ threadId: null, messageId: replyId, content: 'rate limit hit', roomId: _tbRoomId });
+    assert.strictEqual(r1, false, 'root message (no threadId) should be rejected');
+    assert.strictEqual(broadcasts.length, 0, 'no emit for root');
+
+    const eligible = tb.maybeBroadcastError({ threadId: rootId, messageId: replyId, content: 'rate limit hit', roomId: _tbRoomId });
+    assert.strictEqual(eligible, true, 'eligible thread reply should pass');
+    assert.strictEqual(broadcasts.length, 1, 'should emit once');
+    assert.strictEqual(broadcasts[0].payload.type, 'message_broadcast');
+    const row = db.prepare('SELECT broadcast_reason FROM messages WHERE id=?').get(replyId);
+    assert.strictEqual(row.broadcast_reason, 'limit', 'rate limit content should classify as limit');
+
+    const reply2Ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?, ?, 'another error', 'error', ?)").run(_tbRoomId, _tbParticipantId, rootId);
+    const reply2Id = Number(reply2Ins.lastInsertRowid);
+    const r2 = tb.maybeBroadcastError({ threadId: rootId, messageId: reply2Id, content: 'another error', roomId: _tbRoomId });
+    assert.strictEqual(r2, false, 'second call same thread within window should be blocked by anti-flood');
+    assert.strictEqual(broadcasts.length, 1, 'no additional emit');
+
+    const r3 = tb.maybeBroadcastError({ threadId: rootId, subAgentId: 99, messageId: reply2Id, content: 'error', roomId: _tbRoomId });
+    assert.strictEqual(r3, false, 'sub-agent message should be rejected');
+
+    clock += 10 * 60 * 1000 + 1;
+    const reply3Ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?, ?, 'generic error', 'error', ?)").run(_tbRoomId, _tbParticipantId, rootId);
+    const reply3Id = Number(reply3Ins.lastInsertRowid);
+    const r4 = tb.maybeBroadcastError({ threadId: rootId, messageId: reply3Id, content: 'generic error', roomId: _tbRoomId });
+    assert.strictEqual(r4, true, 'after 10 min should pass again');
+    const row3 = db.prepare('SELECT broadcast_reason FROM messages WHERE id=?').get(reply3Id);
+    assert.strictEqual(row3.broadcast_reason, 'error', 'generic error content should classify as error');
+    assert.strictEqual(broadcasts.length, 2, 'should have emitted again');
+
+    const r5 = tb.maybeBroadcastError({ threadId: rootId, messageId: reply3Id, reason: 'error' });
+    assert.strictEqual(r5, false, 'anti-flood should block even with explicit reason');
   });
 
   // Teardown — delete all test rooms and actors created during the run
