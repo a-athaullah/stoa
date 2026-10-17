@@ -250,14 +250,14 @@ Agent utama juga bisa memperbarui file memory miliknya sendiri (`MEMORY.md`, `US
 
 ### Menautkan Sub-Agent ke Room
 
-Sub-agent yang sudah didefinisikan harus ditautkan ke sebuah room sebelum bisa dipakai di sana. Klik seal agent di header room untuk membuka **"Sub-agent milik <Agent>"**, lalu aktif/nonaktifkan tiap sub-agent untuk room tersebut. Hanya sub-agent yang tertaut yang bisa dimunculkan di room itu. Setelah tertaut, kamu juga bisa menyapa sub-agent secara langsung dengan me-@mention label-nya (misalnya `@probe`). @mention sub-agent tampil disorot biru di feed pesan (sama seperti mention agent). Popup mention menampilkan avatar sub-agent sendiri dengan badge parent kecil di sampingnya, beserta role sub-agent jika sudah diatur.
+Sub-agent yang sudah didefinisikan harus ditautkan ke sebuah room sebelum bisa dipakai di sana. Klik seal agent di header room untuk membuka **"Sub-agent milik <Agent>"**, lalu aktif/nonaktifkan tiap sub-agent untuk room tersebut. Hanya sub-agent yang tertaut yang bisa dimunculkan di room itu. Setelah tertaut, kamu juga bisa menyapa sub-agent secara langsung dengan me-@mention label-nya (misalnya `@probe`). @mention sub-agent tampil disorot biru di feed pesan (sama seperti mention agent). Popup mention menampilkan avatar sub-agent sendiri dengan badge parent kecil di sampingnya, beserta role sub-agent jika sudah diatur. Sebuah @mention yang ditulis di dalam kode inline (backtick) atau code fence (` ``` ` atau `~~~`) tidak diperlakukan sebagai pemicu — isi pesan tidak berubah, hanya deteksi pemicunya yang dilewati. Fence atau backtick yang tidak ditutup tidak menekan apa pun; mention setelahnya tetap memicu secara normal.
 
 ### Cara Kerja Orkestrasi
 
 Saat agent utama merespons, ia bisa memicu sub-agent yang tertaut untuk menangani sub-tugas:
 
 1. **Fire-and-forget** — tiap sub-agent menjalankan tugasnya secara independen, jadi giliran agent utama tidak pernah terblokir menunggu mereka.
-2. **Auto-wake** — saat sebuah sub-agent selesai, agent utama otomatis dibangunkan untuk membaca hasilnya dan menyusun tindak lanjut. Ini berlaku ketika sub-agent dipicu oleh parent — melalui mention di respons parent, wake cascade, atau spawn via API. Wake bertahan melewati restart server (di-antre secara durable). Jika manusia atau automation me-@mention sub-agent secara langsung (tanpa juga me-mention parent di pesan yang sama), parent **tidak** dibangunkan saat sub-agent tersebut selesai — kecuali sub-agent selesai dengan error.
+2. **Auto-wake** — saat sebuah sub-agent selesai, agent utama otomatis dibangunkan untuk membaca hasilnya dan menyusun tindak lanjut. Ini berlaku ketika sub-agent dipicu oleh parent — melalui mention di respons parent, wake cascade, atau spawn via API. Wake bertahan melewati restart server (di-antre secara durable). Jika manusia atau automation me-@mention sub-agent secara langsung (tanpa juga me-mention parent di pesan yang sama), parent **tidak** dibangunkan saat sub-agent tersebut selesai — kecuali sub-agent selesai dengan error. Saat parent dibangunkan, hasil sub-agent (termasuk catatan kegagalan dan ringkasan biaya) dikirimkan sebagai task di input parent — tidak ditambahkan sebagai pesan chat di feed.
 3. **Satu level dalam** — sebuah sub-agent tidak pernah bisa memunculkan sub-agent-nya sendiri. Orkestrasi tegas satu level, mencegah pohon yang meliar.
 4. **Wake cascade** — saat agent utama menyintesis hasil sub-agent, @mention apapun di responsnya otomatis memicu agent atau sub-agent yang di-mention. Ini memungkinkan loop orkestrasi: misalnya, sub-agent riset selesai → agent utama baca hasilnya dan @mention reviewer → reviewer jalan → agent utama baca review dan @mention fixer → dst. Batas kedalaman (default 5 hop) mencegah rantai tak terbatas.
 
@@ -316,7 +316,7 @@ Sub-agent selalu berjalan di **mesin yang sama** dengan agent induknya. Server m
 
 Sub-agent persisten yang sudah di-link ke room bisa berjalan otomatis sesuai jadwal — tanpa @mention dan tanpa orchestrator. Ini berguna untuk pengecekan berkala (misalnya `probe` yang memeriksa penggunaan disk setiap 30 menit) atau laporan harian pada jam tetap.
 
-Jadwal dikelola di **Room Settings > Scheduled Triggers**. Klik **+ add schedule** lalu pilih sub-agent yang sudah di-link, tipe jadwal (interval atau harian), cadence atau waktu, dan task. Setiap jadwal bisa di-toggle on/off, diedit, atau dihapus dari barisnya.
+Jadwal dikelola di **Room Settings > Scheduled Triggers**. Klik **+ add schedule** lalu pilih sub-agent yang sudah di-link, tipe jadwal (interval atau harian), cadence atau waktu, dan task. Setiap jadwal bisa di-toggle on/off, diedit, atau dihapus dari barisnya. Saat sebuah run terpicu, task yang dikonfigurasi dikirimkan langsung ke input sub-agent — tidak muncul sebagai pesan chat di room.
 
 Jadwal punya salah satu dari dua bentuk:
 

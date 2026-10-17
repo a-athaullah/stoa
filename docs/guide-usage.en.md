@@ -249,14 +249,14 @@ Main agents can also update their own memory files (`MEMORY.md`, `USER.md`) auto
 
 ### Linking Sub-Agents to a Room
 
-A defined sub-agent must be linked to a room before it can be used there. Click the agent's seal in the room header to open **"<Agent>'s sub-agents"**, then toggle each sub-agent on or off for that room. Only linked sub-agents can be spawned in that room. Once linked, you can also address a sub-agent directly by @mentioning its label (e.g. `@probe`). Sub-agent @mentions appear highlighted in blue in the message feed (matching the style of agent mentions). The mention popup shows each sub-agent's own avatar alongside a small parent badge, plus the sub-agent's role when one is set.
+A defined sub-agent must be linked to a room before it can be used there. Click the agent's seal in the room header to open **"<Agent>'s sub-agents"**, then toggle each sub-agent on or off for that room. Only linked sub-agents can be spawned in that room. Once linked, you can also address a sub-agent directly by @mentioning its label (e.g. `@probe`). Sub-agent @mentions appear highlighted in blue in the message feed (matching the style of agent mentions). The mention popup shows each sub-agent's own avatar alongside a small parent badge, plus the sub-agent's role when one is set. A @mention written inside inline code (backticks) or a code fence (` ``` ` or `~~~`) is never treated as a trigger — the message content is unchanged, only trigger detection skips it. An unclosed fence or backtick has no suppressing effect; any mention after it still triggers normally.
 
 ### How Orchestration Works
 
 When the main agent responds, it can trigger its linked sub-agents to handle sub-tasks:
 
 1. **Fire-and-forget** — each sub-agent runs its task independently, so the main agent's turn is never blocked waiting for them.
-2. **Auto-wake** — when a sub-agent finishes, the main agent is automatically woken to read the result and synthesize a follow-up. This applies when the sub-agent was triggered by the parent — via a mention in the parent's response, a wake cascade, or an API spawn. The wake survives a server restart (queued durably). If a human or automation @mentions a sub-agent directly (without also mentioning the parent in the same message), the parent is **not** woken when that sub-agent finishes — unless the sub-agent finishes with an error.
+2. **Auto-wake** — when a sub-agent finishes, the main agent is automatically woken to read the result and synthesize a follow-up. This applies when the sub-agent was triggered by the parent — via a mention in the parent's response, a wake cascade, or an API spawn. The wake survives a server restart (queued durably). If a human or automation @mentions a sub-agent directly (without also mentioning the parent in the same message), the parent is **not** woken when that sub-agent finishes — unless the sub-agent finishes with an error. When the parent wakes, the sub-agent's result (including any failure notes and cost summary) is delivered as a task in the parent's input — it is not added as a chat message in the feed.
 3. **One level deep** — a sub-agent can never spawn its own sub-agents. Orchestration is strictly one level, which prevents runaway trees.
 4. **Wake cascade** — when the main agent synthesizes a sub-agent result, any @mentions in its response automatically trigger the mentioned agents or sub-agents. This enables orchestration loops: for example, a research sub-agent finishes → the main agent reads its result and @mentions a reviewer → the reviewer runs → the main agent reads the review and @mentions a fixer → and so on. A depth limit (default 5 hops) prevents infinite chains.
 
@@ -315,7 +315,7 @@ Sub-agents always run on the **same machine** as their parent agent. The server 
 
 A persistent sub-agent linked to a room can run automatically on a schedule — no @mention and no orchestrator needed. This is useful for recurring checks (for example, a `probe` that inspects disk usage every 30 minutes) or a fixed-time daily report.
 
-Schedules are managed in **Room Settings > Scheduled Triggers**. Click **+ add schedule** and choose a linked sub-agent, a schedule type (interval or daily), the cadence or time, and a task. Each schedule can be toggled on/off, edited, or deleted from its row.
+Schedules are managed in **Room Settings > Scheduled Triggers**. Click **+ add schedule** and choose a linked sub-agent, a schedule type (interval or daily), the cadence or time, and a task. Each schedule can be toggled on/off, edited, or deleted from its row. When a run fires, the configured task is delivered directly to the sub-agent's input — it does not appear as a chat message in the room.
 
 A schedule takes one of two shapes:
 
