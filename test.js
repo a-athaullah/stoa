@@ -3664,6 +3664,76 @@ async function run() {
       } finally { humanWs.close(); }
     });
 
+    // ── Mentions inside code spans/fences must not trigger (detection only) ──
+    const noSubTrigger = (ms = 1500) => waitForWsMessage(wkWs, m => m.type === 'agent_trigger' && m.sub_agent?.id === wkSa.id, ms)
+      .then(m => { complete(m, 'unexpected'); return true; }, () => false);
+
+    await test('Human mention inside inline code → sub-agent NOT triggered', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const fired = noSubTrigger();
+      const pt = nextParentTrigger(5000);
+      await sendAsHuman('how do I call `@wakesub` from here?');
+      const p = await pt; // no real mention left → normal no-mention fallback wakes the room agent
+      assert.ok(p.prompt.includes('`@wakesub`'), 'content forwarded to the agent must stay untouched');
+      complete(p, 'like that');
+      assert.strictEqual(await fired, false, 'mention in backticks must not trigger the sub-agent');
+    });
+
+    await test('Human mention inside a code fence → sub-agent NOT triggered', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const fired = noSubTrigger();
+      const pt = nextParentTrigger(5000);
+      await sendAsHuman('example:\n```\n@wakesub do the thing\n```\nthanks');
+      complete(await pt, 'noted');
+      assert.strictEqual(await fired, false, 'mention in a code fence must not trigger the sub-agent');
+      const stored = db.prepare("SELECT content FROM messages WHERE room_id=? AND content LIKE 'example:%' ORDER BY id DESC LIMIT 1").get(wkRoomId);
+      assert.strictEqual(stored.content, 'example:\n```\n@wakesub do the thing\n```\nthanks', 'stored content is not stripped');
+    });
+
+    await test('Mention outside code + same mention inside code → sub-agent triggered', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const t = nextSubTrigger();
+      await sendAsHuman('@wakesub explain what `@wakesub --help` prints');
+      complete(await t, 'help text');
+    });
+
+    await test('Unclosed fence does not swallow the rest → mention still triggers', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const t = nextSubTrigger();
+      await sendAsHuman('```\n@wakesub this fence never closes');
+      complete(await t, 'still here');
+    });
+
+    await test('Parent mentioned only inside code → wake_parent stays 0', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const t = nextSubTrigger();
+      await sendAsHuman(`@wakesub compare with \`\` @${WK_NAME} \`\``);
+      const m = await t;
+      const parentWake = nextParentTrigger(1500).then(w => { complete(w, 'x'); return true; }, () => false);
+      complete(m, 'compared');
+      assert.strictEqual(await parentWake, false);
+      assert.strictEqual(db.prepare('SELECT wake_parent FROM messages WHERE id=?').get(m.message_id).wake_parent, 0);
+    });
+
+    await test('Parent response with sub-agent mention in code → no cascade', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const pt = nextParentTrigger(5000);
+      await sendAsHuman(`@${WK_NAME} how do I reach your helper?`);
+      const p = await pt;
+      const fired = noSubTrigger();
+      complete(p, 'Write it like this:\n```\n@wakesub <task>\n```');
+      assert.strictEqual(await fired, false, 'code mention in an agent response must not cascade');
+    });
+
+    await test('Proactive agent message with sub-agent mention in fence → no cascade', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const fired = noSubTrigger();
+      const r = await req('POST', `/api/rooms/${wkRoomId}/message`, { content: 'Usage:\n```bash\n@wakesub run tests\n```' },
+        { 'x-agent-id': String(wkActorId), 'x-agent-secret': wkSecret });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      assert.strictEqual(await fired, false, 'fenced mention in a proactive message must not cascade');
+    });
+
     await test('Cleanup — wake test data', async () => {
       await new Promise(r => setTimeout(r, 300));
       if (wkWs) { wkWs.close(); wkWs = null; }

@@ -512,6 +512,18 @@ const MAX_WAKE_CASCADE_DEPTH = 5;
 const wakeCascadeDepth = new Map(); // roomId → current depth
 const mentionBoundary = (name) => new RegExp(`(?:^|\\s)@${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=\\s|[.,!?;:]|$)`);
 
+// A mention inside markdown code (fenced block or inline span) is an example, not a
+// trigger. Used for trigger detection only — stored and forwarded content is untouched.
+// Code is replaced by a space so the text around it can't fuse into a new mention.
+// Unclosed fences/backticks match nothing, so the rest of the message still triggers.
+function stripCodeSpans(content) {
+  if (!content) return '';
+  if (!content.includes('`') && !content.includes('~~~')) return content;
+  return content
+    .replace(/(^|\n)[ \t]*(`{3,}|~{3,})[^\n]*\n(?:[\s\S]*?\n)?[ \t]*\2[`~]*[ \t]*(?=\n|$)/g, '$1 ')
+    .replace(/(`+)(?!`)[^\n]*?[^`\n]\1(?!`)/g, ' ');
+}
+
 async function cascadeMentionsAfterWake(roomId, parent, threadId) {
   const cascadeKey = threadId ? `${roomId}:${threadId}` : String(roomId);
   const depth = (wakeCascadeDepth.get(cascadeKey) || 0) + 1;
@@ -535,7 +547,8 @@ async function cascadeMentionsAfterWake(roomId, parent, threadId) {
         WHERE rp.actor_id=? AND m.room_id=? AND m.state='complete' AND m.sub_agent_id IS NULL AND m.completed_at IS NOT NULL
         ORDER BY m.id DESC LIMIT 1
       `).get(parent.actor_id, roomId);
-  if (!lastMsg?.content || !lastMsg.content.includes('@')) return;
+  const mentionText = stripCodeSpans(lastMsg?.content);
+  if (!mentionText.includes('@')) return;
   // Auto-thread: if at room level, sub-agent responses go under the parent's message
   const effectiveThreadId = threadId || lastMsg.id;
 
@@ -556,14 +569,14 @@ async function cascadeMentionsAfterWake(roomId, parent, threadId) {
   const regularAgentsCascade = [];
 
   for (const sa of linkedSubs) {
-    if (mentionBoundary(sa.label).test(lastMsg.content)) {
+    if (mentionBoundary(sa.label).test(mentionText)) {
       const parentAgent = allAi.find(a => a.actor_id === sa.parent_actor_id);
       if (parentAgent) subAgentsCascade.push({ ...parentAgent, sub_agent: sa });
     }
   }
 
   for (const other of allAi) {
-    if (other.actor_id !== parent.actor_id && mentionBoundary(other.name).test(lastMsg.content)) {
+    if (other.actor_id !== parent.actor_id && mentionBoundary(other.name).test(mentionText)) {
       const alreadyQueued = regularAgentsCascade.some(a => a.actor_id === other.actor_id);
       if (!alreadyQueued) regularAgentsCascade.push({ ...other, sub_agent: null });
     }
@@ -591,7 +604,8 @@ async function cascadeMentionsAfterWake(roomId, parent, threadId) {
 
 // Cascade @mentions from a proactive agent message (same logic as wake-cascade but content is known upfront).
 async function cascadeMentionsFromProactive(roomId, senderActorId, content, threadId) {
-  if (!content.includes('@')) return;
+  const mentionText = stripCodeSpans(content);
+  if (!mentionText.includes('@')) return;
 
   const allAi = db.prepare(`
     SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.adapter_config, a.avatar_color, a.avatar_symbol, a.avatar_url
@@ -610,14 +624,14 @@ async function cascadeMentionsFromProactive(roomId, senderActorId, content, thre
   const regularAgentsCascade = [];
 
   for (const sa of linkedSubs) {
-    if (mentionBoundary(sa.label).test(content)) {
+    if (mentionBoundary(sa.label).test(mentionText)) {
       const parentAgent = allAi.find(a => a.actor_id === sa.parent_actor_id);
       if (parentAgent) subAgentsCascade.push({ ...parentAgent, sub_agent: sa });
     }
   }
 
   for (const other of allAi) {
-    if (other.actor_id !== senderActorId && mentionBoundary(other.name).test(content)) {
+    if (other.actor_id !== senderActorId && mentionBoundary(other.name).test(mentionText)) {
       const alreadyQueued = regularAgentsCascade.some(a => a.actor_id === other.actor_id);
       if (!alreadyQueued) regularAgentsCascade.push({ ...other, sub_agent: null });
     }
@@ -6435,9 +6449,10 @@ function parseGitDiff(raw) {
 // ─── Message handling ─────────────────────────────────────────────────────────
 
 function resolveAgentOrder(content, agents, roomId) {
+  const mentionText = stripCodeSpans(content);
   const mentions = [];
   for (const agent of agents) {
-    const idx = content.indexOf('@' + agent.name);
+    const idx = mentionText.indexOf('@' + agent.name);
     if (idx !== -1) mentions.push({ agent: { ...agent, sub_agent: null }, idx });
   }
 
@@ -6450,7 +6465,7 @@ function resolveAgentOrder(content, agents, roomId) {
       WHERE rsa.room_id=? AND sa.enabled=1
     `).all(roomId);
     for (const sa of linkedSubs) {
-      const idx = content.indexOf('@' + sa.label);
+      const idx = mentionText.indexOf('@' + sa.label);
       if (idx === -1) continue;
       const parent = agents.find(a => a.actor_id === sa.parent_actor_id);
       if (!parent) continue;
@@ -6550,9 +6565,10 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
         : db.prepare(lastMsgQuery).get(currentAgent.actor_id, roomId);
 
       if (lastMsg?.content) {
+        const mentionText = stripCodeSpans(lastMsg.content);
         const allAiInRoom = allAiStmt.all(roomId);
         for (const other of allAiInRoom) {
-          if (other.actor_id !== currentAgent.actor_id && mentionBoundary(other.name).test(lastMsg.content)) {
+          if (other.actor_id !== currentAgent.actor_id && mentionBoundary(other.name).test(mentionText)) {
             const alreadyQueued = agents.slice(i + 1).some(a => a.actor_id === other.actor_id);
             if (!alreadyQueued) agents.push({ ...other, sub_agent: null });
           }
@@ -6566,7 +6582,7 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
           WHERE rsa.room_id=? AND sa.enabled=1
         `).all(roomId);
         for (const sa of linkedSubs) {
-          if (mentionBoundary(sa.label).test(lastMsg.content) && !firedSubAgentIds.has(sa.id)) {
+          if (mentionBoundary(sa.label).test(mentionText) && !firedSubAgentIds.has(sa.id)) {
             const parent = allAiInRoom.find(a => a.actor_id === sa.parent_actor_id);
             if (parent) {
               firedSubAgentIds.add(sa.id);
@@ -6711,11 +6727,12 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
 
   if (allAiParts.length > 0) {
     const ordered = resolveAgentOrder(content, allAiParts, roomId);
+    const mentionText = stripCodeSpans(content);
     // resolveAgentOrder folds "@Parent @label" into the sub-agent, so an explicit parent
     // mention is detected separately: only then does the parent get woken afterwards.
     // Automation messages also land here and are treated the same as human messages.
     const subAgentMentions = ordered.filter(a => a.sub_agent)
-      .map(a => ({ ...a, wake_parent: mentionBoundary(a.name).test(content) }));
+      .map(a => ({ ...a, wake_parent: mentionBoundary(a.name).test(mentionText) }));
     const parentMentions   = ordered.filter(a => !a.sub_agent);
 
     // Sub-agents fire in parallel — independent of conversation flow
@@ -7227,6 +7244,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   }
 
   const emailThreadSection = buildEmailThreadSection(db, { roomId, threadId });
+
 
   const fullPrompt = [
     identityLine,
