@@ -9476,6 +9476,28 @@ async function run() {
     assert.strictEqual(emptyConditions.matched, true, 'empty conditions should match');
   });
 
+  await test('replyMatchesAnyAutomation: empty conds match, invalid JSON skip, partial match', async () => {
+    const { replyMatchesAnyAutomation } = require('./lib/evaluate-conditions');
+    const fields = { from: 'alice@example.com', subject: 'PR Review: fix auth bug', body: 'Please review' };
+
+    assert.strictEqual(replyMatchesAnyAutomation([{ trigger_conditions: '[]' }], fields), true, 'empty conditions should match');
+    assert.strictEqual(replyMatchesAnyAutomation([{ trigger_conditions: null }], fields), true, 'null conditions (defaults to []) should match');
+
+    assert.strictEqual(replyMatchesAnyAutomation([{ trigger_conditions: '[{"field":"subject","op":"contains","value":"PR Review"}]' }], fields), true, 'matching condition should match');
+    assert.strictEqual(replyMatchesAnyAutomation([{ trigger_conditions: '[{"field":"subject","op":"contains","value":"deploy"}]' }], fields), false, 'non-matching condition should not match');
+
+    assert.strictEqual(replyMatchesAnyAutomation([{ trigger_conditions: 'not valid json{' }], fields), false, 'invalid JSON should not match');
+    assert.strictEqual(replyMatchesAnyAutomation([{ trigger_conditions: '"not an array"' }], fields), false, 'non-array JSON should not match');
+
+    const multiAutos = [
+      { trigger_conditions: '[{"field":"subject","op":"contains","value":"deploy"}]' },
+      { trigger_conditions: '[{"field":"from","op":"contains","value":"alice"}]' }
+    ];
+    assert.strictEqual(replyMatchesAnyAutomation(multiAutos, fields), true, 'should match if any automation matches');
+
+    assert.strictEqual(replyMatchesAnyAutomation([], fields), false, 'no automations should not match');
+  });
+
   await test('setBroadcastReason: valid reason persists + emits, invalid reason rejected', async () => {
     const db = require('./db');
     const { createThreadBroadcast } = require('./lib/thread-broadcast');

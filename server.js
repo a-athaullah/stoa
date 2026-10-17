@@ -1685,12 +1685,12 @@ const server = http.createServer(async (req, res) => {
       const threadFilter = scopeAll ? '' : 'AND (m.thread_id IS NULL OR m.broadcast_reason IS NOT NULL)';
       // Subquery summary per root (used only in roots-only mode)
       const threadSummarySQL = scopeAll ? '' : `,
-        (SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id) AS thread_count,
-        (SELECT MAX(r.created_at) FROM messages r WHERE r.thread_id = m.id) AS thread_last_at,
-        (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state IN ('streaming','requesting'))) AS thread_active,
-        (SELECT GROUP_CONCAT(DISTINCT rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id) AS thread_participant_ids,
-        (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state = 'error')) AS thread_has_error,
-        (SELECT GROUP_CONCAT(DISTINCT r.sub_agent_label || ':' || rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id AND r.sub_agent_label IS NOT NULL) AS thread_sub_agent_participants`;
+        CASE WHEN m.thread_id IS NULL THEN (SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id) END AS thread_count,
+        CASE WHEN m.thread_id IS NULL THEN (SELECT MAX(r.created_at) FROM messages r WHERE r.thread_id = m.id) END AS thread_last_at,
+        CASE WHEN m.thread_id IS NULL THEN (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state IN ('streaming','requesting'))) END AS thread_active,
+        CASE WHEN m.thread_id IS NULL THEN (SELECT GROUP_CONCAT(DISTINCT rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id) END AS thread_participant_ids,
+        CASE WHEN m.thread_id IS NULL THEN (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state = 'error')) END AS thread_has_error,
+        CASE WHEN m.thread_id IS NULL THEN (SELECT GROUP_CONCAT(DISTINCT r.sub_agent_label || ':' || rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id AND r.sub_agent_label IS NOT NULL) END AS thread_sub_agent_participants`;
 
       function enrichThreadData(m) {
         if (m.broadcast_reason && m.thread_id) {
@@ -4852,12 +4852,12 @@ wss.on('connection', (ws, req) => {
       const messages = db.prepare(`
         SELECT * FROM (
           SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
-            (SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id) AS thread_count,
-            (SELECT MAX(r.created_at) FROM messages r WHERE r.thread_id = m.id) AS thread_last_at,
-            (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state IN ('streaming','requesting'))) AS thread_active,
-            (SELECT GROUP_CONCAT(DISTINCT rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id) AS thread_participant_ids,
-            (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state = 'error')) AS thread_has_error,
-            (SELECT GROUP_CONCAT(DISTINCT r.sub_agent_label || ':' || rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id AND r.sub_agent_label IS NOT NULL) AS thread_sub_agent_participants
+            CASE WHEN m.thread_id IS NULL THEN (SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id) END AS thread_count,
+            CASE WHEN m.thread_id IS NULL THEN (SELECT MAX(r.created_at) FROM messages r WHERE r.thread_id = m.id) END AS thread_last_at,
+            CASE WHEN m.thread_id IS NULL THEN (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state IN ('streaming','requesting'))) END AS thread_active,
+            CASE WHEN m.thread_id IS NULL THEN (SELECT GROUP_CONCAT(DISTINCT rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id) END AS thread_participant_ids,
+            CASE WHEN m.thread_id IS NULL THEN (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state = 'error')) END AS thread_has_error,
+            CASE WHEN m.thread_id IS NULL THEN (SELECT GROUP_CONCAT(DISTINCT r.sub_agent_label || ':' || rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id AND r.sub_agent_label IS NOT NULL) END AS thread_sub_agent_participants
           FROM messages m
           JOIN room_participants rp ON rp.id=m.participant_id
           JOIN actors a ON a.id=rp.actor_id
@@ -7436,7 +7436,7 @@ function extractSlackFullText(event) {
   return parts.join('\n');
 }
 
-const { evaluateConditions } = require('./lib/evaluate-conditions');
+const { evaluateConditions, replyMatchesAnyAutomation } = require('./lib/evaluate-conditions');
 
 // ─── Slack automation listener ────────────────────────────────────────────────
 
@@ -7511,17 +7511,10 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
           // Thread broadcast: check if reply matches any slack automation conditions
           if (insertedId) {
             const slackAutos = db.prepare(
-              "SELECT trigger_conditions FROM automations WHERE enabled=1 AND trigger_type='slack' AND (connection_id IS NULL OR connection_id=?)"
+              "SELECT trigger_conditions FROM automations WHERE enabled=1 AND trigger_type='slack' AND trigger_event='message' AND (connection_id IS NULL OR connection_id=?)"
             ).all(connId || null);
             const replyFieldValues = { message_text: event.text || '', slack_full_text: extractSlackFullText(event), slack_bot_id: event.bot_id || '', slack_user: event.user || '', slack_channel: event.channel || '', reaction: '' };
-            const anyMatch = slackAutos.some(a => {
-              try {
-                const conds = JSON.parse(a.trigger_conditions || '[]');
-                if (!Array.isArray(conds) || conds.length === 0) return false;
-                return evaluateConditions(conds, replyFieldValues).matched;
-              } catch { return false; }
-            });
-            if (anyMatch) {
+            if (replyMatchesAnyAutomation(slackAutos, replyFieldValues)) {
               setBroadcastReason(insertedId, 'automation_match', watchedMsg.room_id);
               console.log(`[${ts2}] [watch_reply] broadcast: automation_match for msg ${insertedId} in room ${watchedMsg.room_id}`);
             }
@@ -7812,14 +7805,8 @@ connectionManager.on('email_event', async ({ eventType, connId, uid, messageId, 
         console.log(`[automation] "${auto.name}" watch_reply routed email to thread ${_threadId} (from=${from})`);
 
         // Evaluate automation conditions for broadcast
-        let emailCondMatch = false;
-        try {
-          const conds = JSON.parse(auto.trigger_conditions || '[]');
-          if (Array.isArray(conds) && conds.length > 0) {
-            const emailFieldValues = { from, subject, body: text, has_attachments: String(hasAttachments) };
-            emailCondMatch = evaluateConditions(conds, emailFieldValues).matched;
-          }
-        } catch {}
+        const emailFieldValues = { from, subject, body: text, has_attachments: String(hasAttachments) };
+        const emailCondMatch = replyMatchesAnyAutomation([auto], emailFieldValues);
 
         (async () => {
           try {
