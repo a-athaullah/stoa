@@ -507,11 +507,14 @@ function _saBuildAvatarEditor(sa, saShade, onUpdate) {
   const updatePreview = () => {
     const c = colorInp.value || saShade;
     const s = symInp.value.trim() || sa.label[0];
+    previewDisc.innerHTML = '';
     if (sa.avatar_url) {
-      previewDisc.style.background = 'none';
-      previewDisc.innerHTML = `<img src="${sa.avatar_url}" style="width:28px;height:28px;border-radius:50%;object-fit:cover">`;
+      previewDisc.style.cssText = 'width:28px;height:28px;border-radius:50%;overflow:hidden;display:inline-flex;flex:0 0 auto';
+      const img = document.createElement('img');
+      img.src = sa.avatar_url;
+      img.style.cssText = 'width:28px;height:28px;border-radius:50%;object-fit:cover';
+      previewDisc.appendChild(img);
     } else {
-      previewDisc.innerHTML = '';
       previewDisc.style.cssText = `width:28px;height:28px;border-radius:50%;background:${c};display:inline-flex;align-items:center;justify-content:center;font-family:var(--h-serif);font-size:14px;color:#fff;flex:0 0 auto`;
       previewDisc.textContent = s;
     }

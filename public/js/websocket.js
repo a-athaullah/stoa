@@ -537,6 +537,17 @@ function handleWsMessage(msg) {
     _updateQueuePill(msg.queued || 0);
     return;
   }
+
+  if (msg.type === 'sub_agent_updated') {
+    const sa = msg.sub_agent;
+    if (!sa) return;
+    for (const rid of Object.keys(roomSubAgentsCache)) {
+      const list = roomSubAgentsCache[rid];
+      const idx = list.findIndex(s => s.id === sa.id);
+      if (idx !== -1) list[idx] = { ...list[idx], ...sa };
+    }
+    return;
+  }
 }
 
 // ── Server restart (same-port) notification ──────────────────────────────
