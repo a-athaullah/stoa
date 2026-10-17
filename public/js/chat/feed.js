@@ -253,8 +253,8 @@ function makeFeedMessageClickable(msgId) {
 }
 
 // ── Broadcast row renderer ──────────────────────────────────────────────────
-// Renders a thread message as a secondary row in the room feed (like Slack's
-// "also send to channel"). Same message row, different DOM container.
+const _broadcastReasonMap = { automation_match: 'automation match', error: 'error', limit: 'limit' };
+
 function appendFeedBroadcastRow(m, inner) {
   if (!inner) inner = document.getElementById('messages-inner');
   if (!inner) return;
@@ -281,10 +281,9 @@ function appendFeedBroadcastRow(m, inner) {
   preview.textContent = '↳ replied in thread' + (snippet ? ': ' + snippet : '');
   header.appendChild(preview);
 
-  const reasonMap = { automation_match: 'automation match', error: 'error', limit: 'limit' };
   const badge = document.createElement('span');
   badge.className = 't-broadcast-badge t-broadcast-badge--' + (m.broadcast_reason || 'error');
-  badge.textContent = reasonMap[m.broadcast_reason] || m.broadcast_reason;
+  badge.textContent = _broadcastReasonMap[m.broadcast_reason] || m.broadcast_reason;
   header.appendChild(badge);
 
   row.appendChild(header);
@@ -366,9 +365,8 @@ function upsertFeedBroadcastRow(m) {
   // Update badge if reason changed
   const badge = existing.querySelector('.t-broadcast-badge');
   if (badge && m.broadcast_reason) {
-    const reasonMap = { automation_match: 'automation match', error: 'error', limit: 'limit' };
     badge.className = 't-broadcast-badge t-broadcast-badge--' + m.broadcast_reason;
-    badge.textContent = reasonMap[m.broadcast_reason] || m.broadcast_reason;
+    badge.textContent = _broadcastReasonMap[m.broadcast_reason] || m.broadcast_reason;
   }
 }
 
