@@ -57,9 +57,12 @@ function handleWsMessage(msg) {
     resetDaySeparator();
     if (typeof clearThreadSummaries === 'function') clearThreadSummaries();
     if (typeof clearThreadPanel === 'function') clearThreadPanel();
-    // Only render root messages in feed; thread replies are shown in thread panel only
+    // Root messages in feed; broadcast rows for thread messages with broadcast_reason
     msg.messages.forEach(m => {
-      if (m.thread_id) return;
+      if (m.thread_id) {
+        if (m.broadcast_reason && typeof appendFeedBroadcastRow === 'function') appendFeedBroadcastRow(m);
+        return;
+      }
       if (typeof appendFeedRootRow === 'function') appendFeedRootRow(m);
       else appendMessage(m);
     });
@@ -106,11 +109,21 @@ function handleWsMessage(msg) {
           if (typeof _scrollThreadToBottom === 'function') _scrollThreadToBottom(true);
         });
       }
+      // Also show in room feed if flagged for broadcast
+      if (m.broadcast_reason && typeof appendFeedBroadcastRow === 'function') {
+        appendFeedBroadcastRow(m);
+        scrollToBottom(true);
+      }
     } else {
       if (typeof appendFeedRootRow === 'function') appendFeedRootRow(m);
       else appendMessage(m);
       scrollToBottom(true);
     }
+    return;
+  }
+
+  if (msg.type === 'message_broadcast') {
+    if (typeof upsertFeedBroadcastRow === 'function') upsertFeedBroadcastRow(msg.message);
     return;
   }
 

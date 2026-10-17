@@ -30,8 +30,8 @@ function _getThreadBody()  { return document.getElementById('thread-body'); }
 function isThreadOpen() { return activeThreadId !== null; }
 
 // ── Open thread ─────────────────────────────────────────────────────────────
-async function openThread(rootId) {
-  if (activeThreadId === rootId) return;
+async function openThread(rootId, highlightMsgId) {
+  if (activeThreadId === rootId && !highlightMsgId) return;
 
   Object.keys(threadContextState).forEach(k => delete threadContextState[k]);
   updateThreadContextBar();
@@ -66,8 +66,17 @@ async function openThread(rootId) {
   clearThreadReply();
   _updateRoomHeaderThread(rootId);
   await _loadThread(rootId);
+  if (highlightMsgId) _highlightThreadMsg(highlightMsgId);
   restoreThreadDraft(currentRoomId, rootId);
   document.getElementById('thread-msg-input')?.focus();
+}
+
+function _highlightThreadMsg(msgId) {
+  const el = document.getElementById('msg-' + msgId);
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  el.classList.add('h-thread-msg-highlight');
+  setTimeout(() => el.classList.remove('h-thread-msg-highlight'), 2000);
 }
 
 function closeThread() {
