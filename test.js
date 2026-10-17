@@ -3734,6 +3734,58 @@ async function run() {
       assert.strictEqual(await fired, false, 'fenced mention in a proactive message must not cascade');
     });
 
+    // ── Prompts that are not stored messages must reach the agent's input ──
+    await test('Spawn task + wake prompt reach the agent input and are not in history', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const TASK = 'TASKMARK-7f3a spawn task body that is only sent via the API';
+      const RESULT = 'RESULTMARK-91c sub-agent output';
+      const t = nextSubTrigger();
+      const r = await req('POST', `/api/rooms/${wkRoomId}/sub-agent-trigger`, { sub_agent_id: wkSa.id, task: TASK },
+        { 'x-agent-id': String(wkActorId), 'x-agent-secret': wkSecret });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      const m = await t;
+      assert.strictEqual(db.prepare("SELECT COUNT(*) AS c FROM messages WHERE room_id=? AND content LIKE '%TASKMARK-7f3a%'").get(wkRoomId).c, 0,
+        'task must not be stored as a message, otherwise this test proves nothing');
+      assert.ok(m.prompt.includes('Task for this turn'), 'task section present');
+      assert.ok(m.prompt.includes(TASK), 'sub-agent must receive its spawn task');
+      const wake = nextParentTrigger(5000);
+      complete(m, RESULT);
+      const w = await wake;
+      assert.strictEqual(db.prepare("SELECT COUNT(*) AS c FROM messages WHERE room_id=? AND content LIKE '%[sub-agent result]%'").get(wkRoomId).c, 0,
+        'wake prompt must not be in history');
+      const taskPart = w.prompt.slice(w.prompt.indexOf('Task for this turn'));
+      assert.ok(w.prompt.includes('Task for this turn'), 'wake prompt section present');
+      assert.ok(taskPart.includes('[sub-agent result] Sub-agent "wakesub"'), 'parent must receive the wake prompt');
+      assert.ok(taskPart.includes(RESULT), 'wake prompt carries the result');
+      complete(w, 'synthesized');
+    });
+
+    await test('Failed run → parent input carries the [sub-agent GAGAL] note', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const t = nextSubTrigger();
+      await sendAsHuman('@wakesub try the flaky step');
+      const m = await t;
+      const wake = nextParentTrigger(5000);
+      complete(m, 'boom', { exit_reason: 'error' });
+      const w = await wake;
+      assert.ok(w.prompt.includes('[sub-agent GAGAL] Sub-agent "wakesub" selesai dengan status ERROR'));
+      complete(w, 'handled');
+    });
+
+    await test('Plain chat → message appears once, no task section (no duplication)', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const pt = nextParentTrigger(5000);
+      await sendAsHuman(`@${WK_NAME} CHATMARK-55e just a normal question`);
+      const p = await pt;
+      // The human message is passed as reply_to too, so it legitimately shows up twice:
+      // once in the history and once in the reply context. A third copy = duplication.
+      assert.strictEqual(p.prompt.split('CHATMARK-55e').length - 1, 2, 'history + reply context only, no injected copy');
+      assert.strictEqual(p.prompt.split(`]: @${WK_NAME} CHATMARK-55e`).length - 1, 1, 'exactly one history line');
+      assert.ok(p.prompt.includes(`reply to`) && p.prompt.includes(`"@${WK_NAME} CHATMARK-55e`), 'second copy is the reply context');
+      assert.ok(!p.prompt.includes('Task for this turn'), 'chat turns get no task section');
+      complete(p, 'answer');
+    });
+
     await test('Cleanup — wake test data', async () => {
       await new Promise(r => setTimeout(r, 300));
       if (wkWs) { wkWs.close(); wkWs = null; }

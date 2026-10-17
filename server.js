@@ -484,7 +484,7 @@ async function drainWake(wakeId) {
   const wakePrompt = `[sub-agent result] Sub-agent "${label}" yang kamu picu sudah selesai. ${failurePrefix}Hasilnya:\n\n${body}\n\nSintesiskan dan lanjutkan menjawab. Kamu boleh @mention sub-agent lain untuk delegate tugas berikutnya (misal @stoa-reviewer untuk review). Mention akan otomatis trigger sub-agent tersebut.${costBlock}`;
 
   try {
-    await triggerAiResponse(row.room_id, { ...parent, sub_agent: null }, wakePrompt, null, [], null, row.thread_id ?? null);
+    await triggerAiResponse(row.room_id, { ...parent, sub_agent: null, prompt_outside_history: true }, wakePrompt, null, [], null, row.thread_id ?? null);
     db.prepare('DELETE FROM pending_wakes WHERE id=?').run(wakeId);
     cascadeMentionsAfterWake(row.room_id, parent, row.thread_id ?? null).catch(e =>
       console.error('[wake-cascade] error:', e.message));
@@ -939,6 +939,7 @@ function fireSchedule(sched) {
   const effectiveHarness = sub.harness || ai.adapter || 'claude';
   ai.sub_agent = { id: sub.id, label: sub.label, tier: sub.tier, model: sub.model, workdir: sub.workdir, system_prompt: sub.system_prompt, harness: effectiveHarness, avatar_color: sub.avatar_color, avatar_symbol: sub.avatar_symbol, avatar_url: sub.avatar_url, description: sub.description, role: sub.role };
   ai.parent_message_id = null; // standalone run — no orchestrator turn to auto-wake
+  ai.prompt_outside_history = true;
   triggerAiResponse(sched.room_id, ai, sched.task, null, []).catch(e => console.error('[scheduler] trigger error:', e.message));
   return 'fired';
 }
@@ -2131,6 +2132,7 @@ const server = http.createServer(async (req, res) => {
     const effectiveHarness = sub.harness || ai.adapter || 'claude';
     ai.sub_agent = { id: sub.id, label: sub.label, tier: sub.tier, model: sub.model, workdir: sub.workdir, system_prompt: sub.system_prompt, harness: effectiveHarness, avatar_color: sub.avatar_color, avatar_symbol: sub.avatar_symbol, avatar_url: sub.avatar_url, description: sub.description, role: sub.role };
     ai.parent_message_id = parentMessageId;
+    ai.prompt_outside_history = true;
 
     // Pre-check: parent actor's stoa-agent must be online to run the sub-agent.
     const parentWs = agentClients.get(agent.id);
@@ -6901,6 +6903,7 @@ function promptStrings(lang) {
       participants: names => `Other participants in this room: ${names}.`,
       timeContext: now => `Current time: ${now}. All message timestamps in the conversation history are in UTC.`,
       historyLabel: 'Conversation history',
+      taskLabel: 'Task for this turn (not part of the conversation history above)',
       attachments: 'Attachments',
       attachmentsNote: 'files downloaded to .stoa-attachments/ in workdir if this is the latest message',
       sentImage: 'sent an image',
@@ -6915,6 +6918,7 @@ function promptStrings(lang) {
       participants: names => `Peserta lain di room ini: ${names}.`,
       timeContext: now => `Waktu sekarang: ${now}. Semua timestamp di riwayat percakapan adalah UTC.`,
       historyLabel: 'Riwayat percakapan',
+      taskLabel: 'Tugas untuk giliran ini (bukan bagian dari riwayat percakapan di atas)',
       attachments: 'Lampiran',
       attachmentsNote: 'file sudah didownload ke .stoa-attachments/ di workdir jika ini pesan terbaru',
       sentImage: 'mengirim gambar',
@@ -6929,6 +6933,7 @@ function promptStrings(lang) {
       participants: names => `このルームの他の参加者: ${names}。`,
       timeContext: now => `現在時刻: ${now}。会話履歴のタイムスタンプはすべてUTCです。`,
       historyLabel: '会話履歴',
+      taskLabel: 'このターンのタスク（上の会話履歴には含まれていません）',
       attachments: '添付ファイル',
       attachmentsNote: '最新メッセージの場合、ファイルはworkdirの.stoa-attachments/にダウンロード済み',
       sentImage: '画像を送信',
@@ -6943,6 +6948,7 @@ function promptStrings(lang) {
       participants: names => `이 방의 다른 참가자: ${names}.`,
       timeContext: now => `현재 시각: ${now}. 대화 기록의 모든 타임스탬프는 UTC입니다.`,
       historyLabel: '대화 기록',
+      taskLabel: '이번 차례의 작업 (위 대화 기록에 포함되지 않음)',
       attachments: '첨부파일',
       attachmentsNote: '최신 메시지인 경우 파일이 workdir의 .stoa-attachments/에 다운로드됨',
       sentImage: '이미지 전송',
@@ -6957,6 +6963,7 @@ function promptStrings(lang) {
       participants: names => `此房间的其他参与者：${names}。`,
       timeContext: now => `当前时间：${now}。对话历史中的所有时间戳均为UTC。`,
       historyLabel: '对话历史',
+      taskLabel: '本轮任务（不在上面的对话历史中）',
       attachments: '附件',
       attachmentsNote: '如果这是最新消息，文件已下载到workdir的.stoa-attachments/',
       sentImage: '发送了图片',
@@ -7245,6 +7252,11 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
 
   const emailThreadSection = buildEmailThreadSection(db, { roomId, threadId });
 
+  // Most callers pass a prompt that is (or is built from) a stored message already in
+  // the history above, so injecting it would duplicate it. Only callers whose prompt
+  // is never stored as a message (wake prompt, /sub-agent-trigger task, scheduled task)
+  // opt in with ai.prompt_outside_history; without it the agent would never see it.
+  const taskSection = ai.prompt_outside_history && prompt ? `\n${L.taskLabel}:\n${prompt}` : '';
 
   const fullPrompt = [
     identityLine,
@@ -7255,6 +7267,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     platformMemoryLine,
     `\n${L.historyLabel}:\n${ctx}`,
     replyCtx,
+    taskSection,
     '\n' + L.replyInstruction,
     otherAINames.length ? L.mentionInstruction(otherAINames) : '',
     orchestrationLine,
