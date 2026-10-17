@@ -2724,6 +2724,14 @@ html.dark .h-room-thread-badge {
   line-height: 1.6;
   letter-spacing: 0.02em;
 }
+.t-broadcast-badge--from-thread {
+  background: oklch(90% 0.02 250);
+  color: oklch(40% 0.04 250);
+}
+.dark .t-broadcast-badge--from-thread {
+  background: oklch(28% 0.03 250);
+  color: oklch(75% 0.04 250);
+}
 .t-broadcast-badge--automation_match {
   background: oklch(88% 0.08 255);
   color: oklch(40% 0.12 255);

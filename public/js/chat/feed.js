@@ -277,6 +277,11 @@ function appendFeedBroadcastRow(m, inner) {
   const header = document.createElement('div');
   header.className = 't-broadcast-header';
 
+  const fromBadge = document.createElement('span');
+  fromBadge.className = 't-broadcast-badge t-broadcast-badge--from-thread';
+  fromBadge.textContent = 'From thread';
+  header.appendChild(fromBadge);
+
   const preview = document.createElement('span');
   preview.className = 't-broadcast-preview';
   const snippet = (m.thread_root_preview || '').slice(0, 80);
@@ -284,7 +289,7 @@ function appendFeedBroadcastRow(m, inner) {
   header.appendChild(preview);
 
   const badge = document.createElement('span');
-  badge.className = 't-broadcast-badge t-broadcast-badge--' + (m.broadcast_reason || 'error');
+  badge.className = 't-broadcast-badge t-broadcast-badge--' + (m.broadcast_reason || 'error') + ' t-broadcast-reason-badge';
   badge.textContent = _broadcastReasonMap[m.broadcast_reason] || m.broadcast_reason;
   header.appendChild(badge);
 
@@ -364,10 +369,10 @@ function upsertFeedBroadcastRow(m) {
     scrollToBottom(true);
     return;
   }
-  // Update badge if reason changed
-  const badge = existing.querySelector('.t-broadcast-badge');
+  // Update reason badge if reason changed
+  const badge = existing.querySelector('.t-broadcast-reason-badge');
   if (badge && m.broadcast_reason) {
-    badge.className = 't-broadcast-badge t-broadcast-badge--' + m.broadcast_reason;
+    badge.className = 't-broadcast-badge t-broadcast-badge--' + m.broadcast_reason + ' t-broadcast-reason-badge';
     badge.textContent = _broadcastReasonMap[m.broadcast_reason] || m.broadcast_reason;
   }
 }

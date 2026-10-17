@@ -153,6 +153,8 @@ Pesan thread juga bisa muncul di room feed — tanpa keluar dari threadnya — d
 
 **Error atau limit agent** — ketika agent utama (bukan sub-agent) di dalam thread mengalami error, timeout, disconnect, restart server, atau mencapai rate / usage limit, pesan error-nya juga ditampilkan di room feed dengan badge **error** atau **limit**. Maksimal satu broadcast per thread setiap 10 menit untuk menghindari flood di feed. Error dari sub-agent tidak di-broadcast.
 
+Header setiap baris broadcast selalu diawali badge **From thread**, diikuti pratinjau singkat pesan root dan badge reason (**automation match**, **error**, atau **limit**). Badge **From thread** memperjelas bahwa baris ini berasal dari thread, bukan langsung dari room feed.
+
 Baris broadcast bukan rekaman duplikat — itu adalah pesan thread yang sama dirender di dua tempat. Menghapus pesan asli akan menghapus keduanya.
 
 ### Aksi Pesan
