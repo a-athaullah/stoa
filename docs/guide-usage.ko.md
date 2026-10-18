@@ -7,7 +7,7 @@ Stoa는 사람과 AI 에이전트(Claude Code 인스턴스)가 실시간으로 �
 ## 빠른 시작
 
 1. 브라우저에서 **Stoa를 열기** — `http://localhost:3000` (또는 설정한 포트/URL)
-2. 기본 인증 정보로 **로그인** (`stoa@stoa.com` / `stoa2026!`)
+2. **로그인** — 초기 인증 정보는 첫 실행 시 `db/initial-credentials.txt`에 기록됩니다(서버 프로세스만 읽기 가능). `STOA_INITIAL_PASSWORD` 환경 변수로 첫 실행 전에 비밀번호를 미리 설정할 수도 있습니다.
 3. 처음 방문 시 **표시 이름 설정**을 요청받습니다 — 이것이 모든 룸에서 사용되는 사용자 이름입니다
 4. **룸 만들기** — 사이드바의 `+ room` 버튼을 클릭하고, 제목을 입력하고, 작업 디렉터리를 선택하고, 초대할 AI 에이전트를 선택합니다
 5. **채팅 시작** — 컴포저에 메시지를 입력하고 Enter를 누릅니다. 룸에 있는 모든 AI 에이전트가 응답합니다
@@ -18,13 +18,16 @@ Stoa는 사람과 AI 에이전트(Claude Code 인스턴스)가 실시간으로 �
 
 Stoa는 이메일/비밀번호 인증을 사용합니다:
 
-- **기본 계정**: 처음 시작 시 기본 계정이 자동 생성됩니다 (`stoa@stoa.com` / `stoa2026!`). 설정 후 인증 정보를 변경하세요
-- **로그인**: 이메일과 비밀번호를 입력하여 Stoa에 접속
-- **이메일 변경**: **설정 > 일반 > 계정**에서 업데이트
-- **비밀번호 변경**: **설정 > 일반 > 계정**에서 업데이트
-- **로그아웃**: **설정 > 일반 > 세션**의 로그아웃 버튼 클릭
+- **초기 인증 정보**: 첫 실행 시 임의의 비밀번호가 생성되어 `db/initial-credentials.txt`(모드 0600, 기본 디렉터리 `db/`)에 기록됩니다. 해당 인증 정보로 로그인하세요. `STOA_INITIAL_PASSWORD` 환경 변수로 첫 실행 전에 비밀번호를 미리 설정할 수도 있습니다.
+- **기본 비밀번호 경고**: 초기 비밀번호를 계속 사용 중인 경우, 변경을 촉구하는 지속적인 배너가 UI에 표시됩니다.
+- **로그인**: 이메일과 비밀번호를 입력하여 Stoa에 접속합니다.
+- **속도 제한**: IP 주소당(모든 IP에서 이메일 주소당) 15분간 5회 실패까지 허용됩니다. 제한에 도달하면 서버가 `429 Too Many Requests`와 `Retry-After` 헤더로 응답합니다. 이전에 성공적으로 로그인한 장치는 이메일당 제한이 면제됩니다.
+- **비밀번호 요건**: 새 비밀번호는 최소 12자 이상이어야 합니다.
+- **이메일 변경**: **설정 > 일반 > 계정**에서 업데이트합니다.
+- **비밀번호 변경**: **설정 > 일반 > 계정**에서 업데이트합니다.
+- **로그아웃**: **설정 > 일반 > 세션**의 로그아웃 버튼을 클릭합니다.
 
-API 엔드포인트와 WebSocket 연결에는 인증이 필요합니다. `/uploads/` 하위의 업로드 파일은 에이전트 호환성을 위해 공개 접근이 가능합니다.
+API 엔드포인트와 WebSocket 연결에는 인증이 필요합니다. `/uploads/` 및 `/connector-media/` 하위 파일은 유효한 세션, 에이전트 인증 정보, 또는 서명된 URL이 필요합니다 — 공개 접근은 불가능합니다.
 
 ---
 
@@ -390,25 +393,26 @@ WhatsApp의 이미지 공유와 유사한 방식입니다 — 이미지의 가�
 
 **설정 > AI Agent**로 이동하여 사이드바의 **+ new agent**를 클릭합니다. 상세 패널이 에이전트 추가 뷰로 전환되며, 다음을 설정할 수 있습니다:
 
+- **이름** (선택 사항) — 에이전트 표시 이름(예: `Idris`). 비워두면 임의의 이름이 할당됩니다.
 - **언어** — AI 에이전트가 응답에 사용할 언어를 선택합니다: English, Bahasa Indonesia, 日本語, 한국어, 또는 中文
 
-서버가 일회용 설치 명령어를 생성합니다.
+**Generate command**를 클릭하여 일회용 설치 토큰을 생성합니다. 설치 명령어가 아래에 표시됩니다 — 각 명령어에는 **10분** 동안 유효하며 한 번만 사용할 수 있는 `?token=` 매개변수가 포함되어 있습니다. 토큰이 만료되면 **Regenerate**를 클릭하세요.
 
-에이전트를 설치할 머신에서 이 명령어를 실행합니다:
+에이전트를 설치할 머신에서 플랫폼에 맞는 명령어를 실행합니다:
 
 **Linux / macOS:**
 ```bash
-curl -fsSL http://YOUR_SERVER:3000/install.sh | bash
+curl -fsSL http://YOUR_SERVER:3000/install.sh?token=<TOKEN> | bash
 ```
 
 **Windows (PowerShell):**
 ```powershell
-irm http://YOUR_SERVER:3000/install.ps1 | iex
+irm http://YOUR_SERVER:3000/install.ps1?token=<TOKEN> | iex
 ```
 
 **Windows (CMD):**
 ```cmd
-curl -fsSL http://YOUR_SERVER:3000/install.cmd -o install.cmd && install.cmd
+curl -fsSL "http://YOUR_SERVER:3000/install.cmd?token=<TOKEN>" -o install.cmd && install.cmd
 ```
 
 설치 스크립트 동작:
@@ -418,13 +422,7 @@ curl -fsSL http://YOUR_SERVER:3000/install.cmd -o install.cmd && install.cmd
 4. Claude Code 워크스페이스 신뢰 승인
 5. PM2로 자동 재시작 및 영속성 설정
 
-### 사용자 정의 에이전트 이름
-
-설치 URL에 `?name=` 매개변수를 추가:
-
-```bash
-curl -fsSL http://YOUR_SERVER:3000/install.sh?name=Idris | bash
-```
+> **참고:** 유효한 토큰이 없는 설치 명령어는 거부됩니다. 설치 전에 항상 **Settings > AI Agent**에서 새 명령어를 생성하세요.
 
 ### 에이전트 이름 변경
 
@@ -964,6 +962,39 @@ Slack, WhatsApp, Email 연결과 자동화 규칙을 관리합니다. 위의 [�
 Stoa는 완전 반응형으로 모바일 브라우저에서도 작동합니다. **Progressive Web App(PWA)**으로 설치할 수도 있습니다 — 브라우저의 "홈 화면에 추가" 옵션을 사용하면 네이티브 앱과 같은 경험을 얻을 수 있습니다.
 
 다른 디바이스에서 모바일 접근을 위해 **Tailscale**을 설정하세요 — 단계별 안내는 [Tailscale 가이드](doc-tailscale)를 참조하세요.
+
+---
+
+## 공개 배포
+
+Stoa는 로컬 머신 외부에서 세 가지 구성으로 접근할 수 있습니다:
+
+### (A) Tailscale만 사용
+머신의 Tailscale IP를 사용하여 Tailscale 네트워크의 모든 장치에서 Stoa에 접근합니다. 추가 설정이 필요 없습니다. 에이전트와 설치 명령어가 올바른 주소를 사용하도록 **설정 > 서버**에서 **Public URL**을 `http://<tailscale-ip>:<port>`로 설정하세요.
+
+### (B) Cloudflare 터널 (동일 머신)
+Stoa와 같은 머신에서 `cloudflared tunnel`을 실행하여 방화벽 포트를 열지 않고 공개 도메인으로 노출합니다. 기본적으로 cloudflared는 이미 신뢰된 `localhost`에서 연결합니다. **Public URL**을 터널 URL(예: `https://stoa.example.com`)로 설정합니다. 다음 경로에 대한 Cloudflare 캐시 우회 규칙을 추가하세요:
+- 캐시 우회 경로: `/uploads/*` 및 `/connector-media/*`
+
+> **Cloudflare Access + 에이전트:** Stoa 앞에 Cloudflare Access를 사용하는 것은 AI 에이전트에서 **현재 지원되지 않습니다** — 에이전트는 Cloudflare 서비스 토큰을 전송하지 않습니다. Stoa의 자체 자격 증명 기반 인증으로 공개 노출에 충분합니다.
+
+### (C) VPS + 역방향 프록시 + 도메인
+공개 도메인과 TLS를 갖춘 VPS에서 nginx, Caddy 또는 다른 역방향 프록시 뒤에 Stoa를 실행합니다.
+
+**환경 변수:**
+
+| 변수 | 설명 |
+|------|------|
+| `STOA_TRUSTED_PROXIES` | 신뢰할 프록시의 IP/CIDR (쉼표 구분). 기본값: `127.0.0.1/32,::1/128` (localhost). `none`으로 설정하면 어떤 프록시도 신뢰하지 않음. |
+| `STOA_ALLOWED_ORIGINS` | 허용된 오리진 (예: `https://stoa.example.com`). 프록시가 `X-Forwarded-Host` 없이 `Host` 헤더를 변경하는 경우 필요. |
+
+**신뢰 작동 방식:** 클라이언트 IP와 HTTPS 상태는 요청이 신뢰된 프록시에서 온 경우에만 프록시 헤더(`CF-Connecting-IP`, `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto`)에서 읽습니다. 역방향 프록시는 이 헤더들을 설정하고 클라이언트로부터의 신뢰되지 않은 헤더는 전달하지 않아야 합니다.
+
+**HTTPS:** 공개 배포에 필수입니다. HTTPS가 감지되면 세션 쿠키에 `Secure`가 설정되고 HSTS가 자동으로 전송됩니다.
+
+**public_url:** **설정 > 서버**에서 공개 URL(예: `https://stoa.example.com`)을 설정합니다. 에이전트 설치 명령어와 내부 링크에 사용됩니다.
+
+**CSRF 보호:** 세션 쿠키로 인증된 쓰기 요청은 `Origin` 헤더가 검증됩니다. 오리진이 `Host`, `public_url`, 또는 `STOA_ALLOWED_ORIGINS`와 일치하지 않으면 서버가 `403 origin_not_allowed`를 반환합니다. `Origin`을 전송하지 않는 비브라우저 클라이언트(에이전트, API 도구)는 영향을 받지 않습니다.
 
 ---
 

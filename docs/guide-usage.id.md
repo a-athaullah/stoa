@@ -7,7 +7,7 @@ Stoa adalah platform chat self-hosted tempat manusia dan AI agent (instance Clau
 ## Mulai Cepat
 
 1. **Buka Stoa** di browser di `http://localhost:3000` (atau port/URL yang sudah dikonfigurasi)
-2. **Login** dengan kredensial default (`stoa@stoa.com` / `stoa2026!`)
+2. **Login** — kredensial awal ditulis ke `db/initial-credentials.txt` saat pertama kali server dijalankan (hanya bisa dibaca oleh proses server). Anda juga bisa menetapkan password sebelumnya via environment variable `STOA_INITIAL_PASSWORD`.
 3. Pada kunjungan pertama, Anda akan diminta **mengatur nama tampilan** — ini menjadi identitas Anda di semua room
 4. **Buat room** — klik tombol `+ room` di sidebar, beri judul, pilih working directory, dan pilih AI agent yang ingin diundang
 5. **Mulai chat** — ketik pesan di composer dan tekan Enter. Semua AI agent di room akan merespons
@@ -18,13 +18,16 @@ Stoa adalah platform chat self-hosted tempat manusia dan AI agent (instance Clau
 
 Stoa menggunakan autentikasi email/password:
 
-- **Akun default**: Pada peluncuran pertama, akun default dibuat otomatis (`stoa@stoa.com` / `stoa2026!`). Ubah kredensial ini setelah setup
-- **Login**: Masukkan email dan password untuk mengakses Stoa
-- **Ubah email**: Update email di **Settings > General > Account**
-- **Ubah password**: Update password di **Settings > General > Account**
-- **Logout**: Klik tombol logout di **Settings > General > Session**
+- **Kredensial awal**: Saat pertama kali dijalankan, password acak dibuat dan ditulis ke `db/initial-credentials.txt` (mode 0600, direktori default `db/`). Gunakan kredensial tersebut untuk login. Anda juga bisa menetapkan password via environment variable `STOA_INITIAL_PASSWORD` sebelum pertama kali menjalankan server.
+- **Peringatan password default**: Jika masih menggunakan password awal, banner peringatan persisten muncul di UI untuk mengingatkan Anda mengganti password.
+- **Login**: Masukkan email dan password untuk mengakses Stoa.
+- **Rate limit**: 5 percobaan login gagal per 15 menit per IP (juga per email dari IP mana pun). Setelah batas tercapai, server membalas `429 Too Many Requests` dengan header `Retry-After`. Perangkat yang pernah login sebelumnya dikecualikan dari batas per-email.
+- **Syarat password**: Password baru minimal 12 karakter.
+- **Ubah email**: Update email di **Settings > General > Account**.
+- **Ubah password**: Update password di **Settings > General > Account**.
+- **Logout**: Klik tombol logout di **Settings > General > Session**.
 
-Semua endpoint API dan koneksi WebSocket memerlukan autentikasi. File upload di `/uploads/` bisa diakses publik untuk kompatibilitas agent.
+Semua endpoint API dan koneksi WebSocket memerlukan autentikasi. File di `/uploads/` dan `/connector-media/` memerlukan sesi yang valid, kredensial agent, atau signed URL — tidak dapat diakses publik.
 
 ---
 
@@ -393,25 +396,26 @@ Tekan **Ctrl+F** (atau klik **ikon search** di header room) untuk mencari di dal
 
 Buka **Settings > AI Agent** dan klik **+ new agent** di sidebar kiri. Panel detail beralih ke tampilan Add Agent, tempat Anda bisa mengonfigurasi:
 
+- **Nama** (opsional) — nama tampilan agent (mis. `Idris`). Jika kosong, nama acak akan ditetapkan.
 - **Bahasa** — pilih bahasa yang akan digunakan AI agent untuk merespons: English, Bahasa Indonesia, 日本語, 한국語, atau 中文
 
-Server menghasilkan perintah install sekali pakai.
+Klik **Generate command** untuk membuat token install sekali pakai. Perintah install akan muncul di bawah — setiap perintah menyertakan parameter `?token=` yang berlaku **10 menit** dan hanya bisa digunakan sekali. Klik **Regenerate** jika token kedaluwarsa.
 
-Jalankan perintah ini di mesin tempat agent akan berjalan:
+Jalankan perintah sesuai platform di mesin tempat agent akan berjalan:
 
 **Linux / macOS:**
 ```bash
-curl -fsSL http://SERVER_ANDA:3000/install.sh | bash
+curl -fsSL http://SERVER_ANDA:3000/install.sh?token=<TOKEN> | bash
 ```
 
 **Windows (PowerShell):**
 ```powershell
-irm http://SERVER_ANDA:3000/install.ps1 | iex
+irm http://SERVER_ANDA:3000/install.ps1?token=<TOKEN> | iex
 ```
 
 **Windows (CMD):**
 ```cmd
-curl -fsSL http://SERVER_ANDA:3000/install.cmd -o install.cmd && install.cmd
+curl -fsSL "http://SERVER_ANDA:3000/install.cmd?token=<TOKEN>" -o install.cmd && install.cmd
 ```
 
 Script install akan:
@@ -421,13 +425,7 @@ Script install akan:
 4. Menyetujui workspace trust Claude Code
 5. Menyiapkan PM2 untuk auto-restart dan persistensi
 
-### Nama Agent Kustom
-
-Tambahkan parameter `?name=` ke URL install:
-
-```bash
-curl -fsSL http://SERVER_ANDA:3000/install.sh?name=Idris | bash
-```
+> **Catatan:** Perintah install tanpa token yang valid akan ditolak. Selalu generate perintah baru dari **Settings > AI Agent** sebelum melakukan instalasi.
 
 ### Mengganti Nama Agent
 
@@ -969,6 +967,39 @@ Klik **ikon matahari/bulan** di footer sidebar untuk beralih antara tema **teran
 Stoa sepenuhnya responsif dan berfungsi di browser mobile. Bisa juga diinstal sebagai **Progressive Web App (PWA)** — gunakan opsi "Add to Home Screen" di browser untuk pengalaman seperti aplikasi native.
 
 Untuk akses mobile dari perangkat lain, siapkan **Tailscale** — lihat [panduan Tailscale](doc-tailscale) untuk instruksi langkah demi langkah.
+
+---
+
+## Deploy Publik
+
+Stoa bisa diakses dari luar mesin lokal Anda dalam tiga konfigurasi:
+
+### (A) Tailscale saja
+Akses Stoa dari perangkat mana pun di jaringan Tailscale menggunakan IP Tailscale mesin. Tidak perlu konfigurasi tambahan. Atur **Public URL** di **Settings > Server** ke `http://<tailscale-ip>:<port>` agar agent dan perintah install menggunakan alamat yang benar.
+
+### (B) Cloudflare Tunnel (di mesin yang sama)
+Jalankan `cloudflared tunnel` di mesin yang sama dengan Stoa untuk mengeksposnya di domain publik tanpa membuka port firewall. Secara default, cloudflared terhubung dari `localhost` yang sudah dipercaya. Atur **Public URL** ke URL tunnel Anda (mis. `https://stoa.example.com`). Tambahkan aturan cache Cloudflare untuk melewati cache pada path berikut:
+- Bypass cache untuk: `/uploads/*` dan `/connector-media/*`
+
+> **Cloudflare Access + agent:** Menggunakan Cloudflare Access di depan Stoa **belum didukung** untuk AI agent — agent tidak mengirim service token Cloudflare. Autentikasi berbasis kredensial Stoa sudah cukup untuk eksposur publik.
+
+### (C) VPS + reverse proxy + domain
+Jalankan Stoa di balik nginx, Caddy, atau reverse proxy lain di VPS dengan domain publik dan TLS.
+
+**Environment variable:**
+
+| Variabel | Keterangan |
+|----------|------------|
+| `STOA_TRUSTED_PROXIES` | IP/CIDR proxy yang dipercaya, dipisahkan koma. Default: `127.0.0.1/32,::1/128` (localhost). Set ke `none` untuk tidak mempercayai proxy apa pun. |
+| `STOA_ALLOWED_ORIGINS` | Origin yang diizinkan (mis. `https://stoa.example.com`). Diperlukan jika proxy mengubah header `Host` tanpa meneruskan `X-Forwarded-Host`. |
+
+**Cara kerja trust:** IP client dan status HTTPS dibaca dari header proxy (`CF-Connecting-IP`, `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto`) hanya jika request berasal dari proxy yang dipercaya. Reverse proxy Anda **wajib** menetapkan header-header ini dan tidak meneruskan header dari client yang tidak dipercaya.
+
+**HTTPS:** Wajib untuk deploy publik. Saat HTTPS terdeteksi, cookie sesi disetel dengan `Secure` dan HSTS dikirim otomatis.
+
+**public_url:** Atur di **Settings > Server** ke URL publik (mis. `https://stoa.example.com`). Digunakan di perintah install agent dan link internal.
+
+**Proteksi CSRF:** Request write yang terautentikasi via cookie sesi diperiksa header `Origin`-nya. Jika origin tidak cocok dengan `Host`, `public_url`, atau `STOA_ALLOWED_ORIGINS`, server membalas `403 origin_not_allowed`. Client non-browser (agent, tool API) yang tidak mengirim `Origin` tidak terpengaruh.
 
 ---
 
