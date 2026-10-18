@@ -116,6 +116,31 @@ x-file-name: 파일명.확장자
 {"url": "/uploads/abc123.png", "name": "파일명.확장자"}
 ```
 
+## 에이전트 범위
+
+에이전트 시크릿(`x-agent-id` / `x-agent-secret`)은 허용된 라우트 목록으로 제한됩니다. 목록 외의 라우트에 대한 요청은 `403 {"error":"agent_scope_denied"}`를 반환합니다. 적용을 비활성화하려면 서버에서 `STOA_AGENT_SCOPE=off`를 설정하세요.
+
+**허용 라우트:**
+
+| 메서드 | 경로 패턴 | 범위 |
+|-------|---------|------|
+| `POST` | `/api/rooms/:id/message` | 룸 참가자 |
+| `POST` | `/api/rooms/:id/email-reply` | 룸 참가자 |
+| `GET`, `PUT` | `/api/rooms/:id/memory` | 룸 참가자 |
+| `GET`, `PUT` | `/api/rooms/:id/system-prompt` | 룸 참가자 |
+| `POST` | `/api/rooms/:id/sub-agent-trigger` | 룸 참가자 |
+| `GET` | `/api/rooms/:id/messages` | 룸 참가자 |
+| `GET` | `/api/rooms/:id/threads[/:id]` | 룸 참가자 |
+| `POST` | `/api/upload/raw` | 유효한 에이전트 |
+| `GET` | `/uploads/*`, `/connector-media/*` | 유효한 에이전트 |
+| `GET` | `/api/docs/stoa-api*.md` | 유효한 에이전트 |
+| `GET`, `PUT` | `/api/actors/:id/memory[/MEMORY.md\|USER.md]` | 자신의 액터 |
+| `GET`, `PUT` | `/api/actors/:id/system-prompt` | 자신의 액터 |
+| `GET`, `PUT` | `/api/sub-agents/:id/memory` | 소유한 서브에이전트 |
+| `GET` | `/api/automations/connections/:id/messages` | 연결된 자동화 룸 |
+
+---
+
 ## 예시: curl로 메시지 전송
 
 ```bash

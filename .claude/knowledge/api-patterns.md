@@ -79,6 +79,53 @@ Authorization: Bearer stoa-proxy:<platId>:<actorId>:<sig>
 - Persistent HMAC key stored in settings table as `security_signing_key` (random 32-byte hex)
 - Generated on startup if absent. Never logged or sent to client.
 
+#### Agent Scope (`lib/agent-scope.js`)
+Agent secrets are restricted to an allowlist; requests outside → `403 {"error":"agent_scope_denied"}` + log `[agent-scope] denied actor=<id> METHOD /path`.
+
+Escape hatch: `STOA_AGENT_SCOPE=off` on the server (warning logged at boot; env only, not a header — not spoofable).
+
+Scopes:
+- `room` — agent must be a participant of the room `:id`
+- `self` — `:actorId` in path must equal `x-agent-id`
+- `sub-agent` — sub-agent `:id` must belong to the agent
+- `connection` — connector must feed an automation targeting a room the agent is in
+- `any` — valid agent secret is sufficient
+
+Allowed routes (source: `AGENT_ALLOWED_ROUTES` in `lib/agent-scope.js`):
+
+| Method | Path | Scope |
+|--------|------|-------|
+| POST | `/api/rooms/:id/message` | room |
+| POST | `/api/rooms/:id/email-reply` | room |
+| GET, PUT | `/api/rooms/:id/memory` | room |
+| GET, PUT | `/api/rooms/:id/system-prompt` | room |
+| POST | `/api/rooms/:id/sub-agent-trigger` | room |
+| GET | `/api/rooms/:id/messages` | room |
+| GET | `/api/rooms/:id/threads`, `/api/rooms/:id/threads/:id` | room |
+| POST | `/api/upload/raw` | any |
+| GET | `/uploads/*`, `/connector-media/*` | any |
+| GET | `/api/docs/stoa-api(.xx)?.md` | any |
+| GET, PUT | `/api/actors/:id/memory`, `/api/actors/:id/memory/(MEMORY\|USER).md` | self |
+| GET, PUT | `/api/actors/:id/system-prompt` | self |
+| GET, PUT | `/api/sub-agents/:id/memory` | sub-agent |
+| GET | `/api/automations/connections/:id/messages` | connection |
+
+Cookie sessions (browser) have full access regardless. `/v1/messages` is unchanged (uses HMAC proxy token or agent header directly).
+
+#### Cloudflare Access Service Token (`lib/cf-access.js`)
+Optional agent-side feature for deployments behind Cloudflare Access (when Tailscale is unavailable).
+
+Env vars (both must be set, or both ignored with a warning):
+- `STOA_CF_ACCESS_CLIENT_ID`
+- `STOA_CF_ACCESS_CLIENT_SECRET`
+
+Behavior:
+- Headers `CF-Access-Client-Id` and `CF-Access-Client-Secret` attached to WebSocket handshake and all HTTP fetches **to the Stoa origin only** (checked via `httpOrigin(url) === httpOrigin(stoaUrl)`)
+- Child sessions (Claude Code, Codex) cannot curl the real Stoa URL — they get `ws://127.0.0.1:<port>/<randomHex>` as `STOA_URL`, which is a loopback forward proxy that injects the CF headers. Token never enters child env or prompts.
+- Proxy: bind `127.0.0.1` only, random path prefix, absolute-form/CONNECT refused, body capped at 25MB, hop-by-hop and CF headers stripped from incoming client requests
+- CF env vars deleted from `process.env` after read (children don't inherit); ecosystem.config.js chmod 600
+- Without env vars: behavior identical to before (zero regression)
+
 #### User Auth (via cookie)
 ```http
 Cookie: stoa_session=<token>

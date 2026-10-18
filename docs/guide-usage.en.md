@@ -980,7 +980,7 @@ Access Stoa from any device on your Tailscale network using the machine's Tailsc
 Run `cloudflared tunnel` on the same machine as Stoa to expose it on a public domain without opening firewall ports. By default, cloudflared connects from `localhost`, which is already trusted. Set **Public URL** to your tunnel URL (e.g., `https://stoa.example.com`). Add this to your Cloudflare cache rules to bypass caching for file paths:
 - Bypass cache for paths: `/uploads/*` and `/connector-media/*`
 
-> **Cloudflare Access + agents:** Using Cloudflare Access in front of Stoa is **not currently supported** for AI agents — agents do not send Cloudflare service tokens. Stoa's own credential-based auth is sufficient for public exposure.
+> **Cloudflare Access + agents:** Set `STOA_CF_ACCESS_CLIENT_ID` and `STOA_CF_ACCESS_CLIENT_SECRET` in the agent's environment to pass a Cloudflare Access service token. The token is sent only to the Stoa origin — not to model providers or other hosts. Child sessions (Claude Code, Codex) receive a loopback proxy URL so they can reach Stoa through Access without the token entering their prompts. Without these variables, behavior is unchanged. **Recommended:** prefer Tailscale for agents; use CF Access tokens only when Tailscale is unavailable.
 
 ### (C) VPS + reverse proxy + domain
 Run Stoa behind nginx, Caddy, or another reverse proxy on a VPS with a public domain and TLS.
@@ -1018,6 +1018,29 @@ header_up X-Real-IP {remote_host}
 **public_url:** Set in **Settings > Server** to the public-facing URL (e.g., `https://stoa.example.com`). Used in agent install commands and internal links.
 
 **CSRF protection:** Write requests authenticated via session cookie are checked for a matching `Origin` header. If the request origin doesn't match `Host`, `public_url`, or `STOA_ALLOWED_ORIGINS`, the server returns `403 origin_not_allowed`. Non-browser clients (agents, API tools) that don't send `Origin` are unaffected.
+
+### Agent permissions
+
+Agent secrets (`x-agent-id` / `x-agent-secret`) are limited to an allowlist of routes needed for legitimate agent work. Requests outside this list are rejected with `403 {"error":"agent_scope_denied"}` and logged as `[agent-scope] denied actor=<id> METHOD /path`.
+
+| Route | Access condition |
+|-------|-----------------|
+| `POST /api/rooms/:id/message` | Room participant |
+| `POST /api/rooms/:id/email-reply` | Room participant |
+| `GET/PUT /api/rooms/:id/memory` | Room participant |
+| `GET/PUT /api/rooms/:id/system-prompt` | Room participant |
+| `POST /api/rooms/:id/sub-agent-trigger` | Room participant |
+| `GET /api/rooms/:id/messages` | Room participant |
+| `GET /api/rooms/:id/threads[/:id]` | Room participant |
+| `POST /api/upload/raw` | Any valid agent |
+| `GET /uploads/*, /connector-media/*` | Any valid agent |
+| `GET /api/docs/stoa-api*.md` | Any valid agent |
+| `GET/PUT /api/actors/:id/memory[/MEMORY.md|USER.md]` | Own actor only |
+| `GET/PUT /api/actors/:id/system-prompt` | Own actor only |
+| `GET/PUT /api/sub-agents/:id/memory` | Owned sub-agent only |
+| `GET /api/automations/connections/:id/messages` | Connected automation room |
+
+Browser sessions (session cookie) retain full access. To disable scope enforcement, set `STOA_AGENT_SCOPE=off` on the server — a warning is logged at startup.
 
 ---
 

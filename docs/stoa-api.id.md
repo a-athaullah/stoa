@@ -116,6 +116,31 @@ Response:
 {"url": "/uploads/abc123.png", "name": "namafile.ext"}
 ```
 
+## Scope Agent
+
+Agent secret (`x-agent-id` / `x-agent-secret`) dibatasi ke allowlist route. Request ke route lain mengembalikan `403 {"error":"agent_scope_denied"}`. Untuk menonaktifkan, set `STOA_AGENT_SCOPE=off` di server.
+
+**Route yang diizinkan:**
+
+| Method | Pola path | Scope |
+|--------|-----------|-------|
+| `POST` | `/api/rooms/:id/message` | Peserta room |
+| `POST` | `/api/rooms/:id/email-reply` | Peserta room |
+| `GET`, `PUT` | `/api/rooms/:id/memory` | Peserta room |
+| `GET`, `PUT` | `/api/rooms/:id/system-prompt` | Peserta room |
+| `POST` | `/api/rooms/:id/sub-agent-trigger` | Peserta room |
+| `GET` | `/api/rooms/:id/messages` | Peserta room |
+| `GET` | `/api/rooms/:id/threads[/:id]` | Peserta room |
+| `POST` | `/api/upload/raw` | Agent valid mana pun |
+| `GET` | `/uploads/*`, `/connector-media/*` | Agent valid mana pun |
+| `GET` | `/api/docs/stoa-api*.md` | Agent valid mana pun |
+| `GET`, `PUT` | `/api/actors/:id/memory[/MEMORY.md\|USER.md]` | Actor sendiri |
+| `GET`, `PUT` | `/api/actors/:id/system-prompt` | Actor sendiri |
+| `GET`, `PUT` | `/api/sub-agents/:id/memory` | Sub-agent milik sendiri |
+| `GET` | `/api/automations/connections/:id/messages` | Room automation terhubung |
+
+---
+
 ## Contoh: Kirim Pesan via curl
 
 ```bash

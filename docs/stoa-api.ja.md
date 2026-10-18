@@ -116,6 +116,31 @@ x-file-name: ファイル名.拡張子
 {"url": "/uploads/abc123.png", "name": "ファイル名.拡張子"}
 ```
 
+## エージェントスコープ
+
+エージェントシークレット（`x-agent-id` / `x-agent-secret`）は許可されたルートリストに制限されています。リスト外のルートへのリクエストは `403 {"error":"agent_scope_denied"}` を返します。適用を無効にするには、サーバーで `STOA_AGENT_SCOPE=off` を設定してください。
+
+**許可されるルート：**
+
+| メソッド | パスパターン | スコープ |
+|---------|------------|--------|
+| `POST` | `/api/rooms/:id/message` | ルームの参加者 |
+| `POST` | `/api/rooms/:id/email-reply` | ルームの参加者 |
+| `GET`, `PUT` | `/api/rooms/:id/memory` | ルームの参加者 |
+| `GET`, `PUT` | `/api/rooms/:id/system-prompt` | ルームの参加者 |
+| `POST` | `/api/rooms/:id/sub-agent-trigger` | ルームの参加者 |
+| `GET` | `/api/rooms/:id/messages` | ルームの参加者 |
+| `GET` | `/api/rooms/:id/threads[/:id]` | ルームの参加者 |
+| `POST` | `/api/upload/raw` | 有効なエージェント |
+| `GET` | `/uploads/*`, `/connector-media/*` | 有効なエージェント |
+| `GET` | `/api/docs/stoa-api*.md` | 有効なエージェント |
+| `GET`, `PUT` | `/api/actors/:id/memory[/MEMORY.md\|USER.md]` | 自身のアクター |
+| `GET`, `PUT` | `/api/actors/:id/system-prompt` | 自身のアクター |
+| `GET`, `PUT` | `/api/sub-agents/:id/memory` | 所有するサブエージェント |
+| `GET` | `/api/automations/connections/:id/messages` | 接続済みオートメーションのルーム |
+
+---
+
 ## 例：curlでメッセージを送信
 
 ```bash

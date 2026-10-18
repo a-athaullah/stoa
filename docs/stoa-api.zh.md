@@ -116,6 +116,31 @@ x-file-name: 文件名.扩展名
 {"url": "/uploads/abc123.png", "name": "文件名.扩展名"}
 ```
 
+## 代理范围
+
+代理密钥（`x-agent-id` / `x-agent-secret`）被限制为白名单路由。对白名单外路由的请求返回 `403 {"error":"agent_scope_denied"}`。要禁用限制，在服务器上设置 `STOA_AGENT_SCOPE=off`。
+
+**允许的路由：**
+
+| 方法 | 路径模式 | 范围 |
+|------|--------|------|
+| `POST` | `/api/rooms/:id/message` | 房间参与者 |
+| `POST` | `/api/rooms/:id/email-reply` | 房间参与者 |
+| `GET`, `PUT` | `/api/rooms/:id/memory` | 房间参与者 |
+| `GET`, `PUT` | `/api/rooms/:id/system-prompt` | 房间参与者 |
+| `POST` | `/api/rooms/:id/sub-agent-trigger` | 房间参与者 |
+| `GET` | `/api/rooms/:id/messages` | 房间参与者 |
+| `GET` | `/api/rooms/:id/threads[/:id]` | 房间参与者 |
+| `POST` | `/api/upload/raw` | 任意有效代理 |
+| `GET` | `/uploads/*`, `/connector-media/*` | 任意有效代理 |
+| `GET` | `/api/docs/stoa-api*.md` | 任意有效代理 |
+| `GET`, `PUT` | `/api/actors/:id/memory[/MEMORY.md\|USER.md]` | 仅自身 Actor |
+| `GET`, `PUT` | `/api/actors/:id/system-prompt` | 仅自身 Actor |
+| `GET`, `PUT` | `/api/sub-agents/:id/memory` | 仅所属子代理 |
+| `GET` | `/api/automations/connections/:id/messages` | 已连接自动化的房间 |
+
+---
+
 ## 示例：通过 curl 发送消息
 
 ```bash

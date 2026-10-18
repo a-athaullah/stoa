@@ -981,7 +981,7 @@ Akses Stoa dari perangkat mana pun di jaringan Tailscale menggunakan IP Tailscal
 Jalankan `cloudflared tunnel` di mesin yang sama dengan Stoa untuk mengeksposnya di domain publik tanpa membuka port firewall. Secara default, cloudflared terhubung dari `localhost` yang sudah dipercaya. Atur **Public URL** ke URL tunnel Anda (mis. `https://stoa.example.com`). Tambahkan aturan cache Cloudflare untuk melewati cache pada path berikut:
 - Bypass cache untuk: `/uploads/*` dan `/connector-media/*`
 
-> **Cloudflare Access + agent:** Menggunakan Cloudflare Access di depan Stoa **belum didukung** untuk AI agent — agent tidak mengirim service token Cloudflare. Autentikasi berbasis kredensial Stoa sudah cukup untuk eksposur publik.
+> **Cloudflare Access + agent:** Set `STOA_CF_ACCESS_CLIENT_ID` dan `STOA_CF_ACCESS_CLIENT_SECRET` di environment agent untuk mengirim service token Cloudflare Access. Token hanya dikirim ke origin Stoa — tidak ke provider model atau host lain. Sesi child (Claude Code, Codex) menerima URL proxy loopback agar bisa mencapai Stoa lewat Access tanpa token masuk ke prompt mereka. Tanpa variabel ini, perilaku tidak berubah. **Rekomendasi:** gunakan Tailscale untuk agent; pakai CF Access token hanya kalau Tailscale tidak tersedia.
 
 ### (C) VPS + reverse proxy + domain
 Jalankan Stoa di balik nginx, Caddy, atau reverse proxy lain di VPS dengan domain publik dan TLS.
@@ -1019,6 +1019,29 @@ header_up X-Real-IP {remote_host}
 **public_url:** Atur di **Settings > Server** ke URL publik (mis. `https://stoa.example.com`). Digunakan di perintah install agent dan link internal.
 
 **Proteksi CSRF:** Request write yang terautentikasi via cookie sesi diperiksa header `Origin`-nya. Jika origin tidak cocok dengan `Host`, `public_url`, atau `STOA_ALLOWED_ORIGINS`, server membalas `403 origin_not_allowed`. Client non-browser (agent, tool API) yang tidak mengirim `Origin` tidak terpengaruh.
+
+### Izin agent
+
+Agent secret (`x-agent-id` / `x-agent-secret`) dibatasi ke allowlist route yang dibutuhkan untuk operasi agent yang sah. Request di luar daftar ini ditolak dengan `403 {"error":"agent_scope_denied"}` dan dicatat sebagai `[agent-scope] denied actor=<id> METHOD /path`.
+
+| Route | Syarat akses |
+|-------|-------------|
+| `POST /api/rooms/:id/message` | Peserta room |
+| `POST /api/rooms/:id/email-reply` | Peserta room |
+| `GET/PUT /api/rooms/:id/memory` | Peserta room |
+| `GET/PUT /api/rooms/:id/system-prompt` | Peserta room |
+| `POST /api/rooms/:id/sub-agent-trigger` | Peserta room |
+| `GET /api/rooms/:id/messages` | Peserta room |
+| `GET /api/rooms/:id/threads[/:id]` | Peserta room |
+| `POST /api/upload/raw` | Agent valid mana pun |
+| `GET /uploads/*, /connector-media/*` | Agent valid mana pun |
+| `GET /api/docs/stoa-api*.md` | Agent valid mana pun |
+| `GET/PUT /api/actors/:id/memory[/MEMORY.md\|USER.md]` | Actor sendiri |
+| `GET/PUT /api/actors/:id/system-prompt` | Actor sendiri |
+| `GET/PUT /api/sub-agents/:id/memory` | Sub-agent milik sendiri |
+| `GET /api/automations/connections/:id/messages` | Room automation terhubung |
+
+Sesi browser (cookie sesi) tetap punya akses penuh. Untuk menonaktifkan pembatasan, set `STOA_AGENT_SCOPE=off` di server — warning dicatat saat startup.
 
 ---
 
