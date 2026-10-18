@@ -116,6 +116,8 @@ Response:
 {"url": "/uploads/abc123.png", "name": "filename.ext"}
 ```
 
+> **Note:** `/uploads/*` URLs require a valid session cookie, agent credentials (`X-Agent-Id` / `X-Agent-Secret`), or a signed URL (`?exp=<unix_seconds>&sig=<hex>`). They are not publicly accessible. Use `signFileUrl(url)` (server-side helper) to generate a signed URL when sending file links to agents or external services.
+
 ### Reply to Email Thread
 
 ```

@@ -2002,13 +2002,74 @@ async function runAsyncUnitTests() {
     }
   });
 
+  // lib/net-trust — forwarding headers only from trusted proxies
+  {
+    const ut = (name, fn) => { try { fn(); console.log(`  ✓ ${name}`); p++; } catch (e) { console.error(`  ✗ ${name}: ${e.message}`); f++; } };
+    const { createNetTrust, parseCidr } = require('./lib/net-trust');
+    const fakeReq = (remoteAddress, headers = {}, encrypted = false) => ({ socket: { remoteAddress, encrypted }, headers });
+    const def = createNetTrust(undefined);
+    ut('net-trust — default trusts loopback only (v4, v6, v4-mapped)', () => {
+      assert.ok(def.isTrustedProxy('127.0.0.1'));
+      assert.ok(def.isTrustedProxy('::1'));
+      assert.ok(def.isTrustedProxy('::ffff:127.0.0.1'));
+      assert.ok(!def.isTrustedProxy('127.0.0.2'));
+      assert.ok(!def.isTrustedProxy('100.73.185.70'));
+      assert.ok(!def.isTrustedProxy('garbage'));
+    });
+    ut('net-trust — untrusted socket: CF-Connecting-IP / XFF / X-Real-IP ignored', () => {
+      const r = fakeReq('203.0.113.9', { 'cf-connecting-ip': '1.1.1.1', 'x-forwarded-for': '2.2.2.2', 'x-real-ip': '3.3.3.3' });
+      assert.strictEqual(def.clientIp(r), '203.0.113.9');
+      assert.strictEqual(def.socketIp(fakeReq('::ffff:203.0.113.9')), '203.0.113.9');
+    });
+    ut('net-trust — trusted socket: CF-Connecting-IP > X-Real-IP > rightmost untrusted XFF', () => {
+      assert.strictEqual(def.clientIp(fakeReq('127.0.0.1', { 'cf-connecting-ip': '1.1.1.1', 'x-real-ip': '3.3.3.3' })), '1.1.1.1');
+      assert.strictEqual(def.clientIp(fakeReq('127.0.0.1', { 'cf-connecting-ip': 'not-an-ip', 'x-real-ip': '3.3.3.3' })), '3.3.3.3');
+      // Leftmost XFF is attacker-controlled; the rightmost non-proxy hop is what our proxy saw.
+      assert.strictEqual(def.clientIp(fakeReq('127.0.0.1', { 'x-forwarded-for': '6.6.6.6, 4.4.4.4, 127.0.0.1' })), '4.4.4.4');
+      assert.strictEqual(def.clientIp(fakeReq('127.0.0.1', { 'x-forwarded-for': '4.4.4.4, junk' })), '127.0.0.1');
+      assert.strictEqual(def.clientIp(fakeReq('127.0.0.1')), '127.0.0.1');
+    });
+    ut('net-trust — X-Forwarded-Proto spoof from untrusted IP gives no Secure/HTTPS', () => {
+      const spoof = fakeReq('203.0.113.9', { 'x-forwarded-proto': 'https' });
+      assert.strictEqual(def.isHttps(spoof), false);
+      assert.ok(!def.cookieFlags(spoof).includes('Secure'));
+      const viaProxy = fakeReq('127.0.0.1', { 'x-forwarded-proto': 'https, http' });
+      assert.strictEqual(def.isHttps(viaProxy), true);
+      assert.ok(def.cookieFlags(viaProxy).includes('; Secure'));
+      assert.strictEqual(def.isHttps(fakeReq('203.0.113.9', {}, true)), true);
+      assert.strictEqual(def.forwardedHost(fakeReq('203.0.113.9', { 'x-forwarded-host': 'evil' })), null);
+      assert.strictEqual(def.forwardedHost(fakeReq('127.0.0.1', { 'x-forwarded-host': 'Stoa.Example.com' })), 'stoa.example.com');
+    });
+    ut('net-trust — custom CIDR list (v4 + v6), "none", invalid entries skipped', () => {
+      const invalid = [];
+      const t = createNetTrust('10.0.0.0/8, 2001:db8::/32, 300.1.1.1, 10.0.0.0/33', (e) => invalid.push(e));
+      assert.deepStrictEqual(invalid, ['300.1.1.1', '10.0.0.0/33']);
+      assert.ok(t.isTrustedProxy('10.20.30.40'));
+      assert.ok(!t.isTrustedProxy('11.0.0.1'));
+      assert.ok(t.isTrustedProxy('2001:db8:1::5'));
+      assert.ok(!t.isTrustedProxy('2001:db9::1'));
+      assert.ok(!t.isTrustedProxy('127.0.0.1'), 'custom list replaces the default');
+      const none = createNetTrust('none');
+      assert.ok(!none.isTrustedProxy('127.0.0.1'));
+      assert.strictEqual(none.clientIp(fakeReq('127.0.0.1', { 'cf-connecting-ip': '1.1.1.1' })), '127.0.0.1');
+      assert.deepStrictEqual(parseCidr('::ffff:10.1.2.3/32'), { address: '10.1.2.3', prefix: 32, type: 'ipv4' });
+      assert.strictEqual(parseCidr('10.0.0.0/abc'), null);
+    });
+  }
+
   return { p, f };
 }
 
 
 const HOST = 'localhost';
 const PORT = parseInt(process.argv[2]) || parseInt(process.env.PORT) || 3000;
+// run-tests.js gives the temp DB copy a throwaway password — the live one never appears here.
+const TEST_EMAIL = process.env.STOA_TEST_EMAIL || 'stoa@stoa.com';
+const TEST_PASSWORD = process.env.STOA_TEST_PASSWORD || '';
 let sessionCookie = null;
+// stoa_device from the first login: keeps re-logins working once the lockout tests lock the email.
+let deviceCookie = null;
+const cookieHeader = () => [sessionCookie, deviceCookie].filter(Boolean).join('; ');
 
 async function req(method, path, body = null, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
@@ -2017,7 +2078,7 @@ async function req(method, path, body = null, extraHeaders = {}) {
       hostname: HOST, port: PORT, path, method,
       headers: {
         'Content-Type': 'application/json',
-        ...(sessionCookie ? { Cookie: sessionCookie } : {}),
+        ...(cookieHeader() ? { Cookie: cookieHeader() } : {}),
         ...(bodyStr ? { 'Content-Length': Buffer.byteLength(bodyStr) } : {}),
         ...extraHeaders,
       },
@@ -2043,7 +2104,7 @@ async function rawReq(method, path, body, contentType, extraHeaders = {}) {
       hostname: HOST, port: PORT, path, method,
       headers: {
         'Content-Type': contentType,
-        ...(sessionCookie ? { Cookie: sessionCookie } : {}),
+        ...(cookieHeader() ? { Cookie: cookieHeader() } : {}),
         ...(body ? { 'Content-Length': Buffer.byteLength(body) } : { 'Content-Length': '0' }),
         ...extraHeaders,
       },
@@ -2147,15 +2208,17 @@ async function run() {
   // Auth
   console.log('\n[Auth]');
   await test('POST /api/auth/login — valid credentials → 200 + cookie', async () => {
-    const r = await req('POST', '/api/auth/login', { email: 'stoa@stoa.com', password: 'stoa2026!' });
+    const r = await req('POST', '/api/auth/login', { email: TEST_EMAIL, password: TEST_PASSWORD });
     assert.strictEqual(r.status, 200, `expected 200, got ${r.status}`);
     assert.ok(r.body.ok, 'body.ok missing');
-    sessionCookie = r.headers['set-cookie']?.[0]?.split(';')[0];
+    sessionCookie = r.headers['set-cookie']?.find(c => c.startsWith('stoa_session='))?.split(';')[0];
+    deviceCookie = r.headers['set-cookie']?.find(c => c.startsWith('stoa_device='))?.split(';')[0];
     assert.ok(sessionCookie, 'no session cookie in response');
+    assert.ok(deviceCookie, 'no device cookie in response');
   });
 
   await test('POST /api/auth/login — wrong password → 401', async () => {
-    const r = await req('POST', '/api/auth/login', { email: 'stoa@stoa.com', password: 'wrongpassword' });
+    const r = await req('POST', '/api/auth/login', { email: TEST_EMAIL, password: 'wrongpassword' });
     assert.strictEqual(r.status, 401);
   });
 
@@ -2177,6 +2240,12 @@ async function run() {
     assert.strictEqual(r.status, 401);
   });
 
+  // One-time install token, minted the way the UI does (human session) → token string | null.
+  const mintInstallToken = async (name) => {
+    const r = await req('POST', '/api/agent/install-token', name === undefined ? {} : { name });
+    return r.status === 200 ? r.body.token : null;
+  };
+
   // Global test rooms/actors — created once, used by all write tests, deleted in teardown
   let testRoomIds = [];
   let testWorkdirId = null;
@@ -2189,10 +2258,9 @@ async function run() {
   // can create the room (agent only needs to be online at that moment), then the caller closes it.
   // Returns null if registration fails. The actor is registered into orphanActorIds for teardown.
   const createOnlineTestAgent = async (name, wdPath) => {
-    const scriptR = await req('GET', `/install.sh?name=${name}`);
-    const tokenMatch = scriptR.raw.match(/REG_TOKEN="([a-f0-9]+)"/);
-    if (!tokenMatch) return null;
-    const reg = await req('POST', '/api/agent/register', { token: tokenMatch[1] });
+    const token = await mintInstallToken(name);
+    if (!token) return null;
+    const reg = await req('POST', '/api/agent/register', { token });
     if (reg.status !== 200) return null;
     const { actor_id: actorId, secret } = reg.body;
     orphanActorIds.push(actorId); // ensure teardown cleans it up even if a later step throws
@@ -4520,33 +4588,79 @@ async function run() {
 
   // Install scripts
   console.log('\n[Install Scripts]');
-  await test('GET /install.sh — returns bash script with one-time token', async () => {
-    const r = await req('GET', '/install.sh');
-    assert.strictEqual(r.status, 200);
-    assert.ok(r.raw.includes('#!/bin/bash'), 'not a bash script');
-    assert.ok(r.raw.includes('REG_TOKEN='), 'no REG_TOKEN in script');
-    assert.ok(r.raw.includes('/api/agent/register'), 'no register endpoint in script');
+  await test('POST /api/agent/install-token — human session → 64-hex token, expires_in 600', async () => {
+    const r = await req('POST', '/api/agent/install-token', { name: '  __test-it  ', lang: 'id' });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    assert.match(r.body.token, /^[a-f0-9]{64}$/);
+    assert.strictEqual(r.body.expires_in, 600);
   });
 
-  await test('GET /install.ps1 — returns PowerShell script', async () => {
-    const r = await req('GET', '/install.ps1');
-    assert.strictEqual(r.status, 200);
-    assert.ok(r.raw.includes('$RegToken'), 'not a PS1 script');
+  await test('POST /api/agent/install-token — validation: bad lang / long name / bad JSON → 400', async () => {
+    assert.strictEqual((await req('POST', '/api/agent/install-token', { lang: 'xx' })).status, 400);
+    assert.strictEqual((await req('POST', '/api/agent/install-token', { name: 'a'.repeat(65) })).status, 400);
+    assert.strictEqual((await req('POST', '/api/agent/install-token', { name: 42 })).status, 400);
+    assert.strictEqual((await rawReq('POST', '/api/agent/install-token', 'not-json', 'application/json')).status, 400);
   });
 
-  await test('GET /install.cmd — returns CMD script', async () => {
-    const r = await req('GET', '/install.cmd');
-    assert.strictEqual(r.status, 200);
-    assert.ok(r.raw.includes('powershell'), 'no powershell in CMD script');
+  await test('POST /api/agent/install-token — unauthenticated → 401', async () => {
+    const saved = sessionCookie; sessionCookie = null;
+    try {
+      assert.strictEqual((await req('POST', '/api/agent/install-token', {})).status, 401);
+    } finally { sessionCookie = saved; }
   });
 
-  await test('GET /install.sh?name=test — name preset in script token', async () => {
-    const r = await req('GET', '/install.sh?name=my-agent');
-    assert.strictEqual(r.status, 200);
-    // The name preset is stored server-side in installTokens (not in script body directly)
-    assert.ok(r.raw.includes('stoa.js'), 'stoa.js not in script');
-    assert.ok(r.raw.includes('claude-session.js'), 'claude-session.js not in script');
-    assert.ok(r.raw.includes('codex-session.js'), 'codex-session.js not in script');
+  await test('GET /install.sh — no token / random token → 401 with failing script', async () => {
+    const saved = sessionCookie; sessionCookie = null;
+    try {
+      const none = await req('GET', '/install.sh');
+      assert.strictEqual(none.status, 401);
+      assert.ok(none.raw.includes('exit 1'), 'invalid-token script must exit non-zero');
+      assert.ok(!none.raw.includes('/api/agent/register'), 'invalid-token script must not register');
+      const rand = await req('GET', `/install.sh?token=${crypto.randomBytes(32).toString('hex')}`);
+      assert.strictEqual(rand.status, 401);
+    } finally { sessionCookie = saved; }
+  });
+
+  await test('GET /install.ps1 and /install.cmd — no token → 401', async () => {
+    const saved = sessionCookie; sessionCookie = null;
+    try {
+      const ps = await req('GET', '/install.ps1');
+      assert.strictEqual(ps.status, 401);
+      assert.ok(ps.raw.includes('exit 1') && !ps.raw.includes('$RegToken'));
+      assert.strictEqual((await req('GET', '/install.cmd')).status, 401);
+      assert.strictEqual((await req('GET', '/install.cmd?token=..%2F..%2Fx')).status, 401);
+    } finally { sessionCookie = saved; }
+  });
+
+  await test('GET /install.sh|ps1|cmd?token=<minted> → 200 carrying that token, without a cookie', async () => {
+    const token = await mintInstallToken('__test-script');
+    assert.ok(token);
+    const saved = sessionCookie; sessionCookie = null;
+    try {
+      const sh = await req('GET', `/install.sh?token=${token}`);
+      assert.strictEqual(sh.status, 200);
+      assert.ok(sh.raw.includes('#!/bin/bash'));
+      assert.ok(sh.raw.includes(`REG_TOKEN="${token}"`), 'script must carry the minted token');
+      assert.ok(sh.raw.includes('stoa.js') && sh.raw.includes('claude-session.js') && sh.raw.includes('codex-session.js'));
+      const ps = await req('GET', `/install.ps1?token=${token}`);
+      assert.strictEqual(ps.status, 200);
+      assert.ok(ps.raw.includes(`$RegToken = "${token}"`));
+      const cmd = await req('GET', `/install.cmd?token=${token}`);
+      assert.strictEqual(cmd.status, 200);
+      assert.ok(cmd.raw.includes(`/install.ps1?token=${token}`), 'cmd must forward the token to ps1');
+    } finally { sessionCookie = saved; }
+  });
+
+  await test('POST /api/agent/install-token — agent headers (no cookie) → 403', async () => {
+    const token = await mintInstallToken('__test-it-agent');
+    const reg = await req('POST', '/api/agent/register', { token });
+    assert.strictEqual(reg.status, 200);
+    orphanActorIds.push(reg.body.actor_id);
+    const saved = sessionCookie; sessionCookie = null;
+    try {
+      const r = await req('POST', '/api/agent/install-token', {}, { 'x-agent-id': String(reg.body.actor_id), 'x-agent-secret': reg.body.secret });
+      assert.strictEqual(r.status, 403);
+    } finally { sessionCookie = saved; }
   });
 
   // Agent register
@@ -4556,27 +4670,333 @@ async function run() {
     assert.strictEqual(r.status, 401);
   });
 
-  await test('POST /api/agent/register — valid one-time token → 200 with secret', async () => {
-    // Get a fresh install script to extract a valid token
-    const scriptR = await req('GET', '/install.sh?name=test-agent');
-    assert.strictEqual(scriptR.status, 200);
-    const tokenMatch = scriptR.raw.match(/REG_TOKEN="([a-f0-9]+)"/);
-    assert.ok(tokenMatch, 'no token found in script');
-    const token = tokenMatch[1];
+  await test('POST /api/agent/register — minted token: name/lang from token, one-time use', async () => {
+    const token = await mintInstallToken('__test-reg-agent');
+    assert.ok(token, 'token mint failed');
+    // The query string can no longer override the name bound to the token.
+    await req('GET', `/install.sh?token=${token}&name=evil`);
 
     const r = await req('POST', '/api/agent/register', { token });
     assert.strictEqual(r.status, 200);
     assert.ok(r.body.actor_id, 'actor_id missing');
     assert.ok(r.body.secret, 'secret missing');
-    assert.ok(r.body.name, 'name missing');
+    assert.strictEqual(r.body.name, '__test-reg-agent');
 
-    // Token should be one-time — second use should fail
+    // Token should be one-time — second use should fail, and so should the script
     const r2 = await req('POST', '/api/agent/register', { token });
     assert.strictEqual(r2.status, 401, 'token should be invalidated after use');
+    assert.strictEqual((await req('GET', `/install.sh?token=${token}`)).status, 401);
 
     // Cleanup: delete the test actor
     await req('DELETE', `/api/actors/${r.body.actor_id}`);
   });
+
+  // ── Public exposure hardening: every check is credential-based, none by source network.
+  console.log('\n[Security Hardening]');
+  {
+    const secDb = require('./db');
+    const signingKey = () => Buffer.from(secDb.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='security_signing_key'").get().value, 'hex');
+    const hmac = (msg) => crypto.createHmac('sha256', signingKey()).update(msg).digest('hex');
+    const signedQuery = (pathname, exp) => `exp=${exp}&sig=${hmac(`file|${pathname}|${exp}`)}`;
+    const nowSec = () => Math.floor(Date.now() / 1000);
+    // Run fn with NO session (device cookie kept unless dropDevice) — then restore.
+    const anon = async (fn, dropDevice = false) => {
+      const s = sessionCookie, d = deviceCookie;
+      sessionCookie = null; if (dropDevice) deviceCookie = null;
+      try { return await fn(); } finally { sessionCookie = s; deviceCookie = d; }
+    };
+    const fs = require('fs');
+    const uploadsDir = path.join(__dirname, 'uploads');
+    const mediaDir = path.join(__dirname, 'connector-media', '__sectest__');
+    const createdUploads = [];
+    const upload = async (name, content, type) => {
+      const r = await rawReq('POST', '/api/upload/raw', content, type, { 'x-file-name': name });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      createdUploads.push(path.join(uploadsDir, r.body.url.slice('/uploads/'.length)));
+      return r.body.url;
+    };
+
+    let secAgent = null, secRoomId = null, txtUrl = null, htmlUrl = null;
+    const txtBody = `sec-test-${crypto.randomBytes(6).toString('hex')}`;
+
+    await test('Security — setup: online agent, room, real uploads', async () => {
+      secAgent = await createOnlineTestAgent('__test-sec-agent', '/tmp/stoa-test-sec');
+      assert.ok(secAgent?.workdirId, 'online test agent setup failed');
+      const r = await req('POST', '/api/rooms', { title: '__sec-room__', workdir_id: secAgent.workdirId, participant_ids: [secAgent.actorId] });
+      assert.strictEqual(r.status, 200);
+      secRoomId = r.body.id;
+      testRoomIds.push(secRoomId);
+      txtUrl = await upload('sec-test.txt', txtBody, 'text/plain');
+      htmlUrl = await upload('sec-test.html', '<script>alert(1)</script>', 'text/html');
+    });
+
+    await test('Security headers — GET / carries nosniff, XFO, frame-ancestors, Referrer-Policy; no HSTS on plain http', async () => {
+      const r = await anon(() => req('GET', '/'));
+      assert.strictEqual(r.headers['x-content-type-options'], 'nosniff');
+      assert.strictEqual(r.headers['x-frame-options'], 'SAMEORIGIN');
+      assert.strictEqual(r.headers['content-security-policy'], "frame-ancestors 'self'");
+      assert.strictEqual(r.headers['referrer-policy'], 'same-origin');
+      assert.strictEqual(r.headers['strict-transport-security'], undefined);
+    });
+
+    await test('Security headers — HTTPS reported by trusted proxy → HSTS + Secure cookies', async () => {
+      const r = await req('GET', '/api/auth/me', null, { 'X-Forwarded-Proto': 'https' });
+      assert.strictEqual(r.headers['strict-transport-security'], 'max-age=15552000');
+      const login = await req('POST', '/api/auth/login', { email: TEST_EMAIL, password: TEST_PASSWORD }, { 'X-Forwarded-Proto': 'https', 'X-Forwarded-For': '192.0.2.200' });
+      assert.strictEqual(login.status, 200);
+      assert.ok(login.headers['set-cookie'].every(c => /;\s*Secure/.test(c)), 'cookies must be Secure behind HTTPS proxy');
+      const plain = await req('POST', '/api/auth/login', { email: TEST_EMAIL, password: TEST_PASSWORD }, { 'X-Forwarded-For': '192.0.2.200' });
+      assert.ok(plain.headers['set-cookie'].every(c => !/Secure/.test(c)), 'no Secure on plain http');
+    });
+
+    await test('/uploads — no credentials → 401 plain text; session → 200 private + nosniff', async () => {
+      const r = await anon(() => req('GET', txtUrl));
+      assert.strictEqual(r.status, 401);
+      assert.strictEqual(r.raw, '401 Unauthorized');
+      const ok = await req('GET', txtUrl);
+      assert.strictEqual(ok.status, 200);
+      assert.strictEqual(ok.raw, txtBody);
+      assert.strictEqual(ok.headers['cache-control'], 'private, max-age=3600');
+      assert.strictEqual(ok.headers['x-content-type-options'], 'nosniff');
+    });
+
+    await test('/uploads — agent headers: valid secret → 200, wrong secret → 401', async () => {
+      const good = await anon(() => req('GET', txtUrl, null, { 'x-agent-id': String(secAgent.actorId), 'x-agent-secret': secAgent.secret }));
+      assert.strictEqual(good.status, 200);
+      assert.strictEqual(good.raw, txtBody);
+      const bad = await anon(() => req('GET', txtUrl, null, { 'x-agent-id': String(secAgent.actorId), 'x-agent-secret': 'nope' }));
+      assert.strictEqual(bad.status, 401);
+    });
+
+    await test('/uploads — .html is forced to download and sandboxed', async () => {
+      const r = await req('GET', htmlUrl);
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.headers['content-disposition'], 'attachment');
+      assert.ok(r.headers['content-security-policy'].split(';').map(x => x.trim()).includes('sandbox'), r.headers['content-security-policy']);
+      const txt = await req('GET', txtUrl);
+      assert.strictEqual(txt.headers['content-disposition'], 'inline');
+      assert.strictEqual(txt.headers['content-security-policy'], "frame-ancestors 'self'");
+    });
+
+    let triggerAtt = null;
+    await test('agent_trigger — attachment URLs are signed and download without a cookie', async () => {
+      const trig = waitForWsMessage(secAgent.ws, m => m.type === 'agent_trigger' && m.room_id === secRoomId, 5000);
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: secRoomId }));
+        await waitForWsMessage(humanWs, m => m.type === 'history');
+        humanWs.send(JSON.stringify({ type: 'send_message', room_id: secRoomId, content: 'see file',
+          attachments: [{ url: txtUrl, name: 'sec-test.txt', type: 'file' }, { url: htmlUrl, type: 'file' }] }));
+        const m = await trig;
+        secAgent.ws.send(JSON.stringify({ type: 'agent_complete', room_id: secRoomId, message_id: m.message_id, content: 'ok' }));
+        triggerAtt = m.attachments;
+      } finally { humanWs.close(); }
+      assert.strictEqual(triggerAtt.length, 2);
+      const u = new URL(triggerAtt[0].url);
+      assert.strictEqual(u.pathname, txtUrl);
+      assert.match(u.searchParams.get('sig'), /^[a-f0-9]{64}$/);
+      const exp = Number(u.searchParams.get('exp'));
+      assert.ok(exp > nowSec() + 6 * 24 * 3600 && exp <= nowSec() + 7 * 24 * 3600 + 5, `exp ~7d, got ${exp - nowSec()}s`);
+      // Nameless attachment gets its file name so the agent can still detect the extension.
+      assert.strictEqual(triggerAtt[1].name, path.basename(htmlUrl));
+      const r = await anon(() => req('GET', u.pathname + u.search), true);
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.raw, txtBody);
+    });
+
+    await test('Signed URL — tampered sig / other path / expired / exp > 8d → 401; fresh valid → 200', async () => {
+      assert.ok(triggerAtt, 'needs the trigger test');
+      const u = new URL(triggerAtt[0].url);
+      const sig = u.searchParams.get('sig'), exp = u.searchParams.get('exp');
+      const flipped = (sig[0] === 'a' ? 'b' : 'a') + sig.slice(1);
+      const get = (p) => anon(() => req('GET', p), true);
+      assert.strictEqual((await get(`${txtUrl}?exp=${exp}&sig=${flipped}`)).status, 401, 'tampered sig');
+      assert.strictEqual((await get(`${txtUrl}?exp=${Number(exp) + 1}&sig=${sig}`)).status, 401, 'tampered exp');
+      assert.strictEqual((await get(`${htmlUrl}?exp=${exp}&sig=${sig}`)).status, 401, 'sig of path A on path B');
+      assert.strictEqual((await get(`${txtUrl}?${signedQuery(txtUrl, nowSec() - 5)}`)).status, 401, 'expired');
+      assert.strictEqual((await get(`${txtUrl}?${signedQuery(txtUrl, nowSec() + 9 * 24 * 3600)}`)).status, 401, 'exp beyond 8 days');
+      assert.strictEqual((await get(`${txtUrl}?${signedQuery(txtUrl, nowSec() + 3600)}`)).status, 200, 'independently signed valid URL');
+    });
+
+    await test('/connector-media — 401 without credentials; session or signed URL → 200 private', async () => {
+      fs.mkdirSync(mediaDir, { recursive: true });
+      fs.writeFileSync(path.join(mediaDir, 'm.txt'), 'wa-media');
+      try {
+        const p = '/connector-media/__sectest__/m.txt';
+        const none = await anon(() => req('GET', p), true);
+        assert.strictEqual(none.status, 401);
+        const s = await req('GET', p);
+        assert.strictEqual(s.status, 200);
+        assert.strictEqual(s.raw, 'wa-media');
+        assert.strictEqual(s.headers['cache-control'], 'private, max-age=3600');
+        const signed = await anon(() => req('GET', `${p}?${signedQuery(p, nowSec() + 60)}`), true);
+        assert.strictEqual(signed.status, 200);
+      } finally { fs.rmSync(mediaDir, { recursive: true, force: true }); }
+    });
+
+    await test('connector_read — WA media_url handed to the agent is signed and downloadable', async () => {
+      const conn = secDb.prepare("INSERT INTO automation_connections (name, provider, token_type, status) VALUES ('__sec-wa__', 'whatsapp', 'qr', 'disconnected')").run();
+      const connId = conn.lastInsertRowid;
+      fs.mkdirSync(mediaDir, { recursive: true });
+      fs.writeFileSync(path.join(mediaDir, 'img.jpg'), 'jpeg-bytes');
+      try {
+        secDb.prepare("INSERT INTO wa_incoming_messages (connection_id, chat_id, sender, text, msg_key, media_path, media_type) VALUES (?, 'c1', 's1', 'hi', 'k1', '/connector-media/__sectest__/img.jpg', 'image')").run(connId);
+        const res = waitForWsMessage(secAgent.ws, m => m.type === 'connector_read_result');
+        secAgent.ws.send(JSON.stringify({ type: 'connector_read', connector_id: connId, chat_id: 'c1' }));
+        const out = await res;
+        assert.ok(out.ok, JSON.stringify(out));
+        const mediaUrl = out.messages[0].media_url;
+        assert.ok(mediaUrl.startsWith('/connector-media/__sectest__/img.jpg?exp='), mediaUrl);
+        assert.strictEqual((await anon(() => req('GET', '/connector-media/__sectest__/img.jpg'), true)).status, 401);
+        const r = await anon(() => req('GET', mediaUrl), true);
+        assert.strictEqual(r.status, 200);
+        assert.strictEqual(r.raw, 'jpeg-bytes');
+      } finally {
+        secDb.prepare('DELETE FROM automation_connections WHERE id=?').run(connId);
+        fs.rmSync(mediaDir, { recursive: true, force: true });
+      }
+    });
+
+    // /v1/messages — ollama proxy
+    const proxyPost = (headers) => anon(() => req('POST', '/v1/messages', { model: 'x', messages: [] }, headers), true);
+    await test('/v1/messages — no bearer, legacy stoa-proxy:<id>, spoofed cf-connecting-ip → 401 authentication_error', async () => {
+      for (const h of [{ 'cf-connecting-ip': '127.0.0.1' }, { Authorization: 'Bearer stoa-proxy:__sec-ollama' }, { Authorization: 'Bearer ' }]) {
+        const r = await proxyPost(h);
+        assert.strictEqual(r.status, 401, JSON.stringify(h));
+        assert.strictEqual(r.body.type, 'error');
+        assert.strictEqual(r.body.error.type, 'authentication_error');
+      }
+    });
+
+    let proxyToken = null;
+    await test('/v1/messages — token minted at trigger passes auth (503 no keys); forged sig / other actor → 401', async () => {
+      const origPlat = secDb.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get();
+      const plats = [{ id: '__sec-ollama', vendor: 'ollama', enabled: true, base_url: 'https://ollama.com', api_keys: [], cached_models: [{ model: 'claude-sonnet-5-5', tools: true }], enabled_models: ['claude-sonnet-5-5'] }];
+      (origPlat ? secDb.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'")
+        : secDb.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'ai_platforms', ?)")).run(JSON.stringify(plats));
+      secDb.prepare("UPDATE rooms SET model='claude-sonnet-5-5', model_config=? WHERE id=?").run(JSON.stringify({ platform_id: '__sec-ollama' }), secRoomId);
+      await new Promise(r => setTimeout(r, 1100)); // getParsedSetting cache TTL
+      try {
+        const trig = waitForWsMessage(secAgent.ws, m => m.type === 'agent_trigger' && m.room_id === secRoomId, 5000);
+        const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+        try {
+          humanWs.send(JSON.stringify({ type: 'join_room', room_id: secRoomId }));
+          await waitForWsMessage(humanWs, m => m.type === 'history');
+          humanWs.send(JSON.stringify({ type: 'send_message', room_id: secRoomId, content: 'proxy please' }));
+          const m = await trig;
+          secAgent.ws.send(JSON.stringify({ type: 'agent_complete', room_id: secRoomId, message_id: m.message_id, content: 'ok' }));
+          proxyToken = m.api_keys?.[0];
+        } finally { humanWs.close(); }
+        assert.match(proxyToken || '', new RegExp(`^stoa-proxy:__sec-ollama:${secAgent.actorId}:[a-f0-9]{64}$`));
+        const ok = await proxyPost({ Authorization: `Bearer ${proxyToken}` });
+        assert.strictEqual(ok.status, 503, JSON.stringify(ok.body));
+        assert.match(ok.body.error.message, /No API keys/);
+        const sig = proxyToken.split(':').pop();
+        const forged = proxyToken.slice(0, -1) + (sig.endsWith('a') ? 'b' : 'a');
+        assert.strictEqual((await proxyPost({ Authorization: `Bearer ${forged}` })).status, 401);
+        const otherActor = `stoa-proxy:__sec-ollama:${secAgent.actorId + 100000}:${sig}`;
+        assert.strictEqual((await proxyPost({ Authorization: `Bearer ${otherActor}` })).status, 401);
+        // Agent headers are an accepted alternative; the platform still must be an ollama platform.
+        const viaHeaders = await proxyPost({ Authorization: 'Bearer stoa-proxy:__sec-ollama', 'x-agent-id': String(secAgent.actorId), 'x-agent-secret': secAgent.secret });
+        assert.strictEqual(viaHeaders.status, 503);
+      } finally {
+        if (origPlat) secDb.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(origPlat.value);
+        else secDb.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run();
+        secDb.prepare('UPDATE rooms SET model=NULL, model_config=NULL WHERE id=?').run(secRoomId);
+      }
+    });
+
+    // CSRF — Origin checks for cookie-authenticated writes
+    await test('CSRF — session POST with foreign/null Origin → 403; same-origin / trusted X-Forwarded-Host → 200', async () => {
+      const foreign = await req('POST', '/api/agent/install-token', {}, { Origin: 'https://evil.example' });
+      assert.strictEqual(foreign.status, 403);
+      assert.strictEqual(foreign.body.error, 'origin_not_allowed');
+      assert.strictEqual((await req('POST', '/api/agent/install-token', {}, { Origin: 'null' })).status, 403);
+      assert.strictEqual((await req('POST', '/api/agent/install-token', {}, { Origin: `http://${HOST}:${PORT}` })).status, 200);
+      assert.strictEqual((await req('POST', '/api/agent/install-token', {}, { Origin: 'https://stoa.example.com', 'X-Forwarded-Host': 'stoa.example.com' })).status, 200);
+      // GET is never blocked; agent-header writes are not cookie-based so Origin is irrelevant.
+      assert.strictEqual((await req('GET', '/api/auth/me', null, { Origin: 'https://evil.example' })).status, 200);
+    });
+
+    await test('CSRF — login with foreign Origin → 403 (login CSRF)', async () => {
+      const r = await req('POST', '/api/auth/login', { email: TEST_EMAIL, password: TEST_PASSWORD }, { Origin: 'https://evil.example', 'X-Forwarded-For': '192.0.2.201' });
+      assert.strictEqual(r.status, 403);
+      assert.ok(!r.headers['set-cookie'], 'no session for cross-origin login');
+    });
+
+    // Login brute-force protection (X-Forwarded-For honored only because tests come from trusted loopback)
+    const login = (password, ip, email = TEST_EMAIL) => req('POST', '/api/auth/login', { email, password }, { 'X-Forwarded-For': ip });
+    await test('Login — 5 failures from one IP → 6th (correct password) 429 + Retry-After; other IP still logs in', async () => {
+      const ip = '198.51.100.7';
+      for (let i = 0; i < 5; i++) assert.strictEqual((await login('wrong-' + i, ip)).status, 401);
+      const blocked = await login(TEST_PASSWORD, ip);
+      assert.strictEqual(blocked.status, 429);
+      assert.strictEqual(blocked.body.error, 'too_many_attempts');
+      const ra = Number(blocked.headers['retry-after']);
+      assert.ok(ra > 0 && ra <= 900, `Retry-After ${blocked.headers['retry-after']}`);
+      assert.strictEqual(blocked.body.retry_after, ra);
+      assert.ok(!blocked.headers['set-cookie'], 'no session while locked');
+      assert.strictEqual((await login(TEST_PASSWORD, '198.51.100.8')).status, 200);
+    });
+
+    await test('Login — 5 failures for one email from 5 IPs → new IP without device cookie 429, with valid device cookie 200', async () => {
+      for (let i = 1; i <= 5; i++) assert.strictEqual((await login('wrong-' + i, `203.0.113.${i}`)).status, 401);
+      const noDevice = await anon(() => login(TEST_PASSWORD, '203.0.113.6'), true);
+      assert.strictEqual(noDevice.status, 429);
+      const forged = await anon(async () => {
+        const [, val] = deviceCookie.split('=');
+        const parts = val.split('.');
+        deviceCookie = `stoa_device=${parts[0]}.${parts[1]}.${'0'.repeat(64)}`;
+        return login(TEST_PASSWORD, '203.0.113.7');
+      });
+      assert.strictEqual(forged.status, 429, 'forged device cookie must not bypass');
+      const withDevice = await anon(() => login(TEST_PASSWORD, '203.0.113.8'));
+      assert.strictEqual(withDevice.status, 200);
+    });
+
+    await test('Login — unknown email and wrong password take the same time (no enumeration)', async () => {
+      const time = async (fn) => { const t = Date.now(); const r = await fn(); assert.strictEqual(r.status, 401); return Date.now() - t; };
+      const unknown = [], wrong = [];
+      for (let i = 0; i < 3; i++) {
+        unknown.push(await time(() => login('x', `198.18.0.${10 + i}`, `nobody-${i}@nowhere.invalid`)));
+        wrong.push(await time(() => login('wrong-pw', `198.18.1.${10 + i}`)));
+      }
+      const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
+      assert.ok(Math.min(...unknown, ...wrong) >= 450, `failures must be padded: ${unknown} / ${wrong}`);
+      assert.ok(Math.abs(avg(unknown) - avg(wrong)) < 100, `timing gap: ${avg(unknown)} vs ${avg(wrong)}`);
+      const a = await login('x', '198.18.2.1', 'nobody@nowhere.invalid');
+      const b = await login('wrong-pw', '198.18.2.2');
+      assert.deepStrictEqual(a.body, b.body, 'same error body');
+    });
+
+    await test('GET /api/auth/me — default_password reflects the stored hash', async () => {
+      const me = await req('GET', '/api/auth/me');
+      assert.strictEqual(me.body.default_password, false);
+      const row = secDb.prepare('SELECT id, password_hash FROM auth_users WHERE id=?').get(me.body.id);
+      const salt = crypto.randomBytes(16).toString('hex');
+      secDb.prepare('UPDATE auth_users SET password_hash=? WHERE id=?').run(`${salt}:${crypto.scryptSync('stoa2026!', salt, 64).toString('hex')}`, row.id);
+      try {
+        assert.strictEqual((await req('GET', '/api/auth/me')).body.default_password, true);
+      } finally {
+        secDb.prepare('UPDATE auth_users SET password_hash=? WHERE id=?').run(row.password_hash, row.id);
+      }
+      assert.strictEqual((await req('GET', '/api/auth/me')).body.default_password, false);
+    });
+
+    await test('PATCH /api/auth/password — 11 chars → 400; 12 chars → 200 (then restored)', async () => {
+      assert.strictEqual((await req('PATCH', '/api/auth/password', { current_password: TEST_PASSWORD, new_password: 'a'.repeat(11) })).status, 400);
+      const next = 'Ab3$' + crypto.randomBytes(4).toString('hex');
+      assert.strictEqual(next.length, 12);
+      assert.strictEqual((await req('PATCH', '/api/auth/password', { current_password: TEST_PASSWORD, new_password: next })).status, 200);
+      const back = await req('PATCH', '/api/auth/password', { current_password: next, new_password: TEST_PASSWORD });
+      assert.strictEqual(back.status, 200, 'restore test password');
+    });
+
+    await test('Security — teardown', async () => {
+      if (secAgent?.ws) secAgent.ws.close();
+      for (const f of createdUploads) { try { fs.unlinkSync(f); } catch {} }
+    });
+  }
 
   // Invites
   console.log('\n[Invites]');
@@ -4592,10 +5012,9 @@ async function run() {
 
   await test('POST /api/invites/:id/resolve — approve invite (approved: true)', async () => {
     if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
-    const scriptR = await req('GET', '/install.sh?name=__test_invite_agent__');
-    const tokenMatch = scriptR.raw.match(/REG_TOKEN="([a-f0-9]+)"/);
-    if (!tokenMatch) { console.log('    (skipped — install token not found)'); return; }
-    const agentRes = await req('POST', '/api/agent/register', { token: tokenMatch[1] });
+    const inviteToken = await mintInstallToken('__test_invite_agent__');
+    assert.ok(inviteToken, 'install token mint failed');
+    const agentRes = await req('POST', '/api/agent/register', { token: inviteToken });
     if (agentRes.status !== 200) { console.log(`    (skipped — agent creation failed: ${agentRes.status})`); return; }
     const { actor_id: agentActorId, secret: agentSecret } = agentRes.body;
     orphanActorIds.push(agentActorId);
@@ -4912,12 +5331,12 @@ async function run() {
   });
 
   await test('PATCH /api/auth/password — wrong current password → 401', async () => {
-    const r = await req('PATCH', '/api/auth/password', { current_password: 'wrong', new_password: 'newpass123' });
+    const r = await req('PATCH', '/api/auth/password', { current_password: 'wrong', new_password: 'newpass123456' });
     assert.strictEqual(r.status, 401);
   });
 
   await test('PATCH /api/auth/password — too short new password → 400', async () => {
-    const r = await req('PATCH', '/api/auth/password', { current_password: 'stoa2026!', new_password: 'abc' });
+    const r = await req('PATCH', '/api/auth/password', { current_password: TEST_PASSWORD, new_password: 'abc' });
     assert.strictEqual(r.status, 400);
   });
 
@@ -4926,8 +5345,8 @@ async function run() {
     assert.strictEqual(r.status, 200);
     assert.ok(r.body.ok);
     // Re-authenticate so subsequent tests keep working
-    const loginR = await req('POST', '/api/auth/login', { email: 'stoa@stoa.com', password: 'stoa2026!' });
-    sessionCookie = loginR.headers['set-cookie']?.[0]?.split(';')[0];
+    const loginR = await req('POST', '/api/auth/login', { email: TEST_EMAIL, password: TEST_PASSWORD });
+    sessionCookie = loginR.headers['set-cookie']?.find(c => c.startsWith('stoa_session='))?.split(';')[0];
     assert.ok(sessionCookie, 'failed to re-authenticate after logout');
   });
 
@@ -8962,10 +9381,9 @@ async function run() {
     if (!hsActorId) { console.log('    (skipped)'); return; }
     process.env.HARNESS_CHECK_TIMEOUT_MS = '1500';
     // Register a second agent
-    const scriptR = await req('GET', '/install.sh?name=__test-harness-wrong');
-    const tokenMatch = scriptR.raw.match(/REG_TOKEN="([a-f0-9]+)"/);
-    if (!tokenMatch) { console.log('    (skipped — no token)'); delete process.env.HARNESS_CHECK_TIMEOUT_MS; return; }
-    const reg = await req('POST', '/api/agent/register', { token: tokenMatch[1] });
+    const wrongToken = await mintInstallToken('__test-harness-wrong');
+    if (!wrongToken) { delete process.env.HARNESS_CHECK_TIMEOUT_MS; assert.fail('install token mint failed'); }
+    const reg = await req('POST', '/api/agent/register', { token: wrongToken });
     if (reg.status !== 200) { console.log('    (skipped — reg failed)'); delete process.env.HARNESS_CHECK_TIMEOUT_MS; return; }
     const wrongActorId = reg.body.actor_id;
     const wrongSecret = reg.body.secret;

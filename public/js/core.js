@@ -57,6 +57,12 @@ function hideLogin() {
   document.getElementById('login-overlay').style.display = 'none';
 }
 
+function loginRetryMessage(retryAfterSec) {
+  const sec = Number(retryAfterSec);
+  const mins = Number.isFinite(sec) && sec > 0 ? Math.ceil(sec / 60) : 15;
+  return `Too many attempts. Try again in ${mins} minute${mins === 1 ? '' : 's'}.`;
+}
+
 async function doLogin(e) {
   e.preventDefault();
   const email = document.getElementById('login-email').value.trim();
@@ -75,7 +81,9 @@ async function doLogin(e) {
       init();
     } else {
       const data = await r.json().catch(() => ({}));
-      errEl.textContent = data.error || 'Login failed';
+      if (r.status === 429) errEl.textContent = loginRetryMessage(data.retry_after ?? r.headers.get('Retry-After'));
+      else if (data.error === 'origin_not_allowed') errEl.textContent = 'Sign-in from this address is not allowed by the server.';
+      else errEl.textContent = data.error || 'Login failed';
     }
   } catch {
     errEl.textContent = 'Network error';
@@ -86,6 +94,29 @@ async function doLogout() {
   try { await fetch('/api/auth/logout', { method: 'POST' }); } catch (e) { console.error('Logout request failed:', e); }
   authUser = null;
   location.reload();
+}
+
+// Persistent warning while the account still uses the shipped default password.
+function renderDefaultPasswordBanner() {
+  const existing = document.getElementById('default-pw-banner');
+  if (!authUser?.default_password) { existing?.remove(); return; }
+  if (existing) return;
+  const banner = document.createElement('div');
+  banner.id = 'default-pw-banner';
+  banner.className = 'h-default-pw-banner';
+  banner.setAttribute('role', 'alert');
+  const text = document.createElement('span');
+  text.textContent = 'You are still using the default password. Change it now.';
+  const link = document.createElement('button');
+  link.type = 'button';
+  link.className = 'h-default-pw-link';
+  link.textContent = 'change password';
+  link.addEventListener('click', () => {
+    openSettingsTab('general');
+    requestAnimationFrame(() => document.getElementById('s-auth-cur-pw')?.focus());
+  });
+  banner.append(text, link);
+  document.body.appendChild(banner);
 }
 
 // ── Notifications ──────────────────────────────────────────────────────────

@@ -16,6 +16,7 @@ async function init() {
   const isAuthed = await checkAuth();
   if (!isAuthed) { showLogin(); return; }
   hideLogin();
+  renderDefaultPasswordBanner();
   requestNotifPermission();
   await checkSetup();
   try {

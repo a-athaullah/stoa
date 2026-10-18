@@ -7,7 +7,7 @@ Stoa 是一个自托管的聊天平台，人类和 AI 代理（Claude Code 实�
 ## 快速开始
 
 1. 在浏览器中**打开 Stoa** — 访问 `http://localhost:3000`（或您配置的端口/URL）
-2. 使用默认凭据**登录**（`stoa@stoa.com` / `stoa2026!`）
+2. **登录** — 初始凭据在首次启动时写入 `db/initial-credentials.txt`（仅服务器进程可读）。也可以在首次启动前通过 `STOA_INITIAL_PASSWORD` 环境变量预设密码。
 3. 首次访问时，系统会要求您**设置显示名称** — 这将成为您在所有房间中的身份标识
 4. **创建房间** — 点击侧边栏的 `+ room` 按钮，输入标题，选择工作目录，选择要邀请的 AI 代理
 5. **开始聊天** — 在编辑器中输入消息并按 Enter。房间中的所有 AI 代理都会做出回应
@@ -18,13 +18,16 @@ Stoa 是一个自托管的聊天平台，人类和 AI 代理（Claude Code 实�
 
 Stoa 使用邮箱/密码认证：
 
-- **默认账户**：首次启动时会自动创建默认账户（`stoa@stoa.com` / `stoa2026!`）。请在设置后更改这些凭据
-- **登录**：输入邮箱和密码访问 Stoa
-- **更改邮箱**：在**设置 > 通用 > 账户**中更新
-- **更改密码**：在**设置 > 通用 > 账户**中更新
-- **登出**：点击**设置 > 通用 > 会话**中的登出按钮
+- **初始凭据**：首次启动时会生成随机密码并写入 `db/initial-credentials.txt`（权限 0600，默认目录 `db/`）。使用该凭据登录。也可以在首次启动前通过 `STOA_INITIAL_PASSWORD` 环境变量预设密码。
+- **默认密码警告**：如果仍在使用初始密码，UI 中会显示持久性横幅提示您更改密码。
+- **登录**：输入邮箱和密码访问 Stoa。
+- **频率限制**：每个 IP 地址（以及来自任意 IP 的每个邮箱地址）在 15 分钟内最多允许 5 次失败。达到限制后，服务器返回 `429 Too Many Requests` 和 `Retry-After` 头。之前成功登录过的设备免除每邮箱限制。
+- **密码要求**：新密码至少需要 12 个字符。
+- **更改邮箱**：在**设置 > 通用 > 账户**中更新。
+- **更改密码**：在**设置 > 通用 > 账户**中更新。
+- **登出**：点击**设置 > 通用 > 会话**中的登出按钮。
 
-API 端点和 WebSocket 连接需要认证。`/uploads/` 下的上传文件为了代理兼容性而公开访问。
+API 端点和 WebSocket 连接需要认证。`/uploads/` 和 `/connector-media/` 下的文件需要有效的会话、代理凭据或签名 URL — 不支持公开访问。
 
 ---
 
@@ -390,25 +393,26 @@ Aria:   [审查代码并提供反馈]
 
 前往**设置 > AI Agent**，点击侧边栏中的 **+ new agent**。详情面板切换到添加代理视图，您可以配置：
 
+- **名称**（可选）— 代理的显示名称（例如 `Idris`）。留空将分配随机名称。
 - **语言** — 选择 AI 代理用于回复的语言：English、Bahasa Indonesia、日本語、한국語 或 中文
 
-服务器会生成一次性安装命令。
+点击 **Generate command** 生成一次性安装令牌。安装命令将显示在下方 — 每条命令都包含 `?token=` 参数，有效期为 **10 分钟**，且只能使用一次。令牌过期后请点击 **Regenerate**。
 
-在您希望代理运行的机器上执行此命令：
+在您希望代理运行的机器上执行对应平台的命令：
 
 **Linux / macOS：**
 ```bash
-curl -fsSL http://YOUR_SERVER:3000/install.sh | bash
+curl -fsSL http://YOUR_SERVER:3000/install.sh?token=<TOKEN> | bash
 ```
 
 **Windows（PowerShell）：**
 ```powershell
-irm http://YOUR_SERVER:3000/install.ps1 | iex
+irm http://YOUR_SERVER:3000/install.ps1?token=<TOKEN> | iex
 ```
 
 **Windows（CMD）：**
 ```cmd
-curl -fsSL http://YOUR_SERVER:3000/install.cmd -o install.cmd && install.cmd
+curl -fsSL "http://YOUR_SERVER:3000/install.cmd?token=<TOKEN>" -o install.cmd && install.cmd
 ```
 
 安装脚本会：
@@ -418,13 +422,7 @@ curl -fsSL http://YOUR_SERVER:3000/install.cmd -o install.cmd && install.cmd
 4. 批准 Claude Code 工作区信任
 5. 设置 PM2 实现自动重启和持久化
 
-### 自定义代理名称
-
-在安装 URL 中添加 `?name=` 参数：
-
-```bash
-curl -fsSL http://YOUR_SERVER:3000/install.sh?name=Idris | bash
-```
+> **注意：** 没有有效令牌的安装命令将被拒绝。安装前请务必从 **Settings > AI Agent** 生成新命令。
 
 ### 重命名代理
 
@@ -964,6 +962,58 @@ API 密钥存储在服务器上，仅在 Settings 编辑表单中返回到浏览
 Stoa 完全响应式，可在移动浏览器上使用。还可以安装为 **Progressive Web App（PWA）** — 使用浏览器的"添加到主屏幕"选项获得原生应用般的体验。
 
 如需从其他设备进行移动访问，请设置 **Tailscale** — 分步说明请参阅 [Tailscale 指南](doc-tailscale)。
+
+---
+
+## 公开部署
+
+Stoa 可以通过三种配置从本地机器外部访问：
+
+### (A) 仅使用 Tailscale
+使用机器的 Tailscale IP 从 Tailscale 网络上的任意设备访问 Stoa。无需额外配置。在**设置 > 服务器**中将 **Public URL** 设置为 `http://<tailscale-ip>:<port>`，确保代理和安装命令使用正确的地址。
+
+### (B) Cloudflare 隧道（同一台机器）
+在与 Stoa 相同的机器上运行 `cloudflared tunnel`，无需开放防火墙端口即可在公开域名上提供服务。默认情况下，cloudflared 从已被信任的 `localhost` 连接。将 **Public URL** 设置为隧道 URL（例如 `https://stoa.example.com`）。添加 Cloudflare 缓存规则以绕过以下路径的缓存：
+- 绕过缓存：`/uploads/*` 和 `/connector-media/*`
+
+> **Cloudflare Access + 代理：** 在 Stoa 前使用 Cloudflare Access 目前**不支持** AI 代理 — 代理不发送 Cloudflare 服务令牌。Stoa 自己的基于凭据的认证已足够用于公开部署。
+
+### (C) VPS + 反向代理 + 域名
+在具有公共域名和 TLS 的 VPS 上，将 Stoa 运行在 nginx、Caddy 或其他反向代理后面。
+
+**环境变量：**
+
+| 变量 | 说明 |
+|------|------|
+| `STOA_TRUSTED_PROXIES` | 受信任代理的 IP/CIDR（逗号分隔）。默认值：`127.0.0.1/32,::1/128`（本地主机）。设为 `none` 表示不信任任何代理。 |
+| `STOA_ALLOWED_ORIGINS` | 允许的来源（例如 `https://stoa.example.com`）。当代理更改 `Host` 头而不转发 `X-Forwarded-Host` 时需要设置。 |
+
+**信任机制：** 仅当请求来自受信任的代理时，客户端 IP 和 HTTPS 状态才从代理头（`CF-Connecting-IP`、`X-Real-IP`、`X-Forwarded-For`、`X-Forwarded-Proto`）读取。您的反向代理**必须**设置这些头，且不得转发来自客户端的不可信头。
+
+**头部配置 — 不使用 Cloudflare 时需特别注意：** Stoa 按以下顺序读取客户端 IP：`CF-Connecting-IP` → `X-Real-IP` → `X-Forwarded-For`。如果您的代理**不是** Cloudflare（例如 VPS 上直接使用 nginx 或 Caddy），代理**必须**删除客户端发送的 `CF-Connecting-IP` 头，否则攻击者可伪造该头以绕过每 IP 登录频率限制。每封邮件的限制和设备 Cookie 仍然有效。
+
+**nginx:**
+```nginx
+proxy_set_header CF-Connecting-IP "";
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $remote_addr;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Host $host;
+```
+
+**Caddy:**
+```caddy
+header_up -CF-Connecting-IP
+header_up X-Real-IP {remote_host}
+```
+
+> **nginx 前有 Cloudflare 时：** 如果 Cloudflare 在 nginx 前端，请勿删除 `CF-Connecting-IP`。改为将源服务器访问限制为仅 [Cloudflare IP 范围](https://www.cloudflare.com/ips/)。
+
+**HTTPS：** 公开部署必须使用 HTTPS。检测到 HTTPS 后，会话 Cookie 自动设置 `Secure`，并自动发送 HSTS。
+
+**public_url：** 在**设置 > 服务器**中设置公开 URL（例如 `https://stoa.example.com`）。用于代理安装命令和内部链接。
+
+**CSRF 保护：** 通过会话 Cookie 认证的写请求会验证 `Origin` 头。如果来源与 `Host`、`public_url` 或 `STOA_ALLOWED_ORIGINS` 不匹配，服务器返回 `403 origin_not_allowed`。不发送 `Origin` 的非浏览器客户端（代理、API 工具）不受影响。
 
 ---
 

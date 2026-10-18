@@ -861,13 +861,48 @@ function parseCookies(cookieHeader) {
   return cookies;
 }
 
-// Seed default auth user
+// Password that older releases seeded for every install (published in the docs).
+const LEGACY_DEFAULT_PASSWORD = 'stoa2026!';
+// user_id → { hash, isDefault }; keyed by hash so a password change invalidates it.
+const defaultPasswordCache = new Map();
+function usesDefaultPassword(user) {
+  const cached = defaultPasswordCache.get(user.id);
+  if (cached && cached.hash === user.password_hash) return cached.isDefault;
+  let isDefault = false;
+  try { isDefault = verifyPassword(LEGACY_DEFAULT_PASSWORD, user.password_hash); } catch {}
+  defaultPasswordCache.set(user.id, { hash: user.password_hash, isDefault });
+  return isDefault;
+}
+
+// Seed the first auth user with a per-install password (never a shared default).
 {
   const existing = db.prepare('SELECT id FROM auth_users LIMIT 1').get();
   if (!existing) {
-    const hash = hashPassword('stoa2026!');
-    db.prepare('INSERT INTO auth_users (email, password_hash) VALUES (?,?)').run('stoa@stoa.com', hash);
-    console.log('[auth] Default user seeded: stoa@stoa.com');
+    const email = 'stoa@stoa.com';
+    const envPassword = process.env.STOA_INITIAL_PASSWORD;
+    const password = envPassword || crypto.randomBytes(15).toString('base64url');
+    // Next to the DB (db/ by default) so an isolated DB_PATH never overwrites the real install's file.
+    const credDir = process.env.DB_PATH ? path.dirname(path.resolve(process.env.DB_PATH)) : path.join(__dirname, 'db');
+    const credFile = path.join(credDir, 'initial-credentials.txt');
+    let written = false;
+    try {
+      fs.writeFileSync(credFile, `Stoa initial login\nemail: ${email}\npassword: ${password}\n\nChange the password in Settings after the first login, then delete this file.\n`, { mode: 0o600 });
+      fs.chmodSync(credFile, 0o600);
+      written = true;
+      console.log(`[auth] Initial credentials written to ${path.relative(__dirname, credFile) || credFile}`);
+    } catch (e) {
+      console.error(`[auth] Failed to write initial credentials file (${e.message})`);
+    }
+    if (written || envPassword) {
+      db.prepare('INSERT INTO auth_users (email, password_hash) VALUES (?,?)').run(email, hashPassword(password));
+    } else {
+      // A random password nobody can read would lock the owner out — retry on next start instead.
+      console.error('[auth] No user seeded: set STOA_INITIAL_PASSWORD or make the DB directory writable, then restart.');
+    }
+  } else {
+    for (const u of db.prepare('SELECT id, email, password_hash FROM auth_users').all()) {
+      if (usesDefaultPassword(u)) console.warn(`[auth] WARNING: user ${u.email} still uses the published default password — change it in Settings now.`);
+    }
   }
 }
 
@@ -900,8 +935,17 @@ const { composeSystemPrompt } = require('./lib/compose-system-prompt');
 // harness-session.js is inlined by esbuild into dist/stoa.js — not distributed separately
 const CLIENT_FILES = new Set(['stoa.js', 'claude-session.js', 'codex-session.js']);
 
-// One-time install tokens (expires in 10 min)
+// One-time install tokens: minted by a logged-in human (POST /api/agent/install-token),
+// shown inside the install command, consumed by /api/agent/register. Expire in 10 min.
 const installTokens = new Map();
+const INSTALL_TOKEN_TTL_MS = 600_000;
+const INSTALL_TOKEN_CAP = 200;
+const INSTALL_LANGS = new Set(['en', 'id', 'ja', 'ko', 'zh']);
+function getInstallEntry(token) {
+  if (typeof token !== 'string' || !/^[a-f0-9]{64}$/.test(token)) return null;
+  const entry = installTokens.get(token);
+  return entry && entry.expires >= Date.now() ? entry : null;
+}
 setInterval(() => {
   const now = Date.now();
   for (const [t, v] of installTokens) if (v.expires < now) installTokens.delete(t);
@@ -1246,9 +1290,194 @@ const AUTH_EXEMPT = new Set(['/api/auth/login', '/favicon.ico', '/api/docs/stoa-
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const IS_PROD = process.env.NODE_ENV === 'production';
 
-function cookieFlags(req) {
-  const secure = req.headers['x-forwarded-proto'] === 'https' || req.socket?.encrypted;
-  return `Path=/; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}`;
+// ─── Security: proxy trust, signing, login limiter ──────────────────────────
+// Every check below is credential-based. Nothing is exempted by source network
+// (localhost/Tailscale/LAN): Stoa must stay safe behind a public tunnel or on a VPS.
+
+const { createNetTrust } = require('./lib/net-trust');
+const netTrust = createNetTrust(process.env.STOA_TRUSTED_PROXIES, (e) => console.warn(`[security] STOA_TRUSTED_PROXIES: ignoring invalid entry "${e}"`));
+const { clientIp, isHttps, cookieFlags } = netTrust;
+
+// Persistent HMAC key for signed file URLs, proxy bearer tokens and device cookies. Never sent to clients.
+const SIGNING_KEY = (() => {
+  let hex = getSetting('security_signing_key');
+  if (!/^[a-f0-9]{64}$/.test(hex || '')) {
+    hex = crypto.randomBytes(32).toString('hex');
+    setSetting('security_signing_key', hex);
+  }
+  return Buffer.from(hex, 'hex');
+})();
+const hmacHex = (msg) => crypto.createHmac('sha256', SIGNING_KEY).update(msg).digest('hex');
+function safeEqualHex(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length || !/^[a-f0-9]+$/.test(a)) return false;
+  return crypto.timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
+}
+
+// Signed file URLs: agents and external fetchers download attachments without cookies.
+const FILE_URL_TTL_SEC = 7 * 24 * 3600;
+const FILE_URL_MAX_TTL_SEC = 8 * 24 * 3600;
+const SIGNED_FILE_PREFIXES = ['/uploads/', '/connector-media/'];
+const fileSig = (pathname, exp) => hmacHex(`file|${pathname}|${exp}`);
+function signFileUrl(pathOrUrl, ttlSec = FILE_URL_TTL_SEC) {
+  if (typeof pathOrUrl !== 'string' || !pathOrUrl) return pathOrUrl;
+  const absolute = /^https?:\/\//i.test(pathOrUrl);
+  let u;
+  try { u = new URL(pathOrUrl, 'http://stoa.invalid'); } catch { return pathOrUrl; }
+  let pathname;
+  try { pathname = decodeURIComponent(u.pathname); } catch { return pathOrUrl; }
+  if (!SIGNED_FILE_PREFIXES.some(p => pathname.startsWith(p))) return pathOrUrl;
+  const exp = Math.floor(Date.now() / 1000) + ttlSec;
+  u.searchParams.set('exp', String(exp));
+  u.searchParams.set('sig', fileSig(pathname, exp));
+  return absolute ? u.toString() : u.pathname + u.search;
+}
+function verifyFileSig(url) {
+  const exp = url.searchParams.get('exp');
+  const sig = url.searchParams.get('sig');
+  if (!exp || !sig || !/^\d{1,12}$/.test(exp)) return false;
+  const now = Math.floor(Date.now() / 1000);
+  const e = Number(exp);
+  if (e <= now || e > now + FILE_URL_MAX_TTL_SEC) return false;
+  let pathname;
+  try { pathname = decodeURIComponent(url.pathname); } catch { return false; }
+  return safeEqualHex(sig, fileSig(pathname, e));
+}
+
+// Ollama proxy bearer: stoa-proxy:<platId>:<actorId>:<sig>. Bound to the actor's current
+// secret, so rotating/deleting the agent revokes every token it was handed.
+const secretDigest = (secret) => crypto.createHash('sha256').update(secret).digest('hex');
+const proxyTokenSig = (platId, actorId, secret) => hmacHex(`proxy|${platId}|${actorId}|${secretDigest(secret)}`);
+function mintProxyToken(platId, actorId) {
+  const actor = db.prepare("SELECT secret FROM actors WHERE id=? AND type='ai'").get(actorId);
+  if (!actor?.secret) return null;
+  return `stoa-proxy:${platId}:${actorId}:${proxyTokenSig(platId, actorId, actor.secret)}`;
+}
+// → platId on success, null otherwise.
+function verifyProxyToken(bearer) {
+  if (typeof bearer !== 'string' || !bearer.startsWith('stoa-proxy:') || bearer.length > 512) return null;
+  const parts = bearer.slice('stoa-proxy:'.length).split(':');
+  if (parts.length < 3) return null;
+  const sig = parts.pop();
+  const actorId = parts.pop();
+  const platId = parts.join(':');
+  if (!platId || !/^\d{1,12}$/.test(actorId)) return null;
+  const actor = db.prepare("SELECT secret FROM actors WHERE id=? AND type='ai'").get(Number(actorId));
+  if (!actor?.secret) return null;
+  return safeEqualHex(sig, proxyTokenSig(platId, actorId, actor.secret)) ? platId : null;
+}
+
+function agentHeaderAuthOk(req) {
+  const agentId = req.headers['x-agent-id'];
+  const agentSecret = req.headers['x-agent-secret'];
+  if (!agentId || !agentSecret) return false;
+  const actor = db.prepare('SELECT secret FROM actors WHERE id=? AND type=?').get(agentId, 'ai');
+  if (!actor?.secret) return false;
+  const h = s => crypto.createHmac('sha256', 'stoa').update(String(s)).digest();
+  return crypto.timingSafeEqual(h(agentSecret), h(actor.secret));
+}
+
+// Device cookie (OWASP): a browser that has logged in before keeps working while its
+// account is under a distributed brute-force lockout.
+const DEVICE_COOKIE_MAX_AGE_SEC = 180 * 24 * 3600;
+function mintDeviceCookie(userId) {
+  const issued = Math.floor(Date.now() / 1000);
+  return `${userId}.${issued}.${hmacHex(`device|${userId}|${issued}`)}`;
+}
+function deviceCookieValidFor(value, userId) {
+  if (typeof value !== 'string' || userId == null) return false;
+  const m = value.match(/^(\d{1,12})\.(\d{1,12})\.([a-f0-9]{64})$/);
+  if (!m || Number(m[1]) !== Number(userId)) return false;
+  const issued = Number(m[2]);
+  const now = Math.floor(Date.now() / 1000);
+  if (issued > now + 60 || now - issued > DEVICE_COOKIE_MAX_AGE_SEC) return false;
+  return safeEqualHex(m[3], hmacHex(`device|${m[1]}|${m[2]}`));
+}
+
+// Fixed-window failure counters (in-memory; a restart clears them, acceptable for a single node).
+const LOGIN_WINDOW_MS = 15 * 60_000;
+const LOGIN_MAX_FAILS = 5;
+const LOGIN_LIMITER_CAP = 10_000;
+const loginFailsByIp = new Map();
+const loginFailsByEmail = new Map();
+function limiterEntry(map, key) {
+  const e = map.get(key);
+  if (!e) return null;
+  if (Date.now() - e.first >= LOGIN_WINDOW_MS) { map.delete(key); return null; }
+  return e;
+}
+function limiterHit(map, key) {
+  let e = limiterEntry(map, key);
+  if (!e) {
+    if (map.size >= LOGIN_LIMITER_CAP) map.delete(map.keys().next().value);
+    e = { count: 0, first: Date.now() };
+    map.set(key, e);
+  }
+  e.count++;
+}
+// → seconds until the window resets when blocked, else 0.
+function limiterRetryAfter(map, key) {
+  const e = limiterEntry(map, key);
+  if (!e || e.count < LOGIN_MAX_FAILS) return 0;
+  return Math.max(1, Math.ceil((e.first + LOGIN_WINDOW_MS - Date.now()) / 1000));
+}
+setInterval(() => {
+  for (const map of [loginFailsByIp, loginFailsByEmail]) {
+    for (const key of [...map.keys()]) limiterEntry(map, key);
+  }
+}, 5 * 60_000).unref();
+
+const LOGIN_FAIL_MIN_MS = 500;
+const DUMMY_PASSWORD_HASH = hashPassword(crypto.randomBytes(16).toString('hex'));
+const MIN_PASSWORD_LENGTH = 12;
+
+// CSRF: a browser-sent Origin must name this server. Non-browser clients send no Origin.
+function hostMatchesOrigin(o, host) {
+  if (!host) return false;
+  const h = String(host).toLowerCase();
+  if (o.host === h) return true;
+  const defPort = o.protocol === 'https:' ? '443' : '80';
+  return h === `${o.hostname}:${defPort}`;
+}
+function originAllowed(req) {
+  const origin = req.headers.origin;
+  if (origin === undefined) return true;
+  let o;
+  try { o = new URL(origin); } catch { return false; }
+  if (o.protocol !== 'http:' && o.protocol !== 'https:') return false;
+  if (hostMatchesOrigin(o, req.headers.host)) return true;
+  const fwd = netTrust.forwardedHost(req);
+  if (fwd && hostMatchesOrigin(o, fwd)) return true;
+  const pub = getSetting('public_url') || process.env.STOA_PUBLIC_URL;
+  if (pub) { try { if (new URL(pub).host === o.host) return true; } catch {} }
+  for (const entry of (process.env.STOA_ALLOWED_ORIGINS || '').split(',')) {
+    const t = entry.trim();
+    if (!t) continue;
+    try { if (new URL(t).origin === o.origin) return true; } catch {}
+  }
+  return false;
+}
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+function setSecurityHeaders(req, res) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Content-Security-Policy', "frame-ancestors 'self'");
+  res.setHeader('Referrer-Policy', 'same-origin');
+  if (isHttps(req)) res.setHeader('Strict-Transport-Security', 'max-age=15552000');
+}
+
+// Served files: never cached by shared caches; script-capable types are forced to download
+// and sandboxed so an uploaded .html/.svg can't run script on the Stoa origin.
+const ACTIVE_CONTENT_EXTS = new Set(['.html', '.htm', '.js', '.mjs', '.svg', '.xml', '.xhtml']);
+function fileResponseHeaders(ext, mime, disposition) {
+  const active = ACTIVE_CONTENT_EXTS.has(ext);
+  const headers = {
+    'Content-Type': mime,
+    'Cache-Control': 'private, max-age=3600',
+    'Content-Disposition': active ? 'attachment' : disposition,
+  };
+  if (active) headers['Content-Security-Policy'] = "sandbox; frame-ancestors 'self'";
+  return headers;
 }
 
 function serveIndex() {
@@ -1264,36 +1493,38 @@ function requireAuth(req, res, url) {
   if (AUTH_EXEMPT.has(url.pathname)) return true;
   // Static assets from public/ (CSS, JS, manifest, icons, SW)
   if (url.pathname.match(/^\/(css|js|vendor|dist)\//) || ['/manifest.json', '/sw.js', '/stoa-icon.svg'].includes(url.pathname)) return true;
-  // Uploaded files accessible by agents (they fetch without cookies)
-  if (url.pathname.startsWith('/uploads/')) return true;
-  // Connector media files (WA downloads) accessible without cookie auth
-  if (url.pathname.startsWith('/connector-media/')) return true;
-  // Install scripts and agent register are public (token-protected already)
+  const isFilePath = SIGNED_FILE_PREFIXES.some(p => url.pathname.startsWith(p));
+  // Agents/connectors fetch attachments without cookies — via a signed URL minted by the server.
+  if (isFilePath && url.searchParams.has('sig') && verifyFileSig(url)) return true;
+  // Install scripts are gated by a one-time install token (minted via POST /api/agent/install-token); register consumes it.
   if (url.pathname === '/install.sh' || url.pathname === '/install.ps1' || url.pathname === '/install.cmd') return true;
   if (url.pathname === '/api/agent/register') return true;
-  // Client file API used by agents for auto-update
+  // Client file API used by agents for auto-update (public repo code, whitelisted names)
   if (url.pathname === '/api/client/manifest' || url.pathname.startsWith('/api/client/file/')) return true;
-  // Ollama Cloud proxy — called by Claude Code SDK which sends a Bearer token, not a browser cookie.
-  // Auth relies on Stoa's trusted-network model (Tailscale): same as /api/agent/register.
-  // The bearer token encodes platform_id (stoa-proxy:<id>) but is NOT a secret — do not treat it as one.
+  // Ollama proxy — the Claude SDK sends only a Bearer token (no cookie). The handler verifies
+  // the HMAC proxy token (or agent headers) before reading the body.
   if (url.pathname === '/v1/messages') return true;
 
-  // Agent HTTP auth via headers (for upload etc.)
-  const agentId = req.headers['x-agent-id'];
-  const agentSecret = req.headers['x-agent-secret'];
-  if (agentId && agentSecret) {
-    const actor = db.prepare('SELECT secret FROM actors WHERE id=? AND type=?').get(agentId, 'ai');
-    if (actor?.secret) {
-      const h = s => crypto.createHmac('sha256', 'stoa').update(s).digest();
-      if (crypto.timingSafeEqual(h(agentSecret), h(actor.secret))) return true;
-    }
-  }
+  if (agentHeaderAuthOk(req)) return true;
 
   const cookies = parseCookies(req.headers.cookie);
   const session = validateAuthSession(cookies.stoa_session);
-  if (session) { req._authUser = session; return true; }
+  if (session) {
+    if (!SAFE_METHODS.has(req.method) && !originAllowed(req)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'origin_not_allowed' }));
+      return false;
+    }
+    req._authUser = session;
+    return true;
+  }
 
   // Not authenticated
+  if (isFilePath) {
+    res.writeHead(401, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('401 Unauthorized');
+    return false;
+  }
   if (url.pathname === '/' || !url.pathname.startsWith('/api/')) {
     // Serve login page for HTML requests
     return 'login';
@@ -1314,6 +1545,7 @@ function updateConnStatus(id, status, errorMsg, meta) {
 const server = http.createServer(async (req, res) => {
   try {
   const url = new URL(req.url, `http://localhost:${PORT}`);
+  setSecurityHeaders(req, res);
 
   // ── Auth check ──
   const authResult = requireAuth(req, res, url);
@@ -1341,19 +1573,42 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/auth/login') {
+    const startedAt = Date.now();
+    if (!originAllowed(req)) return json(res, { error: 'origin_not_allowed' }, 403);
     const body = await readBody(req);
     const data = parseJsonBody(body);
     if (!data) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
-    const { email, password } = data;
-    const user = db.prepare('SELECT * FROM auth_users WHERE email=?').get(email);
-    if (!user || !verifyPassword(password, user.password_hash)) {
-      res.writeHead(401, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify({ error: 'Invalid email or password' }));
+    const email = typeof data.email === 'string' ? data.email.trim().toLowerCase() : '';
+    const password = typeof data.password === 'string' && data.password.length <= 1024 ? data.password : null;
+    const ip = clientIp(req);
+    const tooMany = (retryAfter) => {
+      res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': String(retryAfter) });
+      return res.end(JSON.stringify({ error: 'too_many_attempts', retry_after: retryAfter }));
+    };
+    // Limits are checked BEFORE the password: a correct guess inside a lockout still gets 429.
+    const ipWait = limiterRetryAfter(loginFailsByIp, ip);
+    if (ipWait) return tooMany(ipWait);
+    const user = email ? db.prepare('SELECT * FROM auth_users WHERE lower(email)=?').get(email) : null;
+    const emailWait = email ? limiterRetryAfter(loginFailsByEmail, email) : 0;
+    if (emailWait && !deviceCookieValidFor(parseCookies(req.headers.cookie).stoa_device, user?.id)) return tooMany(emailWait);
+    // Always run scrypt (dummy hash for unknown users) so response time doesn't reveal which emails exist.
+    const ok = password !== null && verifyPassword(password, user?.password_hash || DUMMY_PASSWORD_HASH) && !!user;
+    if (!ok) {
+      limiterHit(loginFailsByIp, ip);
+      if (email) limiterHit(loginFailsByEmail, email);
+      const wait = LOGIN_FAIL_MIN_MS - (Date.now() - startedAt);
+      if (wait > 0) await new Promise(r => setTimeout(r, wait));
+      return json(res, { error: 'Invalid email or password' }, 401);
     }
+    loginFailsByIp.delete(ip);
+    if (password === LEGACY_DEFAULT_PASSWORD) defaultPasswordCache.set(user.id, { hash: user.password_hash, isDefault: true });
     const session = createAuthSession(user.id);
     res.writeHead(200, {
       'Content-Type': 'application/json',
-      'Set-Cookie': `stoa_session=${session.token}; ${cookieFlags(req)}; Max-Age=${7*24*3600}`,
+      'Set-Cookie': [
+        `stoa_session=${session.token}; ${cookieFlags(req)}; Max-Age=${7*24*3600}`,
+        `stoa_device=${mintDeviceCookie(user.id)}; ${cookieFlags(req)}; Max-Age=${DEVICE_COOKIE_MAX_AGE_SEC}`,
+      ],
     });
     return res.end(JSON.stringify({ ok: true, email: user.email }));
   }
@@ -1371,8 +1626,9 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/auth/me') {
-    const user = db.prepare('SELECT id, email FROM auth_users WHERE id=?').get(req._authUser.user_id);
-    return json(res, user || {});
+    const user = db.prepare('SELECT id, email, password_hash FROM auth_users WHERE id=?').get(req._authUser.user_id);
+    if (!user) return json(res, {});
+    return json(res, { id: user.id, email: user.email, default_password: usesDefaultPassword(user) });
   }
 
   if (req.method === 'PATCH' && url.pathname === '/api/auth/email') {
@@ -1390,7 +1646,8 @@ const server = http.createServer(async (req, res) => {
     const data = parseJsonBody(await readBody(req));
     if (!data) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
     const { current_password, new_password } = data;
-    if (!new_password || new_password.length < 6) { res.writeHead(400); return res.end('password must be at least 6 characters'); }
+    if (typeof new_password !== 'string' || new_password.length < MIN_PASSWORD_LENGTH || new_password.length > 1024) { res.writeHead(400); return res.end(`password must be ${MIN_PASSWORD_LENGTH}-1024 characters`); }
+    if (typeof current_password !== 'string') { res.writeHead(401); return res.end('current password incorrect'); }
     const user = db.prepare('SELECT * FROM auth_users WHERE id=?').get(req._authUser.user_id);
     if (!verifyPassword(current_password, user.password_hash)) {
       res.writeHead(401); return res.end('current password incorrect');
@@ -1419,7 +1676,7 @@ const server = http.createServer(async (req, res) => {
     };
     const mime = MIMES[ext] || 'application/octet-stream';
     const disp = mime.startsWith('text/') || mime.includes('json') ? 'inline' : 'attachment';
-    res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'public, max-age=86400', 'Content-Disposition': disp });
+    res.writeHead(200, fileResponseHeaders(ext, mime, disp));
     return res.end(fs.readFileSync(filepath));
   }
 
@@ -1437,7 +1694,7 @@ const server = http.createServer(async (req, res) => {
     };
     const mime = MIMES[ext] || 'application/octet-stream';
     const disp = mime.startsWith('text/') ? 'inline' : 'attachment';
-    res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'public, max-age=86400', 'Content-Disposition': disp });
+    res.writeHead(200, fileResponseHeaders(ext, mime, disp));
     return res.end(fs.readFileSync(filepath));
   }
 
@@ -3927,15 +4184,31 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ── Agent install script ──
+  if (req.method === 'POST' && url.pathname === '/api/agent/install-token') {
+    if (!req._authUser) return json(res, { error: 'human auth required' }, 403);
+    const data = parseJsonBody(await readBody(req) || '{}');
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return json(res, { error: 'Invalid JSON' }, 400);
+    if (data.name !== undefined && data.name !== null && typeof data.name !== 'string') return json(res, { error: 'name must be a string' }, 400);
+    const name = (data.name || '').trim();
+    if (name.length > 64) return json(res, { error: 'name must be at most 64 characters' }, 400);
+    const lang = data.lang === undefined || data.lang === null || data.lang === '' ? 'en' : data.lang;
+    if (!INSTALL_LANGS.has(lang)) return json(res, { error: 'invalid lang' }, 400);
+    while (installTokens.size >= INSTALL_TOKEN_CAP) installTokens.delete(installTokens.keys().next().value);
+    const token = crypto.randomBytes(32).toString('hex');
+    installTokens.set(token, { expires: Date.now() + INSTALL_TOKEN_TTL_MS, name, lang });
+    return json(res, { token, expires_in: INSTALL_TOKEN_TTL_MS / 1000 });
+  }
+
   if (req.method === 'GET' && url.pathname === '/install.sh') {
+    const token = url.searchParams.get('token');
+    if (!getInstallEntry(token)) {
+      res.writeHead(401, { 'Content-Type': 'text/plain; charset=utf-8' });
+      return res.end('#!/bin/bash\necho "Stoa: install token invalid or expired. Generate a new command from Settings > Agents." >&2\nexit 1\n');
+    }
     const host = req.headers.host || `localhost:${PORT}`;
     const baseUrl = getPublicUrl(host);
     const wsProto = baseUrl.startsWith('https') ? 'wss' : 'ws';
     const stoaUrl = baseUrl.replace(/^https?/, wsProto);
-    const token = crypto.randomBytes(12).toString('hex');
-    const presetName = url.searchParams.get('name') || '';
-    const lang = url.searchParams.get('lang') || 'en';
-    installTokens.set(token, { expires: Date.now() + 600_000, name: presetName, lang });
 
     const clientFiles = 'stoa.js claude-session.js codex-session.js';
     const trustCmd = 'claude --version > /dev/null 2>&1 || true';
@@ -4029,14 +4302,15 @@ echo "Logs   : pm2 logs \${AGENT_NAME}"
 
   // ── Windows PowerShell installer ──
   if (req.method === 'GET' && url.pathname === '/install.ps1') {
+    const token = url.searchParams.get('token');
+    if (!getInstallEntry(token)) {
+      res.writeHead(401, { 'Content-Type': 'text/plain; charset=utf-8' });
+      return res.end('Write-Error "Stoa: install token invalid or expired. Generate a new command from Settings > Agents."\r\nexit 1\r\n');
+    }
     const host = req.headers.host || `localhost:${PORT}`;
     const baseUrl = getPublicUrl(host);
     const wsProto = baseUrl.startsWith('https') ? 'wss' : 'ws';
     const stoaUrl = baseUrl.replace(/^https?/, wsProto);
-    const token = crypto.randomBytes(12).toString('hex');
-    const presetName = url.searchParams.get('name') || '';
-    const ps1Lang = url.searchParams.get('lang') || 'en';
-    installTokens.set(token, { expires: Date.now() + 600_000, name: presetName, lang: ps1Lang });
 
     const ps1Files = '"stoa.js","claude-session.js","codex-session.js"';
     const ps1TrustCmd = 'try { & claude --version 2>$null } catch {}';
@@ -4122,13 +4396,14 @@ Write-Host "Logs   : pm2 logs $AgentName"
 
   // ── Windows CMD installer (proxies to PS1) ──
   if (req.method === 'GET' && url.pathname === '/install.cmd') {
+    const token = url.searchParams.get('token');
+    if (!getInstallEntry(token)) {
+      res.writeHead(401, { 'Content-Type': 'text/plain; charset=utf-8' });
+      return res.end('@echo off\r\necho Stoa: install token invalid or expired. Generate a new command from Settings ^> Agents. 1>&2\r\nexit /b 1\r\n');
+    }
     const host = req.headers.host || `localhost:${PORT}`;
     const baseUrl = getPublicUrl(host);
-    const cmdParams = [];
-    if (url.searchParams.get('name')) cmdParams.push(`name=${encodeURIComponent(url.searchParams.get('name'))}`);
-    if (url.searchParams.get('lang')) cmdParams.push(`lang=${encodeURIComponent(url.searchParams.get('lang'))}`);
-    const qs = cmdParams.length ? '?' + cmdParams.join('&') : '';
-    const script = `@echo off\r\npowershell -ExecutionPolicy Bypass -Command "irm '${baseUrl}/install.ps1${qs}' | iex"\r\n`;
+    const script = `@echo off\r\npowershell -ExecutionPolicy Bypass -Command "irm '${baseUrl}/install.ps1?token=${token}' | iex"\r\n`;
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
     return res.end(script);
   }
@@ -4139,8 +4414,8 @@ Write-Host "Logs   : pm2 logs $AgentName"
     const data = parseJsonBody(body);
     if (!data) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
     const { token } = data;
-    const entry = installTokens.get(token);
-    if (!entry || entry.expires < Date.now()) {
+    const entry = getInstallEntry(token);
+    if (!entry) {
       res.writeHead(401); return res.end(JSON.stringify({ error: 'invalid or expired token' }));
     }
     installTokens.delete(token);
@@ -4886,13 +5161,20 @@ Write-Host "Logs   : pm2 logs $AgentName"
 
   // Ollama Cloud proxy — forward /v1/messages to ollama.com with API key rotation
   if (req.method === 'POST' && url.pathname === '/v1/messages') {
+    // Auth BEFORE reading the body. Bearer = HMAC proxy token minted per trigger (see mintProxyToken).
+    // The SDK may send it as Authorization: Bearer or as x-api-key.
+    const authz = req.headers['authorization'];
+    const bearer = typeof authz === 'string' ? authz.replace(/^Bearer\s+/i, '').trim()
+      : (typeof req.headers['x-api-key'] === 'string' ? req.headers['x-api-key'].trim() : '');
+    const proxyPlatId = verifyProxyToken(bearer);
+    if (!proxyPlatId && !agentHeaderAuthOk(req)) {
+      return json(res, { type: 'error', error: { type: 'authentication_error', message: 'invalid or missing Stoa proxy token' } }, 401);
+    }
     const platforms = getParsedSetting('ai_platforms') ?? [];
-    // Bearer token carries platform_id: "stoa-proxy:<id>". Fall back to first vendor='ollama' for legacy callers.
-    const bearer = (req.headers['authorization'] || '').replace(/^Bearer\s+/i, '');
-    const proxyPlatId = bearer.startsWith('stoa-proxy:') ? bearer.slice('stoa-proxy:'.length) : null;
-    const plat = (proxyPlatId && platforms.find(p => p.id === proxyPlatId && p.vendor === 'ollama'))
-      || platforms.find(p => p.vendor === 'ollama')
-      || platforms.find(p => p.base_url?.includes('ollama.com'));
+    // Agent-header callers still name the platform in the bearer ("stoa-proxy:<platId>[:...]"); no fallback platform.
+    const rest = bearer.startsWith('stoa-proxy:') ? bearer.slice('stoa-proxy:'.length) : '';
+    const plat = platforms.find(p => p.vendor === 'ollama' && p.id
+      && (proxyPlatId ? p.id === proxyPlatId : (rest === p.id || rest.startsWith(p.id + ':'))));
     if (!plat) { res.writeHead(503); return res.end(JSON.stringify({ type: 'error', error: { type: 'service_unavailable', message: 'No Ollama Cloud platform configured' } })); }
     const keys = getPlatKeys(plat);
     if (!keys.length) { res.writeHead(503); return res.end(JSON.stringify({ type: 'error', error: { type: 'service_unavailable', message: 'No API keys configured for Ollama Cloud' } })); }
@@ -6356,7 +6638,7 @@ wss.on('connection', (ws, req) => {
             text:       r.text,
             direction:  r.direction,
             media_type: r.media_type || null,
-            media_url:  r.media_path || null,
+            media_url:  r.media_path ? signFileUrl(r.media_path) : null,
             timestamp:  r.created_at,
           }));
         } else if (connRow3.provider === 'slack') {
@@ -7364,7 +7646,8 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
             if (plat.vendor === 'ollama') {
               // getPublicUrl: remote agents resolve 127.0.0.1 to themselves → ECONNREFUSED
               modelBaseUrl = getPublicUrl(`localhost:${PORT}`);
-              modelApiKeys = [`stoa-proxy:${cfg.platform_id}`];
+              const proxyToken = mintProxyToken(cfg.platform_id, ai.actor_id);
+              modelApiKeys = proxyToken ? [proxyToken] : undefined;
             } else {
               modelBaseUrl = plat.base_url || cfg.base_url || undefined;
               modelApiKeys = plat.api_keys?.length ? plat.api_keys : (plat.api_key ? [plat.api_key] : undefined);
@@ -7438,10 +7721,12 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
       });
       pendingActorMeta.set(msgId, { actor_id: ai.actor_id, room_id: roomId, actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null, sub_agent_label: subAgent?.label || null, sub_agent_avatar_color: subAgent?.avatar_color || null, sub_agent_avatar_symbol: subAgent?.avatar_symbol || null, sub_agent_avatar_url: subAgent?.avatar_url || null, sub_agent_role: subAgent?.role || null, thread_id: threadId || null });
       const triggerBaseUrl = getPublicUrl(`localhost:${PORT}`);
-      const fullAttachments = (attachments || []).map(a => ({
-        ...a,
-        url: a.url?.startsWith('/') ? triggerBaseUrl + a.url : a.url,
-      }));
+      // Agents download without cookies → signed URLs. Name falls back to the bare file name because
+      // stoa.js derives the extension from name||url, and the url now carries a query string.
+      const fullAttachments = (attachments || []).map(a => {
+        if (typeof a.url !== 'string' || !a.url.startsWith('/')) return a;
+        return { ...a, name: a.name || path.basename(a.url.split('?')[0]), url: triggerBaseUrl + signFileUrl(a.url) };
+      });
       const roomSysPromptRaw = db.prepare('SELECT system_prompt FROM rooms WHERE id=?').get(roomId)?.system_prompt || null;
       const baseSysPrompt = getSetting('base_system_prompt') || DEFAULT_BASE_SYSTEM_PROMPT;
       const agentSysPrompt = db.prepare('SELECT system_prompt FROM actors WHERE id=?').get(ai.actor_id)?.system_prompt || null;

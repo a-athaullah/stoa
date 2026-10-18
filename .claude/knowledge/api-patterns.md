@@ -5,13 +5,16 @@
 ### HTTP Routes
 
 #### Public Routes (no auth required)
-- `/api/auth/login` - Login endpoint
-- `/install.sh`, `/install.ps1`, `/install.cmd` - Agent install scripts
-- `/api/agent/register` - Agent registration (token-protected)
+- `/api/auth/login` - Login endpoint (rate limited: 5 failures / 15 min per IP and per email)
+- `/install.sh`, `/install.ps1`, `/install.cmd` - Agent install scripts (require valid `?token=` from `POST /api/agent/install-token`)
+- `/api/agent/register` - Agent registration (install-token protected, one-time use)
 - `/api/client/manifest` - Client version info
 - `/api/client/file/:filename` - Client file download
-- `/uploads/*` - Static uploads (agents need access without cookies)
 - Static assets (`/css`, `/js`, `/dist`, etc.)
+
+#### Protected Routes (require auth — previously public)
+- `/uploads/*` - Session cookie, agent header, or signed URL required
+- `/connector-media/*` - Session cookie, agent header, or signed URL required
 
 #### Agent HTTP Auth (via headers)
 ```http
@@ -25,7 +28,56 @@ const h = s => crypto.createHmac('sha256', 'stoa').update(s).digest();
 if (crypto.timingSafeEqual(h(agentSecret), h(actor.secret))) { /* authorized */ }
 ```
 
-**Use case:** Agent upload file, fetch workspace files
+**Use case:** Agent upload file, fetch workspace files, access `/uploads/*` and `/connector-media/*`
+
+#### Install Token (human session only)
+```
+POST /api/agent/install-token
+Body: { name?: string, lang?: string }
+Response: { token: string, expires_in: 600 }
+```
+- Requires human session (`req._authUser`); agent header → 403
+- Token = 64-char hex, valid 10 minutes, one-time use
+- Used in install script URL: `/install.sh?token=<t>`
+
+#### Signed File URL
+```
+/uploads/<file>?exp=<unix_seconds>&sig=<hex>
+/connector-media/<file>?exp=<unix_seconds>&sig=<hex>
+```
+- `sig = HMAC-SHA256(signingKey, 'file|' + decodedPathname + '|' + exp)`
+- Valid: `exp > now` AND `exp <= now + 8 days`; TTL default 7 days
+- Path, sig, or exp mismatch → 401
+- Helper: `signFileUrl(pathOrUrl, ttlSec = 7*24*3600)`
+
+#### Device Cookie (`stoa_device`)
+- Set on successful login: `<userId>.<issuedAt>.<hmac(signingKey,'device|'+userId+'|'+issuedAt)>`
+- HttpOnly, SameSite=Lax, Secure when HTTPS, Max-Age 180 days
+- Exempts the device from per-email login rate limit
+
+#### Ollama Proxy Token (`/v1/messages`)
+```
+Authorization: Bearer stoa-proxy:<platId>:<actorId>:<sig>
+```
+- `sig = HMAC-SHA256(signingKey, 'proxy|' + platId + '|' + actorId + '|' + sha256(actor.secret))`
+- Old format `stoa-proxy:<id>` → 401; empty bearer → 401
+- Also accepts: `X-Agent-Id` / `X-Agent-Secret` valid headers
+
+#### CSRF Protection
+- Non-GET/HEAD/OPTIONS requests authenticated via **session cookie** (not agent header) check `Origin` header
+- Allowed origins: `Host`, `public_url`, `X-Forwarded-Host` (from trusted proxy), `STOA_ALLOWED_ORIGINS`
+- Mismatch → `403 { error: 'origin_not_allowed' }`
+- No `Origin` header → allowed (non-browser clients)
+
+#### Trust Proxy Model
+- `STOA_TRUSTED_PROXIES`: comma-separated IP/CIDR. Default: `127.0.0.1/32,::1/128`. `none` = trust nobody.
+- `clientIp(req)`: reads `CF-Connecting-IP` → `X-Real-IP` → `X-Forwarded-For` (rightmost non-trusted) only when socket IP is trusted; else = socket IP
+- `isHttps(req)`: `req.socket.encrypted` OR (trusted socket AND `X-Forwarded-Proto === 'https'`)
+- Spoof from untrusted IP → ignored
+
+#### Signing Key
+- Persistent HMAC key stored in settings table as `security_signing_key` (random 32-byte hex)
+- Generated on startup if absent. Never logged or sent to client.
 
 #### User Auth (via cookie)
 ```http

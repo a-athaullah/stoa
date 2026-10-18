@@ -1632,6 +1632,27 @@ html.dark .h-system-event.error {
 .h-restart-banner a { color: #fff; text-decoration: underline; font-weight: 500; }
 @keyframes h-banner-slide { from { transform: translateY(-100%); } to { transform: translateY(0); } }
 
+.h-default-pw-banner {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 10px); left: 50%; transform: translateX(-50%);
+  z-index: 9500;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: center;
+  max-width: calc(100vw - 24px); box-sizing: border-box;
+  padding: 8px 10px 8px 16px; border-radius: 12px;
+  background: oklch(0.93 0.07 75); color: oklch(0.32 0.08 60);
+  border: 1px solid oklch(0.80 0.11 70);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  font-family: var(--h-sans); font-size: 13px; line-height: 1.35;
+}
+html.dark .h-default-pw-banner { background: oklch(0.33 0.07 65); color: oklch(0.93 0.06 80); border-color: oklch(0.48 0.09 65); }
+.h-default-pw-link {
+  flex: 0 0 auto; padding: 5px 12px; border-radius: 999px; cursor: pointer;
+  border: 1px solid currentColor; background: transparent; color: inherit;
+  font-family: var(--h-sans); font-size: 12.5px; font-weight: 500;
+}
+.h-default-pw-link:hover { background: color-mix(in oklch, currentColor 12%, transparent); }
+.h-default-pw-link:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+
 .h-install-banner {
   display: none;
   position: fixed;
