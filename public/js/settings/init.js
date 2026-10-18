@@ -312,7 +312,7 @@ function initSettings() {
     const errEl = document.getElementById('s-auth-error');
     errEl.textContent = '';
     if (!cur || !newPw) { errEl.textContent = 'Fill both fields'; return; }
-    if (newPw.length < 6) { errEl.textContent = 'New password must be at least 6 characters'; return; }
+    if (newPw.length < 12) { errEl.textContent = 'New password must be at least 12 characters'; return; }
     try {
       const r = await fetch('/api/auth/password', {
         method: 'PATCH',
@@ -325,8 +325,13 @@ function initSettings() {
         const saved = document.getElementById('s-auth-pw-saved');
         saved.classList.add('visible');
         setTimeout(() => saved.classList.remove('visible'), 2000);
+        if (authUser) authUser.default_password = false;
+        renderDefaultPasswordBanner();
       } else {
-        errEl.textContent = await r.text();
+        const text = await r.text();
+        let msg = text;
+        try { msg = JSON.parse(text).error || text; } catch {}
+        errEl.textContent = msg || 'Failed to change password';
       }
     } catch { errEl.textContent = 'Network error'; }
   });

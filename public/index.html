@@ -339,7 +339,7 @@
           </div>
           <div class="s-server-field">
             <span class="s-server-field-label">new password</span>
-            <input class="s-server-input" id="s-auth-new-pw" type="password" autocomplete="new-password" placeholder="min 6 characters">
+            <input class="s-server-input" id="s-auth-new-pw" type="password" autocomplete="new-password" minlength="12" placeholder="min 12 characters">
             <span class="s-server-saved" id="s-auth-pw-saved">saved</span>
             <button class="s-server-save" id="s-auth-pw-save" type="button">change</button>
           </div>
@@ -691,7 +691,7 @@
     <div class="login-sub">sign in to continue</div>
     <input class="login-input" id="login-email" type="email" placeholder="Email" autocomplete="email" required>
     <input class="login-input" id="login-password" type="password" placeholder="Password" autocomplete="current-password" required>
-    <div class="login-error" id="login-error"></div>
+    <div class="login-error" id="login-error" role="alert" aria-live="polite"></div>
     <button class="login-btn" type="submit">sign in</button>
   </form>
 </div>
