@@ -990,6 +990,25 @@ Stoa 可以通过三种配置从本地机器外部访问：
 
 **信任机制：** 仅当请求来自受信任的代理时，客户端 IP 和 HTTPS 状态才从代理头（`CF-Connecting-IP`、`X-Real-IP`、`X-Forwarded-For`、`X-Forwarded-Proto`）读取。您的反向代理**必须**设置这些头，且不得转发来自客户端的不可信头。
 
+**头部配置 — 不使用 Cloudflare 时需特别注意：** Stoa 按以下顺序读取客户端 IP：`CF-Connecting-IP` → `X-Real-IP` → `X-Forwarded-For`。如果您的代理**不是** Cloudflare（例如 VPS 上直接使用 nginx 或 Caddy），代理**必须**删除客户端发送的 `CF-Connecting-IP` 头，否则攻击者可伪造该头以绕过每 IP 登录频率限制。每封邮件的限制和设备 Cookie 仍然有效。
+
+**nginx:**
+```nginx
+proxy_set_header CF-Connecting-IP "";
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $remote_addr;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Host $host;
+```
+
+**Caddy:**
+```caddy
+header_up -CF-Connecting-IP
+header_up X-Real-IP {remote_host}
+```
+
+> **nginx 前有 Cloudflare 时：** 如果 Cloudflare 在 nginx 前端，请勿删除 `CF-Connecting-IP`。改为将源服务器访问限制为仅 [Cloudflare IP 范围](https://www.cloudflare.com/ips/)。
+
 **HTTPS：** 公开部署必须使用 HTTPS。检测到 HTTPS 后，会话 Cookie 自动设置 `Secure`，并自动发送 HSTS。
 
 **public_url：** 在**设置 > 服务器**中设置公开 URL（例如 `https://stoa.example.com`）。用于代理安装命令和内部链接。

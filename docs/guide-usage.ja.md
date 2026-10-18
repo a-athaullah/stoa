@@ -990,6 +990,25 @@ Stoa と同じマシンで `cloudflared tunnel` を実行し、ファイアウ�
 
 **信頼の仕組み：** クライアント IP と HTTPS ステータスは、リクエストが信頼されたプロキシからの場合にのみプロキシヘッダー（`CF-Connecting-IP`、`X-Real-IP`、`X-Forwarded-For`、`X-Forwarded-Proto`）から読み取られます。リバースプロキシはこれらのヘッダーを設定し、クライアントからの信頼されていないヘッダーを転送しないようにしてください。
 
+**ヘッダー設定 — Cloudflare を使用しない場合に重要：** Stoa はクライアント IP を次の順序で読み取ります：`CF-Connecting-IP` → `X-Real-IP` → `X-Forwarded-For`。プロキシが Cloudflare **でない**場合（例：VPS 上の nginx や Caddy を直接使用）、プロキシはクライアントから送信される `CF-Connecting-IP` を**必ず**削除してください。削除しないと、攻撃者がこのヘッダーを偽造して IP ごとのログインレート制限を回避できます。メールごとの制限とデバイスクッキーは引き続き有効です。
+
+**nginx:**
+```nginx
+proxy_set_header CF-Connecting-IP "";
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $remote_addr;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Host $host;
+```
+
+**Caddy:**
+```caddy
+header_up -CF-Connecting-IP
+header_up X-Real-IP {remote_host}
+```
+
+> **nginx の前に Cloudflare がある場合：** Cloudflare が nginx の前にある場合は `CF-Connecting-IP` を削除しないでください。代わりに、オリジンサーバーへのアクセスを [Cloudflare の IP レンジ](https://www.cloudflare.com/ips/)のみに制限してください。
+
 **HTTPS：** 公開デプロイには必須です。HTTPS が検出されると、セッションクッキーに `Secure` が設定され、HSTS が自動的に送信されます。
 
 **public_url：** **設定 > サーバー** で公開 URL（例：`https://stoa.example.com`）を設定します。エージェントのインストールコマンドや内部リンクで使用されます。

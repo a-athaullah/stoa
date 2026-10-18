@@ -990,6 +990,25 @@ Stoa와 같은 머신에서 `cloudflared tunnel`을 실행하여 방화벽 포�
 
 **신뢰 작동 방식:** 클라이언트 IP와 HTTPS 상태는 요청이 신뢰된 프록시에서 온 경우에만 프록시 헤더(`CF-Connecting-IP`, `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto`)에서 읽습니다. 역방향 프록시는 이 헤더들을 설정하고 클라이언트로부터의 신뢰되지 않은 헤더는 전달하지 않아야 합니다.
 
+**헤더 설정 — Cloudflare를 사용하지 않는 경우 중요:** Stoa는 클라이언트 IP를 다음 순서로 읽습니다: `CF-Connecting-IP` → `X-Real-IP` → `X-Forwarded-For`. 프록시가 Cloudflare가 **아닌** 경우(예: VPS의 nginx나 Caddy 직접 사용), 프록시는 클라이언트가 전송하는 `CF-Connecting-IP`를 **반드시** 제거해야 합니다. 제거하지 않으면 공격자가 이 헤더를 위조하여 IP별 로그인 속도 제한을 우회할 수 있습니다. 이메일별 제한과 장치 쿠키는 계속 유효합니다.
+
+**nginx:**
+```nginx
+proxy_set_header CF-Connecting-IP "";
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $remote_addr;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Host $host;
+```
+
+**Caddy:**
+```caddy
+header_up -CF-Connecting-IP
+header_up X-Real-IP {remote_host}
+```
+
+> **nginx 앞에 Cloudflare가 있는 경우:** Cloudflare가 nginx 앞에 있으면 `CF-Connecting-IP`를 제거하지 마세요. 대신 [Cloudflare IP 범위](https://www.cloudflare.com/ips/)만 오리진 서버에 접근할 수 있도록 제한하세요.
+
 **HTTPS:** 공개 배포에 필수입니다. HTTPS가 감지되면 세션 쿠키에 `Secure`가 설정되고 HSTS가 자동으로 전송됩니다.
 
 **public_url:** **설정 > 서버**에서 공개 URL(예: `https://stoa.example.com`)을 설정합니다. 에이전트 설치 명령어와 내부 링크에 사용됩니다.

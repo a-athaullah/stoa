@@ -994,6 +994,25 @@ Run Stoa behind nginx, Caddy, or another reverse proxy on a VPS with a public do
 
 **How trust works:** Client IP and HTTPS status are read from proxy headers (`CF-Connecting-IP`, `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto`) only when the request comes from a trusted proxy. Headers from untrusted IPs are ignored. Your reverse proxy **must** set these headers and not forward untrusted ones from clients.
 
+**Header configuration — important if not behind Cloudflare:** Stoa reads client IP in this order: `CF-Connecting-IP` → `X-Real-IP` → `X-Forwarded-For`. If your proxy is **not** Cloudflare (e.g., nginx or Caddy directly on a VPS), the proxy **must** strip `CF-Connecting-IP` sent by clients — otherwise an attacker can forge this header to bypass the per-IP login rate limit. The per-email limit and device cookie remain effective regardless.
+
+**nginx:**
+```nginx
+proxy_set_header CF-Connecting-IP "";
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $remote_addr;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Host $host;
+```
+
+**Caddy:**
+```caddy
+header_up -CF-Connecting-IP
+header_up X-Real-IP {remote_host}
+```
+
+> **Cloudflare in front of nginx:** If Cloudflare sits in front of your nginx, do **not** strip `CF-Connecting-IP`. Instead, restrict access to your origin server to [Cloudflare IP ranges](https://www.cloudflare.com/ips/) only.
+
 **HTTPS:** Required for public deployment. When `isHttps` is detected (either via TLS socket or a trusted `X-Forwarded-Proto: https`), session cookies are set with `Secure`, and HSTS is sent automatically.
 
 **public_url:** Set in **Settings > Server** to the public-facing URL (e.g., `https://stoa.example.com`). Used in agent install commands and internal links.

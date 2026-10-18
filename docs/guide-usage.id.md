@@ -995,6 +995,25 @@ Jalankan Stoa di balik nginx, Caddy, atau reverse proxy lain di VPS dengan domai
 
 **Cara kerja trust:** IP client dan status HTTPS dibaca dari header proxy (`CF-Connecting-IP`, `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto`) hanya jika request berasal dari proxy yang dipercaya. Reverse proxy Anda **wajib** menetapkan header-header ini dan tidak meneruskan header dari client yang tidak dipercaya.
 
+**Konfigurasi header — penting jika tidak di belakang Cloudflare:** Stoa membaca IP client dengan urutan: `CF-Connecting-IP` → `X-Real-IP` → `X-Forwarded-For`. Jika proxy Anda **bukan** Cloudflare (mis. nginx atau Caddy langsung di VPS), proxy **wajib** menghapus `CF-Connecting-IP` yang dikirim client — jika tidak, penyerang bisa memalsukan header ini untuk mengakali limit login per IP. Limit per email dan device cookie tetap berlaku.
+
+**nginx:**
+```nginx
+proxy_set_header CF-Connecting-IP "";
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $remote_addr;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Host $host;
+```
+
+**Caddy:**
+```caddy
+header_up -CF-Connecting-IP
+header_up X-Real-IP {remote_host}
+```
+
+> **Cloudflare di depan nginx:** Jika Cloudflare berada di depan nginx Anda, jangan hapus `CF-Connecting-IP`. Sebagai gantinya, batasi akses ke origin server hanya untuk [IP range Cloudflare](https://www.cloudflare.com/ips/) saja.
+
 **HTTPS:** Wajib untuk deploy publik. Saat HTTPS terdeteksi, cookie sesi disetel dengan `Secure` dan HSTS dikirim otomatis.
 
 **public_url:** Atur di **Settings > Server** ke URL publik (mis. `https://stoa.example.com`). Digunakan di perintah install agent dan link internal.
