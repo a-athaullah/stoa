@@ -199,7 +199,7 @@ BODY=$(python3 -c "import json; print(json.dumps({
   'trigger_type': 'slack',
   'trigger_event': 'app_mention',
   'target_room_id': int('$STOA_ROOM_ID'),
-  'prompt_template': 'A user mentioned the bot: {{event.text}}. Reply helpfully.',
+  'prompt_template': 'A user mentioned the bot: {{slack_message_text}}. Reply helpfully.',
   'connection_id': 1,
   'reply_mode': 'none'
 }))")
@@ -210,7 +210,14 @@ curl -s -X POST "$BASE_URL/api/automations" \
   -d "$BODY"
 ```
 
-Required fields: `name`, `trigger_event`, `target_room_id`, `prompt_template`. Optional: `trigger_type` (default `slack`), `connection_id`, `trigger_conditions` (JSON array), `reply_mode` (`none`/`thread`/`channel`), `watch_reply` (boolean).
+Required fields: `name`, `trigger_event`, `target_room_id`, `prompt_template`. Optional: `trigger_type` (default `slack`), `connection_id`, `trigger_conditions` (JSON array), `reply_mode` (`none` default; `reply_wa` for WhatsApp only), `watch_reply` (boolean).
+
+**Prompt template placeholders by trigger type:**
+- Slack: `{{slack_message_text}}`, `{{slack_user}}`, `{{slack_channel}}`, `{{slack_message_link}}`, `{{slack_thread_ts}}`, `{{slack_full_text}}`, `{{extracted_url}}`, `{{slack_bot_id}}`
+- WhatsApp: `{{wa_message_text}}`, `{{wa_sender}}`, `{{wa_sender_name}}`, `{{wa_chat_id}}`, `{{wa_chat_name}}`, `{{wa_is_group}}`, `{{wa_is_mentioned}}`, `{{extracted_url}}`
+- Email: `{{email.from}}`, `{{email.from_name}}`, `{{email.subject}}`, `{{email.body}}`, `{{email.date}}`, `{{email.has_attachments}}`
+
+**Valid `trigger_event` values:** Slack: any Slack event name (e.g., `message`, `app_mention`, `reaction_added`). WhatsApp: `message`, `group_message`, `group_mention`, `message_any`. Email: `message`.
 
 ---
 

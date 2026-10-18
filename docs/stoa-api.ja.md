@@ -161,7 +161,7 @@ BODY=$(python3 -c "import json; print(json.dumps({
   'trigger_type': 'slack',
   'trigger_event': 'app_mention',
   'target_room_id': int('$STOA_ROOM_ID'),
-  'prompt_template': 'ユーザーがボットを言及しました: {{event.text}}. 適切に返答してください。',
+  'prompt_template': 'ユーザーがボットを言及しました: {{slack_message_text}}. 適切に返答してください。',
   'connection_id': 1,
   'reply_mode': 'none'
 }))")
@@ -172,7 +172,14 @@ curl -s -X POST "$BASE_URL/api/automations" \
   -d "$BODY"
 ```
 
-必須フィールド: `name`、`trigger_event`、`target_room_id`、`prompt_template`。省略可能: `trigger_type` (デフォルト `slack`)、`connection_id`、`trigger_conditions` (JSON配列)、`reply_mode` (`none`/`thread`/`channel`)、`watch_reply` (真偽値)。
+必須フィールド: `name`、`trigger_event`、`target_room_id`、`prompt_template`。省略可能: `trigger_type` (デフォルト `slack`)、`connection_id`、`trigger_conditions` (JSON配列)、`reply_mode` (デフォルト `none`; WhatsApp専用 `reply_wa`)、`watch_reply` (真偽値)。
+
+**プロンプトテンプレートのプレースホルダー:**
+- Slack: `{{slack_message_text}}`, `{{slack_user}}`, `{{slack_channel}}`, `{{slack_message_link}}`, `{{slack_thread_ts}}`, `{{slack_full_text}}`, `{{extracted_url}}`, `{{slack_bot_id}}`
+- WhatsApp: `{{wa_message_text}}`, `{{wa_sender}}`, `{{wa_sender_name}}`, `{{wa_chat_id}}`, `{{wa_chat_name}}`, `{{wa_is_group}}`, `{{wa_is_mentioned}}`, `{{extracted_url}}`
+- Email: `{{email.from}}`, `{{email.from_name}}`, `{{email.subject}}`, `{{email.body}}`, `{{email.date}}`, `{{email.has_attachments}}`
+
+**有効な `trigger_event` の値:** Slack: Slackイベント名 (例: `message`, `app_mention`, `reaction_added`)。WhatsApp: `message`, `group_message`, `group_mention`, `message_any`。Email: `message`。
 
 ---
 

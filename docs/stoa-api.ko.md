@@ -161,7 +161,7 @@ BODY=$(python3 -c "import json; print(json.dumps({
   'trigger_type': 'slack',
   'trigger_event': 'app_mention',
   'target_room_id': int('$STOA_ROOM_ID'),
-  'prompt_template': '사용자가 봇을 언급했습니다: {{event.text}}. 도움이 되도록 답변하세요.',
+  'prompt_template': '사용자가 봇을 언급했습니다: {{slack_message_text}}. 도움이 되도록 답변하세요.',
   'connection_id': 1,
   'reply_mode': 'none'
 }))")
@@ -172,7 +172,14 @@ curl -s -X POST "$BASE_URL/api/automations" \
   -d "$BODY"
 ```
 
-필수 필드: `name`, `trigger_event`, `target_room_id`, `prompt_template`. 선택: `trigger_type` (기본값 `slack`), `connection_id`, `trigger_conditions` (JSON 배열), `reply_mode` (`none`/`thread`/`channel`), `watch_reply` (불리언).
+필수 필드: `name`, `trigger_event`, `target_room_id`, `prompt_template`. 선택: `trigger_type` (기본값 `slack`), `connection_id`, `trigger_conditions` (JSON 배열), `reply_mode` (기본값 `none`; WhatsApp 전용 `reply_wa`), `watch_reply` (불리언).
+
+**프롬프트 템플릿 플레이스홀더:**
+- Slack: `{{slack_message_text}}`, `{{slack_user}}`, `{{slack_channel}}`, `{{slack_message_link}}`, `{{slack_thread_ts}}`, `{{slack_full_text}}`, `{{extracted_url}}`, `{{slack_bot_id}}`
+- WhatsApp: `{{wa_message_text}}`, `{{wa_sender}}`, `{{wa_sender_name}}`, `{{wa_chat_id}}`, `{{wa_chat_name}}`, `{{wa_is_group}}`, `{{wa_is_mentioned}}`, `{{extracted_url}}`
+- Email: `{{email.from}}`, `{{email.from_name}}`, `{{email.subject}}`, `{{email.body}}`, `{{email.date}}`, `{{email.has_attachments}}`
+
+**유효한 `trigger_event` 값:** Slack: Slack 이벤트 이름 (예: `message`, `app_mention`, `reaction_added`). WhatsApp: `message`, `group_message`, `group_mention`, `message_any`. Email: `message`.
 
 ---
 

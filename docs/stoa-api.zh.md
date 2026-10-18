@@ -161,7 +161,7 @@ BODY=$(python3 -c "import json; print(json.dumps({
   'trigger_type': 'slack',
   'trigger_event': 'app_mention',
   'target_room_id': int('$STOA_ROOM_ID'),
-  'prompt_template': '用户提到了机器人：{{event.text}}。请给出有帮助的回复。',
+  'prompt_template': '用户提到了机器人：{{slack_message_text}}。请给出有帮助的回复。',
   'connection_id': 1,
   'reply_mode': 'none'
 }))")
@@ -172,7 +172,14 @@ curl -s -X POST "$BASE_URL/api/automations" \
   -d "$BODY"
 ```
 
-必填字段：`name`、`trigger_event`、`target_room_id`、`prompt_template`。可选：`trigger_type`（默认 `slack`）、`connection_id`、`trigger_conditions`（JSON 数组）、`reply_mode`（`none`/`thread`/`channel`）、`watch_reply`（布尔值）。
+必填字段：`name`、`trigger_event`、`target_room_id`、`prompt_template`。可选：`trigger_type`（默认 `slack`）、`connection_id`、`trigger_conditions`（JSON 数组）、`reply_mode`（默认 `none`；WhatsApp 专用 `reply_wa`）、`watch_reply`（布尔值）。
+
+**提示模板占位符（按触发类型）：**
+- Slack: `{{slack_message_text}}`, `{{slack_user}}`, `{{slack_channel}}`, `{{slack_message_link}}`, `{{slack_thread_ts}}`, `{{slack_full_text}}`, `{{extracted_url}}`, `{{slack_bot_id}}`
+- WhatsApp: `{{wa_message_text}}`, `{{wa_sender}}`, `{{wa_sender_name}}`, `{{wa_chat_id}}`, `{{wa_chat_name}}`, `{{wa_is_group}}`, `{{wa_is_mentioned}}`, `{{extracted_url}}`
+- Email: `{{email.from}}`, `{{email.from_name}}`, `{{email.subject}}`, `{{email.body}}`, `{{email.date}}`, `{{email.has_attachments}}`
+
+**有效的 `trigger_event` 值：** Slack：任意 Slack 事件名（如 `message`、`app_mention`、`reaction_added`）。WhatsApp：`message`、`group_message`、`group_mention`、`message_any`。Email：`message`。
 
 ---
 
