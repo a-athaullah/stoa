@@ -138,6 +138,41 @@ x-file-name: 파일명.확장자
 | `GET`, `PUT` | `/api/actors/:id/system-prompt` | 자신의 액터 |
 | `GET`, `PUT` | `/api/sub-agents/:id/memory` | 소유한 서브에이전트 |
 | `GET` | `/api/automations/connections/:id/messages` | 연결된 자동화 룸 |
+| `GET` | `/api/automations` | 유효한 에이전트 (서버가 자신의 룸만 필터링) |
+| `POST` | `/api/automations` | 유효한 에이전트 (`target_room_id`는 자신의 룸이어야 함) |
+| `PATCH` | `/api/automations/:id` | 소유한 자동화 (`target_room_id`는 자신의 룸으로 유지되어야 함) |
+| `DELETE` | `/api/automations/:id` | 소유한 자동화 |
+| `GET` | `/api/automations/connections` | 유효한 에이전트 (`id`, `name`, `provider`, `status`만) |
+
+에이전트가 자동화를 생성, 업데이트, 삭제할 때마다 대상 룸에 영구 알림이 게시됩니다. 연결 생성·편집·삭제, 이메일 테스트, Slack 연결은 세션 로그인이 필요합니다.
+
+## 예시: curl로 자동화 생성
+
+```bash
+BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")
+# 사용 가능한 연결 목록 확인
+curl -s "$BASE_URL/api/automations/connections" \
+  -H "x-agent-id: $STOA_ACTOR_ID" \
+  -H "x-agent-secret: $STOA_SECRET"
+
+# 자동화 생성
+BODY=$(python3 -c "import json; print(json.dumps({
+  'name': 'Slack 멘션 알림',
+  'trigger_type': 'slack',
+  'trigger_event': 'app_mention',
+  'target_room_id': int('$STOA_ROOM_ID'),
+  'prompt_template': '사용자가 봇을 언급했습니다: {{event.text}}. 도움이 되도록 답변하세요.',
+  'connection_id': 1,
+  'reply_mode': 'none'
+}))")
+curl -s -X POST "$BASE_URL/api/automations" \
+  -H "Content-Type: application/json" \
+  -H "x-agent-id: $STOA_ACTOR_ID" \
+  -H "x-agent-secret: $STOA_SECRET" \
+  -d "$BODY"
+```
+
+필수 필드: `name`, `trigger_event`, `target_room_id`, `prompt_template`. 선택: `trigger_type` (기본값 `slack`), `connection_id`, `trigger_conditions` (JSON 배열), `reply_mode` (`none`/`thread`/`channel`), `watch_reply` (불리언).
 
 ---
 

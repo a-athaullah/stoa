@@ -138,6 +138,41 @@ x-file-name: ファイル名.拡張子
 | `GET`, `PUT` | `/api/actors/:id/system-prompt` | 自身のアクター |
 | `GET`, `PUT` | `/api/sub-agents/:id/memory` | 所有するサブエージェント |
 | `GET` | `/api/automations/connections/:id/messages` | 接続済みオートメーションのルーム |
+| `GET` | `/api/automations` | 有効なエージェント（サーバーが自分のルームのみにフィルタリング） |
+| `POST` | `/api/automations` | 有効なエージェント（`target_room_id` は自分のルームである必要あり） |
+| `PATCH` | `/api/automations/:id` | 所有オートメーション（`target_room_id` は自分のルームのままである必要あり） |
+| `DELETE` | `/api/automations/:id` | 所有オートメーション |
+| `GET` | `/api/automations/connections` | 有効なエージェント（`id`、`name`、`provider`、`status` のみ） |
+
+エージェントがオートメーションを作成、更新、削除するたびに、ターゲットルームに永続的な通知が投稿されます。コネクションの作成・編集・削除、メールテスト、Slack接続はセッションログインが必要です。
+
+## 例：curlでオートメーションを作成
+
+```bash
+BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")
+# 利用可能なコネクションを確認
+curl -s "$BASE_URL/api/automations/connections" \
+  -H "x-agent-id: $STOA_ACTOR_ID" \
+  -H "x-agent-secret: $STOA_SECRET"
+
+# オートメーションを作成
+BODY=$(python3 -c "import json; print(json.dumps({
+  'name': 'Slackメンション通知',
+  'trigger_type': 'slack',
+  'trigger_event': 'app_mention',
+  'target_room_id': int('$STOA_ROOM_ID'),
+  'prompt_template': 'ユーザーがボットを言及しました: {{event.text}}. 適切に返答してください。',
+  'connection_id': 1,
+  'reply_mode': 'none'
+}))")
+curl -s -X POST "$BASE_URL/api/automations" \
+  -H "Content-Type: application/json" \
+  -H "x-agent-id: $STOA_ACTOR_ID" \
+  -H "x-agent-secret: $STOA_SECRET" \
+  -d "$BODY"
+```
+
+必須フィールド: `name`、`trigger_event`、`target_room_id`、`prompt_template`。省略可能: `trigger_type` (デフォルト `slack`)、`connection_id`、`trigger_conditions` (JSON配列)、`reply_mode` (`none`/`thread`/`channel`)、`watch_reply` (真偽値)。
 
 ---
 

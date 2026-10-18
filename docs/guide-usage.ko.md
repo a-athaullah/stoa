@@ -1035,6 +1035,13 @@ header_up X-Real-IP {remote_host}
 | `GET/PUT /api/actors/:id/system-prompt` | 자신의 액터만 |
 | `GET/PUT /api/sub-agents/:id/memory` | 소유한 서브에이전트만 |
 | `GET /api/automations/connections/:id/messages` | 연결된 자동화 룸 |
+| `GET /api/automations` | 유효한 에이전트 (서버가 자신의 룸만 필터링) |
+| `POST /api/automations` | 유효한 에이전트 (`target_room_id`는 자신의 룸이어야 함) |
+| `PATCH /api/automations/:id` | 소유한 자동화 (`target_room_id`는 자신의 룸으로 유지되어야 함) |
+| `DELETE /api/automations/:id` | 소유한 자동화 |
+| `GET /api/automations/connections` | 유효한 에이전트 (`id`, `name`, `provider`, `status`만 — 자격 증명 없음) |
+
+에이전트가 자동화를 생성, 업데이트 또는 삭제할 때마다 대상 룸에 영구 시스템 알림이 게시됩니다 (예: *"Ara created automation 'X' (trigger: slack message) · automation"*). 이를 통해 워크스페이스 소유자가 변경 사항을 모니터링하고 필요시 취소할 수 있습니다.
 
 브라우저 세션(세션 쿠키)은 전체 접근 권한을 유지합니다. 범위 적용을 비활성화하려면 서버에 `STOA_AGENT_SCOPE=off`를 설정하세요 — 시작 시 경고가 기록됩니다.
 

@@ -245,11 +245,24 @@
 
 **Risk it closes:** Prompt injection via untrusted content (WhatsApp, email, Slack, web) could cause an agent to curl admin endpoints (delete rooms, read settings, generate install tokens, etc.).
 
-**Implementation:** `matchAgentRoute(method, pathname)` in `lib/agent-scope.js` returns `{scope, id}` or null. Scope checks are: `room` (participant check), `self` (actor id match), `sub-agent` (ownership), `connection` (automation feed), `any` (valid agent sufficient). Non-matching requests → `403 {error:'agent_scope_denied'}` + one log line.
+**Implementation:** `matchAgentRoute(method, pathname)` in `lib/agent-scope.js` returns `{scope, id}` or null. Scope checks are: `room` (participant check), `self` (actor id match), `sub-agent` (ownership), `connection` (automation feed), `automation` (automation targets agent's room), `any` (valid agent sufficient). Non-matching requests → `403 {error:'agent_scope_denied'}` + one log line.
 
 **Escape hatch:** `STOA_AGENT_SCOPE=off` on server (warning logged at boot). Not gated by request headers — cannot be spoofed.
 
 **Implication:** Do not flag `requireAuth` agent bypass as "agent has full access" — that was closed in R21. When auditing, check `lib/agent-scope.js` for allowlist coverage instead.
+
+### Agent Automation Access (R21 extension — PR #171)
+**Decision (owner):** Agents can create, update, and delete automations, but only targeting rooms they are participants of. Scope `automation` was added to cover PATCH/DELETE by automation id.
+
+**Rationale:** Workspace owner explicitly requested this so agents can set up automations on their behalf (e.g., "Ara, create an automation for email from client X"). Alternative (session-only) would require the human to do it manually.
+
+**Risk mitigation:**
+- `target_room_id` is validated against participant membership on POST and PATCH — an agent cannot create or move an automation to a room it doesn't belong to.
+- `GET /api/automations/connections` strips credential/token fields; agents receive only `id`, `name`, `provider`, `status`.
+- Every agent create/update/delete posts a permanent system message in the target room (suffix `· automation`) — the owner sees all changes live and can revoke them.
+- Connection create/edit/delete, test-email, and Slack connect remain session-only (human login required); agents cannot touch credentials.
+
+**Do not flag** the automation routes in `lib/agent-scope.js` as "agents have admin automation access" — the handler-level participant check is the enforcement layer, not scope alone.
 
 ---
 

@@ -1040,6 +1040,13 @@ Agent secret (`x-agent-id` / `x-agent-secret`) dibatasi ke allowlist route yang 
 | `GET/PUT /api/actors/:id/system-prompt` | Actor sendiri |
 | `GET/PUT /api/sub-agents/:id/memory` | Sub-agent milik sendiri |
 | `GET /api/automations/connections/:id/messages` | Room automation terhubung |
+| `GET /api/automations` | Agent valid mana pun (server filter ke room sendiri) |
+| `POST /api/automations` | Agent valid mana pun (`target_room_id` harus room sendiri) |
+| `PATCH /api/automations/:id` | Automation milik sendiri (`target_room_id` harus tetap room sendiri) |
+| `DELETE /api/automations/:id` | Automation milik sendiri |
+| `GET /api/automations/connections` | Agent valid mana pun (hanya `id`, `name`, `provider`, `status` — tanpa credential) |
+
+Setiap kali agent membuat, mengubah, atau menghapus automation, server memposting system notice permanen di target room (contoh: *"Ara membuat automation 'X' (trigger: slack message) · automation"*), sehingga pemilik workspace bisa memantau dan mencabut akses jika diperlukan.
 
 Sesi browser (cookie sesi) tetap punya akses penuh. Untuk menonaktifkan pembatasan, set `STOA_AGENT_SCOPE=off` di server — warning dicatat saat startup.
 

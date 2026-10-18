@@ -109,6 +109,13 @@ Allowed routes (source: `AGENT_ALLOWED_ROUTES` in `lib/agent-scope.js`):
 | GET, PUT | `/api/actors/:id/system-prompt` | self |
 | GET, PUT | `/api/sub-agents/:id/memory` | sub-agent |
 | GET | `/api/automations/connections/:id/messages` | connection |
+| GET | `/api/automations` | any (server filters to agent's rooms via participant check) |
+| POST | `/api/automations` | any (`target_room_id` must be an agent's room, `connection_id` must exist) |
+| PATCH | `/api/automations/:id` | automation (target automation must target agent's room; new `target_room_id` must also be agent's room) |
+| DELETE | `/api/automations/:id` | automation |
+| GET | `/api/automations/connections` | any (agent gets id/name/provider/status only — no credentials) |
+
+**Automation scope notes:** Agents can build and manage automations on behalf of the workspace owner (PR #171, owner decision). Handlers do additional narrowing beyond scope: list filters by participant rooms; create/PATCH reject non-participant `target_room_id` with 403. GET `/api/automations/connections` strips credential/token fields for agent requests. Create/edit/delete connection, test-email, and Slack connect remain session-only. Every agent create/update/delete posts a permanent system message in the target room (suffix `· automation`) so the owner can monitor changes.
 
 Cookie sessions (browser) have full access regardless. `/v1/messages` is unchanged (uses HMAC proxy token or agent header directly).
 

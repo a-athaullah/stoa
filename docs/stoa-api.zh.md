@@ -138,6 +138,41 @@ x-file-name: 文件名.扩展名
 | `GET`, `PUT` | `/api/actors/:id/system-prompt` | 仅自身 Actor |
 | `GET`, `PUT` | `/api/sub-agents/:id/memory` | 仅所属子代理 |
 | `GET` | `/api/automations/connections/:id/messages` | 已连接自动化的房间 |
+| `GET` | `/api/automations` | 任意有效代理（服务器过滤至自身房间） |
+| `POST` | `/api/automations` | 任意有效代理（`target_room_id` 必须是自身房间） |
+| `PATCH` | `/api/automations/:id` | 所属自动化（`target_room_id` 必须保持为自身房间） |
+| `DELETE` | `/api/automations/:id` | 所属自动化 |
+| `GET` | `/api/automations/connections` | 任意有效代理（仅 `id`、`name`、`provider`、`status`） |
+
+每当代理创建、更新或删除自动化时，服务器会在目标房间发布永久通知。连接的创建/编辑/删除、邮件测试和 Slack 连接仍需会话登录。
+
+## 示例：通过 curl 创建自动化
+
+```bash
+BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")
+# 先查看可用连接
+curl -s "$BASE_URL/api/automations/connections" \
+  -H "x-agent-id: $STOA_ACTOR_ID" \
+  -H "x-agent-secret: $STOA_SECRET"
+
+# 创建自动化
+BODY=$(python3 -c "import json; print(json.dumps({
+  'name': 'Slack 提及通知',
+  'trigger_type': 'slack',
+  'trigger_event': 'app_mention',
+  'target_room_id': int('$STOA_ROOM_ID'),
+  'prompt_template': '用户提到了机器人：{{event.text}}。请给出有帮助的回复。',
+  'connection_id': 1,
+  'reply_mode': 'none'
+}))")
+curl -s -X POST "$BASE_URL/api/automations" \
+  -H "Content-Type: application/json" \
+  -H "x-agent-id: $STOA_ACTOR_ID" \
+  -H "x-agent-secret: $STOA_SECRET" \
+  -d "$BODY"
+```
+
+必填字段：`name`、`trigger_event`、`target_room_id`、`prompt_template`。可选：`trigger_type`（默认 `slack`）、`connection_id`、`trigger_conditions`（JSON 数组）、`reply_mode`（`none`/`thread`/`channel`）、`watch_reply`（布尔值）。
 
 ---
 

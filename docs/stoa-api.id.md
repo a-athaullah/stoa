@@ -138,6 +138,41 @@ Agent secret (`x-agent-id` / `x-agent-secret`) dibatasi ke allowlist route. Requ
 | `GET`, `PUT` | `/api/actors/:id/system-prompt` | Actor sendiri |
 | `GET`, `PUT` | `/api/sub-agents/:id/memory` | Sub-agent milik sendiri |
 | `GET` | `/api/automations/connections/:id/messages` | Room automation terhubung |
+| `GET` | `/api/automations` | Agent valid mana pun (server filter ke room sendiri) |
+| `POST` | `/api/automations` | Agent valid mana pun (`target_room_id` harus room sendiri) |
+| `PATCH` | `/api/automations/:id` | Automation milik sendiri (`target_room_id` harus tetap room sendiri) |
+| `DELETE` | `/api/automations/:id` | Automation milik sendiri |
+| `GET` | `/api/automations/connections` | Agent valid mana pun (hanya `id`, `name`, `provider`, `status`) |
+
+Setiap create, update, atau delete automation oleh agent memposting notice permanen di target room. Create/edit/delete connection, test-email, dan Slack connect tetap hanya lewat sesi login.
+
+## Contoh: Buat Automation via curl
+
+```bash
+BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")
+# Lihat connection yang tersedia terlebih dahulu
+curl -s "$BASE_URL/api/automations/connections" \
+  -H "x-agent-id: $STOA_ACTOR_ID" \
+  -H "x-agent-secret: $STOA_SECRET"
+
+# Buat automation
+BODY=$(python3 -c "import json; print(json.dumps({
+  'name': 'Notifikasi mention Slack',
+  'trigger_type': 'slack',
+  'trigger_event': 'app_mention',
+  'target_room_id': int('$STOA_ROOM_ID'),
+  'prompt_template': 'Pengguna menyebut bot: {{event.text}}. Balas dengan membantu.',
+  'connection_id': 1,
+  'reply_mode': 'none'
+}))")
+curl -s -X POST "$BASE_URL/api/automations" \
+  -H "Content-Type: application/json" \
+  -H "x-agent-id: $STOA_ACTOR_ID" \
+  -H "x-agent-secret: $STOA_SECRET" \
+  -d "$BODY"
+```
+
+Field wajib: `name`, `trigger_event`, `target_room_id`, `prompt_template`. Opsional: `trigger_type` (default `slack`), `connection_id`, `trigger_conditions` (JSON array), `reply_mode` (`none`/`thread`/`channel`), `watch_reply` (boolean).
 
 ---
 

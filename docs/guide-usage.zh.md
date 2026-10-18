@@ -1035,6 +1035,13 @@ header_up X-Real-IP {remote_host}
 | `GET/PUT /api/actors/:id/system-prompt` | 仅自身 Actor |
 | `GET/PUT /api/sub-agents/:id/memory` | 仅所属子代理 |
 | `GET /api/automations/connections/:id/messages` | 已连接自动化的房间 |
+| `GET /api/automations` | 任意有效代理（服务器过滤至自身房间） |
+| `POST /api/automations` | 任意有效代理（`target_room_id` 必须是自身房间） |
+| `PATCH /api/automations/:id` | 所属自动化（`target_room_id` 必须保持为自身房间） |
+| `DELETE /api/automations/:id` | 所属自动化 |
+| `GET /api/automations/connections` | 任意有效代理（仅 `id`、`name`、`provider`、`status` — 不含凭据） |
+
+每当代理创建、更新或删除自动化时，服务器会在目标房间发布永久系统通知（例如：*"Ara created automation 'X' (trigger: slack message) · automation"*），以便工作区所有者监控变更并在需要时撤销。
 
 浏览器会话（会话 Cookie）保留完整访问权限。要禁用范围限制，在服务器上设置 `STOA_AGENT_SCOPE=off` — 启动时会记录警告。
 

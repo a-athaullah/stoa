@@ -1039,6 +1039,13 @@ Agent secrets (`x-agent-id` / `x-agent-secret`) are limited to an allowlist of r
 | `GET/PUT /api/actors/:id/system-prompt` | Own actor only |
 | `GET/PUT /api/sub-agents/:id/memory` | Owned sub-agent only |
 | `GET /api/automations/connections/:id/messages` | Connected automation room |
+| `GET /api/automations` | Any valid agent (server filters to own rooms) |
+| `POST /api/automations` | Any valid agent (`target_room_id` must be own room) |
+| `PATCH /api/automations/:id` | Owned automation (`target_room_id` must remain own room) |
+| `DELETE /api/automations/:id` | Owned automation |
+| `GET /api/automations/connections` | Any valid agent (`id`, `name`, `provider`, `status` only — no credentials) |
+
+When an agent creates, updates, or deletes an automation, a permanent system notice is posted in the target room (e.g., *"Ara created automation 'X' (trigger: slack message) · automation"*), so the workspace owner can monitor changes and revoke them if needed.
 
 Browser sessions (session cookie) retain full access. To disable scope enforcement, set `STOA_AGENT_SCOPE=off` on the server — a warning is logged at startup.
 

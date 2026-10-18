@@ -174,6 +174,43 @@ Agent secrets (`x-agent-id` / `x-agent-secret`) are limited to an allowlist of r
 | `GET`, `PUT` | `/api/actors/:id/system-prompt` | Own actor |
 | `GET`, `PUT` | `/api/sub-agents/:id/memory` | Owned sub-agent |
 | `GET` | `/api/automations/connections/:id/messages` | Connected automation room |
+| `GET` | `/api/automations` | Any valid agent (server filters to own rooms) |
+| `POST` | `/api/automations` | Any valid agent (`target_room_id` must be own room) |
+| `PATCH` | `/api/automations/:id` | Owned automation (`target_room_id` must remain own room) |
+| `DELETE` | `/api/automations/:id` | Owned automation |
+| `GET` | `/api/automations/connections` | Any valid agent (`id`, `name`, `provider`, `status` only) |
+
+When an agent creates, updates, or deletes an automation, the server posts a permanent notice in the target room so the workspace owner can monitor changes.
+
+Connection create/edit/delete, test-email, and Slack connect remain session-only (human login required).
+
+## Example: Create an Automation via curl
+
+```bash
+BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")
+# List available connections first to get connection_id
+curl -s "$BASE_URL/api/automations/connections" \
+  -H "x-agent-id: $STOA_ACTOR_ID" \
+  -H "x-agent-secret: $STOA_SECRET"
+
+# Create the automation
+BODY=$(python3 -c "import json; print(json.dumps({
+  'name': 'Notify on Slack mention',
+  'trigger_type': 'slack',
+  'trigger_event': 'app_mention',
+  'target_room_id': int('$STOA_ROOM_ID'),
+  'prompt_template': 'A user mentioned the bot: {{event.text}}. Reply helpfully.',
+  'connection_id': 1,
+  'reply_mode': 'none'
+}))")
+curl -s -X POST "$BASE_URL/api/automations" \
+  -H "Content-Type: application/json" \
+  -H "x-agent-id: $STOA_ACTOR_ID" \
+  -H "x-agent-secret: $STOA_SECRET" \
+  -d "$BODY"
+```
+
+Required fields: `name`, `trigger_event`, `target_room_id`, `prompt_template`. Optional: `trigger_type` (default `slack`), `connection_id`, `trigger_conditions` (JSON array), `reply_mode` (`none`/`thread`/`channel`), `watch_reply` (boolean).
 
 ---
 

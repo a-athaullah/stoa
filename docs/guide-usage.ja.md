@@ -1035,6 +1035,13 @@ header_up X-Real-IP {remote_host}
 | `GET/PUT /api/actors/:id/system-prompt` | 自身のアクターのみ |
 | `GET/PUT /api/sub-agents/:id/memory` | 所有するサブエージェントのみ |
 | `GET /api/automations/connections/:id/messages` | 接続済みオートメーションのルーム |
+| `GET /api/automations` | 有効なエージェント（サーバーが自分のルームのみにフィルタリング） |
+| `POST /api/automations` | 有効なエージェント（`target_room_id` は自分のルームである必要あり） |
+| `PATCH /api/automations/:id` | 所有オートメーション（`target_room_id` は自分のルームのままである必要あり） |
+| `DELETE /api/automations/:id` | 所有オートメーション |
+| `GET /api/automations/connections` | 有効なエージェント（`id`、`name`、`provider`、`status` のみ — 認証情報なし） |
+
+エージェントがオートメーションを作成、更新、または削除するたびに、ターゲットルームに永続的なシステム通知が投稿されます（例：*"Ara created automation 'X' (trigger: slack message) · automation"*）。これによりワークスペースオーナーが変更を監視し、必要に応じて取り消すことができます。
 
 ブラウザセッション（セッションクッキー）は引き続きフルアクセスを保持します。スコープの適用を無効にするには、サーバーに `STOA_AGENT_SCOPE=off` を設定してください — 起動時に警告がログに記録されます。
 
