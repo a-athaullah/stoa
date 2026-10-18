@@ -4250,6 +4250,17 @@ STOA_URL="${stoaUrl}"
 REG_TOKEN="${token}"
 AGENT_DIR="\${HOME}/stoa-agent"
 
+# Optional Cloudflare Access service token (Stoa behind CF Access, agent without Tailscale)
+CF_HDR=()
+if [ -n "\${STOA_CF_ACCESS_CLIENT_ID:-}" ] && [ -n "\${STOA_CF_ACCESS_CLIENT_SECRET:-}" ]; then
+  CF_HDR=(-H "CF-Access-Client-Id: \${STOA_CF_ACCESS_CLIENT_ID}" -H "CF-Access-Client-Secret: \${STOA_CF_ACCESS_CLIENT_SECRET}")
+  echo "Cloudflare Access service token: enabled"
+elif [ -n "\${STOA_CF_ACCESS_CLIENT_ID:-}\${STOA_CF_ACCESS_CLIENT_SECRET:-}" ]; then
+  echo "Warning: set both STOA_CF_ACCESS_CLIENT_ID and STOA_CF_ACCESS_CLIENT_SECRET — ignoring Cloudflare Access token" >&2
+  STOA_CF_ACCESS_CLIENT_ID=""
+  STOA_CF_ACCESS_CLIENT_SECRET=""
+fi
+
 echo "=== Stoa Agent Setup ==="
 echo "Server : \${BASE_URL}"
 echo ""
@@ -4260,7 +4271,7 @@ mkdir -p "\${HOME}/stoa-workspace"
 echo "[1/5] Downloading client files..."
 cd "\${AGENT_DIR}"
 for FILE in ${clientFiles}; do
-  curl -fsSL "\${BASE_URL}/api/client/file/\${FILE}" -o "\${FILE}"
+  curl -fsSL "\${CF_HDR[@]}" "\${BASE_URL}/api/client/file/\${FILE}" -o "\${FILE}"
   echo "  ok \${FILE}"
 done
 
@@ -4270,7 +4281,7 @@ npm install ws > /dev/null 2>&1
 echo "  ok ws"
 
 echo "[3/5] Registering agent..."
-RESPONSE=\$(curl -s -X POST "\${BASE_URL}/api/agent/register" \\
+RESPONSE=\$(curl -s "\${CF_HDR[@]}" -X POST "\${BASE_URL}/api/agent/register" \\
   -H "Content-Type: application/json" \\
   -d "{\\"token\\":\\"\${REG_TOKEN}\\"}")
 ACTOR_ID=\$(echo "\${RESPONSE}" | grep -o '"actor_id":[0-9]*' | grep -o '[0-9]*')
@@ -4304,6 +4315,8 @@ module.exports = {
       STOA_ACTOR_ID: '\${ACTOR_ID}',
       STOA_SECRET: '\${STOA_SECRET}',
       STOA_WORK_DIR: process.env.HOME + '/stoa-workspace',
+      STOA_CF_ACCESS_CLIENT_ID: '\${STOA_CF_ACCESS_CLIENT_ID:-}',
+      STOA_CF_ACCESS_CLIENT_SECRET: '\${STOA_CF_ACCESS_CLIENT_SECRET:-}',
     },
     restart_delay: 3000,
     max_restarts: 50,
@@ -4311,6 +4324,7 @@ module.exports = {
   }]
 };
 EOFCFG
+chmod 600 ecosystem.config.js
 
 pm2 stop "\${AGENT_NAME}" 2>/dev/null || true
 pm2 delete "\${AGENT_NAME}" 2>/dev/null || true
@@ -4351,6 +4365,19 @@ $RegToken = "${token}"
 $AgentDir = "$env:USERPROFILE\\stoa-agent"
 $WorkDir  = "$env:USERPROFILE\\stoa-workspace"
 
+# Optional Cloudflare Access service token (Stoa behind CF Access, agent without Tailscale)
+$CfHeaders = @{}
+$CfId = "$env:STOA_CF_ACCESS_CLIENT_ID"
+$CfSecret = "$env:STOA_CF_ACCESS_CLIENT_SECRET"
+if ($CfId -and $CfSecret) {
+  $CfHeaders["CF-Access-Client-Id"] = $CfId
+  $CfHeaders["CF-Access-Client-Secret"] = $CfSecret
+  Write-Host "Cloudflare Access service token: enabled"
+} elseif ($CfId -or $CfSecret) {
+  Write-Warning "Set both STOA_CF_ACCESS_CLIENT_ID and STOA_CF_ACCESS_CLIENT_SECRET - ignoring Cloudflare Access token"
+  $CfId = ""; $CfSecret = ""
+}
+
 Write-Host "=== Stoa Agent Setup ==="
 Write-Host "Server : $BaseUrl"
 Write-Host ""
@@ -4360,7 +4387,7 @@ New-Item -ItemType Directory -Force $WorkDir  | Out-Null
 
 Write-Host "[1/5] Downloading client files..."
 foreach ($file in @(${ps1Files})) {
-  Invoke-WebRequest "$BaseUrl/api/client/file/$file" -OutFile "$AgentDir\\$file" -UseBasicParsing
+  Invoke-WebRequest "$BaseUrl/api/client/file/$file" -Headers $CfHeaders -OutFile "$AgentDir\\$file" -UseBasicParsing
   Write-Host "  ok $file"
 }
 
@@ -4372,7 +4399,7 @@ Write-Host "  ok ws"
 
 Write-Host "[3/5] Registering agent..."
 $body = '{"token":"' + $RegToken + '"}'
-$resp = Invoke-RestMethod -Uri "$BaseUrl/api/agent/register" -Method Post -ContentType "application/json" -Body $body
+$resp = Invoke-RestMethod -Uri "$BaseUrl/api/agent/register" -Method Post -Headers $CfHeaders -ContentType "application/json" -Body $body
 $ActorId   = $resp.actor_id
 $AgentName = $resp.name
 $Secret    = $resp.secret
@@ -4399,6 +4426,8 @@ module.exports = {
       STOA_ACTOR_ID: String($ActorId),
       STOA_SECRET: '$Secret',
       STOA_WORK_DIR: require('os').homedir() + '/stoa-workspace',
+      STOA_CF_ACCESS_CLIENT_ID: '$CfId',
+      STOA_CF_ACCESS_CLIENT_SECRET: '$CfSecret',
     },
     restart_delay: 3000,
     max_restarts: 50,
@@ -4432,7 +4461,9 @@ Write-Host "Logs   : pm2 logs $AgentName"
     }
     const host = req.headers.host || `localhost:${PORT}`;
     const baseUrl = getPublicUrl(host);
-    const script = `@echo off\r\npowershell -ExecutionPolicy Bypass -Command "irm '${baseUrl}/install.ps1?token=${token}' | iex"\r\n`;
+    // Env (incl. optional STOA_CF_ACCESS_CLIENT_ID/SECRET) is inherited by powershell and reused by install.ps1.
+    const cfFetch = "$h=@{}; if ($env:STOA_CF_ACCESS_CLIENT_ID -and $env:STOA_CF_ACCESS_CLIENT_SECRET) { $h['CF-Access-Client-Id']=$env:STOA_CF_ACCESS_CLIENT_ID; $h['CF-Access-Client-Secret']=$env:STOA_CF_ACCESS_CLIENT_SECRET };";
+    const script = `@echo off\r\npowershell -ExecutionPolicy Bypass -Command "${cfFetch} irm -Headers $h '${baseUrl}/install.ps1?token=${token}' | iex"\r\n`;
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
     return res.end(script);
   }

@@ -2089,6 +2089,82 @@ async function runAsyncUnitTests() {
     });
   }
 
+  // lib/cf-access — Cloudflare Access service token helpers + loopback forward proxy
+  {
+    const cf = require('./lib/cf-access');
+    const creds = { clientId: 'cid.access', clientSecret: 'csecret' };
+    await uta('cf-access — env: both set → creds; only one → null + warning; none → null silently', async () => {
+      const warns = [];
+      assert.deepStrictEqual(cf.readCfAccessEnv({ STOA_CF_ACCESS_CLIENT_ID: ' ID-VAL-1 ', STOA_CF_ACCESS_CLIENT_SECRET: 'SECRET-VAL-2' }, w => warns.push(w)), { clientId: 'ID-VAL-1', clientSecret: 'SECRET-VAL-2' });
+      assert.strictEqual(cf.readCfAccessEnv({ STOA_CF_ACCESS_CLIENT_ID: 'ID-VAL-1' }, w => warns.push(w)), null);
+      assert.strictEqual(cf.readCfAccessEnv({ STOA_CF_ACCESS_CLIENT_SECRET: 'SECRET-VAL-2' }, w => warns.push(w)), null);
+      assert.strictEqual(warns.length, 2);
+      assert.ok(!warns.join(' ').includes('VAL-'), 'warning must not echo token values');
+      assert.strictEqual(cf.readCfAccessEnv({}, w => warns.push(w)), null);
+      assert.strictEqual(warns.length, 2);
+    });
+    await uta('cf-access — headers only for the Stoa origin (ws↔http mapped), never other hosts/ports', async () => {
+      const h = cf.cfHeadersFor('https://stoa.example.com/uploads/a.png?sig=1', 'wss://stoa.example.com', creds);
+      assert.strictEqual(h['CF-Access-Client-Id'], 'cid.access');
+      assert.strictEqual(h['CF-Access-Client-Secret'], 'csecret');
+      assert.ok(cf.cfHeadersFor('ws://stoa.example.com/', 'ws://stoa.example.com', creds)['CF-Access-Client-Id']);
+      assert.deepStrictEqual(cf.cfHeadersFor('https://ollama.com/v1/messages', 'wss://stoa.example.com', creds), {});
+      assert.deepStrictEqual(cf.cfHeadersFor('https://stoa.example.com.evil.io/', 'wss://stoa.example.com', creds), {});
+      assert.deepStrictEqual(cf.cfHeadersFor('https://stoa.example.com:8443/', 'wss://stoa.example.com', creds), {});
+      assert.deepStrictEqual(cf.cfHeadersFor('http://stoa.example.com/', 'wss://stoa.example.com', creds), {}, 'scheme downgrade');
+      assert.deepStrictEqual(cf.cfHeadersFor('https://stoa.example.com/', 'wss://stoa.example.com', null), {});
+      assert.deepStrictEqual(cf.cfHeadersFor('not a url', 'wss://stoa.example.com', creds), {});
+    });
+    await uta('cf-access proxy — forwards under prefix with injected headers, body + query intact; rejects everything else', async () => {
+      const net = require('net');
+      const hits = [];
+      const upstream = http.createServer((rq, rs) => {
+        let body = '';
+        rq.on('data', c => body += c);
+        rq.on('end', () => { hits.push({ url: rq.url, method: rq.method, headers: rq.headers, body }); rs.writeHead(201, { 'X-Up': 'yes' }); rs.end('up:' + body); });
+      });
+      await new Promise(r => upstream.listen(0, '127.0.0.1', r));
+      const upUrl = `ws://127.0.0.1:${upstream.address().port}`;
+      const proxy = await cf.startCfForwardProxy({ getUpstream: () => upUrl, creds, maxBodyBytes: 64 });
+      const call = (method, pathStr, body, headers = {}) => new Promise((resolve, reject) => {
+        const rq = http.request({ host: '127.0.0.1', port: proxy.port, path: pathStr, method, headers }, rs => {
+          let d = ''; rs.on('data', c => d += c); rs.on('end', () => resolve({ status: rs.statusCode, headers: rs.headers, body: d }));
+        });
+        rq.on('error', reject);
+        if (body) rq.write(body);
+        rq.end();
+      });
+      try {
+        assert.ok(proxy.wsUrl.startsWith(`ws://127.0.0.1:${proxy.port}/`) && proxy.prefix.length === 33);
+        const ok = await call('POST', `${proxy.prefix}/api/rooms/1/message?x=1`, '{"a":1}', { 'Content-Type': 'application/json', 'CF-Access-Client-Secret': 'spoofed' });
+        assert.strictEqual(ok.status, 201);
+        assert.strictEqual(ok.body, 'up:{"a":1}');
+        assert.strictEqual(ok.headers['x-up'], 'yes');
+        assert.strictEqual(hits.length, 1);
+        assert.strictEqual(hits[0].url, '/api/rooms/1/message?x=1');
+        assert.strictEqual(hits[0].headers['cf-access-client-id'], 'cid.access');
+        assert.strictEqual(hits[0].headers['cf-access-client-secret'], 'csecret', 'client-supplied CF header must be replaced');
+        assert.strictEqual(hits[0].headers.host, `127.0.0.1:${upstream.address().port}`);
+        assert.strictEqual((await call('GET', '/api/rooms')).status, 404, 'no prefix');
+        assert.strictEqual((await call('GET', `${proxy.prefix}x/api`)).status, 404, 'prefix must be a full segment');
+        assert.strictEqual((await call('GET', `${proxy.prefix}//evil.example/x`)).status, 400, 'protocol-relative escape');
+        assert.strictEqual((await call('POST', `${proxy.prefix}/api/upload/raw`, 'x'.repeat(65), { 'Content-Length': '65' })).status, 413);
+        // Absolute-form (open proxy attempt) and CONNECT, over a raw socket.
+        const raw = (line) => new Promise((resolve) => {
+          const sock = net.connect(proxy.port, '127.0.0.1', () => sock.write(line));
+          let d = ''; sock.on('data', c => d += c); sock.on('end', () => resolve(d)); sock.on('error', () => resolve(d));
+          setTimeout(() => { sock.destroy(); resolve(d); }, 1000);
+        });
+        assert.match(await raw('GET http://evil.example/ HTTP/1.1\r\nHost: evil.example\r\nConnection: close\r\n\r\n'), /^HTTP\/1\.1 404/);
+        assert.match(await raw('CONNECT evil.example:443 HTTP/1.1\r\nHost: evil.example:443\r\n\r\n'), /^HTTP\/1\.1 405/);
+        assert.strictEqual(hits.length, 1, 'rejected requests must never reach upstream');
+      } finally {
+        await proxy.close();
+        await new Promise(r => upstream.close(r));
+      }
+    });
+  }
+
   return { p, f };
 }
 
@@ -5164,6 +5240,53 @@ async function run() {
       if (agB?.ws) agB.ws.close();
     });
   }
+
+  // ── Cloudflare Access service token: installer plumbing + proxy against the real server
+  console.log('\n[Cloudflare Access]');
+  await test('install.sh — CF token optional: headers on every curl, persisted to PM2 env, valid bash', async () => {
+    const token = await mintInstallToken('__test-cf-sh');
+    const r = await req('GET', `/install.sh?token=${token}`);
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.raw.includes('CF_HDR=(-H "CF-Access-Client-Id: ${STOA_CF_ACCESS_CLIENT_ID}"'), 'header array');
+    assert.strictEqual((r.raw.match(/curl [^\n]*"\$\{CF_HDR\[@\]\}"/g) || []).length, 2, 'download + register curls carry CF headers');
+    assert.ok(r.raw.includes("STOA_CF_ACCESS_CLIENT_SECRET: '${STOA_CF_ACCESS_CLIENT_SECRET:-}'"), 'persisted into ecosystem env');
+    assert.ok(r.raw.includes('chmod 600 ecosystem.config.js'));
+    assert.ok(!/echo[^\n]*\$\{STOA_CF_ACCESS_CLIENT_SECRET/.test(r.raw), 'secret never echoed');
+    const f = path.join(require('os').tmpdir(), `stoa-install-${process.pid}.sh`);
+    require('fs').writeFileSync(f, r.raw);
+    try {
+      const chk = require('child_process').spawnSync('bash', ['-n', f], { encoding: 'utf8' });
+      assert.strictEqual(chk.status, 0, chk.stderr);
+    } finally { require('fs').unlinkSync(f); }
+  });
+
+  await test('install.ps1 / install.cmd — CF headers on downloads + register, env persisted', async () => {
+    const token = await mintInstallToken('__test-cf-ps');
+    const ps = await req('GET', `/install.ps1?token=${token}`);
+    assert.strictEqual(ps.status, 200);
+    assert.ok(ps.raw.includes('-Headers $CfHeaders -OutFile'), 'client file download');
+    assert.ok(ps.raw.includes('-Method Post -Headers $CfHeaders'), 'register');
+    assert.ok(ps.raw.includes("STOA_CF_ACCESS_CLIENT_ID: '$CfId'"));
+    const cmd = await req('GET', `/install.cmd?token=${token}`);
+    assert.strictEqual(cmd.status, 200);
+    assert.ok(cmd.raw.includes(`irm -Headers $h '`) && cmd.raw.includes(`/install.ps1?token=${token}'`));
+  });
+
+  await test('cf-access proxy → real Stoa server: passthrough status/body, no auth bypass', async () => {
+    const cf = require('./lib/cf-access');
+    const proxy = await cf.startCfForwardProxy({ getUpstream: () => `ws://${HOST}:${PORT}`, creds: { clientId: 'i', clientSecret: 's' } });
+    const get = (p) => new Promise((resolve, reject) => {
+      http.get({ host: '127.0.0.1', port: proxy.port, path: proxy.prefix + p }, rs => {
+        let d = ''; rs.on('data', c => d += c); rs.on('end', () => resolve({ status: rs.statusCode, body: d }));
+      }).on('error', reject);
+    });
+    try {
+      const docs = await get('/api/docs/stoa-api.md');
+      assert.strictEqual(docs.status, 200);
+      assert.ok(docs.body.includes('Stoa Platform API'));
+      assert.strictEqual((await get('/api/rooms')).status, 401, 'proxy adds CF headers only, never Stoa credentials');
+    } finally { await proxy.close(); }
+  });
 
   // Invites
   console.log('\n[Invites]');
