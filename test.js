@@ -2008,6 +2008,9 @@ async function runAsyncUnitTests() {
 
 const HOST = 'localhost';
 const PORT = parseInt(process.argv[2]) || parseInt(process.env.PORT) || 3000;
+// run-tests.js gives the temp DB copy a throwaway password — the live one never appears here.
+const TEST_EMAIL = process.env.STOA_TEST_EMAIL || 'stoa@stoa.com';
+const TEST_PASSWORD = process.env.STOA_TEST_PASSWORD || '';
 let sessionCookie = null;
 
 async function req(method, path, body = null, extraHeaders = {}) {
@@ -2147,7 +2150,7 @@ async function run() {
   // Auth
   console.log('\n[Auth]');
   await test('POST /api/auth/login — valid credentials → 200 + cookie', async () => {
-    const r = await req('POST', '/api/auth/login', { email: 'stoa@stoa.com', password: 'stoa2026!' });
+    const r = await req('POST', '/api/auth/login', { email: TEST_EMAIL, password: TEST_PASSWORD });
     assert.strictEqual(r.status, 200, `expected 200, got ${r.status}`);
     assert.ok(r.body.ok, 'body.ok missing');
     sessionCookie = r.headers['set-cookie']?.[0]?.split(';')[0];
@@ -2155,7 +2158,7 @@ async function run() {
   });
 
   await test('POST /api/auth/login — wrong password → 401', async () => {
-    const r = await req('POST', '/api/auth/login', { email: 'stoa@stoa.com', password: 'wrongpassword' });
+    const r = await req('POST', '/api/auth/login', { email: TEST_EMAIL, password: 'wrongpassword' });
     assert.strictEqual(r.status, 401);
   });
 
@@ -4917,7 +4920,7 @@ async function run() {
   });
 
   await test('PATCH /api/auth/password — too short new password → 400', async () => {
-    const r = await req('PATCH', '/api/auth/password', { current_password: 'stoa2026!', new_password: 'abc' });
+    const r = await req('PATCH', '/api/auth/password', { current_password: TEST_PASSWORD, new_password: 'abc' });
     assert.strictEqual(r.status, 400);
   });
 
@@ -4926,7 +4929,7 @@ async function run() {
     assert.strictEqual(r.status, 200);
     assert.ok(r.body.ok);
     // Re-authenticate so subsequent tests keep working
-    const loginR = await req('POST', '/api/auth/login', { email: 'stoa@stoa.com', password: 'stoa2026!' });
+    const loginR = await req('POST', '/api/auth/login', { email: TEST_EMAIL, password: TEST_PASSWORD });
     sessionCookie = loginR.headers['set-cookie']?.[0]?.split(';')[0];
     assert.ok(sessionCookie, 'failed to re-authenticate after logout');
   });

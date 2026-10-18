@@ -6,6 +6,7 @@
  *   1. Copies db/stoa.db -> a throwaway temp file (no WAL/SHM carried over)
  *   2. Neutralizes external side-effects in the COPY
  *      (automation_connections -> 'disconnected' so boot won't reconnect Slack)
+ *      and sets a throwaway login password in the COPY (env STOA_TEST_EMAIL/STOA_TEST_PASSWORD)
  *   3. Boots a throwaway server on an isolated free port (never the live PORT),
  *      building its agent bundle into a temp dir (STOA_AGENT_BUNDLE_DIR) — the live
  *      server serves dist/stoa.js to agents, so a rebuild there leaks branch code to prod
@@ -26,6 +27,7 @@ const os   = require('os');
 const net  = require('net');
 const http = require('http');
 const path = require('path');
+const crypto = require('crypto');
 const Database = require('better-sqlite3');
 
 const projectRoot = path.resolve(__dirname, '../..');
@@ -70,11 +72,22 @@ function waitUp(port, tries = 50) {
 
   tmpArtifacts.forEach((f) => { try { fs.unlinkSync(f); } catch {} });
   fs.copyFileSync(liveDb, tmpDb);
+  const testPassword = crypto.randomBytes(18).toString('base64url');
+  let testEmail = null;
 
   try {
     const c = new Database(tmpDb);
     c.pragma('journal_mode = WAL');
     try { c.prepare("UPDATE automation_connections SET status='disconnected'").run(); } catch {}
+    // The live password can change any time and must never live in test code: give the COPY a
+    // throwaway password (same scrypt format as server.js hashPassword) and hand it to test.js via env.
+    const user = c.prepare('SELECT id, email FROM auth_users ORDER BY id LIMIT 1').get();
+    if (user) {
+      const salt = crypto.randomBytes(16).toString('hex');
+      const hash = crypto.scryptSync(testPassword, salt, 64).toString('hex');
+      c.prepare('UPDATE auth_users SET password_hash=? WHERE id=?').run(`${salt}:${hash}`, user.id);
+      testEmail = user.email;
+    }
     c.close();
   } catch (e) {
     console.log(JSON.stringify({ success: false, error: `failed to prep temp DB: ${e.message}` }, null, 2));
@@ -83,7 +96,8 @@ function waitUp(port, tries = 50) {
   }
 
   const PORT = parseInt(process.env.TEST_PORT, 10) || (await getFreePort());
-  const env = { ...process.env, PORT: String(PORT), DB_PATH: tmpDb, TEST_HOST: '127.0.0.1', STOA_TEST: '1', STOA_AGENT_BUNDLE_DIR: tmpBundleDir };
+  const env = { ...process.env, PORT: String(PORT), DB_PATH: tmpDb, TEST_HOST: '127.0.0.1', STOA_TEST: '1', STOA_AGENT_BUNDLE_DIR: tmpBundleDir,
+    STOA_TEST_EMAIL: testEmail || '', STOA_TEST_PASSWORD: testPassword };
 
   const server = spawn(process.execPath, [serverFile], { cwd: projectRoot, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let serverLog = '';
