@@ -15,3 +15,6 @@ connector-media/
 .stoa-attachments/
 .credentials-key
 dist/
+
+# Per-install first-login credentials written by server.js (next to the DB)
+initial-credentials.txt
