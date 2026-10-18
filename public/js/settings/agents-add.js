@@ -3,7 +3,7 @@ const sFinishedSlips = new Set();
 
 function sOpenAddPanel() {
   sAddPanel = { open: true, name: '', os: sDetectOS(), lang: 'en', phase: 'waiting',
-    baselineIds: new Set(settingsActors.map(a => String(a.id))), newActor: null, timer: null };
+    baselineIds: new Set(settingsActors.map(a => String(a.id))), newActor: null, timer: null, installSlip: null };
   sFinishedSlips.clear();
   // Hide empty state and detail, show add panel
   const empty = document.getElementById('s-agent-empty-state');
@@ -37,20 +37,6 @@ function sCloseAddPanel() {
 let sPublicUrl = '';   // cached from /api/settings
 let sPort = 3000;      // cached from /api/settings
 
-function sGetCmd() {
-  const base = sPublicUrl || `http://localhost:${sPort}`;
-  const params = [];
-  if (sAddPanel.name) params.push(`name=${encodeURIComponent(sAddPanel.name)}`);
-  if (sAddPanel.lang && sAddPanel.lang !== 'en') params.push(`lang=${sAddPanel.lang}`);
-  const q = params.length ? '?' + params.join('&') : '';
-  const url = `${base}/${({unix:'install.sh',ps:'install.ps1',cmd:'install.cmd'})[sAddPanel.os]}${q}`;
-  return {
-    unix: `curl -fsSL "${url}" | bash`,
-    ps:   `irm "${url}" | iex`,
-    cmd:  `curl -fsSL "${url}" -o i.cmd && i.cmd && del i.cmd`,
-  }[sAddPanel.os];
-}
-
 function sRenderAddPanel() {
   const panel = document.getElementById('s-add-panel');
   panel.innerHTML = '';
@@ -63,7 +49,7 @@ function sRenderAddPanel() {
   title.textContent = 'invite a new AI agent';
   const sub = document.createElement('span');
   sub.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)';
-  sub.textContent = 'run the install command on the target machine';
+  sub.textContent = 'generate a one-time install command, then run it on the target machine';
   const spacer = document.createElement('span'); spacer.style.flex = '1';
   const closeBtn = document.createElement('button');
   closeBtn.className = 's-icon-btn'; closeBtn.title = 'Close'; closeBtn.innerHTML = svgX(15);
@@ -93,7 +79,7 @@ function sRenderAddPanel() {
   nameLbl.textContent = 'name';
   const nameInp = document.createElement('input');
   nameInp.className = 's-name-input'; nameInp.type = 'text'; nameInp.name = 'agent-name'; nameInp.placeholder = 'e.g. Aria'; nameInp.value = sAddPanel.name;
-  nameInp.addEventListener('input', () => { sAddPanel.name = nameInp.value; sUpdateCmd(); });
+  nameInp.addEventListener('input', () => { sAddPanel.name = nameInp.value; sAddPanel.installSlip.invalidate(); });
   const nameHint = document.createElement('span');
   nameHint.className = 's-field-hint'; nameHint.textContent = 'leave blank → auto-assigned (stoa-XXXXXX)';
   nameGrp.appendChild(nameLbl); nameGrp.appendChild(nameInp); nameGrp.appendChild(nameHint);
@@ -113,7 +99,7 @@ function sRenderAddPanel() {
     p.addEventListener('click', () => {
       sAddPanel.os = id;
       document.querySelectorAll('#s-os-pills .s-os-pill').forEach(x => x.classList.toggle('active', x.dataset.os === id));
-      sUpdateCmd();
+      sAddPanel.installSlip.setOs(id);
     });
     osPills.appendChild(p);
   });
@@ -133,43 +119,20 @@ function sRenderAddPanel() {
     if (sAddPanel.lang === id) opt.selected = true;
     langSelect.appendChild(opt);
   });
-  langSelect.addEventListener('change', () => { sAddPanel.lang = langSelect.value; sUpdateCmd(); });
+  langSelect.addEventListener('change', () => { sAddPanel.lang = langSelect.value; sAddPanel.installSlip.invalidate(); });
   langGrp.appendChild(langLbl); langGrp.appendChild(langSelect);
 
   fieldRow.appendChild(langGrp); fieldRow.appendChild(nameGrp); fieldRow.appendChild(osGrp);
   panel.appendChild(fieldRow);
 
-  // Command slip
-  const slipWrap = document.createElement('div');
-  const slipCaption = document.createElement('div');
-  slipCaption.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-faint);margin-bottom:8px;letter-spacing:.02em';
-  slipCaption.textContent = 'run this on the target machine';
-  const slip = document.createElement('div');
-  slip.className = 's-cmd-slip'; slip.id = 's-cmd-slip';
-  const dollar = document.createElement('span'); dollar.className = 's-cmd-dollar'; dollar.textContent = '$';
-  const cmdText = document.createElement('span'); cmdText.id = 's-cmd-text'; cmdText.textContent = sGetCmd();
-  const copyBtn = document.createElement('button');
-  copyBtn.className = 's-cmd-copy'; copyBtn.title = 'Copy'; copyBtn.innerHTML = svgCopy();
-  copyBtn.addEventListener('click', async () => {
-    const text = document.getElementById('s-cmd-text')?.textContent || '';
-    if (await copyToClipboard(text)) {
-      copyBtn.classList.add('copied'); copyBtn.innerHTML = svgCheck(14);
-      setTimeout(() => { copyBtn.classList.remove('copied'); copyBtn.innerHTML = svgCopy(); }, 1000);
-    }
-  });
-  slip.appendChild(dollar); slip.appendChild(cmdText); slip.appendChild(copyBtn);
-  slipWrap.appendChild(slipCaption); slipWrap.appendChild(slip);
-  panel.appendChild(slipWrap);
+  sAddPanel.installSlip = sMakeInstallSlip('run this on the target machine',
+    () => ({ name: sAddPanel.name.trim(), lang: sAddPanel.lang }), sAddPanel.os);
+  panel.appendChild(sAddPanel.installSlip.el);
 
   // Status area
   panel.appendChild(sMakeWaitingPill());
 
   setTimeout(() => nameInp.focus(), 50);
-}
-
-function sUpdateCmd() {
-  const el = document.getElementById('s-cmd-text');
-  if (el) el.textContent = sGetCmd();
 }
 
 function sMakeWaitingPill() {

@@ -433,14 +433,97 @@ function sStartEdit(actorId) {
   requestAnimationFrame(() => acc.classList.add('open'));
 }
 
-function sEditGetCmd(backend, name, lang, os) {
+const S_INSTALL_SCRIPTS = { unix: 'install.sh', ps: 'install.ps1', cmd: 'install.cmd' };
+
+function sInstallCmd(token, os) {
   const base = sPublicUrl || `http://localhost:${sPort}`;
-  const params = [`name=${encodeURIComponent(name || '')}`];
-  if (lang && lang !== 'en') params.push(`lang=${lang}`);
-  const q = '?' + params.join('&');
-  const script = { unix: 'install.sh', ps: 'install.ps1', cmd: 'install.cmd' }[os];
-  const url = `${base}/${script}${q}`;
+  const url = `${base}/${S_INSTALL_SCRIPTS[os]}?token=${encodeURIComponent(token)}`;
   return { unix: `curl -fsSL "${url}" | bash`, ps: `irm "${url}" | iex`, cmd: `curl -fsSL "${url}" -o i.cmd && i.cmd && del i.cmd` }[os];
+}
+
+async function sMintInstallToken(name, lang) {
+  const r = await fetch('/api/agent/install-token', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: name || undefined, lang: lang || 'en' }),
+  });
+  if (r.status === 401) { showLogin(); throw new Error('Session expired. Sign in again.'); }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok || typeof data.token !== 'string') throw new Error(data.error || `Failed to generate install command (${r.status})`);
+  return data;
+}
+
+// Install command slip backed by a single-use, 10-minute token. The token carries name + lang,
+// so changing either invalidates the shown command; switching OS reuses the same token.
+function sMakeInstallSlip(captionText, getParams, os) {
+  const st = { token: null, expiresAt: 0, os, seq: 0, timer: null, stale: '' };
+  const wrap = document.createElement('div');
+  const caption = document.createElement('div');
+  caption.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-faint);margin-bottom:8px;letter-spacing:.02em';
+  caption.textContent = captionText;
+  const slip = document.createElement('div'); slip.className = 's-cmd-slip';
+  const dollar = document.createElement('span'); dollar.className = 's-cmd-dollar'; dollar.textContent = '$';
+  const cmdText = document.createElement('span');
+  const copyBtn = document.createElement('button');
+  copyBtn.type = 'button'; copyBtn.className = 's-cmd-copy'; copyBtn.title = 'Copy'; copyBtn.setAttribute('aria-label', 'Copy install command');
+  copyBtn.innerHTML = svgCopy();
+  copyBtn.addEventListener('click', async () => {
+    if (!st.token) return;
+    if (await copyToClipboard(cmdText.textContent)) {
+      copyBtn.classList.add('copied'); copyBtn.innerHTML = svgCheck(14);
+      setTimeout(() => { copyBtn.classList.remove('copied'); copyBtn.innerHTML = svgCopy(); }, 1000);
+    }
+  });
+  slip.append(dollar, cmdText, copyBtn);
+
+  const foot = document.createElement('div'); foot.className = 's-install-foot';
+  const note = document.createElement('span'); note.className = 's-field-hint';
+  const genBtn = document.createElement('button'); genBtn.type = 'button'; genBtn.className = 's-install-gen';
+  const err = document.createElement('span'); err.className = 's-install-err'; err.setAttribute('role', 'alert');
+  foot.append(note, genBtn);
+  wrap.append(caption, slip, foot, err);
+
+  function render() {
+    const live = st.token && Date.now() < st.expiresAt;
+    if (st.token && !live) { st.token = null; st.stale = 'command expired — generate a new one'; }
+    slip.classList.toggle('s-cmd-slip-empty', !live);
+    copyBtn.style.display = live ? '' : 'none';
+    cmdText.textContent = live ? sInstallCmd(st.token, st.os) : 'generate a command to install the agent';
+    note.textContent = live ? 'valid for 10 minutes · single use' : st.stale;
+    genBtn.textContent = live ? 'regenerate' : 'generate command';
+  }
+
+  async function generate() {
+    const seq = ++st.seq;
+    genBtn.disabled = true; err.textContent = '';
+    try {
+      const { name, lang } = getParams();
+      const data = await sMintInstallToken(name, lang);
+      if (seq !== st.seq) return;
+      const ttl = Number(data.expires_in) > 0 ? Number(data.expires_in) : 600;
+      st.token = data.token; st.expiresAt = Date.now() + ttl * 1000; st.stale = '';
+      clearTimeout(st.timer);
+      st.timer = setTimeout(render, ttl * 1000);
+      render();
+    } catch (e) {
+      if (seq === st.seq) err.textContent = e.message || 'Failed to generate install command';
+    } finally {
+      if (seq === st.seq) genBtn.disabled = false;
+    }
+  }
+  genBtn.addEventListener('click', generate);
+  render();
+
+  return {
+    el: wrap,
+    setOs(next) { st.os = next; render(); },
+    invalidate() {
+      if (!st.token) return;
+      st.seq++; st.token = null; clearTimeout(st.timer);
+      genBtn.disabled = false;
+      st.stale = 'name or language changed — generate a new command';
+      render();
+    },
+  };
 }
 
 // ── Sub-agent design primitives (port of subagents.jsx) ──────────────────────
@@ -774,9 +857,8 @@ function saMakeField(labelText, controlEl, hintText) {
 
 function sMakeEditAccordion(actor) {
   const cfg = (() => { try { return JSON.parse(actor.adapter_config || '{}'); } catch { return {}; } })();
-  const backend = actor.adapter || 'claude';
   let editOs = sDetectOS();
-  let updateCmd = () => {};
+  let invalidateCmd = () => {};
 
   const acc = document.createElement('div');
   acc.className = 's-add-panel';
@@ -851,14 +933,14 @@ function sMakeEditAccordion(actor) {
     if (code === (cfg.lang || 'en')) o.selected = true;
     langSel.appendChild(o);
   });
-  langSel.addEventListener('change', () => { updateCmd(); });
+  langSel.addEventListener('change', () => { invalidateCmd(); });
   langGrp.append(mkFieldLbl('language'), langSel);
 
   const nameGrp = document.createElement('div');
   nameGrp.className = 's-field-group';
   const nameInp = document.createElement('input');
   nameInp.className = 's-name-input'; nameInp.type = 'text'; nameInp.name = 'agent-name'; nameInp.value = actor.name;
-  nameInp.addEventListener('input', () => { updateCmd(); });
+  nameInp.addEventListener('input', () => { invalidateCmd(); });
   nameInp.addEventListener('keydown', e => { if (e.key === 'Escape') sCloseEditAccordion(); });
   const nameHint = document.createElement('span');
   nameHint.className = 's-field-hint'; nameHint.textContent = 'name shown in all rooms';
@@ -879,40 +961,17 @@ function sMakeEditAccordion(actor) {
     p.addEventListener('click', () => {
       editOs = id;
       document.querySelectorAll(`#s-eacc-pills-${actor.id} .s-os-pill`).forEach(x => x.classList.toggle('active', x.dataset.os === id));
-      updateCmd();
+      installSlip.setOs(id);
     });
     osPills.appendChild(p);
   });
   platGrp.append(mkFieldLbl('platform'), osPills);
   acc.appendChild(platGrp);
 
-  // Command slip
-  const slipWrap = document.createElement('div');
-  const slipCaption = document.createElement('div');
-  slipCaption.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-faint);margin-bottom:8px;letter-spacing:.02em';
-  slipCaption.textContent = 'reinstall on the target machine';
-  const slip = document.createElement('div');
-  slip.className = 's-cmd-slip';
-  const dollar = document.createElement('span'); dollar.className = 's-cmd-dollar'; dollar.textContent = '$';
-  const cmdText = document.createElement('span'); cmdText.id = `s-eacc-cmd-${actor.id}`;
-  const copyBtn = document.createElement('button');
-  copyBtn.className = 's-cmd-copy'; copyBtn.title = 'Copy'; copyBtn.innerHTML = svgCopy();
-  copyBtn.addEventListener('click', async () => {
-    const text = document.getElementById(`s-eacc-cmd-${actor.id}`)?.textContent || '';
-    if (await copyToClipboard(text)) {
-      copyBtn.classList.add('copied'); copyBtn.innerHTML = svgCheck(14);
-      setTimeout(() => { copyBtn.classList.remove('copied'); copyBtn.innerHTML = svgCopy(); }, 1000);
-    }
-  });
-  slip.append(dollar, cmdText, copyBtn);
-  slipWrap.append(slipCaption, slip);
-  acc.appendChild(slipWrap);
-
-  updateCmd = () => {
-    const el = document.getElementById(`s-eacc-cmd-${actor.id}`);
-    if (el) el.textContent = sEditGetCmd(backend, nameInp.value || actor.name, langSel.value, editOs);
-  };
-  updateCmd();
+  const installSlip = sMakeInstallSlip('reinstall on the target machine',
+    () => ({ name: nameInp.value.trim() || actor.name, lang: langSel.value }), editOs);
+  acc.appendChild(installSlip.el);
+  invalidateCmd = () => installSlip.invalidate();
 
   // ── Sub-agents section (card — ported from subagents.jsx) ──
   saInjectTokens();
@@ -1694,7 +1753,7 @@ function renderAgentDetailHeader(container, actor) {
 function buildAgentSettingsCard(actor) {
   const cfg = (() => { try { return JSON.parse(actor.adapter_config || '{}'); } catch { return {}; } })();
   let editOs = sDetectOS();
-  let updateCmd = () => {};
+  let invalidateCmd = () => {};
 
   const card = document.createElement('div');
   card.className = 's-agents-card';
@@ -1805,13 +1864,13 @@ function buildAgentSettingsCard(actor) {
     if (code === (cfg.lang || 'en')) o.selected = true;
     langSel.appendChild(o);
   });
-  langSel.addEventListener('change', () => updateCmd());
+  langSel.addEventListener('change', () => invalidateCmd());
   langGrp.append(mkFieldLbl('language'), langSel);
 
   const nameGrp = document.createElement('div'); nameGrp.className = 's-field-group';
   const nameInp = document.createElement('input');
   nameInp.className = 's-name-input'; nameInp.type = 'text'; nameInp.name = 'agent-name'; nameInp.value = actor.name;
-  nameInp.addEventListener('input', () => updateCmd());
+  nameInp.addEventListener('input', () => invalidateCmd());
   const nameHint = document.createElement('span'); nameHint.className = 's-field-hint'; nameHint.textContent = 'name shown in all rooms';
   nameGrp.append(mkFieldLbl('name'), nameInp, nameHint);
 
@@ -1891,38 +1950,17 @@ function buildAgentSettingsCard(actor) {
     p.addEventListener('click', () => {
       editOs = id;
       document.querySelectorAll(`#s-detail-pills-${actor.id} .s-os-pill`).forEach(x => x.classList.toggle('active', x.dataset.os === id));
-      updateCmd();
+      installSlip.setOs(id);
     });
     osPills.appendChild(p);
   });
   platGrp.append(mkFieldLbl('platform'), osPills);
   body.appendChild(platGrp);
 
-  const slipWrap = document.createElement('div');
-  const slipCaption = document.createElement('div');
-  slipCaption.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-faint);margin-bottom:8px;letter-spacing:.02em';
-  slipCaption.textContent = 'reinstall on the target machine';
-  const slip = document.createElement('div'); slip.className = 's-cmd-slip';
-  const dollar = document.createElement('span'); dollar.className = 's-cmd-dollar'; dollar.textContent = '$';
-  const cmdText = document.createElement('span'); cmdText.id = `s-detail-cmd-${actor.id}`;
-  const copyBtn = document.createElement('button');
-  copyBtn.className = 's-cmd-copy'; copyBtn.title = 'Copy'; copyBtn.innerHTML = svgCopy();
-  copyBtn.addEventListener('click', async () => {
-    const text = document.getElementById(`s-detail-cmd-${actor.id}`)?.textContent || '';
-    if (await copyToClipboard(text)) {
-      copyBtn.classList.add('copied'); copyBtn.innerHTML = svgCheck(14);
-      setTimeout(() => { copyBtn.classList.remove('copied'); copyBtn.innerHTML = svgCopy(); }, 1000);
-    }
-  });
-  slip.append(dollar, cmdText, copyBtn);
-  slipWrap.append(slipCaption, slip);
-  body.appendChild(slipWrap);
-
-  updateCmd = () => {
-    const el = document.getElementById(`s-detail-cmd-${actor.id}`);
-    if (el) el.textContent = sEditGetCmd(actor.adapter || 'claude', nameInp.value || actor.name, langSel.value, editOs);
-  };
-  updateCmd();
+  const installSlip = sMakeInstallSlip('reinstall on the target machine',
+    () => ({ name: nameInp.value.trim() || actor.name, lang: langSel.value }), editOs);
+  body.appendChild(installSlip.el);
+  invalidateCmd = () => installSlip.invalidate();
 
   const actionsRow = document.createElement('div');
   actionsRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;padding-top:4px';
