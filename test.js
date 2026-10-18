@@ -1577,6 +1577,38 @@ function runUnitTests() {
     assert.ok(stoa.STALE_TRIGGER_MS >= MIN_STALE, `STALE_TRIGGER_MS (${stoa.STALE_TRIGGER_MS}) must be >= ${MIN_STALE}`);
   });
 
+  // lib/agent-scope — route allowlist matcher
+  {
+    const { matchAgentRoute, agentScopeEnforced } = require('./lib/agent-scope');
+    ut('agent-scope — allowlisted routes match with scope + numeric id', () => {
+      assert.deepStrictEqual(matchAgentRoute('POST', '/api/rooms/12/message'), { scope: 'room', id: 12 });
+      assert.deepStrictEqual(matchAgentRoute('PUT', '/api/actors/4/memory/MEMORY.md'), { scope: 'self', id: 4 });
+      assert.deepStrictEqual(matchAgentRoute('PUT', '/api/sub-agents/9/memory'), { scope: 'sub-agent', id: 9 });
+      assert.deepStrictEqual(matchAgentRoute('GET', '/api/automations/connections/3/messages'), { scope: 'connection', id: 3 });
+      assert.deepStrictEqual(matchAgentRoute('POST', '/api/upload/raw'), { scope: 'any', id: null });
+      assert.deepStrictEqual(matchAgentRoute('GET', '/api/docs/stoa-api.ja.md'), { scope: 'any', id: null });
+    });
+    ut('agent-scope — wrong method, suffix, or admin route → null', () => {
+      assert.strictEqual(matchAgentRoute('DELETE', '/api/rooms/12/message'), null);
+      assert.strictEqual(matchAgentRoute('POST', '/api/rooms/12/message/x'), null);
+      assert.strictEqual(matchAgentRoute('DELETE', '/api/rooms/12'), null);
+      assert.strictEqual(matchAgentRoute('PUT', '/api/actors/4/memory/OTHER.md'), null);
+      assert.strictEqual(matchAgentRoute('PATCH', '/api/settings'), null);
+      assert.strictEqual(matchAgentRoute('POST', '/api/agent/install-token'), null);
+      assert.strictEqual(matchAgentRoute('GET', '/api/automations'), null);
+      assert.strictEqual(matchAgentRoute('GET', '/api/docs/../settings'), null);
+      assert.strictEqual(matchAgentRoute(undefined, '/api/upload/raw'), null);
+    });
+    ut('agent-scope — STOA_AGENT_SCOPE: only "off" disables enforcement', () => {
+      assert.strictEqual(agentScopeEnforced(undefined), true);
+      assert.strictEqual(agentScopeEnforced(''), true);
+      assert.strictEqual(agentScopeEnforced('on'), true);
+      assert.strictEqual(agentScopeEnforced('0'), true);
+      assert.strictEqual(agentScopeEnforced('off'), false);
+      assert.strictEqual(agentScopeEnforced(' OFF '), false);
+    });
+  }
+
   return { p, f };
 }
 
@@ -4995,6 +5027,141 @@ async function run() {
     await test('Security — teardown', async () => {
       if (secAgent?.ws) secAgent.ws.close();
       for (const f of createdUploads) { try { fs.unlinkSync(f); } catch {} }
+    });
+  }
+
+  // ── Agent secret scoping: agent headers (no session) reach only allowlisted, owned resources.
+  console.log('\n[Agent Scope]');
+  {
+    const scDb = require('./db');
+    let agA = null, agB = null, roomA = null, otherRoom = null;
+    // Pure agent request: no session cookie, no device cookie.
+    const asAgent = async (ag, method, p, body = null) => {
+      const s = sessionCookie, d = deviceCookie;
+      sessionCookie = null; deviceCookie = null;
+      try { return await req(method, p, body, { 'x-agent-id': String(ag.actorId), 'x-agent-secret': ag.secret }); }
+      finally { sessionCookie = s; deviceCookie = d; }
+    };
+    const denied = (r, what) => {
+      assert.strictEqual(r.status, 403, `${what}: expected 403, got ${r.status} ${r.raw?.slice(0, 120)}`);
+      assert.strictEqual(r.body.error, 'agent_scope_denied', `${what}: ${r.raw?.slice(0, 120)}`);
+    };
+
+    await test('Agent scope — setup: two agents, room for A, room without A', async () => {
+      agA = await createOnlineTestAgent('__test-scope-a', '/tmp/stoa-test-scope-a');
+      agB = await createOnlineTestAgent('__test-scope-b', '/tmp/stoa-test-scope-b');
+      assert.ok(agA?.workdirId && agB?.workdirId, 'agent setup failed');
+      const ra = await req('POST', '/api/rooms', { title: '__scope-room-a__', workdir_id: agA.workdirId, participant_ids: [agA.actorId] });
+      const rb = await req('POST', '/api/rooms', { title: '__scope-room-b__', workdir_id: agB.workdirId, participant_ids: [agB.actorId] });
+      assert.strictEqual(ra.status, 200); assert.strictEqual(rb.status, 200);
+      roomA = ra.body.id; otherRoom = rb.body.id;
+      testRoomIds.push(roomA, otherRoom);
+    });
+
+    await test('Agent scope — admin endpoints → 403 agent_scope_denied, and nothing changes', async () => {
+      denied(await asAgent(agA, 'DELETE', `/api/rooms/${roomA}`), 'DELETE room');
+      denied(await asAgent(agA, 'PATCH', `/api/rooms/${roomA}`, { title: 'pwned' }), 'PATCH room');
+      denied(await asAgent(agA, 'PATCH', '/api/settings', { public_url: 'http://evil.example' }), 'PATCH settings');
+      denied(await asAgent(agA, 'GET', '/api/settings'), 'GET settings');
+      denied(await asAgent(agA, 'POST', '/api/agent/install-token', {}), 'install-token');
+      denied(await asAgent(agA, 'GET', '/api/automations'), 'GET automations');
+      denied(await asAgent(agA, 'GET', '/api/automations/connections'), 'GET connections');
+      denied(await asAgent(agA, 'GET', '/api/rooms'), 'list rooms');
+      denied(await asAgent(agA, 'POST', '/api/rooms', { title: 'x' }), 'create room');
+      denied(await asAgent(agA, 'DELETE', `/api/actors/${agB.actorId}`), 'DELETE actor');
+      denied(await asAgent(agA, 'POST', `/api/actors/${agA.actorId}/sub-agents`, { label: 'sneaky', tier: 'quick' }), 'create sub-agent');
+      denied(await asAgent(agA, 'PATCH', '/api/auth/password', { current_password: 'x', new_password: 'y'.repeat(12) }), 'auth');
+      // Verify via the human session that the denied writes had no effect.
+      const rooms = (await req('GET', '/api/rooms')).body;
+      const ra = rooms.find(r => r.id === roomA);
+      assert.ok(ra, 'room A must still exist');
+      assert.notStrictEqual(ra.title, 'pwned');
+      assert.ok((await req('GET', '/api/actors')).body.some(a => a.id === agB.actorId), 'actor B must still exist');
+      assert.notStrictEqual((await req('GET', '/api/settings')).body.public_url, 'http://evil.example');
+    });
+
+    await test('Agent scope — proactive message: own room 200, room without the agent 403', async () => {
+      const ok = await asAgent(agA, 'POST', `/api/rooms/${roomA}/message`, { content: 'scope ok' });
+      assert.strictEqual(ok.status, 200, ok.raw);
+      const hist = await req('GET', `/api/rooms/${roomA}/messages?limit=5`);
+      assert.ok(JSON.stringify(hist.body).includes('scope ok'), 'message must be stored');
+      denied(await asAgent(agA, 'POST', `/api/rooms/${otherRoom}/message`, { content: 'intrude' }), 'message other room');
+    });
+
+    await test('Agent scope — room read/memory: participant 200, non-participant 403', async () => {
+      assert.strictEqual((await asAgent(agA, 'GET', `/api/rooms/${roomA}/messages`)).status, 200);
+      assert.strictEqual((await asAgent(agA, 'GET', `/api/rooms/${roomA}/threads`)).status, 200);
+      assert.strictEqual((await asAgent(agA, 'PUT', `/api/rooms/${roomA}/memory`, { content: 'scope-mem' })).status, 200);
+      assert.strictEqual((await req('GET', `/api/rooms/${roomA}/memory`)).body.content, 'scope-mem');
+      denied(await asAgent(agA, 'GET', `/api/rooms/${otherRoom}/messages`), 'read other room');
+      denied(await asAgent(agA, 'PUT', `/api/rooms/${otherRoom}/memory`, { content: 'x' }), 'other room memory');
+      denied(await asAgent(agA, 'GET', `/api/rooms/${otherRoom}/system-prompt`), 'other room system prompt');
+      denied(await asAgent(agA, 'GET', `/api/rooms/${roomA}/export`), 'export not allowlisted');
+    });
+
+    await test('Agent scope — actor memory: self 200, other actor 403', async () => {
+      const self = await asAgent(agA, 'PUT', `/api/actors/${agA.actorId}/memory/MEMORY.md`, { content: 'scope-self' });
+      assert.strictEqual(self.status, 200, self.raw);
+      const files = (await req('GET', `/api/actors/${agA.actorId}/memory`)).body;
+      assert.ok(JSON.stringify(files).includes('scope-self'));
+      denied(await asAgent(agA, 'PUT', `/api/actors/${agB.actorId}/memory/MEMORY.md`, { content: 'x' }), 'other actor memory');
+      denied(await asAgent(agA, 'GET', `/api/actors/${agB.actorId}/memory`), 'read other actor memory');
+      denied(await asAgent(agA, 'PUT', `/api/actors/${agB.actorId}/system-prompt`, { system_prompt: 'x' }), 'other actor prompt');
+    });
+
+    await test('Agent scope — sub-agent memory: own sub-agent 200, other actor\'s 403', async () => {
+      const mine = await req('POST', `/api/actors/${agA.actorId}/sub-agents`, { label: 'scopemine', tier: 'quick' });
+      const theirs = await req('POST', `/api/actors/${agB.actorId}/sub-agents`, { label: 'scopetheirs', tier: 'quick' });
+      assert.strictEqual(mine.status, 201); assert.strictEqual(theirs.status, 201);
+      assert.strictEqual((await asAgent(agA, 'PUT', `/api/sub-agents/${mine.body.id}/memory`, { content: 'sa-mem' })).status, 200);
+      assert.strictEqual((await asAgent(agA, 'GET', `/api/sub-agents/${mine.body.id}/memory`)).body.content, 'sa-mem');
+      denied(await asAgent(agA, 'PUT', `/api/sub-agents/${theirs.body.id}/memory`, { content: 'x' }), 'other sub-agent memory');
+      denied(await asAgent(agA, 'PATCH', `/api/sub-agents/${mine.body.id}`, { tier: 'deep' }), 'edit own sub-agent definition');
+    });
+
+    await test('Agent scope — upload + API docs (any) → 200', async () => {
+      const up = await rawReq('POST', '/api/upload/raw', 'scope-file', 'text/plain', { 'x-file-name': 'scope.txt', 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret, Cookie: '' });
+      assert.strictEqual(up.status, 200, up.raw);
+      const got = await asAgent(agA, 'GET', up.body.url);
+      assert.strictEqual(got.raw, 'scope-file');
+      try { require('fs').unlinkSync(path.join(__dirname, 'uploads', up.body.url.slice('/uploads/'.length))); } catch {}
+      assert.strictEqual((await asAgent(agA, 'GET', '/api/docs/stoa-api.id.md')).status, 200);
+    });
+
+    await test('Agent scope — WA history: connector feeding the agent\'s room 200, other connector 403', async () => {
+      const mk = () => scDb.prepare("INSERT INTO automation_connections (name, provider, token_type, status) VALUES ('__scope-wa__', 'whatsapp', 'qr', 'disconnected')").run().lastInsertRowid;
+      const fed = mk(), foreign = mk();
+      const auto = scDb.prepare("INSERT INTO automations (name, trigger_type, trigger_event, target_room_id, prompt_template, enabled, connection_id) VALUES ('__scope-auto__', 'whatsapp', 'message', ?, 'x', 0, ?)").run(roomA, fed).lastInsertRowid;
+      try {
+        const ok = await asAgent(agA, 'GET', `/api/automations/connections/${fed}/messages?chatId=c1`);
+        assert.strictEqual(ok.status, 200, ok.raw);
+        assert.ok(Array.isArray(ok.body));
+        denied(await asAgent(agA, 'GET', `/api/automations/connections/${foreign}/messages?chatId=c1`), 'foreign connector');
+        denied(await asAgent(agA, 'DELETE', `/api/automations/connections/${fed}`), 'delete connector');
+      } finally {
+        scDb.prepare('DELETE FROM automations WHERE id=?').run(auto);
+        scDb.prepare('DELETE FROM automation_connections WHERE id IN (?, ?)').run(fed, foreign);
+      }
+    });
+
+    await test('Agent scope — human session keeps admin access, even with agent headers attached', async () => {
+      assert.strictEqual((await req('GET', '/api/settings')).status, 200);
+      const both = await req('GET', '/api/automations', null, { 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret });
+      assert.strictEqual(both.status, 200);
+      // Session still enforces CSRF Origin even when agent headers ride along.
+      const csrf = await req('POST', '/api/agent/install-token', {}, { 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret, Origin: 'https://evil.example' });
+      assert.strictEqual(csrf.status, 403);
+      assert.strictEqual(csrf.body.error, 'origin_not_allowed');
+    });
+
+    await test('Agent scope — wrong secret is still 401 (not scope-checked)', async () => {
+      const r = await asAgent({ actorId: agA.actorId, secret: 'wrong' }, 'GET', `/api/rooms/${roomA}/memory`);
+      assert.strictEqual(r.status, 401);
+    });
+
+    await test('Agent scope — teardown', async () => {
+      if (agA?.ws) agA.ws.close();
+      if (agB?.ws) agB.ws.close();
     });
   }
 

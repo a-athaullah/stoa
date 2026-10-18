@@ -1366,6 +1366,25 @@ function verifyProxyToken(bearer) {
   return safeEqualHex(sig, proxyTokenSig(platId, actorId, actor.secret)) ? platId : null;
 }
 
+// Least-privilege agent secrets — see lib/agent-scope.js for the allowlist and its evidence.
+const { matchAgentRoute, agentScopeEnforced } = require('./lib/agent-scope');
+const AGENT_SCOPE_ENFORCED = agentScopeEnforced(process.env.STOA_AGENT_SCOPE);
+if (!AGENT_SCOPE_ENFORCED) console.warn('[agent-scope] WARNING: STOA_AGENT_SCOPE=off — agent secrets have full API access');
+function agentScopeAllowed(agentId, route) {
+  switch (route.scope) {
+    case 'any': return true;
+    case 'self': return route.id === agentId;
+    case 'room':
+      return !!db.prepare('SELECT 1 FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(route.id, agentId);
+    case 'sub-agent':
+      return !!db.prepare('SELECT 1 FROM sub_agents WHERE id=? AND parent_actor_id=?').get(route.id, agentId);
+    case 'connection':
+      return !!db.prepare(`SELECT 1 FROM automations a JOIN room_participants rp ON rp.room_id=a.target_room_id
+        WHERE a.connection_id=? AND rp.actor_id=? LIMIT 1`).get(route.id, agentId);
+    default: return false;
+  }
+}
+
 function agentHeaderAuthOk(req) {
   const agentId = req.headers['x-agent-id'];
   const agentSecret = req.headers['x-agent-secret'];
@@ -1505,8 +1524,7 @@ function requireAuth(req, res, url) {
   // the HMAC proxy token (or agent headers) before reading the body.
   if (url.pathname === '/v1/messages') return true;
 
-  if (agentHeaderAuthOk(req)) return true;
-
+  // Human session first: a valid cookie keeps full access (and the Origin check) even if agent headers are present.
   const cookies = parseCookies(req.headers.cookie);
   const session = validateAuthSession(cookies.stoa_session);
   if (session) {
@@ -1517,6 +1535,17 @@ function requireAuth(req, res, url) {
     }
     req._authUser = session;
     return true;
+  }
+
+  if (agentHeaderAuthOk(req)) {
+    if (!AGENT_SCOPE_ENFORCED) return true;
+    const agentId = Number(req.headers['x-agent-id']);
+    const route = matchAgentRoute(req.method, url.pathname);
+    if (route && agentScopeAllowed(agentId, route)) return true;
+    console.warn(`[agent-scope] denied actor=${agentId} ${req.method} ${url.pathname.slice(0, 200)}`);
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'agent_scope_denied' }));
+    return false;
   }
 
   // Not authenticated
@@ -8319,7 +8348,7 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, senderName, t
 
       if ((auto.reply_mode || 'none') === 'reply_wa') {
         const baseUrl = getPublicUrl(`localhost:${PORT}`);
-        prompt = `${prompt}\n\n---\n[WhatsApp Context]\nSender: ${senderName || sender} (${sender})\nChat: ${chatId}\nType: ${isGroup ? 'group' : 'direct_message'}\nConnection ID: ${connId}\n\nTo reply to this sender via WhatsApp, write:\n[wa:reply]Your message here[/wa:reply]\n\nTo read recent chat history:\ncurl ${baseUrl}/api/automations/connections/${connId}/messages?chatId=${encodeURIComponent(chatId)}&limit=20\n---`;
+        prompt = `${prompt}\n\n---\n[WhatsApp Context]\nSender: ${senderName || sender} (${sender})\nChat: ${chatId}\nType: ${isGroup ? 'group' : 'direct_message'}\nConnection ID: ${connId}\n\nTo reply to this sender via WhatsApp, write:\n[wa:reply]Your message here[/wa:reply]\n\nTo read recent chat history:\ncurl -s \"${baseUrl}/api/automations/connections/${connId}/messages?chatId=${encodeURIComponent(chatId)}&limit=20\" -H \"x-agent-id: $STOA_ACTOR_ID\" -H \"x-agent-secret: $STOA_SECRET\"\n---`;
       }
 
       const _roomId = auto.target_room_id;
