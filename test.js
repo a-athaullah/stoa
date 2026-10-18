@@ -1585,6 +1585,8 @@ function runUnitTests() {
       assert.deepStrictEqual(matchAgentRoute('PUT', '/api/actors/4/memory/MEMORY.md'), { scope: 'self', id: 4 });
       assert.deepStrictEqual(matchAgentRoute('PUT', '/api/sub-agents/9/memory'), { scope: 'sub-agent', id: 9 });
       assert.deepStrictEqual(matchAgentRoute('GET', '/api/automations/connections/3/messages'), { scope: 'connection', id: 3 });
+      assert.deepStrictEqual(matchAgentRoute('PATCH', '/api/automations/7'), { scope: 'automation', id: 7 });
+      assert.deepStrictEqual(matchAgentRoute('GET', '/api/automations'), { scope: 'any', id: null });
       assert.deepStrictEqual(matchAgentRoute('POST', '/api/upload/raw'), { scope: 'any', id: null });
       assert.deepStrictEqual(matchAgentRoute('GET', '/api/docs/stoa-api.ja.md'), { scope: 'any', id: null });
     });
@@ -1595,7 +1597,10 @@ function runUnitTests() {
       assert.strictEqual(matchAgentRoute('PUT', '/api/actors/4/memory/OTHER.md'), null);
       assert.strictEqual(matchAgentRoute('PATCH', '/api/settings'), null);
       assert.strictEqual(matchAgentRoute('POST', '/api/agent/install-token'), null);
-      assert.strictEqual(matchAgentRoute('GET', '/api/automations'), null);
+      assert.strictEqual(matchAgentRoute('POST', '/api/automations/connections'), null);
+      assert.strictEqual(matchAgentRoute('POST', '/api/automations/connections/test-email'), null);
+      assert.strictEqual(matchAgentRoute('DELETE', '/api/automations/connections/3'), null);
+      assert.strictEqual(matchAgentRoute('PATCH', '/api/automations/7/x'), null);
       assert.strictEqual(matchAgentRoute('GET', '/api/docs/../settings'), null);
       assert.strictEqual(matchAgentRoute(undefined, '/api/upload/raw'), null);
     });
@@ -5140,8 +5145,8 @@ async function run() {
       denied(await asAgent(agA, 'PATCH', '/api/settings', { public_url: 'http://evil.example' }), 'PATCH settings');
       denied(await asAgent(agA, 'GET', '/api/settings'), 'GET settings');
       denied(await asAgent(agA, 'POST', '/api/agent/install-token', {}), 'install-token');
-      denied(await asAgent(agA, 'GET', '/api/automations'), 'GET automations');
-      denied(await asAgent(agA, 'GET', '/api/automations/connections'), 'GET connections');
+      denied(await asAgent(agA, 'POST', '/api/automations/connections', { name: 'x', provider: 'slack' }), 'create connection');
+      denied(await asAgent(agA, 'POST', '/api/automations/connections/test-email', {}), 'test-email');
       denied(await asAgent(agA, 'GET', '/api/rooms'), 'list rooms');
       denied(await asAgent(agA, 'POST', '/api/rooms', { title: 'x' }), 'create room');
       denied(await asAgent(agA, 'DELETE', `/api/actors/${agB.actorId}`), 'DELETE actor');
@@ -5217,6 +5222,77 @@ async function run() {
       } finally {
         scDb.prepare('DELETE FROM automations WHERE id=?').run(auto);
         scDb.prepare('DELETE FROM automation_connections WHERE id IN (?, ?)').run(fed, foreign);
+      }
+    });
+
+    await test('Agent automations — create/edit/delete in own room 200, each leaves a persistent notice', async () => {
+      const notices = async () => {
+        const hist = await req('GET', `/api/rooms/${roomA}/messages?limit=100`);
+        const rows = Array.isArray(hist.body) ? hist.body : (hist.body.messages || []);
+        return rows.filter(m => m.state === 'system_event' && / · automation$/.test(m.content)).map(m => m.content);
+      };
+      const created = await asAgent(agA, 'POST', '/api/automations', { name: 'scope-auto\nx', trigger_type: 'slack', trigger_event: 'message', target_room_id: roomA, prompt_template: 'do it' });
+      assert.strictEqual(created.status, 200, created.raw);
+      const id = created.body.id;
+      const row = scDb.prepare('SELECT target_room_id, name FROM automations WHERE id=?').get(id);
+      assert.strictEqual(row.target_room_id, roomA);
+      let n = await notices();
+      assert.ok(n.some(c => c === '__test-scope-a created automation "scope-auto x" (trigger: slack message) · automation'), JSON.stringify(n));
+      const patched = await asAgent(agA, 'PATCH', `/api/automations/${id}`, { enabled: false, name: 'scope-auto-2' });
+      assert.strictEqual(patched.status, 200, patched.raw);
+      assert.strictEqual(scDb.prepare('SELECT enabled, name FROM automations WHERE id=?').get(id).enabled, 0);
+      n = await notices();
+      assert.ok(n.some(c => c.startsWith('__test-scope-a updated automation "scope-auto-2"')), JSON.stringify(n));
+      assert.strictEqual((await asAgent(agA, 'DELETE', `/api/automations/${id}`)).status, 200);
+      assert.strictEqual(scDb.prepare('SELECT 1 FROM automations WHERE id=?').get(id), undefined);
+      n = await notices();
+      assert.ok(n.some(c => c.startsWith('__test-scope-a deleted automation "scope-auto-2"')), JSON.stringify(n));
+    });
+
+    await test('Agent automations — other room / moving target / foreign automation → 403; bad connection → 400', async () => {
+      const other = await asAgent(agA, 'POST', '/api/automations', { name: 'x', trigger_event: 'message', target_room_id: otherRoom, prompt_template: 'p' });
+      assert.strictEqual(other.status, 403);
+      assert.strictEqual(scDb.prepare("SELECT COUNT(*) c FROM automations WHERE target_room_id=? AND name='x'").get(otherRoom).c, 0);
+      const missingConn = await asAgent(agA, 'POST', '/api/automations', { name: 'x', trigger_event: 'message', target_room_id: roomA, prompt_template: 'p', connection_id: 99999999 });
+      assert.strictEqual(missingConn.status, 400);
+      const mine = await asAgent(agA, 'POST', '/api/automations', { name: 'scope-move', trigger_event: 'message', target_room_id: roomA, prompt_template: 'p' });
+      assert.strictEqual(mine.status, 200);
+      const theirs = await req('POST', '/api/automations', { name: 'scope-theirs', trigger_event: 'message', target_room_id: otherRoom, prompt_template: 'p' });
+      assert.strictEqual(theirs.status, 200);
+      try {
+        const move = await asAgent(agA, 'PATCH', `/api/automations/${mine.body.id}`, { target_room_id: otherRoom });
+        assert.strictEqual(move.status, 403);
+        assert.strictEqual(scDb.prepare('SELECT target_room_id FROM automations WHERE id=?').get(mine.body.id).target_room_id, roomA);
+        denied(await asAgent(agA, 'PATCH', `/api/automations/${theirs.body.id}`, { enabled: false }), 'edit foreign automation');
+        denied(await asAgent(agA, 'DELETE', `/api/automations/${theirs.body.id}`), 'delete foreign automation');
+        assert.ok(scDb.prepare('SELECT 1 FROM automations WHERE id=?').get(theirs.body.id), 'foreign automation untouched');
+        // List shows only automations targeting the agent's rooms; the human sees both.
+        const list = await asAgent(agA, 'GET', '/api/automations');
+        assert.strictEqual(list.status, 200);
+        assert.ok(list.body.some(a => a.id === mine.body.id));
+        assert.ok(list.body.every(a => scDb.prepare('SELECT 1 FROM room_participants WHERE room_id=? AND actor_id=?').get(a.target_room_id, agA.actorId)), 'only own rooms');
+        assert.ok((await req('GET', '/api/automations')).body.some(a => a.id === theirs.body.id));
+      } finally {
+        await req('DELETE', `/api/automations/${mine.body.id}`);
+        await req('DELETE', `/api/automations/${theirs.body.id}`);
+      }
+    });
+
+    await test('Agent automations — connection list has id/name/provider/status only, no secrets', async () => {
+      const id = scDb.prepare("INSERT INTO automation_connections (name, provider, token_type, credentials, metadata, status) VALUES ('__scope-conn__', 'slack', 'bot', ?, ?, 'disconnected')")
+        .run(JSON.stringify({ token: 'xoxb-SECRET-TOKEN', appToken: 'xapp-SECRET' }), JSON.stringify({ smtpHost: 'secret.example' })).lastInsertRowid;
+      try {
+        const r = await asAgent(agA, 'GET', '/api/automations/connections');
+        assert.strictEqual(r.status, 200);
+        const c = r.body.find(x => x.id === id);
+        assert.deepStrictEqual(c, { id, name: '__scope-conn__', provider: 'slack', status: 'disconnected' });
+        assert.ok(!r.raw.includes('SECRET') && !r.raw.includes('secret.example'), 'no credentials/metadata leak');
+        const human = await req('GET', '/api/automations/connections');
+        assert.strictEqual(human.body.find(x => x.id === id).token, 'xoxb-SECRET-TOKEN', 'session view unchanged');
+        denied(await asAgent(agA, 'DELETE', `/api/automations/connections/${id}`), 'delete connection');
+        denied(await asAgent(agA, 'PATCH', `/api/automations/connections/${id}`, { name: 'x' }), 'edit connection');
+      } finally {
+        scDb.prepare('DELETE FROM automation_connections WHERE id=?').run(id);
       }
     });
 

@@ -1381,8 +1381,25 @@ function agentScopeAllowed(agentId, route) {
     case 'connection':
       return !!db.prepare(`SELECT 1 FROM automations a JOIN room_participants rp ON rp.room_id=a.target_room_id
         WHERE a.connection_id=? AND rp.actor_id=? LIMIT 1`).get(route.id, agentId);
+    case 'automation':
+      return !!db.prepare(`SELECT 1 FROM automations a JOIN room_participants rp ON rp.room_id=a.target_room_id
+        WHERE a.id=? AND rp.actor_id=? LIMIT 1`).get(route.id, agentId);
     default: return false;
   }
+}
+function agentInRoom(agentId, roomId) {
+  return !!db.prepare('SELECT 1 FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(roomId, agentId);
+}
+// Persistent "· automation" system bubble (kept by the history filters) so the owner sees every
+// automation change an agent makes in the room it targets.
+function postAutomationChangeNotice(agentId, roomId, verb, auto) {
+  const part = db.prepare(`SELECT rp.id, a.name FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
+    WHERE rp.room_id=? AND rp.actor_id=? LIMIT 1`).get(roomId, agentId);
+  if (!part) return;
+  const clean = (v, max) => String(v ?? '').replace(/[\r\n]+/g, ' ').slice(0, max);
+  const content = `${clean(part.name, 64)} ${verb} automation "${clean(auto.name, 100)}" (trigger: ${clean(auto.trigger_type, 20)} ${clean(auto.trigger_event, 40)}) · automation`;
+  const r = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')").run(roomId, part.id, content);
+  broadcast(roomId, { type: 'message_new', message: { id: Number(r.lastInsertRowid), room_id: roomId, content, state: 'system_event', created_at: new Date().toISOString() } });
 }
 
 function agentHeaderAuthOk(req) {
@@ -1541,7 +1558,7 @@ function requireAuth(req, res, url) {
     if (!AGENT_SCOPE_ENFORCED) return true;
     const agentId = Number(req.headers['x-agent-id']);
     const route = matchAgentRoute(req.method, url.pathname);
-    if (route && agentScopeAllowed(agentId, route)) return true;
+    if (route && agentScopeAllowed(agentId, route)) { req._scopedAgentId = agentId; return true; }
     console.warn(`[agent-scope] denied actor=${agentId} ${req.method} ${url.pathname.slice(0, 200)}`);
     res.writeHead(403, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'agent_scope_denied' }));
@@ -2112,6 +2129,7 @@ const server = http.createServer(async (req, res) => {
                 (m.state = 'complete' AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL))
                 OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
                 OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
+                OR (m.state = 'system_event' AND m.content LIKE '% · automation')
                 OR (m.state = 'error' AND m.broadcast_reason IS NOT NULL)
               )
             ORDER BY m.created_at DESC LIMIT ?
@@ -2137,6 +2155,7 @@ const server = http.createServer(async (req, res) => {
             (m.state = 'complete' AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL))
             OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
             OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
+            OR (m.state = 'system_event' AND m.content LIKE '% · automation')
             OR (m.state = 'error' AND m.broadcast_reason IS NOT NULL)
           )
         ORDER BY m.created_at ASC
@@ -4851,6 +4870,9 @@ Write-Host "Logs   : pm2 logs $AgentName"
 
   // ── Automation: Connections CRUD ──────────────────────────────────────────
   if (req.method === 'GET' && url.pathname === '/api/automations/connections') {
+    if (req._scopedAgentId) {
+      return json(res, db.prepare('SELECT id, name, provider, status FROM automation_connections ORDER BY id ASC').all());
+    }
     const rows = db.prepare('SELECT id,name,provider,token_type,credentials,metadata,status,error_msg,created_at FROM automation_connections ORDER BY id ASC').all();
     return json(res, rows.map(r => {
       let meta = {}; try { meta = JSON.parse(r.metadata || '{}'); } catch {}
@@ -5153,7 +5175,10 @@ Write-Host "Logs   : pm2 logs $AgentName"
 
   // ── Automation: CRUD ─────────────────────────────────────────────────────────
   if (req.method === 'GET' && url.pathname === '/api/automations') {
-    const rows = db.prepare('SELECT * FROM automations ORDER BY id DESC').all();
+    const rows = req._scopedAgentId
+      ? db.prepare(`SELECT a.* FROM automations a WHERE EXISTS (SELECT 1 FROM room_participants rp
+          WHERE rp.room_id=a.target_room_id AND rp.actor_id=?) ORDER BY a.id DESC`).all(req._scopedAgentId)
+      : db.prepare('SELECT * FROM automations ORDER BY id DESC').all();
     return json(res, rows);
   }
 
@@ -5165,6 +5190,13 @@ Write-Host "Logs   : pm2 logs $AgentName"
     const rawConds = body.trigger_conditions || '[]';
     const condsErr = validateConditions(rawConds);
     if (condsErr) { res.writeHead(400); return res.end(JSON.stringify({ error: condsErr })); }
+    const scopedAgent = req._scopedAgentId;
+    if (scopedAgent) {
+      if (!agentInRoom(scopedAgent, parseInt(body.target_room_id))) return json(res, { error: 'agent_scope_denied' }, 403);
+      if (body.connection_id != null && body.connection_id !== '' && !db.prepare('SELECT 1 FROM automation_connections WHERE id=?').get(parseInt(body.connection_id))) {
+        return json(res, { error: 'connection not found' }, 400);
+      }
+    }
     const trigType = body.trigger_type || 'slack';
     const watchReply = (trigType === 'slack' || trigType === 'email') ? (body.watch_reply ? 1 : 0) : 0;
     const result = db.prepare(`
@@ -5182,6 +5214,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
       watchReply,
     );
     const row = db.prepare('SELECT * FROM automations WHERE id=?').get(result.lastInsertRowid);
+    if (scopedAgent) postAutomationChangeNotice(scopedAgent, row.target_room_id, 'created', row);
     return json(res, row);
   }
 
@@ -5201,9 +5234,14 @@ Write-Host "Logs   : pm2 logs $AgentName"
         if (condsErr) { res.writeHead(400); return res.end(JSON.stringify({ error: condsErr })); }
       }
       const roomId      = body.target_room_id !== undefined ? parseInt(body.target_room_id)          : auto.target_room_id;
+      const scopedAgent = req._scopedAgentId;
+      if (scopedAgent && roomId !== auto.target_room_id && !agentInRoom(scopedAgent, roomId)) return json(res, { error: 'agent_scope_denied' }, 403);
       const prompt      = body.prompt_template !== undefined ? body.prompt_template.trim()           : auto.prompt_template;
       const enabled     = body.enabled !== undefined     ? (body.enabled ? 1 : 0)                    : auto.enabled;
       const connId      = body.connection_id !== undefined ? (parseInt(body.connection_id) || null)  : auto.connection_id;
+      if (scopedAgent && connId && connId !== auto.connection_id && !db.prepare('SELECT 1 FROM automation_connections WHERE id=?').get(connId)) {
+        return json(res, { error: 'connection not found' }, 400);
+      }
       const replyMode   = body.reply_mode !== undefined    ? (body.reply_mode || 'none')              : (auto.reply_mode || 'none');
       const patchTrigType = auto.trigger_type || 'slack';
       const watchReply  = body.watch_reply !== undefined  ? ((patchTrigType === 'slack' || patchTrigType === 'email') ? (body.watch_reply ? 1 : 0) : 0) : (auto.watch_reply || 0);
@@ -5211,10 +5249,16 @@ Write-Host "Logs   : pm2 logs $AgentName"
         UPDATE automations SET name=?, trigger_event=?, trigger_conditions=?, target_room_id=?, prompt_template=?, enabled=?, connection_id=?, reply_mode=?, watch_reply=? WHERE id=?
       `).run(name, event, conds, roomId, prompt, enabled, connId, replyMode, watchReply, autoId);
       const updated = db.prepare('SELECT * FROM automations WHERE id=?').get(autoId);
+      if (scopedAgent) {
+        postAutomationChangeNotice(scopedAgent, updated.target_room_id, 'updated', updated);
+        if (updated.target_room_id !== auto.target_room_id) postAutomationChangeNotice(scopedAgent, auto.target_room_id, 'moved away', updated);
+      }
       return json(res, updated);
     }
     if (req.method === 'DELETE') {
+      const auto = req._scopedAgentId ? db.prepare('SELECT * FROM automations WHERE id=?').get(autoId) : null;
       db.prepare('DELETE FROM automations WHERE id=?').run(autoId);
+      if (auto) postAutomationChangeNotice(req._scopedAgentId, auto.target_room_id, 'deleted', auto);
       return json(res, { ok: true });
     }
   }
@@ -5434,6 +5478,7 @@ wss.on('connection', (ws, req) => {
             (m.state IN ('complete','streaming','requesting') AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL OR m.state IN ('streaming','requesting')))
             OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
             OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
+            OR (m.state = 'system_event' AND m.content LIKE '% · automation')
             OR (m.state = 'error' AND m.broadcast_reason IS NOT NULL)
           )
           ORDER BY m.created_at DESC LIMIT 100
