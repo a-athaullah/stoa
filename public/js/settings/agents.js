@@ -587,7 +587,7 @@ function _saPopulateModelSel(modelSel, harness, actor, currentVal) {
   if (!harness || harness === 'claude') {
     const anthropicModels = _saAnthropicModels();
     for (const m of anthropicModels) {
-      const o = document.createElement('option'); o.value = m.value; o.textContent = m.label || m.value; modelSel.appendChild(o);
+      const o = document.createElement('option'); o.value = m.value; o.textContent = (m.label || m.value) + (m.custom ? ' · custom' : ''); modelSel.appendChild(o);
     }
     if (currentVal && !anthropicModels.some(m => m.value === currentVal)) {
       const o = document.createElement('option'); o.value = currentVal; o.textContent = currentVal; modelSel.appendChild(o);

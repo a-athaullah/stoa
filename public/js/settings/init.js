@@ -95,7 +95,11 @@ function handleActorStatus(actor) {
     if (!sRowStates.has(actor.id)) sRowStates.set(actor.id, { state: 'default', draft: actor.name });
     settingsActors = allActors.filter(a => a.type !== 'human' || a.id === humanActor?.id);
     if (typeof renderAgentSidebar === 'function' && document.getElementById('agent-list')) renderAgentSidebar();
-    if (typeof refreshModelDropdownForActor === 'function') refreshModelDropdownForActor(actor.id);
+    if (Array.isArray(actor.harness_status) && typeof refreshHarnessCache === 'function') {
+      refreshHarnessCache().then(() => refreshModelDropdownForActor(actor.id));
+    } else if (typeof refreshModelDropdownForActor === 'function') {
+      refreshModelDropdownForActor(actor.id);
+    }
     // Update add panel if open and waiting
     if (sAddPanel?.phase === 'waiting' && actor.type === 'ai' && !sAddPanel.baselineIds?.has(String(actor.id))) {
       sAddPanel.phase = 'connected'; sAddPanel.newActor = actor;

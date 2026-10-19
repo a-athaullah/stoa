@@ -50,6 +50,167 @@ async function sLoadPlatformsTab() {
 
   const addPlatBtn = document.getElementById('s-add-platform-btn');
   if (addPlatBtn) addPlatBtn.onclick = () => sShowPlatformForm();
+  sLoadCustomModels();
+}
+
+// ── Custom Claude models ─────────────────────────────────────────────────────
+const S_CUSTOM_MODEL_RE = /^claude-[a-z0-9][a-z0-9.-]{1,62}$/;
+
+async function sCustomModelError(r, fallback) {
+  let msg = '';
+  try { msg = (await r.json())?.error || ''; } catch {}
+  if (r.status === 409) return msg || 'This model is already in the list.';
+  if (r.status === 401) { showLogin(); return 'Session expired — please sign in again.'; }
+  return msg || fallback;
+}
+
+function sCustomModelRow(m, onRemoved) {
+  const row = document.createElement('div');
+  row.className = 's-cm-row';
+
+  const text = document.createElement('div');
+  text.className = 's-cm-text';
+  const label = document.createElement('span');
+  label.className = 's-cm-label';
+  label.textContent = m.label || m.value;
+  const id = document.createElement('span');
+  id.className = 's-cm-id';
+  id.textContent = m.value;
+  text.append(label, id);
+
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 's-icon-btn';
+  del.title = 'Remove ' + m.value;
+  del.setAttribute('aria-label', 'Remove ' + m.value);
+  del.innerHTML = svgX(13);
+  del.addEventListener('click', async () => {
+    if (!confirm(`Remove ${m.value}? Rooms already using it keep their setting.`)) return;
+    del.disabled = true;
+    row.classList.add('is-busy');
+    try {
+      const r = await fetch(`/api/settings/custom-models/${encodeURIComponent(m.value)}`, { method: 'DELETE' });
+      if (!r.ok && r.status !== 404) throw new Error(await sCustomModelError(r, 'Failed to remove model'));
+      onRemoved();
+    } catch (e) {
+      del.disabled = false;
+      row.classList.remove('is-busy');
+      showToast(e.message, { error: true });
+    }
+  });
+
+  row.append(text, del);
+  return row;
+}
+
+async function sLoadCustomModels(highlightValue) {
+  const box = document.getElementById('s-custom-models');
+  if (!box) return;
+  let groups;
+  try { groups = await fjson('/api/ai/models'); } catch { showToast('Failed to load Claude models', { error: true }); return; }
+  const anthropic = groups.find(g => g.platform_id === 'anthropic');
+  const custom = (anthropic?.models || []).filter(m => m.custom);
+  const refresh = (v) => { sLoadCustomModels(v); fetchPlatformModels(); };
+
+  box.innerHTML = '';
+  const list = document.createElement('div');
+  list.className = 's-cm-list';
+  if (!custom.length) {
+    const empty = document.createElement('div');
+    empty.className = 's-cm-empty';
+    empty.textContent = 'No custom models yet. Built-in Claude models are always available.';
+    list.appendChild(empty);
+  }
+  for (const m of custom) {
+    const row = sCustomModelRow(m, () => refresh());
+    if (m.value === highlightValue) row.classList.add('is-new');
+    list.appendChild(row);
+  }
+
+  const form = document.createElement('form');
+  form.className = 's-cm-form';
+  form.noValidate = true;
+
+  const idInp = document.createElement('input');
+  idInp.className = 's-server-input s-cm-id-input';
+  idInp.name = 'custom-model-id';
+  idInp.placeholder = 'claude-haiku-5-5';
+  idInp.maxLength = 70;
+  idInp.autocomplete = 'off'; idInp.spellcheck = false;
+  idInp.setAttribute('autocapitalize', 'off');
+  idInp.setAttribute('aria-label', 'Model ID');
+  idInp.setAttribute('data-1p-ignore', ''); idInp.setAttribute('data-lpignore', 'true');
+
+  const labelInp = document.createElement('input');
+  labelInp.className = 's-server-input s-cm-label-input';
+  labelInp.name = 'custom-model-label';
+  labelInp.placeholder = 'label (optional)';
+  labelInp.maxLength = 40;
+  labelInp.autocomplete = 'off';
+  labelInp.setAttribute('aria-label', 'Display label (optional)');
+  labelInp.setAttribute('data-1p-ignore', ''); labelInp.setAttribute('data-lpignore', 'true');
+
+  const addBtn = document.createElement('button');
+  addBtn.type = 'submit';
+  addBtn.className = 's-server-save';
+  addBtn.textContent = 'add model';
+  addBtn.disabled = true;
+
+  const hint = document.createElement('div');
+  hint.className = 's-cm-hint';
+  hint.id = 's-cm-hint';
+  hint.setAttribute('aria-live', 'polite');
+  const defaultHint = 'Use the exact model ID from Anthropic — lowercase letters, digits, dots and dashes.';
+  const setHint = (msg, isError) => {
+    hint.textContent = msg || defaultHint;
+    hint.classList.toggle('is-error', !!isError);
+    idInp.setAttribute('aria-invalid', isError ? 'true' : 'false');
+  };
+  setHint();
+  idInp.setAttribute('aria-describedby', hint.id);
+
+  const validate = () => {
+    const v = idInp.value.trim();
+    const known = getAvailableModels().some(m => m.platform_id === 'anthropic' && m.value === v);
+    if (!v) { setHint(); return false; }
+    if (!S_CUSTOM_MODEL_RE.test(v)) {
+      setHint(v.startsWith('claude-') ? 'Only lowercase letters, digits, dots and dashes after "claude-".' : 'Model ID must start with "claude-".', true);
+      return false;
+    }
+    if (known) { setHint('This model is already in the list.', true); return false; }
+    setHint();
+    return true;
+  };
+  idInp.addEventListener('input', () => { addBtn.disabled = !validate(); });
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!validate() || addBtn.disabled) return;
+    const value = idInp.value.trim();
+    const lbl = labelInp.value.trim();
+    addBtn.disabled = true; idInp.disabled = true; labelInp.disabled = true;
+    addBtn.textContent = 'adding…';
+    try {
+      const r = await fetch('/api/settings/custom-models', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(lbl ? { value, label: lbl } : { value }),
+      });
+      if (!r.ok) throw new Error(await sCustomModelError(r, 'Failed to add model'));
+      showToast(`${lbl || value} added`);
+      refresh(value);
+    } catch (err) {
+      addBtn.textContent = 'add model';
+      idInp.disabled = false; labelInp.disabled = false; addBtn.disabled = false;
+      setHint(err.message, true);
+      idInp.focus();
+    }
+  });
+
+  const fields = document.createElement('div');
+  fields.className = 's-cm-fields';
+  fields.append(idInp, labelInp, addBtn);
+  form.append(fields, hint);
+  box.append(list, form);
 }
 
 function sShowPlatformForm(existing) {
