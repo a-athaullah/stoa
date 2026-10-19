@@ -453,7 +453,7 @@ Sub-agents can also choose their own harness, or leave it on **inherit from pare
 
 **Checking harness availability:** After installing or logging in to a CLI tool on the agent's machine, click the **Check** button next to the Harness dropdown (in the agent detail panel or accordion in **Settings > AI Agent**) to re-detect without restarting the agent. The button is disabled when the agent is offline, and detection can take up to ~15 seconds. The dropdown updates immediately when results arrive — new harnesses detected show a toast notification. Rescan also re-checks harnesses alongside working directories and skills.
 
-For **Codex**, Check also fetches the available model list from the agent via `codex debug models` — hidden models are filtered out, results are sorted by CLI priority, and the first model becomes the default. The room model dropdown updates immediately. If new models are found, a toast shows e.g. `Codex CLI: 2 new models`. If the agent cannot report models (older CLI version or command failure), Stoa falls back to its built-in model list. **Claude** has no equivalent command, so the Claude model list always comes from Stoa and does not update via Check.
+For **Codex**, the model list is synced automatically every time an agent connects — no manual Check needed. The active set is the union across all online agents, so two agents on different Codex versions keep each other's models active; a model is deactivated only when no online agent reports it. Check also triggers this sync on demand. Hidden models are filtered out, results are sorted by CLI priority, and if no default exists the reporter's first model becomes the default. The room model dropdown updates immediately. If new models are found, a toast shows e.g. `Codex CLI: 2 new models`. If the agent cannot report models (older CLI version or command failure), Stoa falls back to its built-in model list. **Claude** has no equivalent sync — its model list always comes from Stoa's built-in list plus any custom entries added in **Settings > Platforms**.
 
 Harnesses that are installed but not logged in appear in the dropdown as **"(not logged in)"** and cannot be selected — the server will also reject them. If login status cannot be determined, the harness remains selectable. If the currently active harness becomes unavailable or loses login, a red hint appears below the Harness dropdown — the harness is not automatically changed.
 
@@ -915,6 +915,15 @@ The API key is stored on the server and returned to the browser only in the Sett
 - **OpenRouter** — `https://openrouter.ai/api/v1`
 - **Together AI** — `https://api.together.xyz/v1`
 - **Groq** — `https://api.groq.com/openai/v1`
+
+### Custom Claude Models
+
+If Anthropic releases a model that isn't yet in the built-in list, add it without a server update. Scroll to the **claude models** card in **Settings > Platforms**.
+
+- **Add** — enter the model ID (e.g. `claude-haiku-5-5`) and an optional display label (max 40 characters), then click **add model**. The model appears immediately in the room model dropdown, tagged **custom**.
+- **Remove** — click × on any custom model row. Rooms already using the model keep their setting; only new selections are affected.
+
+Model ID format: must start with `claude-`, followed by lowercase letters, digits, dots, or dashes (regex: `^claude-[a-z0-9][a-z0-9.-]{1,62}$`). Duplicate or incorrectly formatted IDs are rejected inline. Maximum 20 custom entries.
 
 ### Automation
 

@@ -136,6 +136,22 @@
 
 ---
 
+### 4. Claude Model List Is Static (No Agent Sync)
+**Decision:** Claude harness models are **not** synced from agent reports. `syncHarnessModels()` skips `harnessName === 'claude'`.
+
+**Why:** Claude CLI has no `claude debug models` equivalent. The model list is maintained manually in `ANTHROPIC_MODELS` (server.js). Owners add unreleased models via `POST /api/settings/custom-models` (Settings > Platforms > claude models card).
+
+**Implication:** After Anthropic releases a new model, the owner must add it manually. Existing models never auto-disappear from the list.
+
+---
+
+### 5. Custom Claude Models: Format Constraint
+**Constraint:** IDs must match `^claude-[a-z0-9][a-z0-9.-]{1,62}$`. Max 20 entries. Stored in `settings` table under key `custom_claude_models` as JSON.
+
+**Why:** The regex mirrors Anthropic's naming convention and is enforced both client-side (`S_CUSTOM_MODEL_RE`) and server-side (`CUSTOM_CLAUDE_MODEL_RE`). Consistent constraint avoids surprises when the model ID is passed as `--model` to the CLI.
+
+---
+
 ## Migration Gotchas
 
 ### Immutable Migrations

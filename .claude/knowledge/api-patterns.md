@@ -408,6 +408,56 @@ Or:
 
 ---
 
+### Custom Claude Models
+
+Owner-only endpoints for adding model IDs that Anthropic released after the built-in `ANTHROPIC_MODELS` list was compiled. Requires human session (`req._authUser`); agent headers → 401.
+
+#### Add
+```
+POST /api/settings/custom-models
+Content-Type: application/json
+
+{ "value": "claude-haiku-5-5", "label": "Haiku 5.5" }
+```
+- `value` (required): must match `^claude-[a-z0-9][a-z0-9.-]{1,62}$`
+- `label` (optional, max 40 chars): display name; defaults to `value` if omitted
+- 409 if model already exists in built-in or custom list
+- 400 if format invalid or max 20 custom entries reached
+- 201 + `{ value, label, custom: true }` on success
+
+#### Remove
+```
+DELETE /api/settings/custom-models/:value
+```
+- `:value` must be URL-encoded
+- 404 if not found; 204 on success
+- Rooms using the removed model keep their setting (no cascade)
+
+#### Model list (includes custom)
+```
+GET /api/ai/models
+```
+Returns grouped models; Anthropic group includes built-in + custom entries. Custom models have `custom: true`.
+
+---
+
+### Harness Models Sync (`harness_models`)
+
+For non-Claude harnesses (e.g. Codex), Stoa mirrors agent-reported models into `harness_models` to persist the model list across agent restarts.
+
+**Trigger:** server receives `actor_status` with `harness_status` array from a connecting agent.
+
+**Behaviour:**
+- Active set = union across all currently online agents for that harness (prevents two agents on different Codex versions from deactivating each other's models)
+- Models no longer reported by any online agent → `is_active=0`
+- Default preserved if one already exists; otherwise reporter's first model becomes default
+- Cap: 50 models per harness (`MAX_SYNCED_HARNESS_MODELS`)
+- Claude harness is **exempt** — its model list always comes from `ANTHROPIC_MODELS` + `custom_claude_models` setting
+
+**Key function:** `syncHarnessModels(harnessName, reporterId)` in `server.js`
+
+---
+
 ### Export
 
 #### Export Room
