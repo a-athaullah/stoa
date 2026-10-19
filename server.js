@@ -676,7 +676,7 @@ async function cascadeMentionsAfterWake(roomId, parent, threadId) {
 }
 
 // Cascade @mentions from a proactive agent message (same logic as wake-cascade but content is known upfront).
-async function cascadeMentionsFromProactive(roomId, senderActorId, content, threadId) {
+async function cascadeMentionsFromProactive(roomId, senderActorId, content, threadId, senderSubAgentId = null) {
   const mentionText = stripCodeSpans(content);
   if (!mentionText.includes('@')) return;
 
@@ -697,6 +697,7 @@ async function cascadeMentionsFromProactive(roomId, senderActorId, content, thre
   const regularAgentsCascade = [];
 
   for (const sa of linkedSubs) {
+    if (sa.id === senderSubAgentId) continue; // a sub-agent never re-triggers itself
     if (mentionBoundary(sa.label).test(mentionText)) {
       const parentAgent = allAi.find(a => a.actor_id === sa.parent_actor_id);
       if (parentAgent) subAgentsCascade.push({ ...parentAgent, sub_agent: sa });
@@ -1747,14 +1748,29 @@ const server = http.createServer(async (req, res) => {
   // ── Upload file (raw binary)
   if (req.method === 'POST' && url.pathname === '/api/upload/raw') {
     const MAX_UPLOAD = 25 * 1024 * 1024;
+    const uploader = req.headers['x-agent-id'] ? `agent ${parseInt(req.headers['x-agent-id']) || '?'}` : 'session';
+    // Answer 413 before dropping the socket: destroying first left the agent with a bare
+    // "fetch failed" and no reason it could report back to the chat.
+    const rejectTooLarge = (bytes) => {
+      console.warn(`[upload] rejected ${bytes} bytes > ${MAX_UPLOAD} limit (${uploader})`);
+      res.writeHead(413, { 'Content-Type': 'application/json', Connection: 'close' });
+      res.end(JSON.stringify({ error: `File too large: ${(bytes / 1048576).toFixed(1)} MB exceeds the ${MAX_UPLOAD / 1048576} MB limit`, max_bytes: MAX_UPLOAD }));
+      res.on('finish', () => req.destroy());
+    };
+    const declared = parseInt(req.headers['content-length'] || '', 10);
+    if (Number.isFinite(declared) && declared > MAX_UPLOAD) return rejectTooLarge(declared);
     const chunks = [];
     let size = 0;
-    await new Promise((resolve, reject) => {
-      req.on('data', c => { size += c.length; if (size > MAX_UPLOAD) { req.destroy(); reject(new Error('File too large')); } else chunks.push(c); });
-      req.on('end', resolve);
-      req.on('error', reject);
-    }).catch(e => { res.writeHead(413, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: e.message })); return; });
-    if (res.headersSent) return;
+    const received = await new Promise((resolve) => {
+      req.on('data', c => {
+        if (size > MAX_UPLOAD) return;
+        size += c.length;
+        if (size > MAX_UPLOAD) { rejectTooLarge(size); resolve(false); } else chunks.push(c);
+      });
+      req.on('end', () => resolve(true));
+      req.on('error', (e) => { console.warn(`[upload] stream error (${uploader}): ${e.message}`); resolve(false); });
+    });
+    if (!received || res.headersSent) return;
     const buffer = Buffer.concat(chunks);
     const fileName = decodeURIComponent(req.headers['x-file-name'] || 'file');
     const mimeType = req.headers['content-type'] || 'application/octet-stream';
@@ -2627,9 +2643,31 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    // sub_agent_id / attachments: used by the agent client to deliver a turn the CLI ran on its own
+    // (stoa.js postUnsolicitedResult) under the right identity, with its uploaded [send:] files.
+    let subAgent = null;
+    if (data.sub_agent_id != null) {
+      const saId = Number(data.sub_agent_id);
+      if (!Number.isInteger(saId) || saId <= 0) return json(res, { error: 'invalid sub_agent_id' }, 400);
+      subAgent = db.prepare('SELECT id, label FROM sub_agents WHERE id=? AND parent_actor_id=?').get(saId, agentId);
+      if (!subAgent) return json(res, { error: 'sub-agent not found for this agent' }, 403);
+    }
+    const attachments = [];
+    if (data.attachments != null) {
+      if (!Array.isArray(data.attachments) || data.attachments.length > 10) return json(res, { error: 'attachments must be an array of at most 10 items' }, 400);
+      for (const a of data.attachments) {
+        const okUrl = typeof a?.url === 'string' && /^\/uploads\/[A-Za-z0-9._-]+$/.test(a.url) && !a.url.includes('..');
+        const okName = typeof a?.name === 'string' && a.name.length > 0 && a.name.length <= 255;
+        if (!okUrl || !okName) return json(res, { error: 'invalid attachment (url must be an /uploads/ file, name 1-255 chars)' }, 400);
+        if (!fs.existsSync(path.join(UPLOADS_DIR, a.url.slice('/uploads/'.length)))) return json(res, { error: `attachment not found: ${a.url}` }, 400);
+        attachments.push({ url: a.url, name: a.name, type: a.type === 'image' ? 'image' : 'file' });
+      }
+    }
+    const single = attachments.length === 1 ? attachments[0] : null;
     const result = db.prepare(
-      "INSERT INTO messages (room_id, participant_id, content, client_event_id, thread_id, state) VALUES (?, ?, ?, ?, ?, 'complete')"
-    ).run(roomId, participant.id, content, eventId, threadId);
+      "INSERT INTO messages (room_id, participant_id, content, client_event_id, thread_id, state, sub_agent_id, sub_agent_label, file_url, file_name, attachments) VALUES (?, ?, ?, ?, ?, 'complete', ?, ?, ?, ?, ?)"
+    ).run(roomId, participant.id, content, eventId, threadId, subAgent?.id ?? null, subAgent?.label ?? null,
+      single?.url ?? null, single?.name ?? null, attachments.length > 1 ? JSON.stringify(attachments) : null);
     const messageId = result.lastInsertRowid;
 
     const row = db.prepare(`
@@ -2644,7 +2682,7 @@ const server = http.createServer(async (req, res) => {
     // Cascade any @mentions in the proactive message (fire-and-forget)
     // Auto-thread: if at room level, sub-agent responses go under this message
     const cascadeThreadId = threadId || Number(messageId);
-    cascadeMentionsFromProactive(roomId, agentId, content, cascadeThreadId).catch(e => console.error('[proactive-cascade]', e.message));
+    cascadeMentionsFromProactive(roomId, agentId, content, cascadeThreadId, subAgent?.id ?? null).catch(e => console.error('[proactive-cascade]', e.message));
     return json(res, { message_id: messageId });
   }
 
@@ -6062,8 +6100,12 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'agent_complete' && agentActorId) {
       if (!msg.content?.trim()) {
         const errMeta = pendingActorMeta.get(msg.message_id) || {};
-        db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msg.message_id);
-        const errPayload = { type: 'message_state', message_id: msg.message_id, state: 'error' };
+        console.warn(`[agent] empty agent_complete: message_id=${msg.message_id} room=${msg.room_id} thread=${errMeta.thread_id ?? 'none'} agent=${agentActorId}`);
+        // A visible placeholder instead of an empty error bubble with no trace of what happened.
+        const placeholder = '(agent returned an empty reply)';
+        const errResultMeta = JSON.stringify({ exit_reason: 'error' });
+        db.prepare(`UPDATE messages SET content=?, state='error', result_meta=?, completed_at=datetime('now') WHERE id=?`).run(placeholder, errResultMeta, msg.message_id);
+        const errPayload = { type: 'message_complete', message_id: msg.message_id, content: placeholder, state: 'error', result_meta: errResultMeta, thread_id: errMeta.thread_id ?? null };
         if (errMeta.thread_id) errPayload.thread_summary = buildThreadSummary(msg.room_id, errMeta.thread_id);
         broadcast(msg.room_id, errPayload);
         maybeBroadcastError({ threadId: errMeta.thread_id, subAgentId: errMeta.sub_agent_label, messageId: msg.message_id, reason: 'error', roomId: msg.room_id });

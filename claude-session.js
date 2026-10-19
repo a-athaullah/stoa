@@ -27,6 +27,9 @@ class ClaudeSession extends EventEmitter {
     this._currentTaskId = null;
     this._accContent = '';
     this._pendingTool = null;
+    this._turnStarted = false;
+    this._autoTurn = null;
+    this._backgroundTasks = [];
     // stable debug log path: one file per workdir in os.tmpdir()
     const wdHash = require('crypto').createHash('sha1').update(workDir).digest('hex').slice(0, 8);
     this.debugLogPath = path.join(os.tmpdir(), `stoa-claude-${wdHash}.log`);
@@ -82,14 +85,13 @@ class ClaudeSession extends EventEmitter {
         this._clearCurrent({ drain: false });
         reject(new Error('claude process exited unexpectedly'));
       }
+      this._autoTurn = null;
+      this._backgroundTasks = [];
       this._restarting = true;
       setTimeout(() => {
         if (this._dead) return;
         this._start();
-        if (!this.busy && this._queue.length > 0) {
-          const next = this._queue.shift();
-          this._startTask(next);
-        }
+        this._drainQueue();
       }, 3000);
     });
   }
@@ -103,11 +105,22 @@ class ClaudeSession extends EventEmitter {
     this._currentTaskId = null;
     this._accContent = '';
     this._pendingTool = null;
+    this._turnStarted = false;
     this.busy = false;
-    if (drain && this._queue.length > 0 && !this._dead && !this._restarting) {
-      const next = this._queue.shift();
-      this._startTask(next);
-    }
+    if (drain) this._drainQueue();
+  }
+
+  _drainQueue() {
+    if (this.busy || this._autoTurn || this._dead || this._restarting || this._queue.length === 0) return;
+    this._startTask(this._queue.shift());
+  }
+
+  hasBackgroundTasks() {
+    return this._backgroundTasks.length > 0;
+  }
+
+  isTurnActive() {
+    return this.busy || !!this._autoTurn;
   }
 
   _startTask({ prompt, imageData, onToken, onState, onTool, resolve, reject, taskId }) {
@@ -120,6 +133,7 @@ class ClaudeSession extends EventEmitter {
     this._currentTaskId = taskId || null;
     this._accContent = '';
     this._pendingTool = null;
+    this._turnStarted = false;
 
     const content = [];
     if (imageData) {
@@ -131,7 +145,30 @@ class ClaudeSession extends EventEmitter {
     this.proc.stdin.write(message + '\n');
   }
 
+  // The CLI also runs turns Stoa never asked for: on resume with an orphaned background shell it
+  // emits a synthetic empty `result` before our prompt's turn, and when a background task finishes
+  // while idle it runs a turn of its own. Only events of a started turn may settle the current task.
+  _isTurnEvent(event) {
+    if (event.type === 'stream_event' || event.type === 'assistant') return true;
+    return event.type === 'system' && (event.subtype === 'status' || event.subtype === 'compact_boundary');
+  }
+
   _handleEvent(event) {
+    if (event.type === 'system' && event.subtype === 'background_tasks_changed') {
+      this._backgroundTasks = Array.isArray(event.tasks) ? event.tasks : [];
+      return;
+    }
+
+    if (this._isTurnEvent(event)) {
+      if (this.busy) this._turnStarted = true;
+      else if (!this._autoTurn) this._autoTurn = { content: '' };
+    }
+
+    if (this._autoTurn && !this.busy) {
+      this._handleAutoTurnEvent(event);
+      return;
+    }
+
     if (event.type === 'system' && event.subtype === 'status') {
       this.emit('status', event.status);
       this._currentOnState?.(event.status);
@@ -162,6 +199,11 @@ class ClaudeSession extends EventEmitter {
     }
 
     if (event.type === 'result') {
+      if (!this.busy) return;
+      if (!this._turnStarted) {
+        console.warn(`[session] ignoring result emitted before turn started: task=${this._currentTaskId} resultLen=${(event.result || '').length} subtype=${event.subtype || ''}`);
+        return;
+      }
       // Use streamed tokens if available, otherwise fall back to result field
       const content = this._accContent || event.result || '';
       const sessionId = event.session_id;
@@ -179,12 +221,25 @@ class ClaudeSession extends EventEmitter {
     }
   }
 
+  _handleAutoTurnEvent(event) {
+    if (event.type === 'stream_event') {
+      const e = event.event;
+      if (e?.type === 'content_block_delta' && e.delta?.type === 'text_delta') this._autoTurn.content += e.delta.text;
+      return;
+    }
+    if (event.type !== 'result') return;
+    const content = this._autoTurn.content || event.result || '';
+    this._autoTurn = null;
+    this.emit('unsolicited_result', { content, sessionId: event.session_id || null });
+    this._drainQueue();
+  }
+
   // Send a message and await the complete response.
   // Returns Promise<{ content, sessionId }>.
   send({ prompt, imageData = null, onToken, onState, onTool, taskId } = {}) {
     return new Promise((resolve, reject) => {
       const task = { prompt, imageData, onToken, onState, onTool, resolve, reject, taskId };
-      if (this.busy || this._restarting) {
+      if (this.busy || this._restarting || this._autoTurn) {
         this._queue.push(task);
       } else {
         this._startTask(task);
@@ -204,6 +259,7 @@ class ClaudeSession extends EventEmitter {
     this._currentTaskId = null;
     this._accContent = '';
     this._pendingTool = null;
+    this._turnStarted = false;
     this.busy = false;
     this._restarting = true;
     resolve?.({ content, sessionId: null, aborted: true });

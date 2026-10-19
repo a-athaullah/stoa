@@ -2219,6 +2219,181 @@ async function runAsyncUnitTests() {
     });
   }
 
+  console.log('  [Agent reply loss — session event handling]');
+
+  // Fake claude process driven by the exact stream-json event order captured in the
+  // 2026-10-19 repro (resume with an orphaned background shell, CLI 2.1.300).
+  const withFakeClaude = async (fn) => {
+    const { EventEmitter } = require('events');
+    const cp = require('child_process');
+    const origSpawn = cp.spawn;
+    const procs = [];
+    cp.spawn = () => {
+      const p = new EventEmitter();
+      p.writes = [];
+      p.stdin = { write: (d) => { p.writes.push(JSON.parse(d)); }, end: () => {}, on: () => {} };
+      p.stdout = new EventEmitter();
+      p.stderr = new EventEmitter();
+      p.killed = null;
+      p.kill = (sig) => { p.killed = sig; };
+      procs.push(p);
+      return p;
+    };
+    delete require.cache[require.resolve('./claude-session')];
+    const origWarn = console.warn;
+    const warns = [];
+    console.warn = (...a) => warns.push(a.join(' '));
+    try {
+      const { ClaudeSession } = require('./claude-session');
+      const session = new ClaudeSession({ workDir: '/tmp' });
+      const emit = (...events) => procs[procs.length - 1].stdout.emit('data', Buffer.from(events.map(e => JSON.stringify(e)).join('\n') + '\n'));
+      await fn({ session, emit, proc: procs[0], warns });
+      session.shutdown();
+    } finally {
+      console.warn = origWarn;
+      cp.spawn = origSpawn;
+      delete require.cache[require.resolve('./claude-session')];
+    }
+  };
+  const SID = 'sess-1';
+  const evInit = { type: 'system', subtype: 'init', session_id: SID };
+  const evStatus = { type: 'system', subtype: 'status', status: 'requesting', session_id: SID };
+  const evText = (t) => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: t } }, session_id: SID });
+  const evResult = (r) => ({ type: 'result', subtype: 'success', result: r, session_id: SID });
+  const evNotif = { type: 'system', subtype: 'task_notification', task_id: 'b1', status: 'killed', summary: "didn't finish before the previous session ended", session_id: SID };
+  const settled = (p) => Promise.race([p.then(v => ({ v })), new Promise(r => setImmediate(() => r(null)))]);
+
+  await uta('ClaudeSession: synthetic empty result on resume is ignored, task gets the real reply', async () => {
+    await withFakeClaude(async ({ session, emit, warns }) => {
+      const p = session.send({ prompt: 'Reply with exactly: HELLO-FROM-TURN-1', taskId: 41300 });
+      emit(evNotif, evInit, evResult(''));
+      assert.strictEqual(await settled(p), null, 'synthetic result must not settle the task');
+      assert.ok(warns.some(w => w.includes('task=41300') && w.includes('resultLen=0')), 'warn names the task and result length');
+      emit(evInit, evStatus, { type: 'stream_event', event: { type: 'message_start' }, session_id: SID }, evText('HELLO-FROM-TURN-1'), { type: 'stream_event', event: { type: 'message_stop' }, session_id: SID }, evResult('HELLO-FROM-TURN-1'));
+      const r = await p;
+      assert.strictEqual(r.content, 'HELLO-FROM-TURN-1');
+      assert.strictEqual(session.busy, false);
+    });
+  });
+
+  await uta('ClaudeSession: /compact (status compacting → result "") still resolves', async () => {
+    await withFakeClaude(async ({ session, emit }) => {
+      const p = session.send({ prompt: '/compact', taskId: 'c1' });
+      emit({ type: 'system', subtype: 'status', status: 'compacting', session_id: SID }, evInit, { type: 'system', subtype: 'compact_boundary', session_id: SID }, evResult(''));
+      const r = await settled(p);
+      assert.ok(r, 'compact result must settle the task');
+      assert.strictEqual(r.v.sessionId, SID);
+    });
+  });
+
+  await uta('ClaudeSession: autonomous turn → unsolicited_result; send() queues until it ends', async () => {
+    await withFakeClaude(async ({ session, emit, proc }) => {
+      const got = [];
+      session.on('unsolicited_result', (r) => got.push(r));
+      emit({ type: 'system', subtype: 'task_notification', task_id: 'b2', status: 'completed', session_id: SID }, evStatus, evText('render done '), evText('[send:/tmp/out.mp4]'));
+      assert.strictEqual(session.isTurnActive(), true);
+      const p = session.send({ prompt: 'user question', taskId: 41200 });
+      assert.strictEqual(proc.writes.length, 0, 'user prompt must wait for the autonomous turn');
+      emit(evResult('render done [send:/tmp/out.mp4]'));
+      assert.deepStrictEqual(got, [{ content: 'render done [send:/tmp/out.mp4]', sessionId: SID }]);
+      assert.strictEqual(await settled(p), null, 'autonomous result must not be attributed to the user task');
+      assert.strictEqual(proc.writes.length, 1, 'queued prompt starts after the autonomous turn');
+      assert.strictEqual(proc.writes[0].message.content[0].text, 'user question');
+      emit(evStatus, evText('answer'), evResult('answer'));
+      assert.strictEqual((await p).content, 'answer');
+      assert.strictEqual(got.length, 1, 'normal turn is not reported as unsolicited');
+    });
+  });
+
+  await uta('ClaudeSession: background_tasks_changed drives hasBackgroundTasks()', async () => {
+    await withFakeClaude(async ({ session, emit, proc }) => {
+      assert.strictEqual(session.hasBackgroundTasks(), false);
+      emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'b3', description: 'sleep 900' }], session_id: SID });
+      assert.strictEqual(session.hasBackgroundTasks(), true);
+      emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [], session_id: SID });
+      assert.strictEqual(session.hasBackgroundTasks(), false);
+      emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'b4' }], session_id: SID });
+      proc.emit('close', 143, 'SIGTERM');
+      assert.strictEqual(session.hasBackgroundTasks(), false, 'a dead process has no live background tasks');
+    });
+  });
+
+  await uta('Idle timer keeps a session with background tasks alive, closes it once they end', async () => {
+    const stoa = require('./stoa.js');
+    const origLog = console.log, origWarn = console.warn;
+    console.log = () => {}; console.warn = () => {};
+    const key = '/tmp/stoa-idle-test::999::t:0';
+    try {
+      await withFakeClaude(async ({ session, emit, proc }) => {
+        stoa.__setDeps({ SESSION_IDLE_TTL: 0.0005 }); // 30 ms
+        stoa.sessionPool.set(key, session);
+        emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'b5', description: 'sleep 900' }], session_id: SID });
+        stoa.startSessionIdleTimer(key);
+        await new Promise(r => setTimeout(r, 150));
+        assert.strictEqual(proc.killed, null, 'process must not be killed while a background task runs');
+        assert.strictEqual(stoa.sessionPool.get(key), session, 'session stays pooled');
+        emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [], session_id: SID });
+        await new Promise(r => setTimeout(r, 150));
+        assert.strictEqual(proc.killed, 'SIGTERM', 'idle session closed after the task ended');
+        assert.strictEqual(stoa.sessionPool.has(key), false);
+      });
+    } finally {
+      stoa.clearSessionIdleTimer(key);
+      stoa.sessionPool.delete(key);
+      stoa.__resetDeps();
+      console.log = origLog; console.warn = origWarn;
+    }
+  });
+
+  await uta('Idle timer hold is bounded by BACKGROUND_HOLD_MAX_MS', async () => {
+    const stoa = require('./stoa.js');
+    const origLog = console.log;
+    console.log = () => {};
+    const key = '/tmp/stoa-idle-cap::999::t:0';
+    try {
+      await withFakeClaude(async ({ session, emit, proc, warns }) => {
+        stoa.__setDeps({ SESSION_IDLE_TTL: 0.0005, BACKGROUND_HOLD_MAX_MS: 60 });
+        stoa.sessionPool.set(key, session);
+        emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'b6', description: 'sleep infinity' }], session_id: SID });
+        stoa.startSessionIdleTimer(key);
+        await new Promise(r => setTimeout(r, 250));
+        assert.strictEqual(proc.killed, 'SIGTERM', 'hold limit reached → session closed');
+        assert.ok(warns.some(w => w.includes('sleep infinity') && w.includes('hold limit')), 'kill of a live background task is logged');
+      });
+    } finally {
+      stoa.clearSessionIdleTimer(key);
+      stoa.sessionPool.delete(key);
+      stoa.__resetDeps();
+      console.log = origLog;
+    }
+  });
+
+  await uta('extractAndUploadFiles: oversize/missing files are reported in content, never uploaded', async () => {
+    const stoa = require('./stoa.js');
+    const fsM = require('fs'), osM = require('os'), pathM = require('path');
+    const dir = fsM.mkdtempSync(pathM.join(osM.tmpdir(), 'stoa-upl-'));
+    const big = pathM.join(dir, 'stoa.mp4');
+    fsM.writeFileSync(big, '');
+    fsM.truncateSync(big, Math.round(stoa.MAX_UPLOAD_BYTES + 1.1 * 1048576)); // sparse, ~26.1 MB
+    const calls = [];
+    const origLog = console.log, origWarn = console.warn;
+    console.log = () => {}; console.warn = () => {};
+    stoa.__setDeps({ fetch: async (...a) => { calls.push(a); throw new Error('must not upload'); } });
+    try {
+      const r = await stoa.extractAndUploadFiles(`video siap [send:${big}] [send:${pathM.join(dir, 'gone.png')}]`, dir);
+      assert.strictEqual(calls.length, 0, 'no upload attempted');
+      assert.deepStrictEqual(r.attachments, []);
+      assert.ok(r.text.startsWith('video siap'), r.text);
+      assert.ok(r.text.includes('⚠️ file stoa.mp4 gagal dikirim: 26.1 MB melebihi batas 25 MB'), r.text);
+      assert.ok(r.text.includes('file gone.png gagal dikirim: file tidak ditemukan'), r.text);
+      assert.ok(!r.text.includes('[send:'), 'markers stripped');
+    } finally {
+      stoa.__resetDeps();
+      console.log = origLog; console.warn = origWarn;
+      fsM.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   return { p, f };
 }
 
@@ -4072,6 +4247,201 @@ async function run() {
       if (wkActorId) {
         await req('DELETE', `/api/actors/${wkActorId}`);
         orphanActorIds = orphanActorIds.filter(id => id !== wkActorId);
+      }
+    });
+  }
+
+  // ── Agent reply loss (2026-10-19): empty completes, upload limit, autonomous-turn delivery ──
+  console.log('\n[Agent reply loss]');
+  {
+    const RL_NAME = '__test-replyloss-agent';
+    const db = require('./db');
+    const fsM = require('fs'), osM = require('os');
+    let rlActorId = null, rlSecret = null, rlRoomId = null, rlWs = null, rlSa = null;
+    const uploaded = [];
+    const agentHeaders = () => ({ 'X-Agent-Id': String(rlActorId), 'X-Agent-Secret': rlSecret });
+    const postMsg = (body) => rawReq('POST', `/api/rooms/${rlRoomId}/message`, JSON.stringify(body), 'application/json', { ...agentHeaders(), Cookie: '' });
+    const uploadAsAgent = async (name, content) => {
+      const r = await rawReq('POST', '/api/upload/raw', content, 'text/plain', { 'X-File-Name': name, ...agentHeaders(), Cookie: '' });
+      if (r.body?.url) uploaded.push(r.body.url);
+      return r;
+    };
+    // Real stoa.js HTTP code against the test server: only the base URL and the agent
+    // credentials are swapped (stoa.js reads both from env at load).
+    const stoaFetchToTestServer = (url, opts) => {
+      const u = new URL(url);
+      const headers = { ...opts.headers, 'X-Agent-Id': String(rlActorId), 'X-Agent-Secret': rlSecret };
+      return fetch(`http://${HOST}:${PORT}${u.pathname}`, { ...opts, headers });
+    };
+
+    await test('Setup — online agent + room + sub-agent for reply-loss tests', async () => {
+      const agent = await createOnlineTestAgent(RL_NAME, '/tmp/stoa-test-replyloss');
+      if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+      rlActorId = agent.actorId; rlSecret = agent.secret; rlWs = agent.ws;
+      const r = await req('POST', '/api/rooms', { title: '__replyloss-room__', workdir_id: agent.workdirId, participant_ids: [rlActorId] });
+      assert.strictEqual(r.status, 200);
+      rlRoomId = r.body.id;
+      testRoomIds.push(rlRoomId);
+      const s = await req('POST', `/api/actors/${rlActorId}/sub-agents`, { label: 'rlsub', tier: 'quick' });
+      assert.strictEqual(s.status, 201, JSON.stringify(s.body));
+      rlSa = s.body;
+      const l = await req('POST', `/api/rooms/${rlRoomId}/sub-agents`, { sub_agent_id: rlSa.id });
+      assert.ok(l.status === 200 || l.status === 201, JSON.stringify(l.body));
+    });
+
+    await test('agent_complete with empty content → visible placeholder, state=error, completed_at set', async () => {
+      if (!rlWs) { console.log('    (skipped)'); return; }
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        const histP = waitForWsMessage(humanWs, m => m.type === 'history');
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: rlRoomId }));
+        await histP;
+        const trig = waitForWsMessage(rlWs, m => m.type === 'agent_trigger', 5000);
+        humanWs.send(JSON.stringify({ type: 'send_message', room_id: rlRoomId, content: 'are you there?' }));
+        const m = await trig;
+        const done = waitForWsMessage(humanWs, x => x.type === 'message_complete' && x.message_id === m.message_id, 5000);
+        rlWs.send(JSON.stringify({ type: 'agent_complete', room_id: rlRoomId, message_id: m.message_id, content: '' }));
+        const payload = await done;
+        assert.strictEqual(payload.content, '(agent returned an empty reply)');
+        assert.strictEqual(payload.state, 'error');
+        const row = db.prepare('SELECT content, state, completed_at, result_meta FROM messages WHERE id=?').get(m.message_id);
+        assert.strictEqual(row.content, '(agent returned an empty reply)');
+        assert.strictEqual(row.state, 'error');
+        assert.ok(row.completed_at, 'completed_at must be set');
+        assert.strictEqual(JSON.parse(row.result_meta).exit_reason, 'error');
+      } finally { humanWs.close(); }
+    });
+
+    await test('POST /api/upload/raw — declared size over limit → 413 JSON with reason', async () => {
+      const big = Buffer.alloc(25 * 1024 * 1024 + 1);
+      const r = await rawReq('POST', '/api/upload/raw', big, 'application/octet-stream', { 'X-File-Name': 'big.bin' });
+      assert.strictEqual(r.status, 413);
+      assert.match(r.body.error, /25\.0 MB exceeds the 25 MB limit/);
+      assert.strictEqual(r.body.max_bytes, 25 * 1024 * 1024);
+    });
+
+    await test('POST /api/upload/raw — chunked stream over limit → 413 arrives before the socket closes', async () => {
+      const result = await new Promise((resolve, reject) => {
+        const r = http.request({ hostname: HOST, port: PORT, path: '/api/upload/raw', method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream', 'Transfer-Encoding': 'chunked', 'X-File-Name': 'big.bin', ...(cookieHeader() ? { Cookie: cookieHeader() } : {}) } }, res => {
+          let d = ''; res.on('data', c => d += c); res.on('end', () => resolve({ status: res.statusCode, body: d }));
+        });
+        r.on('error', (e) => resolve({ error: e.message }));
+        const chunk = Buffer.alloc(1024 * 1024);
+        let sent = 0;
+        const pump = () => {
+          while (sent < 27) { sent++; if (!r.write(chunk)) return r.once('drain', pump); }
+          r.end();
+        };
+        pump();
+        setTimeout(() => reject(new Error('no response')), 10000);
+      });
+      assert.ok(!result.error, `client saw a dropped connection instead of 413: ${result.error}`);
+      assert.strictEqual(result.status, 413);
+      assert.match(JSON.parse(result.body).error, /exceeds the 25 MB limit/);
+    });
+
+    await test('POST /api/rooms/:id/message — sub_agent_id posts under the sub-agent identity', async () => {
+      if (!rlSa) { console.log('    (skipped)'); return; }
+      const r = await postMsg({ content: 'background render finished', sub_agent_id: rlSa.id });
+      assert.strictEqual(r.status, 200, r.raw);
+      const row = db.prepare('SELECT sub_agent_id, sub_agent_label, content FROM messages WHERE id=?').get(r.body.message_id);
+      assert.strictEqual(row.sub_agent_id, rlSa.id);
+      assert.strictEqual(row.sub_agent_label, 'rlsub');
+    });
+
+    await test('POST /api/rooms/:id/message — foreign / invalid sub_agent_id rejected', async () => {
+      if (!rlSa) { console.log('    (skipped)'); return; }
+      const foreign = db.prepare('SELECT id FROM sub_agents WHERE parent_actor_id != ? LIMIT 1').get(rlActorId);
+      const r1 = await postMsg({ content: 'x', sub_agent_id: foreign ? foreign.id : 99999999 });
+      assert.strictEqual(r1.status, 403, r1.raw);
+      const r2 = await postMsg({ content: 'x', sub_agent_id: 'abc' });
+      assert.strictEqual(r2.status, 400, r2.raw);
+    });
+
+    await test('POST /api/rooms/:id/message — attachments: uploaded file accepted, traversal/missing rejected', async () => {
+      if (!rlRoomId) { console.log('    (skipped)'); return; }
+      const up = await uploadAsAgent('notes.txt', 'hello');
+      assert.strictEqual(up.status, 200, up.raw);
+      const ok = await postMsg({ content: 'file', attachments: [{ url: up.body.url, name: 'notes.txt', type: 'file' }] });
+      assert.strictEqual(ok.status, 200, ok.raw);
+      const row = db.prepare('SELECT file_url, file_name, attachments FROM messages WHERE id=?').get(ok.body.message_id);
+      assert.strictEqual(row.file_url, up.body.url);
+      assert.strictEqual(row.file_name, 'notes.txt');
+      for (const bad of ['/uploads/../db/stoa.db', '/etc/passwd', '/uploads/does-not-exist.txt']) {
+        const r = await postMsg({ content: 'file', attachments: [{ url: bad, name: 'x' }] });
+        assert.strictEqual(r.status, 400, `${bad} → ${r.status}`);
+      }
+      const many = await postMsg({ content: 'file', attachments: 'nope' });
+      assert.strictEqual(many.status, 400);
+    });
+
+    await test('stoa.js postUnsolicitedResult → sub-agent message in its thread with [send:] file', async () => {
+      if (!rlSa) { console.log('    (skipped)'); return; }
+      const stoa = require('./stoa.js');
+      const root = await postMsg({ content: 'thread root' });
+      assert.strictEqual(root.status, 200, root.raw);
+      const threadId = root.body.message_id;
+      const dir = fsM.mkdtempSync(require('path').join(osM.tmpdir(), 'stoa-unsol-'));
+      const file = require('path').join(dir, 'report.txt');
+      fsM.writeFileSync(file, 'render log');
+      const origLog = console.log;
+      console.log = () => {};
+      stoa.__setDeps({ fetch: stoaFetchToTestServer });
+      try {
+        const key = `${dir}::${rlRoomId}::t:${threadId}::sub:${rlSa.id}`;
+        const msgId = await stoa.postUnsolicitedResult(key, { content: `Render selesai.\n[send:${file}]\n[send:${dir}/missing.mp4]` });
+        assert.ok(msgId, 'message id returned');
+        const row = db.prepare('SELECT content, thread_id, sub_agent_label, file_url, file_name, participant_id FROM messages WHERE id=?').get(msgId);
+        assert.strictEqual(row.thread_id, threadId);
+        assert.strictEqual(row.sub_agent_label, 'rlsub');
+        assert.strictEqual(row.file_name, 'report.txt');
+        assert.ok(row.file_url?.startsWith('/uploads/'));
+        uploaded.push(row.file_url);
+        assert.ok(row.content.startsWith('Render selesai.'), row.content);
+        assert.ok(row.content.includes('file missing.mp4 gagal dikirim: file tidak ditemukan'), row.content);
+        const part = db.prepare('SELECT actor_id FROM room_participants WHERE id=?').get(row.participant_id);
+        assert.strictEqual(part.actor_id, rlActorId, 'sent by the parent agent actor');
+      } finally {
+        stoa.__resetDeps();
+        console.log = origLog;
+        fsM.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    await test('stoa.js extractAndUploadFiles — server rejection becomes a note, no undefined attachment', async () => {
+      if (!rlActorId) { console.log('    (skipped)'); return; }
+      const stoa = require('./stoa.js');
+      const dir = fsM.mkdtempSync(require('path').join(osM.tmpdir(), 'stoa-rej-'));
+      const file = require('path').join(dir, 'a.txt');
+      fsM.writeFileSync(file, 'x');
+      const origErr = console.error;
+      console.error = () => {};
+      // Wrong secret → the real server answers 403 JSON instead of { url }.
+      stoa.__setDeps({ fetch: (url, opts) => fetch(`http://${HOST}:${PORT}${new URL(url).pathname}`, { ...opts, headers: { ...opts.headers, 'X-Agent-Id': String(rlActorId), 'X-Agent-Secret': 'wrong' } }) });
+      try {
+        const r = await stoa.extractAndUploadFiles(`done [send:${file}]`, dir);
+        assert.deepStrictEqual(r.attachments, []);
+        assert.match(r.text, /^done\n\n⚠️ file a\.txt gagal dikirim: ditolak server \(/);
+      } finally {
+        stoa.__resetDeps();
+        console.error = origErr;
+        fsM.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    await test('Cleanup — reply-loss test data', async () => {
+      if (rlWs) { rlWs.close(); rlWs = null; }
+      for (const u of uploaded) { try { fsM.unlinkSync(require('path').join(__dirname, 'uploads', u.slice('/uploads/'.length))); } catch {} }
+      if (rlSa) await req('DELETE', `/api/sub-agents/${rlSa.id}`);
+      if (rlRoomId) {
+        await req('PATCH', `/api/rooms/${rlRoomId}`, { archived: true });
+        await req('DELETE', `/api/rooms/${rlRoomId}`);
+        testRoomIds = testRoomIds.filter(id => id !== rlRoomId);
+      }
+      if (rlActorId) {
+        await req('DELETE', `/api/actors/${rlActorId}`);
+        orphanActorIds = orphanActorIds.filter(id => id !== rlActorId);
       }
     });
   }
