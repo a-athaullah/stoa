@@ -4175,6 +4175,147 @@ async function run() {
     });
   }
 
+  // ── Agent reply loss (2026-10-19): empty completes, upload limit, autonomous-turn delivery ──
+  console.log('\n[Agent reply loss]');
+  {
+    const RL_NAME = '__test-replyloss-agent';
+    const db = require('./db');
+    const fsM = require('fs'), osM = require('os');
+    let rlActorId = null, rlSecret = null, rlRoomId = null, rlWs = null, rlSa = null;
+    const uploaded = [];
+    const agentHeaders = () => ({ 'X-Agent-Id': String(rlActorId), 'X-Agent-Secret': rlSecret });
+    const postMsg = (body) => rawReq('POST', `/api/rooms/${rlRoomId}/message`, JSON.stringify(body), 'application/json', { ...agentHeaders(), Cookie: '' });
+    const uploadAsAgent = async (name, content) => {
+      const r = await rawReq('POST', '/api/upload/raw', content, 'text/plain', { 'X-File-Name': name, ...agentHeaders(), Cookie: '' });
+      if (r.body?.url) uploaded.push(r.body.url);
+      return r;
+    };
+    // Real stoa.js HTTP code against the test server: only the base URL and the agent
+    // credentials are swapped (stoa.js reads both from env at load).
+    const stoaFetchToTestServer = (url, opts) => {
+      const u = new URL(url);
+      const headers = { ...opts.headers, 'X-Agent-Id': String(rlActorId), 'X-Agent-Secret': rlSecret };
+      return fetch(`http://${HOST}:${PORT}${u.pathname}`, { ...opts, headers });
+    };
+
+    await test('Setup — online agent + room + sub-agent for reply-loss tests', async () => {
+      const agent = await createOnlineTestAgent(RL_NAME, '/tmp/stoa-test-replyloss');
+      if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+      rlActorId = agent.actorId; rlSecret = agent.secret; rlWs = agent.ws;
+      const r = await req('POST', '/api/rooms', { title: '__replyloss-room__', workdir_id: agent.workdirId, participant_ids: [rlActorId] });
+      assert.strictEqual(r.status, 200);
+      rlRoomId = r.body.id;
+      testRoomIds.push(rlRoomId);
+      const s = await req('POST', `/api/actors/${rlActorId}/sub-agents`, { label: 'rlsub', tier: 'quick' });
+      assert.strictEqual(s.status, 201, JSON.stringify(s.body));
+      rlSa = s.body;
+      const l = await req('POST', `/api/rooms/${rlRoomId}/sub-agents`, { sub_agent_id: rlSa.id });
+      assert.ok(l.status === 200 || l.status === 201, JSON.stringify(l.body));
+    });
+
+    await test('agent_complete with empty content → visible placeholder, state=error, completed_at set', async () => {
+      if (!rlWs) { console.log('    (skipped)'); return; }
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        const histP = waitForWsMessage(humanWs, m => m.type === 'history');
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: rlRoomId }));
+        await histP;
+        const trig = waitForWsMessage(rlWs, m => m.type === 'agent_trigger', 5000);
+        humanWs.send(JSON.stringify({ type: 'send_message', room_id: rlRoomId, content: 'are you there?' }));
+        const m = await trig;
+        const done = waitForWsMessage(humanWs, x => x.type === 'message_complete' && x.message_id === m.message_id, 5000);
+        rlWs.send(JSON.stringify({ type: 'agent_complete', room_id: rlRoomId, message_id: m.message_id, content: '' }));
+        const payload = await done;
+        assert.strictEqual(payload.content, '(agent returned an empty reply)');
+        assert.strictEqual(payload.state, 'error');
+        const row = db.prepare('SELECT content, state, completed_at, result_meta FROM messages WHERE id=?').get(m.message_id);
+        assert.strictEqual(row.content, '(agent returned an empty reply)');
+        assert.strictEqual(row.state, 'error');
+        assert.ok(row.completed_at, 'completed_at must be set');
+        assert.strictEqual(JSON.parse(row.result_meta).exit_reason, 'error');
+      } finally { humanWs.close(); }
+    });
+
+    await test('POST /api/upload/raw — declared size over limit → 413 JSON with reason', async () => {
+      const big = Buffer.alloc(25 * 1024 * 1024 + 1);
+      const r = await rawReq('POST', '/api/upload/raw', big, 'application/octet-stream', { 'X-File-Name': 'big.bin' });
+      assert.strictEqual(r.status, 413);
+      assert.match(r.body.error, /25\.0 MB exceeds the 25 MB limit/);
+      assert.strictEqual(r.body.max_bytes, 25 * 1024 * 1024);
+    });
+
+    await test('POST /api/upload/raw — chunked stream over limit → 413 arrives before the socket closes', async () => {
+      const result = await new Promise((resolve, reject) => {
+        const r = http.request({ hostname: HOST, port: PORT, path: '/api/upload/raw', method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream', 'Transfer-Encoding': 'chunked', 'X-File-Name': 'big.bin', ...(cookieHeader() ? { Cookie: cookieHeader() } : {}) } }, res => {
+          let d = ''; res.on('data', c => d += c); res.on('end', () => resolve({ status: res.statusCode, body: d }));
+        });
+        r.on('error', (e) => resolve({ error: e.message }));
+        const chunk = Buffer.alloc(1024 * 1024);
+        let sent = 0;
+        const pump = () => {
+          while (sent < 27) { sent++; if (!r.write(chunk)) return r.once('drain', pump); }
+          r.end();
+        };
+        pump();
+        setTimeout(() => reject(new Error('no response')), 10000);
+      });
+      assert.ok(!result.error, `client saw a dropped connection instead of 413: ${result.error}`);
+      assert.strictEqual(result.status, 413);
+      assert.match(JSON.parse(result.body).error, /exceeds the 25 MB limit/);
+    });
+
+    await test('POST /api/rooms/:id/message — sub_agent_id posts under the sub-agent identity', async () => {
+      if (!rlSa) { console.log('    (skipped)'); return; }
+      const r = await postMsg({ content: 'background render finished', sub_agent_id: rlSa.id });
+      assert.strictEqual(r.status, 200, r.raw);
+      const row = db.prepare('SELECT sub_agent_id, sub_agent_label, content FROM messages WHERE id=?').get(r.body.message_id);
+      assert.strictEqual(row.sub_agent_id, rlSa.id);
+      assert.strictEqual(row.sub_agent_label, 'rlsub');
+    });
+
+    await test('POST /api/rooms/:id/message — foreign / invalid sub_agent_id rejected', async () => {
+      if (!rlSa) { console.log('    (skipped)'); return; }
+      const foreign = db.prepare('SELECT id FROM sub_agents WHERE parent_actor_id != ? LIMIT 1').get(rlActorId);
+      const r1 = await postMsg({ content: 'x', sub_agent_id: foreign ? foreign.id : 99999999 });
+      assert.strictEqual(r1.status, 403, r1.raw);
+      const r2 = await postMsg({ content: 'x', sub_agent_id: 'abc' });
+      assert.strictEqual(r2.status, 400, r2.raw);
+    });
+
+    await test('POST /api/rooms/:id/message — attachments: uploaded file accepted, traversal/missing rejected', async () => {
+      if (!rlRoomId) { console.log('    (skipped)'); return; }
+      const up = await uploadAsAgent('notes.txt', 'hello');
+      assert.strictEqual(up.status, 200, up.raw);
+      const ok = await postMsg({ content: 'file', attachments: [{ url: up.body.url, name: 'notes.txt', type: 'file' }] });
+      assert.strictEqual(ok.status, 200, ok.raw);
+      const row = db.prepare('SELECT file_url, file_name, attachments FROM messages WHERE id=?').get(ok.body.message_id);
+      assert.strictEqual(row.file_url, up.body.url);
+      assert.strictEqual(row.file_name, 'notes.txt');
+      for (const bad of ['/uploads/../db/stoa.db', '/etc/passwd', '/uploads/does-not-exist.txt']) {
+        const r = await postMsg({ content: 'file', attachments: [{ url: bad, name: 'x' }] });
+        assert.strictEqual(r.status, 400, `${bad} → ${r.status}`);
+      }
+      const many = await postMsg({ content: 'file', attachments: 'nope' });
+      assert.strictEqual(many.status, 400);
+    });
+
+    await test('Cleanup — reply-loss test data', async () => {
+      if (rlWs) { rlWs.close(); rlWs = null; }
+      for (const u of uploaded) { try { fsM.unlinkSync(require('path').join(__dirname, 'uploads', u.slice('/uploads/'.length))); } catch {} }
+      if (rlSa) await req('DELETE', `/api/sub-agents/${rlSa.id}`);
+      if (rlRoomId) {
+        await req('PATCH', `/api/rooms/${rlRoomId}`, { archived: true });
+        await req('DELETE', `/api/rooms/${rlRoomId}`);
+        testRoomIds = testRoomIds.filter(id => id !== rlRoomId);
+      }
+      if (rlActorId) {
+        await req('DELETE', `/api/actors/${rlActorId}`);
+        orphanActorIds = orphanActorIds.filter(id => id !== rlActorId);
+      }
+    });
+  }
+
   // ── Phase 6: proactive schedules (sub_agent_schedules CRUD) ────────────────
   // Requires migration 20260901-sub-agent-schedules.sql applied.
   console.log('\n[Sub-agent schedules]');
