@@ -2219,6 +2219,105 @@ async function runAsyncUnitTests() {
     });
   }
 
+  console.log('  [Agent reply loss — session event handling]');
+
+  // Fake claude process driven by the exact stream-json event order captured in the
+  // 2026-10-19 repro (resume with an orphaned background shell, CLI 2.1.300).
+  const withFakeClaude = async (fn) => {
+    const { EventEmitter } = require('events');
+    const cp = require('child_process');
+    const origSpawn = cp.spawn;
+    const procs = [];
+    cp.spawn = () => {
+      const p = new EventEmitter();
+      p.writes = [];
+      p.stdin = { write: (d) => { p.writes.push(JSON.parse(d)); }, end: () => {}, on: () => {} };
+      p.stdout = new EventEmitter();
+      p.stderr = new EventEmitter();
+      p.killed = null;
+      p.kill = (sig) => { p.killed = sig; };
+      procs.push(p);
+      return p;
+    };
+    delete require.cache[require.resolve('./claude-session')];
+    const origWarn = console.warn;
+    const warns = [];
+    console.warn = (...a) => warns.push(a.join(' '));
+    try {
+      const { ClaudeSession } = require('./claude-session');
+      const session = new ClaudeSession({ workDir: '/tmp' });
+      const emit = (...events) => procs[procs.length - 1].stdout.emit('data', Buffer.from(events.map(e => JSON.stringify(e)).join('\n') + '\n'));
+      await fn({ session, emit, proc: procs[0], warns });
+      session.shutdown();
+    } finally {
+      console.warn = origWarn;
+      cp.spawn = origSpawn;
+      delete require.cache[require.resolve('./claude-session')];
+    }
+  };
+  const SID = 'sess-1';
+  const evInit = { type: 'system', subtype: 'init', session_id: SID };
+  const evStatus = { type: 'system', subtype: 'status', status: 'requesting', session_id: SID };
+  const evText = (t) => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: t } }, session_id: SID });
+  const evResult = (r) => ({ type: 'result', subtype: 'success', result: r, session_id: SID });
+  const evNotif = { type: 'system', subtype: 'task_notification', task_id: 'b1', status: 'killed', summary: "didn't finish before the previous session ended", session_id: SID };
+  const settled = (p) => Promise.race([p.then(v => ({ v })), new Promise(r => setImmediate(() => r(null)))]);
+
+  await uta('ClaudeSession: synthetic empty result on resume is ignored, task gets the real reply', async () => {
+    await withFakeClaude(async ({ session, emit, warns }) => {
+      const p = session.send({ prompt: 'Reply with exactly: HELLO-FROM-TURN-1', taskId: 41300 });
+      emit(evNotif, evInit, evResult(''));
+      assert.strictEqual(await settled(p), null, 'synthetic result must not settle the task');
+      assert.ok(warns.some(w => w.includes('task=41300') && w.includes('resultLen=0')), 'warn names the task and result length');
+      emit(evInit, evStatus, { type: 'stream_event', event: { type: 'message_start' }, session_id: SID }, evText('HELLO-FROM-TURN-1'), { type: 'stream_event', event: { type: 'message_stop' }, session_id: SID }, evResult('HELLO-FROM-TURN-1'));
+      const r = await p;
+      assert.strictEqual(r.content, 'HELLO-FROM-TURN-1');
+      assert.strictEqual(session.busy, false);
+    });
+  });
+
+  await uta('ClaudeSession: /compact (status compacting → result "") still resolves', async () => {
+    await withFakeClaude(async ({ session, emit }) => {
+      const p = session.send({ prompt: '/compact', taskId: 'c1' });
+      emit({ type: 'system', subtype: 'status', status: 'compacting', session_id: SID }, evInit, { type: 'system', subtype: 'compact_boundary', session_id: SID }, evResult(''));
+      const r = await settled(p);
+      assert.ok(r, 'compact result must settle the task');
+      assert.strictEqual(r.v.sessionId, SID);
+    });
+  });
+
+  await uta('ClaudeSession: autonomous turn → unsolicited_result; send() queues until it ends', async () => {
+    await withFakeClaude(async ({ session, emit, proc }) => {
+      const got = [];
+      session.on('unsolicited_result', (r) => got.push(r));
+      emit({ type: 'system', subtype: 'task_notification', task_id: 'b2', status: 'completed', session_id: SID }, evStatus, evText('render done '), evText('[send:/tmp/out.mp4]'));
+      assert.strictEqual(session.isTurnActive(), true);
+      const p = session.send({ prompt: 'user question', taskId: 41200 });
+      assert.strictEqual(proc.writes.length, 0, 'user prompt must wait for the autonomous turn');
+      emit(evResult('render done [send:/tmp/out.mp4]'));
+      assert.deepStrictEqual(got, [{ content: 'render done [send:/tmp/out.mp4]', sessionId: SID }]);
+      assert.strictEqual(await settled(p), null, 'autonomous result must not be attributed to the user task');
+      assert.strictEqual(proc.writes.length, 1, 'queued prompt starts after the autonomous turn');
+      assert.strictEqual(proc.writes[0].message.content[0].text, 'user question');
+      emit(evStatus, evText('answer'), evResult('answer'));
+      assert.strictEqual((await p).content, 'answer');
+      assert.strictEqual(got.length, 1, 'normal turn is not reported as unsolicited');
+    });
+  });
+
+  await uta('ClaudeSession: background_tasks_changed drives hasBackgroundTasks()', async () => {
+    await withFakeClaude(async ({ session, emit, proc }) => {
+      assert.strictEqual(session.hasBackgroundTasks(), false);
+      emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'b3', description: 'sleep 900' }], session_id: SID });
+      assert.strictEqual(session.hasBackgroundTasks(), true);
+      emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [], session_id: SID });
+      assert.strictEqual(session.hasBackgroundTasks(), false);
+      emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'b4' }], session_id: SID });
+      proc.emit('close', 143, 'SIGTERM');
+      assert.strictEqual(session.hasBackgroundTasks(), false, 'a dead process has no live background tasks');
+    });
+  });
+
   return { p, f };
 }
 
