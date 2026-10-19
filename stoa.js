@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.366";
+var CLIENT_VERSION = "0.4.367";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -235,6 +235,14 @@ var STOA_URL = process.env.STOA_URL || "ws://localhost:3001";
 var ACTOR_ID = parseInt(process.env.STOA_ACTOR_ID || "1");
 var ACTOR_TYPE = process.env.STOA_TYPE || "human";
 var STOA_SECRET = process.env.STOA_SECRET || "";
+var { readCfAccessEnv, cfHeadersFor, httpOrigin, startCfForwardProxy } = require("./lib/cf-access");
+var CF_ACCESS = readCfAccessEnv(process.env, (m) => console.warn(m));
+delete process.env.STOA_CF_ACCESS_CLIENT_ID;
+delete process.env.STOA_CF_ACCESS_CLIENT_SECRET;
+var cfProxyReady = null;
+function stoaCfHeaders(url) {
+  return cfHeadersFor(url, STOA_URL, CF_ACCESS);
+}
 var ROOM_ID = parseInt(process.argv[2] || process.env.STOA_ROOM_ID || "1");
 var C = {
   reset: "\x1B[0m",
@@ -736,7 +744,8 @@ async function detectHarnessesAsync() {
   return { harnesses_available, harness_status: status };
 }
 function connect() {
-  ws = new WebSocket(STOA_URL);
+  const cfHeaders = stoaCfHeaders(STOA_URL);
+  ws = Object.keys(cfHeaders).length ? new WebSocket(STOA_URL, { headers: cfHeaders }) : new WebSocket(STOA_URL);
   ws.on("open", () => {
     if (ACTOR_TYPE === "ai") {
       getSession(process.env.STOA_WORK_DIR || os.homedir(), "default");
@@ -1446,8 +1455,11 @@ ${allNotes}`;
     const triggerHarness = msg.harness || "claude";
     const apiKeys = msg.api_keys || (msg.api_key ? [msg.api_key] : []);
     const platformEnv = { STOA_ROOM_ID: String(room_id), STOA_THREAD_ID: threadId ? String(threadId) : "" };
+    const proxy = cfProxyReady ? await cfProxyReady : null;
+    if (proxy) platformEnv.STOA_URL = proxy.wsUrl;
     if (triggerHarness === "claude") {
-      if (msg.base_url) platformEnv.ANTHROPIC_BASE_URL = msg.base_url;
+      // The Stoa Ollama proxy sits behind Cloudflare Access too — route it through the loopback proxy.
+      if (msg.base_url) platformEnv.ANTHROPIC_BASE_URL = proxy && httpOrigin(msg.base_url) === httpOrigin(STOA_URL) ? proxy.httpUrl : msg.base_url;
       if (apiKeys[0]) platformEnv.ANTHROPIC_AUTH_TOKEN = apiKeys[0];
     }
     const envToUse = platformEnv;
@@ -1824,7 +1836,8 @@ async function extractAndUploadFiles(content, workdir) {
           "Content-Type": mime,
           "X-File-Name": encodeURIComponent(fileName),
           "X-Agent-Id": String(ACTOR_ID),
-          "X-Agent-Secret": STOA_SECRET
+          "X-Agent-Secret": STOA_SECRET,
+          ...stoaCfHeaders(`${baseUrl}/api/upload/raw`)
         },
         body: fileData
       });
@@ -1892,7 +1905,7 @@ function fetchToFile(url, destPath) {
   const http = url.startsWith("https") ? require("https") : require("http");
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => { req.destroy(); reject(new Error(`fetchToFile timeout: ${url}`)); }, FETCH_TIMEOUT_MS);
-    const req = http.get(url, (res) => {
+    const req = http.get(url, { headers: stoaCfHeaders(url) }, (res) => {
       if (res.statusCode < 200 || res.statusCode >= 300) {
         clearTimeout(timer);
         res.resume();
@@ -1924,7 +1937,7 @@ function fetchText(url) {
   const http = url.startsWith("https") ? require("https") : require("http");
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => { req.destroy(); reject(new Error(`fetchText timeout: ${url}`)); }, FETCH_TIMEOUT_MS);
-    const req = http.get(url, (res) => {
+    const req = http.get(url, { headers: stoaCfHeaders(url) }, (res) => {
       if (res.statusCode < 200 || res.statusCode >= 300) {
         clearTimeout(timer);
         res.resume();
@@ -2155,9 +2168,10 @@ function startPrompt() {
     const m = input.match(/^\/(approve|reject) (\d+)$/);
     if (m) {
       const approved = m[1] === "approve";
-      await fetch(`${STOA_URL.replace("ws://", "http://")}/api/invites/${m[2]}/resolve`, {
+      const inviteUrl = `${STOA_URL.replace("ws://", "http://")}/api/invites/${m[2]}/resolve`;
+      await fetch(inviteUrl, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...stoaCfHeaders(inviteUrl) },
         body: JSON.stringify({ approved })
       });
       out(C.gray + `[Invite ${approved ? "approved" : "rejected"}]` + C.reset);
@@ -2207,6 +2221,11 @@ var keepAlive = setInterval(() => {
     connect();
   }
 }, 2e4);
+if (CF_ACCESS) {
+  cfProxyReady = startCfForwardProxy({ getUpstream: () => STOA_URL, creds: CF_ACCESS, log: (m) => console.error(m) })
+    .then((p) => { console.log(`[stoa] Cloudflare Access token active; child sessions use loopback proxy on port ${p.port}`); return p; })
+    .catch((e) => { console.error(`[stoa] Cloudflare Access proxy failed to start: ${e.message}`); return null; });
+}
 connect();
 if (ACTOR_TYPE === "ai") {
   updateChecker = setInterval(checkForUpdates, UPDATE_INTERVAL);

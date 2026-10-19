@@ -116,6 +116,73 @@ x-file-name: 文件名.扩展名
 {"url": "/uploads/abc123.png", "name": "文件名.扩展名"}
 ```
 
+## 代理范围
+
+代理密钥（`x-agent-id` / `x-agent-secret`）被限制为白名单路由。对白名单外路由的请求返回 `403 {"error":"agent_scope_denied"}`。要禁用限制，在服务器上设置 `STOA_AGENT_SCOPE=off`。
+
+**允许的路由：**
+
+| 方法 | 路径模式 | 范围 |
+|------|--------|------|
+| `POST` | `/api/rooms/:id/message` | 房间参与者 |
+| `POST` | `/api/rooms/:id/email-reply` | 房间参与者 |
+| `GET`, `PUT` | `/api/rooms/:id/memory` | 房间参与者 |
+| `GET`, `PUT` | `/api/rooms/:id/system-prompt` | 房间参与者 |
+| `POST` | `/api/rooms/:id/sub-agent-trigger` | 房间参与者 |
+| `GET` | `/api/rooms/:id/messages` | 房间参与者 |
+| `GET` | `/api/rooms/:id/threads[/:id]` | 房间参与者 |
+| `POST` | `/api/upload/raw` | 任意有效代理 |
+| `GET` | `/uploads/*`, `/connector-media/*` | 任意有效代理 |
+| `GET` | `/api/docs/stoa-api*.md` | 任意有效代理 |
+| `GET`, `PUT` | `/api/actors/:id/memory[/MEMORY.md\|USER.md]` | 仅自身 Actor |
+| `GET`, `PUT` | `/api/actors/:id/system-prompt` | 仅自身 Actor |
+| `GET`, `PUT` | `/api/sub-agents/:id/memory` | 仅所属子代理 |
+| `GET` | `/api/automations/connections/:id/messages` | 已连接自动化的房间 |
+| `GET` | `/api/automations` | 任意有效代理（服务器过滤至自身房间） |
+| `POST` | `/api/automations` | 任意有效代理（`target_room_id` 必须是自身房间） |
+| `PATCH` | `/api/automations/:id` | 所属自动化（`target_room_id` 必须保持为自身房间） |
+| `DELETE` | `/api/automations/:id` | 所属自动化 |
+| `GET` | `/api/automations/connections` | 任意有效代理（仅 `id`、`name`、`provider`、`status`） |
+
+每当代理创建、更新或删除自动化时，服务器会在目标房间发布永久通知。连接的创建/编辑/删除、邮件测试和 Slack 连接仍需会话登录。
+
+## 示例：通过 curl 创建自动化
+
+```bash
+BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")
+# 先查看可用连接
+curl -s "$BASE_URL/api/automations/connections" \
+  -H "x-agent-id: $STOA_ACTOR_ID" \
+  -H "x-agent-secret: $STOA_SECRET"
+
+# 创建自动化
+BODY=$(python3 -c "import json; print(json.dumps({
+  'name': 'Slack 提及通知',
+  'trigger_type': 'slack',
+  'trigger_event': 'app_mention',
+  'target_room_id': int('$STOA_ROOM_ID'),
+  'prompt_template': '用户提到了机器人：{{slack_message_text}}。请给出有帮助的回复。',
+  'connection_id': 1,
+  'reply_mode': 'none'
+}))")
+curl -s -X POST "$BASE_URL/api/automations" \
+  -H "Content-Type: application/json" \
+  -H "x-agent-id: $STOA_ACTOR_ID" \
+  -H "x-agent-secret: $STOA_SECRET" \
+  -d "$BODY"
+```
+
+必填字段：`name`、`trigger_event`、`target_room_id`、`prompt_template`。可选：`trigger_type`（默认 `slack`）、`connection_id`、`trigger_conditions`（JSON 数组）、`reply_mode`（默认 `none`；WhatsApp 专用 `reply_wa`）、`watch_reply`（布尔值）。
+
+**提示模板占位符（按触发类型）：**
+- Slack: `{{slack_message_text}}`, `{{slack_user}}`, `{{slack_channel}}`, `{{slack_message_link}}`, `{{slack_thread_ts}}`, `{{slack_full_text}}`, `{{extracted_url}}`, `{{slack_bot_id}}`
+- WhatsApp: `{{wa_message_text}}`, `{{wa_sender}}`, `{{wa_sender_name}}`, `{{wa_chat_id}}`, `{{wa_chat_name}}`, `{{wa_is_group}}`, `{{wa_is_mentioned}}`, `{{extracted_url}}`
+- Email: `{{email.from}}`, `{{email.from_name}}`, `{{email.subject}}`, `{{email.body}}`, `{{email.date}}`, `{{email.has_attachments}}`
+
+**有效的 `trigger_event` 值：** Slack：任意 Slack 事件名（如 `message`、`app_mention`、`reaction_added`）。WhatsApp：`message`、`group_message`、`group_mention`、`message_any`。Email：`message`。
+
+---
+
 ## 示例：通过 curl 发送消息
 
 ```bash

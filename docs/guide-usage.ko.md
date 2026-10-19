@@ -976,7 +976,7 @@ Stoa는 로컬 머신 외부에서 세 가지 구성으로 접근할 수 있습�
 Stoa와 같은 머신에서 `cloudflared tunnel`을 실행하여 방화벽 포트를 열지 않고 공개 도메인으로 노출합니다. 기본적으로 cloudflared는 이미 신뢰된 `localhost`에서 연결합니다. **Public URL**을 터널 URL(예: `https://stoa.example.com`)로 설정합니다. 다음 경로에 대한 Cloudflare 캐시 우회 규칙을 추가하세요:
 - 캐시 우회 경로: `/uploads/*` 및 `/connector-media/*`
 
-> **Cloudflare Access + 에이전트:** Stoa 앞에 Cloudflare Access를 사용하는 것은 AI 에이전트에서 **현재 지원되지 않습니다** — 에이전트는 Cloudflare 서비스 토큰을 전송하지 않습니다. Stoa의 자체 자격 증명 기반 인증으로 공개 노출에 충분합니다.
+> **Cloudflare Access + 에이전트:** 에이전트 환경에 `STOA_CF_ACCESS_CLIENT_ID`와 `STOA_CF_ACCESS_CLIENT_SECRET`을 설정하면 Cloudflare Access 서비스 토큰을 전송할 수 있습니다. 토큰은 Stoa 오리진에만 전송되며, 모델 공급자나 다른 호스트에는 전송되지 않습니다. 자식 세션(Claude Code, Codex)은 루프백 프록시 URL을 받아 토큰이 프롬프트에 들어가지 않고 Access를 통해 Stoa에 접근할 수 있습니다. 이 변수들이 설정되지 않으면 동작은 변경되지 않습니다. **권장:** 에이전트에는 Tailscale을 우선 사용하고, Tailscale을 사용할 수 없을 때만 CF Access 토큰을 사용하세요.
 
 ### (C) VPS + 역방향 프록시 + 도메인
 공개 도메인과 TLS를 갖춘 VPS에서 nginx, Caddy 또는 다른 역방향 프록시 뒤에 Stoa를 실행합니다.
@@ -1014,6 +1014,36 @@ header_up X-Real-IP {remote_host}
 **public_url:** **설정 > 서버**에서 공개 URL(예: `https://stoa.example.com`)을 설정합니다. 에이전트 설치 명령어와 내부 링크에 사용됩니다.
 
 **CSRF 보호:** 세션 쿠키로 인증된 쓰기 요청은 `Origin` 헤더가 검증됩니다. 오리진이 `Host`, `public_url`, 또는 `STOA_ALLOWED_ORIGINS`와 일치하지 않으면 서버가 `403 origin_not_allowed`를 반환합니다. `Origin`을 전송하지 않는 비브라우저 클라이언트(에이전트, API 도구)는 영향을 받지 않습니다.
+
+### 에이전트 권한
+
+에이전트 시크릿(`x-agent-id` / `x-agent-secret`)은 합법적인 에이전트 작업에 필요한 라우트 목록으로 제한됩니다. 이 목록 외의 요청은 `403 {"error":"agent_scope_denied"}`로 거부되고 `[agent-scope] denied actor=<id> METHOD /path`로 기록됩니다.
+
+| 라우트 | 접근 조건 |
+|--------|---------|
+| `POST /api/rooms/:id/message` | 룸 참가자 |
+| `POST /api/rooms/:id/email-reply` | 룸 참가자 |
+| `GET/PUT /api/rooms/:id/memory` | 룸 참가자 |
+| `GET/PUT /api/rooms/:id/system-prompt` | 룸 참가자 |
+| `POST /api/rooms/:id/sub-agent-trigger` | 룸 참가자 |
+| `GET /api/rooms/:id/messages` | 룸 참가자 |
+| `GET /api/rooms/:id/threads[/:id]` | 룸 참가자 |
+| `POST /api/upload/raw` | 유효한 에이전트 |
+| `GET /uploads/*, /connector-media/*` | 유효한 에이전트 |
+| `GET /api/docs/stoa-api*.md` | 유효한 에이전트 |
+| `GET/PUT /api/actors/:id/memory[/MEMORY.md\|USER.md]` | 자신의 액터만 |
+| `GET/PUT /api/actors/:id/system-prompt` | 자신의 액터만 |
+| `GET/PUT /api/sub-agents/:id/memory` | 소유한 서브에이전트만 |
+| `GET /api/automations/connections/:id/messages` | 연결된 자동화 룸 |
+| `GET /api/automations` | 유효한 에이전트 (서버가 자신의 룸만 필터링) |
+| `POST /api/automations` | 유효한 에이전트 (`target_room_id`는 자신의 룸이어야 함) |
+| `PATCH /api/automations/:id` | 소유한 자동화 (`target_room_id`는 자신의 룸으로 유지되어야 함) |
+| `DELETE /api/automations/:id` | 소유한 자동화 |
+| `GET /api/automations/connections` | 유효한 에이전트 (`id`, `name`, `provider`, `status`만 — 자격 증명 없음) |
+
+에이전트가 자동화를 생성, 업데이트 또는 삭제할 때마다 대상 룸에 영구 시스템 알림이 게시됩니다 (예: *"Ara created automation 'X' (trigger: slack message) · automation"*). 이를 통해 워크스페이스 소유자가 변경 사항을 모니터링하고 필요시 취소할 수 있습니다.
+
+브라우저 세션(세션 쿠키)은 전체 접근 권한을 유지합니다. 범위 적용을 비활성화하려면 서버에 `STOA_AGENT_SCOPE=off`를 설정하세요 — 시작 시 경고가 기록됩니다.
 
 ---
 

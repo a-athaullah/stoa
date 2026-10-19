@@ -1366,6 +1366,42 @@ function verifyProxyToken(bearer) {
   return safeEqualHex(sig, proxyTokenSig(platId, actorId, actor.secret)) ? platId : null;
 }
 
+// Least-privilege agent secrets — see lib/agent-scope.js for the allowlist and its evidence.
+const { matchAgentRoute, agentScopeEnforced } = require('./lib/agent-scope');
+const AGENT_SCOPE_ENFORCED = agentScopeEnforced(process.env.STOA_AGENT_SCOPE);
+if (!AGENT_SCOPE_ENFORCED) console.warn('[agent-scope] WARNING: STOA_AGENT_SCOPE=off — agent secrets have full API access');
+function agentScopeAllowed(agentId, route) {
+  switch (route.scope) {
+    case 'any': return true;
+    case 'self': return route.id === agentId;
+    case 'room':
+      return !!db.prepare('SELECT 1 FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(route.id, agentId);
+    case 'sub-agent':
+      return !!db.prepare('SELECT 1 FROM sub_agents WHERE id=? AND parent_actor_id=?').get(route.id, agentId);
+    case 'connection':
+      return !!db.prepare(`SELECT 1 FROM automations a JOIN room_participants rp ON rp.room_id=a.target_room_id
+        WHERE a.connection_id=? AND rp.actor_id=? LIMIT 1`).get(route.id, agentId);
+    case 'automation':
+      return !!db.prepare(`SELECT 1 FROM automations a JOIN room_participants rp ON rp.room_id=a.target_room_id
+        WHERE a.id=? AND rp.actor_id=? LIMIT 1`).get(route.id, agentId);
+    default: return false;
+  }
+}
+function agentInRoom(agentId, roomId) {
+  return !!db.prepare('SELECT 1 FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(roomId, agentId);
+}
+// Persistent "· automation" system bubble (kept by the history filters) so the owner sees every
+// automation change an agent makes in the room it targets.
+function postAutomationChangeNotice(agentId, roomId, verb, auto) {
+  const part = db.prepare(`SELECT rp.id, a.name FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
+    WHERE rp.room_id=? AND rp.actor_id=? LIMIT 1`).get(roomId, agentId);
+  if (!part) return;
+  const clean = (v, max) => String(v ?? '').replace(/[\r\n]+/g, ' ').slice(0, max);
+  const content = `${clean(part.name, 64)} ${verb} automation "${clean(auto.name, 100)}" (trigger: ${clean(auto.trigger_type, 20)} ${clean(auto.trigger_event, 40)}) · automation`;
+  const r = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')").run(roomId, part.id, content);
+  broadcast(roomId, { type: 'message_new', message: { id: Number(r.lastInsertRowid), room_id: roomId, content, state: 'system_event', created_at: new Date().toISOString() } });
+}
+
 function agentHeaderAuthOk(req) {
   const agentId = req.headers['x-agent-id'];
   const agentSecret = req.headers['x-agent-secret'];
@@ -1505,8 +1541,7 @@ function requireAuth(req, res, url) {
   // the HMAC proxy token (or agent headers) before reading the body.
   if (url.pathname === '/v1/messages') return true;
 
-  if (agentHeaderAuthOk(req)) return true;
-
+  // Human session first: a valid cookie keeps full access (and the Origin check) even if agent headers are present.
   const cookies = parseCookies(req.headers.cookie);
   const session = validateAuthSession(cookies.stoa_session);
   if (session) {
@@ -1517,6 +1552,17 @@ function requireAuth(req, res, url) {
     }
     req._authUser = session;
     return true;
+  }
+
+  if (agentHeaderAuthOk(req)) {
+    if (!AGENT_SCOPE_ENFORCED) return true;
+    const agentId = Number(req.headers['x-agent-id']);
+    const route = matchAgentRoute(req.method, url.pathname);
+    if (route && agentScopeAllowed(agentId, route)) { req._scopedAgentId = agentId; return true; }
+    console.warn(`[agent-scope] denied actor=${agentId} ${req.method} ${url.pathname.slice(0, 200)}`);
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'agent_scope_denied' }));
+    return false;
   }
 
   // Not authenticated
@@ -2083,6 +2129,7 @@ const server = http.createServer(async (req, res) => {
                 (m.state = 'complete' AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL))
                 OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
                 OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
+                OR (m.state = 'system_event' AND m.content LIKE '% · automation')
                 OR (m.state = 'error' AND m.broadcast_reason IS NOT NULL)
               )
             ORDER BY m.created_at DESC LIMIT ?
@@ -2108,6 +2155,7 @@ const server = http.createServer(async (req, res) => {
             (m.state = 'complete' AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL))
             OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
             OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
+            OR (m.state = 'system_event' AND m.content LIKE '% · automation')
             OR (m.state = 'error' AND m.broadcast_reason IS NOT NULL)
           )
         ORDER BY m.created_at ASC
@@ -4221,6 +4269,17 @@ STOA_URL="${stoaUrl}"
 REG_TOKEN="${token}"
 AGENT_DIR="\${HOME}/stoa-agent"
 
+# Optional Cloudflare Access service token (Stoa behind CF Access, agent without Tailscale)
+CF_HDR=()
+if [ -n "\${STOA_CF_ACCESS_CLIENT_ID:-}" ] && [ -n "\${STOA_CF_ACCESS_CLIENT_SECRET:-}" ]; then
+  CF_HDR=(-H "CF-Access-Client-Id: \${STOA_CF_ACCESS_CLIENT_ID}" -H "CF-Access-Client-Secret: \${STOA_CF_ACCESS_CLIENT_SECRET}")
+  echo "Cloudflare Access service token: enabled"
+elif [ -n "\${STOA_CF_ACCESS_CLIENT_ID:-}\${STOA_CF_ACCESS_CLIENT_SECRET:-}" ]; then
+  echo "Warning: set both STOA_CF_ACCESS_CLIENT_ID and STOA_CF_ACCESS_CLIENT_SECRET — ignoring Cloudflare Access token" >&2
+  STOA_CF_ACCESS_CLIENT_ID=""
+  STOA_CF_ACCESS_CLIENT_SECRET=""
+fi
+
 echo "=== Stoa Agent Setup ==="
 echo "Server : \${BASE_URL}"
 echo ""
@@ -4231,7 +4290,7 @@ mkdir -p "\${HOME}/stoa-workspace"
 echo "[1/5] Downloading client files..."
 cd "\${AGENT_DIR}"
 for FILE in ${clientFiles}; do
-  curl -fsSL "\${BASE_URL}/api/client/file/\${FILE}" -o "\${FILE}"
+  curl -fsSL "\${CF_HDR[@]}" "\${BASE_URL}/api/client/file/\${FILE}" -o "\${FILE}"
   echo "  ok \${FILE}"
 done
 
@@ -4241,7 +4300,7 @@ npm install ws > /dev/null 2>&1
 echo "  ok ws"
 
 echo "[3/5] Registering agent..."
-RESPONSE=\$(curl -s -X POST "\${BASE_URL}/api/agent/register" \\
+RESPONSE=\$(curl -s "\${CF_HDR[@]}" -X POST "\${BASE_URL}/api/agent/register" \\
   -H "Content-Type: application/json" \\
   -d "{\\"token\\":\\"\${REG_TOKEN}\\"}")
 ACTOR_ID=\$(echo "\${RESPONSE}" | grep -o '"actor_id":[0-9]*' | grep -o '[0-9]*')
@@ -4275,6 +4334,8 @@ module.exports = {
       STOA_ACTOR_ID: '\${ACTOR_ID}',
       STOA_SECRET: '\${STOA_SECRET}',
       STOA_WORK_DIR: process.env.HOME + '/stoa-workspace',
+      STOA_CF_ACCESS_CLIENT_ID: '\${STOA_CF_ACCESS_CLIENT_ID:-}',
+      STOA_CF_ACCESS_CLIENT_SECRET: '\${STOA_CF_ACCESS_CLIENT_SECRET:-}',
     },
     restart_delay: 3000,
     max_restarts: 50,
@@ -4282,6 +4343,7 @@ module.exports = {
   }]
 };
 EOFCFG
+chmod 600 ecosystem.config.js
 
 pm2 stop "\${AGENT_NAME}" 2>/dev/null || true
 pm2 delete "\${AGENT_NAME}" 2>/dev/null || true
@@ -4322,6 +4384,19 @@ $RegToken = "${token}"
 $AgentDir = "$env:USERPROFILE\\stoa-agent"
 $WorkDir  = "$env:USERPROFILE\\stoa-workspace"
 
+# Optional Cloudflare Access service token (Stoa behind CF Access, agent without Tailscale)
+$CfHeaders = @{}
+$CfId = "$env:STOA_CF_ACCESS_CLIENT_ID"
+$CfSecret = "$env:STOA_CF_ACCESS_CLIENT_SECRET"
+if ($CfId -and $CfSecret) {
+  $CfHeaders["CF-Access-Client-Id"] = $CfId
+  $CfHeaders["CF-Access-Client-Secret"] = $CfSecret
+  Write-Host "Cloudflare Access service token: enabled"
+} elseif ($CfId -or $CfSecret) {
+  Write-Warning "Set both STOA_CF_ACCESS_CLIENT_ID and STOA_CF_ACCESS_CLIENT_SECRET - ignoring Cloudflare Access token"
+  $CfId = ""; $CfSecret = ""
+}
+
 Write-Host "=== Stoa Agent Setup ==="
 Write-Host "Server : $BaseUrl"
 Write-Host ""
@@ -4331,7 +4406,7 @@ New-Item -ItemType Directory -Force $WorkDir  | Out-Null
 
 Write-Host "[1/5] Downloading client files..."
 foreach ($file in @(${ps1Files})) {
-  Invoke-WebRequest "$BaseUrl/api/client/file/$file" -OutFile "$AgentDir\\$file" -UseBasicParsing
+  Invoke-WebRequest "$BaseUrl/api/client/file/$file" -Headers $CfHeaders -OutFile "$AgentDir\\$file" -UseBasicParsing
   Write-Host "  ok $file"
 }
 
@@ -4343,7 +4418,7 @@ Write-Host "  ok ws"
 
 Write-Host "[3/5] Registering agent..."
 $body = '{"token":"' + $RegToken + '"}'
-$resp = Invoke-RestMethod -Uri "$BaseUrl/api/agent/register" -Method Post -ContentType "application/json" -Body $body
+$resp = Invoke-RestMethod -Uri "$BaseUrl/api/agent/register" -Method Post -Headers $CfHeaders -ContentType "application/json" -Body $body
 $ActorId   = $resp.actor_id
 $AgentName = $resp.name
 $Secret    = $resp.secret
@@ -4370,6 +4445,8 @@ module.exports = {
       STOA_ACTOR_ID: String($ActorId),
       STOA_SECRET: '$Secret',
       STOA_WORK_DIR: require('os').homedir() + '/stoa-workspace',
+      STOA_CF_ACCESS_CLIENT_ID: '$CfId',
+      STOA_CF_ACCESS_CLIENT_SECRET: '$CfSecret',
     },
     restart_delay: 3000,
     max_restarts: 50,
@@ -4403,7 +4480,9 @@ Write-Host "Logs   : pm2 logs $AgentName"
     }
     const host = req.headers.host || `localhost:${PORT}`;
     const baseUrl = getPublicUrl(host);
-    const script = `@echo off\r\npowershell -ExecutionPolicy Bypass -Command "irm '${baseUrl}/install.ps1?token=${token}' | iex"\r\n`;
+    // Env (incl. optional STOA_CF_ACCESS_CLIENT_ID/SECRET) is inherited by powershell and reused by install.ps1.
+    const cfFetch = "$h=@{}; if ($env:STOA_CF_ACCESS_CLIENT_ID -and $env:STOA_CF_ACCESS_CLIENT_SECRET) { $h['CF-Access-Client-Id']=$env:STOA_CF_ACCESS_CLIENT_ID; $h['CF-Access-Client-Secret']=$env:STOA_CF_ACCESS_CLIENT_SECRET };";
+    const script = `@echo off\r\npowershell -ExecutionPolicy Bypass -Command "${cfFetch} irm -Headers $h '${baseUrl}/install.ps1?token=${token}' | iex"\r\n`;
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
     return res.end(script);
   }
@@ -4791,6 +4870,9 @@ Write-Host "Logs   : pm2 logs $AgentName"
 
   // ── Automation: Connections CRUD ──────────────────────────────────────────
   if (req.method === 'GET' && url.pathname === '/api/automations/connections') {
+    if (req._scopedAgentId) {
+      return json(res, db.prepare('SELECT id, name, provider, status FROM automation_connections ORDER BY id ASC').all());
+    }
     const rows = db.prepare('SELECT id,name,provider,token_type,credentials,metadata,status,error_msg,created_at FROM automation_connections ORDER BY id ASC').all();
     return json(res, rows.map(r => {
       let meta = {}; try { meta = JSON.parse(r.metadata || '{}'); } catch {}
@@ -5093,7 +5175,10 @@ Write-Host "Logs   : pm2 logs $AgentName"
 
   // ── Automation: CRUD ─────────────────────────────────────────────────────────
   if (req.method === 'GET' && url.pathname === '/api/automations') {
-    const rows = db.prepare('SELECT * FROM automations ORDER BY id DESC').all();
+    const rows = req._scopedAgentId
+      ? db.prepare(`SELECT a.* FROM automations a WHERE EXISTS (SELECT 1 FROM room_participants rp
+          WHERE rp.room_id=a.target_room_id AND rp.actor_id=?) ORDER BY a.id DESC`).all(req._scopedAgentId)
+      : db.prepare('SELECT * FROM automations ORDER BY id DESC').all();
     return json(res, rows);
   }
 
@@ -5105,6 +5190,13 @@ Write-Host "Logs   : pm2 logs $AgentName"
     const rawConds = body.trigger_conditions || '[]';
     const condsErr = validateConditions(rawConds);
     if (condsErr) { res.writeHead(400); return res.end(JSON.stringify({ error: condsErr })); }
+    const scopedAgent = req._scopedAgentId;
+    if (scopedAgent) {
+      if (!agentInRoom(scopedAgent, parseInt(body.target_room_id))) return json(res, { error: 'agent_scope_denied' }, 403);
+      if (body.connection_id != null && body.connection_id !== '' && !db.prepare('SELECT 1 FROM automation_connections WHERE id=?').get(parseInt(body.connection_id))) {
+        return json(res, { error: 'connection not found' }, 400);
+      }
+    }
     const trigType = body.trigger_type || 'slack';
     const watchReply = (trigType === 'slack' || trigType === 'email') ? (body.watch_reply ? 1 : 0) : 0;
     const result = db.prepare(`
@@ -5122,6 +5214,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
       watchReply,
     );
     const row = db.prepare('SELECT * FROM automations WHERE id=?').get(result.lastInsertRowid);
+    if (scopedAgent) postAutomationChangeNotice(scopedAgent, row.target_room_id, 'created', row);
     return json(res, row);
   }
 
@@ -5141,9 +5234,14 @@ Write-Host "Logs   : pm2 logs $AgentName"
         if (condsErr) { res.writeHead(400); return res.end(JSON.stringify({ error: condsErr })); }
       }
       const roomId      = body.target_room_id !== undefined ? parseInt(body.target_room_id)          : auto.target_room_id;
+      const scopedAgent = req._scopedAgentId;
+      if (scopedAgent && roomId !== auto.target_room_id && !agentInRoom(scopedAgent, roomId)) return json(res, { error: 'agent_scope_denied' }, 403);
       const prompt      = body.prompt_template !== undefined ? body.prompt_template.trim()           : auto.prompt_template;
       const enabled     = body.enabled !== undefined     ? (body.enabled ? 1 : 0)                    : auto.enabled;
       const connId      = body.connection_id !== undefined ? (parseInt(body.connection_id) || null)  : auto.connection_id;
+      if (scopedAgent && connId && connId !== auto.connection_id && !db.prepare('SELECT 1 FROM automation_connections WHERE id=?').get(connId)) {
+        return json(res, { error: 'connection not found' }, 400);
+      }
       const replyMode   = body.reply_mode !== undefined    ? (body.reply_mode || 'none')              : (auto.reply_mode || 'none');
       const patchTrigType = auto.trigger_type || 'slack';
       const watchReply  = body.watch_reply !== undefined  ? ((patchTrigType === 'slack' || patchTrigType === 'email') ? (body.watch_reply ? 1 : 0) : 0) : (auto.watch_reply || 0);
@@ -5151,10 +5249,16 @@ Write-Host "Logs   : pm2 logs $AgentName"
         UPDATE automations SET name=?, trigger_event=?, trigger_conditions=?, target_room_id=?, prompt_template=?, enabled=?, connection_id=?, reply_mode=?, watch_reply=? WHERE id=?
       `).run(name, event, conds, roomId, prompt, enabled, connId, replyMode, watchReply, autoId);
       const updated = db.prepare('SELECT * FROM automations WHERE id=?').get(autoId);
+      if (scopedAgent) {
+        postAutomationChangeNotice(scopedAgent, updated.target_room_id, 'updated', updated);
+        if (updated.target_room_id !== auto.target_room_id) postAutomationChangeNotice(scopedAgent, auto.target_room_id, 'moved away', updated);
+      }
       return json(res, updated);
     }
     if (req.method === 'DELETE') {
+      const auto = req._scopedAgentId ? db.prepare('SELECT * FROM automations WHERE id=?').get(autoId) : null;
       db.prepare('DELETE FROM automations WHERE id=?').run(autoId);
+      if (auto) postAutomationChangeNotice(req._scopedAgentId, auto.target_room_id, 'deleted', auto);
       return json(res, { ok: true });
     }
   }
@@ -5374,6 +5478,7 @@ wss.on('connection', (ws, req) => {
             (m.state IN ('complete','streaming','requesting') AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL OR m.state IN ('streaming','requesting')))
             OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
             OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
+            OR (m.state = 'system_event' AND m.content LIKE '% · automation')
             OR (m.state = 'error' AND m.broadcast_reason IS NOT NULL)
           )
           ORDER BY m.created_at DESC LIMIT 100
@@ -8319,7 +8424,7 @@ connectionManager.on('wa_event', async ({ chatId, isGroup, sender, senderName, t
 
       if ((auto.reply_mode || 'none') === 'reply_wa') {
         const baseUrl = getPublicUrl(`localhost:${PORT}`);
-        prompt = `${prompt}\n\n---\n[WhatsApp Context]\nSender: ${senderName || sender} (${sender})\nChat: ${chatId}\nType: ${isGroup ? 'group' : 'direct_message'}\nConnection ID: ${connId}\n\nTo reply to this sender via WhatsApp, write:\n[wa:reply]Your message here[/wa:reply]\n\nTo read recent chat history:\ncurl ${baseUrl}/api/automations/connections/${connId}/messages?chatId=${encodeURIComponent(chatId)}&limit=20\n---`;
+        prompt = `${prompt}\n\n---\n[WhatsApp Context]\nSender: ${senderName || sender} (${sender})\nChat: ${chatId}\nType: ${isGroup ? 'group' : 'direct_message'}\nConnection ID: ${connId}\n\nTo reply to this sender via WhatsApp, write:\n[wa:reply]Your message here[/wa:reply]\n\nTo read recent chat history:\ncurl -s \"${baseUrl}/api/automations/connections/${connId}/messages?chatId=${encodeURIComponent(chatId)}&limit=20\" -H \"x-agent-id: $STOA_ACTOR_ID\" -H \"x-agent-secret: $STOA_SECRET\"\n---`;
       }
 
       const _roomId = auto.target_room_id;

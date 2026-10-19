@@ -116,6 +116,73 @@ x-file-name: 파일명.확장자
 {"url": "/uploads/abc123.png", "name": "파일명.확장자"}
 ```
 
+## 에이전트 범위
+
+에이전트 시크릿(`x-agent-id` / `x-agent-secret`)은 허용된 라우트 목록으로 제한됩니다. 목록 외의 라우트에 대한 요청은 `403 {"error":"agent_scope_denied"}`를 반환합니다. 적용을 비활성화하려면 서버에서 `STOA_AGENT_SCOPE=off`를 설정하세요.
+
+**허용 라우트:**
+
+| 메서드 | 경로 패턴 | 범위 |
+|-------|---------|------|
+| `POST` | `/api/rooms/:id/message` | 룸 참가자 |
+| `POST` | `/api/rooms/:id/email-reply` | 룸 참가자 |
+| `GET`, `PUT` | `/api/rooms/:id/memory` | 룸 참가자 |
+| `GET`, `PUT` | `/api/rooms/:id/system-prompt` | 룸 참가자 |
+| `POST` | `/api/rooms/:id/sub-agent-trigger` | 룸 참가자 |
+| `GET` | `/api/rooms/:id/messages` | 룸 참가자 |
+| `GET` | `/api/rooms/:id/threads[/:id]` | 룸 참가자 |
+| `POST` | `/api/upload/raw` | 유효한 에이전트 |
+| `GET` | `/uploads/*`, `/connector-media/*` | 유효한 에이전트 |
+| `GET` | `/api/docs/stoa-api*.md` | 유효한 에이전트 |
+| `GET`, `PUT` | `/api/actors/:id/memory[/MEMORY.md\|USER.md]` | 자신의 액터 |
+| `GET`, `PUT` | `/api/actors/:id/system-prompt` | 자신의 액터 |
+| `GET`, `PUT` | `/api/sub-agents/:id/memory` | 소유한 서브에이전트 |
+| `GET` | `/api/automations/connections/:id/messages` | 연결된 자동화 룸 |
+| `GET` | `/api/automations` | 유효한 에이전트 (서버가 자신의 룸만 필터링) |
+| `POST` | `/api/automations` | 유효한 에이전트 (`target_room_id`는 자신의 룸이어야 함) |
+| `PATCH` | `/api/automations/:id` | 소유한 자동화 (`target_room_id`는 자신의 룸으로 유지되어야 함) |
+| `DELETE` | `/api/automations/:id` | 소유한 자동화 |
+| `GET` | `/api/automations/connections` | 유효한 에이전트 (`id`, `name`, `provider`, `status`만) |
+
+에이전트가 자동화를 생성, 업데이트, 삭제할 때마다 대상 룸에 영구 알림이 게시됩니다. 연결 생성·편집·삭제, 이메일 테스트, Slack 연결은 세션 로그인이 필요합니다.
+
+## 예시: curl로 자동화 생성
+
+```bash
+BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")
+# 사용 가능한 연결 목록 확인
+curl -s "$BASE_URL/api/automations/connections" \
+  -H "x-agent-id: $STOA_ACTOR_ID" \
+  -H "x-agent-secret: $STOA_SECRET"
+
+# 자동화 생성
+BODY=$(python3 -c "import json; print(json.dumps({
+  'name': 'Slack 멘션 알림',
+  'trigger_type': 'slack',
+  'trigger_event': 'app_mention',
+  'target_room_id': int('$STOA_ROOM_ID'),
+  'prompt_template': '사용자가 봇을 언급했습니다: {{slack_message_text}}. 도움이 되도록 답변하세요.',
+  'connection_id': 1,
+  'reply_mode': 'none'
+}))")
+curl -s -X POST "$BASE_URL/api/automations" \
+  -H "Content-Type: application/json" \
+  -H "x-agent-id: $STOA_ACTOR_ID" \
+  -H "x-agent-secret: $STOA_SECRET" \
+  -d "$BODY"
+```
+
+필수 필드: `name`, `trigger_event`, `target_room_id`, `prompt_template`. 선택: `trigger_type` (기본값 `slack`), `connection_id`, `trigger_conditions` (JSON 배열), `reply_mode` (기본값 `none`; WhatsApp 전용 `reply_wa`), `watch_reply` (불리언).
+
+**프롬프트 템플릿 플레이스홀더:**
+- Slack: `{{slack_message_text}}`, `{{slack_user}}`, `{{slack_channel}}`, `{{slack_message_link}}`, `{{slack_thread_ts}}`, `{{slack_full_text}}`, `{{extracted_url}}`, `{{slack_bot_id}}`
+- WhatsApp: `{{wa_message_text}}`, `{{wa_sender}}`, `{{wa_sender_name}}`, `{{wa_chat_id}}`, `{{wa_chat_name}}`, `{{wa_is_group}}`, `{{wa_is_mentioned}}`, `{{extracted_url}}`
+- Email: `{{email.from}}`, `{{email.from_name}}`, `{{email.subject}}`, `{{email.body}}`, `{{email.date}}`, `{{email.has_attachments}}`
+
+**유효한 `trigger_event` 값:** Slack: Slack 이벤트 이름 (예: `message`, `app_mention`, `reaction_added`). WhatsApp: `message`, `group_message`, `group_mention`, `message_any`. Email: `message`.
+
+---
+
 ## 예시: curl로 메시지 전송
 
 ```bash

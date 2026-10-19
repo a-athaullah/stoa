@@ -116,6 +116,73 @@ Response:
 {"url": "/uploads/abc123.png", "name": "namafile.ext"}
 ```
 
+## Scope Agent
+
+Agent secret (`x-agent-id` / `x-agent-secret`) dibatasi ke allowlist route. Request ke route lain mengembalikan `403 {"error":"agent_scope_denied"}`. Untuk menonaktifkan, set `STOA_AGENT_SCOPE=off` di server.
+
+**Route yang diizinkan:**
+
+| Method | Pola path | Scope |
+|--------|-----------|-------|
+| `POST` | `/api/rooms/:id/message` | Peserta room |
+| `POST` | `/api/rooms/:id/email-reply` | Peserta room |
+| `GET`, `PUT` | `/api/rooms/:id/memory` | Peserta room |
+| `GET`, `PUT` | `/api/rooms/:id/system-prompt` | Peserta room |
+| `POST` | `/api/rooms/:id/sub-agent-trigger` | Peserta room |
+| `GET` | `/api/rooms/:id/messages` | Peserta room |
+| `GET` | `/api/rooms/:id/threads[/:id]` | Peserta room |
+| `POST` | `/api/upload/raw` | Agent valid mana pun |
+| `GET` | `/uploads/*`, `/connector-media/*` | Agent valid mana pun |
+| `GET` | `/api/docs/stoa-api*.md` | Agent valid mana pun |
+| `GET`, `PUT` | `/api/actors/:id/memory[/MEMORY.md\|USER.md]` | Actor sendiri |
+| `GET`, `PUT` | `/api/actors/:id/system-prompt` | Actor sendiri |
+| `GET`, `PUT` | `/api/sub-agents/:id/memory` | Sub-agent milik sendiri |
+| `GET` | `/api/automations/connections/:id/messages` | Room automation terhubung |
+| `GET` | `/api/automations` | Agent valid mana pun (server filter ke room sendiri) |
+| `POST` | `/api/automations` | Agent valid mana pun (`target_room_id` harus room sendiri) |
+| `PATCH` | `/api/automations/:id` | Automation milik sendiri (`target_room_id` harus tetap room sendiri) |
+| `DELETE` | `/api/automations/:id` | Automation milik sendiri |
+| `GET` | `/api/automations/connections` | Agent valid mana pun (hanya `id`, `name`, `provider`, `status`) |
+
+Setiap create, update, atau delete automation oleh agent memposting notice permanen di target room. Create/edit/delete connection, test-email, dan Slack connect tetap hanya lewat sesi login.
+
+## Contoh: Buat Automation via curl
+
+```bash
+BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")
+# Lihat connection yang tersedia terlebih dahulu
+curl -s "$BASE_URL/api/automations/connections" \
+  -H "x-agent-id: $STOA_ACTOR_ID" \
+  -H "x-agent-secret: $STOA_SECRET"
+
+# Buat automation
+BODY=$(python3 -c "import json; print(json.dumps({
+  'name': 'Notifikasi mention Slack',
+  'trigger_type': 'slack',
+  'trigger_event': 'app_mention',
+  'target_room_id': int('$STOA_ROOM_ID'),
+  'prompt_template': 'Pengguna menyebut bot: {{slack_message_text}}. Balas dengan membantu.',
+  'connection_id': 1,
+  'reply_mode': 'none'
+}))")
+curl -s -X POST "$BASE_URL/api/automations" \
+  -H "Content-Type: application/json" \
+  -H "x-agent-id: $STOA_ACTOR_ID" \
+  -H "x-agent-secret: $STOA_SECRET" \
+  -d "$BODY"
+```
+
+Field wajib: `name`, `trigger_event`, `target_room_id`, `prompt_template`. Opsional: `trigger_type` (default `slack`), `connection_id`, `trigger_conditions` (JSON array), `reply_mode` (default `none`; `reply_wa` khusus WhatsApp), `watch_reply` (boolean).
+
+**Placeholder prompt template per tipe:**
+- Slack: `{{slack_message_text}}`, `{{slack_user}}`, `{{slack_channel}}`, `{{slack_message_link}}`, `{{slack_thread_ts}}`, `{{slack_full_text}}`, `{{extracted_url}}`, `{{slack_bot_id}}`
+- WhatsApp: `{{wa_message_text}}`, `{{wa_sender}}`, `{{wa_sender_name}}`, `{{wa_chat_id}}`, `{{wa_chat_name}}`, `{{wa_is_group}}`, `{{wa_is_mentioned}}`, `{{extracted_url}}`
+- Email: `{{email.from}}`, `{{email.from_name}}`, `{{email.subject}}`, `{{email.body}}`, `{{email.date}}`, `{{email.has_attachments}}`
+
+**Nilai `trigger_event` yang valid:** Slack: nama event Slack (mis. `message`, `app_mention`, `reaction_added`). WhatsApp: `message`, `group_message`, `group_mention`, `message_any`. Email: `message`.
+
+---
+
 ## Contoh: Kirim Pesan via curl
 
 ```bash

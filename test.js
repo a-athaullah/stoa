@@ -1577,6 +1577,43 @@ function runUnitTests() {
     assert.ok(stoa.STALE_TRIGGER_MS >= MIN_STALE, `STALE_TRIGGER_MS (${stoa.STALE_TRIGGER_MS}) must be >= ${MIN_STALE}`);
   });
 
+  // lib/agent-scope — route allowlist matcher
+  {
+    const { matchAgentRoute, agentScopeEnforced } = require('./lib/agent-scope');
+    ut('agent-scope — allowlisted routes match with scope + numeric id', () => {
+      assert.deepStrictEqual(matchAgentRoute('POST', '/api/rooms/12/message'), { scope: 'room', id: 12 });
+      assert.deepStrictEqual(matchAgentRoute('PUT', '/api/actors/4/memory/MEMORY.md'), { scope: 'self', id: 4 });
+      assert.deepStrictEqual(matchAgentRoute('PUT', '/api/sub-agents/9/memory'), { scope: 'sub-agent', id: 9 });
+      assert.deepStrictEqual(matchAgentRoute('GET', '/api/automations/connections/3/messages'), { scope: 'connection', id: 3 });
+      assert.deepStrictEqual(matchAgentRoute('PATCH', '/api/automations/7'), { scope: 'automation', id: 7 });
+      assert.deepStrictEqual(matchAgentRoute('GET', '/api/automations'), { scope: 'any', id: null });
+      assert.deepStrictEqual(matchAgentRoute('POST', '/api/upload/raw'), { scope: 'any', id: null });
+      assert.deepStrictEqual(matchAgentRoute('GET', '/api/docs/stoa-api.ja.md'), { scope: 'any', id: null });
+    });
+    ut('agent-scope — wrong method, suffix, or admin route → null', () => {
+      assert.strictEqual(matchAgentRoute('DELETE', '/api/rooms/12/message'), null);
+      assert.strictEqual(matchAgentRoute('POST', '/api/rooms/12/message/x'), null);
+      assert.strictEqual(matchAgentRoute('DELETE', '/api/rooms/12'), null);
+      assert.strictEqual(matchAgentRoute('PUT', '/api/actors/4/memory/OTHER.md'), null);
+      assert.strictEqual(matchAgentRoute('PATCH', '/api/settings'), null);
+      assert.strictEqual(matchAgentRoute('POST', '/api/agent/install-token'), null);
+      assert.strictEqual(matchAgentRoute('POST', '/api/automations/connections'), null);
+      assert.strictEqual(matchAgentRoute('POST', '/api/automations/connections/test-email'), null);
+      assert.strictEqual(matchAgentRoute('DELETE', '/api/automations/connections/3'), null);
+      assert.strictEqual(matchAgentRoute('PATCH', '/api/automations/7/x'), null);
+      assert.strictEqual(matchAgentRoute('GET', '/api/docs/../settings'), null);
+      assert.strictEqual(matchAgentRoute(undefined, '/api/upload/raw'), null);
+    });
+    ut('agent-scope — STOA_AGENT_SCOPE: only "off" disables enforcement', () => {
+      assert.strictEqual(agentScopeEnforced(undefined), true);
+      assert.strictEqual(agentScopeEnforced(''), true);
+      assert.strictEqual(agentScopeEnforced('on'), true);
+      assert.strictEqual(agentScopeEnforced('0'), true);
+      assert.strictEqual(agentScopeEnforced('off'), false);
+      assert.strictEqual(agentScopeEnforced(' OFF '), false);
+    });
+  }
+
   return { p, f };
 }
 
@@ -2054,6 +2091,82 @@ async function runAsyncUnitTests() {
       assert.strictEqual(none.clientIp(fakeReq('127.0.0.1', { 'cf-connecting-ip': '1.1.1.1' })), '127.0.0.1');
       assert.deepStrictEqual(parseCidr('::ffff:10.1.2.3/32'), { address: '10.1.2.3', prefix: 32, type: 'ipv4' });
       assert.strictEqual(parseCidr('10.0.0.0/abc'), null);
+    });
+  }
+
+  // lib/cf-access — Cloudflare Access service token helpers + loopback forward proxy
+  {
+    const cf = require('./lib/cf-access');
+    const creds = { clientId: 'cid.access', clientSecret: 'csecret' };
+    await uta('cf-access — env: both set → creds; only one → null + warning; none → null silently', async () => {
+      const warns = [];
+      assert.deepStrictEqual(cf.readCfAccessEnv({ STOA_CF_ACCESS_CLIENT_ID: ' ID-VAL-1 ', STOA_CF_ACCESS_CLIENT_SECRET: 'SECRET-VAL-2' }, w => warns.push(w)), { clientId: 'ID-VAL-1', clientSecret: 'SECRET-VAL-2' });
+      assert.strictEqual(cf.readCfAccessEnv({ STOA_CF_ACCESS_CLIENT_ID: 'ID-VAL-1' }, w => warns.push(w)), null);
+      assert.strictEqual(cf.readCfAccessEnv({ STOA_CF_ACCESS_CLIENT_SECRET: 'SECRET-VAL-2' }, w => warns.push(w)), null);
+      assert.strictEqual(warns.length, 2);
+      assert.ok(!warns.join(' ').includes('VAL-'), 'warning must not echo token values');
+      assert.strictEqual(cf.readCfAccessEnv({}, w => warns.push(w)), null);
+      assert.strictEqual(warns.length, 2);
+    });
+    await uta('cf-access — headers only for the Stoa origin (ws↔http mapped), never other hosts/ports', async () => {
+      const h = cf.cfHeadersFor('https://stoa.example.com/uploads/a.png?sig=1', 'wss://stoa.example.com', creds);
+      assert.strictEqual(h['CF-Access-Client-Id'], 'cid.access');
+      assert.strictEqual(h['CF-Access-Client-Secret'], 'csecret');
+      assert.ok(cf.cfHeadersFor('ws://stoa.example.com/', 'ws://stoa.example.com', creds)['CF-Access-Client-Id']);
+      assert.deepStrictEqual(cf.cfHeadersFor('https://ollama.com/v1/messages', 'wss://stoa.example.com', creds), {});
+      assert.deepStrictEqual(cf.cfHeadersFor('https://stoa.example.com.evil.io/', 'wss://stoa.example.com', creds), {});
+      assert.deepStrictEqual(cf.cfHeadersFor('https://stoa.example.com:8443/', 'wss://stoa.example.com', creds), {});
+      assert.deepStrictEqual(cf.cfHeadersFor('http://stoa.example.com/', 'wss://stoa.example.com', creds), {}, 'scheme downgrade');
+      assert.deepStrictEqual(cf.cfHeadersFor('https://stoa.example.com/', 'wss://stoa.example.com', null), {});
+      assert.deepStrictEqual(cf.cfHeadersFor('not a url', 'wss://stoa.example.com', creds), {});
+    });
+    await uta('cf-access proxy — forwards under prefix with injected headers, body + query intact; rejects everything else', async () => {
+      const net = require('net');
+      const hits = [];
+      const upstream = http.createServer((rq, rs) => {
+        let body = '';
+        rq.on('data', c => body += c);
+        rq.on('end', () => { hits.push({ url: rq.url, method: rq.method, headers: rq.headers, body }); rs.writeHead(201, { 'X-Up': 'yes' }); rs.end('up:' + body); });
+      });
+      await new Promise(r => upstream.listen(0, '127.0.0.1', r));
+      const upUrl = `ws://127.0.0.1:${upstream.address().port}`;
+      const proxy = await cf.startCfForwardProxy({ getUpstream: () => upUrl, creds, maxBodyBytes: 64 });
+      const call = (method, pathStr, body, headers = {}) => new Promise((resolve, reject) => {
+        const rq = http.request({ host: '127.0.0.1', port: proxy.port, path: pathStr, method, headers }, rs => {
+          let d = ''; rs.on('data', c => d += c); rs.on('end', () => resolve({ status: rs.statusCode, headers: rs.headers, body: d }));
+        });
+        rq.on('error', reject);
+        if (body) rq.write(body);
+        rq.end();
+      });
+      try {
+        assert.ok(proxy.wsUrl.startsWith(`ws://127.0.0.1:${proxy.port}/`) && proxy.prefix.length === 33);
+        const ok = await call('POST', `${proxy.prefix}/api/rooms/1/message?x=1`, '{"a":1}', { 'Content-Type': 'application/json', 'CF-Access-Client-Secret': 'spoofed' });
+        assert.strictEqual(ok.status, 201);
+        assert.strictEqual(ok.body, 'up:{"a":1}');
+        assert.strictEqual(ok.headers['x-up'], 'yes');
+        assert.strictEqual(hits.length, 1);
+        assert.strictEqual(hits[0].url, '/api/rooms/1/message?x=1');
+        assert.strictEqual(hits[0].headers['cf-access-client-id'], 'cid.access');
+        assert.strictEqual(hits[0].headers['cf-access-client-secret'], 'csecret', 'client-supplied CF header must be replaced');
+        assert.strictEqual(hits[0].headers.host, `127.0.0.1:${upstream.address().port}`);
+        assert.strictEqual((await call('GET', '/api/rooms')).status, 404, 'no prefix');
+        assert.strictEqual((await call('GET', `${proxy.prefix}x/api`)).status, 404, 'prefix must be a full segment');
+        assert.strictEqual((await call('GET', `${proxy.prefix}//evil.example/x`)).status, 400, 'protocol-relative escape');
+        assert.strictEqual((await call('POST', `${proxy.prefix}/api/upload/raw`, 'x'.repeat(65), { 'Content-Length': '65' })).status, 413);
+        // Absolute-form (open proxy attempt) and CONNECT, over a raw socket.
+        const raw = (line) => new Promise((resolve) => {
+          const sock = net.connect(proxy.port, '127.0.0.1', () => sock.write(line));
+          let d = ''; sock.on('data', c => d += c); sock.on('end', () => resolve(d)); sock.on('error', () => resolve(d));
+          setTimeout(() => { sock.destroy(); resolve(d); }, 1000);
+        });
+        assert.match(await raw('GET http://evil.example/ HTTP/1.1\r\nHost: evil.example\r\nConnection: close\r\n\r\n'), /^HTTP\/1\.1 404/);
+        assert.match(await raw('CONNECT evil.example:443 HTTP/1.1\r\nHost: evil.example:443\r\n\r\n'), /^HTTP\/1\.1 405/);
+        assert.strictEqual(hits.length, 1, 'rejected requests must never reach upstream');
+      } finally {
+        await proxy.close();
+        await new Promise(r => upstream.close(r));
+      }
     });
   }
 
@@ -4997,6 +5110,259 @@ async function run() {
       for (const f of createdUploads) { try { fs.unlinkSync(f); } catch {} }
     });
   }
+
+  // ── Agent secret scoping: agent headers (no session) reach only allowlisted, owned resources.
+  console.log('\n[Agent Scope]');
+  {
+    const scDb = require('./db');
+    let agA = null, agB = null, roomA = null, otherRoom = null;
+    // Pure agent request: no session cookie, no device cookie.
+    const asAgent = async (ag, method, p, body = null) => {
+      const s = sessionCookie, d = deviceCookie;
+      sessionCookie = null; deviceCookie = null;
+      try { return await req(method, p, body, { 'x-agent-id': String(ag.actorId), 'x-agent-secret': ag.secret }); }
+      finally { sessionCookie = s; deviceCookie = d; }
+    };
+    const denied = (r, what) => {
+      assert.strictEqual(r.status, 403, `${what}: expected 403, got ${r.status} ${r.raw?.slice(0, 120)}`);
+      assert.strictEqual(r.body.error, 'agent_scope_denied', `${what}: ${r.raw?.slice(0, 120)}`);
+    };
+
+    await test('Agent scope — setup: two agents, room for A, room without A', async () => {
+      agA = await createOnlineTestAgent('__test-scope-a', '/tmp/stoa-test-scope-a');
+      agB = await createOnlineTestAgent('__test-scope-b', '/tmp/stoa-test-scope-b');
+      assert.ok(agA?.workdirId && agB?.workdirId, 'agent setup failed');
+      const ra = await req('POST', '/api/rooms', { title: '__scope-room-a__', workdir_id: agA.workdirId, participant_ids: [agA.actorId] });
+      const rb = await req('POST', '/api/rooms', { title: '__scope-room-b__', workdir_id: agB.workdirId, participant_ids: [agB.actorId] });
+      assert.strictEqual(ra.status, 200); assert.strictEqual(rb.status, 200);
+      roomA = ra.body.id; otherRoom = rb.body.id;
+      testRoomIds.push(roomA, otherRoom);
+    });
+
+    await test('Agent scope — admin endpoints → 403 agent_scope_denied, and nothing changes', async () => {
+      denied(await asAgent(agA, 'DELETE', `/api/rooms/${roomA}`), 'DELETE room');
+      denied(await asAgent(agA, 'PATCH', `/api/rooms/${roomA}`, { title: 'pwned' }), 'PATCH room');
+      denied(await asAgent(agA, 'PATCH', '/api/settings', { public_url: 'http://evil.example' }), 'PATCH settings');
+      denied(await asAgent(agA, 'GET', '/api/settings'), 'GET settings');
+      denied(await asAgent(agA, 'POST', '/api/agent/install-token', {}), 'install-token');
+      denied(await asAgent(agA, 'POST', '/api/automations/connections', { name: 'x', provider: 'slack' }), 'create connection');
+      denied(await asAgent(agA, 'POST', '/api/automations/connections/test-email', {}), 'test-email');
+      denied(await asAgent(agA, 'GET', '/api/rooms'), 'list rooms');
+      denied(await asAgent(agA, 'POST', '/api/rooms', { title: 'x' }), 'create room');
+      denied(await asAgent(agA, 'DELETE', `/api/actors/${agB.actorId}`), 'DELETE actor');
+      denied(await asAgent(agA, 'POST', `/api/actors/${agA.actorId}/sub-agents`, { label: 'sneaky', tier: 'quick' }), 'create sub-agent');
+      denied(await asAgent(agA, 'PATCH', '/api/auth/password', { current_password: 'x', new_password: 'y'.repeat(12) }), 'auth');
+      // Verify via the human session that the denied writes had no effect.
+      const rooms = (await req('GET', '/api/rooms')).body;
+      const ra = rooms.find(r => r.id === roomA);
+      assert.ok(ra, 'room A must still exist');
+      assert.notStrictEqual(ra.title, 'pwned');
+      assert.ok((await req('GET', '/api/actors')).body.some(a => a.id === agB.actorId), 'actor B must still exist');
+      assert.notStrictEqual((await req('GET', '/api/settings')).body.public_url, 'http://evil.example');
+    });
+
+    await test('Agent scope — proactive message: own room 200, room without the agent 403', async () => {
+      const ok = await asAgent(agA, 'POST', `/api/rooms/${roomA}/message`, { content: 'scope ok' });
+      assert.strictEqual(ok.status, 200, ok.raw);
+      const hist = await req('GET', `/api/rooms/${roomA}/messages?limit=5`);
+      assert.ok(JSON.stringify(hist.body).includes('scope ok'), 'message must be stored');
+      denied(await asAgent(agA, 'POST', `/api/rooms/${otherRoom}/message`, { content: 'intrude' }), 'message other room');
+    });
+
+    await test('Agent scope — room read/memory: participant 200, non-participant 403', async () => {
+      assert.strictEqual((await asAgent(agA, 'GET', `/api/rooms/${roomA}/messages`)).status, 200);
+      assert.strictEqual((await asAgent(agA, 'GET', `/api/rooms/${roomA}/threads`)).status, 200);
+      assert.strictEqual((await asAgent(agA, 'PUT', `/api/rooms/${roomA}/memory`, { content: 'scope-mem' })).status, 200);
+      assert.strictEqual((await req('GET', `/api/rooms/${roomA}/memory`)).body.content, 'scope-mem');
+      denied(await asAgent(agA, 'GET', `/api/rooms/${otherRoom}/messages`), 'read other room');
+      denied(await asAgent(agA, 'PUT', `/api/rooms/${otherRoom}/memory`, { content: 'x' }), 'other room memory');
+      denied(await asAgent(agA, 'GET', `/api/rooms/${otherRoom}/system-prompt`), 'other room system prompt');
+      denied(await asAgent(agA, 'GET', `/api/rooms/${roomA}/export`), 'export not allowlisted');
+    });
+
+    await test('Agent scope — actor memory: self 200, other actor 403', async () => {
+      const self = await asAgent(agA, 'PUT', `/api/actors/${agA.actorId}/memory/MEMORY.md`, { content: 'scope-self' });
+      assert.strictEqual(self.status, 200, self.raw);
+      const files = (await req('GET', `/api/actors/${agA.actorId}/memory`)).body;
+      assert.ok(JSON.stringify(files).includes('scope-self'));
+      denied(await asAgent(agA, 'PUT', `/api/actors/${agB.actorId}/memory/MEMORY.md`, { content: 'x' }), 'other actor memory');
+      denied(await asAgent(agA, 'GET', `/api/actors/${agB.actorId}/memory`), 'read other actor memory');
+      denied(await asAgent(agA, 'PUT', `/api/actors/${agB.actorId}/system-prompt`, { system_prompt: 'x' }), 'other actor prompt');
+    });
+
+    await test('Agent scope — sub-agent memory: own sub-agent 200, other actor\'s 403', async () => {
+      const mine = await req('POST', `/api/actors/${agA.actorId}/sub-agents`, { label: 'scopemine', tier: 'quick' });
+      const theirs = await req('POST', `/api/actors/${agB.actorId}/sub-agents`, { label: 'scopetheirs', tier: 'quick' });
+      assert.strictEqual(mine.status, 201); assert.strictEqual(theirs.status, 201);
+      assert.strictEqual((await asAgent(agA, 'PUT', `/api/sub-agents/${mine.body.id}/memory`, { content: 'sa-mem' })).status, 200);
+      assert.strictEqual((await asAgent(agA, 'GET', `/api/sub-agents/${mine.body.id}/memory`)).body.content, 'sa-mem');
+      denied(await asAgent(agA, 'PUT', `/api/sub-agents/${theirs.body.id}/memory`, { content: 'x' }), 'other sub-agent memory');
+      denied(await asAgent(agA, 'PATCH', `/api/sub-agents/${mine.body.id}`, { tier: 'deep' }), 'edit own sub-agent definition');
+    });
+
+    await test('Agent scope — upload + API docs (any) → 200', async () => {
+      const up = await rawReq('POST', '/api/upload/raw', 'scope-file', 'text/plain', { 'x-file-name': 'scope.txt', 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret, Cookie: '' });
+      assert.strictEqual(up.status, 200, up.raw);
+      const got = await asAgent(agA, 'GET', up.body.url);
+      assert.strictEqual(got.raw, 'scope-file');
+      try { require('fs').unlinkSync(path.join(__dirname, 'uploads', up.body.url.slice('/uploads/'.length))); } catch {}
+      assert.strictEqual((await asAgent(agA, 'GET', '/api/docs/stoa-api.id.md')).status, 200);
+    });
+
+    await test('Agent scope — WA history: connector feeding the agent\'s room 200, other connector 403', async () => {
+      const mk = () => scDb.prepare("INSERT INTO automation_connections (name, provider, token_type, status) VALUES ('__scope-wa__', 'whatsapp', 'qr', 'disconnected')").run().lastInsertRowid;
+      const fed = mk(), foreign = mk();
+      const auto = scDb.prepare("INSERT INTO automations (name, trigger_type, trigger_event, target_room_id, prompt_template, enabled, connection_id) VALUES ('__scope-auto__', 'whatsapp', 'message', ?, 'x', 0, ?)").run(roomA, fed).lastInsertRowid;
+      try {
+        const ok = await asAgent(agA, 'GET', `/api/automations/connections/${fed}/messages?chatId=c1`);
+        assert.strictEqual(ok.status, 200, ok.raw);
+        assert.ok(Array.isArray(ok.body));
+        denied(await asAgent(agA, 'GET', `/api/automations/connections/${foreign}/messages?chatId=c1`), 'foreign connector');
+        denied(await asAgent(agA, 'DELETE', `/api/automations/connections/${fed}`), 'delete connector');
+      } finally {
+        scDb.prepare('DELETE FROM automations WHERE id=?').run(auto);
+        scDb.prepare('DELETE FROM automation_connections WHERE id IN (?, ?)').run(fed, foreign);
+      }
+    });
+
+    await test('Agent automations — create/edit/delete in own room 200, each leaves a persistent notice', async () => {
+      const notices = async () => {
+        const hist = await req('GET', `/api/rooms/${roomA}/messages?limit=100`);
+        const rows = Array.isArray(hist.body) ? hist.body : (hist.body.messages || []);
+        return rows.filter(m => m.state === 'system_event' && / · automation$/.test(m.content)).map(m => m.content);
+      };
+      const created = await asAgent(agA, 'POST', '/api/automations', { name: 'scope-auto\nx', trigger_type: 'slack', trigger_event: 'message', target_room_id: roomA, prompt_template: 'do it' });
+      assert.strictEqual(created.status, 200, created.raw);
+      const id = created.body.id;
+      const row = scDb.prepare('SELECT target_room_id, name FROM automations WHERE id=?').get(id);
+      assert.strictEqual(row.target_room_id, roomA);
+      let n = await notices();
+      assert.ok(n.some(c => c === '__test-scope-a created automation "scope-auto x" (trigger: slack message) · automation'), JSON.stringify(n));
+      const patched = await asAgent(agA, 'PATCH', `/api/automations/${id}`, { enabled: false, name: 'scope-auto-2' });
+      assert.strictEqual(patched.status, 200, patched.raw);
+      assert.strictEqual(scDb.prepare('SELECT enabled, name FROM automations WHERE id=?').get(id).enabled, 0);
+      n = await notices();
+      assert.ok(n.some(c => c.startsWith('__test-scope-a updated automation "scope-auto-2"')), JSON.stringify(n));
+      assert.strictEqual((await asAgent(agA, 'DELETE', `/api/automations/${id}`)).status, 200);
+      assert.strictEqual(scDb.prepare('SELECT 1 FROM automations WHERE id=?').get(id), undefined);
+      n = await notices();
+      assert.ok(n.some(c => c.startsWith('__test-scope-a deleted automation "scope-auto-2"')), JSON.stringify(n));
+    });
+
+    await test('Agent automations — other room / moving target / foreign automation → 403; bad connection → 400', async () => {
+      const other = await asAgent(agA, 'POST', '/api/automations', { name: 'x', trigger_event: 'message', target_room_id: otherRoom, prompt_template: 'p' });
+      assert.strictEqual(other.status, 403);
+      assert.strictEqual(scDb.prepare("SELECT COUNT(*) c FROM automations WHERE target_room_id=? AND name='x'").get(otherRoom).c, 0);
+      const missingConn = await asAgent(agA, 'POST', '/api/automations', { name: 'x', trigger_event: 'message', target_room_id: roomA, prompt_template: 'p', connection_id: 99999999 });
+      assert.strictEqual(missingConn.status, 400);
+      const mine = await asAgent(agA, 'POST', '/api/automations', { name: 'scope-move', trigger_event: 'message', target_room_id: roomA, prompt_template: 'p' });
+      assert.strictEqual(mine.status, 200);
+      const theirs = await req('POST', '/api/automations', { name: 'scope-theirs', trigger_event: 'message', target_room_id: otherRoom, prompt_template: 'p' });
+      assert.strictEqual(theirs.status, 200);
+      try {
+        const move = await asAgent(agA, 'PATCH', `/api/automations/${mine.body.id}`, { target_room_id: otherRoom });
+        assert.strictEqual(move.status, 403);
+        assert.strictEqual(scDb.prepare('SELECT target_room_id FROM automations WHERE id=?').get(mine.body.id).target_room_id, roomA);
+        denied(await asAgent(agA, 'PATCH', `/api/automations/${theirs.body.id}`, { enabled: false }), 'edit foreign automation');
+        denied(await asAgent(agA, 'DELETE', `/api/automations/${theirs.body.id}`), 'delete foreign automation');
+        assert.ok(scDb.prepare('SELECT 1 FROM automations WHERE id=?').get(theirs.body.id), 'foreign automation untouched');
+        // List shows only automations targeting the agent's rooms; the human sees both.
+        const list = await asAgent(agA, 'GET', '/api/automations');
+        assert.strictEqual(list.status, 200);
+        assert.ok(list.body.some(a => a.id === mine.body.id));
+        assert.ok(list.body.every(a => scDb.prepare('SELECT 1 FROM room_participants WHERE room_id=? AND actor_id=?').get(a.target_room_id, agA.actorId)), 'only own rooms');
+        assert.ok((await req('GET', '/api/automations')).body.some(a => a.id === theirs.body.id));
+      } finally {
+        await req('DELETE', `/api/automations/${mine.body.id}`);
+        await req('DELETE', `/api/automations/${theirs.body.id}`);
+      }
+    });
+
+    await test('Agent automations — connection list has id/name/provider/status only, no secrets', async () => {
+      const id = scDb.prepare("INSERT INTO automation_connections (name, provider, token_type, credentials, metadata, status) VALUES ('__scope-conn__', 'slack', 'bot', ?, ?, 'disconnected')")
+        .run(JSON.stringify({ token: 'xoxb-SECRET-TOKEN', appToken: 'xapp-SECRET' }), JSON.stringify({ smtpHost: 'secret.example' })).lastInsertRowid;
+      try {
+        const r = await asAgent(agA, 'GET', '/api/automations/connections');
+        assert.strictEqual(r.status, 200);
+        const c = r.body.find(x => x.id === id);
+        assert.deepStrictEqual(c, { id, name: '__scope-conn__', provider: 'slack', status: 'disconnected' });
+        assert.ok(!r.raw.includes('SECRET') && !r.raw.includes('secret.example'), 'no credentials/metadata leak');
+        const human = await req('GET', '/api/automations/connections');
+        assert.strictEqual(human.body.find(x => x.id === id).token, 'xoxb-SECRET-TOKEN', 'session view unchanged');
+        denied(await asAgent(agA, 'DELETE', `/api/automations/connections/${id}`), 'delete connection');
+        denied(await asAgent(agA, 'PATCH', `/api/automations/connections/${id}`, { name: 'x' }), 'edit connection');
+      } finally {
+        scDb.prepare('DELETE FROM automation_connections WHERE id=?').run(id);
+      }
+    });
+
+    await test('Agent scope — human session keeps admin access, even with agent headers attached', async () => {
+      assert.strictEqual((await req('GET', '/api/settings')).status, 200);
+      const both = await req('GET', '/api/automations', null, { 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret });
+      assert.strictEqual(both.status, 200);
+      // Session still enforces CSRF Origin even when agent headers ride along.
+      const csrf = await req('POST', '/api/agent/install-token', {}, { 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret, Origin: 'https://evil.example' });
+      assert.strictEqual(csrf.status, 403);
+      assert.strictEqual(csrf.body.error, 'origin_not_allowed');
+    });
+
+    await test('Agent scope — wrong secret is still 401 (not scope-checked)', async () => {
+      const r = await asAgent({ actorId: agA.actorId, secret: 'wrong' }, 'GET', `/api/rooms/${roomA}/memory`);
+      assert.strictEqual(r.status, 401);
+    });
+
+    await test('Agent scope — teardown', async () => {
+      if (agA?.ws) agA.ws.close();
+      if (agB?.ws) agB.ws.close();
+    });
+  }
+
+  // ── Cloudflare Access service token: installer plumbing + proxy against the real server
+  console.log('\n[Cloudflare Access]');
+  await test('install.sh — CF token optional: headers on every curl, persisted to PM2 env, valid bash', async () => {
+    const token = await mintInstallToken('__test-cf-sh');
+    const r = await req('GET', `/install.sh?token=${token}`);
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.raw.includes('CF_HDR=(-H "CF-Access-Client-Id: ${STOA_CF_ACCESS_CLIENT_ID}"'), 'header array');
+    assert.strictEqual((r.raw.match(/curl [^\n]*"\$\{CF_HDR\[@\]\}"/g) || []).length, 2, 'download + register curls carry CF headers');
+    assert.ok(r.raw.includes("STOA_CF_ACCESS_CLIENT_SECRET: '${STOA_CF_ACCESS_CLIENT_SECRET:-}'"), 'persisted into ecosystem env');
+    assert.ok(r.raw.includes('chmod 600 ecosystem.config.js'));
+    assert.ok(!/echo[^\n]*\$\{STOA_CF_ACCESS_CLIENT_SECRET/.test(r.raw), 'secret never echoed');
+    const f = path.join(require('os').tmpdir(), `stoa-install-${process.pid}.sh`);
+    require('fs').writeFileSync(f, r.raw);
+    try {
+      const chk = require('child_process').spawnSync('bash', ['-n', f], { encoding: 'utf8' });
+      assert.strictEqual(chk.status, 0, chk.stderr);
+    } finally { require('fs').unlinkSync(f); }
+  });
+
+  await test('install.ps1 / install.cmd — CF headers on downloads + register, env persisted', async () => {
+    const token = await mintInstallToken('__test-cf-ps');
+    const ps = await req('GET', `/install.ps1?token=${token}`);
+    assert.strictEqual(ps.status, 200);
+    assert.ok(ps.raw.includes('-Headers $CfHeaders -OutFile'), 'client file download');
+    assert.ok(ps.raw.includes('-Method Post -Headers $CfHeaders'), 'register');
+    assert.ok(ps.raw.includes("STOA_CF_ACCESS_CLIENT_ID: '$CfId'"));
+    const cmd = await req('GET', `/install.cmd?token=${token}`);
+    assert.strictEqual(cmd.status, 200);
+    assert.ok(cmd.raw.includes(`irm -Headers $h '`) && cmd.raw.includes(`/install.ps1?token=${token}'`));
+  });
+
+  await test('cf-access proxy → real Stoa server: passthrough status/body, no auth bypass', async () => {
+    const cf = require('./lib/cf-access');
+    const proxy = await cf.startCfForwardProxy({ getUpstream: () => `ws://${HOST}:${PORT}`, creds: { clientId: 'i', clientSecret: 's' } });
+    const get = (p) => new Promise((resolve, reject) => {
+      http.get({ host: '127.0.0.1', port: proxy.port, path: proxy.prefix + p }, rs => {
+        let d = ''; rs.on('data', c => d += c); rs.on('end', () => resolve({ status: rs.statusCode, body: d }));
+      }).on('error', reject);
+    });
+    try {
+      const docs = await get('/api/docs/stoa-api.md');
+      assert.strictEqual(docs.status, 200);
+      assert.ok(docs.body.includes('Stoa Platform API'));
+      assert.strictEqual((await get('/api/rooms')).status, 401, 'proxy adds CF headers only, never Stoa credentials');
+    } finally { await proxy.close(); }
+  });
 
   // Invites
   console.log('\n[Invites]');

@@ -116,6 +116,73 @@ x-file-name: ファイル名.拡張子
 {"url": "/uploads/abc123.png", "name": "ファイル名.拡張子"}
 ```
 
+## エージェントスコープ
+
+エージェントシークレット（`x-agent-id` / `x-agent-secret`）は許可されたルートリストに制限されています。リスト外のルートへのリクエストは `403 {"error":"agent_scope_denied"}` を返します。適用を無効にするには、サーバーで `STOA_AGENT_SCOPE=off` を設定してください。
+
+**許可されるルート：**
+
+| メソッド | パスパターン | スコープ |
+|---------|------------|--------|
+| `POST` | `/api/rooms/:id/message` | ルームの参加者 |
+| `POST` | `/api/rooms/:id/email-reply` | ルームの参加者 |
+| `GET`, `PUT` | `/api/rooms/:id/memory` | ルームの参加者 |
+| `GET`, `PUT` | `/api/rooms/:id/system-prompt` | ルームの参加者 |
+| `POST` | `/api/rooms/:id/sub-agent-trigger` | ルームの参加者 |
+| `GET` | `/api/rooms/:id/messages` | ルームの参加者 |
+| `GET` | `/api/rooms/:id/threads[/:id]` | ルームの参加者 |
+| `POST` | `/api/upload/raw` | 有効なエージェント |
+| `GET` | `/uploads/*`, `/connector-media/*` | 有効なエージェント |
+| `GET` | `/api/docs/stoa-api*.md` | 有効なエージェント |
+| `GET`, `PUT` | `/api/actors/:id/memory[/MEMORY.md\|USER.md]` | 自身のアクター |
+| `GET`, `PUT` | `/api/actors/:id/system-prompt` | 自身のアクター |
+| `GET`, `PUT` | `/api/sub-agents/:id/memory` | 所有するサブエージェント |
+| `GET` | `/api/automations/connections/:id/messages` | 接続済みオートメーションのルーム |
+| `GET` | `/api/automations` | 有効なエージェント（サーバーが自分のルームのみにフィルタリング） |
+| `POST` | `/api/automations` | 有効なエージェント（`target_room_id` は自分のルームである必要あり） |
+| `PATCH` | `/api/automations/:id` | 所有オートメーション（`target_room_id` は自分のルームのままである必要あり） |
+| `DELETE` | `/api/automations/:id` | 所有オートメーション |
+| `GET` | `/api/automations/connections` | 有効なエージェント（`id`、`name`、`provider`、`status` のみ） |
+
+エージェントがオートメーションを作成、更新、削除するたびに、ターゲットルームに永続的な通知が投稿されます。コネクションの作成・編集・削除、メールテスト、Slack接続はセッションログインが必要です。
+
+## 例：curlでオートメーションを作成
+
+```bash
+BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")
+# 利用可能なコネクションを確認
+curl -s "$BASE_URL/api/automations/connections" \
+  -H "x-agent-id: $STOA_ACTOR_ID" \
+  -H "x-agent-secret: $STOA_SECRET"
+
+# オートメーションを作成
+BODY=$(python3 -c "import json; print(json.dumps({
+  'name': 'Slackメンション通知',
+  'trigger_type': 'slack',
+  'trigger_event': 'app_mention',
+  'target_room_id': int('$STOA_ROOM_ID'),
+  'prompt_template': 'ユーザーがボットを言及しました: {{slack_message_text}}. 適切に返答してください。',
+  'connection_id': 1,
+  'reply_mode': 'none'
+}))")
+curl -s -X POST "$BASE_URL/api/automations" \
+  -H "Content-Type: application/json" \
+  -H "x-agent-id: $STOA_ACTOR_ID" \
+  -H "x-agent-secret: $STOA_SECRET" \
+  -d "$BODY"
+```
+
+必須フィールド: `name`、`trigger_event`、`target_room_id`、`prompt_template`。省略可能: `trigger_type` (デフォルト `slack`)、`connection_id`、`trigger_conditions` (JSON配列)、`reply_mode` (デフォルト `none`; WhatsApp専用 `reply_wa`)、`watch_reply` (真偽値)。
+
+**プロンプトテンプレートのプレースホルダー:**
+- Slack: `{{slack_message_text}}`, `{{slack_user}}`, `{{slack_channel}}`, `{{slack_message_link}}`, `{{slack_thread_ts}}`, `{{slack_full_text}}`, `{{extracted_url}}`, `{{slack_bot_id}}`
+- WhatsApp: `{{wa_message_text}}`, `{{wa_sender}}`, `{{wa_sender_name}}`, `{{wa_chat_id}}`, `{{wa_chat_name}}`, `{{wa_is_group}}`, `{{wa_is_mentioned}}`, `{{extracted_url}}`
+- Email: `{{email.from}}`, `{{email.from_name}}`, `{{email.subject}}`, `{{email.body}}`, `{{email.date}}`, `{{email.has_attachments}}`
+
+**有効な `trigger_event` の値:** Slack: Slackイベント名 (例: `message`, `app_mention`, `reaction_added`)。WhatsApp: `message`, `group_message`, `group_mention`, `message_any`。Email: `message`。
+
+---
+
 ## 例：curlでメッセージを送信
 
 ```bash

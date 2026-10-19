@@ -976,7 +976,7 @@ Stoa 可以通过三种配置从本地机器外部访问：
 在与 Stoa 相同的机器上运行 `cloudflared tunnel`，无需开放防火墙端口即可在公开域名上提供服务。默认情况下，cloudflared 从已被信任的 `localhost` 连接。将 **Public URL** 设置为隧道 URL（例如 `https://stoa.example.com`）。添加 Cloudflare 缓存规则以绕过以下路径的缓存：
 - 绕过缓存：`/uploads/*` 和 `/connector-media/*`
 
-> **Cloudflare Access + 代理：** 在 Stoa 前使用 Cloudflare Access 目前**不支持** AI 代理 — 代理不发送 Cloudflare 服务令牌。Stoa 自己的基于凭据的认证已足够用于公开部署。
+> **Cloudflare Access + 代理：** 在代理环境中设置 `STOA_CF_ACCESS_CLIENT_ID` 和 `STOA_CF_ACCESS_CLIENT_SECRET` 即可发送 Cloudflare Access 服务令牌。令牌仅发送给 Stoa 源站，不发送给模型提供商或其他主机。子会话（Claude Code、Codex）收到回环代理 URL，可以在不将令牌暴露给提示词的情况下通过 Access 连接 Stoa。未设置这些变量时，行为不变。**推荐：** 代理优先使用 Tailscale；仅在 Tailscale 不可用时使用 CF Access 令牌。
 
 ### (C) VPS + 反向代理 + 域名
 在具有公共域名和 TLS 的 VPS 上，将 Stoa 运行在 nginx、Caddy 或其他反向代理后面。
@@ -1014,6 +1014,36 @@ header_up X-Real-IP {remote_host}
 **public_url：** 在**设置 > 服务器**中设置公开 URL（例如 `https://stoa.example.com`）。用于代理安装命令和内部链接。
 
 **CSRF 保护：** 通过会话 Cookie 认证的写请求会验证 `Origin` 头。如果来源与 `Host`、`public_url` 或 `STOA_ALLOWED_ORIGINS` 不匹配，服务器返回 `403 origin_not_allowed`。不发送 `Origin` 的非浏览器客户端（代理、API 工具）不受影响。
+
+### 代理权限
+
+代理密钥（`x-agent-id` / `x-agent-secret`）被限制为合法代理操作所需的路由白名单。白名单之外的请求将以 `403 {"error":"agent_scope_denied"}` 拒绝，并记录为 `[agent-scope] denied actor=<id> METHOD /path`。
+
+| 路由 | 访问条件 |
+|------|--------|
+| `POST /api/rooms/:id/message` | 房间参与者 |
+| `POST /api/rooms/:id/email-reply` | 房间参与者 |
+| `GET/PUT /api/rooms/:id/memory` | 房间参与者 |
+| `GET/PUT /api/rooms/:id/system-prompt` | 房间参与者 |
+| `POST /api/rooms/:id/sub-agent-trigger` | 房间参与者 |
+| `GET /api/rooms/:id/messages` | 房间参与者 |
+| `GET /api/rooms/:id/threads[/:id]` | 房间参与者 |
+| `POST /api/upload/raw` | 任意有效代理 |
+| `GET /uploads/*, /connector-media/*` | 任意有效代理 |
+| `GET /api/docs/stoa-api*.md` | 任意有效代理 |
+| `GET/PUT /api/actors/:id/memory[/MEMORY.md\|USER.md]` | 仅自身 Actor |
+| `GET/PUT /api/actors/:id/system-prompt` | 仅自身 Actor |
+| `GET/PUT /api/sub-agents/:id/memory` | 仅所属子代理 |
+| `GET /api/automations/connections/:id/messages` | 已连接自动化的房间 |
+| `GET /api/automations` | 任意有效代理（服务器过滤至自身房间） |
+| `POST /api/automations` | 任意有效代理（`target_room_id` 必须是自身房间） |
+| `PATCH /api/automations/:id` | 所属自动化（`target_room_id` 必须保持为自身房间） |
+| `DELETE /api/automations/:id` | 所属自动化 |
+| `GET /api/automations/connections` | 任意有效代理（仅 `id`、`name`、`provider`、`status` — 不含凭据） |
+
+每当代理创建、更新或删除自动化时，服务器会在目标房间发布永久系统通知（例如：*"Ara created automation 'X' (trigger: slack message) · automation"*），以便工作区所有者监控变更并在需要时撤销。
+
+浏览器会话（会话 Cookie）保留完整访问权限。要禁用范围限制，在服务器上设置 `STOA_AGENT_SCOPE=off` — 启动时会记录警告。
 
 ---
 
