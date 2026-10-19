@@ -1398,6 +1398,55 @@ function runUnitTests() {
     }
   });
 
+  // Codex usage must survive _clearCurrent() (which nulls _usage and starts the next queued task)
+  ut('CodexSession close resolves with normalized turn.completed usage', () => {
+    const { EventEmitter } = require('events');
+    const cp = require('child_process');
+    const origSpawn = cp.spawn;
+    const fakeProcs = [];
+    cp.spawn = () => {
+      const p = new EventEmitter();
+      p.stdin = { write: () => {}, end: () => {}, on: () => {} };
+      p.stdout = new EventEmitter();
+      p.stderr = new EventEmitter();
+      p.kill = () => {};
+      fakeProcs.push(p);
+      return p;
+    };
+    delete require.cache[require.resolve('./codex-session')];
+    try {
+      const { CodexSession } = require('./codex-session');
+      const session = new CodexSession({ workDir: '/tmp' });
+      let r1 = null, r2 = null;
+      session._startTask({ prompt: 'one', resolve: (r) => { r1 = r; }, reject: () => {}, taskId: 't1' });
+      session._queue.push({ prompt: 'two', resolve: (r) => { r2 = r; }, reject: () => {}, taskId: 't2' });
+      const lines = [
+        { type: 'thread.started', thread_id: 'th-1' },
+        { type: 'item.completed', item: { type: 'agent_message', text: 'hello' } },
+        { type: 'turn.completed', usage: { input_tokens: 14734, cached_input_tokens: 12288, cache_write_input_tokens: 7, output_tokens: 5, reasoning_output_tokens: 0 } },
+      ];
+      fakeProcs[0].stdout.emit('data', Buffer.from(lines.map(l => JSON.stringify(l)).join('\n') + '\n'));
+      fakeProcs[0].emit('close', 0, null);
+      assert.strictEqual(fakeProcs.length, 2, 'queued task started on close');
+      fakeProcs[1].emit('close', 0, null);
+      assert.ok(r1, 'task1 resolved');
+      assert.strictEqual(r1.content, 'hello');
+      assert.strictEqual(r1.sessionId, 'th-1');
+      assert.strictEqual(r1.subtype, 'success');
+      assert.deepStrictEqual(r1.usage, {
+        input_tokens: 14734 - 12288,
+        output_tokens: 5,
+        cache_read_input_tokens: 12288,
+        cache_creation_input_tokens: 7,
+      });
+      assert.ok(r2, 'task2 resolved');
+      assert.strictEqual(r2.usage, null, 'task2 had no turn.completed -> no usage leak from task1');
+    } finally {
+      cp.spawn = origSpawn;
+      delete require.cache[require.resolve('./codex-session')];
+    }
+  });
+
   // R4: cancelTask removes queued task without aborting current
   ut('ClaudeSession.cancelTask() removes queued task', () => {
     const { ClaudeSession } = require('./claude-session');
@@ -9372,9 +9421,12 @@ async function run() {
     const cs = new CodexSession({ workDir: '/tmp' });
     cs._handleEvent({ type: 'turn.completed', usage: { input_tokens: 14170, cached_input_tokens: 12288, output_tokens: 5, reasoning_output_tokens: 0 } });
     assert.ok(cs._usage, 'usage should be set');
-    assert.strictEqual(cs._usage.input_tokens, 14170);
+    assert.strictEqual(cs._usage.input_tokens, 14170 - 12288, 'OpenAI input includes cached; stored input excludes it');
     assert.strictEqual(cs._usage.output_tokens, 5);
     assert.strictEqual(cs._usage.cache_read_input_tokens, 12288);
+    assert.strictEqual(cs._usage.cache_creation_input_tokens, 0, 'missing cache_write_input_tokens -> 0');
+    cs._handleEvent({ type: 'turn.completed', usage: { input_tokens: 10, cached_input_tokens: 50, output_tokens: 1 } });
+    assert.strictEqual(cs._usage.input_tokens, 0, 'never negative when cached > input');
   });
 
   await test('CodexSession _handleEvent — tool events forwarded', () => {

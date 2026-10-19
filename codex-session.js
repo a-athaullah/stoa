@@ -92,10 +92,13 @@ class CodexSession extends EventEmitter {
     this.proc.on('close', (code, signal) => {
       if (myProc !== this.proc) return;
       if (this._currentResolve) {
+        // Snapshot before _clearCurrent(): it nulls _usage and may start the next queued task.
         const content = this._accContent || '';
+        const usage = this._usage;
+        const sessionId = this._threadId;
         const res = this._currentResolve;
         this._clearCurrent();
-        res({ content, sessionId: this._threadId, usage: this._usage, modelUsage: null, totalCostUsd: 0, durationMs: null, subtype: code === 0 ? 'success' : null });
+        res({ content, sessionId, usage, modelUsage: null, totalCostUsd: 0, durationMs: null, subtype: code === 0 ? 'success' : null });
       }
     });
 
@@ -134,10 +137,15 @@ class CodexSession extends EventEmitter {
     }
 
     if (event.type === 'turn.completed' && event.usage) {
+      // OpenAI input_tokens already includes cached tokens; usage_log follows Anthropic semantics
+      // (input excludes cache) and stats sum input + cache_read, so split them to avoid double-counting.
+      const input = event.usage.input_tokens || 0;
+      const cached = event.usage.cached_input_tokens || 0;
       this._usage = {
-        input_tokens: event.usage.input_tokens || 0,
+        input_tokens: Math.max(0, input - cached),
         output_tokens: event.usage.output_tokens || 0,
-        cache_read_input_tokens: event.usage.cached_input_tokens || 0,
+        cache_read_input_tokens: cached,
+        cache_creation_input_tokens: event.usage.cache_write_input_tokens || 0,
       };
     }
   }
