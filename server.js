@@ -826,6 +826,27 @@ const ANTHROPIC_MODELS = [
 ];
 const MAX_SYNCED_HARNESS_MODELS = 50;
 
+// Claude CLI has no model-listing command, so a model released after this build is added by the
+// owner from Settings (key custom_claude_models) instead of editing ANTHROPIC_MODELS.
+const CUSTOM_CLAUDE_MODEL_RE = /^claude-[a-z0-9][a-z0-9.-]{1,62}$/;
+const CUSTOM_CLAUDE_LABEL_MAX = 40;
+const MAX_CUSTOM_CLAUDE_MODELS = 20;
+
+function getCustomClaudeModels() {
+  let list;
+  try { list = getParsedSetting('custom_claude_models'); } catch { return []; }
+  if (!Array.isArray(list)) return [];
+  return list.filter(m => m && typeof m.value === 'string' && CUSTOM_CLAUDE_MODEL_RE.test(m.value) && typeof m.label === 'string');
+}
+
+function getAnthropicModels() {
+  const builtin = new Set(ANTHROPIC_MODELS.map(m => m.value));
+  const custom = getCustomClaudeModels()
+    .filter(m => !builtin.has(m.value))
+    .map(m => ({ value: m.value, label: m.label, vision: true, tools: true, custom: true }));
+  return [...ANTHROPIC_MODELS, ...custom];
+}
+
 // ─── Auth: password hashing & session management ─────────────────────────────
 
 function hashPassword(password) {
@@ -3109,6 +3130,34 @@ const server = http.createServer(async (req, res) => {
     return json(res, { ok: true });
   }
 
+  // ── Custom Claude models (owner-added IDs for models newer than ANTHROPIC_MODELS) ──
+  if (req.method === 'POST' && url.pathname === '/api/settings/custom-models') {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    const body = parseJsonBody(await readBody(req));
+    if (!body) return json(res, { error: 'Invalid JSON' }, 400);
+    const value = typeof body.value === 'string' ? body.value.trim() : '';
+    if (!CUSTOM_CLAUDE_MODEL_RE.test(value)) return json(res, { error: 'value must match ^claude-[a-z0-9][a-z0-9.-]{1,62}$' }, 400);
+    if (body.label !== undefined && body.label !== null && typeof body.label !== 'string') return json(res, { error: 'label must be a string' }, 400);
+    const label = (body.label || '').trim() || value;
+    if (label.length > CUSTOM_CLAUDE_LABEL_MAX) return json(res, { error: `label max ${CUSTOM_CLAUDE_LABEL_MAX} characters` }, 400);
+    const list = getCustomClaudeModels();
+    if (ANTHROPIC_MODELS.some(m => m.value === value) || list.some(m => m.value === value)) return json(res, { error: 'model already exists' }, 409);
+    if (list.length >= MAX_CUSTOM_CLAUDE_MODELS) return json(res, { error: `max ${MAX_CUSTOM_CLAUDE_MODELS} custom models` }, 400);
+    setSetting('custom_claude_models', JSON.stringify([...list, { value, label }]));
+    return json(res, { value, label, custom: true }, 201);
+  }
+
+  if (req.method === 'DELETE' && url.pathname.startsWith('/api/settings/custom-models/')) {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    let value;
+    try { value = decodeURIComponent(url.pathname.slice('/api/settings/custom-models/'.length)); } catch { return json(res, { error: 'invalid model id' }, 400); }
+    const list = getCustomClaudeModels();
+    const next = list.filter(m => m.value !== value);
+    if (next.length === list.length) return json(res, { error: 'not found' }, 404);
+    setSetting('custom_claude_models', JSON.stringify(next));
+    res.writeHead(204); return res.end();
+  }
+
   // ── R29: Global display settings ──
   if (req.method === 'GET' && url.pathname === '/api/settings/display') {
     if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
@@ -3775,7 +3824,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && url.pathname === '/api/ai/models') {
     const platforms = getParsedSetting('ai_platforms') ?? [];
-    const result = [{ platform_id: 'anthropic', platform_name: 'Claude (built-in)', models: ANTHROPIC_MODELS }];
+    const result = [{ platform_id: 'anthropic', platform_name: 'Claude (built-in)', models: getAnthropicModels() }];
     for (const p of platforms) {
       if (!p.enabled) continue;
       const group = { platform_id: p.id, platform_name: p.name, base_url: p.base_url || null, models: [] };
@@ -3798,7 +3847,9 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/harnesses') {
     const rows = db.prepare('SELECT * FROM harnesses ORDER BY id').all();
     const result = rows.map(h => {
-      const models = db.prepare('SELECT model_id, display_name, is_default, is_active FROM harness_models WHERE harness_id=? AND is_active=1 ORDER BY is_default DESC, model_id').all(h.id);
+      const models = h.name === 'claude'
+        ? getHarnessModels(null, 'claude').map(m => ({ ...m, is_active: 1 }))
+        : db.prepare('SELECT model_id, display_name, is_default, is_active FROM harness_models WHERE harness_id=? AND is_active=1 ORDER BY is_default DESC, model_id').all(h.id);
       return { name: h.name, label: h.description || h.name, models };
     });
     return json(res, result);
@@ -5404,7 +5455,7 @@ const pendingHarnessChecks = new Map(); // request_id → { resolve, timer, acto
 
 function getHarnessModels(actorId, harnessName) {
   if (harnessName === 'claude') {
-    return ANTHROPIC_MODELS.map(m => ({ model_id: m.value, display_name: m.label, is_default: m.value === 'claude-sonnet-5-5' ? 1 : 0 }));
+    return getAnthropicModels().map(m => ({ model_id: m.value, display_name: m.label, is_default: m.value === 'claude-sonnet-5-5' ? 1 : 0 }));
   }
   const statusList = agentHarnessStatus.get(actorId) || [];
   const hs = statusList.find(s => s.id === harnessName);

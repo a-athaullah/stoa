@@ -10477,6 +10477,95 @@ async function run() {
     });
   }
 
+  // Custom Claude models (Settings) — extend ANTHROPIC_MODELS without a code change
+  {
+    const cmDb = require('./db');
+    const savedSetting = cmDb.prepare("SELECT value FROM settings WHERE scope='global' AND key_name='custom_claude_models'").get()?.value ?? null;
+    const anthropicIds = async () => (await req('GET', '/api/ai/models')).body.find(g => g.platform_id === 'anthropic').models;
+    const enc = encodeURIComponent;
+
+    await test('custom models — POST adds model; listed in /api/ai/models and claude /api/harnesses', async () => {
+      cmDb.prepare("DELETE FROM settings WHERE scope='global' AND key_name='custom_claude_models'").run();
+      const r = await req('POST', '/api/settings/custom-models', { value: 'claude-haiku-5-5', label: 'Haiku 5.5' });
+      assert.strictEqual(r.status, 201, r.raw);
+      assert.deepStrictEqual(r.body, { value: 'claude-haiku-5-5', label: 'Haiku 5.5', custom: true });
+      const m = (await anthropicIds()).find(x => x.value === 'claude-haiku-5-5');
+      assert.ok(m, 'custom model missing from /api/ai/models');
+      assert.strictEqual(m.custom, true);
+      assert.strictEqual(m.label, 'Haiku 5.5');
+      assert.ok((await anthropicIds()).filter(x => x.custom).every(x => x.value.startsWith('claude-')));
+      assert.ok(!(await anthropicIds()).find(x => x.value === 'claude-opus-5-5').custom, 'built-ins must not be marked custom');
+      const claude = (await req('GET', '/api/harnesses')).body.find(h => h.name === 'claude');
+      assert.ok(claude.models.some(x => x.model_id === 'claude-haiku-5-5'), 'claude harness models must include custom');
+      assert.ok(claude.models.some(x => x.model_id === 'claude-opus-5-5'), 'claude harness models must include built-ins');
+    });
+
+    await test('custom models — label defaults to value, duplicate 409, built-in 409', async () => {
+      const r = await req('POST', '/api/settings/custom-models', { value: 'claude-test-nolabel-1' });
+      assert.strictEqual(r.status, 201, r.raw);
+      assert.strictEqual(r.body.label, 'claude-test-nolabel-1');
+      assert.strictEqual((await req('POST', '/api/settings/custom-models', { value: 'claude-haiku-5-5' })).status, 409);
+      assert.strictEqual((await req('POST', '/api/settings/custom-models', { value: 'claude-opus-5-5' })).status, 409);
+      const stored = JSON.parse(cmDb.prepare("SELECT value FROM settings WHERE scope='global' AND key_name='custom_claude_models'").get().value);
+      assert.deepStrictEqual(stored.map(x => x.value), ['claude-haiku-5-5', 'claude-test-nolabel-1'], 'rejected posts must not be stored');
+    });
+
+    await test('custom models — invalid value/label → 400', async () => {
+      for (const value of ['gpt-6', 'claude-', 'claude-X', 'Claude-haiku', 'claude-a/../b', 'claude-a b', 'claude-' + 'a'.repeat(63), 123, null]) {
+        const r = await req('POST', '/api/settings/custom-models', { value });
+        assert.strictEqual(r.status, 400, `value ${JSON.stringify(value)} → ${r.status}`);
+      }
+      assert.strictEqual((await req('POST', '/api/settings/custom-models', { value: 'claude-ok-1', label: 'x'.repeat(41) })).status, 400);
+      assert.strictEqual((await req('POST', '/api/settings/custom-models', { value: 'claude-ok-1', label: 42 })).status, 400);
+      assert.strictEqual((await rawReq('POST', '/api/settings/custom-models', '{nope', 'application/json')).status, 400);
+    });
+
+    await test('custom models — max 20 entries', async () => {
+      const stored = () => JSON.parse(cmDb.prepare("SELECT value FROM settings WHERE scope='global' AND key_name='custom_claude_models'").get().value);
+      for (let i = stored().length; i < 20; i++) {
+        assert.strictEqual((await req('POST', '/api/settings/custom-models', { value: `claude-test-cap-${i}` })).status, 201);
+      }
+      const r = await req('POST', '/api/settings/custom-models', { value: 'claude-test-cap-over' });
+      assert.strictEqual(r.status, 400, r.raw);
+      assert.strictEqual(stored().length, 20);
+    });
+
+    await test('custom models — DELETE 204 removes it, second DELETE 404', async () => {
+      const r = await req('DELETE', `/api/settings/custom-models/${enc('claude-haiku-5-5')}`);
+      assert.strictEqual(r.status, 204, r.raw);
+      assert.ok(!(await anthropicIds()).some(x => x.value === 'claude-haiku-5-5'), 'deleted model still listed');
+      assert.strictEqual((await req('DELETE', `/api/settings/custom-models/${enc('claude-haiku-5-5')}`)).status, 404);
+      assert.strictEqual((await req('DELETE', '/api/settings/custom-models/%E0%A4%A')).status, 400);
+    });
+
+    await test('custom models — no session → 401; agent secret → agent_scope_denied', async () => {
+      const s = sessionCookie, d = deviceCookie;
+      sessionCookie = null; deviceCookie = null;
+      try {
+        assert.strictEqual((await req('POST', '/api/settings/custom-models', { value: 'claude-anon-1' })).status, 401);
+      } finally { sessionCookie = s; deviceCookie = d; }
+      const ag = await createOnlineTestAgent('__test-cm-agent', '/tmp/stoa-test-cm-agent');
+      assert.ok(ag, 'agent setup failed');
+      sessionCookie = null; deviceCookie = null;
+      let post, del;
+      try {
+        const h = { 'x-agent-id': String(ag.actorId), 'x-agent-secret': ag.secret };
+        post = await req('POST', '/api/settings/custom-models', { value: 'claude-agent-1' }, h);
+        del = await req('DELETE', `/api/settings/custom-models/${enc('claude-test-nolabel-1')}`, null, h);
+      } finally { sessionCookie = s; deviceCookie = d; ag.ws.close(); }
+      assert.strictEqual(post.status, 403); assert.strictEqual(post.body.error, 'agent_scope_denied');
+      assert.strictEqual(del.status, 403); assert.strictEqual(del.body.error, 'agent_scope_denied');
+      const stored = JSON.parse(cmDb.prepare("SELECT value FROM settings WHERE scope='global' AND key_name='custom_claude_models'").get().value);
+      assert.ok(!stored.some(x => x.value === 'claude-agent-1'), 'agent must not add');
+      assert.ok(stored.some(x => x.value === 'claude-test-nolabel-1'), 'agent must not delete');
+    });
+
+    await test('custom models — teardown restores setting', async () => {
+      if (savedSetting === null) cmDb.prepare("DELETE FROM settings WHERE scope='global' AND key_name='custom_claude_models'").run();
+      else cmDb.prepare("UPDATE settings SET value=? WHERE scope='global' AND key_name='custom_claude_models'").run(savedSetting);
+    });
+  }
+
   // harnesses/check — models field included in response
   await test('POST /api/actors/:id/harnesses/check — models field in response', async () => {
     if (!hsActorId) { console.log('    (skipped)'); return; }
