@@ -410,7 +410,7 @@ Or:
 
 ### Custom Claude Models
 
-Owner-only endpoints for adding model IDs that Anthropic released after the built-in `ANTHROPIC_MODELS` list was compiled. Requires human session (`req._authUser`); agent headers → 401.
+Owner-only endpoints for adding model IDs that Anthropic released after the built-in `ANTHROPIC_MODELS` list was compiled. Requires human session (`req._authUser`); agent headers → 403 `agent_scope_denied`.
 
 #### Add
 ```
@@ -445,7 +445,7 @@ Returns grouped models; Anthropic group includes built-in + custom entries. Cust
 
 For non-Claude harnesses (e.g. Codex), Stoa mirrors agent-reported models into `harness_models` to persist the model list across agent restarts.
 
-**Trigger:** server receives `actor_status` with `harness_status` array from a connecting agent.
+**Trigger:** agent sends `harnesses_update` WS message to the server on connect. (`actor_status` is the broadcast the server sends to clients *after* sync completes — not the trigger.)
 
 **Behaviour:**
 - Active set = union across all currently online agents for that harness (prevents two agents on different Codex versions from deactivating each other's models)
