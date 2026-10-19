@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.368";
+var CLIENT_VERSION = "0.4.369";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -235,6 +235,15 @@ var STOA_URL = process.env.STOA_URL || "ws://localhost:3001";
 var ACTOR_ID = parseInt(process.env.STOA_ACTOR_ID || "1");
 var ACTOR_TYPE = process.env.STOA_TYPE || "human";
 var STOA_SECRET = process.env.STOA_SECRET || "";
+// PM2 logs carry no timestamp of their own; without one, agent log lines cannot be matched to
+// message rows. Agent process only — the human chat CLI and in-process importers (test.js) keep
+// the plain console.
+if (require.main === module && ACTOR_TYPE === "ai") {
+  for (const level of ["log", "warn", "error"]) {
+    const orig = console[level].bind(console);
+    console[level] = (...args) => orig(new Date().toISOString(), ...args);
+  }
+}
 var { readCfAccessEnv, cfHeadersFor, httpOrigin, startCfForwardProxy } = require("./lib/cf-access");
 var CF_ACCESS = readCfAccessEnv(process.env, (m) => console.warn(m));
 delete process.env.STOA_CF_ACCESS_CLIENT_ID;
@@ -362,6 +371,11 @@ function doRestart() {
   process.exit(0);
 }
 var sessionPool = /* @__PURE__ */ new Map();
+// Must match MAX_UPLOAD in server.js /api/upload/raw.
+var MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+function formatMB(bytes) {
+  return `${(bytes / 1048576).toFixed(1)} MB`;
+}
 var sessionIdleTimers = /* @__PURE__ */ new Map();
 var SESSION_IDLE_TTL = 5;
 var AUTO_COMPACT_THRESHOLD = parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB || "300") * 1024;
@@ -375,6 +389,7 @@ function compactWithTimeout(session) {
     const hardTimer = setTimeout(() => {
       timedOut = true;
       clearTimeout(idleTimer);
+      warnBackgroundKill(session, "compact hard timeout");
       session.abort();
       reject(new Error(`compact hard ceiling exceeded (${COMPACT_HARD_MS / 6e4} min)`));
     }, COMPACT_HARD_MS);
@@ -384,6 +399,7 @@ function compactWithTimeout(session) {
       idleTimer = setTimeout(() => {
         timedOut = true;
         clearTimeout(hardTimer);
+        warnBackgroundKill(session, "compact idle timeout");
         session.abort();
         reject(new Error(`compact idle timeout (${COMPACT_IDLE_MS / 6e4} min without output)`));
       }, COMPACT_IDLE_MS);
@@ -618,6 +634,7 @@ async function prepareResume({ targetDir, rid, targetModel, toolsSupported, env,
   const session = createHarnessSession(harness, { workDir: targetDir, flags, resumeId: rid || null, env, systemPrompt: harness === "codex" ? systemPrompt : null, model: targetModel });
   session._systemPromptHash = systemPromptHash || null;
   session._harness = harness;
+  attachUnsolicitedHandler(session, sessionKey);
   sessionPool.set(sessionKey, session);
   return session;
 }
@@ -644,22 +661,44 @@ function getSession(workdir, roomId, env, subAgentId, threadId, systemPrompt, sy
     session = createHarnessSession(harness, { workDir: path.resolve(workdir), env: env || null, flags: flags.length ? flags : void 0, systemPrompt: harness === "codex" ? systemPrompt : null });
     session._systemPromptHash = systemPromptHash || null;
     session._harness = harness;
+    attachUnsolicitedHandler(session, key);
     sessionPool.set(key, session);
     console.log(`[stoa] ${harness} session started for ${key}`);
     startSessionIdleTimer(key);
   }
   return session;
 }
-function startSessionIdleTimer(sessionKey) {
+// SIGTERM to the claude process also kills its background shells, so an idle session that still
+// runs one is kept alive (bounded, so a forgotten `sleep infinity` cannot pin a process forever).
+var BACKGROUND_HOLD_MAX_MS = 3 * 60 * 60 * 1e3;
+function describeBackgroundTasks(session) {
+  const tasks = session?._backgroundTasks || [];
+  return tasks.map((t) => t?.description || t?.task_id || "?").join("; ").slice(0, 200);
+}
+function warnBackgroundKill(session, reason, sessionKey = "") {
+  if (!session?.hasBackgroundTasks?.()) return;
+  console.warn(`[stoa] ${reason}: terminating session with ${session._backgroundTasks.length} background task(s) still running [${describeBackgroundTasks(session)}] ${sessionKey}`);
+}
+function startSessionIdleTimer(sessionKey, holdSince = null) {
   clearSessionIdleTimer(sessionKey);
   const timer = setTimeout(() => {
     const session = sessionPool.get(sessionKey);
-    if (session && !session.busy) {
-      session.shutdown();
-      sessionPool.delete(sessionKey);
-      sessionIdleTimers.delete(sessionKey);
-      console.log(`[stoa] session closed (idle ${SESSION_IDLE_TTL}m): ${sessionKey}`);
+    if (!session || session.busy) return;
+    const holding = session.hasBackgroundTasks?.() || session.isTurnActive?.();
+    if (holding) {
+      const since = holdSince || Date.now();
+      const heldMs = Date.now() - since;
+      if (heldMs < BACKGROUND_HOLD_MAX_MS) {
+        console.log(`[stoa] session kept alive (idle ${SESSION_IDLE_TTL}m, held ${Math.round(heldMs / 6e4)}m): ${session.isTurnActive?.() ? "autonomous turn running" : `background task(s) [${describeBackgroundTasks(session)}]`} ${sessionKey}`);
+        startSessionIdleTimer(sessionKey, since);
+        return;
+      }
+      warnBackgroundKill(session, `idle hold limit ${BACKGROUND_HOLD_MAX_MS / 36e5}h reached`, sessionKey);
     }
+    session.shutdown();
+    sessionPool.delete(sessionKey);
+    sessionIdleTimers.delete(sessionKey);
+    console.log(`[stoa] session closed (idle ${SESSION_IDLE_TTL}m): ${sessionKey}`);
   }, SESSION_IDLE_TTL * 6e4);
   // unref: housekeeping only — the agent stays alive via its WS/keepAlive; a ref'd timer
   // here kept in-process importers (test.js) from exiting.
@@ -900,6 +939,7 @@ async function handleAgentMessage(msg) {
     } else {
       const active = activeTriggers.get(msg.message_id);
       if (active?.session) {
+        warnBackgroundKill(active.session, `cancel by user msg=${msg.message_id}`, active.sessionKey || "");
         if (active.session.cancelTask) {
           active.session.cancelTask(msg.message_id);
         } else {
@@ -1191,6 +1231,7 @@ async function handleAgentMessage(msg) {
     if (!session) {
       if (msg.claude_session_id) {
         session = new ClaudeSession({ workDir: workdirResolved, flags: ["--resume", msg.claude_session_id], resumeId: msg.claude_session_id });
+        attachUnsolicitedHandler(session, key);
         sessionPool.set(key, session);
         startSessionIdleTimer(key);
         console.log(`[stoa] compact: resuming session ${msg.claude_session_id.slice(0, 8)}... for ${key}`);
@@ -1480,6 +1521,7 @@ ${allNotes}`;
     const newEnv = JSON.stringify(envToUse || {});
     const needsEnvChange = currentEnv !== newEnv;
     if (needsResume || needsFreshSession || needsModelChange || needsEnvChange || needsSystemPromptChange || needsHarnessChange) {
+      warnBackgroundKill(session, `session restart (${[needsResume && "resume", needsFreshSession && "fresh", needsModelChange && "model", needsEnvChange && "env", needsSystemPromptChange && "system_prompt", needsHarnessChange && "harness"].filter(Boolean).join(",")}) msg=${message_id}`, sessionKey);
       session.shutdown();
       session = await (_prepareResumeOverride || prepareResume)({ ...resumeBase, rid: needsHarnessChange ? null : rid, targetModel, env: envToUse });
       console.log(`[stoa] Session restarted: harness=${triggerHarness} workdir=${targetDir} room=${room_id} thread=${threadId}${rid ? " resume=" + rid.slice(0, 8) + "..." : " (fresh)"}${targetModel ? " model=" + targetModel : ""}${needsSystemPromptChange ? " system_prompt_changed" : ""}${needsHarnessChange ? " harness_changed" : ""}${msg.base_url ? " base_url=" + msg.base_url : ""}${msg.tools_supported === false ? " tools=disabled" : ""}`);
@@ -1515,7 +1557,8 @@ ${allNotes}`;
         }
         clearInterval(hangWatchdog);
         abortReason = "timeout";
-        console.error(`[stoa] trigger timeout (${timeout / 1e3}s ${fullContent ? "idle" : "no first token"}), aborting`);
+        console.error(`[stoa] trigger timeout (${timeout / 1e3}s ${fullContent ? "idle" : "no first token"}), aborting msg=${message_id} ${sessionKey}`);
+        warnBackgroundKill(session, `watchdog timeout msg=${message_id}`, sessionKey);
         session.cancelTask(message_id);
       }
     }, 1e4);
@@ -1564,6 +1607,7 @@ ${allNotes}`;
           console.log(`[stoa] model "${failed}" unavailable (${lastErr.message}), falling back to "${targetModel}"`);
           send({ type: "agent_stream_reset", room_id, message_id });
           fullContent = "";
+          warnBackgroundKill(session, `error-recovery restart msg=${message_id}`, sessionKey);
           session.shutdown();
           session = await (_prepareResumeOverride || prepareResume)({ ...resumeBase, rid, targetModel, env: envToUse });
           _updateEntry({ session, lastActivity: Date.now() });
@@ -1586,6 +1630,7 @@ ${allNotes}`;
         for (let ki = 1; ki < apiKeys.length; ki++) {
           console.log(`[stoa] API key #1 failed (${retryErr.message}), rotating to key #${ki + 1}...`);
           const rotatedEnv = { ...platformEnv, ANTHROPIC_AUTH_TOKEN: apiKeys[ki] };
+          warnBackgroundKill(session, `error-recovery restart msg=${message_id}`, sessionKey);
           session.shutdown();
           session = await (_prepareResumeOverride || prepareResume)({ ...resumeBase, rid, targetModel, env: rotatedEnv });
           _updateEntry({ session, lastActivity: Date.now() });
@@ -1605,6 +1650,7 @@ ${allNotes}`;
       } else if (isAuthOrQuota && !fullContent) {
         console.log(`[stoa] OAuth/auth error (${retryErr.message}), killing session and retrying fresh...`);
         send({ type: "agent_stream_reset", room_id, message_id });
+        warnBackgroundKill(session, `error-recovery restart msg=${message_id}`, sessionKey);
         session.shutdown();
         sessionPool.delete(sessionKey);
         await new Promise((r) => setTimeout(r, 2e3));
@@ -1629,6 +1675,7 @@ ${allNotes}`;
         console.log(`[stoa] thinking-signature 400 detected (exception): ${retryErr.message.slice(0, 120)}`);
         send({ type: "agent_stream_reset", room_id, message_id });
         fullContent = "";
+        warnBackgroundKill(session, `error-recovery restart msg=${message_id}`, sessionKey);
         session.shutdown();
         await backupSessionFile(targetDir, rid);
         session = await (_prepareResumeOverride || prepareResume)({ ...resumeBase, rid, targetModel, env: envToUse, aggressive: true });
@@ -1649,6 +1696,7 @@ ${allNotes}`;
       console.log(`[stoa] OAuth expired detected in room=${room_id} msg=${message_id}, content="${content.slice(0, 100)}"`);
       console.log(`[stoa] Killing session and retrying...`);
       send({ type: "agent_stream_reset", room_id, message_id });
+      warnBackgroundKill(session, `error-recovery restart msg=${message_id}`, sessionKey);
       session.shutdown();
       sessionPool.delete(sessionKey);
       await new Promise((r) => setTimeout(r, 2e3));
@@ -1669,6 +1717,7 @@ ${allNotes}`;
       console.log(`[stoa] thinking-signature 400 detected (content): ${content.slice(0, 120)}`);
       send({ type: "agent_stream_reset", room_id, message_id });
       fullContent = "";
+      warnBackgroundKill(session, `error-recovery restart msg=${message_id}`, sessionKey);
       session.shutdown();
       await backupSessionFile(targetDir, rid);
       session = await (_prepareResumeOverride || prepareResume)({ ...resumeBase, rid, targetModel, env: envToUse, aggressive: true });
@@ -1697,6 +1746,7 @@ ${allNotes}`;
         console.log(`[stoa] Aborted message ${message_id}, reason=${effectiveReason || "user"}, partial=${partial.length} chars`);
       }
     } else {
+      if (!content.trim()) console.warn(`[stoa] empty result from ${triggerHarness}: msg=${message_id} subtype=${subtype || ""} ${sessionKey}`);
       const { text: cleanContent, attachments } = await extractAndUploadFiles(content, msg.workdir);
       const actualModel = targetModel || modelUsage && Object.keys(modelUsage).find((k) => k !== "total") || void 0;
       const result_meta = {
@@ -1818,19 +1868,31 @@ async function extractAndUploadFiles(content, workdir) {
     ".xml": "application/xml"
   };
   const attachments = [];
+  const failures = [];
   for (const m of matches) {
     const filePath = m[1].trim();
     const resolved = path.isAbsolute(filePath) ? filePath : path.resolve(workdir || ".", filePath);
-    if (!fs.existsSync(resolved)) {
-      console.log(`[stoa] send file not found: ${resolved}`);
+    const fileName = path.basename(resolved);
+    let stat = null;
+    try {
+      stat = fs.statSync(resolved);
+    } catch {
+    }
+    if (!stat?.isFile()) {
+      console.warn(`[stoa] send file not found: ${resolved}`);
+      failures.push({ name: fileName, reason: "file tidak ditemukan" });
+      continue;
+    }
+    if (stat.size > MAX_UPLOAD_BYTES) {
+      console.warn(`[stoa] send file too large: ${resolved} (${stat.size} bytes > ${MAX_UPLOAD_BYTES})`);
+      failures.push({ name: fileName, reason: `${formatMB(stat.size)} melebihi batas ${MAX_UPLOAD_BYTES / 1048576} MB` });
       continue;
     }
     try {
       const fileData = fs.readFileSync(resolved);
-      const fileName = path.basename(resolved);
       const ext = path.extname(fileName).toLowerCase();
       const mime = mimeMap[ext] || "application/octet-stream";
-      const res = await fetch(`${baseUrl}/api/upload/raw`, {
+      const res = await (_fetchOverride || fetch)(`${baseUrl}/api/upload/raw`, {
         method: "POST",
         headers: {
           "Content-Type": mime,
@@ -1841,14 +1903,77 @@ async function extractAndUploadFiles(content, workdir) {
         },
         body: fileData
       });
-      const result = await res.json();
+      let result = null;
+      try {
+        result = await res.json();
+      } catch {
+      }
+      if (!res.ok || typeof result?.url !== "string") {
+        const why = result?.error || `HTTP ${res.status}`;
+        console.error(`[stoa] file upload rejected: ${fileName} (${stat.size} bytes) status=${res.status} error=${why}`);
+        failures.push({ name: fileName, reason: `ditolak server (${why})` });
+        continue;
+      }
       console.log(`[stoa] uploaded file: ${fileName} \u2192 ${result.url}`);
-      attachments.push({ url: result.url, name: result.name, type: IMAGE_EXTS.has(ext) ? "image" : "file" });
+      attachments.push({ url: result.url, name: result.name || fileName, type: IMAGE_EXTS.has(ext) ? "image" : "file" });
     } catch (err) {
-      console.error(`[stoa] file upload failed: ${err.message}`);
+      console.error(`[stoa] file upload failed: ${fileName} (${stat.size} bytes): ${err.message}`);
+      failures.push({ name: fileName, reason: `upload gagal (${err.message})` });
     }
   }
-  return { text, attachments };
+  if (failures.length) {
+    const notes = failures.map((f) => `\u26A0\uFE0F file ${f.name} gagal dikirim: ${f.reason}`);
+    text = [text, ...notes].filter(Boolean).join("\n\n");
+  }
+  return { text, attachments, failures };
+}
+// A turn the CLI ran on its own (background task finished while idle) has no Stoa message row,
+// so its output goes out as a proactive message in the session's room/thread, under the
+// sub-agent's identity when the session belongs to one.
+function attachUnsolicitedHandler(session, sessionKey) {
+  if (typeof session?.on !== "function") return;
+  session.on("unsolicited_result", (result) => {
+    postUnsolicitedResult(sessionKey, result).catch((err) => console.error(`[stoa] unsolicited result post failed: ${err.message} ${sessionKey}`));
+  });
+}
+async function postUnsolicitedResult(sessionKey, { content } = {}) {
+  const { roomId, threadId, subAgentId } = parseSessionKey(sessionKey);
+  const workdir = sessionKey.split("::")[0];
+  if (sessionPool.has(sessionKey)) startSessionIdleTimer(sessionKey);
+  const raw = stripLeadingThinkingMarker(content || "").trim();
+  if (!raw) {
+    console.log(`[stoa] unsolicited turn produced no output: ${sessionKey}`);
+    return null;
+  }
+  if (!roomId) {
+    console.warn(`[stoa] unsolicited turn output dropped (no room in session key, ${raw.length} chars): ${sessionKey}`);
+    return null;
+  }
+  const { text, attachments } = await extractAndUploadFiles(raw, workdir);
+  const body = { content: text || "\u{1F4CE}" };
+  if (threadId) body.thread_id = threadId;
+  if (subAgentId) body.sub_agent_id = subAgentId;
+  if (attachments.length) body.attachments = attachments;
+  const baseUrl = STOA_URL.replace("ws://", "http://").replace("wss://", "https://");
+  const url = `${baseUrl}/api/rooms/${roomId}/message`;
+  const res = await (_fetchOverride || fetch)(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Agent-Id": String(ACTOR_ID),
+      "X-Agent-Secret": STOA_SECRET,
+      ...stoaCfHeaders(url)
+    },
+    body: JSON.stringify(body)
+  });
+  let resBody = null;
+  try {
+    resBody = await res.json();
+  } catch {
+  }
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${resBody?.error || ""}`.trim());
+  console.log(`[stoa] unsolicited turn output posted: msg=${resBody?.message_id} room=${roomId} thread=${threadId || 0}${subAgentId ? " sub=" + subAgentId : ""} (${text.length} chars, ${attachments.length} file(s))`);
+  return resBody?.message_id ?? null;
 }
 function runTrigger(msg) {
   processTrigger(msg).catch((err) => {
@@ -2192,6 +2317,7 @@ function printHeader() {
 var _sendOverride = null;
 var _getSessionOverride = null;
 var _prepareResumeOverride = null;
+var _fetchOverride = null;
 function send(data) {
   if (_sendOverride) return _sendOverride(data);
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data));
@@ -2238,12 +2364,18 @@ function __setDeps(overrides) {
   if (overrides.FETCH_TIMEOUT_MS != null) FETCH_TIMEOUT_MS = overrides.FETCH_TIMEOUT_MS;
   if (overrides.getSession) _getSessionOverride = overrides.getSession;
   if (overrides.prepareResume) _prepareResumeOverride = overrides.prepareResume;
+  if (overrides.fetch) _fetchOverride = overrides.fetch;
+  if (overrides.SESSION_IDLE_TTL != null) SESSION_IDLE_TTL = overrides.SESSION_IDLE_TTL;
+  if (overrides.BACKGROUND_HOLD_MAX_MS != null) BACKGROUND_HOLD_MAX_MS = overrides.BACKGROUND_HOLD_MAX_MS;
 }
 function __resetDeps() {
   _sendOverride = null;
   _getSessionOverride = null;
   _prepareResumeOverride = null;
+  _fetchOverride = null;
+  SESSION_IDLE_TTL = 5;
+  BACKGROUND_HOLD_MAX_MS = 3 * 60 * 60 * 1e3;
   FETCH_TIMEOUT_MS = 60000;
   consecutiveTriggerErrors = 0;
 }
-module.exports = { fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, FIRST_TOKEN_TIMEOUT, __setDeps, __resetDeps };
+module.exports = { fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, FIRST_TOKEN_TIMEOUT, __setDeps, __resetDeps, extractAndUploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES };

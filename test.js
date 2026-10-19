@@ -2318,6 +2318,82 @@ async function runAsyncUnitTests() {
     });
   });
 
+  await uta('Idle timer keeps a session with background tasks alive, closes it once they end', async () => {
+    const stoa = require('./stoa.js');
+    const origLog = console.log, origWarn = console.warn;
+    console.log = () => {}; console.warn = () => {};
+    const key = '/tmp/stoa-idle-test::999::t:0';
+    try {
+      await withFakeClaude(async ({ session, emit, proc }) => {
+        stoa.__setDeps({ SESSION_IDLE_TTL: 0.0005 }); // 30 ms
+        stoa.sessionPool.set(key, session);
+        emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'b5', description: 'sleep 900' }], session_id: SID });
+        stoa.startSessionIdleTimer(key);
+        await new Promise(r => setTimeout(r, 150));
+        assert.strictEqual(proc.killed, null, 'process must not be killed while a background task runs');
+        assert.strictEqual(stoa.sessionPool.get(key), session, 'session stays pooled');
+        emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [], session_id: SID });
+        await new Promise(r => setTimeout(r, 150));
+        assert.strictEqual(proc.killed, 'SIGTERM', 'idle session closed after the task ended');
+        assert.strictEqual(stoa.sessionPool.has(key), false);
+      });
+    } finally {
+      stoa.clearSessionIdleTimer(key);
+      stoa.sessionPool.delete(key);
+      stoa.__resetDeps();
+      console.log = origLog; console.warn = origWarn;
+    }
+  });
+
+  await uta('Idle timer hold is bounded by BACKGROUND_HOLD_MAX_MS', async () => {
+    const stoa = require('./stoa.js');
+    const origLog = console.log;
+    console.log = () => {};
+    const key = '/tmp/stoa-idle-cap::999::t:0';
+    try {
+      await withFakeClaude(async ({ session, emit, proc, warns }) => {
+        stoa.__setDeps({ SESSION_IDLE_TTL: 0.0005, BACKGROUND_HOLD_MAX_MS: 60 });
+        stoa.sessionPool.set(key, session);
+        emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'b6', description: 'sleep infinity' }], session_id: SID });
+        stoa.startSessionIdleTimer(key);
+        await new Promise(r => setTimeout(r, 250));
+        assert.strictEqual(proc.killed, 'SIGTERM', 'hold limit reached → session closed');
+        assert.ok(warns.some(w => w.includes('sleep infinity') && w.includes('hold limit')), 'kill of a live background task is logged');
+      });
+    } finally {
+      stoa.clearSessionIdleTimer(key);
+      stoa.sessionPool.delete(key);
+      stoa.__resetDeps();
+      console.log = origLog;
+    }
+  });
+
+  await uta('extractAndUploadFiles: oversize/missing files are reported in content, never uploaded', async () => {
+    const stoa = require('./stoa.js');
+    const fsM = require('fs'), osM = require('os'), pathM = require('path');
+    const dir = fsM.mkdtempSync(pathM.join(osM.tmpdir(), 'stoa-upl-'));
+    const big = pathM.join(dir, 'stoa.mp4');
+    fsM.writeFileSync(big, '');
+    fsM.truncateSync(big, Math.round(stoa.MAX_UPLOAD_BYTES + 1.1 * 1048576)); // sparse, ~26.1 MB
+    const calls = [];
+    const origLog = console.log, origWarn = console.warn;
+    console.log = () => {}; console.warn = () => {};
+    stoa.__setDeps({ fetch: async (...a) => { calls.push(a); throw new Error('must not upload'); } });
+    try {
+      const r = await stoa.extractAndUploadFiles(`video siap [send:${big}] [send:${pathM.join(dir, 'gone.png')}]`, dir);
+      assert.strictEqual(calls.length, 0, 'no upload attempted');
+      assert.deepStrictEqual(r.attachments, []);
+      assert.ok(r.text.startsWith('video siap'), r.text);
+      assert.ok(r.text.includes('⚠️ file stoa.mp4 gagal dikirim: 26.1 MB melebihi batas 25 MB'), r.text);
+      assert.ok(r.text.includes('file gone.png gagal dikirim: file tidak ditemukan'), r.text);
+      assert.ok(!r.text.includes('[send:'), 'markers stripped');
+    } finally {
+      stoa.__resetDeps();
+      console.log = origLog; console.warn = origWarn;
+      fsM.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   return { p, f };
 }
 
@@ -4298,6 +4374,60 @@ async function run() {
       }
       const many = await postMsg({ content: 'file', attachments: 'nope' });
       assert.strictEqual(many.status, 400);
+    });
+
+    await test('stoa.js postUnsolicitedResult → sub-agent message in its thread with [send:] file', async () => {
+      if (!rlSa) { console.log('    (skipped)'); return; }
+      const stoa = require('./stoa.js');
+      const root = await postMsg({ content: 'thread root' });
+      assert.strictEqual(root.status, 200, root.raw);
+      const threadId = root.body.message_id;
+      const dir = fsM.mkdtempSync(require('path').join(osM.tmpdir(), 'stoa-unsol-'));
+      const file = require('path').join(dir, 'report.txt');
+      fsM.writeFileSync(file, 'render log');
+      const origLog = console.log;
+      console.log = () => {};
+      stoa.__setDeps({ fetch: stoaFetchToTestServer });
+      try {
+        const key = `${dir}::${rlRoomId}::t:${threadId}::sub:${rlSa.id}`;
+        const msgId = await stoa.postUnsolicitedResult(key, { content: `Render selesai.\n[send:${file}]\n[send:${dir}/missing.mp4]` });
+        assert.ok(msgId, 'message id returned');
+        const row = db.prepare('SELECT content, thread_id, sub_agent_label, file_url, file_name, participant_id FROM messages WHERE id=?').get(msgId);
+        assert.strictEqual(row.thread_id, threadId);
+        assert.strictEqual(row.sub_agent_label, 'rlsub');
+        assert.strictEqual(row.file_name, 'report.txt');
+        assert.ok(row.file_url?.startsWith('/uploads/'));
+        uploaded.push(row.file_url);
+        assert.ok(row.content.startsWith('Render selesai.'), row.content);
+        assert.ok(row.content.includes('file missing.mp4 gagal dikirim: file tidak ditemukan'), row.content);
+        const part = db.prepare('SELECT actor_id FROM room_participants WHERE id=?').get(row.participant_id);
+        assert.strictEqual(part.actor_id, rlActorId, 'sent by the parent agent actor');
+      } finally {
+        stoa.__resetDeps();
+        console.log = origLog;
+        fsM.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    await test('stoa.js extractAndUploadFiles — server rejection becomes a note, no undefined attachment', async () => {
+      if (!rlActorId) { console.log('    (skipped)'); return; }
+      const stoa = require('./stoa.js');
+      const dir = fsM.mkdtempSync(require('path').join(osM.tmpdir(), 'stoa-rej-'));
+      const file = require('path').join(dir, 'a.txt');
+      fsM.writeFileSync(file, 'x');
+      const origErr = console.error;
+      console.error = () => {};
+      // Wrong secret → the real server answers 403 JSON instead of { url }.
+      stoa.__setDeps({ fetch: (url, opts) => fetch(`http://${HOST}:${PORT}${new URL(url).pathname}`, { ...opts, headers: { ...opts.headers, 'X-Agent-Id': String(rlActorId), 'X-Agent-Secret': 'wrong' } }) });
+      try {
+        const r = await stoa.extractAndUploadFiles(`done [send:${file}]`, dir);
+        assert.deepStrictEqual(r.attachments, []);
+        assert.match(r.text, /^done\n\n⚠️ file a\.txt gagal dikirim: ditolak server \(/);
+      } finally {
+        stoa.__resetDeps();
+        console.error = origErr;
+        fsM.rmSync(dir, { recursive: true, force: true });
+      }
     });
 
     await test('Cleanup — reply-loss test data', async () => {
