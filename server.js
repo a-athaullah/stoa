@@ -824,6 +824,7 @@ const ANTHROPIC_MODELS = [
   { value: 'claude-sonnet-4-5', label: 'Sonnet 4.5', vision: true, tools: true },
   { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', vision: true, tools: true },
 ];
+const MAX_SYNCED_HARNESS_MODELS = 50;
 
 // ─── Auth: password hashing & session management ─────────────────────────────
 
@@ -5414,6 +5415,42 @@ function getHarnessModels(actorId, harnessName) {
   if (!harnessRow) return [];
   return db.prepare('SELECT model_id, display_name, is_default FROM harness_models WHERE harness_id=? AND is_active=1 ORDER BY is_default DESC, model_id').all(harnessRow.id);
 }
+// Mirror agent-reported models into harness_models (the fallback used while no agent is online),
+// so a new harness model shows up without a code change. Claude never reports a list — its models
+// are ANTHROPIC_MODELS + custom_claude_models. Active set = union across all online agents, so two
+// agents on different harness versions don't keep deactivating each other's models.
+function syncHarnessModels(harnessName, reporterId) {
+  if (harnessName === 'claude') return;
+  const harnessRow = db.prepare('SELECT id FROM harnesses WHERE name=?').get(harnessName);
+  if (!harnessRow) return;
+  const union = new Map();
+  let reporterDefault = null;
+  for (const [actorId, statusList] of agentHarnessStatus) {
+    if (actorId !== reporterId && !agentClients.has(actorId)) continue;
+    const hs = statusList.find(s => s.id === harnessName);
+    if (!hs?.models) continue;
+    for (const m of hs.models) {
+      if (union.size >= MAX_SYNCED_HARNESS_MODELS) break;
+      if (!union.has(m.id)) union.set(m.id, m.label);
+      if (actorId === reporterId && m.is_default) reporterDefault = m.id;
+    }
+  }
+  if (!union.size) return;
+  const ids = JSON.stringify([...union.keys()]);
+  const upsert = db.prepare(
+    'INSERT INTO harness_models (harness_id, model_id, display_name, is_default, is_active) VALUES (?,?,?,0,1) ' +
+    'ON CONFLICT(harness_id, model_id) DO UPDATE SET display_name=excluded.display_name, is_active=1'
+  );
+  db.transaction(() => {
+    for (const [id, label] of union) upsert.run(harnessRow.id, id, label);
+    db.prepare('UPDATE harness_models SET is_active=0 WHERE harness_id=? AND model_id NOT IN (SELECT value FROM json_each(?))').run(harnessRow.id, ids);
+    const hasDefault = db.prepare('SELECT 1 FROM harness_models WHERE harness_id=? AND is_default=1 AND is_active=1').get(harnessRow.id);
+    if (hasDefault) return;
+    const pick = reporterDefault && union.has(reporterDefault) ? reporterDefault : union.keys().next().value;
+    db.prepare('UPDATE harness_models SET is_default=0 WHERE harness_id=?').run(harnessRow.id);
+    db.prepare('UPDATE harness_models SET is_default=1 WHERE harness_id=? AND model_id=?').run(harnessRow.id, pick);
+  })();
+}
 const pendingAgents = new Map();    // message_id → { resolve, reject }
 const pendingActorMeta = new Map(); // message_id → { name, avatar_color, avatar_symbol }
 const pendingCompacts = new Map();  // room_id → { total, completed, agents[] }
@@ -5740,6 +5777,11 @@ wss.on('connection', (ws, req) => {
       const available = Array.isArray(msg.harnesses_available) ? [...new Set(msg.harnesses_available.filter(h => KNOWN_HARNESSES.includes(h)))] : status.filter(s => s.installed).map(s => s.id);
       agentHarnesses.set(agentActorId, available);
       agentHarnessStatus.set(agentActorId, status);
+      for (const hs of status) {
+        if (!hs.models) continue;
+        try { syncHarnessModels(hs.id, agentActorId); }
+        catch (e) { console.error(`[harness_models] sync ${hs.id} failed:`, e.message); }
+      }
       const actor = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, created_at FROM actors WHERE id=?').get(agentActorId);
       if (actor) broadcastGlobal({ type: 'actor_status', actor: { ...actor, online: true, client_version: agentVersions.get(agentActorId) || null, harnesses_available: available, harness_status: status } });
       if (msg.request_id && pendingHarnessChecks.has(msg.request_id)) {

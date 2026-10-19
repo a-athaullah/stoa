@@ -10381,6 +10381,102 @@ async function run() {
     ws9.close();
   });
 
+  // Agent-reported harness models are mirrored into harness_models (fallback while no agent is online)
+  {
+    const hmDb = require('./db');
+    const codexId = hmDb.prepare("SELECT id FROM harnesses WHERE name='codex'").get()?.id;
+    const claudeId = hmDb.prepare("SELECT id FROM harnesses WHERE name='claude'").get()?.id;
+    const snapshot = hmDb.prepare('SELECT * FROM harness_models').all();
+    let syncA = null, syncB = null;
+    const rows = () => Object.fromEntries(hmDb.prepare('SELECT model_id, is_default, is_active FROM harness_models WHERE harness_id=?').all(codexId).map(r => [r.model_id, r]));
+    const report = async (ag, harnessId, models) => {
+      ag.ws.send(JSON.stringify({
+        type: 'harnesses_update',
+        harnesses_available: ['claude', 'codex'],
+        harness_status: [{ id: harnessId, installed: true, logged_in: true, version: '9.9.9', models }],
+      }));
+      await new Promise(r => setTimeout(r, 200));
+    };
+    const seed = (list) => {
+      hmDb.prepare('DELETE FROM harness_models WHERE harness_id=?').run(codexId);
+      const ins = hmDb.prepare('INSERT INTO harness_models (harness_id, model_id, display_name, is_default, is_active) VALUES (?,?,?,?,1)');
+      for (const [id, def] of list) ins.run(codexId, id, id, def ? 1 : 0);
+    };
+
+    await test('harness_models sync — new model added, unreported deactivated, active default kept', async () => {
+      assert.ok(codexId, 'codex harness row missing');
+      syncA = await createOnlineTestAgent('__test-hm-sync-a', '/tmp/stoa-test-hm-sync-a');
+      assert.ok(syncA, 'agent setup failed');
+      seed([['gpt-test-keep', true], ['gpt-test-stale', false]]);
+      await report(syncA, 'codex', [
+        { id: 'gpt-test-new', label: 'GPT Test New', is_default: true },
+        { id: 'gpt-test-keep', label: 'GPT Test Keep', is_default: false },
+      ]);
+      const r = rows();
+      assert.strictEqual(r['gpt-test-new']?.is_active, 1, 'reported model must be inserted active');
+      assert.strictEqual(r['gpt-test-stale'].is_active, 0, 'unreported model must be deactivated');
+      assert.strictEqual(r['gpt-test-keep'].is_default, 1, 'existing active default must not be overwritten');
+      assert.strictEqual(r['gpt-test-new'].is_default, 0);
+      const api = (await req('GET', '/api/harnesses')).body.find(h => h.name === 'codex');
+      const ids = api.models.map(m => m.model_id);
+      assert.ok(ids.includes('gpt-test-new') && !ids.includes('gpt-test-stale'), `api: ${ids}`);
+      assert.strictEqual(api.models.find(m => m.model_id === 'gpt-test-new').display_name, 'GPT Test New');
+    });
+
+    await test('harness_models sync — default deactivated → reporter default becomes the only default', async () => {
+      if (!syncA) { console.log('    (skipped)'); return; }
+      seed([['gpt-test-stale', true], ['gpt-test-keep', false]]);
+      await report(syncA, 'codex', [
+        { id: 'gpt-test-keep', label: 'Keep', is_default: false },
+        { id: 'gpt-test-new', label: 'New', is_default: true },
+      ]);
+      const r = rows();
+      assert.strictEqual(r['gpt-test-stale'].is_active, 0);
+      assert.strictEqual(r['gpt-test-stale'].is_default, 0, 'stale default must be cleared');
+      assert.strictEqual(r['gpt-test-new'].is_default, 1, 'reporter default picked');
+      const defaults = hmDb.prepare('SELECT COUNT(*) c FROM harness_models WHERE harness_id=? AND is_default=1').get(codexId).c;
+      assert.strictEqual(defaults, 1, 'exactly one default');
+    });
+
+    await test('harness_models sync — union of online agents: second agent does not deactivate the first', async () => {
+      if (!syncA) { console.log('    (skipped)'); return; }
+      syncB = await createOnlineTestAgent('__test-hm-sync-b', '/tmp/stoa-test-hm-sync-b');
+      assert.ok(syncB, 'agent B setup failed');
+      await report(syncB, 'codex', [{ id: 'gpt-test-only-b', label: 'B', is_default: true }]);
+      let r = rows();
+      assert.strictEqual(r['gpt-test-only-b']?.is_active, 1);
+      assert.strictEqual(r['gpt-test-new'].is_active, 1, 'model still reported by online agent A must stay active');
+      // Once A is offline, B's next report is the whole online picture → A-only models go inactive.
+      const closed = new Promise(res => syncA.ws.once('close', res));
+      syncA.ws.close(); await closed;
+      await new Promise(res => setTimeout(res, 100));
+      await report(syncB, 'codex', [{ id: 'gpt-test-only-b', label: 'B', is_default: true }]);
+      r = rows();
+      assert.strictEqual(r['gpt-test-new'].is_active, 0, 'model of offline agent deactivated');
+      assert.strictEqual(r['gpt-test-only-b'].is_default, 1, 'default moved to an active model');
+    });
+
+    await test('harness_models sync — models:null and claude reports leave the table untouched', async () => {
+      if (!syncB) { console.log('    (skipped)'); return; }
+      const codexBefore = JSON.stringify(rows());
+      const claudeBefore = JSON.stringify(hmDb.prepare('SELECT * FROM harness_models WHERE harness_id=? ORDER BY id').all(claudeId));
+      await report(syncB, 'codex', null);
+      await report(syncB, 'claude', [{ id: 'claude-injected-x', label: 'X', is_default: true }]);
+      assert.strictEqual(JSON.stringify(rows()), codexBefore, 'models:null must not touch codex rows');
+      assert.strictEqual(JSON.stringify(hmDb.prepare('SELECT * FROM harness_models WHERE harness_id=? ORDER BY id').all(claudeId)), claudeBefore, 'claude rows unchanged');
+    });
+
+    await test('harness_models sync — teardown restores rows', async () => {
+      for (const ag of [syncA, syncB]) { try { ag?.ws.close(); } catch {} }
+      hmDb.transaction(() => {
+        hmDb.prepare('DELETE FROM harness_models').run();
+        const ins = hmDb.prepare('INSERT INTO harness_models (id, harness_id, model_id, display_name, is_default, is_active) VALUES (?,?,?,?,?,?)');
+        for (const s of snapshot) ins.run(s.id, s.harness_id, s.model_id, s.display_name, s.is_default, s.is_active);
+      })();
+      assert.strictEqual(hmDb.prepare('SELECT COUNT(*) c FROM harness_models').get().c, snapshot.length);
+    });
+  }
+
   // harnesses/check — models field included in response
   await test('POST /api/actors/:id/harnesses/check — models field in response', async () => {
     if (!hsActorId) { console.log('    (skipped)'); return; }
