@@ -588,11 +588,17 @@ html.dark .s-docs-body pre .hljs-property, html.dark .s-docs-body pre .hljs-attr
 .s-icon-btn:hover:not(:disabled) { background: var(--h-hair-soft); }
 .s-icon-btn:disabled { opacity: .45; cursor: default; color: var(--h-ink-faint); }
 .s-icon-btn.s-ok { color: #7fb98c; }
-.s-restart-wrap { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.s-restart-wrap { display: inline-flex; align-items: center; gap: 6px; min-width: 0; margin-left: 6px; }
+@media (max-width: 640px) { .s-restart-wrap { margin-left: 0; } }
 .s-restart-btn {
-  gap: 4px; padding: 3px 7px; height: auto; width: auto;
+  gap: 4px; padding: 3px 8px; height: auto; width: auto; border-radius: 6px;
+  border: 1px solid var(--h-hairline); background: var(--h-surface-hi); color: var(--h-ink);
   font-family: var(--h-sans); font-size: 11.5px; white-space: nowrap;
+  transition: background .12s, border-color .12s;
 }
+.s-restart-btn:hover:not(:disabled) { background: var(--h-surface); border-color: var(--h-ink-faint); }
+.s-restart-btn:focus-visible { outline: 2px solid var(--h-accent); outline-offset: 1px; }
+.s-restart-btn:disabled { background: transparent; border-color: var(--h-hair-soft); }
 .s-restart-status {
   font-family: var(--h-serif); font-style: italic; font-size: 11.5px; color: var(--h-ink-faint);
 }
