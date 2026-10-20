@@ -386,10 +386,13 @@ Agent juga bisa **mengirim file** kepada Anda. Saat agent menyertakan `[send:pat
 
 **Search bar** di sidebar memungkinkan pencarian di semua pesan di semua room.
 
-- Menggunakan SQLite FTS5 (full-text search)
-- Hasil menampilkan **snippet yang di-highlight** dengan kata yang cocok
+- Menggunakan SQLite FTS5 (full-text search) dengan dukungan hybrid semantic search opsional
+- Hasil menampilkan **snippet yang di-highlight** — snippet dimulai sedikit sebelum kata yang cocok agar highlight selalu terlihat
 - Klik hasil untuk navigasi langsung ke pesan tersebut di room-nya
+- Hasil dari dalam thread menampilkan **badge thread** — klik untuk membuka thread root
 - Pencarian instan — bekerja di ribuan pesan
+
+**Query yang toleran:** karakter khusus seperti tanda hubung, kutip, dan titik dua ditangani dengan baik — tidak ada lagi error "Search failed". Prefix matching aktif. Jika semua kata tidak ditemukan bersamaan, pencarian otomatis fallback ke kata individual.
 
 ### Pencarian Dalam Room
 
@@ -399,6 +402,19 @@ Tekan **Ctrl+F** (atau klik **ikon search** di header room) untuk mencari di dal
 - Setiap hasil menampilkan snippet dengan kata yang cocok di-highlight
 - Klik hasil mana pun untuk **langsung melompat** ke pesan tersebut di percakapan — pesan lama dimuat otomatis jika diperlukan
 - Tekan **Escape** atau klik tombol close untuk menutup search bar
+
+### Hybrid (Semantic) Search
+
+Saat model embedding sudah termuat, Stoa dapat menemukan pesan berdasarkan **makna**, bukan hanya kata kunci. Hasil yang ditandai **badge related** cocok secara semantik — relevan secara konseptual meski tidak mengandung kata yang kamu ketik.
+
+- Menggunakan model `multilingual-e5-small` yang berjalan lokal — tidak ada data yang keluar dari server
+- Mendukung 100+ bahasa secara native
+- Saat pertama kali digunakan, model (~130 MB) diunduh sekali ke folder `models/`
+- **Backfill** latar belakang mengindeks pesan yang ada (~25.000 pesan membutuhkan sekitar 25 menit pada satu core CPU; ~580 MB RAM selama backfill)
+- Pencarian tetap berjalan normal selama backfill — hasil semantic muncul bertahap seiring proses pengindeksan
+- Jika model belum siap, pencarian otomatis fallback ke keyword-only
+
+Untuk menonaktifkan semantic search, set `STOA_SEMANTIC_SEARCH=off` di file `.env` dan restart server.
 
 ---
 

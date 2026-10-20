@@ -307,3 +307,10 @@ ORDER BY rank;
 ```
 
 **Performance:** Fast even with 100k+ messages.
+
+**Never `INSERT INTO messages_fts(messages_fts, ...) VALUES('delete', ...)` by hand before deleting a message.** `messages_fts_ad` already does it; a second 'delete' corrupts the external-content index (`integrity-check` → "database disk image is malformed"). Fixed in DELETE /api/messages/:id (was doing both).
+
+User input never goes to MATCH raw: `lib/search-query.js` `buildFtsQueries()` (quoted terms, prefix, OR fallback).
+
+### message_embeddings (semantic search)
+`message_id` PK → messages ON DELETE CASCADE, `model`, `vec` BLOB (Float32 LE, 384 dims; NULL = too short (<12 chars) or model failed → never retried), `created_at`. Trigger `message_embeddings_au` deletes the row on content UPDATE so the backfill re-embeds it. Rows whose `model` differs from the current one count as missing (model switch = full re-embed). Written only by `lib/semantic-index.js`.

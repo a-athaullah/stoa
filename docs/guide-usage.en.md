@@ -385,10 +385,13 @@ Agents can also **send files** to you. When an agent includes `[send:path/to/fil
 
 The **search bar** in the sidebar lets you search across all messages in all rooms.
 
-- Powered by SQLite FTS5 (full-text search)
-- Results show **highlighted snippets** with matching terms
+- Powered by SQLite FTS5 (full-text search) with optional hybrid semantic search
+- Results show **highlighted snippets** — snippets start just before the match so the highlight is always visible
 - Click a result to navigate directly to that message in its room
+- Results from threads show a **thread badge** — click to open the thread root
 - Search is instant — works across thousands of messages
+
+**Tolerant query handling:** special characters like hyphens, quotes, and colons are handled gracefully — no "Search failed" errors. Prefix matching is enabled. If all words aren't found together, the search automatically falls back to individual words.
 
 ### In-Room Search
 
@@ -398,6 +401,19 @@ Press **Ctrl+F** (or click the **search icon** in the room header) to search wit
 - Each result shows a snippet with the matching term highlighted
 - Click any result to **jump directly** to that message in the conversation — older messages are loaded automatically if needed
 - Press **Escape** or click the close button to dismiss the search bar
+
+### Hybrid (Semantic) Search
+
+When the embedding model is loaded, Stoa can find messages by **meaning**, not just keywords. A result marked with a **related badge** matched semantically — it's conceptually relevant even if it doesn't contain the exact words you typed.
+
+- Uses the `multilingual-e5-small` model running locally — no data leaves your server
+- Supports 100+ languages out of the box
+- On first use, the model (~130 MB) is downloaded once to the `models/` folder
+- A background **backfill** indexes existing messages (~25,000 messages takes roughly 25 minutes on one CPU core; ~580 MB RAM during backfill)
+- Search works normally during backfill — semantic results appear incrementally as indexing progresses
+- If the model is not yet ready, search automatically falls back to keyword-only
+
+To disable semantic search, set `STOA_SEMANTIC_SEARCH=off` in your `.env` and restart the server.
 
 ---
 

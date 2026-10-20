@@ -97,6 +97,8 @@ function waitUp(port, tries = 50) {
 
   const PORT = parseInt(process.env.TEST_PORT, 10) || (await getFreePort());
   const env = { ...process.env, PORT: String(PORT), DB_PATH: tmpDb, TEST_HOST: '127.0.0.1', STOA_TEST: '1', STOA_AGENT_BUNDLE_DIR: tmpBundleDir,
+    // Model-free embedding backend: exercises worker/backfill/hybrid without a 130 MB download.
+    STOA_SEMANTIC_BACKEND: 'hash',
     STOA_TEST_EMAIL: testEmail || '', STOA_TEST_PASSWORD: testPassword };
 
   const server = spawn(process.execPath, [serverFile], { cwd: projectRoot, env, stdio: ['ignore', 'pipe', 'pipe'] });

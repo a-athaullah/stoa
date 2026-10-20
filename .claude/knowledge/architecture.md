@@ -179,7 +179,7 @@ All WS events carry `thread_id` (null for root). Thread-specific events routed t
 ### Indexes
 - All foreign keys indexed
 - Frequently queried columns indexed
-- FTS5 for message search
+- FTS5 (`messages_fts`) for keyword search; `message_embeddings` for hybrid semantic search (multilingual-e5-small, 384-dim Float32, backfilled in worker thread)
 
 ### Caching
 - In-memory WebSocket connection map

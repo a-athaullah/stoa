@@ -177,6 +177,40 @@ GET /api/rooms/:id/messages?before=<messageId>&limit=50
 
 Returns messages **older than** `messageId`, newest first. Default scope returns only root messages (thread_id IS NULL) with thread summary subquery.
 
+### Search Routes
+
+```
+GET /api/search?q=<query>&room_id=<id>&mode=keyword|hybrid&limit=<n>
+```
+
+- `q` (required): search query string; sanitized by `lib/search-query.js` before passing to FTS5
+- `room_id` (optional): scope to one room; omit to search all accessible rooms
+- `mode` (optional, default `hybrid`): `keyword` = FTS5 only, `hybrid` = FTS5 + embeddings fused with RRF; falls back to keyword automatically while the model is not ready. Any other value → 400. (`match` is a per-row response field, not a query param.)
+- `limit` (optional, default 30, max 100)
+
+**Response:** JSON array (backward-compatible), each item:
+```json
+{
+  "id": 123,
+  "room_id": 5,
+  "content": "...",
+  "snippet": "...highlighted...",
+  "match": "keyword|semantic|both",
+  "thread_root_id": 120,
+  "thread_root_preview": "first line of thread root"
+}
+```
+
+Response header `X-Stoa-Search-Semantic: 1` when semantic results are included.
+
+**Agent access:** human session only (agent HTTP auth → 403 `agent_scope_denied`). Agents use `agent_search` WS action.
+
+```
+GET /api/search/status
+```
+
+Returns `{ state: 'off'|'loading'|'ready'|'failed', model, dim, indexed, error }` (`error` is null unless `failed`). Human session only — agents do not need backfill status.
+
 ### Thread Routes
 ```
 GET    /api/rooms/:id/threads            → List threads (?state=active for active only)
