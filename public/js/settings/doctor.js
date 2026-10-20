@@ -135,7 +135,7 @@ function _renderDebugBundleSection() {
         </div>
         <div style="display:flex;gap:8px">
           <button onclick="_debugBundleHideConsent()" style="background:none;border:1px solid var(--h-border);border-radius:6px;padding:5px 12px;font-size:12px;color:var(--h-ink-mute);cursor:pointer">Cancel</button>
-          <button onclick="_debugBundleCreate()" style="background:var(--h-accent,oklch(0.55 0.15 250));border:none;border-radius:6px;padding:5px 12px;font-size:12px;color:#fff;cursor:pointer">I understand, create bundle</button>
+          <button onclick="_debugBundleCreate()" style="background:var(--h-accent);border:none;border-radius:6px;padding:5px 12px;font-size:12px;color:var(--h-accent-ink);cursor:pointer">I understand, create bundle</button>
         </div>
       </div>
       <div id="debug-bundle-list"></div>

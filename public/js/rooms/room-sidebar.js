@@ -740,7 +740,7 @@ function renderRoomSidebar(room, participants) {
         const lbl = document.createElement('span'); lbl.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--h-ink)'; lbl.textContent = sched.sub_agent_label || '?';
         const cad = document.createElement('span'); cad.style.cssText = 'font-size:10.5px;color:var(--h-ink-mute);padding:1px 6px;border-radius:999px;border:1px solid var(--h-border)'; cad.textContent = fmtCadence(sched.schedule_spec);
         const diag = scheduleDiagnoses[sched.id];
-        if (diag && diag.status !== 'ok') { const badge = document.createElement('span'); badge.style.cssText = `font-size:9.5px;padding:1px 6px;border-radius:999px;background:${diag.status === 'overdue' ? '#B45309' : 'var(--h-red-fill)'};color:#fff;font-weight:600`; badge.textContent = diag.status; badge.title = diag.details || ''; top.appendChild(badge); }
+        if (diag && diag.status !== 'ok') { const badge = document.createElement('span'); badge.style.cssText = `font-size:9.5px;padding:1px 6px;border-radius:999px;background:${diag.status === 'overdue' ? 'var(--h-amber-badge)' : 'var(--h-red-fill)'};color:var(--h-fill-ink);font-weight:600`; badge.textContent = diag.status; badge.title = diag.details || ''; top.appendChild(badge); }
         top.append(lbl, cad);
         const task = document.createElement('div'); task.style.cssText = 'font-size:11.5px;color:var(--h-ink-faint);font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px'; task.textContent = sched.task;
         info.append(top, task);

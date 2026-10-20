@@ -53,6 +53,8 @@
   --h-green-fill:  #7FB98C;
   --h-amber:       #855F12;
   --h-amber-fill:  #C8A84B;
+  --h-amber-badge: #B45309;
+  --h-fill-ink:    #fff;
   --h-pin:         #A5671F;
   --h-info-ink:    oklch(0.48 0.10 250);
   --h-teal:        oklch(0.48 0.09 180);

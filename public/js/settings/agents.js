@@ -521,7 +521,7 @@ function sMakeConfirmPill(actor) {
   cancelBtn.textContent = 'cancel';
   cancelBtn.addEventListener('click', () => sCancelDelete(actor.id));
   const removeBtn = document.createElement('button');
-  removeBtn.style.cssText = 'background:var(--h-red-fill);border:none;color:#fff;font-family:var(--h-sans);font-size:12.5px;padding:5px 12px;border-radius:999px;cursor:pointer;letter-spacing:.01em';
+  removeBtn.style.cssText = 'background:var(--h-red-fill);border:none;color:var(--h-fill-ink);font-family:var(--h-sans);font-size:12.5px;padding:5px 12px;border-radius:999px;cursor:pointer;letter-spacing:.01em';
   removeBtn.textContent = 'remove';
   removeBtn.addEventListener('click', () => sCommitDelete(actor.id));
   pill.appendChild(lbl); pill.appendChild(cancelBtn); pill.appendChild(removeBtn);

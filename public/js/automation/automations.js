@@ -70,7 +70,7 @@ function autoRenderAutomationRow(auto) {
         <span style="font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Trigger: ${triggerParts.join(' + ')}">Trigger: ${triggerParts.join(' + ')}</span>
         <span style="font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-faint)">Action: Send to room "${roomName}"</span>
         <span style="font-family:var(--h-sans);font-size:12px;color:var(--h-ink-faint);margin-top:1px">${lastRun}</span>
-        ${auto.watch_reply && (auto.trigger_type === 'slack' || auto.trigger_type === 'email') ? `<span style="display:inline-block;font-family:var(--h-sans);font-size:11px;color:#4a8fcc;background:color-mix(in srgb,#4a8fcc 12%,transparent);border:1px solid color-mix(in srgb,#4a8fcc 25%,transparent);border-radius:4px;padding:1px 6px;margin-top:2px">watching replies</span>` : ''}
+        ${auto.watch_reply && (auto.trigger_type === 'slack' || auto.trigger_type === 'email') ? `<span style="display:inline-block;font-family:var(--h-sans);font-size:11px;color:var(--h-info-ink);background:var(--h-info-bg);border:1px solid var(--h-info-line);border-radius:4px;padding:1px 6px;margin-top:2px">watching replies</span>` : ''}
       </div>
       <div class="auto-row-controls" style="display:flex;align-items:center;gap:8px;margin-top:3px;flex-shrink:0">
         <span class="auto-toggle-btn" data-id="${auto.id}" data-enabled="${isEnabled ? '1' : '0'}" title="${isEnabled ? 'Disable' : 'Enable'}" style="width:36px;height:20px;border-radius:999px;position:relative;display:inline-block;cursor:pointer;background:${toggleBg};transition:background .15s;flex-shrink:0">
