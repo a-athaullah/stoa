@@ -5883,6 +5883,14 @@ async function run() {
       assert.notStrictEqual((await req('GET', '/api/settings')).body.public_url, 'http://evil.example');
     });
 
+    await test('Agent scope — search over HTTP is session-only: agent 403, human 200', async () => {
+      denied(await asAgent(agA, 'GET', '/api/search/status'), 'search status');
+      denied(await asAgent(agA, 'GET', '/api/search?q=scope'), 'search');
+      const st = await req('GET', '/api/search/status');
+      assert.strictEqual(st.status, 200, st.raw);
+      assert.ok(['off', 'loading', 'ready', 'failed'].includes(st.body.state), `state=${st.body.state}`);
+    });
+
     await test('Agent scope — proactive message: own room 200, room without the agent 403', async () => {
       const ok = await asAgent(agA, 'POST', `/api/rooms/${roomA}/message`, { content: 'scope ok' });
       assert.strictEqual(ok.status, 200, ok.raw);

@@ -2187,6 +2187,8 @@ const server = http.createServer(async (req, res) => {
     return json(res, rows);
   }
 
+  // Session-only on purpose (not in lib/agent-scope.js): the backfill status feeds the human search
+  // UI; agents get semantic results through WS agent_search. Not a finding.
   if (req.method === 'GET' && url.pathname === '/api/search/status') {
     return json(res, semanticIndex.status());
   }
