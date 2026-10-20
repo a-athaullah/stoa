@@ -259,6 +259,8 @@ Headers:
 }
 ```
 
+Also sent: `client_version`, `harnesses_available`, `supervisor` (`'pm2'|null`), `boot_id` (random hex per agent process) — see Agent Restart When Idle.
+
 Server validates secret, adds to `agentClients` Map.
 After connect: sends `claude_md_import` for each unmigrated workdir.
 
@@ -449,6 +451,22 @@ Human session only (no session → 401, agent headers → 403 `agent_scope_denie
 - **Source:** the Claude CLI has no model-listing command, so the agent scans its own binary (`detectClaudeModelCandidates()` in `harness-session.js`, called from `detectHarnessesAsync()` in `stoa.js`). It resolves `claude` on `PATH` (realpath), streams the file in 1 MB chunks with a 64-char overlap (never loads the ~250 MB binary), matches `\bclaude-(haiku|sonnet|opus|fable)-\d{1,2}-\d{1,2}(-\d{8})?\b`, and keeps one ID per family+version (the undated alias wins over dated snapshots), newest first, max 50. Result cached per `path:size:mtime`, so it rescans only after a CLI update.
 - **Transport:** top-level fields `claude_model_candidates` (string[]) + `claude_cli_version` on the existing `harnesses_update` WS message. Server validates (array, strings matching the custom-model regex, deduped, max 50, version ≤100 chars) and keeps them **in memory per agent** (`agentClaudeCandidates`, cleared on disconnect or when a report has no array). Not stored in the DB.
 - **Filtering (`getClaudeModelCandidates()`):** union over online agents; drops IDs already in `ANTHROPIC_MODELS` or custom (compared by base, so `claude-haiku-4-5` counts as listed via `claude-haiku-4-5-20251001`); per family keeps only versions **newer** than the newest listed model, because the binary also embeds every legacy ID (`claude-sonnet-3-7`, `claude-opus-4-1`, …). Older gaps remain reachable through manual input. `cli_version` = highest version among reporting agents (numeric compare).
+
+---
+
+### Agent Restart When Idle
+
+```
+POST /api/actors/:id/restart
+→ 200 { "ok": true, "state": "requested" }        // or the outstanding state if already requested (not re-sent)
+```
+Human session only (no session → 401, agent headers → 403 `agent_scope_denied`; not in `lib/agent-scope.js`). 404 unknown/non-AI actor; 409 `{ error: "agent_offline" }`; 409 `{ error: "not_supervised" }`.
+
+Purpose: running sessions hold the old harness CLI process; restarting the agent process rebuilds them on the updated CLI (sessions resume — `ai_sessions` untouched). Separate from **Check** (`harnesses/check`), which stays cheap.
+
+- **Supervisor gate:** the agent exits with `process.exit(0)` and relies on PM2 `autorestart`. An agent not under PM2 would die and stay down, so the agent reports `supervisor` in `agent_connect` via `lib/supervisor.js detectSupervisor()`: `'pm2'` only if `pm_id` is set, `autorestart !== 'false'`, **and** `process.ppid` equals the daemon pid in `$PM2_HOME/pm2.pid` (pm_id alone is inherited by any `node stoa.js` started from a shell inside a PM2 process). Old agents send nothing → `null` → 409.
+- **Agent side:** WS `{ type: "restart", reason: "manual" }` reuses the existing `pendingRestart` path (restart only when `activeTriggers` and `triggerQueue` are empty) and acks `{ type: "restart_status", state: "pending"|"restarting", active, queued }`. Without `reason` (server's version-outdated restart) behaviour is unchanged and silent.
+- **State (`agentRestarts`, in memory):** `requested` → `pending` → `restarting` → `done`. Broadcast to UI as `agent_restart_status { actor_id, state, active?, queued? }`; `/api/actors` and `actor_status` carry `supervisor` + `restart_state`. Agent acks only apply while a request is outstanding, and an agent cannot report `done`. The entry survives the disconnect; `done` is decided on reconnect by `boot_id` (random per agent process, sent in `agent_connect`): a different boot_id means the process really restarted, the same one is just a network blip and keeps the state. `restarting` is best-effort (the process exits right after sending), so the UI may see `requested` → offline → online + `done`.
 
 ---
 
