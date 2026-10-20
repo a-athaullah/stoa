@@ -120,13 +120,14 @@ function _restartStatusText(entry, actor) {
   return busy.length ? `waiting for idle · ${busy.join(', ')}` : 'waiting for idle…';
 }
 
-function _syncRestartBtn(btn, statusEl, actor) {
+function _syncRestartBtn(btn, actor) {
   const entry = sRestartState.get(actor.id);
   const reason = _restartBlockReason(actor);
+  const status = _restartStatusText(entry, actor);
   btn.disabled = !!entry || !!reason;
-  btn.title = reason || (entry ? 'Restart already requested' : 'Restart this agent once it is idle so sessions pick up the updated CLI');
-  statusEl.textContent = _restartStatusText(entry, actor);
-  statusEl.classList.toggle('is-active', !!entry);
+  btn.classList.toggle('is-active', !!entry);
+  btn.title = entry ? `Restart requested · ${status}` : (reason || 'Restart when idle — restarts this agent once it is idle so sessions pick up the updated CLI');
+  btn.setAttribute('aria-label', entry ? `Restart when idle: ${status}` : 'Restart when idle');
 }
 
 function _setRestartEntry(actorId, state, extra = {}) {
@@ -140,26 +141,17 @@ function _setRestartEntry(actorId, state, extra = {}) {
   }
 }
 
-function _makeRestartIdleBtn(actor) {
+function _makeRestartIdleBtn(actor, sz) {
   if (!sRestartState.has(actor.id) && S_RESTART_ACTIVE.has(actor.restart_state)) _setRestartEntry(actor.id, actor.restart_state);
-  const wrap = document.createElement('span');
-  wrap.className = 's-restart-wrap';
-  wrap.dataset.restartActor = actor.id;
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 's-icon-btn s-restart-btn';
-  btn.innerHTML = svgPower(13);
-  const lbl = document.createElement('span');
-  lbl.textContent = 'Restart when idle';
-  btn.appendChild(lbl);
-  const status = document.createElement('span');
-  status.className = 's-restart-status';
-  status.setAttribute('role', 'status');
-  status.setAttribute('aria-live', 'polite');
-  wrap.append(btn, status);
-  _syncRestartBtn(btn, status, actor);
+  btn.dataset.restartActor = actor.id;
+  btn.innerHTML = svgPower(sz);
+  _syncRestartBtn(btn, actor);
 
-  btn.addEventListener('click', async () => {
+  btn.addEventListener('click', async e => {
+    e.stopPropagation();
     if (!confirm('Restart this agent when idle?\n\nRunning sessions are rebuilt once the agent is idle; conversations resume where they left off.')) return;
     btn.disabled = true;
     try {
@@ -175,14 +167,12 @@ function _makeRestartIdleBtn(actor) {
     } catch { showToast('Failed to request restart', { error: true }); }
     finally { _renderRestartUi(actor.id); }
   });
-  return wrap;
+  return btn;
 }
 
 function _renderRestartUi(actorId, actor = allActors.find(a => a.id === actorId)) {
   if (!actor) return;
-  document.querySelectorAll(`.s-restart-wrap[data-restart-actor="${actorId}"]`).forEach(w => {
-    _syncRestartBtn(w.querySelector('.s-restart-btn'), w.querySelector('.s-restart-status'), actor);
-  });
+  document.querySelectorAll(`.s-restart-btn[data-restart-actor="${actorId}"]`).forEach(btn => _syncRestartBtn(btn, actor));
 }
 
 function sHandleRestartStatus(msg) {
@@ -483,6 +473,7 @@ function sMakeRow(actor, flash) {
         setTimeout(() => { upd.disabled = !actor.online; upd.style.opacity = ''; }, 3000);
       });
       acts.appendChild(upd);
+      acts.appendChild(_makeRestartIdleBtn(actor, 14));
     }
 
     const del = document.createElement('button');
@@ -1034,7 +1025,7 @@ function sMakeEditAccordion(actor) {
   const _accCheckBtn = _makeCheckHarnessBtn(actor, beSel, _accHint);
   const _accSelRow = document.createElement('div');
   _accSelRow.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap';
-  _accSelRow.append(beSel, _accCheckBtn, _makeRestartIdleBtn(actor));
+  _accSelRow.append(beSel, _accCheckBtn);
   beGrp.append(mkFieldLbl('harness'), _accSelRow, _accHint);
 
   const langGrp = document.createElement('div');
@@ -1859,7 +1850,7 @@ function renderAgentDetailHeader(container, actor) {
     delBtn.replaceWith(pill);
   });
 
-  actions.append(refreshBtn, updBtn, delBtn);
+  actions.append(refreshBtn, updBtn, _makeRestartIdleBtn(actor, 16), delBtn);
   container.append(avWrap, nameStat, actions);
 }
 
@@ -1963,7 +1954,7 @@ function buildAgentSettingsCard(actor) {
   const beCheckBtn = _makeCheckHarnessBtn(actor, beSel, beHint);
   const beSelRow = document.createElement('div');
   beSelRow.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap';
-  beSelRow.append(beSel, beCheckBtn, _makeRestartIdleBtn(actor));
+  beSelRow.append(beSel, beCheckBtn);
   const beNotice = document.createElement('span');
   beNotice.id = `s-harness-notice-${actor.id}`;
   beNotice.style.cssText = 'font-size:11.5px;color:oklch(60% .15 80);margin-top:2px;display:none';
