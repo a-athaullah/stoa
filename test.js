@@ -1868,6 +1868,15 @@ async function runAsyncUnitTests() {
     }
   });
 
+  await uta('build.js — agent bundle (live dist/stoa.js) is opt-in via --agent, honours STOA_AGENT_BUNDLE_DIR', async () => {
+    const pathM = require('path');
+    const { agentBundleTarget } = require('./build/build.js');
+    assert.strictEqual(agentBundleTarget([], {}, '/repo'), null, 'plain npm run build must not touch the bundle the live server serves');
+    assert.strictEqual(agentBundleTarget(['--minify'], { STOA_AGENT_BUNDLE_DIR: '/tmp/x' }, '/repo'), null, 'the env dir alone does not opt in');
+    assert.strictEqual(agentBundleTarget(['--agent'], {}, '/repo'), pathM.join('/repo', 'dist', 'stoa.js'));
+    assert.strictEqual(agentBundleTarget(['--agent'], { STOA_AGENT_BUNDLE_DIR: '/tmp/x' }, '/repo'), pathM.join('/tmp/x', 'stoa.js'));
+  });
+
   await uta('agent update check — writes only files matching the manifest hash, restarts only when something was written', async () => {
     const stoa = require('./stoa.js');
     const fsM = require('fs'), osM = require('os'), pathM = require('path'), cryptoM = require('crypto');

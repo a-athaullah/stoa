@@ -4,6 +4,18 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.join(__dirname, '..');
+
+// The live server reads dist/stoa.js per request for /api/client/manifest, so writing it
+// from a branch checkout pushes unmerged code to every agent (auto-update + restart).
+// server.js already rebuilds the agent bundle on every start, so the frontend build leaves
+// it alone; `--agent` opts in, into STOA_AGENT_BUNDLE_DIR when set (like server.js).
+function agentBundleTarget(argv, env, rootDir) {
+  if (!argv.includes('--agent')) return null;
+  return path.join(env.STOA_AGENT_BUNDLE_DIR || path.join(rootDir, 'dist'), 'stoa.js');
+}
+module.exports = { agentBundleTarget };
+if (require.main !== module) return;
+
 const pub = path.join(root, 'public');
 const vendor = path.join(pub, 'vendor');
 const dist = path.join(pub, 'dist');
@@ -65,14 +77,16 @@ fs.writeFileSync(path.join(dist, '_app.js'), jsConcat);
 execSync(`npx esbuild public/dist/_app.js --minify --outfile=public/dist/stoa.min.js`, { cwd: root, stdio: 'inherit' });
 fs.unlinkSync(path.join(dist, '_app.js'));
 
-// ── Agent bundle: stoa.js + lib/* → dist/stoa.js ──
-const agentDist = path.join(root, 'dist');
-if (!fs.existsSync(agentDist)) fs.mkdirSync(agentDist, { recursive: true });
-execSync(`npx esbuild stoa.js --bundle --platform=node --target=node18 --external:ws --external:./claude-session --external:./codex-session --outfile=dist/stoa.js`, { cwd: root, stdio: 'inherit' });
+// ── Agent bundle (opt-in): stoa.js + lib/* → dist/stoa.js ──
+const agentOut = agentBundleTarget(process.argv.slice(2), process.env, root);
+if (agentOut) {
+  fs.mkdirSync(path.dirname(agentOut), { recursive: true });
+  execSync(`npx esbuild stoa.js --bundle --platform=node --target=node18 --external:ws --external:./claude-session --external:./codex-session --outfile=${JSON.stringify(agentOut)}`, { cwd: root, stdio: 'inherit' });
+}
 
 // ── Summary ──
 const size = (f) => (fs.statSync(f).size / 1024).toFixed(1) + 'KB';
 console.log(`\n✓ Build complete`);
 console.log(`  vendor/  — marked ${size(path.join(vendor, 'marked.min.js'))}, purify ${size(path.join(vendor, 'purify.min.js'))}, hljs ${size(path.join(vendor, 'highlight.min.js'))}, codemirror ${size(path.join(vendor, 'codemirror.bundle.js'))}`);
 console.log(`  dist/    — stoa.min.css ${size(path.join(dist, 'stoa.min.css'))}, stoa.min.js ${size(path.join(dist, 'stoa.min.js'))}`);
-console.log(`  agent/   — dist/stoa.js ${size(path.join(agentDist, 'stoa.js'))}`);
+console.log(agentOut ? `  agent/   — ${agentOut.startsWith(root + path.sep) ? path.relative(root, agentOut) : agentOut} ${size(agentOut)}` : '  agent/   — skipped (server.js builds dist/stoa.js on start; --agent to force)');

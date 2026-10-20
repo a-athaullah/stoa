@@ -39,6 +39,24 @@
 
 **Mitigation:** Agents auto-reconnect. Server restart is rare (update deployments).
 
+**Self-healing for sub-agent runs (bug/orphan-subagent-wake):**
+- Agent processes keep running across a ws drop or server restart. On `agent_connect` the agent
+  sends `active_message_ids`; those runs are revived (back to `streaming`), the rest are orphaned.
+- Every path that ends a sub-agent run without `agent_complete` (disconnect, reconnect, server
+  start, "agent updating", mid-trigger disconnect) stamps `result_meta.exit_reason='interrupted'`
+  (server-only value, not in `RESULT_EXIT_REASONS`) and queues a `pending_wakes` row.
+  `agent_error` / empty `agent_complete` on a sub-agent queue a normal failure wake.
+- `drainWake` only delivers to a connected, current-version agent — otherwise the row waits for
+  the next `agent_connect` (triggerAiResponse to an offline/outdated agent returns without
+  throwing, which used to consume the wake).
+- Loop guard: >3 interrupted runs per (room, thread, sub-agent) in 1 hour → system_event, no wake.
+  The server never re-triggers a sub-agent itself; the parent decides.
+- Kill switch: `STOA_ORPHAN_WAKE=off` (wakes only; the interrupted stamp stays).
+- Agent side: a pending update restart waits up to 30 min (not 3) while a tool call is in flight.
+  The run watchdog (5 min idle) and stale sweep (20 min) still bound silent tools.
+- Known gap: a sub-agent run already marked error by the 15-min server timeout, whose agent then
+  dies, gets no wake (needs the thread watchdog, plan Lapis 4).
+
 ---
 
 ### 4. File Upload Size Limit

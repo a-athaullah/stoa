@@ -485,4 +485,10 @@ npm run build
 - `public/dist/stoa.min.css` (Tailwind purged + minified)
 - `public/dist/stoa.min.js` (concatenated + minified)
 
+The agent bundle (`dist/stoa.js`) is **not** built by default: the live server reads it per
+request for `/api/client/manifest`, so a build from a branch checkout (including the pre-commit
+hook, which runs `build/build.js` when `public/js/` is staged) would push unmerged code to every
+agent. `server.js` rebuilds it on every start. Opt in with `node build/build.js --agent`
+(`npm run build -- --agent`); honours `STOA_AGENT_BUNDLE_DIR`.
+
 **Auto-switched** via `NODE_ENV=production` check in `server.js`.
