@@ -9428,6 +9428,8 @@ async function run() {
     assert.strictEqual(check1.status, 404);
     const check2 = await req('GET', `/api/messages/${replyId}`);
     assert.strictEqual(check2.status, 404);
+    // Throws "database disk image is malformed" if an FTS entry was deleted twice (manual + trigger).
+    require('./db').prepare("INSERT INTO messages_fts(messages_fts, rank) VALUES('integrity-check', 1)").run();
   });
 
   await test('Thread — search results carry thread_id', async () => {

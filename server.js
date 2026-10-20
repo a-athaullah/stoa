@@ -2070,13 +2070,10 @@ const server = http.createServer(async (req, res) => {
       if (!cascade) {
         return json(res, { error: 'Cannot delete thread root with replies. Use ?cascade=1 to delete thread and all replies.' }, 409);
       }
-      const threadMsgs = db.prepare('SELECT id FROM messages WHERE thread_id=?').all(msgId);
-      for (const tm of threadMsgs) {
-        db.prepare("INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', ?, (SELECT content FROM messages WHERE id=?))").run(tm.id, tm.id);
-      }
       db.prepare('DELETE FROM messages WHERE thread_id=?').run(msgId);
     }
-    db.prepare("INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', ?, (SELECT content FROM messages WHERE id=?))").run(msgId, msgId);
+    // The messages_fts_ad trigger removes the FTS entry. A second manual 'delete' here used to
+    // corrupt the external-content index (integrity-check: "database disk image is malformed").
     db.prepare('DELETE FROM messages WHERE id=?').run(msgId);
     broadcast(msg.room_id, { type: 'message_deleted', message_id: msgId, cascade: !!hasReplies });
     res.writeHead(204); return res.end();
