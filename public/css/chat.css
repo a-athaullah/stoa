@@ -1011,6 +1011,7 @@ html.dark .h-msg-row:hover { background: var(--h-hover); }
 .h-msg-row.ai .h-msg-actions { right: 8px; }
 .h-msg-row.human .h-msg-actions { left: 8px; }
 .t-root-row .h-msg-actions { display: flex; right: 8px; }
+.t-broadcast-row .h-msg-actions { top: -4px; }
 .h-thread-msg-row:hover .h-msg-actions, .h-thread-root-row:hover .h-msg-actions { display: flex; }
 .h-thread-msg-row.show-actions .h-msg-actions, .h-thread-root-row.show-actions .h-msg-actions { display: flex; }
 .h-thread-msg-row .h-msg-actions, .h-thread-root-row .h-msg-actions { right: 8px; }

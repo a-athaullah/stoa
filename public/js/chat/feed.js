@@ -102,6 +102,7 @@ function appendFeedRootRow(m, inner) {
     if (await copyToClipboard(m.content || '')) showCopyFeedback(this);
   };
   actions.querySelector('[data-action="delete"]').onclick = (e) => { e.stopPropagation(); deleteMessage(m.id); };
+  addMessageLinkAction(actions, m.id, null, m.room_id);
   col.style.position = 'relative';
   col.appendChild(actions);
 
@@ -352,6 +353,12 @@ function appendFeedBroadcastRow(m, inner) {
     content.innerHTML = highlightMentions(renderMarkdown(m.content));
     col.appendChild(content);
   }
+
+  const actions = document.createElement('div');
+  actions.className = 'h-msg-actions';
+  addMessageLinkAction(actions, m.id, m.thread_id, m.room_id);
+  col.style.position = 'relative';
+  col.appendChild(actions);
 
   body.appendChild(col);
   row.appendChild(body);

@@ -636,6 +636,7 @@ async function init() {
   initSettings();
   initGlobalWs();
   initMessageActionTouch();
+  applyInitialRoute(rooms);
 }
 
 

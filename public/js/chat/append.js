@@ -240,6 +240,7 @@ function appendMessage(m, container) {
     if (await copyToClipboard(m.content || '')) showCopyFeedback(this);
   };
   actions.querySelector('[data-action="delete"]').onclick = () => deleteMessage(m.id);
+  addMessageLinkAction(actions, m.id, m.thread_id || null, m.room_id);
 
   body.appendChild(bubble);
   body.style.position = 'relative';

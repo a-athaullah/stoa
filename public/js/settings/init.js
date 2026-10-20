@@ -25,6 +25,7 @@ function initGlobalWs() {
       if (msg.type === 'room_deleted' || msg.type === 'room_archived') {
         if (currentRoomId === msg.room_id) {
           currentRoomId = null;
+          routeWrite(null, null, 'replace');
           document.getElementById('messages-inner').innerHTML = '';
           document.getElementById('chat-header').innerHTML = '';
         }
