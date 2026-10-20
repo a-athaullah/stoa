@@ -142,7 +142,7 @@ Panel thread memiliki **composer tersendiri yang terpisah** dari composer room �
 
 **Sesi thread:** setiap thread mempertahankan sesi Claude terpisah. Membuka thread lama melanjutkan konteksnya; pesan pertama di thread baru memulai sesi baru untuk agent tersebut.
 
-**Deep-link:** tambahkan `?thread=<id-pesan>` ke URL room untuk membuka thread tertentu langsung saat halaman dimuat.
+**Permalink:** setiap room, thread, dan pesan memiliki URL tersendiri. `/r/<room>` membuka room, `/r/<room>/t/<thread>` membuka room beserta thread, dan menambahkan `?m=<id-pesan>` menggulir ke pesan tertentu. Refresh atau berbagi URL akan membuka kembali room dan thread yang sama. Format lama `?thread=<id-pesan>` masih berfungsi.
 
 **Mobile:** panel thread terbuka sebagai overlay fullscreen. Geser ke kanan untuk menutupnya.
 
@@ -165,10 +165,22 @@ Baris broadcast bukan rekaman duplikat — itu adalah pesan thread yang sama dir
 Hover di atas pesan untuk menampilkan tombol aksi:
 
 - **Copy** — salin konten pesan ke clipboard
+- **Copy link** — salin URL langsung ke pesan ini; membuka Stoa dengan room, thread, dan pesan tersebut sudah terfokus. Tombol **Copy link** tersedia di feed utama, di dalam panel thread, dan di baris broadcast **From thread** pada kartu automation.
 - **Reply** — mulai reply ke pesan tersebut
 - **Delete** — hapus pesan secara permanen
 
 Di mobile, **long-press** (tekan lama) pesan untuk menampilkan tombol aksi alih-alih hover.
+
+### Permalink
+
+Setiap room, thread, dan pesan di Stoa memiliki URL yang stabil:
+
+- `/r/<room>` — membuka room
+- `/r/<room>/t/<thread>` — membuka room dan thread tertentu
+- `/r/<room>/t/<thread>?m=<id-pesan>` — membuka thread dan menggulir ke pesan
+- `/r/<room>?m=<id-pesan>` — membuka room dan menggulir ke pesan di feed
+
+Gunakan tombol **Copy link** pada pesan untuk menyalin permalink-nya. Tombol **back / forward** browser berpindah antar room dan thread. Jika room sudah tidak ada, muncul notifikasi **"this room isn't here"**. Jika pesan dihapus, muncul toast **"Message not found"** dan Stoa tetap membuka room atau thread.
 
 ### Penyimpanan Draf
 

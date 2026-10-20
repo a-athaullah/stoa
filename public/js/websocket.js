@@ -45,8 +45,13 @@ function connectWS(roomId) {
 
 function handleWsMessage(msg) {
   if (msg.type === 'auth_error') {
-    showToast(msg.message || 'Session expired. Redirecting to login…', { error: true, duration: 4000 });
-    setTimeout(() => { window.location.href = '/login'; }, 2000);
+    showToast(msg.message || 'Session expired. Please sign in again.', { error: true, duration: 4000 });
+    // Reload in place: the login overlay shows on the same URL, so a permalink survives sign-in.
+    // If HTTP auth still passes but the WS keeps rejecting, show the overlay instead of reload-looping.
+    const last = Number(sessionStorage.getItem('stoa-auth-reload') || 0);
+    if (Date.now() - last < 30000) { showLogin(); return; }
+    sessionStorage.setItem('stoa-auth-reload', String(Date.now()));
+    setTimeout(() => location.reload(), 2000);
     return;
   }
   if (msg.type === 'history') {
@@ -75,7 +80,7 @@ function handleWsMessage(msg) {
       if (m.state === 'streaming' || m.state === 'requesting') {
         if (m.thread_id) {
           if (typeof openThread === 'function' && typeof isThreadOpen === 'function' && !isThreadOpen()) {
-            openThread(m.thread_id);
+            openThread(m.thread_id, null, { history: 'replace' });
           }
           if (typeof activeThreadId !== 'undefined' && activeThreadId === m.thread_id) {
             const tbody = document.getElementById('thread-body');
@@ -89,8 +94,7 @@ function handleWsMessage(msg) {
       }
     }
     scrollToBottom(true);
-    // Check if there's a deep-link thread param
-    if (typeof checkThreadDeepLink === 'function') checkThreadDeepLink();
+    routerOnHistory();
     return;
   }
 
@@ -188,7 +192,7 @@ function handleWsMessage(msg) {
       const tId = msg.thread_id || null;
       // Auto-open thread panel when AI starts responding in a thread — only if no thread is currently open
       if (tId && typeof openThread === 'function' && typeof isThreadOpen === 'function' && !isThreadOpen()) {
-        openThread(tId);
+        openThread(tId, null, { history: 'replace' });
       }
       // Thread messages never render in room feed
       if (tId && (typeof activeThreadId === 'undefined' || activeThreadId !== tId)) return;

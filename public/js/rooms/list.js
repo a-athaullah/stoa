@@ -334,6 +334,7 @@ async function archiveRoom(room) {
   } catch { showToast('Failed to archive room', { error: true }); return; }
   if (currentRoomId === room.id) {
     currentRoomId = null;
+    routeWrite(null, null, 'replace');
     document.getElementById('messages-inner').innerHTML = '';
     document.getElementById('chat-header').innerHTML = '';
   }
@@ -356,6 +357,7 @@ async function deleteRoom(room) {
   } catch { showToast('Failed to delete room', { error: true }); return; }
   if (currentRoomId === room.id) {
     currentRoomId = null;
+    routeWrite(null, null, 'replace');
     document.getElementById('messages-inner').innerHTML = '';
     document.getElementById('chat-header').innerHTML = '';
   }

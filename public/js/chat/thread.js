@@ -30,7 +30,7 @@ function _getThreadBody()  { return document.getElementById('thread-body'); }
 function isThreadOpen() { return activeThreadId !== null; }
 
 // ── Open thread ─────────────────────────────────────────────────────────────
-async function openThread(rootId, highlightMsgId) {
+async function openThread(rootId, highlightMsgId, opts = {}) {
   if (activeThreadId === rootId && !highlightMsgId) return;
 
   Object.keys(threadContextState).forEach(k => delete threadContextState[k]);
@@ -43,10 +43,7 @@ async function openThread(rootId, highlightMsgId) {
   const stopAction = document.getElementById('thread-stop-action');
   if (stopAction) stopAction.classList.remove('visible');
 
-  // Update URL param
-  const url = new URL(location.href);
-  url.searchParams.set('thread', rootId);
-  history.replaceState(null, '', url);
+  routeWrite(currentRoomId, rootId, opts.history || 'push', highlightMsgId);
 
   // Highlight active root in feed
   document.querySelectorAll('.h-feed-root').forEach(el => {
@@ -66,27 +63,34 @@ async function openThread(rootId, highlightMsgId) {
   clearThreadReply();
   _updateRoomHeaderThread(rootId);
   await _loadThread(rootId);
-  if (highlightMsgId) _highlightThreadMsg(highlightMsgId);
+  if (highlightMsgId && highlightMsgId !== rootId && !(await _highlightThreadMsg(highlightMsgId))) {
+    showToast('Message not found in this thread', { error: true });
+  }
   restoreThreadDraft(currentRoomId, rootId);
   document.getElementById('thread-msg-input')?.focus();
 }
 
-function _highlightThreadMsg(msgId) {
-  const el = document.getElementById('msg-' + msgId);
-  if (!el) return;
+async function _highlightThreadMsg(msgId) {
+  const find = () => _getThreadBody()?.querySelector('#msg-' + msgId);
+  let el = find();
+  for (let i = 0; i < 20 && !el && !threadNoMoreOlder && threadOldestMsgId && msgId < threadOldestMsgId; i++) {
+    threadLoadingOlder = false;
+    await _loadOlderThreadMessages();
+    el = find();
+  }
+  if (!el) return false;
   el.scrollIntoView({ behavior: 'smooth', block: 'center' });
   el.classList.add('h-thread-msg-highlight');
   setTimeout(() => el.classList.remove('h-thread-msg-highlight'), 2000);
+  return true;
 }
 
-function closeThread() {
+function closeThread(opts = {}) {
   if (!activeThreadId) return;
   saveThreadDraft(currentRoomId, activeThreadId);
   activeThreadId = null;
 
-  const url = new URL(location.href);
-  url.searchParams.delete('thread');
-  history.replaceState(null, '', url);
+  routeWrite(currentRoomId, null, opts.history || 'push');
 
   document.querySelectorAll('.h-feed-root').forEach(el => el.classList.remove('h-feed-root-active'));
 
@@ -954,6 +958,7 @@ function appendThreadMessage(m, container) {
   };
   actions.querySelector('[data-action="reply"]').onclick = () => startThreadReply(m.id, m.actor_name, m.avatar_color, m.content);
   actions.querySelector('[data-action="delete"]').onclick = () => deleteMessage(m.id);
+  addMessageLinkAction(actions, m.id, m.thread_id || activeThreadId, m.room_id);
 
   body.appendChild(bubble);
   body.style.position = 'relative';
@@ -1097,6 +1102,7 @@ function _renderThreadRoot(m, container) {
     if (await copyToClipboard(m.content || '')) showCopyFeedback(this);
   };
   actions.querySelector('[data-action="delete"]').onclick = () => deleteMessage(m.id);
+  addMessageLinkAction(actions, m.id, m.id, m.room_id);
 
   body.appendChild(bubble);
   body.style.position = 'relative';
@@ -1539,12 +1545,6 @@ function hideThreadCompactBar() {
   threadCompactingParticipants = [];
   const bar = document.getElementById('thread-compact-bar');
   if (bar) { bar.classList.remove('visible'); bar.innerHTML = ''; }
-}
-
-// ── Deep-link from URL params ─────────────────────────────────────────────────
-function checkThreadDeepLink() {
-  const threadId = new URL(location.href).searchParams.get('thread');
-  if (threadId) openThread(parseInt(threadId, 10));
 }
 
 // ── Room header breadcrumb ────────────────────────────────────────────────────

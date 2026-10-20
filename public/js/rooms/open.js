@@ -1,5 +1,5 @@
 // ── Open room ──────────────────────────────────────────────────────────────
-async function openRoom(room) {
+async function openRoom(room, opts = {}) {
   if (settingsOpen) {
     settingsOpen = false;
     sStopPolling();
@@ -8,7 +8,7 @@ async function openRoom(room) {
     if (typeof setAppNavActive === 'function') setAppNavActive('inbox');
   }
   closeRoomSearch();
-  if (typeof closeThread === 'function') closeThread();
+  if (typeof closeThread === 'function') closeThread({ history: 'none' });
   // Save draft from previous room
   saveDraft(currentRoomId);
   if (window.stopVoiceRecognition) window.stopVoiceRecognition();
@@ -16,6 +16,8 @@ async function openRoom(room) {
   currentRoomId = room.id;
   currentRoomData = room;
   currentRoomWorkdirId = room.workdir_id || null;
+  routeWrite(room.id, null, opts.history || 'push');
+  clearRouteNotFound();
   clearRoomDisplay();
   clearComposerProcessing();
 
@@ -38,7 +40,7 @@ async function openRoom(room) {
     parts = await fjson(`/api/rooms/${room.id}/participants`);
   } catch {
     setConnected(false);
-    setTimeout(() => openRoom(room), 3000);
+    setTimeout(() => openRoom(room, opts), 3000);
     return;
   }
   roomParticipantsCache[room.id] = parts;

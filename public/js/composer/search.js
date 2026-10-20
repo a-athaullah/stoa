@@ -62,7 +62,7 @@
         searchInput.value = '';
         searchClear.style.display = 'none';
         hideSearchResults();
-        navigateToMessage(r.room_id, r.id, r.room_title);
+        goToMessage(r.room_id, r.id, r.thread_id);
       };
       searchResults.appendChild(item);
     }
@@ -72,15 +72,6 @@
     searchResults.style.display = 'none';
     roomList.style.display = '';
     roomsRow.style.display = '';
-  }
-
-  function navigateToMessage(roomId, msgId, roomTitle) {
-    if (currentRoomId !== roomId) {
-      openRoom({ id: roomId, title: roomTitle || 'Room' });
-      setTimeout(() => scrollToMessage(msgId), 800);
-    } else {
-      scrollToMessage(msgId);
-    }
   }
 }
 
@@ -152,27 +143,28 @@ async function doRoomSearch(query) {
     item.appendChild(snippet);
     item.onclick = () => {
       resultsEl.classList.remove('visible');
-      scrollToMessage(r.id);
+      goToMessage(r.room_id || currentRoomId, r.id, r.thread_id);
     };
     resultsEl.appendChild(item);
   }
 }
 
 async function scrollToMessage(msgId) {
-  let el = document.getElementById('msg-' + msgId);
+  const find = () => document.getElementById('messages-inner')?.querySelector('#msg-' + msgId);
+  let el = find();
   if (!el && currentRoomId && oldestMessageId && msgId < oldestMessageId) {
     for (let i = 0; i < 20 && !el && !noMoreOlder; i++) {
       loadingOlder = false;
       await loadOlderMessages();
-      el = document.getElementById('msg-' + msgId);
+      el = find();
     }
   }
-  if (el) {
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    el.style.transition = 'background 0.3s';
-    el.style.background = 'color-mix(in srgb, #d39749 15%, transparent)';
-    setTimeout(() => { el.style.background = ''; }, 2000);
-  }
+  if (!el) return false;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  el.style.transition = 'background 0.3s';
+  el.style.background = 'color-mix(in srgb, #d39749 15%, transparent)';
+  setTimeout(() => { el.style.background = ''; }, 2000);
+  return true;
 }
 
 (function() {
