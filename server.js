@@ -1549,6 +1549,11 @@ function serveIndex() {
   return html;
 }
 
+// SPA permalinks (/r/<room>, /r/<room>/t/<thread>) render index.html; the client router reads the path.
+// Strict digits-only shape: nothing else under /r/ is served and the path never touches the filesystem.
+const APP_ROUTE_RE = /^\/r\/\d{1,15}(?:\/t\/\d{1,15})?\/?$/;
+const isAppRoute = (pathname) => pathname === '/' || APP_ROUTE_RE.test(pathname);
+
 function requireAuth(req, res, url) {
   if (AUTH_EXEMPT.has(url.pathname)) return true;
   // Static assets from public/ (CSS, JS, manifest, icons, SW)
@@ -1621,7 +1626,8 @@ const server = http.createServer(async (req, res) => {
   const authResult = requireAuth(req, res, url);
   if (authResult === false) return;
   if (authResult === 'login') {
-    if (req.method === 'GET' && url.pathname === '/') {
+    // Login is an in-page overlay, so the permalink URL survives sign-in without a server redirect.
+    if (req.method === 'GET' && isAppRoute(url.pathname)) {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
       return res.end(serveIndex());
     }
@@ -1860,7 +1866,7 @@ const server = http.createServer(async (req, res) => {
   // Serve static files from public/
   const STATIC_TYPES = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml' };
   if (req.method === 'GET') {
-    const isRoot = url.pathname === '/';
+    const isRoot = isAppRoute(url.pathname);
     const ext = isRoot ? '.html' : path.extname(url.pathname);
     if (STATIC_TYPES[ext]) {
       if (isRoot) {
@@ -2091,14 +2097,16 @@ const server = http.createServer(async (req, res) => {
     const msgId = parseInt(msgGetMatch[1]);
     const row = db.prepare(`
       SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
-             sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url, sa.role AS sub_agent_role
+             sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url, sa.role AS sub_agent_role,
+             r.archived_at AS room_archived_at
       FROM messages m
       JOIN room_participants rp ON rp.id=m.participant_id
       JOIN actors a ON a.id=rp.actor_id
+      JOIN rooms r ON r.id=m.room_id
       LEFT JOIN sub_agents sa ON sa.id=m.sub_agent_id
       WHERE m.id=?
     `).get(msgId);
-    if (!row) { res.writeHead(404); return res.end(); }
+    if (!row) return json(res, { error: 'message not found' }, 404);
     enrichAutomation(row);
     return json(res, row);
   }

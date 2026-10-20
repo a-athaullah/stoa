@@ -5314,6 +5314,76 @@ async function run() {
       assert.strictEqual(r.headers['strict-transport-security'], undefined);
     });
 
+    await test('Permalink /r/<room>[/t/<thread>] — serves index.html (anon login overlay + session), no redirect', async () => {
+      const index = await req('GET', '/');
+      assert.strictEqual(index.status, 200);
+      assert.ok(index.raw.includes('login-overlay'), 'index.html marker');
+      for (const p of [`/r/${secRoomId}`, `/r/${secRoomId}/`, `/r/${secRoomId}/t/42`, `/r/${secRoomId}/t/42?m=7`]) {
+        for (const [who, call] of [['anon', () => anon(() => req('GET', p))], ['session', () => req('GET', p)]]) {
+          const r = await call();
+          assert.strictEqual(r.status, 200, `${who} ${p}`);
+          assert.match(r.headers['content-type'], /^text\/html/, `${who} ${p}`);
+          assert.strictEqual(r.headers['cache-control'], 'no-cache', `${who} ${p}`);
+          assert.strictEqual(r.headers.location, undefined, `${who} ${p} must not redirect`);
+          assert.strictEqual(r.raw, index.raw, `${who} ${p} body`);
+        }
+      }
+    });
+
+    await test('Permalink — malformed /r/ paths and traversal are not served as the app or a file', async () => {
+      const serverSrc = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8').slice(0, 200);
+      const bad = ['/r/abc', '/r/', '/r/1/t/', '/r/1/t/x', '/r/1/t/2/extra', '/r/1/x/2', '/r/-1',
+        '/r/1/../../server.js', '/r/1/%2e%2e/%2e%2e/server.js', '/r/..%2f..%2fserver.js', '/r/1/t/2/../../../package.json'];
+      for (const p of bad) {
+        const r = await req('GET', p);
+        assert.notStrictEqual(r.status, 200, `session ${p} → ${r.status}`);
+        assert.ok(!r.raw.includes('login-overlay') && !r.raw.includes(serverSrc) && !r.raw.includes('"dependencies"'), `session ${p} leaked content`);
+        const a = await anon(() => req('GET', p));
+        assert.strictEqual(a.status, 401, `anon ${p} → ${a.status}`);
+        assert.strictEqual(a.headers.location, undefined);
+      }
+    });
+
+    await test('Permalink — redirect-ish params are inert: no Location header, same index body', async () => {
+      const index = await anon(() => req('GET', '/'));
+      for (const p of [`/r/${secRoomId}?next=//evil.example`, `/r/${secRoomId}?redirect=https://evil.example/r/1`, `/r/${secRoomId}/t/1?m=%0d%0aLocation:%20https://evil.example`]) {
+        const r = await anon(() => req('GET', p));
+        assert.strictEqual(r.status, 200, p);
+        assert.strictEqual(r.headers.location, undefined, p);
+        assert.strictEqual(r.raw, index.raw, p);
+      }
+    });
+
+    await test('GET /api/messages/:id — resolves permalink target: room_id, thread_id, room_archived_at; 404 is JSON', async () => {
+      const db = require('./db');
+      const part = db.prepare('SELECT id FROM room_participants WHERE room_id=? LIMIT 1').get(secRoomId);
+      assert.ok(part, 'sec room has a participant');
+      const rootId = Number(db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,'permalink root','complete')").run(secRoomId, part.id).lastInsertRowid);
+      const replyId = Number(db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?,?,'permalink reply','complete',?)").run(secRoomId, part.id, rootId).lastInsertRowid);
+      try {
+        const root = await req('GET', `/api/messages/${rootId}`);
+        assert.strictEqual(root.status, 200);
+        assert.strictEqual(root.body.room_id, secRoomId);
+        assert.strictEqual(root.body.thread_id, null);
+        assert.strictEqual(root.body.room_archived_at, null);
+        const reply = await req('GET', `/api/messages/${replyId}`);
+        assert.strictEqual(reply.body.room_id, secRoomId);
+        assert.strictEqual(reply.body.thread_id, rootId);
+        assert.strictEqual(reply.body.content, 'permalink reply');
+        assert.strictEqual((await req('PATCH', `/api/rooms/${secRoomId}`, { archived: true })).status, 200);
+        const archived = await req('GET', `/api/messages/${replyId}`);
+        assert.strictEqual(archived.status, 200, 'archived room message still resolvable');
+        assert.ok(archived.body.room_archived_at, 'room_archived_at set after archive');
+        const missing = await req('GET', '/api/messages/999999999');
+        assert.strictEqual(missing.status, 404);
+        assert.deepStrictEqual(missing.body, { error: 'message not found' });
+        assert.strictEqual((await anon(() => req('GET', `/api/messages/${replyId}`))).status, 401);
+      } finally {
+        await req('PATCH', `/api/rooms/${secRoomId}`, { archived: false });
+        db.prepare('DELETE FROM messages WHERE id IN (?,?)').run(replyId, rootId);
+      }
+    });
+
     await test('Security headers — HTTPS reported by trusted proxy → HSTS + Secure cookies', async () => {
       const r = await req('GET', '/api/auth/me', null, { 'X-Forwarded-Proto': 'https' });
       assert.strictEqual(r.headers['strict-transport-security'], 'max-age=15552000');
