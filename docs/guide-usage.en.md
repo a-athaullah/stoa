@@ -920,6 +920,8 @@ The API key is stored on the server and returned to the browser only in the Sett
 
 If Anthropic releases a model that isn't yet in the built-in list, add it without a server update. Scroll to the **claude models** card in **Settings > Platforms**.
 
+If an agent with a Claude CLI binary is online, the card shows a **Detected from Claude CLI v*X*** strip with clickable chips for model IDs newer than the latest already-registered entry in each family. Clicking a chip prefills the model ID and label fields (label auto-generated, e.g. _Haiku 5.5_, editable); click **add model** to save — nothing is added automatically. Older model IDs can still be typed in manually. If no agent has reported a CLI, the strip prompts you to connect one.
+
 - **Add** — enter the model ID (e.g. `claude-haiku-5-5`) and an optional display label (max 40 characters), then click **add model**. The model appears immediately in the room model dropdown, tagged **custom**.
 - **Remove** — click × on any custom model row. Rooms already using the model keep their setting; only new selections are affected.
 

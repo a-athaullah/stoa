@@ -921,6 +921,8 @@ API key disimpan di server dan dikembalikan ke browser hanya di form edit Settin
 
 Jika Anthropic merilis model yang belum ada di daftar bawaan, tambahkan tanpa perlu update server. Gulir ke kartu **claude models** di **Settings > Platforms**.
 
+Jika ada agent dengan binary Claude CLI yang online, kartu menampilkan strip **Detected from Claude CLI v*X*** berisi chip yang bisa diklik untuk ID model yang lebih baru dari entri terdaftar terbaru di setiap family. Mengklik chip mengisi otomatis kolom ID model dan label (label dibuat otomatis, misalnya _Haiku 5.5_, bisa diedit); klik **add model** untuk menyimpan — tidak ada simpan otomatis. ID model lama tetap bisa diketik manual. Jika belum ada agent yang melaporkan CLI, strip menampilkan pesan untuk menghubungkan agent.
+
 - **Tambah** — masukkan ID model (misalnya `claude-haiku-5-5`) dan label tampilan opsional (maks 40 karakter), lalu klik **add model**. Model langsung muncul di dropdown model room, ditandai **custom**.
 - **Hapus** — klik × pada baris model kustom. Room yang sudah menggunakan model tersebut mempertahankan pengaturannya; hanya pemilihan baru yang terpengaruh.
 
