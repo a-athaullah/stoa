@@ -10249,6 +10249,58 @@ async function run() {
     assert.ok('system_prompt' in ai, 'AI actor should have system_prompt field');
   });
 
+  // Claude model candidates scanned from the CLI binary (agent side, harness-session.js)
+  await test('extractClaudeModelIds — strict pattern drops Bedrock suffix, codenames, aliases, legacy dated', () => {
+    const { extractClaudeModelIds } = require('./harness-session');
+    const text = [
+      'anthropic.claude-opus-5-5-v1:0', 'us.anthropic.claude-sonnet-5-5-v1', '"claude-haiku-5-5"',
+      'claude-fable-5-mythos-5', 'claude-opus-5', 'claude-sonnet-5,', 'claude-opus-4-20250514',
+      'claude-sonnet-4-5-20250929', 'x_claude-opus-9-9', 'claude-3-5-sonnet-20241022', 'claude-opus-4-1x',
+    ].join('\0\x01');
+    assert.deepStrictEqual([...extractClaudeModelIds(text)].sort(), [
+      'claude-haiku-5-5', 'claude-opus-5-5', 'claude-sonnet-4-5-20250929', 'claude-sonnet-5-5',
+    ]);
+  });
+
+  await test('rankClaudeModelIds — one per base (alias beats dated), newest first, capped', () => {
+    const { rankClaudeModelIds } = require('./harness-session');
+    const ranked = rankClaudeModelIds(['claude-haiku-4-5-20251001', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5',
+      'claude-opus-4-1-20250805', 'claude-haiku-5-5', 'claude-sonnet-3-7', 'not-a-model', 'claude-opus-4-1-20250901']);
+    assert.deepStrictEqual(ranked, ['claude-haiku-5-5', 'claude-haiku-4-5', 'claude-sonnet-4-5-20250929', 'claude-opus-4-1-20250901', 'claude-sonnet-3-7']);
+    const many = Array.from({ length: 80 }, (_, i) => `claude-opus-${Math.floor(i / 10) + 1}-${i % 10}`);
+    assert.strictEqual(rankClaudeModelIds(many).length, 50);
+    assert.strictEqual(rankClaudeModelIds(many)[0], 'claude-opus-8-9');
+  });
+
+  await test('scanClaudeBinaryForModels — streams chunks, finds an ID split across the 1 MB boundary', async () => {
+    const fs = require('fs'), os = require('os');
+    const { scanClaudeBinaryForModels } = require('./harness-session');
+    const f = path.join(os.tmpdir(), `stoa-test-claude-bin-${process.pid}`);
+    const id = 'claude-haiku-5-5';
+    const head = Buffer.alloc((1 << 20) - 7, 0xff);           // split "claude-" | "haiku-5-5"
+    fs.writeFileSync(f, Buffer.concat([head, Buffer.from(id + '\0claude-opus-5-5-v1\0'), Buffer.alloc(4096, 0x00)]));
+    try {
+      assert.deepStrictEqual(await scanClaudeBinaryForModels(f), ['claude-haiku-5-5', 'claude-opus-5-5']);
+    } finally { fs.unlinkSync(f); }
+  });
+
+  await test('detectClaudeModelCandidates — resolves claude on PATH, caches per binary, rescans on change', async () => {
+    const fs = require('fs'), os = require('os');
+    const { detectClaudeModelCandidates } = require('./harness-session');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-test-claude-path-'));
+    const bin = path.join(dir, process.platform === 'win32' ? 'claude.exe' : 'claude');
+    try {
+      fs.writeFileSync(bin, 'claude-opus-5-5\0'); fs.chmodSync(bin, 0o755);
+      const env = { PATH: dir, PATHEXT: '.EXE' };
+      const first = await detectClaudeModelCandidates(env);
+      assert.deepStrictEqual(first, ['claude-opus-5-5']);
+      assert.strictEqual(await detectClaudeModelCandidates(env), first, 'unchanged binary must hit the cache');
+      fs.writeFileSync(bin, 'claude-opus-5-5\0claude-haiku-6-0\0');
+      assert.deepStrictEqual(await detectClaudeModelCandidates(env), ['claude-haiku-6-0', 'claude-opus-5-5'], 'changed binary must be rescanned');
+      assert.strictEqual(await detectClaudeModelCandidates({ PATH: path.join(dir, 'nope') }), null, 'no claude on PATH → null');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
   // parseCodexModels — valid, visibility filter, priority sort, garbage
   await test('parseCodexModels — valid JSON with visibility filter and priority sort', () => {
     const { parseCodexModels } = require('./harness-session');
@@ -10563,6 +10615,92 @@ async function run() {
     await test('custom models — teardown restores setting', async () => {
       if (savedSetting === null) cmDb.prepare("DELETE FROM settings WHERE scope='global' AND key_name='custom_claude_models'").run();
       else cmDb.prepare("UPDATE settings SET value=? WHERE scope='global' AND key_name='custom_claude_models'").run(savedSetting);
+    });
+  }
+
+  // GET /api/settings/custom-models/candidates — union of online agents' scanned IDs minus what Stoa lists
+  {
+    const ccDb = require('./db');
+    const savedCustom = ccDb.prepare("SELECT value FROM settings WHERE scope='global' AND key_name='custom_claude_models'").get()?.value ?? null;
+    let candA = null, candB = null;
+    const sendCandidates = async (ag, extra) => {
+      ag.ws.send(JSON.stringify({
+        type: 'harnesses_update',
+        harnesses_available: ['claude'],
+        harness_status: [{ id: 'claude', installed: true, logged_in: true, version: '2.1.300 (Claude Code)', models: null }],
+        ...extra,
+      }));
+      await new Promise(r => setTimeout(r, 200));
+    };
+    const get = async () => req('GET', '/api/settings/custom-models/candidates');
+
+    await test('claude candidates — malicious payload filtered; known, aliases of dated, and older-than-listed excluded', async () => {
+      ccDb.prepare("DELETE FROM settings WHERE scope='global' AND key_name='custom_claude_models'").run();
+      candA = await createOnlineTestAgent('__test-cc-a', '/tmp/stoa-test-cc-a');
+      assert.ok(candA, 'agent setup failed');
+      await sendCandidates(candA, {
+        claude_cli_version: '2.1.300 (Claude Code)',
+        claude_model_candidates: [
+          'claude-sonnet-6-0', 'claude-haiku-5-5', 'claude-haiku-5-5',
+          'claude-opus-5-5',            // built-in
+          'claude-haiku-4-5',           // alias of built-in claude-haiku-4-5-20251001
+          'claude-opus-4-5',            // older than newest listed opus
+          'claude-../../etc', '<img src=x onerror=alert(1)>', 42, { id: 'claude-opus-9-9' }, null,
+          'claude-' + 'a'.repeat(80), 'gpt-6.1-sol',
+        ],
+      });
+      const r = await get();
+      assert.strictEqual(r.status, 200, r.raw);
+      assert.deepStrictEqual(r.body, { cli_version: '2.1.300 (Claude Code)', candidates: [{ id: 'claude-sonnet-6-0' }, { id: 'claude-haiku-5-5' }] });
+    });
+
+    await test('claude candidates — an added custom model disappears from suggestions', async () => {
+      if (!candA) { console.log('    (skipped)'); return; }
+      assert.strictEqual((await req('POST', '/api/settings/custom-models', { value: 'claude-haiku-5-5', label: 'Haiku 5.5' })).status, 201);
+      assert.deepStrictEqual((await get()).body.candidates, [{ id: 'claude-sonnet-6-0' }]);
+    });
+
+    await test('claude candidates — union across agents, highest CLI version, capped per agent at 50', async () => {
+      if (!candA) { console.log('    (skipped)'); return; }
+      candB = await createOnlineTestAgent('__test-cc-b', '/tmp/stoa-test-cc-b');
+      assert.ok(candB, 'agent B setup failed');
+      const flood = Array.from({ length: 60 }, (_, i) => `claude-fable-${10 + Math.floor(i / 10)}-${i % 10}`);
+      await sendCandidates(candB, { claude_cli_version: '2.1.1000', claude_model_candidates: flood });
+      const body = (await get()).body;
+      assert.strictEqual(body.cli_version, '2.1.1000', 'numeric compare: 2.1.1000 > 2.1.300');
+      const ids = body.candidates.map(c => c.id);
+      assert.ok(ids.includes('claude-sonnet-6-0'), 'agent A candidate kept');
+      assert.strictEqual(ids.filter(id => id.startsWith('claude-fable-')).length, 50, 'agent B list capped at 50');
+      assert.ok(!ids.includes('claude-fable-15-9'), 'entries past the cap dropped');
+      assert.strictEqual(ids[0], 'claude-fable-14-9', 'newest first');
+    });
+
+    await test('claude candidates — non-array payload clears the agent; disconnect clears too', async () => {
+      if (!candA || !candB) { console.log('    (skipped)'); return; }
+      await sendCandidates(candB, { claude_model_candidates: 'claude-opus-9-9' });
+      assert.deepStrictEqual((await get()).body, { cli_version: '2.1.300 (Claude Code)', candidates: [{ id: 'claude-sonnet-6-0' }] });
+      const closed = new Promise(res => candA.ws.once('close', res));
+      candA.ws.close(); await closed;
+      await new Promise(res => setTimeout(res, 100));
+      assert.deepStrictEqual((await get()).body, { cli_version: null, candidates: [] });
+    });
+
+    await test('claude candidates — no session → 401; agent secret → agent_scope_denied', async () => {
+      const s = sessionCookie, d = deviceCookie;
+      sessionCookie = null; deviceCookie = null;
+      let anon, asAg;
+      try {
+        anon = await get();
+        asAg = await req('GET', '/api/settings/custom-models/candidates', null, { 'x-agent-id': String(candB.actorId), 'x-agent-secret': candB.secret });
+      } finally { sessionCookie = s; deviceCookie = d; }
+      assert.strictEqual(anon.status, 401);
+      assert.strictEqual(asAg.status, 403); assert.strictEqual(asAg.body.error, 'agent_scope_denied');
+    });
+
+    await test('claude candidates — teardown', async () => {
+      for (const ag of [candA, candB]) { try { ag?.ws.close(); } catch {} }
+      if (savedCustom === null) ccDb.prepare("DELETE FROM settings WHERE scope='global' AND key_name='custom_claude_models'").run();
+      else ccDb.prepare("UPDATE settings SET value=? WHERE scope='global' AND key_name='custom_claude_models'").run(savedCustom);
     });
   }
 

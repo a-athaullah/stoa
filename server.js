@@ -831,6 +831,7 @@ const MAX_SYNCED_HARNESS_MODELS = 50;
 const CUSTOM_CLAUDE_MODEL_RE = /^claude-[a-z0-9][a-z0-9.-]{1,62}$/;
 const CUSTOM_CLAUDE_LABEL_MAX = 40;
 const MAX_CUSTOM_CLAUDE_MODELS = 20;
+const MAX_CLAUDE_CANDIDATES = 50;
 
 function getCustomClaudeModels() {
   let list;
@@ -3147,6 +3148,11 @@ const server = http.createServer(async (req, res) => {
     return json(res, { value, label, custom: true }, 201);
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/settings/custom-models/candidates') {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    return json(res, getClaudeModelCandidates());
+  }
+
   if (req.method === 'DELETE' && url.pathname.startsWith('/api/settings/custom-models/')) {
     if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
     let value;
@@ -5452,6 +5458,53 @@ const agentVersions = new Map();  // actor_id → client_version string
 const agentHarnesses = new Map(); // actor_id → string[] (available harnesses)
 const agentHarnessStatus = new Map(); // actor_id → [{ id, installed, logged_in, version, models }]
 const pendingHarnessChecks = new Map(); // request_id → { resolve, timer, actorId }
+const agentClaudeCandidates = new Map(); // actor_id → { cli_version, candidates: string[] } (scanned from the agent's claude binary)
+
+function validateClaudeCandidates(list, cliVersion) {
+  if (!Array.isArray(list)) return null;
+  const seen = new Set();
+  const candidates = [];
+  for (const id of list) {
+    if (typeof id !== 'string' || !CUSTOM_CLAUDE_MODEL_RE.test(id) || seen.has(id)) continue;
+    seen.add(id);
+    candidates.push(id);
+    if (candidates.length >= MAX_CLAUDE_CANDIDATES) break;
+  }
+  const cli_version = typeof cliVersion === 'string' && cliVersion.trim() ? cliVersion.trim().slice(0, 100) : null;
+  return { cli_version, candidates };
+}
+
+const claudeModelKey = (id) => {
+  const m = /^claude-(haiku|sonnet|opus|fable)-(\d{1,2})-(\d{1,2})(?:-\d{8})?$/.exec(id);
+  return m ? { base: `claude-${m[1]}-${m[2]}-${m[3]}`, family: m[1], ver: +m[2] * 100 + +m[3] } : null;
+};
+
+// Suggestions for the custom-model card: IDs the CLI binary knows that Stoa doesn't list yet.
+// A binary also embeds every legacy ID, so per family only versions NEWER than the newest
+// listed one are suggested (older gaps stay reachable through manual input). Dated snapshots
+// collapse into their alias via the base key.
+function getClaudeModelCandidates() {
+  const known = getAnthropicModels().map(m => claudeModelKey(m.value)).filter(Boolean);
+  const knownBases = new Set(known.map(k => k.base));
+  const newestByFamily = new Map();
+  for (const k of known) newestByFamily.set(k.family, Math.max(newestByFamily.get(k.family) ?? 0, k.ver));
+  const out = new Map();
+  let cliVersion = null;
+  for (const [actorId, entry] of agentClaudeCandidates) {
+    if (!agentClients.has(actorId)) continue;
+    if (entry.cli_version && (!cliVersion || entry.cli_version.localeCompare(cliVersion, undefined, { numeric: true }) > 0)) cliVersion = entry.cli_version;
+    for (const id of entry.candidates) {
+      const k = claudeModelKey(id);
+      if (!k || knownBases.has(k.base) || out.has(k.base)) continue;
+      if (newestByFamily.has(k.family) && k.ver <= newestByFamily.get(k.family)) continue;
+      out.set(k.base, { id, ver: k.ver, family: k.family });
+    }
+  }
+  const candidates = [...out.values()]
+    .sort((a, b) => b.ver - a.ver || a.family.localeCompare(b.family))
+    .map(c => ({ id: c.id }));
+  return { cli_version: cliVersion, candidates };
+}
 
 function getHarnessModels(actorId, harnessName) {
   if (harnessName === 'claude') {
@@ -5828,6 +5881,9 @@ wss.on('connection', (ws, req) => {
       const available = Array.isArray(msg.harnesses_available) ? [...new Set(msg.harnesses_available.filter(h => KNOWN_HARNESSES.includes(h)))] : status.filter(s => s.installed).map(s => s.id);
       agentHarnesses.set(agentActorId, available);
       agentHarnessStatus.set(agentActorId, status);
+      const claudeCandidates = validateClaudeCandidates(msg.claude_model_candidates, msg.claude_cli_version);
+      if (claudeCandidates) agentClaudeCandidates.set(agentActorId, claudeCandidates);
+      else agentClaudeCandidates.delete(agentActorId);
       for (const hs of status) {
         if (!hs.models) continue;
         try { syncHarnessModels(hs.id, agentActorId); }
@@ -6917,6 +6973,7 @@ wss.on('connection', (ws, req) => {
       agentVersions.delete(agentActorId);
       agentHarnesses.delete(agentActorId);
       agentHarnessStatus.delete(agentActorId);
+      agentClaudeCandidates.delete(agentActorId);
       for (const [rid, pending] of pendingHarnessChecks) {
         if (pending.actorId === agentActorId) {
           clearTimeout(pending.timer);
