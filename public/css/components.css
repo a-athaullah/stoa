@@ -340,6 +340,27 @@ html.dark .h-room-search-bar .h-room-search-nav button:hover { color: var(--h-in
 .s-cm-hint { font-family: var(--h-serif); font-style: italic; font-size: 12px; color: var(--h-ink-faint); }
 .s-cm-hint.is-error { color: oklch(0.55 0.15 28); font-style: normal; }
 html.dark .s-cm-hint.is-error { color: oklch(0.72 0.13 28); }
+.s-cm-suggest { padding: 12px 18px 4px; display: flex; flex-direction: column; gap: 8px; }
+.s-cm-suggest-head { font-family: var(--h-serif); font-style: italic; font-size: 12.5px; color: var(--h-ink-mute); }
+.s-cm-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.s-cm-chip {
+  display: inline-flex; align-items: baseline; gap: 7px; max-width: 100%;
+  padding: 5px 11px; border-radius: 999px; cursor: pointer;
+  background: var(--h-surface-hi); border: 1px solid var(--h-hairline); color: var(--h-ink);
+  font-family: var(--h-sans); font-size: 13px;
+  transition: border-color .15s, background .15s;
+}
+.s-cm-chip:hover { border-color: var(--h-ink-mute); }
+.s-cm-chip:focus-visible { outline: 2px solid var(--h-accent); outline-offset: 2px; }
+.s-cm-chip[aria-pressed="true"] {
+  border-color: var(--h-accent);
+  background: color-mix(in oklch, var(--h-accent) 14%, var(--h-surface));
+}
+.s-cm-chip-id {
+  font-family: ui-monospace, monospace; font-size: 11px; color: var(--h-ink-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.s-cm-manual-label { font-family: var(--h-serif); font-style: italic; font-size: 12px; color: var(--h-ink-faint); }
 @media (prefers-reduced-motion: reduce) { .s-cm-row.is-new { animation: none; } }
 .s-server-saved {
   font-size: 12px; color: var(--h-ink-faint); font-family: var(--h-serif);

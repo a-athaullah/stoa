@@ -64,6 +64,63 @@ async function sCustomModelError(r, fallback) {
   return msg || fallback;
 }
 
+function sCustomModelAutoLabel(id) {
+  const m = /^claude-([a-z]+)-(\d+)-(\d+)(?:-\d{8})?$/.exec(id);
+  return m ? `${m[1][0].toUpperCase()}${m[1].slice(1)} ${m[2]}.${m[3]}` : id;
+}
+
+function sCustomModelSuggestions(data, onPick) {
+  const wrap = document.createElement('div');
+  wrap.className = 's-cm-suggest';
+  const head = document.createElement('div');
+  head.className = 's-cm-suggest-head';
+  wrap.appendChild(head);
+
+  if (!data) {
+    head.textContent = 'Suggestions unavailable right now — you can still add an ID manually below.';
+    return wrap;
+  }
+  const version = typeof data.cli_version === 'string' ? data.cli_version.slice(0, 40) : '';
+  const ids = (Array.isArray(data.candidates) ? data.candidates : [])
+    .map(c => c?.id)
+    .filter(id => typeof id === 'string' && S_CUSTOM_MODEL_RE.test(id));
+
+  if (!version) {
+    head.textContent = 'No online agent has reported a Claude CLI yet. Connect one to get suggestions.';
+    return wrap;
+  }
+  if (!ids.length) {
+    head.textContent = `Detected from Claude CLI v${version} — every model it knows is already available.`;
+    return wrap;
+  }
+  head.textContent = `Detected from Claude CLI v${version} — pick one to add:`;
+
+  const chips = document.createElement('div');
+  chips.className = 's-cm-chips';
+  chips.setAttribute('role', 'group');
+  chips.setAttribute('aria-label', 'Models detected from Claude CLI');
+  for (const id of ids) {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 's-cm-chip';
+    chip.setAttribute('aria-pressed', 'false');
+    const name = document.createElement('span');
+    name.className = 's-cm-chip-label';
+    name.textContent = sCustomModelAutoLabel(id);
+    const code = document.createElement('span');
+    code.className = 's-cm-chip-id';
+    code.textContent = id;
+    chip.append(name, code);
+    chip.addEventListener('click', () => {
+      chips.querySelectorAll('.s-cm-chip').forEach(c => c.setAttribute('aria-pressed', String(c === chip)));
+      onPick(id, sCustomModelAutoLabel(id));
+    });
+    chips.appendChild(chip);
+  }
+  wrap.appendChild(chips);
+  return wrap;
+}
+
 function sCustomModelRow(m, onRemoved) {
   const row = document.createElement('div');
   row.className = 's-cm-row';
@@ -106,8 +163,13 @@ function sCustomModelRow(m, onRemoved) {
 async function sLoadCustomModels(highlightValue) {
   const box = document.getElementById('s-custom-models');
   if (!box) return;
-  let groups;
-  try { groups = await fjson('/api/ai/models'); } catch { showToast('Failed to load Claude models', { error: true }); return; }
+  const [modelsRes, candRes] = await Promise.allSettled([
+    fjson('/api/ai/models'),
+    fjson('/api/settings/custom-models/candidates'),
+  ]);
+  if (modelsRes.status !== 'fulfilled') { showToast('Failed to load Claude models', { error: true }); return; }
+  const groups = modelsRes.value;
+  const candidates = candRes.status === 'fulfilled' ? candRes.value : null;
   const anthropic = groups.find(g => g.platform_id === 'anthropic');
   const custom = (anthropic?.models || []).filter(m => m.custom);
   const refresh = (v) => { sLoadCustomModels(v); fetchPlatformModels(); };
@@ -181,7 +243,21 @@ async function sLoadCustomModels(highlightValue) {
     setHint();
     return true;
   };
-  idInp.addEventListener('input', () => { addBtn.disabled = !validate(); });
+  idInp.addEventListener('input', () => {
+    addBtn.disabled = !validate();
+    suggest.querySelectorAll('.s-cm-chip[aria-pressed="true"]').forEach(c => {
+      if (c.querySelector('.s-cm-chip-id')?.textContent !== idInp.value.trim()) c.setAttribute('aria-pressed', 'false');
+    });
+  });
+
+  const suggest = sCustomModelSuggestions(candidates, (id, label) => {
+    idInp.value = id;
+    labelInp.value = label;
+    addBtn.disabled = !validate();
+    if (!addBtn.disabled) setHint('Check the label, then press add model to save.');
+    labelInp.focus();
+    labelInp.select();
+  });
 
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -209,8 +285,11 @@ async function sLoadCustomModels(highlightValue) {
   const fields = document.createElement('div');
   fields.className = 's-cm-fields';
   fields.append(idInp, labelInp, addBtn);
-  form.append(fields, hint);
-  box.append(list, form);
+  const manual = document.createElement('div');
+  manual.className = 's-cm-manual-label';
+  manual.textContent = 'or type an ID';
+  form.append(manual, fields, hint);
+  box.append(list, suggest, form);
 }
 
 function sShowPlatformForm(existing) {
