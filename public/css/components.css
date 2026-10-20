@@ -588,6 +588,22 @@ html.dark .s-docs-body pre .hljs-property, html.dark .s-docs-body pre .hljs-attr
 .s-icon-btn:hover:not(:disabled) { background: var(--h-hair-soft); }
 .s-icon-btn:disabled { opacity: .45; cursor: default; color: var(--h-ink-faint); }
 .s-icon-btn.s-ok { color: #7fb98c; }
+.s-restart-wrap { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.s-restart-btn {
+  gap: 4px; padding: 3px 7px; height: auto; width: auto;
+  font-family: var(--h-sans); font-size: 11.5px; white-space: nowrap;
+}
+.s-restart-status {
+  font-family: var(--h-serif); font-style: italic; font-size: 11.5px; color: var(--h-ink-faint);
+}
+.s-restart-status.is-active { color: oklch(0.58 0.12 75); }
+html.dark .s-restart-status.is-active { color: oklch(0.78 0.11 80); }
+.s-restart-status.is-active::before {
+  content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 5px; border-radius: 50%;
+  background: currentColor; vertical-align: 1px; animation: s-restart-pulse 1.2s ease-in-out infinite;
+}
+@keyframes s-restart-pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .s-restart-status.is-active::before { animation: none; } }
 .s-rename-input {
   padding: 4px 10px; border-radius: 8px; background: var(--h-surface);
   min-width: 180px; font-family: var(--h-serif); font-size: 17px; color: var(--h-ink);

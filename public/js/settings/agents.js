@@ -101,6 +101,78 @@ function _makeCheckHarnessBtn(actor, sel, hintEl) {
   return btn;
 }
 
+// actorId -> 'pending' (waiting for idle) | 'restarting' (went offline, PM2 bringing it back)
+const sRestartState = new Map();
+
+function _restartBlockReason(actor) {
+  if (!actor.online) return 'Offline';
+  if (actor.process_managed !== true) return 'Not running under PM2 — a restart would stop this agent for good';
+  return null;
+}
+
+function _syncRestartBtn(btn, statusEl, actor) {
+  const state = sRestartState.get(actor.id);
+  const reason = _restartBlockReason(actor);
+  btn.disabled = !!state || !!reason;
+  btn.title = reason || (state ? 'Restart already requested' : 'Restart this agent once it is idle so sessions pick up the updated CLI');
+  statusEl.textContent = state === 'pending' ? 'waiting for idle…' : state === 'restarting' ? 'restarting…' : '';
+  statusEl.classList.toggle('is-active', !!state);
+}
+
+function _makeRestartIdleBtn(actor) {
+  const wrap = document.createElement('span');
+  wrap.className = 's-restart-wrap';
+  wrap.dataset.restartActor = actor.id;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 's-icon-btn s-restart-btn';
+  btn.innerHTML = svgPower(13);
+  const lbl = document.createElement('span');
+  lbl.textContent = 'Restart when idle';
+  btn.appendChild(lbl);
+  const status = document.createElement('span');
+  status.className = 's-restart-status';
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-live', 'polite');
+  wrap.append(btn, status);
+  _syncRestartBtn(btn, status, actor);
+
+  btn.addEventListener('click', async () => {
+    if (!confirm('Restart this agent when idle?\n\nRunning sessions are rebuilt once the agent is idle; conversations resume where they left off.')) return;
+    btn.disabled = true;
+    try {
+      const r = await fetch(`/api/actors/${actor.id}/restart`, { method: 'POST' });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        if (r.status === 401) showLogin();
+        showToast(data.error || 'Failed to request restart', { error: true });
+        return;
+      }
+      sRestartState.set(actor.id, 'pending');
+    } catch { showToast('Failed to request restart', { error: true }); }
+    finally { sSyncRestartUi(allActors.find(a => a.id === actor.id) || actor, {}); }
+  });
+  return wrap;
+}
+
+// `update` is the raw actor_status payload: restart_pending is only trusted from the live
+// message, never from the merged actor copy, so a stale flag can't re-arm after reconnect.
+function sSyncRestartUi(actor, update = actor) {
+  if (!actor) return;
+  const state = sRestartState.get(actor.id);
+  if (!actor.online) {
+    if (state === 'pending') sRestartState.set(actor.id, 'restarting');
+  } else if (state === 'restarting') {
+    sRestartState.delete(actor.id);
+    showToast(`${actor.name || 'Agent'} is back online`);
+  } else if (update.restart_pending === true) {
+    sRestartState.set(actor.id, 'pending');
+  }
+  document.querySelectorAll(`.s-restart-wrap[data-restart-actor="${actor.id}"]`).forEach(w => {
+    _syncRestartBtn(w.querySelector('.s-restart-btn'), w.querySelector('.s-restart-status'), actor);
+  });
+}
+
 function sDetectOS() {
   return /Windows/.test(navigator.userAgent) ? 'ps' : 'unix';
 }
@@ -125,6 +197,7 @@ function svgSpinner(sz=16) { return `<svg width="${sz}" height="${sz}" viewBox="
 function svgSpinnerTiny() { return `<svg class="s-spinner" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M14 8a6 6 0 1 1-6-6"/></svg>`; }
 function svgUpdate(sz=14) { return `<svg width="${sz}" height="${sz}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v9M5 8l3 3 3-3"/><path d="M3 13h10"/></svg>`; }
 function svgRefresh(sz=14) { return `<svg width="${sz}" height="${sz}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.1-3.3"/><path d="M14 2.5v3h-3"/></svg>`; }
+function svgPower(sz=14) { return `<svg width="${sz}" height="${sz}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 2v6"/><path d="M4.6 4.4a5 5 0 1 0 6.8 0"/></svg>`; }
 function svgCopy(sz=14) { return `<svg width="${sz}" height="${sz}" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="8.5" height="8.5" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2H4A1.5 1.5 0 0 0 2.5 3.5V9A1.5 1.5 0 0 0 4 10.5h1"/></svg>`; }
 
 function openSettings(tab) {
@@ -920,8 +993,8 @@ function sMakeEditAccordion(actor) {
   if (_accInitHint) { _accHint.textContent = _accInitHint; _accHint.style.display = ''; }
   const _accCheckBtn = _makeCheckHarnessBtn(actor, beSel, _accHint);
   const _accSelRow = document.createElement('div');
-  _accSelRow.style.cssText = 'display:flex;align-items:center;gap:6px';
-  _accSelRow.append(beSel, _accCheckBtn);
+  _accSelRow.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap';
+  _accSelRow.append(beSel, _accCheckBtn, _makeRestartIdleBtn(actor));
   beGrp.append(mkFieldLbl('harness'), _accSelRow, _accHint);
 
   const langGrp = document.createElement('div');
@@ -1849,8 +1922,8 @@ function buildAgentSettingsCard(actor) {
   if (_initHint) { beHint.textContent = _initHint; beHint.style.display = ''; }
   const beCheckBtn = _makeCheckHarnessBtn(actor, beSel, beHint);
   const beSelRow = document.createElement('div');
-  beSelRow.style.cssText = 'display:flex;align-items:center;gap:6px';
-  beSelRow.append(beSel, beCheckBtn);
+  beSelRow.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap';
+  beSelRow.append(beSel, beCheckBtn, _makeRestartIdleBtn(actor));
   const beNotice = document.createElement('span');
   beNotice.id = `s-harness-notice-${actor.id}`;
   beNotice.style.cssText = 'font-size:11.5px;color:oklch(60% .15 80);margin-top:2px;display:none';

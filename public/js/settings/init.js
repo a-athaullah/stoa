@@ -130,6 +130,10 @@ function handleActorStatus(actor) {
       if (!vMatch) sub.textContent = text + ` · v${actor.client_version}`;
     }
   }
+  if (typeof sSyncRestartUi === 'function') {
+    const merged = allActors.find(a => a.id === actor.id);
+    sSyncRestartUi(merged ? { ...merged, ...actor } : actor, actor);
+  }
   // Update detail header action buttons if this agent is selected
   if (typeof agentsSelectedId !== 'undefined' && agentsSelectedId === actor.id) {
     const header = document.getElementById('s-agent-detail-header');
