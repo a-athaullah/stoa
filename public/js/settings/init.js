@@ -17,6 +17,7 @@ function initGlobalWs() {
     globalWs.onmessage = async e => {
       let msg; try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.type === 'actor_status') handleActorStatus(msg.actor);
+      if (msg.type === 'agent_restart_status' && typeof sHandleRestartStatus === 'function') sHandleRestartStatus(msg);
       if (msg.type === 'agent_scan_complete') sFinishSetupSlip(msg.actor_id);
       if (msg.type === 'actor_removed') handleActorRemoved(msg.actor_id, msg.affected_rooms);
       if (msg.type === 'server_restart') handleServerRestart(msg);
@@ -129,6 +130,10 @@ function handleActorStatus(actor) {
       const vMatch = text.match(/v[\d.]+/);
       if (!vMatch) sub.textContent = text + ` · v${actor.client_version}`;
     }
+  }
+  if (typeof sSyncRestartUi === 'function') {
+    const merged = allActors.find(a => a.id === actor.id);
+    sSyncRestartUi(merged ? { ...merged, ...actor } : actor, actor);
   }
   // Update detail header action buttons if this agent is selected
   if (typeof agentsSelectedId !== 'undefined' && agentsSelectedId === actor.id) {

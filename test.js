@@ -1676,6 +1676,49 @@ async function runAsyncUnitTests() {
 
   console.log('  [Async Fetch Tests]');
 
+  await uta('detectSupervisor — pm2 only when parent is the PM2 daemon (inherited pm_id is not enough)', async () => {
+    const { detectSupervisor } = require('./lib/supervisor');
+    const pm2Env = { pm_id: '0', autorestart: 'true', PM2_HOME: '/x/.pm2' };
+    const reads = [];
+    const readFile = (f) => { reads.push(f); return '1179\n'; };
+    assert.strictEqual(detectSupervisor({ env: pm2Env, ppid: 1179, readFile }), 'pm2');
+    assert.strictEqual(reads[0], require('path').join('/x/.pm2', 'pm2.pid'), 'PM2_HOME respected');
+    assert.strictEqual(detectSupervisor({ env: pm2Env, ppid: 4242, readFile }), null, 'node stoa.js from a shell under PM2 inherits pm_id');
+    assert.strictEqual(detectSupervisor({ env: {}, ppid: 1179, readFile }), null, 'no pm_id');
+    assert.strictEqual(detectSupervisor({ env: { ...pm2Env, autorestart: 'false' }, ppid: 1179, readFile }), null, 'autorestart off → would not come back');
+    assert.strictEqual(detectSupervisor({ env: pm2Env, ppid: 1179, readFile: () => { throw new Error('ENOENT'); } }), null, 'no pid file');
+    assert.strictEqual(detectSupervisor({ env: pm2Env, ppid: NaN, readFile: () => 'garbage' }), null, 'unparsable pid');
+    const home = detectSupervisor({ env: { pm_id: '3' }, ppid: 7, readFile: (f) => { reads.push(f); return '7'; }, homedir: '/home/u' });
+    assert.strictEqual(home, 'pm2');
+    assert.strictEqual(reads.at(-1), require('path').join('/home/u', '.pm2', 'pm2.pid'), 'default PM2_HOME = ~/.pm2');
+  });
+
+  await uta('agent restart msg — manual: restarts NOW even while busy, acks restarting with counts; version path still waits for idle', async () => {
+    const stoa = require('./stoa.js');
+    const sent = [];
+    let restarts = 0;
+    stoa.__setDeps({ send: (m) => sent.push(m), doRestart: () => { restarts++; } });
+    try {
+      stoa.activeTriggers.clear();
+      stoa.activeTriggers.set('busy-1', { room_id: 1, startedAt: Date.now(), lastActivity: Date.now() });
+      stoa.activeTriggers.set('busy-2', { room_id: 2, startedAt: Date.now(), lastActivity: Date.now() });
+      await stoa.handleAgentMessage({ type: 'restart', reason: 'manual' });
+      assert.deepStrictEqual(sent, [{ type: 'restart_status', state: 'restarting', active: 2, queued: 0 }], 'ack sent before exiting');
+      assert.strictEqual(restarts, 1, 'busy agent restarts immediately');
+      stoa.activeTriggers.clear();
+      stoa.drainQueue();
+      assert.strictEqual(restarts, 1, 'manual path must not also arm pendingRestart');
+      sent.length = 0; restarts = 0;
+      stoa.activeTriggers.set('busy-3', { room_id: 3, startedAt: Date.now(), lastActivity: Date.now() });
+      await stoa.handleAgentMessage({ type: 'restart' });
+      assert.deepStrictEqual(sent, [], 'version-outdated restart stays silent');
+      assert.strictEqual(restarts, 0, 'version-outdated restart still waits for idle');
+      stoa.activeTriggers.clear();
+      stoa.drainQueue();
+      assert.strictEqual(restarts, 1, 'and fires once the last trigger drains');
+    } finally { stoa.activeTriggers.clear(); stoa.__resetDeps(); }
+  });
+
   await uta('fetchText rejects on HTTP 500', async () => {
     const { fetchText } = require('./stoa.js');
     const httpMod = require('http');
@@ -10701,6 +10744,118 @@ async function run() {
       for (const ag of [candA, candB]) { try { ag?.ws.close(); } catch {} }
       if (savedCustom === null) ccDb.prepare("DELETE FROM settings WHERE scope='global' AND key_name='custom_claude_models'").run();
       else ccDb.prepare("UPDATE settings SET value=? WHERE scope='global' AND key_name='custom_claude_models'").run(savedCustom);
+    });
+  }
+
+  // POST /api/actors/:id/restart — manual restart when idle (PM2-supervised agents only)
+  console.log('\n[Agent Restart]');
+  {
+    let rsAgent = null, plainAgent = null, human = null;
+    const connectAs = async (actorId, secret, extra) => {
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`);
+      const ready = waitForWsMessage(ws, m => m.type === 'agent_ready');
+      ws.send(JSON.stringify({ type: 'agent_connect', actor_id: actorId, secret, client_version: '0.0.1', ...extra }));
+      await ready;
+      return ws;
+    };
+    const restartState = async (id) => (await req('GET', '/api/actors')).body.find(a => a.id === id);
+    const closeWs = async (ws) => { const c = new Promise(r => ws.once('close', r)); ws.close(); await c; await new Promise(r => setTimeout(r, 100)); };
+
+    await test('agent restart — setup: pm2 agent, unsupervised agent, human global ws', async () => {
+      plainAgent = await createOnlineTestAgent('__test-rs-plain', '/tmp/stoa-test-rs-plain');
+      const token = await mintInstallToken('__test-rs-pm2');
+      const reg = await req('POST', '/api/agent/register', { token });
+      assert.strictEqual(reg.status, 200, reg.raw);
+      rsAgent = { actorId: reg.body.actor_id, secret: reg.body.secret };
+      orphanActorIds.push(rsAgent.actorId);
+      rsAgent.ws = await connectAs(rsAgent.actorId, rsAgent.secret, { supervisor: 'pm2', boot_id: 'aaaaaaaaaaaaaaaa' });
+      human = await openWsConnection(`ws://${HOST}:${PORT}`, cookieHeader());
+      human.send(JSON.stringify({ type: 'subscribe_global' }));
+      await new Promise(r => setTimeout(r, 100));
+      assert.ok(plainAgent, 'plain agent setup failed');
+      const a = await restartState(rsAgent.actorId);
+      assert.strictEqual(a.supervisor, 'pm2');
+      assert.strictEqual(a.restart_state, null);
+      assert.strictEqual((await restartState(plainAgent.actorId)).supervisor, null, 'agent without supervisor field → null');
+    });
+
+    await test('agent restart — no session 401, agent secret 403, unknown/human actor 404', async () => {
+      const s = sessionCookie, d = deviceCookie;
+      sessionCookie = null; deviceCookie = null;
+      let anon, asAgent;
+      try {
+        anon = await req('POST', `/api/actors/${rsAgent.actorId}/restart`);
+        asAgent = await req('POST', `/api/actors/${rsAgent.actorId}/restart`, null, { 'x-agent-id': String(rsAgent.actorId), 'x-agent-secret': rsAgent.secret });
+      } finally { sessionCookie = s; deviceCookie = d; }
+      assert.strictEqual(anon.status, 401);
+      assert.strictEqual(asAgent.status, 403); assert.strictEqual(asAgent.body.error, 'agent_scope_denied');
+      assert.strictEqual((await req('POST', '/api/actors/999999/restart')).status, 404);
+      const humanId = (await req('GET', '/api/settings')).body.human_id;
+      assert.strictEqual((await req('POST', `/api/actors/${humanId}/restart`)).status, 404, 'human actor is not an agent');
+      assert.strictEqual((await restartState(rsAgent.actorId)).restart_state, null, 'denied requests must not start a restart');
+    });
+
+    await test('agent restart — unsupervised agent → 409 not_supervised, no restart sent', async () => {
+      const got = [];
+      plainAgent.ws.on('message', (d) => { const m = JSON.parse(d); if (m.type === 'restart') got.push(m); });
+      const r = await req('POST', `/api/actors/${plainAgent.actorId}/restart`);
+      assert.strictEqual(r.status, 409, r.raw);
+      assert.strictEqual(r.body.error, 'not_supervised');
+      await new Promise(res => setTimeout(res, 150));
+      assert.strictEqual(got.length, 0, 'unsupervised agent must never receive restart');
+    });
+
+    await test('agent restart — offline agent → 409 agent_offline', async () => {
+      await closeWs(plainAgent.ws);
+      const r = await req('POST', `/api/actors/${plainAgent.actorId}/restart`);
+      assert.strictEqual(r.status, 409, r.raw);
+      assert.strictEqual(r.body.error, 'agent_offline');
+    });
+
+    await test('agent restart — sends {restart, manual} once, state requested → restarting, broadcast to UI', async () => {
+      const got = [];
+      rsAgent.ws.on('message', (d) => { const m = JSON.parse(d); if (m.type === 'restart') got.push(m); });
+      const bcast = waitForWsMessage(human, m => m.type === 'agent_restart_status' && m.actor_id === rsAgent.actorId && m.state === 'requested');
+      const r = await req('POST', `/api/actors/${rsAgent.actorId}/restart`);
+      assert.strictEqual(r.status, 200, r.raw);
+      assert.deepStrictEqual(r.body, { ok: true, state: 'requested' });
+      await bcast;
+      const again = await req('POST', `/api/actors/${rsAgent.actorId}/restart`);
+      assert.deepStrictEqual(again.body, { ok: true, state: 'requested' }, 'second click reports the outstanding request');
+      await new Promise(res => setTimeout(res, 150));
+      assert.deepStrictEqual(got, [{ type: 'restart', reason: 'manual' }], 'exactly one restart message');
+      rsAgent.ws.send(JSON.stringify({ type: 'restart_status', state: 'pending', active: 1, queued: 0 }));
+      await new Promise(res => setTimeout(res, 150));
+      assert.strictEqual((await restartState(rsAgent.actorId)).restart_state, 'requested', 'pending (old wait-for-idle ack) is no longer a state');
+      const restarting = waitForWsMessage(human, m => m.type === 'agent_restart_status' && m.state === 'restarting');
+      rsAgent.ws.send(JSON.stringify({ type: 'restart_status', state: 'restarting', active: 2, queued: 'x' }));
+      const p = await restarting;
+      assert.strictEqual(p.active, 2); assert.strictEqual(p.queued, 0, 'non-integer count sanitized');
+      assert.strictEqual((await restartState(rsAgent.actorId)).restart_state, 'restarting');
+      rsAgent.ws.send(JSON.stringify({ type: 'restart_status', state: 'done' }));
+      await new Promise(res => setTimeout(res, 150));
+      assert.strictEqual((await restartState(rsAgent.actorId)).restart_state, 'restarting', 'agent cannot claim done');
+    });
+
+    await test('agent restart — reconnect with same boot_id keeps state; new boot_id → done', async () => {
+      await closeWs(rsAgent.ws);
+      rsAgent.ws = await connectAs(rsAgent.actorId, rsAgent.secret, { supervisor: 'pm2', boot_id: 'aaaaaaaaaaaaaaaa' });
+      assert.strictEqual((await restartState(rsAgent.actorId)).restart_state, 'restarting', 'network blip is not a restart');
+      await closeWs(rsAgent.ws);
+      const done = waitForWsMessage(human, m => m.type === 'agent_restart_status' && m.actor_id === rsAgent.actorId && m.state === 'done');
+      rsAgent.ws = await connectAs(rsAgent.actorId, rsAgent.secret, { supervisor: 'pm2', boot_id: 'bbbbbbbbbbbbbbbb' });
+      await done;
+      assert.strictEqual((await restartState(rsAgent.actorId)).restart_state, null);
+    });
+
+    await test('agent restart — unsolicited restart_status is ignored', async () => {
+      rsAgent.ws.send(JSON.stringify({ type: 'restart_status', state: 'restarting', active: 1, queued: 0 }));
+      await new Promise(res => setTimeout(res, 150));
+      assert.strictEqual((await restartState(rsAgent.actorId)).restart_state, null);
+    });
+
+    await test('agent restart — teardown', async () => {
+      for (const ws of [rsAgent?.ws, plainAgent?.ws, human]) { try { ws?.close(); } catch {} }
     });
   }
 

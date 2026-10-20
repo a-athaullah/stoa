@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.372";
+var CLIENT_VERSION = "0.4.380";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -245,6 +245,9 @@ if (require.main === module && ACTOR_TYPE === "ai") {
   }
 }
 var { readCfAccessEnv, cfHeadersFor, httpOrigin, startCfForwardProxy } = require("./lib/cf-access");
+var { detectSupervisor } = require("./lib/supervisor");
+var SUPERVISOR = detectSupervisor();
+var BOOT_ID = crypto.randomBytes(8).toString("hex");
 var CF_ACCESS = readCfAccessEnv(process.env, (m) => console.warn(m));
 delete process.env.STOA_CF_ACCESS_CLIENT_ID;
 delete process.env.STOA_CF_ACCESS_CLIENT_SECRET;
@@ -361,7 +364,9 @@ async function checkForUpdates() {
   } catch {
   }
 }
+var _restartOverride = null;
 function doRestart() {
+  if (_restartOverride) return _restartOverride();
   console.log("[stoa:update] restarting to apply...");
   clearInterval(keepAlive);
   clearInterval(updateChecker);
@@ -369,6 +374,14 @@ function doRestart() {
   for (const s of sessionPool.values()) s.shutdown();
   ws?.close();
   process.exit(0);
+}
+// process.exit right after ws.send can drop the frame; exit from the send callback, with a cap.
+function sendThenRestart(data) {
+  let done = false;
+  const go = () => { if (done) return; done = true; doRestart(); };
+  if (_sendOverride || ws?.readyState !== WebSocket.OPEN) { send(data); return go(); }
+  ws.send(JSON.stringify(data), go);
+  setTimeout(go, 1e3).unref();
 }
 var sessionPool = /* @__PURE__ */ new Map();
 // Must match MAX_UPLOAD in server.js /api/upload/raw.
@@ -798,7 +811,7 @@ function connect() {
   ws.on("open", () => {
     if (ACTOR_TYPE === "ai") {
       getSession(process.env.STOA_WORK_DIR || os.homedir(), "default");
-      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, harnesses_available: [] }));
+      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, harnesses_available: [], supervisor: SUPERVISOR, boot_id: BOOT_ID }));
       console.log(`[stoa] Agent #${ACTOR_ID} v${CLIENT_VERSION} connected to ${STOA_URL} (max_concurrent=${MAX_CONCURRENT})`);
       detectHarnessesAsync().then((result) => {
         send({ type: "harnesses_update", ...result });
@@ -919,6 +932,13 @@ async function handleAgentMessage(msg) {
       send({ type: "harnesses_update", ...result, request_id: msg.request_id });
       console.log(`[stoa] Harness check: ${result.harness_status.map((s) => `${s.id}${s.installed ? " v" + s.version : " (not found)"}${s.logged_in === false ? " (not logged in)" : ""}`).join(", ") || "none"}`);
     }).catch(() => {});
+  }
+  if (msg.type === "restart" && msg.reason === "manual") {
+    // Owner asked for it and was warned: stop now, don't wait for idle. doRestart shuts the
+    // sessions down; the server marks this agent's in-flight messages as interrupted on disconnect.
+    console.log(`[stoa] Restart requested from UI \u2014 stopping ${activeTriggers.size} active, ${triggerQueue.length} queued trigger(s)`);
+    sendThenRestart({ type: "restart_status", state: "restarting", active: activeTriggers.size, queued: triggerQueue.length });
+    return;
   }
   if (msg.type === "restart") {
     console.log("[stoa] Server requested restart (version outdated)");
@@ -2377,6 +2397,7 @@ function __setDeps(overrides) {
   if (overrides.fetch) _fetchOverride = overrides.fetch;
   if (overrides.SESSION_IDLE_TTL != null) SESSION_IDLE_TTL = overrides.SESSION_IDLE_TTL;
   if (overrides.BACKGROUND_HOLD_MAX_MS != null) BACKGROUND_HOLD_MAX_MS = overrides.BACKGROUND_HOLD_MAX_MS;
+  if (overrides.doRestart) _restartOverride = overrides.doRestart;
 }
 function __resetDeps() {
   _sendOverride = null;
@@ -2387,5 +2408,7 @@ function __resetDeps() {
   BACKGROUND_HOLD_MAX_MS = 3 * 60 * 60 * 1e3;
   FETCH_TIMEOUT_MS = 60000;
   consecutiveTriggerErrors = 0;
+  _restartOverride = null;
+  pendingRestart = false;
 }
-module.exports = { fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, FIRST_TOKEN_TIMEOUT, __setDeps, __resetDeps, extractAndUploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES };
+module.exports = { handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, FIRST_TOKEN_TIMEOUT, __setDeps, __resetDeps, extractAndUploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES };

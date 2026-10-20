@@ -588,6 +588,11 @@ html.dark .s-docs-body pre .hljs-property, html.dark .s-docs-body pre .hljs-attr
 .s-icon-btn:hover:not(:disabled) { background: var(--h-hair-soft); }
 .s-icon-btn:disabled { opacity: .45; cursor: default; color: var(--h-ink-faint); }
 .s-icon-btn.s-ok { color: #7fb98c; }
+.s-icon-btn.s-restart-btn.is-active { opacity: 1; color: oklch(0.58 0.12 75); background: oklch(0.58 0.12 75 / .12); }
+html.dark .s-icon-btn.s-restart-btn.is-active { color: oklch(0.78 0.11 80); background: oklch(0.78 0.11 80 / .14); }
+.s-restart-btn.is-active svg { animation: s-restart-pulse 1.2s ease-in-out infinite; }
+@keyframes s-restart-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .s-restart-btn.is-active svg { animation: none; } }
 .s-rename-input {
   padding: 4px 10px; border-radius: 8px; background: var(--h-surface);
   min-width: 180px; font-family: var(--h-serif); font-size: 17px; color: var(--h-ink);
