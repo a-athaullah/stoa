@@ -1011,7 +1011,10 @@ html.dark .h-msg-row:hover { background: var(--h-hover); }
 .h-msg-row.ai .h-msg-actions { right: 8px; }
 .h-msg-row.human .h-msg-actions { left: 8px; }
 .t-root-row .h-msg-actions { display: flex; right: 8px; }
-.t-broadcast-row .h-msg-actions { top: -4px; }
+/* Broadcast toolbar hangs off the row (not the column) so it lines up with plain root rows: 20px row padding + 8px */
+.t-broadcast-row > .h-msg-actions { top: -7px; right: 28px; }
+/* Keep the reason badge clear of that toolbar (2 buttons + gap) */
+.t-broadcast-row > .t-broadcast-header { padding-right: 72px; }
 .h-thread-msg-row:hover .h-msg-actions, .h-thread-root-row:hover .h-msg-actions { display: flex; }
 .h-thread-msg-row.show-actions .h-msg-actions, .h-thread-root-row.show-actions .h-msg-actions { display: flex; }
 .h-thread-msg-row .h-msg-actions, .h-thread-root-row .h-msg-actions { right: 8px; }
@@ -2744,7 +2747,9 @@ html.dark .h-room-thread-badge {
 
 /* ── Broadcast row (thread message shown in room feed) ─────────────────────── */
 .t-broadcast-row {
+  position: relative;
   flex-direction: column;
+  align-items: stretch;
   gap: 6px;
   border-left: 3px solid oklch(62% 0.12 250 / 0.45);
   padding-left: calc(20px - 3px);

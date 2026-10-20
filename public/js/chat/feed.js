@@ -354,14 +354,20 @@ function appendFeedBroadcastRow(m, inner) {
     col.appendChild(content);
   }
 
-  const actions = document.createElement('div');
-  actions.className = 'h-msg-actions';
-  addMessageLinkAction(actions, m.id, m.thread_id, m.room_id);
-  col.style.position = 'relative';
-  col.appendChild(actions);
-
   body.appendChild(col);
   row.appendChild(body);
+
+  // Mirror of a thread message: copy + link only. Delete belongs in the thread itself.
+  const actions = document.createElement('div');
+  actions.className = 'h-msg-actions';
+  actions.innerHTML =
+    `<button class="h-msg-action-btn" data-action="copy" title="Copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>`;
+  actions.querySelector('[data-action="copy"]').onclick = async function(e) {
+    e.stopPropagation();
+    if (await copyToClipboard(m.content || '')) showCopyFeedback(this);
+  };
+  addMessageLinkAction(actions, m.id, m.thread_id, m.room_id);
+  row.appendChild(actions);
 
   inner.appendChild(row);
 
