@@ -110,7 +110,7 @@ function finalizeMessage(msgId, content, fileUrl, fileName, attachments, aiModel
       if (await copyToClipboard(content || '')) showCopyFeedback(this);
     };
     actions.querySelector('[data-action="delete"]').onclick = () => deleteMessage(msgId);
-    addMessageLinkAction(actions, msgId, inThread ? activeThreadId : null);
+    addMessageLinkAction(actions, msgId, inThread ? activeThreadId : null, currentRoomId);
     body.style.position = 'relative';
     body.appendChild(actions);
   }
