@@ -214,6 +214,7 @@ function cleanErrorText(raw) {
 }
 
 const { createThreadBroadcast } = require('./lib/thread-broadcast');
+const { buildFtsQueries } = require('./lib/search-query');
 const { setBroadcastReason, getThreadRootPreview, maybeBroadcastError } = createThreadBroadcast({
   db, broadcastToRoom: (...a) => broadcast(...a), enrichFn: enrichAutomation
 });
@@ -314,6 +315,49 @@ function saveSubAgentThreadSession(participantId, subAgentId, claudeSessionId, w
     `INSERT INTO ai_sessions (participant_id, room_id, sub_agent_id, claude_session_id, workdir, thread_id, status) VALUES (?,?,?,?,?,?,'idle')
      ON CONFLICT(participant_id, sub_agent_id, thread_id) WHERE sub_agent_id IS NOT NULL DO UPDATE SET claude_session_id=excluded.claude_session_id, room_id=excluded.room_id, workdir=excluded.workdir, status='idle', last_active_at=datetime('now')`
   ).run(participantId, rp?.room_id ?? null, subAgentId, claudeSessionId, workdir || null, threadId || 0);
+}
+
+// Keyword (FTS5) search shared by GET /api/search and the agent_search WS message. User input is
+// never passed to MATCH verbatim (see lib/search-query.js). All terms are ANDed first; when that
+// finds nothing the same terms are ORed so a single misspelt word doesn't empty the result.
+// `actorId` limits results to rooms that actor participates in (agents must not read other rooms).
+const keywordSearchStmts = new Map();
+function keywordSearchStmt(mark, byRoom, byActor) {
+  const key = `${mark}:${byRoom}:${byActor}`;
+  if (!keywordSearchStmts.has(key)) {
+    keywordSearchStmts.set(key, db.prepare(`
+      SELECT m.id, m.room_id, m.content, m.created_at, m.thread_id, m.thread_id AS thread_root_id,
+             a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
+             r.title as room_title, r.archived_at,
+             substr(tr.content, 1, 140) AS thread_root_preview,
+             ${mark ? "snippet(messages_fts, 0, '<mark>', '</mark>', '…', 40)" : "snippet(messages_fts, 0, '', '', '…', 60)"} as snippet
+      FROM messages_fts
+      JOIN messages m ON m.id = messages_fts.rowid
+      JOIN room_participants rp ON rp.id = m.participant_id
+      JOIN actors a ON a.id = rp.actor_id
+      JOIN rooms r ON r.id = m.room_id
+      LEFT JOIN messages tr ON tr.id = m.thread_id
+      WHERE messages_fts MATCH ? AND m.state='complete'
+      ${byRoom ? 'AND m.room_id = ?' : ''}
+      ${byActor ? 'AND m.room_id IN (SELECT room_id FROM room_participants WHERE actor_id = ?)' : ''}
+      ORDER BY rank
+      LIMIT ?
+    `));
+  }
+  return keywordSearchStmts.get(key);
+}
+function keywordSearch(q, { roomId = null, actorId = null, limit, defaultLimit = 30, maxLimit = 100, mark = true } = {}) {
+  const fts = buildFtsQueries(q);
+  if (!fts) return [];
+  const n = parseInt(limit, 10);
+  const lim = n > 0 ? Math.min(n, maxLimit) : defaultLimit;
+  const stmt = keywordSearchStmt(mark, !!roomId, !!actorId);
+  const filters = [roomId, actorId].filter(Boolean);
+  const run = match => stmt.all(match, ...filters, lim);
+  let rows = run(fts.and);
+  if (!rows.length && fts.or) rows = run(fts.or);
+  for (const r of rows) r.match = 'keyword';
+  return rows;
 }
 
 function buildThreadSummary(roomId, rootId) {
@@ -2055,26 +2099,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/search') {
-    const q = (url.searchParams.get('q') || '').trim();
-    const roomId = url.searchParams.get('room_id');
-    const limit = Math.min(parseInt(url.searchParams.get('limit') ?? '30'), 100);
-    if (!q) return json(res, []);
-    const rows = db.prepare(`
-      SELECT m.id, m.room_id, m.content, m.created_at, m.thread_id,
-             a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
-             r.title as room_title, r.archived_at,
-             snippet(messages_fts, 0, '<mark>', '</mark>', '…', 40) as snippet
-      FROM messages_fts
-      JOIN messages m ON m.id = messages_fts.rowid
-      JOIN room_participants rp ON rp.id = m.participant_id
-      JOIN actors a ON a.id = rp.actor_id
-      JOIN rooms r ON r.id = m.room_id
-      WHERE messages_fts MATCH ? AND m.state='complete'
-      ${roomId ? 'AND m.room_id = ?' : ''}
-      ORDER BY rank
-      LIMIT ?
-    `).all(...(roomId ? [q, roomId, limit] : [q, limit]));
-    return json(res, rows);
+    const roomParam = url.searchParams.get('room_id');
+    const roomId = roomParam ? parseInt(roomParam, 10) : null;
+    if (roomParam && !(roomId > 0)) return json(res, { error: 'invalid room_id' }, 400);
+    return json(res, keywordSearch(url.searchParams.get('q'), { roomId, limit: url.searchParams.get('limit') }));
   }
 
   if (req.method === 'GET' && url.pathname.startsWith('/api/rooms/')) {
@@ -6022,25 +6050,11 @@ wss.on('connection', (ws, req) => {
     }
 
     if (msg.type === 'agent_search' && agentActorId) {
-      const q = (msg.query || '').trim();
-      const roomId = msg.room_id;
-      const limit = Math.min(parseInt(msg.limit ?? '20'), 50);
-      if (!q) { ws.send(JSON.stringify({ type: 'search_result', request_id: msg.request_id, results: [] })); }
-      else {
-        const rows = db.prepare(`
-          SELECT m.id, m.room_id, m.content, m.created_at,
-                 a.name as actor_name, a.type as actor_type,
-                 snippet(messages_fts, 0, '', '', '…', 60) as snippet
-          FROM messages_fts
-          JOIN messages m ON m.id = messages_fts.rowid
-          JOIN room_participants rp ON rp.id = m.participant_id
-          JOIN actors a ON a.id = rp.actor_id
-          WHERE messages_fts MATCH ? AND m.state='complete'
-          ${roomId ? 'AND m.room_id = ?' : ''}
-          ORDER BY rank LIMIT ?
-        `).all(...(roomId ? [q, roomId, limit] : [q, limit]));
-        ws.send(JSON.stringify({ type: 'search_result', request_id: msg.request_id, results: rows }));
-      }
+      const roomId = parseInt(msg.room_id, 10) > 0 ? parseInt(msg.room_id, 10) : null;
+      const results = keywordSearch(msg.query, { roomId, actorId: agentActorId, limit: msg.limit, maxLimit: 50, defaultLimit: 20, mark: false })
+        .map(({ id, room_id, content, created_at, actor_name, actor_type, snippet, thread_root_id, match }) =>
+          ({ id, room_id, content, created_at, actor_name, actor_type, snippet, thread_root_id, match }));
+      ws.send(JSON.stringify({ type: 'search_result', request_id: msg.request_id, results }));
     }
 
     if (msg.type === 'agent_get_message' && agentActorId) {

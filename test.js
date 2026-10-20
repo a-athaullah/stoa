@@ -515,6 +515,42 @@ function runUnitTests() {
     }
   });
 
+  // ── Search query builder — lib/search-query.js
+  const { buildFtsQueries, parseSearchTerms, MAX_TERMS } = require('./lib/search-query');
+  ut('buildFtsQueries — every term is quoted; operators/columns become plain words', () => {
+    const f = buildFtsQueries('tidak ada-apa');
+    assert.strictEqual(f.and, '"tidak"* AND "ada apa"*');
+    assert.strictEqual(f.or, '"tidak"* OR "ada"* OR "apa"*');
+    assert.strictEqual(buildFtsQueries('NOT col:x (y)').and, '"not"* AND "col x" AND "y"');
+  });
+  ut('buildFtsQueries — no searchable characters → null', () => {
+    for (const q of ['', '   ', '---', '"', '*:()^', null, undefined]) assert.strictEqual(buildFtsQueries(q), null, String(q));
+  });
+  ut('buildFtsQueries — quoted text is an exact phrase, unbalanced quote ignored', () => {
+    assert.deepStrictEqual(buildFtsQueries('"search hybrid" fts'), { and: '"search hybrid" AND "fts"*', or: '"search hybrid" OR "fts"*' });
+    assert.deepStrictEqual(buildFtsQueries('"stoa'), { and: '"stoa"*', or: null });
+  });
+  ut('buildFtsQueries — short words are not prefix-expanded; duplicates collapse', () => {
+    assert.deepStrictEqual(buildFtsQueries('ab ab'), { and: '"ab"', or: null });
+  });
+  ut('parseSearchTerms — unicode words kept, term count capped', () => {
+    assert.deepStrictEqual(parseSearchTerms('日本語 café')[1].words, ['café']);
+    assert.strictEqual(parseSearchTerms(Array.from({ length: 40 }, (_, i) => 'w' + i).join(' ')).length, MAX_TERMS);
+  });
+  ut('buildFtsQueries — output is valid FTS5 for hostile input', () => {
+    const Database = require('better-sqlite3');
+    const mem = new Database(':memory:');
+    mem.exec("CREATE VIRTUAL TABLE t USING fts5(content); INSERT INTO t VALUES ('stoa-agent restart'), ('tidak ada apa')");
+    for (const q of ['a"b', 'x OR', 'NEAR(a b', '"'.repeat(3), 'col:', '^a', "a'; DROP TABLE t;--", 'stoa-agent', '*a*']) {
+      const f = buildFtsQueries(q);
+      if (!f) continue;
+      mem.prepare('SELECT rowid FROM t WHERE t MATCH ?').all(f.and);
+      if (f.or) mem.prepare('SELECT rowid FROM t WHERE t MATCH ?').all(f.or);
+    }
+    assert.strictEqual(mem.prepare('SELECT rowid FROM t WHERE t MATCH ?').all(buildFtsQueries('stoa-agent').and).length, 1);
+    mem.close();
+  });
+
   // ── Regex safety (R20) — tests import production code from lib/regex-safety.js
   const { safeRegexTest, escapeRegExp, validateRegexPattern } = require('./lib/regex-safety');
 
@@ -9389,6 +9425,117 @@ async function run() {
     assert.strictEqual(rootResult.thread_id, null);
     const replyResult = r.body.find(m => m.thread_id === rootId);
     assert.ok(replyResult, 'reply found in search with thread_id');
+  });
+
+  // ── Search: query sanitising, prefix, OR fallback, thread labels, agent scope ──
+  console.log('\n[Search — keyword]');
+  const sTag = 'kzq' + Date.now().toString(36);
+  const sIds = {};
+  let sAgentA = null, sRoomA = null, sRoomB = null;
+  const sPost = async (agent, roomId, content, threadId) => {
+    const r = await req('POST', `/api/rooms/${roomId}/message`, threadId ? { content, thread_id: threadId } : { content }, {
+      'x-agent-id': String(agent.actorId), 'x-agent-secret': agent.secret,
+    });
+    assert.strictEqual(r.status, 200, `post failed: ${JSON.stringify(r.body)}`);
+    return r.body.message_id;
+  };
+  const sSearch = async qs => {
+    const r = await req('GET', `/api/search?${qs}`);
+    assert.strictEqual(r.status, 200, `GET /api/search?${qs} → ${r.status} ${JSON.stringify(r.body)}`);
+    assert.ok(Array.isArray(r.body));
+    return r.body;
+  };
+  const sQ = q => sSearch('q=' + encodeURIComponent(q));
+
+  await test('Search — setup: two agents, two rooms, seeded messages', async () => {
+    sAgentA = await createOnlineTestAgent('__test-search-a', '/tmp/stoa-test-search-a');
+    const b = await createOnlineTestAgent('__test-search-b', '/tmp/stoa-test-search-b');
+    if (!sAgentA?.workdirId || !b?.workdirId) { console.log('    (skipped — could not set up online test agents)'); sAgentA = null; return; }
+    const ra = await req('POST', '/api/rooms', { title: '__test-search-a__', workdir_id: sAgentA.workdirId, participant_ids: [sAgentA.actorId] });
+    const rb = await req('POST', '/api/rooms', { title: '__test-search-b__', workdir_id: b.workdirId, participant_ids: [b.actorId] });
+    assert.strictEqual(ra.status, 200); assert.strictEqual(rb.status, 200);
+    sRoomA = ra.body.id; sRoomB = rb.body.id;
+    testRoomIds.push(sRoomA, sRoomB);
+    sIds.agent = await sPost(sAgentA, sRoomA, `${sTag}alpha stoa-agent restart via launchd`);
+    sIds.stoanya = await sPost(sAgentA, sRoomA, `${sTag}alpha stoanya lambat`);
+    sIds.root = await sPost(sAgentA, sRoomA, `${sTag}root thread topic`);
+    sIds.reply = await sPost(sAgentA, sRoomA, `${sTag}reply inside the thread`, sIds.root);
+    sIds.other = await sPost(b, sRoomB, `${sTag}alpha belongs to another room`);
+    b.ws.close();
+  });
+
+  await test('Search — FTS operators/punctuation in the query never error (200)', async () => {
+    if (!sAgentA) { console.log('    (skipped)'); return; }
+    for (const q of [`${sTag}alpha-x`, `"${sTag}alpha`, `${sTag}alpha:stoa`, `(${sTag}alpha`, `${sTag}alpha*`,
+      `NOT ${sTag}alpha`, `${sTag}alpha NEAR(`, `^${sTag}alpha`, `${sTag}alpha AND OR`, `${sTag}alpha'; DROP TABLE messages;--`]) {
+      const rows = await sQ(q);
+      assert.ok(rows.some(m => m.id === sIds.agent), `query ${JSON.stringify(q)} should still find the seeded message`);
+    }
+    for (const q of ['---', '"', '*', '()', ':']) assert.deepStrictEqual(await sQ(q), [], `query ${JSON.stringify(q)} has no words → []`);
+  });
+
+  await test('Search — hyphenated input matches the adjacent words (phrase)', async () => {
+    if (!sAgentA) { console.log('    (skipped)'); return; }
+    const ids = (await sQ(`${sTag}alpha stoa-agent`)).map(m => m.id);
+    assert.ok(ids.includes(sIds.agent), 'message with "stoa-agent" found');
+    assert.ok(!ids.includes(sIds.stoanya), 'message without "agent" excluded while the AND query has hits');
+  });
+
+  await test('Search — partial word matches by prefix', async () => {
+    if (!sAgentA) { console.log('    (skipped)'); return; }
+    const ids = (await sQ(`${sTag}alph`)).map(m => m.id);
+    assert.ok(ids.includes(sIds.agent) && ids.includes(sIds.stoanya), 'prefix of the tag word finds both messages');
+    const exact = (await sQ(`"${sTag}alph"`)).map(m => m.id);
+    assert.ok(!exact.includes(sIds.agent), 'quoted term is exact, no prefix expansion');
+  });
+
+  await test('Search — falls back to OR when no message has every word', async () => {
+    if (!sAgentA) { console.log('    (skipped)'); return; }
+    const ids = (await sQ(`${sTag}alpha zzqnosuchwordanywhere`)).map(m => m.id);
+    assert.ok(ids.includes(sIds.agent) && ids.includes(sIds.stoanya), 'OR fallback returns partial matches');
+  });
+
+  await test('Search — thread replies carry thread_root_id + root preview', async () => {
+    if (!sAgentA) { console.log('    (skipped)'); return; }
+    const reply = (await sQ(`${sTag}reply`)).find(m => m.id === sIds.reply);
+    assert.ok(reply, 'thread reply is searchable');
+    assert.strictEqual(reply.thread_root_id, sIds.root);
+    assert.ok(reply.thread_root_preview.startsWith(`${sTag}root thread topic`));
+    assert.strictEqual(reply.match, 'keyword');
+    assert.match(reply.snippet, /<mark>/);
+    const root = (await sQ(`${sTag}root`)).find(m => m.id === sIds.root);
+    assert.strictEqual(root.thread_root_id, null);
+    assert.strictEqual(root.thread_root_preview, null);
+  });
+
+  await test('Search — room_id filter, invalid room_id → 400, bad limit → default', async () => {
+    if (!sAgentA) { console.log('    (skipped)'); return; }
+    const inRoom = (await sSearch(`q=${sTag}alpha&room_id=${sRoomA}`)).map(m => m.id);
+    assert.ok(inRoom.includes(sIds.agent) && !inRoom.includes(sIds.other));
+    for (const bad of ['abc', '-1', '0']) {
+      const r = await req('GET', `/api/search?q=${sTag}alpha&room_id=${bad}`);
+      assert.strictEqual(r.status, 400, `room_id=${bad}`);
+    }
+    assert.strictEqual((await sSearch(`q=${sTag}alpha&limit=abc`)).length, 3, 'non-numeric limit → default limit, not a SQL error');
+    assert.strictEqual((await sSearch(`q=${sTag}alpha&limit=1`)).length, 1);
+  });
+
+  await test('Search — WS agent_search only returns rooms the agent is in, without <mark>', async () => {
+    if (!sAgentA) { console.log('    (skipped)'); return; }
+    const ask = (request_id, payload) => {
+      const got = waitForWsMessage(sAgentA.ws, m => m.type === 'search_result' && m.request_id === request_id);
+      sAgentA.ws.send(JSON.stringify({ type: 'agent_search', request_id, ...payload }));
+      return got;
+    };
+    const ids = (await ask('kzq-1', { query: `${sTag}alpha` })).results.map(m => m.id);
+    assert.ok(ids.includes(sIds.agent), 'own room result returned');
+    assert.ok(!ids.includes(sIds.other), 'other room result must not leak to the agent');
+    assert.deepStrictEqual((await ask('kzq-2', { query: `${sTag}alpha`, room_id: sRoomB })).results, [],
+      'explicit room_id of a foreign room returns nothing');
+    const reply = (await ask('kzq-3', { query: `${sTag}reply` })).results.find(m => m.id === sIds.reply);
+    assert.strictEqual(reply.thread_root_id, sIds.root);
+    assert.ok(!/<mark>/.test(reply.snippet));
+    sAgentA.ws.close();
   });
 
   await test('Thread — export includes thread_id column', async () => {
