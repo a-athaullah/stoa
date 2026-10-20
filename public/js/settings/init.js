@@ -17,6 +17,7 @@ function initGlobalWs() {
     globalWs.onmessage = async e => {
       let msg; try { msg = JSON.parse(e.data); } catch { return; }
       if (msg.type === 'actor_status') handleActorStatus(msg.actor);
+      if (msg.type === 'agent_restart_status' && typeof sHandleRestartStatus === 'function') sHandleRestartStatus(msg);
       if (msg.type === 'agent_scan_complete') sFinishSetupSlip(msg.actor_id);
       if (msg.type === 'actor_removed') handleActorRemoved(msg.actor_id, msg.affected_rooms);
       if (msg.type === 'server_restart') handleServerRestart(msg);

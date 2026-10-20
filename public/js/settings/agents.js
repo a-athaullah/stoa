@@ -101,25 +101,47 @@ function _makeCheckHarnessBtn(actor, sel, hintEl) {
   return btn;
 }
 
-// actorId -> 'pending' (waiting for idle) | 'restarting' (went offline, PM2 bringing it back)
+// actorId -> { state: 'requested'|'pending'|'restarting', active?, queued? } — fed by agent_restart_status
 const sRestartState = new Map();
+const S_RESTART_ACTIVE = new Set(['requested', 'pending', 'restarting']);
 
 function _restartBlockReason(actor) {
   if (!actor.online) return 'Offline';
-  if (actor.process_managed !== true) return 'Not running under PM2 — a restart would stop this agent for good';
+  if (actor.supervisor !== 'pm2') return 'Not running under PM2 — a restart would stop this agent for good';
   return null;
 }
 
+function _restartStatusText(entry, actor) {
+  if (!entry) return '';
+  if (!actor.online || entry.state === 'restarting') return 'restarting…';
+  const busy = [];
+  if (entry.active > 0) busy.push(`${entry.active} running`);
+  if (entry.queued > 0) busy.push(`${entry.queued} queued`);
+  return busy.length ? `waiting for idle · ${busy.join(', ')}` : 'waiting for idle…';
+}
+
 function _syncRestartBtn(btn, statusEl, actor) {
-  const state = sRestartState.get(actor.id);
+  const entry = sRestartState.get(actor.id);
   const reason = _restartBlockReason(actor);
-  btn.disabled = !!state || !!reason;
-  btn.title = reason || (state ? 'Restart already requested' : 'Restart this agent once it is idle so sessions pick up the updated CLI');
-  statusEl.textContent = state === 'pending' ? 'waiting for idle…' : state === 'restarting' ? 'restarting…' : '';
-  statusEl.classList.toggle('is-active', !!state);
+  btn.disabled = !!entry || !!reason;
+  btn.title = reason || (entry ? 'Restart already requested' : 'Restart this agent once it is idle so sessions pick up the updated CLI');
+  statusEl.textContent = _restartStatusText(entry, actor);
+  statusEl.classList.toggle('is-active', !!entry);
+}
+
+function _setRestartEntry(actorId, state, extra = {}) {
+  const a = allActors.find(x => x.id === actorId);
+  if (S_RESTART_ACTIVE.has(state)) {
+    sRestartState.set(actorId, { state, active: Number(extra.active) || 0, queued: Number(extra.queued) || 0 });
+    if (a) a.restart_state = state;
+  } else {
+    sRestartState.delete(actorId);
+    if (a) a.restart_state = null;
+  }
 }
 
 function _makeRestartIdleBtn(actor) {
+  if (!sRestartState.has(actor.id) && S_RESTART_ACTIVE.has(actor.restart_state)) _setRestartEntry(actor.id, actor.restart_state);
   const wrap = document.createElement('span');
   wrap.className = 's-restart-wrap';
   wrap.dataset.restartActor = actor.id;
@@ -145,32 +167,50 @@ function _makeRestartIdleBtn(actor) {
       const data = await r.json().catch(() => ({}));
       if (!r.ok) {
         if (r.status === 401) showLogin();
-        showToast(data.error || 'Failed to request restart', { error: true });
+        showToast(data.message || data.error || 'Failed to request restart', { error: true });
         return;
       }
-      sRestartState.set(actor.id, 'pending');
+      // A WS update may land before this response; never overwrite a newer state with 'requested'.
+      if (!sRestartState.has(actor.id)) _setRestartEntry(actor.id, S_RESTART_ACTIVE.has(data.state) ? data.state : 'requested');
     } catch { showToast('Failed to request restart', { error: true }); }
-    finally { sSyncRestartUi(allActors.find(a => a.id === actor.id) || actor, {}); }
+    finally { _renderRestartUi(actor.id); }
   });
   return wrap;
 }
 
-// `update` is the raw actor_status payload: restart_pending is only trusted from the live
-// message, never from the merged actor copy, so a stale flag can't re-arm after reconnect.
-function sSyncRestartUi(actor, update = actor) {
+function _renderRestartUi(actorId, actor = allActors.find(a => a.id === actorId)) {
   if (!actor) return;
-  const state = sRestartState.get(actor.id);
-  if (!actor.online) {
-    if (state === 'pending') sRestartState.set(actor.id, 'restarting');
-  } else if (state === 'restarting') {
-    sRestartState.delete(actor.id);
-    showToast(`${actor.name || 'Agent'} is back online`);
-  } else if (update.restart_pending === true) {
-    sRestartState.set(actor.id, 'pending');
-  }
-  document.querySelectorAll(`.s-restart-wrap[data-restart-actor="${actor.id}"]`).forEach(w => {
+  document.querySelectorAll(`.s-restart-wrap[data-restart-actor="${actorId}"]`).forEach(w => {
     _syncRestartBtn(w.querySelector('.s-restart-btn'), w.querySelector('.s-restart-status'), actor);
   });
+}
+
+function sHandleRestartStatus(msg) {
+  const id = Number(msg.actor_id);
+  if (!id || (msg.state !== 'done' && !S_RESTART_ACTIVE.has(msg.state))) return;
+  _setRestartEntry(id, msg.state, msg);
+  if (msg.state === 'done') {
+    const a = allActors.find(x => x.id === id);
+    showToast(`${a?.name || 'Agent'} is back online`);
+  }
+  _renderRestartUi(id);
+}
+
+// `update` is the raw actor_status payload. Only the agent-connect broadcast carries
+// restart_state, read live from the server; the merged allActors copy is never trusted for it.
+// That lets a page that missed the 'done' event settle once the agent is back.
+function sSyncRestartUi(actor, update = actor) {
+  if (!actor) return;
+  const had = sRestartState.get(actor.id);
+  if (!actor.online && had) had.wentOffline = true;
+  else if (actor.online && 'restart_state' in update) {
+    if (S_RESTART_ACTIVE.has(update.restart_state)) _setRestartEntry(actor.id, update.restart_state);
+    else if (had) {
+      _setRestartEntry(actor.id, null);
+      if (had.wentOffline || had.state === 'restarting') showToast(`${actor.name || 'Agent'} is back online`);
+    }
+  }
+  _renderRestartUi(actor.id, actor);
 }
 
 function sDetectOS() {
