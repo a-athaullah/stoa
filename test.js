@@ -11920,6 +11920,69 @@ async function run() {
   console.log('\n[Auto-update & Trigger Cleanup]');
 
   // ── Thread Broadcast tests ─────────────────────────────────────────────
+  console.log('\n[Slack Code Fences]');
+
+  // Rendered through the same marked version the client uses, so a leaked fence
+  // shows up as the trailing template fields landing inside <pre>.
+  const _fenceTemplate = 'Pesan:\n{{slack_message_text}}\n\nslack_user: U123\nslack_thread_ts: 1.2';
+  const _renderPrompt = (text) => {
+    const { marked } = require('marked');
+    return marked.parse(_fenceTemplate.replace('{{slack_message_text}}', () => text));
+  };
+  const _preBodies = (html) => [...html.matchAll(/<pre><code[^>]*>([\s\S]*?)<\/code><\/pre>/g)].map(m => m[1]);
+
+  await test('slack fences: closing fence inline with trailing text stays inside the message', async () => {
+    const { normalizeSlackCodeFences } = require('./lib/slack-fences');
+    const raw = '```\nREQUEST: CRD-1\nSTATUS: AWAITING_SIGNATURE``` *Sent using* Bot';
+    const rawPre = _preBodies(_renderPrompt(raw));
+    assert.ok(rawPre.length === 1 && rawPre[0].includes('slack_user'), 'precondition: raw text leaks into later fields');
+
+    const out = normalizeSlackCodeFences(raw);
+    assert.strictEqual(out, '```\nREQUEST: CRD-1\nSTATUS: AWAITING_SIGNATURE\n```\n *Sent using* Bot');
+    const html = _renderPrompt(out);
+    const pre = _preBodies(html);
+    assert.strictEqual(pre.length, 1);
+    assert.ok(pre[0].includes('AWAITING_SIGNATURE'), 'code stays in the block');
+    assert.ok(!pre[0].includes('slack_user') && !pre[0].includes('Sent using'), 'nothing after the fence is in the block');
+    assert.ok(html.includes('slack_user: U123'), 'trailing field renders as text');
+  });
+
+  await test('slack fences: opening fence inline gets its own line, content not eaten as info string', async () => {
+    const { normalizeSlackCodeFences } = require('./lib/slack-fences');
+    const out = normalizeSlackCodeFences('Hasil: ```STATUS: OK\nID: 7``` done');
+    assert.strictEqual(out, 'Hasil: \n```\nSTATUS: OK\nID: 7\n```\n done');
+    const pre = _preBodies(_renderPrompt(out));
+    assert.strictEqual(pre.length, 1);
+    assert.ok(pre[0].startsWith('STATUS: OK'), 'first line is code content, not a language tag');
+    assert.ok(!pre[0].includes('done') && !pre[0].includes('slack_user'));
+  });
+
+  await test('slack fences: odd fence count is closed at end of text', async () => {
+    const { normalizeSlackCodeFences } = require('./lib/slack-fences');
+    const out = normalizeSlackCodeFences('a ```x``` b ```unterminated');
+    assert.strictEqual(out, 'a \n```\nx\n```\n b \n```\nunterminated\n```');
+    const pre = _preBodies(_renderPrompt(out));
+    assert.strictEqual(pre.length, 2);
+    assert.ok(pre.every(b => !b.includes('slack_user')), 'unterminated block must not swallow later fields');
+  });
+
+  await test('slack fences: text without fences (incl. inline backticks) is unchanged', async () => {
+    const { normalizeSlackCodeFences } = require('./lib/slack-fences');
+    for (const s of ['plain text', 'use `npm i` then `ls`', '``double``', '', '```\nalready\nclean\n```\n']) {
+      assert.strictEqual(normalizeSlackCodeFences(s), s, JSON.stringify(s));
+    }
+    assert.strictEqual(normalizeSlackCodeFences(undefined), undefined);
+  });
+
+  await test('slack fences: automation prompt substitutes normalized text, conditions keep raw text', async () => {
+    const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
+    assert.ok(/\.replace\(\/\\\{\\\{slack_message_text\\\}\\\}\/g, promptText\)/.test(src), 'slack_message_text must use promptText');
+    assert.ok(/\.replace\(\/\\\{\\\{slack_full_text\\\}\\\}\/g, promptFullText\)/.test(src), 'slack_full_text must use promptFullText');
+    assert.ok(src.includes('const promptText = normalizeSlackCodeFences(text);'));
+    assert.ok(src.includes('const promptFullText = normalizeSlackCodeFences(fullText);'));
+    assert.ok(src.includes('message_text: text, slack_full_text: fullText,'), 'condition matching must stay on raw text');
+  });
+
   console.log('\n[Thread Broadcast]');
 
   let _tbRoomId, _tbRootMsgId, _tbParticipantId;
