@@ -1719,6 +1719,118 @@ async function runAsyncUnitTests() {
     } finally { stoa.activeTriggers.clear(); stoa.__resetDeps(); }
   });
 
+  await uta('agent pending restart — forced after RESTART_STALL_MS without trigger progress, never while the trigger progresses', async () => {
+    const stoa = require('./stoa.js');
+    const sent = [];
+    let restarts = 0;
+    stoa.__setDeps({ send: (m) => sent.push(m), doRestart: () => { restarts++; } });
+    const T = stoa.RESTART_STALL_MS;
+    assert.ok(T >= 60e3 && T < stoa.STALE_TRIGGER_MS, 'stall window must fire before the 20m stale sweep would');
+    try {
+      stoa.activeTriggers.clear();
+      stoa.sweepStaleTriggers(Date.now() + 10 * 60e3);
+      assert.strictEqual(restarts, 0, 'no pending restart: an idle trigger is left alone');
+
+      const entry = { room_id: 1, startedAt: Date.now() - 15 * 60e3, lastActivity: Date.now() - 15 * 60e3 };
+      stoa.activeTriggers.set('stuck-1', entry);
+      const armedAt = Date.now();
+      await stoa.handleAgentMessage({ type: 'restart' });
+      assert.strictEqual(restarts, 0, 'busy agent defers the version restart');
+
+      stoa.sweepStaleTriggers(armedAt + T - 5e3);
+      assert.strictEqual(restarts, 0, 'already-idle trigger still gets the full window from when the restart was armed');
+
+      entry.lastActivity = armedAt + T - 1e3;
+      stoa.sweepStaleTriggers(armedAt + T + 30e3);
+      assert.strictEqual(restarts, 0, 'trigger made progress inside the window → keep waiting');
+
+      stoa.sweepStaleTriggers(entry.lastActivity + T + 1e3);
+      assert.strictEqual(restarts, 1, 'no progress for RESTART_STALL_MS → forced restart');
+      assert.deepStrictEqual(sent, [{ type: 'restart_status', state: 'restarting', reason: 'update_stalled', active: 1, queued: 0 }], 'notifies before restarting');
+    } finally { stoa.activeTriggers.clear(); stoa.__resetDeps(); }
+  });
+
+  await uta('agent update check — writes only files matching the manifest hash, restarts only when something was written', async () => {
+    const stoa = require('./stoa.js');
+    const fsM = require('fs'), osM = require('os'), pathM = require('path'), cryptoM = require('crypto');
+    const h = (t) => cryptoM.createHash('sha256').update(Buffer.from(t, 'utf8')).digest('hex').slice(0, 12);
+    const files = { 'stoa.js': '// new stoa ✓\n', 'codex-session.js': '// new codex\n', 'claude-session.js': '// tampered\n' };
+    let manifestFiles = { 'stoa.js': h(files['stoa.js']), 'codex-session.js': h(files['codex-session.js']), 'claude-session.js': h('// what the manifest promised\n'), '../evil.js': 'x' };
+    const httpMod = require('http');
+    const srv = httpMod.createServer((req, res) => {
+      if (req.url === '/api/client/manifest') return res.end(JSON.stringify({ files: manifestFiles }));
+      const name = decodeURIComponent(req.url.replace('/api/client/file/', ''));
+      if (!(name in files)) { res.writeHead(404); return res.end(); }
+      res.end(files[name]);
+    });
+    await new Promise(r => srv.listen(0, '127.0.0.1', r));
+    const baseUrl = `http://127.0.0.1:${srv.address().port}`;
+    const dir = fsM.mkdtempSync(pathM.join(osM.tmpdir(), 'stoa-upd-'));
+    let restarts = 0;
+    stoa.__setDeps({ doRestart: () => { restarts++; } });
+    try {
+      stoa.activeTriggers.clear();
+      const manifest = { 'stoa.js': 'old000000000', 'claude-session.js': 'old111111111' };
+      await stoa.checkForUpdates({ baseUrl, dir, manifest });
+      assert.strictEqual(fsM.readFileSync(pathM.join(dir, 'stoa.js'), 'utf8'), files['stoa.js']);
+      assert.strictEqual(fsM.readFileSync(pathM.join(dir, 'codex-session.js'), 'utf8'), files['codex-session.js'], 'file new to the client is fetched too');
+      assert.ok(!fsM.existsSync(pathM.join(dir, 'claude-session.js')), 'hash mismatch → not written');
+      assert.ok(!fsM.readdirSync(pathM.dirname(dir)).includes('evil.js') && !fsM.existsSync(pathM.join(dir, '..', 'evil.js')), 'traversal name ignored');
+      assert.strictEqual(manifest['claude-session.js'], 'old111111111', 'mismatched file keeps old hash');
+      assert.strictEqual(restarts, 1, 'restart after writing');
+
+      await stoa.checkForUpdates({ baseUrl, dir, manifest });
+      assert.strictEqual(restarts, 1, 'only the mismatched file is still "changed" and it is never written → no restart loop');
+
+      manifestFiles = { 'stoa.js': h('// newer\n') };
+      files['stoa.js'] = '// newer\n';
+      stoa.activeTriggers.set('busy', { room_id: 1, startedAt: Date.now(), lastActivity: Date.now() });
+      await stoa.checkForUpdates({ baseUrl, dir, manifest });
+      assert.strictEqual(restarts, 1, 'busy → deferred');
+      stoa.activeTriggers.clear();
+      stoa.drainQueue();
+      assert.strictEqual(restarts, 2, 'deferred restart fires when idle');
+    } finally {
+      stoa.activeTriggers.clear(); stoa.__resetDeps();
+      srv.close(); fsM.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await uta('agent pre-connect update — restarts before connecting when an update exists, gives up after the cap when the server hangs', async () => {
+    const stoa = require('./stoa.js');
+    const fsM = require('fs'), osM = require('os'), pathM = require('path'), cryptoM = require('crypto');
+    const body = '// codex v2\n';
+    const hash = cryptoM.createHash('sha256').update(body).digest('hex').slice(0, 12);
+    let hang = false;
+    const httpMod = require('http');
+    const srv = httpMod.createServer((req, res) => {
+      if (hang) return;
+      if (req.url === '/api/client/manifest') return res.end(JSON.stringify({ files: { 'codex-session.js': hash } }));
+      res.end(body);
+    });
+    await new Promise(r => srv.listen(0, '127.0.0.1', r));
+    const baseUrl = `http://127.0.0.1:${srv.address().port}`;
+    const dir = fsM.mkdtempSync(pathM.join(osM.tmpdir(), 'stoa-pre-'));
+    const events = [];
+    stoa.__setDeps({ doRestart: () => events.push('restart') });
+    try {
+      await stoa.preConnectUpdate({ baseUrl, dir, manifest: {} }).then(() => events.push('connect'));
+      assert.deepStrictEqual(events, ['restart', 'connect'], 'restart is decided before the connect step runs');
+      events.length = 0;
+      await stoa.preConnectUpdate({ baseUrl, dir, manifest: { 'codex-session.js': hash } }).then(() => events.push('connect'));
+      assert.deepStrictEqual(events, ['connect'], 'up to date → straight to connect');
+      events.length = 0;
+      hang = true;
+      const t0 = Date.now();
+      await stoa.preConnectUpdate({ baseUrl, dir, manifest: {} }, 200).then(() => events.push('connect'));
+      assert.deepStrictEqual(events, ['connect'], 'hanging server does not block connect');
+      assert.ok(Date.now() - t0 < 2000, 'returned at the cap');
+    } finally {
+      stoa.__resetDeps();
+      srv.closeAllConnections?.(); srv.close(); fsM.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   await uta('fetchText rejects on HTTP 500', async () => {
     const { fetchText } = require('./stoa.js');
     const httpMod = require('http');
