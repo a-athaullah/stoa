@@ -150,24 +150,54 @@ function _makeRestartIdleBtn(actor, sz) {
   btn.innerHTML = svgPower(sz);
   _syncRestartBtn(btn, actor);
 
-  btn.addEventListener('click', async e => {
+  btn.addEventListener('click', e => {
     e.stopPropagation();
-    if (!confirm('Restart this agent when idle?\n\nRunning sessions are rebuilt once the agent is idle; conversations resume where they left off.')) return;
-    btn.disabled = true;
-    try {
-      const r = await fetch(`/api/actors/${actor.id}/restart`, { method: 'POST' });
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) {
-        if (r.status === 401) showLogin();
-        showToast(data.message || data.error || 'Failed to request restart', { error: true });
-        return;
-      }
-      // A WS update may land before this response; never overwrite a newer state with 'requested'.
-      if (!sRestartState.has(actor.id)) _setRestartEntry(actor.id, S_RESTART_ACTIVE.has(data.state) ? data.state : 'requested');
-    } catch { showToast('Failed to request restart', { error: true }); }
-    finally { _renderRestartUi(actor.id); }
+    _showRestartIdleConfirm(actor);
   });
   return btn;
+}
+
+function _showRestartIdleConfirm(actor) {
+  const el = document.getElementById('app-top-notice');
+  if (!el) return;
+  el.className = 'notice-confirm';
+  el.style.display = 'flex';
+  el.innerHTML = '';
+  const msg = document.createElement('span');
+  msg.style.flex = '1';
+  msg.textContent = `Restart ${actor.name || 'this agent'} when idle? Running sessions are rebuilt once the agent is idle; conversations resume where they left off.`;
+  const btns = document.createElement('div');
+  btns.style.cssText = 'display:flex;gap:8px';
+  const ok = document.createElement('button');
+  ok.className = 'app-notice-btn-confirm';
+  ok.textContent = 'restart';
+  ok.onclick = () => { hideAppNotice(); _requestRestartIdle(actor.id); };
+  const cancel = document.createElement('button');
+  cancel.className = 'app-notice-btn-cancel';
+  cancel.textContent = 'cancel';
+  cancel.onclick = hideAppNotice;
+  btns.append(ok, cancel);
+  el.append(msg, btns);
+  ok.focus();
+}
+
+async function _requestRestartIdle(actorId) {
+  const actor = allActors.find(a => a.id === actorId);
+  // State may have moved while the notice was open (WS update, agent went offline).
+  if (!actor || sRestartState.has(actorId) || _restartBlockReason(actor)) { _renderRestartUi(actorId, actor); return; }
+  document.querySelectorAll(`.s-restart-btn[data-restart-actor="${actorId}"]`).forEach(b => { b.disabled = true; });
+  try {
+    const r = await fetch(`/api/actors/${actorId}/restart`, { method: 'POST' });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      if (r.status === 401) showLogin();
+      showToast(data.message || data.error || 'Failed to request restart', { error: true });
+      return;
+    }
+    // A WS update may land before this response; never overwrite a newer state with 'requested'.
+    if (!sRestartState.has(actorId)) _setRestartEntry(actorId, S_RESTART_ACTIVE.has(data.state) ? data.state : 'requested');
+  } catch { showToast('Failed to request restart', { error: true }); }
+  finally { _renderRestartUi(actorId); }
 }
 
 function _renderRestartUi(actorId, actor = allActors.find(a => a.id === actorId)) {
