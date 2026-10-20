@@ -882,7 +882,7 @@ Only messages sent *after* this feature was introduced carry automation identity
 
 Stoa uses a **vertical sidebar nav** on the far left of the app. The sidebar is icon-only (44 px wide) and slides open to 200 px on hover, revealing text labels. Click any icon to switch sections. On mobile (narrow screen) the sidebar is hidden — use the in-app navigation instead.
 
-Nav items, top to bottom: **Inbox** (your rooms list), then a separator, followed by the settings sections: **AI Agent**, **Server**, **General**, **Docs**, **Platforms**, **Automation**, **Usage**, **Doctor**.
+Nav items, top to bottom: **Inbox** (your rooms list), then a separator, followed by the settings sections: **AI Agent**, **Server**, **General**, **Themes**, **Docs**, **Platforms**, **Automation**, **Usage**, **Doctor**.
 
 ### AI Agent
 
@@ -980,9 +980,18 @@ All figures are read-only and refresh whenever you reopen the tab or change the 
 
 ---
 
-## Theme
+## Themes
 
-Click the **sun/moon icon** in the sidebar footer to toggle between **light** and **dark** themes. Your preference is saved in the browser.
+Open **Settings > Themes** (left nav, below General) to choose the app's visual theme. Themes are arranged in two groups:
+
+- **Light** — Warm Paper (default), Hoth, Mood Indigo, Banana, Sweet Treat
+- **Dark** — Dark, Aubergine, Ochin, Haberdashery, Choco Mint, Nocturne
+
+Click a card to apply it immediately — a checkmark marks the active theme. Cards are keyboard-accessible. Your choice is saved in the browser.
+
+**Migration:** If you previously used the light setting, Warm Paper is applied automatically. The dark setting stays as Dark. With no prior setting, Stoa follows your device's system dark/light preference.
+
+On mobile, the status bar color updates to match the active theme.
 
 ---
 

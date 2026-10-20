@@ -14,6 +14,53 @@ Single-page application in `index.html` (~7000 lines).
 
 ---
 
+## Theming
+
+### How it works
+
+Themes are CSS token blocks defined in `public/css/base.css` under `[data-theme="<id>"]` selectors. The `data-theme` attribute is set on `<html>` by `setTheme()` in `public/js/core.js`.
+
+**Never use `.dark` class or hardcoded colors.** Every color must come from a CSS token (e.g., `var(--h-ink)`). New tokens must be defined in **all 11 themes** — missing a token in one theme causes invisible or broken UI in that theme.
+
+### Key files
+
+- `public/js/core.js` — `THEMES` array (source of truth for IDs), `DEFAULT_THEME = 'warm-paper'`, `resolveStoredTheme()`, `setTheme(id, { persist })`, `currentTheme()`
+- `public/js/settings/themes.js` — renders the Themes tab: preview cards, group labels, keyboard-accessible buttons, `sSyncThemeCards()`
+- `public/css/base.css` — `[data-theme="<id>"] { ... }` token blocks for each theme
+- `public/index.html` — inline boot script applies stored theme before first paint (anti-flash)
+
+### Theme list (as of v0.59)
+
+| ID | Label | Scheme |
+|----|-------|--------|
+| `warm-paper` | Warm Paper | light (default) |
+| `hoth` | Hoth | light |
+| `mood-indigo` | Mood Indigo | light |
+| `banana` | Banana | light |
+| `sweet-treat` | Sweet Treat | light |
+| `dark` | Dark | dark |
+| `aubergine` | Aubergine | dark |
+| `ochin` | Ochin | dark |
+| `haberdashery` | Haberdashery | dark |
+| `choco-mint` | Choco Mint | dark |
+| `nocturne` | Nocturne | dark |
+
+### Migration from old dark/light toggle
+
+`resolveStoredTheme()` in `core.js` handles the one-time migration:
+- `localStorage['stoa-theme'] === 'light'` → `warm-paper`
+- `localStorage['stoa-theme'] === 'dark'` → `dark` (unchanged)
+- no value → follows `prefers-color-scheme`
+
+### Adding a new theme
+
+1. Add `{ id, label, scheme }` entry to `THEMES` in `core.js`
+2. Add `[data-theme="<id>"] { ... }` block in `base.css` — define **every** token used by any other theme
+3. Run `.claude/tools/theme-contrast.js` to verify all color pairs pass contrast minimums
+4. Bump `CLIENT_VERSION` in `stoa.js`
+
+---
+
 ## State Management
 
 ### Global State

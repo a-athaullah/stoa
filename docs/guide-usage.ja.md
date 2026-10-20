@@ -878,7 +878,7 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 
 Stoa はアプリの最左端に**縦型サイドバーナビ**を配置しています。サイドバーはアイコンのみ（幅 44 px）で、ホバーすると 200 px に展開してテキストラベルが表示されます。任意のアイコンをクリックしてセクションを切り替えます。モバイル（狭い画面）ではサイドバーは非表示になります。
 
-ナビアイテム（上から下）：**Inbox**（ルーム一覧）、セパレーター、そして設定セクション：**AI Agent**、**Server**、**General**、**Docs**、**Platforms**、**Automation**、**Usage**、**Doctor**。
+ナビアイテム（上から下）：**Inbox**（ルーム一覧）、セパレーター、そして設定セクション：**AI Agent**、**Server**、**General**、**Themes**、**Docs**、**Platforms**、**Automation**、**Usage**、**Doctor**。
 
 ### AI Agent
 
@@ -978,7 +978,16 @@ Slack、WhatsApp、Emailの接続およびオートメーションルールを�
 
 ## テーマ
 
-サイドバーフッターの**太陽/月アイコン**をクリックして、**ライト**と**ダーク**テーマを切り替えます。設定はブラウザに保存されます。
+**Settings > Themes**（左ナビ、General の下）を開いてビジュアルテーマを選択します。テーマは2つのグループに分かれています：
+
+- **ライト** — Warm Paper（デフォルト）、Hoth、Mood Indigo、Banana、Sweet Treat
+- **ダーク** — Dark、Aubergine、Ochin、Haberdashery、Choco Mint、Nocturne
+
+カードをクリックすると即座に適用されます — チェックマークがアクティブなテーマを示します。カードはキーボードからも操作できます。選択はブラウザに保存されます。
+
+**移行：** 以前にライト設定を使用していた場合、Warm Paper が自動的に適用されます。ダーク設定は Dark のまま維持されます。保存された設定がない場合、Stoa はデバイスのシステムのダーク/ライト設定に従います。
+
+モバイルでは、ステータスバーの色がアクティブなテーマに合わせて更新されます。
 
 ---
 
