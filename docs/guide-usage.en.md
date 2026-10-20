@@ -328,7 +328,7 @@ Sub-agents always run on the **same machine** as their parent agent. The server 
 
 ### Interrupted Sub-Agents
 
-If a sub-agent run is cut short — because the agent restarted to pick up an update, the server restarted, or the agent's connection dropped — the parent agent is automatically woken with a message beginning **`[sub-agent INTERRUPTED]`**. This is distinct from `[sub-agent FAILED]` (logic failure): an interruption means the work was stopped externally, not that it produced wrong output.
+If a sub-agent run is cut short — because the agent restarted to pick up an update, the server restarted, or the agent's connection dropped — the parent agent is automatically woken with a message beginning **`[sub-agent TERPUTUS]`**. This is distinct from `[sub-agent GAGAL]` (logic failure): an interruption means the work was stopped externally, not that it produced wrong output.
 
 When woken after an interruption, the parent agent:
 1. Checks `git status` (or equivalent) for partial work left in the working tree.
