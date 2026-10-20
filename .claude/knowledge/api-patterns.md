@@ -12,6 +12,9 @@
 - `/api/client/file/:filename` - Client file download
 - Static assets (`/css`, `/js`, `/dist`, etc.)
 
+#### SPA Permalink Routes
+`/r/<roomId>` and `/r/<roomId>/t/<threadId>` serve `index.html` — the client router resolves the path. Pattern: `APP_ROUTE_RE = /^\/r\/\d{1,15}(?:\/t\/\d{1,15})?\/?$/` (strict digit-only IDs, nothing else under `/r/`). These routes also serve `index.html` when unauthenticated (login overlay appears, permalink URL preserved after sign-in).
+
 #### Protected Routes (require auth — previously public)
 - `/uploads/*` - Session cookie, agent header, or signed URL required
 - `/connector-media/*` - Session cookie, agent header, or signed URL required
@@ -161,7 +164,11 @@ POST   /api/rooms/:id/messages           → Create (body.thread_id for thread r
 GET    /api/rooms/:id/messages/:msgId    → Get one
 PATCH  /api/rooms/:id/messages/:msgId    → Update (edit)
 DELETE /api/rooms/:id/messages/:msgId    → Delete (root with replies → 409; ?cascade=1 → delete all)
+
+GET    /api/messages/:id                 → Look up a message by ID without knowing its room
 ```
+
+**`GET /api/messages/:id`** — used by the client permalink router to resolve a `?m=<id>` link. Returns the full message row including `room_archived_at` (from the joined `rooms` table). Returns `{ error: 'message not found' }` with status 404 (JSON, not empty body) when the message does not exist.
 
 **Pagination:**
 ```

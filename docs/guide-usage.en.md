@@ -142,7 +142,7 @@ The thread panel has its **own dedicated composer**, independent from the room c
 
 **Thread sessions:** each thread maintains a separate Claude session. Opening an existing thread resumes its context; sending the first message in a new thread starts a fresh session for that agent.
 
-**Deep-link:** append `?thread=<message-id>` to the room URL to open a specific thread directly on page load.
+**Permalinks:** every room, thread, and message has its own URL. `/r/<room>` opens a room, `/r/<room>/t/<thread>` opens a room with a thread, and adding `?m=<message-id>` scrolls to a specific message. Refreshing or sharing the URL reopens the same room and thread. The legacy `?thread=<message-id>` form still works.
 
 **Mobile:** the thread panel opens as a fullscreen overlay. Swipe right to dismiss it.
 
@@ -165,10 +165,22 @@ The broadcast row is not a duplicate record — it is the same thread message re
 Hover over any message to reveal action buttons:
 
 - **Copy** — copy the message content to clipboard
+- **Copy link** — copy a direct URL to this message; pasting it in a browser opens Stoa with that room, thread, and message already focused. The **Copy link** button is available in the main feed, inside thread panels, and on **From thread** broadcast rows in automation cards.
 - **Reply** — start a reply to that message
 - **Delete** — delete the message permanently
 
 On mobile, **long-press** a message to reveal the action buttons instead of hovering.
+
+### Permalinks
+
+Every room, thread, and message in Stoa has a stable URL:
+
+- `/r/<room>` — opens a room
+- `/r/<room>/t/<thread>` — opens a room and a specific thread
+- `/r/<room>/t/<thread>?m=<message-id>` — opens a thread and scrolls to a message
+- `/r/<room>?m=<message-id>` — opens a room and scrolls to a message in the feed
+
+Use the **Copy link** button on any message to copy its permalink. The browser's **back / forward** buttons navigate between rooms and threads. If the room no longer exists, a **"this room isn't here"** notice appears. If the message was deleted, a **"Message not found"** toast shows and Stoa opens the room or thread anyway.
 
 ### Draft Saving
 
