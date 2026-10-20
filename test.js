@@ -1828,6 +1828,46 @@ async function runAsyncUnitTests() {
     } finally { stoa.activeTriggers.clear(); stoa.__resetDeps(); }
   });
 
+  await uta('agent pending restart — a tool in flight stretches the stall window to RESTART_STALL_TOOL_MS (hard cap); text output ends it', async () => {
+    const stoa = require('./stoa.js');
+    const sent = [];
+    let restarts = 0, opts = null, finish = null;
+    const mockSession = {
+      _systemPromptHash: null, _harness: 'claude', flags: [], env: { STOA_ROOM_ID: '99', STOA_THREAD_ID: '' }, resumeId: null,
+      on: () => {}, removeListener: () => {}, shutdown: () => {}, cancelTask: () => false,
+      send: (o) => { opts = o; return new Promise(r => { finish = r; }); },
+    };
+    stoa.__setDeps({ send: (m) => sent.push(m), getSession: () => mockSession, doRestart: () => { restarts++; } });
+    const T = stoa.RESTART_STALL_MS, TOOL = 30 * 60e3;
+    let run = null;
+    try {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      run = stoa.processTrigger({ room_id: 99, message_id: 'tif-1', prompt: 'run the test suite', workdir: require('os').tmpdir() });
+      for (let i = 0; i < 100 && !opts; i++) await new Promise(r => setTimeout(r, 10));
+      assert.ok(opts, 'session.send reached');
+      const entry = stoa.activeTriggers.get('tif-1');
+      await stoa.handleAgentMessage({ type: 'restart' });
+      opts.onTool({ name: 'Bash', input: { command: 'node .claude/tools/run-tests.js' } });
+      assert.strictEqual(entry.toolInFlight, true);
+      const base = Date.now();
+      assert.strictEqual(stoa.forceRestartIfStalled(base + T + 60e3), false, 'a silent tool past 3 min is not a stall');
+      assert.strictEqual(restarts, 0);
+      assert.strictEqual(stoa.forceRestartIfStalled(base + TOOL + 1e3), true, 'hard cap: forced once the tool window is exceeded');
+      assert.strictEqual(restarts, 1);
+      opts.onToken('suite passed');
+      assert.strictEqual(entry.toolInFlight, false, 'text output means every tool result is in');
+      assert.strictEqual(stoa.forceRestartIfStalled(entry.lastActivity + T + 1e3), true, 'no tool in flight → the 3-min rule applies again');
+      assert.strictEqual(restarts, 2);
+    } finally {
+      finish?.({ content: 'suite passed', sessionId: null });
+      await run?.catch(() => {});
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      stoa.__resetDeps();
+    }
+  });
+
   await uta('agent update check — writes only files matching the manifest hash, restarts only when something was written', async () => {
     const stoa = require('./stoa.js');
     const fsM = require('fs'), osM = require('os'), pathM = require('path'), cryptoM = require('crypto');

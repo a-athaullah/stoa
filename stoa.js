@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.389";
+var CLIENT_VERSION = "0.4.390";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -394,7 +394,10 @@ function preConnectUpdate(opts = {}, capMs = PRE_CONNECT_UPDATE_MS) {
 // outdated agent, so a trigger that hangs holds the old version forever (newfin: 10 days).
 // Progress = entry.lastActivity (tokens, state, tools, status, retries). Measured from when
 // the restart was armed at the earliest, so a long-silent trigger still gets the full window.
+// A tool call (test suite, build) is silent until it returns, so while one is in flight the
+// window stretches to RESTART_STALL_TOOL_MS — a hard cap, the newfin hang stays bounded.
 var RESTART_STALL_MS = 3 * 60e3;
+var RESTART_STALL_TOOL_MS = 30 * 60e3;
 var pendingRestartSince = 0;
 function armPendingRestart(reason) {
   if (pendingRestart) return;
@@ -405,8 +408,12 @@ function armPendingRestart(reason) {
 function forceRestartIfStalled(now) {
   if (!pendingRestart) return false;
   let lastProgress = pendingRestartSince;
-  for (const entry of activeTriggers.values()) lastProgress = Math.max(lastProgress, entry.lastActivity || entry.startedAt || 0);
-  if (now - lastProgress < RESTART_STALL_MS) return false;
+  let toolInFlight = false;
+  for (const entry of activeTriggers.values()) {
+    lastProgress = Math.max(lastProgress, entry.lastActivity || entry.startedAt || 0);
+    if (entry.toolInFlight) toolInFlight = true;
+  }
+  if (now - lastProgress < (toolInFlight ? RESTART_STALL_TOOL_MS : RESTART_STALL_MS)) return false;
   console.warn(`[stoa:update] no trigger progress for ${Math.round((now - lastProgress) / 1e3)}s \u2014 forcing restart (${activeTriggers.size} active, ${triggerQueue.length} queued)`);
   sendThenRestart({ type: "restart_status", state: "restarting", reason: "update_stalled", active: activeTriggers.size, queued: triggerQueue.length });
   return true;
@@ -1649,6 +1656,7 @@ ${allNotes}`;
       taskId: message_id,
       onToken: (token) => {
         updateActivity();
+        entry.toolInFlight = false;
         fullContent += token;
         send({ type: "agent_token", room_id, message_id, token });
         if (_toolStatusTimer) _stopToolTimer2();
@@ -1658,8 +1666,11 @@ ${allNotes}`;
         send({ type: "agent_state", room_id, message_id, state });
         if (_toolStatusTimer) _stopToolTimer2();
       },
+      // The session layer surfaces tool_use but not tool_result, so a tool counts as in
+      // flight until the model streams text again (it only does once every result is in).
       onTool: (tool) => {
         updateActivity();
+        entry.toolInFlight = true;
         send({ type: "agent_tool", room_id, message_id, tool });
         _startToolStatus2(_toolVerb_for2(tool.name, tool.input));
       }
@@ -2465,4 +2476,4 @@ function __resetDeps() {
   pendingRestart = false;
   pendingRestartSince = 0;
 }
-module.exports = { handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, __setDeps, __resetDeps, extractAndUploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES };
+module.exports = { handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, RESTART_STALL_TOOL_MS, forceRestartIfStalled, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, __setDeps, __resetDeps, extractAndUploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES };
