@@ -258,6 +258,11 @@ ALTER TABLE rooms ADD COLUMN foo TEXT DEFAULT NULL;
 - Must be zero data loss
 - Must be idempotent (safe to re-run)
 
+### Runner (`lib/migrations.js`, called from server.js at boot)
+- Boot order: `db/schema.sqlite.sql` (whole-file `db.exec`, non-fatal) → `migrations` table → legacy seeds (`LEGACY_MIGRATIONS`) → pending files in name order, each in one transaction, recorded only on success.
+- **Baseline vs migrations:** a fresh DB already has the columns/indexes that older migrations add, so they fail with `duplicate column name` / `index ... already exists`. On exactly those two errors the runner re-runs the file statement by statement (`splitSqlStatements`, trigger/quote/comment aware), skips only the `ALTER TABLE ... ADD` / `CREATE INDEX` whose object exists, runs everything else (backfills, other indexes, table rebuilds) and records the file (`[migration] applied: X (already present, skipped: ...)`). Any other error — including `table ... already exists` — rolls the whole file back and it is retried next boot.
+- **schema.sqlite.sql must load whole on an empty DB.** `db.exec` stops at the first failing statement and everything after it is silently missing (since #136 an index on `messages.sub_agent_id` / `parent_message_id`, columns that only migrations add, cut off `auth_users`, `auth_sessions`, `usage_log`, …). Never put an index in the baseline that references a column the baseline table does not define; leave it to its migration. Test: `[Migration Runner]` in test.js builds a fresh DB from the schema and runs the runner twice.
+
 ---
 
 ## Indexes
@@ -271,11 +276,12 @@ CREATE INDEX idx_messages_room_root ON messages(room_id, id) WHERE thread_id IS 
 CREATE INDEX idx_messages_reply_to ON messages(reply_to);
 CREATE INDEX idx_room_participants_room_id ON room_participants(room_id);
 CREATE INDEX idx_room_participants_actor_id ON room_participants(actor_id);
+CREATE INDEX idx_room_participants_workdir_id ON room_participants(workdir_id);
 CREATE UNIQUE INDEX idx_ai_sessions_main_unique ON ai_sessions(participant_id, thread_id) WHERE sub_agent_id IS NULL;
 CREATE UNIQUE INDEX idx_ai_sessions_sub_unique ON ai_sessions(participant_id, sub_agent_id, thread_id) WHERE sub_agent_id IS NOT NULL;
 CREATE INDEX idx_ai_sessions_thread ON ai_sessions(thread_id);
-CREATE INDEX idx_messages_room_thread_state ON messages(room_id, thread_id, state) WHERE sub_agent_id IS NOT NULL;
-CREATE INDEX idx_messages_room_parent ON messages(room_id, created_at) WHERE parent_message_id IS NOT NULL;
+CREATE INDEX idx_messages_room_thread_state ON messages(room_id, thread_id, state) WHERE sub_agent_id IS NOT NULL;  -- migration 20260915 only (not in baseline)
+CREATE INDEX idx_messages_room_parent ON messages(room_id, created_at) WHERE parent_message_id IS NOT NULL;  -- migration 20260915 only (not in baseline)
 CREATE INDEX idx_messages_participant_room ON messages(participant_id, room_id, id);
 CREATE INDEX idx_pending_writes_room_status ON memory_pending_writes(room_id, status);
 ```
