@@ -516,7 +516,29 @@ function runUnitTests() {
   });
 
   // ── Search query builder — lib/search-query.js
-  const { buildFtsQueries, parseSearchTerms, MAX_TERMS } = require('./lib/search-query');
+  const { buildFtsQueries, parseSearchTerms, focusSnippet, fuseRrf, MAX_TERMS } = require('./lib/search-query');
+  ut('focusSnippet — a late first <mark> is pulled to the front at a word boundary', () => {
+    const lead = 'Kalimat pembuka yang panjang sekali dan tidak ada hubungannya dengan kata yang dicari oleh pengguna, ';
+    const out = focusSnippet(`…${lead}lalu <mark>search</mark> tadi.`);
+    assert.ok(out.startsWith('…'), out);
+    assert.ok(out.indexOf('<mark>') <= 51, `mark at ${out.indexOf('<mark>')}: ${out}`);
+    assert.ok(out.endsWith('lalu <mark>search</mark> tadi.'));
+    assert.ok(/^…\S/.test(out) && lead.includes(out.slice(1, out.indexOf(' lalu'))), 'cut lands on a word start');
+  });
+  ut('focusSnippet — early mark, no mark, non-string are returned unchanged', () => {
+    assert.strictEqual(focusSnippet('a <mark>b</mark> c'), 'a <mark>b</mark> c');
+    const plain = 'x'.repeat(300);
+    assert.strictEqual(focusSnippet(plain), plain);
+    assert.strictEqual(focusSnippet(null), null);
+  });
+  ut('fuseRrf — ids in both lists outrank single-list ids; keyword order breaks ties', () => {
+    const f = fuseRrf([10, 20, 30], [30, 40]);
+    assert.deepStrictEqual(f.map(x => x.id), [30, 10, 20, 40], '20 and 40 tie at rank 2 → keyword first');
+    assert.deepStrictEqual(f[0], { id: 30, keyword: true, semantic: true });
+    assert.deepStrictEqual(f.find(x => x.id === 40), { id: 40, keyword: false, semantic: true });
+    assert.deepStrictEqual(fuseRrf([1, 2], []).map(x => x.id), [1, 2]);
+    assert.deepStrictEqual(fuseRrf([], [5, 6]).map(x => x.id), [5, 6]);
+  });
   ut('buildFtsQueries — every term is quoted; operators/columns become plain words', () => {
     const f = buildFtsQueries('tidak ada-apa');
     assert.strictEqual(f.and, '"tidak"* AND "ada apa"*');
@@ -9506,6 +9528,18 @@ async function run() {
     const root = (await sQ(`${sTag}root`)).find(m => m.id === sIds.root);
     assert.strictEqual(root.thread_root_id, null);
     assert.strictEqual(root.thread_root_preview, null);
+  });
+
+  await test('Search — long message: the snippet starts near the match, not at the first sentence', async () => {
+    if (!sAgentA) { console.log('    (skipped)'); return; }
+    // One long sentence: FTS5 then centres the fragment on the hit, leaving ~20 words before it.
+    const words = Array.from({ length: 200 }, (_, i) => `kata${i}`);
+    words.splice(100, 0, `${sTag}longhit`);
+    const id = await sPost(sAgentA, sRoomA, words.join(' '));
+    const hit = (await sQ(`${sTag}longhit`)).find(m => m.id === id);
+    assert.ok(hit, 'long message found');
+    const at = hit.snippet.indexOf('<mark>');
+    assert.ok(at >= 0 && at <= 51, `first <mark> must be within the first ~50 chars, got ${at}: ${hit.snippet}`);
   });
 
   await test('Search — room_id filter, invalid room_id → 400, bad limit → default', async () => {

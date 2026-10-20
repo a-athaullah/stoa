@@ -214,7 +214,7 @@ function cleanErrorText(raw) {
 }
 
 const { createThreadBroadcast } = require('./lib/thread-broadcast');
-const { buildFtsQueries } = require('./lib/search-query');
+const { buildFtsQueries, focusSnippet } = require('./lib/search-query');
 const { setBroadcastReason, getThreadRootPreview, maybeBroadcastError } = createThreadBroadcast({
   db, broadcastToRoom: (...a) => broadcast(...a), enrichFn: enrichAutomation
 });
@@ -356,7 +356,10 @@ function keywordSearch(q, { roomId = null, actorId = null, limit, defaultLimit =
   const run = match => stmt.all(match, ...filters, lim);
   let rows = run(fts.and);
   if (!rows.length && fts.or) rows = run(fts.or);
-  for (const r of rows) r.match = 'keyword';
+  for (const r of rows) {
+    r.match = 'keyword';
+    if (mark) r.snippet = focusSnippet(r.snippet);
+  }
   return rows;
 }
 
