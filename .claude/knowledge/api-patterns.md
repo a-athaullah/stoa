@@ -180,13 +180,13 @@ Returns messages **older than** `messageId`, newest first. Default scope returns
 ### Search Routes
 
 ```
-GET /api/search?q=<query>&room_id=<id>&match=keyword|semantic|both&limit=<n>
+GET /api/search?q=<query>&room_id=<id>&mode=keyword|hybrid&limit=<n>
 ```
 
 - `q` (required): search query string; sanitized by `lib/search-query.js` before passing to FTS5
 - `room_id` (optional): scope to one room; omit to search all accessible rooms
-- `match` (optional, default `keyword`): `keyword` = FTS5 only, `semantic` = embeddings only, `both` = hybrid RRF fusion
-- `limit` (optional, default 20, max 100)
+- `mode` (optional, default `hybrid`): `keyword` = FTS5 only, `hybrid` = FTS5 + embeddings fused with RRF; falls back to keyword automatically while the model is not ready. Any other value → 400. (`match` is a per-row response field, not a query param.)
+- `limit` (optional, default 30, max 100)
 
 **Response:** JSON array (backward-compatible), each item:
 ```json
@@ -209,7 +209,7 @@ Response header `X-Stoa-Search-Semantic: 1` when semantic results are included.
 GET /api/search/status
 ```
 
-Returns backfill progress: `{ total, indexed, pct, model, state: 'idle'|'running'|'failed' }`. Human session only — agents do not need backfill status.
+Returns `{ state: 'off'|'loading'|'ready'|'failed', model, dim, indexed, error }` (`error` is null unless `failed`). Human session only — agents do not need backfill status.
 
 ### Thread Routes
 ```
