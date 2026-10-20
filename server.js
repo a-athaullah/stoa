@@ -3864,7 +3864,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/actors') {
     const rows = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, system_prompt, default_model, created_at FROM actors ORDER BY id').all();
     const result = rows.map(r => {
-      const out = { ...r, online: agentClients.has(r.id), client_version: agentVersions.get(r.id) || null, harnesses_available: agentHarnesses.get(r.id) || [], harness_status: agentHarnessStatus.get(r.id) || [] };
+      const out = { ...r, online: agentClients.has(r.id), client_version: agentVersions.get(r.id) || null, harnesses_available: agentHarnesses.get(r.id) || [], harness_status: agentHarnessStatus.get(r.id) || [], supervisor: agentSupervisors.get(r.id) ?? null, restart_state: agentRestarts.get(r.id)?.state ?? null };
       if (r.type === 'ai') {
         const h = r.adapter || 'claude';
         out.harness_default_model = getHarnessDefaultModel(r.id, h);
@@ -4678,6 +4678,27 @@ Write-Host "Logs   : pm2 logs $AgentName"
     return json(res, { ok: true });
   }
 
+  // POST /api/actors/:id/restart — restart the agent process once it is idle, so running sessions
+  // are rebuilt on an updated harness CLI (they resume; ai_sessions untouched). Session only.
+  if (req.method === 'POST' && url.pathname.match(/^\/api\/actors\/\d+\/restart$/)) {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    const actorId = parseInt(url.pathname.split('/')[3]);
+    const actor = db.prepare('SELECT id FROM actors WHERE id=? AND type=?').get(actorId, 'ai');
+    if (!actor) return json(res, { error: 'agent not found' }, 404);
+    const agentWs = agentClients.get(actorId);
+    if (!agentWs) return json(res, { error: 'agent_offline', message: 'agent is offline' }, 409);
+    if (agentSupervisors.get(actorId) !== 'pm2') {
+      return json(res, { error: 'not_supervised', message: 'agent is not running under PM2 — it would exit and not come back. Restart it manually.' }, 409);
+    }
+    const existing = agentRestarts.get(actorId);
+    if (existing) return json(res, { ok: true, state: existing.state });
+    agentRestarts.set(actorId, { state: 'requested', boot_id: agentBootIds.get(actorId) ?? null, requested_at: Date.now() });
+    agentWs.send(JSON.stringify({ type: 'restart', reason: 'manual' }));
+    setAgentRestartState(actorId, 'requested');
+    console.log(`[agent] Actor #${actorId} restart requested from UI`);
+    return json(res, { ok: true, state: 'requested' });
+  }
+
   // POST /api/actors/:id/harnesses/check — ask agent to re-detect harnesses
   if (req.method === 'POST' && url.pathname.match(/^\/api\/actors\/\d+\/harnesses\/check$/)) {
     if (!requireAuth(req, res, url)) return;
@@ -5458,6 +5479,20 @@ const agentVersions = new Map();  // actor_id → client_version string
 const agentHarnesses = new Map(); // actor_id → string[] (available harnesses)
 const agentHarnessStatus = new Map(); // actor_id → [{ id, installed, logged_in, version, models }]
 const pendingHarnessChecks = new Map(); // request_id → { resolve, timer, actorId }
+const agentSupervisors = new Map(); // actor_id → 'pm2' | null (who restarts the agent after process.exit)
+const agentBootIds = new Map();     // actor_id → per-process id, tells a real restart from a reconnect
+// actor_id → { state: 'requested'|'pending'|'restarting', boot_id, requested_at }. Survives the
+// disconnect on purpose: it is resolved when the agent reconnects with a different boot_id.
+const agentRestarts = new Map();
+const AGENT_RESTART_STATES = new Set(['pending', 'restarting']);
+const BOOT_ID_RE = /^[a-f0-9]{8,64}$/;
+
+function setAgentRestartState(actorId, state, extra = {}) {
+  const entry = agentRestarts.get(actorId);
+  if (state === 'done') agentRestarts.delete(actorId);
+  else if (entry) entry.state = state;
+  broadcastGlobal({ type: 'agent_restart_status', actor_id: actorId, state, ...extra });
+}
 const agentClaudeCandidates = new Map(); // actor_id → { cli_version, candidates: string[] } (scanned from the agent's claude binary)
 
 function validateClaudeCandidates(list, cliVersion) {
@@ -5838,6 +5873,11 @@ wss.on('connection', (ws, req) => {
       }
       if (msg.client_version) agentVersions.set(agentActorId, msg.client_version);
       if (Array.isArray(msg.harnesses_available)) agentHarnesses.set(agentActorId, msg.harnesses_available);
+      agentSupervisors.set(agentActorId, msg.supervisor === 'pm2' ? 'pm2' : null);
+      const bootId = typeof msg.boot_id === 'string' && BOOT_ID_RE.test(msg.boot_id) ? msg.boot_id : null;
+      agentBootIds.set(agentActorId, bootId);
+      const restart = agentRestarts.get(agentActorId);
+      if (restart && (!bootId || bootId !== restart.boot_id)) setAgentRestartState(agentActorId, 'done');
       console.log(`[agent] Actor #${agentActorId} connected (v${msg.client_version || '?'})`);
       if (EXPECTED_CLIENT_VERSION && msg.client_version && msg.client_version.localeCompare(EXPECTED_CLIENT_VERSION, undefined, { numeric: true }) < 0) {
         console.log(`[agent] Actor #${agentActorId} outdated (v${msg.client_version} < v${EXPECTED_CLIENT_VERSION}), sending force_update`);
@@ -5846,7 +5886,7 @@ wss.on('connection', (ws, req) => {
       ws.send(JSON.stringify({ type: 'agent_ready' }));
       ws.send(JSON.stringify({ type: 'set_config', max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1, session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5, auto_compact_threshold_kb: parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB) || 300 }));
       const connectedActor = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, created_at FROM actors WHERE id=?').get(agentActorId);
-      if (connectedActor) broadcastGlobal({ type: 'actor_status', actor: { ...connectedActor, online: true, client_version: msg.client_version || null } });
+      if (connectedActor) broadcastGlobal({ type: 'actor_status', actor: { ...connectedActor, online: true, client_version: msg.client_version || null, supervisor: agentSupervisors.get(agentActorId), restart_state: agentRestarts.get(agentActorId)?.state ?? null } });
       // R23: push all room settings so agent is always in sync regardless of connect order.
       const agentRooms = db.prepare("SELECT DISTINCT room_id FROM room_participants WHERE actor_id=?").all(agentActorId).map(r => r.room_id);
       for (const rid of agentRooms) {
@@ -5871,6 +5911,12 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ type: 'claude_md_import', workdir: wd.path }));
       }
       if (unmigratedWds.length) console.log(`[claude_md] requested import for ${unmigratedWds.length} workdir(s) of Actor #${agentActorId}`);
+    }
+
+    // ── Agent acks a manual restart request (only meaningful while one is outstanding)
+    if (msg.type === 'restart_status' && agentActorId && agentRestarts.has(agentActorId) && AGENT_RESTART_STATES.has(msg.state)) {
+      const count = (v) => Number.isInteger(v) && v >= 0 && v < 1e6 ? v : 0;
+      setAgentRestartState(agentActorId, msg.state, { active: count(msg.active), queued: count(msg.queued) });
     }
 
     // ── Agent reports harness availability
@@ -6974,6 +7020,8 @@ wss.on('connection', (ws, req) => {
       agentHarnesses.delete(agentActorId);
       agentHarnessStatus.delete(agentActorId);
       agentClaudeCandidates.delete(agentActorId);
+      agentSupervisors.delete(agentActorId);
+      agentBootIds.delete(agentActorId);
       for (const [rid, pending] of pendingHarnessChecks) {
         if (pending.actorId === agentActorId) {
           clearTimeout(pending.timer);
