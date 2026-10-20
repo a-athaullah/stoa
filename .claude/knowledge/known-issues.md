@@ -397,6 +397,20 @@ These are the pre-existing colors; they were not degraded by the themes feature.
 
 ---
 
+### 7. Hybrid Search — Local Embeddings, Best Effort
+**Decision:** Semantic search uses a local ONNX model (`Xenova/multilingual-e5-small` q8 via optional dependency `@huggingface/transformers`), never a paid API. Brute-force cosine over an in-memory index in a worker thread (`lib/semantic-worker.js`); no vector extension. GET /api/search `mode=hybrid` (default) fuses FTS + vector ranks with RRF; `match` = keyword|semantic|both; header `X-Stoa-Search-Semantic: 1|0`.
+
+**Why:** Owner rejects pay-as-you-go APIs. 25k messages × 384 floats ≈ 40 MB, query 5–120 ms on M4.
+
+**Implications / gotchas:**
+- Semantic is best effort: model loading/failed/missing dependency/`STOA_SEMANTIC_SEARCH=off`/4 s timeout → keyword result, still 200. Status: GET /api/search/status.
+- First start downloads ~130 MB into `models/` (`STOA_MODEL_DIR`, gitignored); full backfill of ~26k messages ≈ 25 min at ~1 core (sleeps as long as each batch took). Server+worker RSS ≈ 600 MB while backfilling.
+- Never `worker.terminate()` the embedding worker while it is inferring: onnxruntime-node aborts the whole process (`libc++abi: Napi::Error`). It is only terminated after it reports `fatal` (idle). Plain process exit is fine.
+- e5 cosine scores are tightly packed (relevant ≈ 0.86, unrelated ≈ 0.80): no absolute threshold; semantic hits below best − 0.05 are dropped, max 20.
+- Tests run with `STOA_SEMANTIC_BACKEND=hash` (set by run-tests.js): deterministic trigram hashing, no model. Keyword tests pin `mode=keyword`, because backfill timing would flip `match` between keyword and both. Real-model quality is not covered by automated tests (needs the 130 MB download) — measured manually, see ~/project/stoa-feature/search-hybrid.md.
+
+---
+
 ## Future Improvements (Not Implemented)
 
 ### Virtual Scrolling
