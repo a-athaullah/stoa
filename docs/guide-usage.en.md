@@ -326,6 +326,23 @@ Sub-agents always run on the **same machine** as their parent agent. The server 
 - **Offline detection** — if the parent agent's machine is disconnected when a sub-agent trigger arrives, the server returns a `503 parent_offline` error immediately (instead of silently accepting). The chat also shows a highlighted error event so the user knows the agent is unreachable.
 - **Working directory validation** — the agent validates that the configured working directory exists on the local filesystem before spawning the sub-agent process. If the path is missing (stale config, wrong machine, deleted folder), it reports an error result back to the room instead of crashing.
 
+### Interrupted Sub-Agents
+
+If a sub-agent run is cut short — because the agent restarted to pick up an update, the server restarted, or the agent's connection dropped — the parent agent is automatically woken with a message beginning **`[sub-agent INTERRUPTED]`**. This is distinct from `[sub-agent FAILED]` (logic failure): an interruption means the work was stopped externally, not that it produced wrong output.
+
+When woken after an interruption, the parent agent:
+1. Checks `git status` (or equivalent) for partial work left in the working tree.
+2. Decides whether to re-trigger the sub-agent, continue from partial results, or surface the issue to the human.
+
+The server never re-triggers a sub-agent automatically after an interruption — the parent always decides.
+
+**Safeguards:**
+- The wake is stored durably. If the parent agent is offline, the wake is delivered as soon as it reconnects on the latest version.
+- If the connection only flickered and the sub-agent run survived, the parent is woken once via the normal completion path — not a false interruption.
+- At most **3 interruption wakes per sub-agent per hour**. After that, a system event appears in the thread — `<label> interrupted repeatedly — human needed` — and no further wakes fire until the hour resets.
+
+To disable this behavior, set `STOA_ORPHAN_WAKE=off` in your server `.env`.
+
 ### Scheduled Sub-Agents (Proactive Triggers)
 
 A persistent sub-agent linked to a room can run automatically on a schedule — no @mention and no orchestrator needed. This is useful for recurring checks (for example, a `probe` that inspects disk usage every 30 minutes) or a fixed-time daily report.
@@ -519,7 +536,7 @@ Green dots next to agent names in the sidebar and room header indicate online st
 Agents automatically:
 - **Reconnect** if the WebSocket connection drops (exponential backoff)
 - **Recover** from Claude CLI crashes
-- **Auto-update** when server-side client files change (checks every 2 minutes and once on startup before going online, restarts via PM2). A running task delays the restart until it finishes; if it stops making progress for 3 minutes, the agent restarts anyway so it cannot stay stuck on an old version
+- **Auto-update** when server-side client files change (checks every 2 minutes and once on startup before going online, restarts via PM2). If a tool call is actively running, the restart waits up to 30 minutes (hard cap) for it to finish; without an active tool call, the 3-minute idle cap applies. This prevents a restart from cutting a long-running tool mid-execution.
 
 ### Agent Re-authentication
 

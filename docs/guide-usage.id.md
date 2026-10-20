@@ -327,6 +327,23 @@ Sub-agent selalu berjalan di **mesin yang sama** dengan agent induknya. Server m
 - **Deteksi offline** — jika mesin agent induk terputus saat trigger sub-agent tiba, server langsung mengembalikan error `503 parent_offline` (bukan diam-diam menerima). Chat juga menampilkan event error yang disorot sehingga pengguna tahu agent tidak bisa dijangkau.
 - **Validasi working directory** — agent memvalidasi bahwa working directory yang dikonfigurasi ada di filesystem lokal sebelum menjalankan proses sub-agent. Jika path tidak ada (konfigurasi basi, mesin salah, folder terhapus), agent melaporkan error result kembali ke room alih-alih crash.
 
+### Sub-Agent Terputus
+
+Jika sebuah run sub-agent terpotong di tengah jalan — karena agent restart untuk mengambil update, server restart, atau koneksi agent terputus — agent induk otomatis dibangunkan dengan pesan berawalan **`[sub-agent TERPUTUS]`**. Ini berbeda dari `[sub-agent GAGAL]` (kegagalan logika): interupsi artinya pekerjaan dihentikan dari luar, bukan menghasilkan output yang salah.
+
+Saat dibangunkan setelah interupsi, agent induk:
+1. Memeriksa `git status` (atau setaranya) untuk pekerjaan parsial yang tersisa di working tree.
+2. Memutuskan apakah men-trigger ulang sub-agent, melanjutkan dari hasil parsial, atau melaporkan ke manusia.
+
+Server tidak pernah men-trigger ulang sub-agent secara otomatis setelah interupsi — agent induk selalu yang memutuskan.
+
+**Pengaman:**
+- Wake disimpan secara permanen. Jika agent induk sedang offline, wake dikirimkan segera setelah reconnect dengan versi terbaru.
+- Jika koneksi hanya berkedip dan run sub-agent masih hidup, agent induk dibangunkan sekali lewat jalur penyelesaian normal — bukan interupsi palsu.
+- Maksimal **3 wake interupsi per sub-agent per jam**. Setelah itu, muncul system event di thread — `<label> terputus berulang, butuh manusia` — dan tidak ada wake lebih lanjut sampai jam berikutnya.
+
+Untuk menonaktifkan perilaku ini, set `STOA_ORPHAN_WAKE=off` di `.env` server.
+
 ### Sub-Agent Terjadwal (Proactive Trigger)
 
 Sub-agent persisten yang sudah di-link ke room bisa berjalan otomatis sesuai jadwal — tanpa @mention dan tanpa orchestrator. Ini berguna untuk pengecekan berkala (misalnya `probe` yang memeriksa penggunaan disk setiap 30 menit) atau laporan harian pada jam tetap.
@@ -520,7 +537,7 @@ Titik hijau di samping nama agent di sidebar dan header room menunjukkan status 
 Agent secara otomatis:
 - **Reconnect** jika koneksi WebSocket terputus (exponential backoff)
 - **Recovery** dari crash Claude CLI
-- **Auto-update** saat file klien di server berubah (cek tiap 2 menit dan sekali saat startup sebelum online, restart via PM2). Task yang sedang jalan menunda restart sampai selesai; kalau task itu tidak ada progres selama 3 menit, agent tetap restart supaya tidak tertahan di versi lama
+- **Auto-update** saat file klien di server berubah (cek tiap 2 menit dan sekali saat startup sebelum online, restart via PM2). Jika tool call sedang aktif berjalan, restart menunggu sampai 30 menit (batas keras) hingga selesai; tanpa tool call aktif, batas idle 3 menit tetap berlaku. Ini mencegah restart memotong tool yang sedang berjalan lama di tengah eksekusi.
 
 ### Re-autentikasi Agent
 
