@@ -858,7 +858,9 @@ function connect() {
   ws.on("open", () => {
     if (ACTOR_TYPE === "ai") {
       getSession(process.env.STOA_WORK_DIR || os.homedir(), "default");
-      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, harnesses_available: [], supervisor: SUPERVISOR, boot_id: BOOT_ID }));
+      // active_message_ids: runs survive a reconnect, so the server must not orphan them.
+      const active_message_ids = [...activeTriggers.keys(), ...triggerQueue.map((t) => t.message_id)];
+      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, harnesses_available: [], supervisor: SUPERVISOR, boot_id: BOOT_ID, active_message_ids }));
       console.log(`[stoa] Agent #${ACTOR_ID} v${CLIENT_VERSION} connected to ${STOA_URL} (max_concurrent=${MAX_CONCURRENT})`);
       detectHarnessesAsync().then((result) => {
         send({ type: "harnesses_update", ...result });
