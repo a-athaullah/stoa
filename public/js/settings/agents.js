@@ -101,9 +101,9 @@ function _makeCheckHarnessBtn(actor, sel, hintEl) {
   return btn;
 }
 
-// actorId -> { state: 'requested'|'pending'|'restarting', active?, queued? } — fed by agent_restart_status
+// actorId -> { state: 'requested'|'restarting' } — fed by agent_restart_status
 const sRestartState = new Map();
-const S_RESTART_ACTIVE = new Set(['requested', 'pending', 'restarting']);
+const S_RESTART_ACTIVE = new Set(['requested', 'restarting']);
 
 function _restartBlockReason(actor) {
   if (!actor.online) return 'Offline';
@@ -111,29 +111,19 @@ function _restartBlockReason(actor) {
   return null;
 }
 
-function _restartStatusText(entry, actor) {
-  if (!entry) return '';
-  if (!actor.online || entry.state === 'restarting') return 'restarting…';
-  const busy = [];
-  if (entry.active > 0) busy.push(`${entry.active} running`);
-  if (entry.queued > 0) busy.push(`${entry.queued} queued`);
-  return busy.length ? `waiting for idle · ${busy.join(', ')}` : 'waiting for idle…';
-}
-
 function _syncRestartBtn(btn, actor) {
   const entry = sRestartState.get(actor.id);
   const reason = _restartBlockReason(actor);
-  const status = _restartStatusText(entry, actor);
   btn.disabled = !!entry || !!reason;
   btn.classList.toggle('is-active', !!entry);
-  btn.title = entry ? `Restart requested · ${status}` : (reason || 'Restart when idle — restarts this agent once it is idle so sessions pick up the updated CLI');
-  btn.setAttribute('aria-label', entry ? `Restart when idle: ${status}` : 'Restart when idle');
+  btn.title = entry ? 'Restarting…' : (reason || 'Restart agent');
+  btn.setAttribute('aria-label', entry ? 'Restart agent: restarting…' : 'Restart agent');
 }
 
-function _setRestartEntry(actorId, state, extra = {}) {
+function _setRestartEntry(actorId, state) {
   const a = allActors.find(x => x.id === actorId);
   if (S_RESTART_ACTIVE.has(state)) {
-    sRestartState.set(actorId, { state, active: Number(extra.active) || 0, queued: Number(extra.queued) || 0 });
+    sRestartState.set(actorId, { state });
     if (a) a.restart_state = state;
   } else {
     sRestartState.delete(actorId);
@@ -141,7 +131,7 @@ function _setRestartEntry(actorId, state, extra = {}) {
   }
 }
 
-function _makeRestartIdleBtn(actor, sz) {
+function _makeRestartBtn(actor, sz) {
   if (!sRestartState.has(actor.id) && S_RESTART_ACTIVE.has(actor.restart_state)) _setRestartEntry(actor.id, actor.restart_state);
   const btn = document.createElement('button');
   btn.type = 'button';
@@ -152,26 +142,27 @@ function _makeRestartIdleBtn(actor, sz) {
 
   btn.addEventListener('click', e => {
     e.stopPropagation();
-    _showRestartIdleConfirm(actor);
+    _showRestartConfirm(actor);
   });
   return btn;
 }
 
-function _showRestartIdleConfirm(actor) {
+function _showRestartConfirm(actor) {
   const el = document.getElementById('app-top-notice');
   if (!el) return;
-  el.className = 'notice-confirm';
+  const name = actor.name || 'this agent';
+  el.className = 'notice-confirm-delete';
   el.style.display = 'flex';
   el.innerHTML = '';
   const msg = document.createElement('span');
   msg.style.flex = '1';
-  msg.textContent = `Restart ${actor.name || 'this agent'} when idle? Running sessions are rebuilt once the agent is idle; conversations resume where they left off.`;
+  msg.textContent = `Restart ${name} now? All of ${name}'s running processes will stop immediately.`;
   const btns = document.createElement('div');
   btns.style.cssText = 'display:flex;gap:8px';
   const ok = document.createElement('button');
-  ok.className = 'app-notice-btn-confirm';
+  ok.className = 'app-notice-btn-danger';
   ok.textContent = 'restart';
-  ok.onclick = () => { hideAppNotice(); _requestRestartIdle(actor.id); };
+  ok.onclick = () => { hideAppNotice(); _requestRestart(actor.id); };
   const cancel = document.createElement('button');
   cancel.className = 'app-notice-btn-cancel';
   cancel.textContent = 'cancel';
@@ -181,7 +172,7 @@ function _showRestartIdleConfirm(actor) {
   ok.focus();
 }
 
-async function _requestRestartIdle(actorId) {
+async function _requestRestart(actorId) {
   const actor = allActors.find(a => a.id === actorId);
   // State may have moved while the notice was open (WS update, agent went offline).
   if (!actor || sRestartState.has(actorId) || _restartBlockReason(actor)) { _renderRestartUi(actorId, actor); return; }
@@ -208,7 +199,7 @@ function _renderRestartUi(actorId, actor = allActors.find(a => a.id === actorId)
 function sHandleRestartStatus(msg) {
   const id = Number(msg.actor_id);
   if (!id || (msg.state !== 'done' && !S_RESTART_ACTIVE.has(msg.state))) return;
-  _setRestartEntry(id, msg.state, msg);
+  _setRestartEntry(id, msg.state);
   if (msg.state === 'done') {
     const a = allActors.find(x => x.id === id);
     showToast(`${a?.name || 'Agent'} is back online`);
@@ -503,7 +494,7 @@ function sMakeRow(actor, flash) {
         setTimeout(() => { upd.disabled = !actor.online; upd.style.opacity = ''; }, 3000);
       });
       acts.appendChild(upd);
-      acts.appendChild(_makeRestartIdleBtn(actor, 14));
+      acts.appendChild(_makeRestartBtn(actor, 14));
     }
 
     const del = document.createElement('button');
@@ -1880,7 +1871,7 @@ function renderAgentDetailHeader(container, actor) {
     delBtn.replaceWith(pill);
   });
 
-  actions.append(refreshBtn, updBtn, _makeRestartIdleBtn(actor, 16), delBtn);
+  actions.append(refreshBtn, updBtn, _makeRestartBtn(actor, 16), delBtn);
   container.append(avWrap, nameStat, actions);
 }
 
