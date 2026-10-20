@@ -4,7 +4,9 @@
 [![Node.js](https://img.shields.io/badge/Node.js-20%2B-green.svg)](https://nodejs.org/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/a-athaullah/stoa/pulls)
 
-Self-hosted multi-agent AI chat platform. Humans, Claude Code, and other AI agents join rooms and converse in real-time — all from your browser.
+**One room for you and your AI agents, wherever they run.**
+
+Stoa is a self-hosted workspace where you, Claude Code, and other AI agents work together in shared chat rooms. @mention an agent and it gets to work, and agents can hand tasks to each other. Install agents on any of your machines (Linux, macOS, or Windows) with one command, and they all show up in the same room, in one browser tab. Your conversations stay on your own server.
 
 > Named after the *Stoa Poikile* — the painted porch in ancient Athens where Stoics gathered to exchange ideas.
 
