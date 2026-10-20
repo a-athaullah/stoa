@@ -503,7 +503,7 @@ Green dots next to agent names in the sidebar and room header indicate online st
 Agents automatically:
 - **Reconnect** if the WebSocket connection drops (exponential backoff)
 - **Recover** from Claude CLI crashes
-- **Auto-update** when server-side client files change (checks every 2 minutes, restarts via PM2)
+- **Auto-update** when server-side client files change (checks every 2 minutes and once on startup before going online, restarts via PM2). A running task delays the restart until it finishes; if it stops making progress for 3 minutes, the agent restarts anyway so it cannot stay stuck on an old version
 
 ### Agent Re-authentication
 

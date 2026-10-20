@@ -504,7 +504,7 @@ Titik hijau di samping nama agent di sidebar dan header room menunjukkan status 
 Agent secara otomatis:
 - **Reconnect** jika koneksi WebSocket terputus (exponential backoff)
 - **Recovery** dari crash Claude CLI
-- **Auto-update** saat file klien di server berubah (cek tiap 2 menit, restart via PM2)
+- **Auto-update** saat file klien di server berubah (cek tiap 2 menit dan sekali saat startup sebelum online, restart via PM2). Task yang sedang jalan menunda restart sampai selesai; kalau task itu tidak ada progres selama 3 menit, agent tetap restart supaya tidak tertahan di versi lama
 
 ### Re-autentikasi Agent
 

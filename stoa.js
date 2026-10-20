@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.384";
+var CLIENT_VERSION = "0.4.385";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -330,39 +330,86 @@ function buildFileTreeAgent(dirPath, rootPath, depth, maxDepth) {
   }
   return result;
 }
+function contentHash(buf) {
+  return crypto.createHash("sha256").update(buf).digest("hex").slice(0, 12);
+}
 function buildLocalManifest() {
   const manifest = {};
   for (const name of UPDATE_FILES) {
     const fp = path.join(__dirname, name);
-    if (fs.existsSync(fp))
-      manifest[name] = crypto.createHash("sha256").update(fs.readFileSync(fp)).digest("hex").slice(0, 12);
+    if (fs.existsSync(fp)) manifest[name] = contentHash(fs.readFileSync(fp));
   }
   return manifest;
 }
 var localManifest = buildLocalManifest();
 var updateChecker = null;
-async function checkForUpdates() {
-  const baseUrl = STOA_URL.replace(/^ws/, "http");
+// opts exist for tests only; production always updates the agent's own directory.
+async function checkForUpdates(opts = {}) {
+  const baseUrl = opts.baseUrl || STOA_URL.replace(/^ws/, "http");
+  const dir = opts.dir || __dirname;
+  const manifest = opts.manifest || localManifest;
   try {
     const body = await fetchText(`${baseUrl}/api/client/manifest`);
     const remote = JSON.parse(body).files || {};
-    const changed = filesToUpdate(remote, localManifest, UPDATE_FILES);
+    const changed = filesToUpdate(remote, manifest, UPDATE_FILES);
     if (!changed.length) return;
     console.log(`[stoa:update] update detected: ${changed.join(", ")}`);
+    const updated = [];
     for (const name of changed) {
       const content = await fetchText(`${baseUrl}/api/client/file/${encodeURIComponent(name)}`);
-      fs.writeFileSync(path.join(__dirname, name), content, "utf8");
-      localManifest[name] = remote[name];
+      // A file that does not match its manifest hash would be "updated" again after every
+      // restart; with the pre-connect check that is a tight restart loop, so never write it.
+      const got = contentHash(Buffer.from(content, "utf8"));
+      if (got !== remote[name]) {
+        console.warn(`[stoa:update] ${name} skipped \u2014 hash ${got} != manifest ${remote[name]}`);
+        continue;
+      }
+      fs.writeFileSync(path.join(dir, name), content, "utf8");
+      manifest[name] = remote[name];
+      updated.push(name);
       console.log(`[stoa:update] ${name} updated`);
     }
+    if (!updated.length) return;
     if (activeTriggers.size > 0 || triggerQueue.length > 0) {
-      pendingRestart = true;
+      armPendingRestart("update downloaded");
       console.log("[stoa:update] restart deferred \u2014 trigger in progress");
       return;
     }
     doRestart();
-  } catch {
+  } catch (err) {
+    console.error(`[stoa:update] check failed: ${err.message}`);
   }
+}
+// Runs before the first connect: an old client only knows its own UPDATE_FILES, so the
+// process it restarts into may need one more update+restart. Doing that check here keeps
+// the extra restart before the agent shows up online. Capped so a slow server can't hold
+// the agent offline; a late result still applies through the normal path.
+var PRE_CONNECT_UPDATE_MS = 10e3;
+function preConnectUpdate(opts = {}, capMs = PRE_CONNECT_UPDATE_MS) {
+  let timer;
+  const cap = new Promise((resolve) => { timer = setTimeout(resolve, capMs); });
+  return Promise.race([checkForUpdates(opts), cap]).finally(() => clearTimeout(timer));
+}
+// A pending restart waits for triggers to finish, but the server refuses new triggers to an
+// outdated agent, so a trigger that hangs holds the old version forever (newfin: 10 days).
+// Progress = entry.lastActivity (tokens, state, tools, status, retries). Measured from when
+// the restart was armed at the earliest, so a long-silent trigger still gets the full window.
+var RESTART_STALL_MS = 3 * 60e3;
+var pendingRestartSince = 0;
+function armPendingRestart(reason) {
+  if (pendingRestart) return;
+  pendingRestart = true;
+  pendingRestartSince = Date.now();
+  console.log(`[stoa:update] restart pending (${reason}) \u2014 forced after ${RESTART_STALL_MS / 1e3}s without trigger progress`);
+}
+function forceRestartIfStalled(now) {
+  if (!pendingRestart) return false;
+  let lastProgress = pendingRestartSince;
+  for (const entry of activeTriggers.values()) lastProgress = Math.max(lastProgress, entry.lastActivity || entry.startedAt || 0);
+  if (now - lastProgress < RESTART_STALL_MS) return false;
+  console.warn(`[stoa:update] no trigger progress for ${Math.round((now - lastProgress) / 1e3)}s \u2014 forcing restart (${activeTriggers.size} active, ${triggerQueue.length} queued)`);
+  sendThenRestart({ type: "restart_status", state: "restarting", reason: "update_stalled", active: activeTriggers.size, queued: triggerQueue.length });
+  return true;
 }
 var _restartOverride = null;
 function doRestart() {
@@ -942,7 +989,7 @@ async function handleAgentMessage(msg) {
   }
   if (msg.type === "restart") {
     console.log("[stoa] Server requested restart (version outdated)");
-    pendingRestart = true;
+    armPendingRestart("server: version outdated");
     if (activeTriggers.size === 0 && triggerQueue.length === 0) doRestart();
     return;
   }
@@ -2054,6 +2101,7 @@ function sweepStaleTriggers(now) {
   }
   if (forceCleaned) drainQueue();
   else if (activeTriggers.size === 0 && triggerQueue.length === 0 && pendingRestart) doRestart();
+  else forceRestartIfStalled(now);
 }
 var FETCH_TIMEOUT_MS = 60000;
 function fetchToFile(url, destPath) {
@@ -2382,11 +2430,14 @@ if (CF_ACCESS) {
     .then((p) => { console.log(`[stoa] Cloudflare Access token active; child sessions use loopback proxy on port ${p.port}`); return p; })
     .catch((e) => { console.error(`[stoa] Cloudflare Access proxy failed to start: ${e.message}`); return null; });
 }
-connect();
 if (ACTOR_TYPE === "ai") {
-  updateChecker = setInterval(checkForUpdates, UPDATE_INTERVAL);
-  setTimeout(checkForUpdates, 15e3);
-  setInterval(() => sweepStaleTriggers(Date.now()), 60000);
+  preConnectUpdate().then(() => {
+    connect();
+    updateChecker = setInterval(checkForUpdates, UPDATE_INTERVAL);
+    setInterval(() => sweepStaleTriggers(Date.now()), 60000);
+  });
+} else {
+  connect();
 }
 }
 function __setDeps(overrides) {
@@ -2410,5 +2461,6 @@ function __resetDeps() {
   consecutiveTriggerErrors = 0;
   _restartOverride = null;
   pendingRestart = false;
+  pendingRestartSince = 0;
 }
-module.exports = { handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, FIRST_TOKEN_TIMEOUT, __setDeps, __resetDeps, extractAndUploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES };
+module.exports = { handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, __setDeps, __resetDeps, extractAndUploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES };
