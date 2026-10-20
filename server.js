@@ -8370,6 +8370,7 @@ function extractSlackFullText(event) {
 }
 
 const { evaluateConditions, replyMatchesAnyAutomation } = require('./lib/evaluate-conditions');
+const { normalizeSlackCodeFences } = require('./lib/slack-fences');
 
 // ─── Slack automation listener ────────────────────────────────────────────────
 
@@ -8435,7 +8436,7 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
             const info = await webClient.users.info({ user: event.user });
             senderName = info.user?.display_name || info.user?.real_name || event.user;
           } catch {}
-          const replyText = `[New Reply on Thread]:\n${senderName} (${event.user}) - ${event.text || ''}`;
+          const replyText = `[New Reply on Thread]:\n${senderName} (${event.user}) - ${normalizeSlackCodeFences(event.text || '')}`;
           const stoaThreadId = watchedMsg.thread_id || watchedMsg.id;
           const insertedId = await handleHumanMessage(watchedMsg.room_id, replyText, null, null, null, null, stoaThreadId, watchReplyAutomation(watchedMsg));
           const ts2 = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
@@ -8474,6 +8475,9 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
     const botId = event.bot_id || '';
     const fullText = isReaction ? '' : extractSlackFullText(event);
     const fieldValues = { message_text: text, slack_full_text: fullText, slack_bot_id: botId, slack_user: userId, slack_channel: channelId, reaction: text };
+    // Conditions match the raw Slack text; only the prompt copy is fence-normalized.
+    const promptText = normalizeSlackCodeFences(text);
+    const promptFullText = normalizeSlackCodeFences(fullText);
 
     let slackUser = userId;
     let slackChannel = channelId;
@@ -8528,13 +8532,13 @@ connectionManager.on('slack_event', async ({ eventType, event, webClient, connId
       }
 
       const prompt = auto.prompt_template
-        .replace(/\{\{slack_message_text\}\}/g, text)
+        .replace(/\{\{slack_message_text\}\}/g, promptText)
         .replace(/\{\{slack_message_link\}\}/g, messageLink)
         .replace(/\{\{slack_thread_ts\}\}/g, event.thread_ts || event.ts || '')
         .replace(/\{\{slack_user\}\}/g, slackUser)
         .replace(/\{\{slack_channel\}\}/g, slackChannel)
         .replace(/\{\{extracted_url\}\}/g, extractedUrl)
-        .replace(/\{\{slack_full_text\}\}/g, fullText)
+        .replace(/\{\{slack_full_text\}\}/g, promptFullText)
         .replace(/\{\{slack_bot_id\}\}/g, botId);
 
       const _roomId = auto.target_room_id;
