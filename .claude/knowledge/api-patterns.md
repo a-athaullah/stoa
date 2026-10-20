@@ -408,6 +408,67 @@ Or:
 
 ---
 
+### Custom Claude Models
+
+Owner-only endpoints for adding model IDs that Anthropic released after the built-in `ANTHROPIC_MODELS` list was compiled. Requires human session (`req._authUser`); agent headers → 403 `agent_scope_denied`.
+
+#### Add
+```
+POST /api/settings/custom-models
+Content-Type: application/json
+
+{ "value": "claude-haiku-5-5", "label": "Haiku 5.5" }
+```
+- `value` (required): must match `^claude-[a-z0-9][a-z0-9.-]{1,62}$`
+- `label` (optional, max 40 chars): display name; defaults to `value` if omitted
+- 409 if model already exists in built-in or custom list
+- 400 if format invalid or max 20 custom entries reached
+- 201 + `{ value, label, custom: true }` on success
+
+#### Remove
+```
+DELETE /api/settings/custom-models/:value
+```
+- `:value` must be URL-encoded
+- 404 if not found; 204 on success
+- Rooms using the removed model keep their setting (no cascade)
+
+#### Model list (includes custom)
+```
+GET /api/ai/models
+```
+Returns grouped models; Anthropic group includes built-in + custom entries. Custom models have `custom: true`.
+
+#### Suggestions from the agent's Claude CLI binary
+```
+GET /api/settings/custom-models/candidates
+→ 200 { "cli_version": "2.1.300 (Claude Code)" | null, "candidates": [{ "id": "claude-haiku-5-5" }] }
+```
+Human session only (no session → 401, agent headers → 403 `agent_scope_denied`; not in `lib/agent-scope.js`).
+
+- **Source:** the Claude CLI has no model-listing command, so the agent scans its own binary (`detectClaudeModelCandidates()` in `harness-session.js`, called from `detectHarnessesAsync()` in `stoa.js`). It resolves `claude` on `PATH` (realpath), streams the file in 1 MB chunks with a 64-char overlap (never loads the ~250 MB binary), matches `\bclaude-(haiku|sonnet|opus|fable)-\d{1,2}-\d{1,2}(-\d{8})?\b`, and keeps one ID per family+version (the undated alias wins over dated snapshots), newest first, max 50. Result cached per `path:size:mtime`, so it rescans only after a CLI update.
+- **Transport:** top-level fields `claude_model_candidates` (string[]) + `claude_cli_version` on the existing `harnesses_update` WS message. Server validates (array, strings matching the custom-model regex, deduped, max 50, version ≤100 chars) and keeps them **in memory per agent** (`agentClaudeCandidates`, cleared on disconnect or when a report has no array). Not stored in the DB.
+- **Filtering (`getClaudeModelCandidates()`):** union over online agents; drops IDs already in `ANTHROPIC_MODELS` or custom (compared by base, so `claude-haiku-4-5` counts as listed via `claude-haiku-4-5-20251001`); per family keeps only versions **newer** than the newest listed model, because the binary also embeds every legacy ID (`claude-sonnet-3-7`, `claude-opus-4-1`, …). Older gaps remain reachable through manual input. `cli_version` = highest version among reporting agents (numeric compare).
+
+---
+
+### Harness Models Sync (`harness_models`)
+
+For non-Claude harnesses (e.g. Codex), Stoa mirrors agent-reported models into `harness_models` to persist the model list across agent restarts.
+
+**Trigger:** agent sends `harnesses_update` WS message to the server on connect. (`actor_status` is the broadcast the server sends to clients *after* sync completes — not the trigger.)
+
+**Behaviour:**
+- Active set = union across all currently online agents for that harness (prevents two agents on different Codex versions from deactivating each other's models)
+- Models no longer reported by any online agent → `is_active=0`
+- Default preserved if one already exists; otherwise reporter's first model becomes default
+- Cap: 50 models per harness (`MAX_SYNCED_HARNESS_MODELS`)
+- Claude harness is **exempt** — its model list always comes from `ANTHROPIC_MODELS` + `custom_claude_models` setting
+
+**Key function:** `syncHarnessModels(harnessName, reporterId)` in `server.js`
+
+---
+
 ### Export
 
 #### Export Room

@@ -352,6 +352,12 @@ async function fetchHarnesses() {
   return allHarnessData;
 }
 
+// harness_models is re-synced server-side on every harnesses_update, so drop the cached copy.
+async function refreshHarnessCache() {
+  allHarnessData = null;
+  return fetchHarnesses();
+}
+
 function getModelsForHarness(harnessName) {
   if (!Array.isArray(allHarnessData) || !harnessName) return null;
   const h = allHarnessData.find(x => x.name === harnessName);
@@ -381,10 +387,11 @@ async function fetchPlatformModels() {
     for (const g of groups) {
       const platKey = g.platform_id === 'anthropic' ? 'anthropic' : g.platform_name;
       for (const m of g.models) {
-        allServerModels.push({ value: m.value, label: m.label, vision: m.vision || false, tools: m.tools || false, local: m.local || false, platform: platKey, platform_id: g.platform_id, base_url: g.base_url || '' });
+        allServerModels.push({ value: m.value, label: m.label, vision: m.vision || false, tools: m.tools || false, local: m.local || false, platform: platKey, platform_id: g.platform_id, base_url: g.base_url || '', custom: !!m.custom });
       }
     }
-    populateModelDropdown();
+    if (currentRoomData) updateModelSelector(currentRoomData, roomParticipantsCache[currentRoomId] || []);
+    else populateModelDropdown();
   } catch {}
   fetchHarnesses(); // prime harness cache in background
 }
@@ -450,7 +457,7 @@ function populateModelDropdown(ignored, currentModel, currentPlatformId, overrid
     if (m.base_url) div.dataset.baseUrl = m.base_url;
     if (m.platform_id) div.dataset.platformId = m.platform_id;
     const icons = _capIconsHtml(m);
-    div.innerHTML = `<span>${escHtml(m.label)}</span>${icons ? `<span class="h-model-cap-icons">${icons}</span>` : ''}`;
+    div.innerHTML = `<span>${escHtml(m.label)}</span>${m.custom ? '<span class="h-model-custom-tag">custom</span>' : ''}${icons ? `<span class="h-model-cap-icons">${icons}</span>` : ''}`;
     div.addEventListener('click', () => selectModelOption(m.value, m.platform_id));
     return div;
   };

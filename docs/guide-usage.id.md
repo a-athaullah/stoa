@@ -454,7 +454,7 @@ Sub-agent juga bisa memilih harness sendiri, atau membiarkannya pada **inherit f
 
 **Mengecek ketersediaan harness:** Setelah menginstal atau login CLI tool di mesin agent, klik tombol **Check** di sebelah dropdown Harness (di panel detail agent atau accordion di **Settings > AI Agent**) untuk mendeteksi ulang tanpa restart agent. Tombol ini nonaktif saat agent offline, dan deteksi bisa memakan waktu hingga ~15 detik. Dropdown langsung diperbarui ketika hasil tiba — harness baru yang terdeteksi ditampilkan via toast. Rescan juga mengecek ulang harness bersama working directory dan skill.
 
-Untuk **Codex**, Check juga mengambil daftar model yang tersedia dari agent via `codex debug models` — model yang disembunyikan CLI dibuang, hasilnya diurutkan sesuai prioritas CLI, dan model pertama jadi default. Dropdown model room langsung diperbarui. Kalau ada model baru, muncul toast seperti `Codex CLI: 2 new models`. Jika agent tidak bisa melaporkan daftar model (CLI versi lama atau perintah gagal), Stoa memakai daftar model bawaannya. **Claude** tidak punya perintah serupa, sehingga daftar model Claude selalu dari Stoa dan tidak ter-update via Check.
+Untuk **Codex**, daftar model disinkronkan otomatis setiap kali agent terhubung — tidak perlu Check manual. Set aktif adalah gabungan dari semua agent yang online, sehingga dua agent dengan versi Codex berbeda tidak saling menonaktifkan model miliknya; model dinonaktifkan hanya kalau tidak ada agent online yang melaporkannya. Check juga memicu sinkronisasi ini secara manual. Model yang disembunyikan CLI dibuang, hasilnya diurutkan sesuai prioritas CLI, dan jika belum ada default, model pertama dari reporter jadi default. Dropdown model room langsung diperbarui. Kalau ada model baru, muncul toast seperti `Codex CLI: 2 new models`. Jika agent tidak bisa melaporkan daftar model (CLI versi lama atau perintah gagal), Stoa memakai daftar model bawaannya. **Claude** tidak punya sinkronisasi serupa — daftar modelnya selalu dari daftar bawaan Stoa ditambah entri kustom yang ditambahkan di **Settings > Platforms**.
 
 Harness yang sudah terinstal tapi belum login tampil di dropdown sebagai **"(not logged in)"** dan tidak bisa dipilih — server juga akan menolaknya. Jika status login tidak bisa dipastikan, harness tetap bisa dipilih. Jika harness yang sedang aktif menjadi tidak tersedia atau kehilangan login, muncul hint merah di bawah dropdown Harness — harness tidak diganti otomatis.
 
@@ -916,6 +916,17 @@ API key disimpan di server dan dikembalikan ke browser hanya di form edit Settin
 - **OpenRouter** — `https://openrouter.ai/api/v1`
 - **Together AI** — `https://api.together.xyz/v1`
 - **Groq** — `https://api.groq.com/openai/v1`
+
+### Model Claude Kustom
+
+Jika Anthropic merilis model yang belum ada di daftar bawaan, tambahkan tanpa perlu update server. Gulir ke kartu **claude models** di **Settings > Platforms**.
+
+Jika ada agent dengan binary Claude CLI yang online, kartu menampilkan strip **Detected from Claude CLI v*X*** berisi chip yang bisa diklik untuk ID model yang lebih baru dari entri terdaftar terbaru di setiap family. Mengklik chip mengisi otomatis kolom ID model dan label (label dibuat otomatis, misalnya _Haiku 5.5_, bisa diedit); klik **add model** untuk menyimpan — tidak ada simpan otomatis. ID model lama tetap bisa diketik manual. Jika belum ada agent yang melaporkan CLI, strip menampilkan pesan untuk menghubungkan agent.
+
+- **Tambah** — masukkan ID model (misalnya `claude-haiku-5-5`) dan label tampilan opsional (maks 40 karakter), lalu klik **add model**. Model langsung muncul di dropdown model room, ditandai **custom**.
+- **Hapus** — klik × pada baris model kustom. Room yang sudah menggunakan model tersebut mempertahankan pengaturannya; hanya pemilihan baru yang terpengaruh.
+
+Format ID model: harus diawali `claude-`, diikuti huruf kecil, angka, titik, atau tanda hubung (regex: `^claude-[a-z0-9][a-z0-9.-]{1,62}$`). ID duplikat atau format salah ditolak langsung. Maksimum 20 entri kustom.
 
 ### Automation
 

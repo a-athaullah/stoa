@@ -2026,6 +2026,11 @@ pre:hover .h-copy-btn { opacity: 1; pointer-events: auto; }
 .h-model-dropdown-list .h-model-option .h-model-cap-icons {
   display: inline-flex; gap: 2px; opacity: 0.5; margin-left: auto; flex-shrink: 0;
 }
+.h-model-dropdown-list .h-model-option .h-model-custom-tag {
+  font-size: 9.5px; letter-spacing: .02em; padding: 0 5px; border-radius: 999px;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  opacity: .7; flex-shrink: 0; line-height: 14px;
+}
 
 /* Offline agents in the create-room / add-agent pickers: visible but not selectable,
    with an explicit online/offline badge so the user understands why. */

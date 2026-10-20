@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.369";
+var CLIENT_VERSION = "0.4.372";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -609,7 +609,7 @@ async function backupSessionFile(workdir, sessionId) {
     return null;
   }
 }
-const { createHarnessSession: _createHS, supportsCompact, buildResumeArgs, parseClaudeAuthStatus, parseCodexLoginStatus, parseCodexModels, filesToUpdate } = require("./harness-session");
+const { createHarnessSession: _createHS, supportsCompact, buildResumeArgs, parseClaudeAuthStatus, parseCodexLoginStatus, parseCodexModels, filesToUpdate, detectClaudeModelCandidates } = require("./harness-session");
 function createHarnessSession(harness, opts) {
   return _createHS(harness, opts, { ClaudeSession });
 }
@@ -762,11 +762,21 @@ async function detectHarnessesAsync() {
     execWithTimeout("codex", ["--version"], 5e3),
   ]);
   const status = [];
+  let claude_model_candidates = null;
+  let claude_cli_version = null;
   if (claudeVer.exitCode >= 0) {
     const version = claudeVer.stdout.trim().split("\n")[0] || null;
     const authResult = await execWithTimeout("claude", ["auth", "status"], 5e3);
     const loggedIn = parseClaudeAuthStatus(authResult.stdout);
     status.push({ id: "claude", installed: claudeVer.exitCode === 0, logged_in: loggedIn, version, models: null });
+    if (claudeVer.exitCode === 0) {
+      try {
+        claude_model_candidates = await detectClaudeModelCandidates();
+        claude_cli_version = version;
+      } catch (err) {
+        console.error(`[stoa] Claude model scan failed: ${err.message}`);
+      }
+    }
   }
   if (codexVer.exitCode >= 0) {
     const version = codexVer.stdout.trim().split("\n")[0] || null;
@@ -780,7 +790,7 @@ async function detectHarnessesAsync() {
     status.push({ id: "codex", installed: codexVer.exitCode === 0, logged_in: loggedIn, version, models });
   }
   const harnesses_available = status.filter((s) => s.installed).map((s) => s.id);
-  return { harnesses_available, harness_status: status };
+  return { harnesses_available, harness_status: status, claude_model_candidates, claude_cli_version };
 }
 function connect() {
   const cfHeaders = stoaCfHeaders(STOA_URL);
