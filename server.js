@@ -214,7 +214,8 @@ function cleanErrorText(raw) {
 }
 
 const { createThreadBroadcast } = require('./lib/thread-broadcast');
-const { buildFtsQueries, focusSnippet } = require('./lib/search-query');
+const { buildFtsQueries, focusSnippet, fuseRrf } = require('./lib/search-query');
+const { createSemanticIndex } = require('./lib/semantic-index');
 const { setBroadcastReason, getThreadRootPreview, maybeBroadcastError } = createThreadBroadcast({
   db, broadcastToRoom: (...a) => broadcast(...a), enrichFn: enrichAutomation
 });
@@ -317,40 +318,59 @@ function saveSubAgentThreadSession(participantId, subAgentId, claudeSessionId, w
   ).run(participantId, rp?.room_id ?? null, subAgentId, claudeSessionId, workdir || null, threadId || 0);
 }
 
-// Keyword (FTS5) search shared by GET /api/search and the agent_search WS message. User input is
-// never passed to MATCH verbatim (see lib/search-query.js). All terms are ANDed first; when that
-// finds nothing the same terms are ORed so a single misspelt word doesn't empty the result.
+// Message search shared by GET /api/search and the agent_search WS message.
+// Keyword half (FTS5): user input is never passed to MATCH verbatim (see lib/search-query.js). All
+// terms are ANDed first; when that finds nothing the same terms are ORed so a single misspelt word
+// doesn't empty the result. Semantic half: see searchMessages below.
 // `actorId` limits results to rooms that actor participates in (agents must not read other rooms).
-const keywordSearchStmts = new Map();
-function keywordSearchStmt(mark, byRoom, byActor) {
-  const key = `${mark}:${byRoom}:${byActor}`;
-  if (!keywordSearchStmts.has(key)) {
-    keywordSearchStmts.set(key, db.prepare(`
-      SELECT m.id, m.room_id, m.content, m.created_at, m.thread_id, m.thread_id AS thread_root_id,
-             a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
-             r.title as room_title, r.archived_at,
-             substr(tr.content, 1, 140) AS thread_root_preview,
-             ${mark ? "snippet(messages_fts, 0, '<mark>', '</mark>', '…', 40)" : "snippet(messages_fts, 0, '', '', '…', 60)"} as snippet
-      FROM messages_fts
-      JOIN messages m ON m.id = messages_fts.rowid
-      JOIN room_participants rp ON rp.id = m.participant_id
-      JOIN actors a ON a.id = rp.actor_id
-      JOIN rooms r ON r.id = m.room_id
-      LEFT JOIN messages tr ON tr.id = m.thread_id
-      WHERE messages_fts MATCH ? AND m.state='complete'
-      ${byRoom ? 'AND m.room_id = ?' : ''}
-      ${byActor ? 'AND m.room_id IN (SELECT room_id FROM room_participants WHERE actor_id = ?)' : ''}
-      ORDER BY rank
-      LIMIT ?
-    `));
-  }
-  return keywordSearchStmts.get(key);
+const SEARCH_ROW_COLUMNS = `
+  m.id, m.room_id, m.content, m.created_at, m.thread_id, m.thread_id AS thread_root_id,
+  a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
+  r.title as room_title, r.archived_at,
+  substr(tr.content, 1, 140) AS thread_root_preview`;
+const SEARCH_ROW_JOINS = `
+  JOIN room_participants rp ON rp.id = m.participant_id
+  JOIN actors a ON a.id = rp.actor_id
+  JOIN rooms r ON r.id = m.room_id
+  LEFT JOIN messages tr ON tr.id = m.thread_id`;
+const searchFilterSql = (byRoom, byActor) => `
+  ${byRoom ? 'AND m.room_id = ?' : ''}
+  ${byActor ? 'AND m.room_id IN (SELECT room_id FROM room_participants WHERE actor_id = ?)' : ''}`;
+const searchStmts = new Map();
+function cachedSearchStmt(key, build) {
+  if (!searchStmts.has(key)) searchStmts.set(key, db.prepare(build()));
+  return searchStmts.get(key);
 }
-function keywordSearch(q, { roomId = null, actorId = null, limit, defaultLimit = 30, maxLimit = 100, mark = true } = {}) {
+const keywordSearchStmt = (mark, byRoom, byActor) => cachedSearchStmt(`kw:${mark}:${byRoom}:${byActor}`, () => `
+  SELECT ${SEARCH_ROW_COLUMNS},
+         ${mark ? "snippet(messages_fts, 0, '<mark>', '</mark>', '…', 40)" : "snippet(messages_fts, 0, '', '', '…', 60)"} as snippet
+  FROM messages_fts
+  JOIN messages m ON m.id = messages_fts.rowid
+  ${SEARCH_ROW_JOINS}
+  WHERE messages_fts MATCH ? AND m.state='complete'
+  ${searchFilterSql(byRoom, byActor)}
+  ORDER BY rank
+  LIMIT ?
+`);
+// Rows for semantic hits. The vector index lives in a worker and can lag behind deletes and edits,
+// so a hit only counts while its message still has a stored vector; the same room/actor filters as
+// the keyword half are re-applied here rather than trusting the worker's room filter alone.
+const semanticRowsStmt = (byRoom, byActor) => cachedSearchStmt(`sem:${byRoom}:${byActor}`, () => `
+  SELECT ${SEARCH_ROW_COLUMNS}
+  FROM messages m
+  JOIN message_embeddings e ON e.message_id = m.id AND e.vec IS NOT NULL
+  ${SEARCH_ROW_JOINS}
+  WHERE m.id IN (SELECT value FROM json_each(?)) AND m.state='complete'
+  ${searchFilterSql(byRoom, byActor)}
+`);
+
+function searchLimit(limit, defaultLimit, maxLimit) {
+  const n = parseInt(limit, 10);
+  return n > 0 ? Math.min(n, maxLimit) : defaultLimit;
+}
+function keywordSearch(q, { roomId = null, actorId = null, lim, mark = true } = {}) {
   const fts = buildFtsQueries(q);
   if (!fts) return [];
-  const n = parseInt(limit, 10);
-  const lim = n > 0 ? Math.min(n, maxLimit) : defaultLimit;
   const stmt = keywordSearchStmt(mark, !!roomId, !!actorId);
   const filters = [roomId, actorId].filter(Boolean);
   const run = match => stmt.all(match, ...filters, lim);
@@ -361,6 +381,52 @@ function keywordSearch(q, { roomId = null, actorId = null, limit, defaultLimit =
     if (mark) r.snippet = focusSnippet(r.snippet);
   }
   return rows;
+}
+
+// Semantic candidates per query: past ~20 the cosine tail of a small model is mostly noise.
+const SEMANTIC_K = 20;
+// e5 cosine scores sit in a narrow band (relevant ≈ 0.86, unrelated ≈ 0.80, measured on this DB),
+// so no absolute threshold works; hits far below the best one are dropped instead.
+const SEMANTIC_REL_CUTOFF = 0.05;
+const SEMANTIC_SNIPPET_LEN = 200;
+
+// mode 'hybrid' fuses keyword and semantic ranks (RRF); each row gets match 'keyword' | 'semantic'
+// | 'both'. Whenever the semantic half is unavailable (model loading/failed/disabled, timeout) the
+// result is the keyword result and `semantic` is false.
+async function searchMessages(q, { roomId = null, actorId = null, limit, defaultLimit = 30, maxLimit = 100, mark = true, mode = 'hybrid' } = {}) {
+  const lim = searchLimit(limit, defaultLimit, maxLimit);
+  const kw = keywordSearch(q, { roomId, actorId, lim, mark });
+  if (mode !== 'hybrid' || !semanticIndex.ready || !buildFtsQueries(q)) return { rows: kw, semantic: false };
+  let rooms = null;
+  if (actorId) {
+    rooms = cachedSearchStmt('agent-rooms', () => 'SELECT DISTINCT room_id FROM room_participants WHERE actor_id = ?')
+      .all(actorId).map(r => r.room_id);
+    if (roomId) rooms = rooms.includes(roomId) ? [roomId] : [];
+  } else if (roomId) rooms = [roomId];
+  const sem = await semanticIndex.search(q, { rooms, k: Math.min(lim, SEMANTIC_K) });
+  if (!sem) return { rows: kw, semantic: false };
+  const best = sem.scores[0];
+  const semIds = sem.ids.filter((_, i) => sem.scores[i] >= best - SEMANTIC_REL_CUTOFF);
+  const kwById = new Map(kw.map(r => [r.id, r]));
+  const needRows = semIds.filter(id => !kwById.has(id));
+  const semById = new Map();
+  if (needRows.length) {
+    const filters = [roomId, actorId].filter(Boolean);
+    for (const r of semanticRowsStmt(!!roomId, !!actorId).all(JSON.stringify(needRows), ...filters)) {
+      const text = r.content.replace(/\s+/g, ' ').trim();
+      r.snippet = text.length > SEMANTIC_SNIPPET_LEN ? text.slice(0, SEMANTIC_SNIPPET_LEN) + '…' : text;
+      semById.set(r.id, r);
+    }
+    semanticIndex.forget(needRows.filter(id => !semById.has(id)));
+  }
+  const rows = [];
+  for (const f of fuseRrf(kw.map(r => r.id), semIds.filter(id => kwById.has(id) || semById.has(id)))) {
+    const row = kwById.get(f.id) || semById.get(f.id);
+    row.match = f.keyword && f.semantic ? 'both' : f.keyword ? 'keyword' : 'semantic';
+    rows.push(row);
+    if (rows.length === lim) break;
+  }
+  return { rows, semantic: true };
 }
 
 function buildThreadSummary(roomId, rootId) {
@@ -797,6 +863,18 @@ try {
 
 // ─── Migration runner ─────────────────────────────────────────────────────────
 runMigrations(db, path.join(__dirname, 'migrations'));
+
+// ─── Semantic search index (lib/semantic-index.js) ─────────────────────────────
+// Needs the optional dependency @huggingface/transformers; without it (or with
+// STOA_SEMANTIC_SEARCH=off) search stays keyword-only. The model (~130 MB) is downloaded on first
+// start into STOA_MODEL_DIR. STOA_SEMANTIC_BACKEND=hash is the model-free test backend.
+const semanticIndex = createSemanticIndex({
+  db,
+  dbPath: db.name,
+  backend: process.env.STOA_SEMANTIC_BACKEND === 'hash' ? 'hash' : 'transformers',
+  modelDir: process.env.STOA_MODEL_DIR || path.join(__dirname, 'models'),
+});
+if (process.env.STOA_SEMANTIC_SEARCH !== 'off') semanticIndex.start();
 
 // ─── Harness model sources ──────────────────────────────────────────────────
 
@@ -2102,7 +2180,15 @@ const server = http.createServer(async (req, res) => {
     const roomParam = url.searchParams.get('room_id');
     const roomId = roomParam ? parseInt(roomParam, 10) : null;
     if (roomParam && !(roomId > 0)) return json(res, { error: 'invalid room_id' }, 400);
-    return json(res, keywordSearch(url.searchParams.get('q'), { roomId, limit: url.searchParams.get('limit') }));
+    const mode = url.searchParams.get('mode') || 'hybrid';
+    if (mode !== 'hybrid' && mode !== 'keyword') return json(res, { error: 'invalid mode (keyword|hybrid)' }, 400);
+    const { rows, semantic } = await searchMessages(url.searchParams.get('q'), { roomId, limit: url.searchParams.get('limit'), mode });
+    res.setHeader('X-Stoa-Search-Semantic', semantic ? '1' : '0');
+    return json(res, rows);
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/search/status') {
+    return json(res, semanticIndex.status());
   }
 
   if (req.method === 'GET' && url.pathname.startsWith('/api/rooms/')) {
@@ -6051,10 +6137,11 @@ wss.on('connection', (ws, req) => {
 
     if (msg.type === 'agent_search' && agentActorId) {
       const roomId = parseInt(msg.room_id, 10) > 0 ? parseInt(msg.room_id, 10) : null;
-      const results = keywordSearch(msg.query, { roomId, actorId: agentActorId, limit: msg.limit, maxLimit: 50, defaultLimit: 20, mark: false })
-        .map(({ id, room_id, content, created_at, actor_name, actor_type, snippet, thread_root_id, match }) =>
-          ({ id, room_id, content, created_at, actor_name, actor_type, snippet, thread_root_id, match }));
-      ws.send(JSON.stringify({ type: 'search_result', request_id: msg.request_id, results }));
+      searchMessages(msg.query, { roomId, actorId: agentActorId, limit: msg.limit, maxLimit: 50, defaultLimit: 20, mark: false })
+        .then(({ rows }) => rows.map(({ id, room_id, content, created_at, actor_name, actor_type, snippet, thread_root_id, match }) =>
+          ({ id, room_id, content, created_at, actor_name, actor_type, snippet, thread_root_id, match })))
+        .catch(e => { console.error('[search] agent_search failed:', e.message); return []; })
+        .then(results => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify({ type: 'search_result', request_id: msg.request_id, results })); });
     }
 
     if (msg.type === 'agent_get_message' && agentActorId) {
@@ -8226,6 +8313,8 @@ function stripWaReplyMarkers(content) {
 }
 
 function broadcast(roomId, data) {
+  // Every new or finished message passes through here: wake the embedding backfill.
+  if (data.type === 'message_new' || data.type === 'message_complete') semanticIndex.kick();
   const clients = roomClients.get(roomId);
   if (!clients) return;
   const msg = JSON.stringify(data);

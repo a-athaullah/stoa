@@ -158,6 +158,17 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
   INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
 END;
 
+-- Semantic search vectors (see migrations/20261021-message-embeddings.sql)
+CREATE TABLE IF NOT EXISTS message_embeddings (
+  message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+  model TEXT NOT NULL,
+  vec BLOB,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE TRIGGER IF NOT EXISTS message_embeddings_au AFTER UPDATE OF content ON messages BEGIN
+  DELETE FROM message_embeddings WHERE message_id = old.id;
+END;
+
 -- Indexes for frequently queried columns
 CREATE INDEX IF NOT EXISTS idx_messages_room_id ON messages(room_id);
 CREATE INDEX IF NOT EXISTS idx_messages_room_state ON messages(room_id, state);

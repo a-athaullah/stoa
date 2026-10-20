@@ -1734,6 +1734,26 @@ async function runAsyncUnitTests() {
 
   console.log('  [Async Fetch Tests]');
 
+  await uta('createSemanticIndex — worker that cannot start → state failed, search resolves null (keyword fallback)', async () => {
+    const Database = require('better-sqlite3');
+    const { createSemanticIndex } = require('./lib/semantic-index');
+    const mem = new Database(':memory:');
+    mem.exec(require('fs').readFileSync(require('path').join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
+    const errors = [];
+    const idx = createSemanticIndex({ db: mem, dbPath: '/nonexistent-stoa-dir/x.db', backend: 'hash', log: { log() {}, error: m => errors.push(m) } });
+    assert.strictEqual(idx.status().state, 'off');
+    assert.strictEqual(await idx.search('anything'), null, 'not started → null');
+    idx.start();
+    const end = Date.now() + 10000;
+    while (idx.status().state !== 'failed' && Date.now() < end) await new Promise(r => setTimeout(r, 50));
+    const st = idx.status();
+    assert.strictEqual(st.state, 'failed');
+    assert.match(st.error, /unable to open|directory does not exist|no such file/i);
+    assert.strictEqual(await idx.search('anything'), null, 'failed → null');
+    assert.ok(errors.some(e => e.includes('falls back to keyword')), 'failure is logged, not swallowed');
+    mem.close();
+  });
+
   await uta('detectSupervisor — pm2 only when parent is the PM2 daemon (inherited pm_id is not enough)', async () => {
     const { detectSupervisor } = require('./lib/supervisor');
     const pm2Env = { pm_id: '0', autorestart: 'true', PM2_HOME: '/x/.pm2' };
@@ -9463,8 +9483,10 @@ async function run() {
     assert.strictEqual(r.status, 200, `post failed: ${JSON.stringify(r.body)}`);
     return r.body.message_id;
   };
+  // Pinned to keyword mode: in hybrid, whether a seeded message is already embedded depends on
+  // backfill timing, which would flip match between 'keyword' and 'both'. Hybrid has its own block.
   const sSearch = async qs => {
-    const r = await req('GET', `/api/search?${qs}`);
+    const r = await req('GET', `/api/search?${qs}&mode=keyword`);
     assert.strictEqual(r.status, 200, `GET /api/search?${qs} → ${r.status} ${JSON.stringify(r.body)}`);
     assert.ok(Array.isArray(r.body));
     return r.body;
@@ -9572,6 +9594,121 @@ async function run() {
     assert.strictEqual(reply.thread_root_id, sIds.root);
     assert.ok(!/<mark>/.test(reply.snippet));
     sAgentA.ws.close();
+  });
+
+  // ── Search: hybrid (semantic + keyword). run-tests.js runs the server with the model-free
+  // `hash` embedding backend (character trigrams), so a misspelt word is a semantic-only match.
+  console.log('\n[Search — hybrid]');
+  const hTag = 'hzq' + Date.now().toString(36);
+  const hIds = {};
+  let hAgentA = null, hAgentB = null, hRoomA = null, hRoomB = null;
+  const hDb = require('./db');
+  const embeddingRow = id => hDb.prepare("SELECT vec FROM message_embeddings WHERE message_id=? AND model='hash-trigram-384'").get(id);
+  const waitFor = async (what, fn, timeoutMs = 30000) => {
+    const end = Date.now() + timeoutMs;
+    for (;;) {
+      const v = await fn();
+      if (v) return v;
+      if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await new Promise(r => setTimeout(r, 250));
+    }
+  };
+  const hSearch = async qs => {
+    const r = await req('GET', `/api/search?${qs}`);
+    assert.strictEqual(r.status, 200, `GET /api/search?${qs} → ${r.status} ${JSON.stringify(r.body)}`);
+    return r;
+  };
+
+  await test('Search hybrid — setup: seeded messages get embedded in the background', async () => {
+    hAgentA = await createOnlineTestAgent('__test-hsearch-a', '/tmp/stoa-test-hsearch-a');
+    hAgentB = await createOnlineTestAgent('__test-hsearch-b', '/tmp/stoa-test-hsearch-b');
+    if (!hAgentA?.workdirId || !hAgentB?.workdirId) { console.log('    (skipped — could not set up online test agents)'); hAgentA = null; return; }
+    const ra = await req('POST', '/api/rooms', { title: '__test-hsearch-a__', workdir_id: hAgentA.workdirId, participant_ids: [hAgentA.actorId] });
+    const rb = await req('POST', '/api/rooms', { title: '__test-hsearch-b__', workdir_id: hAgentB.workdirId, participant_ids: [hAgentB.actorId] });
+    assert.strictEqual(ra.status, 200); assert.strictEqual(rb.status, 200);
+    hRoomA = ra.body.id; hRoomB = rb.body.id;
+    testRoomIds.push(hRoomA, hRoomB);
+    hIds.a = await sPost(hAgentA, hRoomA, `${hTag}semantix kelinci melompat tinggi`);
+    hIds.b = await sPost(hAgentB, hRoomB, `${hTag}semantix kelinci melompat tinggi`);
+    hIds.short = await sPost(hAgentA, hRoomA, 'ok siap');
+    for (const k of ['a', 'b', 'short']) await waitFor(`embedding of ${k}`, () => embeddingRow(hIds[k]));
+    assert.strictEqual(embeddingRow(hIds.a).vec.length, 384 * 4, '384 float32 dims stored');
+  });
+
+  await test('Search hybrid — GET /api/search/status reports the ready index', async () => {
+    if (!hAgentA) { console.log('    (skipped)'); return; }
+    const r = await req('GET', '/api/search/status');
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.state, 'ready');
+    assert.strictEqual(r.body.model, 'hash-trigram-384');
+    assert.strictEqual(r.body.dim, 384);
+    assert.ok(r.body.indexed >= 2, `indexed=${r.body.indexed}`);
+    assert.strictEqual(r.body.error, null);
+  });
+
+  await test('Search hybrid — misspelt word: keyword finds nothing, hybrid returns a semantic match', async () => {
+    if (!hAgentA) { console.log('    (skipped)'); return; }
+    const q = encodeURIComponent(`${hTag}semamtix`);
+    const kw = await hSearch(`q=${q}&mode=keyword`);
+    assert.ok(!kw.body.some(m => m.id === hIds.a), 'keyword mode must not find the misspelt word');
+    assert.strictEqual(kw.headers['x-stoa-search-semantic'], '0');
+    const hy = await hSearch(`q=${q}`);
+    assert.strictEqual(hy.headers['x-stoa-search-semantic'], '1', 'hybrid is the default mode');
+    const hit = hy.body.find(m => m.id === hIds.a);
+    assert.ok(hit, 'semantic hit returned');
+    assert.strictEqual(hit.match, 'semantic');
+    assert.strictEqual(hit.snippet, `${hTag}semantix kelinci melompat tinggi`);
+    assert.strictEqual(hit.room_title, '__test-hsearch-a__');
+    assert.strictEqual(hit.thread_root_id, null);
+  });
+
+  await test('Search hybrid — a message found by both halves is labelled "both"', async () => {
+    if (!hAgentA) { console.log('    (skipped)'); return; }
+    const hit = (await hSearch(`q=${hTag}semantix`)).body.find(m => m.id === hIds.a);
+    assert.strictEqual(hit?.match, 'both');
+    assert.match(hit.snippet, /<mark>/, 'keyword snippet (with highlight) is kept for "both"');
+  });
+
+  await test('Search hybrid — room_id filter applies to semantic hits; tiny messages are never embedded', async () => {
+    if (!hAgentA) { console.log('    (skipped)'); return; }
+    const ids = (await hSearch(`q=${hTag}semamtix&room_id=${hRoomB}`)).body.map(m => m.id);
+    assert.ok(ids.includes(hIds.b) && !ids.includes(hIds.a), 'only the room_id room');
+    assert.strictEqual(embeddingRow(hIds.short).vec, null, '"ok siap" gets a NULL row so the backfill skips it');
+    const r = await req('GET', '/api/search?q=x&mode=semantic');
+    assert.strictEqual(r.status, 400, 'unknown mode → 400');
+  });
+
+  await test('Search hybrid — WS agent_search: semantic hits stay inside the agent\'s rooms', async () => {
+    if (!hAgentA) { console.log('    (skipped)'); return; }
+    const got = waitForWsMessage(hAgentA.ws, m => m.type === 'search_result' && m.request_id === 'hzq-1', 6000);
+    hAgentA.ws.send(JSON.stringify({ type: 'agent_search', request_id: 'hzq-1', query: `${hTag}semamtix` }));
+    const results = (await got).results;
+    const own = results.find(m => m.id === hIds.a);
+    assert.strictEqual(own?.match, 'semantic', 'own room semantic hit returned');
+    assert.ok(!results.some(m => m.id === hIds.b), 'other room\'s identical message must not leak');
+  });
+
+  await test('Search hybrid — edited content is re-embedded', async () => {
+    if (!hAgentA) { console.log('    (skipped)'); return; }
+    const before = embeddingRow(hIds.a).vec;
+    hDb.prepare('UPDATE messages SET content=? WHERE id=?').run(`${hTag}zebragurun berlari kencang`, hIds.a);
+    assert.strictEqual(embeddingRow(hIds.a), undefined, 'edit drops the stale vector (trigger)');
+    await sPost(hAgentA, hRoomA, `${hTag} wake the backfill`);
+    const after = (await waitFor('re-embedding', () => embeddingRow(hIds.a))).vec;
+    assert.ok(!before.equals(after), 'vector recomputed from the new content');
+    const hit = (await hSearch(`q=${hTag}zebragurum`)).body.find(m => m.id === hIds.a);
+    assert.strictEqual(hit?.match, 'semantic', 'new content is what the vector now represents');
+  });
+
+  await test('Search hybrid — deleting a message removes its vector and keeps the FTS index intact', async () => {
+    if (!hAgentA) { console.log('    (skipped)'); return; }
+    const del = await req('DELETE', `/api/messages/${hIds.b}`);
+    assert.strictEqual(del.status, 204);
+    assert.strictEqual(embeddingRow(hIds.b), undefined, 'ON DELETE CASCADE');
+    assert.ok(!(await hSearch(`q=${hTag}semamtix`)).body.some(m => m.id === hIds.b), 'deleted message not returned');
+    hDb.prepare("INSERT INTO messages_fts(messages_fts, rank) VALUES('integrity-check', 1)").run();
+    hAgentA.ws.close();
+    hAgentB.ws.close();
   });
 
   await test('Thread — export includes thread_id column', async () => {
