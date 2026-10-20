@@ -21,14 +21,5 @@ function renderSidebarFooter() {
   conn.className = 'h-conn-status';
   conn.innerHTML = '<span class="h-conn-dot"></span><span class="h-conn-label">offline</span>';
   footer.appendChild(conn);
-  const isDark = document.documentElement.classList.contains('dark');
-  const themeBtn = document.createElement('button');
-  themeBtn.id = 'theme-toggle';
-  themeBtn.className = 'h-theme-btn';
-  themeBtn.setAttribute('aria-label', 'toggle theme');
-  themeBtn.title = isDark ? 'switch to light' : 'switch to dark';
-  themeBtn.innerHTML = isDark ? SUN_SVG : MOON_SVG;
-  themeBtn.onclick = toggleTheme;
-  footer.appendChild(themeBtn);
 }
 

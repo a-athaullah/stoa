@@ -41,15 +41,15 @@ function autoRenderConnectionCard(conn) {
   const isEmail = conn.provider === 'email';
 
   const dotStyle = isConnected
-    ? 'background:#7fb98c;box-shadow:0 0 0 3px color-mix(in srgb,#7fb98c 22%,transparent)'
+    ? 'background:var(--h-green-fill);box-shadow:0 0 0 3px color-mix(in srgb,var(--h-green-fill) 22%,transparent)'
     : isError
-    ? 'background:#b35a4b'
+    ? 'background:var(--h-red)'
     : isConnecting
-    ? 'background:#c8a84b'
+    ? 'background:var(--h-amber-fill)'
     : 'background:transparent;border:1.5px solid var(--h-ink-faint)';
 
   const statusLabel = isConnected ? 'connected' : isError ? 'error' : isConnecting ? 'connecting…' : 'disconnected';
-  const statusColor = isConnected ? '#7fb98c' : isError ? '#b35a4b' : isConnecting ? '#c8a84b' : 'var(--h-ink-faint)';
+  const statusColor = isConnected ? 'var(--h-green)' : isError ? 'var(--h-red)' : isConnecting ? 'var(--h-amber)' : 'var(--h-ink-faint)';
 
   const isConfirm = autoState.connConfirmId === conn.id;
 
@@ -63,24 +63,24 @@ function autoRenderConnectionCard(conn) {
       <div style="display:flex;align-items:center;gap:8px;margin-left:auto">
         <span style="font-family:var(--h-sans);font-size:12.5px;color:var(--h-ink-mute)">${confirmLabel}</span>
         <button class="auto-small-btn auto-conn-confirm-cancel-btn">Cancel</button>
-        <button class="auto-small-btn auto-conn-confirm-ok-btn" data-id="${conn.id}" data-action="${action}" style="color:#b35a4b;border-color:#b35a4b">${okLabel}</button>
+        <button class="auto-small-btn auto-conn-confirm-ok-btn" data-id="${conn.id}" data-action="${action}" style="color:var(--h-red);border-color:var(--h-red)">${okLabel}</button>
       </div>
     `;
   } else {
     const btns = [];
     btns.push(`<button class="auto-small-btn auto-conn-edit-btn" data-id="${conn.id}">${svgPencil(13)} Edit</button>`);
     if (isConnected) {
-      btns.push(`<button class="auto-small-btn auto-conn-disconnect-btn" data-id="${conn.id}" style="color:#b35a4b;border-color:color-mix(in srgb,#b35a4b 40%,transparent)">Disconnect</button>`);
+      btns.push(`<button class="auto-small-btn auto-conn-disconnect-btn" data-id="${conn.id}" style="color:var(--h-red);border-color:color-mix(in srgb,var(--h-red) 40%,transparent)">Disconnect</button>`);
     } else if (isDisconnected || isConnecting) {
       if (isWa && isConnecting) {
         btns.push(`<button class="auto-small-btn auto-conn-show-qr-btn" data-id="${conn.id}">Show QR</button>`);
       } else {
         btns.push(`<button class="auto-small-btn auto-conn-reconnect-btn" data-id="${conn.id}">Reconnect</button>`);
       }
-      btns.push(`<button class="auto-small-btn auto-conn-delete-btn" data-id="${conn.id}" style="color:#b35a4b;border-color:color-mix(in srgb,#b35a4b 40%,transparent)">Delete</button>`);
+      btns.push(`<button class="auto-small-btn auto-conn-delete-btn" data-id="${conn.id}" style="color:var(--h-red);border-color:color-mix(in srgb,var(--h-red) 40%,transparent)">Delete</button>`);
     } else if (isError) {
-      btns.push(`<button class="auto-small-btn auto-conn-retry-btn" data-id="${conn.id}" style="color:#b35a4b;border-color:color-mix(in srgb,#b35a4b 40%,transparent)">Retry</button>`);
-      btns.push(`<button class="auto-small-btn auto-conn-delete-btn" data-id="${conn.id}" style="color:#b35a4b;border-color:color-mix(in srgb,#b35a4b 40%,transparent)">Delete</button>`);
+      btns.push(`<button class="auto-small-btn auto-conn-retry-btn" data-id="${conn.id}" style="color:var(--h-red);border-color:color-mix(in srgb,var(--h-red) 40%,transparent)">Retry</button>`);
+      btns.push(`<button class="auto-small-btn auto-conn-delete-btn" data-id="${conn.id}" style="color:var(--h-red);border-color:color-mix(in srgb,var(--h-red) 40%,transparent)">Delete</button>`);
     }
     actions = `<div class="auto-row-actions" style="display:flex;gap:6px;opacity:0;transition:opacity .12s;margin-left:auto">${btns.join('')}</div>`;
   }
@@ -132,13 +132,13 @@ function autoRenderConnectionCard(conn) {
         ${actions}
       </div>
       ${isError && conn.error_msg ? `
-        <div style="padding:8px 16px 10px;background:color-mix(in srgb,#b35a4b 6%,var(--h-surface))">
-          <span style="font-family:var(--h-sans);font-size:12.5px;color:#b35a4b">${escHtml(conn.error_msg)}</span>
+        <div style="padding:8px 16px 10px;background:color-mix(in srgb,var(--h-red) 6%,var(--h-surface))">
+          <span style="font-family:var(--h-sans);font-size:12.5px;color:var(--h-red)">${escHtml(conn.error_msg)}</span>
         </div>
       ` : ''}
       ${isWa && isConnecting && autoState.qrModal.connId === conn.id ? `
-        <div style="padding:8px 16px 10px;background:color-mix(in srgb,#c8a84b 6%,var(--h-surface))">
-          <span style="font-family:var(--h-sans);font-size:12.5px;color:#c8a84b">Waiting for QR scan — open WhatsApp → Linked Devices → Link a Device</span>
+        <div style="padding:8px 16px 10px;background:color-mix(in srgb,var(--h-amber-fill) 6%,var(--h-surface))">
+          <span style="font-family:var(--h-sans);font-size:12.5px;color:var(--h-amber)">Waiting for QR scan — open WhatsApp → Linked Devices → Link a Device</span>
         </div>
       ` : ''}
     </div>
@@ -167,8 +167,8 @@ function autoRenderConnectionForm() {
     let badge = '';
     if (r) {
       badge = r.ok
-        ? `<span style="font-family:var(--h-sans);font-size:12px;color:#7fb98c">✓ Connection OK</span>`
-        : `<span style="font-family:var(--h-sans);font-size:12px;color:#b35a4b">✗ ${escHtml(r.error || 'Failed')}</span>`;
+        ? `<span style="font-family:var(--h-sans);font-size:12px;color:var(--h-green)">✓ Connection OK</span>`
+        : `<span style="font-family:var(--h-sans);font-size:12px;color:var(--h-red)">✗ ${escHtml(r.error || 'Failed')}</span>`;
     }
     return `<button class="auto-small-btn" id="auto-conn-test-btn" style="display:inline-flex;align-items:center;gap:5px">Test connection</button>${badge ? ' ' + badge : ''}`;
   })() : '';
@@ -234,7 +234,7 @@ function autoRenderConnectionForm() {
 
       <!-- Allowed senders (required) -->
       <div style="display:flex;flex-direction:column;gap:5px">
-        <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-mute)">Allowed senders <span style="font-size:12px;color:#b35a4b">required</span></span>
+        <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-mute)">Allowed senders <span style="font-size:12px;color:var(--h-red)">required</span></span>
         <textarea class="auto-prompt-ta" id="auto-conn-email-senders" rows="3" placeholder="boss@example.com&#10;*@kantor.com&#10;alerts@service.io">${escHtml(f.emailAllowedSenders)}</textarea>
         <span style="font-family:var(--h-sans);font-size:12px;color:var(--h-ink-faint)">One per line. Wildcards: <code>*@domain.com</code>. Emails from unlisted senders are silently ignored.</span>
       </div>
@@ -253,7 +253,7 @@ function autoRenderConnectionForm() {
           <span style="font-family:var(--h-sans);font-size:12px;color:var(--h-ink-faint)">Drop emails without dmarc=pass or dkim=pass (prevents spoofing)</span>
         </div>
         <span id="auto-conn-email-auth-toggle" role="switch" aria-checked="${f.emailRequireAuthPass ? 'true' : 'false'}" tabindex="0"
-          style="width:36px;height:20px;border-radius:999px;position:relative;display:inline-block;cursor:pointer;flex-shrink:0;background:${f.emailRequireAuthPass ? '#7fb98c' : 'var(--h-hairline)'};transition:background .15s">
+          style="width:36px;height:20px;border-radius:999px;position:relative;display:inline-block;cursor:pointer;flex-shrink:0;background:${f.emailRequireAuthPass ? 'var(--h-green-fill)' : 'var(--h-hairline)'};transition:background .15s">
           <span style="position:absolute;top:2px;left:${f.emailRequireAuthPass ? '18px' : '2px'};width:16px;height:16px;border-radius:50%;background:#fff;transition:left .15s;box-shadow:0 1px 2px rgba(0,0,0,.2)"></span>
         </span>
       </div>
@@ -346,7 +346,7 @@ function autoRenderConnectionForm() {
         ${waFields}
 
         ${autoState.connFormError ? `
-          <div style="font-family:var(--h-sans);font-size:12.5px;color:#b35a4b;padding:8px 12px;background:color-mix(in srgb,#b35a4b 8%,var(--h-surface));border-radius:6px;border:1px solid color-mix(in srgb,#b35a4b 25%,transparent)">
+          <div style="font-family:var(--h-sans);font-size:12.5px;color:var(--h-red);padding:8px 12px;background:color-mix(in srgb,var(--h-red) 8%,var(--h-surface));border-radius:6px;border:1px solid color-mix(in srgb,var(--h-red) 25%,transparent)">
             ${escHtml(autoState.connFormError)}
           </div>
         ` : ''}

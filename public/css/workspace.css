@@ -1,7 +1,7 @@
 /* ── Dev workspace panel ─────────────────────────────── */
 .ws-mono { font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", ui-monospace, Consolas, monospace; }
-.ws-code { background: oklch(0.193 0.016 44); color: #d3c8b4; }
-.ws-code .hljs { background: transparent; color: #d3c8b4; }
+.ws-code { background: var(--h-pre-bg); color: var(--h-code-ink); }
+.ws-code .hljs { background: transparent; color: var(--h-code-ink); }
 .ws-code::-webkit-scrollbar { width: 8px; height: 8px; }
 .ws-code::-webkit-scrollbar-thumb { background: rgba(255,255,255,.12); border-radius: 4px; }
 .ws-code::-webkit-scrollbar-track { background: transparent; }
@@ -60,16 +60,15 @@
   height: 42px;
   flex: 0 0 auto;
   background: var(--h-header-bg);
-  border-bottom: 1px solid rgba(247,242,233,0.15);
+  border-bottom: 1px solid var(--h-header-divider);
 }
-html.dark .ws-tab-bar { border-bottom-color: var(--h-hairline); }
 .ws-pin-tab {
   position: relative;
   width: 40px;
   border: none;
   cursor: pointer;
   background: transparent;
-  color: var(--h-header-ink-faint);
+  color: var(--h-header-btn-ink);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -77,8 +76,6 @@ html.dark .ws-tab-bar { border-bottom-color: var(--h-hairline); }
 }
 .ws-pin-tab:hover { color: var(--h-header-ink); }
 .ws-pin-tab.active { background: var(--h-bg); color: var(--h-ink); }
-html.dark .ws-pin-tab { color: var(--h-ink-mute); }
-html.dark .ws-pin-tab:hover { color: var(--h-ink); }
 .ws-pin-tab .ws-tab-indicator {
   position: absolute;
   left: 8px; right: 8px; bottom: 0;
@@ -215,18 +212,18 @@ html.dark .ws-pin-tab:hover { color: var(--h-ink); }
 /* ── Editor (remote file editing) ────────────── */
 .ws-editor-wrap {
   flex: 1; min-height: 0; display: flex;
-  background: oklch(0.193 0.016 44);
+  background: var(--h-pre-bg);
   font-family: 'SF Mono','Cascadia Code','Fira Code','JetBrains Mono',ui-monospace,monospace;
   font-size: 13px; line-height: 21px; overflow: hidden;
 }
 .ws-editor-gutter {
   flex: 0 0 auto; overflow: hidden; text-align: right;
-  color: #7a7060; user-select: none; white-space: pre;
-  padding: 10px 12px 10px 14px; border-right: 1px solid rgba(255,255,255,.07);
+  color: var(--h-code-mute); user-select: none; white-space: pre;
+  padding: 10px 12px 10px 14px; border-right: 1px solid var(--h-code-line);
 }
 .ws-editor-ta {
   flex: 1; min-width: 0; resize: none; border: none; outline: none;
-  background: transparent; color: #d3c8b4; font: inherit; padding: 10px 16px;
+  background: transparent; color: var(--h-code-ink); font: inherit; padding: 10px 16px;
   white-space: pre; tab-size: 2; caret-color: oklch(0.78 0.085 78);
 }
 .ws-editor-ta::selection { background: color-mix(in srgb, oklch(0.78 0.085 78) 32%, transparent); }
@@ -251,7 +248,7 @@ html.dark .ws-pin-tab:hover { color: var(--h-ink); }
   color: oklch(0.27 0.035 72);
 }
 .ws-edit-btn.primary { background: var(--h-ink); color: var(--h-bg); }
-.ws-edit-btn.danger { background: transparent; color: #c08378; border-color: color-mix(in srgb, #c08378 48%, transparent); }
+.ws-edit-btn.danger { background: transparent; color: var(--h-red); border-color: color-mix(in srgb, var(--h-red) 48%, transparent); }
 .ws-icon-btn {
   width: 30px; height: 30px; border-radius: 8px; flex: 0 0 auto; cursor: pointer;
   border: 1px solid var(--h-hair-soft); background: transparent; color: var(--h-ink-mute);
@@ -297,7 +294,7 @@ html.dark .ws-pin-tab:hover { color: var(--h-ink); }
   color: var(--h-ink);
 }
 .ws-ctx-item:hover { background: var(--h-surface-hi); }
-.ws-ctx-item.danger { color: #c08378; }
+.ws-ctx-item.danger { color: var(--h-red); }
 
 /* ── Empty panel ──────────────────────────────── */
 .ws-empty-state {
@@ -396,11 +393,11 @@ html.dark .ws-pin-tab:hover { color: var(--h-ink); }
   display: table-cell;
   text-align: right;
   padding: 0 12px 0 14px;
-  color: #7a7060;
+  color: var(--h-code-mute);
   user-select: none;
-  border-right: 1px solid rgba(255,255,255,.07);
+  border-right: 1px solid var(--h-code-line);
 }
-.ws-code-line.active .ws-code-gutter { color: #d3c8b4; }
+.ws-code-line.active .ws-code-gutter { color: var(--h-code-ink); }
 .ws-code-text {
   display: table-cell;
   padding: 0 18px 0 16px;
@@ -418,8 +415,8 @@ html.dark .ws-pin-tab:hover { color: var(--h-ink); }
   background: var(--h-surface);
 }
 .ws-diff-stat { display: inline-flex; align-items: center; gap: 6px; font-family: var(--h-sans); font-size: 11px; font-weight: 500; }
-.ws-diff-add { color: #7faa7c; }
-.ws-diff-del { color: #c08378; }
+.ws-diff-add { color: var(--h-green); }
+.ws-diff-del { color: var(--h-red); }
 
 .ws-diff-hunk {
   display: table-row;
@@ -427,12 +424,12 @@ html.dark .ws-pin-tab:hover { color: var(--h-ink); }
 .ws-diff-hunk-text {
   display: table-cell;
   padding: 3px 14px;
-  color: #7d93b0;
+  color: var(--h-hl-hunk);
   background: rgba(91,143,212,.08);
   white-space: pre;
 }
-.ws-diff-line-add { background: color-mix(in srgb, oklch(0.62 0.10 150) 16%, oklch(0.193 0.016 44)); }
-.ws-diff-line-del { background: color-mix(in srgb, oklch(0.58 0.12 28) 16%, oklch(0.193 0.016 44)); }
+.ws-diff-line-add { background: color-mix(in srgb, oklch(0.62 0.10 150) 16%, var(--h-pre-bg)); }
+.ws-diff-line-del { background: color-mix(in srgb, oklch(0.58 0.12 28) 16%, var(--h-pre-bg)); }
 
 /* ── Markdown viewer ──────────────────────────── */
 .ws-md-body { max-width: 620px; }
@@ -485,12 +482,12 @@ html.dark .ws-pin-tab:hover { color: var(--h-ink); }
 }
 .ws-md-body pre {
   position: relative; margin: 0 0 16px; border-radius: 8px;
-  background: oklch(0.193 0.016 44); overflow-x: auto;
+  background: var(--h-pre-bg); overflow-x: auto;
 }
 .ws-md-body pre code {
   display: block; padding: 14px 16px; padding-right: 52px;
   font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
-  font-size: calc(var(--stoa-msg-scale, 1) * 13px); line-height: 1.6; color: #d3c8b4;
+  font-size: calc(var(--stoa-msg-scale, 1) * 13px); line-height: 1.6; color: var(--h-code-ink);
   white-space: pre-wrap; overflow-wrap: break-word;
   background: transparent;
 }

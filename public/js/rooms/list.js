@@ -103,7 +103,7 @@ function _makeRoomRow(room, isArchived) {
   time.className = 'h-room-time';
   if (hasDraft) {
     time.textContent = 'draft';
-    time.style.color = '#d39749';
+    time.style.color = 'var(--h-pin)';
     time.style.fontWeight = '600';
   } else {
     time.textContent = (room.last_activity || room.created_at) ? relativeTime(room.last_activity || room.created_at) : (room.message_count + ' msg');
@@ -115,7 +115,7 @@ function _makeRoomRow(room, isArchived) {
   if (isArchived) {
     actionBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
     actionBtn.title = 'Delete';
-    actionBtn.style.color = '#c44';
+    actionBtn.style.color = 'var(--h-red)';
     actionBtn.onclick = e => { e.stopPropagation(); deleteRoom(room); };
     const restoreActionBtn = document.createElement('button');
     restoreActionBtn.className = 'h-room-action';
@@ -212,7 +212,7 @@ function renderRoomList(rooms) {
       const delAll = document.createElement('div');
       delAll.style.cssText = 'text-align:center;padding:12px 0 4px';
       const delBtn = document.createElement('button');
-      delBtn.style.cssText = 'background:transparent;border:1px solid var(--h-hairline);border-radius:6px;padding:5px 14px;font-family:var(--h-sans);font-size:12px;color:#c44;cursor:pointer';
+      delBtn.style.cssText = 'background:transparent;border:1px solid var(--h-hairline);border-radius:6px;padding:5px 14px;font-family:var(--h-sans);font-size:12px;color:var(--h-red);cursor:pointer';
       delBtn.textContent = 'delete all archived';
       delBtn.onclick = async () => {
         if (!confirm(`Delete all ${rooms.length} archived rooms? This cannot be undone.`)) return;

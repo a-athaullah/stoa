@@ -527,7 +527,7 @@ function handleWsMessage(msg) {
         if (rootRow && !rootRow.querySelector('.h-thread-limit-notice')) {
           const notice = document.createElement('div');
           notice.className = 'h-thread-limit-notice';
-          notice.style.cssText = 'font-size:11.5px;color:var(--h-error,#b35a4b);margin-top:4px;padding:2px 6px;background:oklch(0.97 0.01 25);border-radius:4px;display:inline-block';
+          notice.style.cssText = 'font-size:11.5px;color:var(--h-red);margin-top:4px;padding:2px 6px;background:var(--h-danger-note-bg);border-radius:4px;display:inline-block';
           notice.textContent = `Thread limit (${msg.max_active_threads}) tercapai`;
           const col = rootRow.querySelector('.t-col') || rootRow;
           col.appendChild(notice);

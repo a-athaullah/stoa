@@ -8,7 +8,7 @@ function wsShowToast(message, kind) {
   }
   const toast = document.createElement('div');
   toast.className = 'ws-toast';
-  const iconColor = kind === 'error' ? '#c08378' : '#7faa7c';
+  const iconColor = kind === 'error' ? 'var(--h-red)' : 'var(--h-green)';
   const iconSvg = kind === 'error'
     ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M12 4.5l8.5 15H3.5z"/><path d="M12 10v4.5"/><circle cx="12" cy="17.6" r=".7" fill="currentColor" stroke="none"/></svg>'
     : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
@@ -73,7 +73,7 @@ function wsShowCtxMenu(x, y, relPath, isDir) {
     if (it.div) { const d = document.createElement('div'); d.style.cssText = 'height:1px;background:var(--h-hair-soft);margin:5px 7px'; menu.appendChild(d); return; }
     const item = document.createElement('div');
     item.className = 'ws-ctx-item' + (it.danger ? ' danger' : '');
-    item.innerHTML = '<span style="display:inline-flex;color:' + (it.danger ? '#c08378' : 'var(--h-ink-mute)') + '">' + it.icon + '</span><span style="flex:1">' + it.label + '</span>';
+    item.innerHTML = '<span style="display:inline-flex;color:' + (it.danger ? 'var(--h-red)' : 'var(--h-ink-mute)') + '">' + it.icon + '</span><span style="flex:1">' + it.label + '</span>';
     item.onclick = () => { wsCloseCtxMenu(); it.action(); };
     menu.appendChild(item);
   });

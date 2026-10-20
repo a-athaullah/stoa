@@ -68,7 +68,7 @@ function _renderDoctor() {
     const icon = c.ok ? '✓' : '⚠';
     const color = c.ok ? 'var(--h-green,oklch(0.65 0.16 145))' : 'var(--h-red,oklch(0.6 0.18 27))';
     const fixBlock = !c.ok && c.fix ? `
-      <div style="margin-top:6px;background:var(--h-code-bg,oklch(0.97 0 0));border-radius:6px;padding:6px 10px;display:flex;align-items:center;gap:8px;justify-content:space-between">
+      <div style="margin-top:6px;background:var(--h-docs-pre-bg);border-radius:6px;padding:6px 10px;display:flex;align-items:center;gap:8px;justify-content:space-between">
         <code style="font-family:var(--h-mono);font-size:11.5px;color:var(--h-ink)">${c.fix}</code>
         <button onclick="navigator.clipboard.writeText('${c.fix.replace(/'/g, "\\'")}')" style="flex-shrink:0;background:none;border:none;cursor:pointer;color:var(--h-ink-mute);font-size:11px;padding:2px 6px;border-radius:4px;border:1px solid var(--h-border)">copy</button>
       </div>` : '';
@@ -124,7 +124,7 @@ function _renderDebugBundleSection() {
       <div id="debug-bundle-actions" style="margin-bottom:8px">
         <button id="debug-bundle-create-btn" onclick="_debugBundleShowConsent()" style="background:none;border:1px solid var(--h-border);border-radius:6px;padding:6px 14px;font-size:12.5px;color:var(--h-ink);cursor:pointer">Create debug bundle</button>
       </div>
-      <div id="debug-bundle-consent" style="display:none;border:1px solid var(--h-border);border-radius:8px;padding:14px;margin-bottom:10px;background:var(--h-code-bg,oklch(0.97 0 0))">
+      <div id="debug-bundle-consent" style="display:none;border:1px solid var(--h-border);border-radius:8px;padding:14px;margin-bottom:10px;background:var(--h-docs-pre-bg)">
         <div style="font-size:12.5px;color:var(--h-ink);margin-bottom:10px;line-height:1.5">
           This bundle will contain:<br>
           &bull; Database health stats &amp; table counts<br>

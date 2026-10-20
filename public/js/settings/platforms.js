@@ -354,7 +354,7 @@ function sShowPlatformForm(existing) {
 
   function renderKeyPill(key, idx) {
     const pill = document.createElement('div');
-    pill.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 8px;border-radius:4px;background:var(--h-surface-raised,rgba(255,255,255,.06));font-family:ui-monospace,monospace;font-size:11.5px;color:var(--h-ink-faint)';
+    pill.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 8px;border-radius:4px;background:var(--h-surface-hi);font-family:ui-monospace,monospace;font-size:11.5px;color:var(--h-ink-faint)';
     const label = document.createElement('span');
     label.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
     label.textContent = (idx === 0 ? '① ' : idx === 1 ? '② ' : '③ ') + key;

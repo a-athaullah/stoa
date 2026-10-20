@@ -16,7 +16,7 @@ function wsFileGlyph(ext, size = 15) {
   const m = WS_FILE_COLORS[ext] || { tag: '', c: 'var(--h-ink-faint)' };
   const el = document.createElement('span');
   el.className = 'ws-file-glyph ws-mono';
-  el.style.cssText = `width:${size+3}px;height:${size+3}px;border:1px solid color-mix(in srgb,${m.c} 50%,transparent);background:color-mix(in srgb,${m.c} 14%,transparent);color:${m.c}`;
+  el.style.cssText = `width:${size+3}px;height:${size+3}px;border:1px solid color-mix(in srgb,${m.c} 50%,transparent);background:color-mix(in srgb,${m.c} 14%,transparent);color:color-mix(in srgb,${m.c} 65%,var(--h-ink))`;
   el.textContent = m.tag;
   return el;
 }

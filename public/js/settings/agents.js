@@ -514,14 +514,14 @@ function sMakeConfirmPill(actor) {
   const pill = document.createElement('div');
   pill.className = 's-confirm-pill';
   const lbl = document.createElement('span');
-  lbl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:13px;color:#b35a4b;white-space:nowrap';
+  lbl.style.cssText = 'font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-red);white-space:nowrap';
   lbl.textContent = `remove ${actor.name}?`;
   const cancelBtn = document.createElement('button');
   cancelBtn.style.cssText = 'background:transparent;border:none;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12.5px;padding:4px 10px;border-radius:999px;cursor:pointer';
   cancelBtn.textContent = 'cancel';
   cancelBtn.addEventListener('click', () => sCancelDelete(actor.id));
   const removeBtn = document.createElement('button');
-  removeBtn.style.cssText = 'background:#b35a4b;border:none;color:#fff5ef;font-family:var(--h-sans);font-size:12.5px;padding:5px 12px;border-radius:999px;cursor:pointer;letter-spacing:.01em';
+  removeBtn.style.cssText = 'background:var(--h-red-fill);border:none;color:#fff;font-family:var(--h-sans);font-size:12.5px;padding:5px 12px;border-radius:999px;cursor:pointer;letter-spacing:.01em';
   removeBtn.textContent = 'remove';
   removeBtn.addEventListener('click', () => sCommitDelete(actor.id));
   pill.appendChild(lbl); pill.appendChild(cancelBtn); pill.appendChild(removeBtn);
@@ -701,7 +701,7 @@ function _saMakeDescLine(sa) {
 function _saAnthropicModels() {
   return getAvailableModels().filter(m => m.platform === 'anthropic');
 }
-const SA_DANGER = '#b35a4b';
+const SA_DANGER = 'var(--h-red)';
 const HARNESS_LABELS = { claude: 'Claude CLI', codex: 'Codex CLI' };
 
 function _saPopulateModelSel(modelSel, harness, actor, currentVal) {
@@ -728,17 +728,7 @@ function _saPopulateModelSel(modelSel, harness, actor, currentVal) {
   modelSel.value = valid.includes(currentVal) ? currentVal : '';
 }
 
-// One-time token injection: the sub-agent seal shade vars. Relative oklch keeps
-// the parent HUE and just lightens/desaturates, so Ara's teal stays teal.
-function saInjectTokens() {
-  if (document.getElementById('sa-tokens')) return;
-  const el = document.createElement('style');
-  el.id = 'sa-tokens';
-  el.textContent =
-    ':root{--sa-sub-dl:0.16;--sa-sub-cf:0.55;--sa-sub-ink:oklch(0.28 0.020 50)}' +
-    'html.dark{--sa-sub-dl:0.15;--sa-sub-cf:0.62;--sa-sub-ink:oklch(0.30 0.020 50)}';
-  document.head.appendChild(el);
-}
+// Sub-agent seal shade: --sa-sub-* tokens live per scheme in css/base.css.
 function saSubShade(color) {
   return `oklch(from ${color} calc(l + var(--sa-sub-dl)) calc(c * var(--sa-sub-cf)) h)`;
 }
@@ -824,7 +814,7 @@ function _saBuildAvatarEditor(sa, saShade, onUpdate) {
   uploadBtn.onclick = () => imgInp.click();
 
   const removeBtn = document.createElement('button');
-  removeBtn.textContent = 'remove image'; removeBtn.style.cssText = 'display:' + (sa.avatar_url ? 'inline-block' : 'none') + ';background:transparent;border:1px solid var(--h-border);border-radius:999px;color:#b35a4b;font-family:var(--h-sans);font-size:12px;padding:4px 12px;cursor:pointer';
+  removeBtn.textContent = 'remove image'; removeBtn.style.cssText = 'display:' + (sa.avatar_url ? 'inline-block' : 'none') + ';background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-red);font-family:var(--h-sans);font-size:12px;padding:4px 12px;cursor:pointer';
   removeBtn.onclick = async () => {
     removeBtn.disabled = true;
     try {
@@ -861,7 +851,7 @@ function _saBuildMemoryEditor(sa) {
       ta.style.cssText = 'width:100%;box-sizing:border-box;min-height:80px;resize:vertical;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;padding:8px 10px;border:1px solid var(--h-border);border-radius:8px;background:var(--h-surface);color:var(--h-ink);outline:none';
       const footer = document.createElement('div'); footer.style.cssText = 'display:flex;align-items:center;justify-content:space-between';
       const counter = document.createElement('span'); counter.style.cssText = 'font-size:11.5px;color:var(--h-ink-faint);font-variant-numeric:tabular-nums';
-      const updateCounter = () => { const used = ta.value.length; const pct = used / SA_MEM_BUDGET; counter.textContent = `${used} / ${SA_MEM_BUDGET}`; counter.style.color = pct > .9 ? 'oklch(55% .18 27)' : pct > .75 ? 'oklch(60% .15 80)' : 'var(--h-ink-faint)'; };
+      const updateCounter = () => { const used = ta.value.length; const pct = used / SA_MEM_BUDGET; counter.textContent = `${used} / ${SA_MEM_BUDGET}`; counter.style.color = pct > .9 ? 'var(--h-red)' : pct > .75 ? 'var(--h-amber)' : 'var(--h-ink-faint)'; };
       updateCounter(); ta.addEventListener('input', updateCounter);
       const saveBtn = document.createElement('button'); saveBtn.textContent = 'save'; saveBtn.style.cssText = 'background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12px;padding:4px 14px;cursor:pointer';
       saveBtn.onclick = async () => {
@@ -1040,7 +1030,7 @@ function sMakeEditAccordion(actor) {
     } catch { showToast('Failed to change harness', { error: true }); beSel.value = actor.adapter || 'claude'; }
   });
   const _accHint = document.createElement('span');
-  _accHint.style.cssText = 'font-size:11px;color:oklch(52% .22 25);display:none';
+  _accHint.style.cssText = 'font-size:11px;color:var(--h-red);display:none';
   const _accInitHint = _harnessHint(actor);
   if (_accInitHint) { _accHint.textContent = _accInitHint; _accHint.style.display = ''; }
   const _accCheckBtn = _makeCheckHarnessBtn(actor, beSel, _accHint);
@@ -1099,7 +1089,6 @@ function sMakeEditAccordion(actor) {
   invalidateCmd = () => installSlip.invalidate();
 
   // ── Sub-agents section (card — ported from subagents.jsx) ──
-  saInjectTokens();
   const saParentColor = actor.avatar_color || '#4f8f9c';
   const saShade = saSubShade(saParentColor);
 
@@ -1411,7 +1400,7 @@ function sMakeEditAccordion(actor) {
       const used = ta.value.length;
       const pct = used / budget;
       counter.textContent = `${used} / ${budget}`;
-      counter.style.color = pct > .9 ? 'oklch(55% .18 27)' : pct > .75 ? 'oklch(60% .15 80)' : 'var(--h-ink-faint)';
+      counter.style.color = pct > .9 ? 'var(--h-red)' : pct > .75 ? 'var(--h-amber)' : 'var(--h-ink-faint)';
     };
     updateCounter();
     ta.addEventListener('input', updateCounter);
@@ -1863,7 +1852,7 @@ function renderAgentDetailHeader(container, actor) {
 
   const delBtn = document.createElement('button');
   delBtn.className = 's-icon-btn'; delBtn.title = 'Remove agent'; delBtn.innerHTML = svgX(16);
-  delBtn.style.color = '#b35a4b';
+  delBtn.style.color = 'var(--h-red)';
   delBtn.addEventListener('click', e => {
     e.stopPropagation();
     sRowStates.set(actor.id, { state: 'confirm-delete', draft: '' });
@@ -1969,7 +1958,7 @@ function buildAgentSettingsCard(actor) {
     } catch { showToast('Failed to change harness', { error: true }); beSel.value = actor.adapter || 'claude'; }
   });
   const beHint = document.createElement('span');
-  beHint.style.cssText = 'font-size:11px;color:oklch(52% .22 25);display:none';
+  beHint.style.cssText = 'font-size:11px;color:var(--h-red);display:none';
   const _initHint = _harnessHint(actor);
   if (_initHint) { beHint.textContent = _initHint; beHint.style.display = ''; }
   const beCheckBtn = _makeCheckHarnessBtn(actor, beSel, beHint);
@@ -1978,7 +1967,7 @@ function buildAgentSettingsCard(actor) {
   beSelRow.append(beSel, beCheckBtn);
   const beNotice = document.createElement('span');
   beNotice.id = `s-harness-notice-${actor.id}`;
-  beNotice.style.cssText = 'font-size:11.5px;color:oklch(60% .15 80);margin-top:2px;display:none';
+  beNotice.style.cssText = 'font-size:11.5px;color:var(--h-amber);margin-top:2px;display:none';
   beGrp.append(mkFieldLbl('harness'), beSelRow, beHint, beNotice);
 
   const langGrp = document.createElement('div'); langGrp.className = 's-field-group'; langGrp.style.minWidth = 'auto';
@@ -2120,7 +2109,6 @@ function buildAgentSettingsCard(actor) {
 }
 
 function buildSubAgentsSection(actor) {
-  saInjectTokens();
   const saParentColor = actor.avatar_color || '#4f8f9c';
   const saShade = saSubShade(saParentColor);
 
@@ -2328,7 +2316,7 @@ function buildAgentMemorySection(actor) {
     const ta = document.createElement('textarea'); ta.name = 'agent-memory-' + file.replace('.', '-').toLowerCase(); ta.value = initial; ta.placeholder = `Write ${file} content here…`; ta.maxLength = budget; ta.style.cssText = 'width:100%;box-sizing:border-box;min-height:80px;resize:vertical;font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.6;padding:8px 10px;border:1px solid var(--h-border);border-radius:8px;background:var(--h-surface);color:var(--h-ink);outline:none';
     const footer = document.createElement('div'); footer.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-top:6px';
     const counter = document.createElement('span'); counter.style.cssText = 'font-size:11.5px;color:var(--h-ink-faint);font-variant-numeric:tabular-nums';
-    const updateCounter = () => { const used = ta.value.length; const pct = used / budget; counter.textContent = `${used} / ${budget}`; counter.style.color = pct > .9 ? 'oklch(55% .18 27)' : pct > .75 ? 'oklch(60% .15 80)' : 'var(--h-ink-faint)'; };
+    const updateCounter = () => { const used = ta.value.length; const pct = used / budget; counter.textContent = `${used} / ${budget}`; counter.style.color = pct > .9 ? 'var(--h-red)' : pct > .75 ? 'var(--h-amber)' : 'var(--h-ink-faint)'; };
     updateCounter(); ta.addEventListener('input', updateCounter);
     const saveBtn = document.createElement('button'); saveBtn.style.cssText = 'background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12px;padding:4px 14px;cursor:pointer'; saveBtn.textContent = 'save';
     saveBtn.onclick = async () => {
@@ -2408,7 +2396,7 @@ function buildAgentSystemPromptSection(actor) {
       const updateCounter = () => {
         const used = ta.value.length; const pct = used / 65536;
         counter.textContent = `${used} / 65536`;
-        counter.style.color = pct > .9 ? 'oklch(55% .18 27)' : pct > .75 ? 'oklch(60% .15 80)' : 'var(--h-ink-faint)';
+        counter.style.color = pct > .9 ? 'var(--h-red)' : pct > .75 ? 'var(--h-amber)' : 'var(--h-ink-faint)';
       };
       updateCounter(); ta.addEventListener('input', updateCounter);
 

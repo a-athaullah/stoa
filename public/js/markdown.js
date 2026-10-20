@@ -66,7 +66,7 @@ function showCopyFeedback(btn) {
   const row = btn.closest('.h-msg-row, .t-root-row, .h-thread-msg-row, .h-thread-root-row');
   if (row) row.classList.add('show-actions');
   const orig = btn.innerHTML;
-  btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5cb85c" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+  btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="color:var(--h-green)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
   btn.classList.add('copied');
   setTimeout(() => {
     btn.innerHTML = orig;
