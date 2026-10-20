@@ -570,7 +570,7 @@ function agentReadyForWake(actorId) {
 // A sub-agent trigger refused before it ran ("agent updating", mid-trigger disconnect):
 // the run never started, so the parent is told the same way as for an interruption.
 function markSubAgentInterrupted(messageId) {
-  const rows = db.prepare(`UPDATE messages SET result_meta=?, completed_at=datetime('now') WHERE id=? AND sub_agent_id IS NOT NULL
+  const rows = db.prepare(`UPDATE messages SET result_meta=?, completed_at=datetime('now') WHERE id=? AND sub_agent_id IS NOT NULL AND state='error'
     RETURNING id, room_id, participant_id, thread_id, sub_agent_id, sub_agent_label`).all(INTERRUPTED_RESULT_META, messageId);
   enqueueOrphanWakes(rows);
 }
@@ -683,7 +683,7 @@ async function drainWake(wakeId) {
     const attempts = row.attempts + 1;
     if (attempts >= MAX_WAKE_ATTEMPTS) {
       db.prepare('DELETE FROM pending_wakes WHERE id=?').run(wakeId);
-      postWakeSystemEvent(row.room_id, row.parent_participant_id, null, `gagal membangunkan ${parent.name} untuk hasil ${label} setelah ${attempts}×`);
+      postWakeSystemEvent(row.room_id, row.parent_participant_id, row.thread_id ?? null, `gagal membangunkan ${parent.name} untuk hasil ${label} setelah ${attempts}×`);
     } else {
       db.prepare('UPDATE pending_wakes SET attempts=? WHERE id=?').run(attempts, wakeId);
     }
