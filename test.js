@@ -1693,7 +1693,7 @@ async function runAsyncUnitTests() {
     assert.strictEqual(reads.at(-1), require('path').join('/home/u', '.pm2', 'pm2.pid'), 'default PM2_HOME = ~/.pm2');
   });
 
-  await uta('agent restart msg — manual: busy → ack pending, no exit; idle → ack restarting + restart; version path: no ack', async () => {
+  await uta('agent restart msg — manual: restarts NOW even while busy, acks restarting with counts; version path still waits for idle', async () => {
     const stoa = require('./stoa.js');
     const sent = [];
     let restarts = 0;
@@ -1701,20 +1701,21 @@ async function runAsyncUnitTests() {
     try {
       stoa.activeTriggers.clear();
       stoa.activeTriggers.set('busy-1', { room_id: 1, startedAt: Date.now(), lastActivity: Date.now() });
+      stoa.activeTriggers.set('busy-2', { room_id: 2, startedAt: Date.now(), lastActivity: Date.now() });
       await stoa.handleAgentMessage({ type: 'restart', reason: 'manual' });
-      assert.deepStrictEqual(sent, [{ type: 'restart_status', state: 'pending', active: 1, queued: 0 }]);
-      assert.strictEqual(restarts, 0, 'busy agent must not restart yet');
+      assert.deepStrictEqual(sent, [{ type: 'restart_status', state: 'restarting', active: 2, queued: 0 }], 'ack sent before exiting');
+      assert.strictEqual(restarts, 1, 'busy agent restarts immediately');
       stoa.activeTriggers.clear();
       stoa.drainQueue();
-      assert.strictEqual(restarts, 1, 'restart fires once the last trigger drains');
+      assert.strictEqual(restarts, 1, 'manual path must not also arm pendingRestart');
       sent.length = 0; restarts = 0;
-      await stoa.handleAgentMessage({ type: 'restart', reason: 'manual' });
-      assert.deepStrictEqual(sent, [{ type: 'restart_status', state: 'restarting', active: 0, queued: 0 }]);
-      assert.strictEqual(restarts, 1);
-      sent.length = 0; restarts = 0;
+      stoa.activeTriggers.set('busy-3', { room_id: 3, startedAt: Date.now(), lastActivity: Date.now() });
       await stoa.handleAgentMessage({ type: 'restart' });
       assert.deepStrictEqual(sent, [], 'version-outdated restart stays silent');
-      assert.strictEqual(restarts, 1);
+      assert.strictEqual(restarts, 0, 'version-outdated restart still waits for idle');
+      stoa.activeTriggers.clear();
+      stoa.drainQueue();
+      assert.strictEqual(restarts, 1, 'and fires once the last trigger drains');
     } finally { stoa.activeTriggers.clear(); stoa.__resetDeps(); }
   });
 
@@ -10811,7 +10812,7 @@ async function run() {
       assert.strictEqual(r.body.error, 'agent_offline');
     });
 
-    await test('agent restart — sends {restart, manual} once, state requested → pending, broadcast to UI', async () => {
+    await test('agent restart — sends {restart, manual} once, state requested → restarting, broadcast to UI', async () => {
       const got = [];
       rsAgent.ws.on('message', (d) => { const m = JSON.parse(d); if (m.type === 'restart') got.push(m); });
       const bcast = waitForWsMessage(human, m => m.type === 'agent_restart_status' && m.actor_id === rsAgent.actorId && m.state === 'requested');
@@ -10823,20 +10824,23 @@ async function run() {
       assert.deepStrictEqual(again.body, { ok: true, state: 'requested' }, 'second click reports the outstanding request');
       await new Promise(res => setTimeout(res, 150));
       assert.deepStrictEqual(got, [{ type: 'restart', reason: 'manual' }], 'exactly one restart message');
-      const pending = waitForWsMessage(human, m => m.type === 'agent_restart_status' && m.state === 'pending');
-      rsAgent.ws.send(JSON.stringify({ type: 'restart_status', state: 'pending', active: 2, queued: 'x' }));
-      const p = await pending;
+      rsAgent.ws.send(JSON.stringify({ type: 'restart_status', state: 'pending', active: 1, queued: 0 }));
+      await new Promise(res => setTimeout(res, 150));
+      assert.strictEqual((await restartState(rsAgent.actorId)).restart_state, 'requested', 'pending (old wait-for-idle ack) is no longer a state');
+      const restarting = waitForWsMessage(human, m => m.type === 'agent_restart_status' && m.state === 'restarting');
+      rsAgent.ws.send(JSON.stringify({ type: 'restart_status', state: 'restarting', active: 2, queued: 'x' }));
+      const p = await restarting;
       assert.strictEqual(p.active, 2); assert.strictEqual(p.queued, 0, 'non-integer count sanitized');
-      assert.strictEqual((await restartState(rsAgent.actorId)).restart_state, 'pending');
+      assert.strictEqual((await restartState(rsAgent.actorId)).restart_state, 'restarting');
       rsAgent.ws.send(JSON.stringify({ type: 'restart_status', state: 'done' }));
       await new Promise(res => setTimeout(res, 150));
-      assert.strictEqual((await restartState(rsAgent.actorId)).restart_state, 'pending', 'agent cannot claim done');
+      assert.strictEqual((await restartState(rsAgent.actorId)).restart_state, 'restarting', 'agent cannot claim done');
     });
 
-    await test('agent restart — reconnect with same boot_id keeps pending; new boot_id → done', async () => {
+    await test('agent restart — reconnect with same boot_id keeps state; new boot_id → done', async () => {
       await closeWs(rsAgent.ws);
       rsAgent.ws = await connectAs(rsAgent.actorId, rsAgent.secret, { supervisor: 'pm2', boot_id: 'aaaaaaaaaaaaaaaa' });
-      assert.strictEqual((await restartState(rsAgent.actorId)).restart_state, 'pending', 'network blip is not a restart');
+      assert.strictEqual((await restartState(rsAgent.actorId)).restart_state, 'restarting', 'network blip is not a restart');
       await closeWs(rsAgent.ws);
       const done = waitForWsMessage(human, m => m.type === 'agent_restart_status' && m.actor_id === rsAgent.actorId && m.state === 'done');
       rsAgent.ws = await connectAs(rsAgent.actorId, rsAgent.secret, { supervisor: 'pm2', boot_id: 'bbbbbbbbbbbbbbbb' });
@@ -10845,7 +10849,7 @@ async function run() {
     });
 
     await test('agent restart — unsolicited restart_status is ignored', async () => {
-      rsAgent.ws.send(JSON.stringify({ type: 'restart_status', state: 'pending', active: 1, queued: 0 }));
+      rsAgent.ws.send(JSON.stringify({ type: 'restart_status', state: 'restarting', active: 1, queued: 0 }));
       await new Promise(res => setTimeout(res, 150));
       assert.strictEqual((await restartState(rsAgent.actorId)).restart_state, null);
     });

@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.378";
+var CLIENT_VERSION = "0.4.379";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -374,6 +374,14 @@ function doRestart() {
   for (const s of sessionPool.values()) s.shutdown();
   ws?.close();
   process.exit(0);
+}
+// process.exit right after ws.send can drop the frame; exit from the send callback, with a cap.
+function sendThenRestart(data) {
+  let done = false;
+  const go = () => { if (done) return; done = true; doRestart(); };
+  if (_sendOverride || ws?.readyState !== WebSocket.OPEN) { send(data); return go(); }
+  ws.send(JSON.stringify(data), go);
+  setTimeout(go, 1e3).unref();
 }
 var sessionPool = /* @__PURE__ */ new Map();
 // Must match MAX_UPLOAD in server.js /api/upload/raw.
@@ -925,13 +933,17 @@ async function handleAgentMessage(msg) {
       console.log(`[stoa] Harness check: ${result.harness_status.map((s) => `${s.id}${s.installed ? " v" + s.version : " (not found)"}${s.logged_in === false ? " (not logged in)" : ""}`).join(", ") || "none"}`);
     }).catch(() => {});
   }
+  if (msg.type === "restart" && msg.reason === "manual") {
+    // Owner asked for it and was warned: stop now, don't wait for idle. doRestart shuts the
+    // sessions down; the server marks this agent's in-flight messages as interrupted on disconnect.
+    console.log(`[stoa] Restart requested from UI \u2014 stopping ${activeTriggers.size} active, ${triggerQueue.length} queued trigger(s)`);
+    sendThenRestart({ type: "restart_status", state: "restarting", active: activeTriggers.size, queued: triggerQueue.length });
+    return;
+  }
   if (msg.type === "restart") {
-    const manual = msg.reason === "manual";
-    console.log(manual ? "[stoa] Restart requested from UI \u2014 will restart when idle" : "[stoa] Server requested restart (version outdated)");
+    console.log("[stoa] Server requested restart (version outdated)");
     pendingRestart = true;
-    const idle = activeTriggers.size === 0 && triggerQueue.length === 0;
-    if (manual) send({ type: "restart_status", state: idle ? "restarting" : "pending", active: activeTriggers.size, queued: triggerQueue.length });
-    if (idle) doRestart();
+    if (activeTriggers.size === 0 && triggerQueue.length === 0) doRestart();
     return;
   }
   if (msg.type === "server_restarting") {

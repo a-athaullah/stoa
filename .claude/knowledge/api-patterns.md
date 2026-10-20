@@ -259,7 +259,7 @@ Headers:
 }
 ```
 
-Also sent: `client_version`, `harnesses_available`, `supervisor` (`'pm2'|null`), `boot_id` (random hex per agent process) — see Agent Restart When Idle.
+Also sent: `client_version`, `harnesses_available`, `supervisor` (`'pm2'|null`), `boot_id` (random hex per agent process) — see Agent Restart.
 
 Server validates secret, adds to `agentClients` Map.
 After connect: sends `claude_md_import` for each unmigrated workdir.
@@ -454,7 +454,7 @@ Human session only (no session → 401, agent headers → 403 `agent_scope_denie
 
 ---
 
-### Agent Restart When Idle
+### Agent Restart
 
 ```
 POST /api/actors/:id/restart
@@ -462,11 +462,11 @@ POST /api/actors/:id/restart
 ```
 Human session only (no session → 401, agent headers → 403 `agent_scope_denied`; not in `lib/agent-scope.js`). 404 unknown/non-AI actor; 409 `{ error: "agent_offline" }`; 409 `{ error: "not_supervised" }`.
 
-Purpose: running sessions hold the old harness CLI process; restarting the agent process rebuilds them on the updated CLI (sessions resume — `ai_sessions` untouched). Separate from **Check** (`harnesses/check`), which stays cheap.
+Purpose: running sessions hold the old harness CLI process; restarting the agent process rebuilds them on the updated CLI (sessions resume — `ai_sessions` untouched). Separate from **Check** (`harnesses/check`), which stays cheap. The restart is **immediate** (owner decision, PR #175): running and queued triggers are stopped, the UI warns about that before confirming.
 
 - **Supervisor gate:** the agent exits with `process.exit(0)` and relies on PM2 `autorestart`. An agent not under PM2 would die and stay down, so the agent reports `supervisor` in `agent_connect` via `lib/supervisor.js detectSupervisor()`: `'pm2'` only if `pm_id` is set, `autorestart !== 'false'`, **and** `process.ppid` equals the daemon pid in `$PM2_HOME/pm2.pid` (pm_id alone is inherited by any `node stoa.js` started from a shell inside a PM2 process). Old agents send nothing → `null` → 409.
-- **Agent side:** WS `{ type: "restart", reason: "manual" }` reuses the existing `pendingRestart` path (restart only when `activeTriggers` and `triggerQueue` are empty) and acks `{ type: "restart_status", state: "pending"|"restarting", active, queued }`. Without `reason` (server's version-outdated restart) behaviour is unchanged and silent.
-- **State (`agentRestarts`, in memory):** `requested` → `pending` → `restarting` → `done`. Broadcast to UI as `agent_restart_status { actor_id, state, active?, queued? }`; `/api/actors` and `actor_status` carry `supervisor` + `restart_state`. Agent acks only apply while a request is outstanding, and an agent cannot report `done`. The entry survives the disconnect; `done` is decided on reconnect by `boot_id` (random per agent process, sent in `agent_connect`): a different boot_id means the process really restarted, the same one is just a network blip and keeps the state. `restarting` is best-effort (the process exits right after sending), so the UI may see `requested` → offline → online + `done`.
+- **Agent side:** WS `{ type: "restart", reason: "manual" }` does not wait for idle and does not arm `pendingRestart`: it acks `{ type: "restart_status", state: "restarting", active, queued }` (how many triggers it is about to stop) and calls `doRestart()` from the ws.send callback (1 s cap) so the ack is flushed before `process.exit`. `doRestart()` shuts every session down; the server's disconnect handler marks this agent's `streaming`/`requesting` messages as interrupted. Without `reason` (server's version-outdated restart) the old wait-for-idle `pendingRestart` path is unchanged and silent.
+- **State (`agentRestarts`, in memory):** `requested` → `restarting` → `done` (a `pending` ack from pre-0.4.379 agents is ignored). Broadcast to UI as `agent_restart_status { actor_id, state, active?, queued? }`; `/api/actors` and `actor_status` carry `supervisor` + `restart_state`. Agent acks only apply while a request is outstanding, and an agent cannot report `done`. The entry survives the disconnect; `done` is decided on reconnect by `boot_id` (random per agent process, sent in `agent_connect`): a different boot_id means the process really restarted, the same one is just a network blip and keeps the state. If the ack is lost the UI may see `requested` → offline → online + `done`.
 
 ---
 

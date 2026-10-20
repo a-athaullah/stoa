@@ -4678,8 +4678,8 @@ Write-Host "Logs   : pm2 logs $AgentName"
     return json(res, { ok: true });
   }
 
-  // POST /api/actors/:id/restart — restart the agent process once it is idle, so running sessions
-  // are rebuilt on an updated harness CLI (they resume; ai_sessions untouched). Session only.
+  // POST /api/actors/:id/restart — restart the agent process now (running turns are stopped; the UI
+  // warns first) so sessions are rebuilt on an updated harness CLI. They resume; ai_sessions untouched.
   if (req.method === 'POST' && url.pathname.match(/^\/api\/actors\/\d+\/restart$/)) {
     if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
     const actorId = parseInt(url.pathname.split('/')[3]);
@@ -5481,10 +5481,10 @@ const agentHarnessStatus = new Map(); // actor_id → [{ id, installed, logged_i
 const pendingHarnessChecks = new Map(); // request_id → { resolve, timer, actorId }
 const agentSupervisors = new Map(); // actor_id → 'pm2' | null (who restarts the agent after process.exit)
 const agentBootIds = new Map();     // actor_id → per-process id, tells a real restart from a reconnect
-// actor_id → { state: 'requested'|'pending'|'restarting', boot_id, requested_at }. Survives the
-// disconnect on purpose: it is resolved when the agent reconnects with a different boot_id.
+// actor_id → { state: 'requested'|'restarting', boot_id, requested_at }. Survives the disconnect
+// on purpose: it is resolved when the agent reconnects with a different boot_id.
 const agentRestarts = new Map();
-const AGENT_RESTART_STATES = new Set(['pending', 'restarting']);
+const AGENT_RESTART_STATES = new Set(['restarting']);
 const BOOT_ID_RE = /^[a-f0-9]{8,64}$/;
 
 function setAgentRestartState(actorId, state, extra = {}) {
