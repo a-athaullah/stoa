@@ -639,6 +639,17 @@
 </div>
 
 
+<!-- init() runs from the APP_JS block and needs the overlay already parsed -->
+<div id="login-overlay" style="display:none">
+  <form class="login-card" onsubmit="doLogin(event)">
+    <div class="login-logo">Stoa</div>
+    <div class="login-sub">sign in to continue</div>
+    <input class="login-input" id="login-email" type="email" placeholder="Email" autocomplete="email" required>
+    <input class="login-input" id="login-password" type="password" placeholder="Password" autocomplete="current-password" required>
+    <div class="login-error" id="login-error" role="alert" aria-live="polite"></div>
+    <button class="login-btn" type="submit">sign in</button>
+  </form>
+</div>
 <script src="/js/vendor/qrcode.min.js"></script>
 <!-- {{APP_JS}} -->
 <script src="/js/core.js"></script>
@@ -693,16 +704,6 @@
 <script src="/js/automation/events.js"></script>
 <script src="/js/automation/api.js"></script>
 <!-- {{/APP_JS}} -->
-<div id="login-overlay" style="display:none">
-  <form class="login-card" onsubmit="doLogin(event)">
-    <div class="login-logo">Stoa</div>
-    <div class="login-sub">sign in to continue</div>
-    <input class="login-input" id="login-email" type="email" placeholder="Email" autocomplete="email" required>
-    <input class="login-input" id="login-password" type="password" placeholder="Password" autocomplete="current-password" required>
-    <div class="login-error" id="login-error" role="alert" aria-live="polite"></div>
-    <button class="login-btn" type="submit">sign in</button>
-  </form>
-</div>
 <div id="img-lightbox" onclick="if(event.target===this)this.classList.remove('visible')"><button class="lb-nav lb-prev" onclick="event.stopPropagation();lbNav(-1)">&#8249;</button><img id="img-lightbox-src" alt="preview"><button class="lb-nav lb-next" onclick="event.stopPropagation();lbNav(1)">&#8250;</button></div>
 </body>
 </html>

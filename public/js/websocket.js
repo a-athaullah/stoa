@@ -45,8 +45,13 @@ function connectWS(roomId) {
 
 function handleWsMessage(msg) {
   if (msg.type === 'auth_error') {
-    showToast(msg.message || 'Session expired. Redirecting to login…', { error: true, duration: 4000 });
-    setTimeout(() => { window.location.href = '/login'; }, 2000);
+    showToast(msg.message || 'Session expired. Please sign in again.', { error: true, duration: 4000 });
+    // Reload in place: the login overlay shows on the same URL, so a permalink survives sign-in.
+    // If HTTP auth still passes but the WS keeps rejecting, show the overlay instead of reload-looping.
+    const last = Number(sessionStorage.getItem('stoa-auth-reload') || 0);
+    if (Date.now() - last < 30000) { showLogin(); return; }
+    sessionStorage.setItem('stoa-auth-reload', String(Date.now()));
+    setTimeout(() => location.reload(), 2000);
     return;
   }
   if (msg.type === 'history') {
