@@ -878,7 +878,7 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 
 Stoa 在应用最左侧使用**垂直侧边栏导航**。侧边栏仅显示图标（宽 44 px），悬停时展开至 200 px 并显示文字标签。点击任意图标切换区域。移动端（窄屏）下侧边栏会隐藏。
 
-导航项目（从上到下）：**Inbox**（房间列表）、分隔符，以及设置区域：**AI Agent**、**Server**、**General**、**Docs**、**Platforms**、**Automation**、**Usage**、**Doctor**。
+导航项目（从上到下）：**Inbox**（房间列表）、分隔符，以及设置区域：**AI Agent**、**Server**、**General**、**Themes**、**Docs**、**Platforms**、**Automation**、**Usage**、**Doctor**。
 
 ### AI Agent
 
@@ -978,7 +978,16 @@ API 密钥存储在服务器上，仅在 Settings 编辑表单中返回到浏览
 
 ## 主题
 
-点击侧边栏底部的**太阳/月亮图标**在**浅色**和**深色**主题之间切换。您的偏好保存在浏览器中。
+打开 **Settings > Themes**（左侧导航，General 下方）选择视觉主题。主题分为两组：
+
+- **浅色** — Warm Paper（默认）、Hoth、Mood Indigo、Banana、Sweet Treat
+- **深色** — Dark、Aubergine、Ochin、Haberdashery、Choco Mint、Nocturne
+
+点击卡片立即应用 — 勾选标记表示当前活动主题。卡片支持键盘操作。您的选择保存在浏览器中。
+
+**迁移：** 如果您之前使用浅色设置，将自动应用 Warm Paper。深色设置保持为 Dark。如果没有已保存的设置，Stoa 将跟随设备的系统深色/浅色偏好。
+
+在移动端，状态栏颜色会随活动主题更新。
 
 ---
 

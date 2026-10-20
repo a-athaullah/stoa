@@ -235,7 +235,7 @@ function renderRoomSidebar(room, participants) {
         renderParticipants(parts, allActors);
         renderSubAgents(subAgents);
       } catch (err) {
-        body.innerHTML = `<div style="font-size:12.5px;color:#b35a4b">failed to load</div>`;
+        body.innerHTML = `<div style="font-size:12.5px;color:var(--h-red)">failed to load</div>`;
       }
     }
 
@@ -576,7 +576,7 @@ function renderRoomSidebar(room, participants) {
       const pleft = document.createElement('div');
       pleft.innerHTML = '<div style="font-size:13px;color:var(--h-ink)">pause new spawns</div><div style="font-size:11.5px;color:var(--h-ink-faint)">running ones finish; blocks new ones</div>';
       const ptog = document.createElement('button');
-      const paintTog = () => { ptog.textContent = paused ? 'paused' : 'active'; ptog.style.cssText = `background:transparent;border:1px solid var(--h-border);border-radius:999px;padding:5px 14px;cursor:pointer;font-family:var(--h-sans);font-size:12.5px;color:${paused ? '#b35a4b' : 'var(--h-ink-mute)'}`; };
+      const paintTog = () => { ptog.textContent = paused ? 'paused' : 'active'; ptog.style.cssText = `background:transparent;border:1px solid var(--h-border);border-radius:999px;padding:5px 14px;cursor:pointer;font-family:var(--h-sans);font-size:12.5px;color:${paused ? 'var(--h-red)' : 'var(--h-ink-mute)'}`; };
       paintTog(); ptog.onclick = () => { paused = !paused; paintTog(); };
       pr.append(pleft, ptog); body.appendChild(pr);
 
@@ -662,7 +662,7 @@ function renderRoomSidebar(room, participants) {
         linkedSubs = sa.linked || [];
         formSubId = linkedSubs[0]?.id ?? '';
         renderSchedule();
-      } catch { body.innerHTML = '<div style="font-size:12.5px;color:#b35a4b">failed to load</div>'; }
+      } catch { body.innerHTML = '<div style="font-size:12.5px;color:var(--h-red)">failed to load</div>'; }
     }
 
     async function reloadSchedules() {
@@ -740,13 +740,13 @@ function renderRoomSidebar(room, participants) {
         const lbl = document.createElement('span'); lbl.style.cssText = 'font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--h-ink)'; lbl.textContent = sched.sub_agent_label || '?';
         const cad = document.createElement('span'); cad.style.cssText = 'font-size:10.5px;color:var(--h-ink-mute);padding:1px 6px;border-radius:999px;border:1px solid var(--h-border)'; cad.textContent = fmtCadence(sched.schedule_spec);
         const diag = scheduleDiagnoses[sched.id];
-        if (diag && diag.status !== 'ok') { const badge = document.createElement('span'); badge.style.cssText = `font-size:9.5px;padding:1px 6px;border-radius:999px;background:${diag.status === 'overdue' ? '#d97706' : '#b35a4b'};color:#fff;font-weight:600`; badge.textContent = diag.status; badge.title = diag.details || ''; top.appendChild(badge); }
+        if (diag && diag.status !== 'ok') { const badge = document.createElement('span'); badge.style.cssText = `font-size:9.5px;padding:1px 6px;border-radius:999px;background:${diag.status === 'overdue' ? 'var(--h-amber-badge)' : 'var(--h-red-fill)'};color:var(--h-fill-ink);font-weight:600`; badge.textContent = diag.status; badge.title = diag.details || ''; top.appendChild(badge); }
         top.append(lbl, cad);
         const task = document.createElement('div'); task.style.cssText = 'font-size:11.5px;color:var(--h-ink-faint);font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px'; task.textContent = sched.task;
         info.append(top, task);
         const ctrl = document.createElement('div'); ctrl.style.cssText = 'display:flex;align-items:center;gap:3px;flex:0 0 auto';
         const tog = document.createElement('button');
-        tog.style.cssText = `background:transparent;border:1px solid var(--h-border);border-radius:999px;padding:2px 8px;cursor:pointer;font-family:var(--h-sans);font-size:11px;color:${sched.enabled ? 'var(--h-ink-mute)' : '#b35a4b'}`;
+        tog.style.cssText = `background:transparent;border:1px solid var(--h-border);border-radius:999px;padding:2px 8px;cursor:pointer;font-family:var(--h-sans);font-size:11px;color:${sched.enabled ? 'var(--h-ink-mute)' : 'var(--h-red)'}`;
         tog.textContent = sched.enabled ? 'on' : 'off';
         tog.onclick = async () => { try { await fetch(`/api/rooms/${room.id}/sub-agent-schedules/${sched.id}`, { method:'PATCH', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ enabled: !sched.enabled }) }); reloadSchedules(); } catch { showToast('Failed', { error:true }); } };
         const editBtn = document.createElement('button'); editBtn.style.cssText = 'background:transparent;border:none;color:var(--h-ink-faint);cursor:pointer;font-size:13px;padding:2px 4px'; editBtn.textContent = '✎'; editBtn.title = 'edit'; editBtn.onclick = () => openForm(sched.id);
@@ -838,7 +838,7 @@ function renderRoomSidebar(room, participants) {
 
     // ── Tab bar — System Prompt first
     const TAB_BASE = 'background:transparent;border:none;font-family:var(--h-sans);font-size:12.5px;padding:4px 12px;cursor:pointer;border-radius:999px;transition:background .15s,color .15s';
-    const TAB_ON = 'color:var(--h-ink);background:var(--h-surface-raised,var(--h-surface))';
+    const TAB_ON = 'color:var(--h-ink);background:var(--h-surface-hi)';
     const TAB_OFF = 'color:var(--h-ink-faint)';
     const tabBar = document.createElement('div');
     tabBar.style.cssText = 'display:flex;gap:2px;margin-bottom:12px;border:1px solid var(--h-border);border-radius:999px;padding:3px;background:var(--h-bg)';
@@ -899,7 +899,7 @@ function renderRoomSidebar(room, participants) {
 
       const footer = document.createElement('div'); footer.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-top:6px;flex:0 0 auto';
       const counter = document.createElement('span'); counter.style.cssText = COUNTER_CSS;
-      const updateCounter = () => { const used = ta.value.length; const pct = used / limit; counter.textContent = `${used} / ${limit}`; counter.style.color = pct > .9 ? 'oklch(55% .18 27)' : pct > .75 ? 'oklch(60% .15 80)' : 'var(--h-ink-faint)'; };
+      const updateCounter = () => { const used = ta.value.length; const pct = used / limit; counter.textContent = `${used} / ${limit}`; counter.style.color = pct > .9 ? 'var(--h-red)' : pct > .75 ? 'var(--h-amber)' : 'var(--h-ink-faint)'; };
       ta.addEventListener('input', updateCounter);
 
       const btnRow = document.createElement('div'); btnRow.style.cssText = 'display:flex;gap:6px';
@@ -950,7 +950,7 @@ function renderRoomSidebar(room, participants) {
     (async () => {
       try {
         const r = await fetch(`/api/rooms/${room.id}/memory`);
-        if (!r.ok) { body.innerHTML = '<div style="font-size:12.5px;color:#b35a4b">failed to load</div>'; return; }
+        if (!r.ok) { body.innerHTML = '<div style="font-size:12.5px;color:var(--h-red)">failed to load</div>'; return; }
         const data = await r.json();
         body.innerHTML = '';
         const BUDGET = data.budget || 1800;
@@ -998,7 +998,7 @@ function renderRoomSidebar(room, participants) {
             } catch { showToast('Failed to save', { error:true }); return false; }
           },
         });
-      } catch { body.innerHTML = '<div style="font-size:12.5px;color:#b35a4b">failed to load</div>'; }
+      } catch { body.innerHTML = '<div style="font-size:12.5px;color:var(--h-red)">failed to load</div>'; }
     })();
 
     // ── System Prompt pane
@@ -1006,7 +1006,7 @@ function renderRoomSidebar(room, participants) {
     (async () => {
       try {
         const r = await fetch(`/api/rooms/${room.id}/system-prompt`);
-        if (!r.ok) { sysPane.innerHTML = '<div style="font-size:12.5px;color:#b35a4b">failed to load</div>'; return; }
+        if (!r.ok) { sysPane.innerHTML = '<div style="font-size:12.5px;color:var(--h-red)">failed to load</div>'; return; }
         const data = await r.json();
         sysPane.innerHTML = '';
 
@@ -1074,7 +1074,7 @@ function renderRoomSidebar(room, participants) {
         });
 
         sysPane.appendChild(matSection);
-      } catch { sysPane.innerHTML = '<div style="font-size:12.5px;color:#b35a4b">failed to load</div>'; }
+      } catch { sysPane.innerHTML = '<div style="font-size:12.5px;color:var(--h-red)">failed to load</div>'; }
     })();
   }
 }

@@ -878,7 +878,7 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 
 Stoa는 앱 가장 왼쪽에 **세로형 사이드바 내비게이션**을 사용합니다. 사이드바는 아이콘만 표시(너비 44 px)되며, 호버하면 200 px로 확장되어 텍스트 레이블이 나타납니다. 아이콘을 클릭하여 섹션을 전환합니다. 모바일(좁은 화면)에서는 사이드바가 숨겨집니다.
 
-내비게이션 항목(위에서 아래): **Inbox**(룸 목록), 구분선, 그리고 설정 섹션: **AI Agent**, **Server**, **General**, **Docs**, **Platforms**, **Automation**, **Usage**, **Doctor**.
+내비게이션 항목(위에서 아래): **Inbox**(룸 목록), 구분선, 그리고 설정 섹션: **AI Agent**, **Server**, **General**, **Themes**, **Docs**, **Platforms**, **Automation**, **Usage**, **Doctor**.
 
 ### AI Agent
 
@@ -978,7 +978,16 @@ Slack, WhatsApp, Email 연결과 자동화 규칙을 관리합니다. 위의 [�
 
 ## 테마
 
-사이드바 푸터의 **해/달 아이콘**을 클릭하여 **라이트**와 **다크** 테마를 전환합니다. 설정은 브라우저에 저장됩니다.
+**Settings > Themes**（왼쪽 내비게이션, General 아래）를 열어 시각적 테마를 선택합니다. 테마는 두 그룹으로 나뉩니다：
+
+- **라이트** — Warm Paper（기본값）, Hoth, Mood Indigo, Banana, Sweet Treat
+- **다크** — Dark, Aubergine, Ochin, Haberdashery, Choco Mint, Nocturne
+
+카드를 클릭하면 즉시 적용됩니다 — 체크 표시가 활성 테마를 나타냅니다. 카드는 키보드로도 접근 가능합니다. 선택은 브라우저에 저장됩니다.
+
+**마이그레이션：** 이전에 라이트 설정을 사용했다면 Warm Paper가 자동으로 적용됩니다. 다크 설정은 Dark로 유지됩니다. 저장된 설정이 없으면 Stoa가 기기의 시스템 다크/라이트 설정을 따릅니다.
+
+모바일에서는 상태 표시줄 색상이 활성 테마에 맞게 업데이트됩니다.
 
 ---
 

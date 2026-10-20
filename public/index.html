@@ -7,6 +7,16 @@
   <link rel="icon" type="image/svg+xml" href="/stoa-icon.svg">
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#1e1a16">
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('stoa-theme');
+        if (t === 'light') t = 'warm-paper';
+        if (!t) t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'warm-paper';
+        if (/^[a-z-]{1,32}$/.test(t)) document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    })();
+  </script>
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -59,6 +69,10 @@
   <button class="app-nav-item" id="nav-general" data-nav="general" title="General" aria-label="General">
     <span class="app-nav-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg></span>
     <span class="app-nav-label">General</span>
+  </button>
+  <button class="app-nav-item" id="nav-themes" data-nav="themes" title="Themes" aria-label="Themes">
+    <span class="app-nav-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.8-.8 1.8-1.8 0-.5-.2-.9-.5-1.2-.3-.4-.5-.8-.5-1.3 0-1 .8-1.8 1.8-1.8H17a4 4 0 0 0 4-4C21 6.6 17 3 12 3z"/><circle cx="7.5" cy="11.5" r="1"/><circle cx="10" cy="7.5" r="1"/><circle cx="15" cy="7.8" r="1"/></svg></span>
+    <span class="app-nav-label">Themes</span>
   </button>
   <button class="app-nav-item" id="nav-docs" data-nav="docs" title="Docs" aria-label="Docs">
     <span class="app-nav-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></span>
@@ -169,13 +183,14 @@
     <div class="s-page-header">
       <button id="s-mobile-back" aria-label="back">&#8592;</button>
       <span id="s-page-title" style="font-family:var(--h-serif);font-size:28px;line-height:1.05">settings</span>
-      <span style="font-family:var(--h-serif);font-style:italic;font-size:14px;color:var(--h-ink-faint)">how the room is kept</span>
+      <span style="font-family:var(--h-serif);font-style:italic;font-size:14px;color:var(--h-header-ink-faint)">how the room is kept</span>
     </div>
     <div class="s-tabs-row">
       <span class="s-tab active" data-tab="agents">AI Agent<span class="s-tab-ul"></span></span>
       <span class="s-tab" data-tab="server">server<span class="s-tab-ul"></span></span>
       <span class="s-tab" data-tab="docs">docs<span class="s-tab-ul"></span></span>
       <span class="s-tab" data-tab="general">general<span class="s-tab-ul"></span></span>
+      <span class="s-tab" data-tab="themes">themes<span class="s-tab-ul"></span></span>
       <span class="s-tab" data-tab="platforms">platforms<span class="s-tab-ul"></span></span>
       <span class="s-tab" data-tab="automation">automation<span class="s-tab-ul"></span></span>
       <span class="s-tab" data-tab="usage">usage<span class="s-tab-ul"></span></span>
@@ -404,6 +419,19 @@
             <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)">configured model providers</span>
           </div>
           <div id="s-platforms-list"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- tab: themes -->
+    <div class="s-content" id="s-tab-themes" style="display:none">
+      <div class="s-content-inner">
+        <div class="s-server-card">
+          <div class="s-server-card-header">
+            <span style="font-family:var(--h-serif);font-size:16px;color:var(--h-ink)">themes</span>
+            <span style="font-family:var(--h-serif);font-style:italic;font-size:13px;color:var(--h-ink-faint)">applies instantly, saved on this device</span>
+          </div>
+          <div class="s-themes-list" id="s-themes-list"></div>
         </div>
       </div>
     </div>
@@ -689,6 +717,7 @@
 <script src="/js/settings/tabs.js"></script>
 <script src="/js/settings/docs.js"></script>
 <script src="/js/settings/appearance.js"></script>
+<script src="/js/settings/themes.js"></script>
 <script src="/js/settings/platforms.js"></script>
 <script src="/js/settings/account.js"></script>
   <script src="/js/settings/usage.js"></script>

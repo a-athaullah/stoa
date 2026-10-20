@@ -263,14 +263,55 @@ function applyBubbleColor(el, color, subAgentLabel) {
 }
 
 // ── Theme ──────────────────────────────────────────────────────────────────
-const MOON_SVG = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 13.5A8.5 8.5 0 1 1 10.5 3.5a6.7 6.7 0 0 0 10 10z"/></svg>`;
-const SUN_SVG  = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.8"/><path d="M12 2.5v2.2M12 19.3v2.2M4.7 4.7l1.6 1.6M17.7 17.7l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.7 19.3l1.6-1.6M17.7 6.3l1.6-1.6"/></svg>`;
+// Palettes are [data-theme] token blocks in css/base.css; this list is the
+// source of truth for which ids exist (.claude/tools/theme-contrast.js reads it).
+// The inline boot script in index.html applies the stored id before first paint.
+const THEMES = [
+  { id: 'warm-paper', label: 'Warm Paper', scheme: 'light' },
+  { id: 'hoth', label: 'Hoth', scheme: 'light' },
+  { id: 'mood-indigo', label: 'Mood Indigo', scheme: 'light' },
+  { id: 'banana', label: 'Banana', scheme: 'light' },
+  { id: 'sweet-treat', label: 'Sweet Treat', scheme: 'light' },
+  { id: 'dark', label: 'Dark', scheme: 'dark' },
+  { id: 'aubergine', label: 'Aubergine', scheme: 'dark' },
+  { id: 'ochin', label: 'Ochin', scheme: 'dark' },
+  { id: 'haberdashery', label: 'Haberdashery', scheme: 'dark' },
+  { id: 'choco-mint', label: 'Choco Mint', scheme: 'dark' },
+  { id: 'nocturne', label: 'Nocturne', scheme: 'dark' },
+];
+const DEFAULT_THEME = 'warm-paper';
 
-function applyTheme(dark) {
-  document.documentElement.classList.toggle('dark', dark);
-  localStorage.setItem('stoa-theme', dark ? 'dark' : 'light');
-  const btn = document.getElementById('theme-toggle');
-  if (btn) { btn.innerHTML = dark ? SUN_SVG : MOON_SVG; btn.title = dark ? 'switch to light' : 'switch to dark'; }
+// Resolves the stored preference, migrating the pre-themes values
+// ('light' → warm-paper, 'dark' stays dark) and falling back to the OS scheme.
+function resolveStoredTheme() {
+  const saved = localStorage.getItem('stoa-theme');
+  if (saved === 'light') return { id: DEFAULT_THEME, migrated: true };
+  if (saved && THEMES.some(t => t.id === saved)) return { id: saved, migrated: false };
+  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  return { id: prefersDark ? 'dark' : DEFAULT_THEME, migrated: saved !== null };
+}
+
+function currentTheme() {
+  return document.documentElement.dataset.theme || DEFAULT_THEME;
+}
+
+function setTheme(id, { persist = true } = {}) {
+  const theme = THEMES.find(t => t.id === id) || THEMES.find(t => t.id === DEFAULT_THEME);
+  document.documentElement.dataset.theme = theme.id;
+  if (persist) localStorage.setItem('stoa-theme', theme.id);
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', themeColorAsRgb(getComputedStyle(document.body).backgroundColor));
+}
+
+// Resolves any CSS color (the dark palette is oklch) to rgb() for the
+// theme-color meta, which older mobile browsers only parse as hex/rgb.
+function themeColorAsRgb(color) {
+  const ctx = document.createElement('canvas').getContext('2d');
+  if (!ctx) return color;
+  ctx.fillStyle = color;
+  ctx.fillRect(0, 0, 1, 1);
+  const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+  return `rgb(${r}, ${g}, ${b})`;
 }
 
 function toggleSidebar() {
@@ -282,9 +323,5 @@ function toggleSidebar() {
     const room = { id: currentRoomId, title: document.querySelector('.h-room-name')?.textContent || '' };
     renderChatHeader(room, parts);
   }
-}
-
-function toggleTheme() {
-  applyTheme(!document.documentElement.classList.contains('dark'));
 }
 

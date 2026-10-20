@@ -26,7 +26,7 @@ function autoRenderAutomationRow(auto) {
   const isConfirm = autoState.confirmDeleteId === auto.id;
 
   const dotStyle = isEnabled
-    ? 'background:#7fb98c;box-shadow:0 0 0 3px color-mix(in srgb,#7fb98c 18%,transparent)'
+    ? 'background:var(--h-green-fill);box-shadow:0 0 0 3px color-mix(in srgb,var(--h-green-fill) 18%,transparent)'
     : 'background:transparent;border:1.5px solid var(--h-ink-faint)';
   const nameColor = isEnabled ? 'var(--h-ink)' : 'var(--h-ink-mute)';
 
@@ -45,17 +45,17 @@ function autoRenderAutomationRow(auto) {
     ? `Last run: ${autoRelTime(auto.last_run_at)} · Ran ${auto.run_count} time${auto.run_count !== 1 ? 's' : ''}`
     : 'Last run: Never';
 
-  const toggleBg = isEnabled ? '#7fb98c' : 'var(--h-hairline)';
+  const toggleBg = isEnabled ? 'var(--h-green-fill)' : 'var(--h-hairline)';
   const thumbLeft = isEnabled ? '18px' : '2px';
 
   if (isConfirm) {
     return `
       <div class="auto-row" data-id="${auto.id}" style="border-bottom:1px solid var(--h-hair-soft)">
-        <div style="padding:12px 18px;display:flex;align-items:center;justify-content:space-between;background:color-mix(in srgb,#b35a4b 8%,var(--h-surface))">
+        <div style="padding:12px 18px;display:flex;align-items:center;justify-content:space-between;background:color-mix(in srgb,var(--h-red) 8%,var(--h-surface))">
           <span style="font-family:var(--h-sans);font-size:13px;color:var(--h-ink-mute)">Delete "${escHtml(auto.name)}"?</span>
           <div style="display:flex;gap:8px">
             <button class="auto-small-btn auto-cancel-delete-btn" data-id="${auto.id}">Cancel</button>
-            <button class="auto-small-btn auto-confirm-delete-btn" data-id="${auto.id}" style="color:#b35a4b;border-color:#b35a4b">Delete</button>
+            <button class="auto-small-btn auto-confirm-delete-btn" data-id="${auto.id}" style="color:var(--h-red);border-color:var(--h-red)">Delete</button>
           </div>
         </div>
       </div>
@@ -70,7 +70,7 @@ function autoRenderAutomationRow(auto) {
         <span style="font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="Trigger: ${triggerParts.join(' + ')}">Trigger: ${triggerParts.join(' + ')}</span>
         <span style="font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-faint)">Action: Send to room "${roomName}"</span>
         <span style="font-family:var(--h-sans);font-size:12px;color:var(--h-ink-faint);margin-top:1px">${lastRun}</span>
-        ${auto.watch_reply && (auto.trigger_type === 'slack' || auto.trigger_type === 'email') ? `<span style="display:inline-block;font-family:var(--h-sans);font-size:11px;color:#4a8fcc;background:color-mix(in srgb,#4a8fcc 12%,transparent);border:1px solid color-mix(in srgb,#4a8fcc 25%,transparent);border-radius:4px;padding:1px 6px;margin-top:2px">watching replies</span>` : ''}
+        ${auto.watch_reply && (auto.trigger_type === 'slack' || auto.trigger_type === 'email') ? `<span style="display:inline-block;font-family:var(--h-sans);font-size:11px;color:var(--h-info-ink);background:var(--h-info-bg);border:1px solid var(--h-info-line);border-radius:4px;padding:1px 6px;margin-top:2px">watching replies</span>` : ''}
       </div>
       <div class="auto-row-controls" style="display:flex;align-items:center;gap:8px;margin-top:3px;flex-shrink:0">
         <span class="auto-toggle-btn" data-id="${auto.id}" data-enabled="${isEnabled ? '1' : '0'}" title="${isEnabled ? 'Disable' : 'Enable'}" style="width:36px;height:20px;border-radius:999px;position:relative;display:inline-block;cursor:pointer;background:${toggleBg};transition:background .15s;flex-shrink:0">
@@ -78,7 +78,7 @@ function autoRenderAutomationRow(auto) {
         </span>
         <div class="auto-row-actions" style="display:flex;gap:4px;opacity:0;transition:opacity .12s">
           <button class="s-icon-btn auto-edit-btn" data-id="${auto.id}" title="Edit">${svgPencil(14)}</button>
-          <button class="s-icon-btn auto-delete-btn" data-id="${auto.id}" title="Delete" style="color:#b35a4b">${autoSvgTrash(14)}</button>
+          <button class="s-icon-btn auto-delete-btn" data-id="${auto.id}" title="Delete" style="color:var(--h-red)">${autoSvgTrash(14)}</button>
         </div>
       </div>
     </div>
@@ -182,8 +182,8 @@ function autoRenderForm() {
     connField = `
       <div style="display:flex;flex-direction:column;gap:5px">
         <span style="font-family:var(--h-serif);font-style:italic;font-size:12.5px;color:var(--h-ink-mute)">Connection</span>
-        <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;background:color-mix(in srgb,#b35a4b 6%,var(--h-surface));border:1px solid color-mix(in srgb,#b35a4b 22%,transparent);border-radius:7px">
-          <span style="font-family:var(--h-sans);font-size:13px;color:#b35a4b;flex:1">No active connections — add one first</span>
+        <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;background:color-mix(in srgb,var(--h-red) 6%,var(--h-surface));border:1px solid color-mix(in srgb,var(--h-red) 22%,transparent);border-radius:7px">
+          <span style="font-family:var(--h-sans);font-size:13px;color:var(--h-red);flex:1">No active connections — add one first</span>
           <button class="auto-pill-btn auto-goto-add-conn-btn" style="font-size:12px;padding:4px 10px;white-space:nowrap">+ add connection</button>
         </div>
       </div>
@@ -302,8 +302,8 @@ function autoRenderForm() {
             </div>
           </div>
           ${isEmailProv ? `
-            <div style="padding:9px 12px;background:color-mix(in srgb,#c8a84b 8%,var(--h-surface));border:1px solid color-mix(in srgb,#c8a84b 25%,transparent);border-radius:7px;margin-top:2px">
-              <span style="font-family:var(--h-sans);font-size:12.5px;color:color-mix(in srgb,#c8a84b 80%,var(--h-ink));line-height:1.5">
+            <div style="padding:9px 12px;background:color-mix(in srgb,var(--h-amber-fill) 8%,var(--h-surface));border:1px solid color-mix(in srgb,var(--h-amber-fill) 25%,transparent);border-radius:7px;margin-top:2px">
+              <span style="font-family:var(--h-sans);font-size:12.5px;color:var(--h-amber);line-height:1.5">
                 <strong>Security note:</strong> email content ({{email.body}}) is untrusted data. A crafted email could attempt to manipulate the agent. Consider adding a trusted-data delimiter in your prompt.
               </span>
             </div>
@@ -320,7 +320,7 @@ function autoRenderForm() {
             <span style="font-family:var(--h-sans);font-size:12px;color:var(--h-ink-faint)">${isEmailProv ? 'Route email thread replies into this Stoa thread' : 'Forward Slack thread replies into this Stoa thread'}</span>
           </div>
           <span id="auto-watch-reply-toggle" role="switch" aria-checked="${f.watchReply ? 'true' : 'false'}" tabindex="0"
-            style="width:36px;height:20px;border-radius:999px;position:relative;display:inline-block;cursor:pointer;flex-shrink:0;background:${f.watchReply ? '#7fb98c' : 'var(--h-hairline)'};transition:background .15s">
+            style="width:36px;height:20px;border-radius:999px;position:relative;display:inline-block;cursor:pointer;flex-shrink:0;background:${f.watchReply ? 'var(--h-green-fill)' : 'var(--h-hairline)'};transition:background .15s">
             <span style="position:absolute;top:2px;left:${f.watchReply ? '18px' : '2px'};width:16px;height:16px;border-radius:50%;background:#fff;transition:left .15s;box-shadow:0 1px 2px rgba(0,0,0,.2)"></span>
           </span>
         </div>

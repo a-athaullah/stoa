@@ -52,7 +52,28 @@
 
 ## Known Bugs & Workarounds
 
-### 0. Thinking-Signature 400 — 3-Layer Defense (R19)
+### 0. Theme — Design Rules (do not flag in audit)
+
+**Rule: Never use `.dark` selector or hardcoded colors.**
+
+All colors must use CSS tokens (e.g., `var(--h-ink)`). The old binary `.dark` class is gone — there is no `.dark { }` block. Themes are applied via `[data-theme="<id>"]` on `<html>`.
+
+**Rule: New tokens must be defined in all 11 themes.**
+
+If a token is added to one theme's block in `base.css`, it must be added to all 11 theme blocks. Missing it causes invisible or broken UI in the themes that lack it.
+
+**Rule: No `.dark` in JS either.**
+
+Do not check `document.documentElement.classList.contains('dark')` or toggle `.dark` class. Use `currentTheme()` from `core.js` to read the active theme ID, or `document.documentElement.dataset.theme`.
+
+**Known tight pairs (by design, not a bug):**
+- Warm Paper hint text: ~3.57:1 against minimum 3.0
+- Dark hint/card text: ~3.31:1 against minimum 3.0
+These are the pre-existing colors; they were not degraded by the themes feature.
+
+---
+
+### 0b. Thinking-Signature 400 — 3-Layer Defense (R19)
 **Bug family:** `400 Invalid signature in thinking block`, `400 thinking blocks cannot be modified`, `400 thinking blocks must remain as they were`.
 
 **Root cause:** Claude signs thinking blocks against the full turn content. Any upstream mutation (compact truncation, session sanitizer, orphan stripping) invalidates the signature. Non-Anthropic models via proxy emit unsigned thinking blocks that Anthropic rejects on resume. Third-party endpoints can't validate Anthropic-proprietary signatures.

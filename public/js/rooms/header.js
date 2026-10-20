@@ -178,7 +178,7 @@ function startRunControls(container, room) {
       tier.textContent = r.tier || '';
       const stop = document.createElement('button');
       stop.textContent = 'stop';
-      stop.style.cssText = 'background:transparent;color:#b35a4b;border:1px solid color-mix(in srgb,#b35a4b 34%,var(--h-border));padding:4px 12px;border-radius:999px;cursor:pointer;font-family:var(--h-sans);font-size:12px;flex:0 0 auto';
+      stop.style.cssText = 'background:transparent;color:var(--h-red);border:1px solid color-mix(in srgb,var(--h-red) 34%,var(--h-border));padding:4px 12px;border-radius:999px;cursor:pointer;font-family:var(--h-sans);font-size:12px;flex:0 0 auto';
       stop.onclick = async () => {
         stop.disabled = true;
         try { await fetch(`/api/rooms/${room.id}/sub-agent-runs/${r.message_id}/stop`, { method: 'POST' }); }

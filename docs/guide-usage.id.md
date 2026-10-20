@@ -883,7 +883,7 @@ Hanya pesan yang dikirim *setelah* fitur ini diperkenalkan yang membawa identita
 
 Stoa menggunakan **sidebar navigasi vertikal** di sisi paling kiri app. Sidebar hanya menampilkan ikon (lebar 44 px) dan melebar ke 200 px saat di-hover, memperlihatkan label teks. Klik ikon mana saja untuk berpindah seksi. Di mobile (layar sempit) sidebar disembunyikan — gunakan navigasi dalam app.
 
-Item navigasi, dari atas ke bawah: **Inbox** (daftar room), lalu separator, diikuti seksi pengaturan: **AI Agent**, **Server**, **General**, **Docs**, **Platforms**, **Automation**, **Usage**, **Doctor**.
+Item navigasi, dari atas ke bawah: **Inbox** (daftar room), lalu separator, diikuti seksi pengaturan: **AI Agent**, **Server**, **General**, **Themes**, **Docs**, **Platforms**, **Automation**, **Usage**, **Doctor**.
 
 ### AI Agent
 
@@ -983,7 +983,16 @@ Semua angka bersifat read-only dan diperbarui setiap kali kamu membuka ulang tab
 
 ## Tema
 
-Klik **ikon matahari/bulan** di footer sidebar untuk beralih antara tema **terang** dan **gelap**. Preferensi Anda disimpan di browser.
+Buka **Settings > Themes** (nav kiri, di bawah General) untuk memilih tema tampilan. Tema dikelompokkan dalam dua grup:
+
+- **Terang** — Warm Paper (default), Hoth, Mood Indigo, Banana, Sweet Treat
+- **Gelap** — Dark, Aubergine, Ochin, Haberdashery, Choco Mint, Nocturne
+
+Klik kartu untuk langsung menerapkannya — centang menandai tema aktif. Kartu bisa diakses lewat keyboard. Pilihan disimpan di browser.
+
+**Migrasi:** Jika sebelumnya menggunakan pengaturan terang, Warm Paper diterapkan otomatis. Pengaturan gelap tetap Dark. Jika belum ada pengaturan tersimpan, Stoa mengikuti preferensi gelap/terang perangkat.
+
+Di mobile, warna status bar menyesuaikan tema aktif.
 
 ---
 

@@ -1,6 +1,14 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-:root {
+/* ── Themes ───────────────────────────────────────────────────────────────────
+   Every theme is a [data-theme] block of --h-* tokens; no component rule may
+   branch on the theme. :root carries warm-paper (the fallback) plus the
+   light-scheme semantic defaults; dark-scheme themes share one override group.
+   The theme list itself lives in THEMES (public/js/core.js). Contrast is
+   audited by .claude/tools/theme-contrast.js — run it after touching a value. */
+
+:root, [data-theme="warm-paper"] {
+  color-scheme: light;
   --h-bg:               #F2EADC;
   --h-header-bg:        #695640;
   --h-sidebar-bg:       #ECE1CE;
@@ -14,11 +22,95 @@
   --h-slip:             #EDE5D9;
   --h-accent:           #5A3925;
   --h-link:             #805036;
-  --h-olive:            #60705A;
   --h-header-ink:       #F7F2E9;
   --h-header-ink-faint: rgba(247,242,233,0.6);
-  /* Aliases — reference theme-aware tokens so they resolve correctly in dark too.
-     Used by JS-built UI (sub-agent dropdown/run controls, settings) + chat.css. */
+  --h-pre-bg:           oklch(0.193 0.016 44);
+  --h-row-hover:        #EBE1D2;
+  --h-thread-bg:        #F0E7D7;
+  --h-code-inline-bg:   oklch(0.820 0.028 50);
+  --h-code-inline-ink:  oklch(0.180 0.014 45);
+}
+
+:root {
+  --h-accent-ink:      #FFFFFF;
+  --h-btn-bg:          var(--h-header-bg);
+  --h-btn-ink:         var(--h-header-ink);
+
+  /* Header chrome (app rail, chat header, thread + workspace headers) */
+  --h-header-hover:      color-mix(in srgb, var(--h-header-ink) 12%, transparent);
+  --h-header-active:     color-mix(in srgb, var(--h-header-ink) 15%, transparent);
+  --h-header-line:       color-mix(in srgb, var(--h-header-ink) 25%, transparent);
+  --h-header-divider:    color-mix(in srgb, var(--h-header-ink) 15%, transparent);
+  --h-header-chip-bg:    color-mix(in srgb, var(--h-header-ink) 12%, transparent);
+  --h-header-chip-line:  color-mix(in srgb, var(--h-header-ink) 20%, transparent);
+  --h-header-btn-ink:    var(--h-header-ink-faint);
+  --h-header-active-ink: var(--h-header-ink);
+
+  /* Semantic colors — light scheme */
+  --h-red:         #A3473A;
+  --h-red-fill:    #C44444;
+  --h-green:       #3D7549;
+  --h-green-fill:  #7FB98C;
+  --h-amber:       #855F12;
+  --h-amber-fill:  #C8A84B;
+  --h-amber-badge: #B45309;
+  --h-fill-ink:    #fff;
+  --h-pin:         #A5671F;
+  --h-info-ink:    oklch(0.48 0.10 250);
+  --h-teal:        oklch(0.48 0.09 180);
+  --h-info-bg:     color-mix(in srgb, var(--h-info-ink) 12%, transparent);
+  --h-info-line:   color-mix(in srgb, var(--h-info-ink) 25%, transparent);
+  --h-info-rule:   color-mix(in srgb, var(--h-info-ink) 40%, transparent);
+  --h-flash:       oklch(90% 0.12 250 / 0.5);
+  --h-amber-soft:  oklch(0.58 0.12 75);
+  --h-faded-mark-opacity: 0.07;
+
+  --h-toast-bg:     oklch(0.28 0.02 50);
+  --h-toast-err-bg: oklch(0.38 0.12 25);
+  --h-toast-ink:    oklch(0.92 0.01 60);
+  --h-warn-bg:      oklch(0.93 0.07 75);
+  --h-warn-ink:     oklch(0.32 0.08 60);
+  --h-warn-line:    oklch(0.80 0.11 70);
+  --h-danger-note-bg:   oklch(0.97 0.02 25);
+  --h-danger-note-line: oklch(0.85 0.08 25);
+
+  --h-bb-thread-bg: oklch(90% 0.02 250);
+  --h-bb-thread-ink: oklch(40% 0.04 250);
+  --h-bb-auto-bg:   oklch(88% 0.08 255);
+  --h-bb-auto-ink:  oklch(40% 0.12 255);
+  --h-bb-err-bg:    oklch(90% 0.06 25);
+  --h-bb-err-ink:   oklch(42% 0.12 25);
+  --h-bb-limit-bg:  oklch(90% 0.08 65);
+  --h-bb-limit-ink: oklch(42% 0.14 65);
+
+  /* Code blocks stay dark in every theme; only --h-pre-bg is tinted per theme */
+  --h-code-ink:   #D3C8B4;
+  --h-code-mute:  #8F8473;
+  --h-code-line:  rgba(255,255,255,.07);
+  --h-hl-keyword: #C2876B;
+  --h-hl-string:  #B59A5E;
+  --h-hl-number:  #C08AA0;
+  --h-hl-comment: #8F8473;
+  --h-hl-title:   #6F9F8C;
+  --h-hl-meta:    #9A8F7E;
+  --h-hl-del:     #C08378;
+  --h-hl-add:     #7FAA7C;
+  --h-hl-hunk:    #7D93B0;
+
+  /* Docs code blocks follow the page (light pre on light themes) */
+  --h-docs-pre-bg: color-mix(in srgb, var(--h-ink) 6%, var(--h-surface));
+  --h-syn-keyword: #8C5A42;
+  --h-syn-string:  #6E5D2B;
+  --h-syn-number:  #845368;
+  --h-syn-title:   #44705F;
+  --h-syn-prop:    var(--h-ink-mute);
+
+  /* Sub-agent seal shading (relative oklch, see saSubShade) */
+  --sa-sub-dl: 0.16;
+  --sa-sub-cf: 0.55;
+  --sa-sub-ink: oklch(0.28 0.020 50);
+
+  /* Aliases — used by JS-built UI (sub-agent dropdown/run controls, settings) */
   --h-border:      var(--h-hairline);
   --h-hover:       color-mix(in srgb, var(--h-ink) 6%, transparent);
   --h-serif:       "Plus Jakarta Sans", "DM Sans", system-ui, sans-serif;
@@ -26,7 +118,66 @@
   --h-msg:         "Plus Jakarta Sans", "DM Sans", system-ui, sans-serif;
 }
 
-html.dark {
+/* Light themes other than warm-paper: generic derived surfaces */
+[data-theme="hoth"], [data-theme="banana"], [data-theme="sweet-treat"], [data-theme="mood-indigo"] {
+  color-scheme: light;
+  --h-row-hover:       var(--h-hover);
+  --h-thread-bg:       color-mix(in srgb, var(--h-ink) 3%, var(--h-bg));
+  --h-code-inline-bg:  color-mix(in srgb, var(--h-ink) 10%, var(--h-surface));
+  --h-code-inline-ink: var(--h-ink);
+}
+
+/* Dark-scheme semantic overrides shared by every dark theme */
+[data-theme="dark"], [data-theme="aubergine"], [data-theme="ochin"],
+[data-theme="haberdashery"], [data-theme="choco-mint"], [data-theme="nocturne"] {
+  color-scheme: dark;
+  --h-row-hover:       var(--h-hover);
+  --h-thread-bg:       var(--h-bg);
+  --h-code-inline-bg:  color-mix(in srgb, var(--h-ink) 16%, var(--h-surface));
+  --h-code-inline-ink: var(--h-ink);
+
+  --h-red:        #EB8577;
+  --h-green:      #8CC79A;
+  --h-amber:      #E0B45C;
+  --h-pin:        #E0A458;
+  --h-info-ink:   oklch(0.78 0.09 250);
+  --h-teal:       oklch(0.78 0.09 180);
+  --h-flash:      oklch(45% 0.10 250 / 0.5);
+  --h-amber-soft: oklch(0.78 0.11 80);
+  --h-faded-mark-opacity: 0.12;
+
+  --h-toast-bg:     oklch(0.38 0.02 55);
+  --h-toast-err-bg: oklch(0.42 0.12 25);
+  --h-warn-bg:      oklch(0.33 0.07 65);
+  --h-warn-ink:     oklch(0.93 0.06 80);
+  --h-warn-line:    oklch(0.48 0.09 65);
+  --h-danger-note-bg:   color-mix(in srgb, var(--h-red) 12%, var(--h-surface));
+  --h-danger-note-line: color-mix(in srgb, var(--h-red) 40%, transparent);
+
+  --h-bb-thread-bg: oklch(28% 0.03 250);
+  --h-bb-thread-ink: oklch(78% 0.04 250);
+  --h-bb-auto-bg:   oklch(30% 0.08 255);
+  --h-bb-auto-ink:  oklch(82% 0.10 255);
+  --h-bb-err-bg:    oklch(28% 0.08 25);
+  --h-bb-err-ink:   oklch(80% 0.11 25);
+  --h-bb-limit-bg:  oklch(28% 0.08 65);
+  --h-bb-limit-ink: oklch(82% 0.13 65);
+
+  --h-syn-keyword: #E0A48A;
+  --h-syn-string:  #C9AD6E;
+  --h-syn-number:  #D49BB2;
+  --h-syn-title:   #82B39F;
+  --h-syn-prop:    #D3C8B4;
+
+  --sa-sub-dl: 0.15;
+  --sa-sub-cf: 0.62;
+  --sa-sub-ink: oklch(0.30 0.020 50);
+
+  --h-btn-bg:  var(--h-accent);
+  --h-btn-ink: var(--h-accent-ink);
+}
+
+[data-theme="dark"] {
   --h-bg:               oklch(0.218 0.016 52);
   --h-header-bg:        oklch(0.265 0.018 50);
   --h-sidebar-bg:       oklch(0.178 0.014 50);
@@ -39,8 +190,201 @@ html.dark {
   --h-ink-faint:        oklch(0.585 0.012 55);
   --h-slip:             oklch(0.255 0.020 60);
   --h-accent:           oklch(0.620 0.100 245);
+  --h-accent-ink:       oklch(0.180 0.014 45);
+  --h-link:             oklch(0.760 0.080 245);
   --h-header-ink:       var(--h-ink);
   --h-header-ink-faint: var(--h-ink-faint);
+  --h-pre-bg:           oklch(0.193 0.016 44);
+  --h-code-inline-bg:   oklch(0.620 0.020 55);
+  --h-code-inline-ink:  oklch(0.150 0.010 45);
+  --h-header-hover:      var(--h-surface);
+  --h-header-active:     var(--h-surface);
+  --h-header-line:       var(--h-hairline);
+  --h-header-divider:    var(--h-hairline);
+  --h-header-chip-bg:    color-mix(in srgb, var(--h-ink-faint) 10%, transparent);
+  --h-header-chip-line:  color-mix(in srgb, var(--h-ink-faint) 15%, transparent);
+  --h-header-btn-ink:    var(--h-ink-mute);
+  --h-header-active-ink: var(--h-accent);
+  --h-btn-bg:            var(--h-header-bg);
+  --h-btn-ink:           var(--h-header-ink);
+}
+
+[data-theme="hoth"] {
+  --h-bg:               #FFFFFF;
+  --h-header-bg:        #F8F8FA;
+  --h-sidebar-bg:       #F8F8FA;
+  --h-surface:          #FFFFFF;
+  --h-surface-hi:       #FAFAFA;
+  --h-hairline:         #DDDFE4;
+  --h-hair-soft:        #E8EAEE;
+  --h-ink:              #1D1C1D;
+  --h-ink-mute:         #454245;
+  --h-ink-faint:        #696669;
+  --h-slip:             #F2F3F5;
+  --h-accent:           #1264A3;
+  --h-link:             #1264A3;
+  --h-header-ink:       #383F45;
+  --h-header-ink-faint: rgba(56,63,69,0.72);
+  --h-btn-bg:           var(--h-accent);
+  --h-btn-ink:          #FFFFFF;
+  --h-pre-bg:           #1F2328;
+}
+
+[data-theme="banana"] {
+  --h-bg:               #FFFEF7;
+  --h-header-bg:        #FFC806;
+  --h-sidebar-bg:       #FFEB84;
+  --h-surface:          #FFFFFF;
+  --h-surface-hi:       #FFF8D4;
+  --h-hairline:         #EBCB55;
+  --h-hair-soft:        #F5DF80;
+  --h-ink:              #1A0A10;
+  --h-ink-mute:         #591035;
+  --h-ink-faint:        #7D4050;
+  --h-slip:             #FFF8D4;
+  --h-accent:           #3B5DB5;
+  --h-link:             #2A50A8;
+  --h-header-ink:       #591035;
+  --h-header-ink-faint: rgba(89,16,53,0.75);
+  --h-pre-bg:           #2B2118;
+}
+
+[data-theme="sweet-treat"] {
+  --h-bg:               #FFFBFB;
+  --h-header-bg:        #FFC2C0;
+  --h-sidebar-bg:       #FFEEED;
+  --h-surface:          #FFFFFF;
+  --h-surface-hi:       #FFF0EE;
+  --h-hairline:         #F5BDBA;
+  --h-hair-soft:        #FFD8D6;
+  --h-ink:              #1A0520;
+  --h-ink-mute:         #4A154B;
+  --h-ink-faint:        #7A4080;
+  --h-slip:             #FFF0EE;
+  --h-accent:           #4A154B;
+  --h-link:             #7B25A0;
+  --h-header-ink:       #4A154B;
+  --h-header-ink-faint: rgba(74,21,75,0.75);
+  --h-pre-bg:           #2A1A2B;
+}
+
+[data-theme="mood-indigo"] {
+  --h-bg:               #FFFFFF;
+  --h-header-bg:        #001A5E;
+  --h-sidebar-bg:       #F8F8FA;
+  --h-surface:          #FAFBFF;
+  --h-surface-hi:       #EEF2FF;
+  --h-hairline:         #CBD5E8;
+  --h-hair-soft:        #D8E0F0;
+  --h-ink:              #0D1338;
+  --h-ink-mute:         #2A3560;
+  --h-ink-faint:        #5060A0;
+  --h-slip:             #E8EDFF;
+  --h-accent:           #2153FF;
+  --h-link:             #1A44E8;
+  --h-header-ink:       #FFFFFF;
+  --h-header-ink-faint: rgba(255,255,255,0.7);
+  --h-pre-bg:           #0F1633;
+}
+
+[data-theme="aubergine"] {
+  --h-bg:               #1A0D1B;
+  --h-header-bg:        #350D36;
+  --h-sidebar-bg:       #3F0E40;
+  --h-surface:          #2E1530;
+  --h-surface-hi:       #3D2040;
+  --h-hairline:         #5A305C;
+  --h-hair-soft:        #4A2050;
+  --h-ink:              #F0E8F0;
+  --h-ink-mute:         #C4A8C6;
+  --h-ink-faint:        #A487A6;
+  --h-slip:             #2A1230;
+  --h-accent:           #4C9689;
+  --h-accent-ink:       #0F0610;
+  --h-link:             #7FAEDB;
+  --h-header-ink:       #FFFFFF;
+  --h-header-ink-faint: rgba(255,255,255,0.7);
+  --h-pre-bg:           #100611;
+}
+
+[data-theme="ochin"] {
+  --h-bg:               #1C2330;
+  --h-header-bg:        #2C3849;
+  --h-sidebar-bg:       #303E4D;
+  --h-surface:          #263040;
+  --h-surface-hi:       #303D4F;
+  --h-hairline:         #46566A;
+  --h-hair-soft:        #384556;
+  --h-ink:              #E8EDF2;
+  --h-ink-mute:         #BAC5D2;
+  --h-ink-faint:        #8E9EAE;
+  --h-slip:             #232E3C;
+  --h-accent:           #6698C8;
+  --h-accent-ink:       #0E141C;
+  --h-link:             #7FADDB;
+  --h-header-ink:       #FFFFFF;
+  --h-header-ink-faint: rgba(255,255,255,0.7);
+  --h-pre-bg:           #141A24;
+}
+
+[data-theme="haberdashery"] {
+  --h-bg:               #002B36;
+  --h-header-bg:        #073642;
+  --h-sidebar-bg:       #073642;
+  --h-surface:          #073642;
+  --h-surface-hi:       #0A4555;
+  --h-hairline:         #1F5A6B;
+  --h-hair-soft:        #164555;
+  --h-ink:              #FDF6E3;
+  --h-ink-mute:         #D8C890;
+  --h-ink-faint:        #A89060;
+  --h-slip:             #073642;
+  --h-accent:           #B58900;
+  --h-accent-ink:       #002B36;
+  --h-link:             #5AC8E8;
+  --h-header-ink:       #FDF6E3;
+  --h-header-ink-faint: rgba(253,246,227,0.7);
+  --h-pre-bg:           #00212A;
+}
+
+[data-theme="choco-mint"] {
+  --h-bg:               #2C2218;
+  --h-header-bg:        #42362B;
+  --h-sidebar-bg:       #544538;
+  --h-surface:          #3A2D22;
+  --h-surface-hi:       #473828;
+  --h-hairline:         #6A5640;
+  --h-hair-soft:        #564430;
+  --h-ink:              #F2EDE8;
+  --h-ink-mute:         #D2C4B6;
+  --h-ink-faint:        #B09C8A;
+  --h-slip:             #362819;
+  --h-accent:           #5DB09D;
+  --h-accent-ink:       #1A140E;
+  --h-link:             #7ECAB8;
+  --h-header-ink:       #FFFFFF;
+  --h-header-ink-faint: rgba(255,255,255,0.7);
+  --h-pre-bg:           #1E1710;
+}
+
+[data-theme="nocturne"] {
+  --h-bg:               #1A1D21;
+  --h-header-bg:        #000000;
+  --h-sidebar-bg:       #0E0F11;
+  --h-surface:          #222529;
+  --h-surface-hi:       #2C2F34;
+  --h-hairline:         #3E434A;
+  --h-hair-soft:        #2E3238;
+  --h-ink:              #F2F3F5;
+  --h-ink-mute:         #C0C4CC;
+  --h-ink-faint:        #8E939D;
+  --h-slip:             #1E2126;
+  --h-accent:           #1D9BD1;
+  --h-accent-ink:       #000000;
+  --h-link:             #3FAEDD;
+  --h-header-ink:       #FFFFFF;
+  --h-header-ink-faint: rgba(255,255,255,0.7);
+  --h-pre-bg:           #0E0F11;
 }
 
 html, body { height: 100%; overflow: hidden; }
@@ -55,4 +399,3 @@ body {
 *::-webkit-scrollbar { width: 6px; height: 6px; }
 *::-webkit-scrollbar-thumb { background: var(--h-hair-soft); border-radius: 3px; }
 *::-webkit-scrollbar-track { background: transparent; }
-

@@ -516,7 +516,7 @@ function wsRenderDiff(container, diffData, mode) {
     g2.textContent = r.n2 || '';
     row.appendChild(g2);
     const sign = document.createElement('span');
-    sign.style.cssText = 'display:table-cell;width:14px;min-width:14px;text-align:center;user-select:none;color:' + (r.k === 'add' ? '#7faa7c' : r.k === 'del' ? '#c08378' : '#7a7060');
+    sign.style.cssText = 'display:table-cell;width:14px;min-width:14px;text-align:center;user-select:none;color:' + (r.k === 'add' ? 'var(--h-hl-add)' : r.k === 'del' ? 'var(--h-hl-del)' : 'var(--h-code-mute)');
     sign.textContent = r.k === 'add' ? '+' : r.k === 'del' ? '−' : '';
     row.appendChild(sign);
     const code = document.createElement('span');

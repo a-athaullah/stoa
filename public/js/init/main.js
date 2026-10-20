@@ -1,7 +1,7 @@
 // ── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
-  const saved = localStorage.getItem('stoa-theme');
-  applyTheme(saved === 'dark' || (!saved && window.matchMedia('(prefers-color-scheme: dark)').matches));
+  const storedTheme = resolveStoredTheme();
+  setTheme(storedTheme.id, { persist: storedTheme.migrated });
   // Restore reading comfort preferences
   ['scale', 'leading', 'width'].forEach(k => {
     const v = localStorage.getItem('stoa-msg-' + k);
