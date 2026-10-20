@@ -1967,18 +1967,22 @@ pre:hover .h-copy-btn { opacity: 1; pointer-events: auto; }
   margin-top: 6px;
 }
 
-/* model dropdown */
+/* model dropdown — dim the label/trigger, never the wrapper: opacity < 1 on an
+   ancestor creates a stacking context that traps the list below positioned
+   feed elements and makes it see-through. */
+#model-selector-label { opacity: 0.7; }
 .h-model-dropdown { position: relative; }
 .h-model-dropdown-trigger {
   display: inline-flex; align-items: center; gap: 4px;
   background: transparent; border: none; cursor: pointer;
   color: inherit; font-size: 11px; padding: 2px 4px;
-  border-radius: 4px;
+  border-radius: 4px; opacity: 0.7;
 }
-.h-model-dropdown-trigger:hover { background: var(--h-surface-hi, rgba(255,255,255,0.08)); }
+.h-model-dropdown-trigger:hover { opacity: 1; background: var(--h-surface-hi, rgba(255,255,255,0.08)); }
 .h-model-dropdown-list {
-  display: none; position: absolute; bottom: 100%; left: 0;
-  min-width: 220px; max-height: 320px; overflow-y: auto;
+  display: none; position: absolute; bottom: 100%; right: 0;
+  min-width: 220px; max-width: calc(100vw - 24px);
+  max-height: min(320px, 45vh); max-height: min(320px, 45dvh); overflow-y: auto;
   background: var(--h-bg, #1a1a1a); border: 1px solid var(--h-hairline, #333);
   border-radius: 6px; box-shadow: 0 -4px 16px rgba(0,0,0,0.4);
   z-index: 200; margin-bottom: 4px; padding: 4px 0;

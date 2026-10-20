@@ -390,9 +390,10 @@ function _createThreadPanel() {
       const modelWrap = document.createElement('span');
       modelWrap.id = 'thread-model-selector-wrap';
       modelWrap.title = 'Switch AI model';
-      modelWrap.style.cssText = 'display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;margin-left:auto;opacity:0.6;padding:1px 4px;border-radius:4px;transition:opacity 0.15s,background 0.15s';
+      modelWrap.style.cssText = 'display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;margin-left:auto;padding:1px 4px;border-radius:4px;transition:background 0.15s';
       const modelLabel = document.createElement('span');
       modelLabel.id = 'thread-model-label';
+      modelLabel.style.cssText = 'opacity:0.6;transition:opacity 0.15s';
       const syncLabel = () => {
         const t = document.getElementById('model-dropdown-text')?.textContent?.trim();
         if (t && t !== 'Select model') modelLabel.textContent = t;
@@ -401,8 +402,8 @@ function _createThreadPanel() {
       const dropdownText = document.getElementById('model-dropdown-text');
       if (dropdownText) new MutationObserver(syncLabel).observe(dropdownText, { childList: true, subtree: true, characterData: true });
       modelWrap.style.position = 'relative';
-      modelWrap.addEventListener('mouseenter', () => { modelWrap.style.opacity = '1'; modelWrap.style.background = 'var(--h-hover)'; });
-      modelWrap.addEventListener('mouseleave', () => { modelWrap.style.opacity = '0.6'; modelWrap.style.background = ''; });
+      modelWrap.addEventListener('mouseenter', () => { modelLabel.style.opacity = '1'; modelWrap.style.background = 'var(--h-hover)'; });
+      modelWrap.addEventListener('mouseleave', () => { modelLabel.style.opacity = '0.6'; modelWrap.style.background = ''; });
       modelWrap.addEventListener('click', e => {
         e.stopPropagation();
         const existing = document.getElementById('thread-model-popup');
@@ -411,7 +412,7 @@ function _createThreadPanel() {
         const popup = document.createElement('div');
         popup.id = 'thread-model-popup';
         popup.className = 'h-model-dropdown-list open';
-        popup.style.cssText = 'position:absolute;z-index:300;bottom:calc(100% + 4px);right:0;min-width:180px;max-height:260px;overflow-y:auto';
+        popup.style.cssText = 'z-index:300;bottom:calc(100% + 4px);min-width:180px;max-height:min(260px, 45dvh)';
         const models = getAvailableModels();
         const hasMulti = models.some(m => m.platform !== 'anthropic');
         const makeOpt = m => {
