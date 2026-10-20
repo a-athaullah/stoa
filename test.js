@@ -12032,6 +12032,90 @@ async function run() {
   console.log('\n[Auto-update & Trigger Cleanup]');
 
   // ── Thread Broadcast tests ─────────────────────────────────────────────
+  console.log('\n[Migration Runner]');
+
+  const _mfs = require('fs'), _mos = require('os');
+  const _migTmp = (files) => {
+    const dir = _mfs.mkdtempSync(path.join(_mos.tmpdir(), 'stoa-mig-'));
+    for (const [name, sql] of Object.entries(files)) _mfs.writeFileSync(path.join(dir, name), sql);
+    return dir;
+  };
+  const _migQuiet = { log() {}, error() {} };
+
+  await test('migrations: fresh DB from schema.sqlite.sql — schema loads whole, every migration recorded, second boot is clean', async () => {
+    const Database = require('better-sqlite3');
+    const { runMigrations } = require('./lib/migrations');
+    const db = new Database(':memory:');
+    try {
+      db.exec(_mfs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
+      const files = _mfs.readdirSync(path.join(__dirname, 'migrations')).filter(f => f.endsWith('.sql'));
+      const first = runMigrations(db, path.join(__dirname, 'migrations'), _migQuiet);
+      assert.deepStrictEqual(first.filter(r => r.status === 'failed'), [], 'no migration fails on a fresh clone');
+      assert.ok(first.some(r => r.status === 'reconciled' && r.filename === '20260620-add-participant-workdir.sql'), 'ADD COLUMN already in baseline → reconciled');
+      assert.strictEqual(db.prepare('SELECT COUNT(*) c FROM migrations').get().c, files.length, 'all files recorded');
+      assert.deepStrictEqual(runMigrations(db, path.join(__dirname, 'migrations'), _migQuiet), [], 'second boot: nothing pending, nothing retried');
+      assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_room_participants_workdir_id'").get());
+      for (const t of ['auth_users', 'auth_sessions', 'usage_log', 'sub_agents', 'harness_models']) {
+        assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(t), `table ${t} exists`);
+      }
+      const aiCols = db.prepare('PRAGMA table_info(ai_sessions)').all().map(c => c.name);
+      assert.ok(aiCols.includes('thread_id') && aiCols.includes('harness'), 'ai_sessions rebuilt by threads-core keeps thread_id + harness');
+    } finally { db.close(); }
+  });
+
+  await test('migrations: already-present ADD COLUMN / CREATE INDEX skipped, rest of the file runs, recorded once', async () => {
+    const Database = require('better-sqlite3');
+    const { runMigrations } = require('./lib/migrations');
+    const db = new Database(':memory:');
+    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, a TEXT, b TEXT); CREATE INDEX idx_t_a ON t(a); INSERT INTO t (id, a) VALUES (1, 'x'), (2, NULL)");
+    const dir = _migTmp({ '20990101-x.sql': "-- add a; it's in the baseline already\nALTER TABLE t ADD COLUMN a TEXT;\nCREATE INDEX idx_t_a ON t(a);\nCREATE INDEX IF NOT EXISTS idx_t_b ON t(b);\nUPDATE t SET b = 'semi;colon' WHERE a IS NOT NULL;\n" });
+    try {
+      const [r] = runMigrations(db, dir, _migQuiet);
+      assert.strictEqual(r.status, 'reconciled');
+      assert.strictEqual(r.skipped.length, 2, 'both the column and the index were skipped');
+      assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name='idx_t_b'").get(), 'later CREATE INDEX ran');
+      assert.deepStrictEqual(db.prepare('SELECT id, b FROM t ORDER BY id').all(), [{ id: 1, b: 'semi;colon' }, { id: 2, b: null }], 'backfill ran, quoted ; intact');
+      assert.ok(db.prepare("SELECT 1 FROM migrations WHERE filename='20990101-x.sql'").get());
+      assert.deepStrictEqual(runMigrations(db, dir, _migQuiet), []);
+    } finally { db.close(); _mfs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  await test('migrations: any other error rolls the whole file back and stays unrecorded (also after a skipped duplicate)', async () => {
+    const Database = require('better-sqlite3');
+    const { runMigrations } = require('./lib/migrations');
+    const db = new Database(':memory:');
+    db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, a TEXT); CREATE TABLE u (id INTEGER PRIMARY KEY); INSERT INTO t (id, a) VALUES (1, 'keep')");
+    const dir = _migTmp({
+      '20990101-plain-error.sql': "CREATE TABLE made (id INTEGER);\nUPDATE t SET a = 'lost';\nINSERT INTO nope VALUES (1);\n",
+      '20990102-dup-then-error.sql': "ALTER TABLE t ADD COLUMN a TEXT;\nCREATE INDEX idx_t_a2 ON t(a);\nUPDATE t SET a = 'lost';\nINSERT INTO nope VALUES (1);\n",
+      '20990103-table-exists.sql': "CREATE TABLE u (id INTEGER PRIMARY KEY, other TEXT);\nCREATE INDEX idx_u ON u(id);\n",
+    });
+    try {
+      const res = runMigrations(db, dir, _migQuiet);
+      assert.deepStrictEqual(res.map(r => [r.filename, r.status]), [['20990101-plain-error.sql', 'failed'], ['20990102-dup-then-error.sql', 'failed'], ['20990103-table-exists.sql', 'failed']]);
+      assert.match(res[0].error, /no such table: nope/);
+      assert.match(res[2].error, /table u already exists/, 'CREATE TABLE is never treated as already applied');
+      assert.ok(!db.prepare("SELECT 1 FROM sqlite_master WHERE name IN ('made','idx_t_a2','idx_u')").get(), 'nothing from the failed files survives');
+      assert.strictEqual(db.prepare('SELECT a FROM t WHERE id=1').get().a, 'keep', 'data untouched');
+      assert.strictEqual(db.prepare("SELECT COUNT(*) c FROM migrations WHERE filename LIKE '2099%'").get().c, 0);
+      assert.strictEqual(runMigrations(db, dir, _migQuiet).length, 3, 'failed files are retried next boot');
+    } finally { db.close(); _mfs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  await test('migrations: splitSqlStatements keeps trigger bodies, quotes and comments intact', async () => {
+    const { splitSqlStatements } = require('./lib/migrations');
+    const sql = "-- lead; comment\nCREATE TABLE a (x TEXT DEFAULT 'a;b');\n/* block; */\nCREATE TRIGGER IF NOT EXISTS trg AFTER INSERT ON a BEGIN\n  INSERT INTO a VALUES ('y');\n  UPDATE a SET [x] = 'q;' WHERE \"x\" = 'z';\nEND;\nCREATE INDEX i ON a(x)";
+    const out = splitSqlStatements(sql);
+    assert.strictEqual(out.length, 3);
+    assert.ok(out[0].endsWith("DEFAULT 'a;b')"));
+    assert.ok(out[1].includes('CREATE TRIGGER') && out[1].trimEnd().endsWith('END'), 'trigger kept whole');
+    assert.strictEqual(out[2], 'CREATE INDEX i ON a(x)');
+    const Database = require('better-sqlite3');
+    const db = new Database(':memory:');
+    try { for (const st of out) db.exec(st); db.exec("INSERT INTO a VALUES ('z')"); assert.strictEqual(db.prepare('SELECT COUNT(*) c FROM a').get().c, 2, 'trigger fired'); }
+    finally { db.close(); }
+  });
+
   console.log('\n[Slack Code Fences]');
 
   // Rendered through the same marked version the client uses, so a leaked fence

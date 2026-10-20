@@ -11,6 +11,7 @@ const { collectDiagnostics, buildEnvelope, gcDebugBundles } = require('./lib/deb
 const { enrichAutomation, enrichAutomationList, watchReplyAutomation } = require('./lib/automation-identity');
 const { sanitizeDisplayName, EMAIL_REPLY_LIMITS, buildEmailThreadSection, normalizeRefIds, findEmailReplyThread } = require('./lib/email-threading');
 const { parseClientVersion } = require('./lib/client-version');
+const { runMigrations } = require('./lib/migrations');
 const fallbackSessions = new Map();
 
 // R15: unique identifier for this server boot. Sessions tagged with a different
@@ -748,65 +749,7 @@ try {
 }
 
 // ─── Migration runner ─────────────────────────────────────────────────────────
-db.exec(`CREATE TABLE IF NOT EXISTS migrations (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  filename TEXT NOT NULL UNIQUE,
-  executed_at INTEGER NOT NULL DEFAULT (unixepoch())
-)`);
-
-// Seed old inline migrations as already-applied for existing DBs
-const _seedMigrations = [
-  { filename: '20260590-migrate-ai-sessions-unique.sql', applied: () => {
-    const tbl = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='ai_sessions'").get();
-    return !!(tbl?.sql && !tbl.sql.includes('participant_id INTEGER NOT NULL UNIQUE'));
-  }},
-  { filename: '20260591-add-agent-workdirs-model.sql', applied: () => {
-    const cols = db.prepare("PRAGMA table_info(agent_workdirs)").all().map(c => c.name);
-    return cols.includes('model');
-  }},
-  { filename: '20260592-add-rooms-archived-at.sql', applied: () => {
-    const cols = db.prepare("PRAGMA table_info(rooms)").all().map(c => c.name);
-    return cols.includes('archived_at');
-  }},
-  { filename: '20260601-add-system-event-state.sql', applied: () => {
-    const tbl = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'").get();
-    return !!(tbl?.sql?.includes('system_event'));
-  }},
-  { filename: '20260602-clean-duplicate-settings.sql', applied: () => true },
-  { filename: '20260609-automation-connections.sql', applied: () => {
-    const hasTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='automation_connections'").get();
-    const cols = db.prepare('PRAGMA table_info(automations)').all().map(c => c.name);
-    return !!(hasTable && cols.includes('connection_id'));
-  }},
-];
-for (const m of _seedMigrations) {
-  if (!db.prepare('SELECT 1 FROM migrations WHERE filename=?').get(m.filename) && m.applied()) {
-    db.prepare('INSERT OR IGNORE INTO migrations (filename) VALUES (?)').run(m.filename);
-  }
-}
-
-// Run pending migrations from migrations/ folder
-try {
-  const migFiles = fs.readdirSync(path.join(__dirname, 'migrations'))
-    .filter(f => f.endsWith('.sql'))
-    .sort();
-  for (const filename of migFiles) {
-    if (db.prepare('SELECT 1 FROM migrations WHERE filename=?').get(filename)) continue;
-    const sql = fs.readFileSync(path.join(__dirname, 'migrations', filename), 'utf8');
-    try {
-      db.exec('BEGIN TRANSACTION');
-      db.exec(sql);
-      db.prepare('INSERT INTO migrations (filename) VALUES (?)').run(filename);
-      db.exec('COMMIT');
-      console.log(`[migration] applied: ${filename}`);
-    } catch (e) {
-      try { db.exec('ROLLBACK'); } catch {}
-      console.error(`[migration] failed: ${filename} —`, e.message);
-    }
-  }
-} catch (e) {
-  if (e.code !== 'ENOENT') console.error('[migration] runner error:', e.message);
-}
+runMigrations(db, path.join(__dirname, 'migrations'));
 
 // ─── Harness model sources ──────────────────────────────────────────────────
 
