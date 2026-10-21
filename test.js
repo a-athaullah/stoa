@@ -1996,6 +1996,114 @@ async function runAsyncUnitTests() {
     });
   });
 
+  // Agent run queue: per-thread serialization under MAX_CONCURRENT, queue status reports, targeted cancel.
+  async function withQueueHarness(maxConcurrent, drive) {
+    const stoa = require('./stoa.js');
+    const sent = [];
+    const sessions = new Map();
+    const sessionFor = (roomId, threadId) => {
+      const key = `${roomId}:${threadId || 0}`;
+      if (!sessions.has(key)) {
+        const s = {
+          _systemPromptHash: null, _harness: 'claude', flags: [], resumeId: null,
+          env: { STOA_ROOM_ID: String(roomId), STOA_THREAD_ID: threadId ? String(threadId) : '' },
+          on: () => {}, removeListener: () => {}, shutdown: () => {},
+          started: [], cancelled: [], pending: new Map(), inFlight: 0, maxInFlight: 0,
+          send(o) {
+            this.started.push(o.taskId);
+            this.inFlight++;
+            this.maxInFlight = Math.max(this.maxInFlight, this.inFlight);
+            return new Promise(r => this.pending.set(o.taskId, (res) => { this.inFlight--; this.pending.delete(o.taskId); r(res); }));
+          },
+          cancelTask(id) { this.cancelled.push(id); this.pending.get(id)?.({ content: '', sessionId: null, aborted: true }); return true; },
+        };
+        sessions.set(key, s);
+      }
+      return sessions.get(key);
+    };
+    stoa.__setDeps({ send: (m) => sent.push(m), getSession: (dir, roomId, env, subId, threadId) => sessionFor(roomId, threadId), doRestart: () => {} });
+    const trigger = (id, threadId) => stoa.handleAgentMessage({ type: 'agent_trigger', room_id: 97, message_id: id, thread_id: threadId, prompt: 'queue test turn', workdir: require('os').tmpdir() });
+    const until = async (fn, what) => { for (let i = 0; i < 200 && !fn(); i++) await new Promise(r => setTimeout(r, 10)); assert.ok(fn(), `timed out waiting for: ${what}`); };
+    const finish = async (roomThread, id) => {
+      const s = sessions.get(roomThread);
+      await until(() => s?.pending.has(id), `msg ${id} running`);
+      s.pending.get(id)({ content: `done ${id}`, sessionId: null });
+      await until(() => !stoa.activeTriggers.has(id), `msg ${id} finished`);
+    };
+    const lastStatus = () => [...sent].reverse().find(m => m.type === 'agent_queue_status');
+    try {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      await stoa.handleAgentMessage({ type: 'set_config', max_concurrent: maxConcurrent });
+      await drive({ stoa, sent, sessions, sessionFor, trigger, until, finish, lastStatus });
+    } finally {
+      for (const s of sessions.values()) for (const done of [...s.pending.values()]) done({ content: 'cleanup', sessionId: null });
+      for (let i = 0; i < 200 && stoa.activeTriggers.size; i++) await new Promise(r => setTimeout(r, 10));
+      stoa.triggerQueue.length = 0;
+      stoa.activeTriggers.clear();
+      await stoa.handleAgentMessage({ type: 'set_config', max_concurrent: 1 });
+      stoa.__resetDeps();
+    }
+  }
+
+  await uta('agent queue — max_concurrent=1 keeps the old one-at-a-time FIFO across threads and reports the queue', async () => {
+    await withQueueHarness(1, async ({ stoa, sessions, trigger, until, finish, lastStatus }) => {
+      await trigger(9101, 501);
+      await trigger(9102, 502);
+      await until(() => sessions.get('97:501')?.pending.has(9101), 'first run started');
+      assert.deepStrictEqual(stoa.triggerQueue.map(t => t.message_id), [9102], 'second thread waits for the single slot');
+      assert.strictEqual(sessions.get('97:502'), undefined, 'second session not touched while queued');
+      assert.deepStrictEqual({ q: lastStatus().queued, r: lastStatus().running, max: lastStatus().max_concurrent }, { q: [9102], r: [9101], max: 1 });
+      await finish('97:501', 9101);
+      await until(() => sessions.get('97:502')?.pending.has(9102), 'queued run started after the slot freed');
+      assert.deepStrictEqual({ q: lastStatus().queued, r: lastStatus().running }, { q: [], r: [9102] });
+    });
+  });
+
+  await uta('agent queue — max_concurrent=3 runs different threads in parallel', async () => {
+    await withQueueHarness(3, async ({ stoa, sessions, trigger, until }) => {
+      await trigger(9111, 511);
+      await trigger(9112, 512);
+      await until(() => sessions.get('97:511')?.pending.has(9111) && sessions.get('97:512')?.pending.has(9112), 'both runs in flight');
+      assert.strictEqual(stoa.triggerQueue.length, 0, 'nothing queued');
+      assert.strictEqual(stoa.activeTriggers.size, 2);
+    });
+  });
+
+  await uta('agent queue — one thread stays serial under max_concurrent=3; a later thread passes the blocked one', async () => {
+    await withQueueHarness(3, async ({ stoa, sessions, trigger, until, finish, lastStatus }) => {
+      await trigger(9121, 521);
+      await trigger(9122, 521);
+      await trigger(9123, 522);
+      await until(() => sessions.get('97:521')?.pending.has(9121) && sessions.get('97:522')?.pending.has(9123), 'thread A first run + thread B run in flight');
+      assert.deepStrictEqual(stoa.triggerQueue.map(t => t.message_id), [9122], 'same-thread run waits even with free slots');
+      assert.deepStrictEqual(sessions.get('97:521').started, [9121], 'the busy session never got the second turn');
+      assert.deepStrictEqual(lastStatus().queued, [9122]);
+      await finish('97:521', 9121);
+      await until(() => sessions.get('97:521').pending.has(9122), 'second turn of the thread started after the first ended');
+      assert.strictEqual(sessions.get('97:521').maxInFlight, 1, 'never two turns at once in one thread');
+      assert.ok(sessions.get('97:522').pending.has(9123), 'other thread unaffected');
+    });
+  });
+
+  await uta('agent queue — cancel_generation stops only the targeted run; a queued cancel reports the shorter queue', async () => {
+    await withQueueHarness(2, async ({ stoa, sent, sessions, trigger, until, lastStatus }) => {
+      await trigger(9131, 531);
+      await trigger(9132, 532);
+      await trigger(9133, 533);
+      await until(() => sessions.get('97:531')?.pending.has(9131) && sessions.get('97:532')?.pending.has(9132), 'two runs in flight');
+      await stoa.handleAgentMessage({ type: 'cancel_generation', room_id: 97, message_id: 9133 });
+      assert.strictEqual(stoa.triggerQueue.length, 0);
+      assert.ok(sent.some(m => m.type === 'agent_complete' && m.message_id === 9133), 'queued run closed as cancelled');
+      assert.deepStrictEqual(lastStatus().queued, [], 'queue status updated after the cancel');
+      await stoa.handleAgentMessage({ type: 'cancel_generation', room_id: 97, message_id: 9131 });
+      assert.deepStrictEqual(sessions.get('97:531').cancelled, [9131]);
+      assert.deepStrictEqual(sessions.get('97:532').cancelled, [], 'the parallel run in another thread is not touched');
+      await until(() => !stoa.activeTriggers.has(9131), 'cancelled run ended');
+      assert.ok(stoa.activeTriggers.has(9132) && sessions.get('97:532').pending.has(9132), 'other run still going');
+    });
+  });
+
   await uta('stale sweep — a tool in flight is swept only past the 30-min tool bound plus two sweep ticks; idle triggers keep the 20-min rule', async () => {
     const stoa = require('./stoa.js');
     const sent = [];
@@ -11803,6 +11911,104 @@ async function run() {
     });
   }
 
+  // agent_queue_status → message_queue positions, health agent_queues, server-authored result_meta.timing
+  console.log('\n[Agent Run Queue]');
+  {
+    const db = require('./db');
+    let aq = null, aqRoomId = null, human = null;
+    const ids = {};
+    const insertRun = (participantId) => Number(db.prepare(
+      "INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,'','streaming')"
+    ).run(aqRoomId, participantId).lastInsertRowid);
+    const status = (queued, running, max = 3) => aq.ws.send(JSON.stringify({ type: 'agent_queue_status', queued, running, max_concurrent: max }));
+    const queueEvent = (ws, id, ms = 3000) => waitForWsMessage(ws, m => m.type === 'message_queue' && m.message_id === id, ms);
+    const healthEntry = async () => (await req('GET', '/api/health/db')).body.agent_queues?.find(q => q.actor_id === aq.actorId);
+    const timingOf = (id) => JSON.parse(db.prepare('SELECT result_meta FROM messages WHERE id=?').get(id).result_meta || '{}').timing;
+    const complete = (id, resultMeta) => aq.ws.send(JSON.stringify({ type: 'agent_complete', room_id: aqRoomId, message_id: id, content: `done ${id}`, result_meta: resultMeta }));
+    const untilDone = async (id) => { for (let i = 0; i < 100 && db.prepare('SELECT state FROM messages WHERE id=?').get(id).state === 'streaming'; i++) await new Promise(r => setTimeout(r, 20)); };
+
+    await test('run queue — setup: online agent, room, joined human ws', async () => {
+      aq = await createOnlineTestAgent('__test-run-queue', '/tmp/stoa-test-run-queue');
+      assert.ok(aq?.workdirId, 'online test agent');
+      const r = await req('POST', '/api/rooms', { title: '__run-queue-room__', workdir_id: aq.workdirId, participant_ids: [aq.actorId] });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      aqRoomId = r.body.id;
+      testRoomIds.push(aqRoomId);
+      const agentPart = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(aqRoomId, aq.actorId).id;
+      const humanPart = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human'").get(aqRoomId).id;
+      for (const k of ['A', 'B', 'C', 'D']) ids[k] = insertRun(agentPart);
+      ids.foreign = insertRun(humanPart);
+      human = await openWsConnection(`ws://${HOST}:${PORT}`, cookieHeader());
+      const hist = waitForWsMessage(human, m => m.type === 'history');
+      human.send(JSON.stringify({ type: 'join_room', room_id: aqRoomId }));
+      await hist;
+    });
+
+    await test('run queue — queued runs broadcast their position; foreign message ids are ignored', async () => {
+      const a = queueEvent(human, ids.A), b = queueEvent(human, ids.B);
+      const foreign = queueEvent(human, ids.foreign, 600).then(() => true, () => false);
+      status([ids.A, ids.B, ids.foreign], [ids.foreign]);
+      assert.deepStrictEqual([(await a).position, (await b).position], [1, 2]);
+      assert.strictEqual((await a).thread_id, null);
+      assert.strictEqual(await foreign, false, 'a message of another actor must not be surfaced');
+      const h = await healthEntry();
+      assert.deepStrictEqual({ reported: h.reported, max: h.max_concurrent, running: h.running, queue_depth: h.queue_depth, rooms: h.rooms },
+        { reported: true, max: 3, running: 0, queue_depth: 2, rooms: [{ room_id: aqRoomId, running: 0, queued: 2 }] });
+    });
+
+    await test('run queue — a client joining the room later is hydrated with current positions', async () => {
+      const late = await openWsConnection(`ws://${HOST}:${PORT}`, cookieHeader());
+      const a = queueEvent(late, ids.A), b = queueEvent(late, ids.B);
+      late.send(JSON.stringify({ type: 'join_room', room_id: aqRoomId }));
+      assert.deepStrictEqual([(await a).position, (await b).position], [1, 2]);
+      late.close();
+    });
+
+    await test('run queue — start clears the position, the rest move up; completion stores server timing', async () => {
+      const aLeft = queueEvent(human, ids.A), bMoved = queueEvent(human, ids.B);
+      status([ids.B], [ids.A]);
+      assert.strictEqual((await aLeft).position, null, 'started run leaves the queue');
+      assert.strictEqual((await bMoved).position, 1);
+      aq.ws.send(JSON.stringify({ type: 'agent_token', room_id: aqRoomId, message_id: ids.A, token: 'x' }));
+      await new Promise(r => setTimeout(r, 50));
+      complete(ids.A, { exit_reason: 'completed', timing: { queue_wait_ms: 999999 } });
+      await untilDone(ids.A);
+      const t = timingOf(ids.A);
+      assert.ok(t, 'timing written to result_meta');
+      assert.strictEqual(t.queue_depth, 0, 'nothing of this agent ran ahead of A');
+      assert.strictEqual(t.parallel, 1);
+      assert.ok(t.queue_wait_ms > 0 && t.queue_wait_ms < 60000, `agent-supplied timing ignored, got ${t.queue_wait_ms}`);
+      assert.ok(Number.isInteger(t.first_token_ms) && t.first_token_ms >= 0 && Number.isInteger(t.run_ms) && t.run_ms >= t.first_token_ms);
+      assert.strictEqual(JSON.parse(db.prepare('SELECT result_meta FROM messages WHERE id=?').get(ids.A).result_meta).exit_reason, 'completed', 'agent exit_reason kept');
+    });
+
+    await test('run queue — queue depth at arrival is recorded; a run without a status report gets no timing', async () => {
+      const bLeft = queueEvent(human, ids.B);
+      status([], [ids.B]);
+      assert.strictEqual((await bLeft).position, null);
+      complete(ids.B, { exit_reason: 'completed' });
+      complete(ids.C, { exit_reason: 'completed', timing: { queue_depth: 5, queue_wait_ms: 1, run_ms: 1 } });
+      await untilDone(ids.B); await untilDone(ids.C);
+      assert.strictEqual(timingOf(ids.B).queue_depth, 1, 'B arrived behind A');
+      assert.strictEqual(timingOf(ids.C), undefined, 'timing is server-authored only');
+    });
+
+    await test('run queue — agent disconnect clears queued positions and the health snapshot', async () => {
+      const d = queueEvent(human, ids.D);
+      status([ids.D], []);
+      assert.strictEqual((await d).position, 1);
+      const cleared = queueEvent(human, ids.D);
+      const c = new Promise(r => aq.ws.once('close', r)); aq.ws.close(); await c;
+      assert.strictEqual((await cleared).position, null);
+      assert.strictEqual(await healthEntry(), undefined, 'offline agent not listed');
+    });
+
+    await test('run queue — teardown', async () => {
+      if (human) human.close();
+      if (aq?.ws && aq.ws.readyState !== 3) aq.ws.close();
+    });
+  }
+
   // POST /api/actors/:id/restart — manual restart when idle (PM2-supervised agents only)
   console.log('\n[Agent Restart]');
   {
@@ -13322,6 +13528,47 @@ async function run() {
     assert.strictEqual(classifyBroadcastError('limitless loop detected'), 'error');
     assert.strictEqual(classifyBroadcastError(''), 'error');
     assert.strictEqual(classifyBroadcastError(null), 'error');
+  });
+
+  await test('run-queue: sanitizeIdList keeps positive safe integers, dedupes, caps length', async () => {
+    const { sanitizeIdList, MAX_REPORTED_IDS } = require('./lib/run-queue');
+    assert.deepStrictEqual(sanitizeIdList([3, '4', 3, -1, 0, 1.5, null, 7]), [3, 7]);
+    assert.deepStrictEqual(sanitizeIdList('1,2'), []);
+    assert.strictEqual(sanitizeIdList(Array.from({ length: MAX_REPORTED_IDS + 50 }, (_, i) => i + 1)).length, MAX_REPORTED_IDS);
+  });
+
+  await test('run-queue: diffRunQueue reports new/moved positions, dequeued and newly started runs', async () => {
+    const { diffRunQueue } = require('./lib/run-queue');
+    const first = diffRunQueue(undefined, { queued: [11, 12], running: [10] });
+    assert.deepStrictEqual(first, { positions: [{ id: 11, position: 1 }, { id: 12, position: 2 }], dequeued: [], started: [10] });
+    const moved = diffRunQueue({ queued: [11, 12], running: [10] }, { queued: [12], running: [11] });
+    assert.deepStrictEqual(moved, { positions: [{ id: 12, position: 1 }], dequeued: [11], started: [11] });
+    const same = diffRunQueue({ queued: [12], running: [11] }, { queued: [12], running: [11] });
+    assert.deepStrictEqual(same, { positions: [], dequeued: [], started: [] }, 'an unchanged report broadcasts nothing');
+  });
+
+  await test('run-queue: summarizeRunTiming derives wait/first-token/run from observed timestamps', async () => {
+    const { summarizeRunTiming } = require('./lib/run-queue');
+    assert.strictEqual(summarizeRunTiming(undefined, 5), null);
+    assert.strictEqual(summarizeRunTiming({ arrived_at: 1000, queue_depth: 2 }, 5000), null, 'never started → no timing');
+    assert.deepStrictEqual(summarizeRunTiming({ arrived_at: 1000, started_at: 4000, first_token_at: 4500, queue_depth: 2, parallel: 3 }, 9000),
+      { queue_depth: 2, parallel: 3, queue_wait_ms: 3000, run_ms: 5000, first_token_ms: 500 });
+    assert.deepStrictEqual(summarizeRunTiming({ arrived_at: 1000, started_at: 1000 }, 1200),
+      { queue_depth: 0, parallel: 1, queue_wait_ms: 0, run_ms: 200 }, 'no token yet → first_token_ms omitted');
+  });
+
+  await test('run-queue: createRunTimeout pause stops the clock, rearm restarts the full window', async () => {
+    const { createRunTimeout } = require('./lib/run-queue');
+    let fired = 0;
+    const t = createRunTimeout(60, () => { fired++; });
+    t.pause();
+    await new Promise(r => setTimeout(r, 90));
+    assert.strictEqual(fired, 0, 'paused timeout must not fire');
+    t.rearm();
+    await new Promise(r => setTimeout(r, 30));
+    assert.strictEqual(fired, 0, 're-armed window starts over');
+    await new Promise(r => setTimeout(r, 60));
+    assert.strictEqual(fired, 1);
   });
 
   await test('maybeBroadcastError: guards eligibility + classifies + sets reason', async () => {

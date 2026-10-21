@@ -13,6 +13,7 @@ const { sanitizeDisplayName, EMAIL_REPLY_LIMITS, buildEmailThreadSection, normal
 const { parseClientVersion } = require('./lib/client-version');
 const { resolveEnvFile, loadEnvFile, setEnvKey, portFallbackWarning, DEFAULT_PORT } = require('./lib/env-file');
 const { runMigrations } = require('./lib/migrations');
+const { sanitizeIdList, diffRunQueue, summarizeRunTiming, createRunTimeout } = require('./lib/run-queue');
 const fallbackSessions = new Map();
 
 // R15: unique identifier for this server boot. Sessions tagged with a different
@@ -3387,7 +3388,20 @@ const server = http.createServer(async (req, res) => {
         ai_sessions: db.prepare('SELECT COUNT(*) as n FROM ai_sessions').get().n,
         agents:      db.prepare("SELECT COUNT(*) as n FROM actors WHERE type='ai'").get().n,
       };
-      return json(res, { page_count: pageCount, page_size: pageSize, size_bytes: sizeBytes, freelist_pages: freelistPages, wal_size_bytes: walSizeBytes, journal_mode: journalMode, counts, checks });
+      // Per connected agent: running/queued runs as last reported by stoa.js, split per room
+      // (= per participant). reported:false → older client that sends no queue status.
+      const onlineIds = [...agentClients.keys()];
+      const agentNames = new Map(onlineIds.length ? db.prepare('SELECT id, name FROM actors WHERE id IN (SELECT value FROM json_each(?))')
+        .all(JSON.stringify(onlineIds)).map(r => [r.id, r.name]) : []);
+      const agent_queues = onlineIds.map(actorId => {
+        const q = agentRunQueues.get(actorId);
+        return {
+          actor_id: actorId, name: agentNames.get(actorId) ?? null, reported: !!q,
+          max_concurrent: q?.max_concurrent ?? null, running: q ? q.running.length : null, queue_depth: q ? q.queued.length : null,
+          rooms: q?.rooms ?? [],
+        };
+      });
+      return json(res, { page_count: pageCount, page_size: pageSize, size_bytes: sizeBytes, freelist_pages: freelistPages, wal_size_bytes: walSizeBytes, journal_mode: journalMode, counts, checks, agent_queues });
     } catch (e) {
       return json(res, { error: e.message }, 500);
     }
@@ -5735,6 +5749,90 @@ function syncHarnessModels(harnessName, reporterId) {
 }
 const pendingAgents = new Map();    // message_id → { resolve, reject }
 const pendingActorMeta = new Map(); // message_id → { name, avatar_color, avatar_symbol }
+
+// Agent run queue, as reported by stoa.js (agent_queue_status). Only the agent knows which
+// triggers wait behind a busy slot; the server keeps the last snapshot per agent, the room of
+// every queued run (for position events) and per-run timestamps (→ result_meta.timing + log).
+const agentRunQueues = new Map(); // actor_id → { queued, running, max_concurrent, rooms }
+const runQueueMeta = new Map();   // queued message_id → { room_id, thread_id }
+const runTimings = new Map();     // message_id → { arrived_at, started_at, first_token_at, queue_depth, parallel, waited }
+const RUN_TIMING_TTL_MS = 24 * 60 * 60 * 1000;
+
+function applyAgentQueueStatus(actorId, msg) {
+  const queuedRaw = sanitizeIdList(msg.queued);
+  const runningRaw = sanitizeIdList(msg.running);
+  const reported = [...new Set([...queuedRaw, ...runningRaw])];
+  // Ownership: an agent can only surface or time its own runs.
+  const owned = new Map(reported.length ? db.prepare(
+    `SELECT m.id, m.room_id, m.thread_id FROM messages m JOIN room_participants rp ON rp.id=m.participant_id
+     WHERE rp.actor_id=? AND m.id IN (SELECT value FROM json_each(?))`
+  ).all(actorId, JSON.stringify(reported)).map(r => [r.id, r]) : []);
+  const next = { queued: queuedRaw.filter(id => owned.has(id)), running: runningRaw.filter(id => owned.has(id)) };
+  const { positions, dequeued, started } = diffRunQueue(agentRunQueues.get(actorId), next);
+  const now = Date.now();
+  for (const [id, t] of runTimings) if (now - t.arrived_at > RUN_TIMING_TTL_MS) runTimings.delete(id);
+
+  next.queued.forEach((id, i) => {
+    if (runTimings.has(id)) return;
+    runTimings.set(id, { arrived_at: now, queue_depth: next.running.length + i, waited: true });
+    // Waiting for a free slot is not a hang: the run timeout starts when the run does.
+    pendingAgents.get(id)?.pause?.();
+  });
+  for (const id of started) {
+    const t = runTimings.get(id) || { arrived_at: now, queue_depth: 0 };
+    if (Number.isFinite(t.started_at)) continue;
+    t.started_at = now;
+    t.parallel = next.running.length;
+    runTimings.set(id, t);
+    if (t.waited) {
+      pendingAgents.get(id)?.rearm?.();
+      console.log(`[queue] msg=${id} started after ${Math.round((now - t.arrived_at) / 1000)}s in queue (actor=${actorId})`);
+    }
+  }
+  for (const { id, position } of positions) {
+    const r = owned.get(id);
+    runQueueMeta.set(id, { room_id: r.room_id, thread_id: r.thread_id ?? null });
+    broadcast(r.room_id, { type: 'message_queue', room_id: r.room_id, message_id: id, thread_id: r.thread_id ?? null, position });
+  }
+  for (const id of dequeued) clearQueuedPosition(id);
+
+  const rooms = new Map();
+  for (const [list, key] of [[next.running, 'running'], [next.queued, 'queued']]) {
+    for (const id of list) {
+      const roomId = owned.get(id).room_id;
+      if (!rooms.has(roomId)) rooms.set(roomId, { room_id: roomId, running: 0, queued: 0 });
+      rooms.get(roomId)[key]++;
+    }
+  }
+  const maxConcurrent = Number.isSafeInteger(msg.max_concurrent) && msg.max_concurrent > 0 ? msg.max_concurrent : null;
+  agentRunQueues.set(actorId, { ...next, max_concurrent: maxConcurrent, rooms: [...rooms.values()] });
+}
+
+function clearQueuedPosition(id) {
+  const meta = runQueueMeta.get(id);
+  if (!meta) return;
+  runQueueMeta.delete(id);
+  broadcast(meta.room_id, { type: 'message_queue', room_id: meta.room_id, message_id: id, thread_id: meta.thread_id, position: null });
+}
+
+// Ends the timing of one run: returns the result_meta.timing object (null when the agent never
+// reported the run — older clients) and writes one [turn] line to the server log.
+function finalizeRunTiming(msgId, info) {
+  const t = runTimings.get(msgId);
+  runTimings.delete(msgId);
+  clearQueuedPosition(msgId);
+  const timing = summarizeRunTiming(t, Date.now());
+  if (timing) {
+    const sec = ms => ms == null ? '-' : (ms / 1000).toFixed(1) + 's';
+    console.log(`[turn] msg=${msgId} room=${info.room_id} thread=${info.thread_id ?? '-'} actor=${info.actor_id} state=${info.state} depth=${timing.queue_depth} parallel=${timing.parallel} wait=${sec(timing.queue_wait_ms)} first_token=${sec(timing.first_token_ms)} run=${sec(timing.run_ms)}`);
+  }
+  return timing;
+}
+
+function withTiming(resultMetaJson, timing) {
+  if (!timing) return resultMetaJson;
+  return JSON.stringify({ ...(resultMetaJson ? JSON.parse(resultMetaJson) : {}), timing });
+}
 const pendingCompacts = new Map();  // room_id → { total, completed, agents[] }
 const recentCompacts = new Map();      // room_id → timestamp — suppresses duplicate auto_compact_start within 30s
 const recentCompactTimers = new Map(); // room_id → timer handle — cleared before reset to avoid early expiry
@@ -5852,6 +5950,13 @@ wss.on('connection', (ws, req) => {
         }
       });
       ws.send(JSON.stringify({ type: 'history', messages: enriched }));
+      // Runs still waiting for a free agent slot (root and thread replies) — same event as live updates.
+      for (const q of agentRunQueues.values()) {
+        q.queued.forEach((id, i) => {
+          const meta = runQueueMeta.get(id);
+          if (meta?.room_id === subscribedRoom) ws.send(JSON.stringify({ type: 'message_queue', room_id: subscribedRoom, message_id: id, thread_id: meta.thread_id, position: i + 1 }));
+        });
+      }
       // Restore compact state if room is currently compacting (room-level and thread-level)
       const roomPrefix = `${subscribedRoom}:`;
       for (const [compactKey, cs] of pendingCompacts) {
@@ -6218,7 +6323,15 @@ wss.on('connection', (ws, req) => {
 
     // ── Agent streams a token
     if (msg.type === 'agent_token' && agentActorId) {
+      const timing = runTimings.get(msg.message_id);
+      if (timing && timing.started_at && !timing.first_token_at) timing.first_token_at = Date.now();
       broadcast(msg.room_id, { type: 'message_token', message_id: msg.message_id, token: msg.token });
+    }
+
+    // ── Agent reports its run queue (stoa.js sends it whenever a run is queued, starts or ends)
+    if (msg.type === 'agent_queue_status' && agentActorId) {
+      try { applyAgentQueueStatus(agentActorId, msg); }
+      catch (e) { console.error('[queue] agent_queue_status failed:', e.message); }
     }
 
     // ── Agent reports a tool call
@@ -6449,7 +6562,8 @@ wss.on('connection', (ws, req) => {
         console.warn(`[agent] empty agent_complete: message_id=${msg.message_id} room=${msg.room_id} thread=${errMeta.thread_id ?? 'none'} agent=${agentActorId}`);
         // A visible placeholder instead of an empty error bubble with no trace of what happened.
         const placeholder = '(agent returned an empty reply)';
-        const errResultMeta = JSON.stringify({ exit_reason: 'error' });
+        const errTiming = finalizeRunTiming(msg.message_id, { room_id: msg.room_id, thread_id: errMeta.thread_id, actor_id: agentActorId, state: 'error' });
+        const errResultMeta = withTiming(JSON.stringify({ exit_reason: 'error' }), errTiming);
         db.prepare(`UPDATE messages SET content=?, state='error', result_meta=?, completed_at=datetime('now') WHERE id=?`).run(placeholder, errResultMeta, msg.message_id);
         const errPayload = { type: 'message_complete', message_id: msg.message_id, content: placeholder, state: 'error', result_meta: errResultMeta, thread_id: errMeta.thread_id ?? null };
         if (errMeta.thread_id) errPayload.thread_summary = buildThreadSummary(msg.room_id, errMeta.thread_id);
@@ -6470,10 +6584,14 @@ wss.on('connection', (ws, req) => {
       const agentContent = stripWaReplyMarkers(rawContent) || rawContent;
       // Phase 4: whitelist result_meta from the agent to a fixed shape before
       // persisting — never store arbitrary agent-supplied JSON on the row.
-      const resultMetaJson = sanitizeResultMeta(msg.result_meta);
+      const agentResultMeta = sanitizeResultMeta(msg.result_meta);
       // R13: explicit failure exit_reason wins over presence of output content.
-      const parsedMeta = resultMetaJson ? JSON.parse(resultMetaJson) : null;
+      const parsedMeta = agentResultMeta ? JSON.parse(agentResultMeta) : null;
       const finalState = FAILURE_EXIT_REASONS.has(parsedMeta?.exit_reason) ? 'error' : 'complete';
+      // timing is server-authored (sanitizeResultMeta drops any agent-supplied copy).
+      const resultMetaJson = withTiming(agentResultMeta, finalizeRunTiming(msg.message_id, {
+        room_id: msg.room_id, thread_id: pendingActorMeta.get(msg.message_id)?.thread_id, actor_id: agentActorId, state: finalState,
+      }));
       db.prepare(
         'UPDATE messages SET content=?, file_url=?, file_name=?, attachments=?, ai_model=?, result_meta=?, state=?, completed_at=datetime(\'now\') WHERE id=?'
       ).run(agentContent, msg.file_url || null, msg.file_name || null, attachJson, msg.ai_model || null, resultMetaJson, finalState, msg.message_id);
@@ -6651,6 +6769,7 @@ wss.on('connection', (ws, req) => {
 
     // ── Agent error
     if (msg.type === 'agent_error' && agentActorId) {
+      finalizeRunTiming(msg.message_id, { room_id: msg.room_id, thread_id: pendingActorMeta.get(msg.message_id)?.thread_id, actor_id: agentActorId, state: 'error' });
       db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msg.message_id);
       broadcast(msg.room_id, { type: 'message_state', message_id: msg.message_id, state: 'error' });
       // R15: agent reported error cleanly — reset session to idle so it isn't
@@ -7185,6 +7304,9 @@ wss.on('connection', (ws, req) => {
       agentClaudeCandidates.delete(agentActorId);
       agentSupervisors.delete(agentActorId);
       agentBootIds.delete(agentActorId);
+      // Timings survive (runs outlive a reconnect); the queue snapshot is rebuilt from the next report.
+      for (const id of agentRunQueues.get(agentActorId)?.queued || []) clearQueuedPosition(id);
+      agentRunQueues.delete(agentActorId);
       for (const [rid, pending] of pendingHarnessChecks) {
         if (pending.actorId === agentActorId) {
           clearTimeout(pending.timer);
@@ -7699,7 +7821,7 @@ async function triggerSkillResponse(roomId, ai, prompt) {
   if (agentWs && agentWs.readyState === 1) {
     const skillRunTimeoutMs = parseInt(process.env.AGENT_RUN_TIMEOUT_MS || String(15 * 60 * 1000));
     await new Promise((resolve, reject) => {
-      const timeoutTimer = setTimeout(() => {
+      const timeout = createRunTimeout(skillRunTimeoutMs, () => {
         if (!pendingAgents.has(msgId)) return;
         pendingAgents.delete(msgId);
         pendingActorMeta.delete(msgId);
@@ -7707,10 +7829,11 @@ async function triggerSkillResponse(roomId, ai, prompt) {
           .run(`(timeout — ${ai.name} did not respond in ${Math.round(skillRunTimeoutMs / 60000)} minutes)`, msgId);
         broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
         reject(new Error('agent_timeout'));
-      }, skillRunTimeoutMs);
+      });
       pendingAgents.set(msgId, {
-        resolve: (v) => { clearTimeout(timeoutTimer); resolve(v); },
-        reject:  (e) => { clearTimeout(timeoutTimer); reject(e); },
+        resolve: (v) => { timeout.pause(); resolve(v); },
+        reject:  (e) => { timeout.pause(); reject(e); },
+        pause: timeout.pause, rearm: timeout.rearm,
       });
       pendingActorMeta.set(msgId, { actor_id: ai.actor_id, room_id: roomId, actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null });
       agentWs.send(JSON.stringify({
@@ -8216,7 +8339,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
       : getThreadSession(ai.participant_id, threadId);
     const agentRunTimeoutMs = parseInt(process.env.AGENT_RUN_TIMEOUT_MS || String(15 * 60 * 1000));
     await new Promise((resolve, reject) => {
-      const timeoutTimer = setTimeout(() => {
+      const timeout = createRunTimeout(agentRunTimeoutMs, () => {
         if (!pendingAgents.has(msgId)) return;
         pendingAgents.delete(msgId);
         pendingActorMeta.delete(msgId);
@@ -8224,10 +8347,12 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
           .run(`(timeout — ${displayName} did not respond in ${Math.round(agentRunTimeoutMs / 60000)} minutes)`, subAgent ? AWAITING_AGENT_RESULT_META : null, msgId);
         broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
         reject(new Error('agent_timeout'));
-      }, agentRunTimeoutMs);
+      });
       pendingAgents.set(msgId, {
-        resolve: (v) => { clearTimeout(timeoutTimer); resolve(v); },
-        reject:  (e) => { clearTimeout(timeoutTimer); reject(e); },
+        resolve: (v) => { timeout.pause(); resolve(v); },
+        reject:  (e) => { timeout.pause(); reject(e); },
+        // agent_queue_status: paused while the run waits in the agent queue, re-armed at start.
+        pause: timeout.pause, rearm: timeout.rearm,
       });
       pendingActorMeta.set(msgId, { actor_id: ai.actor_id, room_id: roomId, actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null, sub_agent_label: subAgent?.label || null, sub_agent_avatar_color: subAgent?.avatar_color || null, sub_agent_avatar_symbol: subAgent?.avatar_symbol || null, sub_agent_avatar_url: subAgent?.avatar_url || null, sub_agent_role: subAgent?.role || null, thread_id: threadId || null });
       const triggerBaseUrl = getPublicUrl(`localhost:${PORT}`);
