@@ -55,6 +55,47 @@ function showThinking(msgId, actorName, color, symbol, avatarUrl, subAgentLabel,
   inner.appendChild(row);
 
   streaming[msgId] = '';
+  applyQueueBadge(msgId);
   scrollToBottom();
 }
 
+
+// ── Agent queue position badge ─────────────────────────────────────────────
+// Server sends message_queue {message_id, position|null}; a run waiting in the agent's
+// queue shows "queued #N" in place of the thinking indicator until it starts.
+const queuePositions = new Map();
+
+function applyQueueBadge(msgId) {
+  const position = queuePositions.get(msgId);
+  document.querySelectorAll(`[id="msg-${msgId}"]`).forEach(row => {
+    const thinking = row.querySelector('.h-thinking-bubble');
+    const host = thinking || row.querySelector('.t-col, .h-msg-body');
+    let badge = row.querySelector('.h-queue-badge');
+    if (!position || !host) {
+      if (badge) badge.remove();
+      if (thinking) thinking.classList.remove('is-queued');
+      return;
+    }
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'h-queue-badge';
+      const meta = thinking ? null : host.querySelector(':scope > .t-meta, :scope > .h-msg-meta');
+      if (meta) meta.after(badge);
+      else host.appendChild(badge);
+    }
+    badge.textContent = `Queued #${position}`;
+    if (thinking) thinking.classList.add('is-queued');
+  });
+}
+
+function setQueuePosition(msgId, position) {
+  if (Number.isInteger(position) && position > 0) queuePositions.set(msgId, position);
+  else queuePositions.delete(msgId);
+  applyQueueBadge(msgId);
+}
+
+function clearQueuePositions() {
+  const ids = [...queuePositions.keys()];
+  queuePositions.clear();
+  ids.forEach(applyQueueBadge);
+}

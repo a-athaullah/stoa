@@ -119,8 +119,17 @@ Ara lapor ke Aan → Aan decide merge/hold/reject
 - Each thread has its own AI session: `ai_sessions.thread_id` (0 = legacy/room-level)
 - `activeSequences` keyed by `${roomId}:${threadId||0}` — threads run in parallel
 - `max_active_threads` per room (default 3) — caps parallel streaming threads
-- `max_concurrent` per agent (default 3) — caps parallel claude processes on agent machine
+- `max_concurrent` per agent (default **1** in `.env`; recommended: 3) — caps parallel claude processes on agent machine. **Parallel between threads; always serial within a thread** (gating by session key in stoa.js run-queue, `lib/run-queue.js`).
 - `busy_input_mode` (interrupt/queue/steer) checked per thread, not per room
+- **Risk (max_concurrent > 1):** threads sharing the same workdir can race on files or git — no lock. Keep 1 for shared-code rooms.
+
+### Agent Run Queue (stoa.js, v0.4.392+)
+- Triggers wait on `sessionKey = ${workdir}::${roomId}::t:${threadId||0}[::sub:${subId}]` busy → FIFO within a thread, later threads can skip blocked ones
+- `agent_queue_status` event: agent → server on every queue change and after `agent_connect` — `{ type, queued: [...msgIds], running: [...msgIds], max_concurrent }`
+- Server ownership-checks the report, then: broadcasts `message_queue` positions to room clients; adds `agent_queues` to `/api/health/db`; writes `result_meta.timing`; logs one `[turn]` line per run
+- `message_queue` event: server → room clients — `{ type, room_id, message_id, thread_id, position }` — `position: null` = run left queue
+- 15-min run timeout is paused while a run waits in the agent queue; resets fully when it starts
+- `result_meta.timing`: `{ queue_depth, parallel, queue_wait_ms, first_token_ms?, run_ms }` — server-authored; older agents that don't send queue status get no timing
 
 ### System Prompt
 - `rooms.system_prompt` — room-level prompt, sent to agent as `--append-system-prompt`

@@ -62,6 +62,7 @@ function handleWsMessage(msg) {
     resetDaySeparator();
     if (typeof clearThreadSummaries === 'function') clearThreadSummaries();
     if (typeof clearThreadPanel === 'function') clearThreadPanel();
+    clearQueuePositions();
     // Root messages in feed; broadcast rows for thread messages with broadcast_reason
     msg.messages.forEach(m => {
       if (m.thread_id) {
@@ -180,7 +181,14 @@ function handleWsMessage(msg) {
     return;
   }
 
+  if (msg.type === 'message_queue') {
+    if (msg.room_id !== currentRoomId) return;
+    setQueuePosition(msg.message_id, msg.position);
+    return;
+  }
+
   if (msg.type === 'message_deleted') {
+    setQueuePosition(msg.message_id, null);
     const row = document.getElementById('msg-' + msg.message_id);
     if (row) row.remove();
     return;
@@ -207,6 +215,7 @@ function handleWsMessage(msg) {
       else setComposerProcessing(msg.message_id);
     }
     if (msg.state === 'error' || (typeof FAILURE_STATES !== 'undefined' && FAILURE_STATES.has(msg.state))) {
+      setQueuePosition(msg.message_id, null);
       const el = document.getElementById('msg-' + msg.message_id);
       if (el) {
         const bubble = el.querySelector('.h-bubble, .h-thinking-bubble');
@@ -242,6 +251,7 @@ function handleWsMessage(msg) {
   }
 
   if (msg.type === 'message_complete') {
+    setQueuePosition(msg.message_id, null);
     finalizeMessage(msg.message_id, msg.content, msg.file_url, msg.file_name, msg.attachments, msg.ai_model, msg.result_meta, msg.model_source);
     clearComposerProcessing(msg.message_id);
     if (typeof clearThreadProcessing === 'function') clearThreadProcessing(msg.message_id);

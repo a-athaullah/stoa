@@ -198,6 +198,12 @@ Composer memiliki toggle **Enter to send**. Saat aktif (default di desktop), men
 
 Saat AI agent sedang streaming respons, tombol **Stop** muncul. Klik untuk membatalkan generasi. Pesan akan menampilkan konten yang sudah di-stream sampai saat itu.
 
+### Badge Posisi Antrean
+
+Saat pesan sedang menunggu giliran di antrean agent — karena agent sedang memproses thread lain — badge **Queued #N** muncul menggantikan indikator streaming, baik di feed room maupun di panel thread (teks badge selalu dalam bahasa Inggris). Angka menunjukkan posisi run dalam antrean (berbasis 1). Badge hilang otomatis saat run dimulai, selesai, atau dibatalkan.
+
+Timeout run 15 menit dari server dijeda selama run menunggu di antrean dan direset penuh saat run dimulai — run yang antre di belakang review panjang tidak akan timeout sebelum sempat mulai.
+
 ### Scroll Tak Terbatas
 
 Hanya pesan terbaru yang dimuat saat membuka room. Scroll ke atas untuk otomatis memuat pesan-pesan lama.
@@ -935,7 +941,7 @@ Panel detail mencakup:
 - **Public URL** — URL yang digunakan agent dan perangkat lain untuk menjangkau server (penting untuk setup Tailscale/remote)
 - **Port** — ubah port server (perlu restart; lihat [panduan ganti port](doc-port))
 - **Max AI Turns** — maksimum respons agent per pesan manusia (mencegah loop tak terbatas)
-- **Concurrent Sessions** — berapa pesan yang bisa diproses agent secara paralel di semua room (langsung diterapkan, tanpa restart)
+- **Concurrent Sessions** — berapa thread yang bisa dijalankan agent secara bersamaan (default: 1; rekomendasi: 3). Paralel *antar* thread; selalu serial *dalam* satu thread. Langsung diterapkan, tanpa restart. **Risiko:** dengan nilai di atas 1, thread yang berbagi workdir yang sama bisa mengedit file atau menjalankan git bersamaan — tidak ada kunci yang mencegah ini. Biarkan di 1 untuk room yang agentnya mengedit kode bersama, atau berikan workdir terpisah untuk setiap thread.
 - **Session Idle TTL** — menit sebelum sesi AI yang idle otomatis ditutup untuk menghemat memori (default 5 menit)
 - **Cleanup Hour** — kapan pembersihan upload harian berjalan (format 24 jam)
 - **Max File Age** — berapa lama file upload disimpan sebelum dibersihkan (jam)
@@ -1011,6 +1017,22 @@ Di bawah kartu, ada **heatmap aktivitas** yang mencakup 26 minggu terakhir. Tiap
 - **Daftar model** di bawahnya menampilkan setiap model dengan total token input/output dan persentase porsinya
 
 Semua angka bersifat read-only dan diperbarui setiap kali kamu membuka ulang tab atau mengubah period.
+
+### Doctor
+
+Tab **Doctor** menampilkan informasi kesehatan instance Stoa kamu: integritas database, ukuran file DB, dan status semua agent.
+
+**Diagnostik antrean agent** — `GET /api/health/db` menyertakan array `agent_queues` dengan status antrean setiap agent yang online: apakah agent melaporkan status antrean (`reported: true` berarti client v0.4.392+), jumlah run aktif, kedalaman antrean, dan rincian per room. `reported: false` berarti client lama yang tidak mengirim event antrean — hitungannya `null`.
+
+**Timing run** — setiap pesan menyertakan timing yang dibuat server di `result_meta.timing` (hanya untuk agent dengan client v0.4.392+):
+
+| Field | Keterangan |
+|-------|------------|
+| `queue_wait_ms` | Waktu run menunggu di antrean agent |
+| `first_token_ms` | Waktu dari run dimulai hingga token pertama (dihilangkan jika tidak ada streaming) |
+| `run_ms` | Durasi run total |
+| `queue_depth` | Run dari agent yang sama di depan run ini saat tiba (0 = langsung mulai) |
+| `parallel` | Run aktif di agent saat run ini dimulai, termasuk dirinya sendiri |
 
 ---
 

@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.391";
+var CLIENT_VERSION = "0.4.394";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -873,6 +873,7 @@ function connect() {
       // active_message_ids: runs survive a reconnect, so the server must not orphan them.
       const active_message_ids = [...activeTriggers.keys(), ...triggerQueue.map((t) => t.message_id)];
       ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, harnesses_available: [], supervisor: SUPERVISOR, boot_id: BOOT_ID, active_message_ids }));
+      sendQueueStatus();
       console.log(`[stoa] Agent #${ACTOR_ID} v${CLIENT_VERSION} connected to ${STOA_URL} (max_concurrent=${MAX_CONCURRENT})`);
       detectHarnessesAsync().then((result) => {
         send({ type: "harnesses_update", ...result });
@@ -1027,6 +1028,7 @@ async function handleAgentMessage(msg) {
       triggerQueue.splice(qIdx, 1);
       send({ type: "agent_complete", room_id: msg.room_id, message_id: msg.message_id, content: "(cancelled before processing)" });
       console.log(`[stoa] Cancelled queued msg=${msg.message_id}`);
+      sendQueueStatus();
     } else {
       const active = activeTriggers.get(msg.message_id);
       if (active?.session) {
@@ -1356,12 +1358,14 @@ async function handleAgentMessage(msg) {
   if (msg.type === "agent_trigger") {
     const { room_id, message_id, prompt } = msg;
     console.log(`[stoa] trigger received room=${room_id} msg=${message_id} prompt="${prompt?.slice(0, 60)}..." (active=${activeTriggers.size}/${MAX_CONCURRENT})`);
-    if (activeTriggers.size >= MAX_CONCURRENT) {
+    if (!canStartTrigger(msg)) {
       triggerQueue.push(msg);
       console.log(`[stoa] queued msg=${message_id} (${triggerQueue.length} in queue)`);
+      sendQueueStatus();
       return;
     }
     runTrigger(msg);
+    sendQueueStatus();
   }
 }
 function wsRequest(type, payload, timeout = 1e4) {
@@ -1387,11 +1391,29 @@ function classifyModelError(m = "") {
   if (/429|rate[ _-]?limit|overloaded|too many requests|529|503|capacity|timeout|timed out/i.test(m)) return "model";
   return "other";
 }
+function triggerWorkdir(msg) {
+  return msg.workdir || (msg.sub_agent ? path.join(os.homedir(), "stoa-agent") : null) || process.env.STOA_WORK_DIR || os.homedir();
+}
+function triggerSessionKey(msg) {
+  return buildSessionKey(triggerWorkdir(msg), msg.room_id, msg.thread_id || 0, msg.sub_agent?.id);
+}
+// A session (= one thread of one participant/sub-agent) runs one turn at a time. Without this,
+// a second trigger for a busy thread would share — and on a model/env/prompt change, shut down —
+// the session the first one is still using, with its first-token watchdog ticking while it waits.
+function canStartTrigger(msg) {
+  if (activeTriggers.size >= MAX_CONCURRENT) return false;
+  const key = triggerSessionKey(msg);
+  for (const t of activeTriggers.values()) if (t.sessionKey === key) return false;
+  return true;
+}
+function sendQueueStatus() {
+  send({ type: "agent_queue_status", queued: triggerQueue.map((t) => t.message_id), running: [...activeTriggers.keys()], max_concurrent: MAX_CONCURRENT });
+}
 async function processTrigger(msg) {
   const { room_id, message_id } = msg;
   const subAgent = msg.sub_agent || null;
   const subAgentDefaultWorkdir = path.join(os.homedir(), "stoa-agent");
-  const workdir = msg.workdir || (subAgent ? subAgentDefaultWorkdir : null) || process.env.STOA_WORK_DIR || os.homedir();
+  const workdir = triggerWorkdir(msg);
   if (!fs.existsSync(workdir)) {
     if (subAgent && workdir === subAgentDefaultWorkdir) {
       fs.mkdirSync(workdir, { recursive: true });
@@ -2078,11 +2100,18 @@ function runTrigger(msg) {
   });
 }
 function drainQueue() {
-  while (activeTriggers.size < MAX_CONCURRENT && triggerQueue.length > 0) {
-    const next = triggerQueue.shift();
+  // FIFO, but a trigger whose thread is still busy stays put and lets later threads pass.
+  let i = 0;
+  while (activeTriggers.size < MAX_CONCURRENT && i < triggerQueue.length) {
+    if (!canStartTrigger(triggerQueue[i])) {
+      i++;
+      continue;
+    }
+    const [next] = triggerQueue.splice(i, 1);
     console.log(`[stoa] dequeued msg=${next.message_id} (${triggerQueue.length} remaining, active=${activeTriggers.size}/${MAX_CONCURRENT})`);
     runTrigger(next);
   }
+  sendQueueStatus();
   if (activeTriggers.size === 0 && triggerQueue.length === 0 && pendingRestart) doRestart();
 }
 // STALE_TRIGGER_MS must exceed maximum idle the watchdog can tolerate:
