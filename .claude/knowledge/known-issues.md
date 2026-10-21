@@ -52,10 +52,22 @@
 - Loop guard: >3 interrupted runs per (room, thread, sub-agent) in 1 hour → system_event, no wake.
   The server never re-triggers a sub-agent itself; the parent decides.
 - Kill switch: `STOA_ORPHAN_WAKE=off` (wakes only; the interrupted stamp stays).
-- Agent side: a pending update restart waits up to 30 min (not 3) while a tool call is in flight.
-  The run watchdog (5 min idle) and stale sweep (20 min) still bound silent tools.
-- Known gap: a sub-agent run already marked error by the 15-min server timeout, whose agent then
-  dies, gets no wake (needs the thread watchdog, plan Lapis 4).
+- Agent side: while a tool call is in flight, every trigger watchdog allows up to 30 min of
+  silence (`TOOL_STALL_MS` via `idleLimit` in stoa.js): hang watchdog (else 5 min idle / 10 min
+  first token), pending update restart (else 3 min). The stale sweep stays a backstop two sweep
+  ticks above the watchdog (32 min with a tool, else 20). No tool in flight → old bounds (newfin).
+- The 15-min server run timeout (`AGENT_RUN_TIMEOUT_MS`, absolute, not idle) only errors the
+  bubble; the agent keeps running. For a sub-agent it writes `result_meta={exit_reason:'timeout',
+  awaiting_agent:true}` (server-only key) and does not wake. The disconnect / reconnect / startup
+  cleanups treat such rows like `streaming` ones (`RUN_IN_FLIGHT_SQL`), so an agent that dies
+  instead of completing still wakes the parent ([sub-agent TERPUTUS]). A late `agent_complete` /
+  `agent_error` overwrites/clears the mark → one wake only. Deliberately no time-based sweep: the
+  agent watchdogs are idle-based (debug-log defers extend them), so a timer would wake the parent
+  for runs still legitimately working.
+- Known gap: a half-open agent socket (machine gone without FIN) is not detected by the server
+  (no server-side heartbeat), so its runs wait for the OS TCP timeout before the disconnect
+  cleanup fires. Pre-existing, applies to `streaming` runs too.
+- Tests: run-tests.js sets `AGENT_RUN_TIMEOUT_MS=15000` so the timeout path runs for real.
 
 ---
 

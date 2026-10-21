@@ -11573,6 +11573,96 @@ async function run() {
       complete(ws, w, 'ok');
     });
 
+    // Server run timeout (AGENT_RUN_TIMEOUT_MS, shortened by run-tests.js) errors a sub-agent
+    // bubble while the agent may still be running it. Four runs share one timeout wait:
+    // A is lost on reconnect, B completes late, C errors late, D survives a reconnect then dies.
+    let aw = null;
+    const awSpawn = async (task) => {
+      const t = waitForWsMessage(ow.ws, m => m.type === 'agent_trigger' && m.sub_agent?.id === aw.sa.id && m.prompt.includes(task), 5000);
+      const r = await req('POST', `/api/rooms/${aw.roomId}/sub-agent-trigger`, { sub_agent_id: aw.sa.id, task }, hdr());
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      return (await t).message_id;
+    };
+    const awComplete = (ws, id, content) => ws.send(JSON.stringify({ type: 'agent_complete', room_id: aw.roomId, message_id: id, content }));
+
+    await test('Orphan wake — server run timeout on a sub-agent marks it awaiting its agent, without waking yet', async () => {
+      if (!owSa) { console.log('    (skipped)'); return; }
+      const r = await req('POST', '/api/rooms', { title: '__orphan-wake-timeout-room__', workdir_id: ow.workdirId, participant_ids: [ow.actorId] });
+      assert.strictEqual(r.status, 200);
+      testRoomIds.push(r.body.id);
+      db.prepare('UPDATE rooms SET max_sub_agents=10, max_spawns_per_hour=50 WHERE id=?').run(r.body.id);
+      const s = await req('POST', `/api/actors/${ow.actorId}/sub-agents`, { label: 'awaitsub', tier: 'quick' });
+      assert.strictEqual(s.status, 201, JSON.stringify(s.body));
+      const l = await req('POST', `/api/rooms/${r.body.id}/sub-agents`, { sub_agent_id: s.body.id });
+      assert.ok(l.status === 200 || l.status === 201, JSON.stringify(l.body));
+      aw = { roomId: r.body.id, sa: s.body };
+      aw.A = await awSpawn('run A lost by the agent');
+      aw.B = await awSpawn('run B completes after the timeout');
+      aw.C = await awSpawn('run C errors after the timeout');
+      aw.D = await awSpawn('run D survives a reconnect');
+      const ids = [aw.A, aw.B, aw.C, aw.D];
+      for (let i = 0; i < 300 && ids.some(id => row(id).state !== 'error'); i++) await new Promise(res => setTimeout(res, 100));
+      for (const id of ids) {
+        const x = row(id);
+        assert.strictEqual(x.state, 'error', 'server run timeout fired');
+        assert.ok(x.content.startsWith('(timeout'), x.content);
+        assert.deepStrictEqual(JSON.parse(x.result_meta), { exit_reason: 'timeout', awaiting_agent: true });
+        assert.strictEqual(wakesFor(id), 0, 'no wake at the timeout: the agent may still complete it');
+      }
+    });
+
+    await test('Orphan wake — timed-out run completed later wakes the parent once with the real result', async () => {
+      if (!aw) { console.log('    (skipped)'); return; }
+      const wake = waitForWsMessage(ow.ws, mm => mm.type === 'agent_trigger' && !mm.sub_agent, 5000);
+      awComplete(ow.ws, aw.B, 'real result of B');
+      const w = await wake;
+      assert.ok(w.prompt.includes('real result of B') && !w.prompt.includes('TERPUTUS'));
+      assert.strictEqual(row(aw.B).result_meta, null, 'completion clears the awaiting mark');
+      complete(ow.ws, w, 'ok');
+      assert.ok(await noParentTrigger(ow.ws, 600));
+    });
+
+    await test('Orphan wake — timed-out run that errors later wakes the parent once with the failure', async () => {
+      if (!aw) { console.log('    (skipped)'); return; }
+      const wake = waitForWsMessage(ow.ws, mm => mm.type === 'agent_trigger' && !mm.sub_agent, 5000);
+      ow.ws.send(JSON.stringify({ type: 'agent_error', room_id: aw.roomId, message_id: aw.C, error: 'crashed late' }));
+      const w = await wake;
+      assert.ok(w.prompt.includes('[sub-agent GAGAL]'));
+      assert.strictEqual(row(aw.C).result_meta, null, 'agent_error clears the awaiting mark');
+      complete(ow.ws, w, 'ok');
+      assert.ok(await noParentTrigger(ow.ws, 600));
+    });
+
+    await test('Orphan wake — reconnect: a timed-out run the agent no longer holds wakes the parent (TERPUTUS); a held one does not', async () => {
+      if (!aw) { console.log('    (skipped)'); return; }
+      const first = ow.ws;
+      const firstClosed = new Promise(r => first.once('close', r));
+      const { ws, parent } = await connectExpectingParent({ active_message_ids: [aw.D] });
+      await firstClosed;
+      ow.ws = ws;
+      const w = await parent;
+      assert.ok(w && w.prompt.includes('[sub-agent TERPUTUS]') && w.prompt.includes('awaitsub'), 'lost run A wakes the parent as interrupted');
+      assert.strictEqual(JSON.parse(row(aw.A).result_meta).exit_reason, 'interrupted');
+      assert.deepStrictEqual(JSON.parse(row(aw.D).result_meta), { exit_reason: 'timeout', awaiting_agent: true }, 'run D is still held by the agent');
+      assert.strictEqual(wakesFor(aw.D), 0);
+      complete(ws, w, 'ok');
+      assert.ok(await noParentTrigger(ws, 600), 'one wake: B and C already reported, D still running');
+    });
+
+    await test('Orphan wake — agent dies after a server run timeout: disconnect wakes the parent once, finished runs stay quiet', async () => {
+      if (!aw) { console.log('    (skipped)'); return; }
+      await closeWs(ow.ws);
+      assert.strictEqual(JSON.parse(row(aw.D).result_meta).exit_reason, 'interrupted');
+      assert.strictEqual(wakesFor(aw.D), 1, 'the timed-out run the dead agent held gets a durable wake');
+      assert.strictEqual(wakesFor(aw.B) + wakesFor(aw.C), 0, 'runs that already reported are not woken again');
+      const { ws, parent } = await connectExpectingParent({ active_message_ids: [] });
+      ow.ws = ws;
+      const w = await parent;
+      assert.ok(w && w.prompt.includes('[sub-agent TERPUTUS]'));
+      complete(ws, w, 'ok');
+      assert.ok(await noParentTrigger(ws, 600), 'exactly one wake after the death');
+    });
+
     await test('Orphan wake — loop guard: 4th interruption within an hour posts a system event instead of waking', async () => {
       if (!owSa) { console.log('    (skipped)'); return; }
       const ptcp = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(owRoomId, ow.actorId);

@@ -524,6 +524,12 @@ function enqueueParentWake(roomId, parentParticipantId, subAgentMessageId, threa
 // current, so a wake queued while the agent is down survives until it returns.
 // STOA_ORPHAN_WAKE=off disables the wakes (the interrupted stamp stays).
 const INTERRUPTED_RESULT_META = JSON.stringify({ exit_reason: 'interrupted' });
+// The 15-min server timeout errors a sub-agent bubble while the agent may still be running it,
+// so it does not wake the parent — agent_complete will. awaiting_agent (server-written only:
+// sanitizeResultMeta drops unknown keys) keeps the row in the disconnect/reconnect/startup
+// cleanup below, so an agent that dies instead of completing still wakes the parent.
+const AWAITING_AGENT_RESULT_META = JSON.stringify({ exit_reason: 'timeout', awaiting_agent: true });
+const RUN_IN_FLIGHT_SQL = "(state IN ('streaming','requesting') OR (state='error' AND sub_agent_id IS NOT NULL AND json_extract(result_meta, '$.awaiting_agent')=1))";
 const ORPHAN_WAKE_LIMIT = 3; // interrupted wakes per (thread, sub-agent) per hour
 const orphanWakeEnabled = () => process.env.STOA_ORPHAN_WAKE !== 'off';
 
@@ -6024,7 +6030,7 @@ wss.on('connection', (ws, req) => {
       }
       if (revived.length) console.log(`[agent] ${revived.length} run(s) still active on reconnect for Actor #${agentActorId} — un-orphaned`);
       const reconnectCleaned = db.prepare(
-        "UPDATE messages SET state='error', result_meta=?, completed_at=datetime('now'), content=CASE WHEN content='' THEN '(interrupted — agent reconnected)' ELSE content END WHERE state IN ('streaming','requesting') AND id NOT IN (SELECT value FROM json_each(?)) AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?) RETURNING id, room_id, participant_id, thread_id, sub_agent_id, sub_agent_label, content"
+        `UPDATE messages SET state='error', result_meta=?, completed_at=datetime('now'), content=CASE WHEN content='' THEN '(interrupted — agent reconnected)' ELSE content END WHERE ${RUN_IN_FLIGHT_SQL} AND id NOT IN (SELECT value FROM json_each(?)) AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?) RETURNING id, room_id, participant_id, thread_id, sub_agent_id, sub_agent_label, content`
       ).all(INTERRUPTED_RESULT_META, stillActive, agentActorId);
       if (reconnectCleaned.length) {
         console.log(`[agent] Cleaned ${reconnectCleaned.length} orphaned message(s) on reconnect for Actor #${agentActorId}`);
@@ -6664,6 +6670,9 @@ wss.on('connection', (ws, req) => {
           }
         }
       } catch {}
+      // The run is over: drop the awaiting-agent mark so a later disconnect cleanup cannot wake twice.
+      db.prepare(`UPDATE messages SET result_meta=NULL WHERE id=? AND json_extract(result_meta, '$.awaiting_agent')=1
+        AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?)`).run(msg.message_id, agentActorId);
       wakeParentOnSubAgentError(msg.message_id, agentActorId);
       pendingAgents.get(msg.message_id)?.reject(new Error(msg.error));
       pendingAgents.delete(msg.message_id);
@@ -7188,7 +7197,7 @@ wss.on('connection', (ws, req) => {
         }
       }
       const cleaned = db.prepare(
-        "UPDATE messages SET state='error', result_meta=?, completed_at=datetime('now'), content=CASE WHEN content='' THEN '(interrupted — agent disconnected)' ELSE content END WHERE state IN ('streaming','requesting') AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?) RETURNING id, room_id, participant_id, thread_id, sub_agent_id, sub_agent_label, content"
+        `UPDATE messages SET state='error', result_meta=?, completed_at=datetime('now'), content=CASE WHEN content='' THEN '(interrupted — agent disconnected)' ELSE content END WHERE ${RUN_IN_FLIGHT_SQL} AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?) RETURNING id, room_id, participant_id, thread_id, sub_agent_id, sub_agent_label, content`
       ).all(INTERRUPTED_RESULT_META, agentActorId);
       if (cleaned.length) {
         console.log(`[agent] Cleaned ${cleaned.length} orphaned message(s) from Actor #${agentActorId}`);
@@ -8215,8 +8224,8 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         if (!pendingAgents.has(msgId)) return;
         pendingAgents.delete(msgId);
         pendingActorMeta.delete(msgId);
-        db.prepare("UPDATE messages SET state='error', content=? WHERE id=?")
-          .run(`(timeout — ${displayName} did not respond in ${Math.round(agentRunTimeoutMs / 60000)} minutes)`, msgId);
+        db.prepare("UPDATE messages SET state='error', content=?, result_meta=? WHERE id=?")
+          .run(`(timeout — ${displayName} did not respond in ${Math.round(agentRunTimeoutMs / 60000)} minutes)`, subAgent ? AWAITING_AGENT_RESULT_META : null, msgId);
         broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
         reject(new Error('agent_timeout'));
       }, agentRunTimeoutMs);
@@ -8467,7 +8476,7 @@ setInterval(() => {
 // On startup: orphaned streaming/requesting messages are dead — mark them as error
 // (agents keep running across a server restart — the ones still busy report it on
 // reconnect and are un-orphaned there, see agent_connect).
-const orphaned = db.prepare("UPDATE messages SET state='error', result_meta=?, completed_at=datetime('now'), content=CASE WHEN content='' THEN '(interrupted — server restart)' ELSE content END WHERE state IN ('streaming','requesting') RETURNING id, room_id, participant_id, thread_id, sub_agent_id, sub_agent_label, content").all(INTERRUPTED_RESULT_META);
+const orphaned = db.prepare(`UPDATE messages SET state='error', result_meta=?, completed_at=datetime('now'), content=CASE WHEN content='' THEN '(interrupted — server restart)' ELSE content END WHERE ${RUN_IN_FLIGHT_SQL} RETURNING id, room_id, participant_id, thread_id, sub_agent_id, sub_agent_label, content`).all(INTERRUPTED_RESULT_META);
 if (orphaned.length) {
   console.log(`[startup] Cleaned ${orphaned.length} orphaned message(s)`);
   for (const r of orphaned) {

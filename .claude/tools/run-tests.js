@@ -99,6 +99,8 @@ function waitUp(port, tries = 50) {
   const env = { ...process.env, PORT: String(PORT), DB_PATH: tmpDb, TEST_HOST: '127.0.0.1', STOA_TEST: '1', STOA_AGENT_BUNDLE_DIR: tmpBundleDir,
     // Model-free embedding backend: exercises worker/backfill/hybrid without a 130 MB download.
     STOA_SEMANTIC_BACKEND: 'hash',
+    // Server run timeout (15 min in prod) short enough for the timed-out sub-agent tests to reach it.
+    AGENT_RUN_TIMEOUT_MS: '15000',
     STOA_TEST_EMAIL: testEmail || '', STOA_TEST_PASSWORD: testPassword };
 
   const server = spawn(process.execPath, [serverFile], { cwd: projectRoot, env, stdio: ['ignore', 'pipe', 'pipe'] });
