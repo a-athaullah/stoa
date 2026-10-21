@@ -6680,8 +6680,25 @@ async function run() {
     const fs = require('fs');
     const envFile = process.env.STOA_ENV_FILE;
     const before = fs.readFileSync(envFile, 'utf8');
-    const r = await req('PATCH', '/api/settings', { human_name: 'x\nPORT=1' });
+    const urlBefore = (await req('GET', '/api/settings')).body.public_url;
+    const r = await req('PATCH', '/api/settings', { public_url: 'http://rejected.invalid', human_name: 'x\nPORT=1' });
     assert.strictEqual(r.status, 400);
+    assert.strictEqual(fs.readFileSync(envFile, 'utf8'), before);
+    assert.strictEqual((await req('GET', '/api/settings')).body.public_url, urlBefore, 'public_url was saved by a rejected request');
+  });
+
+  await test('PATCH /api/actors/:id — human name with a line break → 400, DB and env file untouched', async () => {
+    const fs = require('fs');
+    const envFile = process.env.STOA_ENV_FILE;
+    const human = (await req('GET', '/api/actors')).body.find(a => a.type === 'human');
+    assert.ok(human, 'test DB has no human actor');
+    const before = fs.readFileSync(envFile, 'utf8');
+    for (const name of ['x\nPORT=1', 'x\rPORT=1']) {
+      const r = await req('PATCH', `/api/actors/${human.id}`, { name });
+      assert.strictEqual(r.status, 400, JSON.stringify(name));
+      assert.strictEqual(r.body.error, 'name must be a single line');
+    }
+    assert.strictEqual((await req('GET', '/api/actors')).body.find(a => a.id === human.id).name, human.name);
     assert.strictEqual(fs.readFileSync(envFile, 'utf8'), before);
   });
 

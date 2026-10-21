@@ -3207,9 +3207,10 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'PATCH' && url.pathname === '/api/settings') {
     const body = parseJsonBody(await readBody(req));
     if (!body) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
+    // Validate before any write so a rejected request leaves settings, .env and DB untouched.
+    if (body.human_name !== undefined && (typeof body.human_name !== 'string' || /[\r\n]/.test(body.human_name))) { res.writeHead(400); return res.end(JSON.stringify({ error: 'human_name must be a single line' })); }
     if (body.public_url !== undefined) setSetting('public_url', body.public_url.trim());
     if (body.human_name !== undefined) {
-      if (/[\r\n]/.test(body.human_name)) { res.writeHead(400); return res.end(JSON.stringify({ error: 'human_name must be a single line' })); }
       const name = body.human_name.trim() || 'Human';
       writeEnv('HUMAN_NAME', name);
       process.env.HUMAN_NAME = name;
@@ -4023,6 +4024,8 @@ const server = http.createServer(async (req, res) => {
     if (!body) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
     const { name, avatar_url, lang, adapter, default_model } = body;
     if (name !== undefined && !name?.trim()) { res.writeHead(400); return res.end('name required'); }
+    // A human's name is mirrored to .env (HUMAN_NAME), which rejects line breaks; reject them here, before the DB transaction.
+    if (name !== undefined && (typeof name !== 'string' || /[\r\n]/.test(name))) { res.writeHead(400); return res.end(JSON.stringify({ error: 'name must be a single line' })); }
     if (avatar_url !== undefined && avatar_url !== null && (!avatar_url.startsWith('/uploads/') || avatar_url.includes('..'))) { res.writeHead(400); return res.end('invalid avatar_url'); }
     // --- VALIDATION PHASE (no DB writes) ---
     const actor = db.prepare('SELECT id, name, type, adapter, default_model FROM actors WHERE id=?').get(id);
