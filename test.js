@@ -1721,6 +1721,76 @@ function runUnitTests() {
     });
   }
 
+  // lib/env-file — the live .env lost PORT to a truncating write racing another writer.
+  {
+    const fs = require('fs'), os = require('os');
+    const { resolveEnvFile, loadEnvFile, setEnvKey, portFallbackWarning } = require('./lib/env-file');
+    const withDir = (fn) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-envfile-ut-'));
+      try { fn(dir); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    };
+    const strayTmp = (dir) => fs.readdirSync(dir).filter(n => n.includes('.tmp-'));
+
+    ut('env-file: back-to-back writes keep every other key and leave no temp file', () => withDir((dir) => {
+      const f = path.join(dir, '.env');
+      fs.writeFileSync(f, '# comment\nPORT=3001\nHUMAN_NAME=Aan\n');
+      setEnvKey(f, 'MAX_AI_TURNS', '15');
+      setEnvKey(f, 'MAX_AI_TURNS', '7');
+      setEnvKey(f, 'HUMAN_NAME', 'Aan Athaullah');
+      assert.strictEqual(fs.readFileSync(f, 'utf8'), '# comment\nPORT=3001\nHUMAN_NAME=Aan Athaullah\nMAX_AI_TURNS=7\n');
+      assert.deepStrictEqual(strayTmp(dir), []);
+      assert.strictEqual(fs.readFileSync(f + '.bak', 'utf8'), '# comment\nPORT=3001\nHUMAN_NAME=Aan\nMAX_AI_TURNS=7\n');
+    }));
+    ut('env-file: write replaces the file (new inode), never truncates it in place', () => withDir((dir) => {
+      const f = path.join(dir, '.env');
+      fs.writeFileSync(f, 'PORT=3001\n');
+      const before = fs.statSync(f).ino;
+      setEnvKey(f, 'MAX_AI_TURNS', '15');
+      assert.notStrictEqual(fs.statSync(f).ino, before, 'in-place write: a concurrent reader can see an empty .env');
+    }));
+    ut('env-file: keeps the file mode and creates a missing file as 0600', () => withDir((dir) => {
+      const f = path.join(dir, '.env');
+      fs.writeFileSync(f, 'PORT=3001\n'); fs.chmodSync(f, 0o640);
+      setEnvKey(f, 'A', '1');
+      assert.strictEqual(fs.statSync(f).mode & 0o777, 0o640);
+      const g = path.join(dir, 'fresh.env');
+      setEnvKey(g, 'PORT', '3001');
+      assert.strictEqual(fs.readFileSync(g, 'utf8'), 'PORT=3001\n');
+      assert.strictEqual(fs.statSync(g).mode & 0o777, 0o600);
+      assert.ok(!fs.existsSync(g + '.bak'), 'nothing to back up for a new file');
+    }));
+    ut('env-file: a symlinked .env stays a symlink and its target is updated', () => withDir((dir) => {
+      const real = path.join(dir, 'real.env'), link = path.join(dir, '.env');
+      fs.writeFileSync(real, 'PORT=3001\n'); fs.symlinkSync(real, link);
+      setEnvKey(link, 'MAX_AI_TURNS', '15');
+      assert.ok(fs.lstatSync(link).isSymbolicLink());
+      assert.strictEqual(fs.readFileSync(real, 'utf8'), 'PORT=3001\nMAX_AI_TURNS=15\n');
+    }));
+    ut('env-file: a line break in a value cannot inject another key', () => withDir((dir) => {
+      const f = path.join(dir, '.env');
+      fs.writeFileSync(f, 'PORT=3001\n');
+      assert.throws(() => setEnvKey(f, 'HUMAN_NAME', 'x\nPORT=1'), /line break/);
+      assert.throws(() => setEnvKey(f, 'bad key', '1'), /invalid env key/);
+      assert.strictEqual(fs.readFileSync(f, 'utf8'), 'PORT=3001\n');
+      assert.deepStrictEqual(strayTmp(dir), []);
+    }));
+    ut('env-file: STOA_ENV_FILE overrides the path; the loader never overrides an explicit env', () => withDir((dir) => {
+      assert.strictEqual(resolveEnvFile('/srv/stoa', {}), path.join('/srv/stoa', '.env'));
+      assert.strictEqual(resolveEnvFile('/srv/stoa', { STOA_ENV_FILE: '/tmp/x.env' }), '/tmp/x.env');
+      const f = path.join(dir, '.env');
+      fs.writeFileSync(f, 'PORT=3001\nMAX_AI_TURNS= 9 \n');
+      const env = { PORT: '4123' };
+      assert.strictEqual(loadEnvFile(f, env), true);
+      assert.deepStrictEqual(env, { PORT: '4123', MAX_AI_TURNS: '9' });
+      assert.strictEqual(loadEnvFile(path.join(dir, 'missing'), {}), false);
+    }));
+    ut('env-file: PORT fallback warning only when PORT is missing or unusable', () => {
+      assert.strictEqual(portFallbackWarning({}, '/x/.env'), '[env] PORT not set, falling back to 3000; check /x/.env');
+      assert.ok(portFallbackWarning({ PORT: 'abc' }, '/x/.env'));
+      assert.strictEqual(portFallbackWarning({ PORT: '3001' }, '/x/.env'), null);
+    });
+  }
+
   return { p, f };
 }
 
@@ -6586,6 +6656,33 @@ async function run() {
     const r = await req('PATCH', '/api/settings', { max_ai_turns: curr.max_ai_turns });
     assert.strictEqual(r.status, 200);
     assert.ok(r.body.ok);
+  });
+
+  await test('PATCH /api/settings — writes STOA_ENV_FILE, never the live .env', async () => {
+    const fs = require('fs');
+    const envFile = process.env.STOA_ENV_FILE;
+    assert.ok(envFile && path.resolve(envFile) !== path.join(__dirname, '.env'), 'run-tests must isolate the env file');
+    const liveEnv = path.join(__dirname, '.env');
+    const stamp = () => { try { const st = fs.statSync(liveEnv); return `${st.mtimeMs}:${fs.readFileSync(liveEnv, 'utf8')}`; } catch { return null; } };
+    const liveBefore = stamp();
+    const curr = (await req('GET', '/api/settings')).body.max_ai_turns;
+    const next = curr === 42 ? 41 : 42;
+    try {
+      assert.strictEqual((await req('PATCH', '/api/settings', { max_ai_turns: next })).status, 200);
+      assert.match(fs.readFileSync(envFile, 'utf8'), new RegExp(`^MAX_AI_TURNS=${next}$`, 'm'));
+      assert.strictEqual(stamp(), liveBefore, 'live .env was modified by the test server');
+    } finally {
+      await req('PATCH', '/api/settings', { max_ai_turns: curr });
+    }
+  });
+
+  await test('PATCH /api/settings — human_name with a line break → 400, env file untouched', async () => {
+    const fs = require('fs');
+    const envFile = process.env.STOA_ENV_FILE;
+    const before = fs.readFileSync(envFile, 'utf8');
+    const r = await req('PATCH', '/api/settings', { human_name: 'x\nPORT=1' });
+    assert.strictEqual(r.status, 400);
+    assert.strictEqual(fs.readFileSync(envFile, 'utf8'), before);
   });
 
   // Server process manager

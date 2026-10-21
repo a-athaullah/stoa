@@ -164,6 +164,21 @@ These are the pre-existing colors; they were not degraded by the themes feature.
 
 ---
 
+### 4. `.env` Lost PORT → Server Came Up on 3000 (2026-10-21)
+**Symptom:** After a restart the server listened on 3000 (`parseInt(process.env.PORT) || 3000`) and every client lost it. The live `.env` held only `MAX_AI_TURNS=15`.
+
+**Cause:** `writeEnv()` did read → `writeFileSync` (truncate + write). The throwaway server from `run-tests.js` ran with the project dir as `__dirname`, so `PATCH /api/settings` in test.js wrote the **live** `.env`; parallel runs (mutation worktrees symlinked `.env`) raced the truncate and one wrote a file with only its own key.
+
+**Fix (`lib/env-file.js`, branch bug/env-clobber):**
+- `STOA_ENV_FILE` overrides the env file path (loader + writer). `run-tests.js` points it at a temp copy of `.env` and fails the run (`liveEnvTouched`) if the live `.env` changes anyway.
+- `setEnvKey` writes a temp file in the same dir and `renameSync`s it over (readers never see a truncated file), keeps the file mode (new file 0600), follows a symlinked `.env`, and saves the previous content to `.env.bak` (gitignored). Synchronous → serial within one process. Two *processes* writing the same file can still lose one update (last rename wins), but never get an empty/partial file.
+- Values with CR/LF are rejected (key injection, e.g. `HUMAN_NAME="x\nPORT=1"`); `PATCH /api/settings` returns 400 for such `human_name`.
+- Startup logs `[env] PORT not set, falling back to 3000; check <file>` to stdout **and** stderr when PORT is missing/unusable. Default behavior unchanged.
+
+**Mutation worktrees:** copy `.env` into the worktree, never symlink it.
+
+---
+
 ## Design Constraints
 
 ### 1. No Real-Time Collaboration Editing
