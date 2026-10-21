@@ -258,10 +258,15 @@ CREATE TABLE IF NOT EXISTS migrations (
   executed_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
-INSERT OR IGNORE INTO settings (scope, key_name, value) VALUES
-  ('global','idle_timeout_seconds','300'),
-  ('global','max_active_rooms_per_ai','3'),
-  ('global','max_ai_turns_per_round','5');
+-- Defaults. Not INSERT OR IGNORE: scope_id is NULL, and NULLs never collide in the UNIQUE
+-- constraint, so that inserted a duplicate row on every start (see 20261021-settings-dedup.sql).
+INSERT INTO settings (scope, key_name, value)
+SELECT d.scope, d.key_name, d.value FROM (
+  SELECT 'global' AS scope, 'idle_timeout_seconds' AS key_name, '300' AS value
+  UNION ALL SELECT 'global', 'max_active_rooms_per_ai', '3'
+  UNION ALL SELECT 'global', 'max_ai_turns_per_round', '5'
+) d
+WHERE NOT EXISTS (SELECT 1 FROM settings s WHERE s.scope = d.scope AND s.scope_id IS NULL AND s.key_name = d.key_name);
 
 
 CREATE TABLE IF NOT EXISTS usage_log (

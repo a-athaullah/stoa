@@ -12129,6 +12129,14 @@ async function run() {
       assert.deepStrictEqual(missing, []);
     });
 
+    await test('settings — no duplicate global rows after startup (schema seed + dedup migration)', async () => {
+      const dups = db.prepare('SELECT scope, key_name, COUNT(*) n FROM settings WHERE scope_id IS NULL GROUP BY scope, key_name HAVING n > 1').all();
+      assert.deepStrictEqual(dups, []);
+      for (const k of ['idle_timeout_seconds', 'max_active_rooms_per_ai', 'max_ai_turns_per_round']) {
+        assert.strictEqual(db.prepare("SELECT COUNT(*) n FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name=?").get(k).n, 1, `${k} default kept`);
+      }
+    });
+
     await test('debug bundle — settings are included, values redacted unless on the shareable list', async () => {
       db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, '__test_bundle_token', 'xoxp-111-222-333-abcdef')").run();
       try {
