@@ -94,6 +94,13 @@ Mechanical tools untuk task repetitif — **hemat token, langsung pakai**.
   Output: `{branch, gitStats, schemaDrift, indexCoverage, docsSync, deadFiles}`
   Checks: schema drift (schema.sqlite.sql vs migrations), FK index coverage, docs 5-lang sync, unreferenced root files
 
+- **`query-plan-audit.js`** — `EXPLAIN QUERY PLAN` untuk semua SQL `db.prepare()` di `server.js` + `lib/*.js`, dijalankan di salinan DB live (VACUUM INTO ke tmp, file live tidak disentuh)
+  ```bash
+  node .claude/tools/query-plan-audit.js [--db=db/stoa.db] [--all] [--min-rows=N]
+  ```
+  Output: `{tables, summary, flagged[], unparsed[], unindexedFKs[]}` — `flagged` = query dengan `SCAN` tanpa index atau `USE TEMP B-TREE`, diurutkan dari tabel terbesar; `unparsed` = SQL dinamis yang perlu dicek manual; `unindexedFKs` = kolom FK anak tanpa index (parent DELETE akan scan tabel anak).
+  **Use case:** WAJIB saat menambah/mengubah query di tabel besar (`messages`, `message_embeddings`, `usage_log`) atau menambah FK baru.
+
 - **`pr-summary.js`** — Kumpul data PR untuk review (commits, files changed, categories)
   ```bash
   node .claude/tools/pr-summary.js [--base=master]

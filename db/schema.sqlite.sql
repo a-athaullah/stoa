@@ -184,11 +184,13 @@ CREATE INDEX IF NOT EXISTS idx_ai_sessions_room_id ON ai_sessions(room_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_sessions_main_unique ON ai_sessions(participant_id, thread_id) WHERE sub_agent_id IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_sessions_sub_unique ON ai_sessions(participant_id, sub_agent_id, thread_id) WHERE sub_agent_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_ai_sessions_thread ON ai_sessions(thread_id);
+CREATE INDEX IF NOT EXISTS idx_ai_sessions_claude_session_id ON ai_sessions(claude_session_id);
 CREATE INDEX IF NOT EXISTS idx_messages_thread_id ON messages(thread_id, id);
 CREATE INDEX IF NOT EXISTS idx_messages_room_root ON messages(room_id, id) WHERE thread_id IS NULL;
 CREATE INDEX IF NOT EXISTS idx_messages_broadcast ON messages(room_id, created_at) WHERE broadcast_reason IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages(reply_to);
 CREATE INDEX IF NOT EXISTS idx_messages_participant_room ON messages(participant_id, room_id, id);
+CREATE INDEX IF NOT EXISTS idx_messages_automation_id ON messages(automation_id) WHERE automation_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS messages_room_client_event ON messages(room_id, client_event_id) WHERE client_event_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_rooms_workdir_id ON rooms(workdir_id);
 CREATE INDEX IF NOT EXISTS idx_rooms_created_by ON rooms(created_by);
@@ -256,10 +258,15 @@ CREATE TABLE IF NOT EXISTS migrations (
   executed_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
-INSERT OR IGNORE INTO settings (scope, key_name, value) VALUES
-  ('global','idle_timeout_seconds','300'),
-  ('global','max_active_rooms_per_ai','3'),
-  ('global','max_ai_turns_per_round','5');
+-- Defaults. Not INSERT OR IGNORE: scope_id is NULL, and NULLs never collide in the UNIQUE
+-- constraint, so that inserted a duplicate row on every start (see 20261021-settings-dedup.sql).
+INSERT INTO settings (scope, key_name, value)
+SELECT d.scope, d.key_name, d.value FROM (
+  SELECT 'global' AS scope, 'idle_timeout_seconds' AS key_name, '300' AS value
+  UNION ALL SELECT 'global', 'max_active_rooms_per_ai', '3'
+  UNION ALL SELECT 'global', 'max_ai_turns_per_round', '5'
+) d
+WHERE NOT EXISTS (SELECT 1 FROM settings s WHERE s.scope = d.scope AND s.scope_id IS NULL AND s.key_name = d.key_name);
 
 
 CREATE TABLE IF NOT EXISTS usage_log (
