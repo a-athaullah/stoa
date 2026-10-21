@@ -65,19 +65,6 @@ function showThinking(msgId, actorName, color, symbol, avatarUrl, subAgentLabel,
 // queue shows "queued #N" in place of the thinking indicator until it starts.
 const queuePositions = new Map();
 
-const QUEUE_BADGE_TEXT = {
-  en: n => `Queued #${n}`,
-  id: n => `Antre di posisi ${n}`,
-  ja: n => `待機中 · ${n}番目`,
-  ko: n => `대기 중 · ${n}번째`,
-  zh: n => `排队中 · 第 ${n} 位`,
-};
-
-function queueBadgeText(n) {
-  const lang = (navigator.language || 'en').slice(0, 2).toLowerCase();
-  return (QUEUE_BADGE_TEXT[lang] || QUEUE_BADGE_TEXT.en)(n);
-}
-
 function applyQueueBadge(msgId) {
   const position = queuePositions.get(msgId);
   document.querySelectorAll(`[id="msg-${msgId}"]`).forEach(row => {
@@ -96,7 +83,7 @@ function applyQueueBadge(msgId) {
       if (meta) meta.after(badge);
       else host.appendChild(badge);
     }
-    badge.textContent = queueBadgeText(position);
+    badge.textContent = `Queued #${position}`;
     if (thinking) thinking.classList.add('is-queued');
   });
 }
