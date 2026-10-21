@@ -265,35 +265,9 @@ function validateConditions(raw) {
   return null;
 }
 
-// Main-agent session lookup: explicit sub_agent_id IS NULL to avoid matching sub-agent sessions.
-// See migration 20260831-sub-agent-definitions.sql for the partial unique index design.
-function getSession(participantId) {
-  const row = db.prepare('SELECT claude_session_id FROM ai_sessions WHERE participant_id=? AND sub_agent_id IS NULL').get(participantId);
-  return row?.claude_session_id ?? null;
-}
-
-function getSubAgentSession(participantId, subAgentId) {
-  const row = db.prepare('SELECT claude_session_id FROM ai_sessions WHERE participant_id=? AND sub_agent_id=?').get(participantId, subAgentId);
-  return row?.claude_session_id ?? null;
-}
-
-function saveSession(participantId, claudeSessionId, workdir) {
-  const rp = db.prepare('SELECT room_id FROM room_participants WHERE id=?').get(participantId);
-  db.prepare(
-    `INSERT INTO ai_sessions (participant_id, room_id, claude_session_id, workdir, status) VALUES (?,?,?,?,'idle')
-     ON CONFLICT(participant_id) WHERE sub_agent_id IS NULL DO UPDATE SET claude_session_id=excluded.claude_session_id, room_id=excluded.room_id, workdir=excluded.workdir, status='idle', last_active_at=datetime('now')`
-  ).run(participantId, rp?.room_id ?? null, claudeSessionId, workdir || null);
-}
-
-function saveSubAgentSession(participantId, subAgentId, claudeSessionId, workdir) {
-  const rp = db.prepare('SELECT room_id FROM room_participants WHERE id=?').get(participantId);
-  db.prepare(
-    `INSERT INTO ai_sessions (participant_id, room_id, sub_agent_id, claude_session_id, workdir, status) VALUES (?,?,?,?,?,'idle')
-     ON CONFLICT(participant_id, sub_agent_id) WHERE sub_agent_id IS NOT NULL DO UPDATE SET claude_session_id=excluded.claude_session_id, room_id=excluded.room_id, workdir=excluded.workdir, status='idle', last_active_at=datetime('now')`
-  ).run(participantId, rp?.room_id ?? null, subAgentId, claudeSessionId, workdir || null);
-}
-
-// Thread-aware session helpers: thread_id 0 = room-level legacy session
+// Session helpers keyed like the partial unique indexes: (participant_id, thread_id) for the main
+// agent (sub_agent_id IS NULL), (participant_id, sub_agent_id, thread_id) for sub-agents.
+// thread_id 0 = room-level session (NOT NULL so the ON CONFLICT upserts can match).
 function getThreadSession(participantId, threadId) {
   const row = db.prepare('SELECT claude_session_id FROM ai_sessions WHERE participant_id=? AND thread_id=? AND sub_agent_id IS NULL').get(participantId, threadId || 0);
   return row?.claude_session_id ?? null;
@@ -7804,7 +7778,8 @@ async function triggerSkillResponse(roomId, ai, prompt) {
   // Single source for the participant's workdir (see resolveParticipantWorkdir). NULL is safe:
   // the trigger sends `workdir || undefined` so the agent falls back to its own cwd.
   const workdir = resolveParticipantWorkdir(ai.participant_id);
-  const sessionId = getSession(ai.participant_id);
+  // Skill commands run at room level (no thread): the session is the thread 0 row.
+  const sessionId = getThreadSession(ai.participant_id, 0);
 
   broadcast(roomId, {
     type: 'message_state',
@@ -7871,7 +7846,7 @@ async function triggerSkillResponse(roomId, ai, prompt) {
           broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
           return;
         }
-        if (result.sessionId) saveSession(ai.participant_id, result.sessionId, workdir);
+        if (result.sessionId) saveThreadSession(ai.participant_id, result.sessionId, workdir, 0);
         fullContent = fullContent.replace(/Please run \/login\b/g, 'Please run /reauth');
         db.prepare("UPDATE messages SET content=?, state='complete', completed_at=datetime('now') WHERE id=?").run(fullContent, msgId);
         broadcast(roomId, { type: 'message_complete', message_id: msgId, content: fullContent });

@@ -12115,6 +12115,20 @@ async function run() {
     const db = require('./db');
     let sk = null, skRoomId = null, skPart = null, human = null;
 
+    await test('query audit — every prepared SQL compiles against the schema; FK indexes present', async () => {
+      // The tool prepares every literal SQL in server.js + lib/ against a copy of this DB. A statement
+      // that does not compile (an ON CONFLICT target with no matching unique index, a renamed column)
+      // only throws when its code path runs, and was swallowed by a catch there.
+      const out = require('child_process').execFileSync(process.execPath,
+        [path.join(__dirname, '.claude/tools/query-plan-audit.js'), `--db=${db.name}`], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+      const report = JSON.parse(out);
+      assert.ok(report.summary.unique > 100, 'tool parsed the sources');
+      const broken = report.unparsed.filter(u => u.sql && !/near "NULL": syntax error/.test(u.reason));
+      assert.deepStrictEqual(broken.map(u => `${u.file}:${u.line} ${u.reason}`), []);
+      const missing = report.unindexedFKs.filter(f => (f.table === 'messages' && f.column === 'automation_id') || f.table === 'pending_wakes');
+      assert.deepStrictEqual(missing, []);
+    });
+
     await test('debug bundle — settings are included, values redacted unless on the shareable list', async () => {
       db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, '__test_bundle_token', 'xoxp-111-222-333-abcdef')").run();
       try {
@@ -12132,6 +12146,34 @@ async function run() {
       } finally {
         db.prepare("DELETE FROM settings WHERE key_name='__test_bundle_token'").run();
       }
+    });
+
+    await test('skill command — resumes the room-level (thread 0) session, not a thread session', async () => {
+      sk = await createOnlineTestAgent('__test-skill-session', '/tmp/stoa-test-skill-session');
+      assert.ok(sk?.workdirId, 'online test agent');
+      const r = await req('POST', '/api/rooms', { title: '__skill-session-room__', workdir_id: sk.workdirId, participant_ids: [sk.actorId] });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      skRoomId = r.body.id;
+      testRoomIds.push(skRoomId);
+      skPart = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(skRoomId, sk.actorId).id;
+      db.prepare("INSERT INTO agent_skills (actor_id, name, scope) VALUES (?, '__qaskill', 'global')").run(sk.actorId);
+      // Thread row first: a lookup that ignores thread_id returns it.
+      const ins = db.prepare("INSERT INTO ai_sessions (participant_id, room_id, claude_session_id, thread_id) VALUES (?,?,?,?)");
+      ins.run(skPart, skRoomId, 'sess-thread-77', 77);
+      ins.run(skPart, skRoomId, 'sess-room', 0);
+      human = await openWsConnection(`ws://${HOST}:${PORT}`, cookieHeader());
+      const hist = waitForWsMessage(human, m => m.type === 'history');
+      human.send(JSON.stringify({ type: 'join_room', room_id: skRoomId }));
+      await hist;
+      const trig = waitForWsMessage(sk.ws, m => m.type === 'agent_trigger', 5000);
+      human.send(JSON.stringify({ type: 'send_message', room_id: skRoomId, content: '/__qaskill' }));
+      const m = await trig;
+      assert.strictEqual(m.prompt, '/__qaskill');
+      assert.strictEqual(m.claude_session_id, 'sess-room');
+      sk.ws.send(JSON.stringify({ type: 'agent_complete', room_id: skRoomId, message_id: m.message_id, content: 'skill done', claude_session_id: 'sess-room-2' }));
+      for (let i = 0; i < 100 && db.prepare('SELECT state FROM messages WHERE id=?').get(m.message_id).state === 'streaming'; i++) await new Promise(res => setTimeout(res, 20));
+      const rows = db.prepare('SELECT thread_id, claude_session_id FROM ai_sessions WHERE participant_id=? AND sub_agent_id IS NULL ORDER BY thread_id').all(skPart);
+      assert.deepStrictEqual(rows, [{ thread_id: 0, claude_session_id: 'sess-room-2' }, { thread_id: 77, claude_session_id: 'sess-thread-77' }]);
     });
 
     await test('query audit fixes — teardown', async () => {
