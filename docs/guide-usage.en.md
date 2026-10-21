@@ -200,7 +200,7 @@ While an AI agent is streaming a response, a **Stop** button appears. Click it t
 
 ### Queue Position Badge
 
-When a message is waiting in the agent's run queue — because the agent is already busy with another thread — a **queued (#N)** badge appears in place of the streaming indicator, both in the room feed and in the thread panel. The number shows the run's 1-based position in the queue. The badge clears automatically when the run starts, finishes, or is cancelled.
+When a message is waiting in the agent's run queue — because the agent is already busy with another thread — a **Queued #N** badge appears in place of the streaming indicator, both in the room feed and in the thread panel. The number shows the run's 1-based position in the queue. The badge clears automatically when the run starts, finishes, or is cancelled.
 
 The server's 15-minute run timeout is paused while a run waits in the queue and resets in full when the run begins — a run queued behind a long review will not time out before it starts.
 

@@ -120,5 +120,18 @@ Mechanical tools untuk task repetitif — **hemat token, langsung pakai**.
 ## Cara pakai saat audit/PR review
 
 ```bash
-# 1. Ambil snapshot data (satu command, semua data tersedia)
-ssh ara-mac cd /home/ubuntu/project/Stoa
+# Step 1: Orientasi — stats saja, tidak ada diff content
+node .claude/tools/audit-snapshot.js --base=master    # schema, docs, index check
+node .claude/tools/review-diff.js --base=master       # kategori + file list, NO diff
+
+# Step 2: Review per kategori — satu call per section
+node .claude/tools/review-diff.js --category=migration --base=master
+node .claude/tools/review-diff.js --category=schema --base=master
+node .claude/tools/review-diff.js --category=backend --base=master
+node .claude/tools/review-diff.js --category=frontend --base=master
+node .claude/tools/review-diff.js --category=test --base=master
+node .claude/tools/review-diff.js --category=docs --base=master
+
+# Step 3: Run tests
+node .claude/tools/run-tests.js
+```

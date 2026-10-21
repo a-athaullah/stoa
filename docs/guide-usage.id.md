@@ -200,7 +200,7 @@ Saat AI agent sedang streaming respons, tombol **Stop** muncul. Klik untuk memba
 
 ### Badge Posisi Antrean
 
-Saat pesan sedang menunggu giliran di antrean agent — karena agent sedang memproses thread lain — badge **antre di posisi N** muncul menggantikan indikator streaming, baik di feed room maupun di panel thread. Angka menunjukkan posisi run dalam antrean (berbasis 1). Badge hilang otomatis saat run dimulai, selesai, atau dibatalkan.
+Saat pesan sedang menunggu giliran di antrean agent — karena agent sedang memproses thread lain — badge **Queued #N** muncul menggantikan indikator streaming, baik di feed room maupun di panel thread (teks badge selalu dalam bahasa Inggris). Angka menunjukkan posisi run dalam antrean (berbasis 1). Badge hilang otomatis saat run dimulai, selesai, atau dibatalkan.
 
 Timeout run 15 menit dari server dijeda selama run menunggu di antrean dan direset penuh saat run dimulai — run yang antre di belakang review panjang tidak akan timeout sebelum sempat mulai.
 
