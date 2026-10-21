@@ -2311,8 +2311,8 @@ const server = http.createServer(async (req, res) => {
                 OR (m.state = 'system_event' AND m.content LIKE '% · automation')
                 OR (m.state = 'error' AND m.broadcast_reason IS NOT NULL)
               )
-            ORDER BY m.created_at DESC LIMIT ?
-          ) t ORDER BY created_at ASC
+            ORDER BY m.id DESC LIMIT ?
+          ) t ORDER BY id ASC
         `).all(roomId, before, limit);
         const enriched = enrichReply(rows);
         enrichAutomationList(enriched);
@@ -2337,7 +2337,7 @@ const server = http.createServer(async (req, res) => {
             OR (m.state = 'system_event' AND m.content LIKE '% · automation')
             OR (m.state = 'error' AND m.broadcast_reason IS NOT NULL)
           )
-        ORDER BY m.created_at ASC
+        ORDER BY m.id ASC
         LIMIT 500
       `).all(roomId, since);
       const enriched = enrichReply(rows);
@@ -4976,7 +4976,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
       JOIN room_participants rp ON rp.id=m.participant_id
       JOIN actors a ON a.id=rp.actor_id
       WHERE m.room_id=? AND m.state='complete'
-      ORDER BY m.created_at ASC
+      ORDER BY m.id ASC
     `).all(roomId);
     enrichAutomationList(rows);
 
@@ -5025,7 +5025,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
         WHERE m.room_id=? AND m.thread_id IS NULL
           AND EXISTS (SELECT 1 FROM messages r3 WHERE r3.thread_id=m.id
             AND r3.state IN ('streaming','requesting'))
-        ORDER BY m.created_at DESC
+        ORDER BY m.id DESC
       `).all(roomId);
     } else {
       rows = db.prepare(`
@@ -5936,8 +5936,8 @@ wss.on('connection', (ws, req) => {
             OR (m.state = 'system_event' AND m.content LIKE '% · automation')
             OR (m.state = 'error' AND m.broadcast_reason IS NOT NULL)
           )
-          ORDER BY m.created_at DESC LIMIT 100
-        ) AS recent ORDER BY created_at ASC
+          ORDER BY m.id DESC LIMIT 100
+        ) AS recent ORDER BY id ASC
       `).all(subscribedRoom);
       const enriched = enrichReply(messages);
       enrichAutomationList(enriched);
@@ -8063,14 +8063,14 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
       SELECT a.name, m.content, m.image_url, m.file_url, m.file_name, m.attachments, m.created_at, rp.actor_id FROM messages m
       JOIN room_participants rp ON rp.id=m.participant_id
       JOIN actors a ON a.id=rp.actor_id
-      WHERE m.room_id=? AND (m.thread_id=? OR m.id=?) AND m.state='complete' ORDER BY m.created_at DESC LIMIT ${historyLimit}
+      WHERE m.room_id=? AND (m.thread_id=? OR m.id=?) AND m.state='complete' ORDER BY m.id DESC LIMIT ${historyLimit}
     `).all(roomId, threadId, threadId);
   } else {
     history = db.prepare(`
       SELECT a.name, m.content, m.image_url, m.file_url, m.file_name, m.attachments, m.created_at, rp.actor_id FROM messages m
       JOIN room_participants rp ON rp.id=m.participant_id
       JOIN actors a ON a.id=rp.actor_id
-      WHERE m.room_id=? AND m.state='complete' ORDER BY m.created_at DESC LIMIT ${historyLimit}
+      WHERE m.room_id=? AND m.state='complete' ORDER BY m.id DESC LIMIT ${historyLimit}
     `).all(roomId);
   }
   const rawHistory = history.slice().reverse().map(r => ({

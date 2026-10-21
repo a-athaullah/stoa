@@ -12009,6 +12009,107 @@ async function run() {
     });
   }
 
+  // created_at only comes from the column DEFAULT, so id order == insert order and lets the
+  // (room_id)/(thread_id) indexes serve ORDER BY + LIMIT. Rows below are seeded with created_at
+  // deliberately inverted against id: every list must still follow id.
+  console.log('\n[Message order by id]');
+  {
+    const db = require('./db');
+    let qo = null, qoRoomId = null, human = null, humanPart = null;
+    const seeded = {};
+    const seed = (key, createdAt, extra = {}) => {
+      seeded[key] = Number(db.prepare(
+        "INSERT INTO messages (room_id, participant_id, content, state, created_at, thread_id) VALUES (?,?,?,?,?,?)"
+      ).run(qoRoomId, humanPart, `__qo_${key}__`, extra.state || 'complete', createdAt, extra.thread_id ?? null).lastInsertRowid);
+    };
+    const orderIn = (text, keys) => keys.map(k => text.indexOf(`__qo_${k}__`));
+    const idsIn = (rows, keys) => rows.map(r => r.id).filter(id => keys.some(k => seeded[k] === id));
+    const complete = (m) => { if (m?.message_id) qo.ws.send(JSON.stringify({ type: 'agent_message', message_id: m.message_id, content: 'done', state: 'complete' })); };
+    const triggerPrompt = async (payload) => {
+      const trig = waitForWsMessage(qo.ws, m => m.type === 'agent_trigger' && !m.sub_agent, 5000);
+      human.send(JSON.stringify({ type: 'send_message', room_id: qoRoomId, ...payload }));
+      const m = await trig;
+      complete(m);
+      return m.prompt;
+    };
+
+    await test('message order — setup: room with rows whose created_at runs against id', async () => {
+      qo = await createOnlineTestAgent('__test-msg-order', '/tmp/stoa-test-msg-order');
+      assert.ok(qo?.workdirId, 'online test agent');
+      const r = await req('POST', '/api/rooms', { title: '__msg-order-room__', workdir_id: qo.workdirId, participant_ids: [qo.actorId] });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      qoRoomId = r.body.id;
+      testRoomIds.push(qoRoomId);
+      humanPart = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human'").get(qoRoomId).id;
+      seed('c1', '2026-01-01 00:00:03');
+      seed('c2', '2026-01-01 00:00:02');
+      seed('c3', '2026-01-01 00:00:01');
+      seed('root', '2026-01-01 00:00:09');
+      seed('t1', '2026-01-01 00:00:08', { thread_id: seeded.root });
+      seed('t2', '2026-01-01 00:00:07', { thread_id: seeded.root });
+      human = await openWsConnection(`ws://${HOST}:${PORT}`, cookieHeader());
+    });
+
+    await test('message order — GET messages (since and before pages) follow id', async () => {
+      const all = await req('GET', `/api/rooms/${qoRoomId}/messages`);
+      assert.deepStrictEqual(idsIn(all.body, ['c1', 'c2', 'c3']), [seeded.c1, seeded.c2, seeded.c3]);
+      const page = await req('GET', `/api/rooms/${qoRoomId}/messages?before=${seeded.root}&limit=2`);
+      assert.deepStrictEqual(page.body.map(m => m.id), [seeded.c2, seeded.c3], 'before-page = the 2 highest ids below the cursor, ascending');
+    });
+
+    await test('message order — join_room history follows id', async () => {
+      const hist = waitForWsMessage(human, m => m.type === 'history');
+      human.send(JSON.stringify({ type: 'join_room', room_id: qoRoomId }));
+      const h = await hist;
+      assert.deepStrictEqual(idsIn(h.messages, ['c1', 'c2', 'c3']), [seeded.c1, seeded.c2, seeded.c3]);
+    });
+
+    await test('message order — export follows id', async () => {
+      const r = await req('GET', `/api/rooms/${qoRoomId}/export?format=json`);
+      assert.strictEqual(r.status, 200);
+      const rows = Array.isArray(r.body) ? r.body : r.body.messages;
+      assert.deepStrictEqual(idsIn(rows, ['c1', 'c2', 'c3', 'root']), [seeded.c1, seeded.c2, seeded.c3, seeded.root]);
+    });
+
+    await test('message order — agent prompt context (room and thread) follows id', async () => {
+      // Room-level context: a sub-agent trigger without thread_id. Thread context: a human reply in the thread.
+      const sa = await req('POST', `/api/actors/${qo.actorId}/sub-agents`, { label: 'qoorder', tier: 'deep' });
+      assert.strictEqual(sa.status, 201, JSON.stringify(sa.body));
+      assert.strictEqual((await req('POST', `/api/rooms/${qoRoomId}/sub-agents`, { sub_agent_id: sa.body.id })).status, 200);
+      const subTrig = waitForWsMessage(qo.ws, m => m.type === 'agent_trigger' && m.sub_agent?.id === sa.body.id, 5000);
+      const r = await req('POST', `/api/rooms/${qoRoomId}/sub-agent-trigger`, { sub_agent_id: sa.body.id, task: 'check the room order' },
+        { 'x-agent-id': String(qo.actorId), 'x-agent-secret': qo.secret });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      const sm = await subTrig;
+      const wake = waitForWsMessage(qo.ws, w => w.type === 'agent_trigger' && !w.sub_agent, 3000).catch(() => null);
+      complete(sm);
+      complete(await wake);
+      const [a, b, c] = orderIn(sm.prompt, ['c1', 'c2', 'c3']);
+      assert.ok(a >= 0 && a < b && b < c, `room context order c1<c2<c3, got ${[a, b, c]}`);
+      const [rt, t1, t2] = orderIn(await triggerPrompt({ content: 'thread order check', thread_id: seeded.root }), ['root', 't1', 't2']);
+      assert.ok(rt >= 0 && rt < t1 && t1 < t2, `thread context order root<t1<t2, got ${[rt, t1, t2]}`);
+    });
+
+    await test('message order — active thread list follows root id (newest first)', async () => {
+      seed('rootX', '2026-01-01 00:00:20');
+      seed('rootY', '2026-01-01 00:00:19');
+      seed('runX', '2026-01-01 00:00:21', { thread_id: seeded.rootX, state: 'streaming' });
+      seed('runY', '2026-01-01 00:00:22', { thread_id: seeded.rootY, state: 'streaming' });
+      try {
+        const r = await req('GET', `/api/rooms/${qoRoomId}/threads?state=active`);
+        assert.strictEqual(r.status, 200);
+        assert.deepStrictEqual(idsIn(r.body, ['rootX', 'rootY']), [seeded.rootY, seeded.rootX]);
+      } finally {
+        db.prepare("UPDATE messages SET state='complete' WHERE id IN (?,?)").run(seeded.runX, seeded.runY);
+      }
+    });
+
+    await test('message order — teardown', async () => {
+      if (human) human.close();
+      if (qo?.ws && qo.ws.readyState !== 3) qo.ws.close();
+    });
+  }
+
   // POST /api/actors/:id/restart — manual restart when idle (PM2-supervised agents only)
   console.log('\n[Agent Restart]');
   {
