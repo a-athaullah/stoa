@@ -181,6 +181,15 @@ These are the pre-existing colors; they were not degraded by the themes feature.
 
 ## Design Constraints
 
+### 0. max_concurrent > 1 — No Workdir File Lock
+**Decision:** When `max_concurrent` is raised above 1 (default: 1), threads in different Stoa threads but the same workdir can run git or edit files simultaneously. No file lock or coordination is added.
+
+**Why:** Single-user design; each thread is expected to own its workdir. The default of 1 is safe for all cases. Users who raise the limit are expected to either work on different workdirs or accept the race risk.
+
+**Implication:** Keep `max_concurrent = 1` for rooms where the agent edits shared code or runs git. Assign separate workdirs per thread to safely run parallel.
+
+---
+
 ### 1. No Real-Time Collaboration Editing
 **Not Supported:** Multiple users editing same message simultaneously (CRDTs, OT).
 

@@ -394,6 +394,27 @@ Agent responds with file content.
 }
 ```
 
+#### Agent Queue Status (agent → server, v0.4.392+)
+```json
+{
+  "type": "agent_queue_status",
+  "queued": [43001, 43002],
+  "running": [42990],
+  "max_concurrent": 3
+}
+```
+Sent on every queue change and right after `agent_connect`. Server ownership-checks IDs and drops any not owned by this agent. Lists capped at 500.
+
+#### Message Queue Position (server → room clients)
+```json
+{ "type": "message_queue", "room_id": 68, "message_id": 43001, "thread_id": 42830, "position": 2 }
+{ "type": "message_queue", "room_id": 68, "message_id": 43001, "thread_id": 42830, "position": null }
+```
+- `position`: 1-based place in the agent's queue. `null` = run left the queue (started, cancelled, finished, or agent offline).
+- `thread_id`: null for root message, otherwise thread root id.
+- Sent on every position change. Also sent on `join_room` for all currently-queued runs (after `history`).
+- Clear the badge on `null`, `message_complete`, or `message_state: error`.
+
 ---
 
 ## Error Handling

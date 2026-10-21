@@ -198,6 +198,12 @@ The composer has an **Enter to send** toggle. When active (default on desktop), 
 
 While an AI agent is streaming a response, a **Stop** button appears. Click it to cancel the current generation. The message will show whatever content was streamed up to that point.
 
+### Queue Position Badge
+
+When a message is waiting in the agent's run queue — because the agent is already busy with another thread — a **queued (#N)** badge appears in place of the streaming indicator, both in the room feed and in the thread panel. The number shows the run's 1-based position in the queue. The badge clears automatically when the run starts, finishes, or is cancelled.
+
+The server's 15-minute run timeout is paused while a run waits in the queue and resets in full when the run begins — a run queued behind a long review will not time out before it starts.
+
 ### Infinite Scroll
 
 Only the most recent messages are loaded when you open a room. Scroll to the top to automatically load older messages.
@@ -934,7 +940,7 @@ The detail panel includes:
 - **Public URL** — the URL agents and other devices use to reach the server (important for Tailscale/remote setups)
 - **Port** — change the server port (requires restart; see the [port change guide](doc-port))
 - **Max AI Turns** — maximum agent responses per human message (prevents infinite loops)
-- **Concurrent Sessions** — how many messages an agent can process in parallel across all rooms (applied instantly, no restart needed)
+- **Concurrent Sessions** — how many threads an agent can run at the same time (default: 1; recommended: 3). Parallel *between* threads; always serial *within* a single thread. Applied instantly, no restart needed. **Risk:** with a value above 1, threads that share the same workdir can edit files or run git simultaneously — nothing prevents this. Keep it at 1 for rooms where the agent works on shared code, or give each thread a separate workdir.
 - **Session Idle TTL** — minutes before idle AI sessions auto-close to free memory (default 5 minutes)
 - **Cleanup Hour** — when the daily upload cleanup runs (24h format)
 - **Max File Age** — how long uploaded files are kept before cleanup (hours)
@@ -1010,6 +1016,22 @@ Below the cards, an **activity heatmap** covers the last 26 weeks. Each cell is 
 - A **model list** below shows every model with its input/output token totals and percentage share
 
 All figures are read-only and refresh whenever you reopen the tab or change the period.
+
+### Doctor
+
+The **Doctor** tab shows health information about your Stoa instance: database integrity, DB file size, and the status of all agents.
+
+**Agent queue diagnostics** — `GET /api/health/db` includes an `agent_queues` array with each online agent's queue state: whether it is reporting queue status (`reported: true` means client v0.4.392+), the number of active runs, queue depth, and a per-room breakdown. `reported: false` means an older client that does not send queue events — its counts are `null`.
+
+**Run timing** — each message carries server-authored timing in `result_meta.timing` (only for agents on client v0.4.392+):
+
+| Field | Description |
+|-------|-------------|
+| `queue_wait_ms` | Time the run spent waiting in the agent's queue |
+| `first_token_ms` | Time from run start to first streamed token (omitted if nothing was streamed) |
+| `run_ms` | Total run duration |
+| `queue_depth` | Runs of the same agent ahead of this one when it arrived (0 = started immediately) |
+| `parallel` | Active runs on the agent when this one started, including itself |
 
 ---
 
