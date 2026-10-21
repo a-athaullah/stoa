@@ -12110,6 +12110,36 @@ async function run() {
     });
   }
 
+  console.log('\n[Query audit fixes]');
+  {
+    const db = require('./db');
+    let sk = null, skRoomId = null, skPart = null, human = null;
+
+    await test('debug bundle — settings are included, values redacted unless on the shareable list', async () => {
+      db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, '__test_bundle_token', 'xoxp-111-222-333-abcdef')").run();
+      try {
+        const cr = await req('POST', '/api/debug/bundle', { consent: true });
+        assert.strictEqual(cr.status, 200);
+        const r = await fetch(`http://${HOST}:${PORT}/api/debug/bundle/${cr.body.id}`, { headers: { Cookie: sessionCookie } });
+        const raw = await r.text();
+        assert.ok(!raw.includes('xoxp-111'), 'secret setting value must not leave the server');
+        const settings = JSON.parse(raw).data.settings;
+        const byKey = Object.fromEntries(settings.map(s => [s.key, s]));
+        assert.strictEqual(byKey.__test_bundle_token?.value, '[REDACTED]');
+        const idle = db.prepare("SELECT value FROM settings WHERE scope='global' AND key_name='idle_timeout_seconds'").get().value;
+        assert.strictEqual(byKey.idle_timeout_seconds?.value, idle, 'shareable setting keeps its value');
+        assert.strictEqual(byKey.idle_timeout_seconds.scope, 'global');
+      } finally {
+        db.prepare("DELETE FROM settings WHERE key_name='__test_bundle_token'").run();
+      }
+    });
+
+    await test('query audit fixes — teardown', async () => {
+      if (human) human.close();
+      if (sk?.ws && sk.ws.readyState !== 3) sk.ws.close();
+    });
+  }
+
   // POST /api/actors/:id/restart — manual restart when idle (PM2-supervised agents only)
   console.log('\n[Agent Restart]');
   {
