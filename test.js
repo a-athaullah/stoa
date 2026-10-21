@@ -5147,6 +5147,8 @@ async function run() {
       const aiPart = partsR.body.find(p => p.type === 'ai');
       if (!aiPart) { console.log('    (skip — no AI participant in first room)'); return; }
 
+      // session_status reads the room-level row (thread_id=0); a DB copy may not have one.
+      const seeded = db.prepare("INSERT OR IGNORE INTO ai_sessions (participant_id, room_id, claude_session_id, thread_id) VALUES (?,?,'r15-test-session',0)").run(aiPart.id, roomId).changes;
       db.prepare("UPDATE ai_sessions SET status='indeterminate' WHERE participant_id=? AND sub_agent_id IS NULL").run(aiPart.id);
       try {
         const r2 = await req('GET', `/api/rooms/${roomId}/participants`);
@@ -5155,6 +5157,7 @@ async function run() {
         assert.strictEqual(found.session_status, 'indeterminate');
       } finally {
         db.prepare("UPDATE ai_sessions SET status='idle' WHERE participant_id=? AND sub_agent_id IS NULL AND status='indeterminate'").run(aiPart.id);
+        if (seeded) db.prepare("DELETE FROM ai_sessions WHERE participant_id=? AND claude_session_id='r15-test-session'").run(aiPart.id);
       }
     });
   }
