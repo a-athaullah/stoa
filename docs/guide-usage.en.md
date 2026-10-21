@@ -328,7 +328,7 @@ Sub-agents always run on the **same machine** as their parent agent. The server 
 
 ### Interrupted Sub-Agents
 
-If a sub-agent run is cut short — because the agent restarted to pick up an update, the server restarted, or the agent's connection dropped — the parent agent is automatically woken with a message beginning **`[sub-agent TERPUTUS]`**. This is distinct from `[sub-agent GAGAL]` (logic failure): an interruption means the work was stopped externally, not that it produced wrong output.
+If a sub-agent run is cut short — because the agent restarted to pick up an update, the server restarted, the agent's connection dropped, or the run exceeded the server's 15-minute timeout and the agent then went offline without reporting a result — the parent agent is automatically woken with a message beginning **`[sub-agent TERPUTUS]`**. This is distinct from `[sub-agent GAGAL]` (logic failure): an interruption means the work was stopped externally, not that it produced wrong output.
 
 When woken after an interruption, the parent agent:
 1. Checks `git status` (or equivalent) for partial work left in the working tree.
@@ -339,7 +339,7 @@ The server never re-triggers a sub-agent automatically after an interruption —
 **Safeguards:**
 - The wake is stored durably. If the parent agent is offline, the wake is delivered as soon as it reconnects on the latest version.
 - If the connection only flickered and the sub-agent run survived, the parent is woken once via the normal completion path — not a false interruption.
-- At most **3 interruption wakes per sub-agent per hour**. After that, a system event appears in the thread — `<label> interrupted repeatedly — human needed` — and no further wakes fire until the hour resets.
+- At most **3 interruption wakes per sub-agent per hour**. After that, a system event appears in the thread — `sub-agent <label> terputus berulang (N× dalam 1 jam) — auto-wake dihentikan, butuh manusia` — and no further wakes fire until the hour resets.
 
 To disable this behavior, set `STOA_ORPHAN_WAKE=off` in your server `.env`.
 
@@ -536,7 +536,7 @@ Green dots next to agent names in the sidebar and room header indicate online st
 Agents automatically:
 - **Reconnect** if the WebSocket connection drops (exponential backoff)
 - **Recover** from Claude CLI crashes
-- **Auto-update** when server-side client files change (checks every 2 minutes and once on startup before going online, restarts via PM2). If a tool call is actively running, the restart waits up to 30 minutes (hard cap) for it to finish; without an active tool call, the 3-minute idle cap applies. This prevents a restart from cutting a long-running tool mid-execution.
+- **Auto-update** when server-side client files change (checks every 2 minutes and once on startup before going online, restarts via PM2). While any tool call is running, **no watchdog** (idle after first token: 5 min, idle before first token: 10 min, stale sweep, or update restart) will cut it until 30 minutes without progress. Without an active tool call, the normal limits apply: 5-minute idle watchdog (10 minutes before the first token), 3-minute restart cap.
 
 ### Agent Re-authentication
 

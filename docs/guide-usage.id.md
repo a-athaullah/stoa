@@ -329,7 +329,7 @@ Sub-agent selalu berjalan di **mesin yang sama** dengan agent induknya. Server m
 
 ### Sub-Agent Terputus
 
-Jika sebuah run sub-agent terpotong di tengah jalan — karena agent restart untuk mengambil update, server restart, atau koneksi agent terputus — agent induk otomatis dibangunkan dengan pesan berawalan **`[sub-agent TERPUTUS]`**. Ini berbeda dari `[sub-agent GAGAL]` (kegagalan logika): interupsi artinya pekerjaan dihentikan dari luar, bukan menghasilkan output yang salah.
+Jika sebuah run sub-agent terpotong di tengah jalan — karena agent restart untuk mengambil update, server restart, koneksi agent terputus, atau run sudah melewati timeout 15 menit di server lalu agent-nya offline tanpa melapor hasil — agent induk otomatis dibangunkan dengan pesan berawalan **`[sub-agent TERPUTUS]`**. Ini berbeda dari `[sub-agent GAGAL]` (kegagalan logika): interupsi artinya pekerjaan dihentikan dari luar, bukan menghasilkan output yang salah.
 
 Saat dibangunkan setelah interupsi, agent induk:
 1. Memeriksa `git status` (atau setaranya) untuk pekerjaan parsial yang tersisa di working tree.
@@ -340,7 +340,7 @@ Server tidak pernah men-trigger ulang sub-agent secara otomatis setelah interups
 **Pengaman:**
 - Wake disimpan secara permanen. Jika agent induk sedang offline, wake dikirimkan segera setelah reconnect dengan versi terbaru.
 - Jika koneksi hanya berkedip dan run sub-agent masih hidup, agent induk dibangunkan sekali lewat jalur penyelesaian normal — bukan interupsi palsu.
-- Maksimal **3 wake interupsi per sub-agent per jam**. Setelah itu, muncul system event di thread — `<label> terputus berulang, butuh manusia` — dan tidak ada wake lebih lanjut sampai jam berikutnya.
+- Maksimal **3 wake interupsi per sub-agent per jam**. Setelah itu, muncul system event di thread — `sub-agent <label> terputus berulang (N× dalam 1 jam) — auto-wake dihentikan, butuh manusia` — dan tidak ada wake lebih lanjut sampai jam berikutnya.
 
 Untuk menonaktifkan perilaku ini, set `STOA_ORPHAN_WAKE=off` di `.env` server.
 
@@ -537,7 +537,7 @@ Titik hijau di samping nama agent di sidebar dan header room menunjukkan status 
 Agent secara otomatis:
 - **Reconnect** jika koneksi WebSocket terputus (exponential backoff)
 - **Recovery** dari crash Claude CLI
-- **Auto-update** saat file klien di server berubah (cek tiap 2 menit dan sekali saat startup sebelum online, restart via PM2). Jika tool call sedang aktif berjalan, restart menunggu sampai 30 menit (batas keras) hingga selesai; tanpa tool call aktif, batas idle 3 menit tetap berlaku. Ini mencegah restart memotong tool yang sedang berjalan lama di tengah eksekusi.
+- **Auto-update** saat file klien di server berubah (cek tiap 2 menit dan sekali saat startup sebelum online, restart via PM2). Selama ada tool call yang berjalan, **tidak ada watchdog** (idle setelah token pertama: 5 menit, idle sebelum token pertama: 10 menit, stale sweep, maupun restart update) yang akan memotong run sampai 30 menit tanpa progres. Tanpa tool call aktif, batas normal berlaku: watchdog idle 5 menit (10 menit sebelum token pertama), dan 3 menit untuk restart update.
 
 ### Re-autentikasi Agent
 
