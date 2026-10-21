@@ -55,6 +55,60 @@ function showThinking(msgId, actorName, color, symbol, avatarUrl, subAgentLabel,
   inner.appendChild(row);
 
   streaming[msgId] = '';
+  applyQueueBadge(msgId);
   scrollToBottom();
 }
 
+
+// ── Agent queue position badge ─────────────────────────────────────────────
+// Server sends message_queue {message_id, position|null}; a run waiting in the agent's
+// queue shows "queued #N" in place of the thinking indicator until it starts.
+const queuePositions = new Map();
+
+const QUEUE_BADGE_TEXT = {
+  en: n => `Queued #${n}`,
+  id: n => `Antre di posisi ${n}`,
+  ja: n => `待機中 · ${n}番目`,
+  ko: n => `대기 중 · ${n}번째`,
+  zh: n => `排队中 · 第 ${n} 位`,
+};
+
+function queueBadgeText(n) {
+  const lang = (navigator.language || 'en').slice(0, 2).toLowerCase();
+  return (QUEUE_BADGE_TEXT[lang] || QUEUE_BADGE_TEXT.en)(n);
+}
+
+function applyQueueBadge(msgId) {
+  const position = queuePositions.get(msgId);
+  document.querySelectorAll(`[id="msg-${msgId}"]`).forEach(row => {
+    const thinking = row.querySelector('.h-thinking-bubble');
+    const host = thinking || row.querySelector('.t-col, .h-msg-body');
+    let badge = row.querySelector('.h-queue-badge');
+    if (!position || !host) {
+      if (badge) badge.remove();
+      if (thinking) thinking.classList.remove('is-queued');
+      return;
+    }
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'h-queue-badge';
+      const meta = thinking ? null : host.querySelector(':scope > .t-meta, :scope > .h-msg-meta');
+      if (meta) meta.after(badge);
+      else host.appendChild(badge);
+    }
+    badge.textContent = queueBadgeText(position);
+    if (thinking) thinking.classList.add('is-queued');
+  });
+}
+
+function setQueuePosition(msgId, position) {
+  if (Number.isInteger(position) && position > 0) queuePositions.set(msgId, position);
+  else queuePositions.delete(msgId);
+  applyQueueBadge(msgId);
+}
+
+function clearQueuePositions() {
+  const ids = [...queuePositions.keys()];
+  queuePositions.clear();
+  ids.forEach(applyQueueBadge);
+}

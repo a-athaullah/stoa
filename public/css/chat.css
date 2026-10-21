@@ -695,6 +695,28 @@
   font-weight: 400;
 }
 
+/* Agent queue position — replaces the thinking indicator while a run waits */
+.h-thinking-bubble.is-queued .h-dot,
+.h-thinking-bubble.is-queued .h-status { display: none; }
+.h-queue-badge {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  width: fit-content;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--h-info-line);
+  background: var(--h-info-bg);
+  color: var(--h-info-ink);
+  font-family: var(--h-sans);
+  font-size: 12px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.t-col > .h-queue-badge,
+.h-msg-body > .h-queue-badge { margin: 4px 0; }
+
 /* Process trail (tool calls below bubble) */
 .h-process-trail {
   display: flex;
