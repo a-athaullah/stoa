@@ -15,6 +15,9 @@
  *      (agent-dispatch tests block without a live agent client connected)
  *   5. Tears everything down (kills server + test, deletes temp DB + temp bundle)
  *   6. Fails the run if the live dist/stoa.js was modified during the run
+ *   7. Points STOA_ENV_FILE at a throwaway copy of .env (PATCH /api/settings writes the env file;
+ *      against the live .env a parallel run once raced it and dropped PORT) and fails the run
+ *      if the live .env changed anyway
  *
  * Usage:        node .claude/tools/run-tests.js
  * Pin port:     TEST_PORT=4123 node .claude/tools/run-tests.js
@@ -35,6 +38,7 @@ const testFile    = path.join(projectRoot, 'test.js');
 const serverFile  = path.join(projectRoot, 'server.js');
 const liveDb      = path.join(projectRoot, 'db', 'stoa.db');
 const liveBundle  = path.join(projectRoot, 'dist', 'stoa.js');
+const liveEnv     = path.join(projectRoot, '.env');
 const TIMEOUT_MS  = (parseInt(process.env.TEST_TIMEOUT, 10) || 180) * 1000;
 
 function getFreePort() {
@@ -63,12 +67,18 @@ function waitUp(port, tries = 50) {
   const tmpDb = path.join(os.tmpdir(), `stoa-test-${process.pid}.db`);
   const tmpArtifacts = [tmpDb, `${tmpDb}-wal`, `${tmpDb}-shm`];
   const tmpBundleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-test-dist-'));
+  const tmpEnvDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-test-env-'));
+  const tmpEnv = path.join(tmpEnvDir, '.env');
   const rmTmp = () => {
     tmpArtifacts.forEach((f) => { try { fs.unlinkSync(f); } catch {} });
     try { fs.rmSync(tmpBundleDir, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(tmpEnvDir, { recursive: true, force: true }); } catch {}
   };
   const bundleStamp = () => { try { const s = fs.statSync(liveBundle); return `${s.mtimeMs}:${s.size}`; } catch { return null; } };
   const liveBundleBefore = bundleStamp();
+  const envStamp = () => { try { const s = fs.statSync(liveEnv); return `${s.mtimeMs}:${fs.readFileSync(liveEnv, 'utf8')}`; } catch { return null; } };
+  const liveEnvBefore = envStamp();
+  try { fs.copyFileSync(liveEnv, tmpEnv); } catch { fs.writeFileSync(tmpEnv, ''); }
 
   tmpArtifacts.forEach((f) => { try { fs.unlinkSync(f); } catch {} });
   fs.copyFileSync(liveDb, tmpDb);
@@ -97,6 +107,7 @@ function waitUp(port, tries = 50) {
 
   const PORT = parseInt(process.env.TEST_PORT, 10) || (await getFreePort());
   const env = { ...process.env, PORT: String(PORT), DB_PATH: tmpDb, TEST_HOST: '127.0.0.1', STOA_TEST: '1', STOA_AGENT_BUNDLE_DIR: tmpBundleDir,
+    STOA_ENV_FILE: tmpEnv,
     // Model-free embedding backend: exercises worker/backfill/hybrid without a 130 MB download.
     STOA_SEMANTIC_BACKEND: 'hash',
     // Server run timeout (15 min in prod) short enough for the timed-out sub-agent tests to reach it.
@@ -140,10 +151,12 @@ function waitUp(port, tries = 50) {
   const passed = (result.output.match(/✓/g) || []).length;
   const failed = (result.output.match(/✗/g) || []).length;
   const liveBundleTouched = bundleStamp() !== liveBundleBefore;
+  const liveEnvTouched = envStamp() !== liveEnvBefore;
   const summary = {
     // A timeout is NOT success, but partial results below still tell us which tests passed.
-    success: !result.timedOut && result.code === 0 && failed === 0 && !liveBundleTouched,
+    success: !result.timedOut && result.code === 0 && failed === 0 && !liveBundleTouched && !liveEnvTouched,
     liveBundleTouched,
+    liveEnvTouched,
     timedOut: result.timedOut,
     timeoutSec: TIMEOUT_MS / 1000,
     testPort: PORT,

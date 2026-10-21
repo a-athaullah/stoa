@@ -5,6 +5,8 @@ connector-media/
 *.log
 *.err
 .env
+.env.bak
+.env.tmp-*
 *.db
 *.db-shm
 *.db-wal

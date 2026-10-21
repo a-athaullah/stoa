@@ -11,6 +11,7 @@ const { collectDiagnostics, buildEnvelope, gcDebugBundles } = require('./lib/deb
 const { enrichAutomation, enrichAutomationList, watchReplyAutomation } = require('./lib/automation-identity');
 const { sanitizeDisplayName, EMAIL_REPLY_LIMITS, buildEmailThreadSection, normalizeRefIds, findEmailReplyThread } = require('./lib/email-threading');
 const { parseClientVersion } = require('./lib/client-version');
+const { resolveEnvFile, loadEnvFile, setEnvKey, portFallbackWarning, DEFAULT_PORT } = require('./lib/env-file');
 const { runMigrations } = require('./lib/migrations');
 const fallbackSessions = new Map();
 
@@ -245,7 +246,7 @@ const MODEL_CONTEXT_LIMITS = {
 };
 function getContextLimit(model) { return MODEL_CONTEXT_LIMITS[model] || DEFAULT_CONTEXT_WINDOW; }
 
-const { escapeRegExp, safeRegexTest, validateRegexPattern } = require('./lib/regex-safety');
+const { safeRegexTest, validateRegexPattern } = require('./lib/regex-safety');
 
 function validateConditions(raw) {
   let parsed;
@@ -925,13 +926,12 @@ function drainPendingWakesOnStartup() {
   for (const r of rows) drainWake(r.id).catch(e => console.error('[wake] startup drain error:', e.message));
 }
 
-// Load .env if present
-const envPath = path.join(__dirname, '.env');
-if (fs.existsSync(envPath)) {
-  for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
-    const m = line.match(/^\s*([A-Z_][A-Z0-9_]*)=(.*)$/);
-    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim();
-  }
+// Load .env if present (STOA_ENV_FILE overrides the path; run-tests uses it to keep off the live file)
+const ENV_FILE = resolveEnvFile(__dirname);
+loadEnvFile(ENV_FILE);
+{
+  const warning = portFallbackWarning(process.env, ENV_FILE);
+  if (warning) { console.log(warning); console.error(warning); }
 }
 
 // Initialize schema on startup
@@ -1088,7 +1088,7 @@ setInterval(() => {
   db.exec("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')");
 }
 
-const PORT = parseInt(process.env.PORT) || 3000;
+const PORT = parseInt(process.env.PORT) || DEFAULT_PORT;
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
 const CONNECTOR_MEDIA_DIR = path.join(__dirname, 'connector-media');
 
@@ -1429,15 +1429,7 @@ function getPublicUrl(fallbackHost) {
 }
 
 function writeEnv(key, value) {
-  const envFile = path.join(__dirname, '.env');
-  let content = fs.existsSync(envFile) ? fs.readFileSync(envFile, 'utf8') : '';
-  const re = new RegExp(`^${escapeRegExp(key)}=.*$`, 'm');
-  if (re.test(content)) {
-    content = content.replace(re, () => `${key}=${value}`);
-  } else {
-    content = content.trimEnd() + `\n${key}=${value}\n`;
-  }
-  fs.writeFileSync(envFile, content, 'utf8');
+  setEnvKey(ENV_FILE, key, value);
 }
 
 function docTitle(filePath) {
@@ -3215,6 +3207,8 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'PATCH' && url.pathname === '/api/settings') {
     const body = parseJsonBody(await readBody(req));
     if (!body) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
+    // Validate before any write so a rejected request leaves settings, .env and DB untouched.
+    if (body.human_name !== undefined && (typeof body.human_name !== 'string' || /[\r\n]/.test(body.human_name))) { res.writeHead(400); return res.end(JSON.stringify({ error: 'human_name must be a single line' })); }
     if (body.public_url !== undefined) setSetting('public_url', body.public_url.trim());
     if (body.human_name !== undefined) {
       const name = body.human_name.trim() || 'Human';
@@ -4030,6 +4024,8 @@ const server = http.createServer(async (req, res) => {
     if (!body) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
     const { name, avatar_url, lang, adapter, default_model } = body;
     if (name !== undefined && !name?.trim()) { res.writeHead(400); return res.end('name required'); }
+    // A human's name is mirrored to .env (HUMAN_NAME), which rejects line breaks; reject them here, before the DB transaction.
+    if (name !== undefined && (typeof name !== 'string' || /[\r\n]/.test(name))) { res.writeHead(400); return res.end(JSON.stringify({ error: 'name must be a single line' })); }
     if (avatar_url !== undefined && avatar_url !== null && (!avatar_url.startsWith('/uploads/') || avatar_url.includes('..'))) { res.writeHead(400); return res.end('invalid avatar_url'); }
     // --- VALIDATION PHASE (no DB writes) ---
     const actor = db.prepare('SELECT id, name, type, adapter, default_model FROM actors WHERE id=?').get(id);
