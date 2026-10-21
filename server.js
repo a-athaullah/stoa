@@ -514,6 +514,85 @@ function enqueueParentWake(roomId, parentParticipantId, subAgentMessageId, threa
   drainWake(Number(lastInsertRowid)).catch(e => console.error('[wake] drain error:', e.message));
 }
 
+// ─── Self-healing: wake the parent when a cleanup path ends a sub-agent run ──
+// Disconnect, reconnect, server restart, "agent updating" and mid-trigger
+// disconnect all end a sub-agent message without an agent_complete, so the
+// normal wake above never fires and the pipeline goes silent. Those paths stamp
+// result_meta.exit_reason='interrupted' (server-authored only: not in
+// RESULT_EXIT_REASONS, so an agent cannot forge it) and queue a durable wake.
+// Queued only — drainWake waits for the parent's agent to be connected and
+// current, so a wake queued while the agent is down survives until it returns.
+// STOA_ORPHAN_WAKE=off disables the wakes (the interrupted stamp stays).
+const INTERRUPTED_RESULT_META = JSON.stringify({ exit_reason: 'interrupted' });
+// The 15-min server timeout errors a sub-agent bubble while the agent may still be running it,
+// so it does not wake the parent — agent_complete will. awaiting_agent (server-written only:
+// sanitizeResultMeta drops unknown keys) keeps the row in the disconnect/reconnect/startup
+// cleanup below, so an agent that dies instead of completing still wakes the parent.
+const AWAITING_AGENT_RESULT_META = JSON.stringify({ exit_reason: 'timeout', awaiting_agent: true });
+const RUN_IN_FLIGHT_SQL = "(state IN ('streaming','requesting') OR (state='error' AND sub_agent_id IS NOT NULL AND json_extract(result_meta, '$.awaiting_agent')=1))";
+const ORPHAN_WAKE_LIMIT = 3; // interrupted wakes per (thread, sub-agent) per hour
+const orphanWakeEnabled = () => process.env.STOA_ORPHAN_WAKE !== 'off';
+
+// rows: { id, room_id, participant_id, thread_id, sub_agent_id, sub_agent_label }
+function enqueueOrphanWakes(rows) {
+  if (!orphanWakeEnabled()) return;
+  for (const r of rows) {
+    if (!r.sub_agent_id) continue;
+    try {
+      if (db.prepare('SELECT 1 FROM pending_wakes WHERE sub_agent_message_id=?').get(r.id)) continue;
+      // Counts this row too: it is already stamped interrupted with completed_at=now.
+      const recent = db.prepare(`SELECT COUNT(*) AS c FROM messages
+        WHERE room_id=? AND thread_id IS ? AND sub_agent_id=?
+          AND json_extract(result_meta, '$.exit_reason')='interrupted'
+          AND completed_at >= datetime('now', '-1 hour')`).get(r.room_id, r.thread_id ?? null, r.sub_agent_id).c;
+      if (recent > ORPHAN_WAKE_LIMIT) {
+        postWakeSystemEvent(r.room_id, r.participant_id, r.thread_id ?? null,
+          `sub-agent ${r.sub_agent_label || 'sub-agent'} terputus berulang (${recent}× dalam 1 jam) — auto-wake dihentikan, butuh manusia`);
+        continue;
+      }
+      db.prepare('INSERT INTO pending_wakes (room_id, parent_participant_id, sub_agent_message_id, thread_id) VALUES (?,?,?,?)')
+        .run(r.room_id, r.participant_id, r.id, r.thread_id ?? null);
+    } catch (e) { console.error('[wake] orphan enqueue error:', e.message); }
+  }
+}
+
+function postWakeSystemEvent(roomId, participantId, threadId, content) {
+  const sys = db.prepare(
+    `INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?,?,?,'system_event',?)`
+  ).run(roomId, participantId, content, threadId);
+  broadcast(roomId, { type: 'message_new', message: db.prepare('SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id WHERE m.id=?').get(Number(sys.lastInsertRowid)) });
+}
+
+// A wake delivered to an offline or outdated agent is consumed without running:
+// triggerAiResponse posts "offline" / "agent updating" and returns. So it waits
+// in pending_wakes for the agent's next (current-version) agent_connect.
+function agentReadyForWake(actorId) {
+  const ws = agentClients.get(actorId);
+  if (!ws || ws.readyState !== 1) return false;
+  const ver = agentVersions.get(actorId);
+  return !(EXPECTED_CLIENT_VERSION && ver && ver.localeCompare(EXPECTED_CLIENT_VERSION, undefined, { numeric: true }) < 0);
+}
+
+// A sub-agent trigger refused before it ran ("agent updating", mid-trigger disconnect):
+// the run never started, so the parent is told the same way as for an interruption.
+function markSubAgentInterrupted(messageId) {
+  const rows = db.prepare(`UPDATE messages SET result_meta=?, completed_at=datetime('now') WHERE id=? AND sub_agent_id IS NOT NULL AND state='error'
+    RETURNING id, room_id, participant_id, thread_id, sub_agent_id, sub_agent_label`).all(INTERRUPTED_RESULT_META, messageId);
+  enqueueOrphanWakes(rows);
+}
+
+// agent_error and an empty agent_complete end a sub-agent run in state='error' outside
+// the agent_complete wake path; without this the parent never hears about the failure.
+function wakeParentOnSubAgentError(messageId, actorId) {
+  if (!orphanWakeEnabled()) return;
+  try {
+    const r = db.prepare(`SELECT room_id, participant_id, thread_id FROM messages WHERE id=? AND sub_agent_id IS NOT NULL AND state='error'
+      AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?)`).get(messageId, actorId);
+    if (!r || db.prepare('SELECT 1 FROM pending_wakes WHERE sub_agent_message_id=?').get(messageId)) return;
+    enqueueParentWake(r.room_id, r.participant_id, messageId, r.thread_id);
+  } catch (e) { console.error('[wake] error-path enqueue error:', e.message); }
+}
+
 // Phase 4 (Loop Guard #7): a compact per-sub-agent cost rollup for a room, used
 // to hand the orchestrator enough context to post a run summary. Reads the
 // canonical spend from usage_log (tokens attributed per sub-agent) and wall time
@@ -565,13 +644,17 @@ async function drainWake(wakeId) {
     SELECT m.content, m.sub_agent_label, m.state, m.result_meta FROM messages m WHERE m.id=?
   `).get(row.sub_agent_message_id);
   if (!parent || !sub) { db.prepare('DELETE FROM pending_wakes WHERE id=?').run(wakeId); return; }
+  if (!agentReadyForWake(parent.actor_id)) return;
 
   const label = sub.sub_agent_label || 'sub-agent';
   // R13: if sub-agent finished with a failure state, prefix the wake prompt so
   // the parent synthesizer knows it failed rather than silently treating it as success.
   const subFailed = sub.state === 'error';
   const subExitReason = sub.result_meta ? (JSON.parse(sub.result_meta)?.exit_reason || null) : null;
-  const failurePrefix = subFailed
+  const interrupted = subFailed && subExitReason === 'interrupted';
+  const failurePrefix = interrupted
+    ? `[sub-agent TERPUTUS] Sub-agent "${label}" ter-interupsi oleh restart agent/server — bukan gagal logika. Kerja parsial mungkin sudah ada di working tree: cek \`git status\` (dan branch aktif) dulu, lalu putuskan apakah perlu trigger ulang. Sesinya tidak tersimpan, jadi trigger ulang = sesi baru: tulis ulang konteks tugasnya lengkap. Output parsial (kalau ada):\n\n`
+    : subFailed
     ? `[sub-agent GAGAL] Sub-agent "${label}" selesai dengan status ERROR (exit_reason: ${subExitReason || 'error'}). Output di bawah ini mungkin parsial atau pesan error:\n\n`
     : '';
   // R5: truncate very long results in the wake prompt; full text stays as the room message.
@@ -595,7 +678,7 @@ async function drainWake(wakeId) {
   const costBlock = rollup
     ? `\n\n${formatCostRollup(rollup)}\n(Ini menutup rangkaian spawn — sertakan ringkasan biaya singkat di jawabanmu kalau relevan.)`
     : '';
-  const wakePrompt = `[sub-agent result] Sub-agent "${label}" yang kamu picu sudah selesai. ${failurePrefix}Hasilnya:\n\n${body}\n\nSintesiskan dan lanjutkan menjawab. Kamu boleh @mention sub-agent lain untuk delegate tugas berikutnya (misal @stoa-reviewer untuk review). Mention akan otomatis trigger sub-agent tersebut.${costBlock}`;
+  const wakePrompt = `[sub-agent result] Sub-agent "${label}" yang kamu picu ${interrupted ? 'berhenti sebelum selesai' : 'sudah selesai'}. ${failurePrefix}Hasilnya:\n\n${body}\n\nSintesiskan dan lanjutkan menjawab. Kamu boleh @mention sub-agent lain untuk delegate tugas berikutnya (misal @stoa-reviewer untuk review). Mention akan otomatis trigger sub-agent tersebut.${costBlock}`;
 
   try {
     await triggerAiResponse(row.room_id, { ...parent, sub_agent: null, prompt_outside_history: true }, wakePrompt, null, [], null, row.thread_id ?? null);
@@ -606,10 +689,7 @@ async function drainWake(wakeId) {
     const attempts = row.attempts + 1;
     if (attempts >= MAX_WAKE_ATTEMPTS) {
       db.prepare('DELETE FROM pending_wakes WHERE id=?').run(wakeId);
-      const sys = db.prepare(
-        `INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')`
-      ).run(row.room_id, row.parent_participant_id, `gagal membangunkan ${parent.name} untuk hasil ${label} setelah ${attempts}×`);
-      broadcast(row.room_id, { type: 'message_new', message: db.prepare('SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id WHERE m.id=?').get(Number(sys.lastInsertRowid)) });
+      postWakeSystemEvent(row.room_id, row.parent_participant_id, row.thread_id ?? null, `gagal membangunkan ${parent.name} untuk hasil ${label} setelah ${attempts}×`);
     } else {
       db.prepare('UPDATE pending_wakes SET attempts=? WHERE id=?').run(attempts, wakeId);
     }
@@ -5929,14 +6009,35 @@ wss.on('connection', (ws, req) => {
       const oldWs = agentClients.get(agentActorId);
       if (oldWs && oldWs !== ws) oldWs.close();
       agentClients.set(agentActorId, ws);
+      // ws close only reconnects in stoa.js — runs survive a flicker or a server restart.
+      // The agent reports what it is still running (active_message_ids); those are not
+      // orphans: undo the interrupted stamp the disconnect/startup cleanup gave them and
+      // drop their queued wake, so agent_complete later wakes the parent exactly once.
+      // Older clients send nothing → every in-flight row is treated as orphaned (as before).
+      const stillActive = JSON.stringify(Array.isArray(msg.active_message_ids)
+        ? msg.active_message_ids.filter(Number.isSafeInteger).slice(0, 1000) : []);
+      const revived = db.prepare(
+        `UPDATE messages SET state='streaming', result_meta=NULL, completed_at=NULL,
+           content=CASE WHEN content LIKE '(interrupted — %)' THEN '' ELSE content END
+         WHERE id IN (SELECT value FROM json_each(?)) AND state='error'
+           AND json_extract(result_meta, '$.exit_reason')='interrupted'
+           AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?)
+         RETURNING id, room_id`
+      ).all(stillActive, agentActorId);
+      for (const r of revived) {
+        db.prepare('DELETE FROM pending_wakes WHERE sub_agent_message_id=?').run(r.id);
+        broadcast(r.room_id, { type: 'message_state', message_id: r.id, state: 'streaming' });
+      }
+      if (revived.length) console.log(`[agent] ${revived.length} run(s) still active on reconnect for Actor #${agentActorId} — un-orphaned`);
       const reconnectCleaned = db.prepare(
-        "UPDATE messages SET state='error', content=CASE WHEN content='' THEN '(interrupted — agent reconnected)' ELSE content END WHERE state IN ('streaming','requesting') AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?) RETURNING id, room_id, thread_id, sub_agent_id, content"
-      ).all(agentActorId);
+        `UPDATE messages SET state='error', result_meta=?, completed_at=datetime('now'), content=CASE WHEN content='' THEN '(interrupted — agent reconnected)' ELSE content END WHERE ${RUN_IN_FLIGHT_SQL} AND id NOT IN (SELECT value FROM json_each(?)) AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?) RETURNING id, room_id, participant_id, thread_id, sub_agent_id, sub_agent_label, content`
+      ).all(INTERRUPTED_RESULT_META, stillActive, agentActorId);
       if (reconnectCleaned.length) {
         console.log(`[agent] Cleaned ${reconnectCleaned.length} orphaned message(s) on reconnect for Actor #${agentActorId}`);
         for (const r of reconnectCleaned) {
           maybeBroadcastError({ threadId: r.thread_id, subAgentId: r.sub_agent_id, messageId: r.id, content: r.content, roomId: r.room_id });
         }
+        enqueueOrphanWakes(reconnectCleaned);
       }
       if (msg.client_version) agentVersions.set(agentActorId, msg.client_version);
       if (Array.isArray(msg.harnesses_available)) agentHarnesses.set(agentActorId, msg.harnesses_available);
@@ -6358,6 +6459,7 @@ wss.on('connection', (ws, req) => {
         if (errMeta.thread_id) errPayload.thread_summary = buildThreadSummary(msg.room_id, errMeta.thread_id);
         broadcast(msg.room_id, errPayload);
         maybeBroadcastError({ threadId: errMeta.thread_id, subAgentId: errMeta.sub_agent_label, messageId: msg.message_id, reason: 'error', roomId: msg.room_id });
+        wakeParentOnSubAgentError(msg.message_id, agentActorId);
         pendingAgents.get(msg.message_id)?.resolve('');
         pendingAgents.delete(msg.message_id);
         pendingActorMeta.delete(msg.message_id);
@@ -6400,6 +6502,9 @@ wss.on('connection', (ws, req) => {
         } catch (e) { console.error('[agent] saveSession error:', e.message); }
       }
       try {
+        // A run un-orphaned on reconnect may still hold an undrained interrupted wake
+        // (e.g. an older client that does not report active runs): the real result replaces it.
+        if (doneRow?.sub_agent_id) db.prepare('DELETE FROM pending_wakes WHERE sub_agent_message_id=?').run(msg.message_id);
         if (doneRow && doneRow.sub_agent_id && (doneRow.wake_parent || finalState === 'error')) {
           enqueueParentWake(msg.room_id, doneRow.participant_id, msg.message_id, doneRow.thread_id ?? null);
         }
@@ -6565,6 +6670,10 @@ wss.on('connection', (ws, req) => {
           }
         }
       } catch {}
+      // The run is over: drop the awaiting-agent mark so a later disconnect cleanup cannot wake twice.
+      db.prepare(`UPDATE messages SET result_meta=NULL WHERE id=? AND json_extract(result_meta, '$.awaiting_agent')=1
+        AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?)`).run(msg.message_id, agentActorId);
+      wakeParentOnSubAgentError(msg.message_id, agentActorId);
       pendingAgents.get(msg.message_id)?.reject(new Error(msg.error));
       pendingAgents.delete(msg.message_id);
       pendingActorMeta.delete(msg.message_id);
@@ -7068,7 +7177,11 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => {
     if (subscribedRoom) roomClients.get(subscribedRoom)?.delete(ws);
     if (isHumanClient) globalClients.delete(ws);
-    if (agentActorId) {
+    // A connection superseded by a newer agent_connect (oldWs.close() there, or a
+    // half-open socket noticed late) must not tear down the live one: it would drop the
+    // agent from agentClients and orphan — and wake the parent of — runs still going.
+    const supersededAgentWs = agentActorId && agentClients.has(agentActorId) && agentClients.get(agentActorId) !== ws;
+    if (agentActorId && !supersededAgentWs) {
       agentClients.delete(agentActorId);
       agentVersions.delete(agentActorId);
       agentHarnesses.delete(agentActorId);
@@ -7084,13 +7197,14 @@ wss.on('connection', (ws, req) => {
         }
       }
       const cleaned = db.prepare(
-        "UPDATE messages SET state='error', content=CASE WHEN content='' THEN '(interrupted — agent disconnected)' ELSE content END WHERE state IN ('streaming','requesting') AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?) RETURNING id, room_id, thread_id, sub_agent_id, content"
-      ).all(agentActorId);
+        `UPDATE messages SET state='error', result_meta=?, completed_at=datetime('now'), content=CASE WHEN content='' THEN '(interrupted — agent disconnected)' ELSE content END WHERE ${RUN_IN_FLIGHT_SQL} AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?) RETURNING id, room_id, participant_id, thread_id, sub_agent_id, sub_agent_label, content`
+      ).all(INTERRUPTED_RESULT_META, agentActorId);
       if (cleaned.length) {
         console.log(`[agent] Cleaned ${cleaned.length} orphaned message(s) from Actor #${agentActorId}`);
         for (const r of cleaned) {
           maybeBroadcastError({ threadId: r.thread_id, subAgentId: r.sub_agent_id, messageId: r.id, content: r.content, roomId: r.room_id });
         }
+        enqueueOrphanWakes(cleaned);
       }
       // Reject all pending promises for this actor so caller sequences can continue/unblock
       for (const [mId, pending] of [...pendingAgents]) {
@@ -7801,6 +7915,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
       console.log(`[trigger] ${ai.name} outdated (v${agentVer} < v${EXPECTED_CLIENT_VERSION}), skipping trigger — sending restart`);
       agentWs.send(JSON.stringify({ type: 'restart' }));
       db.prepare("UPDATE messages SET state='error', content='(agent updating — please retry)' WHERE id=?").run(msgId);
+      if (subAgent) markSubAgentInterrupted(msgId);
       broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error', actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null });
       return;
     }
@@ -8109,8 +8224,8 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         if (!pendingAgents.has(msgId)) return;
         pendingAgents.delete(msgId);
         pendingActorMeta.delete(msgId);
-        db.prepare("UPDATE messages SET state='error', content=? WHERE id=?")
-          .run(`(timeout — ${displayName} did not respond in ${Math.round(agentRunTimeoutMs / 60000)} minutes)`, msgId);
+        db.prepare("UPDATE messages SET state='error', content=?, result_meta=? WHERE id=?")
+          .run(`(timeout — ${displayName} did not respond in ${Math.round(agentRunTimeoutMs / 60000)} minutes)`, subAgent ? AWAITING_AGENT_RESULT_META : null, msgId);
         broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
         reject(new Error('agent_timeout'));
       }, agentRunTimeoutMs);
@@ -8166,6 +8281,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     console.log(`[trigger] ${displayName} disconnected mid-trigger, msgId=${msgId} — marking error for retry`);
     db.prepare("UPDATE messages SET state='error', content=? WHERE id=?")
       .run(`(${displayName} terputus saat trigger — akan dicoba ulang otomatis)`, msgId);
+    if (subAgent) markSubAgentInterrupted(msgId);
     broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
     throw new Error('agent_disconnected_mid_trigger');
   }
@@ -8358,12 +8474,15 @@ setInterval(() => {
 }, 60_000);
 
 // On startup: orphaned streaming/requesting messages are dead — mark them as error
-const orphaned = db.prepare("UPDATE messages SET state='error', content=CASE WHEN content='' THEN '(interrupted — server restart)' ELSE content END WHERE state IN ('streaming','requesting') RETURNING id, room_id, thread_id, sub_agent_id, content").all();
+// (agents keep running across a server restart — the ones still busy report it on
+// reconnect and are un-orphaned there, see agent_connect).
+const orphaned = db.prepare(`UPDATE messages SET state='error', result_meta=?, completed_at=datetime('now'), content=CASE WHEN content='' THEN '(interrupted — server restart)' ELSE content END WHERE ${RUN_IN_FLIGHT_SQL} RETURNING id, room_id, participant_id, thread_id, sub_agent_id, sub_agent_label, content`).all(INTERRUPTED_RESULT_META);
 if (orphaned.length) {
   console.log(`[startup] Cleaned ${orphaned.length} orphaned message(s)`);
   for (const r of orphaned) {
     maybeBroadcastError({ threadId: r.thread_id, subAgentId: r.sub_agent_id, messageId: r.id, content: r.content });
   }
+  enqueueOrphanWakes(orphaned);
 }
 
 // Detect process manager once at startup — used by /api/server/process-manager and /api/server/restart

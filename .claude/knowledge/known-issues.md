@@ -39,6 +39,36 @@
 
 **Mitigation:** Agents auto-reconnect. Server restart is rare (update deployments).
 
+**Self-healing for sub-agent runs (bug/orphan-subagent-wake):**
+- Agent processes keep running across a ws drop or server restart. On `agent_connect` the agent
+  sends `active_message_ids`; those runs are revived (back to `streaming`), the rest are orphaned.
+- Every path that ends a sub-agent run without `agent_complete` (disconnect, reconnect, server
+  start, "agent updating", mid-trigger disconnect) stamps `result_meta.exit_reason='interrupted'`
+  (server-only value, not in `RESULT_EXIT_REASONS`) and queues a `pending_wakes` row.
+  `agent_error` / empty `agent_complete` on a sub-agent queue a normal failure wake.
+- `drainWake` only delivers to a connected, current-version agent — otherwise the row waits for
+  the next `agent_connect` (triggerAiResponse to an offline/outdated agent returns without
+  throwing, which used to consume the wake).
+- Loop guard: >3 interrupted runs per (room, thread, sub-agent) in 1 hour → system_event, no wake.
+  The server never re-triggers a sub-agent itself; the parent decides.
+- Kill switch: `STOA_ORPHAN_WAKE=off` (wakes only; the interrupted stamp stays).
+- Agent side: while a tool call is in flight, every trigger watchdog allows up to 30 min of
+  silence (`TOOL_STALL_MS` via `idleLimit` in stoa.js): hang watchdog (else 5 min idle / 10 min
+  first token), pending update restart (else 3 min). The stale sweep stays a backstop two sweep
+  ticks above the watchdog (32 min with a tool, else 20). No tool in flight → old bounds (newfin).
+- The 15-min server run timeout (`AGENT_RUN_TIMEOUT_MS`, absolute, not idle) only errors the
+  bubble; the agent keeps running. For a sub-agent it writes `result_meta={exit_reason:'timeout',
+  awaiting_agent:true}` (server-only key) and does not wake. The disconnect / reconnect / startup
+  cleanups treat such rows like `streaming` ones (`RUN_IN_FLIGHT_SQL`), so an agent that dies
+  instead of completing still wakes the parent ([sub-agent TERPUTUS]). A late `agent_complete` /
+  `agent_error` overwrites/clears the mark → one wake only. Deliberately no time-based sweep: the
+  agent watchdogs are idle-based (debug-log defers extend them), so a timer would wake the parent
+  for runs still legitimately working.
+- Known gap: a half-open agent socket (machine gone without FIN) is not detected by the server
+  (no server-side heartbeat), so its runs wait for the OS TCP timeout before the disconnect
+  cleanup fires. Pre-existing, applies to `streaming` runs too.
+- Tests: run-tests.js sets `AGENT_RUN_TIMEOUT_MS=15000` so the timeout path runs for real.
+
 ---
 
 ### 4. File Upload Size Limit

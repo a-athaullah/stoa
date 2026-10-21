@@ -1828,6 +1828,134 @@ async function runAsyncUnitTests() {
     } finally { stoa.activeTriggers.clear(); stoa.__resetDeps(); }
   });
 
+  await uta('agent pending restart — a tool in flight stretches the stall window to TOOL_STALL_MS (hard cap); text output ends it', async () => {
+    const stoa = require('./stoa.js');
+    const sent = [];
+    let restarts = 0, opts = null, finish = null;
+    const mockSession = {
+      _systemPromptHash: null, _harness: 'claude', flags: [], env: { STOA_ROOM_ID: '99', STOA_THREAD_ID: '' }, resumeId: null,
+      on: () => {}, removeListener: () => {}, shutdown: () => {}, cancelTask: () => false,
+      send: (o) => { opts = o; return new Promise(r => { finish = r; }); },
+    };
+    stoa.__setDeps({ send: (m) => sent.push(m), getSession: () => mockSession, doRestart: () => { restarts++; } });
+    const T = stoa.RESTART_STALL_MS, TOOL = 30 * 60e3;
+    let run = null;
+    try {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      run = stoa.processTrigger({ room_id: 99, message_id: 'tif-1', prompt: 'run the test suite', workdir: require('os').tmpdir() });
+      for (let i = 0; i < 100 && !opts; i++) await new Promise(r => setTimeout(r, 10));
+      assert.ok(opts, 'session.send reached');
+      const entry = stoa.activeTriggers.get('tif-1');
+      await stoa.handleAgentMessage({ type: 'restart' });
+      opts.onTool({ name: 'Bash', input: { command: 'node .claude/tools/run-tests.js' } });
+      assert.strictEqual(entry.toolInFlight, true);
+      const base = Date.now();
+      assert.strictEqual(stoa.forceRestartIfStalled(base + T + 60e3), false, 'a silent tool past 3 min is not a stall');
+      assert.strictEqual(restarts, 0);
+      assert.strictEqual(stoa.forceRestartIfStalled(base + TOOL + 1e3), true, 'hard cap: forced once the tool window is exceeded');
+      assert.strictEqual(restarts, 1);
+      opts.onToken('suite passed');
+      assert.strictEqual(entry.toolInFlight, false, 'text output means every tool result is in');
+      assert.strictEqual(stoa.forceRestartIfStalled(entry.lastActivity + T + 1e3), true, 'no tool in flight → the 3-min rule applies again');
+      assert.strictEqual(restarts, 2);
+    } finally {
+      finish?.({ content: 'suite passed', sessionId: null });
+      await run?.catch(() => {});
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      stoa.__resetDeps();
+    }
+  });
+
+  // Drives the real hangWatchdog: captures its 10s interval callback and moves Date.now.
+  async function runHangWatchdog(msgId, drive) {
+    const stoa = require('./stoa.js');
+    const cancelled = [];
+    let opts = null, finish = null, watchdog = null, skew = 0;
+    const mockSession = {
+      _systemPromptHash: null, _harness: 'claude', flags: [], env: { STOA_ROOM_ID: '99', STOA_THREAD_ID: '' }, resumeId: null,
+      on: () => {}, removeListener: () => {}, shutdown: () => {},
+      cancelTask: (id) => { cancelled.push(id); return true; },
+      send: (o) => { opts = o; return new Promise(r => { finish = r; }); },
+    };
+    stoa.__setDeps({ send: () => {}, getSession: () => mockSession, doRestart: () => {} });
+    const realSetInterval = global.setInterval, realNow = Date.now;
+    global.setInterval = (fn, ms, ...a) => { if (ms === 1e4 && !watchdog) watchdog = fn; return realSetInterval(fn, ms, ...a); };
+    Date.now = () => realNow() + skew;
+    let run = null;
+    try {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      run = stoa.processTrigger({ room_id: 99, message_id: msgId, prompt: 'run the long build', workdir: require('os').tmpdir() });
+      for (let i = 0; i < 100 && !opts; i++) await new Promise(r => setTimeout(r, 10));
+      global.setInterval = realSetInterval;
+      assert.ok(opts && watchdog, 'session.send reached with the hang watchdog armed');
+      await drive({ opts, cancelled, tick: (ms) => { skew += ms; watchdog(); } });
+    } finally {
+      global.setInterval = realSetInterval;
+      Date.now = realNow;
+      finish?.({ content: 'done', sessionId: null });
+      await run?.catch(() => {});
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      stoa.__resetDeps();
+    }
+  }
+
+  await uta('hang watchdog — a silent tool in flight is cut at 30 min, not at the 10-min first-token / 5-min idle bound', async () => {
+    await runHangWatchdog('hw-tool', async ({ opts, cancelled, tick }) => {
+      opts.onTool({ name: 'Bash', input: { command: 'node .claude/tools/run-tests.js' } });
+      tick(11 * 60e3);
+      assert.deepStrictEqual(cancelled, [], 'past the 10-min first-token bound: a running tool is not a hang');
+      tick(18 * 60e3);
+      assert.deepStrictEqual(cancelled, [], '29 min silent tool still alive');
+      tick(60e3 + 1e3);
+      assert.deepStrictEqual(cancelled, ['hw-tool'], 'hard cap: cut once 30 min pass without progress');
+    });
+  });
+
+  await uta('hang watchdog — without a tool in flight the 5-min idle bound still applies (newfin hang stays bounded)', async () => {
+    await runHangWatchdog('hw-idle', async ({ opts, cancelled, tick }) => {
+      opts.onTool({ name: 'Bash', input: { command: 'ls' } });
+      opts.onToken('listing done');
+      tick(5 * 60e3 - 1e3);
+      assert.deepStrictEqual(cancelled, []);
+      tick(2e3);
+      assert.deepStrictEqual(cancelled, ['hw-idle'], 'text after the tool ends the tool window: 5-min idle rule');
+    });
+  });
+
+  await uta('stale sweep — a tool in flight is swept only past the 30-min tool bound plus two sweep ticks; idle triggers keep the 20-min rule', async () => {
+    const stoa = require('./stoa.js');
+    const sent = [];
+    stoa.__setDeps({ send: (m) => sent.push(m) });
+    try {
+      stoa.activeTriggers.clear();
+      const now = Date.now();
+      stoa.activeTriggers.set('sw-tool', { room_id: 99, toolInFlight: true, startedAt: now - 40 * 60e3, lastActivity: now - 31 * 60e3 });
+      stoa.activeTriggers.set('sw-idle', { room_id: 99, startedAt: now - 40 * 60e3, lastActivity: now - 21 * 60e3 });
+      stoa.sweepStaleTriggers(now);
+      assert.strictEqual(stoa.activeTriggers.has('sw-tool'), true, 'silent tool at 31 min: the watchdog owns that cut, not the sweep');
+      assert.strictEqual(stoa.activeTriggers.has('sw-idle'), false, 'no tool: 20-min stale rule unchanged');
+      stoa.sweepStaleTriggers(now + 2 * 60e3);
+      assert.strictEqual(stoa.activeTriggers.has('sw-tool'), false, 'backstop: swept past 32 min');
+      assert.ok(sent.some(m => m.type === 'agent_complete' && m.message_id === 'sw-tool'));
+    } finally {
+      stoa.activeTriggers.clear();
+      stoa.__resetDeps();
+    }
+  });
+
+  await uta('build.js — agent bundle (live dist/stoa.js) is opt-in via --agent, honours STOA_AGENT_BUNDLE_DIR', async () => {
+    const pathM = require('path');
+    const { agentBundleTarget } = require('./build/build.js');
+    assert.strictEqual(agentBundleTarget([], {}, '/repo'), null, 'plain npm run build must not touch the bundle the live server serves');
+    assert.strictEqual(agentBundleTarget(['--minify'], { STOA_AGENT_BUNDLE_DIR: '/tmp/x' }, '/repo'), null, 'the env dir alone does not opt in');
+    assert.strictEqual(agentBundleTarget(['--agent'], {}, '/repo'), pathM.join('/repo', 'dist', 'stoa.js'));
+    assert.strictEqual(agentBundleTarget(['--agent'], { STOA_AGENT_BUNDLE_DIR: '/tmp/x' }, '/repo'), pathM.join('/tmp/x', 'stoa.js'));
+  });
+
   await uta('agent update check — writes only files matching the manifest hash, restarts only when something was written', async () => {
     const stoa = require('./stoa.js');
     const fsM = require('fs'), osM = require('os'), pathM = require('path'), cryptoM = require('crypto');
@@ -11254,6 +11382,307 @@ async function run() {
       for (const ag of [candA, candB]) { try { ag?.ws.close(); } catch {} }
       if (savedCustom === null) ccDb.prepare("DELETE FROM settings WHERE scope='global' AND key_name='custom_claude_models'").run();
       else ccDb.prepare("UPDATE settings SET value=? WHERE scope='global' AND key_name='custom_claude_models'").run(savedCustom);
+    });
+  }
+
+  // ── Self-healing: orphaned sub-agent runs wake their parent ────────────────
+  // Disconnect / reconnect / "agent updating" end a sub-agent run without an
+  // agent_complete. The parent must still be woken (once, when its agent is back),
+  // runs the agent reports as still active must not be orphaned, and a loop guard
+  // stops waking after 3 interruptions per (thread, sub-agent) per hour.
+  console.log('\n[Sub-agent orphan wake]');
+  {
+    const OW_NAME = '__test-orphan-wake';
+    const db = require('./db');
+    let ow = null, owRoomId = null, owSa = null;
+    const hdr = () => ({ 'x-agent-id': String(ow.actorId), 'x-agent-secret': ow.secret });
+    const connect = async (extra = {}) => {
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`);
+      const ready = waitForWsMessage(ws, m => m.type === 'agent_ready', 5000);
+      ws.send(JSON.stringify({ type: 'agent_connect', actor_id: ow.actorId, secret: ow.secret, ...extra }));
+      await ready;
+      return ws;
+    };
+    // Listener armed before agent_connect: the wake drain runs inside the handshake.
+    const connectExpectingParent = async (extra, ms = 5000) => {
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`);
+      const parent = waitForWsMessage(ws, m => m.type === 'agent_trigger' && !m.sub_agent, ms).then(m => m, () => null);
+      const ready = waitForWsMessage(ws, m => m.type === 'agent_ready', 5000);
+      ws.send(JSON.stringify({ type: 'agent_connect', actor_id: ow.actorId, secret: ow.secret, ...extra }));
+      await ready;
+      return { ws, parent };
+    };
+    const closeWs = async (ws) => {
+      if (ws.readyState === 3) return;
+      const c = new Promise(r => ws.once('close', r)); ws.close(); await c;
+      await new Promise(r => setTimeout(r, 150));
+    };
+    const spawnSub = async (task) => {
+      const t = waitForWsMessage(ow.ws, m => m.type === 'agent_trigger' && m.sub_agent?.id === owSa.id, 5000);
+      const r = await req('POST', `/api/rooms/${owRoomId}/sub-agent-trigger`, { sub_agent_id: owSa.id, task }, hdr());
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      return t;
+    };
+    const complete = (ws, m, content, resultMeta) => ws.send(JSON.stringify({
+      type: 'agent_complete', room_id: owRoomId, message_id: m.message_id, content, ...(resultMeta ? { result_meta: resultMeta } : {}),
+    }));
+    const wakesFor = (id) => db.prepare('SELECT COUNT(*) AS c FROM pending_wakes WHERE sub_agent_message_id=?').get(id).c;
+    const row = (id) => db.prepare('SELECT state, content, result_meta FROM messages WHERE id=?').get(id);
+    const noParentTrigger = (ws, ms = 1200) => waitForWsMessage(ws, m => m.type === 'agent_trigger' && !m.sub_agent, ms).then(() => false, () => true);
+
+    await test('Orphan wake — setup: online agent + room + linked sub-agent', async () => {
+      const agent = await createOnlineTestAgent(OW_NAME, '/tmp/stoa-test-orphan-wake');
+      if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+      ow = agent;
+      const r = await req('POST', '/api/rooms', { title: '__orphan-wake-room__', workdir_id: agent.workdirId, participant_ids: [agent.actorId] });
+      assert.strictEqual(r.status, 200);
+      owRoomId = r.body.id;
+      testRoomIds.push(owRoomId);
+      const s = await req('POST', `/api/actors/${agent.actorId}/sub-agents`, { label: 'orphansub', tier: 'quick' });
+      assert.strictEqual(s.status, 201, JSON.stringify(s.body));
+      owSa = s.body;
+      const l = await req('POST', `/api/rooms/${owRoomId}/sub-agents`, { sub_agent_id: owSa.id });
+      assert.ok(l.status === 200 || l.status === 201, JSON.stringify(l.body));
+    });
+
+    await test('Orphan wake — disconnect mid-run queues a wake; reconnect wakes parent with interrupted prompt', async () => {
+      if (!owSa) { console.log('    (skipped)'); return; }
+      const m = await spawnSub('a long running task');
+      await closeWs(ow.ws);
+      const r = row(m.message_id);
+      assert.strictEqual(r.state, 'error');
+      assert.strictEqual(JSON.parse(r.result_meta).exit_reason, 'interrupted');
+      assert.strictEqual(wakesFor(m.message_id), 1, 'disconnect must queue a durable wake for the parent');
+      const { ws, parent } = await connectExpectingParent({ active_message_ids: [] });
+      ow.ws = ws;
+      const w = await parent;
+      assert.ok(w, 'parent must be woken once its agent is back');
+      assert.ok(w.prompt.includes('[sub-agent TERPUTUS]') && w.prompt.includes('git status'), 'interrupted wake uses the interruption prompt');
+      assert.ok(!w.prompt.includes('[sub-agent GAGAL]'), 'an interruption is not reported as a logic failure');
+      complete(ws, w, 'noted');
+      assert.ok(await noParentTrigger(ws), 'exactly one wake for one interruption');
+      assert.strictEqual(wakesFor(m.message_id), 0, 'wake consumed after the parent turn');
+    });
+
+    await test('Orphan wake — run still active on reconnect is revived, not orphaned; completion wakes once', async () => {
+      if (!owSa) { console.log('    (skipped)'); return; }
+      const m = await spawnSub('survives a flicker');
+      await closeWs(ow.ws);
+      assert.strictEqual(wakesFor(m.message_id), 1);
+      const ws = await connect({ active_message_ids: [m.message_id] });
+      ow.ws = ws;
+      const r = row(m.message_id);
+      assert.strictEqual(r.state, 'streaming', 'a run the agent still holds goes back to streaming');
+      assert.strictEqual(r.result_meta, null);
+      assert.strictEqual(r.content, '', 'interrupted placeholder removed');
+      assert.strictEqual(wakesFor(m.message_id), 0, 'queued interrupted wake dropped');
+      assert.ok(await noParentTrigger(ws), 'no wake while the run is still going');
+      const wake = waitForWsMessage(ws, mm => mm.type === 'agent_trigger' && !mm.sub_agent, 5000);
+      complete(ws, m, 'real result after flicker');
+      const w = await wake;
+      assert.ok(w.prompt.includes('real result after flicker') && !w.prompt.includes('TERPUTUS'));
+      complete(ws, w, 'ok');
+      assert.ok(await noParentTrigger(ws), 'exactly one wake');
+    });
+
+    await test('Orphan wake — reconnect without active list (older client) orphans the run, completion replaces the wake', async () => {
+      if (!owSa) { console.log('    (skipped)'); return; }
+      const m = await spawnSub('old client run');
+      // Outdated agent: wake must wait (delivering it would only hit "agent updating").
+      await closeWs(ow.ws);
+      const old = await connect({ client_version: '0.0.1' });
+      assert.strictEqual(row(m.message_id).state, 'error');
+      assert.strictEqual(wakesFor(m.message_id), 1, 'wake held while the agent is outdated');
+      assert.ok(await noParentTrigger(old), 'no wake to an outdated agent');
+      // The old process finishes the run before it restarts: one wake, with the real result.
+      const wake = waitForWsMessage(old, mm => mm.type === 'agent_trigger' && !mm.sub_agent, 1500).then(x => x, () => null);
+      complete(old, m, 'finished on old client');
+      await new Promise(r => setTimeout(r, 200));
+      assert.strictEqual(row(m.message_id).state, 'complete');
+      assert.strictEqual(await wake, null, 'still outdated → completion wake waits too');
+      assert.strictEqual(wakesFor(m.message_id), 1, 'interrupted wake replaced by the completion wake, not duplicated');
+      await closeWs(old);
+      const { ws, parent } = await connectExpectingParent({});
+      ow.ws = ws;
+      const w = await parent;
+      assert.ok(w && w.prompt.includes('finished on old client') && !w.prompt.includes('TERPUTUS'));
+      complete(ws, w, 'ok');
+      assert.ok(await noParentTrigger(ws), 'exactly one wake');
+    });
+
+    await test('Orphan wake — superseded connection closing does not orphan runs of the live one', async () => {
+      if (!owSa) { console.log('    (skipped)'); return; }
+      const m = await spawnSub('superseded');
+      const first = ow.ws;
+      const firstClosed = new Promise(r => first.once('close', r));
+      const second = await connect({ active_message_ids: [m.message_id] });
+      await firstClosed;
+      await new Promise(r => setTimeout(r, 200));
+      ow.ws = second;
+      assert.strictEqual(row(m.message_id).state, 'streaming', 'old socket close must not mark the live run error');
+      assert.strictEqual(wakesFor(m.message_id), 0);
+      const a = (await req('GET', '/api/actors')).body.find(x => x.id === ow.actorId);
+      assert.strictEqual(a.online, true, 'agent stays online after its superseded socket closes');
+      const wake = waitForWsMessage(second, mm => mm.type === 'agent_trigger' && !mm.sub_agent, 5000);
+      complete(second, m, 'done');
+      complete(second, await wake, 'ok');
+    });
+
+    await test('Orphan wake — agent_error on a sub-agent run wakes the parent with the failure', async () => {
+      if (!owSa) { console.log('    (skipped)'); return; }
+      const m = await spawnSub('will crash');
+      const wake = waitForWsMessage(ow.ws, mm => mm.type === 'agent_trigger' && !mm.sub_agent, 5000);
+      ow.ws.send(JSON.stringify({ type: 'agent_error', room_id: owRoomId, message_id: m.message_id, error: 'session crashed' }));
+      const w = await wake;
+      assert.ok(w.prompt.includes('[sub-agent GAGAL]'));
+      complete(ow.ws, w, 'ok');
+    });
+
+    await test('Orphan wake — agent_error for another agent\'s sub-agent run does not wake that parent', async () => {
+      if (!owSa) { console.log('    (skipped)'); return; }
+      const m = await spawnSub('a run that is not yours');
+      const other = await createOnlineTestAgent('__test-orphan-other', '/tmp/stoa-test-orphan-other');
+      try {
+        other.ws.send(JSON.stringify({ type: 'agent_error', room_id: owRoomId, message_id: m.message_id, error: 'forged' }));
+        await new Promise(r => setTimeout(r, 300));
+        assert.strictEqual(wakesFor(m.message_id), 0, 'a foreign agent cannot queue a wake');
+      } finally { await closeWs(other.ws); }
+      const wake = waitForWsMessage(ow.ws, mm => mm.type === 'agent_trigger' && !mm.sub_agent, 5000);
+      complete(ow.ws, m, 'done');
+      complete(ow.ws, await wake, 'ok');
+    });
+
+    await test('Orphan wake — sub-agent refused with "agent updating" wakes the parent after the update', async () => {
+      if (!owSa) { console.log('    (skipped)'); return; }
+      await closeWs(ow.ws);
+      const old = await connect({ client_version: '0.0.1' });
+      const restart = waitForWsMessage(old, mm => mm.type === 'restart', 5000);
+      const r = await req('POST', `/api/rooms/${owRoomId}/sub-agent-trigger`, { sub_agent_id: owSa.id, task: 'during update' }, hdr());
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      await restart;
+      await new Promise(res => setTimeout(res, 200));
+      const m = db.prepare("SELECT id, state, content, result_meta FROM messages WHERE room_id=? AND sub_agent_id=? ORDER BY id DESC LIMIT 1").get(owRoomId, owSa.id);
+      assert.strictEqual(m.content, '(agent updating — please retry)');
+      assert.strictEqual(JSON.parse(m.result_meta).exit_reason, 'interrupted');
+      assert.strictEqual(wakesFor(m.id), 1);
+      await closeWs(old);
+      const { ws, parent } = await connectExpectingParent({ active_message_ids: [] });
+      ow.ws = ws;
+      const w = await parent;
+      assert.ok(w && w.prompt.includes('[sub-agent TERPUTUS]'));
+      complete(ws, w, 'ok');
+    });
+
+    // Server run timeout (AGENT_RUN_TIMEOUT_MS, shortened by run-tests.js) errors a sub-agent
+    // bubble while the agent may still be running it. Four runs share one timeout wait:
+    // A is lost on reconnect, B completes late, C errors late, D survives a reconnect then dies.
+    let aw = null;
+    const awSpawn = async (task) => {
+      const t = waitForWsMessage(ow.ws, m => m.type === 'agent_trigger' && m.sub_agent?.id === aw.sa.id && m.prompt.includes(task), 5000);
+      const r = await req('POST', `/api/rooms/${aw.roomId}/sub-agent-trigger`, { sub_agent_id: aw.sa.id, task }, hdr());
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      return (await t).message_id;
+    };
+    const awComplete = (ws, id, content) => ws.send(JSON.stringify({ type: 'agent_complete', room_id: aw.roomId, message_id: id, content }));
+
+    await test('Orphan wake — server run timeout on a sub-agent marks it awaiting its agent, without waking yet', async () => {
+      if (!owSa) { console.log('    (skipped)'); return; }
+      const r = await req('POST', '/api/rooms', { title: '__orphan-wake-timeout-room__', workdir_id: ow.workdirId, participant_ids: [ow.actorId] });
+      assert.strictEqual(r.status, 200);
+      testRoomIds.push(r.body.id);
+      db.prepare('UPDATE rooms SET max_sub_agents=10, max_spawns_per_hour=50 WHERE id=?').run(r.body.id);
+      const s = await req('POST', `/api/actors/${ow.actorId}/sub-agents`, { label: 'awaitsub', tier: 'quick' });
+      assert.strictEqual(s.status, 201, JSON.stringify(s.body));
+      const l = await req('POST', `/api/rooms/${r.body.id}/sub-agents`, { sub_agent_id: s.body.id });
+      assert.ok(l.status === 200 || l.status === 201, JSON.stringify(l.body));
+      aw = { roomId: r.body.id, sa: s.body };
+      aw.A = await awSpawn('run A lost by the agent');
+      aw.B = await awSpawn('run B completes after the timeout');
+      aw.C = await awSpawn('run C errors after the timeout');
+      aw.D = await awSpawn('run D survives a reconnect');
+      const ids = [aw.A, aw.B, aw.C, aw.D];
+      for (let i = 0; i < 300 && ids.some(id => row(id).state !== 'error'); i++) await new Promise(res => setTimeout(res, 100));
+      for (const id of ids) {
+        const x = row(id);
+        assert.strictEqual(x.state, 'error', 'server run timeout fired');
+        assert.ok(x.content.startsWith('(timeout'), x.content);
+        assert.deepStrictEqual(JSON.parse(x.result_meta), { exit_reason: 'timeout', awaiting_agent: true });
+        assert.strictEqual(wakesFor(id), 0, 'no wake at the timeout: the agent may still complete it');
+      }
+    });
+
+    await test('Orphan wake — timed-out run completed later wakes the parent once with the real result', async () => {
+      if (!aw) { console.log('    (skipped)'); return; }
+      const wake = waitForWsMessage(ow.ws, mm => mm.type === 'agent_trigger' && !mm.sub_agent, 5000);
+      awComplete(ow.ws, aw.B, 'real result of B');
+      const w = await wake;
+      assert.ok(w.prompt.includes('real result of B') && !w.prompt.includes('TERPUTUS'));
+      assert.strictEqual(row(aw.B).result_meta, null, 'completion clears the awaiting mark');
+      complete(ow.ws, w, 'ok');
+      assert.ok(await noParentTrigger(ow.ws, 600));
+    });
+
+    await test('Orphan wake — timed-out run that errors later wakes the parent once with the failure', async () => {
+      if (!aw) { console.log('    (skipped)'); return; }
+      const wake = waitForWsMessage(ow.ws, mm => mm.type === 'agent_trigger' && !mm.sub_agent, 5000);
+      ow.ws.send(JSON.stringify({ type: 'agent_error', room_id: aw.roomId, message_id: aw.C, error: 'crashed late' }));
+      const w = await wake;
+      assert.ok(w.prompt.includes('[sub-agent GAGAL]'));
+      assert.strictEqual(row(aw.C).result_meta, null, 'agent_error clears the awaiting mark');
+      complete(ow.ws, w, 'ok');
+      assert.ok(await noParentTrigger(ow.ws, 600));
+    });
+
+    await test('Orphan wake — reconnect: a timed-out run the agent no longer holds wakes the parent (TERPUTUS); a held one does not', async () => {
+      if (!aw) { console.log('    (skipped)'); return; }
+      const first = ow.ws;
+      const firstClosed = new Promise(r => first.once('close', r));
+      const { ws, parent } = await connectExpectingParent({ active_message_ids: [aw.D] });
+      await firstClosed;
+      ow.ws = ws;
+      const w = await parent;
+      assert.ok(w && w.prompt.includes('[sub-agent TERPUTUS]') && w.prompt.includes('awaitsub'), 'lost run A wakes the parent as interrupted');
+      assert.strictEqual(JSON.parse(row(aw.A).result_meta).exit_reason, 'interrupted');
+      assert.deepStrictEqual(JSON.parse(row(aw.D).result_meta), { exit_reason: 'timeout', awaiting_agent: true }, 'run D is still held by the agent');
+      assert.strictEqual(wakesFor(aw.D), 0);
+      complete(ws, w, 'ok');
+      assert.ok(await noParentTrigger(ws, 600), 'one wake: B and C already reported, D still running');
+    });
+
+    await test('Orphan wake — agent dies after a server run timeout: disconnect wakes the parent once, finished runs stay quiet', async () => {
+      if (!aw) { console.log('    (skipped)'); return; }
+      await closeWs(ow.ws);
+      assert.strictEqual(JSON.parse(row(aw.D).result_meta).exit_reason, 'interrupted');
+      assert.strictEqual(wakesFor(aw.D), 1, 'the timed-out run the dead agent held gets a durable wake');
+      assert.strictEqual(wakesFor(aw.B) + wakesFor(aw.C), 0, 'runs that already reported are not woken again');
+      const { ws, parent } = await connectExpectingParent({ active_message_ids: [] });
+      ow.ws = ws;
+      const w = await parent;
+      assert.ok(w && w.prompt.includes('[sub-agent TERPUTUS]'));
+      complete(ws, w, 'ok');
+      assert.ok(await noParentTrigger(ws, 600), 'exactly one wake after the death');
+    });
+
+    await test('Orphan wake — loop guard: 4th interruption within an hour posts a system event instead of waking', async () => {
+      if (!owSa) { console.log('    (skipped)'); return; }
+      const ptcp = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(owRoomId, ow.actorId);
+      // Two interruptions already happened in this room/sub-agent (tests above); top up to 3.
+      const seed = () => db.prepare(`INSERT INTO messages (room_id, participant_id, content, state, sub_agent_id, sub_agent_label, result_meta, completed_at)
+        VALUES (?,?,'(interrupted — agent disconnected)','error',?,?,?,datetime('now'))`).run(owRoomId, ptcp.id, owSa.id, owSa.label, JSON.stringify({ exit_reason: 'interrupted' }));
+      while (db.prepare(`SELECT COUNT(*) AS c FROM messages WHERE room_id=? AND thread_id IS NULL AND sub_agent_id=?
+        AND json_extract(result_meta,'$.exit_reason')='interrupted' AND completed_at >= datetime('now','-1 hour')`).get(owRoomId, owSa.id).c < 3) seed();
+      const m = await spawnSub('the fourth interruption');
+      await closeWs(ow.ws);
+      assert.strictEqual(wakesFor(m.message_id), 0, 'over the limit → no wake');
+      const ev = db.prepare("SELECT content FROM messages WHERE room_id=? AND state='system_event' AND content LIKE '%terputus berulang%' ORDER BY id DESC LIMIT 1").get(owRoomId);
+      assert.ok(ev && ev.content.includes('orphansub') && ev.content.includes('butuh manusia'));
+      const { ws, parent } = await connectExpectingParent({ active_message_ids: [] }, 1200);
+      ow.ws = ws;
+      assert.strictEqual(await parent, null, 'parent not woken past the loop guard');
+    });
+
+    await test('Orphan wake — teardown', async () => {
+      if (ow?.ws) await closeWs(ow.ws);
     });
   }
 

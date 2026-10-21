@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.389";
+var CLIENT_VERSION = "0.4.391";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -394,7 +394,15 @@ function preConnectUpdate(opts = {}, capMs = PRE_CONNECT_UPDATE_MS) {
 // outdated agent, so a trigger that hangs holds the old version forever (newfin: 10 days).
 // Progress = entry.lastActivity (tokens, state, tools, status, retries). Measured from when
 // the restart was armed at the earliest, so a long-silent trigger still gets the full window.
+// A tool call (test suite, build) is silent until it returns, so while one is in flight the
+// window stretches to TOOL_STALL_MS (see idleLimit) — a hard cap, the newfin hang stays bounded.
 var RESTART_STALL_MS = 3 * 60e3;
+// One idle bound for every trigger watchdog (hang, stale sweep, pending restart): a silent
+// tool in flight may run up to TOOL_STALL_MS before any of them treats the trigger as hung.
+var TOOL_STALL_MS = 30 * 60e3;
+function idleLimit(entry, baseMs) {
+  return entry?.toolInFlight ? Math.max(baseMs, TOOL_STALL_MS) : baseMs;
+}
 var pendingRestartSince = 0;
 function armPendingRestart(reason) {
   if (pendingRestart) return;
@@ -405,8 +413,12 @@ function armPendingRestart(reason) {
 function forceRestartIfStalled(now) {
   if (!pendingRestart) return false;
   let lastProgress = pendingRestartSince;
-  for (const entry of activeTriggers.values()) lastProgress = Math.max(lastProgress, entry.lastActivity || entry.startedAt || 0);
-  if (now - lastProgress < RESTART_STALL_MS) return false;
+  let toolInFlight = false;
+  for (const entry of activeTriggers.values()) {
+    lastProgress = Math.max(lastProgress, entry.lastActivity || entry.startedAt || 0);
+    if (entry.toolInFlight) toolInFlight = true;
+  }
+  if (now - lastProgress < idleLimit({ toolInFlight }, RESTART_STALL_MS)) return false;
   console.warn(`[stoa:update] no trigger progress for ${Math.round((now - lastProgress) / 1e3)}s \u2014 forcing restart (${activeTriggers.size} active, ${triggerQueue.length} queued)`);
   sendThenRestart({ type: "restart_status", state: "restarting", reason: "update_stalled", active: activeTriggers.size, queued: triggerQueue.length });
   return true;
@@ -858,7 +870,9 @@ function connect() {
   ws.on("open", () => {
     if (ACTOR_TYPE === "ai") {
       getSession(process.env.STOA_WORK_DIR || os.homedir(), "default");
-      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, harnesses_available: [], supervisor: SUPERVISOR, boot_id: BOOT_ID }));
+      // active_message_ids: runs survive a reconnect, so the server must not orphan them.
+      const active_message_ids = [...activeTriggers.keys(), ...triggerQueue.map((t) => t.message_id)];
+      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, harnesses_available: [], supervisor: SUPERVISOR, boot_id: BOOT_ID, active_message_ids }));
       console.log(`[stoa] Agent #${ACTOR_ID} v${CLIENT_VERSION} connected to ${STOA_URL} (max_concurrent=${MAX_CONCURRENT})`);
       detectHarnessesAsync().then((result) => {
         send({ type: "harnesses_update", ...result });
@@ -1618,7 +1632,7 @@ ${allNotes}`;
     const MAX_DEBUG_DEFERS = 3;
     let debugDeferCount = 0;
     hangWatchdog = setInterval(() => {
-      const timeout = fullContent ? TRIGGER_TIMEOUT : FIRST_TOKEN_TIMEOUT;
+      const timeout = idleLimit(entry, fullContent ? TRIGGER_TIMEOUT : FIRST_TOKEN_TIMEOUT);
       if (Date.now() - lastActivity > timeout) {
         if (session.debugLogPath && debugDeferCount < MAX_DEBUG_DEFERS) {
           try {
@@ -1647,6 +1661,7 @@ ${allNotes}`;
       taskId: message_id,
       onToken: (token) => {
         updateActivity();
+        entry.toolInFlight = false;
         fullContent += token;
         send({ type: "agent_token", room_id, message_id, token });
         if (_toolStatusTimer) _stopToolTimer2();
@@ -1656,8 +1671,11 @@ ${allNotes}`;
         send({ type: "agent_state", room_id, message_id, state });
         if (_toolStatusTimer) _stopToolTimer2();
       },
+      // The session layer surfaces tool_use but not tool_result, so a tool counts as in
+      // flight until the model streams text again (it only does once every result is in).
       onTool: (tool) => {
         updateActivity();
+        entry.toolInFlight = true;
         send({ type: "agent_tool", room_id, message_id, tool });
         _startToolStatus2(_toolVerb_for2(tool.name, tool.input));
       }
@@ -2071,15 +2089,21 @@ function drainQueue() {
 // worst case ≈ FIRST_TOKEN_TIMEOUT (10m) + one watchdog interval (10s) ≈ 10m10s
 // (defer resets lastActivity, so defers do NOT extend idle from sweep's perspective).
 // Default 20m gives ~10m buffer. Clamped to ≥ FIRST_TOKEN_TIMEOUT + 2×sweep_interval.
+// With a tool in flight the watchdog tolerates TOOL_STALL_MS, so staleLimit keeps the
+// same two-sweep margin above that — the sweep stays a backstop, never the first cut.
+var STALE_SWEEP_INTERVAL_MS = 60e3;
 var STALE_TRIGGER_MS = (() => {
-  const MIN_STALE = FIRST_TOKEN_TIMEOUT + 2 * 60000;
+  const MIN_STALE = FIRST_TOKEN_TIMEOUT + 2 * STALE_SWEEP_INTERVAL_MS;
   const raw = parseInt(process.env.STALE_TRIGGER_MS || String(20 * 60 * 1000));
   return Math.max(raw, MIN_STALE);
 })();
+function staleLimit(entry) {
+  return Math.max(STALE_TRIGGER_MS, idleLimit(entry, FIRST_TOKEN_TIMEOUT) + 2 * STALE_SWEEP_INTERVAL_MS);
+}
 function sweepStaleTriggers(now) {
   let forceCleaned = false;
   for (const [msgId, entry] of activeTriggers) {
-    if (now - (entry.lastActivity || entry.startedAt || now) > STALE_TRIGGER_MS) {
+    if (now - (entry.lastActivity || entry.startedAt || now) > staleLimit(entry)) {
       console.warn(`[stoa] stale trigger swept: msg=${msgId} idle=${Math.round((now - (entry.lastActivity || entry.startedAt)) / 1000)}s`);
       entry.swept = true;
       entry.abortReason = 'stale';
@@ -2434,7 +2458,7 @@ if (ACTOR_TYPE === "ai") {
   preConnectUpdate().then(() => {
     connect();
     updateChecker = setInterval(checkForUpdates, UPDATE_INTERVAL);
-    setInterval(() => sweepStaleTriggers(Date.now()), 60000);
+    setInterval(() => sweepStaleTriggers(Date.now()), STALE_SWEEP_INTERVAL_MS);
   });
 } else {
   connect();
@@ -2463,4 +2487,4 @@ function __resetDeps() {
   pendingRestart = false;
   pendingRestartSince = 0;
 }
-module.exports = { handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, __setDeps, __resetDeps, extractAndUploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES };
+module.exports = { handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, TOOL_STALL_MS, forceRestartIfStalled, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, __setDeps, __resetDeps, extractAndUploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES };
