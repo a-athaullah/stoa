@@ -1828,7 +1828,7 @@ async function runAsyncUnitTests() {
     } finally { stoa.activeTriggers.clear(); stoa.__resetDeps(); }
   });
 
-  await uta('agent pending restart — a tool in flight stretches the stall window to RESTART_STALL_TOOL_MS (hard cap); text output ends it', async () => {
+  await uta('agent pending restart — a tool in flight stretches the stall window to TOOL_STALL_MS (hard cap); text output ends it', async () => {
     const stoa = require('./stoa.js');
     const sent = [];
     let restarts = 0, opts = null, finish = null;
@@ -1864,6 +1864,85 @@ async function runAsyncUnitTests() {
       await run?.catch(() => {});
       stoa.activeTriggers.clear();
       stoa.triggerQueue.length = 0;
+      stoa.__resetDeps();
+    }
+  });
+
+  // Drives the real hangWatchdog: captures its 10s interval callback and moves Date.now.
+  async function runHangWatchdog(msgId, drive) {
+    const stoa = require('./stoa.js');
+    const cancelled = [];
+    let opts = null, finish = null, watchdog = null, skew = 0;
+    const mockSession = {
+      _systemPromptHash: null, _harness: 'claude', flags: [], env: { STOA_ROOM_ID: '99', STOA_THREAD_ID: '' }, resumeId: null,
+      on: () => {}, removeListener: () => {}, shutdown: () => {},
+      cancelTask: (id) => { cancelled.push(id); return true; },
+      send: (o) => { opts = o; return new Promise(r => { finish = r; }); },
+    };
+    stoa.__setDeps({ send: () => {}, getSession: () => mockSession, doRestart: () => {} });
+    const realSetInterval = global.setInterval, realNow = Date.now;
+    global.setInterval = (fn, ms, ...a) => { if (ms === 1e4 && !watchdog) watchdog = fn; return realSetInterval(fn, ms, ...a); };
+    Date.now = () => realNow() + skew;
+    let run = null;
+    try {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      run = stoa.processTrigger({ room_id: 99, message_id: msgId, prompt: 'run the long build', workdir: require('os').tmpdir() });
+      for (let i = 0; i < 100 && !opts; i++) await new Promise(r => setTimeout(r, 10));
+      global.setInterval = realSetInterval;
+      assert.ok(opts && watchdog, 'session.send reached with the hang watchdog armed');
+      await drive({ opts, cancelled, tick: (ms) => { skew += ms; watchdog(); } });
+    } finally {
+      global.setInterval = realSetInterval;
+      Date.now = realNow;
+      finish?.({ content: 'done', sessionId: null });
+      await run?.catch(() => {});
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      stoa.__resetDeps();
+    }
+  }
+
+  await uta('hang watchdog — a silent tool in flight is cut at 30 min, not at the 10-min first-token / 5-min idle bound', async () => {
+    await runHangWatchdog('hw-tool', async ({ opts, cancelled, tick }) => {
+      opts.onTool({ name: 'Bash', input: { command: 'node .claude/tools/run-tests.js' } });
+      tick(11 * 60e3);
+      assert.deepStrictEqual(cancelled, [], 'past the 10-min first-token bound: a running tool is not a hang');
+      tick(18 * 60e3);
+      assert.deepStrictEqual(cancelled, [], '29 min silent tool still alive');
+      tick(60e3 + 1e3);
+      assert.deepStrictEqual(cancelled, ['hw-tool'], 'hard cap: cut once 30 min pass without progress');
+    });
+  });
+
+  await uta('hang watchdog — without a tool in flight the 5-min idle bound still applies (newfin hang stays bounded)', async () => {
+    await runHangWatchdog('hw-idle', async ({ opts, cancelled, tick }) => {
+      opts.onTool({ name: 'Bash', input: { command: 'ls' } });
+      opts.onToken('listing done');
+      tick(5 * 60e3 - 1e3);
+      assert.deepStrictEqual(cancelled, []);
+      tick(2e3);
+      assert.deepStrictEqual(cancelled, ['hw-idle'], 'text after the tool ends the tool window: 5-min idle rule');
+    });
+  });
+
+  await uta('stale sweep — a tool in flight is swept only past the 30-min tool bound plus two sweep ticks; idle triggers keep the 20-min rule', async () => {
+    const stoa = require('./stoa.js');
+    const sent = [];
+    stoa.__setDeps({ send: (m) => sent.push(m) });
+    try {
+      stoa.activeTriggers.clear();
+      const now = Date.now();
+      stoa.activeTriggers.set('sw-tool', { room_id: 99, toolInFlight: true, startedAt: now - 40 * 60e3, lastActivity: now - 31 * 60e3 });
+      stoa.activeTriggers.set('sw-idle', { room_id: 99, startedAt: now - 40 * 60e3, lastActivity: now - 21 * 60e3 });
+      stoa.sweepStaleTriggers(now);
+      assert.strictEqual(stoa.activeTriggers.has('sw-tool'), true, 'silent tool at 31 min: the watchdog owns that cut, not the sweep');
+      assert.strictEqual(stoa.activeTriggers.has('sw-idle'), false, 'no tool: 20-min stale rule unchanged');
+      stoa.sweepStaleTriggers(now + 2 * 60e3);
+      assert.strictEqual(stoa.activeTriggers.has('sw-tool'), false, 'backstop: swept past 32 min');
+      assert.ok(sent.some(m => m.type === 'agent_complete' && m.message_id === 'sw-tool'));
+    } finally {
+      stoa.activeTriggers.clear();
       stoa.__resetDeps();
     }
   });
