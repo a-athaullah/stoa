@@ -1515,8 +1515,9 @@ const mcpCredentials = require('./lib/credentials');
 const { createUpstreamManager, decodeServerEnv } = require('./lib/mcp-upstreams');
 const { createMcpGateway } = require('./lib/mcp-gateway');
 const { createMcpApi } = require('./lib/mcp-api');
+const { connectionEnv } = require('./lib/mcp-catalog');
 const mcpUpstreams = createUpstreamManager({
-  readEnv: (row) => decodeServerEnv(row, mcpCredentials.decrypt),
+  readEnv: (row) => connectionEnv(row, decodeServerEnv(row, mcpCredentials.decrypt)),
   onStatus: (serverId, status, lastError) => broadcastGlobal({ type: 'mcp_status', server_id: serverId, status, last_error: lastError }),
 });
 const mcpGateway = createMcpGateway({ db, upstreams: mcpUpstreams, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt, version: require('./package.json').version });

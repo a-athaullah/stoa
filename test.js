@@ -1813,6 +1813,13 @@ function runUnitTests() {
     assert.match(validateEnv({ A: 'line1\nline2' }, 'stdio'), /single-line/);
     assert.match(validateEnv(['A'], 'stdio'), /object/);
   });
+  ut('MCP connectionEnv — preset header template maps stored fields; custom servers pass through', () => {
+    const { connectionEnv } = require('./lib/mcp-catalog');
+    assert.deepStrictEqual(connectionEnv({ preset: 'github' }, { GITHUB_PAT: 'ghp_x' }), { Authorization: 'Bearer ghp_x' });
+    assert.deepStrictEqual(connectionEnv({ preset: 'github' }, {}), {}, 'no half-filled header');
+    assert.deepStrictEqual(connectionEnv({ preset: null }, { 'X-Api-Key': 'k' }), { 'X-Api-Key': 'k' });
+    assert.deepStrictEqual(connectionEnv({ preset: 'context7' }, { A: '1' }), { A: '1' });
+  });
   ut('MCP decideAccess — deny anywhere wins, then allow, then default_access; disabled never', () => {
     const { decideAccess } = require('./lib/mcp-gateway');
     const on = { enabled: 1, default_access: 'none' };
@@ -13956,6 +13963,7 @@ async function run() {
   {
     const mDb = require('./db');
     const FIXTURE = path.join(__dirname, 'test', 'fixtures', 'mcp-dummy-server.js');
+    const { startMcpHttpFixture } = require('./test/fixtures/mcp-http-server');
     const SECRET = 'dummy-secret-' + crypto.randomBytes(8).toString('hex');
     let agA = null, agB = null, roomA = null, roomB = null, sub = null, server = null;
     let tokA = null, tokB = null, tokSub = null;
@@ -14041,8 +14049,9 @@ async function run() {
       const ids = r.body.presets.map(p => p.id);
       assert.ok(ids.includes('context7') && ids.includes('github'));
       const gh = r.body.presets.find(p => p.id === 'github');
-      assert.deepStrictEqual(gh.env_fields.map(f => [f.key, f.secret, f.required]), [['GITHUB_PERSONAL_ACCESS_TOKEN', true, true]]);
-      assert.ok(!('command' in gh) && !('args' in gh));
+      assert.strictEqual(gh.transport, 'http', 'GitHub preset is the remote server, no docker');
+      assert.deepStrictEqual(gh.env_fields.map(f => [f.key, f.secret, f.required]), [['GITHUB_PAT', true, true]]);
+      assert.ok(!('command' in gh) && !('args' in gh) && !('headers' in gh));
     });
 
     await test('MCP install — validation: binary outside allowlist, bad slug, reserved env, preset env', async () => {
@@ -14056,10 +14065,47 @@ async function run() {
       }
       assert.strictEqual((await req('POST', '/api/mcp/servers', { ...base, command: 'node', env: { PATH: '/tmp' } })).status, 400, 'PATH override');
       assert.strictEqual((await req('POST', '/api/mcp/servers', { preset: 'github', slug: 'mcpgh' })).status, 400, 'required preset field');
-      assert.strictEqual((await req('POST', '/api/mcp/servers', { preset: 'github', slug: 'mcpgh', env: { GITHUB_PERSONAL_ACCESS_TOKEN: 'x', OTHER: 'y' } })).status, 400, 'unknown preset field');
+      assert.strictEqual((await req('POST', '/api/mcp/servers', { preset: 'github', slug: 'mcpgh', env: { GITHUB_PAT: 'x', OTHER: 'y' } })).status, 400, 'unknown preset field');
+      assert.strictEqual((await req('POST', '/api/mcp/servers', { preset: 'github', slug: 'mcpgh', env: { GITHUB_PAT: 'x\r\nX-Evil: 1' } })).status, 400, 'header injection via field value');
       assert.strictEqual((await req('POST', '/api/mcp/servers', { preset: 'nope' })).status, 400);
       assert.strictEqual((await req('POST', '/api/mcp/servers', { ...base, transport: 'http', url: 'file:///etc/passwd' })).status, 400);
       assert.strictEqual(mDb.prepare("SELECT COUNT(*) n FROM mcp_servers WHERE slug IN ('mcpbad','mcpgh')").get().n, 0);
+    });
+
+    await test('MCP install — GitHub preset is remote http; PAT stored encrypted, sent only as a header', async () => {
+      const pat = 'github_pat_' + crypto.randomBytes(12).toString('hex');
+      const r = await req('POST', '/api/mcp/servers', { preset: 'github', slug: 'mcpgh', env: { GITHUB_PAT: pat } });
+      assert.strictEqual(r.status, 201, r.raw);
+      try {
+        const s = r.body.server;
+        assert.deepStrictEqual([s.transport, s.url, s.command], ['http', 'https://api.githubcopilot.com/mcp/', null]);
+        assert.deepStrictEqual(s.env_keys, [{ key: 'GITHUB_PAT', masked: '••••' + pat.slice(-4) }]);
+        assert.ok(!r.raw.includes(pat));
+        assert.ok(!mDb.prepare('SELECT env_enc FROM mcp_servers WHERE id=?').get(s.id).env_enc.includes(pat));
+        assert.strictEqual((await req('PATCH', `/api/mcp/servers/${s.id}`, { url: 'http://127.0.0.1:1/mcp' })).status, 400, 'preset url is fixed');
+      } finally {
+        await req('DELETE', `/api/mcp/servers/${r.body.server?.id}`);
+      }
+    });
+
+    await test('MCP http upstream — custom headers authenticate to a remote server, wrong header fails', async () => {
+      const fx = await startMcpHttpFixture({ mode: 'bearer', bearer: 'fixture-key-1234567890' });
+      let id = null;
+      try {
+        let r = await req('POST', '/api/mcp/servers', { slug: 'mcphttp', name: 'Http', transport: 'http', url: fx.mcpUrl, env: { Authorization: 'Bearer wrong-key' } });
+        assert.strictEqual(r.status, 201, r.raw);
+        id = r.body.server.id;
+        let t = await req('POST', `/api/mcp/servers/${id}/test`);
+        assert.strictEqual(t.body.ok, false, 'wrong header is rejected upstream');
+        r = await req('PATCH', `/api/mcp/servers/${id}`, { env: { Authorization: 'Bearer fixture-key-1234567890' } });
+        assert.strictEqual(r.status, 200, r.raw);
+        t = await req('POST', `/api/mcp/servers/${id}/test`);
+        assert.strictEqual(t.body.ok, true, JSON.stringify(t.body));
+        assert.deepStrictEqual(t.body.tools, ['whoami']);
+      } finally {
+        if (id) await req('DELETE', `/api/mcp/servers/${id}`);
+        await fx.close();
+      }
     });
 
     await test('MCP install — custom stdio server; env never returned, only masked tail', async () => {
