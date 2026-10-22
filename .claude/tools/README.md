@@ -11,6 +11,8 @@ Mechanical tools untuk task repetitif — **hemat token, langsung pakai**.
   ```
   Output: `{success, total, passed, failed, output}`
 
+  Runs against a throwaway copy of `db/stoa.db`. The copy is stamped with a random token (`stoa_test_marker`), and test.js refuses any `DB_PATH` without that token, so running `test.js` directly can't write to the live DB. From a git worktree, run it the same way: when the worktree has no `db/stoa.db` or `.env`, the runner copies them read-only from the main worktree. Never symlink the live DB or `.env` into a worktree; symlinking `node_modules` is fine.
+
 ### 🔍 Inspection
 - **`get-rooms.js`** — List all rooms + participants
   ```bash

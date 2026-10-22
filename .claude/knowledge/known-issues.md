@@ -202,6 +202,17 @@ These are the pre-existing colors; they were not degraded by the themes feature.
 
 **Mutation worktrees:** copy `.env` into the worktree, never symlink it.
 
+### 5. Test Rows Left in the Live DB from a Worktree (2026-10-22)
+**Symptom:** After a review run, the live DB had `__cascade-*` rooms, `__scope-wa__` connections and `__cascade_test_global__` settings.
+
+**Cause:** the reviewer's worktree had `db/stoa.db` symlinked to the live DB and ran `test.js` directly with `STOA_TEST=1`. Integration tests that INSERT through `require('./db')` wrote to the live file, while their cleanup went through the test server, so the rows stayed.
+
+**Fix (branch improvement/test-db-guard):**
+- `run-tests.js` writes a random token into its DB copy (table `stoa_test_marker`, which only exists in copies) and passes it as `STOA_TEST_DB_TOKEN`.
+- `test.js` refuses to run unless `DB_PATH` is set, does not resolve (through symlinks) to the repo's `db/stoa.db`, and holds the matching token. The repo-path check runs before the DB is opened. The token check opens the DB read-only. A path check alone can be bypassed by any new symlink or path; the token can't be satisfied by the live DB.
+- From a worktree without `db/stoa.db`, `run-tests.js` copies the DB and `.env` from the main worktree (`git rev-parse --git-common-dir`). Nobody needs to link the live DB anymore.
+- The copy also sets `mcp_servers.enabled=0`: a live server with `default_access='all'` showed up in the MCP policy tests' tool lists and made real upstream calls.
+
 ---
 
 ## Design Constraints

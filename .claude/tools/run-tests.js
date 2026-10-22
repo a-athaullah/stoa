@@ -5,7 +5,8 @@
  * Guarantees the LIVE server + REAL DB are never touched:
  *   1. Copies db/stoa.db -> a throwaway temp file (no WAL/SHM carried over)
  *   2. Neutralizes external side-effects in the COPY
- *      (automation_connections -> 'disconnected' so boot won't reconnect Slack)
+ *      (automation_connections -> 'disconnected' so boot won't reconnect Slack;
+ *      mcp_servers -> disabled so live upstreams stay out of the MCP tests)
  *      and sets a throwaway login password in the COPY (env STOA_TEST_EMAIL/STOA_TEST_PASSWORD)
  *   3. Boots a throwaway server on an isolated free port (never the live PORT),
  *      building its agent bundle into a temp dir (STOA_AGENT_BUNDLE_DIR) — the live
@@ -19,12 +20,17 @@
  *      against the live .env a parallel run once raced it and dropped PORT) and fails the run
  *      if the live .env changed anyway
  *
+ *   8. Writes a random token into the COPY (table stoa_test_marker) and passes it as
+ *      STOA_TEST_DB_TOKEN; test.js refuses to run against any DB without the matching token
+ *   9. From a git worktree with no db/stoa.db, copies the DB (and .env) from the main worktree,
+ *      read-only — never symlink the live DB into a worktree
+ *
  * Usage:        node .claude/tools/run-tests.js
  * Pin port:     TEST_PORT=4123 node .claude/tools/run-tests.js
  * Timeout (s):  TEST_TIMEOUT=120 node .claude/tools/run-tests.js   (default 90)
  */
 
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const fs   = require('fs');
 const os   = require('os');
 const net  = require('net');
@@ -36,9 +42,22 @@ const Database = require('better-sqlite3');
 const projectRoot = path.resolve(__dirname, '../..');
 const testFile    = path.join(projectRoot, 'test.js');
 const serverFile  = path.join(projectRoot, 'server.js');
-const liveDb      = path.join(projectRoot, 'db', 'stoa.db');
-const liveBundle  = path.join(projectRoot, 'dist', 'stoa.js');
-const liveEnv     = path.join(projectRoot, '.env');
+
+// A git worktree has no db/stoa.db or .env of its own: read them (read-only) from the main
+// worktree, so nobody needs to symlink the live DB into a worktree to run tests.
+function sourceRoot() {
+  if (fs.existsSync(path.join(projectRoot, 'db', 'stoa.db'))) return projectRoot;
+  try {
+    const common = execFileSync('git', ['rev-parse', '--git-common-dir'], { cwd: projectRoot, encoding: 'utf8' }).trim();
+    const main = path.dirname(path.resolve(projectRoot, common));
+    if (fs.existsSync(path.join(main, 'db', 'stoa.db'))) return main;
+  } catch {}
+  return projectRoot;
+}
+const dataRoot    = sourceRoot();
+const liveDb      = path.join(dataRoot, 'db', 'stoa.db');
+const liveBundle  = path.join(dataRoot, 'dist', 'stoa.js');
+const liveEnv     = path.join(dataRoot, '.env');
 const TIMEOUT_MS  = (parseInt(process.env.TEST_TIMEOUT, 10) || 180) * 1000;
 
 function getFreePort() {
@@ -81,14 +100,22 @@ function waitUp(port, tries = 50) {
   try { fs.copyFileSync(liveEnv, tmpEnv); } catch { fs.writeFileSync(tmpEnv, ''); }
 
   tmpArtifacts.forEach((f) => { try { fs.unlinkSync(f); } catch {} });
-  fs.copyFileSync(liveDb, tmpDb);
+  try { fs.copyFileSync(liveDb, tmpDb); } catch (e) {
+    console.log(JSON.stringify({ success: false, error: `no source DB to copy: ${e.message}` }, null, 2));
+    rmTmp();
+    process.exit(1);
+  }
   const testPassword = crypto.randomBytes(18).toString('base64url');
+  const dbToken = crypto.randomBytes(24).toString('hex');
   let testEmail = null;
 
   try {
     const c = new Database(tmpDb);
     c.pragma('journal_mode = WAL');
     try { c.prepare("UPDATE automation_connections SET status='disconnected'").run(); } catch {}
+    // Live MCP servers (e.g. a default_access='all' preset) would leak into the MCP policy tests'
+    // tool lists and make real upstream calls: the COPY starts with every server disabled.
+    try { c.prepare('UPDATE mcp_servers SET enabled=0').run(); } catch {}
     // The live password can change any time and must never live in test code: give the COPY a
     // throwaway password (same scrypt format as server.js hashPassword) and hand it to test.js via env.
     const user = c.prepare('SELECT id, email FROM auth_users ORDER BY id LIMIT 1').get();
@@ -98,6 +125,9 @@ function waitUp(port, tries = 50) {
       c.prepare('UPDATE auth_users SET password_hash=? WHERE id=?').run(`${salt}:${hash}`, user.id);
       testEmail = user.email;
     }
+    // test.js refuses any DB_PATH that does not carry this token (see its header guard).
+    c.exec('CREATE TABLE stoa_test_marker (token TEXT NOT NULL)');
+    c.prepare('INSERT INTO stoa_test_marker (token) VALUES (?)').run(dbToken);
     c.close();
   } catch (e) {
     console.log(JSON.stringify({ success: false, error: `failed to prep temp DB: ${e.message}` }, null, 2));
@@ -116,7 +146,7 @@ function waitUp(port, tries = 50) {
     AGENT_RUN_TIMEOUT_MS: '15000',
     // MCP approval wait (5 min in prod) short enough for the expiry test to reach it.
     MCP_APPROVAL_TIMEOUT_MS: '3000',
-    STOA_TEST_EMAIL: testEmail || '', STOA_TEST_PASSWORD: testPassword };
+    STOA_TEST_EMAIL: testEmail || '', STOA_TEST_PASSWORD: testPassword, STOA_TEST_DB_TOKEN: dbToken };
 
   const server = spawn(process.execPath, [serverFile], { cwd: projectRoot, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let serverLog = '';
