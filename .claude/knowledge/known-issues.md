@@ -85,7 +85,10 @@
   is dropped without replay. A successful replay runs `cascadeMentionsAfterWake` (the refused run
   never reached triggerAgentsSequential's cascade).
 - Give-up: `attempts >= 3` (each refused/failed replay +1) or older than 30 min → row deleted +
-  system_event "trigger <id> tidak terproses — butuh manusia" in the thread.
+  system_event "trigger <id> tidak terproses — butuh manusia" in the thread. Attempts are checked on
+  drain; age is also checked by `sweepExpiredRetriggers` every `RETRIGGER_SWEEP_MS` (60 s, 500 ms
+  under run-tests), so an agent that never reconnects still produces the notice. The sweep skips
+  chains being drained; `giveUpRetrigger` only reports when its DELETE removed the row (no double notice).
 - Room feed: the placeholder goes through `maybeBroadcastError` (`broadcast_reason='error'`, 10-min
   per-thread flood guard kept). The give-up system_event calls `setBroadcastReason` directly and
   always reaches the feed (threaded rows only): it is the terminal "a human must act" signal, at most

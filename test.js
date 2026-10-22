@@ -11934,9 +11934,9 @@ async function run() {
       // Expired row in a thread with no recent feed broadcast (flood guard is per thread).
       const hp = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human'").get(rt.roomId).id;
       const root = Number(db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,'old root retrigger-E2','complete')").run(rt.roomId, hp).lastInsertRowid);
+      const feed = waitForWsMessage(rt.hws, mm => mm.type === 'message_broadcast' && mm.message?.thread_id === root, 5000);
       db.prepare("INSERT INTO pending_retriggers (room_id, participant_id, trigger_message_id, thread_id, prompt, created_at) VALUES (?,?,?,?,'old root retrigger-E2', datetime('now','-31 minutes'))").run(rt.roomId, rt.owPart, root, root);
       await closeWs(ow.ws);
-      const feed = waitForWsMessage(rt.hws, mm => mm.type === 'message_broadcast' && mm.message?.thread_id === root, 5000);
       const feed1 = waitForWsMessage(rt.hws, mm => mm.type === 'message_broadcast' && mm.message?.thread_id === e1 && mm.message?.state === 'system_event', 5000);
       const { ws, triggers } = await rtConnectCollect();
       ow.ws = ws;
@@ -11955,6 +11955,34 @@ async function run() {
       assert.strictEqual((await feed).message.id, s2.id);
       await new Promise(res => setTimeout(res, 500));
       assert.strictEqual(triggers.length, 0, 'given-up triggers are not delivered');
+    });
+
+    await test('Retrigger — sweep gives up expired rows of an agent that never reconnects', async () => {
+      if (!rt) { console.log('    (skipped)'); return; }
+      await closeWs(rt.other.ws);
+      const otherName = db.prepare('SELECT name FROM actors WHERE id=?').get(rt.other.actorId).name;
+      const otherPart = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(rt.roomId, rt.other.actorId).id;
+      const hp = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human'").get(rt.roomId).id;
+      const mkRoot = (c) => Number(db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'complete')").run(rt.roomId, hp, c).lastInsertRowid);
+      const oldRoot = mkRoot('offline retrigger-S old');
+      const freshRoot = mkRoot('offline retrigger-S fresh');
+      const feed = waitForWsMessage(rt.hws, mm => mm.type === 'message_broadcast' && mm.message?.thread_id === oldRoot, 5000);
+      const ins = db.prepare('INSERT INTO pending_retriggers (room_id, participant_id, trigger_message_id, thread_id, prompt, created_at) VALUES (?,?,?,?,?,?)');
+      const oldId = Number(ins.run(rt.roomId, otherPart, oldRoot, oldRoot, 'offline retrigger-S old', db.prepare("SELECT datetime('now','-31 minutes') AS t").get().t).lastInsertRowid);
+      const freshId = Number(ins.run(rt.roomId, otherPart, freshRoot, freshRoot, 'offline retrigger-S fresh', db.prepare("SELECT datetime('now') AS t").get().t).lastInsertRowid);
+      const gone = await waitFor(() => !db.prepare('SELECT 1 FROM pending_retriggers WHERE id=?').get(oldId));
+      assert.ok(gone, 'expired row removed without any agent_connect');
+      const a = (await req('GET', '/api/actors')).body.find(x => x.id === rt.other.actorId);
+      assert.strictEqual(a.online, false, 'agent stayed offline the whole time');
+      const s = db.prepare("SELECT * FROM messages WHERE room_id=? AND thread_id=? AND state='system_event'").all(rt.roomId, oldRoot);
+      assert.strictEqual(s.length, 1, 'exactly one give-up notice');
+      assert.ok(s[0].content.startsWith(`trigger ${oldRoot} tidak terproses — butuh manusia (${otherName}: kedaluwarsa`), s[0].content);
+      assert.strictEqual(s[0].broadcast_reason, 'error');
+      assert.strictEqual((await feed).message.id, s[0].id, 'give-up reaches the room feed');
+      await new Promise(res => setTimeout(res, 1200));
+      assert.ok(db.prepare('SELECT 1 FROM pending_retriggers WHERE id=?').get(freshId), 'a row inside the age limit is left for the next connect');
+      assert.strictEqual(db.prepare("SELECT COUNT(*) AS c FROM messages WHERE room_id=? AND thread_id=? AND state='system_event'").get(rt.roomId, oldRoot).c, 1, 'later sweeps do not repeat the notice');
+      db.prepare('DELETE FROM pending_retriggers WHERE id=?').run(freshId);
     });
 
     await test('Retrigger — teardown', async () => {

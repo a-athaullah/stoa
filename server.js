@@ -602,7 +602,8 @@ function queueRetrigger(roomId, ai, prompt, replyTo, attachments, threadId) {
 }
 
 function giveUpRetrigger(row, agentName, why) {
-  db.prepare('DELETE FROM pending_retriggers WHERE id=?').run(row.id);
+  // The sweep and a drain chain can both reach a row; only the one that deletes it reports.
+  if (db.prepare('DELETE FROM pending_retriggers WHERE id=?').run(row.id).changes === 0) return;
   const ref = row.trigger_message_id ? `trigger ${row.trigger_message_id}` : `trigger (antrean #${row.id})`;
   const sysId = postWakeSystemEvent(row.room_id, row.participant_id, row.thread_id ?? null,
     `${ref} tidak terproses — butuh manusia (${agentName}: ${why})`);
@@ -654,6 +655,25 @@ async function deliverRetrigger(id) {
   if (left && left.attempts >= MAX_RETRIGGER_ATTEMPTS) giveUpRetrigger(left, ai.name, `gagal ${left.attempts}×`);
   return false;
 }
+
+// drainRetriggers only runs on agent_connect, so an agent that never comes back (failed update,
+// machine down) would hold its rows forever and nobody would hear. The sweep gives up expired
+// rows regardless of connection; a chain being drained right now owns its rows and is skipped.
+// RETRIGGER_SWEEP_MS is shortened by run-tests.js so the sweep runs for real in tests.
+const RETRIGGER_SWEEP_MS = parseInt(process.env.RETRIGGER_SWEEP_MS) || 60_000;
+function sweepExpiredRetriggers() {
+  const rows = db.prepare(`SELECT pr.*, a.name AS agent_name FROM pending_retriggers pr
+    JOIN room_participants rp ON rp.id=pr.participant_id JOIN actors a ON a.id=rp.actor_id
+    WHERE pr.created_at < datetime('now', ?) ORDER BY pr.id`).all(`-${RETRIGGER_MAX_AGE_MIN} minutes`);
+  for (const r of rows) {
+    if (retriggerChains.has(`${r.participant_id}:${r.thread_id ?? ''}`)) continue;
+    try { giveUpRetrigger(r, r.agent_name, `kedaluwarsa > ${RETRIGGER_MAX_AGE_MIN} menit`); }
+    catch (e) { console.error(`[retrigger] sweep give-up #${r.id} failed:`, e.message); }
+  }
+}
+setInterval(() => {
+  try { sweepExpiredRetriggers(); } catch (e) { console.error('[retrigger] sweep error:', e.message); }
+}, RETRIGGER_SWEEP_MS).unref();
 
 function drainRetriggers(actorId) {
   const rows = db.prepare(`SELECT pr.id, pr.participant_id, pr.thread_id FROM pending_retriggers pr
