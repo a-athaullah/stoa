@@ -989,8 +989,8 @@ An agent can have up to 20 approval requests pending at the same time. Approval 
 
 When you add, remove, or reconfigure an MCP server:
 
-- **Claude** agents receive a `tools/list_changed` notification and pick up the updated tool list at the **next turn** — no restart needed.
-- **Codex** agents spawn fresh per turn, so changes take effect at the **next session** (i.e., the next message).
+- **Claude Code** sessions persist across turns; the tool list is established when the session starts. Changes take effect the **next time the session starts** — triggered by a model switch, env change, system prompt change, or any other condition that causes a session restart.
+- **Codex** spawns a fresh process per turn (each turn is a new MCP connection), so changes take effect at the **next turn** (next message).
 
 ### Credentials and Security
 

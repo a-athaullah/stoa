@@ -202,7 +202,7 @@ Agent (Claude/Codex)
 
 **Tool approval:** `requires_approval` tools hold the gateway call (up to `APPROVAL_TIMEOUT_MAX_MS` = 10 min), emit `mcp_approval` WS event to room/thread. Owner approves or denies via API. Default timeout 5 min (configurable `MCP_APPROVAL_TIMEOUT_MS`). Max 20 pending per actor.
 
-**Agent update path:** Claude gets `tools/list_changed` → picks up at next turn. Codex spawns per turn → picks up immediately next message.
+**Agent update path:** Gateway is stateless (no persistent stream), so `tools/list_changed` is never pushed. Claude Code sessions persist across turns — tool list established at session start, changes visible at next session start (model/env/system-prompt change triggers restart). Codex spawns per turn → picks up changes immediately at next turn.
 
 **Env isolation:** stdio upstreams spawn with `baseEnv()` (PATH, HOME, TMPDIR + server-specific keys only), not `process.env`.
 

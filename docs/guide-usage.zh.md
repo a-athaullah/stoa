@@ -985,8 +985,8 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 
 添加、删除或重新配置 MCP 服务器后：
 
-- **Claude** 代理会收到 `tools/list_changed` 通知，并在**下一个 turn** 获取更新后的工具列表 — 无需重启。
-- **Codex** 代理每个 turn 重新生成，因此变更在**下一个会话**（即下一条消息）生效。
+- **Claude Code** 的会话跨 turn 保持。工具列表在会话启动时确定，因此变更在**下次会话启动时**生效（由模型切换、env 变更、系统提示变更等触发会话重启的条件引起）。
+- **Codex** 每个 turn 生成新进程（每个 turn 都是全新的 MCP 连接），因此变更在**下一个 turn**（下一条消息）立即生效。
 
 ### 凭证与安全
 

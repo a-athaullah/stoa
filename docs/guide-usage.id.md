@@ -990,8 +990,8 @@ Satu agent bisa punya maksimal 20 permintaan approval yang pending sekaligus. Ka
 
 Saat kamu menambah, menghapus, atau mengonfigurasi ulang MCP server:
 
-- Agent **Claude** menerima notifikasi `tools/list_changed` dan mengambil daftar tool terbaru di **turn berikutnya** — tidak perlu restart.
-- Agent **Codex** spawn baru tiap turn, jadi perubahan berlaku di **sesi berikutnya** (yaitu pesan berikutnya).
+- **Claude Code** mempertahankan sesi antar turn; daftar tool ditetapkan saat sesi dimulai. Perubahan berlaku **saat sesi berikutnya dimulai** — dipicu oleh pergantian model, perubahan env, perubahan system prompt, atau kondisi lain yang menyebabkan restart sesi.
+- **Codex** menjalankan proses baru per turn (setiap turn adalah koneksi MCP baru), jadi perubahan berlaku di **turn berikutnya** (pesan berikutnya).
 
 ### Kredensial dan Keamanan
 
