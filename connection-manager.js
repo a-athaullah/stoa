@@ -5,6 +5,14 @@
 const EventEmitter = require('events');
 const path = require('path');
 
+// Socket Mode ack() returns a promise that rejects when the socket is not ready (e.g. mid-reconnect).
+// Unhandled, that rejection kills the whole server; a lost ack only means Slack may redeliver.
+function safeAck(ack, connId) {
+  Promise.resolve().then(() => ack()).catch((err) => {
+    console.warn(`[conn:${connId}] Slack ack failed (${err?.code || 'error'}): ${err?.message || err}`);
+  });
+}
+
 class SlackConnection extends EventEmitter {
   constructor(connId) {
     super();
@@ -44,7 +52,7 @@ class SlackConnection extends EventEmitter {
 
     const fwd = (eventType) => {
       this.client.on(eventType, ({ event, ack }) => {
-        ack();
+        safeAck(ack, this.connId);
         if (!event) return;
         const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
         console.log(`[${ts}] [slack:recv] type=${eventType} channel=${event.channel || event.item?.channel || '-'} ts=${event.ts || event.event_ts || '-'}`);
@@ -54,7 +62,7 @@ class SlackConnection extends EventEmitter {
 
     // app_mention from Slack SDK — remap eventType to 'mention' to match DB/UI value
     this.client.on('app_mention', ({ event, ack }) => {
-      ack();
+      safeAck(ack, this.connId);
       if (!event) return;
       const ts = new Date().toISOString().replace('T', ' ').replace('Z', ' UTC');
       console.log(`[${ts}] [slack:recv] type=mention channel=${event.channel || '-'} ts=${event.ts || '-'}`);
@@ -128,7 +136,10 @@ class WhatsAppConnection extends EventEmitter {
       logger: pino({ level: 'silent' }),
     });
 
-    this.sock.ev.on('creds.update', saveCreds);
+    // saveCreds writes files; the event emitter does not await it, so a failed write must be caught here.
+    this.sock.ev.on('creds.update', (...args) => {
+      Promise.resolve().then(() => saveCreds(...args)).catch((err) => console.error(`[wa:${this.connId}] saving credentials failed:`, err.message));
+    });
 
     this.sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
       if (qr) {
@@ -750,4 +761,5 @@ class ConnectionManager extends EventEmitter {
 
 const connectionManager = new ConnectionManager();
 connectionManager.EmailConnection = EmailConnection;
+connectionManager.SlackConnection = SlackConnection;
 module.exports = connectionManager;
