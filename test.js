@@ -14343,6 +14343,7 @@ async function run() {
       assert.strictEqual(r.status, 200);
       const ids = r.body.presets.map(p => p.id);
       assert.ok(ids.includes('context7') && ids.includes('github'));
+      assert.ok(r.body.presets.every(p => typeof p.playground === 'boolean' && !('command' in p) && !('args' in p)), 'no command line in any preset');
       const gh = r.body.presets.find(p => p.id === 'github');
       assert.strictEqual(gh.transport, 'http', 'GitHub preset is the remote server, no docker');
       assert.deepStrictEqual(gh.env_fields.map(f => [f.key, f.secret, f.required]), [['GITHUB_PAT', true, true]]);
@@ -14350,6 +14351,38 @@ async function run() {
       const byId = Object.fromEntries(r.body.presets.map(p => [p.id, p]));
       assert.deepStrictEqual(['context7', 'github', 'notion', 'linear'].map(id => byId[id]?.auth), ['none', 'headers', 'oauth', 'oauth']);
       assert.deepStrictEqual([byId.notion.env_fields, byId.linear.env_fields, byId.notion.transport], [[], [], 'http']);
+    });
+
+    await test('MCP install — playground presets install with no fields under their default slug; Brave needs its key', async () => {
+      const cat = (await req('GET', '/api/mcp/catalog')).body.presets;
+      const playground = cat.filter(p => p.playground).map(p => p.id);
+      assert.deepStrictEqual(playground.sort(), ['deepwiki', 'everything', 'memory', 'thinking']);
+      const created = [];
+      try {
+        for (const id of playground) {
+          if (mDb.prepare('SELECT 1 FROM mcp_servers WHERE slug=?').get(id)) { console.log(`    (${id} skipped — slug taken in DB copy)`); continue; }
+          const r = await req('POST', '/api/mcp/servers', { preset: id });
+          assert.strictEqual(r.status, 201, `${id}: ${r.raw}`);
+          created.push(r.body.server.id);
+          assert.strictEqual(r.body.server.slug, id, 'preset id is a valid default slug');
+          assert.strictEqual(r.body.server.auth, 'none');
+          const row = mDb.prepare('SELECT transport, command, args_json, url, env_enc FROM mcp_servers WHERE id=?').get(r.body.server.id);
+          assert.strictEqual(row.env_enc, null, `${id} stores no credentials`);
+          if (row.transport === 'stdio') {
+            assert.strictEqual(row.command, 'npx');
+            assert.match(JSON.parse(row.args_json).at(-1), /^@modelcontextprotocol\/server-[a-z-]+@\d[\d.]*$/, `${id} is pinned to an exact version`);
+          } else assert.strictEqual(row.url, 'https://mcp.deepwiki.com/mcp');
+        }
+        assert.strictEqual((await req('POST', '/api/mcp/servers', { preset: 'brave' })).status, 400, 'Brave without API key');
+        const key = 'BSA' + crypto.randomBytes(12).toString('hex');
+        const b = await req('POST', '/api/mcp/servers', { preset: 'brave', env: { BRAVE_API_KEY: key } });
+        assert.strictEqual(b.status, 201, b.raw);
+        created.push(b.body.server.id);
+        assert.ok(!b.raw.includes(key) && !mDb.prepare('SELECT env_enc FROM mcp_servers WHERE id=?').get(b.body.server.id).env_enc.includes(key));
+        assert.match(JSON.parse(mDb.prepare('SELECT args_json FROM mcp_servers WHERE id=?').get(b.body.server.id).args_json).at(-1), /^@brave\/brave-search-mcp-server@\d[\d.]*$/);
+      } finally {
+        for (const id of created) await req('DELETE', `/api/mcp/servers/${id}`);
+      }
     });
 
     await test('MCP install — validation: binary outside allowlist, bad slug, reserved env, preset env', async () => {
