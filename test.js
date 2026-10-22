@@ -1791,6 +1791,99 @@ function runUnitTests() {
     });
   }
 
+
+  // ── MCP gateway (pure helpers)
+  ut('MCP validateCommand — allowlisted names and absolute executables only', () => {
+    const { validateCommand } = require('./lib/mcp-upstreams');
+    for (const c of ['npx', 'uvx', 'node', 'docker']) assert.strictEqual(validateCommand(c), null, c);
+    assert.match(validateCommand('bash'), /must be one of/);
+    assert.match(validateCommand('sh -c id'), /must be one of/);
+    assert.match(validateCommand('./node'), /must be one of/);
+    assert.strictEqual(validateCommand(process.execPath), null, 'absolute path to an executable');
+    assert.match(validateCommand('/nonexistent/stoa-mcp-bin'), /not found/);
+    assert.match(validateCommand(require('path').join(__dirname, 'package.json')), /not executable/);
+    assert.match(validateCommand(''), /required/);
+  });
+  ut('MCP validateEnv — reserved and malformed names rejected, headers allowed for http', () => {
+    const { validateEnv } = require('./lib/mcp-upstreams');
+    assert.strictEqual(validateEnv({ GITHUB_PERSONAL_ACCESS_TOKEN: 'x' }, 'stdio'), null);
+    for (const k of ['PATH', 'NODE_OPTIONS', 'LD_PRELOAD', 'DYLD_INSERT_LIBRARIES', 'HOME']) assert.match(validateEnv({ [k]: 'x' }, 'stdio'), /reserved/, k);
+    assert.match(validateEnv({ 'A-B': 'x' }, 'stdio'), /invalid env name/);
+    assert.strictEqual(validateEnv({ Authorization: 'Bearer x' }, 'http'), null);
+    assert.match(validateEnv({ A: 'line1\nline2' }, 'stdio'), /single-line/);
+    assert.match(validateEnv(['A'], 'stdio'), /object/);
+  });
+  ut('MCP connectionEnv — preset header template maps stored fields; custom servers pass through', () => {
+    const { connectionEnv } = require('./lib/mcp-catalog');
+    assert.deepStrictEqual(connectionEnv({ preset: 'github' }, { GITHUB_PAT: 'ghp_x' }), { Authorization: 'Bearer ghp_x' });
+    assert.deepStrictEqual(connectionEnv({ preset: 'github' }, {}), {}, 'no half-filled header');
+    assert.deepStrictEqual(connectionEnv({ preset: null }, { 'X-Api-Key': 'k' }), { 'X-Api-Key': 'k' });
+    assert.deepStrictEqual(connectionEnv({ preset: 'context7' }, { A: '1' }), { A: '1' });
+  });
+  ut('MCP decideAccess — deny anywhere wins, then allow, then default_access; disabled never', () => {
+    const { decideAccess } = require('./lib/mcp-gateway');
+    const on = { enabled: 1, default_access: 'none' };
+    assert.strictEqual(decideAccess(on, []), false);
+    assert.strictEqual(decideAccess({ ...on, default_access: 'all' }, []), true);
+    assert.strictEqual(decideAccess(on, [{ allow: 1 }]), true, 'agent allow');
+    assert.strictEqual(decideAccess({ ...on, default_access: 'all' }, [{ allow: 1 }, { allow: 0 }]), false, 'sub-agent deny narrows agent allow');
+    assert.strictEqual(decideAccess({ enabled: 0, default_access: 'all' }, [{ allow: 1 }]), false);
+  });
+  ut('MCP writeHint — annotations first, then verb in the name', () => {
+    const { writeHint } = require('./lib/mcp-gateway');
+    assert.strictEqual(writeHint({ name: 'send_message' }), true);
+    assert.strictEqual(writeHint({ name: 'create-issue' }), true);
+    assert.strictEqual(writeHint({ name: 'get_issue' }), false);
+    assert.strictEqual(writeHint({ name: 'resolve-library-id' }), false, '"resolve" is not "set"');
+    assert.strictEqual(writeHint({ name: 'delete_repo', annotations: { readOnlyHint: true } }), false);
+    assert.strictEqual(writeHint({ name: 'search', annotations: { destructiveHint: true } }), true);
+  });
+  ut('MCP argsPreview — secrets redacted at any depth, capped at 2KB', () => {
+    const { argsPreview } = require('./lib/mcp-gateway');
+    const p = JSON.parse(argsPreview({ q: 'hello', api_key: 'k1', nested: { Authorization: 'Bearer z', list: [{ password: 'p' }] } }));
+    assert.deepStrictEqual(p, { q: 'hello', api_key: '***', nested: { Authorization: '***', list: [{ password: '***' }] } });
+    const long = argsPreview({ a: 'x'.repeat(400), b: 'y'.repeat(400), c: 'z'.repeat(400), d: 'w'.repeat(400), e: 'v'.repeat(400), f: 'u'.repeat(400) });
+    assert.ok(long.length <= 2048, `preview length ${long.length}`);
+  });
+  ut('MCP capResult — under cap untouched; over cap cut with notice and isError kept', () => {
+    const { capResult } = require('./lib/mcp-gateway');
+    const small = { content: [{ type: 'text', text: 'ok' }] };
+    assert.strictEqual(capResult(small, 1024).result, small);
+    const big = { content: [{ type: 'text', text: 'é'.repeat(5000) }, { type: 'image', data: 'AAAA', mimeType: 'image/png' }], isError: true };
+    const { result, bytes } = capResult(big, 2048);
+    assert.ok(bytes > 2048);
+    assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 2048 + 200, 'capped result stays near the cap');
+    assert.match(result.content[0].text, /result truncated/);
+    assert.ok(!result.content[0].text.includes('�'), 'no broken multibyte char at the cut');
+    assert.strictEqual(result.isError, true);
+  });
+  ut('MCP agent config — token referenced by env name, never literal in argv', () => {
+    const { mcpConfigArgs: claudeArgs } = require('./claude-session');
+    const { mcpConfigArgs: codexArgs } = require('./codex-session');
+    const env = { STOA_MCP_TOKEN: 'stoa_mcp_SECRETVALUE', STOA_MCP_URL: 'http://127.0.0.1:3001/mcp' };
+    const c = claudeArgs(env);
+    assert.strictEqual(c[0], '--mcp-config');
+    const cfg = JSON.parse(c[1]).mcpServers.stoa;
+    assert.deepStrictEqual(cfg, { type: 'http', url: env.STOA_MCP_URL, headers: { Authorization: 'Bearer ${STOA_MCP_TOKEN}' } });
+    const x = codexArgs(env);
+    assert.ok(x.includes('mcp_servers.stoa.url="http://127.0.0.1:3001/mcp"'));
+    assert.ok(x.includes('mcp_servers.stoa.bearer_token_env_var="STOA_MCP_TOKEN"'));
+    assert.ok(x.includes('mcp_servers.stoa.default_tools_approval_mode="approve"'));
+    for (const a of [...c, ...x]) assert.ok(!a.includes('SECRETVALUE'), 'token must not be in argv');
+    assert.deepStrictEqual(claudeArgs({}), []);
+    assert.deepStrictEqual(codexArgs({ STOA_MCP_TOKEN: 't' }), [], 'no url → no config');
+    assert.ok(!c.includes('--strict-mcp-config'));
+  });
+  ut('MCP agent-scope — /mcp is self-authenticated, /api/mcp/* is not agent-allowlisted', () => {
+    const { isSelfAuthenticatedPath, matchAgentRoute } = require('./lib/agent-scope');
+    assert.strictEqual(isSelfAuthenticatedPath('/mcp'), true);
+    assert.strictEqual(isSelfAuthenticatedPath('/mcp/'), false);
+    assert.strictEqual(isSelfAuthenticatedPath('/api/mcp/servers'), false);
+    for (const [m, p] of [['GET', '/api/mcp/servers'], ['POST', '/api/mcp/servers'], ['PUT', '/api/mcp/access'], ['GET', '/api/mcp/calls']]) {
+      assert.strictEqual(matchAgentRoute(m, p), null, `${m} ${p}`);
+    }
+  });
+
   return { p, f };
 }
 
@@ -1936,6 +2029,39 @@ async function runAsyncUnitTests() {
       stoa.triggerQueue.length = 0;
       stoa.__resetDeps();
     }
+  });
+
+  await uta('MCP agent env — trigger with mcp_token: token + url in env, tool timeout outlasts an approval wait', async () => {
+    const stoa = require('./stoa.js');
+    const { mcpConfigArgs: codexArgs } = require('./codex-session');
+    const { APPROVAL_TIMEOUT_MAX_MS } = require('./lib/mcp-gateway');
+    let env = null, finish = null;
+    const mockSession = {
+      _systemPromptHash: null, _harness: 'claude', flags: [], env: null, resumeId: null,
+      on: () => {}, removeListener: () => {}, shutdown: () => {}, cancelTask: () => false,
+      send: () => new Promise(r => { finish = r; }),
+    };
+    stoa.__setDeps({ send: () => {}, getSession: (dir, room, e) => { env = e; mockSession.env = e; return mockSession; } });
+    let run = null;
+    try {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      run = stoa.processTrigger({ room_id: 99, message_id: 'mcp-env-1', prompt: 'use the mcp tools', workdir: require('os').tmpdir(), mcp_token: 'stoa_mcp_ENVTEST' });
+      for (let i = 0; i < 100 && !finish; i++) await new Promise(r => setTimeout(r, 10));
+      assert.ok(env, 'session created');
+      assert.strictEqual(env.STOA_MCP_TOKEN, 'stoa_mcp_ENVTEST');
+      assert.match(env.STOA_MCP_URL, /^https?:\/\/.+\/mcp$/);
+      const ms = Number(env.MCP_TOOL_TIMEOUT);
+      assert.ok(ms > APPROVAL_TIMEOUT_MAX_MS + 60_000, `MCP_TOOL_TIMEOUT ${ms} must outlast approval cap + call timeout`);
+      assert.ok(codexArgs(env).includes(`mcp_servers.stoa.tool_timeout_sec=${Math.ceil(ms / 1000)}`), 'codex gets the same bound');
+    } finally {
+      finish?.({ content: 'done', sessionId: null });
+      await run?.catch(() => {});
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      stoa.__resetDeps();
+    }
+    assert.ok(!codexArgs({ STOA_MCP_TOKEN: 't', STOA_MCP_URL: 'http://x/mcp' }).some(a => a.includes('tool_timeout_sec')), 'no timeout env → codex default');
   });
 
   // Drives the real hangWatchdog: captures its 10s interval callback and moves Date.now.
@@ -2905,6 +3031,215 @@ async function runAsyncUnitTests() {
       stoa.__resetDeps();
       console.log = origLog;
     }
+  });
+
+  await uta('MCP gateway — token reuse per session key, revoke, timeout and denied calls recorded', async () => {
+    const Database = require('better-sqlite3');
+    const { createMcpGateway } = require('./lib/mcp-gateway');
+    const mem = new Database(':memory:');
+    mem.exec(require('fs').readFileSync(require('path').join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
+    mem.exec(`CREATE TABLE IF NOT EXISTS sub_agents (id INTEGER PRIMARY KEY, parent_actor_id INTEGER, label TEXT)`);
+    const actorId = Number(mem.prepare("INSERT INTO actors (name, type, secret) VALUES ('mcp-unit','ai','s')").run().lastInsertRowid);
+    const srvId = Number(mem.prepare("INSERT INTO mcp_servers (slug, name, transport, command, default_access) VALUES ('slow','Slow','stdio','node','all')").run().lastInsertRowid);
+    const calls = [];
+    const upstreams = {
+      listTools: async () => [{ name: 'wait', inputSchema: { type: 'object' } }],
+      callTool: async (row, name, args, { timeoutMs }) => {
+        calls.push({ name, timeoutMs });
+        const e = new Error('Request timed out'); e.code = -32001; throw e;
+      },
+    };
+    const enc = (s) => 'enc:' + Buffer.from(s).toString('base64');
+    const dec = (s) => Buffer.from(s.slice(4), 'base64').toString();
+    const gw = createMcpGateway({ db: mem, upstreams, encrypt: enc, decrypt: dec, callTimeoutMs: 1234, log: { warn() {}, error() {} } });
+    const t1 = gw.issueToken({ actorId, threadId: 7 });
+    assert.strictEqual(gw.issueToken({ actorId, threadId: 7 }), t1, 'same session key → same token (stable env)');
+    assert.notStrictEqual(gw.issueToken({ actorId, threadId: 8 }), t1, 'other thread → other token');
+    const stored = mem.prepare('SELECT token_hash, token_enc FROM mcp_tokens').all();
+    assert.ok(stored.every(r => !r.token_hash.includes(t1) && r.token_enc !== t1), 'token not stored in clear');
+    const ident = gw.authenticate('Bearer ' + t1);
+    assert.deepStrictEqual(ident, { actorId, roomId: null, threadId: 7, subAgentId: null });
+    assert.strictEqual(gw.authenticate('Bearer ' + t1 + 'x'), null);
+    assert.strictEqual(gw.authenticate(t1), null, 'scheme required');
+    const tools = await gw.visibleTools(ident);
+    assert.deepStrictEqual(tools.map(t => t.name), ['slow__wait']);
+    const r = await gw.callTool(ident, 'slow__wait', { token: 'abc' });
+    assert.strictEqual(r.isError, true);
+    assert.match(r.content[0].text, /timed out/);
+    assert.deepStrictEqual(calls, [{ name: 'wait', timeoutMs: 1234 }], 'namespace stripped, timeout forwarded');
+    const d = await gw.callTool(ident, 'nope', {});
+    assert.match(d.content[0].text, /Denied by Stoa: unknown tool/);
+    const rows = mem.prepare('SELECT server_id, server_slug, tool, status, args_preview FROM mcp_calls ORDER BY id').all();
+    assert.deepStrictEqual(rows.map(x => [x.server_slug, x.tool, x.status]), [['slow', 'wait', 'timeout'], [null, 'nope', 'denied']]);
+    assert.strictEqual(rows[0].server_id, srvId);
+    assert.strictEqual(JSON.parse(rows[0].args_preview).token, '***');
+    // Approval: owner decision vs timeout vs abort vs cleanup; every path settles exactly once.
+    mem.prepare("INSERT INTO mcp_tool_overrides (server_id, tool, requires_approval) VALUES (?, 'wait', 1)").run(srvId);
+    const events = [];
+    const gw2 = createMcpGateway({ db: mem, upstreams: { ...upstreams, callTool: async () => ({ content: [{ type: 'text', text: 'ran' }] }) },
+      encrypt: enc, decrypt: dec, approvalTimeoutMs: 80, onApproval: (type, a) => events.push([type, a.id, a.status]), log: { warn() {}, error() {} } });
+    const ident2 = { ...ident, roomId: 5 };
+    const expired = await gw2.callTool(ident2, 'slow__wait', {});
+    assert.match(expired.content[0].text, /approval expired/);
+    const firstId = events[0][1];
+    assert.deepStrictEqual(events, [['mcp_approval', firstId, 'pending'], ['mcp_approval_resolved', firstId, 'expired']]);
+    assert.strictEqual(gw2.decideApproval(firstId, 'approve').status, 409);
+    const ac = new AbortController();
+    const aborted = gw2.callTool(ident2, 'slow__wait', {}, { signal: ac.signal });
+    ac.abort();
+    assert.match((await aborted).content[0].text, /approval expired/, 'agent dropped the request → expired');
+    const pendingRoom = gw2.callTool(ident2, 'slow__wait', {});
+    gw2.forgetRoom(5);
+    assert.match((await pendingRoom).content[0].text, /approval expired/, 'room deleted → pending expired');
+    const ok = gw2.callTool(ident2, 'slow__wait', {});
+    const okId = events.at(-1)[1];
+    assert.strictEqual(gw2.decideApproval(okId, 'approve').status, 200);
+    assert.strictEqual((await ok).content[0].text, 'ran');
+    mem.prepare("INSERT INTO mcp_approvals (server_slug, tool, actor_id, expires_at) VALUES ('slow','wait',?, datetime('now','+1 hour'))").run(actorId);
+    createMcpGateway({ db: mem, upstreams, encrypt: enc, decrypt: dec, log: { warn() {}, error() {} } });
+    assert.strictEqual(mem.prepare("SELECT COUNT(*) n FROM mcp_approvals WHERE status='pending'").get().n, 0, 'pending rows from a previous process expire at boot');
+    mem.prepare('DELETE FROM mcp_tool_overrides').run();
+
+    gw.forgetActor(actorId);
+    assert.strictEqual(gw.authenticate('Bearer ' + t1), null, 'revoked with the actor');
+    assert.notStrictEqual(gw.issueToken({ actorId, threadId: 7 }), t1, 'revoked token is never handed out again');
+    mem.prepare("UPDATE mcp_calls SET created_at=datetime('now','-40 days') WHERE id=(SELECT MIN(id) FROM mcp_calls)").run();
+    mem.prepare("UPDATE mcp_approvals SET created_at=datetime('now','-40 days') WHERE id=?").run(firstId);
+    assert.strictEqual(gw.pruneCalls(30), 2, 'one old call + one old decided approval');
+    mem.close();
+  });
+
+  await uta('MCP gateway — sessions: list_changed only to sessions whose tools changed; bound to token; closed on revoke, idle, per-token cap', async () => {
+    const Database = require('better-sqlite3');
+    const http = require('http');
+    const { createMcpGateway } = require('./lib/mcp-gateway');
+    const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
+    const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/client/streamableHttp.js');
+    const { ToolListChangedNotificationSchema } = require('@modelcontextprotocol/sdk/types.js');
+    const mem = new Database(':memory:');
+    mem.exec(require('fs').readFileSync(require('path').join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
+    mem.exec(`CREATE TABLE IF NOT EXISTS sub_agents (id INTEGER PRIMARY KEY, parent_actor_id INTEGER, label TEXT)`);
+    const A = Number(mem.prepare("INSERT INTO actors (name, type, secret) VALUES ('mcp-sess-a','ai','s')").run().lastInsertRowid);
+    const B = Number(mem.prepare("INSERT INTO actors (name, type, secret) VALUES ('mcp-sess-b','ai','s')").run().lastInsertRowid);
+    const srvId = Number(mem.prepare("INSERT INTO mcp_servers (slug, name, transport, command, default_access) VALUES ('dyn','Dyn','stdio','node','all')").run().lastInsertRowid);
+    const list = [{ name: 'one', inputSchema: { type: 'object' } }, { name: 'two', inputSchema: { type: 'object' } }];
+    const upstreams = { listTools: async () => list, info: () => ({ tools: list }), callTool: async () => ({ content: [] }) };
+    const enc = (s) => 'enc:' + Buffer.from(s).toString('base64');
+    const dec = (s) => Buffer.from(s.slice(4), 'base64').toString();
+    const gw = createMcpGateway({ db: mem, upstreams, encrypt: enc, decrypt: dec, sessionIdleMs: 300, notifyDebounceMs: 20, log: { warn() {}, error() {} } });
+    const srv = http.createServer(async (req, res) => {
+      let body;
+      if (req.method === 'POST') { const ch = []; for await (const c of req) ch.push(c); body = JSON.parse(Buffer.concat(ch).toString()); }
+      await gw.handle(req, res, body);
+    });
+    await new Promise(r => srv.listen(0, '127.0.0.1', r));
+    const url = `http://127.0.0.1:${srv.address().port}/mcp`;
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const connect = async (token) => {
+      const c = new Client({ name: 'unit', version: '1' });
+      const seen = { n: 0 };
+      c.setNotificationHandler(ToolListChangedNotificationSchema, () => { seen.n++; });
+      const t = new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { Authorization: 'Bearer ' + token } } });
+      await c.connect(t);
+      return { c, t, seen };
+    };
+    const tA = gw.issueToken({ actorId: A }), tB = gw.issueToken({ actorId: B });
+    const a = await connect(tA), b = await connect(tB);
+    try {
+      assert.strictEqual(gw.sessionCount(), 2);
+      assert.ok(a.t.sessionId && a.t.sessionId !== b.t.sessionId);
+      assert.deepStrictEqual((await b.c.listTools()).tools.map(t => t.name), ['dyn__one', 'dyn__two']);
+      await sleep(150);
+      mem.prepare("INSERT INTO mcp_access (server_id, subject_type, subject_id, allow) VALUES (?, 'agent', ?, 0)").run(srvId, B);
+      gw.toolsChanged();
+      await sleep(250);
+      assert.deepStrictEqual([a.seen.n, b.seen.n], [0, 1], 'only the session whose tools changed is notified');
+      assert.deepStrictEqual((await b.c.listTools()).tools, [], 'mid-session re-list reflects the deny');
+      mem.prepare("INSERT INTO mcp_tool_overrides (server_id, tool, enabled) VALUES (?, 'one', 0)").run(srvId);
+      gw.toolsChanged();
+      await sleep(250);
+      assert.deepStrictEqual([a.seen.n, b.seen.n], [1, 1], 'disabled tool: A notified, B (no access) not');
+      assert.deepStrictEqual((await a.c.listTools()).tools.map(t => t.name), ['dyn__two']);
+      gw.toolsChanged();
+      await sleep(250);
+      assert.deepStrictEqual([a.seen.n, b.seen.n], [1, 1], 'nothing changed → no notification');
+      const rpc = { jsonrpc: '2.0', id: 9, method: 'tools/list', params: {} };
+      const post = (token, sid, payload = rpc) => fetch(url, { method: 'POST', body: JSON.stringify(payload), headers: {
+        'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: 'Bearer ' + token, ...(sid ? { 'mcp-session-id': sid } : {}) } });
+      assert.strictEqual((await post(tB, a.t.sessionId)).status, 404, "another token cannot use A's session");
+      assert.strictEqual((await post(tA, 'no-such-session')).status, 404, 'unknown session → 404 so the client re-initializes');
+      assert.strictEqual((await post(tA, null)).status, 200, 'no session id → served statelessly');
+      gw.forgetActor(B);
+      assert.strictEqual(gw.sessionCount(), 1, "revoking B's token closes its session");
+      await sleep(700);
+      assert.strictEqual(gw.sessionCount(), 1, 'a session with an open GET stream outlives the idle limit');
+      await a.c.close();
+      await sleep(900);
+      assert.strictEqual(gw.sessionCount(), 0, 'stream gone + idle → closed');
+      const init = { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'x', version: '1' } } };
+      for (let i = 0; i < 10; i++) { const r = await post(tA, null, init); assert.strictEqual(r.status, 200); await r.text(); }
+      assert.strictEqual(gw.sessionCount(), 8, 'per-token cap closes the oldest');
+    } finally {
+      await a.c.close().catch(() => {});
+      await b.c.close().catch(() => {});
+      gw.close();
+      assert.strictEqual(gw.sessionCount(), 0);
+      await new Promise(r => { srv.closeAllConnections?.(); srv.close(r); });
+      mem.close();
+    }
+  });
+
+  await uta('MCP oauth — state is single use and expires after 10 minutes; tokens never stored in clear', async () => {
+    const Database = require('better-sqlite3');
+    const { createMcpOAuth, STATE_TTL_MS } = require('./lib/mcp-oauth');
+    const mem = new Database(':memory:');
+    mem.exec(require('fs').readFileSync(require('path').join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
+    const id = Number(mem.prepare("INSERT INTO mcp_servers (slug, name, transport, url, auth) VALUES ('o','O','http','https://mcp.example/mcp','oauth')").run().lastInsertRowid);
+    const enc = (x) => 'enc:' + Buffer.from(x).toString('base64');
+    const dec = (x) => Buffer.from(x.slice(4), 'base64').toString();
+    let clock = 1_000_000;
+    const exchanged = [];
+    // Stand-in for the SDK's auth(): registers once, redirects, and on a code saves tokens.
+    const auth = async (p, { authorizationCode }) => {
+      if (!p.clientInformation()) p.saveClientInformation({ client_id: 'cid', redirect_uris: [p.redirectUrl] });
+      if (authorizationCode) { exchanged.push([authorizationCode, p.codeVerifier()]); p.saveTokens({ access_token: 'secret-access', refresh_token: 'secret-refresh' }); return 'AUTHORIZED'; }
+      p.saveCodeVerifier('verifier-1');
+      p.redirectToAuthorization(new URL(`https://auth.example/authorize?state=${p.state()}`));
+      return 'REDIRECT';
+    };
+    const o = createMcpOAuth({ db: mem, encrypt: enc, decrypt: dec, now: () => clock, sdk: { auth }, log: { warn() {}, error() {} } });
+    const row = () => mem.prepare('SELECT * FROM mcp_servers WHERE id=?').get(id);
+    assert.strictEqual(o.needsAuth(row()), true);
+    const stateOf = (u) => new URL(u).searchParams.get('state');
+    const s1 = stateOf(await o.start(row(), 'https://stoa.example'));
+    clock += STATE_TTL_MS + 1;
+    await assert.rejects(o.finish({ state: s1, code: 'c1' }), /expired/);
+    const s2 = stateOf(await o.start(row(), 'https://stoa.example'));
+    assert.notStrictEqual(s2, s1);
+    assert.strictEqual(await o.finish({ state: s2, code: 'c2' }), id);
+    assert.deepStrictEqual(exchanged, [['c2', 'verifier-1']], 'verifier from start reaches the exchange');
+    await assert.rejects(o.finish({ state: s2, code: 'c2' }), /unknown, used or expired/);
+    assert.strictEqual(o.needsAuth(row()), false);
+    assert.ok(!/secret-/.test(row().oauth_enc));
+    assert.strictEqual(o.provider(id).redirectUrl, 'https://stoa.example/api/mcp/oauth/callback');
+    await assert.rejects(o.start({ ...row(), auth: 'headers' }, 'https://stoa.example'), /does not use OAuth/);
+    const hostile = createMcpOAuth({ db: mem, encrypt: enc, decrypt: dec, sdk: { auth: async (p) => { p.saveCodeVerifier('v'); p.redirectToAuthorization(new URL('javascript:alert(1)')); return 'REDIRECT'; } }, log: { warn() {}, error() {} } });
+    await assert.rejects(hostile.start(row(), 'https://stoa.example'), /must be http/);
+    mem.close();
+  });
+
+  await uta('MCP upstreams — failed start backs off; disabled row never spawns', async () => {
+    const { createUpstreamManager } = require('./lib/mcp-upstreams');
+    const statuses = [];
+    const um = createUpstreamManager({ readEnv: () => ({}), onStatus: (id, s, e) => statuses.push([id, s, e]), log: { warn() {}, error() {} } });
+    const row = { id: 1, slug: 'broken', transport: 'stdio', command: '/nonexistent/stoa-mcp-bin', args_json: '[]', enabled: 1 };
+    await assert.rejects(um.listTools(row), /not found/);
+    await assert.rejects(um.listTools(row), /failed recently/, 'second try inside backoff window is refused');
+    assert.deepStrictEqual(statuses.at(-1).slice(0, 2), [1, 'error']);
+    assert.strictEqual(um.info(row).status, 'error');
+    await assert.rejects(um.listTools({ ...row, enabled: 0 }), /disabled/);
+    assert.strictEqual(um.info({ ...row, enabled: 0 }).status, 'disabled');
+    um.stopAll();
   });
 
   await uta('extractAndUploadFiles: oversize/missing files are reported in content, never uploaded', async () => {
@@ -10686,6 +11021,35 @@ async function run() {
     assert.ok(devInstrArg.includes('Be helpful and concise'), 'content preserved');
   });
 
+  await test('CodexSession — MCP tool steps carry mcp__<server>__<tool> + arguments, which the chat trail parses as a gateway tool', () => {
+    const { CodexSession } = require('./codex-session');
+    const vm = require('vm');
+    // Event lines as emitted by codex-cli 0.162.1 `exec --json` for a call to the Stoa gateway.
+    const recorded = [
+      '{"type":"item.started","item":{"id":"item_0","type":"mcp_tool_call","server":"stoa","tool":"deepwiki__ask_question","arguments":{"repoName":"a/b","question":"q"},"result":null,"error":null,"status":"in_progress"}}',
+      '{"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"stoa","tool":"deepwiki__ask_question","arguments":{"repoName":"a/b","question":"q"},"result":{"content":[{"type":"text","text":"ok"}],"structured_content":null},"error":null,"status":"completed"}}',
+      '{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"ls -la","status":"completed"}}',
+      '{"type":"item.completed","item":{"id":"item_2","type":"file_change","path":"/tmp/x.txt","status":"completed"}}',
+      '{"type":"item.completed","item":{"id":"item_3","type":"mcp_tool_call","tool":"orphan","arguments":null,"status":"failed"}}',
+    ];
+    const cs = new CodexSession({ workDir: '/tmp' });
+    const steps = [];
+    cs._currentOnTool = (t) => steps.push(t);
+    for (const line of recorded) cs._handleEvent(JSON.parse(line));
+    assert.deepStrictEqual(steps, [
+      { name: 'mcp__stoa__deepwiki__ask_question', input: { repoName: 'a/b', question: 'q' } },
+      { name: 'command_execution', input: { command: 'ls -la' } },
+      { name: 'file_change', input: { command: '/tmp/x.txt' } },
+      { name: 'mcp_tool_call', input: {} },
+    ], 'one step per completed item; MCP name from server+tool, non-MCP steps unchanged, missing server falls back');
+
+    const ctx = {};
+    vm.runInNewContext(require('fs').readFileSync(path.join(__dirname, 'public/js/chat/trail.js'), 'utf8'), ctx);
+    assert.deepStrictEqual({ ...ctx.parseStoaMcpTool(steps[0].name) }, { slug: 'deepwiki', tool: 'ask_question' }, 'chat labels the Codex step via deepwiki');
+    assert.strictEqual(ctx.parseStoaMcpTool(steps[3].name), null, 'fallback step gets no label');
+    assert.strictEqual(ctx.toolSummary(steps[0].name, steps[0].input), 'a/b', 'arguments feed the step summary');
+  });
+
   // escapeTomlValue unit tests
   await test('escapeTomlValue — escapes newlines and quotes', () => {
     const { escapeTomlValue } = require('./codex-session');
@@ -11825,6 +12189,199 @@ async function run() {
       const w = await parent;
       assert.ok(w && w.prompt.includes('[sub-agent TERPUTUS]'));
       complete(ws, w, 'ok');
+    });
+
+    // ── Parent trigger refused by "agent updating" is re-delivered after the update ──
+    // Room with a second agent so a proactive @mention can trigger the parent with no
+    // reply_to (dedup by prompt). A human WS watches the room feed for message_broadcast.
+    let rt = null;
+    const rtMsg = (tag) => db.prepare("SELECT id FROM messages WHERE room_id=? AND content LIKE ? ORDER BY id DESC LIMIT 1").get(rt.roomId, `%${tag}`);
+    const rtQueue = () => db.prepare('SELECT * FROM pending_retriggers WHERE room_id=? ORDER BY id').all(rt.roomId);
+    const rtOutdated = async () => {
+      await closeWs(ow.ws);
+      ow.ws = await connect({ client_version: '0.0.1' });
+    };
+    const rtHumanSend = async (tag) => {
+      const restart = waitForWsMessage(ow.ws, mm => mm.type === 'restart', 5000);
+      rt.hws.send(JSON.stringify({ type: 'send_message', room_id: rt.roomId, content: `@${rt.owName} tolong cek ${tag}` }));
+      await restart;
+      await new Promise(res => setTimeout(res, 200));
+      return rtMsg(tag).id;
+    };
+    const rtConnectCollect = async () => {
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`);
+      const triggers = [];
+      ws.on('message', d => { try { const m = JSON.parse(d); if (m.type === 'agent_trigger' && !m.sub_agent) triggers.push(m); } catch {} });
+      const ready = waitForWsMessage(ws, m => m.type === 'agent_ready', 5000);
+      ws.send(JSON.stringify({ type: 'agent_connect', actor_id: ow.actorId, secret: ow.secret, active_message_ids: [] }));
+      await ready;
+      return { ws, triggers };
+    };
+    const waitFor = async (fn, ms = 5000) => {
+      for (let i = 0; i < ms / 50; i++) { const v = fn(); if (v) return v; await new Promise(res => setTimeout(res, 50)); }
+      return fn();
+    };
+
+    await test('Retrigger — setup: room with the parent agent, a second agent and a human feed socket', async () => {
+      if (!ow) { console.log('    (skipped)'); return; }
+      const other = await createOnlineTestAgent('__test-retrigger-other', '/tmp/stoa-test-retrigger-other');
+      if (!other?.actorId) { console.log('    (skipped — could not set up second agent)'); return; }
+      const r = await req('POST', '/api/rooms', { title: '__retrigger-room__', workdir_id: ow.workdirId, participant_ids: [ow.actorId, other.actorId] });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      testRoomIds.push(r.body.id);
+      const hws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      hws.send(JSON.stringify({ type: 'join_room', room_id: r.body.id }));
+      await new Promise(res => setTimeout(res, 100));
+      rt = {
+        roomId: r.body.id, other, hws,
+        owName: db.prepare('SELECT name FROM actors WHERE id=?').get(ow.actorId).name,
+        owPart: db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(r.body.id, ow.actorId).id,
+      };
+    });
+
+    await test('Retrigger — parent trigger refused while outdated is queued and its placeholder reaches the room feed', async () => {
+      if (!rt) { console.log('    (skipped)'); return; }
+      await rtOutdated();
+      const feed = waitForWsMessage(rt.hws, mm => mm.type === 'message_broadcast' && mm.message?.room_id === rt.roomId, 5000);
+      const humanId = await rtHumanSend('retrigger-A');
+      rt.threadA = humanId;
+      const ph = db.prepare('SELECT * FROM messages WHERE room_id=? AND participant_id=? AND reply_to=? AND sub_agent_id IS NULL').get(rt.roomId, rt.owPart, humanId);
+      assert.ok(ph, 'placeholder bubble exists');
+      assert.strictEqual(ph.state, 'error');
+      assert.strictEqual(ph.content, '(agent updating — akan diproses otomatis setelah restart)');
+      assert.strictEqual(ph.thread_id, humanId, 'room-level message auto-threads');
+      assert.strictEqual(ph.broadcast_reason, 'error', 'placeholder flagged for the room feed');
+      const b = await feed;
+      assert.strictEqual(b.message.id, ph.id, 'message_broadcast carries the placeholder');
+      const q = rtQueue();
+      assert.strictEqual(q.length, 1);
+      assert.strictEqual(q[0].trigger_message_id, humanId);
+      assert.strictEqual(q[0].thread_id, humanId);
+      assert.strictEqual(q[0].participant_id, rt.owPart);
+      assert.strictEqual(q[0].attempts, 0);
+    });
+
+    await test('Retrigger — the same trigger refused twice is queued once', async () => {
+      if (!rt) { console.log('    (skipped)'); return; }
+      const oh = { 'x-agent-id': String(rt.other.actorId), 'x-agent-secret': rt.other.secret };
+      for (let i = 0; i < 2; i++) {
+        const restart = waitForWsMessage(ow.ws, mm => mm.type === 'restart', 5000);
+        const r = await req('POST', `/api/rooms/${rt.roomId}/message`, { content: `@${rt.owName} cek retrigger-B`, thread_id: rt.threadA }, oh);
+        assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+        await restart;
+      }
+      await new Promise(res => setTimeout(res, 200));
+      const refused = db.prepare("SELECT COUNT(*) AS c FROM messages WHERE room_id=? AND participant_id=? AND state='error' AND thread_id=?").get(rt.roomId, rt.owPart, rt.threadA).c;
+      assert.strictEqual(refused, 3, 'every refusal still shows a placeholder');
+      const q = rtQueue();
+      assert.strictEqual(q.length, 2, JSON.stringify(q.map(x => x.prompt)));
+      assert.strictEqual(q[1].trigger_message_id, null, 'proactive cascade has no reply_to');
+      assert.ok(q[1].prompt.includes('retrigger-B'));
+    });
+
+    await test('Retrigger — reconnect on the current version re-delivers each queued trigger once, FIFO in the thread', async () => {
+      if (!rt) { console.log('    (skipped)'); return; }
+      await closeWs(ow.ws);
+      const { ws, triggers } = await rtConnectCollect();
+      ow.ws = ws;
+      assert.ok(await waitFor(() => triggers.length >= 1), 'first queued trigger re-delivered');
+      assert.strictEqual(triggers.length, 1, 'next trigger in the thread waits for the first to finish');
+      assert.ok(triggers[0].prompt.includes('retrigger-A'), 'oldest first');
+      assert.strictEqual(triggers[0].thread_id, rt.threadA);
+      assert.strictEqual(triggers[0].reply_to, rt.threadA, 'replay answers the original trigger');
+      complete(ws, triggers[0], 'done A');
+      assert.ok(await waitFor(() => triggers.length >= 2), 'second queued trigger re-delivered');
+      assert.ok(triggers[1].prompt.includes('retrigger-B'));
+      complete(ws, triggers[1], 'done B');
+      await waitFor(() => rtQueue().length === 0);
+      assert.strictEqual(rtQueue().length, 0, 'queue drained after the replays returned');
+      await new Promise(res => setTimeout(res, 1200));
+      assert.strictEqual(triggers.length, 2, 'exactly one delivery per queued trigger');
+      const done = db.prepare("SELECT state, content FROM messages WHERE id=?").get(triggers[0].message_id);
+      assert.strictEqual(done.state, 'complete');
+    });
+
+    await test('Retrigger — a trigger the agent already answered is dropped, not replayed', async () => {
+      if (!rt) { console.log('    (skipped)'); return; }
+      await rtOutdated();
+      const humanId = await rtHumanSend('retrigger-D');
+      assert.strictEqual(rtQueue().length, 1);
+      // The old process answered it before restarting (e.g. a second trigger path).
+      db.prepare("INSERT INTO messages (room_id, participant_id, content, state, reply_to, thread_id) VALUES (?,?,'answered','complete',?,?)").run(rt.roomId, rt.owPart, humanId, humanId);
+      await closeWs(ow.ws);
+      const { ws, triggers } = await rtConnectCollect();
+      ow.ws = ws;
+      await waitFor(() => rtQueue().length === 0);
+      assert.strictEqual(rtQueue().length, 0, 'answered trigger removed from the queue');
+      await new Promise(res => setTimeout(res, 800));
+      assert.strictEqual(triggers.length, 0, 'no replay of an answered trigger');
+    });
+
+    await test('Retrigger — over the attempt limit or age limit posts "butuh manusia" and drops the row', async () => {
+      if (!rt) { console.log('    (skipped)'); return; }
+      await rtOutdated();
+      const e1 = await rtHumanSend('retrigger-E1');
+      const q1 = rtQueue();
+      assert.strictEqual(q1.length, 1);
+      db.prepare('UPDATE pending_retriggers SET attempts=3 WHERE id=?').run(q1[0].id);
+      // Expired row in a thread with no recent feed broadcast (flood guard is per thread).
+      const hp = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human'").get(rt.roomId).id;
+      const root = Number(db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,'old root retrigger-E2','complete')").run(rt.roomId, hp).lastInsertRowid);
+      const feed = waitForWsMessage(rt.hws, mm => mm.type === 'message_broadcast' && mm.message?.thread_id === root, 5000);
+      db.prepare("INSERT INTO pending_retriggers (room_id, participant_id, trigger_message_id, thread_id, prompt, created_at) VALUES (?,?,?,?,'old root retrigger-E2', datetime('now','-31 minutes'))").run(rt.roomId, rt.owPart, root, root);
+      await closeWs(ow.ws);
+      const feed1 = waitForWsMessage(rt.hws, mm => mm.type === 'message_broadcast' && mm.message?.thread_id === e1 && mm.message?.state === 'system_event', 5000);
+      const { ws, triggers } = await rtConnectCollect();
+      ow.ws = ws;
+      await waitFor(() => rtQueue().length === 0);
+      assert.strictEqual(rtQueue().length, 0, 'both rows dropped');
+      const sys = (t) => db.prepare("SELECT * FROM messages WHERE room_id=? AND thread_id=? AND state='system_event' ORDER BY id DESC LIMIT 1").get(rt.roomId, t);
+      const s1 = sys(e1);
+      assert.ok(s1 && s1.content.startsWith(`trigger ${e1} tidak terproses — butuh manusia`), s1?.content);
+      const ph1 = db.prepare("SELECT broadcast_reason FROM messages WHERE room_id=? AND participant_id=? AND reply_to=? AND state='error'").get(rt.roomId, rt.owPart, e1);
+      assert.strictEqual(ph1.broadcast_reason, 'error', 'placeholder took the thread\'s flood-guard slot');
+      assert.strictEqual(s1.broadcast_reason, 'error', 'give-up bypasses the flood guard although the placeholder was broadcast <10 min ago');
+      assert.strictEqual((await feed1).message.id, s1.id, 'give-up reaches the room feed');
+      const s2 = sys(root);
+      assert.ok(s2 && s2.content.includes(`trigger ${root} tidak terproses — butuh manusia`) && s2.content.includes('kedaluwarsa'), s2?.content);
+      assert.strictEqual(s2.broadcast_reason, 'error', 'system_event reaches the room feed');
+      assert.strictEqual((await feed).message.id, s2.id);
+      await new Promise(res => setTimeout(res, 500));
+      assert.strictEqual(triggers.length, 0, 'given-up triggers are not delivered');
+    });
+
+    await test('Retrigger — sweep gives up expired rows of an agent that never reconnects', async () => {
+      if (!rt) { console.log('    (skipped)'); return; }
+      await closeWs(rt.other.ws);
+      const otherName = db.prepare('SELECT name FROM actors WHERE id=?').get(rt.other.actorId).name;
+      const otherPart = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(rt.roomId, rt.other.actorId).id;
+      const hp = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human'").get(rt.roomId).id;
+      const mkRoot = (c) => Number(db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'complete')").run(rt.roomId, hp, c).lastInsertRowid);
+      const oldRoot = mkRoot('offline retrigger-S old');
+      const freshRoot = mkRoot('offline retrigger-S fresh');
+      const feed = waitForWsMessage(rt.hws, mm => mm.type === 'message_broadcast' && mm.message?.thread_id === oldRoot, 5000);
+      const ins = db.prepare('INSERT INTO pending_retriggers (room_id, participant_id, trigger_message_id, thread_id, prompt, created_at) VALUES (?,?,?,?,?,?)');
+      const oldId = Number(ins.run(rt.roomId, otherPart, oldRoot, oldRoot, 'offline retrigger-S old', db.prepare("SELECT datetime('now','-31 minutes') AS t").get().t).lastInsertRowid);
+      const freshId = Number(ins.run(rt.roomId, otherPart, freshRoot, freshRoot, 'offline retrigger-S fresh', db.prepare("SELECT datetime('now') AS t").get().t).lastInsertRowid);
+      const gone = await waitFor(() => !db.prepare('SELECT 1 FROM pending_retriggers WHERE id=?').get(oldId));
+      assert.ok(gone, 'expired row removed without any agent_connect');
+      const a = (await req('GET', '/api/actors')).body.find(x => x.id === rt.other.actorId);
+      assert.strictEqual(a.online, false, 'agent stayed offline the whole time');
+      const s = db.prepare("SELECT * FROM messages WHERE room_id=? AND thread_id=? AND state='system_event'").all(rt.roomId, oldRoot);
+      assert.strictEqual(s.length, 1, 'exactly one give-up notice');
+      assert.ok(s[0].content.startsWith(`trigger ${oldRoot} tidak terproses — butuh manusia (${otherName}: kedaluwarsa`), s[0].content);
+      assert.strictEqual(s[0].broadcast_reason, 'error');
+      assert.strictEqual((await feed).message.id, s[0].id, 'give-up reaches the room feed');
+      await new Promise(res => setTimeout(res, 1200));
+      assert.ok(db.prepare('SELECT 1 FROM pending_retriggers WHERE id=?').get(freshId), 'a row inside the age limit is left for the next connect');
+      assert.strictEqual(db.prepare("SELECT COUNT(*) AS c FROM messages WHERE room_id=? AND thread_id=? AND state='system_event'").get(rt.roomId, oldRoot).c, 1, 'later sweeps do not repeat the notice');
+      db.prepare('DELETE FROM pending_retriggers WHERE id=?').run(freshId);
+    });
+
+    await test('Retrigger — teardown', async () => {
+      if (!rt) return;
+      rt.hws.close();
+      await closeWs(rt.other.ws);
     });
 
     // Server run timeout (AGENT_RUN_TIMEOUT_MS, shortened by run-tests.js) errors a sub-agent
@@ -13830,6 +14387,666 @@ async function run() {
     const r5 = tb.maybeBroadcastError({ threadId: rootId, messageId: reply3Id, reason: 'error' });
     assert.strictEqual(r5, false, 'anti-flood should block even with explicit reason');
   });
+
+  // ── MCP gateway end-to-end: real /api/mcp admin API, real tokens from agent_trigger, real /mcp
+  // requests proxied to a stdio dummy upstream (test/fixtures/mcp-dummy-server.js, no network).
+  console.log('\n[MCP Gateway]');
+  {
+    const mDb = require('./db');
+    const FIXTURE = path.join(__dirname, 'test', 'fixtures', 'mcp-dummy-server.js');
+    const { startMcpHttpFixture } = require('./test/fixtures/mcp-http-server');
+    const SECRET = 'dummy-secret-' + crypto.randomBytes(8).toString('hex');
+    let agA = null, agB = null, roomA = null, roomB = null, sub = null, server = null;
+    let tokA = null, tokB = null, tokSub = null, threadA = null;
+    // Cookies are dropped only while fn() builds its request (synchronously), so an anonymous call
+    // can stay in flight while owner requests run (approval tests).
+    const asAnon = (fn) => {
+      const s = sessionCookie, d = deviceCookie;
+      sessionCookie = null; deviceCookie = null;
+      try { return fn(); } finally { sessionCookie = s; deviceCookie = d; }
+    };
+    // JSON-RPC over streamable HTTP; the reply is JSON or one SSE "data:" event.
+    let rpcId = 0;
+    const mcp = (token, method, params = {}, extra = {}) => asAnon(async () => {
+      const headers = { Accept: 'application/json, text/event-stream', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...extra };
+      const r = await req('POST', '/mcp', { jsonrpc: '2.0', id: ++rpcId, method, params }, headers);
+      let msg = typeof r.body === 'object' ? r.body : null;
+      if (!msg && typeof r.raw === 'string') {
+        const line = r.raw.split('\n').find(l => l.startsWith('data:'));
+        if (line) msg = JSON.parse(line.slice(5));
+      }
+      return { status: r.status, msg, raw: r.raw };
+    });
+    const listNames = async (token) => {
+      const r = await mcp(token, 'tools/list');
+      assert.strictEqual(r.status, 200, r.raw?.slice(0, 200));
+      return r.msg.result.tools.map(t => t.name).sort();
+    };
+    const callText = async (token, name, args = {}) => {
+      const r = await mcp(token, 'tools/call', { name, arguments: args });
+      assert.strictEqual(r.status, 200, r.raw?.slice(0, 200));
+      return { text: r.msg.result.content?.[0]?.text || '', isError: !!r.msg.result.isError };
+    };
+    const lastCall = () => mDb.prepare('SELECT * FROM mcp_calls ORDER BY id DESC LIMIT 1').get();
+    const grant = (subject_type, subject_id, allow) => req('PUT', '/api/mcp/access', { server_id: server.id, subject_type, subject_id, allow });
+    // → { token, threadId }. A room-level human message opens its own thread; pass threadId to stay in it.
+    const triggerToken = async (ag, roomId, content, threadId = undefined) => {
+      const trig = waitForWsMessage(ag.ws, m => m.type === 'agent_trigger' && m.room_id === roomId && !m.sub_agent, 5000);
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+        await waitForWsMessage(humanWs, m => m.type === 'history');
+        humanWs.send(JSON.stringify({ type: 'send_message', room_id: roomId, content, ...(threadId ? { thread_id: threadId } : {}) }));
+        const m = await trig;
+        ag.ws.send(JSON.stringify({ type: 'agent_message', message_id: m.message_id, content: 'done', state: 'complete' }));
+        return { token: m.mcp_token, threadId: m.thread_id };
+      } finally { humanWs.close(); }
+    };
+
+    await test('MCP setup — two online agents, a room each, a sub-agent', async () => {
+      agA = await createOnlineTestAgent('__test-mcp-a', '/tmp/stoa-test-mcp-a');
+      agB = await createOnlineTestAgent('__test-mcp-b', '/tmp/stoa-test-mcp-b');
+      assert.ok(agA?.workdirId && agB?.workdirId, 'online test agents');
+      const ra = await req('POST', '/api/rooms', { title: '__mcp-room-a__', workdir_id: agA.workdirId, participant_ids: [agA.actorId] });
+      const rb = await req('POST', '/api/rooms', { title: '__mcp-room-b__', workdir_id: agB.workdirId, participant_ids: [agB.actorId] });
+      assert.strictEqual(ra.status, 200); assert.strictEqual(rb.status, 200);
+      roomA = ra.body.id; roomB = rb.body.id;
+      testRoomIds.push(roomA, roomB);
+      const sr = await req('POST', `/api/actors/${agA.actorId}/sub-agents`, { label: 'mcpsub', tier: 'quick', workdir: '/tmp/stoa-test-mcp-sub' });
+      assert.strictEqual(sr.status, 201, JSON.stringify(sr.body));
+      sub = sr.body;
+      assert.strictEqual((await req('POST', `/api/rooms/${roomA}/sub-agents`, { sub_agent_id: sub.id })).status < 300, true);
+    });
+
+    await test('MCP trigger — no MCP server installed → no mcp_token (session env unchanged)', async () => {
+      if (mDb.prepare('SELECT 1 FROM mcp_servers LIMIT 1').get()) { console.log('    (skipped — DB copy already has MCP servers)'); return; }
+      assert.strictEqual((await triggerToken(agA, roomA, 'before mcp')).token, undefined);
+    });
+
+    await test('MCP admin — no session → 401; agent secret → agent_scope_denied; nothing created', async () => {
+      const anon = await asAnon(() => req('GET', '/api/mcp/servers'));
+      assert.strictEqual(anon.status, 401);
+      const before = mDb.prepare('SELECT COUNT(*) n FROM mcp_servers').get().n;
+      const h = { 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret };
+      for (const [m, p, b] of [['GET', '/api/mcp/servers'], ['POST', '/api/mcp/servers', { slug: 'evil', name: 'x', transport: 'stdio', command: 'node', args: ['-e', '1'] }], ['PUT', '/api/mcp/access', {}], ['GET', '/api/mcp/calls']]) {
+        const r = await asAnon(() => req(m, p, b || null, h));
+        assert.strictEqual(r.status, 403, `${m} ${p}`);
+        assert.strictEqual(r.body.error, 'agent_scope_denied');
+      }
+      assert.strictEqual(mDb.prepare('SELECT COUNT(*) n FROM mcp_servers').get().n, before);
+    });
+
+    await test('MCP catalog — presets without command lines', async () => {
+      const r = await req('GET', '/api/mcp/catalog');
+      assert.strictEqual(r.status, 200);
+      const ids = r.body.presets.map(p => p.id);
+      assert.ok(ids.includes('context7') && ids.includes('github'));
+      assert.ok(r.body.presets.every(p => typeof p.playground === 'boolean' && !('command' in p) && !('args' in p)), 'no command line in any preset');
+      const gh = r.body.presets.find(p => p.id === 'github');
+      assert.strictEqual(gh.transport, 'http', 'GitHub preset is the remote server, no docker');
+      assert.deepStrictEqual(gh.env_fields.map(f => [f.key, f.secret, f.required]), [['GITHUB_PAT', true, true]]);
+      assert.ok(!('command' in gh) && !('args' in gh) && !('headers' in gh));
+      const byId = Object.fromEntries(r.body.presets.map(p => [p.id, p]));
+      assert.deepStrictEqual(['context7', 'github', 'notion', 'linear'].map(id => byId[id]?.auth), ['none', 'headers', 'oauth', 'oauth']);
+      assert.deepStrictEqual([byId.notion.env_fields, byId.linear.env_fields, byId.notion.transport], [[], [], 'http']);
+    });
+
+    await test('MCP install — playground presets install with no fields under their default slug; Brave needs its key', async () => {
+      const cat = (await req('GET', '/api/mcp/catalog')).body.presets;
+      const playground = cat.filter(p => p.playground).map(p => p.id);
+      assert.deepStrictEqual(playground.sort(), ['deepwiki', 'everything', 'memory', 'thinking']);
+      const created = [];
+      try {
+        for (const id of playground) {
+          if (mDb.prepare('SELECT 1 FROM mcp_servers WHERE slug=?').get(id)) { console.log(`    (${id} skipped — slug taken in DB copy)`); continue; }
+          const r = await req('POST', '/api/mcp/servers', { preset: id });
+          assert.strictEqual(r.status, 201, `${id}: ${r.raw}`);
+          created.push(r.body.server.id);
+          assert.strictEqual(r.body.server.slug, id, 'preset id is a valid default slug');
+          assert.strictEqual(r.body.server.auth, 'none');
+          const row = mDb.prepare('SELECT transport, command, args_json, url, env_enc FROM mcp_servers WHERE id=?').get(r.body.server.id);
+          assert.strictEqual(row.env_enc, null, `${id} stores no credentials`);
+          if (row.transport === 'stdio') {
+            assert.strictEqual(row.command, 'npx');
+            assert.match(JSON.parse(row.args_json).at(-1), /^@modelcontextprotocol\/server-[a-z-]+@\d[\d.]*$/, `${id} is pinned to an exact version`);
+          } else assert.strictEqual(row.url, 'https://mcp.deepwiki.com/mcp');
+        }
+        assert.strictEqual((await req('POST', '/api/mcp/servers', { preset: 'brave' })).status, 400, 'Brave without API key');
+        const key = 'BSA' + crypto.randomBytes(12).toString('hex');
+        const b = await req('POST', '/api/mcp/servers', { preset: 'brave', env: { BRAVE_API_KEY: key } });
+        assert.strictEqual(b.status, 201, b.raw);
+        created.push(b.body.server.id);
+        assert.ok(!b.raw.includes(key) && !mDb.prepare('SELECT env_enc FROM mcp_servers WHERE id=?').get(b.body.server.id).env_enc.includes(key));
+        assert.match(JSON.parse(mDb.prepare('SELECT args_json FROM mcp_servers WHERE id=?').get(b.body.server.id).args_json).at(-1), /^@brave\/brave-search-mcp-server@\d[\d.]*$/);
+      } finally {
+        for (const id of created) await req('DELETE', `/api/mcp/servers/${id}`);
+      }
+    });
+
+    await test('MCP install — validation: binary outside allowlist, bad slug, reserved env, preset env', async () => {
+      const base = { slug: 'mcpbad', name: 'Bad', transport: 'stdio', args: [] };
+      for (const command of ['bash', 'sh', 'python3', 'node; id', '/nonexistent/x']) {
+        const r = await req('POST', '/api/mcp/servers', { ...base, command });
+        assert.strictEqual(r.status, 400, `${command}: ${r.raw}`);
+      }
+      for (const slug of ['Bad', '1x', 'a__b', 'x'.repeat(33), 'a-b']) {
+        assert.strictEqual((await req('POST', '/api/mcp/servers', { ...base, slug, command: 'node' })).status, 400, slug);
+      }
+      assert.strictEqual((await req('POST', '/api/mcp/servers', { ...base, command: 'node', env: { PATH: '/tmp' } })).status, 400, 'PATH override');
+      assert.strictEqual((await req('POST', '/api/mcp/servers', { preset: 'github', slug: 'mcpgh' })).status, 400, 'required preset field');
+      assert.strictEqual((await req('POST', '/api/mcp/servers', { preset: 'github', slug: 'mcpgh', env: { GITHUB_PAT: 'x', OTHER: 'y' } })).status, 400, 'unknown preset field');
+      assert.strictEqual((await req('POST', '/api/mcp/servers', { preset: 'github', slug: 'mcpgh', env: { GITHUB_PAT: 'x\r\nX-Evil: 1' } })).status, 400, 'header injection via field value');
+      assert.strictEqual((await req('POST', '/api/mcp/servers', { preset: 'nope' })).status, 400);
+      assert.strictEqual((await req('POST', '/api/mcp/servers', { ...base, transport: 'http', url: 'file:///etc/passwd' })).status, 400);
+      assert.strictEqual(mDb.prepare("SELECT COUNT(*) n FROM mcp_servers WHERE slug IN ('mcpbad','mcpgh')").get().n, 0);
+    });
+
+    await test('MCP install — GitHub preset is remote http; PAT stored encrypted, sent only as a header', async () => {
+      const pat = 'github_pat_' + crypto.randomBytes(12).toString('hex');
+      const r = await req('POST', '/api/mcp/servers', { preset: 'github', slug: 'mcpgh', env: { GITHUB_PAT: pat } });
+      assert.strictEqual(r.status, 201, r.raw);
+      try {
+        const s = r.body.server;
+        assert.deepStrictEqual([s.transport, s.url, s.command], ['http', 'https://api.githubcopilot.com/mcp/', null]);
+        assert.deepStrictEqual(s.env_keys, [{ key: 'GITHUB_PAT', masked: '••••' + pat.slice(-4) }]);
+        assert.ok(!r.raw.includes(pat));
+        assert.ok(!mDb.prepare('SELECT env_enc FROM mcp_servers WHERE id=?').get(s.id).env_enc.includes(pat));
+        assert.strictEqual((await req('PATCH', `/api/mcp/servers/${s.id}`, { url: 'http://127.0.0.1:1/mcp' })).status, 400, 'preset url is fixed');
+      } finally {
+        await req('DELETE', `/api/mcp/servers/${r.body.server?.id}`);
+      }
+    });
+
+    await test('MCP http upstream — custom headers authenticate to a remote server, wrong header fails', async () => {
+      const fx = await startMcpHttpFixture({ mode: 'bearer', bearer: 'fixture-key-1234567890' });
+      let id = null;
+      try {
+        let r = await req('POST', '/api/mcp/servers', { slug: 'mcphttp', name: 'Http', transport: 'http', url: fx.mcpUrl, env: { Authorization: 'Bearer wrong-key' } });
+        assert.strictEqual(r.status, 201, r.raw);
+        id = r.body.server.id;
+        let t = await req('POST', `/api/mcp/servers/${id}/test`);
+        assert.strictEqual(t.body.ok, false, 'wrong header is rejected upstream');
+        r = await req('PATCH', `/api/mcp/servers/${id}`, { env: { Authorization: 'Bearer fixture-key-1234567890' } });
+        assert.strictEqual(r.status, 200, r.raw);
+        t = await req('POST', `/api/mcp/servers/${id}/test`);
+        assert.strictEqual(t.body.ok, true, JSON.stringify(t.body));
+        assert.deepStrictEqual(t.body.tools, ['whoami']);
+      } finally {
+        if (id) await req('DELETE', `/api/mcp/servers/${id}`);
+        await fx.close();
+      }
+    });
+
+    await test('MCP install — custom stdio server; env never returned, only masked tail', async () => {
+      const r = await req('POST', '/api/mcp/servers', { slug: 'mcpdummy', name: 'Dummy', transport: 'stdio', command: process.execPath, args: [FIXTURE], env: { DUMMY_SECRET: SECRET } });
+      assert.strictEqual(r.status, 201, r.raw);
+      server = r.body.server;
+      assert.strictEqual(server.default_access, 'none', 'no agent gets access by default');
+      assert.deepStrictEqual(server.env_keys, [{ key: 'DUMMY_SECRET', masked: '••••' + SECRET.slice(-4) }]);
+      const list = await req('GET', '/api/mcp/servers');
+      assert.ok(!list.raw.includes(SECRET) && !r.raw.includes(SECRET), 'secret value never in responses');
+      const stored = mDb.prepare('SELECT env_enc FROM mcp_servers WHERE id=?').get(server.id).env_enc;
+      assert.ok(stored && !stored.includes(SECRET), 'stored encrypted');
+      assert.strictEqual((await req('POST', '/api/mcp/servers', { slug: 'mcpdummy', name: 'Dup', transport: 'stdio', command: 'node' })).status, 409);
+    });
+
+    await test('MCP test endpoint — starts upstream and lists its tools', async () => {
+      const r = await req('POST', `/api/mcp/servers/${server.id}/test`);
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.ok, true, r.raw);
+      assert.deepStrictEqual(r.body.tools.sort(), ['big', 'echo', 'fail', 'send_note']);
+      const t = await req('GET', `/api/mcp/servers/${server.id}/tools`);
+      assert.strictEqual(t.status, 200);
+      const byName = Object.fromEntries(t.body.tools.map(x => [x.name, x]));
+      assert.strictEqual(byName.send_note.write_hint, true);
+      assert.strictEqual(byName.echo.write_hint, false);
+      assert.strictEqual(byName.echo.enabled, true);
+      const s = (await req('GET', '/api/mcp/servers')).body.servers.find(x => x.id === server.id);
+      assert.strictEqual(s.status, 'running');
+      assert.strictEqual(s.tool_count, 4);
+    });
+
+    await test('MCP token — delivered in agent_trigger, stable for the same session', async () => {
+      const first = await triggerToken(agA, roomA, 'mcp one');
+      tokA = first.token;
+      threadA = first.threadId;
+      assert.match(tokA || '', /^stoa_mcp_[A-Za-z0-9_-]{43}$/);
+      assert.ok(first.threadId, 'room-level message runs in its own thread');
+      assert.strictEqual((await triggerToken(agA, roomA, 'mcp two', first.threadId)).token, tokA, 'same agent/room/thread → same token');
+      const other = await triggerToken(agA, roomA, 'mcp three');
+      assert.ok(other.token && other.token !== tokA && other.threadId !== first.threadId, 'other thread → other token');
+      tokB = (await triggerToken(agB, roomB, 'mcp b')).token;
+      assert.ok(tokB && tokB !== tokA);
+      const st = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.sub_agent?.id === sub.id, 5000);
+      const r = await asAnon(() => req('POST', `/api/rooms/${roomA}/sub-agent-trigger`, { sub_agent_id: sub.id, task: 'check the mcp tools please' }, { 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret }));
+      assert.strictEqual(r.status, 200, r.raw);
+      const m = await st;
+      tokSub = m.mcp_token;
+      assert.ok(tokSub && tokSub !== tokA, 'sub-agent session has its own token');
+      const wake = waitForWsMessage(agA.ws, w => w.type === 'agent_trigger' && !w.sub_agent, 3000).catch(() => null);
+      agA.ws.send(JSON.stringify({ type: 'agent_message', message_id: m.message_id, content: 'done', state: 'complete' }));
+      const w = await wake;
+      if (w) agA.ws.send(JSON.stringify({ type: 'agent_message', message_id: w.message_id, content: 'done', state: 'complete' }));
+    });
+
+    await test('MCP token — skill command trigger carries the room-level token too', async () => {
+      mDb.prepare("INSERT INTO agent_skills (actor_id, name, scope) VALUES (?, '__mcpskill', 'global')").run(agA.actorId);
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: roomA }));
+        await waitForWsMessage(humanWs, m => m.type === 'history');
+        const runSkill = async () => {
+          const trig = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.prompt === '/__mcpskill', 5000);
+          humanWs.send(JSON.stringify({ type: 'send_message', room_id: roomA, content: '/__mcpskill' }));
+          const m = await trig;
+          agA.ws.send(JSON.stringify({ type: 'agent_complete', room_id: roomA, message_id: m.message_id, content: 'skill done' }));
+          return m.mcp_token;
+        };
+        const t1 = await runSkill();
+        assert.match(t1 || '', /^stoa_mcp_/, 'skill-run trigger has an MCP token');
+        assert.strictEqual(await runSkill(), t1, 'stable across skill runs');
+        assert.strictEqual((await mcp(t1, 'tools/list')).status, 200, 'token authenticates');
+        const row = mDb.prepare('SELECT room_id, thread_id, sub_agent_id FROM mcp_tokens WHERE token_hash=?').get(crypto.createHash('sha256').update(t1).digest('hex'));
+        assert.deepStrictEqual(row, { room_id: roomA, thread_id: null, sub_agent_id: null }, 'room-level session key');
+      } finally {
+        humanWs.close();
+        mDb.prepare("DELETE FROM agent_skills WHERE actor_id=? AND name='__mcpskill'").run(agA.actorId);
+      }
+    });
+
+    await test('MCP /mcp — missing, wrong, or agent-secret auth → 401', async () => {
+      assert.strictEqual((await mcp(null, 'tools/list')).status, 401);
+      assert.strictEqual((await mcp('stoa_mcp_' + 'A'.repeat(43), 'tools/list')).status, 401);
+      assert.strictEqual((await mcp(agA.secret, 'tools/list')).status, 401, 'agent secret as bearer');
+      assert.strictEqual((await mcp(null, 'tools/list', {}, { 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret })).status, 401, 'agent headers');
+      const cookie = await req('POST', '/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/list' }, { Accept: 'application/json, text/event-stream' });
+      assert.strictEqual(cookie.status, 401, 'owner session cookie is not an MCP token');
+    });
+
+    await test('MCP policy — default none: agent sees no tools and a direct call is denied + logged', async () => {
+      assert.deepStrictEqual(await listNames(tokA), []);
+      const r = await callText(tokA, 'mcpdummy__echo', { text: 'hi' });
+      assert.strictEqual(r.isError, true);
+      assert.match(r.text, /Denied by Stoa/);
+      const c = lastCall();
+      assert.deepStrictEqual([c.status, c.server_slug, c.tool, c.actor_id, c.room_id], ['denied', 'mcpdummy', 'echo', agA.actorId, roomA]);
+    });
+
+    await test('MCP policy — agent allow: namespaced tools, call proxied with server env only', async () => {
+      assert.strictEqual((await grant('agent', agA.actorId, true)).status, 200);
+      assert.deepStrictEqual(await listNames(tokA), ['mcpdummy__big', 'mcpdummy__echo', 'mcpdummy__fail', 'mcpdummy__send_note']);
+      const r = await callText(tokA, 'mcpdummy__echo', { text: 'hi', api_key: 'should-not-be-logged' });
+      assert.strictEqual(r.isError, false);
+      assert.deepStrictEqual(JSON.parse(r.text), { text: 'hi', secret: 'set', leak: 'clean' });
+      const c = lastCall();
+      assert.strictEqual(c.status, 'ok');
+      assert.ok(c.result_bytes > 0 && c.duration_ms >= 0);
+      assert.deepStrictEqual(JSON.parse(c.args_preview), { text: 'hi', api_key: '***' });
+      assert.deepStrictEqual(await listNames(tokB), [], 'agent B unaffected');
+      const f = await callText(tokA, 'mcpdummy__fail');
+      assert.strictEqual(f.isError, true);
+      assert.strictEqual(lastCall().status, 'error');
+      assert.strictEqual((await callText(tokA, 'echo', {})).isError, true, 'un-namespaced name is not routed');
+    });
+
+    await test('MCP policy — sub-agent deny overrides parent agent allow', async () => {
+      assert.ok((await listNames(tokSub)).includes('mcpdummy__echo'), 'sub-agent inherits agent allow');
+      assert.strictEqual((await grant('sub_agent', sub.id, false)).status, 200);
+      assert.deepStrictEqual(await listNames(tokSub), []);
+      const r = await callText(tokSub, 'mcpdummy__echo', { text: 'x' });
+      assert.match(r.text, /Denied by Stoa/);
+      const c = lastCall();
+      assert.deepStrictEqual([c.status, c.sub_agent_id], ['denied', sub.id]);
+      assert.ok((await listNames(tokA)).includes('mcpdummy__echo'), 'parent keeps access');
+    });
+
+    await test('MCP tool overrides — disabled tool hidden and refused; requires_approval tool stays listed', async () => {
+      let r = await req('PUT', `/api/mcp/servers/${server.id}/tools/send_note`, { enabled: false });
+      assert.deepStrictEqual(r.body.tool, { name: 'send_note', enabled: false, requires_approval: false, rate_limit_per_min: null });
+      r = await req('PUT', `/api/mcp/servers/${server.id}/tools/big`, { requires_approval: true });
+      assert.strictEqual(r.status, 200);
+      assert.deepStrictEqual(await listNames(tokA), ['mcpdummy__big', 'mcpdummy__echo', 'mcpdummy__fail']);
+      assert.match((await callText(tokA, 'mcpdummy__send_note')).text, /tool is disabled/);
+      assert.strictEqual((await req('PUT', `/api/mcp/servers/${server.id}/tools/echo`, { enabled: 'no' })).status, 400);
+      const tools = (await req('GET', `/api/mcp/servers/${server.id}/tools`)).body.tools;
+      assert.strictEqual(tools.find(t => t.name === 'big').requires_approval, true);
+      await req('PUT', `/api/mcp/servers/${server.id}/tools/send_note`, { enabled: true });
+    });
+
+    await test('MCP sessions — owner edits push tools/list_changed to the agent session it affects, mid-session', async () => {
+      const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
+      const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/client/streamableHttp.js');
+      const { ToolListChangedNotificationSchema } = require('@modelcontextprotocol/sdk/types.js');
+      const open = async (token) => {
+        const c = new Client({ name: 'stoa-test', version: '1' });
+        const seen = { n: 0 };
+        c.setNotificationHandler(ToolListChangedNotificationSchema, () => { seen.n++; });
+        await c.connect(new StreamableHTTPClientTransport(new URL(`http://${HOST}:${PORT}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
+        return { c, seen };
+      };
+      const until = async (cond, ms = 3000) => { const end = Date.now() + ms; while (!cond() && Date.now() < end) await new Promise(r => setTimeout(r, 25)); return cond(); };
+      const a = await open(tokA), s = await open(tokSub);
+      try {
+        const names = async () => (await a.c.listTools()).tools.map(t => t.name).sort();
+        assert.ok((await names()).includes('mcpdummy__echo'));
+        assert.deepStrictEqual((await s.c.listTools()).tools, [], 'sub-agent is denied (previous test)');
+        await new Promise(r => setTimeout(r, 200));
+        assert.strictEqual((await req('PUT', `/api/mcp/servers/${server.id}/tools/echo`, { enabled: false })).status, 200);
+        assert.ok(await until(() => a.seen.n === 1), 'agent session notified after the owner disabled a tool');
+        assert.ok(!(await names()).includes('mcpdummy__echo'), 'same session re-lists without the tool');
+        assert.strictEqual((await req('PUT', `/api/mcp/servers/${server.id}/tools/echo`, { enabled: true })).status, 200);
+        assert.ok(await until(() => a.seen.n === 2));
+        assert.ok((await names()).includes('mcpdummy__echo'));
+        assert.strictEqual(s.seen.n, 0, 'denied sub-agent session saw no change, got no notification');
+      } finally {
+        await a.c.close().catch(() => {});
+        await s.c.close().catch(() => {});
+      }
+    });
+
+    // big requires approval (previous test). The owner watches roomA; the agent's call blocks meanwhile.
+    const approvalRound = async (decide, onEvent = null) => {
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        if (onEvent) humanWs.on('message', d => { const m = JSON.parse(d); if (m.type?.startsWith('mcp_approval')) onEvent(m); });
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: roomA }));
+        await waitForWsMessage(humanWs, m => m.type === 'history');
+        const asked = waitForWsMessage(humanWs, m => m.type === 'mcp_approval', 5000);
+        const call = callText(tokA, 'mcpdummy__big', { bytes: 12, token: 'not-in-preview' });
+        const { approval } = await asked;
+        const resolved = waitForWsMessage(humanWs, m => m.type === 'mcp_approval_resolved' && m.id === approval.id, 8000);
+        const out = await decide(approval);
+        return { approval, out, result: await call, resolved: await resolved };
+      } finally { humanWs.close(); }
+    };
+
+    await test('MCP approval — call waits for the owner; card has who/what/where; approve runs the tool', async () => {
+      const ranBig = () => mDb.prepare("SELECT COUNT(*) n FROM mcp_calls WHERE server_slug='mcpdummy' AND tool='big'").get().n;
+      const before = ranBig();
+      const { approval, out, result, resolved } = await approvalRound(async (a) => {
+        assert.strictEqual(ranBig(), before, 'nothing ran or was logged before the decision');
+        const pending = await req('GET', `/api/mcp/approvals?room_id=${roomA}&thread_id=${threadA}&status=pending`);
+        assert.strictEqual(pending.status, 200);
+        assert.deepStrictEqual(pending.body.approvals.map(x => x.id), [a.id], 'listed while pending');
+        return req('POST', `/api/mcp/approvals/${a.id}`, { decision: 'approve' });
+      });
+      assert.deepStrictEqual([approval.server_slug, approval.tool, approval.actor_id, approval.actor_name, approval.room_id, approval.thread_id, approval.status],
+        ['mcpdummy', 'big', agA.actorId, '__test-mcp-a', roomA, threadA, 'pending']);
+      assert.deepStrictEqual(JSON.parse(approval.args_preview), { bytes: 12, token: '***' });
+      const ttl = Date.parse(approval.expires_at) - Date.parse(approval.created_at);
+      assert.ok(Math.abs(ttl - Number(process.env.MCP_APPROVAL_TIMEOUT_MS || 300000)) <= 1000, `expires_at follows the timeout (${ttl}ms)`);
+      assert.strictEqual(out.status, 200, out.raw);
+      assert.strictEqual(out.body.approval.status, 'approved');
+      assert.strictEqual(resolved.status, 'approved');
+      assert.match(resolved.decided_at, /Z$/);
+      assert.deepStrictEqual([result.isError, result.text], [false, 'x'.repeat(12)]);
+      assert.strictEqual(lastCall().status, 'ok');
+      const again = await req('POST', `/api/mcp/approvals/${approval.id}`, { decision: 'deny' });
+      assert.strictEqual(again.status, 409, 'decided once');
+      assert.strictEqual(again.body.approval.status, 'approved');
+    });
+
+    await test('MCP approval — events reach owner connections outside the room once, room members once', async () => {
+      const outside = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      const seen = { outside: [], member: [] };
+      try {
+        outside.send(JSON.stringify({ type: 'subscribe_global' }));
+        outside.on('message', d => { const m = JSON.parse(d); if (m.type?.startsWith('mcp_approval')) seen.outside.push(m); });
+        await new Promise(r => setTimeout(r, 100));
+        const { approval, resolved } = await approvalRound(async (a) => {
+          return req('POST', `/api/mcp/approvals/${a.id}`, { decision: 'approve' });
+        }, (m) => seen.member.push(m));
+        await new Promise(r => setTimeout(r, 200));
+        const ids = (arr, t) => arr.filter(m => m.type === t && (m.approval?.id ?? m.id) === approval.id).length;
+        assert.deepStrictEqual([ids(seen.outside, 'mcp_approval'), ids(seen.outside, 'mcp_approval_resolved')], [1, 1], 'MCP page connection');
+        assert.deepStrictEqual([ids(seen.member, 'mcp_approval'), ids(seen.member, 'mcp_approval_resolved')], [1, 1], 'room member: no duplicate card');
+        const g = seen.outside.find(m => m.type === 'mcp_approval_resolved');
+        assert.deepStrictEqual([g.status, g.room_id, resolved.room_id], ['approved', roomA, roomA]);
+        assert.strictEqual(seen.outside.find(m => m.type === 'mcp_approval').approval.tool, 'big');
+      } finally { outside.close(); }
+    });
+
+    await test('MCP approval — deny returns a tool error to the agent and logs denied', async () => {
+      const { result, resolved } = await approvalRound(a => req('POST', `/api/mcp/approvals/${a.id}`, { decision: 'deny' }));
+      assert.strictEqual(resolved.status, 'denied');
+      assert.strictEqual(result.isError, true);
+      assert.match(result.text, /owner denied/);
+      const c = lastCall();
+      assert.deepStrictEqual([c.status, c.tool], ['denied', 'big']);
+    });
+
+    await test('MCP approval — no decision before expires_at → expired, call refused', async () => {
+      const t0 = Date.now();
+      const { approval, result, resolved } = await approvalRound(async () => null);
+      assert.ok(Date.now() - t0 >= Number(process.env.MCP_APPROVAL_TIMEOUT_MS || 0) - 200, 'waited for the timeout');
+      assert.strictEqual(resolved.status, 'expired');
+      assert.match(result.text, /approval expired/);
+      assert.strictEqual(lastCall().status, 'denied');
+      assert.strictEqual((await req('POST', `/api/mcp/approvals/${approval.id}`, { decision: 'approve' })).status, 409, 'too late to approve');
+      const hist = await req('GET', `/api/mcp/approvals?room_id=${roomA}`);
+      assert.deepStrictEqual(hist.body.approvals.slice(0, 3).map(x => x.status), ['expired', 'denied', 'approved']);
+    });
+
+    await test('MCP approval — bad input, unknown id, agent secret refused', async () => {
+      assert.strictEqual((await req('POST', '/api/mcp/approvals/99999999', { decision: 'approve' })).status, 404);
+      const any = mDb.prepare('SELECT id FROM mcp_approvals ORDER BY id DESC LIMIT 1').get();
+      assert.strictEqual((await req('POST', `/api/mcp/approvals/${any.id}`, { decision: 'yes' })).status, 400);
+      assert.strictEqual((await req('GET', '/api/mcp/approvals?status=maybe')).status, 400);
+      assert.strictEqual((await req('GET', '/api/mcp/approvals?room_id=x')).status, 400);
+      const h = { 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret };
+      const r = await asAnon(() => req('POST', `/api/mcp/approvals/${any.id}`, { decision: 'approve' }, h));
+      assert.strictEqual(r.status, 403, 'an agent cannot approve its own call');
+      await req('PUT', `/api/mcp/servers/${server.id}/tools/big`, { requires_approval: false });
+      assert.strictEqual(mDb.prepare('SELECT COUNT(*) n FROM mcp_tool_overrides WHERE server_id=?').get(server.id).n, 0, 'back to defaults → no override rows');
+    });
+
+    await test('MCP rate limit — per agent per tool per minute; excess refused and logged rate_limited', async () => {
+      for (const bad of [0, 10001, 1.5, '3', true]) {
+        assert.strictEqual((await req('PUT', `/api/mcp/servers/${server.id}/tools/echo`, { rate_limit_per_min: bad })).status, 400, String(bad));
+      }
+      let r = await req('PUT', `/api/mcp/servers/${server.id}/tools/echo`, { rate_limit_per_min: 2 });
+      assert.deepStrictEqual(r.body.tool, { name: 'echo', enabled: true, requires_approval: false, rate_limit_per_min: 2 });
+      const tools = (await req('GET', `/api/mcp/servers/${server.id}/tools`)).body.tools;
+      assert.strictEqual(tools.find(t => t.name === 'echo').rate_limit_per_min, 2);
+      assert.strictEqual((await callText(tokA, 'mcpdummy__echo', { text: '1' })).isError, false);
+      assert.strictEqual((await callText(tokA, 'mcpdummy__echo', { text: '2' })).isError, false);
+      const third = await callText(tokA, 'mcpdummy__echo', { text: '3' });
+      assert.strictEqual(third.isError, true);
+      assert.match(third.text, /rate limited \(2 calls per minute for this tool\), try again in \d+s/);
+      assert.deepStrictEqual([lastCall().status, lastCall().tool], ['rate_limited', 'echo']);
+      assert.strictEqual((await callText(tokA, 'mcpdummy__fail')).text, 'dummy failure', 'other tools are not limited');
+      await grant('sub_agent', sub.id, null);
+      assert.strictEqual((await callText(tokSub, 'mcpdummy__echo', { text: 's' })).isError, false, 'the sub-agent has its own window');
+      await grant('sub_agent', sub.id, false);
+      r = await req('PUT', `/api/mcp/servers/${server.id}/tools/echo`, { rate_limit_per_min: null });
+      assert.strictEqual(r.body.tool.rate_limit_per_min, null);
+      assert.strictEqual((await callText(tokA, 'mcpdummy__echo', { text: '4' })).isError, false, 'limit removed');
+      assert.strictEqual(mDb.prepare("SELECT COUNT(*) n FROM mcp_tool_overrides WHERE server_id=? AND tool='echo'").get(server.id).n, 0);
+    });
+
+    await test('MCP policy — room deny is a boundary even with agent allow', async () => {
+      assert.strictEqual((await grant('room', roomA, false)).status, 200);
+      assert.deepStrictEqual(await listNames(tokA), []);
+      assert.strictEqual((await grant('room', roomA, null)).status, 200);
+      assert.ok((await listNames(tokA)).length > 0, 'null removes the grant');
+    });
+
+    let oauthFx = null, oauthServer = null;
+    const ownerOrigin = `http://${HOST}:${PORT}`;
+    await test('MCP oauth — new server needs_auth; start needs the owner Origin; authorize URL is PKCE + registered redirect', async () => {
+      oauthFx = await startMcpHttpFixture({ mode: 'oauth' });
+      let r = await req('POST', '/api/mcp/servers', { slug: 'mcpoauth', name: 'OAuth', transport: 'http', url: oauthFx.mcpUrl, auth: 'oauth' });
+      assert.strictEqual(r.status, 201, r.raw);
+      oauthServer = r.body.server;
+      assert.deepStrictEqual([oauthServer.auth, oauthServer.status], ['oauth', 'needs_auth']);
+      const t = await req('POST', `/api/mcp/servers/${oauthServer.id}/test`);
+      assert.strictEqual(t.body.ok, false);
+      assert.match(t.body.error, /authorize/);
+      assert.strictEqual(oauthFx.stats.mcpRequests, 0, 'no request to the upstream without tokens');
+      assert.strictEqual((await req('POST', `/api/mcp/servers/${oauthServer.id}/oauth/start`)).status, 400, 'no Origin');
+      assert.strictEqual((await req('POST', `/api/mcp/servers/${oauthServer.id}/oauth/start`, null, { Origin: 'https://evil.example' })).status, 403, 'foreign Origin');
+      assert.strictEqual((await req('POST', `/api/mcp/servers/${server.id}/oauth/start`, null, { Origin: ownerOrigin })).status, 400, 'stdio server has no OAuth');
+      r = await req('POST', `/api/mcp/servers/${oauthServer.id}/oauth/start`, null, { Origin: ownerOrigin });
+      assert.strictEqual(r.status, 200, r.raw);
+      const a = oauthFx.authorize(r.body.authorize_url);
+      assert.strictEqual(a.redirect_uri, `${ownerOrigin}/api/mcp/oauth/callback`);
+      assert.strictEqual(a.resource, oauthFx.mcpUrl, 'RFC 8707 resource from the protected resource metadata');
+      assert.ok(a.state && a.state.length >= 32);
+      assert.strictEqual(oauthFx.stats.registrations, 1, 'dynamic client registration');
+    });
+
+    await test('MCP oauth callback — owner only, bad/replayed state refused, tokens stored encrypted, server usable', async () => {
+      const start = await req('POST', `/api/mcp/servers/${oauthServer.id}/oauth/start`, null, { Origin: ownerOrigin });
+      const { code, state } = oauthFx.authorize(start.body.authorize_url);
+      const cb = (q) => req('GET', `/api/mcp/oauth/callback?${new URLSearchParams(q)}`);
+      assert.strictEqual((await asAnon(() => cb({ code, state }))).status, 401, 'needs the owner session');
+      assert.strictEqual((await cb({ code, state: state + 'x' })).status, 400, 'unknown state');
+      assert.strictEqual(oauthFx.stats.tokenRequests, 0, 'nothing exchanged on a bad state');
+      const ok = await cb({ code, state });
+      assert.strictEqual(ok.status, 302, ok.raw);
+      assert.strictEqual(ok.headers.location, `/?mcp_oauth=connected&server_id=${oauthServer.id}`);
+      assert.strictEqual(oauthFx.stats.registrations, 1, 'registration reused for the same redirect URI');
+      assert.strictEqual((await cb({ code, state })).status, 400, 'state is single use');
+      const enc = mDb.prepare('SELECT oauth_enc FROM mcp_servers WHERE id=?').get(oauthServer.id).oauth_enc;
+      assert.ok(enc && !/at_|rt_|client_/.test(enc), 'tokens and client id stored encrypted');
+      const list = await req('GET', '/api/mcp/servers');
+      assert.ok(!/at_[A-Za-z0-9_-]{10}|rt_[A-Za-z0-9_-]{10}|oauth_enc/.test(list.raw), 'never in responses');
+      assert.notStrictEqual(list.body.servers.find(x => x.id === oauthServer.id).status, 'needs_auth');
+      const t = await req('POST', `/api/mcp/servers/${oauthServer.id}/test`);
+      assert.deepStrictEqual([t.body.ok, t.body.tools], [true, ['whoami']], JSON.stringify(t.body));
+      assert.strictEqual((await req('PUT', '/api/mcp/access', { server_id: oauthServer.id, subject_type: 'agent', subject_id: agA.actorId, allow: true })).status, 200);
+      const r = await callText(tokA, 'mcpoauth__whoami');
+      assert.deepStrictEqual([r.isError, r.text], [false, 'hello via oauth']);
+    });
+
+    await test('MCP oauth — provider error and revoked tokens: back to needs_auth, call refused clearly', async () => {
+      const start = await req('POST', `/api/mcp/servers/${oauthServer.id}/oauth/start`, null, { Origin: ownerOrigin });
+      const { state } = oauthFx.authorize(start.body.authorize_url);
+      const denied = await req('GET', `/api/mcp/oauth/callback?${new URLSearchParams({ state, error: 'access_denied' })}`);
+      assert.strictEqual(denied.status, 302);
+      assert.match(denied.headers.location, new RegExp(`^/\\?mcp_oauth=error&server_id=${oauthServer.id}&reason=`));
+      assert.strictEqual((await callText(tokA, 'mcpoauth__whoami')).text, 'hello via oauth', 'a refused re-connect keeps the working tokens');
+      oauthFx.revokeAll();
+      const t = await req('POST', `/api/mcp/servers/${oauthServer.id}/test`);
+      assert.strictEqual(t.body.ok, false);
+      assert.match(t.body.error, /authorization expired or was revoked/);
+      const s = (await req('GET', '/api/mcp/servers')).body.servers.find(x => x.id === oauthServer.id);
+      assert.strictEqual(s.status, 'needs_auth');
+      const c = await callText(tokA, 'mcpoauth__whoami');
+      assert.strictEqual(c.isError, true);
+      assert.match(c.text, /authoriz/);
+    });
+
+    await test('MCP oauth — auth mode validation; leaving oauth drops stored tokens', async () => {
+      assert.strictEqual((await req('POST', '/api/mcp/servers', { slug: 'mcpx', name: 'X', transport: 'http', url: oauthFx.mcpUrl, auth: 'magic' })).status, 400);
+      assert.strictEqual((await req('POST', '/api/mcp/servers', { slug: 'mcpx', name: 'X', transport: 'stdio', command: 'node', auth: 'oauth' })).status, 400);
+      assert.strictEqual((await req('PATCH', `/api/mcp/servers/${server.id}`, { auth: 'oauth' })).status, 400, 'stdio server');
+      const r = await req('PATCH', `/api/mcp/servers/${oauthServer.id}`, { auth: 'headers' });
+      assert.strictEqual(r.body.server.auth, 'headers');
+      assert.strictEqual(mDb.prepare('SELECT oauth_enc FROM mcp_servers WHERE id=?').get(oauthServer.id).oauth_enc, null);
+      await req('DELETE', `/api/mcp/servers/${oauthServer.id}`);
+      oauthServer = null;
+      await oauthFx.close();
+      oauthFx = null;
+    });
+
+    await test('MCP access — matrix lists subjects and grants; bad input rejected', async () => {
+      const r = await req('GET', '/api/mcp/access');
+      assert.strictEqual(r.status, 200);
+      assert.ok(r.body.servers.some(s => s.id === server.id && s.slug === 'mcpdummy'));
+      assert.ok(r.body.subjects.some(s => s.type === 'sub_agent' && s.id === sub.id && s.parent_agent_id === agA.actorId));
+      assert.ok(r.body.subjects.some(s => s.type === 'room' && s.id === roomA));
+      assert.ok(r.body.grants.some(g => g.server_id === server.id && g.subject_type === 'agent' && g.subject_id === agA.actorId && g.allow === true));
+      assert.strictEqual((await grant('user', agA.actorId, true)).status, 400);
+      assert.strictEqual((await grant('agent', 99999999, true)).status, 404);
+      assert.strictEqual((await grant('agent', agA.actorId, 'yes')).status, 400);
+      assert.strictEqual((await req('PUT', '/api/mcp/access', { server_id: 99999999, subject_type: 'agent', subject_id: agA.actorId, allow: true })).status, 404);
+    });
+
+    await test('MCP activity — filters, joins names, paginates by before_id', async () => {
+      const all = await req('GET', `/api/mcp/calls?server_id=${server.id}`);
+      assert.strictEqual(all.status, 200);
+      assert.ok(all.body.calls.length >= 5);
+      assert.ok(all.body.calls.every(c => c.server_slug === 'mcpdummy'));
+      const ok = all.body.calls.find(c => c.status === 'ok');
+      assert.strictEqual(ok.actor_name, '__test-mcp-a');
+      assert.match(ok.created_at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
+      assert.ok(all.body.calls.some(c => c.sub_agent_label === 'mcpsub'));
+      assert.ok(!all.raw.includes('should-not-be-logged'));
+      const p1 = await req('GET', `/api/mcp/calls?server_id=${server.id}&limit=1`);
+      assert.strictEqual(p1.body.calls.length, 1);
+      assert.strictEqual(p1.body.next_before_id, p1.body.calls[0].id);
+      const p2 = await req('GET', `/api/mcp/calls?server_id=${server.id}&limit=1&before_id=${p1.body.next_before_id}`);
+      assert.ok(p2.body.calls[0].id < p1.body.calls[0].id);
+      assert.strictEqual((await req('GET', `/api/mcp/calls?actor_id=${agB.actorId}&server_id=${server.id}`)).body.calls.length, 0);
+      assert.strictEqual((await req('GET', '/api/mcp/calls?limit=abc')).status, 400);
+    });
+
+    await test('MCP edit — env merge (empty keeps, env_remove drops), slug immutable, disable hides tools', async () => {
+      let r = await req('PATCH', `/api/mcp/servers/${server.id}`, { env: { DUMMY_SECRET: '', EXTRA_KEY: 'extra-value-1234' } });
+      assert.strictEqual(r.status, 200, r.raw);
+      assert.deepStrictEqual(r.body.server.env_keys.map(e => e.key).sort(), ['DUMMY_SECRET', 'EXTRA_KEY']);
+      assert.deepStrictEqual(JSON.parse((await callText(tokA, 'mcpdummy__echo', { text: 'y' })).text).secret, 'set', 'empty value kept the secret');
+      r = await req('PATCH', `/api/mcp/servers/${server.id}`, { env_remove: ['DUMMY_SECRET'] });
+      assert.deepStrictEqual(r.body.server.env_keys.map(e => e.key), ['EXTRA_KEY']);
+      assert.strictEqual(JSON.parse((await callText(tokA, 'mcpdummy__echo', { text: 'z' })).text).secret, 'unset', 'reconfigured upstream lost the removed env');
+      assert.strictEqual((await req('PATCH', `/api/mcp/servers/${server.id}`, { slug: 'renamed' })).status, 400);
+      assert.strictEqual((await req('PATCH', `/api/mcp/servers/${server.id}`, { command: 'bash' })).status, 400);
+      r = await req('PATCH', `/api/mcp/servers/${server.id}`, { enabled: false });
+      assert.strictEqual(r.body.server.status, 'disabled');
+      assert.deepStrictEqual(await listNames(tokA), []);
+      assert.match((await callText(tokA, 'mcpdummy__echo')).text, /disabled/);
+      await req('PATCH', `/api/mcp/servers/${server.id}`, { enabled: true });
+    });
+
+    await test('MCP cleanup — deleting a sub-agent revokes its token and drops its grants', async () => {
+      assert.strictEqual(mDb.prepare("SELECT COUNT(*) n FROM mcp_access WHERE subject_type='sub_agent' AND subject_id=?").get(sub.id).n, 1);
+      assert.strictEqual((await req('DELETE', `/api/sub-agents/${sub.id}`)).status, 204);
+      assert.strictEqual(mDb.prepare("SELECT COUNT(*) n FROM mcp_access WHERE subject_type='sub_agent' AND subject_id=?").get(sub.id).n, 0);
+      assert.strictEqual((await mcp(tokSub, 'tools/list')).status, 401);
+      assert.strictEqual((await mcp(tokA, 'tools/list')).status, 200, 'parent token still valid');
+    });
+
+    await test('MCP cleanup — deleting a room revokes its tokens and drops its grants', async () => {
+      assert.strictEqual((await mcp(tokB, 'tools/list')).status, 200);
+      assert.strictEqual((await grant('room', roomB, false)).status, 200);
+      assert.strictEqual((await req('DELETE', `/api/rooms/${roomB}`)).status, 204);
+      testRoomIds = testRoomIds.filter(id => id !== roomB);
+      assert.strictEqual(mDb.prepare("SELECT COUNT(*) n FROM mcp_access WHERE subject_type='room' AND subject_id=?").get(roomB).n, 0);
+      assert.ok(mDb.prepare('SELECT revoked_at FROM mcp_tokens WHERE room_id=?').all(roomB).every(t => t.revoked_at));
+      assert.strictEqual((await mcp(tokB, 'tools/list')).status, 401);
+    });
+
+    // Token revocation on actor delete is covered by the "MCP gateway — token reuse…" unit test; an agent
+    // still in a room cannot be deleted while its messages exist, so here room B is already gone.
+    await test('MCP cleanup — deleting an agent drops its grants', async () => {
+      assert.strictEqual((await grant('agent', agB.actorId, true)).status, 200);
+      agB.ws.close();
+      assert.strictEqual((await req('DELETE', `/api/actors/${agB.actorId}`)).status, 204);
+      assert.strictEqual(mDb.prepare("SELECT COUNT(*) n FROM mcp_access WHERE subject_type='agent' AND subject_id=?").get(agB.actorId).n, 0);
+      assert.strictEqual(mDb.prepare('SELECT COUNT(*) n FROM mcp_tokens WHERE actor_id=? AND revoked_at IS NULL').get(agB.actorId).n, 0);
+      agB = null;
+    });
+
+    await test('MCP delete server — 204, calls keep server_slug, tools gone', async () => {
+      assert.strictEqual((await req('DELETE', `/api/mcp/servers/${server.id}`)).status, 204);
+      assert.strictEqual((await req('GET', `/api/mcp/servers/${server.id}/tools`)).status, 404);
+      const orphan = mDb.prepare("SELECT COUNT(*) n FROM mcp_calls WHERE server_id IS NULL AND server_slug='mcpdummy'").get().n;
+      assert.ok(orphan >= 5);
+      assert.deepStrictEqual(await listNames(tokA), []);
+      server = null;
+    });
+
+    await test('MCP teardown', async () => {
+      if (server) await req('DELETE', `/api/mcp/servers/${server.id}`);
+      if (oauthServer) await req('DELETE', `/api/mcp/servers/${oauthServer.id}`);
+      if (oauthFx) await oauthFx.close();
+      mDb.prepare("DELETE FROM mcp_calls WHERE server_slug='mcpoauth'").run();
+      mDb.prepare("DELETE FROM mcp_calls WHERE server_slug='mcpdummy'").run();
+      if (agA?.ws) agA.ws.close();
+      if (agB?.ws) agB.ws.close();
+    });
+  }
 
   // Teardown — delete all test rooms and actors created during the run
   console.log('\n[Test Teardown]');

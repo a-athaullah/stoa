@@ -7,6 +7,15 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
+// Stoa MCP gateway. The header holds the literal ${STOA_MCP_TOKEN}; Claude Code expands it from the
+// process env, so the token never appears in argv (visible in ps). No --strict-mcp-config: the
+// user's own MCP servers keep working.
+function mcpConfigArgs(env) {
+  if (!env?.STOA_MCP_TOKEN || !env?.STOA_MCP_URL) return [];
+  const config = { mcpServers: { stoa: { type: 'http', url: env.STOA_MCP_URL, headers: { Authorization: 'Bearer ${STOA_MCP_TOKEN}' } } } };
+  return ['--mcp-config', JSON.stringify(config)];
+}
+
 class ClaudeSession extends EventEmitter {
   constructor({ workDir = process.cwd(), flags = [], resumeId = null, env = null } = {}) {
     super();
@@ -46,6 +55,7 @@ class ClaudeSession extends EventEmitter {
       '--verbose',
       '--dangerously-skip-permissions',
       '--debug-file', this.debugLogPath,
+      ...mcpConfigArgs(this.env),
       ...this.flags,
     ];
     const spawnOpts = { cwd: this.workDir, windowsHide: true };
@@ -293,4 +303,4 @@ class ClaudeSession extends EventEmitter {
   }
 }
 
-module.exports = { ClaudeSession };
+module.exports = { ClaudeSession, mcpConfigArgs };

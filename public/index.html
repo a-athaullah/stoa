@@ -33,6 +33,7 @@
   <link rel="stylesheet" href="/css/workspace.css">
   <link rel="stylesheet" href="/css/chat.css">
   <link rel="stylesheet" href="/css/components.css">
+  <link rel="stylesheet" href="/css/mcp.css">
   <!-- {{/APP_CSS}} -->
 </head>
 <body>
@@ -85,6 +86,10 @@
   <button class="app-nav-item" id="nav-automation" data-nav="automation" title="Automation" aria-label="Automation">
     <span class="app-nav-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>
     <span class="app-nav-label">Automation</span>
+  </button>
+  <button class="app-nav-item" id="nav-mcp" data-nav="mcp" title="MCP" aria-label="MCP">
+    <span class="app-nav-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 2v6"/><path d="M15 2v6"/><path d="M6 8h12v4a6 6 0 0 1-12 0z"/><path d="M12 18v4"/></svg></span>
+    <span class="app-nav-label">MCP</span>
   </button>
   <button class="app-nav-item" id="nav-usage" data-nav="usage" title="Usage" aria-label="Usage">
     <span class="app-nav-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></span>
@@ -193,6 +198,7 @@
       <span class="s-tab" data-tab="themes">themes<span class="s-tab-ul"></span></span>
       <span class="s-tab" data-tab="platforms">platforms<span class="s-tab-ul"></span></span>
       <span class="s-tab" data-tab="automation">automation<span class="s-tab-ul"></span></span>
+      <span class="s-tab" data-tab="mcp">MCP<span class="s-tab-ul"></span></span>
       <span class="s-tab" data-tab="usage">usage<span class="s-tab-ul"></span></span>
       <span class="s-tab" data-tab="doctor">doctor<span class="s-tab-ul"></span></span>
     </div>
@@ -438,6 +444,9 @@
 
     <!-- tab: automation -->
     <div class="s-content" id="s-tab-automation" style="display:none"></div>
+
+    <!-- tab: mcp -->
+    <div class="s-content" id="s-tab-mcp" style="display:none"></div>
 
     <!-- tab: usage -->
     <div class="s-content" id="s-tab-usage" style="display:none">
@@ -732,6 +741,12 @@
 <script src="/js/automation/automations.js"></script>
 <script src="/js/automation/events.js"></script>
 <script src="/js/automation/api.js"></script>
+<script src="/js/mcp/state.js"></script>
+<script src="/js/mcp/installed.js"></script>
+<script src="/js/mcp/add.js"></script>
+<script src="/js/mcp/access.js"></script>
+<script src="/js/mcp/activity.js"></script>
+<script src="/js/mcp/approvals.js"></script>
 <!-- {{/APP_JS}} -->
 <div id="img-lightbox" onclick="if(event.target===this)this.classList.remove('visible')"><button class="lb-nav lb-prev" onclick="event.stopPropagation();lbNav(-1)">&#8249;</button><img id="img-lightbox-src" alt="preview"><button class="lb-nav lb-next" onclick="event.stopPropagation();lbNav(1)">&#8250;</button></div>
 </body>

@@ -108,10 +108,14 @@ function waitUp(port, tries = 50) {
   const PORT = parseInt(process.env.TEST_PORT, 10) || (await getFreePort());
   const env = { ...process.env, PORT: String(PORT), DB_PATH: tmpDb, TEST_HOST: '127.0.0.1', STOA_TEST: '1', STOA_AGENT_BUNDLE_DIR: tmpBundleDir,
     STOA_ENV_FILE: tmpEnv,
+    // Expired-retrigger sweep (60 s in prod) fast enough for the offline-agent give-up test.
+    RETRIGGER_SWEEP_MS: '500',
     // Model-free embedding backend: exercises worker/backfill/hybrid without a 130 MB download.
     STOA_SEMANTIC_BACKEND: 'hash',
     // Server run timeout (15 min in prod) short enough for the timed-out sub-agent tests to reach it.
     AGENT_RUN_TIMEOUT_MS: '15000',
+    // MCP approval wait (5 min in prod) short enough for the expiry test to reach it.
+    MCP_APPROVAL_TIMEOUT_MS: '3000',
     STOA_TEST_EMAIL: testEmail || '', STOA_TEST_PASSWORD: testPassword };
 
   const server = spawn(process.execPath, [serverFile], { cwd: projectRoot, env, stdio: ['ignore', 'pipe', 'pipe'] });

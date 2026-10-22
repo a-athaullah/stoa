@@ -536,7 +536,9 @@ function postWakeSystemEvent(roomId, participantId, threadId, content) {
   const sys = db.prepare(
     `INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?,?,?,'system_event',?)`
   ).run(roomId, participantId, content, threadId);
-  broadcast(roomId, { type: 'message_new', message: db.prepare('SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id WHERE m.id=?').get(Number(sys.lastInsertRowid)) });
+  const id = Number(sys.lastInsertRowid);
+  broadcast(roomId, { type: 'message_new', message: db.prepare('SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id WHERE m.id=?').get(id) });
+  return id;
 }
 
 // A wake delivered to an offline or outdated agent is consumed without running:
@@ -567,6 +569,129 @@ function wakeParentOnSubAgentError(messageId, actorId) {
     if (!r || db.prepare('SELECT 1 FROM pending_wakes WHERE sub_agent_message_id=?').get(messageId)) return;
     enqueueParentWake(r.room_id, r.participant_id, messageId, r.thread_id);
   } catch (e) { console.error('[wake] error-path enqueue error:', e.message); }
+}
+
+// ─── Self-healing: re-deliver parent triggers refused by "agent updating" ───
+// An outdated agent gets a restart and the trigger is refused before it runs. A
+// sub-agent run wakes its parent (markSubAgentInterrupted); a parent trigger is
+// queued here instead and re-delivered on the agent's next current-version
+// agent_connect, FIFO per (participant, thread). A row stays until its replay
+// returns, so a crash mid-replay re-delivers it (at-least-once); the
+// already-answered check below drops it if the agent did reply to the trigger.
+// After MAX_RETRIGGER_ATTEMPTS refusals/failures or RETRIGGER_MAX_AGE_MIN the row
+// is dropped with a system_event so a human picks it up.
+const MAX_RETRIGGER_ATTEMPTS = 3;
+const RETRIGGER_MAX_AGE_MIN = 30;
+const retriggerChains = new Set(); // `${participant_id}:${thread_id}` chains being drained
+
+function queueRetrigger(roomId, ai, prompt, replyTo, attachments, threadId) {
+  try {
+    if (ai.retrigger) {
+      ai.retrigger.refused = true;
+      db.prepare('UPDATE pending_retriggers SET attempts=attempts+1 WHERE id=?').run(ai.retrigger.id);
+      return;
+    }
+    const dup = replyTo
+      ? db.prepare('SELECT 1 FROM pending_retriggers WHERE participant_id=? AND trigger_message_id=?').get(ai.participant_id, replyTo)
+      : db.prepare('SELECT 1 FROM pending_retriggers WHERE participant_id=? AND thread_id IS ? AND trigger_message_id IS NULL AND prompt=?').get(ai.participant_id, threadId ?? null, prompt);
+    if (dup) return;
+    db.prepare(`INSERT INTO pending_retriggers (room_id, participant_id, trigger_message_id, thread_id, prompt, attachments, outside_history)
+      VALUES (?,?,?,?,?,?,?)`).run(roomId, ai.participant_id, replyTo ?? null, threadId ?? null, prompt,
+      attachments?.length ? JSON.stringify(attachments) : null, ai.prompt_outside_history ? 1 : 0);
+  } catch (e) { console.error('[retrigger] enqueue error:', e.message); }
+}
+
+function giveUpRetrigger(row, agentName, why) {
+  // The sweep and a drain chain can both reach a row; only the one that deletes it reports.
+  if (db.prepare('DELETE FROM pending_retriggers WHERE id=?').run(row.id).changes === 0) return;
+  const ref = row.trigger_message_id ? `trigger ${row.trigger_message_id}` : `trigger (antrean #${row.id})`;
+  const sysId = postWakeSystemEvent(row.room_id, row.participant_id, row.thread_id ?? null,
+    `${ref} tidak terproses — butuh manusia (${agentName}: ${why})`);
+  // Bypasses maybeBroadcastError's 10-min per-thread flood guard on purpose: this is the terminal
+  // "a human must act" signal, at most once per queued trigger, so it cannot flood the feed — and the
+  // guard is usually already spent by this thread's "agent updating" placeholder. Parent-only rows,
+  // so the sub-agent skip does not apply; a root (thread-less) message is in the feed already.
+  if (row.thread_id) setBroadcastReason(sysId, 'error', row.room_id);
+  console.log(`[retrigger] gave up on #${row.id} (${why})`);
+}
+
+// Returns true to continue the chain with the next queued trigger, false to stop it
+// (agent not ready / refused again: the rest of the chain would be refused too).
+async function deliverRetrigger(id) {
+  const row = db.prepare(`SELECT *, created_at < datetime('now', ?) AS expired FROM pending_retriggers WHERE id=?`)
+    .get(`-${RETRIGGER_MAX_AGE_MIN} minutes`, id);
+  if (!row) return true;
+  const ai = db.prepare(`
+    SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.adapter_config, a.avatar_color, a.avatar_symbol, a.avatar_url
+    FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.id=?
+  `).get(row.participant_id);
+  if (!ai) { db.prepare('DELETE FROM pending_retriggers WHERE id=?').run(id); return true; }
+  if (row.expired) { giveUpRetrigger(row, ai.name, `kedaluwarsa > ${RETRIGGER_MAX_AGE_MIN} menit`); return true; }
+  if (row.attempts >= MAX_RETRIGGER_ATTEMPTS) { giveUpRetrigger(row, ai.name, `gagal ${row.attempts}×`); return true; }
+  if (row.trigger_message_id && db.prepare(`SELECT 1 FROM messages WHERE reply_to=? AND participant_id=? AND sub_agent_id IS NULL
+      AND state IN ('complete','streaming','requesting') LIMIT 1`).get(row.trigger_message_id, row.participant_id)) {
+    db.prepare('DELETE FROM pending_retriggers WHERE id=?').run(id);
+    return true;
+  }
+  if (!agentReadyForWake(ai.actor_id)) return false;
+
+  const holder = { id, refused: false };
+  let attachments = [];
+  try { attachments = row.attachments ? JSON.parse(row.attachments) : []; } catch { /* stored by queueRetrigger, always JSON */ }
+  try {
+    await triggerAiResponse(row.room_id, { ...ai, sub_agent: null, prompt_outside_history: !!row.outside_history, retrigger: holder },
+      row.prompt, row.trigger_message_id, attachments, null, row.thread_id ?? null);
+    if (!holder.refused) {
+      db.prepare('DELETE FROM pending_retriggers WHERE id=?').run(id);
+      // The refused run never reached triggerAgentsSequential's mention cascade; run it like a wake turn does.
+      cascadeMentionsAfterWake(row.room_id, ai, row.thread_id ?? null).catch(e => console.error('[retrigger-cascade] error:', e.message));
+      return true;
+    }
+  } catch (e) {
+    if (!holder.refused) db.prepare('UPDATE pending_retriggers SET attempts=attempts+1 WHERE id=?').run(id);
+    console.error(`[retrigger] replay #${id} failed:`, e.message);
+  }
+  const left = db.prepare('SELECT * FROM pending_retriggers WHERE id=?').get(id);
+  if (left && left.attempts >= MAX_RETRIGGER_ATTEMPTS) giveUpRetrigger(left, ai.name, `gagal ${left.attempts}×`);
+  return false;
+}
+
+// drainRetriggers only runs on agent_connect, so an agent that never comes back (failed update,
+// machine down) would hold its rows forever and nobody would hear. The sweep gives up expired
+// rows regardless of connection; a chain being drained right now owns its rows and is skipped.
+// RETRIGGER_SWEEP_MS is shortened by run-tests.js so the sweep runs for real in tests.
+const RETRIGGER_SWEEP_MS = parseInt(process.env.RETRIGGER_SWEEP_MS) || 60_000;
+function sweepExpiredRetriggers() {
+  const rows = db.prepare(`SELECT pr.*, a.name AS agent_name FROM pending_retriggers pr
+    JOIN room_participants rp ON rp.id=pr.participant_id JOIN actors a ON a.id=rp.actor_id
+    WHERE pr.created_at < datetime('now', ?) ORDER BY pr.id`).all(`-${RETRIGGER_MAX_AGE_MIN} minutes`);
+  for (const r of rows) {
+    if (retriggerChains.has(`${r.participant_id}:${r.thread_id ?? ''}`)) continue;
+    try { giveUpRetrigger(r, r.agent_name, `kedaluwarsa > ${RETRIGGER_MAX_AGE_MIN} menit`); }
+    catch (e) { console.error(`[retrigger] sweep give-up #${r.id} failed:`, e.message); }
+  }
+}
+setInterval(() => {
+  try { sweepExpiredRetriggers(); } catch (e) { console.error('[retrigger] sweep error:', e.message); }
+}, RETRIGGER_SWEEP_MS).unref();
+
+function drainRetriggers(actorId) {
+  const rows = db.prepare(`SELECT pr.id, pr.participant_id, pr.thread_id FROM pending_retriggers pr
+    JOIN room_participants rp ON rp.id=pr.participant_id WHERE rp.actor_id=? ORDER BY pr.id`).all(actorId);
+  const chains = new Map();
+  for (const r of rows) {
+    const key = `${r.participant_id}:${r.thread_id ?? ''}`;
+    if (!chains.has(key)) chains.set(key, []);
+    chains.get(key).push(r.id);
+  }
+  for (const [key, ids] of chains) {
+    if (retriggerChains.has(key)) continue;
+    retriggerChains.add(key);
+    (async () => {
+      for (const id of ids) if (!(await deliverRetrigger(id))) break;
+    })().catch(e => console.error('[retrigger] drain error:', e.message)).finally(() => retriggerChains.delete(key));
+  }
+  if (rows.length) console.log(`[retrigger] draining ${rows.length} queued trigger(s) for Actor #${actorId} in ${chains.size} chain(s)`);
 }
 
 // Phase 4 (Loop Guard #7): a compact per-sub-agent cost rollup for a room, used
@@ -1506,9 +1631,54 @@ function verifyProxyToken(bearer) {
 }
 
 // Least-privilege agent secrets — see lib/agent-scope.js for the allowlist and its evidence.
-const { matchAgentRoute, agentScopeEnforced } = require('./lib/agent-scope');
+const { matchAgentRoute, agentScopeEnforced, isSelfAuthenticatedPath } = require('./lib/agent-scope');
 const AGENT_SCOPE_ENFORCED = agentScopeEnforced(process.env.STOA_AGENT_SCOPE);
 if (!AGENT_SCOPE_ENFORCED) console.warn('[agent-scope] WARNING: STOA_AGENT_SCOPE=off — agent secrets have full API access');
+
+// MCP gateway (plan: stoa-feature/mcp-gateway.md): upstream MCP servers run here, agents reach them via /mcp.
+const mcpCredentials = require('./lib/credentials');
+const { createUpstreamManager, decodeServerEnv } = require('./lib/mcp-upstreams');
+const { createMcpGateway, APPROVAL_TIMEOUT_MAX_MS } = require('./lib/mcp-gateway');
+const { createMcpApi } = require('./lib/mcp-api');
+const { connectionEnv } = require('./lib/mcp-catalog');
+const { createMcpOAuth } = require('./lib/mcp-oauth');
+const mcpOAuth = createMcpOAuth({ db, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt });
+const mcpUpstreams = createUpstreamManager({
+  readEnv: (row) => connectionEnv(row, decodeServerEnv(row, mcpCredentials.decrypt)),
+  // A start / stop / OAuth connect can change an upstream's cached tool list → open agent sessions.
+  onStatus: (serverId, status, lastError) => {
+    broadcastGlobal({ type: 'mcp_status', server_id: serverId, status, last_error: lastError });
+    mcpGateway.toolsChanged();
+  },
+  authProvider: (row) => mcpOAuth.provider(row.id),
+  needsAuth: (row) => mcpOAuth.needsAuth(row),
+});
+const mcpGateway = createMcpGateway({
+  db, upstreams: mcpUpstreams, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt, version: require('./package.json').version,
+  approvalTimeoutMs: Math.min(APPROVAL_TIMEOUT_MAX_MS, Math.max(1000, parseInt(process.env.MCP_APPROVAL_TIMEOUT_MS, 10) || 5 * 60_000)),
+  // Approval cards live in the room (and thread) the agent is working in; the MCP page's approval log
+  // needs them too, so every other owner connection gets the same event. One copy per connection.
+  onApproval: (type, approval) => {
+    broadcastRoomThenGlobal(approval.room_id, type === 'mcp_approval'
+      ? { type, approval }
+      : { type, id: approval.id, status: approval.status, decided_at: approval.decided_at, room_id: approval.room_id });
+  },
+});
+const mcpApi = createMcpApi({ db, upstreams: mcpUpstreams, gateway: mcpGateway, oauth: mcpOAuth, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt });
+const MCP_CALLS_RETENTION_DAYS = parseInt(process.env.MCP_CALLS_RETENTION_DAYS, 10) || 30;
+const pruneMcpCalls = () => {
+  try { mcpGateway.pruneCalls(MCP_CALLS_RETENTION_DAYS); } catch (e) { console.error('[mcp] prune failed:', e.message); }
+};
+pruneMcpCalls();
+setInterval(pruneMcpCalls, 60 * 60_000).unref();
+// Token only once an MCP server exists: before that the agent session env is unchanged (no respawn
+// for setups that never use MCP). Harnesses without tool support get none.
+const mcpHasServers = db.prepare('SELECT 1 FROM mcp_servers LIMIT 1');
+function mcpTokenForTrigger({ actorId, roomId, threadId, subAgentId, toolsSupported }) {
+  if (toolsSupported === false || !mcpHasServers.get()) return undefined;
+  try { return mcpGateway.issueToken({ actorId, roomId, threadId: threadId || null, subAgentId: subAgentId || null }); }
+  catch (e) { console.error('[mcp] token issue failed:', e.message); return undefined; }
+}
 function agentScopeAllowed(agentId, route) {
   switch (route.scope) {
     case 'any': return true;
@@ -1684,6 +1854,8 @@ function requireAuth(req, res, url) {
   // Ollama proxy — the Claude SDK sends only a Bearer token (no cookie). The handler verifies
   // the HMAC proxy token (or agent headers) before reading the body.
   if (url.pathname === '/v1/messages') return true;
+  // MCP gateway — bearer MCP token verified by mcpGateway.handle before anything else.
+  if (isSelfAuthenticatedPath(url.pathname)) return true;
 
   // Human session first: a valid cookie keeps full access (and the Origin check) even if agent headers are present.
   const cookies = parseCookies(req.headers.cookie);
@@ -1748,6 +1920,19 @@ const server = http.createServer(async (req, res) => {
     }
     res.writeHead(401); return res.end('Unauthorized');
   }
+
+  if (url.pathname === '/mcp') {
+    let body;
+    if (req.method === 'POST') {
+      let raw;
+      try { raw = await readBody(req, 1024 * 1024); }
+      catch { return json(res, { error: 'request body too large' }, 413); }
+      body = parseJsonBody(raw);
+      if (body === null) return json(res, { jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' }, id: null }, 400);
+    }
+    return mcpGateway.handle(req, res, body);
+  }
+  if (await mcpApi.handle(req, res, url, { json, readBody, parseJsonBody })) return;
 
   // ── Auth routes (exempt from auth check above) ──
   if (req.method === 'POST' && url.pathname === '/api/client-error') {
@@ -2177,6 +2362,7 @@ const server = http.createServer(async (req, res) => {
       db.prepare("DELETE FROM settings WHERE scope='room' AND scope_id=?").run(roomId);
       db.prepare('DELETE FROM room_memory WHERE room_id=?').run(roomId);
       db.prepare('DELETE FROM memory_pending_writes WHERE room_id=?').run(roomId);
+      mcpGateway.forgetRoom(roomId);
       db.prepare('DELETE FROM rooms WHERE id=?').run(roomId);
     });
     deleteRoom();
@@ -4142,6 +4328,7 @@ const server = http.createServer(async (req, res) => {
     }
     db.prepare('DELETE FROM invite_suggestions WHERE suggested_actor_id=?').run(id);
     db.prepare('DELETE FROM room_participants WHERE actor_id=?').run(id);
+    mcpGateway.forgetActor(id);
     db.prepare('DELETE FROM actors WHERE id=?').run(id);
     const ws = agentClients.get(id);
     if (ws) { ws.close(); agentClients.delete(id); }
@@ -4289,6 +4476,7 @@ const server = http.createServer(async (req, res) => {
     const sa = db.prepare('SELECT avatar_url FROM sub_agents WHERE id=?').get(id);
     if (sa?.avatar_url) deleteAvatarFile(sa.avatar_url);
     db.prepare('DELETE FROM sub_agent_memory WHERE sub_agent_id=?').run(id);
+    mcpGateway.forgetSubAgent(id);
     db.prepare('DELETE FROM sub_agents WHERE id=?').run(id);
     res.writeHead(204); return res.end();
   }
@@ -5832,6 +6020,16 @@ function broadcastGlobal(data) {
   }
 }
 
+// Room members via broadcast(), then every other human connection: no connection gets it twice.
+function broadcastRoomThenGlobal(roomId, data) {
+  if (roomId != null) broadcast(roomId, data);
+  const inRoom = roomId != null ? roomClients.get(roomId) : null;
+  const str = JSON.stringify(data);
+  for (const client of globalClients) {
+    if (client.readyState === 1 && !inRoom?.has(client)) client.send(str);
+  }
+}
+
 function broadcastServerRestart(newPort, newWsUrl) {
   const payload = JSON.stringify({ type: 'server_restart', new_port: newPort, new_ws_url: newWsUrl });
   for (const client of globalClients) {
@@ -6146,6 +6344,7 @@ wss.on('connection', (ws, req) => {
         console.log(`[agent] draining ${reconnectWakes.length} pending wake(s) for Actor #${agentActorId} on reconnect`);
         for (const r of reconnectWakes) drainWake(r.id).catch(e => console.error('[wake] reconnect drain error:', e.message));
       }
+      drainRetriggers(agentActorId);
       // CLAUDE.md import: request import for unmigrated workdirs
       const unmigratedWds = db.prepare(
         'SELECT id, path FROM agent_workdirs WHERE actor_id=? AND claude_md_migrated_at IS NULL'
@@ -7819,6 +8018,8 @@ async function triggerSkillResponse(roomId, ai, prompt) {
         claude_session_id: sessionId,
         prompt,
         workdir: workdir || undefined,
+        // Same session key as a room-level triggerAiResponse, so the token (and session env) match.
+        mcp_token: mcpTokenForTrigger({ actorId: ai.actor_id, roomId }),
       }));
     });
   } else {
@@ -7949,6 +8150,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
       ? `${ai.name} sedang offline — sub-agent "${subLabel}" tidak bisa dijalankan`
       : `${ai.name} sedang offline`;
     console.log(`[trigger] ${ai.name} is offline${subLabel ? ` (sub-agent: ${subLabel})` : ''}, saving system_event`);
+    if (ai.retrigger) queueRetrigger(roomId, ai, prompt, replyTo, attachments, threadId);
     const sysResult = db.prepare(
       `INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?,?,?,?,?)`
     ).run(roomId, ai.participant_id, offlineMsg, 'system_event', threadId);
@@ -8008,9 +8210,13 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     if (agentVer && agentVer.localeCompare(EXPECTED_CLIENT_VERSION, undefined, { numeric: true }) < 0) {
       console.log(`[trigger] ${ai.name} outdated (v${agentVer} < v${EXPECTED_CLIENT_VERSION}), skipping trigger — sending restart`);
       agentWs.send(JSON.stringify({ type: 'restart' }));
-      db.prepare("UPDATE messages SET state='error', content='(agent updating — please retry)' WHERE id=?").run(msgId);
+      // A sub-agent's parent is woken and decides; a parent trigger is replayed from pending_retriggers.
+      const updatingText = subAgent ? '(agent updating — please retry)' : '(agent updating — akan diproses otomatis setelah restart)';
+      db.prepare("UPDATE messages SET state='error', content=? WHERE id=?").run(updatingText, msgId);
       if (subAgent) markSubAgentInterrupted(msgId);
+      else queueRetrigger(roomId, ai, prompt, replyTo, attachments, threadId);
       broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error', actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null });
+      maybeBroadcastError({ threadId, subAgentId: subAgent?.id, messageId: msgId, reason: 'error', roomId });
       return;
     }
   }
@@ -8367,6 +8573,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         thread_id: threadId || undefined,
         system_prompt: roomSysPrompt || undefined,
         system_prompt_hash: sysPromptHash || undefined,
+        mcp_token: mcpTokenForTrigger({ actorId: ai.actor_id, roomId, threadId, subAgentId: subAgent?.id, toolsSupported: modelToolsSupported }),
       }));
       console.log(`[trigger] sent to ${displayName} agent, msgId=${msgId}`);
     });

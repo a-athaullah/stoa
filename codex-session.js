@@ -10,6 +10,29 @@ function escapeTomlValue(str) {
   return JSON.stringify(String(str));
 }
 
+// Stoa MCP gateway. Codex reads the bearer token from the env var named here, so it stays out of
+// argv. approve: Stoa runs codex with approval policy "never", and without this every MCP tool call
+// is refused as "requires approval"; access control happens in the gateway.
+function mcpConfigArgs(env) {
+  if (!env?.STOA_MCP_TOKEN || !env?.STOA_MCP_URL) return [];
+  return [
+    '-c', `mcp_servers.stoa.url=${escapeTomlValue(env.STOA_MCP_URL)}`,
+    '-c', 'mcp_servers.stoa.bearer_token_env_var="STOA_MCP_TOKEN"',
+    '-c', 'mcp_servers.stoa.default_tools_approval_mode="approve"',
+    // Codex's default (60 s) would cut a call the gateway holds for owner approval.
+    ...(/^\d+$/.test(env.MCP_TOOL_TIMEOUT || '') ? ['-c', `mcp_servers.stoa.tool_timeout_sec=${Math.ceil(Number(env.MCP_TOOL_TIMEOUT) / 1000)}`] : []),
+  ];
+}
+
+// Same name shape as Claude Code (mcp__<server>__<tool>), so the chat labels gateway tools for both.
+function mcpToolStep(item) {
+  const args = item.arguments && typeof item.arguments === 'object' && !Array.isArray(item.arguments) ? item.arguments : {};
+  if (typeof item.server !== 'string' || !item.server || typeof item.tool !== 'string' || !item.tool) {
+    return { name: 'mcp_tool_call', input: args };
+  }
+  return { name: `mcp__${item.server}__${item.tool}`, input: args };
+}
+
 class CodexSession extends EventEmitter {
   constructor({ workDir = process.cwd(), flags = [], resumeId = null, env = null, systemPrompt = null, model = null } = {}) {
     super();
@@ -37,13 +60,13 @@ class CodexSession extends EventEmitter {
     const args = ['exec'];
     if (isResume && this._threadId) {
       args.push('resume', '--json', '--skip-git-repo-check', '--ignore-user-config');
-      args.push('-c', `sandbox_mode="${SANDBOX_MODE}"`);
+      args.push('-c', `sandbox_mode="${SANDBOX_MODE}"`, ...mcpConfigArgs(this.env));
       if (this.model) args.push('-m', this.model);
       if (this.systemPrompt) args.push('-c', `developer_instructions=${escapeTomlValue(this.systemPrompt)}`);
       args.push(this._threadId, '-');
     } else {
       args.push('--json', '--skip-git-repo-check', '--ignore-user-config');
-      args.push('-c', `sandbox_mode="${SANDBOX_MODE}"`);
+      args.push('-c', `sandbox_mode="${SANDBOX_MODE}"`, ...mcpConfigArgs(this.env));
       if (this.model) args.push('-m', this.model);
       if (this.systemPrompt) args.push('-c', `developer_instructions=${escapeTomlValue(this.systemPrompt)}`);
       args.push('-');
@@ -131,9 +154,10 @@ class CodexSession extends EventEmitter {
         this._accContent += event.item.text;
         this._currentOnToken?.(event.item.text);
       }
-      if (event.item?.type === 'command_execution' || event.item?.type === 'file_change' || event.item?.type === 'mcp_tool_call') {
+      if (event.item?.type === 'command_execution' || event.item?.type === 'file_change') {
         this._currentOnTool?.({ name: event.item.type, input: { command: event.item.command || event.item.path || '' } });
       }
+      if (event.item?.type === 'mcp_tool_call') this._currentOnTool?.(mcpToolStep(event.item));
     }
 
     if (event.type === 'turn.completed' && event.usage) {
@@ -232,4 +256,4 @@ class CodexSession extends EventEmitter {
   }
 }
 
-module.exports = { CodexSession, escapeTomlValue };
+module.exports = { CodexSession, escapeTomlValue, mcpConfigArgs };

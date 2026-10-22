@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.394";
+var CLIENT_VERSION = "0.4.403";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -400,6 +400,7 @@ var RESTART_STALL_MS = 3 * 60e3;
 // One idle bound for every trigger watchdog (hang, stale sweep, pending restart): a silent
 // tool in flight may run up to TOOL_STALL_MS before any of them treats the trigger as hung.
 var TOOL_STALL_MS = 30 * 60e3;
+var MCP_TOOL_TIMEOUT_MS = 12 * 60e3;
 function idleLimit(entry, baseMs) {
   return entry?.toolInFlight ? Math.max(baseMs, TOOL_STALL_MS) : baseMs;
 }
@@ -1611,6 +1612,14 @@ ${allNotes}`;
     const platformEnv = { STOA_ROOM_ID: String(room_id), STOA_THREAD_ID: threadId ? String(threadId) : "" };
     const proxy = cfProxyReady ? await cfProxyReady : null;
     if (proxy) platformEnv.STOA_URL = proxy.wsUrl;
+    // MCP gateway: the token goes in env only; claude-session / codex-session reference it by name.
+    // MCP_TOOL_TIMEOUT (Claude Code reads it; codex-session maps it to tool_timeout_sec) must outlast a
+    // call held for owner approval: gateway cap 10 min (APPROVAL_TIMEOUT_MAX_MS) + 60 s call timeout.
+    if (msg.mcp_token) {
+      platformEnv.STOA_MCP_TOKEN = msg.mcp_token;
+      platformEnv.STOA_MCP_URL = (proxy ? proxy.httpUrl : STOA_URL.replace(/^ws/, "http")).replace(/\/+$/, "") + "/mcp";
+      platformEnv.MCP_TOOL_TIMEOUT = String(MCP_TOOL_TIMEOUT_MS);
+    }
     if (triggerHarness === "claude") {
       // The Stoa Ollama proxy sits behind Cloudflare Access too — route it through the loopback proxy.
       if (msg.base_url) platformEnv.ANTHROPIC_BASE_URL = proxy && httpOrigin(msg.base_url) === httpOrigin(STOA_URL) ? proxy.httpUrl : msg.base_url;

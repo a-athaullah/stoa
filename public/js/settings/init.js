@@ -13,6 +13,7 @@ function initGlobalWs() {
           sLoadAutomationTab();
         }
       }
+      if (typeof mcpInvalidate === 'function') mcpInvalidate();
     };
     globalWs.onmessage = async e => {
       let msg; try { msg = JSON.parse(e.data); } catch { return; }
@@ -36,6 +37,8 @@ function initGlobalWs() {
       }
       if (msg.type === 'wa_qr' && typeof autoHandleWaQr === 'function') autoHandleWaQr(msg);
       if (msg.type === 'conn_status' && typeof autoHandleConnStatus === 'function') autoHandleConnStatus(msg);
+      if (msg.type === 'mcp_status' && typeof mcpHandleStatus === 'function') mcpHandleStatus(msg);
+      if ((msg.type === 'mcp_approval' || msg.type === 'mcp_approval_resolved') && typeof mcpApprovalEvent === 'function') mcpApprovalEvent(msg);
       if (msg.type === 'model_update') handleModelUpdate(msg);
       if (msg.type === 'room_created' || msg.type === 'room_activity' || msg.type === 'room_updated') {
         if (msg.type === 'room_activity' && msg.room_id !== currentRoomId) {
@@ -79,6 +82,7 @@ document.addEventListener('visibilitychange', () => {
         sLoadAutomationTab();
       }
     }
+    if (typeof mcpInvalidate === 'function') mcpInvalidate();
   }
 });
 

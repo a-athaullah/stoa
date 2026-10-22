@@ -10,6 +10,16 @@ function toolSummary(name, input) {
   return val;
 }
 
+// Gateway tools reach Claude Code as mcp__stoa__<slug>__<tool>; the gateway splits slug and tool at the first "__".
+function parseStoaMcpTool(name) {
+  const prefix = 'mcp__stoa__';
+  if (typeof name !== 'string' || !name.startsWith(prefix)) return null;
+  const rest = name.slice(prefix.length);
+  const sep = rest.indexOf('__');
+  if (sep <= 0 || sep + 2 >= rest.length) return null;
+  return { slug: rest.slice(0, sep), tool: rest.slice(sep + 2) };
+}
+
 function appendToolStep(msgId, tool) {
   const row = document.getElementById('msg-' + msgId);
   if (!row) return;
@@ -29,13 +39,22 @@ function appendToolStep(msgId, tool) {
 
   const toolEl = document.createElement('span');
   toolEl.className = 'h-process-tool';
-  toolEl.textContent = tool.name;
+  const gw = parseStoaMcpTool(tool.name);
+  toolEl.textContent = gw ? gw.tool : tool.name;
 
   const inputEl = document.createElement('span');
   inputEl.className = 'h-process-input';
   inputEl.textContent = toolSummary(tool.name, tool.input);
 
   step.appendChild(toolEl);
+  if (gw) {
+    const via = document.createElement('span');
+    via.className = 'h-process-via';
+    via.dataset.mcpSlug = gw.slug;
+    via.textContent = mcpViaText(mcpServerNameBySlug(gw.slug));
+    via.title = tool.name;
+    step.appendChild(via);
+  }
   step.appendChild(inputEl);
   trail.appendChild(step);
   scrollToBottom();
