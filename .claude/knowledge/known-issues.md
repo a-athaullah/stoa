@@ -69,6 +69,31 @@
   cleanup fires. Pre-existing, applies to `streaming` runs too.
 - Tests: run-tests.js sets `AGENT_RUN_TIMEOUT_MS=15000` so the timeout path runs for real.
 
+**Self-healing for parent triggers refused by "agent updating" (bug/outdated-trigger-lost):**
+- Incident 2026-10-22 03:30–03:35 UTC, room 68 (msgs 43448/43450/43453/43455): a parent trigger to
+  an outdated agent was set `state='error'` + restart and dropped; sub-agents had a wake, parents had nothing.
+- Now the refused parent trigger goes into `pending_retriggers` (room, participant, trigger_message_id =
+  the `reply_to` it answers or NULL for scheduler/wake/cascade, thread_id, prompt, attachments,
+  outside_history, attempts). Placeholder text: "(agent updating — akan diproses otomatis setelah
+  restart)"; a sub-agent keeps "(agent updating — please retry)" because its parent is woken and decides.
+- Dedup at enqueue: one row per (participant, trigger_message_id), or per (participant, thread, prompt)
+  when there is no trigger message.
+- `drainRetriggers` runs on every `agent_connect`: chains per (participant, thread), FIFO by id,
+  next row only after the previous replay returned. Delivered only to a current-version agent
+  (`agentReadyForWake`). The row stays until the replay returns → a crash mid-replay re-delivers
+  (at-least-once); a row whose trigger already has a complete/streaming reply from that participant
+  is dropped without replay. A successful replay runs `cascadeMentionsAfterWake` (the refused run
+  never reached triggerAgentsSequential's cascade).
+- Give-up: `attempts >= 3` (each refused/failed replay +1) or older than 30 min → row deleted +
+  system_event "trigger <id> tidak terproses — butuh manusia" in the thread. Attempts are checked on
+  drain; age is also checked by `sweepExpiredRetriggers` every `RETRIGGER_SWEEP_MS` (60 s, 500 ms
+  under run-tests), so an agent that never reconnects still produces the notice. The sweep skips
+  chains being drained; `giveUpRetrigger` only reports when its DELETE removed the row (no double notice).
+- Room feed: the placeholder goes through `maybeBroadcastError` (`broadcast_reason='error'`, 10-min
+  per-thread flood guard kept). The give-up system_event calls `setBroadcastReason` directly and
+  always reaches the feed (threaded rows only): it is the terminal "a human must act" signal, at most
+  once per queued trigger, so it cannot flood — and the placeholder usually spent the guard already.
+
 ---
 
 ### 4. File Upload Size Limit
