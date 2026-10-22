@@ -2031,6 +2031,39 @@ async function runAsyncUnitTests() {
     }
   });
 
+  await uta('MCP agent env — trigger with mcp_token: token + url in env, tool timeout outlasts an approval wait', async () => {
+    const stoa = require('./stoa.js');
+    const { mcpConfigArgs: codexArgs } = require('./codex-session');
+    const { APPROVAL_TIMEOUT_MAX_MS } = require('./lib/mcp-gateway');
+    let env = null, finish = null;
+    const mockSession = {
+      _systemPromptHash: null, _harness: 'claude', flags: [], env: null, resumeId: null,
+      on: () => {}, removeListener: () => {}, shutdown: () => {}, cancelTask: () => false,
+      send: () => new Promise(r => { finish = r; }),
+    };
+    stoa.__setDeps({ send: () => {}, getSession: (dir, room, e) => { env = e; mockSession.env = e; return mockSession; } });
+    let run = null;
+    try {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      run = stoa.processTrigger({ room_id: 99, message_id: 'mcp-env-1', prompt: 'use the mcp tools', workdir: require('os').tmpdir(), mcp_token: 'stoa_mcp_ENVTEST' });
+      for (let i = 0; i < 100 && !finish; i++) await new Promise(r => setTimeout(r, 10));
+      assert.ok(env, 'session created');
+      assert.strictEqual(env.STOA_MCP_TOKEN, 'stoa_mcp_ENVTEST');
+      assert.match(env.STOA_MCP_URL, /^https?:\/\/.+\/mcp$/);
+      const ms = Number(env.MCP_TOOL_TIMEOUT);
+      assert.ok(ms > APPROVAL_TIMEOUT_MAX_MS + 60_000, `MCP_TOOL_TIMEOUT ${ms} must outlast approval cap + call timeout`);
+      assert.ok(codexArgs(env).includes(`mcp_servers.stoa.tool_timeout_sec=${Math.ceil(ms / 1000)}`), 'codex gets the same bound');
+    } finally {
+      finish?.({ content: 'done', sessionId: null });
+      await run?.catch(() => {});
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      stoa.__resetDeps();
+    }
+    assert.ok(!codexArgs({ STOA_MCP_TOKEN: 't', STOA_MCP_URL: 'http://x/mcp' }).some(a => a.includes('tool_timeout_sec')), 'no timeout env → codex default');
+  });
+
   // Drives the real hangWatchdog: captures its 10s interval callback and moves Date.now.
   async function runHangWatchdog(msgId, drive) {
     const stoa = require('./stoa.js');

@@ -19,6 +19,8 @@ function mcpConfigArgs(env) {
     '-c', `mcp_servers.stoa.url=${escapeTomlValue(env.STOA_MCP_URL)}`,
     '-c', 'mcp_servers.stoa.bearer_token_env_var="STOA_MCP_TOKEN"',
     '-c', 'mcp_servers.stoa.default_tools_approval_mode="approve"',
+    // Codex's default (60 s) would cut a call the gateway holds for owner approval.
+    ...(/^\d+$/.test(env.MCP_TOOL_TIMEOUT || '') ? ['-c', `mcp_servers.stoa.tool_timeout_sec=${Math.ceil(Number(env.MCP_TOOL_TIMEOUT) / 1000)}`] : []),
   ];
 }
 
