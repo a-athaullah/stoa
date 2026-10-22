@@ -7,6 +7,38 @@ if (process.env.STOA_TEST !== '1') {
   console.error('[test.js] refusing to run without STOA_TEST=1 — use: node .claude/tools/run-tests.js');
   process.exit(1);
 }
+// STOA_TEST=1 alone is not enough: integration tests INSERT through require('./db'), which opens
+// DB_PATH or falls back to db/stoa.db. On 2026-10-22 a worktree whose db/stoa.db was a symlink to
+// the live DB ran this file directly and left test rows in prod. So the DB must be the runner's
+// copy, proven by a random token the runner writes into it (stoa_test_marker) and passes via env.
+// The live DB never has that table, so no path trick (symlink, copy of .env, DB_PATH) gets past it.
+{
+  const fs = require('fs');
+  const path = require('path');
+  const crypto = require('crypto');
+  const refuse = (why) => {
+    console.error(`[test.js] refusing to run: ${why} — use: node .claude/tools/run-tests.js`);
+    process.exit(1);
+  };
+  const dbPath = process.env.DB_PATH;
+  const token = process.env.STOA_TEST_DB_TOKEN || '';
+  if (!dbPath) refuse('DB_PATH is not set, db/index.js would open db/stoa.db');
+  // Checked before opening anything, so a symlinked repo DB is never even opened read-only.
+  const real = (p) => { try { return fs.realpathSync(p); } catch { return null; } };
+  const target = real(dbPath);
+  if (!target) refuse(`DB_PATH does not exist: ${dbPath}`);
+  if (target === real(path.join(__dirname, 'db', 'stoa.db'))) refuse(`DB_PATH resolves to the repo DB ${target}`);
+  if (!token) refuse('STOA_TEST_DB_TOKEN is not set');
+  let marker = null;
+  try {
+    const Database = require('better-sqlite3');
+    const c = new Database(target, { readonly: true, fileMustExist: true });
+    try { marker = c.prepare('SELECT token FROM stoa_test_marker').pluck().get(); } finally { c.close(); }
+  } catch {}
+  const a = Buffer.from(String(marker ?? ''));
+  const b = Buffer.from(token);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) refuse(`DB_PATH ${target} is not a run-tests copy (test DB marker missing or mismatched)`);
+}
 const http = require('http');
 const assert = require('assert');
 const path = require('path');
@@ -1881,6 +1913,63 @@ function runUnitTests() {
     assert.strictEqual(isSelfAuthenticatedPath('/api/mcp/servers'), false);
     for (const [m, p] of [['GET', '/api/mcp/servers'], ['POST', '/api/mcp/servers'], ['PUT', '/api/mcp/access'], ['GET', '/api/mcp/calls']]) {
       assert.strictEqual(matchAgentRoute(m, p), null, `${m} ${p}`);
+    }
+  });
+  ut('test DB guard — test.js refuses a missing DB_PATH, the repo DB via symlink and an unmarked DB, without writing them', () => {
+    const fs = require('fs');
+    const os = require('os');
+    const { spawnSync } = require('child_process');
+    const Database = require('better-sqlite3');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-guard-'));
+    try {
+      // A copy of this file in a fake repo whose db/stoa.db is a symlink to a fake "live" DB —
+      // the 2026-10-22 worktree setup. Past the guard it dies on require('./lib/schedule'),
+      // so even a broken guard cannot run the suite from here.
+      fs.mkdirSync(path.join(tmp, 'repo', 'db'), { recursive: true });
+      fs.mkdirSync(path.join(tmp, 'live'));
+      fs.copyFileSync(__filename, path.join(tmp, 'repo', 'test.js'));
+      const live = path.join(tmp, 'live', 'stoa.db');
+      const marked = path.join(tmp, 'live', 'marked.db');
+      const plain = path.join(tmp, 'live', 'plain.db');
+      const mk = (file, token) => {
+        const c = new Database(file);
+        c.pragma('journal_mode = WAL');
+        c.exec('CREATE TABLE rooms (id INTEGER PRIMARY KEY, name TEXT)');
+        if (token) { c.exec('CREATE TABLE stoa_test_marker (token TEXT NOT NULL)'); c.prepare('INSERT INTO stoa_test_marker VALUES (?)').run(token); }
+        c.close();
+      };
+      const token = crypto.randomBytes(24).toString('hex');
+      mk(live, token);
+      mk(marked, token);
+      mk(plain, null);
+      fs.symlinkSync(live, path.join(tmp, 'repo', 'db', 'stoa.db'));
+      fs.symlinkSync(marked, path.join(tmp, 'outside-link.db'));
+      // Read-only opens leave the DB file itself alone (SQLite may still add empty -wal/-shm).
+      const stamp = () => JSON.stringify([live, marked, plain].map(f => [crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex'), fs.statSync(f).mtimeMs]));
+      const before = stamp();
+      const run = (extra) => spawnSync(process.execPath, [path.join(tmp, 'repo', 'test.js')], {
+        cwd: path.join(tmp, 'repo'), encoding: 'utf8', timeout: 20000,
+        env: { PATH: process.env.PATH, NODE_PATH: path.join(__dirname, 'node_modules'), STOA_TEST: '1', ...extra },
+      });
+      const refused = (r, why, label) => {
+        assert.strictEqual(r.status, 1, `${label}: exit ${r.status} ${r.stderr}`);
+        assert.match(r.stderr, why, `${label}: ${r.stderr}`);
+      };
+      refused(run({}), /refusing to run: DB_PATH is not set/, 'no DB_PATH');
+      refused(run({ STOA_TEST_DB_TOKEN: token }), /refusing to run: DB_PATH is not set/, 'token but no DB_PATH');
+      // Even with the matching token, the repo's own db/stoa.db (a symlink to live) is refused.
+      refused(run({ DB_PATH: path.join(tmp, 'repo', 'db', 'stoa.db'), STOA_TEST_DB_TOKEN: token }), /resolves to the repo DB/, 'repo DB symlink');
+      refused(run({ DB_PATH: path.join(tmp, 'outside-link.db'), STOA_TEST_DB_TOKEN: 'f'.repeat(48) }), /not a run-tests copy/, 'wrong token');
+      refused(run({ DB_PATH: path.join(tmp, 'outside-link.db') }), /STOA_TEST_DB_TOKEN is not set/, 'no token');
+      refused(run({ DB_PATH: plain, STOA_TEST_DB_TOKEN: token }), /not a run-tests copy/, 'unmarked DB');
+      assert.strictEqual(stamp(), before, 'guarded DB files unchanged');
+      assert.ok(!fs.existsSync(`${live}-wal`) && !fs.existsSync(`${live}-shm`), 'the repo DB is refused before SQLite opens it');
+      // The marked DB with its token passes the guard and reaches the next require.
+      const ok = run({ DB_PATH: path.join(tmp, 'outside-link.db'), STOA_TEST_DB_TOKEN: token });
+      assert.doesNotMatch(ok.stderr, /refusing to run/, ok.stderr);
+      assert.match(ok.stderr, /Cannot find module '\.\/lib\/schedule'/, ok.stderr);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
     }
   });
 
