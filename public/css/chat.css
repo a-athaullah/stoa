@@ -725,6 +725,7 @@
   margin-top: 5px;
   padding-left: 1px;
 }
+.h-process-trail[hidden] { display: none; }
 .h-process-step {
   display: flex;
   align-items: baseline;

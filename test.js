@@ -11207,6 +11207,42 @@ async function run() {
     assert.strictEqual(ctx.toolSummary(steps[0].name, steps[0].input), 'a/b', 'arguments feed the step summary');
   });
 
+  await test('tool steps — stored per message for its own running agent only, capped, summary matches the chat trail', () => {
+    const Database = require('better-sqlite3');
+    const vm = require('vm');
+    const fs = require('fs');
+    const { MAX_STEPS, toolStepSummary, recordToolStep } = require('./lib/tool-steps');
+    const mem = new Database(':memory:');
+    mem.exec(fs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
+    mem.exec(fs.readFileSync(path.join(__dirname, 'migrations', '20261023-message-tool-steps.sql'), 'utf8'));
+    mem.exec(`INSERT INTO actors (id, type, name) VALUES (1, 'ai', 'A'), (2, 'ai', 'B');
+      INSERT INTO rooms (id, title, created_by) VALUES (1, 'r', 1);
+      INSERT INTO room_participants (id, room_id, actor_id) VALUES (10, 1, 1), (20, 1, 2);
+      INSERT INTO messages (id, room_id, participant_id, content, state) VALUES
+        (100, 1, 10, '', 'streaming'), (101, 1, 10, 'x', 'complete'), (102, 1, 20, '', 'streaming');`);
+    const steps = id => JSON.parse(mem.prepare('SELECT tool_steps FROM messages WHERE id=?').get(id).tool_steps || '[]');
+
+    assert.strictEqual(recordToolStep(mem, { messageId: 100, actorId: 1, tool: { name: 'Bash', input: { command: 'ls', description: 'list' } } }), true);
+    assert.strictEqual(recordToolStep(mem, { messageId: 100, actorId: 1, tool: { name: 'mcp__stoa__deepwiki__ask_question', input: { repoName: 'a/b', secret: 1 } } }), true);
+    assert.deepStrictEqual(steps(100), [{ name: 'Bash', summary: 'ls' }, { name: 'mcp__stoa__deepwiki__ask_question', summary: 'a/b' }], 'only name + one-line summary kept, in order');
+    assert.strictEqual(recordToolStep(mem, { messageId: 102, actorId: 1, tool: { name: 'Bash', input: {} } }), false, 'another actor\'s message is refused');
+    assert.strictEqual(recordToolStep(mem, { messageId: 101, actorId: 1, tool: { name: 'Bash', input: {} } }), false, 'a finished message is refused');
+    assert.strictEqual(recordToolStep(mem, { messageId: 100, actorId: 1, tool: { input: {} } }), false, 'nameless tool is ignored');
+    assert.deepStrictEqual([steps(101), steps(102)], [[], []]);
+    for (let i = 0; i < MAX_STEPS + 5; i++) recordToolStep(mem, { messageId: 100, actorId: 1, tool: { name: 'Read', input: { file_path: '/f' + i } } });
+    assert.strictEqual(steps(100).length, MAX_STEPS, 'capped');
+
+    const ctx = {};
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'public/js/chat/trail.js'), 'utf8'), ctx);
+    const cases = [['Bash', { command: 'x'.repeat(100) }], ['Read', { file_path: '/a' }], ['Grep', { pattern: 'p', path: '/q' }],
+      ['mcp__x', { n: 3, q: 'first' }], ['Edit', { old_string: 'o' }], ['Write', null], ['Other', {}], ['Bash', { command: 'x'.repeat(64) }]];
+    for (const [n, input] of cases) assert.strictEqual(toolStepSummary(n, input), ctx.toolSummary(n, input), `summary parity for ${n}`);
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(ctx.parseSavedToolSteps(JSON.stringify([{ name: 'Bash', summary: 'ls' }, { name: '' }, null, { name: 'Read', summary: 5 }])))),
+      [{ name: 'Bash', summary: 'ls' }, { name: 'Read', summary: '' }], 'client drops malformed saved steps');
+    assert.deepStrictEqual([...ctx.parseSavedToolSteps('not json')], []);
+    assert.deepStrictEqual([...ctx.parseSavedToolSteps('{"name":"Bash"}')], []);
+  });
+
   // escapeTomlValue unit tests
   await test('escapeTomlValue — escapes newlines and quotes', () => {
     const { escapeTomlValue } = require('./codex-session');

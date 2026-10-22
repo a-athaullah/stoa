@@ -11,6 +11,7 @@ const { collectDiagnostics, buildEnvelope, gcDebugBundles } = require('./lib/deb
 const { enrichAutomation, enrichAutomationList, watchReplyAutomation } = require('./lib/automation-identity');
 const { sanitizeDisplayName, EMAIL_REPLY_LIMITS, buildEmailThreadSection, normalizeRefIds, findEmailReplyThread } = require('./lib/email-threading');
 const { parseClientVersion } = require('./lib/client-version');
+const { recordToolStep } = require('./lib/tool-steps');
 const { resolveEnvFile, loadEnvFile, setEnvKey, portFallbackWarning, DEFAULT_PORT } = require('./lib/env-file');
 const { runMigrations } = require('./lib/migrations');
 const { sanitizeIdList, diffRunQueue, summarizeRunTiming, createRunTimeout } = require('./lib/run-queue');
@@ -6509,6 +6510,8 @@ wss.on('connection', (ws, req) => {
 
     // ── Agent reports a tool call
     if (msg.type === 'agent_tool' && agentActorId) {
+      try { recordToolStep(db, { messageId: msg.message_id, actorId: agentActorId, tool: msg.tool }); }
+      catch (e) { console.error('[tool-steps] record failed:', e.message); }
       broadcast(msg.room_id, { type: 'message_tool', message_id: msg.message_id, tool: msg.tool });
     }
 
@@ -8039,6 +8042,8 @@ async function triggerSkillResponse(roomId, ai, prompt) {
             broadcast(roomId, { type: 'message_state', message_id: msgId, state: displayState, ...meta });
           },
           onTool: tool => {
+            try { recordToolStep(db, { messageId: msgId, actorId: ai.actor_id, tool }); }
+            catch (e) { console.error('[tool-steps] record failed:', e.message); }
             broadcast(roomId, { type: 'message_tool', message_id: msgId, tool });
           },
         });
