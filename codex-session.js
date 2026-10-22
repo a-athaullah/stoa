@@ -10,6 +10,18 @@ function escapeTomlValue(str) {
   return JSON.stringify(String(str));
 }
 
+// Stoa MCP gateway. Codex reads the bearer token from the env var named here, so it stays out of
+// argv. approve: Stoa runs codex with approval policy "never", and without this every MCP tool call
+// is refused as "requires approval"; access control happens in the gateway.
+function mcpConfigArgs(env) {
+  if (!env?.STOA_MCP_TOKEN || !env?.STOA_MCP_URL) return [];
+  return [
+    '-c', `mcp_servers.stoa.url=${escapeTomlValue(env.STOA_MCP_URL)}`,
+    '-c', 'mcp_servers.stoa.bearer_token_env_var="STOA_MCP_TOKEN"',
+    '-c', 'mcp_servers.stoa.default_tools_approval_mode="approve"',
+  ];
+}
+
 class CodexSession extends EventEmitter {
   constructor({ workDir = process.cwd(), flags = [], resumeId = null, env = null, systemPrompt = null, model = null } = {}) {
     super();
@@ -37,13 +49,13 @@ class CodexSession extends EventEmitter {
     const args = ['exec'];
     if (isResume && this._threadId) {
       args.push('resume', '--json', '--skip-git-repo-check', '--ignore-user-config');
-      args.push('-c', `sandbox_mode="${SANDBOX_MODE}"`);
+      args.push('-c', `sandbox_mode="${SANDBOX_MODE}"`, ...mcpConfigArgs(this.env));
       if (this.model) args.push('-m', this.model);
       if (this.systemPrompt) args.push('-c', `developer_instructions=${escapeTomlValue(this.systemPrompt)}`);
       args.push(this._threadId, '-');
     } else {
       args.push('--json', '--skip-git-repo-check', '--ignore-user-config');
-      args.push('-c', `sandbox_mode="${SANDBOX_MODE}"`);
+      args.push('-c', `sandbox_mode="${SANDBOX_MODE}"`, ...mcpConfigArgs(this.env));
       if (this.model) args.push('-m', this.model);
       if (this.systemPrompt) args.push('-c', `developer_instructions=${escapeTomlValue(this.systemPrompt)}`);
       args.push('-');
@@ -232,4 +244,4 @@ class CodexSession extends EventEmitter {
   }
 }
 
-module.exports = { CodexSession, escapeTomlValue };
+module.exports = { CodexSession, escapeTomlValue, mcpConfigArgs };
