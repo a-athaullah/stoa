@@ -1791,6 +1791,92 @@ function runUnitTests() {
     });
   }
 
+
+  // ── MCP gateway (pure helpers)
+  ut('MCP validateCommand — allowlisted names and absolute executables only', () => {
+    const { validateCommand } = require('./lib/mcp-upstreams');
+    for (const c of ['npx', 'uvx', 'node', 'docker']) assert.strictEqual(validateCommand(c), null, c);
+    assert.match(validateCommand('bash'), /must be one of/);
+    assert.match(validateCommand('sh -c id'), /must be one of/);
+    assert.match(validateCommand('./node'), /must be one of/);
+    assert.strictEqual(validateCommand(process.execPath), null, 'absolute path to an executable');
+    assert.match(validateCommand('/nonexistent/stoa-mcp-bin'), /not found/);
+    assert.match(validateCommand(require('path').join(__dirname, 'package.json')), /not executable/);
+    assert.match(validateCommand(''), /required/);
+  });
+  ut('MCP validateEnv — reserved and malformed names rejected, headers allowed for http', () => {
+    const { validateEnv } = require('./lib/mcp-upstreams');
+    assert.strictEqual(validateEnv({ GITHUB_PERSONAL_ACCESS_TOKEN: 'x' }, 'stdio'), null);
+    for (const k of ['PATH', 'NODE_OPTIONS', 'LD_PRELOAD', 'DYLD_INSERT_LIBRARIES', 'HOME']) assert.match(validateEnv({ [k]: 'x' }, 'stdio'), /reserved/, k);
+    assert.match(validateEnv({ 'A-B': 'x' }, 'stdio'), /invalid env name/);
+    assert.strictEqual(validateEnv({ Authorization: 'Bearer x' }, 'http'), null);
+    assert.match(validateEnv({ A: 'line1\nline2' }, 'stdio'), /single-line/);
+    assert.match(validateEnv(['A'], 'stdio'), /object/);
+  });
+  ut('MCP decideAccess — deny anywhere wins, then allow, then default_access; disabled never', () => {
+    const { decideAccess } = require('./lib/mcp-gateway');
+    const on = { enabled: 1, default_access: 'none' };
+    assert.strictEqual(decideAccess(on, []), false);
+    assert.strictEqual(decideAccess({ ...on, default_access: 'all' }, []), true);
+    assert.strictEqual(decideAccess(on, [{ allow: 1 }]), true, 'agent allow');
+    assert.strictEqual(decideAccess({ ...on, default_access: 'all' }, [{ allow: 1 }, { allow: 0 }]), false, 'sub-agent deny narrows agent allow');
+    assert.strictEqual(decideAccess({ enabled: 0, default_access: 'all' }, [{ allow: 1 }]), false);
+  });
+  ut('MCP writeHint — annotations first, then verb in the name', () => {
+    const { writeHint } = require('./lib/mcp-gateway');
+    assert.strictEqual(writeHint({ name: 'send_message' }), true);
+    assert.strictEqual(writeHint({ name: 'create-issue' }), true);
+    assert.strictEqual(writeHint({ name: 'get_issue' }), false);
+    assert.strictEqual(writeHint({ name: 'resolve-library-id' }), false, '"resolve" is not "set"');
+    assert.strictEqual(writeHint({ name: 'delete_repo', annotations: { readOnlyHint: true } }), false);
+    assert.strictEqual(writeHint({ name: 'search', annotations: { destructiveHint: true } }), true);
+  });
+  ut('MCP argsPreview — secrets redacted at any depth, capped at 2KB', () => {
+    const { argsPreview } = require('./lib/mcp-gateway');
+    const p = JSON.parse(argsPreview({ q: 'hello', api_key: 'k1', nested: { Authorization: 'Bearer z', list: [{ password: 'p' }] } }));
+    assert.deepStrictEqual(p, { q: 'hello', api_key: '***', nested: { Authorization: '***', list: [{ password: '***' }] } });
+    const long = argsPreview({ a: 'x'.repeat(400), b: 'y'.repeat(400), c: 'z'.repeat(400), d: 'w'.repeat(400), e: 'v'.repeat(400), f: 'u'.repeat(400) });
+    assert.ok(long.length <= 2048, `preview length ${long.length}`);
+  });
+  ut('MCP capResult — under cap untouched; over cap cut with notice and isError kept', () => {
+    const { capResult } = require('./lib/mcp-gateway');
+    const small = { content: [{ type: 'text', text: 'ok' }] };
+    assert.strictEqual(capResult(small, 1024).result, small);
+    const big = { content: [{ type: 'text', text: 'é'.repeat(5000) }, { type: 'image', data: 'AAAA', mimeType: 'image/png' }], isError: true };
+    const { result, bytes } = capResult(big, 2048);
+    assert.ok(bytes > 2048);
+    assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 2048 + 200, 'capped result stays near the cap');
+    assert.match(result.content[0].text, /result truncated/);
+    assert.ok(!result.content[0].text.includes('�'), 'no broken multibyte char at the cut');
+    assert.strictEqual(result.isError, true);
+  });
+  ut('MCP agent config — token referenced by env name, never literal in argv', () => {
+    const { mcpConfigArgs: claudeArgs } = require('./claude-session');
+    const { mcpConfigArgs: codexArgs } = require('./codex-session');
+    const env = { STOA_MCP_TOKEN: 'stoa_mcp_SECRETVALUE', STOA_MCP_URL: 'http://127.0.0.1:3001/mcp' };
+    const c = claudeArgs(env);
+    assert.strictEqual(c[0], '--mcp-config');
+    const cfg = JSON.parse(c[1]).mcpServers.stoa;
+    assert.deepStrictEqual(cfg, { type: 'http', url: env.STOA_MCP_URL, headers: { Authorization: 'Bearer ${STOA_MCP_TOKEN}' } });
+    const x = codexArgs(env);
+    assert.ok(x.includes('mcp_servers.stoa.url="http://127.0.0.1:3001/mcp"'));
+    assert.ok(x.includes('mcp_servers.stoa.bearer_token_env_var="STOA_MCP_TOKEN"'));
+    assert.ok(x.includes('mcp_servers.stoa.default_tools_approval_mode="approve"'));
+    for (const a of [...c, ...x]) assert.ok(!a.includes('SECRETVALUE'), 'token must not be in argv');
+    assert.deepStrictEqual(claudeArgs({}), []);
+    assert.deepStrictEqual(codexArgs({ STOA_MCP_TOKEN: 't' }), [], 'no url → no config');
+    assert.ok(!c.includes('--strict-mcp-config'));
+  });
+  ut('MCP agent-scope — /mcp is self-authenticated, /api/mcp/* is not agent-allowlisted', () => {
+    const { isSelfAuthenticatedPath, matchAgentRoute } = require('./lib/agent-scope');
+    assert.strictEqual(isSelfAuthenticatedPath('/mcp'), true);
+    assert.strictEqual(isSelfAuthenticatedPath('/mcp/'), false);
+    assert.strictEqual(isSelfAuthenticatedPath('/api/mcp/servers'), false);
+    for (const [m, p] of [['GET', '/api/mcp/servers'], ['POST', '/api/mcp/servers'], ['PUT', '/api/mcp/access'], ['GET', '/api/mcp/calls']]) {
+      assert.strictEqual(matchAgentRoute(m, p), null, `${m} ${p}`);
+    }
+  });
+
   return { p, f };
 }
 
@@ -2905,6 +2991,68 @@ async function runAsyncUnitTests() {
       stoa.__resetDeps();
       console.log = origLog;
     }
+  });
+
+  await uta('MCP gateway — token reuse per session key, revoke, timeout and denied calls recorded', async () => {
+    const Database = require('better-sqlite3');
+    const { createMcpGateway } = require('./lib/mcp-gateway');
+    const mem = new Database(':memory:');
+    mem.exec(require('fs').readFileSync(require('path').join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
+    mem.exec(`CREATE TABLE IF NOT EXISTS sub_agents (id INTEGER PRIMARY KEY, parent_actor_id INTEGER, label TEXT)`);
+    const actorId = Number(mem.prepare("INSERT INTO actors (name, type, secret) VALUES ('mcp-unit','ai','s')").run().lastInsertRowid);
+    const srvId = Number(mem.prepare("INSERT INTO mcp_servers (slug, name, transport, command, default_access) VALUES ('slow','Slow','stdio','node','all')").run().lastInsertRowid);
+    const calls = [];
+    const upstreams = {
+      listTools: async () => [{ name: 'wait', inputSchema: { type: 'object' } }],
+      callTool: async (row, name, args, { timeoutMs }) => {
+        calls.push({ name, timeoutMs });
+        const e = new Error('Request timed out'); e.code = -32001; throw e;
+      },
+    };
+    const enc = (s) => 'enc:' + Buffer.from(s).toString('base64');
+    const dec = (s) => Buffer.from(s.slice(4), 'base64').toString();
+    const gw = createMcpGateway({ db: mem, upstreams, encrypt: enc, decrypt: dec, callTimeoutMs: 1234, log: { warn() {}, error() {} } });
+    const t1 = gw.issueToken({ actorId, threadId: 7 });
+    assert.strictEqual(gw.issueToken({ actorId, threadId: 7 }), t1, 'same session key → same token (stable env)');
+    assert.notStrictEqual(gw.issueToken({ actorId, threadId: 8 }), t1, 'other thread → other token');
+    const stored = mem.prepare('SELECT token_hash, token_enc FROM mcp_tokens').all();
+    assert.ok(stored.every(r => !r.token_hash.includes(t1) && r.token_enc !== t1), 'token not stored in clear');
+    const ident = gw.authenticate('Bearer ' + t1);
+    assert.deepStrictEqual(ident, { actorId, roomId: null, threadId: 7, subAgentId: null });
+    assert.strictEqual(gw.authenticate('Bearer ' + t1 + 'x'), null);
+    assert.strictEqual(gw.authenticate(t1), null, 'scheme required');
+    const tools = await gw.visibleTools(ident);
+    assert.deepStrictEqual(tools.map(t => t.name), ['slow__wait']);
+    const r = await gw.callTool(ident, 'slow__wait', { token: 'abc' });
+    assert.strictEqual(r.isError, true);
+    assert.match(r.content[0].text, /timed out/);
+    assert.deepStrictEqual(calls, [{ name: 'wait', timeoutMs: 1234 }], 'namespace stripped, timeout forwarded');
+    const d = await gw.callTool(ident, 'nope', {});
+    assert.match(d.content[0].text, /Denied by Stoa: unknown tool/);
+    const rows = mem.prepare('SELECT server_id, server_slug, tool, status, args_preview FROM mcp_calls ORDER BY id').all();
+    assert.deepStrictEqual(rows.map(x => [x.server_slug, x.tool, x.status]), [['slow', 'wait', 'timeout'], [null, 'nope', 'denied']]);
+    assert.strictEqual(rows[0].server_id, srvId);
+    assert.strictEqual(JSON.parse(rows[0].args_preview).token, '***');
+    gw.forgetActor(actorId);
+    assert.strictEqual(gw.authenticate('Bearer ' + t1), null, 'revoked with the actor');
+    assert.notStrictEqual(gw.issueToken({ actorId, threadId: 7 }), t1, 'revoked token is never handed out again');
+    mem.prepare("UPDATE mcp_calls SET created_at=datetime('now','-40 days') WHERE tool='wait'").run();
+    assert.strictEqual(gw.pruneCalls(30), 1);
+    mem.close();
+  });
+
+  await uta('MCP upstreams — failed start backs off; disabled row never spawns', async () => {
+    const { createUpstreamManager } = require('./lib/mcp-upstreams');
+    const statuses = [];
+    const um = createUpstreamManager({ readEnv: () => ({}), onStatus: (id, s, e) => statuses.push([id, s, e]), log: { warn() {}, error() {} } });
+    const row = { id: 1, slug: 'broken', transport: 'stdio', command: '/nonexistent/stoa-mcp-bin', args_json: '[]', enabled: 1 };
+    await assert.rejects(um.listTools(row), /not found/);
+    await assert.rejects(um.listTools(row), /failed recently/, 'second try inside backoff window is refused');
+    assert.deepStrictEqual(statuses.at(-1).slice(0, 2), [1, 'error']);
+    assert.strictEqual(um.info(row).status, 'error');
+    await assert.rejects(um.listTools({ ...row, enabled: 0 }), /disabled/);
+    assert.strictEqual(um.info({ ...row, enabled: 0 }).status, 'disabled');
+    um.stopAll();
   });
 
   await uta('extractAndUploadFiles: oversize/missing files are reported in content, never uploaded', async () => {
@@ -13801,6 +13949,333 @@ async function run() {
     const r5 = tb.maybeBroadcastError({ threadId: rootId, messageId: reply3Id, reason: 'error' });
     assert.strictEqual(r5, false, 'anti-flood should block even with explicit reason');
   });
+
+  // ── MCP gateway end-to-end: real /api/mcp admin API, real tokens from agent_trigger, real /mcp
+  // requests proxied to a stdio dummy upstream (test/fixtures/mcp-dummy-server.js, no network).
+  console.log('\n[MCP Gateway]');
+  {
+    const mDb = require('./db');
+    const FIXTURE = path.join(__dirname, 'test', 'fixtures', 'mcp-dummy-server.js');
+    const SECRET = 'dummy-secret-' + crypto.randomBytes(8).toString('hex');
+    let agA = null, agB = null, roomA = null, roomB = null, sub = null, server = null;
+    let tokA = null, tokB = null, tokSub = null;
+    const asAnon = async (fn) => {
+      const s = sessionCookie, d = deviceCookie;
+      sessionCookie = null; deviceCookie = null;
+      try { return await fn(); } finally { sessionCookie = s; deviceCookie = d; }
+    };
+    // JSON-RPC over streamable HTTP; the reply is JSON or one SSE "data:" event.
+    let rpcId = 0;
+    const mcp = (token, method, params = {}, extra = {}) => asAnon(async () => {
+      const headers = { Accept: 'application/json, text/event-stream', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...extra };
+      const r = await req('POST', '/mcp', { jsonrpc: '2.0', id: ++rpcId, method, params }, headers);
+      let msg = typeof r.body === 'object' ? r.body : null;
+      if (!msg && typeof r.raw === 'string') {
+        const line = r.raw.split('\n').find(l => l.startsWith('data:'));
+        if (line) msg = JSON.parse(line.slice(5));
+      }
+      return { status: r.status, msg, raw: r.raw };
+    });
+    const listNames = async (token) => {
+      const r = await mcp(token, 'tools/list');
+      assert.strictEqual(r.status, 200, r.raw?.slice(0, 200));
+      return r.msg.result.tools.map(t => t.name).sort();
+    };
+    const callText = async (token, name, args = {}) => {
+      const r = await mcp(token, 'tools/call', { name, arguments: args });
+      assert.strictEqual(r.status, 200, r.raw?.slice(0, 200));
+      return { text: r.msg.result.content?.[0]?.text || '', isError: !!r.msg.result.isError };
+    };
+    const lastCall = () => mDb.prepare('SELECT * FROM mcp_calls ORDER BY id DESC LIMIT 1').get();
+    const grant = (subject_type, subject_id, allow) => req('PUT', '/api/mcp/access', { server_id: server.id, subject_type, subject_id, allow });
+    // → { token, threadId }. A room-level human message opens its own thread; pass threadId to stay in it.
+    const triggerToken = async (ag, roomId, content, threadId = undefined) => {
+      const trig = waitForWsMessage(ag.ws, m => m.type === 'agent_trigger' && m.room_id === roomId && !m.sub_agent, 5000);
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+        await waitForWsMessage(humanWs, m => m.type === 'history');
+        humanWs.send(JSON.stringify({ type: 'send_message', room_id: roomId, content, ...(threadId ? { thread_id: threadId } : {}) }));
+        const m = await trig;
+        ag.ws.send(JSON.stringify({ type: 'agent_message', message_id: m.message_id, content: 'done', state: 'complete' }));
+        return { token: m.mcp_token, threadId: m.thread_id };
+      } finally { humanWs.close(); }
+    };
+
+    await test('MCP setup — two online agents, a room each, a sub-agent', async () => {
+      agA = await createOnlineTestAgent('__test-mcp-a', '/tmp/stoa-test-mcp-a');
+      agB = await createOnlineTestAgent('__test-mcp-b', '/tmp/stoa-test-mcp-b');
+      assert.ok(agA?.workdirId && agB?.workdirId, 'online test agents');
+      const ra = await req('POST', '/api/rooms', { title: '__mcp-room-a__', workdir_id: agA.workdirId, participant_ids: [agA.actorId] });
+      const rb = await req('POST', '/api/rooms', { title: '__mcp-room-b__', workdir_id: agB.workdirId, participant_ids: [agB.actorId] });
+      assert.strictEqual(ra.status, 200); assert.strictEqual(rb.status, 200);
+      roomA = ra.body.id; roomB = rb.body.id;
+      testRoomIds.push(roomA, roomB);
+      const sr = await req('POST', `/api/actors/${agA.actorId}/sub-agents`, { label: 'mcpsub', tier: 'quick', workdir: '/tmp/stoa-test-mcp-sub' });
+      assert.strictEqual(sr.status, 201, JSON.stringify(sr.body));
+      sub = sr.body;
+      assert.strictEqual((await req('POST', `/api/rooms/${roomA}/sub-agents`, { sub_agent_id: sub.id })).status < 300, true);
+    });
+
+    await test('MCP trigger — no MCP server installed → no mcp_token (session env unchanged)', async () => {
+      if (mDb.prepare('SELECT 1 FROM mcp_servers LIMIT 1').get()) { console.log('    (skipped — DB copy already has MCP servers)'); return; }
+      assert.strictEqual((await triggerToken(agA, roomA, 'before mcp')).token, undefined);
+    });
+
+    await test('MCP admin — no session → 401; agent secret → agent_scope_denied; nothing created', async () => {
+      const anon = await asAnon(() => req('GET', '/api/mcp/servers'));
+      assert.strictEqual(anon.status, 401);
+      const before = mDb.prepare('SELECT COUNT(*) n FROM mcp_servers').get().n;
+      const h = { 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret };
+      for (const [m, p, b] of [['GET', '/api/mcp/servers'], ['POST', '/api/mcp/servers', { slug: 'evil', name: 'x', transport: 'stdio', command: 'node', args: ['-e', '1'] }], ['PUT', '/api/mcp/access', {}], ['GET', '/api/mcp/calls']]) {
+        const r = await asAnon(() => req(m, p, b || null, h));
+        assert.strictEqual(r.status, 403, `${m} ${p}`);
+        assert.strictEqual(r.body.error, 'agent_scope_denied');
+      }
+      assert.strictEqual(mDb.prepare('SELECT COUNT(*) n FROM mcp_servers').get().n, before);
+    });
+
+    await test('MCP catalog — presets without command lines', async () => {
+      const r = await req('GET', '/api/mcp/catalog');
+      assert.strictEqual(r.status, 200);
+      const ids = r.body.presets.map(p => p.id);
+      assert.ok(ids.includes('context7') && ids.includes('github'));
+      const gh = r.body.presets.find(p => p.id === 'github');
+      assert.deepStrictEqual(gh.env_fields.map(f => [f.key, f.secret, f.required]), [['GITHUB_PERSONAL_ACCESS_TOKEN', true, true]]);
+      assert.ok(!('command' in gh) && !('args' in gh));
+    });
+
+    await test('MCP install — validation: binary outside allowlist, bad slug, reserved env, preset env', async () => {
+      const base = { slug: 'mcpbad', name: 'Bad', transport: 'stdio', args: [] };
+      for (const command of ['bash', 'sh', 'python3', 'node; id', '/nonexistent/x']) {
+        const r = await req('POST', '/api/mcp/servers', { ...base, command });
+        assert.strictEqual(r.status, 400, `${command}: ${r.raw}`);
+      }
+      for (const slug of ['Bad', '1x', 'a__b', 'x'.repeat(33), 'a-b']) {
+        assert.strictEqual((await req('POST', '/api/mcp/servers', { ...base, slug, command: 'node' })).status, 400, slug);
+      }
+      assert.strictEqual((await req('POST', '/api/mcp/servers', { ...base, command: 'node', env: { PATH: '/tmp' } })).status, 400, 'PATH override');
+      assert.strictEqual((await req('POST', '/api/mcp/servers', { preset: 'github', slug: 'mcpgh' })).status, 400, 'required preset field');
+      assert.strictEqual((await req('POST', '/api/mcp/servers', { preset: 'github', slug: 'mcpgh', env: { GITHUB_PERSONAL_ACCESS_TOKEN: 'x', OTHER: 'y' } })).status, 400, 'unknown preset field');
+      assert.strictEqual((await req('POST', '/api/mcp/servers', { preset: 'nope' })).status, 400);
+      assert.strictEqual((await req('POST', '/api/mcp/servers', { ...base, transport: 'http', url: 'file:///etc/passwd' })).status, 400);
+      assert.strictEqual(mDb.prepare("SELECT COUNT(*) n FROM mcp_servers WHERE slug IN ('mcpbad','mcpgh')").get().n, 0);
+    });
+
+    await test('MCP install — custom stdio server; env never returned, only masked tail', async () => {
+      const r = await req('POST', '/api/mcp/servers', { slug: 'mcpdummy', name: 'Dummy', transport: 'stdio', command: process.execPath, args: [FIXTURE], env: { DUMMY_SECRET: SECRET } });
+      assert.strictEqual(r.status, 201, r.raw);
+      server = r.body.server;
+      assert.strictEqual(server.default_access, 'none', 'no agent gets access by default');
+      assert.deepStrictEqual(server.env_keys, [{ key: 'DUMMY_SECRET', masked: '••••' + SECRET.slice(-4) }]);
+      const list = await req('GET', '/api/mcp/servers');
+      assert.ok(!list.raw.includes(SECRET) && !r.raw.includes(SECRET), 'secret value never in responses');
+      const stored = mDb.prepare('SELECT env_enc FROM mcp_servers WHERE id=?').get(server.id).env_enc;
+      assert.ok(stored && !stored.includes(SECRET), 'stored encrypted');
+      assert.strictEqual((await req('POST', '/api/mcp/servers', { slug: 'mcpdummy', name: 'Dup', transport: 'stdio', command: 'node' })).status, 409);
+    });
+
+    await test('MCP test endpoint — starts upstream and lists its tools', async () => {
+      const r = await req('POST', `/api/mcp/servers/${server.id}/test`);
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.ok, true, r.raw);
+      assert.deepStrictEqual(r.body.tools.sort(), ['big', 'echo', 'fail', 'send_note']);
+      const t = await req('GET', `/api/mcp/servers/${server.id}/tools`);
+      assert.strictEqual(t.status, 200);
+      const byName = Object.fromEntries(t.body.tools.map(x => [x.name, x]));
+      assert.strictEqual(byName.send_note.write_hint, true);
+      assert.strictEqual(byName.echo.write_hint, false);
+      assert.strictEqual(byName.echo.enabled, true);
+      const s = (await req('GET', '/api/mcp/servers')).body.servers.find(x => x.id === server.id);
+      assert.strictEqual(s.status, 'running');
+      assert.strictEqual(s.tool_count, 4);
+    });
+
+    await test('MCP token — delivered in agent_trigger, stable for the same session', async () => {
+      const first = await triggerToken(agA, roomA, 'mcp one');
+      tokA = first.token;
+      assert.match(tokA || '', /^stoa_mcp_[A-Za-z0-9_-]{43}$/);
+      assert.ok(first.threadId, 'room-level message runs in its own thread');
+      assert.strictEqual((await triggerToken(agA, roomA, 'mcp two', first.threadId)).token, tokA, 'same agent/room/thread → same token');
+      const other = await triggerToken(agA, roomA, 'mcp three');
+      assert.ok(other.token && other.token !== tokA && other.threadId !== first.threadId, 'other thread → other token');
+      tokB = (await triggerToken(agB, roomB, 'mcp b')).token;
+      assert.ok(tokB && tokB !== tokA);
+      const st = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.sub_agent?.id === sub.id, 5000);
+      const r = await asAnon(() => req('POST', `/api/rooms/${roomA}/sub-agent-trigger`, { sub_agent_id: sub.id, task: 'check the mcp tools please' }, { 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret }));
+      assert.strictEqual(r.status, 200, r.raw);
+      const m = await st;
+      tokSub = m.mcp_token;
+      assert.ok(tokSub && tokSub !== tokA, 'sub-agent session has its own token');
+      const wake = waitForWsMessage(agA.ws, w => w.type === 'agent_trigger' && !w.sub_agent, 3000).catch(() => null);
+      agA.ws.send(JSON.stringify({ type: 'agent_message', message_id: m.message_id, content: 'done', state: 'complete' }));
+      const w = await wake;
+      if (w) agA.ws.send(JSON.stringify({ type: 'agent_message', message_id: w.message_id, content: 'done', state: 'complete' }));
+    });
+
+    await test('MCP /mcp — missing, wrong, or agent-secret auth → 401', async () => {
+      assert.strictEqual((await mcp(null, 'tools/list')).status, 401);
+      assert.strictEqual((await mcp('stoa_mcp_' + 'A'.repeat(43), 'tools/list')).status, 401);
+      assert.strictEqual((await mcp(agA.secret, 'tools/list')).status, 401, 'agent secret as bearer');
+      assert.strictEqual((await mcp(null, 'tools/list', {}, { 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret })).status, 401, 'agent headers');
+      const cookie = await req('POST', '/mcp', { jsonrpc: '2.0', id: 1, method: 'tools/list' }, { Accept: 'application/json, text/event-stream' });
+      assert.strictEqual(cookie.status, 401, 'owner session cookie is not an MCP token');
+    });
+
+    await test('MCP policy — default none: agent sees no tools and a direct call is denied + logged', async () => {
+      assert.deepStrictEqual(await listNames(tokA), []);
+      const r = await callText(tokA, 'mcpdummy__echo', { text: 'hi' });
+      assert.strictEqual(r.isError, true);
+      assert.match(r.text, /Denied by Stoa/);
+      const c = lastCall();
+      assert.deepStrictEqual([c.status, c.server_slug, c.tool, c.actor_id, c.room_id], ['denied', 'mcpdummy', 'echo', agA.actorId, roomA]);
+    });
+
+    await test('MCP policy — agent allow: namespaced tools, call proxied with server env only', async () => {
+      assert.strictEqual((await grant('agent', agA.actorId, true)).status, 200);
+      assert.deepStrictEqual(await listNames(tokA), ['mcpdummy__big', 'mcpdummy__echo', 'mcpdummy__fail', 'mcpdummy__send_note']);
+      const r = await callText(tokA, 'mcpdummy__echo', { text: 'hi', api_key: 'should-not-be-logged' });
+      assert.strictEqual(r.isError, false);
+      assert.deepStrictEqual(JSON.parse(r.text), { text: 'hi', secret: 'set', leak: 'clean' });
+      const c = lastCall();
+      assert.strictEqual(c.status, 'ok');
+      assert.ok(c.result_bytes > 0 && c.duration_ms >= 0);
+      assert.deepStrictEqual(JSON.parse(c.args_preview), { text: 'hi', api_key: '***' });
+      assert.deepStrictEqual(await listNames(tokB), [], 'agent B unaffected');
+      const f = await callText(tokA, 'mcpdummy__fail');
+      assert.strictEqual(f.isError, true);
+      assert.strictEqual(lastCall().status, 'error');
+      assert.strictEqual((await callText(tokA, 'echo', {})).isError, true, 'un-namespaced name is not routed');
+    });
+
+    await test('MCP policy — sub-agent deny overrides parent agent allow', async () => {
+      assert.ok((await listNames(tokSub)).includes('mcpdummy__echo'), 'sub-agent inherits agent allow');
+      assert.strictEqual((await grant('sub_agent', sub.id, false)).status, 200);
+      assert.deepStrictEqual(await listNames(tokSub), []);
+      const r = await callText(tokSub, 'mcpdummy__echo', { text: 'x' });
+      assert.match(r.text, /Denied by Stoa/);
+      const c = lastCall();
+      assert.deepStrictEqual([c.status, c.sub_agent_id], ['denied', sub.id]);
+      assert.ok((await listNames(tokA)).includes('mcpdummy__echo'), 'parent keeps access');
+    });
+
+    await test('MCP tool overrides — disabled and requires_approval tools are hidden and refused', async () => {
+      let r = await req('PUT', `/api/mcp/servers/${server.id}/tools/send_note`, { enabled: false });
+      assert.deepStrictEqual(r.body.tool, { name: 'send_note', enabled: false, requires_approval: false });
+      r = await req('PUT', `/api/mcp/servers/${server.id}/tools/big`, { requires_approval: true });
+      assert.strictEqual(r.status, 200);
+      assert.deepStrictEqual(await listNames(tokA), ['mcpdummy__echo', 'mcpdummy__fail']);
+      assert.match((await callText(tokA, 'mcpdummy__send_note')).text, /tool is disabled/);
+      assert.match((await callText(tokA, 'mcpdummy__big', { bytes: 10 })).text, /requires owner approval/);
+      assert.strictEqual((await req('PUT', `/api/mcp/servers/${server.id}/tools/echo`, { enabled: 'no' })).status, 400);
+      const tools = (await req('GET', `/api/mcp/servers/${server.id}/tools`)).body.tools;
+      assert.strictEqual(tools.find(t => t.name === 'big').requires_approval, true);
+      await req('PUT', `/api/mcp/servers/${server.id}/tools/send_note`, { enabled: true });
+      await req('PUT', `/api/mcp/servers/${server.id}/tools/big`, { requires_approval: false });
+      assert.strictEqual(mDb.prepare('SELECT COUNT(*) n FROM mcp_tool_overrides WHERE server_id=?').get(server.id).n, 0, 'back to defaults → no override rows');
+    });
+
+    await test('MCP policy — room deny is a boundary even with agent allow', async () => {
+      assert.strictEqual((await grant('room', roomA, false)).status, 200);
+      assert.deepStrictEqual(await listNames(tokA), []);
+      assert.strictEqual((await grant('room', roomA, null)).status, 200);
+      assert.ok((await listNames(tokA)).length > 0, 'null removes the grant');
+    });
+
+    await test('MCP access — matrix lists subjects and grants; bad input rejected', async () => {
+      const r = await req('GET', '/api/mcp/access');
+      assert.strictEqual(r.status, 200);
+      assert.ok(r.body.servers.some(s => s.id === server.id && s.slug === 'mcpdummy'));
+      assert.ok(r.body.subjects.some(s => s.type === 'sub_agent' && s.id === sub.id && s.parent_agent_id === agA.actorId));
+      assert.ok(r.body.subjects.some(s => s.type === 'room' && s.id === roomA));
+      assert.ok(r.body.grants.some(g => g.server_id === server.id && g.subject_type === 'agent' && g.subject_id === agA.actorId && g.allow === true));
+      assert.strictEqual((await grant('user', agA.actorId, true)).status, 400);
+      assert.strictEqual((await grant('agent', 99999999, true)).status, 404);
+      assert.strictEqual((await grant('agent', agA.actorId, 'yes')).status, 400);
+      assert.strictEqual((await req('PUT', '/api/mcp/access', { server_id: 99999999, subject_type: 'agent', subject_id: agA.actorId, allow: true })).status, 404);
+    });
+
+    await test('MCP activity — filters, joins names, paginates by before_id', async () => {
+      const all = await req('GET', `/api/mcp/calls?server_id=${server.id}`);
+      assert.strictEqual(all.status, 200);
+      assert.ok(all.body.calls.length >= 5);
+      assert.ok(all.body.calls.every(c => c.server_slug === 'mcpdummy'));
+      const ok = all.body.calls.find(c => c.status === 'ok');
+      assert.strictEqual(ok.actor_name, '__test-mcp-a');
+      assert.match(ok.created_at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
+      assert.ok(all.body.calls.some(c => c.sub_agent_label === 'mcpsub'));
+      assert.ok(!all.raw.includes('should-not-be-logged'));
+      const p1 = await req('GET', `/api/mcp/calls?server_id=${server.id}&limit=1`);
+      assert.strictEqual(p1.body.calls.length, 1);
+      assert.strictEqual(p1.body.next_before_id, p1.body.calls[0].id);
+      const p2 = await req('GET', `/api/mcp/calls?server_id=${server.id}&limit=1&before_id=${p1.body.next_before_id}`);
+      assert.ok(p2.body.calls[0].id < p1.body.calls[0].id);
+      assert.strictEqual((await req('GET', `/api/mcp/calls?actor_id=${agB.actorId}&server_id=${server.id}`)).body.calls.length, 0);
+      assert.strictEqual((await req('GET', '/api/mcp/calls?limit=abc')).status, 400);
+    });
+
+    await test('MCP edit — env merge (empty keeps, env_remove drops), slug immutable, disable hides tools', async () => {
+      let r = await req('PATCH', `/api/mcp/servers/${server.id}`, { env: { DUMMY_SECRET: '', EXTRA_KEY: 'extra-value-1234' } });
+      assert.strictEqual(r.status, 200, r.raw);
+      assert.deepStrictEqual(r.body.server.env_keys.map(e => e.key).sort(), ['DUMMY_SECRET', 'EXTRA_KEY']);
+      assert.deepStrictEqual(JSON.parse((await callText(tokA, 'mcpdummy__echo', { text: 'y' })).text).secret, 'set', 'empty value kept the secret');
+      r = await req('PATCH', `/api/mcp/servers/${server.id}`, { env_remove: ['DUMMY_SECRET'] });
+      assert.deepStrictEqual(r.body.server.env_keys.map(e => e.key), ['EXTRA_KEY']);
+      assert.strictEqual(JSON.parse((await callText(tokA, 'mcpdummy__echo', { text: 'z' })).text).secret, 'unset', 'reconfigured upstream lost the removed env');
+      assert.strictEqual((await req('PATCH', `/api/mcp/servers/${server.id}`, { slug: 'renamed' })).status, 400);
+      assert.strictEqual((await req('PATCH', `/api/mcp/servers/${server.id}`, { command: 'bash' })).status, 400);
+      r = await req('PATCH', `/api/mcp/servers/${server.id}`, { enabled: false });
+      assert.strictEqual(r.body.server.status, 'disabled');
+      assert.deepStrictEqual(await listNames(tokA), []);
+      assert.match((await callText(tokA, 'mcpdummy__echo')).text, /disabled/);
+      await req('PATCH', `/api/mcp/servers/${server.id}`, { enabled: true });
+    });
+
+    await test('MCP cleanup — deleting a sub-agent revokes its token and drops its grants', async () => {
+      assert.strictEqual(mDb.prepare("SELECT COUNT(*) n FROM mcp_access WHERE subject_type='sub_agent' AND subject_id=?").get(sub.id).n, 1);
+      assert.strictEqual((await req('DELETE', `/api/sub-agents/${sub.id}`)).status, 204);
+      assert.strictEqual(mDb.prepare("SELECT COUNT(*) n FROM mcp_access WHERE subject_type='sub_agent' AND subject_id=?").get(sub.id).n, 0);
+      assert.strictEqual((await mcp(tokSub, 'tools/list')).status, 401);
+      assert.strictEqual((await mcp(tokA, 'tools/list')).status, 200, 'parent token still valid');
+    });
+
+    await test('MCP cleanup — deleting a room revokes its tokens and drops its grants', async () => {
+      assert.strictEqual((await mcp(tokB, 'tools/list')).status, 200);
+      assert.strictEqual((await grant('room', roomB, false)).status, 200);
+      assert.strictEqual((await req('DELETE', `/api/rooms/${roomB}`)).status, 204);
+      testRoomIds = testRoomIds.filter(id => id !== roomB);
+      assert.strictEqual(mDb.prepare("SELECT COUNT(*) n FROM mcp_access WHERE subject_type='room' AND subject_id=?").get(roomB).n, 0);
+      assert.ok(mDb.prepare('SELECT revoked_at FROM mcp_tokens WHERE room_id=?').all(roomB).every(t => t.revoked_at));
+      assert.strictEqual((await mcp(tokB, 'tools/list')).status, 401);
+    });
+
+    // Token revocation on actor delete is covered by the "MCP gateway — token reuse…" unit test; an agent
+    // still in a room cannot be deleted while its messages exist, so here room B is already gone.
+    await test('MCP cleanup — deleting an agent drops its grants', async () => {
+      assert.strictEqual((await grant('agent', agB.actorId, true)).status, 200);
+      agB.ws.close();
+      assert.strictEqual((await req('DELETE', `/api/actors/${agB.actorId}`)).status, 204);
+      assert.strictEqual(mDb.prepare("SELECT COUNT(*) n FROM mcp_access WHERE subject_type='agent' AND subject_id=?").get(agB.actorId).n, 0);
+      assert.strictEqual(mDb.prepare('SELECT COUNT(*) n FROM mcp_tokens WHERE actor_id=? AND revoked_at IS NULL').get(agB.actorId).n, 0);
+      agB = null;
+    });
+
+    await test('MCP delete server — 204, calls keep server_slug, tools gone', async () => {
+      assert.strictEqual((await req('DELETE', `/api/mcp/servers/${server.id}`)).status, 204);
+      assert.strictEqual((await req('GET', `/api/mcp/servers/${server.id}/tools`)).status, 404);
+      const orphan = mDb.prepare("SELECT COUNT(*) n FROM mcp_calls WHERE server_id IS NULL AND server_slug='mcpdummy'").get().n;
+      assert.ok(orphan >= 5);
+      assert.deepStrictEqual(await listNames(tokA), []);
+      server = null;
+    });
+
+    await test('MCP teardown', async () => {
+      if (server) await req('DELETE', `/api/mcp/servers/${server.id}`);
+      mDb.prepare("DELETE FROM mcp_calls WHERE server_slug='mcpdummy'").run();
+      if (agA?.ws) agA.ws.close();
+      if (agB?.ws) agB.ws.close();
+    });
+  }
 
   // Teardown — delete all test rooms and actors created during the run
   console.log('\n[Test Teardown]');
