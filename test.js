@@ -3189,6 +3189,74 @@ async function runAsyncUnitTests() {
     }
   });
 
+  await uta('MCP gateway — a tools change made while the session has no GET stream is delivered when the stream reopens', async () => {
+    const Database = require('better-sqlite3');
+    const http = require('http');
+    const { createMcpGateway } = require('./lib/mcp-gateway');
+    const mem = new Database(':memory:');
+    mem.exec(require('fs').readFileSync(require('path').join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
+    mem.exec(`CREATE TABLE IF NOT EXISTS sub_agents (id INTEGER PRIMARY KEY, parent_actor_id INTEGER, label TEXT)`);
+    const A = Number(mem.prepare("INSERT INTO actors (name, type, secret) VALUES ('mcp-reopen','ai','s')").run().lastInsertRowid);
+    const srvId = Number(mem.prepare("INSERT INTO mcp_servers (slug, name, transport, command, default_access) VALUES ('dyn','Dyn','stdio','node','all')").run().lastInsertRowid);
+    const list = [{ name: 'one', inputSchema: { type: 'object' } }, { name: 'two', inputSchema: { type: 'object' } }];
+    const upstreams = { listTools: async () => list, info: () => ({ tools: list }), callTool: async () => ({ content: [] }) };
+    const enc = (x) => 'enc:' + Buffer.from(x).toString('base64');
+    const dec = (x) => Buffer.from(x.slice(4), 'base64').toString();
+    const gw = createMcpGateway({ db: mem, upstreams, encrypt: enc, decrypt: dec, notifyDebounceMs: 20, log: { warn() {}, error() {} } });
+    const srv = http.createServer(async (req, res) => {
+      let body;
+      if (req.method === 'POST') { const ch = []; for await (const c of req) ch.push(c); body = JSON.parse(Buffer.concat(ch).toString()); }
+      await gw.handle(req, res, body);
+    });
+    await new Promise(r => srv.listen(0, '127.0.0.1', r));
+    const url = `http://127.0.0.1:${srv.address().port}/mcp`;
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const token = gw.issueToken({ actorId: A });
+    const hdr = (extra = {}) => ({ Authorization: 'Bearer ' + token, 'mcp-protocol-version': '2025-06-18', ...extra });
+    const post = (payload, sid) => fetch(url, { method: 'POST', body: JSON.stringify(payload), headers: hdr({
+      'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...(sid ? { 'mcp-session-id': sid } : {}) }) });
+    // Reads the session's GET stream for ms; returns how many tools/list_changed arrived.
+    const listen = async (sid, ms) => {
+      const ac = new AbortController();
+      let r;
+      // Right after a stream drops, the SDK answers 409 until its cancel callback runs (tens of ms);
+      // real clients reconnect after a back-off of a second or more.
+      for (let i = 0; i < 40; i++) {
+        r = await fetch(url, { headers: hdr({ Accept: 'text/event-stream', 'mcp-session-id': sid }), signal: ac.signal });
+        if (r.status !== 409) break;
+        await r.text();
+        await sleep(50);
+      }
+      assert.strictEqual(r.status, 200);
+      let text = '';
+      const timer = setTimeout(() => ac.abort(), ms);
+      try { for await (const chunk of r.body) text += Buffer.from(chunk).toString(); } catch {} finally { clearTimeout(timer); }
+      return (text.match(/notifications\/tools\/list_changed/g) || []).length;
+    };
+    try {
+      const init = await post({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'x', version: '1' } } });
+      const sid = init.headers.get('mcp-session-id');
+      await init.text();
+      assert.ok(sid, 'stateful session');
+      assert.strictEqual((await post({ jsonrpc: '2.0', method: 'notifications/initialized' }, sid)).status, 202);
+      // No GET stream open: the change cannot be delivered now.
+      mem.prepare("INSERT INTO mcp_tool_overrides (server_id, tool, enabled) VALUES (?, 'one', 0)").run(srvId);
+      gw.toolsChanged();
+      await sleep(150);
+      assert.strictEqual(await listen(sid, 400), 1, 'the missed change arrives once the stream reopens');
+      assert.strictEqual(await listen(sid, 300), 0, 'already delivered → a later reopen sends nothing');
+      mem.prepare("UPDATE mcp_tool_overrides SET enabled=1 WHERE server_id=? AND tool='one'").run(srvId);
+      const open = listen(sid, 500);
+      await sleep(100);
+      gw.toolsChanged();
+      assert.strictEqual(await open, 1, 'change while the stream is open is delivered on it');
+    } finally {
+      gw.close();
+      await new Promise(r => { srv.closeAllConnections?.(); srv.close(r); });
+      mem.close();
+    }
+  });
+
   await uta('MCP oauth — state is single use and expires after 10 minutes; tokens never stored in clear', async () => {
     const Database = require('better-sqlite3');
     const { createMcpOAuth, STATE_TTL_MS } = require('./lib/mcp-oauth');
