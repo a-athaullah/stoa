@@ -7716,6 +7716,35 @@ async function run() {
   });
 
   // ── Email: imapflow BigInt uidValidity ─────────────────────────────────────
+  // Run in a child: an unhandled rejection there exits non-zero, exactly how the live server died (03:29 UTC 2026-10-22).
+  await test('SlackConnection — ack() rejecting (socket not ready) is logged, event still forwarded, process survives', () => {
+    const script = `
+      const Module = require('module');
+      const handlers = {};
+      const stubs = {
+        '@slack/socket-mode': { SocketModeClient: class { on(t, fn) { handlers[t] = fn; } async start() {} } },
+        '@slack/web-api': { WebClient: class { constructor() { this.auth = { test: async () => ({ team: 'T', url: 'https://t.slack.com/', user: 'bot', user_id: 'U1' }) }; } } },
+      };
+      const load = Module._load;
+      Module._load = function (req, ...rest) { return stubs[req] || load.call(this, req, ...rest); };
+      const { SlackConnection } = require(${JSON.stringify(path.join(__dirname, 'connection-manager.js'))});
+      (async () => {
+        const sc = new SlackConnection(7);
+        const got = [];
+        sc.on('slack_event', (p) => got.push(p.eventType));
+        await sc.start({ appToken: 'xapp', token: 'xoxb', tokenType: 'bot' });
+        const notReady = () => Promise.reject(Object.assign(new Error('Failed to send a WebSocket message as the client is not ready'), { code: 'slack_socket_mode_no_reply_received_error' }));
+        handlers.message({ event: { channel: 'C1', ts: '1' }, ack: notReady });
+        handlers.app_mention({ event: { channel: 'C1', ts: '2' }, ack: () => { throw new Error('sync throw'); } });
+        await new Promise(r => setTimeout(r, 50));
+        console.log('EVENTS ' + got.join(','));
+      })();`;
+    const r = require('child_process').spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', timeout: 15000 });
+    assert.strictEqual(r.status, 0, `child died: ${r.stderr.slice(0, 500)}`);
+    assert.match(r.stdout, /EVENTS message,mention/);
+    assert.match(r.stderr, /\[conn:7\] Slack ack failed \(slack_socket_mode_no_reply_received_error\)/);
+  });
+
   await test('EmailConnection._applyMailboxStatus — BigInt uidValidity → JSON-serializable number', () => {
     const { EmailConnection } = require('./connection-manager');
     const ec = new EmailConnection(0);
