@@ -183,6 +183,37 @@ All WS events carry `thread_id` (null for root). Thread-specific events routed t
 - **automations** - webhook → room message triggers
 - **automation_connections** - Slack/Discord credentials
 
+## MCP Gateway
+
+Agent machines connect to Stoa's `/mcp` endpoint (streamable HTTP, MCP protocol) using a session token injected into env as `STOA_MCP_TOKEN`. The gateway proxies tool calls to upstream MCP servers (stdio processes or remote HTTP).
+
+```
+Agent (Claude/Codex)
+  → POST /mcp  Bearer STOA_MCP_TOKEN
+    → auth: token_hash lookup (mcp_tokens), scope = (actor, room, thread, sub_agent)
+    → policy: sub_agent → agent → room → server default_access; deny wins
+    → router: stoa tool (e.g. context7__resolve-library-id) → upstream client
+    → audit: INSERT mcp_calls (args_preview redacted, capped at 2 KB)
+```
+
+**Upstream lifecycle:** stdio upstreams lazy-start on first call, idle-stop after N min, auto-restart with backoff. HTTP upstreams: stateless per request.
+
+**Token:** issued per session trigger (`issueToken`), stored as SHA-256 hash in `mcp_tokens`. Sengaja tanpa TTL — token stabil selama session, tidak menyebabkan respawn. Revoked when actor / sub_agent / room deleted.
+
+**Tool approval:** `requires_approval` tools hold the gateway call (up to `APPROVAL_TIMEOUT_MAX_MS` = 10 min), emit `mcp_approval` WS event to room/thread. Owner approves or denies via API. Default timeout 5 min (configurable `MCP_APPROVAL_TIMEOUT_MS`). Max 20 pending per actor.
+
+**Agent update path:** Claude gets `tools/list_changed` → picks up at next turn. Codex spawns per turn → picks up immediately next message.
+
+**Env isolation:** stdio upstreams spawn with `baseEnv()` (PATH, HOME, TMPDIR + server-specific keys only), not `process.env`.
+
+**Admin API** (`/api/mcp/*`): owner session only. Gateway endpoint (`/mcp`): MCP token only (not agent secret, not session cookie).
+
+**WS events:** `mcp_status` (upstream up/down/error), `mcp_approval` (new pending), `mcp_approval_resolved` (decided).
+
+**Retention:** `mcp_calls` and decided `mcp_approvals` pruned after `MCP_CALLS_RETENTION_DAYS` (default 30).
+
+**Tables:** `mcp_servers`, `mcp_tool_overrides`, `mcp_access`, `mcp_tokens`, `mcp_calls`, `mcp_approvals`.
+
 ## Performance Optimizations
 
 ### Indexes

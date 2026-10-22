@@ -237,6 +237,85 @@ AI responds, result posted back to Slack
 
 ---
 
+## MCP Gateway Tables
+
+Added in `migrations/20261022-mcp-gateway.sql`.
+
+```sql
+-- Installed MCP servers
+CREATE TABLE mcp_servers (
+  id INTEGER PRIMARY KEY,
+  slug TEXT NOT NULL UNIQUE,              -- namespace prefix (e.g. "context7")
+  name TEXT NOT NULL,
+  transport TEXT NOT NULL CHECK(transport IN ('stdio','http')),
+  command TEXT, args_json TEXT,           -- stdio only
+  url TEXT,                               -- http only
+  env_enc TEXT,                           -- AES-GCM encrypted env/headers JSON
+  auth TEXT CHECK(auth IN ('none','headers','oauth')),
+  preset TEXT,                            -- catalog id, NULL = custom
+  enabled INTEGER NOT NULL DEFAULT 1,
+  default_access TEXT NOT NULL DEFAULT 'none' CHECK(default_access IN ('all','none')),
+  created_at TEXT, updated_at TEXT
+);
+
+-- Per-tool overrides (enable, approval, rate limit)
+CREATE TABLE mcp_tool_overrides (
+  server_id INTEGER NOT NULL REFERENCES mcp_servers(id) ON DELETE CASCADE,
+  tool TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  requires_approval INTEGER NOT NULL DEFAULT 0,
+  rate_limit_per_min INTEGER,
+  PRIMARY KEY (server_id, tool)
+);
+
+-- Access policy (agent / sub_agent / room × server)
+CREATE TABLE mcp_access (
+  server_id INTEGER NOT NULL REFERENCES mcp_servers(id) ON DELETE CASCADE,
+  subject_type TEXT NOT NULL CHECK(subject_type IN ('agent','sub_agent','room')),
+  subject_id INTEGER NOT NULL,
+  allow INTEGER NOT NULL,
+  PRIMARY KEY (server_id, subject_type, subject_id)
+);
+
+-- Per-session tokens (hash only)
+CREATE TABLE mcp_tokens (
+  token_hash TEXT PRIMARY KEY,
+  actor_id INTEGER NOT NULL, room_id INTEGER, thread_id INTEGER, sub_agent_id INTEGER,
+  created_at TEXT, revoked_at TEXT
+);
+
+-- Call audit log
+CREATE TABLE mcp_calls (
+  id INTEGER PRIMARY KEY,
+  server_id INTEGER, server_slug TEXT, tool TEXT NOT NULL,
+  actor_id INTEGER, sub_agent_id INTEGER, room_id INTEGER, thread_id INTEGER,
+  args_preview TEXT,   -- redacted, max 2KB
+  status TEXT NOT NULL CHECK(status IN ('ok','error','denied','timeout','rate_limited')),
+  error TEXT, duration_ms INTEGER, result_bytes INTEGER,
+  created_at TEXT
+);
+
+-- Approval requests (requires_approval tools)
+CREATE TABLE mcp_approvals (
+  id INTEGER PRIMARY KEY,
+  server_id INTEGER, server_slug TEXT, tool TEXT NOT NULL,
+  actor_id INTEGER, sub_agent_id INTEGER, room_id INTEGER, thread_id INTEGER,
+  args_preview TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','denied','expired')),
+  decided_at TEXT, expires_at TEXT,
+  created_at TEXT
+);
+```
+
+**Access policy resolution** (deny wins):
+1. `mcp_access` sub_agent explicit row
+2. `mcp_access` agent explicit row (parent of sub_agent)
+3. `mcp_servers.default_access`
+
+**Cleanup:** `mcp_access` rows for deleted agents/sub-agents/rooms are cleaned up by DELETE triggers on those tables.
+
+---
+
 ## Migration Pattern
 
 ### Rule
