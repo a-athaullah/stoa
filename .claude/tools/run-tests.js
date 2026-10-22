@@ -87,11 +87,13 @@ function waitUp(port, tries = 50) {
   const tmpArtifacts = [tmpDb, `${tmpDb}-wal`, `${tmpDb}-shm`];
   const tmpBundleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-test-dist-'));
   const tmpEnvDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-test-env-'));
+  const tmpMcpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-test-mcp-'));
   const tmpEnv = path.join(tmpEnvDir, '.env');
   const rmTmp = () => {
     tmpArtifacts.forEach((f) => { try { fs.unlinkSync(f); } catch {} });
     try { fs.rmSync(tmpBundleDir, { recursive: true, force: true }); } catch {}
     try { fs.rmSync(tmpEnvDir, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(tmpMcpDir, { recursive: true, force: true }); } catch {}
   };
   const bundleStamp = () => { try { const s = fs.statSync(liveBundle); return `${s.mtimeMs}:${s.size}`; } catch { return null; } };
   const liveBundleBefore = bundleStamp();
@@ -138,6 +140,8 @@ function waitUp(port, tries = 50) {
   const PORT = parseInt(process.env.TEST_PORT, 10) || (await getFreePort());
   const env = { ...process.env, PORT: String(PORT), DB_PATH: tmpDb, TEST_HOST: '127.0.0.1', STOA_TEST: '1', STOA_AGENT_BUNDLE_DIR: tmpBundleDir,
     STOA_ENV_FILE: tmpEnv,
+    // MCP upstream work dirs (<root>/<server id>) apart from the live server's: ids overlap with the DB copy.
+    STOA_MCP_WORK_DIR: tmpMcpDir,
     // Expired-retrigger sweep (60 s in prod) fast enough for the offline-agent give-up test.
     RETRIGGER_SWEEP_MS: '500',
     // Model-free embedding backend: exercises worker/backfill/hybrid without a 130 MB download.
