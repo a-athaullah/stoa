@@ -10992,6 +10992,35 @@ async function run() {
     assert.ok(devInstrArg.includes('Be helpful and concise'), 'content preserved');
   });
 
+  await test('CodexSession — MCP tool steps carry mcp__<server>__<tool> + arguments, which the chat trail parses as a gateway tool', () => {
+    const { CodexSession } = require('./codex-session');
+    const vm = require('vm');
+    // Event lines as emitted by codex-cli 0.162.1 `exec --json` for a call to the Stoa gateway.
+    const recorded = [
+      '{"type":"item.started","item":{"id":"item_0","type":"mcp_tool_call","server":"stoa","tool":"deepwiki__ask_question","arguments":{"repoName":"a/b","question":"q"},"result":null,"error":null,"status":"in_progress"}}',
+      '{"type":"item.completed","item":{"id":"item_0","type":"mcp_tool_call","server":"stoa","tool":"deepwiki__ask_question","arguments":{"repoName":"a/b","question":"q"},"result":{"content":[{"type":"text","text":"ok"}],"structured_content":null},"error":null,"status":"completed"}}',
+      '{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"ls -la","status":"completed"}}',
+      '{"type":"item.completed","item":{"id":"item_2","type":"file_change","path":"/tmp/x.txt","status":"completed"}}',
+      '{"type":"item.completed","item":{"id":"item_3","type":"mcp_tool_call","tool":"orphan","arguments":null,"status":"failed"}}',
+    ];
+    const cs = new CodexSession({ workDir: '/tmp' });
+    const steps = [];
+    cs._currentOnTool = (t) => steps.push(t);
+    for (const line of recorded) cs._handleEvent(JSON.parse(line));
+    assert.deepStrictEqual(steps, [
+      { name: 'mcp__stoa__deepwiki__ask_question', input: { repoName: 'a/b', question: 'q' } },
+      { name: 'command_execution', input: { command: 'ls -la' } },
+      { name: 'file_change', input: { command: '/tmp/x.txt' } },
+      { name: 'mcp_tool_call', input: {} },
+    ], 'one step per completed item; MCP name from server+tool, non-MCP steps unchanged, missing server falls back');
+
+    const ctx = {};
+    vm.runInNewContext(require('fs').readFileSync(path.join(__dirname, 'public/js/chat/trail.js'), 'utf8'), ctx);
+    assert.deepStrictEqual({ ...ctx.parseStoaMcpTool(steps[0].name) }, { slug: 'deepwiki', tool: 'ask_question' }, 'chat labels the Codex step via deepwiki');
+    assert.strictEqual(ctx.parseStoaMcpTool(steps[3].name), null, 'fallback step gets no label');
+    assert.strictEqual(ctx.toolSummary(steps[0].name, steps[0].input), 'a/b', 'arguments feed the step summary');
+  });
+
   // escapeTomlValue unit tests
   await test('escapeTomlValue — escapes newlines and quotes', () => {
     const { escapeTomlValue } = require('./codex-session');

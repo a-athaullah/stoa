@@ -24,6 +24,15 @@ function mcpConfigArgs(env) {
   ];
 }
 
+// Same name shape as Claude Code (mcp__<server>__<tool>), so the chat labels gateway tools for both.
+function mcpToolStep(item) {
+  const args = item.arguments && typeof item.arguments === 'object' && !Array.isArray(item.arguments) ? item.arguments : {};
+  if (typeof item.server !== 'string' || !item.server || typeof item.tool !== 'string' || !item.tool) {
+    return { name: 'mcp_tool_call', input: args };
+  }
+  return { name: `mcp__${item.server}__${item.tool}`, input: args };
+}
+
 class CodexSession extends EventEmitter {
   constructor({ workDir = process.cwd(), flags = [], resumeId = null, env = null, systemPrompt = null, model = null } = {}) {
     super();
@@ -145,9 +154,10 @@ class CodexSession extends EventEmitter {
         this._accContent += event.item.text;
         this._currentOnToken?.(event.item.text);
       }
-      if (event.item?.type === 'command_execution' || event.item?.type === 'file_change' || event.item?.type === 'mcp_tool_call') {
+      if (event.item?.type === 'command_execution' || event.item?.type === 'file_change') {
         this._currentOnTool?.({ name: event.item.type, input: { command: event.item.command || event.item.path || '' } });
       }
+      if (event.item?.type === 'mcp_tool_call') this._currentOnTool?.(mcpToolStep(event.item));
     }
 
     if (event.type === 'turn.completed' && event.usage) {
