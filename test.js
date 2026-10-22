@@ -3109,6 +3109,86 @@ async function runAsyncUnitTests() {
     mem.close();
   });
 
+  await uta('MCP gateway — sessions: list_changed only to sessions whose tools changed; bound to token; closed on revoke, idle, per-token cap', async () => {
+    const Database = require('better-sqlite3');
+    const http = require('http');
+    const { createMcpGateway } = require('./lib/mcp-gateway');
+    const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
+    const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/client/streamableHttp.js');
+    const { ToolListChangedNotificationSchema } = require('@modelcontextprotocol/sdk/types.js');
+    const mem = new Database(':memory:');
+    mem.exec(require('fs').readFileSync(require('path').join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
+    mem.exec(`CREATE TABLE IF NOT EXISTS sub_agents (id INTEGER PRIMARY KEY, parent_actor_id INTEGER, label TEXT)`);
+    const A = Number(mem.prepare("INSERT INTO actors (name, type, secret) VALUES ('mcp-sess-a','ai','s')").run().lastInsertRowid);
+    const B = Number(mem.prepare("INSERT INTO actors (name, type, secret) VALUES ('mcp-sess-b','ai','s')").run().lastInsertRowid);
+    const srvId = Number(mem.prepare("INSERT INTO mcp_servers (slug, name, transport, command, default_access) VALUES ('dyn','Dyn','stdio','node','all')").run().lastInsertRowid);
+    const list = [{ name: 'one', inputSchema: { type: 'object' } }, { name: 'two', inputSchema: { type: 'object' } }];
+    const upstreams = { listTools: async () => list, info: () => ({ tools: list }), callTool: async () => ({ content: [] }) };
+    const enc = (s) => 'enc:' + Buffer.from(s).toString('base64');
+    const dec = (s) => Buffer.from(s.slice(4), 'base64').toString();
+    const gw = createMcpGateway({ db: mem, upstreams, encrypt: enc, decrypt: dec, sessionIdleMs: 300, notifyDebounceMs: 20, log: { warn() {}, error() {} } });
+    const srv = http.createServer(async (req, res) => {
+      let body;
+      if (req.method === 'POST') { const ch = []; for await (const c of req) ch.push(c); body = JSON.parse(Buffer.concat(ch).toString()); }
+      await gw.handle(req, res, body);
+    });
+    await new Promise(r => srv.listen(0, '127.0.0.1', r));
+    const url = `http://127.0.0.1:${srv.address().port}/mcp`;
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const connect = async (token) => {
+      const c = new Client({ name: 'unit', version: '1' });
+      const seen = { n: 0 };
+      c.setNotificationHandler(ToolListChangedNotificationSchema, () => { seen.n++; });
+      const t = new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { Authorization: 'Bearer ' + token } } });
+      await c.connect(t);
+      return { c, t, seen };
+    };
+    const tA = gw.issueToken({ actorId: A }), tB = gw.issueToken({ actorId: B });
+    const a = await connect(tA), b = await connect(tB);
+    try {
+      assert.strictEqual(gw.sessionCount(), 2);
+      assert.ok(a.t.sessionId && a.t.sessionId !== b.t.sessionId);
+      assert.deepStrictEqual((await b.c.listTools()).tools.map(t => t.name), ['dyn__one', 'dyn__two']);
+      await sleep(150);
+      mem.prepare("INSERT INTO mcp_access (server_id, subject_type, subject_id, allow) VALUES (?, 'agent', ?, 0)").run(srvId, B);
+      gw.toolsChanged();
+      await sleep(250);
+      assert.deepStrictEqual([a.seen.n, b.seen.n], [0, 1], 'only the session whose tools changed is notified');
+      assert.deepStrictEqual((await b.c.listTools()).tools, [], 'mid-session re-list reflects the deny');
+      mem.prepare("INSERT INTO mcp_tool_overrides (server_id, tool, enabled) VALUES (?, 'one', 0)").run(srvId);
+      gw.toolsChanged();
+      await sleep(250);
+      assert.deepStrictEqual([a.seen.n, b.seen.n], [1, 1], 'disabled tool: A notified, B (no access) not');
+      assert.deepStrictEqual((await a.c.listTools()).tools.map(t => t.name), ['dyn__two']);
+      gw.toolsChanged();
+      await sleep(250);
+      assert.deepStrictEqual([a.seen.n, b.seen.n], [1, 1], 'nothing changed → no notification');
+      const rpc = { jsonrpc: '2.0', id: 9, method: 'tools/list', params: {} };
+      const post = (token, sid, payload = rpc) => fetch(url, { method: 'POST', body: JSON.stringify(payload), headers: {
+        'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: 'Bearer ' + token, ...(sid ? { 'mcp-session-id': sid } : {}) } });
+      assert.strictEqual((await post(tB, a.t.sessionId)).status, 404, "another token cannot use A's session");
+      assert.strictEqual((await post(tA, 'no-such-session')).status, 404, 'unknown session → 404 so the client re-initializes');
+      assert.strictEqual((await post(tA, null)).status, 200, 'no session id → served statelessly');
+      gw.forgetActor(B);
+      assert.strictEqual(gw.sessionCount(), 1, "revoking B's token closes its session");
+      await sleep(700);
+      assert.strictEqual(gw.sessionCount(), 1, 'a session with an open GET stream outlives the idle limit');
+      await a.c.close();
+      await sleep(900);
+      assert.strictEqual(gw.sessionCount(), 0, 'stream gone + idle → closed');
+      const init = { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'x', version: '1' } } };
+      for (let i = 0; i < 10; i++) { const r = await post(tA, null, init); assert.strictEqual(r.status, 200); await r.text(); }
+      assert.strictEqual(gw.sessionCount(), 8, 'per-token cap closes the oldest');
+    } finally {
+      await a.c.close().catch(() => {});
+      await b.c.close().catch(() => {});
+      gw.close();
+      assert.strictEqual(gw.sessionCount(), 0);
+      await new Promise(r => { srv.closeAllConnections?.(); srv.close(r); });
+      mem.close();
+    }
+  });
+
   await uta('MCP oauth — state is single use and expires after 10 minutes; tokens never stored in clear', async () => {
     const Database = require('better-sqlite3');
     const { createMcpOAuth, STATE_TTL_MS } = require('./lib/mcp-oauth');
@@ -14573,6 +14653,37 @@ async function run() {
       const tools = (await req('GET', `/api/mcp/servers/${server.id}/tools`)).body.tools;
       assert.strictEqual(tools.find(t => t.name === 'big').requires_approval, true);
       await req('PUT', `/api/mcp/servers/${server.id}/tools/send_note`, { enabled: true });
+    });
+
+    await test('MCP sessions — owner edits push tools/list_changed to the agent session it affects, mid-session', async () => {
+      const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
+      const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/client/streamableHttp.js');
+      const { ToolListChangedNotificationSchema } = require('@modelcontextprotocol/sdk/types.js');
+      const open = async (token) => {
+        const c = new Client({ name: 'stoa-test', version: '1' });
+        const seen = { n: 0 };
+        c.setNotificationHandler(ToolListChangedNotificationSchema, () => { seen.n++; });
+        await c.connect(new StreamableHTTPClientTransport(new URL(`http://${HOST}:${PORT}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
+        return { c, seen };
+      };
+      const until = async (cond, ms = 3000) => { const end = Date.now() + ms; while (!cond() && Date.now() < end) await new Promise(r => setTimeout(r, 25)); return cond(); };
+      const a = await open(tokA), s = await open(tokSub);
+      try {
+        const names = async () => (await a.c.listTools()).tools.map(t => t.name).sort();
+        assert.ok((await names()).includes('mcpdummy__echo'));
+        assert.deepStrictEqual((await s.c.listTools()).tools, [], 'sub-agent is denied (previous test)');
+        await new Promise(r => setTimeout(r, 200));
+        assert.strictEqual((await req('PUT', `/api/mcp/servers/${server.id}/tools/echo`, { enabled: false })).status, 200);
+        assert.ok(await until(() => a.seen.n === 1), 'agent session notified after the owner disabled a tool');
+        assert.ok(!(await names()).includes('mcpdummy__echo'), 'same session re-lists without the tool');
+        assert.strictEqual((await req('PUT', `/api/mcp/servers/${server.id}/tools/echo`, { enabled: true })).status, 200);
+        assert.ok(await until(() => a.seen.n === 2));
+        assert.ok((await names()).includes('mcpdummy__echo'));
+        assert.strictEqual(s.seen.n, 0, 'denied sub-agent session saw no change, got no notification');
+      } finally {
+        await a.c.close().catch(() => {});
+        await s.c.close().catch(() => {});
+      }
     });
 
     // big requires approval (previous test). The owner watches roomA; the agent's call blocks meanwhile.

@@ -202,7 +202,7 @@ Agent (Claude/Codex)
 
 **Tool approval:** `requires_approval` tools hold the gateway call (up to `APPROVAL_TIMEOUT_MAX_MS` = 10 min), emit `mcp_approval` WS event to room/thread. Owner approves or denies via API. Default timeout 5 min (configurable `MCP_APPROVAL_TIMEOUT_MS`). Max 20 pending per actor.
 
-**Agent update path:** Gateway is stateless (no persistent stream), so `tools/list_changed` is never pushed. Claude Code sessions persist across turns — tool list established at session start, changes visible at next session start (model/env/system-prompt change triggers restart). Codex spawns per turn → picks up changes immediately at next turn.
+**Agent update path:** Gateway is stateful (`mcp-session-id`, bound to the token that opened it). Claude Code keeps a GET SSE stream open; on any `/api/mcp/*` write or upstream status change the gateway recomputes each session's tool fingerprint (allowed servers + cached upstream tool names − disabled overrides, debounced 250 ms) and sends `notifications/tools/list_changed` only to sessions whose set changed → Claude re-lists mid-session (verified with Claude Code 2.1.306). Codex spawns per turn → new session each turn. Unknown session id → 404 → client re-initializes (survives server restart). Sessions close on token revoke (forget*), after 10 min idle without an open stream, and per-token cap 8. No-session non-initialize requests are served statelessly.
 
 **Env isolation:** stdio upstreams spawn with `baseEnv()` (PATH, HOME, TMPDIR + server-specific keys only), not `process.env`.
 
