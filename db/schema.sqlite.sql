@@ -398,3 +398,20 @@ CREATE TABLE IF NOT EXISTS harness_models (
   is_active INTEGER NOT NULL DEFAULT 1,
   UNIQUE(harness_id, model_id)
 );
+
+-- Parent-agent triggers refused while the agent was outdated; see migrations/20261022-pending-retriggers.sql.
+CREATE TABLE IF NOT EXISTS pending_retriggers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  participant_id INTEGER NOT NULL REFERENCES room_participants(id) ON DELETE CASCADE,
+  trigger_message_id INTEGER REFERENCES messages(id) ON DELETE CASCADE,
+  thread_id INTEGER DEFAULT NULL,
+  prompt TEXT NOT NULL,
+  attachments TEXT,
+  outside_history INTEGER NOT NULL DEFAULT 0,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_pending_retriggers_participant ON pending_retriggers(participant_id, thread_id, id);
+CREATE INDEX IF NOT EXISTS idx_pending_retriggers_trigger ON pending_retriggers(trigger_message_id);
+CREATE INDEX IF NOT EXISTS idx_pending_retriggers_room ON pending_retriggers(room_id);
