@@ -423,6 +423,8 @@ CREATE TABLE IF NOT EXISTS mcp_tool_overrides (
   tool TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
   requires_approval INTEGER NOT NULL DEFAULT 0,
+  -- Calls per minute per (agent, sub-agent, tool); NULL = no limit. Counted in memory by the gateway.
+  rate_limit_per_min INTEGER CHECK(rate_limit_per_min IS NULL OR rate_limit_per_min BETWEEN 1 AND 10000),
   PRIMARY KEY (server_id, tool)
 );
 
@@ -463,7 +465,7 @@ CREATE TABLE IF NOT EXISTS mcp_calls (
   room_id INTEGER,
   thread_id INTEGER,
   args_preview TEXT,
-  status TEXT NOT NULL CHECK(status IN ('ok','error','denied','timeout')),
+  status TEXT NOT NULL CHECK(status IN ('ok','error','denied','timeout','rate_limited')),
   error TEXT,
   duration_ms INTEGER,
   result_bytes INTEGER,

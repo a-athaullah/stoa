@@ -14263,7 +14263,7 @@ async function run() {
 
     await test('MCP tool overrides — disabled tool hidden and refused; requires_approval tool stays listed', async () => {
       let r = await req('PUT', `/api/mcp/servers/${server.id}/tools/send_note`, { enabled: false });
-      assert.deepStrictEqual(r.body.tool, { name: 'send_note', enabled: false, requires_approval: false });
+      assert.deepStrictEqual(r.body.tool, { name: 'send_note', enabled: false, requires_approval: false, rate_limit_per_min: null });
       r = await req('PUT', `/api/mcp/servers/${server.id}/tools/big`, { requires_approval: true });
       assert.strictEqual(r.status, 200);
       assert.deepStrictEqual(await listNames(tokA), ['mcpdummy__big', 'mcpdummy__echo', 'mcpdummy__fail']);
@@ -14347,6 +14347,30 @@ async function run() {
       assert.strictEqual(r.status, 403, 'an agent cannot approve its own call');
       await req('PUT', `/api/mcp/servers/${server.id}/tools/big`, { requires_approval: false });
       assert.strictEqual(mDb.prepare('SELECT COUNT(*) n FROM mcp_tool_overrides WHERE server_id=?').get(server.id).n, 0, 'back to defaults → no override rows');
+    });
+
+    await test('MCP rate limit — per agent per tool per minute; excess refused and logged rate_limited', async () => {
+      for (const bad of [0, 10001, 1.5, '3', true]) {
+        assert.strictEqual((await req('PUT', `/api/mcp/servers/${server.id}/tools/echo`, { rate_limit_per_min: bad })).status, 400, String(bad));
+      }
+      let r = await req('PUT', `/api/mcp/servers/${server.id}/tools/echo`, { rate_limit_per_min: 2 });
+      assert.deepStrictEqual(r.body.tool, { name: 'echo', enabled: true, requires_approval: false, rate_limit_per_min: 2 });
+      const tools = (await req('GET', `/api/mcp/servers/${server.id}/tools`)).body.tools;
+      assert.strictEqual(tools.find(t => t.name === 'echo').rate_limit_per_min, 2);
+      assert.strictEqual((await callText(tokA, 'mcpdummy__echo', { text: '1' })).isError, false);
+      assert.strictEqual((await callText(tokA, 'mcpdummy__echo', { text: '2' })).isError, false);
+      const third = await callText(tokA, 'mcpdummy__echo', { text: '3' });
+      assert.strictEqual(third.isError, true);
+      assert.match(third.text, /rate limited \(2 calls per minute for this tool\), try again in \d+s/);
+      assert.deepStrictEqual([lastCall().status, lastCall().tool], ['rate_limited', 'echo']);
+      assert.strictEqual((await callText(tokA, 'mcpdummy__fail')).text, 'dummy failure', 'other tools are not limited');
+      await grant('sub_agent', sub.id, null);
+      assert.strictEqual((await callText(tokSub, 'mcpdummy__echo', { text: 's' })).isError, false, 'the sub-agent has its own window');
+      await grant('sub_agent', sub.id, false);
+      r = await req('PUT', `/api/mcp/servers/${server.id}/tools/echo`, { rate_limit_per_min: null });
+      assert.strictEqual(r.body.tool.rate_limit_per_min, null);
+      assert.strictEqual((await callText(tokA, 'mcpdummy__echo', { text: '4' })).isError, false, 'limit removed');
+      assert.strictEqual(mDb.prepare("SELECT COUNT(*) n FROM mcp_tool_overrides WHERE server_id=? AND tool='echo'").get(server.id).n, 0);
     });
 
     await test('MCP policy — room deny is a boundary even with agent allow', async () => {
