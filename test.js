@@ -3040,11 +3040,39 @@ async function runAsyncUnitTests() {
     assert.deepStrictEqual(rows.map(x => [x.server_slug, x.tool, x.status]), [['slow', 'wait', 'timeout'], [null, 'nope', 'denied']]);
     assert.strictEqual(rows[0].server_id, srvId);
     assert.strictEqual(JSON.parse(rows[0].args_preview).token, '***');
+    // Approval: owner decision vs timeout vs abort vs cleanup; every path settles exactly once.
+    mem.prepare("INSERT INTO mcp_tool_overrides (server_id, tool, requires_approval) VALUES (?, 'wait', 1)").run(srvId);
+    const events = [];
+    const gw2 = createMcpGateway({ db: mem, upstreams: { ...upstreams, callTool: async () => ({ content: [{ type: 'text', text: 'ran' }] }) },
+      encrypt: enc, decrypt: dec, approvalTimeoutMs: 80, onApproval: (type, a) => events.push([type, a.id, a.status]), log: { warn() {}, error() {} } });
+    const ident2 = { ...ident, roomId: 5 };
+    const expired = await gw2.callTool(ident2, 'slow__wait', {});
+    assert.match(expired.content[0].text, /approval expired/);
+    const firstId = events[0][1];
+    assert.deepStrictEqual(events, [['mcp_approval', firstId, 'pending'], ['mcp_approval_resolved', firstId, 'expired']]);
+    assert.strictEqual(gw2.decideApproval(firstId, 'approve').status, 409);
+    const ac = new AbortController();
+    const aborted = gw2.callTool(ident2, 'slow__wait', {}, { signal: ac.signal });
+    ac.abort();
+    assert.match((await aborted).content[0].text, /approval expired/, 'agent dropped the request → expired');
+    const pendingRoom = gw2.callTool(ident2, 'slow__wait', {});
+    gw2.forgetRoom(5);
+    assert.match((await pendingRoom).content[0].text, /approval expired/, 'room deleted → pending expired');
+    const ok = gw2.callTool(ident2, 'slow__wait', {});
+    const okId = events.at(-1)[1];
+    assert.strictEqual(gw2.decideApproval(okId, 'approve').status, 200);
+    assert.strictEqual((await ok).content[0].text, 'ran');
+    mem.prepare("INSERT INTO mcp_approvals (server_slug, tool, actor_id, expires_at) VALUES ('slow','wait',?, datetime('now','+1 hour'))").run(actorId);
+    createMcpGateway({ db: mem, upstreams, encrypt: enc, decrypt: dec, log: { warn() {}, error() {} } });
+    assert.strictEqual(mem.prepare("SELECT COUNT(*) n FROM mcp_approvals WHERE status='pending'").get().n, 0, 'pending rows from a previous process expire at boot');
+    mem.prepare('DELETE FROM mcp_tool_overrides').run();
+
     gw.forgetActor(actorId);
     assert.strictEqual(gw.authenticate('Bearer ' + t1), null, 'revoked with the actor');
     assert.notStrictEqual(gw.issueToken({ actorId, threadId: 7 }), t1, 'revoked token is never handed out again');
-    mem.prepare("UPDATE mcp_calls SET created_at=datetime('now','-40 days') WHERE tool='wait'").run();
-    assert.strictEqual(gw.pruneCalls(30), 1);
+    mem.prepare("UPDATE mcp_calls SET created_at=datetime('now','-40 days') WHERE id=(SELECT MIN(id) FROM mcp_calls)").run();
+    mem.prepare("UPDATE mcp_approvals SET created_at=datetime('now','-40 days') WHERE id=?").run(firstId);
+    assert.strictEqual(gw.pruneCalls(30), 2, 'one old call + one old decided approval');
     mem.close();
   });
 
@@ -13966,11 +13994,13 @@ async function run() {
     const { startMcpHttpFixture } = require('./test/fixtures/mcp-http-server');
     const SECRET = 'dummy-secret-' + crypto.randomBytes(8).toString('hex');
     let agA = null, agB = null, roomA = null, roomB = null, sub = null, server = null;
-    let tokA = null, tokB = null, tokSub = null;
-    const asAnon = async (fn) => {
+    let tokA = null, tokB = null, tokSub = null, threadA = null;
+    // Cookies are dropped only while fn() builds its request (synchronously), so an anonymous call
+    // can stay in flight while owner requests run (approval tests).
+    const asAnon = (fn) => {
       const s = sessionCookie, d = deviceCookie;
       sessionCookie = null; deviceCookie = null;
-      try { return await fn(); } finally { sessionCookie = s; deviceCookie = d; }
+      try { return fn(); } finally { sessionCookie = s; deviceCookie = d; }
     };
     // JSON-RPC over streamable HTTP; the reply is JSON or one SSE "data:" event.
     let rpcId = 0;
@@ -14140,6 +14170,7 @@ async function run() {
     await test('MCP token — delivered in agent_trigger, stable for the same session', async () => {
       const first = await triggerToken(agA, roomA, 'mcp one');
       tokA = first.token;
+      threadA = first.threadId;
       assert.match(tokA || '', /^stoa_mcp_[A-Za-z0-9_-]{43}$/);
       assert.ok(first.threadId, 'room-level message runs in its own thread');
       assert.strictEqual((await triggerToken(agA, roomA, 'mcp two', first.threadId)).token, tokA, 'same agent/room/thread → same token');
@@ -14230,18 +14261,90 @@ async function run() {
       assert.ok((await listNames(tokA)).includes('mcpdummy__echo'), 'parent keeps access');
     });
 
-    await test('MCP tool overrides — disabled and requires_approval tools are hidden and refused', async () => {
+    await test('MCP tool overrides — disabled tool hidden and refused; requires_approval tool stays listed', async () => {
       let r = await req('PUT', `/api/mcp/servers/${server.id}/tools/send_note`, { enabled: false });
       assert.deepStrictEqual(r.body.tool, { name: 'send_note', enabled: false, requires_approval: false });
       r = await req('PUT', `/api/mcp/servers/${server.id}/tools/big`, { requires_approval: true });
       assert.strictEqual(r.status, 200);
-      assert.deepStrictEqual(await listNames(tokA), ['mcpdummy__echo', 'mcpdummy__fail']);
+      assert.deepStrictEqual(await listNames(tokA), ['mcpdummy__big', 'mcpdummy__echo', 'mcpdummy__fail']);
       assert.match((await callText(tokA, 'mcpdummy__send_note')).text, /tool is disabled/);
-      assert.match((await callText(tokA, 'mcpdummy__big', { bytes: 10 })).text, /requires owner approval/);
       assert.strictEqual((await req('PUT', `/api/mcp/servers/${server.id}/tools/echo`, { enabled: 'no' })).status, 400);
       const tools = (await req('GET', `/api/mcp/servers/${server.id}/tools`)).body.tools;
       assert.strictEqual(tools.find(t => t.name === 'big').requires_approval, true);
       await req('PUT', `/api/mcp/servers/${server.id}/tools/send_note`, { enabled: true });
+    });
+
+    // big requires approval (previous test). The owner watches roomA; the agent's call blocks meanwhile.
+    const approvalRound = async (decide) => {
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: roomA }));
+        await waitForWsMessage(humanWs, m => m.type === 'history');
+        const asked = waitForWsMessage(humanWs, m => m.type === 'mcp_approval', 5000);
+        const call = callText(tokA, 'mcpdummy__big', { bytes: 12, token: 'not-in-preview' });
+        const { approval } = await asked;
+        const resolved = waitForWsMessage(humanWs, m => m.type === 'mcp_approval_resolved' && m.id === approval.id, 8000);
+        const out = await decide(approval);
+        return { approval, out, result: await call, resolved: await resolved };
+      } finally { humanWs.close(); }
+    };
+
+    await test('MCP approval — call waits for the owner; card has who/what/where; approve runs the tool', async () => {
+      const ranBig = () => mDb.prepare("SELECT COUNT(*) n FROM mcp_calls WHERE server_slug='mcpdummy' AND tool='big'").get().n;
+      const before = ranBig();
+      const { approval, out, result, resolved } = await approvalRound(async (a) => {
+        assert.strictEqual(ranBig(), before, 'nothing ran or was logged before the decision');
+        const pending = await req('GET', `/api/mcp/approvals?room_id=${roomA}&thread_id=${threadA}&status=pending`);
+        assert.strictEqual(pending.status, 200);
+        assert.deepStrictEqual(pending.body.approvals.map(x => x.id), [a.id], 'listed while pending');
+        return req('POST', `/api/mcp/approvals/${a.id}`, { decision: 'approve' });
+      });
+      assert.deepStrictEqual([approval.server_slug, approval.tool, approval.actor_id, approval.actor_name, approval.room_id, approval.thread_id, approval.status],
+        ['mcpdummy', 'big', agA.actorId, '__test-mcp-a', roomA, threadA, 'pending']);
+      assert.deepStrictEqual(JSON.parse(approval.args_preview), { bytes: 12, token: '***' });
+      const ttl = Date.parse(approval.expires_at) - Date.parse(approval.created_at);
+      assert.ok(Math.abs(ttl - Number(process.env.MCP_APPROVAL_TIMEOUT_MS || 300000)) <= 1000, `expires_at follows the timeout (${ttl}ms)`);
+      assert.strictEqual(out.status, 200, out.raw);
+      assert.strictEqual(out.body.approval.status, 'approved');
+      assert.strictEqual(resolved.status, 'approved');
+      assert.match(resolved.decided_at, /Z$/);
+      assert.deepStrictEqual([result.isError, result.text], [false, 'x'.repeat(12)]);
+      assert.strictEqual(lastCall().status, 'ok');
+      const again = await req('POST', `/api/mcp/approvals/${approval.id}`, { decision: 'deny' });
+      assert.strictEqual(again.status, 409, 'decided once');
+      assert.strictEqual(again.body.approval.status, 'approved');
+    });
+
+    await test('MCP approval — deny returns a tool error to the agent and logs denied', async () => {
+      const { result, resolved } = await approvalRound(a => req('POST', `/api/mcp/approvals/${a.id}`, { decision: 'deny' }));
+      assert.strictEqual(resolved.status, 'denied');
+      assert.strictEqual(result.isError, true);
+      assert.match(result.text, /owner denied/);
+      const c = lastCall();
+      assert.deepStrictEqual([c.status, c.tool], ['denied', 'big']);
+    });
+
+    await test('MCP approval — no decision before expires_at → expired, call refused', async () => {
+      const t0 = Date.now();
+      const { approval, result, resolved } = await approvalRound(async () => null);
+      assert.ok(Date.now() - t0 >= Number(process.env.MCP_APPROVAL_TIMEOUT_MS || 0) - 200, 'waited for the timeout');
+      assert.strictEqual(resolved.status, 'expired');
+      assert.match(result.text, /approval expired/);
+      assert.strictEqual(lastCall().status, 'denied');
+      assert.strictEqual((await req('POST', `/api/mcp/approvals/${approval.id}`, { decision: 'approve' })).status, 409, 'too late to approve');
+      const hist = await req('GET', `/api/mcp/approvals?room_id=${roomA}`);
+      assert.deepStrictEqual(hist.body.approvals.slice(0, 3).map(x => x.status), ['expired', 'denied', 'approved']);
+    });
+
+    await test('MCP approval — bad input, unknown id, agent secret refused', async () => {
+      assert.strictEqual((await req('POST', '/api/mcp/approvals/99999999', { decision: 'approve' })).status, 404);
+      const any = mDb.prepare('SELECT id FROM mcp_approvals ORDER BY id DESC LIMIT 1').get();
+      assert.strictEqual((await req('POST', `/api/mcp/approvals/${any.id}`, { decision: 'yes' })).status, 400);
+      assert.strictEqual((await req('GET', '/api/mcp/approvals?status=maybe')).status, 400);
+      assert.strictEqual((await req('GET', '/api/mcp/approvals?room_id=x')).status, 400);
+      const h = { 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret };
+      const r = await asAnon(() => req('POST', `/api/mcp/approvals/${any.id}`, { decision: 'approve' }, h));
+      assert.strictEqual(r.status, 403, 'an agent cannot approve its own call');
       await req('PUT', `/api/mcp/servers/${server.id}/tools/big`, { requires_approval: false });
       assert.strictEqual(mDb.prepare('SELECT COUNT(*) n FROM mcp_tool_overrides WHERE server_id=?').get(server.id).n, 0, 'back to defaults → no override rows');
     });

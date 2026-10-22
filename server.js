@@ -1513,15 +1513,25 @@ if (!AGENT_SCOPE_ENFORCED) console.warn('[agent-scope] WARNING: STOA_AGENT_SCOPE
 // MCP gateway (plan: stoa-feature/mcp-gateway.md): upstream MCP servers run here, agents reach them via /mcp.
 const mcpCredentials = require('./lib/credentials');
 const { createUpstreamManager, decodeServerEnv } = require('./lib/mcp-upstreams');
-const { createMcpGateway } = require('./lib/mcp-gateway');
+const { createMcpGateway, APPROVAL_TIMEOUT_MAX_MS } = require('./lib/mcp-gateway');
 const { createMcpApi } = require('./lib/mcp-api');
 const { connectionEnv } = require('./lib/mcp-catalog');
 const mcpUpstreams = createUpstreamManager({
   readEnv: (row) => connectionEnv(row, decodeServerEnv(row, mcpCredentials.decrypt)),
   onStatus: (serverId, status, lastError) => broadcastGlobal({ type: 'mcp_status', server_id: serverId, status, last_error: lastError }),
 });
-const mcpGateway = createMcpGateway({ db, upstreams: mcpUpstreams, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt, version: require('./package.json').version });
-const mcpApi = createMcpApi({ db, upstreams: mcpUpstreams, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt });
+const mcpGateway = createMcpGateway({
+  db, upstreams: mcpUpstreams, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt, version: require('./package.json').version,
+  approvalTimeoutMs: Math.min(APPROVAL_TIMEOUT_MAX_MS, Math.max(1000, parseInt(process.env.MCP_APPROVAL_TIMEOUT_MS, 10) || 5 * 60_000)),
+  // Approval cards live in the room (and thread) the agent is working in.
+  onApproval: (type, approval) => {
+    if (approval.room_id == null) return;
+    broadcast(approval.room_id, type === 'mcp_approval'
+      ? { type, approval }
+      : { type, id: approval.id, status: approval.status, decided_at: approval.decided_at });
+  },
+});
+const mcpApi = createMcpApi({ db, upstreams: mcpUpstreams, gateway: mcpGateway, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt });
 const MCP_CALLS_RETENTION_DAYS = parseInt(process.env.MCP_CALLS_RETENTION_DAYS, 10) || 30;
 const pruneMcpCalls = () => {
   try { mcpGateway.pruneCalls(MCP_CALLS_RETENTION_DAYS); } catch (e) { console.error('[mcp] prune failed:', e.message); }

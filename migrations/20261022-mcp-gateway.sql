@@ -73,3 +73,25 @@ CREATE TABLE IF NOT EXISTS mcp_calls (
 CREATE INDEX IF NOT EXISTS idx_mcp_calls_created ON mcp_calls(created_at);
 CREATE INDEX IF NOT EXISTS idx_mcp_calls_server ON mcp_calls(server_id, id);
 CREATE INDEX IF NOT EXISTS idx_mcp_calls_actor ON mcp_calls(actor_id, id);
+
+-- Owner approval for tools marked requires_approval: the gateway holds the agent's tools/call open until
+-- the owner decides or expires_at passes (expired = denied). Rows still pending at boot belong to a
+-- request that died with the old process and are expired then.
+CREATE TABLE IF NOT EXISTS mcp_approvals (
+  id INTEGER PRIMARY KEY,
+  server_id INTEGER REFERENCES mcp_servers(id) ON DELETE SET NULL,
+  server_slug TEXT NOT NULL,
+  tool TEXT NOT NULL,
+  actor_id INTEGER NOT NULL,
+  sub_agent_id INTEGER,
+  room_id INTEGER,
+  thread_id INTEGER,
+  args_preview TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','denied','expired')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL,
+  decided_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_approvals_room ON mcp_approvals(room_id, id);
+CREATE INDEX IF NOT EXISTS idx_mcp_approvals_pending ON mcp_approvals(status) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_mcp_approvals_created ON mcp_approvals(created_at);
