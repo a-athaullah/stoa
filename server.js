@@ -606,7 +606,11 @@ function giveUpRetrigger(row, agentName, why) {
   const ref = row.trigger_message_id ? `trigger ${row.trigger_message_id}` : `trigger (antrean #${row.id})`;
   const sysId = postWakeSystemEvent(row.room_id, row.participant_id, row.thread_id ?? null,
     `${ref} tidak terproses — butuh manusia (${agentName}: ${why})`);
-  maybeBroadcastError({ threadId: row.thread_id, messageId: sysId, reason: 'error', roomId: row.room_id });
+  // Bypasses maybeBroadcastError's 10-min per-thread flood guard on purpose: this is the terminal
+  // "a human must act" signal, at most once per queued trigger, so it cannot flood the feed — and the
+  // guard is usually already spent by this thread's "agent updating" placeholder. Parent-only rows,
+  // so the sub-agent skip does not apply; a root (thread-less) message is in the feed already.
+  if (row.thread_id) setBroadcastReason(sysId, 'error', row.room_id);
   console.log(`[retrigger] gave up on #${row.id} (${why})`);
 }
 

@@ -11937,6 +11937,7 @@ async function run() {
       db.prepare("INSERT INTO pending_retriggers (room_id, participant_id, trigger_message_id, thread_id, prompt, created_at) VALUES (?,?,?,?,'old root retrigger-E2', datetime('now','-31 minutes'))").run(rt.roomId, rt.owPart, root, root);
       await closeWs(ow.ws);
       const feed = waitForWsMessage(rt.hws, mm => mm.type === 'message_broadcast' && mm.message?.thread_id === root, 5000);
+      const feed1 = waitForWsMessage(rt.hws, mm => mm.type === 'message_broadcast' && mm.message?.thread_id === e1 && mm.message?.state === 'system_event', 5000);
       const { ws, triggers } = await rtConnectCollect();
       ow.ws = ws;
       await waitFor(() => rtQueue().length === 0);
@@ -11944,7 +11945,10 @@ async function run() {
       const sys = (t) => db.prepare("SELECT * FROM messages WHERE room_id=? AND thread_id=? AND state='system_event' ORDER BY id DESC LIMIT 1").get(rt.roomId, t);
       const s1 = sys(e1);
       assert.ok(s1 && s1.content.startsWith(`trigger ${e1} tidak terproses — butuh manusia`), s1?.content);
-      assert.strictEqual(s1.broadcast_reason, null, 'flood guard: the placeholder in this thread was broadcast <10 min ago');
+      const ph1 = db.prepare("SELECT broadcast_reason FROM messages WHERE room_id=? AND participant_id=? AND reply_to=? AND state='error'").get(rt.roomId, rt.owPart, e1);
+      assert.strictEqual(ph1.broadcast_reason, 'error', 'placeholder took the thread\'s flood-guard slot');
+      assert.strictEqual(s1.broadcast_reason, 'error', 'give-up bypasses the flood guard although the placeholder was broadcast <10 min ago');
+      assert.strictEqual((await feed1).message.id, s1.id, 'give-up reaches the room feed');
       const s2 = sys(root);
       assert.ok(s2 && s2.content.includes(`trigger ${root} tidak terproses — butuh manusia`) && s2.content.includes('kedaluwarsa'), s2?.content);
       assert.strictEqual(s2.broadcast_reason, 'error', 'system_event reaches the room feed');

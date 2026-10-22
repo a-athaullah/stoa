@@ -86,10 +86,10 @@
   never reached triggerAgentsSequential's cascade).
 - Give-up: `attempts >= 3` (each refused/failed replay +1) or older than 30 min → row deleted +
   system_event "trigger <id> tidak terproses — butuh manusia" in the thread.
-- Room feed: the placeholder and the give-up system_event go through `maybeBroadcastError`
-  (`broadcast_reason='error'`). The 10-min per-thread flood guard is kept as is, so a give-up within
-  10 min of the placeholder broadcast in the same thread is not broadcast again — the placeholder
-  already put that thread in the feed.
+- Room feed: the placeholder goes through `maybeBroadcastError` (`broadcast_reason='error'`, 10-min
+  per-thread flood guard kept). The give-up system_event calls `setBroadcastReason` directly and
+  always reaches the feed (threaded rows only): it is the terminal "a human must act" signal, at most
+  once per queued trigger, so it cannot flood — and the placeholder usually spent the guard already.
 
 ---
 
