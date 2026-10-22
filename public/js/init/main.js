@@ -636,7 +636,7 @@ async function init() {
   initSettings();
   initGlobalWs();
   initMessageActionTouch();
-  applyInitialRoute(rooms);
+  if (!mcpConsumeOAuthReturn()) applyInitialRoute(rooms);
 }
 
 

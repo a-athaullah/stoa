@@ -37,7 +37,7 @@ function mcpOpenEdit(srv) {
   });
   mcpState.form = {
     mode: 'edit', preset, presetId: srv.preset || null, serverId: srv.id, name: srv.name, slug: srv.slug, slugTouched: true,
-    transport: srv.transport, auth: srv.auth || 'none', command: srv.command || '', args: (srv.args || []).join('\n'), url: srv.url || '',
+    transport: srv.transport, auth: srv.auth || 'none', authInitial: srv.auth || 'none', command: srv.command || '', args: (srv.args || []).join('\n'), url: srv.url || '',
     allow_all: srv.default_access === 'all', error: null, saving: false, env,
   };
   mcpState.addMode = srv.preset ? 'catalog' : 'custom';
@@ -176,8 +176,22 @@ function mcpMakeForm(f) {
       ta.addEventListener('input', () => { f.args = ta.value; });
       box.appendChild(mcpField('arguments', ta, 'one per line, passed as-is — quotes and $VARS are not expanded'));
     } else {
-      box.appendChild(mcpField('url', mcpInput(f.url, v => { f.url = v; }, { placeholder: 'https://example.com/mcp', mono: true }),
-        'remote servers with OAuth arrive in a later update; header tokens work now'));
+      box.appendChild(mcpField('url', mcpInput(f.url, v => { f.url = v; }, { placeholder: 'https://example.com/mcp', mono: true })));
+      const aseg = mcpEl('div', 'mcp-seg mcp-seg-small');
+      aseg.setAttribute('role', 'group');
+      aseg.setAttribute('aria-label', 'Sign-in');
+      [['headers', 'header token or none'], ['oauth', 'oauth sign-in']].forEach(([id, label]) => {
+        const b = mcpBtn('mcp-seg-btn', label, () => {
+          if ((f.auth === 'oauth') === (id === 'oauth')) return;
+          f.auth = id;
+          mcpRender();
+        });
+        b.setAttribute('aria-pressed', (f.auth === 'oauth') === (id === 'oauth') ? 'true' : 'false');
+        aseg.appendChild(b);
+      });
+      box.appendChild(mcpField('sign-in', aseg, f.auth === 'oauth'
+        ? `after ${isEdit ? 'saving' : 'install'}, use connect on the server card to sign in with the provider`
+        : 'put a token in headers below, e.g. Authorization'));
     }
   }
 
@@ -308,7 +322,11 @@ async function mcpSubmitForm(f, errEl, saveBtn) {
   if (isEdit) {
     body = { name: f.name.trim() };
     if (isCustom && f.transport === 'stdio') { body.command = f.command.trim(); body.args = f.args.split('\n').map(a => a.trim()).filter(Boolean); }
-    if (isCustom && f.transport === 'http') body.url = f.url.trim();
+    if (isCustom && f.transport === 'http') {
+      body.url = f.url.trim();
+      const auth = mcpFormHttpAuth(f, env);
+      if (auth !== f.authInitial) body.auth = auth;
+    }
     if (Object.keys(env).length) body.env = env;
     const removed = f.env.filter(r => r.existing && r.remove).map(r => r.key);
     if (removed.length) body.env_remove = removed;
@@ -316,7 +334,7 @@ async function mcpSubmitForm(f, errEl, saveBtn) {
     body = { slug: f.slug, name: f.name.trim(), transport: f.transport, env, allow_all: !!f.allow_all };
     if (f.preset) body.preset = f.preset.id;
     else if (f.transport === 'stdio') { body.command = f.command.trim(); body.args = f.args.split('\n').map(a => a.trim()).filter(Boolean); }
-    else body.url = f.url.trim();
+    else { body.url = f.url.trim(); body.auth = mcpFormHttpAuth(f, env); }
   }
 
   f.saving = true; saveBtn.disabled = true; saveBtn.textContent = 'saving…';
@@ -343,4 +361,9 @@ async function mcpSubmitForm(f, errEl, saveBtn) {
   mcpState.addMode = 'catalog';
   showToast(isEdit ? `${body.name} saved` : `${body.name} installed — run test to fetch its tools`);
   mcpSetTab('installed');
+}
+
+function mcpFormHttpAuth(f, env) {
+  if (f.auth === 'oauth') return 'oauth';
+  return Object.keys(env).length || f.env.some(r => r.existing && !r.remove) ? 'headers' : 'none';
 }

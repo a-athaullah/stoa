@@ -31,6 +31,7 @@ let mcpState = {
   activityView: 'calls',
   approvals: null,
   approvalsFilter: '',
+  oauthReturn: null,
 };
 
 async function mcpApi(method, url, body) {
@@ -126,6 +127,31 @@ async function sLoadMcpTab() {
     mcpState.loaded = ok;
   }
   mcpRender();
+  if (mcpState.loaded) mcpFlushOAuthReturn();
+}
+
+// The OAuth callback lands on /?mcp_oauth=connected|error&server_id=N[&reason=…] (in the tab opened by connect).
+function mcpConsumeOAuthReturn() {
+  const q = new URLSearchParams(location.search);
+  const result = q.get('mcp_oauth');
+  if (result !== 'connected' && result !== 'error') return false;
+  const id = /^\d{1,15}$/.test(q.get('server_id') || '') ? Number(q.get('server_id')) : null;
+  mcpState.oauthReturn = { ok: result === 'connected', serverId: id, reason: (q.get('reason') || '').slice(0, 200) };
+  ['mcp_oauth', 'server_id', 'reason'].forEach(k => q.delete(k));
+  history.replaceState(null, '', location.pathname + (q.size ? `?${q}` : '') + location.hash);
+  mcpState.tab = 'installed';
+  openSettingsTab('mcp');
+  return true;
+}
+
+function mcpFlushOAuthReturn() {
+  const ret = mcpState.oauthReturn;
+  if (!ret) return;
+  mcpState.oauthReturn = null;
+  const name = mcpServerById(ret.serverId)?.name || 'MCP server';
+  if (ret.ok) showToast(`${name} connected`);
+  else showToast(`Couldn’t connect ${name}: ${ret.reason || 'sign-in failed'}`, { error: true, duration: 8000 });
+  document.querySelector(`.mcp-card[data-server-id="${ret.serverId}"]`)?.scrollIntoView({ block: 'center' });
 }
 
 function mcpSetTab(tab) {

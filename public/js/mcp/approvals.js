@@ -22,8 +22,20 @@ async function mcpApprovalsLoad(roomId) {
   mcpApprovalsSync();
 }
 
+// Room WS and the owner's global WS both deliver approval events: every path here is idempotent by id.
+function mcpApprovalEvent(msg) {
+  if (msg.type === 'mcp_approval') {
+    mcpApprovalNew(msg.approval);
+    mcpApprLogEvent(msg.approval);
+  } else if (msg.type === 'mcp_approval_resolved') {
+    const res = msg.approval ? { id: msg.approval.id, status: msg.approval.status, decided_at: msg.approval.decided_at } : msg;
+    mcpApprovalResolved(res);
+    mcpApprLogEvent(res);
+  }
+}
+
 function mcpApprovalNew(a) {
-  if (!a || a.room_id !== currentRoomId) return;
+  if (!a || a.room_id !== currentRoomId || mcpApprovals.has(a.id)) return;
   mcpApprovals.set(a.id, a);
   mcpApprovalsSync();
   if (a.thread_id && typeof activeThreadId !== 'undefined' && activeThreadId === a.thread_id) {
@@ -34,7 +46,7 @@ function mcpApprovalNew(a) {
 }
 
 function mcpApprovalResolved(msg) {
-  const a = mcpApprovals.get(msg.id);
+  const a = mcpApprovals.get(msg?.id);
   if (!a || a.status === msg.status) return;
   a.status = msg.status;
   a.decided_at = msg.decided_at || null;

@@ -285,13 +285,8 @@ function handleWsMessage(msg) {
     return;
   }
 
-  if (msg.type === 'mcp_approval') {
-    if (typeof mcpApprovalNew === 'function') mcpApprovalNew(msg.approval);
-    return;
-  }
-
-  if (msg.type === 'mcp_approval_resolved') {
-    if (typeof mcpApprovalResolved === 'function') mcpApprovalResolved(msg);
+  if (msg.type === 'mcp_approval' || msg.type === 'mcp_approval_resolved') {
+    if (typeof mcpApprovalEvent === 'function') mcpApprovalEvent(msg);
     return;
   }
 

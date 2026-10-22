@@ -208,3 +208,19 @@ function mcpApprLogSync(a, out) {
   a.decided_at = out.decided_at;
   if (mcpIsVisible() && mcpState.tab === 'activity' && mcpState.activityView === 'approvals') mcpRender();
 }
+
+// Live update of a loaded approvals log: a new request is prepended once, a resolution updates its row.
+function mcpApprLogEvent(ev) {
+  const list = mcpState.approvals?.list;
+  if (!ev || !list) return;
+  const cur = list.find(x => x.id === ev.id);
+  if (ev.args_preview !== undefined) {
+    if (cur || (mcpState.approvalsFilter && mcpState.approvalsFilter !== ev.status)) return;
+    list.unshift({ ...ev });
+  } else {
+    if (!cur || cur.status === ev.status) return;
+    cur.status = ev.status;
+    cur.decided_at = ev.decided_at || null;
+  }
+  if (mcpIsVisible() && mcpState.tab === 'activity' && mcpState.activityView === 'approvals') mcpRender();
+}

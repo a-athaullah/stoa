@@ -242,7 +242,7 @@ function mcpMakeToolList(srv) {
     const setTool = field => async next => {
       const r = await mcpApi('PUT', `/api/mcp/servers/${srv.id}/tools/${encodeURIComponent(tool.name)}`, { [field]: next });
       if (!r.ok) { showToast(`Couldn’t update ${tool.name}: ${r.error}`, { error: true }); return false; }
-      tool[field] = next;
+      ['enabled', 'requires_approval', 'rate_limit_per_min'].forEach(k => { if (r.data && k in r.data) tool[k] = r.data[k]; });
       return true;
     };
     const on = mcpSwitch(tool.enabled !== false, `${tool.name} enabled`, setTool('enabled'));
