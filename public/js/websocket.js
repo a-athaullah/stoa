@@ -96,6 +96,7 @@ function handleWsMessage(msg) {
     }
     scrollToBottom(true);
     routerOnHistory();
+    if (typeof mcpApprovalsLoad === 'function') { mcpApprovalsReset(); mcpApprovalsLoad(currentRoomId); }
     return;
   }
 
@@ -281,6 +282,16 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'model_update') {
     handleModelUpdate(msg);
+    return;
+  }
+
+  if (msg.type === 'mcp_approval') {
+    if (typeof mcpApprovalNew === 'function') mcpApprovalNew(msg.approval);
+    return;
+  }
+
+  if (msg.type === 'mcp_approval_resolved') {
+    if (typeof mcpApprovalResolved === 'function') mcpApprovalResolved(msg);
     return;
   }
 

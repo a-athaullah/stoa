@@ -15,7 +15,7 @@ function mcpNewForm(preset) {
   if (preset) {
     return {
       mode: 'new', preset, serverId: null, name: preset.name, slug: mcpSlugFrom(preset.id), slugTouched: true,
-      transport: preset.transport, command: '', args: '', url: '', allow_all: false, error: null, saving: false,
+      transport: preset.transport, auth: preset.auth || 'none', command: '', args: '', url: '', allow_all: false, error: null, saving: false,
       env: (preset.env_fields || []).map(f => ({ key: f.key, value: '', label: f.label || f.key, help: f.help || '', secret: !!f.secret, required: !!f.required, fixed: true })),
     };
   }
@@ -37,7 +37,7 @@ function mcpOpenEdit(srv) {
   });
   mcpState.form = {
     mode: 'edit', preset, presetId: srv.preset || null, serverId: srv.id, name: srv.name, slug: srv.slug, slugTouched: true,
-    transport: srv.transport, command: srv.command || '', args: (srv.args || []).join('\n'), url: srv.url || '',
+    transport: srv.transport, auth: srv.auth || 'none', command: srv.command || '', args: (srv.args || []).join('\n'), url: srv.url || '',
     allow_all: srv.default_access === 'all', error: null, saving: false, env,
   };
   mcpState.addMode = srv.preset ? 'catalog' : 'custom';
@@ -80,10 +80,12 @@ function mcpRenderAdd(panel) {
     card.setAttribute('aria-pressed', f?.preset?.id === p.id ? 'true' : 'false');
     const top = mcpEl('div', 'mcp-preset-top');
     top.append(mcpEl('span', 'mcp-preset-name', p.name), mcpEl('span', 'mcp-chip', p.transport));
+    if (p.auth === 'oauth') top.appendChild(mcpEl('span', 'mcp-chip', 'oauth'));
     if (installed) top.appendChild(mcpEl('span', 'mcp-chip mcp-chip-ok', 'installed'));
     card.append(top, mcpEl('span', 'mcp-preset-desc', p.description || ''));
     const needs = (p.env_fields || []).filter(x => x.required).length;
-    card.appendChild(mcpEl('span', 'mcp-preset-foot', needs ? `needs ${needs} credential${needs > 1 ? 's' : ''}` : 'no credentials needed'));
+    card.appendChild(mcpEl('span', 'mcp-preset-foot', p.auth === 'oauth' ? `sign in with ${p.name} after install`
+      : needs ? `needs ${needs} credential${needs > 1 ? 's' : ''}` : 'no credentials needed'));
     grid.appendChild(card);
   });
   panel.appendChild(grid);
@@ -222,7 +224,9 @@ function mcpMakeEnvEditor(f, isCustom) {
   section.appendChild(title);
 
   if (!f.env.length && !isCustom) {
-    section.appendChild(mcpEl('div', 'mcp-muted', 'none needed.'));
+    section.appendChild(mcpEl('div', 'mcp-muted', f.auth === 'oauth'
+      ? `none to paste: after ${f.mode === 'edit' ? 'saving' : 'install'}, use connect on the server card to sign in with ${f.name}. tokens are stored encrypted on this server.`
+      : 'none needed.'));
     return section;
   }
 

@@ -17,6 +17,7 @@ let mcpState = {
   expanded: new Set(),
   testing: new Set(),
   testResults: {},
+  oauthPending: new Set(),
   confirmRemoveId: null,
   form: null,
   addMode: 'catalog',
@@ -27,6 +28,9 @@ let mcpState = {
   callsError: null,
   callsFilter: { server_id: '', actor_id: '' },
   openCallId: null,
+  activityView: 'calls',
+  approvals: null,
+  approvalsFilter: '',
 };
 
 async function mcpApi(method, url, body) {
@@ -40,7 +44,7 @@ async function mcpApi(method, url, body) {
   if (r.status === 401) { showLogin(); return { ok: false, error: 'unauthorized' }; }
   let data = null;
   try { data = await r.json(); } catch {}
-  if (!r.ok) return { ok: false, status: r.status, error: (data && data.error) || `${r.status} ${r.statusText}` };
+  if (!r.ok) return { ok: false, status: r.status, data, error: (data && data.error) || `${r.status} ${r.statusText}` };
   return { ok: true, data };
 }
 
@@ -91,10 +95,14 @@ function mcpServerById(id) {
   return mcpState.servers.find(s => s.id === id) || null;
 }
 
+function mcpTsMs(ts) {
+  if (!ts) return NaN;
+  return Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(ts) ? ts : ts.replace(' ', 'T') + 'Z');
+}
+
 function mcpLocalTime(ts) {
   if (!ts) return '';
-  const iso = /[zZ]|[+-]\d\d:?\d\d$/.test(ts) ? ts : ts.replace(' ', 'T') + 'Z';
-  const d = new Date(iso);
+  const d = new Date(mcpTsMs(ts));
   if (isNaN(d)) return ts;
   return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
@@ -169,6 +177,7 @@ function mcpHandleStatus(msg) {
   }
   srv.status = msg.status;
   srv.last_error = msg.last_error || null;
+  if (msg.status !== 'needs_auth') mcpState.oauthPending.delete(srv.id);
   if (!mcpIsVisible() || mcpState.tab !== 'installed') return;
   const card = document.querySelector(`.mcp-card[data-server-id="${srv.id}"]`);
   if (card) card.replaceWith(mcpMakeServerCard(srv));
@@ -178,6 +187,7 @@ function mcpInvalidate() {
   mcpState.loaded = false;
   mcpState.access = null;
   mcpState.callsLoaded = false;
+  mcpState.approvals = null;
   if (mcpIsVisible()) sLoadMcpTab();
 }
 

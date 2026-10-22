@@ -23,6 +23,15 @@ function mcpReloadCalls() {
 }
 
 function mcpRenderActivity(panel) {
+  const seg = mcpEl('div', 'mcp-seg');
+  [['calls', 'tool calls'], ['approvals', 'approvals']].forEach(([id, label]) => {
+    const b = mcpBtn('mcp-seg-btn', label, () => { if (mcpState.activityView !== id) { mcpState.activityView = id; mcpRender(); } });
+    b.setAttribute('aria-pressed', mcpState.activityView === id ? 'true' : 'false');
+    seg.appendChild(b);
+  });
+  panel.appendChild(seg);
+  if (mcpState.activityView === 'approvals') { mcpRenderApprovalLog(panel); return; }
+
   const bar = mcpEl('div', 'mcp-filters');
   const mkSelect = (label, value, options, onChange) => {
     const sel = mcpEl('select', 'auto-sel');
@@ -120,4 +129,82 @@ function mcpMakeCallRow(c) {
     row.appendChild(det);
   }
   return row;
+}
+
+async function mcpLoadApprovalLog() {
+  const q = new URLSearchParams();
+  if (mcpState.approvalsFilter) q.set('status', mcpState.approvalsFilter);
+  const r = await mcpApi('GET', `/api/mcp/approvals${q.size ? `?${q}` : ''}`);
+  mcpState.approvals = r.ok ? { list: Array.isArray(r.data?.approvals) ? r.data.approvals : [] } : { error: r.error, list: [] };
+}
+
+function mcpReloadApprovalLog() {
+  mcpState.approvals = null;
+  mcpRender();
+}
+
+function mcpRenderApprovalLog(panel) {
+  const bar = mcpEl('div', 'mcp-filters');
+  const sel = mcpEl('select', 'auto-sel');
+  sel.setAttribute('aria-label', 'Filter approvals by status');
+  [['', 'all statuses'], ['pending', 'pending'], ['approved', 'approved'], ['denied', 'denied'], ['expired', 'expired']].forEach(([v, t]) => {
+    const o = mcpEl('option', null, t);
+    o.value = v;
+    sel.appendChild(o);
+  });
+  sel.value = mcpState.approvalsFilter;
+  sel.addEventListener('change', () => { mcpState.approvalsFilter = sel.value; mcpReloadApprovalLog(); });
+  bar.append(sel, mcpEl('span', 'mcp-actions-spacer'), mcpBtn('auto-small-btn', 'refresh', mcpReloadApprovalLog));
+  panel.appendChild(bar);
+
+  if (!mcpState.approvals) {
+    panel.appendChild(mcpEl('div', 'mcp-muted', 'loading approvals…'));
+    mcpLoadApprovalLog().then(() => { if (mcpIsVisible() && mcpState.tab === 'activity' && mcpState.activityView === 'approvals') mcpRender(); });
+    return;
+  }
+  const { list, error } = mcpState.approvals;
+  if (error) {
+    panel.appendChild(mcpEmpty('couldn’t load approvals', error, mcpBtn('auto-small-btn', 'retry', mcpReloadApprovalLog)));
+    return;
+  }
+  if (!list.length) {
+    panel.appendChild(mcpEmpty(mcpState.approvalsFilter ? `no ${mcpState.approvalsFilter} approvals` : 'no approval requests yet',
+      mcpState.approvalsFilter ? null : 'turn on approval for a tool under installed → tools; each call then waits for you in its room or thread.'));
+    return;
+  }
+  const rows = mcpEl('div', 'mcp-calls');
+  rows.setAttribute('role', 'list');
+  list.forEach(a => rows.appendChild(mcpMakeApprovalLogRow(a)));
+  panel.appendChild(rows);
+}
+
+function mcpMakeApprovalLogRow(a) {
+  const row = mcpEl('div', 'mcp-call mcp-appr-log');
+  row.setAttribute('role', 'listitem');
+  const main = mcpEl('div', 'mcp-call-main mcp-appr-log-main');
+  const time = mcpEl('span', 'mcp-call-time', mcpLocalTime(a.created_at));
+  time.title = a.created_at ? `${a.created_at} UTC` : '';
+  main.append(time, mcpEl('code', 'mcp-call-tool', mcpApprToolName(a)), mcpEl('span', 'mcp-call-who', mcpApprWho(a)),
+    mcpEl('span', `mcp-call-status mcp-call-${a.status}`, a.status));
+  if (a.args_preview) main.title = a.args_preview;
+  row.appendChild(main);
+
+  const side = mcpEl('div', 'mcp-call-side');
+  if (a.status === 'pending') {
+    const actions = mcpEl('span', 'mcp-appr-actions');
+    actions.append(
+      mcpBtn('mcp-appr-approve', 'approve', async () => mcpApprLogSync(a, await mcpDecide(a, 'approve', actions))),
+      mcpBtn('mcp-appr-deny', 'deny', async () => mcpApprLogSync(a, await mcpDecide(a, 'deny', actions))));
+    side.appendChild(actions);
+  }
+  if (a.room_id) side.appendChild(mcpBtn('mcp-link-btn', a.thread_id ? 'open thread' : 'open room', () => goToMessage(a.room_id, null, a.thread_id || null)));
+  row.appendChild(side);
+  return row;
+}
+
+function mcpApprLogSync(a, out) {
+  if (!out) return;
+  a.status = out.status;
+  a.decided_at = out.decided_at;
+  if (mcpIsVisible() && mcpState.tab === 'activity' && mcpState.activityView === 'approvals') mcpRender();
 }

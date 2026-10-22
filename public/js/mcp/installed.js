@@ -1,5 +1,5 @@
 // ── MCP tab: installed servers ───────────────────────────────────────────────
-const MCP_STATUS_LABEL = { running: 'running', idle: 'idle', error: 'error', disabled: 'disabled' };
+const MCP_STATUS_LABEL = { running: 'running', idle: 'idle', error: 'error', disabled: 'disabled', needs_auth: 'needs sign-in' };
 
 function mcpRenderInstalled(panel) {
   if (!mcpState.loaded && mcpState.loadError) {
@@ -35,6 +35,7 @@ function mcpMakeServerCard(srv) {
     mcpEl('span', null, srv.transport === 'http' ? 'http' : 'stdio'),
     mcpEl('span', null, srv.tool_count == null ? 'tools not fetched yet' : `${srv.tool_count} tool${srv.tool_count === 1 ? '' : 's'}`),
     mcpEl('span', null, srv.default_access === 'all' ? 'all agents by default' : 'granted agents only'));
+  if (srv.auth === 'oauth') meta.appendChild(mcpEl('span', null, 'oauth'));
   if (srv.preset) meta.appendChild(mcpEl('span', null, `preset · ${srv.preset}`));
   titles.append(nameRow, meta);
 
@@ -49,6 +50,14 @@ function mcpMakeServerCard(srv) {
   card.appendChild(head);
 
   if (status === 'error' && srv.last_error) card.appendChild(mcpEl('div', 'mcp-card-error', srv.last_error));
+  if (status === 'needs_auth') {
+    const note = mcpEl('div', 'mcp-auth-note');
+    note.appendChild(mcpEl('span', null, mcpState.oauthPending.has(srv.id)
+      ? `finish signing in to ${srv.name} in the new tab. this card updates by itself.`
+      : `sign in to ${srv.name} so agents can use its tools.`));
+    note.appendChild(mcpBtn('auto-save-btn mcp-connect-btn', 'connect', () => mcpStartOAuth(srv)));
+    card.appendChild(note);
+  }
 
   const tr = mcpState.testResults[srv.id];
   if (tr) {
@@ -93,12 +102,74 @@ function mcpMakeServerCard(srv) {
     const rmBtn = mcpBtn('s-icon-btn', null, () => { mcpState.confirmRemoveId = srv.id; card.replaceWith(mcpMakeServerCard(srv)); }, `Remove ${srv.name}`);
     rmBtn.innerHTML = autoSvgTrash(13);
     rmBtn.setAttribute('aria-label', `Remove ${srv.name}`);
+    if (srv.auth === 'oauth' && status !== 'needs_auth' && srv.enabled) {
+      actions.appendChild(mcpBtn('mcp-link-btn', 'reconnect', () => mcpStartOAuth(srv), `Sign in to ${srv.name} again`));
+    }
     actions.append(testBtn, editBtn, rmBtn);
   }
   card.appendChild(actions);
 
   if (expanded) card.appendChild(mcpMakeToolList(srv));
   return card;
+}
+
+function mcpToolCtl(label, control) {
+  const wrap = mcpEl('span', 'mcp-tool-ctl');
+  const cap = mcpEl('span', 'mcp-tool-ctl-label', label);
+  cap.setAttribute('aria-hidden', 'true');
+  wrap.append(cap, control);
+  return wrap;
+}
+
+function mcpMakeRateInput(tool, save) {
+  const input = mcpEl('input', 'auto-field-input mcp-input mcp-rate-input');
+  input.type = 'number';
+  input.min = '1';
+  input.max = '10000';
+  input.step = '1';
+  input.inputMode = 'numeric';
+  input.placeholder = 'no limit';
+  input.value = tool.rate_limit_per_min == null ? '' : String(tool.rate_limit_per_min);
+  input.setAttribute('aria-label', `${tool.name} calls per minute limit, empty for no limit`);
+  input.title = 'Max calls per minute for each agent or sub-agent. Empty = no limit';
+  const saved = () => (tool.rate_limit_per_min == null ? '' : String(tool.rate_limit_per_min));
+  const commit = async () => {
+    const raw = input.value.trim();
+    if (raw === saved()) { input.removeAttribute('aria-invalid'); return; }
+    const n = raw === '' ? null : Number(raw);
+    if (n !== null && (!Number.isInteger(n) || n < 1 || n > 10000)) {
+      input.setAttribute('aria-invalid', 'true');
+      showToast(`${tool.name}: limit must be a whole number from 1 to 10000, or empty`, { error: true });
+      return;
+    }
+    input.removeAttribute('aria-invalid');
+    input.disabled = true;
+    const ok = await save(n);
+    input.disabled = false;
+    if (!ok) input.value = saved();
+  };
+  input.addEventListener('change', commit);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    if (e.key === 'Escape') { input.value = saved(); input.removeAttribute('aria-invalid'); input.blur(); }
+  });
+  return input;
+}
+
+// The tab opens before the await so popup blockers still see the click as its trigger.
+async function mcpStartOAuth(srv) {
+  const tab = window.open('', '_blank');
+  const r = await mcpApi('POST', `/api/mcp/servers/${srv.id}/oauth/start`);
+  const url = r.ok && mcpSafeHref(r.data?.authorize_url);
+  if (!url) {
+    tab?.close();
+    showToast(`Couldn’t start sign-in for ${srv.name}: ${r.ok ? 'invalid authorize URL' : r.error}`, { error: true });
+    return;
+  }
+  mcpState.oauthPending.add(srv.id);
+  mcpRerenderCard(srv);
+  if (tab) { tab.opener = null; tab.location.href = url; }
+  else location.assign(url);
 }
 
 async function mcpTestServer(srv) {
@@ -149,7 +220,7 @@ function mcpMakeToolList(srv) {
     return wrap;
   }
   const head = mcpEl('div', 'mcp-tool-row mcp-tool-head');
-  head.append(mcpEl('span', null, 'tool'), mcpEl('span', null, 'on'), mcpEl('span', null, 'approval'));
+  head.append(mcpEl('span', null, 'tool'), mcpEl('span', null, 'on'), mcpEl('span', null, 'approval'), mcpEl('span', null, 'limit / min'));
   head.setAttribute('aria-hidden', 'true');
   wrap.appendChild(head);
   t.list.forEach(tool => {
@@ -176,8 +247,9 @@ function mcpMakeToolList(srv) {
     };
     const on = mcpSwitch(tool.enabled !== false, `${tool.name} enabled`, setTool('enabled'));
     const appr = mcpSwitch(!!tool.requires_approval, `${tool.name} requires approval`, setTool('requires_approval'));
-    appr.title = 'Requires approval — saved now, approval prompts arrive in a later update';
-    row.append(info, on, appr);
+    appr.title = 'Requires approval: each call waits for approve / deny in the room or thread';
+    row.append(info, mcpToolCtl('on', on), mcpToolCtl('approval', appr),
+      mcpToolCtl('limit / min', mcpMakeRateInput(tool, setTool('rate_limit_per_min'))));
     wrap.appendChild(row);
   });
   return wrap;
