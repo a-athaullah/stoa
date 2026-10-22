@@ -12053,6 +12053,199 @@ async function run() {
       complete(ws, w, 'ok');
     });
 
+    // ── Parent trigger refused by "agent updating" is re-delivered after the update ──
+    // Room with a second agent so a proactive @mention can trigger the parent with no
+    // reply_to (dedup by prompt). A human WS watches the room feed for message_broadcast.
+    let rt = null;
+    const rtMsg = (tag) => db.prepare("SELECT id FROM messages WHERE room_id=? AND content LIKE ? ORDER BY id DESC LIMIT 1").get(rt.roomId, `%${tag}`);
+    const rtQueue = () => db.prepare('SELECT * FROM pending_retriggers WHERE room_id=? ORDER BY id').all(rt.roomId);
+    const rtOutdated = async () => {
+      await closeWs(ow.ws);
+      ow.ws = await connect({ client_version: '0.0.1' });
+    };
+    const rtHumanSend = async (tag) => {
+      const restart = waitForWsMessage(ow.ws, mm => mm.type === 'restart', 5000);
+      rt.hws.send(JSON.stringify({ type: 'send_message', room_id: rt.roomId, content: `@${rt.owName} tolong cek ${tag}` }));
+      await restart;
+      await new Promise(res => setTimeout(res, 200));
+      return rtMsg(tag).id;
+    };
+    const rtConnectCollect = async () => {
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`);
+      const triggers = [];
+      ws.on('message', d => { try { const m = JSON.parse(d); if (m.type === 'agent_trigger' && !m.sub_agent) triggers.push(m); } catch {} });
+      const ready = waitForWsMessage(ws, m => m.type === 'agent_ready', 5000);
+      ws.send(JSON.stringify({ type: 'agent_connect', actor_id: ow.actorId, secret: ow.secret, active_message_ids: [] }));
+      await ready;
+      return { ws, triggers };
+    };
+    const waitFor = async (fn, ms = 5000) => {
+      for (let i = 0; i < ms / 50; i++) { const v = fn(); if (v) return v; await new Promise(res => setTimeout(res, 50)); }
+      return fn();
+    };
+
+    await test('Retrigger — setup: room with the parent agent, a second agent and a human feed socket', async () => {
+      if (!ow) { console.log('    (skipped)'); return; }
+      const other = await createOnlineTestAgent('__test-retrigger-other', '/tmp/stoa-test-retrigger-other');
+      if (!other?.actorId) { console.log('    (skipped — could not set up second agent)'); return; }
+      const r = await req('POST', '/api/rooms', { title: '__retrigger-room__', workdir_id: ow.workdirId, participant_ids: [ow.actorId, other.actorId] });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      testRoomIds.push(r.body.id);
+      const hws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      hws.send(JSON.stringify({ type: 'join_room', room_id: r.body.id }));
+      await new Promise(res => setTimeout(res, 100));
+      rt = {
+        roomId: r.body.id, other, hws,
+        owName: db.prepare('SELECT name FROM actors WHERE id=?').get(ow.actorId).name,
+        owPart: db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(r.body.id, ow.actorId).id,
+      };
+    });
+
+    await test('Retrigger — parent trigger refused while outdated is queued and its placeholder reaches the room feed', async () => {
+      if (!rt) { console.log('    (skipped)'); return; }
+      await rtOutdated();
+      const feed = waitForWsMessage(rt.hws, mm => mm.type === 'message_broadcast' && mm.message?.room_id === rt.roomId, 5000);
+      const humanId = await rtHumanSend('retrigger-A');
+      rt.threadA = humanId;
+      const ph = db.prepare('SELECT * FROM messages WHERE room_id=? AND participant_id=? AND reply_to=? AND sub_agent_id IS NULL').get(rt.roomId, rt.owPart, humanId);
+      assert.ok(ph, 'placeholder bubble exists');
+      assert.strictEqual(ph.state, 'error');
+      assert.strictEqual(ph.content, '(agent updating — akan diproses otomatis setelah restart)');
+      assert.strictEqual(ph.thread_id, humanId, 'room-level message auto-threads');
+      assert.strictEqual(ph.broadcast_reason, 'error', 'placeholder flagged for the room feed');
+      const b = await feed;
+      assert.strictEqual(b.message.id, ph.id, 'message_broadcast carries the placeholder');
+      const q = rtQueue();
+      assert.strictEqual(q.length, 1);
+      assert.strictEqual(q[0].trigger_message_id, humanId);
+      assert.strictEqual(q[0].thread_id, humanId);
+      assert.strictEqual(q[0].participant_id, rt.owPart);
+      assert.strictEqual(q[0].attempts, 0);
+    });
+
+    await test('Retrigger — the same trigger refused twice is queued once', async () => {
+      if (!rt) { console.log('    (skipped)'); return; }
+      const oh = { 'x-agent-id': String(rt.other.actorId), 'x-agent-secret': rt.other.secret };
+      for (let i = 0; i < 2; i++) {
+        const restart = waitForWsMessage(ow.ws, mm => mm.type === 'restart', 5000);
+        const r = await req('POST', `/api/rooms/${rt.roomId}/message`, { content: `@${rt.owName} cek retrigger-B`, thread_id: rt.threadA }, oh);
+        assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+        await restart;
+      }
+      await new Promise(res => setTimeout(res, 200));
+      const refused = db.prepare("SELECT COUNT(*) AS c FROM messages WHERE room_id=? AND participant_id=? AND state='error' AND thread_id=?").get(rt.roomId, rt.owPart, rt.threadA).c;
+      assert.strictEqual(refused, 3, 'every refusal still shows a placeholder');
+      const q = rtQueue();
+      assert.strictEqual(q.length, 2, JSON.stringify(q.map(x => x.prompt)));
+      assert.strictEqual(q[1].trigger_message_id, null, 'proactive cascade has no reply_to');
+      assert.ok(q[1].prompt.includes('retrigger-B'));
+    });
+
+    await test('Retrigger — reconnect on the current version re-delivers each queued trigger once, FIFO in the thread', async () => {
+      if (!rt) { console.log('    (skipped)'); return; }
+      await closeWs(ow.ws);
+      const { ws, triggers } = await rtConnectCollect();
+      ow.ws = ws;
+      assert.ok(await waitFor(() => triggers.length >= 1), 'first queued trigger re-delivered');
+      assert.strictEqual(triggers.length, 1, 'next trigger in the thread waits for the first to finish');
+      assert.ok(triggers[0].prompt.includes('retrigger-A'), 'oldest first');
+      assert.strictEqual(triggers[0].thread_id, rt.threadA);
+      assert.strictEqual(triggers[0].reply_to, rt.threadA, 'replay answers the original trigger');
+      complete(ws, triggers[0], 'done A');
+      assert.ok(await waitFor(() => triggers.length >= 2), 'second queued trigger re-delivered');
+      assert.ok(triggers[1].prompt.includes('retrigger-B'));
+      complete(ws, triggers[1], 'done B');
+      await waitFor(() => rtQueue().length === 0);
+      assert.strictEqual(rtQueue().length, 0, 'queue drained after the replays returned');
+      await new Promise(res => setTimeout(res, 1200));
+      assert.strictEqual(triggers.length, 2, 'exactly one delivery per queued trigger');
+      const done = db.prepare("SELECT state, content FROM messages WHERE id=?").get(triggers[0].message_id);
+      assert.strictEqual(done.state, 'complete');
+    });
+
+    await test('Retrigger — a trigger the agent already answered is dropped, not replayed', async () => {
+      if (!rt) { console.log('    (skipped)'); return; }
+      await rtOutdated();
+      const humanId = await rtHumanSend('retrigger-D');
+      assert.strictEqual(rtQueue().length, 1);
+      // The old process answered it before restarting (e.g. a second trigger path).
+      db.prepare("INSERT INTO messages (room_id, participant_id, content, state, reply_to, thread_id) VALUES (?,?,'answered','complete',?,?)").run(rt.roomId, rt.owPart, humanId, humanId);
+      await closeWs(ow.ws);
+      const { ws, triggers } = await rtConnectCollect();
+      ow.ws = ws;
+      await waitFor(() => rtQueue().length === 0);
+      assert.strictEqual(rtQueue().length, 0, 'answered trigger removed from the queue');
+      await new Promise(res => setTimeout(res, 800));
+      assert.strictEqual(triggers.length, 0, 'no replay of an answered trigger');
+    });
+
+    await test('Retrigger — over the attempt limit or age limit posts "butuh manusia" and drops the row', async () => {
+      if (!rt) { console.log('    (skipped)'); return; }
+      await rtOutdated();
+      const e1 = await rtHumanSend('retrigger-E1');
+      const q1 = rtQueue();
+      assert.strictEqual(q1.length, 1);
+      db.prepare('UPDATE pending_retriggers SET attempts=3 WHERE id=?').run(q1[0].id);
+      // Expired row in a thread with no recent feed broadcast (flood guard is per thread).
+      const hp = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human'").get(rt.roomId).id;
+      const root = Number(db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,'old root retrigger-E2','complete')").run(rt.roomId, hp).lastInsertRowid);
+      const feed = waitForWsMessage(rt.hws, mm => mm.type === 'message_broadcast' && mm.message?.thread_id === root, 5000);
+      db.prepare("INSERT INTO pending_retriggers (room_id, participant_id, trigger_message_id, thread_id, prompt, created_at) VALUES (?,?,?,?,'old root retrigger-E2', datetime('now','-31 minutes'))").run(rt.roomId, rt.owPart, root, root);
+      await closeWs(ow.ws);
+      const feed1 = waitForWsMessage(rt.hws, mm => mm.type === 'message_broadcast' && mm.message?.thread_id === e1 && mm.message?.state === 'system_event', 5000);
+      const { ws, triggers } = await rtConnectCollect();
+      ow.ws = ws;
+      await waitFor(() => rtQueue().length === 0);
+      assert.strictEqual(rtQueue().length, 0, 'both rows dropped');
+      const sys = (t) => db.prepare("SELECT * FROM messages WHERE room_id=? AND thread_id=? AND state='system_event' ORDER BY id DESC LIMIT 1").get(rt.roomId, t);
+      const s1 = sys(e1);
+      assert.ok(s1 && s1.content.startsWith(`trigger ${e1} tidak terproses — butuh manusia`), s1?.content);
+      const ph1 = db.prepare("SELECT broadcast_reason FROM messages WHERE room_id=? AND participant_id=? AND reply_to=? AND state='error'").get(rt.roomId, rt.owPart, e1);
+      assert.strictEqual(ph1.broadcast_reason, 'error', 'placeholder took the thread\'s flood-guard slot');
+      assert.strictEqual(s1.broadcast_reason, 'error', 'give-up bypasses the flood guard although the placeholder was broadcast <10 min ago');
+      assert.strictEqual((await feed1).message.id, s1.id, 'give-up reaches the room feed');
+      const s2 = sys(root);
+      assert.ok(s2 && s2.content.includes(`trigger ${root} tidak terproses — butuh manusia`) && s2.content.includes('kedaluwarsa'), s2?.content);
+      assert.strictEqual(s2.broadcast_reason, 'error', 'system_event reaches the room feed');
+      assert.strictEqual((await feed).message.id, s2.id);
+      await new Promise(res => setTimeout(res, 500));
+      assert.strictEqual(triggers.length, 0, 'given-up triggers are not delivered');
+    });
+
+    await test('Retrigger — sweep gives up expired rows of an agent that never reconnects', async () => {
+      if (!rt) { console.log('    (skipped)'); return; }
+      await closeWs(rt.other.ws);
+      const otherName = db.prepare('SELECT name FROM actors WHERE id=?').get(rt.other.actorId).name;
+      const otherPart = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(rt.roomId, rt.other.actorId).id;
+      const hp = db.prepare("SELECT rp.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='human'").get(rt.roomId).id;
+      const mkRoot = (c) => Number(db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'complete')").run(rt.roomId, hp, c).lastInsertRowid);
+      const oldRoot = mkRoot('offline retrigger-S old');
+      const freshRoot = mkRoot('offline retrigger-S fresh');
+      const feed = waitForWsMessage(rt.hws, mm => mm.type === 'message_broadcast' && mm.message?.thread_id === oldRoot, 5000);
+      const ins = db.prepare('INSERT INTO pending_retriggers (room_id, participant_id, trigger_message_id, thread_id, prompt, created_at) VALUES (?,?,?,?,?,?)');
+      const oldId = Number(ins.run(rt.roomId, otherPart, oldRoot, oldRoot, 'offline retrigger-S old', db.prepare("SELECT datetime('now','-31 minutes') AS t").get().t).lastInsertRowid);
+      const freshId = Number(ins.run(rt.roomId, otherPart, freshRoot, freshRoot, 'offline retrigger-S fresh', db.prepare("SELECT datetime('now') AS t").get().t).lastInsertRowid);
+      const gone = await waitFor(() => !db.prepare('SELECT 1 FROM pending_retriggers WHERE id=?').get(oldId));
+      assert.ok(gone, 'expired row removed without any agent_connect');
+      const a = (await req('GET', '/api/actors')).body.find(x => x.id === rt.other.actorId);
+      assert.strictEqual(a.online, false, 'agent stayed offline the whole time');
+      const s = db.prepare("SELECT * FROM messages WHERE room_id=? AND thread_id=? AND state='system_event'").all(rt.roomId, oldRoot);
+      assert.strictEqual(s.length, 1, 'exactly one give-up notice');
+      assert.ok(s[0].content.startsWith(`trigger ${oldRoot} tidak terproses — butuh manusia (${otherName}: kedaluwarsa`), s[0].content);
+      assert.strictEqual(s[0].broadcast_reason, 'error');
+      assert.strictEqual((await feed).message.id, s[0].id, 'give-up reaches the room feed');
+      await new Promise(res => setTimeout(res, 1200));
+      assert.ok(db.prepare('SELECT 1 FROM pending_retriggers WHERE id=?').get(freshId), 'a row inside the age limit is left for the next connect');
+      assert.strictEqual(db.prepare("SELECT COUNT(*) AS c FROM messages WHERE room_id=? AND thread_id=? AND state='system_event'").get(rt.roomId, oldRoot).c, 1, 'later sweeps do not repeat the notice');
+      db.prepare('DELETE FROM pending_retriggers WHERE id=?').run(freshId);
+    });
+
+    await test('Retrigger — teardown', async () => {
+      if (!rt) return;
+      rt.hws.close();
+      await closeWs(rt.other.ws);
+    });
+
     // Server run timeout (AGENT_RUN_TIMEOUT_MS, shortened by run-tests.js) errors a sub-agent
     // bubble while the agent may still be running it. Four runs share one timeout wait:
     // A is lost on reconnect, B completes late, C errors late, D survives a reconnect then dies.

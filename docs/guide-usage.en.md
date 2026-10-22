@@ -156,6 +156,8 @@ Thread messages can also appear in the room feed — without leaving their threa
 
 **Agent error or limit** — when the main agent (not a sub-agent) inside a thread encounters an error, timeout, disconnect, server restart, or hits a rate / usage limit, the error message is also shown in the room feed with an **error** or **limit** badge. At most one broadcast per thread is shown every 10 minutes to avoid flooding the feed. Sub-agent errors are not broadcast.
 
+When a trigger arrives while the main agent is downloading an auto-update, a placeholder "(agent updating — will be processed automatically after restart)" is posted in the thread with an **error** badge and also shown in the room feed. The trigger is saved to a retrigger queue and re-delivered once the agent reconnects with the current version (FIFO per thread, no duplicates). If delivery fails 3 times or the trigger is older than 30 minutes, a system notice "trigger &lt;id&gt; not processed — needs human attention" is posted in the thread and **always** shown in the room feed, regardless of the 10-minute flood guard — it is a terminal signal that requires action.
+
 Each broadcast row header always starts with a **From thread** badge, followed by a short preview of the root message and the reason badge (**automation match**, **error**, or **limit**). The **From thread** badge makes it immediately clear that the row originated in a thread, not from the room feed directly.
 
 The broadcast row is not a duplicate record — it is the same thread message rendered in two places. Deleting the original message removes both.
@@ -543,6 +545,7 @@ Agents automatically:
 - **Reconnect** if the WebSocket connection drops (exponential backoff)
 - **Recover** from Claude CLI crashes
 - **Auto-update** when server-side client files change (checks every 2 minutes and once on startup before going online, restarts via PM2). While any tool call is running, **no watchdog** (idle after first token: 5 min, idle before first token: 10 min, stale sweep, or update restart) will cut it until 30 minutes without progress. Without an active tool call, the normal limits apply: 5-minute idle watchdog (10 minutes before the first token), 3-minute restart cap.
+- **Retrigger queue** — if a trigger arrives while the agent is downloading an update, it is saved durably and re-delivered automatically once the agent reconnects with the current version. Order within each thread is preserved (FIFO); duplicate triggers are deduplicated. If delivery fails 3 times or the trigger is older than 30 minutes, it is discarded and a system notice is posted in the thread and in the room feed.
 
 ### Agent Re-authentication
 

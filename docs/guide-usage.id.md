@@ -156,6 +156,8 @@ Pesan thread juga bisa muncul di room feed — tanpa keluar dari threadnya — d
 
 **Error atau limit agent** — ketika agent utama (bukan sub-agent) di dalam thread mengalami error, timeout, disconnect, restart server, atau mencapai rate / usage limit, pesan error-nya juga ditampilkan di room feed dengan badge **error** atau **limit**. Maksimal satu broadcast per thread setiap 10 menit untuk menghindari flood di feed. Error dari sub-agent tidak di-broadcast.
 
+Ketika trigger datang saat agent utama sedang mengunduh auto-update, placeholder "(agent sedang update — akan diproses otomatis setelah restart)" dikirim ke thread dengan badge **error** dan juga tampil di room feed. Trigger disimpan ke antrean retrigger dan dikirim ulang setelah agent terhubung kembali dengan versi terbaru (FIFO per thread, tanpa duplikat). Jika pengiriman gagal 3 kali atau trigger sudah lebih dari 30 menit, sistem mengirim notifikasi "trigger &lt;id&gt; tidak terproses — butuh manusia" di thread dan **selalu** tampil di room feed, tanpa peduli flood guard 10 menit — ini sinyal terminal yang butuh tindakan.
+
 Header setiap baris broadcast selalu diawali badge **From thread**, diikuti pratinjau singkat pesan root dan badge reason (**automation match**, **error**, atau **limit**). Badge **From thread** memperjelas bahwa baris ini berasal dari thread, bukan langsung dari room feed.
 
 Baris broadcast bukan rekaman duplikat — itu adalah pesan thread yang sama dirender di dua tempat. Menghapus pesan asli akan menghapus keduanya.
@@ -544,6 +546,7 @@ Agent secara otomatis:
 - **Reconnect** jika koneksi WebSocket terputus (exponential backoff)
 - **Recovery** dari crash Claude CLI
 - **Auto-update** saat file klien di server berubah (cek tiap 2 menit dan sekali saat startup sebelum online, restart via PM2). Selama ada tool call yang berjalan, **tidak ada watchdog** (idle setelah token pertama: 5 menit, idle sebelum token pertama: 10 menit, stale sweep, maupun restart update) yang akan memotong run sampai 30 menit tanpa progres. Tanpa tool call aktif, batas normal berlaku: watchdog idle 5 menit (10 menit sebelum token pertama), dan 3 menit untuk restart update.
+- **Antrean retrigger** — jika trigger datang saat agent sedang mengunduh update, trigger disimpan secara durable dan dikirim ulang otomatis setelah agent terhubung kembali dengan versi terbaru. Urutan dalam tiap thread dipertahankan (FIFO); trigger duplikat dihapus. Jika pengiriman gagal 3 kali atau trigger sudah lebih dari 30 menit, trigger dibuang dan notifikasi sistem dikirim ke thread dan room feed.
 
 ### Re-autentikasi Agent
 
