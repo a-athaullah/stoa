@@ -108,6 +108,41 @@ function mcpLocalTime(ts) {
   return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
+// Chat tool steps name the gateway server, often before the MCP tab was ever opened; kept apart from
+// mcpState.servers so a background fetch never desyncs a rendered MCP tab.
+const mcpChatNames = new Map();
+const mcpChatSlugMisses = new Set();
+let mcpChatNamesReq = null;
+
+function mcpViaText(name) {
+  return `via ${name} (Stoa)`;
+}
+
+function mcpServerNameBySlug(slug) {
+  const s = mcpState.servers.find(x => x.slug === slug);
+  if (s) return s.name || slug;
+  if (mcpChatNames.has(slug)) return mcpChatNames.get(slug);
+  if (!mcpChatSlugMisses.has(slug)) {
+    mcpChatSlugMisses.add(slug);
+    mcpRefreshChatNames();
+  }
+  return slug;
+}
+
+function mcpRefreshChatNames() {
+  if (mcpChatNamesReq) return;
+  // Plain fetch, not mcpApi: a passive label must never pop the login overlay on a 401.
+  mcpChatNamesReq = fetch('/api/mcp/servers').then(r => (r.ok ? r.json() : null)).catch(() => null).then(data => {
+    mcpChatNamesReq = null;
+    if (!Array.isArray(data?.servers)) return;
+    for (const s of data.servers) if (s?.slug && s.name) mcpChatNames.set(s.slug, s.name);
+    document.querySelectorAll('.h-process-via[data-mcp-slug]').forEach(el => {
+      const name = mcpChatNames.get(el.dataset.mcpSlug);
+      if (name) el.textContent = mcpViaText(name);
+    });
+  });
+}
+
 async function mcpLoadServers() {
   const r = await mcpApi('GET', '/api/mcp/servers');
   if (!r.ok) { mcpState.loadError = r.error; return false; }

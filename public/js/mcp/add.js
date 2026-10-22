@@ -81,6 +81,11 @@ function mcpRenderAdd(panel) {
     const top = mcpEl('div', 'mcp-preset-top');
     top.append(mcpEl('span', 'mcp-preset-name', p.name), mcpEl('span', 'mcp-chip', p.transport));
     if (p.auth === 'oauth') top.appendChild(mcpEl('span', 'mcp-chip', 'oauth'));
+    if (p.playground) {
+      const chip = mcpEl('span', 'mcp-chip', 'playground');
+      chip.title = 'for trying the gateway out, no account needed';
+      top.appendChild(chip);
+    }
     if (installed) top.appendChild(mcpEl('span', 'mcp-chip mcp-chip-ok', 'installed'));
     card.append(top, mcpEl('span', 'mcp-preset-desc', p.description || ''));
     const needs = (p.env_fields || []).filter(x => x.required).length;
@@ -123,7 +128,7 @@ function mcpMakeForm(f) {
   head.appendChild(mcpEl('span', 'mcp-form-title', isEdit ? `edit ${f.name}` : isCustom ? 'custom MCP server' : `install ${f.preset.name}`));
   const docs = f.preset?.docs_url && mcpSafeHref(f.preset.docs_url);
   if (docs) {
-    const a = mcpEl('a', 'mcp-docs-link', 'how to get credentials ↗');
+    const a = mcpEl('a', 'mcp-docs-link', (f.preset.env_fields || []).length ? 'how to get credentials ↗' : 'docs ↗');
     a.href = docs; a.target = '_blank'; a.rel = 'noopener noreferrer';
     head.appendChild(a);
   }
@@ -233,7 +238,7 @@ function mcpMakeEnvEditor(f, isCustom) {
   const isHttp = f.transport === 'http';
   const section = mcpEl('div', 'mcp-env');
   const title = mcpEl('div', 'mcp-env-head');
-  title.appendChild(mcpEl('span', 'mcp-field-label', isHttp ? 'headers' : f.preset || f.presetId ? 'credentials' : 'environment variables'));
+  title.appendChild(mcpEl('span', 'mcp-field-label', !isCustom ? 'credentials' : isHttp ? 'headers' : 'environment variables'));
   title.appendChild(mcpEl('span', 'mcp-field-hint', 'encrypted at rest, never sent back to the browser'));
   section.appendChild(title);
 
