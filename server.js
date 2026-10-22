@@ -7863,6 +7863,8 @@ async function triggerSkillResponse(roomId, ai, prompt) {
         claude_session_id: sessionId,
         prompt,
         workdir: workdir || undefined,
+        // Same session key as a room-level triggerAiResponse, so the token (and session env) match.
+        mcp_token: mcpTokenForTrigger({ actorId: ai.actor_id, roomId }),
       }));
     });
   } else {

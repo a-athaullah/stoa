@@ -14113,6 +14113,31 @@ async function run() {
       if (w) agA.ws.send(JSON.stringify({ type: 'agent_message', message_id: w.message_id, content: 'done', state: 'complete' }));
     });
 
+    await test('MCP token — skill command trigger carries the room-level token too', async () => {
+      mDb.prepare("INSERT INTO agent_skills (actor_id, name, scope) VALUES (?, '__mcpskill', 'global')").run(agA.actorId);
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: roomA }));
+        await waitForWsMessage(humanWs, m => m.type === 'history');
+        const runSkill = async () => {
+          const trig = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.prompt === '/__mcpskill', 5000);
+          humanWs.send(JSON.stringify({ type: 'send_message', room_id: roomA, content: '/__mcpskill' }));
+          const m = await trig;
+          agA.ws.send(JSON.stringify({ type: 'agent_complete', room_id: roomA, message_id: m.message_id, content: 'skill done' }));
+          return m.mcp_token;
+        };
+        const t1 = await runSkill();
+        assert.match(t1 || '', /^stoa_mcp_/, 'skill-run trigger has an MCP token');
+        assert.strictEqual(await runSkill(), t1, 'stable across skill runs');
+        assert.strictEqual((await mcp(t1, 'tools/list')).status, 200, 'token authenticates');
+        const row = mDb.prepare('SELECT room_id, thread_id, sub_agent_id FROM mcp_tokens WHERE token_hash=?').get(crypto.createHash('sha256').update(t1).digest('hex'));
+        assert.deepStrictEqual(row, { room_id: roomA, thread_id: null, sub_agent_id: null }, 'room-level session key');
+      } finally {
+        humanWs.close();
+        mDb.prepare("DELETE FROM agent_skills WHERE actor_id=? AND name='__mcpskill'").run(agA.actorId);
+      }
+    });
+
     await test('MCP /mcp — missing, wrong, or agent-secret auth → 401', async () => {
       assert.strictEqual((await mcp(null, 'tools/list')).status, 401);
       assert.strictEqual((await mcp('stoa_mcp_' + 'A'.repeat(43), 'tools/list')).status, 401);
