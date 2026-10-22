@@ -951,6 +951,17 @@ Grid katalog menampilkan MCP server siap pakai:
 - **Notion** — cari, baca, dan perbarui halaman (server remote resmi). Menggunakan OAuth: setelah install, klik **connect** di kartu untuk sign in.
 - **Linear** — issues, proyek, komentar (server remote resmi). Menggunakan OAuth: setelah install, klik **connect** di kartu untuk sign in.
 
+Preset **Playground** ditandai chip `playground` — tidak perlu akun atau API key, cocok untuk mencoba gateway:
+
+- **Everything** (test server) — server test MCP resmi: echo, penjumlahan, sample gambar, dan panggilan panjang. Install via `npx`.
+- **Memory** — knowledge graph kecil yang bisa ditulis dan dicari agent. Data disimpan di server Stoa dan **dibagikan ke semua agent yang punya akses**. Install via `npx`.
+- **Sequential Thinking** — tool berpikir bertahap yang memungkinkan agent merevisi dan mencabang penalarannya. Install via `npx`.
+- **DeepWiki** — ajukan pertanyaan tentang repositori GitHub publik (server remote, tidak perlu `npx`).
+
+Server katalog lainnya:
+
+- **Brave Search** — pencarian web, berita, gambar, dan lokal (server resmi Brave). Membutuhkan `BRAVE_API_KEY` dari [api-dashboard.search.brave.com](https://api-dashboard.search.brave.com) (paket gratis sudah cukup untuk mencoba).
+
 Klik **Custom** untuk menambah server sendiri:
 
 - **stdio** — command yang berjalan sebagai subprocess di server Stoa. *Peringatan: command ini berjalan di server tanpa shell, hanya dengan `PATH`, `HOME`, dan variabel yang kamu tambahkan. Hanya tambahkan command yang kamu percaya.* Binary yang diizinkan: `npx`, `uvx`, `node`, `docker`, atau path absolut.
@@ -989,12 +1000,16 @@ Saat **requires approval** diaktifkan untuk sebuah tool, gateway menahan panggil
 
 Satu agent bisa punya maksimal 20 permintaan approval yang pending sekaligus. Kartu approval tidak dobel — permintaan pending yang sama muncul paling banyak sekali di room feed dan sekali di thread.
 
+### Label Tool di Chat
+
+Saat agent sedang berjalan, setiap panggilan tool MCP ditampilkan sebagai blok tool di chat. Blok ini menampilkan **nama tool** diikuti label kecil miring **"via \<nama server\> (Stoa)"** — misalnya `resolve-library-id via Context7 (Stoa)`. Hover untuk melihat nama internal lengkap sebagai tooltip. Label terlihat selama pesan di-stream; blok tool tidak disimpan, jadi tidak muncul setelah halaman di-reload.
+
 ### Kapan Agent Menerima Perubahan
 
-Saat kamu menambah, menghapus, atau mengonfigurasi ulang MCP server:
+Saat kamu menambah, menghapus, atau mengonfigurasi ulang MCP server, gateway memberi tahu sesi yang aktif:
 
-- **Claude Code** mempertahankan sesi antar turn; daftar tool ditetapkan saat sesi dimulai. Perubahan berlaku **saat sesi berikutnya dimulai** — dipicu oleh pergantian model, perubahan env, perubahan system prompt, atau kondisi lain yang menyebabkan restart sesi.
-- **Codex** menjalankan proses baru per turn (setiap turn adalah koneksi MCP baru), jadi perubahan berlaku di **turn berikutnya** (pesan berikutnya).
+- **Claude Code** — gateway mengirim notifikasi `tools/list_changed` ke sesi agent yang terbuka. Claude Code memperbarui daftar tool-nya **langsung, di tengah sesi** — tidak perlu restart sesi. Jika sesi di-restart karena alasan lain (pergantian model, perubahan env, perubahan system prompt), daftar terbaru sudah tersedia dari awal.
+- **Codex** — menjalankan proses baru per turn (setiap turn adalah koneksi MCP baru), jadi perubahan berlaku di **turn berikutnya** (pesan berikutnya).
 
 ### Kredensial dan Keamanan
 

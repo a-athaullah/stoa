@@ -950,6 +950,17 @@ A catalog grid lists ready-to-use MCP servers:
 - **Notion** — search, read, and update pages (official remote server). Uses OAuth: after install, click **connect** on the card to sign in.
 - **Linear** — issues, projects, comments (official remote server). Uses OAuth: after install, click **connect** on the card to sign in.
 
+**Playground** presets are marked with a `playground` chip — no account or API key needed, good for trying the gateway out:
+
+- **Everything** (test server) — official MCP test server: echo, add numbers, sample images, and long-running calls. Installs via `npx`.
+- **Memory** — a small knowledge graph agents can write and search. Data is stored on the Stoa server and **shared by every agent with access**. Installs via `npx`.
+- **Sequential Thinking** — step-by-step reasoning tool that lets an agent revise and branch its thinking. Installs via `npx`.
+- **DeepWiki** — ask questions about public GitHub repositories (remote server, no `npx` needed).
+
+Other catalog server:
+
+- **Brave Search** — web, news, image, and local search (official Brave server). Requires a `BRAVE_API_KEY` from [api-dashboard.search.brave.com](https://api-dashboard.search.brave.com) (free plan is enough to try it).
+
 Click **Custom** to add your own server:
 
 - **stdio** — a command that runs as a subprocess on the Stoa server. *Warning: this command runs on the server without a shell, with only `PATH`, `HOME`, and the variables you add. Only add commands you trust.* Allowed binaries: `npx`, `uvx`, `node`, `docker`, or an absolute path.
@@ -988,12 +999,16 @@ When **requires approval** is enabled for a tool, the gateway holds the call and
 
 An agent can have up to 20 approval requests pending at the same time. Approval cards are deduplicated — the same pending request appears at most once in the room feed and once in the thread.
 
+### Tool Labels in Chat
+
+While an agent is running, each MCP tool call appears as a tool block in the chat. The block shows the **tool name** followed by a small italic label **"via \<server name\> (Stoa)"** — for example, `resolve-library-id via Context7 (Stoa)`. Hovering shows the full internal tool name as a tooltip. The label is visible while the message is streaming; tool blocks are not stored, so they do not appear after the page is reloaded.
+
 ### When Agents See Changes
 
-When you add, remove, or reconfigure an MCP server:
+When you add, remove, or reconfigure an MCP server, the gateway notifies active sessions:
 
-- **Claude Code** sessions persist across turns; the tool list is established when the session starts. Changes take effect the **next time the session starts** — triggered by a model switch, env change, system prompt change, or any other condition that causes a session restart.
-- **Codex** spawns a fresh process per turn (each turn is a new MCP connection), so changes take effect at the **next turn** (next message).
+- **Claude Code** — the gateway sends a `tools/list_changed` notification to the agent's open session. Claude Code refreshes its tool list **immediately, mid-session** — no session restart needed. If the session is restarted for any other reason (model switch, env change, system prompt change), the updated list is available from the start.
+- **Codex** — spawns a fresh process per turn (each turn is a new MCP connection), so changes take effect at the **next turn** (next message).
 
 ### Credentials and Security
 

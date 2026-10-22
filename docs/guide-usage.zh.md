@@ -946,6 +946,17 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 - **Notion** — 搜索、读取和更新页面（Notion 官方远程服务器）。使用 OAuth：安装后点击卡片上的 **connect** 登录。
 - **Linear** — Issues、项目、评论（Linear 官方远程服务器）。使用 OAuth：安装后点击卡片上的 **connect** 登录。
 
+**Playground** 预设带有 `playground` 芯片标记 — 无需账号或 API Key，适合体验网关：
+
+- **Everything**（测试服务器）— MCP 官方测试服务器：回显、数字求和、示例图片、长时间运行的调用。通过 `npx` 安装。
+- **Memory** — 代理可写入和搜索的小型知识图谱。数据存储在 Stoa 服务器上，**所有有访问权限的代理共享**。通过 `npx` 安装。
+- **Sequential Thinking** — 让代理修正和分支推理的逐步思考工具。通过 `npx` 安装。
+- **DeepWiki** — 可对公开 GitHub 仓库提问（远程服务器，无需 `npx`）。
+
+其他目录服务器：
+
+- **Brave Search** — 网页、新闻、图片和本地搜索（Brave 官方服务器）。需要从 [api-dashboard.search.brave.com](https://api-dashboard.search.brave.com) 获取 `BRAVE_API_KEY`（免费套餐即可体验）。
+
 点击 **Custom** 添加自定义服务器：
 
 - **stdio** — 在 Stoa 服务器上作为子进程运行的命令。*警告：该命令在没有 Shell 的情况下运行，仅有 `PATH`、`HOME` 和您添加的变量。请只添加您信任的命令。* 允许的可执行文件：`npx`、`uvx`、`node`、`docker` 或绝对路径。
@@ -984,12 +995,16 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 
 单个代理最多可同时有 20 个待处理的审批请求。
 
+### 聊天中的工具标签
+
+代理运行时，每次 MCP 工具调用都会在聊天中以工具块显示。块内显示**工具名称**，后跟小型斜体标签 **"via \<服务器名\> (Stoa)"** — 例如 `resolve-library-id via Context7 (Stoa)`。悬停可查看完整内部工具名称（工具提示）。标签在消息流式传输期间可见；工具块不会持久保存，页面刷新后不再显示。
+
 ### 代理何时收到变更
 
-添加、删除或重新配置 MCP 服务器后：
+添加、删除或重新配置 MCP 服务器后，网关会通知活动会话：
 
-- **Claude Code** 的会话跨 turn 保持。工具列表在会话启动时确定，因此变更在**下次会话启动时**生效（由模型切换、env 变更、系统提示变更等触发会话重启的条件引起）。
-- **Codex** 每个 turn 生成新进程（每个 turn 都是全新的 MCP 连接），因此变更在**下一个 turn**（下一条消息）立即生效。
+- **Claude Code** — 网关向代理的开放会话发送 `tools/list_changed` 通知。Claude Code 会**立即在会话中间**刷新工具列表 — 无需重启会话。如果会话因其他原因重启（模型切换、env 变更、系统提示变更），更新后的列表从一开始就可用。
+- **Codex** — 每个 turn 生成新进程（每个 turn 都是全新的 MCP 连接），因此变更在**下一个 turn**（下一条消息）生效。
 
 ### 凭证与安全
 
