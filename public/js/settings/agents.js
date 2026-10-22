@@ -1256,6 +1256,7 @@ function sMakeEditAccordion(actor) {
     if (existing) {
       appendItems.push(saMakeField('avatar', _saBuildAvatarEditor(existing, saShade, upd => { existing.avatar_color = upd.avatar_color; existing.avatar_symbol = upd.avatar_symbol; existing.avatar_url = upd.avatar_url; }), 'color, symbol, or image'));
       appendItems.push(saMakeField('memory', _saBuildMemoryEditor(existing), 'notes this sub-agent updates after tasks'));
+      appendItems.push(saMakeField('MCP', mcpBuildSubAgentSummary(existing, actor.id), 'room grants can still add or remove access inside a specific room'));
     }
     appendItems.push(btns);
     saForm.append(...appendItems);
@@ -2204,6 +2205,7 @@ function buildSubAgentsSection(actor) {
     if (existing) {
       appendItems2.push(saMakeField('avatar', _saBuildAvatarEditor(existing, saShade, upd => { existing.avatar_color = upd.avatar_color; existing.avatar_symbol = upd.avatar_symbol; existing.avatar_url = upd.avatar_url; }), 'color, symbol, or image'));
       appendItems2.push(saMakeField('memory', _saBuildMemoryEditor(existing), 'notes this sub-agent updates after tasks'));
+      appendItems2.push(saMakeField('MCP', mcpBuildSubAgentSummary(existing, actor.id), 'room grants can still add or remove access inside a specific room'));
     }
     appendItems2.push(btns);
     saForm.append(...appendItems2);

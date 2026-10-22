@@ -1020,6 +1020,7 @@ async function _loadThread(rootId) {
 
     if (msgs.length > 0) threadOldestMsgId = msgs[0].id;
     threadNoMoreOlder = msgs.length < 100;
+    if (typeof mcpApprovalsSync === 'function') mcpApprovalsSync();
 
     _scrollThreadToBottom(true);
   } catch (e) {

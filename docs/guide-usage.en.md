@@ -920,11 +920,110 @@ Only messages sent *after* this feature was introduced carry automation identity
 
 ---
 
+## MCP
+
+**MCP (Model Context Protocol)** gives your AI agents *tools* they can call on their own — file search, code lookup, issue tracking, and more. Install an MCP server once in Stoa and every agent (Claude Code, Codex, sub-agents, agents on any machine) can use its tools, with credentials stored centrally and access controlled per agent.
+
+**MCP vs Connections:** Connections (Automation) are *ears* — they listen for incoming events from Slack, WhatsApp, and email and trigger agents. MCP servers are *hands* — tools an agent calls by choice during a run. The same service (e.g., GitHub) can appear in both; the credentials are independent.
+
+Open the **MCP** section in the app nav (below Automation).
+
+### Installed Tab
+
+Each installed MCP server appears as a card showing:
+
+- **Name** and current **status**: `running` (upstream process active), `idle` (ready but not currently processing), `needs sign-in` (OAuth required), `error` (startup failure), or `disabled`.
+- **Number of active tools** in this server.
+- **Enable toggle** — disabling hides all tools from every agent instantly.
+- **Test** — starts the upstream and returns the number of tools found (or an error message).
+- **Edit** / **Remove** — update credentials or delete the server.
+- **Connect** (OAuth servers) — opens the provider sign-in flow. Appears as a button when the server status is `needs sign-in`, or as a **reconnect** link when already authenticated and you need to re-sign-in.
+
+Click a card to expand it and see each tool. Each tool has an **enable toggle**, a **requires approval** toggle, and an optional **rate limit (calls / min)** field. Tools whose names suggest write operations (send, create, update, delete) carry a **write** badge as a reminder to review their access settings.
+
+### Add Tab
+
+A catalog grid lists ready-to-use MCP servers:
+
+- **Context7** — up-to-date library documentation. No credentials needed; installs via `npx`.
+- **GitHub** — issues, pull requests, code search (official remote server). Requires a Personal Access Token.
+- **Notion** — search, read, and update pages (official remote server). Uses OAuth: after install, click **connect** on the card to sign in.
+- **Linear** — issues, projects, comments (official remote server). Uses OAuth: after install, click **connect** on the card to sign in.
+
+**Playground** presets are marked with a `playground` chip — no account or API key needed, good for trying the gateway out:
+
+- **Everything** (test server) — official MCP test server: echo, add numbers, sample images, and long-running calls. Installs via `npx`.
+- **Memory** — a small knowledge graph agents can write and search. Data is stored on the Stoa server and **shared by every agent with access**. Installs via `npx`.
+- **Sequential Thinking** — step-by-step reasoning tool that lets an agent revise and branch its thinking. Installs via `npx`.
+- **DeepWiki** — ask questions about public GitHub repositories (remote server, no `npx` needed).
+
+Other catalog server:
+
+- **Brave Search** — web, news, image, and local search (official Brave server). Requires a `BRAVE_API_KEY` from [api-dashboard.search.brave.com](https://api-dashboard.search.brave.com) (free plan is enough to try it).
+
+Click **Custom** to add your own server:
+
+- **stdio** — a command that runs as a subprocess on the Stoa server. *Warning: this command runs on the server without a shell, with only `PATH`, `HOME`, and the variables you add. Only add commands you trust.* Allowed binaries: `npx`, `uvx`, `node`, `docker`, or an absolute path.
+- **HTTP** — a remote MCP server reachable via URL. Choose **header token** (add a static `Authorization` header) or **OAuth sign-in** (connect after install).
+
+After installing, click **connect** on any OAuth server card to complete sign-in. Credentials are stored encrypted on the server and are never shown again once saved — the API never returns their values.
+
+### Access Tab
+
+The access matrix controls which agents and sub-agents can use each MCP server.
+
+- **Rows** — all agents and sub-agents (sub-agents are indented under their parent).
+- **Columns** — each installed MCP server.
+- **Cells** — click to cycle: `✓ allow` → `✕ deny` → `inherit`.
+  - **inherit** — defers to the next level: sub-agent → parent agent → server default.
+  - **deny always wins** — an explicit deny at any level blocks access, regardless of parent settings.
+
+The **server default** (shown in the column header) is `none` for every new server. Toggle **allow all agents** in the column header to switch the default to `all`.
+
+### Activity Tab
+
+Two sub-views:
+
+- **Tool calls** — every call an agent made through the gateway: timestamp, agent/sub-agent, room/thread (click to jump), tool name, status (`ok`, `error`, `timeout`, `denied`, `rate_limited`), and duration. Filter by MCP server or agent. Useful for debugging "why did that fail?".
+- **Approvals** — history of approval requests: who requested what, when, and whether it was approved, denied, or expired.
+
+Activity is retained for **30 days** by default (configurable via `MCP_CALLS_RETENTION_DAYS`).
+
+### Tool Approval (Requires Approval)
+
+When **requires approval** is enabled for a tool, the gateway holds the call and sends an **MCP approval** card in the room or thread where the agent is running. The card shows the agent, the tool name, and the arguments preview.
+
+- Click **approve** to let the call proceed.
+- Click **deny** to reject it.
+- If no decision is made within **5 minutes** (default, configurable via `MCP_APPROVAL_TIMEOUT_MS`, max 10 min), the call is automatically denied and the agent receives an error.
+
+An agent can have up to 20 approval requests pending at the same time. Approval cards are deduplicated — the same pending request appears at most once in the room feed and once in the thread.
+
+### Tool Labels in Chat
+
+While an agent is running, each MCP tool call appears as a tool block in the chat. The block shows the **tool name** followed by a small italic label **"via \<server name\> (Stoa)"** — for example, `resolve-library-id via Context7 (Stoa)`. Hovering shows the full internal tool name as a tooltip. The label is visible while the message is streaming; tool blocks are not stored, so they do not appear after the page is reloaded.
+
+### When Agents See Changes
+
+When you add, remove, or reconfigure an MCP server, the gateway notifies active sessions:
+
+- **Claude Code** — the gateway sends a `tools/list_changed` notification to the agent's open session. Claude Code refreshes its tool list **immediately, mid-session** — no session restart needed. If the session is restarted for any other reason (model switch, env change, system prompt change), the updated list is available from the start.
+- **Codex** — spawns a fresh process per turn (each turn is a new MCP connection), so changes take effect at the **next turn** (next message).
+
+### Credentials and Security
+
+- Credentials (tokens, headers) are stored **encrypted** on the server and never returned by any API endpoint.
+- The MCP session token injected into each agent is scoped to `(agent, room, thread, sub-agent)` and lives in the agent's environment — never in command-line arguments (not visible in `ps`).
+- The token is revoked automatically when its agent, sub-agent, or room is deleted.
+- stdio upstream processes start with an isolated environment (only `PATH`, `HOME`, and the variables you explicitly add) — the server's own environment variables are not passed through.
+
+---
+
 ## Settings
 
 Stoa uses a **vertical sidebar nav** on the far left of the app. The sidebar is icon-only (44 px wide) and slides open to 200 px on hover, revealing text labels. Click any icon to switch sections. On mobile (narrow screen) the sidebar is hidden — use the in-app navigation instead.
 
-Nav items, top to bottom: **Inbox** (your rooms list), then a separator, followed by the settings sections: **AI Agent**, **Server**, **General**, **Themes**, **Docs**, **Platforms**, **Automation**, **Usage**, **Doctor**.
+Nav items, top to bottom: **Inbox** (your rooms list), then a separator, followed by the settings sections: **AI Agent**, **Server**, **General**, **Themes**, **Docs**, **Platforms**, **Automation**, **MCP**, **Usage**, **Doctor**.
 
 ### AI Agent
 

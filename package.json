@@ -1,6 +1,6 @@
 {
   "name": "stoa",
-  "version": "0.62.2",
+  "version": "0.63.0",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -24,6 +24,7 @@
     "@codemirror/state": "^6.6.0",
     "@codemirror/view": "^6.43.0",
     "@lezer/highlight": "^1.2.3",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "@slack/socket-mode": "^2.0.7",
     "@slack/web-api": "^7.16.0",
     "@whiskeysockets/baileys": "^7.0.0-rc13",

@@ -921,11 +921,110 @@ Hanya pesan yang dikirim *setelah* fitur ini diperkenalkan yang membawa identita
 
 ---
 
+## MCP
+
+**MCP (Model Context Protocol)** memberi agent AI *tool* yang bisa mereka panggil sendiri — pencarian file, penelusuran kode, issue tracking, dan lainnya. Install satu MCP server di Stoa, dan semua agent (Claude Code, Codex, sub-agent, agent di mesin mana pun) bisa memakai tool-nya, dengan kredensial tersimpan terpusat dan akses dikontrol per agent.
+
+**MCP vs Connections:** Connections (Automation) adalah *telinga* — mendengarkan event masuk dari Slack, WhatsApp, dan email lalu men-trigger agent. MCP server adalah *tangan* — tool yang dipanggil agent atas inisiatifnya sendiri saat berkerja. Layanan yang sama (misalnya GitHub) bisa ada di keduanya; kredensialnya independen.
+
+Buka seksi **MCP** di nav app (di bawah Automation).
+
+### Tab Installed
+
+Setiap MCP server yang terinstall ditampilkan sebagai kartu berisi:
+
+- **Nama** dan **status** saat ini: `running` (proses upstream aktif), `idle` (siap tapi tidak sedang memproses), `needs sign-in` (OAuth diperlukan), `error` (gagal start), atau `disabled`.
+- **Jumlah tool aktif** di server ini.
+- **Toggle enable** — menonaktifkan langsung menyembunyikan semua tool dari setiap agent.
+- **Test** — menjalankan upstream dan mengembalikan jumlah tool yang ditemukan (atau pesan error).
+- **Edit** / **Remove** — perbarui kredensial atau hapus server.
+- **Connect** (server OAuth) — membuka flow sign-in provider. Muncul sebagai tombol saat status `needs sign-in`, atau sebagai link **reconnect** saat sudah terautentikasi tapi perlu sign-in ulang.
+
+Klik kartu untuk membuka daftar tool. Setiap tool punya **toggle enable**, **toggle requires approval**, dan field **rate limit (panggilan / menit)** opsional. Tool yang namanya mengindikasikan operasi tulis (send, create, update, delete) ditandai badge **write** sebagai pengingat untuk memeriksa pengaturan aksesnya.
+
+### Tab Add
+
+Grid katalog menampilkan MCP server siap pakai:
+
+- **Context7** — dokumentasi library terkini. Tidak perlu kredensial; install via `npx`.
+- **GitHub** — issues, pull request, pencarian kode (server remote resmi). Membutuhkan Personal Access Token.
+- **Notion** — cari, baca, dan perbarui halaman (server remote resmi). Menggunakan OAuth: setelah install, klik **connect** di kartu untuk sign in.
+- **Linear** — issues, proyek, komentar (server remote resmi). Menggunakan OAuth: setelah install, klik **connect** di kartu untuk sign in.
+
+Preset **Playground** ditandai chip `playground` — tidak perlu akun atau API key, cocok untuk mencoba gateway:
+
+- **Everything** (test server) — server test MCP resmi: echo, penjumlahan, sample gambar, dan panggilan panjang. Install via `npx`.
+- **Memory** — knowledge graph kecil yang bisa ditulis dan dicari agent. Data disimpan di server Stoa dan **dibagikan ke semua agent yang punya akses**. Install via `npx`.
+- **Sequential Thinking** — tool berpikir bertahap yang memungkinkan agent merevisi dan mencabang penalarannya. Install via `npx`.
+- **DeepWiki** — ajukan pertanyaan tentang repositori GitHub publik (server remote, tidak perlu `npx`).
+
+Server katalog lainnya:
+
+- **Brave Search** — pencarian web, berita, gambar, dan lokal (server resmi Brave). Membutuhkan `BRAVE_API_KEY` dari [api-dashboard.search.brave.com](https://api-dashboard.search.brave.com) (paket gratis sudah cukup untuk mencoba).
+
+Klik **Custom** untuk menambah server sendiri:
+
+- **stdio** — command yang berjalan sebagai subprocess di server Stoa. *Peringatan: command ini berjalan di server tanpa shell, hanya dengan `PATH`, `HOME`, dan variabel yang kamu tambahkan. Hanya tambahkan command yang kamu percaya.* Binary yang diizinkan: `npx`, `uvx`, `node`, `docker`, atau path absolut.
+- **HTTP** — MCP server remote yang bisa diakses via URL. Pilih **header token** (tambah header `Authorization` statis) atau **OAuth sign-in** (connect setelah install).
+
+Setelah install, klik **connect** di kartu server OAuth mana pun untuk menyelesaikan sign-in. Kredensial disimpan terenkripsi di server dan tidak pernah ditampilkan lagi setelah disimpan — API tidak pernah mengembalikan nilainya.
+
+### Tab Access
+
+Matrix akses mengontrol agent dan sub-agent mana yang bisa menggunakan setiap MCP server.
+
+- **Baris** — semua agent dan sub-agent (sub-agent menjorok di bawah parent-nya).
+- **Kolom** — setiap MCP server yang terinstall.
+- **Sel** — klik untuk mengubah: `✓ allow` → `✕ deny` → `inherit`.
+  - **inherit** — mengikuti level berikutnya: sub-agent → agent induk → default server.
+  - **deny selalu menang** — deny eksplisit di level mana pun memblokir akses, apapun pengaturan parent.
+
+**Default server** (ditampilkan di header kolom) adalah `none` untuk setiap server baru. Toggle **allow all agents** di header kolom untuk mengubah default ke `all`.
+
+### Tab Activity
+
+Dua sub-tampilan:
+
+- **Tool calls** — setiap panggilan yang dibuat agent melalui gateway: timestamp, agent/sub-agent, room/thread (klik untuk loncat), nama tool, status (`ok`, `error`, `timeout`, `denied`, `rate_limited`), dan durasi. Filter per MCP server atau agent. Berguna untuk debug "kenapa itu gagal?".
+- **Approvals** — riwayat permintaan approval: siapa meminta apa, kapan, dan apakah disetujui, ditolak, atau kedaluwarsa.
+
+Activity disimpan selama **30 hari** secara default (dapat dikonfigurasi via `MCP_CALLS_RETENTION_DAYS`).
+
+### Approval Tool (Requires Approval)
+
+Saat **requires approval** diaktifkan untuk sebuah tool, gateway menahan panggilan dan mengirim kartu **MCP approval** di room atau thread tempat agent berjalan. Kartu menampilkan agent, nama tool, dan preview argumen.
+
+- Klik **approve** untuk mengizinkan panggilan dilanjutkan.
+- Klik **deny** untuk menolaknya.
+- Jika tidak ada keputusan dalam **5 menit** (default, dapat dikonfigurasi via `MCP_APPROVAL_TIMEOUT_MS`, maks 10 menit), panggilan otomatis ditolak dan agent menerima error.
+
+Satu agent bisa punya maksimal 20 permintaan approval yang pending sekaligus. Kartu approval tidak dobel — permintaan pending yang sama muncul paling banyak sekali di room feed dan sekali di thread.
+
+### Label Tool di Chat
+
+Saat agent sedang berjalan, setiap panggilan tool MCP ditampilkan sebagai blok tool di chat. Blok ini menampilkan **nama tool** diikuti label kecil miring **"via \<nama server\> (Stoa)"** — misalnya `resolve-library-id via Context7 (Stoa)`. Hover untuk melihat nama internal lengkap sebagai tooltip. Label terlihat selama pesan di-stream; blok tool tidak disimpan, jadi tidak muncul setelah halaman di-reload.
+
+### Kapan Agent Menerima Perubahan
+
+Saat kamu menambah, menghapus, atau mengonfigurasi ulang MCP server, gateway memberi tahu sesi yang aktif:
+
+- **Claude Code** — gateway mengirim notifikasi `tools/list_changed` ke sesi agent yang terbuka. Claude Code memperbarui daftar tool-nya **langsung, di tengah sesi** — tidak perlu restart sesi. Jika sesi di-restart karena alasan lain (pergantian model, perubahan env, perubahan system prompt), daftar terbaru sudah tersedia dari awal.
+- **Codex** — menjalankan proses baru per turn (setiap turn adalah koneksi MCP baru), jadi perubahan berlaku di **turn berikutnya** (pesan berikutnya).
+
+### Kredensial dan Keamanan
+
+- Kredensial (token, header) disimpan **terenkripsi** di server dan tidak pernah dikembalikan oleh endpoint API mana pun.
+- Token sesi MCP yang diinjeksikan ke setiap agent terikat ke `(agent, room, thread, sub-agent)` dan hanya ada di environment agent — tidak pernah di argumen command-line (tidak terlihat di `ps`).
+- Token otomatis dicabut saat agent, sub-agent, atau room-nya dihapus.
+- Proses upstream stdio dijalankan dengan environment terisolasi (hanya `PATH`, `HOME`, dan variabel yang kamu tambahkan secara eksplisit) — environment variabel server sendiri tidak diteruskan.
+
+---
+
 ## Pengaturan
 
 Stoa menggunakan **sidebar navigasi vertikal** di sisi paling kiri app. Sidebar hanya menampilkan ikon (lebar 44 px) dan melebar ke 200 px saat di-hover, memperlihatkan label teks. Klik ikon mana saja untuk berpindah seksi. Di mobile (layar sempit) sidebar disembunyikan — gunakan navigasi dalam app.
 
-Item navigasi, dari atas ke bawah: **Inbox** (daftar room), lalu separator, diikuti seksi pengaturan: **AI Agent**, **Server**, **General**, **Themes**, **Docs**, **Platforms**, **Automation**, **Usage**, **Doctor**.
+Item navigasi, dari atas ke bawah: **Inbox** (daftar room), lalu separator, diikuti seksi pengaturan: **AI Agent**, **Server**, **General**, **Themes**, **Docs**, **Platforms**, **Automation**, **MCP**, **Usage**, **Doctor**.
 
 ### AI Agent
 

@@ -916,11 +916,110 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 
 ---
 
+## MCP
+
+**MCP（模型上下文协议）** 为 AI 代理提供可以主动调用的*工具* — 文件搜索、代码查询、Issue 管理等。在 Stoa 中安装一次 MCP 服务器，所有代理（Claude Code、Codex、子代理、任何机器上的代理）即可使用其工具，凭证集中存储，访问权限按代理进行控制。
+
+**MCP 与 Connections 的区别：** Connections（Automation）是*耳朵* — 监听来自 Slack、WhatsApp、邮件的传入事件并触发代理。MCP 服务器是*双手* — 代理在运行时主动调用的工具。同一服务（例如 GitHub）可以同时配置在两处，凭证相互独立。
+
+在应用导航中打开 **MCP** 区域（Automation 下方）。
+
+### Installed 标签页
+
+每个已安装的 MCP 服务器以卡片形式展示：
+
+- **名称**与当前**状态**：`running`（上游进程运行中）、`idle`（就绪待命）、`needs sign-in`（需要 OAuth 认证）、`error`（启动失败）、`disabled`。
+- **活跃工具数量**。
+- **启用开关** — 禁用后所有代理立即无法看到该服务器的工具。
+- **Test** — 启动上游进程，返回发现的工具数量或错误信息。
+- **Edit** / **Remove** — 更新凭证或删除服务器。
+- **Connect**（OAuth 服务器）— 打开提供商登录流程。状态为 `needs sign-in` 时显示为按钮；已认证但需要重新登录时显示为 **reconnect** 链接。
+
+点击卡片展开工具列表。每个工具有**启用开关**、**requires approval 开关**和可选的**速率限制（次/分钟）**字段。名称暗示写入操作（send、create、update、delete）的工具会显示 **write** 标记，提醒检查访问权限设置。
+
+### Add 标签页
+
+目录中列出了可直接使用的 MCP 服务器：
+
+- **Context7** — 最新的库文档。无需凭证，通过 `npx` 安装。
+- **GitHub** — Issues、PR、代码搜索（GitHub 官方远程服务器）。需要 Personal Access Token。
+- **Notion** — 搜索、读取和更新页面（Notion 官方远程服务器）。使用 OAuth：安装后点击卡片上的 **connect** 登录。
+- **Linear** — Issues、项目、评论（Linear 官方远程服务器）。使用 OAuth：安装后点击卡片上的 **connect** 登录。
+
+**Playground** 预设带有 `playground` 芯片标记 — 无需账号或 API Key，适合体验网关：
+
+- **Everything**（测试服务器）— MCP 官方测试服务器：回显、数字求和、示例图片、长时间运行的调用。通过 `npx` 安装。
+- **Memory** — 代理可写入和搜索的小型知识图谱。数据存储在 Stoa 服务器上，**所有有访问权限的代理共享**。通过 `npx` 安装。
+- **Sequential Thinking** — 让代理修正和分支推理的逐步思考工具。通过 `npx` 安装。
+- **DeepWiki** — 可对公开 GitHub 仓库提问（远程服务器，无需 `npx`）。
+
+其他目录服务器：
+
+- **Brave Search** — 网页、新闻、图片和本地搜索（Brave 官方服务器）。需要从 [api-dashboard.search.brave.com](https://api-dashboard.search.brave.com) 获取 `BRAVE_API_KEY`（免费套餐即可体验）。
+
+点击 **Custom** 添加自定义服务器：
+
+- **stdio** — 在 Stoa 服务器上作为子进程运行的命令。*警告：该命令在没有 Shell 的情况下运行，仅有 `PATH`、`HOME` 和您添加的变量。请只添加您信任的命令。* 允许的可执行文件：`npx`、`uvx`、`node`、`docker` 或绝对路径。
+- **HTTP** — 可通过 URL 访问的远程 MCP 服务器。选择 **header token**（添加静态 `Authorization` 标头）或 **OAuth sign-in**（安装后 connect）。
+
+安装后，点击 OAuth 服务器卡片上的 **connect** 完成登录。凭证加密存储在服务器上，保存后不再显示。
+
+### Access 标签页
+
+访问矩阵控制哪些代理和子代理可以使用每个 MCP 服务器。
+
+- **行** — 所有代理和子代理（子代理缩进在父级下方）。
+- **列** — 每个已安装的 MCP 服务器。
+- **单元格** — 点击循环切换：`✓ allow` → `✕ deny` → `inherit`。
+  - **inherit** — 跟随上级：子代理 → 父代理 → 服务器默认值。
+  - **deny 始终优先** — 任何级别的显式 deny 都会阻止访问，无论父级设置如何。
+
+列标题中的**服务器默认值**对新服务器为 `none`。在列标题中切换 **allow all agents** 可将默认值改为 `all`。
+
+### Activity 标签页
+
+两个子视图：
+
+- **Tool calls** — 代理通过网关发出的所有调用：时间戳、代理/子代理、房间/线程（点击跳转）、工具名称、状态（`ok`、`error`、`timeout`、`denied`、`rate_limited`）、耗时。可按 MCP 服务器或代理过滤。
+- **Approvals** — 审批请求历史：谁在何时请求了什么，结果如何。
+
+活动默认保留 **30 天**（可通过 `MCP_CALLS_RETENTION_DAYS` 配置）。
+
+### 工具审批（Requires Approval）
+
+为工具启用 **requires approval** 后，网关将暂停调用，并在代理运行的房间或线程中发送 **MCP approval** 卡片。卡片显示代理、工具名称和参数预览。
+
+- 点击 **approve** 允许调用继续。
+- 点击 **deny** 拒绝。
+- **5 分钟内**（默认值，可通过 `MCP_APPROVAL_TIMEOUT_MS` 配置，最长 10 分钟）无决定则自动拒绝，代理收到错误。
+
+单个代理最多可同时有 20 个待处理的审批请求。
+
+### 聊天中的工具标签
+
+代理运行时，每次 MCP 工具调用都会在聊天中以工具块显示。块内显示**工具名称**，后跟小型斜体标签 **"via \<服务器名\> (Stoa)"** — 例如 `resolve-library-id via Context7 (Stoa)`。悬停可查看完整内部工具名称（工具提示）。标签在消息流式传输期间可见；工具块不会持久保存，页面刷新后不再显示。
+
+### 代理何时收到变更
+
+添加、删除或重新配置 MCP 服务器后，网关会通知活动会话：
+
+- **Claude Code** — 网关向代理的开放会话发送 `tools/list_changed` 通知。Claude Code 会**立即在会话中间**刷新工具列表 — 无需重启会话。如果会话因其他原因重启（模型切换、env 变更、系统提示变更），更新后的列表从一开始就可用。
+- **Codex** — 每个 turn 生成新进程（每个 turn 都是全新的 MCP 连接），因此变更在**下一个 turn**（下一条消息）生效。
+
+### 凭证与安全
+
+- 凭证（令牌、标头）在服务器上**加密**存储，任何 API 端点均不返回其值。
+- 注入每个代理的 MCP 会话令牌的作用域为 `(代理, 房间, 线程, 子代理)`，仅存在于代理的环境变量中 — 不出现在命令行参数中（在 `ps` 中不可见）。
+- 令牌在其代理、子代理或房间被删除时自动撤销。
+- stdio 上游进程以隔离的环境启动（仅 `PATH`、`HOME` 和您显式添加的变量），服务器自身的环境变量不会传递。
+
+---
+
 ## 设置
 
 Stoa 在应用最左侧使用**垂直侧边栏导航**。侧边栏仅显示图标（宽 44 px），悬停时展开至 200 px 并显示文字标签。点击任意图标切换区域。移动端（窄屏）下侧边栏会隐藏。
 
-导航项目（从上到下）：**Inbox**（房间列表）、分隔符，以及设置区域：**AI Agent**、**Server**、**General**、**Themes**、**Docs**、**Platforms**、**Automation**、**Usage**、**Doctor**。
+导航项目（从上到下）：**Inbox**（房间列表）、分隔符，以及设置区域：**AI Agent**、**Server**、**General**、**Themes**、**Docs**、**Platforms**、**Automation**、**MCP**、**Usage**、**Doctor**。
 
 ### AI Agent
 

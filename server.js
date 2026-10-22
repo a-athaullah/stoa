@@ -1631,9 +1631,54 @@ function verifyProxyToken(bearer) {
 }
 
 // Least-privilege agent secrets — see lib/agent-scope.js for the allowlist and its evidence.
-const { matchAgentRoute, agentScopeEnforced } = require('./lib/agent-scope');
+const { matchAgentRoute, agentScopeEnforced, isSelfAuthenticatedPath } = require('./lib/agent-scope');
 const AGENT_SCOPE_ENFORCED = agentScopeEnforced(process.env.STOA_AGENT_SCOPE);
 if (!AGENT_SCOPE_ENFORCED) console.warn('[agent-scope] WARNING: STOA_AGENT_SCOPE=off — agent secrets have full API access');
+
+// MCP gateway (plan: stoa-feature/mcp-gateway.md): upstream MCP servers run here, agents reach them via /mcp.
+const mcpCredentials = require('./lib/credentials');
+const { createUpstreamManager, decodeServerEnv } = require('./lib/mcp-upstreams');
+const { createMcpGateway, APPROVAL_TIMEOUT_MAX_MS } = require('./lib/mcp-gateway');
+const { createMcpApi } = require('./lib/mcp-api');
+const { connectionEnv } = require('./lib/mcp-catalog');
+const { createMcpOAuth } = require('./lib/mcp-oauth');
+const mcpOAuth = createMcpOAuth({ db, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt });
+const mcpUpstreams = createUpstreamManager({
+  readEnv: (row) => connectionEnv(row, decodeServerEnv(row, mcpCredentials.decrypt)),
+  // A start / stop / OAuth connect can change an upstream's cached tool list → open agent sessions.
+  onStatus: (serverId, status, lastError) => {
+    broadcastGlobal({ type: 'mcp_status', server_id: serverId, status, last_error: lastError });
+    mcpGateway.toolsChanged();
+  },
+  authProvider: (row) => mcpOAuth.provider(row.id),
+  needsAuth: (row) => mcpOAuth.needsAuth(row),
+});
+const mcpGateway = createMcpGateway({
+  db, upstreams: mcpUpstreams, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt, version: require('./package.json').version,
+  approvalTimeoutMs: Math.min(APPROVAL_TIMEOUT_MAX_MS, Math.max(1000, parseInt(process.env.MCP_APPROVAL_TIMEOUT_MS, 10) || 5 * 60_000)),
+  // Approval cards live in the room (and thread) the agent is working in; the MCP page's approval log
+  // needs them too, so every other owner connection gets the same event. One copy per connection.
+  onApproval: (type, approval) => {
+    broadcastRoomThenGlobal(approval.room_id, type === 'mcp_approval'
+      ? { type, approval }
+      : { type, id: approval.id, status: approval.status, decided_at: approval.decided_at, room_id: approval.room_id });
+  },
+});
+const mcpApi = createMcpApi({ db, upstreams: mcpUpstreams, gateway: mcpGateway, oauth: mcpOAuth, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt });
+const MCP_CALLS_RETENTION_DAYS = parseInt(process.env.MCP_CALLS_RETENTION_DAYS, 10) || 30;
+const pruneMcpCalls = () => {
+  try { mcpGateway.pruneCalls(MCP_CALLS_RETENTION_DAYS); } catch (e) { console.error('[mcp] prune failed:', e.message); }
+};
+pruneMcpCalls();
+setInterval(pruneMcpCalls, 60 * 60_000).unref();
+// Token only once an MCP server exists: before that the agent session env is unchanged (no respawn
+// for setups that never use MCP). Harnesses without tool support get none.
+const mcpHasServers = db.prepare('SELECT 1 FROM mcp_servers LIMIT 1');
+function mcpTokenForTrigger({ actorId, roomId, threadId, subAgentId, toolsSupported }) {
+  if (toolsSupported === false || !mcpHasServers.get()) return undefined;
+  try { return mcpGateway.issueToken({ actorId, roomId, threadId: threadId || null, subAgentId: subAgentId || null }); }
+  catch (e) { console.error('[mcp] token issue failed:', e.message); return undefined; }
+}
 function agentScopeAllowed(agentId, route) {
   switch (route.scope) {
     case 'any': return true;
@@ -1809,6 +1854,8 @@ function requireAuth(req, res, url) {
   // Ollama proxy — the Claude SDK sends only a Bearer token (no cookie). The handler verifies
   // the HMAC proxy token (or agent headers) before reading the body.
   if (url.pathname === '/v1/messages') return true;
+  // MCP gateway — bearer MCP token verified by mcpGateway.handle before anything else.
+  if (isSelfAuthenticatedPath(url.pathname)) return true;
 
   // Human session first: a valid cookie keeps full access (and the Origin check) even if agent headers are present.
   const cookies = parseCookies(req.headers.cookie);
@@ -1873,6 +1920,19 @@ const server = http.createServer(async (req, res) => {
     }
     res.writeHead(401); return res.end('Unauthorized');
   }
+
+  if (url.pathname === '/mcp') {
+    let body;
+    if (req.method === 'POST') {
+      let raw;
+      try { raw = await readBody(req, 1024 * 1024); }
+      catch { return json(res, { error: 'request body too large' }, 413); }
+      body = parseJsonBody(raw);
+      if (body === null) return json(res, { jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' }, id: null }, 400);
+    }
+    return mcpGateway.handle(req, res, body);
+  }
+  if (await mcpApi.handle(req, res, url, { json, readBody, parseJsonBody })) return;
 
   // ── Auth routes (exempt from auth check above) ──
   if (req.method === 'POST' && url.pathname === '/api/client-error') {
@@ -2302,6 +2362,7 @@ const server = http.createServer(async (req, res) => {
       db.prepare("DELETE FROM settings WHERE scope='room' AND scope_id=?").run(roomId);
       db.prepare('DELETE FROM room_memory WHERE room_id=?').run(roomId);
       db.prepare('DELETE FROM memory_pending_writes WHERE room_id=?').run(roomId);
+      mcpGateway.forgetRoom(roomId);
       db.prepare('DELETE FROM rooms WHERE id=?').run(roomId);
     });
     deleteRoom();
@@ -4267,6 +4328,7 @@ const server = http.createServer(async (req, res) => {
     }
     db.prepare('DELETE FROM invite_suggestions WHERE suggested_actor_id=?').run(id);
     db.prepare('DELETE FROM room_participants WHERE actor_id=?').run(id);
+    mcpGateway.forgetActor(id);
     db.prepare('DELETE FROM actors WHERE id=?').run(id);
     const ws = agentClients.get(id);
     if (ws) { ws.close(); agentClients.delete(id); }
@@ -4414,6 +4476,7 @@ const server = http.createServer(async (req, res) => {
     const sa = db.prepare('SELECT avatar_url FROM sub_agents WHERE id=?').get(id);
     if (sa?.avatar_url) deleteAvatarFile(sa.avatar_url);
     db.prepare('DELETE FROM sub_agent_memory WHERE sub_agent_id=?').run(id);
+    mcpGateway.forgetSubAgent(id);
     db.prepare('DELETE FROM sub_agents WHERE id=?').run(id);
     res.writeHead(204); return res.end();
   }
@@ -5954,6 +6017,16 @@ function broadcastGlobal(data) {
   const str = JSON.stringify(data);
   for (const client of globalClients) {
     if (client.readyState === 1) client.send(str);
+  }
+}
+
+// Room members via broadcast(), then every other human connection: no connection gets it twice.
+function broadcastRoomThenGlobal(roomId, data) {
+  if (roomId != null) broadcast(roomId, data);
+  const inRoom = roomId != null ? roomClients.get(roomId) : null;
+  const str = JSON.stringify(data);
+  for (const client of globalClients) {
+    if (client.readyState === 1 && !inRoom?.has(client)) client.send(str);
   }
 }
 
@@ -7945,6 +8018,8 @@ async function triggerSkillResponse(roomId, ai, prompt) {
         claude_session_id: sessionId,
         prompt,
         workdir: workdir || undefined,
+        // Same session key as a room-level triggerAiResponse, so the token (and session env) match.
+        mcp_token: mcpTokenForTrigger({ actorId: ai.actor_id, roomId }),
       }));
     });
   } else {
@@ -8498,6 +8573,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         thread_id: threadId || undefined,
         system_prompt: roomSysPrompt || undefined,
         system_prompt_hash: sysPromptHash || undefined,
+        mcp_token: mcpTokenForTrigger({ actorId: ai.actor_id, roomId, threadId, subAgentId: subAgent?.id, toolsSupported: modelToolsSupported }),
       }));
       console.log(`[trigger] sent to ${displayName} agent, msgId=${msgId}`);
     });

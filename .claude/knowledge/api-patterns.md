@@ -122,6 +122,36 @@ Allowed routes (source: `AGENT_ALLOWED_ROUTES` in `lib/agent-scope.js`):
 
 Cookie sessions (browser) have full access regardless. `/v1/messages` is unchanged (uses HMAC proxy token or agent header directly).
 
+**MCP scope:** `/mcp` accepts only MCP session tokens (`Bearer` header, hash-looked-up in `mcp_tokens`). Agent secrets and session cookies are not accepted. `/api/mcp/*` admin endpoints require a session cookie (owner-only, no agent access).
+
+#### MCP Gateway Token
+
+```
+POST /mcp
+Authorization: Bearer <mcp_session_token>
+Content-Type: application/json  (MCP JSON-RPC)
+```
+
+- Token issued per session trigger, stored as SHA-256 hash in `mcp_tokens`
+- Scoped to `(actor_id, room_id, thread_id, sub_agent_id)` — gateway reads identity from token, not from request body
+- Token injected into agent env as `STOA_MCP_TOKEN`; gateway URL as `STOA_MCP_URL`
+- Sengaja tanpa TTL; revoked when actor/sub_agent/room deleted
+
+**Admin API** (session cookie, owner only):
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/mcp/catalog` | Available presets (static) |
+| GET, POST | `/api/mcp/servers` | List / install MCP server |
+| PATCH, DELETE | `/api/mcp/servers/:id` | Edit / delete server |
+| POST | `/api/mcp/servers/:id/test` | Test connection, returns tool count |
+| GET | `/api/mcp/servers/:id/tools` | Tools + overrides |
+| PUT | `/api/mcp/servers/:id/tools/:tool` | Set tool enabled / requires_approval / rate_limit_per_min |
+| GET, PUT | `/api/mcp/access` | Access matrix (agent/sub_agent/room × server) |
+| GET | `/api/mcp/calls` | Activity log paginated (`?server_id=&actor_id=&before_id=`) |
+| GET | `/api/mcp/approvals` | Pending/settled approvals (`?room_id=&status=`) |
+| POST | `/api/mcp/approvals/:id` | Decide approval (`{ "decision": "approve"|"deny" }`) → 200/404/409 |
+
 #### Cloudflare Access Service Token (`lib/cf-access.js`)
 Optional agent-side feature for deployments behind Cloudflare Access (when Tailscale is unavailable).
 

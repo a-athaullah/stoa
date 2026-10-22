@@ -114,6 +114,8 @@ function waitUp(port, tries = 50) {
     STOA_SEMANTIC_BACKEND: 'hash',
     // Server run timeout (15 min in prod) short enough for the timed-out sub-agent tests to reach it.
     AGENT_RUN_TIMEOUT_MS: '15000',
+    // MCP approval wait (5 min in prod) short enough for the expiry test to reach it.
+    MCP_APPROVAL_TIMEOUT_MS: '3000',
     STOA_TEST_EMAIL: testEmail || '', STOA_TEST_PASSWORD: testPassword };
 
   const server = spawn(process.execPath, [serverFile], { cwd: projectRoot, env, stdio: ['ignore', 'pipe', 'pipe'] });
