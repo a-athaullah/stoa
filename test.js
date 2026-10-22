@@ -14350,9 +14350,10 @@ async function run() {
     });
 
     // big requires approval (previous test). The owner watches roomA; the agent's call blocks meanwhile.
-    const approvalRound = async (decide) => {
+    const approvalRound = async (decide, onEvent = null) => {
       const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
       try {
+        if (onEvent) humanWs.on('message', d => { const m = JSON.parse(d); if (m.type?.startsWith('mcp_approval')) onEvent(m); });
         humanWs.send(JSON.stringify({ type: 'join_room', room_id: roomA }));
         await waitForWsMessage(humanWs, m => m.type === 'history');
         const asked = waitForWsMessage(humanWs, m => m.type === 'mcp_approval', 5000);
@@ -14388,6 +14389,26 @@ async function run() {
       const again = await req('POST', `/api/mcp/approvals/${approval.id}`, { decision: 'deny' });
       assert.strictEqual(again.status, 409, 'decided once');
       assert.strictEqual(again.body.approval.status, 'approved');
+    });
+
+    await test('MCP approval — events reach owner connections outside the room once, room members once', async () => {
+      const outside = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      const seen = { outside: [], member: [] };
+      try {
+        outside.send(JSON.stringify({ type: 'subscribe_global' }));
+        outside.on('message', d => { const m = JSON.parse(d); if (m.type?.startsWith('mcp_approval')) seen.outside.push(m); });
+        await new Promise(r => setTimeout(r, 100));
+        const { approval, resolved } = await approvalRound(async (a) => {
+          return req('POST', `/api/mcp/approvals/${a.id}`, { decision: 'approve' });
+        }, (m) => seen.member.push(m));
+        await new Promise(r => setTimeout(r, 200));
+        const ids = (arr, t) => arr.filter(m => m.type === t && (m.approval?.id ?? m.id) === approval.id).length;
+        assert.deepStrictEqual([ids(seen.outside, 'mcp_approval'), ids(seen.outside, 'mcp_approval_resolved')], [1, 1], 'MCP page connection');
+        assert.deepStrictEqual([ids(seen.member, 'mcp_approval'), ids(seen.member, 'mcp_approval_resolved')], [1, 1], 'room member: no duplicate card');
+        const g = seen.outside.find(m => m.type === 'mcp_approval_resolved');
+        assert.deepStrictEqual([g.status, g.room_id, resolved.room_id], ['approved', roomA, roomA]);
+        assert.strictEqual(seen.outside.find(m => m.type === 'mcp_approval').approval.tool, 'big');
+      } finally { outside.close(); }
     });
 
     await test('MCP approval — deny returns a tool error to the agent and logs denied', async () => {

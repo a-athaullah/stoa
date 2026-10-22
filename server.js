@@ -1527,12 +1527,12 @@ const mcpUpstreams = createUpstreamManager({
 const mcpGateway = createMcpGateway({
   db, upstreams: mcpUpstreams, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt, version: require('./package.json').version,
   approvalTimeoutMs: Math.min(APPROVAL_TIMEOUT_MAX_MS, Math.max(1000, parseInt(process.env.MCP_APPROVAL_TIMEOUT_MS, 10) || 5 * 60_000)),
-  // Approval cards live in the room (and thread) the agent is working in.
+  // Approval cards live in the room (and thread) the agent is working in; the MCP page's approval log
+  // needs them too, so every other owner connection gets the same event. One copy per connection.
   onApproval: (type, approval) => {
-    if (approval.room_id == null) return;
-    broadcast(approval.room_id, type === 'mcp_approval'
+    broadcastRoomThenGlobal(approval.room_id, type === 'mcp_approval'
       ? { type, approval }
-      : { type, id: approval.id, status: approval.status, decided_at: approval.decided_at });
+      : { type, id: approval.id, status: approval.status, decided_at: approval.decided_at, room_id: approval.room_id });
   },
 });
 const mcpApi = createMcpApi({ db, upstreams: mcpUpstreams, gateway: mcpGateway, oauth: mcpOAuth, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt });
@@ -5888,6 +5888,16 @@ function broadcastGlobal(data) {
   const str = JSON.stringify(data);
   for (const client of globalClients) {
     if (client.readyState === 1) client.send(str);
+  }
+}
+
+// Room members via broadcast(), then every other human connection: no connection gets it twice.
+function broadcastRoomThenGlobal(roomId, data) {
+  if (roomId != null) broadcast(roomId, data);
+  const inRoom = roomId != null ? roomClients.get(roomId) : null;
+  const str = JSON.stringify(data);
+  for (const client of globalClients) {
+    if (client.readyState === 1 && !inRoom?.has(client)) client.send(str);
   }
 }
 
