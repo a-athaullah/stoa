@@ -932,7 +932,8 @@ Open the **MCP** section in the app nav (below Automation).
 
 Each installed MCP server appears as a card showing:
 
-- **Name** and current **status**: `running` (upstream process active), `idle` (ready but not currently processing), `needs sign-in` (OAuth required), `error` (startup failure), or `disabled`.
+- **Brand icon** (or initials if none is available) and the server **name**.
+- Current **status**: `running` (upstream process active), `idle` (ready but not currently processing), `needs sign-in` (OAuth required), `error` (startup failure), or `disabled`.
 - **Number of active tools** in this server.
 - **Enable toggle** — disabling hides all tools from every agent instantly.
 - **Test** — starts the upstream and returns the number of tools found (or an error message).
@@ -957,9 +958,22 @@ A catalog grid lists ready-to-use MCP servers:
 - **Sequential Thinking** — step-by-step reasoning tool that lets an agent revise and branch its thinking. Installs via `npx`.
 - **DeepWiki** — ask questions about public GitHub repositories (remote server, no `npx` needed).
 
-Other catalog server:
+Other catalog servers:
 
 - **Brave Search** — web, news, image, and local search (official Brave server). Requires a `BRAVE_API_KEY` from [api-dashboard.search.brave.com](https://api-dashboard.search.brave.com) (free plan is enough to try it).
+- **Sentry** — issues, events, releases, and projects (official server). Requires a personal auth token from Sentry → Settings → Personal Tokens (needs `org:read`, `project:read`, `event:read`; add `event:write` to let agents update issues). Installs via `npx`.
+- **Cloudflare** — DNS, Workers, R2, zones, and more for your Cloudflare accounts (official remote server). Uses OAuth: click **connect** after install.
+- **Supabase** — projects, database (SQL), edge functions, and logs for a Supabase organization (official remote server, beta). Uses OAuth: click **connect** after install.
+- **Todoist** — tasks, projects, sections, and comments in Todoist (official remote server by Doist). Uses OAuth: click **connect** after install.
+
+**Browser automation** presets run a real browser on the Stoa server — `localhost` in those tools means the Stoa machine, not the agent's machine. No account needed for either:
+
+- **Chrome DevTools** — drive a headless Chrome: open pages, click, type, read console and network, record traces (official Google server). The `upload_file` tool **requires approval** by default (it hands a local file from the Stoa server to the browser).
+- **Playwright** — browser automation through accessibility snapshots: navigate, click, fill forms, screenshots (official Microsoft server). `browser_file_upload` **requires approval** by default; `browser_run_code_unsafe` (arbitrary JS execution) is **disabled** by default.
+
+**File access** preset:
+
+- **Filesystem** — read, search, and edit files in folders you choose on the Stoa server (official MCP server). Agents on other machines reach these folders too via the gateway. Required field: **Allowed folders** — one or more absolute paths on the Stoa server, comma-separated. The root (`/`) and any path that overlaps the Stoa install folder are rejected. Write tools (`write_file`, `edit_file`, `create_directory`, `move_file`) **require approval** by default.
 
 Click **Custom** to add your own server:
 
@@ -1001,7 +1015,7 @@ An agent can have up to 20 approval requests pending at the same time. Approval 
 
 ### Tool Labels in Chat
 
-While an agent is running, each MCP tool call appears as a tool block in the chat. The block shows the **tool name** followed by a small italic label **"via \<server name\> (Stoa)"** — for example, `resolve-library-id via Context7 (Stoa)`. Hovering shows the full internal tool name as a tooltip. The label is visible while the message is streaming; tool blocks are not stored, so they do not appear after the page is reloaded.
+While an agent is running, each MCP tool call appears as a tool block in the chat. The block shows the **tool name** followed by a small italic label **"via \<server name\> (Stoa)"** — for example, `resolve-library-id via Context7 (Stoa)`. Hovering shows the full internal tool name as a tooltip. Tool steps are stored with the message (up to 50 steps per message, tool name + one-line summary each) and the process trail — including MCP labels — **survives a page reload**.
 
 ### When Agents See Changes
 

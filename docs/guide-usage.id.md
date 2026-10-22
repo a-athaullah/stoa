@@ -933,7 +933,8 @@ Buka seksi **MCP** di nav app (di bawah Automation).
 
 Setiap MCP server yang terinstall ditampilkan sebagai kartu berisi:
 
-- **Nama** dan **status** saat ini: `running` (proses upstream aktif), `idle` (siap tapi tidak sedang memproses), `needs sign-in` (OAuth diperlukan), `error` (gagal start), atau `disabled`.
+- **Ikon brand** (atau inisial jika tidak tersedia) dan **nama** server.
+- **Status** saat ini: `running` (proses upstream aktif), `idle` (siap tapi tidak sedang memproses), `needs sign-in` (OAuth diperlukan), `error` (gagal start), atau `disabled`.
 - **Jumlah tool aktif** di server ini.
 - **Toggle enable** — menonaktifkan langsung menyembunyikan semua tool dari setiap agent.
 - **Test** — menjalankan upstream dan mengembalikan jumlah tool yang ditemukan (atau pesan error).
@@ -961,6 +962,19 @@ Preset **Playground** ditandai chip `playground` — tidak perlu akun atau API k
 Server katalog lainnya:
 
 - **Brave Search** — pencarian web, berita, gambar, dan lokal (server resmi Brave). Membutuhkan `BRAVE_API_KEY` dari [api-dashboard.search.brave.com](https://api-dashboard.search.brave.com) (paket gratis sudah cukup untuk mencoba).
+- **Sentry** — issues, events, releases, dan proyek (server resmi). Membutuhkan personal auth token dari Sentry → Settings → Personal Tokens (`org:read`, `project:read`, `event:read`; tambah `event:write` kalau ingin agent bisa update issues). Install via `npx`.
+- **Cloudflare** — DNS, Workers, R2, zone, dan lainnya untuk akun Cloudflare-mu (server remote resmi). Pakai OAuth: klik **connect** setelah install.
+- **Supabase** — proyek, database (SQL), edge function, dan log untuk organisasi Supabase (server remote resmi, beta). Pakai OAuth: klik **connect** setelah install.
+- **Todoist** — task, proyek, seksi, dan komentar di Todoist (server remote resmi oleh Doist). Pakai OAuth: klik **connect** setelah install.
+
+Preset **browser automation** menjalankan browser sungguhan di server Stoa — `localhost` di tool-tool tersebut artinya mesin Stoa, bukan mesin agent. Tidak perlu akun untuk keduanya:
+
+- **Chrome DevTools** — mengendalikan Chrome headless: buka halaman, klik, ketik, baca console dan network, rekam trace (server resmi Google). Tool `upload_file` **requires approval** secara default (mengirim file dari server Stoa ke browser).
+- **Playwright** — browser automation via accessibility snapshot: navigasi, klik, isi form, screenshot (server resmi Microsoft). `browser_file_upload` **requires approval** secara default; `browser_run_code_unsafe` (eksekusi JS sembarang) **dinonaktifkan** secara default.
+
+Preset **akses file**:
+
+- **Filesystem** — baca, cari, dan edit file di folder yang kamu pilih di server Stoa (server MCP resmi). Agent di mesin lain juga bisa mengakses folder ini lewat gateway. Field wajib: **Allowed folders** — satu atau lebih path absolut di server Stoa, dipisahkan koma. Root (`/`) dan path yang overlap folder instalasi Stoa ditolak. Tool tulis (`write_file`, `edit_file`, `create_directory`, `move_file`) **requires approval** secara default.
 
 Klik **Custom** untuk menambah server sendiri:
 
@@ -1002,7 +1016,7 @@ Satu agent bisa punya maksimal 20 permintaan approval yang pending sekaligus. Ka
 
 ### Label Tool di Chat
 
-Saat agent sedang berjalan, setiap panggilan tool MCP ditampilkan sebagai blok tool di chat. Blok ini menampilkan **nama tool** diikuti label kecil miring **"via \<nama server\> (Stoa)"** — misalnya `resolve-library-id via Context7 (Stoa)`. Hover untuk melihat nama internal lengkap sebagai tooltip. Label terlihat selama pesan di-stream; blok tool tidak disimpan, jadi tidak muncul setelah halaman di-reload.
+Saat agent sedang berjalan, setiap panggilan tool MCP ditampilkan sebagai blok tool di chat. Blok ini menampilkan **nama tool** diikuti label kecil miring **"via \<nama server\> (Stoa)"** — misalnya `resolve-library-id via Context7 (Stoa)`. Hover untuk melihat nama internal lengkap sebagai tooltip. Langkah tool disimpan bersama pesan (maksimal 50 langkah per pesan, nama tool + ringkasan satu baris) sehingga process trail — termasuk label MCP — **tetap ada setelah halaman di-reload**.
 
 ### Kapan Agent Menerima Perubahan
 

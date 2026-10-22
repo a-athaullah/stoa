@@ -928,7 +928,8 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 
 インストール済みの MCP サーバーがカードとして表示されます：
 
-- **名前**と現在の**ステータス**：`running`（アップストリームプロセス稼働中）、`idle`（待機中）、`needs sign-in`（OAuth 認証が必要）、`error`（起動失敗）、`disabled`。
+- **ブランドアイコン**（利用できない場合はイニシャル）とサーバー**名**。
+- 現在の**ステータス**：`running`（アップストリームプロセス稼働中）、`idle`（待機中）、`needs sign-in`（OAuth 認証が必要）、`error`（起動失敗）、`disabled`。
 - **アクティブなツール数**。
 - **有効トグル** — 無効にするとすべてのエージェントからツールが即座に非表示になります。
 - **Test** — アップストリームを起動し、ツール数またはエラーメッセージを返します。
@@ -956,6 +957,19 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 その他のカタログサーバー：
 
 - **Brave Search** — ウェブ・ニュース・画像・ローカル検索（Brave 公式サーバー）。[api-dashboard.search.brave.com](https://api-dashboard.search.brave.com) で取得した `BRAVE_API_KEY` が必要（無料プランで試用可能）。
+- **Sentry** — Issues、イベント、リリース、プロジェクト（公式サーバー）。Sentry → Settings → Personal Tokens でトークン取得（`org:read`、`project:read`、`event:read` 必須；Issue 更新も行う場合は `event:write` を追加）。`npx` でインストール。
+- **Cloudflare** — Cloudflare の DNS、Workers、R2、ゾーンなど（公式リモートサーバー）。OAuth：インストール後に **connect** をクリック。
+- **Supabase** — Supabase 組織のプロジェクト、データベース（SQL）、Edge Functions、ログ（公式リモートサーバー、ベータ）。OAuth：インストール後に **connect** をクリック。
+- **Todoist** — Todoist のタスク、プロジェクト、セクション、コメント（Doist 公式リモートサーバー）。OAuth：インストール後に **connect** をクリック。
+
+**ブラウザ自動化**プリセットは Stoa サーバー上で実際のブラウザを起動します — これらのツールでの `localhost` は Stoa マシンを意味します。いずれもアカウント不要です：
+
+- **Chrome DevTools** — ヘッドレス Chrome の操作：ページを開く、クリック、入力、コンソール・ネットワーク読み取り、パフォーマンストレース記録（Google 公式サーバー）。`upload_file` ツールはデフォルトで **requires approval**（Stoa サーバーのファイルをブラウザに渡すため）。
+- **Playwright** — アクセシビリティスナップショットによるブラウザ自動化：ナビゲート、クリック、フォーム入力、スクリーンショット（Microsoft 公式サーバー）。`browser_file_upload` はデフォルトで **requires approval**；`browser_run_code_unsafe`（任意 JS 実行）はデフォルトで**無効**。
+
+**ファイルアクセス**プリセット：
+
+- **Filesystem** — Stoa サーバー上の指定フォルダを読み取り・検索・編集（MCP 公式サーバー）。他マシンのエージェントもゲートウェイ経由でアクセスできます。必須項目：**Allowed folders** — サーバー上の絶対パスをカンマ区切りで指定。ルート（`/`）および Stoa のインストールフォルダと重なるパスは拒否されます。書き込みツール（`write_file`、`edit_file`、`create_directory`、`move_file`）はデフォルトで **requires approval**。
 
 **Custom** をクリックして独自サーバーを追加できます：
 
@@ -997,7 +1011,7 @@ Activity は**デフォルト 30 日間**保持されます（`MCP_CALLS_RETENTI
 
 ### チャット内のツールラベル
 
-エージェントが実行中、各 MCP ツール呼び出しはチャットにツールブロックとして表示されます。ブロックには**ツール名**と小さなイタリック体のラベル **"via \<サーバー名\> (Stoa)"** が表示されます（例：`resolve-library-id via Context7 (Stoa)`）。ホバーするとフルの内部ツール名がツールチップで確認できます。ラベルはメッセージのストリーミング中に表示されます。ツールブロックは保存されないため、ページをリロードすると表示されなくなります。
+エージェントが実行中、各 MCP ツール呼び出しはチャットにツールブロックとして表示されます。ブロックには**ツール名**と小さなイタリック体のラベル **"via \<サーバー名\> (Stoa)"** が表示されます（例：`resolve-library-id via Context7 (Stoa)`）。ホバーするとフルの内部ツール名がツールチップで確認できます。ツールステップはメッセージと一緒に保存されます（メッセージ 1 件あたり最大 50 ステップ、ツール名 + 1 行サマリー）。プロセストレイル — MCP ラベルを含む — は**ページリロード後も保持**されます。
 
 ### エージェントへの変更反映
 

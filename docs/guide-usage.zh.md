@@ -928,7 +928,8 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 
 每个已安装的 MCP 服务器以卡片形式展示：
 
-- **名称**与当前**状态**：`running`（上游进程运行中）、`idle`（就绪待命）、`needs sign-in`（需要 OAuth 认证）、`error`（启动失败）、`disabled`。
+- **品牌图标**（如无则显示首字母缩写）与服务器**名称**。
+- 当前**状态**：`running`（上游进程运行中）、`idle`（就绪待命）、`needs sign-in`（需要 OAuth 认证）、`error`（启动失败）、`disabled`。
 - **活跃工具数量**。
 - **启用开关** — 禁用后所有代理立即无法看到该服务器的工具。
 - **Test** — 启动上游进程，返回发现的工具数量或错误信息。
@@ -956,6 +957,19 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 其他目录服务器：
 
 - **Brave Search** — 网页、新闻、图片和本地搜索（Brave 官方服务器）。需要从 [api-dashboard.search.brave.com](https://api-dashboard.search.brave.com) 获取 `BRAVE_API_KEY`（免费套餐即可体验）。
+- **Sentry** — 问题、事件、发布版本和项目（官方服务器）。需要在 Sentry → Settings → Personal Tokens 创建令牌（`org:read`、`project:read`、`event:read`；需要更新问题时加 `event:write`）。通过 `npx` 安装。
+- **Cloudflare** — Cloudflare 账号的 DNS、Workers、R2、区域等（官方远程服务器）。OAuth：安装后点击 **connect**。
+- **Supabase** — Supabase 组织的项目、数据库（SQL）、Edge Functions 和日志（官方远程服务器，Beta 版）。OAuth：安装后点击 **connect**。
+- **Todoist** — Todoist 的任务、项目、分区和评论（Doist 官方远程服务器）。OAuth：安装后点击 **connect**。
+
+**浏览器自动化**预设在 Stoa 服务器上运行真实浏览器 — 这些工具中的 `localhost` 指 Stoa 所在机器，而非代理机器。两者均无需账号：
+
+- **Chrome DevTools** — 控制无头 Chrome：打开页面、点击、输入、读取控制台和网络、录制性能追踪（Google 官方服务器）。`upload_file` 工具默认 **requires approval**（将 Stoa 服务器上的文件传递给浏览器）。
+- **Playwright** — 通过无障碍快照实现浏览器自动化：导航、点击、填写表单、截图（Microsoft 官方服务器）。`browser_file_upload` 默认 **requires approval**；`browser_run_code_unsafe`（任意 JS 执行）默认**禁用**。
+
+**文件访问**预设：
+
+- **Filesystem** — 读取、搜索和编辑您在 Stoa 服务器上指定文件夹中的文件（官方 MCP 服务器）。其他机器上的代理也能通过网关访问这些文件夹。必填项：**Allowed folders** — Stoa 服务器上的绝对路径，多个路径用逗号分隔。根目录（`/`）及与 Stoa 安装目录重叠的路径会被拒绝。写入工具（`write_file`、`edit_file`、`create_directory`、`move_file`）默认 **requires approval**。
 
 点击 **Custom** 添加自定义服务器：
 
@@ -997,7 +1011,7 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 
 ### 聊天中的工具标签
 
-代理运行时，每次 MCP 工具调用都会在聊天中以工具块显示。块内显示**工具名称**，后跟小型斜体标签 **"via \<服务器名\> (Stoa)"** — 例如 `resolve-library-id via Context7 (Stoa)`。悬停可查看完整内部工具名称（工具提示）。标签在消息流式传输期间可见；工具块不会持久保存，页面刷新后不再显示。
+代理运行时，每次 MCP 工具调用都会在聊天中以工具块显示。块内显示**工具名称**，后跟小型斜体标签 **"via \<服务器名\> (Stoa)"** — 例如 `resolve-library-id via Context7 (Stoa)`。悬停可查看完整内部工具名称（工具提示）。工具步骤与消息一起保存（每条消息最多 50 步，每步含工具名称和单行摘要），因此流程追踪记录 — 包括 MCP 标签 — **在页面刷新后依然保留**。
 
 ### 代理何时收到变更
 
