@@ -1516,9 +1516,13 @@ const { createUpstreamManager, decodeServerEnv } = require('./lib/mcp-upstreams'
 const { createMcpGateway, APPROVAL_TIMEOUT_MAX_MS } = require('./lib/mcp-gateway');
 const { createMcpApi } = require('./lib/mcp-api');
 const { connectionEnv } = require('./lib/mcp-catalog');
+const { createMcpOAuth } = require('./lib/mcp-oauth');
+const mcpOAuth = createMcpOAuth({ db, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt });
 const mcpUpstreams = createUpstreamManager({
   readEnv: (row) => connectionEnv(row, decodeServerEnv(row, mcpCredentials.decrypt)),
   onStatus: (serverId, status, lastError) => broadcastGlobal({ type: 'mcp_status', server_id: serverId, status, last_error: lastError }),
+  authProvider: (row) => mcpOAuth.provider(row.id),
+  needsAuth: (row) => mcpOAuth.needsAuth(row),
 });
 const mcpGateway = createMcpGateway({
   db, upstreams: mcpUpstreams, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt, version: require('./package.json').version,
@@ -1531,7 +1535,7 @@ const mcpGateway = createMcpGateway({
       : { type, id: approval.id, status: approval.status, decided_at: approval.decided_at });
   },
 });
-const mcpApi = createMcpApi({ db, upstreams: mcpUpstreams, gateway: mcpGateway, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt });
+const mcpApi = createMcpApi({ db, upstreams: mcpUpstreams, gateway: mcpGateway, oauth: mcpOAuth, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt });
 const MCP_CALLS_RETENTION_DAYS = parseInt(process.env.MCP_CALLS_RETENTION_DAYS, 10) || 30;
 const pruneMcpCalls = () => {
   try { mcpGateway.pruneCalls(MCP_CALLS_RETENTION_DAYS); } catch (e) { console.error('[mcp] prune failed:', e.message); }

@@ -27,3 +27,9 @@ ALTER TABLE mcp_calls_p3 RENAME TO mcp_calls;
 CREATE INDEX IF NOT EXISTS idx_mcp_calls_created ON mcp_calls(created_at);
 CREATE INDEX IF NOT EXISTS idx_mcp_calls_server ON mcp_calls(server_id, id);
 CREATE INDEX IF NOT EXISTS idx_mcp_calls_actor ON mcp_calls(actor_id, id);
+
+-- Remote servers: how the gateway authenticates. 'headers' = static headers from env_enc, 'oauth' =
+-- OAuth 2.1 with the provider (lib/mcp-oauth.js); oauth_enc is lib/credentials.js ciphertext of the
+-- client registration + tokens and is never returned by the API.
+ALTER TABLE mcp_servers ADD COLUMN auth TEXT NOT NULL DEFAULT 'none' CHECK(auth IN ('none','headers','oauth'));
+ALTER TABLE mcp_servers ADD COLUMN oauth_enc TEXT;

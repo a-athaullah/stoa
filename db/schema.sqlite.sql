@@ -399,7 +399,7 @@ CREATE TABLE IF NOT EXISTS harness_models (
   UNIQUE(harness_id, model_id)
 );
 
--- MCP gateway (migrations/20261022-mcp-gateway.sql)
+-- MCP gateway (migrations/20261022-mcp-gateway.sql, 20261022-mcp-p3.sql)
 CREATE TABLE IF NOT EXISTS mcp_servers (
   id INTEGER PRIMARY KEY,
   -- Tool namespace prefix (slug__tool). No '__' inside so the split on the first '__' is unambiguous.
@@ -414,6 +414,10 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
   preset TEXT,
   enabled INTEGER NOT NULL DEFAULT 1,
   default_access TEXT NOT NULL DEFAULT 'none' CHECK(default_access IN ('all','none')),
+  -- Remote servers: 'headers' = static headers from env_enc, 'oauth' = lib/mcp-oauth.js; oauth_enc is
+  -- the encrypted client registration + tokens, never returned by the API.
+  auth TEXT NOT NULL DEFAULT 'none' CHECK(auth IN ('none','headers','oauth')),
+  oauth_enc TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

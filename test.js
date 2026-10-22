@@ -3076,6 +3076,45 @@ async function runAsyncUnitTests() {
     mem.close();
   });
 
+  await uta('MCP oauth — state is single use and expires after 10 minutes; tokens never stored in clear', async () => {
+    const Database = require('better-sqlite3');
+    const { createMcpOAuth, STATE_TTL_MS } = require('./lib/mcp-oauth');
+    const mem = new Database(':memory:');
+    mem.exec(require('fs').readFileSync(require('path').join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
+    const id = Number(mem.prepare("INSERT INTO mcp_servers (slug, name, transport, url, auth) VALUES ('o','O','http','https://mcp.example/mcp','oauth')").run().lastInsertRowid);
+    const enc = (x) => 'enc:' + Buffer.from(x).toString('base64');
+    const dec = (x) => Buffer.from(x.slice(4), 'base64').toString();
+    let clock = 1_000_000;
+    const exchanged = [];
+    // Stand-in for the SDK's auth(): registers once, redirects, and on a code saves tokens.
+    const auth = async (p, { authorizationCode }) => {
+      if (!p.clientInformation()) p.saveClientInformation({ client_id: 'cid', redirect_uris: [p.redirectUrl] });
+      if (authorizationCode) { exchanged.push([authorizationCode, p.codeVerifier()]); p.saveTokens({ access_token: 'secret-access', refresh_token: 'secret-refresh' }); return 'AUTHORIZED'; }
+      p.saveCodeVerifier('verifier-1');
+      p.redirectToAuthorization(new URL(`https://auth.example/authorize?state=${p.state()}`));
+      return 'REDIRECT';
+    };
+    const o = createMcpOAuth({ db: mem, encrypt: enc, decrypt: dec, now: () => clock, sdk: { auth }, log: { warn() {}, error() {} } });
+    const row = () => mem.prepare('SELECT * FROM mcp_servers WHERE id=?').get(id);
+    assert.strictEqual(o.needsAuth(row()), true);
+    const stateOf = (u) => new URL(u).searchParams.get('state');
+    const s1 = stateOf(await o.start(row(), 'https://stoa.example'));
+    clock += STATE_TTL_MS + 1;
+    await assert.rejects(o.finish({ state: s1, code: 'c1' }), /expired/);
+    const s2 = stateOf(await o.start(row(), 'https://stoa.example'));
+    assert.notStrictEqual(s2, s1);
+    assert.strictEqual(await o.finish({ state: s2, code: 'c2' }), id);
+    assert.deepStrictEqual(exchanged, [['c2', 'verifier-1']], 'verifier from start reaches the exchange');
+    await assert.rejects(o.finish({ state: s2, code: 'c2' }), /unknown, used or expired/);
+    assert.strictEqual(o.needsAuth(row()), false);
+    assert.ok(!/secret-/.test(row().oauth_enc));
+    assert.strictEqual(o.provider(id).redirectUrl, 'https://stoa.example/api/mcp/oauth/callback');
+    await assert.rejects(o.start({ ...row(), auth: 'headers' }, 'https://stoa.example'), /does not use OAuth/);
+    const hostile = createMcpOAuth({ db: mem, encrypt: enc, decrypt: dec, sdk: { auth: async (p) => { p.saveCodeVerifier('v'); p.redirectToAuthorization(new URL('javascript:alert(1)')); return 'REDIRECT'; } }, log: { warn() {}, error() {} } });
+    await assert.rejects(hostile.start(row(), 'https://stoa.example'), /must be http/);
+    mem.close();
+  });
+
   await uta('MCP upstreams — failed start backs off; disabled row never spawns', async () => {
     const { createUpstreamManager } = require('./lib/mcp-upstreams');
     const statuses = [];
@@ -14082,6 +14121,9 @@ async function run() {
       assert.strictEqual(gh.transport, 'http', 'GitHub preset is the remote server, no docker');
       assert.deepStrictEqual(gh.env_fields.map(f => [f.key, f.secret, f.required]), [['GITHUB_PAT', true, true]]);
       assert.ok(!('command' in gh) && !('args' in gh) && !('headers' in gh));
+      const byId = Object.fromEntries(r.body.presets.map(p => [p.id, p]));
+      assert.deepStrictEqual(['context7', 'github', 'notion', 'linear'].map(id => byId[id]?.auth), ['none', 'headers', 'oauth', 'oauth']);
+      assert.deepStrictEqual([byId.notion.env_fields, byId.linear.env_fields, byId.notion.transport], [[], [], 'http']);
     });
 
     await test('MCP install — validation: binary outside allowlist, bad slug, reserved env, preset env', async () => {
@@ -14380,6 +14422,85 @@ async function run() {
       assert.ok((await listNames(tokA)).length > 0, 'null removes the grant');
     });
 
+    let oauthFx = null, oauthServer = null;
+    const ownerOrigin = `http://${HOST}:${PORT}`;
+    await test('MCP oauth — new server needs_auth; start needs the owner Origin; authorize URL is PKCE + registered redirect', async () => {
+      oauthFx = await startMcpHttpFixture({ mode: 'oauth' });
+      let r = await req('POST', '/api/mcp/servers', { slug: 'mcpoauth', name: 'OAuth', transport: 'http', url: oauthFx.mcpUrl, auth: 'oauth' });
+      assert.strictEqual(r.status, 201, r.raw);
+      oauthServer = r.body.server;
+      assert.deepStrictEqual([oauthServer.auth, oauthServer.status], ['oauth', 'needs_auth']);
+      const t = await req('POST', `/api/mcp/servers/${oauthServer.id}/test`);
+      assert.strictEqual(t.body.ok, false);
+      assert.match(t.body.error, /authorize/);
+      assert.strictEqual(oauthFx.stats.mcpRequests, 0, 'no request to the upstream without tokens');
+      assert.strictEqual((await req('POST', `/api/mcp/servers/${oauthServer.id}/oauth/start`)).status, 400, 'no Origin');
+      assert.strictEqual((await req('POST', `/api/mcp/servers/${oauthServer.id}/oauth/start`, null, { Origin: 'https://evil.example' })).status, 403, 'foreign Origin');
+      assert.strictEqual((await req('POST', `/api/mcp/servers/${server.id}/oauth/start`, null, { Origin: ownerOrigin })).status, 400, 'stdio server has no OAuth');
+      r = await req('POST', `/api/mcp/servers/${oauthServer.id}/oauth/start`, null, { Origin: ownerOrigin });
+      assert.strictEqual(r.status, 200, r.raw);
+      const a = oauthFx.authorize(r.body.authorize_url);
+      assert.strictEqual(a.redirect_uri, `${ownerOrigin}/api/mcp/oauth/callback`);
+      assert.strictEqual(a.resource, oauthFx.mcpUrl, 'RFC 8707 resource from the protected resource metadata');
+      assert.ok(a.state && a.state.length >= 32);
+      assert.strictEqual(oauthFx.stats.registrations, 1, 'dynamic client registration');
+    });
+
+    await test('MCP oauth callback — owner only, bad/replayed state refused, tokens stored encrypted, server usable', async () => {
+      const start = await req('POST', `/api/mcp/servers/${oauthServer.id}/oauth/start`, null, { Origin: ownerOrigin });
+      const { code, state } = oauthFx.authorize(start.body.authorize_url);
+      const cb = (q) => req('GET', `/api/mcp/oauth/callback?${new URLSearchParams(q)}`);
+      assert.strictEqual((await asAnon(() => cb({ code, state }))).status, 401, 'needs the owner session');
+      assert.strictEqual((await cb({ code, state: state + 'x' })).status, 400, 'unknown state');
+      assert.strictEqual(oauthFx.stats.tokenRequests, 0, 'nothing exchanged on a bad state');
+      const ok = await cb({ code, state });
+      assert.strictEqual(ok.status, 302, ok.raw);
+      assert.strictEqual(ok.headers.location, `/?mcp_oauth=connected&server_id=${oauthServer.id}`);
+      assert.strictEqual(oauthFx.stats.registrations, 1, 'registration reused for the same redirect URI');
+      assert.strictEqual((await cb({ code, state })).status, 400, 'state is single use');
+      const enc = mDb.prepare('SELECT oauth_enc FROM mcp_servers WHERE id=?').get(oauthServer.id).oauth_enc;
+      assert.ok(enc && !/at_|rt_|client_/.test(enc), 'tokens and client id stored encrypted');
+      const list = await req('GET', '/api/mcp/servers');
+      assert.ok(!/at_[A-Za-z0-9_-]{10}|rt_[A-Za-z0-9_-]{10}|oauth_enc/.test(list.raw), 'never in responses');
+      assert.notStrictEqual(list.body.servers.find(x => x.id === oauthServer.id).status, 'needs_auth');
+      const t = await req('POST', `/api/mcp/servers/${oauthServer.id}/test`);
+      assert.deepStrictEqual([t.body.ok, t.body.tools], [true, ['whoami']], JSON.stringify(t.body));
+      assert.strictEqual((await req('PUT', '/api/mcp/access', { server_id: oauthServer.id, subject_type: 'agent', subject_id: agA.actorId, allow: true })).status, 200);
+      const r = await callText(tokA, 'mcpoauth__whoami');
+      assert.deepStrictEqual([r.isError, r.text], [false, 'hello via oauth']);
+    });
+
+    await test('MCP oauth — provider error and revoked tokens: back to needs_auth, call refused clearly', async () => {
+      const start = await req('POST', `/api/mcp/servers/${oauthServer.id}/oauth/start`, null, { Origin: ownerOrigin });
+      const { state } = oauthFx.authorize(start.body.authorize_url);
+      const denied = await req('GET', `/api/mcp/oauth/callback?${new URLSearchParams({ state, error: 'access_denied' })}`);
+      assert.strictEqual(denied.status, 302);
+      assert.match(denied.headers.location, new RegExp(`^/\\?mcp_oauth=error&server_id=${oauthServer.id}&reason=`));
+      assert.strictEqual((await callText(tokA, 'mcpoauth__whoami')).text, 'hello via oauth', 'a refused re-connect keeps the working tokens');
+      oauthFx.revokeAll();
+      const t = await req('POST', `/api/mcp/servers/${oauthServer.id}/test`);
+      assert.strictEqual(t.body.ok, false);
+      assert.match(t.body.error, /authorization expired or was revoked/);
+      const s = (await req('GET', '/api/mcp/servers')).body.servers.find(x => x.id === oauthServer.id);
+      assert.strictEqual(s.status, 'needs_auth');
+      const c = await callText(tokA, 'mcpoauth__whoami');
+      assert.strictEqual(c.isError, true);
+      assert.match(c.text, /authoriz/);
+    });
+
+    await test('MCP oauth — auth mode validation; leaving oauth drops stored tokens', async () => {
+      assert.strictEqual((await req('POST', '/api/mcp/servers', { slug: 'mcpx', name: 'X', transport: 'http', url: oauthFx.mcpUrl, auth: 'magic' })).status, 400);
+      assert.strictEqual((await req('POST', '/api/mcp/servers', { slug: 'mcpx', name: 'X', transport: 'stdio', command: 'node', auth: 'oauth' })).status, 400);
+      assert.strictEqual((await req('PATCH', `/api/mcp/servers/${server.id}`, { auth: 'oauth' })).status, 400, 'stdio server');
+      const r = await req('PATCH', `/api/mcp/servers/${oauthServer.id}`, { auth: 'headers' });
+      assert.strictEqual(r.body.server.auth, 'headers');
+      assert.strictEqual(mDb.prepare('SELECT oauth_enc FROM mcp_servers WHERE id=?').get(oauthServer.id).oauth_enc, null);
+      await req('DELETE', `/api/mcp/servers/${oauthServer.id}`);
+      oauthServer = null;
+      await oauthFx.close();
+      oauthFx = null;
+    });
+
     await test('MCP access — matrix lists subjects and grants; bad input rejected', async () => {
       const r = await req('GET', '/api/mcp/access');
       assert.strictEqual(r.status, 200);
@@ -14469,6 +14590,9 @@ async function run() {
 
     await test('MCP teardown', async () => {
       if (server) await req('DELETE', `/api/mcp/servers/${server.id}`);
+      if (oauthServer) await req('DELETE', `/api/mcp/servers/${oauthServer.id}`);
+      if (oauthFx) await oauthFx.close();
+      mDb.prepare("DELETE FROM mcp_calls WHERE server_slug='mcpoauth'").run();
       mDb.prepare("DELETE FROM mcp_calls WHERE server_slug='mcpdummy'").run();
       if (agA?.ws) agA.ws.close();
       if (agB?.ws) agB.ws.close();
