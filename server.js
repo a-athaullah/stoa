@@ -1641,11 +1641,13 @@ const mcpCredentials = require('./lib/credentials');
 const { createUpstreamManager, decodeServerEnv } = require('./lib/mcp-upstreams');
 const { createMcpGateway, APPROVAL_TIMEOUT_MAX_MS } = require('./lib/mcp-gateway');
 const { createMcpApi } = require('./lib/mcp-api');
-const { connectionEnv } = require('./lib/mcp-catalog');
+const { connectionEnv, connectionArgs } = require('./lib/mcp-catalog');
 const { createMcpOAuth } = require('./lib/mcp-oauth');
 const mcpOAuth = createMcpOAuth({ db, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt });
 const mcpUpstreams = createUpstreamManager({
   readEnv: (row) => connectionEnv(row, decodeServerEnv(row, mcpCredentials.decrypt)),
+  readArgs: (row) => connectionArgs(row, decodeServerEnv(row, mcpCredentials.decrypt)),
+  workRoot: path.join(require('os').tmpdir(), 'stoa-mcp'),
   // A start / stop / OAuth connect can change an upstream's cached tool list → open agent sessions.
   onStatus: (serverId, status, lastError) => {
     broadcastGlobal({ type: 'mcp_status', server_id: serverId, status, last_error: lastError });
