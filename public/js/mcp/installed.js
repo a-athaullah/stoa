@@ -24,8 +24,10 @@ function mcpMakeServerCard(srv) {
   const status = srv.enabled ? (srv.status || 'idle') : 'disabled';
 
   const head = mcpEl('div', 'mcp-card-head');
+  const badge = mcpEl('span', 'mcp-icon-wrap');
   const dot = mcpEl('span', `mcp-dot mcp-dot-${status}`);
   dot.setAttribute('aria-hidden', 'true');
+  badge.append(mcpMakeIcon(mcpIconForServer(srv), srv.name), dot);
   const titles = mcpEl('div', 'mcp-card-titles');
   const nameRow = mcpEl('div', 'mcp-card-name-row');
   nameRow.append(mcpEl('span', 'mcp-card-name', srv.name), mcpEl('code', 'mcp-slug', `${srv.slug}__*`));
@@ -46,7 +48,7 @@ function mcpMakeServerCard(srv) {
     card.replaceWith(mcpMakeServerCard(srv));
     return true;
   });
-  head.append(dot, titles, enable);
+  head.append(badge, titles, enable);
   card.appendChild(head);
 
   if (status === 'error' && srv.last_error) card.appendChild(mcpEl('div', 'mcp-card-error', srv.last_error));

@@ -92,6 +92,53 @@ function mcpEmpty(title, body, action) {
   return box;
 }
 
+const MCP_ICON_HEX_RE = /^[0-9a-f]{6}$/i;
+const MCP_ICON_PATH_RE = /^[MmZzLlHhVvCcSsQqTtAa0-9eE.,+\-\s]{1,20000}$/;
+
+// Relative luminance of a #rrggbb brand colour; near-black marks (GitHub, Notion) switch to the theme ink.
+function mcpHexLuminance(hex) {
+  const [r, g, b] = [0, 2, 4].map(i => {
+    const c = parseInt(hex.slice(i, i + 2), 16) / 255;
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function mcpInitialsOf(name) {
+  const words = String(name || '').trim().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  const text = words.length > 1 ? words[0][0] + words[1][0] : (words[0] || '?').slice(0, 2);
+  return text.toUpperCase();
+}
+
+// icon: catalog contract from lib/mcp-icons.js — {kind:'svg', hex, path, title} | {kind:'initials', hex, text, title} | null.
+// Anything missing or malformed falls back to neutral initials of the name.
+function mcpMakeIcon(icon, name, size = 'md') {
+  const tile = mcpEl('span', `mcp-icon mcp-icon-${size}`);
+  tile.setAttribute('aria-hidden', 'true');
+  const hex = icon && MCP_ICON_HEX_RE.test(icon.hex || '') ? icon.hex : null;
+  if (hex) tile.style.setProperty('--mcp-brand', `#${hex}`);
+  if (icon?.kind === 'svg' && hex && MCP_ICON_PATH_RE.test(icon.path || '')) {
+    tile.classList.add('mcp-icon-brand');
+    if (mcpHexLuminance(hex) < 0.05) tile.classList.add('mcp-icon-ink');
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('focusable', 'false');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', icon.path);
+    svg.appendChild(path);
+    tile.appendChild(svg);
+    return tile;
+  }
+  const custom = icon?.kind === 'initials' && typeof icon.text === 'string' && icon.text.trim();
+  tile.classList.add(hex ? 'mcp-icon-initials' : 'mcp-icon-plain');
+  tile.textContent = custom ? icon.text.trim().slice(0, 2).toUpperCase() : mcpInitialsOf(name);
+  return tile;
+}
+
+function mcpIconForServer(srv) {
+  return srv.preset ? mcpState.catalog.find(p => p.id === srv.preset)?.icon || null : null;
+}
+
 function mcpServerById(id) {
   return mcpState.servers.find(s => s.id === id) || null;
 }
