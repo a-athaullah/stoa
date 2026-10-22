@@ -7,8 +7,8 @@ function mcpSafeHref(url) {
 }
 
 function mcpSlugFrom(text) {
-  const s = String(text || '').toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^[^a-z]+/, '').replace(/_+$/, '');
-  return s.slice(0, 32);
+  const s = String(text || '').toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/_{2,}/g, '_').replace(/^[^a-z]+/, '');
+  return s.slice(0, 32).replace(/_+$/, '');
 }
 
 function mcpNewForm(preset) {
@@ -273,7 +273,7 @@ function mcpValidateForm(f) {
   const isEdit = f.mode === 'edit';
   const isCustom = !f.preset && !f.presetId;
   if (!f.name.trim()) return 'Name is required';
-  if (!isEdit && !MCP_SLUG_RE.test(f.slug)) return 'Slug must be lowercase letters, digits or _ and start with a letter';
+  if (!isEdit && (!MCP_SLUG_RE.test(f.slug) || f.slug.length > 32 || f.slug.includes('__'))) return 'Slug must start with a letter, use a-z 0-9 _ (max 32), and not contain "__"';
   if (!isEdit && mcpState.servers.some(s => s.slug === f.slug)) return `Slug "${f.slug}" is already used`;
   if (isCustom && f.transport === 'stdio' && !f.command.trim()) return 'Command is required';
   if (isCustom && f.transport === 'stdio' && /\s/.test(f.command.trim())) return 'Command must be a single binary — move flags to arguments';
