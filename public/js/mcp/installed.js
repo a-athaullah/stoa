@@ -101,6 +101,7 @@ function mcpMakeServerCard(srv) {
     const editBtn = mcpBtn('s-icon-btn', null, () => mcpOpenEdit(srv), `Edit ${srv.name}`);
     editBtn.innerHTML = svgPencil(13);
     editBtn.setAttribute('aria-label', `Edit ${srv.name}`);
+    editBtn.dataset.mcpReturn = `edit:${srv.id}`;
     const rmBtn = mcpBtn('s-icon-btn', null, () => { mcpState.confirmRemoveId = srv.id; card.replaceWith(mcpMakeServerCard(srv)); }, `Remove ${srv.name}`);
     rmBtn.innerHTML = autoSvgTrash(13);
     rmBtn.setAttribute('aria-label', `Remove ${srv.name}`);

@@ -11,10 +11,21 @@ function mcpSlugFrom(text) {
   return s.slice(0, 32).replace(/_+$/, '');
 }
 
+// A second install of the same preset gets the next free slug (github_2, …) instead of a 409.
+function mcpFreeSlug(base) {
+  const taken = s => mcpState.servers.some(x => x.slug === s);
+  if (!taken(base)) return base;
+  for (let n = 2; n < 100; n++) {
+    const s = `${base.slice(0, 32 - String(n).length - 1)}_${n}`;
+    if (!taken(s)) return s;
+  }
+  return base;
+}
+
 function mcpNewForm(preset) {
   if (preset) {
     return {
-      mode: 'new', preset, serverId: null, name: preset.name, slug: mcpSlugFrom(preset.id), slugTouched: true,
+      mode: 'new', preset, serverId: null, name: preset.name, slug: mcpFreeSlug(mcpSlugFrom(preset.id)), slugTouched: true, inDialog: true,
       transport: preset.transport, auth: preset.auth || 'none', command: '', args: '', url: '', allow_all: false, error: null, saving: false,
       env: (preset.env_fields || []).map(f => ({ key: f.key, value: '', label: f.label || f.key, help: f.help || '', secret: !!f.secret, required: !!f.required, fixed: true })),
     };
@@ -35,18 +46,73 @@ function mcpOpenEdit(srv) {
   fields.forEach(f => {
     if (!env.some(e => e.key === f.key)) env.push({ key: f.key, value: '', label: f.label || f.key, help: f.help || '', secret: !!f.secret, required: false, fixed: true });
   });
-  mcpState.form = {
-    mode: 'edit', preset, presetId: srv.preset || null, serverId: srv.id, name: srv.name, slug: srv.slug, slugTouched: true,
-    transport: srv.transport, auth: srv.auth || 'none', authInitial: srv.auth || 'none', command: srv.command || '', args: (srv.args || []).join('\n'), url: srv.url || '',
+  mcpOpenDialog({
+    mode: 'edit', preset, presetId: srv.preset || null, serverId: srv.id, name: srv.name, slug: srv.slug, slugTouched: true, inDialog: true,
+    icon: mcpIconForServer(srv), transport: srv.transport, auth: srv.auth || 'none', authInitial: srv.auth || 'none', command: srv.command || '', args: (srv.args || []).join('\n'), url: srv.url || '',
     allow_all: srv.default_access === 'all', error: null, saving: false, env,
-  };
-  mcpState.addMode = srv.preset ? 'catalog' : 'custom';
-  mcpSetTab('add');
+  }, `edit:${srv.id}`);
+}
+
+// ── Install / edit dialog (native <dialog>: focus trap, Esc and top layer come with showModal) ──
+let mcpDialogReturn = null;
+
+function mcpDialogEl() {
+  let dlg = document.getElementById('mcp-dialog');
+  if (dlg) return dlg;
+  dlg = mcpEl('dialog', 'mcp-dialog');
+  dlg.id = 'mcp-dialog';
+  dlg.setAttribute('aria-labelledby', 'mcp-dialog-title');
+  dlg.addEventListener('cancel', e => { if (mcpState.form?.saving) e.preventDefault(); });
+  dlg.addEventListener('close', mcpOnDialogClose);
+  let downOnBackdrop = false;
+  dlg.addEventListener('pointerdown', e => { downOnBackdrop = e.target === dlg; });
+  dlg.addEventListener('click', e => {
+    if (e.target === dlg && downOnBackdrop && !mcpState.form?.saving) dlg.close();
+  });
+  document.body.appendChild(dlg);
+  return dlg;
+}
+
+// returnKey matches a data-mcp-return attribute; looked up after close because the opener may have been re-rendered.
+function mcpOpenDialog(f, returnKey) {
+  mcpState.form = f;
+  mcpDialogReturn = returnKey;
+  const dlg = mcpDialogEl();
+  dlg.replaceChildren(mcpMakeForm(f));
+  if (!dlg.open) dlg.showModal();
+  const first = dlg.querySelector('.mcp-env input:not([disabled])')
+    || dlg.querySelector('.mcp-access-choice input:checked')
+    || dlg.querySelector('input:not([disabled])');
+  first?.focus();
+}
+
+function mcpRenderDialog() {
+  const dlg = document.getElementById('mcp-dialog');
+  const f = mcpState.form;
+  if (!dlg?.open || !f?.inDialog) return;
+  const focusables = () => [...dlg.querySelectorAll('input, textarea, button, a[href], summary')];
+  const idx = focusables().indexOf(document.activeElement);
+  dlg.replaceChildren(mcpMakeForm(f));
+  if (idx >= 0) focusables()[idx]?.focus();
+}
+
+function mcpCloseDialog() {
+  const dlg = document.getElementById('mcp-dialog');
+  if (dlg?.open) dlg.close();
+}
+
+function mcpOnDialogClose() {
+  if (mcpState.form?.inDialog) mcpState.form = null;
+  document.getElementById('mcp-dialog')?.replaceChildren();
+  const key = mcpDialogReturn;
+  mcpDialogReturn = null;
+  const target = (key && document.querySelector(`[data-mcp-return="${CSS.escape(key)}"]`))
+    || document.querySelector('.mcp-tabbtn[aria-selected="true"]');
+  target?.focus();
 }
 
 function mcpRenderAdd(panel) {
-  const f = mcpState.form;
-  if (f && f.mode === 'edit') { panel.appendChild(mcpMakeForm(f)); return; }
+  const f = mcpState.form && !mcpState.form.inDialog ? mcpState.form : null;
 
   const seg = mcpEl('div', 'mcp-seg');
   seg.setAttribute('role', 'group');
@@ -64,8 +130,7 @@ function mcpRenderAdd(panel) {
   panel.appendChild(seg);
 
   if (mcpState.addMode === 'custom') {
-    if (!f) mcpState.form = mcpNewForm(null);
-    panel.appendChild(mcpMakeForm(mcpState.form));
+    panel.appendChild(mcpMakeForm(f || (mcpState.form = mcpNewForm(null))));
     return;
   }
 
@@ -76,8 +141,7 @@ function mcpRenderAdd(panel) {
   const grid = mcpEl('div', 'mcp-catalog');
   mcpState.catalog.forEach(p => {
     const installed = mcpState.servers.some(s => s.preset === p.id);
-    const card = mcpBtn('mcp-preset', null, () => { mcpState.form = mcpNewForm(p); mcpRender(); });
-    card.setAttribute('aria-pressed', f?.preset?.id === p.id ? 'true' : 'false');
+    const card = mcpEl('div', 'mcp-preset');
     const top = mcpEl('div', 'mcp-preset-top');
     top.append(mcpMakeIcon(p.icon, p.name, 'sm'), mcpEl('span', 'mcp-preset-name', p.name), mcpEl('span', 'mcp-chip', p.transport));
     if (p.auth === 'oauth') top.appendChild(mcpEl('span', 'mcp-chip', 'oauth'));
@@ -89,12 +153,18 @@ function mcpRenderAdd(panel) {
     if (installed) top.appendChild(mcpEl('span', 'mcp-chip mcp-chip-ok', 'installed'));
     card.append(top, mcpEl('span', 'mcp-preset-desc', p.description || ''));
     const needs = (p.env_fields || []).filter(x => x.required).length;
-    card.appendChild(mcpEl('span', 'mcp-preset-foot', p.auth === 'oauth' ? `sign in with ${p.name} after install`
+    const foot = mcpEl('div', 'mcp-preset-foot');
+    foot.appendChild(mcpEl('span', 'mcp-preset-need', p.auth === 'oauth' ? `sign in with ${p.name} after install`
       : needs ? `needs ${needs} credential${needs > 1 ? 's' : ''}` : 'no credentials needed'));
+    const install = mcpBtn(installed ? 'auto-small-btn' : 'mcp-install-btn', installed ? 'install another' : 'install',
+      () => mcpOpenDialog(mcpNewForm(p), `preset:${p.id}`));
+    install.dataset.mcpReturn = `preset:${p.id}`;
+    install.setAttribute('aria-label', `${installed ? 'Install another' : 'Install'} ${p.name}`);
+    foot.appendChild(install);
+    card.appendChild(foot);
     grid.appendChild(card);
   });
   panel.appendChild(grid);
-  if (f && f.preset) panel.appendChild(mcpMakeForm(f));
 }
 
 function mcpField(label, control, hint) {
@@ -125,14 +195,25 @@ function mcpMakeForm(f) {
   box.noValidate = true;
 
   const head = mcpEl('div', 'mcp-form-head');
-  head.appendChild(mcpEl('span', 'mcp-form-title', isEdit ? `edit ${f.name}` : isCustom ? 'custom MCP server' : `install ${f.preset.name}`));
+  if (f.inDialog) head.appendChild(mcpMakeIcon(f.preset?.icon || f.icon || null, f.name, 'md'));
+  const title = mcpEl('span', 'mcp-form-title', isEdit ? `edit ${f.name}` : isCustom ? 'custom MCP server' : `install ${f.preset.name}`);
+  if (f.inDialog) title.id = 'mcp-dialog-title';
+  head.appendChild(title);
   const docs = f.preset?.docs_url && mcpSafeHref(f.preset.docs_url);
   if (docs) {
     const a = mcpEl('a', 'mcp-docs-link', (f.preset.env_fields || []).length ? 'how to get credentials ↗' : 'docs ↗');
     a.href = docs; a.target = '_blank'; a.rel = 'noopener noreferrer';
     head.appendChild(a);
   }
+  if (f.inDialog) {
+    const x = mcpBtn('s-icon-btn mcp-dialog-x', null, mcpCloseDialog, 'Close');
+    x.innerHTML = svgX(14);
+    x.setAttribute('aria-label', 'Close');
+    x.disabled = f.saving;
+    head.appendChild(x);
+  }
   box.appendChild(head);
+  if (f.inDialog && !isEdit && f.preset?.description) box.appendChild(mcpEl('p', 'mcp-form-desc', f.preset.description));
 
   if (isCustom && f.transport === 'stdio') {
     const warn = mcpEl('div', 'mcp-warn');
@@ -151,10 +232,24 @@ function mcpMakeForm(f) {
       if (s) s.value = f.slug;
     }
   }, { placeholder: 'e.g. Context7' })));
-  const slugIn = mcpInput(f.slug, v => { f.slug = v; f.slugTouched = true; }, { placeholder: 'context7', mono: true, disabled: isEdit });
+  const slugIn = mcpInput(f.slug, v => {
+    f.slug = v; f.slugTouched = true;
+    const h = box.querySelector('.mcp-ident-slug');
+    if (h) h.textContent = ` · tools appear as ${v}__tool`;
+  }, { placeholder: 'context7', mono: true, disabled: isEdit });
   slugIn.classList.add('mcp-slug-input');
   grid.appendChild(mcpField('slug', slugIn, isEdit ? 'fixed after install — it prefixes every tool name' : 'lowercase, starts with a letter. tools appear as slug__tool'));
-  box.appendChild(grid);
+  if (!isEdit && !isCustom) {
+    const more = mcpEl('details', 'mcp-ident');
+    more.open = !!f.identityOpen;
+    more.addEventListener('toggle', () => { f.identityOpen = more.open; });
+    const sum = mcpEl('summary', null, 'name & slug');
+    sum.appendChild(mcpEl('span', 'mcp-field-hint mcp-ident-slug', ` · tools appear as ${f.slug}__tool`));
+    more.append(sum, grid);
+    box.appendChild(more);
+  } else {
+    box.appendChild(grid);
+  }
 
   if (isCustom) {
     const tseg = mcpEl('div', 'mcp-seg mcp-seg-small');
@@ -200,19 +295,9 @@ function mcpMakeForm(f) {
     }
   }
 
-  box.appendChild(mcpMakeEnvEditor(f, isCustom));
+  if (isCustom || f.env.length || f.auth === 'oauth') box.appendChild(mcpMakeEnvEditor(f, isCustom));
 
-  if (!isEdit) {
-    const chk = mcpEl('label', 'mcp-check');
-    const cb = mcpEl('input');
-    cb.type = 'checkbox'; cb.checked = !!f.allow_all;
-    cb.addEventListener('change', () => { f.allow_all = cb.checked; });
-    const txt = mcpEl('span');
-    txt.append(mcpEl('span', 'mcp-check-title', 'allow all agents'),
-      mcpEl('span', 'mcp-field-hint', 'off: nobody can use it until you grant access in the access tab.'));
-    chk.append(cb, txt);
-    box.appendChild(chk);
-  }
+  if (!isEdit) box.appendChild(mcpMakeAccessChoice(f));
 
   const err = mcpEl('div', 'auto-field-err', f.error || '');
   err.setAttribute('role', 'alert');
@@ -220,6 +305,7 @@ function mcpMakeForm(f) {
 
   const btns = mcpEl('div', 'mcp-form-btns');
   const cancel = mcpBtn('auto-cancel-btn', 'cancel', () => {
+    if (f.inDialog) { mcpCloseDialog(); return; }
     mcpState.form = null;
     if (isEdit) { mcpState.addMode = 'catalog'; mcpSetTab('installed'); }
     else { mcpState.addMode = 'catalog'; mcpRender(); }
@@ -227,11 +313,29 @@ function mcpMakeForm(f) {
   const save = mcpEl('button', 'auto-save-btn', f.saving ? 'saving…' : isEdit ? 'save' : 'install');
   save.type = 'submit';
   save.disabled = f.saving;
+  cancel.disabled = f.inDialog && f.saving;
   btns.append(cancel, save);
   box.appendChild(btns);
 
   box.addEventListener('submit', e => { e.preventDefault(); mcpSubmitForm(f, err, save); });
   return box;
+}
+
+function mcpMakeAccessChoice(f) {
+  const set = mcpEl('fieldset', 'mcp-access-choice');
+  set.appendChild(mcpEl('legend', 'mcp-field-label', 'who can use it'));
+  [[false, 'only agents I grant', 'nobody can call its tools until you grant access in the access tab.'],
+    [true, 'allow all agents', 'every agent can call its tools. you can still block one in the access tab.']].forEach(([all, label, hint]) => {
+    const opt = mcpEl('label', 'mcp-access-opt');
+    const rb = mcpEl('input');
+    rb.type = 'radio'; rb.name = 'mcp-access'; rb.checked = !!f.allow_all === all;
+    rb.addEventListener('change', () => { if (rb.checked) f.allow_all = all; });
+    const txt = mcpEl('span');
+    txt.append(mcpEl('span', 'mcp-check-title', label), mcpEl('span', 'mcp-field-hint', hint));
+    opt.append(rb, txt);
+    set.appendChild(opt);
+  });
+  return set;
 }
 
 function mcpMakeEnvEditor(f, isCustom) {
@@ -243,9 +347,8 @@ function mcpMakeEnvEditor(f, isCustom) {
   section.appendChild(title);
 
   if (!f.env.length && !isCustom) {
-    section.appendChild(mcpEl('div', 'mcp-muted', f.auth === 'oauth'
-      ? `none to paste: after ${f.mode === 'edit' ? 'saving' : 'install'}, use connect on the server card to sign in with ${f.name}. tokens are stored encrypted on this server.`
-      : 'none needed.'));
+    section.appendChild(mcpEl('div', 'mcp-muted',
+      `none to paste: after ${f.mode === 'edit' ? 'saving' : 'install'}, use connect on the server card to sign in with ${f.name}. tokens are stored encrypted on this server.`));
     return section;
   }
 
@@ -316,7 +419,7 @@ function mcpValidateForm(f) {
 
 async function mcpSubmitForm(f, errEl, saveBtn) {
   const problem = mcpValidateForm(f);
-  if (problem) { f.error = problem; errEl.textContent = problem; return; }
+  if (problem) { mcpShowFormError(f, errEl, problem); return; }
   f.error = null; errEl.textContent = '';
   const isEdit = f.mode === 'edit';
   const isCustom = !f.preset && !f.presetId;
@@ -343,13 +446,22 @@ async function mcpSubmitForm(f, errEl, saveBtn) {
   }
 
   f.saving = true; saveBtn.disabled = true; saveBtn.textContent = 'saving…';
+  if (f.inDialog) errEl.closest('form')?.querySelectorAll('.auto-cancel-btn, .mcp-dialog-x').forEach(b => { b.disabled = true; });
   const r = isEdit
     ? await mcpApi('PATCH', `/api/mcp/servers/${f.serverId}`, body)
     : await mcpApi('POST', '/api/mcp/servers', body);
   f.saving = false;
   if (!r.ok) {
-    f.error = r.error; errEl.textContent = r.error;
-    saveBtn.disabled = false; saveBtn.textContent = isEdit ? 'save' : 'install';
+    if (errEl.isConnected) {
+      saveBtn.disabled = false; saveBtn.textContent = isEdit ? 'save' : 'install';
+      errEl.closest('form')?.querySelectorAll('.auto-cancel-btn, .mcp-dialog-x').forEach(b => { b.disabled = false; });
+      mcpShowFormError(f, errEl, r.error);
+    } else if (mcpState.form === f) {
+      f.error = r.error;
+      if (f.inDialog) mcpRenderDialog(); else mcpRender();
+    } else {
+      showToast(`Couldn’t ${isEdit ? 'save' : 'install'} ${body.name}: ${r.error}`, { error: true });
+    }
     return;
   }
   const srv = r.data?.server;
@@ -362,10 +474,23 @@ async function mcpSubmitForm(f, errEl, saveBtn) {
     await mcpLoadServers();
   }
   mcpState.access = null;
-  mcpState.form = null;
+  if (mcpState.form === f) mcpState.form = null;
   mcpState.addMode = 'catalog';
   showToast(isEdit ? `${body.name} saved` : `${body.name} installed — run test to fetch its tools`);
   mcpSetTab('installed');
+  if (f.inDialog) {
+    if (srv) mcpDialogReturn = `edit:${srv.id}`;
+    mcpCloseDialog();
+  }
+}
+
+function mcpShowFormError(f, errEl, msg) {
+  f.error = msg;
+  errEl.textContent = msg;
+  if (/^(name|slug)\b/i.test(msg)) {
+    const more = errEl.closest('form')?.querySelector('.mcp-ident');
+    if (more) more.open = true;
+  }
 }
 
 function mcpFormHttpAuth(f, env) {
