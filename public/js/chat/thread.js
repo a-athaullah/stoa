@@ -836,6 +836,7 @@ function appendThreadMessage(m, container) {
 
   if (m.state === 'streaming' || m.state === 'requesting') {
     showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, container, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role);
+    renderSavedTrail(document.getElementById('msg-' + m.id)?.querySelector('.h-msg-body'), m);
     setThreadProcessing(m.id);
     return;
   }
@@ -962,6 +963,7 @@ function appendThreadMessage(m, container) {
   addMessageLinkAction(actions, m.id, m.thread_id || activeThreadId, m.room_id);
 
   body.appendChild(bubble);
+  renderSavedTrail(body, m);
   body.style.position = 'relative';
   body.appendChild(actions);
   row.appendChild(body);
@@ -1107,6 +1109,8 @@ function _renderThreadRoot(m, container) {
   addMessageLinkAction(actions, m.id, m.id, m.room_id);
 
   body.appendChild(bubble);
+  // A root still running streams its steps into the feed row, not this copy.
+  if (m.state !== 'streaming' && m.state !== 'requesting') renderSavedTrail(body, m);
   body.style.position = 'relative';
   body.appendChild(actions);
   row.appendChild(body);

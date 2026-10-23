@@ -79,7 +79,7 @@ function mcpRenderAdd(panel) {
     const card = mcpBtn('mcp-preset', null, () => { mcpState.form = mcpNewForm(p); mcpRender(); });
     card.setAttribute('aria-pressed', f?.preset?.id === p.id ? 'true' : 'false');
     const top = mcpEl('div', 'mcp-preset-top');
-    top.append(mcpEl('span', 'mcp-preset-name', p.name), mcpEl('span', 'mcp-chip', p.transport));
+    top.append(mcpMakeIcon(p.icon, p.name, 'sm'), mcpEl('span', 'mcp-preset-name', p.name), mcpEl('span', 'mcp-chip', p.transport));
     if (p.auth === 'oauth') top.appendChild(mcpEl('span', 'mcp-chip', 'oauth'));
     if (p.playground) {
       const chip = mcpEl('span', 'mcp-chip', 'playground');

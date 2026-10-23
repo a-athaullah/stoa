@@ -11,6 +11,7 @@ const { collectDiagnostics, buildEnvelope, gcDebugBundles } = require('./lib/deb
 const { enrichAutomation, enrichAutomationList, watchReplyAutomation } = require('./lib/automation-identity');
 const { sanitizeDisplayName, EMAIL_REPLY_LIMITS, buildEmailThreadSection, normalizeRefIds, findEmailReplyThread } = require('./lib/email-threading');
 const { parseClientVersion } = require('./lib/client-version');
+const { recordToolStep } = require('./lib/tool-steps');
 const { resolveEnvFile, loadEnvFile, setEnvKey, portFallbackWarning, DEFAULT_PORT } = require('./lib/env-file');
 const { runMigrations } = require('./lib/migrations');
 const { sanitizeIdList, diffRunQueue, summarizeRunTiming, createRunTimeout } = require('./lib/run-queue');
@@ -1640,11 +1641,14 @@ const mcpCredentials = require('./lib/credentials');
 const { createUpstreamManager, decodeServerEnv } = require('./lib/mcp-upstreams');
 const { createMcpGateway, APPROVAL_TIMEOUT_MAX_MS } = require('./lib/mcp-gateway');
 const { createMcpApi } = require('./lib/mcp-api');
-const { connectionEnv } = require('./lib/mcp-catalog');
+const { connectionEnv, connectionArgs } = require('./lib/mcp-catalog');
 const { createMcpOAuth } = require('./lib/mcp-oauth');
 const mcpOAuth = createMcpOAuth({ db, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt });
 const mcpUpstreams = createUpstreamManager({
   readEnv: (row) => connectionEnv(row, decodeServerEnv(row, mcpCredentials.decrypt)),
+  readArgs: (row) => connectionArgs(row, decodeServerEnv(row, mcpCredentials.decrypt)),
+  // run-tests.js points this elsewhere: test servers reuse ids of the live DB copy and delete their dirs.
+  workRoot: process.env.STOA_MCP_WORK_DIR || path.join(require('os').tmpdir(), 'stoa-mcp'),
   // A start / stop / OAuth connect can change an upstream's cached tool list → open agent sessions.
   onStatus: (serverId, status, lastError) => {
     broadcastGlobal({ type: 'mcp_status', server_id: serverId, status, last_error: lastError });
@@ -6509,6 +6513,8 @@ wss.on('connection', (ws, req) => {
 
     // ── Agent reports a tool call
     if (msg.type === 'agent_tool' && agentActorId) {
+      try { recordToolStep(db, { messageId: msg.message_id, actorId: agentActorId, tool: msg.tool }); }
+      catch (e) { console.error('[tool-steps] record failed:', e.message); }
       broadcast(msg.room_id, { type: 'message_tool', message_id: msg.message_id, tool: msg.tool });
     }
 
@@ -8039,6 +8045,8 @@ async function triggerSkillResponse(roomId, ai, prompt) {
             broadcast(roomId, { type: 'message_state', message_id: msgId, state: displayState, ...meta });
           },
           onTool: tool => {
+            try { recordToolStep(db, { messageId: msgId, actorId: ai.actor_id, tool }); }
+            catch (e) { console.error('[tool-steps] record failed:', e.message); }
             broadcast(roomId, { type: 'message_tool', message_id: msgId, tool });
           },
         });

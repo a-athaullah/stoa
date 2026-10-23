@@ -1852,6 +1852,79 @@ function runUnitTests() {
     assert.deepStrictEqual(connectionEnv({ preset: null }, { 'X-Api-Key': 'k' }), { 'X-Api-Key': 'k' });
     assert.deepStrictEqual(connectionEnv({ preset: 'context7' }, { A: '1' }), { A: '1' });
   });
+  ut('MCP catalog — every preset installs as declared: npx + exact pinned package or https url, safe browser flags, valid icon', () => {
+    const { PRESETS, publicCatalog } = require('./lib/mcp-catalog');
+    const { validateArgs, validateUrl, validateCommand } = require('./lib/mcp-upstreams');
+    assert.strictEqual(PRESETS.length, 16);
+    for (const p of PRESETS) {
+      assert.ok(/^[a-z][a-z0-9_]{0,31}$/.test(p.id) && !p.id.includes('__'), `${p.id} is a valid default slug`);
+      assert.ok(['none', 'headers', 'oauth'].includes(p.auth), p.id);
+      if (p.transport === 'stdio') {
+        // uvx / docker are allowlisted for custom servers but not installed on the Stoa server: presets use npx.
+        assert.strictEqual(p.command, 'npx', p.id);
+        assert.strictEqual(validateCommand(p.command), null);
+        assert.strictEqual(validateArgs(p.args), null, p.id);
+        const spec = p.args[p.args.indexOf('-y') + 1];
+        assert.match(spec, /^(@[a-z0-9-]+\/)?[a-z0-9.-]+@\d+\.\d+\.\d+$/, `${p.id} pins an exact version: ${spec}`);
+      } else {
+        assert.strictEqual(p.transport, 'http', p.id);
+        assert.strictEqual(validateUrl(p.url), null, p.id);
+        assert.ok(p.url.startsWith('https://'), p.id);
+      }
+      for (const [tool, d] of Object.entries(p.tool_defaults || {})) {
+        assert.ok(d.enabled === false || d.requires_approval === true, `${p.id}.${tool} default restricts something`);
+      }
+    }
+    for (const id of ['chrome', 'playwright']) {
+      const args = PRESETS.find(p => p.id === id).args;
+      assert.ok(args.includes('--headless') && args.includes('--isolated'), `${id}: no window, no owner profile`);
+    }
+    for (const { id, icon } of publicCatalog()) {
+      assert.ok(icon, `${id} has an icon`);
+      assert.match(icon.hex, /^[0-9A-F]{6}$/, id);
+      if (icon.kind === 'svg') {
+        assert.match(icon.path, /^[MmZzLlHhVvCcSsQqTtAa0-9.,\-\s]+$/, `${id}: path data only, nothing that could be markup`);
+        assert.match(icon.source, /^simple-icons@16\.35\.0\/[a-z0-9]+$/, id);
+      } else {
+        assert.strictEqual(icon.kind, 'initials', id);
+        assert.match(icon.text, /^[A-Z0-9]{1,3}$/, id);
+      }
+    }
+  });
+  ut('MCP Filesystem preset — folders must be existing absolute dirs, not /, not around or inside the install; re-checked at start', () => {
+    const fs = require('fs');
+    const os = require('os');
+    const { parsePaths, connectionEnv, connectionArgs } = require('./lib/mcp-catalog');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-fs-paths-'));
+    try {
+      const a = path.join(tmp, 'a');
+      fs.mkdirSync(a);
+      fs.writeFileSync(path.join(tmp, 'f.txt'), 'x');
+      fs.symlinkSync(path.join(__dirname, 'lib'), path.join(tmp, 'to-stoa'));
+      const realA = fs.realpathSync(a);
+      assert.deepStrictEqual(parsePaths(` ${a} , ${a}/ ,`), { dirs: [realA] }, 'trimmed, deduped, symlinks resolved');
+      const cases = [
+        ['', /at least one folder/], [' , ', /at least one folder/], ['rel/dir', /not an absolute path/],
+        ['/', /filesystem root/], [path.join(tmp, ...Array(40).fill('..')), /filesystem root/],
+        [path.join(tmp, 'f.txt'), /not a folder/], [path.join(tmp, 'missing'), /does not exist/],
+        [__dirname, /overlaps the Stoa install/], [path.join(__dirname, 'db'), /overlaps the Stoa install/],
+        [path.dirname(__dirname), /overlaps the Stoa install/], [path.join(tmp, 'to-stoa'), /overlaps the Stoa install/],
+        [`${a},/`, /filesystem root/], [Array(17).fill(a).join(','), /at most 16/],
+      ];
+      for (const [v, re] of cases) assert.match(parsePaths(v).error || '', re, JSON.stringify(v));
+      const fsRow = { preset: 'filesystem' };
+      assert.deepStrictEqual(connectionEnv(fsRow, { ALLOWED_DIRS: a }), {}, 'folders go to argv, not the env');
+      assert.deepStrictEqual(connectionArgs(fsRow, { ALLOWED_DIRS: a }), [realA]);
+      assert.deepStrictEqual(connectionArgs({ preset: 'context7' }, {}), []);
+      assert.deepStrictEqual(connectionArgs({ preset: null }, { X: '1' }), []);
+      // Saved while safe, then swapped for a symlink into the install: refused when the upstream starts.
+      fs.rmSync(a, { recursive: true });
+      fs.symlinkSync(__dirname, a);
+      assert.throws(() => connectionArgs(fsRow, { ALLOWED_DIRS: a }), /Allowed folders: .* overlaps the Stoa install/);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
   ut('MCP decideAccess — deny anywhere wins, then allow, then default_access; disabled never', () => {
     const { decideAccess } = require('./lib/mcp-gateway');
     const on = { enabled: 1, default_access: 'none' };
@@ -3397,6 +3470,47 @@ async function runAsyncUnitTests() {
     await assert.rejects(um.listTools({ ...row, enabled: 0 }), /disabled/);
     assert.strictEqual(um.info({ ...row, enabled: 0 }).status, 'disabled');
     um.stopAll();
+  });
+
+  await uta('MCP upstreams — stdio upstream runs in its own 0700 work dir (cwd + TMPDIR) with preset args; removed with the server', async () => {
+    const fs = require('fs');
+    const os = require('os');
+    const { createUpstreamManager } = require('./lib/mcp-upstreams');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-mcp-work-'));
+    const sdk = (m) => JSON.stringify(require.resolve(`@modelcontextprotocol/sdk/${m}`));
+    const script = path.join(tmp, 'where.js');
+    fs.writeFileSync(script, `
+      const { Server } = require(${sdk('server/index.js')});
+      const { StdioServerTransport } = require(${sdk('server/stdio.js')});
+      const { ListToolsRequestSchema, CallToolRequestSchema } = require(${sdk('types.js')});
+      const s = new Server({ name: 'where', version: '1.0.0' }, { capabilities: { tools: {} } });
+      s.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: 'whereami', inputSchema: { type: 'object', properties: {} } }] }));
+      s.setRequestHandler(CallToolRequestSchema, async () => ({ content: [{ type: 'text', text: JSON.stringify({ cwd: process.cwd(), tmpdir: process.env.TMPDIR, argv: process.argv.slice(2) }) }] }));
+      s.connect(new StdioServerTransport());`);
+    const quiet = { warn() {}, error() {} };
+    const workRoot = path.join(tmp, 'work');
+    const row = { id: 7, slug: 'where', transport: 'stdio', command: 'node', args_json: JSON.stringify([script]), enabled: 1 };
+    const um = createUpstreamManager({ readEnv: () => ({}), readArgs: () => ['/extra/one'], workRoot, log: quiet });
+    const um2 = createUpstreamManager({ readEnv: () => ({}), readArgs: () => { throw new Error('Allowed folders: /x overlaps the Stoa install'); }, log: quiet });
+    try {
+      const r = await um.callTool(row, 'whereami', {});
+      const w = JSON.parse(r.content[0].text);
+      const dir = path.join(workRoot, '7');
+      assert.strictEqual(fs.realpathSync(w.cwd), fs.realpathSync(dir), 'not the Stoa cwd');
+      assert.notStrictEqual(fs.realpathSync(w.cwd), fs.realpathSync(process.cwd()));
+      assert.strictEqual(w.tmpdir, dir);
+      assert.deepStrictEqual(w.argv, ['/extra/one'], 'preset args follow the stored args');
+      assert.strictEqual(fs.statSync(dir).mode & 0o777, 0o700);
+      um.remove(7);
+      for (let i = 0; i < 60 && fs.existsSync(dir); i++) await new Promise(res => setTimeout(res, 50));
+      assert.ok(!fs.existsSync(dir), 'work dir removed with the server');
+      await assert.rejects(um2.listTools({ ...row, id: 8 }), /overlaps the Stoa install/, 'a refused folder fails the start');
+      assert.strictEqual(um2.info({ ...row, id: 8 }).status, 'error');
+    } finally {
+      um.stopAll();
+      um2.stopAll();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   await uta('extractAndUploadFiles: oversize/missing files are reported in content, never uploaded', async () => {
@@ -11207,6 +11321,42 @@ async function run() {
     assert.strictEqual(ctx.toolSummary(steps[0].name, steps[0].input), 'a/b', 'arguments feed the step summary');
   });
 
+  await test('tool steps — stored per message for its own running agent only, capped, summary matches the chat trail', () => {
+    const Database = require('better-sqlite3');
+    const vm = require('vm');
+    const fs = require('fs');
+    const { MAX_STEPS, toolStepSummary, recordToolStep } = require('./lib/tool-steps');
+    const mem = new Database(':memory:');
+    mem.exec(fs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
+    mem.exec(fs.readFileSync(path.join(__dirname, 'migrations', '20261023-message-tool-steps.sql'), 'utf8'));
+    mem.exec(`INSERT INTO actors (id, type, name) VALUES (1, 'ai', 'A'), (2, 'ai', 'B');
+      INSERT INTO rooms (id, title, created_by) VALUES (1, 'r', 1);
+      INSERT INTO room_participants (id, room_id, actor_id) VALUES (10, 1, 1), (20, 1, 2);
+      INSERT INTO messages (id, room_id, participant_id, content, state) VALUES
+        (100, 1, 10, '', 'streaming'), (101, 1, 10, 'x', 'complete'), (102, 1, 20, '', 'streaming');`);
+    const steps = id => JSON.parse(mem.prepare('SELECT tool_steps FROM messages WHERE id=?').get(id).tool_steps || '[]');
+
+    assert.strictEqual(recordToolStep(mem, { messageId: 100, actorId: 1, tool: { name: 'Bash', input: { command: 'ls', description: 'list' } } }), true);
+    assert.strictEqual(recordToolStep(mem, { messageId: 100, actorId: 1, tool: { name: 'mcp__stoa__deepwiki__ask_question', input: { repoName: 'a/b', secret: 1 } } }), true);
+    assert.deepStrictEqual(steps(100), [{ name: 'Bash', summary: 'ls' }, { name: 'mcp__stoa__deepwiki__ask_question', summary: 'a/b' }], 'only name + one-line summary kept, in order');
+    assert.strictEqual(recordToolStep(mem, { messageId: 102, actorId: 1, tool: { name: 'Bash', input: {} } }), false, 'another actor\'s message is refused');
+    assert.strictEqual(recordToolStep(mem, { messageId: 101, actorId: 1, tool: { name: 'Bash', input: {} } }), false, 'a finished message is refused');
+    assert.strictEqual(recordToolStep(mem, { messageId: 100, actorId: 1, tool: { input: {} } }), false, 'nameless tool is ignored');
+    assert.deepStrictEqual([steps(101), steps(102)], [[], []]);
+    for (let i = 0; i < MAX_STEPS + 5; i++) recordToolStep(mem, { messageId: 100, actorId: 1, tool: { name: 'Read', input: { file_path: '/f' + i } } });
+    assert.strictEqual(steps(100).length, MAX_STEPS, 'capped');
+
+    const ctx = {};
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'public/js/chat/trail.js'), 'utf8'), ctx);
+    const cases = [['Bash', { command: 'x'.repeat(100) }], ['Read', { file_path: '/a' }], ['Grep', { pattern: 'p', path: '/q' }],
+      ['mcp__x', { n: 3, q: 'first' }], ['Edit', { old_string: 'o' }], ['Write', null], ['Other', {}], ['Bash', { command: 'x'.repeat(64) }]];
+    for (const [n, input] of cases) assert.strictEqual(toolStepSummary(n, input), ctx.toolSummary(n, input), `summary parity for ${n}`);
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(ctx.parseSavedToolSteps(JSON.stringify([{ name: 'Bash', summary: 'ls' }, { name: '' }, null, { name: 'Read', summary: 5 }])))),
+      [{ name: 'Bash', summary: 'ls' }, { name: 'Read', summary: '' }], 'client drops malformed saved steps');
+    assert.deepStrictEqual([...ctx.parseSavedToolSteps('not json')], []);
+    assert.deepStrictEqual([...ctx.parseSavedToolSteps('{"name":"Bash"}')], []);
+  });
+
   // escapeTomlValue unit tests
   await test('escapeTomlValue — escapes newlines and quotes', () => {
     const { escapeTomlValue } = require('./codex-session');
@@ -14646,6 +14796,8 @@ async function run() {
       const byId = Object.fromEntries(r.body.presets.map(p => [p.id, p]));
       assert.deepStrictEqual(['context7', 'github', 'notion', 'linear'].map(id => byId[id]?.auth), ['none', 'headers', 'oauth', 'oauth']);
       assert.deepStrictEqual([byId.notion.env_fields, byId.linear.env_fields, byId.notion.transport], [[], [], 'http']);
+      assert.deepStrictEqual([byId.chrome.icon.kind, byId.playwright.icon.kind, byId.github.icon.kind], ['svg', 'initials', 'svg'], 'icons are served with the catalog');
+      assert.ok(!r.raw.includes('tool_defaults'), 'catalog API keeps its contract');
     });
 
     await test('MCP install — playground presets install with no fields under their default slug; Brave needs its key', async () => {
@@ -14696,6 +14848,48 @@ async function run() {
       assert.strictEqual((await req('POST', '/api/mcp/servers', { preset: 'nope' })).status, 400);
       assert.strictEqual((await req('POST', '/api/mcp/servers', { ...base, transport: 'http', url: 'file:///etc/passwd' })).status, 400);
       assert.strictEqual(mDb.prepare("SELECT COUNT(*) n FROM mcp_servers WHERE slug IN ('mcpbad','mcpgh')").get().n, 0);
+    });
+
+    await test('MCP install — Filesystem folders validated (create + patch), writes start approval-gated; Playwright unsafe tool starts disabled; secrets stay masked', async () => {
+      const fsM = require('fs'), osM = require('os'), pathM = require('path');
+      const dir = fsM.mkdtempSync(pathM.join(osM.tmpdir(), 'stoa-fs-preset-'));
+      const created = [];
+      const overrides = (id) => mDb.prepare('SELECT tool, enabled, requires_approval FROM mcp_tool_overrides WHERE server_id=? ORDER BY tool').all(id).map(o => [o.tool, o.enabled, o.requires_approval]);
+      const listed = async (id) => (await req('GET', '/api/mcp/servers')).body.servers.find(x => x.id === id);
+      try {
+        for (const [env, why] of [[{}, 'required'], [{ ALLOWED_DIRS: '/' }, 'root'], [{ ALLOWED_DIRS: 'relative/dir' }, 'relative'],
+          [{ ALLOWED_DIRS: __dirname }, 'install'], [{ ALLOWED_DIRS: pathM.dirname(__dirname) }, 'parent of install'],
+          [{ ALLOWED_DIRS: pathM.join(dir, 'missing') }, 'missing']]) {
+          const r = await req('POST', '/api/mcp/servers', { preset: 'filesystem', slug: 'mcpfs', env });
+          assert.strictEqual(r.status, 400, `${why}: ${r.raw}`);
+        }
+        assert.strictEqual(mDb.prepare("SELECT COUNT(*) n FROM mcp_servers WHERE slug='mcpfs'").get().n, 0);
+        const r = await req('POST', '/api/mcp/servers', { preset: 'filesystem', slug: 'mcpfs', env: { ALLOWED_DIRS: dir } });
+        assert.strictEqual(r.status, 201, r.raw);
+        const id = r.body.server.id;
+        created.push(id);
+        assert.deepStrictEqual(overrides(id), [['create_directory', 1, 1], ['edit_file', 1, 1], ['move_file', 1, 1], ['write_file', 1, 1]]);
+        assert.strictEqual((await listed(id)).env_keys.find(k => k.key === 'ALLOWED_DIRS').value, dir, 'folders are not secret: shown as is');
+        assert.strictEqual((await req('PATCH', `/api/mcp/servers/${id}`, { env: { ALLOWED_DIRS: '/' } })).status, 400);
+        assert.strictEqual((await req('PATCH', `/api/mcp/servers/${id}`, { env_remove: ['ALLOWED_DIRS'] })).status, 400, 'cannot drop the required folders');
+        assert.strictEqual((await listed(id)).env_keys.find(k => k.key === 'ALLOWED_DIRS').value, dir, 'rejected patches change nothing');
+
+        const pw = await req('POST', '/api/mcp/servers', { preset: 'playwright', slug: 'mcppw' });
+        assert.strictEqual(pw.status, 201, pw.raw);
+        created.push(pw.body.server.id);
+        assert.deepStrictEqual(overrides(pw.body.server.id), [['browser_file_upload', 1, 1], ['browser_run_code_unsafe', 0, 0]]);
+
+        const token = 'sntryu_' + crypto.randomBytes(16).toString('hex');
+        const se = await req('POST', '/api/mcp/servers', { preset: 'sentry', slug: 'mcpsentry', env: { SENTRY_ACCESS_TOKEN: token } });
+        assert.strictEqual(se.status, 201, se.raw);
+        created.push(se.body.server.id);
+        assert.deepStrictEqual(overrides(se.body.server.id), [], 'presets without defaults add no overrides');
+        const tok = (await listed(se.body.server.id)).env_keys.find(k => k.key === 'SENTRY_ACCESS_TOKEN');
+        assert.ok(tok && !('value' in tok) && tok.masked.endsWith(token.slice(-4)), 'secret field stays masked');
+      } finally {
+        for (const id of created) await req('DELETE', `/api/mcp/servers/${id}`);
+        fsM.rmSync(dir, { recursive: true, force: true });
+      }
     });
 
     await test('MCP install — GitHub preset is remote http; PAT stored encrypted, sent only as a header', async () => {

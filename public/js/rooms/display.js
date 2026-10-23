@@ -18,6 +18,7 @@ function getCleanupProgress() { return _resolve('cleanup_progress'); }
 function applyDisplaySettings(room, global) {
   if (global) _displayGlobal = { ..._DISPLAY_BUILT_IN, ...global };
   _displayRoom = room ? { ...room } : {};
+  syncSavedTrails();
 }
 
 // Called on 'room_setting' / 'room_setting_ack' for display keys
@@ -28,11 +29,13 @@ function applyRoomDisplaySetting(key, value) {
   } else {
     _displayRoom[key] = value;
   }
+  syncSavedTrails();
 }
 
 // Update only global defaults (e.g. from Account Settings save) without touching room overrides
 function applyGlobalDefaults(global) {
   if (global) _displayGlobal = { ..._DISPLAY_BUILT_IN, ...global };
+  syncSavedTrails();
 }
 
 // Reset when leaving a room

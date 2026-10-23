@@ -92,6 +92,8 @@ function appendFeedRootRow(m, inner) {
     if (attachWrap.children.length > 0) col.appendChild(attachWrap);
   }
 
+  renderSavedTrail(col, m);
+
   const actions = document.createElement('div');
   actions.className = 'h-msg-actions';
   actions.innerHTML =

@@ -43,6 +43,32 @@
   outline: 2px solid var(--h-info-ink); outline-offset: 2px;
 }
 
+/* Server icons: brand glyph on a tint of its colour, or initials */
+.mcp-icon {
+  --mcp-brand: var(--h-ink-mute);
+  flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
+  font-family: var(--h-sans); font-weight: 600; letter-spacing: .02em; line-height: 1; user-select: none;
+}
+.mcp-icon-sm { width: 26px; height: 26px; border-radius: 7px; font-size: 10.5px; }
+.mcp-icon-md { width: 34px; height: 34px; border-radius: 9px; font-size: 12.5px; }
+.mcp-icon svg { width: 58%; height: 58%; fill: currentColor; }
+.mcp-icon-brand {
+  color: var(--mcp-brand);
+  background: color-mix(in oklch, var(--mcp-brand) 13%, var(--h-surface-hi));
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--mcp-brand) 24%, transparent);
+}
+.mcp-icon-brand.mcp-icon-ink {
+  color: var(--h-ink);
+  background: color-mix(in oklch, var(--h-ink) 7%, var(--h-surface-hi));
+  box-shadow: inset 0 0 0 1px var(--h-hair-soft);
+}
+/* sRGB: mixing toward black in oklch drags the hue (greens turn olive) */
+.mcp-icon-initials { color: oklch(1 0 0); background: color-mix(in srgb, var(--mcp-brand), black 15%); }
+.mcp-icon-plain { color: var(--h-ink-mute); background: var(--h-hair-soft); }
+.mcp-icon-wrap { position: relative; flex-shrink: 0; display: inline-flex; }
+.mcp-icon-wrap .mcp-dot { position: absolute; right: -3px; bottom: -3px; margin: 0; box-shadow: 0 0 0 2px var(--h-surface); }
+.mcp-icon-wrap .mcp-dot-disabled { background: var(--h-surface); }
+
 /* Installed cards */
 .mcp-cards { display: flex; flex-direction: column; gap: 12px; }
 .mcp-card {

@@ -206,6 +206,14 @@ Agent (Claude/Codex)
 
 **Env isolation:** stdio upstreams spawn with `baseEnv()` (PATH, HOME, TMPDIR + server-specific keys only), not `process.env`.
 
+**Presets** (`lib/mcp-catalog.js`, 16): pinned npx package or https URL. Stdio presets run with `npx` because uvx and Docker aren't installed on the server. Rules:
+- `env_fields` hold the owner's values, stored encrypted. A field with `kind: 'paths'` (the Filesystem folders) isn't passed as an env var; `connectionArgs` turns it into argv. The folders are checked on save and checked again at every start: each must be an absolute existing directory, not `/`, and must not contain or sit inside the Stoa install (which holds `.credentials-key`).
+- `tool_defaults` adds `mcp_tool_overrides` rows in the same transaction as the install. Playwright's `browser_run_code_unsafe` (equivalent to RCE) starts disabled. Filesystem write tools and the browser upload tools start with approval required.
+- `secret: false` fields come back in clear text (`env_keys[].value`); every other field is masked.
+- Icons (`lib/mcp-icons.js`) ship with the catalog as `presets[].icon`: `{kind:'svg', path, hex, title, source}` for Simple Icons 16.35.0 glyphs (CC0, copied path data only), or `{kind:'initials', text, hex, title}`.
+
+**Upstream work dir:** each stdio upstream gets its own `cwd` and `TMPDIR` at `<STOA_MCP_WORK_DIR or os.tmpdir()/stoa-mcp>/<id>` (0700; `run-tests.js` uses a temp root), and that directory is deleted when the server is deleted. Without this, the process would inherit the Stoa repo as cwd. Chrome DevTools limits file tools to TMPDIR and Playwright limits them to cwd, so both stay inside this directory (verified: a screenshot path outside it is refused). Browser presets run `--headless --isolated`: no window on the owner's screen and none of the owner's Chrome profile.
+
 **Admin API** (`/api/mcp/*`): owner session only. Gateway endpoint (`/mcp`): MCP token only (not agent secret, not session cookie).
 
 **WS events:** `mcp_status` (upstream up/down/error), `mcp_approval` (new pending), `mcp_approval_resolved` (decided).

@@ -928,7 +928,8 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 
 설치된 MCP 서버가 카드로 표시됩니다:
 
-- **이름**과 현재 **상태**: `running`(업스트림 프로세스 활성), `idle`(대기 중), `needs sign-in`(OAuth 필요), `error`(시작 실패), `disabled`.
+- **브랜드 아이콘**(없으면 이니셜)과 서버 **이름**.
+- 현재 **상태**: `running`(업스트림 프로세스 활성), `idle`(대기 중), `needs sign-in`(OAuth 필요), `error`(시작 실패), `disabled`.
 - **활성 도구 수**.
 - **활성화 토글** — 비활성화하면 모든 에이전트에서 도구가 즉시 숨겨집니다.
 - **Test** — 업스트림을 시작하고 발견된 도구 수 또는 오류 메시지를 반환합니다.
@@ -956,6 +957,19 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 기타 카탈로그 서버:
 
 - **Brave Search** — 웹, 뉴스, 이미지, 로컬 검색(Brave 공식 서버). [api-dashboard.search.brave.com](https://api-dashboard.search.brave.com)에서 받은 `BRAVE_API_KEY` 필요(무료 플랜으로 체험 가능).
+- **Sentry** — 이슈, 이벤트, 릴리스, 프로젝트(공식 서버). Sentry → Settings → Personal Tokens에서 토큰 발급(`org:read`, `project:read`, `event:read` 필요; 이슈 업데이트 시 `event:write` 추가). `npx`로 설치.
+- **Cloudflare** — Cloudflare 계정의 DNS, Workers, R2, 존 등(공식 원격 서버). OAuth: 설치 후 **connect** 클릭.
+- **Supabase** — Supabase 조직의 프로젝트, 데이터베이스(SQL), Edge Functions, 로그(공식 원격 서버, 베타). OAuth: 설치 후 **connect** 클릭.
+- **Todoist** — Todoist의 할일, 프로젝트, 섹션, 댓글(Doist 공식 원격 서버). OAuth: 설치 후 **connect** 클릭.
+
+**브라우저 자동화** 프리셋은 Stoa 서버에서 실제 브라우저를 실행합니다 — 이 도구들에서 `localhost`는 Stoa 머신을 의미합니다. 둘 다 계정이 필요하지 않습니다:
+
+- **Chrome DevTools** — 헤드리스 Chrome 제어: 페이지 열기, 클릭, 입력, 콘솔·네트워크 읽기, 성능 트레이스 기록(Google 공식 서버). `upload_file` 도구는 기본적으로 **requires approval**(Stoa 서버 파일을 브라우저에 전달하기 때문).
+- **Playwright** — 접근성 스냅샷 기반 브라우저 자동화: 탐색, 클릭, 폼 입력, 스크린샷(Microsoft 공식 서버). `browser_file_upload`는 기본적으로 **requires approval**; `browser_run_code_unsafe`(임의 JS 실행)는 기본적으로 **비활성화**.
+
+**파일 접근** 프리셋:
+
+- **Filesystem** — Stoa 서버에서 지정한 폴더의 파일을 읽고, 검색하고, 편집합니다(공식 MCP 서버). 다른 머신의 에이전트도 게이트웨이를 통해 이 폴더에 접근할 수 있습니다. 필수 항목: **Allowed folders** — Stoa 서버의 절대 경로를 쉼표로 구분해 입력. 루트(`/`)와 Stoa 설치 폴더와 겹치는 경로는 거부됩니다. 쓰기 도구(`write_file`, `edit_file`, `create_directory`, `move_file`)는 기본적으로 **requires approval**.
 
 **Custom**을 클릭하여 자체 서버를 추가할 수 있습니다:
 
@@ -997,7 +1011,7 @@ Activity는 기본적으로 **30일간** 보관됩니다(`MCP_CALLS_RETENTION_DA
 
 ### 채팅 내 도구 레이블
 
-에이전트가 실행 중일 때 각 MCP 도구 호출은 채팅에 도구 블록으로 표시됩니다. 블록에는 **도구 이름**과 작은 이탤릭체 레이블 **"via \<서버 이름\> (Stoa)"** 이 표시됩니다(예: `resolve-library-id via Context7 (Stoa)`). 마우스를 올리면 전체 내부 도구 이름이 툴팁으로 표시됩니다. 레이블은 메시지 스트리밍 중에만 표시되며, 도구 블록은 저장되지 않아 페이지 새로고침 후에는 나타나지 않습니다.
+에이전트가 실행 중일 때 각 MCP 도구 호출은 채팅에 도구 블록으로 표시됩니다. 블록에는 **도구 이름**과 작은 이탤릭체 레이블 **"via \<서버 이름\> (Stoa)"** 이 표시됩니다(예: `resolve-library-id via Context7 (Stoa)`). 마우스를 올리면 전체 내부 도구 이름이 툴팁으로 표시됩니다. 도구 단계는 메시지와 함께 저장되므로(메시지당 최대 50단계, 도구 이름 + 한 줄 요약), 프로세스 트레일 — MCP 레이블 포함 — 은 **페이지 새로고침 후에도 유지**됩니다.
 
 ### 에이전트에 변경 사항 반영 시점
 
