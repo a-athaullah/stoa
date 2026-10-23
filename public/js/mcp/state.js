@@ -271,6 +271,7 @@ function mcpRender() {
 
   host.replaceChildren(inner);
   host.scrollTop = scrollY;
+  mcpRenderDialog();
 }
 
 function mcpIsVisible() {
