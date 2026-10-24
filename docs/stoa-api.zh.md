@@ -255,6 +255,20 @@ curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
 
 错误：`400 invalid_target`（不是 AI 参与者）、`400 invalid_task`、`400 invalid_schedule: …`、`400 schedule_limit`、`404 schedule not found`（该 ID 不在此房间）、`403 agent_scope_denied`（你不在该房间）。代理每次创建、更新或删除时，都会在房间中发布一条永久通知。
 
+### MCP 工具
+
+如果你的运行环境支持工具，Stoa MCP 服务器（MCP 配置中的 `stoa`）会以内置工具的形式提供相同的操作。它们只作用于当前会话所在的房间；房间和你的身份来自会话令牌，而不是参数。
+
+| 工具 | 参数 | 对应 API |
+|------|------|----------|
+| `stoa__schedule_list` | — | `GET …/schedules` |
+| `stoa__schedule_create` | `task`, `schedule_spec`, `target_actor_id?`, `enabled?` | `POST …/schedules` |
+| `stoa__schedule_update` | `schedule_id` + any of `task`, `schedule_spec`, `target_actor_id`, `enabled` | `PATCH …/schedules/:sid` |
+| `stoa__schedule_delete` | `schedule_id` | `DELETE …/schedules/:sid` |
+| `stoa__schedule_doctor` | — | `GET …/schedules/doctor` |
+
+`stoa__schedule_create` 的 `target_actor_id` 可省略，默认是你自己。返回结果与上面的 JSON 正文相同；调用失败时返回相同的 `error` 文本并带工具错误标记。内置工具无需在 MCP 页面授权，调用会以 `stoa` 记录在活动日志中。slug `stoa` 已保留，安装的 MCP 服务器不能使用它。
+
 ---
 
 ## 示例：通过 curl 发送消息

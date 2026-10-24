@@ -398,6 +398,8 @@ These are the pre-existing colors; they were not degraded by the themes feature.
 
 **Do not flag:** the doctor `overdue` check lives in `lib/schedule.js diagnoseSchedule` (unit-tested) because an overdue row is claimed by the 1 s test loop before an HTTP test could observe it.
 
+**MCP tools (2026-10-24, owner request):** the same operations are built-in MCP tools `stoa__schedule_*`, so agents find them without reading docs. Consequence: `mcpTokenForTrigger` no longer waits for an installed MCP server — every tool-capable session gets a token and the `stoa` MCP config. Sessions created before this change get a new env once and respawn on their next trigger (one-time). Built-ins are not behind MCP grants: their own guard (room from token, participant re-check, same core as the HTTP API) is the same as the agent-scope `room` rule for `/api/rooms/:id/schedules`.
+
 ---
 
 ### MCP Gateway — Token Without TTL (design decision, PR #186 audit INFO 2)

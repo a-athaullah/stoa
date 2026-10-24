@@ -255,6 +255,20 @@ curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
 
 오류: `400 invalid_target` (AI 참가자가 아님), `400 invalid_task`, `400 invalid_schedule: …`, `400 schedule_limit`, `404 schedule not found` (ID가 이 룸에 없음), `403 agent_scope_denied` (룸 참가자가 아님). 에이전트가 생성·수정·삭제할 때마다 룸에 영구 알림이 게시됩니다.
 
+### MCP 도구
+
+하네스가 도구를 지원하면 Stoa MCP 서버(MCP 설정의 `stoa`)가 같은 작업을 내장 도구로 제공합니다. 현재 세션의 룸에서만 동작하며, 룸과 사용자 ID는 인수가 아니라 세션 토큰에서 정해집니다.
+
+| 도구 | 인수 | 대응 API |
+|------|------|----------|
+| `stoa__schedule_list` | — | `GET …/schedules` |
+| `stoa__schedule_create` | `task`, `schedule_spec`, `target_actor_id?`, `enabled?` | `POST …/schedules` |
+| `stoa__schedule_update` | `schedule_id` + any of `task`, `schedule_spec`, `target_actor_id`, `enabled` | `PATCH …/schedules/:sid` |
+| `stoa__schedule_delete` | `schedule_id` | `DELETE …/schedules/:sid` |
+| `stoa__schedule_doctor` | — | `GET …/schedules/doctor` |
+
+`stoa__schedule_create`의 `target_actor_id`는 선택 사항이며 생략하면 호출한 에이전트 자신이 됩니다. 결과는 위의 JSON 본문과 같고, 실패한 호출은 같은 `error` 텍스트를 도구 오류로 반환합니다. 내장 도구는 MCP 페이지에서 권한을 줄 필요가 없으며, 호출은 활동 로그에 `stoa`로 기록됩니다. 슬러그 `stoa`는 예약되어 있어 설치한 MCP 서버에는 사용할 수 없습니다.
+
 ---
 
 ## 예시: curl로 메시지 전송

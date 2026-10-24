@@ -193,6 +193,7 @@ Agent (Claude/Codex)
     → auth: token_hash lookup (mcp_tokens), scope = (actor, room, thread, sub_agent)
     → policy: sub_agent → agent → room → server default_access; deny wins
     → router: stoa tool (e.g. context7__resolve-library-id) → upstream client
+              stoa__<tool> → built-in handler (scheduled triggers, lib/room-schedules.js), no upstream
     → audit: INSERT mcp_calls (args_preview redacted, capped at 2 KB)
 ```
 
