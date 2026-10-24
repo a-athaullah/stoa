@@ -11357,6 +11357,61 @@ async function run() {
     assert.deepStrictEqual([...ctx.parseSavedToolSteps('{"name":"Bash"}')], []);
   });
 
+  await test('schedules panel — every form spec passes server validation unchanged, summaries and next run read naturally', () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const { validateScheduleSpec } = require('./lib/schedule');
+    const ctx = {};
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'public/js/rooms/schedules.js'), 'utf8'), ctx);
+    const js = v => JSON.stringify(v);
+    const form = (patch) => Object.assign(ctx.schedDefaultForm([{ actor_id: 7 }]), { task: 'post the morning summary' }, patch);
+    const forms = [
+      form({ type: 'interval', every: 90 }),
+      form({ type: 'daily', at: '07:30', tz: 'Asia/Jakarta' }),
+      form({ type: 'weekly', at: '09:00', tz: 'Europe/London', days: new Set([5, 1, 3]) }),
+      form({ type: 'monthly', at: '23:59', tz: 'UTC', day: 31 }),
+      form({ type: 'yearly', at: '00:00', tz: 'America/New_York', month: 2, yday: 29 }),
+    ];
+    for (const f of forms) {
+      assert.strictEqual(f.target, 7, 'default target is the first agent');
+      assert.strictEqual(ctx.schedValidateForm(f), '', `${f.type} form is valid`);
+      const spec = ctx.schedSpecFromForm(f);
+      const v = validateScheduleSpec(JSON.parse(js(spec)));
+      assert.ok(v.ok, `${f.type}: ${v.error}`);
+      assert.strictEqual(js(v.spec), js(spec), `${f.type}: server normalization is a no-op on what the panel sends`);
+      const back = ctx.schedSpecFromForm(ctx.schedFormFromSchedule({ id: 1, target_actor_id: 7, task: 't', schedule_spec: v.spec }));
+      assert.strictEqual(js(back), js(spec), `${f.type}: edit form round-trips the stored spec`);
+    }
+    assert.strictEqual(js(ctx.schedSpecFromForm(forms[2]).days), '[1,3,5]', 'weekdays sent sorted, Sunday = 0');
+
+    const S = ctx.schedSummary;
+    assert.deepStrictEqual([15, 60, 90, 120].map(m => S({ type: 'interval', every_minutes: m })),
+      ['every 15 min', 'every hour', 'every 1 h 30 min', 'every 2 hours']);
+    assert.strictEqual(S({ type: 'weekly', at: '09:00', tz: 'Asia/Jakarta', days: [1, 3, 5] }), 'every Mon, Wed, Fri at 09:00 WIB');
+    assert.strictEqual(S({ type: 'weekly', at: '09:00', tz: 'Asia/Jakarta', days: [1, 2, 3, 4, 5] }), 'every weekday at 09:00 WIB');
+    assert.strictEqual(S({ type: 'weekly', at: '09:00', tz: 'UTC', days: [0, 1] }), 'every Mon, Sun at 09:00 UTC', 'Monday-first order');
+    assert.strictEqual(S({ type: 'weekly', at: '08:00', tz: 'Europe/London', days: [0, 6] }, true), 'weekends · 08:00 London');
+    assert.deepStrictEqual([1, 2, 3, 11, 12, 13, 21, 22, 31].map(d => S({ type: 'monthly', at: '07:00', tz: 'UTC', day: d }, true).split(' · ')[1]),
+      ['1st', '2nd', '3rd', '11th', '12th', '13th', '21st', '22nd', '31st']);
+    assert.strictEqual(S({ type: 'yearly', at: '09:00', tz: 'Asia/Makassar', month: 8, day: 17 }), 'every year on Aug 17 at 09:00 WITA');
+    assert.strictEqual(S({ type: 'nope' }), 'unknown schedule');
+    assert.strictEqual(ctx.schedSummaryNote({ type: 'monthly', day: 30 }), 'months without a 30th run on their last day');
+    assert.strictEqual(ctx.schedSummaryNote({ type: 'monthly', day: 28 }), '');
+    assert.strictEqual(ctx.schedSummaryNote({ type: 'yearly', month: 2, day: 29 }), 'non-leap years run on Feb 28');
+
+    assert.strictEqual(ctx.schedValidateForm(form({ type: 'weekly', days: new Set() })), 'pick at least one day');
+    assert.strictEqual(ctx.schedValidateForm(form({ type: 'interval', every: 4 })), 'interval must be 5–1440 minutes');
+    assert.strictEqual(ctx.schedValidateForm(form({ type: 'daily', at: '' })), 'pick a time');
+    assert.strictEqual(ctx.schedValidateForm(form({ task: '   short   ' })), 'task needs at least 10 characters');
+    assert.strictEqual(ctx.schedValidateForm(Object.assign(form({}), { target: null })), 'pick an agent');
+
+    assert.strictEqual(ctx.schedParseUtc('2026-10-24 02:00:00').toISOString(), '2026-10-24T02:00:00.000Z', 'SQLite UTC timestamps parse as UTC');
+    const daily = { type: 'daily', at: '09:00', tz: 'Asia/Jakarta' };
+    assert.ok(ctx.schedNextRunText({ enabled: 1, next_run_at: '2026-10-27 02:00:00', schedule_spec: daily }).startsWith('next Tue 27 Oct, 09:00 WIB · '),
+      'next run shown in the schedule\'s own time zone');
+    assert.strictEqual(ctx.schedNextRunText({ enabled: 0, next_run_at: null, schedule_spec: daily }), 'paused');
+  });
+
   // escapeTomlValue unit tests
   await test('escapeTomlValue — escapes newlines and quotes', () => {
     const { escapeTomlValue } = require('./codex-session');
