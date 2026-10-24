@@ -53,16 +53,9 @@ function appendFeedRootRow(m, inner) {
   meta.appendChild(nameEl);
 
   if (m.actor_type === 'ai' && m.automation) {
-    const providerTag = document.createElement('span');
-    providerTag.className = 't-automation-tag';
-    const _pl = { gmail: 'Gmail', email: 'Email', slack: 'Slack', whatsapp: 'WhatsApp' };
-    providerTag.textContent = 'via ' + (_pl[m.automation.provider] || m.automation.provider || 'connection');
-    meta.appendChild(providerTag);
+    meta.appendChild(makeAutomationTagEl(m));
   } else if (m.automation) {
-    const autoTag = document.createElement('span');
-    autoTag.className = 't-automation-tag';
-    autoTag.textContent = 'Automation';
-    meta.appendChild(autoTag);
+    meta.appendChild(makeAutomationTagEl(m));
   }
 
   if (m.created_at) {
