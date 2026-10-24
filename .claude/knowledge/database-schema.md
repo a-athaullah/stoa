@@ -235,6 +235,28 @@ POST message to target_room_id
 AI responds, result posted back to Slack
 ```
 
+### room_schedules
+Scheduled triggers (migration `20261024-scheduled-triggers.sql`, which copied and dropped the old `sub_agent_schedules`). Defined ONLY in that migration, not in `schema.sqlite.sql` (boot runs the schema first, a copy would break the CREATE on a fresh clone).
+
+```sql
+CREATE TABLE room_schedules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  target_actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,      -- AI agent that runs the task
+  created_by_actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,  -- human or agent
+  task TEXT NOT NULL,
+  schedule_spec TEXT NOT NULL,   -- JSON normalized by lib/schedule.js: interval|daily|weekly|monthly|yearly
+  enabled INTEGER NOT NULL DEFAULT 1,
+  next_run_at TEXT,              -- UTC; NULL iff disabled
+  last_run_at TEXT, last_error TEXT,   -- last_error also holds "skipped: <status>"
+  run_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+-- idx_room_schedules_due(enabled, next_run_at), idx_room_schedules_room, idx_room_schedules_target
+```
+
+Old sub-agent schedules were migrated as `target_actor_id = sub_agents.parent_actor_id`, `task = '@<label> ' || task`. A fired run is a `messages` row from the human participant with `automation_provider='schedule'`, `automation_name=<cadence>`, `automation_id=NULL` (that column FKs `automations`).
+
 ---
 
 ## MCP Gateway Tables

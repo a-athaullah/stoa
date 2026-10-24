@@ -70,7 +70,7 @@ Agent ready to receive commands
 - Parent is **not** woken when a human or automation directly @mentions a sub-agent — unless the same message also mentions the parent explicitly, or the sub-agent finishes with an error
 - Wake is queued durably (survives server restart) via `pending_wakes` table
 - When parent wakes, the sub-agent's result (failure notes, cost summary) is delivered as a task in the parent's input (outside chat history)
-- Tasks from API spawn (`/sub-agent-trigger`) and scheduler are delivered to the sub-agent as a task input (outside chat history)
+- Tasks from API spawn (`/sub-agent-trigger`) are delivered to the sub-agent as a task input (outside chat history). Scheduled triggers (`room_schedules`) post a room message routed to their target agent; an `@label` in the task reaches the sub-agent through normal mention routing
 - Mentions inside inline code (backticks) or code fences (``` or ~~~) are never treated as triggers; unclosed fences/backticks have no suppressing effect
 
 ### Sub-Agent Team (Room 2638)

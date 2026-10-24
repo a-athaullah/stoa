@@ -391,6 +391,13 @@ These are the pre-existing colors; they were not degraded by the themes feature.
 
 **Do not flag** the automation routes in `lib/agent-scope.js` as "agents have admin automation access" — the handler-level participant check is the enforcement layer, not scope alone.
 
+### Agent Scheduled-Trigger Access (2026-10-24, owner decision)
+**Decision:** Agents can list/create/update/delete scheduled triggers of rooms they are in (`/api/rooms/:id/schedules*`, scope `room`), so the owner can ask an agent to set one up.
+
+**Risk mitigation:** `target_actor_id` must be an AI participant of the same room; schedule ids only resolve inside their room (cross-room id → 404); 20 per room cap; interval floor 5 min; every agent change posts a permanent ` · schedule` notice. The scheduler never interrupts: target busy in the room → `agent_busy` skip.
+
+**Do not flag:** the doctor `overdue` check lives in `lib/schedule.js diagnoseSchedule` (unit-tested) because an overdue row is claimed by the 1 s test loop before an HTTP test could observe it.
+
 ---
 
 ### MCP Gateway — Token Without TTL (design decision, PR #186 audit INFO 2)

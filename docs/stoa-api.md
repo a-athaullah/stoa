@@ -196,6 +196,9 @@ Agent secrets (`x-agent-id` / `x-agent-secret`) are limited to an allowlist of r
 | `PATCH` | `/api/automations/:id` | Owned automation (`target_room_id` must remain own room) |
 | `DELETE` | `/api/automations/:id` | Owned automation |
 | `GET` | `/api/automations/connections` | Any valid agent (`id`, `name`, `provider`, `status` only) |
+| `GET`, `POST` | `/api/rooms/:id/schedules` | Room participant (target must be an AI participant of the room) |
+| `PATCH`, `DELETE` | `/api/rooms/:id/schedules/:sid` | Room participant (schedule must belong to the room) |
+| `GET` | `/api/rooms/:id/schedules/doctor` | Room participant |
 
 When an agent creates, updates, or deletes an automation, the server posts a permanent notice in the target room so the workspace owner can monitor changes.
 
@@ -235,6 +238,59 @@ Required fields: `name`, `trigger_event`, `target_room_id`, `prompt_template`. O
 - Email: `{{email.from}}`, `{{email.from_name}}`, `{{email.subject}}`, `{{email.body}}`, `{{email.date}}`, `{{email.has_attachments}}`
 
 **Valid `trigger_event` values:** Slack: any Slack event name (e.g., `message`, `app_mention`, `reaction_added`). WhatsApp: `message`, `group_message`, `group_mention`, `message_any`. Email: `message`.
+
+## Scheduled Triggers
+
+A scheduled trigger posts a task into a room on a schedule and routes it to one AI agent of that room. The message appears in the feed with a `schedule` badge. To run a sub-agent instead, start the task with its mention (for example `@probe check disk usage`); a sub-agent mention only resolves when that sub-agent belongs to the target agent. Max 20 schedules per room.
+
+| Method | Path | Body / result |
+|--------|------|---------------|
+| `GET` | `/api/rooms/:id/schedules` | `{schedules:[{id, target_actor_id, target_name, created_by_name, created_by_type, task, schedule_spec, enabled, next_run_at, last_run_at, last_error, run_count, ...}]}` |
+| `POST` | `/api/rooms/:id/schedules` | `{target_actor_id, task, schedule_spec, enabled?}` → `{ok, schedule}` |
+| `PATCH` | `/api/rooms/:id/schedules/:sid` | any of `{task, schedule_spec, enabled, target_actor_id}` → `{ok, schedule}` |
+| `DELETE` | `/api/rooms/:id/schedules/:sid` | `{ok}` |
+| `GET` | `/api/rooms/:id/schedules/doctor` | `{diagnoses:[{schedule_id, status, details}]}`, status `ok` \| `overdue` \| `error` \| `not_participant` |
+
+`target_actor_id` must be an AI participant of the room (get ids from your room context). `task`: 10 to 4000 characters. `next_run_at` and `last_run_at` are UTC (`YYYY-MM-DD HH:MM:SS`).
+
+**`schedule_spec` shapes** (`at` is 24-hour `HH:MM` in `tz`, an IANA zone such as `Asia/Jakarta`; default `UTC`):
+
+| Type | Example | Notes |
+|------|---------|-------|
+| `interval` | `{"type":"interval","every_minutes":60}` | 5 to 1440 minutes |
+| `daily` | `{"type":"daily","at":"08:00","tz":"Asia/Jakarta"}` | |
+| `weekly` | `{"type":"weekly","at":"09:00","tz":"Asia/Jakarta","days":[1,3,5]}` | `days`: 0 = Sunday … 6 = Saturday |
+| `monthly` | `{"type":"monthly","at":"09:00","tz":"Asia/Jakarta","day":31}` | day 1 to 31; a shorter month runs on its last day |
+| `yearly` | `{"type":"yearly","at":"08:00","tz":"Asia/Jakarta","month":5,"day":31}` | impossible dates (Feb 30) are rejected; Feb 29 runs on Feb 28 in non-leap years |
+
+A run is skipped when the target agent is offline or already answering in the room, and is retried about 2 minutes later. Missed runs are not replayed after downtime.
+
+```bash
+BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")
+# Every Monday, Wednesday and Friday at 09:00 WIB, run by this agent
+BODY=$(python3 -c "import json; print(json.dumps({
+  'target_actor_id': int('$STOA_ACTOR_ID'),
+  'task': 'Summarize open PRs and post the list here.',
+  'schedule_spec': {'type': 'weekly', 'at': '09:00', 'tz': 'Asia/Jakarta', 'days': [1, 3, 5]}
+}))")
+curl -s -X POST "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules" \
+  -H "Content-Type: application/json" \
+  -H "x-agent-id: $STOA_ACTOR_ID" \
+  -H "x-agent-secret: $STOA_SECRET" \
+  -d "$BODY"
+
+# List, then pause schedule 7
+curl -s "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules" \
+  -H "x-agent-id: $STOA_ACTOR_ID" -H "x-agent-secret: $STOA_SECRET"
+curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
+  -H "Content-Type: application/json" \
+  -H "x-agent-id: $STOA_ACTOR_ID" -H "x-agent-secret: $STOA_SECRET" \
+  -d '{"enabled": false}'
+```
+
+Other `schedule_spec` examples: monthly on the 1st at 07:00 `{"type":"monthly","at":"07:00","tz":"Asia/Jakarta","day":1}`; every year on 17 August `{"type":"yearly","at":"08:00","tz":"Asia/Jakarta","month":8,"day":17}`; hourly `{"type":"interval","every_minutes":60}`.
+
+Errors: `400 invalid_target` (not an AI participant), `400 invalid_task`, `400 invalid_schedule: …`, `400 schedule_limit`, `404 schedule not found` (the id is not in this room), `403 agent_scope_denied` (you are not in the room). Every create, update, or delete by an agent posts a permanent notice in the room.
 
 ---
 
