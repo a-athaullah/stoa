@@ -14985,11 +14985,14 @@ async function run() {
       }
       return { status: r.status, msg, raw: r.raw };
     });
-    const listNames = async (token) => {
+    // Upstream tools only: Stoa's built-in stoa__* tools are always listed and get their own tests.
+    const listAll = async (token) => {
       const r = await mcp(token, 'tools/list');
       assert.strictEqual(r.status, 200, r.raw?.slice(0, 200));
-      return r.msg.result.tools.map(t => t.name).sort();
+      return r.msg.result.tools;
     };
+    const listNames = async (token) => (await listAll(token)).map(t => t.name).filter(n => !n.startsWith('stoa__')).sort();
+    const BUILTINS = ['stoa__schedule_create', 'stoa__schedule_delete', 'stoa__schedule_doctor', 'stoa__schedule_list', 'stoa__schedule_update'];
     const callText = async (token, name, args = {}) => {
       const r = await mcp(token, 'tools/call', { name, arguments: args });
       assert.strictEqual(r.status, 200, r.raw?.slice(0, 200));
@@ -15026,9 +15029,25 @@ async function run() {
       assert.strictEqual((await req('POST', `/api/rooms/${roomA}/sub-agents`, { sub_agent_id: sub.id })).status < 300, true);
     });
 
-    await test('MCP trigger — no MCP server installed → no mcp_token (session env unchanged)', async () => {
-      if (mDb.prepare('SELECT 1 FROM mcp_servers LIMIT 1').get()) { console.log('    (skipped — DB copy already has MCP servers)'); return; }
-      assert.strictEqual((await triggerToken(agA, roomA, 'before mcp')).token, undefined);
+    // The DB copy may hold servers; they are hidden for this test through the test's own connection with
+    // foreign keys off (no cascade into grants/overrides) and put back with the same ids.
+    await test('MCP trigger — no upstream server installed → token still issued, built-in tools listed', async () => {
+      const saved = mDb.prepare('SELECT * FROM mcp_servers').all();
+      let token;
+      mDb.pragma('foreign_keys = OFF');
+      try {
+        mDb.prepare('DELETE FROM mcp_servers').run();
+        token = (await triggerToken(agA, roomA, 'before mcp')).token;
+        assert.match(token || '', /^stoa_mcp_/, 'tool-capable session gets a token without any upstream');
+        const tools = await listAll(token);
+        assert.deepStrictEqual(tools.map(t => t.name).sort(), BUILTINS, 'only the built-ins');
+      } finally {
+        for (const row of saved) {
+          const cols = Object.keys(row);
+          mDb.prepare(`INSERT INTO mcp_servers (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`).run(...cols.map(c => row[c]));
+        }
+        mDb.pragma('foreign_keys = ON');
+      }
     });
 
     await test('MCP admin — no session → 401; agent secret → agent_scope_denied; nothing created', async () => {
@@ -15341,7 +15360,7 @@ async function run() {
       try {
         const names = async () => (await a.c.listTools()).tools.map(t => t.name).sort();
         assert.ok((await names()).includes('mcpdummy__echo'));
-        assert.deepStrictEqual((await s.c.listTools()).tools, [], 'sub-agent is denied (previous test)');
+        assert.deepStrictEqual((await s.c.listTools()).tools.map(t => t.name).sort(), BUILTINS, 'sub-agent is denied the upstream (previous test), keeps the built-ins');
         await new Promise(r => setTimeout(r, 200));
         assert.strictEqual((await req('PUT', `/api/mcp/servers/${server.id}/tools/echo`, { enabled: false })).status, 200);
         assert.ok(await until(() => a.seen.n === 1), 'agent session notified after the owner disabled a tool');
@@ -15611,6 +15630,155 @@ async function run() {
       await req('PATCH', `/api/mcp/servers/${server.id}`, { enabled: true });
     });
 
+    // ── Built-in stoa__schedule_* tools: same core as /api/rooms/:id/schedules (lib/room-schedules.js).
+    const stoaCall = async (token, tool, args = {}) => {
+      const r = await callText(token, `stoa__${tool}`, args);
+      return { ...r, body: JSON.parse(r.text) };
+    };
+    const schedRows = (roomId) => mDb.prepare('SELECT * FROM room_schedules WHERE room_id=? ORDER BY id').all(roomId);
+    const noticesOf = (roomId, sinceId) => mDb.prepare("SELECT content FROM messages WHERE room_id=? AND id>? AND state='system_event' AND content LIKE '% · schedule'").all(roomId, sinceId).map(m => m.content);
+    const maxMsgId = () => mDb.prepare('SELECT COALESCE(MAX(id),0) m FROM messages').get().m;
+    let builtinSchedId = null;
+
+    await test('MCP built-ins — listed for every token regardless of grants, with input schemas', async () => {
+      const tools = await listAll(tokB);
+      const byName = Object.fromEntries(tools.map(t => [t.name, t]));
+      assert.deepStrictEqual(BUILTINS.filter(n => byName[n]), BUILTINS, 'agent B has no grant but sees the built-ins');
+      const create = byName.stoa__schedule_create;
+      assert.deepStrictEqual(create.inputSchema.required, ['task', 'schedule_spec']);
+      assert.deepStrictEqual(create.inputSchema.properties.schedule_spec.properties.type.enum, ['interval', 'daily', 'weekly', 'monthly', 'yearly']);
+      assert.ok(!('room_id' in create.inputSchema.properties), 'room comes from the token, not an argument');
+      assert.strictEqual(byName.stoa__schedule_delete.annotations.destructiveHint, true);
+      assert.strictEqual(byName.stoa__schedule_list.annotations.readOnlyHint, true);
+    });
+
+    await test('MCP built-ins — create in own room: target defaults to caller, row + notice + mcp_calls', async () => {
+      const since = maxMsgId();
+      const r = await stoaCall(tokA, 'schedule_create', { task: 'Weekly MCP check of the build pipeline', schedule_spec: { type: 'weekly', at: '09:30', tz: 'Asia/Jakarta', days: [5, 1] } });
+      assert.strictEqual(r.isError, false, r.text);
+      builtinSchedId = r.body.schedule.id;
+      const row = mDb.prepare('SELECT * FROM room_schedules WHERE id=?').get(builtinSchedId);
+      assert.deepStrictEqual([row.room_id, row.target_actor_id, row.created_by_actor_id, row.enabled], [roomA, agA.actorId, agA.actorId, 1]);
+      assert.deepStrictEqual(JSON.parse(row.schedule_spec), { type: 'weekly', at: '09:30', tz: 'Asia/Jakarta', days: [1, 5] }, 'normalized by lib/schedule.js');
+      assert.ok(row.next_run_at, 'next run computed');
+      const notices = noticesOf(roomA, since);
+      assert.strictEqual(notices.length, 1);
+      assert.match(notices[0], new RegExp(`^__test-mcp-a created schedule #${builtinSchedId} for __test-mcp-a \\(weekly Mon, Fri 09:30 Asia/Jakarta\\) · schedule$`));
+      const c = lastCall();
+      assert.deepStrictEqual([c.server_id, c.server_slug, c.tool, c.status, c.actor_id, c.room_id], [null, 'stoa', 'schedule_create', 'ok', agA.actorId, roomA]);
+      const http = await req('GET', `/api/rooms/${roomA}/schedules`);
+      assert.ok(http.body.schedules.some(s => s.id === builtinSchedId), 'same row through the HTTP API');
+      const list = await stoaCall(tokA, 'schedule_list');
+      assert.deepStrictEqual(list.body.schedules.map(s => s.id), schedRows(roomA).map(s => s.id));
+    });
+
+    await test('MCP built-ins — invalid target / task / spec rejected, nothing written', async () => {
+      const before = schedRows(roomA).length;
+      const human = mDb.prepare("SELECT id FROM actors WHERE type='human' LIMIT 1").get().id;
+      for (const [args, err] of [
+        [{ task: 'Run the nightly report please', schedule_spec: { type: 'daily', at: '01:00' }, target_actor_id: agB.actorId }, /^invalid_target/],
+        [{ task: 'Run the nightly report please', schedule_spec: { type: 'daily', at: '01:00' }, target_actor_id: human }, /^invalid_target/],
+        [{ task: 'todo', schedule_spec: { type: 'daily', at: '01:00' } }, /^invalid_task$/],
+        [{ task: 'Run the nightly report please', schedule_spec: { type: 'interval', every_minutes: 1 } }, /^invalid_schedule/],
+        [{ task: 'Run the nightly report please', schedule_spec: { type: 'yearly', at: '01:00', month: 2, day: 30 } }, /^invalid_schedule/],
+      ]) {
+        const r = await stoaCall(tokA, 'schedule_create', args);
+        assert.strictEqual(r.isError, true, JSON.stringify(args));
+        assert.match(r.body.error, err);
+      }
+      assert.strictEqual(schedRows(roomA).length, before);
+      assert.strictEqual(lastCall().status, 'error');
+    });
+
+    await test('MCP built-ins — a token of another room cannot see, update or delete the schedule', async () => {
+      const since = maxMsgId();
+      assert.deepStrictEqual((await stoaCall(tokB, 'schedule_list')).body.schedules.map(s => s.room_id).filter(id => id !== roomB), []);
+      const u = await stoaCall(tokB, 'schedule_update', { schedule_id: builtinSchedId, task: 'Hijacked task from another room' });
+      assert.deepStrictEqual([u.isError, u.body.error], [true, 'schedule not found']);
+      const d = await stoaCall(tokB, 'schedule_delete', { schedule_id: builtinSchedId });
+      assert.deepStrictEqual([d.isError, d.body.error], [true, 'schedule not found']);
+      const row = mDb.prepare('SELECT task FROM room_schedules WHERE id=?').get(builtinSchedId);
+      assert.strictEqual(row.task, 'Weekly MCP check of the build pipeline', 'untouched');
+      assert.deepStrictEqual(noticesOf(roomA, since), []);
+    });
+
+    await test('MCP built-ins — session without a room → tool error; unknown built-in → denied', async () => {
+      const raw = 'stoa_mcp_' + crypto.randomBytes(32).toString('base64url');
+      mDb.prepare('INSERT INTO mcp_tokens (token_hash, token_enc, actor_id, room_id, thread_id, sub_agent_id) VALUES (?,?,?,NULL,NULL,NULL)')
+        .run(crypto.createHash('sha256').update(raw).digest('hex'), 'unused', agA.actorId);
+      try {
+        const r = await stoaCall(raw, 'schedule_list');
+        assert.deepStrictEqual([r.isError, r.body.error], [true, 'this MCP session is not bound to a room']);
+      } finally { mDb.prepare('DELETE FROM mcp_tokens WHERE token_hash=?').run(crypto.createHash('sha256').update(raw).digest('hex')); }
+      const u = await callText(tokA, 'stoa__drop_everything');
+      assert.strictEqual(u.isError, true);
+      assert.match(u.text, /unknown tool/);
+      assert.deepStrictEqual([lastCall().server_slug, lastCall().status], ['stoa', 'denied']);
+    });
+
+    await test('MCP built-ins — update (pause, retarget check, spec) and doctor', async () => {
+      const since = maxMsgId();
+      assert.match((await stoaCall(tokA, 'schedule_update', {})).body.error, /^schedule_id required$/);
+      assert.match((await stoaCall(tokA, 'schedule_update', { schedule_id: builtinSchedId })).body.error, /^nothing to update$/);
+      let r = await stoaCall(tokA, 'schedule_update', { schedule_id: builtinSchedId, enabled: false });
+      assert.strictEqual(r.isError, false, r.text);
+      let row = mDb.prepare('SELECT enabled, next_run_at FROM room_schedules WHERE id=?').get(builtinSchedId);
+      assert.deepStrictEqual(row, { enabled: 0, next_run_at: null }, 'paused');
+      r = await stoaCall(tokA, 'schedule_update', { schedule_id: builtinSchedId, target_actor_id: agB.actorId });
+      assert.match(r.body.error, /^invalid_target/);
+      r = await stoaCall(tokA, 'schedule_update', { schedule_id: builtinSchedId, enabled: true, schedule_spec: { type: 'monthly', at: '07:00', tz: 'UTC', day: 31 } });
+      assert.strictEqual(r.isError, false, r.text);
+      row = mDb.prepare('SELECT enabled, next_run_at, schedule_spec FROM room_schedules WHERE id=?').get(builtinSchedId);
+      assert.strictEqual(row.enabled, 1);
+      assert.match(row.next_run_at, / 07:00:00$/);
+      assert.deepStrictEqual(JSON.parse(row.schedule_spec), { type: 'monthly', at: '07:00', tz: 'UTC', day: 31 });
+      assert.strictEqual(noticesOf(roomA, since).filter(n => n.includes(`updated schedule #${builtinSchedId} `)).length, 2);
+      const doc = await stoaCall(tokA, 'schedule_doctor');
+      assert.strictEqual(doc.body.room_id, roomA);
+      assert.deepStrictEqual(doc.body.diagnoses.find(d => d.schedule_id === builtinSchedId), { schedule_id: builtinSchedId, status: 'ok', details: null });
+    });
+
+    await test('MCP built-ins — cap of 20 per room enforced through the shared core', async () => {
+      const made = [];
+      try {
+        const room = schedRows(roomA).length;
+        for (let i = room; i < 20; i++) {
+          const r = await stoaCall(tokA, 'schedule_create', { task: `Filler schedule number ${i}`, schedule_spec: { type: 'daily', at: '03:00' }, enabled: false });
+          assert.strictEqual(r.isError, false, r.text);
+          made.push(r.body.schedule.id);
+        }
+        const over = await stoaCall(tokA, 'schedule_create', { task: 'One schedule too many here', schedule_spec: { type: 'daily', at: '03:00' }, enabled: false });
+        assert.deepStrictEqual([over.isError, over.body.error, over.body.limit], [true, 'schedule_limit', 20]);
+        assert.strictEqual(schedRows(roomA).length, 20);
+      } finally {
+        for (const id of made) await req('DELETE', `/api/rooms/${roomA}/schedules/${id}`);
+      }
+    });
+
+    await test('MCP built-ins — delete: row gone, notice; reserved slug "stoa" refused and never shadows built-ins', async () => {
+      const since = maxMsgId();
+      const d = await stoaCall(tokA, 'schedule_delete', { schedule_id: builtinSchedId });
+      assert.deepStrictEqual([d.isError, d.body], [false, { ok: true }]);
+      assert.strictEqual(mDb.prepare('SELECT 1 FROM room_schedules WHERE id=?').get(builtinSchedId), undefined);
+      assert.strictEqual(noticesOf(roomA, since).filter(n => n.includes(`deleted schedule #${builtinSchedId} `)).length, 1);
+      assert.strictEqual((await stoaCall(tokA, 'schedule_delete', { schedule_id: builtinSchedId })).body.error, 'schedule not found');
+
+      const before = mDb.prepare('SELECT COUNT(*) n FROM mcp_servers').get().n;
+      const r = await req('POST', '/api/mcp/servers', { slug: 'stoa', name: 'Impostor', transport: 'stdio', command: 'node', args: ['-e', '1'] });
+      assert.strictEqual(r.status, 400);
+      assert.match(r.body.error, /reserved/);
+      assert.strictEqual(mDb.prepare('SELECT COUNT(*) n FROM mcp_servers').get().n, before);
+      // A row from before the reservation: never exposed or started, the built-in still answers.
+      const legacy = Number(mDb.prepare("INSERT INTO mcp_servers (slug, name, transport, command, args_json, default_access) VALUES ('stoa','Legacy','stdio','node','[]','all')").run().lastInsertRowid);
+      try {
+        assert.deepStrictEqual((await listAll(tokA)).map(t => t.name).filter(n => n.startsWith('stoa__')).sort(), BUILTINS);
+        const l = await stoaCall(tokA, 'schedule_list');
+        assert.strictEqual(l.isError, false);
+        assert.ok(Array.isArray(l.body.schedules));
+        assert.match((await callText(tokA, 'stoa__echo')).text, /unknown tool/, 'not routed to the legacy row');
+      } finally { mDb.prepare('DELETE FROM mcp_servers WHERE id=?').run(legacy); }
+    });
+
     await test('MCP cleanup — deleting a sub-agent revokes its token and drops its grants', async () => {
       assert.strictEqual(mDb.prepare("SELECT COUNT(*) n FROM mcp_access WHERE subject_type='sub_agent' AND subject_id=?").get(sub.id).n, 1);
       assert.strictEqual((await req('DELETE', `/api/sub-agents/${sub.id}`)).status, 204);
@@ -15655,6 +15823,7 @@ async function run() {
       if (oauthFx) await oauthFx.close();
       mDb.prepare("DELETE FROM mcp_calls WHERE server_slug='mcpoauth'").run();
       mDb.prepare("DELETE FROM mcp_calls WHERE server_slug='mcpdummy'").run();
+      mDb.prepare("DELETE FROM mcp_calls WHERE server_slug='stoa' AND room_id IN (?,?)").run(roomA ?? -1, roomB ?? -1);
       if (agA?.ws) agA.ws.close();
       if (agB?.ws) agB.ws.close();
     });

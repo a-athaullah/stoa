@@ -6,7 +6,8 @@ const { execSync } = require('child_process');
 const { WebSocketServer } = require('ws');
 const db = require('./db');
 const { ClaudeSession } = require('./claude-session');
-const { validateScheduleSpec, computeNextRun, nextRunAfterSkip, describeSchedule, diagnoseSchedule } = require('./lib/schedule');
+const { validateScheduleSpec, computeNextRun, nextRunAfterSkip, describeSchedule } = require('./lib/schedule');
+const { createRoomSchedules, scheduleMcpTools } = require('./lib/room-schedules');
 const { collectDiagnostics, buildEnvelope, gcDebugBundles } = require('./lib/debug-bundle');
 const { enrichAutomation, enrichAutomationList, watchReplyAutomation } = require('./lib/automation-identity');
 const { sanitizeDisplayName, EMAIL_REPLY_LIMITS, buildEmailThreadSection, normalizeRefIds, findEmailReplyThread } = require('./lib/email-threading');
@@ -1287,11 +1288,10 @@ if (!fs.existsSync(CONNECTOR_MEDIA_DIR)) fs.mkdirSync(CONNECTOR_MEDIA_DIR);
 //     Non-transient skips (room gone / archived / target not a participant /
 //     no human participant) keep the far next slot.
 //   • Rate limiting: the interval floor (≥5 min), the busy skip and the 20-per-room
-//     cap bound cadence.
+//     cap (lib/room-schedules.js) bound cadence.
 //   • Failure isolation: try/catch per schedule; one bad row never kills the loop.
 const SCHED_TICK_MS = parseInt(process.env.SCHED_TICK_MS) || 30000;
 const SCHED_RETRY_MS = parseInt(process.env.SCHED_RETRY_MS) || 120000; // grace retry after transient skip
-const SCHEDULES_PER_ROOM = 20;
 const fmtUtc = (d) => d.toISOString().replace('T', ' ').slice(0, 19);
 
 // Attempt one scheduled fire. Returns a short status string; never throws.
@@ -1657,8 +1657,10 @@ const mcpUpstreams = createUpstreamManager({
   authProvider: (row) => mcpOAuth.provider(row.id),
   needsAuth: (row) => mcpOAuth.needsAuth(row),
 });
+// Scheduled triggers core, shared by /api/rooms/:id/schedules and the stoa__schedule_* MCP tools.
+const roomSchedules = createRoomSchedules({ db, broadcast });
 const mcpGateway = createMcpGateway({
-  db, upstreams: mcpUpstreams, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt, version: require('./package.json').version,
+  db, upstreams: mcpUpstreams, builtinTools: scheduleMcpTools(roomSchedules), encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt, version: require('./package.json').version,
   approvalTimeoutMs: Math.min(APPROVAL_TIMEOUT_MAX_MS, Math.max(1000, parseInt(process.env.MCP_APPROVAL_TIMEOUT_MS, 10) || 5 * 60_000)),
   // Approval cards live in the room (and thread) the agent is working in; the MCP page's approval log
   // needs them too, so every other owner connection gets the same event. One copy per connection.
@@ -1675,11 +1677,10 @@ const pruneMcpCalls = () => {
 };
 pruneMcpCalls();
 setInterval(pruneMcpCalls, 60 * 60_000).unref();
-// Token only once an MCP server exists: before that the agent session env is unchanged (no respawn
-// for setups that never use MCP). Harnesses without tool support get none.
-const mcpHasServers = db.prepare('SELECT 1 FROM mcp_servers LIMIT 1');
+// Every tool-capable session gets a token: the gateway always serves Stoa's built-in tools, even with
+// no upstream server installed. Harnesses without tool support get none (session env unchanged).
 function mcpTokenForTrigger({ actorId, roomId, threadId, subAgentId, toolsSupported }) {
-  if (toolsSupported === false || !mcpHasServers.get()) return undefined;
+  if (toolsSupported === false) return undefined;
   try { return mcpGateway.issueToken({ actorId, roomId, threadId: threadId || null, subAgentId: subAgentId || null }); }
   catch (e) { console.error('[mcp] token issue failed:', e.message); return undefined; }
 }
@@ -1711,18 +1712,6 @@ function postAutomationChangeNotice(agentId, roomId, verb, auto) {
   if (!part) return;
   const clean = (v, max) => String(v ?? '').replace(/[\r\n]+/g, ' ').slice(0, max);
   const content = `${clean(part.name, 64)} ${verb} automation "${clean(auto.name, 100)}" (trigger: ${clean(auto.trigger_type, 20)} ${clean(auto.trigger_event, 40)}) · automation`;
-  const r = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')").run(roomId, part.id, content);
-  broadcast(roomId, { type: 'message_new', message: { id: Number(r.lastInsertRowid), room_id: roomId, content, state: 'system_event', created_at: new Date().toISOString() } });
-}
-
-// Same idea for scheduled triggers: an agent-made schedule fires tasks in the room, so the owner
-// sees every create/update/delete. Suffix " · schedule" keeps it in the history filters.
-function postScheduleChangeNotice(agentId, roomId, verb, sched) {
-  const part = db.prepare(`SELECT rp.id, a.name FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
-    WHERE rp.room_id=? AND rp.actor_id=? LIMIT 1`).get(roomId, agentId);
-  if (!part || !sched) return;
-  const clean = (v, max) => String(v ?? '').replace(/[\r\n]+/g, ' ').slice(0, max);
-  const content = `${clean(part.name, 64)} ${verb} schedule #${sched.id} for ${clean(sched.target_name, 64)} (${clean(describeSchedule(sched.schedule_spec), 80)}) · schedule`;
   const r = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')").run(roomId, part.id, content);
   broadcast(roomId, { type: 'message_new', message: { id: Number(r.lastInsertRowid), room_id: roomId, content, state: 'system_event', created_at: new Date().toISOString() } });
 }
@@ -2651,154 +2640,28 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ── Scheduled triggers: /api/rooms/:id/schedules[/:sid] + /schedules/doctor ──
-  // Human session or agent secret. Agents (agent-scope 'room') must be participants of the
-  // room; every schedule they create/edit/delete is announced in the room (system notice) so
-  // the owner sees it. Ownership is by room: a schedule id only resolves inside its room.
+  // Human session or agent secret. Logic lives in lib/room-schedules.js (shared with the MCP
+  // tools): agents must be participants of the room, every change they make is announced in
+  // the room, and a schedule id only resolves inside its room.
   const schedMatch = url.pathname.match(/^\/api\/rooms\/(\d+)\/schedules(?:\/(\d+|doctor))?$/);
   if (schedMatch) {
     const roomId = parseInt(schedMatch[1]);
     const agentId = req._authUser ? null : (req._scopedAgentId || verifyAgentRequest(req)?.id || null);
     if (!req._authUser && !agentId) return json(res, { error: 'unauthorized' }, 401);
-    const room = db.prepare('SELECT id FROM rooms WHERE id=?').get(roomId);
-    if (!room) return json(res, { error: 'room not found' }, 404);
-    if (agentId && !agentInRoom(agentId, roomId)) return json(res, { error: 'agent_scope_denied' }, 403);
 
-    const selectSchedules = `
-      SELECT s.id, s.room_id, s.target_actor_id, t.name AS target_name,
-             s.created_by_actor_id, c.name AS created_by_name, c.type AS created_by_type,
-             s.task, s.schedule_spec, s.enabled, s.next_run_at, s.last_run_at, s.last_error, s.run_count, s.created_at
-      FROM room_schedules s JOIN actors t ON t.id=s.target_actor_id JOIN actors c ON c.id=s.created_by_actor_id`;
-    const outRow = (r) => { try { r.schedule_spec = JSON.parse(r.schedule_spec); } catch { r.schedule_spec = null; } return r; };
-    const getSchedule = (id) => {
-      const r = db.prepare(`${selectSchedules} WHERE s.id=?`).get(id);
-      return r ? outRow(r) : null;
-    };
-    const isAiParticipant = (actorId) => !!db.prepare(`
-      SELECT 1 FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
-      WHERE rp.room_id=? AND rp.actor_id=? AND a.type='ai'`).get(roomId, actorId);
-    // Same floor as the interactive trigger (R4) plus a ceiling: the task is posted verbatim.
-    const validTask = (t) => {
-      if (typeof t !== 'string') return null;
-      const task = t.trim();
-      if (task.length < 10 || task.length > 4000 || /^(test|todo|tbd|placeholder|\.+)$/i.test(task)) return null;
-      return task;
-    };
-    const parseEnabled = (v) => (v === true || v === 1) ? 1 : (v === false || v === 0) ? 0 : null;
-    const changed = (verb, row) => {
-      broadcast(roomId, { type: 'room_schedule_changed', room_id: roomId });
-      if (agentId) postScheduleChangeNotice(agentId, roomId, verb, row);
-    };
+    const denied = roomSchedules.access(roomId, agentId);
+    if (denied) return json(res, denied.body, denied.status);
+    const reply = (r) => json(res, r.body, r.status);
 
-    // GET doctor — read-only health check per schedule.
     if (schedMatch[2] === 'doctor') {
       if (req.method !== 'GET') return json(res, { error: 'method not allowed' }, 405);
-      const rows = db.prepare(`
-        SELECT s.id, s.target_actor_id, s.enabled, s.next_run_at, s.last_error,
-               EXISTS (SELECT 1 FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
-                       WHERE rp.room_id=s.room_id AND rp.actor_id=s.target_actor_id AND a.type='ai') AS is_participant
-        FROM room_schedules s WHERE s.room_id=? ORDER BY s.id
-      `).all(roomId);
-      const nowMs = Date.now();
-      const diagnoses = rows.map(s => ({ schedule_id: s.id, ...diagnoseSchedule(s, nowMs) }));
-      return json(res, { room_id: roomId, diagnoses });
+      return reply(roomSchedules.doctor(roomId));
     }
-
     const schedId = schedMatch[2] ? parseInt(schedMatch[2]) : null;
-
-    if (req.method === 'GET' && !schedId) {
-      const rows = db.prepare(`${selectSchedules} WHERE s.room_id=? ORDER BY s.id`).all(roomId);
-      return json(res, { schedules: rows.map(outRow) });
-    }
-
-    if (req.method === 'POST' && !schedId) {
-      const data = parseJsonBody(await readBody(req));
-      if (!data) return json(res, { error: 'Invalid JSON' }, 400);
-      const targetId = Number(data.target_actor_id);
-      if (!Number.isInteger(targetId) || targetId <= 0) return json(res, { error: 'target_actor_id required' }, 400);
-      if (!isAiParticipant(targetId)) return json(res, { error: 'invalid_target: must be an AI agent in this room' }, 400);
-      const task = validTask(data.task);
-      if (!task) return json(res, { error: 'invalid_task' }, 400);
-      const specRes = validateScheduleSpec(data.schedule_spec);
-      if (!specRes.ok) return json(res, { error: `invalid_schedule: ${specRes.error}` }, 400);
-      const enabled = data.enabled === undefined ? 1 : parseEnabled(data.enabled);
-      if (enabled === null) return json(res, { error: 'enabled must be a boolean' }, 400);
-      const creatorId = agentId || db.prepare("SELECT id FROM actors WHERE type='human' LIMIT 1").get()?.id;
-      if (!creatorId) return json(res, { error: 'no human actor' }, 500);
-      const nextRun = enabled ? fmtUtc(computeNextRun(specRes.spec, new Date())) : null;
-      // Cap check and insert in one transaction so two concurrent creates can't both pass the count.
-      const insert = db.transaction(() => {
-        const count = db.prepare('SELECT COUNT(*) AS c FROM room_schedules WHERE room_id=?').get(roomId).c;
-        if (count >= SCHEDULES_PER_ROOM) return null;
-        return db.prepare(`
-          INSERT INTO room_schedules (room_id, target_actor_id, created_by_actor_id, task, schedule_spec, enabled, next_run_at)
-          VALUES (?,?,?,?,?,?,?)
-        `).run(roomId, targetId, creatorId, task, JSON.stringify(specRes.spec), enabled, nextRun).lastInsertRowid;
-      });
-      const newId = insert();
-      if (!newId) return json(res, { error: 'schedule_limit', limit: SCHEDULES_PER_ROOM }, 400);
-      const row = getSchedule(newId);
-      changed('created', row);
-      return json(res, { ok: true, schedule: row });
-    }
-
-    if (req.method === 'PATCH' && schedId) {
-      const existing = db.prepare('SELECT * FROM room_schedules WHERE id=? AND room_id=?').get(schedId, roomId);
-      if (!existing) return json(res, { error: 'schedule not found' }, 404);
-      const data = parseJsonBody(await readBody(req));
-      if (!data) return json(res, { error: 'Invalid JSON' }, 400);
-      const updates = [];
-      const params = [];
-      let spec = null;
-      try { spec = JSON.parse(existing.schedule_spec); } catch {}
-      if (data.target_actor_id !== undefined) {
-        const targetId = Number(data.target_actor_id);
-        if (!Number.isInteger(targetId) || targetId <= 0 || !isAiParticipant(targetId)) {
-          return json(res, { error: 'invalid_target: must be an AI agent in this room' }, 400);
-        }
-        updates.push('target_actor_id=?'); params.push(targetId);
-      }
-      if (data.task !== undefined) {
-        const task = validTask(data.task);
-        if (!task) return json(res, { error: 'invalid_task' }, 400);
-        updates.push('task=?'); params.push(task);
-      }
-      if (data.schedule_spec !== undefined) {
-        const specRes = validateScheduleSpec(data.schedule_spec);
-        if (!specRes.ok) return json(res, { error: `invalid_schedule: ${specRes.error}` }, 400);
-        spec = specRes.spec;
-        updates.push('schedule_spec=?'); params.push(JSON.stringify(spec));
-      }
-      let enabled = existing.enabled;
-      if (data.enabled !== undefined) {
-        enabled = parseEnabled(data.enabled);
-        if (enabled === null) return json(res, { error: 'enabled must be a boolean' }, 400);
-        updates.push('enabled=?'); params.push(enabled);
-      }
-      // Recompute next_run_at when the spec changed or the schedule is (re)enabled;
-      // clear it when disabled so the loop skips it.
-      if (enabled && (data.schedule_spec !== undefined || !existing.enabled)) {
-        const specRes = validateScheduleSpec(spec);
-        if (!specRes.ok) return json(res, { error: 'invalid_schedule: stored spec is invalid — send schedule_spec' }, 400);
-        updates.push('next_run_at=?', 'last_error=NULL'); params.push(fmtUtc(computeNextRun(specRes.spec, new Date())));
-      } else if (!enabled) {
-        updates.push('next_run_at=NULL');
-      }
-      if (!updates.length) return json(res, { error: 'nothing to update' }, 400);
-      params.push(schedId);
-      db.prepare(`UPDATE room_schedules SET ${updates.join(', ')} WHERE id=?`).run(...params);
-      const row = getSchedule(schedId);
-      changed('updated', row);
-      return json(res, { ok: true, schedule: row });
-    }
-
-    if (req.method === 'DELETE' && schedId) {
-      const row = getSchedule(schedId);
-      if (!row || row.room_id !== roomId) return json(res, { error: 'schedule not found' }, 404);
-      db.prepare('DELETE FROM room_schedules WHERE id=?').run(schedId);
-      changed('deleted', row);
-      return json(res, { ok: true });
-    }
-
+    if (req.method === 'GET' && !schedId) return reply(roomSchedules.list(roomId));
+    if (req.method === 'POST' && !schedId) return reply(roomSchedules.create(roomId, agentId, parseJsonBody(await readBody(req))));
+    if (req.method === 'PATCH' && schedId) return reply(roomSchedules.update(roomId, agentId, schedId, parseJsonBody(await readBody(req))));
+    if (req.method === 'DELETE' && schedId) return reply(roomSchedules.remove(roomId, agentId, schedId));
     return json(res, { error: 'method not allowed' }, 405);
   }
 
