@@ -558,6 +558,11 @@ function handleWsMessage(msg) {
     return;
   }
 
+  if (msg.type === 'room_schedule_changed') {
+    onRoomScheduleChanged(msg.room_id);
+    return;
+  }
+
   if (msg.type === 'sub_agent_updated') {
     const sa = msg.sub_agent;
     if (!sa) return;

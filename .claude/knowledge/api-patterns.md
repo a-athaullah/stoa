@@ -117,6 +117,9 @@ Allowed routes (source: `AGENT_ALLOWED_ROUTES` in `lib/agent-scope.js`):
 | PATCH | `/api/automations/:id` | automation (target automation must target agent's room; new `target_room_id` must also be agent's room) |
 | DELETE | `/api/automations/:id` | automation |
 | GET | `/api/automations/connections` | any (agent gets id/name/provider/status only — no credentials) |
+| GET, POST | `/api/rooms/:id/schedules` | room (POST: `target_actor_id` must be an AI participant of the room) |
+| PATCH, DELETE | `/api/rooms/:id/schedules/:sid` | room (schedule must belong to that room, else 404) |
+| GET | `/api/rooms/:id/schedules/doctor` | room |
 
 **Automation scope notes:** Agents can build and manage automations on behalf of the workspace owner (PR #171, owner decision). Handlers do additional narrowing beyond scope: list filters by participant rooms; create/PATCH reject non-participant `target_room_id` with 403. GET `/api/automations/connections` strips credential/token fields for agent requests. Create/edit/delete connection, test-email, and Slack connect remain session-only. Every agent create/update/delete posts a permanent system message in the target room (suffix `· automation`) so the owner can monitor changes.
 
@@ -136,6 +139,7 @@ Content-Type: application/json  (MCP JSON-RPC)
 - Scoped to `(actor_id, room_id, thread_id, sub_agent_id)` — gateway reads identity from token, not from request body
 - Token injected into agent env as `STOA_MCP_TOKEN`; gateway URL as `STOA_MCP_URL`
 - Sengaja tanpa TTL; revoked when actor/sub_agent/room deleted
+- Issued to every tool-capable session (`toolsSupported !== false`), even with no upstream server installed, because the gateway always serves the built-in `stoa__*` tools
 
 **Admin API** (session cookie, owner only):
 
@@ -466,6 +470,13 @@ UI shows error state with red indicator.
 ---
 
 ## Special Routes
+
+### Scheduled Triggers
+`/api/rooms/:id/schedules[/:sid]` + `/schedules/doctor` — human session or agent secret (scope `room`).
+- Body: `{target_actor_id, task (10..4000), schedule_spec, enabled?}`; spec shapes in `lib/schedule.js` (interval 5..1440 min, daily, weekly `days` 0=Sun, monthly `day` clamps to month end, yearly `month`+`day`, Feb 29 → Feb 28 in non-leap years). Max 20 per room (`400 schedule_limit`, checked in the insert transaction).
+- Every change broadcasts `room_schedule_changed {room_id}`; agent changes also post a system_event ending ` · schedule` (kept by the history filters).
+- One implementation: `lib/room-schedules.js` (`createRoomSchedules` → `access/list/create/update/remove/doctor`, each → `{status, body}`) serves both the HTTP routes and the built-in MCP tools `stoa__schedule_list|create|update|delete|doctor` (`scheduleMcpTools`, passed to `createMcpGateway({ builtinTools })`). MCP tools take room + caller from the token only (`ident.roomId` null → tool error), `target_actor_id` defaults to the caller; results are the HTTP bodies as JSON text, failures `isError`. Built-ins skip grants/overrides/approval, are logged in `mcp_calls` with `server_id NULL, server_slug 'stoa'`. Slug `stoa` is reserved (`BUILTIN_SLUG`; mcp-api create → 400; a legacy row with it is never listed, started or called).
+- Scheduler loop (`schedulerTick`, `SCHED_TICK_MS`, 1 s under run-tests) claims `next_run_at` before firing, then `fireSchedule` → `handleHumanMessage(..., {provider:'schedule', target_actor_id})`. `target_actor_id` makes routing consider ONLY that agent (ignores `notify_on_message`); `@label` of the target's sub-agent still resolves. Skips: `agent_offline`/`agent_busy`/`thread_limit` transient (retry ~2 min), `room_gone`/`archived`/`target_not_participant`/`no_human_participant` keep the next slot; reason saved to `last_error`.
 
 ### Automations
 

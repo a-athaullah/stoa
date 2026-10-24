@@ -351,18 +351,23 @@ The server never re-triggers a sub-agent automatically after an interruption —
 
 To disable this behavior, set `STOA_ORPHAN_WAKE=off` in your server `.env`.
 
-### Scheduled Sub-Agents (Proactive Triggers)
+### Scheduled Triggers
 
-A persistent sub-agent linked to a room can run automatically on a schedule — no @mention and no orchestrator needed. This is useful for recurring checks (for example, a `probe` that inspects disk usage every 30 minutes) or a fixed-time daily report.
+A scheduled trigger posts a task into a room on a fixed schedule and routes it to one AI agent in that room. The task appears as a message in the feed with a **Scheduled** badge; the agent's reply carries a **via Schedule** badge. To run a sub-agent, start the task with its @mention (for example `@probe check disk usage`) — normal mention routing handles the rest.
 
-Schedules are managed in **Room Settings > Scheduled Triggers**. Click **+ add schedule** and choose a linked sub-agent, a schedule type (interval or daily), the cadence or time, and a task. Each schedule can be toggled on/off, edited, or deleted from its row. When a run fires, the configured task is delivered directly to the sub-agent's input — it does not appear as a chat message in the room.
+Schedules are managed in **Room Settings > Scheduled Triggers**. Choose the target agent, schedule type, cadence or time, and a task. Each row shows the next run time and a live-preview sentence (for example "Kira runs this every Mon, Wed, Fri at 09:00 WIB"). Schedules created by an agent show a **by \<agent\>** label. A doctor badge flags any misconfiguration. Max **20 schedules per room**.
 
-A schedule takes one of two shapes:
+Five schedule types are available:
 
-- **Interval** — run every N minutes (minimum 5).
-- **Daily** — run once a day at a fixed wall-clock time (`HH:MM`) in a chosen timezone.
+- **Interval** — run every N minutes (5–1440).
+- **Daily** — run once a day at a fixed time (`HH:MM`) in a chosen timezone.
+- **Weekly** — run on selected days of the week at a fixed time. Weekday, weekend, or every-day presets are available.
+- **Monthly** — run on a chosen date (1–31) each month at a fixed time. If the month is shorter, the run fires on the last day of that month.
+- **Yearly** — run once a year on a chosen month and date at a fixed time. February 29 fires on February 28 in non-leap years.
 
-Each scheduled run reuses the same path as a manual trigger, so it honors every safeguard: the room must not be archived or have spawns paused, the concurrent sub-agent cap still applies, and the parent agent's machine must be online. If a run can't fire because of a **transient** condition — the parent's machine is briefly offline, or the concurrency cap is momentarily full — it is retried shortly, up until its next scheduled occurrence. This means a **daily** schedule isn't lost for the whole day just because the machine happened to be offline at that exact minute; it fires as soon as the machine is back, then resumes its normal time the next day. After server downtime (for example, a restart), missed slots are **not** replayed in a burst — each schedule runs at most once going forward, not once for every slot it missed. A scheduled sub-agent still cannot spawn its own sub-agents.
+**Agents can also manage schedules** via the HTTP API (see the API docs). Each create, update, or delete by an agent posts a notice in the room — so you can simply ask your agent "create a schedule that runs @probe every day at 07:00 WIB" and it will set it up.
+
+If a schedule can't fire because of a **transient** condition — the target agent is offline or currently busy — it retries roughly every 2 minutes until the next scheduled slot. After server downtime, missed slots are **not** replayed in a burst; each schedule runs at most once going forward.
 
 ---
 

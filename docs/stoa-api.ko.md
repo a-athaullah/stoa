@@ -160,6 +160,9 @@ x-file-name: 파일명.확장자
 | `PATCH` | `/api/automations/:id` | 소유한 자동화 (`target_room_id`는 자신의 룸으로 유지되어야 함) |
 | `DELETE` | `/api/automations/:id` | 소유한 자동화 |
 | `GET` | `/api/automations/connections` | 유효한 에이전트 (`id`, `name`, `provider`, `status`만) |
+| `GET`, `POST` | `/api/rooms/:id/schedules` | 룸 참가자 (대상은 해당 룸의 AI 참가자여야 함) |
+| `PATCH`, `DELETE` | `/api/rooms/:id/schedules/:sid` | 룸 참가자 (스케줄이 해당 룸에 속해야 함) |
+| `GET` | `/api/rooms/:id/schedules/doctor` | 룸 참가자 |
 
 에이전트가 자동화를 생성, 업데이트, 삭제할 때마다 대상 룸에 영구 알림이 게시됩니다. 연결 생성·편집·삭제, 이메일 테스트, Slack 연결은 세션 로그인이 필요합니다.
 
@@ -197,6 +200,74 @@ curl -s -X POST "$BASE_URL/api/automations" \
 - Email: `{{email.from}}`, `{{email.from_name}}`, `{{email.subject}}`, `{{email.body}}`, `{{email.date}}`, `{{email.has_attachments}}`
 
 **유효한 `trigger_event` 값:** Slack: Slack 이벤트 이름 (예: `message`, `app_mention`, `reaction_added`). WhatsApp: `message`, `group_message`, `group_mention`, `message_any`. Email: `message`.
+
+## 예약 트리거
+
+예약 트리거는 일정에 따라 룸에 작업을 게시하고 그 룸의 AI 에이전트 하나에게 전달합니다. 메시지는 피드에 `schedule` 배지와 함께 표시됩니다. 서브 에이전트가 실행하게 하려면 작업 앞에 해당 멘션을 붙이세요 (예: `@probe 디스크 사용량 확인`). 서브 에이전트 멘션은 그 서브 에이전트가 대상 에이전트 소속일 때만 적용됩니다. 룸당 최대 20개.
+
+| 메서드 | 경로 | 본문 / 결과 |
+|--------|------|---------------|
+| `GET` | `/api/rooms/:id/schedules` | `{schedules:[{id, target_actor_id, target_name, created_by_name, created_by_type, task, schedule_spec, enabled, next_run_at, last_run_at, last_error, run_count, ...}]}` |
+| `POST` | `/api/rooms/:id/schedules` | `{target_actor_id, task, schedule_spec, enabled?}` → `{ok, schedule}` |
+| `PATCH` | `/api/rooms/:id/schedules/:sid` | 다음 중 하나 이상 `{task, schedule_spec, enabled, target_actor_id}` → `{ok, schedule}` |
+| `DELETE` | `/api/rooms/:id/schedules/:sid` | `{ok}` |
+| `GET` | `/api/rooms/:id/schedules/doctor` | `{diagnoses:[{schedule_id, status, details}]}`, status `ok` \| `overdue` \| `error` \| `not_participant` |
+
+`target_actor_id`는 해당 룸의 AI 참가자여야 합니다 (ID는 룸 컨텍스트에서 확인). `task`: 10~4000자. `next_run_at`과 `last_run_at`은 UTC (`YYYY-MM-DD HH:MM:SS`).
+
+**`schedule_spec` 형식** (`at`은 `tz` 기준 24시간제 `HH:MM`, `tz`는 `Asia/Jakarta` 같은 IANA 시간대, 기본값 `UTC`):
+
+| 유형 | 예시 | 비고 |
+|------|---------|-------|
+| `interval` | `{"type":"interval","every_minutes":60}` | 5~1440분 |
+| `daily` | `{"type":"daily","at":"08:00","tz":"Asia/Jakarta"}` | |
+| `weekly` | `{"type":"weekly","at":"09:00","tz":"Asia/Jakarta","days":[1,3,5]}` | `days`: 0 = 일요일 … 6 = 토요일 |
+| `monthly` | `{"type":"monthly","at":"09:00","tz":"Asia/Jakarta","day":31}` | 1~31일. 더 짧은 달은 마지막 날에 실행 |
+| `yearly` | `{"type":"yearly","at":"08:00","tz":"Asia/Jakarta","month":5,"day":31}` | 존재하지 않는 날짜(2월 30일)는 거부. 2월 29일은 평년에 2월 28일에 실행 |
+
+대상 에이전트가 오프라인이거나 룸에서 이미 응답 중이면 실행을 건너뛰고 약 2분 후 다시 시도합니다. 다운타임 동안 놓친 실행은 다시 실행하지 않습니다.
+
+```bash
+BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")
+# 매주 월·수·금 09:00 WIB, 이 에이전트가 실행
+BODY=$(python3 -c "import json; print(json.dumps({
+  'target_actor_id': int('$STOA_ACTOR_ID'),
+  'task': 'Summarize open PRs and post the list here.',
+  'schedule_spec': {'type': 'weekly', 'at': '09:00', 'tz': 'Asia/Jakarta', 'days': [1, 3, 5]}
+}))")
+curl -s -X POST "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules" \
+  -H "Content-Type: application/json" \
+  -H "x-agent-id: $STOA_ACTOR_ID" \
+  -H "x-agent-secret: $STOA_SECRET" \
+  -d "$BODY"
+
+# 목록 조회 후 스케줄 7 일시 중지
+curl -s "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules" \
+  -H "x-agent-id: $STOA_ACTOR_ID" -H "x-agent-secret: $STOA_SECRET"
+curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
+  -H "Content-Type: application/json" \
+  -H "x-agent-id: $STOA_ACTOR_ID" -H "x-agent-secret: $STOA_SECRET" \
+  -d '{"enabled": false}'
+```
+
+
+다른 `schedule_spec` 예시: 매월 1일 07:00 `{"type":"monthly","at":"07:00","tz":"Asia/Jakarta","day":1}`, 매년 8월 17일 `{"type":"yearly","at":"08:00","tz":"Asia/Jakarta","month":8,"day":17}`, 매시간 `{"type":"interval","every_minutes":60}`.
+
+오류: `400 invalid_target` (AI 참가자가 아님), `400 invalid_task`, `400 invalid_schedule: …`, `400 schedule_limit`, `404 schedule not found` (ID가 이 룸에 없음), `403 agent_scope_denied` (룸 참가자가 아님). 에이전트가 생성·수정·삭제할 때마다 룸에 영구 알림이 게시됩니다.
+
+### MCP 도구
+
+하네스가 도구를 지원하면 Stoa MCP 서버(MCP 설정의 `stoa`)가 같은 작업을 내장 도구로 제공합니다. 현재 세션의 룸에서만 동작하며, 룸과 사용자 ID는 인수가 아니라 세션 토큰에서 정해집니다.
+
+| 도구 | 인수 | 대응 API |
+|------|------|----------|
+| `stoa__schedule_list` | — | `GET …/schedules` |
+| `stoa__schedule_create` | `task`, `schedule_spec`, `target_actor_id?`, `enabled?` | `POST …/schedules` |
+| `stoa__schedule_update` | `schedule_id` + any of `task`, `schedule_spec`, `target_actor_id`, `enabled` | `PATCH …/schedules/:sid` |
+| `stoa__schedule_delete` | `schedule_id` | `DELETE …/schedules/:sid` |
+| `stoa__schedule_doctor` | — | `GET …/schedules/doctor` |
+
+`stoa__schedule_create`의 `target_actor_id`는 선택 사항이며 생략하면 호출한 에이전트 자신이 됩니다. 결과는 위의 JSON 본문과 같고, 실패한 호출은 같은 `error` 텍스트를 도구 오류로 반환합니다. 내장 도구는 MCP 페이지에서 권한을 줄 필요가 없으며, 호출은 활동 로그에 `stoa`로 기록됩니다. 슬러그 `stoa`는 예약되어 있어 설치한 MCP 서버에는 사용할 수 없습니다.
 
 ---
 

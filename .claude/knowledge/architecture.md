@@ -70,7 +70,7 @@ Agent ready to receive commands
 - Parent is **not** woken when a human or automation directly @mentions a sub-agent — unless the same message also mentions the parent explicitly, or the sub-agent finishes with an error
 - Wake is queued durably (survives server restart) via `pending_wakes` table
 - When parent wakes, the sub-agent's result (failure notes, cost summary) is delivered as a task in the parent's input (outside chat history)
-- Tasks from API spawn (`/sub-agent-trigger`) and scheduler are delivered to the sub-agent as a task input (outside chat history)
+- Tasks from API spawn (`/sub-agent-trigger`) are delivered to the sub-agent as a task input (outside chat history). Scheduled triggers (`room_schedules`) post a room message routed to their target agent; an `@label` in the task reaches the sub-agent through normal mention routing
 - Mentions inside inline code (backticks) or code fences (``` or ~~~) are never treated as triggers; unclosed fences/backticks have no suppressing effect
 
 ### Sub-Agent Team (Room 2638)
@@ -193,6 +193,7 @@ Agent (Claude/Codex)
     → auth: token_hash lookup (mcp_tokens), scope = (actor, room, thread, sub_agent)
     → policy: sub_agent → agent → room → server default_access; deny wins
     → router: stoa tool (e.g. context7__resolve-library-id) → upstream client
+              stoa__<tool> → built-in handler (scheduled triggers, lib/room-schedules.js), no upstream
     → audit: INSERT mcp_calls (args_preview redacted, capped at 2 KB)
 ```
 

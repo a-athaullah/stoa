@@ -352,18 +352,23 @@ Server tidak pernah men-trigger ulang sub-agent secara otomatis setelah interups
 
 Untuk menonaktifkan perilaku ini, set `STOA_ORPHAN_WAKE=off` di `.env` server.
 
-### Sub-Agent Terjadwal (Proactive Trigger)
+### Scheduled Triggers
 
-Sub-agent persisten yang sudah di-link ke room bisa berjalan otomatis sesuai jadwal — tanpa @mention dan tanpa orchestrator. Ini berguna untuk pengecekan berkala (misalnya `probe` yang memeriksa penggunaan disk setiap 30 menit) atau laporan harian pada jam tetap.
+Scheduled trigger memposting task ke room sesuai jadwal dan mengirimkannya ke satu AI agent di room tersebut. Task muncul sebagai pesan di feed dengan badge **Scheduled**; balasan agent membawa badge **via Schedule**. Untuk menjalankan sub-agent, awali task dengan @mention-nya (misalnya `@probe cek disk usage`) — routing mention normal akan menangani sisanya.
 
-Jadwal dikelola di **Room Settings > Scheduled Triggers**. Klik **+ add schedule** lalu pilih sub-agent yang sudah di-link, tipe jadwal (interval atau harian), cadence atau waktu, dan task. Setiap jadwal bisa di-toggle on/off, diedit, atau dihapus dari barisnya. Saat sebuah run terpicu, task yang dikonfigurasi dikirimkan langsung ke input sub-agent — tidak muncul sebagai pesan chat di room.
+Jadwal dikelola di **Room Settings > Scheduled Triggers**. Pilih agent target, tipe jadwal, cadence atau waktu, dan task. Setiap baris menampilkan waktu run berikutnya dan kalimat preview langsung (misalnya "Kira runs this every Mon, Wed, Fri at 09:00 WIB"). Jadwal yang dibuat oleh agent menampilkan label **by \<agent\>**. Badge dokter menandai konfigurasi yang bermasalah. Maksimal **20 jadwal per room**.
 
-Jadwal punya salah satu dari dua bentuk:
+Lima tipe jadwal tersedia:
 
-- **Interval** — berjalan setiap N menit (minimum 5).
-- **Harian** — berjalan sekali sehari pada jam dinding tetap (`HH:MM`) di timezone yang dipilih.
+- **Interval** — berjalan setiap N menit (5–1440).
+- **Harian** — berjalan sekali sehari pada jam tetap (`HH:MM`) di timezone yang dipilih.
+- **Mingguan** — berjalan pada hari-hari tertentu setiap minggu pada jam tetap. Tersedia preset hari kerja, akhir pekan, atau setiap hari.
+- **Bulanan** — berjalan pada tanggal tertentu (1–31) setiap bulan pada jam tetap. Jika bulan lebih pendek, run terjadi di hari terakhir bulan itu.
+- **Tahunan** — berjalan sekali setahun pada bulan dan tanggal yang dipilih pada jam tetap. 29 Februari berjalan pada 28 Februari di tahun non-kabisat.
 
-Setiap eksekusi terjadwal memakai jalur yang sama dengan trigger manual, jadi semua pengaman tetap berlaku: room tidak boleh diarsipkan atau sedang pause spawns, batas sub-agent konkuren tetap berlaku, dan mesin agent induk harus online. Jika sebuah run tidak bisa jalan karena kondisi **sementara** — mesin induk sedang offline sebentar, atau batas konkuren kebetulan penuh — run itu dicoba lagi tak lama kemudian, sampai batas jadwal berikutnya. Artinya jadwal **harian** tidak hilang seharian penuh hanya karena mesin kebetulan offline persis di menit itu; ia jalan begitu mesin kembali online, lalu lanjut ke waktu normalnya keesokan hari. Setelah downtime (misalnya restart), slot yang terlewat **tidak** ditembakkan sekaligus — tiap jadwal berjalan paling banyak sekali ke depan, bukan sekali untuk setiap slot yang terlewat. Sub-agent terjadwal tetap tidak bisa memunculkan sub-agent-nya sendiri.
+**Agent juga bisa mengelola jadwal** lewat HTTP API (lihat docs API). Setiap buat, ubah, atau hapus oleh agent memposting notice di room — jadi kamu cukup minta agent "buatkan jadwal yang menjalankan @probe setiap hari jam 07:00 WIB" dan agent akan mengaturnya.
+
+Jika jadwal tidak bisa jalan karena kondisi **sementara** — agent target offline atau sedang sibuk — dicoba lagi sekitar setiap 2 menit sampai slot jadwal berikutnya. Setelah downtime server, slot yang terlewat **tidak** ditembakkan sekaligus; tiap jadwal berjalan paling banyak sekali ke depan.
 
 ---
 

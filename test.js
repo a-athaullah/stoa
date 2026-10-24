@@ -499,6 +499,8 @@ function runUnitTests() {
   });
   ut('validateScheduleSpec — bad shapes rejected', () => {
     assert.ok(!validateScheduleSpec({ type: 'weekly' }).ok);
+    assert.ok(!validateScheduleSpec({ type: 'cron', at: '08:00' }).ok);
+    assert.ok(!validateScheduleSpec({ type: 'constructor', at: '08:00' }).ok);
     assert.ok(!validateScheduleSpec(null).ok);
     assert.ok(!validateScheduleSpec([]).ok);
     assert.ok(!validateScheduleSpec('x').ok);
@@ -523,11 +525,94 @@ function runUnitTests() {
     assert.strictEqual(computeNextRun(spec, new Date('2026-09-01T02:00:00Z')).toISOString(), '2026-09-02T01:00:00.000Z');
   });
 
+  ut('validateScheduleSpec — weekly days normalized sorted; empty/dup/out-of-range/extra rejected', () => {
+    const r = validateScheduleSpec({ type: 'weekly', at: '09:00', tz: 'Asia/Jakarta', days: [5, 1, 3] });
+    assert.ok(r.ok, r.error);
+    assert.deepStrictEqual(r.spec, { type: 'weekly', at: '09:00', tz: 'Asia/Jakarta', days: [1, 3, 5] });
+    assert.ok(!validateScheduleSpec({ type: 'weekly', at: '09:00', days: [] }).ok);
+    assert.ok(!validateScheduleSpec({ type: 'weekly', at: '09:00', days: [1, 1] }).ok);
+    assert.ok(!validateScheduleSpec({ type: 'weekly', at: '09:00', days: [7] }).ok);
+    assert.ok(!validateScheduleSpec({ type: 'weekly', at: '09:00', days: ['1'] }).ok);
+    assert.ok(!validateScheduleSpec({ type: 'weekly', at: '09:00', days: [1], day: 3 }).ok);
+  });
+  ut('validateScheduleSpec — monthly day 1..31; yearly rejects impossible dates, accepts Feb 29', () => {
+    assert.deepStrictEqual(validateScheduleSpec({ type: 'monthly', at: '07:30', day: 31 }).spec, { type: 'monthly', at: '07:30', tz: 'UTC', day: 31 });
+    assert.ok(!validateScheduleSpec({ type: 'monthly', at: '07:30', day: 0 }).ok);
+    assert.ok(!validateScheduleSpec({ type: 'monthly', at: '07:30', day: 32 }).ok);
+    assert.ok(!validateScheduleSpec({ type: 'monthly', at: '07:30', day: 5, month: 1 }).ok);
+    assert.ok(validateScheduleSpec({ type: 'yearly', at: '00:00', month: 2, day: 29 }).ok);
+    assert.ok(!validateScheduleSpec({ type: 'yearly', at: '00:00', month: 2, day: 30 }).ok);
+    assert.ok(!validateScheduleSpec({ type: 'yearly', at: '00:00', month: 4, day: 31 }).ok);
+    assert.ok(!validateScheduleSpec({ type: 'yearly', at: '00:00', month: 13, day: 1 }).ok);
+    assert.ok(!validateScheduleSpec({ type: 'yearly', at: '00:00', day: 1 }).ok);
+  });
+  ut('computeNextRun — weekly WIB: rolls to the next listed weekday, slot itself is excluded', () => {
+    const spec = { type: 'weekly', at: '09:00', tz: 'Asia/Jakarta', days: [1, 3, 5] }; // Mon, Wed, Fri
+    // Sat 2026-10-24 07:00 WIB → Mon 2026-10-26 09:00 WIB = 02:00 UTC
+    assert.strictEqual(computeNextRun(spec, new Date('2026-10-24T00:00:00Z')).toISOString(), '2026-10-26T02:00:00.000Z');
+    // exactly Mon 09:00 WIB → Wed
+    assert.strictEqual(computeNextRun(spec, new Date('2026-10-26T02:00:00Z')).toISOString(), '2026-10-28T02:00:00.000Z');
+    // Fri after the slot → next Mon (week rollover)
+    assert.strictEqual(computeNextRun(spec, new Date('2026-10-30T03:00:00Z')).toISOString(), '2026-11-02T02:00:00.000Z');
+    // tz date differs from UTC date: Sun 2026-10-25 20:00 UTC = Mon 03:00 WIB → Mon 09:00 WIB same day
+    assert.strictEqual(computeNextRun(spec, new Date('2026-10-25T20:00:00Z')).toISOString(), '2026-10-26T02:00:00.000Z');
+  });
+  ut('computeNextRun — weekly single day a full week out', () => {
+    const spec = { type: 'weekly', at: '10:00', tz: 'UTC', days: [6] }; // Sat
+    assert.strictEqual(computeNextRun(spec, new Date('2026-10-24T10:00:00Z')).toISOString(), '2026-10-31T10:00:00.000Z');
+  });
+  ut('computeNextRun — monthly day 31 clamps to month end (Feb non-leap/leap, Apr)', () => {
+    const spec = { type: 'monthly', at: '09:00', tz: 'UTC', day: 31 };
+    assert.strictEqual(computeNextRun(spec, new Date('2026-02-01T00:00:00Z')).toISOString(), '2026-02-28T09:00:00.000Z');
+    assert.strictEqual(computeNextRun(spec, new Date('2028-02-01T00:00:00Z')).toISOString(), '2028-02-29T09:00:00.000Z');
+    assert.strictEqual(computeNextRun(spec, new Date('2026-04-10T00:00:00Z')).toISOString(), '2026-04-30T09:00:00.000Z');
+    // after the clamped slot → next month's real 31st
+    assert.strictEqual(computeNextRun(spec, new Date('2026-04-30T09:00:00Z')).toISOString(), '2026-05-31T09:00:00.000Z');
+    // December → January rollover
+    assert.strictEqual(computeNextRun(spec, new Date('2026-12-31T10:00:00Z')).toISOString(), '2027-01-31T09:00:00.000Z');
+  });
+  ut('computeNextRun — monthly WIB slot on the 1st lands on the previous UTC day', () => {
+    const spec = { type: 'monthly', at: '06:00', tz: 'Asia/Jakarta', day: 1 };
+    assert.strictEqual(computeNextRun(spec, new Date('2026-10-24T00:00:00Z')).toISOString(), '2026-10-31T23:00:00.000Z');
+  });
+  ut('computeNextRun — yearly: this year, next year, Feb 29 → Feb 28 in non-leap years', () => {
+    const anniv = { type: 'yearly', at: '08:00', tz: 'Asia/Jakarta', month: 5, day: 31 };
+    assert.strictEqual(computeNextRun(anniv, new Date('2026-10-24T00:00:00Z')).toISOString(), '2027-05-31T01:00:00.000Z');
+    assert.strictEqual(computeNextRun(anniv, new Date('2027-01-01T00:00:00Z')).toISOString(), '2027-05-31T01:00:00.000Z');
+    const leap = { type: 'yearly', at: '00:00', tz: 'UTC', month: 2, day: 29 };
+    assert.strictEqual(computeNextRun(leap, new Date('2027-01-01T00:00:00Z')).toISOString(), '2027-02-28T00:00:00.000Z');
+    assert.strictEqual(computeNextRun(leap, new Date('2027-02-28T00:00:00Z')).toISOString(), '2028-02-29T00:00:00.000Z');
+  });
+  ut('computeNextRun — DST zone keeps the wall clock (New York 09:00 EDT → EST)', () => {
+    const spec = { type: 'weekly', at: '09:00', tz: 'America/New_York', days: [1] };
+    assert.strictEqual(computeNextRun(spec, new Date('2026-10-27T00:00:00Z')).toISOString(), '2026-11-02T14:00:00.000Z'); // EST
+    assert.strictEqual(computeNextRun(spec, new Date('2026-10-20T00:00:00Z')).toISOString(), '2026-10-26T13:00:00.000Z'); // EDT
+  });
+  ut('describeSchedule — readable cadence labels for every type', () => {
+    const { describeSchedule } = schedule;
+    assert.strictEqual(describeSchedule({ type: 'interval', every_minutes: 30 }), 'every 30 min');
+    assert.strictEqual(describeSchedule({ type: 'daily', at: '08:00', tz: 'UTC' }), 'daily 08:00 UTC');
+    assert.strictEqual(describeSchedule({ type: 'weekly', at: '09:00', tz: 'Asia/Jakarta', days: [1, 5] }), 'weekly Mon, Fri 09:00 Asia/Jakarta');
+    assert.strictEqual(describeSchedule({ type: 'monthly', at: '09:00', tz: 'UTC', day: 31 }), 'monthly day 31 09:00 UTC');
+    assert.strictEqual(describeSchedule({ type: 'yearly', at: '09:00', tz: 'UTC', month: 2, day: 29 }), 'yearly Feb 29 09:00 UTC');
+    assert.strictEqual(describeSchedule(null), 'schedule');
+  });
+  ut('diagnoseSchedule — precedence not_participant > overdue > error > ok', () => {
+    const { diagnoseSchedule } = schedule;
+    const now = Date.parse('2026-10-24T12:00:00Z');
+    const base = { enabled: 1, next_run_at: '2026-10-24 11:50:00', last_error: null, is_participant: 1 };
+    assert.strictEqual(diagnoseSchedule(base, now).status, 'ok', '10 min late is within grace');
+    assert.strictEqual(diagnoseSchedule({ ...base, next_run_at: '2026-10-24 11:40:00' }, now).status, 'overdue');
+    assert.strictEqual(diagnoseSchedule({ ...base, enabled: 0, next_run_at: '2026-10-24 11:40:00' }, now).status, 'ok', 'disabled is never overdue');
+    assert.strictEqual(diagnoseSchedule({ ...base, last_error: 'skipped: agent_offline' }, now).details, 'skipped: agent_offline');
+    assert.strictEqual(diagnoseSchedule({ ...base, next_run_at: '2026-10-24 11:40:00', is_participant: 0 }, now).status, 'not_participant');
+  });
+
   const { nextRunAfterSkip } = schedule;
   ut('nextRunAfterSkip — transient skip retries at now+retryMs (grace window)', () => {
     const now = new Date('2026-09-01T08:00:00Z');
     const nextSlot = new Date('2026-09-02T08:00:00Z'); // daily: far away
-    for (const s of ['parent_offline', 'max_concurrent', 'self_overlap']) {
+    for (const s of ['agent_offline', 'agent_busy', 'thread_limit']) {
       const r = nextRunAfterSkip(s, nextSlot, now, 120000);
       assert.strictEqual(r.toISOString(), '2026-09-01T08:02:00.000Z', `transient ${s} should retry in 2min`);
     }
@@ -535,13 +620,13 @@ function runUnitTests() {
   ut('nextRunAfterSkip — retry is capped at nextSlot (never overshoots)', () => {
     const now = new Date('2026-09-01T08:00:00Z');
     const nextSlot = new Date('2026-09-01T08:01:00Z'); // interval-ish: slot sooner than retryMs
-    const r = nextRunAfterSkip('parent_offline', nextSlot, now, 120000);
+    const r = nextRunAfterSkip('agent_offline', nextSlot, now, 120000);
     assert.strictEqual(r.toISOString(), '2026-09-01T08:01:00.000Z', 'retry must not exceed nextSlot');
   });
   ut('nextRunAfterSkip — non-transient skip keeps the far next slot', () => {
     const now = new Date('2026-09-01T08:00:00Z');
     const nextSlot = new Date('2026-09-02T08:00:00Z');
-    for (const s of ['archived', 'paused', 'unlinked_or_disabled', 'room_gone']) {
+    for (const s of ['archived', 'target_not_participant', 'no_human_participant', 'room_gone']) {
       const r = nextRunAfterSkip(s, nextSlot, now, 120000);
       assert.strictEqual(r.toISOString(), '2026-09-02T08:00:00.000Z', `non-transient ${s} must keep nextSlot`);
     }
@@ -1728,6 +1813,9 @@ function runUnitTests() {
       assert.deepStrictEqual(matchAgentRoute('GET', '/api/automations'), { scope: 'any', id: null });
       assert.deepStrictEqual(matchAgentRoute('POST', '/api/upload/raw'), { scope: 'any', id: null });
       assert.deepStrictEqual(matchAgentRoute('GET', '/api/docs/stoa-api.ja.md'), { scope: 'any', id: null });
+      assert.deepStrictEqual(matchAgentRoute('POST', '/api/rooms/12/schedules'), { scope: 'room', id: 12 });
+      assert.deepStrictEqual(matchAgentRoute('DELETE', '/api/rooms/12/schedules/3'), { scope: 'room', id: 12 });
+      assert.deepStrictEqual(matchAgentRoute('GET', '/api/rooms/12/schedules/doctor'), { scope: 'room', id: 12 });
     });
     ut('agent-scope — wrong method, suffix, or admin route → null', () => {
       assert.strictEqual(matchAgentRoute('DELETE', '/api/rooms/12/message'), null);
@@ -1740,6 +1828,9 @@ function runUnitTests() {
       assert.strictEqual(matchAgentRoute('POST', '/api/automations/connections/test-email'), null);
       assert.strictEqual(matchAgentRoute('DELETE', '/api/automations/connections/3'), null);
       assert.strictEqual(matchAgentRoute('PATCH', '/api/automations/7/x'), null);
+      assert.strictEqual(matchAgentRoute('PUT', '/api/rooms/12/schedules/3'), null);
+      assert.strictEqual(matchAgentRoute('PATCH', '/api/rooms/12/schedules'), null);
+      assert.strictEqual(matchAgentRoute('GET', '/api/rooms/12/sub-agent-schedules'), null);
       assert.strictEqual(matchAgentRoute('GET', '/api/docs/../settings'), null);
       assert.strictEqual(matchAgentRoute(undefined, '/api/upload/raw'), null);
     });
@@ -5591,235 +5682,350 @@ async function run() {
     });
   }
 
-  // ── Phase 6: proactive schedules (sub_agent_schedules CRUD) ────────────────
-  // Requires migration 20260901-sub-agent-schedules.sql applied.
-  console.log('\n[Sub-agent schedules]');
+  // ── Scheduled triggers v2 (room_schedules CRUD, agent access, real firing) ──
+  // Firing tests rely on run-tests.js setting SCHED_TICK_MS=1000 (prod: 30 s).
+  console.log('\n[Scheduled triggers]');
   {
-    let ssActorId = null, ssSecret = null, ssWorkdirId = null, ssRoomId = null;
-    let ssSubAgent = null, ssAgentWs = null, ssSchedId = null;
+    const sDb = require('./db');
+    let agA = null, agC = null, agOut = null, roomId = null, outRoomId = null, subAgent = null;
+    const createdIds = [];
+    const asAgent = async (ag, method, p, body = null) => {
+      const s = sessionCookie, d = deviceCookie;
+      sessionCookie = null; deviceCookie = null;
+      try { return await req(method, p, body, { 'x-agent-id': String(ag.actorId), 'x-agent-secret': ag.secret }); }
+      finally { sessionCookie = s; deviceCookie = d; }
+    };
+    const base = () => `/api/rooms/${roomId}/schedules`;
+    const ready = () => !!(agA && agC && roomId);
+    const waitFor = async (fn, timeoutMs = 8000) => {
+      const end = Date.now() + timeoutMs;
+      for (;;) {
+        const v = fn();
+        if (v) return v;
+        if (Date.now() > end) return null;
+        await new Promise(r => setTimeout(r, 200));
+      }
+    };
+    const row = (id) => sDb.prepare('SELECT * FROM room_schedules WHERE id=?').get(id);
+    const makeDue = (id) => sDb.prepare("UPDATE room_schedules SET next_run_at=datetime('now','-1 minute') WHERE id=?").run(id);
 
-    // Agent-header request WITHOUT a human cookie — exercises the human-only gate.
-    const agentReq = (method, path, agentId, secret) => new Promise((resolve, reject) => {
-      const r = http.request({ hostname: HOST, port: PORT, path, method,
-        headers: { 'Content-Type': 'application/json', 'x-agent-id': String(agentId), 'x-agent-secret': secret, 'Content-Length': '0' } },
-        res => { let d = ''; res.on('data', c => d += c); res.on('end', () => { let b; try { b = JSON.parse(d); } catch { b = d; } resolve({ status: res.statusCode, body: b }); }); });
-      r.on('error', reject); r.end();
+    await test('Schedules — setup: room with agents A + C, agent Out in another room', async () => {
+      agA = await createOnlineTestAgent('__test-sched-a', '/tmp/stoa-test-sched-a');
+      agC = await createOnlineTestAgent('__test-sched-c', '/tmp/stoa-test-sched-c');
+      agOut = await createOnlineTestAgent('__test-sched-out', '/tmp/stoa-test-sched-out');
+      assert.ok(agA?.workdirId && agC?.workdirId && agOut?.workdirId, 'agent setup failed');
+      const r = await req('POST', '/api/rooms', { title: '__sched-room__', workdir_id: agA.workdirId, participant_ids: [agA.actorId, agC.actorId] });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      roomId = r.body.id;
+      const o = await req('POST', '/api/rooms', { title: '__sched-out-room__', workdir_id: agOut.workdirId, participant_ids: [agOut.actorId] });
+      assert.strictEqual(o.status, 200);
+      outRoomId = o.body.id;
+      const sa = await req('POST', `/api/actors/${agA.actorId}/sub-agents`, { label: 'schedprobe', tier: 'quick' });
+      assert.strictEqual(sa.status, 201, JSON.stringify(sa.body));
+      subAgent = sa.body;
+      assert.strictEqual((await req('POST', `/api/rooms/${roomId}/sub-agents`, { sub_agent_id: subAgent.id })).status, 200);
     });
 
-    await test('Setup — register test agent + room + linked sub-agent', async () => {
-      const agent = await createOnlineTestAgent('__test-sched', '/tmp/stoa-test-sched');
-      if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
-      ssActorId = agent.actorId; ssSecret = agent.secret; ssWorkdirId = agent.workdirId; ssAgentWs = agent.ws;
-      const r = await req('POST', '/api/rooms', { title: '__sched-room__', workdir_id: ssWorkdirId, participant_ids: [ssActorId] });
+    await test('Schedules — migration: room_schedules exists, sub_agent_schedules dropped, old route gone', async () => {
+      assert.ok(sDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='room_schedules'").get());
+      assert.ok(!sDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sub_agent_schedules'").get());
+      const cols = sDb.prepare('PRAGMA table_info(room_schedules)').all().map(c => c.name);
+      for (const c of ['target_actor_id', 'created_by_actor_id', 'run_count', 'last_error']) assert.ok(cols.includes(c), c);
+      if (roomId) assert.notStrictEqual((await req('GET', `/api/rooms/${roomId}/sub-agent-schedules`)).status, 200);
+    });
+
+    await test('Schedules — POST every type → 200 with a next_run_at that honours the spec', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const wd = (new Date().getUTCDay() + 3) % 7;
+      const specs = [
+        { type: 'interval', every_minutes: 30 },
+        { type: 'daily', at: '08:00', tz: 'Asia/Jakarta' },
+        { type: 'weekly', at: '12:00', tz: 'UTC', days: [wd] },
+        { type: 'monthly', at: '09:00', tz: 'UTC', day: 31 },
+        { type: 'yearly', at: '00:00', tz: 'UTC', month: 2, day: 29 },
+      ];
+      for (const spec of specs) {
+        const r = await req('POST', base(), { target_actor_id: agA.actorId, task: `laporan berkala ${spec.type}`, schedule_spec: spec });
+        assert.strictEqual(r.status, 200, `${spec.type}: ${JSON.stringify(r.body)}`);
+        createdIds.push(r.body.schedule.id);
+        const next = new Date(r.body.schedule.next_run_at.replace(' ', 'T') + 'Z');
+        assert.ok(next > new Date(), `${spec.type}: next_run_at must be in the future`);
+        if (spec.type === 'weekly') assert.strictEqual(next.getUTCDay(), wd, 'weekly lands on the chosen weekday');
+        if (spec.type === 'monthly') {
+          const last = new Date(Date.UTC(next.getUTCFullYear(), next.getUTCMonth() + 1, 0)).getUTCDate();
+          assert.strictEqual(next.getUTCDate(), Math.min(31, last), 'monthly 31 = last day of month');
+        }
+        if (spec.type === 'yearly') {
+          assert.strictEqual(next.getUTCMonth(), 1);
+          const y = next.getUTCFullYear();
+          const leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+          assert.strictEqual(next.getUTCDate(), leap ? 29 : 28, 'Feb 29 → Feb 28 in non-leap years');
+        }
+      }
+      const weekly = createdIds[2];
+      assert.deepStrictEqual(row(weekly).schedule_spec, JSON.stringify({ type: 'weekly', at: '12:00', tz: 'UTC', days: [wd] }));
+    });
+
+    await test('Schedules — POST rejects bad target / task / spec / enabled', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const ok = { target_actor_id: agA.actorId, task: 'cek disk usage lalu lapor', schedule_spec: { type: 'interval', every_minutes: 30 } };
+      const human = sDb.prepare("SELECT id FROM actors WHERE type='human' LIMIT 1").get().id;
+      for (const [body, err] of [
+        [{ ...ok, target_actor_id: agOut.actorId }, /^invalid_target/],
+        [{ ...ok, target_actor_id: human }, /^invalid_target/],
+        [{ ...ok, target_actor_id: 'abc' }, /target_actor_id required/],
+        [{ ...ok, task: 'test' }, /^invalid_task$/],
+        [{ ...ok, task: 'x'.repeat(4001) }, /^invalid_task$/],
+        [{ ...ok, task: 12345678901 }, /^invalid_task$/],
+        [{ ...ok, schedule_spec: { type: 'yearly', at: '09:00', month: 2, day: 30 } }, /^invalid_schedule/],
+        [{ ...ok, schedule_spec: { type: 'weekly', at: '09:00', days: [] } }, /^invalid_schedule/],
+        [{ ...ok, enabled: 'yes' }, /enabled must be a boolean/],
+      ]) {
+        const r = await req('POST', base(), body);
+        assert.strictEqual(r.status, 400, `${JSON.stringify(body).slice(0, 80)} → ${r.status}`);
+        assert.match(String(r.body.error), err);
+      }
+      assert.strictEqual((await req('POST', '/api/rooms/99999999/schedules', ok)).status, 404);
+    });
+
+    await test('Schedules — POST enabled:false stores no next_run_at', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const r = await req('POST', base(), { target_actor_id: agC.actorId, task: 'jadwal yang dimatikan', schedule_spec: { type: 'daily', at: '07:00' }, enabled: false });
       assert.strictEqual(r.status, 200);
-      ssRoomId = r.body.id;
-      const sa = await req('POST', `/api/actors/${ssActorId}/sub-agents`, { label: 'probe', tier: 'quick' });
-      assert.strictEqual(sa.status, 201, `sub-agent create failed: ${JSON.stringify(sa.body)}`);
-      ssSubAgent = sa.body;
-      const link = await req('POST', `/api/rooms/${ssRoomId}/sub-agents`, { sub_agent_id: ssSubAgent.id });
-      assert.strictEqual(link.status, 200);
-      if (ssAgentWs) { ssAgentWs.close(); ssAgentWs = null; }
-    });
-
-    await test('Migration applied — sub_agent_schedules table exists', async () => {
-      const db = require('./db');
-      const tbl = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sub_agent_schedules'").get();
-      assert.ok(tbl, 'migration 20260901-sub-agent-schedules not applied — restart the server');
-    });
-
-    await test('POST schedule — interval valid → 200, next_run_at set, spec round-trips', async () => {
-      if (!ssRoomId || !ssSubAgent) { console.log('    (skipped)'); return; }
-      const r = await req('POST', `/api/rooms/${ssRoomId}/sub-agent-schedules`,
-        { sub_agent_id: ssSubAgent.id, task: 'cek disk usage lalu lapor', schedule_spec: { type: 'interval', every_minutes: 30 } });
-      assert.strictEqual(r.status, 200, `create failed: ${JSON.stringify(r.body)}`);
-      assert.ok(r.body.schedule.next_run_at, 'next_run_at must be set on enabled schedule');
-      assert.deepStrictEqual(r.body.schedule.schedule_spec, { type: 'interval', every_minutes: 30 });
-      ssSchedId = r.body.schedule.id;
-    });
-
-    await test('POST schedule — invalid task (too short) → 400', async () => {
-      if (!ssRoomId || !ssSubAgent) { console.log('    (skipped)'); return; }
-      const r = await req('POST', `/api/rooms/${ssRoomId}/sub-agent-schedules`,
-        { sub_agent_id: ssSubAgent.id, task: 'test', schedule_spec: { type: 'interval', every_minutes: 30 } });
-      assert.strictEqual(r.status, 400);
-      assert.strictEqual(r.body.error, 'invalid_task');
-    });
-
-    await test('POST schedule — interval below floor → 400', async () => {
-      if (!ssRoomId || !ssSubAgent) { console.log('    (skipped)'); return; }
-      const r = await req('POST', `/api/rooms/${ssRoomId}/sub-agent-schedules`,
-        { sub_agent_id: ssSubAgent.id, task: 'cek sesuatu berkala', schedule_spec: { type: 'interval', every_minutes: 1 } });
-      assert.strictEqual(r.status, 400);
-      assert.ok(String(r.body.error).startsWith('invalid_schedule'));
-    });
-
-    await test('POST schedule — daily valid → 200', async () => {
-      if (!ssRoomId || !ssSubAgent) { console.log('    (skipped)'); return; }
-      const r = await req('POST', `/api/rooms/${ssRoomId}/sub-agent-schedules`,
-        { sub_agent_id: ssSubAgent.id, task: 'laporan harian pagi', schedule_spec: { type: 'daily', at: '08:00', tz: 'Asia/Jakarta' } });
-      assert.strictEqual(r.status, 200, `daily create failed: ${JSON.stringify(r.body)}`);
-      assert.strictEqual(r.body.schedule.schedule_spec.tz, 'Asia/Jakarta');
-      // clean this one up immediately to keep the list deterministic
-      await req('DELETE', `/api/rooms/${ssRoomId}/sub-agent-schedules/${r.body.schedule.id}`);
-    });
-
-    await test('POST schedule — sub-agent not in room → 404', async () => {
-      if (!ssRoomId) { console.log('    (skipped)'); return; }
-      const r = await req('POST', `/api/rooms/${ssRoomId}/sub-agent-schedules`,
-        { sub_agent_id: 99999999, task: 'sesuatu yang valid', schedule_spec: { type: 'interval', every_minutes: 30 } });
-      assert.strictEqual(r.status, 404);
-    });
-
-    await test('POST schedule — agent-header auth rejected (human-only) → 403', async () => {
-      if (!ssRoomId || !ssActorId) { console.log('    (skipped)'); return; }
-      const r = await agentReq('POST', `/api/rooms/${ssRoomId}/sub-agent-schedules`, ssActorId, ssSecret);
-      assert.strictEqual(r.status, 403, `expected 403 for agent auth, got ${r.status}`);
-    });
-
-    await test('GET schedules — lists the interval schedule with label', async () => {
-      if (!ssRoomId || !ssSchedId) { console.log('    (skipped)'); return; }
-      const r = await req('GET', `/api/rooms/${ssRoomId}/sub-agent-schedules`);
-      assert.strictEqual(r.status, 200);
-      assert.strictEqual(r.body.schedules.length, 1);
-      assert.strictEqual(r.body.schedules[0].sub_agent_label, 'probe');
-      assert.strictEqual(r.body.schedules[0].schedule_spec.every_minutes, 30);
-    });
-
-    await test('PATCH schedule — disable clears next_run_at', async () => {
-      if (!ssSchedId) { console.log('    (skipped)'); return; }
-      const r = await req('PATCH', `/api/rooms/${ssRoomId}/sub-agent-schedules/${ssSchedId}`, { enabled: false });
-      assert.strictEqual(r.status, 200);
+      createdIds.push(r.body.schedule.id);
       assert.strictEqual(r.body.schedule.enabled, 0);
-      assert.strictEqual(r.body.schedule.next_run_at, null, 'disabled schedule must clear next_run_at');
+      assert.strictEqual(r.body.schedule.next_run_at, null);
     });
 
-    await test('PATCH schedule — re-enable recomputes next_run_at', async () => {
-      if (!ssSchedId) { console.log('    (skipped)'); return; }
-      const r = await req('PATCH', `/api/rooms/${ssRoomId}/sub-agent-schedules/${ssSchedId}`, { enabled: true });
+    await test('Schedules — GET lists names, creator type and parsed spec', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const r = await req('GET', base());
       assert.strictEqual(r.status, 200);
-      assert.strictEqual(r.body.schedule.enabled, 1);
-      assert.ok(r.body.schedule.next_run_at, 're-enabled schedule must have next_run_at');
+      assert.strictEqual(r.body.schedules.length, createdIds.length);
+      const first = r.body.schedules.find(s => s.id === createdIds[0]);
+      assert.strictEqual(first.target_name, '__test-sched-a');
+      assert.strictEqual(first.created_by_type, 'human');
+      assert.ok(first.created_by_name);
+      assert.deepStrictEqual(first.schedule_spec, { type: 'interval', every_minutes: 30 });
+      assert.strictEqual(first.run_count, 0);
     });
 
-    await test('PATCH schedule — invalid spec → 400', async () => {
-      if (!ssSchedId) { console.log('    (skipped)'); return; }
-      const r = await req('PATCH', `/api/rooms/${ssRoomId}/sub-agent-schedules/${ssSchedId}`,
-        { schedule_spec: { type: 'daily', at: '99:99' } });
+    await test('Schedules — PATCH: disable clears, re-enable recomputes, retarget validated', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const id = createdIds[0];
+      let r = await req('PATCH', `${base()}/${id}`, { enabled: false });
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.schedule.next_run_at, null);
+      r = await req('PATCH', `${base()}/${id}`, { enabled: true });
+      assert.ok(r.body.schedule.next_run_at, 're-enable must set next_run_at');
+      r = await req('PATCH', `${base()}/${id}`, { target_actor_id: agC.actorId });
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.schedule.target_name, '__test-sched-c');
+      r = await req('PATCH', `${base()}/${id}`, { target_actor_id: agOut.actorId });
       assert.strictEqual(r.status, 400);
-    });
-
-    await test('DELETE schedule — removes it', async () => {
-      if (!ssSchedId) { console.log('    (skipped)'); return; }
-      const r = await req('DELETE', `/api/rooms/${ssRoomId}/sub-agent-schedules/${ssSchedId}`);
+      assert.strictEqual(row(id).target_actor_id, agC.actorId, 'rejected retarget must not write');
+      r = await req('PATCH', `${base()}/${id}`, { schedule_spec: { type: 'monthly', at: '09:00', day: 0 } });
+      assert.strictEqual(r.status, 400);
+      r = await req('PATCH', `${base()}/${id}`, { schedule_spec: { type: 'monthly', at: '09:00', tz: 'Asia/Jakarta', day: 15 } });
       assert.strictEqual(r.status, 200);
-      const r2 = await req('GET', `/api/rooms/${ssRoomId}/sub-agent-schedules`);
-      assert.strictEqual(r2.body.schedules.length, 0);
-      ssSchedId = null;
+      const next = new Date(r.body.schedule.next_run_at.replace(' ', 'T') + 'Z');
+      // 09:00 WIB on the 15th = 02:00 UTC on the 15th
+      assert.strictEqual(next.getUTCDate(), 15);
+      assert.strictEqual(next.getUTCHours(), 2);
+      assert.strictEqual((await req('PATCH', `${base()}/${id}`, {})).status, 400, 'empty patch → 400');
     });
 
-    // ── R12: schedule doctor endpoint
-    await test('R12 — Migration applied: sub_agent_schedules has last_error column', () => {
-      const db = require('./db');
-      const tbl = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='sub_agent_schedules'").get();
-      assert.ok(tbl?.sql?.includes('last_error'), 'last_error column not found — run migrations');
+    await test('Schedules — ownership by room: id from another room → 404', async () => {
+      if (!ready() || !outRoomId) { console.log('    (skipped)'); return; }
+      const id = createdIds[0];
+      assert.strictEqual((await req('PATCH', `/api/rooms/${outRoomId}/schedules/${id}`, { enabled: false })).status, 404);
+      assert.strictEqual((await req('DELETE', `/api/rooms/${outRoomId}/schedules/${id}`)).status, 404);
+      assert.ok(row(id), 'schedule must survive a cross-room delete');
     });
 
-    await test('R12 — GET /doctor — unauthenticated → 401', async () => {
-      if (!ssRoomId) { console.log('    (skipped)'); return; }
-      const r = await fetch(`http://${HOST}:${PORT}/api/rooms/${ssRoomId}/sub-agent-schedules/doctor`);
-      assert.strictEqual(r.status, 401);
+    await test('Schedules — cap: 20 per room → 400 schedule_limit', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const before = sDb.prepare('SELECT COUNT(*) AS c FROM room_schedules WHERE room_id=?').get(roomId).c;
+      for (let i = before; i < 20; i++) {
+        const r = await req('POST', base(), { target_actor_id: agA.actorId, task: `jadwal pengisi nomor ${i}`, schedule_spec: { type: 'interval', every_minutes: 60 }, enabled: false });
+        assert.strictEqual(r.status, 200);
+        createdIds.push(r.body.schedule.id);
+      }
+      const r = await req('POST', base(), { target_actor_id: agA.actorId, task: 'jadwal ke dua puluh satu', schedule_spec: { type: 'interval', every_minutes: 60 } });
+      assert.strictEqual(r.status, 400);
+      assert.strictEqual(r.body.error, 'schedule_limit');
+      // Back under the cap for the agent tests below.
+      const extra = createdIds.splice(6);
+      for (const id of extra) assert.strictEqual((await req('DELETE', `${base()}/${id}`)).status, 200);
+      assert.strictEqual(sDb.prepare('SELECT COUNT(*) AS c FROM room_schedules WHERE room_id=?').get(roomId).c, 6);
     });
 
-    await test('R12 — GET /doctor — nonexistent room → 404', async () => {
-      const r = await req('GET', '/api/rooms/999999/sub-agent-schedules/doctor');
-      assert.strictEqual(r.status, 404);
-    });
-
-    await test('R12 — GET /doctor — empty room → empty diagnoses array', async () => {
-      if (!ssRoomId) { console.log('    (skipped)'); return; }
-      const r = await req('GET', `/api/rooms/${ssRoomId}/sub-agent-schedules/doctor`);
+    let agentSchedId = null;
+    await test('Schedules — agent in room can create/update/delete; each change posts a · schedule notice', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      let r = await asAgent(agA, 'POST', base(), { target_actor_id: agC.actorId, task: 'rangkum diskusi minggu ini', schedule_spec: { type: 'weekly', at: '17:00', tz: 'Asia/Jakarta', days: [5] } });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      agentSchedId = r.body.schedule.id;
+      assert.strictEqual(r.body.schedule.created_by_actor_id, agA.actorId);
+      assert.strictEqual(r.body.schedule.created_by_type, 'ai');
+      assert.ok(r.body.schedule.next_run_at);
+      const notices = () => sDb.prepare("SELECT content FROM messages WHERE room_id=? AND state='system_event' AND content LIKE ?").all(roomId, `%schedule #${agentSchedId} %`).map(m => m.content);
+      assert.deepStrictEqual(notices(), [`__test-sched-a created schedule #${agentSchedId} for __test-sched-c (weekly Fri 17:00 Asia/Jakarta) · schedule`]);
+      r = await asAgent(agA, 'PATCH', `${base()}/${agentSchedId}`, { enabled: false });
       assert.strictEqual(r.status, 200);
-      assert.ok(Array.isArray(r.body.diagnoses), 'diagnoses not array');
-      assert.strictEqual(r.body.diagnoses.length, 0);
-      assert.strictEqual(r.body.room_id, ssRoomId);
+      assert.strictEqual(notices().length, 2);
+      assert.ok(notices()[1].includes(' updated schedule '));
+      r = await asAgent(agA, 'GET', base());
+      assert.strictEqual(r.status, 200);
+      assert.ok(r.body.schedules.some(s => s.id === agentSchedId));
+      assert.strictEqual((await asAgent(agA, 'GET', `${base()}/doctor`)).status, 200);
+      // Notices survive a history reload (kept by the system_event filter).
+      const hist = await req('GET', `/api/rooms/${roomId}/messages`);
+      const list = Array.isArray(hist.body) ? hist.body : (hist.body.messages || []);
+      assert.ok(list.some(m => m.state === 'system_event' && String(m.content).endsWith(' · schedule')), 'notice missing from history');
+      r = await asAgent(agA, 'DELETE', `${base()}/${agentSchedId}`);
+      assert.strictEqual(r.status, 200);
+      assert.ok(!row(agentSchedId));
+      assert.ok(notices()[2].includes(' deleted schedule '));
     });
 
-    await test('R12 — GET /doctor — enabled schedule with overdue next_run_at → overdue', async () => {
-      if (!ssRoomId || !ssSubAgent) { console.log('    (skipped)'); return; }
-      const db = require('./db');
-      const past = new Date(Date.now() - 20 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+    await test('Schedules — agent scope: outsider denied, insider cannot target a non-participant', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const body = { target_actor_id: agOut.actorId, task: 'sesuatu yang cukup panjang', schedule_spec: { type: 'interval', every_minutes: 30 } };
+      for (const [m, p, b] of [['GET', base()], ['POST', base(), body], ['GET', `${base()}/doctor`],
+        ['PATCH', `${base()}/${createdIds[0]}`, { enabled: false }], ['DELETE', `${base()}/${createdIds[0]}`]]) {
+        const r = await asAgent(agOut, m, p, b || null);
+        assert.strictEqual(r.status, 403, `${m} ${p} → ${r.status}`);
+        assert.strictEqual(r.body.error, 'agent_scope_denied');
+      }
+      assert.ok(row(createdIds[0]), 'denied delete must not delete');
+      const r = await asAgent(agA, 'POST', base(), body);
+      assert.strictEqual(r.status, 400);
+      assert.match(r.body.error, /^invalid_target/);
+      // Unauthenticated → 401 from the auth middleware.
+      const s = sessionCookie, d = deviceCookie; sessionCookie = null; deviceCookie = null;
+      try { assert.strictEqual((await req('GET', base())).status, 401); } finally { sessionCookie = s; deviceCookie = d; }
+    });
+
+    await test('Schedules — doctor: not_participant and error statuses', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const ins = sDb.prepare(`INSERT INTO room_schedules (room_id, target_actor_id, created_by_actor_id, task, schedule_spec, enabled, next_run_at, last_error)
+        VALUES (?,?,?,?,?,0,NULL,?)`);
       const spec = JSON.stringify({ type: 'interval', every_minutes: 30 });
-      const insertResult = db.prepare(
-        `INSERT INTO sub_agent_schedules (room_id, sub_agent_id, created_by_actor_id, task, schedule_spec, enabled, next_run_at) VALUES (?,?,?,?,?,1,?)`
-      ).run(ssRoomId, ssSubAgent.id, 1, 'test overdue task r12', spec, past);
-      const overdueSched = insertResult.lastInsertRowid;
-      try {
-        const r = await req('GET', `/api/rooms/${ssRoomId}/sub-agent-schedules/doctor`);
-        assert.strictEqual(r.status, 200);
-        const diag = r.body.diagnoses.find(d => d.schedule_id === Number(overdueSched));
-        assert.ok(diag, 'overdue schedule not found in diagnoses');
-        assert.strictEqual(diag.status, 'overdue');
-        assert.ok(diag.details, 'overdue details missing');
-      } finally {
-        db.prepare('DELETE FROM sub_agent_schedules WHERE id=?').run(overdueSched);
-      }
+      const gone = Number(ins.run(roomId, agOut.actorId, agA.actorId, 'target not in room task', spec, null).lastInsertRowid);
+      const err = Number(ins.run(roomId, agA.actorId, agA.actorId, 'task with last error', spec, 'skipped: agent_offline').lastInsertRowid);
+      createdIds.push(gone, err);
+      const r = await req('GET', `${base()}/doctor`);
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.diagnoses.find(d => d.schedule_id === gone).status, 'not_participant');
+      const e = r.body.diagnoses.find(d => d.schedule_id === err);
+      assert.strictEqual(e.status, 'error');
+      assert.strictEqual(e.details, 'skipped: agent_offline');
+      assert.strictEqual(r.body.diagnoses.find(d => d.schedule_id === createdIds[1]).status, 'ok');
+      for (const id of [gone, err]) await req('DELETE', `${base()}/${id}`);
+      createdIds.splice(createdIds.indexOf(gone), 2);
     });
 
-    await test('R12 — GET /doctor — schedule with last_error → error status', async () => {
-      if (!ssRoomId || !ssSubAgent) { console.log('    (skipped)'); return; }
-      const db = require('./db');
-      const future = new Date(Date.now() + 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
-      const spec = JSON.stringify({ type: 'interval', every_minutes: 30 });
-      const insertResult = db.prepare(
-        `INSERT INTO sub_agent_schedules (room_id, sub_agent_id, created_by_actor_id, task, schedule_spec, enabled, next_run_at, last_error) VALUES (?,?,?,?,?,1,?,?)`
-      ).run(ssRoomId, ssSubAgent.id, 1, 'test error task r12', spec, future, 'something went wrong');
-      const errorSched = insertResult.lastInsertRowid;
-      try {
-        const r = await req('GET', `/api/rooms/${ssRoomId}/sub-agent-schedules/doctor`);
-        assert.strictEqual(r.status, 200);
-        const diag = r.body.diagnoses.find(d => d.schedule_id === Number(errorSched));
-        assert.ok(diag, 'error schedule not found in diagnoses');
-        assert.strictEqual(diag.status, 'error');
-        assert.strictEqual(diag.details, 'something went wrong');
-      } finally {
-        db.prepare('DELETE FROM sub_agent_schedules WHERE id=?').run(errorSched);
-      }
+    // Firing: every other schedule off so only the one under test can be due.
+    const onlyEnabled = (id) => sDb.prepare('UPDATE room_schedules SET enabled=0, next_run_at=NULL WHERE room_id=? AND id<>?').run(roomId, id);
+    const scheduleMsgs = () => sDb.prepare("SELECT id, content, automation_name, automation_id FROM messages WHERE room_id=? AND automation_provider='schedule' ORDER BY id").all(roomId);
+
+    await test('Schedules — fire: @sub-agent in the task runs that sub-agent of the target', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const r = await req('POST', base(), { target_actor_id: agA.actorId, task: '@schedprobe cek disk usage lalu lapor', schedule_spec: { type: 'interval', every_minutes: 30 } });
+      assert.strictEqual(r.status, 200);
+      const id = r.body.schedule.id; createdIds.push(id);
+      onlyEnabled(id);
+      const trig = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.room_id === roomId, 8000);
+      makeDue(id);
+      const t = await trig;
+      assert.strictEqual(t.sub_agent?.id, subAgent.id, 'sub-agent must be the one triggered');
+      const msgs = scheduleMsgs();
+      assert.strictEqual(msgs.length, 1);
+      assert.strictEqual(msgs[0].content, '@schedprobe cek disk usage lalu lapor');
+      assert.strictEqual(msgs[0].automation_name, 'every 30 min');
+      assert.strictEqual(msgs[0].automation_id, null, 'automation_id references automations — must stay NULL');
+      const after = await waitFor(() => { const x = row(id); return x.run_count === 1 ? x : null; });
+      assert.ok(after, 'run_count must become 1');
+      assert.ok(after.last_run_at);
+      assert.strictEqual(after.last_error, null);
+      assert.ok(new Date(after.next_run_at.replace(' ', 'T') + 'Z') > new Date(Date.now() + 25 * 60000), 'claimed the next slot');
+      await req('PATCH', `${base()}/${id}`, { enabled: false });
     });
 
-    await test('R12 — GET /doctor — unlinked sub-agent → unlinked status', async () => {
-      if (!ssRoomId || !ssSubAgent) { console.log('    (skipped)'); return; }
-      const db = require('./db');
-      db.prepare('DELETE FROM room_sub_agents WHERE room_id=? AND sub_agent_id=?').run(ssRoomId, ssSubAgent.id);
-      const future = new Date(Date.now() + 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
-      const spec = JSON.stringify({ type: 'interval', every_minutes: 30 });
-      const insertResult = db.prepare(
-        `INSERT INTO sub_agent_schedules (room_id, sub_agent_id, created_by_actor_id, task, schedule_spec, enabled, next_run_at) VALUES (?,?,?,?,?,1,?)`
-      ).run(ssRoomId, ssSubAgent.id, 1, 'test unlinked task r12', spec, future);
-      const unlinkSched = insertResult.lastInsertRowid;
+    await test('Schedules — fire: only the target agent answers, even with notify_on_message off', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const r = await req('POST', base(), { target_actor_id: agA.actorId, task: 'rangkum status server hari ini', schedule_spec: { type: 'daily', at: '06:00', tz: 'Asia/Jakarta' } });
+      const id = r.body.schedule.id; createdIds.push(id);
+      onlyEnabled(id);
+      // A muted for plain room messages: normal routing would then pick C — the schedule must still pick A.
+      sDb.prepare('UPDATE room_participants SET notify_on_message=0 WHERE room_id=? AND actor_id=?').run(roomId, agA.actorId);
+      let cTriggered = false;
+      const onC = (d) => { const m = JSON.parse(d.toString()); if (m.type === 'agent_trigger' && m.room_id === roomId) cTriggered = true; };
+      agC.ws.on('message', onC);
       try {
-        const r = await req('GET', `/api/rooms/${ssRoomId}/sub-agent-schedules/doctor`);
-        assert.strictEqual(r.status, 200);
-        const diag = r.body.diagnoses.find(d => d.schedule_id === Number(unlinkSched));
-        assert.ok(diag, 'unlinked schedule not found in diagnoses');
-        assert.strictEqual(diag.status, 'unlinked');
+        const trig = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.room_id === roomId && !m.sub_agent, 8000);
+        makeDue(id);
+        await trig;
+        await new Promise(res => setTimeout(res, 1500));
+        assert.strictEqual(cTriggered, false, 'agent C must not be triggered by a schedule that targets A');
       } finally {
-        db.prepare('DELETE FROM sub_agent_schedules WHERE id=?').run(unlinkSched);
-        db.prepare('INSERT OR IGNORE INTO room_sub_agents (room_id, sub_agent_id) VALUES (?,?)').run(ssRoomId, ssSubAgent.id);
+        agC.ws.off('message', onC);
+        sDb.prepare('UPDATE room_participants SET notify_on_message=1 WHERE room_id=? AND actor_id=?').run(roomId, agA.actorId);
       }
+      assert.strictEqual(scheduleMsgs().at(-1).automation_name, 'daily 06:00 Asia/Jakarta');
+      const after = await waitFor(() => row(id).run_count === 1);
+      assert.ok(after);
+      const next = new Date(row(id).next_run_at.replace(' ', 'T') + 'Z');
+      assert.strictEqual(next.getUTCHours(), 23, 'daily 06:00 WIB = 23:00 UTC');
     });
 
-    await test('Cleanup — delete schedule test room + sub-agent + actor', async () => {
-      if (ssRoomId) {
-        await req('PATCH', `/api/rooms/${ssRoomId}`, { archived: true });
-        await req('DELETE', `/api/rooms/${ssRoomId}`);
-        ssRoomId = null;
+    await test('Schedules — fire skipped while the target is busy (agent_busy → grace retry, nothing posted)', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      // A's main turn from the previous test is still streaming (the test agent never answers).
+      assert.ok(sDb.prepare(`SELECT 1 FROM messages m JOIN room_participants rp ON rp.id=m.participant_id
+        WHERE m.room_id=? AND rp.actor_id=? AND m.sub_agent_id IS NULL AND m.state IN ('streaming','requesting')`).get(roomId, agA.actorId), 'precondition: A busy');
+      const r = await req('POST', base(), { target_actor_id: agA.actorId, task: 'jangan ganggu kalau sibuk', schedule_spec: { type: 'daily', at: '06:00' } });
+      const id = r.body.schedule.id; createdIds.push(id);
+      onlyEnabled(id);
+      const before = scheduleMsgs().length;
+      makeDue(id);
+      const after = await waitFor(() => { const x = row(id); return x.last_error === 'skipped: agent_busy' ? x : null; });
+      assert.ok(after, 'expected skipped: agent_busy');
+      assert.strictEqual(after.run_count, 0);
+      assert.strictEqual(scheduleMsgs().length, before, 'nothing may be posted on a skip');
+      const retryInMin = (new Date(after.next_run_at.replace(' ', 'T') + 'Z') - Date.now()) / 60000;
+      assert.ok(retryInMin > 0 && retryInMin < 3, `grace retry ~2 min, got ${retryInMin.toFixed(2)}`);
+      await req('PATCH', `${base()}/${id}`, { enabled: false });
+    });
+
+    await test('Schedules — fire skipped when the target is offline (agent_offline)', async () => {
+      if (!ready()) { console.log('    (skipped)'); return; }
+      const r = await req('POST', base(), { target_actor_id: agC.actorId, task: 'cek antrian email masuk', schedule_spec: { type: 'interval', every_minutes: 30 } });
+      const id = r.body.schedule.id; createdIds.push(id);
+      onlyEnabled(id);
+      agC.ws.close();
+      await new Promise(res => setTimeout(res, 300));
+      makeDue(id);
+      const after = await waitFor(() => { const x = row(id); return x.last_error === 'skipped: agent_offline' ? x : null; });
+      assert.ok(after, 'expected skipped: agent_offline');
+      assert.strictEqual(after.run_count, 0);
+      await req('PATCH', `${base()}/${id}`, { enabled: false });
+    });
+
+    await test('Schedules — cleanup', async () => {
+      for (const ag of [agA, agC, agOut]) { try { ag?.ws?.close(); } catch {} }
+      for (const rid of [roomId, outRoomId]) {
+        if (!rid) continue;
+        await req('PATCH', `/api/rooms/${rid}`, { archived: true });
+        await req('DELETE', `/api/rooms/${rid}`);
       }
-      if (ssSubAgent) { await req('DELETE', `/api/sub-agents/${ssSubAgent.id}`); ssSubAgent = null; }
-      if (ssActorId) {
-        const r = await req('DELETE', `/api/actors/${ssActorId}`);
-        assert.ok([200, 204].includes(r.status));
-        orphanActorIds = orphanActorIds.filter(id => id !== ssActorId);
-        ssActorId = null;
+      if (roomId) assert.strictEqual(sDb.prepare('SELECT COUNT(*) AS c FROM room_schedules WHERE room_id=?').get(roomId).c, 0, 'room delete cascades schedules');
+      if (subAgent) await req('DELETE', `/api/sub-agents/${subAgent.id}`);
+      for (const ag of [agA, agC, agOut]) {
+        if (!ag) continue;
+        await req('DELETE', `/api/actors/${ag.actorId}`);
+        orphanActorIds = orphanActorIds.filter(x => x !== ag.actorId);
       }
     });
   }
@@ -11357,6 +11563,61 @@ async function run() {
     assert.deepStrictEqual([...ctx.parseSavedToolSteps('{"name":"Bash"}')], []);
   });
 
+  await test('schedules panel — every form spec passes server validation unchanged, summaries and next run read naturally', () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const { validateScheduleSpec } = require('./lib/schedule');
+    const ctx = {};
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'public/js/rooms/schedules.js'), 'utf8'), ctx);
+    const js = v => JSON.stringify(v);
+    const form = (patch) => Object.assign(ctx.schedDefaultForm([{ actor_id: 7 }]), { task: 'post the morning summary' }, patch);
+    const forms = [
+      form({ type: 'interval', every: 90 }),
+      form({ type: 'daily', at: '07:30', tz: 'Asia/Jakarta' }),
+      form({ type: 'weekly', at: '09:00', tz: 'Europe/London', days: new Set([5, 1, 3]) }),
+      form({ type: 'monthly', at: '23:59', tz: 'UTC', day: 31 }),
+      form({ type: 'yearly', at: '00:00', tz: 'America/New_York', month: 2, yday: 29 }),
+    ];
+    for (const f of forms) {
+      assert.strictEqual(f.target, 7, 'default target is the first agent');
+      assert.strictEqual(ctx.schedValidateForm(f), '', `${f.type} form is valid`);
+      const spec = ctx.schedSpecFromForm(f);
+      const v = validateScheduleSpec(JSON.parse(js(spec)));
+      assert.ok(v.ok, `${f.type}: ${v.error}`);
+      assert.strictEqual(js(v.spec), js(spec), `${f.type}: server normalization is a no-op on what the panel sends`);
+      const back = ctx.schedSpecFromForm(ctx.schedFormFromSchedule({ id: 1, target_actor_id: 7, task: 't', schedule_spec: v.spec }));
+      assert.strictEqual(js(back), js(spec), `${f.type}: edit form round-trips the stored spec`);
+    }
+    assert.strictEqual(js(ctx.schedSpecFromForm(forms[2]).days), '[1,3,5]', 'weekdays sent sorted, Sunday = 0');
+
+    const S = ctx.schedSummary;
+    assert.deepStrictEqual([15, 60, 90, 120].map(m => S({ type: 'interval', every_minutes: m })),
+      ['every 15 min', 'every hour', 'every 1 h 30 min', 'every 2 hours']);
+    assert.strictEqual(S({ type: 'weekly', at: '09:00', tz: 'Asia/Jakarta', days: [1, 3, 5] }), 'every Mon, Wed, Fri at 09:00 WIB');
+    assert.strictEqual(S({ type: 'weekly', at: '09:00', tz: 'Asia/Jakarta', days: [1, 2, 3, 4, 5] }), 'every weekday at 09:00 WIB');
+    assert.strictEqual(S({ type: 'weekly', at: '09:00', tz: 'UTC', days: [0, 1] }), 'every Mon, Sun at 09:00 UTC', 'Monday-first order');
+    assert.strictEqual(S({ type: 'weekly', at: '08:00', tz: 'Europe/London', days: [0, 6] }, true), 'weekends · 08:00 London');
+    assert.deepStrictEqual([1, 2, 3, 11, 12, 13, 21, 22, 31].map(d => S({ type: 'monthly', at: '07:00', tz: 'UTC', day: d }, true).split(' · ')[1]),
+      ['1st', '2nd', '3rd', '11th', '12th', '13th', '21st', '22nd', '31st']);
+    assert.strictEqual(S({ type: 'yearly', at: '09:00', tz: 'Asia/Makassar', month: 8, day: 17 }), 'every year on Aug 17 at 09:00 WITA');
+    assert.strictEqual(S({ type: 'nope' }), 'unknown schedule');
+    assert.strictEqual(ctx.schedSummaryNote({ type: 'monthly', day: 30 }), 'months without a 30th run on their last day');
+    assert.strictEqual(ctx.schedSummaryNote({ type: 'monthly', day: 28 }), '');
+    assert.strictEqual(ctx.schedSummaryNote({ type: 'yearly', month: 2, day: 29 }), 'non-leap years run on Feb 28');
+
+    assert.strictEqual(ctx.schedValidateForm(form({ type: 'weekly', days: new Set() })), 'pick at least one day');
+    assert.strictEqual(ctx.schedValidateForm(form({ type: 'interval', every: 4 })), 'interval must be 5–1440 minutes');
+    assert.strictEqual(ctx.schedValidateForm(form({ type: 'daily', at: '' })), 'pick a time');
+    assert.strictEqual(ctx.schedValidateForm(form({ task: '   short   ' })), 'task needs at least 10 characters');
+    assert.strictEqual(ctx.schedValidateForm(Object.assign(form({}), { target: null })), 'pick an agent');
+
+    assert.strictEqual(ctx.schedParseUtc('2026-10-24 02:00:00').toISOString(), '2026-10-24T02:00:00.000Z', 'SQLite UTC timestamps parse as UTC');
+    const daily = { type: 'daily', at: '09:00', tz: 'Asia/Jakarta' };
+    assert.ok(ctx.schedNextRunText({ enabled: 1, next_run_at: '2026-10-27 02:00:00', schedule_spec: daily }).startsWith('next Tue 27 Oct, 09:00 WIB · '),
+      'next run shown in the schedule\'s own time zone');
+    assert.strictEqual(ctx.schedNextRunText({ enabled: 0, next_run_at: null, schedule_spec: daily }), 'paused');
+  });
+
   // escapeTomlValue unit tests
   await test('escapeTomlValue — escapes newlines and quotes', () => {
     const { escapeTomlValue } = require('./codex-session');
@@ -14724,11 +14985,14 @@ async function run() {
       }
       return { status: r.status, msg, raw: r.raw };
     });
-    const listNames = async (token) => {
+    // Upstream tools only: Stoa's built-in stoa__* tools are always listed and get their own tests.
+    const listAll = async (token) => {
       const r = await mcp(token, 'tools/list');
       assert.strictEqual(r.status, 200, r.raw?.slice(0, 200));
-      return r.msg.result.tools.map(t => t.name).sort();
+      return r.msg.result.tools;
     };
+    const listNames = async (token) => (await listAll(token)).map(t => t.name).filter(n => !n.startsWith('stoa__')).sort();
+    const BUILTINS = ['stoa__schedule_create', 'stoa__schedule_delete', 'stoa__schedule_doctor', 'stoa__schedule_list', 'stoa__schedule_update'];
     const callText = async (token, name, args = {}) => {
       const r = await mcp(token, 'tools/call', { name, arguments: args });
       assert.strictEqual(r.status, 200, r.raw?.slice(0, 200));
@@ -14765,9 +15029,25 @@ async function run() {
       assert.strictEqual((await req('POST', `/api/rooms/${roomA}/sub-agents`, { sub_agent_id: sub.id })).status < 300, true);
     });
 
-    await test('MCP trigger — no MCP server installed → no mcp_token (session env unchanged)', async () => {
-      if (mDb.prepare('SELECT 1 FROM mcp_servers LIMIT 1').get()) { console.log('    (skipped — DB copy already has MCP servers)'); return; }
-      assert.strictEqual((await triggerToken(agA, roomA, 'before mcp')).token, undefined);
+    // The DB copy may hold servers; they are hidden for this test through the test's own connection with
+    // foreign keys off (no cascade into grants/overrides) and put back with the same ids.
+    await test('MCP trigger — no upstream server installed → token still issued, built-in tools listed', async () => {
+      const saved = mDb.prepare('SELECT * FROM mcp_servers').all();
+      let token;
+      mDb.pragma('foreign_keys = OFF');
+      try {
+        mDb.prepare('DELETE FROM mcp_servers').run();
+        token = (await triggerToken(agA, roomA, 'before mcp')).token;
+        assert.match(token || '', /^stoa_mcp_/, 'tool-capable session gets a token without any upstream');
+        const tools = await listAll(token);
+        assert.deepStrictEqual(tools.map(t => t.name).sort(), BUILTINS, 'only the built-ins');
+      } finally {
+        for (const row of saved) {
+          const cols = Object.keys(row);
+          mDb.prepare(`INSERT INTO mcp_servers (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')})`).run(...cols.map(c => row[c]));
+        }
+        mDb.pragma('foreign_keys = ON');
+      }
     });
 
     await test('MCP admin — no session → 401; agent secret → agent_scope_denied; nothing created', async () => {
@@ -15080,7 +15360,7 @@ async function run() {
       try {
         const names = async () => (await a.c.listTools()).tools.map(t => t.name).sort();
         assert.ok((await names()).includes('mcpdummy__echo'));
-        assert.deepStrictEqual((await s.c.listTools()).tools, [], 'sub-agent is denied (previous test)');
+        assert.deepStrictEqual((await s.c.listTools()).tools.map(t => t.name).sort(), BUILTINS, 'sub-agent is denied the upstream (previous test), keeps the built-ins');
         await new Promise(r => setTimeout(r, 200));
         assert.strictEqual((await req('PUT', `/api/mcp/servers/${server.id}/tools/echo`, { enabled: false })).status, 200);
         assert.ok(await until(() => a.seen.n === 1), 'agent session notified after the owner disabled a tool');
@@ -15350,6 +15630,155 @@ async function run() {
       await req('PATCH', `/api/mcp/servers/${server.id}`, { enabled: true });
     });
 
+    // ── Built-in stoa__schedule_* tools: same core as /api/rooms/:id/schedules (lib/room-schedules.js).
+    const stoaCall = async (token, tool, args = {}) => {
+      const r = await callText(token, `stoa__${tool}`, args);
+      return { ...r, body: JSON.parse(r.text) };
+    };
+    const schedRows = (roomId) => mDb.prepare('SELECT * FROM room_schedules WHERE room_id=? ORDER BY id').all(roomId);
+    const noticesOf = (roomId, sinceId) => mDb.prepare("SELECT content FROM messages WHERE room_id=? AND id>? AND state='system_event' AND content LIKE '% · schedule'").all(roomId, sinceId).map(m => m.content);
+    const maxMsgId = () => mDb.prepare('SELECT COALESCE(MAX(id),0) m FROM messages').get().m;
+    let builtinSchedId = null;
+
+    await test('MCP built-ins — listed for every token regardless of grants, with input schemas', async () => {
+      const tools = await listAll(tokB);
+      const byName = Object.fromEntries(tools.map(t => [t.name, t]));
+      assert.deepStrictEqual(BUILTINS.filter(n => byName[n]), BUILTINS, 'agent B has no grant but sees the built-ins');
+      const create = byName.stoa__schedule_create;
+      assert.deepStrictEqual(create.inputSchema.required, ['task', 'schedule_spec']);
+      assert.deepStrictEqual(create.inputSchema.properties.schedule_spec.properties.type.enum, ['interval', 'daily', 'weekly', 'monthly', 'yearly']);
+      assert.ok(!('room_id' in create.inputSchema.properties), 'room comes from the token, not an argument');
+      assert.strictEqual(byName.stoa__schedule_delete.annotations.destructiveHint, true);
+      assert.strictEqual(byName.stoa__schedule_list.annotations.readOnlyHint, true);
+    });
+
+    await test('MCP built-ins — create in own room: target defaults to caller, row + notice + mcp_calls', async () => {
+      const since = maxMsgId();
+      const r = await stoaCall(tokA, 'schedule_create', { task: 'Weekly MCP check of the build pipeline', schedule_spec: { type: 'weekly', at: '09:30', tz: 'Asia/Jakarta', days: [5, 1] } });
+      assert.strictEqual(r.isError, false, r.text);
+      builtinSchedId = r.body.schedule.id;
+      const row = mDb.prepare('SELECT * FROM room_schedules WHERE id=?').get(builtinSchedId);
+      assert.deepStrictEqual([row.room_id, row.target_actor_id, row.created_by_actor_id, row.enabled], [roomA, agA.actorId, agA.actorId, 1]);
+      assert.deepStrictEqual(JSON.parse(row.schedule_spec), { type: 'weekly', at: '09:30', tz: 'Asia/Jakarta', days: [1, 5] }, 'normalized by lib/schedule.js');
+      assert.ok(row.next_run_at, 'next run computed');
+      const notices = noticesOf(roomA, since);
+      assert.strictEqual(notices.length, 1);
+      assert.match(notices[0], new RegExp(`^__test-mcp-a created schedule #${builtinSchedId} for __test-mcp-a \\(weekly Mon, Fri 09:30 Asia/Jakarta\\) · schedule$`));
+      const c = lastCall();
+      assert.deepStrictEqual([c.server_id, c.server_slug, c.tool, c.status, c.actor_id, c.room_id], [null, 'stoa', 'schedule_create', 'ok', agA.actorId, roomA]);
+      const http = await req('GET', `/api/rooms/${roomA}/schedules`);
+      assert.ok(http.body.schedules.some(s => s.id === builtinSchedId), 'same row through the HTTP API');
+      const list = await stoaCall(tokA, 'schedule_list');
+      assert.deepStrictEqual(list.body.schedules.map(s => s.id), schedRows(roomA).map(s => s.id));
+    });
+
+    await test('MCP built-ins — invalid target / task / spec rejected, nothing written', async () => {
+      const before = schedRows(roomA).length;
+      const human = mDb.prepare("SELECT id FROM actors WHERE type='human' LIMIT 1").get().id;
+      for (const [args, err] of [
+        [{ task: 'Run the nightly report please', schedule_spec: { type: 'daily', at: '01:00' }, target_actor_id: agB.actorId }, /^invalid_target/],
+        [{ task: 'Run the nightly report please', schedule_spec: { type: 'daily', at: '01:00' }, target_actor_id: human }, /^invalid_target/],
+        [{ task: 'todo', schedule_spec: { type: 'daily', at: '01:00' } }, /^invalid_task$/],
+        [{ task: 'Run the nightly report please', schedule_spec: { type: 'interval', every_minutes: 1 } }, /^invalid_schedule/],
+        [{ task: 'Run the nightly report please', schedule_spec: { type: 'yearly', at: '01:00', month: 2, day: 30 } }, /^invalid_schedule/],
+      ]) {
+        const r = await stoaCall(tokA, 'schedule_create', args);
+        assert.strictEqual(r.isError, true, JSON.stringify(args));
+        assert.match(r.body.error, err);
+      }
+      assert.strictEqual(schedRows(roomA).length, before);
+      assert.strictEqual(lastCall().status, 'error');
+    });
+
+    await test('MCP built-ins — a token of another room cannot see, update or delete the schedule', async () => {
+      const since = maxMsgId();
+      assert.deepStrictEqual((await stoaCall(tokB, 'schedule_list')).body.schedules.map(s => s.room_id).filter(id => id !== roomB), []);
+      const u = await stoaCall(tokB, 'schedule_update', { schedule_id: builtinSchedId, task: 'Hijacked task from another room' });
+      assert.deepStrictEqual([u.isError, u.body.error], [true, 'schedule not found']);
+      const d = await stoaCall(tokB, 'schedule_delete', { schedule_id: builtinSchedId });
+      assert.deepStrictEqual([d.isError, d.body.error], [true, 'schedule not found']);
+      const row = mDb.prepare('SELECT task FROM room_schedules WHERE id=?').get(builtinSchedId);
+      assert.strictEqual(row.task, 'Weekly MCP check of the build pipeline', 'untouched');
+      assert.deepStrictEqual(noticesOf(roomA, since), []);
+    });
+
+    await test('MCP built-ins — session without a room → tool error; unknown built-in → denied', async () => {
+      const raw = 'stoa_mcp_' + crypto.randomBytes(32).toString('base64url');
+      mDb.prepare('INSERT INTO mcp_tokens (token_hash, token_enc, actor_id, room_id, thread_id, sub_agent_id) VALUES (?,?,?,NULL,NULL,NULL)')
+        .run(crypto.createHash('sha256').update(raw).digest('hex'), 'unused', agA.actorId);
+      try {
+        const r = await stoaCall(raw, 'schedule_list');
+        assert.deepStrictEqual([r.isError, r.body.error], [true, 'this MCP session is not bound to a room']);
+      } finally { mDb.prepare('DELETE FROM mcp_tokens WHERE token_hash=?').run(crypto.createHash('sha256').update(raw).digest('hex')); }
+      const u = await callText(tokA, 'stoa__drop_everything');
+      assert.strictEqual(u.isError, true);
+      assert.match(u.text, /unknown tool/);
+      assert.deepStrictEqual([lastCall().server_slug, lastCall().status], ['stoa', 'denied']);
+    });
+
+    await test('MCP built-ins — update (pause, retarget check, spec) and doctor', async () => {
+      const since = maxMsgId();
+      assert.match((await stoaCall(tokA, 'schedule_update', {})).body.error, /^schedule_id required$/);
+      assert.match((await stoaCall(tokA, 'schedule_update', { schedule_id: builtinSchedId })).body.error, /^nothing to update$/);
+      let r = await stoaCall(tokA, 'schedule_update', { schedule_id: builtinSchedId, enabled: false });
+      assert.strictEqual(r.isError, false, r.text);
+      let row = mDb.prepare('SELECT enabled, next_run_at FROM room_schedules WHERE id=?').get(builtinSchedId);
+      assert.deepStrictEqual(row, { enabled: 0, next_run_at: null }, 'paused');
+      r = await stoaCall(tokA, 'schedule_update', { schedule_id: builtinSchedId, target_actor_id: agB.actorId });
+      assert.match(r.body.error, /^invalid_target/);
+      r = await stoaCall(tokA, 'schedule_update', { schedule_id: builtinSchedId, enabled: true, schedule_spec: { type: 'monthly', at: '07:00', tz: 'UTC', day: 31 } });
+      assert.strictEqual(r.isError, false, r.text);
+      row = mDb.prepare('SELECT enabled, next_run_at, schedule_spec FROM room_schedules WHERE id=?').get(builtinSchedId);
+      assert.strictEqual(row.enabled, 1);
+      assert.match(row.next_run_at, / 07:00:00$/);
+      assert.deepStrictEqual(JSON.parse(row.schedule_spec), { type: 'monthly', at: '07:00', tz: 'UTC', day: 31 });
+      assert.strictEqual(noticesOf(roomA, since).filter(n => n.includes(`updated schedule #${builtinSchedId} `)).length, 2);
+      const doc = await stoaCall(tokA, 'schedule_doctor');
+      assert.strictEqual(doc.body.room_id, roomA);
+      assert.deepStrictEqual(doc.body.diagnoses.find(d => d.schedule_id === builtinSchedId), { schedule_id: builtinSchedId, status: 'ok', details: null });
+    });
+
+    await test('MCP built-ins — cap of 20 per room enforced through the shared core', async () => {
+      const made = [];
+      try {
+        const room = schedRows(roomA).length;
+        for (let i = room; i < 20; i++) {
+          const r = await stoaCall(tokA, 'schedule_create', { task: `Filler schedule number ${i}`, schedule_spec: { type: 'daily', at: '03:00' }, enabled: false });
+          assert.strictEqual(r.isError, false, r.text);
+          made.push(r.body.schedule.id);
+        }
+        const over = await stoaCall(tokA, 'schedule_create', { task: 'One schedule too many here', schedule_spec: { type: 'daily', at: '03:00' }, enabled: false });
+        assert.deepStrictEqual([over.isError, over.body.error, over.body.limit], [true, 'schedule_limit', 20]);
+        assert.strictEqual(schedRows(roomA).length, 20);
+      } finally {
+        for (const id of made) await req('DELETE', `/api/rooms/${roomA}/schedules/${id}`);
+      }
+    });
+
+    await test('MCP built-ins — delete: row gone, notice; reserved slug "stoa" refused and never shadows built-ins', async () => {
+      const since = maxMsgId();
+      const d = await stoaCall(tokA, 'schedule_delete', { schedule_id: builtinSchedId });
+      assert.deepStrictEqual([d.isError, d.body], [false, { ok: true }]);
+      assert.strictEqual(mDb.prepare('SELECT 1 FROM room_schedules WHERE id=?').get(builtinSchedId), undefined);
+      assert.strictEqual(noticesOf(roomA, since).filter(n => n.includes(`deleted schedule #${builtinSchedId} `)).length, 1);
+      assert.strictEqual((await stoaCall(tokA, 'schedule_delete', { schedule_id: builtinSchedId })).body.error, 'schedule not found');
+
+      const before = mDb.prepare('SELECT COUNT(*) n FROM mcp_servers').get().n;
+      const r = await req('POST', '/api/mcp/servers', { slug: 'stoa', name: 'Impostor', transport: 'stdio', command: 'node', args: ['-e', '1'] });
+      assert.strictEqual(r.status, 400);
+      assert.match(r.body.error, /reserved/);
+      assert.strictEqual(mDb.prepare('SELECT COUNT(*) n FROM mcp_servers').get().n, before);
+      // A row from before the reservation: never exposed or started, the built-in still answers.
+      const legacy = Number(mDb.prepare("INSERT INTO mcp_servers (slug, name, transport, command, args_json, default_access) VALUES ('stoa','Legacy','stdio','node','[]','all')").run().lastInsertRowid);
+      try {
+        assert.deepStrictEqual((await listAll(tokA)).map(t => t.name).filter(n => n.startsWith('stoa__')).sort(), BUILTINS);
+        const l = await stoaCall(tokA, 'schedule_list');
+        assert.strictEqual(l.isError, false);
+        assert.ok(Array.isArray(l.body.schedules));
+        assert.match((await callText(tokA, 'stoa__echo')).text, /unknown tool/, 'not routed to the legacy row');
+      } finally { mDb.prepare('DELETE FROM mcp_servers WHERE id=?').run(legacy); }
+    });
+
     await test('MCP cleanup — deleting a sub-agent revokes its token and drops its grants', async () => {
       assert.strictEqual(mDb.prepare("SELECT COUNT(*) n FROM mcp_access WHERE subject_type='sub_agent' AND subject_id=?").get(sub.id).n, 1);
       assert.strictEqual((await req('DELETE', `/api/sub-agents/${sub.id}`)).status, 204);
@@ -15394,6 +15823,7 @@ async function run() {
       if (oauthFx) await oauthFx.close();
       mDb.prepare("DELETE FROM mcp_calls WHERE server_slug='mcpoauth'").run();
       mDb.prepare("DELETE FROM mcp_calls WHERE server_slug='mcpdummy'").run();
+      mDb.prepare("DELETE FROM mcp_calls WHERE server_slug='stoa' AND room_id IN (?,?)").run(roomA ?? -1, roomB ?? -1);
       if (agA?.ws) agA.ws.close();
       if (agB?.ws) agB.ws.close();
     });
