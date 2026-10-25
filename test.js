@@ -15095,6 +15095,36 @@ async function run() {
     } finally { db.close(); }
   });
 
+  // db/index.js in a child Node whose better-sqlite3 throws like a real ABI mismatch (or another error).
+  const _dbOpenWith = (errCode, errMessage) => require('child_process').spawnSync(process.execPath, ['-e', `
+    const Module = require('module'); const load = Module._load;
+    Module._load = function (request, ...rest) {
+      if (request !== 'better-sqlite3') return load.call(this, request, ...rest);
+      return function FakeDatabase() { const e = new Error(${JSON.stringify(errMessage)}); if (${JSON.stringify(errCode)}) e.code = ${JSON.stringify(errCode)}; throw e; };
+    };
+    require('./db');
+  `], { cwd: __dirname, encoding: 'utf8', env: { ...process.env, DB_PATH: path.join(_mos.tmpdir(), 'stoa-abi-never-created.db') } });
+
+  await test('db open: native ABI mismatch → one clear rebuild hint with this Node, exit 1, no stack', async () => {
+    for (const [code, msg] of [
+      ['ERR_DLOPEN_FAILED', "dlopen(/x/better_sqlite3.node, 0x0001): tried: '/x/better_sqlite3.node' (mach-o file, but is an incompatible architecture)"],
+      [null, 'The module /x/better_sqlite3.node was compiled against a different Node.js version using\nNODE_MODULE_VERSION 115. This version of Node.js requires\nNODE_MODULE_VERSION 127.'],
+    ]) {
+      const r = _dbOpenWith(code, msg);
+      assert.strictEqual(r.status, 1, r.stderr);
+      assert.ok(r.stderr.includes('npm rebuild better-sqlite3'), r.stderr);
+      assert.ok(r.stderr.includes(process.version) && r.stderr.includes(process.execPath), 'names the Node actually running');
+      assert.ok(!/^\s+at /m.test(r.stderr), 'no stack trace');
+    }
+  });
+
+  await test('db open: any other error is rethrown as-is (no rebuild hint)', async () => {
+    const r = _dbOpenWith('SQLITE_CANTOPEN', 'unable to open database file');
+    assert.notStrictEqual(r.status, 0);
+    assert.ok(r.stderr.includes('unable to open database file') && /^\s+at /m.test(r.stderr), 'original error with its stack');
+    assert.ok(!r.stderr.includes('npm rebuild'), r.stderr);
+  });
+
   await test('migrations: splitSqlStatements keeps trigger bodies, quotes and comments intact', async () => {
     const { splitSqlStatements } = require('./lib/migrations');
     const sql = "-- lead; comment\nCREATE TABLE a (x TEXT DEFAULT 'a;b');\n/* block; */\nCREATE TRIGGER IF NOT EXISTS trg AFTER INSERT ON a BEGIN\n  INSERT INTO a VALUES ('y');\n  UPDATE a SET [x] = 'q;' WHERE \"x\" = 'z';\nEND;\nCREATE INDEX i ON a(x)";
