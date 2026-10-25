@@ -193,9 +193,13 @@ Agent (Claude/Codex)
     → auth: token_hash lookup (mcp_tokens), scope = (actor, room, thread, sub_agent)
     → policy: sub_agent → agent → room → server default_access; deny wins
     → router: stoa tool (e.g. context7__resolve-library-id) → upstream client
-              stoa__<tool> → built-in handler (scheduled triggers, lib/room-schedules.js), no upstream
+              stoa__<tool> → built-in handler (lib/stoa-mcp-tools.js + lib/room-schedules.js), no upstream
+              availableTo(ident) checked per tool before exposure and before call (sub-agent sessions
+              see only message/read/own-memory tools; config-mutating tools hidden and refused)
     → audit: INSERT mcp_calls (args_preview redacted, capped at 2 KB)
 ```
+
+**Built-in tools (24):** Messaging (`stoa__message_send`, `stoa__messages_read`, `stoa__threads_list`, `stoa__thread_read`), Memory (`stoa__room/agent/sub_agent_memory_get/set`), System prompts (`stoa__room/agent_system_prompt_get/set`), Sub-agents (`stoa__sub_agent_list/create/update/delete/trigger`), Automation (`stoa__automation_list/create/update/delete`, `stoa__connection_list`). Each tool calls the same `lib/*.js` core function as its REST counterpart (`{status, body}`), so validation is never duplicated. Configuration-mutating tools post a `· config` or `· automation` room notice via the same notice path as REST.
 
 **Upstream lifecycle:** stdio upstreams lazy-start on first call, idle-stop after N min, auto-restart with backoff. HTTP upstreams: stateless per request.
 

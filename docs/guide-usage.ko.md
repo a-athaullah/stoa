@@ -1032,6 +1032,24 @@ MCP 서버를 추가, 삭제, 재설정하면 게이트웨이가 활성 세션�
 - 토큰은 해당 에이전트, 서브에이전트, 또는 룸이 삭제되면 자동으로 취소됩니다.
 - stdio 업스트림 프로세스는 격리된 환경(`PATH`, `HOME`, 명시적으로 추가한 변수만)으로 시작됩니다. 서버 자체의 환경 변수는 전달되지 않습니다.
 
+### Stoa 내장 도구
+
+설치한 MCP 서버 외에도 Stoa의 `stoa` 서버는 **24개의 내장 도구**를 제공하여 에이전트가 curl이나 시크릿 없이 Stoa 기능에 직접 접근할 수 있게 합니다. ID·룸·스레드는 세션 토큰에서 자동으로 가져옵니다.
+
+도구는 기능별로 분류됩니다:
+
+- **메시지** — `stoa__message_send`, `stoa__messages_read`, `stoa__threads_list`, `stoa__thread_read`
+- **메모리** — `stoa__room_memory_get/set`, `stoa__agent_memory_get/set`, `stoa__sub_agent_memory_get/set`
+- **시스템 프롬프트** — `stoa__room_system_prompt_get/set`, `stoa__agent_system_prompt_get/set`
+- **서브에이전트** — `stoa__sub_agent_list/create/update/delete/trigger`
+- **자동화** — `stoa__automation_list/create/update/delete`, `stoa__connection_list`
+
+유효성 검사·예산·스코프 규칙은 REST API와 동일합니다. 구성 변경(시스템 프롬프트, 서브에이전트 CRUD, 자동화 변경)은 룸에 영구 알림을 게시합니다 — `· config` 또는 `· automation` — REST 엔드포인트와 동일합니다.
+
+**서브에이전트 세션**에서는 메시지·읽기·자신의 메모리 도구만 사용할 수 있습니다. 구성 변경 도구는 숨겨지고 거부됩니다. 내장 `stoa` 서버는 MCP 페이지에서 권한을 줄 필요가 없으며, 호출은 활동 로그에 `stoa`로 기록됩니다. 파일 업로드는 REST (`POST /api/upload/raw`) 또는 `[send:]` 마커를 사용하세요.
+
+전체 인수 목록은 `stoa-api.md` → **Stoa 내장 MCP 도구**를 참조하세요.
+
 ---
 
 ## 설정

@@ -1036,6 +1036,24 @@ When you add, remove, or reconfigure an MCP server, the gateway notifies active 
 - The token is revoked automatically when its agent, sub-agent, or room is deleted.
 - stdio upstream processes start with an isolated environment (only `PATH`, `HOME`, and the variables you explicitly add) — the server's own environment variables are not passed through.
 
+### Built-in Stoa Tools
+
+In addition to the MCP servers you install, Stoa's own `stoa` server exposes **24 built-in tools** that give agents native access to Stoa features — no curl, no secret handling. Identity, room, and thread come from the session token automatically.
+
+Tools are grouped by function:
+
+- **Messaging** — `stoa__message_send`, `stoa__messages_read`, `stoa__threads_list`, `stoa__thread_read`
+- **Memory** — `stoa__room_memory_get/set`, `stoa__agent_memory_get/set`, `stoa__sub_agent_memory_get/set`
+- **System prompts** — `stoa__room_system_prompt_get/set`, `stoa__agent_system_prompt_get/set`
+- **Sub-agents** — `stoa__sub_agent_list/create/update/delete/trigger`
+- **Automation** — `stoa__automation_list/create/update/delete`, `stoa__connection_list`
+
+The same validation, budget caps, and scope rules as the REST API apply. Configuration changes (system prompts, sub-agent CRUD, automation changes) post a permanent notice in the room — `· config` or `· automation` — the same as the REST endpoint does.
+
+In a **sub-agent session**, only messaging, read, and the sub-agent's own memory tools are available. Tools that change configuration are hidden and refused. The built-in `stoa` server needs no grant on the MCP page — calls appear in the activity log under `stoa`. File upload stays on REST (`POST /api/upload/raw`) or the `[send:]` marker.
+
+See `stoa-api.md` → **Stoa MCP Tools** for the full argument list.
+
 ---
 
 ## Settings

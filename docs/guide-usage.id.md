@@ -1037,6 +1037,24 @@ Saat kamu menambah, menghapus, atau mengonfigurasi ulang MCP server, gateway mem
 - Token otomatis dicabut saat agent, sub-agent, atau room-nya dihapus.
 - Proses upstream stdio dijalankan dengan environment terisolasi (hanya `PATH`, `HOME`, dan variabel yang kamu tambahkan secara eksplisit) — environment variabel server sendiri tidak diteruskan.
 
+### Tool Bawaan Stoa
+
+Selain server MCP yang kamu pasang, server `stoa` bawaan Stoa menyediakan **24 tool bawaan** yang memberi agent akses langsung ke fitur Stoa — tanpa curl, tanpa secret. Identitas, room, dan thread diambil otomatis dari token sesi.
+
+Tool dikelompokkan berdasarkan fungsi:
+
+- **Pesan** — `stoa__message_send`, `stoa__messages_read`, `stoa__threads_list`, `stoa__thread_read`
+- **Memory** — `stoa__room_memory_get/set`, `stoa__agent_memory_get/set`, `stoa__sub_agent_memory_get/set`
+- **System prompt** — `stoa__room_system_prompt_get/set`, `stoa__agent_system_prompt_get/set`
+- **Sub-agent** — `stoa__sub_agent_list/create/update/delete/trigger`
+- **Automation** — `stoa__automation_list/create/update/delete`, `stoa__connection_list`
+
+Validasi, budget, dan scope berlaku sama seperti REST API. Perubahan konfigurasi (system prompt, CRUD sub-agent, perubahan automation) memunculkan notice permanen di room — `· config` atau `· automation` — sama dengan endpoint REST.
+
+Dalam **sesi sub-agent**, hanya tool pesan, baca, dan memory sub-agent sendiri yang tersedia. Tool yang mengubah konfigurasi disembunyikan dan ditolak. Server `stoa` bawaan tidak perlu grant di halaman MCP — panggilannya muncul di log aktivitas dengan nama `stoa`. Upload file tetap melalui REST (`POST /api/upload/raw`) atau marker `[send:]`.
+
+Lihat `stoa-api.md` → **Tool MCP Stoa Bawaan** untuk daftar argumen lengkap.
+
 ---
 
 ## Pengaturan
