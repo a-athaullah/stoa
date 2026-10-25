@@ -46,6 +46,41 @@ const crypto = require('crypto');
 const { WebSocket } = require('ws');
 const schedule = require('./lib/schedule');
 
+// In-app updater fixture: a bare "origin" plus two clones — `up` publishes commits, `live` is the install
+// being updated. Never touches the Stoa repo. server.js in the fixture is a stand-in the smoke boot runs.
+const GOOD_SMOKE_SERVER = "require('http').createServer((q, s) => s.end('ok')).listen(process.env.PORT);\n";
+const BAD_SMOKE_SERVER = "console.error('boom: migration failed'); process.exit(3);\n";
+function makeUpdateFixture(root, live = path.join(root, 'live')) {
+  const { execFileSync } = require('child_process');
+  const fsM = require('fs');
+  const env = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', GIT_CONFIG_NOSYSTEM: '1' };
+  const g = (cwd, ...args) => execFileSync('git', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  fsM.mkdirSync(root, { recursive: true });
+  const remote = path.join(root, 'remote.git');
+  const up = path.join(root, 'up');
+  g(root, 'init', '--quiet', '--bare', '--initial-branch=master', remote);
+  g(root, 'clone', '--quiet', remote, up);
+  const commit = (dir, files, msg) => {
+    for (const [name, body] of Object.entries(files)) fsM.writeFileSync(path.join(dir, name), body);
+    g(dir, 'add', '-A');
+    g(dir, 'commit', '--quiet', '-m', msg);
+  };
+  commit(up, { 'package.json': '{"version":"1.0.0"}\n', 'server.js': GOOD_SMOKE_SERVER, '.gitignore': 'update-state.json*\n' }, 'initial');
+  g(up, 'push', '--quiet', 'origin', 'HEAD:master');
+  g(root, 'clone', '--quiet', remote, live);
+  const publish = (files, msg) => { commit(up, files, msg); g(up, 'push', '--quiet', 'origin', 'HEAD:master'); return g(up, 'rev-parse', 'HEAD'); };
+  return { root, live, up, g, commit, publish, head: () => g(live, 'rev-parse', 'HEAD') };
+}
+const waitUntil = async (pred, timeoutMs = 20000, stepMs = 100) => {
+  const end = Date.now() + timeoutMs;
+  for (;;) {
+    const v = await pred();
+    if (v) return v;
+    if (Date.now() > end) throw new Error('waitUntil timed out');
+    await new Promise(r => setTimeout(r, stepMs));
+  }
+};
+
 // ── Pure Unit Tests (no server required) ──────────────────────────────────────
 
 function runUnitTests() {
@@ -3629,6 +3664,204 @@ async function runAsyncUnitTests() {
       fsM.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // ── In-app updater (lib/server-update.js + lib/boot-guard.js) against a throwaway git fixture ──
+  {
+    const osM = require('os'), fsM = require('fs');
+    const Database = require('better-sqlite3');
+    const { createServerUpdate } = require('./lib/server-update');
+    const bg = require('./lib/boot-guard');
+    const tmp = fsM.mkdtempSync(path.join(osM.tmpdir(), 'stoa-upd-unit-'));
+    const fx = makeUpdateFixture(tmp);
+    const dbFile = path.join(tmp, 'live.db');
+    const sdb = new Database(dbFile);
+    sdb.exec('CREATE TABLE t (x)');
+    const stateFile = path.join(tmp, 'update-state.json');
+    let activeRuns = 0;
+    const events = [];
+    const restarts = [];
+    const mk = (over = {}) => createServerUpdate({
+      repoDir: fx.live, stateFile, envFile: path.join(tmp, 'none.env'), db: sdb, restartable: true,
+      countActiveRuns: () => activeRuns, broadcast: (m) => events.push(m), restart: (why) => restarts.push(why),
+      smokeTimeoutMs: 15000, smokeSettleMs: 300, log: { log() {}, warn() {}, error() {} }, ...over,
+    });
+    const upd = mk();
+    const settled = () => waitUntil(async () => { const s = await upd.status(); return s.update.state !== 'running' && s; });
+    try {
+      await uta('server-update — fresh clone: supported, on master, up_to_date blocks, version from package.json', async () => {
+        const s = await upd.status();
+        assert.strictEqual(s.supported, true);
+        assert.strictEqual(s.reason, null);
+        assert.strictEqual(s.branch, 'master');
+        assert.strictEqual(s.current.version, '1.0.0');
+        assert.strictEqual(s.current.sha, fx.head().slice(0, 7));
+        assert.strictEqual(s.behind, 0);
+        assert.deepStrictEqual(s.blockers, ['up_to_date']);
+        assert.strictEqual(s.update.state, 'idle');
+        const r = await upd.start({});
+        assert.strictEqual(r.status, 409);
+        assert.strictEqual(r.body.code, 'up_to_date');
+      });
+
+      await uta('server-update — check fetches: behind 2, newest-first commits, latest version, update_available broadcast once', async () => {
+        fx.publish({ 'a.txt': '1' }, 'feat: first');
+        const newest = fx.publish({ 'package.json': '{"version":"1.1.0"}\n' }, 'release 1.1.0');
+        assert.strictEqual((await upd.status()).behind, 0, 'status alone does not fetch');
+        const s = await upd.check();
+        assert.strictEqual(s.behind, 2);
+        assert.deepStrictEqual(s.commits.map(c => c.subject), ['release 1.1.0', 'feat: first']);
+        assert.strictEqual(s.latest.sha, newest.slice(0, 7));
+        assert.strictEqual(s.latest.version, '1.1.0');
+        assert.deepStrictEqual(s.blockers, []);
+        assert.ok(s.checked_at && !s.check_error);
+        await upd.check();
+        const avail = events.filter(e => e.type === 'update_available');
+        assert.strictEqual(avail.length, 1, 'same latest sha is announced once');
+        assert.deepStrictEqual(avail[0], { type: 'update_available', latest: s.latest, behind: 2 });
+      });
+
+      await uta('server-update — dirty_tree / not_default_branch / diverged block start with that code; tree untouched', async () => {
+        const before = fx.head();
+        fsM.writeFileSync(path.join(fx.live, 'stray.txt'), 'x');
+        assert.strictEqual((await upd.start({ force: true })).body.code, 'dirty_tree');
+        fsM.unlinkSync(path.join(fx.live, 'stray.txt'));
+        fx.g(fx.live, 'checkout', '--quiet', '-b', 'feature/x');
+        const nb = await upd.status();
+        assert.ok(nb.blockers.includes('not_default_branch'));
+        assert.strictEqual((await upd.start({})).body.code, 'not_default_branch');
+        fx.g(fx.live, 'checkout', '--quiet', 'master');
+        fx.g(fx.live, 'branch', '--quiet', '-D', 'feature/x');
+        fx.commit(fx.live, { 'local.txt': 'mine' }, 'local only');
+        const dv = await upd.status();
+        assert.deepStrictEqual(dv.blockers, ['diverged']);
+        assert.strictEqual((await upd.start({ force: true })).body.code, 'diverged');
+        fx.g(fx.live, 'reset', '--quiet', '--hard', before);
+        assert.strictEqual(fx.head(), before);
+        assert.deepStrictEqual((await upd.status()).blockers, []);
+      });
+
+      await uta('server-update — unsupported: no process manager → 400 no_process_manager; docker; plain dir → not_git', async () => {
+        const noPm = await mk({ restartable: false }).status();
+        assert.deepStrictEqual([noPm.supported, noPm.reason], [false, 'no_process_manager']);
+        assert.deepStrictEqual((await mk({ restartable: false }).start({})).body.code, 'no_process_manager');
+        assert.strictEqual((await mk({ restartable: false }).start({})).status, 400);
+        assert.strictEqual((await mk({ isDocker: true }).status()).reason, 'docker');
+        const plain = path.join(tmp, 'plain');
+        fsM.mkdirSync(plain);
+        const ng = await mk({ repoDir: plain }).status();
+        assert.deepStrictEqual([ng.supported, ng.reason, ng.current], [false, 'not_git', null]);
+      });
+
+      await uta('server-update — active runs: 409 active_runs with the count unless force: true', async () => {
+        activeRuns = 2;
+        const r = await upd.start({});
+        assert.strictEqual(r.status, 409);
+        assert.deepStrictEqual(r.body, { error: '2 agent run(s) in progress', code: 'active_runs', active_runs: 2 });
+        assert.strictEqual((await upd.status()).active_runs, 2);
+      });
+
+      await uta('server-update — smoke boot crashes → reset to previous HEAD, state failed + rolled_back, no restart', async () => {
+        const prev = fx.head();
+        const bad = fx.publish({ 'server.js': BAD_SMOKE_SERVER }, 'broken release');
+        events.length = 0;
+        const r = await upd.start({ force: true });
+        assert.strictEqual(r.status, 202);
+        assert.strictEqual((await upd.start({ force: true })).body.code, 'update_running', 'second start while running → 409');
+        // Back-to-back status polls (as the UI does) while the update runs: each runs `git status` against the
+        // live tree, and every 'failed' snapshot must already show the rolled-back HEAD.
+        const snaps = [];
+        const poll = async () => { for (;;) { const v = await upd.status(); snaps.push(v); if (v.update.state !== 'running') return v; } };
+        const [s] = await Promise.all([poll(), poll(), poll(), poll()]);
+        assert.deepStrictEqual(snaps.filter(v => v.update.state === 'failed' && v.current.sha !== prev.slice(0, 7)).map(v => v.current.sha), [],
+          'no snapshot pairs state failed with the pre-rollback HEAD');
+        activeRuns = 0;
+        assert.strictEqual(s.update.state, 'failed');
+        assert.strictEqual(s.update.step, 'smoke');
+        assert.ok(s.update.error.includes('smoke boot exited (3)') && s.update.error.includes('boom: migration failed'), s.update.error);
+        assert.strictEqual(fx.head(), prev, 'tree back on the previous HEAD');
+        assert.strictEqual(fx.g(fx.live, 'status', '--porcelain'), '');
+        assert.deepStrictEqual(restarts, []);
+        const lr = s.update.last_result;
+        assert.deepStrictEqual([lr.ok, lr.rolled_back, lr.from, lr.to], [false, true, prev, bad]);
+        const file = bg.readState(stateFile);
+        assert.strictEqual(file.status, 'failed');
+        assert.deepStrictEqual(file.last_result, lr);
+        assert.deepStrictEqual(events.filter(e => e.type === 'update_progress').map(e => e.step), ['fetch', 'merge', 'smoke', 'smoke']);
+      });
+
+      await uta('server-update — smoke boot healthy → fast-forward kept, state file pending, restart via the shared path', async () => {
+        const prev = fx.head();
+        const good = fx.publish({ 'server.js': GOOD_SMOKE_SERVER, 'package.json': '{"version":"1.2.0"}\n' }, 'fixed release');
+        events.length = 0;
+        assert.strictEqual((await upd.start({})).status, 202);
+        const s = await settled();
+        assert.strictEqual(s.update.state, 'restarting');
+        assert.strictEqual(s.update.step, 'restart');
+        assert.deepStrictEqual(restarts, ['update']);
+        assert.strictEqual(fx.head(), good);
+        assert.strictEqual(s.current.version, '1.2.0');
+        const file = bg.readState(stateFile);
+        assert.deepStrictEqual([file.status, file.prev_head, file.new_head, file.attempts], ['pending', prev, good, 0]);
+        assert.strictEqual((await upd.start({ force: true })).body.code, 'update_running', 'restarting → no second update');
+        const fresh = await mk().status();
+        assert.deepStrictEqual([fresh.update.state, fresh.blockers[0]], ['idle', 'update_running'], 'after restart, a pending boot check is a blocker');
+        const r2 = await mk().start({ force: true });
+        assert.deepStrictEqual([r2.status, r2.body.code], [409, 'update_running']);
+        assert.ok(!events.some(e => e.step === 'install'), 'lockfile unchanged → no npm ci');
+      });
+
+      await uta('boot-guard — pending: attempts 1..3 counted; 4th boot resets to prev_head, records rolled_back, exits 1', async () => {
+        const st = bg.readState(stateFile);
+        const quiet = { log() {}, warn() {}, error() {} };
+        const exits = [];
+        const opts = { file: stateFile, repoDir: fx.live, exit: (c) => exits.push(c), log: quiet };
+        for (let i = 1; i <= 3; i++) {
+          assert.strictEqual(bg.runBootGuard(opts), 'counted');
+          assert.strictEqual(bg.readState(stateFile).attempts, i);
+        }
+        assert.strictEqual(fx.head(), st.new_head);
+        assert.deepStrictEqual(exits, []);
+        assert.strictEqual(bg.runBootGuard(opts), 'rolled_back');
+        assert.deepStrictEqual(exits, [1]);
+        assert.strictEqual(fx.head(), st.prev_head);
+        const after = bg.readState(stateFile);
+        assert.strictEqual(after.status, 'rolled_back');
+        assert.deepStrictEqual([after.last_result.ok, after.last_result.rolled_back, after.last_result.from, after.last_result.to], [false, true, st.prev_head, st.new_head]);
+        assert.strictEqual(bg.runBootGuard(opts), 'none', 'not pending any more → normal boot');
+        assert.ok(!(await mk().status()).blockers.includes('update_running'), 'rolled back → no longer blocked');
+        assert.strictEqual((await mk().status()).update.last_result.rolled_back, true, 'last_result read from the state file at boot');
+      });
+
+      await uta('boot-guard — HEAD moved by hand → stale (no reset); healthy mark after delay → ok + last_result', async () => {
+        const quiet = { log() {}, warn() {}, error() {} };
+        const head = fx.head();
+        const other = fx.g(fx.up, 'rev-parse', 'HEAD');
+        bg.writeState(stateFile, { status: 'pending', prev_head: other, new_head: 'f'.repeat(40), attempts: 3 });
+        assert.strictEqual(bg.runBootGuard({ file: stateFile, repoDir: fx.live, exit: () => assert.fail('must not exit'), log: quiet }), 'stale');
+        assert.strictEqual(fx.head(), head);
+        bg.writeState(stateFile, { status: 'pending', prev_head: other, new_head: head, attempts: 1 });
+        bg.scheduleHealthyMark({ file: stateFile, delayMs: 20, log: quiet });
+        const done = await waitUntil(() => bg.readState(stateFile).status === 'ok' && bg.readState(stateFile), 2000, 10);
+        assert.deepStrictEqual([done.last_result.ok, done.last_result.from, done.last_result.to], [true, other, head]);
+        assert.strictEqual(fsM.readdirSync(tmp).filter(f => f.startsWith('update-state.json.tmp')).length, 0, 'atomic write leaves no tmp file');
+      });
+
+      await uta('server-update — daily check timer fetches on its own and reports fetch failures as check_error', async () => {
+        const u2 = mk();
+        const stop = u2.startDailyCheck({ firstDelayMs: 10, intervalMs: 50 });
+        try {
+          await waitUntil(async () => (await u2.status()).checked_at, 3000, 20);
+          fx.g(fx.live, 'remote', 'set-url', 'origin', path.join(tmp, 'gone.git'));
+          const t0 = (await u2.status()).checked_at;
+          const s = await waitUntil(async () => { const v = await u2.status(); return v.checked_at !== t0 && v.check_error && v; }, 3000, 20);
+          assert.ok(/fetch failed/.test(s.check_error), s.check_error);
+        } finally { stop(); }
+      });
+    } finally {
+      sdb.close();
+      fsM.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
 
   return { p, f };
 }
@@ -7638,6 +7871,119 @@ async function run() {
     assert.strictEqual(r.status, 401);
   });
 
+  // In-app updater over HTTP. run-tests.js points STOA_UPDATE_REPO_DIR at an empty temp path and
+  // STOA_UPDATE_PROCESS_MANAGER at launchd; the fixture's server.js always fails the smoke boot here,
+  // so the throwaway server is never restarted by these tests.
+  console.log('\n[Server Update]');
+  if (!process.env.STOA_UPDATE_REPO_DIR) {
+    console.log('    (STOA_UPDATE_REPO_DIR not set — run via run-tests.js; skipped)');
+  } else {
+    const fsM = require('fs');
+    const Database = require('better-sqlite3');
+    const live = process.env.STOA_UPDATE_REPO_DIR;
+    let fx = null, updAgent = null, streamingId = null;
+    const udb = new Database(process.env.DB_PATH);
+    try {
+      await test('update — every route: no session → 401', async () => {
+        for (const [m, u] of [['GET', '/api/server/update/status'], ['POST', '/api/server/update/check'], ['POST', '/api/server/update']]) {
+          const r = await rawReq(m, u, m === 'POST' ? '{}' : '', 'application/json', { Cookie: '' });
+          assert.strictEqual(r.status, 401, `${m} ${u}`);
+        }
+      });
+
+      await test('update — agent secret (no session) → 403 agent_scope_denied on every route', async () => {
+        updAgent = await createOnlineTestAgent('__test-update-agent', '/tmp/stoa-test-update');
+        assert.ok(updAgent, 'agent setup');
+        const h = { Cookie: '', 'x-agent-id': String(updAgent.actorId), 'x-agent-secret': updAgent.secret };
+        for (const [m, u] of [['GET', '/api/server/update/status'], ['POST', '/api/server/update/check'], ['POST', '/api/server/update']]) {
+          const r = await rawReq(m, u, m === 'POST' ? '{"force":true}' : '', 'application/json', h);
+          assert.strictEqual(r.status, 403, `${m} ${u}`);
+          assert.strictEqual(r.body.error, 'agent_scope_denied');
+        }
+      });
+
+      await test('update — no git checkout at the repo dir → supported false, reason not_git; POST → 400', async () => {
+        const s = await req('GET', '/api/server/update/status');
+        assert.strictEqual(s.status, 200);
+        assert.deepStrictEqual([s.body.supported, s.body.reason], [false, 'not_git']);
+        const u = await req('POST', '/api/server/update', {});
+        assert.deepStrictEqual([u.status, u.body.code], [400, 'not_git']);
+      });
+
+      await test('update — clone present: status up_to_date, check → behind + update_available over WS', async () => {
+        fx = makeUpdateFixture(path.dirname(live), live);
+        const s0 = (await req('GET', '/api/server/update/status')).body;
+        assert.deepStrictEqual([s0.supported, s0.branch, s0.behind, s0.blockers], [true, 'master', 0, ['up_to_date']]);
+        assert.strictEqual(s0.current.version, '1.0.0');
+        assert.strictEqual(s0.checked_at, null);
+        const latest = fx.publish({ 'package.json': '{"version":"1.1.0"}\n' }, 'release 1.1.0');
+        const ws = await openWsConnection(`ws://${HOST}:${PORT}`, cookieHeader());
+        try {
+          ws.send(JSON.stringify({ type: 'subscribe_global' }));
+          await new Promise(r => setTimeout(r, 200));
+          const avail = waitForWsMessage(ws, m => m.type === 'update_available', 8000);
+          const c = await req('POST', '/api/server/update/check');
+          assert.strictEqual(c.status, 200);
+          assert.deepStrictEqual([c.body.behind, c.body.latest.sha, c.body.latest.version, c.body.blockers], [1, latest.slice(0, 7), '1.1.0', []]);
+          assert.deepStrictEqual(c.body.commits, [{ sha: latest.slice(0, 7), subject: 'release 1.1.0' }]);
+          assert.ok(c.body.checked_at);
+          const m = await avail;
+          assert.deepStrictEqual([m.latest.sha, m.behind], [latest.slice(0, 7), 1]);
+        } finally { ws.close(); }
+      });
+
+      await test('update — dirty tree → 409 dirty_tree (file left untouched)', async () => {
+        fsM.writeFileSync(path.join(live, 'notes.txt'), 'mine');
+        try {
+          const r = await req('POST', '/api/server/update', { force: true });
+          assert.deepStrictEqual([r.status, r.body.code], [409, 'dirty_tree']);
+          assert.strictEqual(fsM.readFileSync(path.join(live, 'notes.txt'), 'utf8'), 'mine');
+        } finally { fsM.unlinkSync(path.join(live, 'notes.txt')); }
+      });
+
+      await test('update — streaming message in the DB → 409 active_runs; force: true → 202, smoke fails, rolled back', async () => {
+        const rp = udb.prepare('SELECT room_id, id FROM room_participants ORDER BY id LIMIT 1').get();
+        assert.ok(rp, 'need any room participant in the DB copy');
+        streamingId = udb.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,'',?)").run(rp.room_id, rp.id, 'streaming').lastInsertRowid;
+        const before = (await req('GET', '/api/server/update/status')).body;
+        assert.ok(before.active_runs >= 1);
+        const blocked = await req('POST', '/api/server/update', {});
+        assert.deepStrictEqual([blocked.status, blocked.body.code, blocked.body.active_runs], [409, 'active_runs', before.active_runs]);
+        const prev = fx.head();
+        fx.publish({ 'server.js': BAD_SMOKE_SERVER }, 'broken');
+        const go = await req('POST', '/api/server/update', { force: true });
+        assert.deepStrictEqual([go.status, go.body], [202, { ok: true }]);
+        const s = await waitUntil(async () => { const b = (await req('GET', '/api/server/update/status')).body; return b.update.state === 'failed' && b; }, 30000, 200);
+        assert.strictEqual(s.update.step, 'smoke');
+        assert.ok(s.update.error.includes('boom: migration failed'), s.update.error);
+        assert.strictEqual(s.update.last_result.rolled_back, true);
+        assert.strictEqual(fx.head(), prev, 'live checkout back on the previous HEAD');
+        assert.strictEqual(s.current.sha, prev.slice(0, 7));
+        assert.ok((await req('GET', '/api/server/process-manager')).status === 200, 'server still up');
+      });
+
+      await test('update — state file pending (boot check not done) → blockers[0] update_running, POST → 409 update_running', async () => {
+        const stateFile = process.env.STOA_UPDATE_STATE_FILE;
+        const saved = fsM.readFileSync(stateFile, 'utf8');
+        const head = fx.head();
+        try {
+          fsM.writeFileSync(stateFile, JSON.stringify({ status: 'pending', prev_head: head, new_head: head, attempts: 1 }));
+          const s = (await req('GET', '/api/server/update/status')).body;
+          assert.strictEqual(s.blockers[0], 'update_running');
+          const u = await req('POST', '/api/server/update', { force: true });
+          assert.deepStrictEqual([u.status, u.body.code], [409, 'update_running']);
+          assert.strictEqual(fx.head(), head, 'tree untouched');
+        } finally { fsM.writeFileSync(stateFile, saved); }
+        assert.ok(!(await req('GET', '/api/server/update/status')).body.blockers.includes('update_running'));
+      });
+    } finally {
+      if (streamingId) udb.prepare('DELETE FROM messages WHERE id=?').run(streamingId);
+      udb.close();
+      if (updAgent?.ws) updAgent.ws.close();
+      if (fx) fsM.rmSync(fx.root, { recursive: true, force: true });
+    }
+  }
+
   // Client error logging
   console.log('\n[Client Error]');
   await test('POST /api/client-error — logs error → 200 ok', async () => {
@@ -11575,6 +11921,61 @@ async function run() {
     assert.ok(ctx.schedNextRunText({ enabled: 1, next_run_at: '2026-10-27 02:00:00', schedule_spec: daily }).startsWith('next Tue 27 Oct, 09:00 WIB · '),
       'next run shown in the schedule\'s own time zone');
     assert.strictEqual(ctx.schedNextRunText({ enabled: 0, next_run_at: null, schedule_spec: daily }), 'paused');
+  });
+
+  await test('update panel — blocker/unsupported codes map to readable reasons, outcome toast shown once, badge follows behind', () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const toasts = [];
+    const store = {};
+    const nav = { title: '', attrs: {}, cls: new Set(),
+      classList: { toggle(c, on) { on ? nav.cls.add(c) : nav.cls.delete(c); } },
+      setAttribute(k, v) { nav.attrs[k] = v; } };
+    const el = () => { const e = { textContent: '', cls: [], attrs: {}, kids: [],
+      classList: { add: c => e.cls.push(c) }, setAttribute(k, v) { e.attrs[k] = v; }, appendChild(k) { e.kids.push(k); } }; return e; };
+    const ctx = {
+      document: { getElementById: id => (id === 'nav-server' ? nav : null), createElement: el },
+      localStorage: { getItem: k => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); } },
+      showToast: (msg, opts) => toasts.push({ msg, error: !!opts?.error }),
+    };
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'public/js/settings/update.js'), 'utf8'), ctx);
+    const R = ctx.sUpdateBlockReason;
+    const base = { supported: true, reason: null, behind: 3, blockers: [] };
+    assert.strictEqual(R(base), null, 'behind with no blockers can update');
+    assert.match(R({ ...base, supported: false, reason: 'docker' }), /docker/);
+    assert.match(R({ ...base, supported: false, reason: 'not_git' }), /not a git checkout/);
+    assert.match(R({ ...base, supported: false, reason: 'no_process_manager' }), /process manager/);
+    assert.strictEqual(R({ ...base, supported: false, reason: 'brand_new' }), 'brand_new', 'unknown code shown as-is');
+    assert.match(R({ ...base, blockers: ['dirty_tree'] }), /uncommitted/);
+    assert.match(R({ ...base, blockers: ['diverged'] }), /fast-forward/);
+    assert.match(R({ ...base, blockers: ['not_default_branch'] }), /another branch/);
+    assert.match(R({ ...base, blockers: ['update_running'] }), /already running/);
+    assert.strictEqual(R({ ...base, blockers: ['constructor'] }), 'constructor', 'prototype keys are not codes');
+    assert.ok(ctx.sUpdateIsBusy({ update: { state: 'running' } }) && ctx.sUpdateIsBusy({ update: { state: 'restarting' } }));
+    assert.ok(!ctx.sUpdateIsBusy({ update: { state: 'failed' } }), 'a failed update can be retried');
+    assert.match(R({ ...base, blockers: ['up_to_date', 'dirty_tree'] }), /uncommitted/, 'a real blocker outranks up_to_date');
+    assert.strictEqual(R({ ...base, behind: 0 }), 'already up to date.');
+    assert.strictEqual(ctx.sUpdateVersionLabel({ sha: 'abc1234', version: '0.68.0' }), 'v0.68.0 · abc1234');
+    assert.strictEqual(ctx.sUpdateVersionLabel(null), '—');
+
+    const rolled = { ...base, current: { sha: 'e2f45ac', version: '0.67.1' },
+      update: { state: 'idle', last_result: { ok: false, rolled_back: true, from: 'e2f45ac', error: 'migration failed', at: '2026-10-25T07:00:00Z' } } };
+    ctx.sUpdateApply(rolled);
+    ctx.sUpdateApply(rolled);
+    assert.strictEqual(toasts.length, 1, 'rollback announced once across reconnects');
+    assert.ok(toasts[0].error && /rolled back to e2f45ac: migration failed/.test(toasts[0].msg), toasts[0].msg);
+    assert.ok(nav.cls.has('has-update') && /update available/.test(nav.attrs['aria-label']), 'badge on while behind');
+    ctx.sHandleUpdateAvailable({ latest: { sha: 'abc1234' }, behind: 0 });
+    assert.ok(!nav.cls.has('has-update') && nav.attrs['aria-label'] === 'Server', 'badge cleared when up to date');
+    ctx.sUpdateApply({ ...rolled, update: { state: 'idle', last_result: { ok: true, at: '2026-10-25T08:00:00Z' } } });
+    assert.strictEqual(toasts.length, 2);
+    assert.ok(!toasts[1].error && /updated to v0.67.1/.test(toasts[1].msg), 'a newer successful result is announced');
+
+    for (const step of ['fetch', 'merge', 'smoke']) ctx.sHandleUpdateProgress({ type: 'update_progress', state: 'running', step });
+    ctx.sHandleUpdateProgress({ type: 'update_progress', state: 'failed', step: 'smoke', error: 'smoke: exited (1)' });
+    const steps = ctx.sUpdateMakeProgress({ state: 'failed', step: 'smoke' }).kids.map(k => `${k.textContent}:${k.cls.join(',')}`);
+    assert.deepStrictEqual(steps, ['fetch:is-done', 'apply commits:is-done', 'install dependencies · skipped:is-skipped',
+      'test boot:is-failed', 'restart:'], 'unchanged lockfile shows install as skipped, not done');
   });
 
   // escapeTomlValue unit tests

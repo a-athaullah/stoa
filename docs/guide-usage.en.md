@@ -1086,6 +1086,27 @@ The detail panel includes:
 
 **Restart Server** — the Server tab also shows a restart card. It displays which process manager is running Stoa (e.g., `running via launchd`) and a **restart server** button. The button is enabled when Stoa is managed by launchd, PM2, systemd, or supervisord — the process manager will restart the process automatically after exit. For Docker or unknown environments the button is disabled (restart the container or process from outside). Click **restart server** → confirm the dialog → the server notifies all connected agents and browsers, then exits. The browser reconnects automatically within ~2–3 seconds and briefly shows "Server restarted" when the connection is restored.
 
+**Updating Stoa** — the Server tab also shows an **Update** card with the currently running version and the latest version available on the default branch. Stoa checks automatically once a day; the card shows the time of the last check. A small badge appears on the Server nav icon when a newer version is available.
+
+- **check now** — force an immediate fetch from the remote.
+- **Update** — open a dialog listing the new commits, then start the update. Progress is shown step by step: fetch → apply commits → install dependencies → test boot → restart. The "install dependencies" step is skipped when `package-lock.json` did not change; it shows as "skipped" in the progress list. After the server restarts, all connected agents auto-update within ~2 minutes.
+
+**Safeguards:**
+- Before the live server is touched, the new version is booted against a copy of the database. If that test fails, the changes are rolled back and the live server keeps running without a restart.
+- If the server fails to start successfully more than 3 times after the update, Stoa automatically rolls back to the previous version and shows a warning after you reconnect.
+- If any agents have active runs, a confirmation dialog appears before the update is forced.
+
+**Update is disabled (with reason shown) when:**
+- The install is not a git checkout — update by hand instead.
+- Running in Docker — pull the new image instead.
+- No process manager (launchd, pm2, systemd, or supervisord) is managing Stoa.
+- The checkout is on a non-default branch.
+- The working tree has uncommitted changes.
+- There are local commits not on origin (diverged).
+- An update is already running or still finishing its boot check.
+
+Previously, updating required running `git pull` manually and restarting the process manager.
+
 ### Platforms
 
 Configure external AI model providers beyond the built-in Claude models. Click **+ add platform** to register a new provider:

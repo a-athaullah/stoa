@@ -22,7 +22,9 @@
  *
  *   8. Writes a random token into the COPY (table stoa_test_marker) and passes it as
  *      STOA_TEST_DB_TOKEN; test.js refuses to run against any DB without the matching token
- *   9. From a git worktree with no db/stoa.db, copies the DB (and .env) from the main worktree,
+ *   9. Points the in-app updater (lib/server-update.js) at a temp git fixture dir, so no test can run git/npm
+ *      on this repo, and keeps its boot-guard state file in that temp dir
+ *  10. From a git worktree with no db/stoa.db, copies the DB (and .env) from the main worktree,
  *      read-only — never symlink the live DB into a worktree
  *
  * Usage:        node .claude/tools/run-tests.js
@@ -88,12 +90,14 @@ function waitUp(port, tries = 50) {
   const tmpBundleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-test-dist-'));
   const tmpEnvDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-test-env-'));
   const tmpMcpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-test-mcp-'));
+  const tmpUpdateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-test-update-'));
   const tmpEnv = path.join(tmpEnvDir, '.env');
   const rmTmp = () => {
     tmpArtifacts.forEach((f) => { try { fs.unlinkSync(f); } catch {} });
     try { fs.rmSync(tmpBundleDir, { recursive: true, force: true }); } catch {}
     try { fs.rmSync(tmpEnvDir, { recursive: true, force: true }); } catch {}
     try { fs.rmSync(tmpMcpDir, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(tmpUpdateDir, { recursive: true, force: true }); } catch {}
   };
   const bundleStamp = () => { try { const s = fs.statSync(liveBundle); return `${s.mtimeMs}:${s.size}`; } catch { return null; } };
   const liveBundleBefore = bundleStamp();
@@ -152,6 +156,13 @@ function waitUp(port, tries = 50) {
     SCHED_TICK_MS: '1000',
     // MCP approval wait (5 min in prod) short enough for the expiry test to reach it.
     MCP_APPROVAL_TIMEOUT_MS: '3000',
+    // In-app updater works on a git fixture test.js builds here — never on this repo — and believes a
+    // process manager exists so its checks run. Its boot-guard state stays in the temp dir too, and the
+    // daily check never fires during a run (test.js drives /check itself).
+    STOA_UPDATE_REPO_DIR: path.join(tmpUpdateDir, 'live'),
+    STOA_UPDATE_STATE_FILE: path.join(tmpUpdateDir, 'update-state.json'),
+    STOA_UPDATE_PROCESS_MANAGER: 'launchd',
+    STOA_UPDATE_CHECK_DELAY_MS: String(24 * 3600_000),
     STOA_TEST_EMAIL: testEmail || '', STOA_TEST_PASSWORD: testPassword, STOA_TEST_DB_TOKEN: dbToken };
 
   const server = spawn(process.execPath, [serverFile], { cwd: projectRoot, env, stdio: ['ignore', 'pipe', 'pipe'] });

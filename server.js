@@ -1,3 +1,8 @@
+// Boot guard before anything else: a broken update must be counted and rolled back even when a later
+// require or a migration crashes this boot (lib/boot-guard.js). A smoke boot is the updater's own trial run.
+const SMOKE_BOOT = process.env.STOA_SMOKE_BOOT === '1';
+const bootGuard = require('./lib/boot-guard');
+if (!SMOKE_BOOT) bootGuard.runBootGuard();
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -22,6 +27,7 @@ const { recordToolStep } = require('./lib/tool-steps');
 const { resolveEnvFile, loadEnvFile, setEnvKey, portFallbackWarning, DEFAULT_PORT } = require('./lib/env-file');
 const { runMigrations } = require('./lib/migrations');
 const { sanitizeIdList, diffRunQueue, summarizeRunTiming, createRunTimeout } = require('./lib/run-queue');
+const { createServerUpdate } = require('./lib/server-update');
 const fallbackSessions = new Map();
 
 // R15: unique identifier for this server boot. Sessions tagged with a different
@@ -671,7 +677,8 @@ function sweepExpiredRetriggers() {
     catch (e) { console.error(`[retrigger] sweep give-up #${r.id} failed:`, e.message); }
   }
 }
-setInterval(() => {
+// STOA_SMOKE_BOOT (lib/server-update.js trial boot on a DB copy): no background work that could post or reach out.
+if (!SMOKE_BOOT) setInterval(() => {
   try { sweepExpiredRetriggers(); } catch (e) { console.error('[retrigger] sweep error:', e.message); }
 }, RETRIGGER_SWEEP_MS).unref();
 
@@ -1258,7 +1265,8 @@ if (!fs.existsSync(CONNECTOR_MEDIA_DIR)) fs.mkdirSync(CONNECTOR_MEDIA_DIR);
     if (next <= now) next.setDate(next.getDate() + 1);
     setTimeout(() => { cleanupUploads(); scheduleNext(); }, next - now);
   };
-  scheduleNext();
+  // A smoke boot shares uploads/ with the live server.
+  if (!SMOKE_BOOT) scheduleNext();
 }
 
 // ── Scheduled triggers: proactive scheduler ────────────────────────────────
@@ -1432,7 +1440,7 @@ function gcTick() {
 
 // Gate the loop off under test (NODE_ENV=test) — integration tests drive the
 // CRUD API directly and must not have the loop firing real triggers underneath.
-if (process.env.NODE_ENV !== 'test') {
+if (process.env.NODE_ENV !== 'test' && !SMOKE_BOOT) {
   (function scheduleLoop() {
     setTimeout(() => {
       try { schedulerTick(); } catch (e) { console.error('[scheduler] tick error:', e.message); }
@@ -3447,27 +3455,37 @@ const server = http.createServer(async (req, res) => {
   // ── Server process manager info & restart ──
   if (req.method === 'GET' && url.pathname === '/api/server/process-manager') {
     if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
-    const restartable = ['launchd', 'pm2', 'systemd', 'supervisord'].includes(detectedProcessManager);
-    return json(res, { manager: detectedProcessManager, restartable });
+    return json(res, { manager: detectedProcessManager, restartable: RESTARTABLE_MANAGERS.has(detectedProcessManager) });
   }
 
   if (req.method === 'POST' && url.pathname === '/api/server/restart') {
     if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
-    const restartable = ['launchd', 'pm2', 'systemd', 'supervisord'].includes(detectedProcessManager);
-    if (!restartable) {
+    if (!RESTARTABLE_MANAGERS.has(detectedProcessManager)) {
       const reason = detectedProcessManager === 'docker'
         ? 'Cannot restart from inside a Docker container — restart the container from the host'
         : 'Process manager not detected — restart the server manually';
       return json(res, { error: reason }, 400);
     }
-    // Notify all connected clients before exiting
-    const payload = JSON.stringify({ type: 'server_restarting' });
-    for (const client of globalClients) { if (client.readyState === 1) client.send(payload); }
-    for (const [, agentWs] of agentClients) { if (agentWs.readyState === 1) agentWs.send(payload); }
-    console.log(`[server] Restart requested by user — exiting for process manager (${detectedProcessManager}) to restart`);
-    json(res, { ok: true });
-    setTimeout(() => process.exit(0), 500);
-    return;
+    restartServer('user');
+    return json(res, { ok: true });
+  }
+
+  // ── In-app update (lib/server-update.js). Owner session only — deliberately not in lib/agent-scope.js. ──
+  if (req.method === 'GET' && url.pathname === '/api/server/update/status') {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    return json(res, await serverUpdate.status());
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/server/update/check') {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    return json(res, await serverUpdate.check());
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/server/update') {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    const body = parseJsonBody(await readBody(req)) || {};
+    const r = await serverUpdate.start({ force: body.force === true });
+    return json(res, r.body, r.status);
   }
 
   // ── AI Platform config ──
@@ -8111,6 +8129,33 @@ const detectedProcessManager = (() => {
   return 'unknown';
 })();
 console.log(`[startup] Process manager: ${detectedProcessManager}`);
+const RESTARTABLE_MANAGERS = new Set(['launchd', 'pm2', 'systemd', 'supervisord']);
+
+// Exit and let the process manager start us again. Clients get server_restarting first and reconnect.
+function restartServer(reason) {
+  const payload = JSON.stringify({ type: 'server_restarting' });
+  for (const client of globalClients) { if (client.readyState === 1) client.send(payload); }
+  for (const [, agentWs] of agentClients) { if (agentWs.readyState === 1) agentWs.send(payload); }
+  console.log(`[server] Restart requested (${reason}) — exiting for process manager (${detectedProcessManager}) to restart`);
+  setTimeout(() => process.exit(0), 500);
+}
+
+// "Active run" = a message an agent is producing right now (streaming / requesting). ai_sessions.status
+// is not used: 'active' there only means "used in the last idle_timeout seconds", not "running now".
+// Sub-agent rows parked as awaiting_agent are not counted either: nothing runs until their agent returns.
+const countActiveRunsStmt = db.prepare("SELECT COUNT(*) FROM messages WHERE state IN ('streaming','requesting')").pluck();
+const serverUpdate = createServerUpdate({
+  repoDir: bootGuard.repoDirPath(),
+  stateFile: bootGuard.stateFilePath(),
+  envFile: ENV_FILE,
+  db,
+  // STOA_UPDATE_PROCESS_MANAGER: test knob (run-tests.js) so the updater's checks run without a real manager.
+  restartable: RESTARTABLE_MANAGERS.has(process.env.STOA_UPDATE_PROCESS_MANAGER || detectedProcessManager),
+  isDocker: detectedProcessManager === 'docker',
+  countActiveRuns: () => countActiveRunsStmt.get(),
+  broadcast: broadcastGlobal,
+  restart: restartServer,
+});
 
 server.listen(PORT, () => {
   // R15: any session left 'active' belongs to a prior process — mark indeterminate.
@@ -8119,7 +8164,13 @@ server.listen(PORT, () => {
 
   console.log(`Stoa running → http://localhost:${PORT}`);
   // Phase 2b (R1): resume any sub-agent wakes left pending by a prior crash/restart.
+  if (SMOKE_BOOT) return;
   try { drainPendingWakesOnStartup(); } catch (e) { console.error('[wake] startup drain failed:', e.message); }
+  bootGuard.scheduleHealthyMark();
+  serverUpdate.startDailyCheck({
+    firstDelayMs: parseInt(process.env.STOA_UPDATE_CHECK_DELAY_MS) || 5 * 60_000,
+    intervalMs: parseInt(process.env.STOA_UPDATE_CHECK_INTERVAL_MS) || 24 * 3600_000,
+  });
 });
 
 
@@ -8614,7 +8665,7 @@ connectionManager.on('conn_status', ({ connId, status, error }) => {
 });
 
 // Reconnect Slack on startup if previously connected
-(async () => {
+if (!SMOKE_BOOT) (async () => {
   const legacyConnected = getSetting('slack_connected') === '1';
   const legacyAppToken  = getSetting('slack_app_token');
   const legacyToken     = getSetting('slack_user_token') || null;

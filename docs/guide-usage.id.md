@@ -1087,6 +1087,27 @@ Panel detail mencakup:
 
 **Restart Server** — tab Server juga menampilkan kartu restart. Kartu ini menunjukkan process manager yang menjalankan Stoa (misalnya `running via launchd`) dan tombol **restart server**. Tombol aktif jika Stoa dikelola oleh launchd, PM2, systemd, atau supervisord — process manager akan otomatis menghidupkan ulang proses setelah exit. Untuk Docker atau environment yang tidak dikenali, tombol dinonaktifkan (restart container atau proses dari luar). Klik **restart server** → konfirmasi dialog → server memberi tahu semua agent dan browser yang terhubung, lalu exit. Browser terhubung kembali otomatis dalam ~2–3 detik dan menampilkan "Server restarted" sebentar setelah koneksi pulih.
 
+**Memperbarui Stoa** — tab Server juga menampilkan kartu **Update** yang menunjukkan versi yang sedang berjalan dan versi terbaru yang tersedia di branch default. Stoa mengecek otomatis sekali sehari; kartu menampilkan waktu pengecekan terakhir. Badge kecil muncul di ikon nav Server kalau ada versi baru.
+
+- **check now** — paksa fetch langsung dari remote.
+- **Update** — buka dialog yang menampilkan daftar commit baru, lalu mulai update. Progres ditampilkan per langkah: fetch → apply commits → install dependencies → test boot → restart. Langkah "install dependencies" dilewati kalau `package-lock.json` tidak berubah; tampil sebagai "skipped" di daftar progres. Setelah server restart, semua agent yang terhubung auto-update dalam ~2 menit.
+
+**Pengaman:**
+- Sebelum server live disentuh, versi baru di-boot terhadap salinan database. Kalau tes ini gagal, perubahan di-rollback dan server live tetap berjalan tanpa restart.
+- Kalau server gagal start lebih dari 3 kali setelah update diterapkan, Stoa otomatis rollback ke versi sebelumnya dan menampilkan peringatan setelah kamu reconnect.
+- Kalau ada agent yang sedang menjalankan run aktif, dialog konfirmasi muncul sebelum update dipaksa.
+
+**Update dinonaktifkan (dengan alasan yang ditampilkan) kalau:**
+- Instalasi bukan git checkout — update manual.
+- Berjalan di Docker — pull image baru.
+- Tidak ada process manager (launchd, pm2, systemd, atau supervisord) yang mengelola Stoa.
+- Checkout berada di branch yang bukan default.
+- Working tree memiliki perubahan yang belum di-commit.
+- Ada commit lokal yang tidak ada di origin (diverged).
+- Update sudah berjalan atau masih menyelesaikan boot check.
+
+Sebelumnya, update mengharuskan menjalankan `git pull` secara manual dan merestart process manager.
+
 ### Platforms
 
 Konfigurasi provider model AI eksternal di luar model Claude bawaan. Klik **+ add platform** untuk mendaftarkan provider baru:
