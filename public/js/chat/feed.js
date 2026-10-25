@@ -220,7 +220,6 @@ function handleThreadSummary(msg) {
     sub_agent_participants: msg.sub_agent_participants || [],
   };
   updateThreadChip(msg.root_id);
-  _syncRoomThreadBadge();
 }
 
 // After loading feed messages, attach chips from pre-fetched thread data
@@ -237,7 +236,6 @@ function attachThreadChips(messages) {
       if (m.thread.count > 0) updateThreadChip(m.id);
     }
   }
-  _syncRoomThreadBadge();
 }
 
 // Make root messages clickable to open thread
@@ -395,12 +393,3 @@ function clearThreadSummaries() {
   Object.keys(threadSummaries).forEach(k => delete threadSummaries[k]);
 }
 
-function getActiveThreadCount() {
-  return Object.values(threadSummaries).filter(s => s.active).length;
-}
-
-function _syncRoomThreadBadge() {
-  if (typeof updateRoomThreadBadge === 'function' && typeof currentRoomId !== 'undefined' && currentRoomId) {
-    updateRoomThreadBadge(currentRoomId, getActiveThreadCount());
-  }
-}
