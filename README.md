@@ -249,6 +249,16 @@ Stoa can listen to a Slack workspace and automatically route incoming messages i
 
 ## Updating
 
+**From the UI:** Settings → Update shows the running and the latest version (checked once a day, or with **Check now**). **Update** lists the incoming commits, asks for confirmation, then fetches, fast-forwards, runs `npm ci` only when `package-lock.json` changed, test-boots the new version on a throwaway copy of the database, and restarts the server. If agents are mid-run you are asked once more before it goes ahead.
+
+Requirements — otherwise the button stays disabled and says why:
+- a git checkout (not Docker) on the default branch of `origin`, with no local changes and no local commits that diverge from it
+- a process manager that restarts the server (launchd, pm2, systemd or supervisord)
+
+If anything fails before the restart (merge, `npm ci`, test boot), the checkout goes back to the previous commit and the running server is left alone. If the new version cannot stay up after the restart (3 failed boots), it rolls itself back to the previous commit and Settings shows a warning once.
+
+**By hand:**
+
 ```bash
 git pull
 pm2 restart stoa-server
