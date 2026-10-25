@@ -4012,10 +4012,10 @@ async function run() {
     for (let i = 0; i < toPinCount; i++) { await req('DELETE', `/api/rooms/${testRoomIds[i]}/pin`); }
   });
 
-  // Room delete cascades to settings, room_memory, memory_pending_writes
+  // Room delete cascades to settings, room_memory
   console.log('\n[Room Delete Cascade]');
   {
-    await test('DELETE /api/rooms/:id — cascades to settings + room_memory + memory_pending_writes', async () => {
+    await test('DELETE /api/rooms/:id — cascades to settings + room_memory', async () => {
       const db = require('./db');
       // Create a room via DB (no online agent needed for delete test)
       const humanId = db.prepare("SELECT id FROM actors WHERE type='human' LIMIT 1").get()?.id || 1;
@@ -4028,16 +4028,12 @@ async function run() {
       // Insert room_memory
       db.prepare("INSERT INTO room_memory (room_id, content) VALUES (?, 'test memory')").run(cascadeRoomId);
       assert.ok(db.prepare('SELECT 1 FROM room_memory WHERE room_id=?').get(cascadeRoomId), 'room_memory inserted');
-      // Insert memory_pending_writes
-      db.prepare("INSERT INTO memory_pending_writes (type, room_id, proposed_content) VALUES ('room', ?, 'pending content')").run(cascadeRoomId);
-      assert.ok(db.prepare('SELECT 1 FROM memory_pending_writes WHERE room_id=?').get(cascadeRoomId), 'pending write inserted');
       // Delete the room via API
       const dr = await req('DELETE', `/api/rooms/${cascadeRoomId}`);
       assert.strictEqual(dr.status, 204);
       // Verify all cascade-deleted
       assert.strictEqual(db.prepare("SELECT COUNT(*) as c FROM settings WHERE scope='room' AND scope_id=?").get(cascadeRoomId).c, 0, 'room settings deleted');
       assert.strictEqual(db.prepare('SELECT 1 FROM room_memory WHERE room_id=?').get(cascadeRoomId), undefined, 'room_memory deleted');
-      assert.strictEqual(db.prepare('SELECT 1 FROM memory_pending_writes WHERE room_id=?').get(cascadeRoomId), undefined, 'pending writes deleted');
     });
     await test('Room delete does not affect other rooms\' settings or global settings', async () => {
       const db = require('./db');
@@ -4068,8 +4064,6 @@ async function run() {
       assert.strictEqual(orphanSettings, 0, 'no orphan room settings should remain after migration');
       const orphanMemory = db.prepare("SELECT COUNT(*) as c FROM room_memory WHERE room_id NOT IN (SELECT id FROM rooms)").get().c;
       assert.strictEqual(orphanMemory, 0, 'no orphan room_memory should remain after migration');
-      const orphanPending = db.prepare("SELECT COUNT(*) as c FROM memory_pending_writes WHERE room_id IS NOT NULL AND room_id NOT IN (SELECT id FROM rooms)").get().c;
-      assert.strictEqual(orphanPending, 0, 'no orphan memory_pending_writes should remain after migration');
     });
   }
 
@@ -10202,7 +10196,7 @@ async function run() {
     assert.strictEqual(r.status, 400, `expected 400, got ${r.status}`);
   });
 
-  await test('R25 — GET /api/rooms/:id/memory — returns content + budget + pending_count', async () => {
+  await test('R25 — GET /api/rooms/:id/memory — returns content + budget', async () => {
     if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
     const roomId = testRoomIds[0];
     const r = await req('GET', `/api/rooms/${roomId}/memory`);
@@ -10210,7 +10204,7 @@ async function run() {
     assert.strictEqual(typeof r.body.content, 'string');
     assert.strictEqual(r.body.budget, 1800);
     assert.strictEqual(typeof r.body.char_count, 'number');
-    assert.strictEqual(typeof r.body.pending_count, 'number');
+    assert.ok(!('pending_count' in r.body), 'approval queue removed');
   });
 
   await test('R25 — PUT /api/rooms/:id/memory — write and read back', async () => {
@@ -10236,54 +10230,18 @@ async function run() {
     assert.strictEqual(r.status, 400, `expected 400, got ${r.status}`);
   });
 
-  await test('R25 — GET /api/rooms/:id/memory/pending — returns pending writes list', async () => {
-    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
-    const roomId = testRoomIds[0];
-    const r = await req('GET', `/api/rooms/${roomId}/memory/pending`);
-    assert.strictEqual(r.status, 200, `expected 200, got ${r.status}`);
-    assert.ok(Array.isArray(r.body.writes), 'writes should be array');
-  });
-
-  await test('R25 — approve/reject pending write flow', async () => {
+  await test('R25 — memory approval queue removed: pending endpoints 404, table dropped by migration', async () => {
     if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
     const db = require('./db');
     const roomId = testRoomIds[0];
-    // Insert a pending write directly into DB
-    const ins = db.prepare(
-      "INSERT INTO memory_pending_writes (type, room_id, proposed_content) VALUES ('room',?,?)"
-    ).run(roomId, 'Proposed room context.');
-    const writeId = ins.lastInsertRowid;
-    // Fetch pending list — should include our write
-    const list = await req('GET', `/api/rooms/${roomId}/memory/pending`);
-    assert.ok(list.body.writes.some(w => w.id === writeId), 'pending write not in list');
-    // Approve
-    const approve = await req('POST', `/api/rooms/${roomId}/memory/pending/${writeId}/approve`);
-    assert.strictEqual(approve.status, 200, `approve failed: ${JSON.stringify(approve.body)}`);
-    assert.ok(approve.body.ok);
-    // room_memory should now have proposed content
-    const mem = await req('GET', `/api/rooms/${roomId}/memory`);
-    assert.strictEqual(mem.body.content, 'Proposed room context.');
-    // Cleanup
+    await req('PUT', `/api/rooms/${roomId}/memory`, { content: 'kept as is' });
+    assert.strictEqual((await req('GET', `/api/rooms/${roomId}/memory/pending`)).status, 404);
+    assert.strictEqual((await req('POST', `/api/rooms/${roomId}/memory/pending/1/approve`)).status, 404);
+    assert.strictEqual((await req('POST', `/api/rooms/${roomId}/memory/pending/1/reject`)).status, 404);
+    assert.strictEqual((await req('GET', `/api/rooms/${roomId}/memory`)).body.content, 'kept as is', 'memory untouched by the dead routes');
+    assert.ok(db.prepare("SELECT 1 FROM migrations WHERE filename='20261025-drop-memory-pending-writes.sql'").get(), 'migration recorded');
+    assert.strictEqual(db.prepare("SELECT COUNT(*) c FROM sqlite_master WHERE name IN ('memory_pending_writes','idx_pending_writes_room_status')").get().c, 0, 'table and index gone');
     await req('PUT', `/api/rooms/${roomId}/memory`, { content: '' });
-    db.prepare('DELETE FROM memory_pending_writes WHERE id=?').run(writeId);
-  });
-
-  await test('R25 — reject pending write flow', async () => {
-    if (!testRoomIds.length) { console.log('    (skipped — no test rooms)'); return; }
-    const db = require('./db');
-    const roomId = testRoomIds[0];
-    const ins = db.prepare(
-      "INSERT INTO memory_pending_writes (type, room_id, proposed_content) VALUES ('room',?,?)"
-    ).run(roomId, 'Should not be applied.');
-    const writeId = ins.lastInsertRowid;
-    const reject = await req('POST', `/api/rooms/${roomId}/memory/pending/${writeId}/reject`);
-    assert.strictEqual(reject.status, 200, `reject failed: ${JSON.stringify(reject.body)}`);
-    assert.ok(reject.body.ok);
-    // room_memory should NOT change
-    const mem = await req('GET', `/api/rooms/${roomId}/memory`);
-    assert.notStrictEqual(mem.body.content, 'Should not be applied.');
-    // Cleanup
-    db.prepare('DELETE FROM memory_pending_writes WHERE id=?').run(writeId);
   });
 
   await test('R25 — GET /api/rooms/9999/memory — nonexistent room → 404', async () => {
@@ -11008,6 +10966,7 @@ async function run() {
     assert.strictEqual(r.status, 200);
     assert.ok(r.body.content.includes('Stoa platform'));
     assert.ok(r.body.content.includes('api/docs/stoa-api.md'));
+    assert.ok(r.body.content.includes('stoa__*'), 'default base prompt points at the built-in MCP tools');
     baseSysPromptDefault = r.body.content;
   });
 
@@ -15810,6 +15769,83 @@ async function run() {
       return { raw, drop: () => mDb.prepare('DELETE FROM mcp_tokens WHERE token_hash=?').run(crypto.createHash('sha256').update(raw).digest('hex')) };
     };
 
+    // Full agent_trigger in thread A (main agent message or sub-agent trigger); answers it so nothing stays streaming.
+    const promptTrigger = async (subAgentId = null) => {
+      const trig = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.room_id === roomA && (subAgentId ? m.sub_agent?.id === subAgentId : !m.sub_agent), 5000);
+      if (subAgentId) {
+        const r = await asAnon(() => req('POST', `/api/rooms/${roomA}/sub-agent-trigger`, { sub_agent_id: subAgentId, task: 'check the prompt instructions', thread_id: threadA }, { 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret }));
+        assert.strictEqual(r.status, 200, r.raw);
+      } else {
+        const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+        try {
+          humanWs.send(JSON.stringify({ type: 'join_room', room_id: roomA }));
+          await waitForWsMessage(humanWs, m => m.type === 'history');
+          humanWs.send(JSON.stringify({ type: 'send_message', room_id: roomA, content: 'prompt check', thread_id: threadA }));
+          await trig;
+        } finally { humanWs.close(); }
+      }
+      const m = await trig;
+      const wake = subAgentId ? waitForWsMessage(agA.ws, w => w.type === 'agent_trigger' && !w.sub_agent, 3000).catch(() => null) : null;
+      agA.ws.send(JSON.stringify({ type: 'agent_message', message_id: m.message_id, content: 'done', state: 'complete' }));
+      const w = await wake;
+      if (w) agA.ws.send(JSON.stringify({ type: 'agent_message', message_id: w.message_id, content: 'done', state: 'complete' }));
+      return m;
+    };
+
+    await test('MCP prompt — a session with a token is taught the stoa__* tools, no curl blocks', async () => {
+      const m = await promptTrigger();
+      assert.match(m.mcp_token || '', /^stoa_mcp_/);
+      for (const t of ['stoa__message_send', 'stoa__room_memory_set', 'stoa__agent_memory_set']) assert.ok(m.prompt.includes(t), `main prompt names ${t}`);
+      assert.ok(m.prompt.includes(`It goes to the thread this session runs in (thread ${m.thread_id})`), 'default thread is spelled out');
+      assert.ok(m.prompt.includes('call `stoa__message_send` with @<label>'), 'delegation via the tool');
+      assert.match(m.prompt, /Room memory budget: \d+\/1800 chars used/);
+      assert.match(m.prompt, /MEMORY\.md \(\d+\/2200 chars\)/);
+      assert.ok(!m.prompt.includes('curl -s -X'), 'no curl block in the main prompt');
+
+      const s = await promptTrigger(sub.id);
+      assert.match(s.mcp_token || '', /^stoa_mcp_/);
+      assert.ok(s.prompt.includes('stoa__sub_agent_memory_set') && s.prompt.includes('stoa__message_send'), 'sub-agent prompt names its tools');
+      assert.match(s.prompt, /own persistent memory \(\d+\/2200 chars used\)/);
+      assert.ok(!s.prompt.includes('curl -s -X'), 'no curl block in the sub-agent prompt');
+    });
+
+    await test('MCP prompt — a tool-less model gets no token and keeps the curl instructions', async () => {
+      const origPlat = mDb.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get();
+      const room = mDb.prepare('SELECT model, model_config, model_tiers FROM rooms WHERE id=?').get(roomA);
+      const MODEL = 'llama-notools-test';
+      const plats = [{ id: '__notools-plat', vendor: 'openrouter', enabled: true, base_url: 'https://notools.invalid/v1', api_keys: ['k'], cached_models: [{ model: MODEL, tools: false }], enabled_models: [MODEL] }];
+      const setPlat = (v) => origPlat
+        ? mDb.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(v)
+        : (v == null
+          ? mDb.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run()
+          : mDb.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'ai_platforms', ?)").run(v));
+      try {
+        setPlat(JSON.stringify(plats));
+        mDb.prepare('UPDATE rooms SET model=?, model_config=?, model_tiers=? WHERE id=?')
+          .run(MODEL, JSON.stringify({ platform_id: '__notools-plat' }), JSON.stringify({ quick: [MODEL], standard: [MODEL], deep: [MODEL] }), roomA);
+        await new Promise(r => setTimeout(r, 1100)); // getParsedSetting caches for 1 s
+
+        const m = await promptTrigger();
+        assert.strictEqual(m.tools_supported, false);
+        assert.strictEqual(m.mcp_token, undefined, 'tool-less model → no token');
+        assert.ok(m.prompt.includes('curl -s -X PUT "$BASE_URL/api/rooms/$STOA_ROOM_ID/memory"'), 'room memory curl kept');
+        assert.ok(m.prompt.includes('curl -s -X PUT "$BASE_URL/api/actors/$STOA_ACTOR_ID/memory/MEMORY.md"'), 'agent memory curl kept');
+        assert.ok(m.prompt.includes('curl -s -X POST "$BASE_URL/api/rooms/$STOA_ROOM_ID/message"'), 'progress curl kept');
+        assert.ok(m.prompt.includes('the @mention MUST be in the curl message body'), 'delegation via curl kept');
+        assert.ok(!m.prompt.includes('stoa__'), 'no tool names without tools');
+
+        const s = await promptTrigger(sub.id);
+        assert.strictEqual(s.mcp_token, undefined);
+        assert.ok(s.prompt.includes(`curl -s -X PUT "$BASE_URL/api/sub-agents/${sub.id}/memory"`), 'sub-agent memory curl kept');
+        assert.ok(s.prompt.includes(`curl -s -X POST "$BASE_URL/api/rooms/${roomA}/message"`), 'sub-agent output curl kept');
+        assert.ok(!s.prompt.includes('stoa__'));
+      } finally {
+        mDb.prepare('UPDATE rooms SET model=?, model_config=?, model_tiers=? WHERE id=?').run(room.model, room.model_config, room.model_tiers, roomA);
+        setPlat(origPlat ? origPlat.value : null);
+        await new Promise(r => setTimeout(r, 1100));
+      }
+    });
+
     await test('MCP stoa tools — main session lists all, sub-agent session hides config tools; schemas take no room/actor id', async () => {
       const main = Object.fromEntries((await listAll(tokA)).map(t => [t.name, t]));
       assert.deepStrictEqual(Object.keys(main).filter(n => n.startsWith('stoa__')).sort(), BUILTINS);
@@ -15970,8 +16006,14 @@ async function run() {
       assert.deepStrictEqual([c.linked_to_room, mcpSub2.parent_actor_id, mcpSub2.tier, mcpSub2.role], [true, agA.actorId, 'standard', 'Helper']);
       assert.ok(mDb.prepare('SELECT 1 FROM room_sub_agents WHERE room_id=? AND sub_agent_id=?').get(roomA, mcpSub2.id), 'linked to room A');
       assert.ok((await req('GET', `/api/actors/${agA.actorId}/sub-agents`)).body.some(s => s.id === mcpSub2.id), 'REST lists it');
-      assert.ok((await stoaOk(tokA, 'sub_agent_list')).sub_agents.some(s => s.id === mcpSub2.id && s.effective_harness));
-      assert.ok(!(await stoaOk(tokB, 'sub_agent_list')).sub_agents.some(s => s.parent_actor_id === agA.actorId), 'agent B lists only its own');
+      const listed = (await stoaOk(tokA, 'sub_agent_list')).sub_agents.find(s => s.id === mcpSub2.id);
+      assert.deepStrictEqual([listed.label, listed.role, listed.tier, listed.has_system_prompt, !!listed.effective_harness], ['mcpsubtwo', 'Helper', 'standard', true, true]);
+      assert.ok(!('system_prompt' in listed) && !('workdir' in listed) && !('parent_actor_id' in listed), 'list is a summary');
+      const full = (await stoaOk(tokA, 'sub_agent_list', { sub_agent_id: mcpSub2.id })).sub_agent;
+      assert.deepStrictEqual([full.id, full.system_prompt, full.parent_actor_id], [mcpSub2.id, 'Help with MCP tests', agA.actorId]);
+      assert.strictEqual(await stoaErr(tokB, 'sub_agent_list', { sub_agent_id: mcpSub2.id }), 'sub-agent not found', 'another parent\'s sub-agent');
+      assert.ok(!(await stoaOk(tokB, 'sub_agent_list')).sub_agents.some(s => s.id === mcpSub2.id), 'agent B lists only its own');
+      assert.ok((await req('GET', `/api/actors/${agA.actorId}/sub-agents`)).body.find(s => s.id === mcpSub2.id).system_prompt === 'Help with MCP tests', 'REST list unchanged');
 
       const count = () => mDb.prepare('SELECT COUNT(*) n FROM sub_agents WHERE parent_actor_id=?').get(agA.actorId).n;
       const n = count();

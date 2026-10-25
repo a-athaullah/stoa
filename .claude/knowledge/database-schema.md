@@ -384,7 +384,6 @@ CREATE INDEX idx_ai_sessions_thread ON ai_sessions(thread_id);
 CREATE INDEX idx_messages_room_thread_state ON messages(room_id, thread_id, state) WHERE sub_agent_id IS NOT NULL;  -- migration 20260915 only (not in baseline)
 CREATE INDEX idx_messages_room_parent ON messages(room_id, created_at) WHERE parent_message_id IS NOT NULL;  -- migration 20260915 only (not in baseline)
 CREATE INDEX idx_messages_participant_room ON messages(participant_id, room_id, id);
-CREATE INDEX idx_pending_writes_room_status ON memory_pending_writes(room_id, status);
 ```
 
 **Why:** Most queries are "get messages for room X", "get roots for feed", or "get thread replies". Composite indexes cover sub-agent streaming checks, parent message activity, and participant lookups.

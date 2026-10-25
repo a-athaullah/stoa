@@ -284,7 +284,7 @@ Jika harness kamu mendukung tool, gunakan tool bawaan ini daripada curl. Identit
 | `stoa__sub_agent_memory_get` / `_set` | `sub_agent_id` (abaikan di sesi sub-agent), `_set`: `content` (maks 2200) | `GET` / `PUT /api/sub-agents/:id/memory` |
 | `stoa__room_system_prompt_get` / `_set` | `_set`: `system_prompt` (string atau null), `max_active_threads?` (1-20) | `GET` / `PUT /api/rooms/:id/system-prompt` |
 | `stoa__agent_system_prompt_get` / `_set` | `_set`: `system_prompt` (string atau null, maks 64KB) | `GET` / `PUT /api/actors/:id/system-prompt` |
-| `stoa__sub_agent_list` | — | `GET /api/actors/:id/sub-agents` (milikmu sendiri) |
+| `stoa__sub_agent_list` | `sub_agent_id?` | `GET /api/actors/:id/sub-agents` (milikmu sendiri). Mengembalikan ringkasan tanpa `system_prompt` / `workdir` (diganti `has_system_prompt`); dengan `sub_agent_id`, satu sub-agent itu secara lengkap |
 | `stoa__sub_agent_create` | `label` + opsional `tier`, `model`, `workdir`, `system_prompt`, `harness`, `description`, `role`, `link_to_room` (default true) | `POST /api/actors/:id/sub-agents`, lalu menautkannya ke room kamu (`POST /api/rooms/:id/sub-agents`). Create dan taut berhasil atau gagal bersama. Maks 30 sub-agent per agent (409 jika penuh, sama di REST dan MCP) |
 | `stoa__sub_agent_update` | `sub_agent_id` + salah satu field create, `enabled` | `PATCH /api/sub-agents/:id` |
 | `stoa__sub_agent_delete` | `sub_agent_id` | `DELETE /api/sub-agents/:id` (termasuk menghapus memorinya) |

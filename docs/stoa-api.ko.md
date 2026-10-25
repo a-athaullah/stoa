@@ -284,7 +284,7 @@ curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
 | `stoa__sub_agent_memory_get` / `_set` | `sub_agent_id` (서브에이전트 세션에서는 생략), `_set`: `content` (최대 2200) | `GET` / `PUT /api/sub-agents/:id/memory` |
 | `stoa__room_system_prompt_get` / `_set` | `_set`: `system_prompt` (문자열 또는 null), `max_active_threads?` (1-20) | `GET` / `PUT /api/rooms/:id/system-prompt` |
 | `stoa__agent_system_prompt_get` / `_set` | `_set`: `system_prompt` (문자열 또는 null, 최대 64KB) | `GET` / `PUT /api/actors/:id/system-prompt` |
-| `stoa__sub_agent_list` | — | `GET /api/actors/:id/sub-agents` (내 것만) |
+| `stoa__sub_agent_list` | `sub_agent_id?` | `GET /api/actors/:id/sub-agents` (내 것만). `system_prompt` / `workdir` 없이 요약을 반환 (대신 `has_system_prompt`). `sub_agent_id`를 지정하면 해당 서브에이전트 전체를 반환 |
 | `stoa__sub_agent_create` | `label` + 선택적으로 `tier`, `model`, `workdir`, `system_prompt`, `harness`, `description`, `role`, `link_to_room` (기본 true) | `POST /api/actors/:id/sub-agents`, 이후 룸에 연결 (`POST /api/rooms/:id/sub-agents`). 생성과 연결이 함께 성공하거나 실패합니다. 에이전트당 최대 30개 서브 에이전트 (가득 차면 409, REST와 MCP 동일) |
 | `stoa__sub_agent_update` | `sub_agent_id` + 생성 필드 중 하나, `enabled` | `PATCH /api/sub-agents/:id` |
 | `stoa__sub_agent_delete` | `sub_agent_id` | `DELETE /api/sub-agents/:id` (메모리도 삭제됩니다) |

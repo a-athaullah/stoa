@@ -334,19 +334,6 @@ CREATE TABLE IF NOT EXISTS room_memory (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS memory_pending_writes (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  type TEXT NOT NULL CHECK(type IN ('agent','room')),
-  actor_id INTEGER,
-  room_id INTEGER,
-  file TEXT,
-  proposed_content TEXT NOT NULL,
-  proposed_at TEXT NOT NULL DEFAULT (datetime('now')),
-  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_pending_writes_room_status ON memory_pending_writes(room_id, status);
-
 CREATE TABLE IF NOT EXISTS debug_bundles (
   id          TEXT PRIMARY KEY,
   format      INTEGER NOT NULL DEFAULT 1,
