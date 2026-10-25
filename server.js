@@ -1042,15 +1042,9 @@ loadEnvFile(ENV_FILE);
   if (warning) { console.log(warning); console.error(warning); }
 }
 
-// Initialize schema on startup
-try {
-  db.exec(fs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
-} catch (e) {
-  console.error('[schema] init warning (non-fatal):', e.message);
-}
-
-// ─── Migration runner ─────────────────────────────────────────────────────────
-runMigrations(db, path.join(__dirname, 'migrations'));
+// ─── Schema + migration runner ────────────────────────────────────────────────
+// Boot is the only place migrations run (README "Updating").
+runMigrations(db, path.join(__dirname, 'migrations'), console, { schemaSql: fs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8') });
 
 // ─── Semantic search index (lib/semantic-index.js) ─────────────────────────────
 // Needs the optional dependency @huggingface/transformers; without it (or with

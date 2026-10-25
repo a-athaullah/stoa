@@ -1,0 +1,571 @@
+-- Fixture: a fresh Stoa install at v0.62.1: that tag's db/schema.sqlite.sql + its migrations/ applied
+-- to a scratch DB (no user data), dumped as schema objects + the migrations table + seed rows.
+-- Used by test.js "[Migration Runner]" to upgrade it to the current migrations in one boot.
+
+CREATE TABLE actors (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL CHECK(type IN ('human','ai')),
+  adapter TEXT DEFAULT NULL,
+  adapter_config TEXT DEFAULT NULL,
+  avatar_color TEXT DEFAULT NULL,
+  avatar_symbol TEXT DEFAULT NULL,
+  avatar_url TEXT DEFAULT NULL,
+  secret TEXT DEFAULT NULL,
+  available_models TEXT DEFAULT NULL,
+  system_prompt TEXT DEFAULT NULL,
+  default_model TEXT DEFAULT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE rooms (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  created_by INTEGER NOT NULL,
+  max_ai_turns INTEGER DEFAULT 5,
+  workdir_id INTEGER DEFAULT NULL,
+  archived_at TEXT DEFAULT NULL,
+  is_pinned INTEGER DEFAULT 0,
+  model TEXT DEFAULT NULL,
+  model_config TEXT DEFAULT NULL,
+  system_prompt TEXT DEFAULT NULL,
+  max_active_threads INTEGER NOT NULL DEFAULT 3,
+  created_at TEXT DEFAULT (datetime('now')), max_sub_agents INTEGER NOT NULL DEFAULT 3, max_spawns_per_hour INTEGER NOT NULL DEFAULT 10, spawns_paused INTEGER NOT NULL DEFAULT 0, model_tiers TEXT DEFAULT NULL,
+  FOREIGN KEY (created_by) REFERENCES actors(id)
+);
+
+CREATE TABLE room_participants (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  room_id INTEGER NOT NULL,
+  actor_id INTEGER NOT NULL,
+  joined_at TEXT DEFAULT (datetime('now')),
+  invited_by INTEGER DEFAULT NULL,
+  notify_on_message INTEGER DEFAULT 1,
+  auto_respond INTEGER DEFAULT 0,
+  workdir_id INTEGER DEFAULT NULL,
+  FOREIGN KEY (room_id) REFERENCES rooms(id),
+  FOREIGN KEY (actor_id) REFERENCES actors(id),
+  FOREIGN KEY (workdir_id) REFERENCES agent_workdirs(id),
+  UNIQUE (room_id, actor_id)
+);
+
+CREATE TABLE messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  room_id INTEGER NOT NULL,
+  participant_id INTEGER NOT NULL,
+  content TEXT NOT NULL,
+  state TEXT DEFAULT 'complete' CHECK(state IN ('requesting','streaming','complete','error','system_event')),
+  reply_to INTEGER DEFAULT NULL,
+  image_url TEXT DEFAULT NULL,
+  file_url TEXT DEFAULT NULL,
+  file_name TEXT DEFAULT NULL,
+  attachments TEXT DEFAULT NULL,
+  ai_model TEXT DEFAULT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  completed_at TEXT DEFAULT NULL,
+  client_event_id TEXT DEFAULT NULL,
+  thread_id INTEGER DEFAULT NULL,
+  slack_thread_ts TEXT DEFAULT NULL,
+  automation_id INTEGER DEFAULT NULL,
+  automation_name TEXT DEFAULT NULL,
+  automation_provider TEXT DEFAULT NULL,
+  model_source TEXT DEFAULT NULL,
+  broadcast_reason TEXT DEFAULT NULL CHECK(broadcast_reason IN ('automation_match','error','limit')), result_meta TEXT DEFAULT NULL, sub_agent_label TEXT DEFAULT NULL, parent_message_id INTEGER DEFAULT NULL REFERENCES messages(id), sub_agent_id INTEGER DEFAULT NULL
+  REFERENCES sub_agents(id) ON DELETE SET NULL, wake_parent INTEGER NOT NULL DEFAULT 1,
+  FOREIGN KEY (room_id) REFERENCES rooms(id),
+  FOREIGN KEY (participant_id) REFERENCES room_participants(id),
+  FOREIGN KEY (thread_id) REFERENCES messages(id),
+  FOREIGN KEY (automation_id) REFERENCES automations(id) ON DELETE SET NULL
+);
+
+CREATE TABLE invite_suggestions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  room_id INTEGER NOT NULL,
+  suggested_by_participant_id INTEGER NOT NULL,
+  suggested_actor_id INTEGER NOT NULL,
+  reason TEXT DEFAULT NULL,
+  status TEXT DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
+  created_at TEXT DEFAULT (datetime('now')),
+  resolved_at TEXT DEFAULT NULL,
+  FOREIGN KEY (room_id) REFERENCES rooms(id),
+  FOREIGN KEY (suggested_by_participant_id) REFERENCES room_participants(id),
+  FOREIGN KEY (suggested_actor_id) REFERENCES actors(id)
+);
+
+CREATE TABLE agent_workdirs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor_id INTEGER NOT NULL,
+  path TEXT NOT NULL,
+  label TEXT DEFAULT NULL,
+  is_default INTEGER DEFAULT 0,
+  claude_md_migrated_at TEXT DEFAULT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (actor_id) REFERENCES actors(id) ON DELETE CASCADE,
+  UNIQUE (actor_id, path)
+);
+
+CREATE TABLE agent_skills (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor_id INTEGER NOT NULL,
+  workdir_id INTEGER DEFAULT NULL,
+  name TEXT NOT NULL,
+  description TEXT DEFAULT NULL,
+  scope TEXT DEFAULT 'project' CHECK(scope IN ('global','project','local')),
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (actor_id) REFERENCES actors(id) ON DELETE CASCADE,
+  FOREIGN KEY (workdir_id) REFERENCES agent_workdirs(id) ON DELETE CASCADE
+);
+
+CREATE TABLE settings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  scope TEXT NOT NULL DEFAULT 'global' CHECK(scope IN ('global','room')),
+  scope_id INTEGER DEFAULT NULL,
+  key_name TEXT NOT NULL,
+  value TEXT NOT NULL,
+  UNIQUE (scope, scope_id, key_name)
+);
+
+CREATE TABLE message_embeddings (
+  message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+  model TEXT NOT NULL,
+  vec BLOB,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE automations (
+  id               INTEGER PRIMARY KEY,
+  name             TEXT NOT NULL,
+  trigger_type     TEXT NOT NULL,
+  trigger_event    TEXT NOT NULL,
+  trigger_conditions TEXT NOT NULL DEFAULT '[]',
+  target_room_id   INTEGER NOT NULL,
+  prompt_template  TEXT NOT NULL,
+  enabled          INTEGER DEFAULT 1,
+  last_run_at      TEXT,
+  run_count        INTEGER DEFAULT 0,
+  reply_mode       TEXT NOT NULL DEFAULT 'none',
+  watch_reply      INTEGER NOT NULL DEFAULT 0,
+  created_at       TEXT DEFAULT (datetime('now')),
+  connection_id    INTEGER DEFAULT NULL REFERENCES automation_connections(id) ON DELETE SET NULL
+);
+
+CREATE TABLE auth_users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE auth_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  token TEXT NOT NULL UNIQUE,
+  user_id INTEGER NOT NULL,
+  expires_at TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (user_id) REFERENCES auth_users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE migrations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  filename TEXT NOT NULL UNIQUE,
+  executed_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+CREATE TABLE usage_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor_id INTEGER NOT NULL,
+  room_id INTEGER,
+  model TEXT NOT NULL,
+  input_tokens INTEGER DEFAULT 0,
+  output_tokens INTEGER DEFAULT 0,
+  cache_read_tokens INTEGER DEFAULT 0,
+  cache_creation_tokens INTEGER DEFAULT 0,
+  cost_usd REAL DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')), sub_agent_id INTEGER DEFAULT NULL REFERENCES sub_agents(id) ON DELETE SET NULL, sub_agent_label TEXT DEFAULT NULL,
+  FOREIGN KEY (actor_id) REFERENCES actors(id)
+);
+
+CREATE TABLE wa_incoming_messages (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  connection_id INTEGER NOT NULL REFERENCES automation_connections(id) ON DELETE CASCADE,
+  chat_id       TEXT NOT NULL,
+  sender        TEXT NOT NULL,
+  text          TEXT NOT NULL DEFAULT '',
+  msg_key       TEXT NOT NULL,
+  media_path    TEXT,
+  media_type    TEXT,
+  direction     TEXT NOT NULL DEFAULT 'in',
+  created_at    DATETIME DEFAULT (datetime('now')),
+  UNIQUE(msg_key, connection_id)
+);
+
+CREATE TABLE room_message_queue (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  room_id     INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  content     TEXT NOT NULL,
+  attachments TEXT,
+  reply_to    INTEGER,
+  event_id    TEXT,
+  thread_id   INTEGER DEFAULT NULL,
+  queued_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  position    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE agent_memory (
+  actor_id INTEGER NOT NULL,
+  file TEXT NOT NULL CHECK(file IN ('MEMORY.md','USER.md')),
+  content TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (actor_id, file)
+);
+
+CREATE TABLE room_memory (
+  room_id INTEGER PRIMARY KEY,
+  content TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE memory_pending_writes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  type TEXT NOT NULL CHECK(type IN ('agent','room')),
+  actor_id INTEGER,
+  room_id INTEGER,
+  file TEXT,
+  proposed_content TEXT NOT NULL,
+  proposed_at TEXT NOT NULL DEFAULT (datetime('now')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected'))
+);
+
+CREATE TABLE debug_bundles (
+  id          TEXT PRIMARY KEY,
+  format      INTEGER NOT NULL DEFAULT 1,
+  redacted    INTEGER NOT NULL DEFAULT 1,
+  read_count  INTEGER NOT NULL DEFAULT 0,
+  max_reads   INTEGER NOT NULL DEFAULT 1,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at  TEXT NOT NULL,
+  file_path   TEXT NOT NULL,
+  size_bytes  INTEGER NOT NULL DEFAULT 0,
+  consent_at  TEXT NOT NULL
+);
+
+CREATE TABLE email_threads (
+  thread_id     INTEGER PRIMARY KEY REFERENCES messages(id),
+  connection_id INTEGER NOT NULL REFERENCES automation_connections(id) ON DELETE CASCADE,
+  message_id    TEXT NOT NULL,
+  ref_headers   TEXT NOT NULL DEFAULT '',
+  subject       TEXT NOT NULL DEFAULT '',
+  from_address  TEXT NOT NULL,
+  created_at    TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE email_message_ids (
+  message_id   TEXT PRIMARY KEY,
+  thread_id    INTEGER NOT NULL,
+  connection_id INTEGER NOT NULL REFERENCES automation_connections(id) ON DELETE CASCADE,
+  direction    TEXT NOT NULL CHECK(direction IN ('in','out')),
+  created_at   TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE harnesses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  description TEXT
+);
+
+CREATE TABLE harness_models (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  harness_id INTEGER NOT NULL REFERENCES harnesses(id),
+  model_id TEXT NOT NULL,
+  display_name TEXT,
+  is_default INTEGER NOT NULL DEFAULT 0,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  UNIQUE(harness_id, model_id)
+);
+
+CREATE TABLE sub_agents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  parent_actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
+  label TEXT NOT NULL,
+  tier TEXT DEFAULT 'quick' CHECK(tier IN ('quick','standard','deep')),
+  model TEXT DEFAULT NULL,
+  workdir TEXT DEFAULT NULL,
+  system_prompt TEXT DEFAULT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')), harness TEXT DEFAULT NULL, description TEXT DEFAULT NULL, avatar_color TEXT DEFAULT NULL, avatar_symbol TEXT DEFAULT NULL, avatar_url TEXT DEFAULT NULL, role TEXT DEFAULT NULL,
+  UNIQUE(parent_actor_id, label)
+);
+
+CREATE TABLE room_sub_agents (
+  room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  sub_agent_id INTEGER NOT NULL REFERENCES sub_agents(id) ON DELETE CASCADE,
+  added_at TEXT DEFAULT (datetime('now')),
+  PRIMARY KEY (room_id, sub_agent_id)
+);
+
+CREATE TABLE pending_wakes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  parent_participant_id INTEGER NOT NULL REFERENCES room_participants(id) ON DELETE CASCADE,
+  sub_agent_message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now'))
+, thread_id INTEGER DEFAULT NULL);
+
+CREATE TABLE sub_agent_schedules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  sub_agent_id INTEGER NOT NULL REFERENCES sub_agents(id) ON DELETE CASCADE,
+  created_by_actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
+  task TEXT NOT NULL,
+  schedule_spec TEXT NOT NULL,          -- trusted JSON, normalized by lib/schedule.js
+  enabled INTEGER NOT NULL DEFAULT 1,
+  next_run_at TEXT,                     -- UTC 'YYYY-MM-DD HH:MM:SS'; NULL only if disabled
+  last_run_at TEXT DEFAULT NULL,
+  created_at TEXT DEFAULT (datetime('now'))
+, last_error TEXT DEFAULT NULL);
+
+CREATE TABLE "ai_sessions" (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  participant_id INTEGER NOT NULL,
+  room_id INTEGER DEFAULT NULL,
+  claude_session_id TEXT NOT NULL,
+  workdir TEXT DEFAULT NULL,
+  status TEXT DEFAULT 'idle' CHECK(status IN ('active','idle','indeterminate')),
+  last_active_at TEXT DEFAULT (datetime('now')),
+  created_at TEXT DEFAULT (datetime('now')),
+  sub_agent_id INTEGER,
+  compact_failure_cooldown_until TEXT DEFAULT NULL,
+  compact_failure_error TEXT DEFAULT NULL,
+  process_generation TEXT DEFAULT NULL,
+  pinned INTEGER NOT NULL DEFAULT 0,
+  context_tokens_used INTEGER DEFAULT 0,
+  thread_id INTEGER NOT NULL DEFAULT 0, harness TEXT NOT NULL DEFAULT 'claude',
+  FOREIGN KEY (participant_id) REFERENCES room_participants(id),
+  FOREIGN KEY (room_id) REFERENCES rooms(id)
+);
+
+CREATE TABLE "automation_connections" (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  name         TEXT NOT NULL,
+  provider     TEXT NOT NULL DEFAULT 'slack' CHECK(provider IN ('slack','whatsapp','email')),
+  token_type   TEXT NOT NULL DEFAULT 'bot' CHECK(token_type IN ('bot','user','qr','password','oauth')),
+  credentials  TEXT NOT NULL DEFAULT '{}',
+  metadata     TEXT NOT NULL DEFAULT '{}',
+  status       TEXT NOT NULL DEFAULT 'disconnected' CHECK(status IN ('connected','disconnected','error','connecting')),
+  error_msg    TEXT DEFAULT NULL,
+  created_at   TEXT DEFAULT (datetime('now')),
+  updated_at   TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE sub_agent_memory (
+  sub_agent_id INTEGER PRIMARY KEY REFERENCES sub_agents(id) ON DELETE CASCADE,
+  content TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE VIRTUAL TABLE messages_fts USING fts5(content, content=messages, content_rowid=id);
+
+CREATE INDEX idx_messages_room_id ON messages(room_id);
+
+CREATE INDEX idx_messages_room_state ON messages(room_id, state);
+
+CREATE INDEX idx_room_participants_room_id ON room_participants(room_id);
+
+CREATE INDEX idx_room_participants_actor_id ON room_participants(actor_id);
+
+CREATE INDEX idx_room_participants_workdir_id ON room_participants(workdir_id);
+
+CREATE INDEX idx_agent_workdirs_actor_id ON agent_workdirs(actor_id);
+
+CREATE INDEX idx_agent_skills_actor_id ON agent_skills(actor_id);
+
+CREATE INDEX idx_agent_skills_workdir_id ON agent_skills(workdir_id);
+
+CREATE INDEX idx_messages_participant_id ON messages(participant_id);
+
+CREATE INDEX idx_messages_thread_id ON messages(thread_id, id);
+
+CREATE INDEX idx_messages_room_root ON messages(room_id, id) WHERE thread_id IS NULL;
+
+CREATE INDEX idx_messages_broadcast ON messages(room_id, created_at) WHERE broadcast_reason IS NOT NULL;
+
+CREATE INDEX idx_messages_reply_to ON messages(reply_to);
+
+CREATE INDEX idx_messages_participant_room ON messages(participant_id, room_id, id);
+
+CREATE INDEX idx_messages_automation_id ON messages(automation_id) WHERE automation_id IS NOT NULL;
+
+CREATE UNIQUE INDEX messages_room_client_event ON messages(room_id, client_event_id) WHERE client_event_id IS NOT NULL;
+
+CREATE INDEX idx_rooms_workdir_id ON rooms(workdir_id);
+
+CREATE INDEX idx_rooms_created_by ON rooms(created_by);
+
+CREATE INDEX idx_automations_trigger ON automations(trigger_type, trigger_event, enabled);
+
+CREATE INDEX idx_automations_connection_id ON automations(connection_id);
+
+CREATE INDEX idx_messages_slack_thread_ts ON messages(slack_thread_ts) WHERE slack_thread_ts IS NOT NULL;
+
+CREATE INDEX idx_auth_sessions_expires ON auth_sessions(expires_at);
+
+CREATE INDEX idx_actors_type ON actors(type);
+
+CREATE INDEX idx_messages_state ON messages(state);
+
+CREATE INDEX idx_auth_users_email ON auth_users(email);
+
+CREATE INDEX idx_settings_scope_key ON settings(scope, key_name);
+
+CREATE INDEX idx_invite_suggestions_room_id ON invite_suggestions(room_id);
+
+CREATE INDEX idx_usage_log_created_at ON usage_log(created_at);
+
+CREATE INDEX idx_usage_log_actor_created ON usage_log(actor_id, created_at);
+
+CREATE INDEX idx_usage_log_model_created ON usage_log(model, created_at);
+
+CREATE INDEX idx_wa_incoming_conn_chat
+  ON wa_incoming_messages(connection_id, chat_id, created_at DESC);
+
+CREATE INDEX idx_rmq_room ON room_message_queue(room_id, position);
+
+CREATE INDEX idx_pending_writes_room_status ON memory_pending_writes(room_id, status);
+
+CREATE INDEX idx_email_threads_connection ON email_threads(connection_id);
+
+CREATE INDEX idx_email_message_ids_thread ON email_message_ids(thread_id);
+
+CREATE INDEX idx_email_message_ids_conn ON email_message_ids(connection_id);
+
+CREATE INDEX idx_messages_parent_message_id ON messages(parent_message_id);
+
+CREATE INDEX idx_sub_agents_parent ON sub_agents(parent_actor_id);
+
+CREATE INDEX idx_messages_sub_agent_id ON messages(sub_agent_id);
+
+CREATE INDEX idx_pending_wakes_room ON pending_wakes(room_id);
+
+CREATE INDEX idx_usage_log_sub_agent_id ON usage_log(sub_agent_id);
+
+CREATE INDEX idx_sas_due ON sub_agent_schedules(enabled, next_run_at);
+
+CREATE INDEX idx_sas_room ON sub_agent_schedules(room_id);
+
+CREATE INDEX idx_sas_sub_agent ON sub_agent_schedules(sub_agent_id);
+
+CREATE UNIQUE INDEX idx_ai_sessions_main_unique ON ai_sessions(participant_id, thread_id) WHERE sub_agent_id IS NULL;
+
+CREATE UNIQUE INDEX idx_ai_sessions_sub_unique ON ai_sessions(participant_id, sub_agent_id, thread_id) WHERE sub_agent_id IS NOT NULL;
+
+CREATE INDEX idx_ai_sessions_participant_id ON ai_sessions(participant_id);
+
+CREATE INDEX idx_ai_sessions_room_id ON ai_sessions(room_id);
+
+CREATE INDEX idx_ai_sessions_thread ON ai_sessions(thread_id);
+
+CREATE INDEX idx_messages_room_thread_state
+  ON messages(room_id, thread_id, state) WHERE sub_agent_id IS NOT NULL;
+
+CREATE INDEX idx_messages_room_parent
+  ON messages(room_id, created_at) WHERE parent_message_id IS NOT NULL;
+
+CREATE INDEX idx_automation_connections_provider ON automation_connections(provider, status);
+
+CREATE INDEX idx_pending_wakes_sub_agent_message ON pending_wakes(sub_agent_message_id);
+
+CREATE INDEX idx_pending_wakes_parent_participant ON pending_wakes(parent_participant_id);
+
+CREATE INDEX idx_ai_sessions_claude_session_id ON ai_sessions(claude_session_id);
+
+CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN
+  INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+END;
+
+CREATE TRIGGER messages_fts_au AFTER UPDATE OF content ON messages BEGIN
+  INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
+  INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+END;
+
+CREATE TRIGGER messages_fts_ad AFTER DELETE ON messages BEGIN
+  INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
+END;
+
+CREATE TRIGGER message_embeddings_au AFTER UPDATE OF content ON messages BEGIN
+  DELETE FROM message_embeddings WHERE message_id = old.id;
+END;
+
+INSERT INTO "settings" ("id", "scope", "scope_id", "key_name", "value") VALUES (1, 'global', NULL, 'idle_timeout_seconds', '300');
+INSERT INTO "settings" ("id", "scope", "scope_id", "key_name", "value") VALUES (2, 'global', NULL, 'max_active_rooms_per_ai', '3');
+INSERT INTO "settings" ("id", "scope", "scope_id", "key_name", "value") VALUES (3, 'global', NULL, 'max_ai_turns_per_round', '5');
+INSERT INTO migrations (filename) VALUES ('20260590-migrate-ai-sessions-unique.sql');
+INSERT INTO migrations (filename) VALUES ('20260592-add-rooms-archived-at.sql');
+INSERT INTO migrations (filename) VALUES ('20260601-add-system-event-state.sql');
+INSERT INTO migrations (filename) VALUES ('20260602-clean-duplicate-settings.sql');
+INSERT INTO migrations (filename) VALUES ('20260609-automation-connections.sql');
+INSERT INTO migrations (filename) VALUES ('20260591-add-agent-workdirs-model.sql');
+INSERT INTO migrations (filename) VALUES ('20260603-add-room-id-to-ai-sessions.sql');
+INSERT INTO migrations (filename) VALUES ('20260604-add-automation-table.sql');
+INSERT INTO migrations (filename) VALUES ('20260605-add-available-models-to-actors.sql');
+INSERT INTO migrations (filename) VALUES ('20260606-add-missing-indexes.sql');
+INSERT INTO migrations (filename) VALUES ('20260607-add-is-pinned-to-rooms.sql');
+INSERT INTO migrations (filename) VALUES ('20260608-add-model-to-rooms.sql');
+INSERT INTO migrations (filename) VALUES ('20260610-backfill-automation-connection-id.sql');
+INSERT INTO migrations (filename) VALUES ('20260611-add-rooms-model-config.sql');
+INSERT INTO migrations (filename) VALUES ('20260611-remove-agent-workdirs-model.sql');
+INSERT INTO migrations (filename) VALUES ('20260612-add-messages-ai-model.sql');
+INSERT INTO migrations (filename) VALUES ('20260618-fix-ollama-vendor-for-custom-base-url.sql');
+INSERT INTO migrations (filename) VALUES ('20260619-usage-log-indexes.sql');
+INSERT INTO migrations (filename) VALUES ('20260619-usage-log-model-index.sql');
+INSERT INTO migrations (filename) VALUES ('20260619-usage-log.sql');
+INSERT INTO migrations (filename) VALUES ('20260620-add-participant-workdir.sql');
+INSERT INTO migrations (filename) VALUES ('20260620-rekey-ai-sessions-participant.sql');
+INSERT INTO migrations (filename) VALUES ('20260624-automation-reply-mode.sql');
+INSERT INTO migrations (filename) VALUES ('20260624-wa-connector-check-constraint.sql');
+INSERT INTO migrations (filename) VALUES ('20260624-wa-incoming-messages.sql');
+INSERT INTO migrations (filename) VALUES ('20260831-message-result-meta.sql');
+INSERT INTO migrations (filename) VALUES ('20260831-messages-sub-agent-identity.sql');
+INSERT INTO migrations (filename) VALUES ('20260831-sub-agent-definitions.sql');
+INSERT INTO migrations (filename) VALUES ('20260831-sub-agent-orchestration.sql');
+INSERT INTO migrations (filename) VALUES ('20260831-tier-model-routing.sql');
+INSERT INTO migrations (filename) VALUES ('20260831-usage-log-sub-agent.sql');
+INSERT INTO migrations (filename) VALUES ('20260901-sub-agent-schedules.sql');
+INSERT INTO migrations (filename) VALUES ('20260902-message-client-event-id.sql');
+INSERT INTO migrations (filename) VALUES ('20260903-compact-failure-cooldown.sql');
+INSERT INTO migrations (filename) VALUES ('20260903-indeterminate-r15.sql');
+INSERT INTO migrations (filename) VALUES ('20260903-schedule-last-error.sql');
+INSERT INTO migrations (filename) VALUES ('20260904-memory.sql');
+INSERT INTO migrations (filename) VALUES ('20260904-r26-session-pinned.sql');
+INSERT INTO migrations (filename) VALUES ('20260904-r28-busy-input-mode.sql');
+INSERT INTO migrations (filename) VALUES ('20260905-context-window-tracking.sql');
+INSERT INTO migrations (filename) VALUES ('20260906-debug-bundles.sql');
+INSERT INTO migrations (filename) VALUES ('20260911-backfill-thread-id.sql');
+INSERT INTO migrations (filename) VALUES ('20260911-threads-core.sql');
+INSERT INTO migrations (filename) VALUES ('20260912-fix-thread0-session-leak.sql');
+INSERT INTO migrations (filename) VALUES ('20260915-optimize-indexes.sql');
+INSERT INTO migrations (filename) VALUES ('20260916-slack-watch-reply.sql');
+INSERT INTO migrations (filename) VALUES ('20261009-automation-sender-identity.sql');
+INSERT INTO migrations (filename) VALUES ('20261009-email-connector.sql');
+INSERT INTO migrations (filename) VALUES ('20261014-email-message-ids.sql');
+INSERT INTO migrations (filename) VALUES ('20261014-email-threads.sql');
+INSERT INTO migrations (filename) VALUES ('20261015-actor-default-model.sql');
+INSERT INTO migrations (filename) VALUES ('20261015-actor-system-prompt.sql');
+INSERT INTO migrations (filename) VALUES ('20261015-ai-sessions-harness.sql');
+INSERT INTO migrations (filename) VALUES ('20261015-harness-tables.sql');
+INSERT INTO migrations (filename) VALUES ('20261016-cleanup-orphan-room-settings.sql');
+INSERT INTO migrations (filename) VALUES ('20261017-message-wake-parent.sql');
+INSERT INTO migrations (filename) VALUES ('20261017-sub-agent-description.sql');
+INSERT INTO migrations (filename) VALUES ('20261017-sub-agent-memory-avatar.sql');
+INSERT INTO migrations (filename) VALUES ('20261017-sub-agent-role.sql');
+INSERT INTO migrations (filename) VALUES ('20261017-thread-broadcast.sql');
+INSERT INTO migrations (filename) VALUES ('20261021-message-embeddings.sql');
+INSERT INTO migrations (filename) VALUES ('20261021-query-indexes.sql');
+INSERT INTO migrations (filename) VALUES ('20261021-settings-dedup.sql');
+INSERT INTO "harnesses" ("id", "name", "description") VALUES (1, 'claude', 'Claude Code CLI (Anthropic)');
+INSERT INTO "harnesses" ("id", "name", "description") VALUES (2, 'codex', 'Codex CLI (OpenAI/ChatGPT)');
+INSERT INTO "harness_models" ("id", "harness_id", "model_id", "display_name", "is_default", "is_active") VALUES (1, 1, 'claude-sonnet-5-5', 'Sonnet 5.5', 1, 1);
+INSERT INTO "harness_models" ("id", "harness_id", "model_id", "display_name", "is_default", "is_active") VALUES (2, 1, 'claude-opus-5-5', 'Opus 5.5', 0, 1);
+INSERT INTO "harness_models" ("id", "harness_id", "model_id", "display_name", "is_default", "is_active") VALUES (3, 1, 'claude-haiku-4-5-20251001', 'Haiku 4.5', 0, 1);
+INSERT INTO "harness_models" ("id", "harness_id", "model_id", "display_name", "is_default", "is_active") VALUES (4, 2, 'gpt-5.6-sol', 'GPT-5.6-Sol', 1, 1);
+INSERT INTO "harness_models" ("id", "harness_id", "model_id", "display_name", "is_default", "is_active") VALUES (5, 2, 'gpt-6-sol', 'GPT-6-Sol', 0, 1);
