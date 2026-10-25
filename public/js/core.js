@@ -264,11 +264,6 @@ function makeAvatarEl(name, color, url, size, subAgentLabel, saAvatarColor, saAv
   } else {
     wrap.appendChild(makeAvatar(name, color, url, size));
   }
-  const badge = document.createElement('span');
-  badge.className = 'h-sa-badge';
-  badge.style.background = color || '#888';
-  badge.textContent = subAgentLabel[0].toUpperCase();
-  wrap.appendChild(badge);
   return wrap;
 }
 
