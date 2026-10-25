@@ -665,3 +665,32 @@ res.end(JSON.stringify({ error: 'Not found' }));
 res.writeHead(500, { 'Content-Type': 'application/json' });
 res.end(JSON.stringify({ error: 'Internal error' }));
 ```
+
+---
+
+## Core Lib Pattern (REST + MCP shared)
+
+Business logic extracted from REST handlers lives in `lib/*.js` as pure functions returning `{status, body}`. The REST handler calls the core function and maps the result to HTTP; the MCP tool calls the same core function and maps to a text result. This ensures validation never drifts between the two surfaces.
+
+**Modules added in PR #195:**
+- `lib/room-messages.js` — message send/read, thread list/read
+- `lib/stoa-memory.js` — room memory, agent memory, sub-agent memory, system prompts
+- `lib/system-prompts.js` — room and agent system prompt get/set (also handles notices + broadcast)
+- `lib/sub-agents.js` — sub-agent CRUD + trigger (create links to room atomically; delete broadcasts `sub_agent_unlinked`)
+- `lib/automation-crud.js` — automation CRUD + connection list
+- `lib/stoa-mcp-tools.js` — assembles all 24 `stoa__*` tool definitions; also exports `availableTo(ident)` for per-tool visibility filtering
+
+**`availableTo(ident)` option on MCP gateway:**
+
+Each tool definition in `stoa-mcp-tools.js` can export `availableTo(ident): boolean`. The gateway calls this before exposing or calling a tool. Sub-agent sessions (`ident.subAgentId != null`) see only: `message_send`, read tools, and `sub_agent_memory_get/set`. All configuration-mutating tools are hidden and refused for sub-agent sessions.
+
+```javascript
+// Example: hide sub_agent_create from sub-agent sessions
+availableTo: (ident) => !ident.subAgentId,
+```
+
+**Behavior changes from REST refactor (PR #195):**
+- Non-string inputs that previously caused 500 now return 400.
+- `trigger_conditions` sent as an array in PATCH is serialized as JSON (REST was ignoring it).
+- Deleting a sub-agent now broadcasts `sub_agent_unlinked` to the room.
+- History `GET /api/rooms/:id/messages` now includes `system_event` notices ending in `· config`.

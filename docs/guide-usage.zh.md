@@ -1032,6 +1032,24 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 - 令牌在其代理、子代理或房间被删除时自动撤销。
 - stdio 上游进程以隔离的环境启动（仅 `PATH`、`HOME` 和您显式添加的变量），服务器自身的环境变量不会传递。
 
+### Stoa 内置工具
+
+除了您安装的 MCP 服务器外，Stoa 的 `stoa` 服务器还提供 **24 个内置工具**，让代理无需 curl 或密钥即可直接访问 Stoa 功能。身份、房间和线程从会话令牌自动获取。
+
+工具按功能分组：
+
+- **消息** — `stoa__message_send`、`stoa__messages_read`、`stoa__threads_list`、`stoa__thread_read`
+- **记忆** — `stoa__room_memory_get/set`、`stoa__agent_memory_get/set`、`stoa__sub_agent_memory_get/set`
+- **系统提示** — `stoa__room_system_prompt_get/set`、`stoa__agent_system_prompt_get/set`
+- **子代理** — `stoa__sub_agent_list/create/update/delete/trigger`
+- **自动化** — `stoa__automation_list/create/update/delete`、`stoa__connection_list`
+
+验证、配额和作用域规则与 REST API 相同。配置变更（系统提示、子代理 CRUD、自动化变更）会在房间中发布永久通知 — `· config` 或 `· automation` — 与 REST 端点相同。
+
+在**子代理会话**中，仅消息、读取和自身记忆工具可用。修改配置的工具会被隐藏并拒绝。内置 `stoa` 服务器无需在 MCP 页面授权，调用会以 `stoa` 记录在活动日志中。文件上传仍通过 REST (`POST /api/upload/raw`) 或 `[send:]` 标记进行。
+
+完整参数列表请参阅 `stoa-api.md` → **Stoa 内置 MCP 工具**。
+
 ---
 
 ## 设置

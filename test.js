@@ -14992,7 +14992,16 @@ async function run() {
       return r.msg.result.tools;
     };
     const listNames = async (token) => (await listAll(token)).map(t => t.name).filter(n => !n.startsWith('stoa__')).sort();
-    const BUILTINS = ['stoa__schedule_create', 'stoa__schedule_delete', 'stoa__schedule_doctor', 'stoa__schedule_list', 'stoa__schedule_update'];
+    const BUILTINS = ['schedule_create', 'schedule_delete', 'schedule_doctor', 'schedule_list', 'schedule_update',
+      'agent_memory_get', 'agent_memory_set', 'agent_system_prompt_get', 'agent_system_prompt_set',
+      'automation_create', 'automation_delete', 'automation_list', 'automation_update', 'connection_list',
+      'message_send', 'messages_read', 'room_memory_get', 'room_memory_set', 'room_system_prompt_get', 'room_system_prompt_set',
+      'sub_agent_create', 'sub_agent_delete', 'sub_agent_list', 'sub_agent_memory_get', 'sub_agent_memory_set', 'sub_agent_trigger', 'sub_agent_update',
+      'thread_read', 'threads_list'].map(n => `stoa__${n}`).sort();
+    // Built-ins a sub-agent session sees: the config-changing ones are hidden from it (availableTo).
+    const SUB_SESSION_TOOLS = ['automation_list', 'connection_list', 'message_send', 'messages_read', 'room_memory_get', 'room_system_prompt_get',
+      'sub_agent_list', 'sub_agent_memory_get', 'sub_agent_memory_set', 'thread_read', 'threads_list'];
+    const SUB_BUILTINS = BUILTINS.filter(n => n.startsWith('stoa__schedule_') || SUB_SESSION_TOOLS.includes(n.slice(6)));
     const callText = async (token, name, args = {}) => {
       const r = await mcp(token, 'tools/call', { name, arguments: args });
       assert.strictEqual(r.status, 200, r.raw?.slice(0, 200));
@@ -15360,7 +15369,7 @@ async function run() {
       try {
         const names = async () => (await a.c.listTools()).tools.map(t => t.name).sort();
         assert.ok((await names()).includes('mcpdummy__echo'));
-        assert.deepStrictEqual((await s.c.listTools()).tools.map(t => t.name).sort(), BUILTINS, 'sub-agent is denied the upstream (previous test), keeps the built-ins');
+        assert.deepStrictEqual((await s.c.listTools()).tools.map(t => t.name).sort(), SUB_BUILTINS, 'sub-agent is denied the upstream (previous test), keeps its built-ins');
         await new Promise(r => setTimeout(r, 200));
         assert.strictEqual((await req('PUT', `/api/mcp/servers/${server.id}/tools/echo`, { enabled: false })).status, 200);
         assert.ok(await until(() => a.seen.n === 1), 'agent session notified after the owner disabled a tool');
@@ -15779,6 +15788,317 @@ async function run() {
       } finally { mDb.prepare('DELETE FROM mcp_servers WHERE id=?').run(legacy); }
     });
 
+    // ── Built-in stoa__* feature tools (lib/stoa-mcp-tools.js): same cores as the HTTP routes.
+    const stoaOk = async (token, tool, args = {}) => {
+      const r = await stoaCall(token, tool, args);
+      assert.strictEqual(r.isError, false, `${tool}: ${r.text}`);
+      return r.body;
+    };
+    const stoaErr = async (token, tool, args = {}) => {
+      const r = await callText(token, `stoa__${tool}`, args);
+      assert.strictEqual(r.isError, true, `${tool} should fail: ${r.text}`);
+      try { return JSON.parse(r.text).error; } catch { return r.text; }
+    };
+    const SUB_DENIED = /not available in this session/;
+    const configNotices = (roomId, sinceId) => mDb.prepare("SELECT content FROM messages WHERE room_id=? AND id>? AND state='system_event' AND content LIKE '% · config'").all(roomId, sinceId).map(m => m.content);
+    const autoNotices = (roomId, sinceId) => mDb.prepare("SELECT content FROM messages WHERE room_id=? AND id>? AND state='system_event' AND content LIKE '% · automation'").all(roomId, sinceId).map(m => m.content);
+    // A token row made by hand: room-less sessions, or a room the agent is not (or no longer) in.
+    const handToken = (actorId, roomId) => {
+      const raw = 'stoa_mcp_' + crypto.randomBytes(32).toString('base64url');
+      mDb.prepare('INSERT INTO mcp_tokens (token_hash, token_enc, actor_id, room_id, thread_id, sub_agent_id) VALUES (?,?,?,?,NULL,NULL)')
+        .run(crypto.createHash('sha256').update(raw).digest('hex'), 'unused', actorId, roomId);
+      return { raw, drop: () => mDb.prepare('DELETE FROM mcp_tokens WHERE token_hash=?').run(crypto.createHash('sha256').update(raw).digest('hex')) };
+    };
+
+    await test('MCP stoa tools — main session lists all, sub-agent session hides config tools; schemas take no room/actor id', async () => {
+      const main = Object.fromEntries((await listAll(tokA)).map(t => [t.name, t]));
+      assert.deepStrictEqual(Object.keys(main).filter(n => n.startsWith('stoa__')).sort(), BUILTINS);
+      for (const t of Object.values(main).filter(t => t.name.startsWith('stoa__'))) {
+        for (const k of ['room_id', 'actor_id', 'parent_actor_id']) assert.ok(!(k in (t.inputSchema.properties || {})), `${t.name} has no ${k} argument`);
+        assert.strictEqual(t.inputSchema.additionalProperties, false, `${t.name} rejects unknown args`);
+      }
+      for (const n of ['sub_agent_delete', 'automation_delete']) assert.strictEqual(main[`stoa__${n}`].annotations.destructiveHint, true, n);
+      for (const n of ['messages_read', 'thread_read', 'threads_list', 'room_memory_get', 'agent_memory_get', 'sub_agent_list', 'automation_list', 'connection_list']) {
+        assert.strictEqual(main[`stoa__${n}`].annotations.readOnlyHint, true, n);
+      }
+      for (const n of ['message_send', 'room_memory_set', 'sub_agent_create', 'automation_update']) {
+        assert.deepStrictEqual([main[`stoa__${n}`].annotations.readOnlyHint, main[`stoa__${n}`].annotations.destructiveHint], [false, false], n);
+      }
+      assert.deepStrictEqual((await listAll(tokSub)).map(t => t.name).filter(n => n.startsWith('stoa__')).sort(), SUB_BUILTINS);
+    });
+
+    await test('MCP stoa tools — message_send: session thread by default, main_feed, idempotent; REST sees the same rows', async () => {
+      const inThread = await stoaOk(tokA, 'message_send', { content: 'MCP progress note in the session thread' });
+      let row = mDb.prepare('SELECT m.room_id, m.thread_id, m.content, m.sub_agent_id, rp.actor_id FROM messages m JOIN room_participants rp ON rp.id=m.participant_id WHERE m.id=?').get(inThread.message_id);
+      assert.deepStrictEqual(row, { room_id: roomA, thread_id: threadA, content: 'MCP progress note in the session thread', sub_agent_id: null, actor_id: agA.actorId });
+      const feedMsg = await stoaOk(tokA, 'message_send', { content: 'MCP note for the main feed', main_feed: true });
+      assert.strictEqual(mDb.prepare('SELECT thread_id FROM messages WHERE id=?').get(feedMsg.message_id).thread_id, null);
+      const again = await stoaOk(tokA, 'message_send', { content: 'MCP note for the main feed', main_feed: true, event_id: 'mcp-evt-1' });
+      assert.deepStrictEqual(await stoaOk(tokA, 'message_send', { content: 'MCP note for the main feed', main_feed: true, event_id: 'mcp-evt-1' }), { message_id: again.message_id, idempotent: true });
+      assert.match(await stoaErr(tokA, 'message_send', { content: 'different body', main_feed: true, event_id: 'mcp-evt-1' }), /event_id conflict/);
+
+      const thread = (await req('GET', `/api/rooms/${roomA}/threads/${threadA}`)).body;
+      assert.ok(thread.messages.some(m => m.id === inThread.message_id), 'REST thread view has the MCP post');
+      const read = await stoaOk(tokA, 'thread_read', {});
+      assert.strictEqual(read.thread_id, threadA);
+      assert.deepStrictEqual(read.messages.map(m => m.id), thread.messages.map(m => m.id), 'thread_read = REST thread replies');
+      assert.deepStrictEqual(Object.keys(read.messages.find(m => m.id === inThread.message_id)).sort(), ['author', 'author_type', 'content', 'created_at', 'id', 'thread_id']);
+      const feed = await stoaOk(tokA, 'messages_read', { limit: 5 });
+      assert.strictEqual(feed.messages.at(-1).id, again.message_id, 'newest last');
+      assert.ok(feed.messages.every(m => m.thread_id === null), 'main feed only');
+      const restFeed = (await req('GET', `/api/rooms/${roomA}/messages?before=${again.message_id + 1}&limit=5`)).body;
+      assert.deepStrictEqual(feed.messages.map(m => m.id), restFeed.map(m => m.id), 'messages_read = REST feed page');
+      const threads = await stoaOk(tokA, 'threads_list', {});
+      assert.ok(threads.threads.some(t => t.id === threadA && t.replies >= 1));
+    });
+
+    await test('MCP stoa tools — message scope: other-room thread, both thread args, other room\'s token, left the room → refused, nothing posted', async () => {
+      const before = maxMsgId();
+      const rootB = mDb.prepare('SELECT id FROM messages WHERE room_id=? AND thread_id IS NULL ORDER BY id LIMIT 1').get(roomB).id;
+      assert.strictEqual(await stoaErr(tokA, 'message_send', { content: 'cross-room post attempt', thread_id: rootB }), 'thread root belongs to a different room');
+      assert.match(await stoaErr(tokA, 'message_send', { content: 'ambiguous target', thread_id: threadA, main_feed: true }), /not both/);
+      assert.strictEqual(await stoaErr(tokA, 'thread_read', { thread_id: rootB }), 'thread root not found');
+      const readB = await stoaOk(tokB, 'messages_read', { limit: 100, include_thread_replies: true });
+      assert.ok(readB.messages.length > 0);
+      const roomOf = mDb.prepare('SELECT room_id FROM messages WHERE id=?');
+      assert.ok(readB.messages.every(m => roomOf.get(m.id).room_id === roomB), 'room B token reads room B only');
+      // Not a participant of the token's room: the gateway refuses the token itself…
+      const stale = handToken(agB.actorId, roomA);
+      try {
+        assert.strictEqual((await mcp(stale.raw, 'tools/call', { name: 'stoa__message_send', arguments: { content: 'not a participant of room A' } })).status, 401);
+      } finally { stale.drop(); }
+      // …and each room tool re-checks membership for a session opened before the agent left the room.
+      const { stoaMcpTools } = require('./lib/stoa-mcp-tools');
+      const direct = Object.fromEntries(stoaMcpTools({ db: mDb, broadcast: () => {}, messages: {}, memory: {}, prompts: {}, subAgents: {}, automations: {} }).map(t => [t.name, t]));
+      for (const tool of ['message_send', 'messages_read', 'room_memory_set', 'room_system_prompt_set', 'sub_agent_trigger']) {
+        const r = await direct[tool].call({ actorId: agB.actorId, roomId: roomA, threadId: null, subAgentId: null }, { content: 'x', task: 'long enough task', label: 'mcpsub', system_prompt: 'x' });
+        assert.deepStrictEqual([r.isError, JSON.parse(r.content[0].text).error], [true, 'agent_scope_denied'], tool);
+      }
+      assert.strictEqual(maxMsgId(), before, 'nothing posted');
+    });
+
+    await test('MCP stoa tools — sub-agent session posts as itself; config tools refused even when called by name', async () => {
+      const m = await stoaOk(tokSub, 'message_send', { content: 'sub-agent progress via MCP', main_feed: true });
+      assert.deepStrictEqual(mDb.prepare('SELECT sub_agent_id, sub_agent_label FROM messages WHERE id=?').get(m.message_id), { sub_agent_id: sub.id, sub_agent_label: 'mcpsub' });
+      const promptBefore = mDb.prepare('SELECT system_prompt FROM actors WHERE id=?').get(agA.actorId).system_prompt;
+      const subsBefore = mDb.prepare('SELECT COUNT(*) n FROM sub_agents WHERE parent_actor_id=?').get(agA.actorId).n;
+      for (const [tool, args] of [
+        ['room_memory_set', { content: 'sub-agent overwrite' }], ['agent_memory_set', { file: 'MEMORY.md', content: 'x' }], ['agent_memory_get', {}],
+        ['agent_system_prompt_set', { system_prompt: 'pwned' }], ['room_system_prompt_set', { system_prompt: 'pwned' }],
+        ['sub_agent_create', { label: 'spawnling' }], ['sub_agent_update', { sub_agent_id: sub.id, tier: 'deep' }], ['sub_agent_delete', { sub_agent_id: sub.id }],
+        ['sub_agent_trigger', { label: 'mcpsub', task: 'recursive self trigger task' }],
+        ['automation_create', { name: 'x', trigger_event: 'message', prompt_template: 'x' }], ['automation_delete', { automation_id: 1 }],
+      ]) {
+        assert.match(await stoaErr(tokSub, tool, args), SUB_DENIED, tool);
+        assert.deepStrictEqual([lastCall().tool, lastCall().status, lastCall().sub_agent_id], [tool, 'denied', sub.id]);
+      }
+      assert.strictEqual(mDb.prepare('SELECT system_prompt FROM actors WHERE id=?').get(agA.actorId).system_prompt, promptBefore);
+      assert.strictEqual(mDb.prepare('SELECT COUNT(*) n FROM sub_agents WHERE parent_actor_id=?').get(agA.actorId).n, subsBefore);
+      assert.ok(mDb.prepare('SELECT 1 FROM sub_agents WHERE id=?').get(sub.id), 'still there');
+    });
+
+    await test('MCP stoa tools — room memory: set/get round-trip with REST, budget enforced, other room isolated', async () => {
+      const content = 'Room A facts written over MCP: deploy on Fridays.';
+      const set = await stoaOk(tokA, 'room_memory_set', { content });
+      assert.deepStrictEqual([set.content, set.budget], [content, 1800]);
+      assert.strictEqual(mDb.prepare('SELECT content FROM room_memory WHERE room_id=?').get(roomA).content, content);
+      assert.strictEqual((await req('GET', `/api/rooms/${roomA}/memory`)).body.content, content, 'REST sees it');
+      assert.strictEqual((await stoaOk(tokA, 'room_memory_get')).content, content);
+      assert.strictEqual(await stoaErr(tokA, 'room_memory_set', { content: 'x'.repeat(1801) }), 'content exceeds 1800 char budget');
+      assert.strictEqual(await stoaErr(tokA, 'room_memory_set', {}), 'content (string) required');
+      assert.strictEqual(mDb.prepare('SELECT content FROM room_memory WHERE room_id=?').get(roomA).content, content, 'unchanged');
+      assert.notStrictEqual((await stoaOk(tokB, 'room_memory_get')).content, content, 'room B reads its own memory');
+      assert.strictEqual((await stoaOk(tokSub, 'room_memory_get')).content, content, 'sub-agent may read the room memory');
+    });
+
+    await test('MCP stoa tools — agent memory: own files only, budgets, unknown file refused', async () => {
+      const set = await stoaOk(tokA, 'agent_memory_set', { file: 'MEMORY.md', content: 'Agent A lesson via MCP' });
+      assert.strictEqual(set.budget, 2200);
+      assert.strictEqual(mDb.prepare("SELECT content FROM agent_memory WHERE actor_id=? AND file='MEMORY.md'").get(agA.actorId).content, 'Agent A lesson via MCP');
+      const rest = (await req('GET', `/api/actors/${agA.actorId}/memory`)).body.files.find(f => f.file === 'MEMORY.md');
+      assert.strictEqual(rest.content, 'Agent A lesson via MCP');
+      assert.strictEqual((await stoaOk(tokA, 'agent_memory_get')).files.find(f => f.file === 'MEMORY.md').content, 'Agent A lesson via MCP');
+      assert.strictEqual(await stoaErr(tokA, 'agent_memory_set', { file: 'USER.md', content: 'u'.repeat(1376) }), 'content exceeds 1375 char budget');
+      assert.strictEqual(await stoaErr(tokA, 'agent_memory_set', { file: '../SECRETS.md', content: 'x' }), 'file must be MEMORY.md or USER.md');
+      assert.strictEqual(mDb.prepare("SELECT COUNT(*) n FROM agent_memory WHERE actor_id=? AND file NOT IN ('MEMORY.md','USER.md')").get(agA.actorId).n, 0);
+      assert.ok(!(await stoaOk(tokB, 'agent_memory_get')).files.some(f => f.content === 'Agent A lesson via MCP'), 'agent B reads only its own');
+    });
+
+    await test('MCP stoa tools — sub-agent memory: parent by id, sub-agent session its own only, other parent refused', async () => {
+      await stoaOk(tokA, 'sub_agent_memory_set', { sub_agent_id: sub.id, content: 'mcpsub notes from parent' });
+      assert.strictEqual(mDb.prepare('SELECT content FROM sub_agent_memory WHERE sub_agent_id=?').get(sub.id).content, 'mcpsub notes from parent');
+      assert.strictEqual((await req('GET', `/api/sub-agents/${sub.id}/memory`)).body.content, 'mcpsub notes from parent');
+      assert.strictEqual((await stoaOk(tokSub, 'sub_agent_memory_get')).content, 'mcpsub notes from parent', 'own memory without an id');
+      await stoaOk(tokSub, 'sub_agent_memory_set', { content: 'mcpsub self-learned' });
+      assert.strictEqual(mDb.prepare('SELECT content FROM sub_agent_memory WHERE sub_agent_id=?').get(sub.id).content, 'mcpsub self-learned');
+      assert.strictEqual(await stoaErr(tokSub, 'sub_agent_memory_set', { sub_agent_id: sub.id + 100000, content: 'x' }), 'forbidden');
+      assert.strictEqual(await stoaErr(tokB, 'sub_agent_memory_get', { sub_agent_id: sub.id }), 'sub-agent not found');
+      assert.strictEqual(await stoaErr(tokB, 'sub_agent_memory_set', { sub_agent_id: sub.id, content: 'hijack' }), 'sub-agent not found');
+      assert.strictEqual(await stoaErr(tokA, 'sub_agent_memory_get', {}), 'sub_agent_id required');
+      assert.strictEqual(await stoaErr(tokA, 'sub_agent_memory_set', { sub_agent_id: sub.id, content: 'm'.repeat(2201) }), 'content exceeds 2200 char budget');
+      assert.strictEqual(mDb.prepare('SELECT content FROM sub_agent_memory WHERE sub_agent_id=?').get(sub.id).content, 'mcpsub self-learned', 'unchanged');
+    });
+
+    await test('MCP stoa tools — system prompts: room + own agent, notices, validation, other room isolated', async () => {
+      const since = maxMsgId();
+      const r = await stoaOk(tokA, 'room_system_prompt_set', { system_prompt: 'Room A rules via MCP', max_active_threads: 4 });
+      assert.deepStrictEqual(r, { system_prompt: 'Room A rules via MCP', max_active_threads: 4 });
+      assert.deepStrictEqual(mDb.prepare('SELECT system_prompt, max_active_threads FROM rooms WHERE id=?').get(roomA), { system_prompt: 'Room A rules via MCP', max_active_threads: 4 });
+      assert.strictEqual((await req('GET', `/api/rooms/${roomA}/system-prompt`)).body.system_prompt, 'Room A rules via MCP');
+      assert.strictEqual(await stoaErr(tokA, 'room_system_prompt_set', { max_active_threads: 50 }), 'max_active_threads must be an integer between 1 and 20');
+      assert.strictEqual(await stoaErr(tokA, 'room_system_prompt_set', {}), 'nothing to update');
+      assert.notStrictEqual((await stoaOk(tokB, 'room_system_prompt_get')).system_prompt, 'Room A rules via MCP');
+      assert.strictEqual((await stoaOk(tokSub, 'room_system_prompt_get')).system_prompt, 'Room A rules via MCP');
+
+      assert.deepStrictEqual(await stoaOk(tokA, 'agent_system_prompt_set', { system_prompt: 'Agent A persona via MCP' }), { system_prompt: 'Agent A persona via MCP' });
+      assert.strictEqual(mDb.prepare('SELECT system_prompt FROM actors WHERE id=?').get(agA.actorId).system_prompt, 'Agent A persona via MCP');
+      assert.strictEqual((await req('GET', `/api/actors/${agA.actorId}/system-prompt`)).body.system_prompt, 'Agent A persona via MCP');
+      assert.strictEqual((await stoaOk(tokA, 'agent_system_prompt_get')).system_prompt, 'Agent A persona via MCP');
+      assert.strictEqual(await stoaErr(tokA, 'agent_system_prompt_set', { system_prompt: 'x'.repeat(65537) }), 'system_prompt exceeds 64KB limit');
+      assert.notStrictEqual((await stoaOk(tokB, 'agent_system_prompt_get')).system_prompt, 'Agent A persona via MCP');
+      assert.deepStrictEqual(configNotices(roomA, since), ['__test-mcp-a updated the room system prompt · config', '__test-mcp-a updated their agent system prompt · config']);
+      assert.ok((await req('GET', `/api/rooms/${roomA}/messages?before=${maxMsgId() + 1}&limit=2`)).body.some(m => m.content.endsWith(' · config')), 'notice kept in the history');
+      await stoaOk(tokA, 'agent_system_prompt_set', { system_prompt: null });
+      await stoaOk(tokA, 'room_system_prompt_set', { system_prompt: null });
+    });
+
+    let mcpSub2 = null, clash = null;
+    await test('MCP stoa tools — sub-agent create (linked to the room), list, update; validation; other parent refused', async () => {
+      const since = maxMsgId();
+      const c = await stoaOk(tokA, 'sub_agent_create', { label: 'mcpsubtwo', tier: 'standard', role: 'Helper', system_prompt: 'Help with MCP tests' });
+      mcpSub2 = c.sub_agent;
+      assert.deepStrictEqual([c.linked_to_room, mcpSub2.parent_actor_id, mcpSub2.tier, mcpSub2.role], [true, agA.actorId, 'standard', 'Helper']);
+      assert.ok(mDb.prepare('SELECT 1 FROM room_sub_agents WHERE room_id=? AND sub_agent_id=?').get(roomA, mcpSub2.id), 'linked to room A');
+      assert.ok((await req('GET', `/api/actors/${agA.actorId}/sub-agents`)).body.some(s => s.id === mcpSub2.id), 'REST lists it');
+      assert.ok((await stoaOk(tokA, 'sub_agent_list')).sub_agents.some(s => s.id === mcpSub2.id && s.effective_harness));
+      assert.ok(!(await stoaOk(tokB, 'sub_agent_list')).sub_agents.some(s => s.parent_actor_id === agA.actorId), 'agent B lists only its own');
+
+      const count = () => mDb.prepare('SELECT COUNT(*) n FROM sub_agents WHERE parent_actor_id=?').get(agA.actorId).n;
+      const n = count();
+      assert.match(await stoaErr(tokA, 'sub_agent_create', { label: '1bad' }), /^label must start with a letter/);
+      assert.strictEqual(await stoaErr(tokA, 'sub_agent_create', { label: 'mcpsub' }), 'label "mcpsub" already exists for this agent');
+      assert.strictEqual(await stoaErr(tokA, 'sub_agent_create', { label: 'okname', tier: 'huge' }), 'tier must be quick, standard, or deep');
+      // Label taken in room A by another parent's sub-agent: create + link roll back together.
+      clash = (await req('POST', `/api/actors/${agB.actorId}/sub-agents`, { label: 'clashlbl' })).body;
+      mDb.prepare('INSERT INTO room_sub_agents (room_id, sub_agent_id) VALUES (?,?)').run(roomA, clash.id);
+      assert.match(await stoaErr(tokA, 'sub_agent_create', { label: 'clashlbl' }), /already in this room/);
+      assert.strictEqual(count(), n, 'nothing half-made');
+
+      const u = await stoaOk(tokA, 'sub_agent_update', { sub_agent_id: mcpSub2.id, tier: 'deep', description: 'Updated over MCP', enabled: false });
+      assert.deepStrictEqual([u.sub_agent.tier, u.sub_agent.description, u.sub_agent.enabled], ['deep', 'Updated over MCP', 0]);
+      assert.deepStrictEqual(mDb.prepare('SELECT tier, description, enabled FROM sub_agents WHERE id=?').get(mcpSub2.id), { tier: 'deep', description: 'Updated over MCP', enabled: 0 });
+      assert.strictEqual(await stoaErr(tokA, 'sub_agent_update', { sub_agent_id: mcpSub2.id, tier: 'huge' }), 'invalid tier');
+      assert.strictEqual(await stoaErr(tokA, 'sub_agent_update', { sub_agent_id: mcpSub2.id }), 'no fields to update');
+      assert.strictEqual(await stoaErr(tokB, 'sub_agent_update', { sub_agent_id: mcpSub2.id, tier: 'quick' }), 'sub-agent not found');
+      assert.strictEqual(await stoaErr(tokB, 'sub_agent_delete', { sub_agent_id: mcpSub2.id }), 'sub-agent not found');
+      assert.strictEqual(await stoaErr(tokA, 'sub_agent_update', { sub_agent_id: clash.id, tier: 'deep' }), 'sub-agent not found', 'another parent\'s row');
+      assert.strictEqual(mDb.prepare('SELECT tier FROM sub_agents WHERE id=?').get(mcpSub2.id).tier, 'deep', 'untouched by agent B');
+      assert.deepStrictEqual(configNotices(roomA, since), ['__test-mcp-a created sub-agent mcpsubtwo · config', '__test-mcp-a updated sub-agent mcpsubtwo · config']);
+    });
+
+    await test('MCP stoa tools — sub-agent cap: 31st create refused on REST and /mcp alike, delete frees a slot', async () => {
+      const count = () => mDb.prepare('SELECT COUNT(*) n FROM sub_agents WHERE parent_actor_id=?').get(agB.actorId).n;
+      const fill = mDb.prepare('INSERT INTO sub_agents (parent_actor_id, label) VALUES (?,?)');
+      const fillers = [];
+      try {
+        for (let i = 0; count() < 30; i++) fillers.push(fill.run(agB.actorId, `capfill${i}`).lastInsertRowid);
+        const rest = await req('POST', `/api/actors/${agB.actorId}/sub-agents`, { label: 'capover' });
+        assert.deepStrictEqual([rest.status, rest.body.error, rest.body.limit], [409, 'sub-agent limit reached: max 30 sub-agents per agent', 30]);
+        assert.strictEqual(await stoaErr(tokB, 'sub_agent_create', { label: 'capover' }), 'sub-agent limit reached: max 30 sub-agents per agent');
+        assert.strictEqual(count(), 30, 'nothing inserted past the cap');
+        assert.ok((await listAll(tokB)).find(t => t.name === 'stoa__sub_agent_create').description.includes('Max 30 sub-agents per agent'));
+
+        const del = await req('DELETE', `/api/sub-agents/${fillers.pop()}`);
+        assert.strictEqual(del.status, 204);
+        const c = await stoaOk(tokB, 'sub_agent_create', { label: 'capover' });
+        assert.strictEqual(count(), 30, 'the freed slot is taken again');
+        assert.strictEqual(await stoaErr(tokB, 'sub_agent_create', { label: 'capover2' }), 'sub-agent limit reached: max 30 sub-agents per agent');
+        assert.strictEqual((await stoaOk(tokB, 'sub_agent_delete', { sub_agent_id: c.sub_agent.id })).ok, true);
+      } finally {
+        for (const id of fillers) mDb.prepare('DELETE FROM sub_agents WHERE id=?').run(id);
+      }
+    });
+
+    await test('MCP stoa tools — sub-agent trigger: runs in the session thread; other room / short task refused', async () => {
+      const st = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.sub_agent?.id === sub.id, 5000);
+      assert.deepStrictEqual(await stoaOk(tokA, 'sub_agent_trigger', { label: 'mcpsub', task: 'summarize the MCP test run' }), { ok: true, label: 'mcpsub' });
+      const m = await st;
+      assert.deepStrictEqual([m.room_id, m.thread_id], [roomA, threadA]);
+      const wake = waitForWsMessage(agA.ws, w => w.type === 'agent_trigger' && !w.sub_agent, 3000).catch(() => null);
+      agA.ws.send(JSON.stringify({ type: 'agent_message', message_id: m.message_id, content: 'done', state: 'complete' }));
+      const w = await wake;
+      if (w) agA.ws.send(JSON.stringify({ type: 'agent_message', message_id: w.message_id, content: 'done', state: 'complete' }));
+      assert.strictEqual(await stoaErr(tokA, 'sub_agent_trigger', { label: 'mcpsub', task: 'todo' }), 'invalid_task');
+      assert.strictEqual(await stoaErr(tokB, 'sub_agent_trigger', { label: 'mcpsub', task: 'cross-room trigger attempt' }), 'sub-agent not found in this room');
+      assert.strictEqual(await stoaErr(tokA, 'sub_agent_trigger', { label: 'clashlbl', task: 'run someone else\'s helper' }), 'not your sub-agent');
+    });
+
+    await test('MCP stoa tools — sub-agent delete: row, memory and link gone, notice', async () => {
+      const since = maxMsgId();
+      mDb.prepare("INSERT INTO sub_agent_memory (sub_agent_id, content) VALUES (?, 'to be dropped')").run(mcpSub2.id);
+      assert.deepStrictEqual(await stoaOk(tokA, 'sub_agent_delete', { sub_agent_id: mcpSub2.id }), { ok: true });
+      assert.strictEqual(mDb.prepare('SELECT 1 FROM sub_agents WHERE id=?').get(mcpSub2.id), undefined);
+      assert.strictEqual(mDb.prepare('SELECT 1 FROM sub_agent_memory WHERE sub_agent_id=?').get(mcpSub2.id), undefined);
+      assert.strictEqual(mDb.prepare('SELECT 1 FROM room_sub_agents WHERE sub_agent_id=?').get(mcpSub2.id), undefined);
+      assert.deepStrictEqual(configNotices(roomA, since), ['__test-mcp-a deleted sub-agent mcpsubtwo · config']);
+      assert.strictEqual(await stoaErr(tokA, 'sub_agent_delete', { sub_agent_id: mcpSub2.id }), 'sub-agent not found');
+      assert.strictEqual((await req('DELETE', `/api/sub-agents/${clash.id}`)).status, 204);
+      clash = null;
+    });
+
+    await test('MCP stoa tools — automations: create in own room, update, delete; other room / agent refused; connections without secrets', async () => {
+      const since = maxMsgId();
+      const created = await stoaOk(tokA, 'automation_create', { name: 'MCP auto', trigger_type: 'slack', trigger_event: 'app_mention', prompt_template: 'Mention: {{slack_message_text}}', trigger_conditions: [{ field: 'message_text', op: 'contains', value: 'deploy' }] });
+      const row = mDb.prepare('SELECT * FROM automations WHERE id=?').get(created.id);
+      assert.deepStrictEqual([row.target_room_id, row.name, row.trigger_event, JSON.parse(row.trigger_conditions)[0].value], [roomA, 'MCP auto', 'app_mention', 'deploy']);
+      try {
+        assert.ok((await req('GET', '/api/automations')).body.some(a => a.id === created.id), 'REST lists it');
+        assert.ok((await stoaOk(tokA, 'automation_list')).automations.some(a => a.id === created.id));
+        assert.ok(!(await stoaOk(tokB, 'automation_list')).automations.some(a => a.id === created.id), 'agent B does not see it');
+        const n = mDb.prepare('SELECT COUNT(*) n FROM automations').get().n;
+        assert.strictEqual(await stoaErr(tokA, 'automation_create', { name: 'x', trigger_event: 'message', prompt_template: 'x', target_room_id: roomB }), 'agent_scope_denied');
+        assert.match(await stoaErr(tokA, 'automation_create', { name: 'x', trigger_event: 'message', prompt_template: 'x', trigger_conditions: [{ op: 'matches_regex', field: 'message_text', value: '(a+)+$' }] }), /^Condition regex: .*nested quantifiers/);
+        assert.strictEqual(await stoaErr(tokA, 'automation_create', { name: 'x', trigger_event: 'message', prompt_template: 'x', connection_id: 99999999 }), 'connection not found');
+        assert.strictEqual(mDb.prepare('SELECT COUNT(*) n FROM automations').get().n, n, 'nothing created');
+
+        const u = await stoaOk(tokA, 'automation_update', { automation_id: created.id, enabled: false, prompt_template: 'Paused via MCP' });
+        assert.deepStrictEqual([u.enabled, u.prompt_template], [0, 'Paused via MCP']);
+        assert.strictEqual(await stoaErr(tokA, 'automation_update', { automation_id: created.id, target_room_id: roomB }), 'agent_scope_denied');
+        assert.strictEqual(await stoaErr(tokB, 'automation_update', { automation_id: created.id, name: 'hijacked' }), 'agent_scope_denied');
+        assert.strictEqual(await stoaErr(tokB, 'automation_delete', { automation_id: created.id }), 'agent_scope_denied');
+        assert.deepStrictEqual(mDb.prepare('SELECT name, target_room_id FROM automations WHERE id=?').get(created.id), { name: 'MCP auto', target_room_id: roomA }, 'untouched');
+
+        const conns = (await stoaOk(tokA, 'connection_list')).connections;
+        assert.ok(conns.every(cn => Object.keys(cn).sort().join() === 'id,name,provider,status'), 'no credentials');
+
+        assert.deepStrictEqual(await stoaOk(tokA, 'automation_delete', { automation_id: created.id }), { ok: true });
+        assert.strictEqual(mDb.prepare('SELECT 1 FROM automations WHERE id=?').get(created.id), undefined);
+        assert.deepStrictEqual(autoNotices(roomA, since).map(s => s.split(' automation ')[0]), ['__test-mcp-a created', '__test-mcp-a updated', '__test-mcp-a deleted']);
+      } finally { mDb.prepare('DELETE FROM automations WHERE id=?').run(created.id); }
+    });
+
+    await test('MCP stoa tools — session without a room: room tools refused, own actor tools still work', async () => {
+      const t = handToken(agA.actorId, null);
+      try {
+        for (const tool of ['message_send', 'messages_read', 'thread_read', 'room_memory_get', 'room_system_prompt_get', 'sub_agent_trigger']) {
+          assert.strictEqual(await stoaErr(t.raw, tool, tool === 'message_send' ? { content: 'x' } : tool === 'sub_agent_trigger' ? { label: 'mcpsub', task: 'some long enough task' } : {}), 'this MCP session is not bound to a room', tool);
+        }
+        assert.strictEqual((await stoaOk(t.raw, 'agent_memory_get')).files.find(f => f.file === 'MEMORY.md').content, 'Agent A lesson via MCP');
+        assert.ok((await stoaOk(t.raw, 'sub_agent_list')).sub_agents.some(s => s.id === sub.id));
+        assert.match(await stoaErr(t.raw, 'automation_create', { name: 'x', trigger_event: 'message', prompt_template: 'x' }), /^target_room_id required/);
+        const n = mDb.prepare('SELECT COUNT(*) n FROM sub_agents WHERE parent_actor_id=?').get(agA.actorId).n;
+        const c = await stoaOk(t.raw, 'sub_agent_create', { label: 'roomless' });
+        assert.strictEqual(c.linked_to_room, false);
+        assert.strictEqual(mDb.prepare('SELECT COUNT(*) n FROM room_sub_agents WHERE sub_agent_id=?').get(c.sub_agent.id).n, 0);
+        await stoaOk(t.raw, 'sub_agent_delete', { sub_agent_id: c.sub_agent.id });
+        assert.strictEqual(mDb.prepare('SELECT COUNT(*) n FROM sub_agents WHERE parent_actor_id=?').get(agA.actorId).n, n);
+      } finally {
+        t.drop();
+        mDb.prepare("DELETE FROM agent_memory WHERE actor_id=?").run(agA.actorId);
+        if (clash) await req('DELETE', `/api/sub-agents/${clash.id}`);
+      }
+    });
+
     await test('MCP cleanup — deleting a sub-agent revokes its token and drops its grants', async () => {
       assert.strictEqual(mDb.prepare("SELECT COUNT(*) n FROM mcp_access WHERE subject_type='sub_agent' AND subject_id=?").get(sub.id).n, 1);
       assert.strictEqual((await req('DELETE', `/api/sub-agents/${sub.id}`)).status, 204);
@@ -15824,6 +16144,7 @@ async function run() {
       mDb.prepare("DELETE FROM mcp_calls WHERE server_slug='mcpoauth'").run();
       mDb.prepare("DELETE FROM mcp_calls WHERE server_slug='mcpdummy'").run();
       mDb.prepare("DELETE FROM mcp_calls WHERE server_slug='stoa' AND room_id IN (?,?)").run(roomA ?? -1, roomB ?? -1);
+      mDb.prepare("DELETE FROM mcp_calls WHERE server_slug='stoa' AND room_id IS NULL AND actor_id=?").run(agA?.actorId ?? -1);
       if (agA?.ws) agA.ws.close();
       if (agB?.ws) agB.ws.close();
     });

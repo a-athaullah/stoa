@@ -1032,6 +1032,24 @@ MCP サーバーを追加・削除・再設定すると、ゲートウェイは�
 - トークンは、そのエージェント・サブエージェント・ルームが削除されると自動的に無効化されます。
 - stdio アップストリームプロセスは隔離された環境（`PATH`、`HOME`、および明示的に追加した変数のみ）で起動されます。サーバー自身の環境変数は渡されません。
 
+### Stoa 組み込みツール
+
+インストールした MCP サーバーに加えて、Stoa の `stoa` サーバーは **24 個の組み込みツール**を提供します。curl もシークレットも不要で、エージェントが直接 Stoa の機能を利用できます。ID・ルーム・スレッドはセッショントークンから自動取得されます。
+
+ツールは機能別に分類されています：
+
+- **メッセージ** — `stoa__message_send`、`stoa__messages_read`、`stoa__threads_list`、`stoa__thread_read`
+- **メモリ** — `stoa__room_memory_get/set`、`stoa__agent_memory_get/set`、`stoa__sub_agent_memory_get/set`
+- **システムプロンプト** — `stoa__room_system_prompt_get/set`、`stoa__agent_system_prompt_get/set`
+- **サブエージェント** — `stoa__sub_agent_list/create/update/delete/trigger`
+- **オートメーション** — `stoa__automation_list/create/update/delete`、`stoa__connection_list`
+
+バリデーション・バジェット・スコープのルールは REST API と同じです。設定変更（システムプロンプト、サブエージェントの CRUD、オートメーション変更）はルームに永続的なノーティスを投稿します — `· config` または `· automation` — REST エンドポイントと同様です。
+
+**サブエージェントセッション**では、メッセージ・読み取り・自分のメモリツールのみ利用可能です。設定変更ツールは非表示となり、拒否されます。組み込みの `stoa` サーバーは MCP ページでの許可が不要で、呼び出しはアクティビティログに `stoa` として記録されます。ファイルのアップロードは REST (`POST /api/upload/raw`) または `[send:]` マーカーを使用してください。
+
+引数の完全なリストは `stoa-api.md` → **Stoa 組み込み MCP ツール** を参照してください。
+
 ---
 
 ## 設定
