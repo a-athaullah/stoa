@@ -28,6 +28,7 @@ const { resolveEnvFile, loadEnvFile, setEnvKey, portFallbackWarning, DEFAULT_POR
 const { runMigrations, pendingMigrations } = require('./lib/migrations');
 const { sanitizeIdList, diffRunQueue, summarizeRunTiming, createRunTimeout } = require('./lib/run-queue');
 const { createServerUpdate } = require('./lib/server-update');
+const { bootAppBundle, useAppBundle } = require('./build/build');
 const { detectProcessManager } = require('./lib/process-manager');
 const fallbackSessions = new Map();
 
@@ -1559,6 +1560,9 @@ function parseDocFilename(name) {
 const AUTH_EXEMPT = new Set(['/api/auth/login', '/favicon.ico', '/api/docs/stoa-api.md']);
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const IS_PROD = process.env.NODE_ENV === 'production';
+// public/dist is not in git: a production start builds it from public/css + public/js. Not on a
+// smoke boot (lib/server-update.js): that runs from the live checkout and must not rewrite it.
+const appBundleReady = IS_PROD && !SMOKE_BOOT && bootAppBundle(__dirname);
 
 // ─── Security: proxy trust, signing, login limiter ──────────────────────────
 // Every check below is credential-based. Nothing is exempted by source network
@@ -1858,12 +1862,8 @@ function fileResponseHeaders(ext, mime, disposition) {
 }
 
 function serveIndex() {
-  let html = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
-  if (IS_PROD && fs.existsSync(path.join(PUBLIC_DIR, 'dist', 'stoa.min.css'))) {
-    html = html.replace(/<!-- \{\{APP_CSS\}\} -->[\s\S]*?<!-- \{\{\/APP_CSS\}\} -->/, '<link rel="stylesheet" href="/dist/stoa.min.css">');
-    html = html.replace(/<!-- \{\{APP_JS\}\} -->[\s\S]*?<!-- \{\{\/APP_JS\}\} -->/, '<script src="/dist/stoa.min.js"></script>');
-  }
-  return html;
+  const html = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
+  return appBundleReady ? useAppBundle(html) : html;
 }
 
 // SPA permalinks (/r/<room>, /r/<room>/t/<thread>) render index.html; the client router reads the path.
