@@ -477,18 +477,26 @@ Browser back/forward fires `popstate`. The handler re-applies the URL to open th
 No build step — load CSS/JS directly from `<link>`/`<script>` tags.
 
 ### Production
-```bash
-npm run build
-```
+`public/dist/` is **not in git** (`.gitignore` `dist/`): a tracked bundle went dirty on every
+`npm run build` in other installs and broke their next `git pull`.
 
-**Output:**
-- `public/dist/stoa.min.css` (Tailwind purged + minified)
-- `public/dist/stoa.min.js` (concatenated + minified)
+With `NODE_ENV=production`, `server.js` builds it on every start via `bootAppBundle()`
+(`build/build.js`): the `{{APP_CSS}}` / `{{APP_JS}}` blocks of `index.html` are concatenated in
+order and minified with esbuild `transformSync` (no bundling, so top-level JS names stay global
+for inline handlers) into:
+- `public/dist/stoa.min.css`
+- `public/dist/stoa.min.js`
 
-The agent bundle (`dist/stoa.js`) is **not** built by default: the live server reads it per
-request for `/api/client/manifest`, so a build from a branch checkout (including the pre-commit
-hook, which runs `build/build.js` when `public/js/` is staged) would push unmerged code to every
-agent. `server.js` rebuilds it on every start. Opt in with `node build/build.js --agent`
-(`npm run build -- --agent`); honours `STOA_AGENT_BUNDLE_DIR`.
+Both files are written to temp names and renamed only after both minified, so a failed build
+leaves no half-new pair. `serveIndex` swaps in the bundle tags only when `appBundleReady` (this
+start built it); otherwise — dev, smoke boot, or `[build] App bundle FAILED` — it serves the
+per-module tags, never a stale bundle. Skipped on `STOA_SMOKE_BOOT` (Easy Update's test boot
+runs from the live checkout). `esbuild` is therefore a runtime `dependency`, not dev-only.
 
-**Auto-switched** via `NODE_ENV=production` check in `server.js`.
+`npm run build` still exists (vendor bundles in `public/vendor/`, which *are* tracked, plus the
+app bundle). The pre-commit hook no longer rebuilds or stages anything.
+
+The agent bundle (`dist/stoa.js`) is **not** built by `npm run build` by default: the live server
+reads it per request for `/api/client/manifest`, so a build from a branch checkout would push
+unmerged code to every agent. `server.js` rebuilds it on every start. Opt in with
+`node build/build.js --agent` (`npm run build -- --agent`); honours `STOA_AGENT_BUNDLE_DIR`.

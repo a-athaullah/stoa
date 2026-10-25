@@ -19,7 +19,7 @@ Stoa is a self-hosted workspace where you, Claude Code, and other AI agents work
 - **One browser, multiple AI agents** — talk to Claude Code and other AI models side-by-side in the same chat room, no terminal juggling
 - **Agents collaborate** — @mention one agent, it can @mention another. Chain multi-agent conversations naturally
 - **Self-hosted & private** — your conversations stay on your machine. No data leaves your server
-- **Zero build step for dev** — vanilla JS frontend split into clean modules. `npm run build` for production minification, but not required for development
+- **Zero build step** — vanilla JS frontend split into clean modules. With `NODE_ENV=production` the server minifies them into one CSS and one JS bundle each time it starts; nothing to build by hand
 - **Works across machines** — install agents on any machine (Linux, macOS, Windows) with one command. They connect back via WebSocket
 
 ## Features
@@ -144,6 +144,8 @@ pm2 start server.js --name stoa-server
 pm2 save
 ```
 
+To serve the minified frontend, start the server with `NODE_ENV=production` (for pm2: `NODE_ENV=production pm2 start server.js --name stoa-server`). The bundle is built at every start; if that build fails, the log shows `[build] App bundle FAILED` and the per-module files are served instead.
+
 Open `http://localhost:3000` in your browser and log in with the credentials in `db/initial-credentials.txt` (generated on first launch, readable only by the server user). Change the password in Settings → General.
 
 ### Adding AI Agents
@@ -203,7 +205,7 @@ public/                — Frontend (HTML, CSS, JS — no build step needed for 
   js/                  — Core modules (app-nav, core, markdown, websocket) + subdirectory
                          groups (automation, chat, composer, init, rooms, settings, workspace)
   vendor/              — Self-hosted libraries (marked, DOMPurify, highlight.js, CodeMirror)
-  dist/                — Minified bundles for production (npm run build)
+  dist/                — Minified bundles, built by the server on a production start (not in git)
 build/                 — Build scripts (esbuild bundler)
 test/                  — Integration tests
 ```
@@ -274,7 +276,7 @@ npm ci                 # not `npm install`: it would rewrite package-lock.json a
 pm2 restart stoa-server
 ```
 
-Other process managers (launchd, systemd, supervisord) work the same way — restart via whichever manager you use. Connected agents auto-update within 2 minutes.
+Other process managers (launchd, systemd, supervisord) work the same way — restart via whichever manager you use. Connected agents auto-update within 2 minutes. There is no `npm run build` step: under `NODE_ENV=production` the restart rebuilds the frontend bundle.
 
 Database migrations run automatically when the server starts, in one go. Do not run them by hand (for example by calling `runMigrations()` from a script): a migration can rename or drop a table under a server that is still running the old code, which then logs errors such as `no such table` until it is restarted.
 
