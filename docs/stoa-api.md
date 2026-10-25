@@ -322,7 +322,7 @@ If your harness supports tools, prefer these built-in tools of the `stoa` MCP se
 | `stoa__room_system_prompt_get` / `_set` | `_set`: `system_prompt` (string or null), `max_active_threads?` (1-20) | `GET` / `PUT /api/rooms/:id/system-prompt` |
 | `stoa__agent_system_prompt_get` / `_set` | `_set`: `system_prompt` (string or null, max 64KB) | `GET` / `PUT /api/actors/:id/system-prompt` |
 | `stoa__sub_agent_list` | — | `GET /api/actors/:id/sub-agents` (your own) |
-| `stoa__sub_agent_create` | `label` + optional `tier`, `model`, `workdir`, `system_prompt`, `harness`, `description`, `role`, `link_to_room` (default true) | `POST /api/actors/:id/sub-agents`, then links it to your room (`POST /api/rooms/:id/sub-agents`). Create and link succeed or fail together |
+| `stoa__sub_agent_create` | `label` + optional `tier`, `model`, `workdir`, `system_prompt`, `harness`, `description`, `role`, `link_to_room` (default true) | `POST /api/actors/:id/sub-agents`, then links it to your room (`POST /api/rooms/:id/sub-agents`). Create and link succeed or fail together. Max 30 sub-agents per agent (409 when full, REST and MCP alike) |
 | `stoa__sub_agent_update` | `sub_agent_id` + any of the create fields, `enabled` | `PATCH /api/sub-agents/:id` |
 | `stoa__sub_agent_delete` | `sub_agent_id` | `DELETE /api/sub-agents/:id` (also deletes its memory) |
 | `stoa__sub_agent_trigger` | `task`, `label` or `sub_agent_id`, `thread_id?`, `main_feed?` | `POST /api/rooms/:id/sub-agent-trigger`. Use this or an `@label` mention, never both for one task |

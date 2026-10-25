@@ -15996,6 +15996,29 @@ async function run() {
       assert.deepStrictEqual(configNotices(roomA, since), ['__test-mcp-a created sub-agent mcpsubtwo · config', '__test-mcp-a updated sub-agent mcpsubtwo · config']);
     });
 
+    await test('MCP stoa tools — sub-agent cap: 31st create refused on REST and /mcp alike, delete frees a slot', async () => {
+      const count = () => mDb.prepare('SELECT COUNT(*) n FROM sub_agents WHERE parent_actor_id=?').get(agB.actorId).n;
+      const fill = mDb.prepare('INSERT INTO sub_agents (parent_actor_id, label) VALUES (?,?)');
+      const fillers = [];
+      try {
+        for (let i = 0; count() < 30; i++) fillers.push(fill.run(agB.actorId, `capfill${i}`).lastInsertRowid);
+        const rest = await req('POST', `/api/actors/${agB.actorId}/sub-agents`, { label: 'capover' });
+        assert.deepStrictEqual([rest.status, rest.body.error, rest.body.limit], [409, 'sub-agent limit reached: max 30 sub-agents per agent', 30]);
+        assert.strictEqual(await stoaErr(tokB, 'sub_agent_create', { label: 'capover' }), 'sub-agent limit reached: max 30 sub-agents per agent');
+        assert.strictEqual(count(), 30, 'nothing inserted past the cap');
+        assert.ok((await listAll(tokB)).find(t => t.name === 'stoa__sub_agent_create').description.includes('Max 30 sub-agents per agent'));
+
+        const del = await req('DELETE', `/api/sub-agents/${fillers.pop()}`);
+        assert.strictEqual(del.status, 204);
+        const c = await stoaOk(tokB, 'sub_agent_create', { label: 'capover' });
+        assert.strictEqual(count(), 30, 'the freed slot is taken again');
+        assert.strictEqual(await stoaErr(tokB, 'sub_agent_create', { label: 'capover2' }), 'sub-agent limit reached: max 30 sub-agents per agent');
+        assert.strictEqual((await stoaOk(tokB, 'sub_agent_delete', { sub_agent_id: c.sub_agent.id })).ok, true);
+      } finally {
+        for (const id of fillers) mDb.prepare('DELETE FROM sub_agents WHERE id=?').run(id);
+      }
+    });
+
     await test('MCP stoa tools — sub-agent trigger: runs in the session thread; other room / short task refused', async () => {
       const st = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.sub_agent?.id === sub.id, 5000);
       assert.deepStrictEqual(await stoaOk(tokA, 'sub_agent_trigger', { label: 'mcpsub', task: 'summarize the MCP test run' }), { ok: true, label: 'mcpsub' });
