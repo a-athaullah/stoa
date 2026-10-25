@@ -186,7 +186,7 @@ Use the **Copy link** button on any message to copy its permalink. The browser's
 
 ### Draft Saving
 
-Unsent messages are automatically saved per room. When you switch rooms and come back, your draft is preserved. Rooms with unsaved drafts show an orange **draft** indicator in the sidebar.
+Unsent messages are automatically saved per room. When you switch rooms and come back, your draft is preserved. Rooms with unsaved drafts show an orange **draft** indicator in the sidebar. Each room row also shows a live **active-thread count** badge when one or more threads are running in that room — updated in real time across all rooms, not just the one currently open.
 
 ### Process Trail
 
@@ -301,10 +301,12 @@ To customize the chains for a room, open the room settings (the **gear** icon in
 
 ### Run Controls
 
-When sub-agents are running, the room header shows a **"N running"** pill. Click it to open a popover that lists each active run with its elapsed time. From there you can:
+The room header shows a **"N threads · N sub-agents"** pill whenever there are active threads or running sub-agents. Click it to open a dropdown with two sections:
 
-- **Stop** an individual run — finalizes that sub-agent's message immediately.
-- **Pause spawns** — blocks any new sub-agent from starting; runs already in flight finish normally. A **"spawns paused"** pill appears in the header while paused. Toggle it off to resume.
+- **ACTIVE THREADS** — lists each running thread; click a row to open it.
+- **SUB-AGENTS** — lists each active run with elapsed time. From here you can **Stop** an individual run (finalizes the message immediately), or use **Pause spawns** to block new sub-agents from starting while letting in-flight runs finish. A sub-agent row that has a linked thread shows an arrow to open it.
+
+While spawning is paused, a **"spawns paused"** chip appears in the header — clicking it reopens this dropdown. Toggle it off to resume.
 
 ### Budget and Rate Limits
 
