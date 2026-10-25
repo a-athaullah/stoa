@@ -15970,8 +15970,14 @@ async function run() {
       assert.deepStrictEqual([c.linked_to_room, mcpSub2.parent_actor_id, mcpSub2.tier, mcpSub2.role], [true, agA.actorId, 'standard', 'Helper']);
       assert.ok(mDb.prepare('SELECT 1 FROM room_sub_agents WHERE room_id=? AND sub_agent_id=?').get(roomA, mcpSub2.id), 'linked to room A');
       assert.ok((await req('GET', `/api/actors/${agA.actorId}/sub-agents`)).body.some(s => s.id === mcpSub2.id), 'REST lists it');
-      assert.ok((await stoaOk(tokA, 'sub_agent_list')).sub_agents.some(s => s.id === mcpSub2.id && s.effective_harness));
-      assert.ok(!(await stoaOk(tokB, 'sub_agent_list')).sub_agents.some(s => s.parent_actor_id === agA.actorId), 'agent B lists only its own');
+      const listed = (await stoaOk(tokA, 'sub_agent_list')).sub_agents.find(s => s.id === mcpSub2.id);
+      assert.deepStrictEqual([listed.label, listed.role, listed.tier, listed.has_system_prompt, !!listed.effective_harness], ['mcpsubtwo', 'Helper', 'standard', true, true]);
+      assert.ok(!('system_prompt' in listed) && !('workdir' in listed) && !('parent_actor_id' in listed), 'list is a summary');
+      const full = (await stoaOk(tokA, 'sub_agent_list', { sub_agent_id: mcpSub2.id })).sub_agent;
+      assert.deepStrictEqual([full.id, full.system_prompt, full.parent_actor_id], [mcpSub2.id, 'Help with MCP tests', agA.actorId]);
+      assert.strictEqual(await stoaErr(tokB, 'sub_agent_list', { sub_agent_id: mcpSub2.id }), 'sub-agent not found', 'another parent\'s sub-agent');
+      assert.ok(!(await stoaOk(tokB, 'sub_agent_list')).sub_agents.some(s => s.id === mcpSub2.id), 'agent B lists only its own');
+      assert.ok((await req('GET', `/api/actors/${agA.actorId}/sub-agents`)).body.find(s => s.id === mcpSub2.id).system_prompt === 'Help with MCP tests', 'REST list unchanged');
 
       const count = () => mDb.prepare('SELECT COUNT(*) n FROM sub_agents WHERE parent_actor_id=?').get(agA.actorId).n;
       const n = count();

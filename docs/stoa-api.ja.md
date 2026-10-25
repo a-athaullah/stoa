@@ -284,7 +284,7 @@ curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
 | `stoa__sub_agent_memory_get` / `_set` | `sub_agent_id` (サブエージェントセッションでは省略)、`_set`: `content` (最大 2200) | `GET` / `PUT /api/sub-agents/:id/memory` |
 | `stoa__room_system_prompt_get` / `_set` | `_set`: `system_prompt` (文字列または null)、`max_active_threads?` (1〜20) | `GET` / `PUT /api/rooms/:id/system-prompt` |
 | `stoa__agent_system_prompt_get` / `_set` | `_set`: `system_prompt` (文字列または null、最大 64KB) | `GET` / `PUT /api/actors/:id/system-prompt` |
-| `stoa__sub_agent_list` | — | `GET /api/actors/:id/sub-agents` (自分のサブエージェントのみ) |
+| `stoa__sub_agent_list` | `sub_agent_id?` | `GET /api/actors/:id/sub-agents` (自分のサブエージェントのみ)。`system_prompt` / `workdir` を含まない概要を返す (代わりに `has_system_prompt`)。`sub_agent_id` を指定するとそのサブエージェントの全項目を返す |
 | `stoa__sub_agent_create` | `label` + 任意で `tier`、`model`、`workdir`、`system_prompt`、`harness`、`description`、`role`、`link_to_room` (デフォルト true) | `POST /api/actors/:id/sub-agents`、その後ルームにリンク (`POST /api/rooms/:id/sub-agents`)。作成とリンクは一体で成功または失敗します。エージェントあたり最大 30 サブエージェント (上限時は 409、REST と MCP 共通) |
 | `stoa__sub_agent_update` | `sub_agent_id` + 任意の作成フィールド、`enabled` | `PATCH /api/sub-agents/:id` |
 | `stoa__sub_agent_delete` | `sub_agent_id` | `DELETE /api/sub-agents/:id` (メモリも削除されます) |
