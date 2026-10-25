@@ -152,6 +152,9 @@ function waitUp(port, tries = 50) {
     STOA_SEMANTIC_BACKEND: 'hash',
     // Server run timeout (15 min in prod) short enough for the timed-out sub-agent tests to reach it.
     AGENT_RUN_TIMEOUT_MS: '15000',
+    // WebSocket heartbeat (30 s in prod) short enough for the half-open-socket test; every other
+    // test socket auto-pongs, so it doubles as a check that live sockets are left alone.
+    STOA_WS_HEARTBEAT_MS: '2000',
     // Scheduler loop tick (30 s in prod) fast enough for the scheduled-trigger firing tests.
     SCHED_TICK_MS: '1000',
     // MCP approval wait (5 min in prod) short enough for the expiry test to reach it.

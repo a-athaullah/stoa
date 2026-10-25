@@ -2485,6 +2485,101 @@ async function runAsyncUnitTests() {
     });
   });
 
+  // Drives the real attachHeartbeatWatchdog on a fake socket: captures its check interval and moves Date.now.
+  function heartbeatHarness() {
+    const stoa = require('./stoa.js');
+    const sock = new (require('events').EventEmitter)();
+    sock.terminated = 0;
+    sock.terminate = () => { sock.terminated++; sock.emit('close'); };
+    const realSetInterval = global.setInterval, realClearInterval = global.clearInterval, realNow = Date.now;
+    let check = null, cleared = false, skew = 0;
+    global.setInterval = (fn) => { check = fn; return 'hb-timer'; };
+    global.clearInterval = (t) => { if (t === 'hb-timer') cleared = true; else realClearInterval(t); };
+    Date.now = () => realNow() + skew;
+    try { stoa.attachHeartbeatWatchdog(sock); } finally { global.setInterval = realSetInterval; }
+    return {
+      sock, limit: stoa.HEARTBEAT_MIN_SILENCE_MS, cleared: () => cleared,
+      tick: (ms) => { skew += ms; if (!cleared) check(); },
+      restore: () => { global.clearInterval = realClearInterval; Date.now = realNow; },
+    };
+  }
+
+  await uta('agent heartbeat watchdog — never fires before the first server ping (old servers do not ping)', async () => {
+    const h = heartbeatHarness();
+    try {
+      h.sock.emit('message', '{}');
+      h.tick(h.limit * 10);
+      assert.strictEqual(h.sock.terminated, 0, 'no ping seen yet → watchdog idle, no reconnect loop against a server without heartbeat');
+    } finally { h.restore(); }
+  });
+
+  await uta('agent heartbeat watchdog — silence past the limit after a ping terminates once and stops the timer', async () => {
+    const h = heartbeatHarness();
+    try {
+      h.sock.emit('ping');
+      h.tick(h.limit - 1e3);
+      assert.strictEqual(h.sock.terminated, 0, 'within the limit');
+      h.tick(2e3);
+      assert.strictEqual(h.sock.terminated, 1, 'silent past the limit → terminate (normal close → reconnect)');
+      assert.ok(h.cleared(), 'timer cleared');
+    } finally { h.restore(); }
+  });
+
+  await uta('agent heartbeat watchdog — each ping or message resets the silence window', async () => {
+    const h = heartbeatHarness();
+    try {
+      h.sock.emit('ping');
+      for (let i = 0; i < 5; i++) { h.tick(25e3); h.sock.emit('ping'); } // 30 s-ish server pings: limit stays at the floor
+      for (let i = 0; i < 3; i++) { h.tick(h.limit - 5e3); h.sock.emit('message', '{}'); }
+      assert.strictEqual(h.sock.terminated, 0, 'pings and messages keep it alive well past one limit in total');
+      h.tick(h.limit + 1e3);
+      assert.strictEqual(h.sock.terminated, 1);
+    } finally { h.restore(); }
+  });
+
+  await uta('agent heartbeat watchdog — bytes of a large frame still arriving count as activity', async () => {
+    const h = heartbeatHarness();
+    try {
+      const tcp = new (require('events').EventEmitter)();
+      h.sock.emit('upgrade', { socket: tcp });
+      h.sock.emit('ping');
+      for (let i = 0; i < 4; i++) { h.tick(h.limit - 5e3); tcp.emit('data', Buffer.alloc(16)); }
+      assert.strictEqual(h.sock.terminated, 0, 'a slow multi-minute frame is not silence');
+      h.tick(h.limit + 1e3);
+      assert.strictEqual(h.sock.terminated, 1);
+    } finally { h.restore(); }
+  });
+
+  await uta('agent heartbeat watchdog — limit scales with a slower server ping interval (3 missed pings)', async () => {
+    const h = heartbeatHarness();
+    try {
+      h.sock.emit('ping');
+      h.tick(60e3);
+      h.sock.emit('ping'); // observed gap 60 s → limit 180 s
+      h.tick(170e3);
+      assert.strictEqual(h.sock.terminated, 0, 'a 60 s server interval is not cut at the 90 s floor');
+      h.tick(15e3);
+      assert.strictEqual(h.sock.terminated, 1);
+    } finally { h.restore(); }
+  });
+
+  await uta('agent heartbeat watchdog — close clears the timer', async () => {
+    const h = heartbeatHarness();
+    try {
+      h.sock.emit('ping');
+      h.sock.emit('close');
+      assert.ok(h.cleared());
+    } finally { h.restore(); }
+  });
+
+  await uta('parseHeartbeatMs — default, bounds, garbage', async () => {
+    const { parseHeartbeatMs, DEFAULT_WS_HEARTBEAT_MS } = require('./lib/ws-heartbeat');
+    assert.strictEqual(parseHeartbeatMs(undefined), DEFAULT_WS_HEARTBEAT_MS);
+    assert.strictEqual(parseHeartbeatMs(''), DEFAULT_WS_HEARTBEAT_MS);
+    assert.strictEqual(parseHeartbeatMs('2000'), 2000);
+    for (const bad of ['999', '300001', '1.5e3x', 'abc', '1500.5', '-5000']) assert.strictEqual(parseHeartbeatMs(bad), null, bad);
+  });
+
   // Startup cleanup (server restart) cannot run inside the suite: drive it on a temp DB.
   await uta('cleanupStartupOrphans — stamps streaming + awaiting_agent runs interrupted and queues their wakes; others untouched', async () => {
     const Database = require('better-sqlite3');
@@ -13785,6 +13880,122 @@ async function run() {
       const { ws, parent } = await connectExpectingParent({ active_message_ids: [] }, 1200);
       ow.ws = ws;
       assert.strictEqual(await parent, null, 'parent not woken past the loop guard');
+    });
+
+    // Server heartbeat (STOA_WS_HEARTBEAT_MS=2000 under run-tests.js): a half-open agent socket is
+    // terminated after a missed pong, which runs the normal disconnect cleanup. Own sub-agent so the
+    // loop guard above (3 interruptions/hour per sub-agent) does not swallow the wake.
+    const HB_MS = 2000;
+    let hbSa = null;
+    const spawnHbSub = async (ws, task) => {
+      const t = waitForWsMessage(ws, m => m.type === 'agent_trigger' && m.sub_agent?.id === hbSa.id, 5000);
+      const r = await req('POST', `/api/rooms/${owRoomId}/sub-agent-trigger`, { sub_agent_id: hbSa.id, task }, hdr());
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      return t;
+    };
+    const connectRaw = async (wsOpts) => {
+      const ws = await new Promise((resolve, reject) => {
+        const w = new WebSocket(`ws://${HOST}:${PORT}`, wsOpts);
+        w.on('open', () => resolve(w)); w.on('error', reject);
+      });
+      const ready = waitForWsMessage(ws, m => m.type === 'agent_ready', 5000);
+      ws.send(JSON.stringify({ type: 'agent_connect', actor_id: ow.actorId, secret: ow.secret, active_message_ids: [] }));
+      await ready;
+      return ws;
+    };
+
+    await test('WS heartbeat — setup: fresh sub-agent linked to the orphan-wake room', async () => {
+      if (!owSa) { console.log('    (skipped)'); return; }
+      const s = await req('POST', `/api/actors/${ow.actorId}/sub-agents`, { label: 'hbsub', tier: 'quick' });
+      assert.strictEqual(s.status, 201, JSON.stringify(s.body));
+      hbSa = s.body;
+      const l = await req('POST', `/api/rooms/${owRoomId}/sub-agents`, { sub_agent_id: hbSa.id });
+      assert.ok(l.status === 200 || l.status === 201, JSON.stringify(l.body));
+    });
+
+    await test('WS heartbeat — agent socket that stops answering pings is terminated; its run is interrupted and wakes the parent once', async () => {
+      if (!hbSa) { console.log('    (skipped)'); return; }
+      await closeWs(ow.ws);
+      // autoPong:false = the server's pings go unanswered, as on a machine gone without a FIN.
+      const dead = await connectRaw({ autoPong: false });
+      ow.ws = dead;
+      const m = await spawnHbSub(dead, 'run on a machine about to vanish');
+      assert.strictEqual(row(m.message_id).state, 'streaming');
+      const t0 = Date.now();
+      await new Promise((resolve, reject) => {
+        const to = setTimeout(() => reject(new Error('server never terminated the silent socket')), HB_MS * 4);
+        dead.once('close', () => { clearTimeout(to); resolve(); });
+      });
+      assert.ok(Date.now() - t0 <= HB_MS * 3, `terminated within ~2 intervals (took ${Date.now() - t0} ms)`);
+      await new Promise(r => setTimeout(r, 150));
+      const r = row(m.message_id);
+      assert.strictEqual(r.state, 'error');
+      assert.strictEqual(r.content, '(interrupted — agent disconnected)');
+      assert.strictEqual(JSON.parse(r.result_meta).exit_reason, 'interrupted');
+      assert.strictEqual(wakesFor(m.message_id), 1, 'one durable wake for the parent');
+      const { ws, parent } = await connectExpectingParent({ active_message_ids: [] });
+      ow.ws = ws;
+      const w = await parent;
+      assert.ok(w && w.prompt.includes('[sub-agent TERPUTUS]') && w.prompt.includes('hbsub'), 'parent woken with the interruption');
+      complete(ws, w, 'noted');
+      assert.ok(await noParentTrigger(ws), 'exactly one wake');
+    });
+
+    await test('WS heartbeat — an agent socket that answers pings stays connected across 3+ intervals', async () => {
+      if (!hbSa) { console.log('    (skipped)'); return; }
+      const ws = ow.ws;
+      let closed = false;
+      ws.once('close', () => { closed = true; });
+      let pings = 0;
+      const onPing = () => { pings++; };
+      ws.on('ping', onPing);
+      await new Promise(r => setTimeout(r, HB_MS * 3.5));
+      ws.off('ping', onPing);
+      assert.ok(pings >= 3, `server pinged every interval (got ${pings})`);
+      assert.strictEqual(closed, false, 'a live socket is never terminated');
+      const a = (await req('GET', '/api/actors')).body.find(x => x.id === ow.actorId);
+      assert.strictEqual(a.online, true);
+    });
+
+    await test('WS heartbeat — a half-open socket superseded by a reconnect is terminated without orphaning the run the new socket holds', async () => {
+      if (!hbSa) { console.log('    (skipped)'); return; }
+      const old = ow.ws;
+      const m = await spawnHbSub(old, 'run that survives a network switch');
+      // Stop reading: no pong, no close-frame reply — the old socket is half-open from here on.
+      old._socket.pause();
+      const ws = await connect({ active_message_ids: [m.message_id] });
+      ow.ws = ws;
+      await new Promise(r => setTimeout(r, HB_MS * 3));
+      const r = row(m.message_id);
+      assert.strictEqual(r.state, 'streaming', 'terminating the superseded socket must not orphan the live run');
+      assert.strictEqual(wakesFor(m.message_id), 0);
+      const a = (await req('GET', '/api/actors')).body.find(x => x.id === ow.actorId);
+      assert.strictEqual(a.online, true, 'agent stays online');
+      const wake = waitForWsMessage(ws, mm => mm.type === 'agent_trigger' && !mm.sub_agent, 5000);
+      complete(ws, m, 'finished after the switch');
+      const w = await wake;
+      assert.ok(w.prompt.includes('finished after the switch') && !w.prompt.includes('TERPUTUS'));
+      complete(ws, w, 'ok');
+      old.terminate();
+    });
+
+    await test('WS heartbeat — a socket still streaming a slow multi-frame message is not cut even though its pong is not answered', async () => {
+      if (!hbSa) { console.log('    (skipped)'); return; }
+      await closeWs(ow.ws);
+      // autoPong:false: only the bytes of the message in flight show the peer is alive (pong queued
+      // behind a large frame on a slow link looks the same to the server).
+      const slow = await connectRaw({ autoPong: false });
+      let closed = false;
+      slow.once('close', () => { closed = true; });
+      const parts = ['{"type":"heartbeat_slow_frame_test",', '"pad":"', 'x'.repeat(64), 'x'.repeat(64), 'x'.repeat(64), 'x'.repeat(64)];
+      for (const part of parts) { slow.send(part, { fin: false }); await new Promise(r => setTimeout(r, HB_MS * 0.75)); }
+      slow.send('"}', { fin: true });
+      await new Promise(r => setTimeout(r, 200));
+      assert.strictEqual(closed, false, `still open after ${parts.length * 0.75} intervals of a slow message`);
+      const a = (await req('GET', '/api/actors')).body.find(x => x.id === ow.actorId);
+      assert.strictEqual(a.online, true);
+      await closeWs(slow);
+      ow.ws = await connect({ active_message_ids: [] });
     });
 
     await test('Orphan wake — teardown', async () => {

@@ -30,6 +30,7 @@ const { sanitizeIdList, diffRunQueue, summarizeRunTiming, createRunTimeout } = r
 const { createServerUpdate } = require('./lib/server-update');
 const { bootAppBundle, useAppBundle } = require('./build/build');
 const { detectProcessManager } = require('./lib/process-manager');
+const { parseHeartbeatMs, startWsHeartbeat, DEFAULT_WS_HEARTBEAT_MS } = require('./lib/ws-heartbeat');
 const { createOrphanRuns, INTERRUPTED_RESULT_META, RUN_IN_FLIGHT_SQL, orphanWakeEnabled } = require('./lib/orphan-runs');
 const fallbackSessions = new Map();
 
@@ -5073,7 +5074,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
 
 // ─── WebSocket server ─────────────────────────────────────────────────────────
 
-const wss = new WebSocketServer({ server, pingInterval: 20000 });
+const wss = new WebSocketServer({ server });
 const roomClients = new Map();    // roomId → Set<ws>
 const globalClients = new Set();  // all browser ws connections
 const agentClients = new Map();   // actor_id → ws
@@ -5088,6 +5089,16 @@ const agentBootIds = new Map();     // actor_id → per-process id, tells a real
 const agentRestarts = new Map();
 const AGENT_RESTART_STATES = new Set(['restarting']);
 const BOOT_ID_RE = /^[a-f0-9]{8,64}$/;
+
+let wsHeartbeatMs = parseHeartbeatMs(process.env.STOA_WS_HEARTBEAT_MS);
+if (wsHeartbeatMs === null) {
+  console.warn(`[ws] STOA_WS_HEARTBEAT_MS=${JSON.stringify(process.env.STOA_WS_HEARTBEAT_MS)} invalid (integer 1000-300000) — using ${DEFAULT_WS_HEARTBEAT_MS}`);
+  wsHeartbeatMs = DEFAULT_WS_HEARTBEAT_MS;
+}
+startWsHeartbeat(wss, wsHeartbeatMs, ws => {
+  const actorId = [...agentClients].find(([, s]) => s === ws)?.[0];
+  console.log(`[ws] heartbeat timeout — terminating ${actorId ? `agent Actor #${actorId}` : 'client'} socket`);
+});
 
 function setAgentRestartState(actorId, state, extra = {}) {
   const entry = agentRestarts.get(actorId);
