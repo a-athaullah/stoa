@@ -1082,6 +1082,27 @@ Stoa 在应用最左侧使用**垂直侧边栏导航**。侧边栏仅显示图�
 
 **重启服务器** — 服务器选项卡还显示一个重启卡片。它显示运行 Stoa 的进程管理器（例如：`running via launchd`）和 **restart server** 按钮。当 Stoa 由 launchd、PM2、systemd 或 supervisord 管理时，按钮可用——进程管理器将在退出后自动重启进程。Docker 或未知环境下按钮不可用（请从外部重启容器或进程）。点击 **restart server** → 确认对话框 → 服务器通知所有已连接的代理和浏览器后退出。浏览器在约 2–3 秒内自动重新连接，连接恢复后短暂显示"Server restarted"。
 
+**更新 Stoa** — 服务器选项卡还显示 **Update** 卡片，显示当前运行的版本和默认分支上可用的最新版本。Stoa 每天自动检查一次，卡片显示最后检查时间。有新版本时，Server 导航图标上会出现小徽标。
+
+- **check now** — 立即从远端强制执行 fetch。
+- **Update** — 打开列出新提交的对话框，然后开始更新。进度按步骤显示：fetch → apply commits → install dependencies → test boot → restart。如果 `package-lock.json` 未变更，则跳过"install dependencies"步骤，并在进度列表中显示"skipped"。服务器重启后，所有已连接的代理在约 2 分钟内自动更新。
+
+**安全保障：**
+- 在修改线上服务器之前，新版本会对数据库副本进行启动测试。如果测试失败，更改将被回滚，线上服务器无需重启即可继续运行。
+- 如果服务器在更新应用后启动失败超过 3 次，Stoa 将自动回滚到之前的版本，并在重新连接后显示警告。
+- 如果有代理正在运行，强制更新前会显示确认对话框。
+
+**更新被禁用（显示原因）的情况：**
+- 安装不是 git 检出 — 请手动更新。
+- 在 Docker 中运行 — 请 pull 新镜像。
+- 没有进程管理器（launchd、pm2、systemd 或 supervisord）管理 Stoa。
+- 检出处于非默认分支。
+- 工作树有未提交的更改。
+- 存在不在 origin 上的本地提交（diverged）。
+- 已有更新正在运行或尚未完成启动检查。
+
+以前，更新需要手动运行 `git pull` 并重启进程管理器。
+
 ### 平台
 
 配置内置 Claude 模型之外的外部 AI 模型供应商。点击 **+ add platform** 注册新供应商：
