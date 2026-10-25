@@ -7871,8 +7871,72 @@ async function run() {
     assert.strictEqual(r.status, 401);
   });
 
+  // Planned restarts must exit 75, not 0: systemd Restart=on-failure and supervisord autorestart=unexpected
+  // leave a server that exited 0 down. Each case boots its own server on a copy of the test DB (smoke-boot
+  // mode: no connectors, scheduler or wakes), triggers the restart over HTTP and reads the real exit code.
+  {
+    const osM = require('os'), fsM = require('fs');
+    const Database = require('better-sqlite3');
+    const bootRestartTarget = async () => {
+      const dir = fsM.mkdtempSync(path.join(osM.tmpdir(), 'stoa-restart-exit-'));
+      const src = new Database(process.env.DB_PATH, { readonly: true });
+      try { await src.backup(path.join(dir, 'stoa.db')); } finally { src.close(); }
+      fsM.copyFileSync(process.env.STOA_ENV_FILE, path.join(dir, '.env'));
+      const port = await new Promise(r => { const s = http.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
+      const env = { ...process.env, PORT: String(port), DB_PATH: path.join(dir, 'stoa.db'), STOA_ENV_FILE: path.join(dir, '.env'),
+        STOA_AGENT_BUNDLE_DIR: path.join(dir, 'dist'), STOA_MCP_WORK_DIR: path.join(dir, 'mcp'),
+        STOA_UPDATE_STATE_FILE: path.join(dir, 'update-state.json'), STOA_UPDATE_REPO_DIR: path.join(dir, 'no-repo'),
+        STOA_SMOKE_BOOT: '1', STOA_SEMANTIC_SEARCH: 'off', STOA_ORPHAN_WAKE: 'off', STOA_TEST_PROCESS_MANAGER: 'launchd' };
+      const child = require('child_process').spawn(process.execPath, [path.join(__dirname, 'server.js')], { cwd: __dirname, env, stdio: ['ignore', 'pipe', 'pipe'] });
+      let log = '';
+      child.stdout.on('data', d => { log += d; });
+      child.stderr.on('data', d => { log += d; });
+      const exited = new Promise(r => child.once('exit', (code, signal) => r({ code, signal })));
+      const call = (method, p, body, cookie) => new Promise((resolve, reject) => {
+        const data = body ? JSON.stringify(body) : '';
+        const r = http.request({ hostname: '127.0.0.1', port, path: p, method,
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data), ...(cookie ? { Cookie: cookie } : {}) } }, res => {
+          let out = ''; res.on('data', c => { out += c; });
+          res.on('end', () => { let b; try { b = JSON.parse(out); } catch { b = out; } resolve({ status: res.statusCode, headers: res.headers, body: b }); });
+        });
+        r.on('error', reject); r.end(data);
+      });
+      const cleanup = async () => {
+        if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await exited; }
+        fsM.rmSync(dir, { recursive: true, force: true });
+      };
+      try {
+        await waitUntil(() => call('GET', '/').then(() => true, () => false), 30000, 200);
+        const login = await call('POST', '/api/auth/login', { email: TEST_EMAIL, password: TEST_PASSWORD });
+        assert.strictEqual(login.status, 200, `login on the throwaway server: ${JSON.stringify(login.body)}`);
+        const cookie = login.headers['set-cookie'].map(c => c.split(';')[0]).join('; ');
+        return { call, cookie, exited, cleanup, log: () => log };
+      } catch (e) { await cleanup(); throw e; }
+    };
+
+    await test('POST /api/server/restart — process exits with 75 (not 0) so on-failure / unexpected managers restart it', async () => {
+      const t = await bootRestartTarget();
+      try {
+        const r = await t.call('POST', '/api/server/restart', null, t.cookie);
+        assert.deepStrictEqual([r.status, r.body], [200, { ok: true }]);
+        const out = await Promise.race([t.exited, new Promise(r => setTimeout(() => r('timeout'), 10000))]);
+        assert.deepStrictEqual(out, { code: 75, signal: null }, t.log().slice(-500));
+      } finally { await t.cleanup(); }
+    });
+
+    await test('PATCH /api/settings port change — process exits with 75 for the manager to restart it on the new port', async () => {
+      const t = await bootRestartTarget();
+      try {
+        const r = await t.call('PATCH', '/api/settings', { port: 65000 }, t.cookie);
+        assert.deepStrictEqual([r.status, r.body.restarting, r.body.new_port], [200, true, 65000]);
+        const out = await Promise.race([t.exited, new Promise(r => setTimeout(() => r('timeout'), 10000))]);
+        assert.deepStrictEqual(out, { code: 75, signal: null }, t.log().slice(-500));
+      } finally { await t.cleanup(); }
+    });
+  }
+
   // In-app updater over HTTP. run-tests.js points STOA_UPDATE_REPO_DIR at an empty temp path and
-  // STOA_UPDATE_PROCESS_MANAGER at launchd; the fixture's server.js always fails the smoke boot here,
+  // STOA_TEST_PROCESS_MANAGER at launchd; the fixture's server.js always fails the smoke boot here,
   // so the throwaway server is never restarted by these tests.
   console.log('\n[Server Update]');
   if (!process.env.STOA_UPDATE_REPO_DIR) {

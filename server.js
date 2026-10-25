@@ -3106,7 +3106,7 @@ const server = http.createServer(async (req, res) => {
         const newWsUrl = newPubUrl.replace(/^https?/, wsProto);
         broadcastServerRestart(newPort, newWsUrl);
         json(res, { ok: true, restarting: true, new_port: newPort });
-        setTimeout(() => process.exit(0), 2000);
+        setTimeout(() => process.exit(RESTART_EXIT_CODE), 2000);
         return;
       }
     }
@@ -8116,8 +8116,10 @@ if (orphaned.length) {
   enqueueOrphanWakes(orphaned);
 }
 
-// Detect process manager once at startup — used by /api/server/process-manager and /api/server/restart
-const detectedProcessManager = (() => {
+// Detect process manager once at startup — used by /api/server/process-manager and /api/server/restart.
+// STOA_TEST_PROCESS_MANAGER (honoured only with STOA_TEST=1, i.e. run-tests.js) pretends one so the
+// restart and update paths can run in tests.
+const detectedProcessManager = (process.env.STOA_TEST === '1' && process.env.STOA_TEST_PROCESS_MANAGER) || (() => {
   if (fs.existsSync('/.dockerenv')) return 'docker';
   if (process.env.PM2_HOME || process.env.PM2_PROCESS_NAME) return 'pm2';
   if (process.env.SUPERVISOR_ENABLED) return 'supervisord';
@@ -8130,6 +8132,11 @@ const detectedProcessManager = (() => {
 })();
 console.log(`[startup] Process manager: ${detectedProcessManager}`);
 const RESTARTABLE_MANAGERS = new Set(['launchd', 'pm2', 'systemd', 'supervisord']);
+// Every planned restart (restart button, port change, update) exits non-zero: systemd Restart=on-failure
+// and supervisord autorestart=unexpected (both defaults) treat exit 0 as "stopped on purpose" and leave
+// the server down. launchd KeepAlive=true and pm2 restart on any exit code, so they are unaffected.
+// 75 = EX_TEMPFAIL (sysexits.h): "try again".
+const RESTART_EXIT_CODE = 75;
 
 // Exit and let the process manager start us again. Clients get server_restarting first and reconnect.
 function restartServer(reason) {
@@ -8137,7 +8144,7 @@ function restartServer(reason) {
   for (const client of globalClients) { if (client.readyState === 1) client.send(payload); }
   for (const [, agentWs] of agentClients) { if (agentWs.readyState === 1) agentWs.send(payload); }
   console.log(`[server] Restart requested (${reason}) — exiting for process manager (${detectedProcessManager}) to restart`);
-  setTimeout(() => process.exit(0), 500);
+  setTimeout(() => process.exit(RESTART_EXIT_CODE), 500);
 }
 
 // "Active run" = a message an agent is producing right now (streaming / requesting). ai_sessions.status
@@ -8149,8 +8156,7 @@ const serverUpdate = createServerUpdate({
   stateFile: bootGuard.stateFilePath(),
   envFile: ENV_FILE,
   db,
-  // STOA_UPDATE_PROCESS_MANAGER: test knob (run-tests.js) so the updater's checks run without a real manager.
-  restartable: RESTARTABLE_MANAGERS.has(process.env.STOA_UPDATE_PROCESS_MANAGER || detectedProcessManager),
+  restartable: RESTARTABLE_MANAGERS.has(detectedProcessManager),
   isDocker: detectedProcessManager === 'docker',
   countActiveRuns: () => countActiveRunsStmt.get(),
   broadcast: broadcastGlobal,
