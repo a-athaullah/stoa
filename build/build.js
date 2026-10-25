@@ -13,7 +13,75 @@ function agentBundleTarget(argv, env, rootDir) {
   if (!argv.includes('--agent')) return null;
   return path.join(env.STOA_AGENT_BUNDLE_DIR || path.join(rootDir, 'dist'), 'stoa.js');
 }
-module.exports = { agentBundleTarget };
+// index.html lists the app CSS/JS between {{APP_CSS}} / {{APP_JS}} markers; the bundle is
+// those files in that order, and useAppBundle swaps each block for its single bundle tag.
+const APP_CSS_BLOCK = /<!-- \{\{APP_CSS\}\} -->[\s\S]*?<!-- \{\{\/APP_CSS\}\} -->/;
+const APP_JS_BLOCK = /<!-- \{\{APP_JS\}\} -->[\s\S]*?<!-- \{\{\/APP_JS\}\} -->/;
+
+function appBundleSources(pub) {
+  const html = fs.readFileSync(path.join(pub, 'index.html'), 'utf8');
+  const block = (re, marker) => {
+    const m = html.match(re);
+    if (!m) throw new Error(`marker ${marker} not found in index.html`);
+    return m[0];
+  };
+  const css = [...block(APP_CSS_BLOCK, 'APP_CSS').matchAll(/href="\/css\/([^"]+\.css)"/g)].map(m => m[1]);
+  if (!css.length) throw new Error('APP_CSS block has no CSS files');
+  const js = [...block(APP_JS_BLOCK, 'APP_JS').matchAll(/src="\/js\/([^"]+\.js)"/g)].map(m => m[1]);
+  // Vendor UMD libs must be loaded outside APP_JS (as separate script tags) so they remain globals in prod
+  js.forEach(src => {
+    if (src.startsWith('vendor/')) throw new Error(`vendor file must not be inside APP_JS block: ${src} — move it outside the markers`);
+  });
+  if (!js.length) throw new Error('APP_JS block has no JS files');
+  const files = { css: css.map(f => path.join(pub, 'css', f)), js: js.map(f => path.join(pub, 'js', f)) };
+  [...files.js, ...files.css].forEach(p => {
+    if (!fs.existsSync(p)) throw new Error(`listed in index.html but not found: ${p}`);
+  });
+  return files;
+}
+
+// Minify without bundling: keeps the CSS cascade, and keeps top-level JS names global for
+// the inline HTML handlers. Both files are fully written before either replaces the old
+// pair, so a failed build throws and leaves no half-new bundle behind.
+function buildAppBundle(rootDir, { outDir = path.join(rootDir, 'public', 'dist') } = {}) {
+  const { transformSync } = require('esbuild');
+  const src = appBundleSources(path.join(rootDir, 'public'));
+  const css = transformSync(src.css.map(f => fs.readFileSync(f, 'utf8')).join('\n'), { loader: 'css', minify: true }).code;
+  const js = transformSync(src.js.map(f => fs.readFileSync(f, 'utf8')).join('\n;\n'), { loader: 'js', minify: true }).code;
+  fs.mkdirSync(outDir, { recursive: true });
+  const out = { css: path.join(outDir, 'stoa.min.css'), js: path.join(outDir, 'stoa.min.js') };
+  const tmp = { css: `${out.css}.${process.pid}.tmp`, js: `${out.js}.${process.pid}.tmp` };
+  try {
+    fs.writeFileSync(tmp.css, css);
+    fs.writeFileSync(tmp.js, js);
+    fs.renameSync(tmp.css, out.css);
+    fs.renameSync(tmp.js, out.js);
+  } finally {
+    for (const f of Object.values(tmp)) fs.rmSync(f, { force: true });
+  }
+  return out;
+}
+
+// server.js start-up (production): true only when this start produced the bundle, so a
+// failed build serves the per-module files instead of whatever stale bundle is on disk.
+function bootAppBundle(rootDir, log = console) {
+  try {
+    buildAppBundle(rootDir);
+    log.log('[build] App bundle ready');
+    return true;
+  } catch (e) {
+    log.error('[build] App bundle FAILED — serving per-module CSS/JS:', e.message);
+    return false;
+  }
+}
+
+function useAppBundle(html) {
+  return html
+    .replace(APP_CSS_BLOCK, '<link rel="stylesheet" href="/dist/stoa.min.css">')
+    .replace(APP_JS_BLOCK, '<script src="/dist/stoa.min.js"></script>');
+}
+
+module.exports = { agentBundleTarget, buildAppBundle, bootAppBundle, useAppBundle };
 if (require.main !== module) return;
 
 const pub = path.join(root, 'public');
@@ -21,7 +89,6 @@ const vendor = path.join(pub, 'vendor');
 const dist = path.join(pub, 'dist');
 
 if (!fs.existsSync(vendor)) fs.mkdirSync(vendor, { recursive: true });
-if (!fs.existsSync(dist)) fs.mkdirSync(dist, { recursive: true });
 
 // ── Vendor bundles ──
 fs.copyFileSync(path.join(root, 'node_modules/marked/lib/marked.umd.js'), path.join(vendor, 'marked.min.js'));
@@ -29,53 +96,8 @@ fs.copyFileSync(path.join(root, 'node_modules/dompurify/dist/purify.min.js'), pa
 execSync(`npx esbuild build/hljs-entry.js --bundle --minify --format=iife --outfile=public/vendor/highlight.min.js`, { cwd: root, stdio: 'inherit' });
 execSync(`npx esbuild build/codemirror-entry.js --bundle --minify --format=esm --outfile=public/vendor/codemirror.bundle.js`, { cwd: root, stdio: 'inherit' });
 
-// ── Parse index.html to derive file lists from APP_CSS / APP_JS blocks ──
-function parseIndexBlock(marker) {
-  const html = fs.readFileSync(path.join(pub, 'index.html'), 'utf8');
-  const open = `<!-- {{${marker}}} -->`;
-  const close = `<!-- {{/${marker}}} -->`;
-  const start = html.indexOf(open);
-  const end = html.indexOf(close);
-  if (start === -1 || end === -1) throw new Error(`marker ${marker} not found in index.html`);
-  return html.slice(start + open.length, end);
-}
-
-const cssBlock = parseIndexBlock('APP_CSS');
-const cssFiles = [...cssBlock.matchAll(/href="\/css\/([^"]+\.css)"/g)].map(m => m[1].replace(/\.css$/, ''));
-if (!cssFiles.length) throw new Error('APP_CSS block has no CSS files');
-
-const jsBlock = parseIndexBlock('APP_JS');
-const jsSrcs = [...jsBlock.matchAll(/src="\/js\/([^"]+\.js)"/g)].map(m => m[1]);
-// Vendor UMD libs must be loaded outside APP_JS (as separate script tags) so they remain globals in prod
-jsSrcs.forEach(src => {
-  if (src.startsWith('vendor/')) throw new Error(`vendor file must not be inside APP_JS block: ${src} — move it outside the markers`);
-});
-const jsFiles = jsSrcs.map(s => s.replace(/\.js$/, ''));
-if (!jsFiles.length) throw new Error('APP_JS block has no JS files');
-
-// Fail early if any listed file is missing
-jsFiles.forEach(f => {
-  const p = path.join(pub, 'js', `${f}.js`);
-  if (!fs.existsSync(p)) throw new Error(`listed in index.html but not found: ${p}`);
-});
-cssFiles.forEach(f => {
-  const p = path.join(pub, 'css', `${f}.css`);
-  if (!fs.existsSync(p)) throw new Error(`listed in index.html but not found: ${p}`);
-});
-
-// ── Minify app CSS → dist/stoa.min.css ──
-// Use --minify without --bundle to preserve cascade without IIFE wrapping
-const cssConcat = cssFiles.map(f => fs.readFileSync(path.join(pub, 'css', `${f}.css`), 'utf8')).join('\n');
-fs.writeFileSync(path.join(dist, '_app.css'), cssConcat);
-execSync(`npx esbuild public/dist/_app.css --minify --outfile=public/dist/stoa.min.css`, { cwd: root, stdio: 'inherit' });
-fs.unlinkSync(path.join(dist, '_app.css'));
-
-// ── Minify app JS → dist/stoa.min.js ──
-// --minify without --bundle preserves top-level globals accessible from inline HTML handlers
-const jsConcat = jsFiles.map(f => fs.readFileSync(path.join(pub, 'js', `${f}.js`), 'utf8')).join('\n;\n');
-fs.writeFileSync(path.join(dist, '_app.js'), jsConcat);
-execSync(`npx esbuild public/dist/_app.js --minify --outfile=public/dist/stoa.min.js`, { cwd: root, stdio: 'inherit' });
-fs.unlinkSync(path.join(dist, '_app.js'));
+// ── App CSS/JS → dist/stoa.min.css + dist/stoa.min.js (server.js also builds these on a production start) ──
+buildAppBundle(root);
 
 // ── Agent bundle (opt-in): stoa.js + lib/* → dist/stoa.js ──
 const agentOut = agentBundleTarget(process.argv.slice(2), process.env, root);

@@ -1352,14 +1352,89 @@ function runUnitTests() {
     }
   });
 
-  ut('build: stoa.min.js contains room-sidebar feature code (bundle sync check)', () => {
-    const fs2 = require('fs'), path2 = require('path');
-    const bundlePath = path2.join(__dirname, 'public/dist/stoa.min.js');
-    assert.ok(fs2.existsSync(bundlePath), 'public/dist/stoa.min.js must exist');
-    const bundle = fs2.readFileSync(bundlePath, 'utf8');
-    assert.ok(bundle.includes('Max active threads'), 'bundle must include room-sidebar.js content (Max active threads)');
-    assert.ok(bundle.includes('thread_limit_reached'), 'bundle must include websocket.js thread_limit_reached handler');
-  });
+  // public/dist is not in git: server.js builds it on a production start (build/build.js).
+  {
+    const fs2 = require('fs'), path2 = require('path'), os2 = require('os');
+    const { buildAppBundle, bootAppBundle, useAppBundle } = require('./build/build');
+    const repoDist = path2.join(__dirname, 'public', 'dist');
+    const distStamp = () => ['stoa.min.css', 'stoa.min.js'].map(f => { try { return fs2.statSync(path2.join(repoDist, f)).mtimeMs; } catch { return null; } }).join();
+    const captureLog = () => { const lines = []; return { lines, log: (...a) => lines.push(['log', a.join(' ')]), error: (...a) => lines.push(['error', a.join(' ')]) }; };
+    const fakeRoot = (jsSrc) => {
+      const root = fs2.mkdtempSync(path2.join(os2.tmpdir(), 'stoa-appbundle-'));
+      for (const d of ['public/css', 'public/js', 'public/dist']) fs2.mkdirSync(path2.join(root, d), { recursive: true });
+      fs2.writeFileSync(path2.join(root, 'public/index.html'), '<!-- {{APP_CSS}} --><link rel="stylesheet" href="/css/a.css"><!-- {{/APP_CSS}} -->\n<!-- {{APP_JS}} --><script src="/js/a.js"></script><!-- {{/APP_JS}} -->');
+      fs2.writeFileSync(path2.join(root, 'public/css/a.css'), '.fresh-css { color: red; }');
+      fs2.writeFileSync(path2.join(root, 'public/js/a.js'), jsSrc);
+      fs2.writeFileSync(path2.join(root, 'public/dist/stoa.min.css'), 'OLD-CSS');
+      fs2.writeFileSync(path2.join(root, 'public/dist/stoa.min.js'), 'OLD-JS');
+      return root;
+    };
+    const readDist = (root) => ({ css: fs2.readFileSync(path2.join(root, 'public/dist/stoa.min.css'), 'utf8'), js: fs2.readFileSync(path2.join(root, 'public/dist/stoa.min.js'), 'utf8'), files: fs2.readdirSync(path2.join(root, 'public/dist')).sort() });
+
+    ut('build: buildAppBundle minifies the real index.html CSS/JS lists into outDir, top-level names kept global', () => {
+      const out = fs2.mkdtempSync(path2.join(os2.tmpdir(), 'stoa-appbundle-out-'));
+      const before = distStamp();
+      try {
+        const res = buildAppBundle(__dirname, { outDir: out });
+        const js = fs2.readFileSync(res.js, 'utf8'), css = fs2.readFileSync(res.css, 'utf8');
+        assert.ok(js.includes('Max active threads'), 'room-sidebar.js content');
+        assert.ok(js.includes('thread_limit_reached'), 'websocket.js handler');
+        assert.ok(/function setAppNavActive\(/.test(js), 'app-nav.js top-level function keeps its name for inline handlers');
+        assert.ok(css.includes('.h-room-tabs'), 'layout.css content');
+        assert.deepStrictEqual(fs2.readdirSync(out).sort(), ['stoa.min.css', 'stoa.min.js'], 'no temp files left');
+        assert.strictEqual(distStamp(), before, 'outDir respected: public/dist of the checkout untouched');
+      } finally { fs2.rmSync(out, { recursive: true, force: true }); }
+    });
+
+    ut('build: bootAppBundle — success replaces the old pair and logs ready', () => {
+      const root = fakeRoot('function freshTopLevel() { return 1; }');
+      try {
+        const c = captureLog();
+        assert.strictEqual(bootAppBundle(root, c), true);
+        const d = readDist(root);
+        assert.ok(d.css.includes('.fresh-css') && !d.css.includes('OLD'), d.css);
+        assert.ok(d.js.includes('function freshTopLevel(') && !d.js.includes('OLD'), d.js);
+        assert.deepStrictEqual(d.files, ['stoa.min.css', 'stoa.min.js']);
+        assert.deepStrictEqual(c.lines, [['log', '[build] App bundle ready']]);
+      } finally { fs2.rmSync(root, { recursive: true, force: true }); }
+    });
+
+    ut('build: bootAppBundle — a failed build returns false, logs FAILED, leaves no half-new bundle or temp file', () => {
+      const root = fakeRoot('function broken( {');
+      try {
+        const c = captureLog();
+        assert.strictEqual(bootAppBundle(root, c), false, 'server.js keys appBundleReady on this, so index.html keeps the per-module tags');
+        const d = readDist(root);
+        assert.strictEqual(d.css, 'OLD-CSS', 'CSS must not be replaced when the JS half fails');
+        assert.strictEqual(d.js, 'OLD-JS');
+        assert.deepStrictEqual(d.files, ['stoa.min.css', 'stoa.min.js'], 'no temp files left');
+        assert.strictEqual(c.lines.length, 1);
+        assert.strictEqual(c.lines[0][0], 'error');
+        assert.ok(c.lines[0][1].startsWith('[build] App bundle FAILED'), c.lines[0][1]);
+      } finally { fs2.rmSync(root, { recursive: true, force: true }); }
+    });
+
+    ut('build: bootAppBundle — missing listed file fails the same way', () => {
+      const root = fakeRoot('var ok = 1;');
+      try {
+        fs2.rmSync(path2.join(root, 'public/css/a.css'));
+        const c = captureLog();
+        assert.strictEqual(bootAppBundle(root, c), false);
+        assert.ok(c.lines[0][1].includes('listed in index.html but not found'), c.lines[0][1]);
+        assert.strictEqual(readDist(root).js, 'OLD-JS');
+      } finally { fs2.rmSync(root, { recursive: true, force: true }); }
+    });
+
+    ut('build: useAppBundle swaps both index.html blocks for one bundle tag each, vendor tags untouched', () => {
+      const html = fs2.readFileSync(path2.join(__dirname, 'public/index.html'), 'utf8');
+      const out = useAppBundle(html);
+      assert.strictEqual(out.split('<link rel="stylesheet" href="/dist/stoa.min.css">').length, 2);
+      assert.strictEqual(out.split('<script src="/dist/stoa.min.js"></script>').length, 2);
+      assert.ok(!/\{\{\/?APP_(CSS|JS)\}\}/.test(out), 'markers gone');
+      assert.ok(!out.includes('src="/js/websocket.js"') && !out.includes('href="/css/layout.css"'), 'per-module app tags gone');
+      assert.ok(out.includes('qrcode.min.js'), 'vendor script outside APP_JS kept');
+    });
+  }
 
   // ── Phase 8: normalizeRefIds (lib/email-threading.js) ──────────────────────
   const { sanitizeDisplayName, normalizeRefIds } = require('./lib/email-threading');
@@ -6942,6 +7017,14 @@ async function run() {
           assert.strictEqual(r.raw, index.raw, `${who} ${p} body`);
         }
       }
+    });
+
+    await test('index.html — a non-production server serves the per-module CSS/JS, not the /dist bundle', async () => {
+      const r = await anon(() => req('GET', '/'));
+      assert.strictEqual(r.status, 200);
+      assert.ok(r.raw.includes('<!-- {{APP_JS}} -->') && r.raw.includes('src="/js/websocket.js"'), 'per-module JS tags');
+      assert.ok(r.raw.includes('href="/css/layout.css"'), 'per-module CSS tags');
+      assert.ok(!r.raw.includes('/dist/stoa.min.'), 'no bundle tag');
     });
 
     await test('Permalink — malformed /r/ paths and traversal are not served as the app or a file', async () => {
