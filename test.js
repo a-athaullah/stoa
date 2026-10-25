@@ -11905,8 +11905,10 @@ async function run() {
     const nav = { title: '', attrs: {}, cls: new Set(),
       classList: { toggle(c, on) { on ? nav.cls.add(c) : nav.cls.delete(c); } },
       setAttribute(k, v) { nav.attrs[k] = v; } };
+    const el = () => { const e = { textContent: '', cls: [], attrs: {}, kids: [],
+      classList: { add: c => e.cls.push(c) }, setAttribute(k, v) { e.attrs[k] = v; }, appendChild(k) { e.kids.push(k); } }; return e; };
     const ctx = {
-      document: { getElementById: id => (id === 'nav-server' ? nav : null) },
+      document: { getElementById: id => (id === 'nav-server' ? nav : null), createElement: el },
       localStorage: { getItem: k => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); } },
       showToast: (msg, opts) => toasts.push({ msg, error: !!opts?.error }),
     };
@@ -11921,6 +11923,10 @@ async function run() {
     assert.match(R({ ...base, blockers: ['dirty_tree'] }), /uncommitted/);
     assert.match(R({ ...base, blockers: ['diverged'] }), /fast-forward/);
     assert.match(R({ ...base, blockers: ['not_default_branch'] }), /another branch/);
+    assert.match(R({ ...base, blockers: ['update_running'] }), /already running/);
+    assert.strictEqual(R({ ...base, blockers: ['constructor'] }), 'constructor', 'prototype keys are not codes');
+    assert.ok(ctx.sUpdateIsBusy({ update: { state: 'running' } }) && ctx.sUpdateIsBusy({ update: { state: 'restarting' } }));
+    assert.ok(!ctx.sUpdateIsBusy({ update: { state: 'failed' } }), 'a failed update can be retried');
     assert.match(R({ ...base, blockers: ['up_to_date', 'dirty_tree'] }), /uncommitted/, 'a real blocker outranks up_to_date');
     assert.strictEqual(R({ ...base, behind: 0 }), 'already up to date.');
     assert.strictEqual(ctx.sUpdateVersionLabel({ sha: 'abc1234', version: '0.68.0' }), 'v0.68.0 · abc1234');
@@ -11938,6 +11944,12 @@ async function run() {
     ctx.sUpdateApply({ ...rolled, update: { state: 'idle', last_result: { ok: true, at: '2026-10-25T08:00:00Z' } } });
     assert.strictEqual(toasts.length, 2);
     assert.ok(!toasts[1].error && /updated to v0.67.1/.test(toasts[1].msg), 'a newer successful result is announced');
+
+    for (const step of ['fetch', 'merge', 'smoke']) ctx.sHandleUpdateProgress({ type: 'update_progress', state: 'running', step });
+    ctx.sHandleUpdateProgress({ type: 'update_progress', state: 'failed', step: 'smoke', error: 'smoke: exited (1)' });
+    const steps = ctx.sUpdateMakeProgress({ state: 'failed', step: 'smoke' }).kids.map(k => `${k.textContent}:${k.cls.join(',')}`);
+    assert.deepStrictEqual(steps, ['fetch:is-done', 'apply commits:is-done', 'install dependencies · skipped:is-skipped',
+      'test boot:is-failed', 'restart:'], 'unchanged lockfile shows install as skipped, not done');
   });
 
   // escapeTomlValue unit tests

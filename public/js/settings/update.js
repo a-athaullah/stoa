@@ -2,6 +2,8 @@
 let sUpdateStatus = null;
 let sUpdateChecking = false;
 let sUpdateLoadFailed = false;
+// Steps reported by update_progress since this page saw the run start at fetch; null when it joined mid-run.
+let sUpdateSeenSteps = null;
 
 const S_UPDATE_SEEN_KEY = 'stoa-update-seen-result';
 const S_UPDATE_STEPS = [
@@ -21,7 +23,12 @@ const S_UPDATE_BLOCKER_TEXT = {
   dirty_tree: 'the working tree has uncommitted changes.',
   diverged: 'there are local commits that are not on origin, so it cannot fast-forward.',
   up_to_date: 'already up to date.',
+  update_running: 'an update is already running or still finishing its boot check.',
 };
+
+function sUpdateCodeText(map, code) {
+  return typeof code === 'string' && Object.hasOwn(map, code) ? map[code] : null;
+}
 
 function sUpdateEl(tag, cls, text) {
   const el = document.createElement(tag);
@@ -44,10 +51,10 @@ function sUpdateTimeLabel(iso) {
 // First blocker other than up_to_date wins; up_to_date only matters when nothing else is wrong.
 function sUpdateBlockReason(s) {
   if (!s) return null;
-  if (!s.supported) return S_UPDATE_UNSUPPORTED_TEXT[s.reason] || s.reason || 'updates are not supported here.';
+  if (!s.supported) return sUpdateCodeText(S_UPDATE_UNSUPPORTED_TEXT, s.reason) || s.reason || 'updates are not supported here.';
   const blockers = Array.isArray(s.blockers) ? s.blockers : [];
   const code = blockers.find(b => b !== 'up_to_date') || blockers[0];
-  if (code) return S_UPDATE_BLOCKER_TEXT[code] || code;
+  if (code) return sUpdateCodeText(S_UPDATE_BLOCKER_TEXT, code) || code;
   if (!(s.behind > 0)) return S_UPDATE_BLOCKER_TEXT.up_to_date;
   return null;
 }
@@ -95,7 +102,7 @@ function sUpdateNotifyLastResult() {
   if (seen === res.at) return;
   try { localStorage.setItem(S_UPDATE_SEEN_KEY, res.at); } catch {}
   if (res.rolled_back) {
-    showToast(`update rolled back to ${res.from || 'the previous version'}${res.error ? ': ' + res.error : ''}`, { error: true, duration: 10000 });
+    showToast(`update rolled back to ${res.from ? String(res.from).slice(0, 7) : 'the previous version'}${res.error ? ': ' + res.error : ''}`, { error: true, duration: 10000 });
   } else if (res.ok) {
     showToast(`stoa updated to ${sUpdateVersionLabel(sUpdateStatus.current)}`);
   }
@@ -114,8 +121,10 @@ function sUpdateMakeProgress(u) {
   list.setAttribute('aria-label', 'update progress');
   const idx = S_UPDATE_STEPS.findIndex(([k]) => k === u.step);
   S_UPDATE_STEPS.forEach(([key, label], i) => {
-    const li = sUpdateEl('li', 's-update-step', label);
-    if (idx >= 0 && i < idx) li.classList.add('is-done');
+    const skipped = idx >= 0 && i < idx && sUpdateSeenSteps && !sUpdateSeenSteps.has(key);
+    const li = sUpdateEl('li', 's-update-step', skipped ? `${label} · skipped` : label);
+    if (skipped) li.classList.add('is-skipped');
+    else if (idx >= 0 && i < idx) li.classList.add('is-done');
     if (i === idx) {
       li.classList.add(u.state === 'failed' ? 'is-failed' : 'is-current');
       li.setAttribute('aria-current', 'step');
@@ -298,7 +307,7 @@ async function sUpdateStart(force, btn, errEl) {
   delete dlg.dataset.sending;
   if (r?.status === 202 || (r?.ok && data?.ok)) {
     dlg.close();
-    if (sUpdateStatus) {
+    if (sUpdateStatus && !sUpdateIsBusy(sUpdateStatus)) {
       sUpdateStatus.update = { ...(sUpdateStatus.update || {}), state: 'running', step: null, error: null };
       sRenderUpdateCard();
     }
@@ -309,7 +318,9 @@ async function sUpdateStart(force, btn, errEl) {
     return;
   }
   btn.disabled = false;
-  errEl.textContent = data?.error || `update failed (${r?.status || 'network error'})`;
+  const code = data?.code;
+  errEl.textContent = sUpdateCodeText(S_UPDATE_BLOCKER_TEXT, code) || sUpdateCodeText(S_UPDATE_UNSUPPORTED_TEXT, code)
+    || data?.error || `update failed (${r?.status || 'network error'})`;
   errEl.hidden = false;
   if (r?.status === 409 || r?.status === 400) sUpdateFetchStatus();
 }
@@ -323,6 +334,8 @@ function sHandleUpdateAvailable(msg) {
 }
 
 function sHandleUpdateProgress(msg) {
+  if (msg.state === 'running' && msg.step === 'fetch') sUpdateSeenSteps = new Set();
+  if (sUpdateSeenSteps && msg.step) sUpdateSeenSteps.add(msg.step);
   if (!sUpdateStatus) { sUpdateFetchStatus(); return; }
   sUpdateStatus.update = {
     ...(sUpdateStatus.update || {}),
