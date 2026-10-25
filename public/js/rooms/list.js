@@ -1,5 +1,6 @@
 // ── Room list ──────────────────────────────────────────────────────────────
 let currentRoomTab = 'rooms';
+const roomActiveThreads = {};
 
 const GAP_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -140,6 +141,7 @@ function _makeRoomRow(room, isArchived) {
   const dots = document.createElement('div');
   dots.className = 'h-room-dots';
   dots.id = 'room-dots-' + room.id;
+  _paintRoomThreadBadge(dots, roomActiveThreads[room.id] || 0);
   content.appendChild(dots);
 
   row.appendChild(content);
@@ -166,6 +168,7 @@ function _makeGroupHeader(label, key) {
 function renderRoomList(rooms) {
   const list = document.getElementById('room-list');
   list.innerHTML = '';
+  for (const room of rooms) setRoomActiveThreads(room.id, room.active_threads);
   const isArchived = currentRoomTab === 'archived';
 
   const pinned = !isArchived ? rooms.filter(r => r.is_pinned) : [];
@@ -262,11 +265,17 @@ function closeAllSwipes() {
 }
 
 // ── Active thread badge per room ───────────────────────────────────────────
-function updateRoomThreadBadge(roomId, count) {
-  const row = document.querySelector(`.h-room-row[data-room-id="${roomId}"]`);
-  if (!row) return;
-  const dots = row.querySelector('.h-room-dots');
-  if (!dots) return;
+// Source of truth is the server: active_threads from GET /api/rooms plus the global
+// room_threads event, so rooms other than the open one stay live too.
+function setRoomActiveThreads(roomId, count) {
+  const n = Math.max(0, Number(count) || 0);
+  roomActiveThreads[roomId] = n;
+  const dots = document.getElementById('room-dots-' + roomId);
+  if (dots) _paintRoomThreadBadge(dots, n);
+  if (roomId === currentRoomId && typeof renderHeaderThreadPill === 'function') renderHeaderThreadPill();
+}
+
+function _paintRoomThreadBadge(dots, count) {
   let badge = dots.querySelector('.h-room-thread-badge');
   if (count > 0) {
     if (!badge) {
@@ -375,5 +384,6 @@ function renderRoomDots(roomId, participants) {
     dot.title = p.name;
     container.appendChild(dot);
   }
+  _paintRoomThreadBadge(container, roomActiveThreads[roomId] || 0);
 }
 

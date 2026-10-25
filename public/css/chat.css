@@ -2521,6 +2521,246 @@ pre:hover .h-copy-btn { opacity: 1; pointer-events: auto; }
   50%       { opacity: 0.7; }
 }
 
+/* ── Chat header: activity pill (threads + sub-agents) + popover ─────────── */
+.h-activity-ctl {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.h-activity-ctl[hidden],
+.h-activity-pill[hidden],
+.h-activity-paused[hidden],
+.h-activity-pop[hidden] { display: none; }
+
+.h-activity-pill,
+.h-activity-paused {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 5px 12px 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--h-border);
+  background: var(--h-surface);
+  color: var(--h-ink-mute);
+  font-family: var(--h-sans);
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease;
+}
+.h-activity-paused {
+  padding: 5px 12px;
+  border-style: dashed;
+  background: color-mix(in srgb, var(--h-ink) 6%, transparent);
+  color: var(--h-ink-faint);
+}
+.h-activity-pill:hover,
+.h-activity-pill[aria-expanded="true"],
+.h-activity-paused:hover { background: color-mix(in srgb, var(--h-surface) 92%, var(--h-ink)); border-color: var(--h-info-line); }
+.h-activity-pill:focus-visible,
+.h-activity-paused:focus-visible { outline: 2px solid var(--h-info-line); outline-offset: 2px; }
+.h-activity-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--h-info-ink);
+  animation: pulse-ring 1.4s ease infinite;
+  flex: 0 0 auto;
+}
+.h-activity-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+.h-activity-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  width: 340px;
+  max-height: min(460px, 70vh);
+  overflow-y: auto;
+  padding: 5px;
+  background: var(--h-surface);
+  border: 1px solid var(--h-border);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px color-mix(in srgb, black 20%, transparent);
+  font-family: var(--h-sans);
+  z-index: 120;
+}
+.h-activity-sec + .h-activity-sec {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--h-border);
+}
+.h-activity-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px 6px;
+  font-size: 10.5px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--h-ink-faint);
+}
+.h-activity-aside {
+  font-size: 11.5px;
+  letter-spacing: 0;
+  text-transform: none;
+  font-style: italic;
+}
+.h-activity-list { display: flex; flex-direction: column; }
+.h-activity-note {
+  padding: 8px 10px 10px;
+  font-size: 12.5px;
+  font-style: italic;
+  color: var(--h-ink-faint);
+}
+
+.h-activity-thread {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--h-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.h-activity-thread:hover,
+.h-activity-thread:focus-visible,
+.h-activity-run.has-thread:hover,
+.h-activity-run.has-thread:focus-visible { background: var(--h-row-hover); outline: none; }
+.h-activity-preview {
+  font-size: 13px;
+  line-height: 1.35;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+}
+.h-activity-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--h-ink-faint);
+}
+.h-activity-runner {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--runner-color, var(--h-ink-faint));
+  flex: 0 0 auto;
+}
+.h-activity-who {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.h-activity-when { flex: 0 0 auto; }
+
+.h-activity-run {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 9px;
+  border-radius: 9px;
+}
+.h-activity-run.has-thread { cursor: pointer; }
+.h-activity-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex: 0 0 auto;
+}
+.h-activity-avatar.is-symbol {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--sa-color) 20%, var(--h-surface));
+  color: var(--sa-color);
+  border: 1px solid color-mix(in srgb, var(--sa-color) 30%, transparent);
+}
+.h-activity-run-mid {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.h-activity-run-label {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 12.5px;
+  color: var(--h-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.h-activity-run-sub {
+  font-size: 11.5px;
+  font-style: italic;
+  color: var(--h-ink-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.h-activity-run-tier { font-size: 11px; color: var(--h-ink-faint); flex: 0 0 auto; }
+.h-activity-stop,
+.h-activity-toggle {
+  flex: 0 0 auto;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: transparent;
+  font-family: var(--h-sans);
+  font-size: 12px;
+  cursor: pointer;
+}
+.h-activity-stop {
+  color: var(--h-red);
+  border: 1px solid color-mix(in srgb, var(--h-red) 34%, var(--h-border));
+}
+.h-activity-toggle {
+  color: var(--h-ink-mute);
+  border: 1px solid var(--h-border);
+}
+.h-activity-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  padding: 8px 10px 6px;
+  border-top: 1px solid var(--h-border);
+}
+.h-activity-list:empty + .h-activity-foot { border-top: 0; margin-top: 0; }
+.h-activity-foot-note { flex: 1; font-size: 11.5px; color: var(--h-ink-faint); }
+
+@media (max-width: 680px) {
+  .h-activity-pill { padding: 5px 10px 5px 9px; font-size: 12px; }
+  .h-activity-paused { padding: 6px 8px; }
+  .h-activity-paused-text { display: none; }
+  .h-activity-pop {
+    position: fixed;
+    top: var(--h-activity-pop-top, 64px);
+    left: 12px;
+    right: 12px;
+    width: auto;
+  }
+}
+
 /* ── Chat header: thread breadcrumb ──────────────────────────────────────── */
 .h-thread-breadcrumb {
   display: flex;

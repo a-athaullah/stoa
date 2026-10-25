@@ -43,6 +43,7 @@ function initGlobalWs() {
       if (msg.type === 'mcp_status' && typeof mcpHandleStatus === 'function') mcpHandleStatus(msg);
       if ((msg.type === 'mcp_approval' || msg.type === 'mcp_approval_resolved') && typeof mcpApprovalEvent === 'function') mcpApprovalEvent(msg);
       if (msg.type === 'model_update') handleModelUpdate(msg);
+      if (msg.type === 'room_threads') setRoomActiveThreads(msg.room_id, msg.active_threads);
       if (msg.type === 'room_created' || msg.type === 'room_activity' || msg.type === 'room_updated') {
         if (msg.type === 'room_activity' && msg.room_id !== currentRoomId) {
           const roomEl = document.querySelector(`.h-room-row[data-room-id="${msg.room_id}"]`);

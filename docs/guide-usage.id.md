@@ -186,7 +186,7 @@ Gunakan tombol **Copy link** pada pesan untuk menyalin permalink-nya. Tombol **b
 
 ### Penyimpanan Draf
 
-Pesan yang belum dikirim otomatis disimpan per room. Saat berpindah room dan kembali, draf Anda tetap tersimpan. Room dengan draf yang belum dikirim menampilkan indikator **draft** oranye di sidebar.
+Pesan yang belum dikirim otomatis disimpan per room. Saat berpindah room dan kembali, draf Anda tetap tersimpan. Room dengan draf yang belum dikirim menampilkan indikator **draft** oranye di sidebar. Setiap baris room di sidebar juga menampilkan badge **jumlah thread aktif** secara langsung saat ada thread yang berjalan di room tersebut — diperbarui real-time di semua room, bukan hanya yang sedang dibuka.
 
 ### Jejak Proses
 
@@ -302,10 +302,12 @@ Untuk menyesuaikan rantai sebuah room, buka setelan room (ikon **gear** di heade
 
 ### Kontrol Run
 
-Saat ada sub-agent berjalan, header room menampilkan pill **"N running"**. Klik untuk membuka popover yang mendaftar tiap run aktif beserta waktu berjalannya. Dari sana kamu bisa:
+Header room menampilkan pill **"N threads · N sub-agents"** saat ada thread aktif atau sub-agent yang berjalan. Klik untuk membuka dropdown dengan dua bagian:
 
-- **Stop** sebuah run — langsung menfinalisasi pesan sub-agent tersebut.
-- **Pause spawns** — memblokir sub-agent baru untuk dimulai; run yang sudah berjalan tetap selesai normal. Pill **"spawns paused"** muncul di header selama dijeda. Matikan lagi untuk melanjutkan.
+- **ACTIVE THREADS** — daftar thread yang sedang aktif; klik baris untuk membukanya.
+- **SUB-AGENTS** — daftar tiap run aktif beserta waktu berjalannya. Dari sini kamu bisa **Stop** sebuah run (langsung menfinalisasi pesan), atau gunakan **Pause spawns** untuk memblokir sub-agent baru sambil membiarkan run yang sudah berjalan selesai. Baris sub-agent yang punya thread terkait bisa diklik untuk membuka thread tersebut.
+
+Saat spawn dijeda, chip **"spawns paused"** muncul di header — klik untuk membuka kembali dropdown ini. Matikan untuk melanjutkan.
 
 ### Budget dan Batas Laju
 

@@ -6569,6 +6569,28 @@ async function run() {
       assert.strictEqual(r.body.length, 0);
     });
 
+    await test('GET /sub-agent-runs — each run carries its thread_id (null on the main feed)', async () => {
+      if (!soRoomId) { console.log('    (skipped)'); return; }
+      const db = require('./db');
+      const part = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(soRoomId, soActorId);
+      const ids = [];
+      try {
+        const rootId = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,'run root','complete')").run(soRoomId, part.id).lastInsertRowid;
+        ids.push(rootId);
+        const ins = db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id, sub_agent_id, sub_agent_label) VALUES (?,?,'','streaming',?,?,'probe')");
+        const inThread = ins.run(soRoomId, part.id, rootId, soSub.id).lastInsertRowid;
+        const inFeed = ins.run(soRoomId, part.id, null, soSub.id).lastInsertRowid;
+        ids.push(inThread, inFeed);
+        const r = await req('GET', `/api/rooms/${soRoomId}/sub-agent-runs`);
+        assert.strictEqual(r.status, 200);
+        const byId = Object.fromEntries(r.body.map(x => [x.message_id, x]));
+        assert.strictEqual(byId[inThread].thread_id, Number(rootId));
+        assert.strictEqual(byId[inFeed].thread_id, null);
+      } finally {
+        for (const id of ids.reverse()) db.prepare('DELETE FROM messages WHERE id=?').run(id);
+      }
+    });
+
     await test('POST /spawns-pause — invalid body → 400', async () => {
       if (!soRoomId) { console.log('    (skipped)'); return; }
       const r = await req('POST', `/api/rooms/${soRoomId}/spawns-pause`, {});
@@ -13926,6 +13948,105 @@ async function run() {
     await test('message order — teardown', async () => {
       if (human) human.close();
       if (qo?.ws && qo.ws.readyState !== 3) qo.ws.close();
+    });
+  }
+
+  // room_threads: the global count of active threads per room, so the room list badge stays live
+  // for rooms the user is not looking at (automation runs in another room).
+  console.log('\n[Room active threads event]');
+  {
+    let rt = null, rtRoomId = null, rtHuman = null, rtSender = null;
+    const rtEvents = [];
+    const onRt = (d) => { const m = JSON.parse(d.toString()); if (m.type === 'room_threads' && m.room_id === rtRoomId) rtEvents.push(m); };
+    const waitRt = (count) => waitForWsMessage(rtHuman, m => m.type === 'room_threads' && m.room_id === rtRoomId && m.active_threads === count, 5000);
+    const startRun = async (content) => {
+      const trig = waitForWsMessage(rt.ws, m => m.type === 'agent_trigger' && !m.sub_agent, 5000);
+      const one = waitRt(1);
+      rtSender.send(JSON.stringify({ type: 'send_message', room_id: rtRoomId, content }));
+      const [t] = await Promise.all([trig, one]);
+      return t;
+    };
+
+    await test('room_threads — setup: agent room + human on the global feed only', async () => {
+      rt = await createOnlineTestAgent('__test-room-threads', '/tmp/stoa-test-room-threads');
+      assert.ok(rt?.workdirId, 'online test agent');
+      const r = await req('POST', '/api/rooms', { title: '__room-threads-room__', workdir_id: rt.workdirId, participant_ids: [rt.actorId] });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      rtRoomId = r.body.id;
+      testRoomIds.push(rtRoomId);
+      rtSender = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      rtSender.send(JSON.stringify({ type: 'join_room', room_id: rtRoomId }));
+      await waitForWsMessage(rtSender, m => m.type === 'history');
+      rtHuman = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      rtHuman.send(JSON.stringify({ type: 'subscribe_global' }));
+      rtHuman.on('message', onRt);
+      await new Promise(r => setTimeout(r, 100));
+    });
+
+    await test('room_threads — run start sends 1 to a client not in the room; complete sends 0', async () => {
+      const t = await startRun('room threads complete path');
+      const rooms = (await req('GET', '/api/rooms')).body;
+      assert.strictEqual(rooms.find(x => x.id === rtRoomId).active_threads, 1, 'GET /api/rooms agrees with the event');
+      const zero = waitRt(0);
+      rt.ws.send(JSON.stringify({ type: 'agent_complete', room_id: rtRoomId, message_id: t.message_id, content: 'done' }));
+      await zero;
+      assert.strictEqual((await req('GET', '/api/rooms')).body.find(x => x.id === rtRoomId).active_threads, 0);
+    });
+
+    await test('room_threads — sent only when the count moves (streaming state updates do not repeat it)', async () => {
+      rtEvents.length = 0;
+      const t = await startRun('room threads dedup path');
+      rt.ws.send(JSON.stringify({ type: 'agent_state', room_id: rtRoomId, message_id: t.message_id, state: 'streaming' }));
+      rt.ws.send(JSON.stringify({ type: 'agent_state', room_id: rtRoomId, message_id: t.message_id, state: 'streaming' }));
+      await new Promise(r => setTimeout(r, 200));
+      assert.deepStrictEqual(rtEvents.map(e => e.active_threads), [1], JSON.stringify(rtEvents));
+      const zero = waitRt(0);
+      rt.ws.send(JSON.stringify({ type: 'agent_error', message_id: t.message_id, room_id: rtRoomId, error: 'boom' }));
+      await zero;
+    });
+
+    await test('room_threads — active thread list names the running agent', async () => {
+      const t = await startRun('room threads list path');
+      const r = await req('GET', `/api/rooms/${rtRoomId}/threads?state=active`);
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(r.body.length, 1, JSON.stringify(r.body));
+      const root = r.body[0];
+      assert.strictEqual(root.content, 'room threads list path');
+      assert.strictEqual(root.running.length, 1);
+      assert.strictEqual(root.running[0].actor_name, '__test-room-threads');
+      assert.strictEqual(root.running[0].sub_agent_id, null);
+      assert.ok(!('thread_id' in root.running[0]), 'grouping key not leaked into each run');
+      const all = await req('GET', `/api/rooms/${rtRoomId}/threads`);
+      assert.ok(all.body.every(x => !('running' in x)), 'all-threads list unchanged');
+      const zero = waitRt(0);
+      rt.ws.send(JSON.stringify({ type: 'agent_complete', room_id: rtRoomId, message_id: t.message_id, content: 'done' }));
+      await zero;
+    });
+
+    await test('room_threads — deleting the root of an active thread sends 0', async () => {
+      await startRun('room threads delete path');
+      const [root] = (await req('GET', `/api/rooms/${rtRoomId}/threads?state=active`)).body;
+      const zero = waitRt(0);
+      assert.strictEqual((await req('DELETE', `/api/messages/${root.id}?cascade=1`)).status, 204);
+      await zero;
+    });
+
+    await test('room_threads — agent disconnect cleanup sends 0', async () => {
+      await startRun('room threads disconnect path');
+      const zero = waitRt(0);
+      rt.ws.close();
+      await zero;
+    });
+
+    await test('room_threads — threads list 404 for unknown room, 401 without auth', async () => {
+      assert.strictEqual((await req('GET', '/api/rooms/99999999/threads?state=active')).status, 404);
+      assert.strictEqual((await req('GET', `/api/rooms/${rtRoomId}/threads?state=active`, null, { Cookie: '' })).status, 401);
+    });
+
+    await test('room_threads — teardown', async () => {
+      if (rtHuman) rtHuman.close();
+      if (rtSender) rtSender.close();
+      if (rt?.ws && rt.ws.readyState !== 3) rt.ws.close();
     });
   }
 
