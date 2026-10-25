@@ -1110,6 +1110,14 @@ Process manager harus menyalakan ulang server setelah exit dengan kode non-zero 
 
 Sebelumnya, update mengharuskan menjalankan `git pull` secara manual dan merestart process manager.
 
+**Update manual:** jalankan `git pull`, lalu `npm ci` (bukan `npm install` — itu akan menulis ulang `package-lock.json` dan membuat checkout kotor), lalu restart server via process manager. Agent yang terhubung akan auto-update dalam 2 menit.
+
+Migrasi database berjalan otomatis saat server start. Jangan jalankan migrasi secara manual: sebuah migrasi bisa me-rename atau menghapus tabel di bawah server yang masih menjalankan kode lama, sehingga muncul error `no such table` sampai server di-restart.
+
+Untuk verifikasi server setelah update, `GET /api/health` (tanpa login) mengembalikan `200` dengan `{"ok":true,"db":"ok","migrations":{"pending":0,"failed":0}}`, atau `503` jika database tidak terbaca, ada migrasi yang gagal, atau ada migrasi baru yang belum jalan karena server belum di-restart setelah `git pull`. Detail ada di log server (baris `[migration]`).
+
+Jika server exit saat startup dengan `[db] better-sqlite3 cannot load in this Node.js`, modul native ter-build untuk versi Node yang berbeda. Jalankan `npm rebuild better-sqlite3` dengan binary Node yang sama yang digunakan process manager, lalu restart.
+
 ### Platforms
 
 Konfigurasi provider model AI eksternal di luar model Claude bawaan. Klik **+ add platform** untuk mendaftarkan provider baru:

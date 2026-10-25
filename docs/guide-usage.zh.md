@@ -1105,6 +1105,14 @@ Stoa 在应用最左侧使用**垂直侧边栏导航**。侧边栏仅显示图�
 
 以前，更新需要手动运行 `git pull` 并重启进程管理器。
 
+**手动更新：** 运行 `git pull`，然后运行 `npm ci`（不是 `npm install` — 后者会重写 `package-lock.json` 并使工作树变脏），再通过进程管理器重启服务器。已连接的 Agent 将在 2 分钟内自动更新。
+
+数据库迁移在服务器启动时自动运行。请勿手动执行：迁移可能会在仍运行旧代码的服务器下重命名或删除表，导致出现 `no such table` 错误，直到服务器重启为止。
+
+更新后验证服务器，可请求 `GET /api/health`（无需登录），正常时返回 `200` 及 `{"ok":true,"db":"ok","migrations":{"pending":0,"failed":0}}`；若数据库无法读取、有迁移失败，或 `git pull` 后未重启服务器导致新迁移尚未执行，则返回 `503`。详细信息请查看服务器日志（`[migration]` 行）。
+
+若服务器启动时以 `[db] better-sqlite3 cannot load in this Node.js` 退出，说明原生模块是为其他 Node 版本构建的。请使用进程管理器所用的同一 Node 二进制文件运行 `npm rebuild better-sqlite3`，然后重启。
+
 ### 平台
 
 配置内置 Claude 模型之外的外部 AI 模型供应商。点击 **+ add platform** 注册新供应商：

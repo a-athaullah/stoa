@@ -10424,6 +10424,37 @@ async function run() {
     const r = await rawReq('GET', '/api/health/db', null, 'application/json', { Cookie: '' });
     assert.strictEqual(r.status, 401, 'should be 401 without auth');
   });
+  await test('GET /api/health — no login: 200 with exactly ok/db/migrations, nothing else', async () => {
+    const r = await rawReq('GET', '/api/health', null, 'application/json', { Cookie: '' });
+    assert.strictEqual(r.status, 200);
+    assert.deepStrictEqual(r.body, { ok: true, db: 'ok', migrations: { pending: 0, failed: 0 } }, 'no version, paths, file names or connector state');
+    assert.strictEqual(r.headers['content-type'], 'application/json');
+  });
+  await test('GET /api/health — exemption is the exact path only: /api/health/ and /api/health/db stay 401', async () => {
+    for (const p of ['/api/health/', '/api/health/db', '/api/health?x=/api/rooms']) {
+      const r = await rawReq('GET', p, null, 'application/json', { Cookie: '' });
+      if (p.includes('?')) { assert.strictEqual(r.status, 200, 'query string does not change the route'); assert.deepStrictEqual(Object.keys(r.body).sort(), ['db', 'migrations', 'ok']); continue; }
+      assert.strictEqual(r.status, 401, `${p} needs auth`);
+    }
+    const post = await rawReq('POST', '/api/health', null, 'application/json', { Cookie: '' });
+    assert.strictEqual(post.status, 401, 'only GET is public');
+  });
+  await test('GET /api/health — an unapplied migration file → 503, pending counted, file name not exposed', async () => {
+    const db = require('./db');
+    const row = db.prepare('SELECT filename FROM migrations ORDER BY filename DESC LIMIT 1').get();
+    db.prepare('DELETE FROM migrations WHERE filename=?').run(row.filename);
+    try {
+      const r = await waitUntil(async () => {
+        const x = await rawReq('GET', '/api/health', null, 'application/json', { Cookie: '' });
+        return x.status === 503 ? x : null;
+      }, 10000, 250);
+      assert.deepStrictEqual(r.body, { ok: false, db: 'ok', migrations: { pending: 1, failed: 0 } });
+      assert.ok(!r.raw.includes(row.filename.replace(/\.sql$/, '')), 'migration name not leaked');
+    } finally {
+      db.prepare('INSERT OR IGNORE INTO migrations (filename) VALUES (?)').run(row.filename);
+    }
+    await waitUntil(async () => (await rawReq('GET', '/api/health', null, 'application/json', { Cookie: '' })).status === 200, 10000, 250);
+  });
   await test('R26 — Migration applied: ai_sessions has pinned column', async () => {
     const r = await req('GET', '/api/health/db');
     assert.strictEqual(r.status, 200, 'server healthy after migration');
@@ -15015,6 +15046,114 @@ async function run() {
       assert.strictEqual(db.prepare("SELECT COUNT(*) c FROM migrations WHERE filename LIKE '2099%'").get().c, 0);
       assert.strictEqual(runMigrations(db, dir, _migQuiet).length, 3, 'failed files are retried next boot');
     } finally { db.close(); _mfs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  await test('migrations: a failed file is retried in the same run once a later file it depends on applies', async () => {
+    const Database = require('better-sqlite3');
+    const { runMigrations } = require('./lib/migrations');
+    const db = new Database(':memory:');
+    const dir = _migTmp({
+      '20990101-a-index.sql': 'CREATE INDEX idx_late_x ON late(x);\n',
+      '20990101-b-table.sql': 'CREATE TABLE late (id INTEGER PRIMARY KEY, x TEXT);\n',
+      '20990102-broken.sql': 'INSERT INTO nope VALUES (1);\n',
+    });
+    const errors = [];
+    try {
+      const res = runMigrations(db, dir, { log() {}, error: (...a) => errors.push(a.join(' ')) });
+      assert.deepStrictEqual(res.map(r => [r.filename, r.status]), [['20990101-a-index.sql', 'applied'], ['20990101-b-table.sql', 'applied'], ['20990102-broken.sql', 'failed']]);
+      assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_late_x'").get());
+      assert.deepStrictEqual(errors, ['[migration] failed: 20990102-broken.sql — no such table: nope'], 'only the final failure is logged, once');
+    } finally { db.close(); _mfs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  await test('migrations: schemaSql that stops on a pending column is re-run after migrations, so its later tables exist for the retry', async () => {
+    const Database = require('better-sqlite3');
+    const { runMigrations } = require('./lib/migrations');
+    const db = new Database(':memory:');
+    db.exec('CREATE TABLE t (id INTEGER PRIMARY KEY)');
+    const schemaSql = 'CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY, c TEXT);\nCREATE INDEX IF NOT EXISTS idx_t_c ON t(c);\nCREATE TABLE IF NOT EXISTS later (id INTEGER PRIMARY KEY);\n';
+    const dir = _migTmp({
+      '20990101-add-c.sql': 'ALTER TABLE t ADD COLUMN c TEXT;\n',
+      '20990102-seed-later.sql': 'INSERT INTO later (id) VALUES (7);\n',
+    });
+    const errors = [];
+    try {
+      const res = runMigrations(db, dir, { log() {}, error: (...a) => errors.push(a.join(' ')) }, { schemaSql });
+      assert.deepStrictEqual(res.map(r => [r.filename, r.status]), [['20990101-add-c.sql', 'applied'], ['20990102-seed-later.sql', 'applied']]);
+      assert.strictEqual(db.prepare('SELECT id FROM later').get().id, 7);
+      assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name='idx_t_c'").get(), 'schema index created on the re-run');
+      assert.deepStrictEqual(errors, [], 'schema error resolved → no warning');
+    } finally { db.close(); _mfs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  // Fixtures = DBs left by a real boot of that tag (header in each file). v0.3.0 predates the three
+  // same-day pairs whose dependent file sorts first (usage-log, threads-core, email-threads); before the
+  // multi-pass runner its upgrade failed 4 files on the first boot and needed a second one.
+  for (const tag of ['v0.3.0', 'v0.62.1']) {
+    await test(`migrations: upgrade from a ${tag} install applies everything in one boot`, async () => {
+      const Database = require('better-sqlite3');
+      const { runMigrations, pendingMigrations } = require('./lib/migrations');
+      const db = new Database(':memory:');
+      try {
+        db.exec(_mfs.readFileSync(path.join(__dirname, 'test', 'fixtures', 'migrations', `install-${tag}.sql`), 'utf8'));
+        const before = pendingMigrations(db, path.join(__dirname, 'migrations'));
+        assert.ok(before.length > 0, 'fixture is behind master');
+        const schemaSql = _mfs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8');
+        const errors = [];
+        const res = runMigrations(db, path.join(__dirname, 'migrations'), { log() {}, error: (...a) => errors.push(a.join(' ')) }, { schemaSql });
+        assert.deepStrictEqual(res.filter(r => r.status === 'failed'), [], 'no migration fails');
+        assert.deepStrictEqual(errors, [], 'no migration or schema error logged');
+        assert.deepStrictEqual(res.map(r => r.filename), before, 'every pending file ran');
+        assert.deepStrictEqual(pendingMigrations(db, path.join(__dirname, 'migrations')), []);
+        const has = (type, name) => !!db.prepare('SELECT 1 FROM sqlite_master WHERE type=? AND name=?').get(type, name);
+        assert.ok(has('table', 'room_schedules') && !has('table', 'sub_agent_schedules'), 'scheduled-triggers rename applied');
+        assert.ok(has('table', 'email_message_ids') && has('table', 'usage_log') && has('index', 'idx_room_participants_workdir_id'));
+        assert.ok(db.prepare('PRAGMA table_info(messages)').all().some(c => c.name === 'thread_id'));
+      } finally { db.close(); }
+    });
+  }
+
+  await test('migrations: runMigrations without dir uses the repo migrations/ folder', async () => {
+    const Database = require('better-sqlite3');
+    const { runMigrations } = require('./lib/migrations');
+    const db = new Database(':memory:');
+    try {
+      db.exec(_mfs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
+      const res = runMigrations(db, undefined, _migQuiet);
+      const files = _mfs.readdirSync(path.join(__dirname, 'migrations')).filter(f => f.endsWith('.sql'));
+      assert.deepStrictEqual(res.filter(r => r.status === 'failed'), []);
+      assert.strictEqual(db.prepare('SELECT COUNT(*) c FROM migrations').get().c, files.length);
+    } finally { db.close(); }
+  });
+
+  // db/index.js in a child Node whose better-sqlite3 throws like a real ABI mismatch (or another error).
+  const _dbOpenWith = (errCode, errMessage) => require('child_process').spawnSync(process.execPath, ['-e', `
+    const Module = require('module'); const load = Module._load;
+    Module._load = function (request, ...rest) {
+      if (request !== 'better-sqlite3') return load.call(this, request, ...rest);
+      return function FakeDatabase() { const e = new Error(${JSON.stringify(errMessage)}); if (${JSON.stringify(errCode)}) e.code = ${JSON.stringify(errCode)}; throw e; };
+    };
+    require('./db');
+  `], { cwd: __dirname, encoding: 'utf8', env: { ...process.env, DB_PATH: path.join(_mos.tmpdir(), 'stoa-abi-never-created.db') } });
+
+  await test('db open: native ABI mismatch → one clear rebuild hint with this Node, exit 1, no stack', async () => {
+    for (const [code, msg] of [
+      ['ERR_DLOPEN_FAILED', "dlopen(/x/better_sqlite3.node, 0x0001): tried: '/x/better_sqlite3.node' (mach-o file, but is an incompatible architecture)"],
+      [null, 'The module /x/better_sqlite3.node was compiled against a different Node.js version using\nNODE_MODULE_VERSION 115. This version of Node.js requires\nNODE_MODULE_VERSION 127.'],
+    ]) {
+      const r = _dbOpenWith(code, msg);
+      assert.strictEqual(r.status, 1, r.stderr);
+      assert.ok(r.stderr.includes('npm rebuild better-sqlite3'), r.stderr);
+      assert.ok(r.stderr.includes(process.version) && r.stderr.includes(process.execPath), 'names the Node actually running');
+      assert.ok(!/^\s+at /m.test(r.stderr), 'no stack trace');
+    }
+  });
+
+  await test('db open: any other error is rethrown as-is (no rebuild hint)', async () => {
+    const r = _dbOpenWith('SQLITE_CANTOPEN', 'unable to open database file');
+    assert.notStrictEqual(r.status, 0);
+    assert.ok(r.stderr.includes('unable to open database file') && /^\s+at /m.test(r.stderr), 'original error with its stack');
+    assert.ok(!r.stderr.includes('npm rebuild'), r.stderr);
   });
 
   await test('migrations: splitSqlStatements keeps trigger bodies, quotes and comments intact', async () => {

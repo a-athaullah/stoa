@@ -25,7 +25,7 @@ const { sanitizeDisplayName, EMAIL_REPLY_LIMITS, buildEmailThreadSection, normal
 const { parseClientVersion } = require('./lib/client-version');
 const { recordToolStep } = require('./lib/tool-steps');
 const { resolveEnvFile, loadEnvFile, setEnvKey, portFallbackWarning, DEFAULT_PORT } = require('./lib/env-file');
-const { runMigrations } = require('./lib/migrations');
+const { runMigrations, pendingMigrations } = require('./lib/migrations');
 const { sanitizeIdList, diffRunQueue, summarizeRunTiming, createRunTimeout } = require('./lib/run-queue');
 const { createServerUpdate } = require('./lib/server-update');
 const { detectProcessManager } = require('./lib/process-manager');
@@ -1042,15 +1042,13 @@ loadEnvFile(ENV_FILE);
   if (warning) { console.log(warning); console.error(warning); }
 }
 
-// Initialize schema on startup
-try {
-  db.exec(fs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
-} catch (e) {
-  console.error('[schema] init warning (non-fatal):', e.message);
-}
-
-// ─── Migration runner ─────────────────────────────────────────────────────────
-runMigrations(db, path.join(__dirname, 'migrations'));
+// ─── Schema + migration runner ────────────────────────────────────────────────
+// Boot is the only place migrations run (README "Updating"). The boot results feed GET /api/health.
+const MIGRATIONS_DIR = path.join(__dirname, 'migrations');
+const bootMigrationFailures = new Set(
+  runMigrations(db, MIGRATIONS_DIR, console, { schemaSql: fs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8') })
+    .filter(r => r.status === 'failed').map(r => r.filename)
+);
 
 // ─── Semantic search index (lib/semantic-index.js) ─────────────────────────────
 // Needs the optional dependency @huggingface/transformers; without it (or with
@@ -1875,6 +1873,8 @@ const isAppRoute = (pathname) => pathname === '/' || APP_ROUTE_RE.test(pathname)
 
 function requireAuth(req, res, url) {
   if (AUTH_EXEMPT.has(url.pathname)) return true;
+  // Public health check (exact path, GET only); its handler returns nothing but healthy-or-not.
+  if (req.method === 'GET' && url.pathname === '/api/health') return true;
   // Static assets from public/ (CSS, JS, manifest, icons, SW)
   if (url.pathname.match(/^\/(css|js|vendor|dist)\//) || ['/manifest.json', '/sw.js', '/stoa-icon.svg'].includes(url.pathname)) return true;
   const isFilePath = SIGNED_FILE_PREFIXES.some(p => url.pathname.startsWith(p));
@@ -3189,6 +3189,14 @@ const server = http.createServer(async (req, res) => {
     if (body.content.length > 65536) return json(res, { error: 'content exceeds 64KB limit' }, 400);
     setSetting('base_system_prompt', body.content);
     return json(res, { content: body.content });
+  }
+
+  // ── Public health (no auth, see requireAuth) for process managers and post-update checks. Anyone can call it once
+  // Stoa is behind a tunnel, so it answers healthy-or-not only: no version, paths, migration file names,
+  // error text or connector state. Cached briefly so it cannot be used to hammer the DB. ──
+  if (req.method === 'GET' && url.pathname === '/api/health') {
+    if (!publicHealth || Date.now() - publicHealth.at > PUBLIC_HEALTH_TTL_MS) publicHealth = { at: Date.now(), body: publicHealthBody() };
+    return json(res, publicHealth.body, publicHealth.body.ok ? 200 : 503);
   }
 
   // ── R26: DB health ──
@@ -8071,6 +8079,24 @@ function broadcast(roomId, data) {
   for (const ws of clients) {
     if (ws.readyState === ws.OPEN) ws.send(msg);
   }
+}
+
+const PUBLIC_HEALTH_TTL_MS = 5000;
+let publicHealth = null;
+
+// failed = files that failed at boot and are still unapplied; pending = any other unapplied file on disk
+// (code pulled but the server not restarted yet).
+function publicHealthBody() {
+  let notApplied;
+  try {
+    notApplied = pendingMigrations(db, MIGRATIONS_DIR);
+  } catch (e) {
+    console.error('[health] check failed:', e.message);
+    return { ok: false, db: 'error', migrations: { pending: 0, failed: 0 } };
+  }
+  const failed = notApplied.filter(f => bootMigrationFailures.has(f)).length;
+  const pending = notApplied.length - failed;
+  return { ok: pending === 0 && failed === 0, db: 'ok', migrations: { pending, failed } };
 }
 
 function json(res, data, status = 200) {
