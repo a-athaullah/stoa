@@ -3832,6 +3832,34 @@ async function runAsyncUnitTests() {
         assert.strictEqual((await mk().status()).update.last_result.rolled_back, true, 'last_result read from the state file at boot');
       });
 
+      await uta('detectProcessManager — pm2 only when the parent is the pm2 daemon; job env + parent for supervisord / launchd / systemd', async () => {
+        const { detectProcessManager: detect } = require('./lib/process-manager');
+        const pidFile = path.join('/h', '.pm2', 'pm2.pid');
+        const readFile = (f) => { if (f === pidFile) return '4242\n'; throw new Error('ENOENT'); };
+        const base = { homedir: '/h', readFile, exists: () => false };
+        const pm2Env = { pm_id: '3', PM2_HOME: '/h/.pm2' };
+        const shell = () => ({ comm: '-zsh', args: '-zsh' });
+        assert.strictEqual(detect({ ...base, env: pm2Env, ppid: 4242, parent: shell }), 'pm2', 'ppid is the daemon');
+        assert.strictEqual(detect({ ...base, env: pm2Env, ppid: 777, parent: shell }), 'unknown', 'pm2 env inherited by a shell → not pm2');
+        assert.strictEqual(detect({ ...base, env: { ...pm2Env, INVOCATION_ID: 'x' }, ppid: 777, parent: () => ({ comm: 'systemd', args: '/lib/systemd/systemd --user' }) }),
+          'systemd', 'stale pm2 env falls through to the real manager');
+        assert.strictEqual(detect({ ...base, env: { ...pm2Env, autorestart: 'false' }, ppid: 4242, parent: shell }), 'unknown', 'pm2 with autorestart off restarts nothing');
+        const sup = () => ({ comm: 'python3', args: '/usr/bin/python3 /usr/bin/supervisord -n -c /etc/supervisord.conf' });
+        assert.strictEqual(detect({ ...base, env: { SUPERVISOR_ENABLED: '1' }, ppid: 9, parent: sup }), 'supervisord');
+        assert.strictEqual(detect({ ...base, env: { SUPERVISOR_ENABLED: '1' }, ppid: 9, parent: shell }), 'unknown', 'SUPERVISOR_ENABLED inherited by a shell');
+        const launchd = () => ({ comm: '/sbin/launchd', args: '/sbin/launchd' });
+        assert.strictEqual(detect({ ...base, env: { XPC_SERVICE_NAME: 'com.stoa.server' }, ppid: 1, parent: launchd }), 'launchd');
+        assert.strictEqual(detect({ ...base, env: { XPC_SERVICE_NAME: '0' }, ppid: 1, parent: launchd }), 'unknown', 'orphaned from a terminal');
+        assert.strictEqual(detect({ ...base, env: { XPC_SERVICE_NAME: 'application.com.apple.Terminal.1' }, ppid: 1, parent: launchd }), 'unknown');
+        const pid1 = () => ({ comm: 'systemd', args: '/sbin/init' });
+        assert.strictEqual(detect({ ...base, env: { INVOCATION_ID: 'abc' }, ppid: 1, parent: pid1 }), 'systemd');
+        assert.strictEqual(detect({ ...base, env: {}, ppid: 1, parent: pid1 }), 'unknown', 'orphaned onto systemd PID 1');
+        assert.strictEqual(detect({ ...base, env: {}, ppid: 1, parent: () => null }), 'unknown', 'no ps (Windows)');
+        assert.strictEqual(detect({ ...base, exists: (f) => f === '/.dockerenv', env: pm2Env, ppid: 4242, parent: shell }), 'docker');
+        // This test process: started by run-tests.js (plain node), whatever PM2_* / XPC env it inherited.
+        assert.ok(!['pm2', 'launchd', 'systemd', 'supervisord'].includes(detect()), `real parent is not a manager, got ${detect()}`);
+      });
+
       await uta('npmCommand — runs npm-cli.js with this node (Windows / Unix / Homebrew layouts), never npm.cmd directly', async () => {
         const has = (...files) => (f) => files.includes(f);
         const noLink = () => { throw new Error('not a link'); };

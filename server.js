@@ -28,6 +28,7 @@ const { resolveEnvFile, loadEnvFile, setEnvKey, portFallbackWarning, DEFAULT_POR
 const { runMigrations } = require('./lib/migrations');
 const { sanitizeIdList, diffRunQueue, summarizeRunTiming, createRunTimeout } = require('./lib/run-queue');
 const { createServerUpdate } = require('./lib/server-update');
+const { detectProcessManager } = require('./lib/process-manager');
 const fallbackSessions = new Map();
 
 // R15: unique identifier for this server boot. Sessions tagged with a different
@@ -8119,17 +8120,7 @@ if (orphaned.length) {
 // Detect process manager once at startup — used by /api/server/process-manager and /api/server/restart.
 // STOA_TEST_PROCESS_MANAGER (honoured only with STOA_TEST=1, i.e. run-tests.js) pretends one so the
 // restart and update paths can run in tests.
-const detectedProcessManager = (process.env.STOA_TEST === '1' && process.env.STOA_TEST_PROCESS_MANAGER) || (() => {
-  if (fs.existsSync('/.dockerenv')) return 'docker';
-  if (process.env.PM2_HOME || process.env.PM2_PROCESS_NAME) return 'pm2';
-  if (process.env.SUPERVISOR_ENABLED) return 'supervisord';
-  try {
-    const parent = execSync(`ps -p ${process.ppid} -o comm=`, { encoding: 'utf8', timeout: 2000 }).trim();
-    if (parent.includes('launchd')) return 'launchd';
-    if (parent.includes('systemd')) return 'systemd';
-  } catch {}
-  return 'unknown';
-})();
+const detectedProcessManager = (process.env.STOA_TEST === '1' && process.env.STOA_TEST_PROCESS_MANAGER) || detectProcessManager();
 console.log(`[startup] Process manager: ${detectedProcessManager}`);
 const RESTARTABLE_MANAGERS = new Set(['launchd', 'pm2', 'systemd', 'supervisord']);
 // Every planned restart (restart button, port change, update) exits non-zero: systemd Restart=on-failure
