@@ -30,6 +30,8 @@ const { sanitizeIdList, diffRunQueue, summarizeRunTiming, createRunTimeout } = r
 const { createServerUpdate } = require('./lib/server-update');
 const { bootAppBundle, useAppBundle } = require('./build/build');
 const { detectProcessManager } = require('./lib/process-manager');
+const { parseHeartbeatMs, startWsHeartbeat, DEFAULT_WS_HEARTBEAT_MS } = require('./lib/ws-heartbeat');
+const { createOrphanRuns, INTERRUPTED_RESULT_META, RUN_IN_FLIGHT_SQL, orphanWakeEnabled } = require('./lib/orphan-runs');
 const fallbackSessions = new Map();
 
 // R15: unique identifier for this server boot. Sessions tagged with a different
@@ -507,38 +509,14 @@ function enqueueParentWake(roomId, parentParticipantId, subAgentMessageId, threa
 // Queued only — drainWake waits for the parent's agent to be connected and
 // current, so a wake queued while the agent is down survives until it returns.
 // STOA_ORPHAN_WAKE=off disables the wakes (the interrupted stamp stays).
-const INTERRUPTED_RESULT_META = JSON.stringify({ exit_reason: 'interrupted' });
+// Stamp + enqueue live in lib/orphan-runs.js.
+
 // The 15-min server timeout errors a sub-agent bubble while the agent may still be running it,
 // so it does not wake the parent — agent_complete will. awaiting_agent (server-written only:
 // sanitizeResultMeta drops unknown keys) keeps the row in the disconnect/reconnect/startup
 // cleanup below, so an agent that dies instead of completing still wakes the parent.
 const AWAITING_AGENT_RESULT_META = JSON.stringify({ exit_reason: 'timeout', awaiting_agent: true });
-const RUN_IN_FLIGHT_SQL = "(state IN ('streaming','requesting') OR (state='error' AND sub_agent_id IS NOT NULL AND json_extract(result_meta, '$.awaiting_agent')=1))";
-const ORPHAN_WAKE_LIMIT = 3; // interrupted wakes per (thread, sub-agent) per hour
-const orphanWakeEnabled = () => process.env.STOA_ORPHAN_WAKE !== 'off';
-
-// rows: { id, room_id, participant_id, thread_id, sub_agent_id, sub_agent_label }
-function enqueueOrphanWakes(rows) {
-  if (!orphanWakeEnabled()) return;
-  for (const r of rows) {
-    if (!r.sub_agent_id) continue;
-    try {
-      if (db.prepare('SELECT 1 FROM pending_wakes WHERE sub_agent_message_id=?').get(r.id)) continue;
-      // Counts this row too: it is already stamped interrupted with completed_at=now.
-      const recent = db.prepare(`SELECT COUNT(*) AS c FROM messages
-        WHERE room_id=? AND thread_id IS ? AND sub_agent_id=?
-          AND json_extract(result_meta, '$.exit_reason')='interrupted'
-          AND completed_at >= datetime('now', '-1 hour')`).get(r.room_id, r.thread_id ?? null, r.sub_agent_id).c;
-      if (recent > ORPHAN_WAKE_LIMIT) {
-        postWakeSystemEvent(r.room_id, r.participant_id, r.thread_id ?? null,
-          `sub-agent ${r.sub_agent_label || 'sub-agent'} terputus berulang (${recent}× dalam 1 jam) — auto-wake dihentikan, butuh manusia`);
-        continue;
-      }
-      db.prepare('INSERT INTO pending_wakes (room_id, parent_participant_id, sub_agent_message_id, thread_id) VALUES (?,?,?,?)')
-        .run(r.room_id, r.participant_id, r.id, r.thread_id ?? null);
-    } catch (e) { console.error('[wake] orphan enqueue error:', e.message); }
-  }
-}
+const { enqueueOrphanWakes, cleanupStartupOrphans } = createOrphanRuns({ db, postWakeSystemEvent });
 
 function postWakeSystemEvent(roomId, participantId, threadId, content) {
   const sys = db.prepare(
@@ -5096,7 +5074,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
 
 // ─── WebSocket server ─────────────────────────────────────────────────────────
 
-const wss = new WebSocketServer({ server, pingInterval: 20000 });
+const wss = new WebSocketServer({ server });
 const roomClients = new Map();    // roomId → Set<ws>
 const globalClients = new Set();  // all browser ws connections
 const agentClients = new Map();   // actor_id → ws
@@ -5111,6 +5089,16 @@ const agentBootIds = new Map();     // actor_id → per-process id, tells a real
 const agentRestarts = new Map();
 const AGENT_RESTART_STATES = new Set(['restarting']);
 const BOOT_ID_RE = /^[a-f0-9]{8,64}$/;
+
+let wsHeartbeatMs = parseHeartbeatMs(process.env.STOA_WS_HEARTBEAT_MS);
+if (wsHeartbeatMs === null) {
+  console.warn(`[ws] STOA_WS_HEARTBEAT_MS=${JSON.stringify(process.env.STOA_WS_HEARTBEAT_MS)} invalid (integer 1000-300000) — using ${DEFAULT_WS_HEARTBEAT_MS}`);
+  wsHeartbeatMs = DEFAULT_WS_HEARTBEAT_MS;
+}
+startWsHeartbeat(wss, wsHeartbeatMs, ws => {
+  const actorId = [...agentClients].find(([, s]) => s === ws)?.[0];
+  console.log(`[ws] heartbeat timeout — terminating ${actorId ? `agent Actor #${actorId}` : 'client'} socket`);
+});
 
 function setAgentRestartState(actorId, state, extra = {}) {
   const entry = agentRestarts.get(actorId);
@@ -8157,16 +8145,12 @@ setInterval(() => {
   ).run(timeout);
 }, 60_000);
 
-// On startup: orphaned streaming/requesting messages are dead — mark them as error
-// (agents keep running across a server restart — the ones still busy report it on
-// reconnect and are un-orphaned there, see agent_connect).
-const orphaned = db.prepare(`UPDATE messages SET state='error', result_meta=?, completed_at=datetime('now'), content=CASE WHEN content='' THEN '(interrupted — server restart)' ELSE content END WHERE ${RUN_IN_FLIGHT_SQL} RETURNING id, room_id, participant_id, thread_id, sub_agent_id, sub_agent_label, content`).all(INTERRUPTED_RESULT_META);
+const orphaned = cleanupStartupOrphans();
 if (orphaned.length) {
   console.log(`[startup] Cleaned ${orphaned.length} orphaned message(s)`);
   for (const r of orphaned) {
     maybeBroadcastError({ threadId: r.thread_id, subAgentId: r.sub_agent_id, messageId: r.id, content: r.content });
   }
-  enqueueOrphanWakes(orphaned);
 }
 
 // Detect process manager once at startup — used by /api/server/process-manager and /api/server/restart.

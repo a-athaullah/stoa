@@ -64,9 +64,22 @@
   `agent_error` overwrites/clears the mark → one wake only. Deliberately no time-based sweep: the
   agent watchdogs are idle-based (debug-log defers extend them), so a timer would wake the parent
   for runs still legitimately working.
-- Known gap: a half-open agent socket (machine gone without FIN) is not detected by the server
-  (no server-side heartbeat), so its runs wait for the OS TCP timeout before the disconnect
-  cleanup fires. Pre-existing, applies to `streaming` runs too.
+- Half-open sockets (bug/ws-heartbeat): `lib/ws-heartbeat.js` pings every socket each
+  `STOA_WS_HEARTBEAT_MS` (default 30000, integer 1000-300000, invalid → warning + default;
+  run-tests.js uses 2000). A socket that sent no bytes at all since the previous tick is
+  `terminate()`d → the normal `close` handler runs the disconnect cleanup + orphan wakes, so a
+  vanished agent machine is noticed in 30-60 s instead of the OS TCP timeout. The old
+  `pingInterval` option on `WebSocketServer` was never a ws option (silently ignored). Browsers
+  and ws clients auto-pong. A superseded agent socket that gets terminated is a no-op thanks to
+  the socket-current guard in `close`. Liveness = any inbound byte on the TCP socket, so a large
+  frame on a slow link (binary `proxy_file_read_result` is base64 over WS) is not mistaken for a
+  dead peer even though its pong is queued behind it.
+- Agent side (stoa.js `attachHeartbeatWatchdog`): armed by the first server ping only (older
+  servers, e.g. newfin v0.68.1, never ping → no reconnect loop). Any ping or message resets it;
+  silence past max(90 s, 3 × last observed ping gap) → `terminate()` → normal reconnect. Covers a
+  half-open server/proxy (cloudflared) that would otherwise leave the agent waiting forever.
+- Startup cleanup lives in `lib/orphan-runs.js` (`cleanupStartupOrphans`, with
+  `enqueueOrphanWakes`, `RUN_IN_FLIGHT_SQL`) so it is unit-tested on a temp DB.
 - Tests: run-tests.js sets `AGENT_RUN_TIMEOUT_MS=15000` so the timeout path runs for real.
 
 **Self-healing for parent triggers refused by "agent updating" (bug/outdated-trigger-lost):**

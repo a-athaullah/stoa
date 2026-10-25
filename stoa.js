@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.414";
+var CLIENT_VERSION = "0.4.415";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -865,9 +865,42 @@ async function detectHarnessesAsync() {
   const harnesses_available = status.filter((s) => s.installed).map((s) => s.id);
   return { harnesses_available, harness_status: status, claude_model_candidates, claude_cli_version };
 }
+// A server/proxy that vanished without a FIN leaves this socket half-open and no 'close' ever
+// fires, so the agent would never reconnect. The server pings every STOA_WS_HEARTBEAT_MS (30 s);
+// silence past max(90 s, 3 observed ping gaps) terminates the socket -> normal reconnect path.
+// Any inbound byte counts: a ping queued behind a large frame on a slow link is not silence.
+// Armed only by the first ping: servers without a heartbeat (e.g. v0.68.1) never ping and must not
+// be dropped.
+var HEARTBEAT_MIN_SILENCE_MS = 9e4;
+var HEARTBEAT_MISSED_PINGS = 3;
+var HEARTBEAT_CHECK_MS = 5e3;
+function attachHeartbeatWatchdog(sock) {
+  let lastPingAt = 0, pingGap = 0, lastSeenAt = 0;
+  const silenceLimit = () => Math.max(HEARTBEAT_MIN_SILENCE_MS, pingGap * HEARTBEAT_MISSED_PINGS);
+  sock.on("ping", () => {
+    const now = Date.now();
+    if (lastPingAt) pingGap = now - lastPingAt;
+    lastPingAt = lastSeenAt = now;
+  });
+  const markSeen = () => {
+    if (lastPingAt) lastSeenAt = Date.now();
+  };
+  sock.on("message", markSeen);
+  sock.on("upgrade", (res) => res.socket.on("data", markSeen));
+  const timer = setInterval(() => {
+    if (!lastPingAt) return;
+    const silent = Date.now() - lastSeenAt;
+    if (silent <= silenceLimit()) return;
+    clearInterval(timer);
+    console.log(`[stoa] No ping from server for ${Math.round(silent / 1e3)}s \u2014 connection presumed dead, reconnecting`);
+    sock.terminate();
+  }, HEARTBEAT_CHECK_MS);
+  sock.on("close", () => clearInterval(timer));
+}
 function connect() {
   const cfHeaders = stoaCfHeaders(STOA_URL);
   ws = Object.keys(cfHeaders).length ? new WebSocket(STOA_URL, { headers: cfHeaders }) : new WebSocket(STOA_URL);
+  attachHeartbeatWatchdog(ws);
   ws.on("open", () => {
     if (ACTOR_TYPE === "ai") {
       getSession(process.env.STOA_WORK_DIR || os.homedir(), "default");
@@ -2525,4 +2558,4 @@ function __resetDeps() {
   pendingRestart = false;
   pendingRestartSince = 0;
 }
-module.exports = { handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, TOOL_STALL_MS, forceRestartIfStalled, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, __setDeps, __resetDeps, extractAndUploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES };
+module.exports = { handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, TOOL_STALL_MS, forceRestartIfStalled, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, attachHeartbeatWatchdog, HEARTBEAT_MIN_SILENCE_MS, __setDeps, __resetDeps, extractAndUploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES };
