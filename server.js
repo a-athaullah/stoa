@@ -2394,6 +2394,7 @@ const server = http.createServer(async (req, res) => {
       db.prepare('DELETE FROM rooms WHERE id=?').run(roomId);
     });
     deleteRoom();
+    activeThreadsSent.delete(roomId);
     broadcastGlobal({ type: 'room_deleted', room_id: roomId });
     res.writeHead(204); return res.end();
   }
@@ -2619,7 +2620,7 @@ const server = http.createServer(async (req, res) => {
     if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
     const roomId = parseInt(url.pathname.split('/')[3]);
     const runs = db.prepare(`
-      SELECT m.id as message_id, m.sub_agent_label, m.created_at, a.name as parent_name, a.avatar_color, sa.tier,
+      SELECT m.id as message_id, m.thread_id, m.sub_agent_label, m.created_at, a.name as parent_name, a.avatar_color, sa.tier,
              sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url, sa.role AS sub_agent_role
       FROM messages m
       JOIN room_participants rp ON rp.id=m.participant_id
@@ -8070,9 +8071,34 @@ function stripWaReplyMarkers(content) {
   return replaced;
 }
 
+// Every thread-run transition (placeholder, streaming, complete, error, stop, disconnect cleanup,
+// delete) already notifies its room through broadcast(), so recounting there keeps the room-list
+// badge of EVERY room live without wiring each UPDATE site. Coalesced per tick; a global
+// room_threads event goes out only when a room's count actually moved.
+const ROOM_THREADS_TRIGGERS = new Set(['message_new', 'message_state', 'message_complete', 'message_deleted', 'message_stream_reset']);
+const activeThreadsSent = new Map(); // room_id -> last count sent (absent = 0)
+const roomThreadsDirty = new Set();
+const countActiveThreads = db.prepare("SELECT COUNT(DISTINCT thread_id) AS c FROM messages WHERE room_id=? AND thread_id IS NOT NULL AND state IN ('streaming','requesting')");
+function flushRoomThreads() {
+  for (const roomId of roomThreadsDirty) {
+    roomThreadsDirty.delete(roomId);
+    let count;
+    try { count = countActiveThreads.get(roomId).c; } catch (e) { console.error('[room_threads] count failed:', e.message); continue; }
+    if (count === (activeThreadsSent.get(roomId) ?? 0)) continue;
+    if (count) activeThreadsSent.set(roomId, count); else activeThreadsSent.delete(roomId);
+    broadcastGlobal({ type: 'room_threads', room_id: roomId, active_threads: count });
+  }
+}
+function markRoomThreads(roomId) {
+  if (!Number.isInteger(roomId)) return;
+  if (!roomThreadsDirty.size) setImmediate(flushRoomThreads);
+  roomThreadsDirty.add(roomId);
+}
+
 function broadcast(roomId, data) {
   // Every new or finished message passes through here: wake the embedding backfill.
   if (data.type === 'message_new' || data.type === 'message_complete') semanticIndex.kick();
+  if (ROOM_THREADS_TRIGGERS.has(data.type)) markRoomThreads(Number(roomId));
   const clients = roomClients.get(roomId);
   if (!clients) return;
   const msg = JSON.stringify(data);
