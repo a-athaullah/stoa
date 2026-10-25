@@ -3767,7 +3767,13 @@ async function runAsyncUnitTests() {
         const r = await upd.start({ force: true });
         assert.strictEqual(r.status, 202);
         assert.strictEqual((await upd.start({ force: true })).body.code, 'update_running', 'second start while running → 409');
-        const s = await settled();
+        // Back-to-back status polls (as the UI does) while the update runs: each runs `git status` against the
+        // live tree, and every 'failed' snapshot must already show the rolled-back HEAD.
+        const snaps = [];
+        const poll = async () => { for (;;) { const v = await upd.status(); snaps.push(v); if (v.update.state !== 'running') return v; } };
+        const [s] = await Promise.all([poll(), poll(), poll(), poll()]);
+        assert.deepStrictEqual(snaps.filter(v => v.update.state === 'failed' && v.current.sha !== prev.slice(0, 7)).map(v => v.current.sha), [],
+          'no snapshot pairs state failed with the pre-rollback HEAD');
         activeRuns = 0;
         assert.strictEqual(s.update.state, 'failed');
         assert.strictEqual(s.update.step, 'smoke');
@@ -3797,6 +3803,10 @@ async function runAsyncUnitTests() {
         const file = bg.readState(stateFile);
         assert.deepStrictEqual([file.status, file.prev_head, file.new_head, file.attempts], ['pending', prev, good, 0]);
         assert.strictEqual((await upd.start({ force: true })).body.code, 'update_running', 'restarting → no second update');
+        const fresh = await mk().status();
+        assert.deepStrictEqual([fresh.update.state, fresh.blockers[0]], ['idle', 'update_running'], 'after restart, a pending boot check is a blocker');
+        const r2 = await mk().start({ force: true });
+        assert.deepStrictEqual([r2.status, r2.body.code], [409, 'update_running']);
         assert.ok(!events.some(e => e.step === 'install'), 'lockfile unchanged → no npm ci');
       });
 
@@ -3818,6 +3828,7 @@ async function runAsyncUnitTests() {
         assert.strictEqual(after.status, 'rolled_back');
         assert.deepStrictEqual([after.last_result.ok, after.last_result.rolled_back, after.last_result.from, after.last_result.to], [false, true, st.prev_head, st.new_head]);
         assert.strictEqual(bg.runBootGuard(opts), 'none', 'not pending any more → normal boot');
+        assert.ok(!(await mk().status()).blockers.includes('update_running'), 'rolled back → no longer blocked');
         assert.strictEqual((await mk().status()).update.last_result.rolled_back, true, 'last_result read from the state file at boot');
       });
 
@@ -7949,6 +7960,21 @@ async function run() {
         assert.strictEqual(fx.head(), prev, 'live checkout back on the previous HEAD');
         assert.strictEqual(s.current.sha, prev.slice(0, 7));
         assert.ok((await req('GET', '/api/server/process-manager')).status === 200, 'server still up');
+      });
+
+      await test('update — state file pending (boot check not done) → blockers[0] update_running, POST → 409 update_running', async () => {
+        const stateFile = process.env.STOA_UPDATE_STATE_FILE;
+        const saved = fsM.readFileSync(stateFile, 'utf8');
+        const head = fx.head();
+        try {
+          fsM.writeFileSync(stateFile, JSON.stringify({ status: 'pending', prev_head: head, new_head: head, attempts: 1 }));
+          const s = (await req('GET', '/api/server/update/status')).body;
+          assert.strictEqual(s.blockers[0], 'update_running');
+          const u = await req('POST', '/api/server/update', { force: true });
+          assert.deepStrictEqual([u.status, u.body.code], [409, 'update_running']);
+          assert.strictEqual(fx.head(), head, 'tree untouched');
+        } finally { fsM.writeFileSync(stateFile, saved); }
+        assert.ok(!(await req('GET', '/api/server/update/status')).body.blockers.includes('update_running'));
       });
     } finally {
       if (streamingId) udb.prepare('DELETE FROM messages WHERE id=?').run(streamingId);
