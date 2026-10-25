@@ -2485,6 +2485,46 @@ async function runAsyncUnitTests() {
     });
   });
 
+  // Startup cleanup (server restart) cannot run inside the suite: drive it on a temp DB.
+  await uta('cleanupStartupOrphans — stamps streaming + awaiting_agent runs interrupted and queues their wakes; others untouched', async () => {
+    const Database = require('better-sqlite3');
+    const { createOrphanRuns } = require('./lib/orphan-runs');
+    const mem = new Database(':memory:');
+    // Boot sequence of a fresh clone: baseline schema, then migrations (messages.sub_agent_id comes from one).
+    mem.exec(require('fs').readFileSync(require('path').join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
+    require('./lib/migrations').runMigrations(mem, require('path').join(__dirname, 'migrations'), { log() {}, error() {} });
+    mem.pragma('foreign_keys = OFF');
+    const ins = (state, subAgentId, resultMeta, content = '') => Number(mem.prepare(
+      'INSERT INTO messages (room_id, participant_id, content, state, sub_agent_id, sub_agent_label, result_meta) VALUES (1, 7, ?, ?, ?, ?, ?)'
+    ).run(content, state, subAgentId, subAgentId ? 'sub' : null, resultMeta).lastInsertRowid);
+    const ids = {
+      streamingSub: ins('streaming', 5, null),
+      awaitingSub: ins('error', 5, JSON.stringify({ exit_reason: 'timeout', awaiting_agent: true }), '(timeout — sub did not respond)'),
+      plainError: ins('error', 5, null, 'boom'),
+      complete: ins('complete', 5, null, 'done'),
+    };
+    const before = Object.fromEntries(Object.entries(ids).map(([k, id]) => [k, mem.prepare('SELECT * FROM messages WHERE id=?').get(id)]));
+    const events = [];
+    const rows = createOrphanRuns({ db: mem, postWakeSystemEvent: (...a) => events.push(a) }).cleanupStartupOrphans();
+    assert.deepStrictEqual(rows.map(r => r.id).sort((a, b) => a - b), [ids.streamingSub, ids.awaitingSub]);
+    const get = (id) => mem.prepare('SELECT state, content, result_meta, completed_at FROM messages WHERE id=?').get(id);
+    for (const k of ['streamingSub', 'awaitingSub']) {
+      const r = get(ids[k]);
+      assert.strictEqual(r.state, 'error', k);
+      assert.deepStrictEqual(JSON.parse(r.result_meta), { exit_reason: 'interrupted' }, k);
+      assert.ok(r.completed_at, k);
+    }
+    assert.strictEqual(get(ids.streamingSub).content, '(interrupted — server restart)');
+    assert.strictEqual(get(ids.awaitingSub).content, '(timeout — sub did not respond)', 'existing content kept');
+    for (const k of ['plainError', 'complete']) assert.deepStrictEqual(mem.prepare('SELECT * FROM messages WHERE id=?').get(ids[k]), before[k], `${k} untouched`);
+    const wakes = mem.prepare('SELECT sub_agent_message_id, parent_participant_id, room_id FROM pending_wakes ORDER BY sub_agent_message_id').all();
+    assert.deepStrictEqual(wakes, [ids.streamingSub, ids.awaitingSub].sort((a, b) => a - b).map(id => ({ sub_agent_message_id: id, parent_participant_id: 7, room_id: 1 })));
+    assert.deepStrictEqual(events, []);
+    assert.deepStrictEqual(createOrphanRuns({ db: mem, postWakeSystemEvent: () => {} }).cleanupStartupOrphans(), [], 'second boot finds nothing');
+    assert.strictEqual(mem.prepare('SELECT COUNT(*) AS c FROM pending_wakes').get().c, 2, 'no duplicate wakes');
+    mem.close();
+  });
+
   // Agent run queue: per-thread serialization under MAX_CONCURRENT, queue status reports, targeted cancel.
   async function withQueueHarness(maxConcurrent, drive) {
     const stoa = require('./stoa.js');
