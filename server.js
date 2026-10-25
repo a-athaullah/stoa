@@ -13,6 +13,7 @@ const { createStoaMemory } = require('./lib/stoa-memory');
 const { createSystemPrompts } = require('./lib/system-prompts');
 const { createSubAgents } = require('./lib/sub-agents');
 const { createAutomationCrud } = require('./lib/automation-crud');
+const { stoaMcpTools } = require('./lib/stoa-mcp-tools');
 const { collectDiagnostics, buildEnvelope, gcDebugBundles } = require('./lib/debug-bundle');
 const { enrichAutomation, enrichAutomationList, watchReplyAutomation } = require('./lib/automation-identity');
 const { sanitizeDisplayName, EMAIL_REPLY_LIMITS, buildEmailThreadSection, normalizeRefIds, findEmailReplyThread } = require('./lib/email-threading');
@@ -1674,7 +1675,10 @@ const subAgents = createSubAgents({
 const automationCrud = createAutomationCrud({ db, validateConditions, postNotice: postAutomationChangeNotice });
 const mcpGateway = createMcpGateway({
   db, upstreams: mcpUpstreams, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt, version: require('./package.json').version,
-  builtinTools: scheduleMcpTools(roomSchedules),
+  builtinTools: [
+    ...scheduleMcpTools(roomSchedules),
+    ...stoaMcpTools({ db, broadcast, messages: roomMessages, memory: stoaMemory, prompts: systemPrompts, subAgents, automations: automationCrud }),
+  ],
   approvalTimeoutMs: Math.min(APPROVAL_TIMEOUT_MAX_MS, Math.max(1000, parseInt(process.env.MCP_APPROVAL_TIMEOUT_MS, 10) || 5 * 60_000)),
   // Approval cards live in the room (and thread) the agent is working in; the MCP page's approval log
   // needs them too, so every other owner connection gets the same event. One copy per connection.
