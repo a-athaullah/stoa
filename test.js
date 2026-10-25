@@ -3797,9 +3797,13 @@ async function runAsyncUnitTests() {
 
       await uta('server-update — dirty_tree / not_default_branch / diverged block start with that code; tree untouched', async () => {
         const before = fx.head();
-        fsM.writeFileSync(path.join(fx.live, 'stray.txt'), 'x');
+        const gi = path.join(fx.live, '.gitignore');
+        const giSaved = fsM.readFileSync(gi, 'utf8');
+        fsM.writeFileSync(gi, giSaved + 'mine\n');
+        assert.ok((await upd.status()).blockers.includes('dirty_tree'), 'an edited tracked file blocks');
         assert.strictEqual((await upd.start({ force: true })).body.code, 'dirty_tree');
-        fsM.unlinkSync(path.join(fx.live, 'stray.txt'));
+        assert.strictEqual(fsM.readFileSync(gi, 'utf8'), giSaved + 'mine\n', 'edit left untouched');
+        fsM.writeFileSync(gi, giSaved);
         fx.g(fx.live, 'checkout', '--quiet', '-b', 'feature/x');
         const nb = await upd.status();
         assert.ok(nb.blockers.includes('not_default_branch'));
@@ -3835,9 +3839,48 @@ async function runAsyncUnitTests() {
         assert.strictEqual((await upd.status()).active_runs, 2);
       });
 
+      await uta('server-update — untracked files do not block (status has no dirty_tree)', async () => {
+        fsM.writeFileSync(path.join(fx.live, 'CLAUDE.md'), '');
+        fsM.mkdirSync(path.join(fx.live, 'scratch'));
+        fsM.writeFileSync(path.join(fx.live, 'scratch', 'notes.txt'), 'x');
+        try {
+          const s = await upd.status();
+          assert.ok(s.behind > 0);
+          assert.deepStrictEqual(s.blockers, []);
+        } finally {
+          fsM.rmSync(path.join(fx.live, 'CLAUDE.md'));
+          fsM.rmSync(path.join(fx.live, 'scratch'), { recursive: true });
+        }
+      });
+
+      await uta('server-update — untracked file on an incoming path → fails at merge, HEAD and the file untouched, nothing to roll back', async () => {
+        const prev = fx.head();
+        const mine = path.join(fx.live, 'incoming.txt');
+        fsM.writeFileSync(mine, 'mine');
+        fx.publish({ 'incoming.txt': 'theirs' }, 'add incoming.txt');
+        try {
+          await upd.check();
+          assert.deepStrictEqual((await upd.status()).blockers, [], 'the collision is not a blocker');
+          activeRuns = 0;
+          assert.strictEqual((await upd.start({})).status, 202);
+          const s = await settled();
+          assert.strictEqual(s.update.state, 'failed');
+          assert.strictEqual(s.update.step, 'merge');
+          assert.ok(s.update.error.startsWith('merge: '), s.update.error);
+          assert.strictEqual(fx.head(), prev, 'HEAD did not move');
+          assert.strictEqual(fsM.readFileSync(mine, 'utf8'), 'mine', 'untracked file kept');
+          const lr = s.update.last_result;
+          assert.deepStrictEqual([lr.ok, lr.rolled_back, lr.from, lr.to], [false, false, prev, null]);
+          assert.deepStrictEqual(bg.readState(stateFile).last_result, lr);
+          assert.deepStrictEqual(restarts, []);
+        } finally { fsM.rmSync(mine, { force: true }); }
+      });
+
       await uta('server-update — smoke boot crashes → reset to previous HEAD, state failed + rolled_back, no restart', async () => {
         const prev = fx.head();
         const bad = fx.publish({ 'server.js': BAD_SMOKE_SERVER }, 'broken release');
+        const keep = path.join(fx.live, 'keep.txt');
+        fsM.writeFileSync(keep, 'kept');
         events.length = 0;
         const r = await upd.start({ force: true });
         assert.strictEqual(r.status, 202);
@@ -3854,6 +3897,8 @@ async function runAsyncUnitTests() {
         assert.strictEqual(s.update.step, 'smoke');
         assert.ok(s.update.error.includes('smoke boot exited (3)') && s.update.error.includes('boom: migration failed'), s.update.error);
         assert.strictEqual(fx.head(), prev, 'tree back on the previous HEAD');
+        assert.strictEqual(fsM.readFileSync(keep, 'utf8'), 'kept', 'the rollback reset leaves untracked files alone');
+        fsM.rmSync(keep);
         assert.strictEqual(fx.g(fx.live, 'status', '--porcelain'), '');
         assert.deepStrictEqual(restarts, []);
         const lr = s.update.last_result;
@@ -8155,13 +8200,19 @@ async function run() {
         } finally { ws.close(); }
       });
 
-      await test('update — dirty tree → 409 dirty_tree (file left untouched)', async () => {
-        fsM.writeFileSync(path.join(live, 'notes.txt'), 'mine');
+      await test('update — untracked file → no dirty_tree; edited tracked file → 409 dirty_tree (edit left untouched)', async () => {
+        const notes = path.join(live, 'notes.txt'), gi = path.join(live, '.gitignore');
+        const giSaved = fsM.readFileSync(gi, 'utf8');
+        fsM.writeFileSync(notes, 'mine');
         try {
+          const s = (await req('GET', '/api/server/update/status')).body;
+          assert.ok(!s.blockers.includes('dirty_tree'), JSON.stringify(s.blockers));
+          fsM.writeFileSync(gi, giSaved + 'mine\n');
           const r = await req('POST', '/api/server/update', { force: true });
           assert.deepStrictEqual([r.status, r.body.code], [409, 'dirty_tree']);
-          assert.strictEqual(fsM.readFileSync(path.join(live, 'notes.txt'), 'utf8'), 'mine');
-        } finally { fsM.unlinkSync(path.join(live, 'notes.txt')); }
+          assert.strictEqual(fsM.readFileSync(gi, 'utf8'), giSaved + 'mine\n');
+          assert.strictEqual(fsM.readFileSync(notes, 'utf8'), 'mine');
+        } finally { fsM.writeFileSync(gi, giSaved); fsM.rmSync(notes, { force: true }); }
       });
 
       await test('update — streaming message in the DB → 409 active_runs; force: true → 202, smoke fails, rolled back', async () => {
@@ -12200,14 +12251,14 @@ async function run() {
     assert.match(R({ ...base, supported: false, reason: 'not_git' }), /not a git checkout/);
     assert.match(R({ ...base, supported: false, reason: 'no_process_manager' }), /process manager/);
     assert.strictEqual(R({ ...base, supported: false, reason: 'brand_new' }), 'brand_new', 'unknown code shown as-is');
-    assert.match(R({ ...base, blockers: ['dirty_tree'] }), /uncommitted/);
+    assert.match(R({ ...base, blockers: ['dirty_tree'] }), /tracked files have uncommitted/);
     assert.match(R({ ...base, blockers: ['diverged'] }), /fast-forward/);
     assert.match(R({ ...base, blockers: ['not_default_branch'] }), /another branch/);
     assert.match(R({ ...base, blockers: ['update_running'] }), /already running/);
     assert.strictEqual(R({ ...base, blockers: ['constructor'] }), 'constructor', 'prototype keys are not codes');
     assert.ok(ctx.sUpdateIsBusy({ update: { state: 'running' } }) && ctx.sUpdateIsBusy({ update: { state: 'restarting' } }));
     assert.ok(!ctx.sUpdateIsBusy({ update: { state: 'failed' } }), 'a failed update can be retried');
-    assert.match(R({ ...base, blockers: ['up_to_date', 'dirty_tree'] }), /uncommitted/, 'a real blocker outranks up_to_date');
+    assert.match(R({ ...base, blockers: ['up_to_date', 'dirty_tree'] }), /tracked files have uncommitted/, 'a real blocker outranks up_to_date');
     assert.strictEqual(R({ ...base, behind: 0 }), 'already up to date.');
     assert.strictEqual(ctx.sUpdateVersionLabel({ sha: 'abc1234', version: '0.68.0' }), 'v0.68.0 · abc1234');
     assert.strictEqual(ctx.sUpdateVersionLabel(null), '—');

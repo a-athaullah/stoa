@@ -20,7 +20,7 @@ const S_UPDATE_UNSUPPORTED_TEXT = {
 };
 const S_UPDATE_BLOCKER_TEXT = {
   not_default_branch: 'the checkout is on another branch. switch back to the default branch to update.',
-  dirty_tree: 'the working tree has uncommitted changes.',
+  dirty_tree: 'tracked files have uncommitted changes.',
   diverged: 'there are local commits that are not on origin, so it cannot fast-forward.',
   up_to_date: 'already up to date.',
   update_running: 'an update is already running or still finishing its boot check.',

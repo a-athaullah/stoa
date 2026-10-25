@@ -1102,7 +1102,7 @@ Panel detail mencakup:
 - Berjalan di Docker — pull image baru.
 - Tidak ada process manager yang didukung (launchd, pm2, systemd, atau supervisord) yang menjadi parent langsung dari proses server — server yang dijalankan manual (`nohup`, `&`) atau yang mewarisi environment variabel manager tanpa benar-benar dijalankan olehnya dianggap tidak dikelola.
 - Checkout berada di branch yang bukan default.
-- Working tree memiliki perubahan yang belum di-commit.
+- File tracked memiliki perubahan yang belum di-commit (file untracked tidak memblokir).
 - Ada commit lokal yang tidak ada di origin (diverged).
 - Update sudah berjalan atau masih menyelesaikan boot check.
 
