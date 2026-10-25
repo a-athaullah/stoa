@@ -11008,6 +11008,7 @@ async function run() {
     assert.strictEqual(r.status, 200);
     assert.ok(r.body.content.includes('Stoa platform'));
     assert.ok(r.body.content.includes('api/docs/stoa-api.md'));
+    assert.ok(r.body.content.includes('stoa__*'), 'default base prompt points at the built-in MCP tools');
     baseSysPromptDefault = r.body.content;
   });
 
@@ -15809,6 +15810,83 @@ async function run() {
         .run(crypto.createHash('sha256').update(raw).digest('hex'), 'unused', actorId, roomId);
       return { raw, drop: () => mDb.prepare('DELETE FROM mcp_tokens WHERE token_hash=?').run(crypto.createHash('sha256').update(raw).digest('hex')) };
     };
+
+    // Full agent_trigger in thread A (main agent message or sub-agent trigger); answers it so nothing stays streaming.
+    const promptTrigger = async (subAgentId = null) => {
+      const trig = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.room_id === roomA && (subAgentId ? m.sub_agent?.id === subAgentId : !m.sub_agent), 5000);
+      if (subAgentId) {
+        const r = await asAnon(() => req('POST', `/api/rooms/${roomA}/sub-agent-trigger`, { sub_agent_id: subAgentId, task: 'check the prompt instructions', thread_id: threadA }, { 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret }));
+        assert.strictEqual(r.status, 200, r.raw);
+      } else {
+        const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+        try {
+          humanWs.send(JSON.stringify({ type: 'join_room', room_id: roomA }));
+          await waitForWsMessage(humanWs, m => m.type === 'history');
+          humanWs.send(JSON.stringify({ type: 'send_message', room_id: roomA, content: 'prompt check', thread_id: threadA }));
+          await trig;
+        } finally { humanWs.close(); }
+      }
+      const m = await trig;
+      const wake = subAgentId ? waitForWsMessage(agA.ws, w => w.type === 'agent_trigger' && !w.sub_agent, 3000).catch(() => null) : null;
+      agA.ws.send(JSON.stringify({ type: 'agent_message', message_id: m.message_id, content: 'done', state: 'complete' }));
+      const w = await wake;
+      if (w) agA.ws.send(JSON.stringify({ type: 'agent_message', message_id: w.message_id, content: 'done', state: 'complete' }));
+      return m;
+    };
+
+    await test('MCP prompt — a session with a token is taught the stoa__* tools, no curl blocks', async () => {
+      const m = await promptTrigger();
+      assert.match(m.mcp_token || '', /^stoa_mcp_/);
+      for (const t of ['stoa__message_send', 'stoa__room_memory_set', 'stoa__agent_memory_set']) assert.ok(m.prompt.includes(t), `main prompt names ${t}`);
+      assert.ok(m.prompt.includes(`It goes to the thread this session runs in (thread ${m.thread_id})`), 'default thread is spelled out');
+      assert.ok(m.prompt.includes('call `stoa__message_send` with @<label>'), 'delegation via the tool');
+      assert.match(m.prompt, /Room memory budget: \d+\/1800 chars used/);
+      assert.match(m.prompt, /MEMORY\.md \(\d+\/2200 chars\)/);
+      assert.ok(!m.prompt.includes('curl -s -X'), 'no curl block in the main prompt');
+
+      const s = await promptTrigger(sub.id);
+      assert.match(s.mcp_token || '', /^stoa_mcp_/);
+      assert.ok(s.prompt.includes('stoa__sub_agent_memory_set') && s.prompt.includes('stoa__message_send'), 'sub-agent prompt names its tools');
+      assert.match(s.prompt, /own persistent memory \(\d+\/2200 chars used\)/);
+      assert.ok(!s.prompt.includes('curl -s -X'), 'no curl block in the sub-agent prompt');
+    });
+
+    await test('MCP prompt — a tool-less model gets no token and keeps the curl instructions', async () => {
+      const origPlat = mDb.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").get();
+      const room = mDb.prepare('SELECT model, model_config, model_tiers FROM rooms WHERE id=?').get(roomA);
+      const MODEL = 'llama-notools-test';
+      const plats = [{ id: '__notools-plat', vendor: 'openrouter', enabled: true, base_url: 'https://notools.invalid/v1', api_keys: ['k'], cached_models: [{ model: MODEL, tools: false }], enabled_models: [MODEL] }];
+      const setPlat = (v) => origPlat
+        ? mDb.prepare("UPDATE settings SET value=? WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run(v)
+        : (v == null
+          ? mDb.prepare("DELETE FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='ai_platforms'").run()
+          : mDb.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'ai_platforms', ?)").run(v));
+      try {
+        setPlat(JSON.stringify(plats));
+        mDb.prepare('UPDATE rooms SET model=?, model_config=?, model_tiers=? WHERE id=?')
+          .run(MODEL, JSON.stringify({ platform_id: '__notools-plat' }), JSON.stringify({ quick: [MODEL], standard: [MODEL], deep: [MODEL] }), roomA);
+        await new Promise(r => setTimeout(r, 1100)); // getParsedSetting caches for 1 s
+
+        const m = await promptTrigger();
+        assert.strictEqual(m.tools_supported, false);
+        assert.strictEqual(m.mcp_token, undefined, 'tool-less model → no token');
+        assert.ok(m.prompt.includes('curl -s -X PUT "$BASE_URL/api/rooms/$STOA_ROOM_ID/memory"'), 'room memory curl kept');
+        assert.ok(m.prompt.includes('curl -s -X PUT "$BASE_URL/api/actors/$STOA_ACTOR_ID/memory/MEMORY.md"'), 'agent memory curl kept');
+        assert.ok(m.prompt.includes('curl -s -X POST "$BASE_URL/api/rooms/$STOA_ROOM_ID/message"'), 'progress curl kept');
+        assert.ok(m.prompt.includes('the @mention MUST be in the curl message body'), 'delegation via curl kept');
+        assert.ok(!m.prompt.includes('stoa__'), 'no tool names without tools');
+
+        const s = await promptTrigger(sub.id);
+        assert.strictEqual(s.mcp_token, undefined);
+        assert.ok(s.prompt.includes(`curl -s -X PUT "$BASE_URL/api/sub-agents/${sub.id}/memory"`), 'sub-agent memory curl kept');
+        assert.ok(s.prompt.includes(`curl -s -X POST "$BASE_URL/api/rooms/${roomA}/message"`), 'sub-agent output curl kept');
+        assert.ok(!s.prompt.includes('stoa__'));
+      } finally {
+        mDb.prepare('UPDATE rooms SET model=?, model_config=?, model_tiers=? WHERE id=?').run(room.model, room.model_config, room.model_tiers, roomA);
+        setPlat(origPlat ? origPlat.value : null);
+        await new Promise(r => setTimeout(r, 1100));
+      }
+    });
 
     await test('MCP stoa tools — main session lists all, sub-agent session hides config tools; schemas take no room/actor id', async () => {
       const main = Object.fromEntries((await listAll(tokA)).map(t => [t.name, t]));

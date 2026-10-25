@@ -1199,7 +1199,7 @@ const CONNECTOR_MEDIA_DIR = path.join(__dirname, 'connector-media');
   if (human) db.prepare('UPDATE actors SET name=? WHERE id=?').run(humanName, human.id);
 }
 
-const DEFAULT_BASE_SYSTEM_PROMPT = `You are an AI agent operating on the Stoa platform. You have access to the following environment variables: STOA_URL, STOA_ROOM_ID, STOA_ACTOR_ID, STOA_SECRET, STOA_THREAD_ID. To derive the HTTP base URL from the WebSocket URL: BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|"). Full API documentation (endpoints for sending messages, updating memory, updating system prompt, uploading files) is available by fetching: curl -s "$BASE_URL/api/docs/stoa-api.md"`;
+const DEFAULT_BASE_SYSTEM_PROMPT = `You are an AI agent operating on the Stoa platform. You have access to the following environment variables: STOA_URL, STOA_ROOM_ID, STOA_ACTOR_ID, STOA_SECRET, STOA_THREAD_ID. To derive the HTTP base URL from the WebSocket URL: BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|"). Full API documentation (endpoints for sending messages, updating memory, updating system prompt, uploading files) is available by fetching: curl -s "$BASE_URL/api/docs/stoa-api.md". When this session has Stoa's built-in MCP tools (named stoa__*), use them for messages, threads, memory, system prompts, sub-agents and automations; the REST API is for file uploads and for sessions without those tools.`;
 
 const { composeSystemPrompt } = require('./lib/compose-system-prompt');
 
@@ -1697,6 +1697,8 @@ pruneMcpCalls();
 setInterval(pruneMcpCalls, 60 * 60_000).unref();
 // Every tool-capable session gets a token: the gateway always serves Stoa's built-in tools, even with
 // no upstream server installed. Harnesses without tool support get none (session env unchanged).
+// Harnesses whose session mounts the gateway from STOA_MCP_TOKEN (claude-session.js, codex-session.js).
+const MCP_HARNESSES = ['claude', 'codex'];
 function mcpTokenForTrigger({ actorId, roomId, threadId, subAgentId, toolsSupported }) {
   if (toolsSupported === false) return undefined;
   try { return mcpGateway.issueToken({ actorId, roomId, threadId: threadId || null, subAgentId: subAgentId || null }); }
@@ -7640,153 +7642,6 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     if (replied) replyCtx = '\n' + L.replyTo(replied.name, replied.content?.substring(0, 500)) + '\n';
   }
 
-  const proactiveCurlBody = threadId
-    ? `'{"content": "Your message here", "thread_id": ${threadId}}'`
-    : `'{"content": "Your message here"}'`;
-  const PROACTIVE_INSTRUCTIONS = `\n\n## Progress Reporting (MANDATORY for background tasks)\n\nFor any task that takes more than a few seconds, or involves file edits, commits, or multi-step work:\n1. After finishing your analysis, send a proactive message with what you found and your plan.\n2. After each significant step (commit, test run, major finding), send a brief update.\n3. At the end, always send a final summary of what was done.\n\nTo send a proactive message to the room:\n\`\`\`bash\nBASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\ncurl -s -X POST "$BASE_URL/api/rooms/$STOA_ROOM_ID/message" \\\n  -H "Content-Type: application/json" \\\n  -H "x-agent-id: $STOA_ACTOR_ID" \\\n  -H "x-agent-secret: $STOA_SECRET" \\\n  -d ${proactiveCurlBody}\n\`\`\`\n\n$STOA_URL, $STOA_ACTOR_ID, $STOA_SECRET, and $STOA_ROOM_ID are available as environment variables.`;
-
-  // Sub-agents are triggered from a caller room that may differ from their own room.
-  // Use the literal caller roomId so reports go back to the right place.
-  const subAgentCurlBody = threadId
-    ? `'{"content": "Your update here", "thread_id": ${threadId}}'`
-    : `'{"content": "Your update here"}'`;
-  const PROACTIVE_INSTRUCTIONS_SUB_AGENT = `\n\n## Output\n\nYour final text response is automatically posted to the room as your result. Do NOT also send it via curl — it would appear twice.\n\nOnly use curl in two cases:\n1. **Long task (>1 min):** send a brief mid-task status update so the user knows you're working. Do NOT send the result via curl — write it in your text response.\n2. **Cascade trigger:** if you need to @mention another agent, put the @mention in a curl message body (plain text @mention is not guaranteed to trigger).\n\nFor quick tasks (single command, short lookup): just write the answer in your text response. No curl needed.\n\nYou were triggered from room ${roomId}. If you do use curl, send to that room.\n\nCurl pattern:\n\`\`\`bash\nBASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\ncurl -s -X POST "$BASE_URL/api/rooms/${roomId}/message" \\\n  -H "Content-Type: application/json" \\\n  -H "x-agent-id: $STOA_ACTOR_ID" \\\n  -H "x-agent-secret: $STOA_SECRET" \\\n  -d ${subAgentCurlBody}\n\`\`\`\n\n$STOA_URL, $STOA_ACTOR_ID, and $STOA_SECRET are available as environment variables.\nRoom ID: ${roomId}`;
-
-  const identityLine = subAgent
-    ? `${L.identity(ai.name)}\nYou are operating as sub-agent "${subAgent.label}" (tier: ${subAgent.tier}).${subAgent.role ? '\nYour role: ' + subAgent.role : ''}${subAgent.description ? '\n\n## Your Purpose\n' + subAgent.description : ''}${subAgent.system_prompt ? '\n\nSub-agent instructions:\n' + subAgent.system_prompt : ''}${PROACTIVE_INSTRUCTIONS_SUB_AGENT}`
-    : `${L.identity(ai.name)}${PROACTIVE_INSTRUCTIONS}`;
-
-  // ── Phase 2b: orchestration — issue a spawn token to the MAIN agent when it
-  // owns sub-agents linked in this room, and tell it how to trigger them.
-  // Sub-agents never get a token (depth = 1, hard-enforced server-side).
-  let orchestrationLine = '';
-  if (!subAgent) {
-    const ownSubs = db.prepare(`
-      SELECT sa.id, sa.label, sa.tier, sa.description, sa.role FROM room_sub_agents rsa
-      JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
-      WHERE rsa.room_id=? AND sa.parent_actor_id=? AND sa.enabled=1
-    `).all(roomId, ai.actor_id);
-    if (ownSubs.length) {
-      const list = ownSubs.map(s => `@${s.label} (${s.tier}${s.role ? ', ' + s.role : ''})${s.description ? ' — ' + s.description.replace(/\s+/g, ' ') : ''}`).join(', ');
-      orchestrationLine =
-        `\nYou can delegate to your sub-agents: ${list}.\n` +
-        `To trigger one, mention @<label> in your response followed by the task — e.g. "@BE-Stoa implement the login endpoint".\n` +
-        `The sub-agent runs automatically; you will be woken once to read its result and continue. You may mention multiple sub-agents in one response to run them in parallel.\n` +
-        `Do NOT write @mention of a sub-agent unless you actually want to trigger it.\n\n` +
-        `**IMPORTANT — reliable sub-agent triggering:** When delegating via a proactive message (curl to the room API), the @mention MUST be in the curl message body — @mention in plain text response is not guaranteed to trigger the cascade. Use the same curl pattern as in the Progress Reporting section above, with @<label> at the start of the content.`;
-    }
-  }
-
-  // Inject frozen memory snapshot at session start
-  const roomMem = db.prepare('SELECT content FROM room_memory WHERE room_id=? AND content != \'\'').get(roomId);
-  let memorySection = '';
-  let platformMemoryLine = '';
-
-  if (subAgent) {
-    // Sub-agent: own memory + room memory (read-only) + self-learning instructions
-    const saMem = db.prepare('SELECT content, updated_at FROM sub_agent_memory WHERE sub_agent_id=?').get(subAgent.id);
-    const saMemContent = saMem?.content || '';
-    const memParts = [];
-    if (saMemContent) memParts.push(`### Your Memory (sub-agent ${subAgent.label})\n${saMemContent}`);
-    if (roomMem) memParts.push(`### Room Memory (READ-ONLY — belongs to parent agent)\n${roomMem.content}`);
-    if (memParts.length) memorySection = `\n## Memory\n${memParts.join('\n\n')}`;
-
-    const saCharCount = saMemContent.length;
-    const saBudget = 2200;
-    const saWarn = saCharCount > 1760 ? `\n⚠ Memory at ${saCharCount}/${saBudget} chars — compress before next update.` : '';
-    platformMemoryLine = `\n## Self-Learning\n` +
-      `You have your own persistent memory (${saCharCount}/${saBudget} chars used).${saWarn}\n` +
-      `At the end of each task, reflect briefly: is there a durable lesson (codebase gotcha, user preference, recurring mistake, proven approach, correct tool/command)?\n` +
-      `If yes, update your memory with the **full curated content** (consolidate/replace old entries, don't append blindly):\n` +
-      '```\n' +
-      `BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\n` +
-      `curl -s -X PUT "$BASE_URL/api/sub-agents/${subAgent.id}/memory" \\\n` +
-      `  -H "Content-Type: application/json" \\\n` +
-      `  -H "x-agent-id: $STOA_ACTOR_ID" \\\n` +
-      `  -H "x-agent-secret: $STOA_SECRET" \\\n` +
-      `  -d '{"content": "your full curated memory here"}'\n` +
-      '```\n' +
-      `Do NOT save: trivial/one-time info, secrets/tokens, things already in room memory.\n` +
-      `Do NOT update room memory — it belongs to the parent agent.`;
-  } else {
-    // Main agent: MEMORY.md + USER.md + room memory + self-write instructions
-    const memRows = db.prepare('SELECT file, content FROM agent_memory WHERE actor_id=? AND content != \'\'').all(ai.actor_id);
-    const memParts = [];
-    for (const { file, content } of memRows) memParts.push(`### ${file}\n${content}`);
-    if (roomMem) memParts.push(`### Room Memory\n${roomMem.content}`);
-    if (memParts.length) memorySection = `\n## Memory\n${memParts.join('\n\n')}`;
-
-    const BUDGETS = { 'MEMORY.md': 2200, 'USER.md': 1375 };
-    const memFiles = db.prepare('SELECT file, content FROM agent_memory WHERE actor_id=?').all(ai.actor_id);
-    const memUsage = {};
-    for (const f of ['MEMORY.md', 'USER.md']) {
-      const row = memFiles.find(r => r.file === f);
-      memUsage[f] = (row?.content || '').length;
-    }
-
-    const roomMemContent = roomMem?.content || '';
-    const charCount = roomMemContent.length;
-    const budget = 1800;
-    const warnThreshold = 1400;
-    let thresholdWarning = '';
-    if (charCount > warnThreshold) {
-      thresholdWarning = `\n⚠ Room memory is at ${charCount}/${budget} chars — compress or summarize existing entries before your next update to stay within budget.`;
-    }
-    platformMemoryLine = `\n## Memory Management\n` +
-      `You have persistent memory for this room. Memory content (if any) is shown in the Memory section above.\n` +
-      `After each exchange, ask yourself: "Is there something worth noting?" Update memory when:\n` +
-      `- The user states a preference or working style\n` +
-      `- An important decision is made\n` +
-      `- Key project context is revealed\n` +
-      `Do NOT save trivial exchanges, greetings, or information already in memory.\n\n` +
-      `**Room memory** (context specific to this room):\n` +
-      '```\n' +
-      `BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\n` +
-      `curl -s -X PUT "$BASE_URL/api/rooms/$STOA_ROOM_ID/memory" \\\n` +
-      `  -H "Content-Type: application/json" \\\n` +
-      `  -H "x-agent-id: $STOA_ACTOR_ID" \\\n` +
-      `  -H "x-agent-secret: $STOA_SECRET" \\\n` +
-      `  -d '{"content": "your updated memory content here"}'\n` +
-      '```\n' +
-      `Room memory budget: ${charCount}/${budget} chars used.${thresholdWarning}\n\n` +
-      `**Agent memory** (persists across all rooms — lessons, pitfalls, environment facts):\n` +
-      `- MEMORY.md (${memUsage['MEMORY.md']}/${BUDGETS['MEMORY.md']} chars): cross-room lessons, codebase gotchas, proven approaches\n` +
-      `- USER.md (${memUsage['USER.md']}/${BUDGETS['USER.md']} chars): user profile, preferences, working style\n` +
-      '```\n' +
-      `curl -s -X PUT "$BASE_URL/api/actors/$STOA_ACTOR_ID/memory/MEMORY.md" \\\n` +
-      `  -H "Content-Type: application/json" \\\n` +
-      `  -H "x-agent-id: $STOA_ACTOR_ID" \\\n` +
-      `  -H "x-agent-secret: $STOA_SECRET" \\\n` +
-      `  -d '{"content": "full curated content"}'\n` +
-      '```\n' +
-      `Replace MEMORY.md with USER.md for user profile updates. Send full curated content (consolidate, don't append blindly). Never store secrets/tokens.`;
-  }
-
-  const emailThreadSection = buildEmailThreadSection(db, { roomId, threadId });
-
-  // Most callers pass a prompt that is (or is built from) a stored message already in
-  // the history above, so injecting it would duplicate it. Only callers whose prompt
-  // is never stored as a message (wake prompt, /sub-agent-trigger task, scheduled task)
-  // opt in with ai.prompt_outside_history; without it the agent would never see it.
-  const taskSection = ai.prompt_outside_history && prompt ? `\n${L.taskLabel}:\n${prompt}` : '';
-
-  const fullPrompt = [
-    identityLine,
-    `Room ID: ${roomId}`,
-    L.timeContext(nowUtc),
-    othersLine,
-    memorySection,
-    platformMemoryLine,
-    `\n${L.historyLabel}:\n${ctx}`,
-    replyCtx,
-    taskSection,
-    '\n' + L.replyInstruction,
-    otherAINames.length ? L.mentionInstruction(otherAINames) : '',
-    orchestrationLine,
-    '\n' + L.sendFileInstruction,
-    emailThreadSection,
-  ].filter(Boolean).join('\n');
-
   const roomRow2 = db.prepare('SELECT model, model_config, model_tiers FROM rooms WHERE id=?').get(roomId);
   const roomModel = roomRow2?.model || null;
   const effectiveHarness = subAgent?.harness || ai.adapter || 'claude';
@@ -7852,6 +7707,171 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     broadcast(roomId, { type: 'message_complete', message_id: msgId, content: errContent });
     return;
   }
+  // The prompt teaches the stoa__* tools only when this session really gets them: a token (none for a
+  // tool-less model or when issuing fails) and a harness that mounts the gateway. Otherwise the curl
+  // instructions below stay exactly as they were.
+  const mcpToken = mcpTokenForTrigger({ actorId: ai.actor_id, roomId, threadId, subAgentId: subAgent?.id, toolsSupported: modelToolsSupported });
+  const stoaTools = !!mcpToken && MCP_HARNESSES.includes(effectiveHarness);
+  const sessionTarget = threadId ? `the thread this session runs in (thread ${threadId})` : 'the room\'s main feed';
+
+  const proactiveCurlBody = threadId
+    ? `'{"content": "Your message here", "thread_id": ${threadId}}'`
+    : `'{"content": "Your message here"}'`;
+  const PROACTIVE_INSTRUCTIONS_TOOLS = `\n\n## Progress Reporting (MANDATORY for background tasks)\n\nFor any task that takes more than a few seconds, or involves file edits, commits, or multi-step work:\n1. After finishing your analysis, send a proactive message with what you found and your plan.\n2. After each significant step (commit, test run, major finding), send a brief update.\n3. At the end, always send a final summary of what was done.\n\nTo send a proactive message, call the \`stoa__message_send\` tool with \`content\`. It goes to ${sessionTarget} automatically — no room or thread argument needed (\`main_feed: true\` posts to the room's main feed instead). An @mention in the content triggers that agent or sub-agent.\n\nStoa features (messages, threads, memory, system prompts, sub-agents, automations) are \`stoa__*\` tools in this session — use them instead of the REST API. REST/curl is only for file uploads.`;
+  const PROACTIVE_INSTRUCTIONS = stoaTools ? PROACTIVE_INSTRUCTIONS_TOOLS : `\n\n## Progress Reporting (MANDATORY for background tasks)\n\nFor any task that takes more than a few seconds, or involves file edits, commits, or multi-step work:\n1. After finishing your analysis, send a proactive message with what you found and your plan.\n2. After each significant step (commit, test run, major finding), send a brief update.\n3. At the end, always send a final summary of what was done.\n\nTo send a proactive message to the room:\n\`\`\`bash\nBASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\ncurl -s -X POST "$BASE_URL/api/rooms/$STOA_ROOM_ID/message" \\\n  -H "Content-Type: application/json" \\\n  -H "x-agent-id: $STOA_ACTOR_ID" \\\n  -H "x-agent-secret: $STOA_SECRET" \\\n  -d ${proactiveCurlBody}\n\`\`\`\n\n$STOA_URL, $STOA_ACTOR_ID, $STOA_SECRET, and $STOA_ROOM_ID are available as environment variables.`;
+
+  // Sub-agents are triggered from a caller room that may differ from their own room.
+  // Use the literal caller roomId so reports go back to the right place.
+  const subAgentCurlBody = threadId
+    ? `'{"content": "Your update here", "thread_id": ${threadId}}'`
+    : `'{"content": "Your update here"}'`;
+  const PROACTIVE_INSTRUCTIONS_SUB_AGENT_TOOLS = `\n\n## Output\n\nYour final text response is automatically posted to the room as your result. Do NOT also send it via \`stoa__message_send\` — it would appear twice.\n\nOnly call \`stoa__message_send\` in two cases:\n1. **Long task (>1 min):** send a brief mid-task status update so the user knows you're working. Do NOT send the result that way — write it in your text response.\n2. **Cascade trigger:** if you need to @mention another agent, put the @mention in the \`stoa__message_send\` content (plain text @mention is not guaranteed to trigger).\n\nFor quick tasks (single command, short lookup): just write the answer in your text response.\n\n\`stoa__message_send\` posts to room ${roomId}, ${sessionTarget}, automatically — no room or thread argument needed.\nRoom ID: ${roomId}`;
+  const PROACTIVE_INSTRUCTIONS_SUB_AGENT = stoaTools ? PROACTIVE_INSTRUCTIONS_SUB_AGENT_TOOLS : `\n\n## Output\n\nYour final text response is automatically posted to the room as your result. Do NOT also send it via curl — it would appear twice.\n\nOnly use curl in two cases:\n1. **Long task (>1 min):** send a brief mid-task status update so the user knows you're working. Do NOT send the result via curl — write it in your text response.\n2. **Cascade trigger:** if you need to @mention another agent, put the @mention in a curl message body (plain text @mention is not guaranteed to trigger).\n\nFor quick tasks (single command, short lookup): just write the answer in your text response. No curl needed.\n\nYou were triggered from room ${roomId}. If you do use curl, send to that room.\n\nCurl pattern:\n\`\`\`bash\nBASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\ncurl -s -X POST "$BASE_URL/api/rooms/${roomId}/message" \\\n  -H "Content-Type: application/json" \\\n  -H "x-agent-id: $STOA_ACTOR_ID" \\\n  -H "x-agent-secret: $STOA_SECRET" \\\n  -d ${subAgentCurlBody}\n\`\`\`\n\n$STOA_URL, $STOA_ACTOR_ID, and $STOA_SECRET are available as environment variables.\nRoom ID: ${roomId}`;
+
+  const identityLine = subAgent
+    ? `${L.identity(ai.name)}\nYou are operating as sub-agent "${subAgent.label}" (tier: ${subAgent.tier}).${subAgent.role ? '\nYour role: ' + subAgent.role : ''}${subAgent.description ? '\n\n## Your Purpose\n' + subAgent.description : ''}${subAgent.system_prompt ? '\n\nSub-agent instructions:\n' + subAgent.system_prompt : ''}${PROACTIVE_INSTRUCTIONS_SUB_AGENT}`
+    : `${L.identity(ai.name)}${PROACTIVE_INSTRUCTIONS}`;
+
+  // ── Phase 2b: orchestration — issue a spawn token to the MAIN agent when it
+  // owns sub-agents linked in this room, and tell it how to trigger them.
+  // Sub-agents never get a token (depth = 1, hard-enforced server-side).
+  let orchestrationLine = '';
+  if (!subAgent) {
+    const ownSubs = db.prepare(`
+      SELECT sa.id, sa.label, sa.tier, sa.description, sa.role FROM room_sub_agents rsa
+      JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
+      WHERE rsa.room_id=? AND sa.parent_actor_id=? AND sa.enabled=1
+    `).all(roomId, ai.actor_id);
+    if (ownSubs.length) {
+      const list = ownSubs.map(s => `@${s.label} (${s.tier}${s.role ? ', ' + s.role : ''})${s.description ? ' — ' + s.description.replace(/\s+/g, ' ') : ''}`).join(', ');
+      orchestrationLine =
+        `\nYou can delegate to your sub-agents: ${list}.\n` +
+        `To trigger one, mention @<label> in your response followed by the task — e.g. "@BE-Stoa implement the login endpoint".\n` +
+        `The sub-agent runs automatically; you will be woken once to read its result and continue. You may mention multiple sub-agents in one response to run them in parallel.\n` +
+        `Do NOT write @mention of a sub-agent unless you actually want to trigger it.\n\n` +
+        (stoaTools
+          ? `**IMPORTANT — reliable sub-agent triggering:** When delegating via a proactive message, call \`stoa__message_send\` with @<label> at the start of the content — @mention in plain text response is not guaranteed to trigger the cascade.`
+          : `**IMPORTANT — reliable sub-agent triggering:** When delegating via a proactive message (curl to the room API), the @mention MUST be in the curl message body — @mention in plain text response is not guaranteed to trigger the cascade. Use the same curl pattern as in the Progress Reporting section above, with @<label> at the start of the content.`);
+    }
+  }
+
+  // Inject frozen memory snapshot at session start
+  const roomMem = db.prepare('SELECT content FROM room_memory WHERE room_id=? AND content != \'\'').get(roomId);
+  let memorySection = '';
+  let platformMemoryLine = '';
+
+  if (subAgent) {
+    // Sub-agent: own memory + room memory (read-only) + self-learning instructions
+    const saMem = db.prepare('SELECT content, updated_at FROM sub_agent_memory WHERE sub_agent_id=?').get(subAgent.id);
+    const saMemContent = saMem?.content || '';
+    const memParts = [];
+    if (saMemContent) memParts.push(`### Your Memory (sub-agent ${subAgent.label})\n${saMemContent}`);
+    if (roomMem) memParts.push(`### Room Memory (READ-ONLY — belongs to parent agent)\n${roomMem.content}`);
+    if (memParts.length) memorySection = `\n## Memory\n${memParts.join('\n\n')}`;
+
+    const saCharCount = saMemContent.length;
+    const saBudget = 2200;
+    const saWarn = saCharCount > 1760 ? `\n⚠ Memory at ${saCharCount}/${saBudget} chars — compress before next update.` : '';
+    platformMemoryLine = `\n## Self-Learning\n` +
+      `You have your own persistent memory (${saCharCount}/${saBudget} chars used).${saWarn}\n` +
+      `At the end of each task, reflect briefly: is there a durable lesson (codebase gotcha, user preference, recurring mistake, proven approach, correct tool/command)?\n` +
+      (stoaTools
+        ? `If yes, call \`stoa__sub_agent_memory_set\` with the **full curated content** (consolidate/replace old entries, don't append blindly; no id needed in this session).\n`
+        : `If yes, update your memory with the **full curated content** (consolidate/replace old entries, don't append blindly):\n` +
+          '```\n' +
+          `BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\n` +
+          `curl -s -X PUT "$BASE_URL/api/sub-agents/${subAgent.id}/memory" \\\n` +
+          `  -H "Content-Type: application/json" \\\n` +
+          `  -H "x-agent-id: $STOA_ACTOR_ID" \\\n` +
+          `  -H "x-agent-secret: $STOA_SECRET" \\\n` +
+          `  -d '{"content": "your full curated memory here"}'\n` +
+          '```\n') +
+      `Do NOT save: trivial/one-time info, secrets/tokens, things already in room memory.\n` +
+      `Do NOT update room memory — it belongs to the parent agent.`;
+  } else {
+    // Main agent: MEMORY.md + USER.md + room memory + self-write instructions
+    const memRows = db.prepare('SELECT file, content FROM agent_memory WHERE actor_id=? AND content != \'\'').all(ai.actor_id);
+    const memParts = [];
+    for (const { file, content } of memRows) memParts.push(`### ${file}\n${content}`);
+    if (roomMem) memParts.push(`### Room Memory\n${roomMem.content}`);
+    if (memParts.length) memorySection = `\n## Memory\n${memParts.join('\n\n')}`;
+
+    const BUDGETS = { 'MEMORY.md': 2200, 'USER.md': 1375 };
+    const memFiles = db.prepare('SELECT file, content FROM agent_memory WHERE actor_id=?').all(ai.actor_id);
+    const memUsage = {};
+    for (const f of ['MEMORY.md', 'USER.md']) {
+      const row = memFiles.find(r => r.file === f);
+      memUsage[f] = (row?.content || '').length;
+    }
+
+    const roomMemContent = roomMem?.content || '';
+    const charCount = roomMemContent.length;
+    const budget = 1800;
+    const warnThreshold = 1400;
+    let thresholdWarning = '';
+    if (charCount > warnThreshold) {
+      thresholdWarning = `\n⚠ Room memory is at ${charCount}/${budget} chars — compress or summarize existing entries before your next update to stay within budget.`;
+    }
+    platformMemoryLine = `\n## Memory Management\n` +
+      `You have persistent memory for this room. Memory content (if any) is shown in the Memory section above.\n` +
+      `After each exchange, ask yourself: "Is there something worth noting?" Update memory when:\n` +
+      `- The user states a preference or working style\n` +
+      `- An important decision is made\n` +
+      `- Key project context is revealed\n` +
+      `Do NOT save trivial exchanges, greetings, or information already in memory.\n\n` +
+      `**Room memory** (context specific to this room):\n` +
+      (stoaTools
+        ? `Call \`stoa__room_memory_set\` with the full updated \`content\` (it replaces the whole room memory).\n`
+        : '```\n' +
+          `BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\n` +
+          `curl -s -X PUT "$BASE_URL/api/rooms/$STOA_ROOM_ID/memory" \\\n` +
+          `  -H "Content-Type: application/json" \\\n` +
+          `  -H "x-agent-id: $STOA_ACTOR_ID" \\\n` +
+          `  -H "x-agent-secret: $STOA_SECRET" \\\n` +
+          `  -d '{"content": "your updated memory content here"}'\n` +
+          '```\n') +
+      `Room memory budget: ${charCount}/${budget} chars used.${thresholdWarning}\n\n` +
+      `**Agent memory** (persists across all rooms — lessons, pitfalls, environment facts):\n` +
+      `- MEMORY.md (${memUsage['MEMORY.md']}/${BUDGETS['MEMORY.md']} chars): cross-room lessons, codebase gotchas, proven approaches\n` +
+      `- USER.md (${memUsage['USER.md']}/${BUDGETS['USER.md']} chars): user profile, preferences, working style\n` +
+      (stoaTools
+        ? `Call \`stoa__agent_memory_set\` with \`file\` ("MEMORY.md" or "USER.md") and the full \`content\`. `
+        : '```\n' +
+          `curl -s -X PUT "$BASE_URL/api/actors/$STOA_ACTOR_ID/memory/MEMORY.md" \\\n` +
+          `  -H "Content-Type: application/json" \\\n` +
+          `  -H "x-agent-id: $STOA_ACTOR_ID" \\\n` +
+          `  -H "x-agent-secret: $STOA_SECRET" \\\n` +
+          `  -d '{"content": "full curated content"}'\n` +
+          '```\n' +
+          `Replace MEMORY.md with USER.md for user profile updates. `) +
+      `Send full curated content (consolidate, don't append blindly). Never store secrets/tokens.`;
+  }
+
+  const emailThreadSection = buildEmailThreadSection(db, { roomId, threadId });
+
+  // Most callers pass a prompt that is (or is built from) a stored message already in
+  // the history above, so injecting it would duplicate it. Only callers whose prompt
+  // is never stored as a message (wake prompt, /sub-agent-trigger task, scheduled task)
+  // opt in with ai.prompt_outside_history; without it the agent would never see it.
+  const taskSection = ai.prompt_outside_history && prompt ? `\n${L.taskLabel}:\n${prompt}` : '';
+
+  const fullPrompt = [
+    identityLine,
+    `Room ID: ${roomId}`,
+    L.timeContext(nowUtc),
+    othersLine,
+    memorySection,
+    platformMemoryLine,
+    `\n${L.historyLabel}:\n${ctx}`,
+    replyCtx,
+    taskSection,
+    '\n' + L.replyInstruction,
+    otherAINames.length ? L.mentionInstruction(otherAINames) : '',
+    orchestrationLine,
+    '\n' + L.sendFileInstruction,
+    emailThreadSection,
+  ].filter(Boolean).join('\n');
+
   // Sub-agent workdir overrides parent workdir when set
   const baseWorkdir = resolveParticipantWorkdir(ai.participant_id, prefetchedCtx?.wdRow);
   const workdir = subAgent?.workdir || baseWorkdir;
@@ -7916,7 +7936,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         thread_id: threadId || undefined,
         system_prompt: roomSysPrompt || undefined,
         system_prompt_hash: sysPromptHash || undefined,
-        mcp_token: mcpTokenForTrigger({ actorId: ai.actor_id, roomId, threadId, subAgentId: subAgent?.id, toolsSupported: modelToolsSupported }),
+        mcp_token: mcpToken,
       }));
       console.log(`[trigger] sent to ${displayName} agent, msgId=${msgId}`);
     });

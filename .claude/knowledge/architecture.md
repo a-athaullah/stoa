@@ -201,6 +201,8 @@ Agent (Claude/Codex)
 
 **Built-in tools (24):** Messaging (`stoa__message_send`, `stoa__messages_read`, `stoa__threads_list`, `stoa__thread_read`), Memory (`stoa__room/agent/sub_agent_memory_get/set`), System prompts (`stoa__room/agent_system_prompt_get/set`), Sub-agents (`stoa__sub_agent_list/create/update/delete/trigger`), Automation (`stoa__automation_list/create/update/delete`, `stoa__connection_list`). Each tool calls the same `lib/*.js` core function as its REST counterpart (`{status, body}`), so validation is never duplicated. Configuration-mutating tools post a `· config` or `· automation` room notice via the same notice path as REST.
 
+**Prompt injection follows the token:** `triggerAiResponse` issues the MCP token before building the prompt. When the session gets a token and its harness mounts the gateway (`MCP_HARNESSES`: claude, codex), the progress-reporting, sub-agent output, delegation and memory sections name the `stoa__*` tools; otherwise (tool-less model, token issue failure) they keep the original curl blocks.
+
 **Upstream lifecycle:** stdio upstreams lazy-start on first call, idle-stop after N min, auto-restart with backoff. HTTP upstreams: stateless per request.
 
 **Token:** issued per session trigger (`issueToken`), stored as SHA-256 hash in `mcp_tokens`. Sengaja tanpa TTL — token stabil selama session, tidak menyebabkan respawn. Revoked when actor / sub_agent / room deleted.
