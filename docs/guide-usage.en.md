@@ -1101,7 +1101,7 @@ The detail panel includes:
 - Running in Docker — pull the new image instead.
 - No supported process manager (launchd, pm2, systemd, or supervisord) is the direct parent of the server process — a server started manually (`nohup`, `&`) or one that inherited a manager's environment without being launched by it is treated as unmanaged.
 - The checkout is on a non-default branch.
-- The working tree has uncommitted changes.
+- Tracked files have uncommitted changes (untracked files do not block).
 - There are local commits not on origin (diverged).
 - An update is already running or still finishing its boot check.
 
