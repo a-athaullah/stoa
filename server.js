@@ -2381,7 +2381,6 @@ const server = http.createServer(async (req, res) => {
       db.prepare('DELETE FROM room_participants WHERE room_id=?').run(roomId);
       db.prepare("DELETE FROM settings WHERE scope='room' AND scope_id=?").run(roomId);
       db.prepare('DELETE FROM room_memory WHERE room_id=?').run(roomId);
-      db.prepare('DELETE FROM memory_pending_writes WHERE room_id=?').run(roomId);
       mcpGateway.forgetRoom(roomId);
       db.prepare('DELETE FROM rooms WHERE id=?').run(roomId);
     });
@@ -3443,58 +3442,6 @@ const server = http.createServer(async (req, res) => {
     if (!requireAuth(req, res, url)) return;
     const r = stoaMemory.roomSet(parseInt(url.pathname.split('/')[3]), parseJsonBody(await readBody(req)));
     return json(res, r.body, r.status);
-  }
-
-  // GET /api/rooms/:id/memory/pending — list pending memory writes
-  if (req.method === 'GET' && url.pathname.match(/^\/api\/rooms\/\d+\/memory\/pending$/)) {
-    if (!requireAuth(req, res, url)) return;
-    const roomId = parseInt(url.pathname.split('/')[3]);
-    const room = db.prepare('SELECT id FROM rooms WHERE id=?').get(roomId);
-    if (!room) return json(res, { error: 'room not found' }, 404);
-    const writes = db.prepare(`
-      SELECT mpw.id, mpw.type, mpw.actor_id, mpw.file, mpw.proposed_content, mpw.proposed_at,
-             a.name as actor_name
-      FROM memory_pending_writes mpw
-      LEFT JOIN actors a ON a.id=mpw.actor_id
-      WHERE mpw.room_id=? AND mpw.status='pending'
-      ORDER BY mpw.proposed_at ASC
-    `).all(roomId);
-    return json(res, { writes });
-  }
-
-  // POST /api/rooms/:id/memory/pending/:writeId/approve
-  if (req.method === 'POST' && url.pathname.match(/^\/api\/rooms\/\d+\/memory\/pending\/\d+\/approve$/)) {
-    if (!requireAuth(req, res, url)) return;
-    const parts = url.pathname.split('/');
-    const roomId = parseInt(parts[3]);
-    const writeId = parseInt(parts[6]);
-    const pending = db.prepare("SELECT * FROM memory_pending_writes WHERE id=? AND room_id=? AND status='pending'").get(writeId, roomId);
-    if (!pending) return json(res, { error: 'pending write not found' }, 404);
-    db.transaction(() => {
-      if (pending.type === 'agent' && pending.actor_id && pending.file) {
-        db.prepare(
-          "INSERT INTO agent_memory (actor_id, file, content, updated_at) VALUES (?,?,?,datetime('now')) ON CONFLICT(actor_id, file) DO UPDATE SET content=excluded.content, updated_at=excluded.updated_at"
-        ).run(pending.actor_id, pending.file, pending.proposed_content);
-      } else if (pending.type === 'room') {
-        db.prepare(
-          "INSERT INTO room_memory (room_id, content, updated_at) VALUES (?,?,datetime('now')) ON CONFLICT(room_id) DO UPDATE SET content=excluded.content, updated_at=excluded.updated_at"
-        ).run(roomId, pending.proposed_content);
-      }
-      db.prepare("UPDATE memory_pending_writes SET status='approved' WHERE id=?").run(writeId);
-    })();
-    return json(res, { ok: true });
-  }
-
-  // POST /api/rooms/:id/memory/pending/:writeId/reject
-  if (req.method === 'POST' && url.pathname.match(/^\/api\/rooms\/\d+\/memory\/pending\/\d+\/reject$/)) {
-    if (!requireAuth(req, res, url)) return;
-    const parts = url.pathname.split('/');
-    const roomId = parseInt(parts[3]);
-    const writeId = parseInt(parts[6]);
-    const pending = db.prepare("SELECT id FROM memory_pending_writes WHERE id=? AND room_id=? AND status='pending'").get(writeId, roomId);
-    if (!pending) return json(res, { error: 'pending write not found' }, 404);
-    db.prepare("UPDATE memory_pending_writes SET status='rejected' WHERE id=?").run(writeId);
-    return json(res, { ok: true });
   }
 
   // ── Server process manager info & restart ──

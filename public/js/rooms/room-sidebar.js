@@ -746,8 +746,6 @@ function renderRoomSidebar(room, participants) {
 
       // start in render mode if there's content, else edit mode
       if (content.trim()) toRender(); else toEdit();
-
-      return { updateContent: (c) => { content = c; if (editWrap.style.display === 'none' || !editWrap.style.display) toRender(); } };
     }
 
     // ── Memory pane
@@ -762,38 +760,7 @@ function renderRoomSidebar(room, participants) {
         body.innerHTML = '';
         const BUDGET = data.budget || 1800;
 
-        if (data.pending_count > 0) {
-          const banner = document.createElement('div');
-          banner.style.cssText = 'background:color-mix(in srgb,oklch(80% .18 80) 18%,transparent);border:1px solid color-mix(in srgb,oklch(75% .18 80) 40%,transparent);border-radius:8px;padding:10px 12px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;gap:10px';
-          const bannerTxt = document.createElement('span'); bannerTxt.style.cssText = 'font-size:12.5px;color:var(--h-ink)'; bannerTxt.textContent = `${data.pending_count} pending write${data.pending_count > 1 ? 's' : ''} from agents`;
-          const reviewBtn = document.createElement('button'); reviewBtn.style.cssText = 'background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12px;padding:4px 12px;cursor:pointer;white-space:nowrap'; reviewBtn.textContent = 'review';
-          let pendingOpen = false;
-          const pendingList = document.createElement('div'); pendingList.style.display = 'none';
-          reviewBtn.onclick = async () => {
-            pendingOpen = !pendingOpen; reviewBtn.textContent = pendingOpen ? 'hide' : 'review';
-            if (pendingOpen) {
-              pendingList.style.display = 'block'; pendingList.innerHTML = '<span style="font-size:12px;color:var(--h-ink-mute)">loading…</span>';
-              try {
-                const pr = await fetch(`/api/rooms/${room.id}/memory/pending`); const pd = await pr.json();
-                pendingList.innerHTML = '';
-                (pd.writes || []).forEach(w => {
-                  const wRow = document.createElement('div'); wRow.style.cssText = 'border:1px solid var(--h-border);border-radius:8px;padding:10px 12px;margin-bottom:8px';
-                  const wMeta = document.createElement('div'); wMeta.style.cssText = 'font-size:11.5px;color:var(--h-ink-faint);margin-bottom:6px'; const wd = new Date(w.proposed_at + 'Z'); wMeta.textContent = `${w.actor_name} · ${wd.toLocaleString()}`;
-                  const wPre = document.createElement('pre'); wPre.style.cssText = 'font-size:12px;color:var(--h-ink);white-space:pre-wrap;word-break:break-word;margin:0 0 8px'; wPre.textContent = w.proposed_content;
-                  const wBtns = document.createElement('div'); wBtns.style.cssText = 'display:flex;gap:6px';
-                  const appr = document.createElement('button'); appr.style.cssText = 'background:transparent;border:1px solid var(--h-border);border-radius:999px;color:var(--h-ink-mute);font-family:var(--h-sans);font-size:12px;padding:3px 12px;cursor:pointer'; appr.textContent = 'approve';
-                  appr.onclick = async () => { appr.disabled = true; const rr = await fetch(`/api/rooms/${room.id}/memory/pending/${w.id}/approve`, { method:'POST' }); if (rr.ok) { wRow.style.opacity = '.4'; memField.updateContent(w.proposed_content); showToast('Write approved'); } else showToast('Failed to approve', { error:true }); };
-                  const rej = document.createElement('button'); rej.style.cssText = 'background:transparent;border:none;color:var(--h-ink-faint);font-family:var(--h-sans);font-size:12px;padding:3px 8px;cursor:pointer'; rej.textContent = 'reject';
-                  rej.onclick = async () => { rej.disabled = true; const rr = await fetch(`/api/rooms/${room.id}/memory/pending/${w.id}/reject`, { method:'POST' }); if (rr.ok) { wRow.style.opacity = '.4'; showToast('Write rejected'); } else showToast('Failed to reject', { error:true }); };
-                  wBtns.append(appr, rej); wRow.append(wMeta, wPre, wBtns); pendingList.appendChild(wRow);
-                });
-              } catch { pendingList.innerHTML = '<span style="font-size:12px;color:var(--h-ink-mute)">failed to load</span>'; }
-            } else { pendingList.style.display = 'none'; }
-          };
-          banner.append(bannerTxt, reviewBtn); body.appendChild(banner); body.appendChild(pendingList);
-        }
-
-        const memField = buildEditField(body, {
+        buildEditField(body, {
           initialContent: data.content || '',
           limit: BUDGET,
           placeholder: 'Write context injected into every session in this room…',
