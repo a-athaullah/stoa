@@ -3832,6 +3832,26 @@ async function runAsyncUnitTests() {
         assert.strictEqual((await mk().status()).update.last_result.rolled_back, true, 'last_result read from the state file at boot');
       });
 
+      await uta('npmCommand — runs npm-cli.js with this node (Windows / Unix / Homebrew layouts), never npm.cmd directly', async () => {
+        const has = (...files) => (f) => files.includes(f);
+        const noLink = () => { throw new Error('not a link'); };
+        const win = bg.npmCommand(['ci'], { platform: 'win32', execPath: '/n/node.exe', exists: has('/n/node_modules/npm/bin/npm-cli.js', '/n/npm.cmd'), realpath: noLink });
+        assert.deepStrictEqual(win, { file: '/n/node.exe', args: ['/n/node_modules/npm/bin/npm-cli.js', 'ci'] }, 'npm.cmd is skipped when npm-cli.js exists');
+        const unix = bg.npmCommand(['ci'], { platform: 'linux', execPath: '/opt/node/bin/node', exists: has('/opt/node/lib/node_modules/npm/bin/npm-cli.js', '/opt/node/bin/npm'), realpath: noLink });
+        assert.deepStrictEqual(unix, { file: '/opt/node/bin/node', args: ['/opt/node/lib/node_modules/npm/bin/npm-cli.js', 'ci'] });
+        const brew = bg.npmCommand(['ci'], { platform: 'darwin', execPath: '/hb/Cellar/node/1/bin/node', exists: has('/hb/Cellar/node/1/bin/npm'),
+          realpath: (f) => (f === '/hb/Cellar/node/1/bin/npm' ? '/hb/lib/node_modules/npm/bin/npm-cli.js' : noLink()) });
+        assert.deepStrictEqual(brew, { file: '/hb/Cellar/node/1/bin/node', args: ['/hb/lib/node_modules/npm/bin/npm-cli.js', 'ci'] }, 'symlinked bin/npm → same node, not the shebang');
+        assert.deepStrictEqual(bg.npmCommand(['ci'], { platform: 'linux', execPath: '/x/bin/node', exists: has('/x/bin/npm'), realpath: () => '/x/bin/npm' }),
+          { file: '/x/bin/npm', args: ['ci'] }, 'a real npm binary is run as is');
+        assert.deepStrictEqual(bg.npmCommand(['ci'], { platform: 'win32', execPath: 'C:/n/node.exe', exists: () => false, realpath: noLink }),
+          { file: 'npm', args: ['ci'] }, 'nothing found → PATH lookup, as before');
+        // On this machine, with a PATH that has no node on it: the resolved command still runs npm.
+        const real = bg.npmCommand(['--version']);
+        const out = require('child_process').execFileSync(real.file, real.args, { encoding: 'utf8', env: { ...process.env, PATH: '/usr/bin:/bin' } }).trim();
+        assert.match(out, /^\d+\.\d+\.\d+/);
+      });
+
       await uta('boot-guard — HEAD moved by hand → stale (no reset); healthy mark after delay → ok + last_result', async () => {
         const quiet = { log() {}, warn() {}, error() {} };
         const head = fx.head();
