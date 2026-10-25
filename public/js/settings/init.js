@@ -7,6 +7,7 @@ function initGlobalWs() {
       globalWs.send(JSON.stringify({ type: 'subscribe_global' }));
       refreshRoomList();
       _onGlobalWsReconnectAfterRestart();
+      if (typeof sUpdateFetchStatus === 'function') sUpdateFetchStatus();
       if (typeof autoState !== 'undefined' && autoState.loaded) {
         autoState.loaded = false;
         if (document.getElementById('s-tab-automation')?.style.display !== 'none') {
@@ -23,6 +24,8 @@ function initGlobalWs() {
       if (msg.type === 'actor_removed') handleActorRemoved(msg.actor_id, msg.affected_rooms);
       if (msg.type === 'server_restart') handleServerRestart(msg);
       if (msg.type === 'server_restarting') handleServerRestarting();
+      if (msg.type === 'update_available' && typeof sHandleUpdateAvailable === 'function') sHandleUpdateAvailable(msg);
+      if (msg.type === 'update_progress' && typeof sHandleUpdateProgress === 'function') sHandleUpdateProgress(msg);
       if (msg.type === 'room_deleted' || msg.type === 'room_archived') {
         if (currentRoomId === msg.room_id) {
           currentRoomId = null;

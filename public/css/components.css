@@ -378,6 +378,75 @@
   padding: 1px 4px; border-radius: 3px;
 }
 
+.s-update-value {
+  flex: 1; min-width: 0; font-size: 13.5px; color: var(--h-ink);
+  font-variant-numeric: tabular-nums; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.s-update-behind { font-family: var(--h-serif); font-style: italic; font-size: 12.5px; color: var(--h-ink-mute); }
+.s-update-btn {
+  background: transparent; color: var(--h-ink-mute); border: 1px solid var(--h-hairline); border-radius: 8px;
+  padding: 6px 13px; font-size: 13px; cursor: pointer; font-family: var(--h-sans); flex-shrink: 0;
+  transition: color .15s, border-color .15s;
+}
+.s-update-btn:hover:not(:disabled) { color: var(--h-ink); border-color: var(--h-ink-mute); }
+.s-update-btn:disabled { opacity: .45; cursor: default; }
+.s-update-btn:focus-visible,
+#s-update-card .s-server-save:focus-visible { outline: 2px solid var(--h-info-ink); outline-offset: 2px; }
+.s-update-note {
+  padding: 10px 18px; border-bottom: 1px solid var(--h-hair-soft);
+  font-family: var(--h-serif); font-style: italic; font-size: 13px; color: var(--h-ink-mute);
+  overflow-wrap: anywhere; white-space: pre-wrap;
+}
+.s-update-note.is-error { color: var(--h-red); font-style: normal; font-family: var(--h-sans); }
+.s-update-note.is-warn { color: var(--h-warn-ink); background: var(--h-warn-bg); font-style: normal; font-family: var(--h-sans); }
+.s-update-reason {
+  flex: 1; min-width: 0; font-family: var(--h-serif); font-style: italic; font-size: 13px; color: var(--h-ink-mute);
+}
+.s-update-steps {
+  list-style: none; margin: 0; padding: 12px 18px; border-bottom: 1px solid var(--h-hair-soft);
+  display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12.5px; color: var(--h-ink-faint);
+}
+.s-update-step { display: flex; align-items: center; gap: 7px; }
+.s-update-step::before {
+  content: ''; width: 7px; height: 7px; border-radius: 50%;
+  border: 1px solid currentColor; box-sizing: border-box; flex-shrink: 0;
+}
+.s-update-step.is-done { color: var(--h-ink-mute); }
+.s-update-step.is-done::before { background: currentColor; }
+.s-update-step.is-current { color: var(--h-ink); font-weight: 500; }
+.s-update-step.is-current::before { background: currentColor; animation: s-update-pulse 1.4s ease-in-out infinite; }
+.s-update-step.is-failed { color: var(--h-red); }
+.s-update-step.is-failed::before { background: currentColor; }
+@keyframes s-update-pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .s-update-step.is-current::before { animation: none; } }
+
+.s-update-dialog {
+  width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); margin: auto; padding: 0; overflow: auto;
+  border: 1px solid var(--h-hairline); border-radius: 16px; background: var(--h-surface); color: var(--h-ink);
+  box-shadow: 0 26px 64px rgba(0,0,0,.36);
+}
+.s-update-dialog::backdrop { background: rgba(18,12,7,.48); }
+.s-update-dlg { padding: 20px 22px 18px; display: flex; flex-direction: column; gap: 12px; }
+.s-update-dlg-title { margin: 0; font-family: var(--h-serif); font-weight: 400; font-size: 20px; overflow-wrap: anywhere; }
+.s-update-dlg-lead { margin: 0; font-size: 13.5px; color: var(--h-ink-mute); }
+.s-update-commits {
+  list-style: none; margin: 0; padding: 4px 0; max-height: 260px; overflow: auto;
+  border: 1px solid var(--h-hair-soft); border-radius: 10px;
+}
+.s-update-commit { display: flex; gap: 10px; align-items: baseline; padding: 6px 12px; font-size: 13px; }
+.s-update-commit + .s-update-commit { border-top: 1px solid var(--h-hair-soft); }
+.s-update-commit-sha { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--h-ink-faint); flex-shrink: 0; }
+.s-update-commit-subject { min-width: 0; overflow-wrap: anywhere; }
+.s-update-dlg-more { margin: 0; font-family: var(--h-serif); font-style: italic; font-size: 12.5px; color: var(--h-ink-faint); }
+.s-update-dlg-warn { margin: 0; font-size: 13px; line-height: 1.5; color: var(--h-ink-mute); }
+.s-update-dlg .s-update-note { padding: 0; border: none; }
+.s-update-dlg-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
+@media (max-width: 560px) {
+  .s-update-dlg { padding: 16px 16px 14px; }
+  #s-update-card .s-server-field { flex-wrap: wrap; gap: 8px 14px; }
+  #s-update-card .s-server-field-label { width: 92px; }
+}
+
 .s-server-hint {
   padding: 9px 18px 12px;
   font-size: 12px; color: var(--h-ink-faint);

@@ -122,6 +122,16 @@
 .app-nav-restart { color: var(--h-header-ink-faint); }
 .app-nav-restart:hover { color: var(--h-header-ink) !important; background: color-mix(in srgb, var(--h-red-fill) 30%, transparent) !important; }
 
+#nav-server .app-nav-icon { position: relative; }
+#nav-server.has-update .app-nav-icon::after {
+  content: ''; position: absolute; top: 8px; right: 8px;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--h-amber-fill); box-shadow: 0 0 0 2px var(--h-header-bg);
+}
+@media (max-width: 680px) {
+  #nav-server.has-update .app-nav-icon::after { top: 1px; right: 1px; }
+}
+
 #app-top-notice {
   position: fixed;
   top: 0; left: 0; right: 0;

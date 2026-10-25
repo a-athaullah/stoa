@@ -11577,6 +11577,49 @@ async function run() {
     assert.strictEqual(ctx.schedNextRunText({ enabled: 0, next_run_at: null, schedule_spec: daily }), 'paused');
   });
 
+  await test('update panel — blocker/unsupported codes map to readable reasons, outcome toast shown once, badge follows behind', () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const toasts = [];
+    const store = {};
+    const nav = { title: '', attrs: {}, cls: new Set(),
+      classList: { toggle(c, on) { on ? nav.cls.add(c) : nav.cls.delete(c); } },
+      setAttribute(k, v) { nav.attrs[k] = v; } };
+    const ctx = {
+      document: { getElementById: id => (id === 'nav-server' ? nav : null) },
+      localStorage: { getItem: k => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); } },
+      showToast: (msg, opts) => toasts.push({ msg, error: !!opts?.error }),
+    };
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'public/js/settings/update.js'), 'utf8'), ctx);
+    const R = ctx.sUpdateBlockReason;
+    const base = { supported: true, reason: null, behind: 3, blockers: [] };
+    assert.strictEqual(R(base), null, 'behind with no blockers can update');
+    assert.match(R({ ...base, supported: false, reason: 'docker' }), /docker/);
+    assert.match(R({ ...base, supported: false, reason: 'not_git' }), /not a git checkout/);
+    assert.match(R({ ...base, supported: false, reason: 'no_process_manager' }), /process manager/);
+    assert.strictEqual(R({ ...base, supported: false, reason: 'brand_new' }), 'brand_new', 'unknown code shown as-is');
+    assert.match(R({ ...base, blockers: ['dirty_tree'] }), /uncommitted/);
+    assert.match(R({ ...base, blockers: ['diverged'] }), /fast-forward/);
+    assert.match(R({ ...base, blockers: ['not_default_branch'] }), /another branch/);
+    assert.match(R({ ...base, blockers: ['up_to_date', 'dirty_tree'] }), /uncommitted/, 'a real blocker outranks up_to_date');
+    assert.strictEqual(R({ ...base, behind: 0 }), 'already up to date.');
+    assert.strictEqual(ctx.sUpdateVersionLabel({ sha: 'abc1234', version: '0.68.0' }), 'v0.68.0 · abc1234');
+    assert.strictEqual(ctx.sUpdateVersionLabel(null), '—');
+
+    const rolled = { ...base, current: { sha: 'e2f45ac', version: '0.67.1' },
+      update: { state: 'idle', last_result: { ok: false, rolled_back: true, from: 'e2f45ac', error: 'migration failed', at: '2026-10-25T07:00:00Z' } } };
+    ctx.sUpdateApply(rolled);
+    ctx.sUpdateApply(rolled);
+    assert.strictEqual(toasts.length, 1, 'rollback announced once across reconnects');
+    assert.ok(toasts[0].error && /rolled back to e2f45ac: migration failed/.test(toasts[0].msg), toasts[0].msg);
+    assert.ok(nav.cls.has('has-update') && /update available/.test(nav.attrs['aria-label']), 'badge on while behind');
+    ctx.sHandleUpdateAvailable({ latest: { sha: 'abc1234' }, behind: 0 });
+    assert.ok(!nav.cls.has('has-update') && nav.attrs['aria-label'] === 'Server', 'badge cleared when up to date');
+    ctx.sUpdateApply({ ...rolled, update: { state: 'idle', last_result: { ok: true, at: '2026-10-25T08:00:00Z' } } });
+    assert.strictEqual(toasts.length, 2);
+    assert.ok(!toasts[1].error && /updated to v0.67.1/.test(toasts[1].msg), 'a newer successful result is announced');
+  });
+
   // escapeTomlValue unit tests
   await test('escapeTomlValue — escapes newlines and quotes', () => {
     const { escapeTomlValue } = require('./codex-session');

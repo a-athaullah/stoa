@@ -90,6 +90,8 @@ async function sLoadServerTab() {
   sPublicUrl = data.public_url || '';
   sPort = port;
   sLoadProcessManager();
+  sRenderUpdateCard();
+  sUpdateFetchStatus();
 }
 
 async function sLoadProcessManager() {
