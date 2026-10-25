@@ -10424,6 +10424,37 @@ async function run() {
     const r = await rawReq('GET', '/api/health/db', null, 'application/json', { Cookie: '' });
     assert.strictEqual(r.status, 401, 'should be 401 without auth');
   });
+  await test('GET /api/health — no login: 200 with exactly ok/db/migrations, nothing else', async () => {
+    const r = await rawReq('GET', '/api/health', null, 'application/json', { Cookie: '' });
+    assert.strictEqual(r.status, 200);
+    assert.deepStrictEqual(r.body, { ok: true, db: 'ok', migrations: { pending: 0, failed: 0 } }, 'no version, paths, file names or connector state');
+    assert.strictEqual(r.headers['content-type'], 'application/json');
+  });
+  await test('GET /api/health — exemption is the exact path only: /api/health/ and /api/health/db stay 401', async () => {
+    for (const p of ['/api/health/', '/api/health/db', '/api/health?x=/api/rooms']) {
+      const r = await rawReq('GET', p, null, 'application/json', { Cookie: '' });
+      if (p.includes('?')) { assert.strictEqual(r.status, 200, 'query string does not change the route'); assert.deepStrictEqual(Object.keys(r.body).sort(), ['db', 'migrations', 'ok']); continue; }
+      assert.strictEqual(r.status, 401, `${p} needs auth`);
+    }
+    const post = await rawReq('POST', '/api/health', null, 'application/json', { Cookie: '' });
+    assert.strictEqual(post.status, 401, 'only GET is public');
+  });
+  await test('GET /api/health — an unapplied migration file → 503, pending counted, file name not exposed', async () => {
+    const db = require('./db');
+    const row = db.prepare('SELECT filename FROM migrations ORDER BY filename DESC LIMIT 1').get();
+    db.prepare('DELETE FROM migrations WHERE filename=?').run(row.filename);
+    try {
+      const r = await waitUntil(async () => {
+        const x = await rawReq('GET', '/api/health', null, 'application/json', { Cookie: '' });
+        return x.status === 503 ? x : null;
+      }, 10000, 250);
+      assert.deepStrictEqual(r.body, { ok: false, db: 'ok', migrations: { pending: 1, failed: 0 } });
+      assert.ok(!r.raw.includes(row.filename.replace(/\.sql$/, '')), 'migration name not leaked');
+    } finally {
+      db.prepare('INSERT OR IGNORE INTO migrations (filename) VALUES (?)').run(row.filename);
+    }
+    await waitUntil(async () => (await rawReq('GET', '/api/health', null, 'application/json', { Cookie: '' })).status === 200, 10000, 250);
+  });
   await test('R26 — Migration applied: ai_sessions has pinned column', async () => {
     const r = await req('GET', '/api/health/db');
     assert.strictEqual(r.status, 200, 'server healthy after migration');
