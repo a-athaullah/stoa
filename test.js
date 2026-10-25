@@ -3894,6 +3894,34 @@ async function runAsyncUnitTests() {
         assert.strictEqual(fsM.readdirSync(tmp).filter(f => f.startsWith('update-state.json.tmp')).length, 0, 'atomic write leaves no tmp file');
       });
 
+      await uta('boot-guard — supervisord: rollback on boot 3 so the old version starts before FATAL (default startretries=3)', async () => {
+        const quiet = { log() {}, warn() {}, error() {} };
+        // supervisord's restart loop for a program that keeps exiting within startsecs (supervisor/process.py:
+        // finish() → BACKOFF and backoff += 1; transition() spawns again only while backoff <= startretries,
+        // else FATAL). Every boot here exits quickly: the update crashes, the rollback boot exits 1.
+        // → boot-guard results per start, ending with 'none' if the rolled-back version got started.
+        const superviseCrashLoop = (env, startretries = 3) => {
+          const before = fx.head();
+          const bad = (fx.commit(fx.live, { 'crash.txt': String(Math.random()) }, 'crashing update'), fx.head());
+          bg.writeState(stateFile, { status: 'pending', prev_head: before, new_head: bad, attempts: 0 });
+          const boots = [];
+          for (let backoff = 0; backoff <= startretries; backoff++) {
+            const r = bg.runBootGuard({ file: stateFile, repoDir: fx.live, env, exit: () => {}, log: quiet });
+            boots.push(r);
+            if (r === 'none') break;
+          }
+          return { boots, before };
+        };
+        const plain = superviseCrashLoop({});
+        assert.deepStrictEqual(plain.boots, ['counted', 'counted', 'counted', 'rolled_back'], 'without the adjustment: FATAL right after the rollback boot');
+        assert.strictEqual(fx.head(), plain.before, 'tree was reset, but supervisord would never start it');
+        const sup = superviseCrashLoop({ SUPERVISOR_ENABLED: '1' });
+        assert.deepStrictEqual(sup.boots, ['counted', 'counted', 'rolled_back', 'none'], 'rolled-back version gets start 4');
+        assert.strictEqual(fx.head(), sup.before);
+        assert.strictEqual(bg.readState(stateFile).last_result.error, `server failed to stay up ${bg.MAX_ATTEMPTS - 1} times after the update — rolled back`);
+        assert.deepStrictEqual([bg.maxAttempts({}), bg.maxAttempts({ SUPERVISOR_ENABLED: '1' })], [3, 2]);
+      });
+
       await uta('server-update — daily check timer fetches on its own and reports fetch failures as check_error', async () => {
         const u2 = mk();
         const stop = u2.startDailyCheck({ firstDelayMs: 10, intervalMs: 50 });
