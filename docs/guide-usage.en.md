@@ -1093,17 +1093,19 @@ The detail panel includes:
 
 **Safeguards:**
 - Before the live server is touched, the new version is booted against a copy of the database. If that test fails, the changes are rolled back and the live server keeps running without a restart.
-- If the server fails to start successfully more than 3 times after the update, Stoa automatically rolls back to the previous version and shows a warning after you reconnect.
+- If the server fails to start successfully 3 times after the update (2 under supervisord, so the rolled-back version still gets a start within supervisord's default `startretries`), Stoa automatically rolls back to the previous version and shows a warning after you reconnect.
 - If any agents have active runs, a confirmation dialog appears before the update is forced.
 
 **Update is disabled (with reason shown) when:**
 - The install is not a git checkout — update by hand instead.
 - Running in Docker — pull the new image instead.
-- No process manager (launchd, pm2, systemd, or supervisord) is managing Stoa.
+- No supported process manager (launchd, pm2, systemd, or supervisord) is the direct parent of the server process — a server started manually (`nohup`, `&`) or one that inherited a manager's environment without being launched by it is treated as unmanaged.
 - The checkout is on a non-default branch.
 - The working tree has uncommitted changes.
 - There are local commits not on origin (diverged).
 - An update is already running or still finishing its boot check.
+
+The process manager must restart the server after a non-zero exit (Stoa exits with code 75 on planned restarts): launchd `KeepAlive: true`; pm2 default (`autorestart: true`); systemd `Restart=always` or `Restart=on-failure`; supervisord `autorestart=true` or `unexpected` (default), with `startretries ≥ 3` (default).
 
 Previously, updating required running `git pull` manually and restarting the process manager.
 
