@@ -285,7 +285,7 @@ curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
 | `stoa__room_system_prompt_get` / `_set` | `_set`: `system_prompt` (字符串或 null), `max_active_threads?` (1-20) | `GET` / `PUT /api/rooms/:id/system-prompt` |
 | `stoa__agent_system_prompt_get` / `_set` | `_set`: `system_prompt` (字符串或 null，最大 64KB) | `GET` / `PUT /api/actors/:id/system-prompt` |
 | `stoa__sub_agent_list` | — | `GET /api/actors/:id/sub-agents` (仅限自己的) |
-| `stoa__sub_agent_create` | `label` + 可选 `tier`, `model`, `workdir`, `system_prompt`, `harness`, `description`, `role`, `link_to_room` (默认 true) | `POST /api/actors/:id/sub-agents`，随后链接到你的房间 (`POST /api/rooms/:id/sub-agents`)。创建和链接同时成功或失败 |
+| `stoa__sub_agent_create` | `label` + 可选 `tier`, `model`, `workdir`, `system_prompt`, `harness`, `description`, `role`, `link_to_room` (默认 true) | `POST /api/actors/:id/sub-agents`，随后链接到你的房间 (`POST /api/rooms/:id/sub-agents`)。创建和链接同时成功或失败。每个 agent 最多 30 个子 agent (已满时返回 409，REST 与 MCP 相同) |
 | `stoa__sub_agent_update` | `sub_agent_id` + 任意创建字段, `enabled` | `PATCH /api/sub-agents/:id` |
 | `stoa__sub_agent_delete` | `sub_agent_id` | `DELETE /api/sub-agents/:id` (同时删除其记忆) |
 | `stoa__sub_agent_trigger` | `task`, `label` 或 `sub_agent_id`, `thread_id?`, `main_feed?` | `POST /api/rooms/:id/sub-agent-trigger`。使用此工具或 `@label` 提及二选一，不要同时使用 |

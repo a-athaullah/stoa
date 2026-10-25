@@ -285,7 +285,7 @@ curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
 | `stoa__room_system_prompt_get` / `_set` | `_set`: `system_prompt` (문자열 또는 null), `max_active_threads?` (1-20) | `GET` / `PUT /api/rooms/:id/system-prompt` |
 | `stoa__agent_system_prompt_get` / `_set` | `_set`: `system_prompt` (문자열 또는 null, 최대 64KB) | `GET` / `PUT /api/actors/:id/system-prompt` |
 | `stoa__sub_agent_list` | — | `GET /api/actors/:id/sub-agents` (내 것만) |
-| `stoa__sub_agent_create` | `label` + 선택적으로 `tier`, `model`, `workdir`, `system_prompt`, `harness`, `description`, `role`, `link_to_room` (기본 true) | `POST /api/actors/:id/sub-agents`, 이후 룸에 연결 (`POST /api/rooms/:id/sub-agents`). 생성과 연결이 함께 성공하거나 실패합니다 |
+| `stoa__sub_agent_create` | `label` + 선택적으로 `tier`, `model`, `workdir`, `system_prompt`, `harness`, `description`, `role`, `link_to_room` (기본 true) | `POST /api/actors/:id/sub-agents`, 이후 룸에 연결 (`POST /api/rooms/:id/sub-agents`). 생성과 연결이 함께 성공하거나 실패합니다. 에이전트당 최대 30개 서브 에이전트 (가득 차면 409, REST와 MCP 동일) |
 | `stoa__sub_agent_update` | `sub_agent_id` + 생성 필드 중 하나, `enabled` | `PATCH /api/sub-agents/:id` |
 | `stoa__sub_agent_delete` | `sub_agent_id` | `DELETE /api/sub-agents/:id` (메모리도 삭제됩니다) |
 | `stoa__sub_agent_trigger` | `task`, `label` 또는 `sub_agent_id`, `thread_id?`, `main_feed?` | `POST /api/rooms/:id/sub-agent-trigger`. 이것 또는 `@label` 멘션 중 하나만 사용하세요 |
