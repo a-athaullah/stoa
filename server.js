@@ -8,6 +8,11 @@ const db = require('./db');
 const { ClaudeSession } = require('./claude-session');
 const { validateScheduleSpec, computeNextRun, nextRunAfterSkip, describeSchedule } = require('./lib/schedule');
 const { createRoomSchedules, scheduleMcpTools } = require('./lib/room-schedules');
+const { createRoomMessages } = require('./lib/room-messages');
+const { createStoaMemory } = require('./lib/stoa-memory');
+const { createSystemPrompts } = require('./lib/system-prompts');
+const { createSubAgents } = require('./lib/sub-agents');
+const { createAutomationCrud } = require('./lib/automation-crud');
 const { collectDiagnostics, buildEnvelope, gcDebugBundles } = require('./lib/debug-bundle');
 const { enrichAutomation, enrichAutomationList, watchReplyAutomation } = require('./lib/automation-identity');
 const { sanitizeDisplayName, EMAIL_REPLY_LIMITS, buildEmailThreadSection, normalizeRefIds, findEmailReplyThread } = require('./lib/email-threading');
@@ -446,19 +451,11 @@ function resolveThread(roomId, threadId) {
 // Depth guard is handled by MAX_WAKE_CASCADE_DEPTH + cascade only fires from
 // parent responses, not sub-agent responses.
 
-const SUB_AGENT_DESCRIPTION_MAX = 500;
-const SUB_AGENT_ROLE_MAX = 40;
-// Returns { value } (trimmed string or null) or { error } for an optional sub-agent text field.
-function normalizeSubAgentText(v, field, max, { singleLine = false } = {}) {
-  if (v === null) return { value: null };
-  if (typeof v !== 'string') return { error: `${field} must be a string or null` };
-  const t = v.trim();
-  if (t.length > max) return { error: `${field} must be at most ${max} characters` };
-  if (singleLine && /[\u0000-\u001f\u007f]/.test(t)) return { error: `${field} must be a single line without control characters` };
-  return { value: t || null };
+function deleteAvatarFile(avatarUrl) {
+  if (!avatarUrl) return;
+  const oldPath = path.join(__dirname, avatarUrl.replace(/^\//, ''));
+  if (oldPath.startsWith(path.join(__dirname, 'uploads')) && fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
 }
-const normalizeSubAgentDescription = v => normalizeSubAgentText(v, 'description', SUB_AGENT_DESCRIPTION_MAX);
-const normalizeSubAgentRole = v => normalizeSubAgentText(v, 'role', SUB_AGENT_ROLE_MAX, { singleLine: true });
 
 // Verify x-agent-id / x-agent-secret headers (same HMAC scheme as proactive message).
 // Returns the agent actor row on success, or null.
@@ -1657,10 +1654,27 @@ const mcpUpstreams = createUpstreamManager({
   authProvider: (row) => mcpOAuth.provider(row.id),
   needsAuth: (row) => mcpOAuth.needsAuth(row),
 });
-// Scheduled triggers core, shared by /api/rooms/:id/schedules and the stoa__schedule_* MCP tools.
+// Cores shared by the HTTP routes and the built-in stoa__* MCP tools (one implementation each, so
+// validation cannot drift between the two paths).
 const roomSchedules = createRoomSchedules({ db, broadcast });
+const roomMessages = createRoomMessages({
+  db, broadcast, broadcastGlobal, resolveThread, enrichAutomation, enrichAutomationList, enrichReply, getThreadRootPreview,
+  cascadeMentions: cascadeMentionsFromProactive, uploadsDir: UPLOADS_DIR,
+});
+const stoaMemory = createStoaMemory({ db });
+const systemPrompts = createSystemPrompts({ db });
+const subAgents = createSubAgents({
+  db, broadcast, getHarnessModels, deleteAvatarFile, resolveThread,
+  onDeleted: (id) => mcpGateway.forgetSubAgent(id),
+  isAgentOnline: (actorId) => agentClients.get(actorId)?.readyState === 1,
+  runSubAgent: (roomId, ai, task, threadId) => {
+    triggerAiResponse(roomId, ai, task, null, [], null, threadId).catch(e => console.error('[sub-agent-trigger] error:', e.message));
+  },
+});
+const automationCrud = createAutomationCrud({ db, validateConditions, postNotice: postAutomationChangeNotice });
 const mcpGateway = createMcpGateway({
-  db, upstreams: mcpUpstreams, builtinTools: scheduleMcpTools(roomSchedules), encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt, version: require('./package.json').version,
+  db, upstreams: mcpUpstreams, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt, version: require('./package.json').version,
+  builtinTools: scheduleMcpTools(roomSchedules),
   approvalTimeoutMs: Math.min(APPROVAL_TIMEOUT_MAX_MS, Math.max(1000, parseInt(process.env.MCP_APPROVAL_TIMEOUT_MS, 10) || 5 * 60_000)),
   // Approval cards live in the room (and thread) the agent is working in; the MCP page's approval log
   // needs them too, so every other owner connection gets the same event. One copy per connection.
@@ -2119,12 +2133,7 @@ const server = http.createServer(async (req, res) => {
     return json(res, { url: `/uploads/${saved}`, name: fileName || saved });
   }
 
-  // ── Avatar helpers (shared by actor + sub-agent avatar endpoints)
-  function deleteAvatarFile(avatarUrl) {
-    if (!avatarUrl) return;
-    const oldPath = path.join(__dirname, avatarUrl.replace(/^\//, ''));
-    if (oldPath.startsWith(path.join(__dirname, 'uploads')) && fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
-  }
+  // ── Avatar helpers (shared by actor + sub-agent avatar endpoints; deleteAvatarFile is module-level)
   function saveAvatarFile(prefix, id, dataUrl) {
     const mimeMatch = dataUrl.match(/^data:(image\/[a-z+]+);base64,/);
     if (!mimeMatch) return { error: 'invalid data_url format' };
@@ -2435,82 +2444,13 @@ const server = http.createServer(async (req, res) => {
     const roomId = url.pathname.split('/')[3];
 
     if (url.pathname.endsWith('/messages')) {
-      const scopeAll = url.searchParams.get('scope') === 'all';
-      const before = url.searchParams.get('before');
-      const limit  = Math.min(parseInt(url.searchParams.get('limit') ?? '50'), 100);
-      const threadFilter = scopeAll ? '' : 'AND (m.thread_id IS NULL OR m.broadcast_reason IS NOT NULL)';
-      // Subquery summary per root (used only in roots-only mode)
-      const threadSummarySQL = scopeAll ? '' : `,
-        CASE WHEN m.thread_id IS NULL THEN (SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id) END AS thread_count,
-        CASE WHEN m.thread_id IS NULL THEN (SELECT MAX(r.created_at) FROM messages r WHERE r.thread_id = m.id) END AS thread_last_at,
-        CASE WHEN m.thread_id IS NULL THEN (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state IN ('streaming','requesting'))) END AS thread_active,
-        CASE WHEN m.thread_id IS NULL THEN (SELECT GROUP_CONCAT(DISTINCT rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id) END AS thread_participant_ids,
-        CASE WHEN m.thread_id IS NULL THEN (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state = 'error')) END AS thread_has_error,
-        CASE WHEN m.thread_id IS NULL THEN (SELECT GROUP_CONCAT(DISTINCT r.sub_agent_label || ':' || rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id AND r.sub_agent_label IS NOT NULL) END AS thread_sub_agent_participants`;
-
-      function enrichThreadData(m) {
-        if (m.broadcast_reason && m.thread_id) {
-          m.thread_root_preview = getThreadRootPreview(m.thread_id);
-          return;
-        }
-        const sap = m.thread_sub_agent_participants ? m.thread_sub_agent_participants.split(',').map(s => { const [label, aid] = s.split(':'); return { label, actor_id: Number(aid) }; }) : [];
-        m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active, participant_ids: m.thread_participant_ids ? m.thread_participant_ids.split(',').map(Number) : [], has_error: !!m.thread_has_error, sub_agent_participants: sap };
-      }
-
-      if (before) {
-        const rows = db.prepare(`
-          SELECT * FROM (
-            SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
-                   sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url, sa.role AS sub_agent_role
-              ${threadSummarySQL}
-            FROM messages m
-            JOIN room_participants rp ON rp.id=m.participant_id
-            JOIN actors a ON a.id=rp.actor_id
-            LEFT JOIN sub_agents sa ON sa.id=m.sub_agent_id
-            WHERE m.room_id=? AND m.id < ?
-              ${threadFilter}
-              AND (
-                (m.state = 'complete' AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL))
-                OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
-                OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
-                OR (m.state = 'system_event' AND m.content LIKE '% · automation')
-                OR (m.state = 'system_event' AND m.content LIKE '% · schedule')
-                OR (m.state = 'error' AND m.broadcast_reason IS NOT NULL)
-              )
-            ORDER BY m.id DESC LIMIT ?
-          ) t ORDER BY id ASC
-        `).all(roomId, before, limit);
-        const enriched = enrichReply(rows);
-        enrichAutomationList(enriched);
-        if (!scopeAll) enriched.forEach(enrichThreadData);
-        return json(res, enriched);
-      }
-      const since = url.searchParams.get('since') ?? '0';
-      const rows = db.prepare(`
-        SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
-               sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url, sa.role AS sub_agent_role
-          ${threadSummarySQL}
-        FROM messages m
-        JOIN room_participants rp ON rp.id=m.participant_id
-        JOIN actors a ON a.id=rp.actor_id
-        LEFT JOIN sub_agents sa ON sa.id=m.sub_agent_id
-        WHERE m.room_id=? AND m.id > ?
-          ${threadFilter}
-          AND (
-            (m.state = 'complete' AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL))
-            OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
-            OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
-            OR (m.state = 'system_event' AND m.content LIKE '% · automation')
-            OR (m.state = 'system_event' AND m.content LIKE '% · schedule')
-            OR (m.state = 'error' AND m.broadcast_reason IS NOT NULL)
-          )
-        ORDER BY m.id ASC
-        LIMIT 500
-      `).all(roomId, since);
-      const enriched = enrichReply(rows);
-      enrichAutomationList(enriched);
-      if (!scopeAll) enriched.forEach(enrichThreadData);
-      return json(res, enriched);
+      const r = roomMessages.feed(roomId, {
+        before: url.searchParams.get('before'),
+        since: url.searchParams.get('since') ?? '0',
+        limit: Math.min(parseInt(url.searchParams.get('limit') ?? '50'), 100),
+        scopeAll: url.searchParams.get('scope') === 'all',
+      });
+      return json(res, r.body, r.status);
     }
 
     if (url.pathname.endsWith('/participants')) {
@@ -2610,24 +2550,8 @@ const server = http.createServer(async (req, res) => {
     const roomId = parseInt(url.pathname.split('/')[3]);
     const data = parseJsonBody(await readBody(req));
     if (!data) return json(res, { error: 'Invalid JSON' }, 400);
-    const { sub_agent_id } = data;
-    if (!sub_agent_id) return json(res, { error: 'sub_agent_id required' }, 400);
-    const sa = db.prepare('SELECT id, parent_actor_id, label FROM sub_agents WHERE id=?').get(sub_agent_id);
-    if (!sa) return json(res, { error: 'sub-agent not found' }, 404);
-    const room = db.prepare('SELECT id FROM rooms WHERE id=?').get(roomId);
-    if (!room) return json(res, { error: 'room not found' }, 404);
-    const parentInRoom = db.prepare('SELECT 1 FROM room_participants WHERE room_id=? AND actor_id=?').get(roomId, sa.parent_actor_id);
-    if (!parentInRoom) return json(res, { error: 'parent agent is not a participant in this room' }, 403);
-    const labelCollision = db.prepare(`
-      SELECT sa2.label, a.name AS parent_name FROM room_sub_agents rsa
-      JOIN sub_agents sa2 ON sa2.id=rsa.sub_agent_id
-      JOIN actors a ON a.id=sa2.parent_actor_id
-      WHERE rsa.room_id=? AND sa2.label=? AND sa2.parent_actor_id!=?
-    `).get(roomId, sa.label, sa.parent_actor_id);
-    if (labelCollision) return json(res, { error: `label "${sa.label}" already in this room (from ${labelCollision.parent_name})` }, 409);
-    db.prepare('INSERT OR IGNORE INTO room_sub_agents (room_id, sub_agent_id) VALUES (?,?)').run(roomId, sub_agent_id);
-    broadcast(roomId, { type: 'sub_agent_linked', room_id: roomId, sub_agent_id });
-    return json(res, { ok: true });
+    const r = subAgents.link(roomId, data.sub_agent_id);
+    return json(res, r.body, r.status);
   }
 
   if (req.method === 'DELETE' && url.pathname.match(/^\/api\/rooms\/\d+\/sub-agents\/\d+$/)) {
@@ -2670,83 +2594,10 @@ const server = http.createServer(async (req, res) => {
     const roomId = parseInt(url.pathname.split('/')[3]);
     const agent = verifyAgentRequest(req);
     if (!agent) return json(res, { error: 'agent auth required' }, 403);
-
     const data = parseJsonBody(await readBody(req));
     if (!data) return json(res, { error: 'Invalid JSON' }, 400);
-    // R4: reject empty/placeholder/too-short task.
-    const task = (data.task || '').trim();
-    if (task.length < 10 || /^(test|todo|tbd|placeholder|\.+)$/i.test(task)) {
-      return json(res, { error: 'invalid_task' }, 400);
-    }
-
-    const room = db.prepare('SELECT id, archived_at, spawns_paused, max_sub_agents, max_spawns_per_hour FROM rooms WHERE id=?').get(roomId);
-    if (!room) return json(res, { error: 'room not found' }, 404);
-    if (room.archived_at) return json(res, { error: 'room is archived' }, 400);
-    if (room.spawns_paused) return json(res, { error: 'spawns_paused' }, 409);
-
-    const parentPart = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(roomId, agent.id);
-    if (!parentPart) return json(res, { error: 'agent is not a participant in this room' }, 403);
-
-    // Thread support
-    const triggerThreadId = data.thread_id ? parseInt(data.thread_id) : null;
-    if (triggerThreadId) {
-      const threadErr = resolveThread(roomId, triggerThreadId);
-      if (threadErr) return json(res, { error: threadErr }, 400);
-    }
-
-    // Resolve sub-agent by id or label; must be linked in this room AND owned by the requester (parent-only, Gap 2).
-    let sub;
-    if (data.sub_agent_id) {
-      sub = db.prepare(`
-        SELECT sa.* FROM room_sub_agents rsa JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
-        WHERE rsa.room_id=? AND sa.id=? AND sa.enabled=1
-      `).get(roomId, parseInt(data.sub_agent_id));
-    } else if (data.label) {
-      sub = db.prepare(`
-        SELECT sa.* FROM room_sub_agents rsa JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
-        WHERE rsa.room_id=? AND sa.label=? AND sa.enabled=1
-      `).get(roomId, String(data.label));
-    } else {
-      return json(res, { error: 'sub_agent_id or label required' }, 400);
-    }
-    if (!sub) return json(res, { error: 'sub-agent not found in this room' }, 404);
-    if (sub.parent_actor_id !== agent.id) return json(res, { error: 'not your sub-agent' }, 403);
-
-    // Budget: concurrent cap (running sub-agent messages) + hourly rate (orchestrator spawns).
-    const running = db.prepare(
-      "SELECT COUNT(*) AS c FROM messages WHERE room_id=? AND sub_agent_id IS NOT NULL AND state='streaming'"
-    ).get(roomId).c;
-    if (running >= room.max_sub_agents) return json(res, { error: 'max_concurrent' }, 429);
-    const lastHour = db.prepare(
-      "SELECT COUNT(*) AS c FROM messages WHERE room_id=? AND parent_message_id IS NOT NULL AND created_at >= datetime('now','-1 hour')"
-    ).get(roomId).c;
-    if (lastHour >= room.max_spawns_per_hour) return json(res, { error: 'budget_exceeded' }, 429);
-
-    // Marker message (non-null parent_message_id) → enables the one-shot auto-wake on completion.
-    const orchMsg = db.prepare(
-      "SELECT id FROM messages WHERE participant_id=? AND room_id=? ORDER BY id DESC LIMIT 1"
-    ).get(parentPart.id, roomId);
-    const parentMessageId = orchMsg?.id ?? null;
-
-    const ai = db.prepare(`
-      SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.adapter_config, a.avatar_color, a.avatar_symbol, a.avatar_url
-      FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.id=?
-    `).get(parentPart.id);
-    const effectiveHarness = sub.harness || ai.adapter || 'claude';
-    ai.sub_agent = { id: sub.id, label: sub.label, tier: sub.tier, model: sub.model, workdir: sub.workdir, system_prompt: sub.system_prompt, harness: effectiveHarness, avatar_color: sub.avatar_color, avatar_symbol: sub.avatar_symbol, avatar_url: sub.avatar_url, description: sub.description, role: sub.role };
-    ai.parent_message_id = parentMessageId;
-    ai.prompt_outside_history = true;
-
-    // Pre-check: parent actor's stoa-agent must be online to run the sub-agent.
-    const parentWs = agentClients.get(agent.id);
-    if (!parentWs || parentWs.readyState !== 1) {
-      return json(res, { error: 'parent_offline', message: `${ai.name} sedang offline — sub-agent tidak bisa dijalankan` }, 503);
-    }
-
-    // Fire-and-forget: return 200 (accepted) immediately. The orchestrator MUST NOT
-    // block waiting — with MAX_CONCURRENT=1 that would deadlock (Gap 4).
-    triggerAiResponse(roomId, ai, task, null, [], null, triggerThreadId).catch(e => console.error('[sub-agent-trigger] error:', e.message));
-    return json(res, { ok: true, label: sub.label });
+    const r = subAgents.trigger(roomId, agent.id, data);
+    return json(res, r.body, r.status);
   }
 
   // ── Phase 2b: list active sub-agent runs in a room (human-auth)
@@ -2821,78 +2672,8 @@ const server = http.createServer(async (req, res) => {
 
     const data = parseJsonBody(await readBody(req));
     if (!data) return json(res, { error: 'Invalid JSON' }, 400);
-    const content = data.content?.trim();
-    if (!content) return json(res, { error: 'content required' }, 400);
-    const rawEventId = typeof data.event_id === 'string' ? data.event_id.trim() : '';
-    const eventId = rawEventId && rawEventId.length <= 128 ? rawEventId : null;
-
-    const room = db.prepare('SELECT id, archived_at FROM rooms WHERE id=?').get(roomId);
-    if (!room) return json(res, { error: 'room not found' }, 404);
-    if (room.archived_at) return json(res, { error: 'room is archived' }, 400);
-
-    const participant = db.prepare(
-      'SELECT rp.id FROM room_participants rp WHERE rp.room_id=? AND rp.actor_id=?'
-    ).get(roomId, agentId);
-    if (!participant) return json(res, { error: 'agent is not a participant in this room' }, 403);
-
-    // Thread support: agent can post into a specific thread
-    const threadId = data.thread_id ? parseInt(data.thread_id) : null;
-    if (threadId) {
-      const threadErr = resolveThread(roomId, threadId);
-      if (threadErr) return json(res, { error: threadErr }, 400);
-    }
-
-    if (eventId) {
-      const existing = db.prepare(
-        'SELECT id, content FROM messages WHERE room_id=? AND client_event_id=?'
-      ).get(roomId, eventId);
-      if (existing) {
-        if (existing.content !== content) return json(res, { error: 'event_id conflict: content mismatch' }, 409);
-        return json(res, { message_id: existing.id, idempotent: true });
-      }
-    }
-
-    // sub_agent_id / attachments: used by the agent client to deliver a turn the CLI ran on its own
-    // (stoa.js postUnsolicitedResult) under the right identity, with its uploaded [send:] files.
-    let subAgent = null;
-    if (data.sub_agent_id != null) {
-      const saId = Number(data.sub_agent_id);
-      if (!Number.isInteger(saId) || saId <= 0) return json(res, { error: 'invalid sub_agent_id' }, 400);
-      subAgent = db.prepare('SELECT id, label FROM sub_agents WHERE id=? AND parent_actor_id=?').get(saId, agentId);
-      if (!subAgent) return json(res, { error: 'sub-agent not found for this agent' }, 403);
-    }
-    const attachments = [];
-    if (data.attachments != null) {
-      if (!Array.isArray(data.attachments) || data.attachments.length > 10) return json(res, { error: 'attachments must be an array of at most 10 items' }, 400);
-      for (const a of data.attachments) {
-        const okUrl = typeof a?.url === 'string' && /^\/uploads\/[A-Za-z0-9._-]+$/.test(a.url) && !a.url.includes('..');
-        const okName = typeof a?.name === 'string' && a.name.length > 0 && a.name.length <= 255;
-        if (!okUrl || !okName) return json(res, { error: 'invalid attachment (url must be an /uploads/ file, name 1-255 chars)' }, 400);
-        if (!fs.existsSync(path.join(UPLOADS_DIR, a.url.slice('/uploads/'.length)))) return json(res, { error: `attachment not found: ${a.url}` }, 400);
-        attachments.push({ url: a.url, name: a.name, type: a.type === 'image' ? 'image' : 'file' });
-      }
-    }
-    const single = attachments.length === 1 ? attachments[0] : null;
-    const result = db.prepare(
-      "INSERT INTO messages (room_id, participant_id, content, client_event_id, thread_id, state, sub_agent_id, sub_agent_label, file_url, file_name, attachments) VALUES (?, ?, ?, ?, ?, 'complete', ?, ?, ?, ?, ?)"
-    ).run(roomId, participant.id, content, eventId, threadId, subAgent?.id ?? null, subAgent?.label ?? null,
-      single?.url ?? null, single?.name ?? null, attachments.length > 1 ? JSON.stringify(attachments) : null);
-    const messageId = result.lastInsertRowid;
-
-    const row = db.prepare(`
-      SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
-      FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id
-      WHERE m.id=?
-    `).get(messageId);
-
-    enrichAutomation(row);
-    broadcast(roomId, { type: 'message_new', message: row });
-    broadcastGlobal({ type: 'room_activity', room_id: roomId });
-    // Cascade any @mentions in the proactive message (fire-and-forget)
-    // Auto-thread: if at room level, sub-agent responses go under this message
-    const cascadeThreadId = threadId || Number(messageId);
-    cascadeMentionsFromProactive(roomId, agentId, content, cascadeThreadId, subAgent?.id ?? null).catch(e => console.error('[proactive-cascade]', e.message));
-    return json(res, { message_id: messageId });
+    const r = roomMessages.send(roomId, agentId, data);
+    return json(res, r.body, r.status);
   }
 
   // ── Email reply via agent tool ──────────────────────────────────────────────
@@ -3647,29 +3428,15 @@ const server = http.createServer(async (req, res) => {
   // GET /api/rooms/:id/memory — room memory
   if (req.method === 'GET' && url.pathname.match(/^\/api\/rooms\/\d+\/memory$/)) {
     if (!requireAuth(req, res, url)) return;
-    const roomId = parseInt(url.pathname.split('/')[3]);
-    const room = db.prepare('SELECT id FROM rooms WHERE id=?').get(roomId);
-    if (!room) return json(res, { error: 'room not found' }, 404);
-    const row = db.prepare('SELECT content, updated_at FROM room_memory WHERE room_id=?').get(roomId);
-    const content = row?.content ?? '';
-    const pending_count = db.prepare("SELECT COUNT(*) as c FROM memory_pending_writes WHERE room_id=? AND status='pending'").get(roomId).c;
-    return json(res, { content, char_count: content.length, budget: 1800, updated_at: row?.updated_at ?? null, pending_count });
+    const r = stoaMemory.roomGet(parseInt(url.pathname.split('/')[3]));
+    return json(res, r.body, r.status);
   }
 
   // PUT /api/rooms/:id/memory — update room memory
   if (req.method === 'PUT' && url.pathname.match(/^\/api\/rooms\/\d+\/memory$/)) {
     if (!requireAuth(req, res, url)) return;
-    const roomId = parseInt(url.pathname.split('/')[3]);
-    const room = db.prepare('SELECT id FROM rooms WHERE id=?').get(roomId);
-    if (!room) return json(res, { error: 'room not found' }, 404);
-    const data = parseJsonBody(await readBody(req));
-    if (!data || typeof data.content !== 'string') return json(res, { error: 'content (string) required' }, 400);
-    if (data.content.length > 1800) return json(res, { error: 'content exceeds 1800 char budget' }, 400);
-    db.prepare(
-      "INSERT INTO room_memory (room_id, content, updated_at) VALUES (?,?,datetime('now')) ON CONFLICT(room_id) DO UPDATE SET content=excluded.content, updated_at=excluded.updated_at"
-    ).run(roomId, data.content);
-    const row = db.prepare('SELECT content, updated_at FROM room_memory WHERE room_id=?').get(roomId);
-    return json(res, { content: row.content, char_count: row.content.length, budget: 1800, updated_at: row.updated_at });
+    const r = stoaMemory.roomSet(parseInt(url.pathname.split('/')[3]), parseJsonBody(await readBody(req)));
+    return json(res, r.body, r.status);
   }
 
   // GET /api/rooms/:id/memory/pending — list pending memory writes
@@ -4225,176 +3992,40 @@ const server = http.createServer(async (req, res) => {
   // ── Sub-agent definitions CRUD ──
 
   if (req.method === 'GET' && url.pathname.match(/^\/api\/actors\/\d+\/sub-agents$/)) {
-    const actorId = parseInt(url.pathname.split('/')[3]);
-    const parentAdapter = db.prepare('SELECT adapter FROM actors WHERE id=?').get(actorId)?.adapter || 'claude';
-    const rows = db.prepare('SELECT * FROM sub_agents WHERE parent_actor_id=? ORDER BY label').all(actorId);
-    const result = rows.map(r => ({ ...r, effective_harness: r.harness || parentAdapter }));
-    return json(res, result);
+    const r = subAgents.list(parseInt(url.pathname.split('/')[3]));
+    return json(res, r.body, r.status);
   }
 
   if (req.method === 'POST' && url.pathname.match(/^\/api\/actors\/\d+\/sub-agents$/)) {
     const actorId = parseInt(url.pathname.split('/')[3]);
-    const actor = db.prepare("SELECT id FROM actors WHERE id=? AND type='ai'").get(actorId);
-    if (!actor) return json(res, { error: 'AI actor not found' }, 404);
     const data = parseJsonBody(await readBody(req));
-    if (!data) return json(res, { error: 'Invalid JSON' }, 400);
-    const { label, tier, model, workdir, system_prompt, harness } = data;
-    let description = null;
-    if (data.description !== undefined) {
-      const d = normalizeSubAgentDescription(data.description);
-      if (d.error) return json(res, { error: d.error }, 400);
-      description = d.value;
-    }
-    let role = null;
-    if (data.role !== undefined) {
-      const r = normalizeSubAgentRole(data.role);
-      if (r.error) return json(res, { error: r.error }, 400);
-      role = r.value;
-    }
-    if (!label?.trim()) return json(res, { error: 'label required' }, 400);
-    if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,29}$/.test(label.trim())) return json(res, { error: 'label must start with a letter, 1-30 chars, alphanumeric/dash/underscore' }, 400);
-    if (tier && !['quick', 'standard', 'deep'].includes(tier)) return json(res, { error: 'tier must be quick, standard, or deep' }, 400);
-    if (harness !== undefined && harness !== null) {
-      const validHarnesses = db.prepare('SELECT name FROM harnesses').all().map(h => h.name);
-      if (!validHarnesses.includes(harness)) return json(res, { error: `harness must be one of: ${validHarnesses.join(', ')} (or null to inherit)` }, 400);
-    }
-    const nameCollision = db.prepare('SELECT 1 FROM actors WHERE LOWER(name)=LOWER(?)').get(label.trim());
-    if (nameCollision) return json(res, { error: `label "${label.trim()}" conflicts with an existing actor name` }, 409);
-    if (model) {
-      const parentAdapter = db.prepare('SELECT adapter FROM actors WHERE id=?').get(actorId)?.adapter || 'claude';
-      const effH = harness || parentAdapter;
-      const hModels = getHarnessModels(actorId, effH);
-      if (hModels.length) {
-        const validIds = new Set(hModels.map(m => m.model_id));
-        if (!validIds.has(model)) return json(res, { error: `model "${model}" not available for harness ${effH}` }, 400);
-      }
-    }
-    try {
-      const result = db.prepare(
-        'INSERT INTO sub_agents (parent_actor_id, label, tier, model, workdir, system_prompt, harness, description, role) VALUES (?,?,?,?,?,?,?,?,?)'
-      ).run(actorId, label.trim(), tier || 'quick', model || null, workdir || null, system_prompt || null, harness || null, description, role);
-      const row = db.prepare('SELECT * FROM sub_agents WHERE id=?').get(result.lastInsertRowid);
-      return json(res, row, 201);
-    } catch (e) {
-      if (e.code === 'SQLITE_CONSTRAINT_UNIQUE') return json(res, { error: `label "${label.trim()}" already exists for this agent` }, 409);
-      throw e;
-    }
+    const r = subAgents.create(actorId, data);
+    return json(res, r.body, r.status);
   }
 
   if (req.method === 'PATCH' && url.pathname.match(/^\/api\/sub-agents\/\d+$/)) {
     const id = parseInt(url.pathname.split('/')[3]);
-    const sa = db.prepare('SELECT * FROM sub_agents WHERE id=?').get(id);
-    if (!sa) return json(res, { error: 'sub-agent not found' }, 404);
-    const data = parseJsonBody(await readBody(req));
-    if (!data) return json(res, { error: 'Invalid JSON' }, 400);
-    const updates = [];
-    const params = [];
-    for (const key of ['label', 'tier', 'model', 'workdir', 'system_prompt', 'enabled', 'harness', 'avatar_color', 'avatar_symbol', 'description', 'role']) {
-      if (data[key] !== undefined) {
-        if (key === 'label') {
-          if (!data.label?.trim()) return json(res, { error: 'label required' }, 400);
-          if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,29}$/.test(data.label.trim())) return json(res, { error: 'invalid label format' }, 400);
-          const nameCollision = db.prepare('SELECT 1 FROM actors WHERE LOWER(name)=LOWER(?)').get(data.label.trim());
-          if (nameCollision) return json(res, { error: `label conflicts with actor name` }, 409);
-          updates.push('label=?'); params.push(data.label.trim());
-        } else if (key === 'tier') {
-          if (!['quick', 'standard', 'deep'].includes(data.tier)) return json(res, { error: 'invalid tier' }, 400);
-          updates.push('tier=?'); params.push(data.tier);
-        } else if (key === 'enabled') {
-          updates.push('enabled=?'); params.push(data.enabled ? 1 : 0);
-        } else if (key === 'harness') {
-          if (data.harness !== null) {
-            const validHarnesses = db.prepare('SELECT name FROM harnesses').all().map(h => h.name);
-            if (!validHarnesses.includes(data.harness)) return json(res, { error: `harness must be one of: ${validHarnesses.join(', ')} (or null to inherit)` }, 400);
-          }
-          updates.push('harness=?'); params.push(data.harness ?? null);
-        } else if (key === 'description') {
-          const d = normalizeSubAgentDescription(data.description);
-          if (d.error) return json(res, { error: d.error }, 400);
-          updates.push('description=?'); params.push(d.value);
-        } else if (key === 'role') {
-          const r = normalizeSubAgentRole(data.role);
-          if (r.error) return json(res, { error: r.error }, 400);
-          updates.push('role=?'); params.push(r.value);
-        } else if (key === 'avatar_color') {
-          if (data.avatar_color !== null && !/^#[0-9a-fA-F]{6}$/.test(data.avatar_color)) return json(res, { error: 'avatar_color must be null or #RRGGBB' }, 400);
-          updates.push('avatar_color=?'); params.push(data.avatar_color ?? null);
-        } else if (key === 'avatar_symbol') {
-          if (data.avatar_symbol !== null) {
-            const sym = String(data.avatar_symbol).trim();
-            if (sym.length < 1 || sym.length > 4 || /[<>]/.test(sym)) return json(res, { error: 'avatar_symbol must be 1-4 chars, no <>' }, 400);
-            updates.push('avatar_symbol=?'); params.push(sym);
-          } else {
-            updates.push('avatar_symbol=?'); params.push(null);
-          }
-        } else {
-          updates.push(`${key}=?`); params.push(data[key] ?? null);
-        }
-      }
-    }
-    if (!updates.length) return json(res, { error: 'no fields to update' }, 400);
-    const newModel = data.model !== undefined ? (data.model ?? null) : sa.model;
-    if (newModel) {
-      const newHarness = data.harness !== undefined ? (data.harness ?? null) : sa.harness;
-      const parentAdapter = db.prepare('SELECT adapter FROM actors WHERE id=?').get(sa.parent_actor_id)?.adapter || 'claude';
-      const effH = newHarness || parentAdapter;
-      const hModels = getHarnessModels(sa.parent_actor_id, effH);
-      if (hModels.length) {
-        const validIds = new Set(hModels.map(m => m.model_id));
-        if (!validIds.has(newModel)) return json(res, { error: `model "${newModel}" not available for harness ${effH}` }, 400);
-      }
-    }
-    params.push(id);
-    try {
-      db.prepare(`UPDATE sub_agents SET ${updates.join(', ')} WHERE id=?`).run(...params);
-    } catch (e) {
-      if (e.code === 'SQLITE_CONSTRAINT_UNIQUE') return json(res, { error: 'label already exists for this agent' }, 409);
-      throw e;
-    }
-    const row = db.prepare('SELECT * FROM sub_agents WHERE id=?').get(id);
-    for (const r of db.prepare('SELECT room_id FROM room_sub_agents WHERE sub_agent_id=?').all(id))
-      broadcast(r.room_id, { type: 'sub_agent_updated', sub_agent: row });
-    return json(res, row);
+    const r = subAgents.update(id, parseJsonBody(await readBody(req)));
+    return json(res, r.body, r.status);
   }
 
   if (req.method === 'DELETE' && url.pathname.match(/^\/api\/sub-agents\/\d+$/)) {
-    const id = parseInt(url.pathname.split('/')[3]);
-    const sa = db.prepare('SELECT avatar_url FROM sub_agents WHERE id=?').get(id);
-    if (sa?.avatar_url) deleteAvatarFile(sa.avatar_url);
-    db.prepare('DELETE FROM sub_agent_memory WHERE sub_agent_id=?').run(id);
-    mcpGateway.forgetSubAgent(id);
-    db.prepare('DELETE FROM sub_agents WHERE id=?').run(id);
+    subAgents.remove(parseInt(url.pathname.split('/')[3]));
     res.writeHead(204); return res.end();
   }
 
-  // ── Sub-agent memory CRUD ──
-  if (req.method === 'GET' && url.pathname.match(/^\/api\/sub-agents\/\d+\/memory$/)) {
-    const id = parseInt(url.pathname.split('/')[3]);
-    const sa = db.prepare('SELECT id, parent_actor_id FROM sub_agents WHERE id=?').get(id);
-    if (!sa) return json(res, { error: 'sub-agent not found' }, 404);
+  // ── Sub-agent memory CRUD (owner, or the parent agent) ──
+  const subMemMatch = url.pathname.match(/^\/api\/sub-agents\/(\d+)\/memory$/);
+  if (subMemMatch && (req.method === 'GET' || req.method === 'PUT')) {
+    const id = parseInt(subMemMatch[1]);
     const agent = verifyAgentRequest(req);
+    const notFound = stoaMemory.subAgentAccess(id, null);
+    if (notFound) return json(res, notFound.body, notFound.status);
     if (!agent && !req._authUser) return json(res, { error: 'unauthorized' }, 401);
-    if (agent && agent.id !== sa.parent_actor_id) return json(res, { error: 'forbidden' }, 403);
-    const row = db.prepare('SELECT content, updated_at FROM sub_agent_memory WHERE sub_agent_id=?').get(id);
-    const content = row?.content ?? '';
-    return json(res, { content, char_count: content.length, budget: 2200, updated_at: row?.updated_at ?? null });
-  }
-
-  if (req.method === 'PUT' && url.pathname.match(/^\/api\/sub-agents\/\d+\/memory$/)) {
-    const id = parseInt(url.pathname.split('/')[3]);
-    const sa = db.prepare('SELECT id, parent_actor_id FROM sub_agents WHERE id=?').get(id);
-    if (!sa) return json(res, { error: 'sub-agent not found' }, 404);
-    const agent = verifyAgentRequest(req);
-    if (!agent && !req._authUser) return json(res, { error: 'unauthorized' }, 401);
-    if (agent && agent.id !== sa.parent_actor_id) return json(res, { error: 'forbidden' }, 403);
-    const data = parseJsonBody(await readBody(req));
-    if (!data || typeof data.content !== 'string') return json(res, { error: 'content (string) required' }, 400);
-    if (data.content.length > 2200) return json(res, { error: 'content exceeds 2200 char budget' }, 400);
-    db.prepare(
-      "INSERT INTO sub_agent_memory (sub_agent_id, content, updated_at) VALUES (?,?,datetime('now')) ON CONFLICT(sub_agent_id) DO UPDATE SET content=excluded.content, updated_at=excluded.updated_at"
-    ).run(id, data.content);
-    const row = db.prepare('SELECT content, updated_at FROM sub_agent_memory WHERE sub_agent_id=?').get(id);
-    return json(res, { content: row.content, char_count: row.content.length, budget: 2200, updated_at: row.updated_at });
+    const denied = agent && stoaMemory.subAgentAccess(id, agent.id);
+    if (denied) return json(res, denied.body, denied.status);
+    const r = req.method === 'GET' ? stoaMemory.subAgentGet(id) : stoaMemory.subAgentSet(id, parseJsonBody(await readBody(req)));
+    return json(res, r.body, r.status);
   }
 
   // ── Sub-agent avatar upload/delete ──
@@ -4930,37 +4561,22 @@ Write-Host "Logs   : pm2 logs $AgentName"
   // GET /api/actors/:id/memory — list agent memory files
   if (req.method === 'GET' && url.pathname.match(/^\/api\/actors\/\d+\/memory$/)) {
     if (!requireAuth(req, res, url)) return;
-    const actorId = parseInt(url.pathname.split('/')[3]);
-    const BUDGETS = { 'MEMORY.md': 2200, 'USER.md': 1375 };
-    const files = ['MEMORY.md', 'USER.md'].map(file => {
-      const row = db.prepare('SELECT content, updated_at FROM agent_memory WHERE actor_id=? AND file=?').get(actorId, file);
-      const content = row?.content ?? '';
-      return { file, content, char_count: content.length, budget: BUDGETS[file], updated_at: row?.updated_at ?? null };
-    });
-    return json(res, { files });
+    const r = stoaMemory.agentGet(parseInt(url.pathname.split('/')[3]));
+    return json(res, r.body, r.status);
   }
 
   // PUT /api/actors/:id/memory/:file — update one agent memory file
   if (req.method === 'PUT' && url.pathname.match(/^\/api\/actors\/\d+\/memory\/(MEMORY\.md|USER\.md)$/)) {
     const parts = url.pathname.split('/');
     const actorId = parseInt(parts[3]);
-    const file = parts[5];
     const agent = verifyAgentRequest(req);
     if (agent) {
       if (agent.id !== actorId) return json(res, { error: 'forbidden — agents can only write their own memory' }, 403);
     } else {
       if (!requireAuth(req, res, url)) return;
     }
-    const BUDGETS = { 'MEMORY.md': 2200, 'USER.md': 1375 };
-    const data = parseJsonBody(await readBody(req));
-    if (!data || typeof data.content !== 'string') return json(res, { error: 'content (string) required' }, 400);
-    const budget = BUDGETS[file];
-    if (data.content.length > budget) return json(res, { error: `content exceeds ${budget} char budget` }, 400);
-    db.prepare(
-      "INSERT INTO agent_memory (actor_id, file, content, updated_at) VALUES (?,?,?,datetime('now')) ON CONFLICT(actor_id, file) DO UPDATE SET content=excluded.content, updated_at=excluded.updated_at"
-    ).run(actorId, file, data.content);
-    const row = db.prepare('SELECT content, updated_at FROM agent_memory WHERE actor_id=? AND file=?').get(actorId, file);
-    return json(res, { file, content: row.content, char_count: row.content.length, budget, updated_at: row.updated_at });
+    const r = stoaMemory.agentSet(actorId, parts[5], parseJsonBody(await readBody(req)));
+    return json(res, r.body, r.status);
   }
 
   // PUT /api/actors/:id/config — update name, lang, adapter_config fields
@@ -4981,32 +4597,22 @@ Write-Host "Logs   : pm2 logs $AgentName"
     return json(res, actor);
   }
 
-  // GET /api/actors/:id/system-prompt
-  if (req.method === 'GET' && url.pathname.match(/^\/api\/actors\/\d+\/system-prompt$/)) {
-    const actorId = parseInt(url.pathname.split('/')[3]);
+  // GET / PUT /api/actors/:id/system-prompt — owner, or the agent itself
+  const actorPromptMatch = url.pathname.match(/^\/api\/actors\/(\d+)\/system-prompt$/);
+  if (actorPromptMatch && (req.method === 'GET' || req.method === 'PUT')) {
+    const actorId = parseInt(actorPromptMatch[1]);
     const reqAgentId = parseInt(req.headers['x-agent-id'] || '0');
     if (!req._authUser && reqAgentId !== actorId) return json(res, { error: 'forbidden' }, 403);
-    const actor = db.prepare("SELECT system_prompt, type FROM actors WHERE id=?").get(actorId);
-    if (!actor) return json(res, { error: 'actor not found' }, 404);
-    if (actor.type !== 'ai') return json(res, { error: 'system-prompt only for AI actors' }, 404);
-    return json(res, { system_prompt: actor.system_prompt || null });
-  }
-
-  // PUT /api/actors/:id/system-prompt
-  if (req.method === 'PUT' && url.pathname.match(/^\/api\/actors\/\d+\/system-prompt$/)) {
-    const actorId = parseInt(url.pathname.split('/')[3]);
-    const reqAgentId = parseInt(req.headers['x-agent-id'] || '0');
-    if (!req._authUser && reqAgentId !== actorId) return json(res, { error: 'forbidden' }, 403);
-    const actor = db.prepare("SELECT id, type FROM actors WHERE id=?").get(actorId);
-    if (!actor) return json(res, { error: 'actor not found' }, 404);
-    if (actor.type !== 'ai') return json(res, { error: 'system-prompt only for AI actors' }, 404);
+    if (req.method === 'GET') {
+      const r = systemPrompts.actorGet(actorId);
+      return json(res, r.body, r.status);
+    }
+    const found = systemPrompts.actorGet(actorId);
+    if (found.status !== 200) return json(res, found.body, found.status);
     const body = parseJsonBody(await readBody(req));
     if (!body) return json(res, { error: 'Invalid JSON' }, 400);
-    const prompt = body.system_prompt;
-    if (prompt !== null && prompt !== undefined && typeof prompt !== 'string') return json(res, { error: 'system_prompt must be string or null' }, 400);
-    if (typeof prompt === 'string' && Buffer.byteLength(prompt) > 65536) return json(res, { error: 'system_prompt exceeds 64KB limit' }, 400);
-    db.prepare('UPDATE actors SET system_prompt=? WHERE id=?').run(prompt ?? null, actorId);
-    return json(res, { system_prompt: prompt ?? null });
+    const r = systemPrompts.actorSet(actorId, body);
+    return json(res, r.body, r.status);
   }
 
   // ── Export room messages ──
@@ -5059,36 +4665,8 @@ Write-Host "Logs   : pm2 logs $AgentName"
   const threadListMatch = req.method === 'GET' && url.pathname.match(/^\/api\/rooms\/(\d+)\/threads$/);
   if (threadListMatch) {
     if (!requireAuth(req, res, url)) return;
-    const roomId = parseInt(threadListMatch[1]);
-    const state = url.searchParams.get('state');
-    let rows;
-    if (state === 'active') {
-      rows = db.prepare(`
-        SELECT m.id, m.content, m.created_at, a.name as actor_name,
-          (SELECT COUNT(*) FROM messages r WHERE r.thread_id=m.id) as reply_count,
-          (SELECT MAX(r2.created_at) FROM messages r2 WHERE r2.thread_id=m.id) as last_reply_at
-        FROM messages m
-        JOIN room_participants rp ON rp.id=m.participant_id
-        JOIN actors a ON a.id=rp.actor_id
-        WHERE m.room_id=? AND m.thread_id IS NULL
-          AND EXISTS (SELECT 1 FROM messages r3 WHERE r3.thread_id=m.id
-            AND r3.state IN ('streaming','requesting'))
-        ORDER BY m.id DESC
-      `).all(roomId);
-    } else {
-      rows = db.prepare(`
-        SELECT m.id, m.content, m.created_at, a.name as actor_name,
-          (SELECT COUNT(*) FROM messages r WHERE r.thread_id=m.id) as reply_count,
-          (SELECT MAX(r2.created_at) FROM messages r2 WHERE r2.thread_id=m.id) as last_reply_at
-        FROM messages m
-        JOIN room_participants rp ON rp.id=m.participant_id
-        JOIN actors a ON a.id=rp.actor_id
-        WHERE m.room_id=? AND m.thread_id IS NULL
-          AND EXISTS (SELECT 1 FROM messages r3 WHERE r3.thread_id=m.id)
-        ORDER BY last_reply_at DESC NULLS LAST
-      `).all(roomId);
-    }
-    return json(res, rows);
+    const r = roomMessages.threads(parseInt(threadListMatch[1]), url.searchParams.get('state'));
+    return json(res, r.body, r.status);
   }
 
   const threadDetailMatch = req.method === 'GET' && url.pathname.match(/^\/api\/rooms\/(\d+)\/threads\/(\d+)$/);
@@ -5096,62 +4674,13 @@ Write-Host "Logs   : pm2 logs $AgentName"
     if (!requireAuth(req, res, url)) return;
     const roomId = parseInt(threadDetailMatch[1]);
     const rootId = parseInt(threadDetailMatch[2]);
-    const rootMsg = db.prepare(`
-      SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
-             sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url, sa.role AS sub_agent_role
-      FROM messages m
-      JOIN room_participants rp ON rp.id=m.participant_id
-      JOIN actors a ON a.id=rp.actor_id
-      LEFT JOIN sub_agents sa ON sa.id=m.sub_agent_id
-      WHERE m.id=? AND m.room_id=? AND m.thread_id IS NULL
-    `).get(rootId, roomId);
-    if (!rootMsg) {
-      return json(res, { error: 'thread root not found' }, 404);
-    }
-    const before = url.searchParams.get('before') ? parseInt(url.searchParams.get('before')) : null;
-    const limit = Math.min(parseInt(url.searchParams.get('limit')) || 100, 500);
-    let messages;
-    if (before) {
-      messages = db.prepare(`
-        SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
-               sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url, sa.role AS sub_agent_role
-        FROM messages m
-        JOIN room_participants rp ON rp.id=m.participant_id
-        JOIN actors a ON a.id=rp.actor_id
-        LEFT JOIN sub_agents sa ON sa.id=m.sub_agent_id
-        WHERE m.thread_id=? AND m.room_id=? AND m.id < ?
-        ORDER BY m.id DESC LIMIT ?
-      `).all(rootId, roomId, before, limit);
-      messages.reverse();
-    } else {
-      messages = db.prepare(`
-        SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
-               sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url, sa.role AS sub_agent_role
-        FROM messages m
-        JOIN room_participants rp ON rp.id=m.participant_id
-        JOIN actors a ON a.id=rp.actor_id
-        LEFT JOIN sub_agents sa ON sa.id=m.sub_agent_id
-        WHERE m.thread_id=? AND m.room_id=?
-        ORDER BY m.id DESC LIMIT ?
-      `).all(rootId, roomId, limit);
-      messages.reverse();
-    }
-    // Enrich reply_to for reply quotes
-    for (const m of messages) {
-      if (m.reply_to) {
-        const replied = db.prepare(`
-          SELECT m2.content, a2.name as actor_name FROM messages m2
-          JOIN room_participants rp2 ON rp2.id=m2.participant_id JOIN actors a2 ON a2.id=rp2.actor_id
-          WHERE m2.id=?
-        `).get(m.reply_to);
-        if (replied) m.reply_msg = { content: replied.content?.substring(0, 300), actor_name: replied.actor_name };
-      }
-    }
-    enrichAutomation(rootMsg);
-    enrichAutomationList(messages);
-    const compactKey = `${roomId}:${rootId}`;
-    const compactState = pendingCompacts.get(compactKey);
-    const result = { thread_id: rootId, root: rootMsg, messages };
+    const r = roomMessages.thread(roomId, rootId, {
+      before: url.searchParams.get('before') ? parseInt(url.searchParams.get('before')) : null,
+      limit: Math.min(parseInt(url.searchParams.get('limit')) || 100, 500),
+    });
+    if (r.status !== 200) return json(res, r.body, r.status);
+    const result = r.body;
+    const compactState = pendingCompacts.get(`${roomId}:${rootId}`);
     if (compactState) {
       result.is_compacting = true;
       result.compacting_participants = compactState.targets || [];
@@ -5167,34 +4696,15 @@ Write-Host "Logs   : pm2 logs $AgentName"
   if (sysPromptMatch && (req.method === 'GET' || req.method === 'PUT')) {
     if (!requireAuth(req, res, url)) return;
     const roomId = parseInt(sysPromptMatch[1]);
-    const room = db.prepare('SELECT system_prompt, max_active_threads FROM rooms WHERE id=?').get(roomId);
-    if (!room) { res.writeHead(404); return res.end(); }
-    if (req.method === 'GET') {
-      return json(res, { system_prompt: room.system_prompt, max_active_threads: room.max_active_threads });
-    }
-    const body = await readBody(req);
-    const data = JSON.parse(body);
-    if (typeof data.system_prompt === 'string' && data.system_prompt.length > 65536) {
-      return json(res, { error: 'system_prompt exceeds 64KB limit' }, 400);
-    }
-    if (data.max_active_threads !== undefined && (!Number.isInteger(data.max_active_threads) || data.max_active_threads < 1 || data.max_active_threads > 20)) {
-      return json(res, { error: 'max_active_threads must be an integer between 1 and 20' }, 400);
-    }
-    if (typeof data.system_prompt === 'string' || data.system_prompt === null) {
-      db.prepare('UPDATE rooms SET system_prompt=? WHERE id=?').run(data.system_prompt, roomId);
-    }
-    if (Number.isInteger(data.max_active_threads)) {
-      db.prepare('UPDATE rooms SET max_active_threads=? WHERE id=?').run(data.max_active_threads, roomId);
-    }
-    const updated = db.prepare('SELECT system_prompt, max_active_threads FROM rooms WHERE id=?').get(roomId);
-    return json(res, updated);
+    const r = req.method === 'GET'
+      ? systemPrompts.roomGet(roomId)
+      : systemPrompts.roomSet(roomId, parseJsonBody(await readBody(req)));
+    return json(res, r.body, r.status);
   }
 
   // ── Automation: Connections CRUD ──────────────────────────────────────────
   if (req.method === 'GET' && url.pathname === '/api/automations/connections') {
-    if (req._scopedAgentId) {
-      return json(res, db.prepare('SELECT id, name, provider, status FROM automation_connections ORDER BY id ASC').all());
-    }
+    if (req._scopedAgentId) return json(res, automationCrud.connections().body);
     const rows = db.prepare('SELECT id,name,provider,token_type,credentials,metadata,status,error_msg,created_at FROM automation_connections ORDER BY id ASC').all();
     return json(res, rows.map(r => {
       let meta = {}; try { meta = JSON.parse(r.metadata || '{}'); } catch {}
@@ -5497,92 +5007,21 @@ Write-Host "Logs   : pm2 logs $AgentName"
 
   // ── Automation: CRUD ─────────────────────────────────────────────────────────
   if (req.method === 'GET' && url.pathname === '/api/automations') {
-    const rows = req._scopedAgentId
-      ? db.prepare(`SELECT a.* FROM automations a WHERE EXISTS (SELECT 1 FROM room_participants rp
-          WHERE rp.room_id=a.target_room_id AND rp.actor_id=?) ORDER BY a.id DESC`).all(req._scopedAgentId)
-      : db.prepare('SELECT * FROM automations ORDER BY id DESC').all();
-    return json(res, rows);
+    return json(res, automationCrud.list(req._scopedAgentId || null).body);
   }
 
   if (req.method === 'POST' && url.pathname === '/api/automations') {
-    const body = parseJsonBody(await readBody(req));
-    if (!body?.name || !body?.trigger_event || !body?.target_room_id || !body?.prompt_template) {
-      res.writeHead(400); return res.end(JSON.stringify({ error: 'Missing required fields' }));
-    }
-    const rawConds = body.trigger_conditions || '[]';
-    const condsErr = validateConditions(rawConds);
-    if (condsErr) { res.writeHead(400); return res.end(JSON.stringify({ error: condsErr })); }
-    const scopedAgent = req._scopedAgentId;
-    if (scopedAgent) {
-      if (!agentInRoom(scopedAgent, parseInt(body.target_room_id))) return json(res, { error: 'agent_scope_denied' }, 403);
-      if (body.connection_id != null && body.connection_id !== '' && !db.prepare('SELECT 1 FROM automation_connections WHERE id=?').get(parseInt(body.connection_id))) {
-        return json(res, { error: 'connection not found' }, 400);
-      }
-    }
-    const trigType = body.trigger_type || 'slack';
-    const watchReply = (trigType === 'slack' || trigType === 'email') ? (body.watch_reply ? 1 : 0) : 0;
-    const result = db.prepare(`
-      INSERT INTO automations (name, trigger_type, trigger_event, trigger_conditions, target_room_id, prompt_template, connection_id, reply_mode, watch_reply)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      body.name.trim(),
-      body.trigger_type || 'slack',
-      body.trigger_event,
-      typeof rawConds === 'string' ? rawConds : JSON.stringify(rawConds),
-      parseInt(body.target_room_id),
-      body.prompt_template.trim(),
-      parseInt(body.connection_id) || null,
-      body.reply_mode || 'none',
-      watchReply,
-    );
-    const row = db.prepare('SELECT * FROM automations WHERE id=?').get(result.lastInsertRowid);
-    if (scopedAgent) postAutomationChangeNotice(scopedAgent, row.target_room_id, 'created', row);
-    return json(res, row);
+    const r = automationCrud.create(req._scopedAgentId || null, parseJsonBody(await readBody(req)));
+    return json(res, r.body, r.status);
   }
 
   const autoIdMatch = url.pathname.match(/^\/api\/automations\/(\d+)$/);
-  if (autoIdMatch) {
+  if (autoIdMatch && (req.method === 'PATCH' || req.method === 'DELETE')) {
     const autoId = parseInt(autoIdMatch[1]);
-    if (req.method === 'PATCH') {
-      const body = parseJsonBody(await readBody(req));
-      if (!body) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
-      const auto = db.prepare('SELECT * FROM automations WHERE id=?').get(autoId);
-      if (!auto) { res.writeHead(404); return res.end(JSON.stringify({ error: 'Not found' })); }
-      const name        = body.name !== undefined        ? body.name.trim()                          : auto.name;
-      const event       = body.trigger_event !== undefined ? body.trigger_event                       : auto.trigger_event;
-      let   conds       = body.trigger_conditions !== undefined ? body.trigger_conditions             : auto.trigger_conditions;
-      if (body.trigger_conditions !== undefined) {
-        const condsErr = validateConditions(conds);
-        if (condsErr) { res.writeHead(400); return res.end(JSON.stringify({ error: condsErr })); }
-      }
-      const roomId      = body.target_room_id !== undefined ? parseInt(body.target_room_id)          : auto.target_room_id;
-      const scopedAgent = req._scopedAgentId;
-      if (scopedAgent && roomId !== auto.target_room_id && !agentInRoom(scopedAgent, roomId)) return json(res, { error: 'agent_scope_denied' }, 403);
-      const prompt      = body.prompt_template !== undefined ? body.prompt_template.trim()           : auto.prompt_template;
-      const enabled     = body.enabled !== undefined     ? (body.enabled ? 1 : 0)                    : auto.enabled;
-      const connId      = body.connection_id !== undefined ? (parseInt(body.connection_id) || null)  : auto.connection_id;
-      if (scopedAgent && connId && connId !== auto.connection_id && !db.prepare('SELECT 1 FROM automation_connections WHERE id=?').get(connId)) {
-        return json(res, { error: 'connection not found' }, 400);
-      }
-      const replyMode   = body.reply_mode !== undefined    ? (body.reply_mode || 'none')              : (auto.reply_mode || 'none');
-      const patchTrigType = auto.trigger_type || 'slack';
-      const watchReply  = body.watch_reply !== undefined  ? ((patchTrigType === 'slack' || patchTrigType === 'email') ? (body.watch_reply ? 1 : 0) : 0) : (auto.watch_reply || 0);
-      db.prepare(`
-        UPDATE automations SET name=?, trigger_event=?, trigger_conditions=?, target_room_id=?, prompt_template=?, enabled=?, connection_id=?, reply_mode=?, watch_reply=? WHERE id=?
-      `).run(name, event, conds, roomId, prompt, enabled, connId, replyMode, watchReply, autoId);
-      const updated = db.prepare('SELECT * FROM automations WHERE id=?').get(autoId);
-      if (scopedAgent) {
-        postAutomationChangeNotice(scopedAgent, updated.target_room_id, 'updated', updated);
-        if (updated.target_room_id !== auto.target_room_id) postAutomationChangeNotice(scopedAgent, auto.target_room_id, 'moved away', updated);
-      }
-      return json(res, updated);
-    }
-    if (req.method === 'DELETE') {
-      const auto = req._scopedAgentId ? db.prepare('SELECT * FROM automations WHERE id=?').get(autoId) : null;
-      db.prepare('DELETE FROM automations WHERE id=?').run(autoId);
-      if (auto) postAutomationChangeNotice(req._scopedAgentId, auto.target_room_id, 'deleted', auto);
-      return json(res, { ok: true });
-    }
+    const r = req.method === 'PATCH'
+      ? automationCrud.update(req._scopedAgentId || null, autoId, parseJsonBody(await readBody(req)))
+      : automationCrud.remove(req._scopedAgentId || null, autoId);
+    return json(res, r.body, r.status);
   }
 
   // Ollama Cloud proxy — forward /v1/messages to ollama.com with API key rotation
@@ -5993,6 +5432,7 @@ wss.on('connection', (ws, req) => {
             OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
             OR (m.state = 'system_event' AND m.content LIKE '% · automation')
             OR (m.state = 'system_event' AND m.content LIKE '% · schedule')
+            OR (m.state = 'system_event' AND m.content LIKE '% · config')
             OR (m.state = 'error' AND m.broadcast_reason IS NOT NULL)
           )
           ORDER BY m.id DESC LIMIT 100
