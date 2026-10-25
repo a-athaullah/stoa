@@ -304,7 +304,7 @@ To customize the chains for a room, open the room settings (the **gear** icon in
 The room header shows a **"N threads · N sub-agents"** pill whenever there are active threads or running sub-agents. Click it to open a dropdown with two sections:
 
 - **ACTIVE THREADS** — lists each running thread; click a row to open it.
-- **SUB-AGENTS** — lists each active run with elapsed time. From here you can **Stop** an individual run (finalizes the message immediately), or use **Pause spawns** to block new sub-agents from starting while letting in-flight runs finish. A sub-agent row that has a linked thread shows an arrow to open it.
+- **SUB-AGENTS** — lists each active run with elapsed time. From here you can **Stop** an individual run (finalizes the message immediately), or use **Pause spawns** to block new sub-agents from starting while letting in-flight runs finish. A sub-agent row that has a linked thread is clickable to open it.
 
 While spawning is paused, a **"spawns paused"** chip appears in the header — clicking it reopens this dropdown. Toggle it off to resume.
 

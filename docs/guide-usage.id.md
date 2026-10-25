@@ -305,7 +305,7 @@ Untuk menyesuaikan rantai sebuah room, buka setelan room (ikon **gear** di heade
 Header room menampilkan pill **"N threads · N sub-agents"** saat ada thread aktif atau sub-agent yang berjalan. Klik untuk membuka dropdown dengan dua bagian:
 
 - **ACTIVE THREADS** — daftar thread yang sedang aktif; klik baris untuk membukanya.
-- **SUB-AGENTS** — daftar tiap run aktif beserta waktu berjalannya. Dari sini kamu bisa **Stop** sebuah run (langsung menfinalisasi pesan), atau gunakan **Pause spawns** untuk memblokir sub-agent baru sambil membiarkan run yang sudah berjalan selesai. Baris sub-agent yang punya thread terkait menampilkan panah untuk membuka thread tersebut.
+- **SUB-AGENTS** — daftar tiap run aktif beserta waktu berjalannya. Dari sini kamu bisa **Stop** sebuah run (langsung menfinalisasi pesan), atau gunakan **Pause spawns** untuk memblokir sub-agent baru sambil membiarkan run yang sudah berjalan selesai. Baris sub-agent yang punya thread terkait bisa diklik untuk membuka thread tersebut.
 
 Saat spawn dijeda, chip **"spawns paused"** muncul di header — klik untuk membuka kembali dropdown ini. Matikan untuk melanjutkan.
 
