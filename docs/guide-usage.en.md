@@ -1109,6 +1109,14 @@ The process manager must restart the server after a non-zero exit (Stoa exits wi
 
 Previously, updating required running `git pull` manually and restarting the process manager.
 
+**To update by hand:** run `git pull`, then `npm ci` (not `npm install` — that would rewrite `package-lock.json` and leave the checkout dirty), then restart the server via your process manager. Connected agents auto-update within 2 minutes.
+
+Database migrations run automatically when the server starts. Do not run them by hand: a migration can rename or drop a table under a server that is still running the old code, causing `no such table` errors until the server is restarted.
+
+To verify the server after an update, `GET /api/health` (no login required) returns `200` with `{"ok":true,"db":"ok","migrations":{"pending":0,"failed":0}}`, or `503` when the database cannot be read, a migration failed, or new migrations have not run yet because the server was not restarted after `git pull`. Details are in the server log (`[migration]` lines).
+
+If the server exits at startup with `[db] better-sqlite3 cannot load in this Node.js`, the native module was built for a different Node version. Run `npm rebuild better-sqlite3` with the same Node binary your process manager uses, then restart.
+
 ### Platforms
 
 Configure external AI model providers beyond the built-in Claude models. Click **+ add platform** to register a new provider:
