@@ -201,9 +201,9 @@ function renderRoomSidebar(room, participants) {
     body.innerHTML = '<div style="font-size:12.5px;color:var(--h-ink-faint)">loading…</div>';
     pop.appendChild(body);
 
-    function avatarEl(actor) {
+    function avatarEl(actor, size = 28) {
       const av = document.createElement('div');
-      av.style.cssText = 'width:28px;height:28px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-family:var(--h-serif);font-style:italic;flex:0 0 auto;overflow:hidden;border:1px solid var(--h-border)';
+      av.style.cssText = `width:${size}px;height:${size}px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-family:var(--h-serif);font-style:italic;flex:0 0 auto;overflow:hidden;border:1px solid var(--h-border)`;
       if (actor.avatar_url) {
         const img = document.createElement('img');
         img.src = actor.avatar_url;
@@ -360,6 +360,15 @@ function renderRoomSidebar(room, participants) {
       return d;
     }
 
+    function subAgentAvatarEl(sa) {
+      return avatarEl({
+        avatar_url: sa.avatar_url,
+        avatar_color: sa.avatar_color,
+        avatar_symbol: sa.avatar_symbol,
+        name: sa.label || sa.parent_name,
+      }, 24);
+    }
+
     function renderSubAgents(subAgents) {
       const linked = subAgents.linked || [];
       const available = subAgents.available || [];
@@ -377,9 +386,7 @@ function renderRoomSidebar(room, participants) {
       linked.forEach(sa => {
         const row = document.createElement('div');
         row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:5px 0';
-        const seal = document.createElement('span');
-        seal.style.cssText = 'width:24px;height:24px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-family:var(--h-serif);font-style:italic;font-size:12px;color:var(--h-ink);background:var(--h-surface);border:1px solid var(--h-border);flex:0 0 auto';
-        seal.textContent = (sa.label || sa.parent_name || '?')[0];
+        const seal = subAgentAvatarEl(sa);
         const info = document.createElement('div');
         info.style.cssText = 'flex:1;min-width:0';
         const name = document.createElement('div');
@@ -415,9 +422,8 @@ function renderRoomSidebar(room, participants) {
         available.forEach(sa => {
           const row = document.createElement('div');
           row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0';
-          const seal = document.createElement('span');
-          seal.style.cssText = 'width:24px;height:24px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-family:var(--h-serif);font-style:italic;font-size:12px;color:var(--h-ink-mute);background:transparent;border:1px dashed var(--h-border);flex:0 0 auto';
-          seal.textContent = (sa.label || sa.parent_name || '?')[0];
+          const seal = subAgentAvatarEl(sa);
+          seal.style.borderStyle = 'dashed';
           const info = document.createElement('div');
           info.style.cssText = 'flex:1;min-width:0';
           const name = document.createElement('div');

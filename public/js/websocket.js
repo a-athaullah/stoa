@@ -152,7 +152,7 @@ function handleWsMessage(msg) {
       : document.getElementById('messages-inner');
     if (!inner) return;
     const baseName = msg.actor_name || 'Agent';
-    const displayName = msg.sub_agent_label ? `${baseName} (${msg.sub_agent_label})` : baseName;
+    const displayName = msg.sub_agent_label ? `${msg.sub_agent_label} (${baseName})` : baseName;
     const actorKey = msg.sub_agent_label ? `${baseName}:${msg.sub_agent_label}` : baseName;
     const last = inner.lastElementChild;
     const isOwnStatus = last?.classList.contains('h-system-event') && last.dataset.actor === actorKey && !last.dataset.done;

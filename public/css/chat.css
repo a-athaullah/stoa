@@ -271,14 +271,6 @@
 
 .h-msg-seal-wrap { flex: 0 0 auto; margin-bottom: 2px; }
 .h-sa-avatar-wrap { position: relative; display: inline-block; }
-.h-sa-badge {
-  position: absolute; bottom: -2px; right: -2px;
-  width: 18px; height: 18px; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 10px; font-weight: 600; color: #fff;
-  border: 2px solid var(--h-surface);
-  filter: brightness(0.8);
-}
 
 .h-conn-badge {
   position: absolute; bottom: -2px; right: -2px;
@@ -1517,11 +1509,6 @@
 }
 .h-mention-item:hover, .h-mention-item.active {
   background: color-mix(in srgb, var(--h-ink) 6%, transparent);
-}
-.h-mention-item .h-sa-badge {
-  width: 11px; height: 11px;
-  font-size: 7px;
-  border-width: 1.5px;
 }
 .h-mention-text {
   display: flex;
