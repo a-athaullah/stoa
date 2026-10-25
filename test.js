@@ -12251,14 +12251,14 @@ async function run() {
     assert.match(R({ ...base, supported: false, reason: 'not_git' }), /not a git checkout/);
     assert.match(R({ ...base, supported: false, reason: 'no_process_manager' }), /process manager/);
     assert.strictEqual(R({ ...base, supported: false, reason: 'brand_new' }), 'brand_new', 'unknown code shown as-is');
-    assert.match(R({ ...base, blockers: ['dirty_tree'] }), /uncommitted/);
+    assert.match(R({ ...base, blockers: ['dirty_tree'] }), /tracked files have uncommitted/);
     assert.match(R({ ...base, blockers: ['diverged'] }), /fast-forward/);
     assert.match(R({ ...base, blockers: ['not_default_branch'] }), /another branch/);
     assert.match(R({ ...base, blockers: ['update_running'] }), /already running/);
     assert.strictEqual(R({ ...base, blockers: ['constructor'] }), 'constructor', 'prototype keys are not codes');
     assert.ok(ctx.sUpdateIsBusy({ update: { state: 'running' } }) && ctx.sUpdateIsBusy({ update: { state: 'restarting' } }));
     assert.ok(!ctx.sUpdateIsBusy({ update: { state: 'failed' } }), 'a failed update can be retried');
-    assert.match(R({ ...base, blockers: ['up_to_date', 'dirty_tree'] }), /uncommitted/, 'a real blocker outranks up_to_date');
+    assert.match(R({ ...base, blockers: ['up_to_date', 'dirty_tree'] }), /tracked files have uncommitted/, 'a real blocker outranks up_to_date');
     assert.strictEqual(R({ ...base, behind: 0 }), 'already up to date.');
     assert.strictEqual(ctx.sUpdateVersionLabel({ sha: 'abc1234', version: '0.68.0' }), 'v0.68.0 · abc1234');
     assert.strictEqual(ctx.sUpdateVersionLabel(null), '—');
