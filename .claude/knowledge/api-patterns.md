@@ -11,7 +11,7 @@
 - `/api/client/manifest` - Client version info
 - `/api/client/file/:filename` - Client file download
 - Static assets (`/css`, `/js`, `/dist`, etc.)
-- `GET /api/health` - Minimal liveness check (no auth, GET only, path must be exact). Returns `{"ok","db":"ok"|"error","migrations":{"pending","failed"}}`. `200` when healthy, `503` when DB error or any migration failed or pending. Result cached 5 s. Intentionally omits version, paths, error messages, and connection status. **Auth bypass is per method+path** (`req.method==='GET' && req.path==='/api/health'`), not via `AUTH_EXEMPT` list — so POST to same path still returns 401. `/api/health/db` (detailed diagnostics) requires session auth.
+- `GET /api/health` - Minimal liveness check (no auth, GET only, path must be exact). Returns `{ ok: boolean, db: "ok"|"error", migrations: { pending: number, failed: number } }`. `200` when healthy, `503` when DB error or any migration failed or pending. Result cached 5 s. Intentionally omits version, paths, error messages, and connection status. **Auth bypass is per method+path** (`req.method==='GET' && url.pathname==='/api/health'` in `requireAuth`), not via `AUTH_EXEMPT` list — so POST to same path still returns 401. `/api/health/db` (detailed diagnostics) requires session auth.
 
 #### SPA Permalink Routes
 `/r/<roomId>` and `/r/<roomId>/t/<threadId>` serve `index.html` — the client router resolves the path. Pattern: `APP_ROUTE_RE = /^\/r\/\d{1,15}(?:\/t\/\d{1,15})?\/?$/` (strict digit-only IDs, nothing else under `/r/`). These routes also serve `index.html` when unauthenticated (login overlay appears, permalink URL preserved after sign-in).
