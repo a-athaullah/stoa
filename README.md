@@ -270,10 +270,17 @@ If anything fails before the restart (merge, `npm ci`, test boot), the checkout 
 
 ```bash
 git pull
+npm ci                 # not `npm install`: it would rewrite package-lock.json and leave the checkout dirty
 pm2 restart stoa-server
 ```
 
-Other process managers (launchd, systemd, supervisord) work the same way — restart via whichever manager you use. Database migrations run automatically on server start. Connected agents auto-update within 2 minutes.
+Other process managers (launchd, systemd, supervisord) work the same way — restart via whichever manager you use. Connected agents auto-update within 2 minutes.
+
+Database migrations run automatically when the server starts, in one go. Do not run them by hand (for example by calling `runMigrations()` from a script): a migration can rename or drop a table under a server that is still running the old code, which then logs errors such as `no such table` until it is restarted.
+
+To check the server after an update, `GET /api/health` (no login) answers `200` with `{"ok":true,"db":"ok","migrations":{"pending":0,"failed":0}}`, or `503` when the database cannot be read or a migration failed (`failed`) or has not run yet because the server was not restarted (`pending`). The details are in the server log (`[migration]` lines).
+
+If the server exits at start with `[db] better-sqlite3 cannot load in this Node.js`, the native module was built for another Node version: run `npm rebuild better-sqlite3` with the same Node your process manager uses.
 
 ## Documentation
 
