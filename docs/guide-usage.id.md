@@ -1094,17 +1094,19 @@ Panel detail mencakup:
 
 **Pengaman:**
 - Sebelum server live disentuh, versi baru di-boot terhadap salinan database. Kalau tes ini gagal, perubahan di-rollback dan server live tetap berjalan tanpa restart.
-- Kalau server gagal start lebih dari 3 kali setelah update diterapkan, Stoa otomatis rollback ke versi sebelumnya dan menampilkan peringatan setelah kamu reconnect.
+- Kalau server gagal start 3 kali setelah update diterapkan (2 kali di bawah supervisord, supaya versi lama masih kebagian jatah start sebelum supervisord menyerah di batas default `startretries`), Stoa otomatis rollback ke versi sebelumnya dan menampilkan peringatan setelah kamu reconnect.
 - Kalau ada agent yang sedang menjalankan run aktif, dialog konfirmasi muncul sebelum update dipaksa.
 
 **Update dinonaktifkan (dengan alasan yang ditampilkan) kalau:**
 - Instalasi bukan git checkout — update manual.
 - Berjalan di Docker — pull image baru.
-- Tidak ada process manager (launchd, pm2, systemd, atau supervisord) yang mengelola Stoa.
+- Tidak ada process manager yang didukung (launchd, pm2, systemd, atau supervisord) yang menjadi parent langsung dari proses server — server yang dijalankan manual (`nohup`, `&`) atau yang mewarisi environment variabel manager tanpa benar-benar dijalankan olehnya dianggap tidak dikelola.
 - Checkout berada di branch yang bukan default.
 - Working tree memiliki perubahan yang belum di-commit.
 - Ada commit lokal yang tidak ada di origin (diverged).
 - Update sudah berjalan atau masih menyelesaikan boot check.
+
+Process manager harus menyalakan ulang server setelah exit dengan kode non-zero (Stoa keluar dengan kode 75 saat restart terencana): launchd `KeepAlive: true`; pm2 default (`autorestart: true`); systemd `Restart=always` atau `Restart=on-failure`; supervisord `autorestart=true` atau `unexpected` (default), dengan `startretries ≥ 3` (default).
 
 Sebelumnya, update mengharuskan menjalankan `git pull` secara manual dan merestart process manager.
 

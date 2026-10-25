@@ -3832,6 +3832,54 @@ async function runAsyncUnitTests() {
         assert.strictEqual((await mk().status()).update.last_result.rolled_back, true, 'last_result read from the state file at boot');
       });
 
+      await uta('detectProcessManager — pm2 only when the parent is the pm2 daemon; job env + parent for supervisord / launchd / systemd', async () => {
+        const { detectProcessManager: detect } = require('./lib/process-manager');
+        const pidFile = path.join('/h', '.pm2', 'pm2.pid');
+        const readFile = (f) => { if (f === pidFile) return '4242\n'; throw new Error('ENOENT'); };
+        const base = { homedir: '/h', readFile, exists: () => false };
+        const pm2Env = { pm_id: '3', PM2_HOME: '/h/.pm2' };
+        const shell = () => ({ comm: '-zsh', args: '-zsh' });
+        assert.strictEqual(detect({ ...base, env: pm2Env, ppid: 4242, parent: shell }), 'pm2', 'ppid is the daemon');
+        assert.strictEqual(detect({ ...base, env: pm2Env, ppid: 777, parent: shell }), 'unknown', 'pm2 env inherited by a shell → not pm2');
+        assert.strictEqual(detect({ ...base, env: { ...pm2Env, INVOCATION_ID: 'x' }, ppid: 777, parent: () => ({ comm: 'systemd', args: '/lib/systemd/systemd --user' }) }),
+          'systemd', 'stale pm2 env falls through to the real manager');
+        assert.strictEqual(detect({ ...base, env: { ...pm2Env, autorestart: 'false' }, ppid: 4242, parent: shell }), 'unknown', 'pm2 with autorestart off restarts nothing');
+        const sup = () => ({ comm: 'python3', args: '/usr/bin/python3 /usr/bin/supervisord -n -c /etc/supervisord.conf' });
+        assert.strictEqual(detect({ ...base, env: { SUPERVISOR_ENABLED: '1' }, ppid: 9, parent: sup }), 'supervisord');
+        assert.strictEqual(detect({ ...base, env: { SUPERVISOR_ENABLED: '1' }, ppid: 9, parent: shell }), 'unknown', 'SUPERVISOR_ENABLED inherited by a shell');
+        const launchd = () => ({ comm: '/sbin/launchd', args: '/sbin/launchd' });
+        assert.strictEqual(detect({ ...base, env: { XPC_SERVICE_NAME: 'com.stoa.server' }, ppid: 1, parent: launchd }), 'launchd');
+        assert.strictEqual(detect({ ...base, env: { XPC_SERVICE_NAME: '0' }, ppid: 1, parent: launchd }), 'unknown', 'orphaned from a terminal');
+        assert.strictEqual(detect({ ...base, env: { XPC_SERVICE_NAME: 'application.com.apple.Terminal.1' }, ppid: 1, parent: launchd }), 'unknown');
+        const pid1 = () => ({ comm: 'systemd', args: '/sbin/init' });
+        assert.strictEqual(detect({ ...base, env: { INVOCATION_ID: 'abc' }, ppid: 1, parent: pid1 }), 'systemd');
+        assert.strictEqual(detect({ ...base, env: {}, ppid: 1, parent: pid1 }), 'unknown', 'orphaned onto systemd PID 1');
+        assert.strictEqual(detect({ ...base, env: {}, ppid: 1, parent: () => null }), 'unknown', 'no ps (Windows)');
+        assert.strictEqual(detect({ ...base, exists: (f) => f === '/.dockerenv', env: pm2Env, ppid: 4242, parent: shell }), 'docker');
+        // This test process: started by run-tests.js (plain node), whatever PM2_* / XPC env it inherited.
+        assert.ok(!['pm2', 'launchd', 'systemd', 'supervisord'].includes(detect()), `real parent is not a manager, got ${detect()}`);
+      });
+
+      await uta('npmCommand — runs npm-cli.js with this node (Windows / Unix / Homebrew layouts), never npm.cmd directly', async () => {
+        const has = (...files) => (f) => files.includes(f);
+        const noLink = () => { throw new Error('not a link'); };
+        const win = bg.npmCommand(['ci'], { platform: 'win32', execPath: '/n/node.exe', exists: has('/n/node_modules/npm/bin/npm-cli.js', '/n/npm.cmd'), realpath: noLink });
+        assert.deepStrictEqual(win, { file: '/n/node.exe', args: ['/n/node_modules/npm/bin/npm-cli.js', 'ci'] }, 'npm.cmd is skipped when npm-cli.js exists');
+        const unix = bg.npmCommand(['ci'], { platform: 'linux', execPath: '/opt/node/bin/node', exists: has('/opt/node/lib/node_modules/npm/bin/npm-cli.js', '/opt/node/bin/npm'), realpath: noLink });
+        assert.deepStrictEqual(unix, { file: '/opt/node/bin/node', args: ['/opt/node/lib/node_modules/npm/bin/npm-cli.js', 'ci'] });
+        const brew = bg.npmCommand(['ci'], { platform: 'darwin', execPath: '/hb/Cellar/node/1/bin/node', exists: has('/hb/Cellar/node/1/bin/npm'),
+          realpath: (f) => (f === '/hb/Cellar/node/1/bin/npm' ? '/hb/lib/node_modules/npm/bin/npm-cli.js' : noLink()) });
+        assert.deepStrictEqual(brew, { file: '/hb/Cellar/node/1/bin/node', args: ['/hb/lib/node_modules/npm/bin/npm-cli.js', 'ci'] }, 'symlinked bin/npm → same node, not the shebang');
+        assert.deepStrictEqual(bg.npmCommand(['ci'], { platform: 'linux', execPath: '/x/bin/node', exists: has('/x/bin/npm'), realpath: () => '/x/bin/npm' }),
+          { file: '/x/bin/npm', args: ['ci'] }, 'a real npm binary is run as is');
+        assert.deepStrictEqual(bg.npmCommand(['ci'], { platform: 'win32', execPath: 'C:/n/node.exe', exists: () => false, realpath: noLink }),
+          { file: 'npm', args: ['ci'] }, 'nothing found → PATH lookup, as before');
+        // On this machine, with a PATH that has no node on it: the resolved command still runs npm.
+        const real = bg.npmCommand(['--version']);
+        const out = require('child_process').execFileSync(real.file, real.args, { encoding: 'utf8', env: { ...process.env, PATH: '/usr/bin:/bin' } }).trim();
+        assert.match(out, /^\d+\.\d+\.\d+/);
+      });
+
       await uta('boot-guard — HEAD moved by hand → stale (no reset); healthy mark after delay → ok + last_result', async () => {
         const quiet = { log() {}, warn() {}, error() {} };
         const head = fx.head();
@@ -3844,6 +3892,34 @@ async function runAsyncUnitTests() {
         const done = await waitUntil(() => bg.readState(stateFile).status === 'ok' && bg.readState(stateFile), 2000, 10);
         assert.deepStrictEqual([done.last_result.ok, done.last_result.from, done.last_result.to], [true, other, head]);
         assert.strictEqual(fsM.readdirSync(tmp).filter(f => f.startsWith('update-state.json.tmp')).length, 0, 'atomic write leaves no tmp file');
+      });
+
+      await uta('boot-guard — supervisord: rollback on boot 3 so the old version starts before FATAL (default startretries=3)', async () => {
+        const quiet = { log() {}, warn() {}, error() {} };
+        // supervisord's restart loop for a program that keeps exiting within startsecs (supervisor/process.py:
+        // finish() → BACKOFF and backoff += 1; transition() spawns again only while backoff <= startretries,
+        // else FATAL). Every boot here exits quickly: the update crashes, the rollback boot exits 1.
+        // → boot-guard results per start, ending with 'none' if the rolled-back version got started.
+        const superviseCrashLoop = (env, startretries = 3) => {
+          const before = fx.head();
+          const bad = (fx.commit(fx.live, { 'crash.txt': String(Math.random()) }, 'crashing update'), fx.head());
+          bg.writeState(stateFile, { status: 'pending', prev_head: before, new_head: bad, attempts: 0 });
+          const boots = [];
+          for (let backoff = 0; backoff <= startretries; backoff++) {
+            const r = bg.runBootGuard({ file: stateFile, repoDir: fx.live, env, exit: () => {}, log: quiet });
+            boots.push(r);
+            if (r === 'none') break;
+          }
+          return { boots, before };
+        };
+        const plain = superviseCrashLoop({});
+        assert.deepStrictEqual(plain.boots, ['counted', 'counted', 'counted', 'rolled_back'], 'without the adjustment: FATAL right after the rollback boot');
+        assert.strictEqual(fx.head(), plain.before, 'tree was reset, but supervisord would never start it');
+        const sup = superviseCrashLoop({ SUPERVISOR_ENABLED: '1' });
+        assert.deepStrictEqual(sup.boots, ['counted', 'counted', 'rolled_back', 'none'], 'rolled-back version gets start 4');
+        assert.strictEqual(fx.head(), sup.before);
+        assert.strictEqual(bg.readState(stateFile).last_result.error, `server failed to stay up ${bg.MAX_ATTEMPTS - 1} times after the update — rolled back`);
+        assert.deepStrictEqual([bg.maxAttempts({}), bg.maxAttempts({ SUPERVISOR_ENABLED: '1' })], [3, 2]);
       });
 
       await uta('server-update — daily check timer fetches on its own and reports fetch failures as check_error', async () => {
@@ -7871,8 +7947,72 @@ async function run() {
     assert.strictEqual(r.status, 401);
   });
 
+  // Planned restarts must exit 75, not 0: systemd Restart=on-failure and supervisord autorestart=unexpected
+  // leave a server that exited 0 down. Each case boots its own server on a copy of the test DB (smoke-boot
+  // mode: no connectors, scheduler or wakes), triggers the restart over HTTP and reads the real exit code.
+  {
+    const osM = require('os'), fsM = require('fs');
+    const Database = require('better-sqlite3');
+    const bootRestartTarget = async () => {
+      const dir = fsM.mkdtempSync(path.join(osM.tmpdir(), 'stoa-restart-exit-'));
+      const src = new Database(process.env.DB_PATH, { readonly: true });
+      try { await src.backup(path.join(dir, 'stoa.db')); } finally { src.close(); }
+      fsM.copyFileSync(process.env.STOA_ENV_FILE, path.join(dir, '.env'));
+      const port = await new Promise(r => { const s = http.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
+      const env = { ...process.env, PORT: String(port), DB_PATH: path.join(dir, 'stoa.db'), STOA_ENV_FILE: path.join(dir, '.env'),
+        STOA_AGENT_BUNDLE_DIR: path.join(dir, 'dist'), STOA_MCP_WORK_DIR: path.join(dir, 'mcp'),
+        STOA_UPDATE_STATE_FILE: path.join(dir, 'update-state.json'), STOA_UPDATE_REPO_DIR: path.join(dir, 'no-repo'),
+        STOA_SMOKE_BOOT: '1', STOA_SEMANTIC_SEARCH: 'off', STOA_ORPHAN_WAKE: 'off', STOA_TEST_PROCESS_MANAGER: 'launchd' };
+      const child = require('child_process').spawn(process.execPath, [path.join(__dirname, 'server.js')], { cwd: __dirname, env, stdio: ['ignore', 'pipe', 'pipe'] });
+      let log = '';
+      child.stdout.on('data', d => { log += d; });
+      child.stderr.on('data', d => { log += d; });
+      const exited = new Promise(r => child.once('exit', (code, signal) => r({ code, signal })));
+      const call = (method, p, body, cookie) => new Promise((resolve, reject) => {
+        const data = body ? JSON.stringify(body) : '';
+        const r = http.request({ hostname: '127.0.0.1', port, path: p, method,
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data), ...(cookie ? { Cookie: cookie } : {}) } }, res => {
+          let out = ''; res.on('data', c => { out += c; });
+          res.on('end', () => { let b; try { b = JSON.parse(out); } catch { b = out; } resolve({ status: res.statusCode, headers: res.headers, body: b }); });
+        });
+        r.on('error', reject); r.end(data);
+      });
+      const cleanup = async () => {
+        if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await exited; }
+        fsM.rmSync(dir, { recursive: true, force: true });
+      };
+      try {
+        await waitUntil(() => call('GET', '/').then(() => true, () => false), 30000, 200);
+        const login = await call('POST', '/api/auth/login', { email: TEST_EMAIL, password: TEST_PASSWORD });
+        assert.strictEqual(login.status, 200, `login on the throwaway server: ${JSON.stringify(login.body)}`);
+        const cookie = login.headers['set-cookie'].map(c => c.split(';')[0]).join('; ');
+        return { call, cookie, exited, cleanup, log: () => log };
+      } catch (e) { await cleanup(); throw e; }
+    };
+
+    await test('POST /api/server/restart — process exits with 75 (not 0) so on-failure / unexpected managers restart it', async () => {
+      const t = await bootRestartTarget();
+      try {
+        const r = await t.call('POST', '/api/server/restart', null, t.cookie);
+        assert.deepStrictEqual([r.status, r.body], [200, { ok: true }]);
+        const out = await Promise.race([t.exited, new Promise(r => setTimeout(() => r('timeout'), 10000))]);
+        assert.deepStrictEqual(out, { code: 75, signal: null }, t.log().slice(-500));
+      } finally { await t.cleanup(); }
+    });
+
+    await test('PATCH /api/settings port change — process exits with 75 for the manager to restart it on the new port', async () => {
+      const t = await bootRestartTarget();
+      try {
+        const r = await t.call('PATCH', '/api/settings', { port: 65000 }, t.cookie);
+        assert.deepStrictEqual([r.status, r.body.restarting, r.body.new_port], [200, true, 65000]);
+        const out = await Promise.race([t.exited, new Promise(r => setTimeout(() => r('timeout'), 10000))]);
+        assert.deepStrictEqual(out, { code: 75, signal: null }, t.log().slice(-500));
+      } finally { await t.cleanup(); }
+    });
+  }
+
   // In-app updater over HTTP. run-tests.js points STOA_UPDATE_REPO_DIR at an empty temp path and
-  // STOA_UPDATE_PROCESS_MANAGER at launchd; the fixture's server.js always fails the smoke boot here,
+  // STOA_TEST_PROCESS_MANAGER at launchd; the fixture's server.js always fails the smoke boot here,
   // so the throwaway server is never restarted by these tests.
   console.log('\n[Server Update]');
   if (!process.env.STOA_UPDATE_REPO_DIR) {

@@ -161,7 +161,7 @@ function waitUp(port, tries = 50) {
     // daily check never fires during a run (test.js drives /check itself).
     STOA_UPDATE_REPO_DIR: path.join(tmpUpdateDir, 'live'),
     STOA_UPDATE_STATE_FILE: path.join(tmpUpdateDir, 'update-state.json'),
-    STOA_UPDATE_PROCESS_MANAGER: 'launchd',
+    STOA_TEST_PROCESS_MANAGER: 'launchd',
     STOA_UPDATE_CHECK_DELAY_MS: String(24 * 3600_000),
     STOA_TEST_EMAIL: testEmail || '', STOA_TEST_PASSWORD: testPassword, STOA_TEST_DB_TOKEN: dbToken };
 

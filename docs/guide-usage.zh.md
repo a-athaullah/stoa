@@ -1089,17 +1089,19 @@ Stoa 在应用最左侧使用**垂直侧边栏导航**。侧边栏仅显示图�
 
 **安全保障：**
 - 在修改线上服务器之前，新版本会对数据库副本进行启动测试。如果测试失败，更改将被回滚，线上服务器无需重启即可继续运行。
-- 如果服务器在更新应用后启动失败超过 3 次，Stoa 将自动回滚到之前的版本，并在重新连接后显示警告。
+- 如果服务器在更新应用后启动失败 3 次（supervisord 下为 2 次，以确保回滚后的版本在 supervisord 默认 `startretries` 范围内仍能获得启动机会），Stoa 将自动回滚到之前的版本，并在重新连接后显示警告。
 - 如果有代理正在运行，强制更新前会显示确认对话框。
 
 **更新被禁用（显示原因）的情况：**
 - 安装不是 git 检出 — 请手动更新。
 - 在 Docker 中运行 — 请 pull 新镜像。
-- 没有进程管理器（launchd、pm2、systemd 或 supervisord）管理 Stoa。
+- 没有受支持的进程管理器（launchd、pm2、systemd 或 supervisord）作为服务器进程的直接父进程 — 手动启动的服务器（`nohup`、`&`）或仅继承了管理器环境变量而非由其启动的服务器，将被视为未受管理。
 - 检出处于非默认分支。
 - 工作树有未提交的更改。
 - 存在不在 origin 上的本地提交（diverged）。
 - 已有更新正在运行或尚未完成启动检查。
+
+进程管理器必须在非零退出码后重启服务器（Stoa 在计划重启时以代码 75 退出）：launchd `KeepAlive: true`；pm2 默认值（`autorestart: true`）；systemd `Restart=always` 或 `Restart=on-failure`；supervisord `autorestart=true` 或 `unexpected`（默认），且 `startretries ≥ 3`（默认）。
 
 以前，更新需要手动运行 `git pull` 并重启进程管理器。
 

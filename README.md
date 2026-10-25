@@ -253,9 +253,18 @@ Stoa can listen to a Slack workspace and automatically route incoming messages i
 
 Requirements — otherwise the button stays disabled and says why:
 - a git checkout (not Docker) on the default branch of `origin`, with no local changes and no local commits that diverge from it
-- a process manager that restarts the server (launchd, pm2, systemd or supervisord)
+- a process manager that restarts the server (launchd, pm2, systemd or supervisord), detected as the server's parent process — a server started by hand, or left running after its terminal closed, is not restartable even if the manager's environment variables are present
 
-If anything fails before the restart (merge, `npm ci`, test boot), the checkout goes back to the previous commit and the running server is left alone. If the new version cannot stay up after the restart (3 failed boots), it rolls itself back to the previous commit and Settings shows a warning once.
+The restart (Restart button, port change, update) exits with code 75, so the manager must start the server again after a non-zero exit. Minimum settings:
+
+| Manager | Setting |
+|---------|---------|
+| launchd | `KeepAlive` = `true` (or `{ SuccessfulExit: false }`) |
+| pm2 | defaults (`autorestart: true`) |
+| systemd | `Restart=always` or `Restart=on-failure` |
+| supervisord | `autorestart=true` or `unexpected` (default); keep `startretries` ≥ 3 (default 3) |
+
+If anything fails before the restart (merge, `npm ci`, test boot), the checkout goes back to the previous commit and the running server is left alone. If the new version cannot stay up after the restart (3 failed boots; 2 under supervisord, so the rolled-back version still gets a start within `startretries`), it rolls itself back to the previous commit and Settings shows a warning once.
 
 **By hand:**
 
