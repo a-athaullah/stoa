@@ -96,6 +96,7 @@ CREATE TABLE messages (
   attachments TEXT,                          -- JSON array
   created_at TEXT,
   completed_at TEXT
+  -- feed_pos REAL added by migration 20261026-message-feed-pos.sql (not in baseline)
 );
 ```
 
@@ -104,9 +105,10 @@ CREATE TABLE messages (
 - `state='system_event'` → bukan message user (e.g., "X joined room")
 - `reply_to` → legacy quote-reply (preserved, not removed)
 - `thread_id` → thread root message id; NULL = root message, non-NULL = reply in thread
+- `feed_pos REAL` (migration `20261026-message-feed-pos.sql`) — display sort key. Backfilled `= id`; new rows get `feed_pos = id` via AFTER INSERT trigger. At completion of an agent/sub-agent reply, if the same participant sent progress messages later in the same scope, `feed_pos` is set to `<last progress feed_pos> + 0.5` so the final reply appears after its own progress messages. Reads `ORDER BY feed_pos, id`. Cursors (`before_id`/`after_id`) are still id-based and resolved to `feed_pos` by the server.
 - `GET /api/rooms/:id/messages` default scope = roots-only (thread_id IS NULL)
 - Full-text search via `messages_fts` (FTS5)
-- Indexes: `idx_messages_thread_id(thread_id, id)`, `idx_messages_room_root(room_id, id) WHERE thread_id IS NULL`
+- Indexes: `idx_messages_thread_id(thread_id, id)`, `idx_messages_room_root(room_id, id) WHERE thread_id IS NULL`, `idx_messages_room_feed_pos(room_id, feed_pos) WHERE thread_id IS NULL`, `idx_messages_thread_feed_pos(thread_id, feed_pos)`
 
 ---
 
