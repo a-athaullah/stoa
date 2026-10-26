@@ -17,6 +17,8 @@ let mcpState = {
   expanded: new Set(),
   testing: new Set(),
   testResults: {},
+  exemptions: {},
+  confirmExemptionId: null,
   oauthPending: new Set(),
   confirmRemoveId: null,
   form: null,
@@ -297,6 +299,7 @@ function mcpInvalidate() {
   mcpState.access = null;
   mcpState.callsLoaded = false;
   mcpState.approvals = null;
+  mcpState.exemptions = {};
   if (mcpIsVisible()) sLoadMcpTab();
 }
 

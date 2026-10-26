@@ -199,14 +199,65 @@ async function mcpToggleTools(srv) {
     mcpState.expanded.delete(srv.id);
   } else {
     mcpState.expanded.add(srv.id);
+    const exemptions = mcpLoadExemptions(srv.id);
     if (!mcpState.tools[srv.id]) {
       mcpState.tools[srv.id] = { loading: true, list: [] };
       mcpRerenderCard(srv);
       const r = await mcpApi('GET', `/api/mcp/servers/${srv.id}/tools`);
       mcpState.tools[srv.id] = r.ok ? { list: Array.isArray(r.data?.tools) ? r.data.tools : [] } : { error: r.error, list: [] };
     }
+    await exemptions;
   }
   mcpRerenderCard(srv);
+}
+
+async function mcpLoadExemptions(serverId) {
+  const r = await mcpApi('GET', `/api/mcp/approval-exemptions?${new URLSearchParams({ server_id: String(serverId) })}`);
+  mcpState.exemptions[serverId] = r.ok ? { list: Array.isArray(r.data?.exemptions) ? r.data.exemptions : [] } : { error: r.error, list: [] };
+}
+
+// An "always allow" from an approval card: refresh the server's list if its tools are on screen.
+async function mcpExemptionsChanged(serverId) {
+  if (serverId == null) return;
+  delete mcpState.exemptions[serverId];
+  if (!mcpState.expanded.has(serverId)) return;
+  await mcpLoadExemptions(serverId);
+  const srv = mcpServerById(serverId);
+  if (srv && mcpIsVisible() && mcpState.tab === 'installed') mcpRerenderCard(srv);
+}
+
+function mcpMakeExemptionLine(srv, tool) {
+  const ex = mcpState.exemptions[srv.id];
+  const list = (ex?.list || []).filter(e => e.tool === tool.name);
+  if (!list.length) return null;
+  const line = mcpEl('div', 'mcp-tool-exempt');
+  line.classList.toggle('mcp-tool-exempt-off', !tool.requires_approval);
+  line.appendChild(mcpEl('span', 'mcp-tool-exempt-label', 'always allowed for'));
+  list.forEach(e => {
+    const who = mcpApprWho(e);
+    const chip = mcpEl('span', 'mcp-exempt-chip');
+    if (mcpState.confirmExemptionId === e.id) {
+      chip.classList.add('mcp-exempt-chip-confirm');
+      const yes = mcpBtn('mcp-exempt-yes', 'remove', async () => {
+        yes.disabled = true;
+        const r = await mcpApi('DELETE', `/api/mcp/approval-exemptions/${e.id}`);
+        if (!r.ok && r.status !== 404) { showToast(`Couldn’t remove ${who}: ${r.error}`, { error: true }); yes.disabled = false; return; }
+        mcpState.confirmExemptionId = null;
+        ex.list = ex.list.filter(x => x.id !== e.id);
+        mcpRerenderCard(srv);
+      }, `${who} will ask for approval again before running ${tool.name}`);
+      const no = mcpBtn('mcp-exempt-no', 'cancel', () => { mcpState.confirmExemptionId = null; mcpRerenderCard(srv); });
+      chip.append(mcpEl('span', 'mcp-exempt-name', `ask ${who} again?`), yes, no);
+    } else {
+      const rm = mcpBtn('mcp-exempt-rm', '×', () => { mcpState.confirmExemptionId = e.id; mcpRerenderCard(srv); });
+      rm.setAttribute('aria-label', `Stop always allowing ${who} to run ${tool.name}`);
+      rm.title = `Stop always allowing ${who}`;
+      chip.append(mcpEl('span', 'mcp-exempt-name', who), rm);
+    }
+    line.appendChild(chip);
+  });
+  if (!tool.requires_approval) line.appendChild(mcpEl('span', 'mcp-tool-exempt-note', 'inactive: approval is off for this tool'));
+  return line;
 }
 
 function mcpMakeToolList(srv) {
@@ -226,6 +277,8 @@ function mcpMakeToolList(srv) {
   head.append(mcpEl('span', null, 'tool'), mcpEl('span', null, 'on'), mcpEl('span', null, 'approval'), mcpEl('span', null, 'limit / min'));
   head.setAttribute('aria-hidden', 'true');
   wrap.appendChild(head);
+  const exErr = mcpState.exemptions[srv.id]?.error;
+  if (exErr) wrap.appendChild(mcpEl('div', 'mcp-card-error', `couldn’t load always-allowed agents · ${exErr}`));
   t.list.forEach(tool => {
     const row = mcpEl('div', 'mcp-tool-row');
     const info = mcpEl('div', 'mcp-tool-info');
@@ -249,10 +302,17 @@ function mcpMakeToolList(srv) {
       return true;
     };
     const on = mcpSwitch(tool.enabled !== false, `${tool.name} enabled`, setTool('enabled'));
-    const appr = mcpSwitch(!!tool.requires_approval, `${tool.name} requires approval`, setTool('requires_approval'));
+    const saveAppr = setTool('requires_approval');
+    const appr = mcpSwitch(!!tool.requires_approval, `${tool.name} requires approval`, async next => {
+      const ok = await saveAppr(next);
+      if (ok && row.querySelector('.mcp-tool-exempt')) mcpRerenderCard(srv);
+      return ok;
+    });
     appr.title = 'Requires approval: each call waits for approve / deny in the room or thread';
     row.append(info, mcpToolCtl('on', on), mcpToolCtl('approval', appr),
       mcpToolCtl('limit / min', mcpMakeRateInput(tool, setTool('rate_limit_per_min'))));
+    const exempt = mcpMakeExemptionLine(srv, tool);
+    if (exempt) row.appendChild(exempt);
     wrap.appendChild(row);
   });
   return wrap;
