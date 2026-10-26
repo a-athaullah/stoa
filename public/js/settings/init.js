@@ -102,7 +102,6 @@ function handleActorStatus(actor) {
       syncNewRoomBtn();
     }
     // New actor — refresh sidebar list
-    if (!sRowStates.has(actor.id)) sRowStates.set(actor.id, { state: 'default', draft: actor.name });
     settingsActors = allActors.filter(a => a.type !== 'human' || a.id === humanActor?.id);
     if (typeof renderAgentSidebar === 'function' && document.getElementById('agent-list')) renderAgentSidebar();
     if (Array.isArray(actor.harness_status) && typeof refreshHarnessCache === 'function') {
@@ -265,7 +264,6 @@ function initSettings() {
     if (e.key === 'Escape') {
       if (sAddPanel.open) { sCloseAddPanel(); e.preventDefault(); return; }
       for (const [id, rs] of sRowStates) {
-        if (rs.state === 'renaming')       { sCancelRename(id); e.preventDefault(); return; }
         if (rs.state === 'confirm-delete') { sCancelDelete(id); e.preventDefault(); return; }
       }
     }
