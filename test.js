@@ -13050,6 +13050,23 @@ async function run() {
     assert.strictEqual(ctx.placeRowByFeedPos(byId('msg-302'), undefined), false, 'no feed_pos (older server) → no move');
   });
 
+  await test('sub-agent form — label errors route by server code, never by text that can quote a user-chosen room title', () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const ctx = { localStorage: { getItem: () => null } };
+    vm.createContext(ctx);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/settings/agents.js'), 'utf8'), ctx);
+    const route = (e) => JSON.stringify(ctx.saLabelErrorRoute(e, 'Scout', 'Atlas'));
+    for (const title of ['Merge conflicts', 'Name already exists', 'actor name drill']) {
+      const error = `label "Scout" already in room "${title}" (#1) from Orion`;
+      assert.strictEqual(route({ error, code: 'label_room_clash', room_id: 1 }), JSON.stringify({ toast: error }), `room "${title}" → toast with the server text`);
+    }
+    assert.strictEqual(route({ error: 'label "Scout" already exists for this agent', code: 'label_exists' }), JSON.stringify({ inline: '"Scout" already exists on Atlas' }));
+    assert.strictEqual(route({ error: 'label conflicts with an actor name', code: 'label_actor_name' }), JSON.stringify({ inline: '"Scout" is an agent name — pick something else' }));
+    assert.strictEqual(route({ error: 'label "Scout" already exists' }), JSON.stringify({ toast: 'label "Scout" already exists' }), 'no code (older server) → toast, the text is not parsed');
+    assert.strictEqual(route({}), JSON.stringify({ toast: 'failed to save' }));
+  });
+
   await test('schedules panel — every form spec passes server validation unchanged, summaries and next run read naturally', () => {
     const vm = require('vm');
     const fs = require('fs');

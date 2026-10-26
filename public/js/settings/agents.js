@@ -704,6 +704,13 @@ function _saAnthropicModels() {
 const SA_DANGER = 'var(--h-red)';
 const HARNESS_LABELS = { claude: 'Claude CLI', codex: 'Codex CLI' };
 
+// Label errors route by the server's stable code: the text can quote user-chosen room and agent names.
+function saLabelErrorRoute(e, label, actorName) {
+  if (e.code === 'label_exists') return { inline: `"${label}" already exists on ${actorName}` };
+  if (e.code === 'label_actor_name') return { inline: `"${label}" is an agent name — pick something else` };
+  return { toast: e.error || 'failed to save' };
+}
+
 function _saPopulateModelSel(modelSel, harness, actor, currentVal) {
   modelSel.innerHTML = '';
   const useTierOpt = document.createElement('option');
@@ -1242,10 +1249,9 @@ function sMakeEditAccordion(actor) {
           : await fetch(`/api/actors/${actor.id}/sub-agents`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         if (!r.ok) {
           const e = await r.json().catch(() => ({}));
-          const msg = e.error || 'failed to save';
-          if (/already exists/i.test(msg)) showErr(`”${label}” already exists on ${actor.name}`);
-          else if (/actor name|conflicts/i.test(msg)) showErr(`”${label}” is an agent name — pick something else`);
-          else showToast(msg, { error: true });
+          const route = saLabelErrorRoute(e, label, actor.name);
+          if (route.inline) showErr(route.inline);
+          else showToast(route.toast, { error: true });
           saveF.disabled = false; return;
         }
         saShowForm(false); saLoadList();
@@ -2194,10 +2200,9 @@ function buildSubAgentsSection(actor) {
           : await fetch(`/api/actors/${actor.id}/sub-agents`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         if (!r.ok) {
           const e = await r.json().catch(() => ({}));
-          const msg = e.error || 'failed to save';
-          if (/already exists/i.test(msg)) showErr(`"${label}" already exists on ${actor.name}`);
-          else if (/actor name|conflicts/i.test(msg)) showErr(`"${label}" is an agent name — pick something else`);
-          else showToast(msg, { error: true });
+          const route = saLabelErrorRoute(e, label, actor.name);
+          if (route.inline) showErr(route.inline);
+          else showToast(route.toast, { error: true });
           saveF.disabled = false; return;
         }
         saShowForm(false); saLoadListWithCache();
