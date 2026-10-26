@@ -1013,7 +1013,8 @@
 .h-msg-row:hover .h-msg-actions, .h-msg-row.show-actions .h-msg-actions { display: flex; }
 .h-msg-row.ai .h-msg-actions { right: 8px; }
 .h-msg-row.human .h-msg-actions { left: 8px; }
-.t-root-row .h-msg-actions { display: flex; right: 8px; }
+.t-root-row .h-msg-actions { right: 8px; }
+.t-root-row:hover .h-msg-actions, .t-root-row:focus-within .h-msg-actions, .t-root-row.show-actions .h-msg-actions { display: flex; }
 /* Broadcast toolbar hangs off the row (not the column) so it lines up with plain root rows: 20px row padding + 8px */
 .t-broadcast-row > .h-msg-actions { top: -7px; right: 28px; }
 /* Keep the reason badge clear of that toolbar (2 buttons + gap) */
