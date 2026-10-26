@@ -4087,6 +4087,37 @@ async function runAsyncUnitTests() {
         assert.strictEqual((await mk().status()).update.last_result.rolled_back, true, 'last_result read from the state file at boot');
       });
 
+      await uta('server-update — failed update, then a successful one: pending hides the old failure; healthy mark → ok without a new instance', async () => {
+        const quiet = { log() {}, warn() {}, error() {} };
+        const u = mk();
+        fx.publish({ 'server.js': BAD_SMOKE_SERVER }, 'broken again');
+        assert.strictEqual((await u.start({ force: true })).status, 202);
+        await waitUntil(async () => { const v = await u.status(); return v.update.state !== 'running' && v; });
+        const failed = (await u.status()).update.last_result;
+        assert.deepStrictEqual([failed.ok, failed.rolled_back], [false, true]);
+        const prev = fx.head();
+        const good = fx.publish({ 'server.js': GOOD_SMOKE_SERVER, 'package.json': '{"version":"1.3.0"}\n' }, 'fixed again');
+        restarts.length = 0;
+        assert.strictEqual((await u.start({})).status, 202);
+        await waitUntil(async () => { const v = await u.status(); return v.update.state === 'restarting' && v; });
+        assert.deepStrictEqual(restarts, ['update']);
+        const pending = bg.readState(stateFile);
+        assert.deepStrictEqual([pending.status, pending.new_head, pending.last_result], ['pending', good, null], 'old failure not carried into pending');
+        assert.strictEqual((await u.status()).update.last_result, null, 'same process: no stale failure while pending');
+        // The restarted process: boot guard counts the boot, then the server module loads with the file still pending.
+        assert.strictEqual(bg.runBootGuard({ file: stateFile, repoDir: fx.live, exit: () => assert.fail('must not exit'), log: quiet }), 'counted');
+        const booted = mk();
+        assert.strictEqual((await booted.status()).update.last_result, null, 'boot while pending → no outcome yet');
+        // A pending file written by an older version still carries the previous failure: it must not surface either.
+        bg.writeState(stateFile, { ...bg.readState(stateFile), last_result: failed });
+        assert.strictEqual((await booted.status()).update.last_result, null, 'legacy pending file with a stale failure');
+        bg.scheduleHealthyMark({ file: stateFile, delayMs: 20, log: quiet });
+        const s = await waitUntil(async () => { const v = await booted.status(); return v.update.last_result?.ok === true && v; }, 2000, 10);
+        assert.deepStrictEqual([s.update.last_result.rolled_back, s.update.last_result.from, s.update.last_result.to], [false, prev, good]);
+        assert.ok(!s.blockers.includes('update_running'));
+        assert.strictEqual((await u.status()).update.last_result.ok, true, 'the instance that saw the failure also reads the newer ok');
+      });
+
       await uta('detectProcessManager — pm2 only when the parent is the pm2 daemon; job env + parent for supervisord / launchd / systemd', async () => {
         const { detectProcessManager: detect } = require('./lib/process-manager');
         const pidFile = path.join('/h', '.pm2', 'pm2.pid');
