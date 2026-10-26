@@ -366,7 +366,7 @@ function renderRoomSidebar(room, participants) {
     }
 
     function subAgentAvatarEl(sa) {
-      return makeAvatarEl(sa.parent_name, sa.parent_avatar_color, null, 24, sa.label || '?', sa.avatar_color, sa.avatar_symbol, sa.avatar_url);
+      return makeAvatarEl(sa.parent_name, sa.parent_avatar_color, null, 24, sa.label || '?', sa.avatar_color, sa.avatar_symbol, sa.avatar_url, sa.id);
     }
 
     function renderSubAgents(subAgents) {

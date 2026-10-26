@@ -220,7 +220,7 @@ function makeAutomationAvatarEl(provider, size) {
 function makeAgentViaConnAvatarEl(m, size) {
   const wrap = document.createElement('div');
   wrap.className = 'h-sa-avatar-wrap';
-  wrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, size, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url));
+  wrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, size, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_id));
   const badge = document.createElement('span');
   badge.className = 'h-conn-badge';
   badge.title = 'via ' + automationProviderLabel(m.automation.provider);

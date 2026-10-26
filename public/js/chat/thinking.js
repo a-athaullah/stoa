@@ -12,7 +12,7 @@ function showThinking(msgId, actorName, color, symbol, avatarUrl, subAgentLabel,
   // Seal
   const sealWrap = document.createElement('div');
   sealWrap.className = 'h-msg-seal-wrap';
-  sealWrap.appendChild(makeAvatarEl(actorName, color, avatarUrl, isThreadPanel ? 28 : 40, subAgentLabel, saAvatarColor, saAvatarSymbol, saAvatarUrl));
+  sealWrap.appendChild(makeAvatarEl(actorName, color, avatarUrl, isThreadPanel ? 28 : 40, subAgentLabel, saAvatarColor, saAvatarSymbol, saAvatarUrl, roomSubAgentIdByLabel(subAgentLabel)));
   row.appendChild(sealWrap);
 
   // Body

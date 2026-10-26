@@ -854,7 +854,7 @@ function appendThreadMessage(m, container) {
   } else if (m.automation?.provider) {
     seal.appendChild(makeAutomationAvatarEl(m.automation.provider, 28));
   } else {
-    seal.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 28, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url));
+    seal.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 28, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_id));
   }
   row.appendChild(seal);
 
@@ -1037,7 +1037,7 @@ function _renderThreadRoot(m, container) {
   } else if (m.automation?.provider) {
     seal.appendChild(makeAutomationAvatarEl(m.automation.provider, 28));
   } else {
-    seal.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 28, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url));
+    seal.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 28, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_id));
   }
   row.appendChild(seal);
 

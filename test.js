@@ -12687,7 +12687,7 @@ async function run() {
     assert.deepStrictEqual([...ctx.parseSavedToolSteps('{"name":"Bash"}')], []);
   });
 
-  await test('sub-agent avatar — no own photo falls back to a label seal (never the parent photo), live refresh repaints only that sub-agent', () => {
+  await test('sub-agent avatar — no own photo falls back to a label seal (never the parent photo), live refresh repaints only that sub-agent (by id, not parent name)', () => {
     const vm = require('vm');
     const fs = require('fs');
     const el = tag => ({ tagName: tag.toUpperCase(), style: {}, dataset: {}, children: [], replaceChildren(...c) { this.children = c; } });
@@ -12695,7 +12695,8 @@ async function run() {
     const ctx = {
       document: { createElement: tag => { const e = el(tag); if (tag === 'div') rendered.push(e); return e; } },
       makeAvatar: (name, color, url) => ({ parentAvatar: { name, color, url } }),
-      allActors: [{ id: 1, name: 'Ara' }, { id: 2, name: 'Idris' }],
+      currentRoomId: 5,
+      roomSubAgentsCache: { 5: [{ id: 852, label: 'Vera', parent_actor_id: 1 }, { id: 853, label: 'Kenji', parent_actor_id: 1 }] },
     };
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'public/js/chat/sub-agent-avatar.js'), 'utf8'), ctx);
     const only = w => w.children[0];
@@ -12718,18 +12719,27 @@ async function run() {
     assert.deepStrictEqual([photo.tagName, photo.src, photo.alt], ['IMG', '/uploads/avatar/avatar-sa-852-1.png', 'Vera']);
 
     rendered.length = 0;
-    const vera = ctx.makeAvatarEl('Ara', '#a00', null, 36, 'Vera', null, null, null);
-    const kenji = ctx.makeAvatarEl('Ara', '#a00', null, 36, 'Kenji', null, null, null);
-    const otherVera = ctx.makeAvatarEl('Idris', '#00a', null, 28, 'Vera', null, null, null);
-    const root = { querySelectorAll: sel => { assert.strictEqual(sel, '.h-sa-avatar-wrap[data-sa-label]'); return rendered.filter(w => w.dataset.saLabel); } };
+    const vera = ctx.makeAvatarEl('Ara', '#a00', null, 36, 'Vera', null, null, null, 852);
+    const kenji = ctx.makeAvatarEl('Ara', '#a00', null, 36, 'Kenji', null, null, null, 853);
+    const twinVera = ctx.makeAvatarEl('Ara', '#0aa', null, 28, 'Vera', null, null, null, 977);
+    const legacy = ctx.makeAvatarEl('Ara', '#a00', null, 36, 'Vera', null, null, null, null);
+    assert.strictEqual(legacy.dataset.saId, undefined, 'no id, no match key');
+    const root = { querySelectorAll: sel => { assert.strictEqual(sel, '.h-sa-avatar-wrap[data-sa-id]'); return rendered.filter(w => w.dataset.saId); } };
     ctx.refreshSubAgentAvatars({ id: 852, parent_actor_id: 1, label: 'Vera', avatar_url: '/uploads/avatar/avatar-sa-852-2.png' }, root);
     assert.deepStrictEqual([only(vera).tagName, only(vera).src, /width:36px/.test(only(vera).style.cssText)], ['IMG', '/uploads/avatar/avatar-sa-852-2.png', true], 'the updated sub-agent is repainted at its rendered size');
     assert.strictEqual(only(kenji).tagName, 'SPAN', 'a sibling sub-agent is untouched');
-    assert.strictEqual(only(otherVera).tagName, 'SPAN', 'same label under another parent is untouched');
+    assert.strictEqual(only(twinVera).tagName, 'SPAN', 'same label under another parent with the same name is untouched');
+    assert.strictEqual(only(legacy).tagName, 'SPAN', 'an avatar rendered without an id is never repainted');
     ctx.refreshSubAgentAvatars({ id: 852, parent_actor_id: 1, label: 'Vera', avatar_url: null, avatar_color: '#0a0', avatar_symbol: null }, root);
     assert.deepStrictEqual([only(vera).tagName, only(vera).textContent, only(vera).style.background], ['SPAN', 'V', '#0a0'], 'removing the photo falls back to the seal, not the parent photo');
-    ctx.refreshSubAgentAvatars({ id: 9, parent_actor_id: 99, label: 'Vera', avatar_url: '/x.png' }, root);
-    assert.strictEqual(only(vera).tagName, 'SPAN', 'unknown parent repaints nothing');
+    ctx.refreshSubAgentAvatars({ id: 977, parent_actor_id: 2, label: 'Vera', avatar_url: '/uploads/avatar/avatar-sa-977-1.png' }, root);
+    assert.deepStrictEqual([only(twinVera).tagName, only(vera).tagName], ['IMG', 'SPAN'], 'the twin updates alone; the first Vera keeps its seal');
+    ctx.refreshSubAgentAvatars({ parent_actor_id: 1, label: 'Kenji', avatar_url: '/x.png' }, root);
+    assert.strictEqual(only(kenji).tagName, 'SPAN', 'an update without an id repaints nothing');
+
+    assert.deepStrictEqual([ctx.roomSubAgentIdByLabel('Kenji'), ctx.roomSubAgentIdByLabel('Nobody'), ctx.roomSubAgentIdByLabel(null)], [853, null, null], 'thinking resolves the id from the open room');
+    ctx.currentRoomId = 6;
+    assert.strictEqual(ctx.roomSubAgentIdByLabel('Kenji'), null, 'another room\'s cache is never used');
   });
 
   await test('schedules panel — every form spec passes server validation unchanged, summaries and next run read naturally', () => {

@@ -2,11 +2,11 @@
 // A sub-agent without its own photo gets a letter seal of its label, coloured with
 // its own colour or the parent's. Never the parent's photo: that reads as the
 // parent agent speaking.
-function makeAvatarEl(name, color, url, size, subAgentLabel, saAvatarColor, saAvatarSymbol, saAvatarUrl) {
+function makeAvatarEl(name, color, url, size, subAgentLabel, saAvatarColor, saAvatarSymbol, saAvatarUrl, saId) {
   if (!subAgentLabel) return makeAvatar(name, color, url, size);
   const wrap = document.createElement('div');
   wrap.className = 'h-sa-avatar-wrap';
-  wrap.dataset.saParent = name || '';
+  if (saId) wrap.dataset.saId = String(saId);
   wrap.dataset.saLabel = subAgentLabel;
   wrap.dataset.saSize = String(size);
   wrap.dataset.saParentColor = color || '';
@@ -36,12 +36,19 @@ function fillSubAgentAvatar(wrap, sa) {
 }
 
 // Repaints every rendered avatar of this sub-agent (feed, thread, thinking, sidebar)
-// after a sub_agent_updated broadcast. Rendered rows only know the parent's name and
-// the label, which is unique per parent.
+// after a sub_agent_updated broadcast. Matched by sub-agent id: actor names are not
+// unique and can be renamed. Avatars rendered without an id are never repainted.
 function refreshSubAgentAvatars(sa, root = document) {
-  const parent = allActors.find(a => a.id === sa.parent_actor_id);
-  if (!parent || !sa.label) return;
-  for (const wrap of root.querySelectorAll('.h-sa-avatar-wrap[data-sa-label]')) {
-    if (wrap.dataset.saLabel === sa.label && wrap.dataset.saParent === parent.name) fillSubAgentAvatar(wrap, sa);
+  if (!sa.id) return;
+  const id = String(sa.id);
+  for (const wrap of root.querySelectorAll('.h-sa-avatar-wrap[data-sa-id]')) {
+    if (wrap.dataset.saId === id) fillSubAgentAvatar(wrap, sa);
   }
+}
+
+// message_state (thinking) carries only the label; labels are unique among the
+// sub-agents linked to a room, so the open room's cache resolves the id.
+function roomSubAgentIdByLabel(label) {
+  if (!label) return null;
+  return (roomSubAgentsCache[currentRoomId] || []).find(s => s.label === label)?.id || null;
 }
