@@ -2,6 +2,19 @@
 // strips it from the final content server-side; mirror that here so it doesn't flicker mid-stream.
 const THINKING_MARKER_RE = /^\s*(?:\[thinking\]\s*)+/;
 
+// ── Live run quote ───────────────────────────────────────────────────────────
+// message_state / message_complete carry the run's reply_msg. The thread panel shows it like
+// appendThreadMessage does after a reload; feed roots never show one (appendFeedRootRow).
+const runReplies = {}; // msgId -> {reply_to, reply_msg}
+
+function setRunReply(msgId, msg) {
+  if (msg?.reply_msg) runReplies[msgId] = { reply_to: msg.reply_to, reply_msg: msg.reply_msg };
+}
+
+function appendRunReplyQuote(row, bubble, msgId) {
+  if (runReplies[msgId] && row.closest('#thread-body')) bubble.appendChild(buildReplyQuote(runReplies[msgId]));
+}
+
 // ── Append streaming token ─────────────────────────────────────────────────
 function appendToken(msgId, token) {
   const row = document.getElementById('msg-' + msgId);
@@ -45,6 +58,7 @@ function appendToken(msgId, token) {
 
   const color = row.querySelector('.h-msg-name').style.color;
   bubble.innerHTML = '';
+  appendRunReplyQuote(row, bubble, msgId);
   bubble.appendChild(document.createTextNode(streaming[msgId].replace(THINKING_MARKER_RE, '')));
   const cursor = document.createElement('span');
   cursor.className = 'h-cursor';
@@ -74,6 +88,7 @@ function finalizeMessage(msgId, content, fileUrl, fileName, attachments, aiModel
     }
 
     bubble.innerHTML = '';
+    appendRunReplyQuote(row, bubble, msgId);
     if (attachments?.length || (fileUrl && fileName)) {
       renderAttachments(bubble, { file_url: fileUrl, file_name: fileName, attachments });
     }
@@ -144,5 +159,31 @@ function finalizeMessage(msgId, content, fileUrl, fileName, attachments, aiModel
   }
 
   delete streaming[msgId];
+  delete runReplies[msgId];
+}
+
+// ── Run ended by the server ─────────────────────────────────────────────────
+// Agent disconnect, run timeout, agent updating, stop while offline: the server sends
+// message_state error with the row's stored text. The row stays (drawn first if this client
+// never had it) and keeps its text, like after a reload.
+function showInterruptedRun(msg, container) {
+  if (!document.getElementById('msg-' + msg.message_id)) {
+    if (!container || !msg.actor_name) return;
+    showThinking(msg.message_id, msg.actor_name, msg.avatar_color, msg.avatar_symbol, msg.avatar_url, msg.sub_agent_label, container, msg.sub_agent_avatar_color, msg.sub_agent_avatar_symbol, msg.sub_agent_avatar_url, msg.sub_agent_role, msg.sub_agent_id);
+  }
+  setRunReply(msg.message_id, msg);
+  finalizeMessage(msg.message_id, msg.content, null, null, null, null, msg.result_meta);
+  const row = document.getElementById('msg-' + msg.message_id);
+  if (row) row.dataset.runInterrupted = '1';
+}
+
+// The agent reconnected and resumed the run: its interrupted row (live, or an error row from
+// history) goes back to thinking, in place.
+function takeInterruptedRun(msgId) {
+  const row = document.getElementById('msg-' + msgId);
+  if (!row?.dataset.runInterrupted) return null;
+  const spot = { parent: row.parentNode, next: row.nextElementSibling };
+  row.remove();
+  return spot;
 }
 

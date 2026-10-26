@@ -452,6 +452,21 @@ Sent on every queue change and right after `agent_connect`. Server ownership-che
 - Sent on every position change. Also sent on `join_room` for all currently-queued runs (after `history`).
 - Clear the badge on `null`, `message_complete`, or `message_state: error`.
 
+#### Live Run Events (server → room clients)
+
+Key WS events broadcast to room browsers during a run. All carry `message_id` and `room_id`.
+
+**`message_state`** — run state transitions:
+- `state: 'streaming'` at trigger (and at revive after disconnect): full identity fields (`thread_id, actor_name, avatar_color, avatar_symbol, avatar_url, sub_agent_id, sub_agent_label, sub_agent_avatar_*`, `sub_agent_role`) + `reply_to` / `reply_msg`. FE must draw the bubble if it doesn't exist yet (late-join or post-disconnect).
+- `state: 'error'` for disconnect/reconnect cleanup: same identity + `reply_msg` + `content` (interruption placeholder, e.g. `'(interrupted — agent disconnected)'`) + `result_meta: {"exit_reason":"interrupted"}` + `feed_pos`. FE shows the bubble with `content` as text; does **not** call `el.remove()`. Exactly one event per interrupted run.
+- Other `state: 'error'` (timeout, stop, mid-trigger) remain bare `{message_id, state:'error'}` — FE removes the thinking bubble.
+
+**`message_complete`** — run finished successfully: carries `reply_to` / `reply_msg` (when the run had a `reply_to`) + `feed_pos`.
+
+**`message_broadcast_cleared`** — `{ type: 'message_broadcast_cleared', message_id: <number>, thread_id: <number> }`. Sent after `message_complete` when a thread run that had been broadcast to the feed as `error`/`limit` completes successfully. FE removes `#broadcast-<message_id>` from the feed; the thread bubble is untouched. No-op if the row doesn't exist. Broadcast reason `automation_match` is never cleared.
+
+**`reply_msg` shape** (all live events + read path): `{ id, content (≤300 chars), image_url, file_url, file_name, attachments, actor_name, avatar_color }`.
+
 ---
 
 ## Error Handling

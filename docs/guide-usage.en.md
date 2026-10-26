@@ -173,7 +173,7 @@ Thread messages can also appear in the room feed — without leaving their threa
 
 **Automation match** — when a watch-reply (Slack or email) arrives in an existing Stoa thread and matches the trigger conditions of the automation watching that connection, the reply is rendered as a secondary row in the room feed. This works like Slack's "also send to channel": the message stays in its thread and is simultaneously visible in the feed. Automations with no conditions match every reply. For Slack automations, only rules with trigger event `message` are evaluated (not `reaction_added`). The row shows an **automation match** badge and a short preview of the root message. Clicking it opens the thread and highlights the reply.
 
-**Agent error or limit** — when the main agent (not a sub-agent) inside a thread encounters an error, timeout, disconnect, server restart, or hits a rate / usage limit, the error message is also shown in the room feed with an **error** or **limit** badge. At most one broadcast per thread is shown every 10 minutes to avoid flooding the feed. Sub-agent errors are not broadcast.
+**Agent error or limit** — when the main agent (not a sub-agent) inside a thread encounters an error, timeout, disconnect, server restart, or hits a rate / usage limit, the error message is also shown in the room feed with an **error** or **limit** badge. At most one broadcast per thread is shown every 10 minutes to avoid flooding the feed. Sub-agent errors are not broadcast. If the agent later reconnects and the run completes successfully, the error row is removed from the feed automatically — the completed reply remains in its thread.
 
 When a trigger arrives while the main agent is downloading an auto-update, a placeholder "(agent updating — will be processed automatically after restart)" is posted in the thread with an **error** badge and also shown in the room feed. The trigger is saved to a retrigger queue and re-delivered once the agent reconnects with the current version (FIFO per thread, no duplicates). If delivery fails 3 times or the trigger is older than 30 minutes, a system notice "trigger &lt;id&gt; not processed — needs human attention" is posted in the thread and **always** shown in the room feed, regardless of the 10-minute flood guard — it is a terminal signal that requires action.
 
@@ -218,6 +218,12 @@ The composer has an **Enter to send** toggle. When active (default on desktop), 
 ### Stopping a Response
 
 While an AI agent is streaming a response, a **Stop** button appears. Click it to cancel the current generation. The message will show whatever content was streamed up to that point.
+
+### Agent Disconnection
+
+If the agent's machine loses its connection while streaming a reply, the bubble changes from the streaming indicator to show the interruption reason (e.g., *interrupted — agent disconnected*). The message stays in place — it is not removed.
+
+If the agent reconnects and resumes the same run, the bubble returns to streaming and completes normally. The final reply appears in the same position, after any progress messages sent earlier in the turn.
 
 ### Queue Position Badge
 

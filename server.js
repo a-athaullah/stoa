@@ -238,7 +238,7 @@ function cleanErrorText(raw) {
 const { createThreadBroadcast } = require('./lib/thread-broadcast');
 const { buildFtsQueries, focusSnippet, fuseRrf } = require('./lib/search-query');
 const { createSemanticIndex } = require('./lib/semantic-index');
-const { setBroadcastReason, getThreadRootPreview, maybeBroadcastError } = createThreadBroadcast({
+const { setBroadcastReason, getThreadRootPreview, maybeBroadcastError, clearErrorBroadcast, emitBroadcastCleared } = createThreadBroadcast({
   db, broadcastToRoom: (...a) => broadcast(...a), enrichFn: enrichAutomation
 });
 
@@ -561,6 +561,11 @@ function enqueueParentWake(roomId, parentParticipantId, subAgentMessageId, threa
 // cleanup below, so an agent that dies instead of completing still wakes the parent.
 const AWAITING_AGENT_RESULT_META = JSON.stringify({ exit_reason: 'timeout', awaiting_agent: true });
 const { enqueueOrphanWakes, cleanupStartupOrphans } = createOrphanRuns({ db, postWakeSystemEvent });
+// A disconnect/reconnect cleanup ended these runs: every client must see the interrupted text in
+// place of "thinking". The run's identity rides along so a client can draw the bubble it never had.
+function broadcastInterrupted(rows) {
+  for (const r of rows) broadcast(r.room_id, roomMessages.runState(r.id, 'error', { content: r.content, result_meta: INTERRUPTED_RESULT_META }));
+}
 
 function postWakeSystemEvent(roomId, participantId, threadId, content) {
   const sys = db.prepare(
@@ -1660,7 +1665,7 @@ const mcpUpstreams = createUpstreamManager({
 // validation cannot drift between the two paths).
 const roomSchedules = createRoomSchedules({ db, broadcast });
 const roomMessages = createRoomMessages({
-  db, broadcast, broadcastGlobal, resolveThread, enrichAutomation, enrichAutomationList, enrichReply, getThreadRootPreview,
+  db, broadcast, broadcastGlobal, resolveThread, enrichAutomation, enrichAutomationList, getThreadRootPreview,
   cascadeMentions: cascadeMentionsFromProactive, uploadsDir: UPLOADS_DIR,
 });
 const stoaMemory = createStoaMemory({ db });
@@ -2629,7 +2634,7 @@ const server = http.createServer(async (req, res) => {
     } else {
       // Agent offline: no one to abort, so finalize the stuck message here.
       db.prepare("UPDATE messages SET state='error', content=?, completed_at=datetime('now') WHERE id=?").run('(stopped by user)', messageId);
-      broadcast(roomId, { type: 'message_state', message_id: messageId, state: 'error' });
+      broadcast(roomId, roomMessages.runError(messageId));
       pendingAgents.get(messageId)?.resolve('');
       pendingAgents.delete(messageId);
       pendingActorMeta.delete(messageId);
@@ -5416,7 +5421,7 @@ wss.on('connection', (ws, req) => {
           JOIN room_participants rp ON rp.id=m.participant_id
           JOIN actors a ON a.id=rp.actor_id
           LEFT JOIN sub_agents sa ON sa.id=m.sub_agent_id
-          WHERE m.room_id=? AND (m.thread_id IS NULL OR m.broadcast_reason IS NOT NULL) AND (
+          WHERE m.room_id=? AND (m.thread_id IS NULL OR (m.broadcast_reason IS NOT NULL AND m.state NOT IN ('streaming','requesting'))) AND (
             (m.state IN ('complete','streaming','requesting') AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL OR m.state IN ('streaming','requesting')))
             OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
             OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
@@ -5428,7 +5433,7 @@ wss.on('connection', (ws, req) => {
           ORDER BY m.feed_pos DESC, m.id DESC LIMIT 100
         ) AS recent ORDER BY feed_pos, id
       `).all(subscribedRoom);
-      const enriched = enrichReply(messages);
+      const enriched = roomMessages.enrichReply(messages);
       enrichAutomationList(enriched);
       enriched.forEach(m => {
         if (m.broadcast_reason && m.thread_id) {
@@ -5606,17 +5611,21 @@ wss.on('connection', (ws, req) => {
       // Older clients send nothing → every in-flight row is treated as orphaned (as before).
       const stillActive = JSON.stringify(Array.isArray(msg.active_message_ids)
         ? msg.active_message_ids.filter(Number.isSafeInteger).slice(0, 1000) : []);
+      // Only the placeholders the server itself wrote (interrupted / run timeout / agent updating) are
+      // dropped — tokens are never stored, so a live run has no text until agent_complete.
       const revived = db.prepare(
         `UPDATE messages SET state='streaming', result_meta=NULL, completed_at=NULL,
-           content=CASE WHEN content LIKE '(interrupted — %)' THEN '' ELSE content END
+           content=CASE WHEN content LIKE '(interrupted — %)' OR content LIKE '(timeout — % did not respond in % minutes)'
+             OR content LIKE '(agent updating — %)' THEN '' ELSE content END
          WHERE id IN (SELECT value FROM json_each(?)) AND state='error'
            AND json_extract(result_meta, '$.exit_reason')='interrupted'
            AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?)
-         RETURNING id, room_id`
+         RETURNING id, room_id, thread_id, broadcast_reason`
       ).all(stillActive, agentActorId);
       for (const r of revived) {
         db.prepare('DELETE FROM pending_wakes WHERE sub_agent_message_id=?').run(r.id);
-        broadcast(r.room_id, { type: 'message_state', message_id: r.id, state: 'streaming' });
+        broadcast(r.room_id, roomMessages.runState(r.id, 'streaming'));
+        if (r.broadcast_reason) emitBroadcastCleared(r.room_id, r.id, r.thread_id);
       }
       if (revived.length) console.log(`[agent] ${revived.length} run(s) still active on reconnect for Actor #${agentActorId} — un-orphaned`);
       const reconnectCleaned = db.prepare(
@@ -5624,6 +5633,7 @@ wss.on('connection', (ws, req) => {
       ).all(INTERRUPTED_RESULT_META, stillActive, agentActorId);
       if (reconnectCleaned.length) {
         console.log(`[agent] Cleaned ${reconnectCleaned.length} orphaned message(s) on reconnect for Actor #${agentActorId}`);
+        broadcastInterrupted(reconnectCleaned);
         for (const r of reconnectCleaned) {
           maybeBroadcastError({ threadId: r.thread_id, subAgentId: r.sub_agent_id, messageId: r.id, content: r.content, roomId: r.room_id });
         }
@@ -6087,16 +6097,19 @@ wss.on('connection', (ws, req) => {
       db.prepare(
         'UPDATE messages SET content=?, file_url=?, file_name=?, attachments=?, ai_model=?, result_meta=?, state=?, completed_at=datetime(\'now\') WHERE id=?'
       ).run(agentContent, msg.file_url || null, msg.file_name || null, attachJson, msg.ai_model || null, resultMetaJson, finalState, msg.message_id);
-      const doneRow = db.prepare('SELECT participant_id, sub_agent_id, parent_message_id, thread_id, model_source, wake_parent FROM messages WHERE id=?').get(msg.message_id);
+      const doneRow = db.prepare('SELECT participant_id, sub_agent_id, parent_message_id, thread_id, model_source, wake_parent, reply_to FROM messages WHERE id=?').get(msg.message_id);
       const completePayload = { type: 'message_complete', message_id: msg.message_id, content: agentContent, ai_model: msg.ai_model || null, model_source: doneRow?.model_source || null, state: finalState, thread_id: doneRow?.thread_id ?? null };
       if (resultMetaJson) completePayload.result_meta = resultMetaJson;
       if (msg.attachments?.length) { completePayload.attachments = msg.attachments; }
       else if (msg.file_url) { completePayload.file_url = msg.file_url; completePayload.file_name = msg.file_name; }
+      if (doneRow?.reply_to) Object.assign(completePayload, { reply_to: doneRow.reply_to, reply_msg: roomMessages.enrichReply([doneRow])[0].reply_msg ?? null });
       if (doneRow?.thread_id) completePayload.thread_summary = buildThreadSummary(msg.room_id, doneRow.thread_id);
       broadcast(msg.room_id, completePayload);
       broadcastGlobal({ type: 'room_activity', room_id: msg.room_id });
       if (finalState === 'error') {
         maybeBroadcastError({ threadId: doneRow?.thread_id, subAgentId: doneRow?.sub_agent_id, messageId: msg.message_id, content: agentContent, roomId: msg.room_id });
+      } else {
+        clearErrorBroadcast(msg.message_id, msg.room_id);
       }
       if (msg.claude_session_id) {
         try {
@@ -6273,7 +6286,7 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'agent_error' && agentActorId) {
       finalizeRunTiming(msg.message_id, { room_id: msg.room_id, thread_id: pendingActorMeta.get(msg.message_id)?.thread_id, actor_id: agentActorId, state: 'error' });
       db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msg.message_id);
-      broadcast(msg.room_id, { type: 'message_state', message_id: msg.message_id, state: 'error' });
+      broadcast(msg.room_id, roomMessages.runError(msg.message_id));
       // R15: agent reported error cleanly — reset session to idle so it isn't
       // flagged as indeterminate on the next restart.
       try {
@@ -6821,18 +6834,20 @@ wss.on('connection', (ws, req) => {
       ).all(INTERRUPTED_RESULT_META, agentActorId);
       if (cleaned.length) {
         console.log(`[agent] Cleaned ${cleaned.length} orphaned message(s) from Actor #${agentActorId}`);
+        broadcastInterrupted(cleaned);
         for (const r of cleaned) {
           maybeBroadcastError({ threadId: r.thread_id, subAgentId: r.sub_agent_id, messageId: r.id, content: r.content, roomId: r.room_id });
         }
         enqueueOrphanWakes(cleaned);
       }
       // Reject all pending promises for this actor so caller sequences can continue/unblock
+      const interruptedIds = new Set(cleaned.map(r => r.id));
       for (const [mId, pending] of [...pendingAgents]) {
         const meta = pendingActorMeta.get(mId);
         if (meta?.actor_id === agentActorId) {
           pendingAgents.delete(mId);
           pendingActorMeta.delete(mId);
-          if (meta.room_id) broadcast(meta.room_id, { type: 'message_state', message_id: mId, state: 'error' });
+          if (meta.room_id && !interruptedIds.has(Number(mId))) broadcast(meta.room_id, { type: 'message_state', message_id: mId, state: 'error' });
           pending.reject(new Error('agent_disconnected'));
         }
       }
@@ -7157,10 +7172,6 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
 
   // Get message with actor info for broadcast
   const row = roomMessages.row(messageId);
-  if (row.reply_to) {
-    const replied = db.prepare(`SELECT m.id, m.content, m.image_url, m.file_url, m.file_name, m.attachments, a.name as actor_name, a.avatar_color FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id WHERE m.id=?`).get(row.reply_to);
-    if (replied) row.reply_msg = replied;
-  }
   enrichAutomation(row);
   const newMsgPayload = { type: 'message_new', message: row };
   if (threadId) newMsgPayload.thread_summary = buildThreadSummary(roomId, threadId);
@@ -7335,7 +7346,7 @@ async function triggerSkillResponse(roomId, ai, prompt) {
         pendingActorMeta.delete(msgId);
         db.prepare("UPDATE messages SET state='error', content=? WHERE id=?")
           .run(`(timeout — ${ai.name} did not respond in ${Math.round(skillRunTimeoutMs / 60000)} minutes)`, msgId);
-        broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
+        broadcast(roomId, roomMessages.runError(msgId));
         reject(new Error('agent_timeout'));
       });
       pendingAgents.set(msgId, {
@@ -7524,22 +7535,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   const msgId = result.lastInsertRowid;
 
   const displayName = subAgent ? `${ai.name}/${subAgent.label}` : ai.name;
-  broadcast(roomId, {
-    type: 'message_state',
-    message_id: msgId,
-    actor_name: ai.name,
-    avatar_color: ai.avatar_color,
-    avatar_symbol: ai.avatar_symbol,
-    avatar_url: ai.avatar_url || null,
-    sub_agent_id: subAgent?.id || null,
-    sub_agent_label: subAgent?.label || null,
-    sub_agent_avatar_color: subAgent?.avatar_color || null,
-    sub_agent_avatar_symbol: subAgent?.avatar_symbol || null,
-    sub_agent_avatar_url: subAgent?.avatar_url || null,
-    sub_agent_role: subAgent?.role || null,
-    thread_id: threadId || null,
-    state: 'streaming',
-  });
+  broadcast(roomId, roomMessages.runState(msgId, 'streaming'));
   console.log(`[trigger] ${displayName} actor_id=${ai.actor_id} agentConnected=${!!agentWs} readyState=${agentWs?.readyState}`);
 
   if (EXPECTED_CLIENT_VERSION && agentWs && agentWs.readyState === 1) {
@@ -7552,7 +7548,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
       db.prepare("UPDATE messages SET state='error', content=? WHERE id=?").run(updatingText, msgId);
       if (subAgent) markSubAgentInterrupted(msgId);
       else queueRetrigger(roomId, ai, prompt, replyTo, attachments, threadId);
-      broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error', actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null });
+      broadcast(roomId, roomMessages.runError(msgId));
       maybeBroadcastError({ threadId, subAgentId: subAgent?.id, messageId: msgId, reason: 'error', roomId });
       return;
     }
@@ -7881,7 +7877,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         pendingActorMeta.delete(msgId);
         db.prepare("UPDATE messages SET state='error', content=?, result_meta=? WHERE id=?")
           .run(`(timeout — ${displayName} did not respond in ${Math.round(agentRunTimeoutMs / 60000)} minutes)`, subAgent ? AWAITING_AGENT_RESULT_META : null, msgId);
-        broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
+        broadcast(roomId, roomMessages.runError(msgId));
         reject(new Error('agent_timeout'));
       });
       pendingAgents.set(msgId, {
@@ -7940,7 +7936,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     db.prepare("UPDATE messages SET state='error', content=? WHERE id=?")
       .run(`(${displayName} terputus saat trigger — akan dicoba ulang otomatis)`, msgId);
     if (subAgent) markSubAgentInterrupted(msgId);
-    broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
+    broadcast(roomId, roomMessages.runError(msgId));
     throw new Error('agent_disconnected_mid_trigger');
   }
 }
@@ -7962,16 +7958,6 @@ async function handleInviteSuggest(roomId, byParticipantId, suggestedActorId, re
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
 // enrichAutomation, enrichAutomationList → lib/automation-identity.js
-
-function enrichReply(rows) {
-  const replyIds = [...new Set(rows.filter(r => r.reply_to).map(r => r.reply_to))];
-  if (!replyIds.length) return rows;
-  const ph = replyIds.map(() => '?').join(',');
-  const repliedRows = db.prepare(`SELECT m.id, m.content, m.image_url, m.file_url, m.file_name, m.attachments, a.name as actor_name, a.avatar_color FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id WHERE m.id IN (${ph})`).all(...replyIds);
-  const replied = {};
-  for (const r of repliedRows) replied[r.id] = r;
-  return rows.map(r => r.reply_to && replied[r.reply_to] ? { ...r, reply_msg: replied[r.reply_to] } : r);
-}
 
 function handleLogout(roomId) {
   // Same single-agent guard as /reauth — credentials are machine-global.

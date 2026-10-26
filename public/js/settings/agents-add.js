@@ -225,7 +225,6 @@ function sStartPolling() {
         sAddPanel.phase = 'connected'; sAddPanel.newActor = newAI;
         allActors.push(newAI); syncNewRoomBtn();
         sStopPolling();
-        if (!sRowStates.has(newAI.id)) sRowStates.set(newAI.id, { state: 'default', draft: newAI.name });
         settingsActors = allActors.filter(a => a.type !== 'human' || a.id === humanActor?.id);
         if (typeof renderAgentSidebar === 'function' && document.getElementById('agent-list')) renderAgentSidebar();
         const waiting = document.getElementById('s-waiting-pill');

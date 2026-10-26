@@ -173,7 +173,7 @@ Pesan thread juga bisa muncul di room feed — tanpa keluar dari threadnya — d
 
 **Automation match** — ketika watch-reply (Slack atau email) masuk ke thread Stoa yang sudah ada dan cocok dengan kondisi trigger automation yang memantau koneksi tersebut, balasan itu dirender sebagai baris sekunder di room feed. Cara kerjanya mirip fitur "also send to channel" di Slack: pesan tetap ada di threadnya dan juga terlihat di feed. Automation tanpa kondisi cocok dengan semua balasan. Untuk Slack, hanya aturan dengan trigger event `message` yang dievaluasi (bukan `reaction_added`). Baris menampilkan badge **automation match** dan pratinjau singkat pesan root. Klik baris tersebut untuk membuka thread dan menyorot balasan yang cocok.
 
-**Error atau limit agent** — ketika agent utama (bukan sub-agent) di dalam thread mengalami error, timeout, disconnect, restart server, atau mencapai rate / usage limit, pesan error-nya juga ditampilkan di room feed dengan badge **error** atau **limit**. Maksimal satu broadcast per thread setiap 10 menit untuk menghindari flood di feed. Error dari sub-agent tidak di-broadcast.
+**Error atau limit agent** — ketika agent utama (bukan sub-agent) di dalam thread mengalami error, timeout, disconnect, restart server, atau mencapai rate / usage limit, pesan error-nya juga ditampilkan di room feed dengan badge **error** atau **limit**. Maksimal satu broadcast per thread setiap 10 menit untuk menghindari flood di feed. Error dari sub-agent tidak di-broadcast. Jika agent kemudian reconnect dan run selesai sukses, baris error di feed dihapus otomatis — balasan yang telah selesai tetap ada di thread-nya.
 
 Ketika trigger datang saat agent utama sedang mengunduh auto-update, placeholder "(agent sedang update — akan diproses otomatis setelah restart)" dikirim ke thread dengan badge **error** dan juga tampil di room feed. Trigger disimpan ke antrean retrigger dan dikirim ulang setelah agent terhubung kembali dengan versi terbaru (FIFO per thread, tanpa duplikat). Jika pengiriman gagal 3 kali atau trigger sudah lebih dari 30 menit, sistem mengirim notifikasi "trigger &lt;id&gt; tidak terproses — butuh manusia" di thread dan **selalu** tampil di room feed, tanpa peduli flood guard 10 menit — ini sinyal terminal yang butuh tindakan.
 
@@ -218,6 +218,12 @@ Composer memiliki toggle **Enter to send**. Saat aktif (default di desktop), men
 ### Menghentikan Respons
 
 Saat AI agent sedang streaming respons, tombol **Stop** muncul. Klik untuk membatalkan generasi. Pesan akan menampilkan konten yang sudah di-stream sampai saat itu.
+
+### Agen Terputus
+
+Jika koneksi mesin agent terputus saat sedang streaming balasan, bubble berubah dari indikator streaming menjadi menampilkan alasan interupsi (misalnya, *interrupted — agent disconnected*). Pesan tetap di tempatnya dan tidak dihapus.
+
+Jika agent reconnect dan melanjutkan run yang sama, bubble kembali ke streaming dan selesai secara normal. Balasan akhir muncul di posisi yang sama, setelah pesan-pesan progress yang dikirim sebelumnya di giliran itu.
 
 ### Badge Posisi Antrean
 

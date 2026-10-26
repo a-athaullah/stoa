@@ -122,6 +122,29 @@ function buildResultChip(raw) {
   return chip;
 }
 
+// ── Reply quote ──────────────────────────────────────────────────────────────
+// The one renderer for m.reply_msg: feed fallback, thread panel and live run bubbles.
+function buildReplyQuote(m) {
+  const quote = document.createElement('div');
+  quote.className = 'h-reply-quote';
+  const name = document.createElement('div');
+  name.className = 'h-reply-quote-name';
+  name.style.color = m.reply_msg.avatar_color || 'var(--h-ink)';
+  name.textContent = m.reply_msg.actor_name || '';
+  const text = document.createElement('div');
+  text.className = 'h-reply-quote-text';
+  for (const a of getAttachments(m.reply_msg)) {
+    const file = document.createElement('div');
+    file.className = 'h-reply-quote-file';
+    file.textContent = a.name || (a.type === 'image' ? 'Image' : 'File');
+    text.appendChild(file);
+  }
+  text.appendChild(document.createTextNode((m.reply_msg.content || '').substring(0, 150)));
+  quote.append(name, text);
+  quote.onclick = () => { const el = document.getElementById('msg-' + m.reply_to); if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.style.transition = 'background 0.3s'; el.style.background = 'color-mix(in srgb, #d39749 15%, transparent)'; setTimeout(() => { el.style.background = ''; }, 2000); } };
+  return quote;
+}
+
 // ── Append message ─────────────────────────────────────────────────────────
 function appendMessage(m, container) {
   const inner = container || document.getElementById('messages-inner');
@@ -223,20 +246,7 @@ function appendMessage(m, container) {
   bubble.className = 'h-bubble';
   applyBubbleColor(bubble, m.avatar_color, m.sub_agent_label);
 
-  if (m.reply_msg) {
-    const quote = document.createElement('div');
-    quote.className = 'h-reply-quote';
-    const replyAttachments = getAttachments(m.reply_msg);
-    let quoteText = escHtml((m.reply_msg.content || '').substring(0, 150));
-    if (replyAttachments.length) {
-      const urls = replyAttachments.map(a => `<div class="h-reply-quote-file">${escHtml(a.url)}</div>`).join('');
-      quoteText = urls + quoteText;
-    }
-    const replyColor = (m.reply_msg.avatar_color || 'var(--h-ink)').replace(/[^a-zA-Z0-9().,%# \-]/g, '');
-    quote.innerHTML = `<div class="h-reply-quote-name" style="color:${replyColor}">${escHtml(m.reply_msg.actor_name)}</div><div class="h-reply-quote-text">${quoteText}</div>`;
-    quote.onclick = () => { const el = document.getElementById('msg-' + m.reply_to); if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.style.transition = 'background 0.3s'; el.style.background = 'color-mix(in srgb, #d39749 15%, transparent)'; setTimeout(() => { el.style.background = ''; }, 2000); } };
-    bubble.appendChild(quote);
-  }
+  if (m.reply_msg) bubble.appendChild(buildReplyQuote(m));
 
   renderAttachments(bubble, m);
 

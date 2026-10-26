@@ -6124,6 +6124,242 @@ async function run() {
     });
   }
 
+  // ── Live run events: reply quote + agent disconnect ───────────────────────
+  // A run replies to the message that triggered it (reply_to); the feed/thread reads attach that quote
+  // (reply_msg), so the live events must carry the same quote or it only appears after a reload.
+  console.log('\n[Live run events — reply quote + disconnect]');
+  {
+    const LR_NAME = '__test-live-run';
+    const db = require('./db');
+    let lr = null, lrRoomId = null, humanWs = null, run = null, humanMsgId = null;
+    const nextTrigger = () => waitForWsMessage(lr.ws, m => m.type === 'agent_trigger' && !m.sub_agent, 5000)
+      .catch(() => { throw new Error('agent trigger never arrived'); });
+    const quoteOf = (id) => db.prepare(`SELECT m.id, substr(m.content, 1, 300) AS content, m.image_url, m.file_url, m.file_name, m.attachments, a.name AS actor_name, a.avatar_color
+      FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id WHERE m.id=?`).get(id);
+
+    await test('Setup — online agent + room for live run event tests', async () => {
+      const agent = await createOnlineTestAgent(LR_NAME, '/tmp/stoa-test-live-run');
+      if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+      lr = agent;
+      const r = await req('POST', '/api/rooms', { title: '__live-run-room__', workdir_id: agent.workdirId, participant_ids: [agent.actorId] });
+      assert.strictEqual(r.status, 200);
+      lrRoomId = r.body.id;
+      testRoomIds.push(lrRoomId);
+      humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      const hist = waitForWsMessage(humanWs, m => m.type === 'history');
+      humanWs.send(JSON.stringify({ type: 'join_room', room_id: lrRoomId }));
+      await hist;
+    });
+
+    await test('reply quote — streaming message_state + message_complete carry the quote the thread read shows', async () => {
+      if (!lr) { console.log('    (skipped)'); return; }
+      const t = nextTrigger();
+      const humanNew = waitForWsMessage(humanWs, m => m.type === 'message_new' && m.message?.content === `@${LR_NAME} quote me`, 5000);
+      humanWs.send(JSON.stringify({ type: 'send_message', room_id: lrRoomId, content: `@${LR_NAME} quote me` }));
+      humanMsgId = (await humanNew).message.id;
+      const streaming = waitForWsMessage(humanWs, m => m.type === 'message_state' && m.state === 'streaming', 5000);
+      run = await t;
+      const st = await streaming;
+      assert.strictEqual(st.message_id, run.message_id);
+      assert.strictEqual(st.reply_to, humanMsgId, 'the run replies to the message that triggered it');
+      assert.deepStrictEqual(st.reply_msg, quoteOf(humanMsgId), 'streaming event carries the quote');
+      assert.strictEqual(st.actor_name, LR_NAME);
+      const done = waitForWsMessage(humanWs, m => m.type === 'message_complete' && m.message_id === run.message_id, 5000);
+      lr.ws.send(JSON.stringify({ type: 'agent_complete', room_id: lrRoomId, message_id: run.message_id, content: 'quoted answer' }));
+      const evt = await done;
+      assert.strictEqual(evt.reply_to, humanMsgId);
+      assert.deepStrictEqual(evt.reply_msg, st.reply_msg, 'completion carries the same quote');
+      const thr = (await req('GET', `/api/rooms/${lrRoomId}/threads/${run.thread_id}`)).body.messages.find(m => m.id === run.message_id);
+      assert.deepStrictEqual(thr.reply_msg, st.reply_msg, 'thread read and live events share one quote shape');
+      const feed = (await req('GET', `/api/rooms/${lrRoomId}/messages?scope=all`)).body.find(m => m.id === run.message_id);
+      assert.deepStrictEqual(feed.reply_msg, st.reply_msg, 'feed read and live events share one quote shape');
+    });
+
+    await test('reply quote — a human reply\'s message_new carries the quote of the message it answers', async () => {
+      if (!run) { console.log('    (skipped)'); return; }
+      const t = nextTrigger();
+      const live = waitForWsMessage(humanWs, m => m.type === 'message_new' && m.message?.content === `@${LR_NAME} replying to the answer`, 5000);
+      humanWs.send(JSON.stringify({ type: 'send_message', room_id: lrRoomId, content: `@${LR_NAME} replying to the answer`, reply_to: run.message_id, thread_id: run.thread_id }));
+      const m = (await live).message;
+      assert.deepStrictEqual(m.reply_msg, quoteOf(run.message_id));
+      const r = await t;
+      const done = waitForWsMessage(humanWs, e => e.type === 'message_complete' && e.message_id === r.message_id, 5000);
+      lr.ws.send(JSON.stringify({ type: 'agent_complete', room_id: lrRoomId, message_id: r.message_id, content: 'ok' }));
+      await done;
+    });
+
+    // Agent disconnect: every run the cleanup ends must reach the client as an error with the interrupted
+    // text — including runs the server holds no pending promise for (revived after a server restart).
+    const lrParticipant = () => db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(lrRoomId, lr.actorId).id;
+    const inFlightRow = () => Number(db.prepare("INSERT INTO messages (room_id, participant_id, content, state, reply_to, thread_id) VALUES (?,?,'','streaming',?,?)")
+      .run(lrRoomId, lrParticipant(), humanMsgId, run.thread_id).lastInsertRowid);
+    const stateEvents = (ids, state, ms = 3000) => {
+      const seen = new Map();
+      return new Promise((resolve) => {
+        const onMsg = (raw) => {
+          let m; try { m = JSON.parse(raw); } catch { return; }
+          if (m.type === 'message_state' && m.state === state && ids.includes(m.message_id)) seen.set(m.message_id, [...(seen.get(m.message_id) || []), m]);
+        };
+        humanWs.on('message', onMsg);
+        setTimeout(() => { humanWs.off('message', onMsg); resolve(seen); }, ms);
+      });
+    };
+    const connectAgent = async (activeIds) => {
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`);
+      const ready = waitForWsMessage(ws, m => m.type === 'agent_ready', 5000);
+      ws.send(JSON.stringify({ type: 'agent_connect', actor_id: lr.actorId, secret: lr.secret, active_message_ids: activeIds }));
+      await ready;
+      return ws;
+    };
+    let pendingRun = null, revivedId = null;
+
+    await test('agent disconnect — every interrupted run is broadcast once as error with its text + identity (pending and revived runs)', async () => {
+      if (!run) { console.log('    (skipped)'); return; }
+      const t = nextTrigger();
+      humanWs.send(JSON.stringify({ type: 'send_message', room_id: lrRoomId, content: `@${LR_NAME} long job`, thread_id: run.thread_id }));
+      pendingRun = await t;
+      revivedId = inFlightRow();
+      const events = stateEvents([pendingRun.message_id, revivedId], 'error');
+      const closed = new Promise(r => lr.ws.once('close', r));
+      lr.ws.close(); await closed;
+      const seen = await events;
+      for (const id of [pendingRun.message_id, revivedId]) {
+        const evs = seen.get(id) || [];
+        assert.strictEqual(evs.length, 1, `run ${id}: exactly one error event (got ${evs.length})`);
+        const e = evs[0];
+        assert.strictEqual(e.content, '(interrupted — agent disconnected)');
+        assert.strictEqual(JSON.parse(e.result_meta).exit_reason, 'interrupted');
+        assert.strictEqual(e.actor_name, LR_NAME, 'identity so the client can draw the bubble');
+        assert.strictEqual(e.thread_id, run.thread_id);
+        assert.deepStrictEqual(db.prepare('SELECT state, content, feed_pos FROM messages WHERE id=?').get(id), { state: 'error', content: e.content, feed_pos: e.feed_pos }, 'event matches the row');
+      }
+    });
+
+    await test('agent reconnect — a run it still holds comes back as streaming with its identity + quote; completing it restores the reply', async () => {
+      if (!pendingRun) { console.log('    (skipped)'); return; }
+      const events = stateEvents([pendingRun.message_id], 'streaming', 1500);
+      lr.ws = await connectAgent([pendingRun.message_id]);
+      const e = (await events).get(pendingRun.message_id)?.[0];
+      assert.ok(e, 'revive is broadcast');
+      assert.strictEqual(e.actor_name, LR_NAME, 'enough identity to redraw a removed bubble');
+      assert.strictEqual(e.thread_id, run.thread_id);
+      assert.ok(e.reply_msg?.id, 'revived bubble keeps its quote');
+      assert.strictEqual(db.prepare('SELECT broadcast_reason FROM messages WHERE id=?').get(pendingRun.message_id).broadcast_reason, 'error',
+        'precondition: the disconnect echoed the thread run to the room feed');
+      const done = waitForWsMessage(humanWs, m => m.type === 'message_complete' && m.message_id === pendingRun.message_id, 5000);
+      const cleared = waitForWsMessage(humanWs, m => m.type === 'message_broadcast_cleared' && m.message_id === pendingRun.message_id, 5000);
+      lr.ws.send(JSON.stringify({ type: 'agent_complete', room_id: lrRoomId, message_id: pendingRun.message_id, content: 'resumed result' }));
+      assert.strictEqual((await done).content, 'resumed result');
+      assert.deepStrictEqual(await cleared, { type: 'message_broadcast_cleared', message_id: pendingRun.message_id, thread_id: run.thread_id }, 'live: the feed echo goes');
+      assert.deepStrictEqual(db.prepare('SELECT state, broadcast_reason FROM messages WHERE id=?').get(pendingRun.message_id), { state: 'complete', broadcast_reason: null });
+      const feed = (await req('GET', `/api/rooms/${lrRoomId}/messages`)).body;
+      assert.ok(!feed.some(m => m.id === pendingRun.message_id), 'reload: the recovered thread reply is no longer in the room feed');
+    });
+
+    await test('run complete — a legitimate (non-error) broadcast reason survives completion', async () => {
+      if (!pendingRun) { console.log('    (skipped)'); return; }
+      const t = nextTrigger();
+      humanWs.send(JSON.stringify({ type: 'send_message', room_id: lrRoomId, content: `@${LR_NAME} watched job`, thread_id: run.thread_id }));
+      const r = await t;
+      db.prepare("UPDATE messages SET broadcast_reason='automation_match' WHERE id=?").run(r.message_id);
+      const cleared = waitForWsMessage(humanWs, m => m.type === 'message_broadcast_cleared' && m.message_id === r.message_id, 1500).then(() => true, () => false);
+      const done = waitForWsMessage(humanWs, m => m.type === 'message_complete' && m.message_id === r.message_id, 5000);
+      lr.ws.send(JSON.stringify({ type: 'agent_complete', room_id: lrRoomId, message_id: r.message_id, content: 'watched result' }));
+      await done;
+      assert.strictEqual(await cleared, false, 'no clear event');
+      assert.strictEqual(db.prepare('SELECT broadcast_reason FROM messages WHERE id=?').get(r.message_id).broadcast_reason, 'automation_match');
+      assert.ok((await req('GET', `/api/rooms/${lrRoomId}/messages`)).body.some(m => m.id === r.message_id), 'still echoed in the room feed');
+    });
+
+    await test('agent reconnect — runs it no longer holds are broadcast as interrupted (a superseded socket does no cleanup)', async () => {
+      if (!pendingRun) { console.log('    (skipped)'); return; }
+      const lost = inFlightRow();
+      const events = stateEvents([lost], 'error', 1500);
+      const old = lr.ws;
+      const oldClosed = new Promise(r => old.once('close', r));
+      lr.ws = await connectAgent([]);
+      await oldClosed;
+      const evs = (await events).get(lost) || [];
+      assert.strictEqual(evs.length, 1, 'exactly one error event');
+      assert.strictEqual(evs[0].content, '(interrupted — agent reconnected)');
+      assert.strictEqual(evs[0].actor_name, LR_NAME);
+    });
+
+    await test('agent reconnect — a revived run drops the server placeholder (timeout/interrupted/updating) so a reload shows it thinking; real text is kept', async () => {
+      if (!pendingRun) { console.log('    (skipped)'); return; }
+      const stamped = (content) => Number(db.prepare("INSERT INTO messages (room_id, participant_id, content, state, result_meta, completed_at, reply_to, thread_id) VALUES (?,?,?,'error',?,datetime('now'),?,?)")
+        .run(lrRoomId, lrParticipant(), content, JSON.stringify({ exit_reason: 'interrupted' }), humanMsgId, run.thread_id).lastInsertRowid);
+      const ids = {
+        timeout: stamped(`(timeout — ${LR_NAME}/sub did not respond in 15 minutes)`),
+        interrupted: stamped('(interrupted — agent disconnected)'),
+        updating: stamped('(agent updating — please retry)'),
+        real: stamped('(timeout — this is what the agent actually wrote'),
+      };
+      const events = stateEvents(Object.values(ids), 'streaming', 1500);
+      const old = lr.ws;
+      const oldClosed = new Promise(r => old.once('close', r));
+      lr.ws = await connectAgent(Object.values(ids));
+      await oldClosed;
+      const seen = await events;
+      const thr = (await req('GET', `/api/rooms/${lrRoomId}/threads/${run.thread_id}`)).body.messages;
+      for (const [k, id] of Object.entries(ids)) {
+        assert.strictEqual(seen.get(id)?.length, 1, `${k}: revived once`);
+        const want = k === 'real' ? '(timeout — this is what the agent actually wrote' : '';
+        assert.deepStrictEqual(db.prepare('SELECT state, content FROM messages WHERE id=?').get(id), { state: 'streaming', content: want }, k);
+        assert.strictEqual(thr.find(m => m.id === id).content, want, `${k}: thread reload matches the live thinking bubble`);
+      }
+    });
+
+    // Feed echo of a thread run: shown only while the run has ended in error, live and on reload alike.
+    const historyOf = async () => {
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        const h = waitForWsMessage(ws, m => m.type === 'history');
+        ws.send(JSON.stringify({ type: 'join_room', room_id: lrRoomId }));
+        return (await h).messages;
+      } finally { ws.close(); }
+    };
+    await test('feed echo — revive hides it (live + reload, reason kept); failing again brings it back past the flood guard', async () => {
+      if (!pendingRun) { console.log('    (skipped)'); return; }
+      const t = nextTrigger();
+      humanWs.send(JSON.stringify({ type: 'send_message', room_id: lrRoomId, content: `@${LR_NAME} echo topic` }));
+      const x = await t;
+      assert.ok(x.thread_id, 'root @mention runs in a thread');
+      const echoed = waitForWsMessage(humanWs, m => m.type === 'message_broadcast' && m.message?.id === x.message_id, 5000);
+      const closed = new Promise(r => lr.ws.once('close', r));
+      lr.ws.close(); await closed;
+      assert.strictEqual((await echoed).message.broadcast_reason, 'error');
+      assert.ok((await historyOf()).some(m => m.id === x.message_id && m.state === 'error'), 'reload shows the echo while interrupted');
+
+      const cleared = waitForWsMessage(humanWs, m => m.type === 'message_broadcast_cleared' && m.message_id === x.message_id, 5000);
+      lr.ws = await connectAgent([x.message_id]);
+      assert.deepStrictEqual(await cleared, { type: 'message_broadcast_cleared', message_id: x.message_id, thread_id: x.thread_id }, 'live: the echo leaves on revive');
+      assert.ok(!(await historyOf()).some(m => m.id === x.message_id), 'reload: no echo for a running run');
+      assert.deepStrictEqual(db.prepare('SELECT state, broadcast_reason FROM messages WHERE id=?').get(x.message_id), { state: 'streaming', broadcast_reason: 'error' }, 'reason kept for a second failure');
+
+      const back = waitForWsMessage(humanWs, m => m.type === 'message_broadcast' && m.message?.id === x.message_id, 5000);
+      lr.ws.send(JSON.stringify({ type: 'agent_complete', room_id: lrRoomId, message_id: x.message_id, content: 'failed again', result_meta: { exit_reason: 'error' } }));
+      const b = (await back).message;
+      assert.deepStrictEqual({ state: b.state, content: b.content, broadcast_reason: b.broadcast_reason }, { state: 'error', content: 'failed again', broadcast_reason: 'error' }, 'live: the echo returns with the failure');
+      const h = (await historyOf()).find(m => m.id === x.message_id);
+      assert.deepStrictEqual({ state: h?.state, content: h?.content }, { state: 'error', content: 'failed again' }, 'reload shows the same echo');
+    });
+
+    await test('Cleanup — live run event test data', async () => {
+      if (humanWs) { humanWs.close(); humanWs = null; }
+      if (lr?.ws) lr.ws.close();
+      if (lrRoomId) {
+        await req('PATCH', `/api/rooms/${lrRoomId}`, { archived: true });
+        await req('DELETE', `/api/rooms/${lrRoomId}`);
+        testRoomIds = testRoomIds.filter(id => id !== lrRoomId);
+      }
+      if (lr?.actorId) {
+        await req('DELETE', `/api/actors/${lr.actorId}`);
+        orphanActorIds = orphanActorIds.filter(id => id !== lr.actorId);
+      }
+    });
+  }
+
   // ── Parent wake gating (messages.wake_parent) ──────────────────────────────
   // A sub-agent the human mentions directly must not wake its parent, unless the
   // parent is @mentioned too or the run errors. Parent-driven runs keep waking.
@@ -13020,7 +13256,7 @@ async function run() {
     const ctx = {
       window: {}, ws: null, currentRoomId: 5,
       document: { getElementById: byId, visibilityState: 'visible' },
-      setQueuePosition() {}, finalizeMessage() {}, clearComposerProcessing() {}, clearThreadProcessing() {}, refreshRoomList() {},
+      setQueuePosition() {}, setRunReply() {}, finalizeMessage() {}, clearComposerProcessing() {}, clearThreadProcessing() {}, refreshRoomList() {},
       scrollToBottom: () => scrolled.push('feed'), _scrollThreadToBottom() {},
     };
     vm.createContext(ctx);
@@ -13050,6 +13286,192 @@ async function run() {
     assert.strictEqual(ctx.placeRowByFeedPos(byId('msg-302'), undefined), false, 'no feed_pos (older server) → no move');
   });
 
+  await test('live run bubble — the reply quote shows live in the thread panel like after a reload; an agent disconnect leaves an interrupted bubble that a resumed run takes back in place', () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const matches = (el, sel) => sel.split(',').some(one => {
+      const s = one.trim();
+      if (s.startsWith('#')) return el.id === s.slice(1);
+      const attr = /^\[([\w-]+)="([^"]*)"\]$/.exec(s);
+      if (attr) return attr[1] === 'id' ? el.id === attr[2] : el.dataset[attr[1].replace(/^data-/, '').replace(/-(\w)/g, (_, c) => c.toUpperCase())] === attr[2];
+      if (s.startsWith('.')) return s.slice(1).split('.').every(c => el.classList.contains(c));
+      return el.tagName === s.toUpperCase();
+    });
+    class El {
+      constructor(tag) {
+        this.tagName = tag.toUpperCase(); this.id = ''; this.style = {}; this.dataset = {}; this.children = []; this.parentNode = null; this._text = '';
+        const cls = new Set(); this._cls = cls;
+        this.classList = { add: (...c) => c.forEach(x => cls.add(x)), remove: (...c) => c.forEach(x => cls.delete(x)), contains: c => cls.has(c) };
+      }
+      set className(v) { this._cls.clear(); String(v).split(/\s+/).filter(Boolean).forEach(c => this._cls.add(c)); }
+      get className() { return [...this._cls].join(' '); }
+      appendChild(c) { if (c.parentNode) c.remove(); c.parentNode = this; this.children.push(c); return c; }
+      append(...cs) { cs.forEach(c => this.appendChild(c)); }
+      insertBefore(n, ref) { if (n.parentNode) n.remove(); const i = ref ? this.children.indexOf(ref) : -1; n.parentNode = this; if (i < 0) this.children.push(n); else this.children.splice(i, 0, n); return n; }
+      replaceChild(n, old) { this.insertBefore(n, old); old.remove(); return old; }
+      after(n) { this.parentNode.insertBefore(n, this.nextElementSibling); }
+      remove() { const p = this.parentNode; if (p) { p.children = p.children.filter(x => x !== this); this.parentNode = null; } }
+      addEventListener() {}
+      get parentElement() { return this.parentNode; }
+      get nextElementSibling() { const s = this.parentNode?.children || []; return s[s.indexOf(this) + 1] || null; }
+      get lastElementChild() { return this.children.at(-1) || null; }
+      get isConnected() { let x = this; while (x.parentNode) x = x.parentNode; return x === body; }
+      set innerHTML(v) {
+        this.children.forEach(c => { c.parentNode = null; }); this.children = [];
+        const html = String(v);
+        this._text = html.replace(/<[^>]*>/g, '');
+        for (const [, action] of html.matchAll(/data-action="(\w+)"/g)) { const b = new El('button'); b.dataset.action = action; this.appendChild(b); }
+      }
+      set textContent(v) { this.children.forEach(c => { c.parentNode = null; }); this.children = []; this._text = String(v); }
+      get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+      querySelectorAll(sel) { const out = []; const walk = e => e.children.forEach(c => { if (matches(c, sel)) out.push(c); walk(c); }); walk(this); return out; }
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
+      closest(sel) { for (let x = this; x; x = x.parentNode) if (matches(x, sel)) return x; return null; }
+    }
+    const body = new El('body');
+    const feed = body.appendChild(new El('div')); feed.id = 'messages-inner';
+    const thread = body.appendChild(new El('div')); thread.id = 'thread-body';
+    const document = {
+      body, visibilityState: 'visible',
+      createElement: t => new El(t),
+      createTextNode: t => Object.assign(new El('#text'), { _text: String(t) }),
+      getElementById: id => (id === 'messages-inner' ? feed : id === 'thread-body' ? thread : body.querySelector('#' + id)),
+      querySelectorAll: sel => body.querySelectorAll(sel),
+    };
+    const processing = new Set();
+    const ctx = {
+      document, window: {}, ws: null, currentRoomId: 5, streaming: {},
+      makeAvatarEl: () => new El('span'), makeSubAgentRoleEl: () => null, applyBubbleColor() {}, scrollToBottom() {}, _scrollThreadToBottom() {},
+      renderMarkdown: s => s, highlightMentions: s => s, renderAttachments() {}, renderSavedTrail() {}, addCopyButtons() {}, linkifyFilePaths() {}, externalLinksNewTab() {},
+      getCleanupProgress: () => 'off', getToolProgress: () => 'all', addMessageLinkAction() {},
+      setComposerProcessing: id => processing.add(id), clearComposerProcessing: id => processing.delete(id),
+      setThreadProcessing: id => processing.add(id), clearThreadProcessing: id => processing.delete(id),
+      refreshRoomList() {},
+    };
+    vm.createContext(ctx);
+    const markdownJs = fs.readFileSync(path.join(__dirname, 'public/js/markdown.js'), 'utf8');
+    vm.runInContext(markdownJs.slice(markdownJs.indexOf('function getAttachments('), markdownJs.indexOf('function renderAttachments(')), ctx);
+    for (const f of ['append.js', 'feed.js', 'thread.js', 'thinking.js', 'stream.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/chat', f), 'utf8'), ctx);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/websocket.js'), 'utf8'), ctx);
+    vm.runInContext('activeThreadId = 150; openThread = () => {}; isThreadOpen = () => true; setThreadProcessing = id => setComposerProcessing(id); clearThreadProcessing = id => clearComposerProcessing(id);', ctx);
+    const ws = m => ctx.handleWsMessage(m);
+    const row = id => body.querySelector('#msg-' + id);
+    const rows = id => body.querySelectorAll(`[id="msg-${id}"]`).length;
+    const shape = el => el && { cls: el.className, color: el.style.color || null, text: el.children.length ? undefined : el.textContent, kids: el.children.map(shape) };
+    const quoteOf = r => r.querySelector('.h-bubble')?.children[0]?.className === 'h-reply-quote' ? shape(r.querySelector('.h-bubble').children[0]) : null;
+    const who = { actor_name: 'Orion', avatar_color: '#0a0', sub_agent_id: 22, sub_agent_label: 'Reviewer' };
+    const reply = { reply_to: 880, reply_msg: { id: 880, content: '<img src=x onerror=alert(1)> fix the ' + 'x'.repeat(200), image_url: null, file_url: null, file_name: null, attachments: [{ url: '/uploads/9f3a.md', name: '<b>spec</b>.md', type: 'file' }, { url: '/uploads/7c1e.png', name: '', type: 'image' }], actor_name: 'Aan', avatar_color: '#c80' } };
+
+    // D1 — thread panel: quote while streaming and after complete, same as the reloaded row.
+    ws({ type: 'message_state', message_id: 900, state: 'streaming', thread_id: 150, ...who, ...reply });
+    assert.strictEqual(row(900).parentNode, thread, 'the thread run draws in the open thread panel');
+    ws({ type: 'message_token', message_id: 900, thread_id: 150, token: 'Looking' });
+    assert.ok(quoteOf(row(900)), 'the streaming bubble shows the quote before the text');
+    ws({ type: 'message_complete', message_id: 900, thread_id: 150, content: 'Done.', result_meta: '{"exit_reason":"completed"}', ...reply });
+    const reloaded = new El('div');
+    ctx.appendThreadMessage({ id: 1900, state: 'complete', thread_id: 150, actor_type: 'ai', content: 'Done.', ...who, ...reply }, reloaded);
+    assert.deepStrictEqual(quoteOf(row(900)), quoteOf(reloaded.children[0]), 'the live quote is the reloaded quote');
+    const q = row(900).querySelector('.h-reply-quote');
+    assert.deepStrictEqual([q.children[0].textContent, q.children[0].style.color], ['Aan', '#c80'], 'name and colour of the quoted message');
+    assert.deepStrictEqual(q.querySelectorAll('.h-reply-quote-file').map(f => [f.children.length, f.textContent]), [[0, '<b>spec</b>.md'], [0, 'Image']], 'attachments by file name as literal text, never the upload path; an unnamed image says so');
+    const single = ctx.buildReplyQuote({ reply_to: 881, reply_msg: { id: 881, content: 'see', file_url: '/uploads/a1b2.pdf', file_name: 'Q3 report.pdf', attachments: null, actor_name: 'Aan' } });
+    assert.deepStrictEqual(single.querySelectorAll('.h-reply-quote-file').map(f => f.textContent), ['Q3 report.pdf'], 'a single upload (file_url/file_name) shows its name');
+    assert.strictEqual(q.children[1].children[2].textContent, reply.reply_msg.content.substring(0, 150), 'quoted text is literal (textContent), cut at 150');
+    assert.strictEqual(rows(900), 1);
+
+    ws({ type: 'message_state', message_id: 901, state: 'streaming', thread_id: 150, ...who });
+    ws({ type: 'message_complete', message_id: 901, thread_id: 150, content: 'Ok.', ...reply });
+    assert.ok(quoteOf(row(901)), 'a quote that only arrives with message_complete still shows');
+
+    // Feed roots never show a quote after a reload, so the live feed row does not either.
+    ws({ type: 'message_state', message_id: 902, state: 'streaming', ...who, ...reply });
+    ws({ type: 'message_complete', message_id: 902, content: 'Hi.', ...reply });
+    const reloadedFeed = new El('div');
+    ctx.appendFeedRootRow({ id: 1902, state: 'complete', actor_type: 'ai', content: 'Hi.', ...who, ...reply }, reloadedFeed);
+    assert.deepStrictEqual([!!row(902).querySelector('.h-reply-quote'), !!reloadedFeed.querySelector('.h-reply-quote')], [false, false], 'feed: no quote live, none after reload');
+
+    // D2 — disconnect: the bubble stays with the run's text and an interrupted chip.
+    const before = feed.appendChild(new El('div')); before.id = 'msg-903';
+    ws({ type: 'message_state', message_id: 904, state: 'streaming', ...who });
+    const after = feed.appendChild(new El('div')); after.id = 'msg-905';
+    ws({ type: 'message_token', message_id: 904, token: 'Half an ans' });
+    assert.ok(processing.has(904));
+    ws({ type: 'message_state', message_id: 904, state: 'error', ...who, content: 'Half an ans', result_meta: '{"exit_reason":"interrupted"}', feed_pos: 904 });
+    const cut = row(904);
+    assert.ok(cut && cut.isConnected, 'an interrupted run is not removed');
+    assert.deepStrictEqual([cut.querySelector('.h-thinking-bubble'), cut.querySelector('.h-cursor'), cut.querySelector('.h-bubble').classList.contains('streaming')], [null, null, false], 'no thinking, no cursor');
+    assert.strictEqual(cut.querySelector('.h-bubble').children[0].textContent, 'Half an ans', 'the stored text stays');
+    assert.deepStrictEqual([cut.querySelector('.h-msg-result').textContent, cut.querySelector('.h-msg-result').classList.contains('warn')], ['⏹ interrupted', true], 'quiet interrupted chip');
+    assert.ok(!processing.has(904), 'the composer is no longer busy');
+    assert.deepStrictEqual(feed.children.map(c => c.id).slice(-3), ['msg-903', 'msg-904', 'msg-905']);
+
+    // Resume: the same row goes back to thinking, in place; the completion finalizes it once.
+    ws({ type: 'message_state', message_id: 904, state: 'streaming', ...who });
+    assert.deepStrictEqual(feed.children.map(c => c.id).slice(-3), ['msg-903', 'msg-904', 'msg-905'], 'the resumed run keeps its place');
+    assert.ok(row(904).querySelector('.h-thinking-bubble') && !row(904).querySelector('.h-msg-result'), 'back to thinking, the interrupted chip is gone');
+    assert.ok(processing.has(904), 'busy again');
+    ws({ type: 'message_token', message_id: 904, token: 'Full answer' });
+    ws({ type: 'message_complete', message_id: 904, content: 'Full answer', result_meta: '{"exit_reason":"completed"}' });
+    assert.deepStrictEqual([rows(904), row(904).querySelector('.h-msg-result').textContent, row(904).dataset.runInterrupted], [1, '✓ completed', undefined], 'one row, completed');
+
+    // A client that never drew the run (joined late) draws it from the event's identity.
+    ws({ type: 'message_state', message_id: 906, state: 'error', thread_id: 150, ...who, ...reply, content: '(interrupted — agent disconnected)', result_meta: '{"exit_reason":"interrupted"}', feed_pos: 906 });
+    assert.strictEqual(row(906)?.parentNode, thread, 'drawn in the open thread');
+    assert.deepStrictEqual([row(906).querySelector('.h-msg-name').textContent, row(906).querySelector('.h-msg-sub').textContent], ['Reviewer', '(Orion)'], 'sub-agent label + parent');
+    assert.ok(quoteOf(row(906)), 'with its quote');
+    ws({ type: 'message_state', message_id: 907, state: 'error', thread_id: 151, ...who, content: '(interrupted — agent disconnected)' });
+    assert.strictEqual(row(907), null, 'a run in a closed thread is not drawn');
+
+    // A bare error (timeout etc.) still drops the empty thinking bubble.
+    ws({ type: 'message_state', message_id: 908, state: 'streaming', ...who });
+    ws({ type: 'message_state', message_id: 908, state: 'error' });
+    assert.strictEqual(row(908), null, 'bare error unchanged');
+
+    // An error row from history is resumable too.
+    ctx.appendFeedRootRow({ id: 909, state: 'error', actor_type: 'ai', content: '(interrupted — agent reconnected)', ...who });
+    const tail = feed.appendChild(new El('div')); tail.id = 'msg-910';
+    ws({ type: 'message_state', message_id: 909, state: 'streaming', ...who });
+    assert.deepStrictEqual([rows(909), !!row(909).querySelector('.h-thinking-bubble'), row(909).nextElementSibling?.id], [1, true, 'msg-910'], 'reloaded error row → thinking, in place');
+
+    // A thread run that recovers drops its error echo from the feed live (as after a reload); the thread copy stays.
+    const echo = id => body.querySelector('#broadcast-' + id);
+    ws({ type: 'message_state', message_id: 911, state: 'streaming', thread_id: 150, ...who });
+    ws({ type: 'message_broadcast', message: { id: 911, thread_id: 150, actor_type: 'ai', state: 'error', content: '(interrupted — agent disconnected)', broadcast_reason: 'error', feed_pos: 911, ...who } });
+    ws({ type: 'message_broadcast', message: { id: 912, thread_id: 150, actor_type: 'ai', content: 'Matched.', broadcast_reason: 'automation_match', feed_pos: 912, ...who } });
+    assert.deepStrictEqual([echo(911)?.parentNode, echo(912)?.parentNode, row(911).parentNode], [feed, feed, thread], 'echoes in the feed, the run in the thread');
+    ws({ type: 'message_complete', message_id: 911, thread_id: 150, content: 'Recovered.', result_meta: '{"exit_reason":"completed"}' });
+    ws({ type: 'message_broadcast_cleared', message_id: 911, thread_id: 150 });
+    assert.strictEqual(echo(911), null, 'the cleared echo leaves the feed');
+    assert.ok(echo(912), 'another echo stays');
+    assert.deepStrictEqual([row(911)?.parentNode, row(911).querySelector('.h-msg-result').textContent], [thread, '✓ completed'], 'the thread row is untouched');
+    const feedIds = feed.children.map(c => c.id);
+    ws({ type: 'message_broadcast_cleared', message_id: 913, thread_id: 150 });
+    assert.deepStrictEqual(feed.children.map(c => c.id), feedIds, 'no echo → no-op');
+
+    // A run the server ended with a notice (timeout etc., no interrupted exit) keeps its bubble and text, like a reload.
+    const notice = '(timeout — Orion did not respond in 10 minutes)';
+    ws({ type: 'message_state', message_id: 914, state: 'streaming', thread_id: 150, ...who });
+    ws({ type: 'message_state', message_id: 914, state: 'error', thread_id: 150, ...who, content: notice, result_meta: null, feed_pos: 914 });
+    const reloadedErr = new El('div');
+    ctx.appendThreadMessage({ id: 1914, state: 'error', thread_id: 150, actor_type: 'ai', content: notice, result_meta: null, ...who }, reloadedErr);
+    const look = r => [r.querySelector('.h-bubble')?.textContent, !!r.querySelector('.h-thinking-bubble'), r.querySelector('.h-msg-result')?.textContent ?? null];
+    assert.deepStrictEqual(look(row(914)), [notice, false, null], 'the timeout notice stays, no chip');
+    assert.deepStrictEqual(look(row(914)), look(reloadedErr.children[0]), 'live = reload');
+    ws({ type: 'message_state', message_id: 914, state: 'streaming', thread_id: 150, ...who });
+    assert.deepStrictEqual([rows(914), !!row(914).querySelector('.h-thinking-bubble')], [1, true], 'and it revives in place');
+
+    // Revive drops the feed echo; failing again brings it back once, with the new text.
+    ws({ type: 'message_broadcast', message: { id: 915, thread_id: 150, actor_type: 'ai', state: 'error', content: '(interrupted — agent disconnected)', broadcast_reason: 'error', feed_pos: 915, ...who } });
+    ws({ type: 'message_state', message_id: 915, state: 'streaming', thread_id: 150, ...who });
+    ws({ type: 'message_broadcast_cleared', message_id: 915, thread_id: 150 });
+    assert.strictEqual(echo(915), null, 'no echo while the run is running again');
+    ws({ type: 'message_state', message_id: 915, state: 'error', thread_id: 150, ...who, content: 'Gave up: <b>disk full</b>', result_meta: null, feed_pos: 915 });
+    ws({ type: 'message_broadcast', message: { id: 915, thread_id: 150, actor_type: 'ai', state: 'error', content: 'Gave up: <b>disk full</b>', broadcast_reason: 'error', feed_pos: 915, ...who } });
+    assert.deepStrictEqual([body.querySelectorAll('[id="broadcast-915"]').length, echo(915).querySelector('.t-content').textContent], [1, 'Gave up: disk full'], 'one echo, the new text');
+    ws({ type: 'message_broadcast', message: { id: 912, thread_id: 150, actor_type: 'ai', content: 'Matched again.', broadcast_reason: 'automation_match', feed_pos: 912, ...who } });
+    assert.deepStrictEqual([echo(912).querySelectorAll('.t-content').length, echo(912).querySelector('.t-content').textContent], [1, 'Matched again.'], 'a re-sent row refreshes the echo text in place');
+  });
+
   await test('sub-agent form — label errors route by server code, never by text that can quote a user-chosen room title', () => {
     const vm = require('vm');
     const fs = require('fs');
@@ -13065,6 +13487,85 @@ async function run() {
     assert.strictEqual(route({ error: 'label conflicts with an actor name', code: 'label_actor_name' }), JSON.stringify({ inline: '"Scout" is an agent name — pick something else' }));
     assert.strictEqual(route({ error: 'label "Scout" already exists' }), JSON.stringify({ toast: 'label "Scout" already exists' }), 'no code (older server) → toast, the text is not parsed');
     assert.strictEqual(route({}), JSON.stringify({ toast: 'failed to save' }));
+  });
+
+  await test('room agents popover — an actor removed elsewhere leaves the open popover (participants + add list), stale loads never win', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El {
+      constructor(tag) { this.tagName = tag.toUpperCase(); this.style = {}; this.dataset = {}; this.children = []; this.parentNode = null; this._text = ''; this.attrs = {};
+        const cls = new Set(); this.classList = { add: (...c) => c.forEach(x => cls.add(x)), remove: (...c) => c.forEach(x => cls.delete(x)), toggle: (c, on) => (on ?? !cls.has(c)) ? cls.add(c) : cls.delete(c), contains: c => cls.has(c) }; }
+      set className(v) { String(v).split(/\s+/).filter(Boolean).forEach(c => this.classList.add(c)); }
+      get className() { return ''; }
+      appendChild(c) { if (c.parentNode) c.remove(); c.parentNode = this; this.children.push(c); return c; }
+      append(...cs) { for (const c of cs) this.appendChild(typeof c === 'string' ? Object.assign(new El('#text'), { textContent: c }) : c); }
+      prepend(...cs) { this.append(...cs); }
+      remove() { const p = this.parentNode; if (p) { p.children = p.children.filter(x => x !== this); this.parentNode = null; } }
+      replaceWith(n) { const p = this.parentNode; if (!p) return; const i = p.children.indexOf(this); p.children[i] = n; n.parentNode = p; this.parentNode = null; }
+      set innerHTML(v) { this.children.forEach(c => { c.parentNode = null; }); this.children = []; this._text = String(v).replace(/<[^>]*>/g, ''); }
+      get innerHTML() { return ''; }
+      set textContent(v) { this.children = []; this._text = String(v); }
+      get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+      setAttribute(k, v) { this.attrs[k] = v; } getAttribute(k) { return this.attrs[k]; }
+      addEventListener() {} removeEventListener() {} focus() {} click() {}
+      getBoundingClientRect() { return { top: 0, left: 0, bottom: 0, right: 0, width: 0, height: 0 }; }
+      querySelector() { return null; } querySelectorAll() { return []; }
+      contains(n) { for (let x = n; x; x = x.parentNode) if (x === this) return true; return false; }
+      get isConnected() { return this.contains ? doc.body.contains(this) : false; }
+      get options() { return this.children.filter(c => c.tagName === 'OPTION'); }
+    }
+    const doc = { body: new El('body'), createElement: t => new El(t), createTextNode: t => Object.assign(new El('#text'), { textContent: t }), getElementById: id => (id === 'room-sidebar' ? sidebar : null),
+      querySelector: () => null, querySelectorAll: () => [], addEventListener() {}, removeEventListener() {}, contains: n => doc.body.contains(n) };
+    const sidebar = doc.body.appendChild(new El('div'));
+    const server = { actors: [{ id: 2, name: 'Atlas', type: 'ai' }, { id: 7, name: 'Quill', type: 'ai' }, { id: 8, name: 'Wren', type: 'ai' }], parts: [{ actor_id: 7, actor_name: 'Quill', name: 'Quill', type: 'ai' }] };
+    const gate = { hold: null };
+    const fjsonCalls = [];
+    const fjson = async url => {
+      fjsonCalls.push(url);
+      const snap = JSON.parse(JSON.stringify(server));
+      const fail = gate.fail;
+      if (gate.hold) await gate.hold;
+      if (fail) throw new Error('network');
+      if (url.endsWith('/participants')) return snap.parts;
+      if (url.endsWith('/sub-agents')) return [];
+      if (url === '/api/actors') return snap.actors;
+      return [];
+    };
+    const ctx = { document: doc, window: { innerWidth: 1280, innerHeight: 800 }, localStorage: { getItem: () => null, removeItem() {} }, fjson,
+      requestAnimationFrame: f => f(), setTimeout: f => f(), getAvailableModels: () => [], showToast() {}, console,
+      humanActor: null, allActors: [], actorByName: {}, settingsActors: [], sRowStates: new Map(), currentRoomId: 1, roomParticipantsCache: {},
+      syncNewRoomBtn() {}, refreshRoomList() {}, renderChatHeader() {} };
+    vm.createContext(ctx);
+    for (const f of ['public/js/rooms/room-sidebar.js', 'public/js/settings/init.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+    ctx.refreshRoomList = () => {};
+    const flush = () => new Promise(r => setImmediate(r));
+    ctx.renderRoomSidebar({ id: 1, title: 'Checkout' }, []);
+    const agentsBtn = sidebar.children.find(b => b.dataset.tooltip === 'Agents');
+    agentsBtn.onclick(); await flush(); await flush();
+    const pop = () => doc.body.children.find(c => c.classList.contains('h-rsb-popover'));
+    assert.ok(pop().textContent.includes('Quill'), 'Quill is listed while it exists');
+    server.actors = server.actors.filter(a => a.id !== 7); server.parts = [];
+    ctx.handleActorRemoved(7, [1]); await flush();
+    assert.ok(!pop().textContent.includes('Quill'), 'the open popover drops the removed agent without a reopen');
+    assert.ok(pop().textContent.includes('Wren'), 'the rest of the add list is still there');
+    // a slow load that started before the removal must not overwrite the fresh one
+    server.actors.push({ id: 9, name: 'Stale', type: 'ai' });
+    let release; gate.hold = new Promise(r => { release = r; });
+    ctx.reloadRsbAgentsPanel();
+    gate.hold = null; server.actors = server.actors.filter(a => a.id !== 9);
+    ctx.reloadRsbAgentsPanel(); await flush();
+    release(); await flush(); await flush();
+    assert.ok(!pop().textContent.includes('Stale'), 'an older load resolving last is dropped');
+    gate.hold = new Promise(r => { release = r; }); gate.fail = true;
+    ctx.reloadRsbAgentsPanel();
+    gate.hold = null; gate.fail = false;
+    ctx.reloadRsbAgentsPanel(); await flush();
+    release(); await flush(); await flush();
+    assert.ok(!pop().textContent.includes('failed to load') && pop().textContent.includes('Wren'), 'an older load failing last keeps the fresh list');
+    ctx.closeRsbPopover();
+    const n = fjsonCalls.length;
+    ctx.handleActorRemoved(8, [1]); await flush();
+    assert.strictEqual(fjsonCalls.length, n, 'a closed popover is not reloaded');
   });
 
   await test('schedules panel — every form spec passes server validation unchanged, summaries and next run read naturally', () => {
@@ -14534,6 +15035,13 @@ async function run() {
       const l = await req('POST', `/api/rooms/${r.body.id}/sub-agents`, { sub_agent_id: s.body.id });
       assert.ok(l.status === 200 || l.status === 201, JSON.stringify(l.body));
       aw = { roomId: r.body.id, sa: s.body };
+      // A room client sees each timeout as an error carrying the notice a reload shows (not a bare error).
+      const hws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      const hist = waitForWsMessage(hws, m => m.type === 'history');
+      hws.send(JSON.stringify({ type: 'join_room', room_id: aw.roomId }));
+      await hist;
+      const errEvents = [];
+      hws.on('message', raw => { const m = JSON.parse(raw); if (m.type === 'message_state' && m.state === 'error') errEvents.push(m); });
       aw.A = await awSpawn('run A lost by the agent');
       aw.B = await awSpawn('run B completes after the timeout');
       aw.C = await awSpawn('run C errors after the timeout');
@@ -14546,7 +15054,12 @@ async function run() {
         assert.ok(x.content.startsWith('(timeout'), x.content);
         assert.deepStrictEqual(JSON.parse(x.result_meta), { exit_reason: 'timeout', awaiting_agent: true });
         assert.strictEqual(wakesFor(id), 0, 'no wake at the timeout: the agent may still complete it');
+        const evs = errEvents.filter(e => e.message_id === id);
+        assert.strictEqual(evs.length, 1, `run ${id}: one error event`);
+        assert.deepStrictEqual({ content: evs[0].content, result_meta: evs[0].result_meta, sub_agent_label: evs[0].sub_agent_label, thread_id: evs[0].thread_id },
+          { content: x.content, result_meta: x.result_meta, sub_agent_label: 'awaitsub', thread_id: x.thread_id ?? null }, 'live event = the row a reload reads');
       }
+      hws.close();
     });
 
     await test('Orphan wake — timed-out run completed later wakes the parent once with the real result', async () => {
@@ -16863,8 +17376,17 @@ async function run() {
     assert.strictEqual(row3.broadcast_reason, 'error', 'generic error content should classify as error');
     assert.strictEqual(broadcasts.length, 2, 'should have emitted again');
 
-    const r5 = tb.maybeBroadcastError({ threadId: rootId, messageId: reply3Id, reason: 'error' });
+    const reply4Id = Number(db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?, ?, 'third error', 'error', ?)").run(_tbRoomId, _tbParticipantId, rootId).lastInsertRowid);
+    const r5 = tb.maybeBroadcastError({ threadId: rootId, messageId: reply4Id, reason: 'error' });
     assert.strictEqual(r5, false, 'anti-flood should block even with explicit reason');
+    assert.strictEqual(db.prepare('SELECT broadcast_reason FROM messages WHERE id=?').get(reply4Id).broadcast_reason, null);
+
+    // A row already echoed (revived run failing again) is echoed again although the window is still closed.
+    const r6 = tb.maybeBroadcastError({ threadId: rootId, messageId: reply3Id, content: 'rate limit again', roomId: _tbRoomId });
+    assert.strictEqual(r6, true, 're-echo of an already-flagged row');
+    assert.strictEqual(broadcasts.length, 3);
+    assert.strictEqual(broadcasts[2].payload.message.id, reply3Id);
+    assert.strictEqual(db.prepare('SELECT broadcast_reason FROM messages WHERE id=?').get(reply3Id).broadcast_reason, 'error', 'reason kept');
   });
 
   // ── MCP gateway end-to-end: real /api/mcp admin API, real tokens from agent_trigger, real /mcp

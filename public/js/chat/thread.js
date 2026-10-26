@@ -837,6 +837,7 @@ function appendThreadMessage(m, container) {
   if (m.id && document.getElementById('msg-' + m.id)) return;
 
   if (m.state === 'streaming' || m.state === 'requesting') {
+    setRunReply(m.id, m);
     showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, container, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role, m.sub_agent_id);
     renderSavedTrail(document.getElementById('msg-' + m.id)?.querySelector('.h-msg-body'), m);
     setThreadProcessing(m.id);
@@ -847,6 +848,7 @@ function appendThreadMessage(m, container) {
   row.className = 'h-thread-msg-row';
   row.id = 'msg-' + m.id;
   setRowFeedPos(row, m.feed_pos);
+  if (m.state === 'error') row.dataset.runInterrupted = '1';
 
   const seal = document.createElement('div');
   seal.className = 'h-msg-seal-wrap';
@@ -912,23 +914,7 @@ function appendThreadMessage(m, container) {
   const bubble = document.createElement('div');
   bubble.className = 'h-bubble';
 
-  if (m.reply_msg) {
-    const quote = document.createElement('div');
-    quote.className = 'h-reply-quote';
-    const replyAttachments = typeof getAttachments === 'function' ? getAttachments(m.reply_msg) : [];
-    let quoteText = escHtml((m.reply_msg.content || '').substring(0, 150));
-    if (replyAttachments.length) {
-      const urls = replyAttachments.map(a => `<div class="h-reply-quote-file">${escHtml(a.url)}</div>`).join('');
-      quoteText = urls + quoteText;
-    }
-    const replyColor = (m.reply_msg.avatar_color || 'var(--h-ink)').replace(/[^a-zA-Z0-9().,%# \-]/g, '');
-    quote.innerHTML = `<div class="h-reply-quote-name" style="color:${replyColor}">${escHtml(m.reply_msg.actor_name)}</div><div class="h-reply-quote-text">${quoteText}</div>`;
-    quote.onclick = () => {
-      const el = document.getElementById('msg-' + m.reply_to);
-      if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.style.transition = 'background 0.3s'; el.style.background = 'color-mix(in srgb, #d39749 15%, transparent)'; setTimeout(() => { el.style.background = ''; }, 2000); }
-    };
-    bubble.appendChild(quote);
-  }
+  if (m.reply_msg) bubble.appendChild(buildReplyQuote(m));
 
   if (typeof renderAttachments === 'function') renderAttachments(bubble, m);
 
