@@ -393,6 +393,12 @@ function upsertFeedBroadcastRow(m) {
   placeRowByFeedPos(existing, m.feed_pos);
 }
 
+// The run recovered and its error/limit echo was cleared server-side; after a
+// reload the reply lives only in its thread, so drop the feed copy live too.
+function removeFeedBroadcastRow(messageId) {
+  document.getElementById('broadcast-' + messageId)?.remove();
+}
+
 function clearThreadSummaries() {
   Object.keys(threadSummaries).forEach(k => delete threadSummaries[k]);
 }

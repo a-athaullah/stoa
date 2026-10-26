@@ -13367,6 +13367,21 @@ async function run() {
     const tail = feed.appendChild(new El('div')); tail.id = 'msg-910';
     ws({ type: 'message_state', message_id: 909, state: 'streaming', ...who });
     assert.deepStrictEqual([rows(909), !!row(909).querySelector('.h-thinking-bubble'), row(909).nextElementSibling?.id], [1, true, 'msg-910'], 'reloaded error row → thinking, in place');
+
+    // A thread run that recovers drops its error echo from the feed live (as after a reload); the thread copy stays.
+    const echo = id => body.querySelector('#broadcast-' + id);
+    ws({ type: 'message_state', message_id: 911, state: 'streaming', thread_id: 150, ...who });
+    ws({ type: 'message_broadcast', message: { id: 911, thread_id: 150, actor_type: 'ai', state: 'error', content: '(interrupted — agent disconnected)', broadcast_reason: 'error', feed_pos: 911, ...who } });
+    ws({ type: 'message_broadcast', message: { id: 912, thread_id: 150, actor_type: 'ai', content: 'Matched.', broadcast_reason: 'automation_match', feed_pos: 912, ...who } });
+    assert.deepStrictEqual([echo(911)?.parentNode, echo(912)?.parentNode, row(911).parentNode], [feed, feed, thread], 'echoes in the feed, the run in the thread');
+    ws({ type: 'message_complete', message_id: 911, thread_id: 150, content: 'Recovered.', result_meta: '{"exit_reason":"completed"}' });
+    ws({ type: 'message_broadcast_cleared', message_id: 911, thread_id: 150 });
+    assert.strictEqual(echo(911), null, 'the cleared echo leaves the feed');
+    assert.ok(echo(912), 'another echo stays');
+    assert.deepStrictEqual([row(911)?.parentNode, row(911).querySelector('.h-msg-result').textContent], [thread, '✓ completed'], 'the thread row is untouched');
+    const feedIds = feed.children.map(c => c.id);
+    ws({ type: 'message_broadcast_cleared', message_id: 913, thread_id: 150 });
+    assert.deepStrictEqual(feed.children.map(c => c.id), feedIds, 'no echo → no-op');
   });
 
   await test('sub-agent form — label errors route by server code, never by text that can quote a user-chosen room title', () => {

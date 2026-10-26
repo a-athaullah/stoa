@@ -140,6 +140,11 @@ function handleWsMessage(msg) {
     return;
   }
 
+  if (msg.type === 'message_broadcast_cleared') {
+    if (typeof removeFeedBroadcastRow === 'function') removeFeedBroadcastRow(msg.message_id);
+    return;
+  }
+
   if (msg.type === 'thread_summary') {
     if (typeof handleThreadSummary === 'function') handleThreadSummary(msg);
     return;
