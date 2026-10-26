@@ -7538,6 +7538,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     avatar_color: ai.avatar_color,
     avatar_symbol: ai.avatar_symbol,
     avatar_url: ai.avatar_url || null,
+    sub_agent_id: subAgent?.id || null,
     sub_agent_label: subAgent?.label || null,
     sub_agent_avatar_color: subAgent?.avatar_color || null,
     sub_agent_avatar_symbol: subAgent?.avatar_symbol || null,
@@ -7896,7 +7897,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         // agent_queue_status: paused while the run waits in the agent queue, re-armed at start.
         pause: timeout.pause, rearm: timeout.rearm,
       });
-      pendingActorMeta.set(msgId, { actor_id: ai.actor_id, room_id: roomId, actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null, sub_agent_label: subAgent?.label || null, sub_agent_avatar_color: subAgent?.avatar_color || null, sub_agent_avatar_symbol: subAgent?.avatar_symbol || null, sub_agent_avatar_url: subAgent?.avatar_url || null, sub_agent_role: subAgent?.role || null, thread_id: threadId || null });
+      pendingActorMeta.set(msgId, { actor_id: ai.actor_id, room_id: roomId, actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null, sub_agent_id: subAgent?.id || null, sub_agent_label: subAgent?.label || null, sub_agent_avatar_color: subAgent?.avatar_color || null, sub_agent_avatar_symbol: subAgent?.avatar_symbol || null, sub_agent_avatar_url: subAgent?.avatar_url || null, sub_agent_role: subAgent?.role || null, thread_id: threadId || null });
       const triggerBaseUrl = getPublicUrl(`localhost:${PORT}`);
       // Agents download without cookies → signed URLs. Name falls back to the bare file name because
       // stoa.js derives the extension from name||url, and the url now carries a query string.

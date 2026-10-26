@@ -6026,7 +6026,7 @@ async function run() {
       assert.strictEqual(sa.parent_avatar_url, parent.avatar_url ?? null);
     });
 
-    await test('Realtime message_state for a sub-agent run carries sub-agent avatar + role', async () => {
+    await test('Realtime message_state for a sub-agent run carries sub-agent id + avatar + role', async () => {
       if (!wkSa) { console.log('    (skipped)'); return; }
       const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
       try {
@@ -6037,7 +6037,13 @@ async function run() {
         const t = nextSubTrigger();
         humanWs.send(JSON.stringify({ type: 'send_message', room_id: wkRoomId, content: '@wakesub show your face' }));
         const st = await stateP;
-        complete(await t, 'here');
+        const trig = await t;
+        const relayP = waitForWsMessage(humanWs, m => m.type === 'message_state' && m.message_id === trig.message_id && m.state === 'requesting', 5000);
+        wkWs.send(JSON.stringify({ type: 'agent_state', room_id: wkRoomId, message_id: trig.message_id, state: 'requesting' }));
+        const relay = await relayP;
+        complete(trig, 'here');
+        assert.strictEqual(st.sub_agent_id, wkSa.id, 'thinking bubble gets the sub-agent id, not just the label');
+        assert.strictEqual(relay.sub_agent_id, wkSa.id, 'agent_state relay carries the sub-agent id too');
         const parent = (await req('GET', '/api/actors')).body.find(a => a.id === wkActorId);
         assert.strictEqual(st.sub_agent_avatar_color, '#123456');
         assert.strictEqual(st.sub_agent_avatar_symbol, 'WK');
@@ -12695,8 +12701,6 @@ async function run() {
     const ctx = {
       document: { createElement: tag => { const e = el(tag); if (tag === 'div') rendered.push(e); return e; } },
       makeAvatar: (name, color, url) => ({ parentAvatar: { name, color, url } }),
-      currentRoomId: 5,
-      roomSubAgentsCache: { 5: [{ id: 852, label: 'Vera', parent_actor_id: 1 }, { id: 853, label: 'Kenji', parent_actor_id: 1 }] },
     };
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'public/js/chat/sub-agent-avatar.js'), 'utf8'), ctx);
     const only = w => w.children[0];
@@ -12737,9 +12741,35 @@ async function run() {
     ctx.refreshSubAgentAvatars({ parent_actor_id: 1, label: 'Kenji', avatar_url: '/x.png' }, root);
     assert.strictEqual(only(kenji).tagName, 'SPAN', 'an update without an id repaints nothing');
 
-    assert.deepStrictEqual([ctx.roomSubAgentIdByLabel('Kenji'), ctx.roomSubAgentIdByLabel('Nobody'), ctx.roomSubAgentIdByLabel(null)], [853, null, null], 'thinking resolves the id from the open room');
-    ctx.currentRoomId = 6;
-    assert.strictEqual(ctx.roomSubAgentIdByLabel('Kenji'), null, 'another room\'s cache is never used');
+  });
+
+  await test('sub-agent avatar — thinking bubble carries the run\'s sub-agent id, so two parents with a same-label sub-agent in one room never cross-repaint', () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const node = tag => ({ tagName: tag.toUpperCase(), style: {}, dataset: {}, classList: { add() {} }, children: [],
+      appendChild(c) { this.children.push(c); return c; }, replaceChildren(...c) { this.children = c; } });
+    const wraps = [];
+    const inner = node('div'); inner.id = 'messages-inner';
+    const ctx = {
+      document: {
+        createElement: tag => { const e = node(tag); if (tag === 'div') wraps.push(e); return e; },
+        getElementById: id => (id === 'messages-inner' ? inner : null),
+        querySelectorAll: () => [],
+      },
+      currentRoomId: 5,
+      roomSubAgentsCache: { 5: [{ id: 11, label: 'Reviewer', parent_actor_id: 1 }, { id: 22, label: 'Reviewer', parent_actor_id: 2 }] },
+      streaming: {}, makeAvatar: () => node('span'), makeSubAgentRoleEl: () => null, applyBubbleColor() {}, scrollToBottom() {},
+    };
+    vm.createContext(ctx);
+    for (const f of ['public/js/chat/sub-agent-avatar.js', 'public/js/chat/thinking.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+    const sa = () => wraps.filter(w => w.dataset.saLabel);
+    ctx.showThinking(501, 'Orion', '#0a0', null, null, 'Reviewer', undefined, null, null, null, null, 22);
+    ctx.showThinking(502, 'Atlas', '#a00', null, null, 'Reviewer', undefined, null, null, null, null, 11);
+    const [orionRev, atlasRev] = sa();
+    assert.deepStrictEqual([orionRev.dataset.saId, atlasRev.dataset.saId], ['22', '11'], 'each bubble keeps the id of the sub-agent that runs, not the first label match in the room');
+    const root = { querySelectorAll: () => sa().filter(w => w.dataset.saId) };
+    ctx.refreshSubAgentAvatars({ id: 22, parent_actor_id: 2, label: 'Reviewer', avatar_url: '/uploads/avatar/avatar-sa-22-1.png' }, root);
+    assert.deepStrictEqual([orionRev.children[0].tagName, atlasRev.children[0].tagName], ['IMG', 'SPAN'], 'only the Orion Reviewer bubble is repainted');
   });
 
   await test('schedules panel — every form spec passes server validation unchanged, summaries and next run read naturally', () => {

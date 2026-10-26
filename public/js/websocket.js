@@ -85,10 +85,10 @@ function handleWsMessage(msg) {
           }
           if (typeof activeThreadId !== 'undefined' && activeThreadId === m.thread_id) {
             const tbody = document.getElementById('thread-body');
-            showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, tbody, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role);
+            showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, tbody, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role, m.sub_agent_id);
           }
         } else {
-          showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, undefined, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role);
+          showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, undefined, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role, m.sub_agent_id);
         }
         if (m.thread_id && typeof setThreadProcessing === 'function') setThreadProcessing(m.id);
         else setComposerProcessing(m.id);
@@ -210,7 +210,7 @@ function handleWsMessage(msg) {
         : document.getElementById('messages-inner');
       const last = targetContainer?.lastElementChild;
       if (last?.classList.contains('h-system-event') && last.dataset.actor?.startsWith(msg.actor_name)) last.remove();
-      showThinking(msg.message_id, msg.actor_name, msg.avatar_color, msg.avatar_symbol, msg.avatar_url, msg.sub_agent_label, targetContainer, msg.sub_agent_avatar_color, msg.sub_agent_avatar_symbol, msg.sub_agent_avatar_url, msg.sub_agent_role);
+      showThinking(msg.message_id, msg.actor_name, msg.avatar_color, msg.avatar_symbol, msg.avatar_url, msg.sub_agent_label, targetContainer, msg.sub_agent_avatar_color, msg.sub_agent_avatar_symbol, msg.sub_agent_avatar_url, msg.sub_agent_role, msg.sub_agent_id);
       if (tId && typeof _scrollThreadToBottom === 'function') _scrollThreadToBottom();
       if (tId && typeof setThreadProcessing === 'function') setThreadProcessing(msg.message_id);
       else setComposerProcessing(msg.message_id);

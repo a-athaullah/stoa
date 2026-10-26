@@ -45,10 +45,3 @@ function refreshSubAgentAvatars(sa, root = document) {
     if (wrap.dataset.saId === id) fillSubAgentAvatar(wrap, sa);
   }
 }
-
-// message_state (thinking) carries only the label; labels are unique among the
-// sub-agents linked to a room, so the open room's cache resolves the id.
-function roomSubAgentIdByLabel(label) {
-  if (!label) return null;
-  return (roomSubAgentsCache[currentRoomId] || []).find(s => s.label === label)?.id || null;
-}
