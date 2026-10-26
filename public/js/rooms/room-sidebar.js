@@ -423,7 +423,7 @@ function renderRoomSidebar(room, participants) {
           const row = document.createElement('div');
           row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0';
           const seal = subAgentAvatarEl(sa);
-          seal.style.borderStyle = 'dashed';
+          seal.style.cssText = 'display:inline-flex;flex:0 0 auto;border-radius:50%;border:1px dashed var(--h-border)';
           const info = document.createElement('div');
           info.style.cssText = 'flex:1;min-width:0';
           const name = document.createElement('div');
