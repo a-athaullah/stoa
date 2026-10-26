@@ -353,6 +353,15 @@ These are the pre-existing colors; they were not degraded by the themes feature.
 
 ---
 
+### Upload Orphan GC + Upload Dirs (R18)
+**Design:** `gcTick()` (scheduler loop, every 6 h, first tick right after boot) deletes files in `UPLOADS_DIR` that no message/avatar references (`lib/upload-gc.js`). Files younger than `UPLOAD_GC_GRACE_MS` (24 h) are never orphans.
+
+**Why the grace period:** an agent uploads first (`/api/upload/raw`) and the message carrying `attachments` is written only when its turn completes — a tick in between used to delete the fresh file.
+
+**Why the dirs are env-overridable (`STOA_UPLOADS_DIR`, `STOA_CONNECTOR_MEDIA_DIR`):** the test server used to share the repo `uploads/`. Its GC compared the live files with the DB copy (copied without `-wal`, so recent messages were missing) and deleted live attachments (2026-10-26, msgs 45023/45265). `run-tests.js` now points both at temp dirs and fails the run if a live upload disappears. Never point a throwaway server at the live dirs.
+
+---
+
 ### Ollama Proxy Token (R20)
 **Old format:** `stoa-proxy:<platform_id>` — no secret, trivially forgeable.
 
