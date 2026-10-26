@@ -18,7 +18,7 @@
   --h-hair-soft:        #D6C8B7;
   --h-ink:              #382D24;
   --h-ink-mute:         #625549;
-  --h-ink-faint:        #87786A;
+  --h-ink-faint:        #736558;
   --h-slip:             #EDE5D9;
   --h-accent:           #5A3925;
   --h-link:             #805036;
@@ -187,7 +187,7 @@
   --h-hair-soft:        oklch(0.345 0.014 48);
   --h-ink:              oklch(0.925 0.014 70);
   --h-ink-mute:         oklch(0.740 0.014 60);
-  --h-ink-faint:        oklch(0.585 0.012 55);
+  --h-ink-faint:        oklch(0.650 0.012 55);
   --h-slip:             oklch(0.255 0.020 60);
   --h-accent:           oklch(0.620 0.100 245);
   --h-accent-ink:       oklch(0.180 0.014 45);

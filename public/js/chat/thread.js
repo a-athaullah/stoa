@@ -393,7 +393,7 @@ function _createThreadPanel() {
       modelWrap.style.cssText = 'display:flex;align-items:center;gap:3px;font-size:11px;cursor:pointer;margin-left:auto;padding:1px 4px;border-radius:4px;transition:background 0.15s';
       const modelLabel = document.createElement('span');
       modelLabel.id = 'thread-model-label';
-      modelLabel.style.cssText = 'opacity:0.6;transition:opacity 0.15s';
+      modelLabel.style.cssText = 'opacity:0.6;transition:opacity 0.15s;white-space:nowrap';
       const syncLabel = () => {
         const t = document.getElementById('model-dropdown-text')?.textContent?.trim();
         if (t && t !== 'Select model') modelLabel.textContent = t;
@@ -404,10 +404,11 @@ function _createThreadPanel() {
       modelWrap.style.position = 'relative';
       modelWrap.addEventListener('mouseenter', () => { modelLabel.style.opacity = '1'; modelWrap.style.background = 'var(--h-hover)'; });
       modelWrap.addEventListener('mouseleave', () => { modelLabel.style.opacity = '0.6'; modelWrap.style.background = ''; });
+      let closePopup = null;
       modelWrap.addEventListener('click', e => {
         e.stopPropagation();
-        const existing = document.getElementById('thread-model-popup');
-        if (existing) { existing.remove(); return; }
+        if (e.target.closest('#thread-model-popup')) return;
+        if (closePopup) { closePopup(); return; }
         if (typeof getAvailableModels !== 'function') return;
         const popup = document.createElement('div');
         popup.id = 'thread-model-popup';
@@ -424,7 +425,7 @@ function _createThreadPanel() {
           if (m.label === cur) div.classList.add('selected');
           div.addEventListener('click', () => {
             if (typeof selectModelOption === 'function') selectModelOption(m.value, m.platform_id);
-            popup.remove();
+            closePopup();
           });
           return div;
         };
@@ -443,8 +444,9 @@ function _createThreadPanel() {
           models.forEach(m => popup.appendChild(makeOpt(m)));
         }
         modelWrap.appendChild(popup);
-        const close = ev => { if (!modelWrap.contains(ev.target)) { popup.remove(); document.removeEventListener('click', close); } };
-        setTimeout(() => document.addEventListener('click', close), 0);
+        const onDocClick = ev => { if (!modelWrap.contains(ev.target)) closePopup(); };
+        closePopup = () => { popup.remove(); document.removeEventListener('click', onDocClick); closePopup = null; };
+        document.addEventListener('click', onDocClick);
       });
       modelWrap.appendChild(modelLabel);
       fmtBar.appendChild(modelWrap);
