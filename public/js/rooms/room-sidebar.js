@@ -243,6 +243,8 @@ function renderRoomSidebar(room, participants) {
       body.appendChild(sectionLabel('Participants'));
 
       const list = Array.isArray(parts) ? parts : (parts.participants || []);
+      const actors = Array.isArray(allActors) ? allActors : (allActors.actors || []);
+      const actorById = new Map(actors.map(a => [a.id, a]));
       if (!list.length) {
         const empty = document.createElement('div');
         empty.style.cssText = 'font-size:12.5px;color:var(--h-ink-mute);font-style:italic;padding:4px 0';
@@ -263,9 +265,13 @@ function renderRoomSidebar(room, participants) {
           const typeChip = document.createElement('span');
           typeChip.textContent = p.type || p.actor_type || 'ai';
           typeChip.style.cssText = 'padding:1px 6px;border-radius:999px;border:1px solid var(--h-border);font-size:10.5px';
-          const status = p.session_status || (p.is_online ? 'online' : 'offline');
+          const actorId = p.actor_id || p.id;
+          const online = (p.type || p.actor_type) === 'human'
+            ? actorId === humanActor?.id
+            : !!actorById.get(actorId)?.online;
+          const status = !online ? 'offline' : p.session_status === 'active' ? 'active' : 'online';
           const statusDot = document.createElement('span');
-          statusDot.style.cssText = `width:6px;height:6px;border-radius:50%;background:${status === 'online' ? 'oklch(65% .18 145)' : 'var(--h-border)'}`;
+          statusDot.style.cssText = `width:6px;height:6px;border-radius:50%;background:${online ? 'oklch(65% .18 145)' : 'var(--h-border)'}`;
           statusDot.title = status;
           meta.append(typeChip, statusDot, document.createTextNode(status));
           info.append(name, meta);
@@ -275,7 +281,6 @@ function renderRoomSidebar(room, participants) {
       }
 
       // Add agent section
-      const actors = Array.isArray(allActors) ? allActors : (allActors.actors || []);
       const participantIds = new Set(list.map(p => p.actor_id || p.id));
       const addable = actors.filter(a => (a.type === 'ai' || a.actor_type === 'ai') && !participantIds.has(a.id));
 
