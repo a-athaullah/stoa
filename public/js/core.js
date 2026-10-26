@@ -242,31 +242,6 @@ function makeSubAgentRoleEl(subAgentLabel, role) {
   return el;
 }
 
-// ── Sub-agent avatar helper ───────────────────────────────────────────────
-function makeAvatarEl(name, color, url, size, subAgentLabel, saAvatarColor, saAvatarSymbol, saAvatarUrl) {
-  if (!subAgentLabel) return makeAvatar(name, color, url, size);
-  const wrap = document.createElement('div');
-  wrap.className = 'h-sa-avatar-wrap';
-  if (saAvatarUrl) {
-    const img = document.createElement('img');
-    img.src = saAvatarUrl;
-    img.style.cssText = `width:${size}px;height:${size}px;border-radius:50%;object-fit:cover;flex-shrink:0;display:inline-block`;
-    img.alt = subAgentLabel;
-    wrap.appendChild(img);
-  } else if (saAvatarColor || saAvatarSymbol) {
-    const seal = document.createElement('span');
-    seal.className = 'h-seal';
-    seal.style.width = size + 'px'; seal.style.height = size + 'px';
-    seal.style.background = saAvatarColor || '#888';
-    seal.style.fontSize = (size * 0.52) + 'px';
-    seal.textContent = saAvatarSymbol || subAgentLabel[0].toUpperCase();
-    wrap.appendChild(seal);
-  } else {
-    wrap.appendChild(makeAvatar(name, color, url, size));
-  }
-  return wrap;
-}
-
 function applyBubbleColor(el, color, subAgentLabel) {
   el.style.background  = subAgentLabel ? saBubbleBg(color) : bubbleBg(color);
   el.style.borderColor = subAgentLabel ? saBubbleBorder(color) : bubbleBorder(color);

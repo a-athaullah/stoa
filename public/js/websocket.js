@@ -571,6 +571,7 @@ function handleWsMessage(msg) {
       const idx = list.findIndex(s => s.id === sa.id);
       if (idx !== -1) list[idx] = { ...list[idx], ...sa };
     }
+    refreshSubAgentAvatars(sa);
     return;
   }
 }
