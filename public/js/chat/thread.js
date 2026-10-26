@@ -846,6 +846,7 @@ function appendThreadMessage(m, container) {
   const row = document.createElement('div');
   row.className = 'h-thread-msg-row';
   row.id = 'msg-' + m.id;
+  setRowFeedPos(row, m.feed_pos);
 
   const seal = document.createElement('div');
   seal.className = 'h-msg-seal-wrap';

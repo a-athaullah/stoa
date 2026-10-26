@@ -5900,6 +5900,230 @@ async function run() {
     });
   }
 
+  // ── Final reply order (messages.feed_pos) ──────────────────────────────────
+  // The reply row is a placeholder made when the turn starts, so the progress the agent posts during
+  // the turn has newer ids. Once the run ends the reply must show after that progress — feed, thread,
+  // join history, cursors, the AI history — while its id stays the same.
+  console.log('\n[Final reply order — feed_pos]');
+  {
+    const RO_NAME = '__test-reply-order';
+    const db = require('./db');
+    let roActorId = null, roSecret = null, roRoomId = null, roWs = null, roSa = null, humanWs = null;
+    const ids = rows => rows.map(r => r.id);
+    const progress = async (content, extra = {}) => {
+      const r = await rawReq('POST', `/api/rooms/${roRoomId}/message`, JSON.stringify({ content, ...extra }), 'application/json',
+        { 'X-Agent-Id': String(roActorId), 'X-Agent-Secret': roSecret });
+      assert.strictEqual(r.status, 200, r.raw);
+      return r.body.message_id;
+    };
+    const nextTrigger = (sub) => waitForWsMessage(roWs, m => m.type === 'agent_trigger' && (sub ? m.sub_agent?.id === sub.id : !m.sub_agent), 5000)
+      .catch(() => { throw new Error('agent trigger never arrived'); });
+    const finish = async (m, content) => {
+      const done = waitForWsMessage(humanWs, e => e.type === 'message_complete' && e.message_id === m.message_id, 5000);
+      roWs.send(JSON.stringify({ type: 'agent_complete', room_id: roRoomId, message_id: m.message_id, content }));
+      return done;
+    };
+    const humanSays = (content, threadId) => humanWs.send(JSON.stringify({ type: 'send_message', room_id: roRoomId, content, ...(threadId ? { thread_id: threadId } : {}) }));
+
+    await test('Setup — online agent + room + linked sub-agent for reply-order tests', async () => {
+      const agent = await createOnlineTestAgent(RO_NAME, '/tmp/stoa-test-reply-order');
+      if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+      roActorId = agent.actorId; roSecret = agent.secret; roWs = agent.ws;
+      const r = await req('POST', '/api/rooms', { title: '__reply-order-room__', workdir_id: agent.workdirId, participant_ids: [roActorId] });
+      assert.strictEqual(r.status, 200);
+      roRoomId = r.body.id;
+      testRoomIds.push(roRoomId);
+      roSa = (await req('POST', `/api/actors/${roActorId}/sub-agents`, { label: 'orderSub', tier: 'quick' })).body;
+      assert.strictEqual((await req('POST', `/api/rooms/${roRoomId}/sub-agents`, { sub_agent_id: roSa.id })).status, 200);
+      humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      const hist = waitForWsMessage(humanWs, m => m.type === 'history');
+      humanWs.send(JSON.stringify({ type: 'join_room', room_id: roRoomId }));
+      await hist;
+    });
+
+    // A human message in the root feed opens a thread on itself; the agent's reply and the progress it
+    // posts (stoa__message_send defaults to the session's thread) both live in that thread.
+    let run = null, tid = null, p1 = null, p2 = null;
+    await test('reply order — thread: final reply after its own progress (WS feed_pos, thread API, scope=all feed, id unchanged)', async () => {
+      if (!roSa) { console.log('    (skipped)'); return; }
+      const t = nextTrigger(null);
+      humanSays(`@${RO_NAME} run the long task`);
+      run = await t;
+      tid = run.thread_id;
+      assert.ok(tid, 'root mention runs in the thread of the human message');
+      p1 = await progress('ro step one done', { thread_id: tid });
+      p2 = await progress('ro step two done', { thread_id: tid });
+      assert.ok(run.message_id < p1, 'placeholder id precedes the progress ids');
+      const evt = await finish(run, 'ro final report');
+      assert.strictEqual(evt.feed_pos, p2 + 0.5, 'completion event carries the new position');
+      assert.deepStrictEqual(db.prepare('SELECT id, feed_pos FROM messages WHERE id=?').get(run.message_id), { id: run.message_id, feed_pos: p2 + 0.5 }, 'id unchanged');
+      assert.deepStrictEqual(ids((await req('GET', `/api/rooms/${roRoomId}/threads/${tid}`)).body.messages).slice(-3), [p1, p2, run.message_id]);
+      assert.deepStrictEqual(ids((await req('GET', `/api/rooms/${roRoomId}/messages?scope=all`)).body).slice(-3), [p1, p2, run.message_id]);
+    });
+
+    await test('reply order — before/since cursors stay message ids, resolved to the display position (thread + feed)', async () => {
+      if (!run) { console.log('    (skipped)'); return; }
+      const thr = async (qs) => ids((await req('GET', `/api/rooms/${roRoomId}/threads/${tid}?${qs}`)).body.messages);
+      const feed = async (qs) => ids((await req('GET', `/api/rooms/${roRoomId}/messages?scope=all&${qs}`)).body);
+      assert.deepStrictEqual(await thr(`before=${run.message_id}&limit=2`), [p1, p2], 'thread page above the moved reply = its progress');
+      assert.deepStrictEqual(await thr(`before=${p2}&limit=1`), [p1], 'moved reply is not above its progress');
+      assert.deepStrictEqual(await feed(`before=${run.message_id}&limit=2`), [p1, p2]);
+      assert.deepStrictEqual(await feed(`since=${p2}`), [run.message_id], 'catch-up after the last progress delivers the reply');
+      assert.deepStrictEqual(await feed(`since=${run.message_id}`), [], 'no duplicates after the reply');
+      const full = await feed('limit=100');
+      assert.deepStrictEqual(await feed(`before=${full[full.length - 2]}&limit=2`), full.slice(-4, -2), 'paging back from any row is contiguous');
+    });
+
+    await test('reply order — the next turn\'s AI history sees progress before the reply; a run without progress keeps feed_pos = id', async () => {
+      if (!run) { console.log('    (skipped)'); return; }
+      const t = nextTrigger(null);
+      humanSays(`@${RO_NAME} and now?`, tid);
+      const m = await t;
+      assert.deepStrictEqual((m.rawHistory || []).map(h => h.content).slice(-4), ['ro step one done', 'ro step two done', 'ro final report', `@${RO_NAME} and now?`]);
+      const evt = await finish(m, 'ro short answer');
+      assert.strictEqual(evt.feed_pos, m.message_id);
+      assert.strictEqual(ids((await req('GET', `/api/rooms/${roRoomId}/threads/${tid}`)).body.messages).at(-1), m.message_id);
+    });
+
+    // A root-feed run: the parent spawns its sub-agent via /sub-agent-trigger without a thread_id.
+    await test('reply order — root feed + sub-agent: reply after its own main-feed progress (feed, join history, cursors)', async () => {
+      if (!run) { console.log('    (skipped)'); return; }
+      const t = nextTrigger(roSa);
+      const spawn = await rawReq('POST', `/api/rooms/${roRoomId}/sub-agent-trigger`, JSON.stringify({ sub_agent_id: roSa.id, task: 'check the root feed please' }), 'application/json',
+        { 'X-Agent-Id': String(roActorId), 'X-Agent-Secret': roSecret });
+      assert.strictEqual(spawn.status, 200, spawn.raw);
+      const m = await t;
+      assert.strictEqual(db.prepare('SELECT thread_id FROM messages WHERE id=?').get(m.message_id).thread_id, null, 'root-feed run');
+      const s1 = await progress('ro root sub step one', { sub_agent_id: roSa.id });
+      const s2 = await progress('ro root sub step two', { sub_agent_id: roSa.id });
+      const wake = nextTrigger(null);
+      const evt = await finish(m, 'ro root sub final');
+      assert.strictEqual(evt.feed_pos, s2 + 0.5);
+      const woken = await wake.catch(() => null); // the parent is woken with the result (wake_parent)
+      if (woken) await finish(woken, 'ro parent woken');
+      const feed = ids((await req('GET', `/api/rooms/${roRoomId}/messages`)).body);
+      assert.deepStrictEqual(feed.slice(feed.indexOf(s1), feed.indexOf(s1) + 3), [s1, s2, m.message_id]);
+      assert.deepStrictEqual(ids((await req('GET', `/api/rooms/${roRoomId}/messages?before=${m.message_id}&limit=2`)).body), [s1, s2]);
+      assert.deepStrictEqual(ids((await req('GET', `/api/rooms/${roRoomId}/messages?since=${s2}`)).body)[0], m.message_id);
+      const ws2 = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        const hist = waitForWsMessage(ws2, x => x.type === 'history');
+        ws2.send(JSON.stringify({ type: 'join_room', room_id: roRoomId }));
+        const h = ids((await hist).messages);
+        assert.deepStrictEqual(h.slice(h.indexOf(s1), h.indexOf(s1) + 3), [s1, s2, m.message_id], 'join history');
+      } finally { ws2.close(); }
+    });
+
+    await test('reply order — thread + sub-agent: reply after the sub-agent\'s progress; the parent\'s message and the sub-agent\'s main-feed post do not move it', async () => {
+      if (!run) { console.log('    (skipped)'); return; }
+      const t = nextTrigger(roSa);
+      humanSays('@orderSub dig into this', tid);
+      const m = await t;
+      assert.strictEqual(db.prepare('SELECT thread_id FROM messages WHERE id=?').get(m.message_id).thread_id, tid);
+      const sp1 = await progress('ro sub step one', { thread_id: tid, sub_agent_id: roSa.id });
+      const sp2 = await progress('ro sub step two', { thread_id: tid, sub_agent_id: roSa.id });
+      const parentMsg = await progress('ro parent note', { thread_id: tid });
+      await progress('ro sub note in the main feed', { sub_agent_id: roSa.id });
+      const evt = await finish(m, 'ro sub final');
+      assert.strictEqual(evt.feed_pos, sp2 + 0.5);
+      assert.deepStrictEqual(ids((await req('GET', `/api/rooms/${roRoomId}/threads/${tid}`)).body.messages).slice(-4), [sp1, sp2, m.message_id, parentMsg]);
+      assert.deepStrictEqual(ids((await req('GET', `/api/rooms/${roRoomId}/threads/${tid}?before=${parentMsg}&limit=2`)).body.messages), [sp2, m.message_id]);
+    });
+
+    await test('Cleanup — reply-order test data', async () => {
+      if (humanWs) { humanWs.close(); humanWs = null; }
+      if (roWs) { roWs.close(); roWs = null; }
+      if (roSa) await req('DELETE', `/api/sub-agents/${roSa.id}`);
+      if (roRoomId) {
+        await req('PATCH', `/api/rooms/${roRoomId}`, { archived: true });
+        await req('DELETE', `/api/rooms/${roRoomId}`);
+        testRoomIds = testRoomIds.filter(id => id !== roRoomId);
+      }
+      if (roActorId) {
+        await req('DELETE', `/api/actors/${roActorId}`);
+        orphanActorIds = orphanActorIds.filter(id => id !== roActorId);
+      }
+    });
+  }
+
+  // ── Sub-agent avatar on live message events ───────────────────────────────
+  // History/feed reads join sub_agents; the live single-row events must carry the same identity, or
+  // the client draws the label seal until a reload brings the photo back.
+  console.log('\n[Sub-agent avatar on live message events]');
+  {
+    const AV_NAME = '__test-sa-avatar-live';
+    const AV_URL = '/uploads/avatars/__test-sa-avatar-live.png';
+    const db = require('./db');
+    let avActorId = null, avSecret = null, avRoomId = null, avWs = null, avSa = null, humanWs = null;
+
+    await test('Setup — online agent + room + linked sub-agent with an avatar', async () => {
+      const agent = await createOnlineTestAgent(AV_NAME, '/tmp/stoa-test-sa-avatar-live');
+      if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+      avActorId = agent.actorId; avSecret = agent.secret; avWs = agent.ws;
+      const r = await req('POST', '/api/rooms', { title: '__sa-avatar-live-room__', workdir_id: agent.workdirId, participant_ids: [avActorId] });
+      assert.strictEqual(r.status, 200);
+      avRoomId = r.body.id;
+      testRoomIds.push(avRoomId);
+      avSa = (await req('POST', `/api/actors/${avActorId}/sub-agents`, { label: 'avatarSub', tier: 'quick', role: 'Avatar tester' })).body;
+      assert.ok(avSa?.id, 'sub-agent created');
+      assert.strictEqual((await req('POST', `/api/rooms/${avRoomId}/sub-agents`, { sub_agent_id: avSa.id })).status, 200);
+      db.prepare('UPDATE sub_agents SET avatar_url=? WHERE id=?').run(AV_URL, avSa.id);
+      humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      const hist = waitForWsMessage(humanWs, m => m.type === 'history');
+      humanWs.send(JSON.stringify({ type: 'join_room', room_id: avRoomId }));
+      await hist;
+    });
+
+    await test('message_new for a sub-agent\'s proactive message carries its avatar + role (same as the feed read)', async () => {
+      if (!avSa) { console.log('    (skipped)'); return; }
+      const live = waitForWsMessage(humanWs, m => m.type === 'message_new' && m.message?.content === 'sa avatar proactive', 5000);
+      const r = await rawReq('POST', `/api/rooms/${avRoomId}/message`, JSON.stringify({ content: 'sa avatar proactive', sub_agent_id: avSa.id }), 'application/json',
+        { 'X-Agent-Id': String(avActorId), 'X-Agent-Secret': avSecret });
+      assert.strictEqual(r.status, 200, r.raw);
+      const m = (await live).message;
+      assert.strictEqual(m.sub_agent_id, avSa.id);
+      assert.strictEqual(m.sub_agent_avatar_url, AV_URL);
+      assert.strictEqual(m.sub_agent_role, 'Avatar tester');
+      const read = (await req('GET', `/api/rooms/${avRoomId}/messages`)).body.find(x => x.id === r.body.message_id);
+      for (const k of ['sub_agent_avatar_url', 'sub_agent_avatar_color', 'sub_agent_avatar_symbol', 'sub_agent_role']) {
+        assert.strictEqual(m[k], read[k], `live ${k} matches the feed read`);
+      }
+    });
+
+    await test('message_broadcast of a sub-agent\'s thread reply carries its avatar', async () => {
+      if (!avSa) { console.log('    (skipped)'); return; }
+      const { createThreadBroadcast } = require('./lib/thread-broadcast');
+      const sent = [];
+      const tb = createThreadBroadcast({ db, broadcastToRoom: (roomId, payload) => sent.push(payload), enrichFn: () => {} });
+      const rootId = (await rawReq('POST', `/api/rooms/${avRoomId}/message`, JSON.stringify({ content: 'sa avatar root' }), 'application/json',
+        { 'X-Agent-Id': String(avActorId), 'X-Agent-Secret': avSecret })).body.message_id;
+      const replyId = (await rawReq('POST', `/api/rooms/${avRoomId}/message`, JSON.stringify({ content: 'sa avatar thread reply', thread_id: rootId, sub_agent_id: avSa.id }), 'application/json',
+        { 'X-Agent-Id': String(avActorId), 'X-Agent-Secret': avSecret })).body.message_id;
+      assert.ok(replyId, 'thread reply posted');
+      assert.strictEqual(tb.setBroadcastReason(replyId, 'automation_match', avRoomId), true);
+      assert.strictEqual(sent.length, 1);
+      assert.strictEqual(sent[0].type, 'message_broadcast');
+      assert.strictEqual(sent[0].message.id, replyId);
+      assert.strictEqual(sent[0].message.sub_agent_avatar_url, AV_URL);
+      assert.strictEqual(sent[0].message.sub_agent_role, 'Avatar tester');
+    });
+
+    await test('Cleanup — sub-agent avatar test data', async () => {
+      if (humanWs) { humanWs.close(); humanWs = null; }
+      if (avWs) { avWs.close(); avWs = null; }
+      if (avSa) await req('DELETE', `/api/sub-agents/${avSa.id}`);
+      if (avRoomId) {
+        await req('PATCH', `/api/rooms/${avRoomId}`, { archived: true });
+        await req('DELETE', `/api/rooms/${avRoomId}`);
+        testRoomIds = testRoomIds.filter(id => id !== avRoomId);
+      }
+      if (avActorId) {
+        await req('DELETE', `/api/actors/${avActorId}`);
+        orphanActorIds = orphanActorIds.filter(id => id !== avActorId);
+      }
+    });
+  }
+
   // ── Parent wake gating (messages.wake_parent) ──────────────────────────────
   // A sub-agent the human mentions directly must not wake its parent, unless the
   // parent is @mentioned too or the run errors. Parent-driven runs keep waking.
@@ -12772,6 +12996,77 @@ async function run() {
     assert.deepStrictEqual([orionRev.children[0].tagName, atlasRev.children[0].tagName], ['IMG', 'SPAN'], 'only the Orion Reviewer bubble is repainted');
   });
 
+  await test('reply order — a completed reply moves past its own progress rows (feed + thread, live), never backward, separators stay put', () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const container = id => {
+      const c = { id, children: [] };
+      c.add = (...els) => els.forEach(e => { e.parentNode = c; c.children.push(e); });
+      return c;
+    };
+    const row = (id, feedPos) => {
+      const e = { id, dataset: {}, parentNode: null };
+      if (feedPos != null) e.dataset.feedPos = String(feedPos);
+      Object.defineProperty(e, 'nextElementSibling', { get() { const s = e.parentNode.children; return s[s.indexOf(e) + 1] || null; } });
+      Object.defineProperty(e, 'isConnected', { get() { return !!e.parentNode; } });
+      e.after = n => { const s = n.parentNode.children; s.splice(s.indexOf(n), 1); n.parentNode = e.parentNode; e.parentNode.children.splice(e.parentNode.children.indexOf(e) + 1, 0, n); };
+      e.querySelector = () => null;
+      return e;
+    };
+    const feed = container('messages-inner');
+    const thread = container('thread-body');
+    const byId = id => [...feed.children, ...thread.children].find(e => e.id === id) || null;
+    const scrolled = [];
+    const ctx = {
+      window: {}, ws: null, currentRoomId: 5,
+      document: { getElementById: byId, visibilityState: 'visible' },
+      setQueuePosition() {}, finalizeMessage() {}, clearComposerProcessing() {}, clearThreadProcessing() {}, refreshRoomList() {},
+      scrollToBottom: () => scrolled.push('feed'), _scrollThreadToBottom() {},
+    };
+    vm.createContext(ctx);
+    for (const f of ['public/js/chat/append.js', 'public/js/websocket.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+    const order = c => c.children.map(e => e.id);
+
+    feed.add(row('msg-100'), row('msg-101'), row('day-sep'), row('msg-102'), row('msg-103'), row('status-line'), row('msg-104'));
+    ctx.handleWsMessage({ type: 'message_complete', message_id: 101, feed_pos: 103.5 });
+    assert.deepStrictEqual(order(feed), ['msg-100', 'day-sep', 'msg-102', 'msg-103', 'msg-101', 'status-line', 'msg-104'],
+      'feed reply lands after its last progress row, before the newer user message; the separator is not dragged along');
+    assert.deepStrictEqual([byId('msg-101').dataset.feedPos, scrolled.length], ['103.5', 1], 'moved row keeps its new position and the feed follows the bottom');
+
+    ctx.handleWsMessage({ type: 'message_complete', message_id: 104, feed_pos: 104 });
+    assert.strictEqual(order(feed).at(-1), 'msg-104', 'a reply with no progress after it stays where it is');
+    assert.strictEqual(scrolled.length, 1, 'no move, no extra scroll');
+
+    thread.add(row('msg-200'), row('msg-201', 199.5), row('msg-202'), row('msg-203'));
+    ctx.handleWsMessage({ type: 'message_complete', message_id: 202, thread_id: 150, feed_pos: 203.5 });
+    assert.deepStrictEqual(order(thread), ['msg-200', 'msg-201', 'msg-203', 'msg-202'], 'thread reply moves the same way');
+    ctx.handleWsMessage({ type: 'message_complete', message_id: 202, thread_id: 150, feed_pos: 199 });
+    assert.deepStrictEqual(order(thread), ['msg-200', 'msg-201', 'msg-203', 'msg-202'], 'never moved backward');
+    assert.strictEqual(ctx.rowFeedPos(byId('msg-201')), 199.5, 'a history row with a fractional feed_pos is read from data-feed-pos, not the id');
+
+    thread.add(row('msg-300'), row('msg-301'), row('msg-302'));
+    ctx.handleWsMessage({ type: 'message_state', message_id: 300, state: 'interrupted', feed_pos: 301.5 });
+    assert.deepStrictEqual(order(thread).slice(-3), ['msg-301', 'msg-300', 'msg-302'], 'an interrupted reply that keeps its text moves too');
+    assert.strictEqual(ctx.placeRowByFeedPos(byId('msg-302'), undefined), false, 'no feed_pos (older server) → no move');
+  });
+
+  await test('sub-agent form — label errors route by server code, never by text that can quote a user-chosen room title', () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const ctx = { localStorage: { getItem: () => null } };
+    vm.createContext(ctx);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/settings/agents.js'), 'utf8'), ctx);
+    const route = (e) => JSON.stringify(ctx.saLabelErrorRoute(e, 'Scout', 'Atlas'));
+    for (const title of ['Merge conflicts', 'Name already exists', 'actor name drill']) {
+      const error = `label "Scout" already in room "${title}" (#1) from Orion`;
+      assert.strictEqual(route({ error, code: 'label_room_clash', room_id: 1 }), JSON.stringify({ toast: error }), `room "${title}" → toast with the server text`);
+    }
+    assert.strictEqual(route({ error: 'label "Scout" already exists for this agent', code: 'label_exists' }), JSON.stringify({ inline: '"Scout" already exists on Atlas' }));
+    assert.strictEqual(route({ error: 'label conflicts with an actor name', code: 'label_actor_name' }), JSON.stringify({ inline: '"Scout" is an agent name — pick something else' }));
+    assert.strictEqual(route({ error: 'label "Scout" already exists' }), JSON.stringify({ toast: 'label "Scout" already exists' }), 'no code (older server) → toast, the text is not parsed');
+    assert.strictEqual(route({}), JSON.stringify({ toast: 'failed to save' }));
+  });
+
   await test('schedules panel — every form spec passes server validation unchanged, summaries and next run read naturally', () => {
     const vm = require('vm');
     const fs = require('fs');
@@ -17918,6 +18213,60 @@ async function run() {
       assert.strictEqual(await stoaErr(tokA, 'sub_agent_update', { sub_agent_id: clash.id, tier: 'deep' }), 'sub-agent not found', 'another parent\'s row');
       assert.strictEqual(mDb.prepare('SELECT tier FROM sub_agents WHERE id=?').get(mcpSub2.id).tier, 'deep', 'untouched by agent B');
       assert.deepStrictEqual(configNotices(roomA, since), ['__test-mcp-a created sub-agent mcpsubtwo · config', '__test-mcp-a updated sub-agent mcpsubtwo · config']);
+    });
+
+    await test('sub-agent label rename — clash in a linked room → 409 naming the room (REST + MCP); own label / unlinked → 200', async () => {
+      const roomName = mDb.prepare('SELECT title FROM rooms WHERE id=?').get(roomA).title;
+      const want = `label "clashlbl" already in room "${roomName}" (#${roomA}) from __test-mcp-b`;
+      const r = await req('PATCH', `/api/sub-agents/${mcpSub2.id}`, { label: 'clashlbl' });
+      assert.deepStrictEqual([r.status, r.body.error, r.body.room_id], [409, want, roomA]);
+      assert.strictEqual(await stoaErr(tokA, 'sub_agent_update', { sub_agent_id: mcpSub2.id, label: 'clashlbl' }), want);
+      assert.strictEqual(mDb.prepare('SELECT label FROM sub_agents WHERE id=?').get(mcpSub2.id).label, 'mcpsubtwo', 'label untouched');
+      // Case-sensitive, like link() and @mention routing.
+      const cs = await req('PATCH', `/api/sub-agents/${mcpSub2.id}`, { label: 'Clashlbl' });
+      assert.deepStrictEqual([cs.status, cs.body.label], [200, 'Clashlbl']);
+      assert.strictEqual((await stoaOk(tokA, 'sub_agent_update', { sub_agent_id: mcpSub2.id, label: 'mcpsubtwo' })).sub_agent.label, 'mcpsubtwo');
+      // Own label is a no-op even if the room already holds a clash (pre-existing data is not re-judged).
+      mDb.prepare('UPDATE sub_agents SET label=? WHERE id=?').run('clashlbl', mcpSub2.id);
+      const same = await req('PATCH', `/api/sub-agents/${mcpSub2.id}`, { label: 'clashlbl' });
+      assert.deepStrictEqual([same.status, same.body.label], [200, 'clashlbl']);
+      mDb.prepare('UPDATE sub_agents SET label=? WHERE id=?').run('mcpsubtwo', mcpSub2.id);
+      // Not linked to any room: nothing to clash with.
+      const free = (await req('POST', `/api/actors/${agA.actorId}/sub-agents`, { label: 'unlinkedsa' })).body;
+      try {
+        const u = await req('PATCH', `/api/sub-agents/${free.id}`, { label: 'clashlbl' });
+        assert.deepStrictEqual([u.status, u.body.label], [200, 'clashlbl']);
+      } finally {
+        await req('DELETE', `/api/sub-agents/${free.id}`);
+      }
+    });
+
+    // The settings UI routes label errors by `code`: the message text embeds user-written room and
+    // agent names, so it cannot be pattern-matched safely.
+    await test('sub-agent label 409s carry a stable code (create / rename / link, REST + MCP)', async () => {
+      const codeOf = r => [r.status, r.body.code];
+      const actorRow = mDb.prepare("INSERT INTO actors (name, type) VALUES ('CodeClashActor', 'human')").run().lastInsertRowid;
+      const free = (await req('POST', `/api/actors/${agA.actorId}/sub-agents`, { label: 'codefree' })).body;
+      try {
+        assert.deepStrictEqual(codeOf(await req('POST', `/api/actors/${agA.actorId}/sub-agents`, { label: 'codeclashactor' })), [409, 'label_actor_name']);
+        assert.deepStrictEqual(codeOf(await req('POST', `/api/actors/${agA.actorId}/sub-agents`, { label: 'mcpsub' })), [409, 'label_exists']);
+        assert.deepStrictEqual(codeOf(await req('PATCH', `/api/sub-agents/${free.id}`, { label: 'codeclashactor' })), [409, 'label_actor_name']);
+        assert.deepStrictEqual(codeOf(await req('PATCH', `/api/sub-agents/${free.id}`, { label: 'mcpsub' })), [409, 'label_exists']);
+        // Linked to roomA, renamed into the label agB's sub-agent holds there.
+        assert.strictEqual((await req('POST', `/api/rooms/${roomA}/sub-agents`, { sub_agent_id: free.id })).status, 200);
+        const rename = await req('PATCH', `/api/sub-agents/${free.id}`, { label: 'clashlbl' });
+        assert.deepStrictEqual([...codeOf(rename), rename.body.room_id], [409, 'label_room_clash', roomA]);
+        const viaMcp = await stoaCall(tokA, 'sub_agent_update', { sub_agent_id: free.id, label: 'clashlbl' });
+        assert.deepStrictEqual([viaMcp.isError, viaMcp.body.code, viaMcp.body.room_id], [true, 'label_room_clash', roomA], 'MCP result carries the same body');
+        // Unlinked again it may take the label; linking it into roomA is then the clash.
+        assert.strictEqual((await req('DELETE', `/api/rooms/${roomA}/sub-agents/${free.id}`)).status, 200);
+        assert.strictEqual((await req('PATCH', `/api/sub-agents/${free.id}`, { label: 'clashlbl' })).status, 200);
+        const link = await req('POST', `/api/rooms/${roomA}/sub-agents`, { sub_agent_id: free.id });
+        assert.deepStrictEqual([...codeOf(link), link.body.room_id], [409, 'label_room_clash', roomA]);
+      } finally {
+        mDb.prepare('DELETE FROM actors WHERE id=?').run(actorRow);
+        await req('DELETE', `/api/sub-agents/${free.id}`);
+      }
     });
 
     await test('MCP stoa tools — sub-agent cap: 31st create refused on REST and /mcp alike, delete frees a slot', async () => {

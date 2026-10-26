@@ -567,7 +567,7 @@ function postWakeSystemEvent(roomId, participantId, threadId, content) {
     `INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?,?,?,'system_event',?)`
   ).run(roomId, participantId, content, threadId);
   const id = Number(sys.lastInsertRowid);
-  broadcast(roomId, { type: 'message_new', message: db.prepare('SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id WHERE m.id=?').get(id) });
+  broadcast(roomId, { type: 'message_new', message: roomMessages.row(id) });
   return id;
 }
 
@@ -2854,11 +2854,7 @@ const server = http.createServer(async (req, res) => {
     ).run(roomId, senderParticipantId, sentNote, threadId, emailProvider);
     const sentMsgId = sentResult.lastInsertRowid;
 
-    const sentRow = db.prepare(`
-      SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
-      FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id
-      WHERE m.id=?
-    `).get(sentMsgId);
+    const sentRow = roomMessages.row(sentMsgId);
     enrichAutomation(sentRow);
     const sentPayload = { type: 'message_new', message: sentRow };
     sentPayload.thread_summary = buildThreadSummary(roomId, threadId);
@@ -4596,7 +4592,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
       JOIN room_participants rp ON rp.id=m.participant_id
       JOIN actors a ON a.id=rp.actor_id
       WHERE m.room_id=? AND m.state='complete'
-      ORDER BY m.id ASC
+      ORDER BY m.feed_pos, m.id
     `).all(roomId);
     enrichAutomationList(rows);
 
@@ -5429,8 +5425,8 @@ wss.on('connection', (ws, req) => {
             OR (m.state = 'system_event' AND m.content LIKE '% · config')
             OR (m.state = 'error' AND m.broadcast_reason IS NOT NULL)
           )
-          ORDER BY m.id DESC LIMIT 100
-        ) AS recent ORDER BY id ASC
+          ORDER BY m.feed_pos DESC, m.id DESC LIMIT 100
+        ) AS recent ORDER BY feed_pos, id
       `).all(subscribedRoom);
       const enriched = enrichReply(messages);
       enrichAutomationList(enriched);
@@ -7160,10 +7156,7 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
   const aiThreadId = threadId ?? messageId;
 
   // Get message with actor info for broadcast
-  const row = db.prepare(`
-    SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
-    FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id
-    WHERE m.id=?`).get(messageId);
+  const row = roomMessages.row(messageId);
   if (row.reply_to) {
     const replied = db.prepare(`SELECT m.id, m.content, m.image_url, m.file_url, m.file_name, m.attachments, a.name as actor_name, a.avatar_color FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id WHERE m.id=?`).get(row.reply_to);
     if (replied) row.reply_msg = replied;
@@ -7588,14 +7581,14 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
       SELECT a.name, m.content, m.image_url, m.file_url, m.file_name, m.attachments, m.created_at, rp.actor_id FROM messages m
       JOIN room_participants rp ON rp.id=m.participant_id
       JOIN actors a ON a.id=rp.actor_id
-      WHERE m.room_id=? AND (m.thread_id=? OR m.id=?) AND m.state='complete' ORDER BY m.id DESC LIMIT ${historyLimit}
+      WHERE m.room_id=? AND (m.thread_id=? OR m.id=?) AND m.state='complete' ORDER BY m.feed_pos DESC, m.id DESC LIMIT ${historyLimit}
     `).all(roomId, threadId, threadId);
   } else {
     history = db.prepare(`
       SELECT a.name, m.content, m.image_url, m.file_url, m.file_name, m.attachments, m.created_at, rp.actor_id FROM messages m
       JOIN room_participants rp ON rp.id=m.participant_id
       JOIN actors a ON a.id=rp.actor_id
-      WHERE m.room_id=? AND m.state='complete' ORDER BY m.id DESC LIMIT ${historyLimit}
+      WHERE m.room_id=? AND m.state='complete' ORDER BY m.feed_pos DESC, m.id DESC LIMIT ${historyLimit}
     `).all(roomId);
   }
   const rawHistory = history.slice().reverse().map(r => ({
@@ -8119,12 +8112,21 @@ function markRoomThreads(roomId) {
   roomThreadsDirty.add(roomId);
 }
 
+// A run that just ended may have moved past its own progress messages (messages_feed_pos_settle
+// trigger), so its end event carries the row's feed_pos for the client to re-slot the bubble.
+// Added here rather than at each finishing site, like the room_threads recount above.
+const feedPosOf = db.prepare('SELECT feed_pos FROM messages WHERE id=?');
+const RUN_END_STATES = new Set(['complete', 'error']);
 function broadcast(roomId, data) {
   // Every new or finished message passes through here: wake the embedding backfill.
   if (data.type === 'message_new' || data.type === 'message_complete') semanticIndex.kick();
   if (ROOM_THREADS_TRIGGERS.has(data.type)) markRoomThreads(Number(roomId));
   const clients = roomClients.get(roomId);
   if (!clients) return;
+  if (data.feed_pos === undefined && data.message_id
+    && (data.type === 'message_complete' || (data.type === 'message_state' && RUN_END_STATES.has(data.state)))) {
+    data = { ...data, feed_pos: feedPosOf.get(data.message_id)?.feed_pos ?? null };
+  }
   const msg = JSON.stringify(data);
   for (const ws of clients) {
     if (ws.readyState === ws.OPEN) ws.send(msg);

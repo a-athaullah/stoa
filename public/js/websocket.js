@@ -226,6 +226,7 @@ function handleWsMessage(msg) {
           const isEmpty = bubble.textContent.trim() === '';
           if (isThinking || isEmpty) el.remove();
         }
+        if (el.isConnected) placeRowByFeedPos(el, msg.feed_pos);
       }
       clearComposerProcessing(msg.message_id);
       if (typeof clearThreadProcessing === 'function') clearThreadProcessing(msg.message_id);
@@ -254,6 +255,7 @@ function handleWsMessage(msg) {
   if (msg.type === 'message_complete') {
     setQueuePosition(msg.message_id, null);
     finalizeMessage(msg.message_id, msg.content, msg.file_url, msg.file_name, msg.attachments, msg.ai_model, msg.result_meta, msg.model_source);
+    if (placeRowByFeedPos(document.getElementById('msg-' + msg.message_id), msg.feed_pos) && !msg.thread_id) scrollToBottom();
     clearComposerProcessing(msg.message_id);
     if (typeof clearThreadProcessing === 'function') clearThreadProcessing(msg.message_id);
     if (msg.thread_id && typeof _scrollThreadToBottom === 'function') _scrollThreadToBottom(true);
