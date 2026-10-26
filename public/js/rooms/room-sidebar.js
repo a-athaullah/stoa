@@ -5,6 +5,7 @@
 let _rsbActiveBtn = null;
 let _rsbPopover = null;
 let _rsbOutsideListener = null;
+let _rsbReloadAgents = null;
 
 let _rsbTooltipEl = null;
 
@@ -224,17 +225,21 @@ function renderRoomSidebar(room, participants) {
       return l;
     }
 
+    let loadSeq = 0;
     async function load() {
+      const seq = ++loadSeq;
       try {
         const [parts, subAgents, allActors] = await Promise.all([
           fjson(`/api/rooms/${room.id}/participants`),
           fjson(`/api/rooms/${room.id}/sub-agents`),
           fjson(`/api/actors`),
         ]);
+        if (seq !== loadSeq) return;
         body.innerHTML = '';
         renderParticipants(parts, allActors);
         renderSubAgents(subAgents);
       } catch (err) {
+        if (seq !== loadSeq) return;
         body.innerHTML = `<div style="font-size:12.5px;color:var(--h-red)">failed to load</div>`;
       }
     }
@@ -455,6 +460,7 @@ function renderRoomSidebar(room, participants) {
       }
     }
 
+    _rsbReloadAgents = load;
     load();
   }
 
@@ -859,7 +865,13 @@ function renderRoomSidebar(room, participants) {
   }
 }
 
+// An agent removed elsewhere (another tab, the Agents page) must leave the open Agents popover too.
+function reloadRsbAgentsPanel() {
+  if (_rsbReloadAgents) _rsbReloadAgents();
+}
+
 function closeRsbPopover() {
+  _rsbReloadAgents = null;
   if (_rsbOutsideListener) { document.removeEventListener('click', _rsbOutsideListener); _rsbOutsideListener = null; }
   if (_rsbPopover) { _rsbPopover.remove(); _rsbPopover = null; }
   if (_rsbActiveBtn) { _rsbActiveBtn.classList.remove('active'); _rsbActiveBtn = null; }

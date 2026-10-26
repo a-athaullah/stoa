@@ -179,6 +179,7 @@ function handleActorRemoved(actorId, affectedRooms) {
       renderChatHeader(room, roomParticipantsCache[currentRoomId] || []);
     }
   }
+  if (typeof reloadRsbAgentsPanel === 'function') reloadRsbAgentsPanel();
   refreshRoomList();
 }
 

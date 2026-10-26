@@ -13067,6 +13067,85 @@ async function run() {
     assert.strictEqual(route({}), JSON.stringify({ toast: 'failed to save' }));
   });
 
+  await test('room agents popover — an actor removed elsewhere leaves the open popover (participants + add list), stale loads never win', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El {
+      constructor(tag) { this.tagName = tag.toUpperCase(); this.style = {}; this.dataset = {}; this.children = []; this.parentNode = null; this._text = ''; this.attrs = {};
+        const cls = new Set(); this.classList = { add: (...c) => c.forEach(x => cls.add(x)), remove: (...c) => c.forEach(x => cls.delete(x)), toggle: (c, on) => (on ?? !cls.has(c)) ? cls.add(c) : cls.delete(c), contains: c => cls.has(c) }; }
+      set className(v) { String(v).split(/\s+/).filter(Boolean).forEach(c => this.classList.add(c)); }
+      get className() { return ''; }
+      appendChild(c) { if (c.parentNode) c.remove(); c.parentNode = this; this.children.push(c); return c; }
+      append(...cs) { for (const c of cs) this.appendChild(typeof c === 'string' ? Object.assign(new El('#text'), { textContent: c }) : c); }
+      prepend(...cs) { this.append(...cs); }
+      remove() { const p = this.parentNode; if (p) { p.children = p.children.filter(x => x !== this); this.parentNode = null; } }
+      replaceWith(n) { const p = this.parentNode; if (!p) return; const i = p.children.indexOf(this); p.children[i] = n; n.parentNode = p; this.parentNode = null; }
+      set innerHTML(v) { this.children.forEach(c => { c.parentNode = null; }); this.children = []; this._text = String(v).replace(/<[^>]*>/g, ''); }
+      get innerHTML() { return ''; }
+      set textContent(v) { this.children = []; this._text = String(v); }
+      get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+      setAttribute(k, v) { this.attrs[k] = v; } getAttribute(k) { return this.attrs[k]; }
+      addEventListener() {} removeEventListener() {} focus() {} click() {}
+      getBoundingClientRect() { return { top: 0, left: 0, bottom: 0, right: 0, width: 0, height: 0 }; }
+      querySelector() { return null; } querySelectorAll() { return []; }
+      contains(n) { for (let x = n; x; x = x.parentNode) if (x === this) return true; return false; }
+      get isConnected() { return this.contains ? doc.body.contains(this) : false; }
+      get options() { return this.children.filter(c => c.tagName === 'OPTION'); }
+    }
+    const doc = { body: new El('body'), createElement: t => new El(t), createTextNode: t => Object.assign(new El('#text'), { textContent: t }), getElementById: id => (id === 'room-sidebar' ? sidebar : null),
+      querySelector: () => null, querySelectorAll: () => [], addEventListener() {}, removeEventListener() {}, contains: n => doc.body.contains(n) };
+    const sidebar = doc.body.appendChild(new El('div'));
+    const server = { actors: [{ id: 2, name: 'Atlas', type: 'ai' }, { id: 7, name: 'Quill', type: 'ai' }, { id: 8, name: 'Wren', type: 'ai' }], parts: [{ actor_id: 7, actor_name: 'Quill', name: 'Quill', type: 'ai' }] };
+    const gate = { hold: null };
+    const fjsonCalls = [];
+    const fjson = async url => {
+      fjsonCalls.push(url);
+      const snap = JSON.parse(JSON.stringify(server));
+      const fail = gate.fail;
+      if (gate.hold) await gate.hold;
+      if (fail) throw new Error('network');
+      if (url.endsWith('/participants')) return snap.parts;
+      if (url.endsWith('/sub-agents')) return [];
+      if (url === '/api/actors') return snap.actors;
+      return [];
+    };
+    const ctx = { document: doc, window: { innerWidth: 1280, innerHeight: 800 }, localStorage: { getItem: () => null, removeItem() {} }, fjson,
+      requestAnimationFrame: f => f(), setTimeout: f => f(), getAvailableModels: () => [], showToast() {}, console,
+      humanActor: null, allActors: [], actorByName: {}, settingsActors: [], sRowStates: new Map(), currentRoomId: 1, roomParticipantsCache: {},
+      syncNewRoomBtn() {}, refreshRoomList() {}, renderChatHeader() {} };
+    vm.createContext(ctx);
+    for (const f of ['public/js/rooms/room-sidebar.js', 'public/js/settings/init.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+    ctx.refreshRoomList = () => {};
+    const flush = () => new Promise(r => setImmediate(r));
+    ctx.renderRoomSidebar({ id: 1, title: 'Checkout' }, []);
+    const agentsBtn = sidebar.children.find(b => b.dataset.tooltip === 'Agents');
+    agentsBtn.onclick(); await flush(); await flush();
+    const pop = () => doc.body.children.find(c => c.classList.contains('h-rsb-popover'));
+    assert.ok(pop().textContent.includes('Quill'), 'Quill is listed while it exists');
+    server.actors = server.actors.filter(a => a.id !== 7); server.parts = [];
+    ctx.handleActorRemoved(7, [1]); await flush();
+    assert.ok(!pop().textContent.includes('Quill'), 'the open popover drops the removed agent without a reopen');
+    assert.ok(pop().textContent.includes('Wren'), 'the rest of the add list is still there');
+    // a slow load that started before the removal must not overwrite the fresh one
+    server.actors.push({ id: 9, name: 'Stale', type: 'ai' });
+    let release; gate.hold = new Promise(r => { release = r; });
+    ctx.reloadRsbAgentsPanel();
+    gate.hold = null; server.actors = server.actors.filter(a => a.id !== 9);
+    ctx.reloadRsbAgentsPanel(); await flush();
+    release(); await flush(); await flush();
+    assert.ok(!pop().textContent.includes('Stale'), 'an older load resolving last is dropped');
+    gate.hold = new Promise(r => { release = r; }); gate.fail = true;
+    ctx.reloadRsbAgentsPanel();
+    gate.hold = null; gate.fail = false;
+    ctx.reloadRsbAgentsPanel(); await flush();
+    release(); await flush(); await flush();
+    assert.ok(!pop().textContent.includes('failed to load') && pop().textContent.includes('Wren'), 'an older load failing last keeps the fresh list');
+    ctx.closeRsbPopover();
+    const n = fjsonCalls.length;
+    ctx.handleActorRemoved(8, [1]); await flush();
+    assert.strictEqual(fjsonCalls.length, n, 'a closed popover is not reloaded');
+  });
+
   await test('schedules panel — every form spec passes server validation unchanged, summaries and next run read naturally', () => {
     const vm = require('vm');
     const fs = require('fs');
