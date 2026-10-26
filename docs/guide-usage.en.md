@@ -1039,9 +1039,12 @@ When **requires approval** is enabled for a tool, the gateway holds the call and
 
 - Click **approve** to let the call proceed.
 - Click **deny** to reject it.
+- Click **always allow** to approve this call and exempt this agent or sub-agent from future approval requests for this specific tool. The exemption is scoped exactly: a sub-agent exemption does not cover the parent agent, and vice versa. Any other pending requests from the same agent for the same tool are approved at the same time.
 - If no decision is made within **5 minutes** (default, configurable via `MCP_APPROVAL_TIMEOUT_MS`, max 10 min), the call is automatically denied and the agent receives an error.
 
 An agent can have up to 20 approval requests pending at the same time. Approval cards are deduplicated — the same pending request appears at most once in the room feed and once in the thread.
+
+**Managing exemptions:** On the MCP page, open the **Installed** tab and expand a tool. Any exempted agents are listed under **always allowed for**. Click **×** next to a name, then confirm to revoke — after that, the agent will be prompted again. If the tool's **requires approval** switch is off, the list is shown dimmed (inactive). Exemptions are removed automatically when the agent or sub-agent is deleted. Calls that pass through an exemption are still recorded in the activity log.
 
 ### Tool Labels in Chat
 
