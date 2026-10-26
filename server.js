@@ -3785,8 +3785,9 @@ const server = http.createServer(async (req, res) => {
     return json(res, result);
   }
 
-  if (req.method === 'PATCH' && url.pathname.startsWith('/api/actors/')) {
-    const id = parseInt(url.pathname.split('/')[3]);
+  const actorPatchMatch = req.method === 'PATCH' && url.pathname.match(/^\/api\/actors\/(\d+)$/);
+  if (actorPatchMatch) {
+    const id = parseInt(actorPatchMatch[1]);
     const body = parseJsonBody(await readBody(req));
     if (!body) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
     const { name, avatar_url, lang, adapter, default_model } = body;
@@ -3905,21 +3906,35 @@ const server = http.createServer(async (req, res) => {
     return json(res, result);
   }
 
-  if (req.method === 'DELETE' && url.pathname.startsWith('/api/actors/')) {
-    const id = parseInt(url.pathname.split('/')[3]);
+  const actorDeleteMatch = req.method === 'DELETE' && url.pathname.match(/^\/api\/actors\/(\d+)$/);
+  if (actorDeleteMatch) {
+    const id = parseInt(actorDeleteMatch[1]);
     const actor = db.prepare('SELECT avatar_url FROM actors WHERE id=?').get(id);
-    deleteAvatarFile(actor?.avatar_url);
+    if (!actor) return json(res, { error: 'actor not found' }, 404);
     const actorParts = db.prepare('SELECT id, room_id FROM room_participants WHERE actor_id=?').all(id);
     const affectedRooms = actorParts.map(r => r.room_id);
-    const actorParticipantIds = actorParts.map(r => r.id);
-    if (actorParticipantIds.length) {
-      const ph = actorParticipantIds.map(() => '?').join(',');
-      db.prepare(`DELETE FROM ai_sessions WHERE participant_id IN (${ph})`).run(...actorParticipantIds);
+    // All or nothing: a row still referencing the actor (messages, usage_log) aborts the whole delete, so the
+    // avatar file, the agent socket and the MCP waiters are touched only after the commit.
+    const deleteActor = db.transaction(() => {
+      if (actorParts.length) {
+        const ph = actorParts.map(() => '?').join(',');
+        db.prepare(`DELETE FROM ai_sessions WHERE participant_id IN (${ph})`).run(...actorParts.map(r => r.id));
+      }
+      db.prepare('DELETE FROM invite_suggestions WHERE suggested_actor_id=?').run(id);
+      db.prepare('DELETE FROM room_participants WHERE actor_id=?').run(id);
+      const release = mcpGateway.dropActor(id);
+      db.prepare('DELETE FROM actors WHERE id=?').run(id);
+      return release;
+    });
+    let releaseMcp;
+    try {
+      releaseMcp = deleteActor();
+    } catch (e) {
+      if (e.code !== 'SQLITE_CONSTRAINT_FOREIGNKEY') throw e;
+      return json(res, { error: 'agent has chat history or usage records and cannot be deleted' }, 409);
     }
-    db.prepare('DELETE FROM invite_suggestions WHERE suggested_actor_id=?').run(id);
-    db.prepare('DELETE FROM room_participants WHERE actor_id=?').run(id);
-    mcpGateway.forgetActor(id);
-    db.prepare('DELETE FROM actors WHERE id=?').run(id);
+    releaseMcp();
+    deleteAvatarFile(actor.avatar_url);
     const ws = agentClients.get(id);
     if (ws) { ws.close(); agentClients.delete(id); }
     broadcastGlobal({ type: 'actor_removed', actor_id: id, affected_rooms: affectedRooms });

@@ -331,7 +331,7 @@ CREATE TABLE mcp_approvals (
 
 -- "Always allow": agent (sub_agent_id NULL) or one sub-agent skips approval for one tool. Exact match
 -- only (parent ≠ sub-agent). UNIQUE index on (server_id, tool, actor_id, COALESCE(sub_agent_id,0)).
--- FKs CASCADE (server, actor, sub-agent) + cleared in forgetActor/forgetSubAgent.
+-- FKs CASCADE (server, actor, sub-agent) + cleared in dropActor/forgetSubAgent.
 CREATE TABLE mcp_approval_exemptions (
   id INTEGER PRIMARY KEY,
   server_id INTEGER NOT NULL, tool TEXT NOT NULL,

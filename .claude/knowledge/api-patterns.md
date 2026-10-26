@@ -190,7 +190,7 @@ GET    /api/actors              → List all
 GET    /api/actors/:id          → Get one
 POST   /api/actors              → Create
 PATCH  /api/actors/:id          → Update
-DELETE /api/actors/:id          → Delete
+DELETE /api/actors/:id          → Delete (exact path only; unknown id → 404; one transaction — 409 and nothing changed while messages/usage_log still reference the actor)
 ```
 
 ### Message Routes
