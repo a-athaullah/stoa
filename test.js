@@ -6188,6 +6188,82 @@ async function run() {
       await done;
     });
 
+    // Agent disconnect: every run the cleanup ends must reach the client as an error with the interrupted
+    // text — including runs the server holds no pending promise for (revived after a server restart).
+    const lrParticipant = () => db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(lrRoomId, lr.actorId).id;
+    const inFlightRow = () => Number(db.prepare("INSERT INTO messages (room_id, participant_id, content, state, reply_to, thread_id) VALUES (?,?,'','streaming',?,?)")
+      .run(lrRoomId, lrParticipant(), humanMsgId, run.thread_id).lastInsertRowid);
+    const stateEvents = (ids, state, ms = 3000) => {
+      const seen = new Map();
+      return new Promise((resolve) => {
+        const onMsg = (raw) => {
+          let m; try { m = JSON.parse(raw); } catch { return; }
+          if (m.type === 'message_state' && m.state === state && ids.includes(m.message_id)) seen.set(m.message_id, [...(seen.get(m.message_id) || []), m]);
+        };
+        humanWs.on('message', onMsg);
+        setTimeout(() => { humanWs.off('message', onMsg); resolve(seen); }, ms);
+      });
+    };
+    const connectAgent = async (activeIds) => {
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`);
+      const ready = waitForWsMessage(ws, m => m.type === 'agent_ready', 5000);
+      ws.send(JSON.stringify({ type: 'agent_connect', actor_id: lr.actorId, secret: lr.secret, active_message_ids: activeIds }));
+      await ready;
+      return ws;
+    };
+    let pendingRun = null, revivedId = null;
+
+    await test('agent disconnect — every interrupted run is broadcast once as error with its text + identity (pending and revived runs)', async () => {
+      if (!run) { console.log('    (skipped)'); return; }
+      const t = nextTrigger();
+      humanWs.send(JSON.stringify({ type: 'send_message', room_id: lrRoomId, content: `@${LR_NAME} long job`, thread_id: run.thread_id }));
+      pendingRun = await t;
+      revivedId = inFlightRow();
+      const events = stateEvents([pendingRun.message_id, revivedId], 'error');
+      const closed = new Promise(r => lr.ws.once('close', r));
+      lr.ws.close(); await closed;
+      const seen = await events;
+      for (const id of [pendingRun.message_id, revivedId]) {
+        const evs = seen.get(id) || [];
+        assert.strictEqual(evs.length, 1, `run ${id}: exactly one error event (got ${evs.length})`);
+        const e = evs[0];
+        assert.strictEqual(e.content, '(interrupted — agent disconnected)');
+        assert.strictEqual(JSON.parse(e.result_meta).exit_reason, 'interrupted');
+        assert.strictEqual(e.actor_name, LR_NAME, 'identity so the client can draw the bubble');
+        assert.strictEqual(e.thread_id, run.thread_id);
+        assert.deepStrictEqual(db.prepare('SELECT state, content, feed_pos FROM messages WHERE id=?').get(id), { state: 'error', content: e.content, feed_pos: e.feed_pos }, 'event matches the row');
+      }
+    });
+
+    await test('agent reconnect — a run it still holds comes back as streaming with its identity + quote; completing it restores the reply', async () => {
+      if (!pendingRun) { console.log('    (skipped)'); return; }
+      const events = stateEvents([pendingRun.message_id], 'streaming', 1500);
+      lr.ws = await connectAgent([pendingRun.message_id]);
+      const e = (await events).get(pendingRun.message_id)?.[0];
+      assert.ok(e, 'revive is broadcast');
+      assert.strictEqual(e.actor_name, LR_NAME, 'enough identity to redraw a removed bubble');
+      assert.strictEqual(e.thread_id, run.thread_id);
+      assert.ok(e.reply_msg?.id, 'revived bubble keeps its quote');
+      const done = waitForWsMessage(humanWs, m => m.type === 'message_complete' && m.message_id === pendingRun.message_id, 5000);
+      lr.ws.send(JSON.stringify({ type: 'agent_complete', room_id: lrRoomId, message_id: pendingRun.message_id, content: 'resumed result' }));
+      assert.strictEqual((await done).content, 'resumed result');
+      assert.strictEqual(db.prepare('SELECT state FROM messages WHERE id=?').get(pendingRun.message_id).state, 'complete');
+    });
+
+    await test('agent reconnect — runs it no longer holds are broadcast as interrupted (a superseded socket does no cleanup)', async () => {
+      if (!pendingRun) { console.log('    (skipped)'); return; }
+      const lost = inFlightRow();
+      const events = stateEvents([lost], 'error', 1500);
+      const old = lr.ws;
+      const oldClosed = new Promise(r => old.once('close', r));
+      lr.ws = await connectAgent([]);
+      await oldClosed;
+      const evs = (await events).get(lost) || [];
+      assert.strictEqual(evs.length, 1, 'exactly one error event');
+      assert.strictEqual(evs[0].content, '(interrupted — agent reconnected)');
+      assert.strictEqual(evs[0].actor_name, LR_NAME);
+    });
+
     await test('Cleanup — live run event test data', async () => {
       if (humanWs) { humanWs.close(); humanWs = null; }
       if (lr?.ws) lr.ws.close();

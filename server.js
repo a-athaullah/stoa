@@ -561,6 +561,11 @@ function enqueueParentWake(roomId, parentParticipantId, subAgentMessageId, threa
 // cleanup below, so an agent that dies instead of completing still wakes the parent.
 const AWAITING_AGENT_RESULT_META = JSON.stringify({ exit_reason: 'timeout', awaiting_agent: true });
 const { enqueueOrphanWakes, cleanupStartupOrphans } = createOrphanRuns({ db, postWakeSystemEvent });
+// A disconnect/reconnect cleanup ended these runs: every client must see the interrupted text in
+// place of "thinking". The run's identity rides along so a client can draw the bubble it never had.
+function broadcastInterrupted(rows) {
+  for (const r of rows) broadcast(r.room_id, roomMessages.runState(r.id, 'error', { content: r.content, result_meta: INTERRUPTED_RESULT_META }));
+}
 
 function postWakeSystemEvent(roomId, participantId, threadId, content) {
   const sys = db.prepare(
@@ -5616,7 +5621,7 @@ wss.on('connection', (ws, req) => {
       ).all(stillActive, agentActorId);
       for (const r of revived) {
         db.prepare('DELETE FROM pending_wakes WHERE sub_agent_message_id=?').run(r.id);
-        broadcast(r.room_id, { type: 'message_state', message_id: r.id, state: 'streaming' });
+        broadcast(r.room_id, roomMessages.runState(r.id, 'streaming'));
       }
       if (revived.length) console.log(`[agent] ${revived.length} run(s) still active on reconnect for Actor #${agentActorId} — un-orphaned`);
       const reconnectCleaned = db.prepare(
@@ -5624,6 +5629,7 @@ wss.on('connection', (ws, req) => {
       ).all(INTERRUPTED_RESULT_META, stillActive, agentActorId);
       if (reconnectCleaned.length) {
         console.log(`[agent] Cleaned ${reconnectCleaned.length} orphaned message(s) on reconnect for Actor #${agentActorId}`);
+        broadcastInterrupted(reconnectCleaned);
         for (const r of reconnectCleaned) {
           maybeBroadcastError({ threadId: r.thread_id, subAgentId: r.sub_agent_id, messageId: r.id, content: r.content, roomId: r.room_id });
         }
@@ -6822,18 +6828,20 @@ wss.on('connection', (ws, req) => {
       ).all(INTERRUPTED_RESULT_META, agentActorId);
       if (cleaned.length) {
         console.log(`[agent] Cleaned ${cleaned.length} orphaned message(s) from Actor #${agentActorId}`);
+        broadcastInterrupted(cleaned);
         for (const r of cleaned) {
           maybeBroadcastError({ threadId: r.thread_id, subAgentId: r.sub_agent_id, messageId: r.id, content: r.content, roomId: r.room_id });
         }
         enqueueOrphanWakes(cleaned);
       }
       // Reject all pending promises for this actor so caller sequences can continue/unblock
+      const interruptedIds = new Set(cleaned.map(r => r.id));
       for (const [mId, pending] of [...pendingAgents]) {
         const meta = pendingActorMeta.get(mId);
         if (meta?.actor_id === agentActorId) {
           pendingAgents.delete(mId);
           pendingActorMeta.delete(mId);
-          if (meta.room_id) broadcast(meta.room_id, { type: 'message_state', message_id: mId, state: 'error' });
+          if (meta.room_id && !interruptedIds.has(Number(mId))) broadcast(meta.room_id, { type: 'message_state', message_id: mId, state: 'error' });
           pending.reject(new Error('agent_disconnected'));
         }
       }
