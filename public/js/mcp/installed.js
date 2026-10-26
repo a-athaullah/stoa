@@ -211,9 +211,21 @@ async function mcpToggleTools(srv) {
   mcpRerenderCard(srv);
 }
 
+// On failure the last known list stays on screen under the error line: hiding live bypasses would be worse than showing stale ones.
 async function mcpLoadExemptions(serverId) {
   const r = await mcpApi('GET', `/api/mcp/approval-exemptions?${new URLSearchParams({ server_id: String(serverId) })}`);
-  mcpState.exemptions[serverId] = r.ok ? { list: Array.isArray(r.data?.exemptions) ? r.data.exemptions : [] } : { error: r.error, list: [] };
+  mcpState.exemptions[serverId] = r.ok
+    ? { list: Array.isArray(r.data?.exemptions) ? r.data.exemptions : [] }
+    : { error: r.error, list: mcpState.exemptions[serverId]?.list || [] };
+}
+
+// Re-entering the tab (or a WS reconnect) can follow agent / sub-agent deletes: re-read the lists that are on screen.
+async function mcpRefreshExemptions() {
+  const ids = mcpState.servers.filter(s => mcpState.expanded.has(s.id)).map(s => s.id);
+  if (!ids.length) return;
+  await Promise.all(ids.map(mcpLoadExemptions));
+  if (!mcpIsVisible() || mcpState.tab !== 'installed') return;
+  ids.forEach(id => { const srv = mcpServerById(id); if (srv) mcpRerenderCard(srv); });
 }
 
 // An "always allow" from an approval card: refresh the server's list if its tools are on screen.
@@ -298,7 +310,8 @@ function mcpMakeToolList(srv) {
     const setTool = field => async next => {
       const r = await mcpApi('PUT', `/api/mcp/servers/${srv.id}/tools/${encodeURIComponent(tool.name)}`, { [field]: next });
       if (!r.ok) { showToast(`Couldn’t update ${tool.name}: ${r.error}`, { error: true }); return false; }
-      ['enabled', 'requires_approval', 'rate_limit_per_min'].forEach(k => { if (r.data && k in r.data) tool[k] = r.data[k]; });
+      const saved = r.data?.tool;
+      ['enabled', 'requires_approval', 'rate_limit_per_min'].forEach(k => { if (saved && k in saved) tool[k] = saved[k]; });
       return true;
     };
     const on = mcpSwitch(tool.enabled !== false, `${tool.name} enabled`, setTool('enabled'));

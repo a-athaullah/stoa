@@ -211,7 +211,9 @@ async function sLoadMcpTab() {
     mcpState.loaded = ok;
   }
   mcpRender();
-  if (mcpState.loaded) mcpFlushOAuthReturn();
+  if (!mcpState.loaded) return;
+  mcpFlushOAuthReturn();
+  mcpRefreshExemptions();
 }
 
 // The OAuth callback lands on /?mcp_oauth=connected|error&server_id=N[&reason=…] (in the tab opened by connect).
@@ -299,7 +301,6 @@ function mcpInvalidate() {
   mcpState.access = null;
   mcpState.callsLoaded = false;
   mcpState.approvals = null;
-  mcpState.exemptions = {};
   if (mcpIsVisible()) sLoadMcpTab();
 }
 
