@@ -561,6 +561,16 @@ function enqueueParentWake(roomId, parentParticipantId, subAgentMessageId, threa
 // cleanup below, so an agent that dies instead of completing still wakes the parent.
 const AWAITING_AGENT_RESULT_META = JSON.stringify({ exit_reason: 'timeout', awaiting_agent: true });
 const { enqueueOrphanWakes, cleanupStartupOrphans } = createOrphanRuns({ db, postWakeSystemEvent });
+// Rows an agent_complete / agent_error may still finish: in flight, or errored by the server
+// while the agent kept running (interrupted / run timeout / agent updating). The agent replays
+// its result after a reconnect (stoa.js outbox), so a duplicate or a result for a row the agent
+// itself already ended must not apply twice. Same placeholder texts as the reconnect revive; a
+// sub-agent's timeout / agent-updating rows carry a server mark instead (awaiting_agent / interrupted).
+const RUN_FINISHABLE_SQL = `(${RUN_IN_FLIGHT_SQL} OR (state='error' AND (json_extract(result_meta, '$.exit_reason')='interrupted'
+  OR (sub_agent_id IS NULL AND result_meta IS NULL AND (content LIKE '(timeout — % did not respond in % minutes)' OR content LIKE '(agent updating — %)')))))`;
+const OWNED_BY_ACTOR_SQL = 'participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?)';
+// SQL only: this runs before runMigrations, so a fresh DB has no messages table yet.
+const FINISHABLE_RUN_SQL = `SELECT id, room_id FROM messages WHERE id=? AND ${OWNED_BY_ACTOR_SQL} AND ${RUN_FINISHABLE_SQL}`;
 // A disconnect/reconnect cleanup ended these runs: every client must see the interrupted text in
 // place of "thinking". The run's identity rides along so a client can draw the bubble it never had.
 function broadcastInterrupted(rows) {
@@ -6059,18 +6069,26 @@ wss.on('connection', (ws, req) => {
 
     // ── Agent finished responding
     if (msg.type === 'agent_complete' && agentActorId) {
+      const run = db.prepare(FINISHABLE_RUN_SQL).get(msg.message_id, agentActorId);
+      if (!run) {
+        console.warn(`[agent] agent_complete ignored: message_id=${msg.message_id} agent=${agentActorId} — not this agent's run, or already finished`);
+        return;
+      }
+      const roomId = run.room_id;
       if (!msg.content?.trim()) {
         const errMeta = pendingActorMeta.get(msg.message_id) || {};
-        console.warn(`[agent] empty agent_complete: message_id=${msg.message_id} room=${msg.room_id} thread=${errMeta.thread_id ?? 'none'} agent=${agentActorId}`);
+        console.warn(`[agent] empty agent_complete: message_id=${msg.message_id} room=${roomId} thread=${errMeta.thread_id ?? 'none'} agent=${agentActorId}`);
         // A visible placeholder instead of an empty error bubble with no trace of what happened.
         const placeholder = '(agent returned an empty reply)';
-        const errTiming = finalizeRunTiming(msg.message_id, { room_id: msg.room_id, thread_id: errMeta.thread_id, actor_id: agentActorId, state: 'error' });
+        const errTiming = finalizeRunTiming(msg.message_id, { room_id: roomId, thread_id: errMeta.thread_id, actor_id: agentActorId, state: 'error' });
         const errResultMeta = withTiming(JSON.stringify({ exit_reason: 'error' }), errTiming);
-        db.prepare(`UPDATE messages SET content=?, state='error', result_meta=?, completed_at=datetime('now') WHERE id=?`).run(placeholder, errResultMeta, msg.message_id);
-        const errPayload = { type: 'message_complete', message_id: msg.message_id, content: placeholder, state: 'error', result_meta: errResultMeta, thread_id: errMeta.thread_id ?? null };
-        if (errMeta.thread_id) errPayload.thread_summary = buildThreadSummary(msg.room_id, errMeta.thread_id);
-        broadcast(msg.room_id, errPayload);
-        maybeBroadcastError({ threadId: errMeta.thread_id, subAgentId: errMeta.sub_agent_label, messageId: msg.message_id, reason: 'error', roomId: msg.room_id });
+        const errDone = db.prepare(`UPDATE messages SET content=?, state='error', result_meta=?, completed_at=datetime('now')
+          WHERE id=? AND ${OWNED_BY_ACTOR_SQL} AND ${RUN_FINISHABLE_SQL} RETURNING thread_id, sub_agent_id`).get(placeholder, errResultMeta, msg.message_id, agentActorId);
+        if (!errDone) return;
+        const errPayload = { type: 'message_complete', message_id: msg.message_id, content: placeholder, state: 'error', result_meta: errResultMeta, thread_id: errDone.thread_id ?? null };
+        if (errDone.thread_id) errPayload.thread_summary = buildThreadSummary(roomId, errDone.thread_id);
+        broadcast(roomId, errPayload);
+        maybeBroadcastError({ threadId: errDone.thread_id, subAgentId: errDone.sub_agent_id, messageId: msg.message_id, reason: 'error', roomId });
         wakeParentOnSubAgentError(msg.message_id, agentActorId);
         pendingAgents.get(msg.message_id)?.resolve('');
         pendingAgents.delete(msg.message_id);
@@ -6080,7 +6098,7 @@ wss.on('connection', (ws, req) => {
       const attachJson = msg.attachments?.length ? JSON.stringify(msg.attachments) : null;
       const rawContent = (msg.content || '').replace(/Please run \/login\b/g, 'Please run /reauth');
       if (/\[wa:reply[\s\S]*?\[\/wa:reply\]/.test(rawContent)) {
-        extractAndSendWaReplies(rawContent, msg.room_id).catch(e =>
+        extractAndSendWaReplies(rawContent, roomId).catch(e =>
           console.error('[wa:reply] extraction error:', e.message));
       }
       const agentContent = stripWaReplyMarkers(rawContent) || rawContent;
@@ -6092,30 +6110,32 @@ wss.on('connection', (ws, req) => {
       const finalState = FAILURE_EXIT_REASONS.has(parsedMeta?.exit_reason) ? 'error' : 'complete';
       // timing is server-authored (sanitizeResultMeta drops any agent-supplied copy).
       const resultMetaJson = withTiming(agentResultMeta, finalizeRunTiming(msg.message_id, {
-        room_id: msg.room_id, thread_id: pendingActorMeta.get(msg.message_id)?.thread_id, actor_id: agentActorId, state: finalState,
+        room_id: roomId, thread_id: pendingActorMeta.get(msg.message_id)?.thread_id, actor_id: agentActorId, state: finalState,
       }));
-      db.prepare(
-        'UPDATE messages SET content=?, file_url=?, file_name=?, attachments=?, ai_model=?, result_meta=?, state=?, completed_at=datetime(\'now\') WHERE id=?'
-      ).run(agentContent, msg.file_url || null, msg.file_name || null, attachJson, msg.ai_model || null, resultMetaJson, finalState, msg.message_id);
-      const doneRow = db.prepare('SELECT participant_id, sub_agent_id, parent_message_id, thread_id, model_source, wake_parent, reply_to FROM messages WHERE id=?').get(msg.message_id);
-      const completePayload = { type: 'message_complete', message_id: msg.message_id, content: agentContent, ai_model: msg.ai_model || null, model_source: doneRow?.model_source || null, state: finalState, thread_id: doneRow?.thread_id ?? null };
+      const doneRow = db.prepare(
+        `UPDATE messages SET content=?, file_url=?, file_name=?, attachments=?, ai_model=?, result_meta=?, state=?, completed_at=datetime('now')
+         WHERE id=? AND ${OWNED_BY_ACTOR_SQL} AND ${RUN_FINISHABLE_SQL}
+         RETURNING participant_id, sub_agent_id, parent_message_id, thread_id, model_source, wake_parent, reply_to`
+      ).get(agentContent, msg.file_url || null, msg.file_name || null, attachJson, msg.ai_model || null, resultMetaJson, finalState, msg.message_id, agentActorId);
+      if (!doneRow) return;
+      const completePayload = { type: 'message_complete', message_id: msg.message_id, content: agentContent, ai_model: msg.ai_model || null, model_source: doneRow.model_source || null, state: finalState, thread_id: doneRow.thread_id ?? null };
       if (resultMetaJson) completePayload.result_meta = resultMetaJson;
       if (msg.attachments?.length) { completePayload.attachments = msg.attachments; }
       else if (msg.file_url) { completePayload.file_url = msg.file_url; completePayload.file_name = msg.file_name; }
-      if (doneRow?.reply_to) Object.assign(completePayload, { reply_to: doneRow.reply_to, reply_msg: roomMessages.enrichReply([doneRow])[0].reply_msg ?? null });
-      if (doneRow?.thread_id) completePayload.thread_summary = buildThreadSummary(msg.room_id, doneRow.thread_id);
-      broadcast(msg.room_id, completePayload);
-      broadcastGlobal({ type: 'room_activity', room_id: msg.room_id });
+      if (doneRow.reply_to) Object.assign(completePayload, { reply_to: doneRow.reply_to, reply_msg: roomMessages.enrichReply([doneRow])[0].reply_msg ?? null });
+      if (doneRow.thread_id) completePayload.thread_summary = buildThreadSummary(roomId, doneRow.thread_id);
+      broadcast(roomId, completePayload);
+      broadcastGlobal({ type: 'room_activity', room_id: roomId });
       if (finalState === 'error') {
-        maybeBroadcastError({ threadId: doneRow?.thread_id, subAgentId: doneRow?.sub_agent_id, messageId: msg.message_id, content: agentContent, roomId: msg.room_id });
+        maybeBroadcastError({ threadId: doneRow.thread_id, subAgentId: doneRow.sub_agent_id, messageId: msg.message_id, content: agentContent, roomId });
       } else {
-        clearErrorBroadcast(msg.message_id, msg.room_id);
+        clearErrorBroadcast(msg.message_id, roomId);
       }
       if (msg.claude_session_id) {
         try {
-          if (doneRow && doneRow.sub_agent_id) {
+          if (doneRow.sub_agent_id) {
             saveSubAgentThreadSession(doneRow.participant_id, doneRow.sub_agent_id, msg.claude_session_id, resolveParticipantWorkdir(doneRow.participant_id), doneRow.thread_id);
-          } else if (doneRow) {
+          } else {
             saveThreadSession(doneRow.participant_id, msg.claude_session_id, resolveParticipantWorkdir(doneRow.participant_id), doneRow.thread_id);
           }
         } catch (e) { console.error('[agent] saveSession error:', e.message); }
@@ -6123,9 +6143,9 @@ wss.on('connection', (ws, req) => {
       try {
         // A run un-orphaned on reconnect may still hold an undrained interrupted wake
         // (e.g. an older client that does not report active runs): the real result replaces it.
-        if (doneRow?.sub_agent_id) db.prepare('DELETE FROM pending_wakes WHERE sub_agent_message_id=?').run(msg.message_id);
-        if (doneRow && doneRow.sub_agent_id && (doneRow.wake_parent || finalState === 'error')) {
-          enqueueParentWake(msg.room_id, doneRow.participant_id, msg.message_id, doneRow.thread_id ?? null);
+        if (doneRow.sub_agent_id) db.prepare('DELETE FROM pending_wakes WHERE sub_agent_message_id=?').run(msg.message_id);
+        if (doneRow.sub_agent_id && (doneRow.wake_parent || finalState === 'error')) {
+          enqueueParentWake(roomId, doneRow.participant_id, msg.message_id, doneRow.thread_id ?? null);
         }
       } catch (e) { console.error('[wake] enqueue error:', e.message); }
       pendingAgents.get(msg.message_id)?.resolve(msg.content);
@@ -6284,25 +6304,31 @@ wss.on('connection', (ws, req) => {
 
     // ── Agent error
     if (msg.type === 'agent_error' && agentActorId) {
-      finalizeRunTiming(msg.message_id, { room_id: msg.room_id, thread_id: pendingActorMeta.get(msg.message_id)?.thread_id, actor_id: agentActorId, state: 'error' });
-      db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msg.message_id);
-      broadcast(msg.room_id, roomMessages.runError(msg.message_id));
+      const run = db.prepare(FINISHABLE_RUN_SQL).get(msg.message_id, agentActorId);
+      if (!run) {
+        console.warn(`[agent] agent_error ignored: message_id=${msg.message_id} agent=${agentActorId} — not this agent's run, or already finished`);
+        return;
+      }
+      finalizeRunTiming(msg.message_id, { room_id: run.room_id, thread_id: pendingActorMeta.get(msg.message_id)?.thread_id, actor_id: agentActorId, state: 'error' });
+      // The run is over: drop the server-written awaiting-agent / interrupted mark so a later
+      // disconnect cleanup cannot wake twice and the queued interrupted wake gives way to this one.
+      const errRow = db.prepare(`UPDATE messages SET state='error', result_meta=CASE
+          WHEN json_extract(result_meta, '$.awaiting_agent')=1 OR json_extract(result_meta, '$.exit_reason')='interrupted' THEN NULL ELSE result_meta END
+        WHERE id=? AND ${OWNED_BY_ACTOR_SQL} AND ${RUN_FINISHABLE_SQL}
+        RETURNING participant_id, sub_agent_id, thread_id, content`).get(msg.message_id, agentActorId);
+      if (!errRow) return;
+      broadcast(run.room_id, roomMessages.runError(msg.message_id));
       // R15: agent reported error cleanly — reset session to idle so it isn't
       // flagged as indeterminate on the next restart.
       try {
-        const errRow = db.prepare('SELECT participant_id, sub_agent_id, thread_id, content FROM messages WHERE id=?').get(msg.message_id);
-        if (errRow) {
-          if (errRow.sub_agent_id) {
-            db.prepare("UPDATE ai_sessions SET status='idle' WHERE participant_id=? AND sub_agent_id=? AND status='active'").run(errRow.participant_id, errRow.sub_agent_id);
-          } else {
-            db.prepare("UPDATE ai_sessions SET status='idle' WHERE participant_id=? AND sub_agent_id IS NULL AND status='active'").run(errRow.participant_id);
-            maybeBroadcastError({ threadId: errRow.thread_id, messageId: msg.message_id, content: errRow.content, roomId: msg.room_id });
-          }
+        if (errRow.sub_agent_id) {
+          db.prepare("UPDATE ai_sessions SET status='idle' WHERE participant_id=? AND sub_agent_id=? AND status='active'").run(errRow.participant_id, errRow.sub_agent_id);
+          db.prepare('DELETE FROM pending_wakes WHERE sub_agent_message_id=?').run(msg.message_id);
+        } else {
+          db.prepare("UPDATE ai_sessions SET status='idle' WHERE participant_id=? AND sub_agent_id IS NULL AND status='active'").run(errRow.participant_id);
+          maybeBroadcastError({ threadId: errRow.thread_id, messageId: msg.message_id, content: errRow.content, roomId: run.room_id });
         }
       } catch {}
-      // The run is over: drop the awaiting-agent mark so a later disconnect cleanup cannot wake twice.
-      db.prepare(`UPDATE messages SET result_meta=NULL WHERE id=? AND json_extract(result_meta, '$.awaiting_agent')=1
-        AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?)`).run(msg.message_id, agentActorId);
       wakeParentOnSubAgentError(msg.message_id, agentActorId);
       pendingAgents.get(msg.message_id)?.reject(new Error(msg.error));
       pendingAgents.delete(msg.message_id);
