@@ -492,9 +492,9 @@ CREATE INDEX IF NOT EXISTS idx_mcp_approvals_pending ON mcp_approvals(status) WH
 CREATE INDEX IF NOT EXISTS idx_mcp_approvals_created ON mcp_approvals(created_at);
 
 -- "Always allow": exempts one agent (sub_agent_id NULL) or one sub-agent from approval for one tool.
--- Exact match only; see migrations/20261026-mcp-approval-exemptions.sql.
+-- Exact match only; AUTOINCREMENT so a stale id never hits a newer row. See migrations/20261026-mcp-approval-exemptions.sql.
 CREATE TABLE IF NOT EXISTS mcp_approval_exemptions (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   server_id INTEGER NOT NULL REFERENCES mcp_servers(id) ON DELETE CASCADE,
   tool TEXT NOT NULL,
   actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,

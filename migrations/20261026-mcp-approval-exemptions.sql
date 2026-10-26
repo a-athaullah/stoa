@@ -2,8 +2,10 @@
 -- sub-agent from approval for one tool. Matching is exact: a sub-agent's exemption does not cover its
 -- parent agent, and the parent's does not cover its sub-agents. UNIQUE treats NULLs as distinct, so the
 -- unique index folds sub_agent_id NULL to 0 (sub_agents ids start at 1).
+-- AUTOINCREMENT: ids are never reused, so a stale id held by the UI (row since removed by a cascade)
+-- can only 404 on DELETE, never remove a newer exemption that took over the id.
 CREATE TABLE IF NOT EXISTS mcp_approval_exemptions (
-  id INTEGER PRIMARY KEY,
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   server_id INTEGER NOT NULL REFERENCES mcp_servers(id) ON DELETE CASCADE,
   tool TEXT NOT NULL,
   actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,

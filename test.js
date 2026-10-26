@@ -3616,6 +3616,26 @@ async function runAsyncUnitTests() {
     mem.close();
   });
 
+  // An existing DB can get the table from either file (boot runs schema.sqlite.sql before migrations).
+  await uta('MCP approval exemptions — schema and migration both never reuse a removed id', async () => {
+    const Database = require('better-sqlite3');
+    const fs = require('fs'), path = require('path');
+    const fromSchema = new Database(':memory:');
+    fromSchema.exec(fs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
+    const fromMigration = new Database(':memory:');
+    fromMigration.exec('CREATE TABLE mcp_calls (id INTEGER PRIMARY KEY)');
+    fromMigration.exec(fs.readFileSync(path.join(__dirname, 'migrations', '20261026-mcp-approval-exemptions.sql'), 'utf8'));
+    for (const [name, mem] of [['schema', fromSchema], ['migration', fromMigration]]) {
+      mem.pragma('foreign_keys = OFF');
+      const ins = mem.prepare('INSERT INTO mcp_approval_exemptions (server_id, tool, actor_id, sub_agent_id) VALUES (1, ?, 1, NULL)');
+      ins.run('a');
+      const idB = Number(ins.run('b').lastInsertRowid);
+      mem.prepare('DELETE FROM mcp_approval_exemptions WHERE id=?').run(idB);
+      assert.ok(Number(ins.run('c').lastInsertRowid) > idB, `${name}: id ${idB} reused`);
+      mem.close();
+    }
+  });
+
   await uta('MCP gateway — sessions: list_changed only to sessions whose tools changed; bound to token; closed on revoke, idle, per-token cap', async () => {
     const Database = require('better-sqlite3');
     const http = require('http');
@@ -16887,15 +16907,21 @@ async function run() {
       assert.strictEqual((await asAnon(() => req('GET', '/api/mcp/approval-exemptions', null, h))).status, 403, 'agent secret refused');
     });
 
-    await test('MCP always allow — deleting the sub-agent or the agent removes its exemptions', async () => {
+    await test('MCP always allow — deleting the sub-agent removes its exemptions; a removed id is never reused', async () => {
       const tmp = await req('POST', `/api/actors/${agB.actorId}/sub-agents`, { label: 'mcpsubtmp', tier: 'quick', workdir: '/tmp/stoa-test-mcp-subtmp' });
       assert.strictEqual(tmp.status, 201, JSON.stringify(tmp.body));
       const ins = mDb.prepare('INSERT INTO mcp_approval_exemptions (server_id, tool, actor_id, sub_agent_id) VALUES (?,?,?,?)');
-      ins.run(server.id, 'big', agB.actorId, tmp.body.id);
-      ins.run(server.id, 'big', agB.actorId, null);
+      const idA = Number(ins.run(server.id, 'big', agB.actorId, null).lastInsertRowid);
+      const idB = Number(ins.run(server.id, 'big', agB.actorId, tmp.body.id).lastInsertRowid);
+      assert.ok(idB > idA, 'B holds the highest id');
       assert.throws(() => ins.run(server.id, 'big', agB.actorId, null), /UNIQUE/, 'one agent-level row per key despite NULL sub_agent_id');
       assert.strictEqual((await req('DELETE', `/api/sub-agents/${tmp.body.id}`)).status < 300, true);
       assert.deepStrictEqual(exemptionRows().map(e => e.sub_agent_id), [null], 'sub-agent row gone, agent row kept');
+      // The UI may still show B's chip; its id must not now point at a newer exemption.
+      const idC = Number(ins.run(server.id, 'send_note', agB.actorId, null).lastInsertRowid);
+      assert.notStrictEqual(idC, idB, 'id of the removed row is not reused');
+      assert.strictEqual((await req('DELETE', `/api/mcp/approval-exemptions/${idB}`)).status, 404, 'stale id → 404');
+      assert.deepStrictEqual(exemptionRows().map(e => e.tool).sort(), ['big', 'send_note'], 'C (and A) untouched');
       mDb.prepare('DELETE FROM mcp_approval_exemptions WHERE server_id=?').run(server.id);
     });
 
