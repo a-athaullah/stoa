@@ -42,19 +42,19 @@ async function nav(page, { base }, id) {
 module.exports = [
   { name: 'hero', file: 'hero.png', docs: ['README.md'],
     run: async (page, ctx) => { await openRoom(page, ctx, 'checkout'); await scrollToFirst(page); } },
-  { name: 'thread', file: 'thread.png', docs: ['README.md', 'docs/guide-usage.*.md#messaging'],
+  { name: 'thread', file: 'thread.png', docs: ['README.md', 'docs/guide-usage.*.md#threads'],
     run: async (page, ctx) => { await openRoom(page, ctx, 'checkout', ctx.msgs.m2); await scrollToFirst(page); } },
   { name: 'dark', file: 'dark.png', theme: 'dark', docs: ['README.md'],
     run: async (page, ctx) => { await openRoom(page, ctx, 'checkout', ctx.msgs.m2); await scrollToFirst(page); } },
-  { name: 'agents-panel', file: 'agents-panel.png', docs: ['README.md', 'docs/guide-usage.*.md#sub-agents-and-orchestration'],
+  { name: 'agents-panel', file: 'agents-panel.png', docs: ['README.md', 'docs/guide-usage.*.md#agents-panel'],
     run: async (page, ctx) => { await openRoom(page, ctx, 'checkout'); await scrollToFirst(page); await rsb(page, 'Agents'); } },
-  { name: 'memory', file: 'memory.png', docs: ['README.md', 'docs/guide-usage.*.md#memory'],
+  { name: 'memory', file: 'memory.png', docs: ['README.md', 'docs/guide-usage.*.md#room-system-prompt--memory'],
     run: async (page, ctx) => {
       await openRoom(page, ctx, 'checkout'); await scrollToFirst(page); await rsb(page, 'Memory');
       await page.locator('.h-rsb-popover').getByText('Memory', { exact: true }).click();
       await parkMouse(page); await settle(page);
     } },
-  { name: 'settings-agents', file: 'settings-agents.png', docs: ['README.md', 'docs/guide-usage.*.md#agent-management'],
+  { name: 'settings-agents', file: 'settings-agents.png', docs: ['README.md', 'docs/guide-usage.*.md#agent-management'], // EN; other langs: #manajemen-agent #エージェント管理 #에이전트-관리 #代理管理
     run: async (page, ctx) => {
       await nav(page, ctx, 'agents');
       await page.getByText('Atlas', { exact: true }).first().click();

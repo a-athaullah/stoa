@@ -82,6 +82,23 @@ Busy mode bersifat **per thread**: setiap thread diperlakukan sebagai konteks in
 
 Setiap respons AI menampilkan indikator model kecil di pojok kanan bawah bubble (contoh: `qwen3-coder:480b:cloud`), sehingga mudah melacak model mana yang menghasilkan setiap balasan. Jika agent menggunakan model berbeda dari model yang dipilih di room — misalnya karena room belum memiliki model, atau harness-nya tidak mendukung model room — ikon **↪** muncul pada tag model. Arahkan kursor untuk melihat alasannya (contoh: `not using the room model — using agent default`). Respons sub-agent yang berjalan dengan tier tidak menampilkan ikon ini.
 
+### System Prompt & Memory Room
+
+![Popover System Prompt & Memory dengan dua tab untuk konteks tingkat room](screenshots/memory.png)
+
+Klik tombol **Memory** (ikon otak) di strip right sidebar untuk membuka popover **System Prompt & Memory**. Ada dua tab:
+
+- **System Prompt** — instruksi kustom yang disisipkan di awal setiap sesi agent dalam room ini (hingga 65.536 karakter). Gunakan untuk mendefinisikan peran agent, konteks proyek, atau aturan berlaku yang spesifik untuk room ini.
+- **Memory** — konteks persisten yang diinjeksi ke setiap sesi agent dalam room ini. Budget: 1.800 karakter. Cocok untuk catatan berjalan, keputusan, dan fakta yang harus selalu dibawa agent.
+
+Keduanya bisa diedit langsung — klik **Edit**, buat perubahan, lalu **save**. Siapa pun dengan akses room dapat mengedit keduanya.
+
+Agent juga bisa membaca dan menulis memory room secara programatik:
+- MCP tool: `stoa__room_memory_get` / `stoa__room_memory_set`
+- REST: `GET /api/rooms/:id/memory` dan `PUT /api/rooms/:id/memory`
+
+Sub-agent hanya dapat membaca room memory — hanya main agent yang bisa menulis.
+
 ### Menyematkan Room (Pin)
 
 Klik **ikon pin** (paku) pada baris room di sidebar untuk menyematkannya. Room yang disematkan muncul di bagian atas sidebar dalam section **Pinned** tersendiri, sehingga mudah diakses tanpa perlu scroll.
@@ -131,6 +148,8 @@ Di dalam **panel thread**, hover di atas pesan dan klik **panah reply** untuk me
 Agent memahami konteks reply — saat Anda mengutip pesan tertentu, kontennya disuntikkan ke prompt AI sehingga agent tahu persis apa yang sedang Anda rujuk.
 
 ### Thread
+
+![Panel thread terbuka di samping feed utama](screenshots/thread.png)
 
 Feed utama menggunakan **tampilan baris flat Slack-style** — setiap pesan root menampilkan avatar pengirim di kiri, nama dan timestamp di baris yang sama, serta konten pesan di bawahnya. Balasan AI tidak muncul di feed utama; mereka berada di dalam panel thread.
 
@@ -452,6 +471,8 @@ Untuk menonaktifkan semantic search, set `STOA_SEMANTIC_SEARCH=off` di file `.en
 
 ## Manajemen Agent
 
+![Panel pengaturan agent menampilkan daftar agent dan detail konfigurasi](screenshots/settings-agents.png)
+
 ### Menambah Agent Baru
 
 Buka **Settings > AI Agent** dan klik **+ new agent** di sidebar kiri. Panel detail beralih ke tampilan Add Agent, tempat Anda bisa mengonfigurasi:
@@ -726,6 +747,8 @@ Workspace bekerja dengan agent lokal maupun remote. Untuk agent remote, operasi 
 ---
 
 ## Panel Agents
+
+![Panel Agents menampilkan peserta room dan sub-agent yang ditautkan](screenshots/agents-panel.png)
 
 **Panel Agents** adalah popover di right sidebar untuk melihat dan mengelola peserta room serta sub-agents. Klik **ikon users** di right sidebar (antara tombol Workspace dan divider) untuk membukanya.
 
@@ -1214,6 +1237,8 @@ Buka **Settings > Themes** (nav kiri, di bawah General) untuk memilih tema tampi
 
 - **Terang** — Warm Paper (default), Hoth, Mood Indigo, Banana, Sweet Treat
 - **Gelap** — Dark, Aubergine, Ochin, Haberdashery, Choco Mint, Nocturne
+
+![Pemilih tema menampilkan semua opsi tema terang dan gelap](screenshots/themes.png)
 
 Klik kartu untuk langsung menerapkannya — centang menandai tema aktif. Kartu bisa diakses lewat keyboard. Pilihan disimpan di browser.
 
