@@ -1911,6 +1911,53 @@ function runUnitTests() {
     assert.ok(stoa.STALE_TRIGGER_MS >= MIN_STALE, `STALE_TRIGGER_MS (${stoa.STALE_TRIGGER_MS}) must be >= ${MIN_STALE}`);
   });
 
+  // lib/avatar-image — magic-byte type check, size caps, agent-side file read
+  {
+    const fs = require('fs'), os = require('os');
+    const { AVATAR_MAX_BYTES, sniffImage, checkAvatarImage, decodeAvatarDataUrl, readAvatarFile } = require('./lib/avatar-image');
+    const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+    const dataUrl = (buf, mime = 'image/png') => `data:${mime};base64,${buf.toString('base64')}`;
+    ut('avatar-image — type from magic bytes only (png / jpeg / gif / webp), anything else refused', () => {
+      assert.strictEqual(sniffImage(PNG).ext, 'png');
+      assert.strictEqual(sniffImage(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10])).ext, 'jpg');
+      assert.strictEqual(sniffImage(Buffer.from('GIF89a\x01\x00', 'latin1')).ext, 'gif');
+      assert.strictEqual(sniffImage(Buffer.from('RIFF\x10\x00\x00\x00WEBPVP8 ', 'latin1')).ext, 'webp');
+      for (const bad of ['<svg xmlns="http://www.w3.org/2000/svg"/>', '%PDF-1.7', 'RIFF\x10\x00\x00\x00WAVEfmt ', '\x89PNG']) {
+        assert.strictEqual(sniffImage(Buffer.from(bad, 'latin1')), null, bad);
+      }
+      // The header is the caller's claim: png bytes behind image/jpeg save as png, svg behind image/png is refused.
+      assert.strictEqual(decodeAvatarDataUrl(dataUrl(PNG, 'image/jpeg')).ext, 'png');
+      assert.deepStrictEqual(decodeAvatarDataUrl(dataUrl(Buffer.from('<svg/>'), 'image/png')), { status: 400, error: 'unsupported image type (png, jpeg, webp or gif only)' });
+      assert.strictEqual(decodeAvatarDataUrl(dataUrl(PNG, 'text/html')).status, 400);
+      assert.strictEqual(decodeAvatarDataUrl(undefined).status, 400);
+      assert.strictEqual(decodeAvatarDataUrl('data:image/png;base64,iVBOR!!!w0K').error, 'invalid base64 in data_url');
+      assert.strictEqual(checkAvatarImage(Buffer.alloc(0)).error, 'empty image');
+    });
+    ut('avatar-image — size cap: exactly max accepted, max+1 → 413 (data_url and raw bytes)', () => {
+      const atMax = Buffer.concat([PNG, Buffer.alloc(AVATAR_MAX_BYTES - PNG.length)]);
+      assert.strictEqual(decodeAvatarDataUrl(dataUrl(atMax)).buffer.length, AVATAR_MAX_BYTES);
+      const over = Buffer.concat([atMax, Buffer.alloc(1)]);
+      assert.strictEqual(decodeAvatarDataUrl(dataUrl(over)).status, 413);
+      assert.strictEqual(checkAvatarImage(over).status, 413);
+    });
+    ut('avatar-image — readAvatarFile: absolute path only, size checked before reading, non-image never returned', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-avatar-'));
+      try {
+        fs.writeFileSync(path.join(dir, 'a.png'), PNG);
+        assert.deepStrictEqual(readAvatarFile(path.join(dir, 'a.png')), { base64: PNG.toString('base64') });
+        assert.strictEqual(readAvatarFile('a.png').error, 'path must be absolute');
+        assert.strictEqual(readAvatarFile(path.join(dir, 'missing.png')).error, 'file not found');
+        assert.strictEqual(readAvatarFile(dir).error, 'not a regular file');
+        fs.writeFileSync(path.join(dir, 'secret.png'), 'AWS_SECRET_ACCESS_KEY=abc123');
+        const leak = readAvatarFile(path.join(dir, 'secret.png'));
+        assert.deepStrictEqual(leak, { status: 400, error: 'unsupported image type (png, jpeg, webp or gif only)' });
+        assert.ok(!JSON.stringify(leak).includes('abc123'), 'file content never in the answer');
+        fs.writeFileSync(path.join(dir, 'big.png'), Buffer.concat([PNG, Buffer.alloc(AVATAR_MAX_BYTES)]));
+        assert.strictEqual(readAvatarFile(path.join(dir, 'big.png')).status, 413);
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    });
+  }
+
   // lib/agent-scope — route allowlist matcher
   {
     const { matchAgentRoute, agentScopeEnforced } = require('./lib/agent-scope');
@@ -1918,6 +1965,7 @@ function runUnitTests() {
       assert.deepStrictEqual(matchAgentRoute('POST', '/api/rooms/12/message'), { scope: 'room', id: 12 });
       assert.deepStrictEqual(matchAgentRoute('PUT', '/api/actors/4/memory/MEMORY.md'), { scope: 'self', id: 4 });
       assert.deepStrictEqual(matchAgentRoute('PUT', '/api/sub-agents/9/memory'), { scope: 'sub-agent', id: 9 });
+      assert.deepStrictEqual(matchAgentRoute('POST', '/api/sub-agents/9/avatar'), { scope: 'sub-agent', id: 9 });
       assert.deepStrictEqual(matchAgentRoute('GET', '/api/automations/connections/3/messages'), { scope: 'connection', id: 3 });
       assert.deepStrictEqual(matchAgentRoute('PATCH', '/api/automations/7'), { scope: 'automation', id: 7 });
       assert.deepStrictEqual(matchAgentRoute('GET', '/api/automations'), { scope: 'any', id: null });
@@ -1943,6 +1991,8 @@ function runUnitTests() {
       assert.strictEqual(matchAgentRoute('GET', '/api/rooms/12/sub-agent-schedules'), null);
       assert.strictEqual(matchAgentRoute('GET', '/api/docs/../settings'), null);
       assert.strictEqual(matchAgentRoute(undefined, '/api/upload/raw'), null);
+      assert.strictEqual(matchAgentRoute('DELETE', '/api/sub-agents/9/avatar'), null, 'removing an avatar stays session-only');
+      assert.strictEqual(matchAgentRoute('POST', '/api/actors/9/avatar'), null);
     });
     ut('agent-scope — STOA_AGENT_SCOPE: only "off" disables enforcement', () => {
       assert.strictEqual(agentScopeEnforced(undefined), true);
@@ -16522,7 +16572,7 @@ async function run() {
       'agent_memory_get', 'agent_memory_set', 'agent_system_prompt_get', 'agent_system_prompt_set',
       'automation_create', 'automation_delete', 'automation_list', 'automation_update', 'connection_list',
       'message_send', 'messages_read', 'room_memory_get', 'room_memory_set', 'room_system_prompt_get', 'room_system_prompt_set',
-      'sub_agent_create', 'sub_agent_delete', 'sub_agent_list', 'sub_agent_memory_get', 'sub_agent_memory_set', 'sub_agent_trigger', 'sub_agent_update',
+      'sub_agent_avatar_set', 'sub_agent_create', 'sub_agent_delete', 'sub_agent_list', 'sub_agent_memory_get', 'sub_agent_memory_set', 'sub_agent_trigger', 'sub_agent_update',
       'thread_read', 'threads_list'].map(n => `stoa__${n}`).sort();
     // Built-ins a sub-agent session sees: the config-changing ones are hidden from it (availableTo).
     const SUB_SESSION_TOOLS = ['automation_list', 'connection_list', 'message_send', 'messages_read', 'room_memory_get', 'room_system_prompt_get',
@@ -17686,6 +17736,109 @@ async function run() {
       await stoaOk(tokA, 'agent_system_prompt_set', { system_prompt: null });
       await stoaOk(tokA, 'room_system_prompt_set', { system_prompt: null });
     });
+
+    // Sub-agent avatar by its parent agent: HTTP with the agent secret, and stoa__sub_agent_avatar_set
+    // (file read by the agent's stoa.js over WS — simulated here with the same lib function).
+    {
+      const fs = require('fs'), os = require('os');
+      const { readAvatarFile, AVATAR_MAX_BYTES } = require('./lib/avatar-image');
+      const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+      const GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+      const uploadsDir = process.env.STOA_UPLOADS_DIR || path.join(__dirname, 'uploads');
+      const fileOf = (url) => path.join(uploadsDir, url.slice('/uploads/'.length));
+      const saUrl = () => mDb.prepare('SELECT avatar_url FROM sub_agents WHERE id=?').get(sub.id).avatar_url;
+      const avatarFiles = () => (fs.existsSync(path.join(uploadsDir, 'avatar')) ? fs.readdirSync(path.join(uploadsDir, 'avatar')) : []).filter(f => f.startsWith(`avatar-sa-${sub.id}-`)).sort();
+      const asAgent = async (ag, payload) => {
+        const saved = sessionCookie; sessionCookie = null;
+        try {
+          return await rawReq('POST', `/api/sub-agents/${sub.id}/avatar`, typeof payload === 'string' ? payload : JSON.stringify(payload), 'application/json',
+            ag ? { 'X-Agent-Id': String(ag.actorId), 'X-Agent-Secret': ag.secret } : {});
+        } finally { sessionCookie = saved; }
+      };
+      const dataUrl = (buf, mime = 'image/png') => `data:${mime};base64,${buf.toString('base64')}`;
+      // Answers the next avatar_file_read on ag's socket; returns the request it saw.
+      const answerOnce = (ag, reply) => new Promise(resolve => {
+        const h = (raw) => {
+          const m = JSON.parse(raw.toString());
+          if (m.type !== 'avatar_file_read') return;
+          ag.ws.off('message', h);
+          ag.ws.send(JSON.stringify({ type: 'avatar_file_read_result', request_id: m.request_id, ...reply(m) }));
+          resolve(m);
+        };
+        ag.ws.on('message', h);
+      });
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-sa-avatar-'));
+
+      await test('Sub-agent avatar HTTP — parent agent secret → 200, file saved, room told; other agent 403; bad type / size refused, nothing written', async () => {
+        const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+        try {
+          humanWs.send(JSON.stringify({ type: 'join_room', room_id: roomA }));
+          await waitForWsMessage(humanWs, m => m.type === 'history');
+          const upd = waitForWsMessage(humanWs, m => m.type === 'sub_agent_updated' && m.sub_agent?.id === sub.id, 5000);
+          const r = await asAgent(agA, { data_url: dataUrl(GIF, 'image/png') });
+          assert.strictEqual(r.status, 200, r.raw);
+          assert.match(r.body.avatar_url, new RegExp(`^/uploads/avatar/avatar-sa-${sub.id}-\\d+\\.gif$`), 'name built by the server, type from the bytes');
+          assert.strictEqual(saUrl(), r.body.avatar_url);
+          assert.ok(fs.readFileSync(fileOf(r.body.avatar_url)).equals(GIF), 'exact bytes on disk');
+          assert.strictEqual((await upd).sub_agent.avatar_url, r.body.avatar_url, 'linked room gets sub_agent_updated');
+        } finally { humanWs.close(); }
+        const url = saUrl(), files = avatarFiles();
+        const denied = await asAgent(agB, { data_url: dataUrl(PNG) });
+        assert.deepStrictEqual([denied.status, denied.body.error], [403, 'agent_scope_denied'], 'another agent\'s sub-agent');
+        const svg = await asAgent(agA, { data_url: dataUrl(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>'), 'image/png') });
+        assert.deepStrictEqual([svg.status, svg.body.error], [400, 'unsupported image type (png, jpeg, webp or gif only)']);
+        const big = await asAgent(agA, { data_url: dataUrl(Buffer.concat([PNG, Buffer.alloc(AVATAR_MAX_BYTES)])) });
+        assert.strictEqual(big.status, 413, big.raw);
+        const huge = await asAgent(agA, JSON.stringify({ data_url: 'data:image/png;base64,' + 'A'.repeat(2 * 1024 * 1024) }));
+        assert.strictEqual(huge.status, 413, 'body over the avatar cap');
+        assert.strictEqual((await asAgent(agA, 'not json')).status, 400);
+        assert.strictEqual((await asAgent(null, { data_url: dataUrl(PNG) })).status, 401);
+        assert.deepStrictEqual([saUrl(), avatarFiles()], [url, files], 'refused uploads change nothing');
+      });
+
+      await test('MCP stoa tools — sub_agent_avatar_set: agent machine reads the file, old file replaced, notice; spoofed answer, non-image, other parent, sub-agent session refused', async () => {
+        const since = maxMsgId();
+        const oldUrl = saUrl();
+        const file = path.join(tmp, 'vera.png');
+        fs.writeFileSync(file, PNG);
+        const seen = answerOnce(agA, m => readAvatarFile(m.path));
+        const okRes = await stoaOk(tokA, 'sub_agent_avatar_set', { sub_agent_id: sub.id, path: file });
+        assert.strictEqual((await seen).path, file, 'the path goes to the parent agent\'s client only');
+        assert.match(okRes.avatar_url, new RegExp(`^/uploads/avatar/avatar-sa-${sub.id}-\\d+\\.png$`));
+        assert.strictEqual(saUrl(), okRes.avatar_url);
+        assert.ok(fs.readFileSync(fileOf(okRes.avatar_url)).equals(PNG));
+        assert.ok(!fs.existsSync(fileOf(oldUrl)), 'previous avatar file removed');
+        assert.deepStrictEqual(configNotices(roomA, since), ['__test-mcp-a set the avatar of sub-agent mcpsub · config']);
+
+        const url = saUrl(), files = avatarFiles();
+        // A client that sends non-image bytes anyway (old / tampered) is still refused by the server.
+        answerOnce(agA, () => ({ base64: Buffer.from('#!/bin/sh\nrm -rf /').toString('base64') }));
+        assert.strictEqual(await stoaErr(tokA, 'sub_agent_avatar_set', { sub_agent_id: sub.id, path: file }), 'unsupported image type (png, jpeg, webp or gif only)');
+        answerOnce(agA, m => readAvatarFile(m.path));
+        assert.strictEqual(await stoaErr(tokA, 'sub_agent_avatar_set', { sub_agent_id: sub.id, path: path.join(tmp, 'nope.png') }), 'file not found');
+        // Agent B answering A's request id is ignored: A's own answer decides.
+        const relay = (raw) => {
+          const m = JSON.parse(raw.toString());
+          if (m.type === 'avatar_file_read') agB.ws.send(JSON.stringify({ type: 'avatar_file_read_result', request_id: m.request_id, base64: GIF.toString('base64') }));
+        };
+        agA.ws.on('message', relay);
+        try {
+          answerOnce(agA, () => ({ status: 413, error: 'image too large' }));
+          assert.strictEqual(await stoaErr(tokA, 'sub_agent_avatar_set', { sub_agent_id: sub.id, path: file }), 'image too large');
+        } finally { agA.ws.off('message', relay); }
+        let asked = false;
+        const spy = (raw) => { if (JSON.parse(raw.toString()).type === 'avatar_file_read') asked = true; };
+        agB.ws.on('message', spy);
+        try {
+          assert.strictEqual(await stoaErr(tokB, 'sub_agent_avatar_set', { sub_agent_id: sub.id, path: file }), 'sub-agent not found');
+        } finally { agB.ws.off('message', spy); }
+        assert.strictEqual(asked, false, 'no file read for a sub-agent of another parent');
+        assert.match(await stoaErr(tokSub, 'sub_agent_avatar_set', { sub_agent_id: sub.id, path: file }), SUB_DENIED);
+        assert.strictEqual(await stoaErr(tokA, 'sub_agent_avatar_set', { sub_agent_id: sub.id, path: '' }), 'path required');
+        assert.deepStrictEqual([saUrl(), avatarFiles()], [url, files], 'refused calls change nothing');
+        fs.rmSync(tmp, { recursive: true, force: true });
+      });
+    }
 
     let mcpSub2 = null, clash = null;
     await test('MCP stoa tools — sub-agent create (linked to the room), list, update; validation; other parent refused', async () => {
