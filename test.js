@@ -13175,7 +13175,7 @@ async function run() {
     const ctx = {
       window: {}, ws: null, currentRoomId: 5,
       document: { getElementById: byId, visibilityState: 'visible' },
-      setQueuePosition() {}, finalizeMessage() {}, clearComposerProcessing() {}, clearThreadProcessing() {}, refreshRoomList() {},
+      setQueuePosition() {}, setRunReply() {}, finalizeMessage() {}, clearComposerProcessing() {}, clearThreadProcessing() {}, refreshRoomList() {},
       scrollToBottom: () => scrolled.push('feed'), _scrollThreadToBottom() {},
     };
     vm.createContext(ctx);
@@ -13203,6 +13203,149 @@ async function run() {
     ctx.handleWsMessage({ type: 'message_state', message_id: 300, state: 'interrupted', feed_pos: 301.5 });
     assert.deepStrictEqual(order(thread).slice(-3), ['msg-301', 'msg-300', 'msg-302'], 'an interrupted reply that keeps its text moves too');
     assert.strictEqual(ctx.placeRowByFeedPos(byId('msg-302'), undefined), false, 'no feed_pos (older server) → no move');
+  });
+
+  await test('live run bubble — the reply quote shows live in the thread panel like after a reload; an agent disconnect leaves an interrupted bubble that a resumed run takes back in place', () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const matches = (el, sel) => sel.split(',').some(one => {
+      const s = one.trim();
+      if (s.startsWith('#')) return el.id === s.slice(1);
+      const attr = /^\[([\w-]+)="([^"]*)"\]$/.exec(s);
+      if (attr) return attr[1] === 'id' ? el.id === attr[2] : el.dataset[attr[1].replace(/^data-/, '').replace(/-(\w)/g, (_, c) => c.toUpperCase())] === attr[2];
+      if (s.startsWith('.')) return s.slice(1).split('.').every(c => el.classList.contains(c));
+      return el.tagName === s.toUpperCase();
+    });
+    class El {
+      constructor(tag) {
+        this.tagName = tag.toUpperCase(); this.id = ''; this.style = {}; this.dataset = {}; this.children = []; this.parentNode = null; this._text = '';
+        const cls = new Set(); this._cls = cls;
+        this.classList = { add: (...c) => c.forEach(x => cls.add(x)), remove: (...c) => c.forEach(x => cls.delete(x)), contains: c => cls.has(c) };
+      }
+      set className(v) { this._cls.clear(); String(v).split(/\s+/).filter(Boolean).forEach(c => this._cls.add(c)); }
+      get className() { return [...this._cls].join(' '); }
+      appendChild(c) { if (c.parentNode) c.remove(); c.parentNode = this; this.children.push(c); return c; }
+      append(...cs) { cs.forEach(c => this.appendChild(c)); }
+      insertBefore(n, ref) { if (n.parentNode) n.remove(); const i = ref ? this.children.indexOf(ref) : -1; n.parentNode = this; if (i < 0) this.children.push(n); else this.children.splice(i, 0, n); return n; }
+      replaceChild(n, old) { this.insertBefore(n, old); old.remove(); return old; }
+      after(n) { this.parentNode.insertBefore(n, this.nextElementSibling); }
+      remove() { const p = this.parentNode; if (p) { p.children = p.children.filter(x => x !== this); this.parentNode = null; } }
+      addEventListener() {}
+      get parentElement() { return this.parentNode; }
+      get nextElementSibling() { const s = this.parentNode?.children || []; return s[s.indexOf(this) + 1] || null; }
+      get lastElementChild() { return this.children.at(-1) || null; }
+      get isConnected() { let x = this; while (x.parentNode) x = x.parentNode; return x === body; }
+      set innerHTML(v) {
+        this.children.forEach(c => { c.parentNode = null; }); this.children = [];
+        const html = String(v);
+        this._text = html.replace(/<[^>]*>/g, '');
+        for (const [, action] of html.matchAll(/data-action="(\w+)"/g)) { const b = new El('button'); b.dataset.action = action; this.appendChild(b); }
+      }
+      set textContent(v) { this.children.forEach(c => { c.parentNode = null; }); this.children = []; this._text = String(v); }
+      get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+      querySelectorAll(sel) { const out = []; const walk = e => e.children.forEach(c => { if (matches(c, sel)) out.push(c); walk(c); }); walk(this); return out; }
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
+      closest(sel) { for (let x = this; x; x = x.parentNode) if (matches(x, sel)) return x; return null; }
+    }
+    const body = new El('body');
+    const feed = body.appendChild(new El('div')); feed.id = 'messages-inner';
+    const thread = body.appendChild(new El('div')); thread.id = 'thread-body';
+    const document = {
+      body, visibilityState: 'visible',
+      createElement: t => new El(t),
+      createTextNode: t => Object.assign(new El('#text'), { _text: String(t) }),
+      getElementById: id => (id === 'messages-inner' ? feed : id === 'thread-body' ? thread : body.querySelector('#' + id)),
+      querySelectorAll: sel => body.querySelectorAll(sel),
+    };
+    const processing = new Set();
+    const ctx = {
+      document, window: {}, ws: null, currentRoomId: 5, streaming: {},
+      makeAvatarEl: () => new El('span'), makeSubAgentRoleEl: () => null, applyBubbleColor() {}, scrollToBottom() {}, _scrollThreadToBottom() {},
+      renderMarkdown: s => s, highlightMentions: s => s, renderAttachments() {}, renderSavedTrail() {}, addCopyButtons() {}, linkifyFilePaths() {}, externalLinksNewTab() {},
+      getAttachments: m => m.attachments || [], getCleanupProgress: () => 'off', getToolProgress: () => 'all', addMessageLinkAction() {},
+      setComposerProcessing: id => processing.add(id), clearComposerProcessing: id => processing.delete(id),
+      setThreadProcessing: id => processing.add(id), clearThreadProcessing: id => processing.delete(id),
+      refreshRoomList() {},
+    };
+    vm.createContext(ctx);
+    for (const f of ['append.js', 'feed.js', 'thread.js', 'thinking.js', 'stream.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/chat', f), 'utf8'), ctx);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/websocket.js'), 'utf8'), ctx);
+    vm.runInContext('activeThreadId = 150; openThread = () => {}; isThreadOpen = () => true; setThreadProcessing = id => setComposerProcessing(id); clearThreadProcessing = id => clearComposerProcessing(id);', ctx);
+    const ws = m => ctx.handleWsMessage(m);
+    const row = id => body.querySelector('#msg-' + id);
+    const rows = id => body.querySelectorAll(`[id="msg-${id}"]`).length;
+    const shape = el => el && { cls: el.className, color: el.style.color || null, text: el.children.length ? undefined : el.textContent, kids: el.children.map(shape) };
+    const quoteOf = r => r.querySelector('.h-bubble')?.children[0]?.className === 'h-reply-quote' ? shape(r.querySelector('.h-bubble').children[0]) : null;
+    const who = { actor_name: 'Orion', avatar_color: '#0a0', sub_agent_id: 22, sub_agent_label: 'Reviewer' };
+    const reply = { reply_to: 880, reply_msg: { id: 880, content: '<img src=x onerror=alert(1)> fix the ' + 'x'.repeat(200), image_url: null, file_url: null, file_name: null, attachments: [{ url: '/uploads/spec.md' }], actor_name: 'Aan', avatar_color: '#c80' } };
+
+    // D1 — thread panel: quote while streaming and after complete, same as the reloaded row.
+    ws({ type: 'message_state', message_id: 900, state: 'streaming', thread_id: 150, ...who, ...reply });
+    assert.strictEqual(row(900).parentNode, thread, 'the thread run draws in the open thread panel');
+    ws({ type: 'message_token', message_id: 900, thread_id: 150, token: 'Looking' });
+    assert.ok(quoteOf(row(900)), 'the streaming bubble shows the quote before the text');
+    ws({ type: 'message_complete', message_id: 900, thread_id: 150, content: 'Done.', result_meta: '{"exit_reason":"completed"}', ...reply });
+    const reloaded = new El('div');
+    ctx.appendThreadMessage({ id: 1900, state: 'complete', thread_id: 150, actor_type: 'ai', content: 'Done.', ...who, ...reply }, reloaded);
+    assert.deepStrictEqual(quoteOf(row(900)), quoteOf(reloaded.children[0]), 'the live quote is the reloaded quote');
+    const q = row(900).querySelector('.h-reply-quote');
+    assert.deepStrictEqual([q.children[0].textContent, q.children[0].style.color, q.children[1].children[0].textContent], ['Aan', '#c80', '/uploads/spec.md'], 'name, colour and attachment of the quoted message');
+    assert.strictEqual(q.children[1].children[1].textContent, reply.reply_msg.content.substring(0, 150), 'quoted text is literal (textContent), cut at 150');
+    assert.strictEqual(rows(900), 1);
+
+    ws({ type: 'message_state', message_id: 901, state: 'streaming', thread_id: 150, ...who });
+    ws({ type: 'message_complete', message_id: 901, thread_id: 150, content: 'Ok.', ...reply });
+    assert.ok(quoteOf(row(901)), 'a quote that only arrives with message_complete still shows');
+
+    // Feed roots never show a quote after a reload, so the live feed row does not either.
+    ws({ type: 'message_state', message_id: 902, state: 'streaming', ...who, ...reply });
+    ws({ type: 'message_complete', message_id: 902, content: 'Hi.', ...reply });
+    const reloadedFeed = new El('div');
+    ctx.appendFeedRootRow({ id: 1902, state: 'complete', actor_type: 'ai', content: 'Hi.', ...who, ...reply }, reloadedFeed);
+    assert.deepStrictEqual([!!row(902).querySelector('.h-reply-quote'), !!reloadedFeed.querySelector('.h-reply-quote')], [false, false], 'feed: no quote live, none after reload');
+
+    // D2 — disconnect: the bubble stays with the run's text and an interrupted chip.
+    const before = feed.appendChild(new El('div')); before.id = 'msg-903';
+    ws({ type: 'message_state', message_id: 904, state: 'streaming', ...who });
+    const after = feed.appendChild(new El('div')); after.id = 'msg-905';
+    ws({ type: 'message_token', message_id: 904, token: 'Half an ans' });
+    assert.ok(processing.has(904));
+    ws({ type: 'message_state', message_id: 904, state: 'error', ...who, content: 'Half an ans', result_meta: '{"exit_reason":"interrupted"}', feed_pos: 904 });
+    const cut = row(904);
+    assert.ok(cut && cut.isConnected, 'an interrupted run is not removed');
+    assert.deepStrictEqual([cut.querySelector('.h-thinking-bubble'), cut.querySelector('.h-cursor'), cut.querySelector('.h-bubble').classList.contains('streaming')], [null, null, false], 'no thinking, no cursor');
+    assert.strictEqual(cut.querySelector('.h-bubble').children[0].textContent, 'Half an ans', 'the stored text stays');
+    assert.deepStrictEqual([cut.querySelector('.h-msg-result').textContent, cut.querySelector('.h-msg-result').classList.contains('warn')], ['⏹ interrupted', true], 'quiet interrupted chip');
+    assert.ok(!processing.has(904), 'the composer is no longer busy');
+    assert.deepStrictEqual(feed.children.map(c => c.id).slice(-3), ['msg-903', 'msg-904', 'msg-905']);
+
+    // Resume: the same row goes back to thinking, in place; the completion finalizes it once.
+    ws({ type: 'message_state', message_id: 904, state: 'streaming', ...who });
+    assert.deepStrictEqual(feed.children.map(c => c.id).slice(-3), ['msg-903', 'msg-904', 'msg-905'], 'the resumed run keeps its place');
+    assert.ok(row(904).querySelector('.h-thinking-bubble') && !row(904).querySelector('.h-msg-result'), 'back to thinking, the interrupted chip is gone');
+    assert.ok(processing.has(904), 'busy again');
+    ws({ type: 'message_token', message_id: 904, token: 'Full answer' });
+    ws({ type: 'message_complete', message_id: 904, content: 'Full answer', result_meta: '{"exit_reason":"completed"}' });
+    assert.deepStrictEqual([rows(904), row(904).querySelector('.h-msg-result').textContent, row(904).dataset.runInterrupted], [1, '✓ completed', undefined], 'one row, completed');
+
+    // A client that never drew the run (joined late) draws it from the event's identity.
+    ws({ type: 'message_state', message_id: 906, state: 'error', thread_id: 150, ...who, ...reply, content: '(interrupted — agent disconnected)', result_meta: '{"exit_reason":"interrupted"}', feed_pos: 906 });
+    assert.strictEqual(row(906)?.parentNode, thread, 'drawn in the open thread');
+    assert.deepStrictEqual([row(906).querySelector('.h-msg-name').textContent, row(906).querySelector('.h-msg-sub').textContent], ['Reviewer', '(Orion)'], 'sub-agent label + parent');
+    assert.ok(quoteOf(row(906)), 'with its quote');
+    ws({ type: 'message_state', message_id: 907, state: 'error', thread_id: 151, ...who, content: '(interrupted — agent disconnected)' });
+    assert.strictEqual(row(907), null, 'a run in a closed thread is not drawn');
+
+    // A bare error (timeout etc.) still drops the empty thinking bubble.
+    ws({ type: 'message_state', message_id: 908, state: 'streaming', ...who });
+    ws({ type: 'message_state', message_id: 908, state: 'error' });
+    assert.strictEqual(row(908), null, 'bare error unchanged');
+
+    // An error row from history is resumable too.
+    ctx.appendFeedRootRow({ id: 909, state: 'error', actor_type: 'ai', content: '(interrupted — agent reconnected)', ...who });
+    const tail = feed.appendChild(new El('div')); tail.id = 'msg-910';
+    ws({ type: 'message_state', message_id: 909, state: 'streaming', ...who });
+    assert.deepStrictEqual([rows(909), !!row(909).querySelector('.h-thinking-bubble'), row(909).nextElementSibling?.id], [1, true, 'msg-910'], 'reloaded error row → thinking, in place');
   });
 
   await test('sub-agent form — label errors route by server code, never by text that can quote a user-chosen room title', () => {

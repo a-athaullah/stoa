@@ -18,6 +18,7 @@ function appendFeedRootRow(m, inner) {
   row.id = 'msg-' + m.id;
   row.dataset.rootId = m.id;
   setRowFeedPos(row, m.feed_pos);
+  if (m.state === 'error') row.dataset.runInterrupted = '1';
 
   // Avatar (36px)
   const avatarWrap = document.createElement('div');

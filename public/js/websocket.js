@@ -43,6 +43,12 @@ function connectWS(roomId) {
   ws.onerror = e => console.warn('[ws] error', e);
 }
 
+// Where a run's row lives: the feed, or the thread panel only while that thread is open.
+function runRowContainer(threadId) {
+  if (!threadId) return document.getElementById('messages-inner');
+  return (typeof activeThreadId !== 'undefined' && activeThreadId === threadId) ? document.getElementById('thread-body') : null;
+}
+
 function handleWsMessage(msg) {
   if (msg.type === 'auth_error') {
     showToast(msg.message || 'Session expired. Please sign in again.', { error: true, duration: 4000 });
@@ -79,6 +85,7 @@ function handleWsMessage(msg) {
     noMoreOlder = msg.messages.length < 100;
     for (const m of msg.messages) {
       if (m.state === 'streaming' || m.state === 'requesting') {
+        setRunReply(m.id, m);
         if (m.thread_id) {
           if (typeof openThread === 'function' && typeof isThreadOpen === 'function' && !isThreadOpen()) {
             openThread(m.thread_id, null, { history: 'replace' });
@@ -205,18 +212,22 @@ function handleWsMessage(msg) {
       }
       // Thread messages never render in room feed
       if (tId && (typeof activeThreadId === 'undefined' || activeThreadId !== tId)) return;
-      const targetContainer = tId
-        ? document.getElementById('thread-body')
-        : document.getElementById('messages-inner');
+      const targetContainer = runRowContainer(tId);
+      setRunReply(msg.message_id, msg);
+      const resumed = msg.state === 'streaming' ? takeInterruptedRun(msg.message_id) : null;
       const last = targetContainer?.lastElementChild;
       if (last?.classList.contains('h-system-event') && last.dataset.actor?.startsWith(msg.actor_name)) last.remove();
       showThinking(msg.message_id, msg.actor_name, msg.avatar_color, msg.avatar_symbol, msg.avatar_url, msg.sub_agent_label, targetContainer, msg.sub_agent_avatar_color, msg.sub_agent_avatar_symbol, msg.sub_agent_avatar_url, msg.sub_agent_role, msg.sub_agent_id);
+      const revived = document.getElementById('msg-' + msg.message_id);
+      if (resumed && revived && resumed.parent === revived.parentNode && resumed.next?.isConnected) resumed.parent.insertBefore(revived, resumed.next);
       if (tId && typeof _scrollThreadToBottom === 'function') _scrollThreadToBottom();
       if (tId && typeof setThreadProcessing === 'function') setThreadProcessing(msg.message_id);
       else setComposerProcessing(msg.message_id);
     }
     if (msg.state === 'error' || (typeof FAILURE_STATES !== 'undefined' && FAILURE_STATES.has(msg.state))) {
       setQueuePosition(msg.message_id, null);
+      // An agent disconnect sends the run's stored text; bare errors (timeout etc.) carry none.
+      if (msg.state === 'error' && typeof msg.content === 'string') showInterruptedRun(msg, runRowContainer(msg.thread_id || null));
       const el = document.getElementById('msg-' + msg.message_id);
       if (el) {
         const bubble = el.querySelector('.h-bubble, .h-thinking-bubble');
@@ -254,6 +265,7 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'message_complete') {
     setQueuePosition(msg.message_id, null);
+    setRunReply(msg.message_id, msg);
     finalizeMessage(msg.message_id, msg.content, msg.file_url, msg.file_name, msg.attachments, msg.ai_model, msg.result_meta, msg.model_source);
     if (placeRowByFeedPos(document.getElementById('msg-' + msg.message_id), msg.feed_pos) && !msg.thread_id) scrollToBottom();
     clearComposerProcessing(msg.message_id);

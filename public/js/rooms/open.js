@@ -34,6 +34,7 @@ async function openRoom(room, opts = {}) {
 
   document.getElementById('messages-inner').innerHTML = '';
   Object.keys(streaming).forEach(k => delete streaming[k]);
+  Object.keys(runReplies).forEach(k => delete runReplies[k]);
 
   let parts = [];
   try {
