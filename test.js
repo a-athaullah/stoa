@@ -5900,6 +5900,152 @@ async function run() {
     });
   }
 
+  // ── Final reply order (messages.feed_pos) ──────────────────────────────────
+  // The reply row is a placeholder made when the turn starts, so the progress the agent posts during
+  // the turn has newer ids. Once the run ends the reply must show after that progress — feed, thread,
+  // join history, cursors, the AI history — while its id stays the same.
+  console.log('\n[Final reply order — feed_pos]');
+  {
+    const RO_NAME = '__test-reply-order';
+    const db = require('./db');
+    let roActorId = null, roSecret = null, roRoomId = null, roWs = null, roSa = null, humanWs = null;
+    const ids = rows => rows.map(r => r.id);
+    const progress = async (content, extra = {}) => {
+      const r = await rawReq('POST', `/api/rooms/${roRoomId}/message`, JSON.stringify({ content, ...extra }), 'application/json',
+        { 'X-Agent-Id': String(roActorId), 'X-Agent-Secret': roSecret });
+      assert.strictEqual(r.status, 200, r.raw);
+      return r.body.message_id;
+    };
+    const nextTrigger = (sub) => waitForWsMessage(roWs, m => m.type === 'agent_trigger' && (sub ? m.sub_agent?.id === sub.id : !m.sub_agent), 5000)
+      .catch(() => { throw new Error('agent trigger never arrived'); });
+    const finish = async (m, content) => {
+      const done = waitForWsMessage(humanWs, e => e.type === 'message_complete' && e.message_id === m.message_id, 5000);
+      roWs.send(JSON.stringify({ type: 'agent_complete', room_id: roRoomId, message_id: m.message_id, content }));
+      return done;
+    };
+    const humanSays = (content, threadId) => humanWs.send(JSON.stringify({ type: 'send_message', room_id: roRoomId, content, ...(threadId ? { thread_id: threadId } : {}) }));
+
+    await test('Setup — online agent + room + linked sub-agent for reply-order tests', async () => {
+      const agent = await createOnlineTestAgent(RO_NAME, '/tmp/stoa-test-reply-order');
+      if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+      roActorId = agent.actorId; roSecret = agent.secret; roWs = agent.ws;
+      const r = await req('POST', '/api/rooms', { title: '__reply-order-room__', workdir_id: agent.workdirId, participant_ids: [roActorId] });
+      assert.strictEqual(r.status, 200);
+      roRoomId = r.body.id;
+      testRoomIds.push(roRoomId);
+      roSa = (await req('POST', `/api/actors/${roActorId}/sub-agents`, { label: 'orderSub', tier: 'quick' })).body;
+      assert.strictEqual((await req('POST', `/api/rooms/${roRoomId}/sub-agents`, { sub_agent_id: roSa.id })).status, 200);
+      humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      const hist = waitForWsMessage(humanWs, m => m.type === 'history');
+      humanWs.send(JSON.stringify({ type: 'join_room', room_id: roRoomId }));
+      await hist;
+    });
+
+    // A human message in the root feed opens a thread on itself; the agent's reply and the progress it
+    // posts (stoa__message_send defaults to the session's thread) both live in that thread.
+    let run = null, tid = null, p1 = null, p2 = null;
+    await test('reply order — thread: final reply after its own progress (WS feed_pos, thread API, scope=all feed, id unchanged)', async () => {
+      if (!roSa) { console.log('    (skipped)'); return; }
+      const t = nextTrigger(null);
+      humanSays(`@${RO_NAME} run the long task`);
+      run = await t;
+      tid = run.thread_id;
+      assert.ok(tid, 'root mention runs in the thread of the human message');
+      p1 = await progress('ro step one done', { thread_id: tid });
+      p2 = await progress('ro step two done', { thread_id: tid });
+      assert.ok(run.message_id < p1, 'placeholder id precedes the progress ids');
+      const evt = await finish(run, 'ro final report');
+      assert.strictEqual(evt.feed_pos, p2 + 0.5, 'completion event carries the new position');
+      assert.deepStrictEqual(db.prepare('SELECT id, feed_pos FROM messages WHERE id=?').get(run.message_id), { id: run.message_id, feed_pos: p2 + 0.5 }, 'id unchanged');
+      assert.deepStrictEqual(ids((await req('GET', `/api/rooms/${roRoomId}/threads/${tid}`)).body.messages).slice(-3), [p1, p2, run.message_id]);
+      assert.deepStrictEqual(ids((await req('GET', `/api/rooms/${roRoomId}/messages?scope=all`)).body).slice(-3), [p1, p2, run.message_id]);
+    });
+
+    await test('reply order — before/since cursors stay message ids, resolved to the display position (thread + feed)', async () => {
+      if (!run) { console.log('    (skipped)'); return; }
+      const thr = async (qs) => ids((await req('GET', `/api/rooms/${roRoomId}/threads/${tid}?${qs}`)).body.messages);
+      const feed = async (qs) => ids((await req('GET', `/api/rooms/${roRoomId}/messages?scope=all&${qs}`)).body);
+      assert.deepStrictEqual(await thr(`before=${run.message_id}&limit=2`), [p1, p2], 'thread page above the moved reply = its progress');
+      assert.deepStrictEqual(await thr(`before=${p2}&limit=1`), [p1], 'moved reply is not above its progress');
+      assert.deepStrictEqual(await feed(`before=${run.message_id}&limit=2`), [p1, p2]);
+      assert.deepStrictEqual(await feed(`since=${p2}`), [run.message_id], 'catch-up after the last progress delivers the reply');
+      assert.deepStrictEqual(await feed(`since=${run.message_id}`), [], 'no duplicates after the reply');
+      const full = await feed('limit=100');
+      assert.deepStrictEqual(await feed(`before=${full[full.length - 2]}&limit=2`), full.slice(-4, -2), 'paging back from any row is contiguous');
+    });
+
+    await test('reply order — the next turn\'s AI history sees progress before the reply; a run without progress keeps feed_pos = id', async () => {
+      if (!run) { console.log('    (skipped)'); return; }
+      const t = nextTrigger(null);
+      humanSays(`@${RO_NAME} and now?`, tid);
+      const m = await t;
+      assert.deepStrictEqual((m.rawHistory || []).map(h => h.content).slice(-4), ['ro step one done', 'ro step two done', 'ro final report', `@${RO_NAME} and now?`]);
+      const evt = await finish(m, 'ro short answer');
+      assert.strictEqual(evt.feed_pos, m.message_id);
+      assert.strictEqual(ids((await req('GET', `/api/rooms/${roRoomId}/threads/${tid}`)).body.messages).at(-1), m.message_id);
+    });
+
+    // A root-feed run: the parent spawns its sub-agent via /sub-agent-trigger without a thread_id.
+    await test('reply order — root feed + sub-agent: reply after its own main-feed progress (feed, join history, cursors)', async () => {
+      if (!run) { console.log('    (skipped)'); return; }
+      const t = nextTrigger(roSa);
+      const spawn = await rawReq('POST', `/api/rooms/${roRoomId}/sub-agent-trigger`, JSON.stringify({ sub_agent_id: roSa.id, task: 'check the root feed please' }), 'application/json',
+        { 'X-Agent-Id': String(roActorId), 'X-Agent-Secret': roSecret });
+      assert.strictEqual(spawn.status, 200, spawn.raw);
+      const m = await t;
+      assert.strictEqual(db.prepare('SELECT thread_id FROM messages WHERE id=?').get(m.message_id).thread_id, null, 'root-feed run');
+      const s1 = await progress('ro root sub step one', { sub_agent_id: roSa.id });
+      const s2 = await progress('ro root sub step two', { sub_agent_id: roSa.id });
+      const wake = nextTrigger(null);
+      const evt = await finish(m, 'ro root sub final');
+      assert.strictEqual(evt.feed_pos, s2 + 0.5);
+      const woken = await wake.catch(() => null); // the parent is woken with the result (wake_parent)
+      if (woken) await finish(woken, 'ro parent woken');
+      const feed = ids((await req('GET', `/api/rooms/${roRoomId}/messages`)).body);
+      assert.deepStrictEqual(feed.slice(feed.indexOf(s1), feed.indexOf(s1) + 3), [s1, s2, m.message_id]);
+      assert.deepStrictEqual(ids((await req('GET', `/api/rooms/${roRoomId}/messages?before=${m.message_id}&limit=2`)).body), [s1, s2]);
+      assert.deepStrictEqual(ids((await req('GET', `/api/rooms/${roRoomId}/messages?since=${s2}`)).body)[0], m.message_id);
+      const ws2 = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        const hist = waitForWsMessage(ws2, x => x.type === 'history');
+        ws2.send(JSON.stringify({ type: 'join_room', room_id: roRoomId }));
+        const h = ids((await hist).messages);
+        assert.deepStrictEqual(h.slice(h.indexOf(s1), h.indexOf(s1) + 3), [s1, s2, m.message_id], 'join history');
+      } finally { ws2.close(); }
+    });
+
+    await test('reply order — thread + sub-agent: reply after the sub-agent\'s progress; the parent\'s message and the sub-agent\'s main-feed post do not move it', async () => {
+      if (!run) { console.log('    (skipped)'); return; }
+      const t = nextTrigger(roSa);
+      humanSays('@orderSub dig into this', tid);
+      const m = await t;
+      assert.strictEqual(db.prepare('SELECT thread_id FROM messages WHERE id=?').get(m.message_id).thread_id, tid);
+      const sp1 = await progress('ro sub step one', { thread_id: tid, sub_agent_id: roSa.id });
+      const sp2 = await progress('ro sub step two', { thread_id: tid, sub_agent_id: roSa.id });
+      const parentMsg = await progress('ro parent note', { thread_id: tid });
+      await progress('ro sub note in the main feed', { sub_agent_id: roSa.id });
+      const evt = await finish(m, 'ro sub final');
+      assert.strictEqual(evt.feed_pos, sp2 + 0.5);
+      assert.deepStrictEqual(ids((await req('GET', `/api/rooms/${roRoomId}/threads/${tid}`)).body.messages).slice(-4), [sp1, sp2, m.message_id, parentMsg]);
+      assert.deepStrictEqual(ids((await req('GET', `/api/rooms/${roRoomId}/threads/${tid}?before=${parentMsg}&limit=2`)).body.messages), [sp2, m.message_id]);
+    });
+
+    await test('Cleanup — reply-order test data', async () => {
+      if (humanWs) { humanWs.close(); humanWs = null; }
+      if (roWs) { roWs.close(); roWs = null; }
+      if (roSa) await req('DELETE', `/api/sub-agents/${roSa.id}`);
+      if (roRoomId) {
+        await req('PATCH', `/api/rooms/${roRoomId}`, { archived: true });
+        await req('DELETE', `/api/rooms/${roRoomId}`);
+        testRoomIds = testRoomIds.filter(id => id !== roRoomId);
+      }
+      if (roActorId) {
+        await req('DELETE', `/api/actors/${roActorId}`);
+        orphanActorIds = orphanActorIds.filter(id => id !== roActorId);
+      }
+    });
+  }
+
   // ── Parent wake gating (messages.wake_parent) ──────────────────────────────
   // A sub-agent the human mentions directly must not wake its parent, unless the
   // parent is @mentioned too or the run errors. Parent-driven runs keep waking.
