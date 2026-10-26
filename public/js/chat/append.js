@@ -136,7 +136,7 @@ function buildReplyQuote(m) {
   for (const a of getAttachments(m.reply_msg)) {
     const file = document.createElement('div');
     file.className = 'h-reply-quote-file';
-    file.textContent = a.url;
+    file.textContent = a.name || (a.type === 'image' ? 'Image' : 'File');
     text.appendChild(file);
   }
   text.appendChild(document.createTextNode((m.reply_msg.content || '').substring(0, 150)));

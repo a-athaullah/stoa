@@ -13308,12 +13308,14 @@ async function run() {
       document, window: {}, ws: null, currentRoomId: 5, streaming: {},
       makeAvatarEl: () => new El('span'), makeSubAgentRoleEl: () => null, applyBubbleColor() {}, scrollToBottom() {}, _scrollThreadToBottom() {},
       renderMarkdown: s => s, highlightMentions: s => s, renderAttachments() {}, renderSavedTrail() {}, addCopyButtons() {}, linkifyFilePaths() {}, externalLinksNewTab() {},
-      getAttachments: m => m.attachments || [], getCleanupProgress: () => 'off', getToolProgress: () => 'all', addMessageLinkAction() {},
+      getCleanupProgress: () => 'off', getToolProgress: () => 'all', addMessageLinkAction() {},
       setComposerProcessing: id => processing.add(id), clearComposerProcessing: id => processing.delete(id),
       setThreadProcessing: id => processing.add(id), clearThreadProcessing: id => processing.delete(id),
       refreshRoomList() {},
     };
     vm.createContext(ctx);
+    const markdownJs = fs.readFileSync(path.join(__dirname, 'public/js/markdown.js'), 'utf8');
+    vm.runInContext(markdownJs.slice(markdownJs.indexOf('function getAttachments('), markdownJs.indexOf('function renderAttachments(')), ctx);
     for (const f of ['append.js', 'feed.js', 'thread.js', 'thinking.js', 'stream.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/chat', f), 'utf8'), ctx);
     vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/websocket.js'), 'utf8'), ctx);
     vm.runInContext('activeThreadId = 150; openThread = () => {}; isThreadOpen = () => true; setThreadProcessing = id => setComposerProcessing(id); clearThreadProcessing = id => clearComposerProcessing(id);', ctx);
@@ -13323,7 +13325,7 @@ async function run() {
     const shape = el => el && { cls: el.className, color: el.style.color || null, text: el.children.length ? undefined : el.textContent, kids: el.children.map(shape) };
     const quoteOf = r => r.querySelector('.h-bubble')?.children[0]?.className === 'h-reply-quote' ? shape(r.querySelector('.h-bubble').children[0]) : null;
     const who = { actor_name: 'Orion', avatar_color: '#0a0', sub_agent_id: 22, sub_agent_label: 'Reviewer' };
-    const reply = { reply_to: 880, reply_msg: { id: 880, content: '<img src=x onerror=alert(1)> fix the ' + 'x'.repeat(200), image_url: null, file_url: null, file_name: null, attachments: [{ url: '/uploads/spec.md' }], actor_name: 'Aan', avatar_color: '#c80' } };
+    const reply = { reply_to: 880, reply_msg: { id: 880, content: '<img src=x onerror=alert(1)> fix the ' + 'x'.repeat(200), image_url: null, file_url: null, file_name: null, attachments: [{ url: '/uploads/9f3a.md', name: '<b>spec</b>.md', type: 'file' }, { url: '/uploads/7c1e.png', name: '', type: 'image' }], actor_name: 'Aan', avatar_color: '#c80' } };
 
     // D1 — thread panel: quote while streaming and after complete, same as the reloaded row.
     ws({ type: 'message_state', message_id: 900, state: 'streaming', thread_id: 150, ...who, ...reply });
@@ -13335,8 +13337,11 @@ async function run() {
     ctx.appendThreadMessage({ id: 1900, state: 'complete', thread_id: 150, actor_type: 'ai', content: 'Done.', ...who, ...reply }, reloaded);
     assert.deepStrictEqual(quoteOf(row(900)), quoteOf(reloaded.children[0]), 'the live quote is the reloaded quote');
     const q = row(900).querySelector('.h-reply-quote');
-    assert.deepStrictEqual([q.children[0].textContent, q.children[0].style.color, q.children[1].children[0].textContent], ['Aan', '#c80', '/uploads/spec.md'], 'name, colour and attachment of the quoted message');
-    assert.strictEqual(q.children[1].children[1].textContent, reply.reply_msg.content.substring(0, 150), 'quoted text is literal (textContent), cut at 150');
+    assert.deepStrictEqual([q.children[0].textContent, q.children[0].style.color], ['Aan', '#c80'], 'name and colour of the quoted message');
+    assert.deepStrictEqual(q.querySelectorAll('.h-reply-quote-file').map(f => [f.children.length, f.textContent]), [[0, '<b>spec</b>.md'], [0, 'Image']], 'attachments by file name as literal text, never the upload path; an unnamed image says so');
+    const single = ctx.buildReplyQuote({ reply_to: 881, reply_msg: { id: 881, content: 'see', file_url: '/uploads/a1b2.pdf', file_name: 'Q3 report.pdf', attachments: null, actor_name: 'Aan' } });
+    assert.deepStrictEqual(single.querySelectorAll('.h-reply-quote-file').map(f => f.textContent), ['Q3 report.pdf'], 'a single upload (file_url/file_name) shows its name');
+    assert.strictEqual(q.children[1].children[2].textContent, reply.reply_msg.content.substring(0, 150), 'quoted text is literal (textContent), cut at 150');
     assert.strictEqual(rows(900), 1);
 
     ws({ type: 'message_state', message_id: 901, state: 'streaming', thread_id: 150, ...who });
