@@ -837,14 +837,14 @@ function renderRoomSidebar(room, participants) {
 
         const matDesc = document.createElement('div');
         matDesc.style.cssText = 'font-size:11.5px;color:var(--h-ink-faint);margin-top:7px;line-height:1.5';
-        matDesc.textContent = 'Jumlah thread yang boleh diproses agent bersamaan. Pesan yang membuka thread baru saat batas penuh tidak akan diproses.';
+        matDesc.textContent = 'How many threads the agent may work on at once. While the limit is reached, a message that would open a new thread is not processed.';
         matSection.appendChild(matDesc);
 
         matSaveBtn.addEventListener('click', async () => {
           const raw = matInput.value.trim();
           const n = Number(raw);
           if (!Number.isInteger(n) || n < 1 || n > 20 || raw === '') {
-            showToast('Max active threads harus bilangan bulat 1–20', { error: true }); return;
+            showToast('Max active threads must be a whole number from 1 to 20', { error: true }); return;
           }
           try {
             const rr = await fetch(`/api/rooms/${room.id}/system-prompt`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ max_active_threads: n }) });
