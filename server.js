@@ -3921,6 +3921,7 @@ const server = http.createServer(async (req, res) => {
         db.prepare(`DELETE FROM ai_sessions WHERE participant_id IN (${ph})`).run(...actorParts.map(r => r.id));
       }
       db.prepare('DELETE FROM invite_suggestions WHERE suggested_actor_id=?').run(id);
+      db.prepare('DELETE FROM invite_suggestions WHERE suggested_by_participant_id IN (SELECT id FROM room_participants WHERE actor_id=?)').run(id);
       db.prepare('DELETE FROM room_participants WHERE actor_id=?').run(id);
       const release = mcpGateway.dropActor(id);
       db.prepare('DELETE FROM actors WHERE id=?').run(id);

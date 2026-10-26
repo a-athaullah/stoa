@@ -8287,6 +8287,46 @@ async function run() {
     }
   });
 
+  // No API writes invite_suggestions on behalf of an agent (the agent's turn output does), so seed the row in the test DB.
+  const seedSuggestionBy = (ag) => {
+    const tdb = require('./db');
+    const by = tdb.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(ag.roomId, ag.actorId);
+    const target = tdb.prepare("SELECT id FROM actors WHERE type='human' ORDER BY id LIMIT 1").get();
+    const sid = Number(tdb.prepare('INSERT INTO invite_suggestions (room_id, suggested_by_participant_id, suggested_actor_id, reason) VALUES (?,?,?,?)')
+      .run(ag.roomId, by.id, target.id, '__test suggestion').lastInsertRowid);
+    return () => tdb.prepare('SELECT 1 FROM invite_suggestions WHERE id=?').get(sid);
+  };
+
+  await test('DELETE /api/actors/:id — agent whose only trace is an invite it suggested → 204, the suggestion goes with it', async () => {
+    const ag = await actorDeleteFixture('__test-actor-suggester', false);
+    const suggestionExists = seedSuggestionBy(ag);
+    try {
+      const r = await req('DELETE', `/api/actors/${ag.actorId}`);
+      assert.strictEqual(r.status, 204, `expected 204, got ${r.status}: ${r.raw}`);
+      assert.strictEqual(await actorRow(ag.actorId), undefined, 'actor removed');
+      assert.ok(!suggestionExists(), 'suggestion made by the agent deleted in the same transaction');
+      orphanActorIds = orphanActorIds.filter(id => id !== ag.actorId);
+    } finally {
+      ag.ws.close();
+      await req('DELETE', `/api/rooms/${ag.roomId}`);
+    }
+  });
+
+  await test('DELETE /api/actors/:id — agent with messages that also suggested an invite → 409, the suggestion is rolled back', async () => {
+    const ag = await actorDeleteFixture('__test-actor-suggester-history', true);
+    const suggestionExists = seedSuggestionBy(ag);
+    try {
+      const r = await req('DELETE', `/api/actors/${ag.actorId}`);
+      assert.strictEqual(r.status, 409, `expected 409, got ${r.status}: ${r.raw}`);
+      assert.ok(suggestionExists(), 'suggestion restored by the rollback');
+      assert.ok(await actorRow(ag.actorId), 'actor kept');
+    } finally {
+      ag.ws.close();
+      await req('DELETE', `/api/rooms/${ag.roomId}`);
+      await req('DELETE', `/api/actors/${ag.actorId}`);
+    }
+  });
+
   await test('DELETE /api/actors/:id — agent without history → 204, row/participant/avatar file gone, socket closed', async () => {
     const ag = await actorDeleteFixture('__test-actor-clean', false);
     const closed = new Promise(resolve => ag.ws.once('close', resolve));
