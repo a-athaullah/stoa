@@ -82,6 +82,23 @@ Busy mode is **thread-scoped**: each thread is treated as an independent context
 
 Each AI response shows a small model indicator at the bottom right of the bubble (e.g., `qwen3-coder:480b:cloud`), making it easy to track which model generated each reply. When an agent used a different model than the room's selected model — for example, because the room has no model set, or the harness can't run the room model — a **↪** icon appears on the model tag. Hover to see why (e.g., `not using the room model — using agent default`). Sub-agent responses running on a tier do not show this icon.
 
+### Room System Prompt & Memory
+
+![System Prompt & Memory popover with two tabs for room-level context](screenshots/memory.png)
+
+Click the **Memory** button (brain icon) in the right sidebar strip to open the **System Prompt & Memory** popover. It has two tabs:
+
+- **System Prompt** — custom instructions prepended to every agent session in this room (up to 65,536 characters). Use it to define the agent's role, project context, or standing rules specific to this room.
+- **Memory** — persistent context injected into every agent session in this room. Budget: 1,800 characters. Good for running notes, decisions, and facts the agent should always carry.
+
+Both are editable inline — click **Edit**, make changes, then **save**. Anyone with room access can edit both.
+
+Agents can also read and write room memory programmatically:
+- MCP tool: `stoa__room_memory_get` / `stoa__room_memory_set`
+- REST: `GET /api/rooms/:id/memory` and `PUT /api/rooms/:id/memory`
+
+Sub-agents have read-only access to room memory — only the main agent can write to it.
+
 ### Pinning a Room
 
 Click the **pin icon** (thumbtack) on a room row in the sidebar to pin it. Pinned rooms appear at the top of the sidebar in a dedicated **Pinned** section, making them instantly accessible regardless of how many rooms you have.
@@ -131,6 +148,8 @@ Inside the **thread panel**, hover over any message and click the **reply arrow*
 Agents understand reply context — when you quote a specific message, its content is injected into the AI prompt so the agent knows exactly what you're referring to.
 
 ### Threads
+
+![Thread panel open alongside the main feed](screenshots/thread.png)
 
 The main feed uses a **Slack-style flat row layout** — each root message shows the sender's avatar on the left, their name and timestamp on the same line, and the message content below. AI agent replies do not appear in the main feed; they live inside thread panels.
 
@@ -451,6 +470,8 @@ To disable semantic search, set `STOA_SEMANTIC_SEARCH=off` in your `.env` and re
 
 ## Agent Management
 
+![Agent settings panel showing agent list and detail view](screenshots/settings-agents.png)
+
 ### Adding a New Agent
 
 Go to **Settings > AI Agent** and click **+ new agent** in the sidebar. The detail panel switches to an Add Agent view where you can configure:
@@ -725,6 +746,8 @@ The workspace works with both local and remote agents. For remote agents, file o
 ---
 
 ## Agents Panel
+
+![Agents panel showing room participants and linked sub-agents](screenshots/agents-panel.png)
 
 The **Agents panel** is a right sidebar popover for viewing and managing room participants and sub-agents. Click the **users icon** in the right sidebar (between the Workspace button and the divider) to open it.
 
@@ -1213,6 +1236,8 @@ Open **Settings > Themes** (left nav, below General) to choose the app's visual 
 
 - **Light** — Warm Paper (default), Hoth, Mood Indigo, Banana, Sweet Treat
 - **Dark** — Dark, Aubergine, Ochin, Haberdashery, Choco Mint, Nocturne
+
+![Theme picker showing all light and dark theme options](screenshots/themes.png)
 
 Click a card to apply it immediately — a checkmark marks the active theme. Cards are keyboard-accessible. Your choice is saved in the browser.
 
