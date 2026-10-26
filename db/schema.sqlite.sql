@@ -135,6 +135,7 @@ CREATE TABLE IF NOT EXISTS agent_skills (
   FOREIGN KEY (workdir_id) REFERENCES agent_workdirs(id) ON DELETE CASCADE
 );
 
+-- Global rows use scope_id NULL (never 0); room rows use the room id.
 CREATE TABLE IF NOT EXISTS settings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   scope TEXT NOT NULL DEFAULT 'global' CHECK(scope IN ('global','room')),

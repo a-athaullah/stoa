@@ -3129,7 +3129,7 @@ const server = http.createServer(async (req, res) => {
   // ── R29: Global display settings ──
   if (req.method === 'GET' && url.pathname === '/api/settings/display') {
     if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
-    const rows = db.prepare("SELECT key_name, value FROM settings WHERE scope='global' AND key_name IN ('tool_progress','live_status','cleanup_progress')").all();
+    const rows = db.prepare("SELECT key_name, value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name IN ('tool_progress','live_status','cleanup_progress')").all();
     const result = { ...DISPLAY_DEFAULTS };
     for (const r of rows) result[r.key_name] = r.value;
     return json(res, result);
@@ -3143,11 +3143,9 @@ const server = http.createServer(async (req, res) => {
       if (!ALLOWED_GLOBAL_DISPLAY.has(key)) continue;
       const allowed = ROOM_SETTING_VALUES[key];
       if (allowed && !allowed.has(body[key])) continue;
-      const existing = db.prepare("SELECT id FROM settings WHERE scope='global' AND key_name=?").get(key);
-      if (existing) db.prepare('UPDATE settings SET value=? WHERE id=?').run(body[key], existing.id);
-      else db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', 0, ?, ?)").run(key, body[key]);
+      setSetting(key, body[key]);
     }
-    const rows = db.prepare("SELECT key_name, value FROM settings WHERE scope='global' AND key_name IN ('tool_progress','live_status','cleanup_progress')").all();
+    const rows = db.prepare("SELECT key_name, value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name IN ('tool_progress','live_status','cleanup_progress')").all();
     const result = { ...DISPLAY_DEFAULTS };
     for (const r of rows) result[r.key_name] = r.value;
     return json(res, result);
@@ -5436,7 +5434,7 @@ wss.on('connection', (ws, req) => {
       }
       // R29: push display settings (room-scoped + global defaults)
       const roomDisplayRows = db.prepare("SELECT key_name, value FROM settings WHERE scope='room' AND scope_id=? AND key_name IN ('tool_progress','live_status','cleanup_progress')").all(subscribedRoom);
-      const globalDisplayRows = db.prepare("SELECT key_name, value FROM settings WHERE scope='global' AND key_name IN ('tool_progress','live_status','cleanup_progress')").all();
+      const globalDisplayRows = db.prepare("SELECT key_name, value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name IN ('tool_progress','live_status','cleanup_progress')").all();
       const globalDisplay = { ...DISPLAY_DEFAULTS };
       for (const r of globalDisplayRows) globalDisplay[r.key_name] = r.value;
       const roomDisplay = {};

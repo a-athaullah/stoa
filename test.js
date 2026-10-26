@@ -11114,6 +11114,38 @@ async function run() {
     await req('PUT', '/api/settings/display', { tool_progress: 'all', live_status: 'full' });
   });
 
+  await test('R29 — PUT /api/settings/display — global rows stored with scope_id NULL, one row per key after repeated PUTs', async () => {
+    const db = require('./db');
+    const keys = ['tool_progress', 'live_status', 'cleanup_progress'];
+    const saved = db.prepare(`SELECT scope_id, key_name, value FROM settings WHERE scope='global' AND key_name IN (${keys.map(() => '?').join(',')})`).all(...keys);
+    const restore = db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', ?, ?, ?)");
+    const clear = () => db.prepare(`DELETE FROM settings WHERE scope='global' AND key_name IN (${keys.map(() => '?').join(',')})`).run(...keys);
+    clear();
+    try {
+      await req('PUT', '/api/settings/display', { tool_progress: 'off', live_status: 'verb' });
+      const r = await req('PUT', '/api/settings/display', { tool_progress: 'new', live_status: 'verb' });
+      assert.strictEqual(r.body.tool_progress, 'new');
+      const rows = db.prepare("SELECT scope_id, key_name, value FROM settings WHERE scope='global' AND key_name IN ('tool_progress','live_status') ORDER BY key_name").all();
+      assert.deepStrictEqual(rows, [{ scope_id: null, key_name: 'live_status', value: 'verb' }, { scope_id: null, key_name: 'tool_progress', value: 'new' }]);
+      assert.strictEqual((await req('GET', '/api/settings/display')).body.tool_progress, 'new');
+    } finally {
+      clear();
+      for (const row of saved) restore.run(row.scope_id, row.key_name, row.value);
+    }
+  });
+
+  await test('R29 — GET /api/settings/display — ignores a stray scope_id 0 row', async () => {
+    const db = require('./db');
+    const before = (await req('GET', '/api/settings/display')).body.cleanup_progress;
+    const stray = before === 'off' ? 'all' : 'off';
+    const id = db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', 0, 'cleanup_progress', ?)").run(stray).lastInsertRowid;
+    try {
+      assert.strictEqual((await req('GET', '/api/settings/display')).body.cleanup_progress, before);
+    } finally {
+      db.prepare('DELETE FROM settings WHERE id=?').run(id);
+    }
+  });
+
   await test('R29 — unauthenticated GET /api/settings/display → 401', async () => {
     const r = await fetch(`http://${HOST}:${PORT}/api/settings/display`);
     assert.strictEqual(r.status, 401);
@@ -15513,6 +15545,35 @@ async function run() {
       const aiCols = db.prepare('PRAGMA table_info(ai_sessions)').all().map(c => c.name);
       assert.ok(aiCols.includes('thread_id') && aiCols.includes('harness'), 'ai_sessions rebuilt by threads-core keeps thread_id + harness');
     } finally { db.close(); }
+  });
+
+  await test('migrations: 20261026-settings-global-scope-null folds global scope_id 0 rows into NULL, 0 row wins on conflict', async () => {
+    const Database = require('better-sqlite3');
+    const { runMigrations } = require('./lib/migrations');
+    const db = new Database(':memory:');
+    const file = '20261026-settings-global-scope-null.sql';
+    const dir = _migTmp({ [file]: _mfs.readFileSync(path.join(__dirname, 'migrations', file), 'utf8') });
+    try {
+      db.exec(_mfs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
+      const ins = db.prepare('INSERT INTO settings (scope, scope_id, key_name, value) VALUES (?, ?, ?, ?)');
+      ins.run('global', 0, 'tool_progress', 'off');
+      ins.run('global', null, 'tool_progress', 'all');
+      ins.run('global', 0, 'live_status', 'verb');
+      ins.run('global', null, 'cleanup_progress', 'all');
+      ins.run('room', 0, 'tool_progress', 'new');
+      ins.run('room', 7, 'tool_progress', 'off');
+      const [r] = runMigrations(db, dir, _migQuiet);
+      assert.strictEqual(r.status, 'applied');
+      const rows = db.prepare("SELECT scope, scope_id, key_name, value FROM settings WHERE key_name IN ('tool_progress','live_status','cleanup_progress') ORDER BY scope, key_name, scope_id").all();
+      assert.deepStrictEqual(rows, [
+        { scope: 'global', scope_id: null, key_name: 'cleanup_progress', value: 'all' },
+        { scope: 'global', scope_id: null, key_name: 'live_status', value: 'verb' },
+        { scope: 'global', scope_id: null, key_name: 'tool_progress', value: 'off' },
+        { scope: 'room', scope_id: 0, key_name: 'tool_progress', value: 'new' },
+        { scope: 'room', scope_id: 7, key_name: 'tool_progress', value: 'off' },
+      ]);
+      assert.strictEqual(db.prepare("SELECT COUNT(*) c FROM settings WHERE scope='global' AND key_name IN ('idle_timeout_seconds','max_active_rooms_per_ai','max_ai_turns_per_round')").get().c, 3, 'unrelated global rows untouched');
+    } finally { db.close(); _mfs.rmSync(dir, { recursive: true, force: true }); }
   });
 
   await test('migrations: already-present ADD COLUMN / CREATE INDEX skipped, rest of the file runs, recorded once', async () => {
