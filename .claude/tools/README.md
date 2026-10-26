@@ -79,6 +79,20 @@ Mechanical tools untuk task repetitif — **hemat token, langsung pakai**.
   Output: `{ok, violations: [{file, line, pattern, description}]}`
   **Use case:** Jalankan saat audit/PR review untuk verifikasi cleanup tidak regress. Exit code 1 jika ada violation.
 
+### 📸 Screenshots
+- **`screenshots/capture.js`** — Regenerate the README/docs screenshots in `docs/screenshots/`
+  ```bash
+  node .claude/tools/screenshots/capture.js                    # every shot
+  node .claude/tools/screenshots/capture.js --only=hero,thread
+  node .claude/tools/screenshots/capture.js --list             # shot → file → where it's embedded
+  node .claude/tools/screenshots/capture.js --serve            # keep the demo up to look around (Ctrl+C deletes it)
+  ```
+  Output: `{ok, outDir, shots: [{name, file, bytes}]}`
+
+  Boots a throwaway server on a random port with a temp DB seeded from `screenshots/demo-data.js` (fictional people, rooms and messages) and an empty `.env`, holds fake WS connections so the "online" agents show as connected, drives headless Chrome, then deletes the temp dir. It never reads `db/stoa.db` or `.env`, so no real data ends up in a screenshot. Shots are defined in `screenshots/shots.js`; each lists the docs that embed it (`docs`) so a UI change maps to the shots it invalidates. Playwright isn't a repo dependency: set `STOA_PLAYWRIGHT=/path/to/node_modules/playwright` if `require('playwright')` fails (uses installed Chrome; `STOA_PLAYWRIGHT_CHANNEL` to change).
+
+  **When to run:** any PR that changes `public/` in a way that shows up in a listed shot → rerun those shots and commit the PNGs with the change. Look at every regenerated image before committing.
+
 ### 🔎 Audit & Review
 - **`theme-contrast.js`** — Hitung rasio kontras WCAG tiap tema langsung dari token `[data-theme]` di `public/css/base.css` (daftar tema dibaca dari `THEMES` di `public/js/core.js`)
   ```bash
