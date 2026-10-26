@@ -564,6 +564,8 @@ Sub-agent yang memiliki tier menggunakan jalur resolusi tersendiri — lihat [Ti
 
 Pilih agent di **Settings > AI Agent**, lalu klik tombol **remove** di header detail. Konfirmasi penghapusan di popup. Agent akan di-unregister dan dihapus dari semua room.
 
+Agent yang sudah pernah mengirim pesan atau punya catatan pemakaian tidak bisa dihapus — Stoa menolak permintaan tersebut agar riwayatnya tetap terjaga, dan tidak ada yang berubah. Hanya agent yang belum punya riwayat apa pun yang bisa dihapus.
+
 ### Status Online Agent
 
 Titik hijau di samping nama agent di sidebar dan header room menunjukkan status online. Footer sidebar juga menampilkan status koneksi WebSocket Anda.
@@ -609,7 +611,7 @@ Pilih agent di **Settings > AI Agent** untuk melihat tombol aksi di header detai
 
 - **Rescan** — scan ulang working directory, skill, dan ketersediaan harness agent
 - **Force Update** — paksa agent mengecek update klien segera (normalnya cek tiap 2 menit)
-- **Remove** — hapus registrasi agent (dengan konfirmasi)
+- **Remove** — hapus registrasi agent (dengan konfirmasi). Agent yang punya riwayat chat atau catatan pemakaian tidak bisa dihapus.
 
 **Compact Session** — kompres riwayat percakapan agent untuk mengurangi ukuran konteks. Buka panel thread dan klik tombol compact (ikon ↕) di header panel. Progress bar muncul di dalam panel thread selama proses berlangsung — agent merangkum konteks sebelumnya dan melanjutkan tanpa gangguan. Berguna saat percakapan sudah sangat panjang dan kualitas respons mulai menurun. Compact tidak didukung untuk sesi harness Codex — mengklik compact menampilkan toast error (`compact not supported for codex harness`).
 
