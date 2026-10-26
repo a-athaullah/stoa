@@ -26,6 +26,10 @@
  *      on this repo, and keeps its boot-guard state file in that temp dir
  *  10. From a git worktree with no db/stoa.db, copies the DB (and .env) from the main worktree,
  *      read-only — never symlink the live DB into a worktree
+ *  11. Points STOA_UPLOADS_DIR / STOA_CONNECTOR_MEDIA_DIR at empty temp dirs: the upload GC compares
+ *      the uploads dir against the (older) DB copy, so on the live dir it deleted live attachments,
+ *      and test uploads/avatars landed in the live dir. Fails the run if a file in the live uploads/
+ *      disappeared during it (additions are not checked: the live server keeps taking uploads meanwhile)
  *
  * Usage:        node .claude/tools/run-tests.js
  * Pin port:     TEST_PORT=4123 node .claude/tools/run-tests.js
@@ -60,6 +64,7 @@ const dataRoot    = sourceRoot();
 const liveDb      = path.join(dataRoot, 'db', 'stoa.db');
 const liveBundle  = path.join(dataRoot, 'dist', 'stoa.js');
 const liveEnv     = path.join(dataRoot, '.env');
+const liveUploads = path.join(dataRoot, 'uploads');
 const TIMEOUT_MS  = (parseInt(process.env.TEST_TIMEOUT, 10) || 180) * 1000;
 
 function getFreePort() {
@@ -91,6 +96,8 @@ function waitUp(port, tries = 50) {
   const tmpEnvDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-test-env-'));
   const tmpMcpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-test-mcp-'));
   const tmpUpdateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-test-update-'));
+  const tmpUploadsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-test-uploads-'));
+  const tmpMediaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-test-media-'));
   const tmpEnv = path.join(tmpEnvDir, '.env');
   const rmTmp = () => {
     tmpArtifacts.forEach((f) => { try { fs.unlinkSync(f); } catch {} });
@@ -98,11 +105,18 @@ function waitUp(port, tries = 50) {
     try { fs.rmSync(tmpEnvDir, { recursive: true, force: true }); } catch {}
     try { fs.rmSync(tmpMcpDir, { recursive: true, force: true }); } catch {}
     try { fs.rmSync(tmpUpdateDir, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(tmpUploadsDir, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(tmpMediaDir, { recursive: true, force: true }); } catch {}
   };
   const bundleStamp = () => { try { const s = fs.statSync(liveBundle); return `${s.mtimeMs}:${s.size}`; } catch { return null; } };
   const liveBundleBefore = bundleStamp();
   const envStamp = () => { try { const s = fs.statSync(liveEnv); return `${s.mtimeMs}:${fs.readFileSync(liveEnv, 'utf8')}`; } catch { return null; } };
   const liveEnvBefore = envStamp();
+  const uploadsListing = () => {
+    const list = (sub) => { try { return fs.readdirSync(path.join(liveUploads, sub)).map((n) => path.join(sub, n)); } catch { return []; } };
+    return [...list(''), ...list('avatar'), ...list('debug')];
+  };
+  const liveUploadsBefore = uploadsListing();
   try { fs.copyFileSync(liveEnv, tmpEnv); } catch { fs.writeFileSync(tmpEnv, ''); }
 
   tmpArtifacts.forEach((f) => { try { fs.unlinkSync(f); } catch {} });
@@ -146,6 +160,10 @@ function waitUp(port, tries = 50) {
     STOA_ENV_FILE: tmpEnv,
     // MCP upstream work dirs (<root>/<server id>) apart from the live server's: ids overlap with the DB copy.
     STOA_MCP_WORK_DIR: tmpMcpDir,
+    // Uploads + connector media apart from the live server's: the upload GC would judge the live files
+    // against the DB copy (which lacks un-checkpointed WAL writes) and delete live attachments.
+    STOA_UPLOADS_DIR: tmpUploadsDir,
+    STOA_CONNECTOR_MEDIA_DIR: tmpMediaDir,
     // Expired-retrigger sweep (60 s in prod) fast enough for the offline-agent give-up test.
     RETRIGGER_SWEEP_MS: '500',
     // Model-free embedding backend: exercises worker/backfill/hybrid without a 130 MB download.
@@ -206,11 +224,14 @@ function waitUp(port, tries = 50) {
   const failed = (result.output.match(/✗/g) || []).length;
   const liveBundleTouched = bundleStamp() !== liveBundleBefore;
   const liveEnvTouched = envStamp() !== liveEnvBefore;
+  const liveUploadsAfter = new Set(uploadsListing());
+  const liveUploadsDeleted = liveUploadsBefore.filter((f) => !liveUploadsAfter.has(f));
   const summary = {
     // A timeout is NOT success, but partial results below still tell us which tests passed.
-    success: !result.timedOut && result.code === 0 && failed === 0 && !liveBundleTouched && !liveEnvTouched,
+    success: !result.timedOut && result.code === 0 && failed === 0 && !liveBundleTouched && !liveEnvTouched && !liveUploadsDeleted.length,
     liveBundleTouched,
     liveEnvTouched,
+    liveUploadsDeleted,
     timedOut: result.timedOut,
     timeoutSec: TIMEOUT_MS / 1000,
     testPort: PORT,

@@ -20,6 +20,7 @@ const { createSubAgents } = require('./lib/sub-agents');
 const { createAutomationCrud } = require('./lib/automation-crud');
 const { stoaMcpTools } = require('./lib/stoa-mcp-tools');
 const { collectDiagnostics, buildEnvelope, gcDebugBundles } = require('./lib/debug-bundle');
+const { auditUploads, reclaimUploads } = require('./lib/upload-gc');
 const { enrichAutomation, enrichAutomationList, watchReplyAutomation } = require('./lib/automation-identity');
 const { sanitizeDisplayName, EMAIL_REPLY_LIMITS, buildEmailThreadSection, normalizeRefIds, findEmailReplyThread } = require('./lib/email-threading');
 const { parseClientVersion } = require('./lib/client-version');
@@ -462,10 +463,21 @@ function resolveThread(roomId, threadId) {
 // Depth guard is handled by MAX_WAKE_CASCADE_DEPTH + cascade only fires from
 // parent responses, not sub-agent responses.
 
+// existsSync is true for directories too; reading one throws EISDIR after the 200 header went out.
+function isRegularFile(fp) {
+  return fs.statSync(fp, { throwIfNoEntry: false })?.isFile() === true;
+}
+
+// Absolute path of an /uploads/... URL inside UPLOADS_DIR, or null if it would land outside it.
+function uploadPathForUrl(url) {
+  if (typeof url !== 'string' || !url.startsWith('/uploads/')) return null;
+  const fp = path.resolve(UPLOADS_DIR, url.slice('/uploads/'.length));
+  return fp.startsWith(UPLOADS_DIR + path.sep) ? fp : null;
+}
+
 function deleteAvatarFile(avatarUrl) {
-  if (!avatarUrl) return;
-  const oldPath = path.join(__dirname, avatarUrl.replace(/^\//, ''));
-  if (oldPath.startsWith(path.join(__dirname, 'uploads')) && fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+  const oldPath = uploadPathForUrl(avatarUrl);
+  if (oldPath && fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
 }
 
 // Verify x-agent-id / x-agent-secret headers (same HMAC scheme as proactive message).
@@ -1174,8 +1186,9 @@ setInterval(() => {
 }
 
 const PORT = parseInt(process.env.PORT) || DEFAULT_PORT;
-const UPLOADS_DIR = path.join(__dirname, 'uploads');
-const CONNECTOR_MEDIA_DIR = path.join(__dirname, 'connector-media');
+// Overridable so a test/throwaway server never reads, writes or GCs the live server's files.
+const UPLOADS_DIR = path.resolve(process.env.STOA_UPLOADS_DIR || path.join(__dirname, 'uploads'));
+const CONNECTOR_MEDIA_DIR = path.resolve(process.env.STOA_CONNECTOR_MEDIA_DIR || path.join(__dirname, 'connector-media'));
 
 // Sync HUMAN_NAME env → human actor on startup (default: "Human")
 {
@@ -1213,8 +1226,8 @@ function clientFileHash(name) {
   if (!fs.existsSync(fp)) return null;
   return crypto.createHash('sha256').update(fs.readFileSync(fp)).digest('hex').slice(0, 12);
 }
-if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR);
-if (!fs.existsSync(CONNECTOR_MEDIA_DIR)) fs.mkdirSync(CONNECTOR_MEDIA_DIR);
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+fs.mkdirSync(CONNECTOR_MEDIA_DIR, { recursive: true });
 
 // ── Scheduled cleanup: delete uploaded files older than CLEANUP_MAX_AGE_HOURS (skip avatar/)
 {
@@ -1361,42 +1374,9 @@ function schedulerTick() {
 }
 
 // R18: GC nebeng scheduler tick — throttle 6 jam, async, errors swallowed to log.
-// Split audit (read-only verdict) from reclaim (mutasi) for dry-run-ability.
+// Audit/reclaim live in lib/upload-gc.js (grace period for fresh, not-yet-referenced uploads).
 const GC_INTERVAL_MS = 6 * 3600_000;
 let _gcLastRun = 0;
-
-function auditUploads() {
-  // Collect all URLs referenced by DB — messages, avatars.
-  const referenced = new Set();
-  for (const row of db.prepare("SELECT image_url FROM messages WHERE image_url IS NOT NULL").all())
-    referenced.add(row.image_url);
-  for (const row of db.prepare("SELECT file_url FROM messages WHERE file_url IS NOT NULL").all())
-    referenced.add(row.file_url);
-  for (const row of db.prepare("SELECT json_each.value FROM messages, json_each(messages.attachments) WHERE messages.attachments IS NOT NULL").all())
-    try { const a = JSON.parse(row.value); if (a?.url) referenced.add(a.url); } catch {}
-  for (const row of db.prepare("SELECT avatar_url FROM actors WHERE avatar_url IS NOT NULL").all())
-    referenced.add(row.avatar_url);
-  for (const row of db.prepare("SELECT avatar_url FROM sub_agents WHERE avatar_url IS NOT NULL").all())
-    referenced.add(row.avatar_url);
-
-  const orphans = [];
-  try {
-    for (const entry of fs.readdirSync(UPLOADS_DIR, { withFileTypes: true })) {
-      if (!entry.isFile()) continue;
-      const rel = `/uploads/${entry.name}`;
-      if (!referenced.has(rel)) orphans.push({ path: path.join(UPLOADS_DIR, entry.name), url: rel });
-    }
-  } catch (e) { console.error('[gc] auditUploads scan error:', e.message); }
-  return orphans;
-}
-
-function reclaimUploads(orphans) {
-  let count = 0;
-  for (const { path: fp } of orphans) {
-    try { fs.unlinkSync(fp); count++; } catch (e) { console.error('[gc] delete error:', fp, e.message); }
-  }
-  return count;
-}
 
 function gcTick() {
   const now = Date.now();
@@ -1405,7 +1385,7 @@ function gcTick() {
   // Run async — GC must never block scheduler tick
   setImmediate(() => {
     try {
-      const orphans = auditUploads();
+      const orphans = auditUploads(db, UPLOADS_DIR);
       if (orphans.length) {
         const deleted = reclaimUploads(orphans);
         console.log(`[gc] reclaimed ${deleted} orphaned upload(s)`);
@@ -2051,7 +2031,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname.startsWith('/uploads/')) {
     const relative = path.normalize(url.pathname.slice('/uploads/'.length)).replace(/^(\.\.[\/\\])+/, '');
     const filepath = path.join(UPLOADS_DIR, relative);
-    if (!filepath.startsWith(UPLOADS_DIR) || !fs.existsSync(filepath)) { res.writeHead(404); return res.end('Not found'); }
+    if (!filepath.startsWith(UPLOADS_DIR + path.sep) || !isRegularFile(filepath)) { res.writeHead(404); return res.end('Not found'); }
     const filename = path.basename(filepath);
     const ext = path.extname(filename).toLowerCase();
     const MIMES = {
@@ -2064,15 +2044,16 @@ const server = http.createServer(async (req, res) => {
     };
     const mime = MIMES[ext] || 'application/octet-stream';
     const disp = mime.startsWith('text/') || mime.includes('json') ? 'inline' : 'attachment';
+    const body = fs.readFileSync(filepath);
     res.writeHead(200, fileResponseHeaders(ext, mime, disp));
-    return res.end(fs.readFileSync(filepath));
+    return res.end(body);
   }
 
   // ── Static: connector media files (WA downloads, etc.)
   if (req.method === 'GET' && url.pathname.startsWith('/connector-media/')) {
     const relative = path.normalize(url.pathname.slice('/connector-media/'.length)).replace(/^(\.\.[\/\\])+/, '');
     const filepath = path.join(CONNECTOR_MEDIA_DIR, relative);
-    if (!filepath.startsWith(CONNECTOR_MEDIA_DIR + path.sep) || !fs.existsSync(filepath)) { res.writeHead(404); return res.end('Not found'); }
+    if (!filepath.startsWith(CONNECTOR_MEDIA_DIR + path.sep) || !isRegularFile(filepath)) { res.writeHead(404); return res.end('Not found'); }
     const ext = path.extname(filepath).toLowerCase();
     const MIMES = {
       '.png':'image/png', '.jpg':'image/jpeg', '.jpeg':'image/jpeg',
@@ -2082,8 +2063,9 @@ const server = http.createServer(async (req, res) => {
     };
     const mime = MIMES[ext] || 'application/octet-stream';
     const disp = mime.startsWith('text/') ? 'inline' : 'attachment';
+    const body = fs.readFileSync(filepath);
     res.writeHead(200, fileResponseHeaders(ext, mime, disp));
-    return res.end(fs.readFileSync(filepath));
+    return res.end(body);
   }
 
   // ── Upload file (raw binary)
@@ -2182,10 +2164,11 @@ const server = http.createServer(async (req, res) => {
       }
       const filePath = path.join(PUBLIC_DIR, url.pathname);
       const resolved = path.resolve(filePath);
-      if (resolved.startsWith(PUBLIC_DIR) && fs.existsSync(resolved)) {
+      if (resolved.startsWith(PUBLIC_DIR) && isRegularFile(resolved)) {
         const cachePolicy = (ext === '.svg' || ext === '.json') ? 'public, max-age=86400' : 'no-store';
+        const body = fs.readFileSync(resolved);
         res.writeHead(200, { 'Content-Type': STATIC_TYPES[ext], 'Cache-Control': cachePolicy });
-        return res.end(fs.readFileSync(resolved));
+        return res.end(body);
       }
     }
   }
@@ -3925,10 +3908,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'DELETE' && url.pathname.startsWith('/api/actors/')) {
     const id = parseInt(url.pathname.split('/')[3]);
     const actor = db.prepare('SELECT avatar_url FROM actors WHERE id=?').get(id);
-    if (actor?.avatar_url) {
-      const avatarPath = path.join(__dirname, actor.avatar_url.replace(/^\//, ''));
-      if (avatarPath.startsWith(path.join(__dirname, 'uploads')) && fs.existsSync(avatarPath)) fs.unlinkSync(avatarPath);
-    }
+    deleteAvatarFile(actor?.avatar_url);
     const actorParts = db.prepare('SELECT id, room_id FROM room_participants WHERE actor_id=?').all(id);
     const affectedRooms = actorParts.map(r => r.room_id);
     const actorParticipantIds = actorParts.map(r => r.id);
@@ -4095,9 +4075,10 @@ const server = http.createServer(async (req, res) => {
     const name = path.basename(url.pathname);
     if (!name.endsWith('.md')) { res.writeHead(400); return res.end('md only'); }
     const fp = path.join(__dirname, 'docs', name);
-    if (!fs.existsSync(fp)) { res.writeHead(404); return res.end('Not found'); }
+    if (!isRegularFile(fp)) { res.writeHead(404); return res.end('Not found'); }
+    const body = fs.readFileSync(fp, 'utf8');
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-    return res.end(fs.readFileSync(fp, 'utf8'));
+    return res.end(body);
   }
 
   // ── Workspace file serve (images, binary files) ──
@@ -5067,6 +5048,8 @@ Write-Host "Logs   : pm2 logs $AgentName"
   } catch (err) {
     console.error('[http] unhandled error:', err.message);
     if (!res.headersSent) { res.writeHead(500); res.end(JSON.stringify({ error: 'Internal server error' })); }
+    // Headers already out: a 500 can't be sent any more, but leaving the response open hangs the client.
+    else if (!res.writableEnded) res.destroy();
   }
 });
 

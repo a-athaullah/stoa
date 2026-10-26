@@ -7232,8 +7232,8 @@ async function run() {
       try { return await fn(); } finally { sessionCookie = s; deviceCookie = d; }
     };
     const fs = require('fs');
-    const uploadsDir = path.join(__dirname, 'uploads');
-    const mediaDir = path.join(__dirname, 'connector-media', '__sectest__');
+    const uploadsDir = process.env.STOA_UPLOADS_DIR || path.join(__dirname, 'uploads');
+    const mediaDir = path.join(process.env.STOA_CONNECTOR_MEDIA_DIR || path.join(__dirname, 'connector-media'), '__sectest__');
     const createdUploads = [];
     const upload = async (name, content, type) => {
       const r = await rawReq('POST', '/api/upload/raw', content, type, { 'x-file-name': name });
@@ -10635,40 +10635,81 @@ async function run() {
   console.log('\n[R18: GC upload orphan audit]');
   {
     const fs = require('fs');
+    const os = require('os');
     const path = require('path');
-    const UPLOADS_DIR = path.join(__dirname, 'uploads');
 
-    await test('R18 — auditUploads: orphaned file detected (not in DB)', () => {
-      // Write a temp file to uploads/ that is NOT referenced by any message
-      const orphanName = `__test-orphan-${Date.now()}.txt`;
-      const orphanPath = path.join(UPLOADS_DIR, orphanName);
-      fs.writeFileSync(orphanPath, 'test orphan');
+    await test('R18 — auditUploads: fresh unreferenced upload survives the grace period, old orphan is reclaimed, referenced files kept', () => {
+      const Database = require('better-sqlite3');
+      const { auditUploads, reclaimUploads, UPLOAD_GC_GRACE_MS } = require('./lib/upload-gc');
+      const mem = new Database(':memory:');
+      mem.exec(fs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
+      require('./lib/migrations').runMigrations(mem, path.join(__dirname, 'migrations'), { log() {}, error() {} });
+      mem.pragma('foreign_keys = OFF');
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-gc-'));
       try {
-        // Verify file exists and is not referenced by any message URL in DB — structural check.
-        assert(fs.existsSync(orphanPath), 'orphan file was written');
-        // Confirm that auditUploads would detect it by checking the file is not in any URL column.
-        const db = require('./db');
-        const refs = [
-          ...db.prepare("SELECT image_url AS url FROM messages WHERE image_url IS NOT NULL").all(),
-          ...db.prepare("SELECT file_url AS url FROM messages WHERE file_url IS NOT NULL").all(),
-          ...db.prepare("SELECT avatar_url AS url FROM actors WHERE avatar_url IS NOT NULL").all(),
-        ].map(r => r.url);
-        assert(!refs.includes(`/uploads/${orphanName}`), 'orphan file not in DB refs');
+        const old = (Date.now() - UPLOAD_GC_GRACE_MS - 3600_000) / 1000;
+        const put = (name, aged) => { const fp = path.join(dir, name); fs.writeFileSync(fp, name); if (aged) fs.utimesSync(fp, old, old); return fp; };
+        const fresh = put('fresh-orphan.png', false);          // agent uploaded, turn not finished yet
+        const stale = put('stale-orphan.png', true);
+        const attached = put('attached.png', true);
+        const imaged = put('imaged.png', true);
+        fs.mkdirSync(path.join(dir, 'avatar'));
+        fs.utimesSync(path.join(dir, 'avatar'), old, old);
+        mem.prepare('INSERT INTO messages (room_id, participant_id, content, attachments) VALUES (1, 1, ?, ?)')
+          .run('x', JSON.stringify([{ url: '/uploads/attached.png', name: 'a.png' }]));
+        mem.prepare('INSERT INTO messages (room_id, participant_id, content, image_url) VALUES (1, 1, ?, ?)').run('y', '/uploads/imaged.png');
+
+        const orphans = auditUploads(mem, dir);
+        assert.deepStrictEqual(orphans.map(o => o.url), ['/uploads/stale-orphan.png']);
+        assert.strictEqual(reclaimUploads(orphans), 1);
+        assert.ok(!fs.existsSync(stale), 'old orphan reclaimed');
+        for (const fp of [fresh, attached, imaged, path.join(dir, 'avatar')]) assert.ok(fs.existsSync(fp), `${path.basename(fp)} kept`);
+
+        // Once past the grace period the same unreferenced file is an orphan.
+        assert.deepStrictEqual(auditUploads(mem, dir, { now: Date.now() + UPLOAD_GC_GRACE_MS + 1000 }).map(o => o.url), ['/uploads/fresh-orphan.png']);
       } finally {
-        try { fs.unlinkSync(orphanPath); } catch {}
+        fs.rmSync(dir, { recursive: true, force: true });
+        mem.close();
       }
     });
 
-    await test('R18 — gcTick: exported auditUploads returns array', () => {
-      // auditUploads is an internal function — verify server exports it for testing
-      // by checking it's called via gcTick which is integrated into scheduler loop.
-      // Since NODE_ENV=test suppresses the loop, verify the function exists by duck-typing.
-      // (Integration: gcTick is called in scheduleLoop, not exposed via HTTP — test structural only.)
-      const serverSrc = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
-      assert(serverSrc.includes('function auditUploads'), 'auditUploads defined');
-      assert(serverSrc.includes('function reclaimUploads'), 'reclaimUploads defined');
-      assert(serverSrc.includes('function gcTick'), 'gcTick defined');
-      assert(serverSrc.includes('GC_INTERVAL_MS'), 'GC_INTERVAL_MS defined');
+    await test('R18 — test server uploads land in STOA_UPLOADS_DIR, never in the repo uploads/', async () => {
+      const tmpUploads = process.env.STOA_UPLOADS_DIR;
+      assert.ok(tmpUploads, 'run-tests.js must pass STOA_UPLOADS_DIR');
+      assert.notStrictEqual(path.resolve(tmpUploads), path.resolve(__dirname, 'uploads'));
+      const r = await rawReq('POST', '/api/upload/raw', 'isolation probe', 'text/plain', { 'X-File-Name': 'probe.txt' });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      const name = r.body.url.slice('/uploads/'.length);
+      try {
+        assert.ok(fs.existsSync(path.join(tmpUploads, name)), 'file written to the temp uploads dir');
+        assert.ok(!fs.existsSync(path.join(__dirname, 'uploads', name)), 'file must not touch the repo uploads/');
+        const g = await rawReq('GET', r.body.url, null, 'text/plain');
+        assert.strictEqual(g.status, 200);
+        assert.strictEqual(g.raw, 'isolation probe');
+      } finally { try { fs.unlinkSync(path.join(tmpUploads, name)); } catch {} }
+    });
+
+    await test('R18 — GET on a subdirectory of uploads/ or connector-media/ → 404 promptly (no EISDIR hang)', async () => {
+      const made = [];
+      const mkSub = (root, name) => { const d = path.join(root, name); if (!fs.existsSync(d)) { fs.mkdirSync(d, { recursive: true }); made.push(d); } };
+      mkSub(process.env.STOA_UPLOADS_DIR, 'avatar');
+      mkSub(process.env.STOA_CONNECTOR_MEDIA_DIR, '__subdir_probe__');
+      const get = (p) => new Promise((resolve, reject) => {
+        const r = http.get({ hostname: HOST, port: PORT, path: p, headers: { Cookie: cookieHeader() } }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
+        r.setTimeout(3000, () => r.destroy(new Error(`${p} timed out`)));
+        r.on('error', reject);
+      });
+      try {
+        assert.strictEqual(await get('/uploads/avatar'), 404);
+        assert.strictEqual(await get('/connector-media/__subdir_probe__'), 404);
+      } finally { for (const d of made) fs.rmSync(d, { recursive: true, force: true }); }
+    });
+
+    await test('R18 — GET /uploads/ (the dir itself) and traversal out of it stay 404', async () => {
+      for (const p of ['/uploads/', '/uploads/%2e%2e/db/stoa.db']) {
+        const g = await rawReq('GET', p, null, 'text/plain');
+        assert.strictEqual(g.status, 404, `${p} → ${g.status}`);
+      }
     });
   }
 
