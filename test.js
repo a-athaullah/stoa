@@ -12772,6 +12772,60 @@ async function run() {
     assert.deepStrictEqual([orionRev.children[0].tagName, atlasRev.children[0].tagName], ['IMG', 'SPAN'], 'only the Orion Reviewer bubble is repainted');
   });
 
+  await test('reply order — a completed reply moves past its own progress rows (feed + thread, live), never backward, separators stay put', () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const container = id => {
+      const c = { id, children: [] };
+      c.add = (...els) => els.forEach(e => { e.parentNode = c; c.children.push(e); });
+      return c;
+    };
+    const row = (id, feedPos) => {
+      const e = { id, dataset: {}, parentNode: null };
+      if (feedPos != null) e.dataset.feedPos = String(feedPos);
+      Object.defineProperty(e, 'nextElementSibling', { get() { const s = e.parentNode.children; return s[s.indexOf(e) + 1] || null; } });
+      Object.defineProperty(e, 'isConnected', { get() { return !!e.parentNode; } });
+      e.after = n => { const s = n.parentNode.children; s.splice(s.indexOf(n), 1); n.parentNode = e.parentNode; e.parentNode.children.splice(e.parentNode.children.indexOf(e) + 1, 0, n); };
+      e.querySelector = () => null;
+      return e;
+    };
+    const feed = container('messages-inner');
+    const thread = container('thread-body');
+    const byId = id => [...feed.children, ...thread.children].find(e => e.id === id) || null;
+    const scrolled = [];
+    const ctx = {
+      window: {}, ws: null, currentRoomId: 5,
+      document: { getElementById: byId, visibilityState: 'visible' },
+      setQueuePosition() {}, finalizeMessage() {}, clearComposerProcessing() {}, clearThreadProcessing() {}, refreshRoomList() {},
+      scrollToBottom: () => scrolled.push('feed'), _scrollThreadToBottom() {},
+    };
+    vm.createContext(ctx);
+    for (const f of ['public/js/chat/append.js', 'public/js/websocket.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+    const order = c => c.children.map(e => e.id);
+
+    feed.add(row('msg-100'), row('msg-101'), row('day-sep'), row('msg-102'), row('msg-103'), row('status-line'), row('msg-104'));
+    ctx.handleWsMessage({ type: 'message_complete', message_id: 101, feed_pos: 103.5 });
+    assert.deepStrictEqual(order(feed), ['msg-100', 'day-sep', 'msg-102', 'msg-103', 'msg-101', 'status-line', 'msg-104'],
+      'feed reply lands after its last progress row, before the newer user message; the separator is not dragged along');
+    assert.deepStrictEqual([byId('msg-101').dataset.feedPos, scrolled.length], ['103.5', 1], 'moved row keeps its new position and the feed follows the bottom');
+
+    ctx.handleWsMessage({ type: 'message_complete', message_id: 104, feed_pos: 104 });
+    assert.strictEqual(order(feed).at(-1), 'msg-104', 'a reply with no progress after it stays where it is');
+    assert.strictEqual(scrolled.length, 1, 'no move, no extra scroll');
+
+    thread.add(row('msg-200'), row('msg-201', 199.5), row('msg-202'), row('msg-203'));
+    ctx.handleWsMessage({ type: 'message_complete', message_id: 202, thread_id: 150, feed_pos: 203.5 });
+    assert.deepStrictEqual(order(thread), ['msg-200', 'msg-201', 'msg-203', 'msg-202'], 'thread reply moves the same way');
+    ctx.handleWsMessage({ type: 'message_complete', message_id: 202, thread_id: 150, feed_pos: 199 });
+    assert.deepStrictEqual(order(thread), ['msg-200', 'msg-201', 'msg-203', 'msg-202'], 'never moved backward');
+    assert.strictEqual(ctx.rowFeedPos(byId('msg-201')), 199.5, 'a history row with a fractional feed_pos is read from data-feed-pos, not the id');
+
+    thread.add(row('msg-300'), row('msg-301'), row('msg-302'));
+    ctx.handleWsMessage({ type: 'message_state', message_id: 300, state: 'interrupted', feed_pos: 301.5 });
+    assert.deepStrictEqual(order(thread).slice(-3), ['msg-301', 'msg-300', 'msg-302'], 'an interrupted reply that keeps its text moves too');
+    assert.strictEqual(ctx.placeRowByFeedPos(byId('msg-302'), undefined), false, 'no feed_pos (older server) → no move');
+  });
+
   await test('schedules panel — every form spec passes server validation unchanged, summaries and next run read naturally', () => {
     const vm = require('vm');
     const fs = require('fs');

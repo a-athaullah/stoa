@@ -54,6 +54,34 @@ function maybeInsertDaySep(inner, ts) {
   inner.appendChild(makeDaySeparator(dayLabel(d)));
 }
 
+// ── Feed position ───────────────────────────────────────────────────────────
+// A reply row is created at turn start, so its id sits before the agent's own
+// progress messages. On completion the server may move its feed_pos past them;
+// the row follows, moving forward only, so separators and status lines stay put.
+function setRowFeedPos(row, feedPos) {
+  if (row && feedPos != null && Number.isFinite(Number(feedPos))) row.dataset.feedPos = String(feedPos);
+}
+
+function rowFeedPos(el) {
+  if (el.dataset?.feedPos) return Number(el.dataset.feedPos);
+  const m = /^(?:msg|broadcast)-(\d+)$/.exec(el.id || '');
+  return m ? Number(m[1]) : null;
+}
+
+function placeRowByFeedPos(row, feedPos) {
+  const pos = Number(feedPos);
+  if (!row || feedPos == null || !Number.isFinite(pos)) return false;
+  row.dataset.feedPos = String(pos);
+  let anchor = null;
+  for (let el = row.nextElementSibling; el; el = el.nextElementSibling) {
+    const p = rowFeedPos(el);
+    if (p != null && p <= pos) anchor = el;
+  }
+  if (!anchor) return false;
+  anchor.after(row);
+  return true;
+}
+
 // ── Result chip (Phase 4) ────────────────────────────────────────────────────
 // Quiet metadata line under an agent bubble: how the run ended + token/duration
 // cost. `raw` is the JSON string stored in messages.result_meta (or null).
@@ -121,6 +149,7 @@ function appendMessage(m, container) {
   const row = document.createElement('div');
   row.className = 'h-msg-row ' + (isHuman ? 'human' : 'ai');
   row.id = 'msg-' + m.id;
+  setRowFeedPos(row, m.feed_pos);
 
   // Seal
   const sealWrap = document.createElement('div');

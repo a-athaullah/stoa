@@ -17,6 +17,7 @@ function appendFeedRootRow(m, inner) {
   row.className = 't-root-row h-feed-root';
   row.id = 'msg-' + m.id;
   row.dataset.rootId = m.id;
+  setRowFeedPos(row, m.feed_pos);
 
   // Avatar (36px)
   const avatarWrap = document.createElement('div');
@@ -270,6 +271,7 @@ function appendFeedBroadcastRow(m, inner) {
   row.id = 'broadcast-' + m.id;
   row.dataset.broadcastId = m.id;
   row.dataset.rootId = m.thread_id;
+  setRowFeedPos(row, m.feed_pos);
 
   // Broadcast header label
   const header = document.createElement('div');
@@ -387,6 +389,7 @@ function upsertFeedBroadcastRow(m) {
     badge.className = 't-broadcast-badge t-broadcast-badge--' + m.broadcast_reason + ' t-broadcast-reason-badge';
     badge.textContent = _broadcastReasonMap[m.broadcast_reason] || m.broadcast_reason;
   }
+  placeRowByFeedPos(existing, m.feed_pos);
 }
 
 function clearThreadSummaries() {
