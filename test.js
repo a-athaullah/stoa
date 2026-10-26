@@ -6310,6 +6310,41 @@ async function run() {
       }
     });
 
+    // Feed echo of a thread run: shown only while the run has ended in error, live and on reload alike.
+    const historyOf = async () => {
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        const h = waitForWsMessage(ws, m => m.type === 'history');
+        ws.send(JSON.stringify({ type: 'join_room', room_id: lrRoomId }));
+        return (await h).messages;
+      } finally { ws.close(); }
+    };
+    await test('feed echo — revive hides it (live + reload, reason kept); failing again brings it back past the flood guard', async () => {
+      if (!pendingRun) { console.log('    (skipped)'); return; }
+      const t = nextTrigger();
+      humanWs.send(JSON.stringify({ type: 'send_message', room_id: lrRoomId, content: `@${LR_NAME} echo topic` }));
+      const x = await t;
+      assert.ok(x.thread_id, 'root @mention runs in a thread');
+      const echoed = waitForWsMessage(humanWs, m => m.type === 'message_broadcast' && m.message?.id === x.message_id, 5000);
+      const closed = new Promise(r => lr.ws.once('close', r));
+      lr.ws.close(); await closed;
+      assert.strictEqual((await echoed).message.broadcast_reason, 'error');
+      assert.ok((await historyOf()).some(m => m.id === x.message_id && m.state === 'error'), 'reload shows the echo while interrupted');
+
+      const cleared = waitForWsMessage(humanWs, m => m.type === 'message_broadcast_cleared' && m.message_id === x.message_id, 5000);
+      lr.ws = await connectAgent([x.message_id]);
+      assert.deepStrictEqual(await cleared, { type: 'message_broadcast_cleared', message_id: x.message_id, thread_id: x.thread_id }, 'live: the echo leaves on revive');
+      assert.ok(!(await historyOf()).some(m => m.id === x.message_id), 'reload: no echo for a running run');
+      assert.deepStrictEqual(db.prepare('SELECT state, broadcast_reason FROM messages WHERE id=?').get(x.message_id), { state: 'streaming', broadcast_reason: 'error' }, 'reason kept for a second failure');
+
+      const back = waitForWsMessage(humanWs, m => m.type === 'message_broadcast' && m.message?.id === x.message_id, 5000);
+      lr.ws.send(JSON.stringify({ type: 'agent_complete', room_id: lrRoomId, message_id: x.message_id, content: 'failed again', result_meta: { exit_reason: 'error' } }));
+      const b = (await back).message;
+      assert.deepStrictEqual({ state: b.state, content: b.content, broadcast_reason: b.broadcast_reason }, { state: 'error', content: 'failed again', broadcast_reason: 'error' }, 'live: the echo returns with the failure');
+      const h = (await historyOf()).find(m => m.id === x.message_id);
+      assert.deepStrictEqual({ state: h?.state, content: h?.content }, { state: 'error', content: 'failed again' }, 'reload shows the same echo');
+    });
+
     await test('Cleanup — live run event test data', async () => {
       if (humanWs) { humanWs.close(); humanWs = null; }
       if (lr?.ws) lr.ws.close();
@@ -14977,6 +15012,13 @@ async function run() {
       const l = await req('POST', `/api/rooms/${r.body.id}/sub-agents`, { sub_agent_id: s.body.id });
       assert.ok(l.status === 200 || l.status === 201, JSON.stringify(l.body));
       aw = { roomId: r.body.id, sa: s.body };
+      // A room client sees each timeout as an error carrying the notice a reload shows (not a bare error).
+      const hws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      const hist = waitForWsMessage(hws, m => m.type === 'history');
+      hws.send(JSON.stringify({ type: 'join_room', room_id: aw.roomId }));
+      await hist;
+      const errEvents = [];
+      hws.on('message', raw => { const m = JSON.parse(raw); if (m.type === 'message_state' && m.state === 'error') errEvents.push(m); });
       aw.A = await awSpawn('run A lost by the agent');
       aw.B = await awSpawn('run B completes after the timeout');
       aw.C = await awSpawn('run C errors after the timeout');
@@ -14989,7 +15031,12 @@ async function run() {
         assert.ok(x.content.startsWith('(timeout'), x.content);
         assert.deepStrictEqual(JSON.parse(x.result_meta), { exit_reason: 'timeout', awaiting_agent: true });
         assert.strictEqual(wakesFor(id), 0, 'no wake at the timeout: the agent may still complete it');
+        const evs = errEvents.filter(e => e.message_id === id);
+        assert.strictEqual(evs.length, 1, `run ${id}: one error event`);
+        assert.deepStrictEqual({ content: evs[0].content, result_meta: evs[0].result_meta, sub_agent_label: evs[0].sub_agent_label, thread_id: evs[0].thread_id },
+          { content: x.content, result_meta: x.result_meta, sub_agent_label: 'awaitsub', thread_id: x.thread_id ?? null }, 'live event = the row a reload reads');
       }
+      hws.close();
     });
 
     await test('Orphan wake — timed-out run completed later wakes the parent once with the real result', async () => {
@@ -17306,8 +17353,17 @@ async function run() {
     assert.strictEqual(row3.broadcast_reason, 'error', 'generic error content should classify as error');
     assert.strictEqual(broadcasts.length, 2, 'should have emitted again');
 
-    const r5 = tb.maybeBroadcastError({ threadId: rootId, messageId: reply3Id, reason: 'error' });
+    const reply4Id = Number(db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?, ?, 'third error', 'error', ?)").run(_tbRoomId, _tbParticipantId, rootId).lastInsertRowid);
+    const r5 = tb.maybeBroadcastError({ threadId: rootId, messageId: reply4Id, reason: 'error' });
     assert.strictEqual(r5, false, 'anti-flood should block even with explicit reason');
+    assert.strictEqual(db.prepare('SELECT broadcast_reason FROM messages WHERE id=?').get(reply4Id).broadcast_reason, null);
+
+    // A row already echoed (revived run failing again) is echoed again although the window is still closed.
+    const r6 = tb.maybeBroadcastError({ threadId: rootId, messageId: reply3Id, content: 'rate limit again', roomId: _tbRoomId });
+    assert.strictEqual(r6, true, 're-echo of an already-flagged row');
+    assert.strictEqual(broadcasts.length, 3);
+    assert.strictEqual(broadcasts[2].payload.message.id, reply3Id);
+    assert.strictEqual(db.prepare('SELECT broadcast_reason FROM messages WHERE id=?').get(reply3Id).broadcast_reason, 'error', 'reason kept');
   });
 
   // ── MCP gateway end-to-end: real /api/mcp admin API, real tokens from agent_trigger, real /mcp
