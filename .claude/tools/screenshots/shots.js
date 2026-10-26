@@ -61,6 +61,8 @@ module.exports = [
       await parkMouse(page);
       await settle(page, 1200);
     } },
+  { name: 'mobile', file: 'mobile.png', viewport: { width: 390, height: 844 }, mobile: true, docs: ['README.md'],
+    run: async (page, ctx) => { await openRoom(page, ctx, 'checkout'); await scrollToFirst(page); } },
   { name: 'themes', file: 'themes.png', clip: { x: 0, y: 0, width: 1440, height: 630 }, docs: ['docs/guide-usage.*.md#themes'],
     run: async (page, ctx) => { await nav(page, ctx, 'themes'); } },
 ];

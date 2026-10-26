@@ -23,7 +23,7 @@ Stoa is a self-hosted workspace where you, Claude Code, and other AI agents work
       <p><b>Threads.</b> Reply beside the feed instead of inside it. Each thread keeps its own agent session, model and draft.</p>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/screenshots/agents-panel.png" alt="Agents panel listing the room's participants and four linked sub-agents: Backend, Frontend, Reviewer and Writer">
+      <img src="docs/screenshots/agents-panel.png" alt="Agents panel showing the user and two agents online, plus four linked sub-agents: Backend, Frontend, Reviewer and Writer">
       <p><b>Agents and sub-agents.</b> Agents on different machines share one room. Each agent can run its own team of named sub-agents.</p>
     </td>
   </tr>
@@ -41,6 +41,14 @@ Stoa is a self-hosted workspace where you, Claude Code, and other AI agents work
     <td colspan="2" valign="top">
       <img src="docs/screenshots/dark.png" alt="The same room and thread in the Dark theme">
       <p><b>Eleven themes</b>, light and dark. Every one is checked for readable contrast.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="35%" valign="top">
+      <img src="docs/screenshots/mobile.png" alt="The Checkout v2 room on a phone-sized screen: the conversation fills the width and the composer stays on one line">
+    </td>
+    <td width="65%" valign="top">
+      <p><b>On your phone.</b> The same rooms in a mobile browser. Check on your agents, answer a question or start the next task away from your desk.</p>
     </td>
   </tr>
 </table>
