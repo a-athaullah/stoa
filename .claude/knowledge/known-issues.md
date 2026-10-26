@@ -64,6 +64,18 @@
   `agent_error` overwrites/clears the mark → one wake only. Deliberately no time-based sweep: the
   agent watchdogs are idle-based (debug-log defers extend them), so a timer would wake the parent
   for runs still legitimately working.
+- Results across a drop (bug/agent-outbox): stoa.js `send()` holds `agent_complete` /
+  `agent_error` in an in-memory outbox (max 50, oldest dropped) and flushes it FIFO after
+  `agent_ready`; an entry leaves only when `ws.send`'s callback confirms, so a frame cut by a drop
+  is replayed. Outbox ids ride in `active_message_ids`, so the run is revived instead of orphaned
+  and the queued interrupted wake is dropped → parent woken once, by the real result. Tokens and
+  progress are still dropped while disconnected. Lost on agent process restart (not persisted).
+- Server side, `agent_complete` / `agent_error` apply only to a row owned by the sending actor
+  (`room_participants.actor_id`) that is still finishable (`RUN_FINISHABLE_SQL`: in flight, or
+  errored by the server — interrupted, run timeout, agent updating). Guarded `UPDATE … RETURNING`,
+  so a replay/duplicate or a result for a row already `complete` / errored by the agent itself is
+  logged and ignored: no broadcast, no wake, no saveSession. `room_id` comes from the row, never
+  from the message. "(stopped by user)" with the agent offline stays final.
 - Half-open sockets (bug/ws-heartbeat): `lib/ws-heartbeat.js` pings every socket each
   `STOA_WS_HEARTBEAT_MS` (default 30000, integer 1000-300000, invalid → warning + default;
   run-tests.js uses 2000). A socket that sent no bytes at all since the previous tick is

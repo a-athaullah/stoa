@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.434";
+var CLIENT_VERSION = "0.4.435";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -906,8 +906,7 @@ function connect() {
     if (ACTOR_TYPE === "ai") {
       getSession(process.env.STOA_WORK_DIR || os.homedir(), "default");
       // active_message_ids: runs survive a reconnect, so the server must not orphan them.
-      const active_message_ids = [...activeTriggers.keys(), ...triggerQueue.map((t) => t.message_id)];
-      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, harnesses_available: [], supervisor: SUPERVISOR, boot_id: BOOT_ID, active_message_ids }));
+      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, harnesses_available: [], supervisor: SUPERVISOR, boot_id: BOOT_ID, active_message_ids: activeMessageIds() }));
       sendQueueStatus();
       console.log(`[stoa] Agent #${ACTOR_ID} v${CLIENT_VERSION} connected to ${STOA_URL} (max_concurrent=${MAX_CONCURRENT})`);
       detectHarnessesAsync().then((result) => {
@@ -934,6 +933,7 @@ function connect() {
     }
   });
   ws.on("close", () => {
+    setOutboxReady(false);
     if (ACTOR_TYPE === "ai") {
       consecutiveFailures++;
       const delay = Math.min(5e3 * Math.pow(2, consecutiveFailures - 1), 6e4);
@@ -964,6 +964,7 @@ async function handleAgentMessage(msg) {
   }
   if (msg.type === "agent_ready") {
     consecutiveFailures = 0;
+    setOutboxReady(true);
     console.log("[stoa] Ready, waiting for triggers...");
     (async () => {
       try {
@@ -2497,9 +2498,48 @@ var _sendOverride = null;
 var _getSessionOverride = null;
 var _prepareResumeOverride = null;
 var _fetchOverride = null;
+// agent_complete / agent_error are the only record of a run's result, so they never go straight
+// to the socket: they wait here until the server has acknowledged the handshake (agent_ready) and
+// leave only once ws.send reports the frame written. One sent while the socket is down is replayed
+// after the next reconnect; the server ignores a replay it already applied. Stream tokens and
+// progress are not worth replaying and are still dropped while disconnected.
+var OUTBOX_TYPES = /* @__PURE__ */ new Set(["agent_complete", "agent_error"]);
+var OUTBOX_MAX = 50;
+var outbox = [];
+var outboxReady = false;
 function send(data) {
   if (_sendOverride) return _sendOverride(data);
+  if (OUTBOX_TYPES.has(data?.type)) {
+    if (outbox.length >= OUTBOX_MAX) {
+      const dropped = outbox.shift();
+      console.warn(`[stoa] outbox full (${OUTBOX_MAX}) \u2014 dropped ${dropped.data.type} for msg=${dropped.data.message_id}`);
+    }
+    outbox.push({ data, sending: false });
+    return flushOutbox();
+  }
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data));
+}
+function flushOutbox() {
+  if (!outboxReady || ws?.readyState !== WebSocket.OPEN) return;
+  for (const entry of outbox) {
+    if (entry.sending) continue;
+    entry.sending = true;
+    ws.send(JSON.stringify(entry.data), (err) => {
+      if (err) { entry.sending = false; return; }
+      const i = outbox.indexOf(entry);
+      if (i !== -1) outbox.splice(i, 1);
+    });
+  }
+}
+function setOutboxReady(ready) {
+  outboxReady = ready;
+  // A frame still unconfirmed when the socket drops may never have left: replay it on the next one.
+  if (!ready) for (const entry of outbox) entry.sending = false;
+  else flushOutbox();
+}
+// Runs whose result has not reached the server yet: still running, queued, or waiting in the outbox.
+function activeMessageIds() {
+  return [...new Set([...activeTriggers.keys(), ...triggerQueue.map((t) => t.message_id), ...outbox.map((e) => e.data.message_id)])];
 }
 function out(line) {
   process.stdout.write("\n" + line + "\n");
@@ -2543,6 +2583,7 @@ if (ACTOR_TYPE === "ai") {
 }
 function __setDeps(overrides) {
   if (overrides.send) _sendOverride = overrides.send;
+  if (overrides.ws) ws = overrides.ws;
   if (overrides.FETCH_TIMEOUT_MS != null) FETCH_TIMEOUT_MS = overrides.FETCH_TIMEOUT_MS;
   if (overrides.getSession) _getSessionOverride = overrides.getSession;
   if (overrides.prepareResume) _prepareResumeOverride = overrides.prepareResume;
@@ -2563,5 +2604,8 @@ function __resetDeps() {
   _restartOverride = null;
   pendingRestart = false;
   pendingRestartSince = 0;
+  ws = null;
+  outbox.length = 0;
+  outboxReady = false;
 }
-module.exports = { handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, TOOL_STALL_MS, forceRestartIfStalled, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, attachHeartbeatWatchdog, HEARTBEAT_MIN_SILENCE_MS, __setDeps, __resetDeps, extractAndUploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES };
+module.exports = { handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, TOOL_STALL_MS, forceRestartIfStalled, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, attachHeartbeatWatchdog, HEARTBEAT_MIN_SILENCE_MS, __setDeps, __resetDeps, extractAndUploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES, send, outbox, OUTBOX_MAX, activeMessageIds };

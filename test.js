@@ -1796,6 +1796,59 @@ function runUnitTests() {
     assert.ok(typeof stoa.__setDeps === 'function', '__setDeps exported');
   });
 
+  // Outbox: a run's result sent while the socket is down is held and replayed after agent_ready.
+  ut('outbox: final results held while disconnected, stream tokens dropped, ids reported on connect', () => {
+    const stoa = require('./stoa.js');
+    stoa.__resetDeps();
+    const sock = { readyState: 3, send: () => { throw new Error('socket is closed'); } };
+    stoa.__setDeps({ ws: sock });
+    try {
+      stoa.send({ type: 'agent_stream', room_id: 1, message_id: 900, token: 'x' });
+      stoa.send({ type: 'agent_complete', room_id: 1, message_id: 901, content: 'done' });
+      stoa.send({ type: 'agent_error', room_id: 1, message_id: 902, error: 'boom' });
+      assert.deepStrictEqual(stoa.outbox.map(e => e.data.message_id), [901, 902], 'only agent_complete / agent_error are kept');
+      assert.deepStrictEqual(stoa.activeMessageIds(), [901, 902], 'held results are reported as active so the server does not orphan them');
+    } finally { stoa.__resetDeps(); }
+  });
+
+  ut('outbox: flushed FIFO only after agent_ready; kept until ws.send confirms; failed frame retried', () => {
+    const stoa = require('./stoa.js');
+    stoa.__resetDeps();
+    const frames = [], cbs = new Map();
+    const sock = { readyState: 3, send: (d, cb) => { const m = JSON.parse(d); frames.push(m); if (cb) cbs.set(m.message_id, cb); } };
+    stoa.__setDeps({ ws: sock });
+    try {
+      stoa.send({ type: 'agent_complete', room_id: 1, message_id: 901, content: 'a' });
+      stoa.send({ type: 'agent_complete', room_id: 1, message_id: 902, content: 'b' });
+      sock.readyState = 1;
+      stoa.send({ type: 'agent_stream', room_id: 1, message_id: 903, token: 't' });
+      assert.deepStrictEqual(frames.map(m => m.type), ['agent_stream'], 'open but no handshake yet: results wait, tokens go');
+      stoa.handleAgentMessage({ type: 'agent_ready' });
+      const results = () => frames.filter(m => m.type === 'agent_complete').map(m => m.message_id);
+      assert.deepStrictEqual(results(), [901, 902], 'flushed in order after agent_ready');
+      assert.strictEqual(stoa.outbox.length, 2, 'nothing removed before ws.send confirms');
+      cbs.get(901)(new Error('socket closed mid-write'));
+      cbs.get(902)();
+      assert.deepStrictEqual(stoa.outbox.map(e => e.data.message_id), [901], 'confirmed frame removed, failed one kept');
+      stoa.send({ type: 'agent_complete', room_id: 1, message_id: 904, content: 'c' });
+      assert.deepStrictEqual(results(), [901, 902, 901, 904], 'failed frame replayed ahead of the new one');
+      cbs.get(901)(); cbs.get(904)();
+      assert.strictEqual(stoa.outbox.length, 0);
+    } finally { stoa.__resetDeps(); }
+  });
+
+  ut('outbox: bounded — oldest result dropped when full', () => {
+    const stoa = require('./stoa.js');
+    stoa.__resetDeps();
+    stoa.__setDeps({ ws: { readyState: 3, send: () => {} } });
+    try {
+      for (let i = 1; i <= stoa.OUTBOX_MAX + 2; i++) stoa.send({ type: 'agent_complete', room_id: 1, message_id: i, content: 'x' });
+      assert.strictEqual(stoa.outbox.length, stoa.OUTBOX_MAX);
+      assert.strictEqual(stoa.outbox[0].data.message_id, 3, 'two oldest dropped');
+      assert.strictEqual(stoa.outbox.at(-1).data.message_id, stoa.OUTBOX_MAX + 2);
+    } finally { stoa.__resetDeps(); }
+  });
+
   // G2: sweepStaleTriggers — stale entry swept, active entry preserved
   ut('sweepStaleTriggers: stale entry swept, active preserved', () => {
     const stoa = require('./stoa.js');
@@ -14684,6 +14737,8 @@ async function run() {
       assert.strictEqual(r.status, 200);
       owRoomId = r.body.id;
       testRoomIds.push(owRoomId);
+      // This section spawns more runs than the default hourly budget allows.
+      assert.strictEqual((await req('PATCH', `/api/rooms/${owRoomId}`, { max_spawns_per_hour: 100 })).status, 200);
       const s = await req('POST', `/api/actors/${agent.actorId}/sub-agents`, { label: 'orphansub', tier: 'quick' });
       assert.strictEqual(s.status, 201, JSON.stringify(s.body));
       owSa = s.body;
@@ -14796,6 +14851,137 @@ async function run() {
       const wake = waitForWsMessage(ow.ws, mm => mm.type === 'agent_trigger' && !mm.sub_agent, 5000);
       complete(ow.ws, m, 'done');
       complete(ow.ws, await wake, 'ok');
+    });
+
+    // ── Late / replayed results (stoa.js outbox) ──
+    // A human socket on the room counts the message_complete broadcasts per run.
+    const watchRoom = async () => {
+      const h = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      const seen = [];
+      h.on('message', d => { try { seen.push(JSON.parse(d)); } catch {} });
+      const hist = waitForWsMessage(h, m => m.type === 'history', 5000);
+      h.send(JSON.stringify({ type: 'join_room', room_id: owRoomId }));
+      await hist;
+      return { h, completes: (id) => seen.filter(m => m.type === 'message_complete' && m.message_id === id).length };
+    };
+    const settle = () => new Promise(r => setTimeout(r, 300));
+
+    await test('Late result — agent_complete for an interrupted run completes it, broadcasts once, wakes the parent once', async () => {
+      if (!owSa) { console.log('    (skipped)'); return; }
+      const m = await spawnSub('finishes after the drop');
+      await closeWs(ow.ws);
+      assert.strictEqual(JSON.parse(row(m.message_id).result_meta).exit_reason, 'interrupted');
+      // Outdated agent: the interrupted wake is held, so only the late result decides the wake.
+      const old = await connect({ client_version: '0.0.1' });
+      const room = await watchRoom();
+      try {
+        complete(old, m, 'late real result');
+        complete(old, m, 'late real result (replayed)');
+        await settle();
+        const r = row(m.message_id);
+        assert.strictEqual(r.state, 'complete');
+        assert.strictEqual(r.content, 'late real result', 'the replay does not overwrite the applied result');
+        assert.strictEqual(room.completes(m.message_id), 1, 'one message_complete for two deliveries');
+        assert.strictEqual(wakesFor(m.message_id), 1, 'interrupted wake replaced by one completion wake');
+      } finally { room.h.close(); }
+      await closeWs(old);
+      const { ws, parent } = await connectExpectingParent({});
+      ow.ws = ws;
+      const w = await parent;
+      assert.ok(w && w.prompt.includes('late real result') && !w.prompt.includes('TERPUTUS'));
+      complete(ws, w, 'ok');
+      assert.ok(await noParentTrigger(ws), 'exactly one wake');
+    });
+
+    await test('Late result — agent_complete delivered twice for a live run: one update, one broadcast, one wake', async () => {
+      if (!owSa) { console.log('    (skipped)'); return; }
+      const m = await spawnSub('double delivery');
+      const room = await watchRoom();
+      try {
+        const wake = waitForWsMessage(ow.ws, mm => mm.type === 'agent_trigger' && !mm.sub_agent, 5000);
+        complete(ow.ws, m, 'first delivery');
+        complete(ow.ws, m, 'second delivery');
+        const w = await wake;
+        await settle();
+        assert.strictEqual(row(m.message_id).content, 'first delivery');
+        assert.strictEqual(room.completes(m.message_id), 1);
+        complete(ow.ws, w, 'ok');
+        assert.ok(await noParentTrigger(ow.ws), 'the duplicate does not wake the parent again');
+      } finally { room.h.close(); }
+    });
+
+    await test('Late result — a run the agent itself ended with an error is final: a later agent_complete is ignored', async () => {
+      if (!owSa) { console.log('    (skipped)'); return; }
+      const m = await spawnSub('fails for real');
+      const wake = waitForWsMessage(ow.ws, mm => mm.type === 'agent_trigger' && !mm.sub_agent, 5000);
+      complete(ow.ws, m, 'tool crashed', { exit_reason: 'error' });
+      complete(ow.ws, await wake, 'ok');
+      const room = await watchRoom();
+      try {
+        complete(ow.ws, m, 'stale success');
+        ow.ws.send(JSON.stringify({ type: 'agent_error', room_id: owRoomId, message_id: m.message_id, error: 'stale error' }));
+        assert.ok(await noParentTrigger(ow.ws), 'no second wake');
+        const r = row(m.message_id);
+        assert.strictEqual(r.state, 'error');
+        assert.strictEqual(r.content, 'tool crashed');
+        assert.strictEqual(room.completes(m.message_id), 0);
+        assert.strictEqual(wakesFor(m.message_id), 0);
+      } finally { room.h.close(); }
+    });
+
+    await test('Late result — agent_complete for another agent\'s run is rejected (row, broadcast and wake untouched)', async () => {
+      if (!owSa) { console.log('    (skipped)'); return; }
+      const m = await spawnSub('not yours to finish');
+      const other = await createOnlineTestAgent('__test-late-other', '/tmp/stoa-test-late-other');
+      const room = await watchRoom();
+      try {
+        other.ws.send(JSON.stringify({ type: 'agent_complete', room_id: owRoomId, message_id: m.message_id, content: 'forged result' }));
+        other.ws.send(JSON.stringify({ type: 'agent_complete', room_id: owRoomId, message_id: m.message_id, content: '' }));
+        await settle();
+        const r = row(m.message_id);
+        assert.strictEqual(r.state, 'streaming');
+        assert.strictEqual(r.content, '');
+        assert.strictEqual(room.completes(m.message_id), 0);
+        assert.strictEqual(wakesFor(m.message_id), 0);
+      } finally { room.h.close(); await closeWs(other.ws); }
+      const wake = waitForWsMessage(ow.ws, mm => mm.type === 'agent_trigger' && !mm.sub_agent, 5000);
+      complete(ow.ws, m, 'real result');
+      complete(ow.ws, await wake, 'ok');
+      assert.strictEqual(row(m.message_id).content, 'real result');
+    });
+
+    await test('Late result — stoa.js outbox: result held over a disconnect revives the run on reconnect and wakes the parent once', async () => {
+      if (!owSa) { console.log('    (skipped)'); return; }
+      const stoa = require('./stoa.js');
+      const m = await spawnSub('finishes while the socket is down');
+      await closeWs(ow.ws);
+      assert.strictEqual(wakesFor(m.message_id), 1);
+      stoa.__resetDeps();
+      stoa.__setDeps({ ws: { readyState: 3, send: () => {} } });
+      try {
+        stoa.send({ type: 'agent_complete', room_id: owRoomId, message_id: m.message_id, content: 'result from the outbox' });
+        assert.ok(stoa.activeMessageIds().includes(m.message_id));
+        const ws = await openWsConnection(`ws://${HOST}:${PORT}`);
+        // agent_ready also scans this machine's workdirs; keep that out of the test DB.
+        const rawSend = ws.send.bind(ws);
+        ws.send = (d, cb) => (String(d).includes('"agent_scan_result"') ? cb?.() : rawSend(d, cb));
+        stoa.__setDeps({ ws });
+        const revived = waitForWsMessage(ws, mm => mm.type === 'agent_ready', 5000).then(mm => {
+          const st = row(m.message_id).state;
+          stoa.handleAgentMessage(mm);
+          return st;
+        });
+        const parent = waitForWsMessage(ws, mm => mm.type === 'agent_trigger' && !mm.sub_agent, 5000);
+        ws.send(JSON.stringify({ type: 'agent_connect', actor_id: ow.actorId, secret: ow.secret, active_message_ids: stoa.activeMessageIds() }));
+        ow.ws = ws;
+        assert.strictEqual(await revived, 'streaming', 'outbox id in active_message_ids → not orphaned');
+        const w = await parent;
+        assert.ok(w.prompt.includes('result from the outbox') && !w.prompt.includes('TERPUTUS'), 'woken by the real result, not the interruption');
+        assert.strictEqual(row(m.message_id).state, 'complete');
+        assert.strictEqual(stoa.outbox.length, 0, 'flushed and confirmed');
+        complete(ws, w, 'ok');
+        assert.ok(await noParentTrigger(ws), 'exactly one wake');
+      } finally { stoa.__resetDeps(); }
     });
 
     await test('Orphan wake — sub-agent refused with "agent updating" wakes the parent after the update', async () => {
