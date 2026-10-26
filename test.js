@@ -10689,6 +10689,22 @@ async function run() {
       } finally { try { fs.unlinkSync(path.join(tmpUploads, name)); } catch {} }
     });
 
+    await test('R18 — GET on a subdirectory of uploads/ or connector-media/ → 404 promptly (no EISDIR hang)', async () => {
+      const made = [];
+      const mkSub = (root, name) => { const d = path.join(root, name); if (!fs.existsSync(d)) { fs.mkdirSync(d, { recursive: true }); made.push(d); } };
+      mkSub(process.env.STOA_UPLOADS_DIR, 'avatar');
+      mkSub(process.env.STOA_CONNECTOR_MEDIA_DIR, '__subdir_probe__');
+      const get = (p) => new Promise((resolve, reject) => {
+        const r = http.get({ hostname: HOST, port: PORT, path: p, headers: { Cookie: cookieHeader() } }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
+        r.setTimeout(3000, () => r.destroy(new Error(`${p} timed out`)));
+        r.on('error', reject);
+      });
+      try {
+        assert.strictEqual(await get('/uploads/avatar'), 404);
+        assert.strictEqual(await get('/connector-media/__subdir_probe__'), 404);
+      } finally { for (const d of made) fs.rmSync(d, { recursive: true, force: true }); }
+    });
+
     await test('R18 — GET /uploads/ (the dir itself) and traversal out of it stay 404', async () => {
       for (const p of ['/uploads/', '/uploads/%2e%2e/db/stoa.db']) {
         const g = await rawReq('GET', p, null, 'text/plain');

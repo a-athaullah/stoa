@@ -463,6 +463,11 @@ function resolveThread(roomId, threadId) {
 // Depth guard is handled by MAX_WAKE_CASCADE_DEPTH + cascade only fires from
 // parent responses, not sub-agent responses.
 
+// existsSync is true for directories too; reading one throws EISDIR after the 200 header went out.
+function isRegularFile(fp) {
+  return fs.statSync(fp, { throwIfNoEntry: false })?.isFile() === true;
+}
+
 // Absolute path of an /uploads/... URL inside UPLOADS_DIR, or null if it would land outside it.
 function uploadPathForUrl(url) {
   if (typeof url !== 'string' || !url.startsWith('/uploads/')) return null;
@@ -2026,7 +2031,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname.startsWith('/uploads/')) {
     const relative = path.normalize(url.pathname.slice('/uploads/'.length)).replace(/^(\.\.[\/\\])+/, '');
     const filepath = path.join(UPLOADS_DIR, relative);
-    if (!filepath.startsWith(UPLOADS_DIR + path.sep) || !fs.existsSync(filepath)) { res.writeHead(404); return res.end('Not found'); }
+    if (!filepath.startsWith(UPLOADS_DIR + path.sep) || !isRegularFile(filepath)) { res.writeHead(404); return res.end('Not found'); }
     const filename = path.basename(filepath);
     const ext = path.extname(filename).toLowerCase();
     const MIMES = {
@@ -2039,15 +2044,16 @@ const server = http.createServer(async (req, res) => {
     };
     const mime = MIMES[ext] || 'application/octet-stream';
     const disp = mime.startsWith('text/') || mime.includes('json') ? 'inline' : 'attachment';
+    const body = fs.readFileSync(filepath);
     res.writeHead(200, fileResponseHeaders(ext, mime, disp));
-    return res.end(fs.readFileSync(filepath));
+    return res.end(body);
   }
 
   // ── Static: connector media files (WA downloads, etc.)
   if (req.method === 'GET' && url.pathname.startsWith('/connector-media/')) {
     const relative = path.normalize(url.pathname.slice('/connector-media/'.length)).replace(/^(\.\.[\/\\])+/, '');
     const filepath = path.join(CONNECTOR_MEDIA_DIR, relative);
-    if (!filepath.startsWith(CONNECTOR_MEDIA_DIR + path.sep) || !fs.existsSync(filepath)) { res.writeHead(404); return res.end('Not found'); }
+    if (!filepath.startsWith(CONNECTOR_MEDIA_DIR + path.sep) || !isRegularFile(filepath)) { res.writeHead(404); return res.end('Not found'); }
     const ext = path.extname(filepath).toLowerCase();
     const MIMES = {
       '.png':'image/png', '.jpg':'image/jpeg', '.jpeg':'image/jpeg',
@@ -2057,8 +2063,9 @@ const server = http.createServer(async (req, res) => {
     };
     const mime = MIMES[ext] || 'application/octet-stream';
     const disp = mime.startsWith('text/') ? 'inline' : 'attachment';
+    const body = fs.readFileSync(filepath);
     res.writeHead(200, fileResponseHeaders(ext, mime, disp));
-    return res.end(fs.readFileSync(filepath));
+    return res.end(body);
   }
 
   // ── Upload file (raw binary)
@@ -2157,10 +2164,11 @@ const server = http.createServer(async (req, res) => {
       }
       const filePath = path.join(PUBLIC_DIR, url.pathname);
       const resolved = path.resolve(filePath);
-      if (resolved.startsWith(PUBLIC_DIR) && fs.existsSync(resolved)) {
+      if (resolved.startsWith(PUBLIC_DIR) && isRegularFile(resolved)) {
         const cachePolicy = (ext === '.svg' || ext === '.json') ? 'public, max-age=86400' : 'no-store';
+        const body = fs.readFileSync(resolved);
         res.writeHead(200, { 'Content-Type': STATIC_TYPES[ext], 'Cache-Control': cachePolicy });
-        return res.end(fs.readFileSync(resolved));
+        return res.end(body);
       }
     }
   }
@@ -4067,9 +4075,10 @@ const server = http.createServer(async (req, res) => {
     const name = path.basename(url.pathname);
     if (!name.endsWith('.md')) { res.writeHead(400); return res.end('md only'); }
     const fp = path.join(__dirname, 'docs', name);
-    if (!fs.existsSync(fp)) { res.writeHead(404); return res.end('Not found'); }
+    if (!isRegularFile(fp)) { res.writeHead(404); return res.end('Not found'); }
+    const body = fs.readFileSync(fp, 'utf8');
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-    return res.end(fs.readFileSync(fp, 'utf8'));
+    return res.end(body);
   }
 
   // ── Workspace file serve (images, binary files) ──
@@ -5039,6 +5048,8 @@ Write-Host "Logs   : pm2 logs $AgentName"
   } catch (err) {
     console.error('[http] unhandled error:', err.message);
     if (!res.headersSent) { res.writeHead(500); res.end(JSON.stringify({ error: 'Internal server error' })); }
+    // Headers already out: a 500 can't be sent any more, but leaving the response open hangs the client.
+    else if (!res.writableEnded) res.destroy();
   }
 });
 
