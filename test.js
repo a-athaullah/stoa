@@ -3598,7 +3598,16 @@ async function runAsyncUnitTests() {
     assert.strictEqual(mem.prepare("SELECT COUNT(*) n FROM mcp_approvals WHERE status='pending'").get().n, 0, 'pending rows from a previous process expire at boot');
     mem.prepare('DELETE FROM mcp_tool_overrides').run();
 
+    // With foreign_keys off nothing cascades, so only forget* can clear the exemptions.
+    mem.pragma('foreign_keys = OFF');
+    const insEx = mem.prepare('INSERT INTO mcp_approval_exemptions (server_id, tool, actor_id, sub_agent_id) VALUES (?,?,?,?)');
+    insEx.run(srvId, 'wait', actorId, 424242);
+    insEx.run(srvId, 'wait', actorId, null);
+    gw.forgetSubAgent(424242);
+    assert.deepStrictEqual(mem.prepare('SELECT sub_agent_id FROM mcp_approval_exemptions').all(), [{ sub_agent_id: null }], 'forgetSubAgent clears only its own row');
     gw.forgetActor(actorId);
+    assert.strictEqual(mem.prepare('SELECT COUNT(*) n FROM mcp_approval_exemptions').get().n, 0, 'forgetActor clears the agent row');
+    mem.pragma('foreign_keys = ON');
     assert.strictEqual(gw.authenticate('Bearer ' + t1), null, 'revoked with the actor');
     assert.notStrictEqual(gw.issueToken({ actorId, threadId: 7 }), t1, 'revoked token is never handed out again');
     mem.prepare("UPDATE mcp_calls SET created_at=datetime('now','-40 days') WHERE id=(SELECT MIN(id) FROM mcp_calls)").run();
@@ -16772,6 +16781,122 @@ async function run() {
       assert.strictEqual((await req('POST', `/api/mcp/approvals/${approval.id}`, { decision: 'approve' })).status, 409, 'too late to approve');
       const hist = await req('GET', `/api/mcp/approvals?room_id=${roomA}`);
       assert.deepStrictEqual(hist.body.approvals.slice(0, 3).map(x => x.status), ['expired', 'denied', 'approved']);
+    });
+
+    // Owner watches roomA; ask(token) starts a big call and resolves once its approval card arrives.
+    const withOwnerWs = async (fn) => {
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: roomA }));
+        await waitForWsMessage(humanWs, m => m.type === 'history');
+        const ask = async (token, bytes = 3) => {
+          const asked = waitForWsMessage(humanWs, m => m.type === 'mcp_approval', 5000);
+          const call = callText(token, 'mcpdummy__big', { bytes });
+          return { approval: (await asked).approval, call };
+        };
+        const resolvedOf = (id) => waitForWsMessage(humanWs, m => m.type === 'mcp_approval_resolved' && m.id === id, 8000);
+        return await fn({ ask, resolvedOf });
+      } finally { humanWs.close(); }
+    };
+    const approvalCount = () => mDb.prepare('SELECT COUNT(*) n FROM mcp_approvals').get().n;
+    const exemptionRows = () => mDb.prepare('SELECT server_id, tool, actor_id, sub_agent_id FROM mcp_approval_exemptions WHERE server_id=? ORDER BY id').all(server.id);
+    let agentExemptionId = null;
+
+    await test('MCP always allow — approves the call + same-key pending ones, later calls skip approval (logged as exemption)', async () => {
+      assert.deepStrictEqual(exemptionRows(), []);
+      await withOwnerWs(async ({ ask, resolvedOf }) => {
+        const first = await ask(tokA, 4);
+        const second = await ask(tokA, 5);
+        const r1 = resolvedOf(first.approval.id), r2 = resolvedOf(second.approval.id);
+        const out = await req('POST', `/api/mcp/approvals/${first.approval.id}`, { decision: 'always' });
+        assert.strictEqual(out.status, 200, out.raw);
+        assert.strictEqual(out.body.approval.status, 'approved');
+        const ex = out.body.exemption;
+        agentExemptionId = ex.id;
+        assert.deepStrictEqual([ex.server_id, ex.server_slug, ex.tool, ex.actor_id, ex.actor_name, ex.sub_agent_id, ex.sub_agent_label],
+          [server.id, 'mcpdummy', 'big', agA.actorId, '__test-mcp-a', null, null]);
+        assert.match(ex.created_at, /Z$/);
+        assert.deepStrictEqual([(await r1).status, (await r2).status], ['approved', 'approved'], 'the other waiting card closes too');
+        assert.deepStrictEqual([(await first.call).text, (await second.call).text], ['xxxx', 'xxxxx']);
+        assert.strictEqual(mDb.prepare('SELECT status FROM mcp_approvals WHERE id=?').get(second.approval.id).status, 'approved');
+        assert.strictEqual(lastCall().approval, 'owner');
+      });
+      const before = approvalCount();
+      const direct = await callText(tokA, 'mcpdummy__big', { bytes: 6 });
+      assert.deepStrictEqual([direct.isError, direct.text], [false, 'xxxxxx'], 'ran without waiting for the owner');
+      assert.strictEqual(approvalCount(), before, 'no approval row for an exempted call');
+      const c = lastCall();
+      assert.deepStrictEqual([c.status, c.tool, c.actor_id, c.sub_agent_id, c.approval], ['ok', 'big', agA.actorId, null, 'exemption']);
+      const calls = await req('GET', `/api/mcp/calls?server_id=${server.id}&limit=1`);
+      assert.strictEqual(calls.body.calls[0].approval, 'exemption', 'activity log shows it');
+      assert.deepStrictEqual(exemptionRows(), [{ server_id: server.id, tool: 'big', actor_id: agA.actorId, sub_agent_id: null }]);
+    });
+
+    await test('MCP always allow — exact match: agent exemption does not cover its sub-agent, sub-agent exemption does not cover the agent', async () => {
+      await grant('sub_agent', sub.id, null);
+      try {
+        await withOwnerWs(async ({ ask }) => {
+          const s1 = await ask(tokSub);
+          assert.strictEqual(s1.approval.sub_agent_id, sub.id, 'sub-agent still asks despite the parent exemption');
+          const out = await req('POST', `/api/mcp/approvals/${s1.approval.id}`, { decision: 'always' });
+          assert.strictEqual(out.status, 200, out.raw);
+          assert.deepStrictEqual([out.body.exemption.actor_id, out.body.exemption.sub_agent_id, out.body.exemption.sub_agent_label], [agA.actorId, sub.id, 'mcpsub']);
+          assert.strictEqual((await s1.call).isError, false);
+          const before = approvalCount();
+          assert.strictEqual((await callText(tokSub, 'mcpdummy__big', { bytes: 2 })).text, 'xx');
+          assert.strictEqual(approvalCount(), before, 'sub-agent now exempt');
+          assert.strictEqual(lastCall().approval, 'exemption');
+
+          const del = await req('DELETE', `/api/mcp/approval-exemptions/${agentExemptionId}`);
+          assert.deepStrictEqual([del.status, del.body], [200, { ok: true }]);
+          assert.strictEqual((await req('DELETE', `/api/mcp/approval-exemptions/${agentExemptionId}`)).status, 404, 'already gone');
+          const a1 = await ask(tokA);
+          assert.deepStrictEqual([a1.approval.actor_id, a1.approval.sub_agent_id], [agA.actorId, null], 'parent asks again; the sub-agent exemption does not cover it');
+          assert.strictEqual((await req('POST', `/api/mcp/approvals/${a1.approval.id}`, { decision: 'deny' })).status, 200);
+          assert.match((await a1.call).text, /owner denied/);
+        });
+        const list = await req('GET', `/api/mcp/approval-exemptions?server_id=${server.id}`);
+        assert.strictEqual(list.status, 200);
+        assert.deepStrictEqual(list.body.exemptions.map(e => [e.server_slug, e.tool, e.actor_name, e.sub_agent_id, e.sub_agent_label]),
+          [['mcpdummy', 'big', '__test-mcp-a', sub.id, 'mcpsub']]);
+        assert.ok((await req('GET', '/api/mcp/approval-exemptions')).body.exemptions.some(e => e.sub_agent_id === sub.id), 'unfiltered list');
+        assert.deepStrictEqual((await req('GET', '/api/mcp/approval-exemptions?server_id=99999999')).body.exemptions, []);
+        assert.strictEqual((await req('DELETE', `/api/mcp/approval-exemptions/${list.body.exemptions[0].id}`)).status, 200);
+        assert.deepStrictEqual(exemptionRows(), []);
+      } finally { await grant('sub_agent', sub.id, false); }
+    });
+
+    await test('MCP always allow — decided, expired or orphaned approval → 409 and no exemption; bad input; owner session only', async () => {
+      const expired = mDb.prepare("SELECT id FROM mcp_approvals WHERE status='expired' AND server_id=? ORDER BY id DESC LIMIT 1").get(server.id);
+      assert.ok(expired, 'the expiry test left an expired row');
+      let r = await req('POST', `/api/mcp/approvals/${expired.id}`, { decision: 'always' });
+      assert.deepStrictEqual([r.status, r.body.approval.status], [409, 'expired']);
+      // Pending in the DB but no request waiting on it (e.g. the agent's connection died).
+      const orphan = Number(mDb.prepare(`INSERT INTO mcp_approvals (server_id, server_slug, tool, actor_id, expires_at)
+        VALUES (?, 'mcpdummy', 'big', ?, datetime('now','+1 hour'))`).run(server.id, agA.actorId).lastInsertRowid);
+      r = await req('POST', `/api/mcp/approvals/${orphan}`, { decision: 'always' });
+      assert.deepStrictEqual([r.status, r.body.approval.status], [409, 'expired']);
+      assert.strictEqual((await req('POST', '/api/mcp/approvals/99999999', { decision: 'always' })).status, 404);
+      assert.deepStrictEqual(exemptionRows(), [], 'no exemption from a call that was not live');
+      assert.strictEqual((await req('POST', `/api/mcp/approvals/${orphan}`, { decision: 'toString' })).status, 400, 'prototype keys are not decisions');
+      assert.strictEqual((await req('GET', '/api/mcp/approval-exemptions?server_id=x')).status, 400);
+      assert.strictEqual((await req('DELETE', '/api/mcp/approval-exemptions/abc')).status, 404);
+      assert.strictEqual((await asAnon(() => req('GET', '/api/mcp/approval-exemptions'))).status, 401);
+      assert.strictEqual((await asAnon(() => req('DELETE', '/api/mcp/approval-exemptions/1'))).status, 401);
+      const h = { 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret };
+      assert.strictEqual((await asAnon(() => req('GET', '/api/mcp/approval-exemptions', null, h))).status, 403, 'agent secret refused');
+    });
+
+    await test('MCP always allow — deleting the sub-agent or the agent removes its exemptions', async () => {
+      const tmp = await req('POST', `/api/actors/${agB.actorId}/sub-agents`, { label: 'mcpsubtmp', tier: 'quick', workdir: '/tmp/stoa-test-mcp-subtmp' });
+      assert.strictEqual(tmp.status, 201, JSON.stringify(tmp.body));
+      const ins = mDb.prepare('INSERT INTO mcp_approval_exemptions (server_id, tool, actor_id, sub_agent_id) VALUES (?,?,?,?)');
+      ins.run(server.id, 'big', agB.actorId, tmp.body.id);
+      ins.run(server.id, 'big', agB.actorId, null);
+      assert.throws(() => ins.run(server.id, 'big', agB.actorId, null), /UNIQUE/, 'one agent-level row per key despite NULL sub_agent_id');
+      assert.strictEqual((await req('DELETE', `/api/sub-agents/${tmp.body.id}`)).status < 300, true);
+      assert.deepStrictEqual(exemptionRows().map(e => e.sub_agent_id), [null], 'sub-agent row gone, agent row kept');
+      mDb.prepare('DELETE FROM mcp_approval_exemptions WHERE server_id=?').run(server.id);
     });
 
     await test('MCP approval — bad input, unknown id, agent secret refused', async () => {
