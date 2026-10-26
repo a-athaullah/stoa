@@ -6046,6 +6046,84 @@ async function run() {
     });
   }
 
+  // ── Sub-agent avatar on live message events ───────────────────────────────
+  // History/feed reads join sub_agents; the live single-row events must carry the same identity, or
+  // the client draws the label seal until a reload brings the photo back.
+  console.log('\n[Sub-agent avatar on live message events]');
+  {
+    const AV_NAME = '__test-sa-avatar-live';
+    const AV_URL = '/uploads/avatars/__test-sa-avatar-live.png';
+    const db = require('./db');
+    let avActorId = null, avSecret = null, avRoomId = null, avWs = null, avSa = null, humanWs = null;
+
+    await test('Setup — online agent + room + linked sub-agent with an avatar', async () => {
+      const agent = await createOnlineTestAgent(AV_NAME, '/tmp/stoa-test-sa-avatar-live');
+      if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+      avActorId = agent.actorId; avSecret = agent.secret; avWs = agent.ws;
+      const r = await req('POST', '/api/rooms', { title: '__sa-avatar-live-room__', workdir_id: agent.workdirId, participant_ids: [avActorId] });
+      assert.strictEqual(r.status, 200);
+      avRoomId = r.body.id;
+      testRoomIds.push(avRoomId);
+      avSa = (await req('POST', `/api/actors/${avActorId}/sub-agents`, { label: 'avatarSub', tier: 'quick', role: 'Avatar tester' })).body;
+      assert.ok(avSa?.id, 'sub-agent created');
+      assert.strictEqual((await req('POST', `/api/rooms/${avRoomId}/sub-agents`, { sub_agent_id: avSa.id })).status, 200);
+      db.prepare('UPDATE sub_agents SET avatar_url=? WHERE id=?').run(AV_URL, avSa.id);
+      humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      const hist = waitForWsMessage(humanWs, m => m.type === 'history');
+      humanWs.send(JSON.stringify({ type: 'join_room', room_id: avRoomId }));
+      await hist;
+    });
+
+    await test('message_new for a sub-agent\'s proactive message carries its avatar + role (same as the feed read)', async () => {
+      if (!avSa) { console.log('    (skipped)'); return; }
+      const live = waitForWsMessage(humanWs, m => m.type === 'message_new' && m.message?.content === 'sa avatar proactive', 5000);
+      const r = await rawReq('POST', `/api/rooms/${avRoomId}/message`, JSON.stringify({ content: 'sa avatar proactive', sub_agent_id: avSa.id }), 'application/json',
+        { 'X-Agent-Id': String(avActorId), 'X-Agent-Secret': avSecret });
+      assert.strictEqual(r.status, 200, r.raw);
+      const m = (await live).message;
+      assert.strictEqual(m.sub_agent_id, avSa.id);
+      assert.strictEqual(m.sub_agent_avatar_url, AV_URL);
+      assert.strictEqual(m.sub_agent_role, 'Avatar tester');
+      const read = (await req('GET', `/api/rooms/${avRoomId}/messages`)).body.find(x => x.id === r.body.message_id);
+      for (const k of ['sub_agent_avatar_url', 'sub_agent_avatar_color', 'sub_agent_avatar_symbol', 'sub_agent_role']) {
+        assert.strictEqual(m[k], read[k], `live ${k} matches the feed read`);
+      }
+    });
+
+    await test('message_broadcast of a sub-agent\'s thread reply carries its avatar', async () => {
+      if (!avSa) { console.log('    (skipped)'); return; }
+      const { createThreadBroadcast } = require('./lib/thread-broadcast');
+      const sent = [];
+      const tb = createThreadBroadcast({ db, broadcastToRoom: (roomId, payload) => sent.push(payload), enrichFn: () => {} });
+      const rootId = (await rawReq('POST', `/api/rooms/${avRoomId}/message`, JSON.stringify({ content: 'sa avatar root' }), 'application/json',
+        { 'X-Agent-Id': String(avActorId), 'X-Agent-Secret': avSecret })).body.message_id;
+      const replyId = (await rawReq('POST', `/api/rooms/${avRoomId}/message`, JSON.stringify({ content: 'sa avatar thread reply', thread_id: rootId, sub_agent_id: avSa.id }), 'application/json',
+        { 'X-Agent-Id': String(avActorId), 'X-Agent-Secret': avSecret })).body.message_id;
+      assert.ok(replyId, 'thread reply posted');
+      assert.strictEqual(tb.setBroadcastReason(replyId, 'automation_match', avRoomId), true);
+      assert.strictEqual(sent.length, 1);
+      assert.strictEqual(sent[0].type, 'message_broadcast');
+      assert.strictEqual(sent[0].message.id, replyId);
+      assert.strictEqual(sent[0].message.sub_agent_avatar_url, AV_URL);
+      assert.strictEqual(sent[0].message.sub_agent_role, 'Avatar tester');
+    });
+
+    await test('Cleanup — sub-agent avatar test data', async () => {
+      if (humanWs) { humanWs.close(); humanWs = null; }
+      if (avWs) { avWs.close(); avWs = null; }
+      if (avSa) await req('DELETE', `/api/sub-agents/${avSa.id}`);
+      if (avRoomId) {
+        await req('PATCH', `/api/rooms/${avRoomId}`, { archived: true });
+        await req('DELETE', `/api/rooms/${avRoomId}`);
+        testRoomIds = testRoomIds.filter(id => id !== avRoomId);
+      }
+      if (avActorId) {
+        await req('DELETE', `/api/actors/${avActorId}`);
+        orphanActorIds = orphanActorIds.filter(id => id !== avActorId);
+      }
+    });
+  }
+
   // ── Parent wake gating (messages.wake_parent) ──────────────────────────────
   // A sub-agent the human mentions directly must not wake its parent, unless the
   // parent is @mentioned too or the run errors. Parent-driven runs keep waking.

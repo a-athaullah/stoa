@@ -567,7 +567,7 @@ function postWakeSystemEvent(roomId, participantId, threadId, content) {
     `INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?,?,?,'system_event',?)`
   ).run(roomId, participantId, content, threadId);
   const id = Number(sys.lastInsertRowid);
-  broadcast(roomId, { type: 'message_new', message: db.prepare('SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id WHERE m.id=?').get(id) });
+  broadcast(roomId, { type: 'message_new', message: roomMessages.row(id) });
   return id;
 }
 
@@ -2854,11 +2854,7 @@ const server = http.createServer(async (req, res) => {
     ).run(roomId, senderParticipantId, sentNote, threadId, emailProvider);
     const sentMsgId = sentResult.lastInsertRowid;
 
-    const sentRow = db.prepare(`
-      SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
-      FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id
-      WHERE m.id=?
-    `).get(sentMsgId);
+    const sentRow = roomMessages.row(sentMsgId);
     enrichAutomation(sentRow);
     const sentPayload = { type: 'message_new', message: sentRow };
     sentPayload.thread_summary = buildThreadSummary(roomId, threadId);
@@ -7160,10 +7156,7 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
   const aiThreadId = threadId ?? messageId;
 
   // Get message with actor info for broadcast
-  const row = db.prepare(`
-    SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type
-    FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id
-    WHERE m.id=?`).get(messageId);
+  const row = roomMessages.row(messageId);
   if (row.reply_to) {
     const replied = db.prepare(`SELECT m.id, m.content, m.image_url, m.file_url, m.file_name, m.attachments, a.name as actor_name, a.avatar_color FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id WHERE m.id=?`).get(row.reply_to);
     if (replied) row.reply_msg = replied;
