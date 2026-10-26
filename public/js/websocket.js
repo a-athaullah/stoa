@@ -231,7 +231,7 @@ function handleWsMessage(msg) {
     }
     if (msg.state === 'error' || (typeof FAILURE_STATES !== 'undefined' && FAILURE_STATES.has(msg.state))) {
       setQueuePosition(msg.message_id, null);
-      // An agent disconnect sends the run's stored text; bare errors (timeout etc.) carry none.
+      // A run the server ended (disconnect, timeout, updating…) sends the row's text; a bare error has none.
       if (msg.state === 'error' && typeof msg.content === 'string') showInterruptedRun(msg, runRowContainer(msg.thread_id || null));
       const el = document.getElementById('msg-' + msg.message_id);
       if (el) {

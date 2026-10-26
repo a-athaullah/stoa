@@ -13447,6 +13447,29 @@ async function run() {
     const feedIds = feed.children.map(c => c.id);
     ws({ type: 'message_broadcast_cleared', message_id: 913, thread_id: 150 });
     assert.deepStrictEqual(feed.children.map(c => c.id), feedIds, 'no echo → no-op');
+
+    // A run the server ended with a notice (timeout etc., no interrupted exit) keeps its bubble and text, like a reload.
+    const notice = '(timeout — Orion did not respond in 10 minutes)';
+    ws({ type: 'message_state', message_id: 914, state: 'streaming', thread_id: 150, ...who });
+    ws({ type: 'message_state', message_id: 914, state: 'error', thread_id: 150, ...who, content: notice, result_meta: null, feed_pos: 914 });
+    const reloadedErr = new El('div');
+    ctx.appendThreadMessage({ id: 1914, state: 'error', thread_id: 150, actor_type: 'ai', content: notice, result_meta: null, ...who }, reloadedErr);
+    const look = r => [r.querySelector('.h-bubble')?.textContent, !!r.querySelector('.h-thinking-bubble'), r.querySelector('.h-msg-result')?.textContent ?? null];
+    assert.deepStrictEqual(look(row(914)), [notice, false, null], 'the timeout notice stays, no chip');
+    assert.deepStrictEqual(look(row(914)), look(reloadedErr.children[0]), 'live = reload');
+    ws({ type: 'message_state', message_id: 914, state: 'streaming', thread_id: 150, ...who });
+    assert.deepStrictEqual([rows(914), !!row(914).querySelector('.h-thinking-bubble')], [1, true], 'and it revives in place');
+
+    // Revive drops the feed echo; failing again brings it back once, with the new text.
+    ws({ type: 'message_broadcast', message: { id: 915, thread_id: 150, actor_type: 'ai', state: 'error', content: '(interrupted — agent disconnected)', broadcast_reason: 'error', feed_pos: 915, ...who } });
+    ws({ type: 'message_state', message_id: 915, state: 'streaming', thread_id: 150, ...who });
+    ws({ type: 'message_broadcast_cleared', message_id: 915, thread_id: 150 });
+    assert.strictEqual(echo(915), null, 'no echo while the run is running again');
+    ws({ type: 'message_state', message_id: 915, state: 'error', thread_id: 150, ...who, content: 'Gave up: <b>disk full</b>', result_meta: null, feed_pos: 915 });
+    ws({ type: 'message_broadcast', message: { id: 915, thread_id: 150, actor_type: 'ai', state: 'error', content: 'Gave up: <b>disk full</b>', broadcast_reason: 'error', feed_pos: 915, ...who } });
+    assert.deepStrictEqual([body.querySelectorAll('[id="broadcast-915"]').length, echo(915).querySelector('.t-content').textContent], [1, 'Gave up: disk full'], 'one echo, the new text');
+    ws({ type: 'message_broadcast', message: { id: 912, thread_id: 150, actor_type: 'ai', content: 'Matched again.', broadcast_reason: 'automation_match', feed_pos: 912, ...who } });
+    assert.deepStrictEqual([echo(912).querySelectorAll('.t-content').length, echo(912).querySelector('.t-content').textContent], [1, 'Matched again.'], 'a re-sent row refreshes the echo text in place');
   });
 
   await test('sub-agent form — label errors route by server code, never by text that can quote a user-chosen room title', () => {

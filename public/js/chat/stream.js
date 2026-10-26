@@ -162,9 +162,10 @@ function finalizeMessage(msgId, content, fileUrl, fileName, attachments, aiModel
   delete runReplies[msgId];
 }
 
-// ── Interrupted run ──────────────────────────────────────────────────────────
-// The agent dropped mid-run: the server sends message_state error with the stored text.
-// The row stays (drawn first if this client never had it) and keeps its text, like after a reload.
+// ── Run ended by the server ─────────────────────────────────────────────────
+// Agent disconnect, run timeout, agent updating, stop while offline: the server sends
+// message_state error with the row's stored text. The row stays (drawn first if this client
+// never had it) and keeps its text, like after a reload.
 function showInterruptedRun(msg, container) {
   if (!document.getElementById('msg-' + msg.message_id)) {
     if (!container || !msg.actor_name) return;

@@ -343,12 +343,7 @@ function appendFeedBroadcastRow(m, inner) {
   const roleEl = makeSubAgentRoleEl(m.sub_agent_label, m.sub_agent_role);
   if (roleEl) col.appendChild(roleEl);
 
-  if (m.content) {
-    const content = document.createElement('div');
-    content.className = 't-content';
-    content.innerHTML = highlightMentions(renderMarkdown(m.content));
-    col.appendChild(content);
-  }
+  setBroadcastContent(col, m.content);
 
   body.appendChild(col);
   row.appendChild(body);
@@ -377,6 +372,15 @@ function appendFeedBroadcastRow(m, inner) {
   if (typeof externalLinksNewTab === 'function') externalLinksNewTab(row);
 }
 
+function setBroadcastContent(col, text) {
+  col.querySelector('.t-content')?.remove();
+  if (!text) return;
+  const content = document.createElement('div');
+  content.className = 't-content';
+  content.innerHTML = highlightMentions(renderMarkdown(text));
+  col.appendChild(content);
+}
+
 function upsertFeedBroadcastRow(m) {
   const existing = document.getElementById('broadcast-' + m.id);
   if (!existing) {
@@ -384,6 +388,9 @@ function upsertFeedBroadcastRow(m) {
     scrollToBottom(true);
     return;
   }
+  // A run that failed again re-sends its row: refresh the text, it may differ from the first failure.
+  const col = existing.querySelector('.t-col');
+  if (col) setBroadcastContent(col, m.content);
   // Update reason badge if reason changed
   const badge = existing.querySelector('.t-broadcast-reason-badge');
   if (badge && m.broadcast_reason) {
