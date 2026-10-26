@@ -6285,6 +6285,31 @@ async function run() {
       assert.strictEqual(evs[0].actor_name, LR_NAME);
     });
 
+    await test('agent reconnect — a revived run drops the server placeholder (timeout/interrupted/updating) so a reload shows it thinking; real text is kept', async () => {
+      if (!pendingRun) { console.log('    (skipped)'); return; }
+      const stamped = (content) => Number(db.prepare("INSERT INTO messages (room_id, participant_id, content, state, result_meta, completed_at, reply_to, thread_id) VALUES (?,?,?,'error',?,datetime('now'),?,?)")
+        .run(lrRoomId, lrParticipant(), content, JSON.stringify({ exit_reason: 'interrupted' }), humanMsgId, run.thread_id).lastInsertRowid);
+      const ids = {
+        timeout: stamped(`(timeout — ${LR_NAME}/sub did not respond in 15 minutes)`),
+        interrupted: stamped('(interrupted — agent disconnected)'),
+        updating: stamped('(agent updating — please retry)'),
+        real: stamped('(timeout — this is what the agent actually wrote'),
+      };
+      const events = stateEvents(Object.values(ids), 'streaming', 1500);
+      const old = lr.ws;
+      const oldClosed = new Promise(r => old.once('close', r));
+      lr.ws = await connectAgent(Object.values(ids));
+      await oldClosed;
+      const seen = await events;
+      const thr = (await req('GET', `/api/rooms/${lrRoomId}/threads/${run.thread_id}`)).body.messages;
+      for (const [k, id] of Object.entries(ids)) {
+        assert.strictEqual(seen.get(id)?.length, 1, `${k}: revived once`);
+        const want = k === 'real' ? '(timeout — this is what the agent actually wrote' : '';
+        assert.deepStrictEqual(db.prepare('SELECT state, content FROM messages WHERE id=?').get(id), { state: 'streaming', content: want }, k);
+        assert.strictEqual(thr.find(m => m.id === id).content, want, `${k}: thread reload matches the live thinking bubble`);
+      }
+    });
+
     await test('Cleanup — live run event test data', async () => {
       if (humanWs) { humanWs.close(); humanWs = null; }
       if (lr?.ws) lr.ws.close();

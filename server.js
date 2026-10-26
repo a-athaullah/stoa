@@ -5611,9 +5611,12 @@ wss.on('connection', (ws, req) => {
       // Older clients send nothing → every in-flight row is treated as orphaned (as before).
       const stillActive = JSON.stringify(Array.isArray(msg.active_message_ids)
         ? msg.active_message_ids.filter(Number.isSafeInteger).slice(0, 1000) : []);
+      // Only the placeholders the server itself wrote (interrupted / run timeout / agent updating) are
+      // dropped — tokens are never stored, so a live run has no text until agent_complete.
       const revived = db.prepare(
         `UPDATE messages SET state='streaming', result_meta=NULL, completed_at=NULL,
-           content=CASE WHEN content LIKE '(interrupted — %)' THEN '' ELSE content END
+           content=CASE WHEN content LIKE '(interrupted — %)' OR content LIKE '(timeout — % did not respond in % minutes)'
+             OR content LIKE '(agent updating — %)' THEN '' ELSE content END
          WHERE id IN (SELECT value FROM json_each(?)) AND state='error'
            AND json_extract(result_meta, '$.exit_reason')='interrupted'
            AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?)
