@@ -216,7 +216,7 @@ function mentionQueryAtCaret(input) {
 
 function makeMentionAvatarEl(p) {
   if (!p.isSub) return makeAvatar(p.name, p.avatar_color, p.avatar_url, 22);
-  return makeAvatarEl(p.parent_name, p.parent_avatar_color, p.parent_avatar_url, 22, p.name, p.avatar_color, p.avatar_symbol, p.avatar_url);
+  return makeAvatarEl(p.parent_name, p.parent_avatar_color, p.parent_avatar_url, 22, p.name, p.avatar_color, p.avatar_symbol, p.avatar_url, p.id);
 }
 
 function showMentionPopup(query, inputId = 'msg-input') {
@@ -233,7 +233,7 @@ function showMentionPopup(query, inputId = 'msg-input') {
   const subMatches = subs
     .filter(s => s.label.toLowerCase().startsWith(q))
     .map(s => ({
-      name: s.label, role: s.role || null, isSub: true,
+      id: s.id, name: s.label, role: s.role || null, isSub: true,
       avatar_color: s.avatar_color || null, avatar_symbol: s.avatar_symbol || null, avatar_url: s.avatar_url || null,
       parent_name: s.parent_name, parent_avatar_color: s.parent_avatar_color, parent_avatar_url: s.parent_avatar_url,
     }));

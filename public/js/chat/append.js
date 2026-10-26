@@ -112,7 +112,7 @@ function appendMessage(m, container) {
 
   // Pesan yang masih streaming/requesting → tampilkan thinking bubble
   if (m.state === 'streaming' || m.state === 'requesting') {
-    showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, undefined, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role);
+    showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, undefined, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role, m.sub_agent_id);
     return;
   }
 
@@ -130,7 +130,7 @@ function appendMessage(m, container) {
   } else if (m.automation?.provider) {
     sealWrap.appendChild(makeAutomationAvatarEl(m.automation.provider, 40));
   } else {
-    sealWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 40, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url));
+    sealWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 40, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_id));
   }
   row.appendChild(sealWrap);
 

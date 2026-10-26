@@ -26,7 +26,7 @@ function appendFeedRootRow(m, inner) {
   } else if (m.automation?.provider) {
     avatarWrap.appendChild(makeAutomationAvatarEl(m.automation.provider, 36));
   } else {
-    avatarWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 36, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url));
+    avatarWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 36, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_id));
   }
   row.appendChild(avatarWrap);
 
@@ -157,7 +157,7 @@ function _buildThreadChip(rootId) {
     });
     const show = items.slice(0, 4);
     show.forEach((item, i) => {
-      const av = makeAvatarEl(item.actor.name, item.actor.avatar_color, item.actor.avatar_url, 20, item.subLabel, item.sub?.avatar_color, item.sub?.avatar_symbol, item.sub?.avatar_url);
+      const av = makeAvatarEl(item.actor.name, item.actor.avatar_color, item.actor.avatar_url, 20, item.subLabel, item.sub?.avatar_color, item.sub?.avatar_symbol, item.sub?.avatar_url, item.sub?.id);
       const el = av.nodeType === 1 ? av : av;
       if (el.classList) el.classList.add('h-thread-chip-av');
       else el.className = (el.className || '') + ' h-thread-chip-av';
@@ -304,7 +304,7 @@ function appendFeedBroadcastRow(m, inner) {
   } else if (m.automation?.provider) {
     avatarWrap.appendChild(makeAutomationAvatarEl(m.automation.provider, 36));
   } else {
-    avatarWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 36, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url));
+    avatarWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 36, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_id));
   }
   body.appendChild(avatarWrap);
 

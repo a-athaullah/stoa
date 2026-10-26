@@ -15,6 +15,7 @@ const { validateScheduleSpec, computeNextRun, nextRunAfterSkip, describeSchedule
 const { createRoomSchedules, scheduleMcpTools } = require('./lib/room-schedules');
 const { createRoomMessages } = require('./lib/room-messages');
 const { createStoaMemory } = require('./lib/stoa-memory');
+const { AVATAR_MAX_BYTES, AVATAR_BODY_MAX, decodeAvatarDataUrl } = require('./lib/avatar-image');
 const { createSystemPrompts } = require('./lib/system-prompts');
 const { createSubAgents } = require('./lib/sub-agents');
 const { createAutomationCrud } = require('./lib/automation-crud');
@@ -478,6 +479,37 @@ function uploadPathForUrl(url) {
 function deleteAvatarFile(avatarUrl) {
   const oldPath = uploadPathForUrl(avatarUrl);
   if (oldPath && fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+}
+
+// Bytes already checked by lib/avatar-image.js; the name is always built here, never from input.
+function saveAvatarFile(prefix, id, buffer, ext) {
+  const saved = `${prefix}-${id}-${Date.now()}.${ext}`;
+  const avatarDir = path.join(UPLOADS_DIR, 'avatar');
+  if (!fs.existsSync(avatarDir)) fs.mkdirSync(avatarDir);
+  fs.writeFileSync(path.join(avatarDir, saved), buffer);
+  return `/uploads/avatar/${saved}`;
+}
+
+// Body of an avatar upload → parsed JSON, or { status, error }. Over AVATAR_BODY_MAX the rest is read
+// and dropped so the caller gets a 413 with a reason, not a reset socket (readBody destroys at once);
+// past the old generic 10 MB cap the socket is dropped after all.
+const AVATAR_DRAIN_MAX = 10 * 1024 * 1024;
+function readAvatarBody(req) {
+  return new Promise(resolve => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', c => {
+      size += c.length;
+      if (size > AVATAR_DRAIN_MAX) req.destroy();
+      else if (size <= AVATAR_BODY_MAX) chunks.push(c);
+    });
+    req.on('end', () => {
+      if (size > AVATAR_BODY_MAX) return resolve({ status: 413, error: 'request body too large' });
+      const data = parseJsonBody(Buffer.concat(chunks).toString('utf8'));
+      resolve(data && typeof data === 'object' ? data : { status: 400, error: 'Invalid JSON' });
+    });
+    req.on('close', () => resolve({ status: 400, error: 'request aborted' }));
+  });
 }
 
 // Verify x-agent-id / x-agent-secret headers (same HMAC scheme as proactive message).
@@ -1634,7 +1666,7 @@ const roomMessages = createRoomMessages({
 const stoaMemory = createStoaMemory({ db });
 const systemPrompts = createSystemPrompts({ db });
 const subAgents = createSubAgents({
-  db, broadcast, getHarnessModels, deleteAvatarFile, resolveThread,
+  db, broadcast, getHarnessModels, saveAvatarFile, deleteAvatarFile, resolveThread,
   onDeleted: (id) => mcpGateway.forgetSubAgent(id),
   isAgentOnline: (actorId) => agentClients.get(actorId)?.readyState === 1,
   runSubAgent: (roomId, ai, task, threadId) => {
@@ -1646,7 +1678,7 @@ const mcpGateway = createMcpGateway({
   db, upstreams: mcpUpstreams, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt, version: require('./package.json').version,
   builtinTools: [
     ...scheduleMcpTools(roomSchedules),
-    ...stoaMcpTools({ db, broadcast, messages: roomMessages, memory: stoaMemory, prompts: systemPrompts, subAgents, automations: automationCrud }),
+    ...stoaMcpTools({ db, broadcast, messages: roomMessages, memory: stoaMemory, prompts: systemPrompts, subAgents, automations: automationCrud, readAgentImage }),
   ],
   approvalTimeoutMs: Math.min(APPROVAL_TIMEOUT_MAX_MS, Math.max(1000, parseInt(process.env.MCP_APPROVAL_TIMEOUT_MS, 10) || 5 * 60_000)),
   // Approval cards live in the room (and thread) the agent is working in; the MCP page's approval log
@@ -2108,33 +2140,20 @@ const server = http.createServer(async (req, res) => {
     return json(res, { url: `/uploads/${saved}`, name: fileName || saved });
   }
 
-  // ── Avatar helpers (shared by actor + sub-agent avatar endpoints; deleteAvatarFile is module-level)
-  function saveAvatarFile(prefix, id, dataUrl) {
-    const mimeMatch = dataUrl.match(/^data:(image\/[a-z+]+);base64,/);
-    if (!mimeMatch) return { error: 'invalid data_url format' };
-    const mimeToExt = { 'image/jpeg':'jpg','image/png':'png','image/gif':'gif','image/webp':'webp' };
-    const ext = mimeToExt[mimeMatch[1]] || 'png';
-    const base64Data = dataUrl.slice(dataUrl.indexOf(',') + 1);
-    const saved = `${prefix}-${id}-${Date.now()}.${ext}`;
-    const avatarDir = path.join(UPLOADS_DIR, 'avatar');
-    if (!fs.existsSync(avatarDir)) fs.mkdirSync(avatarDir);
-    fs.writeFileSync(path.join(avatarDir, saved), Buffer.from(base64Data, 'base64'));
-    return { avatar_url: `/uploads/avatar/${saved}` };
-  }
-
   // ── Actor avatar upload
   const avatarUploadMatch = req.method === 'POST' && url.pathname.match(/^\/api\/actors\/(\d+)\/avatar$/);
   if (avatarUploadMatch) {
     const id = parseInt(avatarUploadMatch[1]);
-    const data = parseJsonBody(await readBody(req));
-    if (!data) { res.writeHead(400); return res.end(JSON.stringify({ error: 'Invalid JSON' })); }
-    const { data_url } = data;
-    if (!data_url || !data_url.startsWith('data:image/')) { res.writeHead(400); return res.end('invalid data_url'); }
-    deleteAvatarFile(db.prepare('SELECT avatar_url FROM actors WHERE id=?').get(id)?.avatar_url);
-    const result = saveAvatarFile('avatar', id, data_url);
-    if (result.error) { res.writeHead(400); return res.end(result.error); }
-    db.prepare('UPDATE actors SET avatar_url=? WHERE id=?').run(result.avatar_url, id);
-    return json(res, { avatar_url: result.avatar_url });
+    const actor = db.prepare('SELECT avatar_url FROM actors WHERE id=?').get(id);
+    if (!actor) return json(res, { error: 'actor not found' }, 404);
+    const data = await readAvatarBody(req);
+    if (data.error) return json(res, { error: data.error }, data.status);
+    const img = decodeAvatarDataUrl(data.data_url);
+    if (img.error) return json(res, { error: img.error }, img.status);
+    const avatarUrl = saveAvatarFile('avatar', id, img.buffer, img.ext);
+    db.prepare('UPDATE actors SET avatar_url=? WHERE id=?').run(avatarUrl, id);
+    deleteAvatarFile(actor.avatar_url);
+    return json(res, { avatar_url: avatarUrl });
   }
 
   // ── Actor avatar delete
@@ -3981,24 +4000,17 @@ const server = http.createServer(async (req, res) => {
     return json(res, r.body, r.status);
   }
 
-  // ── Sub-agent avatar upload/delete ──
-  if (req.method === 'POST' && url.pathname.match(/^\/api\/sub-agents\/\d+\/avatar$/)) {
-    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
-    const id = parseInt(url.pathname.split('/')[3]);
-    const sa = db.prepare('SELECT id, avatar_url FROM sub_agents WHERE id=?').get(id);
-    if (!sa) return json(res, { error: 'sub-agent not found' }, 404);
-    const data = parseJsonBody(await readBody(req));
-    if (!data) return json(res, { error: 'Invalid JSON' }, 400);
-    const { data_url } = data;
-    if (!data_url || !data_url.startsWith('data:image/')) return json(res, { error: 'invalid data_url' }, 400);
-    deleteAvatarFile(sa.avatar_url);
-    const result = saveAvatarFile('avatar-sa', id, data_url);
-    if (result.error) return json(res, { error: result.error }, 400);
-    db.prepare('UPDATE sub_agents SET avatar_url=? WHERE id=?').run(result.avatar_url, id);
-    const updated = db.prepare('SELECT * FROM sub_agents WHERE id=?').get(id);
-    for (const r of db.prepare('SELECT room_id FROM room_sub_agents WHERE sub_agent_id=?').all(id))
-      broadcast(r.room_id, { type: 'sub_agent_updated', sub_agent: updated });
-    return json(res, { avatar_url: result.avatar_url });
+  // ── Sub-agent avatar upload (owner, or the parent agent — lib/agent-scope.js) / delete (owner) ──
+  const saAvatarMatch = req.method === 'POST' && url.pathname.match(/^\/api\/sub-agents\/(\d+)\/avatar$/);
+  if (saAvatarMatch) {
+    const agent = verifyAgentRequest(req);
+    if (!agent && !req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    const data = await readAvatarBody(req);
+    if (data.error) return json(res, { error: data.error }, data.status);
+    const img = decodeAvatarDataUrl(data.data_url);
+    if (img.error) return json(res, { error: img.error }, img.status);
+    const r = subAgents.setAvatar(parseInt(saAvatarMatch[1]), img.buffer, { parentActorId: agent ? agent.id : null });
+    return json(res, r.status === 200 ? { avatar_url: r.body.avatar_url } : r.body, r.status);
   }
 
   if (req.method === 'DELETE' && url.pathname.match(/^\/api\/sub-agents\/\d+\/avatar$/)) {
@@ -5304,6 +5316,22 @@ function addPendingFileOp(rid, op) {
   setTimeout(() => pendingFileOps.delete(rid), 15000);
 }
 
+// stoa__sub_agent_avatar_set: the image lives on the agent's machine, so its stoa.js reads it
+// (lib/avatar-image.js readAvatarFile). Only the agent that was asked may answer its request id.
+const AGENT_IMAGE_TIMEOUT_MS = 15000;
+const pendingAgentImages = new Map(); // request_id → { actorId, done }
+function readAgentImage(actorId, filePath) {
+  const ws = agentClients.get(actorId);
+  if (!ws || ws.readyState !== 1) return Promise.resolve({ status: 409, error: 'agent offline' });
+  const rid = crypto.randomBytes(8).toString('hex');
+  return new Promise(resolve => {
+    const timer = setTimeout(() => done({ status: 504, error: 'agent did not answer in time (its Stoa client may need an update)' }), AGENT_IMAGE_TIMEOUT_MS);
+    const done = (r) => { clearTimeout(timer); pendingAgentImages.delete(rid); resolve(r); };
+    pendingAgentImages.set(rid, { actorId, done });
+    ws.send(JSON.stringify({ type: 'avatar_file_read', request_id: rid, path: filePath }));
+  });
+}
+
 function broadcastGlobal(data) {
   const str = JSON.stringify(data);
   for (const client of globalClients) {
@@ -6132,6 +6160,16 @@ wss.on('connection', (ws, req) => {
         } catch (e) {
           console.warn('[workdir] could not canonicalize path:', e.message);
         }
+      }
+      return;
+    }
+
+    if (msg.type === 'avatar_file_read_result' && agentActorId) {
+      const op = pendingAgentImages.get(msg.request_id);
+      if (op && op.actorId === agentActorId) {
+        op.done(typeof msg.base64 === 'string'
+          ? { base64: msg.base64 }
+          : { status: msg.status === 413 ? 413 : 400, error: String(msg.error || 'agent could not read the file').slice(0, 200) });
       }
       return;
     }
@@ -7500,6 +7538,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     avatar_color: ai.avatar_color,
     avatar_symbol: ai.avatar_symbol,
     avatar_url: ai.avatar_url || null,
+    sub_agent_id: subAgent?.id || null,
     sub_agent_label: subAgent?.label || null,
     sub_agent_avatar_color: subAgent?.avatar_color || null,
     sub_agent_avatar_symbol: subAgent?.avatar_symbol || null,
@@ -7858,7 +7897,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         // agent_queue_status: paused while the run waits in the agent queue, re-armed at start.
         pause: timeout.pause, rearm: timeout.rearm,
       });
-      pendingActorMeta.set(msgId, { actor_id: ai.actor_id, room_id: roomId, actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null, sub_agent_label: subAgent?.label || null, sub_agent_avatar_color: subAgent?.avatar_color || null, sub_agent_avatar_symbol: subAgent?.avatar_symbol || null, sub_agent_avatar_url: subAgent?.avatar_url || null, sub_agent_role: subAgent?.role || null, thread_id: threadId || null });
+      pendingActorMeta.set(msgId, { actor_id: ai.actor_id, room_id: roomId, actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null, sub_agent_id: subAgent?.id || null, sub_agent_label: subAgent?.label || null, sub_agent_avatar_color: subAgent?.avatar_color || null, sub_agent_avatar_symbol: subAgent?.avatar_symbol || null, sub_agent_avatar_url: subAgent?.avatar_url || null, sub_agent_role: subAgent?.role || null, thread_id: threadId || null });
       const triggerBaseUrl = getPublicUrl(`localhost:${PORT}`);
       // Agents download without cookies → signed URLs. Name falls back to the bare file name because
       // stoa.js derives the extension from name||url, and the url now carries a query string.

@@ -154,6 +154,7 @@ x-file-name: 文件名.扩展名
 | `GET`, `PUT` | `/api/actors/:id/memory[/MEMORY.md\|USER.md]` | 仅自身 Actor |
 | `GET`, `PUT` | `/api/actors/:id/system-prompt` | 仅自身 Actor |
 | `GET`, `PUT` | `/api/sub-agents/:id/memory` | 仅所属子代理 |
+| `POST` | `/api/sub-agents/:id/avatar` | 仅所属子代理（可用父代理密钥）；body 上限 512 KB |
 | `GET` | `/api/automations/connections/:id/messages` | 已连接自动化的房间 |
 | `GET` | `/api/automations` | 任意有效代理（服务器过滤至自身房间） |
 | `POST` | `/api/automations` | 任意有效代理（`target_room_id` 必须是自身房间） |
@@ -289,6 +290,7 @@ curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
 | `stoa__sub_agent_update` | `sub_agent_id` + 任意创建字段, `enabled` | `PATCH /api/sub-agents/:id` |
 | `stoa__sub_agent_delete` | `sub_agent_id` | `DELETE /api/sub-agents/:id` (同时删除其记忆) |
 | `stoa__sub_agent_trigger` | `task`, `label` 或 `sub_agent_id`, `thread_id?`, `main_feed?` | `POST /api/rooms/:id/sub-agent-trigger`。使用此工具或 `@label` 提及二选一，不要同时使用 |
+| `stoa__sub_agent_avatar_set` | `sub_agent_id`（整数）、`path`（代理机器上的绝对路径，允许 `~/`，最多 4096 字符） | 通过父代理的 WebSocket 调用 `POST /api/sub-agents/:id/avatar`。接受 png、jpeg、webp、gif（从文件字节验证）；最大 512 KB（建议先缩放至 256 px）。仅限自己所属的子代理——其他代理的子代理返回 `sub-agent not found`。子代理会话中不可用。代理离线返回 409，stoa.js 版本过旧或 15 秒内无响应返回 504 |
 | `stoa__automation_list` | — | `GET /api/automations` (以你的房间为目标的自动化) |
 | `stoa__automation_create` | `name`, `trigger_event`, `prompt_template` + 可选 `trigger_type`, `trigger_conditions` (数组), `connection_id`, `reply_mode`, `watch_reply`, `enabled`, `target_room_id` (默认: 你的房间) | `POST /api/automations` |
 | `stoa__automation_update` | `automation_id` + 除 `trigger_type` 外的任意创建字段 | `PATCH /api/automations/:id` |

@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.423";
+var CLIENT_VERSION = "0.4.426";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -246,6 +246,7 @@ if (require.main === module && ACTOR_TYPE === "ai") {
 }
 var { readCfAccessEnv, cfHeadersFor, httpOrigin, startCfForwardProxy } = require("./lib/cf-access");
 var { detectSupervisor } = require("./lib/supervisor");
+var { readAvatarFile } = require("./lib/avatar-image");
 var SUPERVISOR = detectSupervisor();
 var BOOT_ID = crypto.randomBytes(8).toString("hex");
 var CF_ACCESS = readCfAccessEnv(process.env, (m) => console.warn(m));
@@ -1088,6 +1089,11 @@ async function handleAgentMessage(msg) {
       console.error("[stoa] Failed to create workdir:", err.message);
       send({ type: "workdir_created", requested: msg.path, error: err.message });
     }
+  }
+  if (msg.type === "avatar_file_read") {
+    const r = readAvatarFile(expandHome(msg.path));
+    send({ type: "avatar_file_read_result", request_id: msg.request_id, ...r });
+    return;
   }
   if (msg.type === "proxy_file_list") {
     try {

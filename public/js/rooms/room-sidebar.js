@@ -366,12 +366,7 @@ function renderRoomSidebar(room, participants) {
     }
 
     function subAgentAvatarEl(sa) {
-      return avatarEl({
-        avatar_url: sa.avatar_url,
-        avatar_color: sa.avatar_color,
-        avatar_symbol: sa.avatar_symbol,
-        name: sa.label || sa.parent_name,
-      }, 24);
+      return makeAvatarEl(sa.parent_name, sa.parent_avatar_color, null, 24, sa.label || '?', sa.avatar_color, sa.avatar_symbol, sa.avatar_url, sa.id);
     }
 
     function renderSubAgents(subAgents) {
@@ -428,7 +423,7 @@ function renderRoomSidebar(room, participants) {
           const row = document.createElement('div');
           row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 0';
           const seal = subAgentAvatarEl(sa);
-          seal.style.borderStyle = 'dashed';
+          seal.style.cssText = 'display:inline-flex;flex:0 0 auto;border-radius:50%;border:1px dashed var(--h-border)';
           const info = document.createElement('div');
           info.style.cssText = 'flex:1;min-width:0';
           const name = document.createElement('div');

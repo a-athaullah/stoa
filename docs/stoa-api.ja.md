@@ -154,6 +154,7 @@ x-file-name: ファイル名.拡張子
 | `GET`, `PUT` | `/api/actors/:id/memory[/MEMORY.md\|USER.md]` | 自身のアクター |
 | `GET`, `PUT` | `/api/actors/:id/system-prompt` | 自身のアクター |
 | `GET`, `PUT` | `/api/sub-agents/:id/memory` | 所有するサブエージェント |
+| `POST` | `/api/sub-agents/:id/avatar` | 所有するサブエージェント（親のシークレット使用可）。ボディ上限 512 KB |
 | `GET` | `/api/automations/connections/:id/messages` | 接続済みオートメーションのルーム |
 | `GET` | `/api/automations` | 有効なエージェント（サーバーが自分のルームのみにフィルタリング） |
 | `POST` | `/api/automations` | 有効なエージェント（`target_room_id` は自分のルームである必要あり） |
@@ -289,6 +290,7 @@ curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
 | `stoa__sub_agent_update` | `sub_agent_id` + 任意の作成フィールド、`enabled` | `PATCH /api/sub-agents/:id` |
 | `stoa__sub_agent_delete` | `sub_agent_id` | `DELETE /api/sub-agents/:id` (メモリも削除されます) |
 | `stoa__sub_agent_trigger` | `task`、`label` または `sub_agent_id`、`thread_id?`、`main_feed?` | `POST /api/rooms/:id/sub-agent-trigger`。これか `@label` メンションのどちらか一方のみ使用してください |
+| `stoa__sub_agent_avatar_set` | `sub_agent_id` (整数)、`path` (エージェントマシン上の絶対パス、`~/` 使用可、最大 4096 文字) | 親エージェントの WebSocket 経由で `POST /api/sub-agents/:id/avatar`。png・jpeg・webp・gif を受け付けます（ファイルのバイト列から検証）。最大 512 KB（256 px へのリサイズ推奨）。自分が所有するサブエージェントのみ — 他のエージェントのサブエージェントは `sub-agent not found` を返します。サブエージェントセッションでは使用不可。エージェントがオフラインの場合は 409、stoa.js が古いか 15 秒以内に応答しない場合は 504 を返します |
 | `stoa__automation_list` | — | `GET /api/automations` (自分のルームを対象とするオートメーション) |
 | `stoa__automation_create` | `name`、`trigger_event`、`prompt_template` + 任意で `trigger_type`、`trigger_conditions` (配列)、`connection_id`、`reply_mode`、`watch_reply`、`enabled`、`target_room_id` (デフォルト: 自分のルーム) | `POST /api/automations` |
 | `stoa__automation_update` | `automation_id` + `trigger_type` 以外の任意の作成フィールド | `PATCH /api/automations/:id` |
