@@ -207,7 +207,7 @@ Agent (Claude/Codex)
 
 **Token:** issued per session trigger (`issueToken`), stored as SHA-256 hash in `mcp_tokens`. Sengaja tanpa TTL — token stabil selama session, tidak menyebabkan respawn. Revoked when actor / sub_agent / room deleted.
 
-**Tool approval:** `requires_approval` tools hold the gateway call (up to `APPROVAL_TIMEOUT_MAX_MS` = 10 min), emit `mcp_approval` WS event to room/thread. Owner approves or denies via API. Default timeout 5 min (configurable `MCP_APPROVAL_TIMEOUT_MS`). Max 20 pending per actor.
+**Tool approval:** `requires_approval` tools hold the gateway call (up to `APPROVAL_TIMEOUT_MAX_MS` = 10 min), emit `mcp_approval` WS event to room/thread. Owner approves or denies via API. Default timeout 5 min (configurable `MCP_APPROVAL_TIMEOUT_MS`). Max 20 pending per actor. `decision: 'always'` stores an exemption (`mcp_approval_exemptions`, exact agent/sub-agent match); exempted calls skip the card and are logged with `mcp_calls.approval='exemption'`.
 
 **Agent update path:** Gateway is stateful (`mcp-session-id`, bound to the token that opened it). Claude Code keeps a GET SSE stream open; on any `/api/mcp/*` write or upstream status change the gateway recomputes each session's tool fingerprint (allowed servers + cached upstream tool names − disabled overrides, debounced 250 ms) and sends `notifications/tools/list_changed` only to sessions whose set changed → Claude re-lists mid-session (verified with Claude Code 2.1.306). No eventStore: with no GET stream open the SDK drops the notification silently (send() still resolves), so a session's fingerprint only advances when the notification went out on an open stream; when a session's GET stream (re)opens the gateway rechecks and sends whatever it missed. Codex spawns per turn → new session each turn. Unknown session id → 404 → client re-initializes (survives server restart). Sessions close on token revoke (forget*), after 10 min idle without an open stream, and per-token cap 8. No-session non-initialize requests are served statelessly.
 
@@ -227,7 +227,7 @@ Agent (Claude/Codex)
 
 **Retention:** `mcp_calls` and decided `mcp_approvals` pruned after `MCP_CALLS_RETENTION_DAYS` (default 30).
 
-**Tables:** `mcp_servers`, `mcp_tool_overrides`, `mcp_access`, `mcp_tokens`, `mcp_calls`, `mcp_approvals`.
+**Tables:** `mcp_servers`, `mcp_tool_overrides`, `mcp_access`, `mcp_tokens`, `mcp_calls`, `mcp_approvals`, `mcp_approval_exemptions`.
 
 ## Performance Optimizations
 

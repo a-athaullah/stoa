@@ -155,7 +155,9 @@ Content-Type: application/json  (MCP JSON-RPC)
 | GET, PUT | `/api/mcp/access` | Access matrix (agent/sub_agent/room × server) |
 | GET | `/api/mcp/calls` | Activity log paginated (`?server_id=&actor_id=&before_id=`) |
 | GET | `/api/mcp/approvals` | Pending/settled approvals (`?room_id=&status=`) |
-| POST | `/api/mcp/approvals/:id` | Decide approval (`{ "decision": "approve"|"deny" }`) → 200/404/409 |
+| POST | `/api/mcp/approvals/:id` | Decide approval (`{ "decision": "approve"|"deny"|"always" }`) → 200/404/409. `always` → `{ approval, exemption }`, also approves same-key pending calls; 409 creates no exemption |
+| GET | `/api/mcp/approval-exemptions` | `?server_id=` → `{ exemptions: [{ id, server_id, server_slug, tool, actor_id, actor_name, sub_agent_id, sub_agent_label, created_at }] }` |
+| DELETE | `/api/mcp/approval-exemptions/:id` | `{ ok: true }` / 404 |
 
 #### Cloudflare Access Service Token (`lib/cf-access.js`)
 Optional agent-side feature for deployments behind Cloudflare Access (when Tailscale is unavailable).

@@ -1040,9 +1040,12 @@ Saat **requires approval** diaktifkan untuk sebuah tool, gateway menahan panggil
 
 - Klik **approve** untuk mengizinkan panggilan dilanjutkan.
 - Klik **deny** untuk menolaknya.
+- Klik **always allow** untuk menyetujui panggilan ini sekaligus membebaskan agent atau sub-agent tersebut dari permintaan approval di masa mendatang untuk tool yang sama. Pengecualian berlaku persis: pengecualian untuk sub-agent tidak berlaku untuk parent agent-nya, begitu pula sebaliknya. Permintaan yang sedang pending dari agent atau sub-agent yang **persis sama** untuk tool yang sama ikut disetujui sekaligus — permintaan dari sub-agent lain atau dari parent tidak terpengaruh.
 - Jika tidak ada keputusan dalam **5 menit** (default, dapat dikonfigurasi via `MCP_APPROVAL_TIMEOUT_MS`, maks 10 menit), panggilan otomatis ditolak dan agent menerima error.
 
 Satu agent bisa punya maksimal 20 permintaan approval yang pending sekaligus. Kartu approval tidak dobel — permintaan pending yang sama muncul paling banyak sekali di room feed dan sekali di thread.
+
+**Mengelola pengecualian:** Di halaman MCP, buka tab **Installed** dan klik tombol **tools** di kartu server untuk membuka daftar tool-nya. Agent yang dikecualikan tercantum di bawah **always allowed for** di bawah baris tool. Klik **×** di samping nama lalu konfirmasi untuk mencabut — setelah itu agent akan ditanya lagi. Jika switch di kolom **Approval** untuk tool tersebut dimatikan, daftar ditampilkan redup (tidak aktif). Pengecualian dihapus otomatis saat agent atau sub-agent dihapus. Panggilan yang lolos lewat pengecualian tetap tercatat di activity log.
 
 ### Label Tool di Chat
 

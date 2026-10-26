@@ -314,7 +314,8 @@ CREATE TABLE mcp_calls (
   args_preview TEXT,   -- redacted, max 2KB
   status TEXT NOT NULL CHECK(status IN ('ok','error','denied','timeout','rate_limited')),
   error TEXT, duration_ms INTEGER, result_bytes INTEGER,
-  created_at TEXT
+  created_at TEXT,
+  approval TEXT        -- 'owner' | 'exemption' for approval-gated calls, NULL otherwise
 );
 
 -- Approval requests (requires_approval tools)
@@ -325,6 +326,16 @@ CREATE TABLE mcp_approvals (
   args_preview TEXT,
   status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','denied','expired')),
   decided_at TEXT, expires_at TEXT,
+  created_at TEXT
+);
+
+-- "Always allow": agent (sub_agent_id NULL) or one sub-agent skips approval for one tool. Exact match
+-- only (parent ≠ sub-agent). UNIQUE index on (server_id, tool, actor_id, COALESCE(sub_agent_id,0)).
+-- FKs CASCADE (server, actor, sub-agent) + cleared in forgetActor/forgetSubAgent.
+CREATE TABLE mcp_approval_exemptions (
+  id INTEGER PRIMARY KEY,
+  server_id INTEGER NOT NULL, tool TEXT NOT NULL,
+  actor_id INTEGER NOT NULL, sub_agent_id INTEGER,
   created_at TEXT
 );
 ```

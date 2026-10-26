@@ -17,6 +17,8 @@ let mcpState = {
   expanded: new Set(),
   testing: new Set(),
   testResults: {},
+  exemptions: {},
+  confirmExemptionId: null,
   oauthPending: new Set(),
   confirmRemoveId: null,
   form: null,
@@ -209,7 +211,9 @@ async function sLoadMcpTab() {
     mcpState.loaded = ok;
   }
   mcpRender();
-  if (mcpState.loaded) mcpFlushOAuthReturn();
+  if (!mcpState.loaded) return;
+  mcpFlushOAuthReturn();
+  mcpRefreshExemptions();
 }
 
 // The OAuth callback lands on /?mcp_oauth=connected|error&server_id=N[&reason=…] (in the tab opened by connect).

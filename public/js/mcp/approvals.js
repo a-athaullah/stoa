@@ -1,4 +1,4 @@
-// ── MCP approvals: approve / deny cards in the room feed and thread panel ────
+// ── MCP approvals: approve / always allow / deny cards in the room feed and thread panel ────
 const MCP_APPR_STATUS_TEXT = {
   approved: 'approved',
   denied: 'denied',
@@ -120,8 +120,11 @@ function mcpMakeApprovalCard(a) {
   if (a.status === 'pending') {
     const actions = mcpEl('div', 'mcp-appr-actions');
     const approve = mcpBtn('mcp-appr-approve', 'approve', () => mcpDecide(a, 'approve', actions));
+    const scope = `Always allow ${mcpApprWho(a)} to run ${mcpApprToolName(a)}`;
+    const always = mcpBtn('mcp-appr-always', 'always allow', () => mcpDecide(a, 'always', actions), scope);
+    always.setAttribute('aria-label', scope);
     const deny = mcpBtn('mcp-appr-deny', 'deny', () => mcpDecide(a, 'deny', actions));
-    actions.append(approve, deny);
+    actions.append(approve, always, deny);
     card.appendChild(actions);
   } else {
     const st = mcpEl('div', `mcp-appr-result mcp-appr-${a.status}`,
@@ -149,18 +152,22 @@ async function mcpDecide(a, decision, actions) {
   const r = await mcpApi('POST', `/api/mcp/approvals/${a.id}`, { decision });
   const body = r.data?.approval || r.data || {};
   let out = null;
-  if (r.ok) out = { status: body.status || (decision === 'approve' ? 'approved' : 'denied'), decided_at: body.decided_at || null };
+  if (r.ok) out = { status: body.status || (decision === 'deny' ? 'denied' : 'approved'), decided_at: body.decided_at || null };
   else if (r.status === 409 && MCP_APPR_STATUS_TEXT[body.status]) out = { status: body.status, decided_at: body.decided_at || null };
   else if (r.status === 404 || r.status === 409) {
     showToast(r.status === 404 ? 'This approval request no longer exists' : 'This request was already decided', { error: true });
     out = { status: 'expired', decided_at: null };
   }
   if (!out) {
-    showToast(`Couldn’t ${decision} ${mcpApprToolName(a)}: ${r.error}`, { error: true });
+    showToast(`Couldn’t ${decision === 'always' ? 'always allow' : decision} ${mcpApprToolName(a)}: ${r.error}`, { error: true });
     actions.querySelectorAll('button').forEach(b => { b.disabled = false; });
     return null;
   }
   mcpApprovalResolved({ id: a.id, ...out });
+  if (decision === 'always' && r.ok) {
+    showToast(`${mcpApprWho(a)} can now run ${mcpApprToolName(a)} without asking`);
+    mcpExemptionsChanged(r.data?.exemption?.server_id ?? mcpState.servers.find(x => x.slug === a.server_slug)?.id);
+  }
   return out;
 }
 

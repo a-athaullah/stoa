@@ -461,7 +461,9 @@ CREATE TABLE IF NOT EXISTS mcp_calls (
   error TEXT,
   duration_ms INTEGER,
   result_bytes INTEGER,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- 'owner' = approved on its card, 'exemption' = mcp_approval_exemptions; NULL = no approval needed.
+  approval TEXT CHECK(approval IS NULL OR approval IN ('owner','exemption'))
 );
 CREATE INDEX IF NOT EXISTS idx_mcp_calls_created ON mcp_calls(created_at);
 CREATE INDEX IF NOT EXISTS idx_mcp_calls_server ON mcp_calls(server_id, id);
@@ -488,6 +490,21 @@ CREATE TABLE IF NOT EXISTS mcp_approvals (
 CREATE INDEX IF NOT EXISTS idx_mcp_approvals_room ON mcp_approvals(room_id, id);
 CREATE INDEX IF NOT EXISTS idx_mcp_approvals_pending ON mcp_approvals(status) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_mcp_approvals_created ON mcp_approvals(created_at);
+
+-- "Always allow": exempts one agent (sub_agent_id NULL) or one sub-agent from approval for one tool.
+-- Exact match only; AUTOINCREMENT so a stale id never hits a newer row. See migrations/20261026-mcp-approval-exemptions.sql.
+CREATE TABLE IF NOT EXISTS mcp_approval_exemptions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  server_id INTEGER NOT NULL REFERENCES mcp_servers(id) ON DELETE CASCADE,
+  tool TEXT NOT NULL,
+  actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
+  sub_agent_id INTEGER REFERENCES sub_agents(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_approval_exemptions_key
+  ON mcp_approval_exemptions(server_id, tool, actor_id, COALESCE(sub_agent_id, 0));
+CREATE INDEX IF NOT EXISTS idx_mcp_approval_exemptions_actor ON mcp_approval_exemptions(actor_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_approval_exemptions_sub_agent ON mcp_approval_exemptions(sub_agent_id) WHERE sub_agent_id IS NOT NULL;
 
 -- Parent-agent triggers refused while the agent was outdated; see migrations/20261022-pending-retriggers.sql.
 CREATE TABLE IF NOT EXISTS pending_retriggers (

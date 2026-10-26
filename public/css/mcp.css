@@ -133,6 +133,26 @@
 .mcp-tool-info { min-width: 0; }
 .mcp-tool-name-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .mcp-tool-name { font-size: 12.5px; color: var(--h-ink); overflow-wrap: anywhere; }
+.mcp-tool-exempt { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; color: var(--h-ink-mute); }
+.mcp-tool-exempt-label { color: var(--h-ink-faint); }
+.mcp-tool-exempt-off .mcp-exempt-chip { opacity: .6; }
+.mcp-tool-exempt-note { font-style: italic; color: var(--h-ink-faint); }
+.mcp-exempt-chip {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 100%; box-sizing: border-box;
+  padding: 1px 3px 1px 9px; border: 1px solid var(--h-hairline); border-radius: 999px; color: var(--h-ink);
+}
+.mcp-exempt-chip-confirm { padding-right: 4px; border-color: var(--h-red); }
+.mcp-exempt-name { overflow-wrap: anywhere; }
+.mcp-exempt-rm, .mcp-exempt-yes, .mcp-exempt-no {
+  background: none; border: none; cursor: pointer; font-family: var(--h-sans); color: var(--h-ink-mute);
+  min-width: 24px; min-height: 24px; border-radius: 999px; padding: 0 6px; font-size: 12px;
+}
+.mcp-exempt-rm { font-size: 15px; line-height: 1; padding: 0; }
+.mcp-exempt-rm:hover, .mcp-exempt-no:hover { background: var(--h-surface-hi); color: var(--h-ink); }
+.mcp-exempt-yes { color: var(--h-red); font-weight: 500; }
+.mcp-exempt-yes:hover { background: color-mix(in srgb, var(--h-red) 12%, transparent); }
+.mcp-exempt-yes:disabled { opacity: .5; cursor: default; }
+.mcp-exempt-rm:focus-visible, .mcp-exempt-yes:focus-visible, .mcp-exempt-no:focus-visible { outline: 2px solid var(--h-link); outline-offset: 1px; }
 .mcp-tool-desc { font-size: 12px; color: var(--h-ink-faint); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .mcp-badge-write {
   font-size: 10.5px; letter-spacing: .04em; padding: 1px 6px; border-radius: 999px;
@@ -316,13 +336,14 @@
 .mcp-appr-args summary { cursor: pointer; font-size: 12px; color: var(--h-ink-mute); margin-bottom: 6px; width: fit-content; }
 .mcp-appr-args summary:focus-visible { outline: 2px solid var(--h-link); outline-offset: 2px; border-radius: 4px; }
 .mcp-appr-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.mcp-appr-approve, .mcp-appr-deny {
+.mcp-appr-approve, .mcp-appr-always, .mcp-appr-deny {
   border-radius: 999px; padding: 6px 16px; font-family: var(--h-sans); font-size: 13px; cursor: pointer; min-height: 32px;
 }
 .mcp-appr-approve { background: var(--h-ink); color: var(--h-bg); border: 1px solid var(--h-ink); }
-.mcp-appr-deny { background: none; color: var(--h-ink); border: 1px solid var(--h-hairline); }
-.mcp-appr-approve:disabled, .mcp-appr-deny:disabled { opacity: .45; cursor: default; }
-.mcp-appr-approve:focus-visible, .mcp-appr-deny:focus-visible { outline: 2px solid var(--h-link); outline-offset: 2px; }
+.mcp-appr-always, .mcp-appr-deny { background: none; color: var(--h-ink); border: 1px solid var(--h-hairline); }
+.mcp-appr-always:hover, .mcp-appr-deny:hover { background: var(--h-surface-hi); }
+.mcp-appr-approve:disabled, .mcp-appr-always:disabled, .mcp-appr-deny:disabled { opacity: .45; cursor: default; }
+.mcp-appr-approve:focus-visible, .mcp-appr-always:focus-visible, .mcp-appr-deny:focus-visible { outline: 2px solid var(--h-link); outline-offset: 2px; }
 .mcp-appr-result { font-size: 12.5px; font-weight: 500; }
 .mcp-appr-approved { color: var(--h-green); }
 .mcp-appr-denied { color: var(--h-red); }
