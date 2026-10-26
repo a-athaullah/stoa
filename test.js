@@ -6124,6 +6124,85 @@ async function run() {
     });
   }
 
+  // ── Live run events: reply quote + agent disconnect ───────────────────────
+  // A run replies to the message that triggered it (reply_to); the feed/thread reads attach that quote
+  // (reply_msg), so the live events must carry the same quote or it only appears after a reload.
+  console.log('\n[Live run events — reply quote + disconnect]');
+  {
+    const LR_NAME = '__test-live-run';
+    const db = require('./db');
+    let lr = null, lrRoomId = null, humanWs = null, run = null, humanMsgId = null;
+    const nextTrigger = () => waitForWsMessage(lr.ws, m => m.type === 'agent_trigger' && !m.sub_agent, 5000)
+      .catch(() => { throw new Error('agent trigger never arrived'); });
+    const quoteOf = (id) => db.prepare(`SELECT m.id, substr(m.content, 1, 300) AS content, m.image_url, m.file_url, m.file_name, m.attachments, a.name AS actor_name, a.avatar_color
+      FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id WHERE m.id=?`).get(id);
+
+    await test('Setup — online agent + room for live run event tests', async () => {
+      const agent = await createOnlineTestAgent(LR_NAME, '/tmp/stoa-test-live-run');
+      if (!agent?.workdirId) { console.log('    (skipped — could not set up online test agent)'); return; }
+      lr = agent;
+      const r = await req('POST', '/api/rooms', { title: '__live-run-room__', workdir_id: agent.workdirId, participant_ids: [agent.actorId] });
+      assert.strictEqual(r.status, 200);
+      lrRoomId = r.body.id;
+      testRoomIds.push(lrRoomId);
+      humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      const hist = waitForWsMessage(humanWs, m => m.type === 'history');
+      humanWs.send(JSON.stringify({ type: 'join_room', room_id: lrRoomId }));
+      await hist;
+    });
+
+    await test('reply quote — streaming message_state + message_complete carry the quote the thread read shows', async () => {
+      if (!lr) { console.log('    (skipped)'); return; }
+      const t = nextTrigger();
+      const humanNew = waitForWsMessage(humanWs, m => m.type === 'message_new' && m.message?.content === `@${LR_NAME} quote me`, 5000);
+      humanWs.send(JSON.stringify({ type: 'send_message', room_id: lrRoomId, content: `@${LR_NAME} quote me` }));
+      humanMsgId = (await humanNew).message.id;
+      const streaming = waitForWsMessage(humanWs, m => m.type === 'message_state' && m.state === 'streaming', 5000);
+      run = await t;
+      const st = await streaming;
+      assert.strictEqual(st.message_id, run.message_id);
+      assert.strictEqual(st.reply_to, humanMsgId, 'the run replies to the message that triggered it');
+      assert.deepStrictEqual(st.reply_msg, quoteOf(humanMsgId), 'streaming event carries the quote');
+      assert.strictEqual(st.actor_name, LR_NAME);
+      const done = waitForWsMessage(humanWs, m => m.type === 'message_complete' && m.message_id === run.message_id, 5000);
+      lr.ws.send(JSON.stringify({ type: 'agent_complete', room_id: lrRoomId, message_id: run.message_id, content: 'quoted answer' }));
+      const evt = await done;
+      assert.strictEqual(evt.reply_to, humanMsgId);
+      assert.deepStrictEqual(evt.reply_msg, st.reply_msg, 'completion carries the same quote');
+      const thr = (await req('GET', `/api/rooms/${lrRoomId}/threads/${run.thread_id}`)).body.messages.find(m => m.id === run.message_id);
+      assert.deepStrictEqual(thr.reply_msg, st.reply_msg, 'thread read and live events share one quote shape');
+      const feed = (await req('GET', `/api/rooms/${lrRoomId}/messages?scope=all`)).body.find(m => m.id === run.message_id);
+      assert.deepStrictEqual(feed.reply_msg, st.reply_msg, 'feed read and live events share one quote shape');
+    });
+
+    await test('reply quote — a human reply\'s message_new carries the quote of the message it answers', async () => {
+      if (!run) { console.log('    (skipped)'); return; }
+      const t = nextTrigger();
+      const live = waitForWsMessage(humanWs, m => m.type === 'message_new' && m.message?.content === `@${LR_NAME} replying to the answer`, 5000);
+      humanWs.send(JSON.stringify({ type: 'send_message', room_id: lrRoomId, content: `@${LR_NAME} replying to the answer`, reply_to: run.message_id, thread_id: run.thread_id }));
+      const m = (await live).message;
+      assert.deepStrictEqual(m.reply_msg, quoteOf(run.message_id));
+      const r = await t;
+      const done = waitForWsMessage(humanWs, e => e.type === 'message_complete' && e.message_id === r.message_id, 5000);
+      lr.ws.send(JSON.stringify({ type: 'agent_complete', room_id: lrRoomId, message_id: r.message_id, content: 'ok' }));
+      await done;
+    });
+
+    await test('Cleanup — live run event test data', async () => {
+      if (humanWs) { humanWs.close(); humanWs = null; }
+      if (lr?.ws) lr.ws.close();
+      if (lrRoomId) {
+        await req('PATCH', `/api/rooms/${lrRoomId}`, { archived: true });
+        await req('DELETE', `/api/rooms/${lrRoomId}`);
+        testRoomIds = testRoomIds.filter(id => id !== lrRoomId);
+      }
+      if (lr?.actorId) {
+        await req('DELETE', `/api/actors/${lr.actorId}`);
+        orphanActorIds = orphanActorIds.filter(id => id !== lr.actorId);
+      }
+    });
+  }
+
   // ── Parent wake gating (messages.wake_parent) ──────────────────────────────
   // A sub-agent the human mentions directly must not wake its parent, unless the
   // parent is @mentioned too or the run errors. Parent-driven runs keep waking.

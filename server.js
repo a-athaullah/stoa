@@ -1660,7 +1660,7 @@ const mcpUpstreams = createUpstreamManager({
 // validation cannot drift between the two paths).
 const roomSchedules = createRoomSchedules({ db, broadcast });
 const roomMessages = createRoomMessages({
-  db, broadcast, broadcastGlobal, resolveThread, enrichAutomation, enrichAutomationList, enrichReply, getThreadRootPreview,
+  db, broadcast, broadcastGlobal, resolveThread, enrichAutomation, enrichAutomationList, getThreadRootPreview,
   cascadeMentions: cascadeMentionsFromProactive, uploadsDir: UPLOADS_DIR,
 });
 const stoaMemory = createStoaMemory({ db });
@@ -5428,7 +5428,7 @@ wss.on('connection', (ws, req) => {
           ORDER BY m.feed_pos DESC, m.id DESC LIMIT 100
         ) AS recent ORDER BY feed_pos, id
       `).all(subscribedRoom);
-      const enriched = enrichReply(messages);
+      const enriched = roomMessages.enrichReply(messages);
       enrichAutomationList(enriched);
       enriched.forEach(m => {
         if (m.broadcast_reason && m.thread_id) {
@@ -6087,11 +6087,12 @@ wss.on('connection', (ws, req) => {
       db.prepare(
         'UPDATE messages SET content=?, file_url=?, file_name=?, attachments=?, ai_model=?, result_meta=?, state=?, completed_at=datetime(\'now\') WHERE id=?'
       ).run(agentContent, msg.file_url || null, msg.file_name || null, attachJson, msg.ai_model || null, resultMetaJson, finalState, msg.message_id);
-      const doneRow = db.prepare('SELECT participant_id, sub_agent_id, parent_message_id, thread_id, model_source, wake_parent FROM messages WHERE id=?').get(msg.message_id);
+      const doneRow = db.prepare('SELECT participant_id, sub_agent_id, parent_message_id, thread_id, model_source, wake_parent, reply_to FROM messages WHERE id=?').get(msg.message_id);
       const completePayload = { type: 'message_complete', message_id: msg.message_id, content: agentContent, ai_model: msg.ai_model || null, model_source: doneRow?.model_source || null, state: finalState, thread_id: doneRow?.thread_id ?? null };
       if (resultMetaJson) completePayload.result_meta = resultMetaJson;
       if (msg.attachments?.length) { completePayload.attachments = msg.attachments; }
       else if (msg.file_url) { completePayload.file_url = msg.file_url; completePayload.file_name = msg.file_name; }
+      if (doneRow?.reply_to) Object.assign(completePayload, { reply_to: doneRow.reply_to, reply_msg: roomMessages.enrichReply([doneRow])[0].reply_msg ?? null });
       if (doneRow?.thread_id) completePayload.thread_summary = buildThreadSummary(msg.room_id, doneRow.thread_id);
       broadcast(msg.room_id, completePayload);
       broadcastGlobal({ type: 'room_activity', room_id: msg.room_id });
@@ -7157,10 +7158,6 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
 
   // Get message with actor info for broadcast
   const row = roomMessages.row(messageId);
-  if (row.reply_to) {
-    const replied = db.prepare(`SELECT m.id, m.content, m.image_url, m.file_url, m.file_name, m.attachments, a.name as actor_name, a.avatar_color FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id WHERE m.id=?`).get(row.reply_to);
-    if (replied) row.reply_msg = replied;
-  }
   enrichAutomation(row);
   const newMsgPayload = { type: 'message_new', message: row };
   if (threadId) newMsgPayload.thread_summary = buildThreadSummary(roomId, threadId);
@@ -7524,22 +7521,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   const msgId = result.lastInsertRowid;
 
   const displayName = subAgent ? `${ai.name}/${subAgent.label}` : ai.name;
-  broadcast(roomId, {
-    type: 'message_state',
-    message_id: msgId,
-    actor_name: ai.name,
-    avatar_color: ai.avatar_color,
-    avatar_symbol: ai.avatar_symbol,
-    avatar_url: ai.avatar_url || null,
-    sub_agent_id: subAgent?.id || null,
-    sub_agent_label: subAgent?.label || null,
-    sub_agent_avatar_color: subAgent?.avatar_color || null,
-    sub_agent_avatar_symbol: subAgent?.avatar_symbol || null,
-    sub_agent_avatar_url: subAgent?.avatar_url || null,
-    sub_agent_role: subAgent?.role || null,
-    thread_id: threadId || null,
-    state: 'streaming',
-  });
+  broadcast(roomId, roomMessages.runState(msgId, 'streaming'));
   console.log(`[trigger] ${displayName} actor_id=${ai.actor_id} agentConnected=${!!agentWs} readyState=${agentWs?.readyState}`);
 
   if (EXPECTED_CLIENT_VERSION && agentWs && agentWs.readyState === 1) {
@@ -7962,16 +7944,6 @@ async function handleInviteSuggest(roomId, byParticipantId, suggestedActorId, re
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
 // enrichAutomation, enrichAutomationList → lib/automation-identity.js
-
-function enrichReply(rows) {
-  const replyIds = [...new Set(rows.filter(r => r.reply_to).map(r => r.reply_to))];
-  if (!replyIds.length) return rows;
-  const ph = replyIds.map(() => '?').join(',');
-  const repliedRows = db.prepare(`SELECT m.id, m.content, m.image_url, m.file_url, m.file_name, m.attachments, a.name as actor_name, a.avatar_color FROM messages m JOIN room_participants rp ON rp.id=m.participant_id JOIN actors a ON a.id=rp.actor_id WHERE m.id IN (${ph})`).all(...replyIds);
-  const replied = {};
-  for (const r of repliedRows) replied[r.id] = r;
-  return rows.map(r => r.reply_to && replied[r.reply_to] ? { ...r, reply_msg: replied[r.reply_to] } : r);
-}
 
 function handleLogout(roomId) {
   // Same single-agent guard as /reauth — credentials are machine-global.
