@@ -154,6 +154,7 @@ x-file-name: 파일명.확장자
 | `GET`, `PUT` | `/api/actors/:id/memory[/MEMORY.md\|USER.md]` | 자신의 액터 |
 | `GET`, `PUT` | `/api/actors/:id/system-prompt` | 자신의 액터 |
 | `GET`, `PUT` | `/api/sub-agents/:id/memory` | 소유한 서브에이전트 |
+| `POST` | `/api/sub-agents/:id/avatar` | 소유한 서브에이전트 (부모 시크릿 사용 가능); body 한도 512 KB |
 | `GET` | `/api/automations/connections/:id/messages` | 연결된 자동화 룸 |
 | `GET` | `/api/automations` | 유효한 에이전트 (서버가 자신의 룸만 필터링) |
 | `POST` | `/api/automations` | 유효한 에이전트 (`target_room_id`는 자신의 룸이어야 함) |
@@ -289,6 +290,7 @@ curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
 | `stoa__sub_agent_update` | `sub_agent_id` + 생성 필드 중 하나, `enabled` | `PATCH /api/sub-agents/:id` |
 | `stoa__sub_agent_delete` | `sub_agent_id` | `DELETE /api/sub-agents/:id` (메모리도 삭제됩니다) |
 | `stoa__sub_agent_trigger` | `task`, `label` 또는 `sub_agent_id`, `thread_id?`, `main_feed?` | `POST /api/rooms/:id/sub-agent-trigger`. 이것 또는 `@label` 멘션 중 하나만 사용하세요 |
+| `stoa__sub_agent_avatar_set` | `sub_agent_id` (정수), `path` (에이전트 머신의 절대 경로, `~/` 허용, 최대 4096자) | 부모 에이전트의 WebSocket을 통해 `POST /api/sub-agents/:id/avatar`. png·jpeg·webp·gif 허용 (파일 바이트로 검증). 최대 512 KB (256 px 리사이즈 권장). 자신이 소유한 서브에이전트만 — 다른 에이전트의 서브에이전트는 `sub-agent not found` 반환. 서브에이전트 세션에서는 사용 불가. 에이전트가 오프라인이면 409, stoa.js가 구버전이거나 15초 내 응답 없으면 504 반환 |
 | `stoa__automation_list` | — | `GET /api/automations` (내 룸을 대상으로 하는 자동화) |
 | `stoa__automation_create` | `name`, `trigger_event`, `prompt_template` + 선택적으로 `trigger_type`, `trigger_conditions` (배열), `connection_id`, `reply_mode`, `watch_reply`, `enabled`, `target_room_id` (기본: 내 룸) | `POST /api/automations` |
 | `stoa__automation_update` | `automation_id` + `trigger_type`을 제외한 생성 필드 중 하나 | `PATCH /api/automations/:id` |

@@ -276,7 +276,7 @@ Sub-agents are defined per agent. Select the agent in **Settings > AI Agent**, t
 - **Workdir** (optional) — a working directory the sub-agent operates in.
 - **System prompt** (optional) — extra instructions that shape the sub-agent's behavior.
 - **Harness** (optional) — `claude` or `codex`. Leave on **inherit from parent** (default) to use the same harness as the parent agent.
-- **Avatar** (optional) — each sub-agent has its own avatar: a hex color (`#RRGGBB`), a symbol (1–4 characters), or a custom image (upload or remove). Sub-agent messages in the feed and thread panels display the sub-agent's own avatar; if none is set, they fall back to the parent agent's avatar. The mention popup also shows each sub-agent's own avatar (with a small parent badge) and role. Messages already on screen reflect the new avatar after a page reload.
+- **Avatar** (optional) — each sub-agent has its own avatar: a hex color (`#RRGGBB`), a symbol (1–4 characters), or a custom image (upload or remove). Sub-agent messages in the feed and thread panels display the sub-agent's own avatar; if none is set, the sub-agent's initial letter label is shown as a seal (using the sub-agent's color, or the parent's color as fallback) — the parent agent's avatar is never used. The mention popup also shows each sub-agent's own avatar (with a small parent badge) and role. Messages already on screen reflect the new avatar immediately — no page reload needed.
 - **Memory** (optional) — each sub-agent has its own persistent memory (2,200-character budget), independent from the room memory. View or edit it directly in the sub-agent card.
 
 You can edit or delete a definition anytime. Definitions belong to the parent agent, not to any specific room.
