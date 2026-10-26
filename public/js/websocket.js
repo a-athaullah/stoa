@@ -536,7 +536,7 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'thread_limit_reached') {
     if (msg.room_id === currentRoomId) {
-      showToast(`Thread limit (${msg.max_active_threads}) tercapai — pesan ini tidak diproses agent`, { error: true, duration: 5000 });
+      showToast(`Thread limit (${msg.max_active_threads}) reached — the agent did not process this message`, { error: true, duration: 5000 });
       const threadId = msg.thread_id;
       if (threadId) {
         const rootRow = document.getElementById('msg-' + threadId);
@@ -544,7 +544,7 @@ function handleWsMessage(msg) {
           const notice = document.createElement('div');
           notice.className = 'h-thread-limit-notice';
           notice.style.cssText = 'font-size:11.5px;color:var(--h-red);margin-top:4px;padding:2px 6px;background:var(--h-danger-note-bg);border-radius:4px;display:inline-block';
-          notice.textContent = `Thread limit (${msg.max_active_threads}) tercapai`;
+          notice.textContent = `Thread limit (${msg.max_active_threads}) reached`;
           const col = rootRow.querySelector('.t-col') || rootRow;
           col.appendChild(notice);
         }

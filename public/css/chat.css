@@ -1013,7 +1013,8 @@
 .h-msg-row:hover .h-msg-actions, .h-msg-row.show-actions .h-msg-actions { display: flex; }
 .h-msg-row.ai .h-msg-actions { right: 8px; }
 .h-msg-row.human .h-msg-actions { left: 8px; }
-.t-root-row .h-msg-actions { display: flex; right: 8px; }
+.t-root-row .h-msg-actions { right: 8px; }
+.t-root-row:hover .h-msg-actions, .t-root-row:focus-within .h-msg-actions, .t-root-row.show-actions .h-msg-actions { display: flex; }
 /* Broadcast toolbar hangs off the row (not the column) so it lines up with plain root rows: 20px row padding + 8px */
 .t-broadcast-row > .h-msg-actions { top: -7px; right: 28px; }
 /* Keep the reason badge clear of that toolbar (2 buttons + gap) */
@@ -1988,13 +1989,20 @@ pre:hover .h-copy-btn { opacity: 1; pointer-events: auto; }
 /* model dropdown — dim the label/trigger, never the wrapper: opacity < 1 on an
    ancestor creates a stacking context that traps the list below positioned
    feed elements and makes it see-through. */
-#model-selector-label { opacity: 0.7; }
-.h-model-dropdown { position: relative; }
+#model-selector-wrap { min-width: 0; }
+#model-selector-label { opacity: 0.7; white-space: nowrap; }
+.h-model-dropdown { position: relative; min-width: 0; }
 .h-model-dropdown-trigger {
   display: inline-flex; align-items: center; gap: 4px;
   background: transparent; border: none; cursor: pointer;
   color: inherit; font-size: 11px; padding: 2px 4px;
   border-radius: 4px; opacity: 0.7;
+  max-width: 100%; white-space: nowrap;
+}
+#model-dropdown-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 680px) {
+  #model-selector-label,
+  #model-capability-badges { display: none !important; }
 }
 .h-model-dropdown-trigger:hover { opacity: 1; background: var(--h-surface-hi, rgba(255,255,255,0.08)); }
 .h-model-dropdown-list {
