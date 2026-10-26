@@ -563,6 +563,8 @@ Sub-agents with a tier use a separate resolution path — see [Model Tiers and F
 
 Select the agent in **Settings > AI Agent**, then click the **remove** button in the detail header. Confirm the deletion in the popup. The agent is unregistered and removed from all rooms.
 
+An agent that has sent messages or has usage records cannot be deleted — Stoa rejects the request so the history is preserved, and nothing changes. Only agents with no history can be removed.
+
 ### Agent Online Status
 
 Green dots next to agent names in the sidebar and room header indicate online status. The sidebar footer also shows your WebSocket connection status.
@@ -608,7 +610,7 @@ Select an agent in **Settings > AI Agent** to see action buttons in the detail h
 
 - **Rescan** — re-scan the agent's working directories, skills, and harness availability
 - **Force Update** — force the agent to check for client updates immediately (normally checks every 2 minutes)
-- **Remove** — unregister the agent (with confirmation)
+- **Remove** — unregister the agent (with confirmation). Agents with chat history or usage records cannot be deleted.
 
 **Compact Session** — compress the agent's conversation history to reduce context size. Open the thread panel and click the compact button (↕ icon) in the panel header. A progress bar appears inside the thread panel while compacting — the agent summarizes prior context and continues seamlessly. Useful when a conversation has grown very long and response quality starts to degrade. Compact is not supported for Codex harness sessions — clicking compact shows a toast error (`compact not supported for codex harness`).
 

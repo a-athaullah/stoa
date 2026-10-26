@@ -3598,15 +3598,15 @@ async function runAsyncUnitTests() {
     assert.strictEqual(mem.prepare("SELECT COUNT(*) n FROM mcp_approvals WHERE status='pending'").get().n, 0, 'pending rows from a previous process expire at boot');
     mem.prepare('DELETE FROM mcp_tool_overrides').run();
 
-    // With foreign_keys off nothing cascades, so only forget* can clear the exemptions.
+    // With foreign_keys off nothing cascades, so only forgetSubAgent/dropActor can clear the exemptions.
     mem.pragma('foreign_keys = OFF');
     const insEx = mem.prepare('INSERT INTO mcp_approval_exemptions (server_id, tool, actor_id, sub_agent_id) VALUES (?,?,?,?)');
     insEx.run(srvId, 'wait', actorId, 424242);
     insEx.run(srvId, 'wait', actorId, null);
     gw.forgetSubAgent(424242);
     assert.deepStrictEqual(mem.prepare('SELECT sub_agent_id FROM mcp_approval_exemptions').all(), [{ sub_agent_id: null }], 'forgetSubAgent clears only its own row');
-    gw.forgetActor(actorId);
-    assert.strictEqual(mem.prepare('SELECT COUNT(*) n FROM mcp_approval_exemptions').get().n, 0, 'forgetActor clears the agent row');
+    gw.dropActor(actorId)();
+    assert.strictEqual(mem.prepare('SELECT COUNT(*) n FROM mcp_approval_exemptions').get().n, 0, 'dropActor clears the agent row');
     mem.pragma('foreign_keys = ON');
     assert.strictEqual(gw.authenticate('Bearer ' + t1), null, 'revoked with the actor');
     assert.notStrictEqual(gw.issueToken({ actorId, threadId: 7 }), t1, 'revoked token is never handed out again');
@@ -3696,7 +3696,7 @@ async function runAsyncUnitTests() {
       assert.strictEqual((await post(tB, a.t.sessionId)).status, 404, "another token cannot use A's session");
       assert.strictEqual((await post(tA, 'no-such-session')).status, 404, 'unknown session → 404 so the client re-initializes');
       assert.strictEqual((await post(tA, null)).status, 200, 'no session id → served statelessly');
-      gw.forgetActor(B);
+      gw.dropActor(B)();
       assert.strictEqual(gw.sessionCount(), 1, "revoking B's token closes its session");
       await sleep(700);
       assert.strictEqual(gw.sessionCount(), 1, 'a session with an open GET stream outlives the idle limit');
@@ -8198,6 +8198,151 @@ async function run() {
     const after = (await req('GET', '/api/actors')).body;
     const updated = after.find(a => a.id === aiActor.id);
     assert.strictEqual(updated?.avatar_url, null);
+  });
+
+  // An agent in a room with an avatar file; `withMessage` → it also posts one message (blocks the delete).
+  const fs = require('fs');
+  const actorDeleteFixture = async (name, withMessage) => {
+    const ag = await createOnlineTestAgent(name, `/tmp/stoa-test-${name}`);
+    assert.ok(ag?.workdirId, 'test agent setup failed');
+    const room = await req('POST', '/api/rooms', { title: `${name}-room`, workdir_id: ag.workdirId, participant_ids: [ag.actorId] });
+    assert.strictEqual(room.status, 200, `create room failed: ${JSON.stringify(room.body)}`);
+    const av = await req('POST', `/api/actors/${ag.actorId}/avatar`, { data_url: MINIMAL_PNG });
+    assert.strictEqual(av.status, 200);
+    const avatarFile = path.join(process.env.STOA_UPLOADS_DIR || path.join(__dirname, 'uploads'), av.body.avatar_url.replace(/^\/uploads\//, ''));
+    assert.ok(fs.existsSync(avatarFile), 'avatar file written');
+    let messageId = null;
+    if (withMessage) {
+      const m = await rawReq('POST', `/api/rooms/${room.body.id}/message`, JSON.stringify({ content: `${name} history` }), 'application/json',
+        { 'X-Agent-Id': String(ag.actorId), 'X-Agent-Secret': ag.secret });
+      assert.strictEqual(m.status, 200, `agent message failed: ${m.raw}`);
+      messageId = m.body.message_id;
+    }
+    return { ...ag, roomId: room.body.id, avatarFile, messageId };
+  };
+  const actorRow = async (id) => (await req('GET', '/api/actors')).body.find(a => a.id === id);
+
+  await test('DELETE/PATCH /api/actors/:id — only the exact path acts; a sub-path typo or unknown id → 404', async () => {
+    const ag = await actorDeleteFixture('__test-actor-route', false);
+    try {
+      for (const [method, p, body] of [
+        ['DELETE', `/api/actors/${ag.actorId}/sub-agents/2`, null],
+        ['DELETE', `/api/actors/${ag.actorId}/`, null],
+        ['PATCH', `/api/actors/${ag.actorId}/typo`, { name: '__test-actor-route-hijacked' }],
+      ]) {
+        const r = await req(method, p, body);
+        assert.strictEqual(r.status, 404, `${method} ${p} → ${r.status}`);
+      }
+      const kept = await actorRow(ag.actorId);
+      assert.strictEqual(kept?.name, '__test-actor-route', 'actor neither deleted nor renamed');
+      assert.strictEqual(ag.ws.readyState, 1, 'agent socket left open');
+      assert.strictEqual((await req('DELETE', '/api/actors/2147483000')).status, 404, 'unknown id → 404, not 204');
+    } finally {
+      ag.ws.close();
+      await req('DELETE', `/api/rooms/${ag.roomId}`);
+      await req('DELETE', `/api/actors/${ag.actorId}`);
+    }
+  });
+
+  await test('DELETE /api/actors/:id — agent with chat history → 409, nothing deleted (participant, messages, avatar file, socket)', async () => {
+    const ag = await actorDeleteFixture('__test-actor-history', true);
+    try {
+      const r = await req('DELETE', `/api/actors/${ag.actorId}`);
+      assert.strictEqual(r.status, 409, `expected 409, got ${r.status}: ${r.raw}`);
+      assert.ok(await actorRow(ag.actorId), 'actor kept');
+      const parts = (await req('GET', `/api/rooms/${ag.roomId}/participants`)).body;
+      assert.ok(parts.some(p => p.actor_id === ag.actorId), 'room participant rolled back, not deleted');
+      const msgs = (await req('GET', `/api/rooms/${ag.roomId}/messages`)).body;
+      assert.ok(msgs.some(m => m.id === ag.messageId && m.content === '__test-actor-history history'), 'chat history intact and readable');
+      assert.ok(fs.existsSync(ag.avatarFile), 'avatar file kept when the delete aborts');
+      assert.strictEqual(ag.ws.readyState, 1, 'agent socket not closed when the delete aborts');
+      const again = await rawReq('POST', `/api/rooms/${ag.roomId}/message`, JSON.stringify({ content: 'still here' }), 'application/json',
+        { 'X-Agent-Id': String(ag.actorId), 'X-Agent-Secret': ag.secret });
+      assert.strictEqual(again.status, 200, 'agent still a working room member');
+    } finally {
+      ag.ws.close();
+      await req('DELETE', `/api/rooms/${ag.roomId}`);
+      await req('DELETE', `/api/actors/${ag.actorId}`);
+    }
+  });
+
+  await test('DELETE /api/actors/:id — usage_log blocks the final DELETE → the earlier participant delete is rolled back', async () => {
+    const ag = await actorDeleteFixture('__test-actor-usage', false);
+    try {
+      ag.ws.send(JSON.stringify({ type: 'usage_report', room_id: ag.roomId, model: 'test-model', usage: { input_tokens: 1, output_tokens: 1 } }));
+      const tdb = require('./db');
+      const deadline = Date.now() + 5000;
+      while (!tdb.prepare('SELECT 1 FROM usage_log WHERE actor_id=?').get(ag.actorId) && Date.now() < deadline) await new Promise(r => setTimeout(r, 50));
+      assert.ok(tdb.prepare('SELECT 1 FROM usage_log WHERE actor_id=?').get(ag.actorId), 'usage row recorded');
+      const r = await req('DELETE', `/api/actors/${ag.actorId}`);
+      assert.strictEqual(r.status, 409, `expected 409, got ${r.status}: ${r.raw}`);
+      const parts = (await req('GET', `/api/rooms/${ag.roomId}/participants`)).body;
+      assert.ok(parts.some(p => p.actor_id === ag.actorId), 'participant delete rolled back with the failed actor delete');
+      assert.ok(fs.existsSync(ag.avatarFile), 'avatar file kept');
+      assert.strictEqual(ag.ws.readyState, 1, 'agent socket not closed');
+    } finally {
+      ag.ws.close();
+      await req('DELETE', `/api/rooms/${ag.roomId}`);
+      await req('DELETE', `/api/actors/${ag.actorId}`);
+    }
+  });
+
+  // No API writes invite_suggestions on behalf of an agent (the agent's turn output does), so seed the row in the test DB.
+  const seedSuggestionBy = (ag) => {
+    const tdb = require('./db');
+    const by = tdb.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(ag.roomId, ag.actorId);
+    const target = tdb.prepare("SELECT id FROM actors WHERE type='human' ORDER BY id LIMIT 1").get();
+    const sid = Number(tdb.prepare('INSERT INTO invite_suggestions (room_id, suggested_by_participant_id, suggested_actor_id, reason) VALUES (?,?,?,?)')
+      .run(ag.roomId, by.id, target.id, '__test suggestion').lastInsertRowid);
+    return () => tdb.prepare('SELECT 1 FROM invite_suggestions WHERE id=?').get(sid);
+  };
+
+  await test('DELETE /api/actors/:id — agent whose only trace is an invite it suggested → 204, the suggestion goes with it', async () => {
+    const ag = await actorDeleteFixture('__test-actor-suggester', false);
+    const suggestionExists = seedSuggestionBy(ag);
+    try {
+      const r = await req('DELETE', `/api/actors/${ag.actorId}`);
+      assert.strictEqual(r.status, 204, `expected 204, got ${r.status}: ${r.raw}`);
+      assert.strictEqual(await actorRow(ag.actorId), undefined, 'actor removed');
+      assert.ok(!suggestionExists(), 'suggestion made by the agent deleted in the same transaction');
+      orphanActorIds = orphanActorIds.filter(id => id !== ag.actorId);
+    } finally {
+      ag.ws.close();
+      await req('DELETE', `/api/rooms/${ag.roomId}`);
+    }
+  });
+
+  await test('DELETE /api/actors/:id — agent with messages that also suggested an invite → 409, the suggestion is rolled back', async () => {
+    const ag = await actorDeleteFixture('__test-actor-suggester-history', true);
+    const suggestionExists = seedSuggestionBy(ag);
+    try {
+      const r = await req('DELETE', `/api/actors/${ag.actorId}`);
+      assert.strictEqual(r.status, 409, `expected 409, got ${r.status}: ${r.raw}`);
+      assert.ok(suggestionExists(), 'suggestion restored by the rollback');
+      assert.ok(await actorRow(ag.actorId), 'actor kept');
+    } finally {
+      ag.ws.close();
+      await req('DELETE', `/api/rooms/${ag.roomId}`);
+      await req('DELETE', `/api/actors/${ag.actorId}`);
+    }
+  });
+
+  await test('DELETE /api/actors/:id — agent without history → 204, row/participant/avatar file gone, socket closed', async () => {
+    const ag = await actorDeleteFixture('__test-actor-clean', false);
+    const closed = new Promise(resolve => ag.ws.once('close', resolve));
+    try {
+      const r = await req('DELETE', `/api/actors/${ag.actorId}`);
+      assert.strictEqual(r.status, 204, `expected 204, got ${r.status}: ${r.raw}`);
+      assert.strictEqual(await actorRow(ag.actorId), undefined, 'actor removed');
+      const parts = (await req('GET', `/api/rooms/${ag.roomId}/participants`)).body;
+      assert.ok(!parts.some(p => p.actor_id === ag.actorId), 'participant removed');
+      assert.ok(!fs.existsSync(ag.avatarFile), 'avatar file deleted after the commit');
+      await closed;
+      orphanActorIds = orphanActorIds.filter(id => id !== ag.actorId);
+    } finally {
+      ag.ws.close();
+      await req('DELETE', `/api/rooms/${ag.roomId}`);
+    }
   });
 
   await test('POST /api/actors/:id/workdirs — offline agent → 503', async () => {

@@ -1538,27 +1538,29 @@ function sCancelDelete(id) {
 }
 
 async function sCommitDelete(id) {
+  const wasSelected = agentsSelectedId === id;
   settingsActors = settingsActors.filter(a => a.id !== id);
   sRowStates.delete(id);
-  if (agentsSelectedId === id) {
+  if (wasSelected) {
     agentsSelectedId = null;
     localStorage.removeItem('stoa-agents-selected');
     showAgentEmptyState();
   }
   renderAgentSidebar();
-  try {
-    const r = await fetch(`/api/actors/${id}`, { method: 'DELETE' });
-    if (!r.ok) throw new Error('delete failed');
+  let status = 0;
+  try { status = (await fetch(`/api/actors/${id}`, { method: 'DELETE' })).status; } catch {}
+  if (status === 204 || status === 404) {
     const idx = allActors.findIndex(a => a.id === id);
     if (idx >= 0) allActors.splice(idx, 1);
     syncNewRoomBtn();
-  } catch {
-    showToast('Failed to delete agent', { error: true });
-    settingsActors = allActors.filter(a => a.type !== 'human' || a.id === humanActor?.id);
-    renderAgentSidebar();
+    return;
   }
+  if (status === 409) showToast('This agent has chat history or usage records, so it can’t be deleted. Its history is kept.', { error: true, duration: 8000 });
+  else showToast('Failed to delete agent', { error: true });
+  settingsActors = allActors.filter(a => a.type !== 'human' || a.id === humanActor?.id);
+  renderAgentSidebar();
+  if (wasSelected && settingsActors.some(a => a.id === id)) selectAgent(id);
 }
-
 
 // ── 2-panel agents page ──────────────────────────────────────────────────────
 let agentsSelectedId = (() => {
