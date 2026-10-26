@@ -18241,6 +18241,34 @@ async function run() {
       }
     });
 
+    // The settings UI routes label errors by `code`: the message text embeds user-written room and
+    // agent names, so it cannot be pattern-matched safely.
+    await test('sub-agent label 409s carry a stable code (create / rename / link, REST + MCP)', async () => {
+      const codeOf = r => [r.status, r.body.code];
+      const actorRow = mDb.prepare("INSERT INTO actors (name, type) VALUES ('CodeClashActor', 'human')").run().lastInsertRowid;
+      const free = (await req('POST', `/api/actors/${agA.actorId}/sub-agents`, { label: 'codefree' })).body;
+      try {
+        assert.deepStrictEqual(codeOf(await req('POST', `/api/actors/${agA.actorId}/sub-agents`, { label: 'codeclashactor' })), [409, 'label_actor_name']);
+        assert.deepStrictEqual(codeOf(await req('POST', `/api/actors/${agA.actorId}/sub-agents`, { label: 'mcpsub' })), [409, 'label_exists']);
+        assert.deepStrictEqual(codeOf(await req('PATCH', `/api/sub-agents/${free.id}`, { label: 'codeclashactor' })), [409, 'label_actor_name']);
+        assert.deepStrictEqual(codeOf(await req('PATCH', `/api/sub-agents/${free.id}`, { label: 'mcpsub' })), [409, 'label_exists']);
+        // Linked to roomA, renamed into the label agB's sub-agent holds there.
+        assert.strictEqual((await req('POST', `/api/rooms/${roomA}/sub-agents`, { sub_agent_id: free.id })).status, 200);
+        const rename = await req('PATCH', `/api/sub-agents/${free.id}`, { label: 'clashlbl' });
+        assert.deepStrictEqual([...codeOf(rename), rename.body.room_id], [409, 'label_room_clash', roomA]);
+        const viaMcp = await stoaCall(tokA, 'sub_agent_update', { sub_agent_id: free.id, label: 'clashlbl' });
+        assert.deepStrictEqual([viaMcp.isError, viaMcp.body.code, viaMcp.body.room_id], [true, 'label_room_clash', roomA], 'MCP result carries the same body');
+        // Unlinked again it may take the label; linking it into roomA is then the clash.
+        assert.strictEqual((await req('DELETE', `/api/rooms/${roomA}/sub-agents/${free.id}`)).status, 200);
+        assert.strictEqual((await req('PATCH', `/api/sub-agents/${free.id}`, { label: 'clashlbl' })).status, 200);
+        const link = await req('POST', `/api/rooms/${roomA}/sub-agents`, { sub_agent_id: free.id });
+        assert.deepStrictEqual([...codeOf(link), link.body.room_id], [409, 'label_room_clash', roomA]);
+      } finally {
+        mDb.prepare('DELETE FROM actors WHERE id=?').run(actorRow);
+        await req('DELETE', `/api/sub-agents/${free.id}`);
+      }
+    });
+
     await test('MCP stoa tools — sub-agent cap: 31st create refused on REST and /mcp alike, delete frees a slot', async () => {
       const count = () => mDb.prepare('SELECT COUNT(*) n FROM sub_agents WHERE parent_actor_id=?').get(agB.actorId).n;
       const fill = mDb.prepare('INSERT INTO sub_agents (parent_actor_id, label) VALUES (?,?)');
