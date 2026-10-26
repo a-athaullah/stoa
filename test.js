@@ -14854,6 +14854,47 @@ async function run() {
     });
 
     // ── Late / replayed results (stoa.js outbox) ──
+    // Module-level code runs before runMigrations: a db.prepare on a table there crashes a fresh install.
+    await test('server boots from an empty DB (fresh install: no module-level prepare before migrations)', async () => {
+      const fs = require('fs'), os = require('os'), net = require('net');
+      const { spawn } = require('child_process');
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-fresh-'));
+      let child = null;
+      try {
+        const port = await new Promise((resolve, reject) => {
+          const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); });
+          s.on('error', reject);
+        });
+        fs.writeFileSync(path.join(tmp, '.env'), '');
+        for (const sub of ['dist', 'mcp']) fs.mkdirSync(path.join(tmp, sub));
+        const env = { ...process.env, PORT: String(port), DB_PATH: path.join(tmp, 'stoa.db'), STOA_ENV_FILE: path.join(tmp, '.env'),
+          STOA_AGENT_BUNDLE_DIR: path.join(tmp, 'dist'), STOA_MCP_WORK_DIR: path.join(tmp, 'mcp'),
+          STOA_UPDATE_STATE_FILE: path.join(tmp, 'update-state.json'),
+          STOA_SMOKE_BOOT: '1', STOA_SEMANTIC_SEARCH: 'off', STOA_ORPHAN_WAKE: 'off' };
+        let out = '';
+        child = spawn(process.execPath, [path.join(__dirname, 'server.js')], { cwd: __dirname, env, stdio: ['ignore', 'pipe', 'pipe'] });
+        const exited = new Promise(r => child.once('exit', (code, sig) => r(code ?? sig)));
+        const up = new Promise(r => {
+          const keep = d => { out = (out + d).slice(-4000); if (out.includes(`localhost:${port}`)) r('up'); };
+          child.stdout.on('data', keep);
+          child.stderr.on('data', keep);
+        });
+        const result = await Promise.race([up, exited.then(c => `exit ${c}`), new Promise(r => setTimeout(() => r('timeout'), 20000))]);
+        assert.strictEqual(result, 'up', `fresh boot failed (${result}): ${out.trim().split('\n').slice(-5).join(' | ')}`);
+        const fresh = new (require('better-sqlite3'))(path.join(tmp, 'stoa.db'), { readonly: true });
+        try {
+          assert.strictEqual(fresh.prepare("SELECT count(*) n FROM sqlite_master WHERE type='table' AND name='messages'").get().n, 1, 'schema applied to the fresh DB');
+        } finally { fresh.close(); }
+      } finally {
+        if (child && child.exitCode === null && child.signalCode === null) {
+          const gone = new Promise(r => child.once('exit', r));
+          child.kill('SIGKILL');
+          await gone;
+        }
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
     // A human socket on the room counts the message_complete broadcasts per run.
     const watchRoom = async () => {
       const h = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);

@@ -311,6 +311,13 @@ These are the pre-existing colors; they were not degraded by the themes feature.
 
 ---
 
+### No `db.prepare` at Module Level in server.js
+**Rule:** Module-level code in `server.js` runs before `runMigrations` (which also applies the schema on a fresh DB). A top-level `db.prepare` on any table crashes a fresh install with `no such table`. Keep the SQL as a constant and prepare it inside the handler.
+
+**Why tests missed it once:** run-tests uses a copy of the live DB, where every table already exists. The test "server boots from an empty DB" now covers this by spawning `server.js` against an empty `DB_PATH`.
+
+---
+
 ## Test Coverage Exclusions
 
 ### Endpoints Without Tests

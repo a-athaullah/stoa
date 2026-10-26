@@ -569,7 +569,8 @@ const { enqueueOrphanWakes, cleanupStartupOrphans } = createOrphanRuns({ db, pos
 const RUN_FINISHABLE_SQL = `(${RUN_IN_FLIGHT_SQL} OR (state='error' AND (json_extract(result_meta, '$.exit_reason')='interrupted'
   OR (sub_agent_id IS NULL AND result_meta IS NULL AND (content LIKE '(timeout — % did not respond in % minutes)' OR content LIKE '(agent updating — %)')))))`;
 const OWNED_BY_ACTOR_SQL = 'participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?)';
-const finishableRunStmt = db.prepare(`SELECT id, room_id FROM messages WHERE id=? AND ${OWNED_BY_ACTOR_SQL} AND ${RUN_FINISHABLE_SQL}`);
+// SQL only: this runs before runMigrations, so a fresh DB has no messages table yet.
+const FINISHABLE_RUN_SQL = `SELECT id, room_id FROM messages WHERE id=? AND ${OWNED_BY_ACTOR_SQL} AND ${RUN_FINISHABLE_SQL}`;
 // A disconnect/reconnect cleanup ended these runs: every client must see the interrupted text in
 // place of "thinking". The run's identity rides along so a client can draw the bubble it never had.
 function broadcastInterrupted(rows) {
@@ -6068,7 +6069,7 @@ wss.on('connection', (ws, req) => {
 
     // ── Agent finished responding
     if (msg.type === 'agent_complete' && agentActorId) {
-      const run = finishableRunStmt.get(msg.message_id, agentActorId);
+      const run = db.prepare(FINISHABLE_RUN_SQL).get(msg.message_id, agentActorId);
       if (!run) {
         console.warn(`[agent] agent_complete ignored: message_id=${msg.message_id} agent=${agentActorId} — not this agent's run, or already finished`);
         return;
@@ -6303,7 +6304,7 @@ wss.on('connection', (ws, req) => {
 
     // ── Agent error
     if (msg.type === 'agent_error' && agentActorId) {
-      const run = finishableRunStmt.get(msg.message_id, agentActorId);
+      const run = db.prepare(FINISHABLE_RUN_SQL).get(msg.message_id, agentActorId);
       if (!run) {
         console.warn(`[agent] agent_error ignored: message_id=${msg.message_id} agent=${agentActorId} — not this agent's run, or already finished`);
         return;
