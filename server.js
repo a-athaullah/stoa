@@ -238,7 +238,7 @@ function cleanErrorText(raw) {
 const { createThreadBroadcast } = require('./lib/thread-broadcast');
 const { buildFtsQueries, focusSnippet, fuseRrf } = require('./lib/search-query');
 const { createSemanticIndex } = require('./lib/semantic-index');
-const { setBroadcastReason, getThreadRootPreview, maybeBroadcastError } = createThreadBroadcast({
+const { setBroadcastReason, getThreadRootPreview, maybeBroadcastError, clearErrorBroadcast } = createThreadBroadcast({
   db, broadcastToRoom: (...a) => broadcast(...a), enrichFn: enrichAutomation
 });
 
@@ -6104,6 +6104,8 @@ wss.on('connection', (ws, req) => {
       broadcastGlobal({ type: 'room_activity', room_id: msg.room_id });
       if (finalState === 'error') {
         maybeBroadcastError({ threadId: doneRow?.thread_id, subAgentId: doneRow?.sub_agent_id, messageId: msg.message_id, content: agentContent, roomId: msg.room_id });
+      } else {
+        clearErrorBroadcast(msg.message_id, msg.room_id);
       }
       if (msg.claude_session_id) {
         try {

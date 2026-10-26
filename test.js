@@ -6244,10 +6244,31 @@ async function run() {
       assert.strictEqual(e.actor_name, LR_NAME, 'enough identity to redraw a removed bubble');
       assert.strictEqual(e.thread_id, run.thread_id);
       assert.ok(e.reply_msg?.id, 'revived bubble keeps its quote');
+      assert.strictEqual(db.prepare('SELECT broadcast_reason FROM messages WHERE id=?').get(pendingRun.message_id).broadcast_reason, 'error',
+        'precondition: the disconnect echoed the thread run to the room feed');
       const done = waitForWsMessage(humanWs, m => m.type === 'message_complete' && m.message_id === pendingRun.message_id, 5000);
+      const cleared = waitForWsMessage(humanWs, m => m.type === 'message_broadcast_cleared' && m.message_id === pendingRun.message_id, 5000);
       lr.ws.send(JSON.stringify({ type: 'agent_complete', room_id: lrRoomId, message_id: pendingRun.message_id, content: 'resumed result' }));
       assert.strictEqual((await done).content, 'resumed result');
-      assert.strictEqual(db.prepare('SELECT state FROM messages WHERE id=?').get(pendingRun.message_id).state, 'complete');
+      assert.deepStrictEqual(await cleared, { type: 'message_broadcast_cleared', message_id: pendingRun.message_id, thread_id: run.thread_id }, 'live: the feed echo goes');
+      assert.deepStrictEqual(db.prepare('SELECT state, broadcast_reason FROM messages WHERE id=?').get(pendingRun.message_id), { state: 'complete', broadcast_reason: null });
+      const feed = (await req('GET', `/api/rooms/${lrRoomId}/messages`)).body;
+      assert.ok(!feed.some(m => m.id === pendingRun.message_id), 'reload: the recovered thread reply is no longer in the room feed');
+    });
+
+    await test('run complete — a legitimate (non-error) broadcast reason survives completion', async () => {
+      if (!pendingRun) { console.log('    (skipped)'); return; }
+      const t = nextTrigger();
+      humanWs.send(JSON.stringify({ type: 'send_message', room_id: lrRoomId, content: `@${LR_NAME} watched job`, thread_id: run.thread_id }));
+      const r = await t;
+      db.prepare("UPDATE messages SET broadcast_reason='automation_match' WHERE id=?").run(r.message_id);
+      const cleared = waitForWsMessage(humanWs, m => m.type === 'message_broadcast_cleared' && m.message_id === r.message_id, 1500).then(() => true, () => false);
+      const done = waitForWsMessage(humanWs, m => m.type === 'message_complete' && m.message_id === r.message_id, 5000);
+      lr.ws.send(JSON.stringify({ type: 'agent_complete', room_id: lrRoomId, message_id: r.message_id, content: 'watched result' }));
+      await done;
+      assert.strictEqual(await cleared, false, 'no clear event');
+      assert.strictEqual(db.prepare('SELECT broadcast_reason FROM messages WHERE id=?').get(r.message_id).broadcast_reason, 'automation_match');
+      assert.ok((await req('GET', `/api/rooms/${lrRoomId}/messages`)).body.some(m => m.id === r.message_id), 'still echoed in the room feed');
     });
 
     await test('agent reconnect — runs it no longer holds are broadcast as interrupted (a superseded socket does no cleanup)', async () => {
