@@ -4118,6 +4118,35 @@ async function runAsyncUnitTests() {
         assert.strictEqual((await u.status()).update.last_result.ok, true, 'the instance that saw the failure also reads the newer ok');
       });
 
+      await uta('server-update — state file not writable: the failure stays visible from memory; a newer file result wins over it', async () => {
+        // A directory at the state path: readState gets EISDIR (→ null) and writeState's rename onto it fails, as root too.
+        const dirState = path.join(tmp, 'state-as-dir');
+        fsM.mkdirSync(dirState);
+        const u = mk({ stateFile: dirState });
+        const prev = fx.head();
+        const bad = fx.publish({ 'server.js': BAD_SMOKE_SERVER }, 'broken, unwritable state');
+        try {
+          await u.check();
+          assert.strictEqual((await u.start({ force: true })).status, 202);
+          const s = await waitUntil(async () => { const v = await u.status(); return v.update.state !== 'running' && v; });
+          assert.strictEqual(s.update.state, 'failed');
+          assert.strictEqual(fx.head(), prev);
+          assert.ok(fsM.statSync(dirState).isDirectory(), 'nothing replaced the directory');
+          const mem = s.update.last_result;
+          assert.deepStrictEqual([mem.ok, mem.rolled_back, mem.from, mem.to], [false, true, prev, bad], 'failure served from memory');
+          fsM.rmSync(dirState, { recursive: true });
+          const older = { ok: true, rolled_back: false, from: 'a'.repeat(40), to: prev, error: null, at: new Date(Date.parse(mem.at) - 60_000).toISOString() };
+          bg.writeState(dirState, { status: 'ok', last_result: older });
+          assert.deepStrictEqual((await u.status()).update.last_result, mem, 'older file result → the in-memory failure stays');
+          const newer = { ...older, at: new Date(Date.parse(mem.at) + 60_000).toISOString() };
+          bg.writeState(dirState, { status: 'ok', last_result: newer });
+          assert.deepStrictEqual((await u.status()).update.last_result, newer, 'newer file result (e.g. a later healthy mark) wins');
+        } finally {
+          fsM.rmSync(dirState, { recursive: true, force: true });
+          for (const f of fsM.readdirSync(tmp).filter(f => f.startsWith('state-as-dir.tmp-'))) fsM.rmSync(path.join(tmp, f));
+        }
+      });
+
       await uta('detectProcessManager — pm2 only when the parent is the pm2 daemon; job env + parent for supervisord / launchd / systemd', async () => {
         const { detectProcessManager: detect } = require('./lib/process-manager');
         const pidFile = path.join('/h', '.pm2', 'pm2.pid');
