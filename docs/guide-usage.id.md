@@ -963,8 +963,9 @@ Buka **Skills** di nav sidebar (antara Automation dan MCP) untuk mengelola libra
 Daftar menampilkan setiap skill dengan `/nama` (monospace), deskripsi, pembuat (avatar kamu atau avatar agent pembuat dengan badge), versi, jumlah file, ukuran, dan waktu terakhir diperbarui.
 
 Kontrol per baris:
+- Klik baris untuk membuka editor (tooltip *"Edit /nama"*).
 - **Toggle aktif** — skill yang dinonaktifkan tidak muncul di autocomplete composer dan tidak di-resolve di pesan.
-- **Menu ⋯** — Edit, Export `.zip`, History, Hapus.
+- **Ikon tempat sampah** — memunculkan konfirmasi inline (*"Delete /nama?"*) dengan tombol **Delete** dan **Cancel**.
 
 Filter chip: **Semua · Punyaku · Buatan agent · Nonaktif**. Cari berdasarkan nama atau deskripsi. Drag file atau arsip ke halaman untuk langsung import.
 
@@ -972,7 +973,7 @@ Filter chip: **Semua · Punyaku · Buatan agent · Nonaktif**. Cari berdasarkan 
 
 Klik **New skill → Write from scratch**. Editor terbuka dengan template kosong dan dua panel:
 
-- **Kiri — file tree**: `SKILL.md` dipinned dan tidak bisa dihapus. Ada tombol tambah file, tambah folder, dan upload. Klik kanan (long-press di tablet) untuk rename atau hapus item.
+- **Kiri — file tree**: `SKILL.md` dipinned dan tidak bisa dihapus. Ada ikon tombol untuk tambah file, tambah folder, dan upload. Hover di atas item untuk menampilkan ikon aksi inline — **Rename** (khusus file) dan **Delete**.
 - **Kanan — editor**: `SKILL.md` dibuka di editor markdown dengan tab **Edit / Preview**. Field **nama**, **deskripsi**, dan **argument hint** di atas editor adalah sumber kebenaran — edit di form, dan frontmatter `SKILL.md` di-generate otomatis saat save. File teks lain (`.js`, `.py`, `.json`, `.md`, `.css`, `.html`) dibuka di editor syntax-highlighted; gambar ditampilkan preview; file binary menampilkan link download.
 
 Klik **Save** untuk membuat revisi baru. Catatan revisi opsional ada di footer. Indikator "unsaved" muncul saat ada perubahan yang belum disimpan.
@@ -1029,9 +1030,38 @@ Agent dan sub-agent bisa membuat dan mengelola skill menggunakan enam MCP tool b
 
 Cache di mesin agent menyimpan maks 2 versi per skill. Skill yang sudah tidak ada di server tidak pernah dijalankan dari cache.
 
-### Riwayat Versi
+### Riwayat, Diff, dan Restore
 
-Klik **⋯ → History** di skill mana pun untuk membuka drawer revisi. Setiap baris menampilkan nomor versi, pembuat, timestamp, catatan, dan perubahan file. Klik versi untuk melihat `SKILL.md`-nya (read-only) dan bandingkan dengan versi saat ini. Klik **Restore** untuk membuat revisi baru yang merupakan salinan versi yang dipilih.
+Editor skill punya dua tab: **Files** (file tree dan editor) dan **History** (daftar revisi lengkap).
+
+Tab History menampilkan setiap revisi beserta nomor versi, pembuat (kamu atau agent), timestamp, catatan revisi, dan ringkasan perubahan file.
+
+Klik revisi untuk membuka tampilan diff dengan dua tab:
+- **SKILL.md** — diff baris per baris dengan versi aktif, beserta baris konteks di sekitarnya.
+- **Changes** — ringkasan per file: file hanya ada di revisi itu, file hanya ada di versi aktif, file yang isinya berbeda, dan file yang permission-nya berbeda.
+
+**Restore vN** — tersedia di panel detail revisi untuk revisi yang tidak aktif. Klik **Restore vN** untuk membuat revisi baru yang mengembalikan isi revisi tersebut. Konfirmasi muncul secara inline; kalau editor punya perubahan yang belum disimpan, konfirmasi memperingatkan bahwa perubahan itu akan dibuang. Setelah restore, toast mengonfirmasi *"Restored vN as vM"*.
+
+### Export
+
+Unduh skill sebagai arsip zip:
+- **Bar editor** — klik **Export .zip** untuk mengunduh versi yang sedang ditampilkan sebagai `<name>.zip`.
+- **History** — setiap baris revisi punya ikon unduh (tooltip *"Export vN as .zip"*); panel detail revisi yang dipilih juga punya tombol **Export vN**. Keduanya mengunduh `<name>-vN.zip`.
+
+Arsip berisi satu folder `<name>/` dengan `SKILL.md` dan semua file pendukung. Izin exec dan timestamp file (sesuai waktu revisi) tetap terbawa. Zip ini bisa di-import ulang lewat **Import**.
+
+Export hanya tersedia untuk owner lewat UI — agent tidak bisa mengakses endpoint export.
+
+### Perubahan dari Tempat Lain
+
+Jika skill diubah dari tempat lain (agent lewat MCP, atau tab browser lain) saat editor sedang terbuka:
+
+- **Tidak ada perubahan yang belum disimpan** — editor diam-diam memuat versi terbaru.
+- **Ada perubahan yang belum disimpan** — muncul banner: *"This skill changed (vN) since you opened it."*
+  - **Reload** — membuang editanmu dan memuat versi terbaru.
+  - **Keep editing** — mempertahankan editanmu di atas versi terbaru. Hanya field dan file yang kamu ubah yang menimpa perubahan remote; pembaruan field lain dari versi baru tetap dipakai.
+
+Mencoba menyimpan versi yang sudah basi akan memunculkan banner yang sama, bukan menimpa diam-diam.
 
 ---
 

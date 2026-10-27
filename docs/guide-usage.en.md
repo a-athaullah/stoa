@@ -962,8 +962,9 @@ Open **Skills** in the sidebar nav (between Automation and MCP) to manage your l
 The list shows all skills with `/name` (monospace), description, creator (your avatar or the creating agent's avatar with a badge), version, file count, size, and last-updated time.
 
 Controls per row:
+- Click a row to open the editor (tooltip *"Edit /name"*).
 - **Enable toggle** — disabled skills are hidden from the composer autocomplete and are not resolved in messages.
-- **⋯ menu** — Edit, Export `.zip`, History, Delete.
+- **Delete icon** — triggers an inline confirmation (*"Delete /name?"*) with **Delete** and **Cancel** buttons.
 
 Filter chips: **All · Mine · By agents · Disabled**. Search by name or description. Drag a file or archive onto the page to start an import.
 
@@ -971,7 +972,7 @@ Filter chips: **All · Mine · By agents · Disabled**. Search by name or descri
 
 Click **New skill → Write from scratch**. The editor opens with a blank template and two panels:
 
-- **Left — file tree**: `SKILL.md` is pinned and cannot be deleted. Buttons to add a file, add a folder, or upload. Right-click (long-press on tablet) to rename or delete items.
+- **Left — file tree**: `SKILL.md` is pinned and cannot be deleted. Icon buttons to add a file, add a folder, or upload. Hover over any item to reveal inline action icons — **Rename** (files only) and **Delete**.
 - **Right — editor**: `SKILL.md` opens in a markdown editor with **Edit / Preview** tabs. The **name**, **description**, and **argument hint** fields above the editor are the source of truth — edit them in the form, and the frontmatter in `SKILL.md` is generated on save. Other text files (`.js`, `.py`, `.json`, `.md`, `.css`, `.html`) open in a syntax-highlighted editor; images show a preview; binary files show a download link.
 
 Click **Save** to create a new revision. An optional revision note appears in the footer. An "unsaved" indicator appears whenever there are pending changes.
@@ -1028,9 +1029,38 @@ Agents and sub-agents can create and manage skills using six built-in MCP tools:
 
 The cache on the agent machine stores up to 2 versions per skill. Skills no longer present on the server are never run from cache.
 
-### Version History
+### History, Diff, and Restore
 
-Click **⋯ → History** on any skill to open the revision drawer. Each row shows the version number, author, timestamp, note, and file changes. Click a version to view its `SKILL.md` read-only and compare with the current version. Click **Restore** to create a new revision that is a copy of the selected version.
+The skill editor has two tabs: **Files** (file tree and editor) and **History** (full revision list).
+
+The History tab shows each revision with version number, author (you or an agent), timestamp, revision note, and a file-change summary.
+
+Click a revision to open a diff view with two tabs:
+- **SKILL.md** — line-by-line diff against the current version, with surrounding context.
+- **Changes** — file-by-file summary: files only in that revision, files only in the current version, files with changed content, and files with changed permissions.
+
+**Restore vN** — available in the revision detail panel for non-active revisions. Click **Restore vN** to create a new revision that restores the selected content. An inline confirmation appears; if the editor has unsaved changes, the confirmation warns they will be discarded. After restoring, a toast confirms *"Restored vN as vM"*.
+
+### Export
+
+Download a skill as a zip archive:
+- **Editor bar** — click **Export .zip** to download the currently shown version as `<name>.zip`.
+- **History** — each revision row has a download icon (tooltip *"Export vN as .zip"*); the selected revision's detail panel also has an **Export vN** button. Both download `<name>-vN.zip`.
+
+The archive contains one `<name>/` folder with `SKILL.md` and all support files. Executable permissions and file timestamps (matching the revision time) are preserved. The zip re-imports cleanly via **Import**.
+
+Export is available to the owner through the UI only — agents cannot call the export endpoint.
+
+### Concurrent Changes
+
+If a skill is changed from elsewhere (an agent via MCP, or another browser tab) while the editor is open:
+
+- **No unsaved changes** — the editor silently reloads the latest version.
+- **Unsaved changes present** — a banner appears: *"This skill changed (vN) since you opened it."*
+  - **Reload** — discards your edits and loads the latest version.
+  - **Keep editing** — keeps your edits on top of the latest version. Only the fields and files you changed override the remote changes; updates to other fields from the new version are retained.
+
+Trying to save a stale version triggers the same banner rather than silently overwriting.
 
 ---
 

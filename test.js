@@ -19680,6 +19680,43 @@ async function run() {
       assert.strictEqual(r.body.skill.version, 5);
     });
 
+    await test('base_version — PATCH / PUT / DELETE refuse a stale base with 409 version_conflict; no base = last write wins', async () => {
+      const c = await create({ name: 'qa-base-version', description: 'd', body: 'v1', files: [{ path: 'a.txt', content_base64: b64('A') }] });
+      assert.strictEqual(c.status, 201, c.raw);
+      const id = c.body.skill.id;
+      const cur = () => db.prepare('SELECT r.version, r.body FROM skills s JOIN skill_revisions r ON r.id=s.current_revision_id WHERE s.id=?').get(id);
+      let r = await req('PATCH', `/api/skills/${id}`, { body: 'v2', base_version: 1 });
+      assert.deepStrictEqual([r.status, r.body.skill?.version], [200, 2], r.raw);
+      // Another writer saved v2 meanwhile: the tab still at v1 must not overwrite it.
+      r = await req('PATCH', `/api/skills/${id}`, { body: 'stale edit', base_version: 1 });
+      assert.deepStrictEqual([r.status, r.body.code, r.body.current_version], [409, 'version_conflict', 2], r.raw);
+      assert.deepStrictEqual([cur().version, B.parseFrontmatter(cur().body).body], [2, 'v2'], 'nothing written on a conflict');
+      r = await req('PATCH', `/api/skills/${id}`, { enabled: false, base_version: 1 });
+      assert.strictEqual(r.status, 409, 'an enable toggle on a stale base is refused too');
+      assert.strictEqual(db.prepare('SELECT enabled FROM skills WHERE id=?').get(id).enabled, 1);
+      r = await rawReq('PUT', `/api/skills/${id}/files/b.txt?base_version=1`, Buffer.from('B'), 'application/octet-stream');
+      assert.deepStrictEqual([r.status, r.body.code], [409, 'version_conflict'], r.raw);
+      r = await req('DELETE', `/api/skills/${id}/files/a.txt?base_version=1`);
+      assert.deepStrictEqual([r.status, r.body.code], [409, 'version_conflict'], r.raw);
+      assert.deepStrictEqual(db.prepare('SELECT path FROM skill_files WHERE revision_id=(SELECT current_revision_id FROM skills WHERE id=?) ORDER BY path').all(id).map(f => f.path), ['SKILL.md', 'a.txt']);
+      r = await rawReq('PUT', `/api/skills/${id}/files/b.txt?base_version=2`, Buffer.from('B'), 'application/octet-stream');
+      assert.deepStrictEqual([r.status, r.body.skill?.version], [200, 3], r.raw);
+      r = await req('DELETE', `/api/skills/${id}/files/a.txt?base_version=3`);
+      assert.deepStrictEqual([r.status, r.body.skill?.version], [200, 4], r.raw);
+      r = await req('PATCH', `/api/skills/${id}`, { body: 'no base' });
+      assert.deepStrictEqual([r.status, r.body.skill?.version, cur().version], [200, 5, 5], 'without base_version the save goes through');
+      for (const bad of [-1, 1.5, '5', null]) {
+        r = await req('PATCH', `/api/skills/${id}`, { body: 'x', base_version: bad });
+        assert.deepStrictEqual([r.status, r.body.code], [400, 'invalid_body'], JSON.stringify(bad));
+      }
+      for (const bad of ['abc', '-1', '']) {
+        r = await rawReq('PUT', `/api/skills/${id}/files/c.txt?base_version=${bad}`, Buffer.from('C'), 'application/octet-stream');
+        assert.deepStrictEqual([r.status, r.body.code], [400, 'invalid_body'], bad);
+      }
+      assert.strictEqual(cur().version, 5, 'no write from the rejected requests');
+      assert.strictEqual((await req('PATCH', '/api/skills/999999999', { body: 'x', base_version: 1 })).status, 404, 'unknown skill stays 404, not 409');
+    });
+
     await test('revisions + restore — restore is a new revision with the old content', async () => {
       const list = await req('GET', `/api/skills/${hg.id}/revisions`);
       assert.deepStrictEqual(list.body.revisions.map(v => v.version), [5, 4, 3, 2, 1]);
@@ -19689,6 +19726,88 @@ async function run() {
       assert.deepStrictEqual([r.body.skill.version, r.body.skill.body], [6, '# Steps\nRun scripts/gen.js']);
       assert.deepStrictEqual(r.body.skill.files.map(f => f.path), ['SKILL.md', 'assets/logo.png', 'scripts/gen.js']);
       assert.strictEqual((await req('POST', `/api/skills/${hg.id}/revisions/99/restore`)).status, 404);
+    });
+
+    await test('GET /api/skills/:id/revisions/:v — full SKILL.md with frontmatter + that revision\'s files; 404 codes', async () => {
+      const rows = db.prepare('SELECT id, version, body FROM skill_revisions WHERE skill_id=? ORDER BY version').all(hg.id);
+      const v1 = await req('GET', `/api/skills/${hg.id}/revisions/1`);
+      assert.strictEqual(v1.status, 200, v1.raw);
+      const rv = v1.body.revision;
+      for (const k of ['id', 'version', 'note', 'source_url', 'created_at', 'author_actor_id', 'author_sub_agent_id', 'author_name', 'author_sub_agent_label', 'current', 'body', 'files', 'manifest_hash', 'total_bytes', 'file_count']) assert.ok(k in rv, `missing ${k}`);
+      assert.deepStrictEqual([rv.id, rv.version, rv.current], [rows[0].id, 1, false]);
+      assert.strictEqual(rv.body, rows[0].body);
+      assert.ok(rv.body.startsWith('---\nname: qa-header-gen\n'), 'frontmatter included');
+      assert.deepStrictEqual(rv.files.map(f => f.path), ['SKILL.md', 'assets/logo.png', 'scripts/gen.js'], 'v1 files, not the current ones');
+      assert.strictEqual(rv.manifest_hash, B.manifestHash(rv.files));
+      const md = await getBuf(`/api/skill-blobs/${rv.files[0].sha256}`);
+      assert.strictEqual(md.body.toString('utf8'), rv.body, 'body is the SKILL.md blob of that revision');
+      const v5 = (await req('GET', `/api/skills/${hg.id}/revisions/5`)).body.revision;
+      assert.ok(!v5.files.some(f => f.path === 'scripts/gen.js') && v5.files.some(f => f.path === 'bin/gen.js'), 'v5 has the moved script');
+      const latest = rows[rows.length - 1];
+      assert.strictEqual((await req('GET', `/api/skills/${hg.id}/revisions/${latest.version}`)).body.revision.current, true);
+      for (const [p, code] of [[`/api/skills/${hg.id}/revisions/99`, 'revision_not_found'], [`/api/skills/${hg.id}/revisions/0`, 'revision_not_found'], ['/api/skills/999999999/revisions/1', 'not_found']]) {
+        const r = await req('GET', p);
+        assert.deepStrictEqual([r.status, r.body.code], [404, code], p);
+      }
+    });
+
+    await test('GET /api/skills/:id/export — zip of <name>/ with modes kept; re-import gives the same manifest_hash', async () => {
+      const text = 'line of a template that compresses well\n'.repeat(400);
+      const bin = crypto.randomBytes(4096);
+      const c = await create({ name: 'qa-export', description: 'Export: round-trip', argument_hint: '<x>', body: '# Export\nRun bin/run.sh',
+        files: [{ path: 'bin/run.sh', content_base64: b64('#!/bin/sh\necho hi\n'), mode: 0o755 }, { path: 'docs/template.md', content_base64: b64(text) },
+          { path: 'assets/blob.bin', content_base64: bin.toString('base64') }, { path: 'empty.txt', content_base64: '' }] });
+      assert.strictEqual(c.status, 201, c.raw);
+      const hash = () => db.prepare("SELECT r.manifest_hash FROM skills s JOIN skill_revisions r ON r.id=s.current_revision_id WHERE s.name='qa-export'").get().manifest_hash;
+      const before = hash();
+      const z = await getBuf(`/api/skills/${c.body.skill.id}/export`);
+      assert.strictEqual(z.status, 200, z.body.toString().slice(0, 200));
+      assert.deepStrictEqual([z.headers['content-type'], z.headers['content-disposition'], z.headers['x-content-type-options']],
+        ['application/zip', 'attachment; filename="qa-export.zip"', 'nosniff']);
+      const entries = await B.readZip(z.body);
+      assert.deepStrictEqual(entries.map(e => [e.path, e.mode]).sort(),
+        [['qa-export/SKILL.md', 0o644], ['qa-export/assets/blob.bin', 0o644], ['qa-export/bin/run.sh', 0o755], ['qa-export/docs/template.md', 0o644], ['qa-export/empty.txt', 0o644]]);
+      assert.ok(entries.find(e => e.path === 'qa-export/assets/blob.bin').data.equals(bin));
+      assert.strictEqual(entries.find(e => e.path === 'qa-export/docs/template.md').data.toString(), text);
+      assert.ok(z.body.length < text.length, 'the text file is deflated, not stored');
+      // Extended Timestamp (0x5455) carries the revision's real instant; DOS time alone has no timezone.
+      const created = db.prepare("SELECT r.created_at FROM skills s JOIN skill_revisions r ON r.id=s.current_revision_id WHERE s.name='qa-export'").get().created_at;
+      const mtimes = await new Promise((resolve, reject) => require('yauzl').fromBuffer(z.body, { lazyEntries: true }, (e, zf) => {
+        if (e) return reject(e);
+        const out = [];
+        zf.on('entry', (en) => { const xt = en.extraFields.find(f => f.id === 0x5455); out.push(xt && xt.data.length === 5 && xt.data[0] === 1 ? xt.data.readUInt32LE(1) : null); zf.readEntry(); });
+        zf.on('end', () => resolve(out));
+        zf.on('error', reject);
+        zf.readEntry();
+      }));
+      assert.deepStrictEqual(mtimes, entries.map(() => Date.parse(`${created.replace(' ', 'T')}Z`) / 1000), 'every entry carries mtime = revision created_at');
+      const del = await req('DELETE', `/api/skills/${c.body.skill.id}`);
+      assert.ok(del.status === 200 || del.status === 204, del.raw);
+      const back = await importFile('qa-export.zip', z.body);
+      assert.strictEqual(back.status, 201, back.raw);
+      assert.deepStrictEqual([back.body.skill.name, back.body.skill.description, back.body.skill.argument_hint, back.body.skill.body], ['qa-export', 'Export: round-trip', '<x>', '# Export\nRun bin/run.sh']);
+      assert.strictEqual(hash(), before, 'identical content after export → import');
+    });
+
+    await test('GET /api/skills/:id/export?version=N — an old revision; bad version 400, unknown 404', async () => {
+      const z = await getBuf(`/api/skills/${hg.id}/export?version=1`);
+      assert.strictEqual(z.status, 200);
+      const entries = await B.readZip(z.body);
+      const v1 = (await req('GET', `/api/skills/${hg.id}/revisions/1`)).body.revision;
+      assert.deepStrictEqual(entries.map(e => e.path).sort(), v1.files.map(f => `qa-header-gen/${f.path}`).sort());
+      assert.strictEqual(entries.find(e => e.path === 'qa-header-gen/SKILL.md').data.toString('utf8'), v1.body);
+      assert.deepStrictEqual(entries.map(e => [e.path.slice('qa-header-gen/'.length), B.sha256(e.data), e.data.length, e.mode]).sort(),
+        v1.files.map(f => [f.path, f.sha256, f.size, f.mode]).sort(), 'every byte and mode of v1');
+      const current = await B.readZip((await getBuf(`/api/skills/${hg.id}/export`)).body);
+      const cur = (await req('GET', `/api/skills/${hg.id}`)).body.skill;
+      assert.strictEqual(B.manifestHash(current.map(e => ({ path: e.path.slice('qa-header-gen/'.length), sha256: B.sha256(e.data), size: e.data.length, mode: e.mode }))),
+        db.prepare('SELECT manifest_hash FROM skill_revisions WHERE id=(SELECT current_revision_id FROM skills WHERE id=?)').get(cur.id).manifest_hash, 'no ?version → the active revision');
+      for (const [q, status, code] of [['?version=99', 404, 'revision_not_found'], ['?version=abc', 400, 'invalid_version'], ['?version=-1', 400, 'invalid_version'], ['?version=', 400, 'invalid_version']]) {
+        const r = await getBuf(`/api/skills/${hg.id}/export${q}`);
+        assert.deepStrictEqual([r.status, JSON.parse(r.body.toString()).code], [status, code], q);
+      }
+      const r = await getBuf('/api/skills/999999999/export');
+      assert.deepStrictEqual([r.status, JSON.parse(r.body.toString()).code], [404, 'not_found']);
     });
 
     await test('import .md — dry_run previews without saving; save uses frontmatter name/description/hint', async () => {
@@ -20036,6 +20155,8 @@ async function run() {
         assert.strictEqual((await req('POST', '/api/skills', { name: 'qa-agent-direct', description: 'd' }, h)).status, 403);
         assert.strictEqual((await rawReq('PUT', `/api/skills/${hg.id}/files/x`, Buffer.from('x'), 'application/octet-stream', h)).status, 403);
         assert.strictEqual((await getBuf('/api/skill-blobs/not-a-sha', h, false)).status, 403);
+        assert.strictEqual((await getBuf(`/api/skills/${hg.id}/export`, h, false)).status, 403, 'export is session-only');
+        assert.strictEqual((await req('GET', `/api/skills/${hg.id}/revisions/1`, null, h)).status, 403, 'revision detail is session-only');
         const man = await req('GET', '/api/skills/qa-header-gen/manifest', null, h);
         assert.strictEqual(man.status, 200, man.raw);
         assert.deepStrictEqual(Object.keys(man.body).sort(), ['files', 'id', 'manifest_hash', 'name', 'version']);
