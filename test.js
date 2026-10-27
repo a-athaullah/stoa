@@ -19691,6 +19691,77 @@ async function run() {
       assert.strictEqual((await req('POST', `/api/skills/${hg.id}/revisions/99/restore`)).status, 404);
     });
 
+    await test('GET /api/skills/:id/revisions/:v — full SKILL.md with frontmatter + that revision\'s files; 404 codes', async () => {
+      const rows = db.prepare('SELECT id, version, body FROM skill_revisions WHERE skill_id=? ORDER BY version').all(hg.id);
+      const v1 = await req('GET', `/api/skills/${hg.id}/revisions/1`);
+      assert.strictEqual(v1.status, 200, v1.raw);
+      const rv = v1.body.revision;
+      for (const k of ['id', 'version', 'note', 'source_url', 'created_at', 'author_actor_id', 'author_sub_agent_id', 'author_name', 'author_sub_agent_label', 'current', 'body', 'files', 'manifest_hash', 'total_bytes', 'file_count']) assert.ok(k in rv, `missing ${k}`);
+      assert.deepStrictEqual([rv.id, rv.version, rv.current], [rows[0].id, 1, false]);
+      assert.strictEqual(rv.body, rows[0].body);
+      assert.ok(rv.body.startsWith('---\nname: qa-header-gen\n'), 'frontmatter included');
+      assert.deepStrictEqual(rv.files.map(f => f.path), ['SKILL.md', 'assets/logo.png', 'scripts/gen.js'], 'v1 files, not the current ones');
+      assert.strictEqual(rv.manifest_hash, B.manifestHash(rv.files));
+      const md = await getBuf(`/api/skill-blobs/${rv.files[0].sha256}`);
+      assert.strictEqual(md.body.toString('utf8'), rv.body, 'body is the SKILL.md blob of that revision');
+      const v5 = (await req('GET', `/api/skills/${hg.id}/revisions/5`)).body.revision;
+      assert.ok(!v5.files.some(f => f.path === 'scripts/gen.js') && v5.files.some(f => f.path === 'bin/gen.js'), 'v5 has the moved script');
+      const latest = rows[rows.length - 1];
+      assert.strictEqual((await req('GET', `/api/skills/${hg.id}/revisions/${latest.version}`)).body.revision.current, true);
+      for (const [p, code] of [[`/api/skills/${hg.id}/revisions/99`, 'revision_not_found'], [`/api/skills/${hg.id}/revisions/0`, 'revision_not_found'], ['/api/skills/999999999/revisions/1', 'not_found']]) {
+        const r = await req('GET', p);
+        assert.deepStrictEqual([r.status, r.body.code], [404, code], p);
+      }
+    });
+
+    await test('GET /api/skills/:id/export — zip of <name>/ with modes kept; re-import gives the same manifest_hash', async () => {
+      const text = 'line of a template that compresses well\n'.repeat(400);
+      const bin = crypto.randomBytes(4096);
+      const c = await create({ name: 'qa-export', description: 'Export: round-trip', argument_hint: '<x>', body: '# Export\nRun bin/run.sh',
+        files: [{ path: 'bin/run.sh', content_base64: b64('#!/bin/sh\necho hi\n'), mode: 0o755 }, { path: 'docs/template.md', content_base64: b64(text) },
+          { path: 'assets/blob.bin', content_base64: bin.toString('base64') }, { path: 'empty.txt', content_base64: '' }] });
+      assert.strictEqual(c.status, 201, c.raw);
+      const hash = () => db.prepare("SELECT r.manifest_hash FROM skills s JOIN skill_revisions r ON r.id=s.current_revision_id WHERE s.name='qa-export'").get().manifest_hash;
+      const before = hash();
+      const z = await getBuf(`/api/skills/${c.body.skill.id}/export`);
+      assert.strictEqual(z.status, 200, z.body.toString().slice(0, 200));
+      assert.deepStrictEqual([z.headers['content-type'], z.headers['content-disposition'], z.headers['x-content-type-options']],
+        ['application/zip', 'attachment; filename="qa-export.zip"', 'nosniff']);
+      const entries = await B.readZip(z.body);
+      assert.deepStrictEqual(entries.map(e => [e.path, e.mode]).sort(),
+        [['qa-export/SKILL.md', 0o644], ['qa-export/assets/blob.bin', 0o644], ['qa-export/bin/run.sh', 0o755], ['qa-export/docs/template.md', 0o644], ['qa-export/empty.txt', 0o644]]);
+      assert.ok(entries.find(e => e.path === 'qa-export/assets/blob.bin').data.equals(bin));
+      assert.strictEqual(entries.find(e => e.path === 'qa-export/docs/template.md').data.toString(), text);
+      assert.ok(z.body.length < text.length, 'the text file is deflated, not stored');
+      const del = await req('DELETE', `/api/skills/${c.body.skill.id}`);
+      assert.ok(del.status === 200 || del.status === 204, del.raw);
+      const back = await importFile('qa-export.zip', z.body);
+      assert.strictEqual(back.status, 201, back.raw);
+      assert.deepStrictEqual([back.body.skill.name, back.body.skill.description, back.body.skill.argument_hint, back.body.skill.body], ['qa-export', 'Export: round-trip', '<x>', '# Export\nRun bin/run.sh']);
+      assert.strictEqual(hash(), before, 'identical content after export → import');
+    });
+
+    await test('GET /api/skills/:id/export?version=N — an old revision; bad version 400, unknown 404', async () => {
+      const z = await getBuf(`/api/skills/${hg.id}/export?version=1`);
+      assert.strictEqual(z.status, 200);
+      const entries = await B.readZip(z.body);
+      const v1 = (await req('GET', `/api/skills/${hg.id}/revisions/1`)).body.revision;
+      assert.deepStrictEqual(entries.map(e => e.path).sort(), v1.files.map(f => `qa-header-gen/${f.path}`).sort());
+      assert.strictEqual(entries.find(e => e.path === 'qa-header-gen/SKILL.md').data.toString('utf8'), v1.body);
+      assert.deepStrictEqual(entries.map(e => [e.path.slice('qa-header-gen/'.length), B.sha256(e.data), e.data.length, e.mode]).sort(),
+        v1.files.map(f => [f.path, f.sha256, f.size, f.mode]).sort(), 'every byte and mode of v1');
+      const current = await B.readZip((await getBuf(`/api/skills/${hg.id}/export`)).body);
+      const cur = (await req('GET', `/api/skills/${hg.id}`)).body.skill;
+      assert.strictEqual(B.manifestHash(current.map(e => ({ path: e.path.slice('qa-header-gen/'.length), sha256: B.sha256(e.data), size: e.data.length, mode: e.mode }))),
+        db.prepare('SELECT manifest_hash FROM skill_revisions WHERE id=(SELECT current_revision_id FROM skills WHERE id=?)').get(cur.id).manifest_hash, 'no ?version → the active revision');
+      for (const [q, status, code] of [['?version=99', 404, 'revision_not_found'], ['?version=abc', 400, 'invalid_version'], ['?version=-1', 400, 'invalid_version'], ['?version=', 400, 'invalid_version']]) {
+        const r = await getBuf(`/api/skills/${hg.id}/export${q}`);
+        assert.deepStrictEqual([r.status, JSON.parse(r.body.toString()).code], [status, code], q);
+      }
+      const r = await getBuf('/api/skills/999999999/export');
+      assert.deepStrictEqual([r.status, JSON.parse(r.body.toString()).code], [404, 'not_found']);
+    });
+
     await test('import .md — dry_run previews without saving; save uses frontmatter name/description/hint', async () => {
       const md = '---\nname: QA Md Import\ndescription: "Imports: md"\nargument-hint: <x>\nlicense: MIT\n---\n\nDo the thing';
       const dry = await importFile('whatever.md', Buffer.from(md), '?dry_run=1');
@@ -20036,6 +20107,8 @@ async function run() {
         assert.strictEqual((await req('POST', '/api/skills', { name: 'qa-agent-direct', description: 'd' }, h)).status, 403);
         assert.strictEqual((await rawReq('PUT', `/api/skills/${hg.id}/files/x`, Buffer.from('x'), 'application/octet-stream', h)).status, 403);
         assert.strictEqual((await getBuf('/api/skill-blobs/not-a-sha', h, false)).status, 403);
+        assert.strictEqual((await getBuf(`/api/skills/${hg.id}/export`, h, false)).status, 403, 'export is session-only');
+        assert.strictEqual((await req('GET', `/api/skills/${hg.id}/revisions/1`, null, h)).status, 403, 'revision detail is session-only');
         const man = await req('GET', '/api/skills/qa-header-gen/manifest', null, h);
         assert.strictEqual(man.status, 200, man.raw);
         assert.deepStrictEqual(Object.keys(man.body).sort(), ['files', 'id', 'manifest_hash', 'name', 'version']);
