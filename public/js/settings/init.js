@@ -15,6 +15,7 @@ function initGlobalWs() {
         }
       }
       if (typeof mcpInvalidate === 'function') mcpInvalidate();
+      if (typeof skillsRefreshCache === 'function') skillsRefreshCache();
     };
     globalWs.onmessage = async e => {
       let msg; try { msg = JSON.parse(e.data); } catch { return; }
@@ -41,6 +42,7 @@ function initGlobalWs() {
       if (msg.type === 'wa_qr' && typeof autoHandleWaQr === 'function') autoHandleWaQr(msg);
       if (msg.type === 'conn_status' && typeof autoHandleConnStatus === 'function') autoHandleConnStatus(msg);
       if (msg.type === 'mcp_status' && typeof mcpHandleStatus === 'function') mcpHandleStatus(msg);
+      if (msg.type === 'skills_changed' && typeof skillsHandleChanged === 'function') skillsHandleChanged();
       if ((msg.type === 'mcp_approval' || msg.type === 'mcp_approval_resolved') && typeof mcpApprovalEvent === 'function') mcpApprovalEvent(msg);
       if (msg.type === 'model_update') handleModelUpdate(msg);
       if (msg.type === 'room_threads') setRoomActiveThreads(msg.room_id, msg.active_threads);

@@ -1,5 +1,5 @@
 // ── App-level navigation sidebar ─────────────────────────────────────────────
-const APP_NAV_SETTINGS_TABS = ['agents', 'server', 'general', 'themes', 'docs', 'platforms', 'automation', 'mcp', 'usage', 'doctor'];
+const APP_NAV_SETTINGS_TABS = ['agents', 'server', 'general', 'themes', 'docs', 'platforms', 'automation', 'skills', 'mcp', 'usage', 'doctor'];
 
 function setAppNavActive(key) {
   document.querySelectorAll('.app-nav-item[data-nav]').forEach(el => {
