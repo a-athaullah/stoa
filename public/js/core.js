@@ -34,7 +34,7 @@ const processingMessages = new Set(); // message IDs currently being processed b
 let oldestMessageId   = null;
 let loadingOlder      = false;
 let noMoreOlder       = false;
-let allSkills = [];  // [{name, description}]
+let allSkills = [];  // enabled skills from GET /api/skills, for the composer / popup
 let skillPopupIdx = -1; // active item index in popup
 let mentionPopupIdx = -1;
 

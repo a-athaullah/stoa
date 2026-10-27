@@ -60,7 +60,6 @@ async function openRoom(room, opts = {}) {
   renderComposerSeal();
   if (typeof updateModelSelector === 'function') updateModelSelector(room, parts);
   loadContextState(room.id);
-  fjson(`/api/rooms/${room.id}/skills`).then(s => { allSkills = s; }).catch(e => { allSkills = []; console.error('Failed to load skills for room', room.id, e); });
 
   connectWS(room.id);
 }

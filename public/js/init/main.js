@@ -97,8 +97,7 @@ async function init() {
     }
     if (popupOpen && e.key === 'Tab') {
       e.preventDefault();
-      const active = popup.querySelector('.h-skill-item.active') || popup.querySelector('.h-skill-item');
-      if (active) applySkill(active.querySelector('.h-skill-name').textContent.slice(1));
+      applyActiveSkill();
       return;
     }
     if (mOpen && e.key === 'Tab') {
@@ -180,8 +179,7 @@ async function init() {
     if (e.key === 'Enter' && !e.shiftKey) {
       if (popupOpen && skillPopupIdx >= 0) {
         e.preventDefault();
-        const active = popup.querySelector('.h-skill-item.active');
-        if (active) applySkill(active.querySelector('.h-skill-name').textContent.slice(1));
+        applyActiveSkill();
         return;
       }
       if (mOpen && mentionPopupIdx >= 0) {

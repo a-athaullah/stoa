@@ -361,6 +361,12 @@ function _createThreadPanel() {
   threadMentionPopup.style.display = 'none';
   composerBox.appendChild(threadMentionPopup);
 
+  const threadSkillPopup = document.createElement('div');
+  threadSkillPopup.id = 'thread-skill-popup';
+  threadSkillPopup.className = 'h-skill-popup';
+  threadSkillPopup.style.display = 'none';
+  composerBox.appendChild(threadSkillPopup);
+
   // Format bar — identical to room composer
   const fmtBar = document.createElement('div');
   fmtBar.className = 'h-fmt-bar';
@@ -617,6 +623,23 @@ function _createThreadPanel() {
 
   // Keyboard handling for thread input
   inputEl.addEventListener('keydown', e => {
+    if (skillInputId === 'thread-msg-input' && isSkillPopupOpen()) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        skillPopupNavigate(e.key === 'ArrowDown' ? 1 : -1);
+        return;
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && skillPopupIdx >= 0)) {
+        e.preventDefault();
+        applyActiveSkill();
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        hideSkillPopup();
+        return;
+      }
+    }
     if (mentionInputId === 'thread-msg-input' && isMentionPopupOpen()) {
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault();
@@ -660,7 +683,11 @@ function _createThreadPanel() {
   });
 
   inputEl.addEventListener('input', () => {
-    const query = mentionQueryAtCaret(inputEl);
+    clearSkillHints(inputEl);
+    const skillQuery = skillQueryAtCaret(inputEl);
+    const query = skillQuery === null ? mentionQueryAtCaret(inputEl) : null;
+    if (skillQuery !== null) showSkillPopup(skillQuery, 'thread-msg-input');
+    else if (skillInputId === 'thread-msg-input') hideSkillPopup();
     if (query !== null) showMentionPopup(query, 'thread-msg-input');
     else if (mentionInputId === 'thread-msg-input') hideMentionPopup();
   });
@@ -924,6 +951,9 @@ function appendThreadMessage(m, container) {
     bubble.appendChild(textDiv);
   }
 
+  const skillChips = buildSkillRefChips(m.skill_refs);
+  if (skillChips) bubble.appendChild(skillChips);
+
   if (m.ai_model) {
     bubble.appendChild(buildModelTag(m.ai_model, m.model_source));
   }
@@ -1072,6 +1102,10 @@ function _renderThreadRoot(m, container) {
     textDiv.innerHTML = highlightMentions(renderMarkdown(m.content));
     bubble.appendChild(textDiv);
   }
+
+  const skillChips = buildSkillRefChips(m.skill_refs);
+  if (skillChips) bubble.appendChild(skillChips);
+
   const actions = document.createElement('div');
   actions.className = 'h-msg-actions';
   actions.innerHTML =

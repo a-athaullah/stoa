@@ -124,6 +124,31 @@ function buildResultChip(raw) {
 
 // ── Reply quote ──────────────────────────────────────────────────────────────
 // The one renderer for m.reply_msg: feed fallback, thread panel and live run bubbles.
+// skill_refs: [{id, name, version}] resolved by the server when the message was routed.
+function buildSkillRefChips(refs) {
+  if (!Array.isArray(refs)) return null;
+  const valid = refs.filter(r => r && Number.isInteger(r.id) && r.id > 0 && typeof r.name === 'string');
+  if (!valid.length) return null;
+  const wrap = document.createElement('div');
+  wrap.className = 'h-skill-refs';
+  valid.slice(0, 3).forEach(r => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'h-skill-ref';
+    const label = document.createElement('span');
+    label.className = 'h-skill-ref-label';
+    label.textContent = 'used';
+    const name = document.createElement('span');
+    name.className = 'h-skill-ref-name';
+    name.textContent = `/${r.name}${Number.isInteger(r.version) ? ` v${r.version}` : ''}`;
+    chip.append(label, name);
+    chip.title = `Open /${r.name} in Skills`;
+    chip.addEventListener('click', e => { e.stopPropagation(); skillsOpenById(r.id); });
+    wrap.appendChild(chip);
+  });
+  return wrap;
+}
+
 function buildReplyQuote(m) {
   const quote = document.createElement('div');
   quote.className = 'h-reply-quote';
@@ -255,6 +280,9 @@ function appendMessage(m, container) {
     textDiv.innerHTML = highlightMentions(renderMarkdown(m.content));
     bubble.appendChild(textDiv);
   }
+
+  const skillChips = buildSkillRefChips(m.skill_refs);
+  if (skillChips) bubble.appendChild(skillChips);
 
   if (m.ai_model) {
     bubble.appendChild(buildModelTag(m.ai_model, m.model_source));

@@ -1182,14 +1182,6 @@
 #msg-input em, #msg-input i { font-style: italic; }
 #msg-input s, #msg-input del { text-decoration: line-through; }
 #msg-input code { font-family: monospace; font-size: 13px; background: var(--h-hair-soft); border-radius: 3px; padding: 0 3px; }
-#msg-input .h-skill-tag {
-  font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
-  font-size: 13px;
-  font-weight: 600;
-  border-radius: 4px;
-  padding: 1px 5px;
-  background: color-mix(in srgb, currentColor 12%, transparent);
-}
 #msg-input pre { background: var(--h-hair-soft); border-radius: 6px; padding: 6px 10px; margin: 2px 0; white-space: pre-wrap; }
 #msg-input pre + pre { margin-top: 0; border-top-left-radius: 0; border-top-right-radius: 0; padding-top: 0; }
 #msg-input pre:has(+ pre) { margin-bottom: 0; border-bottom-left-radius: 0; border-bottom-right-radius: 0; padding-bottom: 0; }
@@ -1423,20 +1415,35 @@
 #thread-msg-input ol, #thread-msg-input ul { margin: 2px 0 2px 18px; padding: 0; }
 #thread-msg-input li { margin: 1px 0; }
 #thread-msg-input a { color: var(--h-link); text-decoration: underline; text-underline-offset: 2px; }
-#thread-msg-input .h-skill-tag {
+#msg-input .h-skill-tag, #thread-msg-input .h-skill-tag {
+  position: relative;
   font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
   font-size: 13px;
   font-weight: 600;
+  color: var(--h-ink);
   border-radius: 4px;
   padding: 1px 5px;
-  background: color-mix(in srgb, currentColor 12%, transparent);
+  background: color-mix(in srgb, var(--h-ink) 8%, transparent);
+  box-shadow: inset 0 0 0 1px var(--h-hair-soft);
+}
+#msg-input .h-skill-tag[data-hint]::after, #thread-msg-input .h-skill-tag[data-hint]::after {
+  content: attr(data-hint);
+  position: absolute;
+  left: calc(100% + 0.7em);
+  top: 1px;
+  white-space: nowrap;
+  font-weight: 400;
+  color: var(--h-ink-faint);
+  pointer-events: none;
 }
 
 /* ── Skill autocomplete ──────────────────────────────── */
-#skill-popup {
+.h-skill-popup {
   position: absolute;
   bottom: 100%;
   left: -1px; right: -1px;
+  max-height: 320px;
+  overflow-y: auto;
   background: color-mix(in srgb, var(--h-surface) 85%, transparent);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
@@ -1444,18 +1451,18 @@
   border-bottom: none;
   border-radius: 12px 12px 0 0;
   box-shadow: 0 -4px 20px rgba(0,0,0,.06);
-  overflow: hidden;
   z-index: 50;
   padding: 4px 0;
 }
 
 .h-skill-item {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  align-items: baseline;
+  gap: 12px;
   padding: 8px 14px;
   cursor: pointer;
   transition: background 0.10s;
+  min-width: 0;
 }
 .h-skill-item:hover, .h-skill-item.active {
   background: color-mix(in srgb, var(--h-ink) 6%, transparent);
@@ -1464,25 +1471,50 @@
   font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
   font-size: 13px;
   font-weight: 600;
-  padding: 2px 7px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--skill-color, #5b8fd4) 15%, transparent);
-  color: color-mix(in srgb, var(--skill-color, #5b8fd4) 65%, var(--h-ink));
+  color: var(--h-ink);
+  flex-shrink: 0;
+}
+.h-skill-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-width: 0;
 }
 .h-skill-desc {
   font-family: var(--h-msg);
-  font-size: 12px;
+  font-size: 12.5px;
+  color: var(--h-ink-mute);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.h-skill-hint {
+  font-family: "Cascadia Code", "Fira Code", Consolas, monospace;
+  font-size: 11.5px;
   color: var(--h-ink-faint);
-  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .h-skill-agent {
   font-family: var(--h-sans);
   font-size: 11px;
   color: var(--h-ink-faint);
-  opacity: .6;
   flex-shrink: 0;
   margin-left: auto;
 }
+
+/* Skills used by a message (skill_refs) */
+.h-skill-refs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.h-skill-ref {
+  display: inline-flex; align-items: baseline; gap: 5px;
+  background: transparent; border: 1px solid var(--h-hair-soft); border-radius: 6px;
+  padding: 2px 8px; cursor: pointer; font-family: var(--h-sans); font-size: 11.5px; color: var(--h-ink-faint);
+}
+.h-skill-ref:hover { color: var(--h-ink-mute); border-color: var(--h-hairline); }
+.h-skill-ref:focus-visible { outline: 2px solid var(--h-info-ink); outline-offset: 2px; }
+.h-skill-ref-name { font-family: "Cascadia Code", "Fira Code", Consolas, monospace; color: var(--h-ink-mute); }
 
 /* ── Mention autocomplete ──────────────────────────── */
 .h-mention-popup {
@@ -1549,7 +1581,7 @@
   margin-left: auto;
 }
 
-/* Skill invoked notice */
+/* System notice */
 .h-skill-notice {
   align-self: center;
   font-family: var(--h-msg);
