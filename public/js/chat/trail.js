@@ -81,38 +81,29 @@ function parseSavedToolSteps(raw) {
     .map(s => ({ name: s.name, summary: typeof s.summary === 'string' ? s.summary : '' }));
 }
 
-// Mirrors what finishStream leaves behind for a live run: failed runs keep their trail unless
-// steps are hidden, finished ones only under "show all" + "keep trail".
-function savedTrailVisible(state) {
-  const progress = getToolProgress();
-  if (progress === 'off') return false;
-  if (state === 'error') return true;
-  return progress === 'all' && getCleanupProgress() === 'off';
+// Only failed runs bring their trail back after a reload, so they can still be diagnosed. A finished
+// run's trail lives only in the session that watched it ("keep trail" keeps it until refresh).
+function savedTrailVisible() {
+  return getToolProgress() !== 'off';
 }
 
 function syncSavedTrails() {
   document.querySelectorAll('.h-process-trail.h-process-saved').forEach(el => {
-    el.hidden = !savedTrailVisible(el.dataset.state);
+    el.hidden = !savedTrailVisible();
   });
 }
 
 // Rebuilds the trail of a message loaded from history. Still-running messages get their steps
-// so far in a live trail that message_tool keeps extending.
+// so far in a live trail that message_tool keeps extending; failed ones get a saved trail.
 function renderSavedTrail(host, m) {
-  const steps = parseSavedToolSteps(m.tool_steps);
-  if (!steps.length || !host) return;
   const running = m.state === 'streaming' || m.state === 'requesting';
+  if (!host || (!running && m.state !== 'error')) return;
+  const steps = parseSavedToolSteps(m.tool_steps);
+  if (!steps.length) return;
   if (running && getToolProgress() === 'off') return;
   const trail = _ensureTrail(host);
   steps.forEach(s => trail.appendChild(buildToolStep(s.name, s.summary)));
   if (running) return;
   trail.classList.add('h-process-saved');
-  trail.dataset.state = m.state;
-  if (m.state === 'complete') {
-    const done = document.createElement('div');
-    done.className = 'h-process-done';
-    done.textContent = 'done';
-    trail.appendChild(done);
-  }
-  trail.hidden = !savedTrailVisible(m.state);
+  trail.hidden = !savedTrailVisible();
 }
