@@ -51,6 +51,12 @@ function htmlToMarkdown(node) {
       const prefix = parent === 'ol' ? `${idx}. ` : '- ';
       return prefix + inner().replace(/\n$/, '').replace(/\n/g, '\n  ') + '\n';
     }
+    case 'span': {
+      const c = inner();
+      if (!node.classList.contains('h-skill-tag')) return c;
+      const next = node.nextSibling ? htmlToMarkdown(node.nextSibling) : '';
+      return next && !/^\s/.test(next) ? c + ' ' : c;
+    }
     case 'br':
       return '\n';
     case 'div': case 'p': {

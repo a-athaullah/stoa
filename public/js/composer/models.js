@@ -121,7 +121,7 @@ function applySkill(name) {
       const frag = document.createDocumentFragment();
       if (beforeText) frag.appendChild(document.createTextNode(beforeText));
       frag.appendChild(makeSkillTag(name));
-      const after = document.createTextNode(' ' + afterText);
+      const after = document.createTextNode(' ' + afterText);
       frag.appendChild(after);
       parent.replaceChild(frag, node);
       const range = document.createRange();
@@ -138,7 +138,7 @@ function applySkill(name) {
   const range = sel.getRangeAt(0);
   range.deleteContents();
   range.insertNode(span);
-  const after = document.createTextNode(' ');
+  const after = document.createTextNode(' ');
   span.parentNode.insertBefore(after, span.nextSibling);
   range.setStart(after, 1);
   range.collapse(true);
