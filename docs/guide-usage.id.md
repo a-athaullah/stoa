@@ -1029,9 +1029,38 @@ Agent dan sub-agent bisa membuat dan mengelola skill menggunakan enam MCP tool b
 
 Cache di mesin agent menyimpan maks 2 versi per skill. Skill yang sudah tidak ada di server tidak pernah dijalankan dari cache.
 
-### Riwayat Versi
+### Riwayat, Diff, dan Restore
 
-Klik **⋯ → History** di skill mana pun untuk membuka drawer revisi. Setiap baris menampilkan nomor versi, pembuat, timestamp, catatan, dan perubahan file. Klik versi untuk melihat `SKILL.md`-nya (read-only) dan bandingkan dengan versi saat ini. Klik **Restore** untuk membuat revisi baru yang merupakan salinan versi yang dipilih.
+Editor skill punya dua tab: **Files** (file tree dan editor) dan **History** (daftar revisi lengkap).
+
+Tab History menampilkan setiap revisi beserta nomor versi, pembuat (kamu atau agent), timestamp, catatan revisi, dan ringkasan perubahan file.
+
+Klik revisi untuk membuka tampilan diff dengan dua tab:
+- **SKILL.md** — diff baris per baris dengan versi aktif, beserta baris konteks di sekitarnya.
+- **Changes** — ringkasan per file: file hanya ada di revisi itu, file hanya ada di versi aktif, file yang isinya berbeda, dan file yang permission-nya berbeda.
+
+**Restore** — klik **Restore** di revisi mana pun untuk membuat revisi baru yang mengembalikan isi revisi tersebut. Konfirmasi muncul secara inline. Kalau editor punya perubahan yang belum disimpan, konfirmasi memperingatkan bahwa perubahan itu akan dibuang.
+
+### Export
+
+Unduh skill sebagai arsip zip:
+- **Bar editor** — klik **Export** untuk mengunduh versi yang sedang ditampilkan.
+- **Baris History** — **⋯ → Export** di revisi mana pun mengunduh revisi itu sebagai `<name>-vN.zip`.
+
+Arsip berisi satu folder `<name>/` dengan `SKILL.md` dan semua file pendukung. Izin exec dan timestamp file (sesuai waktu revisi) tetap terbawa. Zip ini bisa di-import ulang lewat **Import**.
+
+Export hanya tersedia untuk owner lewat UI — agent tidak bisa mengakses endpoint export.
+
+### Perubahan dari Tempat Lain
+
+Jika skill diubah dari tempat lain (agent lewat MCP, atau tab browser lain) saat editor sedang terbuka:
+
+- **Tidak ada perubahan yang belum disimpan** — editor diam-diam memuat versi terbaru.
+- **Ada perubahan yang belum disimpan** — muncul banner: *"This skill changed (vN) since you opened it."*
+  - **Reload** — membuang editanmu dan memuat versi terbaru.
+  - **Keep editing** — mempertahankan editanmu di atas versi terbaru. Hanya field dan file yang kamu ubah yang menimpa perubahan remote; pembaruan field lain dari versi baru tetap dipakai.
+
+Mencoba menyimpan versi yang sudah basi akan memunculkan banner yang sama, bukan menimpa diam-diam.
 
 ---
 

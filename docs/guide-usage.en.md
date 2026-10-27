@@ -1028,9 +1028,38 @@ Agents and sub-agents can create and manage skills using six built-in MCP tools:
 
 The cache on the agent machine stores up to 2 versions per skill. Skills no longer present on the server are never run from cache.
 
-### Version History
+### History, Diff, and Restore
 
-Click **⋯ → History** on any skill to open the revision drawer. Each row shows the version number, author, timestamp, note, and file changes. Click a version to view its `SKILL.md` read-only and compare with the current version. Click **Restore** to create a new revision that is a copy of the selected version.
+The skill editor has two tabs: **Files** (file tree and editor) and **History** (full revision list).
+
+The History tab shows each revision with version number, author (you or an agent), timestamp, revision note, and a file-change summary.
+
+Click a revision to open a diff view with two tabs:
+- **SKILL.md** — line-by-line diff against the current version, with surrounding context.
+- **Changes** — file-by-file summary: files only in that revision, files only in the current version, files with changed content, and files with changed permissions.
+
+**Restore** — click **Restore** on any revision to create a new revision that restores the selected content. An inline confirmation appears. If the editor has unsaved changes, the confirmation warns they will be discarded.
+
+### Export
+
+Download a skill as a zip archive:
+- **Editor bar** — click **Export** to download the currently shown version.
+- **History row** — **⋯ → Export** on any revision downloads that specific version as `<name>-vN.zip`.
+
+The archive contains one `<name>/` folder with `SKILL.md` and all support files. Executable permissions and file timestamps (matching the revision time) are preserved. The zip re-imports cleanly via **Import**.
+
+Export is available to the owner through the UI only — agents cannot call the export endpoint.
+
+### Concurrent Changes
+
+If a skill is changed from elsewhere (an agent via MCP, or another browser tab) while the editor is open:
+
+- **No unsaved changes** — the editor silently reloads the latest version.
+- **Unsaved changes present** — a banner appears: *"This skill changed (vN) since you opened it."*
+  - **Reload** — discards your edits and loads the latest version.
+  - **Keep editing** — keeps your edits on top of the latest version. Only the fields and files you changed override the remote changes; updates to other fields from the new version are retained.
+
+Trying to save a stale version triggers the same banner rather than silently overwriting.
 
 ---
 
