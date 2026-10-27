@@ -121,7 +121,7 @@ class CodexSession extends EventEmitter {
         const sessionId = this._threadId;
         const res = this._currentResolve;
         this._clearCurrent();
-        res({ content, sessionId, usage, modelUsage: null, totalCostUsd: 0, durationMs: null, subtype: code === 0 ? 'success' : null });
+        res({ content, sessionId, usage, modelUsage: null, totalCostUsd: 0, durationMs: null, subtype: code === 0 ? 'success' : null, isError: code !== 0 });
       }
     });
 

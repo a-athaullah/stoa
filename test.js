@@ -1732,6 +1732,56 @@ function runUnitTests() {
     }
   });
 
+  // A limit stop is reported by the CLI as subtype "success" + is_error: true; isError carries it to exit_reason.
+  ut('ClaudeSession result: is_error with subtype success resolves isError', () => {
+    const { ClaudeSession } = require('./claude-session');
+    const resolveWith = (event) => {
+      const session = Object.create(ClaudeSession.prototype);
+      Object.assign(session, { busy: true, _turnStarted: true, _autoTurn: null, _accContent: '', _queue: [], _backgroundTasks: [], _currentTaskId: 't1' });
+      let out = null;
+      session._currentResolve = (r) => { out = r; };
+      session._handleEvent(event);
+      return out;
+    };
+    const limited = resolveWith({ type: 'result', subtype: 'success', is_error: true, result: "You've hit your session limit · resets 5:30pm", session_id: 's1' });
+    assert.strictEqual(limited.isError, true);
+    assert.strictEqual(limited.subtype, 'success');
+    assert.strictEqual(limited.content, "You've hit your session limit · resets 5:30pm");
+    assert.strictEqual(resolveWith({ type: 'result', subtype: 'success', is_error: false, result: 'done', session_id: 's1' }).isError, false);
+    assert.strictEqual(resolveWith({ type: 'result', subtype: 'success', result: 'done', session_id: 's1' }).isError, false, 'missing is_error is not an error');
+  });
+
+  ut('CodexSession close: non-zero exit resolves isError, clean exit does not', () => {
+    const { EventEmitter } = require('events');
+    const cp = require('child_process');
+    const origSpawn = cp.spawn;
+    const fakeProcs = [];
+    cp.spawn = () => {
+      const p = new EventEmitter();
+      p.stdin = { write: () => {}, end: () => {}, on: () => {} };
+      p.stdout = new EventEmitter();
+      p.stderr = new EventEmitter();
+      p.kill = () => {};
+      fakeProcs.push(p);
+      return p;
+    };
+    delete require.cache[require.resolve('./codex-session')];
+    try {
+      const { CodexSession } = require('./codex-session');
+      const session = new CodexSession({ workDir: '/tmp' });
+      let failed = null, ok = null;
+      session._startTask({ prompt: 'one', resolve: (r) => { failed = r; }, reject: () => {}, taskId: 't1' });
+      fakeProcs[0].emit('close', 1, null);
+      assert.deepStrictEqual({ subtype: failed.subtype, isError: failed.isError }, { subtype: null, isError: true });
+      session._startTask({ prompt: 'two', resolve: (r) => { ok = r; }, reject: () => {}, taskId: 't2' });
+      fakeProcs[1].emit('close', 0, null);
+      assert.deepStrictEqual({ subtype: ok.subtype, isError: ok.isError }, { subtype: 'success', isError: false });
+    } finally {
+      cp.spawn = origSpawn;
+      delete require.cache[require.resolve('./codex-session')];
+    }
+  });
+
   // R4: cancelTask removes queued task without aborting current
   ut('ClaudeSession.cancelTask() removes queued task', () => {
     const { ClaudeSession } = require('./claude-session');
@@ -3089,6 +3139,37 @@ async function runAsyncUnitTests() {
       assert.notStrictEqual(names[0], names[1], 'filenames are different');
     } finally {
       server.close();
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      stoa.__resetDeps();
+    }
+  });
+
+  await uta('processTrigger: a session result with isError completes with exit_reason error even when subtype is success', async () => {
+    const stoa = require('./stoa.js');
+    const sent = [];
+    let next = null;
+    const mockSession = {
+      _systemPromptHash: null, _harness: 'claude', flags: [], env: { STOA_ROOM_ID: '99', STOA_THREAD_ID: '' }, resumeId: null,
+      on: () => {}, removeListener: () => {}, shutdown: () => {}, cancelTask: () => false,
+      send: async () => next,
+    };
+    stoa.__setDeps({ send: (m) => sent.push(m), getSession: () => mockSession });
+    const run = async (message_id, result) => {
+      next = result;
+      await stoa.processTrigger({ room_id: 99, message_id, prompt: 'go', workdir: require('os').tmpdir() });
+      return sent.find(m => m.type === 'agent_complete' && m.message_id === message_id);
+    };
+    try {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      const limited = await run('iserr-1', { content: "You've hit your session limit · resets 5:30pm", sessionId: null, subtype: 'success', isError: true });
+      assert.ok(limited, 'agent_complete sent');
+      assert.strictEqual(limited.result_meta.exit_reason, 'error');
+      assert.strictEqual(limited.content, "You've hit your session limit · resets 5:30pm");
+      assert.strictEqual((await run('iserr-2', { content: 'all good', sessionId: null, subtype: 'success', isError: false })).result_meta.exit_reason, 'completed');
+      assert.strictEqual((await run('iserr-3', { content: 'stopped', sessionId: null, subtype: 'error_max_turns' })).result_meta.exit_reason, 'error', 'a non-success subtype still fails');
+    } finally {
       stoa.activeTriggers.clear();
       stoa.triggerQueue.length = 0;
       stoa.__resetDeps();
@@ -6389,6 +6470,21 @@ async function run() {
       assert.deepStrictEqual({ state: b.state, content: b.content, broadcast_reason: b.broadcast_reason }, { state: 'error', content: 'failed again', broadcast_reason: 'error' }, 'live: the echo returns with the failure');
       const h = (await historyOf()).find(m => m.id === x.message_id);
       assert.deepStrictEqual({ state: h?.state, content: h?.content }, { state: 'error', content: 'failed again' }, 'reload shows the same echo');
+    });
+
+    await test('feed echo — a limit result (agent_complete exit_reason error) in a thread echoes to the room feed as limit', async () => {
+      if (!pendingRun) { console.log('    (skipped)'); return; }
+      const t = nextTrigger();
+      humanWs.send(JSON.stringify({ type: 'send_message', room_id: lrRoomId, content: `@${LR_NAME} limit topic` }));
+      const x = await t;
+      assert.ok(x.thread_id, 'root @mention runs in a thread');
+      const echoed = waitForWsMessage(humanWs, m => m.type === 'message_broadcast' && m.message?.id === x.message_id, 5000);
+      const text = "You've hit your session limit · resets 5:30pm (Asia/Jakarta)";
+      lr.ws.send(JSON.stringify({ type: 'agent_complete', room_id: lrRoomId, message_id: x.message_id, content: text, result_meta: { exit_reason: 'error' } }));
+      const b = (await echoed).message;
+      assert.deepStrictEqual({ state: b.state, content: b.content, broadcast_reason: b.broadcast_reason }, { state: 'error', content: text, broadcast_reason: 'limit' }, 'live: echoed as a limit');
+      assert.deepStrictEqual(db.prepare('SELECT state, broadcast_reason FROM messages WHERE id=?').get(x.message_id), { state: 'error', broadcast_reason: 'limit' });
+      assert.ok((await req('GET', `/api/rooms/${lrRoomId}/messages`)).body.some(m => m.id === x.message_id), 'reload: in the room feed');
     });
 
     await test('Cleanup — live run event test data', async () => {
@@ -17507,6 +17603,11 @@ async function run() {
     assert.strictEqual(classifyBroadcastError('usage limit reached'), 'limit');
     assert.strictEqual(classifyBroadcastError('usage limits exceeded'), 'limit');
     assert.strictEqual(classifyBroadcastError('too many requests to API'), 'limit');
+    assert.strictEqual(classifyBroadcastError("You've hit your session limit · resets 5:30pm"), 'limit');
+    assert.strictEqual(classifyBroadcastError('Session limit reached'), 'limit');
+    assert.strictEqual(classifyBroadcastError("You've hit your Opus weekly limit"), 'limit');
+    assert.strictEqual(classifyBroadcastError('we hit a speed limit in the loop'), 'error', 'only "your"/"the" limit counts');
+    assert.strictEqual(classifyBroadcastError('session limitless mode'), 'error');
     assert.strictEqual(classifyBroadcastError('(interrupted — agent disconnected)'), 'error');
     assert.strictEqual(classifyBroadcastError('some random error'), 'error');
     assert.strictEqual(classifyBroadcastError('limitless loop detected'), 'error');

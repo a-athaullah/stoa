@@ -223,11 +223,14 @@ class ClaudeSession extends EventEmitter {
       // Phase 4: the CLI result event also carries wall-clock + a subtype that
       // distinguishes a clean finish from an error stop (e.g. error_max_turns).
       // These were previously dropped; they feed the run's result_meta chip.
+      // A limit stop ("You've hit your session limit") arrives as subtype "success"
+      // with is_error: true, so the subtype alone would report it as a clean finish.
       const durationMs = event.duration_ms || null;
       const subtype = event.subtype || null;
+      const isError = event.is_error === true;
       const resolve = this._currentResolve;
       this._clearCurrent();
-      resolve?.({ content, sessionId, usage, modelUsage, totalCostUsd, durationMs, subtype });
+      resolve?.({ content, sessionId, usage, modelUsage, totalCostUsd, durationMs, subtype, isError });
     }
   }
 

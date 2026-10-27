@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.438";
+var CLIENT_VERSION = "0.4.439";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -1856,7 +1856,7 @@ ${allNotes}`;
         throw retryErr;
       }
     }
-    let { content, sessionId, aborted, usage, modelUsage, totalCostUsd, durationMs, subtype } = result;
+    let { content, sessionId, aborted, usage, modelUsage, totalCostUsd, durationMs, subtype, isError } = result;
     content = stripLeadingThinkingMarker(content);
     const AUTH_EXPIRED_RE = /not logged in|please run \/(reauth|login)/i;
     if (triggerHarness === "claude" && !aborted && AUTH_EXPIRED_RE.test(content) && content.length < 200) {
@@ -1875,7 +1875,7 @@ ${allNotes}`;
       updateActivity();
       _checkSwept();
       result = await session.send(sendOpts);
-      ({ content, sessionId, aborted, usage, modelUsage, totalCostUsd, durationMs, subtype } = result);
+      ({ content, sessionId, aborted, usage, modelUsage, totalCostUsd, durationMs, subtype, isError } = result);
       content = stripLeadingThinkingMarker(content);
       console.log(`[stoa] OAuth retry completed for room=${room_id} msg=${message_id}, content=${content.length} chars`);
     }
@@ -1894,7 +1894,7 @@ ${allNotes}`;
       updateActivity();
       _checkSwept();
       result = await session.send(sendOpts);
-      ({ content, sessionId, aborted, usage, modelUsage, totalCostUsd, durationMs, subtype } = result);
+      ({ content, sessionId, aborted, usage, modelUsage, totalCostUsd, durationMs, subtype, isError } = result);
       content = stripLeadingThinkingMarker(content);
       console.log(`[stoa] thinking-signature recovery ${isThinkingSignatureError(content) ? "FAILED" : "ok"} for room=${room_id} msg=${message_id}`);
     }
@@ -1917,7 +1917,7 @@ ${allNotes}`;
       const { text: cleanContent, attachments } = await extractAndUploadFiles(content, msg.workdir);
       const actualModel = targetModel || modelUsage && Object.keys(modelUsage).find((k) => k !== "total") || void 0;
       const result_meta = {
-        exit_reason: subtype && subtype !== "success" ? "error" : "completed",
+        exit_reason: isError || subtype && subtype !== "success" ? "error" : "completed",
         tokens: usage ? { input: usage.input_tokens || 0, output: usage.output_tokens || 0 } : null,
         duration_ms: durationMs || null
       };
