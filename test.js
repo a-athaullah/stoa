@@ -19446,6 +19446,35 @@ async function run() {
       assert.strictEqual(db.prepare("SELECT COUNT(*) AS c FROM skills WHERE name='qa-evil'").get().c, 0);
     });
 
+    await test('import — macOS AppleDouble "._*" files ignored in zip / tar.gz, with one top-level folder or files at the root', async () => {
+      const skill = (name) => ({ name: 'SKILL.md', data: `---\nname: ${name}\ndescription: d\n---\nb` });
+      const junk = (name) => ({ name, data: Buffer.from([0, 5, 22, 7, 0, 2, 0, 0]) });
+      const inFolder = (e) => ({ ...e, name: `my-skill/${e.name}` });
+      const bundles = {
+        'tar.gz, one folder': ['x.tar.gz', await makeTar([junk('._my-skill'), inFolder(skill('qa-ad-tf')), inFolder(junk('._SKILL.md')), inFolder({ name: 'ref.md', data: 'r' }), inFolder(junk('._ref.md'))])],
+        'tar.gz, root': ['x.tgz', await makeTar([skill('qa-ad-tr'), junk('._SKILL.md'), { name: 'ref.md', data: 'r' }, junk('._ref.md')])],
+        'zip, one folder': ['x.zip', makeZip([junk('._my-skill'), inFolder(skill('qa-ad-zf')), inFolder(junk('._SKILL.md')), inFolder({ name: 'ref.md', data: 'r' }), inFolder(junk('._ref.md'))])],
+        'zip, root': ['x.zip', makeZip([skill('qa-ad-zr'), junk('._SKILL.md'), { name: 'ref.md', data: 'r' }, junk('._ref.md')])],
+      };
+      for (const [label, [filename, data]] of Object.entries(bundles)) {
+        let r = await importFile(filename, data, '?dry_run=1');
+        assert.strictEqual(r.status, 200, `${label}: ${r.raw}`);
+        assert.deepStrictEqual(r.body.preview.files.map(f => f.path), ['SKILL.md', 'ref.md'], label);
+        assert.ok(r.body.preview.warnings.some(w => /Ignored \d+ macOS metadata files? \(__MACOSX, \.DS_Store, \._\*\)/.test(w)), label);
+        r = await importFile(filename, data);
+        assert.strictEqual(r.status, 201, `${label}: ${r.raw}`);
+        const paths = db.prepare('SELECT f.path FROM skill_files f JOIN skills s ON s.current_revision_id = f.revision_id WHERE s.id = ? ORDER BY f.path').all(r.body.skill.id).map(x => x.path);
+        assert.deepStrictEqual(paths, ['SKILL.md', 'ref.md'], `${label}: nothing "._" stored`);
+      }
+      const mp = multipart([
+        { name: 'files', filename: 'SKILL.md', data: '---\nname: qa-ad-dir\ndescription: d\n---\n' }, { name: 'paths', data: 'qa-ad-dir/SKILL.md' },
+        { name: 'files', filename: '._SKILL.md', data: 'junk' }, { name: 'paths', data: 'qa-ad-dir/._SKILL.md' },
+        { name: 'files', filename: '._qa-ad-dir', data: 'junk' }, { name: 'paths', data: '._qa-ad-dir' },
+      ]);
+      const r = await rawReq('POST', '/api/skills/import?dry_run=1', mp.body, mp.type);
+      assert.deepStrictEqual([r.status, r.body.preview?.files.map(f => f.path)], [200, ['SKILL.md']], `folder: ${r.raw}`);
+    });
+
     await test('import .tar.gz / .tar — valid bundle; links, devices and oversize rejected', async () => {
       const ok = await makeTar([{ name: 'qa-tar/SKILL.md', data: '---\nname: qa-tar\ndescription: from tar\n---\nb' }, { name: 'qa-tar/bin/x', data: 'x', mode: 0o755 }]);
       let r = await importFile('qa.tgz', ok);
@@ -19495,6 +19524,21 @@ async function run() {
         const r = await req('POST', '/api/skills/import?dry_run=1', { url });
         assert.deepStrictEqual([r.status, r.body.code], [400, 'invalid_url'], url);
       }
+    });
+
+    await test('import URL — "." / ".." segments (literal or %2e-encoded) rejected on the raw string, fetch never called', async () => {
+      let calls = 0;
+      const fetchImpl = async () => { calls++; throw new Error('must not fetch'); };
+      for (const p of ['a/../b', 'a/%2e%2e/b', 'a/%2E./b', 'a/.%2e/b', 'a/./b', 'a/%2e/b', 'skills/..', 'a%2F..%2Fb']) {
+        const url = `https://github.com/acme/repo/tree/main/${p}`;
+        let code = null;
+        try { await B.readGithub(url, fetchImpl); } catch (e) { code = e.code; }
+        assert.strictEqual(code, 'invalid_url', url);
+        const r = await req('POST', '/api/skills/import?dry_run=1', { url });
+        assert.deepStrictEqual([r.status, r.body.code], [400, 'invalid_url'], `HTTP ${url}`);
+      }
+      assert.strictEqual(calls, 0);
+      assert.deepStrictEqual(B.parseGithubUrl('https://github.com/acme/repo/tree/main/a..b/.hidden'), { owner: 'acme', repo: 'repo', ref: 'main', subpath: 'a..b/.hidden' }, 'dots inside a name are fine');
     });
 
     await test('GitHub fetch (stubbed) — codeload URL, folder extracted, redirects on the whitelist only, size cap streamed', async () => {
