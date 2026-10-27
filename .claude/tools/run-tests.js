@@ -26,7 +26,7 @@
  *      on this repo, and keeps its boot-guard state file in that temp dir
  *  10. From a git worktree with no db/stoa.db, copies the DB (and .env) from the main worktree,
  *      read-only — never symlink the live DB into a worktree
- *  11. Points STOA_UPLOADS_DIR / STOA_CONNECTOR_MEDIA_DIR at empty temp dirs: the upload GC compares
+ *  11. Points STOA_UPLOADS_DIR / STOA_CONNECTOR_MEDIA_DIR / STOA_SKILL_BLOBS_DIR at empty temp dirs: the upload GC compares
  *      the uploads dir against the (older) DB copy, so on the live dir it deleted live attachments,
  *      and test uploads/avatars landed in the live dir. Fails the run if a file in the live uploads/
  *      disappeared during it (additions are not checked: the live server keeps taking uploads meanwhile)
@@ -98,6 +98,7 @@ function waitUp(port, tries = 50) {
   const tmpUpdateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-test-update-'));
   const tmpUploadsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-test-uploads-'));
   const tmpMediaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-test-media-'));
+  const tmpSkillBlobsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-test-skill-blobs-'));
   const tmpEnv = path.join(tmpEnvDir, '.env');
   const rmTmp = () => {
     tmpArtifacts.forEach((f) => { try { fs.unlinkSync(f); } catch {} });
@@ -107,6 +108,7 @@ function waitUp(port, tries = 50) {
     try { fs.rmSync(tmpUpdateDir, { recursive: true, force: true }); } catch {}
     try { fs.rmSync(tmpUploadsDir, { recursive: true, force: true }); } catch {}
     try { fs.rmSync(tmpMediaDir, { recursive: true, force: true }); } catch {}
+    try { fs.rmSync(tmpSkillBlobsDir, { recursive: true, force: true }); } catch {}
   };
   const bundleStamp = () => { try { const s = fs.statSync(liveBundle); return `${s.mtimeMs}:${s.size}`; } catch { return null; } };
   const liveBundleBefore = bundleStamp();
@@ -164,6 +166,7 @@ function waitUp(port, tries = 50) {
     // against the DB copy (which lacks un-checkpointed WAL writes) and delete live attachments.
     STOA_UPLOADS_DIR: tmpUploadsDir,
     STOA_CONNECTOR_MEDIA_DIR: tmpMediaDir,
+    STOA_SKILL_BLOBS_DIR: tmpSkillBlobsDir,
     // Expired-retrigger sweep (60 s in prod) fast enough for the offline-agent give-up test.
     RETRIGGER_SWEEP_MS: '500',
     // Model-free embedding backend: exercises worker/backfill/hybrid without a 130 MB download.

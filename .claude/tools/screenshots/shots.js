@@ -65,4 +65,6 @@ module.exports = [
     run: async (page, ctx) => { await openRoom(page, ctx, 'checkout'); await scrollToFirst(page); } },
   { name: 'themes', file: 'themes.png', clip: { x: 0, y: 0, width: 1440, height: 630 }, docs: ['docs/guide-usage.*.md#themes'],
     run: async (page, ctx) => { await nav(page, ctx, 'themes'); } },
+  { name: 'skills', file: 'skills.png', docs: ['docs/guide-usage.*.md#skills'],
+    run: async (page, ctx) => { await nav(page, ctx, 'skills'); } },
 ];

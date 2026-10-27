@@ -35,6 +35,7 @@ async function openRoom(room, opts = {}) {
   document.getElementById('messages-inner').innerHTML = '';
   Object.keys(streaming).forEach(k => delete streaming[k]);
   Object.keys(runReplies).forEach(k => delete runReplies[k]);
+  Object.keys(runSkillRefs).forEach(k => delete runSkillRefs[k]);
 
   let parts = [];
   try {
@@ -60,7 +61,6 @@ async function openRoom(room, opts = {}) {
   renderComposerSeal();
   if (typeof updateModelSelector === 'function') updateModelSelector(room, parts);
   loadContextState(room.id);
-  fjson(`/api/rooms/${room.id}/skills`).then(s => { allSkills = s; }).catch(e => { allSkills = []; console.error('Failed to load skills for room', room.id, e); });
 
   connectWS(room.id);
 }

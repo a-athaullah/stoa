@@ -124,6 +124,17 @@ function seed(dbPath) {
       for (const m of r.messages) ids.msgs[m.id] = insert(m);
       for (const t of r.threads || []) for (const m of t.replies) insert(m, ids.msgs[t.root]);
     }
+    if (demo.SKILLS) {
+      const addSkill = db.prepare(`INSERT INTO skills (name, description, argument_hint, enabled, created_by_actor_id, current_revision_id, created_at, updated_at) VALUES (?,?,?,?,?,NULL,?,?)`);
+      const addRev = db.prepare(`INSERT INTO skill_revisions (skill_id, version, body, manifest_hash, total_bytes, file_count, author_actor_id, created_at) VALUES (?,?,?,?,?,?,?,?)`);
+      for (const s of demo.SKILLS) {
+        const creatorId = s.by ? ids.actors[s.by] : null;
+        const skillId = addSkill.run(s.name, s.description, s.argument_hint || null, s.enabled, creatorId, ts(1000), ts(100)).lastInsertRowid;
+        const hash = crypto.createHash('sha256').update(s.body).digest('hex');
+        const revId = addRev.run(skillId, 1, s.body, hash, Buffer.byteLength(s.body), 1, creatorId, ts(1000)).lastInsertRowid;
+        db.prepare('UPDATE skills SET current_revision_id=? WHERE id=?').run(revId, skillId);
+      }
+    }
   })();
   db.close();
   return ids;

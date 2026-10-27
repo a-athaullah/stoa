@@ -10,7 +10,6 @@ const crypto = require('crypto');
 const { execSync } = require('child_process');
 const { WebSocketServer } = require('ws');
 const db = require('./db');
-const { ClaudeSession } = require('./claude-session');
 const { validateScheduleSpec, computeNextRun, nextRunAfterSkip, describeSchedule } = require('./lib/schedule');
 const { createRoomSchedules, scheduleMcpTools } = require('./lib/room-schedules');
 const { createRoomMessages } = require('./lib/room-messages');
@@ -18,6 +17,8 @@ const { createStoaMemory } = require('./lib/stoa-memory');
 const { AVATAR_MAX_BYTES, AVATAR_BODY_MAX, decodeAvatarDataUrl } = require('./lib/avatar-image');
 const { createSystemPrompts } = require('./lib/system-prompts');
 const { createSubAgents } = require('./lib/sub-agents');
+const { createSkills } = require('./lib/skills');
+const { createSkillsHttp } = require('./lib/skills-http');
 const { createAutomationCrud } = require('./lib/automation-crud');
 const { stoaMcpTools } = require('./lib/stoa-mcp-tools');
 const { collectDiagnostics, buildEnvelope, gcDebugBundles } = require('./lib/debug-bundle');
@@ -34,25 +35,10 @@ const { bootAppBundle, useAppBundle } = require('./build/build');
 const { detectProcessManager } = require('./lib/process-manager');
 const { parseHeartbeatMs, startWsHeartbeat, DEFAULT_WS_HEARTBEAT_MS } = require('./lib/ws-heartbeat');
 const { createOrphanRuns, INTERRUPTED_RESULT_META, RUN_IN_FLIGHT_SQL, orphanWakeEnabled } = require('./lib/orphan-runs');
-const fallbackSessions = new Map();
 
 // R15: unique identifier for this server boot. Sessions tagged with a different
 // generation are from a prior process and their in-flight state is unknown.
 const PROCESS_GEN = crypto.randomBytes(16).toString('hex');
-const FALLBACK_IDLE_MS = 30 * 60 * 1000;
-function getFallbackSession(participantId, workDir) {
-  const key = `${participantId}:${workDir || ''}`;
-  const entry = fallbackSessions.get(key);
-  if (entry) {
-    clearTimeout(entry.timer);
-    entry.timer = setTimeout(() => { entry.session.shutdown(); fallbackSessions.delete(key); }, FALLBACK_IDLE_MS);
-    return entry.session;
-  }
-  const session = new ClaudeSession({ workDir: workDir || __dirname });
-  const timer = setTimeout(() => { session.shutdown(); fallbackSessions.delete(key); }, FALLBACK_IDLE_MS);
-  fallbackSessions.set(key, { session, timer });
-  return session;
-}
 
 const connectionManager = require('./connection-manager');
 
@@ -828,7 +814,7 @@ async function drainWake(wakeId) {
   const wakePrompt = `[sub-agent result] Sub-agent "${label}" yang kamu picu ${interrupted ? 'berhenti sebelum selesai' : 'sudah selesai'}. ${failurePrefix}Hasilnya:\n\n${body}\n\nSintesiskan dan lanjutkan menjawab. Kamu boleh @mention sub-agent lain untuk delegate tugas berikutnya (misal @stoa-reviewer untuk review). Mention akan otomatis trigger sub-agent tersebut.${costBlock}`;
 
   try {
-    await triggerAiResponse(row.room_id, { ...parent, sub_agent: null, prompt_outside_history: true }, wakePrompt, null, [], null, row.thread_id ?? null);
+    await triggerAiResponse(row.room_id, { ...parent, sub_agent: null, prompt_outside_history: true, no_skills: true }, wakePrompt, null, [], null, row.thread_id ?? null);
     db.prepare('DELETE FROM pending_wakes WHERE id=?').run(wakeId);
     cascadeMentionsAfterWake(row.room_id, parent, row.thread_id ?? null).catch(e =>
       console.error('[wake-cascade] error:', e.message));
@@ -1236,6 +1222,9 @@ const PORT = parseInt(process.env.PORT) || DEFAULT_PORT;
 // Overridable so a test/throwaway server never reads, writes or GCs the live server's files.
 const UPLOADS_DIR = path.resolve(process.env.STOA_UPLOADS_DIR || path.join(__dirname, 'uploads'));
 const CONNECTOR_MEDIA_DIR = path.resolve(process.env.STOA_CONNECTOR_MEDIA_DIR || path.join(__dirname, 'connector-media'));
+// Skill file blobs (lib/skills.js). Outside uploads/ on purpose: nothing serves this directory, blobs are
+// only read through /api/skill-blobs with an ownership / enabled check.
+const SKILL_BLOBS_DIR = path.resolve(process.env.STOA_SKILL_BLOBS_DIR || path.join(__dirname, 'data', 'skill-blobs'));
 
 // Sync HUMAN_NAME env → human actor on startup (default: "Human")
 {
@@ -1438,6 +1427,8 @@ function gcTick() {
         console.log(`[gc] reclaimed ${deleted} orphaned upload(s)`);
       }
       const bundlesCleaned = gcDebugBundles(db);
+      const skillBlobsCleaned = skills.gc();
+      if (skillBlobsCleaned) console.log(`[gc] removed ${skillBlobsCleaned} unreferenced skill blob(s)`);
       if (bundlesCleaned) console.log(`[gc] cleaned ${bundlesCleaned} debug bundle(s)`);
     } catch (e) { console.error('[gc] tick error:', e.message); }
   });
@@ -1680,6 +1671,8 @@ const roomMessages = createRoomMessages({
 });
 const stoaMemory = createStoaMemory({ db });
 const systemPrompts = createSystemPrompts({ db });
+const skills = createSkills({ db, blobsDir: SKILL_BLOBS_DIR, onChange: () => broadcastGlobal({ type: 'skills_changed' }) });
+const skillsHttp = createSkillsHttp({ skills, json });
 const subAgents = createSubAgents({
   db, broadcast, getHarnessModels, saveAvatarFile, deleteAvatarFile, resolveThread,
   onDeleted: (id) => mcpGateway.forgetSubAgent(id),
@@ -1972,6 +1965,7 @@ const server = http.createServer(async (req, res) => {
     return mcpGateway.handle(req, res, body);
   }
   if (await mcpApi.handle(req, res, url, { json, readBody, parseJsonBody })) return;
+  if (await skillsHttp.handle(req, res, url)) return;
 
   // ── Auth routes (exempt from auth check above) ──
   if (req.method === 'POST' && url.pathname === '/api/client-error') {
@@ -2506,24 +2500,6 @@ const server = http.createServer(async (req, res) => {
       return json(res, room);
     }
 
-    if (url.pathname.endsWith('/skills')) {
-      const room = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(roomId);
-      if (!room) { res.writeHead(404); return res.end('Room not found'); }
-      const agentIds = db.prepare(
-        "SELECT a.id FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='ai'"
-      ).all(roomId).map(r => r.id);
-      if (!agentIds.length) return json(res, []);
-      const ph = agentIds.map(() => '?').join(',');
-      const skills = db.prepare(`
-        SELECT s.name, s.description, s.scope, s.actor_id, a.name as actor_name,
-               a.avatar_color, a.avatar_symbol, a.avatar_url
-        FROM agent_skills s JOIN actors a ON a.id=s.actor_id
-        WHERE s.actor_id IN (${ph})
-          AND ((s.scope IN ('project','local') AND s.workdir_id = ?) OR s.scope = 'global')
-        ORDER BY s.scope, s.name
-      `).all(...agentIds, room.workdir_id);
-      return json(res, skills);
-    }
   }
 
   if (req.method === 'POST' && url.pathname.match(/^\/api\/rooms\/\d+\/participants$/)) {
@@ -4481,7 +4457,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
     return json(res, { ok: true });
   }
 
-  // POST /api/actors/:id/rescan — ask agent to re-scan workdirs, skills & harnesses
+  // POST /api/actors/:id/rescan — ask agent to re-scan workdirs & harnesses
   if (req.method === 'POST' && url.pathname.match(/^\/api\/actors\/\d+\/rescan$/)) {
     if (!requireAuth(req, res, url)) return;
     const actorId = parseInt(url.pathname.split('/')[3]);
@@ -5099,6 +5075,9 @@ const roomClients = new Map();    // roomId → Set<ws>
 const globalClients = new Set();  // all browser ws connections
 const agentClients = new Map();   // actor_id → ws
 const agentVersions = new Map();  // actor_id → client_version string
+// actor_id → Set of features the agent client announced in agent_connect ('skills': it caches skill
+// files and builds the skill preamble itself; without it the server inlines SKILL.md into the prompt).
+const agentFeatures = new Map();
 const agentHarnesses = new Map(); // actor_id → string[] (available harnesses)
 const agentHarnessStatus = new Map(); // actor_id → [{ id, installed, logged_in, version, models }]
 const pendingHarnessChecks = new Map(); // request_id → { resolve, timer, actorId }
@@ -5499,15 +5478,9 @@ wss.on('connection', (ws, req) => {
         handleLogout(msg.room_id);
         return;
       }
-      let handled = false;
-      if (msg.content?.startsWith('/')) {
-        handled = await handleSkillCommand(msg.room_id, msg.content, ws);
-      }
-      if (!handled) {
-        const wsEventId = typeof msg.event_id === 'string' && msg.event_id.length <= 128 ? msg.event_id : null;
-        const wsThreadId = typeof msg.thread_id === 'number' ? msg.thread_id : null;
-        await handleHumanMessage(msg.room_id, msg.content, msg.attachments || null, msg.reply_to || null, ws, wsEventId, wsThreadId);
-      }
+      const wsEventId = typeof msg.event_id === 'string' && msg.event_id.length <= 128 ? msg.event_id : null;
+      const wsThreadId = typeof msg.thread_id === 'number' ? msg.thread_id : null;
+      await handleHumanMessage(msg.room_id, msg.content, msg.attachments || null, msg.reply_to || null, ws, wsEventId, wsThreadId);
     }
 
     if (msg.type === 'stop_generation') {
@@ -5650,6 +5623,7 @@ wss.on('connection', (ws, req) => {
         enqueueOrphanWakes(reconnectCleaned);
       }
       if (msg.client_version) agentVersions.set(agentActorId, msg.client_version);
+      agentFeatures.set(agentActorId, new Set(Array.isArray(msg.features) ? msg.features.filter(f => typeof f === 'string').slice(0, 20) : []));
       if (Array.isArray(msg.harnesses_available)) agentHarnesses.set(agentActorId, msg.harnesses_available);
       agentSupervisors.set(agentActorId, msg.supervisor === 'pm2' ? 'pm2' : null);
       const bootId = typeof msg.boot_id === 'string' && BOOT_ID_RE.test(msg.boot_id) ? msg.boot_id : null;
@@ -5728,13 +5702,10 @@ wss.on('connection', (ws, req) => {
 
     // ── Agent reports scan results
     if (msg.type === 'agent_scan_result' && agentActorId) {
-      const { workdirs = [], globalSkills = [] } = msg;
+      const { workdirs = [] } = msg;
       // UPSERT workdirs — preserve IDs so room references stay valid
       const upsertWorkdir = db.prepare(
         'INSERT INTO agent_workdirs (actor_id, path, label, is_default) VALUES (?,?,?,?) ON CONFLICT(actor_id, path) DO UPDATE SET label=excluded.label, is_default=excluded.is_default'
-      );
-      const insertSkill = db.prepare(
-        'INSERT OR IGNORE INTO agent_skills (actor_id, workdir_id, name, description, scope) VALUES (?,?,?,?,?)'
       );
       const scannedPaths = new Set();
       for (const wd of workdirs) {
@@ -5742,18 +5713,6 @@ wss.on('connection', (ws, req) => {
         upsertWorkdir.run(agentActorId, wd.path, label, wd.is_default ? 1 : 0);
         scannedPaths.add(wd.path);
       }
-      const allWds = db.prepare('SELECT id, path FROM agent_workdirs WHERE actor_id=?').all(agentActorId);
-      const wdMap = new Map(allWds.map(w => [w.path, w.id]));
-      db.prepare('DELETE FROM agent_skills WHERE actor_id=? AND workdir_id IS NOT NULL').run(agentActorId);
-      const batchSkills = db.transaction((skills) => { for (const s of skills) insertSkill.run(s.actorId, s.wdId, s.name, s.desc, s.scope); });
-      const allSkills = [];
-      for (const wd of workdirs) {
-        const wdId = wdMap.get(wd.path);
-        for (const sk of (wd.skills || [])) {
-          allSkills.push({ actorId: agentActorId, wdId, name: sk.name, desc: sk.description || null, scope: sk.scope || 'project' });
-        }
-      }
-      if (allSkills.length) batchSkills(allSkills);
       // Remove workdirs no longer reported (only if not referenced by any room)
       const staleWds = db.prepare('SELECT id, path FROM agent_workdirs WHERE actor_id=?').all(agentActorId);
       const staleIds = staleWds.filter(wd => !scannedPaths.has(wd.path)).map(wd => wd.id);
@@ -5774,14 +5733,10 @@ wss.on('connection', (ws, req) => {
         const toDelete = staleIds.filter(id => !inUseIds.has(id));
         if (toDelete.length) {
           const ph = toDelete.map(() => '?').join(',');
-          db.prepare(`DELETE FROM agent_skills WHERE workdir_id IN (${ph})`).run(...toDelete);
           db.prepare(`DELETE FROM agent_workdirs WHERE id IN (${ph})`).run(...toDelete);
         }
       }
-      db.prepare('DELETE FROM agent_skills WHERE actor_id=? AND workdir_id IS NULL').run(agentActorId);
-      const globalBatch = globalSkills.map(sk => ({ actorId: agentActorId, wdId: null, name: sk.name, desc: sk.description || null, scope: 'global' }));
-      if (globalBatch.length) batchSkills(globalBatch);
-      console.log(`[agent] Actor #${agentActorId} reported ${workdirs.length} workdirs, ${globalSkills.length} global skills`);
+      console.log(`[agent] Actor #${agentActorId} reported ${workdirs.length} workdirs`);
       broadcastGlobal({ type: 'agent_scan_complete', actor_id: agentActorId });
     }
 
@@ -6840,6 +6795,7 @@ wss.on('connection', (ws, req) => {
     if (agentActorId && !supersededAgentWs) {
       agentClients.delete(agentActorId);
       agentVersions.delete(agentActorId);
+      agentFeatures.delete(agentActorId);
       agentHarnesses.delete(agentActorId);
       agentHarnessStatus.delete(agentActorId);
       agentClaudeCandidates.delete(agentActorId);
@@ -7287,149 +7243,12 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
   return Number(messageId);
 }
 
-async function handleSkillCommand(roomId, rawCommand, senderWs) {
-  // Parse: /skill-name [ai-name]
-  const parts = rawCommand.slice(1).trim().split(/\s+/);
-  const skillName = parts[0].toLowerCase();
-  const targetName = parts.slice(1).join(' ').trim().toLowerCase() || null;
-
-  // Cari AI target di room
-  const allAis = targetName
-    ? db.prepare(`
-        SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.avatar_color, a.avatar_symbol, a.avatar_url
-        FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
-        WHERE rp.room_id=? AND a.type='ai' AND LOWER(a.name)=?
-      `).all(roomId, targetName)
-    : db.prepare(`
-        SELECT rp.id as participant_id, a.id as actor_id, a.name, a.adapter, a.avatar_color, a.avatar_symbol, a.avatar_url
-        FROM room_participants rp JOIN actors a ON a.id=rp.actor_id
-        WHERE rp.room_id=? AND a.type='ai'
-      `).all(roomId);
-
-  if (!allAis.length) return false;
-
-  // Check skill exists — scoped to room's workdir
-  const room = db.prepare('SELECT workdir_id FROM rooms WHERE id=?').get(roomId);
-  const aiIds = allAis.map(a => a.actor_id);
-  const placeholders = aiIds.map(() => '?').join(',');
-  const matchedSkills = db.prepare(
-    `SELECT actor_id FROM agent_skills WHERE name=? AND actor_id IN (${placeholders})
-     AND ((scope IN ('project','local') AND workdir_id = ?) OR scope = 'global')`
-  ).all(skillName, ...aiIds, room?.workdir_id);
-
-  if (!matchedSkills.length) return false;
-
-  // Only trigger agents that own the matched skill
-  const matchedIds = new Set(matchedSkills.map(s => s.actor_id));
-  const filteredAis = allAis.filter(a => matchedIds.has(a.actor_id));
-
-  // Broadcast notice bahwa skill dipanggil
-  broadcast(roomId, {
-    type: 'skill_invoked',
-    skill_name: skillName,
-    targets: filteredAis.map(a => a.name),
-  });
-
-  // Send skill invocation as prompt — agent's Claude Code session handles the skill
-  const promptText = `/${skillName}`;
-
-  for (const ai of filteredAis) {
-    await triggerSkillResponse(roomId, ai, promptText);
-  }
-  return true;
-}
-
-async function triggerSkillResponse(roomId, ai, prompt) {
-  const result = db.prepare(
-    `INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,'','streaming')`
-  ).run(roomId, ai.participant_id);
-  const msgId = result.lastInsertRowid;
-
-  // Single source for the participant's workdir (see resolveParticipantWorkdir). NULL is safe:
-  // the trigger sends `workdir || undefined` so the agent falls back to its own cwd.
-  const workdir = resolveParticipantWorkdir(ai.participant_id);
-  // Skill commands run at room level (no thread): the session is the thread 0 row.
-  const sessionId = getThreadSession(ai.participant_id, 0);
-
-  broadcast(roomId, {
-    type: 'message_state',
-    message_id: msgId,
-    actor_name: ai.name,
-    avatar_color: ai.avatar_color,
-    avatar_symbol: ai.avatar_symbol,
-    avatar_url: ai.avatar_url || null,
-    state: 'streaming',
-  });
-
-  const agentWs = agentClients.get(ai.actor_id);
-
-  if (agentWs && agentWs.readyState === 1) {
-    const skillRunTimeoutMs = parseInt(process.env.AGENT_RUN_TIMEOUT_MS || String(15 * 60 * 1000));
-    await new Promise((resolve, reject) => {
-      const timeout = createRunTimeout(skillRunTimeoutMs, () => {
-        if (!pendingAgents.has(msgId)) return;
-        pendingAgents.delete(msgId);
-        pendingActorMeta.delete(msgId);
-        db.prepare("UPDATE messages SET state='error', content=? WHERE id=?")
-          .run(`(timeout — ${ai.name} did not respond in ${Math.round(skillRunTimeoutMs / 60000)} minutes)`, msgId);
-        broadcast(roomId, roomMessages.runError(msgId));
-        reject(new Error('agent_timeout'));
-      });
-      pendingAgents.set(msgId, {
-        resolve: (v) => { timeout.pause(); resolve(v); },
-        reject:  (e) => { timeout.pause(); reject(e); },
-        pause: timeout.pause, rearm: timeout.rearm,
-      });
-      pendingActorMeta.set(msgId, { actor_id: ai.actor_id, room_id: roomId, actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null });
-      agentWs.send(JSON.stringify({
-        type: 'agent_trigger',
-        room_id: roomId,
-        message_id: msgId,
-        participant_id: ai.participant_id,
-        claude_session_id: sessionId,
-        prompt,
-        workdir: workdir || undefined,
-        // Same session key as a room-level triggerAiResponse, so the token (and session env) match.
-        mcp_token: mcpTokenForTrigger({ actorId: ai.actor_id, roomId }),
-      }));
-    });
-  } else {
-    const meta = { actor_name: ai.name, avatar_color: ai.avatar_color, avatar_symbol: ai.avatar_symbol, avatar_url: ai.avatar_url || null };
-    let fullContent = '';
-    {
-      const session = getFallbackSession(ai.participant_id, workdir);
-      try {
-        const result = await session.send({
-          prompt,
-          onToken: token => {
-            fullContent += token;
-            broadcast(roomId, { type: 'message_token', message_id: msgId, token });
-          },
-          onState: state => {
-            const displayState = typeof state === 'string' ? state.replace(/Please run \/login\b/g, 'Please run /reauth') : state;
-            broadcast(roomId, { type: 'message_state', message_id: msgId, state: displayState, ...meta });
-          },
-          onTool: tool => {
-            try { recordToolStep(db, { messageId: msgId, actorId: ai.actor_id, tool }); }
-            catch (e) { console.error('[tool-steps] record failed:', e.message); }
-            broadcast(roomId, { type: 'message_tool', message_id: msgId, tool });
-          },
-        });
-        if (!fullContent.trim()) {
-          db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msgId);
-          broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
-          return;
-        }
-        if (result.sessionId) saveThreadSession(ai.participant_id, result.sessionId, workdir, 0);
-        fullContent = fullContent.replace(/Please run \/login\b/g, 'Please run /reauth');
-        db.prepare("UPDATE messages SET content=?, state='complete', completed_at=datetime('now') WHERE id=?").run(fullContent, msgId);
-        broadcast(roomId, { type: 'message_complete', message_id: msgId, content: fullContent });
-      } catch {
-        db.prepare(`UPDATE messages SET state='error' WHERE id=?`).run(msgId);
-        broadcast(roomId, { type: 'message_state', message_id: msgId, state: 'error' });
-      }
-    }
-  }
+// The skill preamble for an agent client without the skill cache: SKILL.md inline, no files.
+function inlineSkillPreamble(refs) {
+  const blocks = refs.map(r => `<stoa-skill name="${r.name}" version="${r.version}">\n${r.body}\n</stoa-skill>`);
+  const withFiles = refs.filter(r => r.file_count > 1).map(r => r.name);
+  if (withFiles.length) blocks.push(`The supporting files of ${withFiles.join(', ')} are not available on this agent: update the Stoa agent client to get them.`);
+  return blocks.join('\n') + '\n';
 }
 
 function promptStrings(lang) {
@@ -7547,17 +7366,21 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   }
 
   const subAgent = ai.sub_agent || null;
+  // "/name" in the prompt → the enabled skills this run uses (agents and sub-agents alike). A wake
+  // prompt is the server quoting a sub-agent's result, not a request, so it never resolves skills.
+  const skillRefs = ai.no_skills ? [] : skills.resolveRefs(prompt);
+  const skillRefsJson = skillRefs.length ? JSON.stringify(skillRefs.map(r => ({ id: r.id, name: r.name, version: r.version }))) : null;
   // parent_message_id marks a /sub-agent-trigger run for traceability. Auto-wake is
   // governed by wake_parent instead (see enqueueParentWake): only a direct human
   // mention passes ai.wake_parent=false; every other caller keeps the wake.
   const parentMessageId = (subAgent && ai.parent_message_id) ? ai.parent_message_id : null;
   const result = subAgent
     ? db.prepare(
-        `INSERT INTO messages (room_id, participant_id, content, state, reply_to, sub_agent_id, sub_agent_label, parent_message_id, thread_id, wake_parent) VALUES (?,?,'','streaming',?,?,?,?,?,?)`
-      ).run(roomId, ai.participant_id, replyTo, subAgent.id, subAgent.label, parentMessageId, threadId, ai.wake_parent === false ? 0 : 1)
+        `INSERT INTO messages (room_id, participant_id, content, state, reply_to, sub_agent_id, sub_agent_label, parent_message_id, thread_id, wake_parent, skill_refs) VALUES (?,?,'','streaming',?,?,?,?,?,?,?)`
+      ).run(roomId, ai.participant_id, replyTo, subAgent.id, subAgent.label, parentMessageId, threadId, ai.wake_parent === false ? 0 : 1, skillRefsJson)
     : db.prepare(
-        `INSERT INTO messages (room_id, participant_id, content, state, reply_to, thread_id) VALUES (?,?,'','streaming',?,?)`
-      ).run(roomId, ai.participant_id, replyTo, threadId);
+        `INSERT INTO messages (room_id, participant_id, content, state, reply_to, thread_id, skill_refs) VALUES (?,?,'','streaming',?,?,?)`
+      ).run(roomId, ai.participant_id, replyTo, threadId, skillRefsJson);
   const msgId = result.lastInsertRowid;
 
   const displayName = subAgent ? `${ai.name}/${subAgent.label}` : ai.name;
@@ -7869,7 +7692,13 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   // opt in with ai.prompt_outside_history; without it the agent would never see it.
   const taskSection = ai.prompt_outside_history && prompt ? `\n${L.taskLabel}:\n${prompt}` : '';
 
+  // A client with the skill cache gets the refs and prepends each skill itself (with the local folder
+  // of its files). An older client gets SKILL.md inlined here, without the files.
+  const agentHasSkillCache = agentFeatures.get(ai.actor_id)?.has('skills') === true;
+  const inlineSkills = !agentHasSkillCache && skillRefs.length ? inlineSkillPreamble(skillRefs) : '';
+
   const fullPrompt = [
+    inlineSkills,
     identityLine,
     `Room ID: ${roomId}`,
     L.timeContext(nowUtc),
@@ -7951,8 +7780,9 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         system_prompt: roomSysPrompt || undefined,
         system_prompt_hash: sysPromptHash || undefined,
         mcp_token: mcpToken,
+        skills: agentHasSkillCache && skillRefs.length ? skillRefs.map(r => ({ id: r.id, name: r.name, version: r.version, manifest_hash: r.manifest_hash })) : undefined,
       }));
-      console.log(`[trigger] sent to ${displayName} agent, msgId=${msgId}`);
+      console.log(`[trigger] sent to ${displayName} agent, msgId=${msgId}${skillRefs.length ? ` skills=${skillRefs.map(r => r.name).join(',')}` : ''}`);
     });
 
   } else {

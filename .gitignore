@@ -26,3 +26,6 @@ models/
 
 # In-app updater state (lib/boot-guard.js), next to the DB
 update-state.json*
+
+# Skill file blobs (lib/skills.js, STOA_SKILL_BLOBS_DIR default)
+data/skill-blobs/

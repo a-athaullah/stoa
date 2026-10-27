@@ -81,4 +81,17 @@ const ROOMS = [
   },
 ];
 
-module.exports = { HUMAN, AGENTS, SUB_AGENTS, ROOMS };
+const SKILLS = [
+  { name: 'commit-msg', description: 'Write a descriptive commit message from staged changes', argument_hint: '-- optional context', enabled: 1,
+    body: `Generate a concise commit message for the staged changes.\n\n## When to use\nRun after \`git add\` when you want a consistent, descriptive commit message.\n\n## Steps\n1. Read \`git diff --cached\`\n2. Summarise the change in under 72 characters\n3. Add a body paragraph if the change is non-obvious` },
+  { name: 'pr-summary', description: 'Draft a pull request title and summary for the current branch', enabled: 1,
+    body: `Draft a pull request title and description for the current branch.\n\n## When to use\nUse before opening a PR to get a clear summary from the diff.\n\n## Steps\n1. Run \`git log main..HEAD --oneline\`\n2. Run \`git diff main...HEAD --stat\`\n3. Draft a title (under 70 chars) and a 3-bullet summary` },
+  { name: 'review-checklist', description: 'Audit a code change for correctness, security, and test coverage', argument_hint: '-- file or branch to review', enabled: 1, by: 'atlas',
+    body: `Review the specified file or branch diff against a standard checklist.\n\n## Checklist\n- Correctness: logic, edge cases, error handling\n- Security: input validation, SQL injection, XSS\n- Test coverage: happy path, error paths, boundary values\n- Documentation: public API changes reflected in docs` },
+  { name: 'changelog', description: 'Generate a changelog entry from commits since the last tag', enabled: 1, by: 'atlas',
+    body: `Generate a changelog entry for the current release.\n\n## When to use\nRun before tagging a release to create a \`CHANGELOG.md\` entry.\n\n## Steps\n1. Run \`git log \$(git describe --tags --abbrev=0)..HEAD --oneline\`\n2. Group commits by type (feat, fix, chore)\n3. Write concise, user-facing descriptions` },
+  { name: 'stoa-audit', description: 'Run a full Stoa PR audit: schema, security, test coverage, API contract', enabled: 0, by: 'atlas',
+    body: `Audit a Stoa pull request across 8 categories.\n\n## Categories\n1. Dead code\n2. Security\n3. Test coverage\n4. API contract\n5. Error handling\n6. Schema drift\n7. Performance\n8. Docs sync` },
+];
+
+module.exports = { HUMAN, AGENTS, SUB_AGENTS, ROOMS, SKILLS };

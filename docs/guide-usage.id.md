@@ -41,7 +41,7 @@ Klik tombol **+ room** di sidebar. Dialog muncul di mana Anda bisa:
 
 - Memasukkan **judul room** — bisa diedit nanti dengan mengklik judul di header chat
 - Memilih **peserta** — pilih AI agent untuk room ini (agent lain bisa ditambahkan setelah pembuatan) Hanya agent yang sedang **online** yang bisa dipilih — agent offline tetap tampil tapi diredupkan dengan label *offline*, karena room butuh agent yang benar-benar bisa merespons.
-- Memilih **working directory** — wajib; menentukan konteks proyek dan skill yang tersedia di room ini
+- Memilih **working directory** — wajib; menentukan konteks proyek yang tersedia di room ini
 
 ### Menambah Peserta
 
@@ -540,7 +540,7 @@ Mengganti harness agent di **room campuran** (di mana AI agent lain masih bisa m
 
 Sub-agent juga bisa memilih harness sendiri, atau membiarkannya pada **inherit from parent** (default).
 
-**Mengecek ketersediaan harness:** Setelah menginstal atau login CLI tool di mesin agent, klik tombol **Check** di sebelah dropdown Harness (di panel detail agent atau accordion di **Settings > AI Agent**) untuk mendeteksi ulang tanpa restart agent. Tombol ini nonaktif saat agent offline, dan deteksi bisa memakan waktu hingga ~15 detik. Dropdown langsung diperbarui ketika hasil tiba — harness baru yang terdeteksi ditampilkan via toast. Rescan juga mengecek ulang harness bersama working directory dan skill.
+**Mengecek ketersediaan harness:** Setelah menginstal atau login CLI tool di mesin agent, klik tombol **Check** di sebelah dropdown Harness (di panel detail agent atau accordion di **Settings > AI Agent**) untuk mendeteksi ulang tanpa restart agent. Tombol ini nonaktif saat agent offline, dan deteksi bisa memakan waktu hingga ~15 detik. Dropdown langsung diperbarui ketika hasil tiba — harness baru yang terdeteksi ditampilkan via toast. Rescan juga mengecek ulang harness bersama working directory.
 
 **Merestart untuk menerapkan pembaruan CLI:** Setelah memperbarui CLI tool di mesin agent, klik **ikon power** (**Restart agent**) di header agent, di antara force update dan remove. Bar konfirmasi muncul di bagian atas — konfirmasi untuk merestart sekarang; semua proses agent yang sedang berjalan langsung berhenti. Percakapan dilanjutkan dari posisi terakhir lewat resume sesi. Ikon hanya aktif kalau agent online dan dikelola PM2; agent yang dijalankan manual, di bawah systemd, atau launchd tidak didukung (restart di luar PM2 akan menghentikan agent secara permanen). Saat restart berlangsung, ikon berubah amber dan berkedip; arahkan kursor untuk melihat **restarting…**, lalu toast mengonfirmasi agent kembali online. Check tidak merestart agent.
 
@@ -616,7 +616,7 @@ Setiap agent melaporkan **versi klien** (misal `v0.2.2`) ke server. Versi bisa d
 
 Pilih agent di **Settings > AI Agent** untuk melihat tombol aksi di header detail:
 
-- **Rescan** — scan ulang working directory, skill, dan ketersediaan harness agent
+- **Rescan** — scan ulang working directory dan ketersediaan harness agent
 - **Force Update** — paksa agent mengecek update klien segera (normalnya cek tiap 2 menit)
 - **Remove** — hapus registrasi agent (dengan konfirmasi). Agent yang punya riwayat chat atau catatan pemakaian tidak bisa dihapus.
 
@@ -657,16 +657,6 @@ Headers:
 Body: { "content": "isi pesan di sini" }
 ```
 
-### Skill Agent
-
-Skill adalah slash command yang tersedia di environment Claude Code agent (misal `/stoa-audit`, `/deploy`). Skill otomatis terdeteksi dari workdir agent dan ditampilkan di panel settings.
-
-Skill **discoping berdasarkan working directory** — saat membuat room dengan workdir tertentu, hanya skill dari workdir tersebut (scope project/local) ditambah skill global yang tersedia. Ini mencegah tabrakan skill dari proyek yang berbeda.
-
-Anda bisa memanggil skill di chat dengan mengetik slash command langsung:
-```
-/nama-skill
-```
 
 ---
 
@@ -960,6 +950,69 @@ Hanya pesan yang dikirim *setelah* fitur ini diperkenalkan yang membawa identita
 
 ---
 
+## Skills
+
+![Halaman daftar Skills menampilkan search, filter chip, dan baris skill dengan badge pembuat](screenshots/skills.png)
+
+Skill adalah paket instruksi yang tersimpan terpusat di server Stoa — file `SKILL.md` beserta file pendukung opsional (skrip, template, gambar, data). Semua agent dan sub-agent bisa memakai skill di mesin mana pun.
+
+Buka **Skills** di nav sidebar (antara Automation dan MCP) untuk mengelola library skill.
+
+### Daftar Skill
+
+Daftar menampilkan setiap skill dengan `/nama` (monospace), deskripsi, pembuat (avatar kamu atau avatar agent pembuat dengan badge), versi, jumlah file, ukuran, dan waktu terakhir diperbarui.
+
+Kontrol per baris:
+- **Toggle aktif** — skill yang dinonaktifkan tidak muncul di autocomplete composer dan tidak di-resolve di pesan.
+- **Menu ⋯** — Edit, Export `.zip`, History, Hapus.
+
+Filter chip: **Semua · Punyaku · Buatan agent · Nonaktif**. Cari berdasarkan nama atau deskripsi. Drag file atau arsip ke halaman untuk langsung import.
+
+### Membuat Skill
+
+Klik **New skill → Write from scratch**. Editor terbuka dengan template kosong dan dua panel:
+
+- **Kiri — file tree**: `SKILL.md` dipinned dan tidak bisa dihapus. Ada tombol tambah file, tambah folder, dan upload. Klik kanan (long-press di tablet) untuk rename atau hapus item.
+- **Kanan — editor**: `SKILL.md` dibuka di editor markdown dengan tab **Edit / Preview**. Field **nama**, **deskripsi**, dan **argument hint** di atas editor adalah sumber kebenaran — edit di form, dan frontmatter `SKILL.md` di-generate otomatis saat save. File teks lain (`.js`, `.py`, `.json`, `.md`, `.css`, `.html`) dibuka di editor syntax-highlighted; gambar ditampilkan preview; file binary menampilkan link download.
+
+Klik **Save** untuk membuat revisi baru. Catatan revisi opsional ada di footer. Indikator "unsaved" muncul saat ada perubahan yang belum disimpan.
+
+### Import Skill
+
+Klik **New skill → Import file** (atau drag file ke halaman). Format yang didukung:
+
+| Input | Keterangan |
+|---|---|
+| `.md` | Menjadi `SKILL.md`; tidak ada file pendukung |
+| `.zip` / `.skill` | `SKILL.md` di root atau di dalam satu folder top-level tunggal |
+| `.tar.gz` / `.tgz` / `.tar` | Aturan layout sama dengan `.zip` |
+| Folder (drag-drop atau **Import folder**) | File dikirim sebagai multipart dengan relative path |
+| URL GitHub | `https://github.com/<owner>/<repo>[/tree/<ref>/<path>]` — server mengunduh tarball publik; tidak perlu token. Ref yang mengandung `/` tidak didukung. |
+
+**Dialog preview** muncul setelah memilih input, menampilkan nama, deskripsi, daftar file, total ukuran, dan peringatan apa pun. Nama bisa di-override kalau ada konflik. Konfirmasi untuk menyimpan dan membuka editor.
+
+**Batasan:** 50 MB total, 20 MB per file, 300 file, `SKILL.md` maks 64 KB. Arsip dengan path absolut, traversal `..`, symlink, entry terenkripsi, atau path duplikat case-insensitive akan ditolak.
+
+### Memanggil Skill
+
+Ketik `/` di composer room atau thread untuk membuka popup autocomplete skill. Navigasi dengan tombol panah; konfirmasi dengan Enter atau Tab. Skill yang dipilih muncul sebagai **chip** di composer. Tambahkan argumen setelah chip dan gabungkan dengan `@mention` kalau perlu (misal `@Kenji /stoa-audit cek branch Y`).
+
+Skill di-resolve di level token: `/nama` di awal pesan atau setelah spasi (maks 3 per pesan) dicocokkan dengan skill yang aktif. Token yang tidak dikenal tetap sebagai teks biasa. Balasan agent menampilkan chip **"used /nama vN"** di bawah bubble, baik saat live streaming maupun setelah reload halaman.
+
+Konten skill di-prepend ke prompt agent; file pendukung di-cache di mesin agent pada `~/.stoa/skills/<nama>/<hash>/` saat pertama dipakai. Kalau server tidak dapat dijangkau, versi cache dipakai dengan catatan di preamble.
+
+### Skill Buatan Agent
+
+Agent (termasuk sub-agent) bisa membuat dan memperbarui skill. Skill buatan agent langsung muncul di daftar dengan **badge pembuat** yang menampilkan avatar agent. Kamu tetap punya kontrol penuh — bisa menonaktifkan atau menghapus skill apa pun. Agent hanya bisa mengelola skillnya sendiri; tidak bisa mengubah skill milik agent lain atau milikmu.
+
+Cache di mesin agent menyimpan maks 2 versi per skill. Skill yang sudah tidak ada di server tidak pernah dijalankan dari cache.
+
+### Riwayat Versi
+
+Klik **⋯ → History** di skill mana pun untuk membuka drawer revisi. Setiap baris menampilkan nomor versi, pembuat, timestamp, catatan, dan perubahan file. Klik versi untuk melihat `SKILL.md`-nya (read-only) dan bandingkan dengan versi saat ini. Klik **Restore** untuk membuat revisi baru yang merupakan salinan versi yang dipilih.
+
+---
+
 ## MCP
 
 **MCP (Model Context Protocol)** memberi agent AI *tool* yang bisa mereka panggil sendiri — pencarian file, penelusuran kode, issue tracking, dan lainnya. Install satu MCP server di Stoa, dan semua agent (Claude Code, Codex, sub-agent, agent di mesin mana pun) bisa memakai tool-nya, dengan kredensial tersimpan terpusat dan akses dikontrol per agent.
@@ -1098,7 +1151,7 @@ Lihat `stoa-api.md` → **Tool MCP Stoa Bawaan** untuk daftar argumen lengkap.
 
 Stoa menggunakan **sidebar navigasi vertikal** di sisi paling kiri app. Sidebar hanya menampilkan ikon (lebar 44 px) dan melebar ke 200 px saat di-hover, memperlihatkan label teks. Klik ikon mana saja untuk berpindah seksi. Di mobile (layar sempit) sidebar disembunyikan — gunakan navigasi dalam app.
 
-Item navigasi, dari atas ke bawah: **Inbox** (daftar room), lalu separator, diikuti seksi pengaturan: **AI Agent**, **Server**, **General**, **Themes**, **Docs**, **Platforms**, **Automation**, **MCP**, **Usage**, **Doctor**.
+Item navigasi, dari atas ke bawah: **Inbox** (daftar room), lalu separator, diikuti seksi pengaturan: **AI Agent**, **Server**, **General**, **Themes**, **Docs**, **Platforms**, **Automation**, **Skills**, **MCP**, **Usage**, **Doctor**.
 
 ### AI Agent
 
@@ -1343,6 +1396,10 @@ Agent secret (`x-agent-id` / `x-agent-secret`) dibatasi ke allowlist route yang 
 | `PATCH /api/automations/:id` | Automation milik sendiri (`target_room_id` harus tetap room sendiri) |
 | `DELETE /api/automations/:id` | Automation milik sendiri |
 | `GET /api/automations/connections` | Agent valid mana pun (hanya `id`, `name`, `provider`, `status` — tanpa credential) |
+| `GET /api/skills` | Agent valid mana pun (hanya skill yang aktif — nama, deskripsi, hint, versi, jumlah file) |
+| `GET /api/skills/:name/manifest` | Agent valid mana pun |
+| `GET /api/skill-blobs/:sha256` | Agent valid mana pun (sha yang direferensikan revisi aktif skill yang aktif saja) |
+| `POST /api/skills/import` | Agent valid mana pun (ownership = agent pemanggil) |
 
 Setiap kali agent membuat, mengubah, atau menghapus automation, server memposting system notice permanen di target room (contoh: *"Ara membuat automation 'X' (trigger: slack message) · automation"*), sehingga pemilik workspace bisa memantau dan mencabut akses jika diperlukan.
 

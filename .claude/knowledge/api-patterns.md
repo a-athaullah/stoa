@@ -121,6 +121,9 @@ Allowed routes (source: `AGENT_ALLOWED_ROUTES` in `lib/agent-scope.js`):
 | GET, POST | `/api/rooms/:id/schedules` | room (POST: `target_actor_id` must be an AI participant of the room) |
 | PATCH, DELETE | `/api/rooms/:id/schedules/:sid` | room (schedule must belong to that room, else 404) |
 | GET | `/api/rooms/:id/schedules/doctor` | room |
+| GET | `/api/skills/:name/manifest` | any (enabled skills only) |
+| GET | `/api/skill-blobs/:sha256` | any (only blobs of the current revision of an enabled skill) |
+| POST | `/api/skills/import` | any (skill owned by the calling agent) |
 
 **Automation scope notes:** Agents can build and manage automations on behalf of the workspace owner (PR #171, owner decision). Handlers do additional narrowing beyond scope: list filters by participant rooms; create/PATCH reject non-participant `target_room_id` with 403. GET `/api/automations/connections` strips credential/token fields for agent requests. Create/edit/delete connection, test-email, and Slack connect remain session-only. Every agent create/update/delete posts a permanent system message in the target room (suffix `· automation`) so the owner can monitor changes.
 

@@ -80,6 +80,9 @@ function appendFeedRootRow(m, inner) {
     col.appendChild(content);
   }
 
+  const skillChips = buildSkillRefChips(m.skill_refs);
+  if (skillChips) col.appendChild(skillChips);
+
   if (typeof renderAttachments === 'function') {
     const attachWrap = document.createElement('div');
     attachWrap.className = 't-attachments';

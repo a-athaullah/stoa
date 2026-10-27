@@ -123,18 +123,6 @@ CREATE TABLE IF NOT EXISTS agent_workdirs (
   UNIQUE (actor_id, path)
 );
 
-CREATE TABLE IF NOT EXISTS agent_skills (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  actor_id INTEGER NOT NULL,
-  workdir_id INTEGER DEFAULT NULL,
-  name TEXT NOT NULL,
-  description TEXT DEFAULT NULL,
-  scope TEXT DEFAULT 'project' CHECK(scope IN ('global','project','local')),
-  created_at TEXT DEFAULT (datetime('now')),
-  FOREIGN KEY (actor_id) REFERENCES actors(id) ON DELETE CASCADE,
-  FOREIGN KEY (workdir_id) REFERENCES agent_workdirs(id) ON DELETE CASCADE
-);
-
 -- Global rows use scope_id NULL (never 0); room rows use the room id.
 CREATE TABLE IF NOT EXISTS settings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -177,8 +165,6 @@ CREATE INDEX IF NOT EXISTS idx_room_participants_room_id ON room_participants(ro
 CREATE INDEX IF NOT EXISTS idx_room_participants_actor_id ON room_participants(actor_id);
 CREATE INDEX IF NOT EXISTS idx_room_participants_workdir_id ON room_participants(workdir_id);
 CREATE INDEX IF NOT EXISTS idx_agent_workdirs_actor_id ON agent_workdirs(actor_id);
-CREATE INDEX IF NOT EXISTS idx_agent_skills_actor_id ON agent_skills(actor_id);
-CREATE INDEX IF NOT EXISTS idx_agent_skills_workdir_id ON agent_skills(workdir_id);
 CREATE INDEX IF NOT EXISTS idx_messages_participant_id ON messages(participant_id);
 CREATE INDEX IF NOT EXISTS idx_ai_sessions_participant_id ON ai_sessions(participant_id);
 CREATE INDEX IF NOT EXISTS idx_ai_sessions_room_id ON ai_sessions(room_id);
@@ -522,3 +508,46 @@ CREATE TABLE IF NOT EXISTS pending_retriggers (
 CREATE INDEX IF NOT EXISTS idx_pending_retriggers_participant ON pending_retriggers(participant_id, thread_id, id);
 CREATE INDEX IF NOT EXISTS idx_pending_retriggers_trigger ON pending_retriggers(trigger_message_id);
 CREATE INDEX IF NOT EXISTS idx_pending_retriggers_room ON pending_retriggers(room_id);
+
+-- Skills library (migrations/20261027-skills-library.sql). messages.skill_refs is added by that migration.
+CREATE TABLE IF NOT EXISTS skills (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  description TEXT NOT NULL,
+  argument_hint TEXT DEFAULT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  current_revision_id INTEGER DEFAULT NULL,
+  created_by_actor_id INTEGER DEFAULT NULL,
+  created_by_sub_agent_id INTEGER DEFAULT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (created_by_actor_id) REFERENCES actors(id) ON DELETE SET NULL,
+  FOREIGN KEY (created_by_sub_agent_id) REFERENCES sub_agents(id) ON DELETE SET NULL
+);
+CREATE TABLE IF NOT EXISTS skill_revisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  skill_id INTEGER NOT NULL,
+  version INTEGER NOT NULL,
+  body TEXT NOT NULL,
+  manifest_hash TEXT NOT NULL,
+  total_bytes INTEGER NOT NULL,
+  file_count INTEGER NOT NULL,
+  author_actor_id INTEGER DEFAULT NULL,
+  author_sub_agent_id INTEGER DEFAULT NULL,
+  note TEXT DEFAULT NULL,
+  source_url TEXT DEFAULT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  UNIQUE (skill_id, version),
+  FOREIGN KEY (skill_id) REFERENCES skills(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS skill_files (
+  revision_id INTEGER NOT NULL,
+  path TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  mode INTEGER NOT NULL DEFAULT 420,
+  PRIMARY KEY (revision_id, path),
+  FOREIGN KEY (revision_id) REFERENCES skill_revisions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_skill_files_sha ON skill_files(sha256);
+CREATE INDEX IF NOT EXISTS idx_skills_created_by_actor ON skills(created_by_actor_id);

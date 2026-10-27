@@ -176,7 +176,7 @@ function sMakeConnectedSlip(actor) {
   const steps = document.createElement('div'); steps.className = 's-progress-steps';
   steps.innerHTML = `
     <div class="s-progress-step done"><span class="s-step-icon">${svgCheck(13)}</span> Connected as actor #${actor.id}</div>
-    <div class="s-progress-step active" id="s-setup-step2-${actor.id}"><span class="s-step-icon">${svgSpinnerTiny()}</span> Scanning skills &amp; workdirs...</div>
+    <div class="s-progress-step active" id="s-setup-step2-${actor.id}"><span class="s-step-icon">${svgSpinnerTiny()}</span> Scanning workdirs...</div>
   `;
   progress.appendChild(bar); progress.appendChild(steps);
   slip.appendChild(top); slip.appendChild(progress);
@@ -189,7 +189,7 @@ function sFinishSetupSlip(actorId) {
   const fill = document.getElementById('s-setup-fill-' + actorId);
   if (fill) fill.style.width = '100%';
   const step2 = document.getElementById('s-setup-step2-' + actorId);
-  if (step2) { step2.className = 's-progress-step done'; step2.innerHTML = `<span class="s-step-icon">${svgCheck(13)}</span> Skills &amp; workdirs ready`; }
+  if (step2) { step2.className = 's-progress-step done'; step2.innerHTML = `<span class="s-step-icon">${svgCheck(13)}</span> Workdirs ready`; }
   const spinner = document.getElementById('s-setup-spinner-' + actorId);
   if (spinner) { spinner.className = 's-connected-check'; spinner.innerHTML = svgCheck(16); }
   const title = document.getElementById('s-setup-title-' + actorId);

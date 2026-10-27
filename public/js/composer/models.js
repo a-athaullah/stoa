@@ -1,57 +1,118 @@
 // ── Skill autocomplete ─────────────────────────────────────────────────────
-const SKILL_COLORS = ['#5b8fd4','#d39749','#8a7660','#6b9e6b','#c25d5d','#9b6bc2','#4a9e9e'];
+// Shared by the room composer (#msg-input) and the thread composer (#thread-msg-input),
+// each with its own popup. Data: allSkills (enabled skills, refreshed on skills_changed).
+const SKILL_POPUP_FOR_INPUT = { 'msg-input': 'skill-popup', 'thread-msg-input': 'thread-skill-popup' };
+const SKILL_QUERY_RE = /(^|\s)\/([a-z0-9-]*)$/;
+let skillInputId = 'msg-input';
 
-function showSkillPopup(query) {
-  const popup = document.getElementById('skill-popup');
-  const matches = allSkills.filter(s => s.name.startsWith(query)).slice(0, 7);
+function skillPopupEl() {
+  return document.getElementById(SKILL_POPUP_FOR_INPUT[skillInputId]);
+}
+
+function isSkillPopupOpen() {
+  const popup = skillPopupEl();
+  return !!popup && popup.style.display !== 'none';
+}
+
+function skillQueryAtCaret(input) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !input.contains(sel.anchorNode)) return null;
+  const node = sel.anchorNode;
+  const text = node.nodeType === 3 ? node.textContent.slice(0, sel.anchorOffset) : '';
+  const match = text.match(SKILL_QUERY_RE);
+  return match ? match[2] : null;
+}
+
+function showSkillPopup(query, inputId = 'msg-input') {
+  if (inputId !== skillInputId) hideSkillPopup();
+  skillInputId = inputId;
+  const popup = skillPopupEl();
+  if (!popup) return;
+  const prefix = allSkills.filter(s => s.name.startsWith(query));
+  const rest = query ? allSkills.filter(s => !s.name.startsWith(query) && s.name.includes(query)) : [];
+  const matches = [...prefix, ...rest].slice(0, 7);
   if (!matches.length) { hideSkillPopup(); return; }
 
-  popup.innerHTML = '';
+  popup.replaceChildren();
+  popup.setAttribute('role', 'listbox');
+  popup.setAttribute('aria-label', 'Skills');
   skillPopupIdx = 0;
   matches.forEach((skill, i) => {
-    const color = SKILL_COLORS[i % SKILL_COLORS.length];
     const item = document.createElement('div');
-    item.className = 'h-skill-item';
-    item.dataset.idx = i;
-    const agentTag = skill.actor_name
-      ? `<span class="h-skill-agent">${escHtml(skill.actor_name)}</span>` : '';
-    item.innerHTML =
-      `<span class="h-skill-name" style="--skill-color:${color}">/${escHtml(skill.name)}</span>` +
-      `<span class="h-skill-desc">${escHtml(skill.description || '')}</span>` +
-      agentTag;
+    item.className = 'h-skill-item' + (i === 0 ? ' active' : '');
+    item.setAttribute('role', 'option');
+    item.setAttribute('aria-selected', i === 0 ? 'true' : 'false');
+    item.dataset.skillName = skill.name;
+    const name = document.createElement('span');
+    name.className = 'h-skill-name';
+    name.textContent = '/' + skill.name;
+    item.appendChild(name);
+    const text = document.createElement('span');
+    text.className = 'h-skill-text';
+    const desc = document.createElement('span');
+    desc.className = 'h-skill-desc';
+    desc.textContent = skill.description || '';
+    text.appendChild(desc);
+    if (skill.argument_hint) {
+      const hint = document.createElement('span');
+      hint.className = 'h-skill-hint';
+      hint.textContent = skill.argument_hint;
+      text.appendChild(hint);
+    }
+    item.appendChild(text);
+    if (skill.creator_name) {
+      const by = document.createElement('span');
+      by.className = 'h-skill-agent';
+      by.textContent = skill.creator_name;
+      item.appendChild(by);
+    }
     item.onmousedown = e => {
       e.preventDefault();
       applySkill(skill.name);
     };
-    if (i === 0) item.classList.add('active');
     popup.appendChild(item);
   });
   popup.style.display = 'block';
 }
 
 function hideSkillPopup() {
-  document.getElementById('skill-popup').style.display = 'none';
+  const popup = skillPopupEl();
+  if (popup) popup.style.display = 'none';
   skillPopupIdx = -1;
 }
 
-function skillColor(name) {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) h = ((h << 5) - h + name.charCodeAt(i)) | 0;
-  return SKILL_COLORS[Math.abs(h) % SKILL_COLORS.length];
+function applyActiveSkill() {
+  const popup = skillPopupEl();
+  const active = popup?.querySelector('.h-skill-item.active') || popup?.querySelector('.h-skill-item');
+  if (active) applySkill(active.dataset.skillName);
+}
+
+// data-hint renders the argument hint as a placeholder after the chip until the next keystroke.
+function makeSkillTag(name) {
+  const span = document.createElement('span');
+  span.className = 'h-skill-tag';
+  span.contentEditable = 'false';
+  span.textContent = '/' + name;
+  const hint = allSkills.find(s => s.name === name)?.argument_hint;
+  if (hint) span.dataset.hint = hint;
+  return span;
+}
+
+function clearSkillHints(input) {
+  input.querySelectorAll('.h-skill-tag[data-hint]').forEach(el => el.removeAttribute('data-hint'));
 }
 
 function applySkill(name) {
-  const input = document.getElementById('msg-input');
+  const input = document.getElementById(skillInputId);
   const sel = window.getSelection();
-  if (!sel.rangeCount) { hideSkillPopup(); return; }
+  if (!input || !sel.rangeCount) { hideSkillPopup(); return; }
   const node = sel.anchorNode;
-  const color = skillColor(name);
 
   if (node.nodeType === 3 && input.contains(node)) {
     const text = node.textContent;
     const cursor = sel.anchorOffset;
     const before = text.slice(0, cursor);
-    const match = before.match(/(^|\s)\/([a-z0-9-]*)$/);
+    const match = before.match(SKILL_QUERY_RE);
     if (match) {
       const start = match.index + match[1].length;
       const beforeText = text.slice(0, start);
@@ -59,13 +120,8 @@ function applySkill(name) {
       const parent = node.parentElement;
       const frag = document.createDocumentFragment();
       if (beforeText) frag.appendChild(document.createTextNode(beforeText));
-      const span = document.createElement('span');
-      span.className = 'h-skill-tag';
-      span.style.color = color;
-      span.contentEditable = 'false';
-      span.textContent = '/' + name;
-      frag.appendChild(span);
-      const after = document.createTextNode(' ' + afterText);
+      frag.appendChild(makeSkillTag(name));
+      const after = document.createTextNode(' ' + afterText);
       frag.appendChild(after);
       parent.replaceChild(frag, node);
       const range = document.createRange();
@@ -78,15 +134,11 @@ function applySkill(name) {
     }
   }
   input.focus();
-  const span = document.createElement('span');
-  span.className = 'h-skill-tag';
-  span.style.color = color;
-  span.contentEditable = 'false';
-  span.textContent = '/' + name;
+  const span = makeSkillTag(name);
   const range = sel.getRangeAt(0);
   range.deleteContents();
   range.insertNode(span);
-  const after = document.createTextNode(' ');
+  const after = document.createTextNode(' ');
   span.parentNode.insertBefore(after, span.nextSibling);
   range.setStart(after, 1);
   range.collapse(true);
@@ -96,27 +148,29 @@ function applySkill(name) {
 }
 
 function skillPopupNavigate(dir) {
-  const popup = document.getElementById('skill-popup');
-  if (popup.style.display === 'none') return false;
+  const popup = skillPopupEl();
+  if (!popup || popup.style.display === 'none') return false;
   const items = popup.querySelectorAll('.h-skill-item');
   if (!items.length) return false;
   items[skillPopupIdx]?.classList.remove('active');
+  items[skillPopupIdx]?.setAttribute('aria-selected', 'false');
   skillPopupIdx = (skillPopupIdx + dir + items.length) % items.length;
   items[skillPopupIdx].classList.add('active');
+  items[skillPopupIdx].setAttribute('aria-selected', 'true');
+  items[skillPopupIdx].scrollIntoView({ block: 'nearest' });
   return true;
 }
 
 function onComposerInput() {
   const input = document.getElementById('msg-input');
   saveDraft(currentRoomId);
+  clearSkillHints(input);
   const sel = window.getSelection();
   if (sel.rangeCount && input.contains(sel.anchorNode)) {
-    const node = sel.anchorNode;
-    const text = node.nodeType === 3 ? node.textContent.slice(0, sel.anchorOffset) : '';
-    const skillMatch = text.match(/(^|\s)\/([a-z0-9-]*)$/);
+    const skillQuery = skillQueryAtCaret(input);
     const mentionQuery = mentionQueryAtCaret(input);
-    if (skillMatch) {
-      showSkillPopup(skillMatch[2]);
+    if (skillQuery !== null) {
+      showSkillPopup(skillQuery, 'msg-input');
       hideMentionPopup();
     } else if (mentionQuery !== null) {
       showMentionPopup(mentionQuery, 'msg-input');

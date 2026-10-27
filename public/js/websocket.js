@@ -314,18 +314,6 @@ function handleWsMessage(msg) {
     return;
   }
 
-  if (msg.type === 'skill_invoked') {
-    const inner = document.getElementById('messages-inner');
-    if (!inner) return;
-    const notice = document.createElement('div');
-    notice.className = 'h-skill-notice';
-    const targets = msg.targets.map(n => n.toLowerCase()).join(', ');
-    notice.textContent = `/${msg.skill_name} → ${targets}`;
-    inner.appendChild(notice);
-    scrollToBottom();
-    return;
-  }
-
   if (msg.type === 'system_notice') {
     const inner = document.getElementById('messages-inner');
     if (!inner) return;
