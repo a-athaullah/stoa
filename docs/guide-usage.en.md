@@ -963,7 +963,7 @@ The list shows all skills with `/name` (monospace), description, creator (your a
 
 Controls per row:
 - **Enable toggle** — disabled skills are hidden from the composer autocomplete and are not resolved in messages.
-- **⋯ menu** — Edit, Export `.zip`, History, Delete.
+- **⋯ menu** — Edit, History, Delete.
 
 Filter chips: **All · Mine · By agents · Disabled**. Search by name or description. Drag a file or archive onto the page to start an import.
 
@@ -1038,13 +1038,13 @@ Click a revision to open a diff view with two tabs:
 - **SKILL.md** — line-by-line diff against the current version, with surrounding context.
 - **Changes** — file-by-file summary: files only in that revision, files only in the current version, files with changed content, and files with changed permissions.
 
-**Restore** — click **Restore** on any revision to create a new revision that restores the selected content. An inline confirmation appears. If the editor has unsaved changes, the confirmation warns they will be discarded.
+**Restore vN** — available in the revision detail panel for non-active revisions. Click **Restore vN** to create a new revision that restores the selected content. An inline confirmation appears; if the editor has unsaved changes, the confirmation warns they will be discarded. After restoring, a toast confirms *"Restored vN as vM"*.
 
 ### Export
 
 Download a skill as a zip archive:
-- **Editor bar** — click **Export** to download the currently shown version.
-- **History row** — **⋯ → Export** on any revision downloads that specific version as `<name>-vN.zip`.
+- **Editor bar** — click **Export .zip** to download the currently shown version as `<name>.zip`.
+- **History** — each revision row has a download icon (tooltip *"Export vN as .zip"*); the selected revision's detail panel also has an **Export vN** button. Both download `<name>-vN.zip`.
 
 The archive contains one `<name>/` folder with `SKILL.md` and all support files. Executable permissions and file timestamps (matching the revision time) are preserved. The zip re-imports cleanly via **Import**.
 

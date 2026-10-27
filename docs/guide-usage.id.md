@@ -964,7 +964,7 @@ Daftar menampilkan setiap skill dengan `/nama` (monospace), deskripsi, pembuat (
 
 Kontrol per baris:
 - **Toggle aktif** — skill yang dinonaktifkan tidak muncul di autocomplete composer dan tidak di-resolve di pesan.
-- **Menu ⋯** — Edit, Export `.zip`, History, Hapus.
+- **Menu ⋯** — Edit, History, Hapus.
 
 Filter chip: **Semua · Punyaku · Buatan agent · Nonaktif**. Cari berdasarkan nama atau deskripsi. Drag file atau arsip ke halaman untuk langsung import.
 
@@ -1039,13 +1039,13 @@ Klik revisi untuk membuka tampilan diff dengan dua tab:
 - **SKILL.md** — diff baris per baris dengan versi aktif, beserta baris konteks di sekitarnya.
 - **Changes** — ringkasan per file: file hanya ada di revisi itu, file hanya ada di versi aktif, file yang isinya berbeda, dan file yang permission-nya berbeda.
 
-**Restore** — klik **Restore** di revisi mana pun untuk membuat revisi baru yang mengembalikan isi revisi tersebut. Konfirmasi muncul secara inline. Kalau editor punya perubahan yang belum disimpan, konfirmasi memperingatkan bahwa perubahan itu akan dibuang.
+**Restore vN** — tersedia di panel detail revisi untuk revisi yang tidak aktif. Klik **Restore vN** untuk membuat revisi baru yang mengembalikan isi revisi tersebut. Konfirmasi muncul secara inline; kalau editor punya perubahan yang belum disimpan, konfirmasi memperingatkan bahwa perubahan itu akan dibuang. Setelah restore, toast mengonfirmasi *"Restored vN as vM"*.
 
 ### Export
 
 Unduh skill sebagai arsip zip:
-- **Bar editor** — klik **Export** untuk mengunduh versi yang sedang ditampilkan.
-- **Baris History** — **⋯ → Export** di revisi mana pun mengunduh revisi itu sebagai `<name>-vN.zip`.
+- **Bar editor** — klik **Export .zip** untuk mengunduh versi yang sedang ditampilkan sebagai `<name>.zip`.
+- **History** — setiap baris revisi punya ikon unduh (tooltip *"Export vN as .zip"*); panel detail revisi yang dipilih juga punya tombol **Export vN**. Keduanya mengunduh `<name>-vN.zip`.
 
 Arsip berisi satu folder `<name>/` dengan `SKILL.md` dan semua file pendukung. Izin exec dan timestamp file (sesuai waktu revisi) tetap terbawa. Zip ini bisa di-import ulang lewat **Import**.
 
