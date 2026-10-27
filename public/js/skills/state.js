@@ -41,7 +41,7 @@ async function skillsApi(method, url, body) {
   if (r.status === 401) { showLogin(); return { ok: false, error: 'unauthorized' }; }
   let data = null;
   try { data = await r.json(); } catch {}
-  if (!r.ok) return { ok: false, status: r.status, code: data?.code || null, error: (data && data.error) || `${r.status} ${r.statusText}` };
+  if (!r.ok) return { ok: false, status: r.status, code: data?.code || null, error: (data && data.error) || `${r.status} ${r.statusText}`, data };
   return { ok: true, data };
 }
 
@@ -145,8 +145,7 @@ function skillsRefreshCache() {
 
 function skillsHandleChanged() {
   skillsRefreshCache();
-  const ed = skillsState.editor;
-  if (skillsIsVisible() && skillsState.view === 'editor' && ed?.mode === 'history' && ed.hist && !ed.hist.loading && !ed.hist.restoring) skHistLoad(ed);
+  if (skillsIsVisible() && skillsState.view === 'editor') skCheckRemote(skillsState.editor);
 }
 
 function skillsIsVisible() {
@@ -164,8 +163,10 @@ async function sLoadSkillsTab() {
     skillsOpenEditor(openId);
     return;
   }
-  if (skillsState.view === 'editor' && skillsState.editor) skillsRenderEditor();
-  else skillsRender();
+  if (skillsState.view === 'editor' && skillsState.editor) {
+    skillsRenderEditor();
+    skCheckRemote(skillsState.editor);
+  } else skillsRender();
 }
 
 // Entry point for feed chips: jump to a skill in the Skills tab.

@@ -129,7 +129,7 @@ function skMakeHistDetail(ed) {
   tabs.setAttribute('aria-label', 'View');
   [['diff', 'Changes'], ['full', 'SKILL.md']].forEach(([id, label]) => {
     const b = skBtn('mcp-seg-btn', label, () => { h.view = id; skRenderHistory(ed); });
-    b.setAttribute('aria-pressed', h.view === id ? 'true' : 'false');
+    b.setAttribute('aria-pressed', (isActive ? 'full' : h.view) === id ? 'true' : 'false');
     b.disabled = id === 'diff' && isActive;
     tabs.appendChild(b);
   });
@@ -298,20 +298,15 @@ async function skRestore(ed, version) {
   skHistLoad(next);
 }
 
-// Older revisions get the version in the name, so several exports of one skill don't overwrite each other.
-function skExportName(res, skill, version) {
-  if (version) return `${skill.name}-v${version}.zip`;
-  const m = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') || '');
-  return m ? m[1] : `${skill.name}.zip`;
-}
-
-async function skExport(skill, version) {
-  const key = `${skill.id}:${version || ''}`;
+// Always pinned to a version, so the editor's Export matches what it shows even if a newer one landed.
+// Per-revision exports get the version in the name, so several of them don't overwrite each other.
+async function skExport(skill, version, plainName) {
+  const key = `${skill.id}:${plainName ? '' : version}`;
   if (skExporting.has(key)) return;
   skExporting.add(key);
   skSyncExportBtns();
   try {
-    const res = await fetch(`/api/skills/${skill.id}/export${version ? `?version=${version}` : ''}`);
+    const res = await fetch(`/api/skills/${skill.id}/export?version=${version}`);
     if (res.status === 401) { showLogin(); return; }
     if (!res.ok) {
       let err = `${res.status} ${res.statusText}`;
@@ -322,7 +317,7 @@ async function skExport(skill, version) {
     const url = URL.createObjectURL(await res.blob());
     const a = document.createElement('a');
     a.href = url;
-    a.download = skExportName(res, skill, version);
+    a.download = plainName ? `${skill.name}.zip` : `${skill.name}-v${version}.zip`;
     document.body.appendChild(a);
     a.click();
     a.remove();

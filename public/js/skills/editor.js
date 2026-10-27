@@ -89,6 +89,8 @@ function skNewEditor(skill) {
     treeOpen: false,
     mode: 'files',
     hist: null,
+    baseVersion: skill?.version ?? null,
+    conflict: null,
   };
   (skill?.files || []).forEach(f => {
     if (f.path === SK_MAIN_FILE) return;
@@ -177,7 +179,7 @@ function skillsRenderEditor() {
       top.appendChild(by);
     }
     if (ed.id) {
-      const exp = skBtn('auto-small-btn sk-ed-export', 'Export .zip', () => skExport(ed.skill), 'Download the saved version as .zip');
+      const exp = skBtn('auto-small-btn sk-ed-export', 'Export .zip', () => skExport(ed.skill, ed.skill.version, true), `Download v${ed.skill.version} as .zip`);
       exp.dataset.exportKey = `${ed.id}:`;
       exp.disabled = skExporting.has(exp.dataset.exportKey);
       top.appendChild(exp);
@@ -202,6 +204,7 @@ function skillsRenderEditor() {
     });
     inner.appendChild(modes);
   }
+  if (ed.conflict) inner.appendChild(skMakeConflict(ed));
 
   if (ed.mode === 'history') {
     if (skIsDirty(ed)) inner.appendChild(skEl('div', 'sk-hist-dirty', 'You have unsaved edits. Switch to Files to save or discard them.'));
@@ -729,10 +732,16 @@ async function skSave(ed) {
     const del = [...new Set([...ed.deleted, ...moved])].filter(p => !ed.files.has(p));
     if (del.length) payload.delete_files = del;
     if (ed.note.trim()) payload.note = ed.note.trim();
+    payload.base_version = ed.baseVersion;
     r = await skillsApi('PATCH', `/api/skills/${ed.id}`, payload);
   }
   if (skillsState.editor !== ed) return;
   ed.saving = false;
+  if (r.status === 409 && r.code === 'version_conflict') {
+    ed.conflict = Number(r.data?.current_version) || ed.baseVersion + 1;
+    skillsRenderEditor();
+    return;
+  }
   if (!r.ok) {
     const nameError = /^name_/.test(r.code || '');
     ed.error = nameError ? null : r.error;
@@ -749,4 +758,70 @@ async function skSave(ed) {
   if (selected && (selected === SK_MAIN_FILE || skillsState.editor.files.has(selected))) skillsState.editor.selected = selected;
   skillsLoad();
   skillsRenderEditor();
+}
+
+// Another tab, an agent or the API saved a newer version: a clean editor follows it silently,
+// a dirty one gets a banner instead of being overwritten (saves carry base_version → 409).
+async function skCheckRemote(ed) {
+  if (!ed?.id || ed.loading || ed.saving || ed.hist?.restoring) return;
+  let skill = null;
+  try {
+    const res = await fetch(`/api/skills/${encodeURIComponent(ed.id)}`);
+    if (res.ok) skill = (await res.json())?.skill;
+  } catch {}
+  if (skillsState.editor !== ed || ed.saving || ed.hist?.restoring || !skill || !(skill.version > ed.skill.version)) return;
+  if (!skIsDirty(ed)) { skReloadEditor(ed, skill); return; }
+  if (skill.version > (ed.conflict || ed.baseVersion)) {
+    ed.conflict = skill.version;
+    skSyncConflict(ed);
+  }
+  if (ed.mode === 'history' && !ed.hist?.loading) skHistLoad(ed);
+}
+
+async function skReloadEditor(ed, skill) {
+  if (!skill) {
+    const r = await skillsApi('GET', `/api/skills/${encodeURIComponent(ed.id)}`);
+    if (skillsState.editor !== ed) return;
+    if (!r.ok) { showToast(`Couldn’t reload /${ed.skill.name}: ${r.error}`, { error: true }); return; }
+    skill = r.data?.skill;
+  }
+  skDisposeEditor();
+  const next = skNewEditor(skill);
+  next.mode = ed.mode;
+  if (next.files.has(ed.selected)) next.selected = ed.selected;
+  if (next.mode === 'history') {
+    const h = skHistState(next);
+    h.sel = ed.hist?.sel ?? null;
+    h.view = ed.hist?.view || 'diff';
+  }
+  skillsState.editor = next;
+  skillsRenderEditor();
+  skillsLoad();
+  if (next.mode === 'history') skHistLoad(next);
+}
+
+function skMakeConflict(ed) {
+  const box = skEl('div', 'sk-conflict');
+  box.id = 'sk-conflict';
+  box.setAttribute('role', 'alert');
+  box.appendChild(skEl('span', 'sk-conflict-text', `This skill changed (v${ed.conflict}) since you opened it. Reload to see it and discard your edits, or keep editing and save your changes on top of it.`));
+  const reload = skBtn('auto-small-btn', 'Reload', () => skReloadEditor(ed));
+  reload.disabled = ed.saving;
+  box.appendChild(reload);
+  box.appendChild(skBtn('auto-small-btn', 'Keep editing', () => {
+    ed.baseVersion = ed.conflict;
+    ed.conflict = null;
+    document.getElementById('sk-conflict')?.remove();
+  }));
+  return box;
+}
+
+// Inserted in place so CodeMirror keeps focus and the cursor while the user is typing.
+function skSyncConflict(ed) {
+  const old = document.getElementById('sk-conflict');
+  const box = skMakeConflict(ed);
+  if (old) { old.replaceWith(box); return; }
+  const anchor = document.querySelector('.sk-editor .sk-ed-modes');
+  if (anchor) anchor.after(box);
+  else skillsRenderEditor();
 }
