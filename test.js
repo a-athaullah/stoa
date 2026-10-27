@@ -4657,13 +4657,6 @@ async function run() {
     assert.ok(r.body.title, 'title missing');
   });
 
-  await test('GET /api/rooms/:id/skills — returns array', async () => {
-    if (!firstRoomId) { console.log('    (skipped — no rooms)'); return; }
-    const r = await req('GET', `/api/rooms/${firstRoomId}/skills`);
-    assert.strictEqual(r.status, 200);
-    assert.ok(Array.isArray(r.body));
-  });
-
   await test('POST /api/rooms/:id/participants — adds actor to room', async () => {
     // Room creation requires workdir owner online as participant; POST /participants also
     // requires the added AI to be online — use two throwaway agents.
@@ -15781,7 +15774,7 @@ async function run() {
   console.log('\n[Query audit fixes]');
   {
     const db = require('./db');
-    let sk = null, skRoomId = null, skPart = null, human = null;
+    let sk = null, skRoomId = null, skPart = null, human = null, qaSkillId = null;
 
     await test('query audit — every prepared SQL compiles against the schema; FK indexes present', async () => {
       // The tool prepares every literal SQL in server.js + lib/ against a copy of this DB. A statement
@@ -15824,7 +15817,7 @@ async function run() {
       }
     });
 
-    await test('skill command — resumes the room-level (thread 0) session, not a thread session', async () => {
+    await test('/skill message — routed like any main-feed message (own thread, fresh session), SKILL.md inlined for an old client', async () => {
       sk = await createOnlineTestAgent('__test-skill-session', '/tmp/stoa-test-skill-session');
       assert.ok(sk?.workdirId, 'online test agent');
       const r = await req('POST', '/api/rooms', { title: '__skill-session-room__', workdir_id: sk.workdirId, participant_ids: [sk.actorId] });
@@ -15832,29 +15825,34 @@ async function run() {
       skRoomId = r.body.id;
       testRoomIds.push(skRoomId);
       skPart = db.prepare('SELECT id FROM room_participants WHERE room_id=? AND actor_id=?').get(skRoomId, sk.actorId).id;
-      db.prepare("INSERT INTO agent_skills (actor_id, name, scope) VALUES (?, '__qaskill', 'global')").run(sk.actorId);
-      // Thread row first: a lookup that ignores thread_id returns it.
-      const ins = db.prepare("INSERT INTO ai_sessions (participant_id, room_id, claude_session_id, thread_id) VALUES (?,?,?,?)");
-      ins.run(skPart, skRoomId, 'sess-thread-77', 77);
-      ins.run(skPart, skRoomId, 'sess-room', 0);
+      const created = await req('POST', '/api/skills', { name: 'qaskill-session', description: 'qa skill', body: 'QA_SKILL_STEPS' });
+      assert.strictEqual(created.status, 201, created.raw);
+      qaSkillId = created.body.skill.id;
+      db.prepare("INSERT INTO ai_sessions (participant_id, room_id, claude_session_id, thread_id) VALUES (?,?,?,?)").run(skPart, skRoomId, 'sess-room', 0);
       human = await openWsConnection(`ws://${HOST}:${PORT}`, cookieHeader());
       const hist = waitForWsMessage(human, m => m.type === 'history');
       human.send(JSON.stringify({ type: 'join_room', room_id: skRoomId }));
       await hist;
       const trig = waitForWsMessage(sk.ws, m => m.type === 'agent_trigger', 5000);
-      human.send(JSON.stringify({ type: 'send_message', room_id: skRoomId, content: '/__qaskill' }));
+      human.send(JSON.stringify({ type: 'send_message', room_id: skRoomId, content: '/qaskill-session go' }));
       const m = await trig;
-      assert.strictEqual(m.prompt, '/__qaskill');
-      assert.strictEqual(m.claude_session_id, 'sess-room');
-      sk.ws.send(JSON.stringify({ type: 'agent_complete', room_id: skRoomId, message_id: m.message_id, content: 'skill done', claude_session_id: 'sess-room-2' }));
+      assert.ok(m.prompt.startsWith('<stoa-skill name="qaskill-session" version="1">'), 'agent without the skill cache gets SKILL.md inline');
+      assert.ok(m.prompt.includes('QA_SKILL_STEPS'));
+      assert.strictEqual(m.skills, undefined, 'no refs for a client that cannot fetch them');
+      const stored = db.prepare("SELECT id, thread_id FROM messages WHERE room_id=? AND content='/qaskill-session go'").get(skRoomId);
+      assert.strictEqual(stored?.thread_id, null, 'the /skill message is stored like any message');
+      assert.strictEqual(m.thread_id, stored.id, 'the reply opens a thread on it, as for any main-feed message');
+      assert.strictEqual(m.claude_session_id, null, 'not the room-level session the old skill path reused');
+      sk.ws.send(JSON.stringify({ type: 'agent_complete', room_id: skRoomId, message_id: m.message_id, content: 'skill done', claude_session_id: 'sess-skill-thread' }));
       for (let i = 0; i < 100 && db.prepare('SELECT state FROM messages WHERE id=?').get(m.message_id).state === 'streaming'; i++) await new Promise(res => setTimeout(res, 20));
       const rows = db.prepare('SELECT thread_id, claude_session_id FROM ai_sessions WHERE participant_id=? AND sub_agent_id IS NULL ORDER BY thread_id').all(skPart);
-      assert.deepStrictEqual(rows, [{ thread_id: 0, claude_session_id: 'sess-room-2' }, { thread_id: 77, claude_session_id: 'sess-thread-77' }]);
+      assert.deepStrictEqual(rows, [{ thread_id: 0, claude_session_id: 'sess-room' }, { thread_id: stored.id, claude_session_id: 'sess-skill-thread' }]);
     });
 
     await test('query audit fixes — teardown', async () => {
       if (human) human.close();
       if (sk?.ws && sk.ws.readyState !== 3) sk.ws.close();
+      if (qaSkillId) await req('DELETE', `/api/skills/${qaSkillId}`);
     });
   }
 
@@ -17929,31 +17927,6 @@ async function run() {
       if (w) agA.ws.send(JSON.stringify({ type: 'agent_message', message_id: w.message_id, content: 'done', state: 'complete' }));
     });
 
-    await test('MCP token — skill command trigger carries the room-level token too', async () => {
-      mDb.prepare("INSERT INTO agent_skills (actor_id, name, scope) VALUES (?, '__mcpskill', 'global')").run(agA.actorId);
-      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
-      try {
-        humanWs.send(JSON.stringify({ type: 'join_room', room_id: roomA }));
-        await waitForWsMessage(humanWs, m => m.type === 'history');
-        const runSkill = async () => {
-          const trig = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.prompt === '/__mcpskill', 5000);
-          humanWs.send(JSON.stringify({ type: 'send_message', room_id: roomA, content: '/__mcpskill' }));
-          const m = await trig;
-          agA.ws.send(JSON.stringify({ type: 'agent_complete', room_id: roomA, message_id: m.message_id, content: 'skill done' }));
-          return m.mcp_token;
-        };
-        const t1 = await runSkill();
-        assert.match(t1 || '', /^stoa_mcp_/, 'skill-run trigger has an MCP token');
-        assert.strictEqual(await runSkill(), t1, 'stable across skill runs');
-        assert.strictEqual((await mcp(t1, 'tools/list')).status, 200, 'token authenticates');
-        const row = mDb.prepare('SELECT room_id, thread_id, sub_agent_id FROM mcp_tokens WHERE token_hash=?').get(crypto.createHash('sha256').update(t1).digest('hex'));
-        assert.deepStrictEqual(row, { room_id: roomA, thread_id: null, sub_agent_id: null }, 'room-level session key');
-      } finally {
-        humanWs.close();
-        mDb.prepare("DELETE FROM agent_skills WHERE actor_id=? AND name='__mcpskill'").run(agA.actorId);
-      }
-    });
-
     await test('MCP /mcp — missing, wrong, or agent-secret auth → 401', async () => {
       assert.strictEqual((await mcp(null, 'tools/list')).status, 401);
       assert.strictEqual((await mcp('stoa_mcp_' + 'A'.repeat(43), 'tools/list')).status, 401);
@@ -19169,6 +19142,740 @@ async function run() {
       mDb.prepare("DELETE FROM mcp_calls WHERE server_slug='stoa' AND room_id IS NULL AND actor_id=?").run(agA?.actorId ?? -1);
       if (agA?.ws) agA.ws.close();
       if (agB?.ws) agB.ws.close();
+    });
+  }
+
+  // Skills library: lib/skill-bundle.js (archives, frontmatter, GitHub), lib/skills.js (storage,
+  // revisions, ownership), lib/skills-http.js (routes), the /skill routing in triggerAiResponse and the
+  // agent cache in stoa.js.
+  console.log('\n[Skills library]');
+  {
+    const db = require('./db');
+    const zlib = require('zlib');
+    const os = require('os');
+    const fsS = require('fs');
+    const Database = require('better-sqlite3');
+    const B = require('./lib/skill-bundle');
+    const { createSkills } = require('./lib/skills');
+    const createdSkillIds = [];
+    let agent = null, agentRoomId = null, oldAgent = null, saRow = null, human = null;
+
+    // A zip written by hand so a test controls every field an attacker controls (attrs, flags, sizes).
+    const crc32 = (buf) => { let crc = 0xFFFFFFFF; for (const b of buf) { let c = (crc ^ b) & 0xFF; for (let k = 0; k < 8; k++) c = c & 1 ? (c >>> 1) ^ 0xEDB88320 : c >>> 1; crc = (crc >>> 8) ^ c; } return (crc ^ 0xFFFFFFFF) >>> 0; };
+    const makeZip = (entries) => {
+      const locals = [], centrals = [];
+      let off = 0;
+      for (const e of entries) {
+        const name = Buffer.from(e.name);
+        const data = Buffer.isBuffer(e.data) ? e.data : Buffer.from(e.data || '');
+        const method = e.method ?? 8;
+        const comp = method === 8 ? zlib.deflateRawSync(data) : data;
+        const usize = e.declaredSize ?? data.length;
+        const lh = Buffer.alloc(30);
+        lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(e.flags || 0, 6); lh.writeUInt16LE(method, 8);
+        lh.writeUInt32LE(crc32(data), 14); lh.writeUInt32LE(comp.length, 18); lh.writeUInt32LE(usize, 22); lh.writeUInt16LE(name.length, 26);
+        locals.push(lh, name, comp);
+        const ch = Buffer.alloc(46);
+        ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(0x0314, 4); ch.writeUInt16LE(20, 6); ch.writeUInt16LE(e.flags || 0, 8); ch.writeUInt16LE(method, 10);
+        ch.writeUInt32LE(crc32(data), 16); ch.writeUInt32LE(comp.length, 20); ch.writeUInt32LE(usize, 24); ch.writeUInt16LE(name.length, 28);
+        ch.writeUInt32LE(((e.attr ?? 0o100644) << 16) >>> 0, 38); ch.writeUInt32LE(off, 42);
+        centrals.push(ch, name);
+        off += 30 + name.length + comp.length;
+      }
+      const cd = Buffer.concat(centrals);
+      const end = Buffer.alloc(22);
+      end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(entries.length, 8); end.writeUInt16LE(entries.length, 10); end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(off, 16);
+      return Buffer.concat([...locals, cd, end]);
+    };
+    const makeTar = async (entries, gzip = true) => {
+      const pack = require('tar-stream').pack();
+      for (const e of entries) pack.entry({ name: e.name, type: e.type || 'file', mode: e.mode ?? 0o644, linkname: e.linkname }, e.type && e.type !== 'file' ? undefined : (e.data ?? ''));
+      pack.finalize();
+      const chunks = [];
+      for await (const c of pack) chunks.push(c);
+      const tar = Buffer.concat(chunks);
+      return gzip ? zlib.gzipSync(tar) : tar;
+    };
+    const multipart = (parts) => {
+      const boundary = `----stoaTest${crypto.randomBytes(8).toString('hex')}`;
+      const bufs = [];
+      for (const p of parts) {
+        const fn = p.filename != null ? `; filename="${p.filename}"` : '';
+        bufs.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${p.name}"${fn}\r\n${p.filename != null ? 'Content-Type: application/octet-stream\r\n' : ''}\r\n`));
+        bufs.push(Buffer.isBuffer(p.data) ? p.data : Buffer.from(p.data));
+        bufs.push(Buffer.from('\r\n'));
+      }
+      bufs.push(Buffer.from(`--${boundary}--\r\n`));
+      return { body: Buffer.concat(bufs), type: `multipart/form-data; boundary=${boundary}` };
+    };
+    const importFile = async (filename, data, query = '', extra = []) => {
+      const mp = multipart([{ name: 'file', filename, data }, ...extra]);
+      const r = await rawReq('POST', `/api/skills/import${query}`, mp.body, mp.type);
+      if (r.status === 201) createdSkillIds.push(r.body.skill.id);
+      return r;
+    };
+    const create = async (body) => {
+      const r = await req('POST', '/api/skills', body);
+      if (r.status === 201) createdSkillIds.push(r.body.skill.id);
+      return r;
+    };
+    // Binary GET (blobs) with optional agent headers; agent requests go without the owner cookie.
+    const getBuf = (p, headers = {}, withCookie = true) => new Promise((resolve, reject) => {
+      const r = http.request({ hostname: HOST, port: PORT, path: p, method: 'GET', headers: { ...(withCookie && cookieHeader() ? { Cookie: cookieHeader() } : {}), ...headers } }, (res) => {
+        const chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+      });
+      r.on('error', reject);
+      r.end();
+    });
+    const asAgent = async (a, fn) => {
+      const saved = sessionCookie;
+      sessionCookie = null;
+      try { return await fn({ 'x-agent-id': String(a.actorId), 'x-agent-secret': a.secret }); } finally { sessionCookie = saved; }
+    };
+    const memDb = () => {
+      const d = new Database(':memory:');
+      require('./lib/migrations').runMigrations(d, path.join(__dirname, 'migrations'), { log() {}, warn() {}, error() {} },
+        { schemaSql: fsS.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8') });
+      d.prepare("INSERT INTO actors (id, name, type) VALUES (901, 'agent-a', 'ai'), (902, 'agent-b', 'ai')").run();
+      d.prepare("INSERT INTO sub_agents (id, parent_actor_id, label, tier) VALUES (951, 901, 'sub-a', 'quick'), (952, 901, 'sub-a2', 'quick')").run();
+      return d;
+    };
+    const tmpDir = (p) => fsS.mkdtempSync(path.join(os.tmpdir(), p));
+    const b64 = (s) => Buffer.from(s).toString('base64');
+
+    await test('skills migration — agent_skills dropped; skills tables + messages.skill_refs exist', async () => {
+      assert.strictEqual(db.prepare("SELECT COUNT(*) AS c FROM sqlite_master WHERE name='agent_skills'").get().c, 0);
+      for (const t of ['skills', 'skill_revisions', 'skill_files']) assert.strictEqual(db.prepare('SELECT COUNT(*) AS c FROM sqlite_master WHERE type=? AND name=?').get('table', t).c, 1, t);
+      assert.ok(db.prepare('PRAGMA table_info(messages)').all().some(c => c.name === 'skill_refs'));
+    });
+
+    await test('GET /api/rooms/:id/skills — removed with the old per-workdir skills', async () => {
+      const r = await req('GET', `/api/rooms/${testRoomIds[0] ?? 1}/skills`);
+      assert.ok(!(r.status === 200 && Array.isArray(r.body)), `old endpoint still answers a list: ${r.status}`);
+    });
+
+    let hg = null;
+    await test('POST /api/skills — 201, contract shape, body without frontmatter, SKILL.md generated from the form', async () => {
+      const r = await create({ name: 'qa-header-gen', description: 'Make a header: with a colon', argument_hint: '<title>', body: '# Steps\nRun scripts/gen.js',
+        files: [{ path: 'scripts/gen.js', content_base64: b64('console.log(1)'), mode: 0o755 }, { path: 'assets/logo.png', content_base64: b64('PNGDATA') }] });
+      assert.strictEqual(r.status, 201, r.raw);
+      hg = r.body.skill;
+      for (const k of ['id', 'name', 'description', 'argument_hint', 'enabled', 'version', 'file_count', 'total_bytes', 'updated_at', 'created_by_actor_id', 'created_by_sub_agent_id', 'creator_name', 'body', 'files']) assert.ok(k in hg, `missing ${k}`);
+      assert.deepStrictEqual([hg.version, hg.file_count, hg.enabled, hg.creator_name, hg.created_by_actor_id], [1, 3, true, null, null]);
+      assert.strictEqual(hg.body, '# Steps\nRun scripts/gen.js');
+      assert.deepStrictEqual(hg.files.map(f => [f.path, f.mode]), [['SKILL.md', 0o644], ['assets/logo.png', 0o644], ['scripts/gen.js', 0o755]]);
+      assert.strictEqual(hg.total_bytes, hg.files.reduce((n, f) => n + f.size, 0));
+      const md = await getBuf(`/api/skill-blobs/${hg.files[0].sha256}`);
+      assert.strictEqual(md.status, 200);
+      const fm = B.parseFrontmatter(md.body.toString('utf8'));
+      assert.deepStrictEqual([fm.fields.name, fm.fields.description, fm.fields['argument-hint'], fm.body], ['qa-header-gen', 'Make a header: with a colon', '<title>', '# Steps\nRun scripts/gen.js']);
+      const list = await req('GET', '/api/skills');
+      assert.ok(list.body.skills.some(s => s.id === hg.id && s.body === undefined), 'list items carry no body');
+    });
+
+    await test('POST /api/skills — name / description / path validation codes', async () => {
+      const cases = [
+        [{ name: 'Bad Name', description: 'd' }, 400, 'name_invalid'],
+        [{ name: 'compact', description: 'd' }, 400, 'name_reserved'],
+        [{ name: 'qa-header-gen', description: 'd' }, 409, 'name_taken'],
+        [{ name: 'qa-nodesc', description: '   ' }, 400, 'description_required'],
+        [{ name: 'qa-longdesc', description: 'x'.repeat(501) }, 400, 'too_large'],
+        [{ name: 'qa-mdfile', description: 'd', files: [{ path: 'SKILL.md', content_base64: b64('x') }] }, 400, 'invalid_path'],
+        [{ name: 'qa-slip', description: 'd', files: [{ path: '../evil.sh', content_base64: b64('x') }] }, 400, 'invalid_path'],
+        [{ name: 'qa-abs', description: 'd', files: [{ path: '/etc/passwd', content_base64: b64('x') }] }, 400, 'invalid_path'],
+        [{ name: 'qa-bs', description: 'd', files: [{ path: 'a\\b', content_base64: b64('x') }] }, 400, 'invalid_path'],
+        [{ name: 'qa-dup', description: 'd', files: [{ path: 'A.txt', content_base64: b64('1') }, { path: 'a.txt', content_base64: b64('2') }] }, 400, 'duplicate_path'],
+        [{ name: 'qa-mode', description: 'd', files: [{ path: 'a', content_base64: b64('1'), mode: 0o4755 }] }, 400, 'invalid_files'],
+      ];
+      for (const [body, status, code] of cases) {
+        const r = await create(body);
+        assert.deepStrictEqual([r.status, r.body.code], [status, code], `${body.name}: ${r.raw}`);
+      }
+    });
+
+    await test('PATCH /api/skills/:id — new revision on change, none on no-op or enable toggle, rename = one revision', async () => {
+      let r = await req('PATCH', `/api/skills/${hg.id}`, { body: '# Steps v2' });
+      assert.strictEqual(r.status, 200, r.raw);
+      assert.deepStrictEqual([r.body.skill.version, r.body.skill.body], [2, '# Steps v2']);
+      r = await req('PATCH', `/api/skills/${hg.id}`, { body: '# Steps v2' });
+      assert.strictEqual(r.body.skill.version, 2, 'same content → no revision');
+      r = await req('PATCH', `/api/skills/${hg.id}`, { enabled: false });
+      assert.deepStrictEqual([r.body.skill.enabled, r.body.skill.version], [false, 2]);
+      r = await req('PATCH', `/api/skills/${hg.id}`, { enabled: true, delete_files: ['scripts/gen.js'], upsert_files: [{ path: 'bin/gen.js', content_base64: b64('console.log(1)'), mode: 0o755 }], note: 'move script' });
+      assert.strictEqual(r.body.skill.version, 3);
+      assert.deepStrictEqual(r.body.skill.files.map(f => f.path), ['SKILL.md', 'assets/logo.png', 'bin/gen.js']);
+      // Same bytes under the logo path in every revision → one blob, not one per revision.
+      assert.strictEqual(db.prepare("SELECT COUNT(DISTINCT f.sha256) AS c FROM skill_files f JOIN skill_revisions r ON r.id=f.revision_id WHERE r.skill_id=? AND f.path='assets/logo.png'").get(hg.id).c, 1);
+      assert.strictEqual(db.prepare('SELECT COUNT(*) AS c FROM skill_revisions WHERE skill_id=?').get(hg.id).c, 3);
+      assert.strictEqual(db.prepare('SELECT note FROM skill_revisions WHERE skill_id=? AND version=3').get(hg.id).note, 'move script');
+    });
+
+    await test('PATCH /api/skills/:id — unknown field, unknown file, unknown skill', async () => {
+      assert.strictEqual((await req('PATCH', `/api/skills/${hg.id}`, { created_by_actor_id: 5 })).body.code, 'invalid_body');
+      assert.deepStrictEqual([(await req('PATCH', `/api/skills/${hg.id}`, { delete_files: ['nope.txt'] })).status], [404]);
+      assert.strictEqual((await req('PATCH', '/api/skills/999999999', { body: 'x' })).status, 404);
+      assert.strictEqual((await req('GET', '/api/skills/999999999')).status, 404);
+      assert.strictEqual((await req('PATCH', `/api/skills/${hg.id}`, { name: 'help' })).body.code, 'name_reserved');
+    });
+
+    await test('PUT / DELETE /api/skills/:id/files/* — one file per revision; traversal in the URL rejected', async () => {
+      let r = await rawReq('PUT', `/api/skills/${hg.id}/files/docs/read%20me.md?mode=420`, Buffer.from('hello'), 'application/octet-stream');
+      assert.strictEqual(r.status, 200, r.raw);
+      assert.ok(r.body.skill.files.some(f => f.path === 'docs/read me.md' && f.size === 5));
+      for (const bad of ['..%2Fescape.sh', 'a%5Cb', 'a/%00b', 'x%2F%2Fy']) {
+        r = await rawReq('PUT', `/api/skills/${hg.id}/files/${bad}`, Buffer.from('x'), 'application/octet-stream');
+        assert.deepStrictEqual([r.status, r.body.code], [400, 'invalid_path'], bad);
+      }
+      r = await rawReq('PUT', `/api/skills/${hg.id}/files/SKILL.md`, Buffer.from('x'), 'application/octet-stream');
+      assert.deepStrictEqual([r.status, r.body.code], [400, 'invalid_path']);
+      r = await req('DELETE', `/api/skills/${hg.id}/files/docs/read%20me.md`);
+      assert.strictEqual(r.status, 200);
+      assert.ok(!r.body.skill.files.some(f => f.path === 'docs/read me.md'));
+      assert.strictEqual(r.body.skill.version, 5);
+    });
+
+    await test('revisions + restore — restore is a new revision with the old content', async () => {
+      const list = await req('GET', `/api/skills/${hg.id}/revisions`);
+      assert.deepStrictEqual(list.body.revisions.map(v => v.version), [5, 4, 3, 2, 1]);
+      assert.strictEqual(list.body.revisions[0].current, true);
+      const r = await req('POST', `/api/skills/${hg.id}/revisions/1/restore`);
+      assert.strictEqual(r.status, 200, r.raw);
+      assert.deepStrictEqual([r.body.skill.version, r.body.skill.body], [6, '# Steps\nRun scripts/gen.js']);
+      assert.deepStrictEqual(r.body.skill.files.map(f => f.path), ['SKILL.md', 'assets/logo.png', 'scripts/gen.js']);
+      assert.strictEqual((await req('POST', `/api/skills/${hg.id}/revisions/99/restore`)).status, 404);
+    });
+
+    await test('import .md — dry_run previews without saving; save uses frontmatter name/description/hint', async () => {
+      const md = '---\nname: QA Md Import\ndescription: "Imports: md"\nargument-hint: <x>\nlicense: MIT\n---\n\nDo the thing';
+      const dry = await importFile('whatever.md', Buffer.from(md), '?dry_run=1');
+      assert.strictEqual(dry.status, 200, dry.raw);
+      assert.deepStrictEqual([dry.body.preview.name, dry.body.preview.description, dry.body.preview.argument_hint, dry.body.preview.name_taken], ['qa-md-import', 'Imports: md', '<x>', false]);
+      assert.ok(dry.body.preview.warnings.some(w => /changed to "qa-md-import"/.test(w)));
+      assert.strictEqual(db.prepare("SELECT COUNT(*) AS c FROM skills WHERE name='qa-md-import'").get().c, 0, 'dry run saves nothing');
+      const r = await importFile('whatever.md', Buffer.from(md));
+      assert.strictEqual(r.status, 201, r.raw);
+      assert.strictEqual(r.body.skill.body, 'Do the thing');
+      const stored = db.prepare('SELECT body FROM skill_revisions WHERE id=(SELECT current_revision_id FROM skills WHERE id=?)').get(r.body.skill.id).body;
+      assert.ok(stored.includes('\nlicense: MIT\n'), 'unknown frontmatter keys are kept');
+      const again = await importFile('whatever.md', Buffer.from(md), '?dry_run=1');
+      assert.strictEqual(again.body.preview.name_taken, true);
+      assert.deepStrictEqual([(await importFile('whatever.md', Buffer.from(md))).status], [409]);
+      const renamed = await importFile('whatever.md', Buffer.from(md), '', [{ name: 'name', data: 'qa-md-import-2' }]);
+      assert.deepStrictEqual([renamed.status, renamed.body.skill?.name], [201, 'qa-md-import-2']);
+    });
+
+    await test('import — no frontmatter: name from the file, description from the first line', async () => {
+      const r = await importFile('qa-plain.md', Buffer.from('# Plain skill title\n\nsteps'));
+      assert.strictEqual(r.status, 201, r.raw);
+      assert.deepStrictEqual([r.body.skill.name, r.body.skill.description], ['qa-plain', 'Plain skill title']);
+      const unclosed = await importFile('qa-unclosed.md', Buffer.from('---\nname: x\n# body'), '?dry_run=1');
+      assert.ok(unclosed.body.preview.warnings.some(w => /not closed/.test(w)));
+      const empty = await importFile('qa-empty.md', Buffer.from(''));
+      assert.deepStrictEqual([empty.status, empty.body.code], [400, 'description_required']);
+    });
+
+    await test('import .zip / .skill — SKILL.md at the root or in one top-level folder; exec bit kept; __MACOSX ignored', async () => {
+      const root = makeZip([{ name: 'SKILL.md', data: '---\nname: qa-zip-root\ndescription: zip root\n---\nb' }, { name: 'run.sh', data: 'echo', attr: 0o100755 }]);
+      let r = await importFile('x.zip', root);
+      assert.strictEqual(r.status, 201, r.raw);
+      assert.deepStrictEqual(r.body.skill.files.map(f => [f.path, f.mode]), [['SKILL.md', 0o644], ['run.sh', 0o755]]);
+      const folder = makeZip([{ name: 'my-skill/', data: '', attr: 0o040755 }, { name: 'my-skill/SKILL.md', data: '---\ndescription: from claude.ai\n---\nb' }, { name: 'my-skill/ref.md', data: 'r' }, { name: '__MACOSX/my-skill/._ref.md', data: 'junk' }, { name: 'my-skill/.DS_Store', data: 'junk' }]);
+      r = await importFile('qa-claude.skill', folder, '?dry_run=1');
+      assert.strictEqual(r.status, 200, r.raw);
+      assert.deepStrictEqual(r.body.preview.files.map(f => f.path), ['SKILL.md', 'ref.md']);
+      assert.strictEqual(r.body.preview.name, 'my-skill', 'name falls back to the folder');
+      assert.ok(r.body.preview.warnings.some(w => /Ignored 2 macOS/.test(w)));
+    });
+
+    await test('import .zip — hostile archives rejected with a specific code', async () => {
+      const md = { name: 'SKILL.md', data: '---\nname: qa-evil\ndescription: d\n---\n' };
+      const cases = {
+        'zip-slip': [makeZip([md, { name: '../../evil.sh', data: 'x' }]), 'invalid_path'],
+        absolute: [makeZip([md, { name: '/etc/cron.d/x', data: 'x' }]), 'invalid_path'],
+        backslash: [makeZip([md, { name: '..\\evil', data: 'x' }]), 'invalid_path'],
+        'drive letter': [makeZip([md, { name: 'C:/x', data: 'x' }]), 'invalid_path'],
+        'null byte': [makeZip([md, { name: 'a\u0000b', data: 'x' }]), 'invalid_path'],
+        'too deep': [makeZip([md, { name: 'a/b/c/d/e/f/g/h/i', data: 'x' }]), 'invalid_path'],
+        symlink: [makeZip([md, { name: 'link', data: '/etc/passwd', attr: 0o120777 }]), 'symlink'],
+        encrypted: [makeZip([md, { name: 'secret', data: 'x', flags: 1 }]), 'encrypted_entry'],
+        'duplicate case': [makeZip([md, { name: 'Readme.md', data: '1' }, { name: 'README.md', data: '2' }]), 'duplicate_path'],
+        'file vs folder': [makeZip([md, { name: 'a', data: '1' }, { name: 'a/b', data: '2' }]), 'duplicate_path'],
+        'ratio bomb': [makeZip([md, { name: 'bomb', data: Buffer.alloc(3 * 1024 * 1024) }]), 'too_large'],
+        'total over 50 MB': [makeZip([md, ...Array.from({ length: 52 }, (_, i) => ({ name: `f${i}`, data: Buffer.alloc(1000 * 1024) }))]), 'too_large'],
+        'too many files': [makeZip([md, ...Array.from({ length: 300 }, (_, i) => ({ name: `f${i}`, data: 'x' }))]), 'too_many_files'],
+        'size header lies': [makeZip([md, { name: 'liar', data: Buffer.alloc(4096, 1), declaredSize: 10 }]), 'invalid_archive'],
+        'no SKILL.md': [makeZip([{ name: 'a/x.md', data: 'x' }, { name: 'b/SKILL.md', data: 'x' }]), 'missing_skill_md'],
+        'not a zip': [Buffer.from('PK\u0003\u0004 garbage'), 'invalid_archive'],
+        'SKILL.md over 64 KB': [makeZip([{ name: 'SKILL.md', data: 'x'.repeat(65 * 1024) }]), 'too_large'],
+      };
+      for (const [label, [zip, code]] of Object.entries(cases)) {
+        const r = await importFile('evil.zip', zip);
+        assert.deepStrictEqual([r.status, r.body.code], [400, code], `${label}: ${r.raw}`);
+      }
+      assert.strictEqual(db.prepare("SELECT COUNT(*) AS c FROM skills WHERE name='qa-evil'").get().c, 0);
+    });
+
+    await test('import .tar.gz / .tar — valid bundle; links, devices and oversize rejected', async () => {
+      const ok = await makeTar([{ name: 'qa-tar/SKILL.md', data: '---\nname: qa-tar\ndescription: from tar\n---\nb' }, { name: 'qa-tar/bin/x', data: 'x', mode: 0o755 }]);
+      let r = await importFile('qa.tgz', ok);
+      assert.strictEqual(r.status, 201, r.raw);
+      assert.deepStrictEqual(r.body.skill.files.map(f => [f.path, f.mode]), [['SKILL.md', 0o644], ['bin/x', 0o755]]);
+      const md = { name: 'SKILL.md', data: '---\nname: qa-tar-evil\ndescription: d\n---\n' };
+      const cases = {
+        symlink: [await makeTar([md, { name: 'l', type: 'symlink', linkname: '/etc/passwd' }]), 'symlink'],
+        hardlink: [await makeTar([md, { name: 'h', type: 'link', linkname: 'SKILL.md' }]), 'symlink'],
+        fifo: [await makeTar([md, { name: 'p', type: 'fifo' }]), 'unsupported_format'],
+        'zip-slip': [await makeTar([md, { name: '../x', data: 'x' }]), 'invalid_path'],
+        'total over 50 MB': [await makeTar([md, ...Array.from({ length: 52 }, (_, i) => ({ name: `f${i}`, data: Buffer.alloc(1000 * 1024) }))]), 'too_large'],
+      };
+      for (const [label, [tar, code]] of Object.entries(cases)) {
+        r = await importFile('evil.tar.gz', tar);
+        assert.deepStrictEqual([r.status, r.body.code], [400, code], `${label}: ${r.raw}`);
+      }
+      r = await importFile('plain.tar', await makeTar([{ name: 'SKILL.md', data: '---\nname: qa-plain-tar\ndescription: d\n---\n' }], false), '?dry_run=1');
+      assert.deepStrictEqual([r.status, r.body.preview?.name], [200, 'qa-plain-tar']);
+    });
+
+    await test('import folder — files + paths parts; single top-level folder stripped; mismatched parts rejected', async () => {
+      let mp = multipart([
+        { name: 'files', filename: 'SKILL.md', data: '---\nname: qa-folder\ndescription: folder import\n---\nb' }, { name: 'paths', data: 'qa-folder/SKILL.md' },
+        { name: 'files', filename: 'a.txt', data: 'A' }, { name: 'paths', data: 'qa-folder/sub/a.txt' },
+      ]);
+      let r = await rawReq('POST', '/api/skills/import', mp.body, mp.type);
+      assert.strictEqual(r.status, 201, r.raw);
+      createdSkillIds.push(r.body.skill.id);
+      assert.deepStrictEqual(r.body.skill.files.map(f => f.path), ['SKILL.md', 'sub/a.txt']);
+      mp = multipart([{ name: 'files', filename: 'SKILL.md', data: 'x' }]);
+      r = await rawReq('POST', '/api/skills/import', mp.body, mp.type);
+      assert.deepStrictEqual([r.status, r.body.code], [400, 'invalid_path']);
+      mp = multipart([{ name: 'files', filename: 'SKILL.md', data: 'x' }, { name: 'paths', data: 'x/../../SKILL.md' }]);
+      r = await rawReq('POST', '/api/skills/import', mp.body, mp.type);
+      assert.deepStrictEqual([r.status, r.body.code], [400, 'invalid_path']);
+      r = await importFile('notes.docx', Buffer.from('nope'));
+      assert.deepStrictEqual([r.status, r.body.code], [400, 'unsupported_format']);
+      r = await rawReq('POST', '/api/skills/import', 'x', 'text/plain');
+      assert.deepStrictEqual([r.status, r.body.code], [415, 'unsupported_format']);
+    });
+
+    await test('import URL — only https://github.com; bad owner / ref / form rejected before any fetch', async () => {
+      for (const url of ['http://github.com/a/b', 'https://gitlab.com/a/b', 'https://github.com.evil.io/a/b', 'https://user@github.com/a/b', 'https://github.com:8443/a/b',
+        'https://github.com/a', 'https://github.com/a$/b', 'https://github.com/a/b/tree/..%2f..', 'https://github.com/a/b/tree/x..y', 'https://github.com/a/b/blob/main/README.md',
+        'https://github.com/a/b/tree/main/%2e%2e%2fx', 'https://github.com/a/b/tree/main/a%5Cb', 'https://127.0.0.1/a/b', 'file:///etc/passwd']) {
+        const r = await req('POST', '/api/skills/import?dry_run=1', { url });
+        assert.deepStrictEqual([r.status, r.body.code], [400, 'invalid_url'], url);
+      }
+    });
+
+    await test('GitHub fetch (stubbed) — codeload URL, folder extracted, redirects on the whitelist only, size cap streamed', async () => {
+      const tarball = await makeTar([
+        { name: 'repo-abc123/README.md', data: 'root readme' },
+        { name: 'repo-abc123/skills/pdf/SKILL.md', data: '---\nname: pdf\ndescription: PDF tools\n---\nb' },
+        { name: 'repo-abc123/skills/pdf/scripts/fill.py', data: 'print(1)' },
+        { name: 'repo-abc123/skills/other/link', type: 'symlink', linkname: '/etc/passwd' },
+      ]);
+      const once = (chunks) => ({ async *[Symbol.asyncIterator]() { for (const c of chunks) yield c; } });
+      const seen = [];
+      const respond = (status, { location, body = [], length } = {}) => ({
+        status, ok: status >= 200 && status < 300,
+        headers: { get: (h) => (h === 'location' ? location ?? null : h === 'content-length' ? (length != null ? String(length) : null) : null) },
+        body: once(body),
+      });
+      let fetchImpl = async (url, opts) => { seen.push([url, opts.redirect]); return respond(200, { body: [tarball] }); };
+      const got = await B.readGithub('https://github.com/acme/repo/tree/main/skills/pdf', fetchImpl);
+      assert.deepStrictEqual(seen, [['https://codeload.github.com/acme/repo/tar.gz/main', 'manual']]);
+      assert.deepStrictEqual(got.files.map(f => f.path), ['scripts/fill.py'], 'only the folder, the symlink elsewhere is skipped');
+      assert.strictEqual(got.folderName, 'pdf');
+      seen.length = 0;
+      await B.readGithub('https://github.com/acme/repo', async (url) => { seen.push(url); return respond(200, { body: [await makeTar([{ name: 'r-1/SKILL.md', data: 'x' }])] }); });
+      assert.deepStrictEqual(seen, ['https://codeload.github.com/acme/repo/tar.gz/HEAD'], 'no ref → default branch');
+      const blobUrl = await B.readGithub('https://github.com/acme/repo/blob/main/skills/pdf/SKILL.md', async () => respond(200, { body: [tarball] }));
+      assert.strictEqual(blobUrl.folderName, 'pdf');
+
+      const err = async (p) => { try { await p; return null; } catch (e) { return [e.code, e.message]; } };
+      fetchImpl = async () => respond(302, { location: 'https://evil.example/x.tgz' });
+      assert.strictEqual((await err(B.readGithub('https://github.com/a/b', fetchImpl)))[0], 'fetch_failed');
+      fetchImpl = async () => respond(302, { location: 'http://codeload.github.com/a/b/tar.gz/HEAD' });
+      assert.match((await err(B.readGithub('https://github.com/a/b', fetchImpl)))[1], /not allowed/, 'https only on every hop');
+      let hops = 0;
+      fetchImpl = async () => { hops++; return respond(302, { location: 'https://codeload.github.com/a/b/tar.gz/HEAD' }); };
+      assert.match((await err(B.readGithub('https://github.com/a/b', fetchImpl)))[1], /Too many redirects/);
+      assert.strictEqual(hops, 4, 'first request + 3 redirects');
+      let followed = [];
+      fetchImpl = async (url) => { followed.push(url); return followed.length === 1 ? respond(301, { location: '/a/b/tar.gz/main' }) : respond(200, { body: [tarball] }); };
+      await B.readGithub('https://github.com/a/b/tree/main/skills/pdf', fetchImpl);
+      assert.strictEqual(followed[1], 'https://codeload.github.com/a/b/tar.gz/main', 'relative redirect resolved on the same host');
+      fetchImpl = async () => respond(200, { length: 60 * 1024 * 1024 });
+      assert.strictEqual((await err(B.readGithub('https://github.com/a/b', fetchImpl)))[0], 'too_large', 'declared size');
+      const chunk = Buffer.alloc(1024 * 1024);
+      fetchImpl = async () => respond(200, { body: Array.from({ length: 51 }, () => chunk) });
+      assert.strictEqual((await err(B.readGithub('https://github.com/a/b', fetchImpl)))[0], 'too_large', 'streamed size, no content-length');
+      fetchImpl = async () => respond(404);
+      assert.deepStrictEqual((await err(B.readGithub('https://github.com/a/b', fetchImpl)))[0], 'fetch_failed');
+      fetchImpl = async () => { throw new Error('ECONNRESET'); };
+      assert.match((await err(B.readGithub('https://github.com/a/b', fetchImpl)))[1], /ECONNRESET/);
+      fetchImpl = async () => respond(200, { body: [tarball] });
+      assert.strictEqual((await err(B.readGithub('https://github.com/a/b/tree/main/skills/missing', fetchImpl)))[0], 'missing_skill_md');
+    });
+
+    await test('createSkills import URL — source_url kept on the revision', async () => {
+      const d = memDb();
+      const dir = tmpDir('stoa-test-skills-');
+      try {
+        const tarball = await makeTar([{ name: 'r-1/SKILL.md', data: '---\nname: from-gh\ndescription: gh\n---\nb' }]);
+        const S = createSkills({ db: d, blobsDir: dir, fetchImpl: async () => ({ status: 200, ok: true, headers: { get: () => null }, body: [tarball] }) });
+        const r = await S.importBundle({ kind: 'url', url: 'https://github.com/acme/r' });
+        assert.strictEqual(r.status, 201, JSON.stringify(r.body));
+        assert.strictEqual(d.prepare('SELECT source_url FROM skill_revisions').get().source_url, 'https://github.com/acme/r');
+      } finally { d.close(); fsS.rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    await test('createSkills ownership — agent edits / deletes its own (and its sub-agents\') skills only; others 404', async () => {
+      const d = memDb();
+      const dir = tmpDir('stoa-test-skills-');
+      try {
+        const S = createSkills({ db: d, blobsDir: dir });
+        const A = { actorId: 901, subAgentId: null }, Bc = { actorId: 902, subAgentId: null }, SA = { actorId: 901, subAgentId: 951 }, SA2 = { actorId: 901, subAgentId: 952 };
+        const owner = S.create({ name: 'owner-skill', description: 'd' }).body.skill;
+        const mine = S.create({ name: 'a-skill', description: 'd' }, A).body.skill;
+        const subs = S.create({ name: 'sub-skill', description: 'd' }, SA).body.skill;
+        assert.deepStrictEqual([mine.created_by_actor_id, mine.creator_name, subs.created_by_sub_agent_id, subs.creator_name], [901, 'agent-a', 951, 'sub-a']);
+        assert.strictEqual(S.update(owner.id, { body: 'x' }, A).status, 404, 'agent cannot edit the owner\'s skill');
+        assert.strictEqual(S.update(mine.id, { body: 'x' }, Bc).status, 404, 'agent B cannot edit agent A\'s skill');
+        assert.strictEqual(S.remove(mine.id, Bc).status, 404);
+        assert.strictEqual(S.update(mine.id, { body: 'x' }, SA).status, 404, 'a sub-agent cannot edit its parent\'s own skill');
+        assert.strictEqual(S.update(subs.id, { body: 'x' }, SA2).status, 404, 'nor a sibling sub-agent\'s');
+        assert.strictEqual(S.update(subs.id, { body: 'by parent' }, A).status, 200, 'the parent manages its sub-agent\'s skill');
+        assert.strictEqual(S.restore(subs.id, 1, Bc).status, 404);
+        assert.strictEqual(S.update(mine.id, { body: 'x' }, A).status, 200);
+        assert.strictEqual(S.update(mine.id, { body: 'y' }, null).status, 200, 'owner can edit everything');
+        assert.strictEqual(d.prepare('SELECT author_actor_id FROM skill_revisions WHERE skill_id=? AND version=3').get(mine.id).author_actor_id, null);
+        assert.strictEqual(S.get(owner.id).status, 200, 'reads stay open');
+        assert.strictEqual(S.remove(subs.id, SA).status, 200);
+        assert.strictEqual(S.remove(owner.id, null).status, 200);
+      } finally { d.close(); fsS.rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    await test('createSkills quota, revision retention and blob GC', async () => {
+      const d = memDb();
+      const dir = tmpDir('stoa-test-skills-');
+      try {
+        const S = createSkills({ db: d, blobsDir: dir, limits: { perActor: 2, total: 3, revisionsKept: 3 } });
+        const A = { actorId: 901, subAgentId: null };
+        assert.strictEqual(S.create({ name: 'q-one', description: 'd' }, A).status, 201);
+        assert.strictEqual(S.create({ name: 'q-two', description: 'd' }, A).status, 201);
+        assert.deepStrictEqual([S.create({ name: 'q-three', description: 'd' }, A).body.code], ['quota_exceeded'], 'per agent');
+        assert.strictEqual(S.create({ name: 'q-owner', description: 'd' }).status, 201, 'the owner has no quota');
+        assert.strictEqual(S.create({ name: 'q-b', description: 'd' }, { actorId: 902, subAgentId: null }).body.code, 'quota_exceeded', 'library total');
+        const shared = b64('shared-bytes');
+        const keep = S.create({ name: 'q-keep', description: 'd', files: [{ path: 'x.bin', content_base64: shared }] }).body.skill;
+        const gone = S.create({ name: 'q-gone', description: 'd', files: [{ path: 'y.bin', content_base64: shared }, { path: 'only.bin', content_base64: b64('only-here') }] }).body.skill;
+        for (let i = 0; i < 4; i++) S.update(keep.id, { body: `v${i}` });
+        assert.deepStrictEqual(d.prepare('SELECT version FROM skill_revisions WHERE skill_id=? ORDER BY version').all(keep.id).map(r => r.version), [3, 4, 5], 'only the newest 3 revisions stay');
+        const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
+        const blobFile = (s) => path.join(dir, sha(s).slice(0, 2), sha(s));
+        fsS.writeFileSync(path.join(dir, 'aa-not-a-shard'), 'x');
+        assert.strictEqual(S.gc(), 2, 'the SKILL.md blobs of the pruned revisions');
+        S.remove(gone.id);
+        assert.ok(S.gc() >= 2);
+        assert.ok(fsS.existsSync(blobFile('shared-bytes')), 'a blob another skill references stays');
+        assert.ok(!fsS.existsSync(blobFile('only-here')), 'an unreferenced blob goes');
+        assert.ok(fsS.existsSync(path.join(dir, 'aa-not-a-shard')), 'GC only touches its own shard folders');
+      } finally { d.close(); fsS.rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    await test('frontmatter round trip — block scalars, quoting, unknown keys kept raw', async () => {
+      const fm = B.parseFrontmatter('\uFEFF---\r\nname: x\r\ndescription: |\r\n  line one\r\n  line two\r\nmetadata:\r\n  a: b\r\nallowed-tools: Read, Grep # comment\r\n---\r\nbody\r\n');
+      assert.deepStrictEqual([fm.fields.description, fm.fields['allowed-tools'], fm.body], ['line one\nline two', 'Read, Grep', 'body\n']);
+      const md = B.buildSkillMd({ name: 'x', description: 'yes', argumentHint: '#tag: value', extras: fm.extras, body: 'b' });
+      const back = B.parseFrontmatter(md);
+      assert.deepStrictEqual([back.fields.description, back.fields['argument-hint'], back.fields.metadata, back.body], ['yes', '#tag: value', null, 'b']);
+      assert.ok(md.includes('description: "yes"'), 'a YAML boolean word is quoted');
+      assert.ok(md.includes('metadata:\n  a: b\nallowed-tools: Read, Grep # comment'));
+    });
+
+    // ── Agents: scope, manifest, blobs, routing ──
+    const connectAgent = async (name, features) => {
+      const token = await mintInstallToken(name);
+      const reg = await req('POST', '/api/agent/register', { token });
+      assert.strictEqual(reg.status, 200, reg.raw);
+      const a = { actorId: reg.body.actor_id, secret: reg.body.secret };
+      orphanActorIds.push(a.actorId);
+      a.ws = await openWsConnection(`ws://${HOST}:${PORT}`);
+      const ready = waitForWsMessage(a.ws, m => m.type === 'agent_ready');
+      a.ws.send(JSON.stringify({ type: 'agent_connect', actor_id: a.actorId, secret: a.secret, ...(features ? { features } : {}) }));
+      await ready;
+      return a;
+    };
+
+    await test('agent scope — manifest / blobs / import allowed; list, edit, delete denied', async () => {
+      agent = await connectAgent('__test-skill-agent', ['skills']);
+      await asAgent(agent, async (h) => {
+        assert.strictEqual((await req('GET', '/api/skills', null, h)).status, 403);
+        assert.strictEqual((await req('GET', `/api/skills/${hg.id}`, null, h)).status, 403);
+        assert.strictEqual((await req('PATCH', `/api/skills/${hg.id}`, { body: 'pwn' }, h)).status, 403);
+        assert.strictEqual((await req('DELETE', `/api/skills/${hg.id}`, null, h)).status, 403);
+        assert.strictEqual((await req('POST', '/api/skills', { name: 'qa-agent-direct', description: 'd' }, h)).status, 403);
+        assert.strictEqual((await rawReq('PUT', `/api/skills/${hg.id}/files/x`, Buffer.from('x'), 'application/octet-stream', h)).status, 403);
+        assert.strictEqual((await getBuf('/api/skill-blobs/not-a-sha', h, false)).status, 403);
+        const man = await req('GET', '/api/skills/qa-header-gen/manifest', null, h);
+        assert.strictEqual(man.status, 200, man.raw);
+        assert.deepStrictEqual(Object.keys(man.body).sort(), ['files', 'id', 'manifest_hash', 'name', 'version']);
+        assert.strictEqual(man.body.manifest_hash, B.manifestHash(man.body.files), 'agent can verify the manifest');
+        const script = man.body.files.find(f => f.path === 'scripts/gen.js');
+        const blob = await getBuf(`/api/skill-blobs/${script.sha256}`, h, false);
+        assert.deepStrictEqual([blob.status, blob.body.toString()], [200, 'console.log(1)']);
+        assert.deepStrictEqual([blob.headers['content-type'], blob.headers['x-content-type-options'], blob.headers['content-disposition']], ['application/octet-stream', 'nosniff', 'attachment']);
+        const mp = multipart([{ name: 'file', filename: 'SKILL.md', data: '---\nname: qa-agent-made\ndescription: by an agent\n---\nb' }]);
+        const imp = await rawReq('POST', '/api/skills/import', mp.body, mp.type, h);
+        assert.strictEqual(imp.status, 201, imp.raw);
+        createdSkillIds.push(imp.body.skill.id);
+        assert.deepStrictEqual([imp.body.skill.created_by_actor_id, imp.body.skill.creator_name], [agent.actorId, '__test-skill-agent']);
+      });
+    });
+
+    await test('agent blobs — only the current revision of an enabled skill; the owner reads any', async () => {
+      const oldMd = db.prepare("SELECT f.sha256 FROM skill_files f JOIN skill_revisions r ON r.id=f.revision_id WHERE r.skill_id=? AND r.version=2 AND f.path='SKILL.md'").get(hg.id).sha256;
+      const cur = (await req('GET', `/api/skills/${hg.id}`)).body.skill.files.find(f => f.path === 'SKILL.md').sha256;
+      await asAgent(agent, async (h) => {
+        assert.strictEqual((await getBuf(`/api/skill-blobs/${oldMd}`, h, false)).status, 404, 'old revision');
+        assert.strictEqual((await getBuf(`/api/skill-blobs/${'0'.repeat(64)}`, h, false)).status, 404, 'unknown sha');
+      });
+      assert.strictEqual((await getBuf(`/api/skill-blobs/${oldMd}`)).status, 200, 'owner');
+      await req('PATCH', `/api/skills/${hg.id}`, { enabled: false });
+      await asAgent(agent, async (h) => {
+        assert.strictEqual((await getBuf(`/api/skill-blobs/${cur}`, h, false)).status, 404, 'disabled skill');
+        assert.strictEqual((await req('GET', '/api/skills/qa-header-gen/manifest', null, h)).status, 404, 'disabled manifest');
+      });
+      assert.strictEqual((await req('GET', '/api/skills/qa-header-gen/manifest')).status, 200, 'owner sees a disabled manifest');
+      await req('PATCH', `/api/skills/${hg.id}`, { enabled: true });
+    });
+
+    await test('skills_changed — browser clients told on create / update / delete', async () => {
+      human = await openWsConnection(`ws://${HOST}:${PORT}`, cookieHeader());
+      human.send(JSON.stringify({ type: 'subscribe_global' }));
+      await new Promise(r => setTimeout(r, 100));
+      let ev = waitForWsMessage(human, m => m.type === 'skills_changed');
+      const r = await create({ name: 'qa-ws', description: 'd' });
+      await ev;
+      ev = waitForWsMessage(human, m => m.type === 'skills_changed');
+      await req('PATCH', `/api/skills/${r.body.skill.id}`, { enabled: false });
+      await ev;
+      ev = waitForWsMessage(human, m => m.type === 'skills_changed');
+      await req('DELETE', `/api/skills/${r.body.skill.id}`);
+      await ev;
+      assert.strictEqual((await req('GET', `/api/skills/${r.body.skill.id}`)).status, 404);
+    });
+
+    const sendInRoom = async (content, extra = {}) => {
+      human.send(JSON.stringify({ type: 'join_room', room_id: agentRoomId }));
+      await waitForWsMessage(human, m => m.type === 'history');
+      human.send(JSON.stringify({ type: 'send_message', room_id: agentRoomId, content, ...extra }));
+    };
+    const finish = (a, m, content = 'done') => a.ws.send(JSON.stringify({ type: 'agent_complete', room_id: m.room_id, message_id: m.message_id, content }));
+
+    await test('/skill routing — message stored as-is; trigger carries refs; run row + live event carry skill_refs', async () => {
+      const wd = await req('POST', `/api/actors/${agent.actorId}/workdirs`, { path: '/tmp/stoa-test-skill-route', label: 'test' });
+      const room = await req('POST', '/api/rooms', { title: '__skill-route-room__', workdir_id: wd.body.id, participant_ids: [agent.actorId] });
+      assert.strictEqual(room.status, 200, room.raw);
+      agentRoomId = room.body.id;
+      testRoomIds.push(agentRoomId);
+      const trig = waitForWsMessage(agent.ws, m => m.type === 'agent_trigger', 5000);
+      const live = waitForWsMessage(human, m => m.type === 'message_state' && m.state === 'streaming', 5000);
+      await sendInRoom('/qa-header-gen make one for /nope and /qa-tar too');
+      const m = await trig;
+      const hgNow = (await req('GET', `/api/skills/${hg.id}`)).body.skill;
+      const tarSkill = db.prepare("SELECT s.id, r.version, r.manifest_hash FROM skills s JOIN skill_revisions r ON r.id=s.current_revision_id WHERE s.name='qa-tar'").get();
+      assert.deepStrictEqual(m.skills, [
+        { id: hg.id, name: 'qa-header-gen', version: hgNow.version, manifest_hash: db.prepare('SELECT manifest_hash FROM skill_revisions WHERE id=(SELECT current_revision_id FROM skills WHERE id=?)').get(hg.id).manifest_hash },
+        { id: tarSkill.id, name: 'qa-tar', version: tarSkill.version, manifest_hash: tarSkill.manifest_hash },
+      ]);
+      assert.ok(!m.prompt.includes('<stoa-skill'), 'a client with the cache builds the preamble itself');
+      assert.ok(m.prompt.includes('/qa-header-gen make one'), 'the message itself is in the history');
+      assert.deepStrictEqual(JSON.parse(db.prepare('SELECT skill_refs FROM messages WHERE id=?').get(m.message_id).skill_refs), [
+        { id: hg.id, name: 'qa-header-gen', version: hgNow.version }, { id: tarSkill.id, name: 'qa-tar', version: tarSkill.version }]);
+      const ev = await live;
+      assert.strictEqual(ev.message_id, m.message_id);
+      assert.ok(JSON.parse(ev.skill_refs).length === 2, 'live bubble gets the refs');
+      const human1 = db.prepare("SELECT skill_refs FROM messages WHERE room_id=? AND content LIKE '/qa-header-gen make one%'").get(agentRoomId);
+      assert.strictEqual(human1.skill_refs, null);
+      finish(agent, m);
+    });
+
+    await test('/skill routing — disabled / unknown / mid-word tokens ignored; at most 3 skills', async () => {
+      await req('PATCH', `/api/skills/${hg.id}`, { enabled: false });
+      let trig = waitForWsMessage(agent.ws, m => m.type === 'agent_trigger', 5000);
+      await sendInRoom('/qa-header-gen path/qa-tar a/qa-zip-root http://x/qa-plain');
+      let m = await trig;
+      assert.strictEqual(m.skills, undefined);
+      assert.strictEqual(db.prepare('SELECT skill_refs FROM messages WHERE id=?').get(m.message_id).skill_refs, null);
+      finish(agent, m);
+      await req('PATCH', `/api/skills/${hg.id}`, { enabled: true });
+      trig = waitForWsMessage(agent.ws, m => m.type === 'agent_trigger', 5000);
+      await sendInRoom('/qa-plain /qa-tar /qa-zip-root /qa-folder /qa-header-gen');
+      m = await trig;
+      assert.deepStrictEqual(m.skills.map(s => s.name), ['qa-plain', 'qa-tar', 'qa-zip-root']);
+      finish(agent, m);
+    });
+
+    await test('/skill routing — inside a thread', async () => {
+      const root = db.prepare("SELECT id FROM messages WHERE room_id=? AND thread_id IS NULL ORDER BY id LIMIT 1").get(agentRoomId).id;
+      const trig = waitForWsMessage(agent.ws, m => m.type === 'agent_trigger' && m.thread_id === root, 5000);
+      await sendInRoom('/qa-tar in a thread', { thread_id: root });
+      const m = await trig;
+      assert.deepStrictEqual(m.skills.map(s => s.name), ['qa-tar']);
+      finish(agent, m);
+    });
+
+    await test('/skill routing — sub-agent brief gets the skill; the parent wake prompt quoting it does not', async () => {
+      const s = await req('POST', `/api/actors/${agent.actorId}/sub-agents`, { label: 'skillsub', tier: 'quick' });
+      assert.strictEqual(s.status, 201, s.raw);
+      saRow = s.body;
+      await req('POST', `/api/rooms/${agentRoomId}/sub-agents`, { sub_agent_id: saRow.id });
+      const sub = waitForWsMessage(agent.ws, m => m.type === 'agent_trigger' && m.sub_agent?.id === saRow.id, 5000);
+      const r = await req('POST', `/api/rooms/${agentRoomId}/sub-agent-trigger`, { sub_agent_id: saRow.id, task: 'please run /qa-zip-root on the repo' },
+        { 'x-agent-id': String(agent.actorId), 'x-agent-secret': agent.secret });
+      assert.strictEqual(r.status, 200, r.raw);
+      const m = await sub;
+      assert.deepStrictEqual(m.skills.map(x => x.name), ['qa-zip-root']);
+      const wake = waitForWsMessage(agent.ws, w => w.type === 'agent_trigger' && !w.sub_agent && w.prompt.includes('[sub-agent result]'), 5000);
+      finish(agent, m, 'ran /qa-zip-root and /qa-tar fine');
+      const w = await wake;
+      assert.strictEqual(w.skills, undefined, 'a wake prompt never resolves skills');
+      finish(agent, w);
+    });
+
+    await test('/skill routing — old client (no skills feature): SKILL.md inlined, files notice, no refs', async () => {
+      oldAgent = await connectAgent('__test-skill-old-agent');
+      const wd = await req('POST', `/api/actors/${oldAgent.actorId}/workdirs`, { path: '/tmp/stoa-test-skill-old', label: 'test' });
+      const room = await req('POST', '/api/rooms', { title: '__skill-old-room__', workdir_id: wd.body.id, participant_ids: [oldAgent.actorId] });
+      testRoomIds.push(room.body.id);
+      const trig = waitForWsMessage(oldAgent.ws, m => m.type === 'agent_trigger', 5000);
+      human.send(JSON.stringify({ type: 'join_room', room_id: room.body.id }));
+      await waitForWsMessage(human, m => m.type === 'history');
+      human.send(JSON.stringify({ type: 'send_message', room_id: room.body.id, content: '/qa-header-gen go' }));
+      const m = await trig;
+      assert.strictEqual(m.skills, undefined);
+      assert.ok(m.prompt.startsWith('<stoa-skill name="qa-header-gen" version="'), m.prompt.slice(0, 80));
+      assert.ok(m.prompt.includes('Run scripts/gen.js'), 'body inline');
+      assert.ok(m.prompt.includes('supporting files of qa-header-gen are not available'), 'tells the agent the files are missing');
+      finish(oldAgent, m);
+    });
+
+    await test('agent_scan_result — an old client still reporting skills only updates workdirs', async () => {
+      oldAgent.ws.send(JSON.stringify({ type: 'agent_scan_result', workdirs: [{ path: '/tmp/stoa-test-skill-old', skills: [{ name: 'x' }] }, { path: '/tmp/stoa-test-skill-scan2' }], globalSkills: [{ name: 'legacy' }] }));
+      await waitUntil(() => db.prepare('SELECT 1 FROM agent_workdirs WHERE actor_id=? AND path=?').get(oldAgent.actorId, '/tmp/stoa-test-skill-scan2'), 5000);
+    });
+
+    // ── stoa.js agent cache ──
+    const stoaCache = async (fn) => {
+      const stoa = require('./stoa.js');
+      const dir = tmpDir('stoa-test-skill-cache-');
+      try { return await fn(stoa, dir); } finally { stoa.__resetDeps(); fsS.rmSync(dir, { recursive: true, force: true }); }
+    };
+    // A fake server: name → { version, files: {path: {data, mode}} }; counts calls per URL kind.
+    const fakeServer = (skillsMap, calls, { corrupt = null, down = false } = {}) => async (url) => {
+      if (down) throw new Error('connect ECONNREFUSED');
+      const u = new URL(url);
+      const man = u.pathname.match(/^\/api\/skills\/([a-z0-9-]+)\/manifest$/);
+      const blob = u.pathname.match(/^\/api\/skill-blobs\/([0-9a-f]{64})$/);
+      const filesOf = (s) => Object.entries(s.files).map(([p, f]) => ({ path: p, sha256: crypto.createHash('sha256').update(f.data).digest('hex'), size: Buffer.byteLength(f.data), mode: f.mode ?? 420 }));
+      if (man) {
+        calls.manifest++;
+        const s = skillsMap[man[1]];
+        if (!s) return { ok: false, status: 404, json: async () => ({}) };
+        const files = filesOf(s);
+        return { ok: true, status: 200, json: async () => ({ id: 1, name: man[1], version: s.version, manifest_hash: s.badHash || B.manifestHash(files), files: s.manifestFiles || files }) };
+      }
+      if (blob) {
+        calls.blob++;
+        for (const s of Object.values(skillsMap)) for (const [p, f] of Object.entries(s.files)) {
+          if (crypto.createHash('sha256').update(f.data).digest('hex') === blob[1]) return { ok: true, status: 200, arrayBuffer: async () => Buffer.from(corrupt === p ? 'tampered' : f.data) };
+        }
+        return { ok: false, status: 404 };
+      }
+      throw new Error(`unexpected url ${url}`);
+    };
+    const hashOf = (s) => B.manifestHash(Object.entries(s.files).map(([p, f]) => ({ path: p, sha256: crypto.createHash('sha256').update(f.data).digest('hex'), size: Buffer.byteLength(f.data), mode: f.mode ?? 420 })));
+
+    await test('stoa.js ensureSkill — first use downloads + verifies; second use hits the cache with zero requests', async () => {
+      await stoaCache(async (stoa, dir) => {
+        const calls = { manifest: 0, blob: 0 };
+        const sk = { 'qa-cache': { version: 3, files: { 'SKILL.md': { data: '---\nname: qa-cache\n---\nCACHE_BODY' }, 'bin/run.sh': { data: 'echo hi', mode: 493 } } } };
+        stoa.__setDeps({ fetch: fakeServer(sk, calls), skillsDir: dir });
+        const ref = { name: 'qa-cache', version: 3, manifest_hash: hashOf(sk['qa-cache']) };
+        const r1 = await stoa.ensureSkill(ref);
+        assert.strictEqual(r1.error, undefined, r1.error);
+        assert.strictEqual(r1.dir, path.join(dir, 'qa-cache', ref.manifest_hash));
+        assert.strictEqual(fsS.readFileSync(path.join(r1.dir, 'bin/run.sh'), 'utf8'), 'echo hi');
+        assert.strictEqual(fsS.statSync(path.join(r1.dir, 'bin/run.sh')).mode & 0o777, 0o755);
+        assert.deepStrictEqual(calls, { manifest: 1, blob: 2 });
+        const r2 = await stoa.ensureSkill(ref);
+        assert.deepStrictEqual([r2.dir, calls.manifest, calls.blob], [r1.dir, 1, 2], 'cache hit → no network');
+        const prompt = await stoa.prependSkills('USER PROMPT', [ref]);
+        assert.ok(prompt.startsWith(`<stoa-skill name="qa-cache" version="3" dir="${r1.dir}">`));
+        assert.ok(prompt.includes('CACHE_BODY') && prompt.endsWith('USER PROMPT'));
+      });
+    });
+
+    await test('stoa.js ensureSkill — tampered blob / bad manifest / traversal path rejected, nothing cached', async () => {
+      await stoaCache(async (stoa, dir) => {
+        const calls = { manifest: 0, blob: 0 };
+        const files = { 'SKILL.md': { data: 'body' }, 'x.txt': { data: 'real' } };
+        stoa.__setDeps({ fetch: fakeServer({ 'qa-bad': { version: 1, files } }, calls, { corrupt: 'x.txt' }), skillsDir: dir });
+        let r = await stoa.ensureSkill({ name: 'qa-bad', version: 1, manifest_hash: 'f'.repeat(64) });
+        assert.match(r.error || '', /does not match its hash/);
+        assert.deepStrictEqual(fsS.readdirSync(path.join(dir, 'qa-bad')), [], 'no partial copy left');
+        stoa.__setDeps({ fetch: fakeServer({ 'qa-bad': { version: 1, files, badHash: 'a'.repeat(64) } }, calls) });
+        r = await stoa.ensureSkill({ name: 'qa-bad', version: 1 });
+        assert.match(r.error || '', /manifest does not match/);
+        const evil = { 'SKILL.md': { data: 'b' } };
+        const evilFiles = [{ path: '../../escape', sha256: 'a'.repeat(64), size: 1, mode: 420 }];
+        stoa.__setDeps({ fetch: fakeServer({ 'qa-bad': { version: 1, files: evil, manifestFiles: evilFiles, badHash: B.manifestHash(evilFiles) } }, calls) });
+        r = await stoa.ensureSkill({ name: 'qa-bad', version: 1 });
+        assert.match(r.error || '', /invalid manifest entry/);
+        assert.ok(!fsS.existsSync(path.join(dir, '..', 'escape')));
+        const pre = await stoa.prependSkills('P', [{ name: 'qa-bad', version: 1 }]);
+        assert.ok(pre.includes('error="download failed"') && pre.includes('could not be loaded'), 'the agent is told, not left guessing');
+        assert.strictEqual((await stoa.ensureSkill({ name: '../etc', version: 1 })).error, 'invalid skill name');
+      });
+    });
+
+    await test('stoa.js ensureSkill — parallel runs share one download; offline uses the cached copy; a gone skill never runs from cache', async () => {
+      await stoaCache(async (stoa, dir) => {
+        const calls = { manifest: 0, blob: 0 };
+        const v1 = { version: 1, files: { 'SKILL.md': { data: 'V1' } } };
+        stoa.__setDeps({ fetch: fakeServer({ 'qa-par': v1 }, calls), skillsDir: dir });
+        const ref1 = { name: 'qa-par', version: 1, manifest_hash: hashOf(v1) };
+        const [a, b] = await Promise.all([stoa.ensureSkill(ref1), stoa.ensureSkill(ref1)]);
+        assert.deepStrictEqual([a.dir, calls.manifest, calls.blob], [b.dir, 1, 1], 'one download for two runs');
+        const v2 = { version: 2, files: { 'SKILL.md': { data: 'V2' } } };
+        stoa.__setDeps({ fetch: fakeServer({}, calls, { down: true }) });
+        const off = await stoa.ensureSkill({ name: 'qa-par', version: 2, manifest_hash: hashOf(v2) });
+        assert.deepStrictEqual([off.body, off.version, !!off.stale], ['V1', 1, true]);
+        assert.ok((await stoa.prependSkills('P', [{ name: 'qa-par', version: 2, manifest_hash: hashOf(v2) }])).includes('could not be reached'));
+        stoa.__setDeps({ fetch: fakeServer({}, calls) });
+        const gone = await stoa.ensureSkill({ name: 'qa-par', version: 2, manifest_hash: hashOf(v2) });
+        assert.ok(gone.error && !gone.body, 'deleted/disabled on the server → not run from the cache');
+        stoa.__setDeps({ fetch: fakeServer({ 'qa-par': v2 }, calls) });
+        const fresh = await stoa.ensureSkill({ name: 'qa-par', version: 2, manifest_hash: hashOf(v2) });
+        assert.strictEqual(fresh.body, 'V2');
+        const v3 = { version: 3, files: { 'SKILL.md': { data: 'V3' } } };
+        stoa.__setDeps({ fetch: fakeServer({ 'qa-par': v3 }, calls) });
+        await new Promise(r => setTimeout(r, 5));
+        await stoa.ensureSkill({ name: 'qa-par', version: 3, manifest_hash: hashOf(v3) });
+        assert.deepStrictEqual(fsS.readdirSync(path.join(dir, 'qa-par')).sort(), [hashOf(v2), hashOf(v3)].sort(), 'two newest copies kept');
+      });
+    });
+
+    await test('skills teardown', async () => {
+      if (human) human.close();
+      for (const a of [agent, oldAgent]) if (a?.ws && a.ws.readyState !== 3) a.ws.close();
+      for (const id of createdSkillIds) await req('DELETE', `/api/skills/${id}`);
+      if (hg) await req('DELETE', `/api/skills/${hg.id}`);
+      if (saRow) await req('DELETE', `/api/sub-agents/${saRow.id}`);
+      assert.strictEqual(db.prepare("SELECT COUNT(*) AS c FROM skills WHERE name LIKE 'qa-%'").get().c, 0);
     });
   }
 

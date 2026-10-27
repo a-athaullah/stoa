@@ -179,7 +179,7 @@ All WS events carry `thread_id` (null for root). Thread-specific events routed t
 
 ### Special Tables
 - **agent_workdirs** - per-agent project directories
-- **agent_skills** - custom commands per agent/workdir
+- **skills / skill_revisions / skill_files** - global skills library (lib/skills.js); `/name` in a prompt → trigger `skills` refs, agent caches files in `~/.stoa/skills`
 - **automations** - webhook → room message triggers
 - **automation_connections** - Slack/Discord credentials
 

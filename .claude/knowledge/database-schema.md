@@ -167,23 +167,13 @@ CREATE TABLE agent_workdirs (
 
 ---
 
-### agent_skills
-Custom commands per agent/workdir.
+### skills / skill_revisions / skill_files
+Skills library (migrations/20261027-skills-library.sql; replaced `agent_skills`, which was dropped).
 
-```sql
-CREATE TABLE agent_skills (
-  id INTEGER PRIMARY KEY,
-  actor_id INTEGER REFERENCES actors(id) ON DELETE CASCADE,
-  workdir_id INTEGER REFERENCES agent_workdirs(id),
-  name TEXT NOT NULL,
-  description TEXT,
-  scope TEXT CHECK(scope IN ('global','project','local'))
-);
-```
-
-**Key points:**
-- Skills = user-defined commands (like slash commands)
-- Scope: global (all workdirs), project (one workdir), local (?)
+- `skills` — one row per skill: `name` (slug `^[a-z][a-z0-9-]{1,47}$`, UNIQUE), `description`, `argument_hint`, `enabled`, `current_revision_id`, `created_by_actor_id` / `created_by_sub_agent_id` (NULL = owner; ON DELETE SET NULL).
+- `skill_revisions` — every edit is a new `version` (UNIQUE per skill); `body` = full SKILL.md, `manifest_hash` = sha256 of the sorted file list (agent cache key), `source_url` for GitHub imports. Newest 20 kept.
+- `skill_files` — `(revision_id, path)` → `sha256`, `size`, `mode` (420/493). SKILL.md is a row too. Content lives in content-addressed blobs `data/skill-blobs/<aa>/<sha256>` (`STOA_SKILL_BLOBS_DIR`), never served statically; GC in `gcTick`.
+- `messages.skill_refs` (migration only) — JSON `[{id, name, version}]` on the agent run message that used the skills.
 
 ---
 
