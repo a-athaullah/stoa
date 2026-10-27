@@ -90,6 +90,7 @@ function skNewEditor(skill) {
     mode: 'files',
     hist: null,
     baseVersion: skill?.version ?? null,
+    basePaths: null,
     conflict: null,
   };
   (skill?.files || []).forEach(f => {
@@ -729,7 +730,7 @@ async function skSave(ed) {
     if (ed.body !== (s.body || '')) payload.body = ed.body;
     if (files.length) payload.upsert_files = files;
     const moved = changed.filter(f => f.origPath && f.origPath !== f.path).map(f => f.origPath);
-    const del = [...new Set([...ed.deleted, ...moved])].filter(p => !ed.files.has(p));
+    const del = [...new Set([...ed.deleted, ...moved])].filter(p => !ed.files.has(p) && (!ed.basePaths || ed.basePaths.has(p)));
     if (del.length) payload.delete_files = del;
     if (ed.note.trim()) payload.note = ed.note.trim();
     payload.base_version = ed.baseVersion;
@@ -808,12 +809,50 @@ function skMakeConflict(ed) {
   const reload = skBtn('auto-small-btn', 'Reload', () => skReloadEditor(ed));
   reload.disabled = ed.saving;
   box.appendChild(reload);
-  box.appendChild(skBtn('auto-small-btn', 'Keep editing', () => {
-    ed.baseVersion = ed.conflict;
-    ed.conflict = null;
-    document.getElementById('sk-conflict')?.remove();
-  }));
+  const keep = skBtn('auto-small-btn', 'Keep editing', () => skKeepEditing(ed, box));
+  keep.disabled = ed.saving;
+  box.appendChild(keep);
   return box;
+}
+
+// Rebase the local edits onto the newest version: saves send only what the user changed, so the
+// deletes (and rename sources) must be the paths that still exist there, or the server says 404.
+// A local edit to a file deleted remotely brings it back; a local file wins over a remote one at the same path.
+async function skKeepEditing(ed, box) {
+  box.querySelectorAll('button').forEach(b => { b.disabled = true; });
+  const r = await skillsApi('GET', `/api/skills/${encodeURIComponent(ed.id)}`);
+  if (skillsState.editor !== ed || ed.saving) return;
+  const skill = r.ok ? r.data?.skill : null;
+  if (!skill) {
+    box.querySelectorAll('button').forEach(b => { b.disabled = ed.saving; });
+    showToast(`Couldn’t load the latest /${ed.skill.name}: ${r.error || 'not found'}`, { error: true });
+    return;
+  }
+  const paths = new Set((skill.files || []).map(f => f.path));
+  const dropped = [];
+  for (const f of [...ed.files.values()]) {
+    if (!f.origPath || f.origPath === f.path || paths.has(f.origPath)) continue;
+    if (f.text === null && !f.bytes) await skLoadFile(f);
+    if (skillsState.editor !== ed || ed.saving) return;
+    if (f.text === null && !f.bytes) {
+      dropped.push(f);
+      if (f.url) URL.revokeObjectURL(f.url);
+      ed.files.delete(f.path);
+    }
+  }
+  ed.deleted.forEach(p => { if (!paths.has(p)) ed.deleted.delete(p); });
+  ed.baseVersion = skill.version;
+  ed.basePaths = paths;
+  ed.conflict = null;
+  if (!skIsDirty(ed)) { skReloadEditor(ed, skill); return; }
+  if (dropped.length) {
+    if (!ed.files.has(ed.selected)) ed.selected = SK_MAIN_FILE;
+    ed.error = `Deleted in v${skill.version} and couldn’t be loaded, so these renames were dropped: ${dropped.map(f => `${f.origPath} → ${f.path}`).join(', ')}.`;
+    skillsRenderEditor();
+    return;
+  }
+  box.remove();
+  skSyncFooter(ed);
 }
 
 // Inserted in place so CodeMirror keeps focus and the cursor while the user is typing.
