@@ -537,6 +537,7 @@ function skMakeFilePane(ed) {
 async function skLoadFile(f) {
   if (f.loading || f.bytes || f.text !== null || !f.sha256) return;
   f.loading = true;
+  f.loadError = null;
   try {
     const r = await fetch(`/api/skill-blobs/${encodeURIComponent(f.sha256)}`);
     if (r.status === 401) { showLogin(); throw new Error('unauthorized'); }
