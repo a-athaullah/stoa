@@ -314,7 +314,7 @@ function skMakeTree(ed) {
   list.setAttribute('aria-label', 'Skill files');
   list.appendChild(skMakeTreeRow(ed, { path: SK_MAIN_FILE, folder: false, pinned: true }));
   skTreeEntries(ed).forEach(n => list.appendChild(skMakeTreeRow(ed, n)));
-  if (ed.adding) list.appendChild(skMakeAddRow(ed));
+  if (ed.adding && !ed.adding.rename) list.appendChild(skMakeAddRow(ed));
   aside.appendChild(list);
   if (ed.fieldErrors.files) aside.appendChild(skEl('div', 'sk-field-error', ed.fieldErrors.files));
   return aside;

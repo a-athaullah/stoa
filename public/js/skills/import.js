@@ -332,6 +332,7 @@ function skMakePreview(st) {
       st.description = input.value.replace(/[\r\n]+/g, ' ');
       const submit = input.form?.querySelector('button[type="submit"]');
       if (submit) submit.disabled = st.saving || !!skImportProblem(st);
+      skSyncDescWarning(box, st);
     });
     desc.appendChild(input);
   }
@@ -357,8 +358,23 @@ function skMakePreview(st) {
   if (warnings.length) {
     const w = skEl('ul', 'sk-warnings');
     w.setAttribute('aria-label', 'Warnings');
-    warnings.forEach(text => w.appendChild(skEl('li', null, String(text))));
+    warnings.forEach(text => {
+      const li = w.appendChild(skEl('li', null, String(text)));
+      if (!p.description && SK_DESC_WARNING_RE.test(li.textContent)) li.dataset.descWarning = '1';
+    });
     box.appendChild(w);
+    skSyncDescWarning(box, st);
   }
   return box;
+}
+
+// The dry run warns about a missing description (lib/skills.js); the override field answers it.
+const SK_DESC_WARNING_RE = /^Description is required/;
+
+function skSyncDescWarning(box, st) {
+  const li = box.querySelector('li[data-desc-warning]');
+  if (!li) return;
+  li.hidden = !!st.description.trim();
+  const list = li.parentElement;
+  list.hidden = [...list.children].every(c => c.hidden);
 }

@@ -522,7 +522,7 @@ async function init() {
     }
   });
   window.addEventListener('beforeunload', (e) => {
-    if (wsEditMode && wsEditDirty) { e.preventDefault(); e.returnValue = ''; }
+    if ((wsEditMode && wsEditDirty) || (skillsState.view === 'editor' && skIsDirty(skillsState.editor))) { e.preventDefault(); e.returnValue = ''; }
   });
   window.onerror = (msg, src, line, col, err) => {
     fetch('/api/client-error', { method: 'POST', headers: { 'Content-Type': 'application/json' },
