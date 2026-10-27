@@ -819,27 +819,34 @@ function skMakeConflict(ed) {
 // deletes (and rename sources) must be the paths that still exist there, or the server says 404.
 // A local edit to a file deleted remotely brings it back; a local file wins over a remote one at the same path.
 async function skKeepEditing(ed, box) {
+  const conflict = ed.conflict;
+  // A newer remote version (banner replaced) or a save while we waited makes this rebase stale.
+  const stale = () => {
+    if (skillsState.editor !== ed) return true;
+    if (!ed.saving && ed.conflict === conflict && box.isConnected) return false;
+    document.getElementById('sk-conflict')?.querySelectorAll('button').forEach(b => { b.disabled = ed.saving; });
+    return true;
+  };
   box.querySelectorAll('button').forEach(b => { b.disabled = true; });
   const r = await skillsApi('GET', `/api/skills/${encodeURIComponent(ed.id)}`);
-  if (skillsState.editor !== ed || ed.saving) return;
+  if (stale()) return;
   const skill = r.ok ? r.data?.skill : null;
   if (!skill) {
-    box.querySelectorAll('button').forEach(b => { b.disabled = ed.saving; });
+    box.querySelectorAll('button').forEach(b => { b.disabled = false; });
     showToast(`Couldn’t load the latest /${ed.skill.name}: ${r.error || 'not found'}`, { error: true });
     return;
   }
   const paths = new Set((skill.files || []).map(f => f.path));
-  const dropped = [];
-  for (const f of [...ed.files.values()]) {
-    if (!f.origPath || f.origPath === f.path || paths.has(f.origPath)) continue;
+  const orphans = [...ed.files.values()].filter(f => f.origPath && f.origPath !== f.path && !paths.has(f.origPath));
+  for (const f of orphans) {
     if (f.text === null && !f.bytes) await skLoadFile(f);
-    if (skillsState.editor !== ed || ed.saving) return;
-    if (f.text === null && !f.bytes) {
-      dropped.push(f);
-      if (f.url) URL.revokeObjectURL(f.url);
-      ed.files.delete(f.path);
-    }
   }
+  if (stale()) return;
+  const dropped = orphans.filter(f => f.text === null && !f.bytes && ed.files.get(f.path) === f);
+  dropped.forEach(f => {
+    if (f.url) URL.revokeObjectURL(f.url);
+    ed.files.delete(f.path);
+  });
   ed.deleted.forEach(p => { if (!paths.has(p)) ed.deleted.delete(p); });
   ed.baseVersion = skill.version;
   ed.basePaths = paths;
