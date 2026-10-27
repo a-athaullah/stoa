@@ -4143,6 +4143,30 @@ async function runAsyncUnitTests() {
         assert.deepStrictEqual(avail[0], { type: 'update_available', latest: s.latest, behind: 2 });
       });
 
+      await uta('server-update — checked_at survives a restart: a new instance reports the last check without fetching', async () => {
+        const checkFile = path.join(tmp, 'update-check.json');
+        const s = await upd.check();
+        const fresh = await mk().status();
+        assert.ok(s.checked_at);
+        assert.strictEqual(fresh.checked_at, s.checked_at, 'loaded from update-check.json');
+        assert.strictEqual(fresh.check_error, null);
+        assert.ok(!('checked_at' in (bg.readState(stateFile) || {})), 'not stored in the boot-guard state file');
+        const orig = fsM.readFileSync(checkFile, 'utf8');
+        try {
+          fsM.writeFileSync(checkFile, JSON.stringify({ checked_at: 'yesterday', check_error: 'x' }));
+          const n = await mk().status();
+          assert.deepStrictEqual([n.checked_at, n.check_error], [null, null], 'non-ISO checked_at → null');
+          fsM.writeFileSync(checkFile, '{"checked_at": "2026-');
+          const c = await mk().status();
+          assert.deepStrictEqual([c.checked_at, c.check_error], [null, null], 'corrupt file → null, no crash');
+          fsM.writeFileSync(checkFile, JSON.stringify({ checked_at: s.checked_at, check_error: 'fetch failed: boom' }));
+          assert.strictEqual((await mk().status()).check_error, 'fetch failed: boom', 'check_error persisted alongside');
+          fsM.writeFileSync(checkFile, JSON.stringify({ checked_at: s.checked_at, check_error: { evil: 1 } }));
+          assert.strictEqual((await mk().status()).check_error, null, 'non-string check_error dropped');
+        } finally { fsM.writeFileSync(checkFile, orig); }
+        await upd.check();
+      });
+
       await uta('server-update — dirty_tree / not_default_branch / diverged block start with that code; tree untouched', async () => {
         const before = fx.head();
         const gi = path.join(fx.live, '.gitignore');
@@ -4276,6 +4300,8 @@ async function runAsyncUnitTests() {
         const r2 = await mk().start({ force: true });
         assert.deepStrictEqual([r2.status, r2.body.code], [409, 'update_running']);
         assert.ok(!events.some(e => e.step === 'install'), 'lockfile unchanged → no npm ci');
+        assert.ok(s.checked_at, 'perform() fetched → checked_at set');
+        assert.strictEqual(fresh.checked_at, s.checked_at, 'restarted instance keeps the checked_at from the update fetch');
       });
 
       await uta('boot-guard — pending: attempts 1..3 counted; 4th boot resets to prev_head, records rolled_back, exits 1', async () => {
@@ -4452,9 +4478,10 @@ async function runAsyncUnitTests() {
 
       await uta('server-update — daily check timer fetches on its own and reports fetch failures as check_error', async () => {
         const u2 = mk();
+        const loaded = (await u2.status()).checked_at;
         const stop = u2.startDailyCheck({ firstDelayMs: 10, intervalMs: 50 });
         try {
-          await waitUntil(async () => (await u2.status()).checked_at, 3000, 20);
+          await waitUntil(async () => (await u2.status()).checked_at !== loaded, 3000, 20);
           fx.g(fx.live, 'remote', 'set-url', 'origin', path.join(tmp, 'gone.git'));
           const t0 = (await u2.status()).checked_at;
           const s = await waitUntil(async () => { const v = await u2.status(); return v.checked_at !== t0 && v.check_error && v; }, 3000, 20);
