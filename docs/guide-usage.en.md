@@ -962,8 +962,9 @@ Open **Skills** in the sidebar nav (between Automation and MCP) to manage your l
 The list shows all skills with `/name` (monospace), description, creator (your avatar or the creating agent's avatar with a badge), version, file count, size, and last-updated time.
 
 Controls per row:
+- Click a row to open the editor (tooltip *"Edit /name"*).
 - **Enable toggle** — disabled skills are hidden from the composer autocomplete and are not resolved in messages.
-- **⋯ menu** — Edit, History, Delete.
+- **Delete icon** — triggers an inline confirmation (*"Delete /name?"*) with **Delete** and **Cancel** buttons.
 
 Filter chips: **All · Mine · By agents · Disabled**. Search by name or description. Drag a file or archive onto the page to start an import.
 
@@ -971,7 +972,7 @@ Filter chips: **All · Mine · By agents · Disabled**. Search by name or descri
 
 Click **New skill → Write from scratch**. The editor opens with a blank template and two panels:
 
-- **Left — file tree**: `SKILL.md` is pinned and cannot be deleted. Buttons to add a file, add a folder, or upload. Right-click (long-press on tablet) to rename or delete items.
+- **Left — file tree**: `SKILL.md` is pinned and cannot be deleted. Icon buttons to add a file, add a folder, or upload. Hover over any item to reveal inline action icons — **Rename** (files only) and **Delete**.
 - **Right — editor**: `SKILL.md` opens in a markdown editor with **Edit / Preview** tabs. The **name**, **description**, and **argument hint** fields above the editor are the source of truth — edit them in the form, and the frontmatter in `SKILL.md` is generated on save. Other text files (`.js`, `.py`, `.json`, `.md`, `.css`, `.html`) open in a syntax-highlighted editor; images show a preview; binary files show a download link.
 
 Click **Save** to create a new revision. An optional revision note appears in the footer. An "unsaved" indicator appears whenever there are pending changes.

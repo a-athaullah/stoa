@@ -963,8 +963,9 @@ Buka **Skills** di nav sidebar (antara Automation dan MCP) untuk mengelola libra
 Daftar menampilkan setiap skill dengan `/nama` (monospace), deskripsi, pembuat (avatar kamu atau avatar agent pembuat dengan badge), versi, jumlah file, ukuran, dan waktu terakhir diperbarui.
 
 Kontrol per baris:
+- Klik baris untuk membuka editor (tooltip *"Edit /nama"*).
 - **Toggle aktif** — skill yang dinonaktifkan tidak muncul di autocomplete composer dan tidak di-resolve di pesan.
-- **Menu ⋯** — Edit, History, Hapus.
+- **Ikon tempat sampah** — memunculkan konfirmasi inline (*"Delete /nama?"*) dengan tombol **Delete** dan **Cancel**.
 
 Filter chip: **Semua · Punyaku · Buatan agent · Nonaktif**. Cari berdasarkan nama atau deskripsi. Drag file atau arsip ke halaman untuk langsung import.
 
@@ -972,7 +973,7 @@ Filter chip: **Semua · Punyaku · Buatan agent · Nonaktif**. Cari berdasarkan 
 
 Klik **New skill → Write from scratch**. Editor terbuka dengan template kosong dan dua panel:
 
-- **Kiri — file tree**: `SKILL.md` dipinned dan tidak bisa dihapus. Ada tombol tambah file, tambah folder, dan upload. Klik kanan (long-press di tablet) untuk rename atau hapus item.
+- **Kiri — file tree**: `SKILL.md` dipinned dan tidak bisa dihapus. Ada ikon tombol untuk tambah file, tambah folder, dan upload. Hover di atas item untuk menampilkan ikon aksi inline — **Rename** (khusus file) dan **Delete**.
 - **Kanan — editor**: `SKILL.md` dibuka di editor markdown dengan tab **Edit / Preview**. Field **nama**, **deskripsi**, dan **argument hint** di atas editor adalah sumber kebenaran — edit di form, dan frontmatter `SKILL.md` di-generate otomatis saat save. File teks lain (`.js`, `.py`, `.json`, `.md`, `.css`, `.html`) dibuka di editor syntax-highlighted; gambar ditampilkan preview; file binary menampilkan link download.
 
 Klik **Save** untuk membuat revisi baru. Catatan revisi opsional ada di footer. Indikator "unsaved" muncul saat ada perubahan yang belum disimpan.
