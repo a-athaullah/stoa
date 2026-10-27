@@ -19680,6 +19680,43 @@ async function run() {
       assert.strictEqual(r.body.skill.version, 5);
     });
 
+    await test('base_version — PATCH / PUT / DELETE refuse a stale base with 409 version_conflict; no base = last write wins', async () => {
+      const c = await create({ name: 'qa-base-version', description: 'd', body: 'v1', files: [{ path: 'a.txt', content_base64: b64('A') }] });
+      assert.strictEqual(c.status, 201, c.raw);
+      const id = c.body.skill.id;
+      const cur = () => db.prepare('SELECT r.version, r.body FROM skills s JOIN skill_revisions r ON r.id=s.current_revision_id WHERE s.id=?').get(id);
+      let r = await req('PATCH', `/api/skills/${id}`, { body: 'v2', base_version: 1 });
+      assert.deepStrictEqual([r.status, r.body.skill?.version], [200, 2], r.raw);
+      // Another writer saved v2 meanwhile: the tab still at v1 must not overwrite it.
+      r = await req('PATCH', `/api/skills/${id}`, { body: 'stale edit', base_version: 1 });
+      assert.deepStrictEqual([r.status, r.body.code, r.body.current_version], [409, 'version_conflict', 2], r.raw);
+      assert.deepStrictEqual([cur().version, B.parseFrontmatter(cur().body).body], [2, 'v2'], 'nothing written on a conflict');
+      r = await req('PATCH', `/api/skills/${id}`, { enabled: false, base_version: 1 });
+      assert.strictEqual(r.status, 409, 'an enable toggle on a stale base is refused too');
+      assert.strictEqual(db.prepare('SELECT enabled FROM skills WHERE id=?').get(id).enabled, 1);
+      r = await rawReq('PUT', `/api/skills/${id}/files/b.txt?base_version=1`, Buffer.from('B'), 'application/octet-stream');
+      assert.deepStrictEqual([r.status, r.body.code], [409, 'version_conflict'], r.raw);
+      r = await req('DELETE', `/api/skills/${id}/files/a.txt?base_version=1`);
+      assert.deepStrictEqual([r.status, r.body.code], [409, 'version_conflict'], r.raw);
+      assert.deepStrictEqual(db.prepare('SELECT path FROM skill_files WHERE revision_id=(SELECT current_revision_id FROM skills WHERE id=?) ORDER BY path').all(id).map(f => f.path), ['SKILL.md', 'a.txt']);
+      r = await rawReq('PUT', `/api/skills/${id}/files/b.txt?base_version=2`, Buffer.from('B'), 'application/octet-stream');
+      assert.deepStrictEqual([r.status, r.body.skill?.version], [200, 3], r.raw);
+      r = await req('DELETE', `/api/skills/${id}/files/a.txt?base_version=3`);
+      assert.deepStrictEqual([r.status, r.body.skill?.version], [200, 4], r.raw);
+      r = await req('PATCH', `/api/skills/${id}`, { body: 'no base' });
+      assert.deepStrictEqual([r.status, r.body.skill?.version, cur().version], [200, 5, 5], 'without base_version the save goes through');
+      for (const bad of [-1, 1.5, '5', null]) {
+        r = await req('PATCH', `/api/skills/${id}`, { body: 'x', base_version: bad });
+        assert.deepStrictEqual([r.status, r.body.code], [400, 'invalid_body'], JSON.stringify(bad));
+      }
+      for (const bad of ['abc', '-1', '']) {
+        r = await rawReq('PUT', `/api/skills/${id}/files/c.txt?base_version=${bad}`, Buffer.from('C'), 'application/octet-stream');
+        assert.deepStrictEqual([r.status, r.body.code], [400, 'invalid_body'], bad);
+      }
+      assert.strictEqual(cur().version, 5, 'no write from the rejected requests');
+      assert.strictEqual((await req('PATCH', '/api/skills/999999999', { body: 'x', base_version: 1 })).status, 404, 'unknown skill stays 404, not 409');
+    });
+
     await test('revisions + restore — restore is a new revision with the old content', async () => {
       const list = await req('GET', `/api/skills/${hg.id}/revisions`);
       assert.deepStrictEqual(list.body.revisions.map(v => v.version), [5, 4, 3, 2, 1]);
@@ -19733,6 +19770,17 @@ async function run() {
       assert.ok(entries.find(e => e.path === 'qa-export/assets/blob.bin').data.equals(bin));
       assert.strictEqual(entries.find(e => e.path === 'qa-export/docs/template.md').data.toString(), text);
       assert.ok(z.body.length < text.length, 'the text file is deflated, not stored');
+      // Extended Timestamp (0x5455) carries the revision's real instant; DOS time alone has no timezone.
+      const created = db.prepare("SELECT r.created_at FROM skills s JOIN skill_revisions r ON r.id=s.current_revision_id WHERE s.name='qa-export'").get().created_at;
+      const mtimes = await new Promise((resolve, reject) => require('yauzl').fromBuffer(z.body, { lazyEntries: true }, (e, zf) => {
+        if (e) return reject(e);
+        const out = [];
+        zf.on('entry', (en) => { const xt = en.extraFields.find(f => f.id === 0x5455); out.push(xt && xt.data.length === 5 && xt.data[0] === 1 ? xt.data.readUInt32LE(1) : null); zf.readEntry(); });
+        zf.on('end', () => resolve(out));
+        zf.on('error', reject);
+        zf.readEntry();
+      }));
+      assert.deepStrictEqual(mtimes, entries.map(() => Date.parse(`${created.replace(' ', 'T')}Z`) / 1000), 'every entry carries mtime = revision created_at');
       const del = await req('DELETE', `/api/skills/${c.body.skill.id}`);
       assert.ok(del.status === 200 || del.status === 204, del.raw);
       const back = await importFile('qa-export.zip', z.body);
