@@ -1162,7 +1162,7 @@ An agent can have up to 20 approval requests pending at the same time. Approval 
 
 ### Tool Labels in Chat
 
-While an agent is running, each MCP tool call appears as a tool block in the chat. The block shows the **tool name** followed by a small italic label **"via \<server name\> (Stoa)"** — for example, `resolve-library-id via Context7 (Stoa)`. Hovering shows the full internal tool name as a tooltip. Tool steps are stored with the message (up to 50 steps per message, tool name + one-line summary each) and the process trail — including MCP labels — **survives a page reload**.
+While an agent is running, each MCP tool call appears as a tool block in the chat. The block shows the **tool name** followed by a small italic label **"via \<server name\> (Stoa)"** — for example, `resolve-library-id via Context7 (Stoa)`. Hovering shows the full internal tool name as a tooltip. Tool steps are stored with the message (up to 50 steps per message, tool name + one-line summary each). After a page reload, the process trail — including MCP labels — is rebuilt only for **error runs** (so they can still be diagnosed) and **runs still in progress**; a completed run's trail is visible during the session that watched it, but disappears on reload.
 
 ### When Agents See Changes
 
