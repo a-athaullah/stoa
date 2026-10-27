@@ -180,6 +180,8 @@ function waitUp(port, tries = 50) {
     SCHED_TICK_MS: '1000',
     // MCP approval wait (5 min in prod) short enough for the expiry test to reach it.
     MCP_APPROVAL_TIMEOUT_MS: '3000',
+    // stoa__skill_use wait for the agent's skill_sync answer (60 s in prod) short enough for its timeout test.
+    SKILL_SYNC_TIMEOUT_MS: '2000',
     // In-app updater works on a git fixture test.js builds here — never on this repo — and believes a
     // process manager exists so its checks run. Its boot-guard state stays in the temp dir too, and the
     // daily check never fires during a run (test.js drives /check itself).

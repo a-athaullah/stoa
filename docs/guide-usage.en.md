@@ -1002,7 +1002,29 @@ The skill content is prepended to the agent's prompt; support files are cached o
 
 ### Agent-Created Skills
 
-Agents (including sub-agents) can create and update skills. Agent-created skills appear immediately in the list with a **creator badge** showing the agent's avatar. You retain full control — you can disable or delete any skill. An agent can manage only its own skills; it cannot modify skills created by other agents or by you.
+Agents and sub-agents can create and manage skills using six built-in MCP tools:
+
+| Tool | Who can call | What it does |
+|---|---|---|
+| `stoa__skill_list` | all agents | Returns name, description, argument hint, creator, and version for every visible skill. |
+| `stoa__skill_get` | all agents | Returns the `SKILL.md` body, or reads a single text file (≤ 256 KB) without downloading. Binary files and files over 256 KB are rejected; use `stoa__skill_use` for those. |
+| `stoa__skill_use` | all agents | Syncs the skill to the agent machine (downloads support files to `~/.stoa/skills/<name>/<hash>/`) and returns the body plus the local directory path. |
+| `stoa__skill_create` | agent / sub-agent | Creates a new skill. `files` accepts `{path, content}` or `{path, content_base64}`. Total payload ≤ 5 MB via MCP; larger bundles use `POST /api/skills/import`. |
+| `stoa__skill_update` | creator only | Creates a new revision. Can update description, argument hint, body, upsert or delete support files, and add a revision note. Cannot rename or toggle enabled. |
+| `stoa__skill_delete` | creator only | Deletes the skill permanently. |
+
+**No approval prompt** — these tools behave like all other `stoa__*` built-ins and never trigger an approval dialog.
+
+**Ownership:** An agent can only modify or delete skills it created. A parent agent can manage skills created by its sub-agents. Skills owned by you or other agents return a `not_found` error to prevent enumeration. You retain full control — disable or delete any skill from the Skills page.
+
+**Quota:**
+- 50 skills per agent. Sub-agents' skills count toward the parent agent's quota.
+- 200 skills total across the library. You (the owner) are exempt from both limits.
+- Create or update via MCP: maximum 5 MB total (body + all files combined). For larger bundles, use `POST /api/skills/import`.
+
+**Skill catalog in system prompt:** Agents that have `stoa__*` tools automatically receive a `<stoa-skills>` block in their system prompt listing up to 40 enabled skills by name and description (≤ 4 KB, no body). When skills change, the agent's session resumes once at the next turn — context is preserved.
+
+**Older clients:** If the agent's client does not support the `skill_sync` feature (pre-v0.4.440), `stoa__skill_use` returns the `SKILL.md` body without downloading support files (`dir: null`, `files_unavailable` set). Updating the agent's client enables full file sync.
 
 The cache on the agent machine stores up to 2 versions per skill. Skills no longer present on the server are never run from cache.
 
