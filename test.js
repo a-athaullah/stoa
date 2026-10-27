@@ -19379,7 +19379,30 @@ async function run() {
       const tooLong = await importFile('qa-empty.md', Buffer.from(''), '', [{ name: 'description', data: 'x'.repeat(501) }]);
       assert.deepStrictEqual([tooLong.status, tooLong.body.code], [400, 'too_large'], 'override is validated like a create');
       const viaJson = await req('POST', '/api/skills/import?dry_run=1', { url: 'https://gitlab.com/a/b', description: 42 });
-      assert.strictEqual(viaJson.status, 400);
+      assert.deepStrictEqual([viaJson.status, viaJson.body.code], [400, 'invalid_body'], 'non-string override rejected before any fetch');
+    });
+
+    await test('import description override — dry run shows it; it wins over frontmatter; blank / multi-line / too long', async () => {
+      const bare = Buffer.from('---\nname: qa-ovr-bare\n---\n');
+      let r = await importFile('x.md', bare, '?dry_run=1');
+      assert.strictEqual(r.body.preview.description, '', 'no frontmatter description, empty body');
+      assert.ok(r.body.preview.warnings.some(w => /Description is required/.test(w)));
+      r = await importFile('x.md', bare, '?dry_run=1', [{ name: 'description', data: 'Typed in the dialog' }]);
+      assert.deepStrictEqual([r.body.preview.description, r.body.preview.warnings.some(w => /Description is required/.test(w))], ['Typed in the dialog', false]);
+      assert.strictEqual(db.prepare("SELECT COUNT(*) AS c FROM skills WHERE name='qa-ovr-bare'").get().c, 0, 'dry run saves nothing');
+      const withFm = Buffer.from('---\nname: qa-ovr-fm\ndescription: From frontmatter\n---\nbody');
+      r = await importFile('x.md', withFm, '', [{ name: 'description', data: 'Typed by the owner' }]);
+      assert.strictEqual(r.status, 201, r.raw);
+      assert.strictEqual(r.body.skill.description, 'Typed by the owner', 'what the owner typed wins over the archive');
+      const md = await getBuf(`/api/skill-blobs/${r.body.skill.files.find(f => f.path === 'SKILL.md').sha256}`);
+      assert.strictEqual(B.parseFrontmatter(md.body.toString('utf8')).fields.description, 'Typed by the owner', 'SKILL.md regenerated with it');
+      r = await importFile('x.md', Buffer.from('---\nname: qa-ovr-blank\ndescription: Kept\n---\n'), '', [{ name: 'description', data: '   ' }]);
+      assert.deepStrictEqual([r.status, r.body.skill?.description], [201, 'Kept'], 'a blank override is no override');
+      r = await importFile('x.md', bare, '', [{ name: 'description', data: 'two\nlines\there' }]);
+      assert.deepStrictEqual([r.status, r.body.skill?.description], [201, 'two lines here'], 'collapsed to one line');
+      r = await importFile('x.md', Buffer.from('---\nname: qa-ovr-long\ndescription: ok\n---\n'), '', [{ name: 'description', data: 'y'.repeat(501) }]);
+      assert.deepStrictEqual([r.status, r.body.code], [400, 'too_large']);
+      assert.strictEqual(db.prepare("SELECT COUNT(*) AS c FROM skills WHERE name='qa-ovr-long'").get().c, 0);
     });
 
     await test('import .zip / .skill — SKILL.md at the root or in one top-level folder; exec bit kept; __MACOSX ignored', async () => {
