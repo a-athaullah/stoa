@@ -1645,6 +1645,8 @@ if (!AGENT_SCOPE_ENFORCED) console.warn('[agent-scope] WARNING: STOA_AGENT_SCOPE
 const mcpCredentials = require('./lib/credentials');
 const { createUpstreamManager, decodeServerEnv } = require('./lib/mcp-upstreams');
 const { createMcpGateway, APPROVAL_TIMEOUT_MAX_MS } = require('./lib/mcp-gateway');
+// One JSON-RPC request to /mcp. stoa__skill_create / skill_update carry up to 5 MB of files, base64 inside JSON.
+const MCP_BODY_MAX = 8 * 1024 * 1024;
 const { createMcpApi } = require('./lib/mcp-api');
 const { connectionEnv, connectionArgs } = require('./lib/mcp-catalog');
 const { createMcpOAuth } = require('./lib/mcp-oauth');
@@ -1686,7 +1688,7 @@ const mcpGateway = createMcpGateway({
   db, upstreams: mcpUpstreams, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt, version: require('./package.json').version,
   builtinTools: [
     ...scheduleMcpTools(roomSchedules),
-    ...stoaMcpTools({ db, broadcast, messages: roomMessages, memory: stoaMemory, prompts: systemPrompts, subAgents, automations: automationCrud, readAgentImage }),
+    ...stoaMcpTools({ db, broadcast, messages: roomMessages, memory: stoaMemory, prompts: systemPrompts, subAgents, automations: automationCrud, readAgentImage, skills, syncAgentSkill }),
   ],
   approvalTimeoutMs: Math.min(APPROVAL_TIMEOUT_MAX_MS, Math.max(1000, parseInt(process.env.MCP_APPROVAL_TIMEOUT_MS, 10) || 5 * 60_000)),
   // Approval cards live in the room (and thread) the agent is working in; the MCP page's approval log
@@ -1957,7 +1959,7 @@ const server = http.createServer(async (req, res) => {
     let body;
     if (req.method === 'POST') {
       let raw;
-      try { raw = await readBody(req, 1024 * 1024); }
+      try { raw = await readBody(req, MCP_BODY_MAX); }
       catch { return json(res, { error: 'request body too large' }, 413); }
       body = parseJsonBody(raw);
       if (body === null) return json(res, { jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' }, id: null }, 400);
@@ -5322,6 +5324,24 @@ function readAgentImage(actorId, filePath) {
   });
 }
 
+// stoa__skill_use: the agent's own stoa.js syncs the skill into its cache (ensureSkill) and answers
+// with the local folder. Only the agent that was asked may answer its request id. Clients older than
+// the 'skill_sync' feature never answer, so they are not asked.
+const SKILL_SYNC_TIMEOUT_MS = Math.max(1000, parseInt(process.env.SKILL_SYNC_TIMEOUT_MS, 10) || 60_000);
+const pendingSkillSyncs = new Map(); // request_id → { actorId, done }
+function syncAgentSkill(actorId, ref) {
+  const ws = agentClients.get(actorId);
+  if (!ws || ws.readyState !== 1) return Promise.resolve({ unavailable: 'your Stoa client is not connected' });
+  if (!agentFeatures.get(actorId)?.has('skill_sync')) return Promise.resolve({ unavailable: 'your Stoa client is too old to download skill files (update the agent)' });
+  const rid = crypto.randomBytes(8).toString('hex');
+  return new Promise(resolve => {
+    const timer = setTimeout(() => done({ error: `your Stoa client did not load the skill files within ${Math.round(SKILL_SYNC_TIMEOUT_MS / 1000)} s` }), SKILL_SYNC_TIMEOUT_MS);
+    const done = (r) => { clearTimeout(timer); pendingSkillSyncs.delete(rid); resolve(r); };
+    pendingSkillSyncs.set(rid, { actorId, done });
+    ws.send(JSON.stringify({ type: 'skill_sync', request_id: rid, skill: ref }));
+  });
+}
+
 function broadcastGlobal(data) {
   const str = JSON.stringify(data);
   for (const client of globalClients) {
@@ -6144,6 +6164,17 @@ wss.on('connection', (ws, req) => {
         } catch (e) {
           console.warn('[workdir] could not canonicalize path:', e.message);
         }
+      }
+      return;
+    }
+
+    if (msg.type === 'skill_sync_result' && agentActorId) {
+      const op = pendingSkillSyncs.get(msg.request_id);
+      if (op && op.actorId === agentActorId) {
+        const dir = typeof msg.dir === 'string' && msg.dir.length <= 4096 && !/[\u0000-\u001f]/.test(msg.dir) ? msg.dir : null;
+        op.done(dir
+          ? { dir, version: Number.isInteger(msg.version) ? msg.version : null, stale: typeof msg.stale === 'string' ? msg.stale.slice(0, 300) : null }
+          : { error: String(msg.error || 'your Stoa client could not load the skill').slice(0, 300) });
       }
       return;
     }
@@ -7554,7 +7585,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   const proactiveCurlBody = threadId
     ? `'{"content": "Your message here", "thread_id": ${threadId}}'`
     : `'{"content": "Your message here"}'`;
-  const PROACTIVE_INSTRUCTIONS_TOOLS = `\n\n## Progress Reporting (MANDATORY for background tasks)\n\nFor any task that takes more than a few seconds, or involves file edits, commits, or multi-step work:\n1. After finishing your analysis, send a proactive message with what you found and your plan.\n2. After each significant step (commit, test run, major finding), send a brief update.\n3. At the end, always send a final summary of what was done.\n\nTo send a proactive message, call the \`stoa__message_send\` tool with \`content\`. It goes to ${sessionTarget} automatically — no room or thread argument needed (\`main_feed: true\` posts to the room's main feed instead). An @mention in the content triggers that agent or sub-agent.\n\nStoa features (messages, threads, memory, system prompts, sub-agents, automations) are \`stoa__*\` tools in this session — use them instead of the REST API. REST/curl is only for file uploads.`;
+  const PROACTIVE_INSTRUCTIONS_TOOLS = `\n\n## Progress Reporting (MANDATORY for background tasks)\n\nFor any task that takes more than a few seconds, or involves file edits, commits, or multi-step work:\n1. After finishing your analysis, send a proactive message with what you found and your plan.\n2. After each significant step (commit, test run, major finding), send a brief update.\n3. At the end, always send a final summary of what was done.\n\nTo send a proactive message, call the \`stoa__message_send\` tool with \`content\`. It goes to ${sessionTarget} automatically — no room or thread argument needed (\`main_feed: true\` posts to the room's main feed instead). An @mention in the content triggers that agent or sub-agent.\n\nStoa features (messages, threads, memory, system prompts, sub-agents, automations, skills) are \`stoa__*\` tools in this session — use them instead of the REST API. REST/curl is only for file uploads.`;
   const PROACTIVE_INSTRUCTIONS = stoaTools ? PROACTIVE_INSTRUCTIONS_TOOLS : `\n\n## Progress Reporting (MANDATORY for background tasks)\n\nFor any task that takes more than a few seconds, or involves file edits, commits, or multi-step work:\n1. After finishing your analysis, send a proactive message with what you found and your plan.\n2. After each significant step (commit, test run, major finding), send a brief update.\n3. At the end, always send a final summary of what was done.\n\nTo send a proactive message to the room:\n\`\`\`bash\nBASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|")\ncurl -s -X POST "$BASE_URL/api/rooms/$STOA_ROOM_ID/message" \\\n  -H "Content-Type: application/json" \\\n  -H "x-agent-id: $STOA_ACTOR_ID" \\\n  -H "x-agent-secret: $STOA_SECRET" \\\n  -d ${proactiveCurlBody}\n\`\`\`\n\n$STOA_URL, $STOA_ACTOR_ID, $STOA_SECRET, and $STOA_ROOM_ID are available as environment variables.`;
 
   // Sub-agents are triggered from a caller room that may differ from their own room.
@@ -7750,7 +7781,12 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         return { ...a, name: a.name || path.basename(a.url.split('?')[0]), url: triggerBaseUrl + signFileUrl(a.url) };
       });
       const roomSysPromptRaw = db.prepare('SELECT system_prompt FROM rooms WHERE id=?').get(roomId)?.system_prompt || null;
-      const baseSysPrompt = getSetting('base_system_prompt') || DEFAULT_BASE_SYSTEM_PROMPT;
+      // The skill catalog rides in the system prompt (not the turn prompt) so it costs nothing per turn;
+      // a skill change alters the hash and the agent's next turn resumes its session with the new list.
+      // Only sessions that have the stoa__skill_* tools to act on it get it — wake runs included, so a
+      // sub-agent result never flips the hash back and forth.
+      const skillCatalog = stoaTools ? skills.catalog() : '';
+      const baseSysPrompt = [getSetting('base_system_prompt') || DEFAULT_BASE_SYSTEM_PROMPT, skillCatalog].filter(Boolean).join('\n\n');
       const agentSysPrompt = db.prepare('SELECT system_prompt FROM actors WHERE id=?').get(ai.actor_id)?.system_prompt || null;
       const roomSysPrompt = composeSystemPrompt(baseSysPrompt, agentSysPrompt, roomSysPromptRaw);
       const sysPromptHash = require('crypto').createHash('sha256').update(roomSysPrompt).digest('hex').slice(0, 16);

@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.439";
+var CLIENT_VERSION = "0.4.440";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -906,7 +906,7 @@ function connect() {
     if (ACTOR_TYPE === "ai") {
       getSession(process.env.STOA_WORK_DIR || os.homedir(), "default");
       // active_message_ids: runs survive a reconnect, so the server must not orphan them.
-      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, features: ["skills"], harnesses_available: [], supervisor: SUPERVISOR, boot_id: BOOT_ID, active_message_ids: activeMessageIds() }));
+      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, features: ["skills", "skill_sync"], harnesses_available: [], supervisor: SUPERVISOR, boot_id: BOOT_ID, active_message_ids: activeMessageIds() }));
       sendQueueStatus();
       console.log(`[stoa] Agent #${ACTOR_ID} v${CLIENT_VERSION} connected to ${STOA_URL} (max_concurrent=${MAX_CONCURRENT})`);
       detectHarnessesAsync().then((result) => {
@@ -1090,6 +1090,14 @@ async function handleAgentMessage(msg) {
       console.error("[stoa] Failed to create workdir:", err.message);
       send({ type: "workdir_created", requested: msg.path, error: err.message });
     }
+  }
+  if (msg.type === "skill_sync") {
+    // stoa__skill_use: put the skill in the local cache and tell the server where it is.
+    const rid = msg.request_id;
+    ensureSkill(msg.skill).then((r) => {
+      send(r.error ? { type: "skill_sync_result", request_id: rid, error: r.error } : { type: "skill_sync_result", request_id: rid, dir: r.dir, version: r.version, stale: r.stale });
+    }).catch((e) => send({ type: "skill_sync_result", request_id: rid, error: e.message }));
+    return;
   }
   if (msg.type === "avatar_file_read") {
     const r = readAvatarFile(expandHome(msg.path));
