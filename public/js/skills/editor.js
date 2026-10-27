@@ -100,10 +100,14 @@ function skSnapshot(ed) {
   return JSON.stringify([ed.name, ed.description, ed.hint, ed.body]);
 }
 
+function skFileChanged(f) {
+  return f.state !== 'clean' || f.path !== f.origPath;
+}
+
 function skIsDirty(ed) {
   if (!ed) return false;
   if (skSnapshot(ed) !== ed.origin || ed.deleted.size) return true;
-  for (const f of ed.files.values()) if (f.state !== 'clean') return true;
+  for (const f of ed.files.values()) if (skFileChanged(f)) return true;
   return false;
 }
 
@@ -266,7 +270,7 @@ function skValidate(ed) {
   else if (/^---\s*\n/.test(ed.body)) fe.body = 'Remove the frontmatter block at the top. Name, description and argument hint come from the fields above.';
   else if (!ed.body.trim()) fe.body = 'SKILL.md needs instructions.';
   let pending = 0;
-  for (const f of ed.files.values()) if (f.state !== 'clean' || f.path !== f.origPath) pending += f.bytes ? f.bytes.length : new TextEncoder().encode(f.text || '').length;
+  for (const f of ed.files.values()) if (skFileChanged(f)) pending += f.bytes ? f.bytes.length : new TextEncoder().encode(f.text || '').length;
   if (pending > SK_SAVE_UPLOAD_MAX) fe.files = `This save uploads ${skFmtBytes(pending)}; save in batches of up to ${skFmtBytes(SK_SAVE_UPLOAD_MAX)}.`;
   ed.fieldErrors = fe;
   return !nameProblem && ed.description.trim() && !fe.body && !fe.files;
@@ -669,7 +673,7 @@ async function skSave(ed) {
     document.querySelector('.sk-input[aria-invalid="true"]')?.focus();
     return;
   }
-  const changed = [...ed.files.values()].filter(f => f.state !== 'clean' || f.path !== f.origPath);
+  const changed = [...ed.files.values()].filter(skFileChanged);
   const toB64 = f => (f.text !== null ? skUtf8ToB64(f.text) : skBytesToB64(f.bytes));
   for (const f of changed) {
     if (f.text === null && !f.bytes) await skLoadFile(f);
