@@ -124,8 +124,10 @@ function buildResultChip(raw) {
 
 // ── Reply quote ──────────────────────────────────────────────────────────────
 // The one renderer for m.reply_msg: feed fallback, thread panel and live run bubbles.
-// skill_refs: [{id, name, version}] resolved by the server when the message was routed.
-function buildSkillRefChips(refs) {
+// skill_refs: [{id, name, version}] (or its JSON text, as stored) resolved by the server when the run was routed.
+function buildSkillRefChips(raw) {
+  let refs = raw;
+  if (typeof raw === 'string') { try { refs = JSON.parse(raw); } catch { return null; } }
   if (!Array.isArray(refs)) return null;
   const valid = refs.filter(r => r && Number.isInteger(r.id) && r.id > 0 && typeof r.name === 'string');
   if (!valid.length) return null;

@@ -6,9 +6,12 @@ const THINKING_MARKER_RE = /^\s*(?:\[thinking\]\s*)+/;
 // message_state / message_complete carry the run's reply_msg. The thread panel shows it like
 // appendThreadMessage does after a reload; feed roots never show one (appendFeedRootRow).
 const runReplies = {}; // msgId -> {reply_to, reply_msg}
+// Same events carry skill_refs, so the "used /skill" chip shows on the live bubble too.
+const runSkillRefs = {}; // msgId -> raw skill_refs
 
 function setRunReply(msgId, msg) {
   if (msg?.reply_msg) runReplies[msgId] = { reply_to: msg.reply_to, reply_msg: msg.reply_msg };
+  if (msg?.skill_refs) runSkillRefs[msgId] = msg.skill_refs;
 }
 
 function appendRunReplyQuote(row, bubble, msgId) {
@@ -100,6 +103,8 @@ function finalizeMessage(msgId, content, fileUrl, fileName, attachments, aiModel
     }
     const resultChip = buildResultChip(resultMeta);
     if (resultChip) bubble.appendChild(resultChip);
+    const skillChips = buildSkillRefChips(runSkillRefs[msgId]);
+    if (skillChips) bubble.appendChild(skillChips);
     addCopyButtons(bubble);
   linkifyFilePaths(bubble);
   externalLinksNewTab(bubble);
@@ -160,6 +165,7 @@ function finalizeMessage(msgId, content, fileUrl, fileName, attachments, aiModel
 
   delete streaming[msgId];
   delete runReplies[msgId];
+  delete runSkillRefs[msgId];
 }
 
 // ── Run ended by the server ─────────────────────────────────────────────────
