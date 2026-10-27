@@ -19374,6 +19374,12 @@ async function run() {
       assert.ok(unclosed.body.preview.warnings.some(w => /not closed/.test(w)));
       const empty = await importFile('qa-empty.md', Buffer.from(''));
       assert.deepStrictEqual([empty.status, empty.body.code], [400, 'description_required']);
+      const filled = await importFile('qa-empty.md', Buffer.from(''), '', [{ name: 'description', data: 'Filled in the preview' }]);
+      assert.deepStrictEqual([filled.status, filled.body.skill?.description], [201, 'Filled in the preview'], 'description part overrides a missing one');
+      const tooLong = await importFile('qa-empty.md', Buffer.from(''), '', [{ name: 'description', data: 'x'.repeat(501) }]);
+      assert.deepStrictEqual([tooLong.status, tooLong.body.code], [400, 'too_large'], 'override is validated like a create');
+      const viaJson = await req('POST', '/api/skills/import?dry_run=1', { url: 'https://gitlab.com/a/b', description: 42 });
+      assert.strictEqual(viaJson.status, 400);
     });
 
     await test('import .zip / .skill — SKILL.md at the root or in one top-level folder; exec bit kept; __MACOSX ignored', async () => {
