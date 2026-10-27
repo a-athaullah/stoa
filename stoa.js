@@ -906,7 +906,7 @@ function connect() {
     if (ACTOR_TYPE === "ai") {
       getSession(process.env.STOA_WORK_DIR || os.homedir(), "default");
       // active_message_ids: runs survive a reconnect, so the server must not orphan them.
-      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, harnesses_available: [], supervisor: SUPERVISOR, boot_id: BOOT_ID, active_message_ids: activeMessageIds() }));
+      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, features: ["skills"], harnesses_available: [], supervisor: SUPERVISOR, boot_id: BOOT_ID, active_message_ids: activeMessageIds() }));
       sendQueueStatus();
       console.log(`[stoa] Agent #${ACTOR_ID} v${CLIENT_VERSION} connected to ${STOA_URL} (max_concurrent=${MAX_CONCURRENT})`);
       detectHarnessesAsync().then((result) => {
@@ -969,7 +969,7 @@ async function handleAgentMessage(msg) {
     (async () => {
       try {
         const scanResult = scanForWorkdirs();
-        console.log(`[stoa] Scanned: ${scanResult.workdirs.length} workdirs, ${scanResult.globalSkills.length} global skills`);
+        console.log(`[stoa] Scanned: ${scanResult.workdirs.length} workdirs`);
         send({ type: "agent_scan_result", ...scanResult });
       } catch (err) {
         console.error("[stoa] Scan failed:", err.message);
@@ -1016,7 +1016,7 @@ async function handleAgentMessage(msg) {
   if (msg.type === "request_scan") {
     try {
       const scanResult = scanForWorkdirs();
-      console.log(`[stoa] Rescan: ${scanResult.workdirs.length} workdirs, ${scanResult.globalSkills.length} global skills`);
+      console.log(`[stoa] Rescan: ${scanResult.workdirs.length} workdirs`);
       send({ type: "agent_scan_result", ...scanResult });
     } catch (err) {
       console.error("[stoa] Rescan failed:", err.message);
@@ -1508,6 +1508,7 @@ ${chain.join("\n")}
       console.error("[stoa] failed to fetch reply chain:", err.message);
     }
   }
+  finalPrompt = await prependSkills(finalPrompt, msg.skills);
   const allAttachments = msg.attachments || [];
   if (!allAttachments.length) {
     if (msg.imageUrl) allAttachments.push({ url: msg.imageUrl, name: "", type: "image" });
@@ -2258,6 +2259,179 @@ function fetchText(url) {
     req.on("error", (err) => { clearTimeout(timer); reject(err); });
   });
 }
+// ── Skill cache: ~/.stoa/skills/<name>/<manifest_hash>/ holds one revision of a skill's files. A ".ok"
+// marker is written last, so a folder without it is never used. The server already validates every
+// path; the checks here are defense in depth, because these files end up next to an agent with a shell.
+var DEFAULT_SKILLS_DIR = path.join(os.homedir(), ".stoa", "skills");
+var SKILLS_DIR = DEFAULT_SKILLS_DIR;
+var SKILL_NAME_RE = /^[a-z][a-z0-9-]{1,47}$/;
+var SKILL_HASH_RE = /^[0-9a-f]{64}$/;
+var SKILL_VERSIONS_KEPT = 2;
+var skillLocks = /* @__PURE__ */ new Map();
+function skillManifestHash(files) {
+  const h = crypto.createHash("sha256");
+  for (const f of [...files].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0)) h.update(`${f.path}
+${f.sha256}
+${f.size}
+${f.mode}
+`);
+  return h.digest("hex");
+}
+function skillFilePath(base, rel) {
+  if (typeof rel !== "string" || !rel || rel.length > 200 || rel.includes("\\") || rel.startsWith("/") || /^[A-Za-z]:/.test(rel) || /[\u0000-\u001f]/.test(rel)) return null;
+  if (rel.split("/").some((s) => s === "" || s === "." || s === "..")) return null;
+  const dest = path.join(base, rel);
+  return dest.startsWith(base + path.sep) ? dest : null;
+}
+async function skillHttp(pathname) {
+  const baseUrl = STOA_URL.replace("ws://", "http://").replace("wss://", "https://");
+  const url = `${baseUrl}${pathname}`;
+  const res = await (_fetchOverride || fetch)(url, {
+    headers: { "X-Agent-Id": String(ACTOR_ID), "X-Agent-Secret": STOA_SECRET, ...stoaCfHeaders(url) },
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
+  });
+  if (res.status === 404) {
+    const e = new Error("not found on the server (deleted or disabled)");
+    e.gone = true;
+    throw e;
+  }
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res;
+}
+function cachedSkillDirs(root) {
+  try {
+    return fs.readdirSync(root).filter((d) => SKILL_HASH_RE.test(d) && fs.existsSync(path.join(root, d, ".ok"))).map((d) => {
+      const dir = path.join(root, d);
+      let meta = {};
+      try { meta = JSON.parse(fs.readFileSync(path.join(dir, ".ok"), "utf8")); } catch {}
+      return { dir, hash: d, version: meta.version ?? null, at: meta.at || 0 };
+    }).sort((a, b) => b.at - a.at);
+  } catch {
+    return [];
+  }
+}
+// The newest SKILL_VERSIONS_KEPT complete copies stay; older ones and half-written folders go.
+function pruneSkillDir(root, keepDir) {
+  const complete = cachedSkillDirs(root);
+  const keep = new Set([keepDir, ...complete.filter((c) => c.dir !== keepDir).slice(0, SKILL_VERSIONS_KEPT - 1).map((c) => c.dir)]);
+  try {
+    for (const d of fs.readdirSync(root)) {
+      const dir = path.join(root, d);
+      if (!keep.has(dir)) fs.rmSync(dir, { recursive: true, force: true });
+    }
+  } catch (e) {
+    console.error(`[skills] prune ${root} failed:`, e.message);
+  }
+}
+async function downloadSkill(name, root) {
+  const manifest = await (await skillHttp(`/api/skills/${name}/manifest`)).json();
+  const files = Array.isArray(manifest?.files) ? manifest.files : [];
+  if (!SKILL_HASH_RE.test(manifest?.manifest_hash || "") || skillManifestHash(files) !== manifest.manifest_hash) throw new Error("manifest does not match its hash");
+  const finalDir = path.join(root, manifest.manifest_hash);
+  if (fs.existsSync(path.join(finalDir, ".ok"))) return { dir: finalDir, version: manifest.version };
+  const previous = cachedSkillDirs(root);
+  const tmpBase = path.join(SKILLS_DIR, ".tmp");
+  fs.mkdirSync(tmpBase, { recursive: true });
+  const tmp = fs.mkdtempSync(path.join(tmpBase, `${name}-`));
+  try {
+    for (const f of files) {
+      const dest = skillFilePath(tmp, f.path);
+      if (!dest || !SKILL_HASH_RE.test(f.sha256 || "") || !Number.isInteger(f.size) || f.size < 0) throw new Error(`invalid manifest entry ${String(f.path).slice(0, 80)}`);
+      let data = null;
+      for (const p of previous) {
+        const old = skillFilePath(p.dir, f.path);
+        try {
+          const buf = fs.readFileSync(old);
+          if (crypto.createHash("sha256").update(buf).digest("hex") === f.sha256) { data = buf; break; }
+        } catch {}
+      }
+      if (!data) {
+        const res = await skillHttp(`/api/skill-blobs/${f.sha256}`);
+        data = Buffer.from(await res.arrayBuffer());
+      }
+      if (data.length !== f.size || crypto.createHash("sha256").update(data).digest("hex") !== f.sha256) throw new Error(`${f.path}: content does not match its hash`);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.writeFileSync(dest, data, { mode: f.mode === 493 ? 493 : 420 });
+    }
+    if (!fs.existsSync(path.join(tmp, "SKILL.md"))) throw new Error("SKILL.md missing from the manifest");
+    fs.writeFileSync(path.join(tmp, ".ok"), JSON.stringify({ version: manifest.version, at: Date.now() }));
+    try {
+      fs.renameSync(tmp, finalDir);
+    } catch (e) {
+      // Another agent process on this machine finished the same revision first.
+      if (!fs.existsSync(path.join(finalDir, ".ok"))) throw e;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  } catch (e) {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    throw e;
+  }
+  pruneSkillDir(root, finalDir);
+  return { dir: finalDir, version: manifest.version };
+}
+// ref: { name, version, manifest_hash } from the trigger. → { name, version, dir, body, stale?, error? }
+// A cached copy of the exact revision means no network at all. When the server cannot be reached the
+// newest cached copy is used (stale); a skill the server says is gone is never run from the cache.
+async function ensureSkill(ref) {
+  const name = ref?.name;
+  if (!SKILL_NAME_RE.test(name || "")) return { name: String(name), error: "invalid skill name" };
+  const prev = skillLocks.get(name) || Promise.resolve();
+  const run = prev.then(() => ensureSkillUnlocked(name, ref));
+  const tail = run.catch(() => {});
+  skillLocks.set(name, tail);
+  tail.then(() => { if (skillLocks.get(name) === tail) skillLocks.delete(name); });
+  return run;
+}
+async function ensureSkillUnlocked(name, ref) {
+  const root = path.join(SKILLS_DIR, name);
+  const read = (dir, version, extra = {}) => ({ name, version, dir, body: fs.readFileSync(path.join(dir, "SKILL.md"), "utf8"), ...extra });
+  if (SKILL_HASH_RE.test(ref.manifest_hash || "")) {
+    const exact = path.join(root, ref.manifest_hash);
+    if (fs.existsSync(path.join(exact, ".ok"))) {
+      try {
+        return read(exact, ref.version);
+      } catch (e) {
+        console.error(`[skills] ${name}: cached copy unreadable, downloading again:`, e.message);
+        fs.rmSync(exact, { recursive: true, force: true });
+      }
+    }
+  }
+  try {
+    fs.mkdirSync(root, { recursive: true });
+    const got = await downloadSkill(name, root);
+    return read(got.dir, got.version);
+  } catch (e) {
+    console.error(`[skills] ${name}: download failed:`, e.message);
+    const cached = e.gone ? null : cachedSkillDirs(root)[0];
+    if (cached) {
+      try {
+        return read(cached.dir, cached.version, { stale: e.message });
+      } catch {}
+    }
+    return { name, version: ref.version, error: e.message };
+  }
+}
+function skillPreamble(results) {
+  const blocks = results.map((r) => {
+    if (r.error) return `<stoa-skill name="${r.name}" error="download failed">
+Skill /${r.name} could not be loaded: ${r.error}. Tell the user it is unavailable instead of guessing its steps.
+</stoa-skill>`;
+    const note = r.stale ? `
+(The Stoa server could not be reached — ${r.stale}. This is the cached copy, version ${r.version ?? "?"}; it may be out of date.)` : "";
+    return `<stoa-skill name="${r.name}" version="${r.version ?? "?"}" dir="${r.dir}">
+${r.body}
+</stoa-skill>${note}`;
+  });
+  if (results.some((r) => !r.error)) blocks.push("Supporting files of each skill are in its `dir` (read-only: do not write output there — write output to the room workdir).");
+  return blocks.join("\n");
+}
+async function prependSkills(prompt, refs) {
+  if (!Array.isArray(refs) || !refs.length) return prompt;
+  const results = await Promise.all(refs.slice(0, 3).map((r) => ensureSkill(r)));
+  return `${skillPreamble(results)}
+
+${prompt}`;
+}
 var SCAN_EXCLUDE_SYSTEM = /* @__PURE__ */ new Set([
   // Windows C:\ level
   "windows",
@@ -2315,34 +2489,12 @@ function scanForWorkdirs() {
       return null;
     }
   }
-  function readSkills(dir) {
-    const skills = [];
-    const commandsDir = path.join(dir, ".claude", "commands");
-    try {
-      const files = fs.readdirSync(commandsDir);
-      for (const f of files) {
-        if (!f.endsWith(".md")) continue;
-        const name = f.replace(/\.md$/, "");
-        let description = null;
-        try {
-          const content = fs.readFileSync(path.join(commandsDir, f), "utf8");
-          const firstLine = content.split("\n").find((l) => l.trim());
-          description = firstLine?.replace(/^#\s*/, "").trim() || null;
-        } catch {
-        }
-        skills.push({ name, description, scope: "project" });
-      }
-    } catch {
-    }
-    return skills;
-  }
   function scanDir(dir, depth, maxDepth, excludeSet) {
     if (depth > maxDepth) return;
     try {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       if (dir !== home && path.basename(dir) !== ".claude" && hasClaudeMarker(dir)) {
-        const skills = readSkills(dir);
-        results.push({ path: dir, skills, is_default: dir === home + "/stoa-workspace" || dir === path.join(home, "stoa-workspace") });
+        results.push({ path: dir, is_default: dir === home + "/stoa-workspace" || dir === path.join(home, "stoa-workspace") });
       }
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
@@ -2373,33 +2525,14 @@ function scanForWorkdirs() {
   if (defaultWorkDir && fs.existsSync(defaultWorkDir)) {
     const normalized = path.resolve(defaultWorkDir);
     if (!results.find((r) => path.resolve(r.path) === normalized)) {
-      const skills = readSkills(normalized);
-      results.unshift({ path: normalized, skills, is_default: true });
+      results.unshift({ path: normalized, is_default: true });
     } else {
       const existing = results.find((r) => path.resolve(r.path) === normalized);
       if (existing) existing.is_default = true;
     }
   }
-  const globalSkills = [];
-  const globalCommandsDir = path.join(home, ".claude", "commands");
-  try {
-    const files = fs.readdirSync(globalCommandsDir);
-    for (const f of files) {
-      if (!f.endsWith(".md")) continue;
-      const name = f.replace(/\.md$/, "");
-      let description = null;
-      try {
-        const content = fs.readFileSync(path.join(globalCommandsDir, f), "utf8");
-        const firstLine = content.split("\n").find((l) => l.trim());
-        description = firstLine?.replace(/^#\s*/, "").trim() || null;
-      } catch {
-      }
-      globalSkills.push({ name, description, scope: "global" });
-    }
-  } catch {
-  }
   for (const r of results) knownWorkdirs.add(path.resolve(r.path));
-  return { workdirs: results, globalSkills };
+  return { workdirs: results };
 }
 function handleHumanMessage(msg) {
   if (msg.type === "history") {
@@ -2591,12 +2724,15 @@ function __setDeps(overrides) {
   if (overrides.SESSION_IDLE_TTL != null) SESSION_IDLE_TTL = overrides.SESSION_IDLE_TTL;
   if (overrides.BACKGROUND_HOLD_MAX_MS != null) BACKGROUND_HOLD_MAX_MS = overrides.BACKGROUND_HOLD_MAX_MS;
   if (overrides.doRestart) _restartOverride = overrides.doRestart;
+  if (overrides.skillsDir) SKILLS_DIR = overrides.skillsDir;
 }
 function __resetDeps() {
   _sendOverride = null;
   _getSessionOverride = null;
   _prepareResumeOverride = null;
   _fetchOverride = null;
+  SKILLS_DIR = DEFAULT_SKILLS_DIR;
+  skillLocks.clear();
   SESSION_IDLE_TTL = 5;
   BACKGROUND_HOLD_MAX_MS = 3 * 60 * 60 * 1e3;
   FETCH_TIMEOUT_MS = 60000;
@@ -2608,4 +2744,4 @@ function __resetDeps() {
   outbox.length = 0;
   outboxReady = false;
 }
-module.exports = { handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, TOOL_STALL_MS, forceRestartIfStalled, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, attachHeartbeatWatchdog, HEARTBEAT_MIN_SILENCE_MS, __setDeps, __resetDeps, extractAndUploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES, send, outbox, OUTBOX_MAX, activeMessageIds };
+module.exports = { handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, TOOL_STALL_MS, forceRestartIfStalled, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, attachHeartbeatWatchdog, HEARTBEAT_MIN_SILENCE_MS, __setDeps, __resetDeps, extractAndUploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES, send, outbox, OUTBOX_MAX, activeMessageIds, ensureSkill, prependSkills, skillManifestHash };
