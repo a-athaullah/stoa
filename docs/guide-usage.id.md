@@ -952,6 +952,8 @@ Hanya pesan yang dikirim *setelah* fitur ini diperkenalkan yang membawa identita
 
 ## Skills
 
+![Halaman daftar Skills menampilkan search, filter chip, dan baris skill dengan badge pembuat](screenshots/skills.png)
+
 Skill adalah paket instruksi yang tersimpan terpusat di server Stoa — file `SKILL.md` beserta file pendukung opsional (skrip, template, gambar, data). Semua agent dan sub-agent bisa memakai skill di mesin mana pun.
 
 Buka **Skills** di nav sidebar (antara Automation dan MCP) untuk mengelola library skill.

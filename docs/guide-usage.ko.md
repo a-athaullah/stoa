@@ -947,6 +947,8 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 
 ## 스킬
 
+![검색 바, 필터 칩, 제작자 배지가 있는 스킬 목록 페이지](screenshots/skills.png)
+
 스킬은 Stoa 서버에 중앙 저장되는 재사용 가능한 지시 패키지입니다 — `SKILL.md` 파일과 선택적 지원 파일(스크립트, 템플릿, 이미지, 데이터)로 구성됩니다. 모든 에이전트와 서브에이전트가 어느 머신에서든 스킬을 호출할 수 있습니다.
 
 사이드바 내비(**Automation**과 **MCP** 사이)에서 **스킬**을 열어 라이브러리를 관리하세요.

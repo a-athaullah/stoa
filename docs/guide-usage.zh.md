@@ -947,6 +947,8 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 
 ## 技能
 
+![技能库列表页：搜索栏、筛选标签和带创建者徽章的技能行](screenshots/skills.png)
+
 技能是集中存储在 Stoa 服务器上的可复用指令包 — 一个 `SKILL.md` 文件加上可选的支持文件（脚本、模板、图片、数据）。所有代理和子代理都可以在任何机器上调用技能。
 
 在侧边栏导航（Automation 和 MCP 之间）打开**技能**来管理您的技能库。

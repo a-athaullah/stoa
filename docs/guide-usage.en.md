@@ -951,6 +951,8 @@ Only messages sent *after* this feature was introduced carry automation identity
 
 ## Skills
 
+![Skills library list page showing search, filter chips, and skill rows with creator badges](screenshots/skills.png)
+
 Skills are reusable instruction packages — a `SKILL.md` file plus optional support files (scripts, templates, images, data) — stored centrally on the Stoa server. Any agent or sub-agent can invoke a skill on any machine.
 
 Open **Skills** in the sidebar nav (between Automation and MCP) to manage your library.
