@@ -454,6 +454,7 @@ function _saAnthropicModels() {
 }
 const SA_DANGER = 'var(--h-red)';
 const HARNESS_LABELS = { claude: 'Claude CLI', codex: 'Codex CLI' };
+const S_RESCAN_TITLE = 'Rescan workdirs & harnesses';
 
 // Label errors route by the server's stable code: the text can quote user-chosen room and agent names.
 function saLabelErrorRoute(e, label, actorName) {
@@ -1029,7 +1030,7 @@ function renderAgentDetailHeader(container, actor) {
   actions.style.cssText = 'display:flex;align-items:center;gap:4px;flex-shrink:0';
 
   const refreshBtn = document.createElement('button');
-  refreshBtn.className = 's-icon-btn'; refreshBtn.title = actor.online ? 'Rescan workdirs, skills & harnesses' : 'Offline';
+  refreshBtn.className = 's-icon-btn'; refreshBtn.title = actor.online ? S_RESCAN_TITLE : 'Offline';
   refreshBtn.disabled = !actor.online; refreshBtn.innerHTML = svgRefresh(16);
   refreshBtn.addEventListener('click', async () => {
     refreshBtn.disabled = true; refreshBtn.style.opacity = '0.4';

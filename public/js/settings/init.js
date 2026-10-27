@@ -150,9 +150,9 @@ function handleActorStatus(actor) {
     const header = document.getElementById('s-agent-detail-header');
     if (header) {
       header.querySelectorAll('.s-icon-btn').forEach(btn => {
-        if (btn.title === 'Rescan workdirs & skills' || btn.title === 'Force update agent code' || btn.title === 'Offline') {
+        if (btn.title === S_RESCAN_TITLE || btn.title === 'Force update agent code' || btn.title === 'Offline') {
           btn.disabled = !actor.online;
-          btn.title = actor.online ? (btn.title === 'Offline' ? 'Rescan workdirs & skills' : btn.title) : 'Offline';
+          btn.title = actor.online ? (btn.title === 'Offline' ? S_RESCAN_TITLE : btn.title) : 'Offline';
         }
       });
     }
