@@ -6,7 +6,6 @@ const SK_LANG_BY_EXT = { js: 'js', mjs: 'js', cjs: 'js', jsx: 'jsx', ts: 'ts', t
 const SK_TEXT_PREVIEW_MAX = 512 * 1024;
 const SK_SAVE_UPLOAD_MAX = 18 * 1024 * 1024;
 const SK_FILE_MAX = 20 * 1024 * 1024;
-const SK_PATH_SEG_RE = /^[A-Za-z0-9._ -]+$/;
 const SK_DESC_MAX = 500;
 const SK_TEMPLATE = `## When to use
 
@@ -52,7 +51,8 @@ function skPathProblem(path, ed, selfPath) {
   if (path.length > 200) return 'Paths are limited to 200 characters.';
   const segs = path.split('/');
   if (segs.length > 8) return 'Folders can nest at most 8 levels deep.';
-  if (segs.some(s => !s || s === '.' || s === '..' || !SK_PATH_SEG_RE.test(s))) return 'Use letters, digits, spaces, dots, hyphens and underscores, separated by /.';
+  if (/[\u0000-\u001f\u007f\\]/.test(path) || /^[A-Za-z]:/.test(path)) return 'Paths can’t contain backslashes, control characters or a drive letter.';
+  if (segs.some(s => !s || s === '.' || s === '..')) return 'Each part of the path needs a name; "." and ".." are not allowed.';
   if (path.toLowerCase() === SK_MAIN_FILE.toLowerCase()) return 'SKILL.md is the main file and already exists.';
   const lower = path.toLowerCase();
   for (const p of ed.files.keys()) {
@@ -219,7 +219,7 @@ function skMakeMetaForm(ed) {
   const hint = skEl('input', 'sk-input');
   hint.value = ed.hint;
   hint.placeholder = '[topic] [tone]';
-  hint.maxLength = 120;
+  hint.maxLength = 200;
   hintField.appendChild(hint);
   hintField.appendChild(skEl('span', 'sk-field-help', 'Optional. Shown in the composer after /name.'));
   form.appendChild(hintField);
@@ -295,8 +295,11 @@ function skTreeEntries(ed) {
 function skMakeTree(ed) {
   const aside = skEl('div', 'sk-tree');
   const head = skEl('div', 'sk-tree-head');
-  const toggle = skBtn('sk-tree-toggle', 'Files', () => { ed.treeOpen = !ed.treeOpen; skillsRenderEditor(); });
-  toggle.setAttribute('aria-expanded', ed.treeOpen ? 'true' : 'false');
+  const collapsible = window.matchMedia('(max-width: 760px)').matches;
+  const toggle = collapsible
+    ? skBtn('sk-tree-toggle', 'Files', () => { ed.treeOpen = !ed.treeOpen; skillsRenderEditor(); })
+    : skEl('span', 'sk-tree-toggle', 'Files');
+  if (collapsible) toggle.setAttribute('aria-expanded', ed.treeOpen ? 'true' : 'false');
   toggle.appendChild(skEl('span', 'sk-tree-count', String(ed.files.size + 1)));
   head.appendChild(toggle);
   const tools = skEl('div', 'sk-tree-tools');

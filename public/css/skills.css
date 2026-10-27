@@ -131,7 +131,7 @@
 .sk-tree-toggle {
   flex: 1; display: inline-flex; align-items: center; gap: 6px; background: none; border: none; padding: 4px 0;
   font-family: var(--h-sans); font-size: 11.5px; letter-spacing: .03em; text-transform: uppercase; color: var(--h-ink-faint);
-  cursor: default; text-align: left;
+  text-align: left;
 }
 .sk-tree-count { text-transform: none; letter-spacing: 0; }
 .sk-tree-tools { display: flex; gap: 0; }

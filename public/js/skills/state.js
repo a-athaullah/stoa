@@ -1,6 +1,10 @@
 // ── Skills tab: state, API, shared cache ─────────────────────────────────────
 const SKILL_NAME_RE = /^[a-z][a-z0-9-]{1,47}$/;
-const SKILL_RESERVED = new Set(['compact', 'clear', 'help', 'model', 'skills']);
+// Same list as RESERVED_NAMES in lib/skill-bundle.js.
+const SKILL_RESERVED = new Set([
+  'compact', 'clear', 'help', 'model', 'models', 'skills', 'skill', 'reauth', 'logout', 'login',
+  'status', 'stop', 'cost', 'config', 'init', 'memory', 'resume', 'review', 'exit', 'quit', 'new', 'reset',
+]);
 const SKILL_BODY_MAX = 64 * 1024;
 const SKILL_UPLOAD_MAX = 25 * 1024 * 1024;
 const SKILL_FILTERS = [
@@ -151,7 +155,13 @@ async function sLoadSkillsTab() {
   if (!skillsState.loaded) await skillsLoad();
   const openId = skillsState.pendingOpenId;
   skillsState.pendingOpenId = null;
-  if (openId) { skillsOpenEditor(openId); return; }
+  const ed = skillsState.view === 'editor' ? skillsState.editor : null;
+  if (openId && ed?.id !== openId && skIsDirty(ed)) {
+    showToast(`Save or discard your changes to ${ed.name ? '/' + ed.name : 'the new skill'} first`, { error: true, duration: 5000 });
+  } else if (openId && ed?.id !== openId) {
+    skillsOpenEditor(openId);
+    return;
+  }
   if (skillsState.view === 'editor' && skillsState.editor) skillsRenderEditor();
   else skillsRender();
 }
