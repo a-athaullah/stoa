@@ -1003,7 +1003,29 @@ Konten skill di-prepend ke prompt agent; file pendukung di-cache di mesin agent 
 
 ### Skill Buatan Agent
 
-Agent (termasuk sub-agent) bisa membuat dan memperbarui skill. Skill buatan agent langsung muncul di daftar dengan **badge pembuat** yang menampilkan avatar agent. Kamu tetap punya kontrol penuh — bisa menonaktifkan atau menghapus skill apa pun. Agent hanya bisa mengelola skillnya sendiri; tidak bisa mengubah skill milik agent lain atau milikmu.
+Agent dan sub-agent bisa membuat dan mengelola skill menggunakan enam MCP tool bawaan:
+
+| Tool | Siapa yang bisa | Yang dilakukan |
+|---|---|---|
+| `stoa__skill_list` | semua agent | Mengembalikan nama, deskripsi, argument hint, pembuat, dan versi semua skill yang terlihat. |
+| `stoa__skill_get` | semua agent | Mengembalikan isi `SKILL.md`, atau membaca satu file teks (≤ 256 KB) tanpa mengunduh. File biner dan file di atas 256 KB ditolak; gunakan `stoa__skill_use` untuk itu. |
+| `stoa__skill_use` | semua agent | Mensinkronkan skill ke mesin agent (mengunduh file pendukung ke `~/.stoa/skills/<name>/<hash>/`) dan mengembalikan isi beserta path direktori lokal. |
+| `stoa__skill_create` | agent / sub-agent | Membuat skill baru. `files` menerima `{path, content}` atau `{path, content_base64}`. Total payload maks 5 MB lewat MCP; bundle lebih besar pakai `POST /api/skills/import`. |
+| `stoa__skill_update` | pembuat saja | Membuat revisi baru. Bisa memperbarui deskripsi, argument hint, isi, upsert atau hapus file pendukung, dan menambah catatan revisi. Tidak bisa rename atau toggle enabled. |
+| `stoa__skill_delete` | pembuat saja | Menghapus skill secara permanen. |
+
+**Tanpa approval** — tool-tool ini bekerja seperti semua tool bawaan `stoa__*` lainnya dan tidak pernah memunculkan dialog persetujuan.
+
+**Kepemilikan:** Agent hanya bisa mengubah atau menghapus skill buatannya sendiri. Parent agent bisa mengelola skill buatan sub-agentnya. Skill milik kamu atau agent lain mengembalikan error `not_found` untuk mencegah enumerasi. Kamu tetap punya kontrol penuh — nonaktifkan atau hapus skill apa pun dari halaman Skills.
+
+**Kuota:**
+- 50 skill per agent. Skill sub-agent dihitung ke kuota parent agent.
+- 200 skill total di seluruh library. Kamu (owner) tidak kena batas ini.
+- Create atau update lewat MCP: maks 5 MB total (isi + semua file gabungan). Untuk bundle lebih besar, pakai `POST /api/skills/import`.
+
+**Katalog skill di system prompt:** Agent yang punya tool `stoa__*` otomatis mendapat blok `<stoa-skills>` di system prompt yang mencantumkan hingga 40 skill aktif beserta nama dan deskripsinya (maks 4 KB, tanpa isi). Setelah skill berubah, sesi agent di-resume sekali di turn berikutnya — konteks tetap utuh.
+
+**Client lama:** Jika client agent tidak mendukung fitur `skill_sync` (sebelum v0.4.440), `stoa__skill_use` mengembalikan isi `SKILL.md` tanpa mengunduh file pendukung (`dir: null`, `files_unavailable` diset). Update client agent untuk mengaktifkan sinkronisasi file penuh.
 
 Cache di mesin agent menyimpan maks 2 versi per skill. Skill yang sudah tidak ada di server tidak pernah dijalankan dari cache.
 
