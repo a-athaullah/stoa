@@ -41,7 +41,7 @@ Click the **+ room** button in the sidebar. A dialog appears where you:
 
 - Enter a **room title** — this can be edited later by clicking the title in the chat header
 - Select **participants** — select the AI agent for this room (you can add more agents after creation) Only agents that are currently **online** can be selected — offline agents are shown greyed-out with an *offline* badge, since a room needs an agent that can actually respond.
-- Select a **working directory** — required; determines which project context and skills are available in this room
+- Select a **working directory** — required; determines which project context is available in this room
 
 ### Adding Participants
 
@@ -539,7 +539,7 @@ Changing an agent's harness in a **mixed room** (where other AI agents can still
 
 Sub-agents can also choose their own harness, or leave it on **inherit from parent** (the default).
 
-**Checking harness availability:** After installing or logging in to a CLI tool on the agent's machine, click the **Check** button next to the Harness dropdown (in the agent detail panel or accordion in **Settings > AI Agent**) to re-detect without restarting the agent. The button is disabled when the agent is offline, and detection can take up to ~15 seconds. The dropdown updates immediately when results arrive — new harnesses detected show a toast notification. Rescan also re-checks harnesses alongside working directories and skills.
+**Checking harness availability:** After installing or logging in to a CLI tool on the agent's machine, click the **Check** button next to the Harness dropdown (in the agent detail panel or accordion in **Settings > AI Agent**) to re-detect without restarting the agent. The button is disabled when the agent is offline, and detection can take up to ~15 seconds. The dropdown updates immediately when results arrive — new harnesses detected show a toast notification. Rescan also re-checks harnesses alongside working directories.
 
 **Restarting to apply CLI updates:** After updating a CLI tool on the agent's machine, click the **power icon** (**Restart agent**) in the agent header, between force update and remove. A confirmation bar appears at the top of the page — confirm to restart immediately; all of the agent's running processes stop at that point. Conversations resume from where they left off via session resume. The icon is only enabled when the agent is online and managed by PM2; agents started manually, under systemd, or launchd are not supported (a restart outside PM2 would stop the agent permanently). While a restart is in progress, the icon turns amber and pulses; hover it to see **restarting…**, then a toast confirms the agent is back. Check does not restart the agent.
 
@@ -615,7 +615,7 @@ Each agent reports its **client version** (e.g., `v0.2.2`) to the server. You ca
 
 Select an agent in **Settings > AI Agent** to see action buttons in the detail header:
 
-- **Rescan** — re-scan the agent's working directories, skills, and harness availability
+- **Rescan** — re-scan the agent's working directories and harness availability
 - **Force Update** — force the agent to check for client updates immediately (normally checks every 2 minutes)
 - **Remove** — unregister the agent (with confirmation). Agents with chat history or usage records cannot be deleted.
 
@@ -656,16 +656,6 @@ Headers:
 Body: { "content": "your message here" }
 ```
 
-### Agent Skills
-
-Skills are slash commands available in an agent's Claude Code environment (e.g., `/stoa-audit`, `/deploy`). They're auto-detected from the agent's workdir and displayed in the settings panel.
-
-Skills are **scoped by working directory** — when you create a room with a specific workdir, only skills from that workdir (project/local scope) plus global skills are available. This prevents skill collisions across different projects.
-
-You can invoke a skill in chat by typing the slash command directly:
-```
-/skill-name
-```
 
 ---
 
@@ -959,6 +949,67 @@ Only messages sent *after* this feature was introduced carry automation identity
 
 ---
 
+## Skills
+
+Skills are reusable instruction packages — a `SKILL.md` file plus optional support files (scripts, templates, images, data) — stored centrally on the Stoa server. Any agent or sub-agent can invoke a skill on any machine.
+
+Open **Skills** in the sidebar nav (between Automation and MCP) to manage your library.
+
+### Skill List
+
+The list shows all skills with `/name` (monospace), description, creator (your avatar or the creating agent's avatar with a badge), version, file count, size, and last-updated time.
+
+Controls per row:
+- **Enable toggle** — disabled skills are hidden from the composer autocomplete and are not resolved in messages.
+- **⋯ menu** — Edit, Export `.zip`, History, Delete.
+
+Filter chips: **All · Mine · By agents · Disabled**. Search by name or description. Drag a file or archive onto the page to start an import.
+
+### Creating a Skill
+
+Click **New skill → Write from scratch**. The editor opens with a blank template and two panels:
+
+- **Left — file tree**: `SKILL.md` is pinned and cannot be deleted. Buttons to add a file, add a folder, or upload. Right-click (long-press on tablet) to rename or delete items.
+- **Right — editor**: `SKILL.md` opens in a markdown editor with **Edit / Preview** tabs. The **name**, **description**, and **argument hint** fields above the editor are the source of truth — edit them in the form, and the frontmatter in `SKILL.md` is generated on save. Other text files (`.js`, `.py`, `.json`, `.md`, `.css`, `.html`) open in a syntax-highlighted editor; images show a preview; binary files show a download link.
+
+Click **Save** to create a new revision. An optional revision note appears in the footer. An "unsaved" indicator appears whenever there are pending changes.
+
+### Importing a Skill
+
+Click **New skill → Import file** (or drag a file onto the page). Supported formats:
+
+| Input | Notes |
+|---|---|
+| `.md` | Becomes `SKILL.md`; no support files |
+| `.zip` / `.skill` | `SKILL.md` at the root or inside a single top-level folder |
+| `.tar.gz` / `.tgz` / `.tar` | Same layout rules as `.zip` |
+| Folder (drag-drop or **Import folder**) | Files sent as multipart with relative paths |
+| GitHub URL | `https://github.com/<owner>/<repo>[/tree/<ref>/<path>]` — server fetches the public tarball; no token needed. Refs containing `/` are not supported. |
+
+A **preview dialog** appears after selecting any input, showing the detected name, description, file list, total size, and any warnings (files ignored, exec bits, etc.). You can override the name here if it conflicts with an existing skill. Confirm to save and open the editor.
+
+**Limits:** 50 MB total, 20 MB per file, 300 files, `SKILL.md` ≤ 64 KB. Archives with absolute paths, `..` traversal, symlinks, encrypted entries, or case-insensitive duplicate paths are rejected.
+
+### Invoking a Skill
+
+Type `/` in any room or thread composer to open the skill autocomplete popup. Arrow keys navigate; Enter or Tab confirms. The chosen skill appears as a **chip** in the composer. Add arguments after the chip and combine with an `@mention` if needed (e.g., `@Kenji /stoa-audit check branch Y`).
+
+Skills are resolved at the token level: `/name` at the start of a message or after whitespace (up to 3 per message) is matched against enabled skills. Unrecognized tokens stay as plain text. The agent's reply shows a **"used /name vN"** chip under the bubble, both live during streaming and after page reload.
+
+The skill content is prepended to the agent's prompt; support files are cached on the agent machine at `~/.stoa/skills/<name>/<hash>/` on first use. If the server is unreachable, the cached version is used with a notice in the preamble.
+
+### Agent-Created Skills
+
+Agents (including sub-agents) can create and update skills. Agent-created skills appear immediately in the list with a **creator badge** showing the agent's avatar. You retain full control — you can disable or delete any skill. An agent can manage only its own skills; it cannot modify skills created by other agents or by you.
+
+The cache on the agent machine stores up to 2 versions per skill. Skills no longer present on the server are never run from cache.
+
+### Version History
+
+Click **⋯ → History** on any skill to open the revision drawer. Each row shows the version number, author, timestamp, note, and file changes. Click a version to view its `SKILL.md` read-only and compare with the current version. Click **Restore** to create a new revision that is a copy of the selected version.
+
+---
+
 ## MCP
 
 **MCP (Model Context Protocol)** gives your AI agents *tools* they can call on their own — file search, code lookup, issue tracking, and more. Install an MCP server once in Stoa and every agent (Claude Code, Codex, sub-agents, agents on any machine) can use its tools, with credentials stored centrally and access controlled per agent.
@@ -1097,7 +1148,7 @@ See `stoa-api.md` → **Stoa MCP Tools** for the full argument list.
 
 Stoa uses a **vertical sidebar nav** on the far left of the app. The sidebar is icon-only (44 px wide) and slides open to 200 px on hover, revealing text labels. Click any icon to switch sections. On mobile (narrow screen) the sidebar is hidden — use the in-app navigation instead.
 
-Nav items, top to bottom: **Inbox** (your rooms list), then a separator, followed by the settings sections: **AI Agent**, **Server**, **General**, **Themes**, **Docs**, **Platforms**, **Automation**, **MCP**, **Usage**, **Doctor**.
+Nav items, top to bottom: **Inbox** (your rooms list), then a separator, followed by the settings sections: **AI Agent**, **Server**, **General**, **Themes**, **Docs**, **Platforms**, **Automation**, **Skills**, **MCP**, **Usage**, **Doctor**.
 
 ### AI Agent
 
@@ -1342,6 +1393,10 @@ Agent secrets (`x-agent-id` / `x-agent-secret`) are limited to an allowlist of r
 | `PATCH /api/automations/:id` | Owned automation (`target_room_id` must remain own room) |
 | `DELETE /api/automations/:id` | Owned automation |
 | `GET /api/automations/connections` | Any valid agent (`id`, `name`, `provider`, `status` only — no credentials) |
+| `GET /api/skills` | Any valid agent (enabled skills only — name, description, hint, version, file count) |
+| `GET /api/skills/:name/manifest` | Any valid agent |
+| `GET /api/skill-blobs/:sha256` | Any valid agent (sha referenced by enabled skill's current revision only) |
+| `POST /api/skills/import` | Any valid agent (ownership = calling agent) |
 
 When an agent creates, updates, or deletes an automation, a permanent system notice is posted in the target room (e.g., *"Ara created automation 'X' (trigger: slack message) · automation"*), so the workspace owner can monitor changes and revoke them if needed.
 
