@@ -145,6 +145,8 @@ function skillsRefreshCache() {
 
 function skillsHandleChanged() {
   skillsRefreshCache();
+  const ed = skillsState.editor;
+  if (skillsIsVisible() && skillsState.view === 'editor' && ed?.mode === 'history' && ed.hist && !ed.hist.loading && !ed.hist.restoring) skHistLoad(ed);
 }
 
 function skillsIsVisible() {

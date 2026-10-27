@@ -87,6 +87,8 @@ function skNewEditor(skill) {
     confirmDelete: null,
     confirmDiscard: false,
     treeOpen: false,
+    mode: 'files',
+    hist: null,
   };
   (skill?.files || []).forEach(f => {
     if (f.path === SK_MAIN_FILE) return;
@@ -174,12 +176,38 @@ function skillsRenderEditor() {
       by.appendChild(skCreatorEl(ed.skill));
       top.appendChild(by);
     }
+    if (ed.id) {
+      const exp = skBtn('auto-small-btn sk-ed-export', 'Export .zip', () => skExport(ed.skill), 'Download the saved version as .zip');
+      exp.dataset.exportKey = `${ed.id}:`;
+      exp.disabled = skExporting.has(exp.dataset.exportKey);
+      top.appendChild(exp);
+    }
   }
   inner.appendChild(top);
 
   if (ed.loading) {
     inner.appendChild(skEl('div', 'sk-muted', 'Loading skill…'));
     host.replaceChildren(inner);
+    return;
+  }
+
+  if (ed.id) {
+    const modes = skEl('div', 'mcp-seg sk-ed-modes');
+    modes.setAttribute('role', 'group');
+    modes.setAttribute('aria-label', 'Editor view');
+    [['files', 'Files'], ['history', 'History']].forEach(([id, label]) => {
+      const b = skBtn('mcp-seg-btn', label, () => skSetEditorMode(ed, id));
+      b.setAttribute('aria-pressed', ed.mode === id ? 'true' : 'false');
+      modes.appendChild(b);
+    });
+    inner.appendChild(modes);
+  }
+
+  if (ed.mode === 'history') {
+    if (skIsDirty(ed)) inner.appendChild(skEl('div', 'sk-hist-dirty', 'You have unsaved edits. Switch to Files to save or discard them.'));
+    inner.appendChild(skMakeHistory(ed));
+    host.replaceChildren(inner);
+    host.scrollTop = 0;
     return;
   }
 
