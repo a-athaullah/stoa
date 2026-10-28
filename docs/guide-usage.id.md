@@ -249,7 +249,7 @@ Ini adalah salah satu fitur paling powerful di Stoa. Saat beberapa AI agent ada 
 
 ### Primary Agent
 
-Setiap room dengan lebih dari satu AI agent memiliki tepat satu **primary agent** — yang menjawab pesan tanpa @mention. Agent lainnya adalah **pendamping**: hanya berjalan saat di-@mention, oleh kamu atau oleh primary agent.
+Setiap room dengan setidaknya satu AI agent memiliki tepat satu **primary agent** — yang menjawab pesan tanpa @mention. Agent lainnya adalah **pendamping**: hanya berjalan saat di-@mention, oleh kamu atau oleh primary agent.
 
 - Primary agent ditetapkan saat room dibuat (default: agent yang working directory-nya dipilih).
 - Ditandai dengan pill kecil `primary` di panel Agents, di popup @mention, dan sebagai "primary: \<nama\>" di bawah judul room.

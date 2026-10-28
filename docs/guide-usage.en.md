@@ -249,7 +249,7 @@ This is one of Stoa's most powerful features. When multiple AI agents are in a r
 
 ### Primary Agent
 
-Each room with more than one AI agent has exactly one **primary agent** — the one that answers messages with no @mention. All other agents are **companions**: they only run when @mentioned, either by you or by the primary agent.
+Every room with at least one AI agent has exactly one **primary agent** — the one that answers messages with no @mention. All other agents are **companions**: they only run when @mentioned, either by you or by the primary agent.
 
 - The primary agent is set when the room is created (defaults to the agent whose working directory was selected).
 - Identified by a small `primary` pill in the Agents panel, in the @mention popup, and as "primary: \<name\>" under the room title.
