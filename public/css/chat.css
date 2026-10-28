@@ -1174,7 +1174,7 @@
   position: sticky; top: 0; z-index: 1; font-weight: 600;
   background: var(--h-surface); box-shadow: inset 0 -1px 0 var(--h-hairline);
 }
-.fp-table td { color: var(--h-ink-mute); }
+.fp-table td { color: var(--h-ink-mute); white-space: pre; }
 @media (max-width: 640px) {
   .fp-dialog, .fp-dialog.is-pdf {
     width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh;

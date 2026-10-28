@@ -72,10 +72,16 @@ function filePreviewKind(u) {
   return FILE_PREVIEW_KINDS[fileExtOf(u.pathname)] || null;
 }
 
+// Label and icon describe the file that will actually download, so served files use the on-disk extension too.
+function fileCardExt(u, name) {
+  if (u && fileIsServed(u)) return fileExtOf(u.pathname) || fileExtOf(name);
+  return fileExtOf(name) || (u ? fileExtOf(u.pathname) : '');
+}
+
 function renderFileCard(a) {
   const u = fileResolveUrl(a.url);
   const name = fileDisplayName(a, u);
-  const ext = fileExtOf(name) || (u ? fileExtOf(u.pathname) : '');
+  const ext = fileCardExt(u, name);
   const kind = filePreviewKind(u);
 
   const card = document.createElement('div');
@@ -161,7 +167,16 @@ function filePreviewDialog() {
   body.className = 'fp-body';
   dlg.append(head, body);
 
-  dlg.addEventListener('click', e => { if (e.target === dlg) dlg.close(); });
+  // A drag across the backdrop edge (e.g. a text selection) still fires click on the dialog,
+  // so close only when the press and the release both landed on the backdrop.
+  let pressedBackdrop = false;
+  let releasedBackdrop = false;
+  dlg.addEventListener('pointerdown', e => { pressedBackdrop = e.target === dlg; });
+  dlg.addEventListener('pointerup', e => { releasedBackdrop = e.target === dlg; });
+  dlg.addEventListener('click', e => {
+    if (e.target === dlg && pressedBackdrop && releasedBackdrop) dlg.close();
+    pressedBackdrop = releasedBackdrop = false;
+  });
   // Esc closes the dialog natively; keep it from reaching the global handler (stop generation, etc.)
   dlg.addEventListener('keydown', e => { if (e.key === 'Escape') e.stopPropagation(); });
   dlg.addEventListener('close', () => {
@@ -233,12 +248,20 @@ function filePreviewNote(text) {
   return p;
 }
 
+// Both sizes share one unit, and near the limit that unit is KB so they never round to the same number.
+function fileSizePair(bytes, limit) {
+  const [div, unit] = bytes < 10 * 1048576 ? [1024, 'KB'] : [1048576, 'MB'];
+  const fmt = n => `${(n / div).toLocaleString('en-US', { maximumFractionDigits: 1 })} ${unit}`;
+  return [fmt(bytes), fmt(limit)];
+}
+
 function filePreviewError(err, file) {
   const box = document.createElement('div');
   box.className = 'fp-empty';
   let msg;
   if (err?.reason === 'large') {
-    msg = `This file is too large to preview (${(err.size / 1024 / 1024).toFixed(1)} MB, limit ${FILE_PREVIEW_MAX_BYTES / 1024 / 1024} MB). Download it to view.`;
+    const [size, limit] = fileSizePair(err.size, FILE_PREVIEW_MAX_BYTES);
+    msg = `This file is too large to preview (${size}, limit ${limit}). Download it to view.`;
   } else if (err?.reason === 'http' && (err.status === 404 || err.status === 410)) {
     msg = 'This file is no longer available. It may have been removed by cleanup.';
   } else if (err?.reason === 'http') {
