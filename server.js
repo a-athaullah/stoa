@@ -222,6 +222,7 @@ function cleanErrorText(raw) {
 }
 
 const { createThreadBroadcast } = require('./lib/thread-broadcast');
+const { findMentions } = require('./lib/mentions');
 const { buildFtsQueries, focusSnippet, fuseRrf } = require('./lib/search-query');
 const { createSemanticIndex } = require('./lib/semantic-index');
 const { setBroadcastReason, getThreadRootPreview, maybeBroadcastError, clearErrorBroadcast, emitBroadcastCleared } = createThreadBroadcast({
@@ -837,7 +838,6 @@ async function drainWake(wakeId) {
 // next sub-agent → cascade triggers it → repeat.
 const MAX_WAKE_CASCADE_DEPTH = 5;
 const wakeCascadeDepth = new Map(); // roomId → current depth
-const mentionBoundary = (name) => new RegExp(`(?:^|\\s)@${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=\\s|[.,!?;:]|$)`);
 
 // A mention inside markdown code (fenced block or inline span) is an example, not a
 // trigger. Used for trigger detection only — stored and forwarded content is untouched.
@@ -968,15 +968,16 @@ async function cascadeMentionsAfterWake(roomId, parent, threadId) {
   const subAgentsCascade = [];
   const regularAgentsCascade = [];
 
+  const mentioned = findMentions(mentionText, [...linkedSubs.map(sa => sa.label), ...allAi.map(a => a.name)]);
   for (const sa of linkedSubs) {
-    if (mentionBoundary(sa.label).test(mentionText)) {
+    if (mentioned.has(sa.label)) {
       const parentAgent = allAi.find(a => a.actor_id === sa.parent_actor_id);
       if (parentAgent) subAgentsCascade.push({ ...parentAgent, sub_agent: sa });
     }
   }
 
   for (const other of allAi) {
-    if (other.actor_id !== parent.actor_id && mentionBoundary(other.name).test(mentionText)) {
+    if (other.actor_id !== parent.actor_id && mentioned.has(other.name)) {
       const alreadyQueued = regularAgentsCascade.some(a => a.actor_id === other.actor_id);
       if (!alreadyQueued) regularAgentsCascade.push({ ...other, sub_agent: null });
     }
@@ -1023,16 +1024,17 @@ async function cascadeMentionsFromProactive(roomId, senderActorId, content, thre
   const subAgentsCascade = [];
   const regularAgentsCascade = [];
 
+  const mentioned = findMentions(mentionText, [...linkedSubs.map(sa => sa.label), ...allAi.map(a => a.name)]);
   for (const sa of linkedSubs) {
     if (sa.id === senderSubAgentId) continue; // a sub-agent never re-triggers itself
-    if (mentionBoundary(sa.label).test(mentionText)) {
+    if (mentioned.has(sa.label)) {
       const parentAgent = allAi.find(a => a.actor_id === sa.parent_actor_id);
       if (parentAgent) subAgentsCascade.push({ ...parentAgent, sub_agent: sa });
     }
   }
 
   for (const other of allAi) {
-    if (other.actor_id !== senderActorId && mentionBoundary(other.name).test(mentionText)) {
+    if (other.actor_id !== senderActorId && mentioned.has(other.name)) {
       const alreadyQueued = regularAgentsCascade.some(a => a.actor_id === other.actor_id);
       if (!alreadyQueued) regularAgentsCascade.push({ ...other, sub_agent: null });
     }
@@ -5477,6 +5479,7 @@ wss.on('connection', (ws, req) => {
             OR (m.state = 'system_event' AND m.content LIKE '% · schedule')
             OR (m.state = 'system_event' AND m.content LIKE '% · config')
             OR (m.state = 'error' AND m.broadcast_reason IS NOT NULL)
+            OR (m.state = 'system_event' AND m.broadcast_reason IS NOT NULL)
           )
           ORDER BY m.feed_pos DESC, m.id DESC LIMIT 100
         ) AS recent ORDER BY feed_pos, id
@@ -7018,35 +7021,36 @@ function roomPrimaryActorId(roomId) {
   return db.prepare(`SELECT ${PRIMARY_ACTOR_SQL} AS id FROM rooms r WHERE r.id=?`).get(roomId)?.id ?? null;
 }
 
+// Sub-agent entries carry parent_mentioned: "@Parent @label" folds into the sub-agent, and only
+// that explicit parent mention lets the sub-agent's result wake the parent afterwards.
 function resolveAgentOrder(content, agents, roomId, primaryActorId) {
   const mentionText = stripCodeSpans(content);
+  const linkedSubs = roomId ? db.prepare(`
+    SELECT sa.*, a.name AS parent_name FROM room_sub_agents rsa
+    JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
+    JOIN actors a ON a.id=sa.parent_actor_id
+    WHERE rsa.room_id=? AND sa.enabled=1
+  `).all(roomId) : [];
+  const mentioned = findMentions(mentionText, [...linkedSubs.map(sa => sa.label), ...agents.map(a => a.name)]);
   const mentions = [];
   for (const agent of agents) {
-    const idx = mentionText.indexOf('@' + agent.name);
-    if (idx !== -1) mentions.push({ agent: { ...agent, sub_agent: null }, idx });
+    if (mentioned.has(agent.name)) mentions.push({ agent: { ...agent, sub_agent: null }, idx: mentioned.get(agent.name) });
   }
 
-  // Check sub-agent label mentions (@probe, @reviewer) — linked to this room
-  if (roomId) {
-    const linkedSubs = db.prepare(`
-      SELECT sa.*, a.name AS parent_name FROM room_sub_agents rsa
-      JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
-      JOIN actors a ON a.id=sa.parent_actor_id
-      WHERE rsa.room_id=? AND sa.enabled=1
-    `).all(roomId);
-    for (const sa of linkedSubs) {
-      const idx = mentionText.indexOf('@' + sa.label);
-      if (idx === -1) continue;
-      const parent = agents.find(a => a.actor_id === sa.parent_actor_id);
-      if (!parent) continue;
-      // Sub-agent mention overrides parent mention (@Parent @label → sub-agent wins)
-      const existingIdx = mentions.findIndex(m => m.agent.actor_id === sa.parent_actor_id);
-      if (existingIdx !== -1) {
-        mentions[existingIdx] = { agent: { ...parent, sub_agent: sa }, idx };
-        continue;
-      }
-      mentions.push({ agent: { ...parent, sub_agent: sa }, idx });
+  // Sub-agent label mentions (@probe, @reviewer) — linked to this room
+  for (const sa of linkedSubs) {
+    if (!mentioned.has(sa.label)) continue;
+    const idx = mentioned.get(sa.label);
+    const parent = agents.find(a => a.actor_id === sa.parent_actor_id);
+    if (!parent) continue;
+    const agent = { ...parent, sub_agent: sa, parent_mentioned: mentioned.has(parent.name) };
+    // Sub-agent mention overrides parent mention (@Parent @label → sub-agent wins)
+    const existingIdx = mentions.findIndex(m => m.agent.actor_id === sa.parent_actor_id);
+    if (existingIdx !== -1) {
+      mentions[existingIdx] = { agent, idx };
+      continue;
     }
+    mentions.push({ agent, idx });
   }
 
   if (mentions.length > 0) {
@@ -7054,7 +7058,7 @@ function resolveAgentOrder(content, agents, roomId, primaryActorId) {
     return mentions.map(m => m.agent);
   }
   // No mentions → only the primary agent answers; the others are assistants it can @mention.
-  return agents.filter(a => a.actor_id === primaryActorId).map(a => ({ ...a, sub_agent: null }));
+  return agents.filter(a => a.actor_id === primaryActorId).map(a => ({ ...a, sub_agent: null, unmentioned: true }));
 }
 
 const activeSequences = new Map(); // roomId → { cancelled: bool }
@@ -7132,22 +7136,23 @@ async function triggerAgentsSequential(roomId, agents, content, replyTo, attachm
       if (lastMsg?.content) {
         const mentionText = stripCodeSpans(lastMsg.content);
         const allAiInRoom = allAiStmt.all(roomId);
-        for (const other of allAiInRoom) {
-          if (other.actor_id !== currentAgent.actor_id && mentionBoundary(other.name).test(mentionText)) {
-            const alreadyQueued = agents.slice(i + 1).some(a => a.actor_id === other.actor_id);
-            if (!alreadyQueued) agents.push({ ...other, sub_agent: null });
-          }
-        }
-
-        // Sub-agent mentions in responses fire in parallel (task-based, independent of conversation flow)
         const linkedSubs = db.prepare(`
           SELECT sa.*, a.name AS parent_name FROM room_sub_agents rsa
           JOIN sub_agents sa ON sa.id=rsa.sub_agent_id
           JOIN actors a ON a.id=sa.parent_actor_id
           WHERE rsa.room_id=? AND sa.enabled=1
         `).all(roomId);
+        const mentioned = findMentions(mentionText, [...linkedSubs.map(sa => sa.label), ...allAiInRoom.map(a => a.name)]);
+        for (const other of allAiInRoom) {
+          if (other.actor_id !== currentAgent.actor_id && mentioned.has(other.name)) {
+            const alreadyQueued = agents.slice(i + 1).some(a => a.actor_id === other.actor_id);
+            if (!alreadyQueued) agents.push({ ...other, sub_agent: null });
+          }
+        }
+
+        // Sub-agent mentions in responses fire in parallel (task-based, independent of conversation flow)
         for (const sa of linkedSubs) {
-          if (mentionBoundary(sa.label).test(mentionText) && !firedSubAgentIds.has(sa.id)) {
+          if (mentioned.has(sa.label) && !firedSubAgentIds.has(sa.id)) {
             const parent = allAiInRoom.find(a => a.actor_id === sa.parent_actor_id);
             if (parent) {
               firedSubAgentIds.add(sa.id);
@@ -7294,12 +7299,9 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
   if (allAiParts.length > 0) {
     // A scheduled run's named agent stands in for the primary when the task has no @mention.
     const ordered = resolveAgentOrder(content, allAiParts, roomId, automation?.target_actor_id || roomPrimaryActorId(roomId));
-    const mentionText = stripCodeSpans(content);
-    // resolveAgentOrder folds "@Parent @label" into the sub-agent, so an explicit parent
-    // mention is detected separately: only then does the parent get woken afterwards.
     // Automation messages also land here and are treated the same as human messages.
     const subAgentMentions = ordered.filter(a => a.sub_agent)
-      .map(a => ({ ...a, wake_parent: mentionBoundary(a.name).test(mentionText) }));
+      .map(a => ({ ...a, wake_parent: a.parent_mentioned }));
     const parentMentions   = ordered.filter(a => !a.sub_agent);
 
     // Sub-agents fire in parallel — independent of conversation flow
@@ -7344,7 +7346,7 @@ function promptStrings(lang) {
       attachedFile: 'attached file',
       replyTo: (name, content) => `[This message is a reply to ${name}'s message: "${content}"]`,
       replyInstruction: 'Reply to the last message naturally and directly. No need to mention humans (@name) as they will read it.',
-      primaryRole: names => `You are the primary agent of this room: messages without an @mention come to you. ${names} only respond when @mentioned — @mention them when you need their help.`,
+      primaryRole: names => `You are the primary agent of this room: messages without an @mention come to you. ${names.join(', ')} only ${names.length === 1 ? 'responds' : 'respond'} when @mentioned — @mention them when you need their help.`,
       assistantRole: name => `${name} is the primary agent of this room. You assist and only respond when @mentioned (by a human or another agent).`,
       mentionInstruction: names => `To talk to another AI, use @TheirName (e.g. ${names.map(n => '@' + n).join(' or ')}). Mentions automatically trigger them to respond.`,
       sendFileInstruction: 'If asked to send a file, include the marker [send:path/to/file] in your response. Path must be absolute. You can send multiple files with multiple [send:...] markers. The system will automatically upload and display them in chat.',
@@ -7361,7 +7363,7 @@ function promptStrings(lang) {
       attachedFile: 'melampirkan file',
       replyTo: (name, content) => `[Pesan ini adalah reply ke pesan ${name}: "${content}"]`,
       replyInstruction: 'Balas pesan terakhir secara natural dan langsung. Tidak perlu mention manusia (@nama) karena mereka pasti membaca.',
-      primaryRole: names => `Kamu agent utama di room ini: pesan tanpa @mention ditujukan ke kamu. ${names} hanya merespons kalau di-@mention — @mention mereka kalau butuh bantuan.`,
+      primaryRole: names => `Kamu agent utama di room ini: pesan tanpa @mention ditujukan ke kamu. ${names.join(', ')} hanya merespons kalau di-@mention — @mention ${names.length === 1 ? 'dia' : 'mereka'} kalau butuh bantuan.`,
       assistantRole: name => `${name} adalah agent utama di room ini. Kamu pendamping dan hanya merespons kalau di-@mention (oleh manusia atau agent lain).`,
       mentionInstruction: names => `Jika ingin bicara ke AI lain, gunakan @NamaMereka (contoh: ${names.map(n => '@' + n).join(' atau ')}). Mention akan otomatis memicu mereka untuk merespons.`,
       sendFileInstruction: 'Jika diminta mengirim file, sertakan marker [send:path/to/file] di response. Path harus absolute. Bisa kirim beberapa file sekaligus dengan multiple marker [send:...]. Sistem akan otomatis upload dan menampilkan di chat.',
@@ -7378,7 +7380,7 @@ function promptStrings(lang) {
       attachedFile: 'ファイルを添付',
       replyTo: (name, content) => `[このメッセージは${name}のメッセージへの返信です: 「${content}」]`,
       replyInstruction: '最後のメッセージに自然に直接返信してください。人間への@メンションは不要です。',
-      primaryRole: names => `あなたはこのルームのメインエージェントです。@メンションのないメッセージはあなたが応答します。${names}は@メンションされた時だけ応答します。助けが必要なら@メンションしてください。`,
+      primaryRole: names => `あなたはこのルームのメインエージェントです。@メンションのないメッセージはあなたが応答します。${names.join('、')}は@メンションされた時だけ応答します。助けが必要なら@メンションしてください。`,
       assistantRole: name => `${name}がこのルームのメインエージェントです。あなたはサポート役で、（人間または他のエージェントから）@メンションされた時だけ応答します。`,
       mentionInstruction: names => `他のAIに話しかけるには@名前を使ってください（例: ${names.map(n => '@' + n).join('、')}）。メンションで自動的に応答が起動します。`,
       sendFileInstruction: 'ファイル送信を求められた場合、レスポンスに[send:path/to/file]マーカーを含めてください。パスは絶対パスで指定。複数ファイルは複数の[send:...]マーカーで送信可能です。',
@@ -7395,7 +7397,7 @@ function promptStrings(lang) {
       attachedFile: '파일 첨부',
       replyTo: (name, content) => `[이 메시지는 ${name}의 메시지에 대한 답장입니다: "${content}"]`,
       replyInstruction: '마지막 메시지에 자연스럽고 직접적으로 답변하세요. 사람에게 @멘션할 필요 없습니다.',
-      primaryRole: names => `당신은 이 방의 메인 에이전트입니다. @멘션이 없는 메시지는 당신이 응답합니다. ${names}은(는) @멘션될 때만 응답합니다. 도움이 필요하면 @멘션하세요.`,
+      primaryRole: names => `당신은 이 방의 메인 에이전트입니다. @멘션이 없는 메시지는 당신이 응답합니다. ${names.join(', ')}은(는) @멘션될 때만 응답합니다. 도움이 필요하면 @멘션하세요.`,
       assistantRole: name => `${name}이(가) 이 방의 메인 에이전트입니다. 당신은 보조 역할이며 (사람 또는 다른 에이전트에게) @멘션될 때만 응답합니다.`,
       mentionInstruction: names => `다른 AI에게 말하려면 @이름을 사용하세요 (예: ${names.map(n => '@' + n).join(' 또는 ')}). 멘션하면 자동으로 응답합니다.`,
       sendFileInstruction: '파일 전송을 요청받으면 응답에 [send:path/to/file] 마커를 포함하세요. 경로는 절대 경로여야 합니다. 여러 파일은 여러 [send:...] 마커로 전송 가능합니다.',
@@ -7412,7 +7414,7 @@ function promptStrings(lang) {
       attachedFile: '附加了文件',
       replyTo: (name, content) => `[此消息是对${name}消息的回复："${content}"]`,
       replyInstruction: '自然直接地回复最后一条消息。无需@提及人类，他们会看到的。',
-      primaryRole: names => `你是此房间的主代理：没有@提及的消息由你回应。${names}只在被@提及时回应——需要帮助时请@提及他们。`,
+      primaryRole: names => `你是此房间的主代理：没有@提及的消息由你回应。${names.join('、')}只在被@提及时回应——需要帮助时请@提及${names.length === 1 ? 'TA' : '他们'}。`,
       assistantRole: name => `${name}是此房间的主代理。你是助手，只在被（人类或其他代理）@提及时回应。`,
       mentionInstruction: names => `要与其他AI对话，请使用@名字（例如：${names.map(n => '@' + n).join('、')}）。提及会自动触发他们回应。`,
       sendFileInstruction: '如果被要求发送文件，请在回复中包含[send:path/to/file]标记。路径必须是绝对路径。可以使用多个[send:...]标记发送多个文件。系统会自动上传并在聊天中显示。',
@@ -7427,9 +7429,14 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
 
   if (!agentWs || agentWs.readyState !== 1) {
     const subLabel = ai.sub_agent?.label;
+    // An unmentioned message goes to the primary only (no fallback to an assistant), so say how to
+    // reach the others.
+    const hasOtherAi = ai.unmentioned && !!db.prepare(`SELECT 1 FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='ai' AND a.id!=? LIMIT 1`).get(roomId, ai.actor_id);
     const offlineMsg = subLabel
       ? `${ai.name} sedang offline — sub-agent "${subLabel}" tidak bisa dijalankan`
-      : `${ai.name} sedang offline`;
+      : hasOtherAi
+        ? `${ai.name} sedang offline — pesan tanpa @mention hanya dijawab ${ai.name}. @mention agent lain di room ini untuk minta bantuan.`
+        : `${ai.name} sedang offline`;
     console.log(`[trigger] ${ai.name} is offline${subLabel ? ` (sub-agent: ${subLabel})` : ''}, saving system_event`);
     if (ai.retrigger) queueRetrigger(roomId, ai, prompt, replyTo, attachments, threadId);
     const sysResult = db.prepare(
@@ -7450,7 +7457,10 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         thread_id: threadId || null,
         created_at: new Date().toISOString(),
       },
+      ...(threadId ? { thread_summary: buildThreadSummary(roomId, threadId) } : {}),
     });
+    // The notice lands in the thread; echo it to the room feed so it's seen without opening it.
+    if (threadId) maybeBroadcastError({ threadId, subAgentId: null, messageId: sysResult.lastInsertRowid, reason: 'error', roomId });
     return;
   }
 
@@ -7562,7 +7572,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   let roomRoleLine = '';
   if (!subAgent && otherAINames.length) {
     const primaryId = roomPrimaryActorId(roomId);
-    if (primaryId === ai.actor_id) roomRoleLine = L.primaryRole(otherAINames.join(', '));
+    if (primaryId === ai.actor_id) roomRoleLine = L.primaryRole(otherAINames);
     else {
       const primaryName = parts.find(p => p.actor_id === primaryId)?.name;
       if (primaryName) roomRoleLine = L.assistantRole(primaryName);

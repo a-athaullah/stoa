@@ -230,35 +230,26 @@ function runUnitTests() {
     assert.ok(verifyPassword('same', h2));
   });
 
-  // resolveAgentOrder (mirrors server logic)
-  const resolveAgentOrder = (content, agents, primaryActorId) => {
-    const mentions = [];
-    for (const agent of agents) {
-      const idx = content.indexOf('@' + agent.name);
-      if (idx !== -1) mentions.push({ agent, idx });
-    }
-    if (mentions.length > 0) {
-      mentions.sort((a, b) => a.idx - b.idx);
-      return mentions.map(m => m.agent);
-    }
-    return agents.filter(a => a.actor_id === primaryActorId);
-  };
-  ut('resolveAgentOrder — single @mention selects one agent', () => {
-    const agents = [{ name: 'Ara' }, { name: 'Idris' }];
-    const ordered = resolveAgentOrder('@Ara please help', agents);
-    assert.strictEqual(ordered.length, 1);
-    assert.strictEqual(ordered[0].name, 'Ara');
+  const { findMentions } = require('./lib/mentions');
+  ut('findMentions — a multi-word name is not also a mention of its shorter prefix', () => {
+    const names = ['Kira', 'Kira Dev'];
+    assert.deepStrictEqual([...findMentions('@Kira Dev check this', names).keys()], ['Kira Dev']);
+    assert.deepStrictEqual([...findMentions('@Kira check this', names).keys()], ['Kira']);
+    assert.deepStrictEqual(Object.fromEntries(findMentions('@Kira, @Kira Dev', names)), { Kira: 0, 'Kira Dev': 7 });
+    assert.deepStrictEqual([...findMentions('@Kira Dev then @Kira', names).keys()].sort(), ['Kira', 'Kira Dev']);
   });
-  ut('resolveAgentOrder — multiple mentions ordered by position', () => {
-    const agents = [{ name: 'Ara' }, { name: 'Idris' }];
-    const ordered = resolveAgentOrder('hey @Idris then @Ara', agents);
-    assert.strictEqual(ordered[0].name, 'Idris');
-    assert.strictEqual(ordered[1].name, 'Ara');
+  ut('findMentions — a mention ends and starts at a word boundary', () => {
+    const names = ['Kira', 'Ara'];
+    assert.strictEqual(findMentions('@Kirana hi', names).size, 0, '@Kirana is not @Kira');
+    assert.strictEqual(findMentions('mail me at x@Kira', names).size, 0, 'inside a word is not a mention');
+    assert.strictEqual(findMentions('@kira hi', names).size, 0, 'case-sensitive');
+    assert.deepStrictEqual([...findMentions('(@Ara) and @Kira.', names).keys()].sort(), ['Ara', 'Kira']);
+    assert.strictEqual(findMentions('@Kira-chan', names).size, 0);
   });
-  ut('resolveAgentOrder — no mentions → only the primary agent', () => {
-    const agents = [{ actor_id: 1, name: 'Ara' }, { actor_id: 2, name: 'Idris' }];
-    assert.deepStrictEqual(resolveAgentOrder('hello everyone', agents, 2).map(a => a.name), ['Idris']);
-    assert.deepStrictEqual(resolveAgentOrder('hello everyone', agents, 9), [], 'primary not among the agents → nobody');
+  ut('findMentions — names with regex metacharacters match literally', () => {
+    assert.deepStrictEqual([...findMentions('ask @a.b+c now', ['a.b+c', 'axb+c']).keys()], ['a.b+c']);
+    assert.strictEqual(findMentions('no mention here', ['Kira']).size, 0);
+    assert.strictEqual(findMentions(null, ['Kira']).size, 0);
   });
 
   // Parallel sub-agent dispatch split (mirrors handleHumanMessage dispatch logic)
@@ -6059,8 +6050,13 @@ async function run() {
   // are assistants that run on @mention. The primary cannot be removed (its actor cannot be deleted).
   console.log('\n[Primary agent]');
   {
-    let pa = null, pb = null, paRoomId = null, humanWs = null;
-    const completeOn = (ws, m) => ws.send(JSON.stringify({ type: 'agent_message', message_id: m.message_id, content: 'done', state: 'complete' }));
+    let pa = null, pb = null, pc = null, paRoomId = null, humanWs = null;
+    // Finishes the run and resolves once the room saw it complete, so the next message isn't held by the thread limit.
+    const completeOn = (ws, m) => {
+      const done = waitForWsMessage(humanWs, x => x.type === 'message_complete' && x.message_id === m.message_id, 5000);
+      ws.send(JSON.stringify({ type: 'agent_complete', room_id: paRoomId, message_id: m.message_id, content: 'done' }));
+      return done;
+    };
     // Resolves with the trigger the agent got, or null when none arrives within ms.
     const triggerOf = (agent, ms) => waitForWsMessage(agent.ws, m => m.type === 'agent_trigger' && m.room_id === paRoomId && !m.sub_agent, ms).catch(() => null);
     const send = (content) => humanWs.send(JSON.stringify({ type: 'send_message', room_id: paRoomId, content }));
@@ -6097,8 +6093,8 @@ async function run() {
       send('hello team, who takes this?');
       const m = await ta;
       assert.ok(m, 'primary triggered');
-      assert.ok(m.prompt.includes('You are the primary agent of this room') && m.prompt.includes('__test-primary-b only respond when @mentioned'), 'primary role line');
-      completeOn(pa.ws, m);
+      assert.ok(m.prompt.includes('You are the primary agent of this room') && m.prompt.includes('__test-primary-b only responds when @mentioned'), 'primary role line, singular with one assistant');
+      await completeOn(pa.ws, m);
       assert.strictEqual(await tb, null, 'assistant agent not triggered');
     });
 
@@ -6109,8 +6105,53 @@ async function run() {
       const m = await tb;
       assert.ok(m, 'mentioned assistant triggered');
       assert.ok(m.prompt.includes('__test-primary-a is the primary agent of this room. You assist and only respond when @mentioned'), 'assistant role line');
-      completeOn(pb.ws, m);
+      await completeOn(pb.ws, m);
       assert.strictEqual(await ta, null, 'primary not triggered when only the assistant is mentioned');
+    });
+
+    await test('@mentions match whole names: "@x Dev" is not also "@x", "@xana" is nobody', async () => {
+      if (!paRoomId) { console.log('    (skipped)'); return; }
+      pc = await createOnlineTestAgent('__test-primary-b Dev', '/tmp/stoa-test-primary-c');
+      assert.ok(pc?.actorId, 'third agent online');
+      assert.strictEqual((await req('POST', `/api/rooms/${paRoomId}/participants`, { actor_id: pc.actorId })).status, 200);
+      const run = async (content, expect) => {
+        const waits = [pa, pb, pc].map(a => triggerOf(a, expect.includes(a) ? 5000 : 1500));
+        send(content);
+        for (const [i, a] of [pa, pb, pc].entries()) {
+          const m = await waits[i];
+          if (expect.includes(a)) { assert.ok(m, `${content} → agent ${i} triggered`); await completeOn(a.ws, m); }
+          else assert.strictEqual(m, null, `${content} → agent ${i} not triggered`);
+        }
+      };
+      await run('@__test-primary-b Dev please', [pc]);
+      await run('@__test-primary-b please', [pb]);
+      await run('@__test-primary-b, @__test-primary-b Dev both of you', [pb, pc]);
+      await run('@__test-primary-bana nobody by that name', [pa]);
+    });
+
+    await test('primary offline + no @mention → nobody else runs; live notice suggests @mention, echoed to the feed', async () => {
+      if (!paRoomId || !pc) { console.log('    (skipped)'); return; }
+      const closed = new Promise(r => pa.ws.once('close', r));
+      pa.ws.close();
+      await closed;
+      await new Promise(r => setTimeout(r, 200));
+      const tb = triggerOf(pb, 1500), tc = triggerOf(pc, 1500);
+      const notice = waitForWsMessage(humanWs, m => m.type === 'message_new' && m.message?.state === 'system_event' && m.message.room_id === paRoomId, 5000);
+      const echo = waitForWsMessage(humanWs, m => m.type === 'message_broadcast' && m.message?.state === 'system_event', 5000);
+      send('anyone there?');
+      const n = await notice;
+      assert.ok(n.message.content.includes('__test-primary-a sedang offline') && n.message.content.includes('@mention agent lain'), n.message.content);
+      assert.ok(n.message.thread_id, 'notice lands in the message thread');
+      assert.strictEqual(n.thread_summary?.root_id, n.message.thread_id, 'thread chip updates live');
+      const e = await echo;
+      assert.strictEqual(e.message.id, n.message.id);
+      assert.strictEqual(e.message.broadcast_reason, 'error');
+      assert.strictEqual(await tb, null, 'no fallback to an assistant');
+      assert.strictEqual(await tc, null, 'no fallback to an assistant');
+      const hist = waitForWsMessage(humanWs, m => m.type === 'history', 5000);
+      humanWs.send(JSON.stringify({ type: 'join_room', room_id: paRoomId }));
+      const h = await hist;
+      assert.ok((h.messages || []).some(m => m.id === n.message.id && m.broadcast_reason === 'error'), 'echo survives a reload');
     });
 
     await test('DELETE primary actor → 409 naming the room (archived too), actor and participation kept', async () => {
@@ -6127,13 +6168,13 @@ async function run() {
 
     await test('Cleanup — primary agent test data', async () => {
       if (humanWs) humanWs.close();
-      for (const a of [pa, pb]) if (a?.ws) a.ws.close();
+      for (const a of [pa, pb, pc]) if (a?.ws) a.ws.close();
       if (paRoomId) {
         await req('PATCH', `/api/rooms/${paRoomId}`, { archived: true });
         await req('DELETE', `/api/rooms/${paRoomId}`);
         testRoomIds = testRoomIds.filter(id => id !== paRoomId);
       }
-      for (const a of [pa, pb]) {
+      for (const a of [pa, pb, pc]) {
         if (!a?.actorId) continue;
         const r = await req('DELETE', `/api/actors/${a.actorId}`);
         assert.ok(r.status === 200 || r.status === 204, `delete actor ${a.actorId} → ${r.status}`);
