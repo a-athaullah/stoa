@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS rooms (
   created_at TEXT DEFAULT (datetime('now')),
   FOREIGN KEY (created_by) REFERENCES actors(id)
 );
+-- rooms.primary_actor_id is added by migrations/20261028-room-primary-agent.sql.
 
 CREATE TABLE IF NOT EXISTS room_participants (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

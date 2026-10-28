@@ -231,7 +231,7 @@ function runUnitTests() {
   });
 
   // resolveAgentOrder (mirrors server logic)
-  const resolveAgentOrder = (content, agents) => {
+  const resolveAgentOrder = (content, agents, primaryActorId) => {
     const mentions = [];
     for (const agent of agents) {
       const idx = content.indexOf('@' + agent.name);
@@ -241,7 +241,7 @@ function runUnitTests() {
       mentions.sort((a, b) => a.idx - b.idx);
       return mentions.map(m => m.agent);
     }
-    return [...agents];
+    return agents.filter(a => a.actor_id === primaryActorId);
   };
   ut('resolveAgentOrder — single @mention selects one agent', () => {
     const agents = [{ name: 'Ara' }, { name: 'Idris' }];
@@ -255,10 +255,10 @@ function runUnitTests() {
     assert.strictEqual(ordered[0].name, 'Idris');
     assert.strictEqual(ordered[1].name, 'Ara');
   });
-  ut('resolveAgentOrder — no mentions → all agents returned', () => {
-    const agents = [{ name: 'Ara' }, { name: 'Idris' }];
-    const ordered = resolveAgentOrder('hello everyone', agents);
-    assert.strictEqual(ordered.length, 2);
+  ut('resolveAgentOrder — no mentions → only the primary agent', () => {
+    const agents = [{ actor_id: 1, name: 'Ara' }, { actor_id: 2, name: 'Idris' }];
+    assert.deepStrictEqual(resolveAgentOrder('hello everyone', agents, 2).map(a => a.name), ['Idris']);
+    assert.deepStrictEqual(resolveAgentOrder('hello everyone', agents, 9), [], 'primary not among the agents → nobody');
   });
 
   // Parallel sub-agent dispatch split (mirrors handleHumanMessage dispatch logic)
@@ -6054,6 +6054,94 @@ async function run() {
     });
   }
 
+  // ── Primary agent ──────────────────────────────────────────────────────────
+  // A message without an @mention goes to the room's primary agent only; the other AI participants
+  // are assistants that run on @mention. The primary cannot be removed (its actor cannot be deleted).
+  console.log('\n[Primary agent]');
+  {
+    let pa = null, pb = null, paRoomId = null, humanWs = null;
+    const completeOn = (ws, m) => ws.send(JSON.stringify({ type: 'agent_message', message_id: m.message_id, content: 'done', state: 'complete' }));
+    // Resolves with the trigger the agent got, or null when none arrives within ms.
+    const triggerOf = (agent, ms) => waitForWsMessage(agent.ws, m => m.type === 'agent_trigger' && m.room_id === paRoomId && !m.sub_agent, ms).catch(() => null);
+    const send = (content) => humanWs.send(JSON.stringify({ type: 'send_message', room_id: paRoomId, content }));
+
+    await test('Setup — room with two online agents, the workdir owner first', async () => {
+      pa = await createOnlineTestAgent('__test-primary-a', '/tmp/stoa-test-primary-a');
+      pb = await createOnlineTestAgent('__test-primary-b', '/tmp/stoa-test-primary-b');
+      if (!pa?.workdirId || !pb?.workdirId) { console.log('    (skipped — could not set up online test agents)'); return; }
+      const r = await req('POST', '/api/rooms', { title: '__primary-room__', workdir_id: pa.workdirId, participant_ids: [pb.actorId, pa.actorId] });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      paRoomId = r.body.id;
+      testRoomIds.push(paRoomId);
+      humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      const histP = waitForWsMessage(humanWs, m => m.type === 'history');
+      humanWs.send(JSON.stringify({ type: 'join_room', room_id: paRoomId }));
+      await histP;
+    });
+
+    await test('POST /api/rooms → primary_actor_id is the workdir owner; participants carry is_primary', async () => {
+      if (!paRoomId) { console.log('    (skipped)'); return; }
+      const room = (await req('GET', '/api/rooms')).body.find(x => x.id === paRoomId);
+      assert.strictEqual(room.primary_actor_id, pa.actorId, 'workdir owner, though listed after the other agent');
+      const rows = (await req('GET', `/api/rooms/${paRoomId}/participants`)).body;
+      const flag = id => rows.find(x => x.actor_id === id)?.is_primary;
+      assert.deepStrictEqual([flag(pa.actorId), flag(pb.actorId)], [1, 0]);
+      assert.strictEqual(rows.filter(x => x.type === 'human')[0].is_primary, 0);
+      const grouped = (await req('GET', `/api/rooms/participants?ids=${paRoomId}`)).body[paRoomId];
+      assert.deepStrictEqual(grouped.filter(x => x.is_primary).map(x => x.actor_id), [pa.actorId]);
+    });
+
+    await test('message without @mention → only the primary agent is triggered, told it is the primary', async () => {
+      if (!paRoomId) { console.log('    (skipped)'); return; }
+      const ta = triggerOf(pa, 5000), tb = triggerOf(pb, 1500);
+      send('hello team, who takes this?');
+      const m = await ta;
+      assert.ok(m, 'primary triggered');
+      assert.ok(m.prompt.includes('You are the primary agent of this room') && m.prompt.includes('__test-primary-b only respond when @mentioned'), 'primary role line');
+      completeOn(pa.ws, m);
+      assert.strictEqual(await tb, null, 'assistant agent not triggered');
+    });
+
+    await test('message @mentioning the assistant → only the assistant runs, told who the primary is', async () => {
+      if (!paRoomId) { console.log('    (skipped)'); return; }
+      const ta = triggerOf(pa, 1500), tb = triggerOf(pb, 5000);
+      send('@__test-primary-b can you check this?');
+      const m = await tb;
+      assert.ok(m, 'mentioned assistant triggered');
+      assert.ok(m.prompt.includes('__test-primary-a is the primary agent of this room. You assist and only respond when @mentioned'), 'assistant role line');
+      completeOn(pb.ws, m);
+      assert.strictEqual(await ta, null, 'primary not triggered when only the assistant is mentioned');
+    });
+
+    await test('DELETE primary actor → 409 naming the room (archived too), actor and participation kept', async () => {
+      if (!paRoomId) { console.log('    (skipped)'); return; }
+      const r = await req('DELETE', `/api/actors/${pa.actorId}`);
+      assert.strictEqual(r.status, 409);
+      assert.ok(r.body.error.includes('__primary-room__'), r.body.error);
+      assert.ok((await req('GET', `/api/rooms/${paRoomId}/participants`)).body.some(x => x.actor_id === pa.actorId), 'still a participant');
+      // archived rooms keep their primary too
+      await req('PATCH', `/api/rooms/${paRoomId}`, { archived: true });
+      assert.strictEqual((await req('DELETE', `/api/actors/${pa.actorId}`)).status, 409, 'archived room still blocks');
+      await req('PATCH', `/api/rooms/${paRoomId}`, { archived: false });
+    });
+
+    await test('Cleanup — primary agent test data', async () => {
+      if (humanWs) humanWs.close();
+      for (const a of [pa, pb]) if (a?.ws) a.ws.close();
+      if (paRoomId) {
+        await req('PATCH', `/api/rooms/${paRoomId}`, { archived: true });
+        await req('DELETE', `/api/rooms/${paRoomId}`);
+        testRoomIds = testRoomIds.filter(id => id !== paRoomId);
+      }
+      for (const a of [pa, pb]) {
+        if (!a?.actorId) continue;
+        const r = await req('DELETE', `/api/actors/${a.actorId}`);
+        assert.ok(r.status === 200 || r.status === 204, `delete actor ${a.actorId} → ${r.status}`);
+        orphanActorIds = orphanActorIds.filter(id => id !== a.actorId);
+      }
+    });
+  }
+
   // ── Final reply order (messages.feed_pos) ──────────────────────────────────
   // The reply row is a placeholder made when the turn starts, so the progress the agent posts during
   // the turn has newer ids. Once the run ends the reply must show after that progress — feed, thread,
@@ -8960,10 +9048,15 @@ async function run() {
 
   // An agent in a room with an avatar file; `withMessage` → it also posts one message (blocks the delete).
   const fs = require('fs');
+  // The room's primary agent cannot be deleted, so the agent under test joins as an assistant in a room
+  // whose workdir (and primary role) belongs to a shared host agent; the delete then reaches the transaction.
+  let actorDeleteHost = null;
   const actorDeleteFixture = async (name, withMessage) => {
+    actorDeleteHost ||= await createOnlineTestAgent('__test-actor-host', '/tmp/stoa-test-actor-host');
+    assert.ok(actorDeleteHost?.workdirId, 'host agent setup failed');
     const ag = await createOnlineTestAgent(name, `/tmp/stoa-test-${name}`);
     assert.ok(ag?.workdirId, 'test agent setup failed');
-    const room = await req('POST', '/api/rooms', { title: `${name}-room`, workdir_id: ag.workdirId, participant_ids: [ag.actorId] });
+    const room = await req('POST', '/api/rooms', { title: `${name}-room`, workdir_id: actorDeleteHost.workdirId, participant_ids: [actorDeleteHost.actorId, ag.actorId] });
     assert.strictEqual(room.status, 200, `create room failed: ${JSON.stringify(room.body)}`);
     const av = await req('POST', `/api/actors/${ag.actorId}/avatar`, { data_url: MINIMAL_PNG });
     assert.strictEqual(av.status, 200);
@@ -17226,6 +17319,39 @@ async function run() {
         { scope: 'room', scope_id: 7, key_name: 'tool_progress', value: 'off' },
       ]);
       assert.strictEqual(db.prepare("SELECT COUNT(*) c FROM settings WHERE scope='global' AND key_name IN ('idle_timeout_seconds','max_active_rooms_per_ai','max_ai_turns_per_round')").get().c, 3, 'unrelated global rows untouched');
+    } finally { db.close(); _mfs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  await test('migrations: 20261028-room-primary-agent backfills workdir owner, else first AI participant, else NULL', async () => {
+    const Database = require('better-sqlite3');
+    const { runMigrations } = require('./lib/migrations');
+    const db = new Database(':memory:');
+    const file = '20261028-room-primary-agent.sql';
+    const dir = _migTmp({ [file]: _mfs.readFileSync(path.join(__dirname, 'migrations', file), 'utf8') });
+    try {
+      db.exec(_mfs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
+      const actor = db.prepare('INSERT INTO actors (name, type) VALUES (?, ?)');
+      const human = actor.run('h', 'human').lastInsertRowid;
+      const [ai1, ai2, ai3] = ['a1', 'a2', 'a3'].map(n => actor.run(n, 'ai').lastInsertRowid);
+      const wd = db.prepare('INSERT INTO agent_workdirs (actor_id, path) VALUES (?, ?)');
+      const wd2 = wd.run(ai2, '/w2').lastInsertRowid, wd3 = wd.run(ai3, '/w3').lastInsertRowid;
+      const room = db.prepare('INSERT INTO rooms (title, created_by, workdir_id) VALUES (?, ?, ?)');
+      const join = db.prepare('INSERT INTO room_participants (room_id, actor_id) VALUES (?, ?)');
+      // workdir owner joined after another AI → still the primary
+      const rOwner = room.run('owner', human, wd2).lastInsertRowid;
+      for (const a of [human, ai1, ai2]) join.run(rOwner, a);
+      // workdir owner is not a participant → first AI by participant id, the human row before it skipped
+      const rFirst = room.run('first', human, wd3).lastInsertRowid;
+      for (const a of [human, ai2, ai1]) join.run(rFirst, a);
+      // no AI participant → NULL
+      const rNone = room.run('none', human, null).lastInsertRowid;
+      join.run(rNone, human);
+      const [r] = runMigrations(db, dir, _migQuiet);
+      assert.strictEqual(r.status, 'applied', r.error);
+      const primary = id => db.prepare('SELECT primary_actor_id p FROM rooms WHERE id=?').get(id).p;
+      assert.strictEqual(primary(rOwner), ai2);
+      assert.strictEqual(primary(rFirst), ai2);
+      assert.strictEqual(primary(rNone), null);
     } finally { db.close(); _mfs.rmSync(dir, { recursive: true, force: true }); }
   });
 
