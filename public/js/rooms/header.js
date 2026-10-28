@@ -80,6 +80,15 @@ function renderChatHeader(room, participants) {
   const countParts = [`${agentCount} agent${agentCount !== 1 ? 's' : ''}`];
   if (saCount) countParts.push(`${saCount} sub-agent${saCount !== 1 ? 's' : ''}`);
   tagline.appendChild(document.createTextNode(countParts.join(' · ')));
+  const primary = agentCount > 1 ? effectiveParticipants.find(p => p.type === 'ai' && isPrimaryParticipant(p, room)) : null;
+  if (primary) {
+    tagline.appendChild(document.createTextNode(' · '));
+    const lead = document.createElement('span');
+    lead.className = 'h-room-primary';
+    lead.title = PRIMARY_AGENT_HINT;
+    lead.textContent = `primary: ${primary.name}`;
+    tagline.appendChild(lead);
+  }
   info.appendChild(tagline);
 
   header.appendChild(info);
