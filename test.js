@@ -4712,6 +4712,16 @@ async function run() {
     }
   };
 
+  // A finished sub-agent run wakes its parent; finish that run too so nothing stays streaming.
+  // Rejects when no wake arrives, so a caller that relies on it also asserts the wake happened.
+  const completeSubAgentRun = async (ws, roomId, m) => {
+    const wake = waitForWsMessage(ws, w => w.type === 'agent_trigger' && !w.sub_agent && w.room_id === roomId, 5000);
+    await completeRun(ws, roomId, m);
+    const w = await wake;
+    await completeRun(ws, roomId, w);
+    return w;
+  };
+
   console.log('\n[Test Setup]');
   await test('Setup — pre-cleanup leftover test actors from prior runs', async () => {
     const actors = (await req('GET', '/api/actors')).body;
@@ -5897,11 +5907,7 @@ async function run() {
         const r = await req('POST', `/api/rooms/${dsRoomId}/sub-agent-trigger`, { sub_agent_id: sa.id, task: 'describe yourself' }, headers);
         assert.strictEqual(r.status, 200, JSON.stringify(r.body));
         const m = await trig;
-        const wake = waitForWsMessage(dsWs, w => w.type === 'agent_trigger' && !w.sub_agent, 3000).catch(() => null);
-        await completeRun(dsWs, dsRoomId, m);
-        const w = await wake;
-        assert.ok(w, 'the finished sub-agent run wakes its parent');
-        await completeRun(dsWs, dsRoomId, w);
+        await completeSubAgentRun(dsWs, dsRoomId, m);
         return m.prompt;
       };
       const p1 = await runSub(dsWith);
@@ -6032,11 +6038,7 @@ async function run() {
         const r = await req('POST', `/api/rooms/${rlRoomId}/sub-agent-trigger`, { sub_agent_id: sa.id, task: 'who are you' }, headers);
         assert.strictEqual(r.status, 200, JSON.stringify(r.body));
         const m = await t;
-        const wake = waitForWsMessage(rlWs, w => w.type === 'agent_trigger' && !w.sub_agent, 3000).catch(() => null);
-        await completeRun(rlWs, rlRoomId, m);
-        const w = await wake;
-        assert.ok(w, 'the finished sub-agent run wakes its parent');
-        await completeRun(rlWs, rlRoomId, w);
+        await completeSubAgentRun(rlWs, rlRoomId, m);
         return m.prompt;
       };
       assert.ok((await runSub(rlWith)).includes('(tier: deep).\nYour role: Tech Lead'), 'sub-agent prompt has role');
@@ -15979,12 +15981,11 @@ async function run() {
     };
     const orderIn = (text, keys) => keys.map(k => text.indexOf(`__qo_${k}__`));
     const idsIn = (rows, keys) => rows.map(r => r.id).filter(id => keys.some(k => seeded[k] === id));
-    const complete = (m) => { if (m?.message_id) qo.ws.send(JSON.stringify({ type: 'agent_message', message_id: m.message_id, content: 'done', state: 'complete' })); };
     const triggerPrompt = async (payload) => {
       const trig = waitForWsMessage(qo.ws, m => m.type === 'agent_trigger' && !m.sub_agent, 5000);
       human.send(JSON.stringify({ type: 'send_message', room_id: qoRoomId, ...payload }));
       const m = await trig;
-      complete(m);
+      await completeRun(qo.ws, qoRoomId, m);
       return m.prompt;
     };
 
@@ -16036,9 +16037,7 @@ async function run() {
         { 'x-agent-id': String(qo.actorId), 'x-agent-secret': qo.secret });
       assert.strictEqual(r.status, 200, JSON.stringify(r.body));
       const sm = await subTrig;
-      const wake = waitForWsMessage(qo.ws, w => w.type === 'agent_trigger' && !w.sub_agent, 3000).catch(() => null);
-      complete(sm);
-      complete(await wake);
+      await completeSubAgentRun(qo.ws, qoRoomId, sm);
       const [a, b, c] = orderIn(sm.prompt, ['c1', 'c2', 'c3']);
       assert.ok(a >= 0 && a < b && b < c, `room context order c1<c2<c3, got ${[a, b, c]}`);
       const [rt, t1, t2] = orderIn(await triggerPrompt({ content: 'thread order check', thread_id: seeded.root }), ['root', 't1', 't2']);
@@ -16457,11 +16456,7 @@ async function run() {
     assert.ok(!trigMsg.model.startsWith('claude-'), `model should not be claude, got: ${trigMsg.model}`);
     assert.strictEqual(trigMsg.model, 'gpt-6.1-sol', 'should use codex default model');
     assert.strictEqual(trigMsg.harness, 'codex');
-    // Complete the agent message so it doesn't hang
-    const msgId = trigMsg.message_id;
-    if (msgId) {
-      ws11.send(JSON.stringify({ type: 'agent_message', message_id: msgId, content: 'test done', state: 'complete' }));
-    }
+    await completeSubAgentRun(ws11, hsRoomId, trigMsg);
     // Cleanup
     await req('DELETE', `/api/sub-agents/${saId}`);
     ws11.close();
@@ -16501,10 +16496,7 @@ async function run() {
     assert.ok(trigMsg.model, 'trigger should have model');
     assert.ok(trigMsg.model.startsWith('claude-'), `model should be claude, got: ${trigMsg.model}`);
     assert.strictEqual(trigMsg.harness, 'claude');
-    // Complete message
-    if (trigMsg.message_id) {
-      ws12.send(JSON.stringify({ type: 'agent_message', message_id: trigMsg.message_id, content: 'test done', state: 'complete' }));
-    }
+    await completeSubAgentRun(ws12, hsRoomId, trigMsg);
     // Cleanup
     db.prepare('UPDATE actors SET adapter=? WHERE id=?').run('claude', hsActorId);
     await req('DELETE', `/api/sub-agents/${saId}`);
@@ -16595,9 +16587,7 @@ async function run() {
     assert.strictEqual(trigMsg.harness, 'codex');
     assert.strictEqual(trigMsg.base_url, undefined, 'codex trigger should not have base_url');
     assert.strictEqual(trigMsg.api_keys, undefined, 'codex trigger should not have api_keys');
-    if (trigMsg.message_id) {
-      ws12.send(JSON.stringify({ type: 'agent_message', message_id: trigMsg.message_id, content: 'done', state: 'complete' }));
-    }
+    await completeRun(ws12, hsRoomId, trigMsg);
     humanWs.close();
     await req('PATCH', `/api/actors/${hsActorId}`, { adapter: 'claude' });
     db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
@@ -16627,7 +16617,7 @@ async function run() {
     assert.strictEqual(trig.model_source, 'harness_default');
     // No base_url since model didn't come from room
     assert.ok(!trig.base_url, 'fallback model should not get platform base_url');
-    if (trig.message_id) ws13.send(JSON.stringify({ type: 'agent_message', message_id: trig.message_id, content: 'done', state: 'complete' }));
+    await completeRun(ws13, hsRoomId, trig);
     humanWs.close();
     db.prepare('UPDATE rooms SET model=? WHERE id=?').run('claude-sonnet-5-5', hsRoomId);
     ws13.close();
@@ -16680,9 +16670,7 @@ async function run() {
     const parentTrig = await parentTrigPromise;
     assert.ok(parentTrig.base_url, 'parent claude trigger should get platform base_url');
     assert.ok(parentTrig.base_url.includes('test-openrouter'), `expected openrouter url, got: ${parentTrig.base_url}`);
-    if (parentTrig.message_id) {
-      ws14.send(JSON.stringify({ type: 'agent_message', message_id: parentTrig.message_id, content: 'done', state: 'complete' }));
-    }
+    await completeRun(ws14, hsRoomId, parentTrig);
     humanWsP.close();
     // Side B: codex sub-agent does NOT get base_url
     const saR = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'codex-under-plat', tier: 'deep', harness: 'codex' });
@@ -16699,9 +16687,7 @@ async function run() {
     assert.strictEqual(trigMsg.harness, 'codex');
     assert.strictEqual(trigMsg.base_url, undefined, 'codex sub-agent should not get parent platform baseUrl');
     assert.strictEqual(trigMsg.api_keys, undefined, 'codex sub-agent should not get parent platform apiKeys');
-    if (trigMsg.message_id) {
-      ws14.send(JSON.stringify({ type: 'agent_message', message_id: trigMsg.message_id, content: 'done', state: 'complete' }));
-    }
+    await completeSubAgentRun(ws14, hsRoomId, trigMsg);
     // Side C: claude sub-agent under platform parent also gets NO base_url (uses Anthropic directly)
     const saR2 = await req('POST', `/api/actors/${hsActorId}/sub-agents`, { label: 'claude-under-plat', tier: 'deep', harness: 'claude' });
     assert.strictEqual(saR2.status, 201);
@@ -16717,9 +16703,7 @@ async function run() {
     assert.strictEqual(trigMsg2.harness, 'claude');
     assert.strictEqual(trigMsg2.base_url, undefined, 'claude sub-agent should not get parent platform baseUrl');
     assert.strictEqual(trigMsg2.api_keys, undefined, 'claude sub-agent should not get parent platform apiKeys');
-    if (trigMsg2.message_id) {
-      ws14.send(JSON.stringify({ type: 'agent_message', message_id: trigMsg2.message_id, content: 'done', state: 'complete' }));
-    }
+    await completeSubAgentRun(ws14, hsRoomId, trigMsg2);
     // Cleanup
     await req('DELETE', `/api/sub-agents/${saId}`);
     await req('DELETE', `/api/sub-agents/${saId2}`);
@@ -18108,7 +18092,7 @@ async function run() {
         await waitForWsMessage(humanWs, m => m.type === 'history');
         humanWs.send(JSON.stringify({ type: 'send_message', room_id: roomId, content, ...(threadId ? { thread_id: threadId } : {}) }));
         const m = await trig;
-        ag.ws.send(JSON.stringify({ type: 'agent_message', message_id: m.message_id, content: 'done', state: 'complete' }));
+        await completeRun(ag.ws, roomId, m);
         return { token: m.mcp_token, threadId: m.thread_id, trigger: m };
       } finally { humanWs.close(); }
     };
@@ -18353,10 +18337,7 @@ async function run() {
       const m = await st;
       tokSub = m.mcp_token;
       assert.ok(tokSub && tokSub !== tokA, 'sub-agent session has its own token');
-      const wake = waitForWsMessage(agA.ws, w => w.type === 'agent_trigger' && !w.sub_agent, 3000).catch(() => null);
-      agA.ws.send(JSON.stringify({ type: 'agent_message', message_id: m.message_id, content: 'done', state: 'complete' }));
-      const w = await wake;
-      if (w) agA.ws.send(JSON.stringify({ type: 'agent_message', message_id: w.message_id, content: 'done', state: 'complete' }));
+      await completeSubAgentRun(agA.ws, roomA, m);
     });
 
     await test('MCP /mcp — missing, wrong, or agent-secret auth → 401', async () => {
@@ -19013,10 +18994,8 @@ async function run() {
         } finally { humanWs.close(); }
       }
       const m = await trig;
-      const wake = subAgentId ? waitForWsMessage(agA.ws, w => w.type === 'agent_trigger' && !w.sub_agent, 3000).catch(() => null) : null;
-      agA.ws.send(JSON.stringify({ type: 'agent_message', message_id: m.message_id, content: 'done', state: 'complete' }));
-      const w = await wake;
-      if (w) agA.ws.send(JSON.stringify({ type: 'agent_message', message_id: w.message_id, content: 'done', state: 'complete' }));
+      if (subAgentId) await completeSubAgentRun(agA.ws, roomA, m);
+      else await completeRun(agA.ws, roomA, m);
       return m;
     };
 
@@ -19451,10 +19430,7 @@ async function run() {
       assert.deepStrictEqual(await stoaOk(tokA, 'sub_agent_trigger', { label: 'mcpsub', task: 'summarize the MCP test run' }), { ok: true, label: 'mcpsub' });
       const m = await st;
       assert.deepStrictEqual([m.room_id, m.thread_id], [roomA, threadA]);
-      const wake = waitForWsMessage(agA.ws, w => w.type === 'agent_trigger' && !w.sub_agent, 3000).catch(() => null);
-      agA.ws.send(JSON.stringify({ type: 'agent_message', message_id: m.message_id, content: 'done', state: 'complete' }));
-      const w = await wake;
-      if (w) agA.ws.send(JSON.stringify({ type: 'agent_message', message_id: w.message_id, content: 'done', state: 'complete' }));
+      await completeSubAgentRun(agA.ws, roomA, m);
       assert.strictEqual(await stoaErr(tokA, 'sub_agent_trigger', { label: 'mcpsub', task: 'todo' }), 'invalid_task');
       assert.strictEqual(await stoaErr(tokB, 'sub_agent_trigger', { label: 'mcpsub', task: 'cross-room trigger attempt' }), 'sub-agent not found in this room');
       assert.strictEqual(await stoaErr(tokA, 'sub_agent_trigger', { label: 'clashlbl', task: 'run someone else\'s helper' }), 'not your sub-agent');
