@@ -1850,15 +1850,37 @@ function setSecurityHeaders(req, res) {
 // Served files: never cached by shared caches; script-capable types are forced to download
 // and sandboxed so an uploaded .html/.svg can't run script on the Stoa origin.
 const ACTIVE_CONTENT_EXTS = new Set(['.html', '.htm', '.js', '.mjs', '.svg', '.xml', '.xhtml']);
-function fileResponseHeaders(ext, mime, disposition) {
+function fileResponseHeaders(ext, mime, disposition, filenameParams) {
   const active = ACTIVE_CONTENT_EXTS.has(ext);
+  const type = active ? 'attachment' : disposition;
   const headers = {
     'Content-Type': mime,
     'Cache-Control': 'private, max-age=3600',
-    'Content-Disposition': active ? 'attachment' : disposition,
+    'Content-Disposition': filenameParams ? `${type}; ${filenameParams}` : type,
   };
   if (active) headers['Content-Security-Policy'] = "sandbox; frame-ancestors 'self'";
   return headers;
+}
+
+// ?download=1&name=<original> → save under the uploader's filename instead of the random
+// on-disk one. The extension is pinned to the stored file's so a .png can't be saved as .html.
+const DOWNLOAD_NAME_MAX = 200;
+function downloadFilenameParams(storedName, requested) {
+  const ext = path.extname(storedName);
+  let name = typeof requested === 'string' ? requested : '';
+  name = name.split(/[\/\\]/).pop()
+    .replace(/[\x00-\x1f\x7f"‎‏‪-‮⁦-⁩]/g, '')
+    .trim().replace(/^\.+/, '').replace(/[.\s]+$/, '');
+  if (!name || !ext) name = storedName;
+  else if (path.extname(name).toLowerCase() !== ext.toLowerCase()) name += ext;
+  const chars = Array.from(name);
+  if (chars.length > DOWNLOAD_NAME_MAX) {
+    const extLen = Array.from(ext).length;
+    name = chars.slice(0, DOWNLOAD_NAME_MAX - extLen).join('') + ext;
+  }
+  const ascii = name.replace(/[^\x20-\x7e]/g, '_');
+  const encoded = encodeURIComponent(name).replace(/['()*]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+  return `filename="${ascii}"; filename*=UTF-8''${encoded}`;
 }
 
 function serveIndex() {
@@ -2084,11 +2106,14 @@ const server = http.createServer(async (req, res) => {
       '.pdf':'application/pdf', '.json':'application/json; charset=utf-8',
       '.html':'text/html; charset=utf-8', '.csv':'text/csv; charset=utf-8',
       '.js':'text/javascript; charset=utf-8', '.ts':'text/plain; charset=utf-8',
+      '.log':'text/plain; charset=utf-8', '.yaml':'text/plain; charset=utf-8', '.yml':'text/plain; charset=utf-8',
+      '.tsv':'text/tab-separated-values; charset=utf-8',
     };
     const mime = MIMES[ext] || 'application/octet-stream';
-    const disp = mime.startsWith('text/') || mime.includes('json') ? 'inline' : 'attachment';
+    const download = url.searchParams.get('download') === '1';
+    const disp = !download && (mime.startsWith('text/') || mime.includes('json') || ext === '.pdf') ? 'inline' : 'attachment';
     const body = fs.readFileSync(filepath);
-    res.writeHead(200, fileResponseHeaders(ext, mime, disp));
+    res.writeHead(200, fileResponseHeaders(ext, mime, disp, download ? downloadFilenameParams(filename, url.searchParams.get('name')) : null));
     return res.end(body);
   }
 
@@ -2105,9 +2130,10 @@ const server = http.createServer(async (req, res) => {
       '.pdf':'application/pdf', '.txt':'text/plain; charset=utf-8',
     };
     const mime = MIMES[ext] || 'application/octet-stream';
-    const disp = mime.startsWith('text/') ? 'inline' : 'attachment';
+    const download = url.searchParams.get('download') === '1';
+    const disp = !download && (mime.startsWith('text/') || ext === '.pdf') ? 'inline' : 'attachment';
     const body = fs.readFileSync(filepath);
-    res.writeHead(200, fileResponseHeaders(ext, mime, disp));
+    res.writeHead(200, fileResponseHeaders(ext, mime, disp, download ? downloadFilenameParams(path.basename(filepath), url.searchParams.get('name')) : null));
     return res.end(body);
   }
 

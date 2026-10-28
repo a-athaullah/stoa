@@ -407,6 +407,31 @@ Click the **attachment button** (paperclip icon) in the composer, or **drag and 
 
 You can attach **multiple files** in a single message — images and documents together. Supported types include images (PNG, JPG, WebP, GIF), text files (Markdown, TXT, JSON, CSV), PDFs, and more.
 
+### Non-Image Attachments
+
+Non-image files are displayed as a **file card** showing the file icon, original name, and type label. Each card has:
+
+- **Download** — saves the file to your device using its original filename.
+- **Preview** — opens the file in an in-app modal (only for safe passive types; see below).
+
+**Previewable types:**
+
+| Type | How it renders |
+|---|---|
+| PDF | Browser PDF viewer (inline iframe) |
+| Markdown | Rendered as formatted text |
+| CSV / TSV | Scrollable table, up to 500 rows shown |
+| TXT / LOG / YAML / YML | Plain text |
+| JSON | Pretty-printed text |
+
+HTML, SVG, JavaScript, and all other types are **download-only** — previewing active content would run untrusted markup on the Stoa origin.
+
+Files larger than 2 MB cannot be previewed; a message tells you to download instead. If a file has been removed by cleanup, the preview shows a "no longer available" notice.
+
+The modal can be closed with **Esc**, by clicking outside it, or with the **Close** button.
+
+Images continue to use the existing lightbox.
+
 ### Image Compression
 
 Images are automatically compressed on the client side before upload to save storage and bandwidth:

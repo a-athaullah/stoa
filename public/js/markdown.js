@@ -240,14 +240,12 @@ function renderAttachments(bubble, m) {
     bubble.appendChild(wrap);
   }
 
-  files.forEach(a => {
-    const link = document.createElement('a');
-    link.href = a.url;
-    link.target = '_blank';
-    link.className = 'h-msg-file';
-    link.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>${escHtml(a.name)}`;
-    bubble.appendChild(link);
-  });
+  if (files.length) {
+    const list = document.createElement('div');
+    list.className = 'h-file-cards';
+    files.forEach(a => list.appendChild(renderFileCard(a)));
+    bubble.appendChild(list);
+  }
 }
 
 function openLightbox(images, startIdx) {
@@ -359,7 +357,7 @@ function openFileFromPath(absOrRelPath) {
 function externalLinksNewTab(el) {
   const origin = window.location.origin;
   el.querySelectorAll('a[href]').forEach(a => {
-    if (a.classList.contains('h-file-link') || a.classList.contains('h-msg-file')) return;
+    if (a.classList.contains('h-file-link') || a.closest('.h-file-card')) return;
     const href = a.getAttribute('href');
     if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
     try {

@@ -408,6 +408,31 @@ Klik **tombol attachment** (ikon paperclip) di composer, atau **drag and drop** 
 
 Anda bisa melampirkan **banyak file** dalam satu pesan — gambar dan dokumen bersamaan. Tipe yang didukung termasuk gambar (PNG, JPG, WebP, GIF), file teks (Markdown, TXT, JSON, CSV), PDF, dan lainnya.
 
+### Lampiran Non-Gambar
+
+File non-gambar ditampilkan sebagai **kartu file** berisi ikon, nama asli, dan label tipe. Setiap kartu memiliki:
+
+- **Download** — menyimpan file ke perangkat Anda dengan nama aslinya.
+- **Preview** — membuka file di modal dalam aplikasi (hanya untuk tipe pasif yang aman; lihat di bawah).
+
+**Tipe yang dapat di-preview:**
+
+| Tipe | Cara tampil |
+|---|---|
+| PDF | Viewer PDF bawaan browser (iframe inline) |
+| Markdown | Dirender sebagai teks berformat |
+| CSV / TSV | Tabel yang bisa digulir, maksimal 500 baris |
+| TXT / LOG / YAML / YML | Teks biasa |
+| JSON | Teks dengan format rapi |
+
+HTML, SVG, JavaScript, dan semua tipe lainnya hanya bisa **didownload** — menampilkan konten aktif akan menjalankan markup tidak tepercaya di origin Stoa.
+
+File di atas 2 MB tidak dapat di-preview; sebuah pesan akan mengarahkan Anda untuk mendownload. Jika file sudah dihapus oleh pembersihan otomatis, preview menampilkan pemberitahuan "tidak tersedia lagi".
+
+Modal dapat ditutup dengan **Esc**, dengan mengklik di luar modal, atau dengan tombol **Close**.
+
+Gambar tetap menggunakan lightbox yang sudah ada.
+
 ### Kompresi Gambar
 
 Gambar otomatis dikompres di sisi klien sebelum upload untuk menghemat penyimpanan dan bandwidth:
