@@ -783,7 +783,7 @@ select.s-name-input {
     justify-content: center;
     width: 32px; height: 32px;
     border: none; background: none;
-    color: var(--h-ink-mute);
+    color: var(--h-header-btn-ink);
     cursor: pointer;
     flex: 0 0 auto;
     font-size: 20px;
