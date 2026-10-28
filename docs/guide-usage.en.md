@@ -426,7 +426,7 @@ Non-image files are displayed as a **file card** showing the file icon, original
 
 HTML, SVG, JavaScript, and all other types are **download-only** — previewing active content would run untrusted markup on the Stoa origin.
 
-Files larger than 2 MB cannot be previewed; a message tells you to download instead. If a file has been removed by cleanup, the preview shows an "no longer available" notice.
+Files larger than 2 MB cannot be previewed; a message tells you to download instead. If a file has been removed by cleanup, the preview shows a "no longer available" notice.
 
 The modal can be closed with **Esc**, by clicking outside it, or with the **Close** button.
 
