@@ -6153,7 +6153,7 @@ async function run() {
       const echo = waitForWsMessage(humanWs, m => m.type === 'message_broadcast' && m.message?.state === 'system_event', 5000);
       send('anyone there?');
       const n = await notice;
-      assert.ok(n.message.content.includes('__test-primary-a sedang offline') && n.message.content.includes('@mention agent lain'), n.message.content);
+      assert.strictEqual(n.message.content, '__test-primary-a is offline — messages without an @mention are answered only by __test-primary-a. @mention another agent in this room for help.', 'English by default');
       assert.ok(n.message.thread_id, 'notice lands in the message thread');
       assert.strictEqual(n.thread_summary?.root_id, n.message.thread_id, 'thread chip updates live');
       const e = await echo;
@@ -6165,6 +6165,24 @@ async function run() {
       humanWs.send(JSON.stringify({ type: 'join_room', room_id: paRoomId }));
       const h = await hist;
       assert.ok((h.messages || []).some(m => m.id === n.message.id && m.broadcast_reason === 'error'), 'echo survives a reload');
+    });
+
+    await test('offline notice follows the agent language; unknown or prototype-named lang falls back to English', async () => {
+      if (!paRoomId || !pc) { console.log('    (skipped)'); return; }
+      const noticeFor = async (lang) => {
+        assert.strictEqual((await req('PUT', `/api/actors/${pa.actorId}/config`, { lang })).status, 200);
+        const notice = waitForWsMessage(humanWs, m => m.type === 'message_new' && m.message?.state === 'system_event' && m.message.room_id === paRoomId, 5000);
+        send(`still there? (${lang})`);
+        return (await notice).message.content;
+      };
+      try {
+        assert.strictEqual(await noticeFor('id'), '__test-primary-a sedang offline — pesan tanpa @mention hanya dijawab __test-primary-a. @mention agent lain di room ini untuk minta bantuan.');
+        assert.strictEqual(await noticeFor('ja'), '__test-primary-aはオフラインです — @メンションのないメッセージには__test-primary-aだけが応答します。このルームの他のエージェントを@メンションしてください。');
+        assert.ok((await noticeFor('xx')).startsWith('__test-primary-a is offline — '), 'unknown lang → English');
+        assert.ok((await noticeFor('constructor')).startsWith('__test-primary-a is offline — '), '"constructor" is not a language');
+      } finally {
+        await req('PUT', `/api/actors/${pa.actorId}/config`, { lang: 'en' });
+      }
     });
 
     await test('DELETE primary actor → 409 naming the room (archived too), actor and participation kept', async () => {
