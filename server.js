@@ -7348,6 +7348,9 @@ function promptStrings(lang) {
       replyInstruction: 'Reply to the last message naturally and directly. No need to mention humans (@name) as they will read it.',
       primaryRole: names => `You are the primary agent of this room: messages without an @mention come to you. ${names.join(', ')} only ${names.length === 1 ? 'responds' : 'respond'} when @mentioned — @mention them when you need their help.`,
       assistantRole: name => `${name} is the primary agent of this room. You assist and only respond when @mentioned (by a human or another agent).`,
+      offline: name => `${name} is offline`,
+      offlineSubAgent: (name, label) => `${name} is offline — sub-agent "${label}" can't run`,
+      offlinePrimary: name => `${name} is offline — messages without an @mention are answered only by ${name}. @mention another agent in this room for help.`,
       mentionInstruction: names => `To talk to another AI, use @TheirName (e.g. ${names.map(n => '@' + n).join(' or ')}). Mentions automatically trigger them to respond.`,
       sendFileInstruction: 'If asked to send a file, include the marker [send:path/to/file] in your response. Path must be absolute. You can send multiple files with multiple [send:...] markers. The system will automatically upload and display them in chat.',
     },
@@ -7365,6 +7368,9 @@ function promptStrings(lang) {
       replyInstruction: 'Balas pesan terakhir secara natural dan langsung. Tidak perlu mention manusia (@nama) karena mereka pasti membaca.',
       primaryRole: names => `Kamu agent utama di room ini: pesan tanpa @mention ditujukan ke kamu. ${names.join(', ')} hanya merespons kalau di-@mention — @mention ${names.length === 1 ? 'dia' : 'mereka'} kalau butuh bantuan.`,
       assistantRole: name => `${name} adalah agent utama di room ini. Kamu pendamping dan hanya merespons kalau di-@mention (oleh manusia atau agent lain).`,
+      offline: name => `${name} sedang offline`,
+      offlineSubAgent: (name, label) => `${name} sedang offline — sub-agent "${label}" tidak bisa dijalankan`,
+      offlinePrimary: name => `${name} sedang offline — pesan tanpa @mention hanya dijawab ${name}. @mention agent lain di room ini untuk minta bantuan.`,
       mentionInstruction: names => `Jika ingin bicara ke AI lain, gunakan @NamaMereka (contoh: ${names.map(n => '@' + n).join(' atau ')}). Mention akan otomatis memicu mereka untuk merespons.`,
       sendFileInstruction: 'Jika diminta mengirim file, sertakan marker [send:path/to/file] di response. Path harus absolute. Bisa kirim beberapa file sekaligus dengan multiple marker [send:...]. Sistem akan otomatis upload dan menampilkan di chat.',
     },
@@ -7382,6 +7388,9 @@ function promptStrings(lang) {
       replyInstruction: '最後のメッセージに自然に直接返信してください。人間への@メンションは不要です。',
       primaryRole: names => `あなたはこのルームのメインエージェントです。@メンションのないメッセージはあなたが応答します。${names.join('、')}は@メンションされた時だけ応答します。助けが必要なら@メンションしてください。`,
       assistantRole: name => `${name}がこのルームのメインエージェントです。あなたはサポート役で、（人間または他のエージェントから）@メンションされた時だけ応答します。`,
+      offline: name => `${name}はオフラインです`,
+      offlineSubAgent: (name, label) => `${name}はオフラインです — サブエージェント「${label}」を実行できません`,
+      offlinePrimary: name => `${name}はオフラインです — @メンションのないメッセージには${name}だけが応答します。このルームの他のエージェントを@メンションしてください。`,
       mentionInstruction: names => `他のAIに話しかけるには@名前を使ってください（例: ${names.map(n => '@' + n).join('、')}）。メンションで自動的に応答が起動します。`,
       sendFileInstruction: 'ファイル送信を求められた場合、レスポンスに[send:path/to/file]マーカーを含めてください。パスは絶対パスで指定。複数ファイルは複数の[send:...]マーカーで送信可能です。',
     },
@@ -7399,6 +7408,9 @@ function promptStrings(lang) {
       replyInstruction: '마지막 메시지에 자연스럽고 직접적으로 답변하세요. 사람에게 @멘션할 필요 없습니다.',
       primaryRole: names => `당신은 이 방의 메인 에이전트입니다. @멘션이 없는 메시지는 당신이 응답합니다. ${names.join(', ')}은(는) @멘션될 때만 응답합니다. 도움이 필요하면 @멘션하세요.`,
       assistantRole: name => `${name}이(가) 이 방의 메인 에이전트입니다. 당신은 보조 역할이며 (사람 또는 다른 에이전트에게) @멘션될 때만 응답합니다.`,
+      offline: name => `${name}은(는) 오프라인입니다`,
+      offlineSubAgent: (name, label) => `${name}은(는) 오프라인입니다 — 서브 에이전트 "${label}"을(를) 실행할 수 없습니다`,
+      offlinePrimary: name => `${name}은(는) 오프라인입니다 — @멘션이 없는 메시지는 ${name}만 응답합니다. 도움이 필요하면 이 방의 다른 에이전트를 @멘션하세요.`,
       mentionInstruction: names => `다른 AI에게 말하려면 @이름을 사용하세요 (예: ${names.map(n => '@' + n).join(' 또는 ')}). 멘션하면 자동으로 응답합니다.`,
       sendFileInstruction: '파일 전송을 요청받으면 응답에 [send:path/to/file] 마커를 포함하세요. 경로는 절대 경로여야 합니다. 여러 파일은 여러 [send:...] 마커로 전송 가능합니다.',
     },
@@ -7416,11 +7428,20 @@ function promptStrings(lang) {
       replyInstruction: '自然直接地回复最后一条消息。无需@提及人类，他们会看到的。',
       primaryRole: names => `你是此房间的主代理：没有@提及的消息由你回应。${names.join('、')}只在被@提及时回应——需要帮助时请@提及${names.length === 1 ? 'TA' : '他们'}。`,
       assistantRole: name => `${name}是此房间的主代理。你是助手，只在被（人类或其他代理）@提及时回应。`,
+      offline: name => `${name}离线`,
+      offlineSubAgent: (name, label) => `${name}离线——子代理"${label}"无法运行`,
+      offlinePrimary: name => `${name}离线——没有@提及的消息只由${name}回应。需要帮助请@提及此房间的其他代理。`,
       mentionInstruction: names => `要与其他AI对话，请使用@名字（例如：${names.map(n => '@' + n).join('、')}）。提及会自动触发他们回应。`,
       sendFileInstruction: '如果被要求发送文件，请在回复中包含[send:path/to/file]标记。路径必须是绝对路径。可以使用多个[send:...]标记发送多个文件。系统会自动上传并在聊天中显示。',
     },
   };
-  return t[lang] || t.en;
+  // lang is free text from the actor config: "constructor" must not resolve to an Object.prototype member.
+  return Object.hasOwn(t, lang) ? t[lang] : t.en;
+}
+
+// Prompt lines and the notices posted on the agent's behalf use the agent's language.
+function agentLangOf(ai) {
+  try { return JSON.parse(ai.adapter_config || '{}').lang || 'en'; } catch { return 'en'; }
 }
 
 async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], prefetchedCtx = null, threadId = null) {
@@ -7432,11 +7453,10 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
     // An unmentioned message goes to the primary only (no fallback to an assistant), so say how to
     // reach the others.
     const hasOtherAi = ai.unmentioned && !!db.prepare(`SELECT 1 FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.room_id=? AND a.type='ai' AND a.id!=? LIMIT 1`).get(roomId, ai.actor_id);
-    const offlineMsg = subLabel
-      ? `${ai.name} sedang offline — sub-agent "${subLabel}" tidak bisa dijalankan`
-      : hasOtherAi
-        ? `${ai.name} sedang offline — pesan tanpa @mention hanya dijawab ${ai.name}. @mention agent lain di room ini untuk minta bantuan.`
-        : `${ai.name} sedang offline`;
+    const L = promptStrings(agentLangOf(ai));
+    const offlineMsg = subLabel ? L.offlineSubAgent(ai.name, subLabel)
+      : hasOtherAi ? L.offlinePrimary(ai.name)
+      : L.offline(ai.name);
     console.log(`[trigger] ${ai.name} is offline${subLabel ? ` (sub-agent: ${subLabel})` : ''}, saving system_event`);
     if (ai.retrigger) queueRetrigger(roomId, ai, prompt, replyTo, attachments, threadId);
     const sysResult = db.prepare(
@@ -7511,8 +7531,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   }
 
   // Build context-aware prompt (language-aware)
-  const agentLang = (() => { try { return JSON.parse(ai.adapter_config || '{}').lang || 'en'; } catch { return 'en'; } })();
-  const L = promptStrings(agentLang);
+  const L = promptStrings(agentLangOf(ai));
 
   const nowUtc = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
 

@@ -180,7 +180,7 @@ function appendMessage(m, container) {
 
   if (m.state === 'system_event') {
     const el = document.createElement('div');
-    const isError = /offline|gagal|error|tidak bisa|tidak ditemukan/i.test(m.content || '');
+    const isError = /offline|オフライン|오프라인|离线|gagal|error|tidak bisa|tidak ditemukan/i.test(m.content || '');
     el.className = 'h-system-event' + (isError ? ' error' : '');
     el.id = 'msg-' + m.id;
     el.textContent = m.content;
