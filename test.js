@@ -13359,6 +13359,20 @@ async function run() {
     assert.strictEqual(ctx.toolSummary(steps[0].name, steps[0].input), 'a/b', 'arguments feed the step summary');
   });
 
+  await test('file preview — too-large size never shows the same number as the limit', () => {
+    const vm = require('vm');
+    const ctx = {};
+    vm.runInNewContext(require('fs').readFileSync(path.join(__dirname, 'public/js/chat/file-card.js'), 'utf8'), ctx);
+    const limit = 2 * 1024 * 1024;
+    for (const over of [1, 10, 51, 52, 100, 1024]) {
+      const [size, lim] = ctx.fileSizePair(limit + over, limit);
+      assert.strictEqual(lim, '2,048 KB', 'limit shown in KB near the limit');
+      assert.notStrictEqual(size, lim, `+${over} bytes must not read as the limit`);
+    }
+    assert.deepStrictEqual([...ctx.fileSizePair(limit + 1, limit)], ['2,048.1 KB', '2,048 KB'], 'one byte over rounds up');
+    assert.deepStrictEqual([...ctx.fileSizePair(26.3 * 1048576, limit)], ['26.3 MB', '2 MB'], 'large files switch both to MB');
+  });
+
   await test('tool steps — stored per message for its own running agent only, capped, summary matches the chat trail', () => {
     const Database = require('better-sqlite3');
     const vm = require('vm');

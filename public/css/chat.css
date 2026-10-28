@@ -1175,6 +1175,8 @@
   background: var(--h-surface); box-shadow: inset 0 -1px 0 var(--h-hairline);
 }
 .fp-table td { color: var(--h-ink-mute); white-space: pre; }
+.fp-table td.is-clip, .fp-table td.is-open { cursor: pointer; }
+.fp-table td.is-open { white-space: pre-wrap; overflow-wrap: anywhere; text-overflow: clip; color: var(--h-ink); }
 @media (max-width: 640px) {
   .fp-dialog, .fp-dialog.is-pdf {
     width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh;

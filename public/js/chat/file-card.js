@@ -248,11 +248,12 @@ function filePreviewNote(text) {
   return p;
 }
 
-// Both sizes share one unit, and near the limit that unit is KB so they never round to the same number.
+// Both sizes share one unit (KB near the limit). The size rounds up and the limit down to 0.1,
+// so a file even one byte over never shows the same number as the limit.
 function fileSizePair(bytes, limit) {
   const [div, unit] = bytes < 10 * 1048576 ? [1024, 'KB'] : [1048576, 'MB'];
-  const fmt = n => `${(n / div).toLocaleString('en-US', { maximumFractionDigits: 1 })} ${unit}`;
-  return [fmt(bytes), fmt(limit)];
+  const fmt = (n, round) => `${(round(n / div * 10) / 10).toLocaleString('en-US', { maximumFractionDigits: 1 })} ${unit}`;
+  return [fmt(bytes, Math.ceil), fmt(limit, Math.floor)];
 }
 
 function filePreviewError(err, file) {
@@ -321,6 +322,33 @@ function parseDelimited(text, delim) {
   return rows.filter(r => r.length > 1 || r[0] !== '');
 }
 
+// Long cells are clipped with an ellipsis. Hover marks a clipped cell (title + pointer cursor);
+// a click or tap toggles it open, wrapped in place. Measured lazily so 500 rows cost no layout up front.
+function filePreviewTableCellExpand(table) {
+  const isClipped = td => td.scrollWidth > td.clientWidth;
+  table.addEventListener('pointerover', e => {
+    const td = e.target.closest('td');
+    if (!td || td.classList.contains('is-open')) return;
+    const clipped = isClipped(td);
+    td.classList.toggle('is-clip', clipped);
+    if (clipped) td.title = td.textContent;
+    else td.removeAttribute('title');
+  });
+  table.addEventListener('click', e => {
+    const td = e.target.closest('td');
+    if (!td || e.detail > 1 || !getSelection().isCollapsed) return;
+    if (td.classList.contains('is-open')) {
+      td.classList.replace('is-open', 'is-clip');
+      td.title = td.textContent;
+      return;
+    }
+    if (!isClipped(td)) return;
+    td.classList.remove('is-clip');
+    td.classList.add('is-open');
+    td.removeAttribute('title');
+  });
+}
+
 function filePreviewTable(text, delim) {
   const rows = parseDelimited(text, delim);
   if (!rows.length) return filePreviewNote('This file is empty.');
@@ -352,6 +380,7 @@ function filePreviewTable(text, delim) {
   });
   tbody.appendChild(frag);
   table.append(thead, tbody);
+  filePreviewTableCellExpand(table);
 
   const caption = filePreviewNote(data.length > shown.length
     ? `Showing ${shown.length.toLocaleString()} of ${data.length.toLocaleString()} rows. Download the file to see all of them.`
