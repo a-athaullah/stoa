@@ -8096,6 +8096,71 @@ async function run() {
       assert.strictEqual(txt.headers['content-security-policy'], "frame-ancestors 'self'");
     });
 
+    await test('/uploads ?download=1&name= — original filename, RFC 5987 encoded, ext pinned to stored file', async () => {
+      const pngUrl = await upload('dl-test.png', Buffer.from([0x89, 0x50, 0x4e, 0x47]), 'image/png');
+      const pdfUrl = await upload('dl-test.pdf', '%PDF-1.4 test', 'application/pdf');
+      const stored = path.basename(pngUrl);
+      const dl = (u, name) => req('GET', `${u}?download=1${name === undefined ? '' : `&name=${encodeURIComponent(name)}`}`);
+
+      const uni = await dl(pdfUrl, 'Laporan Q3 — final ✓.pdf');
+      assert.strictEqual(uni.status, 200);
+      assert.strictEqual(uni.headers['content-disposition'],
+        `attachment; filename="Laporan Q3 _ final _.pdf"; filename*=UTF-8''Laporan%20Q3%20%E2%80%94%20final%20%E2%9C%93.pdf`);
+      assert.strictEqual(decodeURIComponent(uni.headers['content-disposition'].split("UTF-8''")[1]), 'Laporan Q3 — final ✓.pdf');
+
+      assert.strictEqual((await dl(pngUrl, 'evil.html')).headers['content-disposition'],
+        `attachment; filename="evil.html.png"; filename*=UTF-8''evil.html.png`);
+      assert.strictEqual((await dl(pngUrl, 'Photo.PNG')).headers['content-disposition'],
+        `attachment; filename="Photo.PNG"; filename*=UTF-8''Photo.PNG`);
+
+      const inj = await dl(pngUrl, 'a"\r\nSet-Cookie: pwn=1\\b.png');
+      assert.strictEqual(inj.status, 200);
+      assert.strictEqual(inj.headers['set-cookie'], undefined);
+      assert.strictEqual(inj.headers['content-disposition'], `attachment; filename="b.png"; filename*=UTF-8''b.png`);
+      const quoteOnly = await dl(pngUrl, 'my "best" pic‮gnp.exe');
+      assert.strictEqual(quoteOnly.headers['content-disposition'],
+        `attachment; filename="my best picgnp.exe.png"; filename*=UTF-8''my%20best%20picgnp.exe.png`);
+
+      const trav = await dl(pngUrl, '../../../etc/passwd');
+      assert.strictEqual(trav.status, 200);
+      assert.strictEqual(trav.headers['content-disposition'], `attachment; filename="passwd.png"; filename*=UTF-8''passwd.png`);
+
+      for (const fallback of [undefined, '', '...', '/']) {
+        assert.strictEqual((await dl(pngUrl, fallback)).headers['content-disposition'],
+          `attachment; filename="${stored}"; filename*=UTF-8''${stored}`, `name=${fallback}`);
+      }
+      const long = (await dl(pngUrl, 'é'.repeat(500))).headers['content-disposition'];
+      assert.strictEqual(decodeURIComponent(long.split("UTF-8''")[1]), 'é'.repeat(196) + '.png');
+
+      assert.strictEqual((await req('GET', `${pngUrl}?download=0&name=x.png`)).headers['content-disposition'], 'attachment');
+    });
+
+    await test('/uploads — PDF inline for preview unless download=1; .html stays sandboxed with download=1', async () => {
+      const pdfUrl = await upload('inline-test.pdf', '%PDF-1.4 test', 'application/pdf');
+      const pdf = await req('GET', pdfUrl);
+      assert.strictEqual(pdf.status, 200);
+      assert.strictEqual(pdf.headers['content-type'], 'application/pdf');
+      assert.strictEqual(pdf.headers['content-disposition'], 'inline');
+      assert.strictEqual(pdf.headers['content-security-policy'], "frame-ancestors 'self'");
+      const html = await req('GET', `${htmlUrl}?download=1&name=page.html`);
+      assert.strictEqual(html.headers['content-disposition'], `attachment; filename="page.html"; filename*=UTF-8''page.html`);
+      assert.ok(html.headers['content-security-policy'].split(';').map(x => x.trim()).includes('sandbox'), html.headers['content-security-policy']);
+      const htmlInline = await req('GET', `${htmlUrl}?name=page.html`);
+      assert.strictEqual(htmlInline.headers['content-disposition'], 'attachment');
+      assert.ok(htmlInline.headers['content-security-policy'].includes('sandbox'));
+    });
+
+    await test('/uploads — .log/.yaml/.yml/.tsv served as inline utf-8 text', async () => {
+      const cases = [['t.log', 'text/plain; charset=utf-8'], ['t.yaml', 'text/plain; charset=utf-8'],
+        ['t.yml', 'text/plain; charset=utf-8'], ['t.tsv', 'text/tab-separated-values; charset=utf-8']];
+      for (const [name, type] of cases) {
+        const u = await upload(name, 'a\tb\n', 'application/octet-stream');
+        const r = await req('GET', u);
+        assert.deepStrictEqual([r.status, r.headers['content-type'], r.headers['content-disposition'], r.raw],
+          [200, type, 'inline', 'a\tb\n'], name);
+      }
+    });
+
     let triggerAtt = null;
     await test('agent_trigger — attachment URLs are signed and download without a cookie', async () => {
       const trig = waitForWsMessage(secAgent.ws, m => m.type === 'agent_trigger' && m.room_id === secRoomId, 5000);
@@ -8149,6 +8214,14 @@ async function run() {
         assert.strictEqual(s.headers['cache-control'], 'private, max-age=3600');
         const signed = await anon(() => req('GET', `${p}?${signedQuery(p, nowSec() + 60)}`), true);
         assert.strictEqual(signed.status, 200);
+        const signedDl = await anon(() => req('GET', `${p}?${signedQuery(p, nowSec() + 60)}&download=1&name=${encodeURIComponent('voice note.html')}`), true);
+        assert.deepStrictEqual([signedDl.status, signedDl.headers['content-disposition']],
+          [200, `attachment; filename="voice note.html.txt"; filename*=UTF-8''voice%20note.html.txt`]);
+        fs.writeFileSync(path.join(mediaDir, 'd.pdf'), '%PDF-1.4');
+        const pdfPath = '/connector-media/__sectest__/d.pdf';
+        assert.strictEqual((await req('GET', pdfPath)).headers['content-disposition'], 'inline');
+        assert.strictEqual((await req('GET', `${pdfPath}?download=1`)).headers['content-disposition'],
+          `attachment; filename="d.pdf"; filename*=UTF-8''d.pdf`);
       } finally { fs.rmSync(mediaDir, { recursive: true, force: true }); }
     });
 
