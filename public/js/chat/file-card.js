@@ -322,33 +322,6 @@ function parseDelimited(text, delim) {
   return rows.filter(r => r.length > 1 || r[0] !== '');
 }
 
-// Long cells are clipped with an ellipsis. Hover marks a clipped cell (title + pointer cursor);
-// a click or tap toggles it open, wrapped in place. Measured lazily so 500 rows cost no layout up front.
-function filePreviewTableCellExpand(table) {
-  const isClipped = td => td.scrollWidth > td.clientWidth;
-  table.addEventListener('pointerover', e => {
-    const td = e.target.closest('td');
-    if (!td || td.classList.contains('is-open')) return;
-    const clipped = isClipped(td);
-    td.classList.toggle('is-clip', clipped);
-    if (clipped) td.title = td.textContent;
-    else td.removeAttribute('title');
-  });
-  table.addEventListener('click', e => {
-    const td = e.target.closest('td');
-    if (!td || e.detail > 1 || !getSelection().isCollapsed) return;
-    if (td.classList.contains('is-open')) {
-      td.classList.replace('is-open', 'is-clip');
-      td.title = td.textContent;
-      return;
-    }
-    if (!isClipped(td)) return;
-    td.classList.remove('is-clip');
-    td.classList.add('is-open');
-    td.removeAttribute('title');
-  });
-}
-
 function filePreviewTable(text, delim) {
   const rows = parseDelimited(text, delim);
   if (!rows.length) return filePreviewNote('This file is empty.');
@@ -380,7 +353,6 @@ function filePreviewTable(text, delim) {
   });
   tbody.appendChild(frag);
   table.append(thead, tbody);
-  filePreviewTableCellExpand(table);
 
   const caption = filePreviewNote(data.length > shown.length
     ? `Showing ${shown.length.toLocaleString()} of ${data.length.toLocaleString()} rows. Download the file to see all of them.`
