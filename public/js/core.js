@@ -38,6 +38,25 @@ let allSkills = [];  // enabled skills from GET /api/skills, for the composer / 
 let skillPopupIdx = -1; // active item index in popup
 let mentionPopupIdx = -1;
 
+const PRIMARY_AGENT_HINT = 'Primary agent: answers messages without a mention';
+
+// Participant rows carry is_primary; the room's primary_actor_id is the fallback for rows that don't.
+// Matched by actor id because actor names aren't unique. A server without the field marks nobody.
+function isPrimaryParticipant(p, room) {
+  if (!p) return false;
+  if (p.is_primary != null) return !!p.is_primary;
+  const roomPrimary = room?.primary_actor_id ?? (room?.id != null && room.id === currentRoomData?.id ? currentRoomData.primary_actor_id : null);
+  return roomPrimary != null && p.actor_id === roomPrimary;
+}
+
+function makePrimaryBadge() {
+  const badge = document.createElement('span');
+  badge.className = 'h-primary-badge';
+  badge.textContent = 'primary';
+  badge.title = PRIMARY_AGENT_HINT;
+  return badge;
+}
+
 // ── Auth ──────────────────────────────────────────────────────────────────
 let authUser = null;
 

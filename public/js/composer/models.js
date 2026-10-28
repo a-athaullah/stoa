@@ -283,7 +283,7 @@ function showMentionPopup(query, inputId = 'msg-input') {
   const q = query.toLowerCase();
   const partMatches = parts
     .filter(p => p.actor_id !== humanActor?.id && p.name.toLowerCase().startsWith(q))
-    .map(p => ({ name: p.name, avatar_color: p.avatar_color, avatar_url: p.avatar_url, isSub: false }));
+    .map(p => ({ name: p.name, avatar_color: p.avatar_color, avatar_url: p.avatar_url, isSub: false, isPrimary: isPrimaryParticipant(p, currentRoomData) }));
   const subMatches = subs
     .filter(s => s.label.toLowerCase().startsWith(q))
     .map(s => ({
@@ -320,6 +320,8 @@ function showMentionPopup(query, inputId = 'msg-input') {
       badge.className = 'h-mention-sub-badge';
       badge.textContent = 'sub';
       item.appendChild(badge);
+    } else if (p.isPrimary) {
+      item.appendChild(makePrimaryBadge());
     }
     item.onmousedown = e => {
       e.preventDefault();

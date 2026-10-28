@@ -230,35 +230,26 @@ function runUnitTests() {
     assert.ok(verifyPassword('same', h2));
   });
 
-  // resolveAgentOrder (mirrors server logic)
-  const resolveAgentOrder = (content, agents) => {
-    const mentions = [];
-    for (const agent of agents) {
-      const idx = content.indexOf('@' + agent.name);
-      if (idx !== -1) mentions.push({ agent, idx });
-    }
-    if (mentions.length > 0) {
-      mentions.sort((a, b) => a.idx - b.idx);
-      return mentions.map(m => m.agent);
-    }
-    return [...agents];
-  };
-  ut('resolveAgentOrder — single @mention selects one agent', () => {
-    const agents = [{ name: 'Ara' }, { name: 'Idris' }];
-    const ordered = resolveAgentOrder('@Ara please help', agents);
-    assert.strictEqual(ordered.length, 1);
-    assert.strictEqual(ordered[0].name, 'Ara');
+  const { findMentions } = require('./lib/mentions');
+  ut('findMentions — a multi-word name is not also a mention of its shorter prefix', () => {
+    const names = ['Kira', 'Kira Dev'];
+    assert.deepStrictEqual([...findMentions('@Kira Dev check this', names).keys()], ['Kira Dev']);
+    assert.deepStrictEqual([...findMentions('@Kira check this', names).keys()], ['Kira']);
+    assert.deepStrictEqual(Object.fromEntries(findMentions('@Kira, @Kira Dev', names)), { Kira: 0, 'Kira Dev': 7 });
+    assert.deepStrictEqual([...findMentions('@Kira Dev then @Kira', names).keys()].sort(), ['Kira', 'Kira Dev']);
   });
-  ut('resolveAgentOrder — multiple mentions ordered by position', () => {
-    const agents = [{ name: 'Ara' }, { name: 'Idris' }];
-    const ordered = resolveAgentOrder('hey @Idris then @Ara', agents);
-    assert.strictEqual(ordered[0].name, 'Idris');
-    assert.strictEqual(ordered[1].name, 'Ara');
+  ut('findMentions — a mention ends and starts at a word boundary', () => {
+    const names = ['Kira', 'Ara'];
+    assert.strictEqual(findMentions('@Kirana hi', names).size, 0, '@Kirana is not @Kira');
+    assert.strictEqual(findMentions('mail me at x@Kira', names).size, 0, 'inside a word is not a mention');
+    assert.strictEqual(findMentions('@kira hi', names).size, 0, 'case-sensitive');
+    assert.deepStrictEqual([...findMentions('(@Ara) and @Kira.', names).keys()].sort(), ['Ara', 'Kira']);
+    assert.strictEqual(findMentions('@Kira-chan', names).size, 0);
   });
-  ut('resolveAgentOrder — no mentions → all agents returned', () => {
-    const agents = [{ name: 'Ara' }, { name: 'Idris' }];
-    const ordered = resolveAgentOrder('hello everyone', agents);
-    assert.strictEqual(ordered.length, 2);
+  ut('findMentions — names with regex metacharacters match literally', () => {
+    assert.deepStrictEqual([...findMentions('ask @a.b+c now', ['a.b+c', 'axb+c']).keys()], ['a.b+c']);
+    assert.strictEqual(findMentions('no mention here', ['Kira']).size, 0);
+    assert.strictEqual(findMentions(null, ['Kira']).size, 0);
   });
 
   // Parallel sub-agent dispatch split (mirrors handleHumanMessage dispatch logic)
@@ -4710,6 +4701,17 @@ async function run() {
     return { actorId, secret, workdirId: wd.body?.id ?? null, ws };
   };
 
+  // Finishes a fake agent run the way the client does and waits until the server stored it complete.
+  const completeRun = async (ws, roomId, m) => {
+    ws.send(JSON.stringify({ type: 'agent_complete', room_id: roomId, message_id: m.message_id, content: 'done' }));
+    const db = require('./db');
+    const deadline = Date.now() + 3000;
+    while (db.prepare('SELECT state FROM messages WHERE id=?').get(m.message_id)?.state !== 'complete') {
+      if (Date.now() > deadline) throw new Error(`run ${m.message_id} not completed`);
+      await new Promise(r => setTimeout(r, 25));
+    }
+  };
+
   console.log('\n[Test Setup]');
   await test('Setup — pre-cleanup leftover test actors from prior runs', async () => {
     const actors = (await req('GET', '/api/actors')).body;
@@ -5790,7 +5792,6 @@ async function run() {
     let dsActorId = null, dsSecret = null, dsRoomId = null, dsWs = null, dsName = null;
     let dsWith = null, dsNone = null;
     const getSa = async id => (await req('GET', `/api/actors/${dsActorId}/sub-agents`)).body.find(s => s.id === id);
-    const completeTrigger = (m) => { if (m?.message_id) dsWs.send(JSON.stringify({ type: 'agent_message', message_id: m.message_id, content: 'done', state: 'complete' })); };
 
     await test('Setup — online agent + room for description tests', async () => {
       dsName = '__test-desc-agent';
@@ -5882,7 +5883,7 @@ async function run() {
         await waitForWsMessage(humanWs, m => m.type === 'history');
         humanWs.send(JSON.stringify({ type: 'send_message', room_id: dsRoomId, content: 'hello main agent' }));
         const m = await trig;
-        completeTrigger(m);
+        await completeRun(dsWs, dsRoomId, m);
         assert.ok(m.prompt.includes('@descbe (standard) — Backend implementation for Stoa'), 'described sub-agent must list collapsed description');
         assert.ok(/@descnone \(quick\)(?! —)/.test(m.prompt), 'undescribed sub-agent keeps old format');
       } finally { humanWs.close(); }
@@ -5897,8 +5898,10 @@ async function run() {
         assert.strictEqual(r.status, 200, JSON.stringify(r.body));
         const m = await trig;
         const wake = waitForWsMessage(dsWs, w => w.type === 'agent_trigger' && !w.sub_agent, 3000).catch(() => null);
-        completeTrigger(m);
-        completeTrigger(await wake);
+        await completeRun(dsWs, dsRoomId, m);
+        const w = await wake;
+        assert.ok(w, 'the finished sub-agent run wakes its parent');
+        await completeRun(dsWs, dsRoomId, w);
         return m.prompt;
       };
       const p1 = await runSub(dsWith);
@@ -5928,7 +5931,6 @@ async function run() {
     let rlActorId = null, rlSecret = null, rlRoomId = null, rlWs = null;
     let rlWith = null, rlNone = null;
     const getSa = async id => (await req('GET', `/api/actors/${rlActorId}/sub-agents`)).body.find(s => s.id === id);
-    const completeTrigger = (m) => { if (m?.message_id) rlWs.send(JSON.stringify({ type: 'agent_message', message_id: m.message_id, content: 'done', state: 'complete' })); };
 
     await test('Setup — online agent + room for role tests', async () => {
       const agent = await createOnlineTestAgent('__test-role-agent', '/tmp/stoa-test-role');
@@ -6019,7 +6021,7 @@ async function run() {
         await histP;
         humanWs.send(JSON.stringify({ type: 'send_message', room_id: rlRoomId, content: 'hello main agent' }));
         const m = await trig;
-        completeTrigger(m);
+        await completeRun(rlWs, rlRoomId, m);
         assert.ok(m.prompt.includes('@rolelead (deep, Tech Lead) — Reviews code'), 'role in delegation list');
         assert.ok(m.prompt.includes('@rolenone (quick)'), 'no role keeps old format');
       } finally { humanWs.close(); }
@@ -6031,8 +6033,10 @@ async function run() {
         assert.strictEqual(r.status, 200, JSON.stringify(r.body));
         const m = await t;
         const wake = waitForWsMessage(rlWs, w => w.type === 'agent_trigger' && !w.sub_agent, 3000).catch(() => null);
-        completeTrigger(m);
-        completeTrigger(await wake);
+        await completeRun(rlWs, rlRoomId, m);
+        const w = await wake;
+        assert.ok(w, 'the finished sub-agent run wakes its parent');
+        await completeRun(rlWs, rlRoomId, w);
         return m.prompt;
       };
       assert.ok((await runSub(rlWith)).includes('(tier: deep).\nYour role: Tech Lead'), 'sub-agent prompt has role');
@@ -6050,6 +6054,144 @@ async function run() {
       if (rlActorId) {
         await req('DELETE', `/api/actors/${rlActorId}`);
         orphanActorIds = orphanActorIds.filter(id => id !== rlActorId);
+      }
+    });
+  }
+
+  // ── Primary agent ──────────────────────────────────────────────────────────
+  // A message without an @mention goes to the room's primary agent only; the other AI participants
+  // are assistants that run on @mention. The primary cannot be removed (its actor cannot be deleted).
+  console.log('\n[Primary agent]');
+  {
+    let pa = null, pb = null, pc = null, paRoomId = null, humanWs = null;
+    // Finishes the run and resolves once the room saw it complete, so the next message isn't held by the thread limit.
+    const completeOn = (ws, m) => {
+      const done = waitForWsMessage(humanWs, x => x.type === 'message_complete' && x.message_id === m.message_id, 5000);
+      ws.send(JSON.stringify({ type: 'agent_complete', room_id: paRoomId, message_id: m.message_id, content: 'done' }));
+      return done;
+    };
+    // Resolves with the trigger the agent got, or null when none arrives within ms.
+    const triggerOf = (agent, ms) => waitForWsMessage(agent.ws, m => m.type === 'agent_trigger' && m.room_id === paRoomId && !m.sub_agent, ms).catch(() => null);
+    const send = (content) => humanWs.send(JSON.stringify({ type: 'send_message', room_id: paRoomId, content }));
+
+    await test('Setup — room with two online agents, the workdir owner first', async () => {
+      pa = await createOnlineTestAgent('__test-primary-a', '/tmp/stoa-test-primary-a');
+      pb = await createOnlineTestAgent('__test-primary-b', '/tmp/stoa-test-primary-b');
+      if (!pa?.workdirId || !pb?.workdirId) { console.log('    (skipped — could not set up online test agents)'); return; }
+      const r = await req('POST', '/api/rooms', { title: '__primary-room__', workdir_id: pa.workdirId, participant_ids: [pb.actorId, pa.actorId] });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      paRoomId = r.body.id;
+      testRoomIds.push(paRoomId);
+      humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      const histP = waitForWsMessage(humanWs, m => m.type === 'history');
+      humanWs.send(JSON.stringify({ type: 'join_room', room_id: paRoomId }));
+      await histP;
+    });
+
+    await test('POST /api/rooms → primary_actor_id is the workdir owner; participants carry is_primary', async () => {
+      if (!paRoomId) { console.log('    (skipped)'); return; }
+      const room = (await req('GET', '/api/rooms')).body.find(x => x.id === paRoomId);
+      assert.strictEqual(room.primary_actor_id, pa.actorId, 'workdir owner, though listed after the other agent');
+      const rows = (await req('GET', `/api/rooms/${paRoomId}/participants`)).body;
+      const flag = id => rows.find(x => x.actor_id === id)?.is_primary;
+      assert.deepStrictEqual([flag(pa.actorId), flag(pb.actorId)], [1, 0]);
+      assert.strictEqual(rows.filter(x => x.type === 'human')[0].is_primary, 0);
+      const grouped = (await req('GET', `/api/rooms/participants?ids=${paRoomId}`)).body[paRoomId];
+      assert.deepStrictEqual(grouped.filter(x => x.is_primary).map(x => x.actor_id), [pa.actorId]);
+    });
+
+    await test('message without @mention → only the primary agent is triggered, told it is the primary', async () => {
+      if (!paRoomId) { console.log('    (skipped)'); return; }
+      const ta = triggerOf(pa, 5000), tb = triggerOf(pb, 1500);
+      send('hello team, who takes this?');
+      const m = await ta;
+      assert.ok(m, 'primary triggered');
+      assert.ok(m.prompt.includes('You are the primary agent of this room') && m.prompt.includes('__test-primary-b only responds when @mentioned'), 'primary role line, singular with one assistant');
+      await completeOn(pa.ws, m);
+      assert.strictEqual(await tb, null, 'assistant agent not triggered');
+    });
+
+    await test('message @mentioning the assistant → only the assistant runs, told who the primary is', async () => {
+      if (!paRoomId) { console.log('    (skipped)'); return; }
+      const ta = triggerOf(pa, 1500), tb = triggerOf(pb, 5000);
+      send('@__test-primary-b can you check this?');
+      const m = await tb;
+      assert.ok(m, 'mentioned assistant triggered');
+      assert.ok(m.prompt.includes('__test-primary-a is the primary agent of this room. You assist and only respond when @mentioned'), 'assistant role line');
+      await completeOn(pb.ws, m);
+      assert.strictEqual(await ta, null, 'primary not triggered when only the assistant is mentioned');
+    });
+
+    await test('@mentions match whole names: "@x Dev" is not also "@x", "@xana" is nobody', async () => {
+      if (!paRoomId) { console.log('    (skipped)'); return; }
+      pc = await createOnlineTestAgent('__test-primary-b Dev', '/tmp/stoa-test-primary-c');
+      assert.ok(pc?.actorId, 'third agent online');
+      assert.strictEqual((await req('POST', `/api/rooms/${paRoomId}/participants`, { actor_id: pc.actorId })).status, 200);
+      const run = async (content, expect) => {
+        const waits = [pa, pb, pc].map(a => triggerOf(a, expect.includes(a) ? 5000 : 1500));
+        send(content);
+        for (const [i, a] of [pa, pb, pc].entries()) {
+          const m = await waits[i];
+          if (expect.includes(a)) { assert.ok(m, `${content} → agent ${i} triggered`); await completeOn(a.ws, m); }
+          else assert.strictEqual(m, null, `${content} → agent ${i} not triggered`);
+        }
+      };
+      await run('@__test-primary-b Dev please', [pc]);
+      await run('@__test-primary-b please', [pb]);
+      await run('@__test-primary-b, @__test-primary-b Dev both of you', [pb, pc]);
+      await run('@__test-primary-bana nobody by that name', [pa]);
+    });
+
+    await test('primary offline + no @mention → nobody else runs; live notice suggests @mention, echoed to the feed', async () => {
+      if (!paRoomId || !pc) { console.log('    (skipped)'); return; }
+      const closed = new Promise(r => pa.ws.once('close', r));
+      pa.ws.close();
+      await closed;
+      await new Promise(r => setTimeout(r, 200));
+      const tb = triggerOf(pb, 1500), tc = triggerOf(pc, 1500);
+      const notice = waitForWsMessage(humanWs, m => m.type === 'message_new' && m.message?.state === 'system_event' && m.message.room_id === paRoomId, 5000);
+      const echo = waitForWsMessage(humanWs, m => m.type === 'message_broadcast' && m.message?.state === 'system_event', 5000);
+      send('anyone there?');
+      const n = await notice;
+      assert.ok(n.message.content.includes('__test-primary-a sedang offline') && n.message.content.includes('@mention agent lain'), n.message.content);
+      assert.ok(n.message.thread_id, 'notice lands in the message thread');
+      assert.strictEqual(n.thread_summary?.root_id, n.message.thread_id, 'thread chip updates live');
+      const e = await echo;
+      assert.strictEqual(e.message.id, n.message.id);
+      assert.strictEqual(e.message.broadcast_reason, 'error');
+      assert.strictEqual(await tb, null, 'no fallback to an assistant');
+      assert.strictEqual(await tc, null, 'no fallback to an assistant');
+      const hist = waitForWsMessage(humanWs, m => m.type === 'history', 5000);
+      humanWs.send(JSON.stringify({ type: 'join_room', room_id: paRoomId }));
+      const h = await hist;
+      assert.ok((h.messages || []).some(m => m.id === n.message.id && m.broadcast_reason === 'error'), 'echo survives a reload');
+    });
+
+    await test('DELETE primary actor → 409 naming the room (archived too), actor and participation kept', async () => {
+      if (!paRoomId) { console.log('    (skipped)'); return; }
+      const r = await req('DELETE', `/api/actors/${pa.actorId}`);
+      assert.strictEqual(r.status, 409);
+      assert.ok(r.body.error.includes('__primary-room__'), r.body.error);
+      assert.ok((await req('GET', `/api/rooms/${paRoomId}/participants`)).body.some(x => x.actor_id === pa.actorId), 'still a participant');
+      // archived rooms keep their primary too
+      await req('PATCH', `/api/rooms/${paRoomId}`, { archived: true });
+      assert.strictEqual((await req('DELETE', `/api/actors/${pa.actorId}`)).status, 409, 'archived room still blocks');
+      await req('PATCH', `/api/rooms/${paRoomId}`, { archived: false });
+    });
+
+    await test('Cleanup — primary agent test data', async () => {
+      if (humanWs) humanWs.close();
+      for (const a of [pa, pb, pc]) if (a?.ws) a.ws.close();
+      if (paRoomId) {
+        await req('PATCH', `/api/rooms/${paRoomId}`, { archived: true });
+        await req('DELETE', `/api/rooms/${paRoomId}`);
+        testRoomIds = testRoomIds.filter(id => id !== paRoomId);
+      }
+      for (const a of [pa, pb, pc]) {
+        if (!a?.actorId) continue;
+        const r = await req('DELETE', `/api/actors/${a.actorId}`);
+        assert.ok(r.status === 200 || r.status === 204, `delete actor ${a.actorId} → ${r.status}`);
+        orphanActorIds = orphanActorIds.filter(id => id !== a.actorId);
       }
     });
   }
@@ -8960,10 +9102,15 @@ async function run() {
 
   // An agent in a room with an avatar file; `withMessage` → it also posts one message (blocks the delete).
   const fs = require('fs');
+  // The room's primary agent cannot be deleted, so the agent under test joins as an assistant in a room
+  // whose workdir (and primary role) belongs to a shared host agent; the delete then reaches the transaction.
+  let actorDeleteHost = null;
   const actorDeleteFixture = async (name, withMessage) => {
+    actorDeleteHost ||= await createOnlineTestAgent('__test-actor-host', '/tmp/stoa-test-actor-host');
+    assert.ok(actorDeleteHost?.workdirId, 'host agent setup failed');
     const ag = await createOnlineTestAgent(name, `/tmp/stoa-test-${name}`);
     assert.ok(ag?.workdirId, 'test agent setup failed');
-    const room = await req('POST', '/api/rooms', { title: `${name}-room`, workdir_id: ag.workdirId, participant_ids: [ag.actorId] });
+    const room = await req('POST', '/api/rooms', { title: `${name}-room`, workdir_id: actorDeleteHost.workdirId, participant_ids: [actorDeleteHost.actorId, ag.actorId] });
     assert.strictEqual(room.status, 200, `create room failed: ${JSON.stringify(room.body)}`);
     const av = await req('POST', `/api/actors/${ag.actorId}/avatar`, { data_url: MINIMAL_PNG });
     assert.strictEqual(av.status, 200);
@@ -13745,6 +13892,24 @@ async function run() {
     assert.strictEqual(route({}), JSON.stringify({ toast: 'failed to save' }));
   });
 
+  await test('primary agent — isPrimaryParticipant matches by actor id: is_primary wins, room primary_actor_id is the fallback, no field marks nobody', () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const ctx = { localStorage: { getItem: () => null, setItem() {} }, document: { addEventListener() {}, getElementById: () => null, querySelector: () => null }, window: { addEventListener() {} }, navigator: {}, location: {} };
+    vm.createContext(ctx);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/core.js'), 'utf8'), ctx);
+    const is = (p, room) => vm.runInContext('isPrimaryParticipant', ctx)(p, room);
+    assert.strictEqual(is({ actor_id: 7, is_primary: 1 }, null), true);
+    assert.strictEqual(is({ actor_id: 7, is_primary: 0 }, { id: 1, primary_actor_id: 7 }), false, 'row flag beats the room field');
+    assert.strictEqual(is({ actor_id: 7 }, { id: 1, primary_actor_id: 7 }), true);
+    assert.strictEqual(is({ actor_id: 8, name: 'Quill' }, { id: 1, primary_actor_id: 7 }), false);
+    assert.strictEqual(is({ actor_id: 7 }, { id: 1 }), false, 'old server: no field anywhere → no mark');
+    vm.runInContext('currentRoomData = { id: 1, primary_actor_id: 7 }', ctx);
+    assert.strictEqual(is({ actor_id: 7 }, { id: 1 }), true, 'partial room object falls back to the open room');
+    assert.strictEqual(is({ actor_id: 7 }, { id: 2 }), false, 'another room never borrows the open room primary');
+    assert.strictEqual(is(null, { id: 1 }), false);
+  });
+
   await test('room agents popover — an actor removed elsewhere leaves the open popover (participants + add list), stale loads never win', async () => {
     const vm = require('vm');
     const fs = require('fs');
@@ -13790,7 +13955,7 @@ async function run() {
     const ctx = { document: doc, window: { innerWidth: 1280, innerHeight: 800 }, localStorage: { getItem: () => null, removeItem() {} }, fjson,
       requestAnimationFrame: f => f(), setTimeout: f => f(), getAvailableModels: () => [], showToast() {}, console,
       humanActor: null, allActors: [], actorByName: {}, settingsActors: [], sRowStates: new Map(), currentRoomId: 1, roomParticipantsCache: {},
-      syncNewRoomBtn() {}, refreshRoomList() {}, renderChatHeader() {} };
+      syncNewRoomBtn() {}, refreshRoomList() {}, renderChatHeader() {}, isPrimaryParticipant: () => false, makePrimaryBadge: () => new El('span') };
     vm.createContext(ctx);
     for (const f of ['public/js/rooms/room-sidebar.js', 'public/js/settings/init.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
     ctx.refreshRoomList = () => {};
@@ -17226,6 +17391,39 @@ async function run() {
         { scope: 'room', scope_id: 7, key_name: 'tool_progress', value: 'off' },
       ]);
       assert.strictEqual(db.prepare("SELECT COUNT(*) c FROM settings WHERE scope='global' AND key_name IN ('idle_timeout_seconds','max_active_rooms_per_ai','max_ai_turns_per_round')").get().c, 3, 'unrelated global rows untouched');
+    } finally { db.close(); _mfs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  await test('migrations: 20261028-room-primary-agent backfills workdir owner, else first AI participant, else NULL', async () => {
+    const Database = require('better-sqlite3');
+    const { runMigrations } = require('./lib/migrations');
+    const db = new Database(':memory:');
+    const file = '20261028-room-primary-agent.sql';
+    const dir = _migTmp({ [file]: _mfs.readFileSync(path.join(__dirname, 'migrations', file), 'utf8') });
+    try {
+      db.exec(_mfs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
+      const actor = db.prepare('INSERT INTO actors (name, type) VALUES (?, ?)');
+      const human = actor.run('h', 'human').lastInsertRowid;
+      const [ai1, ai2, ai3] = ['a1', 'a2', 'a3'].map(n => actor.run(n, 'ai').lastInsertRowid);
+      const wd = db.prepare('INSERT INTO agent_workdirs (actor_id, path) VALUES (?, ?)');
+      const wd2 = wd.run(ai2, '/w2').lastInsertRowid, wd3 = wd.run(ai3, '/w3').lastInsertRowid;
+      const room = db.prepare('INSERT INTO rooms (title, created_by, workdir_id) VALUES (?, ?, ?)');
+      const join = db.prepare('INSERT INTO room_participants (room_id, actor_id) VALUES (?, ?)');
+      // workdir owner joined after another AI → still the primary
+      const rOwner = room.run('owner', human, wd2).lastInsertRowid;
+      for (const a of [human, ai1, ai2]) join.run(rOwner, a);
+      // workdir owner is not a participant → first AI by participant id, the human row before it skipped
+      const rFirst = room.run('first', human, wd3).lastInsertRowid;
+      for (const a of [human, ai2, ai1]) join.run(rFirst, a);
+      // no AI participant → NULL
+      const rNone = room.run('none', human, null).lastInsertRowid;
+      join.run(rNone, human);
+      const [r] = runMigrations(db, dir, _migQuiet);
+      assert.strictEqual(r.status, 'applied', r.error);
+      const primary = id => db.prepare('SELECT primary_actor_id p FROM rooms WHERE id=?').get(id).p;
+      assert.strictEqual(primary(rOwner), ai2);
+      assert.strictEqual(primary(rFirst), ai2);
+      assert.strictEqual(primary(rNone), null);
     } finally { db.close(); _mfs.rmSync(dir, { recursive: true, force: true }); }
   });
 

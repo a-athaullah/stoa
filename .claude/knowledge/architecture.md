@@ -64,6 +64,9 @@ Agent ready to receive commands
 - Each AI participant = one Claude API session
 - Session persists in `ai_sessions` table
 - Workdir-specific sessions supported (same AI, different projects)
+- Each room has exactly one **primary agent** (`rooms.primary_actor_id`). Messages with no @mention trigger only the primary. All other agents (companions) only run when @mentioned — by the human or by the primary.
+- Primary is set at room creation (defaults to workdir owner agent); fallback is the AI participant with the lowest `room_participants.id`.
+- `DELETE /api/actors/:id` returns 409 if the actor is primary in any room (including archived). Primary cannot be reassigned via API yet.
 
 ### Sub-Agent Auto-Wake Rules
 - Parent is woken after sub-agent completes **only if** the sub-agent was triggered by the parent (mention in parent response, wake cascade, or API spawn)

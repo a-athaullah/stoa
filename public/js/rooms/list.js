@@ -381,7 +381,7 @@ function renderRoomDots(roomId, participants) {
     const dot = document.createElement('span');
     dot.className = 'h-actor-dot';
     dot.style.background = p.avatar_color;
-    dot.title = p.name;
+    dot.title = isPrimaryParticipant(p, { id: roomId }) ? `${p.name} (primary)` : p.name;
     container.appendChild(dot);
   }
   _paintRoomThreadBadge(container, roomActiveThreads[roomId] || 0);
