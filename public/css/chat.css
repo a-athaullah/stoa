@@ -1655,6 +1655,19 @@
   border-radius: 4px;
   margin-left: auto;
 }
+.h-primary-badge {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 400;
+  line-height: 1.4;
+  letter-spacing: .04em;
+  color: var(--h-ink-mute);
+  border: 1px solid var(--h-hairline);
+  padding: 0 6px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.h-mention-item .h-primary-badge { margin-left: auto; }
 
 /* System notice */
 .h-skill-notice {

@@ -745,14 +745,20 @@ async function sCommitDelete(id) {
   }
   renderAgentSidebar();
   let status = 0;
-  try { status = (await fetch(`/api/actors/${id}`, { method: 'DELETE' })).status; } catch {}
+  let body = {};
+  try {
+    const r = await fetch(`/api/actors/${id}`, { method: 'DELETE' });
+    status = r.status;
+    if (status === 409) body = await r.json().catch(() => ({}));
+  } catch {}
   if (status === 204 || status === 404) {
     const idx = allActors.findIndex(a => a.id === id);
     if (idx >= 0) allActors.splice(idx, 1);
     syncNewRoomBtn();
     return;
   }
-  if (status === 409) showToast('This agent has chat history or usage records, so it can’t be deleted. Its history is kept.', { error: true, duration: 8000 });
+  if (status === 409 && body.error && !body.error.includes('chat history')) showToast(body.error, { error: true, duration: 8000 });
+  else if (status === 409) showToast('This agent has chat history or usage records, so it can’t be deleted. Its history is kept.', { error: true, duration: 8000 });
   else showToast('Failed to delete agent', { error: true });
   settingsActors = allActors.filter(a => a.type !== 'human' || a.id === humanActor?.id);
   renderAgentSidebar();

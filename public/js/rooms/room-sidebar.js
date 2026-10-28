@@ -256,15 +256,20 @@ function renderRoomSidebar(room, participants) {
         empty.textContent = 'no participants';
         body.appendChild(empty);
       } else {
-        list.forEach(p => {
+        const ordered = [...list].sort((a, b) => isPrimaryParticipant(b, room) - isPrimaryParticipant(a, room));
+        ordered.forEach(p => {
           const row = document.createElement('div');
           row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:5px 0';
           const av = avatarEl(p);
           const info = document.createElement('div');
           info.style.cssText = 'flex:1;min-width:0';
+          const nameRow = document.createElement('div');
+          nameRow.style.cssText = 'display:flex;align-items:center;gap:6px;min-width:0';
           const name = document.createElement('div');
-          name.style.cssText = 'font-size:13px;color:var(--h-ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+          name.style.cssText = 'font-size:13px;color:var(--h-ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0';
           name.textContent = p.name || p.actor_name || '?';
+          nameRow.appendChild(name);
+          if (isPrimaryParticipant(p, room)) nameRow.appendChild(makePrimaryBadge());
           const meta = document.createElement('div');
           meta.style.cssText = 'font-size:11px;color:var(--h-ink-faint);display:flex;align-items:center;gap:6px;margin-top:1px';
           const typeChip = document.createElement('span');
@@ -279,7 +284,7 @@ function renderRoomSidebar(room, participants) {
           statusDot.style.cssText = `width:6px;height:6px;border-radius:50%;background:${online ? 'oklch(65% .18 145)' : 'var(--h-border)'}`;
           statusDot.title = status;
           meta.append(typeChip, statusDot, document.createTextNode(status));
-          info.append(name, meta);
+          info.append(nameRow, meta);
           row.append(av, info);
           body.appendChild(row);
         });
