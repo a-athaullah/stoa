@@ -1163,7 +1163,7 @@ Satu agent bisa punya maksimal 20 permintaan approval yang pending sekaligus. Ka
 
 ### Label Tool di Chat
 
-Saat agent sedang berjalan, setiap panggilan tool MCP ditampilkan sebagai blok tool di chat. Blok ini menampilkan **nama tool** diikuti label kecil miring **"via \<nama server\> (Stoa)"** — misalnya `resolve-library-id via Context7 (Stoa)`. Hover untuk melihat nama internal lengkap sebagai tooltip. Langkah tool disimpan bersama pesan (maksimal 50 langkah per pesan, nama tool + ringkasan satu baris) sehingga process trail — termasuk label MCP — **tetap ada setelah halaman di-reload**.
+Saat agent sedang berjalan, setiap panggilan tool MCP ditampilkan sebagai blok tool di chat. Blok ini menampilkan **nama tool** diikuti label kecil miring **"via \<nama server\> (Stoa)"** — misalnya `resolve-library-id via Context7 (Stoa)`. Hover untuk melihat nama internal lengkap sebagai tooltip. Langkah tool disimpan bersama pesan (maksimal 50 langkah per pesan, nama tool + ringkasan satu baris). Setelah halaman di-reload, process trail — termasuk label MCP — hanya dibangun ulang untuk **run yang error** (agar tetap bisa didiagnosis) dan **run yang masih berjalan**; trail run yang selesai normal hanya terlihat selama sesi yang mengamatinya dan hilang saat reload.
 
 ### Kapan Agent Menerima Perubahan
 
