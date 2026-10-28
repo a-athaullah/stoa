@@ -109,6 +109,10 @@ function seed(dbPath) {
         if (def.online) db.prepare("INSERT INTO ai_sessions (participant_id, room_id, claude_session_id, workdir, status, thread_id) VALUES (?,?,?,?,'idle',0)")
           .run(part[a], roomId, crypto.randomUUID(), def.workdir);
       }
+      if (r.agents.length > 1) {
+        const primaryKey = r.primary || r.agents[0];
+        db.prepare('UPDATE rooms SET primary_actor_id=? WHERE id=?').run(ids.actors[primaryKey], roomId);
+      }
       if (r.memory) db.prepare("INSERT INTO room_memory (room_id, content, updated_at) VALUES (?,?,datetime('now'))").run(roomId, r.memory);
       for (const s of r.subs) db.prepare('INSERT INTO room_sub_agents (room_id, sub_agent_id) VALUES (?,?)').run(roomId, ids.subs[s]);
       const insert = (m, threadId) => {

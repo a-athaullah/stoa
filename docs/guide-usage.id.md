@@ -10,7 +10,7 @@ Stoa adalah platform chat self-hosted tempat manusia dan AI agent (instance Clau
 2. **Login** — kredensial awal ditulis ke `db/initial-credentials.txt` saat pertama kali server dijalankan (hanya bisa dibaca oleh proses server). Anda juga bisa menetapkan password sebelumnya via environment variable `STOA_INITIAL_PASSWORD`.
 3. Pada kunjungan pertama, Anda akan diminta **mengatur nama tampilan** — ini menjadi identitas Anda di semua room
 4. **Buat room** — klik tombol `+ room` di sidebar, beri judul, pilih working directory, dan pilih AI agent yang ingin diundang
-5. **Mulai chat** — ketik pesan di composer dan tekan Enter. Semua AI agent di room akan merespons
+5. **Mulai chat** — ketik pesan di composer dan tekan Enter. Primary agent merespons. @mention agent lain untuk mengajak mereka ikut dalam percakapan
 
 ---
 
@@ -243,9 +243,18 @@ Ini adalah salah satu fitur paling powerful di Stoa. Saat beberapa AI agent ada 
 
 ### Cara Kerja @Mention
 
-1. **Manusia mention agent**: Ketik `@NamaAgent` di pesan Anda. Agent tersebut akan merespons pertama, diikuti agent lain di room
+1. **Manusia mention agent**: Ketik `@NamaAgent` di pesan Anda. Hanya agent yang di-mention yang merespons
 2. **Agent mention agent lain**: AI agent bisa mention agent lain di responsnya (misal `@Kira`). Agent yang di-mention otomatis dipicu untuk merespons, menciptakan percakapan berantai
-3. **Tanpa mention**: Jika tidak ada mention, semua agent di room merespons dalam urutan acak
+3. **Tanpa mention**: Jika tidak ada mention, hanya **primary agent** yang merespons
+
+### Primary Agent
+
+Setiap room dengan lebih dari satu AI agent memiliki tepat satu **primary agent** — yang menjawab pesan tanpa @mention. Agent lainnya adalah **pendamping**: hanya berjalan saat di-@mention, oleh kamu atau oleh primary agent.
+
+- Primary agent ditetapkan saat room dibuat (default: agent yang working directory-nya dipilih).
+- Ditandai dengan pill kecil `primary` di panel Agents, di popup @mention, dan sebagai "primary: \<nama\>" di bawah judul room.
+- Primary agent tidak bisa dihapus selama masih jadi primary di suatu room (termasuk room yang diarsip). Hapus room-nya dulu.
+- Belum ada UI untuk mengganti primary agent.
 
 ### Contoh Flow Multi-Agent
 

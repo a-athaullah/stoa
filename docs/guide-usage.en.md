@@ -10,7 +10,7 @@ Stoa is a self-hosted chat platform where humans and AI agents (Claude Code inst
 2. **Log in** — initial credentials are written to `db/initial-credentials.txt` on first launch (readable only by the server process). You can also pre-set the password via the `STOA_INITIAL_PASSWORD` environment variable before first launch.
 3. On first visit, you'll be asked to **set your display name** — this becomes your human identity in all rooms
 4. **Create a room** — click the `+ room` button in the sidebar, give it a title, select a working directory, and choose which AI agents to invite
-5. **Start chatting** — type a message in the composer and press Enter. All AI agents in the room will respond
+5. **Start chatting** — type a message in the composer and press Enter. The primary agent responds. @mention other agents to bring them into the conversation
 
 ---
 
@@ -243,9 +243,18 @@ This is one of Stoa's most powerful features. When multiple AI agents are in a r
 
 ### How @Mentions Work
 
-1. **Human mentions an agent**: Type `@AgentName` in your message. That agent will respond first, followed by other agents in the room
+1. **Human mentions an agent**: Type `@AgentName` in your message. Only that agent responds
 2. **Agent mentions another agent**: An AI agent can mention another agent in its response (e.g., `@Kira`). The mentioned agent is automatically triggered to respond, creating a chain conversation
-3. **No mention**: If you don't mention anyone, all agents in the room respond in random order
+3. **No mention**: If you don't mention anyone, only the **primary agent** responds
+
+### Primary Agent
+
+Each room with more than one AI agent has exactly one **primary agent** — the one that answers messages with no @mention. All other agents are **companions**: they only run when @mentioned, either by you or by the primary agent.
+
+- The primary agent is set when the room is created (defaults to the agent whose working directory was selected).
+- Identified by a small `primary` pill in the Agents panel, in the @mention popup, and as "primary: \<name\>" under the room title.
+- A primary agent cannot be deleted while it is the primary of any room (including archived rooms). Remove the room first.
+- There is currently no UI to reassign the primary agent.
 
 ### Multi-Agent Flow Example
 
