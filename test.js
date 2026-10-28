@@ -4701,6 +4701,17 @@ async function run() {
     return { actorId, secret, workdirId: wd.body?.id ?? null, ws };
   };
 
+  // Finishes a fake agent run the way the client does and waits until the server stored it complete.
+  const completeRun = async (ws, roomId, m) => {
+    ws.send(JSON.stringify({ type: 'agent_complete', room_id: roomId, message_id: m.message_id, content: 'done' }));
+    const db = require('./db');
+    const deadline = Date.now() + 3000;
+    while (db.prepare('SELECT state FROM messages WHERE id=?').get(m.message_id)?.state !== 'complete') {
+      if (Date.now() > deadline) throw new Error(`run ${m.message_id} not completed`);
+      await new Promise(r => setTimeout(r, 25));
+    }
+  };
+
   console.log('\n[Test Setup]');
   await test('Setup — pre-cleanup leftover test actors from prior runs', async () => {
     const actors = (await req('GET', '/api/actors')).body;
@@ -5781,7 +5792,6 @@ async function run() {
     let dsActorId = null, dsSecret = null, dsRoomId = null, dsWs = null, dsName = null;
     let dsWith = null, dsNone = null;
     const getSa = async id => (await req('GET', `/api/actors/${dsActorId}/sub-agents`)).body.find(s => s.id === id);
-    const completeTrigger = (m) => { if (m?.message_id) dsWs.send(JSON.stringify({ type: 'agent_message', message_id: m.message_id, content: 'done', state: 'complete' })); };
 
     await test('Setup — online agent + room for description tests', async () => {
       dsName = '__test-desc-agent';
@@ -5873,7 +5883,7 @@ async function run() {
         await waitForWsMessage(humanWs, m => m.type === 'history');
         humanWs.send(JSON.stringify({ type: 'send_message', room_id: dsRoomId, content: 'hello main agent' }));
         const m = await trig;
-        completeTrigger(m);
+        await completeRun(dsWs, dsRoomId, m);
         assert.ok(m.prompt.includes('@descbe (standard) — Backend implementation for Stoa'), 'described sub-agent must list collapsed description');
         assert.ok(/@descnone \(quick\)(?! —)/.test(m.prompt), 'undescribed sub-agent keeps old format');
       } finally { humanWs.close(); }
@@ -5888,8 +5898,10 @@ async function run() {
         assert.strictEqual(r.status, 200, JSON.stringify(r.body));
         const m = await trig;
         const wake = waitForWsMessage(dsWs, w => w.type === 'agent_trigger' && !w.sub_agent, 3000).catch(() => null);
-        completeTrigger(m);
-        completeTrigger(await wake);
+        await completeRun(dsWs, dsRoomId, m);
+        const w = await wake;
+        assert.ok(w, 'the finished sub-agent run wakes its parent');
+        await completeRun(dsWs, dsRoomId, w);
         return m.prompt;
       };
       const p1 = await runSub(dsWith);
@@ -5919,7 +5931,6 @@ async function run() {
     let rlActorId = null, rlSecret = null, rlRoomId = null, rlWs = null;
     let rlWith = null, rlNone = null;
     const getSa = async id => (await req('GET', `/api/actors/${rlActorId}/sub-agents`)).body.find(s => s.id === id);
-    const completeTrigger = (m) => { if (m?.message_id) rlWs.send(JSON.stringify({ type: 'agent_message', message_id: m.message_id, content: 'done', state: 'complete' })); };
 
     await test('Setup — online agent + room for role tests', async () => {
       const agent = await createOnlineTestAgent('__test-role-agent', '/tmp/stoa-test-role');
@@ -6010,7 +6021,7 @@ async function run() {
         await histP;
         humanWs.send(JSON.stringify({ type: 'send_message', room_id: rlRoomId, content: 'hello main agent' }));
         const m = await trig;
-        completeTrigger(m);
+        await completeRun(rlWs, rlRoomId, m);
         assert.ok(m.prompt.includes('@rolelead (deep, Tech Lead) — Reviews code'), 'role in delegation list');
         assert.ok(m.prompt.includes('@rolenone (quick)'), 'no role keeps old format');
       } finally { humanWs.close(); }
@@ -6022,8 +6033,10 @@ async function run() {
         assert.strictEqual(r.status, 200, JSON.stringify(r.body));
         const m = await t;
         const wake = waitForWsMessage(rlWs, w => w.type === 'agent_trigger' && !w.sub_agent, 3000).catch(() => null);
-        completeTrigger(m);
-        completeTrigger(await wake);
+        await completeRun(rlWs, rlRoomId, m);
+        const w = await wake;
+        assert.ok(w, 'the finished sub-agent run wakes its parent');
+        await completeRun(rlWs, rlRoomId, w);
         return m.prompt;
       };
       assert.ok((await runSub(rlWith)).includes('(tier: deep).\nYour role: Tech Lead'), 'sub-agent prompt has role');
