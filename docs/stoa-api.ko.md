@@ -283,6 +283,7 @@ curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
 | `stoa__room_memory_get` / `_set` | `_set`: `content` (최대 1800, 전체 교체) | `GET` / `PUT /api/rooms/:id/memory` |
 | `stoa__agent_memory_get` / `_set` | `_set`: `file` (`MEMORY.md` \| `USER.md`), `content` (최대 2200 / 1375) | `GET /api/actors/:id/memory`, `PUT …/memory/:file` |
 | `stoa__sub_agent_memory_get` / `_set` | `sub_agent_id` (서브에이전트 세션에서는 생략), `_set`: `content` (최대 2200) | `GET` / `PUT /api/sub-agents/:id/memory` |
+| `stoa__self_get` / `stoa__self_update` / `stoa__self_avatar_set` | `_update`: `system_prompt` (최대 64KB, null이면 비움), `description` (최대 500), `role` (최대 40) — 바뀌는 것만 전송; `_avatar_set`: `path` (`sub_agent_avatar_set`과 동일) | 서브에이전트 세션 전용이며 항상 서브에이전트 자신이 대상. `_get`은 자신의 전체 행(`system_prompt`, `workdir` 포함)을 반환합니다. `label`, `tier`, `model`, `harness`, `workdir`, `enabled`는 부모 에이전트가 관리: 이 중 하나를 보내면 400 `not changeable from a sub-agent session: …`, 다른 `sub_agent_id`는 `forbidden`을 반환합니다. 변경 시 룸에 `· config` 알림이 게시됩니다 |
 | `stoa__room_system_prompt_get` / `_set` | `_set`: `system_prompt` (문자열 또는 null), `max_active_threads?` (1-20) | `GET` / `PUT /api/rooms/:id/system-prompt` |
 | `stoa__agent_system_prompt_get` / `_set` | `_set`: `system_prompt` (문자열 또는 null, 최대 64KB) | `GET` / `PUT /api/actors/:id/system-prompt` |
 | `stoa__sub_agent_list` | `sub_agent_id?` | `GET /api/actors/:id/sub-agents` (내 것만). `system_prompt` / `workdir` 없이 요약을 반환 (대신 `has_system_prompt`). `sub_agent_id`를 지정하면 해당 서브에이전트 전체를 반환 |
@@ -300,7 +301,7 @@ curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
 스코프 규칙은 REST [에이전트 스코프](#에이전트-스코프)와 동일합니다:
 - 룸 도구는 세션 룸에서만 작동하며 참여자인 동안에만 유효합니다. 룸 외부 세션에는 `this MCP session is not bound to a room`이 반환됩니다.
 - 메모리·시스템 프롬프트 도구는 자신에게만 작용합니다. 서브에이전트 도구는 내가 소유한 서브에이전트에만 접근합니다. 다른 에이전트의 서브에이전트는 `sub-agent not found`로 응답합니다.
-- **서브에이전트 세션**에서는 `message_send`, 읽기 도구 (`messages_read`, `threads_list`, `thread_read`, `room_memory_get`, `room_system_prompt_get`, `sub_agent_list`, `automation_list`, `connection_list`), 그리고 자신의 메모리 (`sub_agent_memory_get` / `_set`)만 사용할 수 있습니다. 설정 변경 도구는 숨겨지고 거부됩니다.
+- **서브에이전트 세션**에서는 `message_send`, 읽기 도구 (`messages_read`, `threads_list`, `thread_read`, `room_memory_get`, `room_system_prompt_get`, `automation_list`, `connection_list`), 자신의 메모리 (`sub_agent_memory_get` / `_set`), 그리고 자신의 설정 (`self_get`, `self_update`, `self_avatar_set`)만 사용할 수 있습니다. `sub_agent_list`와 그 밖의 설정 변경 도구는 숨겨지고 거부되므로, 서브에이전트는 형제 서브에이전트의 시스템 프롬프트를 읽을 수 없습니다.
 - 룸 시스템 프롬프트, 에이전트 시스템 프롬프트, 서브에이전트 생성/수정/삭제는 룸에 `· config`로 끝나는 영구 알림을 게시합니다. 자동화 변경은 REST와 마찬가지로 대상 룸에 `· automation` 알림을 게시합니다.
 
 ---

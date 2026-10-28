@@ -283,6 +283,7 @@ curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
 | `stoa__room_memory_get` / `_set` | `_set`: `content` (最大 1800、完全置換) | `GET` / `PUT /api/rooms/:id/memory` |
 | `stoa__agent_memory_get` / `_set` | `_set`: `file` (`MEMORY.md` \| `USER.md`)、`content` (最大 2200 / 1375) | `GET /api/actors/:id/memory`、`PUT …/memory/:file` |
 | `stoa__sub_agent_memory_get` / `_set` | `sub_agent_id` (サブエージェントセッションでは省略)、`_set`: `content` (最大 2200) | `GET` / `PUT /api/sub-agents/:id/memory` |
+| `stoa__self_get` / `stoa__self_update` / `stoa__self_avatar_set` | `_update`: `system_prompt` (最大 64KB、null でクリア)、`description` (最大 500)、`role` (最大 40) — 変更するものだけ送信; `_avatar_set`: `path` (`sub_agent_avatar_set` と同じ) | サブエージェントセッション専用で、常にそのサブエージェント自身が対象。`_get` は自身の完全な行 (`system_prompt` と `workdir` を含む) を返します。`label`、`tier`、`model`、`harness`、`workdir`、`enabled` は親エージェントが管理: いずれかを送ると 400 `not changeable from a sub-agent session: …`、別の `sub_agent_id` は `forbidden` を返します。変更はルームに `· config` ノーティスを投稿します |
 | `stoa__room_system_prompt_get` / `_set` | `_set`: `system_prompt` (文字列または null)、`max_active_threads?` (1〜20) | `GET` / `PUT /api/rooms/:id/system-prompt` |
 | `stoa__agent_system_prompt_get` / `_set` | `_set`: `system_prompt` (文字列または null、最大 64KB) | `GET` / `PUT /api/actors/:id/system-prompt` |
 | `stoa__sub_agent_list` | `sub_agent_id?` | `GET /api/actors/:id/sub-agents` (自分のサブエージェントのみ)。`system_prompt` / `workdir` を含まない概要を返す (代わりに `has_system_prompt`)。`sub_agent_id` を指定するとそのサブエージェントの全項目を返す |
@@ -300,7 +301,7 @@ curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
 スコープのルールは REST の[エージェントスコープ](#エージェントスコープ)と同じです：
 - ルームツールはセッションのルームにのみ作用し、参加者である間のみ有効です。ルーム外のセッションには `this MCP session is not bound to a room` が返ります。
 - メモリ・システムプロンプトツールは自分自身にのみ作用します。サブエージェントツールは自分が所有するサブエージェントにのみ作用します。他のエージェントのサブエージェントには `sub-agent not found` が返ります。
-- **サブエージェントセッション**では、`message_send`、読み取りツール (`messages_read`、`threads_list`、`thread_read`、`room_memory_get`、`room_system_prompt_get`、`sub_agent_list`、`automation_list`、`connection_list`)、および自分のメモリ (`sub_agent_memory_get` / `_set`) のみ利用可能です。設定変更ツールは非表示となり、拒否されます。
+- **サブエージェントセッション**では、`message_send`、読み取りツール (`messages_read`、`threads_list`、`thread_read`、`room_memory_get`、`room_system_prompt_get`、`automation_list`、`connection_list`)、自分のメモリ (`sub_agent_memory_get` / `_set`)、および自分の設定 (`self_get`、`self_update`、`self_avatar_set`) のみ利用可能です。`sub_agent_list` とその他の設定変更ツールは非表示となり拒否されるため、サブエージェントは兄弟のシステムプロンプトを読めません。
 - ルームシステムプロンプト・エージェントシステムプロンプト・サブエージェントの作成/更新/削除は、ルームに `· config` で終わる永続的なノーティスを投稿します。オートメーションの変更は REST と同様に対象ルームに `· automation` ノーティスを投稿します。
 
 ---
