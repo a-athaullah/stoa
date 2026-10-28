@@ -13745,6 +13745,24 @@ async function run() {
     assert.strictEqual(route({}), JSON.stringify({ toast: 'failed to save' }));
   });
 
+  await test('primary agent — isPrimaryParticipant matches by actor id: is_primary wins, room primary_actor_id is the fallback, no field marks nobody', () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const ctx = { localStorage: { getItem: () => null, setItem() {} }, document: { addEventListener() {}, getElementById: () => null, querySelector: () => null }, window: { addEventListener() {} }, navigator: {}, location: {} };
+    vm.createContext(ctx);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/core.js'), 'utf8'), ctx);
+    const is = (p, room) => vm.runInContext('isPrimaryParticipant', ctx)(p, room);
+    assert.strictEqual(is({ actor_id: 7, is_primary: 1 }, null), true);
+    assert.strictEqual(is({ actor_id: 7, is_primary: 0 }, { id: 1, primary_actor_id: 7 }), false, 'row flag beats the room field');
+    assert.strictEqual(is({ actor_id: 7 }, { id: 1, primary_actor_id: 7 }), true);
+    assert.strictEqual(is({ actor_id: 8, name: 'Quill' }, { id: 1, primary_actor_id: 7 }), false);
+    assert.strictEqual(is({ actor_id: 7 }, { id: 1 }), false, 'old server: no field anywhere → no mark');
+    vm.runInContext('currentRoomData = { id: 1, primary_actor_id: 7 }', ctx);
+    assert.strictEqual(is({ actor_id: 7 }, { id: 1 }), true, 'partial room object falls back to the open room');
+    assert.strictEqual(is({ actor_id: 7 }, { id: 2 }), false, 'another room never borrows the open room primary');
+    assert.strictEqual(is(null, { id: 1 }), false);
+  });
+
   await test('room agents popover — an actor removed elsewhere leaves the open popover (participants + add list), stale loads never win', async () => {
     const vm = require('vm');
     const fs = require('fs');
@@ -13790,7 +13808,7 @@ async function run() {
     const ctx = { document: doc, window: { innerWidth: 1280, innerHeight: 800 }, localStorage: { getItem: () => null, removeItem() {} }, fjson,
       requestAnimationFrame: f => f(), setTimeout: f => f(), getAvailableModels: () => [], showToast() {}, console,
       humanActor: null, allActors: [], actorByName: {}, settingsActors: [], sRowStates: new Map(), currentRoomId: 1, roomParticipantsCache: {},
-      syncNewRoomBtn() {}, refreshRoomList() {}, renderChatHeader() {} };
+      syncNewRoomBtn() {}, refreshRoomList() {}, renderChatHeader() {}, isPrimaryParticipant: () => false, makePrimaryBadge: () => new El('span') };
     vm.createContext(ctx);
     for (const f of ['public/js/rooms/room-sidebar.js', 'public/js/settings/init.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
     ctx.refreshRoomList = () => {};
