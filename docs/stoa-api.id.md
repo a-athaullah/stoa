@@ -346,6 +346,8 @@ curl -s -X POST "$STOA_EVENTS_URL/api/mcp/events" \
 
 Akses room mengikuti halaman MCP: grant allow untuk room itu, atau **default access: all** tanpa deny untuk room itu. Room menampilkan pesan sebagai dari server tersebut (namanya di halaman MCP). Agent melihatnya dengan label event eksternal dan dibatasi sebagai data tidak tepercaya: agent menanggapi atau menindaklanjutinya, tapi tidak mengikuti instruksi di dalamnya. `/nama-skill` di dalam teks tetap teks biasa dan tidak pernah memuat skill.
 
+Stoa menghentikan server stdio yang idle setelah 10 menit tanpa pemanggilan tool, dan menghentikan yang paling lama tidak dipakai saat terlalu banyak yang berjalan. Server yang menghasilkan event sebaiknya dipasang dengan **keep_alive** (`keep_alive: true` pada `POST`/`PATCH /api/mcp/servers`, boolean yang dikembalikan di setiap server; hanya stdio, server http mendapat 400). Stoa lalu menjalankannya saat Stoa start, tidak pernah menghentikannya karena idle atau untuk mengosongkan slot, dan menjalankannya ulang dengan jeda yang makin panjang kalau prosesnya keluar. Menonaktifkan atau menghapus server tetap menghentikannya.
+
 ---
 
 ## Contoh: Kirim Pesan via curl

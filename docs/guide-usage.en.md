@@ -1220,6 +1220,21 @@ An MCP server you've installed can post messages directly into a room — for ex
 
 MCP server authors: see `stoa-api.md` → **MCP Server Events** for the endpoint contract.
 
+### Keep Running
+
+Local (stdio) MCP servers are started on demand and stopped after 10 minutes idle, or when a slot is needed. Turn on the **keep running** switch to change this behaviour for a specific server.
+
+With **keep running** on:
+- Stoa starts the server when Stoa itself starts, not when a tool is first used.
+- The server is never stopped for being idle or to free a slot.
+- If the process exits, Stoa restarts it with a growing delay (1 s, 2 s, 4 s… up to 60 s). The delay resets after the server has stayed up for 60 s.
+
+The switch is in the server's **edit dialog** (pencil button on the card) and also in the **add form** — for stdio servers only, not for remote (http) servers. In the edit dialog, toggling the switch saves immediately without restarting the server.
+
+A server with **keep running** on shows a small **always on** chip on its card. The chip is hidden while the server is disabled.
+
+Keep-alive servers still count toward the 16-server slot limit. If all 16 slots are held by keep-alive servers, a new normal server can't start and shows an error. Disabling or deleting the server stops it regardless of the setting.
+
 ### Credentials and Security
 
 - Credentials (tokens, headers) are stored **encrypted** on the server and never returned by any API endpoint.

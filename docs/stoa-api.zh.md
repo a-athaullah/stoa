@@ -346,6 +346,8 @@ curl -s -X POST "$STOA_EVENTS_URL/api/mcp/events" \
 
 房间访问遵循 MCP 页面的设置：该房间有 allow 授权，或 **default access: all** 且该房间没有 deny。房间中该消息显示为来自该服务器（其在 MCP 页面的名称）。代理看到的是标记为外部事件、并作为不可信数据隔开的内容：代理可以回应或据此行动，但不会执行其中的指令。文本中的 `/skill-name` 仅是普通文本，不会加载任何技能。
 
+Stoa 会停止 10 分钟内没有工具调用的空闲 stdio 服务器，并在运行数量过多时停止最久未使用的服务器。产生事件的服务器应以 **keep_alive** 安装（在 `POST`/`PATCH /api/mcp/servers` 中设置 `keep_alive: true`，每个服务器都会返回该布尔值；仅限 stdio，http 服务器返回 400）。Stoa 会在启动时运行它，不会因空闲或腾出名额而停止它，进程退出时会以逐渐增加的间隔重新启动。禁用或删除服务器仍会停止它。
+
 ---
 
 ## 示例：通过 curl 发送消息
