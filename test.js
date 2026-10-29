@@ -14276,6 +14276,79 @@ async function run() {
     assert.strictEqual(editF.keep_alive, true);
   });
 
+  await test('mcp server card — enable switch ends right when a WS mcp_status redraws the card mid-PATCH, always on chip hides while disabled, a running status fetches the missing tool count once', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El {
+      constructor(tag) { this.tagName = tag.toUpperCase(); this.style = { setProperty() {} }; this.dataset = {}; this.children = []; this.parentNode = null; this._text = ''; this.attrs = {}; this.on = {};
+        const cls = new Set(); this.cls = cls; this.classList = { add: (...c) => c.forEach(x => cls.add(x)), remove: (...c) => c.forEach(x => cls.delete(x)), toggle: (c, on) => (on ?? !cls.has(c)) ? cls.add(c) : cls.delete(c), contains: c => cls.has(c) }; }
+      set className(v) { String(v).split(/\s+/).filter(Boolean).forEach(c => this.classList.add(c)); }
+      get className() { return [...this.cls].join(' '); }
+      appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
+      append(...cs) { for (const c of cs) this.appendChild(typeof c === 'string' ? Object.assign(new El('#text'), { textContent: c }) : c); }
+      replaceWith(n) { const p = this.parentNode; if (!p) return; p.children[p.children.indexOf(this)] = n; n.parentNode = p; this.parentNode = null; }
+      set innerHTML(v) { this.children = []; this._text = ''; }
+      set textContent(v) { this.children = []; this._text = String(v); }
+      get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+      setAttribute(k, v) { this.attrs[k] = String(v); } getAttribute(k) { return this.attrs[k] ?? null; } removeAttribute(k) { delete this.attrs[k]; }
+      addEventListener(t, f) { (this.on[t] ||= []).push(f); }
+      all(pred, out = []) { if (pred(this)) out.push(this); this.children.forEach(c => c.all && c.all(pred, out)); return out; }
+      byClass(c) { return this.all(n => n.cls.has(c)); }
+    }
+    const root = new El('div');
+    const onScreen = id => root.all(n => n.cls.has('mcp-card') && String(n.dataset.serverId) === String(id))[0] || null;
+    const calls = [];
+    let respond = () => ({ ok: true, data: null });
+    const ctx = { document: { createElement: t => new El(t), createTextNode: t => Object.assign(new El('#text'), { textContent: t }), getElementById: () => null,
+      querySelector: sel => onScreen((sel.match(/data-server-id="(\d+)"/) || [])[1]) },
+    Node: El, showToast() {}, svgPencil: () => '', autoSvgTrash: () => '', svgX: () => '', console };
+    vm.createContext(ctx);
+    for (const f of ['state.js', 'installed.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/mcp', f), 'utf8'), ctx);
+    vm.runInContext('mcpApi = (method, url, body) => { __calls.push({ method, url, body }); return __respond(method, url, body); }; mcpIsVisible = () => true; mcpState.tab = "installed";',
+      Object.assign(ctx, { __calls: calls, __respond: (...a) => respond(...a) }));
+    const srv = { id: 4, slug: 'meet', name: 'Meet Bot', transport: 'stdio', enabled: 1, keep_alive: true, status: 'running', tool_count: 1, default_access: 'none' };
+    vm.runInContext('mcpState.servers = __s;', Object.assign(ctx, { __s: [srv] }));
+    root.appendChild(vm.runInContext('mcpMakeServerCard', ctx)(srv));
+    const sw = () => onScreen(4).byClass('mcp-switch')[0];
+    const click = el => Promise.all((el.on.click || []).map(f => f({ preventDefault() {} })));
+    assert.strictEqual(onScreen(4).byClass('mcp-chip-always').length, 1);
+
+    let release;
+    respond = () => new Promise(res => { release = res; });
+    const clicking = click(sw());
+    vm.runInContext('mcpHandleStatus', ctx)({ type: 'mcp_status', server_id: 4, status: 'disabled', last_error: null });
+    release({ ok: true, data: { server: { ...srv, enabled: 0, status: 'disabled' } } });
+    await clicking;
+    assert.strictEqual(JSON.stringify(calls[0].body), JSON.stringify({ enabled: false }));
+    assert.strictEqual(sw().getAttribute('aria-checked'), 'false', 'the card on screen shows the switch off even though the WS redraw landed before the PATCH reply');
+    assert.strictEqual(sw().getAttribute('aria-label'), 'Enable Meet Bot');
+    assert.strictEqual(onScreen(4).byClass('mcp-chip-always').length, 0, 'no always on chip next to disabled');
+    respond = () => ({ ok: true, data: { server: { ...srv, enabled: 1, status: 'idle' } } });
+    await click(sw());
+    assert.strictEqual(JSON.stringify(calls[1].body), JSON.stringify({ enabled: true }), 'the next click enables instead of disabling again');
+    assert.strictEqual(sw().getAttribute('aria-checked'), 'true');
+    assert.strictEqual(onScreen(4).byClass('mcp-chip-always').length, 1);
+
+    calls.length = 0;
+    srv.tool_count = null;
+    vm.runInContext('mcpRerenderCard', ctx)(srv);
+    let listed;
+    respond = () => new Promise(res => { listed = res; });
+    const status = vm.runInContext('mcpHandleStatus', ctx);
+    status({ type: 'mcp_status', server_id: 4, status: 'running', last_error: null });
+    status({ type: 'mcp_status', server_id: 4, status: 'running', last_error: null });
+    assert.strictEqual(calls.length, 1, 'one list fetch per server while it is in flight');
+    assert.deepStrictEqual([calls[0].method, calls[0].url], ['GET', '/api/mcp/servers']);
+    listed({ ok: true, data: { servers: [{ ...srv, tool_count: 2 }] } });
+    await new Promise(r => setImmediate(r));
+    assert.strictEqual(srv.tool_count, 2);
+    assert.ok(onScreen(4).textContent.includes('2 tools'), 'the card shows the count without a reload');
+    respond = () => { throw new Error('no fetch expected'); };
+    status({ type: 'mcp_status', server_id: 4, status: 'running', last_error: null });
+    status({ type: 'mcp_status', server_id: 4, status: 'idle', last_error: null });
+    assert.strictEqual(calls.length, 1, 'a known count or a non-running status never refetches');
+  });
+
   await test('room agents popover — an actor removed elsewhere leaves the open popover (participants + add list), stale loads never win', async () => {
     const vm = require('vm');
     const fs = require('fs');

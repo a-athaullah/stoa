@@ -20,6 +20,7 @@ let mcpState = {
   exemptions: {},
   confirmExemptionId: null,
   oauthPending: new Set(),
+  toolCountRefresh: new Set(),
   confirmRemoveId: null,
   form: null,
   addMode: 'catalog',
@@ -294,6 +295,20 @@ function mcpHandleStatus(msg) {
   if (!mcpIsVisible() || mcpState.tab !== 'installed') return;
   const card = document.querySelector(`.mcp-card[data-server-id="${srv.id}"]`);
   if (card) card.replaceWith(mcpMakeServerCard(srv));
+  if (msg.status === 'running' && srv.tool_count == null) mcpRefreshToolCount(srv.id);
+}
+
+// mcp_status carries no tool count: a server that just came up (keep-alive start, create, edit Save) reads it once from the list.
+async function mcpRefreshToolCount(id) {
+  if (mcpState.toolCountRefresh.has(id)) return;
+  mcpState.toolCountRefresh.add(id);
+  const r = await mcpApi('GET', '/api/mcp/servers');
+  mcpState.toolCountRefresh.delete(id);
+  const fresh = r.ok && Array.isArray(r.data?.servers) ? r.data.servers.find(s => s.id === id) : null;
+  const srv = mcpServerById(id);
+  if (!srv || fresh?.tool_count == null) return;
+  srv.tool_count = fresh.tool_count;
+  if (mcpIsVisible() && mcpState.tab === 'installed') mcpRerenderCard(srv);
 }
 
 function mcpInvalidate() {
