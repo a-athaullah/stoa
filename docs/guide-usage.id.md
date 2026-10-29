@@ -1210,6 +1210,17 @@ Saat kamu menambah, menghapus, atau mengonfigurasi ulang MCP server, gateway mem
 - **Claude Code** — gateway mengirim notifikasi `tools/list_changed` ke sesi agent yang terbuka. Claude Code memperbarui daftar tool-nya **langsung, di tengah sesi** — tidak perlu restart sesi. Jika sesi di-restart karena alasan lain (pergantian model, perubahan env, perubahan system prompt), daftar terbaru sudah tersedia dari awal.
 - **Codex** — menjalankan proses baru per turn (setiap turn adalah koneksi MCP baru), jadi perubahan berlaku di **turn berikutnya** (pesan berikutnya).
 
+### Pesan dari MCP Server
+
+MCP server yang terinstall dapat memposting pesan langsung ke dalam room — misalnya ringkasan rapat dari integrasi kalender, atau alert dari server monitoring. Pesan ini muncul dengan nama server beserta tag **Integration** dan ikon kecil berbentuk colokan.
+
+- **Routing** — tanpa @mention, pesan masuk ke primary agent room; dengan @mention, pesan dikirim ke agent yang disebutkan.
+- **Akses** — server hanya bisa memposting ke room yang memiliki akses kepadanya (dikontrol di halaman MCP, melalui access matrix).
+- **Kepercayaan** — teks event diperlakukan sebagai data eksternal yang tidak tepercaya. `/skill-name` di dalamnya tetap menjadi teks literal dan tidak pernah memuat skill. Agent bisa membalas atau bertindak atas pesan tersebut, tapi tidak akan mengikuti instruksi di dalamnya seolah instruksi itu berasal dari kamu.
+- **Balasan agent** — balasan dari agent terlihat seperti balasan agent biasa, tanpa tag tambahan.
+
+Pengembang MCP server: lihat `stoa-api.md` → **MCP Server Events** untuk kontrak endpoint.
+
 ### Kredensial dan Keamanan
 
 - Kredensial (token, header) disimpan **terenkripsi** di server dan tidak pernah dikembalikan oleh endpoint API mana pun.

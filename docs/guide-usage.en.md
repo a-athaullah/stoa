@@ -1209,6 +1209,17 @@ When you add, remove, or reconfigure an MCP server, the gateway notifies active 
 - **Claude Code** — the gateway sends a `tools/list_changed` notification to the agent's open session. Claude Code refreshes its tool list **immediately, mid-session** — no session restart needed. If the session is restarted for any other reason (model switch, env change, system prompt change), the updated list is available from the start.
 - **Codex** — spawns a fresh process per turn (each turn is a new MCP connection), so changes take effect at the **next turn** (next message).
 
+### Messages from MCP Servers
+
+An MCP server you've installed can post messages directly into a room — for example, a meeting summary from a calendar integration, or an alert from a monitoring server. These messages appear under the server's name with an **Integration** tag and a small plug icon.
+
+- **Routing** — without an @mention the message goes to the room's primary agent; with an @mention it goes to the named agent.
+- **Access** — a server can only post to rooms it has access to (controlled on the MCP page, in the access matrix).
+- **Trust** — event text is treated as untrusted external data. A `/skill-name` inside it stays literal and never loads a skill. Agents can reply to or act on the message, but won't follow instructions inside it as if they came from you.
+- **Agent replies** — replies from the agent look like normal agent replies, with no extra tag.
+
+MCP server authors: see `stoa-api.md` → **MCP Server Events** for the endpoint contract.
+
 ### Credentials and Security
 
 - Credentials (tokens, headers) are stored **encrypted** on the server and never returned by any API endpoint.
