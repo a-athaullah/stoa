@@ -1221,6 +1221,21 @@ MCP server yang terinstall dapat memposting pesan langsung ke dalam room — mis
 
 Pengembang MCP server: lihat `stoa-api.md` → **MCP Server Events** untuk kontrak endpoint.
 
+### Keep Running
+
+Server MCP lokal (stdio) dimulai sesuai permintaan dan dihentikan setelah 10 menit tidak aktif, atau saat slot dibutuhkan. Aktifkan switch **keep running** untuk mengubah perilaku ini pada server tertentu.
+
+Dengan **keep running** aktif:
+- Stoa memulai server bersamaan dengan Stoa sendiri, bukan saat tool pertama kali dipanggil.
+- Server tidak pernah dihentikan karena tidak aktif atau untuk mengosongkan slot.
+- Jika proses keluar, Stoa memulai ulang dengan jeda yang bertambah (1 dtk, 2 dtk, 4 dtk… hingga 60 dtk). Jeda direset setelah server aktif selama 60 dtk.
+
+Switch ini ada di **edit dialog** server (tombol pensil di kartu) dan juga di **form tambah** — hanya untuk server stdio, bukan remote (http). Di edit dialog, mengubah switch langsung tersimpan tanpa me-restart server.
+
+Server dengan **keep running** aktif menampilkan chip kecil **always on** di kartunya. Chip disembunyikan selama server dinonaktifkan.
+
+Server keep-alive tetap dihitung dalam batas 16 slot. Jika semua 16 slot ditempati server keep-alive, server normal baru tidak bisa dimulai dan akan muncul error. Menonaktifkan atau menghapus server akan tetap menghentikannya.
+
 ### Kredensial dan Keamanan
 
 - Kredensial (token, header) disimpan **terenkripsi** di server dan tidak pernah dikembalikan oleh endpoint API mana pun.
