@@ -434,6 +434,15 @@ CREATE TABLE IF NOT EXISTS mcp_tokens (
 CREATE INDEX IF NOT EXISTS idx_mcp_tokens_actor ON mcp_tokens(actor_id);
 CREATE INDEX IF NOT EXISTS idx_mcp_tokens_sub_agent ON mcp_tokens(sub_agent_id) WHERE sub_agent_id IS NOT NULL;
 
+-- One events token per installed server (POST /api/mcp/events, lib/mcp-events.js), given to a stdio
+-- upstream as STOA_EVENTS_TOKEN. Lookups by hash; token_enc keeps it stable across respawns.
+CREATE TABLE IF NOT EXISTS mcp_event_tokens (
+  server_id INTEGER PRIMARY KEY REFERENCES mcp_servers(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  token_enc TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS mcp_calls (
   id INTEGER PRIMARY KEY,
   server_id INTEGER REFERENCES mcp_servers(id) ON DELETE SET NULL,
