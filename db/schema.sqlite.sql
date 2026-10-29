@@ -389,6 +389,8 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
   preset TEXT,
   enabled INTEGER NOT NULL DEFAULT 1,
   default_access TEXT NOT NULL DEFAULT 'none' CHECK(default_access IN ('all','none')),
+  -- stdio only: never idle-stopped or evicted, started at boot, restarted after an exit (lib/mcp-upstreams.js).
+  keep_alive INTEGER NOT NULL DEFAULT 0 CHECK(keep_alive IN (0,1)),
   -- Remote servers: 'headers' = static headers from env_enc, 'oauth' = lib/mcp-oauth.js; oauth_enc is
   -- the encrypted client registration + tokens, never returned by the API.
   auth TEXT NOT NULL DEFAULT 'none' CHECK(auth IN ('none','headers','oauth')),
