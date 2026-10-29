@@ -432,10 +432,14 @@ Non-image files are displayed as a **file card** showing the file icon, original
 | CSV / TSV | Scrollable table, up to 500 rows shown |
 | TXT / LOG / YAML / YML | Plain text |
 | JSON | Pretty-printed text |
+| Video (MP4, M4V, WebM, MOV) | Native player in a wide dialog (up to 960 px); fullscreen on mobile. Supports seeking. |
+| Audio (MP3, M4A, AAC, WAV, OGG, OGA, Opus, FLAC) | Native player in a compact dialog (up to 480 px); floating on mobile. |
 
 HTML, SVG, JavaScript, and all other types are **download-only** — previewing active content would run untrusted markup on the Stoa origin.
 
-Files larger than 2 MB cannot be previewed; a message tells you to download instead. If a file has been removed by cleanup, the preview shows a "no longer available" notice.
+Files larger than 2 MB cannot be previewed; a message tells you to download instead. Video and audio files are streamed directly and are not subject to the 2 MB limit. If a file has been removed by cleanup, the preview shows a "no longer available" notice.
+
+If the browser cannot play a video or audio format, a message is shown with a **Download** button. Closing the modal or opening another preview stops any playing media.
 
 The modal can be closed with **Esc**, by clicking outside it, or with the **Close** button.
 

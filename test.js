@@ -8323,6 +8323,78 @@ async function run() {
       }
     });
 
+    await test('/uploads — audio/video served inline with their media type; download=1 stays attachment', async () => {
+      const cases = [['c.mp4', 'video/mp4'], ['c.m4v', 'video/mp4'], ['c.webm', 'video/webm'], ['c.mov', 'video/quicktime'],
+        ['c.mp3', 'audio/mpeg'], ['c.m4a', 'audio/mp4'], ['c.aac', 'audio/aac'], ['c.wav', 'audio/wav'],
+        ['c.ogg', 'audio/ogg'], ['c.oga', 'audio/ogg'], ['c.opus', 'audio/ogg'], ['c.flac', 'audio/flac']];
+      for (const [name, type] of cases) {
+        const u = await upload(name, 'media-bytes', 'application/octet-stream');
+        const r = await req('GET', u);
+        assert.deepStrictEqual([r.status, r.headers['content-type'], r.headers['content-disposition'], r.headers['accept-ranges'], r.headers['content-length'], r.raw],
+          [200, type, 'inline', 'bytes', '11', 'media-bytes'], name);
+        assert.strictEqual(r.headers['content-security-policy'], "frame-ancestors 'self'", name);
+      }
+      const mp4 = await upload('dl-clip.mp4', 'media-bytes', 'video/mp4');
+      const dl = await req('GET', `${mp4}?download=1&name=${encodeURIComponent('Rapat Senin.mp4')}`);
+      assert.deepStrictEqual([dl.status, dl.headers['content-type'], dl.headers['content-disposition']],
+        [200, 'video/mp4', `attachment; filename="Rapat Senin.mp4"; filename*=UTF-8''Rapat%20Senin.mp4`]);
+      const png = await upload('still.png', Buffer.from([0x89, 0x50, 0x4e, 0x47]), 'image/png');
+      assert.strictEqual((await req('GET', png)).headers['content-disposition'], 'attachment');
+    });
+
+    await test('/uploads — HTTP Range: 206 with exact bytes, suffix/open ranges, 416 when unsatisfiable', async () => {
+      const u = await upload('range.mp4', '0123456789', 'video/mp4');
+      const get = range => req('GET', u, null, { Range: range });
+      const ok = [['bytes=2-5', '2345', 'bytes 2-5/10'], ['bytes=7-', '789', 'bytes 7-9/10'], ['bytes=-3', '789', 'bytes 7-9/10'],
+        ['bytes=-50', '0123456789', 'bytes 0-9/10'], ['bytes=5-100', '56789', 'bytes 5-9/10'], ['bytes=0-0', '0', 'bytes 0-0/10'],
+        ['bytes=9-9', '9', 'bytes 9-9/10']];
+      for (const [range, body, cr] of ok) {
+        const r = await get(range);
+        assert.deepStrictEqual([r.status, r.raw, r.headers['content-range'], r.headers['content-length'], r.headers['content-type'], r.headers['content-disposition']],
+          [206, body, cr, String(body.length), 'video/mp4', 'inline'], range);
+        assert.strictEqual(r.headers['x-content-type-options'], 'nosniff', range);
+        assert.strictEqual(r.headers['cache-control'], 'private, max-age=3600', range);
+      }
+      for (const range of ['bytes=10-', 'bytes=50-60', 'bytes=5-2', 'bytes=-0', 'bytes=-', 'bytes=abc', 'bytes=1-x']) {
+        const r = await get(range);
+        assert.deepStrictEqual([r.status, r.raw, r.headers['content-range'], r.headers['accept-ranges']], [416, '', 'bytes */10', 'bytes'], range);
+      }
+      for (const range of ['bytes=0-1,4-5', 'items=0-3']) {
+        const r = await get(range);
+        assert.deepStrictEqual([r.status, r.raw, r.headers['content-range']], [200, '0123456789', undefined], range);
+      }
+      const html = await req('GET', htmlUrl, null, { Range: 'bytes=0-3' });
+      assert.strictEqual(html.status, 206);
+      assert.strictEqual(html.headers['content-disposition'], 'attachment');
+      assert.ok(html.headers['content-security-policy'].split(';').map(x => x.trim()).includes('sandbox'), html.headers['content-security-policy']);
+      const emptyName = `__empty-${crypto.randomBytes(4).toString('hex')}.mp3`;
+      fs.writeFileSync(path.join(uploadsDir, emptyName), '');
+      createdUploads.push(path.join(uploadsDir, emptyName));
+      const empty = await req('GET', `/uploads/${emptyName}`);
+      assert.deepStrictEqual([empty.status, empty.raw, empty.headers['content-length']], [200, '', '0']);
+      assert.strictEqual((await req('GET', `/uploads/${emptyName}`, null, { Range: 'bytes=0-' })).status, 416);
+    });
+
+    await test('/connector-media — WA audio/video inline + ranged; download=1 attachment', async () => {
+      fs.mkdirSync(mediaDir, { recursive: true });
+      fs.writeFileSync(path.join(mediaDir, 'voice.ogg'), 'OggS-voice-note');
+      fs.writeFileSync(path.join(mediaDir, 'clip.mp4'), 'ftyp-video');
+      try {
+        const ogg = '/connector-media/__sectest__/voice.ogg';
+        const r = await req('GET', ogg);
+        assert.deepStrictEqual([r.status, r.headers['content-type'], r.headers['content-disposition'], r.headers['accept-ranges'], r.raw],
+          [200, 'audio/ogg', 'inline', 'bytes', 'OggS-voice-note']);
+        const part = await anon(() => req('GET', `${ogg}?${signedQuery(ogg, nowSec() + 60)}`, null, { Range: 'bytes=5-9' }), true);
+        assert.deepStrictEqual([part.status, part.raw, part.headers['content-range']], [206, 'voice', 'bytes 5-9/15']);
+        assert.strictEqual((await anon(() => req('GET', ogg, null, { Range: 'bytes=0-1' }), true)).status, 401);
+        assert.strictEqual((await req('GET', ogg, null, { Range: 'bytes=15-' })).status, 416);
+        const mp4 = '/connector-media/__sectest__/clip.mp4';
+        assert.deepStrictEqual([(await req('GET', mp4)).headers['content-type'], (await req('GET', mp4)).headers['content-disposition']], ['video/mp4', 'inline']);
+        assert.strictEqual((await req('GET', `${mp4}?download=1`)).headers['content-disposition'],
+          `attachment; filename="clip.mp4"; filename*=UTF-8''clip.mp4`);
+      } finally { fs.rmSync(mediaDir, { recursive: true, force: true }); }
+    });
+
     let triggerAtt = null;
     await test('agent_trigger — attachment URLs are signed and download without a cookie', async () => {
       const trig = waitForWsMessage(secAgent.ws, m => m.type === 'agent_trigger' && m.room_id === secRoomId, 5000);
@@ -13538,6 +13610,30 @@ async function run() {
     }
     assert.deepStrictEqual([...ctx.fileSizePair(limit + 1, limit)], ['2,048.1 KB', '2,048 KB'], 'one byte over rounds up');
     assert.deepStrictEqual([...ctx.fileSizePair(26.3 * 1048576, limit)], ['26.3 MB', '2 MB'], 'large files switch both to MB');
+  });
+
+  await test('file preview — audio/video kinds come from the served on-disk extension; media icon for every media ext', () => {
+    const vm = require('vm');
+    const ctx = { URL, location: { origin: 'https://stoa.test' } };
+    vm.runInNewContext(require('fs').readFileSync(path.join(__dirname, 'public/js/chat/file-card.js'), 'utf8'), ctx);
+    const kindOf = raw => ctx.filePreviewKind(ctx.fileResolveUrl(raw));
+    const video = ['/uploads/a.mp4', '/uploads/b.MOV', '/uploads/c.webm', '/uploads/d.m4v', '/connector-media/1/2026-10-29/e.mp4', 'https://stoa.test/uploads/f.Mp4?exp=1&sig=x'];
+    const audio = ['/uploads/a.mp3', '/uploads/b.opus', '/uploads/c.flac', '/uploads/d.m4a', '/uploads/e.oga', '/uploads/f.ogg', '/uploads/g.wav', '/uploads/h.AAC', '/connector-media/1/x/voice.ogg'];
+    for (const u of video) assert.strictEqual(kindOf(u), 'video', u);
+    for (const u of audio) assert.strictEqual(kindOf(u), 'audio', u);
+    for (const u of ['https://evil.test/uploads/a.mp4', '/static/a.mp4', '/api/files/a.mp3', 'javascript:alert(1)//a.mp4', '/uploads/a.html', '/uploads/a.svg', '/uploads/a.mkv', '/uploads/mp4', ''])
+      assert.strictEqual(kindOf(u), null, u);
+
+    const disguised = ctx.fileResolveUrl('/uploads/x.html');
+    assert.strictEqual(ctx.fileCardExt(disguised, 'holiday.mp4'), 'html', 'served file: label follows the on-disk ext, not the display name');
+    assert.strictEqual(ctx.filePreviewKind(disguised), null, 'no player for an .html stored file named like a video');
+    assert.strictEqual(ctx.filePreviewKind(ctx.fileResolveUrl('/uploads/x.mp3')), 'audio', 'and a real mp3 stays audio whatever it is called');
+
+    const mediaIcon = ctx.fileIconSvg('mp4', 16);
+    assert.ok(mediaIcon.includes('<polygon'), 'media icon is the play glyph');
+    for (const ext of ['mp4', 'm4v', 'mov', 'webm', 'mp3', 'm4a', 'aac', 'wav', 'ogg', 'oga', 'opus', 'flac'])
+      assert.strictEqual(ctx.fileIconSvg(ext, 16), mediaIcon, ext);
+    for (const ext of ['html', 'pdf', 'mkv']) assert.ok(!ctx.fileIconSvg(ext, 16).includes('<polygon'), ext);
   });
 
   await test('tool steps — stored per message for its own running agent only, capped, summary matches the chat trail', () => {
