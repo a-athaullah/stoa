@@ -7,6 +7,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { pipeline } = require('stream');
 const { execSync } = require('child_process');
 const { WebSocketServer } = require('ws');
 const db = require('./db');
@@ -1864,6 +1865,53 @@ function fileResponseHeaders(ext, mime, disposition, filenameParams) {
   return headers;
 }
 
+// Audio/video play inline in the preview player; the browser streams them with Range requests.
+const MEDIA_MIMES = {
+  '.mp4':'video/mp4', '.m4v':'video/mp4', '.webm':'video/webm', '.mov':'video/quicktime',
+  '.mp3':'audio/mpeg', '.m4a':'audio/mp4', '.aac':'audio/aac', '.wav':'audio/wav',
+  '.ogg':'audio/ogg', '.oga':'audio/ogg', '.opus':'audio/ogg', '.flac':'audio/flac',
+};
+
+// Single byte range per RFC 9110 §14. Returns null → serve the whole file (no Range, another
+// unit, or a multi-range we don't implement), false → 416, else { start, end } inclusive.
+function parseByteRange(header, size) {
+  if (typeof header !== 'string' || !/^\s*bytes=/i.test(header) || header.includes(',')) return null;
+  const m = /^\s*bytes=(\d*)-(\d*)\s*$/i.exec(header);
+  if (!m || (m[1] === '' && m[2] === '')) return false;
+  let start, end;
+  if (m[1] === '') {
+    const n = Number(m[2]);
+    if (!n || !size) return false;
+    start = Math.max(0, size - n); end = size - 1;
+  } else {
+    start = Number(m[1]);
+    end = m[2] === '' ? size - 1 : Math.min(Number(m[2]), size - 1);
+    if (start >= size || (m[2] !== '' && Number(m[2]) < start)) return false;
+  }
+  return { start, end };
+}
+
+// Streams instead of buffering so a 25MB video isn't read whole into memory per seek.
+function sendFileRanged(req, res, filepath, headers) {
+  let size;
+  try { size = fs.statSync(filepath).size; } catch { res.writeHead(404); return res.end('Not found'); }
+  const range = parseByteRange(req.headers.range, size);
+  headers['Accept-Ranges'] = 'bytes';
+  if (range === false) {
+    headers['Content-Range'] = `bytes */${size}`;
+    res.writeHead(416, headers);
+    return res.end();
+  }
+  const { start, end } = range || { start: 0, end: size - 1 };
+  if (range) headers['Content-Range'] = `bytes ${start}-${end}/${size}`;
+  headers['Content-Length'] = size ? end - start + 1 : 0;
+  res.writeHead(range ? 206 : 200, headers);
+  if (!size) return res.end();
+  pipeline(fs.createReadStream(filepath, { start, end }), res, err => {
+    if (err && err.code !== 'ERR_STREAM_PREMATURE_CLOSE') console.error(`[files] stream ${filepath}: ${err.message}`);
+  });
+}
+
 // ?download=1&name=<original> → save under the uploader's filename instead of the random
 // on-disk one. The extension is pinned to the stored file's so a .png can't be saved as .html.
 const DOWNLOAD_NAME_MAX = 200;
@@ -2111,12 +2159,10 @@ const server = http.createServer(async (req, res) => {
       '.log':'text/plain; charset=utf-8', '.yaml':'text/plain; charset=utf-8', '.yml':'text/plain; charset=utf-8',
       '.tsv':'text/tab-separated-values; charset=utf-8',
     };
-    const mime = MIMES[ext] || 'application/octet-stream';
+    const mime = MIMES[ext] || MEDIA_MIMES[ext] || 'application/octet-stream';
     const download = url.searchParams.get('download') === '1';
-    const disp = !download && (mime.startsWith('text/') || mime.includes('json') || ext === '.pdf') ? 'inline' : 'attachment';
-    const body = fs.readFileSync(filepath);
-    res.writeHead(200, fileResponseHeaders(ext, mime, disp, download ? downloadFilenameParams(filename, url.searchParams.get('name')) : null));
-    return res.end(body);
+    const disp = !download && (mime.startsWith('text/') || mime.includes('json') || ext === '.pdf' || MEDIA_MIMES[ext]) ? 'inline' : 'attachment';
+    return sendFileRanged(req, res, filepath, fileResponseHeaders(ext, mime, disp, download ? downloadFilenameParams(filename, url.searchParams.get('name')) : null));
   }
 
   // ── Static: connector media files (WA downloads, etc.)
@@ -2128,15 +2174,12 @@ const server = http.createServer(async (req, res) => {
     const MIMES = {
       '.png':'image/png', '.jpg':'image/jpeg', '.jpeg':'image/jpeg',
       '.gif':'image/gif', '.webp':'image/webp',
-      '.mp4':'video/mp4', '.mp3':'audio/mpeg', '.ogg':'audio/ogg',
       '.pdf':'application/pdf', '.txt':'text/plain; charset=utf-8',
     };
-    const mime = MIMES[ext] || 'application/octet-stream';
+    const mime = MIMES[ext] || MEDIA_MIMES[ext] || 'application/octet-stream';
     const download = url.searchParams.get('download') === '1';
-    const disp = !download && (mime.startsWith('text/') || ext === '.pdf') ? 'inline' : 'attachment';
-    const body = fs.readFileSync(filepath);
-    res.writeHead(200, fileResponseHeaders(ext, mime, disp, download ? downloadFilenameParams(path.basename(filepath), url.searchParams.get('name')) : null));
-    return res.end(body);
+    const disp = !download && (mime.startsWith('text/') || ext === '.pdf' || MEDIA_MIMES[ext]) ? 'inline' : 'attachment';
+    return sendFileRanged(req, res, filepath, fileResponseHeaders(ext, mime, disp, download ? downloadFilenameParams(path.basename(filepath), url.searchParams.get('name')) : null));
   }
 
   // ── Upload file (raw binary)
