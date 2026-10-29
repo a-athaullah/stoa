@@ -1042,7 +1042,7 @@ git 저장소(또는 GitHub)에서 가져온 스킬은 **Source** 링크를 유�
 
 **GitHub 가져오기:** GitHub URL로 가져온 스킬도 소스가 기록됩니다. 첫 번째 **Check for updates**에서는 "Update available"이 표시됩니다(초기 가져오기 시 커밋이 기록되지 않으므로). 첫 번째 **Update**에서 커밋이 기록되며, 이미 일치하는 경우 내용이 교체되지 않습니다.
 
-**MCP 경유:** 에이전트는 `stoa__skill_import_git`을 사용하여 git에서 스킬을 가져올 수 있습니다 — 가져온 스킬은 호출한 에이전트의 것이 됩니다. `stoa__skill_source_check`는 모든 에이전트가 볼 수 있는 스킬(활성화된 스킬 또는 자신이 만든 스킬)에 대해 호출할 수 있습니다. `stoa__skill_source_update`와 `stoa__skill_source_detach`는 `stoa__skill_update` 및 `stoa__skill_delete`와 동일한 소유권 규칙을 따릅니다: 제작자만(부모 에이전트는 서브에이전트가 만든 스킬도 포함). UI에서 가져온 스킬은 사용자 것으로 유지됩니다 — 제작자가 아닌 에이전트는 not-found 오류를 받습니다.
+**MCP 경유:** 에이전트는 `stoa__skill_import_git`을 사용하여 git에서 스킬을 가져올 수 있습니다 — 가져온 스킬은 호출한 에이전트의 것이 됩니다. `stoa__skill_source_check`는 모든 에이전트가 볼 수 있는 스킬(활성화된 스킬 또는 자신이 만든 스킬)에 대해 호출할 수 있습니다. `stoa__skill_source_update`와 `stoa__skill_source_detach`는 `stoa__skill_update` 및 `stoa__skill_delete`와 동일한 소유권 규칙을 따릅니다: 제작자만(부모 에이전트는 서브에이전트가 만든 스킬도 포함). UI에서 가져온 스킬은 사용자 것으로 유지됩니다 — 제작자가 아닌 에이전트는 forbidden 오류를 받습니다.
 
 ### 스킬 호출
 

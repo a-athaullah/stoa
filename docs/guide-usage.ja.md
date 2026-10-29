@@ -1042,7 +1042,7 @@ git リポジトリ（または GitHub）からインポートしたスキルは
 
 **GitHub インポート：** GitHub URL からインポートしたスキルも Source が記録されます。最初の **Check for updates** では "Update available" と表示されます（初回インポート時にコミットが記録されないため）。最初の **Update** でコミットが記録され、内容が一致する場合は置き換えられません。
 
-**MCP 経由：** エージェントは `stoa__skill_import_git` を使って git からスキルをインポートできます — インポートされたスキルは呼び出したエージェントのものになります。`stoa__skill_source_check` はすべてのエージェントが可視スキル（有効なもの、または自分が作成したもの）に対して呼び出せます。`stoa__skill_source_update` と `stoa__skill_source_detach` は `stoa__skill_update` および `stoa__skill_delete` と同じ所有権ルールに従います：作成者のみ（親エージェントはサブエージェントが作成したスキルも対象）。UI 経由でインポートしたスキルはオーナーのものとして残ります — 作成者でないエージェントは not-found エラーを受け取ります。
+**MCP 経由：** エージェントは `stoa__skill_import_git` を使って git からスキルをインポートできます — インポートされたスキルは呼び出したエージェントのものになります。`stoa__skill_source_check` はすべてのエージェントが可視スキル（有効なもの、または自分が作成したもの）に対して呼び出せます。`stoa__skill_source_update` と `stoa__skill_source_detach` は `stoa__skill_update` および `stoa__skill_delete` と同じ所有権ルールに従います：作成者のみ（親エージェントはサブエージェントが作成したスキルも対象）。UI 経由でインポートしたスキルはオーナーのものとして残ります — 作成者でないエージェントは forbidden エラー（403）を受け取ります。
 
 ### スキルの呼び出し
 

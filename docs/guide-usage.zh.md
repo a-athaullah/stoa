@@ -1042,7 +1042,7 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 
 **GitHub 导入：** 通过 GitHub URL 导入的技能也会记录其来源。首次 **Check for updates** 会显示"Update available"（初始导入未记录提交）；首次 **Update** 会记录提交，若内容已匹配则不会替换。
 
-**通过 MCP：** 代理可以使用 `stoa__skill_import_git` 从 git 导入技能 — 导入的技能归调用代理所有。`stoa__skill_source_check` 可由所有代理对任何可见技能（已启用或自己创建的）调用。`stoa__skill_source_update` 和 `stoa__skill_source_detach` 遵循与 `stoa__skill_update` 和 `stoa__skill_delete` 相同的所有权规则：仅限创建者（父代理包含其子代理创建的技能）。通过 UI 导入的技能仍归您所有 — 非创建者的代理会收到 not-found 错误。
+**通过 MCP：** 代理可以使用 `stoa__skill_import_git` 从 git 导入技能 — 导入的技能归调用代理所有。`stoa__skill_source_check` 可由所有代理对任何可见技能（已启用或自己创建的）调用。`stoa__skill_source_update` 和 `stoa__skill_source_detach` 遵循与 `stoa__skill_update` 和 `stoa__skill_delete` 相同的所有权规则：仅限创建者（父代理包含其子代理创建的技能）。通过 UI 导入的技能仍归您所有 — 非创建者的代理会收到 forbidden 错误。
 
 ### 调用技能
 

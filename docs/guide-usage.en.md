@@ -1046,7 +1046,7 @@ Skills imported from a git repository (or GitHub) retain a **Source** link. Open
 
 **GitHub imports:** Skills imported via a GitHub URL also record their source. The first **Check for updates** shows "Update available" (the initial import doesn't store the commit); the first **Update** records it without replacing content if it already matches.
 
-**Via MCP:** Agents can import from git using `stoa__skill_import_git` — the imported skill belongs to the calling agent. Any agent can call `stoa__skill_source_check` on any visible skill (enabled or one it created). `stoa__skill_source_update` and `stoa__skill_source_detach` follow the same ownership rule as `stoa__skill_update` and `stoa__skill_delete`: only the creator (a parent agent includes skills created by its sub-agents). Skills you imported via the UI stay yours — agents that did not create them receive a not-found error.
+**Via MCP:** Agents can import from git using `stoa__skill_import_git` — the imported skill belongs to the calling agent. Any agent can call `stoa__skill_source_check` on any visible skill (enabled or one it created). `stoa__skill_source_update` and `stoa__skill_source_detach` follow the same ownership rule as `stoa__skill_update` and `stoa__skill_delete`: only the creator (a parent agent includes skills created by its sub-agents). Skills you imported via the UI stay yours — agents that did not create them receive a forbidden error.
 
 ### Invoking a Skill
 

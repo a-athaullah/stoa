@@ -1047,7 +1047,7 @@ Skill yang diimpor dari git repository (atau GitHub) menyimpan tautan **Source**
 
 **Impor GitHub:** Skill yang diimpor melalui URL GitHub juga menyimpan source-nya. **Check for updates** pertama akan menampilkan "Update available" (commit tidak tersimpan saat impor awal); **Update** pertama mencatatnya tanpa mengganti konten jika sudah cocok.
 
-**Via MCP:** Agent dapat mengimpor dari git menggunakan `stoa__skill_import_git` — skill yang diimpor menjadi milik agent yang mengimpor. Semua agent dapat memanggil `stoa__skill_source_check` pada skill manapun yang terlihat (aktif atau buatan agent itu sendiri). `stoa__skill_source_update` dan `stoa__skill_source_detach` mengikuti aturan kepemilikan yang sama dengan `stoa__skill_update` dan `stoa__skill_delete`: hanya pembuat (agent induk mencakup skill buatan sub-agentnya). Skill yang Anda impor via UI tetap milik Anda — agent yang bukan pembuatnya akan mendapat error not-found.
+**Via MCP:** Agent dapat mengimpor dari git menggunakan `stoa__skill_import_git` — skill yang diimpor menjadi milik agent yang mengimpor. Semua agent dapat memanggil `stoa__skill_source_check` pada skill manapun yang terlihat (aktif atau buatan agent itu sendiri). `stoa__skill_source_update` dan `stoa__skill_source_detach` mengikuti aturan kepemilikan yang sama dengan `stoa__skill_update` dan `stoa__skill_delete`: hanya pembuat (agent induk mencakup skill buatan sub-agentnya). Skill yang Anda impor via UI tetap milik Anda — agent yang bukan pembuatnya akan mendapat error forbidden.
 
 ### Memanggil Skill
 

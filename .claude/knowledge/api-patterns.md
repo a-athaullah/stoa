@@ -123,10 +123,10 @@ Allowed routes (source: `AGENT_ALLOWED_ROUTES` in `lib/agent-scope.js`):
 | GET | `/api/rooms/:id/schedules/doctor` | room |
 | GET | `/api/skills/:name/manifest` | any (enabled skills only) |
 | GET | `/api/skill-blobs/:sha256` | any (only blobs of the current revision of an enabled skill) |
-| POST | `/api/skills/import` | any (skill owned by the calling agent); `git_url` body field → owner session only (403 for agents); agents use `stoa__skill_import_git` MCP tool instead |
+| POST | `/api/skills/import` | any (skill owned by the calling agent; `git_url` field works for agents too — or use `stoa__skill_import_git` MCP tool) |
 | POST | `/api/skills/:id\|:name/source/check` | any agent (read-only; works on any visible skill) |
-| POST | `/api/skills/:id\|:name/source/update` | creator only (same ownership as skill update; 404 for non-creator) |
-| DELETE | `/api/skills/:id\|:name/source` | creator only (same ownership as skill delete; 404 for non-creator) |
+| POST | `/api/skills/:id\|:name/source/update` | creator only (same ownership as skill update; 403 for non-creator who can see it, 404 if not visible) |
+| DELETE | `/api/skills/:id\|:name/source` | creator only (same ownership as skill delete; 403 for non-creator who can see it, 404 if not visible) |
 
 **Automation scope notes:** Agents can build and manage automations on behalf of the workspace owner (PR #171, owner decision). Handlers do additional narrowing beyond scope: list filters by participant rooms; create/PATCH reject non-participant `target_room_id` with 403. GET `/api/automations/connections` strips credential/token fields for agent requests. Create/edit/delete connection, test-email, and Slack connect remain session-only. Every agent create/update/delete posts a permanent system message in the target room (suffix `· automation`) so the owner can monitor changes.
 
