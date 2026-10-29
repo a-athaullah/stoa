@@ -3793,7 +3793,7 @@ async function runAsyncUnitTests() {
     mem.close();
   });
 
-  await uta('MCP gateway — approval-gated built-in: every call waits (no exemption), always → 400 and stays pending, preview replaces args, cut preview refused', async () => {
+  await uta('MCP gateway — approval-gated built-in: every call waits (no exemption), always → 400 and stays pending, preview replaces args, cut preview and failed precheck refused before a card', async () => {
     const Database = require('better-sqlite3');
     const { createMcpGateway } = require('./lib/mcp-gateway');
     const mem = new Database(':memory:');
@@ -3808,6 +3808,10 @@ async function runAsyncUnitTests() {
       builtinTools: [{
         name: 'gated', description: 'x', inputSchema: { type: 'object' }, requiresApproval: true,
         previewArgs: (a) => ({ cmd: a.cmd, env: Object.fromEntries(Object.keys(a.env || {}).map(k => [k, '***'])) }),
+        precheck: async (ident, a) => {
+          if (a.cmd === 'boom') throw new Error('precheck blew up');
+          return a.cmd === 'invalid' ? 'cmd "invalid" is not allowed' : null;
+        },
         call: async (ident, a) => { ran.push(a); return { content: [{ type: 'text', text: 'done' }] }; },
       }, { name: 'free', description: 'y', inputSchema: { type: 'object' }, call: async () => ({ content: [{ type: 'text', text: 'free' }] }) }],
     });
@@ -3815,8 +3819,10 @@ async function runAsyncUnitTests() {
     const pendingCard = () => events.filter(e => e.type === 'mcp_approval').at(-1);
     const lastCall = () => mem.prepare('SELECT * FROM mcp_calls ORDER BY id DESC LIMIT 1').get();
     const SECRET = 'value-of-the-secret-xyz';
+    const flush = () => new Promise(r => setImmediate(r)); // the precheck is awaited before the card
 
     const first = gw.callTool(ident, 'stoa__gated', { cmd: 'npx srv', env: { API: SECRET } });
+    await flush();
     const card = pendingCard();
     assert.deepStrictEqual([card.server_slug, card.tool, card.status, card.allow_always], ['stoa', 'gated', 'pending', false]);
     assert.deepStrictEqual(JSON.parse(card.args_preview), { cmd: 'npx srv', env: { API: '***' } }, 'card shows the preview, not the args');
@@ -3834,6 +3840,7 @@ async function runAsyncUnitTests() {
     assert.ok(!okRow.args_preview.includes(SECRET) && okRow.args_preview.includes('npx srv'), 'mcp_calls keeps the preview');
 
     const second = gw.callTool(ident, 'stoa__gated', { cmd: 'again' });
+    await flush();
     assert.notStrictEqual(pendingCard().id, card.id, 'approved once ≠ approved forever: a new card');
     gw.decideApproval(pendingCard().id, 'deny');
     assert.match((await second).content[0].text, /Denied by Stoa: the owner denied this call/);
@@ -3846,6 +3853,7 @@ async function runAsyncUnitTests() {
 
     const ac = new AbortController();
     const fourth = gw.callTool(ident, 'stoa__gated', { cmd: 'dropped' }, { signal: ac.signal });
+    await flush();
     const dropped = pendingCard().id;
     ac.abort();
     assert.match((await fourth).content[0].text, /approval expired/, 'abort signal reaches the built-in wait');
@@ -3855,6 +3863,17 @@ async function runAsyncUnitTests() {
     const long = await gw.callTool(ident, 'stoa__gated', { cmd: 'x'.repeat(600) });
     assert.match(long.content[0].text, /too long to show in full/);
     assert.strictEqual(events.length, n, 'no card for a preview that would be cut');
+    assert.strictEqual(ran.length, 1);
+
+    const refused = await gw.callTool(ident, 'stoa__gated', { cmd: 'invalid', env: { API: SECRET } });
+    assert.deepStrictEqual([refused.isError, refused.content[0].text], [true, 'cmd "invalid" is not allowed']);
+    assert.deepStrictEqual([lastCall().status, lastCall().error, lastCall().approval], ['error', 'cmd "invalid" is not allowed', null]);
+    assert.ok(!lastCall().args_preview.includes(SECRET), 'a refused call is recorded with the preview too');
+    const blew = await gw.callTool(ident, 'stoa__gated', { cmd: 'boom' });
+    assert.match(blew.content[0].text, /^Tool failed: precheck blew up/);
+    assert.strictEqual(lastCall().status, 'error');
+    assert.strictEqual(events.length, n, 'no card when the precheck refuses or throws');
+    assert.strictEqual(mem.prepare('SELECT COUNT(*) n FROM mcp_approvals WHERE status=?').get('pending').n, 0);
     assert.strictEqual(ran.length, 1);
 
     assert.strictEqual((await gw.callTool(ident, 'stoa__free', {})).content[0].text, 'free', 'built-ins without the flag run at once');
@@ -20297,25 +20316,39 @@ async function run() {
     const serverBySlug = (slug) => mDb.prepare('SELECT * FROM mcp_servers WHERE slug=?').get(slug);
     const decide = (decision) => (a) => req('POST', `/api/mcp/approvals/${a.id}`, { decision });
 
-    await test('MCP stoa tools — mcp_catalog / mcp_server_list: presets, servers with env names only; hidden from sub-agent sessions', async () => {
+    await test('MCP stoa tools — mcp_catalog / mcp_server_list: presets; every server with env key names only (no masked tail, no plain preset value) and has_access; hidden from sub-agent sessions', async () => {
+      const fsM = require('fs'), osM = require('os'), pathM = require('path');
       const cat = await stoaOk(tokA, 'mcp_catalog');
       assert.deepStrictEqual(cat.presets.map(p => p.id), (await req('GET', '/api/mcp/catalog')).body.presets.map(p => p.id));
-      // Its own server with a known env, so the check does not depend on what earlier tests left on mcpdummy.
+      // Owner-installed servers agA has no access to: a secret long enough for the owner API's masked tail, and a
+      // Filesystem folder the owner API shows in plain.
       const LIST_VALUE = 'list-value-' + crypto.randomBytes(8).toString('hex');
-      const made = await req('POST', '/api/mcp/servers', { slug: 'mcplisted', name: 'Listed', transport: 'stdio', command: process.execPath, args: [FIXTURE], env: { LIST_KEY: LIST_VALUE } });
-      assert.strictEqual(made.status, 201, made.raw);
+      const dir = fsM.mkdtempSync(pathM.join(osM.tmpdir(), 'stoa-mcplist-'));
+      const made = [];
       try {
+        let r = await req('POST', '/api/mcp/servers', { slug: 'mcplisted', name: 'Listed', transport: 'stdio', command: process.execPath, args: [FIXTURE], env: { LIST_KEY: LIST_VALUE } });
+        assert.strictEqual(r.status, 201, r.raw);
+        made.push(r.body.server.id);
+        r = await req('POST', '/api/mcp/servers', { preset: 'filesystem', slug: 'mcplistfs', env: { ALLOWED_DIRS: dir } });
+        assert.strictEqual(r.status, 201, r.raw);
+        made.push(r.body.server.id);
+        const owned = (await req('GET', '/api/mcp/servers')).body.servers;
+        assert.ok(JSON.stringify(owned).includes(LIST_VALUE.slice(-4)) && JSON.stringify(owned).includes(dir), 'the owner API does show both');
         const list = await stoaCall(tokA, 'mcp_server_list');
         assert.strictEqual(list.isError, false);
         const listed = list.body.servers.find(s => s.slug === 'mcplisted');
-        assert.strictEqual(listed.command, process.execPath);
-        assert.deepStrictEqual(listed.env_keys, [{ key: 'LIST_KEY', masked: '••••' + LIST_VALUE.slice(-4) }], JSON.stringify(listed.env_keys));
-        const owned = (await req('GET', '/api/mcp/servers')).body.servers.find(s => s.slug === 'mcplisted');
-        assert.deepStrictEqual(listed.env_keys, owned.env_keys, 'same masked shape as the owner API');
-        assert.ok(!list.text.includes(LIST_VALUE), 'env value never returned');
-        assert.ok(!list.text.includes(SECRET), 'env value never returned');
+        assert.deepStrictEqual(listed, {
+          slug: 'mcplisted', name: 'Listed', transport: 'stdio', command: process.execPath, args: [FIXTURE], url: null, preset: null,
+          enabled: true, status: owned.find(s => s.slug === 'mcplisted').status, tool_count: owned.find(s => s.slug === 'mcplisted').tool_count,
+          env_keys: ['LIST_KEY'], has_access: false,
+        });
+        assert.deepStrictEqual(list.body.servers.find(s => s.slug === 'mcplistfs').env_keys, ['ALLOWED_DIRS']);
+        assert.deepStrictEqual(list.body.servers.map(s => s.slug), owned.map(s => s.slug), 'every server, so the agent can pick a free slug');
+        assert.ok(list.body.servers.every(s => s.env_keys.every(k => typeof k === 'string')), 'names only on every server');
+        for (const leak of [LIST_VALUE.slice(-4), dir, SECRET, '••••']) assert.ok(!list.text.includes(leak), `not in the result: ${leak}`);
       } finally {
-        await req('DELETE', `/api/mcp/servers/${made.body.server.id}`);
+        for (const id of made) await req('DELETE', `/api/mcp/servers/${id}`);
+        fsM.rmSync(dir, { recursive: true, force: true });
       }
       for (const tool of ['mcp_catalog', 'mcp_server_list', 'mcp_server_add']) {
         assert.match(await stoaErr(tokSub, tool, tool === 'mcp_server_add' ? { slug: 'subadd', name: 'x', transport: 'stdio', command: process.execPath, args: [FIXTURE] } : {}), SUB_DENIED, tool);
@@ -20345,13 +20378,16 @@ async function run() {
         assert.strictEqual(resolved.status, 'approved');
         assert.strictEqual(result.isError, false, result.text);
         const body = JSON.parse(result.text);
-        assert.deepStrictEqual([body.server.slug, body.server.default_access, body.test.ok, body.test.tool_count], ['mcpadded', 'none', true, 4]);
+        assert.deepStrictEqual([body.server.slug, body.server.has_access, body.server.env_keys, body.test.ok, body.test.tool_count], ['mcpadded', true, ['DUMMY_SECRET'], true, 4]);
+        assert.ok(!result.text.includes(ADD_SECRET.slice(-4)) && !result.text.includes('••••'), 'the add result carries env names only, like the list');
         const row = serverBySlug('mcpadded');
         assert.strictEqual(row.default_access, 'none', 'allow_all ignored');
         assert.deepStrictEqual(mDb.prepare('SELECT subject_type, subject_id, allow FROM mcp_access WHERE server_id=?').all(row.id),
           [{ subject_type: 'agent', subject_id: agA.actorId, allow: 1 }], 'granted to the caller only');
         assert.ok((await listNames(tokA)).includes('mcpadded__echo'), 'caller sees its tools');
         assert.ok(!(await listNames(tokB)).some(n => n.startsWith('mcpadded__')), 'another agent does not');
+        const hasAccess = async (token) => (await stoaCall(token, 'mcp_server_list')).body.servers.find(s => s.slug === 'mcpadded').has_access;
+        assert.deepStrictEqual([await hasAccess(tokA), await hasAccess(tokB)], [true, false], 'has_access follows the gateway grant');
         const echo = await callText(tokA, 'mcpadded__echo', { text: 'hi' });
         assert.strictEqual(echo.isError, false, echo.text);
         assert.strictEqual(JSON.parse(echo.text).secret, 'set', 'env reached the upstream');
@@ -20370,7 +20406,7 @@ async function run() {
       }
     });
 
-    await test('MCP stoa tools — mcp_server_add: deny or no decision → nothing installed; duplicate / reserved slug → tool error after approval', async () => {
+    await test('MCP stoa tools — mcp_server_add: deny or no decision → nothing installed', async () => {
       const args = { slug: 'mcpnever', name: 'Never', transport: 'stdio', command: process.execPath, args: [FIXTURE] };
       const denied = await addRound(args, decide('deny'));
       assert.match(denied.result.text, /owner denied/);
@@ -20379,14 +20415,56 @@ async function run() {
       assert.strictEqual(expired.resolved.status, 'expired');
       assert.match(expired.result.text, /approval expired/);
       assert.strictEqual(serverBySlug('mcpnever'), undefined, 'expired → not installed');
-      const before = mDb.prepare('SELECT COUNT(*) n FROM mcp_servers').get().n;
-      const dup = await addRound({ ...args, slug: 'mcpdummy' }, decide('approve'));
-      assert.deepStrictEqual([dup.result.isError, JSON.parse(dup.result.text).error], [true, 'slug "mcpdummy" is already used']);
-      const reserved = await addRound({ ...args, slug: 'stoa' }, decide('approve'));
-      assert.match(JSON.parse(reserved.result.text).error, /reserved/);
-      assert.strictEqual(mDb.prepare('SELECT COUNT(*) n FROM mcp_servers').get().n, before);
-      const tooLong = await callText(tokA, 'stoa__mcp_server_add', { ...args, args: ['-e', 'x'.repeat(600)] });
-      assert.match(tooLong.text, /too long to show in full/, 'a call the owner could not see in full is refused before asking');
+      // The slug was free when the card went up but is taken by the time the owner approves: the insert still refuses it.
+      let raced = null;
+      try {
+        const race = await addRound({ ...args, slug: 'mcprace' }, async (a) => {
+          const r = await req('POST', '/api/mcp/servers', { slug: 'mcprace', name: 'Owner first', transport: 'stdio', command: process.execPath, args: [FIXTURE] });
+          assert.strictEqual(r.status, 201, r.raw);
+          raced = r.body.server.id;
+          await decide('approve')(a);
+        });
+        assert.deepStrictEqual([race.result.isError, JSON.parse(race.result.text).error], [true, 'slug "mcprace" is already used']);
+        assert.strictEqual(serverBySlug('mcprace').name, 'Owner first', 'the owner\'s server is untouched');
+        assert.deepStrictEqual(mDb.prepare('SELECT COUNT(*) n FROM mcp_access WHERE server_id=?').get(raced).n, 0, 'no grant slipped onto it');
+      } finally {
+        if (raced) await req('DELETE', `/api/mcp/servers/${raced}`);
+      }
+    });
+
+    await test('MCP stoa tools — mcp_server_add: invalid args, reserved / taken slug, too-long args → tool error before any approval card', async () => {
+      const args = { slug: 'mcpnever', name: 'Never', transport: 'stdio', command: process.execPath, args: [FIXTURE] };
+      const counts = () => [mDb.prepare('SELECT COUNT(*) n FROM mcp_servers').get().n, mDb.prepare('SELECT COUNT(*) n FROM mcp_approvals').get().n];
+      const before = counts();
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      const cards = [];
+      humanWs.on('message', (d) => { const m = JSON.parse(d); if (m.type === 'mcp_approval') cards.push(m); });
+      try {
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: roomA }));
+        await waitForWsMessage(humanWs, m => m.type === 'history');
+        const lastCall = mDb.prepare('SELECT COALESCE(MAX(id), 0) id FROM mcp_calls').get().id;
+        for (const [bad, re] of [
+          [{}, /slug must start with a letter/],
+          [{ ...args, slug: 'Bad-Slug' }, /slug must start with a letter/],
+          [{ ...args, slug: 'stoa' }, /reserved/],
+          [{ ...args, slug: 'mcpdummy' }, /^slug "mcpdummy" is already used$/],
+          [{ ...args, transport: 'ftp' }, /transport must be stdio or http/],
+          [{ ...args, command: undefined }, /command is required/],
+          [{ ...args, preset: 'no-such-preset' }, /unknown preset/],
+          [{ ...args, env: { 'BAD KEY': 'x' } }, /invalid env name: BAD KEY/],
+        ]) {
+          const r = await callText(tokA, 'stoa__mcp_server_add', bad);
+          assert.strictEqual(r.isError, true, `${JSON.stringify(bad)}: ${r.text}`);
+          assert.match(r.text, re, JSON.stringify(bad));
+        }
+        const tooLong = await callText(tokA, 'stoa__mcp_server_add', { ...args, args: ['-e', 'x'.repeat(600)] });
+        assert.match(tooLong.text, /too long to show in full/, 'a call the owner could not see in full is refused before asking');
+        const recorded = mDb.prepare("SELECT status, approval FROM mcp_calls WHERE id>? AND tool='mcp_server_add' ORDER BY id").all(lastCall);
+        assert.deepStrictEqual(recorded.map(c => [c.status, c.approval]), [...Array(8).fill(['error', null]), ['denied', null]]);
+        await new Promise(r => setTimeout(r, 300));
+      } finally { humanWs.close(); }
+      assert.deepStrictEqual(counts(), before, 'no server and no mcp_approvals row');
+      assert.deepStrictEqual(cards, [], 'no mcp_approval event');
     });
 
     // ── Built-in stoa__skill_* tools: same core as /api/skills (lib/skills.js).

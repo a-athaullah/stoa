@@ -1715,7 +1715,10 @@ const mcpGateway = createMcpGateway({
     ...stoaMcpTools({
       db, broadcast, messages: roomMessages, memory: stoaMemory, prompts: systemPrompts, subAgents, automations: automationCrud, readAgentImage, setActorAvatar, skills, syncAgentSkill,
       // mcpApi is created below (it needs this gateway); only called once a tool runs.
-      mcpServers: { catalog: publicCatalog, list: () => mcpApi.listServers(), add: (body, actorId) => mcpApi.addServerForAgent(body, actorId) },
+      mcpServers: {
+        catalog: publicCatalog, list: (ident) => mcpApi.listServersForAgent(ident),
+        check: (body, actorId) => mcpApi.checkServerForAgent(body, actorId), add: (body, actorId) => mcpApi.addServerForAgent(body, actorId),
+      },
     }),
   ],
   approvalTimeoutMs: Math.min(APPROVAL_TIMEOUT_MAX_MS, Math.max(1000, parseInt(process.env.MCP_APPROVAL_TIMEOUT_MS, 10) || 5 * 60_000)),
