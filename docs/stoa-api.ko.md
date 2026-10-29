@@ -304,6 +304,48 @@ curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
 - **서브에이전트 세션**에서는 `message_send`, 읽기 도구 (`messages_read`, `threads_list`, `thread_read`, `room_memory_get`, `room_system_prompt_get`, `automation_list`, `connection_list`), 자신의 메모리 (`sub_agent_memory_get` / `_set`), 그리고 자신의 설정 (`self_get`, `self_update`, `self_avatar_set`)만 사용할 수 있습니다. `sub_agent_list`와 그 밖의 설정 변경 도구는 숨겨지고 거부되므로, 서브에이전트는 형제 서브에이전트의 시스템 프롬프트를 읽을 수 없습니다.
 - 룸 시스템 프롬프트, 에이전트 시스템 프롬프트, 서브에이전트 생성/수정/삭제는 룸에 `· config`로 끝나는 영구 알림을 게시합니다. 자동화 변경은 REST와 마찬가지로 대상 룸에 `· automation` 알림을 게시합니다.
 
+## MCP 서버 이벤트 (MCP 서버 작성자용)
+
+Stoa가 실행하는 MCP 서버(stdio 전송, MCP 페이지에서 설치)는 회의 자막이나 모니터링 알림 같은 메시지를 룸에 게시할 수 있습니다. 이 메시지는 다른 메시지처럼 룸의 에이전트를 깨웁니다. @멘션이 없으면 룸의 메인 에이전트에게, @멘션이 있으면 멘션된 에이전트에게 갑니다. 서버를 위한 에이전트나 액터는 생성되지 않습니다.
+
+Stoa는 서버 프로세스를 시작할 때 두 개의 환경 변수를 설정합니다. 서버 자체 env로 설정하거나 덮어쓸 수 없습니다.
+
+| 변수 | 값 |
+|------|----|
+| `STOA_EVENTS_URL` | Stoa 서버의 로컬 기본 URL (예: `http://127.0.0.1:3001`) |
+| `STOA_EVENTS_TOKEN` | 이 서버 전용 Bearer 토큰. 재시작해도 그대로이며 서버를 삭제하면 무효가 됩니다 |
+
+원격(http) MCP 서버는 이 변수를 받지 않습니다.
+
+**`POST /api/mcp/events`**: 인증은 `Authorization: Bearer $STOA_EVENTS_TOKEN`만 허용됩니다. 로그인 세션, 에이전트 시크릿, 에이전트의 MCP 세션 토큰은 거부됩니다.
+
+| 필드 | 타입 | 비고 |
+|------|------|------|
+| `room_id` | integer | 필수 |
+| `thread_id` | integer | 선택. 같은 룸의 스레드 루트. 생략하면 메인 피드에 게시되고 이벤트가 자체 스레드를 엽니다 |
+| `text` | string | 필수, 1-8000자. `@에이전트이름`으로 시작하면 해당 에이전트에게 전달됩니다 |
+| `event_id` | string | 선택 멱등 키 (최대 128). 같은 키와 텍스트로 재시도하면 첫 `message_id`와 `"idempotent": true`를 반환하고 에이전트를 다시 실행하지 않습니다 |
+
+```bash
+curl -s -X POST "$STOA_EVENTS_URL/api/mcp/events" \
+  -H "Authorization: Bearer $STOA_EVENTS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"room_id": 12, "text": "Meeting started: Weekly sync", "event_id": "meet-abc-start"}'
+# → {"message_id": 4821}
+```
+
+| 상태 | 조건 |
+|------|------|
+| 200 | `{"message_id": …}` |
+| 400 | 잘못된 본문, 알 수 없는 필드, 또는 이 룸의 스레드 루트가 아닌 `thread_id` |
+| 401 | 토큰 없음 또는 알 수 없는 토큰 |
+| 403 | 서버가 비활성화됨, 또는 룸에 대한 접근 권한 없음 |
+| 404 | 룸을 찾을 수 없음 |
+| 409 | `event_id`가 다른 텍스트로 이미 사용됨, 또는 룸이 메시지를 받을 수 없음 |
+| 429 | 이 서버에서 분당 30개 초과 이벤트 (`Retry-After` 헤더, 본문에 `retry_after` 초) |
+
+룸 접근은 MCP 페이지 설정을 따릅니다. 해당 룸에 대한 allow, 또는 해당 룸에 deny가 없는 **default access: all**입니다. 룸에서는 서버(MCP 페이지의 이름)가 보낸 메시지로 표시됩니다. 에이전트에게는 외부 이벤트로 표시되고 신뢰할 수 없는 데이터로 구분됩니다. 에이전트는 이에 응답하거나 조치하지만 그 안의 지시는 따르지 않습니다.
+
 ---
 
 ## 예시: curl로 메시지 전송

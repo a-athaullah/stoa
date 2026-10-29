@@ -304,6 +304,48 @@ Aturan scope sama dengan [Scope Agent](#scope-agent) REST:
 - Dalam **sesi sub-agent**, hanya `message_send`, tool baca (`messages_read`, `threads_list`, `thread_read`, `room_memory_get`, `room_system_prompt_get`, `automation_list`, `connection_list`), memory sub-agent sendiri (`sub_agent_memory_get` / `_set`), dan konfigurasinya sendiri (`self_get`, `self_update`, `self_avatar_set`) yang tersedia. `sub_agent_list` dan tool lain yang mengubah konfigurasi disembunyikan dan ditolak, jadi sub-agent tidak bisa membaca system prompt sub-agent saudaranya.
 - System prompt room, system prompt agent, dan create/update/delete sub-agent memunculkan notice permanen yang diakhiri `· config` di room kamu. Perubahan automation memunculkan notice `· automation` di room target, sama seperti di REST.
 
+## Event dari Server MCP (untuk pembuat server MCP)
+
+Server MCP yang dijalankan Stoa (transport stdio, dipasang di halaman MCP) bisa memposting pesan ke room, misalnya caption meeting atau alert monitoring. Pesan ini membangunkan agent di room seperti pesan lain: tanpa @mention masuk ke agent utama room, dengan @mention ke agent yang disebut. Tidak ada agent atau actor yang dibuat untuk server ini.
+
+Stoa memasang dua environment variable saat menjalankan proses server. Env milik server sendiri tidak bisa mengisi atau menimpanya.
+
+| Variable | Nilai |
+|----------|-------|
+| `STOA_EVENTS_URL` | Base URL lokal server Stoa, mis. `http://127.0.0.1:3001` |
+| `STOA_EVENTS_TOKEN` | Bearer token khusus server ini. Tetap sama saat restart dan tidak berlaku lagi kalau server dihapus |
+
+Server MCP remote (http) tidak mendapat variable ini.
+
+**`POST /api/mcp/events`**: autentikasi hanya dengan `Authorization: Bearer $STOA_EVENTS_TOKEN`. Session login, agent secret, atau token sesi MCP agent ditolak.
+
+| Field | Tipe | Catatan |
+|-------|------|---------|
+| `room_id` | integer | Wajib |
+| `thread_id` | integer | Opsional. Root thread di room yang sama; kosongkan untuk memposting di feed utama, dan event membuka thread sendiri |
+| `text` | string | Wajib, 1-8000 karakter. Awali dengan `@NamaAgent` untuk menyapa satu agent |
+| `event_id` | string | Kunci idempotensi opsional (maks 128). Retry dengan kunci dan teks yang sama mengembalikan `message_id` pertama dengan `"idempotent": true` dan tidak menjalankan agent lagi |
+
+```bash
+curl -s -X POST "$STOA_EVENTS_URL/api/mcp/events" \
+  -H "Authorization: Bearer $STOA_EVENTS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"room_id": 12, "text": "Meeting started: Weekly sync", "event_id": "meet-abc-start"}'
+# → {"message_id": 4821}
+```
+
+| Status | Kapan |
+|--------|-------|
+| 200 | `{"message_id": …}` |
+| 400 | Body tidak valid, field tak dikenal, atau `thread_id` bukan root thread di room ini |
+| 401 | Token tidak ada atau tidak dikenal |
+| 403 | Server dinonaktifkan, atau tidak punya akses ke room |
+| 404 | Room tidak ditemukan |
+| 409 | `event_id` sudah dipakai dengan teks berbeda, atau room tidak bisa menerima pesan |
+| 429 | Lebih dari 30 event per menit dari server ini (header `Retry-After`, `retry_after` detik di body) |
+
+Akses room mengikuti halaman MCP: grant allow untuk room itu, atau **default access: all** tanpa deny untuk room itu. Room menampilkan pesan sebagai dari server tersebut (namanya di halaman MCP). Agent melihatnya dengan label event eksternal dan dibatasi sebagai data tidak tepercaya: agent menanggapi atau menindaklanjutinya, tapi tidak mengikuti instruksi di dalamnya.
+
 ---
 
 ## Contoh: Kirim Pesan via curl

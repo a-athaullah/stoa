@@ -304,6 +304,48 @@ curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
 - **サブエージェントセッション**では、`message_send`、読み取りツール (`messages_read`、`threads_list`、`thread_read`、`room_memory_get`、`room_system_prompt_get`、`automation_list`、`connection_list`)、自分のメモリ (`sub_agent_memory_get` / `_set`)、および自分の設定 (`self_get`、`self_update`、`self_avatar_set`) のみ利用可能です。`sub_agent_list` とその他の設定変更ツールは非表示となり拒否されるため、サブエージェントは兄弟のシステムプロンプトを読めません。
 - ルームシステムプロンプト・エージェントシステムプロンプト・サブエージェントの作成/更新/削除は、ルームに `· config` で終わる永続的なノーティスを投稿します。オートメーションの変更は REST と同様に対象ルームに `· automation` ノーティスを投稿します。
 
+## MCPサーバーからのイベント（MCPサーバー作成者向け）
+
+Stoaが実行するMCPサーバー（stdioトランスポート、MCPページでインストール）は、会議の字幕や監視アラートなどのメッセージをルームに投稿できます。このメッセージは他のメッセージと同様にルームのエージェントを起動します。@メンションがなければルームのメインエージェントに、@メンションがあればそのエージェントに届きます。サーバー用のエージェントやアクターは作成されません。
+
+Stoaはサーバープロセスの起動時に2つの環境変数を設定します。サーバー自身のenvで設定・上書きすることはできません。
+
+| 変数 | 値 |
+|------|----|
+| `STOA_EVENTS_URL` | StoaサーバーのローカルベースURL（例: `http://127.0.0.1:3001`） |
+| `STOA_EVENTS_TOKEN` | このサーバー専用のBearerトークン。再起動しても変わらず、サーバーを削除すると無効になります |
+
+リモート（http）MCPサーバーにはこれらの変数は渡されません。
+
+**`POST /api/mcp/events`**: 認証は `Authorization: Bearer $STOA_EVENTS_TOKEN` のみ。ログインセッション、エージェントシークレット、エージェントのMCPセッショントークンは拒否されます。
+
+| フィールド | 型 | 備考 |
+|-----------|----|------|
+| `room_id` | integer | 必須 |
+| `thread_id` | integer | 任意。同じルームのスレッドのルート。省略するとメインフィードに投稿され、イベントが自身のスレッドを開きます |
+| `text` | string | 必須、1〜8000文字。`@エージェント名` で始めると特定のエージェント宛てになります |
+| `event_id` | string | 任意の冪等キー（最大128）。同じキーとテキストで再送すると最初の `message_id` と `"idempotent": true` を返し、エージェントは再実行されません |
+
+```bash
+curl -s -X POST "$STOA_EVENTS_URL/api/mcp/events" \
+  -H "Authorization: Bearer $STOA_EVENTS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"room_id": 12, "text": "Meeting started: Weekly sync", "event_id": "meet-abc-start"}'
+# → {"message_id": 4821}
+```
+
+| ステータス | 条件 |
+|-----------|------|
+| 200 | `{"message_id": …}` |
+| 400 | 不正なボディ、不明なフィールド、またはこのルームのスレッドルートでない `thread_id` |
+| 401 | トークンがない、または不明 |
+| 403 | サーバーが無効、またはルームへのアクセス権がない |
+| 404 | ルームが見つからない |
+| 409 | `event_id` が別のテキストで使用済み、またはルームがメッセージを受け取れない |
+| 429 | このサーバーから1分間に30件を超えるイベント（`Retry-After` ヘッダー、ボディに `retry_after` 秒） |
+
+ルームへのアクセスはMCPページの設定に従います。そのルームへのallow、または **default access: all** でそのルームにdenyがない場合です。ルームではサーバー（MCPページでの名前）からのメッセージとして表示されます。エージェントには外部イベントとしてラベル付けされ、信頼できないデータとして区切られます。エージェントは応答・対応しますが、その中の指示には従いません。
+
 ---
 
 ## 例：curlでメッセージを送信
