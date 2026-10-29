@@ -15,7 +15,7 @@ const { validateScheduleSpec, computeNextRun, nextRunAfterSkip, describeSchedule
 const { createRoomSchedules, scheduleMcpTools } = require('./lib/room-schedules');
 const { createRoomMessages } = require('./lib/room-messages');
 const { createStoaMemory } = require('./lib/stoa-memory');
-const { AVATAR_MAX_BYTES, AVATAR_BODY_MAX, decodeAvatarDataUrl } = require('./lib/avatar-image');
+const { AVATAR_MAX_BYTES, AVATAR_BODY_MAX, checkAvatarImage, decodeAvatarDataUrl } = require('./lib/avatar-image');
 const { createSystemPrompts } = require('./lib/system-prompts');
 const { createSubAgents } = require('./lib/sub-agents');
 const { createSkills } = require('./lib/skills');
@@ -476,6 +476,19 @@ function saveAvatarFile(prefix, id, buffer, ext) {
   if (!fs.existsSync(avatarDir)) fs.mkdirSync(avatarDir);
   fs.writeFileSync(path.join(avatarDir, saved), buffer);
   return `/uploads/avatar/${saved}`;
+}
+
+// Actor avatar from image bytes: POST /api/actors/:id/avatar and stoa__agent_avatar_set. The old file
+// goes only after the new one is saved and recorded.
+function setActorAvatar(id, buffer) {
+  const actor = db.prepare('SELECT avatar_url FROM actors WHERE id=?').get(id);
+  if (!actor) return { status: 404, body: { error: 'actor not found' } };
+  const img = checkAvatarImage(buffer);
+  if (img.error) return { status: img.status, body: { error: img.error } };
+  const avatarUrl = saveAvatarFile('avatar', id, img.buffer, img.ext);
+  db.prepare('UPDATE actors SET avatar_url=? WHERE id=?').run(avatarUrl, id);
+  deleteAvatarFile(actor.avatar_url);
+  return { status: 200, body: { avatar_url: avatarUrl } };
 }
 
 // Body of an avatar upload → parsed JSON, or { status, error }. Over AVATAR_BODY_MAX the rest is read
@@ -1699,7 +1712,7 @@ const mcpGateway = createMcpGateway({
   db, upstreams: mcpUpstreams, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt, version: require('./package.json').version,
   builtinTools: [
     ...scheduleMcpTools(roomSchedules),
-    ...stoaMcpTools({ db, broadcast, messages: roomMessages, memory: stoaMemory, prompts: systemPrompts, subAgents, automations: automationCrud, readAgentImage, skills, syncAgentSkill }),
+    ...stoaMcpTools({ db, broadcast, messages: roomMessages, memory: stoaMemory, prompts: systemPrompts, subAgents, automations: automationCrud, readAgentImage, setActorAvatar, skills, syncAgentSkill }),
   ],
   approvalTimeoutMs: Math.min(APPROVAL_TIMEOUT_MAX_MS, Math.max(1000, parseInt(process.env.MCP_APPROVAL_TIMEOUT_MS, 10) || 5 * 60_000)),
   // Approval cards live in the room (and thread) the agent is working in; the MCP page's approval log
@@ -2236,16 +2249,13 @@ const server = http.createServer(async (req, res) => {
   const avatarUploadMatch = req.method === 'POST' && url.pathname.match(/^\/api\/actors\/(\d+)\/avatar$/);
   if (avatarUploadMatch) {
     const id = parseInt(avatarUploadMatch[1]);
-    const actor = db.prepare('SELECT avatar_url FROM actors WHERE id=?').get(id);
-    if (!actor) return json(res, { error: 'actor not found' }, 404);
+    if (!db.prepare('SELECT 1 FROM actors WHERE id=?').get(id)) return json(res, { error: 'actor not found' }, 404);
     const data = await readAvatarBody(req);
     if (data.error) return json(res, { error: data.error }, data.status);
     const img = decodeAvatarDataUrl(data.data_url);
     if (img.error) return json(res, { error: img.error }, img.status);
-    const avatarUrl = saveAvatarFile('avatar', id, img.buffer, img.ext);
-    db.prepare('UPDATE actors SET avatar_url=? WHERE id=?').run(avatarUrl, id);
-    deleteAvatarFile(actor.avatar_url);
-    return json(res, { avatar_url: avatarUrl });
+    const r = setActorAvatar(id, img.buffer);
+    return json(res, r.body, r.status);
   }
 
   // ── Actor avatar delete
@@ -2632,9 +2642,8 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'DELETE' && url.pathname.match(/^\/api\/rooms\/\d+\/sub-agents\/\d+$/)) {
     const parts = url.pathname.split('/');
     const roomId = parseInt(parts[3]);
-    const subAgentId = parseInt(parts[5]);
-    db.prepare('DELETE FROM room_sub_agents WHERE room_id=? AND sub_agent_id=?').run(roomId, subAgentId);
-    broadcast(roomId, { type: 'sub_agent_unlinked', room_id: roomId, sub_agent_id: subAgentId });
+    // Unlinking what is not linked stays a no-op here, as before; only stoa__sub_agent_unlink reports it.
+    subAgents.unlink(roomId, parseInt(parts[5]));
     return json(res, { ok: true });
   }
 
@@ -5402,7 +5411,7 @@ function addPendingFileOp(rid, op) {
   setTimeout(() => pendingFileOps.delete(rid), 15000);
 }
 
-// stoa__sub_agent_avatar_set: the image lives on the agent's machine, so its stoa.js reads it
+// stoa__agent_avatar_set / sub_agent_avatar_set / self_avatar_set: the image lives on the agent's machine, so its stoa.js reads it
 // (lib/avatar-image.js readAvatarFile). Only the agent that was asked may answer its request id.
 const AGENT_IMAGE_TIMEOUT_MS = 15000;
 const pendingAgentImages = new Map(); // request_id → { actorId, done }

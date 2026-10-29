@@ -18485,11 +18485,11 @@ async function run() {
     };
     const listNames = async (token) => (await listAll(token)).map(t => t.name).filter(n => !n.startsWith('stoa__')).sort();
     const BUILTINS = ['schedule_create', 'schedule_delete', 'schedule_doctor', 'schedule_list', 'schedule_update',
-      'agent_memory_get', 'agent_memory_set', 'agent_system_prompt_get', 'agent_system_prompt_set',
+      'agent_avatar_set', 'agent_memory_get', 'agent_memory_set', 'agent_system_prompt_get', 'agent_system_prompt_set',
       'automation_create', 'automation_delete', 'automation_list', 'automation_update', 'connection_list',
       'message_send', 'messages_read', 'room_memory_get', 'room_memory_set', 'room_system_prompt_get', 'room_system_prompt_set',
       'skill_create', 'skill_delete', 'skill_get', 'skill_list', 'skill_update', 'skill_use',
-      'sub_agent_avatar_set', 'sub_agent_create', 'sub_agent_delete', 'sub_agent_list', 'sub_agent_memory_get', 'sub_agent_memory_set', 'sub_agent_trigger', 'sub_agent_update',
+      'sub_agent_avatar_set', 'sub_agent_create', 'sub_agent_delete', 'sub_agent_link', 'sub_agent_list', 'sub_agent_memory_get', 'sub_agent_memory_set', 'sub_agent_trigger', 'sub_agent_unlink', 'sub_agent_update',
       'thread_read', 'threads_list'].map(n => `stoa__${n}`).sort();
     // Built-ins a sub-agent session sees: the config-changing ones are hidden from it (availableTo).
     const SUB_SESSION_TOOLS = ['automation_list', 'connection_list', 'message_send', 'messages_read', 'room_memory_get', 'room_system_prompt_get',
@@ -19488,7 +19488,7 @@ async function run() {
       for (const n of ['messages_read', 'thread_read', 'threads_list', 'room_memory_get', 'agent_memory_get', 'sub_agent_list', 'automation_list', 'connection_list']) {
         assert.strictEqual(main[`stoa__${n}`].annotations.readOnlyHint, true, n);
       }
-      for (const n of ['message_send', 'room_memory_set', 'sub_agent_create', 'automation_update']) {
+      for (const n of ['message_send', 'room_memory_set', 'sub_agent_create', 'sub_agent_link', 'sub_agent_unlink', 'automation_update']) {
         assert.deepStrictEqual([main[`stoa__${n}`].annotations.readOnlyHint, main[`stoa__${n}`].annotations.destructiveHint], [false, false], n);
       }
       const subTools = Object.fromEntries((await listAll(tokSub)).map(t => [t.name, t]));
@@ -19733,6 +19733,58 @@ async function run() {
         assert.deepStrictEqual([saUrl(), avatarFiles()], [url, files], 'refused calls change nothing');
       });
 
+      await test('MCP stoa tools — agent_avatar_set: own avatar only, file read by its own client, old file replaced, notice; non-image / too large refused; REST shares the helper', async () => {
+        const actorUrl = (id) => mDb.prepare('SELECT avatar_url FROM actors WHERE id=?').get(id).avatar_url;
+        const origA = actorUrl(agA.actorId), origB = actorUrl(agB.actorId);
+        const file = path.join(tmp, 'agent.png');
+        fs.writeFileSync(file, PNG);
+        try {
+          const since = maxMsgId();
+          const seen = answerOnce(agA, m => readAvatarFile(m.path));
+          // actor_id is not an input: the target is always the caller.
+          const first = await stoaOk(tokA, 'agent_avatar_set', { path: file, actor_id: agB.actorId });
+          assert.strictEqual((await seen).path, file, 'the path goes to the caller\'s own client');
+          assert.match(first.avatar_url, new RegExp(`^/uploads/avatar/avatar-${agA.actorId}-\\d+\\.png$`));
+          assert.strictEqual(actorUrl(agA.actorId), first.avatar_url);
+          assert.ok(fs.readFileSync(fileOf(first.avatar_url)).equals(PNG), 'exact bytes on disk');
+          assert.strictEqual(actorUrl(agB.actorId), origB, 'agent B untouched');
+          answerOnce(agA, () => ({ base64: GIF.toString('base64') }));
+          const second = await stoaOk(tokA, 'agent_avatar_set', { path: file });
+          assert.match(second.avatar_url, new RegExp(`^/uploads/avatar/avatar-${agA.actorId}-\\d+\\.gif$`), 'type from the bytes');
+          assert.ok(!fs.existsSync(fileOf(first.avatar_url)), 'previous avatar file removed');
+          assert.deepStrictEqual(configNotices(roomA, since), ['__test-mcp-a set their agent avatar · config', '__test-mcp-a set their agent avatar · config']);
+
+          const url = actorUrl(agA.actorId);
+          // A client that sends non-image or oversized bytes anyway is still refused by the server.
+          answerOnce(agA, () => ({ base64: Buffer.from('#!/bin/sh\nrm -rf /').toString('base64') }));
+          assert.strictEqual(await stoaErr(tokA, 'agent_avatar_set', { path: file }), 'unsupported image type (png, jpeg, webp or gif only)');
+          answerOnce(agA, () => ({ base64: Buffer.concat([PNG, Buffer.alloc(AVATAR_MAX_BYTES)]).toString('base64') }));
+          assert.match(await stoaErr(tokA, 'agent_avatar_set', { path: file }), /^image too large/);
+          answerOnce(agA, m => readAvatarFile(m.path));
+          assert.strictEqual(await stoaErr(tokA, 'agent_avatar_set', { path: path.join(tmp, 'nope.png') }), 'file not found');
+          assert.strictEqual(await stoaErr(tokA, 'agent_avatar_set', { path: '' }), 'path required');
+          let asked = false;
+          const spy = (raw) => { if (JSON.parse(raw.toString()).type === 'avatar_file_read') asked = true; };
+          agA.ws.on('message', spy);
+          try {
+            assert.match(await stoaErr(tokSub, 'agent_avatar_set', { path: file }), SUB_DENIED);
+          } finally { agA.ws.off('message', spy); }
+          assert.strictEqual(asked, false, 'no file read from a sub-agent session');
+          assert.strictEqual(actorUrl(agA.actorId), url, 'refused calls change nothing');
+          assert.ok(fs.existsSync(fileOf(url)), 'current file kept');
+
+          const rest = await req('POST', `/api/actors/${agA.actorId}/avatar`, { data_url: `data:image/png;base64,${PNG.toString('base64')}` });
+          assert.strictEqual(rest.status, 200, rest.raw);
+          assert.deepStrictEqual([actorUrl(agA.actorId), fs.existsSync(fileOf(url))], [rest.body.avatar_url, false], 'REST upload replaces the MCP-set file');
+          const bad = await req('POST', `/api/actors/${agA.actorId}/avatar`, { data_url: `data:image/png;base64,${Buffer.from('nope').toString('base64')}` });
+          assert.strictEqual(bad.status, 400);
+          assert.strictEqual((await req('POST', '/api/actors/999999999/avatar', { data_url: `data:image/png;base64,${PNG.toString('base64')}` })).status, 404);
+        } finally {
+          await req('DELETE', `/api/actors/${agA.actorId}/avatar`);
+          if (origA) mDb.prepare('UPDATE actors SET avatar_url=? WHERE id=?').run(origA, agA.actorId);
+        }
+      });
+
       await test('MCP stoa tools — sub-agent self-config: own prompt/description/role/avatar with notices; parent-owned fields 400, other sub-agent forbidden, parent tools unchanged', async () => {
         const PARENT_FIELDS = 'label, tier, model, harness, workdir, enabled, system_prompt, description, role, avatar_url';
         const rowOf = (id) => mDb.prepare(`SELECT ${PARENT_FIELDS} FROM sub_agents WHERE id=?`).get(id);
@@ -19892,6 +19944,83 @@ async function run() {
         assert.deepStrictEqual([...codeOf(link), link.body.room_id], [409, 'label_room_clash', roomA]);
       } finally {
         mDb.prepare('DELETE FROM actors WHERE id=?').run(actorRow);
+        await req('DELETE', `/api/sub-agents/${free.id}`);
+      }
+    });
+
+    await test('MCP stoa tools — sub_agent_link / sub_agent_unlink: own sub-agent into this or another room of the caller, notices; other parent 404, foreign room 403, label clash 409, unlink twice 404', async () => {
+      const linkedIn = async (roomId) => (await req('GET', `/api/rooms/${roomId}/sub-agents`)).body.linked.map(s => s.id);
+      const free = (await req('POST', `/api/actors/${agA.actorId}/sub-agents`, { label: 'linkfree' })).body;
+      // Same label as agent B's sub-agent already linked in room A (made in the create test).
+      const twin = (await req('POST', `/api/actors/${agA.actorId}/sub-agents`, { label: 'clashlbl' })).body;
+      const rc = await req('POST', '/api/rooms', { title: '__mcp-room-c__', workdir_id: agA.workdirId, participant_ids: [agA.actorId] });
+      assert.strictEqual(rc.status, 200, rc.raw);
+      const roomC = rc.body.id;
+      testRoomIds.push(roomC);
+      const roomless = handToken(agA.actorId, null);
+      try {
+        assert.ok(free.id && twin.id && !(await linkedIn(roomA)).includes(free.id), 'created unlinked');
+        const since = maxMsgId();
+        assert.deepStrictEqual(await stoaOk(tokA, 'sub_agent_link', { sub_agent_id: free.id }), { ok: true, room_id: roomA, sub_agent_id: free.id }, 'defaults to the session room');
+        assert.ok((await linkedIn(roomA)).includes(free.id), 'REST lists it as linked in room A');
+        assert.deepStrictEqual(await stoaOk(tokA, 'sub_agent_link', { sub_agent_id: free.id, target_room_id: roomC }), { ok: true, room_id: roomC, sub_agent_id: free.id });
+        assert.ok((await linkedIn(roomC)).includes(free.id), 'linked in room C too');
+
+        assert.strictEqual(await stoaErr(tokB, 'sub_agent_link', { sub_agent_id: free.id, target_room_id: roomB }), 'sub-agent not found', 'another parent\'s sub-agent');
+        assert.strictEqual(await stoaErr(tokA, 'sub_agent_link', { sub_agent_id: 999999999 }), 'sub-agent not found');
+        assert.strictEqual(await stoaErr(tokA, 'sub_agent_link', { sub_agent_id: free.id, target_room_id: roomB }), 'agent_scope_denied', 'a room the caller is not in');
+        assert.strictEqual(await stoaErr(tokA, 'sub_agent_link', { sub_agent_id: free.id, target_room_id: 999999999 }), 'agent_scope_denied', 'a missing room answers alike');
+        assert.ok(!(await linkedIn(roomB)).includes(free.id), 'not linked into room B');
+        const cl = await stoaCall(tokA, 'sub_agent_link', { sub_agent_id: twin.id });
+        assert.deepStrictEqual([cl.isError, cl.body.code, cl.body.room_id], [true, 'label_room_clash', roomA]);
+        assert.match(cl.body.error, /^label "clashlbl" already in this room/);
+        assert.ok(!(await linkedIn(roomA)).includes(twin.id), 'clash not linked');
+        assert.strictEqual(await stoaErr(tokA, 'sub_agent_link', {}), 'sub_agent_id required');
+        assert.strictEqual(await stoaErr(tokA, 'sub_agent_link', { sub_agent_id: free.id, target_room_id: 'x' }), 'target_room_id must be a positive integer');
+        assert.strictEqual(await stoaErr(roomless.raw, 'sub_agent_link', { sub_agent_id: free.id }), 'target_room_id required (this MCP session is not bound to a room)');
+        assert.match(await stoaErr(tokSub, 'sub_agent_link', { sub_agent_id: free.id }), SUB_DENIED);
+        assert.match(await stoaErr(tokSub, 'sub_agent_unlink', { sub_agent_id: sub.id }), SUB_DENIED);
+
+        assert.strictEqual(await stoaErr(tokB, 'sub_agent_unlink', { sub_agent_id: clash.id, target_room_id: roomA }), 'agent_scope_denied', 'own sub-agent, but a room the caller is not in');
+        assert.ok((await linkedIn(roomA)).includes(clash.id), 'still linked');
+        assert.strictEqual(await stoaErr(tokB, 'sub_agent_unlink', { sub_agent_id: free.id, target_room_id: roomB }), 'sub-agent not found');
+        assert.deepStrictEqual(await stoaOk(tokA, 'sub_agent_unlink', { sub_agent_id: free.id }), { ok: true, room_id: roomA, sub_agent_id: free.id });
+        assert.ok(!(await linkedIn(roomA)).includes(free.id), 'gone from room A');
+        assert.ok((await linkedIn(roomC)).includes(free.id), 'room C untouched');
+        assert.ok(mDb.prepare('SELECT 1 FROM sub_agents WHERE id=?').get(free.id), 'the sub-agent itself is kept');
+        assert.strictEqual(await stoaErr(tokA, 'sub_agent_unlink', { sub_agent_id: free.id }), 'sub-agent not linked to this room');
+        assert.deepStrictEqual(await stoaOk(roomless.raw, 'sub_agent_unlink', { sub_agent_id: free.id, target_room_id: roomC }), { ok: true, room_id: roomC, sub_agent_id: free.id });
+        // REST DELETE keeps answering ok for a pair that is not linked.
+        const again = await req('DELETE', `/api/rooms/${roomC}/sub-agents/${free.id}`);
+        assert.deepStrictEqual([again.status, again.body], [200, { ok: true }]);
+
+        assert.deepStrictEqual(configNotices(roomA, since), ['__test-mcp-a linked sub-agent linkfree to this room · config', '__test-mcp-a unlinked sub-agent linkfree from this room · config']);
+        assert.deepStrictEqual(configNotices(roomC, since), ['__test-mcp-a linked sub-agent linkfree to this room · config', '__test-mcp-a unlinked sub-agent linkfree from this room · config']);
+        assert.deepStrictEqual(configNotices(roomB, since), []);
+      } finally {
+        roomless.drop();
+        await req('DELETE', `/api/sub-agents/${free.id}`);
+        await req('DELETE', `/api/sub-agents/${twin.id}`);
+      }
+    });
+
+    await test('sub-agent unlink broadcast — sub_agent_unlinked only when a link was removed (REST and MCP share lib/sub-agents.js unlink)', async () => {
+      const free = (await req('POST', `/api/actors/${agA.actorId}/sub-agents`, { label: 'unlinkcast' })).body;
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: roomA }));
+        await waitForWsMessage(humanWs, m => m.type === 'history');
+        const seen = [];
+        humanWs.on('message', (raw) => { const m = JSON.parse(raw.toString()); if (m.type === 'sub_agent_unlinked' && m.sub_agent_id === free.id) seen.push(m); });
+        assert.strictEqual((await req('DELETE', `/api/rooms/${roomA}/sub-agents/${free.id}`)).status, 200);
+        await stoaOk(tokA, 'sub_agent_link', { sub_agent_id: free.id });
+        const cast = waitForWsMessage(humanWs, m => m.type === 'sub_agent_unlinked' && m.sub_agent_id === free.id, 5000);
+        await stoaOk(tokA, 'sub_agent_unlink', { sub_agent_id: free.id });
+        assert.deepStrictEqual(await cast, { type: 'sub_agent_unlinked', room_id: roomA, sub_agent_id: free.id });
+        await new Promise(r => setTimeout(r, 200));
+        assert.strictEqual(seen.length, 1, 'no broadcast for the REST no-op before the link');
+      } finally {
+        humanWs.close();
         await req('DELETE', `/api/sub-agents/${free.id}`);
       }
     });
