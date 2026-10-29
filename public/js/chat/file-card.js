@@ -7,7 +7,10 @@ const FILE_PREVIEW_KINDS = {
   csv: 'csv', tsv: 'tsv',
   txt: 'text', log: 'text', yaml: 'text', yml: 'text',
   json: 'json',
+  mp4: 'video', m4v: 'video', webm: 'video', mov: 'video',
+  mp3: 'audio', m4a: 'audio', aac: 'audio', wav: 'audio', ogg: 'audio', oga: 'audio', opus: 'audio', flac: 'audio',
 };
+const FILE_MEDIA_KINDS = new Set(['video', 'audio']);
 const FILE_PREVIEW_MAX_BYTES = 2 * 1024 * 1024;
 const FILE_PREVIEW_MAX_ROWS = 500;
 const FILE_SERVED_PREFIXES = ['/uploads/', '/connector-media/'];
@@ -26,7 +29,8 @@ const FILE_ICON_BY_EXT = {
   csv: 'table', tsv: 'table', xls: 'table', xlsx: 'table',
   json: 'code', yaml: 'code', yml: 'code', html: 'code', htm: 'code', js: 'code', ts: 'code', py: 'code', svg: 'code', xml: 'code',
   zip: 'archive', gz: 'archive', tgz: 'archive', tar: 'archive', rar: 'archive', '7z': 'archive',
-  mp4: 'media', mov: 'media', webm: 'media', mp3: 'media', ogg: 'media', wav: 'media', m4a: 'media',
+  mp4: 'media', m4v: 'media', mov: 'media', webm: 'media',
+  mp3: 'media', m4a: 'media', aac: 'media', wav: 'media', ogg: 'media', oga: 'media', opus: 'media', flac: 'media',
 };
 
 function fileIconSvg(ext, size) {
@@ -181,7 +185,7 @@ function filePreviewDialog() {
   dlg.addEventListener('keydown', e => { if (e.key === 'Escape') e.stopPropagation(); });
   dlg.addEventListener('close', () => {
     filePreviewToken++;
-    body.replaceChildren();
+    filePreviewClear(body);
   });
   document.body.appendChild(dlg);
   return dlg;
@@ -196,10 +200,17 @@ function openFilePreview(file) {
   dlg.querySelector('.fp-sub').textContent = file.ext ? file.ext.toUpperCase() : 'File';
   dlg.querySelector('.fp-actions').replaceChildren(fileDownloadLink(file.url, file.name, 'fp-btn'));
   dlg.classList.toggle('is-pdf', file.kind === 'pdf');
+  dlg.classList.toggle('is-video', file.kind === 'video');
+  dlg.classList.toggle('is-audio', file.kind === 'audio');
   const body = dlg.querySelector('.fp-body');
-  body.replaceChildren();
+  filePreviewClear(body);
   if (!dlg.open) dlg.showModal();
   dlg.querySelector('.fp-close').focus();
+
+  if (FILE_MEDIA_KINDS.has(file.kind)) {
+    body.appendChild(filePreviewMedia(file, token, body));
+    return;
+  }
 
   if (file.kind === 'pdf') {
     const frame = document.createElement('iframe');
@@ -221,6 +232,65 @@ function openFilePreview(file) {
       if (token !== filePreviewToken) return;
       body.replaceChildren(filePreviewError(err, file));
     });
+}
+
+// A detached element can keep buffering, so media is paused and its source released before it goes.
+function filePreviewClear(body) {
+  body.querySelectorAll('video, audio').forEach(m => {
+    m.pause();
+    m.removeAttribute('src');
+    m.load();
+  });
+  body.replaceChildren();
+}
+
+// Media streams straight from the file URL (the server answers Range requests), so the
+// text-preview size limit does not apply and nothing is fetched into memory here.
+function filePreviewMedia(file, token, body) {
+  const isVideo = file.kind === 'video';
+  const media = document.createElement(file.kind);
+  media.className = isVideo ? 'fp-video' : 'fp-audio';
+  media.controls = true;
+  media.preload = 'metadata';
+  if (isVideo) media.setAttribute('playsinline', '');
+  media.setAttribute('aria-label', file.name);
+
+  const stage = document.createElement('div');
+  stage.className = isVideo ? 'fp-stage' : 'fp-audio-wrap';
+  stage.appendChild(media);
+
+  media.addEventListener('error', () => {
+    if (token !== filePreviewToken) return;
+    const code = media.error?.code;
+    filePreviewClear(body);
+    if (code === 2) { body.appendChild(filePreviewError({ reason: 'network' }, file)); return; }
+    filePreviewProbe(file.url).then(err => {
+      if (token !== filePreviewToken) return;
+      body.replaceChildren(filePreviewError(err || { reason: 'unplayable' }, file));
+    });
+  });
+  // A container the browser opens but whose video codec it can't decode plays the sound over a blank frame.
+  if (isVideo) {
+    media.addEventListener('loadedmetadata', () => {
+      if (token !== filePreviewToken || media.videoWidth) return;
+      const note = filePreviewNote("This browser can't show the picture of this video, only its sound may play. Download it to watch in another app.");
+      note.classList.add('fp-media-note');
+      stage.after(note);
+    }, { once: true });
+  }
+  media.src = file.url.href;
+  return stage;
+}
+
+// The media error alone can't tell a missing file from an unsupported codec, so ask the server.
+async function filePreviewProbe(u) {
+  try {
+    const res = await fetch(u.href, { credentials: 'same-origin', headers: { Range: 'bytes=0-0' } });
+    res.body?.cancel().catch(() => {});
+    return res.ok || res.status === 416 ? null : { reason: 'http', status: res.status };
+  } catch {
+    return { reason: 'network' };
+  }
 }
 
 async function filePreviewFetchText(u) {
@@ -263,6 +333,8 @@ function filePreviewError(err, file) {
   if (err?.reason === 'large') {
     const [size, limit] = fileSizePair(err.size, FILE_PREVIEW_MAX_BYTES);
     msg = `This file is too large to preview (${size}, limit ${limit}). Download it to view.`;
+  } else if (err?.reason === 'unplayable') {
+    msg = `This browser can't play this ${file.kind === 'audio' ? 'audio' : 'video'} file. Download it to play in another app.`;
   } else if (err?.reason === 'http' && (err.status === 404 || err.status === 410)) {
     msg = 'This file is no longer available. It may have been removed by cleanup.';
   } else if (err?.reason === 'http') {
@@ -273,7 +345,7 @@ function filePreviewError(err, file) {
     msg = "Couldn't load the preview.";
   }
   box.appendChild(filePreviewNote(msg));
-  if (err?.reason === 'large') box.appendChild(fileDownloadLink(file.url, file.name, 'fp-btn'));
+  if (err?.reason === 'large' || err?.reason === 'unplayable') box.appendChild(fileDownloadLink(file.url, file.name, 'fp-btn'));
   return box;
 }
 
