@@ -1027,10 +1027,27 @@ Klik **New skill → Import file** (atau drag file ke halaman). Format yang didu
 | `.tar.gz` / `.tgz` / `.tar` | Aturan layout sama dengan `.zip` |
 | Folder (drag-drop atau **Import folder**) | File dikirim sebagai multipart dengan relative path |
 | URL GitHub | `https://github.com/<owner>/<repo>[/tree/<ref>/<path>]` — server mengunduh tarball publik; tidak perlu token. Ref yang mengandung `/` tidak didukung. |
+| Git repository | **New skill → Import from git repository** — masukkan URL repository (`https://` atau `ssh://`, contoh: `ssh://git@host:2222/owner/repo.git`), branch atau tag (opsional), dan subfolder (opsional). Server menggunakan SSH key-nya sendiri; kredensial dalam URL ditolak. Source disimpan untuk update di masa mendatang. |
 
 **Dialog preview** muncul setelah memilih input, menampilkan nama, deskripsi, daftar file, total ukuran, dan peringatan apa pun. Nama bisa di-override kalau ada konflik. Konfirmasi untuk menyimpan dan membuka editor.
 
 **Batasan:** 50 MB total, 20 MB per file, 300 file, `SKILL.md` maks 64 KB. Arsip dengan path absolut, traversal `..`, symlink, entry terenkripsi, atau path duplikat case-insensitive akan ditolak.
+
+### Melacak Update
+
+Skill yang diimpor dari git repository (atau GitHub) menyimpan tautan **Source**. Buka editor skill untuk melihat blok **Source**: URL, ref, subfolder, hash commit singkat, dan waktu pengecekan terakhir.
+
+| Tombol | Fungsi |
+|---|---|
+| **Check for updates** | Menghubungi repository. Jika ada commit terbaru, muncul badge **Update available** di blok Source dan di daftar skill. |
+| **Update** | Mengambil commit terbaru dan membuat revisi baru (catatan: `git update <sha7>`). Jika tidak ada perubahan, muncul toast *"already matches the repository"*. |
+| **Detach** | Menghapus tautan source. Skill dan semua historinya tetap utuh. |
+
+**Edit lokal:** Jika skill diedit di Stoa setelah impor terakhir, blok Source menampilkan *"Edited since the last import"*, dan **Update** meminta konfirmasi sebelum menimpa. Edit sebelumnya tetap tersimpan di History. Selama editor memiliki perubahan yang belum disimpan, tombol **Update** dinonaktifkan — simpan atau buang perubahan terlebih dahulu.
+
+**Impor GitHub:** Skill yang diimpor melalui URL GitHub juga menyimpan source-nya. **Check for updates** pertama akan menampilkan "Update available" (commit tidak tersimpan saat impor awal); **Update** pertama mencatatnya tanpa mengganti konten jika sudah cocok.
+
+**Hanya pemilik:** Agent tidak dapat mengimpor dari git, memeriksa update, memperbarui, atau memutus tautan source (403).
 
 ### Memanggil Skill
 

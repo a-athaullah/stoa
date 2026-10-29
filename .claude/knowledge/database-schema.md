@@ -173,6 +173,7 @@ Skills library (migrations/20261027-skills-library.sql; replaced `agent_skills`,
 - `skills` — one row per skill: `name` (slug `^[a-z][a-z0-9-]{1,47}$`, UNIQUE), `description`, `argument_hint`, `enabled`, `current_revision_id`, `created_by_actor_id` / `created_by_sub_agent_id` (NULL = owner; ON DELETE SET NULL).
 - `skill_revisions` — every edit is a new `version` (UNIQUE per skill); `body` = full SKILL.md, `manifest_hash` = sha256 of the sorted file list (agent cache key), `source_url` for GitHub imports. Newest 20 kept.
 - `skill_files` — `(revision_id, path)` → `sha256`, `size`, `mode` (420/493). SKILL.md is a row too. Content lives in content-addressed blobs `data/skill-blobs/<aa>/<sha256>` (`STOA_SKILL_BLOBS_DIR`), never served statically; GC in `gcTick`.
+- `skill_sources` (migration `20261029-skill-sources.sql`) — one row per skill that has a git source. `skill_id` PK FK → `skills(id)` ON DELETE CASCADE. Columns: `kind TEXT CHECK(kind IN ('git'))`, `url`, `ref`, `subdir`, `commit_sha` (SHA of the content in the current revision), `synced_revision_id` (integer, no FK — identifies the revision a git import/update wrote; if `skills.current_revision_id` differs, `local_changes` is true), `checked_commit` (SHA seen at last `ls-remote`), `checked_at`, `created_at`, `updated_at`. URL never carries credentials.
 - `messages.skill_refs` (migration only) — JSON `[{id, name, version}]` on the agent run message that used the skills.
 
 ---

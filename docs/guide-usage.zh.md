@@ -1022,10 +1022,27 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 | `.tar.gz` / `.tgz` / `.tar` | 与 `.zip` 相同的布局规则 |
 | 文件夹（拖放或 **Import folder**） | 以相对路径作为多部分数据发送 |
 | GitHub URL | `https://github.com/<owner>/<repo>[/tree/<ref>/<path>]` — 服务器获取公开 tarball，无需令牌（仅公开仓库）。包含 `/` 的 ref 不受支持。 |
+| Git 仓库 | **New skill → Import from git repository** — 输入仓库 URL（`https://` 或 `ssh://`，例如 `ssh://git@host:2222/owner/repo.git`）、可选的分支或标签以及可选的子文件夹。服务器使用自己的 SSH 密钥；URL 中不得包含凭据。来源将被记录以便后续更新。 |
 
 选择输入后会出现**预览对话框**，显示检测到的名称、描述、文件列表、总大小和任何警告。如有冲突可覆盖名称。确认后保存并打开编辑器。
 
 **限制：** 总计 50 MB，每个文件 20 MB，300 个文件，`SKILL.md` 最大 64 KB。包含绝对路径、`..` 路径穿越、符号链接、加密条目或大小写不敏感重复路径的压缩包将被拒绝。
+
+### 跟踪更新
+
+从 git 仓库（或 GitHub）导入的技能会保留 **Source** 链接。打开技能编辑器可查看 **Source** 块：URL、ref、子文件夹、短提交哈希和最后检查时间。
+
+| 按钮 | 功能 |
+|---|---|
+| **Check for updates** | 连接到仓库。若有新提交，Source 块和技能列表中会出现 **Update available** 标记。 |
+| **Update** | 拉取最新提交并创建新版本（备注：`git update <sha7>`）。若无变化，弹出 *"already matches the repository"* 提示。 |
+| **Detach** | 移除 Source 链接。技能及其所有历史记录保持完整。 |
+
+**本地编辑：** 若技能在上次导入后在 Stoa 中被编辑过，Source 块会显示 *"Edited since the last import"*，**Update** 在覆盖前会要求确认。之前的编辑保存在 History 中。编辑器中有未保存的更改时，**Update** 将被禁用 — 请先保存或放弃更改。
+
+**GitHub 导入：** 通过 GitHub URL 导入的技能也会记录其来源。首次 **Check for updates** 会显示"Update available"（初始导入未记录提交）；首次 **Update** 会记录提交，若内容已匹配则不会替换。
+
+**仅限所有者：** 代理无法从 git 导入、检查更新、更新或分离来源（403）。
 
 ### 调用技能
 

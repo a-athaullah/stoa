@@ -1026,10 +1026,27 @@ Click **New skill → Import file** (or drag a file onto the page). Supported fo
 | `.tar.gz` / `.tgz` / `.tar` | Same layout rules as `.zip` |
 | Folder (drag-drop or **Import folder**) | Files sent as multipart with relative paths |
 | GitHub URL | `https://github.com/<owner>/<repo>[/tree/<ref>/<path>]` — server fetches the public tarball; no token needed. Refs containing `/` are not supported. |
+| Git repository | **New skill → Import from git repository** — enter the repository URL (`https://` or `ssh://`, e.g. `ssh://git@host:2222/owner/repo.git`), an optional branch or tag, and an optional subfolder. The server uses its own SSH key; credentials in the URL are rejected. The source is remembered for future updates. |
 
 A **preview dialog** appears after selecting any input, showing the detected name, description, file list, total size, and any warnings (files ignored, exec bits, etc.). You can override the name here if it conflicts with an existing skill. Confirm to save and open the editor.
 
 **Limits:** 50 MB total, 20 MB per file, 300 files, `SKILL.md` ≤ 64 KB. Archives with absolute paths, `..` traversal, symlinks, encrypted entries, or case-insensitive duplicate paths are rejected.
+
+### Tracking Updates
+
+Skills imported from a git repository (or GitHub) retain a **Source** link. Open the skill editor to see the **Source** block: URL, ref, subfolder, short commit hash, and last-check time.
+
+| Button | What it does |
+|---|---|
+| **Check for updates** | Contacts the repository. If a newer commit exists, shows *"Update available"* and adds an **Update available** badge in the skill list. |
+| **Update** | Pulls the latest commit and creates a new revision (note: `git update <sha7>`). If nothing changed, a toast says *"already matches the repository"*. |
+| **Detach** | Removes the source link. The skill and all its history stay intact. |
+
+**Local edits:** If the skill was edited in Stoa after the last import, the Source block shows *"Edited since the last import"*, and **Update** asks for confirmation before overwriting. Earlier edits remain in History. While the editor has unsaved changes, **Update** is disabled — save or discard first.
+
+**GitHub imports:** Skills imported via a GitHub URL also record their source. The first **Check for updates** shows "Update available" (the initial import doesn't store the commit); the first **Update** records it without replacing content if it already matches.
+
+**Owner only:** Agents cannot import from git, check for updates, update, or detach a source (403).
 
 ### Invoking a Skill
 
