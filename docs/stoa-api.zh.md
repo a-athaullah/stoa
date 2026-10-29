@@ -304,6 +304,48 @@ curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
 - 在**子代理会话**中，仅 `message_send`、读取工具 (`messages_read`, `threads_list`, `thread_read`, `room_memory_get`, `room_system_prompt_get`, `automation_list`, `connection_list`)、自身记忆 (`sub_agent_memory_get` / `_set`) 以及自身配置 (`self_get`, `self_update`, `self_avatar_set`) 可用。`sub_agent_list` 及其他修改配置的工具会被隐藏并拒绝，因此子代理无法读取兄弟子代理的系统提示。
 - 房间系统提示、代理系统提示及子代理的创建/更新/删除会在房间中发布以 `· config` 结尾的永久通知。自动化变更与 REST 相同，在目标房间发布 `· automation` 通知。
 
+## MCP 服务器事件（面向 MCP 服务器作者）
+
+由 Stoa 运行的 MCP 服务器（stdio 传输，在 MCP 页面安装）可以向房间发布消息，例如会议字幕或监控告警。该消息会像其他消息一样唤醒房间的代理：没有 @提及时发给房间的主代理，有 @提及时发给被提及的代理。不会为该服务器创建代理或 actor。
+
+Stoa 在启动服务器进程时设置两个环境变量。服务器自身的 env 不能设置或覆盖它们。
+
+| 变量 | 值 |
+|------|----|
+| `STOA_EVENTS_URL` | Stoa 服务器的本地基础 URL，例如 `http://127.0.0.1:3001` |
+| `STOA_EVENTS_TOKEN` | 仅属于该服务器的 Bearer 令牌。重启后保持不变，删除服务器后失效 |
+
+远程（http）MCP 服务器不会获得这些变量。
+
+**`POST /api/mcp/events`**：仅通过 `Authorization: Bearer $STOA_EVENTS_TOKEN` 认证。登录会话、代理密钥或代理的 MCP 会话令牌都会被拒绝。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `room_id` | integer | 必填 |
+| `thread_id` | integer | 可选。同一房间的线程根消息；省略则发布到主动态，事件会开启自己的线程 |
+| `text` | string | 必填，1-8000 个字符。以 `@代理名` 开头可指定某个代理 |
+| `event_id` | string | 可选幂等键（最长 128）。使用相同键和文本重试时返回首次的 `message_id` 并带 `"idempotent": true`，不会再次运行代理 |
+
+```bash
+curl -s -X POST "$STOA_EVENTS_URL/api/mcp/events" \
+  -H "Authorization: Bearer $STOA_EVENTS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"room_id": 12, "text": "Meeting started: Weekly sync", "event_id": "meet-abc-start"}'
+# → {"message_id": 4821}
+```
+
+| 状态 | 情况 |
+|------|------|
+| 200 | `{"message_id": …}` |
+| 400 | 请求体无效、字段未知，或 `thread_id` 不是本房间的线程根 |
+| 401 | 缺少令牌或令牌未知 |
+| 403 | 服务器已停用，或无权访问该房间 |
+| 404 | 房间不存在 |
+| 409 | `event_id` 已用于不同文本，或房间无法接收消息 |
+| 429 | 该服务器每分钟超过 30 个事件（`Retry-After` 头，响应体中 `retry_after` 秒） |
+
+房间访问遵循 MCP 页面的设置：该房间有 allow 授权，或 **default access: all** 且该房间没有 deny。房间中该消息显示为来自该服务器（其在 MCP 页面的名称）。代理看到的是标记为外部事件、并作为不可信数据隔开的内容：代理可以回应或据此行动，但不会执行其中的指令。文本中的 `/skill-name` 仅是普通文本，不会加载任何技能。
+
 ---
 
 ## 示例：通过 curl 发送消息

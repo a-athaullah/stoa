@@ -341,6 +341,48 @@ Scope rules are the same as the REST [Agent Scope](#agent-scope):
 - In a **sub-agent session**, only `message_send`, the read tools (`messages_read`, `threads_list`, `thread_read`, `room_memory_get`, `room_system_prompt_get`, `automation_list`, `connection_list`), the sub-agent's own memory (`sub_agent_memory_get` / `_set`), and its own configuration (`self_get`, `self_update`, `self_avatar_set`) are available. `sub_agent_list` and the other tools that change configuration are hidden and refused, so a sub-agent cannot read its siblings' system prompts.
 - Room system prompt, agent system prompt, and sub-agent create/update/delete post a permanent notice ending in `· config` in your room. Automation changes post their `· automation` notice in the target room, as on REST.
 
+## MCP Server Events (for MCP server authors)
+
+An MCP server that Stoa runs (stdio transport, installed on the MCP page) can post a message into a room, for example a meeting caption or a monitor alert. The message wakes the room's agents like any other message: without an @mention it goes to the room's primary agent, with an @mention to the agent mentioned. No agent or actor is created for the server.
+
+Stoa sets two environment variables when it starts the server process. A server's own env cannot set or override them.
+
+| Variable | Value |
+|----------|-------|
+| `STOA_EVENTS_URL` | Local base URL of the Stoa server, e.g. `http://127.0.0.1:3001` |
+| `STOA_EVENTS_TOKEN` | Bearer token for this server only. It stays the same across restarts and stops working when the server is deleted |
+
+Remote (http) MCP servers do not get these variables.
+
+**`POST /api/mcp/events`**: authenticated only by `Authorization: Bearer $STOA_EVENTS_TOKEN`. A login session, an agent secret, or an agent's MCP session token is refused.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `room_id` | integer | Required |
+| `thread_id` | integer | Optional. Thread root in the same room; omit it to post in the main feed, where the event opens its own thread |
+| `text` | string | Required, 1-8000 characters. Start with `@AgentName` to address one agent |
+| `event_id` | string | Optional idempotency key (max 128). A retry with the same key and text returns the first `message_id` with `"idempotent": true` and does not run the agents again |
+
+```bash
+curl -s -X POST "$STOA_EVENTS_URL/api/mcp/events" \
+  -H "Authorization: Bearer $STOA_EVENTS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"room_id": 12, "text": "Meeting started: Weekly sync", "event_id": "meet-abc-start"}'
+# → {"message_id": 4821}
+```
+
+| Status | When |
+|--------|------|
+| 200 | `{"message_id": …}` |
+| 400 | Invalid body, unknown field, or `thread_id` that is not a thread root of this room |
+| 401 | Missing or unknown token |
+| 403 | The server is disabled, or it has no access to the room |
+| 404 | Room not found |
+| 409 | `event_id` already used with different text, or the room cannot receive messages |
+| 429 | More than 30 events per minute from this server (`Retry-After` header, `retry_after` seconds in the body) |
+
+Room access follows the MCP page: an allow grant for the room, or **default access: all** without a deny for that room. The room shows the message as coming from the server (its name on the MCP page). Agents see it labelled as an external event and fenced as untrusted data: they answer or act on it, but do not follow instructions inside it. A `/skill-name` in the text stays literal text and never loads a skill.
+
 ---
 
 ## Example: Send a Message via curl
