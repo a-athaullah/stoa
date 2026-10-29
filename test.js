@@ -21181,6 +21181,32 @@ async function run() {
       for (const p of ['../x', '/etc', 'a/../b', 'a/./b', 'a\\b', 7]) assert.throws(() => G.checkSubdir(p), (e) => e.code === 'invalid_path', JSON.stringify(p));
     });
 
+    await test('skill-git gitError — ssh stderr classified on all lines, not the closing paragraph', async () => {
+      const closing = 'fatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\n';
+      const cases = [
+        ['Forgejo: Cannot find repository: aan/no-such-repo\n' + closing, 'git_repo_not_found', 404, 'Repository not found (or no access to it)'],
+        ['ERROR: Repository not found.\n' + closing, 'git_repo_not_found', 404, 'Repository not found (or no access to it)'],
+        ['fatal: \'x.git\' does not appear to be a git repository\n' + closing, 'git_repo_not_found', 404, 'Repository not found (or no access to it)'],
+        [closing, 'git_repo_not_found', 404, 'Repository not found (or no access to it)'],
+        ['git@gitlab.example.com: Permission denied (publickey).\n' + closing, 'git_auth_failed', 502, /^Access denied by the git host/],
+        ['Host key verification failed.\n' + closing, 'git_auth_failed', 502, /SSH key yet/],
+        ['ssh: Could not resolve hostname nohost.invalid: nodename nor servname provided, or not known\n' + closing,
+          'git_unreachable', 502, 'Cannot reach the git host: ssh: Could not resolve hostname nohost.invalid: nodename nor servname provided, or not known'],
+        ['warning: something odd\nfatal: unable to access \'https://***@h/x.git/\': SSL certificate problem\nPlease make sure you\n',
+          'git_failed', 502, 'git failed: unable to access \'https://***@h/x.git/\': SSL certificate problem'],
+      ];
+      for (const [stderr, code, status, message] of cases) {
+        const e = G.gitError(stderr);
+        assert.deepStrictEqual([e.code, e.status], [code, status], stderr);
+        if (message instanceof RegExp) assert.match(e.message, message, stderr);
+        else assert.strictEqual(e.message, message, stderr);
+      }
+      const leaked = G.gitError('fatal: unable to access \'https://user:s3cret@h/x.git/\': The requested URL returned error: 500\n');
+      assert.strictEqual(leaked.code, 'git_failed');
+      assert.ok(!leaked.message.includes('s3cret') && leaked.message.includes('https://***@h/x.git/'), leaked.message);
+      assert.strictEqual(G.gitError('').message, 'git failed');
+    });
+
     await test('createSkills git source — import, check, update, unchanged update, local changes, detach; agents refused', async () => {
       const d = memDb();
       const dir = tmpDir('stoa-test-skills-');
