@@ -13612,6 +13612,30 @@ async function run() {
     assert.deepStrictEqual([...ctx.fileSizePair(26.3 * 1048576, limit)], ['26.3 MB', '2 MB'], 'large files switch both to MB');
   });
 
+  await test('file preview — audio/video kinds come from the served on-disk extension; media icon for every media ext', () => {
+    const vm = require('vm');
+    const ctx = { URL, location: { origin: 'https://stoa.test' } };
+    vm.runInNewContext(require('fs').readFileSync(path.join(__dirname, 'public/js/chat/file-card.js'), 'utf8'), ctx);
+    const kindOf = raw => ctx.filePreviewKind(ctx.fileResolveUrl(raw));
+    const video = ['/uploads/a.mp4', '/uploads/b.MOV', '/uploads/c.webm', '/uploads/d.m4v', '/connector-media/1/2026-10-29/e.mp4', 'https://stoa.test/uploads/f.Mp4?exp=1&sig=x'];
+    const audio = ['/uploads/a.mp3', '/uploads/b.opus', '/uploads/c.flac', '/uploads/d.m4a', '/uploads/e.oga', '/uploads/f.ogg', '/uploads/g.wav', '/uploads/h.AAC', '/connector-media/1/x/voice.ogg'];
+    for (const u of video) assert.strictEqual(kindOf(u), 'video', u);
+    for (const u of audio) assert.strictEqual(kindOf(u), 'audio', u);
+    for (const u of ['https://evil.test/uploads/a.mp4', '/static/a.mp4', '/api/files/a.mp3', 'javascript:alert(1)//a.mp4', '/uploads/a.html', '/uploads/a.svg', '/uploads/a.mkv', '/uploads/mp4', ''])
+      assert.strictEqual(kindOf(u), null, u);
+
+    const disguised = ctx.fileResolveUrl('/uploads/x.html');
+    assert.strictEqual(ctx.fileCardExt(disguised, 'holiday.mp4'), 'html', 'served file: label follows the on-disk ext, not the display name');
+    assert.strictEqual(ctx.filePreviewKind(disguised), null, 'no player for an .html stored file named like a video');
+    assert.strictEqual(ctx.filePreviewKind(ctx.fileResolveUrl('/uploads/x.mp3')), 'audio', 'and a real mp3 stays audio whatever it is called');
+
+    const mediaIcon = ctx.fileIconSvg('mp4', 16);
+    assert.ok(mediaIcon.includes('<polygon'), 'media icon is the play glyph');
+    for (const ext of ['mp4', 'm4v', 'mov', 'webm', 'mp3', 'm4a', 'aac', 'wav', 'ogg', 'oga', 'opus', 'flac'])
+      assert.strictEqual(ctx.fileIconSvg(ext, 16), mediaIcon, ext);
+    for (const ext of ['html', 'pdf', 'mkv']) assert.ok(!ctx.fileIconSvg(ext, 16).includes('<polygon'), ext);
+  });
+
   await test('tool steps — stored per message for its own running agent only, capped, summary matches the chat trail', () => {
     const Database = require('better-sqlite3');
     const vm = require('vm');
