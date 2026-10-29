@@ -1046,7 +1046,7 @@ Skills imported from a git repository (or GitHub) retain a **Source** link. Open
 
 **GitHub imports:** Skills imported via a GitHub URL also record their source. The first **Check for updates** shows "Update available" (the initial import doesn't store the commit); the first **Update** records it without replacing content if it already matches.
 
-**Owner only:** Agents cannot import from git, check for updates, update, or detach a source (403).
+**Via MCP:** Agents can import from git using `stoa__skill_import_git` — the imported skill belongs to the calling agent. Any agent can call `stoa__skill_source_check` on any visible skill (enabled or one it created). `stoa__skill_source_update` and `stoa__skill_source_detach` follow the same ownership rule as `stoa__skill_update` and `stoa__skill_delete`: only the creator (a parent agent includes skills created by its sub-agents). Skills you imported via the UI stay yours — agents that did not create them receive a not-found error.
 
 ### Invoking a Skill
 
@@ -1058,7 +1058,7 @@ The skill content is prepended to the agent's prompt; support files are cached o
 
 ### Agent-Created Skills
 
-Agents and sub-agents can create and manage skills using six built-in MCP tools:
+Agents and sub-agents can create and manage skills using ten built-in MCP tools:
 
 | Tool | Who can call | What it does |
 |---|---|---|
@@ -1068,6 +1068,10 @@ Agents and sub-agents can create and manage skills using six built-in MCP tools:
 | `stoa__skill_create` | agent / sub-agent | Creates a new skill. `files` accepts `{path, content}` or `{path, content_base64}`. Total payload ≤ 5 MB via MCP; larger bundles use `POST /api/skills/import`. |
 | `stoa__skill_update` | creator only | Creates a new revision. Can update description, argument hint, body, upsert or delete support files, and add a revision note. Cannot rename or toggle enabled. |
 | `stoa__skill_delete` | creator only | Deletes the skill permanently. |
+| `stoa__skill_import_git` | agent / sub-agent | Imports a skill from a git repository (`https://` or `ssh://`). Optional: `ref` (branch or tag), `path` (subfolder containing `SKILL.md`), `name` and `description` overrides, `dry_run: true` to preview without saving. Uses the server's SSH key. The skill belongs to the calling agent. |
+| `stoa__skill_source_check` | all agents | Checks whether the skill's git repository has a newer commit. Works on any visible skill (enabled or created by the caller). |
+| `stoa__skill_source_update` | creator only | Pulls the latest commit and creates a new revision. Returns `updated: false` if already current; `local_changes: true` if Stoa edits were replaced (they stay in History). |
+| `stoa__skill_source_detach` | creator only | Removes the git source link. The skill and its history stay intact. |
 
 **No approval prompt** — these tools behave like all other `stoa__*` built-ins and never trigger an approval dialog.
 

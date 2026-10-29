@@ -1042,7 +1042,7 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 
 **GitHub 导入：** 通过 GitHub URL 导入的技能也会记录其来源。首次 **Check for updates** 会显示"Update available"（初始导入未记录提交）；首次 **Update** 会记录提交，若内容已匹配则不会替换。
 
-**仅限所有者：** 代理无法从 git 导入、检查更新、更新或分离来源（403）。
+**通过 MCP：** 代理可以使用 `stoa__skill_import_git` 从 git 导入技能 — 导入的技能归调用代理所有。`stoa__skill_source_check` 可由所有代理对任何可见技能（已启用或自己创建的）调用。`stoa__skill_source_update` 和 `stoa__skill_source_detach` 遵循与 `stoa__skill_update` 和 `stoa__skill_delete` 相同的所有权规则：仅限创建者（父代理包含其子代理创建的技能）。通过 UI 导入的技能仍归您所有 — 非创建者的代理会收到 not-found 错误。
 
 ### 调用技能
 
@@ -1054,7 +1054,7 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 
 ### 代理创建的技能
 
-代理和子代理可以使用六个内置 MCP 工具来创建和管理技能。
+代理和子代理可以使用十个内置 MCP 工具来创建和管理技能。
 
 | 工具 | 可调用者 | 功能 |
 |---|---|---|
@@ -1064,6 +1064,10 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 | `stoa__skill_create` | 代理 / 子代理 | 创建新技能。`files` 接受 `{path, content}` 或 `{path, content_base64}`。MCP 方式总大小 ≤ 5 MB；更大的包请使用 `POST /api/skills/import`。 |
 | `stoa__skill_update` | 仅创建者 | 创建新版本。可更新描述、参数提示、正文、添加/删除支持文件及版本备注。不能重命名或切换启用状态。 |
 | `stoa__skill_delete` | 仅创建者 | 永久删除技能。 |
+| `stoa__skill_import_git` | 代理 / 子代理 | 从 git 仓库（`https://` 或 `ssh://`）导入技能。可选：`ref`（分支或标签）、`path`（包含 `SKILL.md` 的子目录）、`name` 和 `description` 覆盖、`dry_run: true` 可预览而不保存。使用服务器 SSH 密钥。技能归调用代理所有。 |
+| `stoa__skill_source_check` | 所有代理 | 检查技能的 git 仓库是否有新提交。对任何可见技能（已启用或调用者创建的）有效。 |
+| `stoa__skill_source_update` | 仅创建者 | 拉取最新提交并创建新版本。已是最新则返回 `updated: false`；Stoa 中的编辑被替换时返回 `local_changes: true`（保留在历史记录中）。 |
+| `stoa__skill_source_detach` | 仅创建者 | 移除 git 来源链接。技能及其历史记录保持完整。 |
 
 **无需审批** — 这些工具与其他 `stoa__*` 内置工具一样，不会弹出审批对话框。
 
