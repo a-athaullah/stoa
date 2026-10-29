@@ -14419,6 +14419,63 @@ async function run() {
     assert.strictEqual(calls.length, 1, 'a known count or a non-running status never refetches');
   });
 
+  await test('mcp approval card — allow_always false hides Always and shows pretty args, a missing field keeps Always, a 400 on Always keeps the card pending without the button', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El {
+      constructor(tag) { this.tagName = tag.toUpperCase(); this.dataset = {}; this.children = []; this.parentNode = null; this._text = ''; this.attrs = {}; this.on = {}; this.disabled = false; this.focused = false;
+        const cls = new Set(); this.cls = cls; this.classList = { add: (...c) => c.forEach(x => cls.add(x)), remove: (...c) => c.forEach(x => cls.delete(x)), toggle: (c, on) => (on ?? !cls.has(c)) ? cls.add(c) : cls.delete(c), contains: c => cls.has(c) }; }
+      set className(v) { String(v).split(/\s+/).filter(Boolean).forEach(c => this.classList.add(c)); }
+      appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
+      append(...cs) { cs.forEach(c => this.appendChild(c)); }
+      remove() { const p = this.parentNode; if (p) p.children.splice(p.children.indexOf(this), 1); this.parentNode = null; }
+      focus() { this.focused = true; }
+      set textContent(v) { this.children = []; this._text = String(v); }
+      get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+      setAttribute(k, v) { this.attrs[k] = String(v); }
+      addEventListener(t, f) { (this.on[t] ||= []).push(f); }
+      all(pred, out = []) { this.children.forEach(c => { if (pred(c)) out.push(c); c.all(pred, out); }); return out; }
+      match(sel) { return sel.startsWith('.') ? this.cls.has(sel.slice(1)) : this.tagName === sel.toUpperCase(); }
+      querySelectorAll(sel) { return this.all(n => n.match(sel)); }
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
+    }
+    const toasts = [];
+    const calls = [];
+    const ctx = { document: { createElement: t => new El(t), createTextNode: t => Object.assign(new El('#text'), { textContent: t }), getElementById: () => null, querySelectorAll: () => [] },
+      showToast: (m, o) => toasts.push({ m, error: !!o?.error }), console };
+    vm.createContext(ctx);
+    for (const f of ['state.js', 'approvals.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/mcp', f), 'utf8'), ctx);
+    vm.runInContext('mcpApi = async (method, url, body) => { __calls.push({ method, url, body }); return { ok: false, status: 400, error: "always is not available for this tool", data: { error: "always is not available for this tool" } }; };',
+      Object.assign(ctx, { __calls: calls }));
+    const make = vm.runInContext('mcpMakeApprovalCard', ctx);
+    const labels = card => card.querySelectorAll('button').map(b => b.textContent);
+    const base = { room_id: 1, thread_id: null, actor_name: 'Atlas', status: 'pending', expires_at: '2099-01-01 00:00:00' };
+
+    const builtin = make({ ...base, id: 1, server_slug: 'stoa', tool: 'mcp_server_add', allow_always: false,
+      args_preview: JSON.stringify({ slug: 'notes', command: 'npx', args: ['-y', 'notes-mcp'], env: { NOTES_TOKEN: '***' } }) });
+    assert.deepStrictEqual(labels(builtin), ['approve', 'deny'], 'a built-in approval offers no Always');
+    assert.strictEqual(builtin.querySelectorAll('.mcp-appr-note').length, 1, 'the card says every call needs its own approval');
+    const pre = builtin.querySelector('.mcp-args-preview').textContent;
+    assert.ok(pre.includes('\n  "command": "npx"') && pre.includes('"NOTES_TOKEN": "***"'), 'arguments are pretty-printed with the masked env value');
+    assert.ok(builtin.textContent.includes('stoa__mcp_server_add'));
+
+    const legacy = make({ ...base, id: 2, server_slug: 'github', tool: 'create_issue', args_preview: '{"title":"bug"}…' });
+    assert.deepStrictEqual(labels(legacy), ['approve', 'always allow', 'deny'], 'a row without allow_always keeps Always');
+    assert.strictEqual(legacy.querySelectorAll('.mcp-appr-note').length, 0);
+    assert.strictEqual(legacy.querySelector('.mcp-args-preview').textContent, '{"title":"bug"}…', 'a cut preview that is not JSON shows as sent');
+
+    const a = { ...base, id: 3, server_slug: 'linear', tool: 'list_issues', allow_always: true, args_preview: '{}' };
+    const card = make(a);
+    await Promise.all(card.querySelector('.mcp-appr-always').on.click.map(f => f()));
+    assert.deepStrictEqual(calls.map(c => [c.method, c.url, c.body.decision]), [['POST', '/api/mcp/approvals/3', 'always']]);
+    assert.deepStrictEqual(labels(card), ['approve', 'deny'], 'the refused Always button is gone');
+    assert.ok(card.querySelectorAll('button').every(b => !b.disabled), 'approve and deny stay usable');
+    assert.ok(card.querySelector('.mcp-appr-approve').focused, 'focus moves to approve');
+    assert.strictEqual(a.status, 'pending', 'the request stays pending');
+    assert.strictEqual(a.allow_always, false, 'a later redraw keeps Always hidden');
+    assert.deepStrictEqual(toasts, [{ m: 'Always allow isn’t available for linear__list_issues: approve or deny this call', error: true }]);
+  });
+
   await test('room agents popover — an actor removed elsewhere leaves the open popover (participants + add list), stale loads never win', async () => {
     const vm = require('vm');
     const fs = require('fs');

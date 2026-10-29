@@ -340,6 +340,7 @@
 .mcp-appr-title { font-size: 14.5px; line-height: 1.45; color: var(--h-ink-mute); overflow-wrap: anywhere; }
 .mcp-appr-who { color: var(--h-ink); font-weight: 500; }
 .mcp-appr-tool { font-size: 13px; color: var(--h-ink); }
+.mcp-appr-note { font-size: 12.5px; color: var(--h-ink-mute); }
 .mcp-appr-args summary { cursor: pointer; font-size: 12px; color: var(--h-ink-mute); margin-bottom: 6px; width: fit-content; }
 .mcp-appr-args summary:focus-visible { outline: 2px solid var(--h-link); outline-offset: 2px; border-radius: 4px; }
 .mcp-appr-actions { display: flex; gap: 8px; flex-wrap: wrap; }

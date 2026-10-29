@@ -90,6 +90,16 @@ function mcpApprToolName(a) {
   return a.server_slug ? `${a.server_slug}__${a.tool}` : a.tool;
 }
 
+// Built-in Stoa tools that need approval send allow_always: false; older rows lack the field and keep Always.
+function mcpApprAllowsAlways(a) {
+  return a.allow_always !== false;
+}
+
+function mcpApprArgsText(preview) {
+  if (!preview) return '—';
+  try { return JSON.stringify(JSON.parse(preview), null, 2); } catch { return preview; }
+}
+
 function mcpMakeApprovalCard(a) {
   const card = mcpEl('div', 'mcp-appr');
   card.dataset.approvalId = a.id;
@@ -110,21 +120,26 @@ function mcpMakeApprovalCard(a) {
   title.append(mcpEl('span', 'mcp-appr-who', mcpApprWho(a)), document.createTextNode(' wants to run '),
     mcpEl('code', 'mcp-appr-tool', mcpApprToolName(a)));
   card.appendChild(title);
+  if (!mcpApprAllowsAlways(a)) card.appendChild(mcpEl('div', 'mcp-appr-note', 'Stoa built-in tool: every call needs its own approval'));
 
   const args = mcpEl('details', 'mcp-appr-args');
   args.open = (a.args_preview || '').length <= 240;
   args.appendChild(mcpEl('summary', null, 'arguments'));
-  args.appendChild(mcpEl('pre', 'mcp-args-preview', a.args_preview || '—'));
+  args.appendChild(mcpEl('pre', 'mcp-args-preview', mcpApprArgsText(a.args_preview)));
   card.appendChild(args);
 
   if (a.status === 'pending') {
     const actions = mcpEl('div', 'mcp-appr-actions');
     const approve = mcpBtn('mcp-appr-approve', 'approve', () => mcpDecide(a, 'approve', actions));
-    const scope = `Always allow ${mcpApprWho(a)} to run ${mcpApprToolName(a)}`;
-    const always = mcpBtn('mcp-appr-always', 'always allow', () => mcpDecide(a, 'always', actions), scope);
-    always.setAttribute('aria-label', scope);
     const deny = mcpBtn('mcp-appr-deny', 'deny', () => mcpDecide(a, 'deny', actions));
-    actions.append(approve, always, deny);
+    if (mcpApprAllowsAlways(a)) {
+      const scope = `Always allow ${mcpApprWho(a)} to run ${mcpApprToolName(a)}`;
+      const always = mcpBtn('mcp-appr-always', 'always allow', () => mcpDecide(a, 'always', actions), scope);
+      always.setAttribute('aria-label', scope);
+      actions.append(approve, always, deny);
+    } else {
+      actions.append(approve, deny);
+    }
     card.appendChild(actions);
   } else {
     const st = mcpEl('div', `mcp-appr-result mcp-appr-${a.status}`,
@@ -159,8 +174,16 @@ async function mcpDecide(a, decision, actions) {
     out = { status: 'expired', decided_at: null };
   }
   if (!out) {
-    showToast(`Couldn’t ${decision === 'always' ? 'always allow' : decision} ${mcpApprToolName(a)}: ${r.error}`, { error: true });
     actions.querySelectorAll('button').forEach(b => { b.disabled = false; });
+    // A server that refuses Always (built-in tool, card rendered before allow_always existed) keeps the request pending.
+    if (decision === 'always' && r.status === 400) {
+      a.allow_always = false;
+      actions.querySelector('.mcp-appr-always')?.remove();
+      actions.querySelector('.mcp-appr-approve')?.focus();
+      showToast(`Always allow isn’t available for ${mcpApprToolName(a)}: approve or deny this call`, { error: true });
+      return null;
+    }
+    showToast(`Couldn’t ${decision === 'always' ? 'always allow' : decision} ${mcpApprToolName(a)}: ${r.error}`, { error: true });
     return null;
   }
   mcpApprovalResolved({ id: a.id, ...out });
