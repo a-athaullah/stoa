@@ -7559,7 +7559,10 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
   const subAgent = ai.sub_agent || null;
   // "/name" in the prompt → the enabled skills this run uses (agents and sub-agents alike). A wake
   // prompt is the server quoting a sub-agent's result, not a request, so it never resolves skills.
-  const skillRefs = ai.no_skills ? [] : skills.resolveRefs(prompt);
+  // Neither does a run triggered by an MCP event (replyTo is the trigger message, also on a retrigger
+  // replay and a mention cascade): its text is untrusted external data, e.g. meeting captions.
+  const triggeredByMcpEvent = !!replyTo && db.prepare("SELECT 1 FROM messages WHERE id=? AND automation_provider='mcp'").get(replyTo);
+  const skillRefs = ai.no_skills || triggeredByMcpEvent ? [] : skills.resolveRefs(prompt);
   const skillRefsJson = skillRefs.length ? JSON.stringify(skillRefs.map(r => ({ id: r.id, name: r.name, version: r.version }))) : null;
   // parent_message_id marks a /sub-agent-trigger run for traceability. Auto-wake is
   // governed by wake_parent instead (see enqueueParentWake): only a direct human

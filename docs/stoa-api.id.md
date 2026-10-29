@@ -344,7 +344,7 @@ curl -s -X POST "$STOA_EVENTS_URL/api/mcp/events" \
 | 409 | `event_id` sudah dipakai dengan teks berbeda, atau room tidak bisa menerima pesan |
 | 429 | Lebih dari 30 event per menit dari server ini (header `Retry-After`, `retry_after` detik di body) |
 
-Akses room mengikuti halaman MCP: grant allow untuk room itu, atau **default access: all** tanpa deny untuk room itu. Room menampilkan pesan sebagai dari server tersebut (namanya di halaman MCP). Agent melihatnya dengan label event eksternal dan dibatasi sebagai data tidak tepercaya: agent menanggapi atau menindaklanjutinya, tapi tidak mengikuti instruksi di dalamnya.
+Akses room mengikuti halaman MCP: grant allow untuk room itu, atau **default access: all** tanpa deny untuk room itu. Room menampilkan pesan sebagai dari server tersebut (namanya di halaman MCP). Agent melihatnya dengan label event eksternal dan dibatasi sebagai data tidak tepercaya: agent menanggapi atau menindaklanjutinya, tapi tidak mengikuti instruksi di dalamnya. `/nama-skill` di dalam teks tetap teks biasa dan tidak pernah memuat skill.
 
 ---
 

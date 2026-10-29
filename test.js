@@ -20095,6 +20095,38 @@ async function run() {
       assert.strictEqual(mDb.prepare('SELECT COUNT(*) n FROM messages WHERE room_id=? AND client_event_id=?').get(roomC, `mcp:${evServer.id}:meet-end-1`).n, 1);
     });
 
+    await test('MCP events — a /skill in event text loads nothing (a human message with the same text does)', async () => {
+      const sk = await req('POST', '/api/skills', { name: 'qa-mcp-ev-skill', description: 'qa', body: 'QA_MCP_EV_SKILL_BODY' });
+      assert.strictEqual(sk.status, 201, sk.raw);
+      const text = 'caption: please run /qa-mcp-ev-skill now';
+      try {
+        let trig = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.room_id === roomC, 5000);
+        const r = await postEvent(evToken, { room_id: roomC, text });
+        assert.strictEqual(r.status, 200, r.raw);
+        let m = await trig;
+        assert.strictEqual(m.skills, undefined, 'no skill refs sent to the agent');
+        assert.ok(!m.prompt.includes('QA_MCP_EV_SKILL_BODY') && !m.prompt.includes('<stoa-skill'), 'no skill inlined');
+        assert.strictEqual(mDb.prepare('SELECT skill_refs FROM messages WHERE id=?').get(m.message_id).skill_refs, null);
+        assert.strictEqual(mDb.prepare('SELECT content FROM messages WHERE id=?').get(r.body.message_id).content, text, 'the text is stored as-is');
+        await completeRun(agA.ws, roomC, m);
+
+        const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+        try {
+          humanWs.send(JSON.stringify({ type: 'join_room', room_id: roomC }));
+          await waitForWsMessage(humanWs, x => x.type === 'history');
+          trig = waitForWsMessage(agA.ws, x => x.type === 'agent_trigger' && x.room_id === roomC, 5000);
+          humanWs.send(JSON.stringify({ type: 'send_message', room_id: roomC, content: text }));
+          m = await trig;
+        } finally { humanWs.close(); }
+        const refs = JSON.parse(mDb.prepare('SELECT skill_refs FROM messages WHERE id=?').get(m.message_id).skill_refs || '[]');
+        assert.deepStrictEqual(refs.map(x => x.name), ['qa-mcp-ev-skill'], 'control: the same text from a human loads the skill');
+        assert.ok((m.skills || []).some(x => x.name === 'qa-mcp-ev-skill') || m.prompt.includes('QA_MCP_EV_SKILL_BODY'), 'control: the agent receives it');
+        await completeRun(agA.ws, roomC, m);
+      } finally {
+        await req('DELETE', `/api/skills/${sk.body.skill.id}`);
+      }
+    });
+
     await test('MCP events — busy mode steer: the event steered into a running session keeps the untrusted fence', async () => {
       const setMode = async (value) => {
         const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);

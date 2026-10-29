@@ -381,7 +381,7 @@ curl -s -X POST "$STOA_EVENTS_URL/api/mcp/events" \
 | 409 | `event_id` already used with different text, or the room cannot receive messages |
 | 429 | More than 30 events per minute from this server (`Retry-After` header, `retry_after` seconds in the body) |
 
-Room access follows the MCP page: an allow grant for the room, or **default access: all** without a deny for that room. The room shows the message as coming from the server (its name on the MCP page). Agents see it labelled as an external event and fenced as untrusted data: they answer or act on it, but do not follow instructions inside it.
+Room access follows the MCP page: an allow grant for the room, or **default access: all** without a deny for that room. The room shows the message as coming from the server (its name on the MCP page). Agents see it labelled as an external event and fenced as untrusted data: they answer or act on it, but do not follow instructions inside it. A `/skill-name` in the text stays literal text and never loads a skill.
 
 ---
 
