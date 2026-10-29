@@ -1,6 +1,9 @@
-// ── Skills tab: import (file, folder, GitHub URL, drag-drop) with dry-run preview ──
+// ── Skills tab: import (file, folder, GitHub URL, git repository, drag-drop) with dry-run preview ──
 const SK_ARCHIVE_RE = /\.(md|zip|skill|tar|tgz|tar\.gz)$/i;
 const SK_GITHUB_RE = /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(\/.*)?$/;
+// Client-side mirror of lib/skill-git.js for live feedback; the server stays the authority.
+const SK_GIT_URL_RE = /^(?:https:\/\/[^\s/@]+(?:\/[^\s]*)?|ssh:\/\/[^\s/]+(?:\/[^\s]*)?|[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^\s]+)$/;
+const SK_GIT_REF_RE = /^(?!-)(?!.*\.\.)[A-Za-z0-9._\/-]{1,200}$/;
 const SK_FOLDER_MAX_FILES = 300;
 
 let skImport = null;
@@ -86,7 +89,28 @@ async function skWalkEntry(entry, prefix, out) {
   }
 }
 
+function skIsRemote(src) {
+  return src.kind === 'url' || src.kind === 'git';
+}
+
+function skGitProblem(src) {
+  const url = (src.url || '').trim();
+  if (!url) return 'Enter the repository URL.';
+  if (/^https:\/\/[^/]*@/.test(url) || /^ssh:\/\/[^/@]*:[^/@]*@/.test(url)) return 'Leave credentials out of the URL; the server uses its own SSH key or public access.';
+  if (url.startsWith('-') || !SK_GIT_URL_RE.test(url)) return 'Use an https://, ssh:// or user@host:path URL.';
+  const ref = (src.ref || '').trim();
+  if (ref && !SK_GIT_REF_RE.test(ref)) return 'That branch or tag name isn’t valid.';
+  const path = skGitPath(src);
+  if (path && (path.startsWith('/') || path.split('/').some(seg => seg === '..'))) return 'The subfolder must be a path inside the repository, without "..".';
+  return null;
+}
+
+function skGitPath(src) {
+  return (src.path || '').trim().replace(/^\.\/|\/+$/g, '');
+}
+
 function skSourceProblem(src) {
+  if (src.kind === 'git') return skGitProblem(src);
   if (src.kind === 'url') {
     const url = (src.url || '').trim();
     if (!url) return 'Paste a GitHub URL.';
@@ -112,13 +136,16 @@ function skIgnoredPath(path) {
 
 function skSourceLabel(src) {
   if (src.kind === 'url') return src.url;
+  if (src.kind === 'git') return skGitLabel(src.url.trim(), src.ref?.trim(), skGitPath(src));
   if (src.kind === 'file') return src.file.name;
   return src.entries[0]?.path.split('/')[0] || 'folder';
 }
 
 function skImportBody(src, name, description) {
-  if (src.kind === 'url') {
-    const body = { url: src.url.trim() };
+  if (skIsRemote(src)) {
+    const body = src.kind === 'git'
+      ? { git_url: src.url.trim(), ref: src.ref?.trim() || null, path: skGitPath(src) || null }
+      : { url: src.url.trim() };
     if (name) body.name = name;
     if (description) body.description = description;
     return body;
@@ -145,7 +172,7 @@ function skImportProblem(st) {
 }
 
 function skStartImport(src) {
-  if (src.kind !== 'url') {
+  if (!skIsRemote(src)) {
     const problem = skSourceProblem(src);
     if (problem) { showToast(problem, { error: true, duration: 6000 }); return; }
   }
@@ -153,7 +180,7 @@ function skStartImport(src) {
 }
 
 function skOpenImportDialog(src) {
-  skImport = { src, phase: src.kind === 'url' && !src.url ? 'input' : 'loading', preview: null, error: null, name: '', description: '', saving: false };
+  skImport = { src, phase: skIsRemote(src) && !src.url ? 'input' : 'loading', preview: null, error: null, name: '', description: '', saving: false };
   const dlg = skDialogEl();
   skRenderImport();
   if (!dlg.open) dlg.showModal();
@@ -179,14 +206,14 @@ function skDialogEl() {
 async function skRunDryRun() {
   const st = skImport;
   const problem = skSourceProblem(st.src);
-  if (problem) { st.phase = st.src.kind === 'url' ? 'input' : 'error'; st.error = problem; skRenderImport(); return; }
+  if (problem) { st.phase = skIsRemote(st.src) ? 'input' : 'error'; st.error = problem; skRenderImport(); return; }
   st.phase = 'loading';
   st.error = null;
   skRenderImport();
   const r = await skillsApi('POST', '/api/skills/import?dry_run=1', skImportBody(st.src, st.name || null));
   if (skImport !== st) return;
   if (!r.ok) {
-    st.phase = st.src.kind === 'url' ? 'input' : 'error';
+    st.phase = skIsRemote(st.src) ? 'input' : 'error';
     st.error = r.error;
   } else {
     st.phase = 'preview';
@@ -194,7 +221,7 @@ async function skRunDryRun() {
     if (!st.name) st.name = st.preview?.name || '';
   }
   skRenderImport();
-  document.querySelector('#sk-dialog .sk-import-name')?.focus();
+  document.querySelector(st.phase === 'input' ? '#sk-dialog .sk-import-url' : '#sk-dialog .sk-import-name')?.focus();
 }
 
 async function skConfirmImport() {
@@ -225,12 +252,19 @@ function skRenderImport() {
   form.addEventListener('submit', e => {
     e.preventDefault();
     if (st.saving || st.phase === 'loading') return;
-    if (st.phase === 'input') { st.src.url = form.querySelector('.sk-import-url')?.value || ''; skRunDryRun(); }
+    if (st.phase === 'input') {
+      st.src.url = form.querySelector('.sk-import-url')?.value || '';
+      if (st.src.kind === 'git') {
+        st.src.ref = form.querySelector('.sk-import-ref')?.value || '';
+        st.src.path = form.querySelector('.sk-import-path')?.value || '';
+      }
+      skRunDryRun();
+    }
     else if (st.phase === 'preview') skConfirmImport();
   });
 
   const head = skEl('div', 'mcp-form-head');
-  const title = skEl('h2', 'mcp-form-title', st.src.kind === 'url' ? 'Import from GitHub' : 'Import skill');
+  const title = skEl('h2', 'mcp-form-title', st.src.kind === 'url' ? 'Import from GitHub' : st.src.kind === 'git' ? 'Import from git repository' : 'Import skill');
   title.id = 'sk-dialog-title';
   head.appendChild(title);
   head.appendChild(skEl('span', 'mcp-actions-spacer'));
@@ -240,7 +274,9 @@ function skRenderImport() {
   head.appendChild(x);
   form.appendChild(head);
 
-  if (st.src.kind === 'url' && st.phase === 'input') {
+  if (st.src.kind === 'git' && st.phase === 'input') {
+    skMakeGitFields(st).forEach(n => form.appendChild(n));
+  } else if (st.src.kind === 'url' && st.phase === 'input') {
     const label = skEl('label', 'sk-field');
     label.appendChild(skEl('span', 'sk-field-label', 'Repository or folder URL'));
     const input = skEl('input', 'sk-input sk-import-url');
@@ -278,12 +314,34 @@ function skRenderImport() {
     ok.type = 'submit';
     ok.disabled = st.saving || !!skImportProblem(st);
     foot.appendChild(ok);
-  } else if (st.phase === 'error' && st.src.kind !== 'url') {
+  } else if (st.phase === 'error' && !skIsRemote(st.src)) {
     foot.appendChild(skBtn('auto-save-btn', 'Choose another', () => { dlg.close(); skPickFiles(st.src.kind === 'folder'); }));
   }
   form.appendChild(foot);
 
   dlg.replaceChildren(form);
+}
+
+function skMakeGitFields(st) {
+  const field = (label, cls, value, placeholder, help, type) => {
+    const wrap = skEl('label', 'sk-field');
+    wrap.appendChild(skEl('span', 'sk-field-label', label));
+    const input = skEl('input', `sk-input ${cls}`);
+    input.type = type || 'text';
+    input.value = value || '';
+    input.placeholder = placeholder;
+    input.spellcheck = false;
+    input.autocomplete = 'off';
+    wrap.appendChild(input);
+    if (help) wrap.appendChild(skEl('span', 'sk-field-help', help));
+    return wrap;
+  };
+  const url = field('Repository URL', 'sk-import-url', st.src.url, 'https://host/owner/repo.git or ssh://git@host:port/owner/repo.git',
+    'GitHub, GitLab, Bitbucket, Gitea or any self-hosted git. SSH uses the server’s own key.');
+  const row = skEl('div', 'sk-git-row');
+  row.appendChild(field('Branch or tag', 'sk-import-ref', st.src.ref, 'Default branch'));
+  row.appendChild(field('Subfolder', 'sk-import-path', st.src.path, 'Repository root'));
+  return [url, row, skEl('span', 'sk-field-help', 'Point at the folder that holds SKILL.md. The source is remembered, so you can check for updates later.')];
 }
 
 function skMakePreview(st) {

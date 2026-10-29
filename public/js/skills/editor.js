@@ -206,6 +206,7 @@ function skillsRenderEditor() {
     inner.appendChild(modes);
   }
   if (ed.conflict) inner.appendChild(skMakeConflict(ed));
+  if (ed.skill?.source) inner.appendChild(skMakeSource(ed));
 
   if (ed.mode === 'history') {
     if (skIsDirty(ed)) inner.appendChild(skEl('div', 'sk-hist-dirty', 'You have unsaved edits. Switch to Files to save or discard them.'));
@@ -697,6 +698,11 @@ function skSyncFooter(ed) {
   const dirty = skIsDirty(ed);
   if (state) state.textContent = ed.saving ? '' : !ed.id ? '' : dirty ? 'Unsaved changes' : 'All changes saved';
   if (save) save.disabled = ed.saving || (!!ed.id && !dirty);
+  const update = document.getElementById('sk-source-update');
+  if (update) {
+    update.disabled = ed.saving || !!ed.src?.busy || dirty;
+    update.title = dirty ? 'Save or discard your edits first' : '';
+  }
 }
 
 async function skSave(ed) {
@@ -771,7 +777,13 @@ async function skCheckRemote(ed) {
     const res = await fetch(`/api/skills/${encodeURIComponent(ed.id)}`);
     if (res.ok) skill = (await res.json())?.skill;
   } catch {}
-  if (skillsState.editor !== ed || ed.saving || ed.hist?.restoring || !skill || !(skill.version > ed.skill.version)) return;
+  if (skillsState.editor !== ed || ed.saving || ed.hist?.restoring || !skill) return;
+  // A check or detach elsewhere changes the source without a new version.
+  if (skill.version === ed.skill.version && JSON.stringify(skill.source ?? null) !== JSON.stringify(ed.skill.source ?? null) && !ed.src?.busy) {
+    skStoreSource(ed, skill.source ?? null);
+    skSyncSource(ed);
+  }
+  if (!(skill.version > ed.skill.version)) return;
   if (!skIsDirty(ed)) { skReloadEditor(ed, skill); return; }
   if (skill.version > (ed.conflict || ed.baseVersion)) {
     ed.conflict = skill.version;
