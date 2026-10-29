@@ -206,10 +206,14 @@ const _AUTOMATION_LOGOS = {
   gmail: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M24 5.457v13.909c0 .904-.732 1.636-1.636 1.636h-3.819V11.73L12 16.64l-6.545-4.91v9.273H1.636A1.636 1.636 0 0 1 0 19.366V5.457c0-2.023 2.309-3.178 3.927-1.964L5.455 4.64 12 9.548l6.545-4.907 1.528-1.147C21.69 2.28 24 3.434 24 5.457z" fill="#EA4335"/><path d="M0 5.457v13.909c0 .904.732 1.636 1.636 1.636h3.819V11.73L12 16.64V9.548L5.455 4.64 3.927 3.493C2.309 2.28 0 3.434 0 5.457z" fill="#C5221F"/><path d="M24 5.457c0-2.023-2.309-3.178-3.927-1.964L18.545 4.64 12 9.548v7.091l6.545-4.91V20.999h3.819A1.636 1.636 0 0 0 24 19.366V5.457z" fill="#FBBC04"/><path d="M12 9.548 5.455 4.64l-1.528-1.147L12 9.548z" fill="#34A853"/><path d="m12 9.548 6.545-4.907-6.545 4.907z" fill="#4285F4"/></svg>',
   email: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m2 7 10 7 10-7"/></svg>',
   schedule: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+  mcp: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 2v5M15 2v5"/><path d="M6 7h12v4a6 6 0 0 1-12 0z"/><path d="M12 17v5"/></svg>',
 };
 const _AUTOMATION_PROVIDER_LABELS = { gmail: 'Gmail', email: 'Email', slack: 'Slack', whatsapp: 'WhatsApp', schedule: 'Schedule' };
 
-function automationProviderLabel(provider) {
+// MCP events carry the user-configured server name; every other provider maps to a fixed label.
+function automationSourceLabel(automation) {
+  const provider = automation?.provider;
+  if (provider === 'mcp') return automation.name || 'MCP';
   return _AUTOMATION_PROVIDER_LABELS[provider] || provider || 'connection';
 }
 
@@ -218,8 +222,9 @@ function automationProviderLabel(provider) {
 function makeAutomationTagEl(m) {
   const tag = document.createElement('span');
   tag.className = 't-automation-tag';
-  if (m.actor_type === 'ai') tag.textContent = 'via ' + automationProviderLabel(m.automation.provider);
-  else tag.textContent = m.automation.provider === 'schedule' ? 'Scheduled' : 'Automation';
+  const provider = m.automation.provider;
+  if (m.actor_type === 'ai') tag.textContent = 'via ' + automationSourceLabel(m.automation);
+  else tag.textContent = provider === 'schedule' ? 'Scheduled' : provider === 'mcp' ? 'Integration' : 'Automation';
   return tag;
 }
 const _BOT_LOGO = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M12 11V7"/><circle cx="12" cy="5" r="2"/><path d="M8 15h.01M16 15h.01"/></svg>';
@@ -242,7 +247,7 @@ function makeAgentViaConnAvatarEl(m, size) {
   wrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, size, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_id));
   const badge = document.createElement('span');
   badge.className = 'h-conn-badge';
-  badge.title = 'via ' + automationProviderLabel(m.automation.provider);
+  badge.title = 'via ' + automationSourceLabel(m.automation);
   badge.setAttribute('aria-label', badge.title);
   const svg = _AUTOMATION_LOGOS[m.automation.provider] || '';
   badge.innerHTML = svg;

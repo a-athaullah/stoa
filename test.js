@@ -14049,6 +14049,28 @@ async function run() {
     assert.strictEqual(is(null, { id: 1 }), false);
   });
 
+  await test('mcp events UI — reply tag and conn badge name the MCP server via textContent, inbound tag reads Integration, plug icon is a stroke glyph', () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const mk = () => { const el = { attrs: {}, children: [], style: {}, classList: { add() {} }, textContent: '', title: '', setAttribute(k, v) { this.attrs[k] = v; }, appendChild(c) { this.children.push(c); return c; }, querySelector: () => null }; return el; };
+    const ctx = { localStorage: { getItem: () => null, setItem() {} }, document: { addEventListener() {}, getElementById: () => null, querySelector: () => null, createElement: mk }, window: { addEventListener() {} }, navigator: {}, location: {} };
+    vm.createContext(ctx);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/core.js'), 'utf8'), ctx);
+    const label = vm.runInContext('automationSourceLabel', ctx);
+    const tag = vm.runInContext('makeAutomationTagEl', ctx);
+    const meet = { id: null, name: 'Google Meet', provider: 'mcp' };
+    assert.strictEqual(label(meet), 'Google Meet');
+    assert.strictEqual(label({ id: null, name: '', provider: 'mcp' }), 'MCP', 'unnamed server falls back to MCP, never the raw key');
+    assert.strictEqual(label({ provider: 'slack', name: 'my automation' }), 'Slack', 'other providers keep the fixed label, not the automation name');
+    assert.strictEqual(tag({ actor_type: 'ai', automation: meet }).textContent, 'via Google Meet');
+    assert.strictEqual(tag({ actor_type: 'human', automation: meet }).textContent, 'Integration');
+    assert.strictEqual(tag({ actor_type: 'human', automation: { provider: 'slack' } }).textContent, 'Automation');
+    const evil = { provider: 'mcp', name: '<img src=x onerror=alert(1)>' };
+    assert.strictEqual(tag({ actor_type: 'ai', automation: evil }).textContent, 'via <img src=x onerror=alert(1)>', 'server name stays literal text');
+    const icon = vm.runInContext('_AUTOMATION_LOGOS.mcp', ctx);
+    assert.ok(icon.includes('stroke="currentColor"') && !/fill="#/.test(icon), 'mcp icon is a monochrome currentColor stroke glyph');
+  });
+
   await test('room agents popover — an actor removed elsewhere leaves the open popover (participants + add list), stale loads never win', async () => {
     const vm = require('vm');
     const fs = require('fs');
