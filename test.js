@@ -4035,6 +4035,95 @@ async function runAsyncUnitTests() {
     um.stopAll();
   });
 
+  // Fake SDK for keep-alive: each started client is recorded with the server's first arg as its tag.
+  const keepAliveHarness = (opts = {}) => {
+    const { createUpstreamManager } = require('./lib/mcp-upstreams');
+    const clients = [];
+    class StdioClientTransport { constructor(o) { this.tag = o.args[0]; } }
+    class Client {
+      async connect(t) { this.tag = t.tag; this.closed = false; clients.push(this); }
+      async listTools() { return { tools: [] }; }
+      async close() { this.closed = true; }
+      setNotificationHandler() {}
+    }
+    const um = createUpstreamManager({
+      readEnv: () => ({}), log: { warn() {}, error() {} },
+      sdk: { Client, StdioClientTransport, StreamableHTTPClientTransport: class {}, ToolListChangedNotificationSchema: {} },
+      ...opts,
+    });
+    const live = (tag) => clients.filter(c => c.tag === tag && !c.closed);
+    return { um, clients, live };
+  };
+  const kaRow = (id, keep_alive, extra = {}) => ({ id, slug: `ka${id}`, transport: 'stdio', command: process.execPath, args_json: JSON.stringify([`s${id}`]), enabled: 1, keep_alive, ...extra });
+  const pause = (ms) => new Promise(r => setTimeout(r, ms));
+
+  await uta('MCP upstreams keep-alive — a normal server idle-stops; a keep_alive one is still running past the same window', async () => {
+    const { um, live } = keepAliveHarness({ idleMs: 60 });
+    await um.listTools(kaRow(1, 0));
+    await um.listTools(kaRow(2, 1));
+    await pause(250);
+    assert.strictEqual(live('s1').length, 0, 'normal server stopped after idle');
+    assert.strictEqual(um.info(kaRow(1, 0)).status, 'idle');
+    assert.strictEqual(live('s2').length, 1, 'keep-alive server still running');
+    assert.strictEqual(um.info(kaRow(2, 1)).status, 'running');
+    um.stopAll();
+  });
+
+  await uta('MCP upstreams keep-alive — LRU eviction skips keep-alive; all slots keep-alive → a normal start fails, nothing evicted', async () => {
+    const { um, live } = keepAliveHarness({ maxRunning: 2 });
+    await um.listTools(kaRow(1, 1));
+    await pause(5);
+    await um.listTools(kaRow(2, 0));
+    await um.listTools(kaRow(3, 0));
+    assert.deepStrictEqual([live('s1').length, live('s2').length, live('s3').length], [1, 0, 1], 'the least recently used NORMAL server went, not the older keep-alive one');
+    await um.listTools(kaRow(4, 1));
+    assert.deepStrictEqual([live('s1').length, live('s3').length, live('s4').length], [1, 0, 1]);
+    await assert.rejects(um.listTools(kaRow(5, 0)), /held by keep-alive servers/);
+    assert.deepStrictEqual([live('s1').length, live('s4').length, live('s5').length], [1, 1, 0], 'no keep-alive server evicted');
+    um.stopAll();
+  });
+
+  await uta('MCP upstreams keep-alive — startKeepAlive starts enabled stdio keep-alive rows only', async () => {
+    const rows = [kaRow(1, 1), kaRow(2, 1, { enabled: 0 }), kaRow(3, 0), kaRow(4, 1, { transport: 'http', url: 'http://127.0.0.1:9/mcp', auth: 'none' })];
+    const { um, clients } = keepAliveHarness({ keepAliveRows: () => rows });
+    um.startKeepAlive();
+    await pause(50);
+    assert.deepStrictEqual(clients.map(c => c.tag), ['s1']);
+    assert.strictEqual(um.info(rows[0]).status, 'running');
+    assert.strictEqual(um.info(rows[1]).status, 'disabled');
+    um.stopAll();
+  });
+
+  await uta('MCP upstreams keep-alive — an exit restarts it after the backoff; a normal server or a disabled one is not restarted', async () => {
+    let rows = { 1: kaRow(1, 1), 2: kaRow(2, 0), 3: kaRow(3, 1) };
+    const { um, clients, live } = keepAliveHarness({ getRow: (id) => rows[id] || null });
+    await um.keepAlive(rows[1]);
+    await um.listTools(rows[2]);
+    await um.keepAlive(rows[3]);
+    for (const c of [...clients]) c.onclose();
+    assert.strictEqual(um.info(rows[1]).status, 'error');
+    rows = { ...rows, 3: { ...rows[3], enabled: 0 } };
+    await pause(1300);
+    assert.strictEqual(live('s1').length, 2, 'keep-alive restarted (the fake never really closes the crashed one)');
+    assert.strictEqual(clients.filter(c => c.tag === 's1').length, 2);
+    assert.strictEqual(um.info(rows[1]).status, 'running');
+    assert.strictEqual(clients.filter(c => c.tag === 's2').length, 1, 'normal server not restarted');
+    assert.strictEqual(clients.filter(c => c.tag === 's3').length, 1, 'disabled meanwhile → not restarted');
+    um.stopAll();
+  });
+
+  await uta('MCP upstreams keep-alive — switching the flag off re-arms the idle timer', async () => {
+    const { um, live } = keepAliveHarness({ idleMs: 60 });
+    await um.keepAlive(kaRow(1, 1));
+    await pause(200);
+    assert.strictEqual(live('s1').length, 1);
+    assert.strictEqual(await um.keepAlive(kaRow(1, 0)), false);
+    assert.strictEqual(live('s1').length, 1, 'not stopped by the switch itself');
+    await pause(250);
+    assert.strictEqual(live('s1').length, 0, 'idle-stopped once keep_alive is off');
+    um.stopAll();
+  });
+
   await uta('MCP upstreams — stdio upstream runs in its own 0700 work dir (cwd + TMPDIR) with preset args; removed with the server', async () => {
     const fs = require('fs');
     const os = require('os');
@@ -19972,6 +20061,39 @@ async function run() {
       return JSON.parse(r.text);
     };
     const noTrigger = (ws, roomId, ms = 1500) => waitForWsMessage(ws, m => m.type === 'agent_trigger' && m.room_id === roomId, ms).then(() => 'triggered', () => 'none');
+
+    await test('MCP keep_alive — API: boolean, stdio only (http → 400), PATCH round-trip; a keep-alive server runs without a tool call', async () => {
+      const http = await req('POST', '/api/mcp/servers', { slug: 'kahttp', name: 'KA http', transport: 'http', url: 'http://127.0.0.1:9/mcp', keep_alive: true });
+      assert.strictEqual(http.status, 400);
+      assert.match(http.body.error, /keep_alive is only for stdio/);
+      assert.strictEqual((await req('POST', '/api/mcp/servers', { slug: 'kastr', name: 'KA', transport: 'stdio', command: process.execPath, args: [EV_FIXTURE], keep_alive: 'yes' })).status, 400);
+      const r = await req('POST', '/api/mcp/servers', { slug: 'kastdio', name: 'KA stdio', transport: 'stdio', command: process.execPath, args: [EV_FIXTURE], keep_alive: true });
+      assert.strictEqual(r.status, 201, r.raw);
+      const id = r.body.server.id;
+      try {
+        assert.strictEqual(r.body.server.keep_alive, true);
+        assert.strictEqual(mDb.prepare('SELECT keep_alive FROM mcp_servers WHERE id=?').get(id).keep_alive, 1);
+        let st = null;
+        for (let i = 0; i < 50 && st !== 'running'; i++) {
+          await new Promise(res => setTimeout(res, 100));
+          st = (await req('GET', '/api/mcp/servers')).body.servers.find(s => s.id === id).status;
+        }
+        assert.strictEqual(st, 'running', 'started by the flag alone, shown as running');
+        const off = await req('PATCH', `/api/mcp/servers/${id}`, { keep_alive: false });
+        assert.strictEqual(off.status, 200, off.raw);
+        assert.strictEqual(off.body.server.keep_alive, false);
+        assert.strictEqual(off.body.server.status, 'running', 'switching the flag alone does not restart the process');
+        assert.strictEqual((await req('GET', '/api/mcp/servers')).body.servers.find(s => s.id === id).keep_alive, false);
+        const h = await req('POST', '/api/mcp/servers', { slug: 'kahttp', name: 'KA http', transport: 'http', url: 'http://127.0.0.1:9/mcp' });
+        assert.strictEqual(h.status, 201, h.raw);
+        assert.strictEqual(h.body.server.keep_alive, false);
+        const hp = await req('PATCH', `/api/mcp/servers/${h.body.server.id}`, { keep_alive: true });
+        assert.strictEqual(hp.status, 400);
+        assert.strictEqual((await req('DELETE', `/api/mcp/servers/${h.body.server.id}`)).status, 204);
+      } finally {
+        assert.strictEqual((await req('DELETE', `/api/mcp/servers/${id}`)).status, 204);
+      }
+    });
 
     await test('MCP events — STOA_EVENTS_* reserved in env; stdio upstream gets the local URL + a token, stable across restarts, never in API responses', async () => {
       const bad = await req('POST', '/api/mcp/servers', { slug: 'mcpevents', name: 'Google Meet', transport: 'stdio', command: process.execPath, args: [EV_FIXTURE], env: { STOA_EVENTS_TOKEN: 'forged' } });

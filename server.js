@@ -1672,6 +1672,8 @@ const mcpUpstreams = createUpstreamManager({
   },
   authProvider: (row) => mcpOAuth.provider(row.id),
   needsAuth: (row) => mcpOAuth.needsAuth(row),
+  getRow: (id) => db.prepare('SELECT * FROM mcp_servers WHERE id=?').get(id),
+  keepAliveRows: () => db.prepare("SELECT * FROM mcp_servers WHERE keep_alive=1 AND enabled=1 AND transport='stdio'").all(),
 });
 // Cores shared by the HTTP routes and the built-in stoa__* MCP tools (one implementation each, so
 // validation cannot drift between the two paths).
@@ -8302,6 +8304,8 @@ server.listen(PORT, () => {
   // Phase 2b (R1): resume any sub-agent wakes left pending by a prior crash/restart.
   if (SMOKE_BOOT) return;
   try { drainPendingWakesOnStartup(); } catch (e) { console.error('[wake] startup drain failed:', e.message); }
+  // After listen: a keep-alive event source may POST /api/mcp/events as soon as it is up.
+  try { mcpUpstreams.startKeepAlive(); } catch (e) { console.error('[mcp] keep-alive startup failed:', e.message); }
   bootGuard.scheduleHealthyMark();
   serverUpdate.startDailyCheck({
     firstDelayMs: parseInt(process.env.STOA_UPDATE_CHECK_DELAY_MS) || 5 * 60_000,
