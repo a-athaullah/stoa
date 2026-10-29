@@ -1215,6 +1215,18 @@ History 标签页显示每个版本的版本号、作者（您或代理）、时
 
 **管理免除项：** 在 MCP 页面打开 **Installed** 标签，点击服务器卡片上的 **tools** 按钮打开工具列表。免除的代理会列在每个工具行下方的 **always allowed for** 中。点击名称旁的 **×** 并确认即可撤销 — 之后该代理将再次收到审批请求。若工具 **Approval** 列的开关关闭，列表以灰色显示（非活跃状态）。删除代理或子代理时，其免除项也会自动删除。通过免除的调用仍会记录在 activity log 中。
 
+### 通过代理添加 MCP 服务器
+
+在主会话（非子代理）中运行的代理可以使用三个内置工具在运行时安装 MCP 服务器：`stoa__mcp_catalog`（浏览可用预设）、`stoa__mcp_server_list`（查看已安装的服务器 — 返回服务器名称和代理的访问权限，不返回 env 值）、`stoa__mcp_server_add`（安装新服务器）。
+
+**审批：** 每次调用 `stoa__mcp_server_add` 都会显示 **MCP approval** 卡片。与普通 MCP 工具不同，没有 **always allow** 选项 — 只有 **approve** 和 **deny**。卡片显示完整参数，env 值以 `***` 掩码。参数无效时（空 slug、保留 slug `stoa`、或已被使用的 slug），在卡片出现之前即被拒绝。
+
+**审批后：** 服务器创建时访问权限默认为 **none**。只有发起调用的代理获得访问权限。您可以像往常一样在 MCP 页面为其他代理调整访问权限。
+
+**被拒绝或超时：** 服务器不会被创建，代理收到错误。
+
+子代理无法使用 `stoa__mcp_server_add`、`stoa__mcp_catalog` 或 `stoa__mcp_server_list` — 这些工具在子代理会话中被隐藏。
+
 ### 聊天中的工具标签
 
 代理运行时，每次 MCP 工具调用都会在聊天中以工具块显示。块内显示**工具名称**，后跟小型斜体标签 **"via \<服务器名\> (Stoa)"** — 例如 `resolve-library-id via Context7 (Stoa)`。悬停可查看完整内部工具名称（工具提示）。工具步骤与消息一起保存（每条消息最多 50 步，每步含工具名称和单行摘要）。页面刷新后，流程追踪记录 — 包括 MCP 标签 — 仅为**出错的运行**（便于诊断）和**仍在进行中的运行**重建；正常完成的运行的追踪记录仅在当次会话中可见，刷新后消失。
@@ -1261,7 +1273,7 @@ keep-alive 服务器仍计入 16 个槽位限制。如果全部 16 个槽位均�
 
 ### Stoa 内置工具
 
-除了您安装的 MCP 服务器外，Stoa 的 `stoa` 服务器还提供 **24 个内置工具**，让代理无需 curl 或密钥即可直接访问 Stoa 功能。身份、房间和线程从会话令牌自动获取。
+除了您安装的 MCP 服务器外，Stoa 的 `stoa` 服务器还提供**内置工具**，让代理无需 curl 或密钥即可直接访问 Stoa 功能。身份、房间和线程从会话令牌自动获取。
 
 工具按功能分组：
 
@@ -1270,6 +1282,7 @@ keep-alive 服务器仍计入 16 个槽位限制。如果全部 16 个槽位均�
 - **系统提示** — `stoa__room_system_prompt_get/set`、`stoa__agent_system_prompt_get/set`
 - **子代理** — `stoa__sub_agent_list/create/update/delete/trigger`
 - **自动化** — `stoa__automation_list/create/update/delete`、`stoa__connection_list`
+- **MCP 服务器** — `stoa__mcp_catalog`、`stoa__mcp_server_list`、`stoa__mcp_server_add`（仅主会话）
 
 验证、配额和作用域规则与 REST API 相同。配置变更（系统提示、子代理 CRUD、自动化变更）会在房间中发布永久通知 — `· config` 或 `· automation` — 与 REST 端点相同。
 

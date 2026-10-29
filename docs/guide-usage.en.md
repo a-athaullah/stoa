@@ -1219,6 +1219,18 @@ An agent can have up to 20 approval requests pending at the same time. Approval 
 
 **Managing exemptions:** On the MCP page, open the **Installed** tab and click the **tools** button on a server card to open its tool list. Any exempted agents are listed under **always allowed for** below each tool row. Click **×** next to a name, then confirm to revoke — after that, the agent will be prompted again. If the **Approval** column switch for the tool is off, the list is shown dimmed (inactive). Exemptions are removed automatically when the agent or sub-agent is deleted. Calls that pass through an exemption are still recorded in the activity log.
 
+### Adding MCP Servers from an Agent
+
+An agent running in the main session (not a sub-agent) can install MCP servers at runtime using three built-in tools: `stoa__mcp_catalog` to browse available presets, `stoa__mcp_server_list` to see what is already installed (server names and whether the agent has access — env values are never returned), and `stoa__mcp_server_add` to install a new server.
+
+**Approval:** Every call to `stoa__mcp_server_add` shows an **MCP approval** card. Unlike regular MCP tools, there is no **always allow** option — only **approve** and **deny**. The card shows the full arguments with env values masked as `***`. A call with invalid arguments (empty slug, reserved slug `stoa`, or a slug already in use) is rejected before the card appears.
+
+**After approval:** The server is created with access set to **none** by default. Only the calling agent receives access. You can adjust access for other agents on the MCP page as usual.
+
+**If denied or expired:** The server is not created and the agent receives an error.
+
+Sub-agents cannot use `stoa__mcp_server_add`, `stoa__mcp_catalog`, or `stoa__mcp_server_list` — these tools are hidden from sub-agent sessions.
+
 ### Tool Labels in Chat
 
 While an agent is running, each MCP tool call appears as a tool block in the chat. The block shows the **tool name** followed by a small italic label **"via \<server name\> (Stoa)"** — for example, `resolve-library-id via Context7 (Stoa)`. Hovering shows the full internal tool name as a tooltip. Tool steps are stored with the message (up to 50 steps per message, tool name + one-line summary each). After a page reload, the process trail — including MCP labels — is rebuilt only for **error runs** (so they can still be diagnosed) and **runs still in progress**; a completed run's trail is visible during the session that watched it, but disappears on reload.
@@ -1265,7 +1277,7 @@ Keep-alive servers still count toward the 16-server slot limit. If all 16 slots 
 
 ### Built-in Stoa Tools
 
-In addition to the MCP servers you install, Stoa's own `stoa` server exposes **24 built-in tools** that give agents native access to Stoa features — no curl, no secret handling. Identity, room, and thread come from the session token automatically.
+In addition to the MCP servers you install, Stoa's own `stoa` server exposes **built-in tools** that give agents native access to Stoa features — no curl, no secret handling. Identity, room, and thread come from the session token automatically.
 
 Tools are grouped by function:
 
@@ -1274,6 +1286,7 @@ Tools are grouped by function:
 - **System prompts** — `stoa__room_system_prompt_get/set`, `stoa__agent_system_prompt_get/set`
 - **Sub-agents** — `stoa__sub_agent_list/create/update/delete/trigger`
 - **Automation** — `stoa__automation_list/create/update/delete`, `stoa__connection_list`
+- **MCP servers** — `stoa__mcp_catalog`, `stoa__mcp_server_list`, `stoa__mcp_server_add` (main sessions only)
 
 The same validation, budget caps, and scope rules as the REST API apply. Configuration changes (system prompts, sub-agent CRUD, automation changes) post a permanent notice in the room — `· config` or `· automation` — the same as the REST endpoint does.
 
