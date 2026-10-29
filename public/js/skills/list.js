@@ -75,6 +75,7 @@ function skMakeNewMenu() {
   item('Import file', '.md, .zip, .skill, .tar.gz', () => skPickFiles(false));
   item('Import folder', 'A folder with SKILL.md', () => skPickFiles(true));
   item('Import from GitHub', 'Public repository URL', () => skOpenImportDialog({ kind: 'url' }));
+  item('Import from git repository', 'Any host, HTTPS or SSH, with updates', () => skOpenImportDialog({ kind: 'git' }));
   btn.addEventListener('click', () => {
     const open = menu.hidden;
     if (!open) { close(); return; }
@@ -143,6 +144,7 @@ function skMakeRow(s) {
   const top = skEl('span', 'sk-row-top');
   top.appendChild(skEl('span', 'sk-row-name', '/' + s.name));
   if (!s.enabled) top.appendChild(skEl('span', 'sk-badge', 'Disabled'));
+  if (s.source?.update_available) top.appendChild(skEl('span', 'sk-badge sk-badge-update', 'Update available'));
   main.appendChild(top);
   main.appendChild(skEl('span', 'sk-row-desc', s.description || ''));
   const meta = skEl('span', 'sk-row-meta');

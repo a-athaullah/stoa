@@ -563,3 +563,17 @@ CREATE TABLE IF NOT EXISTS skill_files (
 );
 CREATE INDEX IF NOT EXISTS idx_skill_files_sha ON skill_files(sha256);
 CREATE INDEX IF NOT EXISTS idx_skills_created_by_actor ON skills(created_by_actor_id);
+-- Git source of a skill (migrations/20261029-skill-sources.sql, lib/skill-git.js).
+CREATE TABLE IF NOT EXISTS skill_sources (
+  skill_id INTEGER PRIMARY KEY REFERENCES skills(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK(kind IN ('git')),
+  url TEXT NOT NULL,
+  ref TEXT DEFAULT NULL,
+  subdir TEXT DEFAULT NULL,
+  commit_sha TEXT DEFAULT NULL,
+  synced_revision_id INTEGER DEFAULT NULL,
+  checked_commit TEXT DEFAULT NULL,
+  checked_at TEXT DEFAULT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);

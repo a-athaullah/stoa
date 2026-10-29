@@ -1022,10 +1022,27 @@ GET /api/automations/connections/:id/messages?chatId=<JID>&limit=<n>
 | `.tar.gz` / `.tgz` / `.tar` | `.zip`과 동일한 레이아웃 규칙 |
 | 폴더(드래그&드롭 또는 **Import folder**) | 상대 경로가 있는 멀티파트로 전송 |
 | GitHub URL | `https://github.com/<owner>/<repo>[/tree/<ref>/<path>]` — 서버가 공개 타볼을 가져옵니다(토큰 불필요, 공개 저장소만). `/`를 포함한 ref는 지원되지 않습니다. |
+| Git 저장소 | **New skill → Import from git repository** — 저장소 URL(`https://` 또는 `ssh://`, 예: `ssh://git@host:2222/owner/repo.git`), 선택적 브랜치 또는 태그, 선택적 서브폴더를 입력합니다. 서버 자체 SSH 키가 사용되며, URL에 자격 증명을 포함하면 거부됩니다. 소스는 이후 업데이트를 위해 기억됩니다. |
 
 입력을 선택하면 **미리보기 대화상자**가 나타나 감지된 이름, 설명, 파일 목록, 총 크기, 경고를 확인할 수 있습니다. 충돌이 있으면 이름을 변경할 수 있습니다. 확인하면 저장 후 에디터가 열립니다.
 
 **제한:** 총 50 MB, 파일당 20 MB, 300개 파일, `SKILL.md` 최대 64 KB. 절대 경로, `..` 경로 탐색, 심볼릭 링크, 암호화된 항목 또는 대소문자를 구분하지 않는 중복 경로가 있는 아카이브는 거부됩니다.
+
+### 업데이트 추적
+
+git 저장소(또는 GitHub)에서 가져온 스킬은 **Source** 링크를 유지합니다. 스킬 에디터를 열면 **Source** 블록에 URL, ref, 서브폴더, 짧은 커밋 해시, 마지막 확인 시간이 표시됩니다.
+
+| 버튼 | 기능 |
+|---|---|
+| **Check for updates** | 저장소에 연결합니다. 새 커밋이 있으면 Source 블록과 스킬 목록에 **Update available** 배지가 표시됩니다. |
+| **Update** | 최신 커밋을 가져와 새 리비전을 만듭니다(노트: `git update <sha7>`). 변경 사항이 없으면 *"already matches the repository"* 토스트가 표시됩니다. |
+| **Detach** | Source 링크를 제거합니다. 스킬과 모든 기록은 그대로 유지됩니다. |
+
+**로컬 편집:** 마지막 가져오기 이후 Stoa에서 스킬을 수정한 경우, Source 블록에 *"Edited since the last import"*가 표시되며 **Update**는 덮어쓰기 전에 확인을 요청합니다. 이전 편집 내용은 History에 남습니다. 에디터에 저장되지 않은 변경 사항이 있는 동안에는 **Update**가 비활성화됩니다. 먼저 저장하거나 취소하세요.
+
+**GitHub 가져오기:** GitHub URL로 가져온 스킬도 소스가 기록됩니다. 첫 번째 **Check for updates**에서는 "Update available"이 표시됩니다(초기 가져오기 시 커밋이 기록되지 않으므로). 첫 번째 **Update**에서 커밋이 기록되며, 이미 일치하는 경우 내용이 교체되지 않습니다.
+
+**소유자 전용:** 에이전트는 git에서 가져오기, 업데이트 확인, 업데이트, Source 분리를 수행할 수 없습니다(403).
 
 ### 스킬 호출
 

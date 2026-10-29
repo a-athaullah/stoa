@@ -21124,7 +21124,187 @@ async function run() {
         const r = await S.importBundle({ kind: 'url', url: 'https://github.com/acme/r' });
         assert.strictEqual(r.status, 201, JSON.stringify(r.body));
         assert.strictEqual(d.prepare('SELECT source_url FROM skill_revisions').get().source_url, 'https://github.com/acme/r');
+        assert.deepStrictEqual(r.body.skill.source, { kind: 'git', url: 'https://github.com/acme/r.git', ref: null, path: null, commit: null,
+          checked_commit: null, checked_at: null, update_available: false, local_changes: false }, 'a GitHub import is linked as a git source');
+        const subTar = await makeTar([{ name: 'r-2/skills/x/SKILL.md', data: '---\nname: gh-sub\ndescription: gh\n---\nb' }]);
+        const S2 = createSkills({ db: d, blobsDir: dir, fetchImpl: async () => ({ status: 200, ok: true, headers: { get: () => null }, body: [subTar] }) });
+        const sub = await S2.importBundle({ kind: 'url', url: 'https://github.com/acme/r/tree/v2/skills/x' });
+        assert.strictEqual(sub.status, 201, JSON.stringify(sub.body));
+        assert.deepStrictEqual([sub.body.skill.source.url, sub.body.skill.source.ref, sub.body.skill.source.path], ['https://github.com/acme/r.git', 'v2', 'skills/x']);
       } finally { d.close(); fsS.rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    // A bare repository in a temp dir, reached over file:// (allowed only with STOA_TEST=1), and a
+    // working clone of it to push new commits from.
+    const { execFileSync } = require('child_process');
+    const makeGitRepo = (files) => {
+      const root = tmpDir('stoa-test-skill-git-');
+      const bare = path.join(root, 'origin.git');
+      const work = path.join(root, 'work');
+      const git = (cwd, ...a) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', ...a], { cwd, stdio: 'pipe' }).toString().trim();
+      git(root, 'init', '-q', '--bare', '-b', 'main', bare);
+      git(root, 'init', '-q', '-b', 'main', work);
+      const commit = (fileMap, msg = 'c') => {
+        for (const [p, v] of Object.entries(fileMap)) {
+          const fp = path.join(work, p);
+          if (v === null) { fsS.rmSync(fp, { force: true }); continue; }
+          fsS.mkdirSync(path.dirname(fp), { recursive: true });
+          if (typeof v === 'object' && v.symlink) fsS.symlinkSync(v.symlink, fp); else fsS.writeFileSync(fp, v);
+        }
+        git(work, 'add', '-A');
+        git(work, 'commit', '-q', '-m', msg);
+        git(work, 'push', '-q', bare, 'HEAD:main');
+        return git(work, 'rev-parse', 'HEAD');
+      };
+      const first = commit(files);
+      return { root, url: `file://${bare}`, first, commit, git: (...a) => git(work, ...a), cleanup: () => fsS.rmSync(root, { recursive: true, force: true }) };
+    };
+    const G = require('./lib/skill-git');
+
+    await test('skill-git validation — only https / ssh / user@host:path; no credentials, options, dot segments', async () => {
+      for (const u of ['https://git.example.com/team/skill.git', 'ssh://git@git.example.com:2222/aan/qiscus-deck-skill.git', 'git@github.com:acme/skills.git']) {
+        assert.strictEqual(G.checkGitUrl(` ${u} `), u, u);
+      }
+      const rejected = ['ext::sh -c touch% /tmp/x', '-uhttps://h/x', 'https://user:pw@h/x.git', 'https://token@h/x.git', 'ssh://u:pw@h/x.git',
+        'ssh://-oProxyCommand=x@h/x', 'git@-oProxyCommand=x:a/b', 'git@h:-x', 'git@h:/abs', 'http://h/x.git', 'git://h/x.git', '/srv/repo.git', '../repo',
+        'https://h/x.git?a=1', 'https://h/', 'https://h/x y.git', 'https://h\\x', '', 42, null];
+      for (const u of rejected) assert.throws(() => G.checkGitUrl(u), (e) => e.code === 'invalid_url', JSON.stringify(u));
+      const prev = process.env.STOA_TEST;
+      process.env.STOA_TEST = '0';
+      try { assert.throws(() => G.checkGitUrl('file:///tmp/r.git'), (e) => e.code === 'invalid_url', 'file:// outside test mode'); }
+      finally { process.env.STOA_TEST = prev; }
+      assert.deepStrictEqual([G.checkRef(null), G.checkRef(''), G.checkRef(' main '), G.checkRef('release/1.2')], [null, null, 'main', 'release/1.2']);
+      for (const ref of ['-b', '--upload-pack=x', 'a..b', 'a//b', 'a/', '/a', 'a.lock', '.hidden', 'x/.y', 'a b', 'a@{1}', 'x'.repeat(201), 5]) {
+        assert.throws(() => G.checkRef(ref), (e) => e.code === 'invalid_ref', JSON.stringify(ref));
+      }
+      assert.deepStrictEqual([G.checkSubdir(null), G.checkSubdir(' '), G.checkSubdir('skills/pdf/')], [null, null, 'skills/pdf']);
+      for (const p of ['../x', '/etc', 'a/../b', 'a/./b', 'a\\b', 7]) assert.throws(() => G.checkSubdir(p), (e) => e.code === 'invalid_path', JSON.stringify(p));
+    });
+
+    await test('skill-git gitError — ssh stderr classified on all lines, not the closing paragraph', async () => {
+      const closing = 'fatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\n';
+      const cases = [
+        ['Forgejo: Cannot find repository: aan/no-such-repo\n' + closing, 'git_repo_not_found', 404, 'Repository not found (or no access to it)'],
+        ['ERROR: Repository not found.\n' + closing, 'git_repo_not_found', 404, 'Repository not found (or no access to it)'],
+        ['fatal: \'x.git\' does not appear to be a git repository\n' + closing, 'git_repo_not_found', 404, 'Repository not found (or no access to it)'],
+        [closing, 'git_repo_not_found', 404, 'Repository not found (or no access to it)'],
+        ['git@gitlab.example.com: Permission denied (publickey).\n' + closing, 'git_auth_failed', 502, /^Access denied by the git host/],
+        ['Host key verification failed.\n' + closing, 'git_auth_failed', 502, /SSH key yet/],
+        ['ssh: Could not resolve hostname nohost.invalid: nodename nor servname provided, or not known\n' + closing,
+          'git_unreachable', 502, 'Cannot reach the git host: ssh: Could not resolve hostname nohost.invalid: nodename nor servname provided, or not known'],
+        ['warning: something odd\nfatal: unable to access \'https://***@h/x.git/\': SSL certificate problem\nPlease make sure you\n',
+          'git_failed', 502, 'git failed: unable to access \'https://***@h/x.git/\': SSL certificate problem'],
+      ];
+      for (const [stderr, code, status, message] of cases) {
+        const e = G.gitError(stderr);
+        assert.deepStrictEqual([e.code, e.status], [code, status], stderr);
+        if (message instanceof RegExp) assert.match(e.message, message, stderr);
+        else assert.strictEqual(e.message, message, stderr);
+      }
+      const leaked = G.gitError('fatal: unable to access \'https://user:s3cret@h/x.git/\': The requested URL returned error: 500\n');
+      assert.strictEqual(leaked.code, 'git_failed');
+      assert.ok(!leaked.message.includes('s3cret') && leaked.message.includes('https://***@h/x.git/'), leaked.message);
+      assert.strictEqual(G.gitError('').message, 'git failed');
+    });
+
+    await test('createSkills git source — import, check, update, unchanged update, local changes, detach; agents refused', async () => {
+      const d = memDb();
+      const dir = tmpDir('stoa-test-skills-');
+      const repo = makeGitRepo({ 'skills/deck/SKILL.md': '---\nname: deck\ndescription: v1\n---\nbody v1\n', 'skills/deck/run.sh': '#!/bin/sh\n', 'README.md': 'repo' });
+      fsS.chmodSync(path.join(repo.root, 'work', 'skills/deck/run.sh'), 0o755);
+      repo.commit({ 'skills/deck/run.sh': '#!/bin/sh\necho 1\n' }, 'exec');
+      const head1 = repo.git('rev-parse', 'HEAD');
+      let changes = 0;
+      try {
+        const S = createSkills({ db: d, blobsDir: dir, onChange: () => { changes++; } });
+        const agentCaller = { actorId: 901, subAgentId: null };
+        const refused = await S.importBundle({ kind: 'git', url: repo.url, path: 'skills/deck' }, agentCaller);
+        assert.deepStrictEqual([refused.status, refused.body.code], [403, 'forbidden'], 'git runs with the server\'s credentials: owner only');
+
+        const preview = await S.importBundle({ kind: 'git', url: repo.url, ref: 'main', path: 'skills/deck' }, null, { dryRun: true });
+        assert.strictEqual(preview.status, 200, JSON.stringify(preview.body));
+        assert.deepStrictEqual(preview.body.preview.source, { kind: 'git', url: repo.url, ref: 'main', path: 'skills/deck', commit: head1 });
+        assert.strictEqual(d.prepare('SELECT COUNT(*) AS c FROM skills').get().c, 0, 'dry run stores nothing');
+
+        const imp = await S.importBundle({ kind: 'git', url: repo.url, ref: 'main', path: 'skills/deck/' });
+        assert.strictEqual(imp.status, 201, JSON.stringify(imp.body));
+        const sk = imp.body.skill;
+        assert.strictEqual(sk.name, 'deck');
+        assert.deepStrictEqual(sk.files.map(f => [f.path, f.mode]), [['SKILL.md', 0o644], ['run.sh', 0o755]], 'only the folder, exec bit kept, no .git');
+        assert.deepStrictEqual(sk.source, { kind: 'git', url: repo.url, ref: 'main', path: 'skills/deck', commit: head1, checked_commit: null, checked_at: null, update_available: false, local_changes: false });
+        assert.strictEqual(S.list().body.skills.find(x => x.id === sk.id).source.commit, head1, 'the list carries the source too');
+
+        let c = await S.sourceCheck(sk.id);
+        assert.deepStrictEqual(c.body, { commit: head1, remote_commit: head1, update_available: false });
+        assert.strictEqual(await S.sourceCheck(sk.id, agentCaller).then(x => x.status), 403);
+
+        const head2 = repo.commit({ 'skills/deck/SKILL.md': '---\nname: renamed-upstream\ndescription: v2\n---\nbody v2\n', 'skills/deck/new.txt': 'n' }, 'v2');
+        c = await S.sourceCheck(sk.id);
+        assert.deepStrictEqual(c.body, { commit: head1, remote_commit: head2, update_available: true });
+        let src = S.get(sk.id).body.skill.source;
+        assert.deepStrictEqual([src.checked_commit, src.update_available, !!src.checked_at], [head2, true, true], 'the check result is stored');
+
+        assert.strictEqual(S.update(sk.id, { body: 'edited here' }).status, 200);
+        assert.strictEqual(S.get(sk.id).body.skill.source.local_changes, true, 'an edit after the import is a local change');
+        assert.strictEqual((await S.sourceUpdate(sk.id, agentCaller)).status, 403);
+        const before = changes;
+        const up = await S.sourceUpdate(sk.id);
+        assert.strictEqual(up.status, 200, JSON.stringify(up.body));
+        assert.deepStrictEqual([up.body.updated, up.body.commit, up.body.local_changes], [true, head2, true]);
+        assert.ok(changes > before, 'skills_changed after an update');
+        const after = up.body.skill;
+        assert.deepStrictEqual([after.name, after.description, after.version, after.body.trim()], ['deck', 'v2', 3, 'body v2'], 'the skill keeps its own name');
+        assert.deepStrictEqual(after.files.map(f => f.path), ['SKILL.md', 'new.txt', 'run.sh']);
+        assert.deepStrictEqual([after.source.commit, after.source.update_available, after.source.local_changes], [head2, false, false]);
+        const revs = S.revisions(sk.id).body.revisions.map(r => [r.version, r.note]);
+        assert.deepStrictEqual(revs, [[3, `git update ${head2.slice(0, 7)}`], [2, null], [1, 'Imported']], 'the local edit stays in the history');
+
+        const same = await S.sourceUpdate(sk.id);
+        assert.deepStrictEqual([same.body.updated, same.body.local_changes, same.body.skill.version], [false, false, 3], 'nothing new → no revision');
+
+        repo.commit({ 'skills/deck/link': { symlink: '../../README.md' } }, 'symlink');
+        const sym = await S.sourceUpdate(sk.id);
+        assert.deepStrictEqual([sym.status, sym.body.code], [400, 'symlink'], 'symlinks are refused like in archives');
+        assert.strictEqual(S.get(sk.id).body.skill.version, 3);
+
+        const det = S.sourceDetach(sk.id);
+        assert.deepStrictEqual([det.status, det.body.skill.source, det.body.skill.version], [200, null, 3], 'detach keeps the content');
+        assert.strictEqual((await S.sourceCheck(sk.id)).body.code, 'no_source');
+        assert.strictEqual(S.sourceDetach(sk.id).status, 404);
+        assert.strictEqual(S.sourceDetach(999999).status, 404);
+
+        repo.commit({ 'skills/deck/link': null }, 'drop symlink');
+        const relinked = await S.importBundle({ kind: 'git', url: repo.url, path: 'skills/deck' }, null, { name: 'deck-two' });
+        assert.strictEqual(relinked.status, 201, JSON.stringify(relinked.body));
+        assert.strictEqual(S.remove(relinked.body.skill.id).status, 200);
+        assert.strictEqual(d.prepare('SELECT COUNT(*) AS c FROM skill_sources WHERE skill_id=?').get(relinked.body.skill.id).c, 0, 'deleting the skill drops its source');
+      } finally { d.close(); fsS.rmSync(dir, { recursive: true, force: true }); repo.cleanup(); }
+    });
+
+    await test('createSkills git source — clear errors: missing ref / repo / folder / SKILL.md, tag refs, temp clone removed', async () => {
+      const d = memDb();
+      const dir = tmpDir('stoa-test-skills-');
+      const repo = makeGitRepo({ 'SKILL.md': '---\nname: root-skill\ndescription: d\n---\nb\n', 'docs/readme.md': 'x' });
+      try {
+        const S = createSkills({ db: d, blobsDir: dir });
+        const tmpBefore = fsS.readdirSync(os.tmpdir()).filter(n => n.startsWith('stoa-skill-git-')).length;
+        const err = async (input) => (await S.importBundle({ kind: 'git', url: repo.url, ...input }, null, { dryRun: true })).body;
+        assert.strictEqual((await err({ ref: 'nope' })).code, 'git_ref_not_found');
+        assert.strictEqual((await err({ url: `${repo.url}-missing` })).code, 'git_repo_not_found');
+        assert.match((await err({ path: 'nothere' })).error, /Folder "nothere" not found/);
+        assert.match((await err({ path: 'docs' })).error, /No SKILL\.md found in "docs"/);
+        assert.strictEqual((await err({ url: 'https://u:secret@example.com/x.git' })).code, 'invalid_url');
+        assert.ok(!JSON.stringify(await err({ url: 'https://u:secret@example.com/x.git' })).includes('secret'), 'credentials are never echoed');
+        assert.strictEqual((await err({ ref: '--upload-pack=touch' })).code, 'invalid_ref');
+        assert.strictEqual((await err({ path: '../..' })).code, 'invalid_path');
+        repo.git('tag', '-a', 'v1', '-m', 'v1');
+        repo.git('push', '-q', path.join(repo.root, 'origin.git'), 'v1');
+        const tagged = await S.importBundle({ kind: 'git', url: repo.url, ref: 'v1' });
+        assert.strictEqual(tagged.status, 201, JSON.stringify(tagged.body));
+        assert.deepStrictEqual([tagged.body.skill.name, tagged.body.skill.source.ref, tagged.body.skill.source.commit], ['root-skill', 'v1', repo.first]);
+        assert.deepStrictEqual((await S.sourceCheck(tagged.body.skill.id)).body, { commit: repo.first, remote_commit: repo.first, update_available: false }, 'an annotated tag resolves to its commit');
+        assert.strictEqual(fsS.readdirSync(os.tmpdir()).filter(n => n.startsWith('stoa-skill-git-')).length, tmpBefore, 'every temp clone is removed');
+      } finally { d.close(); fsS.rmSync(dir, { recursive: true, force: true }); repo.cleanup(); }
     });
 
     await test('createSkills ownership — agent edits / deletes its own (and its sub-agents\') skills only; others 404', async () => {
@@ -21264,6 +21444,50 @@ async function run() {
       await req('DELETE', `/api/skills/${r.body.skill.id}`);
       await ev;
       assert.strictEqual((await req('GET', `/api/skills/${r.body.skill.id}`)).status, 404);
+    });
+
+    await test('git source over HTTP — import git_url, check / update by id or name, detach; agents get 403', async () => {
+      const repo = makeGitRepo({ 'SKILL.md': '---\nname: qa-git-skill\ndescription: v1\n---\nb1\n' });
+      try {
+        await asAgent(agent, async (h) => {
+          const r = await req('POST', '/api/skills/import', { git_url: repo.url }, h);
+          assert.deepStrictEqual([r.status, r.body.code], [403, 'forbidden'], 'import is open to agents, git_url is not');
+          assert.strictEqual((await req('POST', '/api/skills/qa-header-gen/source/check', null, h)).status, 403);
+          assert.strictEqual((await req('POST', `/api/skills/${hg.id}/source/update`, null, h)).status, 403);
+          assert.strictEqual((await req('DELETE', `/api/skills/${hg.id}/source`, null, h)).status, 403);
+        });
+        assert.strictEqual((await req('POST', '/api/skills/import', { git_url: repo.url, url: 'https://github.com/a/b' })).body.code, 'invalid_body');
+        assert.strictEqual((await req('POST', '/api/skills/import', { git_url: repo.url, dry_run: 'yes' })).body.code, 'invalid_body');
+        assert.strictEqual((await req('POST', '/api/skills/import', { git_url: 'file:///etc' , ref: '-x' })).body.code, 'invalid_ref');
+        const preview = await req('POST', '/api/skills/import', { git_url: repo.url, dry_run: true });
+        assert.strictEqual(preview.status, 200, preview.raw);
+        assert.deepStrictEqual([preview.body.preview.name, preview.body.preview.source.commit], ['qa-git-skill', repo.first]);
+        const imp = await req('POST', '/api/skills/import', { git_url: repo.url, ref: 'main' });
+        assert.strictEqual(imp.status, 201, imp.raw);
+        const id = imp.body.skill.id;
+        createdSkillIds.push(id);
+        assert.deepStrictEqual([imp.body.skill.source.url, imp.body.skill.source.ref, imp.body.skill.source.commit], [repo.url, 'main', repo.first]);
+        const listed = (await req('GET', '/api/skills')).body.skills.find(x => x.id === id);
+        assert.strictEqual(listed.source.update_available, false);
+        assert.strictEqual((await req('GET', `/api/skills/${hg.id}`)).body.skill.source, null, 'a skill not from git has source null');
+
+        const head2 = repo.commit({ 'SKILL.md': '---\nname: qa-git-skill\ndescription: v2\n---\nb2\n' }, 'v2');
+        const chk = await req('POST', '/api/skills/qa-git-skill/source/check');
+        assert.deepStrictEqual(chk.body, { commit: repo.first, remote_commit: head2, update_available: true }, 'by name');
+        assert.strictEqual((await req('GET', '/api/skills')).body.skills.find(x => x.id === id).source.update_available, true, 'the list badge');
+        const ev = waitForWsMessage(human, m => m.type === 'skills_changed');
+        const up = await req('POST', `/api/skills/${id}/source/update`);
+        assert.strictEqual(up.status, 200, up.raw);
+        await ev;
+        assert.deepStrictEqual([up.body.updated, up.body.local_changes, up.body.commit, up.body.skill.description, up.body.skill.version], [true, false, head2, 'v2', 2]);
+        const again = await req('POST', `/api/skills/${id}/source/update`);
+        assert.deepStrictEqual([again.body.updated, again.body.skill.version], [false, 2]);
+        assert.strictEqual((await req('GET', `/api/skills/${id}/source`)).status, 404, 'GET is not a source route');
+        assert.strictEqual((await req('POST', '/api/skills/qa-no-such-skill/source/check')).status, 404);
+        const det = await req('DELETE', `/api/skills/${id}/source`);
+        assert.deepStrictEqual([det.status, det.body.skill.source], [200, null]);
+        assert.strictEqual((await req('POST', `/api/skills/${id}/source/check`)).body.code, 'no_source');
+      } finally { repo.cleanup(); }
     });
 
     const sendInRoom = async (content, extra = {}) => {
