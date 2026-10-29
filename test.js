@@ -4039,9 +4039,10 @@ async function runAsyncUnitTests() {
   const keepAliveHarness = (opts = {}) => {
     const { createUpstreamManager } = require('./lib/mcp-upstreams');
     const clients = [];
+    const fail = new Set();
     class StdioClientTransport { constructor(o) { this.tag = o.args[0]; } }
     class Client {
-      async connect(t) { this.tag = t.tag; this.closed = false; clients.push(this); }
+      async connect(t) { if (fail.has(t.tag)) throw new Error('boom'); this.tag = t.tag; this.closed = false; clients.push(this); }
       async listTools() { return { tools: [] }; }
       async close() { this.closed = true; }
       setNotificationHandler() {}
@@ -4052,7 +4053,7 @@ async function runAsyncUnitTests() {
       ...opts,
     });
     const live = (tag) => clients.filter(c => c.tag === tag && !c.closed);
-    return { um, clients, live };
+    return { um, clients, live, fail };
   };
   const kaRow = (id, keep_alive, extra = {}) => ({ id, slug: `ka${id}`, transport: 'stdio', command: process.execPath, args_json: JSON.stringify([`s${id}`]), enabled: 1, keep_alive, ...extra });
   const pause = (ms) => new Promise(r => setTimeout(r, ms));
@@ -4109,6 +4110,48 @@ async function runAsyncUnitTests() {
     assert.strictEqual(um.info(rows[1]).status, 'running');
     assert.strictEqual(clients.filter(c => c.tag === 's2').length, 1, 'normal server not restarted');
     assert.strictEqual(clients.filter(c => c.tag === 's3').length, 1, 'disabled meanwhile → not restarted');
+    um.stopAll();
+  });
+
+  await uta('MCP upstreams keep-alive — a crash loop backs off further each time; a stable run resets the backoff', async () => {
+    const row = kaRow(1, 1);
+    const { um, clients } = keepAliveHarness({ getRow: () => row, backoffBaseMs: 40, stableMs: 300 });
+    const starts = [];
+    const crashLoop = (n) => new Promise((resolve) => {
+      const tick = setInterval(() => {
+        const c = clients[clients.length - 1];
+        if (c && !c.crashed && um.info(row).status === 'running') {
+          c.crashed = true;
+          starts.push(Date.now());
+          if (starts.length >= n) { clearInterval(tick); resolve(); } else c.onclose();
+        }
+      }, 2);
+    });
+    await um.keepAlive(row);
+    await crashLoop(5);
+    const gaps = starts.slice(1).map((t, i) => t - starts[i]);
+    for (let i = 1; i < gaps.length; i++) assert.ok(gaps[i] > gaps[i - 1], `restart delay grows on every crash: ${gaps.join(',')}`);
+    assert.ok(gaps[gaps.length - 1] >= 300, `4th restart waited the 8x backoff (>=320ms): ${gaps.join(',')}`);
+    // Now up past stableMs: the next exit starts again from the base delay, not 16x.
+    await pause(350);
+    const before = Date.now();
+    clients[clients.length - 1].onclose();
+    while (um.info(row).status !== 'running') await pause(2);
+    const after = Date.now() - before;
+    assert.ok(after < 200, `stable run reset the backoff to ~40ms (16x would be 640ms): ${after}ms`);
+    um.stopAll();
+  });
+
+  await uta('MCP upstreams — a normal server that started after failed starts and then exits backs off from the base delay, as before', async () => {
+    const row = kaRow(1, 0);
+    const { um, clients, fail } = keepAliveHarness();
+    fail.add('s1');
+    for (const n of [1, 2, 3]) await assert.rejects(um.listTools(row, { fresh: true }), /boom/, `failed start ${n}`);
+    await assert.rejects(um.callTool(row, 'x'), /retrying in 4s/, "three failed starts → 4s backoff pending");
+    fail.delete('s1');
+    await um.listTools(row, { fresh: true });
+    clients[0].onclose();
+    await assert.rejects(um.callTool(row, 'x'), /retrying in 1s/, 'a successful start cleared the count: one exit = base backoff');
     um.stopAll();
   });
 
