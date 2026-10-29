@@ -433,10 +433,14 @@ File non-gambar ditampilkan sebagai **kartu file** berisi ikon, nama asli, dan l
 | CSV / TSV | Tabel yang bisa digulir, maksimal 500 baris |
 | TXT / LOG / YAML / YML | Teks biasa |
 | JSON | Teks dengan format rapi |
+| Video (MP4, M4V, WebM, MOV) | Player bawaan di dialog lebar (maks 960 px); layar penuh di HP. Bisa di-seek. |
+| Audio (MP3, M4A, AAC, WAV, OGG, OGA, Opus, FLAC) | Player bawaan di dialog kecil (maks 480 px); mengambang di HP. |
 
 HTML, SVG, JavaScript, dan semua tipe lainnya hanya bisa **didownload** — menampilkan konten aktif akan menjalankan markup tidak tepercaya di origin Stoa.
 
-File di atas 2 MB tidak dapat di-preview; sebuah pesan akan mengarahkan Anda untuk mendownload. Jika file sudah dihapus oleh pembersihan otomatis, preview menampilkan pemberitahuan "tidak tersedia lagi".
+File di atas 2 MB tidak dapat di-preview; sebuah pesan akan mengarahkan Anda untuk mendownload. File video dan audio di-stream langsung dan tidak terkena batasan 2 MB. Jika file sudah dihapus oleh pembersihan otomatis, preview menampilkan pemberitahuan "tidak tersedia lagi".
+
+Jika browser tidak bisa memutar format video atau audio, muncul pesan dengan tombol **Download**. Menutup modal atau membuka preview lain akan menghentikan media yang sedang diputar.
 
 Modal dapat ditutup dengan **Esc**, dengan mengklik di luar modal, atau dengan tombol **Close**.
 

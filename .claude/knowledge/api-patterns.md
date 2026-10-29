@@ -279,6 +279,8 @@ Content-Type: multipart/form-data
 
 **Cleanup:** Files older than 24h auto-deleted (except `uploads/avatar/`)
 
+**File serving (`GET /uploads/*`):** supports HTTP Range requests (206 Partial Content / 416 Range Not Satisfiable). Video/audio types (`mp4 m4v webm mov mp3 m4a aac wav ogg oga opus flac`) are served inline (`Content-Disposition: inline`) without a size cap — the 2 MB preview limit applies only to text/document types fetched by the FE. All other files use `?download=1` to force `Content-Disposition: attachment` with the original filename.
+
 ---
 
 ### Agent-Specific Routes
