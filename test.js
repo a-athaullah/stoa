@@ -18448,6 +18448,32 @@ async function run() {
     assert.strictEqual(db.prepare('SELECT broadcast_reason FROM messages WHERE id=?').get(reply3Id).broadcast_reason, 'error', 'reason kept');
   });
 
+  // A bare repository in a temp dir, reached over file:// (allowed only with STOA_TEST=1), and a
+  // working clone of it to push new commits from.
+  const makeGitRepo = (files) => {
+    const gfs = require('fs');
+    const { execFileSync } = require('child_process');
+    const root = gfs.mkdtempSync(path.join(require('os').tmpdir(), 'stoa-test-skill-git-'));
+    const bare = path.join(root, 'origin.git');
+    const work = path.join(root, 'work');
+    const git = (cwd, ...a) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', ...a], { cwd, stdio: 'pipe' }).toString().trim();
+    git(root, 'init', '-q', '--bare', '-b', 'main', bare);
+    git(root, 'init', '-q', '-b', 'main', work);
+    const commit = (fileMap, msg = 'c') => {
+      for (const [p, v] of Object.entries(fileMap)) {
+        const fp = path.join(work, p);
+        if (v === null) { gfs.rmSync(fp, { force: true }); continue; }
+        gfs.mkdirSync(path.dirname(fp), { recursive: true });
+        if (typeof v === 'object' && v.symlink) gfs.symlinkSync(v.symlink, fp); else gfs.writeFileSync(fp, v);
+      }
+      git(work, 'add', '-A');
+      git(work, 'commit', '-q', '-m', msg);
+      git(work, 'push', '-q', bare, 'HEAD:main');
+      return git(work, 'rev-parse', 'HEAD');
+    };
+    const first = commit(files);
+    return { root, url: `file://${bare}`, first, commit, git: (...a) => git(work, ...a), cleanup: () => gfs.rmSync(root, { recursive: true, force: true }) };
+  };
   // ── MCP gateway end-to-end: real /api/mcp admin API, real tokens from agent_trigger, real /mcp
   // requests proxied to a stdio dummy upstream (test/fixtures/mcp-dummy-server.js, no network).
   console.log('\n[MCP Gateway]');
@@ -18488,13 +18514,13 @@ async function run() {
       'agent_avatar_set', 'agent_memory_get', 'agent_memory_set', 'agent_system_prompt_get', 'agent_system_prompt_set',
       'automation_create', 'automation_delete', 'automation_list', 'automation_update', 'connection_list',
       'message_send', 'messages_read', 'room_memory_get', 'room_memory_set', 'room_system_prompt_get', 'room_system_prompt_set',
-      'skill_create', 'skill_delete', 'skill_get', 'skill_list', 'skill_update', 'skill_use',
+      'skill_create', 'skill_delete', 'skill_get', 'skill_import_git', 'skill_list', 'skill_source_check', 'skill_source_detach', 'skill_source_update', 'skill_update', 'skill_use',
       'sub_agent_avatar_set', 'sub_agent_create', 'sub_agent_delete', 'sub_agent_link', 'sub_agent_list', 'sub_agent_memory_get', 'sub_agent_memory_set', 'sub_agent_trigger', 'sub_agent_unlink', 'sub_agent_update',
       'thread_read', 'threads_list'].map(n => `stoa__${n}`).sort();
     // Built-ins a sub-agent session sees: the config-changing ones are hidden from it (availableTo).
     const SUB_SESSION_TOOLS = ['automation_list', 'connection_list', 'message_send', 'messages_read', 'room_memory_get', 'room_system_prompt_get',
       'self_avatar_set', 'self_get', 'self_update',
-      'skill_create', 'skill_delete', 'skill_get', 'skill_list', 'skill_update', 'skill_use', 'sub_agent_memory_get', 'sub_agent_memory_set', 'thread_read', 'threads_list'];
+      'skill_create', 'skill_delete', 'skill_get', 'skill_import_git', 'skill_list', 'skill_source_check', 'skill_source_detach', 'skill_source_update', 'skill_update', 'skill_use', 'sub_agent_memory_get', 'sub_agent_memory_set', 'thread_read', 'threads_list'];
     // self_* exist only in sub-agent sessions, so they are not in BUILTINS (the main session's list).
     const SUB_BUILTINS = [...BUILTINS, 'stoa__self_avatar_set', 'stoa__self_get', 'stoa__self_update']
       .filter(n => n.startsWith('stoa__schedule_') || SUB_SESSION_TOOLS.includes(n.slice(6))).sort();
@@ -20198,6 +20224,42 @@ async function run() {
       assert.deepStrictEqual(skillNotices(roomA, since), ['__test-mcp-a deleted skill /qa-mcp-sub · config']);
     });
 
+    await test('MCP skills — skill_import_git / skill_source_*: import owned by the agent, check by anyone, update / detach by its creator, notices', async () => {
+      const repo = makeGitRepo({ 'SKILL.md': '---\nname: qa-mcp-git\ndescription: v1\n---\nb1\n' });
+      try {
+        const since = maxMsgId();
+        const preview = await stoaOk(tokA, 'skill_import_git', { git_url: repo.url, ref: 'main', dry_run: true });
+        assert.deepStrictEqual([preview.preview.name, preview.preview.source.commit], ['qa-mcp-git', repo.first]);
+        assert.strictEqual(skillRow('qa-mcp-git'), undefined, 'dry run stores nothing');
+        const imp = await stoaOk(tokA, 'skill_import_git', { git_url: repo.url, ref: 'main' });
+        assert.deepStrictEqual(imp, { ok: true, skill: { name: 'qa-mcp-git', version: 1, description: 'v1', file_count: 1 }, source: { url: repo.url, ref: 'main', path: null, commit: repo.first } });
+        assert.deepStrictEqual([skillRow('qa-mcp-git').created_by_actor_id, skillRow('qa-mcp-git').created_by_sub_agent_id], [agA.actorId, null]);
+        assert.strictEqual((await skillErr(tokB, 'skill_import_git', { git_url: repo.url })).code, 'name_taken');
+        assert.strictEqual((await skillErr(tokB, 'skill_import_git', { git_url: '-oProxyCommand=touch /tmp/x' })).code, 'invalid_url');
+        assert.strictEqual((await skillErr(tokB, 'skill_import_git', { git_url: repo.url, ref: '--upload-pack=x' })).code, 'invalid_ref');
+
+        const head2 = repo.commit({ 'SKILL.md': '---\nname: qa-mcp-git\ndescription: v2\n---\nb2\n' }, 'v2');
+        assert.deepStrictEqual(await stoaOk(tokB, 'skill_source_check', { name: 'qa-mcp-git' }), { commit: repo.first, remote_commit: head2, update_available: true }, 'any agent may check');
+        const forbidden = { error: 'You can only update or detach the source of a skill you created', code: 'forbidden' };
+        assert.deepStrictEqual(await skillErr(tokB, 'skill_source_update', { name: 'qa-mcp-git' }), forbidden, 'another agent');
+        assert.deepStrictEqual(await skillErr(tokSub, 'skill_source_update', { name: 'qa-mcp-git' }), forbidden, 'a sub-agent → its parent\'s skill');
+        assert.deepStrictEqual(await skillErr(tokA, 'skill_source_update', { name: 'qa-mcp-owner' }), forbidden, 'agent → owner skill');
+        assert.deepStrictEqual(await skillErr(tokB, 'skill_source_detach', { name: 'qa-mcp-git' }), forbidden);
+        assert.deepStrictEqual(await skillErr(tokA, 'skill_source_check', { name: 'qa-mcp-missing' }), NOT_FOUND);
+        assert.strictEqual(skillRow('qa-mcp-git').current_revision_id, mDb.prepare('SELECT id FROM skill_revisions WHERE skill_id=? AND version=1').get(skillRow('qa-mcp-git').id).id, 'nothing written');
+
+        const up = await stoaOk(tokA, 'skill_source_update', { name: 'qa-mcp-git' });
+        assert.deepStrictEqual(up, { ok: true, skill: { name: 'qa-mcp-git', version: 2, description: 'v2', file_count: 1 }, updated: true, commit: head2, local_changes: false, warnings: [] });
+        const rev = mDb.prepare('SELECT author_actor_id, note FROM skill_revisions WHERE id=?').get(skillRow('qa-mcp-git').current_revision_id);
+        assert.deepStrictEqual([rev.author_actor_id, rev.note], [agA.actorId, `git update ${head2.slice(0, 7)}`]);
+        assert.strictEqual((await stoaOk(tokA, 'skill_source_update', { name: 'qa-mcp-git' })).updated, false, 'already up to date');
+        assert.deepStrictEqual((await stoaOk(tokA, 'skill_source_detach', { name: 'qa-mcp-git' })).skill.version, 2);
+        assert.strictEqual((await skillErr(tokA, 'skill_source_check', { name: 'qa-mcp-git' })).code, 'no_source');
+        assert.deepStrictEqual(skillNotices(roomA, since), ['__test-mcp-a imported skill /qa-mcp-git from git · config',
+          `__test-mcp-a updated skill /qa-mcp-git from git ${head2.slice(0, 7)} · config`, '__test-mcp-a detached skill /qa-mcp-git from its git source · config']);
+      } finally { repo.cleanup(); }
+    });
+
     await test('MCP skills — bad paths / file entries, invalid input and the 5 MB cap rejected; nothing written', async () => {
       const count = () => mDb.prepare('SELECT COUNT(*) n FROM skills').get().n;
       const before = count();
@@ -21263,31 +21325,6 @@ async function run() {
       } finally { d.close(); fsS.rmSync(dir, { recursive: true, force: true }); }
     });
 
-    // A bare repository in a temp dir, reached over file:// (allowed only with STOA_TEST=1), and a
-    // working clone of it to push new commits from.
-    const { execFileSync } = require('child_process');
-    const makeGitRepo = (files) => {
-      const root = tmpDir('stoa-test-skill-git-');
-      const bare = path.join(root, 'origin.git');
-      const work = path.join(root, 'work');
-      const git = (cwd, ...a) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', ...a], { cwd, stdio: 'pipe' }).toString().trim();
-      git(root, 'init', '-q', '--bare', '-b', 'main', bare);
-      git(root, 'init', '-q', '-b', 'main', work);
-      const commit = (fileMap, msg = 'c') => {
-        for (const [p, v] of Object.entries(fileMap)) {
-          const fp = path.join(work, p);
-          if (v === null) { fsS.rmSync(fp, { force: true }); continue; }
-          fsS.mkdirSync(path.dirname(fp), { recursive: true });
-          if (typeof v === 'object' && v.symlink) fsS.symlinkSync(v.symlink, fp); else fsS.writeFileSync(fp, v);
-        }
-        git(work, 'add', '-A');
-        git(work, 'commit', '-q', '-m', msg);
-        git(work, 'push', '-q', bare, 'HEAD:main');
-        return git(work, 'rev-parse', 'HEAD');
-      };
-      const first = commit(files);
-      return { root, url: `file://${bare}`, first, commit, git: (...a) => git(work, ...a), cleanup: () => fsS.rmSync(root, { recursive: true, force: true }) };
-    };
     const G = require('./lib/skill-git');
 
     await test('skill-git validation — only https / ssh / user@host:path; no credentials, options, dot segments', async () => {
@@ -21336,7 +21373,7 @@ async function run() {
       assert.strictEqual(G.gitError('').message, 'git failed');
     });
 
-    await test('createSkills git source — import, check, update, unchanged update, local changes, detach; agents refused', async () => {
+    await test('createSkills git source — import, check, update, unchanged update, local changes, detach', async () => {
       const d = memDb();
       const dir = tmpDir('stoa-test-skills-');
       const repo = makeGitRepo({ 'skills/deck/SKILL.md': '---\nname: deck\ndescription: v1\n---\nbody v1\n', 'skills/deck/run.sh': '#!/bin/sh\n', 'README.md': 'repo' });
@@ -21346,10 +21383,6 @@ async function run() {
       let changes = 0;
       try {
         const S = createSkills({ db: d, blobsDir: dir, onChange: () => { changes++; } });
-        const agentCaller = { actorId: 901, subAgentId: null };
-        const refused = await S.importBundle({ kind: 'git', url: repo.url, path: 'skills/deck' }, agentCaller);
-        assert.deepStrictEqual([refused.status, refused.body.code], [403, 'forbidden'], 'git runs with the server\'s credentials: owner only');
-
         const preview = await S.importBundle({ kind: 'git', url: repo.url, ref: 'main', path: 'skills/deck' }, null, { dryRun: true });
         assert.strictEqual(preview.status, 200, JSON.stringify(preview.body));
         assert.deepStrictEqual(preview.body.preview.source, { kind: 'git', url: repo.url, ref: 'main', path: 'skills/deck', commit: head1 });
@@ -21365,7 +21398,8 @@ async function run() {
 
         let c = await S.sourceCheck(sk.id);
         assert.deepStrictEqual(c.body, { commit: head1, remote_commit: head1, update_available: false });
-        assert.strictEqual(await S.sourceCheck(sk.id, agentCaller).then(x => x.status), 403);
+        const agentCaller = { actorId: 901, subAgentId: null };
+        assert.deepStrictEqual((await S.sourceCheck(sk.id, agentCaller)).body, { commit: head1, remote_commit: head1, update_available: false }, 'check is read-only: any agent');
 
         const head2 = repo.commit({ 'skills/deck/SKILL.md': '---\nname: renamed-upstream\ndescription: v2\n---\nbody v2\n', 'skills/deck/new.txt': 'n' }, 'v2');
         c = await S.sourceCheck(sk.id);
@@ -21375,7 +21409,9 @@ async function run() {
 
         assert.strictEqual(S.update(sk.id, { body: 'edited here' }).status, 200);
         assert.strictEqual(S.get(sk.id).body.skill.source.local_changes, true, 'an edit after the import is a local change');
-        assert.strictEqual((await S.sourceUpdate(sk.id, agentCaller)).status, 403);
+        const refused = await S.sourceUpdate(sk.id, agentCaller);
+        assert.deepStrictEqual([refused.status, refused.body.code], [403, 'forbidden'], 'an agent never updates the owner\'s skill (same rule as update)');
+        assert.deepStrictEqual([S.sourceDetach(sk.id, agentCaller).status, S.get(sk.id).body.skill.version], [403, 2], 'nor detaches it; nothing written');
         const before = changes;
         const up = await S.sourceUpdate(sk.id);
         assert.strictEqual(up.status, 200, JSON.stringify(up.body));
@@ -21407,6 +21443,51 @@ async function run() {
         assert.strictEqual(relinked.status, 201, JSON.stringify(relinked.body));
         assert.strictEqual(S.remove(relinked.body.skill.id).status, 200);
         assert.strictEqual(d.prepare('SELECT COUNT(*) AS c FROM skill_sources WHERE skill_id=?').get(relinked.body.skill.id).c, 0, 'deleting the skill drops its source');
+      } finally { d.close(); fsS.rmSync(dir, { recursive: true, force: true }); repo.cleanup(); }
+    });
+
+    await test('createSkills git source by agents — import owned by the agent, update / detach only by its creator, validation unchanged', async () => {
+      const d = memDb();
+      const dir = tmpDir('stoa-test-skills-');
+      const repo = makeGitRepo({ 'SKILL.md': '---\nname: agent-git\ndescription: v1\n---\nb1\n' });
+      try {
+        const S = createSkills({ db: d, blobsDir: dir });
+        const A = { actorId: 901, subAgentId: null };
+        const B2 = { actorId: 902, subAgentId: null };
+        const imp = await S.importBundle({ kind: 'git', url: repo.url, ref: 'main' }, A);
+        assert.strictEqual(imp.status, 201, JSON.stringify(imp.body));
+        const id = imp.body.skill.id;
+        const row = d.prepare('SELECT created_by_actor_id, created_by_sub_agent_id FROM skills WHERE id=?').get(id);
+        assert.deepStrictEqual([row.created_by_actor_id, row.created_by_sub_agent_id], [901, null], 'the importing agent owns the skill');
+        assert.strictEqual(imp.body.skill.source.commit, repo.first);
+
+        const head2 = repo.commit({ 'SKILL.md': '---\nname: agent-git\ndescription: v2\n---\nb2\n' }, 'v2');
+        assert.deepStrictEqual((await S.sourceCheck(id, B2)).body, { commit: repo.first, remote_commit: head2, update_available: true }, 'another agent may check');
+        const other = await S.sourceUpdate(id, B2);
+        assert.deepStrictEqual([other.status, other.body.code], [403, 'forbidden']);
+        assert.strictEqual(S.sourceDetach(id, B2).status, 403);
+        assert.strictEqual(S.get(id).body.skill.version, 1, 'nothing written by the other agent');
+
+        const up = await S.sourceUpdate(id, A);
+        assert.deepStrictEqual([up.status, up.body.updated, up.body.skill.version, up.body.skill.description], [200, true, 2, 'v2']);
+        const rev = d.prepare('SELECT author_actor_id, author_sub_agent_id, note FROM skill_revisions WHERE skill_id=? AND version=2').get(id);
+        assert.deepStrictEqual([rev.author_actor_id, rev.author_sub_agent_id, rev.note], [901, null, `git update ${head2.slice(0, 7)}`], 'the agent is the revision author');
+
+        const sub = await S.importBundle({ kind: 'git', url: repo.url }, { actorId: 901, subAgentId: 951 }, { name: 'agent-git-sub' });
+        assert.strictEqual(sub.status, 201, JSON.stringify(sub.body));
+        assert.strictEqual(S.sourceDetach(sub.body.skill.id, { actorId: 901, subAgentId: 952 }).status, 403, 'a sibling sub-agent may not');
+        assert.strictEqual(S.sourceDetach(sub.body.skill.id, A).status, 200, 'the parent manages its sub-agent\'s skill');
+
+        assert.strictEqual((await S.importBundle({ kind: 'git', url: repo.url }, B2)).body.code, 'name_taken', 'a clash is still 409');
+        for (const [url, ref, p, code] of [['-oProxyCommand=x', null, null, 'invalid_url'], ['ext::sh -c id', null, null, 'invalid_url'], ['https://u:pw@h/x.git', null, null, 'invalid_url'],
+          [repo.url, '--upload-pack=x', null, 'invalid_ref'], [repo.url, null, '../x', 'invalid_path']]) {
+          const r = await S.importBundle({ kind: 'git', url, ref, path: p }, B2, { dryRun: true });
+          assert.deepStrictEqual([r.status, r.body.code], [400, code], url);
+        }
+        const prev = process.env.STOA_TEST;
+        process.env.STOA_TEST = '0';
+        try { assert.strictEqual((await S.importBundle({ kind: 'git', url: repo.url }, B2, { dryRun: true })).body.code, 'invalid_url', 'file:// outside test mode'); }
+        finally { process.env.STOA_TEST = prev; }
       } finally { d.close(); fsS.rmSync(dir, { recursive: true, force: true }); repo.cleanup(); }
     });
 
@@ -21575,15 +21656,22 @@ async function run() {
       assert.strictEqual((await req('GET', `/api/skills/${r.body.skill.id}`)).status, 404);
     });
 
-    await test('git source over HTTP — import git_url, check / update by id or name, detach; agents get 403', async () => {
+    await test('git source over HTTP — import git_url, check / update by id or name, detach; agents own what they import', async () => {
       const repo = makeGitRepo({ 'SKILL.md': '---\nname: qa-git-skill\ndescription: v1\n---\nb1\n' });
       try {
         await asAgent(agent, async (h) => {
-          const r = await req('POST', '/api/skills/import', { git_url: repo.url }, h);
-          assert.deepStrictEqual([r.status, r.body.code], [403, 'forbidden'], 'import is open to agents, git_url is not');
-          assert.strictEqual((await req('POST', '/api/skills/qa-header-gen/source/check', null, h)).status, 403);
-          assert.strictEqual((await req('POST', `/api/skills/${hg.id}/source/update`, null, h)).status, 403);
+          const r = await req('POST', '/api/skills/import', { git_url: repo.url, name: 'qa-git-agent' }, h);
+          assert.strictEqual(r.status, 201, r.raw);
+          createdSkillIds.push(r.body.skill.id);
+          assert.strictEqual(db.prepare('SELECT created_by_actor_id FROM skills WHERE id=?').get(r.body.skill.id).created_by_actor_id, agent.actorId);
+          assert.strictEqual((await req('POST', '/api/skills/qa-git-agent/source/check', null, h)).body.update_available, false);
+          assert.strictEqual((await req('POST', '/api/skills/qa-header-gen/source/check', null, h)).body.code, 'no_source', 'check reaches any skill');
+          assert.strictEqual((await req('POST', `/api/skills/${hg.id}/source/update`, null, h)).status, 403, 'not the agent\'s skill');
           assert.strictEqual((await req('DELETE', `/api/skills/${hg.id}/source`, null, h)).status, 403);
+          assert.strictEqual((await req('POST', '/api/skills/import', { git_url: '-oProxyCommand=x' }, h)).body.code, 'invalid_url');
+          const det = await req('DELETE', '/api/skills/qa-git-agent/source', null, h);
+          assert.deepStrictEqual([det.status, det.body.skill.source], [200, null], 'its own skill: detach allowed');
+          assert.strictEqual((await req('GET', `/api/skills/${r.body.skill.id}`, null, h)).status, 403, 'other skill routes stay session-only');
         });
         assert.strictEqual((await req('POST', '/api/skills/import', { git_url: repo.url, url: 'https://github.com/a/b' })).body.code, 'invalid_body');
         assert.strictEqual((await req('POST', '/api/skills/import', { git_url: repo.url, dry_run: 'yes' })).body.code, 'invalid_body');

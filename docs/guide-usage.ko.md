@@ -1042,7 +1042,7 @@ git 저장소(또는 GitHub)에서 가져온 스킬은 **Source** 링크를 유�
 
 **GitHub 가져오기:** GitHub URL로 가져온 스킬도 소스가 기록됩니다. 첫 번째 **Check for updates**에서는 "Update available"이 표시됩니다(초기 가져오기 시 커밋이 기록되지 않으므로). 첫 번째 **Update**에서 커밋이 기록되며, 이미 일치하는 경우 내용이 교체되지 않습니다.
 
-**소유자 전용:** 에이전트는 git에서 가져오기, 업데이트 확인, 업데이트, Source 분리를 수행할 수 없습니다(403).
+**MCP 경유:** 에이전트는 `stoa__skill_import_git`을 사용하여 git에서 스킬을 가져올 수 있습니다 — 가져온 스킬은 호출한 에이전트의 것이 됩니다. `stoa__skill_source_check`는 모든 에이전트가 볼 수 있는 스킬(활성화된 스킬 또는 자신이 만든 스킬)에 대해 호출할 수 있습니다. `stoa__skill_source_update`와 `stoa__skill_source_detach`는 `stoa__skill_update` 및 `stoa__skill_delete`와 동일한 소유권 규칙을 따릅니다: 제작자만(부모 에이전트는 서브에이전트가 만든 스킬도 포함). UI에서 가져온 스킬은 사용자 것으로 유지됩니다 — 제작자가 아닌 에이전트는 forbidden 오류를 받습니다.
 
 ### 스킬 호출
 
@@ -1054,7 +1054,7 @@ git 저장소(또는 GitHub)에서 가져온 스킬은 **Source** 링크를 유�
 
 ### 에이전트가 만든 스킬
 
-에이전트와 서브에이전트는 6개의 기본 MCP 도구로 스킬을 만들고 관리할 수 있습니다.
+에이전트와 서브에이전트는 10개의 기본 MCP 도구로 스킬을 만들고 관리할 수 있습니다.
 
 | 도구 | 사용 대상 | 기능 |
 |---|---|---|
@@ -1064,6 +1064,10 @@ git 저장소(또는 GitHub)에서 가져온 스킬은 **Source** 링크를 유�
 | `stoa__skill_create` | 에이전트 / 서브에이전트 | 새 스킬을 만듭니다. `files`는 `{path, content}` 또는 `{path, content_base64}`를 받습니다. MCP 경유 총 페이로드 ≤ 5 MB. 더 큰 번들은 `POST /api/skills/import`를 사용하세요. |
 | `stoa__skill_update` | 제작자만 | 새 리비전을 만듭니다. 설명, 인수 힌트, 본문, 지원 파일 업서트/삭제, 리비전 메모를 업데이트할 수 있습니다. 이름 변경이나 활성화/비활성화 토글은 불가합니다. |
 | `stoa__skill_delete` | 제작자만 | 스킬을 영구 삭제합니다. |
+| `stoa__skill_import_git` | 에이전트 / 서브에이전트 | git 리포지토리(`https://` 또는 `ssh://`)에서 스킬을 가져옵니다. 선택적: `ref`(브랜치 또는 태그), `path`(`SKILL.md`가 있는 하위 폴더), `name`/`description` 재정의, `dry_run: true`로 저장 없이 미리보기. 서버 SSH 키 사용. 스킬은 호출한 에이전트의 것이 됩니다. |
+| `stoa__skill_source_check` | 모든 에이전트 | 스킬의 git 리포지토리에 새 커밋이 있는지 확인합니다. 볼 수 있는 스킬(활성화된 스킬 또는 호출자가 만든 스킬)에 대해 작동합니다. |
+| `stoa__skill_source_update` | 제작자만 | 최신 커밋을 가져와 새 리비전을 만듭니다. 이미 최신이면 `updated: false`; Stoa 편집이 교체되면 `local_changes: true`(History에 보존됨). |
+| `stoa__skill_source_detach` | 제작자만 | git 소스 링크를 제거합니다. 스킬과 기록은 그대로 유지됩니다. |
 
 **승인 없음** — 이 도구들은 다른 `stoa__*` 기본 도구와 동일하게 작동하며 승인 대화 상자를 표시하지 않습니다.
 

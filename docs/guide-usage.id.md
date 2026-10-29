@@ -1047,7 +1047,7 @@ Skill yang diimpor dari git repository (atau GitHub) menyimpan tautan **Source**
 
 **Impor GitHub:** Skill yang diimpor melalui URL GitHub juga menyimpan source-nya. **Check for updates** pertama akan menampilkan "Update available" (commit tidak tersimpan saat impor awal); **Update** pertama mencatatnya tanpa mengganti konten jika sudah cocok.
 
-**Hanya pemilik:** Agent tidak dapat mengimpor dari git, memeriksa update, memperbarui, atau memutus tautan source (403).
+**Via MCP:** Agent dapat mengimpor dari git menggunakan `stoa__skill_import_git` — skill yang diimpor menjadi milik agent yang mengimpor. Semua agent dapat memanggil `stoa__skill_source_check` pada skill manapun yang terlihat (aktif atau buatan agent itu sendiri). `stoa__skill_source_update` dan `stoa__skill_source_detach` mengikuti aturan kepemilikan yang sama dengan `stoa__skill_update` dan `stoa__skill_delete`: hanya pembuat (agent induk mencakup skill buatan sub-agentnya). Skill yang Anda impor via UI tetap milik Anda — agent yang bukan pembuatnya akan mendapat error forbidden.
 
 ### Memanggil Skill
 
@@ -1059,7 +1059,7 @@ Konten skill di-prepend ke prompt agent; file pendukung di-cache di mesin agent 
 
 ### Skill Buatan Agent
 
-Agent dan sub-agent bisa membuat dan mengelola skill menggunakan enam MCP tool bawaan:
+Agent dan sub-agent bisa membuat dan mengelola skill menggunakan sepuluh MCP tool bawaan:
 
 | Tool | Siapa yang bisa | Yang dilakukan |
 |---|---|---|
@@ -1069,6 +1069,10 @@ Agent dan sub-agent bisa membuat dan mengelola skill menggunakan enam MCP tool b
 | `stoa__skill_create` | agent / sub-agent | Membuat skill baru. `files` menerima `{path, content}` atau `{path, content_base64}`. Total payload maks 5 MB lewat MCP; bundle lebih besar pakai `POST /api/skills/import`. |
 | `stoa__skill_update` | pembuat saja | Membuat revisi baru. Bisa memperbarui deskripsi, argument hint, isi, upsert atau hapus file pendukung, dan menambah catatan revisi. Tidak bisa rename atau toggle enabled. |
 | `stoa__skill_delete` | pembuat saja | Menghapus skill secara permanen. |
+| `stoa__skill_import_git` | agent / sub-agent | Mengimpor skill dari repositori git (`https://` atau `ssh://`). Opsional: `ref` (branch atau tag), `path` (subfolder yang berisi `SKILL.md`), override `name` dan `description`, `dry_run: true` untuk preview tanpa menyimpan. Menggunakan SSH key server. Skill menjadi milik agent yang mengimpor. |
+| `stoa__skill_source_check` | semua agent | Memeriksa apakah repositori git skill memiliki commit terbaru. Berfungsi pada skill apa pun yang terlihat (aktif atau buatan pemanggil). |
+| `stoa__skill_source_update` | pembuat saja | Mengambil commit terbaru dan membuat revisi baru. Mengembalikan `updated: false` jika sudah terkini; `local_changes: true` jika edit di Stoa digantikan (tetap ada di History). |
+| `stoa__skill_source_detach` | pembuat saja | Menghapus tautan source git. Skill dan seluruh histori-nya tetap utuh. |
 
 **Tanpa approval** — tool-tool ini bekerja seperti semua tool bawaan `stoa__*` lainnya dan tidak pernah memunculkan dialog persetujuan.
 
