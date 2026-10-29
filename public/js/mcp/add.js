@@ -26,13 +26,13 @@ function mcpNewForm(preset) {
   if (preset) {
     return {
       mode: 'new', preset, serverId: null, name: preset.name, slug: mcpFreeSlug(mcpSlugFrom(preset.id)), slugTouched: true, inDialog: true,
-      transport: preset.transport, auth: preset.auth || 'none', command: '', args: '', url: '', allow_all: false, error: null, saving: false,
+      transport: preset.transport, auth: preset.auth || 'none', command: '', args: '', url: '', allow_all: false, keep_alive: false, error: null, saving: false,
       env: (preset.env_fields || []).map(f => ({ key: f.key, value: '', label: f.label || f.key, help: f.help || '', secret: !!f.secret, required: !!f.required, fixed: true })),
     };
   }
   return {
     mode: 'new', preset: null, serverId: null, name: '', slug: '', slugTouched: false,
-    transport: 'stdio', command: '', args: '', url: '', allow_all: false, error: null, saving: false, env: [],
+    transport: 'stdio', command: '', args: '', url: '', allow_all: false, keep_alive: false, error: null, saving: false, env: [],
   };
 }
 
@@ -49,7 +49,7 @@ function mcpOpenEdit(srv) {
   mcpOpenDialog({
     mode: 'edit', preset, presetId: srv.preset || null, serverId: srv.id, name: srv.name, slug: srv.slug, slugTouched: true, inDialog: true,
     icon: mcpIconForServer(srv), transport: srv.transport, auth: srv.auth || 'none', authInitial: srv.auth || 'none', command: srv.command || '', args: (srv.args || []).join('\n'), url: srv.url || '',
-    allow_all: srv.default_access === 'all', error: null, saving: false, env,
+    allow_all: srv.default_access === 'all', keep_alive: !!srv.keep_alive, error: null, saving: false, env,
   }, `edit:${srv.id}`);
 }
 
@@ -297,6 +297,8 @@ function mcpMakeForm(f) {
 
   if (isCustom || f.env.length || f.auth === 'oauth') box.appendChild(mcpMakeEnvEditor(f, isCustom));
 
+  if (f.transport === 'stdio') box.appendChild(mcpMakeKeepAlive(f));
+
   if (!isEdit) box.appendChild(mcpMakeAccessChoice(f));
 
   const err = mcpEl('div', 'auto-field-err', f.error || '');
@@ -319,6 +321,41 @@ function mcpMakeForm(f) {
 
   box.addEventListener('submit', e => { e.preventDefault(); mcpSubmitForm(f, err, save); });
   return box;
+}
+
+// In edit mode the switch saves on its own: a PATCH carrying only keep_alive leaves the process running,
+// while the form's save reconfigures (restarts) it, which would cut off e.g. a meeting bot mid-call.
+function mcpMakeKeepAlive(f) {
+  const isEdit = f.mode === 'edit';
+  const wrap = mcpEl('div', 'mcp-keepalive');
+  const row = mcpEl('div', 'mcp-keepalive-row');
+  const txt = mcpEl('div', 'mcp-keepalive-text');
+  const titleId = `mcp-keepalive-title-${f.serverId || 'new'}`;
+  const title = mcpEl('span', 'mcp-check-title', 'keep running');
+  title.id = titleId;
+  txt.append(title, mcpEl('span', 'mcp-field-hint', 'Start with Stoa and never stop it when idle. For MCP servers that send events into rooms (e.g. a meeting bot).'));
+  if (isEdit) txt.appendChild(mcpEl('span', 'mcp-field-hint', 'saved right away, without restarting the server.'));
+  const err = mcpEl('div', 'auto-field-err');
+  err.setAttribute('role', 'alert');
+  const sw = mcpSwitch(!!f.keep_alive, 'Keep running', async next => {
+    if (!isEdit) { f.keep_alive = next; return true; }
+    err.textContent = '';
+    const r = await mcpApi('PATCH', `/api/mcp/servers/${f.serverId}`, { keep_alive: next });
+    if (!r.ok) { err.textContent = r.error; return false; }
+    f.keep_alive = next;
+    const srv = mcpServerById(f.serverId);
+    if (srv) {
+      Object.assign(srv, r.data?.server || { keep_alive: next });
+      if (mcpIsVisible() && mcpState.tab === 'installed') mcpRerenderCard(srv);
+    }
+    return true;
+  });
+  sw.classList.add('mcp-keepalive-switch');
+  sw.removeAttribute('aria-label');
+  sw.setAttribute('aria-labelledby', titleId);
+  row.append(txt, sw);
+  wrap.append(row, err);
+  return wrap;
 }
 
 function mcpMakeAccessChoice(f) {
@@ -440,6 +477,7 @@ async function mcpSubmitForm(f, errEl, saveBtn) {
     if (removed.length) body.env_remove = removed;
   } else {
     body = { slug: f.slug, name: f.name.trim(), transport: f.transport, env, allow_all: !!f.allow_all };
+    if (f.transport === 'stdio' && f.keep_alive) body.keep_alive = true;
     if (f.preset) body.preset = f.preset.id;
     else if (f.transport === 'stdio') { body.command = f.command.trim(); body.args = f.args.split('\n').map(a => a.trim()).filter(Boolean); }
     else { body.url = f.url.trim(); body.auth = mcpFormHttpAuth(f, env); }

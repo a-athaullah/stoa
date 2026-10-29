@@ -14160,6 +14160,79 @@ async function run() {
     assert.ok(icon.includes('stroke="currentColor"') && !/fill="#/.test(icon), 'mcp icon is a monochrome currentColor stroke glyph');
   });
 
+  await test('mcp keep_alive UI — "always on" chip only for stdio keep-alive, create sends the flag, edit switch PATCHes keep_alive alone and rolls back with the API error inline', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El {
+      constructor(tag) { this.tagName = tag.toUpperCase(); this.style = { setProperty() {} }; this.dataset = {}; this.children = []; this.parentNode = null; this._text = ''; this.attrs = {}; this.on = {};
+        const cls = new Set(); this.cls = cls; this.classList = { add: (...c) => c.forEach(x => cls.add(x)), remove: (...c) => c.forEach(x => cls.delete(x)), toggle: (c, on) => (on ?? !cls.has(c)) ? cls.add(c) : cls.delete(c), contains: c => cls.has(c) }; }
+      set className(v) { String(v).split(/\s+/).filter(Boolean).forEach(c => this.classList.add(c)); }
+      get className() { return [...this.cls].join(' '); }
+      appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
+      append(...cs) { for (const c of cs) this.appendChild(typeof c === 'string' ? Object.assign(new El('#text'), { textContent: c }) : c); }
+      replaceWith(n) { const p = this.parentNode; if (!p) return; p.children[p.children.indexOf(this)] = n; n.parentNode = p; }
+      set innerHTML(v) { this.children = []; this._text = ''; }
+      set textContent(v) { this.children = []; this._text = String(v); }
+      get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+      setAttribute(k, v) { this.attrs[k] = String(v); } getAttribute(k) { return this.attrs[k] ?? null; } removeAttribute(k) { delete this.attrs[k]; }
+      addEventListener(t, f) { (this.on[t] ||= []).push(f); }
+      all(pred, out = []) { if (pred(this)) out.push(this); this.children.forEach(c => c.all && c.all(pred, out)); return out; }
+      byClass(c) { return this.all(n => n.cls.has(c)); }
+    }
+    const calls = [];
+    let reply = { ok: true, data: null };
+    const ctx = { document: { createElement: t => new El(t), createTextNode: t => Object.assign(new El('#text'), { textContent: t }), querySelector: () => null, getElementById: () => null },
+      Node: El, showToast() {}, svgPencil: () => '', autoSvgTrash: () => '', svgX: () => '', console };
+    vm.createContext(ctx);
+    for (const f of ['state.js', 'installed.js', 'add.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/mcp', f), 'utf8'), ctx);
+    vm.runInContext('mcpApi = async (method, url, body) => { __calls.push({ method, url, body }); return __reply(); }; mcpIsVisible = () => false;', Object.assign(ctx, { __calls: calls, __reply: () => reply }));
+    const card = srv => vm.runInContext('mcpMakeServerCard', ctx)(srv);
+    const base = { id: 4, slug: 'meet', name: 'Google Meet', transport: 'stdio', enabled: 1, status: 'running', tool_count: 3, default_access: 'none' };
+    const chip = c => c.byClass('mcp-chip-always');
+    assert.strictEqual(chip(card({ ...base, keep_alive: false })).length, 0, 'no chip when keep_alive is off');
+    const on = chip(card({ ...base, keep_alive: true }));
+    assert.strictEqual(on.length, 1);
+    assert.strictEqual(on[0].textContent, 'always on');
+    assert.strictEqual(chip(card({ ...base, transport: 'http', keep_alive: true })).length, 0, 'http servers never show it');
+
+    const form = f => vm.runInContext('mcpMakeForm', ctx)(f);
+    const newForm = vm.runInContext('mcpNewForm', ctx)(null);
+    assert.strictEqual(form(newForm).byClass('mcp-keepalive').length, 1, 'custom stdio create form offers the toggle');
+    assert.strictEqual(form({ ...newForm, transport: 'http' }).byClass('mcp-keepalive').length, 0, 'http create form hides it');
+    const click = el => Promise.all((el.on.click || []).map(f => f({ preventDefault() {} })));
+    const createBox = form(newForm);
+    await click(createBox.byClass('mcp-keepalive-switch')[0]);
+    assert.strictEqual(newForm.keep_alive, true);
+    assert.strictEqual(calls.length, 0, 'on the create form the switch only sets the draft');
+    Object.assign(newForm, { name: 'Bot', slug: 'bot', command: 'node', args: 'bot.js' });
+    reply = { ok: true, data: { server: { id: 9, slug: 'bot', name: 'Bot', transport: 'stdio', keep_alive: true } } };
+    vm.runInContext('mcpSetTab = () => {}; mcpRender = () => {};', ctx);
+    await vm.runInContext('mcpSubmitForm', ctx)(newForm, new El('div'), new El('button'));
+    assert.deepStrictEqual([calls[0].method, calls[0].url, calls[0].body.keep_alive], ['POST', '/api/mcp/servers', true]);
+
+    calls.length = 0;
+    const srv = { ...base, keep_alive: false };
+    vm.runInContext('mcpState.servers = __s;', Object.assign(ctx, { __s: [srv] }));
+    vm.runInContext('mcpOpenDialog = f => { __f.push(f); };', Object.assign(ctx, { __f: [] }));
+    vm.runInContext('mcpOpenEdit', ctx)(srv);
+    const editF = ctx.__f[0];
+    const editBox = form(editF);
+    const sw = editBox.byClass('mcp-keepalive-switch')[0];
+    const err = editBox.byClass('mcp-keepalive')[0].byClass('auto-field-err')[0];
+    reply = { ok: false, status: 400, error: 'keep_alive is only for stdio servers' };
+    await click(sw);
+    assert.strictEqual(JSON.stringify(calls[0]), JSON.stringify({ method: 'PATCH', url: '/api/mcp/servers/4', body: { keep_alive: true } }), 'the switch PATCHes keep_alive alone so the process is not restarted');
+    assert.strictEqual(sw.getAttribute('aria-checked'), 'false', 'a failed PATCH rolls the switch back');
+    assert.strictEqual(err.textContent, 'keep_alive is only for stdio servers', 'the API error shows inline');
+    assert.strictEqual(srv.keep_alive, false);
+    reply = { ok: true, data: { server: { ...base, keep_alive: true } } };
+    await click(sw);
+    assert.strictEqual(sw.getAttribute('aria-checked'), 'true');
+    assert.strictEqual(err.textContent, '', 'a later success clears the error');
+    assert.strictEqual(srv.keep_alive, true, 'the cached server picks up the saved value so the card chip follows');
+    assert.strictEqual(editF.keep_alive, true);
+  });
+
   await test('room agents popover — an actor removed elsewhere leaves the open popover (participants + add list), stale loads never win', async () => {
     const vm = require('vm');
     const fs = require('fs');

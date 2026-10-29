@@ -216,6 +216,13 @@
 .mcp-env-keyname { font-size: 11px; color: var(--h-ink-faint); overflow-wrap: anywhere; }
 .mcp-env-help { margin-top: -4px; }
 .mcp-check-title { font-size: 13.5px; }
+.mcp-keepalive { display: flex; flex-direction: column; gap: 6px; }
+.mcp-keepalive-row {
+  display: flex; align-items: center; gap: 12px; padding: 10px 12px;
+  border: 1px solid var(--h-hair-soft); border-radius: 10px;
+}
+.mcp-keepalive-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.mcp-keepalive-switch { flex-shrink: 0; }
 .mcp-form-btns { display: flex; justify-content: flex-end; gap: 8px; }
 .mcp-access-choice { border: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .mcp-access-choice legend { padding: 0; margin-bottom: 8px; }

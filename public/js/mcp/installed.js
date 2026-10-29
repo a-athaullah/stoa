@@ -31,6 +31,11 @@ function mcpMakeServerCard(srv) {
   const titles = mcpEl('div', 'mcp-card-titles');
   const nameRow = mcpEl('div', 'mcp-card-name-row');
   nameRow.append(mcpEl('span', 'mcp-card-name', srv.name), mcpEl('code', 'mcp-slug', `${srv.slug}__*`));
+  if (srv.keep_alive && srv.transport !== 'http') {
+    const always = mcpEl('span', 'mcp-chip mcp-chip-always', 'always on');
+    always.title = 'Keep running: starts with Stoa and is never stopped when idle';
+    nameRow.appendChild(always);
+  }
   const meta = mcpEl('div', 'mcp-card-meta');
   const statusEl = mcpEl('span', `mcp-status mcp-status-${status}`, MCP_STATUS_LABEL[status] || status);
   meta.append(statusEl,
