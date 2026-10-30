@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.461";
+var CLIENT_VERSION = "0.4.462";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -247,7 +247,7 @@ if (require.main === module && ACTOR_TYPE === "ai") {
 var { readCfAccessEnv, cfHeadersFor, httpOrigin, startCfForwardProxy } = require("./lib/cf-access");
 var { detectSupervisor } = require("./lib/supervisor");
 var { readAvatarFile } = require("./lib/avatar-image");
-var { probeHarnessAccounts, machineIdentity } = require("./lib/harness-probe");
+var { probeHarnessAccounts, machineIdentity, sameClaudeAccount, parseClaudeRateLimitEvent, createRateLimitReporter } = require("./lib/harness-probe");
 var SUPERVISOR = detectSupervisor();
 var BOOT_ID = crypto.randomBytes(8).toString("hex");
 var CF_ACCESS = readCfAccessEnv(process.env, (m) => console.warn(m));
@@ -686,7 +686,22 @@ async function backupSessionFile(workdir, sessionId) {
 }
 const { createHarnessSession: _createHS, supportsCompact, buildResumeArgs, parseClaudeAuthStatus, parseCodexLoginStatus, parseCodexModels, filesToUpdate, detectClaudeModelCandidates } = require("./harness-session");
 function createHarnessSession(harness, opts) {
-  return _createHS(harness, opts, { ClaudeSession });
+  const session = _createHS(harness, opts, { ClaudeSession });
+  if (harness !== "codex") watchClaudeRateLimits(session, opts.env);
+  return session;
+}
+// Every Claude turn carries a rate_limit_event: the plan limits of this machine's card come from it
+// (lib/harness-accounts.js), throttled. A session on another login or provider (own CLAUDE_CONFIG_DIR,
+// API key, third-party base URL) describes another account and is not reported.
+var reportClaudeRateLimits = createRateLimitReporter({
+  emit: (rateLimits) => {
+    const machine = safeMachineIdentity();
+    if (machine) send({ type: "harness_rate_limits", machine_id: machine.id, harness: "claude", rate_limits: rateLimits });
+  }
+});
+function watchClaudeRateLimits(session, sessionEnv) {
+  if (!sameClaudeAccount({ ...process.env, ...sessionEnv || {} })) return;
+  session.on("rate_limit_event", (info) => reportClaudeRateLimits(parseClaudeRateLimitEvent(info)));
 }
 async function prepareResume({ targetDir, rid, targetModel, toolsSupported, env, sessionKey, thirdParty = false, aggressive = false, systemPrompt = null, systemPromptHash = null, harness = "claude" }) {
   if (harness === "claude" && rid && !compactsInFlight.has(sessionKey)) {
@@ -959,21 +974,20 @@ function safeMachineIdentity() {
   }
 }
 // Server-coordinated (lib/harness-accounts.js asks one agent per machine), so no timer here. Requests
-// that arrive while a probe runs share it.
-var harnessProbeInFlight = null;
+// that arrive while a probe of the same kind runs share it.
+var harnessProbeInFlight = { plain: null, ping: null };
 function runHarnessAccountsProbe(msg) {
   const requestId = typeof msg.request_id === "string" ? msg.request_id.slice(0, 64) : null;
   const skipLimits = {};
-  for (const id of ["claude", "codex"]) {
-    const v = msg.skip_limits?.[id];
-    if (typeof v === "string" && v.length <= 40 && Number.isFinite(Date.parse(v))) skipLimits[id] = v;
-  }
-  if (!harnessProbeInFlight) {
-    harnessProbeInFlight = probeHarnessAccounts({ skipLimits }).finally(() => {
-      harnessProbeInFlight = null;
+  const v = msg.skip_limits?.codex;
+  if (typeof v === "string" && v.length <= 40 && Number.isFinite(Date.parse(v))) skipLimits.codex = v;
+  const kind = msg.ping_limits === true ? "ping" : "plain";
+  if (!harnessProbeInFlight[kind]) {
+    harnessProbeInFlight[kind] = probeHarnessAccounts({ skipLimits, pingLimits: kind === "ping" }).finally(() => {
+      harnessProbeInFlight[kind] = null;
     });
   }
-  harnessProbeInFlight.then((result) => {
+  harnessProbeInFlight[kind].then((result) => {
     send({ type: "harness_accounts", request_id: requestId, ...result });
   }).catch((err) => console.error(`[stoa] harness accounts probe failed: ${err.message}`));
 }
@@ -1404,6 +1418,7 @@ async function handleAgentMessage(msg) {
     if (!session) {
       if (msg.claude_session_id) {
         session = new ClaudeSession({ workDir: workdirResolved, flags: ["--resume", msg.claude_session_id], resumeId: msg.claude_session_id });
+        watchClaudeRateLimits(session, null);
         attachUnsolicitedHandler(session, key);
         sessionPool.set(key, session);
         startSessionIdleTimer(key);

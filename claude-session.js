@@ -164,6 +164,11 @@ class ClaudeSession extends EventEmitter {
   }
 
   _handleEvent(event) {
+    // Not part of any turn's output, so it is passed on whether a turn is ours, an auto turn or none.
+    if (event.type === 'rate_limit_event') {
+      this.emit('rate_limit_event', event.rate_limit_info ?? null);
+      return;
+    }
     if (event.type === 'system' && event.subtype === 'background_tasks_changed') {
       this._backgroundTasks = Array.isArray(event.tasks) ? event.tasks : [];
       return;
