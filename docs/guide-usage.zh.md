@@ -1440,7 +1440,7 @@ API 密钥存储在服务器上，仅在 Settings 编辑表单中返回到浏览
 - **Not installed** — 该机器上未安装 CLI。
 - **API key login — no plan limits** — 使用 API 密钥的账号没有计划使用窗口。
 - **Limits unavailable** — 账号已确认，但限额端点返回了错误。
-- **Rate-limited / last known values** — Claude 的使用端点每个账号大约每小时允许一次查询；被速率限制时，提示会显示下次查询的时间，同时继续显示上次已知的数值。共享同一 Claude 账号的其他工具（如 Claude Code 本身）也会消耗此限额。
+- **Rate-limited / last known values** — Claude 的使用端点每个账号大约每小时允许一次查询；被速率限制时，提示会显示下次查询的时间，同时继续显示上次已知的数值。
 
 令牌凭据仅在代理机器上读取，绝不发送至 Stoa 服务器。
 

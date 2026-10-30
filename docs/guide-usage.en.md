@@ -1444,7 +1444,7 @@ Possible states for a harness panel:
 - **Not installed** — the CLI is not on that machine.
 - **API key login — no plan limits** — API key accounts have no plan usage windows.
 - **Limits unavailable** — the account is confirmed but the limits endpoint returned an error.
-- **Rate-limited / last known values** — Claude's usage endpoint allows approximately one check per hour per account; when rate-limited, the note shows when the next check will be attempted and the last known values remain visible. Other tools sharing the same Claude account (such as Claude Code itself) count toward this limit.
+- **Rate-limited / last known values** — Claude's usage endpoint allows approximately one check per hour per account; when rate-limited, the note shows when the next check will be attempted and the last known values remain visible.
 
 Token credentials are read on the agent machine only and are never sent to the Stoa server.
 

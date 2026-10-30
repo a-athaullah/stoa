@@ -1440,7 +1440,7 @@ Slack, WhatsApp, Email 연결과 자동화 규칙을 관리합니다. 위의 [�
 - **Not installed** — 해당 머신에 CLI가 설치되어 있지 않습니다.
 - **API key login — no plan limits** — API 키를 사용하는 계정에는 플랜 사용 창이 없습니다.
 - **Limits unavailable** — 계정은 확인되었지만 한도 엔드포인트가 오류를 반환했습니다.
-- **Rate-limited / last known values** — Claude 사용 엔드포인트는 계정당 약 1시간에 1번 조회를 허용합니다. 속도 제한 중에는 다음 조회 예정 시간이 표시되고 마지막으로 확인된 값이 계속 표시됩니다. 같은 Claude 계정을 공유하는 다른 도구(Claude Code 자체 포함)도 이 한도에 영향을 줍니다.
+- **Rate-limited / last known values** — Claude 사용 엔드포인트는 계정당 약 1시간에 1번 조회를 허용합니다. 속도 제한 중에는 다음 조회 예정 시간이 표시되고 마지막으로 확인된 값이 계속 표시됩니다.
 
 토큰 인증 정보는 에이전트 머신에서만 읽히며 Stoa 서버로는 전송되지 않습니다.
 

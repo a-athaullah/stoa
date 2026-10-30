@@ -1445,7 +1445,7 @@ Status yang mungkin muncul di panel harness:
 - **Not installed** — CLI belum terinstal di mesin tersebut.
 - **API key login — no plan limits** — akun yang pakai API key tidak punya jendela penggunaan plan.
 - **Limits unavailable** — akun terkonfirmasi tapi endpoint limit mengembalikan error.
-- **Rate-limited / last known values** — endpoint penggunaan Claude mengizinkan sekitar satu cek per jam per akun; saat rate-limited, notis menunjukkan kapan cek berikutnya akan dicoba dan nilai terakhir yang diketahui tetap ditampilkan. Tools lain yang berbagi akun Claude yang sama (seperti Claude Code sendiri) turut memengaruhi limit ini.
+- **Rate-limited / last known values** — endpoint penggunaan Claude mengizinkan sekitar satu cek per jam per akun; saat rate-limited, notis menunjukkan kapan cek berikutnya akan dicoba dan nilai terakhir yang diketahui tetap ditampilkan.
 
 Kredensial token hanya dibaca di mesin agent dan tidak pernah dikirim ke server Stoa.
 
