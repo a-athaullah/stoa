@@ -17,6 +17,8 @@ const uaState = {
   loading: false,
   error: null,
   refreshingAll: false,
+  allSeq: 0,
+  allAcked: false,
   refreshing: new Set(),
   seq: 0,
   applied: 0,
@@ -91,6 +93,7 @@ async function uaFetch(method, body) {
 function uaApply(seq, data) {
   if (seq < uaState.applied) return false;
   uaState.applied = seq;
+  if (uaState.refreshingAll && seq > uaState.allSeq) uaState.allAcked = true;
   uaState.data = data;
   uaState.error = null;
   uaSchedulePoll();
@@ -120,7 +123,11 @@ async function uaLoad() {
 async function uaRefresh(machineId) {
   if (uaState.refreshingAll || (machineId && uaState.refreshing.has(machineId))) return;
   if (machineId) uaState.refreshing.add(machineId);
-  else uaState.refreshingAll = true;
+  else {
+    uaState.refreshingAll = true;
+    uaState.allSeq = uaState.seq;
+    uaState.allAcked = false;
+  }
   uaRender();
   const res = await uaFetch('POST', machineId ? { machine_id: machineId } : {});
   if (machineId) uaState.refreshing.delete(machineId);
@@ -204,7 +211,11 @@ function uaPct(n) {
   return v < 10 && v % 1 ? v.toFixed(1) : String(Math.round(v));
 }
 
-function uaTone(pct) { return pct >= 90 ? 'crit' : pct >= 70 ? 'warm' : 'calm'; }
+// Tone follows the rounded figure on screen, so "70%" is never calm and "90%" never only amber.
+function uaTone(n) {
+  const pct = Number(uaPct(n));
+  return pct >= 90 ? 'crit' : pct >= 70 ? 'warm' : 'calm';
+}
 
 function uaPlan(plan) {
   const s = String(plan || '').trim();
@@ -413,7 +424,10 @@ function uaRenderMismatch(d, machines) {
 }
 
 function uaRenderMachine(m) {
-  const busy = m.refreshing === true || uaState.refreshing.has(m.machine_id) || (uaState.refreshingAll && m.online);
+  // Refresh all marks every online machine until a list read after the POST arrives; from then on each card
+  // follows the server, so machines that already answered drop back to "checked just now".
+  const pendingAll = uaState.refreshingAll && !uaState.allAcked && m.online;
+  const busy = m.refreshing === true || uaState.refreshing.has(m.machine_id) || pendingAll;
   const card = uaEl('article', 'ua-machine' + (m.online ? '' : ' is-offline') + (busy ? ' is-busy' : ''));
   card.dataset.machineId = m.machine_id;
   const host = m.hostname || 'Unknown machine';
@@ -498,11 +512,10 @@ function uaRenderHarness(h, acc, probedAt) {
   if (status === 'not_applicable') {
     panel.appendChild(uaEl('p', 'ua-state', 'API key login — no plan limits'));
   } else if (status === 'token_expired') {
-    const note = uaEl('p', 'ua-hint ua-hint--warn', 'Token expired — run any task on an agent here, or type /reauth in its room.');
-    panel.appendChild(note);
+    panel.appendChild(uaTokenExpiredNote(h));
   } else if (status !== 'ok') {
     panel.appendChild(uaEl('p', 'ua-state', 'Limits unavailable'));
-    if (acc.error) panel.appendChild(uaEl('p', 'ua-hint', acc.error));
+    if (acc.error && !uaRetryNote(acc.retry_at)) panel.appendChild(uaEl('p', 'ua-hint', acc.error));
   } else if (!limits.length) {
     panel.appendChild(uaEl('p', 'ua-state', 'No limit windows reported'));
   }
@@ -520,7 +533,10 @@ function uaRenderHarness(h, acc, probedAt) {
     panel.appendChild(asOf);
   }
   const retry = uaRel('ua-asof', 'retry', acc.retry_at);
-  if (retry.textContent) panel.appendChild(retry);
+  if (retry.textContent) {
+    if (acc.error) retry.title = acc.error;
+    panel.appendChild(retry);
+  }
   const balance = acc.credits && acc.credits.enabled ? acc.credits.balance : null;
   if (balance !== null && balance !== undefined && balance !== '') {
     const credits = uaEl('div', 'ua-credits');
@@ -531,12 +547,23 @@ function uaRenderHarness(h, acc, probedAt) {
   return panel;
 }
 
+// /reauth re-runs `claude auth login`, so only Claude gets that shortcut.
+function uaTokenExpiredNote(h) {
+  if (h.id === 'claude') return uaEl('p', 'ua-hint ua-hint--warn', 'Token expired — run any task on an agent here, or type /reauth in its room.');
+  const note = uaEl('p', 'ua-hint ua-hint--warn', 'Token expired — run ');
+  note.appendChild(uaEl('code', null, h.login));
+  note.appendChild(document.createTextNode(' on that machine.'));
+  return note;
+}
+
 function uaRenderMeter(l) {
   const pct = Math.max(0, Math.min(100, Number(l.used_pct) || 0));
   const label = l.label || l.key || 'Limit';
   const row = uaEl('div', `ua-meter ua-tone-${uaTone(pct)}`);
   const line = uaEl('div', 'ua-meter-line');
-  line.appendChild(uaEl('span', 'ua-meter-label', label));
+  const labelEl = uaEl('span', 'ua-meter-label', label);
+  labelEl.title = label;
+  line.appendChild(labelEl);
   line.appendChild(uaEl('span', 'ua-meter-pct', uaPct(pct) + '%'));
   row.appendChild(line);
   const track = uaEl('div', 'ua-meter-track');
@@ -567,6 +594,7 @@ function uaRenderAgents(agents) {
     av.classList.add('ua-agent-avatar');
     li.appendChild(av);
     const name = uaEl('span', 'ua-agent-name', a.name || 'Agent');
+    name.title = a.name || 'Agent';
     li.appendChild(name);
     const dot = uaEl('span', 'ua-dot');
     dot.setAttribute('role', 'img');

@@ -14468,6 +14468,48 @@ async function run() {
     assert.strictEqual(rx.byClass('ua-asof').length, 0, 'fresh limits carry no note');
     assert.strictEqual(rx.byClass('ua-credits-value')[0].textContent, '12.5');
     assert.strictEqual(host.byClass('ua-notice-email').length, 1, 'the same email in another case is one account');
+
+    const tone = vm.runInContext('uaTone', ctx);
+    assert.deepStrictEqual([69.4, 69.5, 89.4, 89.5].map(tone), ['calm', 'warm', 'warm', 'crit'], 'tone follows the rounded percentage on screen');
+
+    const edge = { machines: [
+      { machine_id: 'm-e', hostname: 'ee', platform: 'linux', online: true, probed_at: probed,
+        harnesses: {
+          claude: acct('e@x.com', { limits_status: 'unavailable', error: 'Rate limited by Anthropic; next check after the wait', retry_at: soon(30) }),
+          codex: acct('e@x.com', { limits_status: 'token_expired' }) },
+        agents: [{ actor_id: 5, name: 'A very long agent name that will not fit', online: true, tokens_7d: 1, turns_7d: 1 }] },
+      { machine_id: 'm-f', hostname: 'ff', platform: 'linux', online: true, probed_at: soon(-30),
+        harnesses: { claude: acct('e@x.com', { limits: [lim('five_hour', 12)], limits_checked_at: soon(-30) }), codex: null }, agents: [] },
+    ], accounts: { claude: ['e@x.com'], codex: ['e@x.com'] }, mismatch: {} };
+    assert.strictEqual(vm.runInContext('uaApply', ctx)(5, edge), true);
+    vm.runInContext('uaRender', ctx)();
+    const [ec, ex] = host.byClass('ua-machine')[0].byClass('ua-harness');
+    assert.ok(!ec.textContent.includes('Rate limited by Anthropic'), 'the rate-limit error is not repeated as text');
+    const retryNote = ec.byClass('ua-asof');
+    assert.strictEqual(retryNote.length, 1);
+    assert.strictEqual(retryNote[0].title, 'Rate limited by Anthropic; next check after the wait', 'the error moves to the tooltip');
+    assert.ok(ex.textContent.includes('Token expired — run codex login on that machine.') && !ex.textContent.includes('/reauth'), 'Codex is not pointed at /reauth');
+    assert.strictEqual(host.byClass('ua-agent-name')[0].title, 'A very long agent name that will not fit');
+    assert.strictEqual(host.byClass('ua-meter-label')[0].title, 'five_hour');
+
+    vm.runInContext('uaState.seq = uaState.applied', ctx);
+    let release;
+    ctx.fetch = () => new Promise(res => { release = res; });
+    const pending = vm.runInContext('uaRefresh', ctx)();
+    let [ce, cf] = host.byClass('ua-machine');
+    assert.ok(ce.cls.has('is-busy') && cf.cls.has('is-busy'), 'refresh all marks every online machine before the server answers');
+    const answered = JSON.parse(JSON.stringify(edge));
+    answered.machines[0].refreshing = true;
+    answered.machines[1].refreshing = false;
+    answered.machines[1].probed_at = soon(0);
+    assert.strictEqual(vm.runInContext('uaApply', ctx)(vm.runInContext('++uaState.seq', ctx), answered), true);
+    vm.runInContext('uaRender', ctx)();
+    [ce, cf] = host.byClass('ua-machine');
+    assert.ok(ce.cls.has('is-busy'), 'a machine still probing stays Checking…');
+    assert.ok(!cf.cls.has('is-busy') && cf.byClass('ua-machine-checked')[0].textContent === 'checked just now', 'an answered machine leaves Checking… while refresh all is still running');
+    release({ ok: true, status: 200, json: async () => edge });
+    await pending;
+    assert.strictEqual(vm.runInContext('uaState.refreshingAll', ctx), false);
   });
 
   await test('mcp server card — enable switch ends right when a WS mcp_status redraws the card mid-PATCH, always on chip hides while disabled, a running status fetches the missing tool count once', async () => {
