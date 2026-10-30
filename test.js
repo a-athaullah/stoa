@@ -22479,6 +22479,7 @@ async function run() {
     const M2 = crypto.randomBytes(8).toString('hex');
     const M3 = crypto.randomBytes(8).toString('hex');
     const M4 = crypto.randomBytes(8).toString('hex');
+    const M5 = crypto.randomBytes(8).toString('hex');
     const sockets = [];
 
     await test('harness accounts — sanitizeSnapshot drops unknown keys (tokens), strips control/bidi chars, clamps and caps', () => {
@@ -22522,7 +22523,7 @@ async function run() {
     });
 
     const fakeDeps = (over = {}) => {
-      const calls = { http: [], keychain: [] };
+      const calls = { http: [], ping: 0 };
       const d = {
         env: { USER: 'aan' }, platform: 'darwin', now: () => Date.parse('2026-10-30T10:00:00Z'),
         run: async (cmd, args) => {
@@ -22530,65 +22531,103 @@ async function run() {
           if (cmd === 'claude') return { code: 0, stdout: JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty', email: 'aan@x.io', orgName: 'Org', subscriptionType: 'max' }) };
           return { code: 0, stdout: 'Logged in using ChatGPT' };
         },
-        readKeychain: async (service, account) => {
-          calls.keychain.push([service, account]);
-          return account ? JSON.stringify({ claudeAiOauth: { accessToken: '', expiresAt: 0 } })
-            : JSON.stringify({ claudeAiOauth: { accessToken: SECRET_TOKEN, expiresAt: Date.parse('2026-10-30T12:00:00Z') } });
-        },
         readFile: () => null,
-        httpGetJson: async (url, headers) => {
-          calls.http.push({ url, auth: headers.Authorization });
-          return { status: 200, body: { seven_day: { utilization: 23, resets_at: '2026-11-04T05:00:00Z' }, five_hour: { utilization: 4.5, resets_at: '2026-10-30T12:40:00Z' }, seven_day_fable: { utilization: 0, resets_at: null }, seven_day_opus: null, extra_usage: { is_enabled: false } } };
-        },
+        httpGetJson: async (url) => { calls.http.push({ url }); return { status: 500, body: null }; },
         codexAppServer: async () => null,
+        claudeLimitsPing: async () => { calls.ping++; return RL_SAMPLE.rate_limit_info; },
         ...over,
       };
       return { d, calls };
     };
+    // Captured from Claude Code 2.1.310 on a Max account (2026-10-30).
+    const RL_SAMPLE = JSON.parse('{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1793338800,"rateLimitType":"five_hour","overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false,"unifiedWindows":{"five_hour":{"utilization":0.64,"resetsAt":1793338800,"status":"allowed"},"seven_day":{"utilization":0.28,"resetsAt":1793768400,"status":"allowed"}}},"uuid":"u","session_id":"s"}');
 
-    await test('harness probe — Claude: skips the empty keychain entry, parses every window, token never in the result', async () => {
+    await test('harness probe — parseClaudeRateLimitEvent: the captured event → both windows in %, reset times, extra usage', () => {
+      const r = hp.parseClaudeRateLimitEvent(RL_SAMPLE.rate_limit_info);
+      assert.strictEqual(r.status, 'allowed');
+      assert.deepStrictEqual(r.limits, [
+        { key: 'five_hour', label: '5-hour session', used_pct: 64, resets_at: '2026-10-30T05:40:00.000Z', window_mins: 300, status: 'allowed' },
+        { key: 'seven_day', label: 'Weekly', used_pct: 28, resets_at: '2026-11-04T05:00:00.000Z', window_mins: 10080, status: 'allowed' },
+      ]);
+      assert.deepStrictEqual(r.overage, { status: 'rejected', is_using: false, disabled_reason: 'org_level_disabled' });
+    });
+
+    await test('harness probe — parseClaudeRateLimitEvent: without unifiedWindows the top-level window; junk and foreign fields dropped', () => {
+      const one = hp.parseClaudeRateLimitEvent({ status: 'allowed_warning', rateLimitType: 'seven_day_opus', utilization: 0.9, resetsAt: 1793768400 });
+      assert.deepStrictEqual(one.limits.map(l => [l.key, l.label, l.used_pct, l.window_mins, l.status]), [['seven_day_opus', 'Weekly · Opus', 90, 10080, 'allowed_warning']]);
+      assert.strictEqual(one.overage, null, 'no overage fields → null, not a guess');
+      const full = hp.parseClaudeRateLimitEvent({ status: 'rejected', rateLimitType: 'five_hour', resetsAt: 1793338800 });
+      assert.strictEqual(full.limits[0].used_pct, 100, 'rejected without utilization = full');
+      assert.deepStrictEqual(hp.parseClaudeRateLimitEvent({ status: 'allowed', rateLimitType: 'five_hour' }).limits, [], 'no utilization, not rejected: no meter');
+      const evil = hp.parseClaudeRateLimitEvent({
+        status: 'pwned', overageStatus: '<script>', overageDisabledReason: 'Bad Reason!', isUsingOverage: 'yes', token: SECRET_TOKEN,
+        unifiedWindows: { five_hour: { utilization: '0.5' }, seven_day: { utilization: 0.1, status: 'x', resetsAt: 'never', extra: SECRET_TOKEN }, list: [1], '': { utilization: 0.2 } },
+      });
+      assert.strictEqual(evil.status, null);
+      assert.deepStrictEqual(evil.overage, { status: null, is_using: null, disabled_reason: null });
+      assert.deepStrictEqual(evil.limits.map(l => [l.key, l.used_pct, l.resets_at, l.status]), [['seven_day', 10, null, null]], 'string utilization / non-object / empty key dropped');
+      assert.ok(!JSON.stringify(evil).includes(SECRET_TOKEN), 'unknown fields not copied');
+      for (const bad of [null, 'x', [], {}]) assert.strictEqual(hp.parseClaudeRateLimitEvent(bad), null);
+    });
+
+    await test('harness probe — createRateLimitReporter: one report per minute, a status change at once, the last throttled one at the end of the gap', () => {
+      let t = 0;
+      const sent = [];
+      const timers = [];
+      const report = hp.createRateLimitReporter({ emit: r => sent.push(r), now: () => t, minGapMs: 60_000,
+        setTimer: (fn, ms) => { const h = { fn, at: t + ms }; timers.push(h); return h; }, clearTimer: h => { h.cleared = true; } });
+      const ev = (pct, status = 'allowed') => hp.parseClaudeRateLimitEvent({ ...RL_SAMPLE.rate_limit_info, status, unifiedWindows: { five_hour: { utilization: pct, status } } });
+      report(ev(0.1));
+      t = 10_000; report(ev(0.2));
+      t = 20_000; report(ev(0.3));
+      assert.deepStrictEqual(sent.map(r => r.limits[0].used_pct), [10], 'same status within the gap: held');
+      assert.strictEqual(timers.length, 1, 'one trailing timer, not one per event');
+      assert.strictEqual(timers[0].at, 60_000);
+      t = 30_000; report(ev(1, 'rejected'));
+      assert.deepStrictEqual(sent.map(r => r.limits[0].used_pct), [10, 100], 'status change sent at once');
+      assert.ok(timers[0].cleared, 'held one superseded');
+      t = 40_000; report(ev(0.99, 'rejected'));
+      t = 90_000; timers.at(-1).fn();
+      assert.deepStrictEqual(sent.map(r => r.limits[0].used_pct), [10, 100, 99], 'trailing report after the gap');
+      report(null);
+      assert.strictEqual(sent.length, 3, 'nothing parsed, nothing sent');
+    });
+
+    await test('harness probe — sameClaudeAccount: another config dir, API key, token or base URL is another account', () => {
+      const agent = { HOME: '/Users/aan', CLAUDE_CONFIG_DIR: '/Users/aan/.claude', PATH: '/bin' };
+      assert.strictEqual(hp.sameClaudeAccount({ ...agent, STOA_ROOM_ID: '5', PATH: '/usr/bin' }, agent), true, 'unrelated vars do not matter');
+      assert.strictEqual(hp.sameClaudeAccount({ ...agent, CLAUDE_CONFIG_DIR: '/Users/aan/.claude-work' }, agent), false);
+      assert.strictEqual(hp.sameClaudeAccount({ ...agent, ANTHROPIC_BASE_URL: 'http://proxy', ANTHROPIC_AUTH_TOKEN: 'k' }, agent), false, 'third-party provider');
+      assert.strictEqual(hp.sameClaudeAccount({ ...agent, CLAUDE_CODE_OAUTH_TOKEN: 't' }, agent), false);
+      assert.strictEqual(hp.sameClaudeAccount({ ...agent, ANTHROPIC_API_KEY: 'k' }, agent), false);
+    });
+
+    await test('harness probe — Claude: account only, no ping and no HTTP by default; ping only with pingLimits', async () => {
       const { d, calls } = fakeDeps();
       const r = await hp.probeClaude(d);
-      assert.deepStrictEqual(calls.keychain.map(c => c[1]), ['aan', null], 'OS-user entry first, then the default');
-      assert.strictEqual(calls.http.length, 1);
-      assert.strictEqual(calls.http[0].auth, `Bearer ${SECRET_TOKEN}`, 'token from the non-empty entry');
-      assert.strictEqual(r.limits_status, 'ok');
-      assert.deepStrictEqual(r.limits.map(l => [l.key, l.label, l.used_pct, l.window_mins]),
-        [['five_hour', '5-hour session', 4.5, 300], ['seven_day', 'Weekly', 23, 10080], ['seven_day_fable', 'Weekly · Fable', 0, 10080]]);
-      assert.deepStrictEqual(r.credits, { enabled: false, balance: null });
       assert.strictEqual(r.account.email, 'aan@x.io');
-      assert.ok(!JSON.stringify(r).includes(SECRET_TOKEN), 'token not in the result');
+      assert.strictEqual(r.limits_status, 'unavailable');
+      assert.deepStrictEqual(r.limits, []);
+      assert.strictEqual(r.error, null);
+      assert.strictEqual(calls.ping, 0, 'an automatic probe never pings');
+      assert.strictEqual(calls.http.length, 0, 'oauth/usage is gone');
+      const { d: d2, calls: c2 } = fakeDeps({ pingLimits: true });
+      const p = await hp.probeClaude(d2);
+      assert.strictEqual(c2.ping, 1);
+      assert.strictEqual(p.limits_status, 'ok');
+      assert.strictEqual(p.source, 'ping');
+      assert.deepStrictEqual(p.limits.map(l => [l.key, l.used_pct]), [['five_hour', 64], ['seven_day', 28]]);
+      assert.deepStrictEqual(p.overage, { status: 'rejected', is_using: false, disabled_reason: 'org_level_disabled' });
+      const { d: d3 } = fakeDeps({ pingLimits: true, claudeLimitsPing: async () => null });
+      const none = await hp.probeClaude(d3);
+      assert.strictEqual(none.limits_status, 'unavailable');
+      assert.match(none.error, /No rate limit data/);
     });
 
-    await test('harness probe — Claude: CLAUDE_CONFIG_DIR reads its own hashed keychain service, never the default login', async () => {
-      const { d, calls } = fakeDeps({ env: { USER: 'aan', CLAUDE_CONFIG_DIR: '/Users/aan/.claude-work' } });
-      await hp.probeClaude(d);
-      const expected = 'Claude Code-credentials-' + crypto.createHash('sha256').update('/Users/aan/.claude-work').digest('hex').slice(0, 8);
-      assert.ok(calls.keychain.length && calls.keychain.every(c => c[0] === expected), `service ${calls.keychain[0]?.[0]}`);
-    });
-
-    await test('harness probe — Claude: expired token → token_expired without calling the endpoint (no refresh)', async () => {
-      const { d, calls } = fakeDeps({ readKeychain: async () => JSON.stringify({ claudeAiOauth: { accessToken: SECRET_TOKEN, expiresAt: Date.parse('2026-10-30T09:00:00Z') } }) });
-      const r = await hp.probeClaude(d);
-      assert.strictEqual(r.limits_status, 'token_expired');
-      assert.strictEqual(calls.http.length, 0);
-      assert.strictEqual(r.account.email, 'aan@x.io', 'account still shown');
-    });
-
-    await test('harness probe — Claude: 429 → error + retry_at from Retry-After; skip_limits → no call at all', async () => {
-      const { d } = fakeDeps({ httpGetJson: async () => ({ status: 429, body: null, retryAfter: 3595 }) });
-      const r = await hp.probeClaude(d);
-      assert.strictEqual(r.limits_status, 'error');
-      assert.strictEqual(r.retry_at, '2026-10-30T10:59:55.000Z');
-      const { d: d2, calls } = fakeDeps({ skipLimits: { claude: '2026-10-30T10:59:55.000Z' } });
-      const r2 = await hp.probeClaude(d2);
-      assert.strictEqual(calls.http.length, 0, 'endpoint not called while the provider asked to wait');
-      assert.strictEqual(r2.retry_at, '2026-10-30T10:59:55.000Z');
-    });
-
-    await test('harness probe — Claude: API-key login → not_applicable; not installed → null; logged out → logged_in false', async () => {
-      const api = await hp.probeClaude(fakeDeps({ run: async (c, a) => a[0] === '--version' ? { code: 0, stdout: '2.1.0' } : { code: 0, stdout: JSON.stringify({ loggedIn: true, authMethod: 'api_key' }) } }).d);
-      assert.strictEqual(api.limits_status, 'not_applicable');
+    await test('harness probe — Claude: API-key login → not_applicable and no ping; not installed → null; logged out → logged_in false', async () => {
+      const { d: apiD, calls } = fakeDeps({ pingLimits: true, run: async (c, a) => a[0] === '--version' ? { code: 0, stdout: '2.1.0' } : { code: 0, stdout: JSON.stringify({ loggedIn: true, authMethod: 'api_key' }) } });
+      assert.strictEqual((await hp.probeClaude(apiD)).limits_status, 'not_applicable');
+      assert.strictEqual(calls.ping, 0, 'no plan limits to ping for');
       assert.strictEqual(await hp.probeClaude(fakeDeps({ run: async () => ({ code: -1, stdout: '' }) }).d), null);
       const out = await hp.probeClaude(fakeDeps({ run: async (c, a) => a[0] === '--version' ? { code: 0, stdout: '2.1.0' } : { code: 1, stdout: JSON.stringify({ loggedIn: false }) } }).d);
       assert.strictEqual(out.logged_in, false);
@@ -22722,11 +22761,12 @@ async function run() {
       assert.ok(machineOf(r.body, M1), 'GET payload returned');
     });
 
-    await test('POST /api/usage/accounts/refresh — stale machine: one agent asked (with skip_limits while rate limited), reply returned, last good limits carried', async () => {
+    await test('POST /api/usage/accounts/refresh — stale machine: one agent asked (ping for Claude, skip_limits for a rate-limited Codex), reply returned, last good Codex limits carried', async () => {
       // A machine with a fresh snapshot gets no probe on connect; aging it afterwards makes it due.
       const goodAt = new Date(Date.now() - 3600e3).toISOString();
+      const codexOk = { ...claudeOk('m3@x.io', 42), account: { email: 'm3@x.io', plan: 'plus', auth_method: 'chatgpt' }, limits_checked_at: goodAt, retry_at: new Date(Date.now() + 600e3).toISOString() };
       db.prepare(`INSERT INTO harness_account_snapshots (machine_id, hostname, platform, payload, probed_at) VALUES (?, 'm3', 'linux', ?, ?)`)
-        .run(M3, JSON.stringify({ claude: { ...claudeOk('m3@x.io', 42), limits_checked_at: goodAt, retry_at: new Date(Date.now() + 600e3).toISOString() }, codex: null }), new Date().toISOString());
+        .run(M3, JSON.stringify({ claude: claudeOk('m3@x.io'), codex: codexOk }), new Date().toISOString());
       const c1 = await haConnect('__test-ha-c1', { id: M3, hostname: 'm3', platform: 'linux' });
       sockets.push(c1.ws);
       await haSleep(300);
@@ -22735,18 +22775,26 @@ async function run() {
       c1.ws.on('message', raw => {
         const m = JSON.parse(raw.toString());
         if (m.type !== 'harness_accounts_request') return;
-        c1.ws.send(JSON.stringify({ ...snap(M3, { claude: { ...claudeOk('m3@x.io'), limits_status: 'error', limits: [], error: 'Rate limited by Anthropic; next check after the wait', retry_at: m.skip_limits?.claude ?? null }, codex: null }), request_id: m.request_id }));
+        c1.ws.send(JSON.stringify({ ...snap(M3, {
+          claude: { ...claudeOk('m3@x.io', 64), source: m.ping_limits ? 'ping' : null },
+          codex: { ...codexOk, limits_status: 'error', limits: [], error: 'Rate limited by OpenAI; next check after the wait', retry_at: m.skip_limits?.codex ?? null },
+        }), request_id: m.request_id }));
       });
       const r = await req('POST', '/api/usage/accounts/refresh', {});
       assert.strictEqual(r.status, 200);
       assert.strictEqual(c1.requests().length, 1, 'asked exactly once');
-      assert.ok(c1.requests()[0].skip_limits?.claude, 'told to skip the rate-limited endpoint');
+      assert.ok(c1.requests()[0].skip_limits?.codex, 'told to skip the rate-limited Codex endpoint');
+      assert.strictEqual(c1.requests()[0].skip_limits.claude, undefined, 'Claude calls no endpoint, nothing to skip');
+      assert.strictEqual(c1.requests()[0].ping_limits, true, 'manual refresh without a recent Claude event: ping');
       const m = machineOf(r.body, M3);
       assert.ok(Date.parse(m.probed_at) > Date.parse(goodAt), 'fresh probe in the answer');
-      assert.strictEqual(m.harnesses.claude.limits_status, 'ok', 'last good limits carried');
-      assert.strictEqual(m.harnesses.claude.limits[0].used_pct, 42);
-      assert.strictEqual(m.harnesses.claude.limits_checked_at, goodAt);
-      assert.match(m.harnesses.claude.error, /Rate limited/);
+      assert.strictEqual(m.harnesses.codex.limits_status, 'ok', 'last good limits carried');
+      assert.strictEqual(m.harnesses.codex.limits[0].used_pct, 42);
+      assert.strictEqual(m.harnesses.codex.limits_checked_at, goodAt);
+      assert.match(m.harnesses.codex.error, /Rate limited/);
+      assert.strictEqual(m.harnesses.claude.source, 'ping');
+      assert.strictEqual(m.harnesses.claude.limits[0].used_pct, 64);
+      assert.strictEqual(m.harnesses.claude.observed_at, m.probed_at, 'stamped with server time');
     });
 
     await test('harness accounts — a machine whose agents are all deleted disappears from the list', async () => {
@@ -22825,8 +22873,149 @@ async function run() {
       assert.strictEqual(m4.harnesses.claude.account.email, 'm4@x.io');
     });
 
+    await test('harness accounts — session rate limits: only from the announced machine, sanitized, throttled, kept through account-only probes', async () => {
+      const Database = require('better-sqlite3');
+      const fsH = require('fs');
+      const d = new Database(':memory:');
+      require('./lib/migrations').runMigrations(d, path.join(__dirname, 'migrations'), { log() {}, warn() {}, error() {} },
+        { schemaSql: fsH.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8') });
+      d.prepare("INSERT INTO actors (id, name, type) VALUES (901, 'agent-a', 'ai'), (902, 'agent-b', 'ai')").run();
+      const A = 'aaaaaaaaaaaaaaaa', B = 'bbbbbbbbbbbbbbbb';
+      let T = Date.parse('2026-10-30T10:00:00Z');
+      const sent = [], casts = [];
+      const inst = ha.createHarnessAccounts({
+        db: d, broadcastGlobal: m => casts.push(m.machine_id), sendToAgent: (id, m) => { sent.push({ id, ...m }); return true; },
+        isOnline: () => true, hasFeature: () => true, now: () => T, refreshWaitMs: 5, probeTimeoutMs: 5,
+      });
+      const claudeOf = (id) => JSON.parse(d.prepare('SELECT payload FROM harness_account_snapshots WHERE machine_id=?').get(id)?.payload || 'null')?.claude;
+      const rl = (machineId, pct5 = 0.64, status = 'allowed', extra = {}) => ({
+        type: 'harness_rate_limits', machine_id: machineId, harness: 'claude',
+        rate_limits: { ...hp.parseClaudeRateLimitEvent({ ...RL_SAMPLE.rate_limit_info, status, unifiedWindows: { ...RL_SAMPLE.rate_limit_info.unifiedWindows, five_hour: { utilization: pct5, resetsAt: 1793338800, status } } }), ...extra },
+      });
+      const warn = console.warn;
+      console.warn = () => {};
+      try {
+        inst.agentConnected(901, { id: A, hostname: 'mac-a', platform: 'darwin' });
+        inst.agentConnected(902, { id: B, hostname: 'box-b', platform: 'linux' });
+        assert.ok(sent.every(s => !s.ping_limits), 'connect probes never ping');
+        inst.accept(901, { ...snap(A, { claude: claudeOk('aan@x.io'), codex: null }), request_id: sent.find(s => s.id === 901).request_id });
+        assert.strictEqual(inst.acceptRateLimits(902, rl(A)), false, 'agent of B cannot write A');
+        assert.strictEqual(inst.acceptRateLimits(901, { ...rl(A), harness: 'codex' }), false, 'claude only');
+        T += 1000;
+        const hostile = rl(A, 0.5, 'allowed', { token: SECRET_TOKEN, limits: [...rl(A).rate_limits.limits, { key: 'Bad Key', used_pct: 1 }, { key: 'x', used_pct: 'NaN' }],
+          overage: { status: 'rejected', is_using: false, disabled_reason: 'org_level_disabled', secret: SECRET_TOKEN } });
+        hostile.rate_limits.limits[0] = { ...hostile.rate_limits.limits[0], used_pct: 250, label: 'Ev\u202eil', status: 'pwned', access_token: SECRET_TOKEN };
+        assert.strictEqual(inst.acceptRateLimits(901, hostile), true);
+        let c = claudeOf(A);
+        assert.ok(!JSON.stringify(c).includes(SECRET_TOKEN), 'unknown fields never stored');
+        assert.deepStrictEqual(c.limits.map(l => [l.key, l.label, l.used_pct, l.status]), [['five_hour', 'Evil', 100, null], ['seven_day', 'Weekly', 28, 'allowed']]);
+        assert.strictEqual(c.source, 'session');
+        assert.strictEqual(c.observed_at, new Date(T).toISOString(), 'server time');
+        assert.strictEqual(c.account.email, 'aan@x.io', 'merged into the probed entry');
+        assert.deepStrictEqual(c.overage, { status: 'rejected', is_using: false, disabled_reason: 'org_level_disabled' });
+        assert.strictEqual(casts.at(-1), A, 'broadcast');
+        T += 5000;
+        assert.strictEqual(inst.acceptRateLimits(901, rl(A, 0.7)), false, 'same status within 10 s: dropped');
+        assert.strictEqual(inst.acceptRateLimits(901, rl(A, 1, 'rejected')), true, 'status change: taken at once');
+        assert.strictEqual(claudeOf(A).rate_limit_status, 'rejected');
+        T += 11_000;
+        const oneWindow = { type: 'harness_rate_limits', machine_id: A, harness: 'claude', rate_limits: hp.parseClaudeRateLimitEvent({ status: 'rejected', rateLimitType: 'seven_day', utilization: 0.95, resetsAt: 1793768400 }) };
+        assert.strictEqual(inst.acceptRateLimits(901, oneWindow), true);
+        assert.deepStrictEqual(claudeOf(A).limits.map(l => [l.key, l.used_pct]), [['seven_day', 95], ['five_hour', 100]], 'one-window event updates that window, keeps the other');
+        const observed = claudeOf(A).observed_at;
+        T += 60_000;
+        inst.accept(901, snap(A, { claude: { ...claudeOk('AAN@x.io'), limits_status: 'unavailable', limits: [] }, codex: null }));
+        c = claudeOf(A);
+        assert.strictEqual(c.limits_status, 'ok', 'an account-only probe keeps the session limits');
+        assert.strictEqual(c.observed_at, observed);
+        assert.strictEqual(c.source, 'session');
+        T += 6000;
+        inst.accept(901, snap(A, { claude: { ...claudeOk('other@x.io'), limits_status: 'unavailable', limits: [] }, codex: null }));
+        assert.deepStrictEqual(claudeOf(A).limits, [], 'another login: the old account\'s limits go');
+        assert.strictEqual(claudeOf(A).observed_at, null);
+        assert.strictEqual(inst.acceptRateLimits(902, { ...rl(B), rate_limits: { status: null, limits: [], overage: null } }), false, 'nothing usable');
+        assert.strictEqual(inst.acceptRateLimits(902, rl(B)), true, 'machine without a snapshot yet');
+        const rowB = d.prepare('SELECT hostname, platform, probed_at FROM harness_account_snapshots WHERE machine_id=?').get(B);
+        assert.deepStrictEqual({ ...rowB }, { hostname: 'box-b', platform: 'linux', probed_at: null }, 'row from the announced machine, never probed');
+        inst.agentDisconnected(902);
+        T += 20_000;
+        assert.strictEqual(inst.acceptRateLimits(902, rl(B, 0.1, 'rejected')), false, 'nothing accepted after disconnect');
+      } finally {
+        console.warn = warn;
+        d.close();
+      }
+    });
+
+    await test('harness accounts — ping only on a manual refresh of a machine without a Claude event for 10 min', async () => {
+      const Database = require('better-sqlite3');
+      const fsH = require('fs');
+      const d = new Database(':memory:');
+      require('./lib/migrations').runMigrations(d, path.join(__dirname, 'migrations'), { log() {}, warn() {}, error() {} },
+        { schemaSql: fsH.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8') });
+      d.prepare("INSERT INTO actors (id, name, type) VALUES (901, 'agent-a', 'ai')").run();
+      const A = 'aaaaaaaaaaaaaaaa';
+      let T = Date.parse('2026-10-30T10:00:00Z');
+      const sent = [];
+      const inst = ha.createHarnessAccounts({
+        db: d, broadcastGlobal: () => {}, sendToAgent: (id, m) => { sent.push(m); return true; },
+        isOnline: () => true, hasFeature: () => true, now: () => T, refreshWaitMs: 5, probeTimeoutMs: 5,
+      });
+      const answer = (claude) => inst.accept(901, { ...snap(A, { claude, codex: null }), request_id: sent.at(-1).request_id });
+      try {
+        inst.agentConnected(901, { id: A, hostname: 'a', platform: 'darwin' });
+        assert.strictEqual(sent.at(-1).ping_limits, undefined, 'connect: no ping');
+        answer(claudeOk('aan@x.io'));
+        T += ha.PROBE_PERIOD_MS + 1000;
+        inst.tick();
+        assert.strictEqual(sent.length, 2);
+        assert.strictEqual(sent.at(-1).ping_limits, undefined, 'periodic tick: no ping');
+        answer({ ...claudeOk('aan@x.io'), limits_status: 'unavailable', limits: [] });
+        T += ha.REFRESH_THROTTLE_MS + 1000;
+        await inst.refresh(A);
+        assert.strictEqual(sent.at(-1).ping_limits, true, 'manual refresh, no event yet: ping');
+        answer({ ...claudeOk('aan@x.io', 64), source: 'ping' });
+        T += ha.REFRESH_THROTTLE_MS + 1000;
+        await inst.refresh(A);
+        assert.strictEqual(sent.at(-1).ping_limits, undefined, 'ping 31 s ago is recent: no new ping');
+        answer({ ...claudeOk('aan@x.io'), limits_status: 'unavailable', limits: [] });
+        T += 10 * 60 * 1000;
+        await inst.refresh(A);
+        assert.strictEqual(sent.at(-1).ping_limits, true, '10 min without an event: ping again');
+        answer({ ...claudeOk('aan@x.io'), logged_in: true, limits_status: 'not_applicable', limits: [], account: { email: 'k@x.io', auth_method: 'api_key' } });
+        T += ha.REFRESH_THROTTLE_MS + 1000;
+        await inst.refresh(A);
+        assert.strictEqual(sent.at(-1).ping_limits, undefined, 'API-key login has no plan limits: no ping');
+      } finally {
+        d.close();
+      }
+    });
+
+    await test('harness accounts — over WS: harness_rate_limits lands on the agent\'s machine; one for another machine is ignored', async () => {
+      const human = await openWsConnection(`ws://${HOST}:${PORT}`, cookieHeader());
+      sockets.push(human);
+      human.send(JSON.stringify({ type: 'subscribe_global' }));
+      await haSleep(100);
+      db.prepare('INSERT INTO harness_account_snapshots (machine_id, hostname, platform, payload, probed_at) VALUES (?, ?, ?, ?, ?)')
+        .run(M5, 'm5', 'linux', JSON.stringify({ claude: claudeOk('m5@x.io'), codex: null }), new Date().toISOString());
+      const e1 = await haConnect('__test-ha-e1', { id: M5, hostname: 'm5', platform: 'linux' });
+      sockets.push(e1.ws);
+      const before = db.prepare('SELECT payload FROM harness_account_snapshots WHERE machine_id=?').get(M1).payload;
+      e1.ws.send(JSON.stringify({ type: 'harness_rate_limits', machine_id: M1, harness: 'claude', rate_limits: hp.parseClaudeRateLimitEvent({ status: 'rejected', rateLimitType: 'five_hour' }) }));
+      const updated = waitForWsMessage(human, m => m.type === 'harness_accounts_updated' && m.machine_id === M5);
+      e1.ws.send(JSON.stringify({ type: 'harness_rate_limits', machine_id: M5, harness: 'claude', rate_limits: hp.parseClaudeRateLimitEvent(RL_SAMPLE.rate_limit_info) }));
+      await updated;
+      assert.strictEqual(db.prepare('SELECT payload FROM harness_account_snapshots WHERE machine_id=?').get(M1).payload, before, 'M1 untouched');
+      const c = machineOf((await req('GET', '/api/usage/accounts')).body, M5).harnesses.claude;
+      assert.deepStrictEqual(c.limits.map(l => [l.key, l.used_pct, l.status]), [['five_hour', 64, 'allowed'], ['seven_day', 28, 'allowed']]);
+      assert.strictEqual(c.source, 'session');
+      assert.ok(Date.parse(c.observed_at) > Date.now() - 60_000);
+      assert.strictEqual(c.rate_limit_status, 'allowed');
+      assert.deepStrictEqual(c.overage, { status: 'rejected', is_using: false, disabled_reason: 'org_level_disabled' });
+      assert.strictEqual(c.account.email, 'm5@x.io');
+    });
+
     for (const s of sockets) { try { s.close(); } catch {} }
-    db.prepare('DELETE FROM harness_account_snapshots WHERE machine_id IN (?, ?, ?, ?)').run(M1, M2, M3, M4);
+    db.prepare('DELETE FROM harness_account_snapshots WHERE machine_id IN (?, ?, ?, ?, ?)').run(M1, M2, M3, M4, M5);
   }
 
   console.log('\n[Test Teardown]');
