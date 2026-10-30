@@ -35,6 +35,7 @@
   <link rel="stylesheet" href="/css/components.css">
   <link rel="stylesheet" href="/css/mcp.css">
   <link rel="stylesheet" href="/css/skills.css">
+  <link rel="stylesheet" href="/css/usage-accounts.css">
   <link rel="stylesheet" href="/css/schedules.css">
   <!-- {{/APP_CSS}} -->
 </head>
@@ -467,8 +468,15 @@
 
     <!-- tab: usage -->
     <div class="s-content" id="s-tab-usage" style="display:none">
-      <div class="s-content-inner" id="usage-panel">
-        <div style="color:var(--h-ink-faint);font-size:13px;padding:24px 0">Loading...</div>
+      <div class="s-content-inner">
+        <div class="usage-subtabs" role="tablist" aria-label="Usage views">
+          <button type="button" class="usage-subtab" role="tab" id="usage-subtab-overview" data-usage-sub="overview" aria-controls="usage-panel" aria-selected="true">Overview</button>
+          <button type="button" class="usage-subtab" role="tab" id="usage-subtab-accounts" data-usage-sub="accounts" aria-controls="usage-accounts-panel" aria-selected="false" tabindex="-1">Accounts &amp; Limits</button>
+        </div>
+        <div id="usage-panel" role="tabpanel" aria-labelledby="usage-subtab-overview">
+          <div style="color:var(--h-ink-faint);font-size:13px;padding:24px 0">Loading...</div>
+        </div>
+        <div id="usage-accounts-panel" class="ua-root" role="tabpanel" aria-labelledby="usage-subtab-accounts" hidden></div>
       </div>
     </div>
 
@@ -751,6 +759,7 @@
 <script src="/js/settings/account.js"></script>
 <script src="/js/settings/update.js"></script>
   <script src="/js/settings/usage.js"></script>
+  <script src="/js/settings/usage-accounts.js"></script>
 <script src="/js/settings/doctor.js"></script>
 <script src="/js/settings/init.js"></script>
 <script src="/js/init/setup.js"></script>

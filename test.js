@@ -14365,6 +14365,86 @@ async function run() {
     assert.strictEqual(editF.keep_alive, true);
   });
 
+  await test('usage accounts UI — machine cards, limit tones, every harness state, mismatch notice, agent strings as text, stale responses dropped', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El {
+      constructor(tag) { this.tagName = tag.toUpperCase(); this.style = {}; this.dataset = {}; this.children = []; this._text = ''; this.attrs = {}; this.on = {}; this.hidden = false;
+        const cls = new Set(); this.cls = cls; this.classList = { add: (...c) => c.forEach(x => cls.add(x)), remove: (...c) => c.forEach(x => cls.delete(x)), toggle: (c, on) => (on ?? !cls.has(c)) ? cls.add(c) : cls.delete(c), contains: c => cls.has(c) }; }
+      set className(v) { String(v).split(/\s+/).filter(Boolean).forEach(c => this.classList.add(c)); }
+      get className() { return [...this.cls].join(' '); }
+      appendChild(c) { this.children.push(c); return c; }
+      replaceChildren(...cs) { this.children = []; cs.forEach(c => c.tagName === '#FRAG' ? this.children.push(...c.children) : this.appendChild(c)); }
+      set innerHTML(v) { throw new Error('innerHTML must not be used'); }
+      set textContent(v) { this.children = []; this._text = String(v); }
+      get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+      setAttribute(k, v) { this.attrs[k] = String(v); } getAttribute(k) { return this.attrs[k] ?? null; }
+      addEventListener(t, f) { (this.on[t] ||= []).push(f); }
+      all(pred, out = []) { if (pred(this)) out.push(this); this.children.forEach(c => c.all && c.all(pred, out)); return out; }
+      byClass(c) { return this.all(n => n.cls.has(c)); }
+    }
+    const host = new El('div');
+    const ctx = { console, Date, Math, Number, String, Map, Set,
+      document: { createElement: t => new El(t), createElementNS: (ns, t) => new El(t), createTextNode: t => Object.assign(new El('#text'), { textContent: t }),
+        createDocumentFragment: () => new El('#frag'), getElementById: id => id === 'usage-accounts-panel' ? host : null, querySelector: () => null, querySelectorAll: () => [], addEventListener() {} },
+      localStorage: { getItem: () => null, setItem() {} }, setInterval: () => 1, clearInterval() {}, setTimeout: () => 1, clearTimeout() {},
+      settingsOpen: false, showLogin() {}, showToast() {}, makeAvatar: (name, color, url) => new El(url ? 'img' : 'span') };
+    vm.createContext(ctx);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/settings/usage.js'), 'utf8'), ctx);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/settings/usage-accounts.js'), 'utf8'), ctx);
+    const soon = m => new Date(Date.now() + m * 60000).toISOString();
+    const lim = (key, pct) => ({ key, label: key, used_pct: pct, resets_at: soon(90), window_mins: 300 });
+    const acct = (email, extra) => ({ installed: true, version: '2.1.0', logged_in: true, account: { email, org_name: 'Org', plan: 'max', auth_method: 'claude.ai' },
+      limits_status: 'ok', limits: [], credits: null, error: null, ...extra });
+    const evil = '<img src=x onerror=alert(1)>';
+    const data = { machines: [
+      { machine_id: 'm-off', hostname: 'zz-offline', platform: 'linux', online: false, probed_at: soon(-120),
+        harnesses: { claude: acct('ops@x.id', { limits_status: 'not_applicable' }), codex: { installed: true, logged_in: false, account: null, limits_status: 'unavailable', limits: [] } },
+        agents: [{ actor_id: 9, name: 'Idris', online: false, tokens_7d: 0, turns_7d: 0 }] },
+      { machine_id: 'm-on', hostname: 'aa-mac', platform: 'darwin', online: true, probed_at: soon(-2),
+        harnesses: { claude: acct('a@x.com', { limits: [lim('five_hour', 23), lim('seven_day', 74), lim('seven_day_fable', 92), lim('odd', 150)] }), codex: null },
+        agents: [{ actor_id: 2, name: evil, online: true, tokens_7d: 1840000, turns_7d: 412 }] },
+      { machine_id: 'm-exp', hostname: 'mm-ubuntu', platform: 'linux', online: true, probed_at: soon(-5),
+        harnesses: { claude: acct('b@x.com', { limits_status: 'token_expired' }), codex: acct('c@x.com', { limits_status: 'error', error: 'bad shape', account: { email: 'c@x.com', plan: 'plus', auth_method: 'chatgpt' } }) },
+        agents: [] },
+    ], accounts: { claude: ['a@x.com', 'b@x.com', 'ops@x.id'], codex: ['c@x.com'] }, mismatch: { claude: true, codex: false } };
+
+    assert.strictEqual(vm.runInContext('uaApply', ctx)(2, data), true);
+    vm.runInContext('uaRender', ctx)();
+    const cards = host.byClass('ua-machine');
+    assert.deepStrictEqual(cards.map(c => c.dataset.machineId), ['m-on', 'm-exp', 'm-off'], 'online machines first, then by hostname');
+    assert.ok(cards[2].cls.has('is-offline') && !cards[0].cls.has('is-offline'));
+    assert.strictEqual(cards[2].byClass('ua-refresh')[0].disabled, true, 'offline machine cannot be refreshed');
+
+    const meters = cards[0].byClass('ua-meter');
+    assert.deepStrictEqual(meters.map(m => ['calm', 'warm', 'crit'].find(t => m.cls.has('ua-tone-' + t))), ['calm', 'warm', 'crit', 'crit']);
+    assert.strictEqual(meters[3].byClass('ua-meter-pct')[0].textContent, '100%', 'out-of-range percentage is clamped');
+    assert.strictEqual(meters[2].byClass('ua-meter-track')[0].getAttribute('aria-valuenow'), '92');
+    assert.ok(meters[0].byClass('ua-meter-reset')[0].textContent.startsWith('Resets in 1h 30m'));
+    assert.strictEqual(cards[0].byClass('ua-harness')[1].textContent, 'CodexNot installed');
+    assert.strictEqual(cards[0].byClass('ua-agent-name')[0].textContent, evil, 'agent name rendered as literal text');
+    assert.strictEqual(cards[0].byClass('ua-agent-num')[0].textContent, '1.84M');
+
+    const [claudeExp, codexErr] = cards[1].byClass('ua-harness');
+    assert.ok(claudeExp.textContent.includes('Token expired') && claudeExp.textContent.includes('/reauth'));
+    assert.ok(codexErr.textContent.includes('c@x.com') && codexErr.textContent.includes('Limits unavailable') && codexErr.textContent.includes('bad shape'), 'account info stays visible when limits fail');
+    assert.ok(cards[2].byClass('ua-harness')[0].textContent.includes('API key login — no plan limits'));
+    assert.ok(cards[2].byClass('ua-harness')[1].textContent.includes('Not logged in'));
+
+    const notice = host.byClass('ua-notice');
+    assert.strictEqual(notice.length, 1);
+    assert.strictEqual(notice[0].byClass('ua-notice-harness').map(n => n.textContent).join(), 'Claude', 'only the mismatched harness is listed');
+    assert.strictEqual(notice[0].byClass('ua-notice-email').length, 3);
+    assert.ok(host.byClass('ua-title')[0].textContent.startsWith('3 machines · Claude: 3 accounts · Codex: 1 account'));
+    assert.ok(host.byClass('ua-tightest-what')[0].textContent.startsWith('Claude · odd on aa-mac'));
+
+    assert.strictEqual(vm.runInContext('uaApply', ctx)(1, { machines: [], accounts: {}, mismatch: {} }), false, 'an older response never overwrites a newer one');
+    assert.strictEqual(vm.runInContext('uaApply', ctx)(3, { machines: [], accounts: {}, mismatch: { claude: true } }), true);
+    vm.runInContext('uaRender', ctx)();
+    assert.strictEqual(host.byClass('ua-empty').length, 1, 'empty state when no machine has reported');
+    assert.strictEqual(host.byClass('ua-notice').length, 0);
+  });
+
   await test('mcp server card — enable switch ends right when a WS mcp_status redraws the card mid-PATCH, always on chip hides while disabled, a running status fetches the missing tool count once', async () => {
     const vm = require('vm');
     const fs = require('fs');

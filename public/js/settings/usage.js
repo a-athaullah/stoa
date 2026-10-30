@@ -10,6 +10,8 @@ const _pad = n => String(n).padStart(2,'0');
 const _MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
 async function sLoadUsageTab() {
+  usageApplySubtab();
+  if (usageSub === 'accounts') return uaLoad();
   const panel = document.getElementById('usage-panel');
   if (!panel) return;
   panel.innerHTML = '<div style="color:var(--h-ink-faint);font-size:13px;padding:24px 0">Loading…</div>';
