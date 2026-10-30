@@ -14405,7 +14405,7 @@ async function run() {
         harnesses: { claude: acct('a@x.com', { limits: [lim('five_hour', 23), lim('seven_day', 74), lim('seven_day_fable', 92), lim('odd', 150)] }), codex: null },
         agents: [{ actor_id: 2, name: evil, online: true, tokens_7d: 1840000, turns_7d: 412 }] },
       { machine_id: 'm-exp', hostname: 'mm-ubuntu', platform: 'linux', online: true, probed_at: soon(-5),
-        harnesses: { claude: acct('b@x.com', { limits_status: 'token_expired' }), codex: acct('c@x.com', { limits_status: 'error', error: 'bad shape', account: { email: 'c@x.com', plan: 'plus', auth_method: 'chatgpt' } }) },
+        harnesses: { claude: acct('b@x.com', { limits_status: 'unavailable' }), codex: acct('c@x.com', { limits_status: 'error', error: 'bad shape', account: { email: 'c@x.com', plan: 'plus', auth_method: 'chatgpt' } }) },
         agents: [] },
     ], accounts: { claude: ['a@x.com', 'b@x.com', 'ops@x.id'], codex: ['c@x.com'] }, mismatch: { claude: true, codex: false } };
 
@@ -14425,8 +14425,8 @@ async function run() {
     assert.strictEqual(cards[0].byClass('ua-agent-name')[0].textContent, evil, 'agent name rendered as literal text');
     assert.strictEqual(cards[0].byClass('ua-agent-num')[0].textContent, '1.84M');
 
-    const [claudeExp, codexErr] = cards[1].byClass('ua-harness');
-    assert.ok(claudeExp.textContent.includes('Token expired') && claudeExp.textContent.includes('/reauth'));
+    const [claudeEmpty, codexErr] = cards[1].byClass('ua-harness');
+    assert.ok(claudeEmpty.textContent.includes('No limit data yet — appears after an agent on this machine runs a task, or press Refresh.'), 'Claude without data yet says how it fills in');
     assert.ok(codexErr.textContent.includes('c@x.com') && codexErr.textContent.includes('Limits unavailable') && codexErr.textContent.includes('bad shape'), 'account info stays visible when limits fail');
     assert.ok(cards[2].byClass('ua-harness')[0].textContent.includes('API key login — no plan limits'));
     assert.ok(cards[2].byClass('ua-harness')[1].textContent.includes('Not logged in'));
@@ -14448,11 +14448,13 @@ async function run() {
     const live = { machines: [
       { machine_id: 'm-r', hostname: 'rr', platform: 'darwin', online: true, probed_at: probed, refreshing: true,
         harnesses: {
-          claude: acct('A@x.com', { limits: [lim('five_hour', 40)], limits_checked_at: soon(-95), retry_at: soon(50), error: 'rate limited', credits: { enabled: true, balance: null } }),
-          codex: acct('c@x.com', { limits: [lim('primary', 10)], limits_checked_at: probed, credits: { enabled: true, balance: '12.5' } }) },
+          claude: acct('A@x.com', { limits: [{ ...lim('five_hour', 40), status: 'allowed' }], source: 'session', observed_at: soon(-4), limits_checked_at: soon(-4),
+            rate_limit_status: 'allowed', overage: { status: 'rejected', is_using: false, disabled_reason: 'org_level_disabled' } }),
+          codex: acct('c@x.com', { limits: [lim('primary', 40)], limits_checked_at: soon(-95), retry_at: soon(50), error: 'rate limited', credits: { enabled: true, balance: null } }) },
         agents: [] },
       { machine_id: 'm-s', hostname: 'ss', platform: 'linux', online: true, probed_at: probed, refreshing: false,
-        harnesses: { claude: acct('a@X.com', { limits: [lim('five_hour', 5)], limits_checked_at: probed }), codex: acct('d@x.com', { logged_in: false }) },
+        harnesses: { claude: acct('a@X.com', { limits: [lim('five_hour', 5)], source: 'session', observed_at: probed, limits_checked_at: probed, overage: null }),
+          codex: acct('d@x.com', { limits: [lim('primary', 10)], limits_checked_at: probed, credits: { enabled: true, balance: '12.5' } }) },
         agents: [] },
     ], accounts: { claude: ['A@x.com'], codex: ['c@x.com'] }, mismatch: { claude: true, codex: false } };
     assert.strictEqual(vm.runInContext('uaApply', ctx)(4, live), true);
@@ -14461,12 +14463,22 @@ async function run() {
     assert.ok(rr.cls.has('is-busy') && rr.byClass('ua-machine-checked')[0].textContent === 'Checking…', 'server-side refreshing shows Checking… on the card');
     assert.ok(!ss.cls.has('is-busy'));
     const [rc, rx] = rr.byClass('ua-harness');
-    const notes = rc.byClass('ua-asof').map(n => n.textContent);
-    assert.ok(notes[0].startsWith('Last known values · as of 1 h ago') && rc.byClass('ua-meters')[0].cls.has('is-stale'), 'carried limits say how old they are');
+    const seen = rc.byClass('ua-asof');
+    assert.strictEqual(seen.length, 1);
+    assert.strictEqual(seen[0].textContent, 'From agent activity · 4 min ago', 'session limits say where and when they were seen');
+    assert.ok(/^\w{3} \d{1,2} \w{3} \d{4} \d{2}:\d{2}$/.test(seen[0].title), 'the absolute time is in the tooltip');
+    assert.ok(!rc.byClass('ua-meters')[0].cls.has('is-stale'), 'session limits from minutes ago are not stale');
+    assert.strictEqual(rc.byClass('ua-extra')[0].textContent, 'Extra usage off');
+    assert.strictEqual(rc.byClass('ua-extra')[0].title, 'org level disabled');
+    assert.strictEqual(rc.byClass('ua-hint').length, 0, 'an allowed status adds no limit-reached note');
+    const notes = rx.byClass('ua-asof').map(n => n.textContent);
+    assert.ok(notes[0].startsWith('Last known values · as of 1 h ago') && rx.byClass('ua-meters')[0].cls.has('is-stale'), 'carried Codex limits say how old they are');
     assert.ok(notes[1].startsWith('Usage endpoint rate-limited · next check after '));
-    assert.strictEqual(rc.byClass('ua-credits').length, 0, 'a null balance renders no credits row');
-    assert.strictEqual(rx.byClass('ua-asof').length, 0, 'fresh limits carry no note');
-    assert.strictEqual(rx.byClass('ua-credits-value')[0].textContent, '12.5');
+    assert.strictEqual(rx.byClass('ua-credits').length, 0, 'a null balance renders no credits row');
+    const [sc, sx] = ss.byClass('ua-harness');
+    assert.strictEqual(sc.byClass('ua-extra').length, 0, 'no overage data, no extra usage line');
+    assert.strictEqual(sx.byClass('ua-asof').length, 0, 'fresh limits carry no note');
+    assert.strictEqual(sx.byClass('ua-credits-value')[0].textContent, '12.5');
     assert.strictEqual(host.byClass('ua-notice-email').length, 1, 'the same email in another case is one account');
 
     const tone = vm.runInContext('uaTone', ctx);
@@ -14475,20 +14487,36 @@ async function run() {
     const edge = { machines: [
       { machine_id: 'm-e', hostname: 'ee', platform: 'linux', online: true, probed_at: probed,
         harnesses: {
-          claude: acct('e@x.com', { limits_status: 'unavailable', error: 'Rate limited by Anthropic; next check after the wait', retry_at: soon(30) }),
-          codex: acct('e@x.com', { limits_status: 'token_expired' }) },
+          claude: acct('e@x.com', { limits_status: 'error', error: 'No rate limit data from the limits check' }),
+          codex: acct('e@x.com', { limits_status: 'unavailable', error: 'Rate limited by OpenAI; next check after the wait', retry_at: soon(30) }) },
         agents: [{ actor_id: 5, name: 'A very long agent name that will not fit', online: true, tokens_7d: 1, turns_7d: 1 }] },
-      { machine_id: 'm-f', hostname: 'ff', platform: 'linux', online: true, probed_at: soon(-30),
-        harnesses: { claude: acct('e@x.com', { limits: [lim('five_hour', 12)], limits_checked_at: soon(-30) }), codex: null }, agents: [] },
+      { machine_id: 'm-f', hostname: 'ff', platform: 'linux', online: true, probed_at: null,
+        harnesses: {
+          claude: acct('e@x.com', { limits: [{ ...lim('five_hour', 20), status: 'allowed_warning' }, { ...lim('seven_day', 3), status: 'rejected', resets_at: soon(600) }],
+            source: 'ping', observed_at: soon(-120), limits_checked_at: soon(-120), rate_limit_status: 'rejected', overage: { status: 'allowed', is_using: true, disabled_reason: null } }),
+          codex: acct('e@x.com', { limits_status: 'token_expired' }) },
+        agents: [] },
     ], accounts: { claude: ['e@x.com'], codex: ['e@x.com'] }, mismatch: {} };
     assert.strictEqual(vm.runInContext('uaApply', ctx)(5, edge), true);
     vm.runInContext('uaRender', ctx)();
-    const [ec, ex] = host.byClass('ua-machine')[0].byClass('ua-harness');
-    assert.ok(!ec.textContent.includes('Rate limited by Anthropic'), 'the rate-limit error is not repeated as text');
-    const retryNote = ec.byClass('ua-asof');
+    const [ee, ff] = host.byClass('ua-machine');
+    const [ec, ex] = ee.byClass('ua-harness');
+    assert.ok(ec.textContent.includes('Limits unavailable') && ec.textContent.includes('No rate limit data from the limits check'), 'an empty limits check is an error, not "no data yet"');
+    assert.ok(!ex.textContent.includes('Rate limited by OpenAI'), 'the rate-limit error is not repeated as text');
+    const retryNote = ex.byClass('ua-asof');
     assert.strictEqual(retryNote.length, 1);
-    assert.strictEqual(retryNote[0].title, 'Rate limited by Anthropic; next check after the wait', 'the error moves to the tooltip');
-    assert.ok(ex.textContent.includes('Token expired — run codex login on that machine.') && !ex.textContent.includes('/reauth'), 'Codex is not pointed at /reauth');
+    assert.strictEqual(retryNote[0].title, 'Rate limited by OpenAI; next check after the wait', 'the error moves to the tooltip');
+    const [fc, fx] = ff.byClass('ua-harness');
+    assert.strictEqual(ff.byClass('ua-machine-checked').length, 0, 'no probe yet, no checked time');
+    assert.deepStrictEqual(fc.byClass('ua-meter').map(m => ['calm', 'warm', 'crit'].find(t => m.cls.has('ua-tone-' + t))), ['warm', 'crit'], 'a flagged window is at least as loud as its flag');
+    assert.ok(fc.byClass('ua-meters')[0].cls.has('is-stale'), 'limits seen over an hour ago are dimmed');
+    assert.strictEqual(fc.byClass('ua-asof')[0].textContent, 'From a limits check · 2 h ago');
+    const reached = fc.byClass('ua-hint--warn');
+    assert.strictEqual(reached.length, 1);
+    assert.ok(reached[0].textContent.startsWith('Limit reached · resets '), 'a rejected account says when it frees up');
+    assert.strictEqual(fc.byClass('ua-extra')[0].textContent, 'Extra usage in use');
+    assert.ok(!fc.byClass('ua-extra')[0].title, 'no reason, no tooltip');
+    assert.ok(fx.textContent.includes('Token expired — run codex login on that machine.') && !fx.textContent.includes('/reauth'), 'Codex is not pointed at /reauth');
     assert.strictEqual(host.byClass('ua-agent-name')[0].title, 'A very long agent name that will not fit');
     assert.strictEqual(host.byClass('ua-meter-label')[0].title, 'five_hour');
 
