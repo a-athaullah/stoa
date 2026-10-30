@@ -22290,6 +22290,328 @@ async function run() {
   }
 
   // Teardown — delete all test rooms and actors created during the run
+  console.log('\n[Harness Accounts & Limits]');
+  {
+    const ha = require('./lib/harness-accounts');
+    const hp = require('./lib/harness-probe');
+    const db = require('./db');
+    const haSleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const haWait = async (pred, ms = 3000) => {
+      const end = Date.now() + ms;
+      while (Date.now() < end) { if (pred()) return true; await haSleep(25); }
+      return false;
+    };
+    const SECRET_TOKEN = 'sk-ant-oat01-NEVER-LEAVES-THE-MACHINE';
+    const claudeOk = (email, pct = 23, extra = {}) => ({
+      installed: true, version: '2.1.310', logged_in: true,
+      account: { email, org_name: 'Org', plan: 'max', auth_method: 'claude.ai' },
+      limits_status: 'ok',
+      limits: [{ key: 'five_hour', label: '5-hour session', used_pct: pct, resets_at: '2026-11-04T05:00:00Z', window_mins: 300 }],
+      credits: null, error: null, ...extra,
+    });
+    const snap = (machineId, harnesses, extra = {}) => ({
+      type: 'harness_accounts', machine: { id: machineId, hostname: '__test-host', platform: 'darwin' },
+      probed_at: new Date().toISOString(), harnesses, ...extra,
+    });
+    const haConnect = async (name, machine, features = ['harness_accounts']) => {
+      const token = await mintInstallToken(name);
+      const reg = await req('POST', '/api/agent/register', { token });
+      assert.strictEqual(reg.status, 200, 'register');
+      const { actor_id: actorId, secret } = reg.body;
+      orphanActorIds.push(actorId);
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`);
+      const inbox = [];
+      ws.on('message', raw => { try { inbox.push(JSON.parse(raw.toString())); } catch {} });
+      const ready = waitForWsMessage(ws, m => m.type === 'agent_ready');
+      ws.send(JSON.stringify({ type: 'agent_connect', actor_id: actorId, secret, features, machine }));
+      await ready;
+      return { actorId, ws, inbox, requests: () => inbox.filter(m => m.type === 'harness_accounts_request') };
+    };
+    const machineOf = (body, id) => body.machines.find(m => m.machine_id === id);
+    const M1 = crypto.randomBytes(8).toString('hex');
+    const M2 = crypto.randomBytes(8).toString('hex');
+    const M3 = crypto.randomBytes(8).toString('hex');
+    const sockets = [];
+
+    await test('harness accounts — sanitizeSnapshot drops unknown keys (tokens), strips control/bidi chars, clamps and caps', () => {
+      const s = ha.sanitizeSnapshot(snap('0123456789abcdef', {
+        claude: {
+          ...claudeOk('a@b.c'), access_token: SECRET_TOKEN,
+          account: { email: 'x'.repeat(500), org_name: 'Ev\u202eil\u0007Org', plan: 'max', auth_method: 'claude.ai', refreshToken: SECRET_TOKEN },
+          limits: [
+            { key: 'five_hour', label: 'L', used_pct: 140, resets_at: 'not a date', window_mins: 300 },
+            { key: 'seven_day', label: 'W', used_pct: -5, resets_at: '2026-11-04T05:00:00Z', window_mins: 99999999 },
+            { key: 'BAD KEY', used_pct: 5 }, { key: 'five_hour', used_pct: 1 }, { key: 'no_pct', used_pct: 'NaN' },
+          ],
+        },
+        codex: 'not an object', gemini: { installed: true },
+      }));
+      const json = JSON.stringify(s);
+      assert.ok(!json.includes(SECRET_TOKEN), 'token dropped');
+      assert.deepStrictEqual(Object.keys(s.harnesses).sort(), ['claude', 'codex'], 'only known harnesses');
+      assert.strictEqual(s.harnesses.codex, null);
+      const c = s.harnesses.claude;
+      assert.strictEqual(c.account.email.length, 200, 'email capped');
+      assert.strictEqual(c.account.org_name, 'EvilOrg', 'bidi override + BEL stripped');
+      assert.deepStrictEqual(c.limits.map(l => [l.key, l.used_pct, l.resets_at, l.window_mins]),
+        [['five_hour', 100, null, 300], ['seven_day', 0, '2026-11-04T05:00:00.000Z', null]], 'clamped, deduped, invalid dropped');
+      assert.strictEqual(ha.sanitizeSnapshot(snap('NOT-HEX', {})), null, 'bad machine id rejected');
+      const noLimits = ha.sanitizeSnapshot(snap('0123456789abcdef', { claude: { ...claudeOk('a@b.c'), limits: [] } }));
+      assert.strictEqual(noLimits.harnesses.claude.limits_status, 'unavailable', "'ok' without limits is not ok");
+    });
+
+    await test('harness accounts — carryLimits keeps the last good limits only for the same account and only for 6h', () => {
+      const now = Date.parse('2026-10-30T10:00:00Z');
+      const prev = { ...claudeOk('Me@x.io'), limits_checked_at: '2026-10-30T09:00:00.000Z' };
+      const failed = { ...claudeOk('me@x.io'), limits_status: 'error', limits: [], error: 'Rate limited' };
+      const kept = ha.carryLimits(failed, prev, now);
+      assert.strictEqual(kept.limits_status, 'ok');
+      assert.strictEqual(kept.limits[0].used_pct, 23);
+      assert.strictEqual(kept.limits_checked_at, '2026-10-30T09:00:00.000Z', 'marks the age of the numbers');
+      assert.strictEqual(ha.carryLimits({ ...failed, account: { email: 'other@x.io' } }, prev, now).limits_status, 'error', 'other account: nothing carried');
+      assert.strictEqual(ha.carryLimits(failed, prev, now + 6 * 3600e3).limits.length, 0, 'too old: nothing carried');
+      assert.strictEqual(ha.carryLimits({ ...failed, limits_status: 'token_expired' }, prev, now).limits_status, 'token_expired', 'expired token is shown as such');
+    });
+
+    const fakeDeps = (over = {}) => {
+      const calls = { http: [], keychain: [] };
+      const d = {
+        env: { USER: 'aan' }, platform: 'darwin', now: () => Date.parse('2026-10-30T10:00:00Z'),
+        run: async (cmd, args) => {
+          if (args[0] === '--version') return { code: 0, stdout: cmd === 'claude' ? '2.1.310 (Claude Code)\n' : 'codex-cli 0.162.1\n' };
+          if (cmd === 'claude') return { code: 0, stdout: JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty', email: 'aan@x.io', orgName: 'Org', subscriptionType: 'max' }) };
+          return { code: 0, stdout: 'Logged in using ChatGPT' };
+        },
+        readKeychain: async (service, account) => {
+          calls.keychain.push([service, account]);
+          return account ? JSON.stringify({ claudeAiOauth: { accessToken: '', expiresAt: 0 } })
+            : JSON.stringify({ claudeAiOauth: { accessToken: SECRET_TOKEN, expiresAt: Date.parse('2026-10-30T12:00:00Z') } });
+        },
+        readFile: () => null,
+        httpGetJson: async (url, headers) => {
+          calls.http.push({ url, auth: headers.Authorization });
+          return { status: 200, body: { seven_day: { utilization: 23, resets_at: '2026-11-04T05:00:00Z' }, five_hour: { utilization: 4.5, resets_at: '2026-10-30T12:40:00Z' }, seven_day_fable: { utilization: 0, resets_at: null }, seven_day_opus: null, extra_usage: { is_enabled: false } } };
+        },
+        codexAppServer: async () => null,
+        ...over,
+      };
+      return { d, calls };
+    };
+
+    await test('harness probe — Claude: skips the empty keychain entry, parses every window, token never in the result', async () => {
+      const { d, calls } = fakeDeps();
+      const r = await hp.probeClaude(d);
+      assert.deepStrictEqual(calls.keychain.map(c => c[1]), ['aan', null], 'OS-user entry first, then the default');
+      assert.strictEqual(calls.http.length, 1);
+      assert.strictEqual(calls.http[0].auth, `Bearer ${SECRET_TOKEN}`, 'token from the non-empty entry');
+      assert.strictEqual(r.limits_status, 'ok');
+      assert.deepStrictEqual(r.limits.map(l => [l.key, l.label, l.used_pct, l.window_mins]),
+        [['five_hour', '5-hour session', 4.5, 300], ['seven_day', 'Weekly', 23, 10080], ['seven_day_fable', 'Weekly · Fable', 0, 10080]]);
+      assert.deepStrictEqual(r.credits, { enabled: false, balance: null });
+      assert.strictEqual(r.account.email, 'aan@x.io');
+      assert.ok(!JSON.stringify(r).includes(SECRET_TOKEN), 'token not in the result');
+    });
+
+    await test('harness probe — Claude: CLAUDE_CONFIG_DIR reads its own hashed keychain service, never the default login', async () => {
+      const { d, calls } = fakeDeps({ env: { USER: 'aan', CLAUDE_CONFIG_DIR: '/Users/aan/.claude-work' } });
+      await hp.probeClaude(d);
+      const expected = 'Claude Code-credentials-' + crypto.createHash('sha256').update('/Users/aan/.claude-work').digest('hex').slice(0, 8);
+      assert.ok(calls.keychain.length && calls.keychain.every(c => c[0] === expected), `service ${calls.keychain[0]?.[0]}`);
+    });
+
+    await test('harness probe — Claude: expired token → token_expired without calling the endpoint (no refresh)', async () => {
+      const { d, calls } = fakeDeps({ readKeychain: async () => JSON.stringify({ claudeAiOauth: { accessToken: SECRET_TOKEN, expiresAt: Date.parse('2026-10-30T09:00:00Z') } }) });
+      const r = await hp.probeClaude(d);
+      assert.strictEqual(r.limits_status, 'token_expired');
+      assert.strictEqual(calls.http.length, 0);
+      assert.strictEqual(r.account.email, 'aan@x.io', 'account still shown');
+    });
+
+    await test('harness probe — Claude: 429 → error + retry_at from Retry-After; skip_limits → no call at all', async () => {
+      const { d } = fakeDeps({ httpGetJson: async () => ({ status: 429, body: null, retryAfter: 3595 }) });
+      const r = await hp.probeClaude(d);
+      assert.strictEqual(r.limits_status, 'error');
+      assert.strictEqual(r.retry_at, '2026-10-30T10:59:55.000Z');
+      const { d: d2, calls } = fakeDeps({ skipLimits: { claude: '2026-10-30T10:59:55.000Z' } });
+      const r2 = await hp.probeClaude(d2);
+      assert.strictEqual(calls.http.length, 0, 'endpoint not called while the provider asked to wait');
+      assert.strictEqual(r2.retry_at, '2026-10-30T10:59:55.000Z');
+    });
+
+    await test('harness probe — Claude: API-key login → not_applicable; not installed → null; logged out → logged_in false', async () => {
+      const api = await hp.probeClaude(fakeDeps({ run: async (c, a) => a[0] === '--version' ? { code: 0, stdout: '2.1.0' } : { code: 0, stdout: JSON.stringify({ loggedIn: true, authMethod: 'api_key' }) } }).d);
+      assert.strictEqual(api.limits_status, 'not_applicable');
+      assert.strictEqual(await hp.probeClaude(fakeDeps({ run: async () => ({ code: -1, stdout: '' }) }).d), null);
+      const out = await hp.probeClaude(fakeDeps({ run: async (c, a) => a[0] === '--version' ? { code: 0, stdout: '2.1.0' } : { code: 1, stdout: JSON.stringify({ loggedIn: false }) } }).d);
+      assert.strictEqual(out.logged_in, false);
+      assert.strictEqual(out.account, null);
+    });
+
+    await test('harness probe — Codex: app-server account + rate limits (extra buckets prefixed); fallback to wham/usage', async () => {
+      const rpc = {
+        account: { account: { type: 'chatgpt', email: 'cx@x.io', planType: 'plus' }, requiresOpenaiAuth: true },
+        rateLimits: { rateLimits: { limitId: 'codex', primary: { usedPercent: 7, windowDurationMins: 300, resetsAt: 1793340514 }, secondary: { usedPercent: 20, windowDurationMins: 10080, resetsAt: 1793781369 }, credits: { hasCredits: false, unlimited: false, balance: '0' } },
+          rateLimitsByLimitId: { codex: {}, codex_mini: { limitName: 'Mini', primary: { usedPercent: 50, windowDurationMins: 60, resetsAt: null } } } },
+      };
+      const { d, calls } = fakeDeps({ codexAppServer: async () => rpc });
+      const r = await hp.probeCodex(d);
+      assert.strictEqual(r.account.email, 'cx@x.io');
+      assert.strictEqual(r.account.plan, 'plus');
+      assert.deepStrictEqual(r.limits.map(l => [l.key, l.label, l.used_pct, l.resets_at]), [
+        ['five_hour', '5-hour session', 7, new Date(1793340514000).toISOString()],
+        ['seven_day', 'Weekly', 20, new Date(1793781369000).toISOString()],
+        ['codex_mini_window_60', '1-hour window · Mini', 50, null],
+      ]);
+      assert.strictEqual(calls.http.length, 0, 'no HTTP when the app-server answered');
+      const auth = JSON.stringify({ tokens: { access_token: SECRET_TOKEN, account_id: 'acc-1' } });
+      const { d: d2, calls: c2 } = fakeDeps({
+        readFile: (p) => p.endsWith('auth.json') ? auth : null,
+        httpGetJson: async (url, headers) => { c2.http.push({ url, acct: headers['ChatGPT-Account-Id'] }); return { status: 200, body: { email: 'cx@x.io', plan_type: 'plus', rate_limit: { primary_window: { used_percent: 3, limit_window_seconds: 18000, reset_at: 1793340514 } } } }; },
+      });
+      const r2 = await hp.probeCodex(d2);
+      assert.deepStrictEqual(c2.http, [{ url: 'https://chatgpt.com/backend-api/wham/usage', acct: 'acc-1' }]);
+      assert.strictEqual(r2.limits[0].key, 'five_hour');
+      assert.strictEqual(r2.account.email, 'cx@x.io');
+      assert.ok(!JSON.stringify(r2).includes(SECRET_TOKEN));
+    });
+
+    await test('harness probe — machineIdentity: 16 hex, changes with the config dir, carries no path', () => {
+      const a = hp.machineIdentity({ USER: 'aan' });
+      const b = hp.machineIdentity({ USER: 'aan', CODEX_HOME: '/tmp/other-codex' });
+      assert.match(a.id, /^[0-9a-f]{16}$/);
+      assert.notStrictEqual(a.id, b.id, 'separate codex home = separate login = separate machine id');
+      assert.ok(!JSON.stringify(b).includes('/tmp/other-codex'));
+    });
+
+    await test('GET /api/usage/accounts and POST refresh — 401 without a session', async () => {
+      const saved = sessionCookie; sessionCookie = null;
+      try {
+        assert.strictEqual((await req('GET', '/api/usage/accounts')).status, 401);
+        assert.strictEqual((await req('POST', '/api/usage/accounts/refresh', {})).status, 401);
+      } finally { sessionCookie = saved; }
+    });
+
+    let a1, a2, b1;
+    await test('harness accounts — connect asks ONE agent per machine for a snapshot; a hostile reply is stored sanitized and broadcast', async () => {
+      const human = await openWsConnection(`ws://${HOST}:${PORT}`, cookieHeader());
+      sockets.push(human);
+      human.send(JSON.stringify({ type: 'subscribe_global' }));
+      await haSleep(100);
+      a1 = await haConnect('__test-ha-a1', { id: M1, hostname: 'ignored', platform: 'darwin' });
+      sockets.push(a1.ws);
+      assert.ok(await haWait(() => a1.requests().length === 1), 'first agent of the machine asked');
+      a2 = await haConnect('__test-ha-a2', { id: M1, hostname: 'ignored', platform: 'darwin' });
+      sockets.push(a2.ws);
+      await haSleep(300);
+      assert.strictEqual(a2.requests().length, 0, 'second agent of the same machine not asked (coalesced)');
+      const updated = waitForWsMessage(human, m => m.type === 'harness_accounts_updated' && m.machine_id === M1);
+      a1.ws.send(JSON.stringify({
+        ...snap(M1, { claude: { ...claudeOk('aan@x.io', 140), oauth_token: SECRET_TOKEN }, codex: null }, { access_token: SECRET_TOKEN }),
+        machine: { id: M1, hostname: 'mac\u0000mini\u202e', platform: 'evil-os' },
+        request_id: a1.requests()[0].request_id,
+      }));
+      await updated;
+      const r = await req('GET', '/api/usage/accounts');
+      assert.strictEqual(r.status, 200);
+      assert.ok(!r.raw.includes(SECRET_TOKEN), 'no token in the API');
+      const row = db.prepare('SELECT hostname, platform, payload FROM harness_account_snapshots WHERE machine_id=?').get(M1);
+      assert.ok(!row.payload.includes(SECRET_TOKEN), 'no token in the DB');
+      const m = machineOf(r.body, M1);
+      assert.strictEqual(m.hostname, 'macmini');
+      assert.strictEqual(m.platform, null, 'unknown platform dropped');
+      assert.strictEqual(m.online, true);
+      assert.deepStrictEqual(m.agents.map(a => a.actor_id).sort(), [a1.actorId, a2.actorId].sort(), 'both agents grouped under the machine');
+      assert.ok(m.agents.every(a => a.online === true && a.tokens_7d === 0 && a.turns_7d === 0));
+      assert.strictEqual(m.harnesses.claude.limits[0].used_pct, 100, 'clamped');
+      assert.strictEqual(m.harnesses.codex, null, 'not installed');
+    });
+
+    await test('harness accounts — two machines on different Claude accounts → mismatch; same account case-insensitively → none', async () => {
+      b1 = await haConnect('__test-ha-b1', { id: M2, hostname: 'kira', platform: 'linux' });
+      sockets.push(b1.ws);
+      assert.ok(await haWait(() => b1.requests().length === 1));
+      b1.ws.send(JSON.stringify({ ...snap(M2, { claude: claudeOk('AAN@x.io'), codex: null }), request_id: b1.requests()[0].request_id }));
+      await haWait(() => !!db.prepare('SELECT 1 FROM harness_account_snapshots WHERE machine_id=?').get(M2));
+      let r = await req('GET', '/api/usage/accounts');
+      const ours = (r.body.accounts.claude || []).filter(e => e.toLowerCase() === 'aan@x.io');
+      assert.strictEqual(ours.length, 1, 'same address, different case → one account');
+      // Unsolicited, and a second one right after it is dropped (per-agent gap) — the first counts.
+      b1.ws.send(JSON.stringify(snap(M2, { claude: claudeOk('kira@x.io'), codex: null })));
+      await haSleep(150);
+      b1.ws.send(JSON.stringify(snap(M2, { claude: claudeOk('spam@x.io'), codex: null })));
+      await haSleep(250);
+      r = await req('GET', '/api/usage/accounts');
+      assert.strictEqual(machineOf(r.body, M2).harnesses.claude.account.email, 'kira@x.io', 'burst dropped');
+      assert.ok(r.body.accounts.claude.includes('kira@x.io') && r.body.accounts.claude.includes('aan@x.io'));
+      assert.strictEqual(r.body.mismatch.claude, true);
+    });
+
+    await test('harness accounts — offline machine keeps its last snapshot, marked offline', async () => {
+      const closed = new Promise(r => b1.ws.once('close', r));
+      b1.ws.close();
+      await closed;
+      await haSleep(150);
+      const m = machineOf((await req('GET', '/api/usage/accounts')).body, M2);
+      assert.strictEqual(m.online, false);
+      assert.strictEqual(m.agents[0].online, false);
+      assert.strictEqual(m.harnesses.claude.account.email, 'kira@x.io', 'last known data kept');
+    });
+
+    await test('POST /api/usage/accounts/refresh — validation: bad machine_id 400, unknown 404, bad JSON 400', async () => {
+      assert.strictEqual((await req('POST', '/api/usage/accounts/refresh', { machine_id: '../../etc' })).status, 400);
+      assert.strictEqual((await req('POST', '/api/usage/accounts/refresh', { machine_id: 'ffffffffffffffff' })).status, 404);
+      assert.strictEqual((await rawReq('POST', '/api/usage/accounts/refresh', '{nope', 'application/json')).status, 400);
+    });
+
+    await test('POST /api/usage/accounts/refresh — a machine probed < 30s ago is not re-probed (cached answer, no request)', async () => {
+      const before = a1.requests().length + a2.requests().length;
+      const t = Date.now();
+      const r = await req('POST', '/api/usage/accounts/refresh', { machine_id: M1 });
+      assert.strictEqual(r.status, 200);
+      assert.ok(Date.now() - t < 2000, 'answered without waiting');
+      await haSleep(200);
+      assert.strictEqual(a1.requests().length + a2.requests().length, before, 'no probe sent');
+      assert.ok(machineOf(r.body, M1), 'GET payload returned');
+    });
+
+    await test('POST /api/usage/accounts/refresh — stale machine: one agent asked (with skip_limits while rate limited), reply returned, last good limits carried', async () => {
+      // A machine with a fresh snapshot gets no probe on connect; aging it afterwards makes it due.
+      const goodAt = new Date(Date.now() - 3600e3).toISOString();
+      db.prepare(`INSERT INTO harness_account_snapshots (machine_id, hostname, platform, payload, probed_at) VALUES (?, 'm3', 'linux', ?, ?)`)
+        .run(M3, JSON.stringify({ claude: { ...claudeOk('m3@x.io', 42), limits_checked_at: goodAt, retry_at: new Date(Date.now() + 600e3).toISOString() }, codex: null }), new Date().toISOString());
+      const c1 = await haConnect('__test-ha-c1', { id: M3, hostname: 'm3', platform: 'linux' });
+      sockets.push(c1.ws);
+      await haSleep(300);
+      assert.strictEqual(c1.requests().length, 0, 'fresh snapshot: no probe on connect');
+      db.prepare('UPDATE harness_account_snapshots SET probed_at=? WHERE machine_id=?').run(goodAt, M3);
+      c1.ws.on('message', raw => {
+        const m = JSON.parse(raw.toString());
+        if (m.type !== 'harness_accounts_request') return;
+        c1.ws.send(JSON.stringify({ ...snap(M3, { claude: { ...claudeOk('m3@x.io'), limits_status: 'error', limits: [], error: 'Rate limited by Anthropic; next check after the wait', retry_at: m.skip_limits?.claude ?? null }, codex: null }), request_id: m.request_id }));
+      });
+      const r = await req('POST', '/api/usage/accounts/refresh', {});
+      assert.strictEqual(r.status, 200);
+      assert.strictEqual(c1.requests().length, 1, 'asked exactly once');
+      assert.ok(c1.requests()[0].skip_limits?.claude, 'told to skip the rate-limited endpoint');
+      const m = machineOf(r.body, M3);
+      assert.ok(Date.parse(m.probed_at) > Date.parse(goodAt), 'fresh probe in the answer');
+      assert.strictEqual(m.harnesses.claude.limits_status, 'ok', 'last good limits carried');
+      assert.strictEqual(m.harnesses.claude.limits[0].used_pct, 42);
+      assert.strictEqual(m.harnesses.claude.limits_checked_at, goodAt);
+      assert.match(m.harnesses.claude.error, /Rate limited/);
+    });
+
+    await test('harness accounts — a machine whose agents are all deleted disappears from the list', async () => {
+      assert.strictEqual((await req('DELETE', `/api/actors/${b1.actorId}`)).status, 204);
+      orphanActorIds = orphanActorIds.filter(id => id !== b1.actorId);
+      assert.strictEqual(db.prepare('SELECT COUNT(*) n FROM agent_machines WHERE actor_id=?').get(b1.actorId).n, 0, 'mapping cascaded');
+      assert.strictEqual(machineOf((await req('GET', '/api/usage/accounts')).body, M2), undefined);
+    });
+
+    for (const s of sockets) { try { s.close(); } catch {} }
+    db.prepare('DELETE FROM harness_account_snapshots WHERE machine_id IN (?, ?, ?)').run(M1, M2, M3);
+  }
+
   console.log('\n[Test Teardown]');
   await test('Teardown — delete all test rooms', async () => {
     if (!testRoomIds.length) { console.log('    (nothing to clean up)'); return; }
