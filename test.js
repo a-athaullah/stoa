@@ -14437,6 +14437,20 @@ async function run() {
     assert.strictEqual(notice[0].byClass('ua-notice-email').length, 3);
     assert.ok(host.byClass('ua-title')[0].textContent.startsWith('3 machines · Claude: 3 accounts · Codex: 1 account'));
     assert.ok(host.byClass('ua-tightest-what')[0].textContent.startsWith('Claude · odd on aa-mac'));
+    assert.ok(host.byClass('ua-tightest-pct')[0].cls.has('ua-tone-crit'));
+
+    const tightest = vm.runInContext('uaTightest', ctx);
+    const pick = (claude, codex) => {
+      const t = tightest([{ hostname: 'mac-studio', harnesses: { claude: acct('a@x.com', { limits: claude }), codex: acct('c@x.com', { limits: codex }) } }]);
+      return t && `${t.harness} · ${t.label} ${t.pct} ${t.tone}`;
+    };
+    const st = (key, pct, status) => ({ ...lim(key, pct), status });
+    assert.strictEqual(pick([st('Weekly', 12, 'rejected')], [lim('Weekly', 55)]), 'Claude · Weekly 12 crit', 'a rejected window outranks a fuller allowed one and keeps its real percentage');
+    assert.strictEqual(pick([st('five_hour', 30, 'rejected'), st('seven_day', 12, 'rejected')], [lim('Weekly', 95)]), 'Claude · five_hour 30 crit', 'among rejected windows the higher percentage wins');
+    assert.strictEqual(pick([st('five_hour', 40, 'allowed_warning')], [lim('Weekly', 55)]), 'Claude · five_hour 40 warm', 'allowed_warning lifts a window to at least warm');
+    assert.strictEqual(pick([st('five_hour', 40, 'allowed_warning')], [lim('Weekly', 92)]), 'Codex · Weekly 92 crit', 'a warning never outranks a window already critical');
+    assert.strictEqual(pick([st('five_hour', 80, 'allowed')], [lim('Weekly', 55)]), 'Claude · five_hour 80 warm', 'without a flagged status the fuller window wins');
+    assert.strictEqual(pick([lim('five_hour', 23)], [lim('Weekly', 55)]), 'Codex · Weekly 55 calm');
 
     assert.strictEqual(vm.runInContext('uaApply', ctx)(1, { machines: [], accounts: {}, mismatch: {} }), false, 'an older response never overwrites a newer one');
     assert.strictEqual(vm.runInContext('uaApply', ctx)(3, { machines: [], accounts: {}, mismatch: { claude: true } }), true);

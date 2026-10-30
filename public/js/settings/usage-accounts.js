@@ -261,6 +261,7 @@ function uaHarness(machine, id) {
   return machine.harnesses ? machine.harnesses[id] : null;
 }
 
+// Ranked by the meter's own tone first; a window the limiter rejected outranks every window it still allows, however full.
 function uaTightest(machines) {
   let best = null;
   machines.forEach(m => UA_HARNESSES.forEach(h => {
@@ -269,7 +270,10 @@ function uaTightest(machines) {
     acc.limits.forEach(l => {
       const pct = Number(l.used_pct);
       if (!isFinite(pct)) return;
-      if (!best || pct > best.pct) best = { pct, harness: h.label, label: l.label || l.key, resets_at: l.resets_at, host: m.hostname };
+      const tone = uaMeterTone(l, pct), rank = UA_TONE_RANK[tone] + (l.status === 'rejected' ? 1 : 0);
+      if (!best || rank > best.rank || (rank === best.rank && pct > best.pct)) {
+        best = { pct, tone, rank, harness: h.label, label: l.label || l.key, resets_at: l.resets_at, host: m.hostname };
+      }
     });
   }));
   return best;
@@ -382,7 +386,7 @@ function uaRenderHeader(d, machines) {
     const where = machines.length > 1 && tight.host ? ` on ${tight.host}` : '';
     const what = uaEl('span', 'ua-tightest-what', `${tight.harness} · ${tight.label}${where}`);
     line.appendChild(what);
-    line.appendChild(uaEl('span', `ua-tightest-pct ua-tone-${uaTone(tight.pct)}`, uaPct(tight.pct) + '%'));
+    line.appendChild(uaEl('span', `ua-tightest-pct ua-tone-${tight.tone}`, uaPct(tight.pct) + '%'));
     const resets = uaRel('ua-tightest-reset', 'resets', tight.resets_at);
     line.appendChild(resets);
     text.appendChild(line);
