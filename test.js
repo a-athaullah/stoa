@@ -22436,6 +22436,7 @@ async function run() {
     const M1 = crypto.randomBytes(8).toString('hex');
     const M2 = crypto.randomBytes(8).toString('hex');
     const M3 = crypto.randomBytes(8).toString('hex');
+    const M4 = crypto.randomBytes(8).toString('hex');
     const sockets = [];
 
     await test('harness accounts — sanitizeSnapshot drops unknown keys (tokens), strips control/bidi chars, clamps and caps', () => {
@@ -22713,8 +22714,77 @@ async function run() {
       assert.strictEqual(machineOf((await req('GET', '/api/usage/accounts')).body, M2), undefined);
     });
 
+    await test('harness accounts — probe start and end broadcast; spoofed machine.id or another agent\'s request_id rejected', async () => {
+      const Database = require('better-sqlite3');
+      const fsH = require('fs');
+      const d = new Database(':memory:');
+      require('./lib/migrations').runMigrations(d, path.join(__dirname, 'migrations'), { log() {}, warn() {}, error() {} },
+        { schemaSql: fsH.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8') });
+      d.prepare("INSERT INTO actors (id, name, type) VALUES (901, 'agent-a', 'ai'), (902, 'agent-b', 'ai')").run();
+      const A = 'aaaaaaaaaaaaaaaa', B = 'bbbbbbbbbbbbbbbb';
+      const sent = [], casts = [];
+      const inst = ha.createHarnessAccounts({
+        db: d, broadcastGlobal: m => casts.push(m.machine_id), sendToAgent: (id, m) => { sent.push({ id, ...m }); return true; },
+        isOnline: () => true, hasFeature: () => true, refreshWaitMs: 20, probeTimeoutMs: 80,
+      });
+      const reqFor = (actor) => sent.filter(s => s.id === actor).at(-1).request_id;
+      const refreshing = (id) => inst.list().machines.find(m => m.machine_id === id)?.refreshing;
+      const warn = console.warn; const warned = [];
+      console.warn = (...a) => warned.push(a.join(' '));
+      try {
+        inst.agentConnected(901, { id: A });
+        inst.agentConnected(902, { id: B });
+        assert.deepStrictEqual(casts, [A, B], 'probe start broadcast per machine');
+        const spoof = { ...snap(A, { claude: claudeOk('evil@x.io'), codex: null }), request_id: reqFor(901) };
+        assert.strictEqual(inst.accept(902, spoof), false, 'agent of B cannot write A, even with A\'s request_id');
+        assert.strictEqual(d.prepare('SELECT COUNT(*) n FROM harness_account_snapshots WHERE machine_id=?').get(A).n, 0);
+        assert.ok(warned.some(w => w.includes('#902') && !w.includes('evil@x.io')), 'rejection logged without payload');
+        assert.strictEqual(inst.accept(902, { ...snap(B, { claude: claudeOk('b@x.io'), codex: null }), request_id: 'stale' }), true, 'own machine, wrong request_id: stored as unsolicited');
+        assert.strictEqual(refreshing(B), true, 'a reply to another request does not end the probe');
+        assert.strictEqual(inst.accept(901, { ...snap(A, { claude: claudeOk('a@x.io'), codex: null }), request_id: reqFor(901) }), true);
+        assert.strictEqual(refreshing(A), false, 'answered probe ends');
+        assert.strictEqual(casts.filter(m => m === A).length, 2, 'start + snapshot');
+        assert.ok(await haWait(() => refreshing(B) === false, 1000), 'probe without an answer times out');
+        assert.strictEqual(casts.filter(m => m === B).length, 3, 'start + unsolicited snapshot + timeout');
+        inst.agentDisconnected(901);
+        assert.strictEqual(inst.accept(901, snap(A, { claude: claudeOk('late@x.io'), codex: null })), false, 'no announced machine after disconnect');
+        inst.agentConnected(902, { id: 'not-hex' });
+        assert.strictEqual(inst.accept(902, snap(B, { claude: claudeOk('b2@x.io'), codex: null })), false, 'invalid machine at connect → nothing accepted');
+        assert.ok(!d.prepare('SELECT payload FROM harness_account_snapshots WHERE machine_id=?').get(A).payload.includes('evil@x.io'));
+      } finally {
+        console.warn = warn;
+        d.close();
+      }
+    });
+
+    await test('harness accounts — over WS: an open tab hears the probe start (refreshing true); a snapshot for another machine is ignored', async () => {
+      const human = await openWsConnection(`ws://${HOST}:${PORT}`, cookieHeader());
+      sockets.push(human);
+      human.send(JSON.stringify({ type: 'subscribe_global' }));
+      await haSleep(100);
+      const before = db.prepare('SELECT payload, probed_at FROM harness_account_snapshots WHERE machine_id=?').get(M1);
+      db.prepare('INSERT INTO harness_account_snapshots (machine_id, hostname, platform, payload, probed_at) VALUES (?, ?, ?, ?, ?)')
+        .run(M4, 'm4', 'linux', JSON.stringify({ claude: null, codex: null }), '2026-01-01T00:00:00.000Z');
+      const started = waitForWsMessage(human, m => m.type === 'harness_accounts_updated' && m.machine_id === M4);
+      const d1 = await haConnect('__test-ha-d1', { id: M4, hostname: 'm4', platform: 'linux' });
+      sockets.push(d1.ws);
+      await started;
+      assert.ok(await haWait(() => d1.requests().length === 1), 'stale machine probed on connect');
+      assert.strictEqual(machineOf((await req('GET', '/api/usage/accounts')).body, M4).refreshing, true, 'GET agrees while the probe runs');
+      d1.ws.send(JSON.stringify({ ...snap(M1, { claude: claudeOk('spoof@x.io'), codex: null }), request_id: d1.requests()[0].request_id }));
+      await haSleep(300);
+      assert.deepStrictEqual(db.prepare('SELECT payload, probed_at FROM harness_account_snapshots WHERE machine_id=?').get(M1), before, 'M1 untouched');
+      assert.strictEqual(machineOf((await req('GET', '/api/usage/accounts')).body, M4).refreshing, true, 'spoof did not end M4\'s probe');
+      const done = waitForWsMessage(human, m => m.type === 'harness_accounts_updated' && m.machine_id === M4);
+      d1.ws.send(JSON.stringify({ ...snap(M4, { claude: claudeOk('m4@x.io'), codex: null }), request_id: d1.requests()[0].request_id }));
+      await done;
+      const m4 = machineOf((await req('GET', '/api/usage/accounts')).body, M4);
+      assert.strictEqual(m4.refreshing, false);
+      assert.strictEqual(m4.harnesses.claude.account.email, 'm4@x.io');
+    });
+
     for (const s of sockets) { try { s.close(); } catch {} }
-    db.prepare('DELETE FROM harness_account_snapshots WHERE machine_id IN (?, ?, ?)').run(M1, M2, M3);
+    db.prepare('DELETE FROM harness_account_snapshots WHERE machine_id IN (?, ?, ?, ?)').run(M1, M2, M3, M4);
   }
 
   console.log('\n[Test Teardown]');
