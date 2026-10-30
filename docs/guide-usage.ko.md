@@ -1439,11 +1439,11 @@ Slack, WhatsApp, Email 연결과 자동화 규칙을 관리합니다. 위의 [�
 - **Not logged in** — CLI가 설치되어 있지만 계정이 로그인되어 있지 않습니다.
 - **Not installed** — 해당 머신에 CLI가 설치되어 있지 않습니다.
 - **API key login — no plan limits** — API 키를 사용하는 계정에는 플랜 사용 창이 없습니다.
-- **Limits unavailable** — 계정은 확인되었지만 한도 엔드포인트가 오류를 반환했습니다.
+- **Limits unavailable** — 계정은 확인되었지만 한도 데이터를 읽을 수 없었습니다(Claude는 에이전트 세션에서 데이터를 받지 못함, Codex는 사용 엔드포인트가 오류를 반환함). 구체적인 오류 메시지가 있으면 아래에 표시됩니다.
 - **No limit data yet**（Claude만 해당）— 이 머신의 에이전트 세션에서 아직 스냅샷이 수신되지 않았습니다. 이 머신의 에이전트가 작업을 실행하면 자동으로 표시되거나 Refresh를 누르세요.
-- **Last known values** — Codex 프로브가 실행되었지만 이전 확인의 데이터가 이월되어 표시됩니다. 데이터가 마지막으로 성공적으로 읽힌 시간이 표시됩니다.
+- **Last known values** — Codex 프로브가 실행되었지만 이전 확인의 데이터가 이월되어 표시됩니다. 데이터가 마지막으로 성공적으로 읽힌 시간이 표시됩니다. Codex 사용 엔드포인트가 일시적으로 속도 제한된 경우 "Usage endpoint rate-limited · next check after HH:MM" 메모도 표시됩니다.
 
-토큰 인증 정보는 에이전트 머신에서만 읽히며 Stoa 서버로는 전송되지 않습니다.
+Codex 인증 정보는 에이전트 머신에서만 읽히며 Stoa 서버로는 전송되지 않습니다. Claude 한도는 에이전트 자체 세션에서 가져오므로 Claude 인증 정보는 읽히지 않습니다.
 
 ### Doctor
 

@@ -1439,11 +1439,11 @@ API 密钥存储在服务器上，仅在 Settings 编辑表单中返回到浏览
 - **Not logged in** — CLI 已安装但未登录任何账号。
 - **Not installed** — 该机器上未安装 CLI。
 - **API key login — no plan limits** — 使用 API 密钥的账号没有计划使用窗口。
-- **Limits unavailable** — 账号已确认，但限额端点返回了错误。
+- **Limits unavailable** — 账号已确认，但无法读取限额数据（对于 Claude，未从代理会话收到数据；对于 Codex，用量端点返回了错误）。如有具体错误信息，将显示在下方。
 - **No limit data yet**（仅 Claude）——该机器的代理会话尚未收到任何快照；此机器上的代理运行任务后会自动出现，或按 Refresh。
-- **Last known values** — Codex 探测已运行，但显示的是上次检查的数据；显示上次成功读取数据的时间。
+- **Last known values** — Codex 探测已运行，但显示的是上次检查的数据；显示上次成功读取数据的时间。如果 Codex 用量端点暂时受到速率限制，还会出现"Usage endpoint rate-limited · next check after HH:MM"提示。
 
-令牌凭据仅在代理机器上读取，绝不发送至 Stoa 服务器。
+Codex 凭据仅在代理机器上读取，绝不发送至 Stoa 服务器。Claude 限额来自代理自身的会话，不会读取任何 Claude 凭据。
 
 ### Doctor
 

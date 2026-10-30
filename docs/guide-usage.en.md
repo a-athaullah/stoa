@@ -1443,11 +1443,11 @@ Possible states for a harness panel:
 - **Not logged in** — the CLI is installed but no account is signed in.
 - **Not installed** — the CLI is not on that machine.
 - **API key login — no plan limits** — API key accounts have no plan usage windows.
-- **Limits unavailable** — the account is confirmed but the limits endpoint returned an error.
+- **Limits unavailable** — the account is confirmed but limit data could not be read (for Claude, no data was received from agent sessions; for Codex, the usage endpoint returned an error). Any specific error message is shown beneath.
 - **No limit data yet** (Claude) — no snapshot has been received from this machine's agent sessions yet; appears automatically after an agent on this machine runs a task, or press Refresh.
-- **Last known values** — a Codex probe ran but the limits data from the previous check is being carried forward; shows when the data was last successfully read.
+- **Last known values** — a Codex probe ran but the limits data from the previous check is being carried forward; shows when the data was last successfully read. If the Codex usage endpoint was temporarily rate-limited, a "Usage endpoint rate-limited · next check after HH:MM" note also appears.
 
-Token credentials are read on the agent machine only and are never sent to the Stoa server.
+Codex credentials are read on the agent machine only and are never sent to the Stoa server. Claude limits come from the agent's own sessions — no Claude credentials are read.
 
 ### Doctor
 

@@ -1444,11 +1444,11 @@ Status yang mungkin muncul di panel harness:
 - **Not logged in** — harness terinstal tapi belum ada akun yang login.
 - **Not installed** — CLI belum terinstal di mesin tersebut.
 - **API key login — no plan limits** — akun yang pakai API key tidak punya jendela penggunaan plan.
-- **Limits unavailable** — akun terkonfirmasi tapi endpoint limit mengembalikan error.
+- **Limits unavailable** — akun terkonfirmasi tapi data limit tidak dapat dibaca (untuk Claude, tidak ada data dari sesi agent; untuk Codex, endpoint penggunaan mengembalikan error). Pesan error spesifik ditampilkan di bawahnya.
 - **No limit data yet** (Claude) — belum ada snapshot yang diterima dari sesi agent di mesin ini; muncul otomatis setelah agent di mesin tersebut menjalankan task, atau tekan Refresh.
-- **Last known values** — probe Codex berjalan tapi data limit dari cek sebelumnya yang ditampilkan; menunjukkan kapan data terakhir berhasil dibaca.
+- **Last known values** — probe Codex berjalan tapi data limit dari cek sebelumnya yang ditampilkan; menunjukkan kapan data terakhir berhasil dibaca. Jika endpoint penggunaan Codex sempat dibatasi sementara, catatan "Usage endpoint rate-limited · next check after HH:MM" juga muncul.
 
-Kredensial token hanya dibaca di mesin agent dan tidak pernah dikirim ke server Stoa.
+Kredensial Codex hanya dibaca di mesin agent dan tidak pernah dikirim ke server Stoa. Limit Claude berasal dari sesi agent itu sendiri — tidak ada kredensial Claude yang dibaca.
 
 ### Doctor
 
