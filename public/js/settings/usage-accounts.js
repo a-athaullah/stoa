@@ -179,6 +179,10 @@ function uaAgo(iso) {
   return `${d.getDate()} ${UA_MONTHS[d.getMonth()]}`;
 }
 
+function uaFull(d) {
+  return `${UA_DAYS[d.getDay()]} ${d.getDate()} ${UA_MONTHS[d.getMonth()]} ${d.getFullYear()} ${uaClock(d)}`;
+}
+
 function uaWhen(d) {
   const now = new Date();
   if (uaSameDay(d, now)) return uaClock(d);
@@ -217,6 +221,15 @@ function uaTone(n) {
   return pct >= 90 ? 'crit' : pct >= 70 ? 'warm' : 'calm';
 }
 
+const UA_TONE_RANK = { calm: 0, warm: 1, crit: 2 };
+const UA_STATUS_TONE = { allowed_warning: 'warm', rejected: 'crit' };
+
+// A window the limiter itself flags is at least as loud as the flag, whatever its percentage says.
+function uaMeterTone(l, pct) {
+  const base = uaTone(pct), flagged = UA_STATUS_TONE[l.status];
+  return flagged && UA_TONE_RANK[flagged] > UA_TONE_RANK[base] ? flagged : base;
+}
+
 function uaPlan(plan) {
   const s = String(plan || '').trim();
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
@@ -248,6 +261,7 @@ function uaHarness(machine, id) {
   return machine.harnesses ? machine.harnesses[id] : null;
 }
 
+// Ranked by the meter's own tone first; a window the limiter rejected outranks every window it still allows, however full.
 function uaTightest(machines) {
   let best = null;
   machines.forEach(m => UA_HARNESSES.forEach(h => {
@@ -256,7 +270,10 @@ function uaTightest(machines) {
     acc.limits.forEach(l => {
       const pct = Number(l.used_pct);
       if (!isFinite(pct)) return;
-      if (!best || pct > best.pct) best = { pct, harness: h.label, label: l.label || l.key, resets_at: l.resets_at, host: m.hostname };
+      const tone = uaMeterTone(l, pct), rank = UA_TONE_RANK[tone] + (l.status === 'rejected' ? 1 : 0);
+      if (!best || rank > best.rank || (rank === best.rank && pct > best.pct)) {
+        best = { pct, tone, rank, harness: h.label, label: l.label || l.key, resets_at: l.resets_at, host: m.hostname };
+      }
     });
   }));
   return best;
@@ -369,7 +386,7 @@ function uaRenderHeader(d, machines) {
     const where = machines.length > 1 && tight.host ? ` on ${tight.host}` : '';
     const what = uaEl('span', 'ua-tightest-what', `${tight.harness} · ${tight.label}${where}`);
     line.appendChild(what);
-    line.appendChild(uaEl('span', `ua-tightest-pct ua-tone-${uaTone(tight.pct)}`, uaPct(tight.pct) + '%'));
+    line.appendChild(uaEl('span', `ua-tightest-pct ua-tone-${tight.tone}`, uaPct(tight.pct) + '%'));
     const resets = uaRel('ua-tightest-reset', 'resets', tight.resets_at);
     line.appendChild(resets);
     text.appendChild(line);
@@ -468,7 +485,11 @@ function uaRenderMachine(m) {
   return card;
 }
 
+const UA_SOURCES = { session: 'From agent activity · ', ping: 'From a limits check · ' };
+const UA_SOURCE_STALE_MS = 3600000;
+
 // Limits checked before the snapshot itself = the server kept the last good numbers through a failed check.
+// Limits seen in agent sessions or a ping carry their own observed_at instead, unrelated to probed_at.
 function uaLimitsCarried(acc, probedAt) {
   const checked = uaDate(acc.limits_checked_at), probed = uaDate(probedAt);
   return !!(checked && probed && probed - checked > 60000);
@@ -513,17 +534,30 @@ function uaRenderHarness(h, acc, probedAt) {
     panel.appendChild(uaEl('p', 'ua-state', 'API key login — no plan limits'));
   } else if (status === 'token_expired') {
     panel.appendChild(uaTokenExpiredNote(h));
+  } else if (status === 'unavailable' && !acc.error && h.id === 'claude') {
+    panel.appendChild(uaEl('p', 'ua-state', 'No limit data yet — appears after an agent on this machine runs a task, or press Refresh.'));
   } else if (status !== 'ok') {
     panel.appendChild(uaEl('p', 'ua-state', 'Limits unavailable'));
     if (acc.error && !uaRetryNote(acc.retry_at)) panel.appendChild(uaEl('p', 'ua-hint', acc.error));
   } else if (!limits.length) {
     panel.appendChild(uaEl('p', 'ua-state', 'No limit windows reported'));
   }
-  const carried = status === 'ok' && uaLimitsCarried(acc, probedAt);
+  const sourcePrefix = UA_SOURCES[acc.source];
+  const observed = sourcePrefix ? uaDate(acc.observed_at) : null;
+  const carried = status === 'ok' && !sourcePrefix && uaLimitsCarried(acc, probedAt);
+  const stale = carried || !!(observed && Date.now() - observed > UA_SOURCE_STALE_MS);
   if (limits.length && status === 'ok') {
-    const list = uaEl('div', 'ua-meters' + (carried ? ' is-stale' : ''));
+    const list = uaEl('div', 'ua-meters' + (stale ? ' is-stale' : ''));
     limits.forEach(l => list.appendChild(uaRenderMeter(l)));
     panel.appendChild(list);
+  }
+  if (status === 'ok' && acc.rate_limit_status === 'rejected') panel.appendChild(uaLimitReachedNote(limits));
+  if (status === 'ok' && observed) {
+    const seen = uaRel('ua-asof', 'ago', acc.observed_at);
+    seen.dataset.uaPrefix = sourcePrefix;
+    seen.textContent = sourcePrefix + seen.textContent;
+    seen.title = uaFull(observed);
+    panel.appendChild(seen);
   }
   if (carried) {
     const asOf = uaRel('ua-asof', 'ago', acc.limits_checked_at);
@@ -537,6 +571,8 @@ function uaRenderHarness(h, acc, probedAt) {
     if (acc.error) retry.title = acc.error;
     panel.appendChild(retry);
   }
+  const extra = uaExtraUsage(acc.overage);
+  if (extra) panel.appendChild(extra);
   const balance = acc.credits && acc.credits.enabled ? acc.credits.balance : null;
   if (balance !== null && balance !== undefined && balance !== '') {
     const credits = uaEl('div', 'ua-credits');
@@ -547,19 +583,41 @@ function uaRenderHarness(h, acc, probedAt) {
   return panel;
 }
 
-// /reauth re-runs `claude auth login`, so only Claude gets that shortcut.
+// Only Codex reports token_expired; Claude limits come from agent sessions, which refresh their own login.
 function uaTokenExpiredNote(h) {
-  if (h.id === 'claude') return uaEl('p', 'ua-hint ua-hint--warn', 'Token expired — run any task on an agent here, or type /reauth in its room.');
   const note = uaEl('p', 'ua-hint ua-hint--warn', 'Token expired — run ');
   note.appendChild(uaEl('code', null, h.login));
   note.appendChild(document.createTextNode(' on that machine.'));
   return note;
 }
 
+// Blocked until the last rejected window resets; without a rejected window the time is unknown.
+function uaLimitReachedNote(limits) {
+  let until = null;
+  limits.forEach(l => {
+    const d = l.status === 'rejected' ? uaDate(l.resets_at) : null;
+    if (d && (!until || d > until)) until = d;
+  });
+  const note = uaEl('p', 'ua-hint ua-hint--warn', until ? `Limit reached · resets ${uaWhen(until)}` : 'Limit reached');
+  if (until) note.title = uaFull(until);
+  return note;
+}
+
+function uaExtraUsage(o) {
+  if (!o) return null;
+  let text = null;
+  if (o.is_using === true) text = 'Extra usage in use';
+  else if (o.status === 'rejected' || o.disabled_reason) text = 'Extra usage off';
+  if (!text) return null;
+  const el = uaEl('p', 'ua-extra', text);
+  if (o.disabled_reason) el.title = String(o.disabled_reason).replace(/_/g, ' ');
+  return el;
+}
+
 function uaRenderMeter(l) {
   const pct = Math.max(0, Math.min(100, Number(l.used_pct) || 0));
   const label = l.label || l.key || 'Limit';
-  const row = uaEl('div', `ua-meter ua-tone-${uaTone(pct)}`);
+  const row = uaEl('div', `ua-meter ua-tone-${uaMeterTone(l, pct)}`);
   const line = uaEl('div', 'ua-meter-line');
   const labelEl = uaEl('span', 'ua-meter-label', label);
   labelEl.title = label;

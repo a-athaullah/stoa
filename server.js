@@ -5844,6 +5844,10 @@ wss.on('connection', (ws, req) => {
       harnessAccounts.accept(agentActorId, msg);
     }
 
+    if (msg.type === 'harness_rate_limits' && agentActorId) {
+      harnessAccounts.acceptRateLimits(agentActorId, msg);
+    }
+
     // ── Agent reports harness availability
     if (msg.type === 'harnesses_update' && agentActorId) {
       const { validateHarnessStatus } = require('./harness-session');

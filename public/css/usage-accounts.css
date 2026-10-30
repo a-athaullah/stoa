@@ -97,6 +97,7 @@
 .ua-meters.is-stale { opacity: .7; }
 .ua-asof { display: block; margin-top: 10px; font-size: 11.5px; line-height: 1.5; color: var(--h-ink-faint); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .ua-asof + .ua-asof { margin-top: 2px; }
+.ua-meters + .ua-hint--warn { margin-top: 10px; }
 .ua-meter-line { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: 12.5px; }
 .ua-meter-label { color: var(--h-ink-mute); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ua-meter-pct { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--h-ink); }
@@ -109,6 +110,8 @@
 .ua-meter.ua-tone-crit .ua-meter-pct { color: var(--h-red); }
 @media (prefers-reduced-motion: reduce) { .ua-meter-fill { transition: none; } }
 
+.ua-extra { margin: 6px 0 0; font-size: 11.5px; line-height: 1.5; color: var(--h-ink-mute); }
+.ua-extra[title] { cursor: help; }
 .ua-credits { display: flex; justify-content: space-between; gap: 10px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--h-hair-soft); font-size: 12.5px; }
 .ua-credits-label { color: var(--h-ink-mute); }
 .ua-credits-value { color: var(--h-ink); font-variant-numeric: tabular-nums; }

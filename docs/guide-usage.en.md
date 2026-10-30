@@ -1431,22 +1431,23 @@ All figures are read-only and refresh whenever you reopen the tab or change the 
 
 **Accounts & limits** — open this sub-tab from **Settings > Usage** (beside Overview) to see which Claude and Codex accounts each of your machines is signed in to, and how much of the plan limits has been consumed.
 
-One card is shown per machine (not per agent). Each card displays the hostname, platform (macOS, Linux, Windows), and online/offline status. Inside, two panels show Claude and Codex side by side (stacked on mobile). Each panel shows the signed-in email, organization, plan, and authentication method. Below those, usage-limit meters display a label (for example "5-hour session" or "Weekly"), the percentage used, a bar, and the time remaining until reset. The bar is neutral below 70%, amber from 70–89%, and red at 90% and above. Agents running on that machine are listed at the bottom of the card with their 7-day token and turn totals.
+One card is shown per machine (not per agent). Each card displays the hostname, platform (macOS, Linux, Windows), and online/offline status. Inside, two panels show Claude and Codex side by side (stacked on mobile). Each panel shows the signed-in email, organization, plan, and authentication method. Below those, usage-limit meters display a label (for example "5-hour session" or "Weekly"), the percentage used, a bar, and the time remaining until reset. The bar is neutral below 70%, amber from 70–89%, and red at 90% and above; if Anthropic marks a window with a warning, the bar is at minimum amber regardless of the percentage; if a window has been exhausted, the bar is red regardless of the percentage. When a limit is reached, a "Limit reached · resets HH:MM" note appears (tooltip shows the full timestamp). If extra usage applies, the panel shows "Extra usage in use" or "Extra usage off" (reason in tooltip). A **Tightest limit** line in the sub-tab header summarises the most constrained window across all machines: exhausted windows rank first, then warned windows, then by percentage. Agents running on that machine are listed at the bottom of the card with their 7-day token and turn totals.
 
 If any machines are signed in to different Claude or Codex accounts, a notice at the top of the tab lists which machine uses which account.
 
-**Refreshing:** data is collected automatically when an agent connects and every 15 minutes. The **Refresh** icon on a card header checks that machine immediately; **Refresh all** in the header checks all machines at once. A machine can be re-probed at most once every 30 seconds. Offline machines show their most recent report.
+**Refreshing:** For Claude, limit data comes from agent activity — the snapshot updates each time an agent on that machine runs a task and is labelled "From agent activity · N min ago" (full timestamp in tooltip); data older than one hour is shown faded. Pressing **Refresh** on a Claude machine with no data from the last 10 minutes triggers a small one-turn limits check; the result is labelled "From a limits check · …". Automatic probes never run that check. For Codex, data is collected automatically when an agent connects and every 15 minutes. The **Refresh** icon on a card header checks that machine immediately; **Refresh all** in the header checks all machines at once. A machine can be re-probed at most once every 30 seconds. Offline machines show their most recent report.
 
 Possible states for a harness panel:
 
-- **Token expired** — for Claude: run any task on an agent on that machine, or type `/reauth` in its room. For Codex: run `codex login` on that machine.
+- **Token expired** — for Codex: run `codex login` on that machine.
 - **Not logged in** — the CLI is installed but no account is signed in.
 - **Not installed** — the CLI is not on that machine.
 - **API key login — no plan limits** — API key accounts have no plan usage windows.
-- **Limits unavailable** — the account is confirmed but the limits endpoint returned an error.
-- **Rate-limited / last known values** — Claude's usage endpoint allows approximately one check per hour per account; when rate-limited, the note shows when the next check will be attempted and the last known values remain visible.
+- **Limits unavailable** — the account is confirmed but limit data could not be read (for Claude, no data was received from agent sessions; for Codex, the usage endpoint returned an error). Any specific error message is shown beneath.
+- **No limit data yet** (Claude) — no snapshot has been received from this machine's agent sessions yet; appears automatically after an agent on this machine runs a task, or press Refresh.
+- **Last known values** — a Codex probe ran but the limits data from the previous check is being carried forward; shows when the data was last successfully read. If the Codex usage endpoint was temporarily rate-limited, a "Usage endpoint rate-limited · next check after HH:MM" note also appears.
 
-Token credentials are read on the agent machine only and are never sent to the Stoa server.
+Codex credentials are read on the agent machine only and are never sent to the Stoa server. Claude limits come from the agent's own sessions — no Claude credentials are read.
 
 ### Doctor
 
