@@ -1432,20 +1432,21 @@ Semua angka bersifat read-only dan diperbarui setiap kali kamu membuka ulang tab
 
 **Accounts & limits** — buka sub-tab ini dari **Settings > Usage** (di sebelah Overview) untuk melihat akun Claude dan Codex mana yang dipakai di setiap mesin, beserta seberapa banyak limit plan yang sudah terpakai.
 
-Satu kartu ditampilkan per mesin (bukan per agent). Tiap kartu memperlihatkan hostname, platform (macOS, Linux, Windows), dan status online/offline. Di dalamnya, dua panel menampilkan Claude dan Codex berdampingan (ditumpuk di mobile). Setiap panel menampilkan email yang login, organisasi, plan, dan metode autentikasi. Di bawahnya, meter limit penggunaan menampilkan label (misalnya "5-hour session" atau "Weekly"), persentase terpakai, bar, dan sisa waktu hingga reset. Bar netral di bawah 70%, kuning dari 70–89%, dan merah pada 90% ke atas. Agent yang berjalan di mesin tersebut terdaftar di bagian bawah kartu beserta total token dan turn 7 hari terakhir.
+Satu kartu ditampilkan per mesin (bukan per agent). Tiap kartu memperlihatkan hostname, platform (macOS, Linux, Windows), dan status online/offline. Di dalamnya, dua panel menampilkan Claude dan Codex berdampingan (ditumpuk di mobile). Setiap panel menampilkan email yang login, organisasi, plan, dan metode autentikasi. Di bawahnya, meter limit penggunaan menampilkan label (misalnya "5-hour session" atau "Weekly"), persentase terpakai, bar, dan sisa waktu hingga reset. Bar netral di bawah 70%, kuning dari 70–89%, dan merah pada 90% ke atas; jika Anthropic menandai window dengan peringatan, bar minimal kuning berapa pun persentasenya; jika window sudah habis, bar merah berapa pun persentasenya. Saat limit tercapai, muncul catatan "Limit reached · resets HH:MM" (tooltip menampilkan waktu lengkap). Jika extra usage berlaku, panel menampilkan "Extra usage in use" atau "Extra usage off" (alasan di tooltip). Baris **Tightest limit** di header sub-tab merangkum window paling ketat di semua mesin: window yang sudah habis menempati urutan pertama, lalu yang berstatus peringatan, kemudian berdasarkan persentase. Agent yang berjalan di mesin tersebut terdaftar di bagian bawah kartu beserta total token dan turn 7 hari terakhir.
 
 Jika ada mesin yang login dengan akun Claude atau Codex berbeda, sebuah notis di bagian atas tab menunjukkan mesin mana memakai akun mana.
 
-**Refresh:** data dikumpulkan otomatis saat agent connect dan setiap 15 menit. Tap ikon **Refresh** di header kartu untuk cek mesin tersebut sekarang; **Refresh all** di header untuk cek semua mesin sekaligus. Satu mesin bisa di-probe ulang paling cepat setiap 30 detik. Mesin offline menampilkan laporan terakhirnya.
+**Refresh:** Untuk Claude, data limit berasal dari aktivitas agent — snapshot diperbarui setiap kali agent di mesin tersebut menjalankan task dan dilabeli "From agent activity · N menit lalu" (waktu lengkap di tooltip); data lebih dari satu jam ditampilkan pudar. Menekan **Refresh** di mesin Claude yang belum punya data dalam 10 menit terakhir akan memicu satu cek limit kecil; hasilnya dilabeli "From a limits check · …". Probe otomatis tidak pernah menjalankan cek itu. Untuk Codex, data dikumpulkan otomatis saat agent connect dan setiap 15 menit. Tap ikon **Refresh** di header kartu untuk cek mesin tersebut sekarang; **Refresh all** di header untuk cek semua mesin sekaligus. Satu mesin bisa di-probe ulang paling cepat setiap 30 detik. Mesin offline menampilkan laporan terakhirnya.
 
 Status yang mungkin muncul di panel harness:
 
-- **Token expired** — untuk Claude: jalankan task apapun di agent di mesin tersebut, atau ketik `/reauth` di roomnya. Untuk Codex: jalankan `codex login` di mesin tersebut.
+- **Token expired** — untuk Codex: jalankan `codex login` di mesin tersebut.
 - **Not logged in** — harness terinstal tapi belum ada akun yang login.
 - **Not installed** — CLI belum terinstal di mesin tersebut.
 - **API key login — no plan limits** — akun yang pakai API key tidak punya jendela penggunaan plan.
 - **Limits unavailable** — akun terkonfirmasi tapi endpoint limit mengembalikan error.
-- **Rate-limited / last known values** — endpoint penggunaan Claude mengizinkan sekitar satu cek per jam per akun; saat rate-limited, notis menunjukkan kapan cek berikutnya akan dicoba dan nilai terakhir yang diketahui tetap ditampilkan.
+- **No limit data yet** (Claude) — belum ada snapshot yang diterima dari sesi agent di mesin ini; muncul otomatis setelah agent di mesin tersebut menjalankan task, atau tekan Refresh.
+- **Last known values** — probe Codex berjalan tapi data limit dari cek sebelumnya yang ditampilkan; menunjukkan kapan data terakhir berhasil dibaca.
 
 Kredensial token hanya dibaca di mesin agent dan tidak pernah dikirim ke server Stoa.
 
