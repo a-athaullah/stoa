@@ -16,10 +16,15 @@ function initGlobalWs() {
       }
       if (typeof mcpInvalidate === 'function') mcpInvalidate();
       if (typeof skillsRefreshCache === 'function') skillsRefreshCache();
+      if (typeof uaHandleUpdated === 'function') uaHandleUpdated();
     };
     globalWs.onmessage = async e => {
       let msg; try { msg = JSON.parse(e.data); } catch { return; }
-      if (msg.type === 'actor_status') handleActorStatus(msg.actor);
+      if (msg.type === 'actor_status') {
+        handleActorStatus(msg.actor);
+        if (typeof uaHandleActorStatus === 'function') uaHandleActorStatus(msg.actor);
+      }
+      if (msg.type === 'harness_accounts_updated' && typeof uaHandleUpdated === 'function') uaHandleUpdated(msg);
       if (msg.type === 'agent_restart_status' && typeof sHandleRestartStatus === 'function') sHandleRestartStatus(msg);
       if (msg.type === 'agent_scan_complete') sFinishSetupSlip(msg.actor_id);
       if (msg.type === 'actor_removed') handleActorRemoved(msg.actor_id, msg.affected_rooms);

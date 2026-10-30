@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.458";
+var CLIENT_VERSION = "0.4.461";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -247,6 +247,7 @@ if (require.main === module && ACTOR_TYPE === "ai") {
 var { readCfAccessEnv, cfHeadersFor, httpOrigin, startCfForwardProxy } = require("./lib/cf-access");
 var { detectSupervisor } = require("./lib/supervisor");
 var { readAvatarFile } = require("./lib/avatar-image");
+var { probeHarnessAccounts, machineIdentity } = require("./lib/harness-probe");
 var SUPERVISOR = detectSupervisor();
 var BOOT_ID = crypto.randomBytes(8).toString("hex");
 var CF_ACCESS = readCfAccessEnv(process.env, (m) => console.warn(m));
@@ -906,7 +907,7 @@ function connect() {
     if (ACTOR_TYPE === "ai") {
       getSession(process.env.STOA_WORK_DIR || os.homedir(), "default");
       // active_message_ids: runs survive a reconnect, so the server must not orphan them.
-      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, features: ["skills", "skill_sync"], harnesses_available: [], supervisor: SUPERVISOR, boot_id: BOOT_ID, active_message_ids: activeMessageIds() }));
+      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, features: ["skills", "skill_sync", "harness_accounts"], machine: safeMachineIdentity(), harnesses_available: [], supervisor: SUPERVISOR, boot_id: BOOT_ID, active_message_ids: activeMessageIds() }));
       sendQueueStatus();
       console.log(`[stoa] Agent #${ACTOR_ID} v${CLIENT_VERSION} connected to ${STOA_URL} (max_concurrent=${MAX_CONCURRENT})`);
       detectHarnessesAsync().then((result) => {
@@ -949,6 +950,32 @@ function connect() {
       process.stdout.write(C.red + "Connection error: " + err.message + C.reset + "\n");
     }
   });
+}
+function safeMachineIdentity() {
+  try {
+    return machineIdentity();
+  } catch {
+    return null;
+  }
+}
+// Server-coordinated (lib/harness-accounts.js asks one agent per machine), so no timer here. Requests
+// that arrive while a probe runs share it.
+var harnessProbeInFlight = null;
+function runHarnessAccountsProbe(msg) {
+  const requestId = typeof msg.request_id === "string" ? msg.request_id.slice(0, 64) : null;
+  const skipLimits = {};
+  for (const id of ["claude", "codex"]) {
+    const v = msg.skip_limits?.[id];
+    if (typeof v === "string" && v.length <= 40 && Number.isFinite(Date.parse(v))) skipLimits[id] = v;
+  }
+  if (!harnessProbeInFlight) {
+    harnessProbeInFlight = probeHarnessAccounts({ skipLimits }).finally(() => {
+      harnessProbeInFlight = null;
+    });
+  }
+  harnessProbeInFlight.then((result) => {
+    send({ type: "harness_accounts", request_id: requestId, ...result });
+  }).catch((err) => console.error(`[stoa] harness accounts probe failed: ${err.message}`));
 }
 function expandHome(p) {
   if (typeof p !== "string" || !p) return p;
@@ -1024,6 +1051,10 @@ async function handleAgentMessage(msg) {
     detectHarnessesAsync().then((result) => {
       send({ type: "harnesses_update", ...result, request_id: msg.request_id });
     }).catch(() => {});
+  }
+  if (msg.type === "harness_accounts_request") {
+    runHarnessAccountsProbe(msg);
+    return;
   }
   if (msg.type === "check_harnesses") {
     detectHarnessesAsync().then((result) => {

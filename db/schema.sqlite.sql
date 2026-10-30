@@ -577,3 +577,18 @@ CREATE TABLE IF NOT EXISTS skill_sources (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+-- Harness accounts & limits per agent machine (migrations/20261030-harness-accounts.sql, lib/harness-accounts.js).
+CREATE TABLE IF NOT EXISTS harness_account_snapshots (
+  machine_id TEXT PRIMARY KEY,
+  hostname TEXT,
+  platform TEXT,
+  payload TEXT NOT NULL,
+  probed_at TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS agent_machines (
+  actor_id INTEGER PRIMARY KEY REFERENCES actors(id) ON DELETE CASCADE,
+  machine_id TEXT NOT NULL,
+  seen_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_agent_machines_machine ON agent_machines(machine_id);

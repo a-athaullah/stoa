@@ -20,6 +20,7 @@ const { createSystemPrompts } = require('./lib/system-prompts');
 const { createSubAgents } = require('./lib/sub-agents');
 const { createSkills } = require('./lib/skills');
 const { createSkillsHttp } = require('./lib/skills-http');
+const { createHarnessAccounts, MACHINE_ID_RE } = require('./lib/harness-accounts');
 const { createAutomationCrud } = require('./lib/automation-crud');
 const { stoaMcpTools } = require('./lib/stoa-mcp-tools');
 const { collectDiagnostics, buildEnvelope, gcDebugBundles } = require('./lib/debug-bundle');
@@ -2980,6 +2981,26 @@ const server = http.createServer(async (req, res) => {
     return json(res, { ok: true });
   }
 
+  // ── Harness accounts & plan limits per agent machine. Owner session only — deliberately not in
+  // lib/agent-scope.js (account emails of every machine are none of an agent's business).
+  if (req.method === 'GET' && url.pathname === '/api/usage/accounts') {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    return json(res, harnessAccounts.list());
+  }
+  if (req.method === 'POST' && url.pathname === '/api/usage/accounts/refresh') {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    let raw;
+    try { raw = await readBody(req, 4096); } catch { return json(res, { error: 'request body too large' }, 413); }
+    const body = raw.trim() ? parseJsonBody(raw) : {};
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return json(res, { error: 'invalid JSON body' }, 400);
+    const machineId = body.machine_id ?? null;
+    if (machineId !== null && (typeof machineId !== 'string' || !MACHINE_ID_RE.test(machineId))) {
+      return json(res, { error: 'machine_id must be 16 lowercase hex characters' }, 400);
+    }
+    if (machineId && !harnessAccounts.knows(machineId)) return json(res, { error: 'machine not found' }, 404);
+    return json(res, await harnessAccounts.refresh(machineId));
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/usage/stats') {
     if (!req._authUser) { res.writeHead(401); return res.end(JSON.stringify({ error: 'unauthorized' })); }
     const rawPeriod = url.searchParams.get('period');
@@ -5193,6 +5214,20 @@ const agentFeatures = new Map();
 const agentHarnesses = new Map(); // actor_id → string[] (available harnesses)
 const agentHarnessStatus = new Map(); // actor_id → [{ id, installed, logged_in, version, models }]
 const pendingHarnessChecks = new Map(); // request_id → { resolve, timer, actorId }
+// Accounts & plan limits per agent machine (Settings → Usage → Accounts & Limits).
+const harnessAccounts = createHarnessAccounts({
+  db, broadcastGlobal,
+  sendToAgent: (actorId, data) => {
+    const w = agentClients.get(actorId);
+    if (w?.readyState !== 1) return false;
+    w.send(JSON.stringify(data));
+    return true;
+  },
+  isOnline: (actorId) => agentClients.get(actorId)?.readyState === 1,
+  hasFeature: (actorId, feature) => !!agentFeatures.get(actorId)?.has(feature),
+  refreshWaitMs: parseInt(process.env.HARNESS_ACCOUNTS_WAIT_MS) || undefined,
+});
+harnessAccounts.start();
 const agentSupervisors = new Map(); // actor_id → 'pm2' | null (who restarts the agent after process.exit)
 const agentBootIds = new Map();     // actor_id → per-process id, tells a real restart from a reconnect
 // actor_id → { state: 'requested'|'restarting', boot_id, requested_at }. Survives the disconnect
@@ -5767,6 +5802,7 @@ wss.on('connection', (ws, req) => {
         ws.send(JSON.stringify({ type: 'force_update' }));
       }
       ws.send(JSON.stringify({ type: 'agent_ready' }));
+      harnessAccounts.agentConnected(agentActorId, msg.machine);
       ws.send(JSON.stringify({ type: 'set_config', max_concurrent: parseInt(process.env.MAX_CONCURRENT) || 1, session_idle_ttl: parseInt(process.env.SESSION_IDLE_TTL) || 5, auto_compact_threshold_kb: parseInt(process.env.AUTO_COMPACT_THRESHOLD_KB) || 300 }));
       const connectedActor = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, created_at FROM actors WHERE id=?').get(agentActorId);
       if (connectedActor) broadcastGlobal({ type: 'actor_status', actor: { ...connectedActor, online: true, client_version: msg.client_version || null, supervisor: agentSupervisors.get(agentActorId), restart_state: agentRestarts.get(agentActorId)?.state ?? null } });
@@ -5801,6 +5837,11 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'restart_status' && agentActorId && agentRestarts.has(agentActorId) && AGENT_RESTART_STATES.has(msg.state)) {
       const count = (v) => Number.isInteger(v) && v >= 0 && v < 1e6 ? v : 0;
       setAgentRestartState(agentActorId, msg.state, { active: count(msg.active), queued: count(msg.queued) });
+    }
+
+    // ── Agent reports its machine's harness accounts & plan limits (lib/harness-accounts.js validates)
+    if (msg.type === 'harness_accounts' && agentActorId) {
+      harnessAccounts.accept(agentActorId, msg);
     }
 
     // ── Agent reports harness availability
@@ -6953,6 +6994,7 @@ wss.on('connection', (ws, req) => {
           pending.resolve({ disconnected: true });
         }
       }
+      harnessAccounts.agentDisconnected(agentActorId);
       const cleaned = db.prepare(
         `UPDATE messages SET state='error', result_meta=?, completed_at=datetime('now'), content=CASE WHEN content='' THEN '(interrupted — agent disconnected)' ELSE content END WHERE ${RUN_IN_FLIGHT_SQL} AND participant_id IN (SELECT rp.id FROM room_participants rp WHERE rp.actor_id=?) RETURNING id, room_id, participant_id, thread_id, sub_agent_id, sub_agent_label, content`
       ).all(INTERRUPTED_RESULT_META, agentActorId);
