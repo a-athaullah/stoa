@@ -91,11 +91,12 @@
 .ua-harness.is-quiet .ua-state { color: var(--h-ink-faint); font-style: italic; }
 .ua-hint { margin: 4px 0 0; font-size: 12px; line-height: 1.5; color: var(--h-ink-faint); overflow-wrap: anywhere; }
 .ua-hint code { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; background: var(--h-code-inline-bg); color: var(--h-code-inline-ink); padding: 1px 5px; border-radius: 4px; }
-.ua-hint--warn { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--h-warn-bg); color: var(--h-warn-ink); }
-.ua-hint--warn + .ua-meters { margin-top: 12px; }
+.ua-hint--warn { margin: 2px 0 0; padding: 1px 0 1px 10px; border-left: 2px solid var(--h-amber-soft); color: var(--h-ink-mute); }
 
 .ua-meters { display: flex; flex-direction: column; gap: 12px; }
-.ua-meters.is-stale { opacity: .55; }
+.ua-meters.is-stale { opacity: .7; }
+.ua-asof { display: block; margin-top: 10px; font-size: 11.5px; line-height: 1.5; color: var(--h-ink-faint); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.ua-asof + .ua-asof { margin-top: 2px; }
 .ua-meter-line { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: 12.5px; }
 .ua-meter-label { color: var(--h-ink-mute); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ua-meter-pct { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--h-ink); }

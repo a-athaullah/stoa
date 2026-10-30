@@ -14443,6 +14443,31 @@ async function run() {
     vm.runInContext('uaRender', ctx)();
     assert.strictEqual(host.byClass('ua-empty').length, 1, 'empty state when no machine has reported');
     assert.strictEqual(host.byClass('ua-notice').length, 0);
+
+    const probed = soon(-1);
+    const live = { machines: [
+      { machine_id: 'm-r', hostname: 'rr', platform: 'darwin', online: true, probed_at: probed, refreshing: true,
+        harnesses: {
+          claude: acct('A@x.com', { limits: [lim('five_hour', 40)], limits_checked_at: soon(-95), retry_at: soon(50), error: 'rate limited', credits: { enabled: true, balance: null } }),
+          codex: acct('c@x.com', { limits: [lim('primary', 10)], limits_checked_at: probed, credits: { enabled: true, balance: '12.5' } }) },
+        agents: [] },
+      { machine_id: 'm-s', hostname: 'ss', platform: 'linux', online: true, probed_at: probed, refreshing: false,
+        harnesses: { claude: acct('a@X.com', { limits: [lim('five_hour', 5)], limits_checked_at: probed }), codex: acct('d@x.com', { logged_in: false }) },
+        agents: [] },
+    ], accounts: { claude: ['A@x.com'], codex: ['c@x.com'] }, mismatch: { claude: true, codex: false } };
+    assert.strictEqual(vm.runInContext('uaApply', ctx)(4, live), true);
+    vm.runInContext('uaRender', ctx)();
+    const [rr, ss] = host.byClass('ua-machine');
+    assert.ok(rr.cls.has('is-busy') && rr.byClass('ua-machine-checked')[0].textContent === 'Checking…', 'server-side refreshing shows Checking… on the card');
+    assert.ok(!ss.cls.has('is-busy'));
+    const [rc, rx] = rr.byClass('ua-harness');
+    const notes = rc.byClass('ua-asof').map(n => n.textContent);
+    assert.ok(notes[0].startsWith('Last known values · as of 1 h ago') && rc.byClass('ua-meters')[0].cls.has('is-stale'), 'carried limits say how old they are');
+    assert.ok(notes[1].startsWith('Usage endpoint rate-limited · next check after '));
+    assert.strictEqual(rc.byClass('ua-credits').length, 0, 'a null balance renders no credits row');
+    assert.strictEqual(rx.byClass('ua-asof').length, 0, 'fresh limits carry no note');
+    assert.strictEqual(rx.byClass('ua-credits-value')[0].textContent, '12.5');
+    assert.strictEqual(host.byClass('ua-notice-email').length, 1, 'the same email in another case is one account');
   });
 
   await test('mcp server card — enable switch ends right when a WS mcp_status redraws the card mid-PATCH, always on chip hides while disabled, a running status fetches the missing tool count once', async () => {

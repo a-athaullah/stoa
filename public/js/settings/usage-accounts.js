@@ -21,6 +21,7 @@ const uaState = {
   seq: 0,
   applied: 0,
   reloadTimer: null,
+  pollTimer: null,
   tickTimer: null,
 };
 
@@ -92,7 +93,17 @@ function uaApply(seq, data) {
   uaState.applied = seq;
   uaState.data = data;
   uaState.error = null;
+  uaSchedulePoll();
   return true;
+}
+
+// A probe the server started on its own (agent connect, periodic) ends in harness_accounts_updated, but one
+// that times out sends nothing; while any machine shows refreshing, re-read until it clears.
+function uaSchedulePoll() {
+  clearTimeout(uaState.pollTimer);
+  uaState.pollTimer = null;
+  if (!uaState.data.machines.some(m => m.refreshing === true)) return;
+  uaState.pollTimer = setTimeout(() => { if (uaIsVisible()) uaLoad(); }, 5000);
 }
 
 async function uaLoad() {
@@ -179,6 +190,15 @@ function uaResets(iso) {
   return `Resets in ${span} · ${uaWhen(d)}`;
 }
 
+function uaRetryNote(iso) {
+  const d = uaDate(iso);
+  return d && d > Date.now() ? `Usage endpoint rate-limited · next check after ${uaWhen(d)}` : '';
+}
+
+function uaRelText(kind, iso) {
+  return kind === 'resets' ? uaResets(iso) : kind === 'retry' ? uaRetryNote(iso) : uaAgo(iso);
+}
+
 function uaPct(n) {
   const v = Math.max(0, Math.min(100, Number(n) || 0));
   return v < 10 && v % 1 ? v.toFixed(1) : String(Math.round(v));
@@ -195,7 +215,7 @@ function uaPlural(n, one, many) { return `${n} ${n === 1 ? one : many}`; }
 
 // Relative labels re-render in place every 30s while the tab is open.
 function uaRel(cls, kind, iso) {
-  const el = uaEl('span', cls, kind === 'resets' ? uaResets(iso) : uaAgo(iso));
+  const el = uaEl('span', cls, uaRelText(kind, iso));
   el.dataset.uaRel = kind;
   el.dataset.uaTs = iso || '';
   return el;
@@ -206,7 +226,9 @@ function uaTick() {
   document.querySelectorAll('#usage-accounts-panel [data-ua-rel]').forEach(el => {
     const iso = el.dataset.uaTs || null;
     const prefix = el.dataset.uaPrefix || '';
-    el.textContent = prefix + (el.dataset.uaRel === 'resets' ? uaResets(iso) : uaAgo(iso));
+    const text = uaRelText(el.dataset.uaRel, iso);
+    el.textContent = text ? prefix + text : '';
+    el.hidden = !text;
   });
 }
 
@@ -241,10 +263,12 @@ function uaLatestProbe(machines) {
 function uaAccountsByEmail(machines, id) {
   const map = new Map();
   machines.forEach(m => {
-    const email = uaHarness(m, id)?.account?.email;
+    const acc = uaHarness(m, id);
+    const email = acc && acc.logged_in !== false ? acc.account?.email : null;
     if (!email) return;
-    if (!map.has(email)) map.set(email, []);
-    map.get(email).push(m.hostname || m.machine_id);
+    const key = email.toLowerCase();
+    if (!map.has(key)) map.set(key, { email, hosts: [] });
+    map.get(key).hosts.push(m.hostname || m.machine_id);
   });
   return map;
 }
@@ -376,7 +400,7 @@ function uaRenderMismatch(d, machines) {
     const group = uaEl('div', 'ua-notice-group');
     group.appendChild(uaEl('div', 'ua-notice-harness', h.label));
     const list = uaEl('ul', 'ua-notice-list');
-    uaAccountsByEmail(machines, h.id).forEach((hosts, email) => {
+    uaAccountsByEmail(machines, h.id).forEach(({ email, hosts }) => {
       const li = uaEl('li');
       li.appendChild(uaEl('span', 'ua-notice-email', email));
       li.appendChild(uaEl('span', 'ua-notice-hosts', hosts.join(', ')));
@@ -389,7 +413,7 @@ function uaRenderMismatch(d, machines) {
 }
 
 function uaRenderMachine(m) {
-  const busy = uaState.refreshingAll || uaState.refreshing.has(m.machine_id);
+  const busy = m.refreshing === true || uaState.refreshing.has(m.machine_id) || (uaState.refreshingAll && m.online);
   const card = uaEl('article', 'ua-machine' + (m.online ? '' : ' is-offline') + (busy ? ' is-busy' : ''));
   card.dataset.machineId = m.machine_id;
   const host = m.hostname || 'Unknown machine';
@@ -405,7 +429,9 @@ function uaRenderMachine(m) {
   status.appendChild(uaEl('span', 'ua-dot'));
   status.appendChild(uaEl('span', null, m.online ? 'Online' : 'Offline'));
   meta.appendChild(status);
-  if (m.probed_at) {
+  if (busy) {
+    meta.appendChild(uaEl('span', 'ua-machine-checked', 'Checking…'));
+  } else if (m.probed_at) {
     const checked = uaRel('ua-machine-checked', 'ago', m.probed_at);
     checked.dataset.uaPrefix = m.online ? 'checked ' : 'last report ';
     checked.textContent = checked.dataset.uaPrefix + checked.textContent;
@@ -420,7 +446,7 @@ function uaRenderMachine(m) {
   card.appendChild(head);
 
   const grid = uaEl('div', 'ua-harnesses');
-  UA_HARNESSES.forEach(h => grid.appendChild(uaRenderHarness(h, uaHarness(m, h.id))));
+  UA_HARNESSES.forEach(h => grid.appendChild(uaRenderHarness(h, uaHarness(m, h.id), m.probed_at)));
   card.appendChild(grid);
 
   const agents = Array.isArray(m.agents) ? m.agents : [];
@@ -428,7 +454,13 @@ function uaRenderMachine(m) {
   return card;
 }
 
-function uaRenderHarness(h, acc) {
+// Limits checked before the snapshot itself = the server kept the last good numbers through a failed check.
+function uaLimitsCarried(acc, probedAt) {
+  const checked = uaDate(acc.limits_checked_at), probed = uaDate(probedAt);
+  return !!(checked && probed && probed - checked > 60000);
+}
+
+function uaRenderHarness(h, acc, probedAt) {
   const panel = uaEl('section', 'ua-harness');
   panel.setAttribute('aria-label', h.label);
   const top = uaEl('div', 'ua-harness-top');
@@ -474,15 +506,26 @@ function uaRenderHarness(h, acc) {
   } else if (!limits.length) {
     panel.appendChild(uaEl('p', 'ua-state', 'No limit windows reported'));
   }
-  if (limits.length && status !== 'not_applicable') {
-    const list = uaEl('div', 'ua-meters' + (status === 'ok' ? '' : ' is-stale'));
+  const carried = status === 'ok' && uaLimitsCarried(acc, probedAt);
+  if (limits.length && status === 'ok') {
+    const list = uaEl('div', 'ua-meters' + (carried ? ' is-stale' : ''));
     limits.forEach(l => list.appendChild(uaRenderMeter(l)));
     panel.appendChild(list);
   }
-  if (acc.credits && acc.credits.enabled) {
+  if (carried) {
+    const asOf = uaRel('ua-asof', 'ago', acc.limits_checked_at);
+    asOf.dataset.uaPrefix = 'Last known values · as of ';
+    asOf.textContent = asOf.dataset.uaPrefix + asOf.textContent;
+    if (acc.error) asOf.title = acc.error;
+    panel.appendChild(asOf);
+  }
+  const retry = uaRel('ua-asof', 'retry', acc.retry_at);
+  if (retry.textContent) panel.appendChild(retry);
+  const balance = acc.credits && acc.credits.enabled ? acc.credits.balance : null;
+  if (balance !== null && balance !== undefined && balance !== '') {
     const credits = uaEl('div', 'ua-credits');
     credits.appendChild(uaEl('span', 'ua-credits-label', 'Credits'));
-    credits.appendChild(uaEl('span', 'ua-credits-value', String(acc.credits.balance ?? '—')));
+    credits.appendChild(uaEl('span', 'ua-credits-value', String(balance)));
     panel.appendChild(credits);
   }
   return panel;
