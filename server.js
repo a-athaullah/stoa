@@ -1664,7 +1664,7 @@ const { createMcpGateway, APPROVAL_TIMEOUT_MAX_MS } = require('./lib/mcp-gateway
 // One JSON-RPC request to /mcp. stoa__skill_create / skill_update carry up to 5 MB of files, base64 inside JSON.
 const MCP_BODY_MAX = 8 * 1024 * 1024;
 const { createMcpApi } = require('./lib/mcp-api');
-const { connectionEnv, connectionArgs } = require('./lib/mcp-catalog');
+const { connectionEnv, connectionArgs, publicCatalog } = require('./lib/mcp-catalog');
 const { createMcpOAuth } = require('./lib/mcp-oauth');
 const mcpOAuth = createMcpOAuth({ db, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt });
 const { createMcpEvents, EVENTS_PATH: MCP_EVENTS_PATH } = require('./lib/mcp-events');
@@ -1712,7 +1712,14 @@ const mcpGateway = createMcpGateway({
   db, upstreams: mcpUpstreams, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt, version: require('./package.json').version,
   builtinTools: [
     ...scheduleMcpTools(roomSchedules),
-    ...stoaMcpTools({ db, broadcast, messages: roomMessages, memory: stoaMemory, prompts: systemPrompts, subAgents, automations: automationCrud, readAgentImage, setActorAvatar, skills, syncAgentSkill }),
+    ...stoaMcpTools({
+      db, broadcast, messages: roomMessages, memory: stoaMemory, prompts: systemPrompts, subAgents, automations: automationCrud, readAgentImage, setActorAvatar, skills, syncAgentSkill,
+      // mcpApi is created below (it needs this gateway); only called once a tool runs.
+      mcpServers: {
+        catalog: publicCatalog, list: (ident) => mcpApi.listServersForAgent(ident),
+        check: (body, actorId) => mcpApi.checkServerForAgent(body, actorId), add: (body, actorId) => mcpApi.addServerForAgent(body, actorId),
+      },
+    }),
   ],
   approvalTimeoutMs: Math.min(APPROVAL_TIMEOUT_MAX_MS, Math.max(1000, parseInt(process.env.MCP_APPROVAL_TIMEOUT_MS, 10) || 5 * 60_000)),
   // Approval cards live in the room (and thread) the agent is working in; the MCP page's approval log

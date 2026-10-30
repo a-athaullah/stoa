@@ -3793,6 +3793,95 @@ async function runAsyncUnitTests() {
     mem.close();
   });
 
+  await uta('MCP gateway — approval-gated built-in: every call waits (no exemption), always → 400 and stays pending, preview replaces args, cut preview and failed precheck refused before a card', async () => {
+    const Database = require('better-sqlite3');
+    const { createMcpGateway } = require('./lib/mcp-gateway');
+    const mem = new Database(':memory:');
+    mem.exec(require('fs').readFileSync(require('path').join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
+    mem.exec(`CREATE TABLE IF NOT EXISTS sub_agents (id INTEGER PRIMARY KEY, parent_actor_id INTEGER, label TEXT)`);
+    const actorId = Number(mem.prepare("INSERT INTO actors (name, type, secret) VALUES ('mcp-gated','ai','s')").run().lastInsertRowid);
+    const ran = [];
+    const events = [];
+    const gw = createMcpGateway({
+      db: mem, upstreams: { listTools: async () => [] }, encrypt: s => s, decrypt: s => s, approvalTimeoutMs: 150, log: { warn() {}, error() {} },
+      onApproval: (type, a) => events.push({ type, ...a }),
+      builtinTools: [{
+        name: 'gated', description: 'x', inputSchema: { type: 'object' }, requiresApproval: true,
+        previewArgs: (a) => ({ cmd: a.cmd, env: Object.fromEntries(Object.keys(a.env || {}).map(k => [k, '***'])) }),
+        precheck: async (ident, a) => {
+          if (a.cmd === 'boom') throw new Error('precheck blew up');
+          return a.cmd === 'invalid' ? 'cmd "invalid" is not allowed' : null;
+        },
+        call: async (ident, a) => { ran.push(a); return { content: [{ type: 'text', text: 'done' }] }; },
+      }, { name: 'free', description: 'y', inputSchema: { type: 'object' }, call: async () => ({ content: [{ type: 'text', text: 'free' }] }) }],
+    });
+    const ident = { actorId, roomId: 3, threadId: 4, subAgentId: null };
+    const pendingCard = () => events.filter(e => e.type === 'mcp_approval').at(-1);
+    const lastCall = () => mem.prepare('SELECT * FROM mcp_calls ORDER BY id DESC LIMIT 1').get();
+    const SECRET = 'value-of-the-secret-xyz';
+    const flush = () => new Promise(r => setImmediate(r)); // the precheck is awaited before the card
+
+    const first = gw.callTool(ident, 'stoa__gated', { cmd: 'npx srv', env: { API: SECRET } });
+    await flush();
+    const card = pendingCard();
+    assert.deepStrictEqual([card.server_slug, card.tool, card.status, card.allow_always], ['stoa', 'gated', 'pending', false]);
+    assert.deepStrictEqual(JSON.parse(card.args_preview), { cmd: 'npx srv', env: { API: '***' } }, 'card shows the preview, not the args');
+    assert.strictEqual(mem.prepare('SELECT server_id FROM mcp_approvals WHERE id=?').get(card.id).server_id, null);
+    const always = gw.decideApproval(card.id, 'always');
+    assert.deepStrictEqual([always.status, always.error], [400, 'always is not available for this tool']);
+    assert.strictEqual(mem.prepare('SELECT status FROM mcp_approvals WHERE id=?').get(card.id).status, 'pending', 'always leaves it pending');
+    assert.strictEqual(mem.prepare('SELECT COUNT(*) n FROM mcp_approval_exemptions').get().n, 0, 'no exemption');
+    assert.deepStrictEqual(ran, [], 'nothing ran before the decision');
+    assert.strictEqual(gw.decideApproval(card.id, 'approve').status, 200, 'still decidable after the refused always');
+    assert.strictEqual((await first).content[0].text, 'done');
+    assert.deepStrictEqual(ran, [{ cmd: 'npx srv', env: { API: SECRET } }], 'the tool gets the real args');
+    const okRow = lastCall();
+    assert.deepStrictEqual([okRow.server_id, okRow.server_slug, okRow.tool, okRow.status, okRow.approval], [null, 'stoa', 'gated', 'ok', 'owner']);
+    assert.ok(!okRow.args_preview.includes(SECRET) && okRow.args_preview.includes('npx srv'), 'mcp_calls keeps the preview');
+
+    const second = gw.callTool(ident, 'stoa__gated', { cmd: 'again' });
+    await flush();
+    assert.notStrictEqual(pendingCard().id, card.id, 'approved once ≠ approved forever: a new card');
+    gw.decideApproval(pendingCard().id, 'deny');
+    assert.match((await second).content[0].text, /Denied by Stoa: the owner denied this call/);
+    assert.strictEqual(ran.length, 1, 'denied → not run');
+    assert.deepStrictEqual([lastCall().status, lastCall().approval], ['denied', null]);
+
+    const third = await gw.callTool(ident, 'stoa__gated', { cmd: 'nobody answers' });
+    assert.match(third.content[0].text, /approval expired/);
+    assert.strictEqual(ran.length, 1, 'expired → not run');
+
+    const ac = new AbortController();
+    const fourth = gw.callTool(ident, 'stoa__gated', { cmd: 'dropped' }, { signal: ac.signal });
+    await flush();
+    const dropped = pendingCard().id;
+    ac.abort();
+    assert.match((await fourth).content[0].text, /approval expired/, 'abort signal reaches the built-in wait');
+    assert.strictEqual(mem.prepare('SELECT status FROM mcp_approvals WHERE id=?').get(dropped).status, 'expired');
+
+    const n = events.length;
+    const long = await gw.callTool(ident, 'stoa__gated', { cmd: 'x'.repeat(600) });
+    assert.match(long.content[0].text, /too long to show in full/);
+    assert.strictEqual(events.length, n, 'no card for a preview that would be cut');
+    assert.strictEqual(ran.length, 1);
+
+    const refused = await gw.callTool(ident, 'stoa__gated', { cmd: 'invalid', env: { API: SECRET } });
+    assert.deepStrictEqual([refused.isError, refused.content[0].text], [true, 'cmd "invalid" is not allowed']);
+    assert.deepStrictEqual([lastCall().status, lastCall().error, lastCall().approval], ['error', 'cmd "invalid" is not allowed', null]);
+    assert.ok(!lastCall().args_preview.includes(SECRET), 'a refused call is recorded with the preview too');
+    const blew = await gw.callTool(ident, 'stoa__gated', { cmd: 'boom' });
+    assert.match(blew.content[0].text, /^Tool failed: precheck blew up/);
+    assert.strictEqual(lastCall().status, 'error');
+    assert.strictEqual(events.length, n, 'no card when the precheck refuses or throws');
+    assert.strictEqual(mem.prepare('SELECT COUNT(*) n FROM mcp_approvals WHERE status=?').get('pending').n, 0);
+    assert.strictEqual(ran.length, 1);
+
+    assert.strictEqual((await gw.callTool(ident, 'stoa__free', {})).content[0].text, 'free', 'built-ins without the flag run at once');
+    assert.strictEqual(events.length, n);
+    gw.close();
+    mem.close();
+  });
+
   // An existing DB can get the table from either file (boot runs schema.sqlite.sql before migrations).
   await uta('MCP approval exemptions — schema and migration both never reuse a removed id', async () => {
     const Database = require('better-sqlite3');
@@ -14349,6 +14438,63 @@ async function run() {
     assert.strictEqual(calls.length, 1, 'a known count or a non-running status never refetches');
   });
 
+  await test('mcp approval card — allow_always false hides Always and shows pretty args, a missing field keeps Always, a 400 on Always keeps the card pending without the button', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El {
+      constructor(tag) { this.tagName = tag.toUpperCase(); this.dataset = {}; this.children = []; this.parentNode = null; this._text = ''; this.attrs = {}; this.on = {}; this.disabled = false; this.focused = false;
+        const cls = new Set(); this.cls = cls; this.classList = { add: (...c) => c.forEach(x => cls.add(x)), remove: (...c) => c.forEach(x => cls.delete(x)), toggle: (c, on) => (on ?? !cls.has(c)) ? cls.add(c) : cls.delete(c), contains: c => cls.has(c) }; }
+      set className(v) { String(v).split(/\s+/).filter(Boolean).forEach(c => this.classList.add(c)); }
+      appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
+      append(...cs) { cs.forEach(c => this.appendChild(c)); }
+      remove() { const p = this.parentNode; if (p) p.children.splice(p.children.indexOf(this), 1); this.parentNode = null; }
+      focus() { this.focused = true; }
+      set textContent(v) { this.children = []; this._text = String(v); }
+      get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+      setAttribute(k, v) { this.attrs[k] = String(v); }
+      addEventListener(t, f) { (this.on[t] ||= []).push(f); }
+      all(pred, out = []) { this.children.forEach(c => { if (pred(c)) out.push(c); c.all(pred, out); }); return out; }
+      match(sel) { return sel.startsWith('.') ? this.cls.has(sel.slice(1)) : this.tagName === sel.toUpperCase(); }
+      querySelectorAll(sel) { return this.all(n => n.match(sel)); }
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
+    }
+    const toasts = [];
+    const calls = [];
+    const ctx = { document: { createElement: t => new El(t), createTextNode: t => Object.assign(new El('#text'), { textContent: t }), getElementById: () => null, querySelectorAll: () => [] },
+      showToast: (m, o) => toasts.push({ m, error: !!o?.error }), console };
+    vm.createContext(ctx);
+    for (const f of ['state.js', 'approvals.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/mcp', f), 'utf8'), ctx);
+    vm.runInContext('mcpApi = async (method, url, body) => { __calls.push({ method, url, body }); return { ok: false, status: 400, error: "always is not available for this tool", data: { error: "always is not available for this tool" } }; };',
+      Object.assign(ctx, { __calls: calls }));
+    const make = vm.runInContext('mcpMakeApprovalCard', ctx);
+    const labels = card => card.querySelectorAll('button').map(b => b.textContent);
+    const base = { room_id: 1, thread_id: null, actor_name: 'Atlas', status: 'pending', expires_at: '2099-01-01 00:00:00' };
+
+    const builtin = make({ ...base, id: 1, server_slug: 'stoa', tool: 'mcp_server_add', allow_always: false,
+      args_preview: JSON.stringify({ slug: 'notes', command: 'npx', args: ['-y', 'notes-mcp'], env: { NOTES_TOKEN: '***' } }) });
+    assert.deepStrictEqual(labels(builtin), ['approve', 'deny'], 'a built-in approval offers no Always');
+    assert.strictEqual(builtin.querySelectorAll('.mcp-appr-note').length, 1, 'the card says every call needs its own approval');
+    const pre = builtin.querySelector('.mcp-args-preview').textContent;
+    assert.ok(pre.includes('\n  "command": "npx"') && pre.includes('"NOTES_TOKEN": "***"'), 'arguments are pretty-printed with the masked env value');
+    assert.ok(builtin.textContent.includes('stoa__mcp_server_add'));
+
+    const legacy = make({ ...base, id: 2, server_slug: 'github', tool: 'create_issue', args_preview: '{"title":"bug"}…' });
+    assert.deepStrictEqual(labels(legacy), ['approve', 'always allow', 'deny'], 'a row without allow_always keeps Always');
+    assert.strictEqual(legacy.querySelectorAll('.mcp-appr-note').length, 0);
+    assert.strictEqual(legacy.querySelector('.mcp-args-preview').textContent, '{"title":"bug"}…', 'a cut preview that is not JSON shows as sent');
+
+    const a = { ...base, id: 3, server_slug: 'linear', tool: 'list_issues', allow_always: true, args_preview: '{}' };
+    const card = make(a);
+    await Promise.all(card.querySelector('.mcp-appr-always').on.click.map(f => f()));
+    assert.deepStrictEqual(calls.map(c => [c.method, c.url, c.body.decision]), [['POST', '/api/mcp/approvals/3', 'always']]);
+    assert.deepStrictEqual(labels(card), ['approve', 'deny'], 'the refused Always button is gone');
+    assert.ok(card.querySelectorAll('button').every(b => !b.disabled), 'approve and deny stay usable');
+    assert.ok(card.querySelector('.mcp-appr-approve').focused, 'focus moves to approve');
+    assert.strictEqual(a.status, 'pending', 'the request stays pending');
+    assert.strictEqual(a.allow_always, false, 'a later redraw keeps Always hidden');
+    assert.deepStrictEqual(toasts, [{ m: 'Always allow isn’t available for linear__list_issues: approve or deny this call', error: true }]);
+  });
+
   await test('room agents popover — an actor removed elsewhere leaves the open popover (participants + add list), stale loads never win', async () => {
     const vm = require('vm');
     const fs = require('fs');
@@ -18514,6 +18660,7 @@ async function run() {
       'agent_avatar_set', 'agent_memory_get', 'agent_memory_set', 'agent_system_prompt_get', 'agent_system_prompt_set',
       'automation_create', 'automation_delete', 'automation_list', 'automation_update', 'connection_list',
       'message_send', 'messages_read', 'room_memory_get', 'room_memory_set', 'room_system_prompt_get', 'room_system_prompt_set',
+      'mcp_catalog', 'mcp_server_add', 'mcp_server_list',
       'skill_create', 'skill_delete', 'skill_get', 'skill_import_git', 'skill_list', 'skill_source_check', 'skill_source_detach', 'skill_source_update', 'skill_update', 'skill_use',
       'sub_agent_avatar_set', 'sub_agent_create', 'sub_agent_delete', 'sub_agent_link', 'sub_agent_list', 'sub_agent_memory_get', 'sub_agent_memory_set', 'sub_agent_trigger', 'sub_agent_unlink', 'sub_agent_update',
       'thread_read', 'threads_list'].map(n => `stoa__${n}`).sort();
@@ -20149,6 +20296,175 @@ async function run() {
         mDb.prepare("DELETE FROM agent_memory WHERE actor_id=?").run(agA.actorId);
         if (clash) await req('DELETE', `/api/sub-agents/${clash.id}`);
       }
+    });
+
+    // ── Built-in stoa__mcp_* tools: same core as /api/mcp/servers (lib/mcp-api.js); every add waits for the owner.
+    // The owner watches roomA; run(decide) starts the add and hands its approval card to decide.
+    const addRound = async (args, decide) => {
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: roomA }));
+        await waitForWsMessage(humanWs, m => m.type === 'history');
+        const asked = waitForWsMessage(humanWs, m => m.type === 'mcp_approval' && m.approval.tool === 'mcp_server_add', 5000);
+        const call = callText(tokA, 'stoa__mcp_server_add', args);
+        const { approval } = await asked;
+        const resolved = waitForWsMessage(humanWs, m => m.type === 'mcp_approval_resolved' && m.id === approval.id, 8000);
+        await decide(approval);
+        return { approval, result: await call, resolved: await resolved };
+      } finally { humanWs.close(); }
+    };
+    const serverBySlug = (slug) => mDb.prepare('SELECT * FROM mcp_servers WHERE slug=?').get(slug);
+    const decide = (decision) => (a) => req('POST', `/api/mcp/approvals/${a.id}`, { decision });
+
+    await test('MCP stoa tools — mcp_catalog / mcp_server_list: presets; every server with env key names only (no masked tail, no plain preset value) and has_access; hidden from sub-agent sessions', async () => {
+      const fsM = require('fs'), osM = require('os'), pathM = require('path');
+      const cat = await stoaOk(tokA, 'mcp_catalog');
+      assert.deepStrictEqual(cat.presets.map(p => p.id), (await req('GET', '/api/mcp/catalog')).body.presets.map(p => p.id));
+      // Owner-installed servers agA has no access to: a secret long enough for the owner API's masked tail, and a
+      // Filesystem folder the owner API shows in plain.
+      const LIST_VALUE = 'list-value-' + crypto.randomBytes(8).toString('hex');
+      const dir = fsM.mkdtempSync(pathM.join(osM.tmpdir(), 'stoa-mcplist-'));
+      const made = [];
+      try {
+        let r = await req('POST', '/api/mcp/servers', { slug: 'mcplisted', name: 'Listed', transport: 'stdio', command: process.execPath, args: [FIXTURE], env: { LIST_KEY: LIST_VALUE } });
+        assert.strictEqual(r.status, 201, r.raw);
+        made.push(r.body.server.id);
+        r = await req('POST', '/api/mcp/servers', { preset: 'filesystem', slug: 'mcplistfs', env: { ALLOWED_DIRS: dir } });
+        assert.strictEqual(r.status, 201, r.raw);
+        made.push(r.body.server.id);
+        const owned = (await req('GET', '/api/mcp/servers')).body.servers;
+        assert.ok(JSON.stringify(owned).includes(LIST_VALUE.slice(-4)) && JSON.stringify(owned).includes(dir), 'the owner API does show both');
+        const list = await stoaCall(tokA, 'mcp_server_list');
+        assert.strictEqual(list.isError, false);
+        const listed = list.body.servers.find(s => s.slug === 'mcplisted');
+        assert.deepStrictEqual(listed, {
+          slug: 'mcplisted', name: 'Listed', transport: 'stdio', command: process.execPath, args: [FIXTURE], url: null, preset: null,
+          enabled: true, status: owned.find(s => s.slug === 'mcplisted').status, tool_count: owned.find(s => s.slug === 'mcplisted').tool_count,
+          env_keys: ['LIST_KEY'], has_access: false,
+        });
+        assert.deepStrictEqual(list.body.servers.find(s => s.slug === 'mcplistfs').env_keys, ['ALLOWED_DIRS']);
+        assert.deepStrictEqual(list.body.servers.map(s => s.slug), owned.map(s => s.slug), 'every server, so the agent can pick a free slug');
+        assert.ok(list.body.servers.every(s => s.env_keys.every(k => typeof k === 'string')), 'names only on every server');
+        for (const leak of [LIST_VALUE.slice(-4), dir, SECRET, '••••']) assert.ok(!list.text.includes(leak), `not in the result: ${leak}`);
+      } finally {
+        for (const id of made) await req('DELETE', `/api/mcp/servers/${id}`);
+        fsM.rmSync(dir, { recursive: true, force: true });
+      }
+      for (const tool of ['mcp_catalog', 'mcp_server_list', 'mcp_server_add']) {
+        assert.match(await stoaErr(tokSub, tool, tool === 'mcp_server_add' ? { slug: 'subadd', name: 'x', transport: 'stdio', command: process.execPath, args: [FIXTURE] } : {}), SUB_DENIED, tool);
+      }
+      assert.strictEqual(mDb.prepare("SELECT COUNT(*) n FROM mcp_approvals WHERE tool='mcp_server_add' AND sub_agent_id=?").get(sub.id).n, 0, 'no approval asked for a sub-agent');
+      assert.strictEqual(serverBySlug('subadd'), undefined);
+    });
+
+    await test('MCP stoa tools — mcp_server_add: approved → server for the caller only (default none + agent grant), tested, notice; env value nowhere; always → 400 and stays pending', async () => {
+      const ADD_SECRET = 'add-secret-' + crypto.randomBytes(8).toString('hex');
+      const since = mDb.prepare('SELECT COALESCE(MAX(id), 0) id FROM messages').get().id;
+      const args = { slug: 'mcpadded', name: 'Added by agent', transport: 'stdio', command: process.execPath, args: [FIXTURE], env: { DUMMY_SECRET: ADD_SECRET }, allow_all: true };
+      try {
+        const { approval, result, resolved } = await addRound(args, async (a) => {
+          assert.strictEqual(serverBySlug('mcpadded'), undefined, 'nothing installed before the decision');
+          const always = await req('POST', `/api/mcp/approvals/${a.id}`, { decision: 'always' });
+          assert.deepStrictEqual([always.status, always.body.error], [400, 'always is not available for this tool']);
+          assert.strictEqual(mDb.prepare('SELECT status FROM mcp_approvals WHERE id=?').get(a.id).status, 'pending', 'always does not settle it');
+          const out = await decide('approve')(a);
+          assert.strictEqual(out.status, 200, out.raw);
+        });
+        assert.deepStrictEqual([approval.server_slug, approval.tool, approval.actor_id, approval.room_id, approval.thread_id, approval.allow_always],
+          ['stoa', 'mcp_server_add', agA.actorId, roomA, threadA, false]);
+        assert.deepStrictEqual(JSON.parse(approval.args_preview),
+          { slug: 'mcpadded', name: 'Added by agent', transport: 'stdio', command: process.execPath, args: [FIXTURE], env: { DUMMY_SECRET: '***' } },
+          'owner sees the full command line and env names; allow_all is not an argument of the tool');
+        assert.strictEqual(resolved.status, 'approved');
+        assert.strictEqual(result.isError, false, result.text);
+        const body = JSON.parse(result.text);
+        assert.deepStrictEqual([body.server.slug, body.server.has_access, body.server.env_keys, body.test.ok, body.test.tool_count], ['mcpadded', true, ['DUMMY_SECRET'], true, 4]);
+        assert.ok(!result.text.includes(ADD_SECRET.slice(-4)) && !result.text.includes('••••'), 'the add result carries env names only, like the list');
+        const row = serverBySlug('mcpadded');
+        assert.strictEqual(row.default_access, 'none', 'allow_all ignored');
+        assert.deepStrictEqual(mDb.prepare('SELECT subject_type, subject_id, allow FROM mcp_access WHERE server_id=?').all(row.id),
+          [{ subject_type: 'agent', subject_id: agA.actorId, allow: 1 }], 'granted to the caller only');
+        assert.ok((await listNames(tokA)).includes('mcpadded__echo'), 'caller sees its tools');
+        assert.ok(!(await listNames(tokB)).some(n => n.startsWith('mcpadded__')), 'another agent does not');
+        const hasAccess = async (token) => (await stoaCall(token, 'mcp_server_list')).body.servers.find(s => s.slug === 'mcpadded').has_access;
+        assert.deepStrictEqual([await hasAccess(tokA), await hasAccess(tokB)], [true, false], 'has_access follows the gateway grant');
+        const echo = await callText(tokA, 'mcpadded__echo', { text: 'hi' });
+        assert.strictEqual(echo.isError, false, echo.text);
+        assert.strictEqual(JSON.parse(echo.text).secret, 'set', 'env reached the upstream');
+        assert.deepStrictEqual(configNotices(roomA, since), ['__test-mcp-a added MCP server mcpadded · config']);
+        const call = mDb.prepare("SELECT * FROM mcp_calls WHERE tool='mcp_server_add' ORDER BY id DESC LIMIT 1").get();
+        assert.deepStrictEqual([call.server_slug, call.status, call.approval], ['stoa', 'ok', 'owner']);
+        const leaked = [
+          ...mDb.prepare('SELECT args_preview AS t FROM mcp_approvals').all(), ...mDb.prepare('SELECT args_preview AS t FROM mcp_calls').all(),
+          ...mDb.prepare('SELECT error AS t FROM mcp_calls WHERE error IS NOT NULL').all(), ...mDb.prepare('SELECT content AS t FROM messages WHERE id>?').all(since),
+        ].filter(r => String(r.t).includes(ADD_SECRET));
+        assert.deepStrictEqual(leaked, [], 'env value not in approvals, calls or messages');
+        assert.ok(row.env_enc && !row.env_enc.includes(ADD_SECRET), 'stored encrypted');
+      } finally {
+        const row = serverBySlug('mcpadded');
+        if (row) assert.strictEqual((await req('DELETE', `/api/mcp/servers/${row.id}`)).status, 204);
+      }
+    });
+
+    await test('MCP stoa tools — mcp_server_add: deny or no decision → nothing installed', async () => {
+      const args = { slug: 'mcpnever', name: 'Never', transport: 'stdio', command: process.execPath, args: [FIXTURE] };
+      const denied = await addRound(args, decide('deny'));
+      assert.match(denied.result.text, /owner denied/);
+      assert.strictEqual(serverBySlug('mcpnever'), undefined, 'denied → not installed');
+      const expired = await addRound(args, async () => null);
+      assert.strictEqual(expired.resolved.status, 'expired');
+      assert.match(expired.result.text, /approval expired/);
+      assert.strictEqual(serverBySlug('mcpnever'), undefined, 'expired → not installed');
+      // The slug was free when the card went up but is taken by the time the owner approves: the insert still refuses it.
+      let raced = null;
+      try {
+        const race = await addRound({ ...args, slug: 'mcprace' }, async (a) => {
+          const r = await req('POST', '/api/mcp/servers', { slug: 'mcprace', name: 'Owner first', transport: 'stdio', command: process.execPath, args: [FIXTURE] });
+          assert.strictEqual(r.status, 201, r.raw);
+          raced = r.body.server.id;
+          await decide('approve')(a);
+        });
+        assert.deepStrictEqual([race.result.isError, JSON.parse(race.result.text).error], [true, 'slug "mcprace" is already used']);
+        assert.strictEqual(serverBySlug('mcprace').name, 'Owner first', 'the owner\'s server is untouched');
+        assert.deepStrictEqual(mDb.prepare('SELECT COUNT(*) n FROM mcp_access WHERE server_id=?').get(raced).n, 0, 'no grant slipped onto it');
+      } finally {
+        if (raced) await req('DELETE', `/api/mcp/servers/${raced}`);
+      }
+    });
+
+    await test('MCP stoa tools — mcp_server_add: invalid args, reserved / taken slug, too-long args → tool error before any approval card', async () => {
+      const args = { slug: 'mcpnever', name: 'Never', transport: 'stdio', command: process.execPath, args: [FIXTURE] };
+      const counts = () => [mDb.prepare('SELECT COUNT(*) n FROM mcp_servers').get().n, mDb.prepare('SELECT COUNT(*) n FROM mcp_approvals').get().n];
+      const before = counts();
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      const cards = [];
+      humanWs.on('message', (d) => { const m = JSON.parse(d); if (m.type === 'mcp_approval') cards.push(m); });
+      try {
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: roomA }));
+        await waitForWsMessage(humanWs, m => m.type === 'history');
+        const lastCall = mDb.prepare('SELECT COALESCE(MAX(id), 0) id FROM mcp_calls').get().id;
+        for (const [bad, re] of [
+          [{}, /slug must start with a letter/],
+          [{ ...args, slug: 'Bad-Slug' }, /slug must start with a letter/],
+          [{ ...args, slug: 'stoa' }, /reserved/],
+          [{ ...args, slug: 'mcpdummy' }, /^slug "mcpdummy" is already used$/],
+          [{ ...args, transport: 'ftp' }, /transport must be stdio or http/],
+          [{ ...args, command: undefined }, /command is required/],
+          [{ ...args, preset: 'no-such-preset' }, /unknown preset/],
+          [{ ...args, env: { 'BAD KEY': 'x' } }, /invalid env name: BAD KEY/],
+        ]) {
+          const r = await callText(tokA, 'stoa__mcp_server_add', bad);
+          assert.strictEqual(r.isError, true, `${JSON.stringify(bad)}: ${r.text}`);
+          assert.match(r.text, re, JSON.stringify(bad));
+        }
+        const tooLong = await callText(tokA, 'stoa__mcp_server_add', { ...args, args: ['-e', 'x'.repeat(600)] });
+        assert.match(tooLong.text, /too long to show in full/, 'a call the owner could not see in full is refused before asking');
+        const recorded = mDb.prepare("SELECT status, approval FROM mcp_calls WHERE id>? AND tool='mcp_server_add' ORDER BY id").all(lastCall);
+        assert.deepStrictEqual(recorded.map(c => [c.status, c.approval]), [...Array(8).fill(['error', null]), ['denied', null]]);
+        await new Promise(r => setTimeout(r, 300));
+      } finally { humanWs.close(); }
+      assert.deepStrictEqual(counts(), before, 'no server and no mcp_approvals row');
+      assert.deepStrictEqual(cards, [], 'no mcp_approval event');
     });
 
     // ── Built-in stoa__skill_* tools: same core as /api/skills (lib/skills.js).

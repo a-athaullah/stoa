@@ -1220,6 +1220,18 @@ Satu agent bisa punya maksimal 20 permintaan approval yang pending sekaligus. Ka
 
 **Mengelola pengecualian:** Di halaman MCP, buka tab **Installed** dan klik tombol **tools** di kartu server untuk membuka daftar tool-nya. Agent yang dikecualikan tercantum di bawah **always allowed for** di bawah baris tool. Klik **×** di samping nama lalu konfirmasi untuk mencabut — setelah itu agent akan ditanya lagi. Jika switch di kolom **Approval** untuk tool tersebut dimatikan, daftar ditampilkan redup (tidak aktif). Pengecualian dihapus otomatis saat agent atau sub-agent dihapus. Panggilan yang lolos lewat pengecualian tetap tercatat di activity log.
 
+### Menambah MCP Server dari Agent
+
+Agent yang berjalan di sesi utama (bukan sub-agent) dapat menginstal MCP server saat runtime menggunakan tiga tool bawaan: `stoa__mcp_catalog` untuk melihat preset yang tersedia, `stoa__mcp_server_list` untuk melihat server yang sudah terpasang (nama server dan apakah agent memiliki akses — nilai env tidak pernah dikembalikan), dan `stoa__mcp_server_add` untuk menginstal server baru.
+
+**Approval:** Setiap panggilan ke `stoa__mcp_server_add` memunculkan kartu **MCP approval**. Tidak seperti tool MCP biasa, tidak ada opsi **always allow** — hanya **approve** dan **deny**. Kartu menampilkan argumen lengkap dengan nilai env disamarkan sebagai `***`. Panggilan dengan argumen tidak valid (slug kosong, slug `stoa` yang dicadangkan, atau slug yang sudah dipakai) ditolak sebelum kartu muncul.
+
+**Setelah disetujui:** Server dibuat dengan akses **none** secara default. Hanya agent yang memanggil yang mendapat akses. Kamu bisa menyesuaikan akses untuk agent lain di halaman MCP seperti biasa.
+
+**Jika ditolak atau kedaluwarsa:** Server tidak dibuat dan agent menerima error.
+
+Sub-agent tidak bisa menggunakan `stoa__mcp_server_add`, `stoa__mcp_catalog`, atau `stoa__mcp_server_list` — tool-tool ini disembunyikan dari sesi sub-agent.
+
 ### Label Tool di Chat
 
 Saat agent sedang berjalan, setiap panggilan tool MCP ditampilkan sebagai blok tool di chat. Blok ini menampilkan **nama tool** diikuti label kecil miring **"via \<nama server\> (Stoa)"** — misalnya `resolve-library-id via Context7 (Stoa)`. Hover untuk melihat nama internal lengkap sebagai tooltip. Langkah tool disimpan bersama pesan (maksimal 50 langkah per pesan, nama tool + ringkasan satu baris). Setelah halaman di-reload, process trail — termasuk label MCP — hanya dibangun ulang untuk **run yang error** (agar tetap bisa didiagnosis) dan **run yang masih berjalan**; trail run yang selesai normal hanya terlihat selama sesi yang mengamatinya dan hilang saat reload.
@@ -1266,7 +1278,7 @@ Server keep-alive tetap dihitung dalam batas 16 slot. Jika semua 16 slot ditempa
 
 ### Tool Bawaan Stoa
 
-Selain server MCP yang kamu pasang, server `stoa` bawaan Stoa menyediakan **24 tool bawaan** yang memberi agent akses langsung ke fitur Stoa — tanpa curl, tanpa secret. Identitas, room, dan thread diambil otomatis dari token sesi.
+Selain server MCP yang kamu pasang, server `stoa` bawaan Stoa menyediakan **tool bawaan** yang memberi agent akses langsung ke fitur Stoa — tanpa curl, tanpa secret. Identitas, room, dan thread diambil otomatis dari token sesi.
 
 Tool dikelompokkan berdasarkan fungsi:
 
@@ -1275,6 +1287,7 @@ Tool dikelompokkan berdasarkan fungsi:
 - **System prompt** — `stoa__room_system_prompt_get/set`, `stoa__agent_system_prompt_get/set`
 - **Sub-agent** — `stoa__sub_agent_list/create/update/delete/trigger`
 - **Automation** — `stoa__automation_list/create/update/delete`, `stoa__connection_list`
+- **Server MCP** — `stoa__mcp_catalog`, `stoa__mcp_server_list`, `stoa__mcp_server_add` (hanya sesi utama)
 
 Validasi, budget, dan scope berlaku sama seperti REST API. Perubahan konfigurasi (system prompt, CRUD sub-agent, perubahan automation) memunculkan notice permanen di room — `· config` atau `· automation` — sama dengan endpoint REST.
 
