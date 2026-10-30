@@ -1409,7 +1409,9 @@ Browse project documentation with multi-language support. Documentation files fr
 
 ### Usage
 
-The **Usage** tab is a personal analytics dashboard for your AI token consumption. Everything is bucketed to your local calendar day — your browser's timezone is sent with each load, so day boundaries, peak hour, and streaks align to your local midnight rather than UTC.
+The **Usage** tab has two sub-tabs: **Overview** and **Accounts & limits**.
+
+The **Overview** sub-tab is a personal analytics dashboard for your AI token consumption. Everything is bucketed to your local calendar day — your browser's timezone is sent with each load, so day boundaries, peak hour, and streaks align to your local midnight rather than UTC.
 
 Two segmented controls sit at the top:
 
@@ -1426,6 +1428,25 @@ Below the cards, an **activity heatmap** covers the last 26 weeks. Each cell is 
 - A **model list** below shows every model with its input/output token totals and percentage share
 
 All figures are read-only and refresh whenever you reopen the tab or change the period.
+
+**Accounts & limits** — open this sub-tab from **Settings > Usage** (beside Overview) to see which Claude and Codex accounts each of your machines is signed in to, and how much of the plan limits has been consumed.
+
+One card is shown per machine (not per agent). Each card displays the hostname, platform (macOS, Linux, Windows), and online/offline status. Inside, two panels show Claude and Codex side by side (stacked on mobile). Each panel shows the signed-in email, organization, plan, and authentication method. Below those, usage-limit meters display a label (for example "5-hour session" or "Weekly"), the percentage used, a bar, and the time remaining until reset. The bar is neutral below 70%, amber from 70–89%, and red at 90% and above. Agents running on that machine are listed at the bottom of the card with their 7-day token and turn totals.
+
+If any machines are signed in to different Claude or Codex accounts, a notice at the top of the tab lists which machine uses which account.
+
+**Refreshing:** data is collected automatically when an agent connects and every 15 minutes. The **Refresh** icon on a card header checks that machine immediately; **Refresh all** in the header checks all machines at once. A machine can be re-probed at most once every 30 seconds. Offline machines show their most recent report.
+
+Possible states for a harness panel:
+
+- **Token expired** — for Claude: run any task on an agent on that machine, or type `/reauth` in its room. For Codex: run `codex login` on that machine.
+- **Not logged in** — the CLI is installed but no account is signed in.
+- **Not installed** — the CLI is not on that machine.
+- **API key login — no plan limits** — API key accounts have no plan usage windows.
+- **Limits unavailable** — the account is confirmed but the limits endpoint returned an error.
+- **Rate-limited / last known values** — Claude's usage endpoint allows approximately one check per hour per account; when rate-limited, the note shows when the next check will be attempted and the last known values remain visible. Other tools sharing the same Claude account (such as Claude Code itself) count toward this limit.
+
+Token credentials are read on the agent machine only and are never sent to the Stoa server.
 
 ### Doctor
 

@@ -1410,7 +1410,9 @@ Jelajahi dokumentasi proyek dengan dukungan multi-bahasa. File dokumentasi dari 
 
 ### Usage
 
-Tab **Usage** adalah dashboard analitik personal untuk konsumsi token AI kamu. Semua data dikelompokkan berdasarkan hari kalender lokal — timezone browser kamu dikirim setiap kali tab dibuka, jadi batas hari, peak hour, dan streak selaras dengan tengah malam lokal kamu, bukan UTC.
+Tab **Usage** memiliki dua sub-tab: **Overview** dan **Accounts & limits**.
+
+Sub-tab **Overview** adalah dashboard analitik personal untuk konsumsi token AI kamu. Semua data dikelompokkan berdasarkan hari kalender lokal — timezone browser kamu dikirim setiap kali tab dibuka, jadi batas hari, peak hour, dan streak selaras dengan tengah malam lokal kamu, bukan UTC.
 
 Dua kontrol segmen ada di bagian atas:
 
@@ -1427,6 +1429,25 @@ Di bawah kartu, ada **heatmap aktivitas** yang mencakup 26 minggu terakhir. Tiap
 - **Daftar model** di bawahnya menampilkan setiap model dengan total token input/output dan persentase porsinya
 
 Semua angka bersifat read-only dan diperbarui setiap kali kamu membuka ulang tab atau mengubah period.
+
+**Accounts & limits** — buka sub-tab ini dari **Settings > Usage** (di sebelah Overview) untuk melihat akun Claude dan Codex mana yang dipakai di setiap mesin, beserta seberapa banyak limit plan yang sudah terpakai.
+
+Satu kartu ditampilkan per mesin (bukan per agent). Tiap kartu memperlihatkan hostname, platform (macOS, Linux, Windows), dan status online/offline. Di dalamnya, dua panel menampilkan Claude dan Codex berdampingan (ditumpuk di mobile). Setiap panel menampilkan email yang login, organisasi, plan, dan metode autentikasi. Di bawahnya, meter limit penggunaan menampilkan label (misalnya "5-hour session" atau "Weekly"), persentase terpakai, bar, dan sisa waktu hingga reset. Bar netral di bawah 70%, kuning dari 70–89%, dan merah pada 90% ke atas. Agent yang berjalan di mesin tersebut terdaftar di bagian bawah kartu beserta total token dan turn 7 hari terakhir.
+
+Jika ada mesin yang login dengan akun Claude atau Codex berbeda, sebuah notis di bagian atas tab menunjukkan mesin mana memakai akun mana.
+
+**Refresh:** data dikumpulkan otomatis saat agent connect dan setiap 15 menit. Tap ikon **Refresh** di header kartu untuk cek mesin tersebut sekarang; **Refresh all** di header untuk cek semua mesin sekaligus. Satu mesin bisa di-probe ulang paling cepat setiap 30 detik. Mesin offline menampilkan laporan terakhirnya.
+
+Status yang mungkin muncul di panel harness:
+
+- **Token expired** — untuk Claude: jalankan task apapun di agent di mesin tersebut, atau ketik `/reauth` di roomnya. Untuk Codex: jalankan `codex login` di mesin tersebut.
+- **Not logged in** — harness terinstal tapi belum ada akun yang login.
+- **Not installed** — CLI belum terinstal di mesin tersebut.
+- **API key login — no plan limits** — akun yang pakai API key tidak punya jendela penggunaan plan.
+- **Limits unavailable** — akun terkonfirmasi tapi endpoint limit mengembalikan error.
+- **Rate-limited / last known values** — endpoint penggunaan Claude mengizinkan sekitar satu cek per jam per akun; saat rate-limited, notis menunjukkan kapan cek berikutnya akan dicoba dan nilai terakhir yang diketahui tetap ditampilkan. Tools lain yang berbagi akun Claude yang sama (seperti Claude Code sendiri) turut memengaruhi limit ini.
+
+Kredensial token hanya dibaca di mesin agent dan tidak pernah dikirim ke server Stoa.
 
 ### Doctor
 
