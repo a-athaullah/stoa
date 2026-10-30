@@ -176,6 +176,12 @@ Skills library (migrations/20261027-skills-library.sql; replaced `agent_skills`,
 - `skill_sources` (migration `20261029-skill-sources.sql`) — one row per skill that has a git source. `skill_id` PK FK → `skills(id)` ON DELETE CASCADE. Columns: `kind TEXT CHECK(kind IN ('git'))`, `url`, `ref`, `subdir`, `commit_sha` (SHA of the content in the current revision), `synced_revision_id` (integer, no FK — identifies the revision a git import/update wrote; if `skills.current_revision_id` differs, `local_changes` is true), `checked_commit` (SHA seen at last `ls-remote`), `checked_at`, `created_at`, `updated_at`. URL never carries credentials.
 - `messages.skill_refs` (migration only) — JSON `[{id, name, version}]` on the agent run message that used the skills.
 
+### harness_account_snapshots / agent_machines
+Harness Accounts & Limits (migration `20261030-harness-accounts.sql`, `lib/harness-accounts.js`).
+
+- `harness_account_snapshots` — `machine_id` PK (16 hex, computed by stoa.js from hostname + OS user + Claude config dir + Codex home), `hostname`, `platform`, `payload` (server-validated JSON `{ claude, codex }`, never tokens), `probed_at` (server time of the last accepted snapshot), `updated_at`.
+- `agent_machines` — `actor_id` PK FK → `actors(id)` ON DELETE CASCADE, `machine_id`, `seen_at`. Written on `agent_connect` (`machine`) and on every accepted snapshot. A machine with no rows here is not listed.
+
 ---
 
 ## Automation Tables

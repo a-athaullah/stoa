@@ -618,6 +618,18 @@ For non-Claude harnesses (e.g. Codex), Stoa mirrors agent-reported models into `
 
 ---
 
+### Harness Accounts & Limits (`lib/harness-accounts.js`, agent side `lib/harness-probe.js`)
+
+Which Claude / Codex account each agent machine is logged into + plan-limit usage (5-hour, weekly). Zero model quota: `claude auth status`, `oauth/usage` (token from Keychain / `.credentials.json`), `codex app-server` (`account/read`, `account/rateLimits/read`), fallback `wham/usage`.
+
+- **Server-coordinated probes.** The usage endpoints are rate limited per account (Anthropic answered 429 with `Retry-After: 3595`), so agents have no timer: the server sends `harness_accounts_request { request_id, skip_limits? }` to ONE online agent (feature `harness_accounts`) per `machine_id` — on connect when the snapshot is ≥ 15 min old, from a 60 s tick on the same rule, and on manual refresh (≥ 30 s since the last probe/request). One request in flight per machine. A stored `retry_at` (from a 429) is passed back as `skip_limits` so nobody calls the endpoint before then.
+- **Agent → server** `harness_accounts { request_id, machine: { id, hostname, platform }, harnesses: { claude, codex } }`. Untrusted: unknown keys dropped (tokens never stored), strings stripped of control/bidi chars and capped, `used_pct` clamped 0–100, timestamps re-parsed, `retry_at` capped at +24 h, `probed_at` = server time. Unsolicited snapshots: max one per agent per 5 s.
+- **Carry-over:** a failed limits check (`error` / `unavailable`) for the same account keeps the last good limits for up to 6 h, with `limits_status: 'ok'`, the original `limits_checked_at` and the failure in `error`.
+- **REST (owner session only, not in agent-scope):** `GET /api/usage/accounts` → `{ machines[], accounts, mismatch }`; `POST /api/usage/accounts/refresh { machine_id? }` waits up to 20 s (`HARNESS_ACCOUNTS_WAIT_MS`) and returns the same payload. Browser broadcast `harness_accounts_updated { machine_id }`.
+- Expired Claude token → `token_expired`, never refreshed by the probe (refresh tokens rotate; it would break the CLI login).
+
+---
+
 ### Export
 
 #### Export Room
