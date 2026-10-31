@@ -1233,7 +1233,7 @@ Activity는 기본적으로 **30일간** 보관됩니다(`MCP_CALLS_RETENTION_DA
 
 - **name** — 표시 이름
 - **command / args** — 커스텀 stdio 서버의 커맨드 라인
-- **url / auth** — 커스텀 HTTP 서버의 URL 및 인증 헤더
+- **url / auth** — 커스텀 HTTP 서버의 URL 및 인증 모드(`none`, `headers`, `oauth`); OAuth 서버의 URL을 변경하면 오너가 OAuth를 다시 연결해야 합니다
 - **env** — 서버의 기존 env에 병합되는 키-값 쌍; 값은 어떤 응답에서도 반환되지 않습니다
 - **env_remove** — 삭제할 env 키 이름 목록
 - **keep_alive** — 유휴 시에도 서버를 유지할지 여부
@@ -1241,7 +1241,7 @@ Activity는 기본적으로 **30일간** 보관됩니다(`MCP_CALLS_RETENTION_DA
 
 에이전트가 변경할 수 없는 필드: **access**, **slug**, **preset**, **transport**. 이를 전달하면 승인 카드가 표시되기 전에 400 오류가 반환됩니다.
 
-**승인:** 각 호출마다 변경된 필드별 이전 값 → 새 값 diff가 표시된 **MCP approval** 카드가 표시됩니다. env 필드는 키 이름만 표시되며 값은 절대 표시되지 않습니다. **always allow** 옵션은 없습니다.
+**승인:** 각 호출마다 변경된 필드별 이전 값 → 새 값 diff가 표시된 **MCP approval** 카드가 표시됩니다. 비밀 env 필드는 키 이름만 표시되고, 비밀이 아닌 프리셋 필드(Filesystem의 허용 폴더 등)는 값도 표시됩니다(추가 카드와 동일). env 값은 에이전트에 반환되지 않습니다. **always allow** 옵션은 없습니다.
 
 **승인 후:** 서버가 재시작되고 연결 테스트가 실행되며 룸에 알림이 표시됩니다.
 

@@ -1238,7 +1238,7 @@ Agent yang sudah memiliki akses ke sebuah server dapat memperbaruinya menggunaka
 
 - **name** — nama tampilan
 - **command / args** — command line untuk custom stdio server
-- **url / auth** — URL dan header auth untuk custom HTTP server
+- **url / auth** — URL dan mode auth (`none`, `headers`, `oauth`) untuk custom HTTP server; jika URL diganti pada server OAuth, owner harus menghubungkan ulang OAuth
 - **env** — pasangan key-value yang di-merge ke env server yang ada; nilai tidak pernah dikembalikan di respons manapun
 - **env_remove** — daftar nama key env yang akan dihapus
 - **keep_alive** — apakah server tetap berjalan saat idle
@@ -1246,7 +1246,7 @@ Agent yang sudah memiliki akses ke sebuah server dapat memperbaruinya menggunaka
 
 Field yang tidak bisa diubah oleh agent: **access**, **slug**, **preset**, dan **transport**. Mengirimkan field ini akan mengembalikan error 400 sebelum kartu approval muncul.
 
-**Approval:** Setiap panggilan memunculkan kartu **MCP approval** dengan diff lama → baru per field yang berubah. Untuk field env, hanya nama key yang ditampilkan — nilai tidak pernah ditampilkan. Tidak ada opsi **always allow**.
+**Approval:** Setiap panggilan memunculkan kartu **MCP approval** dengan diff lama → baru per field yang berubah. Untuk field env yang bersifat rahasia, hanya nama key yang ditampilkan; field preset yang tidak rahasia (seperti folder yang diizinkan untuk Filesystem) tetap ditampilkan nilainya, sama seperti kartu add. Nilai env tidak pernah dikembalikan ke agent. Tidak ada opsi **always allow**.
 
 **Setelah disetujui:** Server di-restart, connection test dijalankan, dan muncul notice di room.
 

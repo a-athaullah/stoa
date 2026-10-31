@@ -1237,7 +1237,7 @@ An agent that already has access to a server can update it using `stoa__mcp_serv
 
 - **name** — display name
 - **command / args** — command line for custom stdio servers
-- **url / auth** — URL and auth header for custom HTTP servers
+- **url / auth** — URL and auth mode (`none`, `headers`, `oauth`) for custom HTTP servers; if the URL changes on an OAuth server, the owner must reconnect OAuth
 - **env** — key-value pairs merged into the server's existing env; values are never returned in any response
 - **env_remove** — list of env key names to delete
 - **keep_alive** — whether the server stays running when idle
@@ -1245,7 +1245,7 @@ An agent that already has access to a server can update it using `stoa__mcp_serv
 
 Fields that cannot be changed by an agent: **access**, **slug**, **preset**, and **transport**. Passing any of these returns a 400 error before the approval card appears.
 
-**Approval:** Every call shows an **MCP approval** card with an old → new diff per changed field. For env fields, only key names are shown — values are never displayed. There is no **always allow** option.
+**Approval:** Every call shows an **MCP approval** card with an old → new diff per changed field. For secret env fields, only key names are shown; non-secret preset fields (such as Filesystem's allowed folders) show their values, the same as the add card. Env values are never returned to the agent. There is no **always allow** option.
 
 **After approval:** The server restarts, a connection test runs, and a notice appears in the room.
 
