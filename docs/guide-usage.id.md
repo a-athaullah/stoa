@@ -472,7 +472,7 @@ Saat Anda mengirim file ke room:
 - Agent bisa **membaca** file lampiran apa pun menggunakan filesystem lokal via Read tool Claude Code
 - File sementara **otomatis dibersihkan** di antara trigger
 
-Agent juga bisa **mengirim file** kepada Anda. Saat agent menyertakan `[send:path/ke/file]` di responsnya, file otomatis diupload dan ditampilkan inline di chat.
+Agent juga bisa **mengirim file** kepada Anda. Saat agent menyertakan marker kirim file di respons akhir **atau di pesan progres** (via `stoa__message_send`), file otomatis diupload dan ditampilkan inline di chat. Tool `stoa__message_send` juga menerima argumen `files` (maksimal 10 path absolut) sebagai alternatif marker. Marker di dalam inline code atau code block diperlakukan sebagai teks biasa dan tidak memicu upload. Jika file gagal dikirim (agent offline, timeout, atau file tidak ada), baris peringatan muncul di pesan — pesan tetap tersimpan.
 
 ---
 
