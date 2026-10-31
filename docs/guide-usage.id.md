@@ -1232,6 +1232,28 @@ Agent yang berjalan di sesi utama (bukan sub-agent) dapat menginstal MCP server 
 
 Sub-agent tidak bisa menggunakan `stoa__mcp_server_add`, `stoa__mcp_catalog`, atau `stoa__mcp_server_list` — tool-tool ini disembunyikan dari sesi sub-agent.
 
+#### Memperbarui MCP Server dari Agent
+
+Agent yang sudah memiliki akses ke sebuah server dapat memperbaruinya menggunakan `stoa__mcp_server_update`. Tool ini menerima slug server dan kombinasi field berikut:
+
+- **name** — nama tampilan
+- **command / args** — command line untuk custom stdio server
+- **url / auth** — URL dan header auth untuk custom HTTP server
+- **env** — pasangan key-value yang di-merge ke env server yang ada; nilai tidak pernah dikembalikan di respons manapun
+- **env_remove** — daftar nama key env yang akan dihapus
+- **keep_alive** — apakah server tetap berjalan saat idle
+- **enabled** — mengaktifkan atau menonaktifkan server
+
+Field yang tidak bisa diubah oleh agent: **access**, **slug**, **preset**, dan **transport**. Mengirimkan field ini akan mengembalikan error 400 sebelum kartu approval muncul.
+
+**Approval:** Setiap panggilan memunculkan kartu **MCP approval** dengan diff lama → baru per field yang berubah. Untuk field env, hanya nama key yang ditampilkan — nilai tidak pernah ditampilkan. Tidak ada opsi **always allow**.
+
+**Setelah disetujui:** Server di-restart, connection test dijalankan, dan muncul notice di room.
+
+**Menonaktifkan server:** Jika agent menyetel `enabled: false`, hanya owner yang bisa mengaktifkannya kembali (via halaman MCP). Agent itu sendiri tidak bisa mengaktifkannya kembali.
+
+Sub-agent tidak bisa menggunakan `stoa__mcp_server_update` — tool ini disembunyikan dari sesi sub-agent.
+
 ### Label Tool di Chat
 
 Saat agent sedang berjalan, setiap panggilan tool MCP ditampilkan sebagai blok tool di chat. Blok ini menampilkan **nama tool** diikuti label kecil miring **"via \<nama server\> (Stoa)"** — misalnya `resolve-library-id via Context7 (Stoa)`. Hover untuk melihat nama internal lengkap sebagai tooltip. Langkah tool disimpan bersama pesan (maksimal 50 langkah per pesan, nama tool + ringkasan satu baris). Setelah halaman di-reload, process trail — termasuk label MCP — hanya dibangun ulang untuk **run yang error** (agar tetap bisa didiagnosis) dan **run yang masih berjalan**; trail run yang selesai normal hanya terlihat selama sesi yang mengamatinya dan hilang saat reload.
@@ -1287,7 +1309,7 @@ Tool dikelompokkan berdasarkan fungsi:
 - **System prompt** — `stoa__room_system_prompt_get/set`, `stoa__agent_system_prompt_get/set`
 - **Sub-agent** — `stoa__sub_agent_list/create/update/delete/trigger`
 - **Automation** — `stoa__automation_list/create/update/delete`, `stoa__connection_list`
-- **Server MCP** — `stoa__mcp_catalog`, `stoa__mcp_server_list`, `stoa__mcp_server_add` (hanya sesi utama)
+- **Server MCP** — `stoa__mcp_catalog`, `stoa__mcp_server_list`, `stoa__mcp_server_add`, `stoa__mcp_server_update` (hanya sesi utama)
 
 Validasi, budget, dan scope berlaku sama seperti REST API. Perubahan konfigurasi (system prompt, CRUD sub-agent, perubahan automation) memunculkan notice permanen di room — `· config` atau `· automation` — sama dengan endpoint REST.
 

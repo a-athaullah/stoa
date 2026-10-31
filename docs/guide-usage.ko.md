@@ -1227,6 +1227,28 @@ Activity는 기본적으로 **30일간** 보관됩니다(`MCP_CALLS_RETENTION_DA
 
 서브에이전트는 `stoa__mcp_server_add`, `stoa__mcp_catalog`, `stoa__mcp_server_list`를 사용할 수 없습니다 — 이 도구들은 서브에이전트 세션에서 숨겨집니다.
 
+#### 에이전트에서 MCP 서버 업데이트
+
+이미 서버에 접근 권한이 있는 에이전트는 `stoa__mcp_server_update`를 사용하여 서버를 업데이트할 수 있습니다. 이 도구는 서버의 슬러그와 다음 필드의 임의 조합을 받습니다:
+
+- **name** — 표시 이름
+- **command / args** — 커스텀 stdio 서버의 커맨드 라인
+- **url / auth** — 커스텀 HTTP 서버의 URL 및 인증 헤더
+- **env** — 서버의 기존 env에 병합되는 키-값 쌍; 값은 어떤 응답에서도 반환되지 않습니다
+- **env_remove** — 삭제할 env 키 이름 목록
+- **keep_alive** — 유휴 시에도 서버를 유지할지 여부
+- **enabled** — 서버 활성화 또는 비활성화
+
+에이전트가 변경할 수 없는 필드: **access**, **slug**, **preset**, **transport**. 이를 전달하면 승인 카드가 표시되기 전에 400 오류가 반환됩니다.
+
+**승인:** 각 호출마다 변경된 필드별 이전 값 → 새 값 diff가 표시된 **MCP approval** 카드가 표시됩니다. env 필드는 키 이름만 표시되며 값은 절대 표시되지 않습니다. **always allow** 옵션은 없습니다.
+
+**승인 후:** 서버가 재시작되고 연결 테스트가 실행되며 룸에 알림이 표시됩니다.
+
+**서버 비활성화:** 에이전트가 `enabled: false`를 설정하면 오너만 다시 활성화할 수 있습니다(MCP 페이지에서). 에이전트 자신은 다시 활성화할 수 없습니다.
+
+서브에이전트는 `stoa__mcp_server_update`를 사용할 수 없습니다 — 이 도구는 서브에이전트 세션에서 숨겨집니다.
+
 ### 채팅 내 도구 레이블
 
 에이전트가 실행 중일 때 각 MCP 도구 호출은 채팅에 도구 블록으로 표시됩니다. 블록에는 **도구 이름**과 작은 이탤릭체 레이블 **"via \<서버 이름\> (Stoa)"** 이 표시됩니다(예: `resolve-library-id via Context7 (Stoa)`). 마우스를 올리면 전체 내부 도구 이름이 툴팁으로 표시됩니다. 도구 단계는 메시지와 함께 저장됩니다(메시지당 최대 50단계, 도구 이름 + 한 줄 요약). 페이지 새로고침 후 프로세스 트레일 — MCP 레이블 포함 — 은 **오류 실행**(진단용)과 **실행 중인 메시지**에만 재구성됩니다. 정상 완료된 실행의 트레일은 해당 세션 내에서만 표시되고 새로고침하면 사라집니다.
@@ -1282,7 +1304,7 @@ keep-alive 서버도 16개 슬롯 제한에 포함됩니다. 모든 16개 슬롯
 - **시스템 프롬프트** — `stoa__room_system_prompt_get/set`, `stoa__agent_system_prompt_get/set`
 - **서브에이전트** — `stoa__sub_agent_list/create/update/delete/trigger`
 - **자동화** — `stoa__automation_list/create/update/delete`, `stoa__connection_list`
-- **MCP 서버** — `stoa__mcp_catalog`, `stoa__mcp_server_list`, `stoa__mcp_server_add`（메인 세션 전용）
+- **MCP 서버** — `stoa__mcp_catalog`, `stoa__mcp_server_list`, `stoa__mcp_server_add`, `stoa__mcp_server_update`（메인 세션 전용）
 
 유효성 검사·예산·스코프 규칙은 REST API와 동일합니다. 구성 변경(시스템 프롬프트, 서브에이전트 CRUD, 자동화 변경)은 룸에 영구 알림을 게시합니다 — `· config` 또는 `· automation` — REST 엔드포인트와 동일합니다.
 
