@@ -1227,6 +1227,28 @@ History 标签页显示每个版本的版本号、作者（您或代理）、时
 
 子代理无法使用 `stoa__mcp_server_add`、`stoa__mcp_catalog` 或 `stoa__mcp_server_list` — 这些工具在子代理会话中被隐藏。
 
+#### 通过代理更新 MCP 服务器
+
+已拥有某服务器访问权限的代理可以使用 `stoa__mcp_server_update` 更新该服务器。该工具接受服务器的 slug 以及以下字段的任意组合：
+
+- **name** — 显示名称
+- **command / args** — 自定义 stdio 服务器的命令行
+- **url / auth** — 自定义 HTTP 服务器的 URL 和认证模式（`none`、`headers`、`oauth`）；若在 OAuth 服务器上更改 URL，所有者需重新连接 OAuth
+- **env** — 合并到服务器现有 env 中的键值对；任何响应中均不返回值
+- **env_remove** — 要删除的 env 键名列表
+- **keep_alive** — 空闲时是否保持服务器运行
+- **enabled** — 启用或禁用服务器
+
+代理无法更改的字段：**access**、**slug**、**preset**、**transport**。传入这些字段将在审批卡片出现之前返回 400 错误。
+
+**审批：** 每次调用都会显示 **MCP approval** 卡片，每个变更字段显示旧值 → 新值的差异。机密 env 字段仅显示键名；非机密的预设字段（如 Filesystem 的允许文件夹）会显示值，与添加卡片一致。env 值不会返回给代理。没有 **always allow** 选项。
+
+**审批后：** 服务器重启，连接测试运行，房间中显示通知。
+
+**禁用服务器：** 如果代理将 `enabled` 设为 `false`，只有所有者可以重新启用（通过 MCP 页面）。代理本身无法重新启用。
+
+子代理无法使用 `stoa__mcp_server_update` — 该工具在子代理会话中被隐藏。
+
 ### 聊天中的工具标签
 
 代理运行时，每次 MCP 工具调用都会在聊天中以工具块显示。块内显示**工具名称**，后跟小型斜体标签 **"via \<服务器名\> (Stoa)"** — 例如 `resolve-library-id via Context7 (Stoa)`。悬停可查看完整内部工具名称（工具提示）。工具步骤与消息一起保存（每条消息最多 50 步，每步含工具名称和单行摘要）。页面刷新后，流程追踪记录 — 包括 MCP 标签 — 仅为**出错的运行**（便于诊断）和**仍在进行中的运行**重建；正常完成的运行的追踪记录仅在当次会话中可见，刷新后消失。
@@ -1282,7 +1304,7 @@ keep-alive 服务器仍计入 16 个槽位限制。如果全部 16 个槽位均�
 - **系统提示** — `stoa__room_system_prompt_get/set`、`stoa__agent_system_prompt_get/set`
 - **子代理** — `stoa__sub_agent_list/create/update/delete/trigger`
 - **自动化** — `stoa__automation_list/create/update/delete`、`stoa__connection_list`
-- **MCP 服务器** — `stoa__mcp_catalog`、`stoa__mcp_server_list`、`stoa__mcp_server_add`（仅主会话）
+- **MCP 服务器** — `stoa__mcp_catalog`、`stoa__mcp_server_list`、`stoa__mcp_server_add`、`stoa__mcp_server_update`（仅主会话）
 
 验证、配额和作用域规则与 REST API 相同。配置变更（系统提示、子代理 CRUD、自动化变更）会在房间中发布永久通知 — `· config` 或 `· automation` — 与 REST 端点相同。
 
