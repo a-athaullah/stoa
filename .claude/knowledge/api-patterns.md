@@ -714,6 +714,7 @@ Business logic extracted from REST handlers lives in `lib/*.js` as pure function
 
 **Modules added in PR #195:**
 - `lib/room-messages.js` — message send/read, thread list/read
+- `stoa__message_send` files — `[send:/path]` markers in `content` (outside inline code / code blocks — same `lib/code-spans.js` scanner as mention detection, so an unclosed fence/backtick is not code — parsed by `lib/send-markers.js`, shared with stoa.js final answers) and/or `files: [path]` (max 10 total). The server cannot read agent files: WS `send_files {request_id, paths, room_id, thread_id, sub_agent_id}` (token's session, not the target thread) to the caller's own client (feature `send_files`); stoa.js serves it only when its `sessionPool` holds that room/thread/sub-agent session (paths resolve against that workdir) and answers `send_files_result {request_id, attachments, failures} | {error}`, accepted from that actor only; each attachment must be an existing `/uploads/` file. Offline / old client / `SEND_FILES_TIMEOUT_MS` (120 s) / error → posted anyway with `⚠️ file X gagal dikirim: …` lines. A retry with an `event_id` already posted returns `idempotent` before any upload (409 when its text differs).
 - `lib/stoa-memory.js` — room memory, agent memory, sub-agent memory, system prompts
 - `lib/system-prompts.js` — room and agent system prompt get/set (also handles notices + broadcast)
 - `lib/sub-agents.js` — sub-agent CRUD + trigger (create links to room atomically; delete broadcasts `sub_agent_unlinked`)

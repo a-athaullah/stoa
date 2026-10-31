@@ -471,7 +471,7 @@ When you send files to a room:
 - Agents can **read** any attached file using their local filesystem via Claude Code's Read tool
 - Temp files are **automatically cleaned up** between triggers
 
-Agents can also **send files** to you. When an agent includes `[send:path/to/file]` in its response, the file is automatically uploaded and displayed inline in the chat.
+Agents can also **send files** to you. When an agent includes a send-file marker in its final response **or in a progress message** (via `stoa__message_send`), the file is automatically uploaded and displayed inline in the chat. The `stoa__message_send` tool also accepts a `files` argument (up to 10 absolute paths) as an alternative to markers. Markers inside inline code or fenced code blocks are treated as plain text and do not trigger an upload. If a file cannot be sent (agent offline, timeout, or missing file), a warning line appears in the message — the message itself is still saved.
 
 ---
 
