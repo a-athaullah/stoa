@@ -1635,6 +1635,8 @@ const mcpGateway = createMcpGateway({
       mcpServers: {
         catalog: publicCatalog, list: (ident) => mcpApi.listServersForAgent(ident),
         check: (body, actorId) => mcpApi.checkServerForAgent(body, actorId), add: (body, actorId) => mcpApi.addServerForAgent(body, actorId),
+        checkUpdate: (body, ident) => mcpApi.checkUpdateForAgent(body, ident), previewUpdate: (body, ident) => mcpApi.previewUpdateForAgent(body, ident),
+        update: (body, ident) => mcpApi.updateServerForAgent(body, ident),
       },
     }),
   ],

@@ -14723,6 +14723,11 @@ async function run() {
     const pre = builtin.querySelector('.mcp-args-preview').textContent;
     assert.ok(pre.includes('\n  "command": "npx"') && pre.includes('"NOTES_TOKEN": "***"'), 'arguments are pretty-printed with the masked env value');
     assert.ok(builtin.textContent.includes('stoa__mcp_server_add'));
+    const update = make({ ...base, id: 3, server_slug: 'stoa', tool: 'mcp_server_update', allow_always: false,
+      args_preview: JSON.stringify({ slug: 'notes', changes: { args: { from: ['-y', 'notes-mcp'], to: ['-y', 'notes-mcp@2'] }, env: { set: { NOTES_TOKEN: '***' }, removed: ['OLD'] } } }) });
+    assert.deepStrictEqual(labels(update), ['approve', 'deny']);
+    const updPre = update.querySelector('.mcp-args-preview').textContent;
+    assert.ok(updPre.includes('"from": [') && updPre.includes('"notes-mcp@2"') && updPre.includes('"NOTES_TOKEN": "***"') && updPre.includes('"removed": ['), 'an update card shows old → new and env names');
 
     const legacy = make({ ...base, id: 2, server_slug: 'github', tool: 'create_issue', args_preview: '{"title":"bug"}…' });
     assert.deepStrictEqual(labels(legacy), ['approve', 'always allow', 'deny'], 'a row without allow_always keeps Always');
@@ -18906,7 +18911,7 @@ async function run() {
       'agent_avatar_set', 'agent_memory_get', 'agent_memory_set', 'agent_system_prompt_get', 'agent_system_prompt_set',
       'automation_create', 'automation_delete', 'automation_list', 'automation_update', 'connection_list',
       'message_send', 'messages_read', 'room_memory_get', 'room_memory_set', 'room_system_prompt_get', 'room_system_prompt_set',
-      'mcp_catalog', 'mcp_server_add', 'mcp_server_list',
+      'mcp_catalog', 'mcp_server_add', 'mcp_server_list', 'mcp_server_update',
       'skill_create', 'skill_delete', 'skill_get', 'skill_import_git', 'skill_list', 'skill_source_check', 'skill_source_detach', 'skill_source_update', 'skill_update', 'skill_use',
       'sub_agent_avatar_set', 'sub_agent_create', 'sub_agent_delete', 'sub_agent_link', 'sub_agent_list', 'sub_agent_memory_get', 'sub_agent_memory_set', 'sub_agent_trigger', 'sub_agent_unlink', 'sub_agent_update',
       'thread_read', 'threads_list'].map(n => `stoa__${n}`).sort();
@@ -20617,19 +20622,20 @@ async function run() {
 
     // ── Built-in stoa__mcp_* tools: same core as /api/mcp/servers (lib/mcp-api.js); every add waits for the owner.
     // The owner watches roomA; run(decide) starts the add and hands its approval card to decide.
-    const addRound = async (args, decide) => {
+    const builtinRound = async (tool, args, decide) => {
       const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
       try {
         humanWs.send(JSON.stringify({ type: 'join_room', room_id: roomA }));
         await waitForWsMessage(humanWs, m => m.type === 'history');
-        const asked = waitForWsMessage(humanWs, m => m.type === 'mcp_approval' && m.approval.tool === 'mcp_server_add', 5000);
-        const call = callText(tokA, 'stoa__mcp_server_add', args);
+        const asked = waitForWsMessage(humanWs, m => m.type === 'mcp_approval' && m.approval.tool === tool, 5000);
+        const call = callText(tokA, `stoa__${tool}`, args);
         const { approval } = await asked;
         const resolved = waitForWsMessage(humanWs, m => m.type === 'mcp_approval_resolved' && m.id === approval.id, 8000);
         await decide(approval);
         return { approval, result: await call, resolved: await resolved };
       } finally { humanWs.close(); }
     };
+    const addRound = (args, decide) => builtinRound('mcp_server_add', args, decide);
     const serverBySlug = (slug) => mDb.prepare('SELECT * FROM mcp_servers WHERE slug=?').get(slug);
     const decide = (decision) => (a) => req('POST', `/api/mcp/approvals/${a.id}`, { decision });
 
@@ -20667,10 +20673,12 @@ async function run() {
         for (const id of made) await req('DELETE', `/api/mcp/servers/${id}`);
         fsM.rmSync(dir, { recursive: true, force: true });
       }
-      for (const tool of ['mcp_catalog', 'mcp_server_list', 'mcp_server_add']) {
-        assert.match(await stoaErr(tokSub, tool, tool === 'mcp_server_add' ? { slug: 'subadd', name: 'x', transport: 'stdio', command: process.execPath, args: [FIXTURE] } : {}), SUB_DENIED, tool);
+      for (const tool of ['mcp_catalog', 'mcp_server_list', 'mcp_server_add', 'mcp_server_update']) {
+        const args = { mcp_server_add: { slug: 'subadd', name: 'x', transport: 'stdio', command: process.execPath, args: [FIXTURE] }, mcp_server_update: { slug: 'mcpdummy', name: 'x' } }[tool] || {};
+        assert.match(await stoaErr(tokSub, tool, args), SUB_DENIED, tool);
       }
-      assert.strictEqual(mDb.prepare("SELECT COUNT(*) n FROM mcp_approvals WHERE tool='mcp_server_add' AND sub_agent_id=?").get(sub.id).n, 0, 'no approval asked for a sub-agent');
+      assert.strictEqual(mDb.prepare("SELECT COUNT(*) n FROM mcp_approvals WHERE tool IN ('mcp_server_add', 'mcp_server_update') AND sub_agent_id=?").get(sub.id).n, 0, 'no approval asked for a sub-agent');
+      assert.notStrictEqual(serverBySlug('mcpdummy').name, 'x', 'the sub-agent changed nothing');
       assert.strictEqual(serverBySlug('subadd'), undefined);
     });
 
@@ -20782,6 +20790,142 @@ async function run() {
       } finally { humanWs.close(); }
       assert.deepStrictEqual(counts(), before, 'no server and no mcp_approvals row');
       assert.deepStrictEqual(cards, [], 'no mcp_approval event');
+    });
+
+    // ── stoa__mcp_server_update: same patch core as PATCH /api/mcp/servers/:id; servers the agent may use only.
+    const updRound = (args, decide) => builtinRound('mcp_server_update', args, decide);
+    // An owner-installed custom server granted to agA only, or (grantA false) to nobody.
+    const ownerServer = async (body, grantA = true) => {
+      const r = await req('POST', '/api/mcp/servers', body);
+      assert.strictEqual(r.status, 201, r.raw);
+      if (grantA) assert.strictEqual((await req('PUT', '/api/mcp/access', { server_id: r.body.server.id, subject_type: 'agent', subject_id: agA.actorId, allow: true })).status, 200);
+      return r.body.server.id;
+    };
+    const dropServer = async (id) => { if (id) await req('DELETE', `/api/mcp/servers/${id}`); };
+
+    await test('MCP stoa tools — mcp_server_update: approved → only the sent fields change (env merged, env_remove, args), process restarts with them, access untouched, notice; card shows old → new and env names only', async () => {
+      const OLD_SECRET = 'upd-old-' + crypto.randomBytes(8).toString('hex');
+      const NEW_SECRET = 'upd-new-' + crypto.randomBytes(8).toString('hex');
+      const since = mDb.prepare('SELECT COALESCE(MAX(id), 0) id FROM messages').get().id;
+      let id = null;
+      try {
+        id = await ownerServer({ slug: 'mcpupd', name: 'Before', transport: 'stdio', command: process.execPath, args: [FIXTURE], env: { DUMMY_SECRET: OLD_SECRET, KEEP_ME: 'k' } });
+        assert.strictEqual(JSON.parse((await callText(tokA, 'mcpupd__echo', { text: 'a' })).text).secret, 'set', 'running with the old env');
+        const before = mDb.prepare('SELECT * FROM mcp_servers WHERE id=?').get(id);
+        const { approval, result, resolved } = await updRound(
+          { slug: 'mcpupd', name: 'After', args: [FIXTURE, '--updated'], env: { NEW_KEY: NEW_SECRET }, env_remove: ['DUMMY_SECRET'] },
+          async (a) => {
+            assert.strictEqual(mDb.prepare('SELECT name FROM mcp_servers WHERE id=?').get(id).name, 'Before', 'nothing changed before the decision');
+            const always = await req('POST', `/api/mcp/approvals/${a.id}`, { decision: 'always' });
+            assert.strictEqual(always.status, 400, 'no always for this tool');
+            assert.strictEqual((await decide('approve')(a)).status, 200);
+          });
+        assert.deepStrictEqual([approval.server_slug, approval.tool, approval.actor_id, approval.allow_always], ['stoa', 'mcp_server_update', agA.actorId, false]);
+        assert.deepStrictEqual(JSON.parse(approval.args_preview), {
+          slug: 'mcpupd',
+          changes: {
+            name: { from: 'Before', to: 'After' },
+            args: { from: [FIXTURE], to: [FIXTURE, '--updated'] },
+            env: { set: { NEW_KEY: '***' }, removed: ['DUMMY_SECRET'] },
+          },
+        }, 'only real changes, old → new, env names only');
+        assert.strictEqual(resolved.status, 'approved');
+        assert.strictEqual(result.isError, false, result.text);
+        const body = JSON.parse(result.text);
+        assert.deepStrictEqual([body.server.slug, body.server.name, body.server.args, body.server.env_keys, body.server.has_access, body.test],
+          ['mcpupd', 'After', [FIXTURE, '--updated'], ['KEEP_ME', 'NEW_KEY'], true, { ok: true, tool_count: 4 }]);
+        const after = mDb.prepare('SELECT * FROM mcp_servers WHERE id=?').get(id);
+        assert.deepStrictEqual([after.command, after.transport, after.default_access, after.enabled], [before.command, before.transport, before.default_access, before.enabled], 'unsent fields untouched');
+        assert.deepStrictEqual(mDb.prepare('SELECT subject_type, subject_id, allow FROM mcp_access WHERE server_id=?').all(id),
+          [{ subject_type: 'agent', subject_id: agA.actorId, allow: 1 }], 'access untouched');
+        const owned = (await req('GET', '/api/mcp/servers')).body.servers.find(s => s.id === id);
+        assert.deepStrictEqual(owned.env_keys.map(e => e.key), ['KEEP_ME', 'NEW_KEY'], 'merged: KEEP_ME kept, NEW_KEY added, DUMMY_SECRET removed');
+        assert.strictEqual(owned.env_keys.find(e => e.key === 'NEW_KEY').masked, '••••' + NEW_SECRET.slice(-4), 'the new value is what was stored');
+        assert.strictEqual(JSON.parse((await callText(tokA, 'mcpupd__echo', { text: 'b' })).text).secret, 'unset', 'the process restarted without the removed env');
+        assert.deepStrictEqual(configNotices(roomA, since), ['__test-mcp-a updated MCP server mcpupd · config']);
+        const leaked = [
+          ...mDb.prepare('SELECT args_preview AS t FROM mcp_approvals').all(), ...mDb.prepare('SELECT args_preview AS t FROM mcp_calls').all(),
+          ...mDb.prepare('SELECT error AS t FROM mcp_calls WHERE error IS NOT NULL').all(), ...mDb.prepare('SELECT content AS t FROM messages WHERE id>?').all(since),
+        ].filter(r => String(r.t).includes(NEW_SECRET) || String(r.t).includes(OLD_SECRET));
+        assert.deepStrictEqual(leaked, [], 'env values not in approvals, calls or messages');
+        assert.ok(!result.text.includes(NEW_SECRET.slice(-4)), 'the result carries env names only');
+
+        // Disabling is allowed, and takes the server out of the agent's reach: has_access false, later updates "not found".
+        const off = await updRound({ slug: 'mcpupd', enabled: false }, decide('approve'));
+        const offBody = JSON.parse(off.result.text);
+        assert.deepStrictEqual([offBody.server.enabled, offBody.server.has_access, offBody.test], [false, false, { ok: false, tool_count: 0, error: 'server is disabled' }]);
+        assert.strictEqual(await stoaErr(tokA, 'mcp_server_update', { slug: 'mcpupd', enabled: true }), 'MCP server not found');
+      } finally { await dropServer(id); }
+    });
+
+    await test('MCP stoa tools — mcp_server_update: denied → nothing changes; a preset field marked secret:false shows its value on the card', async () => {
+      const fsM = require('fs'), osM = require('os'), pathM = require('path');
+      const dirA = fsM.mkdtempSync(pathM.join(osM.tmpdir(), 'stoa-mcpupd-a-'));
+      const dirB = fsM.mkdtempSync(pathM.join(osM.tmpdir(), 'stoa-mcpupd-b-'));
+      let id = null;
+      try {
+        id = await ownerServer({ preset: 'filesystem', slug: 'mcpupdfs', env: { ALLOWED_DIRS: dirA } });
+        const before = mDb.prepare('SELECT * FROM mcp_servers WHERE id=?').get(id);
+        const { approval, result } = await updRound({ slug: 'mcpupdfs', env: { ALLOWED_DIRS: dirB }, keep_alive: true }, decide('deny'));
+        assert.deepStrictEqual(JSON.parse(approval.args_preview), {
+          slug: 'mcpupdfs', changes: { keep_alive: { from: false, to: true }, env: { set: { ALLOWED_DIRS: dirB } } },
+        }, 'the folder the server will reach is shown, like on the add card');
+        assert.match(result.text, /owner denied/);
+        assert.deepStrictEqual(mDb.prepare('SELECT * FROM mcp_servers WHERE id=?').get(id), before, 'row unchanged');
+      } finally {
+        await dropServer(id);
+        for (const d of [dirA, dirB]) fsM.rmSync(d, { recursive: true, force: true });
+      }
+    });
+
+    await test('MCP stoa tools — mcp_server_update: no access / unknown slug look the same, fields an agent may not send, invalid values, no change → tool error before any approval card', async () => {
+      let mine = null, hidden = null;
+      const HIDDEN_SECRET = 'hidden-' + crypto.randomBytes(8).toString('hex');
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      const cards = [];
+      humanWs.on('message', (d) => { const m = JSON.parse(d); if (m.type === 'mcp_approval') cards.push(m); });
+      try {
+        mine = await ownerServer({ slug: 'mcpupdmine', name: 'Mine', transport: 'stdio', command: process.execPath, args: [FIXTURE] });
+        hidden = await ownerServer({ slug: 'mcpupdhidden', name: 'Hidden', transport: 'stdio', command: process.execPath, args: [FIXTURE], env: { HIDDEN_KEY: HIDDEN_SECRET } }, false);
+        const rows = () => mDb.prepare('SELECT * FROM mcp_servers WHERE id IN (?, ?) ORDER BY id').all(mine, hidden);
+        const before = rows();
+        const approvals = mDb.prepare('SELECT COUNT(*) n FROM mcp_approvals').get().n;
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: roomA }));
+        await waitForWsMessage(humanWs, m => m.type === 'history');
+        const lastCall = mDb.prepare('SELECT COALESCE(MAX(id), 0) id FROM mcp_calls').get().id;
+        const cases = [
+          [{ slug: 'mcpupdhidden', name: 'Taken over' }, /^MCP server not found$/],
+          [{ slug: 'mcpnosuchslug', name: 'x' }, /^MCP server not found$/],
+          [{ name: 'x' }, /^slug is required$/],
+          [{ slug: 'mcpupdmine', default_access: 'all' }, /^default_access cannot be changed by an agent$/],
+          [{ slug: 'mcpupdmine', transport: 'http' }, /^transport cannot be changed by an agent$/],
+          [{ slug: 'mcpupdmine', preset: 'filesystem' }, /^preset cannot be changed by an agent$/],
+          [{ slug: 'mcpupdmine', allow: true }, /^allow cannot be changed by an agent$/],
+          [{ slug: 'mcpupdmine', command: 'bash' }, /^command must be one of/],
+          [{ slug: 'mcpupdmine', url: 'https://example.com/mcp' }, /^stdio servers do not take url$/],
+          [{ slug: 'mcpupdmine', env: { 'BAD KEY': 'x' } }, /invalid env name: BAD KEY/],
+          [{ slug: 'mcpupdmine', env_remove: 'X' }, /^env_remove must be an array of names$/],
+          [{ slug: 'mcpupdmine', name: 'Mine', args: [FIXTURE], enabled: true }, /^nothing to change/],
+          [{ slug: 'mcpupdmine' }, /^nothing to change/],
+        ];
+        for (const [bad, re] of cases) {
+          const r = await callText(tokA, 'stoa__mcp_server_update', bad);
+          assert.strictEqual(r.isError, true, `${JSON.stringify(bad)}: ${r.text}`);
+          assert.match(r.text, re, JSON.stringify(bad));
+        }
+        const recorded = mDb.prepare("SELECT status, approval, args_preview FROM mcp_calls WHERE id>? AND tool='mcp_server_update' ORDER BY id").all(lastCall);
+        assert.deepStrictEqual(recorded.map(c => [c.status, c.approval]), Array(cases.length).fill(['error', null]));
+        assert.deepStrictEqual(JSON.parse(recorded[0].args_preview), { slug: 'mcpupdhidden', name: 'Taken over' }, 'a server without access shows no stored config, only the arguments sent');
+        await new Promise(r => setTimeout(r, 300));
+        assert.deepStrictEqual(rows(), before, 'no server changed');
+        assert.strictEqual(mDb.prepare('SELECT COUNT(*) n FROM mcp_approvals').get().n, approvals, 'no mcp_approvals row');
+        assert.deepStrictEqual(cards, [], 'no mcp_approval event');
+        assert.ok(!mDb.prepare('SELECT args_preview AS t FROM mcp_calls WHERE id>?').all(lastCall).some(r => r.t.includes(HIDDEN_SECRET)));
+      } finally {
+        humanWs.close();
+        await dropServer(mine);
+        await dropServer(hidden);
+      }
     });
 
     // ── Built-in stoa__skill_* tools: same core as /api/skills (lib/skills.js).
