@@ -182,6 +182,8 @@ function waitUp(port, tries = 50) {
     MCP_APPROVAL_TIMEOUT_MS: '3000',
     // stoa__skill_use wait for the agent's skill_sync answer (60 s in prod) short enough for its timeout test.
     SKILL_SYNC_TIMEOUT_MS: '2000',
+    // stoa__message_send wait for the agent's send_files answer (120 s in prod) short enough for its timeout test.
+    SEND_FILES_TIMEOUT_MS: '2000',
     // In-app updater works on a git fixture test.js builds here — never on this repo — and believes a
     // process manager exists so its checks run. Its boot-guard state stays in the temp dir too, and the
     // daily check never fires during a run (test.js drives /check itself).

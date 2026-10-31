@@ -778,12 +778,8 @@ function runUnitTests() {
     assert.ok(validateRegexPattern(42) !== null);
   });
 
-  // ── stripCodeSpans (loaded from server.js source, so the real code is tested) ──
-  const stripCodeSpans = (() => {
-    const src = require('fs').readFileSync(path.join(__dirname, 'server.js'), 'utf8');
-    const start = src.indexOf('function stripCodeSpans(content) {');
-    return new Function(`${src.slice(start, src.indexOf('\n}\n', start) + 2)}\nreturn stripCodeSpans;`)();
-  })();
+  // ── stripCodeSpans (lib/code-spans.js — also the scanner behind [send:] markers) ──
+  const { stripCodeSpans } = require('./lib/code-spans');
   const msSince = t0 => Number(process.hrtime.bigint() - t0) / 1e6;
   ut('stripCodeSpans — inline, fence, ~~~ and multi-backtick spans become one space', () => {
     assert.strictEqual(stripCodeSpans('use `@kenji` here'), 'use   here');
@@ -4317,6 +4313,67 @@ async function runAsyncUnitTests() {
       assert.ok(r.text.includes('file gone.png gagal dikirim: file tidak ditemukan'), r.text);
       assert.ok(!r.text.includes('[send:'), 'markers stripped');
     } finally {
+      stoa.__resetDeps();
+      console.log = origLog; console.warn = origWarn;
+      fsM.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await uta('extractAndUploadFiles: markers inside inline code / code blocks stay text and are not uploaded', async () => {
+    const stoa = require('./stoa.js');
+    const fsM = require('fs'), osM = require('os'), pathM = require('path');
+    const dir = fsM.mkdtempSync(pathM.join(osM.tmpdir(), 'stoa-upl-'));
+    fsM.writeFileSync(pathM.join(dir, 'real.png'), 'PNG');
+    const uploads = [];
+    const origLog = console.log, origWarn = console.warn;
+    console.log = () => {}; console.warn = () => {};
+    stoa.__setDeps({ fetch: async (url, opts) => { uploads.push(decodeURIComponent(opts.headers['X-File-Name'])); return { ok: true, status: 200, json: async () => ({ url: '/uploads/real-1.png', name: 'real.png' }) }; } });
+    try {
+      const content = 'Pakai `[send:/abs/a.png]` atau ``[send:/abs/`b`.png]``:\n```md\n[send:/abs/c.png]\n```\nIni filenya [send:real.png]';
+      const r = await stoa.extractAndUploadFiles(content, dir);
+      assert.deepStrictEqual(uploads, ['real.png'], 'only the marker outside code, resolved against the workdir');
+      assert.deepStrictEqual(r.attachments, [{ url: '/uploads/real-1.png', name: 'real.png', type: 'image' }]);
+      assert.strictEqual(r.text, 'Pakai `[send:/abs/a.png]` atau ``[send:/abs/`b`.png]``:\n```md\n[send:/abs/c.png]\n```\nIni filenya');
+      const unclosed = await stoa.extractAndUploadFiles('```\nit`s [send:real.png]', dir);
+      assert.strictEqual(unclosed.text, '```\nit`s', 'an unclosed fence/backtick is not code (same rule as mentions)');
+      assert.strictEqual(uploads.length, 2);
+      const { extractSendMarkers } = require('./lib/send-markers');
+      const flood = '```js\n'.repeat(100000) + '[send:/abs/x.png]';
+      const t0 = process.hrtime.bigint();
+      assert.deepStrictEqual(extractSendMarkers(flood).paths, ['/abs/x.png']);
+      assert.ok(Number(process.hrtime.bigint() - t0) / 1e6 < 500, 'linear on 100k unclosed fence openers');
+    } finally {
+      stoa.__resetDeps();
+      console.log = origLog; console.warn = origWarn;
+      fsM.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  await uta('stoa.js send_files — uploads for a session it runs (relative to its workdir), refuses any other room/thread/sub-agent', async () => {
+    const stoa = require('./stoa.js');
+    const fsM = require('fs'), osM = require('os'), pathM = require('path');
+    const dir = fsM.mkdtempSync(pathM.join(osM.tmpdir(), 'stoa-sf-'));
+    fsM.writeFileSync(pathM.join(dir, 'report.pdf'), '%PDF');
+    const keys = [`${pathM.resolve(dir)}::901::t:77`, `${pathM.resolve(dir)}::901::t:0::sub:5`];
+    for (const k of keys) stoa.sessionPool.set(k, {});
+    const sent = [], uploads = [];
+    const origLog = console.log, origWarn = console.warn;
+    console.log = () => {}; console.warn = () => {};
+    stoa.__setDeps({ send: (m) => sent.push(m), fetch: async (url, opts) => { uploads.push(decodeURIComponent(opts.headers['X-File-Name'])); return { ok: true, status: 200, json: async () => ({ url: '/uploads/r-1.pdf', name: 'report.pdf' }) }; } });
+    try {
+      await stoa.handleAgentMessage({ type: 'send_files', request_id: 'a', paths: ['report.pdf', pathM.join(dir, 'gone.png'), 7], room_id: 901, thread_id: 77, sub_agent_id: null });
+      await stoa.handleAgentMessage({ type: 'send_files', request_id: 'b', paths: ['report.pdf'], room_id: 901, thread_id: null, sub_agent_id: 5 });
+      for (const [rid, ask] of [['c', { room_id: 902, thread_id: 77 }], ['d', { room_id: 901, thread_id: 78 }], ['e', { room_id: 901, thread_id: null, sub_agent_id: 6 }], ['f', { room_id: '901', thread_id: 77 }]]) {
+        await stoa.handleAgentMessage({ type: 'send_files', request_id: rid, paths: ['/etc/hosts'], sub_agent_id: null, ...ask });
+      }
+      await waitUntil(() => sent.length === 6, 3000, 10);
+      const byId = Object.fromEntries(sent.map(m => [m.request_id, m]));
+      assert.deepStrictEqual([byId.a.type, byId.a.attachments, byId.a.failures], ['send_files_result', [{ url: '/uploads/r-1.pdf', name: 'report.pdf', type: 'file' }], [{ name: 'gone.png', reason: 'file tidak ditemukan' }]]);
+      assert.deepStrictEqual(byId.b.attachments.map(a => a.name), ['report.pdf'], 'the sub-agent session');
+      for (const rid of ['c', 'd', 'e', 'f']) assert.deepStrictEqual([byId[rid].error, byId[rid].attachments], ['no session of this room runs on the agent machine', undefined], rid);
+      assert.deepStrictEqual(uploads, ['report.pdf', 'report.pdf'], '/etc/hosts never read for a session this client does not run');
+    } finally {
+      for (const k of keys) stoa.sessionPool.delete(k);
       stoa.__resetDeps();
       console.log = origLog; console.warn = origWarn;
       fsM.rmSync(dir, { recursive: true, force: true });
@@ -19882,6 +19939,77 @@ async function run() {
       assert.deepStrictEqual(feed.messages.map(m => m.id), restFeed.map(m => m.id), 'messages_read = REST feed page');
       const threads = await stoaOk(tokA, 'threads_list', {});
       assert.ok(threads.threads.some(t => t.id === threadA && t.replies >= 1));
+    });
+
+    await test('MCP stoa tools — message_send [send:] files: the session\'s own client uploads them; failures, code spans, forged answers, retries', async () => {
+      const fsM = require('fs'), pathM = require('path');
+      const announceA = async (features) => {
+        const ready = waitForWsMessage(agA.ws, m => m.type === 'agent_ready', 3000);
+        agA.ws.send(JSON.stringify({ type: 'agent_connect', actor_id: agA.actorId, secret: agA.secret, ...(features ? { features } : {}) }));
+        await ready;
+      };
+      const up = await rawReq('POST', '/api/upload/raw', 'PNGDATA', 'image/png', { 'X-File-Name': 'shot.png', 'X-Agent-Id': String(agA.actorId), 'X-Agent-Secret': agA.secret, Cookie: '' });
+      assert.strictEqual(up.status, 200, JSON.stringify(up.body));
+      const msgRow = (id) => mDb.prepare('SELECT content, thread_id, file_url, file_name, attachments, sub_agent_id FROM messages WHERE id=?').get(id);
+      await announceA(['skills', 'skill_sync', 'send_files']);
+      try {
+        const ask = waitForWsMessage(agA.ws, m => m.type === 'send_files', 3000);
+        const pending = stoaOk(tokA, 'message_send', { content: 'Hasil render [send:/home/a/out/shot.png] dan [send:/home/a/out/gone.png] — contoh sintaks: `[send:/not/this.png]`', event_id: 'mcp-files-1' });
+        const m = await ask;
+        assert.deepStrictEqual([m.paths, m.room_id, m.thread_id, m.sub_agent_id], [['/home/a/out/shot.png', '/home/a/out/gone.png'], roomA, threadA, null], 'only the markers outside code, for this session');
+        agB.ws.send(JSON.stringify({ type: 'send_files_result', request_id: m.request_id, attachments: [{ url: '/uploads/evil.png', name: 'evil.png', type: 'image' }], failures: [] }));
+        await new Promise(r => setTimeout(r, 200));
+        agA.ws.send(JSON.stringify({ type: 'send_files_result', request_id: m.request_id,
+          attachments: [{ url: up.body.url, name: 'shot.png', type: 'image' }, { url: '/uploads/../db/stoa.db', name: 'stoa.db', type: 'file' }],
+          failures: [{ name: 'gone.png', reason: 'file tidak ditemukan' }] }));
+        const sent = await pending;
+        const row = msgRow(sent.message_id);
+        assert.deepStrictEqual([row.file_url, row.file_name, row.attachments, row.thread_id], [up.body.url, 'shot.png', null, threadA], 'one valid upload → single attachment; the forged answer of another agent is ignored');
+        assert.strictEqual(row.content, 'Hasil render  dan  — contoh sintaks: `[send:/not/this.png]`\n\n⚠️ file gone.png gagal dikirim: file tidak ditemukan\n\n⚠️ file stoa.db gagal dikirim: upload tidak valid');
+
+        let asked = 0;
+        const spy = (raw) => { if (JSON.parse(raw).type === 'send_files') asked++; };
+        agA.ws.on('message', spy);
+        try {
+          assert.deepStrictEqual(await stoaOk(tokA, 'message_send', { content: 'Hasil render [send:/home/a/out/shot.png] dan [send:/home/a/out/gone.png] — contoh sintaks: `[send:/not/this.png]`', event_id: 'mcp-files-1' }),
+            { message_id: sent.message_id, idempotent: true }, 'a retry does not upload again');
+          assert.match(await stoaErr(tokA, 'message_send', { content: 'lain [send:/x.png]', event_id: 'mcp-files-1' }), /event_id conflict/);
+          const code = await stoaOk(tokA, 'message_send', { content: 'Format marker:\n```\n[send:/abs/path.png]\n```\natau inline `[send:/abs/path]`.' });
+          assert.strictEqual(msgRow(code.message_id).content, 'Format marker:\n```\n[send:/abs/path.png]\n```\natau inline `[send:/abs/path]`.', 'markers in code are text');
+          assert.strictEqual(asked, 0, 'neither the retry nor code spans ask the agent');
+        } finally { agA.ws.off('message', spy); }
+
+        assert.match(await stoaErr(tokA, 'message_send', { content: 'x', files: ['/a', 5] }), /files must be an array/);
+        const viaFiles = waitForWsMessage(agA.ws, x => x.type === 'send_files', 3000);
+        const p2 = stoaOk(tokSub, 'message_send', { content: 'laporan', files: ['/home/a/r.pdf'], main_feed: true });
+        const m2 = await viaFiles;
+        assert.deepStrictEqual([m2.paths, m2.sub_agent_id], [['/home/a/r.pdf'], sub.id], 'files arg; a sub-agent session is resolved to its own session');
+        agA.ws.send(JSON.stringify({ type: 'send_files_result', request_id: m2.request_id, error: 'no session of this room runs on the agent machine' }));
+        const r2 = msgRow((await p2).message_id);
+        assert.deepStrictEqual([r2.content, r2.file_url, r2.sub_agent_id], ['laporan\n\n⚠️ file r.pdf gagal dikirim: no session of this room runs on the agent machine', null, sub.id]);
+
+        const t0 = Date.now();
+        const silent = await stoaOk(tokA, 'message_send', { content: '[send:/home/a/late.png]' });
+        assert.ok(Date.now() - t0 >= 1900, 'waited for SEND_FILES_TIMEOUT_MS');
+        assert.strictEqual(msgRow(silent.message_id).content, '⚠️ file late.png gagal dikirim: agent tidak menjawab dalam 2 detik', 'timeout: the message is still posted');
+
+        await announceA(['skills', 'skill_sync']);
+        const old = await stoaOk(tokA, 'message_send', { content: 'lama [send:/home/a/x.png]' });
+        assert.strictEqual(msgRow(old.message_id).content, 'lama\n\n⚠️ file x.png gagal dikirim: Stoa client agent terlalu lama, update agent');
+      } finally {
+        await announceA();
+        try { fsM.unlinkSync(pathM.join(__dirname, 'uploads', up.body.url.slice('/uploads/'.length))); } catch {}
+      }
+    });
+
+    await test('MCP stoa tools — message_send [send:] with the agent offline: posted with a warning, nothing lost', async () => {
+      const { stoaMcpTools } = require('./lib/stoa-mcp-tools');
+      const posted = [];
+      const tool = stoaMcpTools({ db: mDb, broadcast: () => {}, messages: { send: (roomId, actorId, data) => { posted.push(data); return { status: 200, body: { message_id: 1 } }; } },
+        memory: {}, prompts: {}, subAgents: {}, automations: {}, uploadAgentFiles: async () => ({ unavailable: 'agent offline' }) }).find(t => t.name === 'message_send');
+      const r = await tool.call({ actorId: agA.actorId, roomId: roomA, threadId: null, subAgentId: null }, { content: '[send:/a/b.png][send:C:\\out\\c.txt]' });
+      assert.strictEqual(r.isError, undefined, r.content[0].text);
+      assert.deepStrictEqual(posted, [{ content: '⚠️ file b.png gagal dikirim: agent offline\n\n⚠️ file c.txt gagal dikirim: agent offline', event_id: undefined, thread_id: null }]);
     });
 
     await test('MCP stoa tools — message scope: other-room thread, both thread args, other room\'s token, left the room → refused, nothing posted', async () => {
