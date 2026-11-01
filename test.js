@@ -14499,6 +14499,118 @@ async function run() {
     assert.strictEqual(editF.keep_alive, true);
   });
 
+  await test('mcp built-in stoa UI — pinned first in list and access matrix, built-in chip, no remove/test/transport/oauth, approval read from the API, edit PATCHes the name only', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El {
+      constructor(tag) { this.tagName = tag.toUpperCase(); this.style = { setProperty() {} }; this.dataset = {}; this.children = []; this.parentNode = null; this._text = ''; this.attrs = {}; this.on = {};
+        const cls = new Set(); this.cls = cls; this.classList = { add: (...c) => c.forEach(x => cls.add(x)), remove: (...c) => c.forEach(x => cls.delete(x)), toggle: (c, on) => (on ?? !cls.has(c)) ? cls.add(c) : cls.delete(c), contains: c => cls.has(c) }; }
+      set className(v) { String(v).split(/\s+/).filter(Boolean).forEach(c => this.classList.add(c)); }
+      get className() { return [...this.cls].join(' '); }
+      appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
+      append(...cs) { for (const c of cs) this.appendChild(typeof c === 'string' ? Object.assign(new El('#text'), { textContent: c }) : c); }
+      replaceWith(n) { const p = this.parentNode; if (!p) return; p.children[p.children.indexOf(this)] = n; n.parentNode = p; }
+      set innerHTML(v) { this.children = []; this._text = ''; }
+      set textContent(v) { this.children = []; this._text = String(v); }
+      get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+      setAttribute(k, v) { this.attrs[k] = String(v); } getAttribute(k) { return this.attrs[k] ?? null; } removeAttribute(k) { delete this.attrs[k]; }
+      addEventListener(t, f) { (this.on[t] ||= []).push(f); }
+      all(pred, out = []) { if (pred(this)) out.push(this); this.children.forEach(c => c.all && c.all(pred, out)); return out; }
+      byClass(c) { return this.all(n => n.cls.has(c)); }
+      closest() { return null; }
+    }
+    const calls = [];
+    let reply = { ok: true, data: null };
+    const ctx = { document: { createElement: t => new El(t), createTextNode: t => Object.assign(new El('#text'), { textContent: t }), querySelector: () => null, getElementById: () => null },
+      Node: El, showToast() {}, svgPencil: () => '', autoSvgTrash: () => '', svgX: () => '', console, __calls: calls, __reply: () => reply };
+    vm.createContext(ctx);
+    for (const f of ['state.js', 'installed.js', 'add.js', 'access.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/mcp', f), 'utf8'), ctx);
+    vm.runInContext('mcpApi = async (method, url, body) => { __calls.push({ method, url, body }); return __reply(); }; mcpIsVisible = () => false; mcpSetTab = () => {}; mcpRender = () => {};', ctx);
+
+    // Shape of the real row: transport 'http' with no url (the builtin column marks it, not the transport).
+    const stoa = { id: 1, slug: 'stoa', name: 'Stoa', builtin: true, transport: 'http', url: null, auth: 'none', enabled: true, status: 'running', tool_count: 30, default_access: 'all', keep_alive: false, env_keys: [] };
+    const meet = { id: 4, slug: 'meet', name: 'Google Meet', transport: 'stdio', enabled: 1, status: 'running', tool_count: 3, default_access: 'none' };
+
+    // Pinned first whatever order the API (or a later push) leaves it in; others keep their order.
+    const pin = vm.runInContext('mcpPinBuiltin', ctx);
+    assert.deepStrictEqual([...pin([meet, { ...meet, id: 5 }, stoa]).map(s => s.id)], [1, 4, 5]);
+    assert.deepStrictEqual([...pin([meet]).map(s => s.id)], [4], 'older server without the flag: list unchanged');
+    reply = { ok: true, data: { servers: [meet, stoa] } };
+    await vm.runInContext('mcpLoadServers', ctx)();
+    assert.deepStrictEqual([...vm.runInContext('mcpState.servers.map(s => s.id)', ctx)], [1, 4]);
+
+    // Access matrix pins it too, using the flag from the server list when the access payload lacks it.
+    reply = { ok: true, data: { servers: [{ id: 4, slug: 'meet', name: 'Google Meet' }, { id: 1, slug: 'stoa', name: 'Stoa' }], subjects: [], grants: [] } };
+    await vm.runInContext('mcpLoadAccess', ctx)();
+    assert.deepStrictEqual([...vm.runInContext('mcpState.access.servers.map(s => s.id)', ctx)], [1, 4]);
+
+    const card = srv => vm.runInContext('mcpMakeServerCard', ctx)(srv);
+    const c = card(stoa);
+    const chips = c.byClass('mcp-chip').map(x => x.textContent);
+    assert.deepStrictEqual(chips, ['built-in'], 'built-in chip, and no "always on" even if keep_alive were set');
+    assert.strictEqual(card({ ...stoa, keep_alive: 1 }).byClass('mcp-chip-always').length, 0);
+    assert.strictEqual(c.byClass('mcp-status')[0].textContent, 'running', 'enabled built-in reads as running, not idle');
+    assert.ok(c.byClass('mcp-card-meta')[0].textContent.includes('in-process'));
+    assert.ok(!/stdio|http/.test(c.byClass('mcp-card-meta')[0].textContent), 'no transport for the built-in, though the row says http');
+    const labels = c.all(n => n.tagName === 'BUTTON').map(b => b.attrs['aria-label'] || b.textContent);
+    assert.ok(labels.includes('Edit Stoa'), 'name stays editable');
+    assert.ok(!labels.some(l => /^Remove /.test(l)), 'no remove button');
+    assert.ok(!labels.includes('test'), 'no test button');
+    assert.ok(labels.includes('tools'), 'tool table still reachable');
+    assert.ok(labels.includes('Disable Stoa'), 'enable switch kept');
+    assert.ok(!labels.some(l => /^Sign in to /.test(l)) && !labels.includes('reconnect'), 'no oauth reconnect');
+    assert.strictEqual(card({ ...stoa, status: 'idle' }).byClass('mcp-status')[0].textContent, 'running', 'enabled built-in never reads idle');
+    assert.strictEqual(card({ ...stoa, enabled: 0 }).byClass('mcp-status')[0].textContent, 'disabled');
+    vm.runInContext('mcpState.confirmRemoveId = 1', ctx);
+    assert.strictEqual(card(stoa).byClass('mcp-confirm-text').length, 0, 'a stale confirm id never offers to remove it');
+    vm.runInContext('mcpState.confirmRemoveId = null', ctx);
+
+    const other = card(meet).all(n => n.tagName === 'BUTTON').map(b => b.attrs['aria-label'] || b.textContent);
+    assert.ok(other.includes('Remove Google Meet') && other.includes('test'), 'regular servers keep remove + test');
+    assert.strictEqual(card(meet).byClass('mcp-chip').length, 0);
+
+    // Tool table: approval comes from the API row, never hard-coded.
+    vm.runInContext('mcpState.expanded.add(1); mcpState.tools[1] = { list: __t }', Object.assign(ctx, { __t: [
+      { name: 'message_send', description: 'Post a message', enabled: true, requires_approval: false, rate_limit_per_min: null, write_hint: true },
+      { name: 'mcp_server_add', description: 'Add an MCP server', enabled: true, requires_approval: true, rate_limit_per_min: null, write_hint: true },
+    ] }));
+    const rows = card(stoa).byClass('mcp-tool-row').filter(r => !r.cls.has('mcp-tool-head'));
+    const appr = rows.map(r => r.all(n => n.attrs['aria-label']?.endsWith('requires approval'))[0].getAttribute('aria-checked'));
+    assert.deepStrictEqual(appr, ['false', 'true']);
+    vm.runInContext('mcpState.tools[1] = { list: [] }', ctx);
+    assert.ok(card(stoa).byClass('mcp-muted')[0].textContent.startsWith('no built-in tools'), 'empty list never tells the owner to run test');
+
+    // Edit dialog: name only, PATCH carries only the name.
+    vm.runInContext('mcpOpenDialog = f => { __f.push(f); };', Object.assign(ctx, { __f: [] }));
+    vm.runInContext('mcpOpenEdit', ctx)(stoa);
+    const f = ctx.__f[0];
+    const box = vm.runInContext('mcpMakeForm', ctx)(f);
+    assert.strictEqual(box.byClass('mcp-keepalive').length, 0, 'no keep running');
+    assert.strictEqual(box.byClass('mcp-env').length, 0, 'no env/headers editor');
+    assert.strictEqual(box.byClass('mcp-warn').length, 0, 'no stdio command warning');
+    assert.strictEqual(box.byClass('mcp-args').length, 0, 'no command/args');
+    assert.ok(!box.all(n => n.attrs['aria-label'] === 'Transport' || n.attrs['aria-label'] === 'Sign-in').length, 'no transport or sign-in switch');
+    assert.ok(!box.all(n => n.placeholder === 'https://example.com/mcp').length, 'no url field');
+    calls.length = 0;
+    f.name = 'Stoa workspace';
+    reply = { ok: true, data: { server: { ...stoa, name: 'Stoa workspace' } } };
+    await vm.runInContext('mcpSubmitForm', ctx)(f, new El('div'), new El('button'));
+    assert.strictEqual(JSON.stringify(calls[0]), JSON.stringify({ method: 'PATCH', url: '/api/mcp/servers/1', body: { name: 'Stoa workspace' } }));
+    assert.deepStrictEqual([...vm.runInContext('mcpState.servers.map(s => s.id)', ctx)], [1, 4], 'saved row stays first');
+
+    // Installed tab: a fresh install with only the built-in still points at the catalog.
+    vm.runInContext('mcpState.loaded = true; mcpState.servers = [__s]', Object.assign(ctx, { __s: stoa }));
+    const panel = new El('div');
+    vm.runInContext('mcpRenderInstalled', ctx)(panel);
+    assert.strictEqual(panel.byClass('mcp-card').length, 1);
+    assert.strictEqual(panel.byClass('mcp-empty').length, 1, 'catalog nudge under the built-in card');
+    vm.runInContext('mcpState.servers = [__s, __m]', Object.assign(ctx, { __m: meet }));
+    const panel2 = new El('div');
+    vm.runInContext('mcpRenderInstalled', ctx)(panel2);
+    assert.deepStrictEqual(panel2.byClass('mcp-card').map(x => x.dataset.serverId), [1, 4]);
+    assert.strictEqual(panel2.byClass('mcp-empty').length, 0);
+  });
+
   await test('usage accounts UI — machine cards, limit tones, every harness state, mismatch notice, agent strings as text, stale responses dropped', async () => {
     const vm = require('vm');
     const fs = require('fs');
