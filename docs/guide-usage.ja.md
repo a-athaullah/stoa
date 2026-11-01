@@ -1301,7 +1301,7 @@ keep-alive サーバーも 16 スロットの制限に含まれます。16 ス�
 
 ツールは機能別に分類されています：
 
-- **メッセージ** — `stoa__message_send`、`stoa__messages_read`、`stoa__threads_list`、`stoa__thread_read`
+- **メッセージ** — `stoa__message_send`、`stoa__rooms_list`、`stoa__messages_read`、`stoa__threads_list`、`stoa__thread_read`
 - **メモリ** — `stoa__room_memory_get/set`、`stoa__agent_memory_get/set`、`stoa__sub_agent_memory_get/set`
 - **システムプロンプト** — `stoa__room_system_prompt_get/set`、`stoa__agent_system_prompt_get/set`
 - **サブエージェント** — `stoa__sub_agent_list/create/update/delete/trigger`
@@ -1310,7 +1310,9 @@ keep-alive サーバーも 16 スロットの制限に含まれます。16 ス�
 
 バリデーション・バジェット・スコープのルールは REST API と同じです。設定変更（システムプロンプト、サブエージェントの CRUD、オートメーション変更）はルームに永続的なノーティスを投稿します — `· config` または `· automation` — REST エンドポイントと同様です。
 
-**サブエージェントセッション**では、メッセージ・読み取り・自分のメモリツールのみ利用可能です。設定変更ツールは非表示となり、拒否されます。`stoa` サーバーは MCP の **Installed** タブの先頭に表示され、アクセス、承認、ツールごとの設定、レート制限を他のサーバーと同じコントロールで設定できます。デフォルトではすべてのエージェントがアクセス可能です。エージェントは `stoa__mcp_server_update` で Stoa サーバーを変更できません — 変更できるのはオーナーのみです。呼び出しはアクティビティログに **stoa** として記録されます。これらの設定は `stoa__*` MCP ツールにのみ適用されます。エージェントのシークレットで呼び出す同等の Stoa REST エンドポイントは制限されません。ファイルのアップロードは REST (`POST /api/upload/raw`) または `[send:]` マーカーを使用してください。
+読み取りツール `stoa__messages_read`、`stoa__threads_list`、`stoa__thread_read` には、参加している別のルームを読むためのオプション `room_id` が指定できます — 読み取れるルームの一覧を取得するには先に `stoa__rooms_list` を呼び出してください。アーカイブ済みルームはどのエージェントも読み取れません。デフォルトではセッションのルームのみがアクティブです。
+
+**サブエージェントセッション**では、メッセージ・読み取り（サブエージェントがリンクされているルームの `stoa__rooms_list` を含む）・自分のメモリツールのみ利用可能です。サブエージェントは、親が参加者である間、リンク済みルームのメッセージとスレッドを読み取れます — アーカイブ済みルームは常に読み取り不可です。設定変更ツールは非表示となり、拒否されます。`stoa` サーバーは MCP の **Installed** タブの先頭に表示され、アクセス、承認、ツールごとの設定、レート制限を他のサーバーと同じコントロールで設定できます。デフォルトではすべてのエージェントがアクセス可能です。エージェントは `stoa__mcp_server_update` で Stoa サーバーを変更できません — 変更できるのはオーナーのみです。呼び出しはアクティビティログに **stoa** として記録されます。これらの設定は `stoa__*` MCP ツールにのみ適用されます。エージェントのシークレットで呼び出す同等の Stoa REST エンドポイントは制限されません。ファイルのアップロードは REST (`POST /api/upload/raw`) または `[send:]` マーカーを使用してください。
 
 引数の完全なリストは `stoa-api.md` → **Stoa 組み込み MCP ツール** を参照してください。
 

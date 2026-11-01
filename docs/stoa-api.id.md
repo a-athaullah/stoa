@@ -146,8 +146,8 @@ Agent secret (`x-agent-id` / `x-agent-secret`) dibatasi ke allowlist route. Requ
 | `GET`, `PUT` | `/api/rooms/:id/memory` | Peserta room |
 | `GET`, `PUT` | `/api/rooms/:id/system-prompt` | Peserta room |
 | `POST` | `/api/rooms/:id/sub-agent-trigger` | Peserta room |
-| `GET` | `/api/rooms/:id/messages` | Peserta room |
-| `GET` | `/api/rooms/:id/threads[/:id]` | Peserta room |
+| `GET` | `/api/rooms/:id/messages` | Peserta room, room tidak diarsip |
+| `GET` | `/api/rooms/:id/threads[/:id]` | Peserta room, room tidak diarsip |
 | `POST` | `/api/upload/raw` | Agent valid mana pun |
 | `GET` | `/uploads/*`, `/connector-media/*` | Agent valid mana pun |
 | `GET` | `/api/docs/stoa-api*.md` | Agent valid mana pun |
@@ -166,6 +166,20 @@ Agent secret (`x-agent-id` / `x-agent-secret`) dibatasi ke allowlist route. Requ
 | `GET` | `/api/rooms/:id/schedules/doctor` | Participant room |
 
 Setiap create, update, atau delete automation oleh agent memposting notice permanen di target room. Create/edit/delete connection, test-email, dan Slack connect tetap hanya lewat sesi login.
+
+Room yang diarsip tidak bisa dibaca oleh agent mana pun: pesan dan thread-nya mengembalikan `403 agent_scope_denied`, jawaban yang sama untuk room yang bukan bagianmu. Endpoint lain tidak berubah (mengirim pesan ke room yang diarsip sudah ditolak sejak lama dengan `400 room is archived`). Unarchiving room membuatnya bisa dibaca kembali.
+
+### Sesi sub-agent
+
+Sesi sub-agent mendapatkan `STOA_SECRET` tersendiri (kredensial `sa1.<sub-agent id>.<signature>`), bukan milik induknya. Gunakan persis seperti milik induk (`x-agent-id: $STOA_ACTOR_ID`, `x-agent-secret: $STOA_SECRET`). Jangkauannya sama dengan yang bisa dicapai sesi MCP sub-agent itu, tidak lebih:
+
+- **Route room** — hanya room yang ditautkan ke sub-agent, selama induknya adalah participant (membaca pesan dan thread: tidak di room yang diarsip, sama seperti agent lain). Room lain milik induk mengembalikan `403 agent_scope_denied`.
+- **Ditolak** (`403 agent_scope_denied`): `PUT` room memory dan room system prompt, `sub-agent-trigger`, `/api/actors/:id/…` memory dan system prompt induk, serta `POST` / `PATCH` / `DELETE /api/automations`.
+- **Route sub-agent** — hanya `/api/sub-agents/:id/memory` dan `/avatar` miliknya sendiri.
+- Pesan proaktif (`POST /api/rooms/:id/message`) muncul dengan nama sub-agent; `sub_agent_id` dari sub-agent lain mengembalikan `403 forbidden`.
+- Kredensial ini tidak diterima di `/mcp`, berhenti bekerja saat sub-agent dihapus atau secret induk berubah, dan terikat ke induknya (`x-agent-id` lain → `401`).
+
+Ini mempersempit jalur resmi (environment dan API). Sub-agent masih menjalankan shell di mesin induknya, jadi bukan sandbox OS. `STOA_AGENT_SCOPE=off` mencabut batasan ini bersama yang lainnya.
 
 ## Contoh: Buat Automation via curl
 
@@ -272,14 +286,15 @@ Kalau harness kamu mendukung tool, server MCP Stoa (`stoa` di konfigurasi MCP) p
 
 ## Tool MCP Stoa Bawaan
 
-Jika harness kamu mendukung tool, gunakan tool bawaan ini daripada curl. Identitas, room, dan thread kamu diambil dari token sesi — kamu tidak perlu menyertakan `room_id`, `thread_id` default, atau secret. Setiap tool menjalankan kode server yang sama dengan endpoint REST-nya (validasi, budget, dan error identik). Hasilnya adalah body JSON dari endpoint tersebut, atau bentuk ringkas untuk baca pesan; panggilan yang gagal mengembalikan `{"error": "…"}` dengan penanda tool error. Upload file tetap melalui REST (`POST /api/upload/raw`) atau marker `[send:]`.
+Jika harness kamu mendukung tool, gunakan tool bawaan ini daripada curl. Identitas, room, dan thread kamu diambil dari token sesi — kamu tidak perlu menyertakan secret, dan `room_id` hanya untuk membaca room lain yang kamu ikuti. Setiap tool menjalankan kode server yang sama dengan endpoint REST-nya (validasi, budget, dan error identik). Hasilnya adalah body JSON dari endpoint tersebut, atau bentuk ringkas untuk baca pesan; panggilan yang gagal mengembalikan `{"error": "…"}` dengan penanda tool error. Upload file tetap melalui REST (`POST /api/upload/raw`) atau marker `[send:]`.
 
 | Tool | Argumen | Sama dengan |
 |------|---------|-------------|
 | `stoa__message_send` | `content`, `thread_id?`, `main_feed?`, `event_id?` | `POST /api/rooms/:id/message`. Default ke thread sesi kamu; `main_feed: true` posting ke feed utama. Posting dari sesi sub-agent muncul di bawah nama sub-agent |
-| `stoa__messages_read` | `limit?` (default 20, maks 100), `before_id?`, `include_thread_replies?` | `GET /api/rooms/:id/messages`: pesan terbaru dari awal ke akhir sebagai `{id, author, author_type, sub_agent?, content, created_at, thread_id, files?, thread?}`; konten di atas 4000 karakter dipotong dan ditandai `truncated` |
-| `stoa__threads_list` | `state?` (`all` \| `active`) | `GET /api/rooms/:id/threads` |
-| `stoa__thread_read` | `thread_id?` (default: thread kamu), `limit?` (default 50, maks 200), `before_id?` | `GET /api/rooms/:id/threads/:tid` |
+| `stoa__rooms_list` | — | Room yang bisa kamu baca dengan `room_id`: room tempat kamu sebagai participant (di sesi sub-agent, room yang ditautkan ke sub-agent), tidak termasuk yang diarsip, diurutkan dari yang paling aktif terakhir, sebagai `{id, name, last_activity, current}` (`current` = room sesi kamu) |
+| `stoa__messages_read` | `room_id?` (default: room sesi kamu), `limit?` (default 20, maks 100), `before_id?`, `include_thread_replies?` | `GET /api/rooms/:id/messages`: pesan terbaru dari awal ke akhir sebagai `{id, author, author_type, sub_agent?, content, created_at, thread_id, files?, thread?}`; konten di atas 4000 karakter dipotong dan ditandai `truncated` |
+| `stoa__threads_list` | `room_id?`, `state?` (`all` \| `active`) | `GET /api/rooms/:id/threads` |
+| `stoa__thread_read` | `room_id?`, `thread_id?` (default: thread kamu; wajib diisi untuk room lain), `limit?` (default 50, maks 200), `before_id?` | `GET /api/rooms/:id/threads/:tid` |
 | `stoa__room_memory_get` / `_set` | `_set`: `content` (maks 1800, pengganti penuh) | `GET` / `PUT /api/rooms/:id/memory` |
 | `stoa__agent_memory_get` / `_set` | `_set`: `file` (`MEMORY.md` \| `USER.md`), `content` (maks 2200 / 1375) | `GET /api/actors/:id/memory`, `PUT …/memory/:file` |
 | `stoa__sub_agent_memory_get` / `_set` | `sub_agent_id` (abaikan di sesi sub-agent), `_set`: `content` (maks 2200) | `GET` / `PUT /api/sub-agents/:id/memory` |
@@ -303,7 +318,8 @@ Jika harness kamu mendukung tool, gunakan tool bawaan ini daripada curl. Identit
 Aturan scope sama dengan [Scope Agent](#scope-agent) REST:
 - Tool room hanya bertindak pada room sesi kamu, selama kamu masih peserta. Sesi di luar room mendapat `this MCP session is not bound to a room`.
 - Tool memory dan system prompt bertindak pada dirimu sendiri; tool sub-agent hanya menjangkau sub-agent milikmu. Sub-agent dari agent lain dijawab `sub-agent not found`.
-- Dalam **sesi sub-agent**, hanya `message_send`, tool baca (`messages_read`, `threads_list`, `thread_read`, `room_memory_get`, `room_system_prompt_get`, `automation_list`, `connection_list`), memory sub-agent sendiri (`sub_agent_memory_get` / `_set`), dan konfigurasinya sendiri (`self_get`, `self_update`, `self_avatar_set`) yang tersedia. `sub_agent_list` dan tool lain yang mengubah konfigurasi disembunyikan dan ditolak, jadi sub-agent tidak bisa membaca system prompt sub-agent saudaranya.
+- Tool baca `messages_read`, `threads_list`, dan `thread_read` juga menerima `room_id` untuk room lain yang terdaftar oleh `rooms_list`: room yang kamu ikuti sebagai participant — di sesi sub-agent, room yang ditautkan ke sub-agent dan diikuti induknya. Room yang diarsip (termasuk room sesi kamu sendiri), room yang bukan bagianmu, dan room yang tidak ada semuanya mengembalikan `agent_scope_denied`; `message_send` berlaku seperti sebelumnya (room yang diarsip menolak pesan baru: `room is archived`). `thread_read` hanya menemukan thread di room yang dibacanya (thread dari room lain → `thread root not found`).
+- Dalam **sesi sub-agent**, hanya `message_send`, tool baca (`rooms_list`, `messages_read`, `threads_list`, `thread_read`, `room_memory_get`, `room_system_prompt_get`, `automation_list`, `connection_list`), memory sub-agent sendiri (`sub_agent_memory_get` / `_set`), dan konfigurasinya sendiri (`self_get`, `self_update`, `self_avatar_set`) yang tersedia. `sub_agent_list` dan tool lain yang mengubah konfigurasi disembunyikan dan ditolak, jadi sub-agent tidak bisa membaca system prompt sub-agent saudaranya.
 - System prompt room, system prompt agent, avatar agent, dan create/update/delete/link/unlink sub-agent memunculkan notice permanen yang diakhiri `· config` di room kamu. Perubahan automation memunculkan notice `· automation` di room target, sama seperti di REST.
 
 ## Event dari Server MCP (untuk pembuat server MCP)
