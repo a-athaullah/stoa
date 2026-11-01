@@ -1144,7 +1144,7 @@ Setiap MCP server yang terinstall ditampilkan sebagai kartu berisi:
 - **Edit** / **Remove** — perbarui kredensial atau hapus server.
 - **Connect** (server OAuth) — membuka flow sign-in provider. Muncul sebagai tombol saat status `needs sign-in`, atau sebagai link **reconnect** saat sudah terautentikasi tapi perlu sign-in ulang.
 
-Server **Stoa** adalah kartu built-in yang selalu ada di urutan teratas. Tidak bisa dihapus dan tidak punya pengaturan koneksi — form edit hanya mengizinkan mengganti nama. Semua kontrol lainnya sama seperti server lain: enable/disable, on/off per tool, approval, rate limit, dan access matrix. Secara default, semua agent punya akses dan hanya `mcp_server_add` serta `mcp_server_update` yang meminta approval.
+Server **Stoa** adalah kartu built-in yang selalu ada di urutan teratas. Tidak bisa dihapus dan tidak punya pengaturan koneksi — form edit hanya mengizinkan mengganti nama. Semua kontrol lainnya sama seperti server lain: enable/disable, on/off per tool, approval, rate limit, dan access matrix. Secara default, semua agent punya akses dan hanya `mcp_server_add` serta `mcp_server_update` yang meminta approval. Pengaturan ini berlaku untuk tool MCP `stoa__*`; endpoint REST Stoa yang setara yang dipanggil dengan secret agent tidak ikut dibatasi.
 
 Klik kartu untuk membuka daftar tool. Setiap tool punya **toggle enable**, **toggle requires approval**, dan field **rate limit (panggilan / menit)** opsional. Tool yang namanya mengindikasikan operasi tulis (send, create, update, delete) ditandai badge **write** sebagai pengingat untuk memeriksa pengaturan aksesnya.
 
@@ -1226,7 +1226,7 @@ Satu agent bisa punya maksimal 20 permintaan approval yang pending sekaligus. Ka
 
 Agent yang berjalan di sesi utama (bukan sub-agent) dapat menginstal MCP server saat runtime menggunakan tiga tool bawaan: `stoa__mcp_catalog` untuk melihat preset yang tersedia, `stoa__mcp_server_list` untuk melihat server yang sudah terpasang (nama server dan apakah agent memiliki akses — nilai env tidak pernah dikembalikan), dan `stoa__mcp_server_add` untuk menginstal server baru.
 
-**Approval:** Setiap panggilan ke `stoa__mcp_server_add` memunculkan kartu **MCP approval**. Kartu menampilkan argumen lengkap dengan nilai env disamarkan sebagai `***`. Panggilan dengan argumen tidak valid (slug kosong, slug `stoa` yang dicadangkan, atau slug yang sudah dipakai) ditolak sebelum kartu muncul.
+**Approval:** Secara default, setiap panggilan ke `stoa__mcp_server_add` memunculkan kartu **MCP approval**. Owner bisa mematikan approval per tool di daftar tool server Stoa, atau klik **always allow** pada kartu untuk membebaskan agent tertentu dari permintaan approval berikutnya untuk tool tersebut. Kartu menampilkan argumen lengkap dengan nilai env disamarkan sebagai `***`. Panggilan dengan argumen tidak valid (slug kosong, slug `stoa` yang dicadangkan, atau slug yang sudah dipakai) ditolak sebelum kartu muncul.
 
 **Setelah disetujui:** Server dibuat dengan akses **none** secara default. Hanya agent yang memanggil yang mendapat akses. Kamu bisa menyesuaikan akses untuk agent lain di halaman MCP seperti biasa.
 
@@ -1248,7 +1248,7 @@ Agent yang sudah memiliki akses ke sebuah server dapat memperbaruinya menggunaka
 
 Field yang tidak bisa diubah oleh agent: **access**, **slug**, **preset**, dan **transport**. Mengirimkan field ini akan mengembalikan error 400 sebelum kartu approval muncul.
 
-**Approval:** Setiap panggilan memunculkan kartu **MCP approval** dengan diff lama → baru per field yang berubah. Untuk field env yang bersifat rahasia, hanya nama key yang ditampilkan; field preset yang tidak rahasia (seperti folder yang diizinkan untuk Filesystem) tetap ditampilkan nilainya, sama seperti kartu add. Nilai env tidak pernah dikembalikan ke agent.
+**Approval:** Secara default, setiap panggilan memunculkan kartu **MCP approval** dengan diff lama → baru per field yang berubah. Owner bisa mematikan approval per tool di daftar tool server Stoa, atau klik **always allow** pada kartu untuk membebaskan agent tertentu. Untuk field env yang bersifat rahasia, hanya nama key yang ditampilkan; field preset yang tidak rahasia (seperti folder yang diizinkan untuk Filesystem) tetap ditampilkan nilainya, sama seperti kartu add. Nilai env tidak pernah dikembalikan ke agent.
 
 **Setelah disetujui:** Server di-restart, connection test dijalankan, dan muncul notice di room.
 
@@ -1315,7 +1315,7 @@ Tool dikelompokkan berdasarkan fungsi:
 
 Validasi, budget, dan scope berlaku sama seperti REST API. Perubahan konfigurasi (system prompt, CRUD sub-agent, perubahan automation) memunculkan notice permanen di room — `· config` atau `· automation` — sama dengan endpoint REST.
 
-Dalam **sesi sub-agent**, hanya tool pesan, baca, dan memory sub-agent sendiri yang tersedia. Tool yang mengubah konfigurasi disembunyikan dan ditolak. Server `stoa` muncul di urutan teratas tab MCP **Installed** tempat akses, approval, pengaturan per tool, dan rate limit bisa dikonfigurasi — kontrol yang sama seperti server lain. Secara default, semua agent punya akses. Agent tidak bisa mengubah server Stoa melalui `stoa__mcp_server_update`; hanya owner yang bisa. Panggilan muncul di log aktivitas dengan nama **stoa**. Upload file tetap melalui REST (`POST /api/upload/raw`) atau marker `[send:]`.
+Dalam **sesi sub-agent**, hanya tool pesan, baca, dan memory sub-agent sendiri yang tersedia. Tool yang mengubah konfigurasi disembunyikan dan ditolak. Server `stoa` muncul di urutan teratas tab MCP **Installed** tempat akses, approval, pengaturan per tool, dan rate limit bisa dikonfigurasi — kontrol yang sama seperti server lain. Secara default, semua agent punya akses. Agent tidak bisa mengubah server Stoa melalui `stoa__mcp_server_update`; hanya owner yang bisa. Panggilan muncul di log aktivitas dengan nama **stoa**. Pengaturan ini hanya berlaku untuk tool MCP `stoa__*`; endpoint REST Stoa yang setara yang dipanggil dengan secret agent tidak ikut dibatasi. Upload file tetap melalui REST (`POST /api/upload/raw`) atau marker `[send:]`.
 
 Lihat `stoa-api.md` → **Tool MCP Stoa Bawaan** untuk daftar argumen lengkap.
 
