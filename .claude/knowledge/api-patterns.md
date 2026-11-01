@@ -95,6 +95,8 @@ Scopes:
 - `connection` — connector must feed an automation targeting a room the agent is in
 - `any` — valid agent secret is sufficient
 
+Sub-agent credential (2026-11-01, `lib/sub-agent-credential.js`): a sub-agent session's `STOA_SECRET` is `sa1.<subId>.<hmac>` (HMAC of `SIGNING_KEY`, parent id, sub id, digest of the parent's secret; stateless, stable). The server sends it as `sub_agent_secret` in `agent_trigger`; stoa.js puts it in the child env instead of the parent's secret. `verifyAgentRequest` accepts it (→ `{id: parent, subAgentId}`; sub-agent must still belong to the parent) and `requireAuth` sets `req._scopedSubAgentId`. `subAgentScopeAllowed` in server.js: routes with `subAgent: false` refused (room memory/system-prompt PUT, sub-agent-trigger, all `self`, automations POST/PATCH/DELETE); `room` → `lib/room-access.js canReach` (linked + parent participant + not archived); `sub-agent` → own id only; `connection` → automation targeting a linked room. Proactive message with it posts with `sub_agent_id` forced to the sub-agent. Never accepted on `/mcp`.
+
 Allowed routes (source: `AGENT_ALLOWED_ROUTES` in `lib/agent-scope.js`):
 
 | Method | Path | Scope |
@@ -733,6 +735,8 @@ Business logic extracted from REST handlers lives in `lib/*.js` as pure function
   - The `source` object on skill list/detail: `{kind, url, ref, path, commit, checked_commit, checked_at, update_available, local_changes}`.
 
 **`availableTo(ident)` option on MCP gateway:**
+
+**Cross-room read (2026-11-01):** `stoa__rooms_list` + optional `room_id` on `messages_read` / `threads_list` / `thread_read`. Without `room_id` → unchanged (`roomDenied` on the session room). With it → `lib/room-access.js canReach(roomId, ident)`: main session = participant; sub-agent session = `room_sub_agents` link AND parent participant; never archived. Fail (incl. missing room) → 403 `agent_scope_denied`. `thread_read` with another room needs `thread_id` (session thread is not looked up there); `messages.thread` filters the root by room.
 
 Each tool definition in `stoa-mcp-tools.js` can export `availableTo(ident): boolean`. The gateway calls this before exposing or calling a tool. Sub-agent sessions (`ident.subAgentId != null`) see only: `message_send`, read tools, and `sub_agent_memory_get/set`. All configuration-mutating tools are hidden and refused for sub-agent sessions.
 

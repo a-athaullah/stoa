@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.467";
+var CLIENT_VERSION = "0.4.468";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -1722,6 +1722,10 @@ ${allNotes}`;
     const triggerHarness = msg.harness || "claude";
     const apiKeys = msg.api_keys || (msg.api_key ? [msg.api_key] : []);
     const platformEnv = { STOA_ROOM_ID: String(room_id), STOA_THREAD_ID: threadId ? String(threadId) : "" };
+    // A sub-agent never inherits this agent's STOA_SECRET: it gets its own credential, scoped by the
+    // server to the rooms it is linked to (lib/sub-agent-credential.js). Same variable name, so the
+    // curl patterns in its prompt keep working; empty when the server sent none.
+    if (subAgent) platformEnv.STOA_SECRET = typeof msg.sub_agent_secret === "string" ? msg.sub_agent_secret : "";
     const proxy = cfProxyReady ? await cfProxyReady : null;
     if (proxy) platformEnv.STOA_URL = proxy.wsUrl;
     // MCP gateway: the token goes in env only; claude-session / codex-session reference it by name.

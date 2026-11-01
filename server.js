@@ -515,19 +515,21 @@ function readAvatarBody(req) {
   });
 }
 
-// Verify x-agent-id / x-agent-secret headers (same HMAC scheme as proactive message).
-// Returns the agent actor row on success, or null.
+// Verify x-agent-id / x-agent-secret headers. The secret is the agent's own (subAgentId null) or the
+// credential of one of its sub-agents (lib/sub-agent-credential.js), which requireAuth narrows to that
+// sub-agent's scope before any handler runs. Returns { id, secret, subAgentId } or null.
 function verifyAgentRequest(req) {
   const agentId = parseInt(req.headers['x-agent-id'] || '0');
-  const agentSecret = req.headers['x-agent-secret'] || '';
+  const agentSecret = String(req.headers['x-agent-secret'] || '');
   if (!agentId || !agentSecret) return null;
   const actor = db.prepare("SELECT id, secret FROM actors WHERE id=? AND type='ai'").get(agentId);
   if (!actor || !actor.secret) return null;
   const h = s => crypto.createHmac('sha256', 'stoa').update(s).digest();
-  try {
-    if (!crypto.timingSafeEqual(h(agentSecret), h(actor.secret))) return null;
-  } catch { return null; }
-  return actor;
+  if (crypto.timingSafeEqual(h(agentSecret), h(actor.secret))) return { ...actor, subAgentId: null };
+  const subAgentId = verifySubAgentSecret(SIGNING_KEY, agentSecret, { actorId: actor.id, actorSecret: actor.secret });
+  if (subAgentId == null) return null;
+  if (!db.prepare('SELECT 1 FROM sub_agents WHERE id=? AND parent_actor_id=?').get(subAgentId, actor.id)) return null;
+  return { ...actor, subAgentId };
 }
 
 // ─── Phase 2b: durable auto-wake (R1) ──────────────────────────────────────
@@ -1573,6 +1575,9 @@ function verifyProxyToken(bearer) {
 const { matchAgentRoute, agentScopeEnforced, isSelfAuthenticatedPath } = require('./lib/agent-scope');
 const AGENT_SCOPE_ENFORCED = agentScopeEnforced(process.env.STOA_AGENT_SCOPE);
 if (!AGENT_SCOPE_ENFORCED) console.warn('[agent-scope] WARNING: STOA_AGENT_SCOPE=off — agent secrets have full API access');
+const { mintSubAgentSecret, verifySubAgentSecret } = require('./lib/sub-agent-credential');
+const { createRoomAccess } = require('./lib/room-access');
+const roomAccess = createRoomAccess(db);
 
 // MCP gateway (plan: stoa-feature/mcp-gateway.md): upstream MCP servers run here, agents reach them via /mcp.
 const mcpCredentials = require('./lib/credentials');
@@ -1665,7 +1670,8 @@ function mcpTokenForTrigger({ actorId, roomId, threadId, subAgentId, toolsSuppor
   try { return mcpGateway.issueToken({ actorId, roomId, threadId: threadId || null, subAgentId: subAgentId || null }); }
   catch (e) { console.error('[mcp] token issue failed:', e.message); return undefined; }
 }
-function agentScopeAllowed(agentId, route) {
+function agentScopeAllowed(agentId, route, subAgentId = null) {
+  if (subAgentId != null) return subAgentScopeAllowed(agentId, subAgentId, route);
   switch (route.scope) {
     case 'any': return true;
     case 'self': return route.id === agentId;
@@ -1682,6 +1688,28 @@ function agentScopeAllowed(agentId, route) {
     default: return false;
   }
 }
+// A sub-agent credential: routes marked subAgent:false are refused (what its MCP session hides or
+// refuses), rooms are only those it is linked to (lib/room-access.js), and sub-agent routes only
+// reach its own row.
+function subAgentScopeAllowed(agentId, subAgentId, route) {
+  if (route.subAgent === false) return false;
+  switch (route.scope) {
+    case 'any': return true;
+    case 'room': return roomAccess.canReach(route.id, { actorId: agentId, subAgentId });
+    case 'sub-agent': return route.id === subAgentId;
+    case 'connection':
+      return !!db.prepare(`SELECT 1 FROM automations a
+        JOIN room_participants rp ON rp.room_id=a.target_room_id AND rp.actor_id=?
+        JOIN room_sub_agents rsa ON rsa.room_id=a.target_room_id AND rsa.sub_agent_id=?
+        WHERE a.connection_id=? LIMIT 1`).get(agentId, subAgentId, route.id);
+    default: return false;
+  }
+}
+// The sub-agent's own REST credential for its session env (lib/sub-agent-credential.js).
+function subAgentSecretFor(actorId, subAgentId) {
+  const actorSecret = db.prepare('SELECT secret FROM actors WHERE id=?').get(actorId)?.secret;
+  return actorSecret ? mintSubAgentSecret(SIGNING_KEY, { actorId, subAgentId, actorSecret }) : undefined;
+}
 function agentInRoom(agentId, roomId) {
   return !!db.prepare('SELECT 1 FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(roomId, agentId);
 }
@@ -1695,16 +1723,6 @@ function postAutomationChangeNotice(agentId, roomId, verb, auto) {
   const content = `${clean(part.name, 64)} ${verb} automation "${clean(auto.name, 100)}" (trigger: ${clean(auto.trigger_type, 20)} ${clean(auto.trigger_event, 40)}) · automation`;
   const r = db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (?,?,?,'system_event')").run(roomId, part.id, content);
   broadcast(roomId, { type: 'message_new', message: { id: Number(r.lastInsertRowid), room_id: roomId, content, state: 'system_event', created_at: new Date().toISOString() } });
-}
-
-function agentHeaderAuthOk(req) {
-  const agentId = req.headers['x-agent-id'];
-  const agentSecret = req.headers['x-agent-secret'];
-  if (!agentId || !agentSecret) return false;
-  const actor = db.prepare('SELECT secret FROM actors WHERE id=? AND type=?').get(agentId, 'ai');
-  if (!actor?.secret) return false;
-  const h = s => crypto.createHmac('sha256', 'stoa').update(String(s)).digest();
-  return crypto.timingSafeEqual(h(agentSecret), h(actor.secret));
 }
 
 // Device cookie (OWASP): a browser that has logged in before keeps working while its
@@ -1923,12 +1941,17 @@ function requireAuth(req, res, url) {
     return true;
   }
 
-  if (agentHeaderAuthOk(req)) {
+  const agent = verifyAgentRequest(req);
+  if (agent) {
     if (!AGENT_SCOPE_ENFORCED) return true;
-    const agentId = Number(req.headers['x-agent-id']);
+    const agentId = agent.id;
     const route = matchAgentRoute(req.method, url.pathname);
-    if (route && agentScopeAllowed(agentId, route)) { req._scopedAgentId = agentId; return true; }
-    console.warn(`[agent-scope] denied actor=${agentId} ${req.method} ${url.pathname.slice(0, 200)}`);
+    if (route && agentScopeAllowed(agentId, route, agent.subAgentId)) {
+      req._scopedAgentId = agentId;
+      req._scopedSubAgentId = agent.subAgentId;
+      return true;
+    }
+    console.warn(`[agent-scope] denied actor=${agentId}${agent.subAgentId != null ? ` sub_agent=${agent.subAgentId}` : ''} ${req.method} ${url.pathname.slice(0, 200)}`);
     res.writeHead(403, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'agent_scope_denied' }));
     return false;
@@ -2669,20 +2692,18 @@ const server = http.createServer(async (req, res) => {
     const roomId = parseInt(url.pathname.split('/')[3]);
 
     // Only agents can post proactive messages
-    const agentId = parseInt(req.headers['x-agent-id'] || '0');
-    const agentSecret = req.headers['x-agent-secret'] || '';
-    if (!agentId || !agentSecret) return json(res, { error: 'agent auth required' }, 403);
-
-    const agentActor = db.prepare("SELECT id, secret FROM actors WHERE id=? AND type='ai'").get(agentId);
-    if (!agentActor) return json(res, { error: 'actor not found' }, 403);
-    const h = s => crypto.createHmac('sha256', 'stoa').update(s).digest();
-    if (!agentActor.secret || !crypto.timingSafeEqual(h(agentSecret), h(agentActor.secret))) {
-      return json(res, { error: 'invalid credentials' }, 403);
-    }
+    if (!req.headers['x-agent-id'] || !req.headers['x-agent-secret']) return json(res, { error: 'agent auth required' }, 403);
+    const agent = verifyAgentRequest(req);
+    if (!agent) return json(res, { error: 'invalid credentials' }, 403);
 
     const data = parseJsonBody(await readBody(req));
     if (!data) return json(res, { error: 'Invalid JSON' }, 400);
-    const r = roomMessages.send(roomId, agentId, data);
+    // A sub-agent credential posts as that sub-agent (as stoa__message_send does), never as another.
+    if (agent.subAgentId != null && typeof data === 'object' && !Array.isArray(data)) {
+      if (data.sub_agent_id != null && Number(data.sub_agent_id) !== agent.subAgentId) return json(res, { error: 'forbidden' }, 403);
+      data.sub_agent_id = agent.subAgentId;
+    }
+    const r = roomMessages.send(roomId, agent.id, data);
     return json(res, r.body, r.status);
   }
 
@@ -2691,16 +2712,11 @@ const server = http.createServer(async (req, res) => {
     const roomId = parseInt(url.pathname.split('/')[3]);
 
     // Agent auth
-    const agentId = parseInt(req.headers['x-agent-id'] || '0');
-    const agentSecret = req.headers['x-agent-secret'] || '';
-    if (!agentId || !agentSecret) return json(res, { error: 'agent auth required' }, 403);
-
-    const agentActor = db.prepare("SELECT id, name, secret FROM actors WHERE id=? AND type='ai'").get(agentId);
-    if (!agentActor) return json(res, { error: 'actor not found' }, 403);
-    const hh = s => crypto.createHmac('sha256', 'stoa').update(s).digest();
-    if (!agentActor.secret || !crypto.timingSafeEqual(hh(agentSecret), hh(agentActor.secret))) {
-      return json(res, { error: 'invalid credentials' }, 403);
-    }
+    if (!req.headers['x-agent-id'] || !req.headers['x-agent-secret']) return json(res, { error: 'agent auth required' }, 403);
+    const verified = verifyAgentRequest(req);
+    if (!verified) return json(res, { error: 'invalid credentials' }, 403);
+    const agentId = verified.id;
+    const agentActor = db.prepare('SELECT id, name FROM actors WHERE id=?').get(agentId);
 
     const data = parseJsonBody(await readBody(req));
     if (!data) return json(res, { error: 'Invalid JSON' }, 400);
@@ -5036,7 +5052,7 @@ Write-Host "Logs   : pm2 logs $AgentName"
     const bearer = typeof authz === 'string' ? authz.replace(/^Bearer\s+/i, '').trim()
       : (typeof req.headers['x-api-key'] === 'string' ? req.headers['x-api-key'].trim() : '');
     const proxyPlatId = verifyProxyToken(bearer);
-    if (!proxyPlatId && !agentHeaderAuthOk(req)) {
+    if (!proxyPlatId && !verifyAgentRequest(req)) {
       return json(res, { type: 'error', error: { type: 'authentication_error', message: 'invalid or missing Stoa proxy token' } }, 401);
     }
     const platforms = getParsedSetting('ai_platforms') ?? [];
@@ -8028,6 +8044,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
         system_prompt: roomSysPrompt || undefined,
         system_prompt_hash: sysPromptHash || undefined,
         mcp_token: mcpToken,
+        sub_agent_secret: subAgent ? subAgentSecretFor(ai.actor_id, subAgent.id) : undefined,
         skills: agentHasSkillCache && skillRefs.length ? skillRefs.map(r => ({ id: r.id, name: r.name, version: r.version, manifest_hash: r.manifest_hash })) : undefined,
       }));
       console.log(`[trigger] sent to ${displayName} agent, msgId=${msgId}${skillRefs.length ? ` skills=${skillRefs.map(r => r.name).join(',')}` : ''}`);
