@@ -276,7 +276,10 @@ CREATE TABLE mcp_servers (
   preset TEXT,                            -- catalog id, NULL = custom
   enabled INTEGER NOT NULL DEFAULT 1,
   default_access TEXT NOT NULL DEFAULT 'none' CHECK(default_access IN ('all','none')),
-  created_at TEXT, updated_at TEXT
+  created_at TEXT, updated_at TEXT,
+  builtin INTEGER NOT NULL DEFAULT 0      -- 1 = Stoa's own stoa__* tools (slug 'stoa', transport 'http', no url);
+                                          -- seeded by 20261101-mcp-builtin-server.sql (default_access 'all',
+                                          -- approval overrides for mcp_server_add/_update); never an upstream
 );
 
 -- Per-tool overrides (enable, approval, rate limit)

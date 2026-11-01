@@ -268,7 +268,7 @@ curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
 | `stoa__schedule_delete` | `schedule_id` | `DELETE …/schedules/:sid` |
 | `stoa__schedule_doctor` | — | `GET …/schedules/doctor` |
 
-`stoa__schedule_create`의 `target_actor_id`는 선택 사항이며 생략하면 호출한 에이전트 자신이 됩니다. 결과는 위의 JSON 본문과 같고, 실패한 호출은 같은 `error` 텍스트를 도구 오류로 반환합니다. 내장 도구는 MCP 페이지에서 권한을 줄 필요가 없으며, 호출은 활동 로그에 `stoa`로 기록됩니다. 슬러그 `stoa`는 예약되어 있어 설치한 MCP 서버에는 사용할 수 없습니다.
+`stoa__schedule_create`의 `target_actor_id`는 선택 사항이며 생략하면 호출한 에이전트 자신이 됩니다. 결과는 위의 JSON 본문과 같고, 실패한 호출은 같은 `error` 텍스트를 도구 오류로 반환합니다. 내장 도구는 MCP 페이지의 `stoa` 서버입니다. 기본적으로 모든 에이전트가 사용할 수 있으며, 소유자는 다른 서버와 마찬가지로 도구 끄기, 접근 제한, 속도 제한, 승인 필수를 설정할 수 있습니다(기본적으로 승인이 필요한 도구는 `stoa__mcp_server_add`와 `stoa__mcp_server_update`뿐입니다). 호출은 활동 로그에 `stoa`로 기록됩니다. 슬러그 `stoa`는 예약되어 있어 설치한 MCP 서버에는 사용할 수 없습니다.
 
 ## Stoa 내장 MCP 도구
 

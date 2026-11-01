@@ -47,7 +47,7 @@ function mcpOpenEdit(srv) {
     if (!env.some(e => e.key === f.key)) env.push({ key: f.key, value: '', label: f.label || f.key, help: f.help || '', secret: !!f.secret, required: false, fixed: true });
   });
   mcpOpenDialog({
-    mode: 'edit', preset, presetId: srv.preset || null, serverId: srv.id, name: srv.name, slug: srv.slug, slugTouched: true, inDialog: true,
+    mode: 'edit', builtin: mcpIsBuiltin(srv), preset, presetId: srv.preset || null, serverId: srv.id, name: srv.name, slug: srv.slug, slugTouched: true, inDialog: true,
     icon: mcpIconForServer(srv), transport: srv.transport, auth: srv.auth || 'none', authInitial: srv.auth || 'none', command: srv.command || '', args: (srv.args || []).join('\n'), url: srv.url || '',
     allow_all: srv.default_access === 'all', keep_alive: !!srv.keep_alive, error: null, saving: false, env,
   }, `edit:${srv.id}`);
@@ -190,7 +190,7 @@ function mcpInput(value, onInput, opts = {}) {
 
 function mcpMakeForm(f) {
   const isEdit = f.mode === 'edit';
-  const isCustom = !f.preset && !f.presetId;
+  const isCustom = !f.builtin && !f.preset && !f.presetId;
   const box = mcpEl('form', 'mcp-form');
   box.noValidate = true;
 
@@ -297,7 +297,7 @@ function mcpMakeForm(f) {
 
   if (isCustom || f.env.length || f.auth === 'oauth') box.appendChild(mcpMakeEnvEditor(f, isCustom));
 
-  if (f.transport === 'stdio') box.appendChild(mcpMakeKeepAlive(f));
+  if (f.transport === 'stdio' && !f.builtin) box.appendChild(mcpMakeKeepAlive(f));
 
   if (!isEdit) box.appendChild(mcpMakeAccessChoice(f));
 
@@ -434,7 +434,7 @@ function mcpMakeEnvEditor(f, isCustom) {
 
 function mcpValidateForm(f) {
   const isEdit = f.mode === 'edit';
-  const isCustom = !f.preset && !f.presetId;
+  const isCustom = !f.builtin && !f.preset && !f.presetId;
   if (!f.name.trim()) return 'Name is required';
   if (!isEdit && (!MCP_SLUG_RE.test(f.slug) || f.slug.length > 32 || f.slug.includes('__'))) return 'Slug must start with a letter, use a-z 0-9 _ (max 32), and not contain "__"';
   if (!isEdit && mcpState.servers.some(s => s.slug === f.slug)) return `Slug "${f.slug}" is already used`;
@@ -459,7 +459,7 @@ async function mcpSubmitForm(f, errEl, saveBtn) {
   if (problem) { mcpShowFormError(f, errEl, problem); return; }
   f.error = null; errEl.textContent = '';
   const isEdit = f.mode === 'edit';
-  const isCustom = !f.preset && !f.presetId;
+  const isCustom = !f.builtin && !f.preset && !f.presetId;
   const env = {};
   f.env.forEach(row => { if (row.key && row.value && !row.remove) env[row.key] = row.value; });
 

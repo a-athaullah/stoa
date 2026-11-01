@@ -8,7 +8,8 @@ async function mcpLoadAccess() {
   if (!r.ok) { mcpState.access = { error: r.error }; return; }
   const grants = new Map();
   (r.data?.grants || []).forEach(g => grants.set(mcpGrantKey(g.server_id, g.subject_type, g.subject_id), !!g.allow));
-  mcpState.access = { servers: r.data?.servers || [], subjects: r.data?.subjects || [], grants };
+  const servers = (r.data?.servers || []).map(s => ({ ...s, builtin: mcpIsBuiltin(s) || mcpIsBuiltin(mcpServerById(s.id)) }));
+  mcpState.access = { servers: mcpPinBuiltin(servers), subjects: r.data?.subjects || [], grants };
 }
 
 function mcpCellState(serverId, type, id) {
@@ -162,7 +163,7 @@ function mcpBuildSubAgentSummary(sa, parentAgentId) {
     const [acc, srv] = await Promise.all([mcpApi('GET', '/api/mcp/access'), mcpApi('GET', '/api/mcp/servers')]);
     box.replaceChildren();
     if (!acc.ok || !srv.ok) { box.appendChild(mcpEl('span', 'mcp-field-hint', `couldn’t load MCP access · ${acc.error || srv.error}`)); return; }
-    const servers = Array.isArray(srv.data?.servers) ? srv.data.servers : [];
+    const servers = Array.isArray(srv.data?.servers) ? mcpPinBuiltin(srv.data.servers) : [];
     const grants = new Map();
     (acc.data?.grants || []).forEach(g => grants.set(mcpGrantKey(g.server_id, g.subject_type, g.subject_id), !!g.allow));
     if (!servers.length) box.appendChild(mcpEl('span', 'mcp-field-hint', 'no MCP servers installed.'));

@@ -7,21 +7,22 @@ function mcpRenderInstalled(panel) {
       mcpBtn('auto-small-btn', 'retry', () => sLoadMcpTab())));
     return;
   }
-  if (!mcpState.servers.length) {
-    panel.appendChild(mcpEmpty('no MCP servers yet',
-      'install one from the catalog — Context7 needs no credentials and gives agents up-to-date library docs.',
-      mcpBtn('auto-pill-btn', 'add an MCP server', () => mcpSetTab('add'))));
-    return;
-  }
+  const empty = title => mcpEmpty(title,
+    'install one from the catalog — Context7 needs no credentials and gives agents up-to-date library docs.',
+    mcpBtn('auto-pill-btn', 'add an MCP server', () => mcpSetTab('add')));
+  if (!mcpState.servers.length) { panel.appendChild(empty('no MCP servers yet')); return; }
   const list = mcpEl('div', 'mcp-cards');
-  mcpState.servers.forEach(srv => list.appendChild(mcpMakeServerCard(srv)));
+  mcpPinBuiltin(mcpState.servers).forEach(srv => list.appendChild(mcpMakeServerCard(srv)));
   panel.appendChild(list);
+  if (mcpState.servers.every(mcpIsBuiltin)) panel.appendChild(empty('no other MCP servers yet'));
 }
 
 function mcpMakeServerCard(srv) {
+  const builtin = mcpIsBuiltin(srv);
   const card = mcpEl('div', 'mcp-card');
   card.dataset.serverId = srv.id;
-  const status = srv.enabled ? (srv.status || 'idle') : 'disabled';
+  // Built-in tools run inside the gateway: there is no process to start, so enabled means ready.
+  const status = !srv.enabled ? 'disabled' : builtin ? 'running' : (srv.status || 'idle');
 
   const head = mcpEl('div', 'mcp-card-head');
   const badge = mcpEl('span', 'mcp-icon-wrap');
@@ -31,7 +32,11 @@ function mcpMakeServerCard(srv) {
   const titles = mcpEl('div', 'mcp-card-titles');
   const nameRow = mcpEl('div', 'mcp-card-name-row');
   nameRow.append(mcpEl('span', 'mcp-card-name', srv.name), mcpEl('code', 'mcp-slug', `${srv.slug}__*`));
-  if (srv.keep_alive && srv.enabled && srv.transport !== 'http') {
+  if (builtin) {
+    const chip = mcpEl('span', 'mcp-chip', 'built-in');
+    chip.title = 'Comes with Stoa: the stoa__* tools agents use for messages, memory, threads and more. It can’t be removed.';
+    nameRow.appendChild(chip);
+  } else if (srv.keep_alive && srv.enabled && srv.transport !== 'http') {
     const always = mcpEl('span', 'mcp-chip mcp-chip-always', 'always on');
     always.title = 'Keep running: starts with Stoa and is never stopped when idle';
     nameRow.appendChild(always);
@@ -39,7 +44,7 @@ function mcpMakeServerCard(srv) {
   const meta = mcpEl('div', 'mcp-card-meta');
   const statusEl = mcpEl('span', `mcp-status mcp-status-${status}`, MCP_STATUS_LABEL[status] || status);
   meta.append(statusEl,
-    mcpEl('span', null, srv.transport === 'http' ? 'http' : 'stdio'),
+    mcpEl('span', null, builtin ? 'in-process' : srv.transport === 'http' ? 'http' : 'stdio'),
     mcpEl('span', null, srv.tool_count == null ? 'tools not fetched yet' : `${srv.tool_count} tool${srv.tool_count === 1 ? '' : 's'}`),
     mcpEl('span', null, srv.default_access === 'all' ? 'all agents by default' : 'granted agents only'));
   if (srv.auth === 'oauth') meta.appendChild(mcpEl('span', null, 'oauth'));
@@ -83,7 +88,7 @@ function mcpMakeServerCard(srv) {
   actions.appendChild(toolsBtn);
   actions.appendChild(mcpEl('span', 'mcp-actions-spacer'));
 
-  if (mcpState.confirmRemoveId === srv.id) {
+  if (mcpState.confirmRemoveId === srv.id && !builtin) {
     const q = mcpEl('span', 'mcp-confirm-text', `remove ${srv.name}? agents lose its tools right away.`);
     const yes = mcpBtn('mcp-danger-btn', 'remove', async () => {
       yes.disabled = true;
@@ -100,21 +105,25 @@ function mcpMakeServerCard(srv) {
     const no = mcpBtn('auto-small-btn', 'cancel', () => { mcpState.confirmRemoveId = null; card.replaceWith(mcpMakeServerCard(srv)); });
     actions.append(q, yes, no);
   } else {
-    const testing = mcpState.testing.has(srv.id);
-    const testBtn = mcpBtn('auto-small-btn', testing ? 'testing…' : 'test', () => mcpTestServer(srv));
-    testBtn.disabled = testing || !srv.enabled;
-    if (!srv.enabled) testBtn.title = 'Enable the server to test it';
     const editBtn = mcpBtn('s-icon-btn', null, () => mcpOpenEdit(srv), `Edit ${srv.name}`);
     editBtn.innerHTML = svgPencil(13);
     editBtn.setAttribute('aria-label', `Edit ${srv.name}`);
     editBtn.dataset.mcpReturn = `edit:${srv.id}`;
-    const rmBtn = mcpBtn('s-icon-btn', null, () => { mcpState.confirmRemoveId = srv.id; card.replaceWith(mcpMakeServerCard(srv)); }, `Remove ${srv.name}`);
-    rmBtn.innerHTML = autoSvgTrash(13);
-    rmBtn.setAttribute('aria-label', `Remove ${srv.name}`);
-    if (srv.auth === 'oauth' && status !== 'needs_auth' && srv.enabled) {
-      actions.appendChild(mcpBtn('mcp-link-btn', 'reconnect', () => mcpStartOAuth(srv), `Sign in to ${srv.name} again`));
+    if (builtin) {
+      actions.appendChild(editBtn);
+    } else {
+      const testing = mcpState.testing.has(srv.id);
+      const testBtn = mcpBtn('auto-small-btn', testing ? 'testing…' : 'test', () => mcpTestServer(srv));
+      testBtn.disabled = testing || !srv.enabled;
+      if (!srv.enabled) testBtn.title = 'Enable the server to test it';
+      const rmBtn = mcpBtn('s-icon-btn', null, () => { mcpState.confirmRemoveId = srv.id; card.replaceWith(mcpMakeServerCard(srv)); }, `Remove ${srv.name}`);
+      rmBtn.innerHTML = autoSvgTrash(13);
+      rmBtn.setAttribute('aria-label', `Remove ${srv.name}`);
+      if (srv.auth === 'oauth' && status !== 'needs_auth' && srv.enabled) {
+        actions.appendChild(mcpBtn('mcp-link-btn', 'reconnect', () => mcpStartOAuth(srv), `Sign in to ${srv.name} again`));
+      }
+      actions.append(testBtn, editBtn, rmBtn);
     }
-    actions.append(testBtn, editBtn, rmBtn);
   }
   card.appendChild(actions);
 
@@ -288,7 +297,7 @@ function mcpMakeToolList(srv) {
     return wrap;
   }
   if (!t.list.length) {
-    wrap.appendChild(mcpEl('div', 'mcp-muted', srv.enabled ? 'no tools reported yet — run test to start the server and fetch them.' : 'enable and test the server to fetch its tools.'));
+    wrap.appendChild(mcpEl('div', 'mcp-muted', mcpIsBuiltin(srv) ? 'no built-in tools reported.' : srv.enabled ? 'no tools reported yet — run test to start the server and fetch them.' : 'enable and test the server to fetch its tools.'));
     return wrap;
   }
   const head = mcpEl('div', 'mcp-tool-row mcp-tool-head');

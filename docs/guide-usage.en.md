@@ -1143,6 +1143,8 @@ Each installed MCP server appears as a card showing:
 - **Edit** / **Remove** — update credentials or delete the server.
 - **Connect** (OAuth servers) — opens the provider sign-in flow. Appears as a button when the server status is `needs sign-in`, or as a **reconnect** link when already authenticated and you need to re-sign-in.
 
+The **Stoa** server is a built-in card pinned to the top of the list. It cannot be removed and has no connection settings — the edit form only allows renaming it. All other controls work the same as any installed server: enable/disable, per-tool on/off, approval, rate limits, and the access matrix. By default, all agents have access and only `mcp_server_add` and `mcp_server_update` require approval. These settings apply to the `stoa__*` MCP tools; equivalent Stoa REST endpoints called with the agent's secret are not restricted.
+
 Click a card to expand it and see each tool. Each tool has an **enable toggle**, a **requires approval** toggle, and an optional **rate limit (calls / min)** field. Tools whose names suggest write operations (send, create, update, delete) carry a **write** badge as a reminder to review their access settings.
 
 ### Add Tab
@@ -1223,7 +1225,7 @@ An agent can have up to 20 approval requests pending at the same time. Approval 
 
 An agent running in the main session (not a sub-agent) can install MCP servers at runtime using three built-in tools: `stoa__mcp_catalog` to browse available presets, `stoa__mcp_server_list` to see what is already installed (server names and whether the agent has access — env values are never returned), and `stoa__mcp_server_add` to install a new server.
 
-**Approval:** Every call to `stoa__mcp_server_add` shows an **MCP approval** card. Unlike regular MCP tools, there is no **always allow** option — only **approve** and **deny**. The card shows the full arguments with env values masked as `***`. A call with invalid arguments (empty slug, reserved slug `stoa`, or a slug already in use) is rejected before the card appears.
+**Approval:** By default, every call to `stoa__mcp_server_add` shows an **MCP approval** card. The owner can turn off approval per tool in the Stoa server's tool list, or click **always allow** on a card to exempt a specific agent from future prompts for that tool. The card shows the full arguments with env values masked as `***`. A call with invalid arguments (empty slug, reserved slug `stoa`, or a slug already in use) is rejected before the card appears.
 
 **After approval:** The server is created with access set to **none** by default. Only the calling agent receives access. You can adjust access for other agents on the MCP page as usual.
 
@@ -1245,7 +1247,7 @@ An agent that already has access to a server can update it using `stoa__mcp_serv
 
 Fields that cannot be changed by an agent: **access**, **slug**, **preset**, and **transport**. Passing any of these returns a 400 error before the approval card appears.
 
-**Approval:** Every call shows an **MCP approval** card with an old → new diff per changed field. For secret env fields, only key names are shown; non-secret preset fields (such as Filesystem's allowed folders) show their values, the same as the add card. Env values are never returned to the agent. There is no **always allow** option.
+**Approval:** By default, every call shows an **MCP approval** card with an old → new diff per changed field. The owner can turn off approval per tool in the Stoa server's tool list, or click **always allow** on a card to exempt a specific agent. For secret env fields, only key names are shown; non-secret preset fields (such as Filesystem's allowed folders) show their values, the same as the add card. Env values are never returned to the agent.
 
 **After approval:** The server restarts, a connection test runs, and a notice appears in the room.
 
@@ -1312,7 +1314,7 @@ Tools are grouped by function:
 
 The same validation, budget caps, and scope rules as the REST API apply. Configuration changes (system prompts, sub-agent CRUD, automation changes) post a permanent notice in the room — `· config` or `· automation` — the same as the REST endpoint does.
 
-In a **sub-agent session**, only messaging, read, and the sub-agent's own memory tools are available. Tools that change configuration are hidden and refused. The built-in `stoa` server needs no grant on the MCP page — calls appear in the activity log under `stoa`. File upload stays on REST (`POST /api/upload/raw`) or the `[send:]` marker.
+In a **sub-agent session**, only messaging, read, and the sub-agent's own memory tools are available. Tools that change configuration are hidden and refused. The `stoa` server appears at the top of the MCP **Installed** tab where access, approval, per-tool settings, and rate limits can be configured — the same controls as any other server. By default, all agents have access. Agents cannot change the Stoa server via `stoa__mcp_server_update`; only the owner can. Calls appear in the activity log under **stoa**. These settings apply to the `stoa__*` MCP tools only; equivalent Stoa REST endpoints called with the agent's secret are not restricted. File upload stays on REST (`POST /api/upload/raw`) or the `[send:]` marker.
 
 See `stoa-api.md` → **Stoa MCP Tools** for the full argument list.
 

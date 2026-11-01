@@ -142,6 +142,15 @@ function mcpIconForServer(srv) {
   return srv.preset ? mcpState.catalog.find(p => p.id === srv.preset)?.icon || null : null;
 }
 
+// The built-in Stoa server (tools stoa__*) is pinned first wherever servers are listed; the rest keep the order they came in.
+function mcpIsBuiltin(srv) {
+  return srv?.builtin === true;
+}
+
+function mcpPinBuiltin(list) {
+  return [...list.filter(mcpIsBuiltin), ...list.filter(s => !mcpIsBuiltin(s))];
+}
+
 function mcpServerById(id) {
   return mcpState.servers.find(s => s.id === id) || null;
 }
@@ -197,7 +206,7 @@ async function mcpLoadServers() {
   const r = await mcpApi('GET', '/api/mcp/servers');
   if (!r.ok) { mcpState.loadError = r.error; return false; }
   mcpState.loadError = null;
-  mcpState.servers = Array.isArray(r.data?.servers) ? r.data.servers : [];
+  mcpState.servers = Array.isArray(r.data?.servers) ? mcpPinBuiltin(r.data.servers) : [];
   return true;
 }
 

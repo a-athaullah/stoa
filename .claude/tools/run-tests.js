@@ -136,8 +136,9 @@ function waitUp(port, tries = 50) {
     c.pragma('journal_mode = WAL');
     try { c.prepare("UPDATE automation_connections SET status='disconnected'").run(); } catch {}
     // Live MCP servers (e.g. a default_access='all' preset) would leak into the MCP policy tests'
-    // tool lists and make real upstream calls: the COPY starts with every server disabled.
-    try { c.prepare('UPDATE mcp_servers SET enabled=0').run(); } catch {}
+    // tool lists and make real upstream calls: the COPY starts with every server disabled. Except the
+    // built-in "stoa" row (Stoa's own tools, no upstream): disabling it would deny every stoa__* call.
+    try { c.prepare("UPDATE mcp_servers SET enabled=0 WHERE slug != 'stoa'").run(); } catch {}
     // The live password can change any time and must never live in test code: give the COPY a
     // throwaway password (same scrypt format as server.js hashPassword) and hand it to test.js via env.
     const user = c.prepare('SELECT id, email FROM auth_users ORDER BY id LIMIT 1').get();
