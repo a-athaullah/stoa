@@ -396,7 +396,10 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
   auth TEXT NOT NULL DEFAULT 'none' CHECK(auth IN ('none','headers','oauth')),
   oauth_enc TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- 1 = Stoa's own tools (slug 'stoa', seeded by migrations/20261101-mcp-builtin-server.sql): never
+  -- started as an upstream, cannot be deleted, connection fields cannot be edited.
+  builtin INTEGER NOT NULL DEFAULT 0 CHECK(builtin IN (0,1))
 );
 
 CREATE TABLE IF NOT EXISTS mcp_tool_overrides (

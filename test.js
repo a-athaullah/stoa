@@ -3789,27 +3789,38 @@ async function runAsyncUnitTests() {
     mem.close();
   });
 
-  await uta('MCP gateway — approval-gated built-in: every call waits (no exemption), always → 400 and stays pending, preview replaces args, cut preview and failed precheck refused before a card', async () => {
+  await uta('MCP gateway — built-ins on the stoa row: seeded approval only for mcp_server_add/_update, override-gated built-in waits, always exempts, preview replaces args, cut preview and failed precheck refused before a card, disable/access/rate limit apply', async () => {
     const Database = require('better-sqlite3');
     const { createMcpGateway } = require('./lib/mcp-gateway');
     const mem = new Database(':memory:');
+    // Boot of a fresh clone: baseline schema, then migrations (the stoa row and its overrides come from one).
     mem.exec(require('fs').readFileSync(require('path').join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8'));
-    mem.exec(`CREATE TABLE IF NOT EXISTS sub_agents (id INTEGER PRIMARY KEY, parent_actor_id INTEGER, label TEXT)`);
+    require('./lib/migrations').runMigrations(mem, require('path').join(__dirname, 'migrations'), { log() {}, error() {} });
+    mem.pragma('foreign_keys = OFF');
+    const stoaRow = mem.prepare('SELECT * FROM mcp_servers WHERE builtin=1').all();
+    assert.strictEqual(stoaRow.length, 1, 'exactly one built-in row');
+    const sid = stoaRow[0].id;
+    assert.deepStrictEqual([stoaRow[0].slug, stoaRow[0].enabled, stoaRow[0].default_access], ['stoa', 1, 'all']);
+    assert.deepStrictEqual(mem.prepare('SELECT tool, enabled, requires_approval, rate_limit_per_min FROM mcp_tool_overrides WHERE server_id=? ORDER BY tool').all(sid).map(o => ({ ...o })),
+      [{ tool: 'mcp_server_add', enabled: 1, requires_approval: 1, rate_limit_per_min: null }, { tool: 'mcp_server_update', enabled: 1, requires_approval: 1, rate_limit_per_min: null }],
+      'only add/update start approval-gated');
     const actorId = Number(mem.prepare("INSERT INTO actors (name, type, secret) VALUES ('mcp-gated','ai','s')").run().lastInsertRowid);
+    mem.prepare('INSERT INTO mcp_tool_overrides (server_id, tool, requires_approval) VALUES (?, ?, 1)').run(sid, 'gated');
     const ran = [];
     const events = [];
+    const tool = (name) => ({ name, description: name, inputSchema: { type: 'object' }, call: async () => ({ content: [{ type: 'text', text: name }] }) });
     const gw = createMcpGateway({
       db: mem, upstreams: { listTools: async () => [] }, encrypt: s => s, decrypt: s => s, approvalTimeoutMs: 150, log: { warn() {}, error() {} },
       onApproval: (type, a) => events.push({ type, ...a }),
       builtinTools: [{
-        name: 'gated', description: 'x', inputSchema: { type: 'object' }, requiresApproval: true,
+        name: 'gated', description: 'x', inputSchema: { type: 'object' },
         previewArgs: (a) => ({ cmd: a.cmd, env: Object.fromEntries(Object.keys(a.env || {}).map(k => [k, '***'])) }),
         precheck: async (ident, a) => {
           if (a.cmd === 'boom') throw new Error('precheck blew up');
           return a.cmd === 'invalid' ? 'cmd "invalid" is not allowed' : null;
         },
         call: async (ident, a) => { ran.push(a); return { content: [{ type: 'text', text: 'done' }] }; },
-      }, { name: 'free', description: 'y', inputSchema: { type: 'object' }, call: async () => ({ content: [{ type: 'text', text: 'free' }] }) }],
+      }, tool('free'), tool('mcp_server_add')],
     });
     const ident = { actorId, roomId: 3, threadId: 4, subAgentId: null };
     const pendingCard = () => events.filter(e => e.type === 'mcp_approval').at(-1);
@@ -3817,22 +3828,27 @@ async function runAsyncUnitTests() {
     const SECRET = 'value-of-the-secret-xyz';
     const flush = () => new Promise(r => setImmediate(r)); // the precheck is awaited before the card
 
+    assert.strictEqual((await gw.callTool(ident, 'stoa__free', {})).content[0].text, 'free', 'a built-in without an override runs at once');
+    assert.strictEqual(events.length, 0);
+    assert.deepStrictEqual([lastCall().server_id, lastCall().server_slug, lastCall().status, lastCall().approval], [sid, 'stoa', 'ok', null], 'logged on the stoa row');
+    const seeded = gw.callTool(ident, 'stoa__mcp_server_add', {});
+    await flush();
+    assert.strictEqual(pendingCard().tool, 'mcp_server_add', 'the seeded override gates add');
+    gw.decideApproval(pendingCard().id, 'approve');
+    assert.strictEqual((await seeded).content[0].text, 'mcp_server_add');
+
     const first = gw.callTool(ident, 'stoa__gated', { cmd: 'npx srv', env: { API: SECRET } });
     await flush();
     const card = pendingCard();
-    assert.deepStrictEqual([card.server_slug, card.tool, card.status, card.allow_always], ['stoa', 'gated', 'pending', false]);
+    assert.deepStrictEqual([card.server_slug, card.tool, card.status, card.allow_always], ['stoa', 'gated', 'pending', true]);
     assert.deepStrictEqual(JSON.parse(card.args_preview), { cmd: 'npx srv', env: { API: '***' } }, 'card shows the preview, not the args');
-    assert.strictEqual(mem.prepare('SELECT server_id FROM mcp_approvals WHERE id=?').get(card.id).server_id, null);
-    const always = gw.decideApproval(card.id, 'always');
-    assert.deepStrictEqual([always.status, always.error], [400, 'always is not available for this tool']);
-    assert.strictEqual(mem.prepare('SELECT status FROM mcp_approvals WHERE id=?').get(card.id).status, 'pending', 'always leaves it pending');
-    assert.strictEqual(mem.prepare('SELECT COUNT(*) n FROM mcp_approval_exemptions').get().n, 0, 'no exemption');
+    assert.strictEqual(mem.prepare('SELECT server_id FROM mcp_approvals WHERE id=?').get(card.id).server_id, sid);
     assert.deepStrictEqual(ran, [], 'nothing ran before the decision');
-    assert.strictEqual(gw.decideApproval(card.id, 'approve').status, 200, 'still decidable after the refused always');
+    assert.strictEqual(gw.decideApproval(card.id, 'approve').status, 200);
     assert.strictEqual((await first).content[0].text, 'done');
     assert.deepStrictEqual(ran, [{ cmd: 'npx srv', env: { API: SECRET } }], 'the tool gets the real args');
     const okRow = lastCall();
-    assert.deepStrictEqual([okRow.server_id, okRow.server_slug, okRow.tool, okRow.status, okRow.approval], [null, 'stoa', 'gated', 'ok', 'owner']);
+    assert.deepStrictEqual([okRow.server_id, okRow.server_slug, okRow.tool, okRow.status, okRow.approval], [sid, 'stoa', 'gated', 'ok', 'owner']);
     assert.ok(!okRow.args_preview.includes(SECRET) && okRow.args_preview.includes('npx srv'), 'mcp_calls keeps the preview');
 
     const second = gw.callTool(ident, 'stoa__gated', { cmd: 'again' });
@@ -3872,10 +3888,71 @@ async function runAsyncUnitTests() {
     assert.strictEqual(mem.prepare('SELECT COUNT(*) n FROM mcp_approvals WHERE status=?').get('pending').n, 0);
     assert.strictEqual(ran.length, 1);
 
-    assert.strictEqual((await gw.callTool(ident, 'stoa__free', {})).content[0].text, 'free', 'built-ins without the flag run at once');
-    assert.strictEqual(events.length, n);
+    // Always: approves this call and exempts the agent from the card for this tool from now on.
+    const fifth = gw.callTool(ident, 'stoa__gated', { cmd: 'always' });
+    await flush();
+    const always = gw.decideApproval(pendingCard().id, 'always');
+    assert.deepStrictEqual([always.status, always.exemption.server_id, always.exemption.server_slug, always.exemption.tool], [200, sid, 'stoa', 'gated']);
+    assert.strictEqual((await fifth).content[0].text, 'done');
+    const m = events.length;
+    assert.strictEqual((await gw.callTool(ident, 'stoa__gated', { cmd: 'exempt' })).content[0].text, 'done');
+    assert.strictEqual(events.length, m, 'exempted → no card');
+    assert.deepStrictEqual([lastCall().status, lastCall().approval], ['ok', 'exemption']);
+
+    const listed = async () => (await gw.visibleTools(ident)).map(t => t.name).filter(t => t.startsWith('stoa__')).sort();
+    assert.deepStrictEqual(await listed(), ['stoa__free', 'stoa__gated', 'stoa__mcp_server_add']);
+    mem.prepare('INSERT INTO mcp_tool_overrides (server_id, tool, enabled) VALUES (?, ?, 0)').run(sid, 'free');
+    assert.deepStrictEqual(await listed(), ['stoa__gated', 'stoa__mcp_server_add'], 'a disabled built-in leaves tools/list');
+    assert.match((await gw.callTool(ident, 'stoa__free', {})).content[0].text, /^Denied by Stoa: tool is disabled/);
+    assert.deepStrictEqual([lastCall().server_id, lastCall().status], [sid, 'denied']);
+    mem.prepare("UPDATE mcp_tool_overrides SET enabled=1, rate_limit_per_min=1 WHERE server_id=? AND tool='free'").run(sid);
+    assert.strictEqual((await gw.callTool(ident, 'stoa__free', {})).content[0].text, 'free');
+    assert.match((await gw.callTool(ident, 'stoa__free', {})).content[0].text, /^Stoa: rate limited \(1 calls per minute/);
+    assert.strictEqual(lastCall().status, 'rate_limited');
+    mem.prepare("INSERT INTO mcp_access (server_id, subject_type, subject_id, allow) VALUES (?, 'agent', ?, 0)").run(sid, actorId);
+    assert.deepStrictEqual(await listed(), [], 'no access → no built-ins listed');
+    assert.match((await gw.callTool(ident, 'stoa__gated', { cmd: 'x' })).content[0].text, /^Denied by Stoa: this agent has no access/);
+    mem.prepare("DELETE FROM mcp_access WHERE server_id=?").run(sid);
+    mem.prepare('UPDATE mcp_servers SET enabled=0 WHERE id=?').run(sid);
+    assert.deepStrictEqual(await listed(), [], 'disabled stoa row → no built-ins listed');
+    assert.match((await gw.callTool(ident, 'stoa__gated', { cmd: 'x' })).content[0].text, /^Denied by Stoa: MCP server is disabled/);
+    assert.strictEqual(ran.length, 3);
     gw.close();
     mem.close();
+  });
+
+  await uta('MCP builtin-server migration — upgrade: a legacy "stoa" row is kept under stoa_old_<id> and disabled, old built-in calls/approvals point at the new row, seeds once', async () => {
+    const Database = require('better-sqlite3');
+    const fs = require('fs'), path = require('path'), os = require('os');
+    const { runMigrations } = require('./lib/migrations');
+    const quiet = { log() {}, error() {} };
+    const MIG = '20261101-mcp-builtin-server.sql';
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-mig-builtin-'));
+    const mem = new Database(':memory:');
+    try {
+      for (const f of fs.readdirSync(path.join(__dirname, 'migrations'))) if (f !== MIG) fs.copyFileSync(path.join(__dirname, 'migrations', f), path.join(dir, f));
+      runMigrations(mem, dir, quiet);
+      assert.ok(!mem.prepare('PRAGMA table_info(mcp_servers)').all().some(c => c.name === 'builtin'), 'DB as before this change');
+      const legacy = Number(mem.prepare("INSERT INTO mcp_servers (slug, name, transport, command, default_access) VALUES ('stoa','Legacy','stdio','node','all')").run().lastInsertRowid);
+      mem.prepare("INSERT INTO mcp_calls (server_id, server_slug, tool, status) VALUES (NULL, 'stoa', 'schedule_list', 'ok')").run();
+      mem.prepare("INSERT INTO mcp_calls (server_id, server_slug, tool, status) VALUES (NULL, 'gone', 'x', 'ok')").run();
+      mem.prepare("INSERT INTO mcp_approvals (server_id, server_slug, tool, actor_id, status, expires_at) VALUES (NULL, 'stoa', 'mcp_server_add', 1, 'approved', '2026-01-01 00:00:00')").run();
+      fs.copyFileSync(path.join(__dirname, 'migrations', MIG), path.join(dir, MIG));
+      // Without the boot schema, a few legacy files keep failing on every run; only this file matters here.
+      const r = runMigrations(mem, dir, quiet).find(x => x.filename === MIG);
+      assert.strictEqual(r?.status, 'applied');
+      const old = mem.prepare('SELECT slug, name, enabled, builtin FROM mcp_servers WHERE id=?').get(legacy);
+      assert.deepStrictEqual({ ...old }, { slug: `stoa_old_${legacy}`, name: 'Legacy', enabled: 0, builtin: 0 }, 'kept, renamed, disabled');
+      const stoa = mem.prepare("SELECT * FROM mcp_servers WHERE slug='stoa'").get();
+      assert.deepStrictEqual([stoa.builtin, stoa.enabled, stoa.default_access], [1, 1, 'all']);
+      assert.deepStrictEqual(mem.prepare('SELECT server_slug, server_id FROM mcp_calls ORDER BY id').all().map(c => [c.server_slug, c.server_id]), [['stoa', stoa.id], ['gone', null]]);
+      assert.strictEqual(mem.prepare('SELECT server_id FROM mcp_approvals').get().server_id, stoa.id);
+      assert.strictEqual(mem.prepare('SELECT COUNT(*) n FROM mcp_tool_overrides WHERE server_id=? AND requires_approval=1').get(stoa.id).n, 2);
+      assert.ok(!runMigrations(mem, dir, quiet).some(x => x.filename === MIG), 'applied once');
+    } finally {
+      mem.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   // An existing DB can get the table from either file (boot runs schema.sqlite.sql before migrations).
@@ -18961,11 +19038,11 @@ async function run() {
     // The DB copy may hold servers; they are hidden for this test through the test's own connection with
     // foreign keys off (no cascade into grants/overrides) and put back with the same ids.
     await test('MCP trigger — no upstream server installed → token still issued, built-in tools listed', async () => {
-      const saved = mDb.prepare('SELECT * FROM mcp_servers').all();
+      const saved = mDb.prepare('SELECT * FROM mcp_servers WHERE builtin=0').all();
       let token;
       mDb.pragma('foreign_keys = OFF');
       try {
-        mDb.prepare('DELETE FROM mcp_servers').run();
+        mDb.prepare('DELETE FROM mcp_servers WHERE builtin=0').run();
         token = (await triggerToken(agA, roomA, 'before mcp')).token;
         assert.match(token || '', /^stoa_mcp_/, 'tool-capable session gets a token without any upstream');
         const tools = await listAll(token);
@@ -19688,7 +19765,8 @@ async function run() {
       assert.strictEqual(notices.length, 1);
       assert.match(notices[0], new RegExp(`^__test-mcp-a created schedule #${builtinSchedId} for __test-mcp-a \\(weekly Mon, Fri 09:30 Asia/Jakarta\\) · schedule$`));
       const c = lastCall();
-      assert.deepStrictEqual([c.server_id, c.server_slug, c.tool, c.status, c.actor_id, c.room_id], [null, 'stoa', 'schedule_create', 'ok', agA.actorId, roomA]);
+      const stoaId = mDb.prepare('SELECT id FROM mcp_servers WHERE builtin=1').get().id;
+      assert.deepStrictEqual([c.server_id, c.server_slug, c.tool, c.status, c.actor_id, c.room_id], [stoaId, 'stoa', 'schedule_create', 'ok', agA.actorId, roomA]);
       const http = await req('GET', `/api/rooms/${roomA}/schedules`);
       assert.ok(http.body.schedules.some(s => s.id === builtinSchedId), 'same row through the HTTP API');
       const list = await stoaCall(tokA, 'schedule_list');
@@ -19778,7 +19856,7 @@ async function run() {
       }
     });
 
-    await test('MCP built-ins — delete: row gone, notice; reserved slug "stoa" refused and never shadows built-ins', async () => {
+    await test('MCP built-ins — delete: row gone, notice; reserved slug "stoa" refused, an unknown built-in is never routed upstream', async () => {
       const since = maxMsgId();
       const d = await stoaCall(tokA, 'schedule_delete', { schedule_id: builtinSchedId });
       assert.deepStrictEqual([d.isError, d.body], [false, { ok: true }]);
@@ -19791,15 +19869,9 @@ async function run() {
       assert.strictEqual(r.status, 400);
       assert.match(r.body.error, /reserved/);
       assert.strictEqual(mDb.prepare('SELECT COUNT(*) n FROM mcp_servers').get().n, before);
-      // A row from before the reservation: never exposed or started, the built-in still answers.
-      const legacy = Number(mDb.prepare("INSERT INTO mcp_servers (slug, name, transport, command, args_json, default_access) VALUES ('stoa','Legacy','stdio','node','[]','all')").run().lastInsertRowid);
-      try {
-        assert.deepStrictEqual((await listAll(tokA)).map(t => t.name).filter(n => n.startsWith('stoa__')).sort(), BUILTINS);
-        const l = await stoaCall(tokA, 'schedule_list');
-        assert.strictEqual(l.isError, false);
-        assert.ok(Array.isArray(l.body.schedules));
-        assert.match((await callText(tokA, 'stoa__echo')).text, /unknown tool/, 'not routed to the legacy row');
-      } finally { mDb.prepare('DELETE FROM mcp_servers WHERE id=?').run(legacy); }
+      // The slug belongs to the built-in row only (UNIQUE): a legacy row is renamed by the migration (unit test).
+      assert.throws(() => mDb.prepare("INSERT INTO mcp_servers (slug, name, transport, command) VALUES ('stoa','Legacy','stdio','node')").run(), /UNIQUE/);
+      assert.match((await callText(tokA, 'stoa__echo')).text, /Denied by Stoa: unknown tool/, 'an unknown stoa__ name is never sent to an upstream');
     });
 
     // ── Built-in stoa__* feature tools (lib/stoa-mcp-tools.js): same cores as the HTTP routes.
@@ -19919,6 +19991,69 @@ async function run() {
       assert.deepStrictEqual(Object.keys(subTools).filter(n => n.startsWith('stoa__')).sort(), SUB_BUILTINS);
       assert.deepStrictEqual(Object.keys(subTools.stoa__self_update.inputSchema.properties).sort(), ['description', 'role', 'system_prompt'], 'self_update offers only the self fields');
       assert.strictEqual(subTools.stoa__self_get.annotations.readOnlyHint, true);
+    });
+
+    await test('MCP stoa server row — listed first as builtin; tools with seeded approval on add/update only; connection fields, delete, test/oauth and slug guarded; disable, access deny and tool off apply to stoa__* and notify nothing broken', async () => {
+      const servers = (await req('GET', '/api/mcp/servers')).body.servers;
+      const stoa = servers[0];
+      assert.deepStrictEqual([stoa.slug, stoa.builtin, stoa.enabled, stoa.default_access, stoa.status, stoa.env_keys], ['stoa', true, true, 'all', 'running', []], 'the built-in row comes first');
+      assert.ok(servers.slice(1).every(s => s.builtin === false), 'every other row says builtin:false');
+      assert.strictEqual(mDb.prepare('SELECT COUNT(*) n FROM mcp_servers WHERE builtin=1').get().n, 1);
+      const tools = (await req('GET', `/api/mcp/servers/${stoa.id}/tools`)).body.tools;
+      assert.deepStrictEqual(tools.map(t => `stoa__${t.name}`).filter(n => BUILTINS.includes(n)).sort(), BUILTINS, 'every main-session built-in is listed for the owner');
+      assert.strictEqual(stoa.tool_count, tools.length);
+      assert.deepStrictEqual(tools.filter(t => t.requires_approval).map(t => t.name).sort(), ['mcp_server_add', 'mcp_server_update'], 'approval by default only on add/update');
+      assert.ok(tools.every(t => t.enabled && t.rate_limit_per_min === null && typeof t.description === 'string'));
+      const byName = Object.fromEntries(tools.map(t => [t.name, t]));
+      assert.deepStrictEqual([byName.message_send.write_hint, byName.messages_read.write_hint], [true, false], 'write hint from the annotations');
+      assert.strictEqual((await req('POST', `/api/mcp/servers/${stoa.id}/test`)).body.ok, true);
+
+      for (const body of [{ transport: 'stdio' }, { command: 'node' }, { url: 'https://x.example/mcp' }, { env: { A: 'b' } }, { keep_alive: true }, { auth: 'headers' }, { slug: 'other' }]) {
+        const r = await req('PATCH', `/api/mcp/servers/${stoa.id}`, body);
+        assert.strictEqual(r.status, 400, JSON.stringify(body));
+      }
+      assert.match((await req('PATCH', `/api/mcp/servers/${stoa.id}`, { url: 'https://x.example/mcp' })).body.error, /built-in Stoa server has no url to change/);
+      const del = await req('DELETE', `/api/mcp/servers/${stoa.id}`);
+      assert.deepStrictEqual([del.status, del.body.error], [400, 'the built-in Stoa server cannot be removed; disable it instead']);
+      assert.strictEqual((await req('POST', `/api/mcp/servers/${stoa.id}/oauth/start`)).status, 400);
+      assert.strictEqual((await req('PUT', `/api/mcp/servers/${stoa.id}/tools/not_a_builtin`, { enabled: false })).status, 404);
+      const taken = await req('POST', '/api/mcp/servers', { slug: 'stoa', name: 'x', transport: 'stdio', command: 'node', args: [] });
+      assert.deepStrictEqual([taken.status, taken.body.error], [400, 'slug "stoa" is reserved for Stoa\'s built-in tools']);
+      assert.strictEqual(mDb.prepare("SELECT transport, url, command FROM mcp_servers WHERE id=?").get(stoa.id).command, null, 'nothing written');
+      const renamed = await req('PATCH', `/api/mcp/servers/${stoa.id}`, { name: 'Stoa tools', slug: 'stoa', transport: stoa.transport });
+      assert.deepStrictEqual([renamed.status, renamed.body.server.name, renamed.body.server.builtin], [200, 'Stoa tools', true]);
+      const asAgent = await stoaCall(tokA, 'mcp_server_list');
+      assert.strictEqual(asAgent.body.servers[0].slug, 'stoa');
+      assert.match(await stoaErr(tokA, 'mcp_server_update', { slug: 'stoa', name: 'mine' }), /only be changed by the owner/, 'refused before any approval card');
+      assert.strictEqual(mDb.prepare("SELECT COUNT(*) n FROM mcp_approvals WHERE status='pending'").get().n, 0);
+
+      const names = async (token) => (await listAll(token)).map(t => t.name).filter(n => n.startsWith('stoa__'));
+      try {
+        let r = await req('PUT', `/api/mcp/servers/${stoa.id}/tools/room_memory_get`, { enabled: false });
+        assert.deepStrictEqual(r.body.tool, { name: 'room_memory_get', enabled: false, requires_approval: false, rate_limit_per_min: null });
+        assert.ok(!(await names(tokA)).includes('stoa__room_memory_get'), 'a disabled built-in leaves tools/list');
+        assert.ok((await names(tokA)).includes('stoa__messages_read'), 'the others stay');
+        assert.match(await stoaErr(tokA, 'room_memory_get'), /Denied by Stoa: tool is disabled/);
+        assert.deepStrictEqual([lastCall().server_id, lastCall().server_slug, lastCall().tool, lastCall().status], [stoa.id, 'stoa', 'room_memory_get', 'denied']);
+        await req('PUT', `/api/mcp/servers/${stoa.id}/tools/room_memory_get`, { enabled: true });
+        assert.strictEqual((await stoaCall(tokA, 'room_memory_get')).isError, false, 'enabled again → runs');
+
+        r = await req('PUT', '/api/mcp/access', { server_id: stoa.id, subject_type: 'agent', subject_id: agB.actorId, allow: false });
+        assert.strictEqual(r.status, 200);
+        assert.deepStrictEqual(await names(tokB), [], 'denied agent sees no stoa__ tools');
+        assert.match(await stoaErr(tokB, 'messages_read'), /Denied by Stoa: this agent has no access/);
+        assert.ok((await names(tokA)).includes('stoa__messages_read'), 'another agent is unaffected');
+
+        r = await req('PATCH', `/api/mcp/servers/${stoa.id}`, { enabled: false });
+        assert.deepStrictEqual([r.status, r.body.server.status], [200, 'disabled']);
+        assert.deepStrictEqual(await names(tokA), [], 'disabled row → no built-ins');
+        assert.match(await stoaErr(tokA, 'messages_read'), /Denied by Stoa: MCP server is disabled/);
+      } finally {
+        await req('PATCH', `/api/mcp/servers/${stoa.id}`, { enabled: true, name: 'Stoa' });
+        await req('PUT', '/api/mcp/access', { server_id: stoa.id, subject_type: 'agent', subject_id: agB.actorId, allow: null });
+        await req('PUT', `/api/mcp/servers/${stoa.id}/tools/room_memory_get`, { enabled: true });
+      }
+      assert.deepStrictEqual((await names(tokB)).sort(), BUILTINS, 'restored');
     });
 
     await test('MCP stoa tools — message_send: session thread by default, main_feed, idempotent; REST sees the same rows', async () => {
@@ -20663,8 +20798,9 @@ async function run() {
         assert.deepStrictEqual(listed, {
           slug: 'mcplisted', name: 'Listed', transport: 'stdio', command: process.execPath, args: [FIXTURE], url: null, preset: null,
           enabled: true, status: owned.find(s => s.slug === 'mcplisted').status, tool_count: owned.find(s => s.slug === 'mcplisted').tool_count,
-          env_keys: ['LIST_KEY'], has_access: false,
+          env_keys: ['LIST_KEY'], has_access: false, builtin: false,
         });
+        assert.deepStrictEqual([list.body.servers[0].slug, list.body.servers[0].builtin, list.body.servers[0].has_access], ['stoa', true, true], 'the built-in row first');
         assert.deepStrictEqual(list.body.servers.find(s => s.slug === 'mcplistfs').env_keys, ['ALLOWED_DIRS']);
         assert.deepStrictEqual(list.body.servers.map(s => s.slug), owned.map(s => s.slug), 'every server, so the agent can pick a free slug');
         assert.ok(list.body.servers.every(s => s.env_keys.every(k => typeof k === 'string')), 'names only on every server');
@@ -20682,21 +20818,18 @@ async function run() {
       assert.strictEqual(serverBySlug('subadd'), undefined);
     });
 
-    await test('MCP stoa tools — mcp_server_add: approved → server for the caller only (default none + agent grant), tested, notice; env value nowhere; always → 400 and stays pending', async () => {
+    await test('MCP stoa tools — mcp_server_add: approved → server for the caller only (default none + agent grant), tested, notice; env value nowhere', async () => {
       const ADD_SECRET = 'add-secret-' + crypto.randomBytes(8).toString('hex');
       const since = mDb.prepare('SELECT COALESCE(MAX(id), 0) id FROM messages').get().id;
       const args = { slug: 'mcpadded', name: 'Added by agent', transport: 'stdio', command: process.execPath, args: [FIXTURE], env: { DUMMY_SECRET: ADD_SECRET }, allow_all: true };
       try {
         const { approval, result, resolved } = await addRound(args, async (a) => {
           assert.strictEqual(serverBySlug('mcpadded'), undefined, 'nothing installed before the decision');
-          const always = await req('POST', `/api/mcp/approvals/${a.id}`, { decision: 'always' });
-          assert.deepStrictEqual([always.status, always.body.error], [400, 'always is not available for this tool']);
-          assert.strictEqual(mDb.prepare('SELECT status FROM mcp_approvals WHERE id=?').get(a.id).status, 'pending', 'always does not settle it');
           const out = await decide('approve')(a);
           assert.strictEqual(out.status, 200, out.raw);
         });
         assert.deepStrictEqual([approval.server_slug, approval.tool, approval.actor_id, approval.room_id, approval.thread_id, approval.allow_always],
-          ['stoa', 'mcp_server_add', agA.actorId, roomA, threadA, false]);
+          ['stoa', 'mcp_server_add', agA.actorId, roomA, threadA, true]);
         assert.deepStrictEqual(JSON.parse(approval.args_preview),
           { slug: 'mcpadded', name: 'Added by agent', transport: 'stdio', command: process.execPath, args: [FIXTURE], env: { DUMMY_SECRET: '***' } },
           'owner sees the full command line and env names; allow_all is not an argument of the tool');
@@ -20816,11 +20949,9 @@ async function run() {
           { slug: 'mcpupd', name: 'After', args: [FIXTURE, '--updated'], env: { NEW_KEY: NEW_SECRET }, env_remove: ['DUMMY_SECRET'] },
           async (a) => {
             assert.strictEqual(mDb.prepare('SELECT name FROM mcp_servers WHERE id=?').get(id).name, 'Before', 'nothing changed before the decision');
-            const always = await req('POST', `/api/mcp/approvals/${a.id}`, { decision: 'always' });
-            assert.strictEqual(always.status, 400, 'no always for this tool');
             assert.strictEqual((await decide('approve')(a)).status, 200);
           });
-        assert.deepStrictEqual([approval.server_slug, approval.tool, approval.actor_id, approval.allow_always], ['stoa', 'mcp_server_update', agA.actorId, false]);
+        assert.deepStrictEqual([approval.server_slug, approval.tool, approval.actor_id, approval.allow_always], ['stoa', 'mcp_server_update', agA.actorId, true]);
         assert.deepStrictEqual(JSON.parse(approval.args_preview), {
           slug: 'mcpupd',
           changes: {

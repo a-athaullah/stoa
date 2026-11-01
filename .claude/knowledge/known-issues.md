@@ -236,7 +236,7 @@ These are the pre-existing colors; they were not degraded by the themes feature.
 - `run-tests.js` writes a random token into its DB copy (table `stoa_test_marker`, which only exists in copies) and passes it as `STOA_TEST_DB_TOKEN`.
 - `test.js` refuses to run unless `DB_PATH` is set, does not resolve (through symlinks) to the repo's `db/stoa.db`, and holds the matching token. The repo-path check runs before the DB is opened. The token check opens the DB read-only. A path check alone can be bypassed by any new symlink or path; the token can't be satisfied by the live DB.
 - From a worktree without `db/stoa.db`, `run-tests.js` copies the DB and `.env` from the main worktree (`git rev-parse --git-common-dir`). Nobody needs to link the live DB anymore.
-- The copy also sets `mcp_servers.enabled=0`: a live server with `default_access='all'` showed up in the MCP policy tests' tool lists and made real upstream calls.
+- The copy also sets `mcp_servers.enabled=0` (except slug `stoa`, the built-in row): a live server with `default_access='all'` showed up in the MCP policy tests' tool lists and made real upstream calls.
 
 ---
 
@@ -439,7 +439,7 @@ These are the pre-existing colors; they were not degraded by the themes feature.
 
 **Do not flag:** the doctor `overdue` check lives in `lib/schedule.js diagnoseSchedule` (unit-tested) because an overdue row is claimed by the 1 s test loop before an HTTP test could observe it.
 
-**MCP tools (2026-10-24, owner request):** the same operations are built-in MCP tools `stoa__schedule_*`, so agents find them without reading docs. Consequence: `mcpTokenForTrigger` no longer waits for an installed MCP server — every tool-capable session gets a token and the `stoa` MCP config. Sessions created before this change get a new env once and respawn on their next trigger (one-time). Built-ins are not behind MCP grants: their own guard (room from token, participant re-check, same core as the HTTP API) is the same as the agent-scope `room` rule for `/api/rooms/:id/schedules`.
+**MCP tools (2026-10-24, owner request):** the same operations are built-in MCP tools `stoa__schedule_*`, so agents find them without reading docs. Consequence: `mcpTokenForTrigger` no longer waits for an installed MCP server — every tool-capable session gets a token and the `stoa` MCP config. Sessions created before this change get a new env once and respawn on their next trigger (one-time). Built-ins keep their own guard (room from token, participant re-check, same core as the HTTP API), the same as the agent-scope `room` rule for `/api/rooms/:id/schedules`. Since 2026-11-01 they are also behind the owner's MCP policy (row `stoa`, default_access 'all'); REST endpoints are deliberately not (owner decision).
 
 ---
 
