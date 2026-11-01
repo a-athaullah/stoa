@@ -413,11 +413,20 @@ These are the pre-existing colors; they were not degraded by the themes feature.
 
 **Risk it closes:** Prompt injection via untrusted content (WhatsApp, email, Slack, web) could cause an agent to curl admin endpoints (delete rooms, read settings, generate install tokens, etc.).
 
-**Implementation:** `matchAgentRoute(method, pathname)` in `lib/agent-scope.js` returns `{scope, id}` or null. Scope checks are: `room` (participant check), `self` (actor id match), `sub-agent` (ownership), `connection` (automation feed), `automation` (automation targets agent's room), `any` (valid agent sufficient). Non-matching requests → `403 {error:'agent_scope_denied'}` + one log line.
+**Implementation:** `matchAgentRoute(method, pathname)` in `lib/agent-scope.js` returns `{scope, id}` (+ `subAgent: false` on routes refused to a sub-agent credential) or null. Scope checks are: `room` (participant check), `self` (actor id match), `sub-agent` (ownership), `connection` (automation feed), `automation` (automation targets agent's room), `any` (valid agent sufficient). Non-matching requests → `403 {error:'agent_scope_denied'}` + one log line.
 
 **Escape hatch:** `STOA_AGENT_SCOPE=off` on server (warning logged at boot). Not gated by request headers — cannot be spoofed.
 
 **Implication:** Do not flag `requireAuth` agent bypass as "agent has full access" — that was closed in R21. When auditing, check `lib/agent-scope.js` for allowlist coverage instead.
+
+### Cross-Room Read + Sub-Agent REST Credential (2026-11-01, owner decision)
+**Decision:** Agents and sub-agents may read messages/threads of other rooms they belong to (MCP `room_id`, `stoa__rooms_list`). Archived rooms are NOT readable that way (owner). Sub-agent sessions no longer get the parent's `STOA_SECRET`: they get a per-sub-agent credential (`lib/sub-agent-credential.js`) limited to rooms the sub-agent is linked to and to what its MCP session may do.
+
+**Why stateless HMAC instead of a token table:** stable value → session env unchanged between triggers (no respawn, see MCP token TTL below); revoked by deleting the sub-agent or rotating the parent's secret; no migration.
+
+**Limit (do not flag as a bypass):** the sub-agent has a shell on its parent's machine — the parent's agent config (with the real secret) is readable there. This narrows the official path (env + API), it is not an OS sandbox. `STOA_AGENT_SCOPE=off` lifts sub-agent limits too (same escape hatch).
+
+**Archived = not readable, everywhere (owner, 2026-11-01):** routes flagged `read: true` in `lib/agent-scope.js` (GET room messages / threads / thread) refuse an archived room for the parent's secret and the sub-agent credential; the MCP read tools refuse it too, the session's own room included. Other routes (proactive message, email-reply, upload, room memory, schedules, MCP `message_send`) keep their master behavior (`canReach(..., {includeArchived: true})`): the scope adds no archived check there. Posting itself is still refused by `lib/room-messages.js` (`400 room is archived`), exactly as on master. Not changed: agent_search WS and the prompt history builder (context the server injects, not a read the agent asks for).
 
 ### Agent Automation Access (R21 extension — PR #171)
 **Decision (owner):** Agents can create, update, and delete automations, but only targeting rooms they are participants of. Scope `automation` was added to cover PATCH/DELETE by automation id.

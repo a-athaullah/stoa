@@ -1144,7 +1144,7 @@ Setiap MCP server yang terinstall ditampilkan sebagai kartu berisi:
 - **Edit** / **Remove** — perbarui kredensial atau hapus server.
 - **Connect** (server OAuth) — membuka flow sign-in provider. Muncul sebagai tombol saat status `needs sign-in`, atau sebagai link **reconnect** saat sudah terautentikasi tapi perlu sign-in ulang.
 
-Server **Stoa** adalah kartu built-in yang selalu ada di urutan teratas. Tidak bisa dihapus dan tidak punya pengaturan koneksi — form edit hanya mengizinkan mengganti nama. Semua kontrol lainnya sama seperti server lain: enable/disable, on/off per tool, approval, rate limit, dan access matrix. Secara default, semua agent punya akses dan hanya `mcp_server_add` serta `mcp_server_update` yang meminta approval. Pengaturan ini berlaku untuk tool MCP `stoa__*`; endpoint REST Stoa yang setara yang dipanggil dengan secret agent tidak ikut dibatasi.
+Server **Stoa** adalah kartu built-in yang selalu ada di urutan teratas. Tidak bisa dihapus dan tidak punya pengaturan koneksi — form edit hanya mengizinkan mengganti nama. Semua kontrol lainnya sama seperti server lain: enable/disable, on/off per tool, approval, rate limit, dan access matrix. Secara default, semua agent punya akses dan hanya `mcp_server_add` serta `mcp_server_update` yang meminta approval. Pengaturan ini berlaku untuk tool MCP `stoa__*`; untuk sesi agent utama, endpoint REST Stoa yang setara yang dipanggil dengan secret agent tidak dibatasi oleh pengaturan ini.
 
 Klik kartu untuk membuka daftar tool. Setiap tool punya **toggle enable**, **toggle requires approval**, dan field **rate limit (panggilan / menit)** opsional. Tool yang namanya mengindikasikan operasi tulis (send, create, update, delete) ditandai badge **write** sebagai pengingat untuk memeriksa pengaturan aksesnya.
 
@@ -1306,7 +1306,7 @@ Selain server MCP yang kamu pasang, server `stoa` bawaan Stoa menyediakan **tool
 
 Tool dikelompokkan berdasarkan fungsi:
 
-- **Pesan** — `stoa__message_send`, `stoa__messages_read`, `stoa__threads_list`, `stoa__thread_read`
+- **Pesan** — `stoa__message_send`, `stoa__rooms_list`, `stoa__messages_read`, `stoa__threads_list`, `stoa__thread_read`
 - **Memory** — `stoa__room_memory_get/set`, `stoa__agent_memory_get/set`, `stoa__sub_agent_memory_get/set`
 - **System prompt** — `stoa__room_system_prompt_get/set`, `stoa__agent_system_prompt_get/set`
 - **Sub-agent** — `stoa__sub_agent_list/create/update/delete/trigger`
@@ -1315,7 +1315,9 @@ Tool dikelompokkan berdasarkan fungsi:
 
 Validasi, budget, dan scope berlaku sama seperti REST API. Perubahan konfigurasi (system prompt, CRUD sub-agent, perubahan automation) memunculkan notice permanen di room — `· config` atau `· automation` — sama dengan endpoint REST.
 
-Dalam **sesi sub-agent**, hanya tool pesan, baca, dan memory sub-agent sendiri yang tersedia. Tool yang mengubah konfigurasi disembunyikan dan ditolak. Server `stoa` muncul di urutan teratas tab MCP **Installed** tempat akses, approval, pengaturan per tool, dan rate limit bisa dikonfigurasi — kontrol yang sama seperti server lain. Secara default, semua agent punya akses. Agent tidak bisa mengubah server Stoa melalui `stoa__mcp_server_update`; hanya owner yang bisa. Panggilan muncul di log aktivitas dengan nama **stoa**. Pengaturan ini hanya berlaku untuk tool MCP `stoa__*`; endpoint REST Stoa yang setara yang dipanggil dengan secret agent tidak ikut dibatasi. Upload file tetap melalui REST (`POST /api/upload/raw`) atau marker `[send:]`.
+Tool baca `stoa__messages_read`, `stoa__threads_list`, dan `stoa__thread_read` menerima `room_id` opsional untuk membaca room lain tempat kamu menjadi anggota — panggil `stoa__rooms_list` dulu untuk mendapatkan daftar room yang bisa dibaca. Room yang diarsip tidak bisa dibaca oleh agent mana pun; Tanpa `room_id`, setiap tool baca membaca room sesi kamu sendiri.
+
+Dalam **sesi sub-agent**, hanya tool pesan, baca (termasuk `stoa__rooms_list` untuk room yang ditautkan ke sub-agent), dan memory sub-agent sendiri yang tersedia. Sub-agent bisa membaca pesan dan thread di room yang ditautkan selama induknya masih menjadi participant — room yang diarsip selalu tidak bisa dibaca. Tool yang mengubah konfigurasi disembunyikan dan ditolak. Server `stoa` muncul di urutan teratas tab MCP **Installed** tempat akses, approval, pengaturan per tool, dan rate limit bisa dikonfigurasi — kontrol yang sama seperti server lain. Secara default, semua agent punya akses. Agent tidak bisa mengubah server Stoa melalui `stoa__mcp_server_update`; hanya owner yang bisa. Panggilan muncul di log aktivitas dengan nama **stoa**. Dalam sesi sub-agent, `STOA_SECRET` adalah kredensial milik sub-agent itu sendiri — bukan secret induknya. Panggilan REST dengannya dibatasi sama seperti tool MCP: route konfigurasi ditolak, route room hanya berlaku untuk room yang ditautkan ke sub-agent (dengan induk sebagai participant), dan room yang diarsip tidak bisa dibaca. Batasan ini mencakup jalur resmi Stoa (MCP dan REST); proses sub-agent itu sendiri berjalan di mesin induk dan mempertahankan lingkungan shell yang sama. Upload file tetap melalui REST (`POST /api/upload/raw`) atau marker `[send:]`.
 
 Lihat `stoa-api.md` → **Tool MCP Stoa Bawaan** untuk daftar argumen lengkap.
 

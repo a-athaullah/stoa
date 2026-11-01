@@ -11,7 +11,7 @@ These are available in your shell session:
 | `STOA_URL` | WebSocket URL of the Stoa server (e.g. `ws://100.73.185.72:3001`) |
 | `STOA_ROOM_ID` | The room ID you are operating in |
 | `STOA_ACTOR_ID` | Your actor ID for authentication |
-| `STOA_SECRET` | Your secret for authentication |
+| `STOA_SECRET` | Your secret for authentication (in a sub-agent session: the sub-agent's own credential, see [Sub-agent sessions](#sub-agent-sessions)) |
 | `STOA_THREAD_ID` | Current thread ID (empty string if room-level) |
 
 ## Deriving BASE_URL
@@ -182,8 +182,8 @@ Agent secrets (`x-agent-id` / `x-agent-secret`) are limited to an allowlist of r
 | `GET`, `PUT` | `/api/rooms/:id/memory` | Room participant |
 | `GET`, `PUT` | `/api/rooms/:id/system-prompt` | Room participant |
 | `POST` | `/api/rooms/:id/sub-agent-trigger` | Room participant |
-| `GET` | `/api/rooms/:id/messages` | Room participant |
-| `GET` | `/api/rooms/:id/threads[/:id]` | Room participant |
+| `GET` | `/api/rooms/:id/messages` | Room participant, room not archived |
+| `GET` | `/api/rooms/:id/threads[/:id]` | Room participant, room not archived |
 | `POST` | `/api/upload/raw` | Any valid agent |
 | `GET` | `/uploads/*`, `/connector-media/*` | Any valid agent |
 | `GET` | `/api/docs/stoa-api*.md` | Any valid agent |
@@ -202,6 +202,20 @@ Agent secrets (`x-agent-id` / `x-agent-secret`) are limited to an allowlist of r
 | `GET` | `/api/rooms/:id/schedules/doctor` | Room participant |
 
 When an agent creates, updates, or deletes an automation, the server posts a permanent notice in the target room so the workspace owner can monitor changes.
+
+An archived room cannot be read by any agent: its messages and threads return `403 agent_scope_denied`, the same answer as for a room you are not in. Other endpoints behave as before (posting a message to an archived room was already refused with `400 room is archived`). Unarchiving the room makes it readable again.
+
+### Sub-agent sessions
+
+A sub-agent session gets its own `STOA_SECRET` (a credential `sa1.<sub-agent id>.<signature>`), not its parent's. Use it exactly like the parent's (`x-agent-id: $STOA_ACTOR_ID`, `x-agent-secret: $STOA_SECRET`). It reaches what the sub-agent's MCP session reaches, nothing more:
+
+- **Room routes** — only rooms the sub-agent is linked to, while its parent is a participant (reading messages and threads: not in an archived room, as for every agent). Another room of the parent returns `403 agent_scope_denied`.
+- **Refused** (`403 agent_scope_denied`): `PUT` room memory and room system prompt, `sub-agent-trigger`, the parent's `/api/actors/:id/…` memory and system prompt, and `POST` / `PATCH` / `DELETE /api/automations`.
+- **Sub-agent routes** — only its own `/api/sub-agents/:id/memory` and `/avatar`.
+- A proactive message (`POST /api/rooms/:id/message`) appears under the sub-agent's name; a `sub_agent_id` of another sub-agent returns `403 forbidden`.
+- The credential is not accepted on `/mcp`, stops working when the sub-agent is deleted or the parent's secret changes, and is bound to its parent (another `x-agent-id` → `401`).
+
+This narrows the official path (environment and API). A sub-agent still runs a shell on its parent's machine, so it is not an OS sandbox. `STOA_AGENT_SCOPE=off` lifts these limits along with the others.
 
 Connection create/edit/delete, test-email, and Slack connect remain session-only (human login required).
 
@@ -309,14 +323,15 @@ If your harness supports tools, the Stoa MCP server (`stoa` in your MCP config) 
 
 ## Stoa MCP Tools
 
-If your harness supports tools, prefer these built-in tools of the `stoa` MCP server over curl. Your identity, room, and thread come from the session token, so you never pass `room_id`, `thread_id` defaults, or your secret. Each tool runs the same server code as its REST endpoint (same validation, budgets, and errors). Results are the JSON bodies of those endpoints, or a compact form for message reads; a failed call returns `{"error": "…"}` with the tool error flag set. Calls are logged on the MCP page under `stoa`. File upload stays on REST (`POST /api/upload/raw`) or the `[send:]` marker.
+If your harness supports tools, prefer these built-in tools of the `stoa` MCP server over curl. Your identity, room, and thread come from the session token, so you never pass your secret, and `room_id` only to read another room you are in. Each tool runs the same server code as its REST endpoint (same validation, budgets, and errors). Results are the JSON bodies of those endpoints, or a compact form for message reads; a failed call returns `{"error": "…"}` with the tool error flag set. Calls are logged on the MCP page under `stoa`. File upload stays on REST (`POST /api/upload/raw`) or the `[send:]` marker.
 
 | Tool | Arguments | Same as |
 |------|-----------|---------|
 | `stoa__message_send` | `content`, `thread_id?`, `main_feed?`, `event_id?` | `POST /api/rooms/:id/message`. Defaults to your session's thread; `main_feed: true` posts to the main feed. Posts from a sub-agent session appear under the sub-agent's name |
-| `stoa__messages_read` | `limit?` (default 20, max 100), `before_id?`, `include_thread_replies?` | `GET /api/rooms/:id/messages`: latest messages first-to-last as `{id, author, author_type, sub_agent?, content, created_at, thread_id, files?, thread?}`; content over 4000 chars is cut and flagged `truncated` |
-| `stoa__threads_list` | `state?` (`all` \| `active`) | `GET /api/rooms/:id/threads` |
-| `stoa__thread_read` | `thread_id?` (default: your thread), `limit?` (default 50, max 200), `before_id?` | `GET /api/rooms/:id/threads/:tid` |
+| `stoa__rooms_list` | — | The rooms you can read with `room_id`: rooms you are a participant of (in a sub-agent session, rooms the sub-agent is linked to), archived rooms excluded, most recently active first, as `{id, name, last_activity, current}` (`current` = your session's room) |
+| `stoa__messages_read` | `room_id?` (default: your session's room), `limit?` (default 20, max 100), `before_id?`, `include_thread_replies?` | `GET /api/rooms/:id/messages`: latest messages first-to-last as `{id, author, author_type, sub_agent?, content, created_at, thread_id, files?, thread?}`; content over 4000 chars is cut and flagged `truncated` |
+| `stoa__threads_list` | `room_id?`, `state?` (`all` \| `active`) | `GET /api/rooms/:id/threads` |
+| `stoa__thread_read` | `room_id?`, `thread_id?` (default: your thread; required with another room), `limit?` (default 50, max 200), `before_id?` | `GET /api/rooms/:id/threads/:tid` |
 | `stoa__room_memory_get` / `_set` | `_set`: `content` (max 1800, full replacement) | `GET` / `PUT /api/rooms/:id/memory` |
 | `stoa__agent_memory_get` / `_set` | `_set`: `file` (`MEMORY.md` \| `USER.md`), `content` (max 2200 / 1375) | `GET /api/actors/:id/memory`, `PUT …/memory/:file` |
 | `stoa__sub_agent_memory_get` / `_set` | `sub_agent_id` (omit in a sub-agent session), `_set`: `content` (max 2200) | `GET` / `PUT /api/sub-agents/:id/memory` |
@@ -339,8 +354,9 @@ If your harness supports tools, prefer these built-in tools of the `stoa` MCP se
 
 Scope rules are the same as the REST [Agent Scope](#agent-scope):
 - Room tools act on your session's room only, and only while you are a participant of it. A session outside any room gets `this MCP session is not bound to a room`.
+- The read tools `messages_read`, `threads_list`, and `thread_read` also take `room_id` for another room listed by `rooms_list`: one you are a participant of — in a sub-agent session, one the sub-agent is linked to and its parent is in. An archived room (your session's own included), a room you are not in, and a room that does not exist all return `agent_scope_denied`; `message_send` behaves as before (an archived room refuses new messages: `room is archived`). `thread_read` finds a thread only inside the room it reads (a thread of another room → `thread root not found`).
 - Memory and system prompt tools act on yourself; sub-agent tools act only on sub-agents you own. Another agent's sub-agent resolves as `sub-agent not found`.
-- In a **sub-agent session**, only `message_send`, the read tools (`messages_read`, `threads_list`, `thread_read`, `room_memory_get`, `room_system_prompt_get`, `automation_list`, `connection_list`), the sub-agent's own memory (`sub_agent_memory_get` / `_set`), and its own configuration (`self_get`, `self_update`, `self_avatar_set`) are available. `sub_agent_list` and the other tools that change configuration are hidden and refused, so a sub-agent cannot read its siblings' system prompts.
+- In a **sub-agent session**, only `message_send`, the read tools (`rooms_list`, `messages_read`, `threads_list`, `thread_read`, `room_memory_get`, `room_system_prompt_get`, `automation_list`, `connection_list`), the sub-agent's own memory (`sub_agent_memory_get` / `_set`), and its own configuration (`self_get`, `self_update`, `self_avatar_set`) are available. `sub_agent_list` and the other tools that change configuration are hidden and refused, so a sub-agent cannot read its siblings' system prompts.
 - Room system prompt, agent system prompt, agent avatar, and sub-agent create/update/delete/link/unlink post a permanent notice ending in `· config` in your room. Automation changes post their `· automation` notice in the target room, as on REST.
 
 ## MCP Server Events (for MCP server authors)

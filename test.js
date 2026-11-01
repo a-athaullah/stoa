@@ -2053,17 +2053,21 @@ function runUnitTests() {
     const { matchAgentRoute, agentScopeEnforced } = require('./lib/agent-scope');
     ut('agent-scope — allowlisted routes match with scope + numeric id', () => {
       assert.deepStrictEqual(matchAgentRoute('POST', '/api/rooms/12/message'), { scope: 'room', id: 12 });
-      assert.deepStrictEqual(matchAgentRoute('PUT', '/api/actors/4/memory/MEMORY.md'), { scope: 'self', id: 4 });
+      assert.deepStrictEqual(matchAgentRoute('PUT', '/api/actors/4/memory/MEMORY.md'), { scope: 'self', id: 4, subAgent: false });
       assert.deepStrictEqual(matchAgentRoute('PUT', '/api/sub-agents/9/memory'), { scope: 'sub-agent', id: 9 });
       assert.deepStrictEqual(matchAgentRoute('POST', '/api/sub-agents/9/avatar'), { scope: 'sub-agent', id: 9 });
       assert.deepStrictEqual(matchAgentRoute('GET', '/api/automations/connections/3/messages'), { scope: 'connection', id: 3 });
-      assert.deepStrictEqual(matchAgentRoute('PATCH', '/api/automations/7'), { scope: 'automation', id: 7 });
+      assert.deepStrictEqual(matchAgentRoute('PATCH', '/api/automations/7'), { scope: 'automation', id: 7, subAgent: false });
       assert.deepStrictEqual(matchAgentRoute('GET', '/api/automations'), { scope: 'any', id: null });
       assert.deepStrictEqual(matchAgentRoute('POST', '/api/upload/raw'), { scope: 'any', id: null });
       assert.deepStrictEqual(matchAgentRoute('GET', '/api/docs/stoa-api.ja.md'), { scope: 'any', id: null });
       assert.deepStrictEqual(matchAgentRoute('POST', '/api/rooms/12/schedules'), { scope: 'room', id: 12 });
       assert.deepStrictEqual(matchAgentRoute('DELETE', '/api/rooms/12/schedules/3'), { scope: 'room', id: 12 });
       assert.deepStrictEqual(matchAgentRoute('GET', '/api/rooms/12/schedules/doctor'), { scope: 'room', id: 12 });
+      for (const p of ['/api/rooms/12/messages', '/api/rooms/12/threads', '/api/rooms/12/threads/5']) {
+        assert.deepStrictEqual(matchAgentRoute('GET', p), { scope: 'room', id: 12, read: true }, `${p}: read route (archived refused)`);
+      }
+      assert.deepStrictEqual(matchAgentRoute('GET', '/api/rooms/12/memory'), { scope: 'room', id: 12 }, 'memory is not a read route');
     });
     ut('agent-scope — wrong method, suffix, or admin route → null', () => {
       assert.strictEqual(matchAgentRoute('DELETE', '/api/rooms/12/message'), null);
@@ -2567,6 +2571,77 @@ async function runAsyncUnitTests() {
       stoa.__resetDeps();
     }
     assert.ok(!codexArgs({ STOA_MCP_TOKEN: 't', STOA_MCP_URL: 'http://x/mcp' }).some(a => a.includes('tool_timeout_sec')), 'no timeout env → codex default');
+  });
+
+  await uta('sub-agent env — STOA_SECRET is the sub-agent credential from the trigger, never the agent\'s own; main sessions unchanged', async () => {
+    const stoa = require('./stoa.js');
+    const envs = [];
+    let finish = null;
+    const mockSession = {
+      _systemPromptHash: null, _harness: 'claude', flags: [], env: null, resumeId: null,
+      on: () => {}, removeListener: () => {}, shutdown: () => {}, cancelTask: () => false,
+      send: () => new Promise(r => { finish = r; }),
+    };
+    stoa.__setDeps({ send: () => {}, getSession: (dir, room, e) => { envs.push(e); mockSession.env = e; return mockSession; } });
+    const run = async (msg) => {
+      finish = null;
+      const p = stoa.processTrigger({ room_id: 99, prompt: 'x', workdir: require('os').tmpdir(), ...msg });
+      for (let i = 0; i < 100 && !finish; i++) await new Promise(r => setTimeout(r, 10));
+      finish?.({ content: 'done', sessionId: null });
+      await p.catch(() => {});
+      return envs.at(-1);
+    };
+    try {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      const sub = { id: 7, label: 'helper', tier: 'quick' };
+      assert.strictEqual((await run({ message_id: 'sa-env-1', sub_agent: sub, sub_agent_secret: 'sa1.7.' + 'a'.repeat(64) })).STOA_SECRET, 'sa1.7.' + 'a'.repeat(64));
+      assert.strictEqual((await run({ message_id: 'sa-env-2', sub_agent: sub })).STOA_SECRET, '', 'no credential sent → empty, the agent secret is not inherited');
+      assert.ok(!('STOA_SECRET' in (await run({ message_id: 'sa-env-3' }))), 'main session: env keeps inheriting the agent\'s own secret');
+    } finally {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      stoa.__resetDeps();
+    }
+  });
+
+  await uta('sub-agent credential — bound to parent, sub-agent and the parent\'s current secret; wrong shape or tampered → null', () => {
+    const { mintSubAgentSecret, verifySubAgentSecret } = require('./lib/sub-agent-credential');
+    const key = crypto.randomBytes(32);
+    const c = mintSubAgentSecret(key, { actorId: 5, subAgentId: 9, actorSecret: 's3cret' });
+    assert.match(c, /^sa1\.9\.[a-f0-9]{64}$/);
+    assert.strictEqual(mintSubAgentSecret(key, { actorId: 5, subAgentId: 9, actorSecret: 's3cret' }), c, 'deterministic');
+    assert.strictEqual(verifySubAgentSecret(key, c, { actorId: 5, actorSecret: 's3cret' }), 9);
+    assert.strictEqual(verifySubAgentSecret(key, c, { actorId: 6, actorSecret: 's3cret' }), null, 'other parent');
+    assert.strictEqual(verifySubAgentSecret(key, c, { actorId: 5, actorSecret: 'rotated' }), null, 'parent secret changed');
+    assert.strictEqual(verifySubAgentSecret(crypto.randomBytes(32), c, { actorId: 5, actorSecret: 's3cret' }), null, 'other server key');
+    assert.strictEqual(verifySubAgentSecret(key, c.replace('sa1.9.', 'sa1.8.'), { actorId: 5, actorSecret: 's3cret' }), null, 'id swapped');
+    for (const bad of [null, '', 's3cret', 'sa1.9.xyz', `sa1.9.${'0'.repeat(64)}`, c + '0', ` ${c}`]) {
+      assert.strictEqual(verifySubAgentSecret(key, bad, { actorId: 5, actorSecret: 's3cret' }), null, String(bad).slice(0, 20));
+    }
+  });
+
+  await uta('room access — member rooms only; sub-agent needs the link AND its parent in the room; archived and missing rooms refused', () => {
+    const Database = require('better-sqlite3');
+    const d = new Database(':memory:');
+    d.exec(`CREATE TABLE rooms (id INTEGER PRIMARY KEY, title TEXT, archived_at TEXT, created_at TEXT);
+      CREATE TABLE room_participants (room_id INTEGER, actor_id INTEGER);
+      CREATE TABLE room_sub_agents (room_id INTEGER, sub_agent_id INTEGER);
+      CREATE TABLE messages (id INTEGER PRIMARY KEY, room_id INTEGER, created_at TEXT);
+      INSERT INTO rooms VALUES (1,'one',NULL,'2026-01-01'),(2,'two',NULL,'2026-01-02'),(3,'archived','2026-02-01','2026-01-03'),(4,'linked only',NULL,'2026-01-04');
+      INSERT INTO room_participants VALUES (1,10),(2,10),(3,10),(1,10);
+      INSERT INTO room_sub_agents VALUES (1,77),(3,77),(4,77);
+      INSERT INTO messages VALUES (1,1,'2026-03-01'),(2,2,'2026-03-05');`);
+    const { createRoomAccess } = require('./lib/room-access');
+    const a = createRoomAccess(d);
+    assert.deepStrictEqual(a.list({ actorId: 10 }), [{ id: 2, title: 'two', last_activity: '2026-03-05' }, { id: 1, title: 'one', last_activity: '2026-03-01' }], 'no duplicates, archived out, newest first');
+    assert.deepStrictEqual(a.list({ actorId: 10, subAgentId: 77 }).map(r => r.id), [1], 'linked + parent in it + not archived');
+    assert.deepStrictEqual([1, 2, 3, 4, 99].map(id => a.canReach(id, { actorId: 10 })), [true, true, false, false, false]);
+    assert.deepStrictEqual([1, 2, 3, 4].map(id => a.canReach(id, { actorId: 10, subAgentId: 77 })), [true, false, false, false], 'room 4: linked but parent not in it');
+    assert.strictEqual(a.canReach('1', { actorId: 10 }), false, 'non-integer id');
+    assert.deepStrictEqual([1, 3, 4, 99].map(id => a.canReach(id, { actorId: 10 }, { includeArchived: true })), [true, true, false, false], 'writes: archived allowed, membership still required');
+    assert.deepStrictEqual([1, 3, 4].map(id => a.canReach(id, { actorId: 10, subAgentId: 77 }, { includeArchived: true })), [true, true, false]);
+    d.close();
   });
 
   // Drives the real hangWatchdog: captures its 10s interval callback and moves Date.now.
@@ -19075,7 +19150,7 @@ async function run() {
     const { startMcpHttpFixture } = require('./test/fixtures/mcp-http-server');
     const SECRET = 'dummy-secret-' + crypto.randomBytes(8).toString('hex');
     let agA = null, agB = null, roomA = null, roomB = null, sub = null, server = null;
-    let tokA = null, tokB = null, tokSub = null, threadA = null;
+    let tokA = null, tokB = null, tokSub = null, threadA = null, subSecret = null;
     // Cookies are dropped only while fn() builds its request (synchronously), so an anonymous call
     // can stay in flight while owner requests run (approval tests).
     const asAnon = (fn) => {
@@ -19083,6 +19158,17 @@ async function run() {
       sessionCookie = null; deviceCookie = null;
       try { return fn(); } finally { sessionCookie = s; deviceCookie = d; }
     };
+    // The test DB is a copy of the live one, where the owner may have changed the built-in server's tool
+    // settings. These tests assume the migration defaults (approval on add/update, everything else free),
+    // so set exactly those for the run and put the owner's rows back in MCP teardown.
+    const builtinId = mDb.prepare('SELECT id FROM mcp_servers WHERE builtin=1').get().id;
+    const ownerBuiltinOverrides = mDb.prepare('SELECT * FROM mcp_tool_overrides WHERE server_id=?').all(builtinId);
+    mDb.transaction(() => {
+      mDb.prepare('DELETE FROM mcp_tool_overrides WHERE server_id=?').run(builtinId);
+      for (const tool of ['mcp_server_add', 'mcp_server_update']) {
+        mDb.prepare('INSERT INTO mcp_tool_overrides (server_id, tool, enabled, requires_approval) VALUES (?, ?, 1, 1)').run(builtinId, tool);
+      }
+    })();
     // JSON-RPC over streamable HTTP; the reply is JSON or one SSE "data:" event.
     let rpcId = 0;
     const mcp = (token, method, params = {}, extra = {}) => asAnon(async () => {
@@ -19105,13 +19191,13 @@ async function run() {
     const BUILTINS = ['schedule_create', 'schedule_delete', 'schedule_doctor', 'schedule_list', 'schedule_update',
       'agent_avatar_set', 'agent_memory_get', 'agent_memory_set', 'agent_system_prompt_get', 'agent_system_prompt_set',
       'automation_create', 'automation_delete', 'automation_list', 'automation_update', 'connection_list',
-      'message_send', 'messages_read', 'room_memory_get', 'room_memory_set', 'room_system_prompt_get', 'room_system_prompt_set',
+      'message_send', 'messages_read', 'room_memory_get', 'room_memory_set', 'room_system_prompt_get', 'room_system_prompt_set', 'rooms_list',
       'mcp_catalog', 'mcp_server_add', 'mcp_server_list', 'mcp_server_update',
       'skill_create', 'skill_delete', 'skill_get', 'skill_import_git', 'skill_list', 'skill_source_check', 'skill_source_detach', 'skill_source_update', 'skill_update', 'skill_use',
       'sub_agent_avatar_set', 'sub_agent_create', 'sub_agent_delete', 'sub_agent_link', 'sub_agent_list', 'sub_agent_memory_get', 'sub_agent_memory_set', 'sub_agent_trigger', 'sub_agent_unlink', 'sub_agent_update',
       'thread_read', 'threads_list'].map(n => `stoa__${n}`).sort();
     // Built-ins a sub-agent session sees: the config-changing ones are hidden from it (availableTo).
-    const SUB_SESSION_TOOLS = ['automation_list', 'connection_list', 'message_send', 'messages_read', 'room_memory_get', 'room_system_prompt_get',
+    const SUB_SESSION_TOOLS = ['automation_list', 'connection_list', 'message_send', 'messages_read', 'room_memory_get', 'room_system_prompt_get', 'rooms_list',
       'self_avatar_set', 'self_get', 'self_update',
       'skill_create', 'skill_delete', 'skill_get', 'skill_import_git', 'skill_list', 'skill_source_check', 'skill_source_detach', 'skill_source_update', 'skill_update', 'skill_use', 'sub_agent_memory_get', 'sub_agent_memory_set', 'thread_read', 'threads_list'];
     // self_* exist only in sub-agent sessions, so they are not in BUILTINS (the main session's list).
@@ -19378,6 +19464,14 @@ async function run() {
       const m = await st;
       tokSub = m.mcp_token;
       assert.ok(tokSub && tokSub !== tokA, 'sub-agent session has its own token');
+      subSecret = m.sub_agent_secret;
+      assert.match(subSecret || '', new RegExp(`^sa1\\.${sub.id}\\.[a-f0-9]{64}$`), 'sub-agent session gets its own REST credential');
+      assert.notStrictEqual(subSecret, agA.secret);
+      const again = waitForWsMessage(agA.ws, x => x.type === 'agent_trigger' && x.sub_agent?.id === sub.id, 5000);
+      assert.strictEqual((await asAnon(() => req('POST', `/api/rooms/${roomA}/sub-agent-trigger`, { sub_agent_id: sub.id, task: 'check the mcp tools again' }, { 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret }))).status, 200);
+      const m2 = await again;
+      assert.strictEqual(m2.sub_agent_secret, subSecret, 'stable across triggers (session env unchanged)');
+      await completeSubAgentRun(agA.ws, roomA, m2);
       await completeSubAgentRun(agA.ws, roomA, m);
     });
 
@@ -20094,12 +20188,17 @@ async function run() {
     await test('MCP stoa tools — main session lists all, sub-agent session hides config tools; schemas take no room/actor id', async () => {
       const main = Object.fromEntries((await listAll(tokA)).map(t => [t.name, t]));
       assert.deepStrictEqual(Object.keys(main).filter(n => n.startsWith('stoa__')).sort(), BUILTINS);
+      // room_id only on the read tools (cross-room read, scoped by the token's identity).
+      const ROOM_READ = ['stoa__messages_read', 'stoa__thread_read', 'stoa__threads_list'];
       for (const t of Object.values(main).filter(t => t.name.startsWith('stoa__'))) {
-        for (const k of ['room_id', 'actor_id', 'parent_actor_id']) assert.ok(!(k in (t.inputSchema.properties || {})), `${t.name} has no ${k} argument`);
+        for (const k of ['room_id', 'actor_id', 'parent_actor_id']) {
+          if (k === 'room_id' && ROOM_READ.includes(t.name)) continue;
+          assert.ok(!(k in (t.inputSchema.properties || {})), `${t.name} has no ${k} argument`);
+        }
         assert.strictEqual(t.inputSchema.additionalProperties, false, `${t.name} rejects unknown args`);
       }
       for (const n of ['sub_agent_delete', 'automation_delete']) assert.strictEqual(main[`stoa__${n}`].annotations.destructiveHint, true, n);
-      for (const n of ['messages_read', 'thread_read', 'threads_list', 'room_memory_get', 'agent_memory_get', 'sub_agent_list', 'automation_list', 'connection_list']) {
+      for (const n of ['rooms_list', 'messages_read', 'thread_read', 'threads_list', 'room_memory_get', 'agent_memory_get', 'sub_agent_list', 'automation_list', 'connection_list']) {
         assert.strictEqual(main[`stoa__${n}`].annotations.readOnlyHint, true, n);
       }
       for (const n of ['message_send', 'room_memory_set', 'sub_agent_create', 'sub_agent_link', 'sub_agent_unlink', 'automation_update']) {
@@ -20293,6 +20392,188 @@ async function run() {
         assert.deepStrictEqual([r.isError, JSON.parse(r.content[0].text).error], [true, 'agent_scope_denied'], tool);
       }
       assert.strictEqual(maxMsgId(), before, 'nothing posted');
+    });
+
+    // Cross-room read (owner decision 2026-11-01): a room the caller is in — a sub-agent: linked to —
+    // never an archived one; anything else answers 403 alike, over MCP and over REST with the sub-agent credential.
+    const subHeaders = (secret = subSecret, actorId = agA.actorId) => ({ 'x-agent-id': String(actorId), 'x-agent-secret': secret });
+    let roomX = null;
+    await test('MCP stoa tools — cross-room read: rooms_list + room_id on messages_read / threads_list / thread_read; non-member, archived, unknown → 403 alike; default unchanged', async () => {
+      const mk = async (title, ids) => {
+        const r = await req('POST', '/api/rooms', { title, workdir_id: agA.workdirId, participant_ids: ids });
+        assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+        testRoomIds.push(r.body.id);
+        return r.body.id;
+      };
+      roomX = await mk('__mcp-room-c__', [agA.actorId, agB.actorId]);
+      const roomD = await mk('__mcp-room-d__', [agA.actorId]);
+      const post = async (roomId, ag, body) => {
+        const r = await asAnon(() => req('POST', `/api/rooms/${roomId}/message`, body, subHeaders(ag.secret, ag.actorId)));
+        assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+        return r.body.message_id;
+      };
+      // Posted as agent A: agent B is deleted later (MCP cleanup), and an agent with history is kept (409).
+      const rootC = await post(roomX, agA, { content: 'room C root' });
+      const replyC = await post(roomX, agA, { content: 'room C reply', thread_id: rootC });
+      await post(roomD, agA, { content: 'room D before archive' });
+      assert.strictEqual((await req('PATCH', `/api/rooms/${roomD}`, { archived: true })).status, 200);
+      const roomOf = mDb.prepare('SELECT room_id FROM messages WHERE id=?');
+
+      const listed = (await stoaOk(tokA, 'rooms_list')).rooms;
+      const ids = listed.map(r => r.id);
+      assert.ok(ids.includes(roomA) && ids.includes(roomX), 'both rooms agent A is in');
+      assert.ok(!ids.includes(roomB), 'room B: not a participant');
+      assert.ok(!ids.includes(roomD), 'archived room left out');
+      const lastC = mDb.prepare('SELECT created_at FROM messages WHERE room_id=? ORDER BY id DESC LIMIT 1').get(roomX).created_at;
+      assert.deepStrictEqual(listed.find(r => r.id === roomX), { id: roomX, name: '__mcp-room-c__', last_activity: lastC, current: false });
+      assert.strictEqual(listed.find(r => r.id === roomA).current, true, 'the session room is marked');
+      assert.ok(!(await stoaOk(tokB, 'rooms_list')).rooms.some(r => r.id === roomA), 'agent B does not see room A');
+
+      const feed = await stoaOk(tokA, 'messages_read', { room_id: roomX, limit: 20 });
+      const restFeed = (await req('GET', `/api/rooms/${roomX}/messages?before=${replyC + 1}&limit=20`)).body;
+      assert.deepStrictEqual(feed.messages.map(m => m.id), restFeed.map(m => m.id), 'messages_read room C = REST feed of room C');
+      assert.ok(feed.messages.some(m => m.id === rootC && m.thread?.replies === 1), 'room C root with its reply count');
+      const threads = await stoaOk(tokA, 'threads_list', { room_id: roomX });
+      assert.deepStrictEqual(threads.threads.map(t => t.id), (await req('GET', `/api/rooms/${roomX}/threads`)).body.map(t => t.id), 'threads_list room C = REST');
+      const th = await stoaOk(tokA, 'thread_read', { room_id: roomX, thread_id: rootC });
+      assert.deepStrictEqual([th.thread_id, th.root.id, th.messages.map(m => m.id)], [rootC, rootC, [replyC]]);
+      assert.match(await stoaErr(tokA, 'thread_read', { room_id: roomX }), /thread_id required/, 'the session thread is not looked up in another room');
+      assert.strictEqual(await stoaErr(tokA, 'thread_read', { room_id: roomX, thread_id: threadA }), 'thread root not found', 'room C + a thread of room A');
+      assert.strictEqual(await stoaErr(tokA, 'thread_read', { room_id: roomA, thread_id: rootC }), 'thread root not found', 'room A + a thread of room C');
+      assert.match(await stoaErr(tokA, 'messages_read', { room_id: 'x' }), /room_id must be a positive integer/);
+
+      const def = await stoaOk(tokA, 'messages_read', { limit: 5 });
+      assert.ok(def.messages.length > 0 && def.messages.every(m => roomOf.get(m.id).room_id === roomA), 'no room_id → the session room');
+      assert.deepStrictEqual(await stoaOk(tokA, 'messages_read', { limit: 5, room_id: roomA }), def, 'room_id of the session room reads the same');
+      assert.strictEqual((await stoaOk(tokA, 'thread_read', {})).thread_id, threadA, 'thread_read default: the session thread');
+
+      const missing = mDb.prepare('SELECT COALESCE(MAX(id),0)+1000 n FROM rooms').get().n;
+      for (const tool of ['messages_read', 'threads_list', 'thread_read']) {
+        for (const [rid, why] of [[roomB, 'not a participant'], [roomD, 'archived'], [missing, 'no such room']]) {
+          assert.strictEqual(await stoaErr(tokA, tool, { room_id: rid, thread_id: rootC }), 'agent_scope_denied', `${tool}: ${why}`);
+        }
+      }
+    });
+
+    await test('REST + MCP — archived room: no agent secret reads it (403), unarchived again → 200; posting there is refused as on master', async () => {
+      const roomD = mDb.prepare("SELECT id FROM rooms WHERE title='__mcp-room-d__' AND archived_at IS NOT NULL ORDER BY id DESC LIMIT 1").get().id;
+      const rootD = mDb.prepare('SELECT id FROM messages WHERE room_id=? ORDER BY id LIMIT 1').get(roomD).id;
+      const restGet = (p, secret = agA.secret) => asAnon(() => req('GET', p, null, subHeaders(secret)));
+      const reads = (roomId, root) => [`/api/rooms/${roomId}/messages`, `/api/rooms/${roomId}/threads`, `/api/rooms/${roomId}/threads/${root}`];
+      for (const p of reads(roomD, rootD)) {
+        const r = await restGet(p);
+        assert.deepStrictEqual([r.status, r.body?.error], [403, 'agent_scope_denied'], `parent secret, archived: ${p}`);
+      }
+      const countD = () => mDb.prepare('SELECT COUNT(*) n FROM messages WHERE room_id=?').get(roomD).n;
+      const before = countD();
+      const posted = await asAnon(() => req('POST', `/api/rooms/${roomD}/message`, { content: 'report from an archived room' }, subHeaders(agA.secret)));
+      assert.deepStrictEqual([posted.status, posted.body?.error], [400, 'room is archived'], 'posting to an archived room: unchanged from master (refused by room-messages, not by the scope)');
+      assert.strictEqual(countD(), before, 'nothing stored');
+      assert.strictEqual((await req('PATCH', `/api/rooms/${roomD}`, { archived: false })).status, 200);
+      try {
+        for (const p of reads(roomD, rootD)) assert.strictEqual((await restGet(p)).status, 200, `unarchived: ${p}`);
+        assert.ok((await stoaOk(tokA, 'messages_read', { room_id: roomD })).messages.some(m => m.id === rootD), 'MCP reads it again');
+      } finally { await req('PATCH', `/api/rooms/${roomD}`, { archived: true }); }
+
+      // The session's own room archived: reads refused (MCP and REST, parent and sub-agent). Posting is refused
+      // as on master (400 room is archived), but by room-messages, not by the scope: the scope still lets it through.
+      assert.strictEqual((await req('PATCH', `/api/rooms/${roomA}`, { archived: true })).status, 200);
+      try {
+        for (const tok of [tokA, tokSub]) {
+          for (const tool of ['messages_read', 'threads_list', 'thread_read']) {
+            assert.strictEqual(await stoaErr(tok, tool, { thread_id: threadA }), 'agent_scope_denied', `MCP ${tool} in an archived session room`);
+          }
+        }
+        assert.match(await stoaErr(tokA, 'message_send', { content: 'MCP report from an archived room', main_feed: true }), /room is archived/, 'MCP message_send unchanged from master');
+        const subPost = await asAnon(() => req('POST', `/api/rooms/${roomA}/message`, { content: 'sub-agent report from an archived room', thread_id: threadA }, subHeaders()));
+        assert.deepStrictEqual([subPost.status, subPost.body?.error], [400, 'room is archived'], 'sub-agent credential: past the scope, refused like the parent secret on master');
+        assert.strictEqual((await restGet(`/api/rooms/${roomA}/memory`, subSecret)).status, 200, 'sub-agent: room memory of its archived room, as before');
+        assert.strictEqual((await restGet(`/api/rooms/${roomA}/messages`, subSecret)).status, 403, 'sub-agent: reading it is refused');
+      } finally { await req('PATCH', `/api/rooms/${roomA}`, { archived: false }); }
+      assert.ok((await stoaOk(tokA, 'messages_read', { limit: 1 })).messages.length === 1, 'unarchived: the session room reads again');
+    });
+
+    await test('MCP + REST — sub-agent: only rooms it is linked to (parent\'s other room → 403); linking opens it', async () => {
+      const rootC = mDb.prepare('SELECT id FROM messages WHERE room_id=? AND thread_id IS NULL ORDER BY id DESC LIMIT 1').get(roomX).id;
+      const restGet = (p, secret = subSecret) => asAnon(() => req('GET', p, null, subHeaders(secret)));
+      const subRooms = (await stoaOk(tokSub, 'rooms_list')).rooms.map(r => r.id);
+      assert.ok(subRooms.includes(roomA), 'linked room listed');
+      assert.ok(!subRooms.includes(roomX), 'parent\'s room the sub-agent is not linked to is left out');
+      for (const tool of ['messages_read', 'threads_list', 'thread_read']) {
+        assert.strictEqual(await stoaErr(tokSub, tool, { room_id: roomX, thread_id: rootC }), 'agent_scope_denied', `MCP ${tool}`);
+      }
+      for (const p of [`/api/rooms/${roomX}/messages`, `/api/rooms/${roomX}/threads`, `/api/rooms/${roomX}/threads/${rootC}`]) {
+        const r = await restGet(p);
+        assert.deepStrictEqual([r.status, r.body?.error], [403, 'agent_scope_denied'], `REST ${p}`);
+        assert.strictEqual((await restGet(p, agA.secret)).status, 200, `parent secret still reads ${p}`);
+      }
+      assert.strictEqual((await restGet(`/api/rooms/${roomA}/messages`)).status, 200, 'REST: linked room');
+      assert.strictEqual((await restGet(`/api/rooms/${roomB}/messages`)).status, 403, 'REST: room the parent is not in');
+
+      assert.ok((await req('POST', `/api/rooms/${roomX}/sub-agents`, { sub_agent_id: sub.id })).status < 300);
+      try {
+        const viaSub = await stoaOk(tokSub, 'messages_read', { room_id: roomX });
+        assert.deepStrictEqual(viaSub, await stoaOk(tokA, 'messages_read', { room_id: roomX }), 'linked: same as the parent reads');
+        assert.ok((await stoaOk(tokSub, 'rooms_list')).rooms.some(r => r.id === roomX));
+        const rest = await restGet(`/api/rooms/${roomX}/threads/${rootC}`);
+        assert.deepStrictEqual([rest.status, rest.body.root?.id], [200, rootC], 'REST: linked room thread');
+        assert.strictEqual((await req('PATCH', `/api/rooms/${roomX}`, { archived: true })).status, 200);
+        try {
+          assert.strictEqual(await stoaErr(tokSub, 'messages_read', { room_id: roomX }), 'agent_scope_denied', 'archived, even when linked');
+          assert.strictEqual((await restGet(`/api/rooms/${roomX}/messages`)).status, 403, 'REST: archived, even when linked');
+        } finally { await req('PATCH', `/api/rooms/${roomX}`, { archived: false }); }
+      } finally {
+        await req('DELETE', `/api/rooms/${roomX}/sub-agents/${sub.id}`);
+      }
+      assert.strictEqual(await stoaErr(tokSub, 'messages_read', { room_id: roomX }), 'agent_scope_denied', 'unlinked again');
+    });
+
+    await test('REST — sub-agent credential: proactive message posts as the sub-agent; config routes refused; forged / other parent / deleted sub-agent → 401; not an MCP token', async () => {
+      const post = (roomId, body, headers = subHeaders()) => asAnon(() => req('POST', `/api/rooms/${roomId}/message`, body, headers));
+      const r = await post(roomA, { content: 'sub-agent progress via curl', thread_id: threadA });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      assert.deepStrictEqual(mDb.prepare('SELECT room_id, thread_id, sub_agent_id, sub_agent_label FROM messages WHERE id=?').get(r.body.message_id),
+        { room_id: roomA, thread_id: threadA, sub_agent_id: sub.id, sub_agent_label: 'mcpsub' }, 'regression: curl progress in a linked room works, under its own name');
+      const sr = await req('POST', `/api/actors/${agA.actorId}/sub-agents`, { label: 'mcpsubtwo', tier: 'quick', workdir: '/tmp/stoa-test-mcp-sub2' });
+      assert.strictEqual(sr.status, 201, JSON.stringify(sr.body));
+      const sub2 = sr.body;
+      try {
+        const before = mDb.prepare('SELECT COALESCE(MAX(id),0) m FROM messages').get().m;
+        assert.strictEqual((await post(roomA, { content: 'posing as a sibling', sub_agent_id: sub2.id })).status, 403, 'cannot post as another sub-agent');
+        assert.strictEqual((await post(roomX, { content: 'parent room, not linked' })).status, 403);
+        assert.strictEqual(mDb.prepare('SELECT COALESCE(MAX(id),0) m FROM messages').get().m, before, 'nothing posted');
+
+        const call = (method, p, body) => asAnon(() => req(method, p, body, subHeaders()));
+        const refused = [
+          ['PUT', `/api/rooms/${roomA}/memory`, { content: 'x' }], ['PUT', `/api/rooms/${roomA}/system-prompt`, { system_prompt: 'x' }],
+          ['POST', `/api/rooms/${roomA}/sub-agent-trigger`, { sub_agent_id: sub2.id, task: 'long enough task' }],
+          ['GET', `/api/actors/${agA.actorId}/memory`], ['PUT', `/api/actors/${agA.actorId}/memory/MEMORY.md`, { content: 'x' }],
+          ['GET', `/api/actors/${agA.actorId}/system-prompt`], ['PUT', `/api/actors/${agA.actorId}/system-prompt`, { system_prompt: 'x' }],
+          ['POST', '/api/automations', { name: 'x' }], ['PATCH', '/api/automations/1', { enabled: false }], ['DELETE', '/api/automations/1'],
+          ['GET', `/api/sub-agents/${sub2.id}/memory`], ['PUT', `/api/sub-agents/${sub2.id}/memory`, { content: 'x' }],
+        ];
+        for (const [method, p, body] of refused) {
+          const x = await call(method, p, body);
+          assert.deepStrictEqual([x.status, x.body?.error], [403, 'agent_scope_denied'], `${method} ${p}`);
+        }
+        for (const [method, p] of [['GET', `/api/rooms/${roomA}/memory`], ['GET', `/api/rooms/${roomA}/system-prompt`], ['GET', `/api/sub-agents/${sub.id}/memory`], ['GET', '/api/automations'], ['GET', `/api/rooms/${roomA}/schedules`]]) {
+          assert.strictEqual((await call(method, p)).status, 200, `${method} ${p} (what its MCP session can read)`);
+        }
+
+        const forged = `sa1.${sub.id}.${'0'.repeat(64)}`;
+        assert.strictEqual((await asAnon(() => req('GET', `/api/rooms/${roomA}/messages`, null, subHeaders(forged)))).status, 401, 'forged');
+        assert.strictEqual((await asAnon(() => req('GET', `/api/rooms/${roomB}/messages`, null, subHeaders(subSecret, agB.actorId)))).status, 401, 'bound to its parent');
+        assert.strictEqual((await mcp(subSecret, 'tools/list')).status, 401, 'not an MCP token');
+        const key = Buffer.from(mDb.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='security_signing_key'").get().value, 'hex');
+        const { mintSubAgentSecret } = require('./lib/sub-agent-credential');
+        const sub2Secret = mintSubAgentSecret(key, { actorId: agA.actorId, subAgentId: sub2.id, actorSecret: agA.secret });
+        assert.strictEqual((await asAnon(() => req('GET', `/api/sub-agents/${sub2.id}/memory`, null, subHeaders(sub2Secret)))).status, 200, 'sub-agent two: its own memory');
+        assert.strictEqual((await asAnon(() => req('GET', `/api/rooms/${roomA}/messages`, null, subHeaders(sub2Secret)))).status, 403, 'sub-agent two is not linked to room A');
+        assert.strictEqual((await req('DELETE', `/api/sub-agents/${sub2.id}`)).status < 300, true);
+        assert.strictEqual((await asAnon(() => req('GET', `/api/sub-agents/${sub2.id}/memory`, null, subHeaders(sub2Secret)))).status, 401, 'deleted sub-agent → credential dead');
+      } finally {
+        await req('DELETE', `/api/sub-agents/${sub2.id}`);
+      }
     });
 
     await test('MCP stoa tools — sub-agent session posts as itself; config tools refused even when called by name', async () => {
@@ -21750,6 +22031,11 @@ async function run() {
     });
 
     await test('MCP teardown', async () => {
+      mDb.transaction(() => {
+        mDb.prepare('DELETE FROM mcp_tool_overrides WHERE server_id=?').run(builtinId);
+        const put = mDb.prepare('INSERT INTO mcp_tool_overrides (server_id, tool, enabled, requires_approval, rate_limit_per_min) VALUES (@server_id, @tool, @enabled, @requires_approval, @rate_limit_per_min)');
+        for (const row of ownerBuiltinOverrides) put.run(row);
+      })();
       if (server) await req('DELETE', `/api/mcp/servers/${server.id}`);
       if (evServer) await req('DELETE', `/api/mcp/servers/${evServer.id}`);
       if (roomC) { await req('DELETE', `/api/rooms/${roomC}`); testRoomIds = testRoomIds.filter(id => id !== roomC); }

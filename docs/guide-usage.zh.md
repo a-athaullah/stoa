@@ -1139,7 +1139,7 @@ History 标签页显示每个版本的版本号、作者（您或代理）、时
 - **Edit** / **Remove** — 更新凭证或删除服务器。
 - **Connect**（OAuth 服务器）— 打开提供商登录流程。状态为 `needs sign-in` 时显示为按钮；已认证但需要重新登录时显示为 **reconnect** 链接。
 
-**Stoa** 服务器是固定在列表顶部的内置卡片，无法删除且没有连接设置 — 编辑表单仅允许重命名。其余控件与其他已安装服务器相同：启用/禁用、每工具开关、审批、速率限制和访问矩阵。默认情况下，所有代理均可访问，仅 `mcp_server_add` 和 `mcp_server_update` 需要审批。这些设置适用于 `stoa__*` MCP 工具；使用代理 secret 调用的等效 Stoa REST 端点不受限制。
+**Stoa** 服务器是固定在列表顶部的内置卡片，无法删除且没有连接设置 — 编辑表单仅允许重命名。其余控件与其他已安装服务器相同：启用/禁用、每工具开关、审批、速率限制和访问矩阵。默认情况下，所有代理均可访问，仅 `mcp_server_add` 和 `mcp_server_update` 需要审批。这些设置适用于 `stoa__*` MCP 工具；对于主会话代理，使用代理 secret 调用的等效 Stoa REST 端点不受这些设置限制。
 
 点击卡片展开工具列表。每个工具有**启用开关**、**requires approval 开关**和可选的**速率限制（次/分钟）**字段。名称暗示写入操作（send、create、update、delete）的工具会显示 **write** 标记，提醒检查访问权限设置。
 
@@ -1301,7 +1301,7 @@ keep-alive 服务器仍计入 16 个槽位限制。如果全部 16 个槽位均�
 
 工具按功能分组：
 
-- **消息** — `stoa__message_send`、`stoa__messages_read`、`stoa__threads_list`、`stoa__thread_read`
+- **消息** — `stoa__message_send`、`stoa__rooms_list`、`stoa__messages_read`、`stoa__threads_list`、`stoa__thread_read`
 - **记忆** — `stoa__room_memory_get/set`、`stoa__agent_memory_get/set`、`stoa__sub_agent_memory_get/set`
 - **系统提示** — `stoa__room_system_prompt_get/set`、`stoa__agent_system_prompt_get/set`
 - **子代理** — `stoa__sub_agent_list/create/update/delete/trigger`
@@ -1310,7 +1310,9 @@ keep-alive 服务器仍计入 16 个槽位限制。如果全部 16 个槽位均�
 
 验证、配额和作用域规则与 REST API 相同。配置变更（系统提示、子代理 CRUD、自动化变更）会在房间中发布永久通知 — `· config` 或 `· automation` — 与 REST 端点相同。
 
-在**子代理会话**中，仅消息、读取和自身记忆工具可用。修改配置的工具会被隐藏并拒绝。`stoa` 服务器显示在 MCP **Installed** 标签页顶部，可在此配置访问权限、审批、每工具设置和速率限制 — 控件与其他服务器相同。默认情况下，所有代理均可访问。代理无法通过 `stoa__mcp_server_update` 修改 Stoa 服务器；仅 owner 可以。调用会以 **stoa** 记录在活动日志中。这些设置仅适用于 `stoa__*` MCP 工具；使用代理 secret 调用的等效 Stoa REST 端点不受限制。文件上传仍通过 REST (`POST /api/upload/raw`) 或 `[send:]` 标记进行。
+读取工具 `stoa__messages_read`、`stoa__threads_list`、`stoa__thread_read` 支持可选的 `room_id` 以读取你所在的其他房间 — 先调用 `stoa__rooms_list` 获取可读房间列表。已归档的房间任何代理都无法读取；不指定 `room_id` 时，每个读取工具读取会话所在的房间。
+
+在**子代理会话**中，仅消息、读取（包括子代理已链接房间的 `stoa__rooms_list`）和自身记忆工具可用。子代理可在父代理是参与者的前提下读取已链接房间的消息和线程 — 已归档的房间始终不可读。修改配置的工具会被隐藏并拒绝。`stoa` 服务器显示在 MCP **Installed** 标签页顶部，可在此配置访问权限、审批、每工具设置和速率限制 — 控件与其他服务器相同。默认情况下，所有代理均可访问。代理无法通过 `stoa__mcp_server_update` 修改 Stoa 服务器；仅 owner 可以。调用会以 **stoa** 记录在活动日志中。在子代理会话中，`STOA_SECRET` 是子代理自身的凭据，而非父代理的 secret。使用它的 REST 调用与 MCP 工具受到相同的范围限制：配置路由被拒绝，房间路由仅对子代理已链接的房间（父代理是参与者的房间）有效，已归档的房间无法读取。此范围限制仅适用于 Stoa 的官方通道（MCP 和 REST）；子代理进程本身在父代理机器上运行，保留相同的 shell 环境。文件上传仍通过 REST (`POST /api/upload/raw`) 或 `[send:]` 标记进行。
 
 完整参数列表请参阅 `stoa-api.md` → **Stoa 内置 MCP 工具**。
 
