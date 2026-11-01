@@ -7,14 +7,14 @@ function mcpRenderInstalled(panel) {
       mcpBtn('auto-small-btn', 'retry', () => sLoadMcpTab())));
     return;
   }
-  const empty = () => mcpEmpty('no MCP servers yet',
+  const empty = title => mcpEmpty(title,
     'install one from the catalog — Context7 needs no credentials and gives agents up-to-date library docs.',
     mcpBtn('auto-pill-btn', 'add an MCP server', () => mcpSetTab('add')));
-  if (!mcpState.servers.length) { panel.appendChild(empty()); return; }
+  if (!mcpState.servers.length) { panel.appendChild(empty('no MCP servers yet')); return; }
   const list = mcpEl('div', 'mcp-cards');
   mcpPinBuiltin(mcpState.servers).forEach(srv => list.appendChild(mcpMakeServerCard(srv)));
   panel.appendChild(list);
-  if (mcpState.servers.every(mcpIsBuiltin)) panel.appendChild(empty());
+  if (mcpState.servers.every(mcpIsBuiltin)) panel.appendChild(empty('no other MCP servers yet'));
 }
 
 function mcpMakeServerCard(srv) {

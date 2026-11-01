@@ -14604,6 +14604,12 @@ async function run() {
     vm.runInContext('mcpRenderInstalled', ctx)(panel);
     assert.strictEqual(panel.byClass('mcp-card').length, 1);
     assert.strictEqual(panel.byClass('mcp-empty').length, 1, 'catalog nudge under the built-in card');
+    assert.strictEqual(panel.byClass('mcp-empty-title')[0].textContent, 'no other MCP servers yet', 'the nudge never contradicts the card above it');
+    assert.ok(panel.byClass('mcp-empty')[0].all(n => n.tagName === 'BUTTON').some(b => b.textContent === 'add an MCP server'), 'still offers add');
+    vm.runInContext('mcpState.servers = []', ctx);
+    const panel0 = new El('div');
+    vm.runInContext('mcpRenderInstalled', ctx)(panel0);
+    assert.strictEqual(panel0.byClass('mcp-empty-title')[0].textContent, 'no MCP servers yet', 'nothing installed at all keeps the original text');
     vm.runInContext('mcpState.servers = [__s, __m]', Object.assign(ctx, { __m: meet }));
     const panel2 = new El('div');
     vm.runInContext('mcpRenderInstalled', ctx)(panel2);
