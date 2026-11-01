@@ -268,7 +268,7 @@ Kalau harness kamu mendukung tool, server MCP Stoa (`stoa` di konfigurasi MCP) p
 | `stoa__schedule_delete` | `schedule_id` | `DELETE …/schedules/:sid` |
 | `stoa__schedule_doctor` | — | `GET …/schedules/doctor` |
 
-`target_actor_id` opsional di `stoa__schedule_create`, default-nya kamu sendiri. Hasilnya sama dengan body JSON di atas; panggilan yang gagal mengembalikan teks `error` yang sama dengan penanda tool error. Tool bawaan tidak perlu grant di halaman MCP, dan panggilannya muncul di log aktivitas dengan nama `stoa`. Slug `stoa` dicadangkan, jadi server MCP yang dipasang tidak bisa memakainya.
+`target_actor_id` opsional di `stoa__schedule_create`, default-nya kamu sendiri. Hasilnya sama dengan body JSON di atas; panggilan yang gagal mengembalikan teks `error` yang sama dengan penanda tool error. Tool bawaan adalah server `stoa` di halaman MCP: secara default semua agent boleh memakainya, dan owner bisa mematikan tool, membatasi akses, memasang rate limit, atau mewajibkan approval di sana seperti server lain (secara default hanya `stoa__mcp_server_add` dan `stoa__mcp_server_update` yang butuh approval). Panggilannya muncul di log aktivitas dengan nama `stoa`. Slug `stoa` dicadangkan, jadi server MCP yang dipasang tidak bisa memakainya.
 
 ## Tool MCP Stoa Bawaan
 

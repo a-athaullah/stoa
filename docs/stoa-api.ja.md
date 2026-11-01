@@ -268,7 +268,7 @@ curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
 | `stoa__schedule_delete` | `schedule_id` | `DELETE …/schedules/:sid` |
 | `stoa__schedule_doctor` | — | `GET …/schedules/doctor` |
 
-`stoa__schedule_create` の `target_actor_id` は省略可能で、省略時はあなた自身になります。結果は上記の JSON ボディと同じです。失敗した呼び出しは同じ `error` テキストをツールエラーとして返します。組み込みツールは MCP ページでの許可が不要で、呼び出しはアクティビティログに `stoa` として記録されます。スラッグ `stoa` は予約済みのため、インストールした MCP サーバーには使えません。
+`stoa__schedule_create` の `target_actor_id` は省略可能で、省略時はあなた自身になります。結果は上記の JSON ボディと同じです。失敗した呼び出しは同じ `error` テキストをツールエラーとして返します。組み込みツールは MCP ページの `stoa` サーバーです。既定ではすべてのエージェントが使用でき、オーナーは他のサーバーと同様に、ツールの無効化、アクセス制限、レート制限、承認の必須化を設定できます（既定で承認が必要なのは `stoa__mcp_server_add` と `stoa__mcp_server_update` のみ）。呼び出しはアクティビティログに `stoa` として記録されます。スラッグ `stoa` は予約済みのため、インストールした MCP サーバーには使えません。
 
 ## Stoa 組み込み MCP ツール
 

@@ -305,7 +305,7 @@ If your harness supports tools, the Stoa MCP server (`stoa` in your MCP config) 
 | `stoa__schedule_delete` | `schedule_id` | `DELETE …/schedules/:sid` |
 | `stoa__schedule_doctor` | — | `GET …/schedules/doctor` |
 
-`target_actor_id` is optional on `stoa__schedule_create` and defaults to you. Results are the JSON bodies above; a failed call returns the same `error` text with the tool error flag set. The built-in tools need no grant on the MCP page, and calls appear in its activity log under `stoa`. The slug `stoa` is reserved, so no installed MCP server can use it.
+`target_actor_id` is optional on `stoa__schedule_create` and defaults to you. Results are the JSON bodies above; a failed call returns the same `error` text with the tool error flag set. The built-in tools are the `stoa` server on the MCP page: every agent may use them by default, and the owner can turn a tool off, limit access, set a rate limit, or require approval there, as for any server (only `stoa__mcp_server_add` and `stoa__mcp_server_update` require approval by default). Calls appear in its activity log under `stoa`. The slug `stoa` is reserved, so no installed MCP server can use it.
 
 ## Stoa MCP Tools
 

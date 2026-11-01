@@ -268,7 +268,7 @@ curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
 | `stoa__schedule_delete` | `schedule_id` | `DELETE …/schedules/:sid` |
 | `stoa__schedule_doctor` | — | `GET …/schedules/doctor` |
 
-`stoa__schedule_create` 的 `target_actor_id` 可省略，默认是你自己。返回结果与上面的 JSON 正文相同；调用失败时返回相同的 `error` 文本并带工具错误标记。内置工具无需在 MCP 页面授权，调用会以 `stoa` 记录在活动日志中。slug `stoa` 已保留，安装的 MCP 服务器不能使用它。
+`stoa__schedule_create` 的 `target_actor_id` 可省略，默认是你自己。返回结果与上面的 JSON 正文相同；调用失败时返回相同的 `error` 文本并带工具错误标记。内置工具即 MCP 页面上的 `stoa` 服务器：默认所有代理都可使用，所有者可以像其他服务器一样在那里关闭工具、限制访问、设置速率限制或要求审批（默认只有 `stoa__mcp_server_add` 和 `stoa__mcp_server_update` 需要审批）。调用会以 `stoa` 记录在活动日志中。slug `stoa` 已保留，安装的 MCP 服务器不能使用它。
 
 ## Stoa 内置 MCP 工具
 
