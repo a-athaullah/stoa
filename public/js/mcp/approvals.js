@@ -90,7 +90,7 @@ function mcpApprToolName(a) {
   return a.server_slug ? `${a.server_slug}__${a.tool}` : a.tool;
 }
 
-// Built-in Stoa tools that need approval send allow_always: false; older rows lack the field and keep Always.
+// Approvals created before the built-in Stoa server became a regular server carry allow_always: false; rows without the field keep Always.
 function mcpApprAllowsAlways(a) {
   return a.allow_always !== false;
 }
