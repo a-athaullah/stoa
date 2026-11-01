@@ -1675,8 +1675,7 @@ function agentScopeAllowed(agentId, route, subAgentId = null) {
   switch (route.scope) {
     case 'any': return true;
     case 'self': return route.id === agentId;
-    case 'room':
-      return !!db.prepare('SELECT 1 FROM room_participants WHERE room_id=? AND actor_id=? LIMIT 1').get(route.id, agentId);
+    case 'room': return roomAccess.canReach(route.id, { actorId: agentId }, { includeArchived: !route.read });
     case 'sub-agent':
       return !!db.prepare('SELECT 1 FROM sub_agents WHERE id=? AND parent_actor_id=?').get(route.id, agentId);
     case 'connection':
@@ -1689,13 +1688,13 @@ function agentScopeAllowed(agentId, route, subAgentId = null) {
   }
 }
 // A sub-agent credential: routes marked subAgent:false are refused (what its MCP session hides or
-// refuses), rooms are only those it is linked to (lib/room-access.js), and sub-agent routes only
-// reach its own row.
+// refuses), rooms are only those it is linked to (lib/room-access.js; read routes: not archived, as
+// for the parent), and sub-agent routes only reach its own row.
 function subAgentScopeAllowed(agentId, subAgentId, route) {
   if (route.subAgent === false) return false;
   switch (route.scope) {
     case 'any': return true;
-    case 'room': return roomAccess.canReach(route.id, { actorId: agentId, subAgentId });
+    case 'room': return roomAccess.canReach(route.id, { actorId: agentId, subAgentId }, { includeArchived: !route.read });
     case 'sub-agent': return route.id === subAgentId;
     case 'connection':
       return !!db.prepare(`SELECT 1 FROM automations a

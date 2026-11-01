@@ -426,7 +426,7 @@ These are the pre-existing colors; they were not degraded by the themes feature.
 
 **Limit (do not flag as a bypass):** the sub-agent has a shell on its parent's machine — the parent's agent config (with the real secret) is readable there. This narrows the official path (env + API), it is not an OS sandbox. `STOA_AGENT_SCOPE=off` lifts sub-agent limits too (same escape hatch).
 
-**Unchanged on purpose:** the parent's own secret over REST keeps the participant-only `room` scope (archived rooms included); only the MCP read path applies the archived rule.
+**Archived = not readable, everywhere (owner, 2026-11-01):** routes flagged `read: true` in `lib/agent-scope.js` (GET room messages / threads / thread) refuse an archived room for the parent's secret and the sub-agent credential; the MCP read tools refuse it too, the session's own room included. Other routes (proactive message, email-reply, upload, room memory, schedules, MCP `message_send`) keep their master behavior (`canReach(..., {includeArchived: true})`): the scope adds no archived check there. Posting itself is still refused by `lib/room-messages.js` (`400 room is archived`), exactly as on master. Not changed: agent_search WS and the prompt history builder (context the server injects, not a read the agent asks for).
 
 ### Agent Automation Access (R21 extension — PR #171)
 **Decision (owner):** Agents can create, update, and delete automations, but only targeting rooms they are participants of. Scope `automation` was added to cover PATCH/DELETE by automation id.
