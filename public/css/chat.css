@@ -2107,6 +2107,8 @@ pre:hover .h-copy-btn { opacity: 1; pointer-events: auto; }
   white-space: nowrap;
 }
 .h-bubble th, .t-content th { background: color-mix(in srgb, var(--h-hairline) 30%, transparent); font-weight: 600; }
+.h-bubble :is(th, td)[align="center"], .t-content :is(th, td)[align="center"] { text-align: center; }
+.h-bubble :is(th, td)[align="right"], .t-content :is(th, td)[align="right"] { text-align: right; }
 
 /* Images in feed attachments */
 .t-attachments .h-msg-img {

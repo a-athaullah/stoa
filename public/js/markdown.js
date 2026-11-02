@@ -30,15 +30,25 @@ marked.use({
   }
 });
 
-// These elements and attributes can escape the message bubble or overlay the app (dialog[open], popover, position:fixed).
+// These elements and attributes can escape the message bubble or overlay the app (dialog[open], popover, position:fixed, <style> applies to the whole document).
 const MARKDOWN_SANITIZE_CONFIG = {
   ADD_ATTR: ['class'],
-  FORBID_TAGS: ['dialog', 'form', 'button', 'select', 'textarea', 'option'],
+  FORBID_TAGS: ['dialog', 'form', 'button', 'select', 'textarea', 'option', 'style'],
   FORBID_ATTR: ['style', 'popover'],
 };
 
+// input stays allowed only for GFM task-list checkboxes; any other input would render as a stray form field.
+function dropNonCheckboxInput(node) {
+  if (node.nodeName === 'INPUT' && (node.getAttribute('type') || '').toLowerCase() !== 'checkbox') node.remove();
+}
+
 function sanitizeMarkdownHtml(html) {
-  return DOMPurify.sanitize(html, MARKDOWN_SANITIZE_CONFIG);
+  DOMPurify.addHook('afterSanitizeAttributes', dropNonCheckboxInput);
+  try {
+    return DOMPurify.sanitize(html, MARKDOWN_SANITIZE_CONFIG);
+  } finally {
+    DOMPurify.removeHook('afterSanitizeAttributes', dropNonCheckboxInput);
+  }
 }
 
 function renderMarkdown(text) {
