@@ -476,8 +476,8 @@ body.sidebar-collapsed #sidebar { display: none; }
   overflow: hidden;
   flex-shrink: 0;
 }
-.h-room-row:hover { background: color-mix(in srgb, var(--h-surface) 60%, transparent); }
-.h-room-row.active { background: var(--h-surface); }
+.h-room-row:hover { background: var(--h-room-hover-bg); }
+.h-room-row.active { background: var(--h-room-active-bg); }
 .h-room-row.swiped { background: transparent !important; }
 .h-room-content {
   padding: 9px 10px;

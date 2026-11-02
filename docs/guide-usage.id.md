@@ -1498,7 +1498,7 @@ Tab **Doctor** menampilkan informasi kesehatan instance Stoa kamu: integritas da
 
 Buka **Settings > Themes** (nav kiri, di bawah General) untuk memilih tema tampilan. Tema dikelompokkan dalam dua grup:
 
-- **Terang** — Warm Paper (default), Hoth, Mood Indigo, Qiscus, Banana, Sweet Treat
+- **Terang** — Warm Paper (default), Hoth, Mood Indigo, Jade, Banana, Sweet Treat
 - **Gelap** — Dark, Aubergine, Ochin, Haberdashery, Choco Mint, Nocturne
 
 ![Pemilih tema menampilkan semua opsi tema terang dan gelap](screenshots/themes.png)

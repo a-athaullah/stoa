@@ -1493,7 +1493,7 @@ Codex 인증 정보는 에이전트 머신에서만 읽히며 Stoa 서버로는 
 
 **Settings > Themes**（왼쪽 내비게이션, General 아래）를 열어 시각적 테마를 선택합니다. 테마는 두 그룹으로 나뉩니다：
 
-- **라이트** — Warm Paper（기본값）, Hoth, Mood Indigo, Qiscus, Banana, Sweet Treat
+- **라이트** — Warm Paper（기본값）, Hoth, Mood Indigo, Jade, Banana, Sweet Treat
 - **다크** — Dark, Aubergine, Ochin, Haberdashery, Choco Mint, Nocturne
 
 ![모든 라이트·다크 테마 옵션을 표시하는 테마 선택기](screenshots/themes.png)

@@ -1493,7 +1493,7 @@ Codex 凭据仅在代理机器上读取，绝不发送至 Stoa 服务器。Claud
 
 打开 **Settings > Themes**（左侧导航，General 下方）选择视觉主题。主题分为两组：
 
-- **浅色** — Warm Paper（默认）、Hoth、Mood Indigo、Qiscus、Banana、Sweet Treat
+- **浅色** — Warm Paper（默认）、Hoth、Mood Indigo、Jade、Banana、Sweet Treat
 - **深色** — Dark、Aubergine、Ochin、Haberdashery、Choco Mint、Nocturne
 
 ![显示所有浅色和深色主题选项的主题选择器](screenshots/themes.png)
