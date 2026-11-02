@@ -118,8 +118,19 @@
   --h-msg:         "Plus Jakarta Sans", "DM Sans", system-ui, sans-serif;
 }
 
+/* Component tokens derived from the palette. Declared on every [data-theme]
+   element (not only :root) so a theme preview card resolves its own palette. */
+:root, [data-theme] {
+  --h-room-active-bg:  var(--h-surface);
+  --h-room-hover-bg:   color-mix(in srgb, var(--h-surface) 60%, transparent);
+  --h-btn-primary-bg:  var(--h-ink);
+  --h-btn-primary-ink: var(--h-bg);
+  --h-check-on:        var(--h-ink);
+}
+
 /* Light themes other than warm-paper: generic derived surfaces */
-[data-theme="hoth"], [data-theme="banana"], [data-theme="sweet-treat"], [data-theme="mood-indigo"] {
+[data-theme="hoth"], [data-theme="banana"], [data-theme="sweet-treat"], [data-theme="mood-indigo"],
+[data-theme="jade"] {
   color-scheme: light;
   --h-row-hover:       var(--h-hover);
   --h-thread-bg:       color-mix(in srgb, var(--h-ink) 3%, var(--h-bg));
@@ -285,6 +296,31 @@
   --h-header-ink:       #FFFFFF;
   --h-header-ink-faint: rgba(255,255,255,0.7);
   --h-pre-bg:           #0F1633;
+}
+
+[data-theme="jade"] {
+  --h-bg:               #F8F9FA;
+  --h-header-bg:        #1A6B55;
+  --h-sidebar-bg:       #FFFFFF;
+  --h-surface:          #FFFFFF;
+  --h-surface-hi:       #EEF7F4;
+  --h-hairline:         #E2E8F0;
+  --h-hair-soft:        #ECECEC;
+  --h-ink:              #1F2937;
+  --h-ink-mute:         #4B5563;
+  --h-ink-faint:        #6B7280;
+  --h-slip:             #D1ECE5;
+  --h-accent:           #1A6B55;
+  --h-link:             #1A6B55;
+  --h-header-ink:       #FFFFFF;
+  --h-header-ink-faint: rgba(255,255,255,0.72);
+  --h-pre-bg:           #0F2A24;
+
+  --h-room-active-bg:   var(--h-slip);
+  --h-room-hover-bg:    var(--h-surface-hi);
+  --h-btn-primary-bg:   var(--h-accent);
+  --h-btn-primary-ink:  #FFFFFF;
+  --h-check-on:         var(--h-accent);
 }
 
 [data-theme="aubergine"] {

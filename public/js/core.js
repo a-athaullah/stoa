@@ -279,6 +279,7 @@ const THEMES = [
   { id: 'warm-paper', label: 'Warm Paper', scheme: 'light' },
   { id: 'hoth', label: 'Hoth', scheme: 'light' },
   { id: 'mood-indigo', label: 'Mood Indigo', scheme: 'light' },
+  { id: 'jade', label: 'Jade', scheme: 'light' },
   { id: 'banana', label: 'Banana', scheme: 'light' },
   { id: 'sweet-treat', label: 'Sweet Treat', scheme: 'light' },
   { id: 'dark', label: 'Dark', scheme: 'dark' },

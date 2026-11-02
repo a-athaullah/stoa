@@ -799,8 +799,8 @@
 .h-invite-actions { display: flex; gap: 8px; margin-top: 4px; }
 
 .h-btn-primary {
-  background: var(--h-ink);
-  color: var(--h-bg);
+  background: var(--h-btn-primary-bg);
+  color: var(--h-btn-primary-ink);
   border: none;
   padding: 8px 18px;
   border-radius: 999px;
@@ -1902,8 +1902,8 @@
 }
 
 .h-actor-check:has(input[type=radio]:checked)::before {
-  background: var(--h-ink);
-  border-color: var(--h-ink);
+  background: var(--h-check-on);
+  border-color: var(--h-check-on);
 }
 
 .h-actor-check:has(input[type=radio]:checked) {
