@@ -1497,7 +1497,7 @@ The **Doctor** tab shows health information about your Stoa instance: database i
 
 Open **Settings > Themes** (left nav, below General) to choose the app's visual theme. Themes are arranged in two groups:
 
-- **Light** — Warm Paper (default), Hoth, Mood Indigo, Banana, Sweet Treat
+- **Light** — Warm Paper (default), Hoth, Mood Indigo, Qiscus, Banana, Sweet Treat
 - **Dark** — Dark, Aubergine, Ochin, Haberdashery, Choco Mint, Nocturne
 
 ![Theme picker showing all light and dark theme options](screenshots/themes.png)

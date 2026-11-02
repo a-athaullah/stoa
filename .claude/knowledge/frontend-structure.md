@@ -36,6 +36,7 @@ Themes are CSS token blocks defined in `public/css/base.css` under `[data-theme=
 | `warm-paper` | Warm Paper | light (default) |
 | `hoth` | Hoth | light |
 | `mood-indigo` | Mood Indigo | light |
+| `qiscus` | Qiscus | light |
 | `banana` | Banana | light |
 | `sweet-treat` | Sweet Treat | light |
 | `dark` | Dark | dark |

@@ -1493,7 +1493,7 @@ Codex の認証情報はエージェントマシン上でのみ読み取られ�
 
 **Settings > Themes**（左ナビ、General の下）を開いてビジュアルテーマを選択します。テーマは2つのグループに分かれています：
 
-- **ライト** — Warm Paper（デフォルト）、Hoth、Mood Indigo、Banana、Sweet Treat
+- **ライト** — Warm Paper（デフォルト）、Hoth、Mood Indigo、Qiscus、Banana、Sweet Treat
 - **ダーク** — Dark、Aubergine、Ochin、Haberdashery、Choco Mint、Nocturne
 
 ![すべてのライト・ダークテーマオプションを表示するテーマ選択画面](screenshots/themes.png)
