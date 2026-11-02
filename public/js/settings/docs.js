@@ -101,7 +101,7 @@ async function sOpenDoc(slug) {
     }
     if (!res.ok) { body.innerHTML = '<p class="s-docs-empty">document not found.</p>'; return; }
     const md = await res.text();
-    body.innerHTML = DOMPurify.sanitize(marked.parse(md), { ADD_ATTR: ['class'] });
+    body.innerHTML = sanitizeMarkdownHtml(marked.parse(md));
     addCopyButtons(body);
     if (lang !== docsLang) {
       const note = document.createElement('p');

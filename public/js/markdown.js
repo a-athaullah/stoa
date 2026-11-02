@@ -30,21 +30,32 @@ marked.use({
   }
 });
 
+// These elements and attributes can escape the message bubble or overlay the app (dialog[open], popover, position:fixed).
+const MARKDOWN_SANITIZE_CONFIG = {
+  ADD_ATTR: ['class'],
+  FORBID_TAGS: ['dialog', 'form', 'button', 'select', 'textarea', 'option'],
+  FORBID_ATTR: ['style', 'popover'],
+};
+
+function sanitizeMarkdownHtml(html) {
+  return DOMPurify.sanitize(html, MARKDOWN_SANITIZE_CONFIG);
+}
+
 function renderMarkdown(text) {
   if (!text) return '';
   const waBlockRe = /\n*---\n\[(WhatsApp Context|Sent to WhatsApp)\]\n([\s\S]*?)\n---/g;
-  if (!waBlockRe.test(text)) return DOMPurify.sanitize(marked.parse(text), { ADD_ATTR: ['class'] });
+  if (!waBlockRe.test(text)) return sanitizeMarkdownHtml(marked.parse(text));
   waBlockRe.lastIndex = 0;
   let result = '', lastIdx = 0, match;
   while ((match = waBlockRe.exec(text)) !== null) {
     const before = text.slice(lastIdx, match.index).trim();
-    if (before) result += DOMPurify.sanitize(marked.parse(before), { ADD_ATTR: ['class'] });
-    const label = match[1], body = DOMPurify.sanitize(marked.parse(match[2].trim()), { ADD_ATTR: ['class'] });
+    if (before) result += sanitizeMarkdownHtml(marked.parse(before));
+    const label = match[1], body = sanitizeMarkdownHtml(marked.parse(match[2].trim()));
     result += `<details class="wa-context"><summary>${label}</summary>${body}</details>`;
     lastIdx = match.index + match[0].length;
   }
   const after = text.slice(lastIdx).trim();
-  if (after) result += DOMPurify.sanitize(marked.parse(after), { ADD_ATTR: ['class'] });
+  if (after) result += sanitizeMarkdownHtml(marked.parse(after));
   return result;
 }
 
