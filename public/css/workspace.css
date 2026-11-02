@@ -503,6 +503,8 @@
   font-weight: 600; color: var(--h-ink);
 }
 .ws-md-body td { color: var(--h-ink-mute); }
+.ws-md-body :is(th, td)[align="center"] { text-align: center; }
+.ws-md-body :is(th, td)[align="right"] { text-align: right; }
 .ws-md-body img { max-width: 100%; border-radius: 8px; margin: 8px 0; }
 
 /* ── Editing banner ───────────────────────────── */

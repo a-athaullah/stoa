@@ -318,7 +318,7 @@ function wsRenderContent() {
       content.style.cssText = 'flex:1;min-height:0;overflow:auto;padding:26px 30px 40px';
       const inner = document.createElement('div');
       inner.className = 'ws-md-body';
-      inner.innerHTML = file.content ? DOMPurify.sanitize(marked.parse(file.content), { ADD_ATTR: ['class'] }) : '<p style="color:var(--h-ink-faint);font-style:italic">empty file</p>';
+      inner.innerHTML = file.content ? sanitizeMarkdownHtml(marked.parse(file.content)) : '<p style="color:var(--h-ink-faint);font-style:italic">empty file</p>';
       addCopyButtons(inner);
       content.appendChild(inner);
     } else if (file.loaded) {
