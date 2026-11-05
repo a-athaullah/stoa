@@ -2655,7 +2655,7 @@ pre:hover .h-copy-btn { opacity: 1; pointer-events: auto; }
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  color: var(--h-ink-mute);
+  color: var(--h-green);
   font-style: italic;
 }
 
