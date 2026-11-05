@@ -239,6 +239,9 @@
   --h-btn-bg:           var(--h-accent);
   --h-btn-ink:          #FFFFFF;
   --h-pre-bg:           #1F2328;
+
+  --h-room-active-bg:   color-mix(in srgb, var(--h-accent) 12%, var(--h-sidebar-bg));
+  --h-room-hover-bg:    color-mix(in srgb, var(--h-ink) 6%, var(--h-sidebar-bg));
 }
 
 [data-theme="banana"] {
@@ -258,6 +261,9 @@
   --h-header-ink:       #591035;
   --h-header-ink-faint: rgba(89,16,53,0.75);
   --h-pre-bg:           #2B2118;
+
+  --h-room-active-bg:   color-mix(in srgb, var(--h-ink-mute) 14%, var(--h-sidebar-bg));
+  --h-room-hover-bg:    color-mix(in srgb, var(--h-ink-mute) 7%, var(--h-sidebar-bg));
 }
 
 [data-theme="sweet-treat"] {
@@ -296,6 +302,9 @@
   --h-header-ink:       #FFFFFF;
   --h-header-ink-faint: rgba(255,255,255,0.7);
   --h-pre-bg:           #0F1633;
+
+  --h-room-active-bg:   color-mix(in srgb, var(--h-accent) 10%, var(--h-sidebar-bg));
+  --h-room-hover-bg:    color-mix(in srgb, var(--h-ink) 5%, var(--h-sidebar-bg));
 }
 
 [data-theme="jade"] {

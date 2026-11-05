@@ -311,7 +311,7 @@ body.sidebar-collapsed #sidebar { display: none; }
   cursor: pointer;
   transition: background 0.12s;
 }
-.h-search-result:hover { background: color-mix(in srgb, var(--h-surface) 60%, transparent); }
+.h-search-result:hover { background: var(--h-room-hover-bg); }
 .h-search-room {
   display: flex;
   align-items: center;
