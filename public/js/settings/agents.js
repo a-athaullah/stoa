@@ -848,7 +848,7 @@ function makeAgentSidebarRow(actor) {
     badge.textContent = actor.avatar_symbol || '◇';
     avWrap.appendChild(badge);
   } else {
-    avWrap.appendChild(makeAvatar(actor.name, color, actor.avatar_url, 28));
+    avWrap.appendChild(makeAvatar(actor.name, color, actor.avatar_url, 28, actor.id));
   }
 
   const mid = document.createElement('div');
@@ -953,7 +953,7 @@ function renderAgentDetailHeader(container, actor) {
     badge.textContent = actor.avatar_symbol || '◇';
     avWrap.appendChild(badge);
   } else {
-    avWrap.appendChild(makeAvatar(actor.name, color, actor.avatar_url, 36));
+    avWrap.appendChild(makeAvatar(actor.name, color, actor.avatar_url, 36, actor.id));
   }
   const camOverlay = document.createElement('div');
   camOverlay.style.cssText = 'position:absolute;inset:0;border-radius:50%;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity .15s;pointer-events:none';

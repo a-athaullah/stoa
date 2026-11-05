@@ -277,6 +277,21 @@ function openLightbox(images, startIdx) {
   img.src = images[startIdx].url;
   lb.classList.toggle('has-nav', images.length > 1);
   lb.classList.add('visible');
+  window.addEventListener('keydown', lbKeydown, true);
+}
+
+function closeLightbox() {
+  document.getElementById('img-lightbox').classList.remove('visible');
+  window.removeEventListener('keydown', lbKeydown, true);
+}
+
+// Capture phase on window runs before the composer, thread and global Escape
+// handlers, so Esc only closes the lightbox (no stop-generation, no thread close).
+function lbKeydown(e) {
+  if (e.key !== 'Escape') return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  closeLightbox();
 }
 
 function lbNav(dir) {

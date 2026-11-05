@@ -28,7 +28,7 @@ function appendFeedRootRow(m, inner) {
   } else if (m.automation?.provider) {
     avatarWrap.appendChild(makeAutomationAvatarEl(m.automation.provider, 36));
   } else {
-    avatarWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 36, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_id));
+    avatarWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 36, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_id, m.actor_id));
   }
   row.appendChild(avatarWrap);
 
@@ -310,7 +310,7 @@ function appendFeedBroadcastRow(m, inner) {
   } else if (m.automation?.provider) {
     avatarWrap.appendChild(makeAutomationAvatarEl(m.automation.provider, 36));
   } else {
-    avatarWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 36, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_id));
+    avatarWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 36, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_id, m.actor_id));
   }
   body.appendChild(avatarWrap);
 

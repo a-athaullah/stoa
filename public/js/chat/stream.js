@@ -175,7 +175,7 @@ function finalizeMessage(msgId, content, fileUrl, fileName, attachments, aiModel
 function showInterruptedRun(msg, container) {
   if (!document.getElementById('msg-' + msg.message_id)) {
     if (!container || !msg.actor_name) return;
-    showThinking(msg.message_id, msg.actor_name, msg.avatar_color, msg.avatar_symbol, msg.avatar_url, msg.sub_agent_label, container, msg.sub_agent_avatar_color, msg.sub_agent_avatar_symbol, msg.sub_agent_avatar_url, msg.sub_agent_role, msg.sub_agent_id);
+    showThinking(msg.message_id, msg.actor_name, msg.avatar_color, msg.avatar_symbol, msg.avatar_url, msg.sub_agent_label, container, msg.sub_agent_avatar_color, msg.sub_agent_avatar_symbol, msg.sub_agent_avatar_url, msg.sub_agent_role, msg.sub_agent_id, msg.actor_id);
   }
   setRunReply(msg.message_id, msg);
   finalizeMessage(msg.message_id, msg.content, null, null, null, null, msg.result_meta);

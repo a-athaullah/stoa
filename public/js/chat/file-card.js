@@ -278,7 +278,11 @@ function filePreviewMedia(file, token, body) {
       stage.after(note);
     }, { once: true });
   }
-  media.src = file.url.href;
+  // WebKit paints no frame under preload=metadata until play, so the stage stays black; a media
+  // fragment makes it seek to, and draw, the first frame. The fragment is never sent to the server.
+  const src = new URL(file.url.href);
+  if (isVideo && !src.hash) src.hash = 't=0.001';
+  media.src = src.href;
   return stage;
 }
 
