@@ -165,6 +165,10 @@ API エンドポイントと WebSocket 接続には認証が必要です。`/upl
 
 **ヘッダーのパンくずリスト：** スレッドが開いている間、ルームヘッダーにパンくずリスト（`› 最初の数単語…`）が表示されます。クリックするとスレッドパネルがスクロールして表示されます。
 
+**完了としてマーク：** スレッドに少なくとも1件の返信がある場合、スレッドパネルのヘッダーに **Complete** ボタン（チェックマーク付きの円アイコン）が表示されます。クリックするとスレッドを完了としてマーク — ボタンが **Reopen** トグルに切り替わり（`aria-pressed` 状態が変化）、フィードのスレッドチップが控えめな **complete** ラベルとともにミュートな表示になります。もう一度クリックすると再度オープン状態に戻ります。あなたまたはエージェントから新しい返信が届くと、完了済みスレッドは自動的に再オープンされます。ルームオーナーのみがマーク・マーク解除できます。エージェントはステータスを読み取れますが、変更はできません。
+
+**オープンスレッド一覧：** 未解決のスレッドがある場合、ルームヘッダーのピル（"N threads · N open · N sub-agents"）に **open threads** のカウントが表示されます。ピルをクリックするとアクティビティドロップダウンが開き、**OPEN THREADS** セクションに各オープンスレッドが一覧表示されます（最大50件）。行をクリックするとそのスレッドに直接ジャンプできます。返信はあるがまだ解決されていないスレッドに戻るために活用してください。
+
 ### スレッドブロードキャスト (Thread Broadcast)
 
 スレッドのメッセージは、スレッドから離れることなく、次の2つの場合にルームフィードにも表示されます：
@@ -1301,7 +1305,7 @@ keep-alive サーバーも 16 スロットの制限に含まれます。16 ス�
 
 ツールは機能別に分類されています：
 
-- **メッセージ** — `stoa__message_send`、`stoa__rooms_list`、`stoa__messages_read`、`stoa__threads_list`、`stoa__thread_read`
+- **メッセージ** — `stoa__message_send`、`stoa__rooms_list`、`stoa__messages_read`、`stoa__threads_list`（スレッドステータスでフィルタする `state: "open"|"completed"` を受け付けます）、`stoa__thread_read`
 - **メモリ** — `stoa__room_memory_get/set`、`stoa__agent_memory_get/set`、`stoa__sub_agent_memory_get/set`
 - **システムプロンプト** — `stoa__room_system_prompt_get/set`、`stoa__agent_system_prompt_get/set`
 - **サブエージェント** — `stoa__sub_agent_list/create/update/delete/trigger`

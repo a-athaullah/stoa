@@ -165,6 +165,10 @@ Busy mode는 **스레드 단위**로 적용됩니다: 각 스레드는 독립적
 
 **헤더 이동 경로:** 스레드가 열려 있는 동안 룸 헤더에 이동 경로(`› 처음 몇 단어…`)가 표시됩니다. 클릭하면 스레드 패널이 스크롤되어 보입니다.
 
+**완료로 표시:** 스레드에 답글이 하나 이상 있으면 스레드 패널 헤더에 **Complete** 버튼(체크마크가 있는 원 아이콘)이 나타납니다. 클릭하면 스레드가 완료로 표시되고, 버튼이 **Reopen** 토글로 변경되며(`aria-pressed` 상태 변경), 피드의 스레드 칩이 조용한 **complete** 레이블과 함께 흐릿하게 표시됩니다. 다시 클릭하면 열림 상태로 돌아옵니다. 나 또는 에이전트로부터 새 답글이 오면 완료된 스레드가 자동으로 다시 열립니다. 룸 소유자만 표시하거나 취소할 수 있으며, 에이전트는 상태를 읽을 수 있지만 변경할 수 없습니다.
+
+**열린 스레드 목록:** 미해결 스레드가 있는 경우 룸 헤더 필("N threads · N open · N sub-agents")에 **open threads** 수가 표시됩니다. 필을 클릭하면 활동 드롭다운이 열리고, **OPEN THREADS** 섹션에 각 열린 스레드가 최대 50개까지 나열됩니다. 행을 클릭하면 해당 스레드로 바로 이동할 수 있습니다. 답글은 있지만 아직 해결되지 않은 스레드를 다시 확인할 때 활용하세요.
+
 ### 스레드 브로드캐스트 (Thread Broadcast)
 
 스레드 메시지는 스레드를 벗어나지 않고 두 가지 경우에 룸 피드에도 표시됩니다:
@@ -1301,7 +1305,7 @@ keep-alive 서버도 16개 슬롯 제한에 포함됩니다. 모든 16개 슬롯
 
 도구는 기능별로 분류됩니다:
 
-- **메시지** — `stoa__message_send`, `stoa__rooms_list`, `stoa__messages_read`, `stoa__threads_list`, `stoa__thread_read`
+- **메시지** — `stoa__message_send`, `stoa__rooms_list`, `stoa__messages_read`, `stoa__threads_list`(스레드 상태로 필터링하는 `state: "open"|"completed"` 허용), `stoa__thread_read`
 - **메모리** — `stoa__room_memory_get/set`, `stoa__agent_memory_get/set`, `stoa__sub_agent_memory_get/set`
 - **시스템 프롬프트** — `stoa__room_system_prompt_get/set`, `stoa__agent_system_prompt_get/set`
 - **서브에이전트** — `stoa__sub_agent_list/create/update/delete/trigger`

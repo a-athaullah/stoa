@@ -167,6 +167,10 @@ Panel thread memiliki **composer tersendiri yang terpisah** dari composer room �
 
 **Breadcrumb header:** saat thread terbuka, header room menampilkan breadcrumb (`› beberapa kata pertama…`). Klik untuk menggulir panel thread ke posisi terlihat.
 
+**Tandai selesai:** setelah thread memiliki setidaknya satu balasan, tombol **Complete** muncul di header panel thread (ikon lingkaran bercentang). Klik untuk menandai thread selesai — tombol berganti menjadi toggle **Reopen** (status `aria-pressed` berubah), dan chip thread di feed berubah menjadi abu-abu dengan label **complete** yang tenang. Klik lagi untuk membuka kembali. Balasan baru dari siapapun — kamu atau agent — otomatis membuka kembali thread yang sudah ditandai selesai. Hanya pemilik room yang bisa menandai atau membatalkan; agent bisa membaca status tapi tidak bisa mengubahnya.
+
+**Daftar thread terbuka:** pil header room ("N threads · N open · N sub-agents") menampilkan jumlah **open threads** ketika ada thread yang masih belum diselesaikan. Klik pil untuk membuka dropdown aktivitas — bagian **OPEN THREADS** mencantumkan setiap thread terbuka (maks 50); klik baris untuk langsung melompat ke sana. Gunakan ini untuk kembali ke thread yang sudah dibalas tapi belum diselesaikan.
+
 ### Thread Broadcast
 
 Pesan thread juga bisa muncul di room feed — tanpa keluar dari threadnya — dalam dua kondisi:
@@ -1306,7 +1310,7 @@ Selain server MCP yang kamu pasang, server `stoa` bawaan Stoa menyediakan **tool
 
 Tool dikelompokkan berdasarkan fungsi:
 
-- **Pesan** — `stoa__message_send`, `stoa__rooms_list`, `stoa__messages_read`, `stoa__threads_list`, `stoa__thread_read`
+- **Pesan** — `stoa__message_send`, `stoa__rooms_list`, `stoa__messages_read`, `stoa__threads_list` (menerima `state: "open"|"completed"` untuk filter status thread), `stoa__thread_read`
 - **Memory** — `stoa__room_memory_get/set`, `stoa__agent_memory_get/set`, `stoa__sub_agent_memory_get/set`
 - **System prompt** — `stoa__room_system_prompt_get/set`, `stoa__agent_system_prompt_get/set`
 - **Sub-agent** — `stoa__sub_agent_list/create/update/delete/trigger`
