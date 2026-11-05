@@ -266,7 +266,6 @@ function noteThreadReply(rootId) {
 
 function _threadCompletionChanged(rootId, completed) {
   if (typeof syncThreadCompleteBtn === 'function') syncThreadCompleteBtn(rootId, completed);
-  if (typeof noteHeaderOpenThread === 'function') noteHeaderOpenThread(rootId, !completed);
 }
 
 // After loading feed messages, attach chips from pre-fetched thread data

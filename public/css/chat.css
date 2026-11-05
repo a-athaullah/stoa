@@ -2756,7 +2756,6 @@ pre:hover .h-copy-btn { opacity: 1; pointer-events: auto; }
   animation: pulse-ring 1.4s ease infinite;
   flex: 0 0 auto;
 }
-.h-activity-dot[hidden] { display: none; }
 .h-activity-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 .h-activity-pop {

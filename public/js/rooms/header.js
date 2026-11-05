@@ -99,20 +99,15 @@ function renderChatHeader(room, participants) {
   if (room.id) header.appendChild(buildHeaderActivityCtl(room));
 }
 
-// ── Header activity: active threads, sub-agent runs, open threads in one pill/popover ──
+// ── Header activity: active threads + sub-agent runs in one pill/popover ──────
 // One control so "threads" and "sub-agents" never stack as two look-alike pills.
 // State survives header re-renders of the same room; switching rooms resets it.
-// openThreads = threads with replies not marked complete, so unfinished work can be revisited.
-const OPEN_THREADS_SHOWN = 50;
-const _activity = { roomId: null, room: null, open: false, runs: [], threads: null, threadsFailed: false, seq: 0, timer: null, openThreads: null, openFailed: false, openSeq: 0, openTimer: null };
+const _activity = { roomId: null, room: null, open: false, runs: [], threads: null, threadsFailed: false, seq: 0, timer: null };
 
 function buildHeaderActivityCtl(room) {
-  const roomChanged = _activity.roomId !== room.id;
-  if (roomChanged) {
-    if (_activity.openTimer) clearTimeout(_activity.openTimer);
-    Object.assign(_activity, { roomId: room.id, open: false, runs: [], threads: null, threadsFailed: false, openThreads: null, openFailed: false, openTimer: null });
+  if (_activity.roomId !== room.id) {
+    Object.assign(_activity, { roomId: room.id, open: false, runs: [], threads: null, threadsFailed: false });
     _activity.seq++;
-    _activity.openSeq++;
   }
   _activity.room = room;
 
@@ -158,7 +153,6 @@ function buildHeaderActivityCtl(room) {
   _syncActivityPill(ctl);
   if (_activity.open) _renderActivityPopover(ctl);
 
-  if (roomChanged) _loadOpenThreads();
   _refreshRuns();
   if (_activity.timer) clearInterval(_activity.timer);
   _activity.timer = setInterval(() => {
@@ -178,19 +172,16 @@ function renderHeaderThreadPill() {
 }
 
 function _activityCounts() {
-  return { threads: roomActiveThreads[_activity.roomId] || 0, runs: _activity.runs.length, openCount: _activity.openThreads?.length || 0, paused: !!_activity.room?.spawns_paused };
+  return { threads: roomActiveThreads[_activity.roomId] || 0, runs: _activity.runs.length, paused: !!_activity.room?.spawns_paused };
 }
 
 function _syncActivityPill(ctl) {
-  const { threads, runs, openCount, paused } = _activityCounts();
+  const { threads, runs, paused } = _activityCounts();
   const parts = [];
   if (threads) parts.push(`${threads} thread${threads === 1 ? '' : 's'}`);
   if (runs) parts.push(`${runs} sub-agent${runs === 1 ? '' : 's'}`);
-  const live = parts.length > 0;
-  if (openCount) parts.push(live ? `${openCount} open` : `${openCount} open thread${openCount === 1 ? '' : 's'}`);
   const pill = ctl.querySelector('.h-activity-pill');
   pill.hidden = !parts.length;
-  pill.querySelector('.h-activity-dot').hidden = !live;
   pill.querySelector('.h-activity-label').textContent = parts.join(' · ');
   const pausedEl = ctl.querySelector('.h-activity-paused');
   pausedEl.hidden = !paused;
@@ -220,7 +211,6 @@ function openActivityPopover() {
   _syncActivityPill(ctl);
   _renderActivityPopover(ctl);
   _loadActiveThreads();
-  _loadOpenThreads();
   _refreshRuns();
 }
 
@@ -250,38 +240,6 @@ async function _loadActiveThreads() {
   if (ctl) _renderActivityPopover(ctl);
 }
 
-async function _loadOpenThreads() {
-  const roomId = _activity.roomId;
-  const seq = ++_activity.openSeq;
-  let rows = null;
-  try { rows = await fjson(`/api/rooms/${roomId}/threads?state=open`); } catch {}
-  if (seq !== _activity.openSeq || roomId !== _activity.roomId) return;
-  _activity.openThreads = Array.isArray(rows) ? rows.filter(t => !t.completed) : null;
-  _activity.openFailed = !Array.isArray(rows);
-  const ctl = document.getElementById('h-activity-ctl');
-  if (!ctl) return;
-  _syncActivityPill(ctl);
-  if (_activity.open) _renderActivityPopover(ctl);
-}
-
-// From feed.js whenever a thread of the open room is completed, reopened, or gets a reply.
-// Completing drops the row locally; a thread that becomes open needs its row from the server.
-function noteHeaderOpenThread(rootId, isOpen) {
-  const list = _activity.openThreads;
-  if (!list || _activity.roomId !== currentRoomId || list.some(t => t.id === rootId) === isOpen) return;
-  if (!isOpen) {
-    _activity.openSeq++;
-    _activity.openThreads = list.filter(t => t.id !== rootId);
-    const ctl = document.getElementById('h-activity-ctl');
-    if (!ctl) return;
-    _syncActivityPill(ctl);
-    if (_activity.open) _renderActivityPopover(ctl);
-    return;
-  }
-  if (_activity.openTimer) clearTimeout(_activity.openTimer);
-  _activity.openTimer = setTimeout(() => { _activity.openTimer = null; _loadOpenThreads(); }, 300);
-}
-
 function _renderActivityPopover(ctl) {
   const pop = ctl.querySelector('.h-activity-pop');
   const focusKey = pop.contains(document.activeElement) ? document.activeElement.dataset.focusKey : null;
@@ -307,18 +265,6 @@ function _renderActivityPopover(ctl) {
     for (const r of runs) body.appendChild(_activityRunRow(r));
     const sec = _activitySection('sub-agents', runs.length ? `${runs.length} of ${_activity.room?.max_sub_agents || 3}` : null, body);
     sec.appendChild(_activityRunFoot(paused));
-    pop.appendChild(sec);
-  }
-
-  if (_activity.openFailed) {
-    pop.appendChild(_activitySection('open threads', null, _activityNote("couldn't load open threads")));
-  } else if (_activity.openThreads?.length) {
-    const rows = _activity.openThreads;
-    const list = document.createElement('div');
-    list.className = 'h-activity-list';
-    for (const t of rows.slice(0, OPEN_THREADS_SHOWN)) list.appendChild(_activityThreadItem(t, { open: true }));
-    const sec = _activitySection('open threads', String(rows.length), list);
-    if (rows.length > OPEN_THREADS_SHOWN) sec.appendChild(_activityNote(`${rows.length - OPEN_THREADS_SHOWN} older not shown`));
     pop.appendChild(sec);
   }
 
@@ -352,11 +298,11 @@ function _activityNote(text) {
   return n;
 }
 
-function _activityThreadItem(t, { open = false } = {}) {
+function _activityThreadItem(t) {
   const item = document.createElement('button');
   item.type = 'button';
   item.className = 'h-activity-thread';
-  item.dataset.focusKey = (open ? 'o' : 't') + t.id;
+  item.dataset.focusKey = 't' + t.id;
 
   const preview = document.createElement('span');
   preview.className = 'h-activity-preview';
@@ -381,7 +327,6 @@ function _activityThreadItem(t, { open = false } = {}) {
   const who = document.createElement('span');
   who.className = 'h-activity-who';
   who.textContent = runners.length ? runners.map(r => r.name).join(', ') : (t.actor_name || '');
-  if (open && t.reply_count) who.textContent += ` · ${t.reply_count} repl${t.reply_count === 1 ? 'y' : 'ies'}`;
   const when = document.createElement('span');
   when.className = 'h-activity-when';
   const ts = t.last_reply_at || t.created_at;
