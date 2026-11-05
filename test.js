@@ -14482,7 +14482,7 @@ async function run() {
       UPDATE messages SET feed_pos = id;
       UPDATE rooms SET primary_actor_id = 7 WHERE id = 5;
       INSERT INTO room_schedules (room_id, target_actor_id, created_by_actor_id, task, schedule_spec, enabled) VALUES
-        (5, 7, 1, 'daily digest for the room', '{"type":"daily","at":"09:00","tz":"UTC"}', 1), (5, 8, 1, 'weekly digest for the room', '{"type":"daily","at":"10:00","tz":"UTC"}', 1);
+        (5, 7, 8, 'daily digest for the room', '{"type":"daily","at":"09:00","tz":"UTC"}', 1), (5, 8, 7, 'weekly digest for the room', '{"type":"daily","at":"10:00","tz":"UTC"}', 1);
       INSERT INTO skills (name, description, created_by_actor_id, created_by_sub_agent_id) VALUES ('by-atlas', 'd', 7, NULL), ('by-reviewer', 'd', 7, 22), ('by-other', 'd', 8, NULL);`);
     const rm = createRoomMessages({ db: mem, broadcast() {}, broadcastGlobal() {}, resolveThread() {}, enrichAutomation() {}, enrichAutomationList() {}, getThreadRootPreview: () => null, cascadeMentions() {}, uploadsDir: '/tmp' });
 
@@ -14622,6 +14622,12 @@ async function run() {
     assert.deepStrictEqual(dots.children.map(d => d.title).sort(), ['Aan', 'Atlas', 'Atlas Prime (primary)'], 'room-list dot tooltips follow the rename');
     assert.deepStrictEqual(schedPop.querySelectorAll('.sch-row-name').map(e => e.textContent), ['Atlas Prime', 'Atlas'], 'the open schedules panel names the renamed target');
     assert.deepStrictEqual(schedPop.querySelectorAll('.sch-row').map(r => r.children[0].tagName), ['IMG', 'SPAN'], 'and repaints its avatar only');
+    assert.deepStrictEqual(schedPop.querySelectorAll('.sch-by').map(e => e.textContent), ['by Atlas', 'by Atlas Prime'], 'the "by" creator follows the rename, the other Atlas keeps its own');
+    const ctrlLabels = schedPop.querySelectorAll('.sch-row-ctrl').map(c => c.children.map(b => b['aria-label'] + '|' + b.title));
+    assert.deepStrictEqual(ctrlLabels, [
+      ['pause trigger for Atlas Prime|pause trigger for Atlas Prime', 'edit trigger for Atlas Prime|edit trigger for Atlas Prime', 'delete trigger for Atlas Prime|delete trigger for Atlas Prime'],
+      ['pause trigger for Atlas|pause trigger for Atlas', 'edit trigger for Atlas|edit trigger for Atlas', 'delete trigger for Atlas|delete trigger for Atlas'],
+    ], 'the switch, edit and delete labels name the renamed target');
     assert.deepStrictEqual(skillsBox.querySelectorAll('.sk-creator-name').map(e => e.textContent), ['Atlas Prime', 'Atlas', 'Reviewer'], 'a skill creator name follows the rename; a sub-agent creator keeps its label');
 
     ws({ type: 'actor_updated', actor: { id: 7, avatar_url: null } });
@@ -14629,6 +14635,51 @@ async function run() {
     vm.runInContext('allActors = allActors.filter(a => a.id !== 7)', ctx);
     ws({ type: 'actor_updated', actor: { id: 7, name: '', avatar_url: null } });
     assert.strictEqual(rowName(100, '.t-name'), 'Atlas Prime', 'nor does an empty name for an actor missing from the cache blank the label');
+
+    // A page without a room socket (settings, skills, home) or a dropped socket misses actor_updated.
+    // Entering such a page and reopening the room socket re-read /api/actors (the server's own query)
+    // and repaint whatever changed meanwhile.
+    const actorsSql = /url\.pathname === '\/api\/actors'\) \{\s*const rows = db\.prepare\('([^']*)'\)/.exec(srv)[1];
+    mem.exec(`UPDATE actors SET name = 'Atlas Prime', avatar_color = NULL WHERE id = 7; UPDATE actors SET name = 'Atlas Two', avatar_url = '/uploads/avatar/two.png' WHERE id = 8;`);
+    const schedFjson = ctx.fjson;
+    let actorsFetch = async () => mem.prepare(actorsSql).all();
+    ctx.fjson = url => (url === '/api/actors' ? actorsFetch() : schedFjson(url));
+    for (const id of ['empty-state', 'chat-inner', 'settings-inner']) body.appendChild(new El('div')).id = id;
+    Object.assign(ctx, { sActivateTab() {}, sLoad() {}, sStopPolling() {}, saveDraft() {} });
+    ctx.window.innerWidth = 1280;
+    for (const f of ['app-nav.js', 'rooms/router.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js', f), 'utf8'), ctx);
+    const settle = () => new Promise(r => setImmediate(r));
+    const atlas8 = () => [rowName(101, '.t-name'), body.querySelector('#msg-101').querySelector('[data-avatar-actor="8"]')?.src, dots.children.map(d => d.title).sort().join(','), vm.runInContext('actorByName[allActors.find(a => a.id === 8).name]?.id', ctx)];
+
+    ctx.openSettingsTab('skills');
+    await settle();
+    assert.deepStrictEqual(atlas8(), ['Atlas Two', '/uploads/avatar/two.png', 'Aan,Atlas Prime (primary),Atlas Two', 8], 'opening a settings page (skills) catches up a rename missed while the room socket was closed');
+    assert.deepStrictEqual(skillsBox.querySelectorAll('.sk-creator-name').map(e => e.textContent), ['Atlas Prime', 'Atlas Two', 'Reviewer'], 'the skills creator rows follow the caught-up rename');
+    assert.strictEqual(vm.runInContext('allActors.find(a => a.id === 7)?.name', ctx), 'Atlas Prime', 'an actor missing from the cache is added back');
+
+    mem.exec(`UPDATE actors SET name = 'Atlas Three' WHERE id = 8`);
+    let sock = null;
+    ctx.WebSocket = class { constructor() { sock = this; } send() {} close() {} };
+    ctx.connectWS(5);
+    sock.onopen();
+    await settle();
+    assert.strictEqual(atlas8()[0], 'Atlas Three', 'a room socket (re)connect catches up too');
+
+    mem.exec(`UPDATE actors SET name = 'Atlas Four' WHERE id = 8`);
+    ctx.showHome();
+    await settle();
+    assert.strictEqual(atlas8()[0], 'Atlas Four', 'so does leaving the room for home');
+
+    const pending = [];
+    actorsFetch = () => new Promise(r => pending.push(r));
+    const stale = mem.prepare(actorsSql).all();
+    mem.exec(`UPDATE actors SET name = 'Atlas Five' WHERE id = 8`);
+    ctx.resyncActors(); ctx.resyncActors();
+    pending[1](mem.prepare(actorsSql).all());
+    await settle();
+    pending[0](stale);
+    await settle();
+    assert.strictEqual(atlas8()[0], 'Atlas Five', 'an older /api/actors response landing last does not undo a newer one');
   });
 
   await test('image lightbox — Esc closes it before any other Esc handler (no stop-generation), the capture listener lives only while open', () => {

@@ -171,6 +171,13 @@ function onRoomScheduleChanged(roomId) {
   if (_schedPanel.roomId === Number(roomId)) _schedPanel.reload();
 }
 
+// actor_updated (websocket.js) → redraw the open panel's rows: target name and avatar, "by" creator,
+// and the switch/edit/delete labels all carry the name.
+function onScheduleActorUpdated(actor) {
+  if (!_schedPanel || !_schedPanel.pop.isConnected) { _schedPanel = null; return; }
+  _schedPanel.actorUpdated(actor);
+}
+
 function buildSchedulePanel(pop, room) {
   const head = schedEl('div', 'sch-head');
   const countEl = schedEl('span', 'sch-count');
@@ -182,7 +189,7 @@ function buildSchedulePanel(pop, room) {
   pop.append(head, formHost, listHost);
 
   let schedules = [], diagnoses = {}, agents = [], form = null, loaded = false;
-  _schedPanel = { roomId: room.id, pop, reload: load };
+  _schedPanel = { roomId: room.id, pop, reload: load, actorUpdated };
 
   addBtn.onclick = () => { form = schedDefaultForm(agents); renderForm(); renderHead(); };
 
@@ -208,6 +215,18 @@ function buildSchedulePanel(pop, room) {
       err.appendChild(retry);
       listHost.appendChild(err);
     }
+  }
+
+  function actorUpdated(actor) {
+    let hit = false;
+    for (const s of schedules) {
+      if (s.target_actor_id === actor.id) { s.target_name = actor.name; hit = true; }
+      if (s.created_by_actor_id === actor.id) { s.created_by_name = actor.name; hit = true; }
+    }
+    for (const a of agents) {
+      if (a.actor_id === actor.id) Object.assign(a, { name: actor.name, avatar_color: actor.avatar_color, avatar_symbol: actor.avatar_symbol, avatar_url: actor.avatar_url });
+    }
+    if (hit && loaded) renderList();
   }
 
   function renderHead() {
@@ -241,13 +260,11 @@ function buildSchedulePanel(pop, room) {
     const row = schedEl('div', 'sch-row' + (sched.enabled ? '' : ' is-off'));
     const agent = agentOf(sched);
     const name = sched.target_name || agent?.name || '?';
-    row.appendChild(makeAvatar(name, agent?.avatar_color, agent?.avatar_url, 26, sched.target_actor_id));
+    row.appendChild(makeAvatar(name, agent?.avatar_color, agent?.avatar_url, 26));
 
     const main = schedEl('div', 'sch-row-main');
     const top = schedEl('div', 'sch-row-top');
-    const nameEl = schedEl('span', 'sch-row-name', name);
-    tagActorName(nameEl, sched.target_actor_id);
-    top.appendChild(nameEl);
+    top.appendChild(schedEl('span', 'sch-row-name', name));
     top.appendChild(schedEl('span', 'sch-chip', schedSummary(sched.schedule_spec, true)));
     const diag = diagnoses[sched.id];
     if (diag && diag.status !== 'ok') {

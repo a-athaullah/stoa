@@ -27,6 +27,7 @@ function connectWS(roomId) {
     ws.send(JSON.stringify({ type: 'file_list' }));
     ws.send(JSON.stringify({ type: 'git_diff' }));
     setConnected(true);
+    resyncActors();
   };
 
   ws.onmessage = e => {
@@ -585,14 +586,35 @@ function handleWsMessage(msg) {
   if (msg.type === 'actor_updated') {
     const a = msg.actor;
     if (!a || !Number.isInteger(a.id)) return;
-    applyActorUpdate({
-      id: a.id,
-      name: typeof a.name === 'string' && a.name ? a.name : (allActors.find(x => x.id === a.id)?.name || ''),
-      avatar_color: typeof a.avatar_color === 'string' ? a.avatar_color : null,
-      avatar_symbol: typeof a.avatar_symbol === 'string' ? a.avatar_symbol : null,
-      avatar_url: safeAvatarUploadUrl(a.avatar_url),
-    });
+    applyActorUpdate(actorDisplayFields(a));
     return;
+  }
+}
+
+function actorDisplayFields(a) {
+  return {
+    id: a.id,
+    name: typeof a.name === 'string' && a.name ? a.name : (allActors.find(x => x.id === a.id)?.name || ''),
+    avatar_color: typeof a.avatar_color === 'string' ? a.avatar_color : null,
+    avatar_symbol: typeof a.avatar_symbol === 'string' ? a.avatar_symbol : null,
+    avatar_url: safeAvatarUploadUrl(a.avatar_url),
+  };
+}
+
+// actor_updated only reaches an open room socket, so a page without one (settings, skills, home) or a
+// dropped connection misses renames and avatar changes. Re-read /api/actors and repaint what changed.
+let _actorResyncSeq = 0;
+async function resyncActors() {
+  const seq = ++_actorResyncSeq;
+  let fresh;
+  try { fresh = await fjson('/api/actors'); } catch { return; }
+  if (seq !== _actorResyncSeq || !Array.isArray(fresh)) return;
+  for (const f of fresh) {
+    if (!f || !Number.isInteger(f.id)) continue;
+    const known = allActors.find(x => x.id === f.id);
+    const next = actorDisplayFields(f);
+    if (!known) { allActors.push(f); actorByName[f.name] = f; applyActorUpdate(next); continue; }
+    if (['name', 'avatar_color', 'avatar_symbol', 'avatar_url'].some(k => (known[k] ?? null) !== next[k])) applyActorUpdate(next);
   }
 }
 
@@ -607,7 +629,13 @@ function safeAvatarUploadUrl(url) {
 function applyActorUpdate(actor) {
   const fields = { name: actor.name, avatar_color: actor.avatar_color, avatar_symbol: actor.avatar_symbol, avatar_url: actor.avatar_url };
   const known = allActors.find(x => x.id === actor.id);
-  if (known) Object.assign(known, fields);
+  if (known) {
+    if (known.name !== actor.name) {
+      if (actorByName[known.name] === known) delete actorByName[known.name];
+      actorByName[actor.name] = known;
+    }
+    Object.assign(known, fields);
+  }
   for (const [rid, parts] of Object.entries(roomParticipantsCache)) {
     let hit = false;
     for (const p of parts || []) if (p.actor_id === actor.id) { Object.assign(p, fields); hit = true; }
@@ -622,6 +650,7 @@ function applyActorUpdate(actor) {
   refreshActorAvatars(actor);
   refreshActorNames(actor);
   if (typeof refreshThreadChips === 'function') refreshThreadChips(actor.id);
+  if (typeof onScheduleActorUpdated === 'function') onScheduleActorUpdated(actor);
   if (humanActor && humanActor.id === actor.id) {
     if (humanActor !== known) Object.assign(humanActor, fields);
     if (typeof renderSidebarFooter === 'function') renderSidebarFooter();
