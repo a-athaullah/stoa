@@ -166,22 +166,37 @@ async function fjson(url, opts) {
 }
 
 // ── Avatar helper ───────────────────────────────────────────────────────────
-function makeAvatar(name, color, avatarUrl, size) {
+function makeAvatar(name, color, avatarUrl, size, actorId) {
+  let el;
   if (avatarUrl) {
-    const img = document.createElement('img');
-    img.src = avatarUrl;
-    img.style.cssText = `width:${size}px;height:${size}px;border-radius:50%;object-fit:cover;flex-shrink:0;display:inline-block`;
-    img.alt = name || '';
-    return img;
+    el = document.createElement('img');
+    el.src = avatarUrl;
+    el.style.cssText = `width:${size}px;height:${size}px;border-radius:50%;object-fit:cover;flex-shrink:0;display:inline-block`;
+    el.alt = name || '';
+  } else {
+    el = document.createElement('span');
+    el.className = 'h-seal';
+    el.style.width  = size + 'px';
+    el.style.height = size + 'px';
+    el.style.background = color || '#888';
+    el.style.fontSize = (size * 0.52) + 'px';
+    el.textContent = name ? name[0] : '?';
   }
-  const el = document.createElement('span');
-  el.className = 'h-seal';
-  el.style.width  = size + 'px';
-  el.style.height = size + 'px';
-  el.style.background = color || '#888';
-  el.style.fontSize = (size * 0.52) + 'px';
-  el.textContent = name ? name[0] : '?';
+  if (actorId) {
+    el.dataset.avatarActor = String(actorId);
+    el.dataset.avatarSize = String(size);
+  }
   return el;
+}
+
+// Repaints every avatar rendered with this actor's id after an actor_updated broadcast.
+// Matched by id, not name: actor names are not unique. Untagged avatars are left alone.
+function refreshActorAvatars(actor, root = document) {
+  const id = String(actor.id);
+  for (const el of root.querySelectorAll('[data-avatar-actor]')) {
+    if (el.dataset.avatarActor !== id) continue;
+    el.replaceWith(makeAvatar(actor.name, actor.avatar_color, actor.avatar_url, Number(el.dataset.avatarSize), actor.id));
+  }
 }
 // ── Connection dot ─────────────────────────────────────────────────────────
 function setConnected(on) {
@@ -244,7 +259,7 @@ function makeAutomationAvatarEl(provider, size) {
 function makeAgentViaConnAvatarEl(m, size) {
   const wrap = document.createElement('div');
   wrap.className = 'h-sa-avatar-wrap';
-  wrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, size, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_id));
+  wrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, size, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_id, m.actor_id));
   const badge = document.createElement('span');
   badge.className = 'h-conn-badge';
   badge.title = 'via ' + automationSourceLabel(m.automation);
