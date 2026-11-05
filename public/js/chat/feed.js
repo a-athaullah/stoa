@@ -216,6 +216,14 @@ function updateThreadChip(rootId) {
   }
 }
 
+// actor_updated: rebuild the chips this actor appears in, from the refreshed allActors. A swapped
+// avatar alone would drop the chip's own class and overlap styling.
+function refreshThreadChips(actorId) {
+  for (const [rootId, s] of Object.entries(threadSummaries)) {
+    if (s.participant_ids?.includes(actorId) || s.sub_agent_participants?.some(sa => sa.actor_id === actorId)) updateThreadChip(rootId);
+  }
+}
+
 // Called on thread_summary WS event
 function handleThreadSummary(msg) {
   threadSummaries[msg.root_id] = {

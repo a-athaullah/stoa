@@ -241,11 +241,13 @@ function buildSchedulePanel(pop, room) {
     const row = schedEl('div', 'sch-row' + (sched.enabled ? '' : ' is-off'));
     const agent = agentOf(sched);
     const name = sched.target_name || agent?.name || '?';
-    row.appendChild(makeAvatar(name, agent?.avatar_color, agent?.avatar_url, 26));
+    row.appendChild(makeAvatar(name, agent?.avatar_color, agent?.avatar_url, 26, sched.target_actor_id));
 
     const main = schedEl('div', 'sch-row-main');
     const top = schedEl('div', 'sch-row-top');
-    top.appendChild(schedEl('span', 'sch-row-name', name));
+    const nameEl = schedEl('span', 'sch-row-name', name);
+    tagActorName(nameEl, sched.target_actor_id);
+    top.appendChild(nameEl);
     top.appendChild(schedEl('span', 'sch-chip', schedSummary(sched.schedule_spec, true)));
     const diag = diagnoses[sched.id];
     if (diag && diag.status !== 'ok') {

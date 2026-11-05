@@ -601,14 +601,17 @@ function safeAvatarUploadUrl(url) {
   return typeof url === 'string' && /^\/uploads\/[^\s\\]+$/.test(url) && !url.includes('..') ? url : null;
 }
 
-// Caches first, then the rendered avatars and name labels: feed, thread, thinking rows, Agents settings,
-// and the human seals in the sidebar footer, app nav and composer.
+// Caches first, then the rendered avatars and name labels: feed, thread, thinking rows, thread chips,
+// room header, room-list dots, schedules, skills, Agents settings, and the human seals in the sidebar
+// footer, app nav and composer.
 function applyActorUpdate(actor) {
   const fields = { name: actor.name, avatar_color: actor.avatar_color, avatar_symbol: actor.avatar_symbol, avatar_url: actor.avatar_url };
   const known = allActors.find(x => x.id === actor.id);
   if (known) Object.assign(known, fields);
-  for (const parts of Object.values(roomParticipantsCache)) {
-    for (const p of parts || []) if (p.actor_id === actor.id) Object.assign(p, fields);
+  for (const [rid, parts] of Object.entries(roomParticipantsCache)) {
+    let hit = false;
+    for (const p of parts || []) if (p.actor_id === actor.id) { Object.assign(p, fields); hit = true; }
+    if (hit && typeof renderRoomDots === 'function') renderRoomDots(Number(rid), parts);
   }
   for (const subs of Object.values(roomSubAgentsCache)) {
     for (const sa of subs || []) {
@@ -618,6 +621,7 @@ function applyActorUpdate(actor) {
   }
   refreshActorAvatars(actor);
   refreshActorNames(actor);
+  if (typeof refreshThreadChips === 'function') refreshThreadChips(actor.id);
   if (humanActor && humanActor.id === actor.id) {
     if (humanActor !== known) Object.assign(humanActor, fields);
     if (typeof renderSidebarFooter === 'function') renderSidebarFooter();

@@ -14457,11 +14457,13 @@ async function run() {
     assert.deepStrictEqual([avatarsOf(1)[0].tagName, state('humanActor.avatar_url'), calls.sort()], ['IMG', '/uploads/avatar/aan.png', ['composer', 'footer', 'rsb']], 'the human update also repaints the sidebar footer and composer seal');
   });
 
-  await test('actor rename — actor_updated rewrites that actor\'s name label and avatar on rows drawn from the server\'s own payloads (feed, thread, live row, run event); sub-agent labels and a same-name actor stay', () => {
+  await test('actor rename — actor_updated rewrites that actor\'s name label and avatar on rows drawn from the server\'s own payloads (feed, thread, live row, run event); sub-agent labels and a same-name actor stay; thread chips, room header, room-list dots, schedules and skills follow too', async () => {
     const vm = require('vm');
     const fs = require('fs');
     const Database = require('better-sqlite3');
     const { createRoomMessages } = require('./lib/room-messages');
+    const { createRoomSchedules } = require('./lib/room-schedules');
+    const { createSkills } = require('./lib/skills');
     const mem = new Database(':memory:');
     require('./lib/migrations').runMigrations(mem, path.join(__dirname, 'migrations'), { log() {}, error() {} }, { schemaSql: fs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8') });
     mem.exec(`INSERT INTO actors (id, type, name, avatar_color) VALUES (1, 'human', 'Aan', '#c80'), (7, 'ai', 'Atlas', '#a00'), (8, 'ai', 'Atlas', '#0a0');
@@ -14475,16 +14477,24 @@ async function run() {
       INSERT INTO messages (id, room_id, participant_id, content, state, thread_id, sub_agent_id, sub_agent_label) VALUES (104, 5, 10, 'reply by Reviewer', 'complete', 100, 22, 'Reviewer');
       INSERT INTO messages (id, room_id, participant_id, content, state, sub_agent_id, sub_agent_label) VALUES (108, 5, 10, 'legacy Reviewer', 'complete', 22, 'Reviewer');
       INSERT INTO messages (id, room_id, participant_id, content, state) VALUES (109, 5, 10, 'legacy Atlas 7', 'complete'), (105, 5, 10, '', 'streaming');
-      UPDATE messages SET feed_pos = id;`);
+      INSERT INTO messages (id, room_id, participant_id, content, state) VALUES (110, 5, 11, 'root by Atlas 8, Atlas 7 replies', 'complete');
+      INSERT INTO messages (id, room_id, participant_id, content, state, thread_id) VALUES (111, 5, 10, 'reply by Atlas 7', 'complete', 110);
+      UPDATE messages SET feed_pos = id;
+      UPDATE rooms SET primary_actor_id = 7 WHERE id = 5;
+      INSERT INTO room_schedules (room_id, target_actor_id, created_by_actor_id, task, schedule_spec, enabled) VALUES
+        (5, 7, 1, 'daily digest for the room', '{"type":"daily","at":"09:00","tz":"UTC"}', 1), (5, 8, 1, 'weekly digest for the room', '{"type":"daily","at":"10:00","tz":"UTC"}', 1);
+      INSERT INTO skills (name, description, created_by_actor_id, created_by_sub_agent_id) VALUES ('by-atlas', 'd', 7, NULL), ('by-reviewer', 'd', 7, 22), ('by-other', 'd', 8, NULL);`);
     const rm = createRoomMessages({ db: mem, broadcast() {}, broadcastGlobal() {}, resolveThread() {}, enrichAutomation() {}, enrichAutomationList() {}, getThreadRootPreview: () => null, cascadeMentions() {}, uploadsDir: '/tmp' });
 
     const matches = (el, sel) => sel.split(',').some(one => {
       const s = one.trim();
       if (s.startsWith('#')) return el.id === s.slice(1);
+      const clsAttr = /^\.([\w-]+)(\[.*\])$/.exec(s);
+      if (clsAttr) return el.classList.contains(clsAttr[1]) && matches(el, clsAttr[2]);
       const has = /^\[data-([\w-]+)\]$/.exec(s);
       if (has) return el.dataset[has[1].replace(/-(\w)/g, (_, c) => c.toUpperCase())] !== undefined;
       const attr = /^\[([\w-]+)="([^"]*)"\]$/.exec(s);
-      if (attr) return attr[1] === 'id' ? el.id === attr[2] : el.dataset[attr[1].replace(/^data-/, '').replace(/-(\w)/g, (_, c) => c.toUpperCase())] === attr[2];
+      if (attr) return attr[1] === 'id' ? el.id === attr[2] : String(el.dataset[attr[1].replace(/^data-/, '').replace(/-(\w)/g, (_, c) => c.toUpperCase())]) === attr[2];
       if (s.startsWith('.')) return s.slice(1).split('.').every(c => el.classList.contains(c));
       return el.tagName === s.toUpperCase();
     });
@@ -14497,7 +14507,7 @@ async function run() {
       set className(v) { this._cls.clear(); String(v).split(/\s+/).filter(Boolean).forEach(c => this._cls.add(c)); }
       get className() { return [...this._cls].join(' '); }
       appendChild(c) { if (c.parentNode) c.remove(); c.parentNode = this; this.children.push(c); return c; }
-      append(...cs) { cs.forEach(c => this.appendChild(c)); }
+      append(...cs) { cs.forEach(c => this.appendChild(typeof c === 'string' ? Object.assign(new El('#text'), { _text: c }) : c)); }
       insertBefore(n, ref) { if (n.parentNode) n.remove(); const i = ref ? this.children.indexOf(ref) : -1; n.parentNode = this; if (i < 0) this.children.push(n); else this.children.splice(i, 0, n); return n; }
       replaceChild(n, old) { this.insertBefore(n, old); old.remove(); return old; }
       replaceWith(n) { this.parentNode.replaceChild(n, this); }
@@ -14534,7 +14544,7 @@ async function run() {
         getElementById: id => (id === 'messages-inner' ? feed : id === 'thread-body' ? thread : body.querySelector('#' + id)),
         querySelector: sel => body.querySelector(sel), querySelectorAll: sel => body.querySelectorAll(sel),
       },
-      applyBubbleColor() {}, scrollToBottom() {}, _scrollThreadToBottom() {}, requestAnimationFrame() {},
+      applyBubbleColor() {}, scrollToBottom() {}, _scrollThreadToBottom() {}, requestAnimationFrame() {}, setInterval: () => 0, clearInterval() {},
       renderMarkdown: s => s, highlightMentions: s => s, renderAttachments() {}, renderSavedTrail() {}, addCopyButtons() {}, linkifyFilePaths() {}, externalLinksNewTab() {},
       getCleanupProgress: () => 'off', getToolProgress: () => 'all', addMessageLinkAction() {},
       setComposerProcessing() {}, clearComposerProcessing() {}, setThreadProcessing() {}, clearThreadProcessing() {}, refreshRoomList() {}, reloadRsbAgentsPanel() {},
@@ -14544,7 +14554,7 @@ async function run() {
     vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/core.js'), 'utf8'), ctx);
     vm.runInContext(md.slice(md.indexOf('function getAttachments('), md.indexOf('function renderAttachments(')), ctx);
     for (const f of ['sub-agent-avatar.js', 'append.js', 'feed.js', 'thread.js', 'thinking.js', 'stream.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/chat', f), 'utf8'), ctx);
-    vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/websocket.js'), 'utf8'), ctx);
+    for (const f of ['websocket.js', 'rooms/header.js', 'rooms/list.js', 'rooms/schedules.js', 'skills/state.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js', f), 'utf8'), ctx);
     vm.runInContext(`currentRoomId = 5; activeThreadId = 100; allActors = [{ id: 1, name: 'Aan' }, { id: 7, name: 'Atlas' }, { id: 8, name: 'Atlas' }]; humanActor = allActors[0];
       openThread = () => {}; isThreadOpen = () => true; makeSubAgentRoleEl = () => null;`, ctx);
     const ws = m => ctx.handleWsMessage(m);
@@ -14560,6 +14570,26 @@ async function run() {
     ctx.appendMessage(rm.row(109), legacy);
     ws({ type: 'message_new', message: rm.row(106) });
     ws(rm.runState(105, 'streaming'));
+    // Thread chips from the feed payload's own thread summary; room header and room-list dots from the
+    // participants query in server.js; schedules and skills from their libs.
+    ctx.attachThreadChips(feedRows);
+    const srv = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+    const partsSql = /url\.pathname === '\/api\/rooms\/participants'[\s\S]*?db\.prepare\(`([\s\S]*?)`\)/.exec(srv)[1]
+      .replace('${PRIMARY_ACTOR_SQL}', /const PRIMARY_ACTOR_SQL = `([\s\S]*?)`;/.exec(srv)[1]).replace('${ph}', '?');
+    const parts = mem.prepare(partsSql).all(5);
+    vm.runInContext('roomParticipantsCache[5] = ' + JSON.stringify(parts), ctx);
+    const header = body.appendChild(new El('div')); header.id = 'chat-header';
+    const dots = body.appendChild(new El('div')); dots.id = 'room-dots-5';
+    const cachedParts = vm.runInContext('roomParticipantsCache[5]', ctx);
+    ctx.renderChatHeader({ id: 5, title: 'r' }, cachedParts);
+    ctx.renderRoomDots(5, cachedParts);
+    const sched = createRoomSchedules({ db: mem, broadcast() {} });
+    ctx.fjson = async url => (url.endsWith('/schedules') ? sched.list(5).body : url.endsWith('/doctor') ? { diagnoses: [] } : parts);
+    const schedPop = body.appendChild(new El('div'));
+    ctx.buildSchedulePanel(schedPop, { id: 5 });
+    await new Promise(r => setImmediate(r));
+    const skillsBox = body.appendChild(new El('div'));
+    for (const sk of createSkills({ db: mem, blobsDir: '/tmp' }).list().body.skills) skillsBox.appendChild(ctx.skCreatorEl(sk));
 
     const names = sel => body.querySelectorAll(sel).map(e => e.textContent);
     const allNames = () => names('.t-name, .h-msg-name, .h-msg-sub');
@@ -14583,6 +14613,16 @@ async function run() {
     const avatars = body.querySelectorAll('[data-avatar-actor="7"]');
     assert.ok(avatars.length >= 4 && avatars.every(a => a.tagName === 'IMG' && a.src === '/uploads/avatar/atlas.png'), 'actor 7 avatars on server-drawn rows are repainted');
     assert.ok(body.querySelectorAll('[data-avatar-actor="8"]').every(a => a.tagName === 'SPAN'), 'the other Atlas keeps its seal');
+
+    assert.deepStrictEqual([100, 110].map(id => body.querySelector('#msg-' + id).querySelectorAll('.h-thread-chip').length), [1, 1], 'each chip is rebuilt in place, not duplicated');
+    const chipAv = id => body.querySelector('#msg-' + id).querySelector('.h-thread-chip-avatars').children;
+    assert.deepStrictEqual(chipAv(110).map(a => [a.tagName, a.src, a.className.includes('h-thread-chip-av')]), [['IMG', '/uploads/avatar/atlas.png', true]], 'the thread chip avatar of actor 7 is repainted, its chip class kept');
+    assert.deepStrictEqual(chipAv(100).map(a => (a.className.includes('h-sa-avatar-wrap') ? 'sub:' + a.dataset.saLabel : a.tagName + ':' + a.textContent)), ['SPAN:A', 'sub:Reviewer'], 'the other Atlas keeps its seal and the Reviewer its own avatar');
+    assert.strictEqual(header.querySelector('.h-room-primary').textContent, 'primary: Atlas Prime', 'the room header names the renamed primary');
+    assert.deepStrictEqual(dots.children.map(d => d.title).sort(), ['Aan', 'Atlas', 'Atlas Prime (primary)'], 'room-list dot tooltips follow the rename');
+    assert.deepStrictEqual(schedPop.querySelectorAll('.sch-row-name').map(e => e.textContent), ['Atlas Prime', 'Atlas'], 'the open schedules panel names the renamed target');
+    assert.deepStrictEqual(schedPop.querySelectorAll('.sch-row').map(r => r.children[0].tagName), ['IMG', 'SPAN'], 'and repaints its avatar only');
+    assert.deepStrictEqual(skillsBox.querySelectorAll('.sk-creator-name').map(e => e.textContent), ['Atlas Prime', 'Atlas', 'Reviewer'], 'a skill creator name follows the rename; a sub-agent creator keeps its label');
 
     ws({ type: 'actor_updated', actor: { id: 7, avatar_url: null } });
     assert.strictEqual(rowName(100, '.t-name'), 'Atlas Prime', 'an update without a name keeps the shown name');
