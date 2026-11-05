@@ -52,6 +52,7 @@ function appendFeedRootRow(m, inner) {
     nameEl.style.color = m.avatar_color;
     nameEl.textContent = m.sub_agent_label || m.actor_name;
   }
+  if (msgShowsActorName(m)) tagActorName(nameEl, m.actor_id);
   meta.appendChild(nameEl);
 
   if (m.actor_type === 'ai' && m.automation) {
@@ -331,6 +332,7 @@ function appendFeedBroadcastRow(m, inner) {
     nameEl.style.color = m.avatar_color;
     nameEl.textContent = m.sub_agent_label || m.actor_name;
   }
+  if (msgShowsActorName(m)) tagActorName(nameEl, m.actor_id);
   meta.appendChild(nameEl);
 
   if (m.created_at) {

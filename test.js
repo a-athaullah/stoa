@@ -14302,7 +14302,7 @@ async function run() {
       },
       currentRoomId: 5,
       roomSubAgentsCache: { 5: [{ id: 11, label: 'Reviewer', parent_actor_id: 1 }, { id: 22, label: 'Reviewer', parent_actor_id: 2 }] },
-      streaming: {}, makeAvatar: () => node('span'), makeSubAgentRoleEl: () => null, applyBubbleColor() {}, scrollToBottom() {},
+      streaming: {}, makeAvatar: () => node('span'), makeSubAgentRoleEl: () => null, applyBubbleColor() {}, scrollToBottom() {}, tagActorName() {},
     };
     vm.createContext(ctx);
     for (const f of ['public/js/chat/sub-agent-avatar.js', 'public/js/chat/thinking.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
@@ -14324,9 +14324,10 @@ async function run() {
       appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
       replaceWith(n) { const s = this.parentNode.children; n.parentNode = this.parentNode; s[s.indexOf(this)] = n; this.parentNode = null; }
       querySelectorAll(sel) {
-        assert.strictEqual(sel, '[data-avatar-actor]');
+        const key = { '[data-avatar-actor]': 'avatarActor', '[data-name-actor]': 'nameActor' }[sel];
+        assert.ok(key, sel);
         const out = [];
-        const walk = e => e.children.forEach(c => { if (c.dataset.avatarActor !== undefined) out.push(c); walk(c); });
+        const walk = e => e.children.forEach(c => { if (c.dataset[key] !== undefined) out.push(c); walk(c); });
         walk(this);
         return out;
       }
@@ -14385,6 +14386,140 @@ async function run() {
     mk('Aan', '#00a', null, 28, 1);
     ws({ id: 1, name: 'Aan', avatar_url: '/uploads/avatar/aan.png', avatar_color: '#00a' });
     assert.deepStrictEqual([avatarsOf(1)[0].tagName, state('humanActor.avatar_url'), calls.sort()], ['IMG', '/uploads/avatar/aan.png', ['composer', 'footer', 'rsb']], 'the human update also repaints the sidebar footer and composer seal');
+  });
+
+  await test('actor rename — actor_updated rewrites that actor\'s name label and avatar on rows drawn from the server\'s own payloads (feed, thread, live row, run event); sub-agent labels and a same-name actor stay', () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const Database = require('better-sqlite3');
+    const { createRoomMessages } = require('./lib/room-messages');
+    const mem = new Database(':memory:');
+    require('./lib/migrations').runMigrations(mem, path.join(__dirname, 'migrations'), { log() {}, error() {} }, { schemaSql: fs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8') });
+    mem.exec(`INSERT INTO actors (id, type, name, avatar_color) VALUES (1, 'human', 'Aan', '#c80'), (7, 'ai', 'Atlas', '#a00'), (8, 'ai', 'Atlas', '#0a0');
+      INSERT INTO rooms (id, title, created_by) VALUES (5, 'r', 1);
+      INSERT INTO room_participants (id, room_id, actor_id) VALUES (12, 5, 1), (10, 5, 7), (11, 5, 8);
+      INSERT INTO sub_agents (id, parent_actor_id, label) VALUES (22, 7, 'Reviewer');
+      INSERT INTO messages (id, room_id, participant_id, content, state) VALUES
+        (100, 5, 10, 'root by Atlas 7', 'complete'), (101, 5, 11, 'root by Atlas 8', 'complete'), (106, 5, 12, 'from Aan', 'complete');
+      INSERT INTO messages (id, room_id, participant_id, content, state, sub_agent_id, sub_agent_label) VALUES (102, 5, 10, 'root by Reviewer', 'complete', 22, 'Reviewer');
+      INSERT INTO messages (id, room_id, participant_id, content, state, thread_id) VALUES (103, 5, 10, 'reply by Atlas 7', 'complete', 100), (107, 5, 11, 'reply by Atlas 8', 'complete', 100);
+      INSERT INTO messages (id, room_id, participant_id, content, state, thread_id, sub_agent_id, sub_agent_label) VALUES (104, 5, 10, 'reply by Reviewer', 'complete', 100, 22, 'Reviewer');
+      INSERT INTO messages (id, room_id, participant_id, content, state, sub_agent_id, sub_agent_label) VALUES (108, 5, 10, 'legacy Reviewer', 'complete', 22, 'Reviewer');
+      INSERT INTO messages (id, room_id, participant_id, content, state) VALUES (109, 5, 10, 'legacy Atlas 7', 'complete'), (105, 5, 10, '', 'streaming');
+      UPDATE messages SET feed_pos = id;`);
+    const rm = createRoomMessages({ db: mem, broadcast() {}, broadcastGlobal() {}, resolveThread() {}, enrichAutomation() {}, enrichAutomationList() {}, getThreadRootPreview: () => null, cascadeMentions() {}, uploadsDir: '/tmp' });
+
+    const matches = (el, sel) => sel.split(',').some(one => {
+      const s = one.trim();
+      if (s.startsWith('#')) return el.id === s.slice(1);
+      const has = /^\[data-([\w-]+)\]$/.exec(s);
+      if (has) return el.dataset[has[1].replace(/-(\w)/g, (_, c) => c.toUpperCase())] !== undefined;
+      const attr = /^\[([\w-]+)="([^"]*)"\]$/.exec(s);
+      if (attr) return attr[1] === 'id' ? el.id === attr[2] : el.dataset[attr[1].replace(/^data-/, '').replace(/-(\w)/g, (_, c) => c.toUpperCase())] === attr[2];
+      if (s.startsWith('.')) return s.slice(1).split('.').every(c => el.classList.contains(c));
+      return el.tagName === s.toUpperCase();
+    });
+    class El {
+      constructor(tag) {
+        this.tagName = tag.toUpperCase(); this.id = ''; this.style = {}; this.dataset = {}; this.children = []; this.parentNode = null; this._text = '';
+        const cls = new Set(); this._cls = cls;
+        this.classList = { add: (...c) => c.forEach(x => cls.add(x)), remove: (...c) => c.forEach(x => cls.delete(x)), contains: c => cls.has(c), toggle: (c, on) => (on ?? !cls.has(c) ? cls.add(c) : cls.delete(c)) };
+      }
+      set className(v) { this._cls.clear(); String(v).split(/\s+/).filter(Boolean).forEach(c => this._cls.add(c)); }
+      get className() { return [...this._cls].join(' '); }
+      appendChild(c) { if (c.parentNode) c.remove(); c.parentNode = this; this.children.push(c); return c; }
+      append(...cs) { cs.forEach(c => this.appendChild(c)); }
+      insertBefore(n, ref) { if (n.parentNode) n.remove(); const i = ref ? this.children.indexOf(ref) : -1; n.parentNode = this; if (i < 0) this.children.push(n); else this.children.splice(i, 0, n); return n; }
+      replaceChild(n, old) { this.insertBefore(n, old); old.remove(); return old; }
+      replaceWith(n) { this.parentNode.replaceChild(n, this); }
+      replaceChildren(...cs) { this.children.forEach(c => { c.parentNode = null; }); this.children = []; cs.forEach(c => this.appendChild(c)); }
+      after(n) { this.parentNode.insertBefore(n, this.nextElementSibling); }
+      remove() { const p = this.parentNode; if (p) { p.children = p.children.filter(x => x !== this); this.parentNode = null; } }
+      addEventListener() {}
+      setAttribute(k, v) { if (k.startsWith('data-')) this.dataset[k.slice(5).replace(/-(\w)/g, (_, c) => c.toUpperCase())] = String(v); else this[k] = v; }
+      getAttribute(k) { return this[k] ?? null; }
+      get parentElement() { return this.parentNode; }
+      get nextElementSibling() { const s = this.parentNode?.children || []; return s[s.indexOf(this) + 1] || null; }
+      get lastElementChild() { return this.children.at(-1) || null; }
+      get isConnected() { let x = this; while (x.parentNode) x = x.parentNode; return x === body; }
+      set innerHTML(v) {
+        this.children.forEach(c => { c.parentNode = null; }); this.children = [];
+        const html = String(v);
+        this._text = html.replace(/<[^>]*>/g, '');
+        for (const [, action] of html.matchAll(/data-action="(\w+)"/g)) { const b = new El('button'); b.dataset.action = action; this.appendChild(b); }
+      }
+      set textContent(v) { this.children.forEach(c => { c.parentNode = null; }); this.children = []; this._text = String(v); }
+      get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+      querySelectorAll(sel) { const out = []; const walk = e => e.children.forEach(c => { if (matches(c, sel)) out.push(c); walk(c); }); walk(this); return out; }
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
+      closest(sel) { for (let x = this; x; x = x.parentNode) if (matches(x, sel)) return x; return null; }
+    }
+    const body = new El('body');
+    const feed = body.appendChild(new El('div')); feed.id = 'messages-inner';
+    const thread = body.appendChild(new El('div')); thread.id = 'thread-body';
+    const ctx = {
+      localStorage: { getItem: () => null, setItem() {} }, navigator: {}, location: {}, window: { addEventListener() {} }, ws: null, streaming: {},
+      document: {
+        body, visibilityState: 'visible', addEventListener() {},
+        createElement: t => new El(t), createTextNode: t => Object.assign(new El('#text'), { _text: String(t) }),
+        getElementById: id => (id === 'messages-inner' ? feed : id === 'thread-body' ? thread : body.querySelector('#' + id)),
+        querySelector: sel => body.querySelector(sel), querySelectorAll: sel => body.querySelectorAll(sel),
+      },
+      applyBubbleColor() {}, scrollToBottom() {}, _scrollThreadToBottom() {}, requestAnimationFrame() {},
+      renderMarkdown: s => s, highlightMentions: s => s, renderAttachments() {}, renderSavedTrail() {}, addCopyButtons() {}, linkifyFilePaths() {}, externalLinksNewTab() {},
+      getCleanupProgress: () => 'off', getToolProgress: () => 'all', addMessageLinkAction() {},
+      setComposerProcessing() {}, clearComposerProcessing() {}, setThreadProcessing() {}, clearThreadProcessing() {}, refreshRoomList() {}, reloadRsbAgentsPanel() {},
+    };
+    vm.createContext(ctx);
+    const md = fs.readFileSync(path.join(__dirname, 'public/js/markdown.js'), 'utf8');
+    vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/core.js'), 'utf8'), ctx);
+    vm.runInContext(md.slice(md.indexOf('function getAttachments('), md.indexOf('function renderAttachments(')), ctx);
+    for (const f of ['sub-agent-avatar.js', 'append.js', 'feed.js', 'thread.js', 'thinking.js', 'stream.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/chat', f), 'utf8'), ctx);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/websocket.js'), 'utf8'), ctx);
+    vm.runInContext(`currentRoomId = 5; activeThreadId = 100; allActors = [{ id: 1, name: 'Aan' }, { id: 7, name: 'Atlas' }, { id: 8, name: 'Atlas' }]; humanActor = allActors[0];
+      openThread = () => {}; isThreadOpen = () => true; makeSubAgentRoleEl = () => null;`, ctx);
+    const ws = m => ctx.handleWsMessage(m);
+
+    // Every payload below is what the server sends: REST feed, REST thread, message_new, message_state.
+    const feedRows = rm.feed(5).body;
+    for (const m of feedRows.filter(m => ![105, 106, 108, 109].includes(m.id))) ctx.appendFeedRootRow(m, feed);
+    const { root, messages } = rm.thread(5, 100).body;
+    ctx._renderThreadRoot(root, thread);
+    for (const m of messages) ctx.appendThreadMessage(m, thread);
+    const legacy = new El('div'); feed.appendChild(legacy);
+    ctx.appendMessage(rm.row(108), legacy);
+    ctx.appendMessage(rm.row(109), legacy);
+    ws({ type: 'message_new', message: rm.row(106) });
+    ws(rm.runState(105, 'streaming'));
+
+    const names = sel => body.querySelectorAll(sel).map(e => e.textContent);
+    const allNames = () => names('.t-name, .h-msg-name, .h-msg-sub');
+    const before = allNames();
+    assert.strictEqual(before.filter(n => n === 'Atlas').length >= 7, true, `rows of both Atlas actors drawn: ${before}`);
+    assert.ok(before.includes('(Atlas)') && before.includes('Reviewer'), 'sub-agent rows show "Reviewer (Atlas)"');
+    const tagged = body.querySelectorAll('[data-name-actor]');
+    assert.ok(tagged.length > 0 && tagged.every(e => ['7', '8', '1'].includes(e.dataset.nameActor)), 'name labels carry the author actor id from the payload');
+    assert.ok(!tagged.some(e => e.textContent === 'Reviewer'), 'a sub-agent label is never tagged as an actor name');
+
+    ws({ type: 'actor_updated', actor: { id: 7, name: 'Atlas Prime', avatar_url: '/uploads/avatar/atlas.png', avatar_color: '#a00', avatar_symbol: null } });
+    const rowName = (id, sel) => body.querySelector('#msg-' + id)?.querySelector(sel)?.textContent;
+    assert.deepStrictEqual(
+      [rowName(100, '.t-name'), rowName(103, '.h-msg-name'), rowName(105, '.h-msg-name')],
+      ['Atlas Prime', 'Atlas Prime', 'Atlas Prime'], 'feed root, thread reply and the running thinking bubble follow the rename');
+    assert.deepStrictEqual([thread.querySelectorAll('.h-msg-name')[0].textContent, legacy.querySelectorAll('.h-msg-name').map(e => e.textContent)], ['Atlas Prime', ['Reviewer', 'Atlas Prime']], 'thread root and appendMessage rows too');
+    assert.deepStrictEqual([rowName(101, '.t-name'), rowName(107, '.h-msg-name'), rowName(106, '.t-name')], ['Atlas', 'Atlas', 'Aan'], 'the other Atlas (same name, other id) and the human keep their names');
+    const subs = body.querySelectorAll('.h-msg-sub').map(e => e.textContent);
+    assert.ok(subs.length >= 2 && subs.every(s => s === '(Atlas Prime)'), `the "(parent)" note follows the parent rename: ${subs}`);
+    assert.ok(body.querySelectorAll('.t-name, .h-msg-name').filter(e => e.textContent === 'Reviewer').length >= 3, 'every sub-agent label stays "Reviewer"');
+    const avatars = body.querySelectorAll('[data-avatar-actor="7"]');
+    assert.ok(avatars.length >= 4 && avatars.every(a => a.tagName === 'IMG' && a.src === '/uploads/avatar/atlas.png'), 'actor 7 avatars on server-drawn rows are repainted');
+    assert.ok(body.querySelectorAll('[data-avatar-actor="8"]').every(a => a.tagName === 'SPAN'), 'the other Atlas keeps its seal');
+
+    ws({ type: 'actor_updated', actor: { id: 7, avatar_url: null } });
+    assert.strictEqual(rowName(100, '.t-name'), 'Atlas Prime', 'an update without a name keeps the shown name');
+    vm.runInContext('allActors = allActors.filter(a => a.id !== 7)', ctx);
+    ws({ type: 'actor_updated', actor: { id: 7, name: '', avatar_url: null } });
+    assert.strictEqual(rowName(100, '.t-name'), 'Atlas Prime', 'nor does an empty name for an actor missing from the cache blank the label');
   });
 
   await test('image lightbox — Esc closes it before any other Esc handler (no stop-generation), the capture listener lives only while open', () => {
@@ -14558,6 +14693,7 @@ async function run() {
     const ctx = {
       document, window: {}, ws: null, currentRoomId: 5, streaming: {},
       makeAvatarEl: () => new El('span'), makeSubAgentRoleEl: () => null, applyBubbleColor() {}, scrollToBottom() {}, _scrollThreadToBottom() {},
+      tagActorName() {}, msgShowsActorName: () => false,
       renderMarkdown: s => s, highlightMentions: s => s, renderAttachments() {}, renderSavedTrail() {}, addCopyButtons() {}, linkifyFilePaths() {}, externalLinksNewTab() {},
       getCleanupProgress: () => 'off', getToolProgress: () => 'all', addMessageLinkAction() {},
       setComposerProcessing: id => processing.add(id), clearComposerProcessing: id => processing.delete(id),
