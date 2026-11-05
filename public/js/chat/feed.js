@@ -1,5 +1,5 @@
 // ── Thread feed — roots-only renderer ──────────────────────────────────────
-// threadSummaries: rootMsgId → {count, last_at, active, participants}
+// threadSummaries: rootMsgId → {count, last_at, active, completed, participants}
 const threadSummaries = {};
 
 // ── Slack-style root row renderer ──────────────────────────────────────────
@@ -140,7 +140,7 @@ function _buildThreadChip(rootId) {
   if (!s || s.count < 1) return null;
 
   const chip = document.createElement('div');
-  chip.className = 'h-thread-chip' + (s.active ? ' active' : '');
+  chip.className = 'h-thread-chip' + (s.active ? ' active' : '') + (s.completed ? ' is-complete' : '');
   chip.dataset.rootId = rootId;
 
   if (s.participant_ids?.length || s.sub_agent_participants?.length) {
@@ -185,6 +185,14 @@ function _buildThreadChip(rootId) {
   count.textContent = s.count + (s.count === 1 ? ' reply' : ' replies');
   chip.appendChild(count);
 
+  if (s.completed) {
+    const done = document.createElement('span');
+    done.className = 'h-thread-chip-done';
+    done.innerHTML = '<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6.4"/><polyline points="5.4 8.2 7.2 10 10.6 6.3"/></svg>';
+    done.appendChild(document.createTextNode('complete'));
+    chip.appendChild(done);
+  }
+
   if (s.last_at) {
     const when = document.createElement('span');
     when.className = 'h-thread-chip-time';
@@ -224,16 +232,41 @@ function refreshThreadChips(actorId) {
   }
 }
 
-// Called on thread_summary WS event
+// Called on thread_summary WS event. The server derives `completed`; a summary without it keeps the
+// last known state (a new reply flips it via noteThreadReply).
 function handleThreadSummary(msg) {
+  const prev = threadSummaries[msg.root_id];
+  const completed = typeof msg.completed === 'boolean' ? msg.completed : !!prev?.completed;
   threadSummaries[msg.root_id] = {
     count: msg.count,
     last_at: msg.last_at,
     active: msg.active,
+    completed,
     participant_ids: msg.participant_ids || [],
     sub_agent_participants: msg.sub_agent_participants || [],
   };
   updateThreadChip(msg.root_id);
+  if (completed !== !!prev?.completed) _threadCompletionChanged(msg.root_id, completed);
+}
+
+// thread_status WS event, PUT response, and the client-side reopen on a new reply.
+function setThreadCompleted(rootId, completed) {
+  const s = threadSummaries[rootId];
+  if (s && s.completed !== completed) {
+    s.completed = completed;
+    updateThreadChip(rootId);
+  }
+  _threadCompletionChanged(rootId, completed);
+}
+
+// A new message in a thread reopens it (the server derives the same from the newest reply id).
+function noteThreadReply(rootId) {
+  setThreadCompleted(rootId, false);
+}
+
+function _threadCompletionChanged(rootId, completed) {
+  if (typeof syncThreadCompleteBtn === 'function') syncThreadCompleteBtn(rootId, completed);
+  if (typeof noteHeaderOpenThread === 'function') noteHeaderOpenThread(rootId, !completed);
 }
 
 // After loading feed messages, attach chips from pre-fetched thread data
@@ -244,6 +277,7 @@ function attachThreadChips(messages) {
         count: m.thread.count || 0,
         last_at: m.thread.last_at,
         active: m.thread.active || false,
+        completed: !!m.thread.completed,
         participant_ids: m.thread.participant_ids || [],
         sub_agent_participants: m.thread.sub_agent_participants || [],
       };
