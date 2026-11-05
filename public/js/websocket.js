@@ -92,10 +92,10 @@ function handleWsMessage(msg) {
           }
           if (typeof activeThreadId !== 'undefined' && activeThreadId === m.thread_id) {
             const tbody = document.getElementById('thread-body');
-            showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, tbody, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role, m.sub_agent_id);
+            showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, tbody, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role, m.sub_agent_id, m.actor_id);
           }
         } else {
-          showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, undefined, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role, m.sub_agent_id);
+          showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, undefined, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role, m.sub_agent_id, m.actor_id);
         }
         if (m.thread_id && typeof setThreadProcessing === 'function') setThreadProcessing(m.id);
         else setComposerProcessing(m.id);
@@ -222,7 +222,7 @@ function handleWsMessage(msg) {
       const resumed = msg.state === 'streaming' ? takeInterruptedRun(msg.message_id) : null;
       const last = targetContainer?.lastElementChild;
       if (last?.classList.contains('h-system-event') && last.dataset.actor?.startsWith(msg.actor_name)) last.remove();
-      showThinking(msg.message_id, msg.actor_name, msg.avatar_color, msg.avatar_symbol, msg.avatar_url, msg.sub_agent_label, targetContainer, msg.sub_agent_avatar_color, msg.sub_agent_avatar_symbol, msg.sub_agent_avatar_url, msg.sub_agent_role, msg.sub_agent_id);
+      showThinking(msg.message_id, msg.actor_name, msg.avatar_color, msg.avatar_symbol, msg.avatar_url, msg.sub_agent_label, targetContainer, msg.sub_agent_avatar_color, msg.sub_agent_avatar_symbol, msg.sub_agent_avatar_url, msg.sub_agent_role, msg.sub_agent_id, msg.actor_id);
       const revived = document.getElementById('msg-' + msg.message_id);
       if (resumed && revived && resumed.parent === revived.parentNode && resumed.next?.isConnected) resumed.parent.insertBefore(revived, resumed.next);
       if (tId && typeof _scrollThreadToBottom === 'function') _scrollThreadToBottom();
@@ -581,6 +581,87 @@ function handleWsMessage(msg) {
     refreshSubAgentAvatars(sa);
     return;
   }
+
+  if (msg.type === 'actor_updated') {
+    // The server sends it to every human socket, the global one included: that one handles it, unless
+    // it is down at the moment.
+    if (globalWs?.readyState !== WebSocket.OPEN) handleActorUpdated(msg);
+    return;
+  }
+}
+
+function handleActorUpdated(msg) {
+  const a = msg.actor;
+  if (!a || !Number.isInteger(a.id)) return;
+  applyActorUpdate(actorDisplayFields(a));
+}
+
+function actorDisplayFields(a) {
+  return {
+    id: a.id,
+    name: typeof a.name === 'string' && a.name ? a.name : (allActors.find(x => x.id === a.id)?.name || ''),
+    avatar_color: typeof a.avatar_color === 'string' ? a.avatar_color : null,
+    avatar_symbol: typeof a.avatar_symbol === 'string' ? a.avatar_symbol : null,
+    avatar_url: safeAvatarUploadUrl(a.avatar_url),
+  };
+}
+
+// actor_updated sent while the global socket was down is lost: on (re)connect, re-read /api/actors and
+// repaint what changed.
+let _actorResyncSeq = 0;
+async function resyncActors() {
+  const seq = ++_actorResyncSeq;
+  let fresh;
+  try { fresh = await fjson('/api/actors'); } catch { return; }
+  if (seq !== _actorResyncSeq || !Array.isArray(fresh)) return;
+  for (const f of fresh) {
+    if (!f || !Number.isInteger(f.id)) continue;
+    const known = allActors.find(x => x.id === f.id);
+    const next = actorDisplayFields(f);
+    if (!known) { allActors.push(f); actorByName[f.name] = f; applyActorUpdate(next); continue; }
+    if (['name', 'avatar_color', 'avatar_symbol', 'avatar_url'].some(k => (known[k] ?? null) !== next[k])) applyActorUpdate(next);
+  }
+}
+
+// Only a same-origin upload path may become an <img src>; anything else falls back to the seal.
+function safeAvatarUploadUrl(url) {
+  return typeof url === 'string' && /^\/uploads\/[^\s\\]+$/.test(url) && !url.includes('..') ? url : null;
+}
+
+// Caches first, then the rendered avatars and name labels: feed, thread, thinking rows, thread chips,
+// room header, room-list dots, schedules, skills, Agents settings, and the human seals in the sidebar
+// footer, app nav and composer.
+function applyActorUpdate(actor) {
+  const fields = { name: actor.name, avatar_color: actor.avatar_color, avatar_symbol: actor.avatar_symbol, avatar_url: actor.avatar_url };
+  const known = allActors.find(x => x.id === actor.id);
+  if (known) {
+    if (known.name !== actor.name) {
+      if (actorByName[known.name] === known) delete actorByName[known.name];
+      actorByName[actor.name] = known;
+    }
+    Object.assign(known, fields);
+  }
+  for (const [rid, parts] of Object.entries(roomParticipantsCache)) {
+    let hit = false;
+    for (const p of parts || []) if (p.actor_id === actor.id) { Object.assign(p, fields); hit = true; }
+    if (hit && typeof renderRoomDots === 'function') renderRoomDots(Number(rid), parts);
+  }
+  for (const subs of Object.values(roomSubAgentsCache)) {
+    for (const sa of subs || []) {
+      if (sa.parent_actor_id !== actor.id) continue;
+      Object.assign(sa, { parent_name: actor.name, parent_avatar_color: actor.avatar_color, parent_avatar_symbol: actor.avatar_symbol, parent_avatar_url: actor.avatar_url });
+    }
+  }
+  refreshActorAvatars(actor);
+  refreshActorNames(actor);
+  if (typeof refreshThreadChips === 'function') refreshThreadChips(actor.id);
+  if (typeof onScheduleActorUpdated === 'function') onScheduleActorUpdated(actor);
+  if (humanActor && humanActor.id === actor.id) {
+    if (humanActor !== known) Object.assign(humanActor, fields);
+    if (typeof renderSidebarFooter === 'function') renderSidebarFooter();
+    if (typeof renderComposerSeal === 'function') renderComposerSeal();
+  }
+  if (typeof reloadRsbAgentsPanel === 'function') reloadRsbAgentsPanel();
 }
 
 // ── Server restart (same-port) notification ──────────────────────────────

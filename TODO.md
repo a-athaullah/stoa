@@ -16,8 +16,6 @@ _Dirapikan 2026-10-26 (v0.70.1, s/d PR #204). Riwayat item yang sudah selesai ad
 - [ ] **Go-public** — cloudflared; bypass cache Cloudflare untuk `/uploads` dan `/connector-media`.
 - [ ] **Themes** (opsional) — hint warm-paper & card dark lebih gelap; tes popup model di thread composer; cek visual pill room_threads (#203) di tema dark.
 - [ ] **Scheduled triggers v2** — apakah schedule boleh fire ke feed utama (bukan thread): keputusan produk.
-- [ ] **Test helper** — `completeTrigger` di `test.js` mengirim `agent_message` (no-op), jadi trigger di test itu tidak benar-benar selesai.
-- [ ] **Flaky test** — upload/raw 413 kadang `ECONNRESET` (lama, bukan regresi).
 
 ## Trash
 

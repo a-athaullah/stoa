@@ -865,7 +865,7 @@ function appendThreadMessage(m, container) {
 
   if (m.state === 'streaming' || m.state === 'requesting') {
     setRunReply(m.id, m);
-    showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, container, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role, m.sub_agent_id);
+    showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, container, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role, m.sub_agent_id, m.actor_id);
     renderSavedTrail(document.getElementById('msg-' + m.id)?.querySelector('.h-msg-body'), m);
     setThreadProcessing(m.id);
     return;
@@ -884,7 +884,7 @@ function appendThreadMessage(m, container) {
   } else if (m.automation?.provider) {
     seal.appendChild(makeAutomationAvatarEl(m.automation.provider, 28));
   } else {
-    seal.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 28, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_id));
+    seal.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 28, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_id, m.actor_id));
   }
   row.appendChild(seal);
 
@@ -908,6 +908,7 @@ function appendThreadMessage(m, container) {
     nameEl.style.color = m.avatar_color;
     nameEl.textContent = m.sub_agent_label || m.actor_name;
   }
+  if (msgShowsActorName(m)) tagActorName(nameEl, m.actor_id);
   meta.appendChild(nameEl);
 
   if (m.actor_type === 'ai' && m.automation) {
@@ -916,6 +917,7 @@ function appendThreadMessage(m, container) {
       const subEl = document.createElement('span');
       subEl.className = 'h-msg-sub';
       subEl.textContent = '(' + m.actor_name + ')';
+      tagActorName(subEl, m.actor_id, true);
       meta.appendChild(subEl);
     }
   } else if (m.automation) {
@@ -924,6 +926,7 @@ function appendThreadMessage(m, container) {
     const subEl = document.createElement('span');
     subEl.className = 'h-msg-sub';
     subEl.textContent = '(' + m.actor_name + ')';
+    tagActorName(subEl, m.actor_id, true);
     meta.appendChild(subEl);
   }
 
@@ -1054,7 +1057,7 @@ function _renderThreadRoot(m, container) {
   } else if (m.automation?.provider) {
     seal.appendChild(makeAutomationAvatarEl(m.automation.provider, 28));
   } else {
-    seal.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 28, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_id));
+    seal.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 28, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_id, m.actor_id));
   }
   row.appendChild(seal);
 
@@ -1076,6 +1079,7 @@ function _renderThreadRoot(m, container) {
     nameEl.style.color = m.avatar_color;
     nameEl.textContent = m.sub_agent_label || m.actor_name;
   }
+  if (msgShowsActorName(m)) tagActorName(nameEl, m.actor_id);
   meta.appendChild(nameEl);
 
   if (m.actor_type === 'ai' && m.automation) {

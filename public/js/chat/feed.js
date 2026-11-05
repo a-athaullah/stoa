@@ -28,7 +28,7 @@ function appendFeedRootRow(m, inner) {
   } else if (m.automation?.provider) {
     avatarWrap.appendChild(makeAutomationAvatarEl(m.automation.provider, 36));
   } else {
-    avatarWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 36, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_id));
+    avatarWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 36, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_id, m.actor_id));
   }
   row.appendChild(avatarWrap);
 
@@ -52,6 +52,7 @@ function appendFeedRootRow(m, inner) {
     nameEl.style.color = m.avatar_color;
     nameEl.textContent = m.sub_agent_label || m.actor_name;
   }
+  if (msgShowsActorName(m)) tagActorName(nameEl, m.actor_id);
   meta.appendChild(nameEl);
 
   if (m.actor_type === 'ai' && m.automation) {
@@ -215,6 +216,14 @@ function updateThreadChip(rootId) {
   }
 }
 
+// actor_updated: rebuild the chips this actor appears in, from the refreshed allActors. A swapped
+// avatar alone would drop the chip's own class and overlap styling.
+function refreshThreadChips(actorId) {
+  for (const [rootId, s] of Object.entries(threadSummaries)) {
+    if (s.participant_ids?.includes(actorId) || s.sub_agent_participants?.some(sa => sa.actor_id === actorId)) updateThreadChip(rootId);
+  }
+}
+
 // Called on thread_summary WS event
 function handleThreadSummary(msg) {
   threadSummaries[msg.root_id] = {
@@ -310,7 +319,7 @@ function appendFeedBroadcastRow(m, inner) {
   } else if (m.automation?.provider) {
     avatarWrap.appendChild(makeAutomationAvatarEl(m.automation.provider, 36));
   } else {
-    avatarWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 36, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_id));
+    avatarWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 36, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_id, m.actor_id));
   }
   body.appendChild(avatarWrap);
 
@@ -331,6 +340,7 @@ function appendFeedBroadcastRow(m, inner) {
     nameEl.style.color = m.avatar_color;
     nameEl.textContent = m.sub_agent_label || m.actor_name;
   }
+  if (msgShowsActorName(m)) tagActorName(nameEl, m.actor_id);
   meta.appendChild(nameEl);
 
   if (m.created_at) {

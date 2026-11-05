@@ -171,6 +171,13 @@ function onRoomScheduleChanged(roomId) {
   if (_schedPanel.roomId === Number(roomId)) _schedPanel.reload();
 }
 
+// actor_updated (websocket.js) → redraw the open panel's rows: target name and avatar, "by" creator,
+// and the switch/edit/delete labels all carry the name.
+function onScheduleActorUpdated(actor) {
+  if (!_schedPanel || !_schedPanel.pop.isConnected) { _schedPanel = null; return; }
+  _schedPanel.actorUpdated(actor);
+}
+
 function buildSchedulePanel(pop, room) {
   const head = schedEl('div', 'sch-head');
   const countEl = schedEl('span', 'sch-count');
@@ -182,7 +189,7 @@ function buildSchedulePanel(pop, room) {
   pop.append(head, formHost, listHost);
 
   let schedules = [], diagnoses = {}, agents = [], form = null, loaded = false;
-  _schedPanel = { roomId: room.id, pop, reload: load };
+  _schedPanel = { roomId: room.id, pop, reload: load, actorUpdated };
 
   addBtn.onclick = () => { form = schedDefaultForm(agents); renderForm(); renderHead(); };
 
@@ -208,6 +215,22 @@ function buildSchedulePanel(pop, room) {
       err.appendChild(retry);
       listHost.appendChild(err);
     }
+  }
+
+  // The open form is not redrawn (that would drop what is being typed): its agent chips are tagged and
+  // repainted by applyActorUpdate, only the preview sentence is rebuilt here.
+  function actorUpdated(actor) {
+    let hit = false;
+    for (const s of schedules) {
+      if (s.target_actor_id === actor.id) { s.target_name = actor.name; hit = true; }
+      if (s.created_by_actor_id === actor.id) { s.created_by_name = actor.name; hit = true; }
+    }
+    for (const a of agents) {
+      if (a.actor_id === actor.id) { Object.assign(a, { name: actor.name, avatar_color: actor.avatar_color, avatar_symbol: actor.avatar_symbol, avatar_url: actor.avatar_url }); hit = true; }
+    }
+    if (!hit || !loaded) return;
+    renderList();
+    form?.updatePreview?.();
   }
 
   function renderHead() {
@@ -465,8 +488,9 @@ function buildSchedulePanel(pop, room) {
     b.type = 'button';
     b.setAttribute('role', 'radio');
     b.setAttribute('aria-checked', on ? 'true' : 'false');
-    b.appendChild(makeAvatar(a.name, a.avatar_color, a.avatar_url, 18));
-    b.appendChild(schedEl('span', null, a.name || '?'));
+    b.appendChild(makeAvatar(a.name, a.avatar_color, a.avatar_url, 18, a.actor_id));
+    const name = b.appendChild(schedEl('span', null, a.name || '?'));
+    tagActorName(name, a.actor_id);
     b.onclick = () => { if (form.target !== a.actor_id) { form.target = a.actor_id; renderForm(); } };
     return b;
   }

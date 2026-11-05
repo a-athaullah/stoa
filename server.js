@@ -311,7 +311,7 @@ function saveSubAgentThreadSession(participantId, subAgentId, claudeSessionId, w
 // `actorId` limits results to rooms that actor participates in (agents must not read other rooms).
 const SEARCH_ROW_COLUMNS = `
   m.id, m.room_id, m.content, m.created_at, m.thread_id, m.thread_id AS thread_root_id,
-  a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
+  rp.actor_id, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
   r.title as room_title, r.archived_at,
   substr(tr.content, 1, 140) AS thread_root_preview`;
 const SEARCH_ROW_JOINS = `
@@ -480,6 +480,19 @@ function saveAvatarFile(prefix, id, buffer, ext) {
   return `/uploads/avatar/${saved}`;
 }
 
+// An actor's name/avatar changed: redrawn without a reload. Every human connection gets it, not only
+// the actor's rooms — the sidebar shows participant dots for all rooms. Agent sockets never get it.
+function broadcastActorUpdated(id) {
+  const actor = db.prepare('SELECT id, name, avatar_url, avatar_color, avatar_symbol FROM actors WHERE id=?').get(id);
+  if (!actor) return;
+  // Runs already in flight carry the actor's look in every message_state; without this they keep the old one.
+  for (const meta of pendingActorMeta.values()) {
+    if (meta.actor_id !== id) continue;
+    Object.assign(meta, { actor_name: actor.name, avatar_url: actor.avatar_url, avatar_color: actor.avatar_color, avatar_symbol: actor.avatar_symbol });
+  }
+  broadcastGlobal({ type: 'actor_updated', actor });
+}
+
 // Actor avatar from image bytes: POST /api/actors/:id/avatar and stoa__agent_avatar_set. The old file
 // goes only after the new one is saved and recorded.
 function setActorAvatar(id, buffer) {
@@ -490,6 +503,7 @@ function setActorAvatar(id, buffer) {
   const avatarUrl = saveAvatarFile('avatar', id, img.buffer, img.ext);
   db.prepare('UPDATE actors SET avatar_url=? WHERE id=?').run(avatarUrl, id);
   deleteAvatarFile(actor.avatar_url);
+  broadcastActorUpdated(id);
   return { status: 200, body: { avatar_url: avatarUrl } };
 }
 
@@ -497,6 +511,9 @@ function setActorAvatar(id, buffer) {
 // and dropped so the caller gets a 413 with a reason, not a reset socket (readBody destroys at once);
 // past the old generic 10 MB cap the socket is dropped after all.
 const AVATAR_DRAIN_MAX = 10 * 1024 * 1024;
+// /api/upload/raw over its limit: how much of the rest of the body is read and dropped after the 413.
+const UPLOAD_LINGER_MAX = 64 * 1024 * 1024;
+const UPLOAD_LINGER_MS = 15000;
 function readAvatarBody(req) {
   return new Promise(resolve => {
     const chunks = [];
@@ -2158,12 +2175,23 @@ const server = http.createServer(async (req, res) => {
     const MAX_UPLOAD = 25 * 1024 * 1024;
     const uploader = req.headers['x-agent-id'] ? `agent ${parseInt(req.headers['x-agent-id']) || '?'}` : 'session';
     // Answer 413 before dropping the socket: destroying first left the agent with a bare
-    // "fetch failed" and no reason it could report back to the chat.
+    // "fetch failed" and no reason it could report back to the chat. The 413 goes out at once, but the
+    // socket stays open while the rest of the body is read and dropped: closing it with unread input
+    // makes the kernel send RST, and a client still uploading then gets EPIPE/ECONNRESET instead of the
+    // 413. Bounded in bytes and time, so an endless body cannot hold the socket.
     const rejectTooLarge = (bytes) => {
       console.warn(`[upload] rejected ${bytes} bytes > ${MAX_UPLOAD} limit (${uploader})`);
-      res.writeHead(413, { 'Content-Type': 'application/json', Connection: 'close' });
-      res.end(JSON.stringify({ error: `File too large: ${(bytes / 1048576).toFixed(1)} MB exceeds the ${MAX_UPLOAD / 1048576} MB limit`, max_bytes: MAX_UPLOAD }));
-      res.on('finish', () => req.destroy());
+      const body = JSON.stringify({ error: `File too large: ${(bytes / 1048576).toFixed(1)} MB exceeds the ${MAX_UPLOAD / 1048576} MB limit`, max_bytes: MAX_UPLOAD });
+      res.writeHead(413, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), Connection: 'close' });
+      res.write(body);
+      let dropped = 0;
+      const finish = () => { clearTimeout(timer); if (!res.writableEnded) res.end(); };
+      const abort = () => { finish(); req.destroy(); };
+      const timer = setTimeout(abort, UPLOAD_LINGER_MS);
+      req.on('data', c => { dropped += c.length; if (dropped > UPLOAD_LINGER_MAX) abort(); });
+      req.once('end', finish);
+      req.once('close', () => clearTimeout(timer));
+      req.resume();
     };
     const declared = parseInt(req.headers['content-length'] || '', 10);
     if (Number.isFinite(declared) && declared > MAX_UPLOAD) return rejectTooLarge(declared);
@@ -2212,6 +2240,7 @@ const server = http.createServer(async (req, res) => {
     const id = parseInt(avatarDeleteMatch[1]);
     deleteAvatarFile(db.prepare('SELECT avatar_url FROM actors WHERE id=?').get(id)?.avatar_url);
     db.prepare('UPDATE actors SET avatar_url=NULL WHERE id=?').run(id);
+    broadcastActorUpdated(id);
     return json(res, { ok: true });
   }
 
@@ -2457,7 +2486,7 @@ const server = http.createServer(async (req, res) => {
   if (msgGetMatch) {
     const msgId = parseInt(msgGetMatch[1]);
     const row = db.prepare(`
-      SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
+      SELECT m.*, rp.actor_id, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
              sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url, sa.role AS sub_agent_role,
              r.archived_at AS room_archived_at
       FROM messages m
@@ -3951,6 +3980,7 @@ const server = http.createServer(async (req, res) => {
       }
     });
     runPatch();
+    if (name !== undefined || avatar_url !== undefined) broadcastActorUpdated(id);
     const finalName = name !== undefined ? name.trim() : actor?.name;
     if (name !== undefined && actor?.type === 'human') {
       writeEnv('HUMAN_NAME', name.trim());
@@ -5529,7 +5559,7 @@ wss.on('connection', (ws, req) => {
       roomClients.get(subscribedRoom).add(ws);
       const messages = db.prepare(`
         SELECT * FROM (
-          SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
+          SELECT m.*, rp.actor_id, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
             sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url, sa.role AS sub_agent_role,
             CASE WHEN m.thread_id IS NULL THEN (SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id) END AS thread_count,
             CASE WHEN m.thread_id IS NULL THEN (SELECT MAX(r.created_at) FROM messages r WHERE r.thread_id = m.id) END AS thread_last_at,
@@ -7156,22 +7186,35 @@ const activeSequences = new Map(); // roomId → { cancelled: bool }
 const roomIdleBus = new (require('events').EventEmitter)();
 roomIdleBus.setMaxListeners(0); // unbounded — one listener per queued room
 
-// R28: drain one queued message per idle event
+// R28: drain one queued message per idle event. The row points at a message that was already stored
+// and broadcast when it was queued, so draining only runs its agents. Rows whose thread is still running
+// wait for that thread's own idle event.
 roomIdleBus.on('idle', (roomId) => {
-  const next = db.prepare('SELECT * FROM room_message_queue WHERE room_id=? ORDER BY position, id LIMIT 1').get(roomId);
+  const queued = db.prepare('SELECT * FROM room_message_queue WHERE room_id=? ORDER BY position, id').all(roomId);
+  const next = queued.find(q => !activeSequences.has(q.thread_id ? `${roomId}:${q.thread_id}` : String(roomId)));
   if (!next) return;
   db.prepare('DELETE FROM room_message_queue WHERE id=?').run(next.id);
-  const remaining = db.prepare('SELECT COUNT(*) as n FROM room_message_queue WHERE room_id=?').get(roomId).n;
-  broadcast(roomId, { type: 'queue_updated', room_id: roomId, queued: remaining });
-  const attachments = next.attachments ? JSON.parse(next.attachments) : [];
-  handleHumanMessage(roomId, next.content, attachments, next.reply_to ?? null, null, next.event_id ?? null, next.thread_id ?? null).catch(e => {
+  broadcast(roomId, { type: 'queue_updated', room_id: roomId, queued: queued.length - 1 });
+  const msg = next.message_id && db.prepare(
+    'SELECT id, content, attachments, thread_id, automation_id, automation_name, automation_provider FROM messages WHERE id=? AND room_id=?'
+  ).get(next.message_id, roomId);
+  if (!msg) {
+    console.warn(`[queue] room ${roomId}: queued row ${next.id} has no stored message, skipped`);
+    roomIdleBus.emit('idle', roomId);
+    return;
+  }
+  const automation = msg.automation_provider || next.target_actor_id
+    ? { id: msg.automation_id, name: msg.automation_name, provider: msg.automation_provider, target_actor_id: next.target_actor_id }
+    : null;
+  try {
+    runAgentsForMessage(roomId, msg.id, msg.content, msg.attachments ? JSON.parse(msg.attachments) : [], msg.thread_id, automation);
+  } catch (e) {
     console.error('[queue] drain error, re-queuing:', e.message);
-    db.prepare('INSERT INTO room_message_queue (room_id, content, attachments, reply_to, event_id, thread_id, position) VALUES (?,?,?,?,?,?,?)').run(
-      next.room_id, next.content, next.attachments ?? null, next.reply_to ?? null, next.event_id ?? null, next.thread_id ?? null, -1
+    db.prepare('INSERT INTO room_message_queue (room_id, content, attachments, reply_to, event_id, thread_id, message_id, target_actor_id, position) VALUES (?,?,?,?,?,?,?,?,?)').run(
+      next.room_id, next.content, next.attachments ?? null, next.reply_to ?? null, next.event_id ?? null, next.thread_id ?? null, next.message_id, next.target_actor_id ?? null, -1
     );
-    const requeued = db.prepare('SELECT COUNT(*) as n FROM room_message_queue WHERE room_id=?').get(roomId).n;
-    broadcast(roomId, { type: 'queue_updated', room_id: roomId, queued: requeued });
-  });
+    broadcast(roomId, { type: 'queue_updated', room_id: roomId, queued: queued.length });
+  }
 });
 
 async function triggerAgentsSequential(roomId, agents, content, replyTo, attachments, initialFiredSubAgentIds = new Set(), threadId = null) {
@@ -7324,7 +7367,6 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
     `INSERT INTO messages (room_id, participant_id, content, image_url, file_url, file_name, attachments, reply_to, client_event_id, thread_id, automation_id, automation_name, automation_provider, state) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'complete')`
   ).run(roomId, humanParticipantId, content, imageUrl, fileUrl, fileName, attachJson, replyTo || null, eventId || null, threadId || null, autoId, autoName, autoProvider);
   const messageId = result.lastInsertRowid;
-  const aiThreadId = threadId ?? messageId;
 
   // Get message with actor info for broadcast
   const row = roomMessages.row(messageId);
@@ -7340,8 +7382,8 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
   if (busyMode !== 'interrupt' && activeSequences.has(seqKey)) {
     if (busyMode === 'queue') {
       const pos = db.prepare('SELECT COALESCE(MAX(position), -1)+1 as p FROM room_message_queue WHERE room_id=?').get(roomId).p;
-      db.prepare('INSERT INTO room_message_queue (room_id, content, attachments, reply_to, event_id, thread_id, position) VALUES (?,?,?,?,?,?,?)').run(
-        roomId, content, attachJson || null, replyTo || null, eventId || null, threadId || null, pos
+      db.prepare('INSERT INTO room_message_queue (room_id, content, attachments, reply_to, event_id, thread_id, message_id, target_actor_id, position) VALUES (?,?,?,?,?,?,?,?,?)').run(
+        roomId, content, attachJson || null, replyTo || null, eventId || null, threadId || null, messageId, automation?.target_actor_id || null, pos
       );
       const queued = db.prepare('SELECT COUNT(*) as n FROM room_message_queue WHERE room_id=?').get(roomId).n;
       broadcast(roomId, { type: 'queue_updated', room_id: roomId, queued });
@@ -7361,6 +7403,14 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
     }
   }
 
+  if (!runAgentsForMessage(roomId, messageId, content, attachments, threadId, automation)) return;
+  return Number(messageId);
+}
+
+// Runs the agents for a stored human/automation message: right away, or when a queued one drains.
+// Returns false when the room is at its active-thread cap and nothing ran.
+function runAgentsForMessage(roomId, messageId, content, attachments, threadId, automation) {
+  const aiThreadId = threadId ?? messageId;
   {
     const roomCfg = db.prepare('SELECT max_active_threads FROM rooms WHERE id=?').get(roomId);
     const maxThreads = roomCfg?.max_active_threads ?? 3;
@@ -7372,7 +7422,7 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
       const alreadyActive = db.prepare(`SELECT 1 FROM messages WHERE room_id=? AND thread_id=? AND state IN ('streaming','requesting') LIMIT 1`).get(roomId, aiThreadId);
       if (!alreadyActive) {
         broadcast(roomId, { type: 'thread_limit_reached', room_id: roomId, thread_id: aiThreadId, max_active_threads: maxThreads });
-        return;
+        return false;
       }
     }
   }
@@ -7416,7 +7466,7 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
       triggerAgentsSequential(roomId, parentMentions, content, messageId, attachments || [], initialFiredSubAgentIds, aiThreadId).catch(e => console.error('[trigger] sequence error:', e));
     }
   }
-  return Number(messageId);
+  return true;
 }
 
 // The skill preamble for an agent client without the skill cache: SKILL.md inline, no files.
@@ -7579,6 +7629,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
       message: {
         id: Number(sysResult.lastInsertRowid),
         room_id: roomId,
+        actor_id: ai.actor_id,
         actor_name: ai.name,
         actor_type: 'ai',
         avatar_color: ai.avatar_color,

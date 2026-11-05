@@ -86,7 +86,10 @@ function renderChatHeader(room, participants) {
     const lead = document.createElement('span');
     lead.className = 'h-room-primary';
     lead.title = PRIMARY_AGENT_HINT;
-    lead.textContent = `primary: ${primary.name}`;
+    const leadName = document.createElement('span');
+    leadName.textContent = primary.name;
+    tagActorName(leadName, primary.actor_id);
+    lead.append('primary: ', leadName);
     tagline.appendChild(lead);
   }
   info.appendChild(tagline);

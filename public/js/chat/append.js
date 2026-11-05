@@ -190,7 +190,7 @@ function appendMessage(m, container) {
 
   // Pesan yang masih streaming/requesting → tampilkan thinking bubble
   if (m.state === 'streaming' || m.state === 'requesting') {
-    showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, undefined, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role, m.sub_agent_id);
+    showThinking(m.id, m.actor_name, m.avatar_color, m.avatar_symbol, m.avatar_url, m.sub_agent_label, undefined, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_role, m.sub_agent_id, m.actor_id);
     return;
   }
 
@@ -209,7 +209,7 @@ function appendMessage(m, container) {
   } else if (m.automation?.provider) {
     sealWrap.appendChild(makeAutomationAvatarEl(m.automation.provider, 40));
   } else {
-    sealWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 40, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_id));
+    sealWrap.appendChild(makeAvatarEl(m.actor_name, m.avatar_color, m.avatar_url, 40, m.sub_agent_label, m.sub_agent_avatar_color, m.sub_agent_avatar_symbol, m.sub_agent_avatar_url, m.sub_agent_id, m.actor_id));
   }
   row.appendChild(sealWrap);
 
@@ -234,6 +234,7 @@ function appendMessage(m, container) {
     nameEl.style.color = m.avatar_color;
     nameEl.textContent = m.sub_agent_label || m.actor_name;
   }
+  if (msgShowsActorName(m)) tagActorName(nameEl, m.actor_id);
   meta.appendChild(nameEl);
 
   if (m.actor_type === 'ai' && m.automation) {
@@ -242,6 +243,7 @@ function appendMessage(m, container) {
       const subEl = document.createElement('span');
       subEl.className = 'h-msg-sub';
       subEl.textContent = '(' + m.actor_name + ')';
+      tagActorName(subEl, m.actor_id, true);
       meta.appendChild(subEl);
     }
   } else if (m.automation) {
@@ -250,6 +252,7 @@ function appendMessage(m, container) {
     const subEl = document.createElement('span');
     subEl.className = 'h-msg-sub';
     subEl.textContent = '(' + m.actor_name + ')';
+    tagActorName(subEl, m.actor_id, true);
     meta.appendChild(subEl);
   }
 

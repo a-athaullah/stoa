@@ -2,8 +2,8 @@
 // A sub-agent without its own photo gets a letter seal of its label, coloured with
 // its own colour or the parent's. Never the parent's photo: that reads as the
 // parent agent speaking.
-function makeAvatarEl(name, color, url, size, subAgentLabel, saAvatarColor, saAvatarSymbol, saAvatarUrl, saId) {
-  if (!subAgentLabel) return makeAvatar(name, color, url, size);
+function makeAvatarEl(name, color, url, size, subAgentLabel, saAvatarColor, saAvatarSymbol, saAvatarUrl, saId, actorId) {
+  if (!subAgentLabel) return makeAvatar(name, color, url, size, actorId);
   const wrap = document.createElement('div');
   wrap.className = 'h-sa-avatar-wrap';
   if (saId) wrap.dataset.saId = String(saId);

@@ -111,8 +111,10 @@ function skCreatorEl(s) {
     return wrap;
   }
   const actor = allActors.find(a => a.id === s.created_by_actor_id);
-  if (actor) wrap.appendChild(makeAvatar(actor.name, actor.avatar_color, actor.avatar_url, 16));
-  wrap.appendChild(skEl('span', 'sk-creator-name', s.creator_name || actor?.name || 'Agent'));
+  if (actor) wrap.appendChild(makeAvatar(actor.name, actor.avatar_color, actor.avatar_url, 16, actor.id));
+  const nameEl = skEl('span', 'sk-creator-name', s.creator_name || actor?.name || 'Agent');
+  if (actor && !s.created_by_sub_agent_id) tagActorName(nameEl, actor.id);
+  wrap.appendChild(nameEl);
   return wrap;
 }
 

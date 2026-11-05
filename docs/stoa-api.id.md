@@ -131,7 +131,7 @@ Response (413 — file terlalu besar):
 {"error": "File too large: 26.1 MB exceeds the 25 MB limit", "max_bytes": 26214400}
 ```
 
-Server memeriksa `Content-Length` sebelum membaca body. Jika ukuran yang dideklarasikan sudah melebihi 25 MB, server langsung mengembalikan 413 tanpa memproses upload.
+Server memeriksa `Content-Length` sebelum membaca body. Jika ukuran yang dideklarasikan sudah melebihi 25 MB, server langsung mengembalikan 413 tanpa menyimpan apa pun. Koneksi lalu tetap terbuka sementara sisa body dibaca dan dibuang (sampai 64 MB atau 15 detik), sehingga klien yang masih mengirim menerima 413, bukan koneksi yang di-reset. Setelah itu server menutupnya.
 
 ## Scope Agent
 

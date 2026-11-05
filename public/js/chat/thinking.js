@@ -1,5 +1,5 @@
 // ── Thinking bubble (before tokens arrive) ─────────────────────────────────
-function showThinking(msgId, actorName, color, symbol, avatarUrl, subAgentLabel, container, saAvatarColor, saAvatarSymbol, saAvatarUrl, saRole, saId) {
+function showThinking(msgId, actorName, color, symbol, avatarUrl, subAgentLabel, container, saAvatarColor, saAvatarSymbol, saAvatarUrl, saRole, saId, actorId) {
   if (document.getElementById('msg-' + msgId)) return; // already exists
   const inner = container || document.getElementById('messages-inner');
   if (!inner) return;
@@ -12,7 +12,7 @@ function showThinking(msgId, actorName, color, symbol, avatarUrl, subAgentLabel,
   // Seal
   const sealWrap = document.createElement('div');
   sealWrap.className = 'h-msg-seal-wrap';
-  sealWrap.appendChild(makeAvatarEl(actorName, color, avatarUrl, isThreadPanel ? 28 : 40, subAgentLabel, saAvatarColor, saAvatarSymbol, saAvatarUrl, saId));
+  sealWrap.appendChild(makeAvatarEl(actorName, color, avatarUrl, isThreadPanel ? 28 : 40, subAgentLabel, saAvatarColor, saAvatarSymbol, saAvatarUrl, saId, actorId));
   row.appendChild(sealWrap);
 
   // Body
@@ -26,11 +26,13 @@ function showThinking(msgId, actorName, color, symbol, avatarUrl, subAgentLabel,
   nameEl.style.color = color;
   // Sub-agent: show label as primary name, orchestrator in parens — "FE-Review (Ara)"
   nameEl.textContent = subAgentLabel || actorName;
+  if (!subAgentLabel) tagActorName(nameEl, actorId);
   meta.appendChild(nameEl);
   if (subAgentLabel) {
     const subEl = document.createElement('span');
     subEl.className = 'h-msg-sub';
     subEl.textContent = '(' + actorName + ')';
+    tagActorName(subEl, actorId, true);
     meta.appendChild(subEl);
   }
   body.appendChild(meta);

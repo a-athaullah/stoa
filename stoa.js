@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.473";
+var CLIENT_VERSION = "0.4.474";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -915,9 +915,15 @@ function attachHeartbeatWatchdog(sock) {
   }, HEARTBEAT_CHECK_MS);
   sock.on("close", () => clearInterval(timer));
 }
+// A peer that accepts the TCP connection but never answers the upgrade (proxy up, origin down) left
+// the socket CONNECTING forever: no 'close', so no reconnect, and the heartbeat watchdog only arms on
+// the first ping. The handshake timeout turns that into error + close -> the normal reconnect path.
+var WS_HANDSHAKE_TIMEOUT_MS = 15e3;
+function openAgentSocket(url, headers, handshakeTimeout = WS_HANDSHAKE_TIMEOUT_MS) {
+  return new WebSocket(url, Object.keys(headers).length ? { headers, handshakeTimeout } : { handshakeTimeout });
+}
 function connect() {
-  const cfHeaders = stoaCfHeaders(STOA_URL);
-  ws = Object.keys(cfHeaders).length ? new WebSocket(STOA_URL, { headers: cfHeaders }) : new WebSocket(STOA_URL);
+  ws = openAgentSocket(STOA_URL, stoaCfHeaders(STOA_URL));
   attachHeartbeatWatchdog(ws);
   ws.on("open", () => {
     if (ACTOR_TYPE === "ai") {
@@ -2825,4 +2831,4 @@ function __resetDeps() {
   outbox.length = 0;
   outboxReady = false;
 }
-module.exports = { handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, TOOL_STALL_MS, forceRestartIfStalled, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, attachHeartbeatWatchdog, HEARTBEAT_MIN_SILENCE_MS, __setDeps, __resetDeps, extractAndUploadFiles, uploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES, send, outbox, OUTBOX_MAX, activeMessageIds, ensureSkill, prependSkills, skillManifestHash };
+module.exports = { handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, TOOL_STALL_MS, forceRestartIfStalled, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, attachHeartbeatWatchdog, HEARTBEAT_MIN_SILENCE_MS, openAgentSocket, WS_HANDSHAKE_TIMEOUT_MS, __setDeps, __resetDeps, extractAndUploadFiles, uploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES, send, outbox, OUTBOX_MAX, activeMessageIds, ensureSkill, prependSkills, skillManifestHash };
