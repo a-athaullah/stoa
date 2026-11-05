@@ -9827,6 +9827,75 @@ async function run() {
     }
   });
 
+  // The UI repaints an actor's avatar/name on actor_updated by actor id, so every path that hands a
+  // message row to a client must say whose it is — a sub-agent's row names its parent actor.
+  await test('message rows carry the author actor_id on every path (history, REST feed/thread/one/search, message_new, run event)', async () => {
+    const ag = await actorDeleteFixture('__test-actor-id-rows', false);
+    const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    let run = null, saId = null;
+    try {
+      const humanId = (await req('GET', `/api/rooms/${ag.roomId}/participants`)).body.find(p => p.type === 'human')?.actor_id;
+      assert.ok(Number.isInteger(humanId) && humanId !== ag.actorId, 'room has a human participant');
+      const sa = await req('POST', `/api/actors/${ag.actorId}/sub-agents`, { label: 'idrows', tier: 'quick' });
+      assert.strictEqual(sa.status, 201, sa.raw);
+      saId = sa.body.id;
+      humanWs.send(JSON.stringify({ type: 'join_room', room_id: ag.roomId }));
+      await waitForWsMessage(humanWs, m => m.type === 'history');
+      const agentPost = async (body) => {
+        const m = await rawReq('POST', `/api/rooms/${ag.roomId}/message`, JSON.stringify(body), 'application/json',
+          { 'X-Agent-Id': String(ag.actorId), 'X-Agent-Secret': ag.secret });
+        assert.strictEqual(m.status, 200, m.raw);
+        return m.body.message_id;
+      };
+      const newOf = (pred) => waitForWsMessage(humanWs, m => m.type === 'message_new' && pred(m.message), 3000);
+
+      let seen = newOf(m => m.content === 'idrows root');
+      const rootId = await agentPost({ content: 'idrows root' });
+      assert.strictEqual((await seen).message.actor_id, ag.actorId, 'message_new (agent REST post)');
+
+      seen = newOf(m => m.content === 'idrows sub');
+      const subId = await agentPost({ content: 'idrows sub', sub_agent_id: saId });
+      const subNew = (await seen).message;
+      assert.deepStrictEqual([subNew.actor_id, subNew.sub_agent_id], [ag.actorId, saId], 'a sub-agent row names its parent actor');
+
+      seen = newOf(m => m.content === '@__test-actor-id-rows idrows ask');
+      const trig = waitForWsMessage(ag.ws, m => m.type === 'agent_trigger' && m.room_id === ag.roomId, 5000);
+      const firstState = waitForWsMessage(humanWs, m => m.type === 'message_state', 5000);
+      humanWs.send(JSON.stringify({ type: 'send_message', room_id: ag.roomId, content: '@__test-actor-id-rows idrows ask' }));
+      const askNew = (await seen).message;
+      assert.strictEqual(askNew.actor_id, humanId, 'message_new (human send_message)');
+      run = await trig;
+      const st = await firstState;
+      assert.deepStrictEqual([st.message_id, st.actor_id], [run.message_id, ag.actorId], 'the run-start message_state');
+      await completeRun(ag.ws, ag.roomId, run);
+      run = null;
+
+      seen = newOf(m => m.content === 'idrows reply');
+      const replyId = await agentPost({ content: 'idrows reply', thread_id: rootId });
+      assert.strictEqual((await seen).message.actor_id, ag.actorId, 'message_new (thread reply)');
+
+      const expected = { [rootId]: ag.actorId, [subId]: ag.actorId, [askNew.id]: humanId };
+      const idsOf = (rows) => Object.fromEntries(rows.filter(r => r.id in expected).map(r => [r.id, r.actor_id]));
+      const hist = waitForWsMessage(humanWs, m => m.type === 'history');
+      humanWs.send(JSON.stringify({ type: 'join_room', room_id: ag.roomId }));
+      assert.deepStrictEqual(idsOf((await hist).messages), expected, 'join_room history');
+      const feed = await req('GET', `/api/rooms/${ag.roomId}/messages`);
+      assert.deepStrictEqual(idsOf(feed.body), expected, 'GET /api/rooms/:id/messages');
+      const thr = await req('GET', `/api/rooms/${ag.roomId}/threads/${rootId}`);
+      assert.deepStrictEqual([thr.body.root.actor_id, thr.body.messages.find(m => m.id === replyId)?.actor_id], [ag.actorId, ag.actorId], 'GET thread root + reply');
+      assert.strictEqual((await req('GET', `/api/messages/${askNew.id}`)).body.actor_id, humanId, 'GET /api/messages/:id');
+      const hits = (await req('GET', `/api/search?q=idrows&room_id=${ag.roomId}&mode=keyword`)).body;
+      assert.deepStrictEqual([hits.find(h => h.id === subId)?.actor_id, hits.find(h => h.id === askNew.id)?.actor_id], [ag.actorId, humanId], 'GET /api/search');
+    } finally {
+      humanWs.close();
+      if (run) await completeRun(ag.ws, ag.roomId, run).catch(() => {});
+      ag.ws.close();
+      if (saId) await req('DELETE', `/api/sub-agents/${saId}`);
+      await req('DELETE', `/api/rooms/${ag.roomId}`);
+      await req('DELETE', `/api/actors/${ag.actorId}`);
+    }
+  });
+
   await test('DELETE /api/actors/:id — usage_log blocks the final DELETE → the earlier participant delete is rolled back', async () => {
     const ag = await actorDeleteFixture('__test-actor-usage', false);
     try {

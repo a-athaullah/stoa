@@ -311,7 +311,7 @@ function saveSubAgentThreadSession(participantId, subAgentId, claudeSessionId, w
 // `actorId` limits results to rooms that actor participates in (agents must not read other rooms).
 const SEARCH_ROW_COLUMNS = `
   m.id, m.room_id, m.content, m.created_at, m.thread_id, m.thread_id AS thread_root_id,
-  a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
+  rp.actor_id, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
   r.title as room_title, r.archived_at,
   substr(tr.content, 1, 140) AS thread_root_preview`;
 const SEARCH_ROW_JOINS = `
@@ -2487,7 +2487,7 @@ const server = http.createServer(async (req, res) => {
   if (msgGetMatch) {
     const msgId = parseInt(msgGetMatch[1]);
     const row = db.prepare(`
-      SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
+      SELECT m.*, rp.actor_id, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
              sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url, sa.role AS sub_agent_role,
              r.archived_at AS room_archived_at
       FROM messages m
@@ -5560,7 +5560,7 @@ wss.on('connection', (ws, req) => {
       roomClients.get(subscribedRoom).add(ws);
       const messages = db.prepare(`
         SELECT * FROM (
-          SELECT m.*, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
+          SELECT m.*, rp.actor_id, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
             sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url, sa.role AS sub_agent_role,
             CASE WHEN m.thread_id IS NULL THEN (SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id) END AS thread_count,
             CASE WHEN m.thread_id IS NULL THEN (SELECT MAX(r.created_at) FROM messages r WHERE r.thread_id = m.id) END AS thread_last_at,
@@ -7630,6 +7630,7 @@ async function triggerAiResponse(roomId, ai, prompt, replyTo, attachments = [], 
       message: {
         id: Number(sysResult.lastInsertRowid),
         room_id: roomId,
+        actor_id: ai.actor_id,
         actor_name: ai.name,
         actor_type: 'ai',
         avatar_color: ai.avatar_color,
