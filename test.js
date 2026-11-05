@@ -2702,6 +2702,30 @@ async function runAsyncUnitTests() {
     });
   });
 
+  await uta('agent socket — a peer that accepts TCP but never answers the upgrade is closed by the handshake timeout (→ reconnect)', async () => {
+    const stoa = require('./stoa.js');
+    assert.strictEqual(stoa.WS_HANDSHAKE_TIMEOUT_MS, 15000);
+    const held = [];
+    const silent = require('net').createServer(s => { held.push(s); s.on('data', () => {}); });
+    await new Promise(r => silent.listen(0, '127.0.0.1', r));
+    try {
+      const started = Date.now();
+      const sock = stoa.openAgentSocket(`ws://127.0.0.1:${silent.address().port}`, { 'CF-Access-Client-Id': 'x' }, 300);
+      const errors = [];
+      sock.on('error', e => errors.push(e.message));
+      await new Promise((resolve, reject) => {
+        sock.on('close', resolve);
+        setTimeout(() => reject(new Error(`still readyState ${sock.readyState} after 3s`)), 3000);
+      });
+      assert.deepStrictEqual(errors, ['Opening handshake has timed out']);
+      assert.ok(Date.now() - started >= 250, 'closed by the timeout, not refused');
+      assert.strictEqual(held.length, 1, 'the TCP connection was accepted');
+    } finally {
+      held.forEach(s => s.destroy());
+      silent.close();
+    }
+  });
+
   // Drives the real attachHeartbeatWatchdog on a fake socket: captures its check interval and moves Date.now.
   function heartbeatHarness() {
     const stoa = require('./stoa.js');
