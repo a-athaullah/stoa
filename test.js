@@ -7503,6 +7503,22 @@ async function run() {
       assert.strictEqual(r.body.max_bytes, 25 * 1024 * 1024);
     });
 
+    await test('POST /api/upload/raw — over-limit body still being sent gets the 413 every time, never EPIPE/ECONNRESET', async () => {
+      const big = Buffer.alloc(25 * 1024 * 1024 + 1);
+      const seen = [];
+      for (let i = 0; i < 8; i++) {
+        seen.push(await new Promise(resolve => {
+          const r = http.request({ hostname: HOST, port: PORT, path: '/api/upload/raw', method: 'POST',
+            headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': big.length, 'X-File-Name': 'big.bin', ...(cookieHeader() ? { Cookie: cookieHeader() } : {}) } }, res => {
+            res.resume(); res.on('end', () => resolve(res.statusCode)); res.on('error', e => resolve(e.code));
+          });
+          r.on('error', e => resolve(e.code));
+          r.end(big);
+        }));
+      }
+      assert.deepStrictEqual(seen, Array(8).fill(413));
+    });
+
     await test('POST /api/upload/raw — chunked stream over limit → 413 arrives before the socket closes', async () => {
       const result = await new Promise((resolve, reject) => {
         const r = http.request({ hostname: HOST, port: PORT, path: '/api/upload/raw', method: 'POST',

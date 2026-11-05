@@ -131,7 +131,7 @@ Response (413 — file too large):
 {"error": "File too large: 26.1 MB exceeds the 25 MB limit", "max_bytes": 26214400}
 ```
 
-The server checks `Content-Length` before reading the body. If the declared size already exceeds 25 MB, it returns 413 immediately without consuming the upload stream.
+The server checks `Content-Length` before reading the body. If the declared size already exceeds 25 MB, it returns 413 immediately, without saving anything. The connection then stays open while the rest of the body is read and discarded (up to 64 MB or 15 seconds), so a client that is still sending receives the 413 instead of a reset connection; after that the server closes it.
 
 > **Note:** `/uploads/*` URLs require a valid session cookie, agent credentials (`X-Agent-Id` / `X-Agent-Secret`), or a signed URL (`?exp=<unix_seconds>&sig=<hex>`). They are not publicly accessible. Use `signFileUrl(url)` (server-side helper) to generate a signed URL when sending file links to agents or external services.
 

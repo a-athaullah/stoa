@@ -507,6 +507,9 @@ function setActorAvatar(id, buffer) {
 // and dropped so the caller gets a 413 with a reason, not a reset socket (readBody destroys at once);
 // past the old generic 10 MB cap the socket is dropped after all.
 const AVATAR_DRAIN_MAX = 10 * 1024 * 1024;
+// /api/upload/raw over its limit: how much of the rest of the body is read and dropped after the 413.
+const UPLOAD_LINGER_MAX = 64 * 1024 * 1024;
+const UPLOAD_LINGER_MS = 15000;
 function readAvatarBody(req) {
   return new Promise(resolve => {
     const chunks = [];
@@ -2168,12 +2171,23 @@ const server = http.createServer(async (req, res) => {
     const MAX_UPLOAD = 25 * 1024 * 1024;
     const uploader = req.headers['x-agent-id'] ? `agent ${parseInt(req.headers['x-agent-id']) || '?'}` : 'session';
     // Answer 413 before dropping the socket: destroying first left the agent with a bare
-    // "fetch failed" and no reason it could report back to the chat.
+    // "fetch failed" and no reason it could report back to the chat. The 413 goes out at once, but the
+    // socket stays open while the rest of the body is read and dropped: closing it with unread input
+    // makes the kernel send RST, and a client still uploading then gets EPIPE/ECONNRESET instead of the
+    // 413. Bounded in bytes and time, so an endless body cannot hold the socket.
     const rejectTooLarge = (bytes) => {
       console.warn(`[upload] rejected ${bytes} bytes > ${MAX_UPLOAD} limit (${uploader})`);
-      res.writeHead(413, { 'Content-Type': 'application/json', Connection: 'close' });
-      res.end(JSON.stringify({ error: `File too large: ${(bytes / 1048576).toFixed(1)} MB exceeds the ${MAX_UPLOAD / 1048576} MB limit`, max_bytes: MAX_UPLOAD }));
-      res.on('finish', () => req.destroy());
+      const body = JSON.stringify({ error: `File too large: ${(bytes / 1048576).toFixed(1)} MB exceeds the ${MAX_UPLOAD / 1048576} MB limit`, max_bytes: MAX_UPLOAD });
+      res.writeHead(413, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), Connection: 'close' });
+      res.write(body);
+      let dropped = 0;
+      const finish = () => { clearTimeout(timer); if (!res.writableEnded) res.end(); };
+      const abort = () => { finish(); req.destroy(); };
+      const timer = setTimeout(abort, UPLOAD_LINGER_MS);
+      req.on('data', c => { dropped += c.length; if (dropped > UPLOAD_LINGER_MAX) abort(); });
+      req.once('end', finish);
+      req.once('close', () => clearTimeout(timer));
+      req.resume();
     };
     const declared = parseInt(req.headers['content-length'] || '', 10);
     if (Number.isFinite(declared) && declared > MAX_UPLOAD) return rejectTooLarge(declared);
