@@ -436,7 +436,7 @@ function buildThreadSummary(roomId, rootId) {
     WHERE m.thread_id = ? AND m.sub_agent_label IS NOT NULL
   `).all(rootId);
   const sub_agent_participants = saRows.map(r => ({ label: r.sub_agent_label, actor_id: r.actor_id }));
-  return { type: 'thread_summary', root_id: rootId, count: row.count, last_at: row.last_at, active: !!row.active, participant_ids, sub_agent_participants };
+  return { type: 'thread_summary', root_id: rootId, count: row.count, last_at: row.last_at, active: !!row.active, participant_ids, sub_agent_participants, ...roomMessages.threadStatus(rootId) };
 }
 
 // Validate thread_id: root must exist in the same room and be a root itself (thread_id IS NULL).
@@ -4718,6 +4718,26 @@ Write-Host "Logs   : pm2 logs $AgentName"
     return json(res, r.body, r.status);
   }
 
+  // Mark a thread complete / reopen it. Owner session only: not in lib/agent-scope.js, so an agent
+  // secret or sub-agent credential is refused by requireAuth (owner decision 2026-11-05).
+  const threadCompleteMatch = req.method === 'PUT' && url.pathname.match(/^\/api\/rooms\/(\d+)\/threads\/(\d+)\/complete$/);
+  if (threadCompleteMatch) {
+    if (!requireAuth(req, res, url)) return;
+    if (!req._authUser) return json(res, { error: 'owner session required' }, 403);
+    const roomId = parseInt(threadCompleteMatch[1]);
+    const rootId = parseInt(threadCompleteMatch[2]);
+    const room = db.prepare('SELECT id, archived_at FROM rooms WHERE id=?').get(roomId);
+    if (!room) return json(res, { error: 'room not found' }, 404);
+    if (room.archived_at) return json(res, { error: 'room is archived' }, 400);
+    const data = parseJsonBody(await readBody(req));
+    if (!data) return json(res, { error: 'Invalid JSON' }, 400);
+    if (typeof data.completed !== 'boolean') return json(res, { error: 'completed must be a boolean' }, 400);
+    const r = roomMessages.setThreadCompleted(roomId, rootId, data.completed);
+    if (r.status !== 200) return json(res, r.body, r.status);
+    broadcast(roomId, { type: 'thread_status', room_id: roomId, ...r.body });
+    return json(res, r.body);
+  }
+
   const threadDetailMatch = req.method === 'GET' && url.pathname.match(/^\/api\/rooms\/(\d+)\/threads\/(\d+)$/);
   if (threadDetailMatch) {
     if (!requireAuth(req, res, url)) return;
@@ -5557,43 +5577,7 @@ wss.on('connection', (ws, req) => {
       subscribedRoom = msg.room_id;
       if (!roomClients.has(subscribedRoom)) roomClients.set(subscribedRoom, new Set());
       roomClients.get(subscribedRoom).add(ws);
-      const messages = db.prepare(`
-        SELECT * FROM (
-          SELECT m.*, rp.actor_id, a.name as actor_name, a.avatar_color, a.avatar_symbol, a.avatar_url, a.type as actor_type,
-            sa.avatar_color AS sub_agent_avatar_color, sa.avatar_symbol AS sub_agent_avatar_symbol, sa.avatar_url AS sub_agent_avatar_url, sa.role AS sub_agent_role,
-            CASE WHEN m.thread_id IS NULL THEN (SELECT COUNT(*) FROM messages r WHERE r.thread_id = m.id) END AS thread_count,
-            CASE WHEN m.thread_id IS NULL THEN (SELECT MAX(r.created_at) FROM messages r WHERE r.thread_id = m.id) END AS thread_last_at,
-            CASE WHEN m.thread_id IS NULL THEN (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state IN ('streaming','requesting'))) END AS thread_active,
-            CASE WHEN m.thread_id IS NULL THEN (SELECT GROUP_CONCAT(DISTINCT rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id) END AS thread_participant_ids,
-            CASE WHEN m.thread_id IS NULL THEN (EXISTS (SELECT 1 FROM messages r WHERE r.thread_id = m.id AND r.state = 'error')) END AS thread_has_error,
-            CASE WHEN m.thread_id IS NULL THEN (SELECT GROUP_CONCAT(DISTINCT r.sub_agent_label || ':' || rp2.actor_id) FROM messages r JOIN room_participants rp2 ON rp2.id=r.participant_id WHERE r.thread_id = m.id AND r.sub_agent_label IS NOT NULL) END AS thread_sub_agent_participants
-          FROM messages m
-          JOIN room_participants rp ON rp.id=m.participant_id
-          JOIN actors a ON a.id=rp.actor_id
-          LEFT JOIN sub_agents sa ON sa.id=m.sub_agent_id
-          WHERE m.room_id=? AND (m.thread_id IS NULL OR (m.broadcast_reason IS NOT NULL AND m.state NOT IN ('streaming','requesting'))) AND (
-            (m.state IN ('complete','streaming','requesting') AND (m.content != '' OR m.image_url IS NOT NULL OR m.attachments IS NOT NULL OR m.state IN ('streaming','requesting')))
-            OR (m.state = 'system_event' AND m.content LIKE '% · session compacted')
-            OR (m.state = 'system_event' AND m.content LIKE '% · reauth')
-            OR (m.state = 'system_event' AND m.content LIKE '% · automation')
-            OR (m.state = 'system_event' AND m.content LIKE '% · schedule')
-            OR (m.state = 'system_event' AND m.content LIKE '% · config')
-            OR (m.state = 'error' AND m.broadcast_reason IS NOT NULL)
-            OR (m.state = 'system_event' AND m.broadcast_reason IS NOT NULL)
-          )
-          ORDER BY m.feed_pos DESC, m.id DESC LIMIT 100
-        ) AS recent ORDER BY feed_pos, id
-      `).all(subscribedRoom);
-      const enriched = roomMessages.enrichReply(messages);
-      enrichAutomationList(enriched);
-      enriched.forEach(m => {
-        if (m.broadcast_reason && m.thread_id) {
-          m.thread_root_preview = getThreadRootPreview(m.thread_id);
-        } else {
-          const sap = m.thread_sub_agent_participants ? m.thread_sub_agent_participants.split(',').map(s => { const [label, aid] = s.split(':'); return { label, actor_id: Number(aid) }; }) : [];
-          m.thread = { count: m.thread_count || 0, last_at: m.thread_last_at || null, active: !!m.thread_active, participant_ids: m.thread_participant_ids ? m.thread_participant_ids.split(',').map(Number) : [], has_error: !!m.thread_has_error, sub_agent_participants: sap };
-        }
-      });
+      const enriched = roomMessages.history(subscribedRoom);
       ws.send(JSON.stringify({ type: 'history', messages: enriched }));
       // Runs still waiting for a free agent slot (root and thread replies) — same event as live updates.
       for (const q of agentRunQueues.values()) {

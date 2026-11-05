@@ -167,6 +167,10 @@ The thread panel has its **own dedicated composer**, independent from the room c
 
 **Header breadcrumb:** when a thread is open, the room header shows a breadcrumb (`› first few words…`). Clicking it scrolls the thread panel into view.
 
+**Mark as complete:** once a thread has at least one reply, a **Complete** button appears in the thread panel header (circle with a checkmark icon). Click it to mark the thread done — the button stays labeled **Complete** but appears pressed, and its tooltip changes to "Reopen thread". The thread chip in the feed turns muted with a quiet **complete** label. Click again to reopen it (tooltip reverts to "Mark thread complete"). Any new reply — from you or the agent — reopens a completed thread automatically. Only the room owner can mark or unmark; agents can read the status but cannot set it.
+
+**Open threads list:** when there are unresolved threads with replies, the room header pill shows the count — as "N open threads" when no threads or sub-agents are currently running, or "N threads · N open" (combined) when there is live activity. The pill is hidden when there is nothing to show. Click it to open the activity dropdown — the **OPEN THREADS** section lists each open thread (up to 50); click a row to jump straight to it.
+
 ### Thread Broadcast
 
 Thread messages can also appear in the room feed — without leaving their thread — in two cases:
@@ -1305,7 +1309,7 @@ In addition to the MCP servers you install, Stoa's own `stoa` server exposes **b
 
 Tools are grouped by function:
 
-- **Messaging** — `stoa__message_send`, `stoa__rooms_list`, `stoa__messages_read`, `stoa__threads_list`, `stoa__thread_read`
+- **Messaging** — `stoa__message_send`, `stoa__rooms_list`, `stoa__messages_read`, `stoa__threads_list` (accepts `state: "open"|"completed"` to filter by thread status), `stoa__thread_read`
 - **Memory** — `stoa__room_memory_get/set`, `stoa__agent_memory_get/set`, `stoa__sub_agent_memory_get/set`
 - **System prompts** — `stoa__room_system_prompt_get/set`, `stoa__agent_system_prompt_get/set`
 - **Sub-agents** — `stoa__sub_agent_list/create/update/delete/trigger`

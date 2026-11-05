@@ -258,11 +258,14 @@ Returns `{ state: 'off'|'loading'|'ready'|'failed', model, dim, indexed, error }
 
 ### Thread Routes
 ```
-GET    /api/rooms/:id/threads            → List threads (?state=active for active only)
+GET    /api/rooms/:id/threads            → List threads (?state=active | open | completed; default all with replies)
 GET    /api/rooms/:id/threads/:rootId    → Get thread messages (root + replies asc)
+PUT    /api/rooms/:id/threads/:rootId/complete → Owner session only: { completed: bool } → { thread_id, completed, completed_at }
 GET    /api/rooms/:id/system-prompt      → Get room system prompt + max_active_threads
 PUT    /api/rooms/:id/system-prompt      → Set system prompt + max_active_threads
 ```
+
+**Thread complete (2026-11-05):** root columns `thread_completed_at` / `thread_completed_through` (newest reply id at mark time; `migrations/20261105-thread-complete.sql`). Status is derived on every read (`lib/room-messages.js THREAD_COMPLETED`): complete = marked AND no reply with `id > thread_completed_through`, so any new reply reopens it without a hook in the insert paths (raw columns stay; reopen via PUT `false` clears them). Exposed as `completed` / `completed_at` on thread list rows, thread detail `root`, feed `m.thread`, WS `thread_summary`, MCP `threads_list` / `thread_read`. PUT is not in `lib/agent-scope.js`: agent secret and sub-agent credential get `403 agent_scope_denied`. 404 = not a root of that room or no replies; archived room → 400. WS to room: `{ type: 'thread_status', room_id, thread_id, completed, completed_at }`.
 
 ---
 

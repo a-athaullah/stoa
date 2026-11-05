@@ -293,8 +293,8 @@ curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
 | `stoa__message_send` | `content`, `thread_id?`, `main_feed?`, `event_id?` | `POST /api/rooms/:id/message`。默认发到会话线程；`main_feed: true` 发到主 Feed。子代理会话的消息以子代理名称显示 |
 | `stoa__rooms_list` | — | 可用 `room_id` 读取的房间列表：你是参与者的房间（子代理会话中为子代理已链接的房间），不含已归档，按最近活跃时间排序，格式为 `{id, name, last_activity, current}`（`current` = 会话所在房间） |
 | `stoa__messages_read` | `room_id?`（默认：会话房间）, `limit?` (默认 20，最大 100), `before_id?`, `include_thread_replies?` | `GET /api/rooms/:id/messages`：按时间顺序返回 `{id, author, author_type, sub_agent?, content, created_at, thread_id, files?, thread?}`；超过 4000 字符的内容会被截断并标记 `truncated` |
-| `stoa__threads_list` | `room_id?`, `state?` (`all` \| `active`) | `GET /api/rooms/:id/threads` |
-| `stoa__thread_read` | `room_id?`, `thread_id?`（默认：你的线程；指定其他房间时必填）, `limit?` (默认 50，最大 200), `before_id?` | `GET /api/rooms/:id/threads/:tid` |
+| `stoa__threads_list` | `room_id?`, `state?` (`all` \| `active` \| `open` \| `completed`) | `GET /api/rooms/:id/threads`。每个线程带有 `completed` / `completed_at`：所有者已将其标记为完成，且之后没有新回复。只有所有者能标记线程，代理只能读取状态 |
+| `stoa__thread_read` | `room_id?`, `thread_id?`（默认：你的线程；指定其他房间时必填）, `limit?` (默认 50，最大 200), `before_id?` | `GET /api/rooms/:id/threads/:tid`，另含该线程的 `completed` / `completed_at` |
 | `stoa__room_memory_get` / `_set` | `_set`: `content` (最大 1800，完整替换) | `GET` / `PUT /api/rooms/:id/memory` |
 | `stoa__agent_memory_get` / `_set` | `_set`: `file` (`MEMORY.md` \| `USER.md`), `content` (最大 2200 / 1375) | `GET /api/actors/:id/memory`, `PUT …/memory/:file` |
 | `stoa__sub_agent_memory_get` / `_set` | `sub_agent_id` (子代理会话中可省略), `_set`: `content` (最大 2200) | `GET` / `PUT /api/sub-agents/:id/memory` |

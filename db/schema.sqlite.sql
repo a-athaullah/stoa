@@ -71,6 +71,8 @@ CREATE TABLE IF NOT EXISTS messages (
   automation_provider TEXT DEFAULT NULL,
   model_source TEXT DEFAULT NULL,
   broadcast_reason TEXT DEFAULT NULL CHECK(broadcast_reason IN ('automation_match','error','limit')),
+  thread_completed_at TEXT DEFAULT NULL,
+  thread_completed_through INTEGER DEFAULT NULL,
   FOREIGN KEY (room_id) REFERENCES rooms(id),
   FOREIGN KEY (participant_id) REFERENCES room_participants(id),
   FOREIGN KEY (thread_id) REFERENCES messages(id),
