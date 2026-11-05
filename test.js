@@ -14259,6 +14259,138 @@ async function run() {
     assert.deepStrictEqual([orionRev.children[0].tagName, atlasRev.children[0].tagName], ['IMG', 'SPAN'], 'only the Orion Reviewer bubble is repainted');
   });
 
+  await test('actor avatar — actor_updated repaints only that actor id (not a same-name actor), keeps the rendered size, updates the caches, and seals any non-/uploads/ url', () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El {
+      constructor(tag) { this.tagName = tag.toUpperCase(); this.dataset = {}; this.style = {}; this.children = []; this.parentNode = null; this.textContent = ''; }
+      appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
+      replaceWith(n) { const s = this.parentNode.children; n.parentNode = this.parentNode; s[s.indexOf(this)] = n; this.parentNode = null; }
+      querySelectorAll(sel) {
+        assert.strictEqual(sel, '[data-avatar-actor]');
+        const out = [];
+        const walk = e => e.children.forEach(c => { if (c.dataset.avatarActor !== undefined) out.push(c); walk(c); });
+        walk(this);
+        return out;
+      }
+    }
+    const body = new El('body');
+    const calls = [];
+    const ctx = {
+      localStorage: { getItem: () => null, setItem() {} },
+      document: { addEventListener() {}, getElementById: () => null, querySelector: () => null, createElement: t => new El(t), querySelectorAll: s => body.querySelectorAll(s) },
+      window: { addEventListener() {} }, navigator: {}, location: {},
+      reloadRsbAgentsPanel: () => calls.push('rsb'), renderSidebarFooter: () => calls.push('footer'), renderComposerSeal: () => calls.push('composer'),
+    };
+    vm.createContext(ctx);
+    for (const f of ['public/js/core.js', 'public/js/websocket.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+    vm.runInContext(`allActors = [{ id: 7, name: 'Ara', avatar_color: '#a00', avatar_url: null }, { id: 8, name: 'Ara', avatar_color: '#0a0', avatar_url: null }, { id: 1, name: 'Aan', avatar_color: '#00a', avatar_url: null }];
+      humanActor = allActors[2];
+      roomParticipantsCache = { 5: [{ actor_id: 7, name: 'Ara', avatar_url: null }, { actor_id: 8, name: 'Ara', avatar_url: null }] };
+      roomSubAgentsCache = { 5: [{ id: 30, label: 'Vera', parent_actor_id: 7, parent_avatar_url: null }, { id: 31, label: 'Vera', parent_actor_id: 8, parent_avatar_url: null }] };`, ctx);
+    const mk = (...a) => body.appendChild(vm.runInContext('makeAvatar', ctx)(...a));
+    mk('Ara', '#a00', null, 36, 7);
+    const row = body.appendChild(new El('div'));
+    row.appendChild(vm.runInContext('makeAvatar', ctx)('Ara', '#a00', null, 20, 7));
+    mk('Ara', '#0a0', null, 36, 8);
+    mk('Ara', '#a00', null, 36);
+    const [mine, , twin, untagged] = body.children;
+    const ws = actor => ctx.handleWsMessage({ type: 'actor_updated', actor });
+    const avatarsOf = id => body.querySelectorAll('[data-avatar-actor]').filter(e => e.dataset.avatarActor === String(id));
+    const state = expr => JSON.parse(vm.runInContext(`JSON.stringify(${expr})`, ctx));
+
+    ws({ id: 7, name: 'Ara', avatar_url: '/uploads/avatar/ara-2.png', avatar_color: '#a00', avatar_symbol: null });
+    const repainted = avatarsOf(7);
+    assert.deepStrictEqual(repainted.map(e => [e.tagName, e.src, /width:(\d+)px/.exec(e.style.cssText)?.[1]]),
+      [['IMG', '/uploads/avatar/ara-2.png', '36'], ['IMG', '/uploads/avatar/ara-2.png', '20']], 'every avatar of actor 7 is repainted at its own rendered size, nested ones too');
+    assert.ok(!body.children.includes(mine), 'the old element was replaced, not left beside the new one');
+    assert.deepStrictEqual([avatarsOf(8)[0], avatarsOf(8)[0].tagName], [twin, 'SPAN'], 'a different actor with the same name is untouched');
+    assert.strictEqual(body.children[3], untagged, 'an avatar rendered without an actor id is never repainted');
+    assert.deepStrictEqual(state('[allActors[0].avatar_url, allActors[1].avatar_url, roomParticipantsCache[5][0].avatar_url, roomParticipantsCache[5][1].avatar_url, roomSubAgentsCache[5][0].parent_avatar_url, roomSubAgentsCache[5][1].parent_avatar_url]'),
+      ['/uploads/avatar/ara-2.png', null, '/uploads/avatar/ara-2.png', null, '/uploads/avatar/ara-2.png', null], 'caches follow actor 7 only, matched by id');
+    assert.deepStrictEqual(calls, ['rsb'], 'the room Agents popover reloads; the human seals are left alone for an agent update');
+
+    for (const bad of ['https://evil.test/a.png', '//evil.test/a.png', 'javascript:alert(1)', '/uploads/../api/me', '/uploads/a b.png', '/static/a.png', 'uploads/a.png', 42]) {
+      ws({ id: 7, name: 'Ara', avatar_url: '/uploads/avatar/ok.png', avatar_color: '#a00' });
+      assert.strictEqual(avatarsOf(7)[0].tagName, 'IMG');
+      ws({ id: 7, name: 'Ara', avatar_url: bad, avatar_color: '#a00' });
+      assert.deepStrictEqual(avatarsOf(7).map(e => [e.tagName, e.src, e.textContent]), [['SPAN', undefined, 'A'], ['SPAN', undefined, 'A']], `${bad} falls back to the seal`);
+      assert.strictEqual(state('allActors[0].avatar_url'), null, `${bad} never reaches the cache`);
+    }
+
+    ws({ id: 7, name: '<img src=x onerror=alert(1)>', avatar_url: null, avatar_color: '#0f0' });
+    assert.deepStrictEqual([avatarsOf(7)[0].tagName, avatarsOf(7)[0].textContent, avatarsOf(7)[0].innerHTML], ['SPAN', '<', undefined], 'the name only reaches textContent');
+    ws({ id: '7', name: 'X', avatar_url: '/uploads/avatar/x.png' });
+    ws({ name: 'Ara', avatar_url: '/uploads/avatar/x.png' });
+    assert.strictEqual(avatarsOf(7)[0].tagName, 'SPAN', 'an update without an integer id repaints nothing');
+
+    calls.length = 0;
+    mk('Aan', '#00a', null, 28, 1);
+    ws({ id: 1, name: 'Aan', avatar_url: '/uploads/avatar/aan.png', avatar_color: '#00a' });
+    assert.deepStrictEqual([avatarsOf(1)[0].tagName, state('humanActor.avatar_url'), calls.sort()], ['IMG', '/uploads/avatar/aan.png', ['composer', 'footer', 'rsb']], 'the human update also repaints the sidebar footer and composer seal');
+  });
+
+  await test('image lightbox — Esc closes it before any other Esc handler (no stop-generation), the capture listener lives only while open', () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const classes = new Set();
+    const lb = { classList: { add: c => classes.add(c), remove: c => classes.delete(c), toggle: (c, on) => (on ? classes.add(c) : classes.delete(c)), contains: c => classes.has(c) } };
+    const img = {};
+    const winListeners = [];
+    const docListeners = [];
+    const ctx = {
+      document: { getElementById: id => ({ 'img-lightbox': lb, 'img-lightbox-src': img })[id] || null },
+      window: {
+        addEventListener: (type, fn, capture) => { if (!winListeners.some(l => l.type === type && l.fn === fn && l.capture === !!capture)) winListeners.push({ type, fn, capture: !!capture }); },
+        removeEventListener: (type, fn, capture) => { const i = winListeners.findIndex(l => l.type === type && l.fn === fn && l.capture === !!capture); if (i >= 0) winListeners.splice(i, 1); },
+      },
+    };
+    vm.createContext(ctx);
+    const md = fs.readFileSync(path.join(__dirname, 'public/js/markdown.js'), 'utf8');
+    vm.runInContext(md.slice(md.indexOf('function openLightbox('), md.indexOf('function lbNav(')), ctx);
+    const fired = [];
+    docListeners.push(e => { if (e.key === 'Escape') fired.push('composer'); });
+    docListeners.push(e => { if (e.key === 'Escape') fired.push('stopGeneration'); });
+    // Window capture runs first, then the document handlers, unless a capture listener stopped the event.
+    const press = key => {
+      const e = { key, defaultPrevented: false, stopped: false, preventDefault() { this.defaultPrevented = true; }, stopImmediatePropagation() { this.stopped = true; }, stopPropagation() { this.stopped = true; } };
+      for (const l of winListeners.filter(l => l.type === 'keydown' && l.capture)) { l.fn(e); if (e.stopped) return e; }
+      for (const fn of docListeners) fn(e);
+      return e;
+    };
+    const images = [{ url: '/uploads/a.png' }, { url: '/uploads/b.png' }];
+
+    ctx.openLightbox(images, 1);
+    ctx.openLightbox(images, 1);
+    assert.deepStrictEqual([classes.has('visible'), img.src, winListeners.length, winListeners[0].capture], [true, '/uploads/b.png', 1, true], 'open adds one capture-phase keydown listener on window, not one per open');
+    const other = press('ArrowRight');
+    assert.deepStrictEqual([classes.has('visible'), other.stopped, other.defaultPrevented], [true, false, false], 'other keys pass through untouched');
+    const esc = press('Escape');
+    assert.deepStrictEqual([classes.has('visible'), esc.defaultPrevented, esc.stopped, fired], [false, true, true, []], 'Esc closes the lightbox and never reaches the composer or the stop-generation handler');
+    assert.strictEqual(winListeners.length, 0, 'the listener is removed on close');
+    press('Escape');
+    assert.deepStrictEqual(fired, ['composer', 'stopGeneration'], 'with the lightbox closed Esc reaches the other handlers again');
+
+    ctx.openLightbox(images, 0);
+    ctx.closeLightbox();
+    assert.deepStrictEqual([classes.has('visible'), winListeners.length], [false, 0], 'closing from the backdrop removes the listener too');
+    const html = fs.readFileSync(path.join(__dirname, 'public/index.html'), 'utf8');
+    assert.match(html, /<div id="img-lightbox" onclick="if\(event\.target===this\)closeLightbox\(\)">/, 'the backdrop closes through closeLightbox()');
+  });
+
+  await test('file preview — video src carries a #t=0.001 fragment so WebKit paints the first frame; an existing fragment, the query and audio are left alone', () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    const el = tag => ({ tagName: tag.toUpperCase(), attrs: {}, children: [], setAttribute(k, v) { this.attrs[k] = v; }, addEventListener() {}, appendChild(c) { this.children.push(c); return c; } });
+    const ctx = { URL, location: { origin: 'https://stoa.test' }, document: { createElement: el } };
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'public/js/chat/file-card.js'), 'utf8'), ctx);
+    const srcOf = (kind, raw) => ctx.filePreviewMedia({ kind, name: 'f', url: ctx.fileResolveUrl(raw) }, 0, el('div')).children[0].src;
+    assert.strictEqual(srcOf('video', '/uploads/a.mp4'), 'https://stoa.test/uploads/a.mp4#t=0.001');
+    assert.strictEqual(srcOf('video', '/uploads/b.MOV?exp=1&sig=x'), 'https://stoa.test/uploads/b.MOV?exp=1&sig=x#t=0.001', 'signed query kept, fragment after it');
+    assert.strictEqual(srcOf('video', '/uploads/c.mp4#t=5'), 'https://stoa.test/uploads/c.mp4#t=5', 'an existing fragment wins');
+    assert.strictEqual(srcOf('audio', '/uploads/d.mp3'), 'https://stoa.test/uploads/d.mp3', 'audio gets no fragment');
+  });
+
   await test('reply order — a completed reply moves past its own progress rows (feed + thread, live), never backward, separators stay put', () => {
     const vm = require('vm');
     const fs = require('fs');
