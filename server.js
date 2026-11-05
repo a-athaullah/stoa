@@ -480,6 +480,15 @@ function saveAvatarFile(prefix, id, buffer, ext) {
   return `/uploads/avatar/${saved}`;
 }
 
+// An actor's name/avatar changed: every room it is in redraws it without a reload.
+function broadcastActorUpdated(id) {
+  const actor = db.prepare('SELECT id, name, avatar_url, avatar_color, avatar_symbol FROM actors WHERE id=?').get(id);
+  if (!actor) return;
+  for (const { room_id } of db.prepare('SELECT DISTINCT room_id FROM room_participants WHERE actor_id=?').all(id)) {
+    broadcast(room_id, { type: 'actor_updated', actor });
+  }
+}
+
 // Actor avatar from image bytes: POST /api/actors/:id/avatar and stoa__agent_avatar_set. The old file
 // goes only after the new one is saved and recorded.
 function setActorAvatar(id, buffer) {
@@ -490,6 +499,7 @@ function setActorAvatar(id, buffer) {
   const avatarUrl = saveAvatarFile('avatar', id, img.buffer, img.ext);
   db.prepare('UPDATE actors SET avatar_url=? WHERE id=?').run(avatarUrl, id);
   deleteAvatarFile(actor.avatar_url);
+  broadcastActorUpdated(id);
   return { status: 200, body: { avatar_url: avatarUrl } };
 }
 
@@ -2212,6 +2222,7 @@ const server = http.createServer(async (req, res) => {
     const id = parseInt(avatarDeleteMatch[1]);
     deleteAvatarFile(db.prepare('SELECT avatar_url FROM actors WHERE id=?').get(id)?.avatar_url);
     db.prepare('UPDATE actors SET avatar_url=NULL WHERE id=?').run(id);
+    broadcastActorUpdated(id);
     return json(res, { ok: true });
   }
 
@@ -3951,6 +3962,7 @@ const server = http.createServer(async (req, res) => {
       }
     });
     runPatch();
+    if (name !== undefined || avatar_url !== undefined) broadcastActorUpdated(id);
     const finalName = name !== undefined ? name.trim() : actor?.name;
     if (name !== undefined && actor?.type === 'human') {
       writeEnv('HUMAN_NAME', name.trim());

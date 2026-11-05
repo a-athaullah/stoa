@@ -9716,6 +9716,44 @@ async function run() {
     }
   });
 
+  await test('actor avatar upload / removal / rename → actor_updated in each room the actor is in, never in other rooms', async () => {
+    const ag = await actorDeleteFixture('__test-actor-avatar-live', false);
+    const other = await req('POST', '/api/rooms', { title: '__test-actor-avatar-other', workdir_id: actorDeleteHost.workdirId, participant_ids: [actorDeleteHost.actorId] });
+    assert.strictEqual(other.status, 200, other.raw);
+    const join = async (roomId) => {
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      ws.send(JSON.stringify({ type: 'join_room', room_id: roomId }));
+      await waitForWsMessage(ws, m => m.type === 'history');
+      return ws;
+    };
+    const inRoom = await join(ag.roomId), outside = await join(other.body.id);
+    const leaked = [];
+    outside.on('message', raw => { if (JSON.parse(raw.toString()).type === 'actor_updated') leaked.push(raw.toString()); });
+    const next = () => waitForWsMessage(inRoom, m => m.type === 'actor_updated' && m.actor?.id === ag.actorId, 3000);
+    const { avatar_color, avatar_symbol } = require('./db').prepare('SELECT avatar_color, avatar_symbol FROM actors WHERE id=?').get(ag.actorId);
+    const expected = (name, avatar_url) => ({ type: 'actor_updated', actor: { id: ag.actorId, name, avatar_url, avatar_color, avatar_symbol } });
+    try {
+      let ev = next();
+      const up = await req('POST', `/api/actors/${ag.actorId}/avatar`, { data_url: MINIMAL_PNG });
+      assert.strictEqual(up.status, 200, up.raw);
+      assert.deepStrictEqual(await ev, expected('__test-actor-avatar-live', up.body.avatar_url), 'upload');
+      ev = next();
+      assert.strictEqual((await req('DELETE', `/api/actors/${ag.actorId}/avatar`)).status, 200);
+      assert.deepStrictEqual(await ev, expected('__test-actor-avatar-live', null), 'removal');
+      ev = next();
+      assert.strictEqual((await req('PATCH', `/api/actors/${ag.actorId}`, { name: '__test-actor-avatar-renamed' })).status, 200);
+      assert.deepStrictEqual(await ev, expected('__test-actor-avatar-renamed', null), 'rename');
+      await new Promise(r => setTimeout(r, 300));
+      assert.deepStrictEqual(leaked, [], 'a room the actor is not in hears nothing');
+    } finally {
+      inRoom.close(); outside.close();
+      ag.ws.close();
+      await req('DELETE', `/api/rooms/${ag.roomId}`);
+      await req('DELETE', `/api/rooms/${other.body.id}`);
+      await req('DELETE', `/api/actors/${ag.actorId}`);
+    }
+  });
+
   await test('DELETE /api/actors/:id — usage_log blocks the final DELETE → the earlier participant delete is rolled back', async () => {
     const ag = await actorDeleteFixture('__test-actor-usage', false);
     try {
@@ -20771,9 +20809,14 @@ async function run() {
         try {
           const since = maxMsgId();
           const seen = answerOnce(agA, m => readAvatarFile(m.path));
+          const roomWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+          roomWs.send(JSON.stringify({ type: 'join_room', room_id: roomA }));
+          await waitForWsMessage(roomWs, m => m.type === 'history');
+          const live = waitForWsMessage(roomWs, m => m.type === 'actor_updated' && m.actor?.id === agA.actorId, 5000).finally(() => roomWs.close());
           // actor_id is not an input: the target is always the caller.
           const first = await stoaOk(tokA, 'agent_avatar_set', { path: file, actor_id: agB.actorId });
           assert.strictEqual((await seen).path, file, 'the path goes to the caller\'s own client');
+          assert.strictEqual((await live).actor.avatar_url, first.avatar_url, 'the room redraws the new avatar live');
           assert.match(first.avatar_url, new RegExp(`^/uploads/avatar/avatar-${agA.actorId}-\\d+\\.png$`));
           assert.strictEqual(actorUrl(agA.actorId), first.avatar_url);
           assert.ok(fs.readFileSync(fileOf(first.avatar_url)).equals(PNG), 'exact bytes on disk');
