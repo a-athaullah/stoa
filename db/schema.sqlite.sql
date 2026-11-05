@@ -302,7 +302,9 @@ CREATE TABLE IF NOT EXISTS room_message_queue (
   event_id    TEXT,
   thread_id   INTEGER DEFAULT NULL,
   queued_at   TEXT NOT NULL DEFAULT (datetime('now')),
-  position    INTEGER NOT NULL DEFAULT 0
+  position    INTEGER NOT NULL DEFAULT 0,
+  message_id  INTEGER DEFAULT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  target_actor_id INTEGER DEFAULT NULL REFERENCES actors(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_rmq_room ON room_message_queue(room_id, position);

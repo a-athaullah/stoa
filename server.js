@@ -7156,22 +7156,35 @@ const activeSequences = new Map(); // roomId → { cancelled: bool }
 const roomIdleBus = new (require('events').EventEmitter)();
 roomIdleBus.setMaxListeners(0); // unbounded — one listener per queued room
 
-// R28: drain one queued message per idle event
+// R28: drain one queued message per idle event. The row points at a message that was already stored
+// and broadcast when it was queued, so draining only runs its agents. Rows whose thread is still running
+// wait for that thread's own idle event.
 roomIdleBus.on('idle', (roomId) => {
-  const next = db.prepare('SELECT * FROM room_message_queue WHERE room_id=? ORDER BY position, id LIMIT 1').get(roomId);
+  const queued = db.prepare('SELECT * FROM room_message_queue WHERE room_id=? ORDER BY position, id').all(roomId);
+  const next = queued.find(q => !activeSequences.has(q.thread_id ? `${roomId}:${q.thread_id}` : String(roomId)));
   if (!next) return;
   db.prepare('DELETE FROM room_message_queue WHERE id=?').run(next.id);
-  const remaining = db.prepare('SELECT COUNT(*) as n FROM room_message_queue WHERE room_id=?').get(roomId).n;
-  broadcast(roomId, { type: 'queue_updated', room_id: roomId, queued: remaining });
-  const attachments = next.attachments ? JSON.parse(next.attachments) : [];
-  handleHumanMessage(roomId, next.content, attachments, next.reply_to ?? null, null, next.event_id ?? null, next.thread_id ?? null).catch(e => {
+  broadcast(roomId, { type: 'queue_updated', room_id: roomId, queued: queued.length - 1 });
+  const msg = next.message_id && db.prepare(
+    'SELECT id, content, attachments, thread_id, automation_id, automation_name, automation_provider FROM messages WHERE id=? AND room_id=?'
+  ).get(next.message_id, roomId);
+  if (!msg) {
+    console.warn(`[queue] room ${roomId}: queued row ${next.id} has no stored message, skipped`);
+    roomIdleBus.emit('idle', roomId);
+    return;
+  }
+  const automation = msg.automation_provider || next.target_actor_id
+    ? { id: msg.automation_id, name: msg.automation_name, provider: msg.automation_provider, target_actor_id: next.target_actor_id }
+    : null;
+  try {
+    runAgentsForMessage(roomId, msg.id, msg.content, msg.attachments ? JSON.parse(msg.attachments) : [], msg.thread_id, automation);
+  } catch (e) {
     console.error('[queue] drain error, re-queuing:', e.message);
-    db.prepare('INSERT INTO room_message_queue (room_id, content, attachments, reply_to, event_id, thread_id, position) VALUES (?,?,?,?,?,?,?)').run(
-      next.room_id, next.content, next.attachments ?? null, next.reply_to ?? null, next.event_id ?? null, next.thread_id ?? null, -1
+    db.prepare('INSERT INTO room_message_queue (room_id, content, attachments, reply_to, event_id, thread_id, message_id, target_actor_id, position) VALUES (?,?,?,?,?,?,?,?,?)').run(
+      next.room_id, next.content, next.attachments ?? null, next.reply_to ?? null, next.event_id ?? null, next.thread_id ?? null, next.message_id, next.target_actor_id ?? null, -1
     );
-    const requeued = db.prepare('SELECT COUNT(*) as n FROM room_message_queue WHERE room_id=?').get(roomId).n;
-    broadcast(roomId, { type: 'queue_updated', room_id: roomId, queued: requeued });
-  });
+    broadcast(roomId, { type: 'queue_updated', room_id: roomId, queued: queued.length });
+  }
 });
 
 async function triggerAgentsSequential(roomId, agents, content, replyTo, attachments, initialFiredSubAgentIds = new Set(), threadId = null) {
@@ -7324,7 +7337,6 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
     `INSERT INTO messages (room_id, participant_id, content, image_url, file_url, file_name, attachments, reply_to, client_event_id, thread_id, automation_id, automation_name, automation_provider, state) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'complete')`
   ).run(roomId, humanParticipantId, content, imageUrl, fileUrl, fileName, attachJson, replyTo || null, eventId || null, threadId || null, autoId, autoName, autoProvider);
   const messageId = result.lastInsertRowid;
-  const aiThreadId = threadId ?? messageId;
 
   // Get message with actor info for broadcast
   const row = roomMessages.row(messageId);
@@ -7340,8 +7352,8 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
   if (busyMode !== 'interrupt' && activeSequences.has(seqKey)) {
     if (busyMode === 'queue') {
       const pos = db.prepare('SELECT COALESCE(MAX(position), -1)+1 as p FROM room_message_queue WHERE room_id=?').get(roomId).p;
-      db.prepare('INSERT INTO room_message_queue (room_id, content, attachments, reply_to, event_id, thread_id, position) VALUES (?,?,?,?,?,?,?)').run(
-        roomId, content, attachJson || null, replyTo || null, eventId || null, threadId || null, pos
+      db.prepare('INSERT INTO room_message_queue (room_id, content, attachments, reply_to, event_id, thread_id, message_id, target_actor_id, position) VALUES (?,?,?,?,?,?,?,?,?)').run(
+        roomId, content, attachJson || null, replyTo || null, eventId || null, threadId || null, messageId, automation?.target_actor_id || null, pos
       );
       const queued = db.prepare('SELECT COUNT(*) as n FROM room_message_queue WHERE room_id=?').get(roomId).n;
       broadcast(roomId, { type: 'queue_updated', room_id: roomId, queued });
@@ -7361,6 +7373,14 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
     }
   }
 
+  if (!runAgentsForMessage(roomId, messageId, content, attachments, threadId, automation)) return;
+  return Number(messageId);
+}
+
+// Runs the agents for a stored human/automation message: right away, or when a queued one drains.
+// Returns false when the room is at its active-thread cap and nothing ran.
+function runAgentsForMessage(roomId, messageId, content, attachments, threadId, automation) {
+  const aiThreadId = threadId ?? messageId;
   {
     const roomCfg = db.prepare('SELECT max_active_threads FROM rooms WHERE id=?').get(roomId);
     const maxThreads = roomCfg?.max_active_threads ?? 3;
@@ -7372,7 +7392,7 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
       const alreadyActive = db.prepare(`SELECT 1 FROM messages WHERE room_id=? AND thread_id=? AND state IN ('streaming','requesting') LIMIT 1`).get(roomId, aiThreadId);
       if (!alreadyActive) {
         broadcast(roomId, { type: 'thread_limit_reached', room_id: roomId, thread_id: aiThreadId, max_active_threads: maxThreads });
-        return;
+        return false;
       }
     }
   }
@@ -7416,7 +7436,7 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
       triggerAgentsSequential(roomId, parentMentions, content, messageId, attachments || [], initialFiredSubAgentIds, aiThreadId).catch(e => console.error('[trigger] sequence error:', e));
     }
   }
-  return Number(messageId);
+  return true;
 }
 
 // The skill preamble for an agent client without the skill cache: SKILL.md inline, no files.

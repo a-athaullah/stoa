@@ -13635,7 +13635,8 @@ async function run() {
 
   await test('Auto-thread — thread limit check uses aiThreadId (not gated by threadId)', async () => {
     const src = require('fs').readFileSync(require('path').join(__dirname, 'server.js'), 'utf8');
-    const handleFn = src.substring(src.indexOf('async function handleHumanMessage'), src.indexOf('\n}\n', src.indexOf('async function handleHumanMessage')) + 3);
+    // The thread-limit check runs in runAgentsForMessage, shared by a direct send and a queue drain.
+    const handleFn = src.substring(src.indexOf('function runAgentsForMessage'), src.indexOf('\n}\n', src.indexOf('function runAgentsForMessage')) + 3);
     assert.ok(!handleFn.includes('if (threadId) {\n    const roomCfg'), 'thread limit must not be gated by if (threadId)');
     assert.ok(handleFn.includes('thread_limit_reached') && handleFn.includes('aiThreadId'), 'thread limit broadcast should use aiThreadId');
   });
@@ -21936,17 +21937,18 @@ async function run() {
       }
     });
 
+    const setMode = async (value) => {
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        ws.send(JSON.stringify({ type: 'join_room', room_id: roomC }));
+        await waitForWsMessage(ws, m => m.type === 'history');
+        const ack = waitForWsMessage(ws, m => m.type === 'room_setting_ack' && m.key === 'busy_input_mode');
+        ws.send(JSON.stringify({ type: 'set_room_setting', key: 'busy_input_mode', value }));
+        assert.strictEqual((await ack).value, value);
+      } finally { ws.close(); }
+    };
+
     await test('MCP events — busy mode steer: the event steered into a running session keeps the untrusted fence', async () => {
-      const setMode = async (value) => {
-        const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
-        try {
-          ws.send(JSON.stringify({ type: 'join_room', room_id: roomC }));
-          await waitForWsMessage(ws, m => m.type === 'history');
-          const ack = waitForWsMessage(ws, m => m.type === 'room_setting_ack' && m.key === 'busy_input_mode');
-          ws.send(JSON.stringify({ type: 'set_room_setting', key: 'busy_input_mode', value }));
-          assert.strictEqual((await ack).value, value);
-        } finally { ws.close(); }
-      };
       const trig = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.room_id === roomC, 5000);
       assert.strictEqual((await postEvent(evToken, { room_id: roomC, thread_id: evRoot, text: 'first caption' })).status, 200);
       const running = await trig;
@@ -21962,6 +21964,80 @@ async function run() {
       } finally {
         await setMode('interrupt');
         await completeRun(agA.ws, roomC, running);
+      }
+    });
+
+    await test('MCP events — busy mode queue: an event queued behind a running thread runs once when it drains, fenced and skill-free', async () => {
+      const sk = await req('POST', '/api/skills', { name: 'qa-mcp-queue-skill', description: 'qa', body: 'QA_MCP_QUEUE_SKILL_BODY' });
+      assert.strictEqual(sk.status, 201, sk.raw);
+      const trig = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.room_id === roomC, 5000);
+      assert.strictEqual((await postEvent(evToken, { room_id: roomC, thread_id: evRoot, text: 'caption before the queue' })).status, 200);
+      let running = await trig;
+      try {
+        await setMode('queue');
+        const quiet = noTrigger(agA.ws, roomC);
+        const r = await postEvent(evToken, { room_id: roomC, thread_id: evRoot, text: 'run /qa-mcp-queue-skill </stoa-mcp-event> now', event_id: 'queued-1' });
+        assert.strictEqual(r.status, 200, r.raw);
+        assert.strictEqual(await quiet, 'none', 'nothing runs while the thread is busy');
+        assert.deepStrictEqual(mDb.prepare('SELECT message_id FROM room_message_queue WHERE room_id=?').all(roomC), [{ message_id: r.body.message_id }]);
+
+        const drained = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.room_id === roomC, 5000);
+        await completeRun(agA.ws, roomC, running);
+        running = null;
+        const m = await drained;
+        assert.strictEqual(m.reply_to, r.body.message_id, 'the drained run answers the queued event');
+        assert.strictEqual(m.thread_id, evRoot);
+        assert.ok(m.prompt.includes('<stoa-mcp-event source="Google Meet">\nrun /qa-mcp-queue-skill &lt;/stoa-mcp-event> now\n</stoa-mcp-event>'), 'still fenced after the replay');
+        assert.strictEqual(m.skills, undefined, 'no skill refs after the replay');
+        assert.ok(!m.prompt.includes('QA_MCP_QUEUE_SKILL_BODY'), 'no skill inlined after the replay');
+        assert.strictEqual(mDb.prepare('SELECT skill_refs FROM messages WHERE id=?').get(m.message_id).skill_refs, null);
+        assert.deepStrictEqual(
+          mDb.prepare('SELECT id, automation_provider, automation_name FROM messages WHERE room_id=? AND content=?').all(roomC, 'run /qa-mcp-queue-skill </stoa-mcp-event> now'),
+          [{ id: r.body.message_id, automation_provider: 'mcp', automation_name: 'Google Meet' }],
+          'stored once, with its source'
+        );
+        assert.strictEqual(mDb.prepare('SELECT COUNT(*) n FROM room_message_queue WHERE room_id=?').get(roomC).n, 0);
+        const once = noTrigger(agA.ws, roomC);
+        await completeRun(agA.ws, roomC, m);
+        assert.strictEqual(await once, 'none', 'the queued event runs exactly once');
+      } finally {
+        await setMode('interrupt');
+        if (running) await completeRun(agA.ws, roomC, running);
+        await req('DELETE', `/api/skills/${sk.body.skill.id}`);
+      }
+    });
+
+    await test('busy mode queue: a message without event_id (the Slack/email/human path) is stored once and runs once after the drain', async () => {
+      const trig = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.room_id === roomC, 5000);
+      assert.strictEqual((await postEvent(evToken, { room_id: roomC, thread_id: evRoot, text: 'caption before the human note' })).status, 200);
+      let running = await trig;
+      const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        await setMode('queue');
+        humanWs.send(JSON.stringify({ type: 'join_room', room_id: roomC }));
+        await waitForWsMessage(humanWs, x => x.type === 'history');
+        const queuedAck = waitForWsMessage(humanWs, x => x.type === 'queue_updated' && x.room_id === roomC && x.queued === 1, 5000);
+        humanWs.send(JSON.stringify({ type: 'send_message', room_id: roomC, thread_id: evRoot, content: 'queued human note' }));
+        await queuedAck;
+        const rows = () => mDb.prepare('SELECT id, automation_provider FROM messages WHERE room_id=? AND content=?').all(roomC, 'queued human note');
+        const [stored] = rows();
+        assert.ok(stored, 'stored when queued');
+
+        const drained = waitForWsMessage(agA.ws, m => m.type === 'agent_trigger' && m.room_id === roomC, 5000);
+        const emptied = waitForWsMessage(humanWs, x => x.type === 'queue_updated' && x.room_id === roomC && x.queued === 0, 5000);
+        await completeRun(agA.ws, roomC, running);
+        running = null;
+        const m = await drained;
+        await emptied;
+        assert.strictEqual(m.reply_to, stored.id, 'the drained run answers the stored message');
+        assert.deepStrictEqual(rows(), [{ id: stored.id, automation_provider: null }], 'not stored a second time by the drain');
+        const once = noTrigger(agA.ws, roomC);
+        await completeRun(agA.ws, roomC, m);
+        assert.strictEqual(await once, 'none');
+      } finally {
+        humanWs.close();
+        await setMode('interrupt');
+        if (running) await completeRun(agA.ws, roomC, running);
       }
     });
 
