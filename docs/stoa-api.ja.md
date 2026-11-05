@@ -293,8 +293,8 @@ curl -s -X PATCH "$BASE_URL/api/rooms/$STOA_ROOM_ID/schedules/7" \
 | `stoa__message_send` | `content`, `thread_id?`, `main_feed?`, `event_id?` | `POST /api/rooms/:id/message`。デフォルトはセッションのスレッド。`main_feed: true` でメインフィードへ投稿。サブエージェントセッションからの投稿はサブエージェント名で表示されます |
 | `stoa__rooms_list` | — | `room_id` で読み取れるルームの一覧: 自分が参加者のルーム（サブエージェントセッションでは、サブエージェントがリンクされているルーム）。アーカイブ済みルームを除外し、最近アクティブな順に `{id, name, last_activity, current}` として返します（`current` = セッションのルーム） |
 | `stoa__messages_read` | `room_id?` (デフォルト: セッションのルーム)、`limit?` (デフォルト 20、最大 100)、`before_id?`、`include_thread_replies?` | `GET /api/rooms/:id/messages`：最新のメッセージを `{id, author, author_type, sub_agent?, content, created_at, thread_id, files?, thread?}` として古い順に返します。4000 文字を超えるコンテンツは切り詰められ `truncated` フラグが付きます |
-| `stoa__threads_list` | `room_id?`、`state?` (`all` \| `active`) | `GET /api/rooms/:id/threads` |
-| `stoa__thread_read` | `room_id?`、`thread_id?` (デフォルト: 自分のスレッド。別ルームでは必須)、`limit?` (デフォルト 50、最大 200)、`before_id?` | `GET /api/rooms/:id/threads/:tid` |
+| `stoa__threads_list` | `room_id?`、`state?` (`all` \| `active` \| `open` \| `completed`) | `GET /api/rooms/:id/threads`。各スレッドに `completed` / `completed_at` があります: オーナーが完了にし、その後に返信がない状態です。スレッドを完了にできるのはオーナーのみで、エージェントは状態を読むだけです |
+| `stoa__thread_read` | `room_id?`、`thread_id?` (デフォルト: 自分のスレッド。別ルームでは必須)、`limit?` (デフォルト 50、最大 200)、`before_id?` | `GET /api/rooms/:id/threads/:tid`、加えてスレッドの `completed` / `completed_at` |
 | `stoa__room_memory_get` / `_set` | `_set`: `content` (最大 1800、完全置換) | `GET` / `PUT /api/rooms/:id/memory` |
 | `stoa__agent_memory_get` / `_set` | `_set`: `file` (`MEMORY.md` \| `USER.md`)、`content` (最大 2200 / 1375) | `GET /api/actors/:id/memory`、`PUT …/memory/:file` |
 | `stoa__sub_agent_memory_get` / `_set` | `sub_agent_id` (サブエージェントセッションでは省略)、`_set`: `content` (最大 2200) | `GET` / `PUT /api/sub-agents/:id/memory` |

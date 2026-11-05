@@ -436,7 +436,7 @@ function buildThreadSummary(roomId, rootId) {
     WHERE m.thread_id = ? AND m.sub_agent_label IS NOT NULL
   `).all(rootId);
   const sub_agent_participants = saRows.map(r => ({ label: r.sub_agent_label, actor_id: r.actor_id }));
-  return { type: 'thread_summary', root_id: rootId, count: row.count, last_at: row.last_at, active: !!row.active, participant_ids, sub_agent_participants };
+  return { type: 'thread_summary', root_id: rootId, count: row.count, last_at: row.last_at, active: !!row.active, participant_ids, sub_agent_participants, ...roomMessages.threadStatus(rootId) };
 }
 
 // Validate thread_id: root must exist in the same room and be a root itself (thread_id IS NULL).
@@ -4716,6 +4716,26 @@ Write-Host "Logs   : pm2 logs $AgentName"
     if (!requireAuth(req, res, url)) return;
     const r = roomMessages.threads(parseInt(threadListMatch[1]), url.searchParams.get('state'));
     return json(res, r.body, r.status);
+  }
+
+  // Mark a thread complete / reopen it. Owner session only: not in lib/agent-scope.js, so an agent
+  // secret or sub-agent credential is refused by requireAuth (owner decision 2026-11-05).
+  const threadCompleteMatch = req.method === 'PUT' && url.pathname.match(/^\/api\/rooms\/(\d+)\/threads\/(\d+)\/complete$/);
+  if (threadCompleteMatch) {
+    if (!requireAuth(req, res, url)) return;
+    if (!req._authUser) return json(res, { error: 'owner session required' }, 403);
+    const roomId = parseInt(threadCompleteMatch[1]);
+    const rootId = parseInt(threadCompleteMatch[2]);
+    const room = db.prepare('SELECT id, archived_at FROM rooms WHERE id=?').get(roomId);
+    if (!room) return json(res, { error: 'room not found' }, 404);
+    if (room.archived_at) return json(res, { error: 'room is archived' }, 400);
+    const data = parseJsonBody(await readBody(req));
+    if (!data) return json(res, { error: 'Invalid JSON' }, 400);
+    if (typeof data.completed !== 'boolean') return json(res, { error: 'completed must be a boolean' }, 400);
+    const r = roomMessages.setThreadCompleted(roomId, rootId, data.completed);
+    if (r.status !== 200) return json(res, r.body, r.status);
+    broadcast(roomId, { type: 'thread_status', room_id: roomId, ...r.body });
+    return json(res, r.body);
   }
 
   const threadDetailMatch = req.method === 'GET' && url.pathname.match(/^\/api\/rooms\/(\d+)\/threads\/(\d+)$/);

@@ -21163,6 +21163,84 @@ async function run() {
       }
     });
 
+    await test('Thread complete — owner marks/reopens; a newer reply reopens it; state=open/completed; feed + detail + MCP show it; agents and sub-agents 403; bad input 400/404; WS thread_status', async () => {
+      const post = async (body) => {
+        const r = await asAnon(() => req('POST', `/api/rooms/${roomA}/message`, body, subHeaders(agA.secret)));
+        assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+        return r.body.message_id;
+      };
+      const root = await post({ content: 'thread complete root' });
+      const reply = await post({ content: 'thread complete reply', thread_id: root });
+      const bare = await post({ content: 'root without replies' });
+      const put = (rootId, body, roomId = roomA) => req('PUT', `/api/rooms/${roomId}/threads/${rootId}/complete`, body);
+      const listed = async (state) => (await req('GET', `/api/rooms/${roomA}/threads${state ? `?state=${state}` : ''}`)).body.find(t => t.id === root);
+      const marker = () => mDb.prepare('SELECT thread_completed_at, thread_completed_through FROM messages WHERE id=?').get(root);
+      const doneAt = () => marker().thread_completed_at;
+
+      assert.deepStrictEqual([(await listed()).completed, (await listed()).completed_at], [false, null], 'a new thread is open');
+      assert.ok(await listed('open'), 'listed under state=open');
+      assert.strictEqual(await listed('completed'), undefined);
+
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      try {
+        ws.send(JSON.stringify({ type: 'join_room', room_id: roomA }));
+        await new Promise(r => setTimeout(r, 300));
+        const evt = waitForWsMessage(ws, m => m.type === 'thread_status' && m.thread_id === root);
+        const done = await put(root, { completed: true });
+        assert.strictEqual(done.status, 200, done.raw);
+        assert.deepStrictEqual([done.body.thread_id, done.body.completed, typeof done.body.completed_at], [root, true, 'string']);
+        assert.deepStrictEqual(await evt, { type: 'thread_status', room_id: roomA, thread_id: root, completed: true, completed_at: done.body.completed_at });
+      } finally { ws.close(); }
+      assert.strictEqual(marker().thread_completed_through, reply, 'marked through the newest reply');
+
+      assert.deepStrictEqual([(await listed()).completed, (await listed()).completed_at], [true, doneAt()], 'state=all row');
+      assert.ok(await listed('completed'), 'state=completed');
+      assert.strictEqual(await listed('open'), undefined, 'not open any more');
+      const detail = (await req('GET', `/api/rooms/${roomA}/threads/${root}`)).body;
+      assert.deepStrictEqual([detail.root.completed, detail.root.completed_at], [true, doneAt()]);
+      const feedRow = (await req('GET', `/api/rooms/${roomA}/messages?before=${bare + 1}&limit=10`)).body.find(m => m.id === root);
+      assert.deepStrictEqual([feedRow.thread.completed, feedRow.thread.completed_at], [true, doneAt()], 'feed thread summary');
+      const mcpList = (await stoaOk(tokA, 'threads_list', { state: 'completed' })).threads.find(t => t.id === root);
+      assert.deepStrictEqual([mcpList?.completed, mcpList?.completed_at], [true, doneAt()], 'MCP threads_list state=completed');
+      assert.strictEqual((await stoaOk(tokA, 'threads_list', { state: 'open' })).threads.some(t => t.id === root), false, 'MCP threads_list state=open');
+      const mcpRead = await stoaOk(tokA, 'thread_read', { thread_id: root });
+      assert.deepStrictEqual([mcpRead.completed, mcpRead.completed_at], [true, doneAt()], 'MCP thread_read');
+
+      // Agents read the status but never set it: parent secret and sub-agent credential are refused, nothing changes.
+      for (const headers of [subHeaders(agA.secret), subHeaders()]) {
+        const r = await asAnon(() => req('PUT', `/api/rooms/${roomA}/threads/${root}/complete`, { completed: false }, headers));
+        assert.deepStrictEqual([r.status, r.body?.error], [403, 'agent_scope_denied']);
+      }
+      assert.ok(marker().thread_completed_at, 'still marked after the refused agent calls');
+
+      for (const bad of [{}, { completed: 'true' }, { completed: 1 }, { completed: null }]) {
+        assert.strictEqual((await put(root, bad)).status, 400, JSON.stringify(bad));
+      }
+      assert.strictEqual((await put(reply, { completed: true })).status, 404, 'a reply is not a thread root');
+      assert.strictEqual((await put(bare, { completed: true })).status, 404, 'a root without replies is not a thread');
+      assert.strictEqual((await put(root, { completed: true }, roomB)).status, 404, 'thread of another room');
+      assert.strictEqual((await put(root, { completed: true }, 99999999)).status, 404, 'unknown room');
+      assert.strictEqual((await asAnon(() => put(root, { completed: true }))).status, 401, 'no session');
+
+      // A reply after the mark reopens it on every read, with the marker left in place.
+      await post({ content: 'more work in the thread', thread_id: root });
+      assert.ok(marker().thread_completed_at, 'marker kept; status is derived');
+      assert.deepStrictEqual([(await listed()).completed, (await listed()).completed_at], [false, null], 'reopened by the new reply');
+      assert.ok(await listed('open'));
+      assert.strictEqual((await req('GET', `/api/rooms/${roomA}/threads/${root}`)).body.root.completed, false);
+      assert.strictEqual((await stoaOk(tokA, 'thread_read', { thread_id: root })).completed, false);
+
+      assert.strictEqual((await put(root, { completed: true })).body.completed, true, 'marked again through the new reply');
+      const reopened = await put(root, { completed: false });
+      assert.deepStrictEqual([reopened.status, reopened.body], [200, { thread_id: root, completed: false, completed_at: null }]);
+      assert.deepStrictEqual(marker(), { thread_completed_at: null, thread_completed_through: null }, 'reopen clears the marker');
+
+      assert.strictEqual((await req('PATCH', `/api/rooms/${roomA}`, { archived: true })).status, 200);
+      try {
+        assert.deepStrictEqual([(await put(root, { completed: true })).status, marker().thread_completed_at], [400, null], 'archived room: refused');
+      } finally { await req('PATCH', `/api/rooms/${roomA}`, { archived: false }); }
+    });
+
     await test('MCP stoa tools — sub-agent session posts as itself; config tools refused even when called by name', async () => {
       const m = await stoaOk(tokSub, 'message_send', { content: 'sub-agent progress via MCP', main_feed: true });
       assert.deepStrictEqual(mDb.prepare('SELECT sub_agent_id, sub_agent_label FROM messages WHERE id=?').get(m.message_id), { sub_agent_id: sub.id, sub_agent_label: 'mcpsub' });
