@@ -6,6 +6,7 @@ function initGlobalWs() {
       reconnectDelay = 3000;
       globalWs.send(JSON.stringify({ type: 'subscribe_global' }));
       refreshRoomList();
+      resyncActors();
       _onGlobalWsReconnectAfterRestart();
       if (typeof sUpdateFetchStatus === 'function') sUpdateFetchStatus();
       if (typeof autoState !== 'undefined' && autoState.loaded) {
@@ -28,6 +29,7 @@ function initGlobalWs() {
       if (msg.type === 'agent_restart_status' && typeof sHandleRestartStatus === 'function') sHandleRestartStatus(msg);
       if (msg.type === 'agent_scan_complete') sFinishSetupSlip(msg.actor_id);
       if (msg.type === 'actor_removed') handleActorRemoved(msg.actor_id, msg.affected_rooms);
+      if (msg.type === 'actor_updated') handleActorUpdated(msg);
       if (msg.type === 'server_restart') handleServerRestart(msg);
       if (msg.type === 'server_restarting') handleServerRestarting();
       if (msg.type === 'update_available' && typeof sHandleUpdateAvailable === 'function') sHandleUpdateAvailable(msg);

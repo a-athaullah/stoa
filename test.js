@@ -14414,6 +14414,7 @@ async function run() {
       document: { addEventListener() {}, getElementById: () => null, querySelector: () => null, createElement: t => new El(t), querySelectorAll: s => body.querySelectorAll(s) },
       window: { addEventListener() {} }, navigator: {}, location: {},
       reloadRsbAgentsPanel: () => calls.push('rsb'), renderSidebarFooter: () => calls.push('footer'), renderComposerSeal: () => calls.push('composer'),
+      globalWs: null, WebSocket: { OPEN: 1 },
     };
     vm.createContext(ctx);
     for (const f of ['public/js/core.js', 'public/js/websocket.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
@@ -14554,6 +14555,7 @@ async function run() {
       renderMarkdown: s => s, highlightMentions: s => s, renderAttachments() {}, renderSavedTrail() {}, addCopyButtons() {}, linkifyFilePaths() {}, externalLinksNewTab() {},
       getCleanupProgress: () => 'off', getToolProgress: () => 'all', addMessageLinkAction() {},
       setComposerProcessing() {}, clearComposerProcessing() {}, setThreadProcessing() {}, clearThreadProcessing() {}, refreshRoomList() {}, reloadRsbAgentsPanel() {},
+      globalWs: null, WebSocket: { OPEN: 1 },
     };
     vm.createContext(ctx);
     const md = fs.readFileSync(path.join(__dirname, 'public/js/markdown.js'), 'utf8');
@@ -14642,50 +14644,60 @@ async function run() {
     ws({ type: 'actor_updated', actor: { id: 7, name: '', avatar_url: null } });
     assert.strictEqual(rowName(100, '.t-name'), 'Atlas Prime', 'nor does an empty name for an actor missing from the cache blank the label');
 
-    // A page without a room socket (settings, skills, home) or a dropped socket misses actor_updated.
-    // Entering such a page and reopening the room socket re-read /api/actors (the server's own query)
-    // and repaint whatever changed meanwhile.
+    // The server sends actor_updated to every human socket. The global one (open on every page, settings
+    // and skills included) handles it; a room socket only while the global one is down. Whatever the
+    // global socket missed while down is caught up from /api/actors (the server's own query) on reconnect.
     const actorsSql = /url\.pathname === '\/api\/actors'\) \{\s*const rows = db\.prepare\('([^']*)'\)/.exec(srv)[1];
-    mem.exec(`UPDATE actors SET name = 'Atlas Prime', avatar_color = NULL WHERE id = 7; UPDATE actors SET name = 'Atlas Two', avatar_url = '/uploads/avatar/two.png' WHERE id = 8;`);
     const schedFjson = ctx.fjson;
     let actorsFetch = async () => mem.prepare(actorsSql).all();
     ctx.fjson = url => (url === '/api/actors' ? actorsFetch() : schedFjson(url));
     for (const id of ['empty-state', 'chat-inner', 'settings-inner']) body.appendChild(new El('div')).id = id;
-    Object.assign(ctx, { sActivateTab() {}, sLoad() {}, sStopPolling() {}, saveDraft() {} });
+    Object.assign(ctx, { sActivateTab() {}, sLoad() {}, sStopPolling() {} });
     ctx.window.innerWidth = 1280;
-    for (const f of ['app-nav.js', 'rooms/router.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js', f), 'utf8'), ctx);
+    for (const f of ['app-nav.js', 'settings/init.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js', f), 'utf8'), ctx);
+    Object.assign(ctx, { refreshRoomList() {}, skillsRefreshCache() {} });
+    const socks = [];
+    ctx.WebSocket = class { static OPEN = 1; constructor() { this.readyState = 0; socks.push(this); } send() {} close() {} };
     const settle = () => new Promise(r => setImmediate(r));
     const atlas8 = () => [rowName(101, '.t-name'), body.querySelector('#msg-101').querySelector('[data-avatar-actor="8"]')?.src, dots.children.map(d => d.title).sort().join(','), vm.runInContext('actorByName[allActors.find(a => a.id === 8).name]?.id', ctx)];
+    const update8 = name => ({ type: 'actor_updated', actor: { id: 8, name, avatar_url: '/uploads/avatar/two.png', avatar_color: '#0a0', avatar_symbol: null } });
 
-    ctx.openSettingsTab('skills');
+    mem.exec(`UPDATE actors SET name = 'Atlas Prime', avatar_color = NULL WHERE id = 7; UPDATE actors SET name = 'Atlas Two', avatar_url = '/uploads/avatar/two.png' WHERE id = 8;`);
+    ctx.initGlobalWs();
+    const g = socks.at(-1);
+    g.readyState = 1;
+    g.onopen();
     await settle();
-    assert.deepStrictEqual(atlas8(), ['Atlas Two', '/uploads/avatar/two.png', 'Aan,Atlas Prime (primary),Atlas Two', 8], 'opening a settings page (skills) catches up a rename missed while the room socket was closed');
-    assert.deepStrictEqual(skillsBox.querySelectorAll('.sk-creator-name').map(e => e.textContent), ['Atlas Prime', 'Atlas Two', 'Reviewer'], 'the skills creator rows follow the caught-up rename');
+    assert.deepStrictEqual(atlas8(), ['Atlas Two', '/uploads/avatar/two.png', 'Aan,Atlas Prime (primary),Atlas Two', 8], 'the global socket (re)connect catches up a rename it missed');
     assert.strictEqual(vm.runInContext('allActors.find(a => a.id === 7)?.name', ctx), 'Atlas Prime', 'an actor missing from the cache is added back');
 
-    mem.exec(`UPDATE actors SET name = 'Atlas Three' WHERE id = 8`);
-    let sock = null;
-    ctx.WebSocket = class { constructor() { sock = this; } send() {} close() {} };
-    ctx.connectWS(5);
-    sock.onopen();
-    await settle();
-    assert.strictEqual(atlas8()[0], 'Atlas Three', 'a room socket (re)connect catches up too');
+    ctx.openSettingsTab('skills');
+    await g.onmessage({ data: JSON.stringify(update8('Atlas Three')) });
+    assert.strictEqual(atlas8()[0], 'Atlas Three', 'with no room socket (skills page open), the global socket applies actor_updated live');
+    assert.deepStrictEqual(skillsBox.querySelectorAll('.sk-creator-name').map(e => e.textContent), ['Atlas Prime', 'Atlas Three', 'Reviewer'], 'the open skills page follows');
 
-    mem.exec(`UPDATE actors SET name = 'Atlas Four' WHERE id = 8`);
-    ctx.showHome();
-    await settle();
-    assert.strictEqual(atlas8()[0], 'Atlas Four', 'so does leaving the room for home');
+    const applyActorUpdate = ctx.applyActorUpdate;
+    let applied = 0;
+    ctx.applyActorUpdate = a => { applied++; applyActorUpdate(a); };
+    ws(update8('Atlas Four'));
+    await g.onmessage({ data: JSON.stringify(update8('Atlas Four')) });
+    assert.deepStrictEqual([atlas8()[0], applied], ['Atlas Four', 1], 'in a room both sockets get the event; it is applied once, by the global socket');
+    g.readyState = 3;
+    ws(update8('Atlas Five'));
+    assert.deepStrictEqual([atlas8()[0], applied], ['Atlas Five', 2], 'while the global socket is down, the room socket applies it');
+    ctx.applyActorUpdate = applyActorUpdate;
 
     const pending = [];
     actorsFetch = () => new Promise(r => pending.push(r));
-    const stale = mem.prepare(actorsSql).all();
     mem.exec(`UPDATE actors SET name = 'Atlas Five' WHERE id = 8`);
+    const stale = mem.prepare(actorsSql).all();
+    mem.exec(`UPDATE actors SET name = 'Atlas Six' WHERE id = 8`);
     ctx.resyncActors(); ctx.resyncActors();
     pending[1](mem.prepare(actorsSql).all());
     await settle();
     pending[0](stale);
     await settle();
-    assert.strictEqual(atlas8()[0], 'Atlas Five', 'an older /api/actors response landing last does not undo a newer one');
+    assert.strictEqual(atlas8()[0], 'Atlas Six', 'an older /api/actors response landing last does not undo a newer one');
   });
 
   await test('image lightbox — Esc closes it before any other Esc handler (no stop-generation), the capture listener lives only while open', () => {

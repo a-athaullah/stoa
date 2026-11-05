@@ -95,7 +95,6 @@ function showHome() {
   currentRoomData = null;
   if (ws) { ws.onclose = null; ws.close(); ws = null; }
   setConnected(false);
-  resyncActors();
   document.querySelectorAll('.h-room-row').forEach(el => el.classList.remove('active'));
   document.getElementById('chat-inner').classList.remove('visible');
   document.getElementById('empty-state').style.display = '';

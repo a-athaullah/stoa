@@ -27,7 +27,6 @@ function connectWS(roomId) {
     ws.send(JSON.stringify({ type: 'file_list' }));
     ws.send(JSON.stringify({ type: 'git_diff' }));
     setConnected(true);
-    resyncActors();
   };
 
   ws.onmessage = e => {
@@ -584,11 +583,17 @@ function handleWsMessage(msg) {
   }
 
   if (msg.type === 'actor_updated') {
-    const a = msg.actor;
-    if (!a || !Number.isInteger(a.id)) return;
-    applyActorUpdate(actorDisplayFields(a));
+    // The server sends it to every human socket, the global one included: that one handles it, unless
+    // it is down at the moment.
+    if (globalWs?.readyState !== WebSocket.OPEN) handleActorUpdated(msg);
     return;
   }
+}
+
+function handleActorUpdated(msg) {
+  const a = msg.actor;
+  if (!a || !Number.isInteger(a.id)) return;
+  applyActorUpdate(actorDisplayFields(a));
 }
 
 function actorDisplayFields(a) {
@@ -601,8 +606,8 @@ function actorDisplayFields(a) {
   };
 }
 
-// actor_updated only reaches an open room socket, so a page without one (settings, skills, home) or a
-// dropped connection misses renames and avatar changes. Re-read /api/actors and repaint what changed.
+// actor_updated sent while the global socket was down is lost: on (re)connect, re-read /api/actors and
+// repaint what changed.
 let _actorResyncSeq = 0;
 async function resyncActors() {
   const seq = ++_actorResyncSeq;
