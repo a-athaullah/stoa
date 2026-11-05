@@ -182,9 +182,8 @@ function renderMessages(roomId) {
 
 ### Threads: complete / open
 - `threadSummaries[rootId].completed` (`chat/feed.js`) is the client copy of the server-derived status. It is fed by the feed payload (`m.thread.completed`), `thread_summary` (a summary without the flag keeps the last value), the thread detail `root.completed`, the PUT response and WS `thread_status` (ignored for another `room_id`).
-- `setThreadCompleted(rootId, completed)` is the single setter: it redraws the feed chip (`.h-thread-chip.is-complete` + `.h-thread-chip-done`), syncs the thread panel toggle (`#thread-complete-btn`, `aria-pressed`, constant "Complete" label, tooltip carries the action, hidden while the thread has no reply) and the header list.
+- `setThreadCompleted(rootId, completed)` is the single setter: it redraws the feed chip (`.h-thread-chip.is-complete` + `.h-thread-chip-done`), syncs the thread panel toggle (`#thread-complete-btn`, `aria-pressed`, constant "Complete" label, tooltip carries the action, hidden while the thread has no reply) (the room header carries no open-thread count or list: not every room's threads need marking complete).
 - Auto-reopen: `message_new` for a thread reply calls `noteThreadReply(tId)` → `setThreadCompleted(tId, false)`. The server derives the same (a reply newer than `thread_completed_through`).
-- Header activity popover (`rooms/header.js`): "open threads" section from `GET /threads?state=open`, loaded once per room and on popover open. `noteHeaderOpenThread()` drops a completed row locally and re-reads the list (debounced) only when a thread not listed becomes open. The pill shows "N open threads" (no live dot) when nothing is running, "· N open" otherwise.
 
 ---
 

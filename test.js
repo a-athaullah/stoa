@@ -14658,7 +14658,7 @@ async function run() {
     assert.deepStrictEqual([avatarsOf(1)[0].tagName, state('humanActor.avatar_url'), calls.sort()], ['IMG', '/uploads/avatar/aan.png', ['composer', 'footer', 'rsb']], 'the human update also repaints the sidebar footer and composer seal');
   });
 
-  await test('thread complete (client) — feed chip, thread_status, auto-reopen on a new reply, and the header "open threads" count follow the server contract', async () => {
+  await test('thread complete (client) — feed chip, thread_status, auto-reopen on a new reply, follow the server contract; the header pill shows no open-thread count', async () => {
     const vm = require('vm');
     const fs = require('fs');
     class El {
@@ -14721,18 +14721,19 @@ async function run() {
     ctx.attachThreadChips([thread(100, { completed: true }), thread(110)]);
     assert.deepStrictEqual([done(100), chip(110).classList.contains('is-complete'), !!chip(110).querySelector('.h-thread-chip-done')], [true, false, false]);
 
-    // Header pill: count from GET ?state=open; a row the server still flags completed is dropped; no live dot.
-    openRows = [{ id: 110, content: 'b', reply_count: 2, completed: false }, { id: 120, content: 'c', reply_count: 1, completed: false }, { id: 100, content: 'a', reply_count: 2, completed: true }];
+    // Header pill: open (not completed) threads never surface there, even when the server would list some;
+    // a room with open threads and nothing running keeps the pill hidden.
+    openRows = [{ id: 110, content: 'b', reply_count: 2, completed: false }, { id: 120, content: 'c', reply_count: 1, completed: false }];
     header.appendChild(ctx.buildHeaderActivityCtl({ id: 5 }));
     await flush();
-    assert.ok(urls.includes('/api/rooms/5/threads?state=open'), urls.join());
-    assert.deepStrictEqual([pill().hidden, pill().textContent, body.querySelector('.h-activity-dot').hidden], [false, '2 open threads', true]);
+    const openReads = () => urls.filter(u => u.includes('state=open')).length;
+    assert.deepStrictEqual([pill().hidden, body.querySelector('#h-activity-ctl').hidden, openReads()], [true, true, 0]);
 
-    // thread_status from another room is ignored; from this room it marks the chip and drops the header row.
+    // thread_status from another room is ignored; from this room it marks the chip and leaves the header alone.
     ws({ type: 'thread_status', room_id: 6, thread_id: 110, completed: true, completed_at: '2026-11-05 10:01:00' });
-    assert.deepStrictEqual([done(110), pill().textContent], [false, '2 open threads']);
+    assert.strictEqual(done(110), false);
     ws({ type: 'thread_status', room_id: 5, thread_id: 110, completed: true, completed_at: '2026-11-05 10:01:00' });
-    assert.deepStrictEqual([done(110), pill().textContent], [true, '1 open thread']);
+    assert.deepStrictEqual([done(110), pill().hidden], [true, true]);
 
     // A server summary that carries completed:true (reply finishing that predates the mark) keeps it complete;
     // one without the flag keeps the last known state.
@@ -14740,19 +14741,21 @@ async function run() {
     ctx.handleThreadSummary({ root_id: 100, count: 2, last_at: '2026-11-05 10:02:00', active: true, participant_ids: [] });
     assert.deepStrictEqual([done(110), done(100)], [true, true]);
 
-    // A new reply in a completed thread reopens it locally and re-reads the open list (server derives the same).
-    const before = urls.length;
-    openRows = [{ id: 110, content: 'b', reply_count: 4, completed: false }, { id: 120, content: 'c', reply_count: 1, completed: false }];
+    // A new reply in a completed thread reopens it locally; the header schedules no open-list reload.
     ws({ type: 'message_new', message: { id: 130, room_id: 5, thread_id: 110, content: 'more' }, thread_summary: { root_id: 110, count: 4, last_at: '2026-11-05 10:03:00', active: false, participant_ids: [] } });
     assert.strictEqual(done(110), false, 'the chip loses its complete marker');
-    assert.strictEqual(timers.length, 1, 'one debounced reload of the open list');
-    timers.shift()();
     await flush();
-    assert.deepStrictEqual([urls.length - before, urls.at(-1), pill().textContent], [1, '/api/rooms/5/threads?state=open', '2 open threads']);
+    assert.deepStrictEqual([timers.length, openReads(), pill().hidden], [0, 0, true]);
 
-    // A reply in a thread already listed open costs no request.
-    ws({ type: 'message_new', message: { id: 131, room_id: 5, thread_id: 120, content: 'x' }, thread_summary: { root_id: 120, count: 2, last_at: '2026-11-05 10:04:00', active: false, participant_ids: [] } });
-    assert.strictEqual(timers.length, 0);
+    // Live activity still shows: an active thread lights the pill with its dot, and its label and popover
+    // carry no open-thread count or section.
+    ctx.roomActiveThreads[5] = 1;
+    ctx.renderHeaderThreadPill();
+    assert.deepStrictEqual([pill().hidden, pill().textContent, body.querySelector('.h-activity-dot').hidden], [false, '1 thread', false]);
+    ctx.openActivityPopover();
+    await flush();
+    const pop = body.querySelector('.h-activity-pop');
+    assert.deepStrictEqual([pop.hidden, /open/.test(pop.textContent), openReads()], [false, false, 0]);
   });
 
   await test('actor rename — actor_updated rewrites that actor\'s name label and avatar on rows drawn from the server\'s own payloads (feed, thread, live row, run event); sub-agent labels and a same-name actor stay; thread chips, room header, room-list dots, schedules and skills follow too', async () => {
