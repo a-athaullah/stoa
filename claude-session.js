@@ -173,6 +173,19 @@ class ClaudeSession extends EventEmitter {
       this._backgroundTasks = Array.isArray(event.tasks) ? event.tasks : [];
       return;
     }
+    // The CLI can hold the level event above back past a turn's result, so the list would miss a
+    // task started in that turn or keep one whose completion started it. The task's own start and
+    // terminal events keep it current in between (the CLI's SDK clients fold them the same way).
+    if (event.type === 'system' && event.subtype === 'task_started') {
+      if (typeof event.task_id === 'string' && event.is_backgrounded !== false && !this._backgroundTasks.some(t => t?.task_id === event.task_id)) {
+        this._backgroundTasks = [...this._backgroundTasks, { task_id: event.task_id, description: event.description }];
+      }
+      return;
+    }
+    if (event.type === 'system' && event.subtype === 'task_notification') {
+      if (typeof event.task_id === 'string') this._backgroundTasks = this._backgroundTasks.filter(t => t?.task_id !== event.task_id);
+      return;
+    }
 
     if (this._isTurnEvent(event)) {
       if (this.busy) this._turnStarted = true;

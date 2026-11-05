@@ -810,7 +810,7 @@ async function drainWake(wakeId) {
     FROM room_participants rp JOIN actors a ON a.id=rp.actor_id WHERE rp.id=?
   `).get(row.parent_participant_id);
   const sub = db.prepare(`
-    SELECT m.content, m.sub_agent_label, m.state, m.result_meta FROM messages m WHERE m.id=?
+    SELECT m.content, m.sub_agent_label, m.state, m.result_meta, m.completed_at FROM messages m WHERE m.id=?
   `).get(row.sub_agent_message_id);
   if (!parent || !sub) { db.prepare('DELETE FROM pending_wakes WHERE id=?').run(wakeId); return; }
   if (!agentReadyForWake(parent.actor_id)) return;
@@ -821,6 +821,9 @@ async function drainWake(wakeId) {
   const subFailed = sub.state === 'error';
   const subExitReason = sub.result_meta ? (JSON.parse(sub.result_meta)?.exit_reason || null) : null;
   const interrupted = subFailed && subExitReason === 'interrupted';
+  // A run row always gets completed_at; a complete row without it is the proactive message of a turn
+  // the CLI ran after the run had ended (lib/room-messages.js wakeAfterUnsolicitedTurn).
+  const continued = sub.state === 'complete' && sub.completed_at == null;
   const failurePrefix = interrupted
     ? `[sub-agent TERPUTUS] Sub-agent "${label}" ter-interupsi oleh restart agent/server — bukan gagal logika. Kerja parsial mungkin sudah ada di working tree: cek \`git status\` (dan branch aktif) dulu, lalu putuskan apakah perlu trigger ulang. Sesinya tidak tersimpan, jadi trigger ulang = sesi baru: tulis ulang konteks tugasnya lengkap. Output parsial (kalau ada):\n\n`
     : subFailed
@@ -847,7 +850,7 @@ async function drainWake(wakeId) {
   const costBlock = rollup
     ? `\n\n${formatCostRollup(rollup)}\n(Ini menutup rangkaian spawn — sertakan ringkasan biaya singkat di jawabanmu kalau relevan.)`
     : '';
-  const wakePrompt = `[sub-agent result] Sub-agent "${label}" yang kamu picu ${interrupted ? 'berhenti sebelum selesai' : 'sudah selesai'}. ${failurePrefix}Hasilnya:\n\n${body}\n\nSintesiskan dan lanjutkan menjawab. Kamu boleh @mention sub-agent lain untuk delegate tugas berikutnya (misal @stoa-reviewer untuk review). Mention akan otomatis trigger sub-agent tersebut.${costBlock}`;
+  const wakePrompt = `[sub-agent result] Sub-agent "${label}" yang kamu picu ${interrupted ? 'berhenti sebelum selesai' : continued ? 'melanjutkan kerja di background setelah run-nya berakhir, dan sekarang selesai (bukan run baru)' : 'sudah selesai'}. ${failurePrefix}Hasilnya:\n\n${body}\n\nSintesiskan dan lanjutkan menjawab. Kamu boleh @mention sub-agent lain untuk delegate tugas berikutnya (misal @stoa-reviewer untuk review). Mention akan otomatis trigger sub-agent tersebut.${costBlock}`;
 
   try {
     await triggerAiResponse(row.room_id, { ...parent, sub_agent: null, prompt_outside_history: true, no_skills: true }, wakePrompt, null, [], null, row.thread_id ?? null);
@@ -1632,7 +1635,7 @@ const mcpUpstreams = createUpstreamManager({
 const roomSchedules = createRoomSchedules({ db, broadcast });
 const roomMessages = createRoomMessages({
   db, broadcast, broadcastGlobal, resolveThread, enrichAutomation, enrichAutomationList, getThreadRootPreview,
-  cascadeMentions: cascadeMentionsFromProactive, uploadsDir: UPLOADS_DIR,
+  cascadeMentions: cascadeMentionsFromProactive, enqueueParentWake, uploadsDir: UPLOADS_DIR,
 });
 const stoaMemory = createStoaMemory({ db });
 const systemPrompts = createSystemPrompts({ db });
@@ -2730,6 +2733,8 @@ const server = http.createServer(async (req, res) => {
     if (agent.subAgentId != null && typeof data === 'object' && !Array.isArray(data)) {
       if (data.sub_agent_id != null && Number(data.sub_agent_id) !== agent.subAgentId) return json(res, { error: 'forbidden' }, 403);
       data.sub_agent_id = agent.subAgentId;
+      // Only the agent client reports a turn the CLI ran on its own; a sub-agent cannot wake its parent.
+      delete data.unsolicited;
     }
     const r = roomMessages.send(roomId, agent.id, data);
     return json(res, r.body, r.status);
