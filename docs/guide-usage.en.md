@@ -169,7 +169,6 @@ The thread panel has its **own dedicated composer**, independent from the room c
 
 **Mark as complete:** once a thread has at least one reply, a **Complete** button appears in the thread panel header (circle with a checkmark icon). Click it to mark the thread done — the button stays labeled **Complete** but appears pressed, and its tooltip changes to "Reopen thread". The thread chip in the feed turns muted with a quiet **complete** label. Click again to reopen it (tooltip reverts to "Mark thread complete"). Any new reply — from you or the agent — reopens a completed thread automatically. Only the room owner can mark or unmark; agents can read the status but cannot set it.
 
-**Open threads list:** when there are unresolved threads with replies, the room header pill shows the count — as "N open threads" when no threads or sub-agents are currently running, or "N threads · N open" (combined) when there is live activity. The pill is hidden when there is nothing to show. Click it to open the activity dropdown — the **OPEN THREADS** section lists each open thread (up to 50); click a row to jump straight to it.
 
 ### Thread Broadcast
 
