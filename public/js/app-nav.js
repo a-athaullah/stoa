@@ -90,6 +90,7 @@ function openSettingsTab(tab) {
   currentRoomId = null;
   if (ws) { ws.onclose = null; ws.close(); ws = null; }
   setConnected(false);
+  resyncActors();
   document.querySelectorAll('.h-room-row').forEach(el => el.classList.remove('active'));
   const isMobile = window.innerWidth <= 680;
   document.body.classList.add('settings-mode');
