@@ -122,6 +122,7 @@ function handleWsMessage(msg) {
           if (typeof _scrollThreadToBottom === 'function') _scrollThreadToBottom(true);
         });
       }
+      if (typeof noteThreadReply === 'function') noteThreadReply(tId);
       // Also show in room feed if flagged for broadcast
       if (m.broadcast_reason && typeof appendFeedBroadcastRow === 'function') {
         appendFeedBroadcastRow(m);
@@ -147,6 +148,11 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'thread_summary') {
     if (typeof handleThreadSummary === 'function') handleThreadSummary(msg);
+    return;
+  }
+
+  if (msg.type === 'thread_status') {
+    if (msg.room_id === currentRoomId && typeof setThreadCompleted === 'function') setThreadCompleted(msg.thread_id, !!msg.completed);
     return;
   }
 

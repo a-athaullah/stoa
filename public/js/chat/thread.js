@@ -175,6 +175,19 @@ function _createThreadPanel() {
   const controls = document.createElement('div');
   controls.className = 'h-thread-controls';
 
+  const completeBtn = document.createElement('button');
+  completeBtn.type = 'button';
+  completeBtn.id = 'thread-complete-btn';
+  completeBtn.className = 'h-thread-complete-btn';
+  completeBtn.hidden = true;
+  completeBtn.setAttribute('aria-pressed', 'false');
+  completeBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle class="h-thread-complete-ring" cx="8" cy="8" r="6.25"/><polyline class="h-thread-complete-tick" points="5.3 8.2 7.1 10 10.7 6.2"/></svg>';
+  const completeLabel = document.createElement('span');
+  completeLabel.textContent = 'Complete';
+  completeBtn.appendChild(completeLabel);
+  completeBtn.onclick = () => toggleThreadComplete();
+  controls.appendChild(completeBtn);
+
   const compactBtn = document.createElement('button');
   compactBtn.id = 'thread-compact-btn';
   compactBtn.className = 'h-thread-ctrl-btn';
@@ -1001,6 +1014,8 @@ async function _loadThread(rootId) {
 
   // Update header with root message snippet
   _updateThreadHeader(rootId);
+  const completeBtn = document.getElementById('thread-complete-btn');
+  if (completeBtn) completeBtn.hidden = true;
 
   try {
     const resp = await fjson(`/api/rooms/${currentRoomId}/threads/${rootId}`);
@@ -1035,6 +1050,7 @@ async function _loadThread(rootId) {
     msgs.forEach(m => appendThreadMessage(m, body));
     _lastDayKey = savedDay;
 
+    setThreadCompleted(rootId, !!root?.completed);
     if (msgs.length > 0) threadOldestMsgId = msgs[0].id;
     threadNoMoreOlder = msgs.length < 100;
     if (typeof mcpApprovalsSync === 'function') mcpApprovalsSync();
@@ -1202,6 +1218,35 @@ function _updateThreadHeader(rootId) {
     || 'Thread';
   titleEl.textContent = snippet;
   titleEl.title = snippet;
+}
+
+// ── Mark complete ────────────────────────────────────────────────────────────
+// Toggle (aria-pressed) with a constant label so the accessible name never flips; the tooltip
+// carries the action. Hidden until the thread has a reply: the server only completes threads with replies.
+function syncThreadCompleteBtn(rootId, completed) {
+  const btn = document.getElementById('thread-complete-btn');
+  if (!btn || rootId !== activeThreadId) return;
+  btn.hidden = !((threadSummaries[rootId]?.count || 0) > 0 || _getThreadBody()?.querySelector('[id^="msg-"]'));
+  btn.setAttribute('aria-pressed', String(completed));
+  btn.dataset.tooltip = completed ? 'Reopen thread' : 'Mark thread complete';
+}
+
+async function toggleThreadComplete() {
+  const btn = document.getElementById('thread-complete-btn');
+  const rootId = activeThreadId;
+  const roomId = currentRoomId;
+  if (!btn || !rootId || btn.disabled) return;
+  const completed = btn.getAttribute('aria-pressed') !== 'true';
+  btn.disabled = true;
+  try {
+    const res = await fetch(`/api/rooms/${roomId}/threads/${rootId}/complete`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ completed }) });
+    const j = await res.json().catch(() => ({}));
+    if (res.ok && roomId === currentRoomId) setThreadCompleted(rootId, !!j.completed);
+    else if (!res.ok) showToast(j.error || 'Failed to update thread', { error: true });
+  } catch {
+    showToast('Failed to update thread', { error: true });
+  }
+  btn.disabled = false;
 }
 
 // ── Stop / compact thread ────────────────────────────────────────────────────

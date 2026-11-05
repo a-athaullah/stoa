@@ -14464,6 +14464,103 @@ async function run() {
     assert.deepStrictEqual([avatarsOf(1)[0].tagName, state('humanActor.avatar_url'), calls.sort()], ['IMG', '/uploads/avatar/aan.png', ['composer', 'footer', 'rsb']], 'the human update also repaints the sidebar footer and composer seal');
   });
 
+  await test('thread complete (client) — feed chip, thread_status, auto-reopen on a new reply, and the header "open threads" count follow the server contract', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El {
+      constructor(tag) {
+        this.tagName = tag.toUpperCase(); this.id = ''; this.dataset = {}; this.style = { setProperty() {} }; this.children = []; this.parentNode = null; this._text = ''; this.hidden = false; this.attrs = {};
+        const cls = new Set(); this._cls = cls;
+        this.classList = { add: (...c) => c.forEach(x => cls.add(x)), remove: (...c) => c.forEach(x => cls.delete(x)), contains: c => cls.has(c), toggle: (c, on) => ((on ?? !cls.has(c)) ? cls.add(c) : cls.delete(c)) };
+      }
+      set className(v) { this._cls.clear(); String(v).split(/\s+/).filter(Boolean).forEach(c => this._cls.add(c)); }
+      get className() { return [...this._cls].join(' '); }
+      appendChild(c) { if (c.parentNode) c.remove(); c.parentNode = this; this.children.push(c); return c; }
+      append(...cs) { cs.forEach(c => this.appendChild(c)); }
+      remove() { const p = this.parentNode; if (p) { p.children = p.children.filter(x => x !== this); this.parentNode = null; } }
+      addEventListener() {}
+      setAttribute(k, v) { this.attrs[k] = String(v); }
+      getAttribute(k) { return this.attrs[k] ?? null; }
+      contains() { return false; }
+      set innerHTML(v) { this.children = []; this._text = ''; }
+      set textContent(v) { this.children.forEach(c => { c.parentNode = null; }); this.children = []; this._text = String(v); }
+      get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+      get childElementCount() { return this.children.length; }
+      matches(sel) {
+        const m = /^\.([\w-]+)(?:\[data-root-id="(\d+)"\])?(?::not\(\[hidden\]\))?$/.exec(sel.trim());
+        if (m) return this._cls.has(m[1]) && (!m[2] || this.dataset.rootId == m[2]);
+        return sel.startsWith('#') && this.id === sel.slice(1);
+      }
+      querySelectorAll(sel) { const out = []; const walk = e => e.children.forEach(c => { if (sel.split(',').some(s => c.matches(s))) out.push(c); walk(c); }); walk(this); return out; }
+      querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
+    }
+    const body = new El('body');
+    const header = body.appendChild(new El('div')); header.id = 'chat-header';
+    header.getBoundingClientRect = () => ({ bottom: 60 });
+    for (const id of [100, 110]) { const row = body.appendChild(new El('div')); row.id = 'msg-' + id; row.appendChild(new El('div')).className = 't-col'; }
+    const urls = [];
+    let openRows = [];
+    const timers = [];
+    const ctx = {
+      localStorage: { getItem: () => null, setItem() {} }, navigator: {}, location: {}, window: { addEventListener() {} }, CSS: { escape: s => s },
+      document: {
+        body, addEventListener() {}, hidden: false, activeElement: null,
+        createElement: t => new El(t), createTextNode: t => Object.assign(new El('#text'), { _text: String(t) }),
+        getElementById: id => body.querySelector('#' + id), querySelector: sel => body.querySelector(sel), querySelectorAll: sel => body.querySelectorAll(sel),
+      },
+      setInterval: () => 0, clearInterval() {}, setTimeout: fn => { timers.push(fn); return timers.length; }, clearTimeout() {},
+      globalWs: null, WebSocket: { OPEN: 1 },
+    };
+    vm.createContext(ctx);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js/core.js'), 'utf8'), ctx);
+    for (const f of ['chat/feed.js', 'websocket.js', 'rooms/header.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, 'public/js', f), 'utf8'), ctx);
+    vm.runInContext('currentRoomId = 5; roomActiveThreads = {};', ctx);
+    ctx.fjson = async url => { urls.push(url); return url.endsWith('?state=open') ? openRows : []; };
+    const flush = () => new Promise(r => setImmediate(r));
+    const ws = m => ctx.handleWsMessage(m);
+    const chip = id => body.querySelector(`.h-thread-chip[data-root-id="${id}"]`);
+    const done = id => chip(id).classList.contains('is-complete') && chip(id).querySelector('.h-thread-chip-done')?.textContent === 'complete';
+    const pill = () => body.querySelector('.h-activity-pill');
+    const thread = (id, extra) => ({ id, thread_id: null, thread: { count: 2, last_at: '2026-11-05 10:00:00', active: false, participant_ids: [], ...extra } });
+
+    // Feed load: the thread summary's `completed` draws the quiet marker; a missing flag means open.
+    ctx.attachThreadChips([thread(100, { completed: true }), thread(110)]);
+    assert.deepStrictEqual([done(100), chip(110).classList.contains('is-complete'), !!chip(110).querySelector('.h-thread-chip-done')], [true, false, false]);
+
+    // Header pill: count from GET ?state=open; a row the server still flags completed is dropped; no live dot.
+    openRows = [{ id: 110, content: 'b', reply_count: 2, completed: false }, { id: 120, content: 'c', reply_count: 1, completed: false }, { id: 100, content: 'a', reply_count: 2, completed: true }];
+    header.appendChild(ctx.buildHeaderActivityCtl({ id: 5 }));
+    await flush();
+    assert.ok(urls.includes('/api/rooms/5/threads?state=open'), urls.join());
+    assert.deepStrictEqual([pill().hidden, pill().textContent, body.querySelector('.h-activity-dot').hidden], [false, '2 open threads', true]);
+
+    // thread_status from another room is ignored; from this room it marks the chip and drops the header row.
+    ws({ type: 'thread_status', room_id: 6, thread_id: 110, completed: true, completed_at: '2026-11-05 10:01:00' });
+    assert.deepStrictEqual([done(110), pill().textContent], [false, '2 open threads']);
+    ws({ type: 'thread_status', room_id: 5, thread_id: 110, completed: true, completed_at: '2026-11-05 10:01:00' });
+    assert.deepStrictEqual([done(110), pill().textContent], [true, '1 open thread']);
+
+    // A server summary that carries completed:true (reply finishing that predates the mark) keeps it complete;
+    // one without the flag keeps the last known state.
+    ctx.handleThreadSummary({ root_id: 110, count: 3, last_at: '2026-11-05 10:02:00', active: false, completed: true, participant_ids: [] });
+    ctx.handleThreadSummary({ root_id: 100, count: 2, last_at: '2026-11-05 10:02:00', active: true, participant_ids: [] });
+    assert.deepStrictEqual([done(110), done(100)], [true, true]);
+
+    // A new reply in a completed thread reopens it locally and re-reads the open list (server derives the same).
+    const before = urls.length;
+    openRows = [{ id: 110, content: 'b', reply_count: 4, completed: false }, { id: 120, content: 'c', reply_count: 1, completed: false }];
+    ws({ type: 'message_new', message: { id: 130, room_id: 5, thread_id: 110, content: 'more' }, thread_summary: { root_id: 110, count: 4, last_at: '2026-11-05 10:03:00', active: false, participant_ids: [] } });
+    assert.strictEqual(done(110), false, 'the chip loses its complete marker');
+    assert.strictEqual(timers.length, 1, 'one debounced reload of the open list');
+    timers.shift()();
+    await flush();
+    assert.deepStrictEqual([urls.length - before, urls.at(-1), pill().textContent], [1, '/api/rooms/5/threads?state=open', '2 open threads']);
+
+    // A reply in a thread already listed open costs no request.
+    ws({ type: 'message_new', message: { id: 131, room_id: 5, thread_id: 120, content: 'x' }, thread_summary: { root_id: 120, count: 2, last_at: '2026-11-05 10:04:00', active: false, participant_ids: [] } });
+    assert.strictEqual(timers.length, 0);
+  });
+
   await test('actor rename — actor_updated rewrites that actor\'s name label and avatar on rows drawn from the server\'s own payloads (feed, thread, live row, run event); sub-agent labels and a same-name actor stay; thread chips, room header, room-list dots, schedules and skills follow too', async () => {
     const vm = require('vm');
     const fs = require('fs');
