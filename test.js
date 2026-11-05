@@ -9756,7 +9756,7 @@ async function run() {
     }
   });
 
-  await test('actor avatar upload / removal / rename → actor_updated in each room the actor is in, never in other rooms', async () => {
+  await test('actor avatar upload / removal / rename → actor_updated once on every human connection (also rooms the actor is not in), never on an agent socket', async () => {
     const ag = await actorDeleteFixture('__test-actor-avatar-live', false);
     const other = await req('POST', '/api/rooms', { title: '__test-actor-avatar-other', workdir_id: actorDeleteHost.workdirId, participant_ids: [actorDeleteHost.actorId] });
     assert.strictEqual(other.status, 200, other.raw);
@@ -9767,9 +9767,12 @@ async function run() {
       return ws;
     };
     const inRoom = await join(ag.roomId), outside = await join(other.body.id);
-    const leaked = [];
-    outside.on('message', raw => { if (JSON.parse(raw.toString()).type === 'actor_updated') leaked.push(raw.toString()); });
-    const next = () => waitForWsMessage(inRoom, m => m.type === 'actor_updated' && m.actor?.id === ag.actorId, 3000);
+    const heard = new Map([['inRoom', inRoom], ['outside', outside], ['agent', ag.ws], ['host agent', actorDeleteHost.ws]].map(([k, ws]) => {
+      const got = [];
+      ws.on('message', raw => { const m = JSON.parse(raw.toString()); if (m.type === 'actor_updated') got.push(m); });
+      return [k, got];
+    }));
+    const next = () => waitForWsMessage(outside, m => m.type === 'actor_updated' && m.actor?.id === ag.actorId, 3000);
     const { avatar_color, avatar_symbol } = require('./db').prepare('SELECT avatar_color, avatar_symbol FROM actors WHERE id=?').get(ag.actorId);
     const expected = (name, avatar_url) => ({ type: 'actor_updated', actor: { id: ag.actorId, name, avatar_url, avatar_color, avatar_symbol } });
     try {
@@ -9784,7 +9787,10 @@ async function run() {
       assert.strictEqual((await req('PATCH', `/api/actors/${ag.actorId}`, { name: '__test-actor-avatar-renamed' })).status, 200);
       assert.deepStrictEqual(await ev, expected('__test-actor-avatar-renamed', null), 'rename');
       await new Promise(r => setTimeout(r, 300));
-      assert.deepStrictEqual(leaked, [], 'a room the actor is not in hears nothing');
+      const all = [expected('__test-actor-avatar-live', up.body.avatar_url), expected('__test-actor-avatar-live', null), expected('__test-actor-avatar-renamed', null)];
+      assert.deepStrictEqual(heard.get('inRoom'), all, 'a human in the actor room hears each change once');
+      assert.deepStrictEqual(heard.get('outside'), all, 'a human in a room the actor is not in hears it too (sidebar dots)');
+      assert.deepStrictEqual([heard.get('agent'), heard.get('host agent')], [[], []], 'agent sockets hear nothing');
     } finally {
       inRoom.close(); outside.close();
       ag.ws.close();

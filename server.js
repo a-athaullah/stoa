@@ -480,7 +480,8 @@ function saveAvatarFile(prefix, id, buffer, ext) {
   return `/uploads/avatar/${saved}`;
 }
 
-// An actor's name/avatar changed: every room it is in redraws it without a reload.
+// An actor's name/avatar changed: redrawn without a reload. Every human connection gets it, not only
+// the actor's rooms — the sidebar shows participant dots for all rooms. Agent sockets never get it.
 function broadcastActorUpdated(id) {
   const actor = db.prepare('SELECT id, name, avatar_url, avatar_color, avatar_symbol FROM actors WHERE id=?').get(id);
   if (!actor) return;
@@ -489,9 +490,7 @@ function broadcastActorUpdated(id) {
     if (meta.actor_id !== id) continue;
     Object.assign(meta, { actor_name: actor.name, avatar_url: actor.avatar_url, avatar_color: actor.avatar_color, avatar_symbol: actor.avatar_symbol });
   }
-  for (const { room_id } of db.prepare('SELECT DISTINCT room_id FROM room_participants WHERE actor_id=?').all(id)) {
-    broadcast(room_id, { type: 'actor_updated', actor });
-  }
+  broadcastGlobal({ type: 'actor_updated', actor });
 }
 
 // Actor avatar from image bytes: POST /api/actors/:id/avatar and stoa__agent_avatar_set. The old file
