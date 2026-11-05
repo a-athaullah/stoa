@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.476";
+var CLIENT_VERSION = "0.4.477";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -2208,6 +2208,11 @@ async function postUnsolicitedResult(sessionKey, { content } = {}) {
   if (threadId) body.thread_id = threadId;
   if (subAgentId) body.sub_agent_id = subAgentId;
   if (attachments.length) body.attachments = attachments;
+  // The server wakes the parent only for the turn that leaves no background task behind: an
+  // earlier one is progress ("tests running, waiting"). Read after the upload, closest to the post.
+  body.unsolicited = true;
+  const session = sessionPool.get(sessionKey);
+  if (typeof session?.hasBackgroundTasks === "function") body.background_running = session.hasBackgroundTasks();
   const baseUrl = STOA_URL.replace("ws://", "http://").replace("wss://", "https://");
   const url = `${baseUrl}/api/rooms/${roomId}/message`;
   const res = await (_fetchOverride || fetch)(url, {

@@ -3753,6 +3753,54 @@ async function runAsyncUnitTests() {
     });
   });
 
+  await uta('ClaudeSession: task_started / task_notification keep the list current while background_tasks_changed lags', async () => {
+    await withFakeClaude(async ({ session, emit }) => {
+      emit({ type: 'system', subtype: 'task_started', task_id: 'fg1', description: 'foreground agent', is_backgrounded: false, session_id: SID });
+      assert.strictEqual(session.hasBackgroundTasks(), false, 'a foreground task is not a background task');
+      emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'b7', description: 'npm test' }], session_id: SID });
+      emit({ type: 'system', subtype: 'task_started', task_id: 'b8', description: 'dev server', session_id: SID });
+      emit({ type: 'system', subtype: 'task_started', task_id: 'b8', description: 'dev server', session_id: SID });
+      assert.deepStrictEqual(session._backgroundTasks.map(t => t.task_id), ['b7', 'b8'], 'a started task is listed once before its level event');
+      emit({ type: 'system', subtype: 'task_notification', task_id: 'b7', status: 'completed', session_id: SID });
+      assert.deepStrictEqual(session._backgroundTasks.map(t => t.task_id), ['b8'], 'only the finished task is dropped');
+      assert.strictEqual(session.hasBackgroundTasks(), true);
+      emit({ type: 'system', subtype: 'task_notification', task_id: 'b8', status: 'failed', session_id: SID });
+      assert.strictEqual(session.hasBackgroundTasks(), false);
+      assert.strictEqual(session.isTurnActive(), false, 'a notification alone does not start an autonomous turn');
+    });
+  });
+
+  await uta('stoa.js postUnsolicitedResult body: unsolicited + background_running from the pooled session', async () => {
+    const stoa = require('./stoa.js');
+    const origLog = console.log;
+    console.log = () => {};
+    const key = '/tmp/stoa-unsol-body::4501::t:56462::sub:77';
+    const bodies = [];
+    stoa.__setDeps({ fetch: async (url, opts) => { bodies.push({ url, body: JSON.parse(opts.body) }); return { ok: true, status: 200, json: async () => ({ message_id: bodies.length }) }; } });
+    try {
+      await withFakeClaude(async ({ session, emit }) => {
+        stoa.sessionPool.set(key, session);
+        emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'b9', description: 'npm test' }], session_id: SID });
+        await stoa.postUnsolicitedResult(key, { content: 'npm test jalan, kutunggu' });
+        emit({ type: 'system', subtype: 'task_notification', task_id: 'b9', status: 'completed', session_id: SID });
+        await stoa.postUnsolicitedResult(key, { content: 'laporan akhir' });
+      });
+      stoa.sessionPool.set(key, { busy: false, shutdown() {} }); // a harness without background tracking
+      await stoa.postUnsolicitedResult(key, { content: 'codex turn' });
+      assert.ok(bodies[0].url.endsWith('/api/rooms/4501/message'), bodies[0].url);
+      assert.deepStrictEqual(bodies.map(b => b.body), [
+        { content: 'npm test jalan, kutunggu', thread_id: 56462, sub_agent_id: 77, unsolicited: true, background_running: true },
+        { content: 'laporan akhir', thread_id: 56462, sub_agent_id: 77, unsolicited: true, background_running: false },
+        { content: 'codex turn', thread_id: 56462, sub_agent_id: 77, unsolicited: true },
+      ]);
+    } finally {
+      stoa.clearSessionIdleTimer(key);
+      stoa.sessionPool.delete(key);
+      stoa.__resetDeps();
+      console.log = origLog;
+    }
+  });
+
   await uta('Idle timer keeps a session with background tasks alive, closes it once they end', async () => {
     const stoa = require('./stoa.js');
     const origLog = console.log, origWarn = console.warn;
@@ -7440,6 +7488,152 @@ async function run() {
       assert.ok(p.prompt.includes(`reply to`) && p.prompt.includes(`"@${WK_NAME} CHATMARK-55e`), 'second copy is the reply context');
       assert.ok(!p.prompt.includes('Task for this turn'), 'chat turns get no task section');
       complete(p, 'answer');
+    });
+
+    // ── A turn the CLI runs after the run ended (background task finished) → parent wake ──
+    // The run's own completion carried only progress ("tests running"); the real result comes as
+    // the agent client's unsolicited post, which must wake the parent exactly like a completion.
+    const unsolPost = (body, headers = { 'x-agent-id': String(wkActorId), 'x-agent-secret': wkSecret }) =>
+      req('POST', `/api/rooms/${wkRoomId}/message`, body, headers);
+    const wakesFor = (id) => db.prepare('SELECT COUNT(*) AS c FROM pending_wakes WHERE sub_agent_message_id=?').get(id).c;
+    // A parent-spawned run (wake_parent=1) that ends with progress text; its own wake is consumed.
+    const spawnedRunEndingInProgress = async () => {
+      const t = nextSubTrigger();
+      const r = await req('POST', `/api/rooms/${wkRoomId}/sub-agent-trigger`, { sub_agent_id: wkSa.id, task: 'run the mutation suite' },
+        { 'x-agent-id': String(wkActorId), 'x-agent-secret': wkSecret });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      const m = await t;
+      assert.strictEqual(db.prepare('SELECT wake_parent FROM messages WHERE id=?').get(m.message_id).wake_parent, 1);
+      const wake = nextParentTrigger(5000);
+      complete(m, 'mutants running in the background, I will report when done');
+      complete(await wake, 'waiting for the sub-agent');
+      return m;
+    };
+
+    await test('Unsolicited sub-agent turn, background still running → parent NOT woken', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const m = await spawnedRunEndingInProgress();
+      const parentWake = nextParentTrigger(1500).then(w => { complete(w, 'x'); return true; }, () => false);
+      const r = await unsolPost({ content: 'npm test running, waiting', thread_id: m.thread_id || undefined, sub_agent_id: wkSa.id, unsolicited: true, background_running: true });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      assert.strictEqual(await parentWake, false, 'a progress turn must not wake the parent');
+      assert.strictEqual(wakesFor(r.body.message_id), 0);
+    });
+
+    await test('Unsolicited sub-agent turn, background done, run woke parent → parent woken with continuation note', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const m = await spawnedRunEndingInProgress();
+      const wake = nextParentTrigger(5000);
+      const r = await unsolPost({ content: 'FINALMARK-3c1 all six findings fixed and pushed', thread_id: m.thread_id || undefined, sub_agent_id: wkSa.id, unsolicited: true, background_running: false });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      const w = await wake;
+      assert.ok(w.prompt.includes('FINALMARK-3c1'), 'parent sees the final report');
+      assert.ok(w.prompt.includes('[sub-agent result] Sub-agent "wakesub" yang kamu picu melanjutkan kerja di background'), 'wake says it is a continuation, not a new run');
+      assert.strictEqual(w.thread_id ?? null, m.thread_id ?? null, 'parent woken in the run\'s thread');
+      complete(w, 'synthesized');
+    });
+
+    await test('Unsolicited turn retried with the same event_id → parent woken once', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const m = await spawnedRunEndingInProgress();
+      const body = { content: 'RETRYMARK-8d2 done', thread_id: m.thread_id || undefined, sub_agent_id: wkSa.id, unsolicited: true, background_running: false, event_id: `unsol-${m.message_id}` };
+      const wake = nextParentTrigger(5000);
+      const r1 = await unsolPost(body);
+      assert.strictEqual(r1.status, 200, JSON.stringify(r1.body));
+      complete(await wake, 'synthesized');
+      const again = nextParentTrigger(1500).then(w => { complete(w, 'x'); return true; }, () => false);
+      const r2 = await unsolPost(body);
+      assert.strictEqual(r2.status, 200, JSON.stringify(r2.body));
+      assert.strictEqual(r2.body.idempotent, true);
+      assert.strictEqual(r2.body.message_id, r1.body.message_id);
+      assert.strictEqual(await again, false, 'an idempotent retry must not wake the parent again');
+      assert.strictEqual(wakesFor(r1.body.message_id), 0);
+    });
+
+    await test('Unsolicited turn after a run the human mentioned directly (wake_parent=0) → parent NOT woken', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const t = nextSubTrigger();
+      await sendAsHuman('@wakesub render the video');
+      const m = await t;
+      complete(m, 'rendering in the background');
+      await waitUntil(() => db.prepare("SELECT 1 FROM messages WHERE id=? AND state='complete'").get(m.message_id), 5000);
+      assert.strictEqual(db.prepare('SELECT wake_parent FROM messages WHERE id=?').get(m.message_id).wake_parent, 0);
+      const parentWake = nextParentTrigger(1500).then(w => { complete(w, 'x'); return true; }, () => false);
+      const r = await unsolPost({ content: 'render done', thread_id: m.thread_id || undefined, sub_agent_id: wkSa.id, unsolicited: true, background_running: false });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      assert.strictEqual(await parentWake, false, 'the human is talking to the sub-agent, not the parent');
+      assert.strictEqual(wakesFor(r.body.message_id), 0);
+    });
+
+    await test('Sub-agent post without the full marker (message_send, old client) → parent NOT woken', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const m = await spawnedRunEndingInProgress();
+      const parentWake = nextParentTrigger(1500).then(w => { complete(w, 'x'); return true; }, () => false);
+      const th = m.thread_id || undefined;
+      const plain = await unsolPost({ content: 'progress via message_send', thread_id: th, sub_agent_id: wkSa.id });
+      const oldClient = await unsolPost({ content: 'old client unsolicited turn', thread_id: th, sub_agent_id: wkSa.id, unsolicited: true });
+      const noFlag = await unsolPost({ content: 'flag only', thread_id: th, sub_agent_id: wkSa.id, background_running: false });
+      const truthy = await unsolPost({ content: 'truthy, not true', thread_id: th, sub_agent_id: wkSa.id, unsolicited: 'yes', background_running: 0 });
+      for (const r of [plain, oldClient, noFlag, truthy]) {
+        assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+        assert.strictEqual(wakesFor(r.body.message_id), 0);
+      }
+      assert.strictEqual(await parentWake, false);
+    });
+
+    await test('Unsolicited marker with a foreign sub_agent_id → 403, nothing posted or woken', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const foreign = db.prepare('SELECT id FROM sub_agents WHERE parent_actor_id != ? LIMIT 1').get(wkActorId);
+      const before = db.prepare('SELECT COUNT(*) AS c FROM pending_wakes').get().c;
+      const r = await unsolPost({ content: 'FOREIGNMARK wake someone else', sub_agent_id: foreign ? foreign.id : 99999999, unsolicited: true, background_running: false });
+      assert.strictEqual(r.status, 403, JSON.stringify(r.body));
+      assert.strictEqual(db.prepare("SELECT COUNT(*) AS c FROM messages WHERE content LIKE 'FOREIGNMARK%'").get().c, 0);
+      assert.strictEqual(db.prepare('SELECT COUNT(*) AS c FROM pending_wakes').get().c, before);
+    });
+
+    await test('Sub-agent credential cannot send the unsolicited marker → parent NOT woken', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const m = await spawnedRunEndingInProgress();
+      const key = Buffer.from(db.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='security_signing_key'").get().value, 'hex');
+      const { mintSubAgentSecret } = require('./lib/sub-agent-credential');
+      const subSecret = mintSubAgentSecret(key, { actorId: wkActorId, subAgentId: wkSa.id, actorSecret: wkSecret });
+      const parentWake = nextParentTrigger(1500).then(w => { complete(w, 'x'); return true; }, () => false);
+      const r = await unsolPost({ content: 'sub-agent posting as if unsolicited', thread_id: m.thread_id || undefined, unsolicited: true, background_running: false },
+        { 'x-agent-id': String(wkActorId), 'x-agent-secret': subSecret });
+      assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+      assert.strictEqual(db.prepare('SELECT sub_agent_id FROM messages WHERE id=?').get(r.body.message_id).sub_agent_id, wkSa.id, 'posted as the sub-agent');
+      assert.strictEqual(await parentWake, false, 'only the agent client reports an unsolicited turn');
+      assert.strictEqual(wakesFor(r.body.message_id), 0);
+    });
+
+    await test('stoa.js postUnsolicitedResult end-to-end: background left → no wake; none left → parent woken', async () => {
+      if (!wkSa) { console.log('    (skipped)'); return; }
+      const stoa = require('./stoa.js');
+      const m = await spawnedRunEndingInProgress();
+      const key = `/tmp/stoa-test-wake::${wkRoomId}::t:${m.thread_id || 0}::sub:${wkSa.id}`;
+      let bg = true;
+      stoa.sessionPool.set(key, { hasBackgroundTasks: () => bg, busy: false, shutdown() {} });
+      stoa.__setDeps({ fetch: (url, opts) => fetch(`http://${HOST}:${PORT}${new URL(url).pathname}`, { ...opts, headers: { ...opts.headers, 'X-Agent-Id': String(wkActorId), 'X-Agent-Secret': wkSecret } }) });
+      const origLog = console.log;
+      console.log = () => {};
+      try {
+        const parentWake = nextParentTrigger(1500).then(w => { complete(w, 'x'); return true; }, () => false);
+        const progressId = await stoa.postUnsolicitedResult(key, { content: 'npm test jalan, kutunggu' });
+        assert.ok(progressId);
+        assert.strictEqual(await parentWake, false, 'progress turn while a background task runs');
+        bg = false;
+        const wake = nextParentTrigger(5000);
+        const finalId = await stoa.postUnsolicitedResult(key, { content: 'E2EMARK-4b7 laporan akhir' });
+        const w = await wake;
+        assert.ok(w.prompt.includes('E2EMARK-4b7'));
+        assert.strictEqual(db.prepare('SELECT thread_id, sub_agent_id FROM messages WHERE id=?').get(finalId).sub_agent_id, wkSa.id);
+        complete(w, 'synthesized');
+      } finally {
+        console.log = origLog;
+        stoa.__resetDeps();
+        stoa.clearSessionIdleTimer(key);
+        stoa.sessionPool.delete(key);
+      }
     });
 
     await test('Cleanup — wake test data', async () => {
