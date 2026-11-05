@@ -21273,6 +21273,15 @@ async function run() {
       const listed = async (state) => (await req('GET', `/api/rooms/${roomA}/threads${state ? `?state=${state}` : ''}`)).body.find(t => t.id === root);
       const marker = () => mDb.prepare('SELECT thread_completed_at, thread_completed_through FROM messages WHERE id=?').get(root);
       const doneAt = () => marker().thread_completed_at;
+      // The root as a fresh page load gets it: WS join_room history (built apart from the REST feed).
+      const joinedRoot = async () => {
+        const hws = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+        try {
+          const hist = waitForWsMessage(hws, m => m.type === 'history');
+          hws.send(JSON.stringify({ type: 'join_room', room_id: roomA }));
+          return (await hist).messages.find(m => m.id === root);
+        } finally { hws.close(); }
+      };
 
       assert.deepStrictEqual([(await listed()).completed, (await listed()).completed_at], [false, null], 'a new thread is open');
       assert.ok(await listed('open'), 'listed under state=open');
@@ -21297,6 +21306,9 @@ async function run() {
       assert.deepStrictEqual([detail.root.completed, detail.root.completed_at], [true, doneAt()]);
       const feedRow = (await req('GET', `/api/rooms/${roomA}/messages?before=${bare + 1}&limit=10`)).body.find(m => m.id === root);
       assert.deepStrictEqual([feedRow.thread.completed, feedRow.thread.completed_at], [true, doneAt()], 'feed thread summary');
+      const joined = await joinedRoot();
+      assert.deepStrictEqual([joined?.thread?.completed, joined?.thread?.completed_at], [true, doneAt()], 'join_room history thread summary');
+      assert.deepStrictEqual(joined.thread, feedRow.thread, 'join_room history and REST feed carry the same thread summary');
       const mcpList = (await stoaOk(tokA, 'threads_list', { state: 'completed' })).threads.find(t => t.id === root);
       assert.deepStrictEqual([mcpList?.completed, mcpList?.completed_at], [true, doneAt()], 'MCP threads_list state=completed');
       assert.strictEqual((await stoaOk(tokA, 'threads_list', { state: 'open' })).threads.some(t => t.id === root), false, 'MCP threads_list state=open');
@@ -21325,6 +21337,7 @@ async function run() {
       assert.deepStrictEqual([(await listed()).completed, (await listed()).completed_at], [false, null], 'reopened by the new reply');
       assert.ok(await listed('open'));
       assert.strictEqual((await req('GET', `/api/rooms/${roomA}/threads/${root}`)).body.root.completed, false);
+      assert.deepStrictEqual([(await joinedRoot()).thread.completed, (await joinedRoot()).thread.completed_at], [false, null], 'join_room history after the new reply');
       assert.strictEqual((await stoaOk(tokA, 'thread_read', { thread_id: root })).completed, false);
 
       assert.strictEqual((await put(root, { completed: true })).body.completed, true, 'marked again through the new reply');
