@@ -14524,6 +14524,7 @@ async function run() {
       addEventListener() {}
       setAttribute(k, v) { if (k.startsWith('data-')) this.dataset[k.slice(5).replace(/-(\w)/g, (_, c) => c.toUpperCase())] = String(v); else this[k] = v; }
       getAttribute(k) { return this[k] ?? null; }
+      scrollIntoView() {}
       get parentElement() { return this.parentNode; }
       get nextElementSibling() { const s = this.parentNode?.children || []; return s[s.indexOf(this) + 1] || null; }
       get lastElementChild() { return this.children.at(-1) || null; }
@@ -14599,6 +14600,18 @@ async function run() {
     const skillsBox = body.appendChild(new El('div'));
     for (const sk of createSkills({ db: mem, blobsDir: '/tmp' }).list().body.skills) skillsBox.appendChild(ctx.skCreatorEl(sk));
 
+    // A trigger form half filled in when the rename lands: picked agent 7, typed a task, moved the time.
+    const aiParts = parts.filter(p => p.type === 'ai');
+    const formChip = id => schedPop.querySelectorAll('.sch-agent')[aiParts.findIndex(p => p.actor_id === id)];
+    schedPop.querySelector('.sch-add').onclick();
+    formChip(7).onclick();
+    const ta = schedPop.querySelector('.sch-task'), timeIn = schedPop.querySelector('.sch-time');
+    ta.value = 'post the release notes here'; ta.oninput();
+    timeIn.value = '13:37'; timeIn.oninput();
+    const formState = () => [schedPop.querySelector('.sch-task') === ta && ta.value, schedPop.querySelector('.sch-time') === timeIn && timeIn.value,
+      schedPop.querySelectorAll('.sch-agent').map(c => c['aria-checked'] + ':' + c.children[1].textContent + ':' + c.children[0].tagName)];
+    const preview = () => schedPop.querySelector('.sch-preview-line').textContent;
+
     const names = sel => body.querySelectorAll(sel).map(e => e.textContent);
     const allNames = () => names('.t-name, .h-msg-name, .h-msg-sub');
     const before = allNames();
@@ -14637,6 +14650,22 @@ async function run() {
       ['pause trigger for Atlas|pause trigger for Atlas', 'edit trigger for Atlas|edit trigger for Atlas', 'delete trigger for Atlas|delete trigger for Atlas'],
     ], 'the switch, edit and delete labels name the renamed target');
     assert.deepStrictEqual(skillsBox.querySelectorAll('.sk-creator-name').map(e => e.textContent), ['Atlas Prime', 'Atlas', 'Reviewer'], 'a skill creator name follows the rename; a sub-agent creator keeps its label');
+    const chips = name => aiParts.map(p => (p.actor_id === 7 ? 'true:' + name + ':IMG' : 'false:Atlas:SPAN'));
+    assert.deepStrictEqual(formState(), ['post the release notes here', '13:37', chips('Atlas Prime')], 'the open new-trigger form keeps its inputs; its agent chip follows the rename');
+    assert.ok(preview().startsWith('Atlas Prime runs this every day at 13:37 '), `the form preview names the renamed agent: ${preview()}`);
+    // Same for a trigger being edited.
+    schedPop.querySelectorAll('.sch-link').find(b => b.textContent === 'cancel').onclick();
+    schedPop.querySelectorAll('.sch-row-ctrl')[0].children[1].onclick();
+    const editTa = schedPop.querySelector('.sch-task');
+    editTa.value = 'an edited task, not saved yet'; editTa.oninput();
+    const at = schedPop.querySelector('.sch-time').value;
+    ws({ type: 'actor_updated', actor: { id: 7, name: 'Atlas Tres', avatar_url: '/uploads/avatar/atlas.png', avatar_color: '#a00', avatar_symbol: null } });
+    assert.deepStrictEqual([schedPop.querySelector('.sch-form-title').textContent, schedPop.querySelector('.sch-task') === editTa && editTa.value, schedPop.querySelector('.sch-time').value,
+      schedPop.querySelectorAll('.sch-agent').map(c => c['aria-checked'] + ':' + c.children[1].textContent + ':' + c.children[0].tagName)],
+    ['edit trigger', 'an edited task, not saved yet', at, chips('Atlas Tres')], 'the edit form keeps its inputs; its agent chip follows the rename');
+    assert.ok(preview().startsWith('Atlas Tres runs this '), `the edit preview names the renamed agent: ${preview()}`);
+    ws({ type: 'actor_updated', actor: { id: 7, name: 'Atlas Prime', avatar_url: '/uploads/avatar/atlas.png', avatar_color: '#a00', avatar_symbol: null } });
+    schedPop.querySelectorAll('.sch-link').find(b => b.textContent === 'cancel').onclick();
 
     ws({ type: 'actor_updated', actor: { id: 7, avatar_url: null } });
     assert.strictEqual(rowName(100, '.t-name'), 'Atlas Prime', 'an update without a name keeps the shown name');
