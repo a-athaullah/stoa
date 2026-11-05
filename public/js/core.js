@@ -198,6 +198,28 @@ function refreshActorAvatars(actor, root = document) {
     el.replaceWith(makeAvatar(actor.name, actor.avatar_color, actor.avatar_url, Number(el.dataset.avatarSize), actor.id));
   }
 }
+
+// A message name label shows the actor's own name unless a sub-agent label or a
+// non-AI automation name takes its place; only then may a rename rewrite it.
+function msgShowsActorName(m) {
+  return !m.sub_agent_label && !(m.automation && m.actor_type !== 'ai' && m.automation.name);
+}
+
+// paren marks the "(Parent)" note beside a sub-agent label.
+function tagActorName(el, actorId, paren) {
+  if (!actorId) return;
+  el.dataset.nameActor = String(actorId);
+  if (paren) el.dataset.nameParen = '1';
+}
+
+function refreshActorNames(actor, root = document) {
+  if (!actor.name) return;
+  const id = String(actor.id);
+  for (const el of root.querySelectorAll('[data-name-actor]')) {
+    if (el.dataset.nameActor !== id) continue;
+    el.textContent = el.dataset.nameParen ? '(' + actor.name + ')' : actor.name;
+  }
+}
 // ── Connection dot ─────────────────────────────────────────────────────────
 function setConnected(on) {
   const dot = document.querySelector('.h-conn-dot');

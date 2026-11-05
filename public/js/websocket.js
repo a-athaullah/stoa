@@ -601,7 +601,7 @@ function safeAvatarUploadUrl(url) {
   return typeof url === 'string' && /^\/uploads\/[^\s\\]+$/.test(url) && !url.includes('..') ? url : null;
 }
 
-// Caches first, then the rendered avatars: feed, thread, thinking rows, Agents settings,
+// Caches first, then the rendered avatars and name labels: feed, thread, thinking rows, Agents settings,
 // and the human seals in the sidebar footer, app nav and composer.
 function applyActorUpdate(actor) {
   const fields = { name: actor.name, avatar_color: actor.avatar_color, avatar_symbol: actor.avatar_symbol, avatar_url: actor.avatar_url };
@@ -617,6 +617,7 @@ function applyActorUpdate(actor) {
     }
   }
   refreshActorAvatars(actor);
+  refreshActorNames(actor);
   if (humanActor && humanActor.id === actor.id) {
     if (humanActor !== known) Object.assign(humanActor, fields);
     if (typeof renderSidebarFooter === 'function') renderSidebarFooter();

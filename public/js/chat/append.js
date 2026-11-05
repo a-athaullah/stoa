@@ -234,6 +234,7 @@ function appendMessage(m, container) {
     nameEl.style.color = m.avatar_color;
     nameEl.textContent = m.sub_agent_label || m.actor_name;
   }
+  if (msgShowsActorName(m)) tagActorName(nameEl, m.actor_id);
   meta.appendChild(nameEl);
 
   if (m.actor_type === 'ai' && m.automation) {
@@ -242,6 +243,7 @@ function appendMessage(m, container) {
       const subEl = document.createElement('span');
       subEl.className = 'h-msg-sub';
       subEl.textContent = '(' + m.actor_name + ')';
+      tagActorName(subEl, m.actor_id, true);
       meta.appendChild(subEl);
     }
   } else if (m.automation) {
@@ -250,6 +252,7 @@ function appendMessage(m, container) {
     const subEl = document.createElement('span');
     subEl.className = 'h-msg-sub';
     subEl.textContent = '(' + m.actor_name + ')';
+    tagActorName(subEl, m.actor_id, true);
     meta.appendChild(subEl);
   }
 
