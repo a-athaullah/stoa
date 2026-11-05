@@ -484,6 +484,11 @@ function saveAvatarFile(prefix, id, buffer, ext) {
 function broadcastActorUpdated(id) {
   const actor = db.prepare('SELECT id, name, avatar_url, avatar_color, avatar_symbol FROM actors WHERE id=?').get(id);
   if (!actor) return;
+  // Runs already in flight carry the actor's look in every message_state; without this they keep the old one.
+  for (const meta of pendingActorMeta.values()) {
+    if (meta.actor_id !== id) continue;
+    Object.assign(meta, { actor_name: actor.name, avatar_url: actor.avatar_url, avatar_color: actor.avatar_color, avatar_symbol: actor.avatar_symbol });
+  }
   for (const { room_id } of db.prepare('SELECT DISTINCT room_id FROM room_participants WHERE actor_id=?').all(id)) {
     broadcast(room_id, { type: 'actor_updated', actor });
   }

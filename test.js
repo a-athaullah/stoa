@@ -9770,6 +9770,39 @@ async function run() {
     }
   });
 
+  await test('avatar changed while the actor\'s run is in flight → the next message_state carries the new avatar', async () => {
+    const ag = await actorDeleteFixture('__test-actor-avatar-run', false);
+    const humanWs = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+    let run = null;
+    try {
+      humanWs.send(JSON.stringify({ type: 'join_room', room_id: ag.roomId }));
+      await waitForWsMessage(humanWs, m => m.type === 'history');
+      const trig = waitForWsMessage(ag.ws, m => m.type === 'agent_trigger' && m.room_id === ag.roomId, 5000);
+      humanWs.send(JSON.stringify({ type: 'send_message', room_id: ag.roomId, content: '@__test-actor-avatar-run hello' }));
+      run = await trig;
+      const stateOf = () => waitForWsMessage(humanWs, m => m.type === 'message_state' && m.message_id === run.message_id, 3000);
+      let st = stateOf();
+      ag.ws.send(JSON.stringify({ type: 'agent_state', room_id: ag.roomId, message_id: run.message_id, state: 'requesting' }));
+      const before = (await st).avatar_url;
+      const up = await req('POST', `/api/actors/${ag.actorId}/avatar`, { data_url: MINIMAL_PNG });
+      assert.strictEqual(up.status, 200, up.raw);
+      assert.notStrictEqual(up.body.avatar_url, before);
+      st = stateOf();
+      ag.ws.send(JSON.stringify({ type: 'agent_state', room_id: ag.roomId, message_id: run.message_id, state: 'streaming' }));
+      const after = await st;
+      assert.strictEqual(after.avatar_url, up.body.avatar_url, 'the in-flight run shows the new avatar');
+      assert.strictEqual(after.actor_id, ag.actorId);
+      await completeRun(ag.ws, ag.roomId, run);
+      run = null;
+    } finally {
+      humanWs.close();
+      if (run) await completeRun(ag.ws, ag.roomId, run).catch(() => {});
+      ag.ws.close();
+      await req('DELETE', `/api/rooms/${ag.roomId}`);
+      await req('DELETE', `/api/actors/${ag.actorId}`);
+    }
+  });
+
   await test('DELETE /api/actors/:id — usage_log blocks the final DELETE → the earlier participant delete is rolled back', async () => {
     const ag = await actorDeleteFixture('__test-actor-usage', false);
     try {
