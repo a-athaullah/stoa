@@ -64,8 +64,6 @@ A **model selector** appears at the right side of the formatting toolbar in the 
 - **Haiku 5.5** — fast and economical
 - **Haiku 4.5** — previous-generation fast
 
-A custom model entry whose ID matches a built-in model is removed automatically when the server starts.
-
 **External platform models**: If you've configured additional platforms in **Settings > Platforms** (e.g., Ollama Cloud, OpenRouter), their enabled models also appear in the selector, grouped by platform name. Models with vision capability are marked with a 👁 icon; models with tool-calling support are marked with a ⚙ icon. Models without tool-calling run in text-only mode (no file reading, no code execution via tools).
 
 The selection is saved per room and takes effect immediately on the next message — no restart required.
@@ -588,9 +586,9 @@ Sub-agents can also choose their own harness, or leave it on **inherit from pare
 
 **Checking harness availability:** After installing or logging in to a CLI tool on the agent's machine, click the **Check** button next to the Harness dropdown (in the agent detail panel or accordion in **Settings > AI Agent**) to re-detect without restarting the agent. The button is disabled when the agent is offline, and detection can take up to ~15 seconds. The dropdown updates immediately when results arrive — new harnesses detected show a toast notification. Rescan also re-checks harnesses alongside working directories.
 
-**Restarting to apply CLI updates:** After updating a CLI tool on the agent's machine, click the **power icon** (**Restart agent**) in the agent header, between force update and remove. A confirmation bar appears at the top of the page — confirm to restart immediately; all of the agent's running processes stop at that point. Conversations resume from where they left off via session resume. The icon is only enabled when the agent is online and managed by PM2; agents started manually, under systemd, or launchd are not supported (a restart outside PM2 would stop the agent permanently). While a restart is in progress, the icon turns amber and pulses; hover it to see **restarting…**, then a toast confirms the agent is back. Check does not restart the agent.
+**Updating CLI tools remotely:** The **CLI versions** section in the agent detail panel lists each installed CLI (Claude CLI or Codex CLI) with its current version and an **Update** button. Clicking **Update** runs `claude update` or `codex update` on the agent's machine without interrupting the agent process itself. If the agent has active runs, the update waits until they finish ("Waiting for idle — updates once current runs finish"); new triggers are held during the update and delivered once it completes. Status messages: *Starting update…*, *Updating…*, *Updated X → Y* (or *Already up to date*), *Update failed: …*. If no CLI is detected, the section shows "No CLI detected — press Check after installing one". Errors: `agent_offline` — agent not connected; `client_outdated` — agent client too old, wait for auto-update to complete first; `not_installed` — CLI not installed on the agent's machine; `update_in_progress` — an update is already running for this CLI.
 
-For **Codex**, the model list is synced automatically every time an agent connects — no manual Check needed. The active set is the union across all online agents, so two agents on different Codex versions keep each other's models active; a model is deactivated only when no online agent reports it. Check also triggers this sync on demand. Hidden models are filtered out, results are sorted by CLI priority, and if no default exists the reporter's first model becomes the default. The room model dropdown updates immediately. If new models are found, a toast shows e.g. `Codex CLI: 2 new models`. If the agent cannot report models (older CLI version or command failure), Stoa falls back to its built-in model list. **Claude** has no equivalent sync — its model list always comes from Stoa's built-in list plus any custom entries added in **Settings > Platforms**.
+For **Codex**, the model list is synced automatically every time an agent connects — no manual Check needed. The active set is the union across all online agents, so two agents on different Codex versions keep each other's models active; a model is deactivated only when no online agent reports it. Check also triggers this sync on demand. Hidden models are filtered out, results are sorted by CLI priority, and if no default exists the reporter's first model becomes the default. The room model dropdown updates immediately. If new models are found, a toast shows e.g. `Codex CLI: 2 new models`. If the agent cannot report models (older CLI version or command failure), Stoa falls back to its built-in model list. **Claude** has an equivalent sync — when a Claude agent connects, Stoa scans the binary to read its model list and adds any new models as official built-in entries. Models not in the connected agent's CLI list appear with a **not listed** tag in the model picker; the tooltip reads "Not listed by this machine's CLI — it may still work". A model is never disabled just because it is absent from the list; it is only hidden for a specific agent if that agent's runs have failed with "model not found" (this does not apply when using a third-party base URL).
 
 Harnesses that are installed but not logged in appear in the dropdown as **"(not logged in)"** and cannot be selected — the server will also reject them. If login status cannot be determined, the harness remains selectable. If the currently active harness becomes unavailable or loses login, a red hint appears below the Harness dropdown — the harness is not automatically changed.
 
@@ -1348,6 +1346,7 @@ The detail panel includes:
 - **System Prompt** — per-agent system prompt applied in every room this agent participates in; sub-agents have their own system prompt and do not inherit this one
 - **Sub-agents card** — all sub-agents defined for this agent, with add/edit/delete/toggle controls
 - **Workdirs card** — read-only list of working directories registered by this agent
+- **CLI versions** — installed CLI tools (Claude CLI, Codex CLI) with their current version and an **Update** button to trigger a remote CLI update
 
 ### Server
 
@@ -1414,16 +1413,11 @@ The API key is stored on the server and returned to the browser only in the Sett
 - **Together AI** — `https://api.together.xyz/v1`
 - **Groq** — `https://api.groq.com/openai/v1`
 
-### Custom Claude Models
+### Claude Model Sync
 
-If Anthropic releases a model that isn't yet in the built-in list, add it without a server update. Scroll to the **claude models** card in **Settings > Platforms**.
+Models from the Claude CLI are registered automatically as official built-in entries when a Claude agent connects — no manual registration is needed. Any model in the CLI's list that is not already in Stoa's built-in set is added immediately and appears in the room model picker. Existing custom entries from older versions are migrated to this list on upgrade, preserving their display labels.
 
-If an agent with a Claude CLI binary is online, the card shows a **Detected from Claude CLI v*X*** strip with clickable chips for model IDs newer than the latest already-registered entry in each family. Clicking a chip prefills the model ID and label fields (label auto-generated, e.g. _Haiku 5.5_, editable); click **add model** to save — nothing is added automatically. Older model IDs can still be typed in manually. If no agent has reported a CLI, the strip prompts you to connect one.
-
-- **Add** — enter the model ID (e.g. `claude-haiku-5-5`) and an optional display label (max 40 characters), then click **add model**. The model appears immediately in the room model dropdown, tagged **custom**.
-- **Remove** — click × on any custom model row. Rooms already using the model keep their setting; only new selections are affected.
-
-Model ID format: must start with `claude-`, followed by lowercase letters, digits, dots, or dashes (regex: `^claude-[a-z0-9][a-z0-9.-]{1,62}$`). Duplicate or incorrectly formatted IDs are rejected inline. Maximum 20 custom entries.
+Models not present in the connected agent's CLI list appear with a **not listed** tag in the model picker. They remain fully selectable; the tooltip reads "Not listed by this machine's CLI — it may still work". Stoa never disables a model solely because it is absent from the list.
 
 ### Automation
 
