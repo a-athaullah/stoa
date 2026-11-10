@@ -599,3 +599,12 @@ CREATE TABLE IF NOT EXISTS agent_machines (
   seen_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_agent_machines_machine ON agent_machines(machine_id);
+-- Model a run proved unknown to one agent's CLI (migrations/20261110-claude-models-from-cli.sql).
+CREATE TABLE IF NOT EXISTS agent_model_failures (
+  actor_id INTEGER NOT NULL REFERENCES actors(id) ON DELETE CASCADE,
+  harness TEXT NOT NULL,
+  model_id TEXT NOT NULL,
+  cli_version TEXT,
+  failed_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (actor_id, harness, model_id)
+);

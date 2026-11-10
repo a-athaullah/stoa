@@ -272,19 +272,24 @@ These are the pre-existing colors; they were not degraded by the themes feature.
 
 ---
 
-### 4. Claude Model List Is Static (No Agent Sync)
-**Decision:** Claude harness models are **not** synced from agent reports. `syncHarnessModels()` skips `harnessName === 'claude'`.
+### 4. Claude Models Come From the CLI Binary Scan
+**Decision (2026-11-10):** Claude models are synced from each agent's binary scan into `harness_models`, like Codex models from `codex debug models`. `ANTHROPIC_MODELS` is only the baseline that is always offered. The custom-model feature is retired (models a CLI release brings are not "custom").
 
-**Why:** Claude CLI has no `claude debug models` equivalent. The model list is maintained manually in `ANTHROPIC_MODELS` (server.js). Owners add unreleased models via `POST /api/settings/custom-models` (Settings > Platforms > claude models card).
+**Why:** Claude CLI has no model-listing command, but its binary embeds the IDs it knows. A model added via an update shows up after the CLI update (Settings → Agents → Update), no Stoa PR.
 
-**Implication:** After Anthropic releases a new model, the owner must add it manually. Existing models never auto-disappear from the list.
+**Implication:** A scan also returns legacy IDs; versions older than the oldest built-in of a family are skipped. A future family not in `ANTHROPIC_MODELS` is taken whole.
 
 ---
 
-### 5. Custom Claude Models: Format Constraint
-**Constraint:** IDs must match `^claude-[a-z0-9][a-z0-9.-]{1,62}$`. Max 20 entries. Stored in `settings` table under key `custom_claude_models` as JSON.
+### 5. Models Are Never Removed for Being Absent From a CLI List
+**Decision (owner, 2026-11-10):** A model missing from a CLI's list may still be usable. Lists only add (`listed: false` marks absence). The only way a model disappears is per agent, after a real run failed with "unknown model" (`agent_model_failures`), until that agent's CLI version changes.
 
-**Why:** The regex mirrors Anthropic's naming convention and is enforced both client-side (`S_CUSTOM_MODEL_RE`) and server-side (`CUSTOM_CLAUDE_MODEL_RE`). Consistent constraint avoids surprises when the model ID is passed as `--model` to the CLI.
+**Not a finding:** `syncHarnessModels` never sets `is_active=0` — on purpose.
+
+---
+
+### 6. Harness CLI Update Holds That Harness's Triggers
+**Decision:** While `claude update` / `codex update` is pending on an agent, new triggers for that harness wait in the agent queue. npm rewrites files in place, so a run starting mid-install could hit a half-written CLI; waiting also lets `waiting_idle` end under steady traffic. Other harnesses keep running. A restart requested meanwhile waits for the update (an interrupted install can leave the CLI broken).
 
 ---
 
