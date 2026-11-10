@@ -508,3 +508,12 @@ The agent bundle (`dist/stoa.js`) is **not** built by `npm run build` by default
 reads it per request for `/api/client/manifest`, so a build from a branch checkout would push
 unmerged code to every agent. `server.js` rebuilds it on every start. Opt in with
 `node build/build.js --agent` (`npm run build -- --agent`); honours `STOA_AGENT_BUNDLE_DIR`.
+
+---
+
+## Agent CLI versions & model listing
+
+- **CLI versions** (Settings → agent detail, `public/js/settings/agents.js`): one row per installed harness from `actor.harness_status`, with an Update button → `POST /api/agents/:id/harnesses/:name/update`. State lives in `sCliUpdateState` (`actorId:harness`), fed by the global WS `harness_update_status` (`sHandleHarnessUpdateStatus`) and seeded from `harness_status[].update` on load/`actor_status` (`sSyncCliUi`). A local `requested` state covers the HTTP round-trip; only a live state or the same `request_id` may replace it. `allActors[].online` goes stale on disconnect, so buttons read `sCliOnline` (set from every `actor_status`).
+- Rows are a 4-column grid (`.s-cli-row { display: contents }`) so every Update button lines up; a container query on `.s-cli-group` switches to 2 columns under 560px of panel width (the settings sidebar eats viewport width, so a viewport media query is wrong here).
+- **Unlisted models**: model items carry `listed` (false = the agent's CLI no longer lists it). They are never filtered out — a model missing from the CLI list can still run. `modelListedOnAgent()` / `withAgentListed()` in `composer/models.js` read it per agent; the composer dropdown shows a quiet "not listed" tag, `<select>`s and the room tier picker append `MODEL_UNLISTED_SUFFIX` with `MODEL_UNLISTED_HINT` as the tooltip.
+- Custom Claude models (Settings → Platforms card, `/api/settings/custom-models*`) were removed: models the CLI knows come from the harness scan instead.

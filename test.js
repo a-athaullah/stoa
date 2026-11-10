@@ -15342,6 +15342,116 @@ async function run() {
     assert.strictEqual(route({}), JSON.stringify({ toast: 'failed to save' }));
   });
 
+  await test('harness CLI update UI — rows follow harness_update_status and harness_status[].update; unlisted models stay selectable with a quiet marker', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El {
+      constructor(tag) { this.tagName = tag; this.children = []; this.className = ''; this.dataset = {}; this.attrs = {}; this.title = ''; this.disabled = false; this._text = ''; this.listeners = {}; const self = this; this.classList = { toggle(c, on) { const s = new Set(self.className.split(' ').filter(Boolean)); if (on) s.add(c); else s.delete(c); self.className = [...s].join(' '); }, contains: c => self.className.split(' ').includes(c) }; }
+      set textContent(v) { this._text = String(v); this.children = []; }
+      get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+      set innerHTML(v) { this.children = []; this._text = ''; this._html = v; }
+      setAttribute(k, v) { this.attrs[k] = String(v); }
+      getAttribute(k) { return this.attrs[k] ?? null; }
+      appendChild(c) { this.children.push(c); return c; }
+      append(...cs) { cs.forEach(c => this.appendChild(c)); }
+      replaceChildren() { this.children = []; }
+      get childElementCount() { return this.children.length; }
+      addEventListener(t, fn) { this.listeners[t] = fn; }
+      all() { return this.children.flatMap(c => [c, ...c.all()]); }
+      matches(sel) {
+        const m = sel.match(/^\.([\w-]+)(?:\[data-([\w-]+)="([^"]*)"\])?$/);
+        if (!m) throw new Error('unsupported selector ' + sel);
+        const key = m[2] && m[2].replace(/-(\w)/g, (_, c) => c.toUpperCase());
+        return this.className.split(' ').includes(m[1]) && (!key || String(this.dataset[key]) === m[3]);
+      }
+      querySelector(sel) { return this.all().find(e => e.matches(sel)) || null; }
+      querySelectorAll(sel) { return this.all().filter(e => e.matches(sel)); }
+    }
+    const root = new El('div');
+    const toasts = [];
+    const calls = [];
+    let respond = null;
+    const ctx = {
+      document: { createElement: t => new El(t), querySelectorAll: sel => root.querySelectorAll(sel), getElementById: () => null, addEventListener() {} },
+      CSS: { escape: s => s }, localStorage: { getItem: () => null },
+      showToast: (m, o) => toasts.push([m, !!o?.error]), showLogin() {},
+      fetch: (url, opts) => { calls.push([url, opts?.method]); return new Promise(r => { respond = (status, body) => r({ ok: status < 300, status, json: async () => body }); }); },
+    };
+    vm.createContext(ctx);
+    for (const f of ['public/js/composer/models.js', 'public/js/settings/agents.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+    const run = s => vm.runInContext(s, ctx);
+    run(`allActors = [{ id: 5, name: 'Atlas', online: true, adapter: 'claude', harness_status: [
+      { id: 'claude', installed: true, version: '2.1.321', models: [{ id: 'claude-opus-5-5', label: 'Opus 5.5', listed: true }, { id: 'claude-opus-4-1', label: 'Opus 4.1', listed: false }],
+        update: { state: 'failed', request_id: 'r0', old_version: '2.1.320', new_version: null, error: '<b>npm</b> EACCES' } },
+      { id: 'codex', installed: true, version: null, models: [{ id: 'gpt-5.5', label: 'GPT-5.5', listed: false }], update: null },
+      { id: 'gemini', installed: false, version: null } ] }]`);
+    const list = run('_makeCliList(allActors[0])');
+    root.appendChild(list);
+    const row = h => list.querySelector(`.s-cli-row[data-cli-harness="${h}"]`);
+    const look = h => { const r = row(h); return [r.querySelector('.s-cli-ver').textContent, r.querySelector('.s-cli-btn').disabled, r.querySelector('.s-cli-status').textContent]; };
+
+    assert.deepStrictEqual(list.querySelectorAll('.s-cli-row').map(r => r.dataset.cliHarness), ['claude', 'codex'], 'only installed CLIs get a row');
+    assert.deepStrictEqual(look('claude'), ['2.1.321', false, 'Update failed: <b>npm</b> EACCES'], 'reload restores the last state; the error stays literal text');
+    assert.ok(row('claude').querySelector('.s-cli-status').classList.contains('is-error'));
+    assert.deepStrictEqual(look('codex'), ['version unknown', false, '']);
+
+    // Click → POST to the contract route; the button locks until the server reports back.
+    row('claude').querySelector('.s-cli-btn').listeners.click();
+    assert.deepStrictEqual(calls, [['/api/agents/5/harnesses/claude/update', 'POST']]);
+    assert.deepStrictEqual(look('claude').slice(1), [true, 'Starting update…']);
+    row('claude').querySelector('.s-cli-btn').listeners.click();
+    assert.strictEqual(calls.length, 1, 'no double request while one is pending');
+    // An actor_status snapshot taken before the request (old failed state) does not unlock the pending button.
+    run(`sSyncCliUi(allActors[0], { harness_status: [{ id: 'claude', installed: true, version: '2.1.321', update: { state: 'failed', request_id: 'r0', error: 'old' } }] })`);
+    assert.deepStrictEqual(look('claude').slice(1), [true, 'Starting update…'], 'a stale snapshot cannot clear a pending request');
+    // The WS status can beat the HTTP response; the response must not roll it back.
+    run(`sHandleHarnessUpdateStatus({ actor_id: 5, harness: 'claude', request_id: 'r1', state: 'waiting_idle', old_version: '2.1.321' })`);
+    respond(202, { request_id: 'r1' });
+    await new Promise(r => setImmediate(r));
+    assert.deepStrictEqual(look('claude').slice(1), [true, 'Waiting for idle — updates once current runs finish']);
+    run(`sHandleHarnessUpdateStatus({ actor_id: 5, harness: 'claude', request_id: 'r1', state: 'running', old_version: '2.1.321' })`);
+    assert.deepStrictEqual(look('claude').slice(1), [true, 'Updating…']);
+    run(`sHandleHarnessUpdateStatus({ actor_id: 5, harness: 'claude', request_id: 'r1', state: 'done', old_version: '2.1.321', new_version: '2.1.330' })`);
+    assert.deepStrictEqual(look('claude').slice(1), [false, 'Updated 2.1.321 → 2.1.330']);
+    assert.deepStrictEqual(toasts.pop(), ['Atlas: Claude CLI is now 2.1.330', false]);
+    run(`sHandleHarnessUpdateStatus({ actor_id: 5, harness: 'claude', request_id: 'r1', state: 'done', old_version: '2.1.321', new_version: '2.1.330' })`);
+    assert.strictEqual(toasts.length, 0, 'a repeated status does not toast twice');
+    // harnesses_update after done brings the new version through actor_status.
+    run(`allActors[0].harness_status[0].version = '2.1.330'; sSyncCliUi(allActors[0], { online: true, harness_status: [{ id: 'claude', installed: true, version: '2.1.330', update: { state: 'done', request_id: 'r1', old_version: '2.1.321', new_version: '2.1.330' } }, { id: 'codex', installed: true, version: '0.130.0', update: { state: 'failed', request_id: 'c9', error: 'network down' } }] })`);
+    assert.deepStrictEqual([look('claude')[0], look('codex')[2]], ['2.1.330', 'Update failed: network down'], 'the raw actor_status payload (no id) still seeds this agent');
+    run(`sSyncCliUi(allActors[0], { online: true, harness_status: [{ id: 'codex', installed: true, version: '0.130.0', update: null }] })`);
+    assert.strictEqual(look('codex')[2], '', 'server says no update → status clears');
+    run(`sHandleHarnessUpdateStatus({ actor_id: 5, harness: 'claude', request_id: 'r2', state: 'bogus' })`);
+    assert.strictEqual(look('claude')[2], 'Updated 2.1.321 → 2.1.330', 'unknown states are ignored');
+
+    // Server refusal (409) shows its reason next to the button and frees it.
+    row('codex').querySelector('.s-cli-btn').listeners.click();
+    respond(409, { error: 'update already running' });
+    await new Promise(r => setImmediate(r));
+    assert.deepStrictEqual(look('codex').slice(1), [false, 'Update failed: update already running']);
+
+    // Offline: every button disables even though allActors keeps online=true.
+    run(`sSyncCliUi({ ...allActors[0], online: false }, { online: false })`);
+    assert.deepStrictEqual(['claude', 'codex'].map(h => [look(h)[1], row(h).querySelector('.s-cli-btn').title]), [[true, 'Offline'], [true, 'Offline']]);
+    row('codex').querySelector('.s-cli-btn').listeners.click();
+    assert.strictEqual(calls.length, 2, 'offline click sends nothing');
+    run(`sSyncCliUi({ ...allActors[0], online: true }, { online: true })`);
+    assert.strictEqual(look('codex')[1], false);
+
+    // listed=false keeps the model and marks it; a model the agent never reported counts as listed.
+    const claude = JSON.parse(run(`JSON.stringify(withAgentListed([{ value: 'claude-opus-5-5' }, { value: 'claude-opus-4-1' }, { value: 'claude-sonnet-9' }], allActors[0], 'claude'))`));
+    assert.deepStrictEqual(claude.map(m => [m.value, m.listed]), [['claude-opus-5-5', true], ['claude-opus-4-1', false], ['claude-sonnet-9', true]]);
+    const codex = JSON.parse(run(`JSON.stringify(_agentHarnessModels(allActors[0].harness_status, 'codex'))`));
+    assert.deepStrictEqual(codex.map(m => [m.value, m.listed]), [['gpt-5.5', false]], 'unlisted harness model is kept');
+    const sel = new El('select');
+    run('_saAppendModelOpt')(sel, { value: 'claude-opus-4-1', label: 'Opus 4.1', listed: false });
+    run('_saAppendModelOpt')(sel, { value: 'claude-opus-5-5', label: 'Opus 5.5', listed: true });
+    assert.deepStrictEqual(sel.children.map(o => [o.value, o.textContent, o.title]), [
+      ['claude-opus-4-1', 'Opus 4.1 · not listed by CLI', "Not listed by this machine's CLI — it may still work"],
+      ['claude-opus-5-5', 'Opus 5.5', ''],
+    ]);
+  });
+
   await test('primary agent — isPrimaryParticipant matches by actor id: is_primary wins, room primary_actor_id is the fallback, no field marks nobody', () => {
     const vm = require('vm');
     const fs = require('fs');

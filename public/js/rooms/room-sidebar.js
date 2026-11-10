@@ -108,6 +108,12 @@ function renderRoomSidebar(room, participants) {
   };
   const TIERS = ['quick', 'standard', 'deep'];
   const shortName = m => m.replace(/^claude-/, '').replace(/-\d.*$/, '');
+  // Tiers apply to every Claude agent in the room, so a model is flagged if any of their CLIs omits it.
+  const unlistedModel = m => getAvailableModels().some(x => x.platform === 'anthropic' && x.value === m && x.listed === false)
+    || (participants || []).some(p => {
+      const a = p.type === 'ai' && allActors.find(x => x.id === p.actor_id);
+      return a && (a.adapter || 'claude') === 'claude' && !modelListedOnAgent(a, 'claude', m);
+    });
 
   function makeStepper(value, min, max, onChange) {
     const wrap = document.createElement('div');
@@ -492,7 +498,7 @@ function renderRoomSidebar(room, participants) {
         if (i > 0) { const a = document.createElement('span'); a.style.cssText = 'color:var(--h-ink-faint);font-size:12px'; a.textContent = '→'; row.appendChild(a); }
         const pill = document.createElement('span');
         pill.style.cssText = 'display:inline-flex;align-items:center;gap:5px;padding:3px 4px 3px 9px;border-radius:999px;background:var(--h-surface);border:1px solid var(--h-border);font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--h-ink)';
-        const nm = document.createElement('span'); nm.textContent = shortName(m); nm.title = m; pill.appendChild(nm);
+        const nm = document.createElement('span'); nm.textContent = shortName(m); nm.title = unlistedModel(m) ? `${m} — ${MODEL_UNLISTED_HINT}` : m; pill.appendChild(nm);
         if (i > 0) {
           const up = document.createElement('button'); up.textContent = '↑'; up.title = 'promote';
           up.style.cssText = 'background:transparent;border:none;color:var(--h-ink-faint);cursor:pointer;font-size:12px;padding:0 2px';
@@ -509,7 +515,7 @@ function renderRoomSidebar(room, participants) {
         const add = document.createElement('select');
         add.style.cssText = 'border:1px dashed var(--h-border);border-radius:999px;background:transparent;color:var(--h-ink-mute);font-size:12px;padding:3px 6px;cursor:pointer;font-family:var(--h-sans)';
         const ph = document.createElement('option'); ph.value = ''; ph.textContent = '+ fallback'; add.appendChild(ph);
-        for (const m of unused) { const o = document.createElement('option'); o.value = m; o.textContent = shortName(m); add.appendChild(o); }
+        for (const m of unused) { const o = document.createElement('option'); o.value = m; o.textContent = shortName(m) + (unlistedModel(m) ? MODEL_UNLISTED_SUFFIX : ''); add.appendChild(o); }
         add.onchange = () => { if (add.value) { (tiersState[tier] = tiersState[tier] || []).push(add.value); renderTiers(); } };
         row.appendChild(add);
       }

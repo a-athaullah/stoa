@@ -423,7 +423,7 @@ function getModelsForHarness(harnessName) {
   return h.models.map(m => ({
     value: m.model_id, label: m.display_name || m.model_id,
     vision: false, tools: false, local: false,
-    platform: harnessName, platform_id: harnessName, is_default: !!m.is_default,
+    platform: harnessName, platform_id: harnessName, is_default: !!m.is_default, listed: m.listed !== false,
   }));
 }
 
@@ -434,9 +434,23 @@ function _agentHarnessModels(harnessStatus, harnessName) {
   return st.models.map(m => ({
     value: m.id, label: m.label || m.id,
     vision: false, tools: false, local: false,
-    platform: harnessName, platform_id: harnessName, is_default: !!m.is_default,
+    platform: harnessName, platform_id: harnessName, is_default: !!m.is_default, listed: m.listed !== false,
   }));
 }
+
+// listed=false: the agent's CLI no longer advertises the model, but it may still run, so it stays selectable.
+function modelListedOnAgent(actor, harness, value) {
+  const st = (actor?.harness_status || []).find(s => s.id === (harness || 'claude'));
+  const m = st?.models?.find(x => x.id === value);
+  return m ? m.listed !== false : true;
+}
+
+function withAgentListed(models, actor, harness) {
+  return models.map(m => ({ ...m, listed: m.listed !== false && modelListedOnAgent(actor, harness, m.value) }));
+}
+
+const MODEL_UNLISTED_HINT = "Not listed by this machine's CLI — it may still work";
+const MODEL_UNLISTED_SUFFIX = ' · not listed by CLI';
 
 async function fetchPlatformModels() {
   try {
@@ -445,7 +459,7 @@ async function fetchPlatformModels() {
     for (const g of groups) {
       const platKey = g.platform_id === 'anthropic' ? 'anthropic' : g.platform_name;
       for (const m of g.models) {
-        allServerModels.push({ value: m.value, label: m.label, vision: m.vision || false, tools: m.tools || false, local: m.local || false, platform: platKey, platform_id: g.platform_id, base_url: g.base_url || '', custom: !!m.custom });
+        allServerModels.push({ value: m.value, label: m.label, vision: m.vision || false, tools: m.tools || false, local: m.local || false, platform: platKey, platform_id: g.platform_id, base_url: g.base_url || '', listed: m.listed !== false });
       }
     }
     if (currentRoomData) updateModelSelector(currentRoomData, roomParticipantsCache[currentRoomId] || []);
@@ -515,7 +529,8 @@ function populateModelDropdown(ignored, currentModel, currentPlatformId, overrid
     if (m.base_url) div.dataset.baseUrl = m.base_url;
     if (m.platform_id) div.dataset.platformId = m.platform_id;
     const icons = _capIconsHtml(m);
-    div.innerHTML = `<span>${escHtml(m.label)}</span>${m.custom ? '<span class="h-model-custom-tag">custom</span>' : ''}${icons ? `<span class="h-model-cap-icons">${icons}</span>` : ''}`;
+    div.innerHTML = `<span>${escHtml(m.label)}</span>${m.listed === false ? '<span class="h-model-unlisted-tag">not listed</span>' : ''}${icons ? `<span class="h-model-cap-icons">${icons}</span>` : ''}`;
+    if (m.listed === false) div.title = MODEL_UNLISTED_HINT;
     div.addEventListener('click', () => selectModelOption(m.value, m.platform_id));
     return div;
   };
@@ -589,7 +604,7 @@ function updateModelSelector(room, parts) {
     const harness = aiActor?.adapter || 'claude';
     const harnessModels = harness !== 'claude'
       ? (_agentHarnessModels(aiActor?.harness_status, harness) || getModelsForHarness(harness))
-      : null;
+      : withAgentListed(getAvailableModels(), aiActor, 'claude');
     populateModelDropdown(null, room.model, parsePlatformId(room.model_config), harnessModels);
     handleModelUpdate({ model: room.model || 'claude-sonnet-4-6' });
     _refreshModelResolution();
