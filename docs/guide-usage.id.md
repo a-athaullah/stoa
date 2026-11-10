@@ -56,9 +56,9 @@ Klik judul room di header chat. Judul menjadi editable — ketik nama baru dan t
 **Selector model** muncul di sisi kanan toolbar formatting di composer. Gunakan untuk mengganti model yang akan digunakan agent untuk respons berikutnya.
 
 **Model Claude bawaan** (via langganan Claude Code):
-- **Opus 5.5 / 5** — kapabilitas tertinggi
+- **Fable 5.2 / 5.1 / 5** — tier paling andal, di atas Opus
+- **Opus 5.5 / 5** — kapabilitas sangat tinggi
 - **Sonnet 5.5 / 5** — performa dan kualitas tinggi
-- **Fable 5.2 / 5.1 / 5** — performa dan kualitas seimbang
 - **Opus 4.8 / 4.7 / 4.6** — kapabilitas tinggi generasi sebelumnya
 - **Sonnet 4.6 / 4.5** — generasi sebelumnya, seimbang (default: Sonnet 4.6)
 - **Haiku 5.5** — cepat dan ekonomis

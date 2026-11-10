@@ -56,9 +56,9 @@ Click the room title in the chat header. It becomes editable — type the new na
 A **model selector** appears at the right side of the formatting toolbar in the composer. Use it to override the model the agent will use for its next response.
 
 **Built-in Claude models** (via Claude Code subscription):
-- **Opus 5.5 / 5** — highest capability
+- **Fable 5.2 / 5.1 / 5** — most capable tier, above Opus
+- **Opus 5.5 / 5** — very high capability
 - **Sonnet 5.5 / 5** — strong performance and quality
-- **Fable 5.2 / 5.1 / 5** — balanced performance and quality
 - **Opus 4.8 / 4.7 / 4.6** — previous-generation high capability
 - **Sonnet 4.6 / 4.5** — previous-generation balanced (default: Sonnet 4.6)
 - **Haiku 5.5** — fast and economical
