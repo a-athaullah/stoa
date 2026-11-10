@@ -544,48 +544,37 @@ Or:
 
 ---
 
-### Custom Claude Models
+### Claude Models from the CLI (custom models retired)
 
-Owner-only endpoints for adding model IDs that Anthropic released after the built-in `ANTHROPIC_MODELS` list was compiled. Requires human session (`req._authUser`); agent headers → 403 `agent_scope_denied`.
+There is no "custom model" path any more (`/api/settings/custom-models*` → 404, setting `custom_claude_models` migrated away by `migrations/20261110-claude-models-from-cli.sql`: every valid entry became a regular claude row in `harness_models`, label kept; a non-array value is left untouched).
 
-#### Add
-```
-POST /api/settings/custom-models
-Content-Type: application/json
+- **Source:** the Claude CLI has no model-listing command, so the agent scans its own binary (`detectClaudeModelCandidates()` in `harness-session.js`, called from `detectHarnessesAsync()` in `stoa.js`). It resolves `claude` on `PATH` (realpath), streams it in 1 MB chunks with a 64-char overlap, and matches `CLAUDE_MODEL_SCAN_RE`: family + major (+ minor) (+ 8-digit date). Major-only IDs (`claude-opus-5`) count; a minor never swallows a date (`claude-opus-4-20250514` = major 4 + date); codenames (`-mythos`) and run-ons are dropped, a Bedrock `-v1` suffix is cut. One ID per base (alias beats dated), newest first, max 50. Cache key `path:size:mtime`; `resetClaudeScanCache()` after a CLI update.
+- **Transport:** `claude_model_candidates` + `claude_cli_version` on `harnesses_update`. Server validates (`claudeModelKey`, ≤64 chars, deduped, max 50) and keeps them per agent in memory (`agentClaudeCandidates`). The `models` an agent puts in its claude `harness_status` entry is ignored.
+- **Sync:** `syncHarnessModels('claude', agent)` upserts scanned IDs into `harness_models` with a derived label (`claudeModelLabel`: `claude-opus-5-5` → "Opus 5.5", dated → alias label), skipping IDs whose base is already in `ANTHROPIC_MODELS` and versions older than the oldest built-in of the same family (a binary embeds every legacy ID). An existing row keeps its label (may be a migrated custom label).
+- **List (`getClaudeModelRows()`):** rows newer than this build first (newest first), then `ANTHROPIC_MODELS` (the always-present baseline). Deduped by base ID. Default `CLAUDE_DEFAULT_MODEL`.
 
-{ "value": "claude-haiku-5-5", "label": "Haiku 5.5" }
-```
-- `value` (required): must match `^claude-[a-z0-9][a-z0-9.-]{1,62}$`
-- `label` (optional, max 40 chars): display name; defaults to `value` if omitted
-- 409 if model already exists in built-in or custom list
-- 400 if format invalid or max 20 custom entries reached
-- 201 + `{ value, label, custom: true }` on success
+### Model lists: `listed` and failed models
 
-#### Remove
-```
-DELETE /api/settings/custom-models/:value
-```
-- `:value` must be URL-encoded
-- 404 if not found; 204 on success
-- Rooms using the removed model keep their setting (no cascade)
+Every harness model list carries `listed: boolean` — the agent's CLI names the model (claude: binary scan, compared by base ID; codex: `codex debug models`).
 
-#### Model list (includes custom)
-```
-GET /api/ai/models
-```
-Returns grouped models; Anthropic group includes built-in + custom entries. Custom models have `custom: true`.
+- Where: `GET /api/ai/models` (anthropic group items), `GET /api/harnesses` (`models[]`), and `harness_status[].models` in `GET /api/actors`, `actor_status`, `POST /api/actors/:id/harnesses/check`. In `harness_status` the server now **fills `models` itself** for every installed harness: `[{ id, label, is_default, listed }]` from `getHarnessModels(actorId, harness)` (`publicHarnessStatus()`).
+- Per agent: listed in that agent's latest report. Global endpoints: listed by any online agent. No report at all (old client, failed scan, offline) → `true` (unknown is not "unlisted").
+- **Never dropped for being unlisted** (owner decision 2026-11-10: a CLI list can omit a model that still works). `syncHarnessModels` is additive for every harness — no `is_active=0` on absence.
+- The only reason a model disappears for an agent: a run proved its CLI does not know it. Agent → WS `{ type: "model_unavailable", harness, model }` (stoa.js `reportModelUnavailable`, pattern `isModelUnavailableError` on error text only; not on a third-party `base_url`). Server stores `agent_model_failures (actor_id, harness, model_id, cli_version)`; `getHarnessModels(actorId, …)` hides those for that agent only, so `resolveAgentModel` falls back to the agent/harness default. Cleared when the agent reports another CLI version for that harness, or on update `done`. The failed run's text gets a hint to update the CLI.
 
-#### Suggestions from the agent's Claude CLI binary
-```
-GET /api/settings/custom-models/candidates
-→ 200 { "cli_version": "2.1.300 (Claude Code)" | null, "candidates": [{ "id": "claude-haiku-5-5" }] }
-```
-Human session only (no session → 401, agent headers → 403 `agent_scope_denied`; not in `lib/agent-scope.js`).
+### Harness CLI Update
 
-- **Source:** the Claude CLI has no model-listing command, so the agent scans its own binary (`detectClaudeModelCandidates()` in `harness-session.js`, called from `detectHarnessesAsync()` in `stoa.js`). It resolves `claude` on `PATH` (realpath), streams the file in 1 MB chunks with a 64-char overlap (never loads the ~250 MB binary), matches `\bclaude-(haiku|sonnet|opus|fable)-\d{1,2}-\d{1,2}(-\d{8})?\b`, and keeps one ID per family+version (the undated alias wins over dated snapshots), newest first, max 50. Result cached per `path:size:mtime`, so it rescans only after a CLI update.
-- **Transport:** top-level fields `claude_model_candidates` (string[]) + `claude_cli_version` on the existing `harnesses_update` WS message. Server validates (array, strings matching the custom-model regex, deduped, max 50, version ≤100 chars) and keeps them **in memory per agent** (`agentClaudeCandidates`, cleared on disconnect or when a report has no array). Not stored in the DB.
-- **Filtering (`getClaudeModelCandidates()`):** union over online agents; drops IDs already in `ANTHROPIC_MODELS` or custom (compared by base, so `claude-haiku-4-5` counts as listed via `claude-haiku-4-5-20251001`); per family keeps only versions **newer** than the newest listed model, because the binary also embeds every legacy ID (`claude-sonnet-3-7`, `claude-opus-4-1`, …). Older gaps remain reachable through manual input. `cli_version` = highest version among reporting agents (numeric compare).
-- **Boot prune (`pruneBuiltinCustomClaudeModels()`):** called once inside `server.listen`. Removes any entry in `custom_claude_models` whose `value` matches an ID in `ANTHROPIC_MODELS`. Entries not in the built-in list are kept as-is and in their original order. If nothing is removed, the setting is not rewritten. Unparseable JSON or a non-array value is left untouched (errors caught, logged, boot continues). This means adding a model to `ANTHROPIC_MODELS` automatically cleans up any matching custom entry on next server start — no migration needed.
+```
+POST /api/agents/:id/harnesses/:name/update
+→ 202 { "request_id": "<16 hex>" }
+```
+Human session only (no session → 401, agent headers → 403 `agent_scope_denied`; not in `lib/agent-scope.js`). `name` ∉ `KNOWN_HARNESSES` → 400; unknown / non-AI actor → 404; 409 with `code`: `agent_offline`, `client_outdated` (agent did not announce feature `harness_update` in `agent_connect`), `not_installed`, `update_in_progress`.
+
+- Server → agent: `{ type: "harness_update", request_id, harness }` — the name only, never a command.
+- Agent (`handleHarnessUpdateRequest` in stoa.js): fixed `HARNESS_UPDATE_ARGS` (`claude update` / `codex update`; both CLIs handle native, npm and Homebrew installs) via `execFile` without a shell, stdin closed, 5 min timeout. A run of that harness still active → `waiting_idle`; new triggers of that harness stay queued (`canStartTrigger`) until the update ends, other harnesses keep running. Version before (`--version`), then after: `resetClaudeScanCache()` + `detectHarnessesAsync()` → `harnesses_update` (before `done`). A restart requested meanwhile (`doRestart`) waits for the update to finish.
+- Agent → server: `{ type: "harness_update_status", request_id, harness, state, old_version, new_version, error }`. Accepted only for the current request of that agent+harness. Error sanitized (`sanitizeUpdateError`: no ANSI/control chars, home and `/Users/*` `/home/*` `C:\Users\*` → `~`, token-like strings redacted, ≤300 chars) on both sides.
+- Broadcast (global): `{ type: "harness_update_status", actor_id, harness, request_id, state: waiting_idle|running|done|failed, old_version, new_version, error }`. `harness_status[].update` carries the last one (or `null`) so the UI recovers after reload. State lives in memory (`harnessUpdates`); internal `requested` is not exposed.
+- Server-side failures: no ack within `HARNESS_UPDATE_ACK_TIMEOUT_MS` (15 s) → `failed` "agent did not respond"; `running` longer than 6 min → "update did not finish in time"; agent disconnect while pending → "agent disconnected". A late status for the same request_id is still accepted.
 
 ---
 
@@ -609,16 +598,16 @@ Purpose: running sessions hold the old harness CLI process; restarting the agent
 
 ### Harness Models Sync (`harness_models`)
 
-For non-Claude harnesses (e.g. Codex), Stoa mirrors agent-reported models into `harness_models` to persist the model list across agent restarts.
+Stoa mirrors agent-reported models into `harness_models`, so models stay offered while the agent is offline and new ones appear without a code change.
 
-**Trigger:** agent sends `harnesses_update` WS message to the server on connect. (`actor_status` is the broadcast the server sends to clients *after* sync completes — not the trigger.)
+**Trigger:** agent sends `harnesses_update` (on connect, on Check, after a CLI update). `actor_status` is the broadcast the server sends afterwards.
 
 **Behaviour:**
-- Active set = union across all currently online agents for that harness (prevents two agents on different Codex versions from deactivating each other's models)
-- Models no longer reported by any online agent → `is_active=0`
-- Default preserved if one already exists; otherwise reporter's first model becomes default
-- Cap: 50 models per harness (`MAX_SYNCED_HARNESS_MODELS`)
-- Claude harness is **exempt** — its model list always comes from `ANTHROPIC_MODELS` + `custom_claude_models` setting
+- Codex: the reporter's `codex debug models` list is upserted (label refreshed). Claude: the binary scan (see "Claude Models from the CLI").
+- **Additive only** — a model missing from a report stays `is_active=1` (owner decision 2026-11-10). Absence shows as `listed: false`.
+- Default preserved if an active one exists; otherwise the reporter's default (codex).
+- Cap: 50 upserts per report (`MAX_SYNCED_HARNESS_MODELS`).
+- Per agent (`getHarnessModels(actorId, 'codex')`): the agent's own list first (its order + default), then the other active rows.
 
 **Key function:** `syncHarnessModels(harnessName, reporterId)` in `server.js`
 

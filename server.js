@@ -22,6 +22,7 @@ const { createSubAgents } = require('./lib/sub-agents');
 const { createSkills } = require('./lib/skills');
 const { createSkillsHttp } = require('./lib/skills-http');
 const { createHarnessAccounts, MACHINE_ID_RE } = require('./lib/harness-accounts');
+const { claudeModelKey, claudeModelLabel, rankClaudeModelIds, KNOWN_HARNESSES, validateHarnessStatus, sanitizeUpdateError } = require('./harness-session');
 const { createAutomationCrud } = require('./lib/automation-crud');
 const { stoaMcpTools } = require('./lib/stoa-mcp-tools');
 const { collectDiagnostics, buildEnvelope, gcDebugBundles } = require('./lib/debug-bundle');
@@ -1060,43 +1061,58 @@ const ANTHROPIC_MODELS = [
   { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', vision: true, tools: true },
 ];
 const MAX_SYNCED_HARNESS_MODELS = 50;
+const CLAUDE_DEFAULT_MODEL = 'claude-sonnet-5-5';
+// A claude row in harness_models: scan results (strict, see harness-session claudeModelKey) and the
+// rows migrated from the retired custom-model setting (its original ID rule).
+const CLAUDE_ROW_ID_RE = /^claude-[a-z0-9][a-z0-9.-]{1,62}$/;
 
-// Claude CLI has no model-listing command, so a model released after this build is added by the
-// owner from Settings (key custom_claude_models) instead of editing ANTHROPIC_MODELS.
-const CUSTOM_CLAUDE_MODEL_RE = /^claude-[a-z0-9][a-z0-9.-]{1,62}$/;
-const CUSTOM_CLAUDE_LABEL_MAX = 40;
-const MAX_CUSTOM_CLAUDE_MODELS = 20;
-const MAX_CLAUDE_CANDIDATES = 50;
-
-function getCustomClaudeModels() {
-  let list;
-  try { list = getParsedSetting('custom_claude_models'); } catch { return []; }
-  if (!Array.isArray(list)) return [];
-  return list.filter(m => m && typeof m.value === 'string' && CUSTOM_CLAUDE_MODEL_RE.test(m.value) && typeof m.label === 'string');
+// Claude models = ANTHROPIC_MODELS (baseline, always present) + claude rows of harness_models (models
+// the agents' CLIs know, synced from their binary scans). Extras come first, newest first: they are
+// models released after this build. Deduped by base ID, so a dated snapshot never doubles its alias.
+function getClaudeModelRows() {
+  const baseline = ANTHROPIC_MODELS.map(m => ({ model_id: m.value, display_name: m.label }));
+  const seen = new Set(baseline.flatMap(m => [m.model_id, claudeModelKey(m.model_id)?.base].filter(Boolean)));
+  const extras = [];
+  const rows = db.prepare("SELECT hm.model_id, hm.display_name FROM harness_models hm JOIN harnesses h ON h.id=hm.harness_id WHERE h.name='claude' AND hm.is_active=1").all();
+  for (const r of rows) {
+    if (!CLAUDE_ROW_ID_RE.test(r.model_id)) continue;
+    const key = claudeModelKey(r.model_id);
+    const dedupe = key?.base || r.model_id;
+    if (seen.has(r.model_id) || seen.has(dedupe)) continue;
+    seen.add(r.model_id); seen.add(dedupe);
+    extras.push({ model_id: r.model_id, display_name: r.display_name || claudeModelLabel(r.model_id) || r.model_id, ver: key?.ver ?? -1 });
+  }
+  extras.sort((x, y) => y.ver - x.ver || x.model_id.localeCompare(y.model_id));
+  return [...extras.map(({ model_id, display_name }) => ({ model_id, display_name })), ...baseline];
 }
 
-// A custom model that later ships in ANTHROPIC_MODELS is removed from the stored setting at boot,
-// so Settings does not keep showing a deletable duplicate. Unparseable or non-array JSON is left as
-// is (getCustomClaudeModels already ignores it); entries that are not built-in are kept untouched.
-function pruneBuiltinCustomClaudeModels() {
-  const raw = getSetting('custom_claude_models');
-  if (!raw) return 0;
-  let list;
-  try { list = JSON.parse(raw); } catch { return 0; }
-  if (!Array.isArray(list)) return 0;
-  const builtin = new Set(ANTHROPIC_MODELS.map(m => m.value));
-  const kept = list.filter(m => !(m && typeof m.value === 'string' && builtin.has(m.value)));
-  if (kept.length === list.length) return 0;
-  setSetting('custom_claude_models', JSON.stringify(kept));
-  return list.length - kept.length;
+// "Listed" = the agent's CLI names the model (claude: binary scan; others: the CLI's model list).
+// Returns null when the agent reported no list (old client, failed scan): unknown is not "unlisted".
+function listedModelSet(actorId, harnessName) {
+  if (harnessName === 'claude') {
+    const entry = agentClaudeCandidates.get(actorId);
+    if (!entry) return null;
+    return new Set(entry.candidates.map(id => claudeModelKey(id)?.base || id));
+  }
+  const hs = (agentHarnessStatus.get(actorId) || []).find(s => s.id === harnessName);
+  return hs?.models ? new Set(hs.models.map(m => m.id)) : null;
+}
+const listedKey = (harnessName, id) => (harnessName === 'claude' && claudeModelKey(id)?.base) || id;
+
+// Global view (no agent): listed by any online agent; true while no online agent reported a list.
+function globalListedCheck(harnessName) {
+  const sets = [];
+  for (const actorId of agentClients.keys()) {
+    const set = listedModelSet(actorId, harnessName);
+    if (set) sets.push(set);
+  }
+  if (!sets.length) return () => true;
+  return (id) => sets.some(set => set.has(listedKey(harnessName, id)));
 }
 
 function getAnthropicModels() {
-  const builtin = new Set(ANTHROPIC_MODELS.map(m => m.value));
-  const custom = getCustomClaudeModels()
-    .filter(m => !builtin.has(m.value))
-    .map(m => ({ value: m.value, label: m.label, vision: true, tools: true, custom: true }));
-  return [...ANTHROPIC_MODELS, ...custom];
+  const isListed = globalListedCheck('claude');
+  return getClaudeModelRows().map(m => ({ value: m.model_id, label: m.display_name, vision: true, tools: true, listed: isListed(m.model_id) }));
 }
 
 // ─── Auth: password hashing & session management ─────────────────────────────
@@ -3193,39 +3209,6 @@ const server = http.createServer(async (req, res) => {
     return json(res, { ok: true });
   }
 
-  // ── Custom Claude models (owner-added IDs for models newer than ANTHROPIC_MODELS) ──
-  if (req.method === 'POST' && url.pathname === '/api/settings/custom-models') {
-    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
-    const body = parseJsonBody(await readBody(req));
-    if (!body) return json(res, { error: 'Invalid JSON' }, 400);
-    const value = typeof body.value === 'string' ? body.value.trim() : '';
-    if (!CUSTOM_CLAUDE_MODEL_RE.test(value)) return json(res, { error: 'value must match ^claude-[a-z0-9][a-z0-9.-]{1,62}$' }, 400);
-    if (body.label !== undefined && body.label !== null && typeof body.label !== 'string') return json(res, { error: 'label must be a string' }, 400);
-    const label = (body.label || '').trim() || value;
-    if (label.length > CUSTOM_CLAUDE_LABEL_MAX) return json(res, { error: `label max ${CUSTOM_CLAUDE_LABEL_MAX} characters` }, 400);
-    const list = getCustomClaudeModels();
-    if (ANTHROPIC_MODELS.some(m => m.value === value) || list.some(m => m.value === value)) return json(res, { error: 'model already exists' }, 409);
-    if (list.length >= MAX_CUSTOM_CLAUDE_MODELS) return json(res, { error: `max ${MAX_CUSTOM_CLAUDE_MODELS} custom models` }, 400);
-    setSetting('custom_claude_models', JSON.stringify([...list, { value, label }]));
-    return json(res, { value, label, custom: true }, 201);
-  }
-
-  if (req.method === 'GET' && url.pathname === '/api/settings/custom-models/candidates') {
-    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
-    return json(res, getClaudeModelCandidates());
-  }
-
-  if (req.method === 'DELETE' && url.pathname.startsWith('/api/settings/custom-models/')) {
-    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
-    let value;
-    try { value = decodeURIComponent(url.pathname.slice('/api/settings/custom-models/'.length)); } catch { return json(res, { error: 'invalid model id' }, 400); }
-    const list = getCustomClaudeModels();
-    const next = list.filter(m => m.value !== value);
-    if (next.length === list.length) return json(res, { error: 'not found' }, 404);
-    setSetting('custom_claude_models', JSON.stringify(next));
-    res.writeHead(204); return res.end();
-  }
-
   // ── R29: Global display settings ──
   if (req.method === 'GET' && url.pathname === '/api/settings/display') {
     if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
@@ -3878,9 +3861,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/harnesses') {
     const rows = db.prepare('SELECT * FROM harnesses ORDER BY id').all();
     const result = rows.map(h => {
-      const models = h.name === 'claude'
-        ? getHarnessModels(null, 'claude').map(m => ({ ...m, is_active: 1 }))
-        : db.prepare('SELECT model_id, display_name, is_default, is_active FROM harness_models WHERE harness_id=? AND is_active=1 ORDER BY is_default DESC, model_id').all(h.id);
+      const models = getHarnessModels(null, h.name).map(m => ({ ...m, is_active: 1 }));
       return { name: h.name, label: h.description || h.name, models };
     });
     return json(res, result);
@@ -3889,7 +3870,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && url.pathname === '/api/actors') {
     const rows = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, system_prompt, default_model, created_at FROM actors ORDER BY id').all();
     const result = rows.map(r => {
-      const out = { ...r, online: agentClients.has(r.id), client_version: agentVersions.get(r.id) || null, harnesses_available: agentHarnesses.get(r.id) || [], harness_status: agentHarnessStatus.get(r.id) || [], supervisor: agentSupervisors.get(r.id) ?? null, restart_state: agentRestarts.get(r.id)?.state ?? null };
+      const out = { ...r, online: agentClients.has(r.id), client_version: agentVersions.get(r.id) || null, harnesses_available: agentHarnesses.get(r.id) || [], harness_status: publicHarnessStatus(r.id), supervisor: agentSupervisors.get(r.id) ?? null, restart_state: agentRestarts.get(r.id)?.state ?? null };
       if (r.type === 'ai') {
         const h = r.adapter || 'claude';
         out.harness_default_model = getHarnessDefaultModel(r.id, h);
@@ -4630,6 +4611,33 @@ Write-Host "Logs   : pm2 logs $AgentName"
     return json(res, result);
   }
 
+  // POST /api/agents/:id/harnesses/:name/update — owner asks an agent to update one harness CLI.
+  // Human session only (not in lib/agent-scope.js): the agent runs a fixed command per harness; the
+  // request carries the harness name, never a command. Progress arrives as harness_update_status.
+  const harnessUpdateMatch = req.method === 'POST' && url.pathname.match(/^\/api\/agents\/(\d+)\/harnesses\/([^/]+)\/update$/);
+  if (harnessUpdateMatch) {
+    if (!req._authUser) return json(res, { error: 'unauthorized' }, 401);
+    const actorId = parseInt(harnessUpdateMatch[1]);
+    const harness = harnessUpdateMatch[2];
+    if (!KNOWN_HARNESSES.includes(harness)) return json(res, { error: `harness must be one of: ${KNOWN_HARNESSES.join(', ')}` }, 400);
+    const actor = db.prepare('SELECT type FROM actors WHERE id=?').get(actorId);
+    if (!actor || actor.type !== 'ai') return json(res, { error: 'agent not found' }, 404);
+    const agentWs = agentClients.get(actorId);
+    if (!agentWs || agentWs.readyState !== 1) return json(res, { error: 'agent offline', code: 'agent_offline' }, 409);
+    if (!agentFeatures.get(actorId)?.has('harness_update')) return json(res, { error: 'agent client too old for CLI updates — wait for its auto-update', code: 'client_outdated' }, 409);
+    const hs = (agentHarnessStatus.get(actorId) || []).find(s => s.id === harness);
+    if (!hs?.installed) return json(res, { error: `${harness} is not installed on this agent`, code: 'not_installed' }, 409);
+    if (harnessUpdatePending(actorId, harness)) return json(res, { error: 'an update for this harness is already in progress', code: 'update_in_progress' }, 409);
+    const requestId = crypto.randomBytes(8).toString('hex');
+    const prev = harnessUpdates.get(`${actorId}:${harness}`);
+    if (prev) clearTimeout(prev.timer);
+    harnessUpdates.set(`${actorId}:${harness}`, { request_id: requestId, state: null, old_version: hs.version ?? null, new_version: null, error: null, timer: null });
+    setHarnessUpdateState(actorId, harness, { state: 'requested' });
+    agentWs.send(JSON.stringify({ type: 'harness_update', request_id: requestId, harness }));
+    console.log(`[agent] Actor #${actorId} ${harness} CLI update requested from UI (${hs.version || 'unknown version'})`);
+    return json(res, { request_id: requestId }, 202);
+  }
+
   // GET /api/actors/:id/memory — list agent memory files
   if (req.method === 'GET' && url.pathname.match(/^\/api\/actors\/\d+\/memory$/)) {
     if (!requireAuth(req, res, url)) return;
@@ -5259,13 +5267,14 @@ function setAgentRestartState(actorId, state, extra = {}) {
   broadcastGlobal({ type: 'agent_restart_status', actor_id: actorId, state, ...extra });
 }
 const agentClaudeCandidates = new Map(); // actor_id → { cli_version, candidates: string[] } (scanned from the agent's claude binary)
+const MAX_CLAUDE_CANDIDATES = 50;
 
 function validateClaudeCandidates(list, cliVersion) {
   if (!Array.isArray(list)) return null;
   const seen = new Set();
   const candidates = [];
   for (const id of list) {
-    if (typeof id !== 'string' || !CUSTOM_CLAUDE_MODEL_RE.test(id) || seen.has(id)) continue;
+    if (typeof id !== 'string' || id.length > 64 || !claudeModelKey(id) || seen.has(id)) continue;
     seen.add(id);
     candidates.push(id);
     if (candidates.length >= MAX_CLAUDE_CANDIDATES) break;
@@ -5274,86 +5283,175 @@ function validateClaudeCandidates(list, cliVersion) {
   return { cli_version, candidates };
 }
 
-const claudeModelKey = (id) => {
-  const m = /^claude-(haiku|sonnet|opus|fable)-(\d{1,2})-(\d{1,2})(?:-\d{8})?$/.exec(id);
-  return m ? { base: `claude-${m[1]}-${m[2]}-${m[3]}`, family: m[1], ver: +m[2] * 100 + +m[3] } : null;
-};
+// Models hidden for one agent after a run proved its CLI does not know them (agent_model_failures).
+function failedModelSet(actorId, harnessName) {
+  if (!actorId) return null;
+  const rows = db.prepare('SELECT model_id FROM agent_model_failures WHERE actor_id=? AND harness=?').all(actorId, harnessName);
+  return rows.length ? new Set(rows.map(r => r.model_id)) : null;
+}
 
-// Suggestions for the custom-model card: IDs the CLI binary knows that Stoa doesn't list yet.
-// A binary also embeds every legacy ID, so per family only versions NEWER than the newest
-// listed one are suggested (older gaps stay reachable through manual input). Dated snapshots
-// collapse into their alias via the base key.
-function getClaudeModelCandidates() {
-  const known = getAnthropicModels().map(m => claudeModelKey(m.value)).filter(Boolean);
-  const knownBases = new Set(known.map(k => k.base));
-  const newestByFamily = new Map();
-  for (const k of known) newestByFamily.set(k.family, Math.max(newestByFamily.get(k.family) ?? 0, k.ver));
-  const out = new Map();
-  let cliVersion = null;
-  for (const [actorId, entry] of agentClaudeCandidates) {
-    if (!agentClients.has(actorId)) continue;
-    if (entry.cli_version && (!cliVersion || entry.cli_version.localeCompare(cliVersion, undefined, { numeric: true }) > 0)) cliVersion = entry.cli_version;
-    for (const id of entry.candidates) {
-      const k = claudeModelKey(id);
-      if (!k || knownBases.has(k.base) || out.has(k.base)) continue;
-      if (newestByFamily.has(k.family) && k.ver <= newestByFamily.get(k.family)) continue;
-      out.set(k.base, { id, ver: k.ver, family: k.family });
+// Models a harness offers, each with listed (named by the CLI's own list). A model is never dropped
+// for being unlisted: a CLI list can omit a model that still works (owner decision 2026-11-10). With
+// an actorId: that agent's list first (its order and default), models its runs proved unknown hidden.
+function getHarnessModels(actorId, harnessName) {
+  let models;
+  if (harnessName === 'claude') {
+    models = getClaudeModelRows().map(m => ({ ...m, is_default: m.model_id === CLAUDE_DEFAULT_MODEL ? 1 : 0 }));
+  } else {
+    const harnessRow = db.prepare('SELECT id FROM harnesses WHERE name=?').get(harnessName);
+    const rows = harnessRow ? db.prepare('SELECT model_id, display_name, is_default FROM harness_models WHERE harness_id=? AND is_active=1 ORDER BY is_default DESC, model_id').all(harnessRow.id) : [];
+    const own = actorId ? (agentHarnessStatus.get(actorId) || []).find(s => s.id === harnessName)?.models : null;
+    if (own?.length) {
+      const ownIds = new Set(own.map(m => m.id));
+      models = [
+        ...own.map(m => ({ model_id: m.id, display_name: m.label, is_default: m.is_default ? 1 : 0 })),
+        ...rows.filter(r => !ownIds.has(r.model_id)).map(r => ({ ...r, is_default: 0 })),
+      ];
+    } else {
+      models = rows;
     }
   }
-  const candidates = [...out.values()]
-    .sort((a, b) => b.ver - a.ver || a.family.localeCompare(b.family))
-    .map(c => ({ id: c.id }));
-  return { cli_version: cliVersion, candidates };
+  const failed = failedModelSet(actorId, harnessName);
+  if (failed) models = models.filter(m => !failed.has(m.model_id));
+  let isListed;
+  if (actorId) {
+    const set = listedModelSet(actorId, harnessName);
+    isListed = set ? (id => set.has(listedKey(harnessName, id))) : () => true;
+  } else {
+    isListed = globalListedCheck(harnessName);
+  }
+  return models.map(m => ({ ...m, listed: isListed(m.model_id) }));
 }
 
-function getHarnessModels(actorId, harnessName) {
-  if (harnessName === 'claude') {
-    return getAnthropicModels().map(m => ({ model_id: m.value, display_name: m.label, is_default: m.value === 'claude-sonnet-5-5' ? 1 : 0 }));
-  }
-  const statusList = agentHarnessStatus.get(actorId) || [];
-  const hs = statusList.find(s => s.id === harnessName);
-  if (hs?.models?.length) {
-    return hs.models.map(m => ({ model_id: m.id, display_name: m.label, is_default: m.is_default ? 1 : 0 }));
-  }
-  const harnessRow = db.prepare('SELECT id FROM harnesses WHERE name=?').get(harnessName);
-  if (!harnessRow) return [];
-  return db.prepare('SELECT model_id, display_name, is_default FROM harness_models WHERE harness_id=? AND is_active=1 ORDER BY is_default DESC, model_id').all(harnessRow.id);
-}
-// Mirror agent-reported models into harness_models (the fallback used while no agent is online),
-// so a new harness model shows up without a code change. Claude never reports a list — its models
-// are ANTHROPIC_MODELS + custom_claude_models. Active set = union across all online agents, so two
-// agents on different harness versions don't keep deactivating each other's models.
+// Mirror the reporting agent's models into harness_models (the list offered while it is offline), so
+// a model a CLI update brings shows up without a code change. Additive only: a model absent from a
+// report stays active (owner decision 2026-11-10). Claude: the binary scan, minus IDs covered by
+// ANTHROPIC_MODELS and versions older than the oldest built-in of the same family (a binary embeds
+// every legacy ID).
 function syncHarnessModels(harnessName, reporterId) {
-  if (harnessName === 'claude') return;
   const harnessRow = db.prepare('SELECT id FROM harnesses WHERE name=?').get(harnessName);
   if (!harnessRow) return;
-  const union = new Map();
+  const add = new Map();
   let reporterDefault = null;
-  for (const [actorId, statusList] of agentHarnessStatus) {
-    if (actorId !== reporterId && !agentClients.has(actorId)) continue;
-    const hs = statusList.find(s => s.id === harnessName);
-    if (!hs?.models) continue;
-    for (const m of hs.models) {
-      if (union.size >= MAX_SYNCED_HARNESS_MODELS) break;
-      if (!union.has(m.id)) union.set(m.id, m.label);
-      if (actorId === reporterId && m.is_default) reporterDefault = m.id;
+  if (harnessName === 'claude') {
+    // One ID per base: a dated snapshot collapses into its alias when the CLI knows both.
+    const candidates = rankClaudeModelIds(agentClaudeCandidates.get(reporterId)?.candidates || []);
+    const baseline = ANTHROPIC_MODELS.map(m => claudeModelKey(m.value)).filter(Boolean);
+    const builtinBases = new Set(baseline.map(k => k.base));
+    const oldestByFamily = new Map();
+    for (const k of baseline) oldestByFamily.set(k.family, Math.min(oldestByFamily.get(k.family) ?? Infinity, k.ver));
+    for (const id of candidates) {
+      const k = claudeModelKey(id);
+      if (!k || builtinBases.has(k.base) || k.ver < (oldestByFamily.get(k.family) ?? 0)) continue;
+      add.set(id, claudeModelLabel(id));
+    }
+  } else {
+    const hs = (agentHarnessStatus.get(reporterId) || []).find(s => s.id === harnessName);
+    for (const m of hs?.models || []) {
+      add.set(m.id, m.label);
+      if (m.is_default) reporterDefault = m.id;
     }
   }
-  if (!union.size) return;
-  const ids = JSON.stringify([...union.keys()]);
-  const upsert = db.prepare(
-    'INSERT INTO harness_models (harness_id, model_id, display_name, is_default, is_active) VALUES (?,?,?,0,1) ' +
-    'ON CONFLICT(harness_id, model_id) DO UPDATE SET display_name=excluded.display_name, is_active=1'
-  );
+  if (!add.size) return;
+  const upsert = harnessName === 'claude'
+    // A claude row may be a migrated custom model with the owner's own label: keep the label.
+    ? db.prepare('INSERT INTO harness_models (harness_id, model_id, display_name, is_default, is_active) VALUES (?,?,?,0,1) ON CONFLICT(harness_id, model_id) DO UPDATE SET is_active=1')
+    : db.prepare('INSERT INTO harness_models (harness_id, model_id, display_name, is_default, is_active) VALUES (?,?,?,0,1) ON CONFLICT(harness_id, model_id) DO UPDATE SET display_name=excluded.display_name, is_active=1');
   db.transaction(() => {
-    for (const [id, label] of union) upsert.run(harnessRow.id, id, label);
-    db.prepare('UPDATE harness_models SET is_active=0 WHERE harness_id=? AND model_id NOT IN (SELECT value FROM json_each(?))').run(harnessRow.id, ids);
+    let n = 0;
+    for (const [id, label] of add) {
+      if (n++ >= MAX_SYNCED_HARNESS_MODELS) break;
+      upsert.run(harnessRow.id, id, label);
+    }
+    if (harnessName === 'claude') return;
     const hasDefault = db.prepare('SELECT 1 FROM harness_models WHERE harness_id=? AND is_default=1 AND is_active=1').get(harnessRow.id);
     if (hasDefault) return;
-    const pick = reporterDefault && union.has(reporterDefault) ? reporterDefault : union.keys().next().value;
+    const pick = reporterDefault || add.keys().next().value;
     db.prepare('UPDATE harness_models SET is_default=0 WHERE harness_id=?').run(harnessRow.id);
     db.prepare('UPDATE harness_models SET is_default=1 WHERE harness_id=? AND model_id=?').run(harnessRow.id, pick);
   })();
+}
+
+// harness_status as clients see it: the agent's report, with models = the merged list for this agent
+// (getHarnessModels, incl. listed) and update = the last CLI update state for that harness.
+function publicHarnessStatus(actorId) {
+  return (agentHarnessStatus.get(actorId) || []).map(s => ({
+    ...s,
+    models: s.installed
+      ? getHarnessModels(actorId, s.id).map(m => ({ id: m.model_id, label: m.display_name, is_default: !!m.is_default, listed: m.listed }))
+      : null,
+    update: publicHarnessUpdate(actorId, s.id),
+  }));
+}
+
+// ─── Harness CLI update (POST /api/agents/:id/harnesses/:name/update) ───────
+// Per (agent, harness): the last request and its state. 'requested' is internal (sent, not yet
+// acknowledged); clients see waiting_idle | running | done | failed. Kept in memory: after a server
+// restart the next harnesses_update shows the version, which is what matters.
+const HARNESS_UPDATE_STATES = new Set(['waiting_idle', 'running', 'done', 'failed']);
+const HARNESS_UPDATE_PENDING = new Set(['requested', 'waiting_idle', 'running']);
+const HARNESS_UPDATE_RUN_TIMEOUT_MS = 6 * 60_000; // agent kills the command at 5 min
+const harnessUpdates = new Map(); // `${actorId}:${harness}` → { request_id, state, old_version, new_version, error, timer }
+
+function publicHarnessUpdate(actorId, harness) {
+  const u = harnessUpdates.get(`${actorId}:${harness}`);
+  if (!u || !HARNESS_UPDATE_STATES.has(u.state)) return null;
+  return { request_id: u.request_id, state: u.state, old_version: u.old_version, new_version: u.new_version, error: u.error };
+}
+
+function harnessUpdatePending(actorId, harness) {
+  return HARNESS_UPDATE_PENDING.has(harnessUpdates.get(`${actorId}:${harness}`)?.state);
+}
+
+function setHarnessUpdateState(actorId, harness, fields) {
+  const u = harnessUpdates.get(`${actorId}:${harness}`);
+  if (!u) return;
+  Object.assign(u, fields);
+  clearTimeout(u.timer);
+  u.timer = null;
+  const ackMs = parseInt(process.env.HARNESS_UPDATE_ACK_TIMEOUT_MS) || 15_000;
+  const limit = u.state === 'requested' ? ackMs : u.state === 'running' ? HARNESS_UPDATE_RUN_TIMEOUT_MS : 0;
+  if (limit) {
+    const error = u.state === 'requested' ? 'agent did not respond' : 'update did not finish in time';
+    u.timer = setTimeout(() => setHarnessUpdateState(actorId, harness, { state: 'failed', error }), limit);
+    u.timer.unref?.();
+  }
+  if (HARNESS_UPDATE_STATES.has(u.state)) broadcastGlobal({ type: 'harness_update_status', actor_id: actorId, harness, ...publicHarnessUpdate(actorId, harness) });
+}
+
+const cleanVersion = (v) => typeof v === 'string' && v.trim() ? v.replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(0, 100) : null;
+
+// Agent → harness_update_status. Only the request this server sent to this agent is accepted.
+function applyHarnessUpdateStatus(actorId, msg) {
+  if (!KNOWN_HARNESSES.includes(msg.harness) || !HARNESS_UPDATE_STATES.has(msg.state)) return;
+  const u = harnessUpdates.get(`${actorId}:${msg.harness}`);
+  if (!u || typeof msg.request_id !== 'string' || msg.request_id !== u.request_id || u.state === 'done') return;
+  setHarnessUpdateState(actorId, msg.harness, {
+    state: msg.state,
+    old_version: cleanVersion(msg.old_version) ?? u.old_version,
+    new_version: cleanVersion(msg.new_version),
+    error: msg.state === 'failed' ? (sanitizeUpdateError(typeof msg.error === 'string' ? msg.error : '', null) || 'update failed') : null,
+  });
+  if (msg.state === 'done') db.prepare('DELETE FROM agent_model_failures WHERE actor_id=? AND harness=?').run(actorId, msg.harness);
+}
+
+// Agent → model_unavailable: a run of `model` failed because this agent's CLI does not know it.
+function recordModelFailure(actorId, msg) {
+  if (!KNOWN_HARNESSES.includes(msg.harness) || typeof msg.model !== 'string' || !/^[A-Za-z0-9._:\[\]-]{1,100}$/.test(msg.model)) return;
+  const cliVersion = (agentHarnessStatus.get(actorId) || []).find(s => s.id === msg.harness)?.version ?? null;
+  db.prepare(
+    "INSERT INTO agent_model_failures (actor_id, harness, model_id, cli_version) VALUES (?,?,?,?) " +
+    "ON CONFLICT(actor_id, harness, model_id) DO UPDATE SET cli_version=excluded.cli_version, failed_at=datetime('now')"
+  ).run(actorId, msg.harness, msg.model, cliVersion);
+  console.log(`[harness_models] Actor #${actorId}: ${msg.harness} model "${msg.model}" not available (CLI ${cliVersion || 'unknown'}) — hidden for this agent`);
+}
+
+// A CLI on another version (update from Stoa or by hand) may know the model now: show it again.
+function clearStaleModelFailures(actorId, status) {
+  for (const hs of status) {
+    if (!hs.installed) continue;
+    db.prepare('DELETE FROM agent_model_failures WHERE actor_id=? AND harness=? AND cli_version IS NOT ?').run(actorId, hs.id, hs.version);
+  }
 }
 const pendingAgents = new Map();    // message_id → { resolve, reject }
 const pendingActorMeta = new Map(); // message_id → { name, avatar_color, avatar_symbol }
@@ -5853,30 +5951,42 @@ wss.on('connection', (ws, req) => {
 
     // ── Agent reports harness availability
     if (msg.type === 'harnesses_update' && agentActorId) {
-      const { validateHarnessStatus } = require('./harness-session');
       const status = validateHarnessStatus(msg.harness_status);
-      const { KNOWN_HARNESSES } = require('./harness-session');
       const available = Array.isArray(msg.harnesses_available) ? [...new Set(msg.harnesses_available.filter(h => KNOWN_HARNESSES.includes(h)))] : status.filter(s => s.installed).map(s => s.id);
       agentHarnesses.set(agentActorId, available);
       agentHarnessStatus.set(agentActorId, status);
       const claudeCandidates = validateClaudeCandidates(msg.claude_model_candidates, msg.claude_cli_version);
       if (claudeCandidates) agentClaudeCandidates.set(agentActorId, claudeCandidates);
       else agentClaudeCandidates.delete(agentActorId);
+      try { clearStaleModelFailures(agentActorId, status); }
+      catch (e) { console.error('[harness_models] clearing model failures failed:', e.message); }
       for (const hs of status) {
-        if (!hs.models) continue;
+        if (hs.id === 'claude' ? !claudeCandidates?.candidates.length : !hs.models) continue;
         try { syncHarnessModels(hs.id, agentActorId); }
         catch (e) { console.error(`[harness_models] sync ${hs.id} failed:`, e.message); }
       }
+      const harnessStatus = publicHarnessStatus(agentActorId);
       const actor = db.prepare('SELECT id, name, type, adapter, adapter_config, avatar_color, avatar_symbol, avatar_url, created_at FROM actors WHERE id=?').get(agentActorId);
-      if (actor) broadcastGlobal({ type: 'actor_status', actor: { ...actor, online: true, client_version: agentVersions.get(agentActorId) || null, harnesses_available: available, harness_status: status } });
+      if (actor) broadcastGlobal({ type: 'actor_status', actor: { ...actor, online: true, client_version: agentVersions.get(agentActorId) || null, harnesses_available: available, harness_status: harnessStatus } });
       if (msg.request_id && pendingHarnessChecks.has(msg.request_id)) {
         const pending = pendingHarnessChecks.get(msg.request_id);
         if (pending.actorId === agentActorId) {
           clearTimeout(pending.timer);
           pendingHarnessChecks.delete(msg.request_id);
-          pending.resolve({ harnesses_available: available, harness_status: status });
+          pending.resolve({ harnesses_available: available, harness_status: harnessStatus });
         }
       }
+    }
+
+    // ── Agent reports progress of a CLI update this server asked for
+    if (msg.type === 'harness_update_status' && agentActorId) {
+      applyHarnessUpdateStatus(agentActorId, msg);
+    }
+
+    // ── Agent reports a run its CLI rejected for an unknown model
+    if (msg.type === 'model_unavailable' && agentActorId) {
+      try { recordModelFailure(agentActorId, msg); }
+      catch (e) { console.error('[harness_models] recording model failure failed:', e.message); }
     }
 
     // ── Agent reports scan results
@@ -6999,6 +7109,9 @@ wss.on('connection', (ws, req) => {
       agentHarnesses.delete(agentActorId);
       agentHarnessStatus.delete(agentActorId);
       agentClaudeCandidates.delete(agentActorId);
+      for (const h of KNOWN_HARNESSES) {
+        if (harnessUpdatePending(agentActorId, h)) setHarnessUpdateState(agentActorId, h, { state: 'failed', error: 'agent disconnected' });
+      }
       agentSupervisors.delete(agentActorId);
       agentBootIds.delete(agentActorId);
       // Timings survive (runs outlive a reconnect); the queue snapshot is rebuilt from the next report.
@@ -8396,10 +8509,6 @@ server.listen(PORT, () => {
   // R15: any session left 'active' belongs to a prior process — mark indeterminate.
   const orphaned = db.prepare("UPDATE ai_sessions SET status='indeterminate' WHERE status='active'").run();
   if (orphaned.changes) console.log(`[startup] ${orphaned.changes} orphaned session(s) marked indeterminate`);
-  try {
-    const pruned = pruneBuiltinCustomClaudeModels();
-    if (pruned) console.log(`[startup] ${pruned} custom Claude model(s) removed: now built-in`);
-  } catch (e) { console.error('[startup] custom Claude model prune failed:', e.message); }
 
   console.log(`Stoa running → http://localhost:${PORT}`);
   // Phase 2b (R1): resume any sub-agent wakes left pending by a prior crash/restart.

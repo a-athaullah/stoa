@@ -2469,6 +2469,205 @@ async function runAsyncUnitTests() {
     } finally { stoa.activeTriggers.clear(); stoa.__resetDeps(); }
   });
 
+  // ── Harness CLI update (agent side): fixed command, waiting_idle, held triggers, sanitized errors ──
+  // A fake `claude` on PATH stands in for the real CLI; its file text also feeds the binary model scan.
+  const fakeHarnessCli = (opts = {}) => {
+    const fs = require('fs'), os = require('os');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-fake-cli-'));
+    const state = path.join(dir, 'version');
+    const log = path.join(dir, 'calls');
+    fs.writeFileSync(state, '2.1.0 (Claude Code)\n');
+    const update = opts.fail
+      ? `printf '\\033[31mError\\033[0m: EACCES ${os.homedir()}/.local/share/claude token sk-ant-abcdefghijklmnop\\n' >&2; exit 3`
+      : `${opts.delayMs ? `/bin/sleep ${opts.delayMs / 1000}; ` : ''}printf '2.2.0 (Claude Code)\\n' > '${state}'; echo updated`;
+    fs.writeFileSync(path.join(dir, 'claude'), [
+      '#!/bin/sh',
+      '# embedded IDs for the scan: "claude-opus-7-1" "claude-sonnet-7-0"',
+      `echo "$@" >> '${log}'`,
+      'case "$1" in',
+      `  --version) /bin/cat '${state}' ;;`,
+      `  auth) echo '{"loggedIn":true}' ;;`,
+      `  update) ${update} ;;`,
+      'esac',
+    ].join('\n'), { mode: 0o755 });
+    const prevPath = process.env.PATH;
+    process.env.PATH = `${dir}:/usr/bin:/bin`;
+    return {
+      calls: () => { try { return fs.readFileSync(log, 'utf8').trim().split('\n'); } catch { return []; } },
+      restore: () => { process.env.PATH = prevPath; fs.rmSync(dir, { recursive: true, force: true }); },
+    };
+  };
+  const waitSent = async (sent, pred, ms = 8000) => {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      const hit = sent.find(pred);
+      if (hit) return hit;
+      await new Promise(r => setTimeout(r, 20));
+    }
+    throw new Error('timed out waiting for agent message');
+  };
+
+  await uta('harness_update — runs the fixed `claude update`, reports running → done with versions, re-sends harnesses_update with the new scan', async () => {
+    const stoa = require('./stoa.js');
+    const sent = [];
+    const cli = fakeHarnessCli();
+    stoa.__setDeps({ send: (m) => sent.push(m), doRestart: () => {} });
+    try {
+      stoa.activeTriggers.clear();
+      await stoa.handleAgentMessage({ type: 'harness_update', request_id: 'rq-1', harness: 'claude', command: 'rm -rf /' });
+      const done = await waitSent(sent, m => m.type === 'harness_update_status' && m.state === 'done');
+      const states = sent.filter(m => m.type === 'harness_update_status').map(m => m.state);
+      assert.deepStrictEqual(states, ['running', 'done'], 'idle agent starts at once');
+      assert.deepStrictEqual(cli.calls().filter(c => c !== '--version' && !c.startsWith('auth')), ['update'], 'only the fixed update command ran (server-sent fields ignored)');
+      assert.strictEqual(done.request_id, 'rq-1');
+      assert.strictEqual(done.old_version, '2.1.0 (Claude Code)');
+      assert.strictEqual(done.new_version, '2.2.0 (Claude Code)');
+      assert.strictEqual(done.error, null);
+      const hu = sent.find(m => m.type === 'harnesses_update');
+      assert.ok(hu, 'harnesses_update re-sent after the update');
+      assert.ok(sent.indexOf(hu) < sent.indexOf(done), 'fresh harness status lands before done');
+      assert.strictEqual(hu.harness_status.find(s => s.id === 'claude').version, '2.2.0 (Claude Code)');
+      assert.ok(hu.claude_model_candidates.includes('claude-opus-7-1'), `scan re-run: ${hu.claude_model_candidates}`);
+      assert.strictEqual(stoa.harnessUpdates.size, 0, 'update slot released');
+    } finally { cli.restore(); stoa.activeTriggers.clear(); stoa.__resetDeps(); }
+  });
+
+  await uta('harness_update — waits for the harness to go idle, holds its new triggers meanwhile; other harnesses keep running', async () => {
+    const stoa = require('./stoa.js');
+    const os = require('os');
+    const sent = [];
+    const ran = [];
+    const mockSession = (harness) => ({
+      _systemPromptHash: null, _harness: harness, flags: [], env: {}, resumeId: null,
+      on: () => {}, removeListener: () => {}, shutdown: () => {}, cancelTask: () => false,
+      send: async () => ({ content: 'ok', sessionId: null }),
+    });
+    const cli = fakeHarnessCli({ delayMs: 600 });
+    stoa.__setDeps({
+      send: (m) => sent.push(m), doRestart: () => {},
+      getSession: (dir, roomId, env, subId, threadId, sp, sph, harness) => { ran.push(roomId); return mockSession(harness || 'claude'); },
+      prepareResume: async (a) => mockSession(a.harness || 'claude'),
+    });
+    const trig = (roomId, harness) => ({ type: 'agent_trigger', room_id: roomId, message_id: `held-${roomId}`, prompt: 'x', harness, workdir: os.tmpdir() });
+    try {
+      stoa.activeTriggers.clear();
+      stoa.triggerQueue.length = 0;
+      stoa.activeTriggers.set('busy-claude', { room_id: 1, harness: 'claude', startedAt: Date.now(), lastActivity: Date.now() });
+      await stoa.handleAgentMessage({ type: 'harness_update', request_id: 'rq-2', harness: 'claude' });
+      assert.deepStrictEqual(sent.filter(m => m.type === 'harness_update_status').map(m => m.state), ['waiting_idle']);
+      assert.deepStrictEqual(cli.calls().filter(c => c === 'update'), [], 'nothing runs while a claude run is active');
+      await stoa.handleAgentMessage({ type: 'harness_update', request_id: 'rq-dup', harness: 'claude' });
+      assert.strictEqual(sent.find(m => m.request_id === 'rq-dup')?.state, 'failed', 'a second request for the same harness is refused');
+      stoa.activeTriggers.clear(); // the claude run ends
+      stoa.triggerQueue.push(trig(2, 'claude'), trig(3, 'codex'));
+      stoa.drainQueue();
+      await waitSent(sent, m => m.request_id === 'rq-2' && m.state === 'running');
+      await waitSent(sent, m => m.type === 'agent_complete' && m.message_id === 'held-3');
+      assert.deepStrictEqual(ran, [3], 'the codex trigger ran during the claude update');
+      assert.ok(stoa.triggerQueue.some(t => t.message_id === 'held-2'), 'the claude trigger stays queued while its CLI updates');
+      await waitSent(sent, m => m.request_id === 'rq-2' && m.state === 'done');
+      await waitSent(sent, m => m.type === 'agent_complete' && m.message_id === 'held-2');
+      assert.deepStrictEqual(ran, [3, 2], 'released once the update finished');
+    } finally {
+      stoa.triggerQueue.length = 0;
+      cli.restore(); stoa.activeTriggers.clear(); stoa.__resetDeps();
+    }
+  });
+
+  await uta('harness_update — failure reports a sanitized error (no ANSI, home masked, token redacted, ≤300 chars)', async () => {
+    const stoa = require('./stoa.js');
+    const sent = [];
+    const cli = fakeHarnessCli({ fail: true });
+    stoa.__setDeps({ send: (m) => sent.push(m), doRestart: () => {} });
+    try {
+      stoa.activeTriggers.clear();
+      await stoa.handleAgentMessage({ type: 'harness_update', request_id: 'rq-3', harness: 'claude' });
+      const failed = await waitSent(sent, m => m.type === 'harness_update_status' && m.state === 'failed');
+      assert.match(failed.error, /exited with code 3/);
+      assert.match(failed.error, /EACCES ~\/\.local\/share\/claude/);
+      assert.ok(!failed.error.includes(require('os').homedir()), 'home path masked');
+      assert.ok(!failed.error.includes('\x1b'), 'ANSI stripped');
+      assert.ok(!failed.error.includes('sk-ant-'), 'token redacted');
+      assert.ok(failed.error.length <= 300);
+      assert.strictEqual(failed.new_version, '2.1.0 (Claude Code)', 'version re-detected even after a failure');
+    } finally { cli.restore(); stoa.activeTriggers.clear(); stoa.__resetDeps(); }
+  });
+
+  await uta('harness_update — unknown harness or missing request_id ignored; a restart waits for a running update', async () => {
+    const stoa = require('./stoa.js');
+    const sent = [];
+    let restarts = 0;
+    const cli = fakeHarnessCli({ delayMs: 400 });
+    stoa.__setDeps({ send: (m) => sent.push(m), doRestart: () => { restarts++; } });
+    try {
+      stoa.activeTriggers.clear();
+      for (const bad of [{ harness: 'bash', request_id: 'x' }, { harness: '../claude', request_id: 'x' }, { harness: 'claude' }, { harness: 'claude', request_id: 7 }]) {
+        await stoa.handleAgentMessage({ type: 'harness_update', ...bad });
+      }
+      assert.deepStrictEqual(sent, [], 'nothing reported, nothing run');
+      assert.deepStrictEqual(cli.calls(), []);
+      await stoa.handleAgentMessage({ type: 'harness_update', request_id: 'rq-4', harness: 'claude' });
+      await waitSent(sent, m => m.state === 'running');
+      await stoa.handleAgentMessage({ type: 'restart', reason: 'manual' });
+      assert.strictEqual(restarts, 0, 'restart deferred while the CLI is being replaced');
+      await waitSent(sent, m => m.state === 'done');
+      assert.strictEqual(restarts, 1, 'deferred restart fires once the update finished');
+    } finally { cli.restore(); stoa.activeTriggers.clear(); stoa.__resetDeps(); }
+  });
+
+  await uta('model_unavailable — a run the CLI rejects for an unknown model is reported once, with an update hint; third-party and normal results are not', async () => {
+    const stoa = require('./stoa.js');
+    const os = require('os');
+    let reply = null;
+    const mockSession = {
+      _systemPromptHash: null, _harness: 'claude', flags: [], env: {}, resumeId: null,
+      on: () => {}, removeListener: () => {}, shutdown: () => {}, cancelTask: () => false,
+      send: async () => reply,
+    };
+    const sent = [];
+    stoa.__setDeps({ send: (m) => sent.push(m), getSession: () => mockSession, prepareResume: async () => mockSession, doRestart: () => {} });
+    const run = async (id, msg, result) => {
+      reply = result;
+      sent.length = 0;
+      await stoa.processTrigger({ room_id: 98, message_id: id, prompt: 'hi', workdir: os.tmpdir(), ...msg });
+      return { complete: sent.find(m => m.type === 'agent_complete'), reports: sent.filter(m => m.type === 'model_unavailable') };
+    };
+    const unknown = "There's an issue with the selected model (claude-opus-9-9). It may not exist or you may not have access to it.";
+    try {
+      stoa.activeTriggers.clear();
+      let r = await run('mu-1', { model: 'claude-opus-9-9' }, { content: unknown, isError: true, sessionId: null });
+      assert.deepStrictEqual(r.reports, [{ type: 'model_unavailable', harness: 'claude', model: 'claude-opus-9-9' }]);
+      assert.match(r.complete.content, /Update CLI dari Settings/);
+      assert.strictEqual(r.complete.result_meta.exit_reason, 'error');
+      r = await run('mu-2', { model: 'claude-opus-9-9', base_url: 'http://127.0.0.1:9/' }, { content: unknown, isError: true, sessionId: null });
+      assert.deepStrictEqual(r.reports, [], 'third-party provider rejected it, not the CLI');
+      r = await run('mu-3', { model: 'claude-opus-9-9' }, { content: 'The model was not found in the docs, here is why…', isError: false, sessionId: null });
+      assert.deepStrictEqual(r.reports, [], 'assistant prose is never classified');
+      r = await run('mu-4', { model: 'claude-opus-9-9' }, { content: 'API Error: 429 rate limit — model overloaded', isError: true, sessionId: null });
+      assert.deepStrictEqual(r.reports, [], 'capacity errors are not "unknown model"');
+    } finally { stoa.activeTriggers.clear(); stoa.__resetDeps(); }
+  });
+
+  await uta('harness-session — isModelUnavailableError / sanitizeUpdateError / claudeModelLabel', () => {
+    const { isModelUnavailableError: is, sanitizeUpdateError: clean, claudeModelLabel: label, claudeModelKey: key } = require('./harness-session');
+    assert.ok(is('API Error: 404 {"type":"error","error":{"type":"not_found_error","message":"model: claude-x-1"}}'));
+    assert.ok(is('The model `gpt-9-sol` does not exist or you do not have access to it.'));
+    assert.ok(is("The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account."));
+    assert.ok(!is('401 Unauthorized: invalid model access token'), 'auth wins');
+    assert.ok(!is('Error: 529 overloaded'));
+    assert.ok(!is('x'.repeat(2001) + ' unknown model'), 'long text (a transcript) never classified');
+    assert.ok(!is(null) && !is(''));
+    assert.strictEqual(clean('a\x1b[1mb\x1b[0m\x07 /home/kai/.npm C:\\Users\\kai\\AppData gho_abcdefghijklmnopqrst', null), 'ab ~/.npm ~\\AppData [redacted]');
+    assert.strictEqual(clean('x'.repeat(500), null).length, 300);
+    assert.strictEqual(clean('   ', null), null);
+    assert.strictEqual(label('claude-opus-5-5'), 'Opus 5.5');
+    assert.strictEqual(label('claude-haiku-4-5-20251001'), 'Haiku 4.5');
+    assert.strictEqual(label('claude-opus-6'), 'Opus 6');
+    assert.strictEqual(label('claude-test-1'), null);
+    assert.strictEqual(key('claude-haiku-4-5-20251001').base, 'claude-haiku-4-5');
+    assert.strictEqual(key('claude-opus-4-20250514').base, 'claude-opus-4');
+  });
+
   await uta('agent pending restart — forced after RESTART_STALL_MS without trigger progress, never while the trigger progresses', async () => {
     const stoa = require('./stoa.js');
     const sent = [];
@@ -15342,6 +15541,126 @@ async function run() {
     assert.strictEqual(route({}), JSON.stringify({ toast: 'failed to save' }));
   });
 
+  await test('harness CLI update UI — rows follow harness_update_status and harness_status[].update; unlisted models stay selectable with a quiet marker', async () => {
+    const vm = require('vm');
+    const fs = require('fs');
+    class El {
+      constructor(tag) { this.tagName = tag; this.children = []; this.className = ''; this.dataset = {}; this.attrs = {}; this.title = ''; this.disabled = false; this._text = ''; this.listeners = {}; const self = this; this.classList = { toggle(c, on) { const s = new Set(self.className.split(' ').filter(Boolean)); if (on) s.add(c); else s.delete(c); self.className = [...s].join(' '); }, contains: c => self.className.split(' ').includes(c) }; }
+      set textContent(v) { this._text = String(v); this.children = []; }
+      get textContent() { return this._text + this.children.map(c => c.textContent).join(''); }
+      set innerHTML(v) { this.children = []; this._text = ''; this._html = v; }
+      setAttribute(k, v) { this.attrs[k] = String(v); }
+      getAttribute(k) { return this.attrs[k] ?? null; }
+      appendChild(c) { this.children.push(c); return c; }
+      append(...cs) { cs.forEach(c => this.appendChild(c)); }
+      replaceChildren() { this.children = []; }
+      get childElementCount() { return this.children.length; }
+      addEventListener(t, fn) { this.listeners[t] = fn; }
+      all() { return this.children.flatMap(c => [c, ...c.all()]); }
+      matches(sel) {
+        const m = sel.match(/^\.([\w-]+)(?:\[data-([\w-]+)="([^"]*)"\])?$/);
+        if (!m) throw new Error('unsupported selector ' + sel);
+        const key = m[2] && m[2].replace(/-(\w)/g, (_, c) => c.toUpperCase());
+        return this.className.split(' ').includes(m[1]) && (!key || String(this.dataset[key]) === m[3]);
+      }
+      querySelector(sel) { return this.all().find(e => e.matches(sel)) || null; }
+      querySelectorAll(sel) { return this.all().filter(e => e.matches(sel)); }
+    }
+    const root = new El('div');
+    const toasts = [];
+    const calls = [];
+    let respond = null;
+    const ctx = {
+      document: { createElement: t => new El(t), querySelectorAll: sel => root.querySelectorAll(sel), getElementById: () => null, addEventListener() {} },
+      CSS: { escape: s => s }, localStorage: { getItem: () => null },
+      showToast: (m, o) => toasts.push([m, !!o?.error]), showLogin() {},
+      fetch: (url, opts) => { calls.push([url, opts?.method]); return new Promise(r => { respond = (status, body) => r({ ok: status < 300, status, json: async () => body }); }); },
+    };
+    vm.createContext(ctx);
+    for (const f of ['public/js/composer/models.js', 'public/js/settings/agents.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
+    const run = s => vm.runInContext(s, ctx);
+    run(`allActors = [{ id: 5, name: 'Atlas', online: true, adapter: 'claude', harness_status: [
+      { id: 'claude', installed: true, version: '2.1.321', models: [{ id: 'claude-opus-5-5', label: 'Opus 5.5', listed: true }, { id: 'claude-opus-4-1', label: 'Opus 4.1', listed: false }],
+        update: { state: 'failed', request_id: 'r0', old_version: '2.1.320', new_version: null, error: '<b>npm</b> EACCES' } },
+      { id: 'codex', installed: true, version: null, models: [{ id: 'gpt-5.5', label: 'GPT-5.5', listed: false }], update: null },
+      { id: 'gemini', installed: false, version: null } ] }]`);
+    const list = run('_makeCliList(allActors[0])');
+    root.appendChild(list);
+    const row = h => list.querySelector(`.s-cli-row[data-cli-harness="${h}"]`);
+    const look = h => { const r = row(h); return [r.querySelector('.s-cli-ver').textContent, r.querySelector('.s-cli-btn').disabled, r.querySelector('.s-cli-status').textContent]; };
+
+    assert.deepStrictEqual(list.querySelectorAll('.s-cli-row').map(r => r.dataset.cliHarness), ['claude', 'codex'], 'only installed CLIs get a row');
+    assert.deepStrictEqual(look('claude'), ['2.1.321', false, 'Update failed: <b>npm</b> EACCES'], 'reload restores the last state; the error stays literal text');
+    assert.ok(row('claude').querySelector('.s-cli-status').classList.contains('is-error'));
+    assert.deepStrictEqual(look('codex'), ['version unknown', false, '']);
+
+    // Click → POST to the contract route; the button locks until the server reports back.
+    row('claude').querySelector('.s-cli-btn').listeners.click();
+    assert.deepStrictEqual(calls, [['/api/agents/5/harnesses/claude/update', 'POST']]);
+    assert.deepStrictEqual(look('claude').slice(1), [true, 'Starting update…']);
+    row('claude').querySelector('.s-cli-btn').listeners.click();
+    assert.strictEqual(calls.length, 1, 'no double request while one is pending');
+    // An actor_status snapshot taken before the request (old failed state) does not unlock the pending button.
+    run(`sSyncCliUi(allActors[0], { harness_status: [{ id: 'claude', installed: true, version: '2.1.321', update: { state: 'failed', request_id: 'r0', error: 'old' } }] })`);
+    assert.deepStrictEqual(look('claude').slice(1), [true, 'Starting update…'], 'a stale snapshot cannot clear a pending request');
+    // The WS status can beat the HTTP response; the response must not roll it back.
+    run(`sHandleHarnessUpdateStatus({ actor_id: 5, harness: 'claude', request_id: 'r1', state: 'waiting_idle', old_version: '2.1.321' })`);
+    respond(202, { request_id: 'r1' });
+    await new Promise(r => setImmediate(r));
+    assert.deepStrictEqual(look('claude').slice(1), [true, 'Waiting for idle — updates once current runs finish']);
+    run(`sHandleHarnessUpdateStatus({ actor_id: 5, harness: 'claude', request_id: 'r1', state: 'running', old_version: '2.1.321' })`);
+    assert.deepStrictEqual(look('claude').slice(1), [true, 'Updating…']);
+    run(`sHandleHarnessUpdateStatus({ actor_id: 5, harness: 'claude', request_id: 'r1', state: 'done', old_version: '2.1.321', new_version: '2.1.330' })`);
+    assert.deepStrictEqual(look('claude').slice(1), [false, 'Updated 2.1.321 → 2.1.330']);
+    assert.deepStrictEqual(toasts.pop(), ['Atlas: Claude CLI is now 2.1.330', false]);
+    run(`sHandleHarnessUpdateStatus({ actor_id: 5, harness: 'claude', request_id: 'r1', state: 'done', old_version: '2.1.321', new_version: '2.1.330' })`);
+    assert.strictEqual(toasts.length, 0, 'a repeated status does not toast twice');
+    // harnesses_update after done brings the new version through actor_status.
+    run(`allActors[0].harness_status[0].version = '2.1.330'; sSyncCliUi(allActors[0], { online: true, harness_status: [{ id: 'claude', installed: true, version: '2.1.330', update: { state: 'done', request_id: 'r1', old_version: '2.1.321', new_version: '2.1.330' } }, { id: 'codex', installed: true, version: '0.130.0', update: { state: 'failed', request_id: 'c9', error: 'network down' } }] })`);
+    assert.deepStrictEqual([look('claude')[0], look('codex')[2]], ['2.1.330', 'Update failed: network down'], 'the raw actor_status payload (no id) still seeds this agent');
+    run(`sSyncCliUi(allActors[0], { online: true, harness_status: [{ id: 'codex', installed: true, version: '0.130.0', update: null }] })`);
+    assert.strictEqual(look('codex')[2], '', 'server says no update → status clears');
+    run(`sHandleHarnessUpdateStatus({ actor_id: 5, harness: 'claude', request_id: 'r2', state: 'bogus' })`);
+    assert.strictEqual(look('claude')[2], 'Updated 2.1.321 → 2.1.330', 'unknown states are ignored');
+
+    // Server refusal (409) shows its reason next to the button and frees it.
+    row('codex').querySelector('.s-cli-btn').listeners.click();
+    respond(409, { error: 'update already running' });
+    await new Promise(r => setImmediate(r));
+    assert.deepStrictEqual(look('codex').slice(1), [false, 'Update failed: update already running']);
+
+    // Offline: every button disables even though allActors keeps online=true.
+    run(`sSyncCliUi({ ...allActors[0], online: false }, { online: false })`);
+    assert.deepStrictEqual(['claude', 'codex'].map(h => [look(h)[1], row(h).querySelector('.s-cli-btn').title]), [[true, 'Offline'], [true, 'Offline']]);
+    row('codex').querySelector('.s-cli-btn').listeners.click();
+    assert.strictEqual(calls.length, 2, 'offline click sends nothing');
+    run(`sSyncCliUi({ ...allActors[0], online: true }, { online: true })`);
+    assert.strictEqual(look('codex')[1], false);
+
+    // listed=false keeps the model and marks it; a model the agent never reported counts as listed.
+    const claude = JSON.parse(run(`JSON.stringify(withAgentListed([{ value: 'claude-opus-5-5' }, { value: 'claude-opus-4-1' }, { value: 'claude-sonnet-9' }], allActors[0], 'claude'))`));
+    assert.deepStrictEqual(claude.map(m => [m.value, m.listed]), [['claude-opus-5-5', true], ['claude-opus-4-1', false], ['claude-sonnet-9', true]]);
+    const codex = JSON.parse(run(`JSON.stringify(_agentHarnessModels(allActors[0].harness_status, 'codex'))`));
+    assert.deepStrictEqual(codex.map(m => [m.value, m.listed]), [['gpt-5.5', false]], 'unlisted harness model is kept');
+    const sel = new El('select');
+    run('_saAppendModelOpt')(sel, { value: 'claude-opus-4-1', label: 'Opus 4.1', listed: false });
+    run('_saAppendModelOpt')(sel, { value: 'claude-opus-5-5', label: 'Opus 5.5', listed: true });
+    assert.deepStrictEqual(sel.children.map(o => [o.value, o.textContent, o.title]), [
+      ['claude-opus-4-1', 'Opus 4.1 · not listed by CLI', "Not listed by this machine's CLI — it may still work"],
+      ['claude-opus-5-5', 'Opus 5.5', ''],
+    ]);
+
+    // Tier picker labels: two models of one family never share a label, known or not.
+    const ids = ['claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5-5', 'claude-sonnet-5', 'claude-opus-6', 'claude-opus-6-1'];
+    const labels = ids.map(id => run('claudeModelLabel')(id));
+    assert.deepStrictEqual(labels, ['Opus 5.5', 'Opus 5', 'Sonnet 5.5', 'Sonnet 5', 'opus-6', 'opus-6-1']);
+    const fallbackIds = JSON.parse(run(`JSON.stringify(getAvailableModels().filter(m => m.platform === 'anthropic').map(m => m.value))`));
+    const all = fallbackIds.concat(ids).map(id => run('claudeModelLabel')(id));
+    assert.strictEqual(new Set(all).size, new Set(fallbackIds.concat(ids)).size, 'every Claude model ID gets its own label');
+    const sidebar = fs.readFileSync(path.join(__dirname, 'public/js/rooms/room-sidebar.js'), 'utf8');
+    assert.ok(!/shortName|def\.innerHTML/.test(sidebar), 'tier picker labels go through claudeModelLabel and textContent');
+  });
+
   await test('primary agent — isPrimaryParticipant matches by actor id: is_primary wins, room primary_actor_id is the fallback, no field marks nobody', () => {
     const vm = require('vm');
     const fs = require('fs');
@@ -16585,15 +16904,17 @@ async function run() {
   });
 
   // Claude model candidates scanned from the CLI binary (agent side, harness-session.js)
-  await test('extractClaudeModelIds — strict pattern drops Bedrock suffix, codenames, aliases, legacy dated', () => {
+  await test('extractClaudeModelIds — strict pattern: major-only and dated IDs kept, Bedrock suffix cut, codenames and run-ons dropped', () => {
     const { extractClaudeModelIds } = require('./harness-session');
     const text = [
       'anthropic.claude-opus-5-5-v1:0', 'us.anthropic.claude-sonnet-5-5-v1', '"claude-haiku-5-5"',
       'claude-fable-5-mythos-5', 'claude-opus-5', 'claude-sonnet-5,', 'claude-opus-4-20250514',
       'claude-sonnet-4-5-20250929', 'x_claude-opus-9-9', 'claude-3-5-sonnet-20241022', 'claude-opus-4-1x',
+      'claude-opus-4-5-mythos', 'claude-opus-4-6-1', 'claude-opus-6-6[1m]',
     ].join('\0\x01');
     assert.deepStrictEqual([...extractClaudeModelIds(text)].sort(), [
-      'claude-haiku-5-5', 'claude-opus-5-5', 'claude-sonnet-4-5-20250929', 'claude-sonnet-5-5',
+      'claude-haiku-5-5', 'claude-opus-4-20250514', 'claude-opus-5', 'claude-opus-5-5', 'claude-opus-6-6',
+      'claude-sonnet-4-5-20250929', 'claude-sonnet-5', 'claude-sonnet-5-5',
     ]);
   });
 
@@ -16790,7 +17111,7 @@ async function run() {
       for (const [id, def] of list) ins.run(codexId, id, id, def ? 1 : 0);
     };
 
-    await test('harness_models sync — new model added, unreported deactivated, active default kept', async () => {
+    await test('harness_models sync — new model added, unreported model stays active (additive), active default kept', async () => {
       assert.ok(codexId, 'codex harness row missing');
       syncA = await createOnlineTestAgent('__test-hm-sync-a', '/tmp/stoa-test-hm-sync-a');
       assert.ok(syncA, 'agent setup failed');
@@ -16801,46 +17122,48 @@ async function run() {
       ]);
       const r = rows();
       assert.strictEqual(r['gpt-test-new']?.is_active, 1, 'reported model must be inserted active');
-      assert.strictEqual(r['gpt-test-stale'].is_active, 0, 'unreported model must be deactivated');
+      assert.strictEqual(r['gpt-test-stale'].is_active, 1, 'a model missing from the CLI list may still work: never deactivated');
       assert.strictEqual(r['gpt-test-keep'].is_default, 1, 'existing active default must not be overwritten');
       assert.strictEqual(r['gpt-test-new'].is_default, 0);
       const api = (await req('GET', '/api/harnesses')).body.find(h => h.name === 'codex');
-      const ids = api.models.map(m => m.model_id);
-      assert.ok(ids.includes('gpt-test-new') && !ids.includes('gpt-test-stale'), `api: ${ids}`);
-      assert.strictEqual(api.models.find(m => m.model_id === 'gpt-test-new').display_name, 'GPT Test New');
+      const byId = Object.fromEntries(api.models.map(m => [m.model_id, m]));
+      assert.strictEqual(byId['gpt-test-new']?.display_name, 'GPT Test New');
+      assert.strictEqual(byId['gpt-test-new'].listed, true);
+      assert.strictEqual(byId['gpt-test-stale']?.listed, false, 'offered, marked unlisted');
+      // Per agent: its own list first, in CLI order, with its own default; the rest after it.
+      const own = (await req('GET', '/api/actors')).body.find(a => a.id === syncA.actorId).harness_status.find(s => s.id === 'codex').models;
+      assert.deepStrictEqual(own.map(m => [m.id, m.is_default, m.listed]), [
+        ['gpt-test-new', true, true], ['gpt-test-keep', false, true], ['gpt-test-stale', false, false],
+      ]);
     });
 
-    await test('harness_models sync — default deactivated → reporter default becomes the only default', async () => {
+    await test('harness_models sync — no active default → reporter default becomes the only default', async () => {
       if (!syncA) { console.log('    (skipped)'); return; }
-      seed([['gpt-test-stale', true], ['gpt-test-keep', false]]);
+      seed([['gpt-test-stale', false], ['gpt-test-keep', false]]);
       await report(syncA, 'codex', [
         { id: 'gpt-test-keep', label: 'Keep', is_default: false },
         { id: 'gpt-test-new', label: 'New', is_default: true },
       ]);
       const r = rows();
-      assert.strictEqual(r['gpt-test-stale'].is_active, 0);
-      assert.strictEqual(r['gpt-test-stale'].is_default, 0, 'stale default must be cleared');
       assert.strictEqual(r['gpt-test-new'].is_default, 1, 'reporter default picked');
       const defaults = hmDb.prepare('SELECT COUNT(*) c FROM harness_models WHERE harness_id=? AND is_default=1').get(codexId).c;
       assert.strictEqual(defaults, 1, 'exactly one default');
     });
 
-    await test('harness_models sync — union of online agents: second agent does not deactivate the first', async () => {
+    await test('harness_models sync — agents on different CLI versions only ever add to the list', async () => {
       if (!syncA) { console.log('    (skipped)'); return; }
       syncB = await createOnlineTestAgent('__test-hm-sync-b', '/tmp/stoa-test-hm-sync-b');
       assert.ok(syncB, 'agent B setup failed');
       await report(syncB, 'codex', [{ id: 'gpt-test-only-b', label: 'B', is_default: true }]);
-      let r = rows();
-      assert.strictEqual(r['gpt-test-only-b']?.is_active, 1);
-      assert.strictEqual(r['gpt-test-new'].is_active, 1, 'model still reported by online agent A must stay active');
-      // Once A is offline, B's next report is the whole online picture → A-only models go inactive.
       const closed = new Promise(res => syncA.ws.once('close', res));
       syncA.ws.close(); await closed;
       await new Promise(res => setTimeout(res, 100));
       await report(syncB, 'codex', [{ id: 'gpt-test-only-b', label: 'B', is_default: true }]);
-      r = rows();
-      assert.strictEqual(r['gpt-test-new'].is_active, 0, 'model of offline agent deactivated');
-      assert.strictEqual(r['gpt-test-only-b'].is_default, 1, 'default moved to an active model');
+      const r = rows();
+      assert.strictEqual(r['gpt-test-only-b']?.is_active, 1);
+      assert.strictEqual(r['gpt-test-new'].is_active, 1, 'a model only the offline agent listed stays active');
+      const own = (await req('GET', '/api/actors')).body.find(a => a.id === syncB.actorId).harness_status.find(s => s.id === 'codex').models;
+      assert.deepStrictEqual(own.find(m => m.id === 'gpt-test-new')?.listed, false, 'B can still pick it, marked unlisted');
     });
 
     await test('harness_models sync — models:null and claude reports leave the table untouched', async () => {
@@ -16864,180 +17187,210 @@ async function run() {
     });
   }
 
-  // Custom Claude models (Settings) — extend ANTHROPIC_MODELS without a code change
+  // Retired: owner-added custom Claude models (models now come from each agent's CLI scan)
+  await test('custom-models endpoints removed → 404', async () => {
+    for (const [m, p, b] of [['POST', '/api/settings/custom-models', { value: 'claude-x-1' }], ['GET', '/api/settings/custom-models/candidates'], ['DELETE', '/api/settings/custom-models/claude-x-1']]) {
+      assert.strictEqual((await req(m, p, b)).status, 404, `${m} ${p}`);
+    }
+  });
+
+  // Claude models from the agents' CLI binary scan: harness_models rows + per-agent `listed`
   {
     const cmDb = require('./db');
-    const savedSetting = cmDb.prepare("SELECT value FROM settings WHERE scope='global' AND key_name='custom_claude_models'").get()?.value ?? null;
-    const anthropicIds = async () => (await req('GET', '/api/ai/models')).body.find(g => g.platform_id === 'anthropic').models;
-    const enc = encodeURIComponent;
-
-    await test('custom models — POST adds model; listed in /api/ai/models and claude /api/harnesses', async () => {
-      cmDb.prepare("DELETE FROM settings WHERE scope='global' AND key_name='custom_claude_models'").run();
-      const r = await req('POST', '/api/settings/custom-models', { value: 'claude-test-future-1', label: 'Future 1' });
-      assert.strictEqual(r.status, 201, r.raw);
-      assert.deepStrictEqual(r.body, { value: 'claude-test-future-1', label: 'Future 1', custom: true });
-      const m = (await anthropicIds()).find(x => x.value === 'claude-test-future-1');
-      assert.ok(m, 'custom model missing from /api/ai/models');
-      assert.strictEqual(m.custom, true);
-      assert.strictEqual(m.label, 'Future 1');
-      assert.ok((await anthropicIds()).filter(x => x.custom).every(x => x.value.startsWith('claude-')));
-      assert.ok(!(await anthropicIds()).find(x => x.value === 'claude-opus-5-5').custom, 'built-ins must not be marked custom');
-      const claude = (await req('GET', '/api/harnesses')).body.find(h => h.name === 'claude');
-      assert.ok(claude.models.some(x => x.model_id === 'claude-test-future-1'), 'claude harness models must include custom');
-      assert.ok(claude.models.some(x => x.model_id === 'claude-opus-5-5'), 'claude harness models must include built-ins');
-    });
-
-    await test('custom models — label defaults to value, duplicate 409, built-in 409', async () => {
-      const r = await req('POST', '/api/settings/custom-models', { value: 'claude-test-nolabel-1' });
-      assert.strictEqual(r.status, 201, r.raw);
-      assert.strictEqual(r.body.label, 'claude-test-nolabel-1');
-      assert.strictEqual((await req('POST', '/api/settings/custom-models', { value: 'claude-test-future-1' })).status, 409);
-      for (const value of ['claude-opus-5-5', 'claude-fable-5-2', 'claude-test-future-1']) {
-        assert.strictEqual((await req('POST', '/api/settings/custom-models', { value })).status, 409, `${value} is built-in`);
-      }
-      const stored = JSON.parse(cmDb.prepare("SELECT value FROM settings WHERE scope='global' AND key_name='custom_claude_models'").get().value);
-      assert.deepStrictEqual(stored.map(x => x.value), ['claude-test-future-1', 'claude-test-nolabel-1'], 'rejected posts must not be stored');
-    });
-
-    await test('custom models — invalid value/label → 400', async () => {
-      for (const value of ['gpt-6', 'claude-', 'claude-X', 'Claude-haiku', 'claude-a/../b', 'claude-a b', 'claude-' + 'a'.repeat(63), 123, null]) {
-        const r = await req('POST', '/api/settings/custom-models', { value });
-        assert.strictEqual(r.status, 400, `value ${JSON.stringify(value)} → ${r.status}`);
-      }
-      assert.strictEqual((await req('POST', '/api/settings/custom-models', { value: 'claude-ok-1', label: 'x'.repeat(41) })).status, 400);
-      assert.strictEqual((await req('POST', '/api/settings/custom-models', { value: 'claude-ok-1', label: 42 })).status, 400);
-      assert.strictEqual((await rawReq('POST', '/api/settings/custom-models', '{nope', 'application/json')).status, 400);
-    });
-
-    await test('custom models — max 20 entries', async () => {
-      const stored = () => JSON.parse(cmDb.prepare("SELECT value FROM settings WHERE scope='global' AND key_name='custom_claude_models'").get().value);
-      for (let i = stored().length; i < 20; i++) {
-        assert.strictEqual((await req('POST', '/api/settings/custom-models', { value: `claude-test-cap-${i}` })).status, 201);
-      }
-      const r = await req('POST', '/api/settings/custom-models', { value: 'claude-test-cap-over' });
-      assert.strictEqual(r.status, 400, r.raw);
-      assert.strictEqual(stored().length, 20);
-    });
-
-    await test('custom models — DELETE 204 removes it, second DELETE 404', async () => {
-      const r = await req('DELETE', `/api/settings/custom-models/${enc('claude-test-future-1')}`);
-      assert.strictEqual(r.status, 204, r.raw);
-      assert.ok(!(await anthropicIds()).some(x => x.value === 'claude-test-future-1'), 'deleted model still listed');
-      assert.strictEqual((await req('DELETE', `/api/settings/custom-models/${enc('claude-test-future-1')}`)).status, 404);
-      assert.strictEqual((await req('DELETE', '/api/settings/custom-models/%E0%A4%A')).status, 400);
-    });
-
-    await test('custom models — no session → 401; agent secret → agent_scope_denied', async () => {
-      const s = sessionCookie, d = deviceCookie;
-      sessionCookie = null; deviceCookie = null;
-      try {
-        assert.strictEqual((await req('POST', '/api/settings/custom-models', { value: 'claude-anon-1' })).status, 401);
-      } finally { sessionCookie = s; deviceCookie = d; }
-      const ag = await createOnlineTestAgent('__test-cm-agent', '/tmp/stoa-test-cm-agent');
-      assert.ok(ag, 'agent setup failed');
-      sessionCookie = null; deviceCookie = null;
-      let post, del;
-      try {
-        const h = { 'x-agent-id': String(ag.actorId), 'x-agent-secret': ag.secret };
-        post = await req('POST', '/api/settings/custom-models', { value: 'claude-agent-1' }, h);
-        del = await req('DELETE', `/api/settings/custom-models/${enc('claude-test-nolabel-1')}`, null, h);
-      } finally { sessionCookie = s; deviceCookie = d; ag.ws.close(); }
-      assert.strictEqual(post.status, 403); assert.strictEqual(post.body.error, 'agent_scope_denied');
-      assert.strictEqual(del.status, 403); assert.strictEqual(del.body.error, 'agent_scope_denied');
-      const stored = JSON.parse(cmDb.prepare("SELECT value FROM settings WHERE scope='global' AND key_name='custom_claude_models'").get().value);
-      assert.ok(!stored.some(x => x.value === 'claude-agent-1'), 'agent must not add');
-      assert.ok(stored.some(x => x.value === 'claude-test-nolabel-1'), 'agent must not delete');
-    });
-
-    await test('custom models — teardown restores setting', async () => {
-      if (savedSetting === null) cmDb.prepare("DELETE FROM settings WHERE scope='global' AND key_name='custom_claude_models'").run();
-      else cmDb.prepare("UPDATE settings SET value=? WHERE scope='global' AND key_name='custom_claude_models'").run(savedSetting);
-    });
-  }
-
-  // GET /api/settings/custom-models/candidates — union of online agents' scanned IDs minus what Stoa lists
-  {
-    const ccDb = require('./db');
-    const savedCustom = ccDb.prepare("SELECT value FROM settings WHERE scope='global' AND key_name='custom_claude_models'").get()?.value ?? null;
-    let candA = null, candB = null;
-    const sendCandidates = async (ag, extra) => {
+    const claudeHid = cmDb.prepare("SELECT id FROM harnesses WHERE name='claude'").get()?.id;
+    const snapshot = cmDb.prepare('SELECT * FROM harness_models WHERE harness_id=?').all(claudeHid);
+    let agA = null, agB = null;
+    const claudeRows = () => Object.fromEntries(cmDb.prepare('SELECT model_id, display_name, is_active FROM harness_models WHERE harness_id=?').all(claudeHid).map(r => [r.model_id, r]));
+    const reportClaude = async (ag, candidates, version = '2.2.0 (Claude Code)') => {
       ag.ws.send(JSON.stringify({
-        type: 'harnesses_update',
-        harnesses_available: ['claude'],
-        harness_status: [{ id: 'claude', installed: true, logged_in: true, version: '2.1.300 (Claude Code)', models: null }],
-        ...extra,
+        type: 'harnesses_update', harnesses_available: ['claude'],
+        harness_status: [{ id: 'claude', installed: true, logged_in: true, version, models: [{ id: 'claude-injected-x', label: 'X', is_default: true }] }],
+        claude_cli_version: version, claude_model_candidates: candidates,
       }));
       await new Promise(r => setTimeout(r, 200));
     };
-    const get = async () => req('GET', '/api/settings/custom-models/candidates');
+    const actorModels = async (id) => {
+      const a = (await req('GET', '/api/actors')).body.find(x => x.id === id);
+      return a?.harness_status?.find(s => s.id === 'claude')?.models || [];
+    };
 
-    await test('claude candidates — malicious payload filtered; known, aliases of dated, and older-than-listed excluded', async () => {
-      ccDb.prepare("DELETE FROM settings WHERE scope='global' AND key_name='custom_claude_models'").run();
-      candA = await createOnlineTestAgent('__test-cc-a', '/tmp/stoa-test-cc-a');
-      assert.ok(candA, 'agent setup failed');
-      await sendCandidates(candA, {
-        claude_cli_version: '2.1.300 (Claude Code)',
-        claude_model_candidates: [
-          'claude-sonnet-6-0', 'claude-haiku-5-6', 'claude-haiku-5-6',
-          'claude-opus-5-5', 'claude-fable-5-2', 'claude-haiku-5-5', // built-in
-          'claude-haiku-4-5',           // alias of built-in claude-haiku-4-5-20251001
-          'claude-opus-4-5',            // older than newest listed opus
-          'claude-../../etc', '<img src=x onerror=alert(1)>', 42, { id: 'claude-opus-9-9' }, null,
-          'claude-' + 'a'.repeat(80), 'gpt-6.1-sol',
-        ],
-      });
-      const r = await get();
-      assert.strictEqual(r.status, 200, r.raw);
-      assert.deepStrictEqual(r.body, { cli_version: '2.1.300 (Claude Code)', candidates: [{ id: 'claude-sonnet-6-0' }, { id: 'claude-haiku-5-6' }] });
+    await test('claude scan → harness_models: new IDs added with derived label; built-in, alias, legacy and junk skipped', async () => {
+      agA = await createOnlineTestAgent('__test-cm-a', '/tmp/stoa-test-cm-a');
+      assert.ok(agA && claudeHid, 'setup failed');
+      await reportClaude(agA, [
+        'claude-opus-7-1', 'claude-opus-7-1-20270101', 'claude-sonnet-7', 'claude-opus-5-5', 'claude-haiku-4-5',
+        'claude-opus-4-1', 'claude-sonnet-4-20250514', 'claude-../../etc', '<img src=x>', 42, null, 'gpt-6.1-sol',
+      ]);
+      const rows = claudeRows();
+      assert.strictEqual(rows['claude-opus-7-1']?.display_name, 'Opus 7.1');
+      assert.strictEqual(rows['claude-sonnet-7']?.display_name, 'Sonnet 7');
+      for (const id of ['claude-opus-7-1-20270101', 'claude-haiku-4-5', 'claude-opus-4-1', 'claude-sonnet-4-20250514', 'claude-../../etc', 'claude-injected-x', 'gpt-6.1-sol']) {
+        assert.ok(!rows[id], `${id} must not be stored`);
+      }
     });
 
-    await test('claude candidates — an added custom model disappears from suggestions', async () => {
-      if (!candA) { console.log('    (skipped)'); return; }
-      assert.strictEqual((await req('POST', '/api/settings/custom-models', { value: 'claude-haiku-5-6', label: 'Haiku 5.6' })).status, 201);
-      assert.deepStrictEqual((await get()).body.candidates, [{ id: 'claude-sonnet-6-0' }]);
+    await test('claude models — per agent: CLI-known first, listed flag, harness_status.models from the server (agent-sent list ignored)', async () => {
+      if (!agA) { console.log('    (skipped)'); return; }
+      const models = await actorModels(agA.actorId);
+      const ids = models.map(m => m.id);
+      assert.strictEqual(ids[0], 'claude-opus-7-1', `newer-than-build models first: ${ids.slice(0, 4)}`);
+      assert.ok(!ids.includes('claude-injected-x'));
+      const byId = Object.fromEntries(models.map(m => [m.id, m]));
+      assert.strictEqual(byId['claude-opus-7-1'].listed, true);
+      assert.strictEqual(byId['claude-opus-7-1'].label, 'Opus 7.1');
+      assert.strictEqual(byId['claude-opus-5-5'].listed, true);
+      assert.strictEqual(byId['claude-haiku-4-5-20251001'].listed, true, 'alias in the scan lists the dated built-in');
+      assert.strictEqual(byId['claude-fable-5-2'].listed, false, 'built-in the CLI does not name: kept, marked unlisted');
+      assert.strictEqual(byId['claude-sonnet-5-5'].is_default, true);
+      const anthropic = (await req('GET', '/api/ai/models')).body.find(g => g.platform_id === 'anthropic');
+      assert.ok(anthropic.models.some(m => m.value === 'claude-opus-7-1' && m.label === 'Opus 7.1' && m.listed === true), 'composer list carries the new model');
+      assert.ok(anthropic.models.every(m => typeof m.listed === 'boolean' && !('custom' in m)));
+      const h = (await req('GET', '/api/harnesses')).body.find(x => x.name === 'claude');
+      assert.ok(h.models.some(m => m.model_id === 'claude-opus-7-1' && m.listed === true));
     });
 
-    await test('claude candidates — union across agents, highest CLI version, capped per agent at 50', async () => {
-      if (!candA) { console.log('    (skipped)'); return; }
-      candB = await createOnlineTestAgent('__test-cc-b', '/tmp/stoa-test-cc-b');
-      assert.ok(candB, 'agent B setup failed');
-      const flood = Array.from({ length: 60 }, (_, i) => `claude-fable-${10 + Math.floor(i / 10)}-${i % 10}`);
-      await sendCandidates(candB, { claude_cli_version: '2.1.1000', claude_model_candidates: flood });
-      const body = (await get()).body;
-      assert.strictEqual(body.cli_version, '2.1.1000', 'numeric compare: 2.1.1000 > 2.1.300');
-      const ids = body.candidates.map(c => c.id);
-      assert.ok(ids.includes('claude-sonnet-6-0'), 'agent A candidate kept');
-      assert.strictEqual(ids.filter(id => id.startsWith('claude-fable-')).length, 50, 'agent B list capped at 50');
-      assert.ok(!ids.includes('claude-fable-15-9'), 'entries past the cap dropped');
-      assert.strictEqual(ids[0], 'claude-fable-14-9', 'newest first');
+    await test('claude models — a model gone from a later scan stays offered (listed=false), never deactivated', async () => {
+      if (!agA) { console.log('    (skipped)'); return; }
+      await reportClaude(agA, ['claude-opus-5-5']);
+      assert.strictEqual(claudeRows()['claude-opus-7-1'].is_active, 1);
+      const m = (await actorModels(agA.actorId)).find(x => x.id === 'claude-opus-7-1');
+      assert.ok(m, 'still offered');
+      assert.strictEqual(m.listed, false);
+      // An agent with no scan (old client): unknown, not "unlisted".
+      agB = await createOnlineTestAgent('__test-cm-b', '/tmp/stoa-test-cm-b');
+      await reportClaude(agB, undefined);
+      assert.ok((await actorModels(agB.actorId)).every(x => x.listed === true));
     });
 
-    await test('claude candidates — non-array payload clears the agent; disconnect clears too', async () => {
-      if (!candA || !candB) { console.log('    (skipped)'); return; }
-      await sendCandidates(candB, { claude_model_candidates: 'claude-opus-9-9' });
-      assert.deepStrictEqual((await get()).body, { cli_version: '2.1.300 (Claude Code)', candidates: [{ id: 'claude-sonnet-6-0' }] });
-      const closed = new Promise(res => candA.ws.once('close', res));
-      candA.ws.close(); await closed;
-      await new Promise(res => setTimeout(res, 100));
-      assert.deepStrictEqual((await get()).body, { cli_version: null, candidates: [] });
+    await test('model_unavailable → hidden for that agent only, until its CLI version changes; bad payloads ignored', async () => {
+      if (!agA || !agB) { console.log('    (skipped)'); return; }
+      const failures = () => cmDb.prepare('SELECT harness, model_id, cli_version FROM agent_model_failures WHERE actor_id=?').all(agA.actorId);
+      for (const bad of [{ harness: 'bash', model: 'claude-opus-7-1' }, { harness: 'claude', model: '../x y' }, { harness: 'claude', model: 42 }, { harness: 'claude' }]) {
+        agA.ws.send(JSON.stringify({ type: 'model_unavailable', ...bad }));
+      }
+      agA.ws.send(JSON.stringify({ type: 'model_unavailable', harness: 'claude', model: 'claude-opus-7-1' }));
+      await new Promise(r => setTimeout(r, 200));
+      assert.deepStrictEqual(failures(), [{ harness: 'claude', model_id: 'claude-opus-7-1', cli_version: '2.2.0 (Claude Code)' }]);
+      assert.ok(!(await actorModels(agA.actorId)).some(m => m.id === 'claude-opus-7-1'), 'hidden for agent A');
+      assert.ok((await actorModels(agB.actorId)).some(m => m.id === 'claude-opus-7-1'), 'agent B unaffected');
+      assert.ok((await req('GET', '/api/harnesses')).body.find(x => x.name === 'claude').models.some(m => m.model_id === 'claude-opus-7-1'), 'global list unaffected');
+      await reportClaude(agA, ['claude-opus-5-5']);
+      assert.strictEqual(failures().length, 1, 'same CLI version: stays hidden');
+      await reportClaude(agA, ['claude-opus-5-5'], '2.3.0 (Claude Code)');
+      assert.deepStrictEqual(failures(), [], 'new CLI version: shown again');
+      assert.ok((await actorModels(agA.actorId)).some(m => m.id === 'claude-opus-7-1'));
     });
 
-    await test('claude candidates — no session → 401; agent secret → agent_scope_denied', async () => {
+    // ── POST /api/agents/:id/harnesses/:name/update ──
+    let upA = null, human = null;
+    const connectWithFeatures = async (ag, features) => {
+      const ws = await openWsConnection(`ws://${HOST}:${PORT}`);
+      const ready = waitForWsMessage(ws, m => m.type === 'agent_ready');
+      ws.send(JSON.stringify({ type: 'agent_connect', actor_id: ag.actorId, secret: ag.secret, features }));
+      await ready;
+      ws.send(JSON.stringify({ type: 'harnesses_update', harnesses_available: ['claude'], harness_status: [
+        { id: 'claude', installed: true, logged_in: true, version: '2.2.0 (Claude Code)', models: null },
+        { id: 'codex', installed: false, logged_in: null, version: null, models: null },
+      ] }));
+      await new Promise(r => setTimeout(r, 150));
+      return ws;
+    };
+    const update = (id, name, headers) => req('POST', `/api/agents/${id}/harnesses/${name}/update`, null, headers);
+    const claudeUpdateState = async (id) => (await req('GET', '/api/actors')).body.find(x => x.id === id)?.harness_status?.find(s => s.id === 'claude')?.update;
+
+    await test('harness update — auth: no session 401, agent secret 403 (owner only); validation 400/404/409', async () => {
+      if (!agA) { console.log('    (skipped)'); return; }
       const s = sessionCookie, d = deviceCookie;
       sessionCookie = null; deviceCookie = null;
-      let anon, asAg;
+      let anon, asAgent;
       try {
-        anon = await get();
-        asAg = await req('GET', '/api/settings/custom-models/candidates', null, { 'x-agent-id': String(candB.actorId), 'x-agent-secret': candB.secret });
+        anon = await update(agA.actorId, 'claude');
+        asAgent = await update(agA.actorId, 'claude', { 'x-agent-id': String(agA.actorId), 'x-agent-secret': agA.secret });
       } finally { sessionCookie = s; deviceCookie = d; }
       assert.strictEqual(anon.status, 401);
-      assert.strictEqual(asAg.status, 403); assert.strictEqual(asAg.body.error, 'agent_scope_denied');
+      assert.strictEqual(asAgent.status, 403);
+      assert.strictEqual(asAgent.body.error, 'agent_scope_denied');
+      for (const name of ['bash', 'claude%2F..', 'CLAUDE', 'claude%00']) assert.strictEqual((await update(agA.actorId, name)).status, 400, name);
+      assert.strictEqual((await update(99999999, 'claude')).status, 404);
+      const humanId = (await req('GET', '/api/actors')).body.find(a => a.type === 'human')?.id;
+      if (humanId) assert.strictEqual((await update(humanId, 'claude')).status, 404, 'a human actor is not an agent');
+      const r = await update(agA.actorId, 'claude');
+      assert.strictEqual(r.status, 409, 'client without the harness_update feature');
+      assert.strictEqual(r.body.code, 'client_outdated');
     });
 
-    await test('claude candidates — teardown', async () => {
-      for (const ag of [candA, candB]) { try { ag?.ws.close(); } catch {} }
-      if (savedCustom === null) ccDb.prepare("DELETE FROM settings WHERE scope='global' AND key_name='custom_claude_models'").run();
-      else ccDb.prepare("UPDATE settings SET value=? WHERE scope='global' AND key_name='custom_claude_models'").run(savedCustom);
+    await test('harness update — 202 sends only the harness name; 409 while pending, not installed, offline', async () => {
+      if (!agA) { console.log('    (skipped)'); return; }
+      upA = await connectWithFeatures(agA, ['harness_update']);
+      human = await openWsConnection(`ws://${HOST}:${PORT}`, sessionCookie);
+      human.send(JSON.stringify({ type: 'subscribe_global' }));
+      const asked = waitForWsMessage(upA, m => m.type === 'harness_update');
+      const r = await update(agA.actorId, 'claude');
+      assert.strictEqual(r.status, 202, r.raw);
+      assert.match(r.body.request_id, /^[0-9a-f]{16}$/);
+      const msg = await asked;
+      assert.deepStrictEqual(msg, { type: 'harness_update', request_id: r.body.request_id, harness: 'claude' });
+      assert.strictEqual((await update(agA.actorId, 'claude')).body.code, 'update_in_progress');
+      assert.strictEqual((await update(agA.actorId, 'codex')).body.code, 'not_installed');
+      agA.lastRequest = r.body.request_id;
+    });
+
+    await test('harness update — status from the agent: foreign/stale ignored, broadcast + harness_status.update, error sanitized', async () => {
+      if (!upA) { console.log('    (skipped)'); return; }
+      const rid = agA.lastRequest;
+      upA.send(JSON.stringify({ type: 'harness_update_status', harness: 'claude', request_id: 'not-mine', state: 'done' }));
+      agB.ws.send(JSON.stringify({ type: 'harness_update_status', harness: 'claude', request_id: rid, state: 'done' }));
+      upA.send(JSON.stringify({ type: 'harness_update_status', harness: 'claude', request_id: rid, state: 'exploded' }));
+      await new Promise(r => setTimeout(r, 150));
+      assert.strictEqual(await claudeUpdateState(agA.actorId), null, 'nothing accepted yet ("requested" is internal)');
+      const cast = waitForWsMessage(human, m => m.type === 'harness_update_status' && m.state === 'waiting_idle');
+      upA.send(JSON.stringify({ type: 'harness_update_status', harness: 'claude', request_id: rid, state: 'waiting_idle', old_version: '2.2.0 (Claude Code)' }));
+      const c = await cast;
+      assert.deepStrictEqual(c, { type: 'harness_update_status', actor_id: agA.actorId, harness: 'claude', request_id: rid, state: 'waiting_idle', old_version: '2.2.0 (Claude Code)', new_version: null, error: null });
+      assert.strictEqual((await claudeUpdateState(agA.actorId)).state, 'waiting_idle');
+      const failedCast = waitForWsMessage(human, m => m.type === 'harness_update_status' && m.state === 'failed');
+      upA.send(JSON.stringify({ type: 'harness_update_status', harness: 'claude', request_id: rid, state: 'failed', error: '\x1b[31mEACCES\x1b[0m /Users/someone/.local/bin ' + 'x'.repeat(600) }));
+      const f = await failedCast;
+      assert.ok(f.error.length <= 300 && !f.error.includes('/Users/someone') && !f.error.includes('\x1b'), f.error);
+      assert.strictEqual((await claudeUpdateState(agA.actorId)).state, 'failed');
+    });
+
+    await test('harness update — done clears the agent\'s model failures; no ack → failed; disconnect while running → failed', async () => {
+      if (!upA) { console.log('    (skipped)'); return; }
+      cmDb.prepare("INSERT INTO agent_model_failures (actor_id, harness, model_id, cli_version) VALUES (?, 'claude', 'claude-opus-7-1', '2.2.0 (Claude Code)')").run(agA.actorId);
+      let asked = waitForWsMessage(upA, m => m.type === 'harness_update');
+      const r = await update(agA.actorId, 'claude');
+      assert.strictEqual(r.status, 202, 'a finished (failed) update can be retried');
+      await asked;
+      upA.send(JSON.stringify({ type: 'harness_update_status', harness: 'claude', request_id: r.body.request_id, state: 'done', old_version: '2.2.0 (Claude Code)', new_version: '2.4.0 (Claude Code)' }));
+      await new Promise(res => setTimeout(res, 150));
+      const st = await claudeUpdateState(agA.actorId);
+      assert.deepStrictEqual([st.state, st.new_version], ['done', '2.4.0 (Claude Code)']);
+      assert.strictEqual(cmDb.prepare('SELECT COUNT(*) n FROM agent_model_failures WHERE actor_id=?').get(agA.actorId).n, 0);
+      // The agent never answers: HARNESS_UPDATE_ACK_TIMEOUT_MS (3 s under run-tests) → failed.
+      const timedOut = waitForWsMessage(human, m => m.type === 'harness_update_status' && m.state === 'failed' && m.error === 'agent did not respond', 8000);
+      assert.strictEqual((await update(agA.actorId, 'claude')).status, 202);
+      await timedOut;
+      asked = waitForWsMessage(upA, m => m.type === 'harness_update');
+      const r2 = await update(agA.actorId, 'claude');
+      await asked;
+      upA.send(JSON.stringify({ type: 'harness_update_status', harness: 'claude', request_id: r2.body.request_id, state: 'running' }));
+      await new Promise(res => setTimeout(res, 100));
+      const dropped = waitForWsMessage(human, m => m.type === 'harness_update_status' && m.error === 'agent disconnected');
+      upA.close();
+      await dropped;
+      assert.strictEqual((await update(agA.actorId, 'claude')).body.code, 'agent_offline');
+    });
+
+    await test('claude models — teardown', async () => {
+      for (const w of [upA, human, agA?.ws, agB?.ws]) { try { w?.close(); } catch {} }
+      cmDb.transaction(() => {
+        cmDb.prepare('DELETE FROM harness_models WHERE harness_id=?').run(claudeHid);
+        const ins = cmDb.prepare('INSERT INTO harness_models (id, harness_id, model_id, display_name, is_default, is_active) VALUES (?,?,?,?,?,?)');
+        for (const s of snapshot) ins.run(s.id, s.harness_id, s.model_id, s.display_name, s.is_default, s.is_active);
+        for (const ag of [agA, agB]) if (ag) cmDb.prepare('DELETE FROM agent_model_failures WHERE actor_id=?').run(ag.actorId);
+      })();
+      assert.strictEqual(cmDb.prepare('SELECT COUNT(*) n FROM harness_models WHERE harness_id=?').get(claudeHid).n, snapshot.length);
     });
   }
 
@@ -17268,30 +17621,49 @@ async function run() {
       } });
     });
 
-    const seedCustomModels = value => db => db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'custom_claude_models', ?)").run(value);
-    const storedCustomModels = db => db.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='custom_claude_models'").get()?.value;
-
-    await test('boot prunes custom Claude models that are now built-in; other entries kept in order', async () => {
-      const seeded = [
-        { value: 'claude-haiku-5-5', label: 'Haiku 5.5' },
-        { value: 'claude-test-keep-1', label: 'Keep 1' },
-        { value: 'claude-fable-5-2', label: 'My Fable' },
-        { value: 'claude-haiku-4-5', label: 'Alias, not the built-in ID' },
-        { value: 'claude-test-keep-2', label: 'Keep 2' },
-      ];
-      await bootIsolatedServer({ seed: seedCustomModels(JSON.stringify(seeded)), inspect: (db, out) => {
-        assert.deepStrictEqual(JSON.parse(storedCustomModels(db)), [seeded[1], seeded[3], seeded[4]]);
-        assert.ok(out.includes('2 custom Claude model(s) removed'), `prune log missing: ${out.slice(-500)}`);
-      } });
-    });
-
-    await test('boot prune — nothing to prune or unparseable JSON: setting left byte-identical, server still boots', async () => {
-      for (const raw of ['[{"value":"claude-test-keep-1","label":"Keep 1"}]', '{not json', '{"value":"claude-haiku-5-5"}', '[null,7,{"value":42}]']) {
-        await bootIsolatedServer({ seed: seedCustomModels(raw), inspect: (db, out) => {
-          assert.strictEqual(storedCustomModels(db), raw, `setting changed for ${raw}`);
-          assert.ok(!out.includes('custom Claude model'), `unexpected prune log for ${raw}: ${out.slice(-500)}`);
-        } });
-      }
+    // migrations/20261110-claude-models-from-cli.sql: retired custom models become regular claude rows.
+    await test('migration — custom_claude_models → harness_models (label kept, invalid skipped), setting removed; non-array left as is', () => {
+      const fs = require('fs'), os = require('os');
+      const Database = require('better-sqlite3');
+      const { runMigrations } = require('./lib/migrations');
+      const quiet = { log() {}, warn() {}, error() {} };
+      const schemaSql = fs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8');
+      const NEW = '20261110-claude-models-from-cli.sql';
+      const before = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-mig-'));
+      try {
+        for (const f of fs.readdirSync(path.join(__dirname, 'migrations'))) {
+          if (f < NEW) fs.copyFileSync(path.join(__dirname, 'migrations', f), path.join(before, f));
+        }
+        const run = (raw) => {
+          const m = new Database(':memory:');
+          runMigrations(m, before, quiet, { schemaSql });
+          if (raw !== undefined) m.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'custom_claude_models', ?)").run(raw);
+          runMigrations(m, path.join(__dirname, 'migrations'), quiet, { schemaSql });
+          assert.ok(m.prepare('SELECT 1 FROM migrations WHERE filename=?').get(NEW), 'migration applied');
+          return m;
+        };
+        const m = run(JSON.stringify([
+          { value: 'claude-haiku-5-6', label: 'Haiku 5.6' }, { value: 'claude-test-x1', label: '  ' }, { value: 'claude-opus-6' },
+          { value: 'claude-Bad' }, { value: 'claude-a/b' }, { value: 42 }, null, 'claude-str',
+          { value: 'claude-sonnet-5-5', label: 'Mine' },
+        ]));
+        const rows = Object.fromEntries(m.prepare("SELECT hm.model_id, hm.display_name, hm.is_active, hm.is_default FROM harness_models hm JOIN harnesses h ON h.id=hm.harness_id WHERE h.name='claude'").all().map(r => [r.model_id, r]));
+        assert.strictEqual(rows['claude-haiku-5-6']?.display_name, 'Haiku 5.6');
+        assert.strictEqual(rows['claude-test-x1']?.display_name, 'claude-test-x1', 'blank label → ID');
+        assert.strictEqual(rows['claude-opus-6']?.display_name, 'claude-opus-6');
+        assert.ok(!rows['claude-Bad'] && !rows['claude-a/b'] && !rows['claude-str'], 'IDs the old rule rejected are not imported');
+        assert.ok(Object.values(rows).every(r => r.is_active === 1));
+        assert.strictEqual(m.prepare("SELECT COUNT(*) n FROM settings WHERE key_name='custom_claude_models'").get().n, 0);
+        m.close();
+        for (const raw of ['{not json', '{"value":"claude-haiku-5-6"}']) {
+          const k = run(raw);
+          assert.strictEqual(k.prepare("SELECT value FROM settings WHERE key_name='custom_claude_models'").get()?.value, raw, `left untouched: ${raw}`);
+          k.close();
+        }
+        const fresh = run(undefined);
+        assert.strictEqual(fresh.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE name='agent_model_failures'").get().n, 1);
+        fresh.close();
+      } finally { fs.rmSync(before, { recursive: true, force: true }); }
     });
 
     // A human socket on the room counts the message_complete broadcasts per run.
@@ -18401,11 +18773,11 @@ async function run() {
     const codexStatus = r.body.harness_status.find(s => s.id === 'codex');
     assert.ok(codexStatus, 'codex status should be in response');
     assert.ok(Array.isArray(codexStatus.models), 'codex should have models array');
-    assert.strictEqual(codexStatus.models.length, 2);
-    assert.strictEqual(codexStatus.models[0].id, 'gpt-6.1-sol');
-    assert.strictEqual(codexStatus.models[0].is_default, true);
+    // The agent's own list first (CLI order + default, listed); other known codex models after it, unlisted.
+    assert.deepStrictEqual(codexStatus.models.slice(0, 2).map(m => [m.id, m.is_default, m.listed]), [['gpt-6.1-sol', true, true], ['gpt-6-sol', false, true]]);
+    assert.ok(codexStatus.models.slice(2).every(m => m.listed === false && m.is_default === false));
     const claudeStatus = r.body.harness_status.find(s => s.id === 'claude');
-    assert.strictEqual(claudeStatus.models, null, 'claude models should be null');
+    assert.ok(claudeStatus.models.some(m => m.id === 'claude-sonnet-5-5' && m.is_default), 'claude models are filled by the server');
     ws10.close();
     delete process.env.HARNESS_CHECK_TIMEOUT_MS;
   });

@@ -64,8 +64,6 @@ Klik judul room di header chat. Judul menjadi editable — ketik nama baru dan t
 - **Haiku 5.5** — cepat dan ekonomis
 - **Haiku 4.5** — cepat generasi sebelumnya
 
-Entri model custom yang ID-nya sama dengan model bawaan akan dihapus otomatis saat server start.
-
 **Model platform eksternal**: Jika Anda sudah mengonfigurasi platform tambahan di **Settings > Platforms** (misal Ollama Cloud, OpenRouter), model yang diaktifkan dari platform tersebut juga muncul di selector, dikelompokkan berdasarkan nama platform. Model yang mendukung input gambar ditandai dengan ikon 👁; model yang mendukung tool-calling ditandai dengan ikon ⚙. Model tanpa tool-calling berjalan dalam mode teks saja (tidak bisa baca file atau eksekusi kode via tools).
 
 Pilihan disimpan per room dan langsung berlaku pada pesan berikutnya — tanpa restart.
@@ -589,9 +587,9 @@ Sub-agent juga bisa memilih harness sendiri, atau membiarkannya pada **inherit f
 
 **Mengecek ketersediaan harness:** Setelah menginstal atau login CLI tool di mesin agent, klik tombol **Check** di sebelah dropdown Harness (di panel detail agent atau accordion di **Settings > AI Agent**) untuk mendeteksi ulang tanpa restart agent. Tombol ini nonaktif saat agent offline, dan deteksi bisa memakan waktu hingga ~15 detik. Dropdown langsung diperbarui ketika hasil tiba — harness baru yang terdeteksi ditampilkan via toast. Rescan juga mengecek ulang harness bersama working directory.
 
-**Merestart untuk menerapkan pembaruan CLI:** Setelah memperbarui CLI tool di mesin agent, klik **ikon power** (**Restart agent**) di header agent, di antara force update dan remove. Bar konfirmasi muncul di bagian atas — konfirmasi untuk merestart sekarang; semua proses agent yang sedang berjalan langsung berhenti. Percakapan dilanjutkan dari posisi terakhir lewat resume sesi. Ikon hanya aktif kalau agent online dan dikelola PM2; agent yang dijalankan manual, di bawah systemd, atau launchd tidak didukung (restart di luar PM2 akan menghentikan agent secara permanen). Saat restart berlangsung, ikon berubah amber dan berkedip; arahkan kursor untuk melihat **restarting…**, lalu toast mengonfirmasi agent kembali online. Check tidak merestart agent.
+**Memperbarui CLI tool dari jarak jauh:** Bagian **CLI versions** di panel detail agent menampilkan setiap CLI yang terinstal (Claude CLI atau Codex CLI) beserta versi saat ini dan tombol **Update**. Mengklik **Update** menjalankan `claude update` atau `codex update` di mesin agent tanpa mengganggu proses agent itu sendiri. Jika agent sedang menjalankan run aktif, pembaruan menunggu hingga selesai ("Waiting for idle — updates once current runs finish"); trigger baru ditahan selama pembaruan dan dikirim begitu selesai. Pesan status: *Starting update…*, *Updating…*, *Updated X → Y* (atau *Already up to date*), *Update failed: …*. Jika tidak ada CLI yang terdeteksi, seksi menampilkan "No CLI detected — press Check after installing one". Error: `agent_offline` — agent tidak terhubung; `client_outdated` — client agent terlalu lama, tunggu auto-update selesai dulu; `not_installed` — CLI tidak terinstal di mesin agent; `update_in_progress` — pembaruan untuk CLI ini sudah berjalan.
 
-Untuk **Codex**, daftar model disinkronkan otomatis setiap kali agent terhubung — tidak perlu Check manual. Set aktif adalah gabungan dari semua agent yang online, sehingga dua agent dengan versi Codex berbeda tidak saling menonaktifkan model miliknya; model dinonaktifkan hanya kalau tidak ada agent online yang melaporkannya. Check juga memicu sinkronisasi ini secara manual. Model yang disembunyikan CLI dibuang, hasilnya diurutkan sesuai prioritas CLI, dan jika belum ada default, model pertama dari reporter jadi default. Dropdown model room langsung diperbarui. Kalau ada model baru, muncul toast seperti `Codex CLI: 2 new models`. Jika agent tidak bisa melaporkan daftar model (CLI versi lama atau perintah gagal), Stoa memakai daftar model bawaannya. **Claude** tidak punya sinkronisasi serupa — daftar modelnya selalu dari daftar bawaan Stoa ditambah entri kustom yang ditambahkan di **Settings > Platforms**.
+Untuk **Codex**, daftar model disinkronkan otomatis setiap kali agent terhubung — tidak perlu Check manual. Set aktif adalah gabungan dari semua agent yang online, sehingga dua agent dengan versi Codex berbeda tidak saling menonaktifkan model miliknya; model dinonaktifkan hanya kalau tidak ada agent online yang melaporkannya. Check juga memicu sinkronisasi ini secara manual. Model yang disembunyikan CLI dibuang, hasilnya diurutkan sesuai prioritas CLI, dan jika belum ada default, model pertama dari reporter jadi default. Dropdown model room langsung diperbarui. Kalau ada model baru, muncul toast seperti `Codex CLI: 2 new models`. Jika agent tidak bisa melaporkan daftar model (CLI versi lama atau perintah gagal), Stoa memakai daftar model bawaannya. **Claude** kini memiliki sinkronisasi serupa — saat agent Claude terhubung, Stoa memindai binary untuk membaca daftar modelnya dan menambahkan model baru sebagai entri bawaan resmi. Model yang tidak ada di daftar CLI agent ditampilkan dengan tag **not listed** di pemilih model; tooltip-nya berbunyi "Not listed by this machine's CLI — it may still work". Model tidak pernah dinonaktifkan hanya karena tidak ada di daftar; model hanya disembunyikan untuk agent tertentu jika run agent tersebut benar-benar gagal dengan "model not found" (tidak berlaku saat menggunakan base URL pihak ketiga).
 
 Harness yang sudah terinstal tapi belum login tampil di dropdown sebagai **"(not logged in)"** dan tidak bisa dipilih — server juga akan menolaknya. Jika status login tidak bisa dipastikan, harness tetap bisa dipilih. Jika harness yang sedang aktif menjadi tidak tersedia atau kehilangan login, muncul hint merah di bawah dropdown Harness — harness tidak diganti otomatis.
 
@@ -1349,6 +1347,7 @@ Panel detail mencakup:
 - **System Prompt** — system prompt per-agent yang diterapkan di setiap room tempat agent berpartisipasi; sub-agent memiliki system prompt sendiri dan tidak mewarisi ini
 - **Kartu Sub-agents** — semua sub-agent yang didefinisikan untuk agent ini, dengan kontrol add/edit/delete/toggle
 - **Kartu Workdirs** — daftar read-only working directory yang terdaftar untuk agent ini
+- **CLI versions** — CLI tool yang terinstal (Claude CLI, Codex CLI) beserta versi saat ini dan tombol **Update** untuk memicu pembaruan CLI dari jarak jauh
 
 ### Server
 
@@ -1415,16 +1414,11 @@ API key disimpan di server dan dikembalikan ke browser hanya di form edit Settin
 - **Together AI** — `https://api.together.xyz/v1`
 - **Groq** — `https://api.groq.com/openai/v1`
 
-### Model Claude Kustom
+### Sinkronisasi Model Claude
 
-Jika Anthropic merilis model yang belum ada di daftar bawaan, tambahkan tanpa perlu update server. Gulir ke kartu **claude models** di **Settings > Platforms**.
+Model dari Claude CLI didaftarkan otomatis sebagai entri bawaan resmi saat agent Claude terhubung — tidak perlu pendaftaran manual. Model baru dari daftar CLI yang belum ada di set bawaan Stoa langsung ditambahkan dan muncul di pemilih model room. Entri kustom dari versi lama dimigrasi ke daftar ini saat upgrade, dengan label tampilan yang dipertahankan.
 
-Jika ada agent dengan binary Claude CLI yang online, kartu menampilkan strip **Detected from Claude CLI v*X*** berisi chip yang bisa diklik untuk ID model yang lebih baru dari entri terdaftar terbaru di setiap family. Mengklik chip mengisi otomatis kolom ID model dan label (label dibuat otomatis, misalnya _Haiku 5.5_, bisa diedit); klik **add model** untuk menyimpan — tidak ada simpan otomatis. ID model lama tetap bisa diketik manual. Jika belum ada agent yang melaporkan CLI, strip menampilkan pesan untuk menghubungkan agent.
-
-- **Tambah** — masukkan ID model (misalnya `claude-haiku-5-5`) dan label tampilan opsional (maks 40 karakter), lalu klik **add model**. Model langsung muncul di dropdown model room, ditandai **custom**.
-- **Hapus** — klik × pada baris model kustom. Room yang sudah menggunakan model tersebut mempertahankan pengaturannya; hanya pemilihan baru yang terpengaruh.
-
-Format ID model: harus diawali `claude-`, diikuti huruf kecil, angka, titik, atau tanda hubung (regex: `^claude-[a-z0-9][a-z0-9.-]{1,62}$`). ID duplikat atau format salah ditolak langsung. Maksimum 20 entri kustom.
+Model yang tidak ada di daftar CLI agent yang terhubung ditampilkan dengan tag **not listed** di pemilih model. Model tersebut tetap bisa dipilih; tooltip-nya berbunyi "Not listed by this machine's CLI — it may still work". Stoa tidak pernah menonaktifkan model hanya karena tidak ada di daftar.
 
 ### Automation
 
