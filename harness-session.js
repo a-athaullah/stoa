@@ -68,10 +68,12 @@ function parseCodexModels(stdout) {
 }
 
 // Claude CLI has no model-listing command, but its binary embeds the model IDs it knows.
-// Strict pattern: family + major + minor (+ optional date). Two-digit major/minor keeps
-// legacy dated IDs like claude-opus-4-20250514 from parsing as minor=20250514; the trailing
-// \b drops Bedrock suffixes (-v1) and rejects codenames like claude-fable-5-mythos-5.
-const CLAUDE_MODEL_SCAN_RE = /\bclaude-(haiku|sonnet|opus|fable)-(\d{1,2})-(\d{1,2})(?:-(\d{8}))?\b/g;
+// Strict pattern: family + major (+ minor) (+ date). The minor must not be followed by another digit,
+// so a legacy dated ID like claude-opus-4-20250514 parses as major 4 + date, never minor=20. The
+// tail lookahead drops codenames (claude-fable-5-mythos-5: "-" + two letters) and IDs that run on
+// into more digits or word characters; a Bedrock suffix (-v1) is cut off, keeping the base ID.
+const CLAUDE_MODEL_SCAN_RE = /\bclaude-(haiku|sonnet|opus|fable)-(\d{1,2})(?:-(\d{1,2})(?!\d))?(?:-(\d{8}))?(?![\w]|-[a-z]{2}|-\d)/g;
+const CLAUDE_MODEL_ID_RE = /^claude-(haiku|sonnet|opus|fable)-(\d{1,2})(?:-(\d{1,2}))?(?:-(\d{8}))?$/;
 const CLAUDE_SCAN_CHUNK = 1 << 20;
 const CLAUDE_SCAN_OVERLAP = 64;
 const CLAUDE_SCAN_MAX_BYTES = 1 << 30;
@@ -82,20 +84,32 @@ function extractClaudeModelIds(text, into = new Set()) {
   return into;
 }
 
-// One ID per family+major+minor (the undated alias wins over a dated snapshot), newest first.
+// { base, family, ver, date } for a Claude model ID; a dated snapshot shares the base of its alias.
+function claudeModelKey(id) {
+  const m = typeof id === 'string' ? CLAUDE_MODEL_ID_RE.exec(id) : null;
+  if (!m) return null;
+  const base = m[3] === undefined ? `claude-${m[1]}-${m[2]}` : `claude-${m[1]}-${m[2]}-${m[3]}`;
+  return { base, family: m[1], major: +m[2], minor: m[3] === undefined ? null : +m[3], ver: +m[2] * 100 + (m[3] === undefined ? 0 : +m[3]), date: m[4] || null };
+}
+
+// claude-opus-5-5 → "Opus 5.5", claude-haiku-4-5-20251001 → "Haiku 4.5", claude-opus-6 → "Opus 6".
+function claudeModelLabel(id) {
+  const k = claudeModelKey(id);
+  if (!k) return null;
+  return `${k.family[0].toUpperCase()}${k.family.slice(1)} ${k.major}${k.minor === null ? '' : '.' + k.minor}`;
+}
+
+// One ID per base (the undated alias wins over a dated snapshot), newest first.
 function rankClaudeModelIds(ids) {
   const byBase = new Map();
   for (const id of ids) {
-    const m = /^claude-(haiku|sonnet|opus|fable)-(\d{1,2})-(\d{1,2})(?:-(\d{8}))?$/.exec(id);
-    if (!m) continue;
-    const base = `claude-${m[1]}-${m[2]}-${m[3]}`;
-    const prev = byBase.get(base);
-    if (!prev || (prev.date && !m[4]) || (prev.date && m[4] && m[4] > prev.date)) {
-      byBase.set(base, { id, major: +m[2], minor: +m[3], family: m[1], date: m[4] || null });
-    }
+    const k = claudeModelKey(id);
+    if (!k) continue;
+    const prev = byBase.get(k.base);
+    if (!prev || (prev.date && !k.date) || (prev.date && k.date && k.date > prev.date)) byBase.set(k.base, { id, ...k });
   }
   return [...byBase.values()]
-    .sort((a, b) => b.major - a.major || b.minor - a.minor || a.family.localeCompare(b.family))
+    .sort((a, b) => b.ver - a.ver || a.family.localeCompare(b.family))
     .slice(0, MAX_CLAUDE_CANDIDATES)
     .map(e => e.id);
 }
@@ -140,6 +154,11 @@ function scanClaudeBinaryForModels(filePath) {
 
 let _claudeScanCache = null; // { key, candidates } — one entry: rescans only when the CLI binary changes
 
+// After a CLI update: an in-place reinstall can keep size and mtime, so the next detect rescans.
+function resetClaudeScanCache() {
+  _claudeScanCache = null;
+}
+
 async function detectClaudeModelCandidates(env = process.env) {
   const fs = require('fs');
   const binPath = resolveCommandPath('claude', env);
@@ -181,6 +200,43 @@ function validateHarnessStatus(arr) {
   ).map(s => ({ id: s.id, installed: s.installed, logged_in: s.logged_in ?? null, version: s.version ? s.version.slice(0, 100) : null, models: validateModels(s.models) }));
 }
 
+// A run that failed because the CLI or API does not know the requested model (Claude CLI:
+// "There's an issue with the selected model"; API: not_found_error on model; Codex: "model ...
+// does not exist / is not supported"). Only error text is passed in, so assistant prose about
+// models never reaches this; auth, quota and capacity errors are excluded explicitly.
+const MODEL_UNAVAILABLE_RES = [
+  /issue with the selected model/i,
+  /not_found_error[^\n]{0,120}\bmodel\b/i,
+  /\bmodel_not_found\b/i,
+  /\bmodel\b[^\n]{0,120}\b(?:does not exist|not found|is not supported|isn't supported|is not available|not available for)/i,
+  /\b(?:unknown|invalid|unsupported) model\b/i,
+];
+const NOT_A_MODEL_ERROR_RE = /\b(?:401|403|429|529)\b|unauthori[sz]ed|authenticat|api[ _-]?key|quota|rate[ _-]?limit|overloaded|capacity|billing|credit/i;
+
+function isModelUnavailableError(text) {
+  if (typeof text !== 'string' || !text || text.length > 2000) return false;
+  if (NOT_A_MODEL_ERROR_RE.test(text)) return false;
+  return MODEL_UNAVAILABLE_RES.some(re => re.test(text));
+}
+
+// Fixed per-harness update commands: the server only ever names the harness, never a command.
+// Both CLIs pick the right path for their install method (native installer, npm, Homebrew).
+const HARNESS_UPDATE_ARGS = { claude: ['update'], codex: ['update'] };
+const UPDATE_ERROR_MAX = 300;
+
+// CLI output shown in the UI: no ANSI codes or control characters, home directory masked as "~",
+// absolute user paths masked, token-looking strings redacted, last UPDATE_ERROR_MAX chars kept.
+function sanitizeUpdateError(text, home) {
+  if (typeof text !== 'string') return null;
+  let s = text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ' ');
+  if (typeof home === 'string' && home.length > 1) s = s.split(home).join('~');
+  s = s.replace(/(?:\/Users|\/home)\/[^\s/'"]+/g, '~').replace(/[A-Za-z]:\\Users\\[^\s\\'"]+/gi, '~');
+  s = s.replace(/\b(?:sk|ghp|gho|xox[abpr]|github_pat)[-_][A-Za-z0-9_-]{10,}/g, '[redacted]');
+  s = s.replace(/\s+/g, ' ').trim();
+  if (!s) return null;
+  return s.length > UPDATE_ERROR_MAX ? '\u2026' + s.slice(-(UPDATE_ERROR_MAX - 1)) : s;
+}
+
 function filesToUpdate(remote, local, allowed) {
   const names = [];
   for (const [name, hash] of Object.entries(remote)) {
@@ -192,4 +248,4 @@ function filesToUpdate(remote, local, allowed) {
   return names;
 }
 
-module.exports = { createHarnessSession, supportsCompact, buildResumeArgs, KNOWN_HARNESSES, parseClaudeAuthStatus, parseCodexLoginStatus, parseCodexModels, validateHarnessStatus, validateModels, filesToUpdate, extractClaudeModelIds, rankClaudeModelIds, resolveCommandPath, scanClaudeBinaryForModels, detectClaudeModelCandidates };
+module.exports = { createHarnessSession, supportsCompact, buildResumeArgs, KNOWN_HARNESSES, parseClaudeAuthStatus, parseCodexLoginStatus, parseCodexModels, validateHarnessStatus, validateModels, filesToUpdate, extractClaudeModelIds, rankClaudeModelIds, claudeModelKey, claudeModelLabel, resolveCommandPath, scanClaudeBinaryForModels, detectClaudeModelCandidates, resetClaudeScanCache, isModelUnavailableError, HARNESS_UPDATE_ARGS, sanitizeUpdateError };

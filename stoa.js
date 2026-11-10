@@ -220,7 +220,7 @@ var require_transcript_sanitizer = __commonJS({
 });
 
 // stoa.js
-var CLIENT_VERSION = "0.4.479";
+var CLIENT_VERSION = "0.4.480";
 var WebSocket = require("ws");
 var readline = require("readline");
 var fs = require("fs");
@@ -429,6 +429,12 @@ function forceRestartIfStalled(now) {
 }
 var _restartOverride = null;
 function doRestart() {
+  // Exiting mid-install can leave a half-replaced CLI (npm rewrites files in place): finish first.
+  if (harnessUpdateProcs > 0) {
+    if (!restartAfterUpdate) console.log("[stoa:update] restart deferred until the harness CLI update finishes");
+    restartAfterUpdate = true;
+    return;
+  }
   if (_restartOverride) return _restartOverride();
   console.log("[stoa:update] restarting to apply...");
   clearInterval(keepAlive);
@@ -685,7 +691,7 @@ async function backupSessionFile(workdir, sessionId) {
     return null;
   }
 }
-const { createHarnessSession: _createHS, supportsCompact, buildResumeArgs, parseClaudeAuthStatus, parseCodexLoginStatus, parseCodexModels, filesToUpdate, detectClaudeModelCandidates } = require("./harness-session");
+const { createHarnessSession: _createHS, supportsCompact, buildResumeArgs, parseClaudeAuthStatus, parseCodexLoginStatus, parseCodexModels, filesToUpdate, detectClaudeModelCandidates, resetClaudeScanCache, isModelUnavailableError, KNOWN_HARNESSES, HARNESS_UPDATE_ARGS, sanitizeUpdateError } = require("./harness-session");
 function createHarnessSession(harness, opts) {
   const session = _createHS(harness, opts, { ClaudeSession });
   if (harness !== "codex") watchClaudeRateLimits(session, opts.env);
@@ -883,6 +889,103 @@ async function detectHarnessesAsync() {
   const harnesses_available = status.filter((s) => s.installed).map((s) => s.id);
   return { harnesses_available, harness_status: status, claude_model_candidates, claude_cli_version };
 }
+// ─── Harness CLI update (owner-triggered from Settings → Agents) ────────────
+// The server names the harness only; the command is fixed (HARNESS_UPDATE_ARGS) and run without a
+// shell. One update per harness at a time. While it is pending, new triggers for that harness stay
+// queued (canStartTrigger): "waiting_idle" ends once the running ones finish, and no run starts on a
+// half-replaced CLI. Other harnesses keep running.
+var HARNESS_UPDATE_TIMEOUT_MS = 5 * 60e3;
+var HARNESS_UPDATE_OUTPUT_MAX = 64 * 1024;
+var harnessUpdates = /* @__PURE__ */ new Map(); // harness → { request_id, state, old_version }
+var harnessUpdateProcs = 0;
+var restartAfterUpdate = false;
+function harnessHasActiveRun(harness) {
+  for (const t of activeTriggers.values()) if ((t.harness || "claude") === harness) return true;
+  return false;
+}
+function sendHarnessUpdateStatus(harness, requestId, fields) {
+  send({ type: "harness_update_status", request_id: requestId, harness, old_version: null, new_version: null, error: null, ...fields });
+}
+function handleHarnessUpdateRequest(msg) {
+  const harness = msg.harness;
+  if (!KNOWN_HARNESSES.includes(harness) || typeof msg.request_id !== "string" || !msg.request_id || msg.request_id.length > 64) return;
+  if (harnessUpdates.has(harness)) {
+    sendHarnessUpdateStatus(harness, msg.request_id, { state: "failed", error: "an update for this harness is already in progress" });
+    return;
+  }
+  harnessUpdates.set(harness, { request_id: msg.request_id, state: "waiting_idle", old_version: null });
+  if (harnessHasActiveRun(harness)) {
+    console.log(`[stoa] ${harness} update waiting for active run(s) to finish`);
+    sendHarnessUpdateStatus(harness, msg.request_id, { state: "waiting_idle" });
+    return;
+  }
+  startHarnessUpdate(harness);
+}
+function startPendingHarnessUpdates() {
+  for (const [harness, u] of harnessUpdates) {
+    if (u.state === "waiting_idle" && !harnessHasActiveRun(harness)) startHarnessUpdate(harness);
+  }
+}
+function runHarnessUpdateCommand(harness) {
+  const { execFile } = require("child_process");
+  return new Promise((resolve) => {
+    let child;
+    const done = (exitCode, output) => resolve({ exitCode, output: String(output || "").slice(-HARNESS_UPDATE_OUTPUT_MAX) });
+    try {
+      child = execFile(harness, HARNESS_UPDATE_ARGS[harness], { encoding: "utf8", timeout: HARNESS_UPDATE_TIMEOUT_MS, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+        const output = `${stdout || ""}\n${stderr || ""}`;
+        if (!err) return done(0, output);
+        done(err.killed ? -2 : (typeof err.code === "number" ? err.code : -1), `${output}\n${err.code === "ENOENT" ? "command not found" : ""}`);
+      });
+      child.stdin?.end();
+    } catch (err) {
+      done(-1, err.message);
+    }
+  });
+}
+async function startHarnessUpdate(harness) {
+  const u = harnessUpdates.get(harness);
+  u.state = "running";
+  harnessUpdateProcs++;
+  let error = null;
+  let newVersion = null;
+  try {
+    const before = await execWithTimeout(harness, ["--version"], 5e3);
+    u.old_version = before.exitCode === 0 ? before.stdout.trim().split("\n")[0] || null : null;
+    sendHarnessUpdateStatus(harness, u.request_id, { state: "running", old_version: u.old_version });
+    console.log(`[stoa] ${harness} update started (${u.old_version || "unknown version"})`);
+    const r = await runHarnessUpdateCommand(harness);
+    if (r.exitCode !== 0) {
+      const reason = r.exitCode === -2 ? `update timed out after ${HARNESS_UPDATE_TIMEOUT_MS / 60e3} minutes` : `update exited with code ${r.exitCode}`;
+      error = sanitizeUpdateError(`${reason}: ${r.output}`, os.homedir()) || reason;
+    }
+    resetClaudeScanCache();
+    const detected = await detectHarnessesAsync();
+    send({ type: "harnesses_update", ...detected });
+    newVersion = detected.harness_status.find((s) => s.id === harness)?.version || null;
+  } catch (err) {
+    error = sanitizeUpdateError(err.message, os.homedir()) || "update failed";
+  } finally {
+    harnessUpdateProcs--;
+    harnessUpdates.delete(harness);
+  }
+  sendHarnessUpdateStatus(harness, u.request_id, { state: error ? "failed" : "done", old_version: u.old_version, new_version: newVersion, error });
+  console.log(`[stoa] ${harness} update ${error ? "failed: " + error : `done (${u.old_version || "?"} \u2192 ${newVersion || "?"})`}`);
+  if (restartAfterUpdate && harnessUpdateProcs === 0) {
+    restartAfterUpdate = false;
+    return doRestart();
+  }
+  drainQueue();
+}
+// A run the CLI rejected because it does not know the model: the server hides that model for this
+// agent until its CLI changes version, and the user is told to update the CLI.
+function reportModelUnavailable(entry, text) {
+  // On a third-party base URL the provider, not the CLI, rejected the model: nothing to update.
+  if (!entry.model || entry.thirdParty || !isModelUnavailableError(text)) return "";
+  send({ type: "model_unavailable", harness: entry.harness || "claude", model: entry.model });
+  console.log(`[stoa] model "${entry.model}" not available on ${entry.harness || "claude"} CLI`);
+  return `\n\n(Model \`${entry.model}\` tidak dikenali ${entry.harness === "codex" ? "Codex" : "Claude"} CLI di mesin ini. Update CLI dari Settings \u2192 Agents, lalu coba lagi.)`;
+}
 // A server/proxy that vanished without a FIN leaves this socket half-open and no 'close' ever
 // fires, so the agent would never reconnect. The server pings every STOA_WS_HEARTBEAT_MS (30 s);
 // silence past max(90 s, 3 observed ping gaps) terminates the socket -> normal reconnect path.
@@ -929,7 +1032,7 @@ function connect() {
     if (ACTOR_TYPE === "ai") {
       getSession(process.env.STOA_WORK_DIR || os.homedir(), "default");
       // active_message_ids: runs survive a reconnect, so the server must not orphan them.
-      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, features: ["skills", "skill_sync", "harness_accounts", "send_files"], machine: safeMachineIdentity(), harnesses_available: [], supervisor: SUPERVISOR, boot_id: BOOT_ID, active_message_ids: activeMessageIds() }));
+      ws.send(JSON.stringify({ type: "agent_connect", actor_id: ACTOR_ID, secret: STOA_SECRET, client_version: CLIENT_VERSION, features: ["skills", "skill_sync", "harness_accounts", "send_files", "harness_update"], machine: safeMachineIdentity(), harnesses_available: [], supervisor: SUPERVISOR, boot_id: BOOT_ID, active_message_ids: activeMessageIds() }));
       sendQueueStatus();
       console.log(`[stoa] Agent #${ACTOR_ID} v${CLIENT_VERSION} connected to ${STOA_URL} (max_concurrent=${MAX_CONCURRENT})`);
       detectHarnessesAsync().then((result) => {
@@ -1082,6 +1185,10 @@ async function handleAgentMessage(msg) {
       send({ type: "harnesses_update", ...result, request_id: msg.request_id });
       console.log(`[stoa] Harness check: ${result.harness_status.map((s) => `${s.id}${s.installed ? " v" + s.version : " (not found)"}${s.logged_in === false ? " (not logged in)" : ""}`).join(", ") || "none"}`);
     }).catch(() => {});
+  }
+  if (msg.type === "harness_update") {
+    handleHarnessUpdateRequest(msg);
+    return;
   }
   if (msg.type === "restart" && msg.reason === "manual") {
     // Owner asked for it and was warned: stop now, don't wait for idle. doRestart shuts the
@@ -1520,6 +1627,7 @@ function triggerSessionKey(msg) {
 // the session the first one is still using, with its first-token watchdog ticking while it waits.
 function canStartTrigger(msg) {
   if (activeTriggers.size >= MAX_CONCURRENT) return false;
+  if (harnessUpdates.has(msg.harness || "claude")) return false;
   const key = triggerSessionKey(msg);
   for (const t of activeTriggers.values()) if (t.sessionKey === key) return false;
   return true;
@@ -1544,7 +1652,7 @@ async function processTrigger(msg) {
   const targetDir = path.resolve(workdir);
   const threadId = msg.thread_id || 0;
   const sessionKey = buildSessionKey(targetDir, room_id, threadId, subAgent?.id);
-  const entry = { workdir, session: null, sessionKey, room_id, startedAt: Date.now(), lastActivity: Date.now() };
+  const entry = { workdir, session: null, sessionKey, room_id, harness: msg.harness || "claude", model: null, thirdParty: !!msg.base_url, startedAt: Date.now(), lastActivity: Date.now() };
   activeTriggers.set(message_id, entry);
   let sessionRef = null;
   let statusHandler = null;
@@ -1757,6 +1865,7 @@ ${allNotes}`;
     const needsFreshSession = !rid && session.resumeId;
     const needsHarnessChange = (session._harness || "claude") !== triggerHarness;
     let targetModel = msg.model || null;
+    entry.model = targetModel;
     const modelChain = Array.isArray(msg.models) && msg.models.length ? msg.models.slice() : targetModel ? [targetModel] : [];
     let modelIdx = 0;
     const currentModel = session.flags?.find((f, i, arr) => arr[i - 1] === "--model") || null;
@@ -1852,6 +1961,7 @@ ${allNotes}`;
           const failed = modelChain[modelIdx];
           modelIdx++;
           targetModel = modelChain[modelIdx];
+          entry.model = targetModel;
           console.log(`[stoa] model "${failed}" unavailable (${lastErr.message}), falling back to "${targetModel}"`);
           send({ type: "agent_stream_reset", room_id, message_id });
           fullContent = "";
@@ -1995,6 +2105,7 @@ ${allNotes}`;
       }
     } else {
       if (!content.trim()) console.warn(`[stoa] empty result from ${triggerHarness}: msg=${message_id} subtype=${subtype || ""} ${sessionKey}`);
+      if (isError || subtype && subtype !== "success") content += reportModelUnavailable(entry, content);
       const { text: cleanContent, attachments } = await extractAndUploadFiles(content, msg.workdir);
       const actualModel = targetModel || modelUsage && Object.keys(modelUsage).find((k) => k !== "total") || void 0;
       const result_meta = {
@@ -2056,7 +2167,7 @@ ${allNotes}`;
     } else {
       consecutiveTriggerErrors++;
       console.error(`[stoa] trigger error (${consecutiveTriggerErrors}/${MAX_TRIGGER_ERRORS}): ${err.message}`);
-      send({ type: "agent_error", room_id, message_id, error: err.message });
+      send({ type: "agent_error", room_id, message_id, error: err.message + reportModelUnavailable(entry, err.message) });
     }
     if (consecutiveTriggerErrors >= MAX_TRIGGER_ERRORS) {
       console.log("[stoa] too many trigger errors, restarting clean...");
@@ -2242,6 +2353,7 @@ function runTrigger(msg) {
   });
 }
 function drainQueue() {
+  startPendingHarnessUpdates();
   // FIFO, but a trigger whose thread is still busy stays put and lets later threads pass.
   let i = 0;
   while (activeTriggers.size < MAX_CONCURRENT && i < triggerQueue.length) {
@@ -2830,10 +2942,11 @@ function __resetDeps() {
   FETCH_TIMEOUT_MS = 60000;
   consecutiveTriggerErrors = 0;
   _restartOverride = null;
+  restartAfterUpdate = false;
   pendingRestart = false;
   pendingRestartSince = 0;
   ws = null;
   outbox.length = 0;
   outboxReady = false;
 }
-module.exports = { handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, TOOL_STALL_MS, forceRestartIfStalled, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, attachHeartbeatWatchdog, HEARTBEAT_MIN_SILENCE_MS, openAgentSocket, WS_HANDSHAKE_TIMEOUT_MS, __setDeps, __resetDeps, extractAndUploadFiles, uploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES, send, outbox, OUTBOX_MAX, activeMessageIds, ensureSkill, prependSkills, skillManifestHash };
+module.exports = { harnessUpdates, handleAgentMessage, fetchToFile, fetchText, drainQueue, runTrigger, activeTriggers, triggerQueue, pendingSteerMessages, MAX_CONCURRENT, processTrigger, sweepStaleTriggers, STALE_TRIGGER_MS, RESTART_STALL_MS, TOOL_STALL_MS, forceRestartIfStalled, checkForUpdates, preConnectUpdate, FIRST_TOKEN_TIMEOUT, attachHeartbeatWatchdog, HEARTBEAT_MIN_SILENCE_MS, openAgentSocket, WS_HANDSHAKE_TIMEOUT_MS, __setDeps, __resetDeps, extractAndUploadFiles, uploadFiles, attachUnsolicitedHandler, postUnsolicitedResult, startSessionIdleTimer, clearSessionIdleTimer, sessionPool, MAX_UPLOAD_BYTES, send, outbox, OUTBOX_MAX, activeMessageIds, ensureSkill, prependSkills, skillManifestHash };
