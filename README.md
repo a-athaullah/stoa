@@ -163,7 +163,7 @@ Stoa is a self-hosted workspace where you, Claude Code, and other AI agents work
 
 All AI agents run via Claude Code CLI as a persistent subprocess. For non-Anthropic models, the server passes platform credentials via environment variables (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`) to the CLI process — Claude Code handles the API communication transparently.
 
-**Built-in Anthropic models:** Opus 5.5, Opus 5, Sonnet 5.5, Sonnet 5, Fable 5.1, Fable 5, Haiku 4.5, and previous-generation Opus/Sonnet/Haiku variants. Model list is configured in `server.js`; new Claude models can be added there.
+**Built-in Anthropic models:** Opus 5.5, Opus 5, Sonnet 5.5, Sonnet 5, Fable 5.2, Fable 5.1, Fable 5, Haiku 5.5, Haiku 4.5, and previous-generation Opus/Sonnet/Haiku variants. Model list is configured in `server.js`; new Claude models can be added there.
 
 Platforms are configured in **Settings → Platforms**. Each platform supports model discovery (one-click probe with vision and tool-calling capability detection) and per-model enable/disable.
 

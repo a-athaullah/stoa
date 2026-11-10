@@ -16873,17 +16873,17 @@ async function run() {
 
     await test('custom models — POST adds model; listed in /api/ai/models and claude /api/harnesses', async () => {
       cmDb.prepare("DELETE FROM settings WHERE scope='global' AND key_name='custom_claude_models'").run();
-      const r = await req('POST', '/api/settings/custom-models', { value: 'claude-haiku-5-5', label: 'Haiku 5.5' });
+      const r = await req('POST', '/api/settings/custom-models', { value: 'claude-test-future-1', label: 'Future 1' });
       assert.strictEqual(r.status, 201, r.raw);
-      assert.deepStrictEqual(r.body, { value: 'claude-haiku-5-5', label: 'Haiku 5.5', custom: true });
-      const m = (await anthropicIds()).find(x => x.value === 'claude-haiku-5-5');
+      assert.deepStrictEqual(r.body, { value: 'claude-test-future-1', label: 'Future 1', custom: true });
+      const m = (await anthropicIds()).find(x => x.value === 'claude-test-future-1');
       assert.ok(m, 'custom model missing from /api/ai/models');
       assert.strictEqual(m.custom, true);
-      assert.strictEqual(m.label, 'Haiku 5.5');
+      assert.strictEqual(m.label, 'Future 1');
       assert.ok((await anthropicIds()).filter(x => x.custom).every(x => x.value.startsWith('claude-')));
       assert.ok(!(await anthropicIds()).find(x => x.value === 'claude-opus-5-5').custom, 'built-ins must not be marked custom');
       const claude = (await req('GET', '/api/harnesses')).body.find(h => h.name === 'claude');
-      assert.ok(claude.models.some(x => x.model_id === 'claude-haiku-5-5'), 'claude harness models must include custom');
+      assert.ok(claude.models.some(x => x.model_id === 'claude-test-future-1'), 'claude harness models must include custom');
       assert.ok(claude.models.some(x => x.model_id === 'claude-opus-5-5'), 'claude harness models must include built-ins');
     });
 
@@ -16891,10 +16891,12 @@ async function run() {
       const r = await req('POST', '/api/settings/custom-models', { value: 'claude-test-nolabel-1' });
       assert.strictEqual(r.status, 201, r.raw);
       assert.strictEqual(r.body.label, 'claude-test-nolabel-1');
-      assert.strictEqual((await req('POST', '/api/settings/custom-models', { value: 'claude-haiku-5-5' })).status, 409);
-      assert.strictEqual((await req('POST', '/api/settings/custom-models', { value: 'claude-opus-5-5' })).status, 409);
+      assert.strictEqual((await req('POST', '/api/settings/custom-models', { value: 'claude-test-future-1' })).status, 409);
+      for (const value of ['claude-opus-5-5', 'claude-fable-5-2', 'claude-test-future-1']) {
+        assert.strictEqual((await req('POST', '/api/settings/custom-models', { value })).status, 409, `${value} is built-in`);
+      }
       const stored = JSON.parse(cmDb.prepare("SELECT value FROM settings WHERE scope='global' AND key_name='custom_claude_models'").get().value);
-      assert.deepStrictEqual(stored.map(x => x.value), ['claude-haiku-5-5', 'claude-test-nolabel-1'], 'rejected posts must not be stored');
+      assert.deepStrictEqual(stored.map(x => x.value), ['claude-test-future-1', 'claude-test-nolabel-1'], 'rejected posts must not be stored');
     });
 
     await test('custom models — invalid value/label → 400', async () => {
@@ -16918,10 +16920,10 @@ async function run() {
     });
 
     await test('custom models — DELETE 204 removes it, second DELETE 404', async () => {
-      const r = await req('DELETE', `/api/settings/custom-models/${enc('claude-haiku-5-5')}`);
+      const r = await req('DELETE', `/api/settings/custom-models/${enc('claude-test-future-1')}`);
       assert.strictEqual(r.status, 204, r.raw);
-      assert.ok(!(await anthropicIds()).some(x => x.value === 'claude-haiku-5-5'), 'deleted model still listed');
-      assert.strictEqual((await req('DELETE', `/api/settings/custom-models/${enc('claude-haiku-5-5')}`)).status, 404);
+      assert.ok(!(await anthropicIds()).some(x => x.value === 'claude-test-future-1'), 'deleted model still listed');
+      assert.strictEqual((await req('DELETE', `/api/settings/custom-models/${enc('claude-test-future-1')}`)).status, 404);
       assert.strictEqual((await req('DELETE', '/api/settings/custom-models/%E0%A4%A')).status, 400);
     });
 
@@ -16976,8 +16978,8 @@ async function run() {
       await sendCandidates(candA, {
         claude_cli_version: '2.1.300 (Claude Code)',
         claude_model_candidates: [
-          'claude-sonnet-6-0', 'claude-haiku-5-5', 'claude-haiku-5-5',
-          'claude-opus-5-5',            // built-in
+          'claude-sonnet-6-0', 'claude-haiku-5-6', 'claude-haiku-5-6',
+          'claude-opus-5-5', 'claude-fable-5-2', 'claude-haiku-5-5', // built-in
           'claude-haiku-4-5',           // alias of built-in claude-haiku-4-5-20251001
           'claude-opus-4-5',            // older than newest listed opus
           'claude-../../etc', '<img src=x onerror=alert(1)>', 42, { id: 'claude-opus-9-9' }, null,
@@ -16986,12 +16988,12 @@ async function run() {
       });
       const r = await get();
       assert.strictEqual(r.status, 200, r.raw);
-      assert.deepStrictEqual(r.body, { cli_version: '2.1.300 (Claude Code)', candidates: [{ id: 'claude-sonnet-6-0' }, { id: 'claude-haiku-5-5' }] });
+      assert.deepStrictEqual(r.body, { cli_version: '2.1.300 (Claude Code)', candidates: [{ id: 'claude-sonnet-6-0' }, { id: 'claude-haiku-5-6' }] });
     });
 
     await test('claude candidates — an added custom model disappears from suggestions', async () => {
       if (!candA) { console.log('    (skipped)'); return; }
-      assert.strictEqual((await req('POST', '/api/settings/custom-models', { value: 'claude-haiku-5-5', label: 'Haiku 5.5' })).status, 201);
+      assert.strictEqual((await req('POST', '/api/settings/custom-models', { value: 'claude-haiku-5-6', label: 'Haiku 5.6' })).status, 201);
       assert.deepStrictEqual((await get()).body.candidates, [{ id: 'claude-sonnet-6-0' }]);
     });
 
@@ -17209,20 +17211,31 @@ async function run() {
     });
 
     // ── Late / replayed results (stoa.js outbox) ──
-    // Module-level code runs before runMigrations: a db.prepare on a table there crashes a fresh install.
-    await test('server boots from an empty DB (fresh install: no module-level prepare before migrations)', async () => {
+    // Boots server.js on its own DB in a temp dir; seed(db) runs on a migrated DB before boot.
+    // inspect(db) receives the DB read-only once the server logs it is listening.
+    const bootIsolatedServer = async ({ seed, inspect }) => {
       const fs = require('fs'), os = require('os'), net = require('net');
       const { spawn } = require('child_process');
+      const Database = require('better-sqlite3');
       const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'stoa-fresh-'));
+      const dbPath = path.join(tmp, 'stoa.db');
       let child = null;
       try {
+        if (seed) {
+          const pre = new Database(dbPath);
+          try {
+            require('./lib/migrations').runMigrations(pre, path.join(__dirname, 'migrations'), { log() {}, warn() {}, error() {} },
+              { schemaSql: fs.readFileSync(path.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8') });
+            seed(pre);
+          } finally { pre.close(); }
+        }
         const port = await new Promise((resolve, reject) => {
           const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); });
           s.on('error', reject);
         });
         fs.writeFileSync(path.join(tmp, '.env'), '');
         for (const sub of ['dist', 'mcp']) fs.mkdirSync(path.join(tmp, sub));
-        const env = { ...process.env, PORT: String(port), DB_PATH: path.join(tmp, 'stoa.db'), STOA_ENV_FILE: path.join(tmp, '.env'),
+        const env = { ...process.env, PORT: String(port), DB_PATH: dbPath, STOA_ENV_FILE: path.join(tmp, '.env'),
           STOA_AGENT_BUNDLE_DIR: path.join(tmp, 'dist'), STOA_MCP_WORK_DIR: path.join(tmp, 'mcp'),
           STOA_UPDATE_STATE_FILE: path.join(tmp, 'update-state.json'),
           STOA_SMOKE_BOOT: '1', STOA_SEMANTIC_SEARCH: 'off', STOA_ORPHAN_WAKE: 'off' };
@@ -17235,11 +17248,9 @@ async function run() {
           child.stderr.on('data', keep);
         });
         const result = await Promise.race([up, exited.then(c => `exit ${c}`), new Promise(r => setTimeout(() => r('timeout'), 20000))]);
-        assert.strictEqual(result, 'up', `fresh boot failed (${result}): ${out.trim().split('\n').slice(-5).join(' | ')}`);
-        const fresh = new (require('better-sqlite3'))(path.join(tmp, 'stoa.db'), { readonly: true });
-        try {
-          assert.strictEqual(fresh.prepare("SELECT count(*) n FROM sqlite_master WHERE type='table' AND name='messages'").get().n, 1, 'schema applied to the fresh DB');
-        } finally { fresh.close(); }
+        assert.strictEqual(result, 'up', `boot failed (${result}): ${out.trim().split('\n').slice(-5).join(' | ')}`);
+        const booted = new Database(dbPath, { readonly: true });
+        try { inspect(booted, out); } finally { booted.close(); }
       } finally {
         if (child && child.exitCode === null && child.signalCode === null) {
           const gone = new Promise(r => child.once('exit', r));
@@ -17247,6 +17258,39 @@ async function run() {
           await gone;
         }
         fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    };
+
+    // Module-level code runs before runMigrations: a db.prepare on a table there crashes a fresh install.
+    await test('server boots from an empty DB (fresh install: no module-level prepare before migrations)', async () => {
+      await bootIsolatedServer({ inspect: fresh => {
+        assert.strictEqual(fresh.prepare("SELECT count(*) n FROM sqlite_master WHERE type='table' AND name='messages'").get().n, 1, 'schema applied to the fresh DB');
+      } });
+    });
+
+    const seedCustomModels = value => db => db.prepare("INSERT INTO settings (scope, scope_id, key_name, value) VALUES ('global', NULL, 'custom_claude_models', ?)").run(value);
+    const storedCustomModels = db => db.prepare("SELECT value FROM settings WHERE scope='global' AND scope_id IS NULL AND key_name='custom_claude_models'").get()?.value;
+
+    await test('boot prunes custom Claude models that are now built-in; other entries kept in order', async () => {
+      const seeded = [
+        { value: 'claude-haiku-5-5', label: 'Haiku 5.5' },
+        { value: 'claude-test-keep-1', label: 'Keep 1' },
+        { value: 'claude-fable-5-2', label: 'My Fable' },
+        { value: 'claude-haiku-4-5', label: 'Alias, not the built-in ID' },
+        { value: 'claude-test-keep-2', label: 'Keep 2' },
+      ];
+      await bootIsolatedServer({ seed: seedCustomModels(JSON.stringify(seeded)), inspect: (db, out) => {
+        assert.deepStrictEqual(JSON.parse(storedCustomModels(db)), [seeded[1], seeded[3], seeded[4]]);
+        assert.ok(out.includes('2 custom Claude model(s) removed'), `prune log missing: ${out.slice(-500)}`);
+      } });
+    });
+
+    await test('boot prune — nothing to prune or unparseable JSON: setting left byte-identical, server still boots', async () => {
+      for (const raw of ['[{"value":"claude-test-keep-1","label":"Keep 1"}]', '{not json', '{"value":"claude-haiku-5-5"}', '[null,7,{"value":42}]']) {
+        await bootIsolatedServer({ seed: seedCustomModels(raw), inspect: (db, out) => {
+          assert.strictEqual(storedCustomModels(db), raw, `setting changed for ${raw}`);
+          assert.ok(!out.includes('custom Claude model'), `unexpected prune log for ${raw}: ${out.slice(-500)}`);
+        } });
       }
     });
 
