@@ -72,11 +72,13 @@ function _applyHarnessCheckResult(actor, data, sel, hintEl) {
   });
   if (newOnes.length) {
     showToast(`New harness detected: ${newOnes.map(h => escHtml(HARNESS_LABELS[h] || h)).join(', ')}`);
-  } else if (newModels.length && curHarness !== 'claude') {
+  } else if (newModels.length) {
     showToast(`${escHtml(HARNESS_LABELS[curHarness] || curHarness)}: ${newModels.length} new model${newModels.length > 1 ? 's' : ''}`);
   } else {
     showToast(parts.length ? `Harnesses: ${parts.map(p => escHtml(p)).join(', ')}` : 'No harnesses detected');
   }
+  _cliSeedFromActor(actor);
+  _renderCliRows(actor.id, actor);
   renderAgentSidebar();
   if (typeof refreshModelDropdownForActor === 'function') refreshModelDropdownForActor(actor.id);
 }
@@ -222,6 +224,173 @@ function sSyncRestartUi(actor, update = actor) {
     }
   }
   _renderRestartUi(actor.id, actor);
+}
+
+// `${actorId}:${harness}` -> { state, old_version, new_version, error, request_id } — fed by harness_update_status
+const sCliUpdateState = new Map();
+const S_CLI_SERVER_STATES = new Set(['waiting_idle', 'running', 'done', 'failed']);
+const S_CLI_ACTIVE = new Set(['requested', 'waiting_idle', 'running']);
+const sCliOnline = new Map(); // actorId -> online, from actor_status (allActors keeps a stale online flag)
+
+function _cliKey(actorId, harness) { return `${actorId}:${harness}`; }
+function _cliIsOnline(actor) { return sCliOnline.has(actor.id) ? sCliOnline.get(actor.id) : !!actor.online; }
+
+function _cliNormalize(u) {
+  if (!u || !S_CLI_SERVER_STATES.has(u.state)) return null;
+  const str = (v, max) => (typeof v === 'string' && v ? v.slice(0, max) : null);
+  return { state: u.state, old_version: str(u.old_version, 100), new_version: str(u.new_version, 100), error: str(u.error, 300), request_id: str(u.request_id, 100) };
+}
+
+// harness_status[].update is the server's last known state; a payload without the key says nothing.
+function _cliSeedFromActor(actor) {
+  for (const st of actor.harness_status || []) {
+    if (!st || !('update' in st)) continue;
+    const k = _cliKey(actor.id, st.id);
+    const u = _cliNormalize(st.update);
+    const cur = sCliUpdateState.get(k);
+    // Our POST is in flight: only a state for this request (or a live one) may replace it.
+    if (cur?.state === 'requested' && !(u && (S_CLI_ACTIVE.has(u.state) || (cur.request_id && u.request_id === cur.request_id)))) continue;
+    if (u) sCliUpdateState.set(k, u); else sCliUpdateState.delete(k);
+  }
+}
+
+function _cliStatusText(u) {
+  if (!u) return '';
+  if (u.state === 'requested') return 'Starting update…';
+  if (u.state === 'waiting_idle') return 'Waiting for idle — updates once current runs finish';
+  if (u.state === 'running') return 'Updating…';
+  if (u.state === 'done') {
+    if (u.old_version && u.old_version === u.new_version) return `Already up to date (${u.new_version})`;
+    return u.old_version && u.new_version ? `Updated ${u.old_version} → ${u.new_version}` : 'Updated';
+  }
+  return `Update failed${u.error ? `: ${u.error}` : ''}`;
+}
+
+function _cliBlockReason(actor, u) {
+  if (!_cliIsOnline(actor)) return 'Offline';
+  if (u && S_CLI_ACTIVE.has(u.state)) return 'Update in progress';
+  return null;
+}
+
+function _cliBuildRow(actor, harness) {
+  const row = document.createElement('div');
+  row.className = 's-cli-row';
+  row.dataset.cliHarness = harness;
+  const name = document.createElement('span');
+  name.className = 's-cli-name';
+  name.textContent = HARNESS_LABELS[harness] || harness;
+  const ver = document.createElement('span');
+  ver.className = 's-cli-ver';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 's-icon-btn s-cli-btn';
+  btn.innerHTML = svgUpdate(13);
+  const lbl = document.createElement('span');
+  lbl.textContent = 'Update';
+  btn.appendChild(lbl);
+  btn.addEventListener('click', () => _requestCliUpdate(actor.id, harness));
+  const status = document.createElement('span');
+  status.className = 's-cli-status';
+  status.setAttribute('role', 'status');
+  row.append(name, ver, btn, status);
+  return row;
+}
+
+function _cliSyncRow(row, actor, st) {
+  const u = sCliUpdateState.get(_cliKey(actor.id, st.id)) || null;
+  row.querySelector('.s-cli-ver').textContent = st.version || 'version unknown';
+  const btn = row.querySelector('.s-cli-btn');
+  const reason = _cliBlockReason(actor, u);
+  btn.disabled = !!reason;
+  btn.title = reason || `Update ${HARNESS_LABELS[st.id] || st.id} on this machine`;
+  btn.setAttribute('aria-label', `Update ${HARNESS_LABELS[st.id] || st.id}`);
+  const status = row.querySelector('.s-cli-status');
+  status.textContent = _cliStatusText(u);
+  status.classList.toggle('is-error', u?.state === 'failed');
+  status.classList.toggle('is-done', u?.state === 'done');
+}
+
+function _cliFillList(list, actor) {
+  const installed = (actor.harness_status || []).filter(s => s && s.installed);
+  const ids = installed.map(s => s.id).join(',');
+  if (list.dataset.cliIds !== ids || !list.childElementCount) {
+    list.replaceChildren();
+    list.dataset.cliIds = ids;
+    if (!installed.length) {
+      const empty = document.createElement('span');
+      empty.className = 's-cli-empty';
+      empty.textContent = _cliIsOnline(actor) ? 'No CLI detected — press Check after installing one' : 'Offline — CLI versions show once the agent connects';
+      list.appendChild(empty);
+      return;
+    }
+    for (const st of installed) list.appendChild(_cliBuildRow(actor, st.id));
+  }
+  for (const st of installed) {
+    const row = list.querySelector(`.s-cli-row[data-cli-harness="${CSS.escape(st.id)}"]`);
+    if (row) _cliSyncRow(row, actor, st);
+  }
+}
+
+function _renderCliRows(actorId, actor = allActors.find(a => a.id === actorId)) {
+  if (!actor) return;
+  document.querySelectorAll(`.s-cli-list[data-cli-actor="${actorId}"]`).forEach(list => _cliFillList(list, actor));
+}
+
+function _makeCliList(actor) {
+  _cliSeedFromActor(actor);
+  const list = document.createElement('div');
+  list.className = 's-cli-list';
+  list.dataset.cliActor = actor.id;
+  _cliFillList(list, actor);
+  return list;
+}
+
+async function _requestCliUpdate(actorId, harness) {
+  const actor = allActors.find(a => a.id === actorId);
+  const k = _cliKey(actorId, harness);
+  if (!actor || _cliBlockReason(actor, sCliUpdateState.get(k))) { _renderCliRows(actorId); return; }
+  sCliUpdateState.set(k, { state: 'requested' });
+  _renderCliRows(actorId);
+  try {
+    const r = await fetch(`/api/agents/${actorId}/harnesses/${encodeURIComponent(harness)}/update`, { method: 'POST' });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      if (r.status === 401) showLogin();
+      sCliUpdateState.set(k, { state: 'failed', error: String(data.error || 'Could not start the update').slice(0, 300) });
+      return;
+    }
+    // A WS status for this request can land before the response; only fill the gap.
+    if (sCliUpdateState.get(k)?.state === 'requested') sCliUpdateState.set(k, { state: 'requested', request_id: data.request_id || null });
+  } catch {
+    sCliUpdateState.set(k, { state: 'failed', error: 'Could not reach the server' });
+  } finally { _renderCliRows(actorId); }
+}
+
+function sHandleHarnessUpdateStatus(msg) {
+  const id = Number(msg.actor_id);
+  const harness = typeof msg.harness === 'string' ? msg.harness : '';
+  const u = _cliNormalize(msg);
+  if (!id || !harness || !u) return;
+  const k = _cliKey(id, harness);
+  const prev = sCliUpdateState.get(k);
+  sCliUpdateState.set(k, u);
+  const actor = allActors.find(a => a.id === id);
+  const st = (actor?.harness_status || []).find(s => s.id === harness);
+  if (st) st.update = u;
+  if (actor && prev?.state !== u.state) {
+    const lbl = HARNESS_LABELS[harness] || harness;
+    if (u.state === 'done') showToast(`${actor.name}: ${lbl} ${u.new_version ? `is now ${u.new_version}` : 'updated'}`);
+    if (u.state === 'failed') showToast(`${actor.name}: ${lbl} update failed`, { error: true });
+  }
+  _renderCliRows(id, actor);
+}
+
+// Mirrors sSyncRestartUi: `update` is the raw actor_status payload, `actor` the merged view.
+function sSyncCliUi(actor, update = actor) {
+  if (!actor) return;
+  sCliOnline.set(actor.id, !!actor.online);
+  if (Array.isArray(update.harness_status)) _cliSeedFromActor({ id: actor.id, harness_status: update.harness_status });
+  _renderCliRows(actor.id, actor);
 }
 
 function sDetectOS() {
@@ -463,25 +632,28 @@ function saLabelErrorRoute(e, label, actorName) {
   return { toast: e.error || 'failed to save' };
 }
 
+function _saAppendModelOpt(sel, m) {
+  const o = document.createElement('option');
+  o.value = m.value;
+  o.textContent = (m.label || m.value) + (m.listed === false ? MODEL_UNLISTED_SUFFIX : '');
+  if (m.listed === false) o.title = MODEL_UNLISTED_HINT;
+  sel.appendChild(o);
+}
+
 function _saPopulateModelSel(modelSel, harness, actor, currentVal) {
   modelSel.innerHTML = '';
   const useTierOpt = document.createElement('option');
   useTierOpt.value = ''; useTierOpt.textContent = 'use tier';
   modelSel.appendChild(useTierOpt);
   if (!harness || harness === 'claude') {
-    const anthropicModels = _saAnthropicModels();
-    for (const m of anthropicModels) {
-      const o = document.createElement('option'); o.value = m.value; o.textContent = (m.label || m.value) + (m.custom ? ' · custom' : ''); modelSel.appendChild(o);
-    }
+    const anthropicModels = withAgentListed(_saAnthropicModels(), actor, 'claude');
+    for (const m of anthropicModels) _saAppendModelOpt(modelSel, m);
     if (currentVal && !anthropicModels.some(m => m.value === currentVal)) {
       const o = document.createElement('option'); o.value = currentVal; o.textContent = currentVal; modelSel.appendChild(o);
     }
   } else {
     const models = (_agentHarnessModels(actor?.harness_status, harness) || getModelsForHarness(harness) || []);
-    for (const m of models) {
-      const o = document.createElement('option'); o.value = m.value;
-      o.textContent = m.label || m.value; modelSel.appendChild(o);
-    }
+    for (const m of models) _saAppendModelOpt(modelSel, m);
   }
   const valid = Array.from(modelSel.options).map(o => o.value);
   modelSel.value = valid.includes(currentVal) ? currentVal : '';
@@ -1197,6 +1369,10 @@ function buildAgentSettingsCard(actor) {
   fieldRow.append(beGrp, langGrp, nameGrp);
   body.appendChild(fieldRow);
 
+  const cliGrp = document.createElement('div'); cliGrp.className = 's-field-group s-cli-group';
+  cliGrp.append(mkFieldLbl('CLI versions'), _makeCliList(actor));
+  body.appendChild(cliGrp);
+
   // ── Default model field ──────────────────────────────────────────────────
   const dmGrp = document.createElement('div'); dmGrp.className = 's-field-group'; dmGrp.style.minWidth = 'auto';
   const dmSel = document.createElement('select');
@@ -1212,18 +1388,14 @@ function buildAgentSettingsCard(actor) {
     noneOpt.textContent = harnessDefault ? `follow harness default — ${harnessDefault}` : 'follow harness default';
     dmSel.appendChild(noneOpt);
     if (!harness || harness === 'claude') {
-      const anthropicModels = _saAnthropicModels();
-      for (const m of anthropicModels) {
-        const o = document.createElement('option'); o.value = m.value; o.textContent = m.label || m.value; dmSel.appendChild(o);
-      }
+      const anthropicModels = withAgentListed(_saAnthropicModels(), actor, 'claude');
+      for (const m of anthropicModels) _saAppendModelOpt(dmSel, m);
       if (actor.default_model && !anthropicModels.some(m => m.value === actor.default_model)) {
         const o = document.createElement('option'); o.value = actor.default_model; o.textContent = actor.default_model; dmSel.appendChild(o);
       }
     } else {
       const models = (_agentHarnessModels(actor.harness_status, harness) || getModelsForHarness(harness) || []);
-      for (const m of models) {
-        const o = document.createElement('option'); o.value = m.value; o.textContent = m.label || m.value; dmSel.appendChild(o);
-      }
+      for (const m of models) _saAppendModelOpt(dmSel, m);
     }
     const valid = Array.from(dmSel.options).map(o => o.value);
     dmSel.value = valid.includes(actor.default_model) ? (actor.default_model || '') : '';
