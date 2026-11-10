@@ -251,9 +251,9 @@ function sanitizeResultMeta(raw) {
 const DEFAULT_CONTEXT_WINDOW = 200000;
 const MODEL_CONTEXT_LIMITS = {
   'claude-opus-5-5': 200000, 'claude-opus-5': 200000, 'claude-sonnet-5-5': 200000, 'claude-sonnet-5': 200000,
-  'claude-fable-5-1': 200000, 'claude-fable-5': 200000,
+  'claude-fable-5-2': 200000, 'claude-fable-5-1': 200000, 'claude-fable-5': 200000,
   'claude-opus-4-8': 200000, 'claude-opus-4-7': 200000, 'claude-opus-4-6': 200000,
-  'claude-sonnet-4-6': 200000, 'claude-sonnet-4-5': 200000, 'claude-haiku-4-5': 200000,
+  'claude-sonnet-4-6': 200000, 'claude-sonnet-4-5': 200000, 'claude-haiku-5-5': 200000, 'claude-haiku-4-5': 200000,
 };
 function getContextLimit(model) { return MODEL_CONTEXT_LIMITS[model] || DEFAULT_CONTEXT_WINDOW; }
 
@@ -1048,6 +1048,7 @@ const ANTHROPIC_MODELS = [
   { value: 'claude-opus-5', label: 'Opus 5', vision: true, tools: true },
   { value: 'claude-sonnet-5-5', label: 'Sonnet 5.5', vision: true, tools: true },
   { value: 'claude-sonnet-5', label: 'Sonnet 5', vision: true, tools: true },
+  { value: 'claude-fable-5-2', label: 'Fable 5.2', vision: true, tools: true },
   { value: 'claude-fable-5-1', label: 'Fable 5.1', vision: true, tools: true },
   { value: 'claude-fable-5', label: 'Fable 5', vision: true, tools: true },
   { value: 'claude-opus-4-8', label: 'Opus 4.8', vision: true, tools: true },
@@ -1055,6 +1056,7 @@ const ANTHROPIC_MODELS = [
   { value: 'claude-opus-4-6', label: 'Opus 4.6', vision: true, tools: true },
   { value: 'claude-sonnet-4-6', label: 'Sonnet 4.6', vision: true, tools: true },
   { value: 'claude-sonnet-4-5', label: 'Sonnet 4.5', vision: true, tools: true },
+  { value: 'claude-haiku-5-5', label: 'Haiku 5.5', vision: true, tools: true },
   { value: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5', vision: true, tools: true },
 ];
 const MAX_SYNCED_HARNESS_MODELS = 50;
@@ -1071,6 +1073,22 @@ function getCustomClaudeModels() {
   try { list = getParsedSetting('custom_claude_models'); } catch { return []; }
   if (!Array.isArray(list)) return [];
   return list.filter(m => m && typeof m.value === 'string' && CUSTOM_CLAUDE_MODEL_RE.test(m.value) && typeof m.label === 'string');
+}
+
+// A custom model that later ships in ANTHROPIC_MODELS is removed from the stored setting at boot,
+// so Settings does not keep showing a deletable duplicate. Unparseable or non-array JSON is left as
+// is (getCustomClaudeModels already ignores it); entries that are not built-in are kept untouched.
+function pruneBuiltinCustomClaudeModels() {
+  const raw = getSetting('custom_claude_models');
+  if (!raw) return 0;
+  let list;
+  try { list = JSON.parse(raw); } catch { return 0; }
+  if (!Array.isArray(list)) return 0;
+  const builtin = new Set(ANTHROPIC_MODELS.map(m => m.value));
+  const kept = list.filter(m => !(m && typeof m.value === 'string' && builtin.has(m.value)));
+  if (kept.length === list.length) return 0;
+  setSetting('custom_claude_models', JSON.stringify(kept));
+  return list.length - kept.length;
 }
 
 function getAnthropicModels() {
@@ -8378,6 +8396,10 @@ server.listen(PORT, () => {
   // R15: any session left 'active' belongs to a prior process — mark indeterminate.
   const orphaned = db.prepare("UPDATE ai_sessions SET status='indeterminate' WHERE status='active'").run();
   if (orphaned.changes) console.log(`[startup] ${orphaned.changes} orphaned session(s) marked indeterminate`);
+  try {
+    const pruned = pruneBuiltinCustomClaudeModels();
+    if (pruned) console.log(`[startup] ${pruned} custom Claude model(s) removed: now built-in`);
+  } catch (e) { console.error('[startup] custom Claude model prune failed:', e.message); }
 
   console.log(`Stoa running → http://localhost:${PORT}`);
   // Phase 2b (R1): resume any sub-agent wakes left pending by a prior crash/restart.

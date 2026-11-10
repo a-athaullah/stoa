@@ -56,9 +56,15 @@ Klik judul room di header chat. Judul menjadi editable — ketik nama baru dan t
 **Selector model** muncul di sisi kanan toolbar formatting di composer. Gunakan untuk mengganti model yang akan digunakan agent untuk respons berikutnya.
 
 **Model Claude bawaan** (via langganan Claude Code):
-- **Haiku 4.5** — tercepat dan paling ekonomis
-- **Sonnet 4.5 / 4.6** — performa dan kualitas seimbang (default: Sonnet 4.6)
-- **Opus 4.6 / 4.7 / 4.8** — kapabilitas tertinggi, cocok untuk tugas kompleks atau konteks panjang
+- **Fable 5.2 / 5.1 / 5** — tier paling andal, di atas Opus
+- **Opus 5.5 / 5** — kapabilitas sangat tinggi
+- **Sonnet 5.5 / 5** — performa dan kualitas tinggi
+- **Opus 4.8 / 4.7 / 4.6** — kapabilitas tinggi generasi sebelumnya
+- **Sonnet 4.6 / 4.5** — generasi sebelumnya, seimbang (default: Sonnet 4.6)
+- **Haiku 5.5** — cepat dan ekonomis
+- **Haiku 4.5** — cepat generasi sebelumnya
+
+Entri model custom yang ID-nya sama dengan model bawaan akan dihapus otomatis saat server start.
 
 **Model platform eksternal**: Jika Anda sudah mengonfigurasi platform tambahan di **Settings > Platforms** (misal Ollama Cloud, OpenRouter), model yang diaktifkan dari platform tersebut juga muncul di selector, dikelompokkan berdasarkan nama platform. Model yang mendukung input gambar ditandai dengan ikon 👁; model yang mendukung tool-calling ditandai dengan ikon ⚙. Model tanpa tool-calling berjalan dalam mode teks saja (tidak bisa baca file atau eksekusi kode via tools).
 

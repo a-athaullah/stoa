@@ -56,9 +56,15 @@ Click the room title in the chat header. It becomes editable — type the new na
 A **model selector** appears at the right side of the formatting toolbar in the composer. Use it to override the model the agent will use for its next response.
 
 **Built-in Claude models** (via Claude Code subscription):
-- **Haiku 4.5** — fastest and most economical
-- **Sonnet 4.5 / 4.6** — balanced performance and quality (default: Sonnet 4.6)
-- **Opus 4.6 / 4.7 / 4.8** — highest capability, best for complex or long-context tasks
+- **Fable 5.2 / 5.1 / 5** — most capable tier, above Opus
+- **Opus 5.5 / 5** — very high capability
+- **Sonnet 5.5 / 5** — strong performance and quality
+- **Opus 4.8 / 4.7 / 4.6** — previous-generation high capability
+- **Sonnet 4.6 / 4.5** — previous-generation balanced (default: Sonnet 4.6)
+- **Haiku 5.5** — fast and economical
+- **Haiku 4.5** — previous-generation fast
+
+A custom model entry whose ID matches a built-in model is removed automatically when the server starts.
 
 **External platform models**: If you've configured additional platforms in **Settings > Platforms** (e.g., Ollama Cloud, OpenRouter), their enabled models also appear in the selector, grouped by platform name. Models with vision capability are marked with a 👁 icon; models with tool-calling support are marked with a ⚙ icon. Models without tool-calling run in text-only mode (no file reading, no code execution via tools).
 
