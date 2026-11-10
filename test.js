@@ -15649,6 +15649,16 @@ async function run() {
       ['claude-opus-4-1', 'Opus 4.1 · not listed by CLI', "Not listed by this machine's CLI — it may still work"],
       ['claude-opus-5-5', 'Opus 5.5', ''],
     ]);
+
+    // Tier picker labels: two models of one family never share a label, known or not.
+    const ids = ['claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5-5', 'claude-sonnet-5', 'claude-opus-6', 'claude-opus-6-1'];
+    const labels = ids.map(id => run('claudeModelLabel')(id));
+    assert.deepStrictEqual(labels, ['Opus 5.5', 'Opus 5', 'Sonnet 5.5', 'Sonnet 5', 'opus-6', 'opus-6-1']);
+    const fallbackIds = JSON.parse(run(`JSON.stringify(getAvailableModels().filter(m => m.platform === 'anthropic').map(m => m.value))`));
+    const all = fallbackIds.concat(ids).map(id => run('claudeModelLabel')(id));
+    assert.strictEqual(new Set(all).size, new Set(fallbackIds.concat(ids)).size, 'every Claude model ID gets its own label');
+    const sidebar = fs.readFileSync(path.join(__dirname, 'public/js/rooms/room-sidebar.js'), 'utf8');
+    assert.ok(!/shortName|def\.innerHTML/.test(sidebar), 'tier picker labels go through claudeModelLabel and textContent');
   });
 
   await test('primary agent — isPrimaryParticipant matches by actor id: is_primary wins, room primary_actor_id is the fallback, no field marks nobody', () => {

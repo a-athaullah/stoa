@@ -474,6 +474,12 @@ function getAvailableModels() {
   return ANTHROPIC_MODELS_FALLBACK.map(m => ({ ...m, platform: 'anthropic', platform_id: 'anthropic' }));
 }
 
+// Display label for a Claude model ID: the known label, else the full ID minus `claude-` so versions stay distinct.
+function claudeModelLabel(value) {
+  const m = getAvailableModels().find(x => x.platform === 'anthropic' && x.value === value);
+  return (m && m.label) || String(value).replace(/^claude-/, '');
+}
+
 // Find a model by value, disambiguating by platform when a name exists on multiple platforms.
 // No platform → Anthropic native model (model_config is null), so default to 'anthropic' rather
 // than matching every platform that shares this name. Falls back to any-platform match.
