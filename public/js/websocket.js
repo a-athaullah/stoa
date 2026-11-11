@@ -27,6 +27,7 @@ function connectWS(roomId) {
     ws.send(JSON.stringify({ type: 'file_list' }));
     ws.send(JSON.stringify({ type: 'git_diff' }));
     setConnected(true);
+    tasksOnSocketOpen(roomId);
   };
 
   ws.onmessage = e => {
@@ -568,6 +569,11 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'queue_updated') {
     _updateQueuePill(msg.queued || 0);
+    return;
+  }
+
+  if (msg.type === 'task_upsert' || msg.type === 'task_delete' || msg.type === 'task_event' || msg.type === 'task_settings') {
+    tasksHandleWs(msg);
     return;
   }
 
