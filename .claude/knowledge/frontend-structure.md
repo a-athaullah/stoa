@@ -187,6 +187,17 @@ function renderMessages(roomId) {
 
 ---
 
+### Room task board (`public/js/tasks/`)
+- `api.js` (`TasksApi`): the only place that calls `/api/rooms/:id/tasks*` (contract: `stoa-feature/kanban/CONTRACT.md`). Errors are `TasksApiError` with `status` and the server's message.
+- `board.js`: state in `tasksUi`, the board (4 columns), toolbar, banner, pointer + keyboard moves, nav buttons. `drawer.js`: the card detail panel. Every class is `tb-*` (`public/css/tasks.css`) so nothing collides with layout classes.
+- Entry: rail button `#rsb-tasks` (`tasksRailButton` in `room-sidebar.js`) and, under 1024px where the rail is hidden, `#tb-hbtn` in the room header (`tasksHeaderControls`). Board mode = `#chat-feed-col.tb-mode` (everything except `#chat-header` and `#task-board` is hidden). Pips: running (teal) / awaiting (indigo), counted from the loaded tasks.
+- Room isolation: `openRoom` calls `tasksOnRoomOpen(room)` (clears state, closes the drawer, restores the per-room view from `localStorage['stoa-task-view']`); the room socket's `onopen` calls `tasksOnSocketOpen(roomId)` for the snapshot (no replay, so reconnects refetch); `tasksHandleWs` drops `task_*` events whose `room_id` is not the current room. A snapshot that lands after a switch is dropped by `tasksUi.seq`.
+- Order comes from the server `rank`; the client never sends one. Moves send `before_id` (card below the drop) or `after_id` (card above, only at the end); confirming an Awaiting card sends neither. Finished is shown newest first (`finished_at`).
+- Stop always opens a `<dialog>` that names the running tasks it will cancel. Esc inside the board (popover, drag, drawer) is caught before the global Esc that stops generation.
+- Chat: `automation.provider === 'task'` renders the avatar `/img/task-avatar.svg` (PNG wrapped in SVG, because the static server serves no `.png`) and a "Task #seq" tag button (`makeTaskTagEl` in `core.js`) that opens the board and the drawer; it reads `automation.task_id` (falls back to `automation.id`) and `automation.task_seq`.
+
+---
+
 ### Message Input
 ```javascript
 function renderMessageInput() {
