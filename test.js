@@ -5209,6 +5209,445 @@ async function runAsyncUnitTests() {
     }
   }
 
+
+  // ── Task board core + runner (lib/room-tasks.js, lib/room-tasks-runner.js) on a migrated :memory: DB ──
+  {
+    console.log('  [Task board — core + runner]');
+    const Database = require('better-sqlite3');
+    const fsT = require('fs'), pathT = require('path');
+    const { runMigrations } = require('./lib/migrations');
+    const { createRoomTasks, taskMcpTools, keyBetween, evenKeys } = require('./lib/room-tasks');
+    const { createRoomTasksRunner, composeTaskMessage } = require('./lib/room-tasks-runner');
+    const tick = () => new Promise(r => setImmediate(r));
+    // → a fresh world: owner 1, agents 2 + 3 in room 10, agent 4 in room 11 only, sub-agent 7 of agent 2 linked to room 10.
+    const world = () => {
+      const db = new Database(':memory:');
+      db.pragma('foreign_keys = ON');
+      runMigrations(db, pathT.join(__dirname, 'migrations'), { log() {}, error() {} },
+        { schemaSql: fsT.readFileSync(pathT.join(__dirname, 'db', 'schema.sqlite.sql'), 'utf8') });
+      db.exec(`INSERT INTO actors (id, name, type) VALUES (1,'owner','human'),(2,'A','ai'),(3,'C','ai'),(4,'Out','ai');
+        INSERT INTO rooms (id, title, created_by) VALUES (10,'r10',1),(11,'r11',1);
+        INSERT INTO room_participants (room_id, actor_id) VALUES (10,1),(10,2),(10,3),(11,1),(11,4);
+        INSERT INTO sub_agents (id, parent_actor_id, label) VALUES (7,2,'probe'),(8,2,'unlinked');
+        INSERT INTO room_sub_agents (room_id, sub_agent_id) VALUES (10,7);`);
+      const sent = [];
+      const tasks = createRoomTasks({ db, broadcast: (roomId, d) => sent.push({ roomId, ...d }) });
+      const deps = {
+        dispatched: [], aborted: [], online: new Set([2, 3, 4]), busy: new Set(),
+        dispatch: (roomId, text, automation) => {
+          deps.dispatched.push({ roomId, text, automation });
+          const id = Number(db.prepare("INSERT INTO messages (room_id, participant_id, content, state, automation_provider, automation_name, task_id, task_seq) VALUES (?, (SELECT id FROM room_participants WHERE room_id=? AND actor_id=1), ?, 'complete', 'task', ?, ?, ?)")
+            .run(roomId, roomId, text, automation.name, automation.task_id, automation.task_seq).lastInsertRowid);
+          db.prepare('UPDATE messages SET thread_id=NULL WHERE id=?').run(id);
+          return id;
+        },
+      };
+      const runner = createRoomTasksRunner({
+        db, tasks, dispatch: (...a) => deps.dispatch(...a), threadBusy: (roomId, t) => deps.busy.has(t),
+        abortThread: (roomId, t) => deps.aborted.push(t), agentOnline: (id) => deps.online.has(id),
+        primaryActorId: (roomId) => (roomId === 10 ? 2 : 4), settleMs: 0, noReplyMs: 60000, log: { error() {} },
+      });
+      // Agent reply in a card's thread (what a finished turn leaves behind).
+      const reply = (taskId, actorId, content, state = 'complete') => {
+        const t = db.prepare('SELECT room_id, thread_id FROM room_tasks WHERE id=?').get(taskId);
+        db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (?, (SELECT id FROM room_participants WHERE room_id=? AND actor_id=?), ?, ?, ?)")
+          .run(t.room_id, t.room_id, actorId, content, state, t.thread_id);
+      };
+      return { db, tasks, runner, deps, sent, reply, close: () => db.close() };
+    };
+    const H = { actorId: null };
+    const AG = { actorId: 2, subAgentId: null };
+    const order = (w, roomId, col) => w.tasks.list(roomId, { col }).body.tasks.map(t => t.title);
+    const mk = (w, title, extra = {}, roomId = 10) => {
+      const r = w.tasks.create(roomId, H, { title, ...extra });
+      assert.strictEqual(r.status, 201, JSON.stringify(r.body));
+      return r.body;
+    };
+
+    await uta('Tasks rank — keys stay ordered, never end in 0; evenKeys spreads evenly', async () => {
+      const keys = [keyBetween(null, null)];
+      for (let i = 0; i < 60; i++) keys.unshift(keyBetween(null, keys[0]));
+      for (let i = 0; i < 60; i++) keys.push(keyBetween(keys.at(-1), null));
+      let lo = keys[3], hi = keys[4];
+      for (let i = 0; i < 60; i++) { const m = keyBetween(lo, hi); assert.ok(lo < m && m < hi, `${lo} < ${m} < ${hi}`); hi = m; }
+      assert.deepStrictEqual([...keys].sort(), keys);
+      assert.ok(keys.every(k => !k.endsWith('0')));
+      assert.throws(() => keyBetween('b', 'a'));
+      const even = evenKeys(500);
+      assert.ok(even.every((k, i) => i === 0 || even[i - 1] < k) && even.every(k => !k.endsWith('0') && k.length <= 4));
+    });
+
+    await uta('Tasks create — validation: title, description, col/await_reason, priority, labels, checklist, assignee, blocked_by', async () => {
+      const w = world();
+      try {
+        const bad = (data, re) => { const r = w.tasks.create(10, H, data); assert.strictEqual(r.status, 400, JSON.stringify(data)); assert.match(r.body.error, re); };
+        bad({ title: '   ' }, /title/);
+        bad({ title: 'x'.repeat(201) }, /title/);
+        bad({ title: 'ok', description: 'x'.repeat(20001) }, /description/);
+        bad({ title: 'ok', col: 'ongoing' }, /col/);
+        bad({ title: 'ok', col: 'awaiting' }, /await_reason/);
+        bad({ title: 'ok', priority: 'urgent' }, /priority/);
+        bad({ title: 'ok', labels: Array(9).fill('a').map((a, i) => a + i) }, /labels/);
+        bad({ title: 'ok', labels: ['x'.repeat(25)] }, /labels/);
+        bad({ title: 'ok', checklist: Array(51).fill({ text: 'a' }) }, /checklist/);
+        bad({ title: 'ok', checklist: [{ text: 'a', done: 'yes' }] }, /checklist/);
+        bad({ title: 'ok', assignee_actor_id: 1 }, /invalid_assignee/); // human
+        bad({ title: 'ok', assignee_actor_id: 4 }, /invalid_assignee/); // agent of another room
+        bad({ title: 'ok', assignee_sub_agent_id: 8 }, /invalid_assignee/); // not linked to the room
+        bad({ title: 'ok', assignee_sub_agent_id: 7, assignee_actor_id: 3 }, /parent/);
+        bad({ title: 'ok', blocked_by: [999] }, /not a task of this room/);
+        bad({ title: 'ok', blocked_by: Array.from({ length: 21 }, (_, i) => i + 1) }, /blocked_by/);
+        const other = mk(w, 'other room', {}, 11);
+        bad({ title: 'ok', blocked_by: [other.id] }, /not a task of this room/);
+        assert.strictEqual(w.tasks.create(10, H, null).status, 400);
+        const t = mk(w, '  Fix\nlogin  ', { labels: ['be', 'be', 'ui'], checklist: [{ text: 'a' }, { id: 5, text: 'b', done: true }, { id: 5, text: 'c' }], assignee_sub_agent_id: 7, priority: 'high' });
+        assert.strictEqual(t.title, 'Fix login');
+        assert.deepStrictEqual(t.labels, ['be', 'ui']);
+        assert.deepStrictEqual(t.checklist.map(c => [c.id, c.text, c.done]), [[6, 'a', false], [5, 'b', true], [7, 'c', false]]);
+        assert.deepStrictEqual([t.assignee_actor_id, t.assignee_sub_agent_id, t.status, t.col, t.seq], [2, 7, 'idle', 'backlog', 1]);
+        assert.strictEqual(t.created_by_actor_id, 1);
+        assert.strictEqual(mk(w, 'second').seq, 2);
+        assert.strictEqual(other.seq, 1, 'seq is per room');
+        const aw = mk(w, 'needs ok', { col: 'awaiting', await_reason: 'budget?' });
+        assert.deepStrictEqual([aw.col, aw.await_reason], ['awaiting', 'budget?']);
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks deps — self, cycles (direct and long), waiting_on, delete releases dependents with an event', async () => {
+      const w = world();
+      try {
+        const a = mk(w, 'A'), b = mk(w, 'B', { blocked_by: [a.id] }), c = mk(w, 'C', { blocked_by: [b.id] });
+        assert.deepStrictEqual([b.blocked_by, b.waiting_on], [[a.id], [a.id]]);
+        assert.match(w.tasks.update(10, H, a.id, { blocked_by: [a.id] }).body.error, /itself/);
+        assert.match(w.tasks.update(10, H, a.id, { blocked_by: [b.id] }).body.error, /cycle/);
+        assert.match(w.tasks.update(10, H, a.id, { blocked_by: [c.id] }).body.error, /cycle/, 'A→C→B→A');
+        assert.strictEqual(w.tasks.update(10, H, c.id, { blocked_by: [a.id, b.id] }).status, 200, 'diamond is not a cycle');
+        w.tasks.move(10, H, a.id, { col: 'finished' });
+        assert.deepStrictEqual(w.tasks.get(10, b.id).body.waiting_on, [], 'finished dep no longer waited on');
+        assert.deepStrictEqual(w.tasks.get(10, c.id).body.waiting_on, [b.id]);
+        assert.strictEqual(w.tasks.remove(10, H, b.id).status, 204);
+        const cAfter = w.tasks.get(10, c.id).body;
+        assert.deepStrictEqual(cAfter.blocked_by, [a.id]);
+        const ev = cAfter.events.find(e => e.kind === 'dep_removed');
+        assert.deepStrictEqual([ev.meta.depends_on_id, ev.meta.deleted, ev.actor_kind], [b.id, true, 'human']);
+        assert.ok(w.sent.some(m => m.type === 'task_delete' && m.task_id === b.id));
+        assert.strictEqual(w.db.prepare('SELECT COUNT(*) c FROM room_task_events WHERE task_id=?').get(b.id).c, 0, 'events of the deleted card go with it');
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks move — order via before/after, column rules, awaiting reason, human-only confirm, finished status', async () => {
+      const w = world();
+      try {
+        const a = mk(w, 'A'), b = mk(w, 'B'), c = mk(w, 'C');
+        assert.strictEqual(w.tasks.move(10, H, c.id, { col: 'backlog', before_id: a.id }).status, 200);
+        assert.deepStrictEqual(order(w, 10, 'backlog'), ['C', 'A', 'B']);
+        w.tasks.move(10, H, c.id, { col: 'backlog', after_id: a.id });
+        assert.deepStrictEqual(order(w, 10, 'backlog'), ['A', 'C', 'B']);
+        w.tasks.move(10, H, a.id, { col: 'backlog' });
+        assert.deepStrictEqual(order(w, 10, 'backlog'), ['C', 'B', 'A'], 'no neighbour → end');
+        assert.strictEqual(w.tasks.move(10, H, a.id, { col: 'backlog', before_id: b.id, after_id: c.id }).status, 400);
+        assert.strictEqual(w.tasks.move(10, H, a.id, { col: 'backlog', before_id: a.id }).status, 400);
+        assert.strictEqual(w.tasks.move(10, H, a.id, { col: 'nope' }).status, 400);
+        assert.strictEqual(w.tasks.move(10, H, a.id, { col: 'ongoing' }).status, 409, 'only the runner moves to ongoing');
+        assert.strictEqual(w.tasks.move(10, H, a.id, { col: 'awaiting' }).status, 400, 'reason required');
+        const fin = w.tasks.move(10, H, b.id, { col: 'finished' }).body;
+        assert.deepStrictEqual([fin.status, !!fin.finished_at], ['done', true]);
+        assert.match(w.tasks.move(10, H, a.id, { col: 'finished', before_id: c.id }).body.error, /column finished/, 'neighbour must be in the target column');
+        const back = w.tasks.move(10, H, b.id, { col: 'backlog' }).body;
+        assert.deepStrictEqual([back.status, back.finished_at], ['idle', null]);
+        const aw = w.tasks.move(10, AG, a.id, { col: 'awaiting', reason: 'need the API key' }).body;
+        assert.deepStrictEqual([aw.col, aw.await_reason], ['awaiting', 'need the API key']);
+        assert.strictEqual(w.tasks.move(10, AG, a.id, { col: 'backlog' }).status, 403, 'agent cannot confirm');
+        assert.strictEqual(w.tasks.move(10, AG, a.id, { col: 'finished' }).status, 403, 'agent cannot bypass Awaiting either');
+        const ok = w.tasks.move(10, H, a.id, { col: 'backlog' }).body;
+        assert.deepStrictEqual([ok.col, ok.await_reason], ['backlog', null]);
+        assert.strictEqual(order(w, 10, 'backlog').at(-1), 'A', 'confirm lands at the end of Backlog');
+        const evs = w.tasks.get(10, a.id).body.events;
+        assert.deepStrictEqual(evs.map(e => e.kind).slice(-2), ['awaiting', 'confirmed']);
+        assert.strictEqual(evs.find(e => e.kind === 'awaiting').actor_kind, 'agent');
+        assert.strictEqual(evs.find(e => e.kind === 'awaiting').actor_id, 2);
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks rank — repeated placement at one spot rebalances, order is kept, keys stay short', async () => {
+      const w = world();
+      try {
+        const ids = ['A', 'B', 'C', 'D'].map(t => mk(w, t).id);
+        // Always drop the last card right below A: the gap after A halves every time.
+        for (let i = 0; i < 150; i++) {
+          const list = w.tasks.list(10, { col: 'backlog' }).body.tasks;
+          w.tasks.move(10, H, list.at(-1).id, { col: 'backlog', after_id: ids[0] });
+        }
+        const ranks = w.db.prepare("SELECT rank FROM room_tasks WHERE room_id=10 ORDER BY rank, id").all().map(r => r.rank);
+        assert.ok(ranks.every(r => r.length <= 24), `ranks too long: ${ranks}`);
+        assert.strictEqual(new Set(ranks).size, ranks.length, 'no duplicate ranks');
+        assert.strictEqual(order(w, 10, 'backlog')[0], 'A');
+        assert.strictEqual(order(w, 10, 'backlog').length, 4);
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks access — archived room 423 on writes, agents never read it; non-participant / unlinked sub-agent 403', async () => {
+      const w = world();
+      try {
+        assert.strictEqual(w.tasks.access(999, H).status, 404);
+        assert.strictEqual(w.tasks.access(10, { actorId: 4 }).status, 403, 'agent of another room');
+        assert.strictEqual(w.tasks.access(10, { actorId: 2, subAgentId: 8 }).status, 403, 'sub-agent not linked');
+        assert.strictEqual(w.tasks.access(10, { actorId: 2, subAgentId: 7 }), null);
+        w.db.prepare("UPDATE rooms SET archived_at=datetime('now') WHERE id=10").run();
+        assert.strictEqual(w.tasks.access(10, H), null, 'owner still reads an archived board');
+        assert.strictEqual(w.tasks.access(10, H, { write: true }).status, 423);
+        assert.strictEqual(w.tasks.access(10, AG, { write: true }).status, 423);
+        assert.strictEqual(w.tasks.access(10, AG).status, 403);
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks isolation — a card of another room is 404 everywhere; neighbour from another room is refused', async () => {
+      const w = world();
+      try {
+        const mine = mk(w, 'mine'), theirs = mk(w, 'theirs', {}, 11);
+        for (const r of [w.tasks.get(10, theirs.id), w.tasks.update(10, H, theirs.id, { title: 'x' }), w.tasks.move(10, H, theirs.id, { col: 'finished' }),
+          w.tasks.remove(10, H, theirs.id), w.tasks.retry(10, H, theirs.id), w.tasks.comment(10, H, theirs.id, { body: 'hi' }),
+          w.tasks.complete(10, H, theirs.id), w.tasks.block(10, H, theirs.id, { reason: 'x' }), w.tasks.fail(10, H, theirs.id, { reason: 'x' })]) {
+          assert.strictEqual(r.status, 404);
+        }
+        assert.strictEqual(w.tasks.move(10, H, mine.id, { col: 'backlog', before_id: theirs.id }).status, 400);
+        assert.deepStrictEqual(w.tasks.list(10).body.tasks.map(t => t.id), [mine.id]);
+        assert.strictEqual(w.tasks.get(11, theirs.id).body.title, 'theirs', 'untouched');
+        assert.ok(w.sent.filter(m => m.task?.id === theirs.id).every(m => m.roomId === 11), 'its events go to its own room only');
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks runner — concurrency slots, rank order, dependency skip without reordering, failed skipped', async () => {
+      const w = world();
+      try {
+        const a = mk(w, 'A'), b = mk(w, 'B', { blocked_by: [a.id] }), c = mk(w, 'C'), d = mk(w, 'D');
+        w.db.prepare("UPDATE room_tasks SET status='failed', fail_reason='x' WHERE id=?").run(c.id);
+        w.tasks.updateSettings(10, H, { concurrency: 2 });
+        const r = w.runner.play(10, H);
+        assert.strictEqual(r.body.settings.running, true);
+        await tick();
+        assert.deepStrictEqual(w.deps.dispatched.map(x => x.automation.task_seq), [a.seq, d.seq], 'B waits on A, C failed → A and D');
+        assert.deepStrictEqual(w.deps.dispatched[0].automation, { id: null, name: 'A', provider: 'task', target_actor_id: 2, task_id: a.id, task_seq: a.seq });
+        assert.strictEqual(r.body.counts.running, 2);
+        assert.deepStrictEqual(order(w, 10, 'backlog'), ['B', 'C'], 'B keeps its place');
+        const runA = w.tasks.get(10, a.id).body;
+        assert.deepStrictEqual([runA.col, runA.status, runA.attempts, runA.thread_id === runA.message_id && !!runA.thread_id], ['ongoing', 'running', 1, true]);
+        // A finishes → B (now eligible) takes the slot.
+        w.reply(a.id, 2, 'A done: shipped');
+        w.runner.checkRuns(); w.runner.checkRuns();
+        await tick();
+        const doneA = w.tasks.get(10, a.id).body;
+        assert.deepStrictEqual([doneA.col, doneA.status, doneA.result_summary], ['finished', 'done', 'A done: shipped']);
+        assert.strictEqual(w.deps.dispatched.at(-1).automation.task_id, b.id);
+        assert.strictEqual(w.tasks.get(10, b.id).body.status, 'running');
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks runner — thread quiet decides: busy waits, error reply fails, agent complete wins, stale thread ignored', async () => {
+      const w = world();
+      try {
+        const a = mk(w, 'A'), b = mk(w, 'B');
+        w.tasks.updateSettings(10, H, { concurrency: 2 });
+        w.runner.play(10, H);
+        await tick();
+        const ta = w.tasks.get(10, a.id).body, tb = w.tasks.get(10, b.id).body;
+        w.reply(a.id, 2, 'partial');
+        w.deps.busy.add(ta.thread_id); // a cascade turn is still running
+        w.runner.checkRuns(); w.runner.checkRuns();
+        assert.strictEqual(w.tasks.get(10, a.id).body.status, 'running', 'busy thread is not done');
+        w.deps.busy.delete(ta.thread_id);
+        w.reply(a.id, 2, '(timeout — A did not respond in 15 minutes)', 'error');
+        w.runner.checkRuns(); w.runner.checkRuns();
+        const fa = w.tasks.get(10, a.id).body;
+        assert.deepStrictEqual([fa.col, fa.status, fa.fail_reason], ['backlog', 'failed', '(timeout — A did not respond in 15 minutes)']);
+        // B: the agent working on it completes through the tool; a later quiet thread changes nothing.
+        assert.strictEqual(w.tasks.complete(10, { actorId: 3 }, b.id, { summary: 'x' }).status, 403, 'C never posted in B\'s thread');
+        w.reply(b.id, 2, 'working');
+        const done = w.tasks.complete(10, AG, b.id, { summary: 'all green' });
+        assert.deepStrictEqual([done.status, done.body.col, done.body.result_summary], [200, 'finished', 'all green']);
+        w.reply(b.id, 2, 'final words');
+        w.runner.checkRuns(); w.runner.checkRuns();
+        assert.strictEqual(w.tasks.get(10, b.id).body.result_summary, 'all green');
+        assert.strictEqual(w.tasks.complete(10, AG, b.id).status, 409, 'not running any more');
+        // Retry A: a new run on a new thread; finishing pinned to the old thread is ignored.
+        assert.strictEqual(w.tasks.retry(10, H, a.id).status, 200);
+        assert.strictEqual(w.tasks.retry(10, H, a.id).status, 409, 'only failed can retry');
+        w.runner.play(10, H);
+        await tick();
+        const ra = w.tasks.get(10, a.id).body;
+        assert.deepStrictEqual([ra.status, ra.attempts], ['running', 2]);
+        assert.notStrictEqual(ra.thread_id, ta.thread_id);
+        assert.strictEqual(w.tasks.run.finish(10, a.id, { ok: true }, w.tasks.run.SYSTEM, ta.thread_id).status, 409);
+        assert.strictEqual(w.tasks.get(10, a.id).body.status, 'running');
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks runner — block moves to Awaiting, fail back to Backlog; only the working agent; reasons required', async () => {
+      const w = world();
+      try {
+        const a = mk(w, 'A'), b = mk(w, 'B');
+        w.tasks.updateSettings(10, H, { concurrency: 2 });
+        w.runner.play(10, H);
+        await tick();
+        w.reply(a.id, 2, 'hmm'); w.reply(b.id, 2, 'hmm');
+        assert.strictEqual(w.tasks.block(10, AG, a.id, {}).status, 400);
+        assert.strictEqual(w.tasks.block(10, { actorId: 3 }, a.id, { reason: 'x' }).status, 403);
+        const bl = w.tasks.block(10, AG, a.id, { reason: 'which region?' }).body;
+        assert.deepStrictEqual([bl.col, bl.status, bl.await_reason], ['awaiting', 'blocked', 'which region?']);
+        const fl = w.tasks.fail(10, AG, b.id, { reason: 'API down' }).body;
+        assert.deepStrictEqual([fl.col, fl.status, fl.fail_reason], ['backlog', 'failed', 'API down']);
+        assert.strictEqual(w.tasks.get(10, b.id).body.events.at(-1).actor_kind, 'agent');
+        const conf = w.tasks.move(10, H, a.id, { col: 'backlog' }).body;
+        assert.deepStrictEqual([conf.status, conf.await_reason], ['idle', null], 'confirming clears blocked');
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks runner — stop aborts every running thread, cards back in place, idempotent; pause keeps runs', async () => {
+      const w = world();
+      try {
+        const a = mk(w, 'A'), b = mk(w, 'B'), c = mk(w, 'C');
+        w.tasks.updateSettings(10, H, { concurrency: 2 });
+        w.runner.play(10, H);
+        await tick();
+        const threads = [a, b].map(t => w.tasks.get(10, t.id).body.thread_id);
+        const paused = w.runner.pause(10, H).body;
+        assert.deepStrictEqual([paused.settings.running, paused.counts.running], [false, 2], 'pause lets runs finish');
+        const s = w.runner.stop(10, H).body;
+        assert.deepStrictEqual(w.deps.aborted.sort(), threads.sort());
+        assert.deepStrictEqual([s.settings.running, s.counts.running, s.counts.backlog], [false, 0, 3]);
+        assert.deepStrictEqual(order(w, 10, 'backlog'), ['A', 'B', 'C'], 'back where they were');
+        const ev = w.tasks.get(10, a.id).body.events.at(-1);
+        assert.deepStrictEqual([ev.kind, ev.body, ev.actor_kind], ['stopped', 'stopped by user', 'human']);
+        w.runner.stop(10, H);
+        assert.strictEqual(w.deps.aborted.length, 2, 'second stop aborts nothing');
+        // A late "done" for a stopped run changes nothing.
+        w.reply(a.id, 2, 'late');
+        w.runner.checkRuns(); w.runner.checkRuns();
+        assert.strictEqual(w.tasks.get(10, a.id).body.status, 'idle');
+        for (const op of ['play', 'pause', 'stop']) assert.strictEqual(w.runner[op](10, AG).status, 403, `agent ${op}`);
+        assert.strictEqual(w.tasks.updateSettings(10, AG, { concurrency: 3 }).status, 403);
+        assert.strictEqual(w.tasks.updateSettings(10, H, { concurrency: 6 }).status, 400);
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks runner — turns itself off: empty / blocked / error (offline agent, archived room, no target), respects thread limit', async () => {
+      const w = world();
+      try {
+        let r = w.runner.play(10, H).body;
+        assert.deepStrictEqual([r.settings.running, r.settings.idle_reason], [false, 'empty']);
+        const a = mk(w, 'A', { col: 'awaiting', await_reason: 'ok?' });
+        mk(w, 'B', { blocked_by: [a.id] });
+        r = w.runner.play(10, H).body;
+        assert.deepStrictEqual([r.settings.running, r.settings.idle_reason], [false, 'blocked']);
+        const c = mk(w, 'C');
+        w.deps.online.delete(2);
+        r = w.runner.play(10, H).body;
+        assert.deepStrictEqual([r.settings.running, r.settings.idle_reason], [false, 'error']);
+        assert.match(r.settings.last_error, /offline/);
+        w.deps.online.add(2);
+        w.db.prepare("UPDATE rooms SET max_active_threads=1 WHERE id=10").run();
+        const other = Number(w.db.prepare("INSERT INTO messages (room_id, participant_id, content, state) VALUES (10, (SELECT id FROM room_participants WHERE room_id=10 AND actor_id=1), 'x', 'complete')").run().lastInsertRowid);
+        w.db.prepare("INSERT INTO messages (room_id, participant_id, content, state, thread_id) VALUES (10, (SELECT id FROM room_participants WHERE room_id=10 AND actor_id=3), '', 'streaming', ?)").run(other);
+        r = w.runner.play(10, H).body;
+        assert.deepStrictEqual([r.settings.running, r.settings.last_error, r.counts.running], [true, 'thread_limit', 0], 'waits for a slot, stays on');
+        w.db.prepare("UPDATE messages SET state='complete' WHERE thread_id=?").run(other);
+        w.runner.poll();
+        await tick();
+        assert.strictEqual(w.tasks.get(10, c.id).body.status, 'running', 'poll retried once a thread freed up');
+        w.runner.stop(10, H);
+        w.db.prepare("UPDATE rooms SET archived_at=datetime('now') WHERE id=10").run();
+        w.tasks.run.writeSettings(10, { running: 1 });
+        w.runner.tick(10);
+        assert.deepStrictEqual([w.tasks.run.settings(10).running, w.tasks.run.settings(10).last_error], [false, 'room is archived']);
+        // No AI agent to run it: the card stays where it is.
+        const lone = mk(w, 'lone', {}, 11);
+        w.db.prepare('DELETE FROM room_participants WHERE room_id=11 AND actor_id=4').run();
+        r = w.runner.play(11, H).body;
+        assert.deepStrictEqual([r.settings.idle_reason, w.tasks.get(11, lone.id).body.col], ['error', 'backlog']);
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks runner — sub-agent assignee: message starts with @label, target is its parent', async () => {
+      const w = world();
+      try {
+        const t = mk(w, 'Probe disks', { assignee_sub_agent_id: 7, description: 'Check **/var**', checklist: [{ text: 'df -h' }] });
+        w.runner.play(10, H);
+        await tick();
+        const d = w.deps.dispatched[0];
+        assert.strictEqual(d.automation.target_actor_id, 2);
+        assert.ok(d.text.startsWith('@probe **Task #1: Probe disks**'), d.text);
+        assert.ok(d.text.includes('Check **/var**') && d.text.includes('- [ ] df -h') && d.text.includes(`task_id ${t.id}`) && d.text.includes('stoa__task_block'));
+        assert.ok(composeTaskMessage({ ...t, seq: 3 }, { lang: 'id' }).includes('Kerjakan task ini'));
+        assert.ok(composeTaskMessage({ ...t, seq: 3 }, { lang: 'constructor' }).includes('Work on this task'), 'unknown lang → en');
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks runner — reaper: running cards back to Backlog (server restart), every runner off', async () => {
+      const w = world();
+      try {
+        const a = mk(w, 'A');
+        w.runner.play(10, H);
+        await tick();
+        assert.strictEqual(w.tasks.get(10, a.id).body.status, 'running');
+        assert.deepStrictEqual(w.runner.reap(), { returned: 1, runnersOff: 1 });
+        const t = w.tasks.get(10, a.id).body;
+        assert.deepStrictEqual([t.col, t.status, t.events.at(-1).kind, t.events.at(-1).body, t.events.at(-1).actor_kind], ['backlog', 'idle', 'stopped', 'server restart', 'system']);
+        assert.strictEqual(w.tasks.run.settings(10).running, false);
+        assert.deepStrictEqual(w.runner.reap(), { returned: 0, runnersOff: 0 });
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks data — room delete cascades cards/deps/events/settings; message task link survives as seq only', async () => {
+      const w = world();
+      try {
+        const a = mk(w, 'A'); mk(w, 'B', { blocked_by: [a.id] });
+        w.tasks.updateSettings(10, H, { concurrency: 2 });
+        w.runner.play(10, H);
+        await tick();
+        const msgId = w.tasks.get(10, a.id).body.message_id;
+        w.runner.stop(10, H);
+        w.tasks.remove(10, H, a.id);
+        const m = w.db.prepare('SELECT task_id, task_seq FROM messages WHERE id=?').get(msgId);
+        assert.deepStrictEqual(m, { task_id: null, task_seq: a.seq }, 'deleted card: badge keeps #seq');
+        w.db.prepare('DELETE FROM messages WHERE room_id=10').run();
+        w.db.prepare('DELETE FROM room_participants WHERE room_id=10').run();
+        w.db.prepare('DELETE FROM rooms WHERE id=10').run();
+        for (const t of ['room_tasks', 'room_task_events', 'room_task_settings']) {
+          assert.strictEqual(w.db.prepare(`SELECT COUNT(*) c FROM ${t} WHERE room_id=10`).get().c, 0, t);
+        }
+        assert.strictEqual(w.db.prepare('SELECT COUNT(*) c FROM room_task_deps').get().c, 0);
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks MCP tools — room + caller from the token, agent limits, isError on refusal', async () => {
+      const w = world();
+      try {
+        const tools = Object.fromEntries(taskMcpTools(w.tasks).map(t => [t.name, t]));
+        assert.deepStrictEqual(Object.keys(tools).sort(), ['task_block', 'task_comment', 'task_complete', 'task_create', 'task_delete', 'task_fail', 'task_get', 'task_list', 'task_move', 'task_update']);
+        assert.ok(!('room_id' in tools.task_create.inputSchema.properties));
+        const call = (name, ident, args) => { const r = tools[name].call(ident, args); return { err: !!r.isError, body: JSON.parse(r.content[0].text) }; };
+        const me = { roomId: 10, actorId: 2, subAgentId: null };
+        const c = call('task_create', me, { title: 'From agent', labels: ['x'] });
+        assert.strictEqual(c.err, false);
+        assert.strictEqual(w.tasks.get(10, c.body.id).body.events[0].actor_kind, 'agent');
+        const sub = call('task_comment', { roomId: 10, actorId: 2, subAgentId: 7 }, { id: c.body.id, body: 'sub says hi' });
+        assert.deepStrictEqual([sub.body.kind, sub.body.actor_kind, sub.body.meta.sub_agent_id], ['comment', 'sub_agent', 7]);
+        assert.strictEqual(call('task_list', { roomId: 11, actorId: 2 }, {}).err, true, 'not a participant of room 11');
+        assert.strictEqual(call('task_list', { roomId: null, actorId: 2 }, {}).err, true);
+        assert.strictEqual(call('task_get', me, {}).body.error, 'id required');
+        assert.strictEqual(call('task_move', me, { id: c.body.id, col: 'ongoing' }).err, true);
+        assert.strictEqual(call('task_move', me, { id: c.body.id, col: 'awaiting', reason: 'need a human' }).body.col, 'awaiting');
+        assert.match(call('task_move', me, { id: c.body.id, col: 'backlog' }).body.error, /human/);
+        const other = mk(w, 'room 11 card', {}, 11);
+        assert.strictEqual(call('task_get', { roomId: 11, actorId: 4 }, { id: other.id }).body.title, 'room 11 card');
+        assert.strictEqual(call('task_get', me, { id: other.id }).body.error, 'task not found', 'id of another room');
+        assert.deepStrictEqual(call('task_delete', me, { id: c.body.id }).body, { ok: true });
+        w.db.prepare("UPDATE rooms SET archived_at=datetime('now') WHERE id=10").run();
+        assert.match(call('task_create', me, { title: 'x' }).body.error, /archived/);
+      } finally { w.close(); }
+    });
+  }
+
   return { p, f };
 }
 
