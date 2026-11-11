@@ -68,11 +68,10 @@ async function tbLoadEvents(before) {
   if (seq !== _tbD.seq || id !== tasksUi.openId || roomId !== tasksUi.roomId) return;
   _tbD.loading = false;
   const page = Array.isArray(data && data.events) ? data.events : [];
-  const extra = Array.isArray(data && data.comments) ? data.comments : [];
   _tbD.hasMore = page.length >= TASK_EVENT_PAGE;
-  tbMergeEvents(before === undefined ? [] : _tbD.events, page.concat(extra));
+  tbMergeEvents(before === undefined ? [] : _tbD.events, page);
   if (data && tbValidTask(data, roomId)) {
-    const { events, comments, ...task } = data;
+    const { events, ...task } = data;
     tasksUi.tasks.set(task.id, task);
     tasksRender();
   }
@@ -270,10 +269,7 @@ function tbRenderDrawer() {
   prioSel.disabled = ro || busy;
   row('Priority', prioSel);
   const assSel = tbSelect(tbAssignees().map(a => [a.key, a.primary ? a.name + ' (primary)' : a.name]), tbAssigneeKey(task), v => {
-    const patch = { assignee_actor_id: null, assignee_sub_agent_id: null };
-    if (v.startsWith('a:')) patch.assignee_actor_id = Number(v.slice(2));
-    else if (v.startsWith('s:')) patch.assignee_sub_agent_id = Number(v.slice(2));
-    tbPatchTask(id, patch);
+    tbPatchTask(id, v.startsWith('s:') ? { assignee_sub_agent_id: Number(v.slice(2)) } : { assignee_actor_id: v.startsWith('a:') ? Number(v.slice(2)) : null });
   }, 'Assignee');
   assSel.disabled = isRun || ro || busy;
   if (isRun) assSel.title = 'The assignee cannot change while the task runs';

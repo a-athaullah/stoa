@@ -269,7 +269,7 @@ function makeAutomationTagEl(m) {
 // Task runner messages (and agent replies in a task thread): "Task #seq" opens the board and the card.
 function makeTaskTagEl(m) {
   const a = m.automation;
-  const taskId = Number.isInteger(a.task_id) ? a.task_id : (Number.isInteger(a.id) ? a.id : null);
+  const taskId = Number.isInteger(a.task_id) ? a.task_id : null;
   const seq = Number.isInteger(a.task_seq) ? a.task_seq : null;
   const text = (m.actor_type === 'ai' ? 'via ' : '') + 'Task' + (seq !== null ? ' #' + seq : '');
   if (taskId === null && seq === null) {
