@@ -11880,7 +11880,9 @@ async function run() {
     const bootRestartTarget = async () => {
       const dir = fsM.mkdtempSync(path.join(osM.tmpdir(), 'stoa-restart-exit-'));
       const src = new Database(process.env.DB_PATH, { readonly: true });
-      try { await src.backup(path.join(dir, 'stoa.db')); } finally { src.close(); }
+      // One step: a stepped online backup restarts whenever the live test server writes in between
+      // (task runner poll, scheduler, retrigger sweep — every few hundred ms), so it never finished.
+      try { await src.backup(path.join(dir, 'stoa.db'), { progress: () => 1e9 }); } finally { src.close(); }
       fsM.copyFileSync(process.env.STOA_ENV_FILE, path.join(dir, '.env'));
       const port = await new Promise(r => { const s = http.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
       const env = { ...process.env, PORT: String(port), DB_PATH: path.join(dir, 'stoa.db'), STOA_ENV_FILE: path.join(dir, '.env'),
