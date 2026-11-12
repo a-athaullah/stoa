@@ -288,6 +288,31 @@ These are the pre-existing colors; they were not degraded by the themes feature.
 
 ---
 
+### 7. Task Board — Human-Only Ops Are Enforced Server-Side, Not Via MCP Permission
+**Decision (2026-11-12):** Runner play/pause/stop, changing concurrency, and confirming Awaiting tasks (moving out of `awaiting`) are HTTP-only and check `isHuman(who)` in `lib/room-tasks.js`. They are not exposed as MCP tools at all — there is no tool to block per-agent.
+
+**Why:** These are intentionally owner-only controls. The board is a collaboration tool where the human remains in control of when the runner runs and which tasks are unblocked.
+
+**Implication:** An agent that tries to call `POST /api/rooms/:id/tasks/runner/play` with agent credentials gets 403 `human_only`. Same for moving a card out of Awaiting.
+
+---
+
+### 8. Task Rank Uses Fractional Indexing — Not Integers
+**Decision:** Card order in Backlog/Awaiting uses a floating-point `rank` column. `placeRank` computes midpoints; a rebalance runs when gaps collapse to < 1e-10.
+
+**Why:** Avoids renumbering the whole column on every drag. The rebalance is triggered lazily, not on every insert.
+
+**Not a finding:** `db.prepare` inside `placeRank` is per-call, not cached — intentional since it's a cold path (called only on create/move, not reads).
+
+---
+
+### 9. Task Description: `<` in Inline Code Spans → `\<` in Composed Message
+**Decision:** `inertHtml` (used in `composeTaskMessage`) escapes `<` as `\<` inside code spans/fences. This prevents Claude from treating the description's HTML as actual markup in the prompt.
+
+**Why:** Descriptions are user-authored Markdown; raw HTML tags in them would otherwise be misread by the model as literal instructions.
+
+---
+
 ### 6. Harness CLI Update Holds That Harness's Triggers
 **Decision:** While `claude update` / `codex update` is pending on an agent, new triggers for that harness wait in the agent queue. npm rewrites files in place, so a run starting mid-install could hit a half-written CLI; waiting also lets `waiting_idle` end under steady traffic. Other harnesses keep running. A restart requested meanwhile waits for the update (an interrupted install can leave the CLI broken).
 

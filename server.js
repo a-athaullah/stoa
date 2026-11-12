@@ -13,6 +13,8 @@ const { WebSocketServer } = require('ws');
 const db = require('./db');
 const { validateScheduleSpec, computeNextRun, nextRunAfterSkip, describeSchedule } = require('./lib/schedule');
 const { createRoomSchedules, scheduleMcpTools } = require('./lib/room-schedules');
+const { createRoomTasks, taskMcpTools } = require('./lib/room-tasks');
+const { createRoomTasksRunner } = require('./lib/room-tasks-runner');
 const { createRoomMessages } = require('./lib/room-messages');
 const { stripCodeSpans } = require('./lib/code-spans'); // a mention inside markdown code is an example, not a trigger
 const { createStoaMemory } = require('./lib/stoa-memory');
@@ -1222,7 +1224,7 @@ const SKILL_BLOBS_DIR = path.resolve(process.env.STOA_SKILL_BLOBS_DIR || path.jo
   if (human) db.prepare('UPDATE actors SET name=? WHERE id=?').run(humanName, human.id);
 }
 
-const DEFAULT_BASE_SYSTEM_PROMPT = `You are an AI agent operating on the Stoa platform. You have access to the following environment variables: STOA_URL, STOA_ROOM_ID, STOA_ACTOR_ID, STOA_SECRET, STOA_THREAD_ID. To derive the HTTP base URL from the WebSocket URL: BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|"). Full API documentation (endpoints for sending messages, updating memory, updating system prompt, uploading files) is available by fetching: curl -s "$BASE_URL/api/docs/stoa-api.md". When this session has Stoa's built-in MCP tools (named stoa__*), use them for messages, threads, memory, system prompts, sub-agents and automations; the REST API is for file uploads and for sessions without those tools.`;
+const DEFAULT_BASE_SYSTEM_PROMPT = `You are an AI agent operating on the Stoa platform. You have access to the following environment variables: STOA_URL, STOA_ROOM_ID, STOA_ACTOR_ID, STOA_SECRET, STOA_THREAD_ID. To derive the HTTP base URL from the WebSocket URL: BASE_URL=$(echo "$STOA_URL" | sed "s|^ws://|http://|;s|^wss://|https://|"). Full API documentation (endpoints for sending messages, updating memory, updating system prompt, uploading files) is available by fetching: curl -s "$BASE_URL/api/docs/stoa-api.md". When this session has Stoa's built-in MCP tools (named stoa__*), use them for messages, threads, memory, system prompts, sub-agents, automations and the room's task board; the REST API is for file uploads and for sessions without those tools.`;
 
 const { composeSystemPrompt } = require('./lib/compose-system-prompt');
 
@@ -1667,6 +1669,27 @@ const mcpUpstreams = createUpstreamManager({
 // Cores shared by the HTTP routes and the built-in stoa__* MCP tools (one implementation each, so
 // validation cannot drift between the two paths).
 const roomSchedules = createRoomSchedules({ db, broadcast });
+const roomTasks = createRoomTasks({ db, broadcast });
+// Task board runner (lib/room-tasks-runner.js). The callbacks run after boot, so the run machinery
+// defined further down (activeSequences, handleHumanMessage, agentClients) is in place by then.
+const roomTasksRunner = createRoomTasksRunner({
+  db, tasks: roomTasks,
+  dispatch: (roomId, text, automation) => handleHumanMessage(roomId, text, null, null, null, null, null, automation),
+  threadBusy: taskThreadBusy,
+  abortThread: abortThreadRuns,
+  agentOnline: (actorId) => agentClients.get(actorId)?.readyState === 1,
+  primaryActorId: (roomId) => roomPrimaryActorId(roomId),
+  agentLang: (actorId) => agentLangOf(db.prepare('SELECT adapter_config FROM actors WHERE id=?').get(actorId) || {}),
+  settleMs: parseInt(process.env.TASK_SETTLE_MS, 10) || 3000,
+  noReplyMs: parseInt(process.env.TASK_NO_REPLY_MS, 10) || 120000,
+});
+// Poll: ends runs whose thread went quiet and retries runners waiting on a thread slot or an agent.
+// Same gate as the scheduler loop.
+if (process.env.NODE_ENV !== 'test' && !SMOKE_BOOT) {
+  setInterval(() => {
+    try { roomTasksRunner.poll(); } catch (e) { console.error('[tasks] poll error:', e.message); }
+  }, parseInt(process.env.TASK_POLL_MS, 10) || 2000).unref();
+}
 const roomMessages = createRoomMessages({
   db, broadcast, broadcastGlobal, resolveThread, enrichAutomation, enrichAutomationList, getThreadRootPreview,
   cascadeMentions: cascadeMentionsFromProactive, enqueueParentWake, uploadsDir: UPLOADS_DIR,
@@ -1688,6 +1711,7 @@ const mcpGateway = createMcpGateway({
   db, upstreams: mcpUpstreams, encrypt: mcpCredentials.encrypt, decrypt: mcpCredentials.decrypt, version: require('./package.json').version,
   builtinTools: [
     ...scheduleMcpTools(roomSchedules),
+    ...taskMcpTools(roomTasks),
     ...stoaMcpTools({
       db, broadcast, messages: roomMessages, memory: stoaMemory, prompts: systemPrompts, subAgents, automations: automationCrud, readAgentImage, setActorAvatar, skills, syncAgentSkill, uploadAgentFiles,
       // mcpApi is created below (it needs this gateway); only called once a tool runs.
@@ -2685,6 +2709,67 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'PATCH' && schedId) return reply(roomSchedules.update(roomId, agentId, schedId, parseJsonBody(await readBody(req))));
     if (req.method === 'DELETE' && schedId) return reply(roomSchedules.remove(roomId, agentId, schedId));
     return json(res, { error: 'method not allowed' }, 405);
+  }
+
+  // ── Task board: /api/rooms/:id/tasks[/:tid[/action]] + /tasks/settings + /tasks/runner/:op ──
+  // Human session or agent secret. Logic lives in lib/room-tasks.js (shared with the stoa__task_* MCP
+  // tools) and lib/room-tasks-runner.js: an agent must be a participant (a sub-agent: linked to the
+  // room), a card id only resolves inside its room, writes on an archived room answer 423 (except runner
+  // pause / stop), and only the owner drives the runner (play / pause / stop / concurrency).
+  const tasksMatch = url.pathname.match(/^\/api\/rooms\/(\d+)\/tasks(?:\/(settings|runner\/(?:play|pause|stop)|\d+(?:\/(?:move|complete|block|fail|retry|comments))?))?$/);
+  if (tasksMatch) {
+    const roomId = parseInt(tasksMatch[1]);
+    const agentId = req._authUser ? null : (req._scopedAgentId || verifyAgentRequest(req)?.id || null);
+    if (!req._authUser && !agentId) return json(res, { error: 'unauthorized' }, 401);
+    const who = { actorId: agentId, subAgentId: agentId ? (req._scopedSubAgentId ?? null) : null };
+    const write = req.method !== 'GET';
+    const halt = tasksMatch[2] === 'runner/pause' || tasksMatch[2] === 'runner/stop';
+    const denied = roomTasks.access(roomId, who, { write, halt });
+    if (denied) return json(res, denied.body, denied.status);
+    const reply = (r) => {
+      if (r.status === 204) { res.writeHead(204); return res.end(); }
+      return json(res, r.body, r.status);
+    };
+    const sub = tasksMatch[2] || '';
+    const body = async () => parseJsonBody(await readBody(req));
+    if (!sub) {
+      if (req.method === 'GET') {
+        const p = url.searchParams;
+        return reply(roomTasks.list(roomId, { col: p.get('col') || null, status: p.get('status') || null, assignee: p.get('assignee'), label: p.get('label') || null, q: p.get('q') || null }));
+      }
+      if (req.method === 'POST') return reply(roomTasks.create(roomId, who, await body()));
+      return json(res, { error: 'method not allowed' }, 405);
+    }
+    if (sub === 'settings') {
+      if (req.method === 'GET') return reply(roomTasks.getSettings(roomId));
+      if (req.method === 'PATCH') return reply(roomTasks.updateSettings(roomId, who, await body()));
+      return json(res, { error: 'method not allowed' }, 405);
+    }
+    if (sub.startsWith('runner/')) {
+      if (req.method !== 'POST') return json(res, { error: 'method not allowed' }, 405);
+      const op = sub.slice('runner/'.length);
+      return reply(op === 'play' ? roomTasksRunner.play(roomId, who) : op === 'pause' ? roomTasksRunner.pause(roomId, who) : roomTasksRunner.stop(roomId, who));
+    }
+    const [tidStr, action] = sub.split('/');
+    const tid = parseInt(tidStr);
+    if (!action) {
+      if (req.method === 'GET') {
+        const before = parseInt(url.searchParams.get('before'));
+        const limit = parseInt(url.searchParams.get('limit'));
+        return reply(roomTasks.get(roomId, tid, { before: Number.isNaN(before) ? null : before, limit: Number.isNaN(limit) ? 50 : limit }));
+      }
+      if (req.method === 'PATCH') return reply(roomTasks.update(roomId, who, tid, await body()));
+      if (req.method === 'DELETE') return reply(roomTasks.remove(roomId, who, tid));
+      return json(res, { error: 'method not allowed' }, 405);
+    }
+    if (req.method !== 'POST') return json(res, { error: 'method not allowed' }, 405);
+    if (action === 'retry') return reply(roomTasks.retry(roomId, who, tid));
+    const data = await body();
+    if (action === 'move') return reply(roomTasks.move(roomId, who, tid, data));
+    if (action === 'comments') return reply(roomTasks.comment(roomId, who, tid, data));
+    if (action === 'complete') return reply(roomTasks.complete(roomId, who, tid, data || {}));
+    if (action === 'block') return reply(roomTasks.block(roomId, who, tid, data || {}));
+    return reply(roomTasks.fail(roomId, who, tid, data || {}));
   }
 
   // ── Sub-agent trigger endpoint (agent auth; spawn_token field accepted but ignored — deprecated)
@@ -7303,6 +7388,51 @@ function resolveAgentOrder(content, agents, roomId, primaryActorId) {
 }
 
 const activeSequences = new Map(); // roomId → { cancelled: bool }
+
+// Task board (lib/room-tasks-runner.js): a card's thread still has work coming — a run in flight, its
+// agent sequence, a queued message, a pending sub-agent wake or an "agent updating" retrigger.
+function taskThreadBusy(roomId, threadId) {
+  if (activeSequences.has(`${roomId}:${threadId}`)) return true;
+  return !!db.prepare(`SELECT 1 WHERE
+    EXISTS (SELECT 1 FROM messages WHERE room_id=? AND (thread_id=? OR id=?) AND ${RUN_IN_FLIGHT_SQL})
+    OR EXISTS (SELECT 1 FROM room_message_queue WHERE room_id=? AND (thread_id=? OR message_id=?))
+    OR EXISTS (SELECT 1 FROM pending_wakes WHERE room_id=? AND thread_id=?)
+    OR EXISTS (SELECT 1 FROM pending_retriggers WHERE room_id=? AND (thread_id=? OR trigger_message_id=?))`)
+    .get(roomId, threadId, threadId, roomId, threadId, threadId, roomId, threadId, roomId, threadId, threadId);
+}
+
+// Task board Stop: end every turn of one thread through the same paths as the stop buttons
+// (stop_generation / sub-agent stop) and drop the work still waiting for it.
+function abortThreadRuns(roomId, threadId) {
+  const seq = activeSequences.get(`${roomId}:${threadId}`);
+  if (seq) seq.cancelled = true;
+  const dropped = db.transaction(() => {
+    const queued = db.prepare('DELETE FROM room_message_queue WHERE room_id=? AND (thread_id=? OR message_id=?)').run(roomId, threadId, threadId).changes;
+    db.prepare('DELETE FROM pending_wakes WHERE room_id=? AND thread_id=?').run(roomId, threadId);
+    db.prepare('DELETE FROM pending_retriggers WHERE room_id=? AND (thread_id=? OR trigger_message_id=?)').run(roomId, threadId, threadId);
+    return queued;
+  })();
+  if (dropped) {
+    const left = db.prepare('SELECT COUNT(*) AS n FROM room_message_queue WHERE room_id=?').get(roomId).n;
+    broadcast(roomId, { type: 'queue_updated', room_id: roomId, queued: left });
+  }
+  const runs = db.prepare(`SELECT m.id, rp.actor_id FROM messages m JOIN room_participants rp ON rp.id=m.participant_id
+    WHERE m.room_id=? AND (m.thread_id=? OR m.id=?) AND m.state IN ('streaming','requesting')`).all(roomId, threadId, threadId);
+  for (const run of runs) {
+    const agentWs = agentClients.get(run.actor_id);
+    if (agentWs && agentWs.readyState === 1) {
+      // The agent aborts and reports agent_complete ('(stopped by user)'), which finalizes the message.
+      agentWs.send(JSON.stringify({ type: 'cancel_generation', room_id: roomId, message_id: run.id }));
+    } else {
+      // Agent offline: no one to abort, so finalize the stuck message here.
+      db.prepare("UPDATE messages SET state='error', content=?, completed_at=datetime('now') WHERE id=?").run('(stopped by user)', run.id);
+      broadcast(roomId, roomMessages.runError(run.id));
+      pendingAgents.get(run.id)?.resolve('');
+      pendingAgents.delete(run.id);
+      pendingActorMeta.delete(run.id);
+    }
+  }
+}
 const roomIdleBus = new (require('events').EventEmitter)();
 roomIdleBus.setMaxListeners(0); // unbounded — one listener per queued room
 
@@ -7483,9 +7613,12 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
   const autoId = automation?.id || null;
   const autoName = automation?.name || null;
   const autoProvider = automation?.provider || null;
+  // A task-board run (lib/room-tasks-runner.js) links its message to the card for the "Task #seq" badge.
+  const taskId = autoProvider === 'task' ? automation.task_id ?? null : null;
+  const taskSeq = autoProvider === 'task' ? automation.task_seq ?? null : null;
   const result = db.prepare(
-    `INSERT INTO messages (room_id, participant_id, content, image_url, file_url, file_name, attachments, reply_to, client_event_id, thread_id, automation_id, automation_name, automation_provider, state) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'complete')`
-  ).run(roomId, humanParticipantId, content, imageUrl, fileUrl, fileName, attachJson, replyTo || null, eventId || null, threadId || null, autoId, autoName, autoProvider);
+    `INSERT INTO messages (room_id, participant_id, content, image_url, file_url, file_name, attachments, reply_to, client_event_id, thread_id, automation_id, automation_name, automation_provider, task_id, task_seq, state) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'complete')`
+  ).run(roomId, humanParticipantId, content, imageUrl, fileUrl, fileName, attachJson, replyTo || null, eventId || null, threadId || null, autoId, autoName, autoProvider, taskId, taskSeq);
   const messageId = result.lastInsertRowid;
 
   // Get message with actor info for broadcast
@@ -7499,7 +7632,8 @@ async function handleHumanMessage(roomId, content, attachments, replyTo, senderW
   // R28: if a sequence is already running, apply busy_input_mode before triggering agents
   const busyMode = getSetting('busy_input_mode', roomId) || 'interrupt';
   const seqKey = threadId ? `${roomId}:${threadId}` : String(roomId);
-  if (busyMode !== 'interrupt' && activeSequences.has(seqKey)) {
+  // A task-board run is a new thread of its own: never queued behind or steered into the main feed's run.
+  if (busyMode !== 'interrupt' && autoProvider !== 'task' && activeSequences.has(seqKey)) {
     if (busyMode === 'queue') {
       const pos = db.prepare('SELECT COALESCE(MAX(position), -1)+1 as p FROM room_message_queue WHERE room_id=?').get(roomId).p;
       db.prepare('INSERT INTO room_message_queue (room_id, content, attachments, reply_to, event_id, thread_id, message_id, target_actor_id, position) VALUES (?,?,?,?,?,?,?,?,?)').run(
@@ -8509,6 +8643,12 @@ server.listen(PORT, () => {
   // R15: any session left 'active' belongs to a prior process — mark indeterminate.
   const orphaned = db.prepare("UPDATE ai_sessions SET status='indeterminate' WHERE status='active'").run();
   if (orphaned.changes) console.log(`[startup] ${orphaned.changes} orphaned session(s) marked indeterminate`);
+
+  // Task board: no turn survives a restart, so running cards go back to Backlog and runners stay off.
+  try {
+    const reaped = roomTasksRunner.reap();
+    if (reaped.returned || reaped.runnersOff) console.log(`[tasks] startup: ${reaped.returned} running task(s) back to Backlog, ${reaped.runnersOff} runner(s) off`);
+  } catch (e) { console.error('[tasks] startup reaper failed:', e.message); }
 
   console.log(`Stoa running → http://localhost:${PORT}`);
   // Phase 2b (R1): resume any sub-agent wakes left pending by a prior crash/restart.

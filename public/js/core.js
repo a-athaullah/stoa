@@ -244,8 +244,9 @@ const _AUTOMATION_LOGOS = {
   email: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m2 7 10 7 10-7"/></svg>',
   schedule: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
   mcp: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 2v5M15 2v5"/><path d="M6 7h12v4a6 6 0 0 1-12 0z"/><path d="M12 17v5"/></svg>',
+  task: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 4.5h4v15h-4zM10 4.5h4v10h-4zM15.5 4.5h4v12.5h-4z"/></svg>',
 };
-const _AUTOMATION_PROVIDER_LABELS = { gmail: 'Gmail', email: 'Email', slack: 'Slack', whatsapp: 'WhatsApp', schedule: 'Schedule' };
+const _AUTOMATION_PROVIDER_LABELS = { gmail: 'Gmail', email: 'Email', slack: 'Slack', whatsapp: 'WhatsApp', schedule: 'Schedule', task: 'Task' };
 
 // MCP events carry the user-configured server name; every other provider maps to a fixed label.
 function automationSourceLabel(automation) {
@@ -257,6 +258,7 @@ function automationSourceLabel(automation) {
 // Meta tag next to the sender name: agent replies show where the turn came from,
 // inbound automation messages show what kind of automation posted them.
 function makeAutomationTagEl(m) {
+  if (m.automation.provider === 'task') return makeTaskTagEl(m);
   const tag = document.createElement('span');
   tag.className = 't-automation-tag';
   const provider = m.automation.provider;
@@ -264,9 +266,49 @@ function makeAutomationTagEl(m) {
   else tag.textContent = provider === 'schedule' ? 'Scheduled' : provider === 'mcp' ? 'Integration' : 'Automation';
   return tag;
 }
+// Task runner messages (and agent replies in a task thread): "Task #seq" opens the board and the card.
+function makeTaskTagEl(m) {
+  const a = m.automation;
+  const taskId = Number.isInteger(a.task_id) ? a.task_id : null;
+  const seq = Number.isInteger(a.task_seq) ? a.task_seq : null;
+  const text = (m.actor_type === 'ai' ? 'via ' : '') + 'Task' + (seq !== null ? ' #' + seq : '');
+  if (taskId === null && seq === null) {
+    const tag = document.createElement('span');
+    tag.className = 't-automation-tag';
+    tag.textContent = text;
+    return tag;
+  }
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 't-automation-tag h-task-tag';
+  btn.title = 'Open this task on the board';
+  btn.innerHTML = _AUTOMATION_LOGOS.task;
+  const svg = btn.querySelector('svg');
+  if (svg) svg.setAttribute('class', 'tb-i');
+  const label = document.createElement('span');
+  label.textContent = text;
+  btn.appendChild(label);
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    tasksOpenFromMessage(taskId, seq);
+  });
+  return btn;
+}
+
 const _BOT_LOGO = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M12 11V7"/><circle cx="12" cy="5" r="2"/><path d="M8 15h.01M16 15h.01"/></svg>';
 
 function makeAutomationAvatarEl(provider, size) {
+  if (provider === 'task') {
+    const box = document.createElement('div');
+    box.className = 'h-automation-avatar h-task-avatar';
+    box.style.width = size + 'px';
+    box.style.height = size + 'px';
+    const img = document.createElement('img');
+    img.src = '/img/task-avatar.svg';
+    img.alt = '';
+    box.appendChild(img);
+    return box;
+  }
   const wrap = document.createElement('div');
   wrap.className = 'h-automation-avatar';
   wrap.style.width = size + 'px';

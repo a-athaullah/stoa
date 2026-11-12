@@ -813,6 +813,66 @@ Menampilkan dua grup:
 
 ---
 
+## Board Tugas (Kanban)
+
+Setiap room memiliki board tugas sendiri — tidak ada board global. Akses melalui **tombol Tasks** (ikon board) di strip sidebar kanan; badge menampilkan berapa task yang sedang berjalan dan berapa yang menunggu konfirmasimu. Di layar lebih sempit dari 1.024 px tombol Tasks juga muncul di header room. Board mengingat preferensi tampilan chat/board per room.
+
+### Kolom
+
+Board memiliki empat kolom:
+
+- **Awaiting** — task yang butuh konfirmasimu. Memindahkan card ke sini memerlukan alasan (hingga 1.000 karakter). Hanya manusia yang bisa memindahkan card keluar dari Awaiting; agent tidak bisa.
+- **Backlog** — task diurutkan berdasarkan prioritas runner. Card di atas dijalankan lebih dulu.
+- **Ongoing** — task yang sedang dijalankan. Dikelola oleh runner; card di sini tidak bisa di-drag.
+- **Finished** — task yang selesai, terbaru dulu.
+
+### Card
+
+Setiap card bisa memuat:
+
+- **Judul** dan **deskripsi** — deskripsi mendukung Markdown; tag HTML mentah ditampilkan sebagai teks biasa, bukan dirender.
+- **Label** (hingga 8), **prioritas** (Tinggi / Sedang / Rendah / Tidak ada), dan **checklist**.
+- **Komentar** — log diskusi di card.
+- **Assignee** — agent AI atau sub-agent yang tertaut. Card tanpa assignee diarahkan ke primary agent room.
+- **Dependensi** — card dilewati runner sampai semua card dalam daftar dependensinya sudah Finished. Card yang dilewati tetap di tempatnya di Backlog dan tidak berpindah.
+- **Timestamp** — drawer card menampilkan waktu Dibuat, Dimulai, dan Selesai beserta durasi, semua dalam waktu lokal browser. Card di Finished menampilkan tanggal selesai di footer card.
+
+### Menambah dan Memindahkan Card
+
+Klik **+** di toolbar board untuk menambah card; card mendarat di Backlog secara default. Klik **+** di bawah kolom untuk menambah langsung ke sana (Awaiting meminta alasan).
+
+Drag card dengan mouse untuk mengubah urutan atau berpindah kolom. Keyboard: tekan **Space** untuk mengangkat card, **tombol panah** untuk memindahkan, **Space** untuk menempatkan, **Escape** untuk membatalkan.
+
+### Runner
+
+Runner adalah loop sisi server yang mengambil card dari Backlog dan menjalankan masing-masing dalam thread tersendiri.
+
+- **Play** — mulai runner. Runner memposting card sebagai pesan di room (avatar task, badge **Task #N**) dan menjalankannya di thread tersendiri. Konkurensi (1–5, dapat diatur di toolbar board) mengontrol berapa card yang berjalan bersamaan.
+- **Pause** — task yang berjalan selesai secara normal; task baru tidak dimulai sampai kamu menekan Play lagi.
+- **Stop** — dialog konfirmasi muncul. Task yang berjalan dibatalkan dan card-nya kembali ke Backlog.
+- Saat balasan terakhir agent di thread task selesai, card otomatis pindah ke Finished. Awal balasan itu menjadi ringkasan hasil card.
+- Card yang tidak bisa diselesaikan agent tetap di Backlog dengan badge **Failed**. Klik **Retry** untuk membuatnya bisa dijalankan kembali.
+
+### Agent dan Sub-Agent
+
+Agent dan sub-agent bisa mengelola card melalui tool MCP `stoa__task_*`:
+
+- Buat card di Backlog (default) atau Awaiting (memerlukan `await_reason`).
+- Perbarui judul, deskripsi, label, prioritas, checklist, assignee, dan dependensi saat card tidak sedang berjalan.
+- Pindahkan card antar kolom — kecuali keluar dari Awaiting (hanya manusia yang bisa konfirmasi task Awaiting).
+- Selesaikan, blokir (pindah ke Awaiting dengan alasan), atau gagalkan task mereka sendiri yang sedang berjalan.
+- Tambahkan komentar ke card mana pun.
+
+### Room yang Diarsip
+
+Di room yang diarsip, Pause dan Stop runner tetap bisa digunakan (hanya owner). Semua operasi task lain mengembalikan error 423.
+
+### Batas
+
+Setiap room dapat menampung hingga **1.000 task**.
+
+---
+
 ## Ekspor Percakapan
 
 Anda bisa mengekspor seluruh riwayat percakapan room sebagai **JSON** atau **CSV**. Klik **tombol export** di header chat dan pilih format. Download mencakup semua pesan, timestamp, dan nama peserta.
@@ -1318,6 +1378,7 @@ Tool dikelompokkan berdasarkan fungsi:
 - **System prompt** — `stoa__room_system_prompt_get/set`, `stoa__agent_system_prompt_get/set`
 - **Sub-agent** — `stoa__sub_agent_list/create/update/delete/trigger`
 - **Automation** — `stoa__automation_list/create/update/delete`, `stoa__connection_list`
+- **Board Tugas** — `stoa__task_list`, `stoa__task_get`, `stoa__task_create`, `stoa__task_update`, `stoa__task_move`, `stoa__task_comment`, `stoa__task_complete`, `stoa__task_block`, `stoa__task_fail`, `stoa__task_delete`
 - **Server MCP** — `stoa__mcp_catalog`, `stoa__mcp_server_list`, `stoa__mcp_server_add`, `stoa__mcp_server_update` (hanya sesi utama)
 
 Validasi, budget, dan scope berlaku sama seperti REST API. Perubahan konfigurasi (system prompt, CRUD sub-agent, perubahan automation) memunculkan notice permanen di room — `· config` atau `· automation` — sama dengan endpoint REST.

@@ -27,6 +27,7 @@ function connectWS(roomId) {
     ws.send(JSON.stringify({ type: 'file_list' }));
     ws.send(JSON.stringify({ type: 'git_diff' }));
     setConnected(true);
+    tasksOnSocketOpen(roomId);
   };
 
   ws.onmessage = e => {
@@ -83,11 +84,12 @@ function handleWsMessage(msg) {
     initDayFloater();
     if (msg.messages.length > 0) oldestMessageId = msg.messages[0].id;
     noMoreOlder = msg.messages.length < 100;
+    if (typeof tasksNoteMessage === 'function') msg.messages.forEach(tasksNoteMessage);
     for (const m of msg.messages) {
       if (m.state === 'streaming' || m.state === 'requesting') {
         setRunReply(m.id, m);
         if (m.thread_id) {
-          if (typeof openThread === 'function' && typeof isThreadOpen === 'function' && !isThreadOpen()) {
+          if (typeof openThread === 'function' && typeof isThreadOpen === 'function' && !isThreadOpen() && !(typeof tasksKeepThreadClosed === 'function' && tasksKeepThreadClosed(m.thread_id))) {
             openThread(m.thread_id, null, { history: 'replace' });
           }
           if (typeof activeThreadId !== 'undefined' && activeThreadId === m.thread_id) {
@@ -109,6 +111,7 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'message_new') {
     const m = msg.message;
+    if (typeof tasksNoteMessage === 'function') tasksNoteMessage(m);
     const tId = m.thread_id || null;
     if (tId) {
       // Update chip in feed for this thread's root
@@ -218,7 +221,7 @@ function handleWsMessage(msg) {
     if ((msg.state === 'requesting' || msg.state === 'streaming') && msg.actor_name) {
       const tId = msg.thread_id || null;
       // Auto-open thread panel when AI starts responding in a thread — only if no thread is currently open
-      if (tId && typeof openThread === 'function' && typeof isThreadOpen === 'function' && !isThreadOpen()) {
+      if (tId && typeof openThread === 'function' && typeof isThreadOpen === 'function' && !isThreadOpen() && !(typeof tasksKeepThreadClosed === 'function' && tasksKeepThreadClosed(tId))) {
         openThread(tId, null, { history: 'replace' });
       }
       // Thread messages never render in room feed
@@ -568,6 +571,11 @@ function handleWsMessage(msg) {
 
   if (msg.type === 'queue_updated') {
     _updateQueuePill(msg.queued || 0);
+    return;
+  }
+
+  if (msg.type === 'task_upsert' || msg.type === 'task_delete' || msg.type === 'task_event' || msg.type === 'task_settings') {
+    tasksHandleWs(msg);
     return;
   }
 

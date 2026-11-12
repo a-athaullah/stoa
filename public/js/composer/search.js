@@ -186,6 +186,7 @@ function toggleRoomSearch() {
   if (bar.classList.contains('visible')) {
     closeRoomSearch();
   } else {
+    if (tasksBoardOpen()) tasksSetView('chat');
     bar.classList.add('visible');
     if (btn) btn.classList.add('active');
     input.value = '';

@@ -812,6 +812,66 @@ Shows two groups:
 
 ---
 
+## Tasks (Kanban Board)
+
+Each room has its own task board — there is no global board. Access it from the **Tasks button** (board icon) in the right sidebar strip; a badge shows how many tasks are currently running and how many are waiting for your confirmation. On screens narrower than 1,024 px the Tasks button also appears in the room header. The board remembers your chat/board preference per room.
+
+### Columns
+
+The board has four columns:
+
+- **Awaiting** — tasks that need your confirmation. Moving a card here requires a reason (up to 1,000 characters). Only a human can move a card out of Awaiting; agents cannot.
+- **Backlog** — tasks ordered by runner priority. Cards at the top run first.
+- **Ongoing** — tasks currently being run. Managed by the runner; cards here cannot be dragged.
+- **Finished** — completed tasks, newest first.
+
+### Cards
+
+Each card can hold:
+
+- **Title** and **description** — description supports Markdown; raw HTML tags are shown as literal text, not rendered.
+- **Labels** (up to 8), **priority** (High / Medium / Low / None), and a **checklist**.
+- **Comments** — a discussion log on the card.
+- **Assignee** — an AI agent or a linked sub-agent. Cards with no assignee go to the room's primary agent.
+- **Dependencies** — a card is skipped by the runner until every card in its dependency list is Finished. Skipped cards keep their place in Backlog and do not move.
+- **Timestamps** — the card drawer shows Created, Started, and Finished times plus elapsed duration, all in browser local time. Finished cards show the completion date in the card footer.
+
+### Adding and Moving Cards
+
+Click **+** in the board toolbar to add a card; cards land in Backlog by default. Click **+** at the bottom of a column to add directly there (Awaiting asks for a reason).
+
+Drag cards with the mouse to reorder or change columns. Keyboard: press **Space** to pick up a card, **arrow keys** to move it, **Space** to drop, **Escape** to cancel.
+
+### Runner
+
+The runner is a server-side loop that takes cards from Backlog and runs each one in a dedicated thread.
+
+- **Play** — start the runner. It posts the card as a message in the room (task avatar, **Task #N** badge) and runs it in a dedicated thread. Concurrency (1–5, configurable in the board toolbar) controls how many cards run at once.
+- **Pause** — running tasks finish normally; no new tasks start until you press Play again.
+- **Stop** — a confirmation dialog appears. Running tasks are cancelled and their cards return to Backlog.
+- When an agent's last reply in a task thread completes, the card moves to Finished automatically. The start of that reply becomes the card's result summary.
+- A card the agent could not finish stays in Backlog with a **Failed** badge. Click **Retry** to make it eligible again.
+
+### Agents and Sub-Agents
+
+Agents and sub-agents can manage cards via the `stoa__task_*` MCP tools:
+
+- Create a card in Backlog (default) or Awaiting (requires `await_reason`).
+- Update title, description, labels, priority, checklist, assignee, and dependencies while the card is not running.
+- Move a card between columns — except out of Awaiting (only a human can confirm an Awaiting task).
+- Complete, block (move to Awaiting with a reason), or fail their own currently-running task.
+- Add comments to any card.
+
+### Archived Rooms
+
+In an archived room, runner Pause and Stop still work (owner only). All other task operations return a 423 error.
+
+### Limits
+
+Each room holds up to **1,000 tasks**.
+
+---
+
 ## Export Conversation
 
 You can export a room's full conversation history as **JSON** or **CSV**. Click the **export button** in the chat header and select the format. The download includes all messages, timestamps, and participant names.
@@ -1317,6 +1377,7 @@ Tools are grouped by function:
 - **System prompts** — `stoa__room_system_prompt_get/set`, `stoa__agent_system_prompt_get/set`
 - **Sub-agents** — `stoa__sub_agent_list/create/update/delete/trigger`
 - **Automation** — `stoa__automation_list/create/update/delete`, `stoa__connection_list`
+- **Task Board** — `stoa__task_list`, `stoa__task_get`, `stoa__task_create`, `stoa__task_update`, `stoa__task_move`, `stoa__task_comment`, `stoa__task_complete`, `stoa__task_block`, `stoa__task_fail`, `stoa__task_delete`
 - **MCP servers** — `stoa__mcp_catalog`, `stoa__mcp_server_list`, `stoa__mcp_server_add`, `stoa__mcp_server_update` (main sessions only)
 
 The same validation, budget caps, and scope rules as the REST API apply. Configuration changes (system prompts, sub-agent CRUD, automation changes) post a permanent notice in the room — `· config` or `· automation` — the same as the REST endpoint does.

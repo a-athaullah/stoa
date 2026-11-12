@@ -187,6 +187,38 @@ All WS events carry `thread_id` (null for root). Thread-specific events routed t
 - **skills / skill_revisions / skill_files** - global skills library (lib/skills.js); `/name` in a prompt → trigger `skills` refs, agent caches files in `~/.stoa/skills`; agents manage their own skills via `stoa__skill_*` MCP tools and see an enabled-skill catalog in the system prompt
 - **automations** - webhook → room message triggers
 - **automation_connections** - Slack/Discord credentials
+- **room_tasks / room_task_deps / room_task_events / room_task_settings** - per-room kanban board (lib/room-tasks.js + lib/room-tasks-runner.js)
+
+## Room Task Board
+
+Each room has a kanban board with four columns: `awaiting`, `backlog`, `ongoing`, `finished`. The board is owned by the server, not the agent — the runner loop lives in `lib/room-tasks-runner.js` and runs entirely on the server side, independent of which room the owner is viewing.
+
+### Core files
+- `lib/room-tasks.js` — CRUD for tasks, MCP tools, HTTP routes, WS broadcast
+- `lib/room-tasks-runner.js` — runner loop (play/pause/stop), `composeTaskMessage`
+
+### Runner flow
+1. `play(roomId, who)` — humanOnly; sets `running=1` in `room_task_settings`, kicks `safeTick`.
+2. `safeTick` — picks Backlog candidates up to concurrency; skips cards with unfinished deps (`waiting_on` list); starts each card as a thread message (provider `task`, badge `Task #<seq>`), sets status `running`.
+3. Card ends when the agent's last reply in that thread completes (`threadBusy` → false after `settleMs`). The start of that reply becomes `result_summary`; card moves to `finished`.
+4. `pause(roomId, who)` — humanOnly; sets `running=0`; in-flight cards finish naturally.
+5. `stop(roomId, who)` — humanOnly; sets `running=0`; calls `abortThread` for each running card; calls `returnToBacklog` (status cleared).
+6. Reap on server startup: any `status='running'` rows are returned to Backlog with reason `server restart`.
+
+### Scope rules (enforced in lib/room-tasks.js)
+- Agents must be room participants; sub-agents must be linked.
+- `ongoing` column: runner-only (agents cannot move a card here).
+- Moving out of `awaiting`: human-only (`only a human confirms an awaiting task`, 403).
+- Runner controls (play/pause/stop) and concurrency change: human-only.
+- Complete/block/fail: only the agent currently running that card.
+- Archived room: 423 for all writes except runner pause/stop (halt flag).
+
+### Design decisions
+- Fractional rank (8-byte REAL) + periodic rebalance; no collisions at normal use.
+- Task message uses provider `task` so the feed can render it with a Task badge.
+- `< ` in a code span inside the task description → `\<` in the composed message (inertHtml) to prevent Claude treating it as an HTML tag.
+- Quick-add from the Awaiting column auto-sets `await_reason = 'Added to Awaiting by hand'`.
+- Dependencies: runner skips a blocked card without moving it; card shows `blocked` status badge.
 
 ## MCP Gateway
 
@@ -204,7 +236,7 @@ Agent (Claude/Codex)
     → audit: INSERT mcp_calls (args_preview redacted, capped at 2 KB)
 ```
 
-**Built-in tools:** Messaging (`stoa__message_send`, `stoa__messages_read`, `stoa__threads_list`, `stoa__thread_read`), Memory (`stoa__room/agent/sub_agent_memory_get/set`), System prompts (`stoa__room/agent_system_prompt_get/set`), Sub-agents (`stoa__sub_agent_list/create/update/delete/trigger`), Automation (`stoa__automation_list/create/update/delete`, `stoa__connection_list`), MCP servers (`stoa__mcp_catalog`, `stoa__mcp_server_list`, `stoa__mcp_server_add`, `stoa__mcp_server_update` — main sessions only; add and update are approval-gated). Each tool calls the same `lib/*.js` core function as its REST counterpart (`{status, body}`), so validation is never duplicated. Configuration-mutating tools post a `· config` or `· automation` room notice via the same notice path as REST.
+**Built-in tools:** Messaging (`stoa__message_send`, `stoa__messages_read`, `stoa__threads_list`, `stoa__thread_read`), Memory (`stoa__room/agent/sub_agent_memory_get/set`), System prompts (`stoa__room/agent_system_prompt_get/set`), Sub-agents (`stoa__sub_agent_list/create/update/delete/trigger`), Automation (`stoa__automation_list/create/update/delete`, `stoa__connection_list`), Task Board (`stoa__task_list/get/create/update/move/comment/complete/block/fail/delete` — available in sub-agent sessions; human-only ops like runner play/pause/stop and confirming Awaiting tasks are enforced server-side), MCP servers (`stoa__mcp_catalog`, `stoa__mcp_server_list`, `stoa__mcp_server_add`, `stoa__mcp_server_update` — main sessions only; add and update are approval-gated). Each tool calls the same `lib/*.js` core function as its REST counterpart (`{status, body}`), so validation is never duplicated. Configuration-mutating tools post a `· config` or `· automation` room notice via the same notice path as REST.
 
 **Prompt injection follows the token:** `triggerAiResponse` issues the MCP token before building the prompt. When the session gets a token and its harness mounts the gateway (`MCP_HARNESSES`: claude, codex), the progress-reporting, sub-agent output, delegation and memory sections name the `stoa__*` tools; otherwise (tool-less model, token issue failure) they keep the original curl blocks.
 
