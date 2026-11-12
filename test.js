@@ -16686,6 +16686,7 @@ async function run() {
       document: { getElementById: byId, visibilityState: 'visible' },
       setQueuePosition() {}, setRunReply() {}, finalizeMessage() {}, clearComposerProcessing() {}, clearThreadProcessing() {}, refreshRoomList() {},
       scrollToBottom: () => scrolled.push('feed'), _scrollThreadToBottom() {},
+      wsPanelIsOpen: () => false,
     };
     vm.createContext(ctx);
     for (const f of ['public/js/chat/append.js', 'public/js/websocket.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, f), 'utf8'), ctx);
@@ -16776,6 +16777,7 @@ async function run() {
       setComposerProcessing: id => processing.add(id), clearComposerProcessing: id => processing.delete(id),
       setThreadProcessing: id => processing.add(id), clearThreadProcessing: id => processing.delete(id),
       refreshRoomList() {},
+      wsPanelIsOpen: () => false,
     };
     vm.createContext(ctx);
     const markdownJs = fs.readFileSync(path.join(__dirname, 'public/js/markdown.js'), 'utf8');
