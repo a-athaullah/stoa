@@ -5294,7 +5294,7 @@ async function runAsyncUnitTests() {
         bad({ title: 'ok', assignee_actor_id: 1 }, /invalid_assignee/); // human
         bad({ title: 'ok', assignee_actor_id: 4 }, /invalid_assignee/); // agent of another room
         bad({ title: 'ok', assignee_sub_agent_id: 8 }, /invalid_assignee/); // not linked to the room
-        bad({ title: 'ok', assignee_sub_agent_id: 7, assignee_actor_id: 3 }, /parent/);
+        bad({ title: 'ok', assignee_sub_agent_id: 7, assignee_actor_id: 2 }, /not both/);
         bad({ title: 'ok', blocked_by: [999] }, /not a task of this room/);
         bad({ title: 'ok', blocked_by: Array.from({ length: 21 }, (_, i) => i + 1) }, /blocked_by/);
         const other = mk(w, 'other room', {}, 11);
@@ -5431,7 +5431,7 @@ async function runAsyncUnitTests() {
         assert.strictEqual(r.body.counts.running, 2);
         assert.deepStrictEqual(order(w, 10, 'backlog'), ['B', 'C'], 'B keeps its place');
         const runA = w.tasks.get(10, a.id).body;
-        assert.deepStrictEqual([runA.col, runA.status, runA.attempts, runA.thread_id === runA.message_id && !!runA.thread_id], ['ongoing', 'running', 1, true]);
+        assert.deepStrictEqual([runA.col, runA.status, runA.attempts, runA.thread_id === runA.message_id && !!runA.thread_id], ['ongoing', 'running', 0, true]);
         // A finishes → B (now eligible) takes the slot.
         w.reply(a.id, 2, 'A done: shipped');
         w.runner.checkRuns(); w.runner.checkRuns();
@@ -5475,7 +5475,7 @@ async function runAsyncUnitTests() {
         w.runner.play(10, H);
         await tick();
         const ra = w.tasks.get(10, a.id).body;
-        assert.deepStrictEqual([ra.status, ra.attempts], ['running', 2]);
+        assert.deepStrictEqual([ra.status, ra.attempts], ['running', 1], 'Retry counts the attempt');
         assert.notStrictEqual(ra.thread_id, ta.thread_id);
         assert.strictEqual(w.tasks.run.finish(10, a.id, { ok: true }, w.tasks.run.SYSTEM, ta.thread_id).status, 409);
         assert.strictEqual(w.tasks.get(10, a.id).body.status, 'running');
