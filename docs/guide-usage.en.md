@@ -846,7 +846,7 @@ Drag cards with the mouse to reorder or change columns. Keyboard: press **Space*
 
 The runner is a server-side loop that takes cards from Backlog and runs each one in a dedicated thread.
 
-- **Play** — start the runner. It posts the card as a message in the room (agent's avatar, **Task #N** badge) and runs it in a dedicated thread. Concurrency (1–5, configurable in the board toolbar) controls how many cards run at once.
+- **Play** — start the runner. It posts the card as a message in the room (task avatar, **Task #N** badge) and runs it in a dedicated thread. Concurrency (1–5, configurable in the board toolbar) controls how many cards run at once.
 - **Pause** — running tasks finish normally; no new tasks start until you press Play again.
 - **Stop** — a confirmation dialog appears. Running tasks are cancelled and their cards return to Backlog.
 - When an agent's last reply in a task thread completes, the card moves to Finished automatically. The start of that reply becomes the card's result summary.
