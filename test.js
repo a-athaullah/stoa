@@ -5410,6 +5410,7 @@ async function runAsyncUnitTests() {
         assert.strictEqual(w.tasks.access(10, H, { write: true }).status, 423);
         assert.strictEqual(w.tasks.access(10, AG, { write: true }).status, 423);
         assert.strictEqual(w.tasks.access(10, AG).status, 403);
+        assert.strictEqual(w.tasks.access(10, H, { write: true, halt: true }), null, 'runner pause / stop stay allowed: a running runner must be stoppable');
       } finally { w.close(); }
     });
 
@@ -5569,8 +5570,13 @@ async function runAsyncUnitTests() {
         w.runner.stop(10, H);
         w.db.prepare("UPDATE rooms SET archived_at=datetime('now') WHERE id=10").run();
         w.tasks.run.writeSettings(10, { running: 1 });
+        const sent = w.deps.dispatched.length;
         w.runner.tick(10);
+        w.runner.poll();
+        await tick();
         assert.deepStrictEqual([w.tasks.run.settings(10).running, w.tasks.run.settings(10).last_error], [false, 'room is archived']);
+        assert.strictEqual(w.deps.dispatched.length, sent, 'an archived room starts no card');
+        assert.deepStrictEqual([w.tasks.get(10, c.id).body.col, w.tasks.get(10, c.id).body.status], ['backlog', 'idle']);
         // No AI agent to run it: the card stays where it is.
         const lone = mk(w, 'lone', {}, 11);
         w.db.prepare('DELETE FROM room_participants WHERE room_id=11 AND actor_id=4').run();
@@ -5594,12 +5600,6 @@ async function runAsyncUnitTests() {
       } finally { w.close(); }
     });
 
-    await uta('Tasks runner — reaper: running cards back to Backlog (server restart), every runner off', async () => {
-      const w = world();
-      try {
-        const a = mk(w, 'A');
-        w.runner.play(10, H);
-        await tick();
     await uta('Tasks runner — task message shows title / checklist text literally once rendered as chat markdown, agent gets it byte-for-byte', async () => {
       const { Marked } = require('marked');
       const md = new Marked({ breaks: true, gfm: true });
@@ -5622,6 +5622,12 @@ async function runAsyncUnitTests() {
       assert.ok(composeTaskMessage({ id: 5, seq: 1, title: 'plain title' }).startsWith('**Task #1: plain title**'), 'no code span when nothing to escape');
     });
 
+    await uta('Tasks runner — reaper: running cards back to Backlog (server restart), every runner off', async () => {
+      const w = world();
+      try {
+        const a = mk(w, 'A');
+        w.runner.play(10, H);
+        await tick();
         assert.strictEqual(w.tasks.get(10, a.id).body.status, 'running');
         assert.deepStrictEqual(w.runner.reap(), { returned: 1, runnersOff: 1 });
         const t = w.tasks.get(10, a.id).body;
@@ -9066,12 +9072,22 @@ async function run() {
       for (const id of [a.id, b.id]) await req('DELETE', `${base()}/${id}`);
     });
 
-    await test('Tasks — archived room: writes and play 423, owner still reads', async () => {
+    await test('Tasks — archived room: writes and play 423, pause / stop still work, owner still reads', async () => {
       if (!ready()) { console.log('    (skipped)'); return; }
+      tDb.prepare('UPDATE room_task_settings SET running=1 WHERE room_id=?').run(roomId);
       assert.strictEqual((await req('PATCH', `/api/rooms/${roomId}`, { archived: true })).status, 200);
       try {
         assert.strictEqual((await req('POST', base(), { title: 'nope' })).status, 423);
         assert.strictEqual((await req('POST', `${base()}/runner/play`)).status, 423);
+        assert.strictEqual((await req('PATCH', `${base()}/settings`, { concurrency: 2 })).status, 423);
+        const paused = await req('POST', `${base()}/runner/pause`);
+        assert.strictEqual(paused.status, 200, 'a runner left on in an archived room can be paused');
+        assert.strictEqual(paused.body.settings.running, false);
+        tDb.prepare('UPDATE room_task_settings SET running=1 WHERE room_id=?').run(roomId);
+        const stopped = await req('POST', `${base()}/runner/stop`);
+        assert.strictEqual(stopped.status, 200, 'and stopped');
+        assert.strictEqual(stopped.body.settings.running, false);
+        assert.strictEqual((await asAgent(agA, 'POST', `${base()}/runner/stop`)).status, 403, 'still owner-only');
         assert.strictEqual((await req('PATCH', `${base()}/${t1.id}`, { title: 'x' })).status, 423);
         assert.strictEqual((await req('GET', base())).status, 200);
         assert.strictEqual((await asAgent(agA, 'GET', base())).status, 403, 'agents never read an archived room');

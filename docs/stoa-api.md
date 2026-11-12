@@ -370,7 +370,7 @@ Each room has a task board with four columns: `awaiting` (waits for a human to c
 - `400`: invalid fields, or `blocked_by` that points at the card itself, a missing card, a card of another room, more than 20 cards, or a cycle.
 - `404`: the room or card does not exist. A card of another room also returns `404`.
 - `409`: the card's state does not allow the change.
-- `423`: the room is archived. No change to its board is allowed.
+- `423`: the room is archived. No change to its board is allowed, except runner pause and stop (owner only), so a runner left on can still be turned off.
 
 ### MCP tools
 

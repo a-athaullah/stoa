@@ -2714,8 +2714,8 @@ const server = http.createServer(async (req, res) => {
   // ── Task board: /api/rooms/:id/tasks[/:tid[/action]] + /tasks/settings + /tasks/runner/:op ──
   // Human session or agent secret. Logic lives in lib/room-tasks.js (shared with the stoa__task_* MCP
   // tools) and lib/room-tasks-runner.js: an agent must be a participant (a sub-agent: linked to the
-  // room), a card id only resolves inside its room, writes on an archived room answer 423, and only the
-  // owner drives the runner (play / pause / stop / concurrency).
+  // room), a card id only resolves inside its room, writes on an archived room answer 423 (except runner
+  // pause / stop), and only the owner drives the runner (play / pause / stop / concurrency).
   const tasksMatch = url.pathname.match(/^\/api\/rooms\/(\d+)\/tasks(?:\/(settings|runner\/(?:play|pause|stop)|\d+(?:\/(?:move|complete|block|fail|retry|comments))?))?$/);
   if (tasksMatch) {
     const roomId = parseInt(tasksMatch[1]);
@@ -2723,7 +2723,8 @@ const server = http.createServer(async (req, res) => {
     if (!req._authUser && !agentId) return json(res, { error: 'unauthorized' }, 401);
     const who = { actorId: agentId, subAgentId: agentId ? (req._scopedSubAgentId ?? null) : null };
     const write = req.method !== 'GET';
-    const denied = roomTasks.access(roomId, who, { write });
+    const halt = tasksMatch[2] === 'runner/pause' || tasksMatch[2] === 'runner/stop';
+    const denied = roomTasks.access(roomId, who, { write, halt });
     if (denied) return json(res, denied.body, denied.status);
     const reply = (r) => {
       if (r.status === 204) { res.writeHead(204); return res.end(); }
