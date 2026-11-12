@@ -20212,6 +20212,7 @@ async function run() {
       const env = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t', GIT_CONFIG_NOSYSTEM: '1' };
       const g = (...a) => execFileSync('git', a, { cwd: flRoot, env, stdio: 'ignore' });
       g('init', '-q'); g('add', 'src', 'README.md'); g('commit', '-qm', 'c');
+      fsW.writeFileSync(path.join(flRoot, '.git/info/exclude'), 'node_modules/\n'); // no global gitignore on the test server
       put('src/lib/util.js', 'two\n');
       fl = await createOnlineTestAgent('__test-file-list', flRoot);
       assert.ok(fl?.workdirId, 'online test agent with the workdir');

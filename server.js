@@ -7320,7 +7320,8 @@ function parseGitDiff(raw) {
   let current = null;
   for (const line of raw.split('\n')) {
     if (line.startsWith('diff --git')) {
-      const match = line.match(/b\/(.+)$/);
+      // Last " b/" of "diff --git a/<path> b/<path>": a bare /b\/(.+)$/ matched the "b/" inside lib/, web/.
+      const match = line.match(/^diff --git a\/.* b\/(.+)$/);
       current = { name: match ? match[1] : '?', hunks: [], add: 0, del: 0 };
       files.push(current);
     } else if (line.startsWith('@@') && current) {
