@@ -5219,6 +5219,7 @@ async function runAsyncUnitTests() {
     const { createRoomTasks, taskMcpTools, keyBetween, evenKeys } = require('./lib/room-tasks');
     const { createRoomTasksRunner, composeTaskMessage, AGENT_UNDECIDED } = require('./lib/room-tasks-runner');
     const { createRoomMessages: createRoomMessagesT } = require('./lib/room-messages');
+    const { createThreadCompleteDefer: createThreadCompleteDeferT } = require('./lib/thread-complete-defer');
     const tick = () => new Promise(r => setImmediate(r));
     const sleepT = (ms) => new Promise(r => setTimeout(r, ms));
     // → a fresh world: owner 1, agents 2 + 3 in room 10, agent 4 in room 11 only, sub-agent 7 of agent 2 linked to room 10.
@@ -5236,12 +5237,19 @@ async function runAsyncUnitTests() {
       const sent = [];
       const push = (roomId, d) => sent.push({ roomId, ...d });
       const msgs = createRoomMessagesT({ db, broadcast() {}, broadcastGlobal() {}, resolveThread() {}, enrichAutomation() {}, enrichAutomationList() {}, getThreadRootPreview: () => null, cascadeMentions() {}, uploadsDir: '/tmp' });
-      const tasks = createRoomTasks({
-        db, broadcast: push, primaryActorId: (roomId) => (roomId === 10 ? 2 : 4),
-        completeThread: (roomId, rootId) => {
+      // Threads with an agent turn running (what server.js reads from activeSequences).
+      const turns = new Set();
+      const threadDefer = createThreadCompleteDeferT({
+        turnActive: (roomId, rootId) => turns.has(rootId),
+        complete: (roomId, rootId) => {
           const r = msgs.setThreadCompleted(roomId, rootId, true);
           if (r.status === 200) push(roomId, { type: 'thread_status', room_id: roomId, ...r.body });
         },
+        log: { error() {} },
+      });
+      const tasks = createRoomTasks({
+        db, broadcast: push, primaryActorId: (roomId) => (roomId === 10 ? 2 : 4),
+        completeThread: (roomId, rootId, opts) => threadDefer.request(roomId, rootId, opts),
       });
       const deps = {
         dispatched: [], nudges: [], aborted: [], online: new Set([2, 3, 4]), busy: new Set(),
@@ -5263,7 +5271,9 @@ async function runAsyncUnitTests() {
           .run(t.room_id, t.room_id, actorId, content, state, t.thread_id);
       };
       const threadDone = (taskId) => db.prepare('SELECT m.thread_completed_at FROM messages m JOIN room_tasks t ON t.thread_id=m.id WHERE t.id=?').get(taskId).thread_completed_at;
-      return { db, tasks, runner, deps, sent, reply, threadDone, close: () => db.close() };
+      const through = (taskId) => db.prepare('SELECT m.thread_completed_through AS t FROM messages m JOIN room_tasks t ON t.thread_id=m.id WHERE t.id=?').get(taskId).t;
+      const lastReply = (taskId) => db.prepare('SELECT MAX(id) AS id FROM messages WHERE thread_id=(SELECT thread_id FROM room_tasks WHERE id=?)').get(taskId).id;
+      return { db, tasks, runner, deps, sent, reply, threadDone, through, lastReply, turns, threadDefer, close: () => db.close() };
     };
     const H = { actorId: null };
     const AG = { actorId: 2, subAgentId: null };
@@ -5826,6 +5836,70 @@ async function runAsyncUnitTests() {
         w.reply(b.id, 2, 'ok');
         assert.strictEqual(w.tasks.complete(10, AG, b.id, { summary: 's' }).status, 200);
         assert.strictEqual(w.threadDone(b.id), null);
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks completion_mode agent — task_complete mid-turn defers the thread mark to the turn end: through = the final answer, a later reply reopens', async () => {
+      const w = world();
+      try {
+        agentMode(w);
+        const a = mk(w, 'A');
+        w.runner.play(10, H);
+        await tick();
+        const root = w.tasks.get(10, a.id).body.thread_id;
+        w.reply(a.id, 2, 'working');
+        w.turns.add(root);
+        const done = w.tasks.complete(10, AG, a.id, { summary: 'ok' });
+        assert.strictEqual(done.body.col, 'finished');
+        assert.strictEqual(w.threadDone(a.id), null, 'not marked while the turn runs');
+        assert.ok(!w.sent.some(e => e.type === 'thread_status'));
+        w.reply(a.id, 2, 'final answer'); w.reply(a.id, 2, 'proactive note');
+        w.turns.delete(root); w.threadDefer.turnEnded(10, root);
+        assert.ok(w.threadDone(a.id), 'marked at turn end');
+        assert.strictEqual(w.through(a.id), w.lastReply(a.id), 'through = last message of the turn');
+        assert.strictEqual(w.sent.filter(e => e.type === 'thread_status').length, 1);
+        assert.strictEqual(w.threadDefer.pendingCount(), 0);
+        // a reply after the turn reopens, as before.
+        w.reply(a.id, 1, 'one more thing');
+        const row = w.db.prepare('SELECT m.id FROM messages m WHERE m.id=?').get(root);
+        const open = w.db.prepare("SELECT 1 AS x FROM messages m WHERE m.id=? AND m.thread_completed_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM messages rc WHERE rc.thread_id=m.id AND rc.id > m.thread_completed_through)").get(row.id);
+        assert.strictEqual(open, undefined, 'new reply after the turn reopens the thread');
+        // a second turn ending with nothing pending marks nothing.
+        const before = w.sent.length;
+        w.threadDefer.turnEnded(10, root);
+        assert.strictEqual(w.sent.length, before);
+      } finally { w.close(); }
+    });
+
+    await uta('Tasks completion_mode agent — task_complete from a human (UI/API) marks at once even while a turn runs; a failed turn still marks through the last message', async () => {
+      const w = world();
+      try {
+        agentMode(w);
+        w.tasks.updateSettings(10, H, { concurrency: 2 });
+        const a = mk(w, 'A'), b = mk(w, 'B');
+        w.runner.play(10, H);
+        await tick();
+        const ra = w.tasks.get(10, a.id).body.thread_id, rb = w.tasks.get(10, b.id).body.thread_id;
+        w.reply(a.id, 2, 'x'); w.reply(b.id, 2, 'y');
+        // human: immediate despite the running turn. (The human path: the card must be running; H passes checkWorking.)
+        w.turns.add(ra);
+        assert.strictEqual(w.tasks.complete(10, H, a.id, {}).status, 200);
+        assert.ok(w.threadDone(a.id), 'human completion not deferred');
+        assert.strictEqual(w.through(a.id), w.lastReply(a.id));
+        // agent, turn fails after task_complete: the error message is the last one, and the turn end still marks.
+        w.turns.add(rb);
+        assert.strictEqual(w.tasks.complete(10, AG, b.id, {}).status, 200);
+        assert.strictEqual(w.threadDone(b.id), null);
+        w.reply(b.id, 2, 'boom', 'error');
+        w.turns.delete(rb); w.threadDefer.turnEnded(10, rb);
+        assert.ok(w.threadDone(b.id), 'marked even though the turn failed');
+        assert.strictEqual(w.through(b.id), w.lastReply(b.id));
+        // no turn running: immediate, as before.
+        const c = mk(w, 'C');
+        w.runner.checkRuns(); await tick();
+        w.reply(c.id, 2, 'z');
+        assert.strictEqual(w.tasks.complete(10, AG, c.id, {}).status, 200);
+        assert.ok(w.threadDone(c.id), 'no turn → immediate');
       } finally { w.close(); }
     });
 
